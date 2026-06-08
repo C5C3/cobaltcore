@@ -152,3 +152,55 @@ type MiddlewareSpec struct {
 	// Config contains key-value pairs for the filter section
 	Config map[string]string `json:"config,omitempty"`
 }
+
+// Feature: CC-0111
+
+// GatewaySpec configures the Gateway API HTTPRoute used to expose an OpenStack
+// service externally. It is the single source of truth for the shared Gateway
+// shape: both the keystone and c5c3 operators reuse this commonv1 type instead
+// of maintaining their own field-for-field copies.
+//
+// The operator plays the application-developer role in the Gateway API model:
+// it only manages the HTTPRoute. The referenced Gateway (and GatewayClass) must
+// be pre-provisioned by the platform team.
+type GatewaySpec struct {
+	// ParentRef identifies the pre-existing Gateway that the HTTPRoute attaches
+	// to.
+	ParentRef GatewayParentRefSpec `json:"parentRef"`
+
+	// Hostname is the externally reachable host (SNI / Host header) that the
+	// HTTPRoute matches. Required.
+	// +kubebuilder:validation:MinLength=1
+	Hostname string `json:"hostname"`
+
+	// Path is the URL path prefix matched by the HTTPRoute. Defaults to "/" when
+	// empty.
+	// +optional
+	Path string `json:"path,omitempty"`
+
+	// Annotations are passed through to the generated HTTPRoute metadata
+	// verbatim, allowing implementation-specific configuration (rate limits,
+	// timeouts, CORS) without extending the CRD.
+	// +optional
+	Annotations map[string]string `json:"annotations,omitempty"`
+}
+
+// GatewayParentRefSpec references a pre-existing Gateway that the operator
+// attaches the HTTPRoute to. It is shared by both the keystone and c5c3
+// operators as the single source of truth for the Gateway parent reference.
+type GatewayParentRefSpec struct {
+	// Name is the Gateway resource name. Required.
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+
+	// Namespace is the namespace of the referenced Gateway. When empty, the
+	// Gateway is assumed to live in the referencing CR's namespace.
+	// +optional
+	Namespace string `json:"namespace,omitempty"`
+
+	// SectionName targets a specific listener on the Gateway (e.g. "https") when
+	// the Gateway defines multiple listeners. When empty, the HTTPRoute attaches
+	// to all compatible listeners.
+	// +optional
+	SectionName string `json:"sectionName,omitempty"`
+}

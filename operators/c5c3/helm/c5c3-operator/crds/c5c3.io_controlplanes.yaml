@@ -414,26 +414,29 @@ spec:
                           ClusterIP Service); when set, the reconciler projects this onto the Keystone
                           CR's spec.gateway so the keystone-operator attaches an HTTPRoute to the
                           referenced Gateway.
+
+                          CC-0111: this is the shared commonv1.GatewaySpec — the curated local copy
+                          was consolidated into internal/common/types so both operators reuse one
+                          source of truth.
                         properties:
                           annotations:
                             additionalProperties:
                               type: string
                             description: |-
-                              Annotations are passed through to the generated HTTPRoute metadata verbatim,
-                              allowing implementation-specific configuration (rate limits, timeouts, CORS)
-                              without extending the CRD.
+                              Annotations are passed through to the generated HTTPRoute metadata
+                              verbatim, allowing implementation-specific configuration (rate limits,
+                              timeouts, CORS) without extending the CRD.
                             type: object
                           hostname:
                             description: |-
-                              Hostname is the externally reachable host (SNI / Host header) the HTTPRoute
-                              matches, e.g. "keystone.127-0-0-1.nip.io". Required.
+                              Hostname is the externally reachable host (SNI / Host header) that the
+                              HTTPRoute matches. Required.
                             minLength: 1
                             type: string
                           parentRef:
                             description: |-
                               ParentRef identifies the pre-existing Gateway that the HTTPRoute attaches
-                              to. The Gateway (and GatewayClass) are platform-team infrastructure managed
-                              outside this CR.
+                              to.
                             properties:
                               name:
                                 description: Name is the Gateway resource name. Required.
@@ -442,7 +445,7 @@ spec:
                               namespace:
                                 description: |-
                                   Namespace is the namespace of the referenced Gateway. When empty, the
-                                  Gateway is assumed to live in the projected Keystone CR's namespace.
+                                  Gateway is assumed to live in the referencing CR's namespace.
                                 type: string
                               sectionName:
                                 description: |-
@@ -455,8 +458,8 @@ spec:
                             type: object
                           path:
                             description: |-
-                              Path is the URL path prefix matched by the HTTPRoute. Defaults to "/" in the
-                              keystone operator when empty.
+                              Path is the URL path prefix matched by the HTTPRoute. Defaults to "/" when
+                              empty.
                             type: string
                         required:
                         - hostname

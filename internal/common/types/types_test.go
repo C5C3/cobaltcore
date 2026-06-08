@@ -8,7 +8,10 @@
 // a nil TLS pointer deep-copies to nil, preserving pre-CC-0106 behavior.
 package types
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 // TestDatabaseTLSSpec_DeepCopy backs REQ-001: DeepCopy of a populated
 // DatabaseTLSSpec returns an independent, equal value, and DeepCopy of a nil
@@ -91,5 +94,93 @@ func TestDatabaseSpec_TLSField_OptionalPointer(t *testing.T) {
 	cloneWith.TLS.Mode = "prefer"
 	if withTLS.TLS.Mode != "verify-ca" {
 		t.Errorf("mutating clone.TLS altered the original: %+v", *withTLS.TLS)
+	}
+}
+
+// Feature: CC-0111
+
+// TestGatewaySpec_DeepCopy backs REQ-001 for the shared commonv1 Gateway shape:
+// DeepCopy of a populated GatewaySpec (non-empty Annotations map, populated
+// nested ParentRef) returns an independent, equal value, and DeepCopy of a nil
+// *GatewaySpec returns nil. GatewaySpec contains a map, so it is not comparable
+// with == — compare via reflect.DeepEqual and field-by-field.
+func TestGatewaySpec_DeepCopy(t *testing.T) {
+	original := &GatewaySpec{
+		ParentRef: GatewayParentRefSpec{
+			Name:        "shared-gateway",
+			Namespace:   "gateway-system",
+			SectionName: "https",
+		},
+		Hostname: "keystone.127-0-0-1.nip.io",
+		Path:     "/v3",
+		Annotations: map[string]string{
+			"haproxy.org/timeout-client": "30s",
+			"haproxy.org/rate-limit":     "100",
+		},
+	}
+
+	clone := original.DeepCopy()
+
+	if clone == original {
+		t.Fatal("DeepCopy did not allocate a new *GatewaySpec")
+	}
+	if !reflect.DeepEqual(clone, original) {
+		t.Errorf("DeepCopy produced an unequal value: got %+v, want %+v", *clone, *original)
+	}
+
+	// Mutating the clone's Annotations map must not affect the original (no
+	// aliasing of the map).
+	clone.Annotations["haproxy.org/rate-limit"] = "mutated"
+	clone.Annotations["added"] = "mutated"
+	if original.Annotations["haproxy.org/rate-limit"] != "100" {
+		t.Errorf("mutating the clone's Annotations altered the original: %+v", original.Annotations)
+	}
+	if _, ok := original.Annotations["added"]; ok {
+		t.Errorf("adding to the clone's Annotations altered the original: %+v", original.Annotations)
+	}
+
+	// Mutating the clone's nested ParentRef fields must not affect the original.
+	clone.ParentRef.Name = "mutated"
+	clone.ParentRef.SectionName = "mutated"
+	if original.ParentRef.Name != "shared-gateway" || original.ParentRef.SectionName != "https" {
+		t.Errorf("mutating the clone's ParentRef altered the original: %+v", original.ParentRef)
+	}
+
+	var nilGateway *GatewaySpec
+	if nilGateway.DeepCopy() != nil {
+		t.Errorf("DeepCopy of a nil *GatewaySpec must return nil")
+	}
+}
+
+// TestGatewayParentRefSpec_DeepCopy backs REQ-001: GatewayParentRefSpec holds
+// only scalar fields, so DeepCopy returns an independent, equal value, and
+// DeepCopy of a nil *GatewayParentRefSpec returns nil.
+func TestGatewayParentRefSpec_DeepCopy(t *testing.T) {
+	original := &GatewayParentRefSpec{
+		Name:        "shared-gateway",
+		Namespace:   "gateway-system",
+		SectionName: "https",
+	}
+
+	clone := original.DeepCopy()
+
+	if clone == original {
+		t.Fatal("DeepCopy did not allocate a new *GatewayParentRefSpec")
+	}
+	if *clone != *original {
+		t.Errorf("DeepCopy produced an unequal value: got %+v, want %+v", *clone, *original)
+	}
+
+	clone.Name = "mutated"
+	clone.Namespace = "mutated"
+	clone.SectionName = "mutated"
+	if original.Name != "shared-gateway" || original.Namespace != "gateway-system" ||
+		original.SectionName != "https" {
+		t.Errorf("mutating the clone altered the original: %+v", *original)
+	}
+
+	var nilRef *GatewayParentRefSpec
+	if nilRef.DeepCopy() != nil {
+		t.Errorf("DeepCopy of a nil *GatewayParentRefSpec must return nil")
 	}
 }

@@ -118,26 +118,17 @@ func (r *ControlPlaneReconciler) reconcileKeystone(ctx context.Context, cp *c5c3
 		keystone.Spec.Bootstrap.AdminPasswordSecretRef = cp.Spec.KORC.AdminCredential.PasswordSecretRef
 		keystone.Spec.Bootstrap.Region = cp.Spec.Region
 
-		// Project external exposure. When a curated gateway is set, map it onto the
-		// Keystone CR's spec.gateway (the keystone-operator then attaches an
-		// HTTPRoute to the referenced Gateway) and advertise the externally
-		// routable URL via the bootstrap public endpoint. When nil, clear any
-		// previously-projected gateway/endpoint so removing it tears the route down
-		// and Keystone falls back to its in-cluster DNS.
-		if gw := cp.Spec.Services.Keystone.Gateway; gw != nil {
-			keystone.Spec.Gateway = &keystonev1alpha1.GatewaySpec{
-				ParentRef: keystonev1alpha1.GatewayParentRefSpec{
-					Name:        gw.ParentRef.Name,
-					Namespace:   gw.ParentRef.Namespace,
-					SectionName: gw.ParentRef.SectionName,
-				},
-				Hostname:    gw.Hostname,
-				Path:        gw.Path,
-				Annotations: gw.Annotations,
-			}
-		} else {
-			keystone.Spec.Gateway = nil
-		}
+		// Project external exposure onto the Keystone CR's spec.gateway, then
+		// advertise the externally routable URL via the bootstrap public endpoint.
+		//
+		// DECISION (CC-0111): both sides are now commonv1.GatewaySpec, so the L2
+		// mapping is a single DeepCopy instead of a field-by-field copy. DeepCopy
+		// (over a direct pointer share) keeps the projected Keystone CR's gateway an
+		// independent object, so a later mutation of either spec can never alias the
+		// other. A nil source yields nil (DeepCopy handles a nil receiver), clearing
+		// any previously-projected gateway so removal tears the HTTPRoute down and
+		// Keystone falls back to its in-cluster DNS.
+		keystone.Spec.Gateway = cp.Spec.Services.Keystone.Gateway.DeepCopy()
 		keystone.Spec.Bootstrap.PublicEndpoint = keystonePublicEndpoint(cp.Spec.Services.Keystone)
 
 		if cp.Spec.Services.Keystone.Replicas != nil {

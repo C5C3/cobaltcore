@@ -73,6 +73,7 @@ func TestControlPlaneSpecReusesCommonTypes(t *testing.T) {
 	spec.Global = &commonv1.PolicySpec{}
 	spec.Services.Keystone.Image = &commonv1.ImageSpec{Repository: "r", Tag: "t"}
 	spec.Services.Keystone.PolicyOverrides = &commonv1.PolicySpec{}
+	spec.Services.Keystone.Gateway = &commonv1.GatewaySpec{}
 	spec.KORC.AdminCredential.PasswordSecretRef = commonv1.SecretRefSpec{Name: "admin"}
 
 	if spec.Infrastructure.Database.Database != "ks" {
@@ -83,7 +84,7 @@ func TestControlPlaneSpecReusesCommonTypes(t *testing.T) {
 	}
 }
 
-// TestServiceKeystoneSpecDeepCopy verifies the curated keystone subset
+// TestServiceKeystoneSpecDeepCopy verifies the shared keystone subset
 // round-trips through DeepCopy with independent pointer storage (CC-0110,
 // plan decision #2).
 func TestServiceKeystoneSpecDeepCopy(t *testing.T) {

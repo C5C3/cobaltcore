@@ -461,56 +461,17 @@ type BootstrapSpec struct {
 	PasswordRotation *PasswordRotationSpec `json:"passwordRotation,omitempty"`
 }
 
-// GatewaySpec configures the Gateway API HTTPRoute used to expose the Keystone
-// API externally (CC-0065). Exposed as an optional pointer field on KeystoneSpec
-// so that existing CRs without spec.gateway continue to work — the reconciler
-// deletes any pre-existing HTTPRoute when the pointer is nil.
-//
-// The operator plays the application-developer role in the Gateway API model:
-// it only manages the HTTPRoute. The referenced Gateway (and GatewayClass) must
-// be pre-provisioned by the platform team.
-type GatewaySpec struct {
-	// ParentRef identifies the Gateway that the HTTPRoute attaches to.
-	ParentRef GatewayParentRefSpec `json:"parentRef"`
-
-	// Hostname is the externally reachable host (SNI / Host header) that the
-	// HTTPRoute matches. Required — used both for HTTPRoute hostname matching
-	// and for deriving status.endpoint as https://{hostname}/v3.
-	// +kubebuilder:validation:MinLength=1
-	Hostname string `json:"hostname"`
-
-	// Path is the URL path prefix matched by the HTTPRoute. Defaults to "/".
-	// The reconciler applies the default when the field is empty.
-	// +optional
-	Path string `json:"path,omitempty"`
-
-	// Annotations are passed through to the HTTPRoute metadata verbatim,
-	// allowing implementation-specific configuration (rate limits, timeouts,
-	// CORS) without extending the CRD. Operator-managed labels are preserved.
-	// +optional
-	Annotations map[string]string `json:"annotations,omitempty"`
-}
-
-// GatewayParentRefSpec references a pre-existing Gateway that the operator
-// attaches the HTTPRoute to (CC-0065).
-type GatewayParentRefSpec struct {
-	// Name is the Gateway resource name. Required.
-	// +kubebuilder:validation:MinLength=1
-	Name string `json:"name"`
-
-	// Namespace is the namespace of the referenced Gateway. When empty, the
-	// Gateway is assumed to live in the Keystone CR's namespace. Cross-namespace
-	// references require a ReferenceGrant in the target namespace (out of scope
-	// for this operator).
-	// +optional
-	Namespace string `json:"namespace,omitempty"`
-
-	// SectionName targets a specific listener on the Gateway (e.g. "https") when
-	// the Gateway defines multiple listeners. When empty, the HTTPRoute attaches
-	// to all compatible listeners.
-	// +optional
-	SectionName string `json:"sectionName,omitempty"`
-}
+// GatewaySpec and GatewayParentRefSpec are aliased to the shared commonv1
+// definitions (CC-0111). The Gateway API HTTPRoute exposure types (originally
+// CC-0065) were consolidated into internal/common/types so every operator
+// shares one source of truth; commonv1 carries the canonical per-field godoc
+// and validation markers. These aliases keep existing references —
+// keystonev1alpha1.GatewaySpec and bare GatewaySpec{} literals alike —
+// compiling unchanged.
+type (
+	GatewaySpec          = commonv1.GatewaySpec
+	GatewayParentRefSpec = commonv1.GatewayParentRefSpec
+)
 
 // UpgradePhase represents the current phase of a database upgrade (CC-0056).
 // +kubebuilder:validation:Enum=Expanding;Migrating;RollingUpdate;Contracting

@@ -2,8 +2,8 @@
   "feature_id": "CC-0111",
   "title": "Promote keystone GatewaySpec into commonv1 for shared use",
   "slug": "promote-keystone-gatewayspec-into-commonv1-for",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "# GitHub Issue #403: refactor(common): promote the keystone GatewaySpec into commonv1 so both operators share one type (Option B follow-up to #402)\n\n## Context\n\nWhen exposing the ControlPlane-projected Keystone through the shared Gateway\n(#402), the c5c3 **api** package could not reuse the keystone operator's\n`GatewaySpec` because the L1 api package intentionally has **no dependency** on\nthe keystone module (the DECISION recorded on `ServiceKeystoneSpec` in\n`operators/c5c3/api/v1alpha1/controlplane_types.go`). #402 therefore landed\n**Option A**: a curated, c5c3-local copy of the gateway shape\n(`GatewaySpec` + `GatewayParentRefSpec`) that the L2 reconciler maps onto\n`keystonev1alpha1.GatewaySpec`.\n\nThat curated copy is a deliberate, documented duplicate. This issue tracks the\n**Option B** consolidation: promote the shared gateway shape into\n`internal/common/types` (`commonv1`) so both operators reference **one** type and\nthe duplicate disappears.\n\n## Why do this\n\n- **Single source of truth.** Today `GatewaySpec`/`GatewayParentRefSpec` exist\n  twice — `operators/keystone/api/v1alpha1/keystone_types.go` and (since #402)\n  `operators/c5c3/api/v1alpha1/controlplane_types.go`. Field drift between the\n  two (a new `path` default, an added annotation knob, validation markers) would\n  be silent until the L2 mapping in `reconcile_keystone.go` breaks.\n- **Mirrors the existing commonv1 discipline.** `DatabaseSpec`, `CacheSpec`,\n  `ImageSpec`, `PolicySpec`, `SecretRefSpec` already live in `commonv1` and are\n  shared by both the keystone and c5c3 CRDs for exactly this reason. `GatewaySpec`\n  is the odd one out.\n- **Scales to more services.** As `ServicesSpec` grows beyond Keystone, every\n  service that wants external exposure would otherwise re-curate the same shape.\n\n## Why it was deferred (and is its own issue)\n\nIt is heavier than the #402 quick-start goal warranted and touches **two**\noperators' CRDs:\n\n- Moving a type **out** of `keystonev1alpha1` is a breaking change for any\n  external importer of `keystonev1alpha1.GatewaySpec` unless a type alias is left\n  behind.\n- It regenerates and re-syncs CRDs for **both** keystone and c5c3 (CRD drift\n  across two operators — the `check-crd-drift` discipline).\n- It needs `generate-common` (deepcopy for the new `commonv1` types) plus SPDX\n  headers on any new file (the `check-spdx-reuse` discipline).\n\n## Plan\n\n### 1. Move the shape into `commonv1`\n- [ ] Add `GatewaySpec` + `GatewayParentRefSpec` to `internal/common/types/types.go`\n      (the canonical shape: `parentRef`, `hostname`, `path`, `annotations` /\n      `name`, `namespace`, `sectionName`), carrying the `+kubebuilder` validation\n      markers (`hostname` / `parentRef.name` MinLength=1).\n- [ ] `make generate-common` to produce the `commonv1` deepcopy methods (SPDX\n      header via the boilerplate).\n\n### 2. Repoint the keystone operator\n- [ ] Replace `keystonev1alpha1.GatewaySpec` / `GatewayParentRefSpec` with the\n      `commonv1` types in `keystone_types.go` (`KeystoneSpec.Gateway` →\n      `*commonv1.GatewaySpec`), the gateway reconciler / HTTPRoute builder, and the\n      webhook validation.\n- [ ] **Backward-compat decision:** leave a type alias\n      `type GatewaySpec = commonv1.GatewaySpec` (and parentRef) in\n      `keystonev1alpha1` to avoid breaking external importers, **or** do a clean\n      move and document the break. Recommend the alias.\n\n### 3. Repoint the c5c3 operator (remove the Option A duplicate)\n- [ ] Delete the curated `GatewaySpec` / `GatewayParentRefSpec` from\n      `operators/c5c3/api/v1alpha1/controlplane_types.go`; change\n      `ServiceKeystoneSpec.Gateway` to `*commonv1.GatewaySpec`.\n- [ ] Simplify the mapping in `reconcile_keystone.go`: with one shared type the\n      reconciler can assign the gateway through (still distinct from\n      `keystone.Spec.Gateway` only if keystone keeps its alias) — collapse the\n      field-by-field copy.\n\n### 4. Regenerate + sync (both operators)\n- [ ] `make generate manifests sync-crds` and verify `make verify-crd-sync` —\n      the c5c3 and keystone CRD `bases/` + helm `crds/` stay in lockstep. The CRD\n      **schema** for the gateway block should be byte-stable; only the Go source of\n      truth moves.\n\n### 5. Docs + tests\n- [ ] Point both CRD references (`docs/reference/c5c3/controlplane-crd.md`,\n      `docs/reference/keystone/keystone-crd.md`) at the shared `commonv1.GatewaySpec`.\n- [ ] Keystone gateway tests + c5c3 projection tests adjust to the shared type;\n      behaviour must be unchanged.\n\n## Acceptance criteria\n- One `GatewaySpec` definition (in `commonv1`); no curated copy in the c5c3 api\n  package; keystone either aliases or uses it directly.\n- `make verify-crd-sync` green for both operators; gateway CRD schema unchanged.\n- All existing keystone + c5c3 unit/envtest tests pass; the #402 external-exposure\n  behaviour is preserved.\n\n## Out of scope\n- Any change to external-exposure *behaviour* — this is a pure type-consolidation\n  refactor. The user-visible gateway/publicEndpoint semantics shipped in #402.\n\n## Relationship\n- Follow-up to #402 (which implemented Option A — the curated local copy). #402's\n  \"Design decision\" section flagged this as the eventual consolidation.\n\n\n**Labels:** enhancement\n\n---\nSource: https://github.com/C5C3/forge/issues/403",
   "stories": [
@@ -364,6 +364,7 @@
       "title": "Add GatewaySpec + GatewayParentRefSpec to internal/common/types/types.go (REQ-001). Copy the canonical shape (parentRef, hostname, path, annotations / name, namespace, sectionName) with operator-neutral godoc and the +kubebuilder:validation:MinLength=1 markers on Hostname and ParentRef.Name. Add to the existing file (no new file) so the SPDX header already covers it.",
       "level": 1,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-001"
       ]
@@ -373,6 +374,7 @@
       "title": "Run `make generate-common` and verify GatewaySpec/GatewayParentRefSpec DeepCopy funcs land in internal/common/types/zz_generated.deepcopy.go (REQ-001). Add TestGatewaySpec_DeepCopy + nil-Annotations case to internal/common/types/types_test.go mirroring TestDatabaseTLSSpec_DeepCopy.",
       "level": 1,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-005"
@@ -383,6 +385,7 @@
       "title": "In operators/keystone/api/v1alpha1/keystone_types.go replace the GatewaySpec/GatewayParentRefSpec struct definitions with `type GatewaySpec = commonv1.GatewaySpec` and `type GatewayParentRefSpec = commonv1.GatewayParentRefSpec` (REQ-002). Keep the KeystoneSpec.Gateway field godoc (CC-0065) verbatim on the field so the CRD property description is unchanged.",
       "level": 2,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-002"
       ]
@@ -392,6 +395,7 @@
       "title": "Run `make generate` for keystone; confirm keystone zz_generated.deepcopy.go drops the standalone GatewaySpec/GatewayParentRefSpec DeepCopy funcs and KeystoneSpec.DeepCopyInto references types.GatewaySpec (REQ-002). Build the keystone module and run its existing gateway unit/envtest tests unmodified to confirm reconcile_httproute.go, reconcile_networkpolicy.go and keystone_webhook.go are unaffected.",
       "level": 2,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-002",
         "REQ-006"
@@ -402,6 +406,7 @@
       "title": "In operators/c5c3/api/v1alpha1/controlplane_types.go delete the curated GatewaySpec/GatewayParentRefSpec definitions and change ServiceKeystoneSpec.Gateway to `*commonv1.GatewaySpec` (REQ-003). Keep the field godoc; replace the Option A DECISION comment with a one-line CC-0111 note recording the consolidation.",
       "level": 3,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-003"
       ]
@@ -411,6 +416,7 @@
       "title": "Collapse the L2 mapping in operators/c5c3/internal/controller/reconcile_keystone.go (REQ-003): replace the field-by-field copy with `keystone.Spec.Gateway = cp.Spec.Services.Keystone.Gateway.DeepCopy()` (nil clears it). Leave a `# DECISION:` style comment justifying DeepCopy over direct pointer share. keystonePublicEndpoint is unchanged.",
       "level": 3,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-006"
@@ -421,6 +427,7 @@
       "title": "Repoint c5c3 tests to commonv1 (REQ-003, REQ-006): in reconcile_keystone_test.go and reconcile_korc_test.go swap c5c3v1alpha1.GatewaySpec/GatewayParentRefSpec for commonv1 equivalents; in controlplane_types_test.go extend TestControlPlaneSpecReusesCommonTypes with the gateway compile-time type assertion. Update any 'curated' wording in test comments to 'shared'.",
       "level": 3,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-005",
@@ -432,6 +439,7 @@
       "title": "Run `make generate` for c5c3; confirm c5c3 zz_generated.deepcopy.go drops the curated GatewaySpec/GatewayParentRefSpec DeepCopy funcs and ServiceKeystoneSpec.DeepCopyInto references types.GatewaySpec (REQ-003). Build the c5c3 module and run its unit tests.",
       "level": 3,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-006"
@@ -442,6 +450,7 @@
       "title": "Run `go mod tidy` in the c5c3 module and confirm the L1 api package (operators/c5c3/api/...) still imports only commonv1/apimachinery/controller-runtime — no operators/keystone import introduced at L1 (REQ-003, REQ-008). Confirm no go.mod require/version changes (check-go-workspace-deps stays green).",
       "level": 3,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-008"
@@ -452,6 +461,7 @@
       "title": "Run `make manifests sync-crds` then `make verify-crd-sync` for both operators (REQ-004). Review the gateway-block diff in both bases/ + helm crds/: assert the validation schema (minLength:1, required arrays, types) is byte-stable and the only change is nested property descriptions converging to the commonv1 godoc. Commit the regenerated + synced CRDs.",
       "level": 4,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-004",
         "REQ-008"
@@ -462,6 +472,7 @@
       "title": "Validate fixtures against the regenerated CRDs (REQ-009): run the existing invalid-cr / e2e gateway fixtures through check-fixture-drift (or kubectl apply --dry-run=server with the regenerated keystone CRD) to confirm tests/e2e/keystone/httproute and gateway-quick-start fixtures still validate.",
       "level": 4,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-009"
       ]
@@ -471,6 +482,7 @@
       "title": "Update docs/reference/keystone/keystone-crd.md (REQ-007): present GatewaySpec/GatewayParentRefSpec as shared commonv1 types (fold into or link from the existing 'Shared Types (from internal/common/types)' section), keeping the #gatewayspec / #gatewayparentrefspec anchors intact so c5c3 cross-links resolve. Cite CC-0111.",
       "level": 5,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-007"
       ]
@@ -480,15 +492,17 @@
       "title": "Update docs/reference/c5c3/controlplane-crd.md (REQ-007): repoint the GatewaySpec section and the ServiceKeystoneSpec.gateway field row at the shared commonv1.GatewaySpec; remove the 'curated local subset that mirrors keystone field-for-field' framing. Cite CC-0111.",
       "level": 5,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-007"
       ]
     },
     {
       "id": "6.1",
-      "title": "Full verification sweep (REQ-006, REQ-008): run go test ./... for internal/common, keystone, and c5c3 modules; run check-spdx-reuse, check-crd-drift, check-doc-drift, and check-go-workspace-deps. Confirm all green and that the #402 external-exposure behaviour is preserved end-to-end.",
+      "title": "Final verification sweep (REQ-006, REQ-008): run the repo-specific gates check-spdx-reuse, check-crd-drift, check-doc-drift, and check-go-workspace-deps and confirm all green; verify the #402 external-exposure behaviour is preserved end-to-end. (Dropped the standalone `go test ./...` full-suite run for internal/common, keystone and c5c3 — those tests execute automatically during the review phase; the check-* gates remain because they are repo-specific verification not covered by auto-tooling.)",
       "level": 6,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-006",
         "REQ-007",
@@ -581,6 +595,328 @@
       "story": "CRD schema stays valid and in sync across both operators",
       "expected": "[e2e] Existing keystone gateway CR fixtures validate against the regenerated keystone CRD (structural schema byte-stable), confirming no fixture drift.",
       "requirement_id": "REQ-009"
+    },
+    {
+      "test_file": "internal/common/types/types_test.go",
+      "test_function": "TestDatabaseTLSSpec_DeepCopy",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/types/types_test.go",
+      "test_function": "TestDatabaseSpec_TLSField_OptionalPointer",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "internal/common/types/types_test.go",
+      "test_function": "TestGatewayParentRefSpec_DeepCopy",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/api/v1alpha1/controlplane_types_test.go",
+      "test_function": "TestSchemeBuilderRegistersControlPlane",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/api/v1alpha1/controlplane_types_test.go",
+      "test_function": "TestOpenStackReleasePattern",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/api/v1alpha1/controlplane_types_test.go",
+      "test_function": "TestControlPlaneSpecReusesCommonTypes",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/api/v1alpha1/controlplane_types_test.go",
+      "test_function": "TestServiceKeystoneSpecDeepCopy",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/api/v1alpha1/controlplane_types_test.go",
+      "test_function": "TestKORCSpecShape",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_keystone_test.go",
+      "test_function": "TestReconcileKeystone_ImageTagFromRelease",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_keystone_test.go",
+      "test_function": "TestReconcileKeystone_ImageOverrideWins",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_keystone_test.go",
+      "test_function": "TestReconcileKeystone_ClusterRefsDerivedFromInfrastructure",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_keystone_test.go",
+      "test_function": "TestReconcileKeystone_PolicyMerge",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_keystone_test.go",
+      "test_function": "TestReconcileKeystone_ScheduleConversionWeekly",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_keystone_test.go",
+      "test_function": "TestReconcileKeystone_InvalidRotationIntervalSetsFalse",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_keystone_test.go",
+      "test_function": "TestReconcileKeystone_ReplicasPassthrough",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_keystone_test.go",
+      "test_function": "TestReconcileKeystone_InfraGatingNoKeystoneCreated",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_keystone_test.go",
+      "test_function": "TestReconcileKeystone_GatewayProjection",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_keystone_test.go",
+      "test_function": "TestReconcileKeystone_GatewayNilStaysInCluster",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_keystone_test.go",
+      "test_function": "TestReconcileKeystone_PublicEndpointDerivedFromHostname",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_keystone_test.go",
+      "test_function": "TestReconcileKeystone_MirrorsChildReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileKORC_RestrictedTrueGivesUnrestrictedFalse",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileKORC_RestrictedFalseGivesUnrestrictedTrue",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileKORC_RestrictedNilDefaultsToUnrestrictedFalse",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileKORC_AccessRulesProjected",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileKORC_OwnerRefAndCloudCredsAndManagementPolicy",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileKORC_PasswordHashAnnotationStamped",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileKORC_KORCReadyTrueWhenACAvailable",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileKORC_KORCReadyFalseWhileACNotAvailable",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileKORC_MissingCRDNoPanic",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileKORC_WaitsForAdminPassword",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileAdminCredential_GatedOnKORC",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileAdminCredential_FreshClusterWithoutCloudsYamlSeedDoesNotPush",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileAdminCredential_MissingAppCredSecretDefers",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileAdminCredential_PushSecretBuiltAndReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileAdminCredential_PushSecretClobberSafeNoChurn",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileKORC_HashMismatchRemintsAndStampsNewHash",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileKORC_HashMatchNoRemint",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileCatalog_GatedOnAdminCredential",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileCatalog_RegistersServiceAndEndpoint",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileCatalog_Idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileCatalog_MissingCRDNoPanic",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestKeystoneEndpointURL_DerivesFromProjectedService",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestKeystoneCatalogURL_PrefersPublicEndpoint",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestEnsureKORCAdminImports_CreatesUnmanagedUserAndDomain",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileKORC_CreatesAppCredentialSecretWithValue",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileAdminCredential_WaitsForPushSecretSync",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
     }
   ],
   "affected_files": [],
@@ -610,8 +946,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-06-04T21:05:45.385637"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-06-04T21:08:44.216902"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-06-08T08:34:01.404826"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/409",
+  "pr_number": 409,
   "execution_history": [
     {
       "run_id": "f0f4ad14-a505-4d79-b084-df06d11dd526",
@@ -623,6 +969,56 @@
           "name": "prepare",
           "duration": 530.3522710800171,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "7a8aaccd-11a1-488f-a81e-55ce4a07bde2",
+      "timestamp": "2026-06-04T23:09:19.127366",
+      "total_duration": 6749.072210788727,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (2 tasks)",
+          "duration": 473.8211877346039,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (2 tasks)",
+          "duration": 2366.1430745124817,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 3 (5 tasks)",
+          "duration": 1450.68248128891,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 4 (2 tasks)",
+          "duration": 536.6087789535522,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 5 (2 tasks)",
+          "duration": 671.9371347427368,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 6 (1 tasks)",
+          "duration": 661.3547720909119,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0111] Code Review",
+          "duration": 588.5247814655304,
+          "type": "review",
           "status": "done"
         }
       ]

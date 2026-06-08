@@ -703,6 +703,15 @@ spec:
 
 ## GatewaySpec
 
+`GatewaySpec` is a shared type from `internal/common/types` (imported as
+`commonv1`), the single source of truth for the Gateway API HTTPRoute shape.
+Both the Keystone operator and the c5c3 ControlPlane reuse it instead
+of maintaining their own field-for-field copies; `keystonev1alpha1.GatewaySpec`
+is a type alias to `commonv1.GatewaySpec`, so existing references compile
+unchanged. The field table below is the canonical reference that the
+[c5c3 ControlPlane CRD doc](../c5c3/controlplane-crd.md#gatewayspec) links back
+to. The reconciler behavior described in this section is Keystone-specific.
+
 Configures external exposure of the Keystone API via a Gateway API HTTPRoute. This is a pointer field (`*GatewaySpec`) on `KeystoneSpec` — when `nil`,
 no HTTPRoute is created and the `HTTPRouteReady` condition is set to `True` with
 reason `HTTPRouteNotRequired`. When set, an `HTTPRoute` (from
@@ -739,6 +748,9 @@ set via `GATEWAY_API_VERSION` in `hack/deploy-infra.sh` and tracks
 ### GatewayParentRefSpec
 
 References the pre-existing `Gateway` that the operator attaches the HTTPRoute to.
+Like `GatewaySpec`, this is a shared `commonv1` type reused by both the
+Keystone operator and the c5c3 ControlPlane; `keystonev1alpha1.GatewayParentRefSpec`
+aliases `commonv1.GatewayParentRefSpec`.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
@@ -1097,6 +1109,14 @@ When `policyOverrides` is set on `KeystoneSpec`, at least one of `rules` or
 | `filterFactory` | `string` | Yes | Python entry point (e.g., `audit_middleware:filter_factory`). |
 | `position` | `PipelinePosition` | Yes | Pipeline insertion point: `"before"` or `"after"`. |
 | `config` | `map[string]string` | No | Key-value pairs for the filter section. |
+
+### GatewaySpec
+
+Gateway API HTTPRoute exposure configuration, promoted into `commonv1` and reused
+by both the Keystone operator and the c5c3 ControlPlane. See
+[`GatewaySpec`](#gatewayspec) above for the field table and the Keystone-specific
+HTTPRoute reconciler behavior, and
+[`GatewayParentRefSpec`](#gatewayparentrefspec) for the parent-reference fields.
 
 ---
 

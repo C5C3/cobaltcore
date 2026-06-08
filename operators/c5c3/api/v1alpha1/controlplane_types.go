@@ -153,8 +153,12 @@ type ServiceKeystoneSpec struct {
 	// ClusterIP Service); when set, the reconciler projects this onto the Keystone
 	// CR's spec.gateway so the keystone-operator attaches an HTTPRoute to the
 	// referenced Gateway.
+	//
+	// CC-0111: this is the shared commonv1.GatewaySpec — the curated local copy
+	// was consolidated into internal/common/types so both operators reuse one
+	// source of truth.
 	// +optional
-	Gateway *GatewaySpec `json:"gateway,omitempty"`
+	Gateway *commonv1.GatewaySpec `json:"gateway,omitempty"`
 
 	// PublicEndpoint is the externally routable Keystone identity endpoint URL
 	// (e.g. "https://keystone.127-0-0-1.nip.io:8443/v3"). The reconciler projects
@@ -166,59 +170,6 @@ type ServiceKeystoneSpec struct {
 	// like :8443), since the port cannot be derived from the hostname alone.
 	// +optional
 	PublicEndpoint string `json:"publicEndpoint,omitempty"`
-}
-
-// GatewaySpec is a CURATED LOCAL subset of the Gateway API HTTPRoute knobs the
-// ControlPlane exposes for the projected Keystone service. It mirrors the
-// keystone operator's GatewaySpec field-for-field on purpose.
-//
-// DECISION (Option A): like ServiceKeystoneSpec, this is intentionally NOT an
-// import of keystonev1alpha1.GatewaySpec — the L1 api package must stay free of
-// the keystone module dependency (see the DECISION on L2 dependency coordinates
-// on ServiceKeystoneSpec). The L2 reconciler maps this struct onto the keystone
-// GatewaySpec. Promoting the shared shape into commonv1 so both operators reuse
-// one type (removing this curated copy) is tracked as a dedicated follow-up.
-type GatewaySpec struct {
-	// ParentRef identifies the pre-existing Gateway that the HTTPRoute attaches
-	// to. The Gateway (and GatewayClass) are platform-team infrastructure managed
-	// outside this CR.
-	ParentRef GatewayParentRefSpec `json:"parentRef"`
-
-	// Hostname is the externally reachable host (SNI / Host header) the HTTPRoute
-	// matches, e.g. "keystone.127-0-0-1.nip.io". Required.
-	// +kubebuilder:validation:MinLength=1
-	Hostname string `json:"hostname"`
-
-	// Path is the URL path prefix matched by the HTTPRoute. Defaults to "/" in the
-	// keystone operator when empty.
-	// +optional
-	Path string `json:"path,omitempty"`
-
-	// Annotations are passed through to the generated HTTPRoute metadata verbatim,
-	// allowing implementation-specific configuration (rate limits, timeouts, CORS)
-	// without extending the CRD.
-	// +optional
-	Annotations map[string]string `json:"annotations,omitempty"`
-}
-
-// GatewayParentRefSpec references a pre-existing Gateway that the projected
-// Keystone's HTTPRoute attaches to. It mirrors the keystone operator's
-// GatewayParentRefSpec.
-type GatewayParentRefSpec struct {
-	// Name is the Gateway resource name. Required.
-	// +kubebuilder:validation:MinLength=1
-	Name string `json:"name"`
-
-	// Namespace is the namespace of the referenced Gateway. When empty, the
-	// Gateway is assumed to live in the projected Keystone CR's namespace.
-	// +optional
-	Namespace string `json:"namespace,omitempty"`
-
-	// SectionName targets a specific listener on the Gateway (e.g. "https") when
-	// the Gateway defines multiple listeners. When empty, the HTTPRoute attaches
-	// to all compatible listeners.
-	// +optional
-	SectionName string `json:"sectionName,omitempty"`
 }
 
 // KORCSpec configures the K-ORC (OpenStack Resource Controller) integration of

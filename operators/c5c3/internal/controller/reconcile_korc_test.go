@@ -1057,8 +1057,8 @@ func TestKeystoneCatalogURL_PrefersPublicEndpoint(t *testing.T) {
 		To(Equal("http://controlplane-keystone.openstack.svc:5000/v3"))
 
 	// A gateway without an explicit publicEndpoint → derived default-443 URL.
-	cp.Spec.Services.Keystone.Gateway = &c5c3v1alpha1.GatewaySpec{
-		ParentRef: c5c3v1alpha1.GatewayParentRefSpec{Name: "openstack-gw"},
+	cp.Spec.Services.Keystone.Gateway = &commonv1.GatewaySpec{
+		ParentRef: commonv1.GatewayParentRefSpec{Name: "openstack-gw"},
 		Hostname:  "keystone.127-0-0-1.nip.io",
 	}
 	g.Expect(keystoneCatalogURL(cp)).

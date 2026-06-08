@@ -1,0 +1,91 @@
+{
+  "summary": "CC-0111 promotes the keystone GatewaySpec/GatewayParentRefSpec into internal/common/types (commonv1) as the single source of truth (Option B follow-up to #402). keystonev1alpha1 now type-aliases the commonv1 types so existing importers compile unchanged; the c5c3 api package deletes its curated copy and points ServiceKeystoneSpec.Gateway at *commonv1.GatewaySpec; the c5c3 L2 mapping in reconcile_keystone.go collapses to a single nil-safe DeepCopy with a DECISION comment. deepcopy and CRDs (bases + helm crds) were regenerated for all three modules; both CRD reference docs now describe GatewaySpec as a shared commonv1 type and cite CC-0111. Verified directly (all three modules build; full unit suites green; gofmt/gofumpt@v0.9.2/go vet clean) and independently confirmed by a 4-dimension multi-agent review (security/deps, quality/architecture, testing, CRD/docs) — all four returned APPROVED with no blocking or major findings.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "commonv1 GatewaySpec/GatewayParentRefSpec DeepCopy unit tests exist and pass (Annotations map + nested ParentRef independence, nil -> nil)", "checked": true},
+    {"item": "Alias transparency: pre-existing keystone gateway tests pass UNMODIFIED (no keystone *_test.go in the diff)", "checked": true},
+    {"item": "Repointed c5c3 gateway tests pass with identical assertions (only the type swapped c5c3v1alpha1 -> commonv1)", "checked": true},
+    {"item": "Edge cases covered (nil source clears gateway; map/pointer independence)", "checked": true},
+    {"item": "Full unit suites green for internal/common, operators/keystone, operators/c5c3 (go test -count=1)", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Follows the established commonv1 shared-type discipline (alongside DatabaseSpec/CacheSpec/ImageSpec/PolicySpec/SecretRefSpec)", "checked": true},
+    {"item": "Single source of truth: exactly one 'type GatewaySpec struct' + one 'type GatewayParentRefSpec struct', both in internal/common/types", "checked": true},
+    {"item": "No dead code: old struct defs and standalone deepcopy funcs fully removed from both operators", "checked": true},
+    {"item": "No orphaned imports introduced (keystonev1alpha1/commonv1/c5c3v1alpha1 still used where present)", "checked": true},
+    {"item": "gofmt, gofumpt (repo-pinned v0.9.2), and go vet clean on all changed Go files", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "Validation markers preserved (+kubebuilder:validation:MinLength=1 on Hostname and ParentRef.Name) -> minLength:1 in all four CRDs", "checked": true},
+    {"item": "No hardcoded secrets; no input-validation regression (required arrays + minLength byte-stable)", "checked": true},
+    {"item": "L1-no-keystone-dependency invariant intact: c5c3 api package imports only commonv1/apimachinery/controller-runtime (go list -deps shows no keystone import at L1)", "checked": true},
+    {"item": "check-spdx-reuse clean: no new uncovered file (types appended to existing types.go); regenerated zz_generated files keep SPDX headers", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Solution is as simple as possible: L2 mapping reduced to one DeepCopy assignment", "checked": true},
+    {"item": "No go.mod/go.sum require or version changes across the three modules (check-go-workspace-deps stays aligned)", "checked": true},
+    {"item": "Gateway-block CRD validation schema byte-stable in both operators; only nested descriptions converge", "checked": true},
+    {"item": "bases/ and helm crds/ stay in lockstep for both operators; make verify-crd-sync green", "checked": true},
+    {"item": "Pure type-consolidation refactor with no external-exposure behaviour change (#402 semantics preserved)", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "No duplicated code: the documented Option A curated copy in the c5c3 api package is removed", "checked": true},
+    {"item": "No speculative abstraction: alias kept only for backward compatibility of existing importers", "checked": true}
+  ],
+  "fail_fast_checklist": [
+    {"item": "DeepCopy is nil-safe (generated DeepCopy returns nil for a nil receiver), so a nil source deterministically clears the projected gateway", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "DeepCopy (over a direct pointer share) prevents aliasing between the ControlPlane spec and the projected Keystone spec; covered by an explicit independence unit test", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "TE7",
+      "severity": "MINOR",
+      "description": "The L2 mapping was collapsed to DeepCopy() specifically to keep the projected Keystone gateway an independent object (per the new DECISION comment), but TestReconcileKeystone_GatewayProjection only asserts field equality of the projected gateway. A naive direct pointer share (keystone.Spec.Gateway = cp.Spec.Services.Keystone.Gateway) would still pass every assertion, so the independence guarantee is not exercised at the controller layer. The DeepCopy independence contract is, however, proven directly by TestGatewaySpec_DeepCopy in internal/common/types/types_test.go, so this is a suggestion, not a gap.",
+      "location": "operators/c5c3/internal/controller/reconcile_keystone_test.go:294-318 (TestReconcileKeystone_GatewayProjection)",
+      "evidence": "reconcile_keystone.go: keystone.Spec.Gateway = cp.Spec.Services.Keystone.Gateway.DeepCopy(); test asserts only k.Spec.Gateway.ParentRef.Name == \"openstack-gw\" ... Annotations HaveKeyWithValue(...), with no post-reconcile mutation-of-source / unchanged-projection check.",
+      "fix": "Optional: after reconcile, mutate cp.Spec.Services.Keystone.Gateway.Annotations / ParentRef.Name and assert the already-projected k.Spec.Gateway is unaffected, locking the DeepCopy independence at the controller layer.",
+      "fix_classification": "AUTO_FIX"
+    },
+    {
+      "check_id": "D4",
+      "severity": "MINOR",
+      "description": "The diff adds a second '### GatewaySpec' heading under the 'Shared Types (from internal/common/types)' section of keystone-crd.md, in addition to the canonical '## GatewaySpec' heading. Both slugify to the same anchor base #gatewayspec; VitePress de-duplicates, so the second becomes #gatewayspec-1. All cross-links (c5c3 controlplane-crd.md and the keystone self-links) target the bare #gatewayspec/#gatewayparentrefspec and still resolve to the canonical occurrences, so no link breaks — this is a cosmetic duplicate-heading smell only.",
+      "location": "docs/reference/keystone/keystone-crd.md:~1113 (### GatewaySpec under Shared Types)",
+      "evidence": "grep '^#\\+ GatewaySpec' keystone-crd.md returns both the canonical '## GatewaySpec' (~line 704) and the newly added '### GatewaySpec' (~line 1113); git show main:... returns only the canonical one, confirming line 1113 is new.",
+      "fix": "Optional: drop the duplicate '### GatewaySpec' heading and keep just the pointer prose, or rename it (e.g. '### GatewaySpec (shared)') so the Shared-Types section does not create a second heading slugging to #gatewayspec.",
+      "fix_classification": "AUTO_FIX"
+    }
+  ],
+  "suggested_improvements": [
+    "Optionally add a controller-layer independence assertion in TestReconcileKeystone_GatewayProjection (mutate the source gateway after reconcile, assert the projected Keystone gateway is unchanged) to lock the DeepCopy-over-pointer-share decision where it is made.",
+    "Optionally de-duplicate the second '### GatewaySpec' heading in keystone-crd.md so the Shared-Types listing points back to the canonical section without creating a #gatewayspec-1 anchor.",
+    "Out of scope but noted: architecture/docs/09-implementation/03-crd-implementation.md still shows GatewaySpec/GatewayParentRefSpec as local Keystone types in a Go code block. That sub-tree is untouched by this feature (and read-only per worktree rules); a future architecture-docs sync could align it with the commonv1 promotion."
+  ],
+  "next_steps": [
+    "Approve and merge — all blocking and major criteria pass with concrete evidence; the two MINOR items are non-blocking suggestions.",
+    "If desired, apply the two AUTO_FIX MINOR suggestions (controller-layer independence assertion + duplicate-heading cleanup) in a quick follow-up commit."
+  ],
+  "detected_patterns": [
+    {
+      "name": "Shared CRD value types live once in commonv1; relocations leave a backward-compat alias",
+      "component": "internal/common/types (commonv1), operators/*/api/v1alpha1",
+      "category": "service-structure",
+      "applies_when": "A CRD value type (a sub-spec used by more than one operator's CRD) needs to be shared between the keystone and c5c3 operators, or an existing per-operator copy is being consolidated",
+      "description": "Value types reused across operator CRDs are defined exactly once in internal/common/types and referenced as commonv1.<Type> from each operator's api package, rather than re-curated field-for-field per operator (which silently drifts). When an exported type is relocated out of an operator's api package into commonv1, a backward-compatible type alias (type X = commonv1.X) is left behind in the original package so existing in-repo and external importers compile unchanged. deepcopy is generated in commonv1 and the standalone per-operator deepcopy funcs are removed; the consuming DeepCopyInto references types.<Type>. This is the same discipline already applied to DatabaseSpec/CacheSpec/ImageSpec/PolicySpec/SecretRefSpec and now GatewaySpec.",
+      "examples": [
+        {
+          "location": "internal/common/types/types.go:166",
+          "code": "// GatewaySpec configures the Gateway API HTTPRoute used to expose an OpenStack\n// service externally. It is the single source of truth for the shared Gateway\n// shape: both the keystone and c5c3 operators reuse this commonv1 type instead\n// of maintaining their own field-for-field copies.\ntype GatewaySpec struct {\n\tParentRef GatewayParentRefSpec `json:\"parentRef\"`\n\t// +kubebuilder:validation:MinLength=1\n\tHostname string `json:\"hostname\"`\n\t// +optional\n\tPath string `json:\"path,omitempty\"`\n\t// +optional\n\tAnnotations map[string]string `json:\"annotations,omitempty\"`\n}"
+        },
+        {
+          "location": "operators/keystone/api/v1alpha1/keystone_types.go:471",
+          "code": "// GatewaySpec and GatewayParentRefSpec are aliased to the shared commonv1\n// definitions (CC-0111). ... These aliases keep existing references —\n// keystonev1alpha1.GatewaySpec and bare GatewaySpec{} literals alike —\n// compiling unchanged.\ntype (\n\tGatewaySpec          = commonv1.GatewaySpec\n\tGatewayParentRefSpec = commonv1.GatewayParentRefSpec\n)"
+        }
+      ]
+    }
+  ]
+}

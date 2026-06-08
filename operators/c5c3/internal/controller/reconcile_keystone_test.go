@@ -294,8 +294,8 @@ func TestReconcileKeystone_GatewayProjection(t *testing.T) {
 
 	s := keystoneTestScheme(t)
 	cp := keystoneControlPlane()
-	cp.Spec.Services.Keystone.Gateway = &c5c3v1alpha1.GatewaySpec{
-		ParentRef: c5c3v1alpha1.GatewayParentRefSpec{
+	cp.Spec.Services.Keystone.Gateway = &commonv1.GatewaySpec{
+		ParentRef: commonv1.GatewayParentRefSpec{
 			Name:        "openstack-gw",
 			Namespace:   "openstack",
 			SectionName: "https",
@@ -312,7 +312,7 @@ func TestReconcileKeystone_GatewayProjection(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 
 	k := getProjectedKeystone(t, c, cp)
-	g.Expect(k.Spec.Gateway).NotTo(BeNil(), "a curated gateway must be projected onto the Keystone CR")
+	g.Expect(k.Spec.Gateway).NotTo(BeNil(), "a shared gateway must be projected onto the Keystone CR")
 	g.Expect(k.Spec.Gateway.ParentRef.Name).To(Equal("openstack-gw"))
 	g.Expect(k.Spec.Gateway.ParentRef.Namespace).To(Equal("openstack"))
 	g.Expect(k.Spec.Gateway.ParentRef.SectionName).To(Equal("https"))
@@ -335,7 +335,7 @@ func TestReconcileKeystone_GatewayNilStaysInCluster(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 
 	k := getProjectedKeystone(t, c, cp)
-	g.Expect(k.Spec.Gateway).To(BeNil(), "no gateway must be projected when the curated gateway is unset (in-cluster only is the default)")
+	g.Expect(k.Spec.Gateway).To(BeNil(), "no gateway must be projected when the shared gateway is unset (in-cluster only is the default)")
 	g.Expect(k.Spec.Bootstrap.PublicEndpoint).To(BeEmpty(), "no public endpoint must be advertised when neither gateway nor publicEndpoint is set")
 }
 
@@ -344,8 +344,8 @@ func TestReconcileKeystone_PublicEndpointDerivedFromHostname(t *testing.T) {
 
 	s := keystoneTestScheme(t)
 	cp := keystoneControlPlane()
-	cp.Spec.Services.Keystone.Gateway = &c5c3v1alpha1.GatewaySpec{
-		ParentRef: c5c3v1alpha1.GatewayParentRefSpec{Name: "openstack-gw"},
+	cp.Spec.Services.Keystone.Gateway = &commonv1.GatewaySpec{
+		ParentRef: commonv1.GatewayParentRefSpec{Name: "openstack-gw"},
 		Hostname:  "keystone.example.com",
 	}
 	// publicEndpoint intentionally left empty → derived from the gateway hostname.

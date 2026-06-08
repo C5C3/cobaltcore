@@ -388,20 +388,20 @@ spec:
                     additionalProperties:
                       type: string
                     description: |-
-                      Annotations are passed through to the HTTPRoute metadata verbatim,
-                      allowing implementation-specific configuration (rate limits, timeouts,
-                      CORS) without extending the CRD. Operator-managed labels are preserved.
+                      Annotations are passed through to the generated HTTPRoute metadata
+                      verbatim, allowing implementation-specific configuration (rate limits,
+                      timeouts, CORS) without extending the CRD.
                     type: object
                   hostname:
                     description: |-
                       Hostname is the externally reachable host (SNI / Host header) that the
-                      HTTPRoute matches. Required — used both for HTTPRoute hostname matching
-                      and for deriving status.endpoint as https://{hostname}/v3.
+                      HTTPRoute matches. Required.
                     minLength: 1
                     type: string
                   parentRef:
-                    description: ParentRef identifies the Gateway that the HTTPRoute
-                      attaches to.
+                    description: |-
+                      ParentRef identifies the pre-existing Gateway that the HTTPRoute attaches
+                      to.
                     properties:
                       name:
                         description: Name is the Gateway resource name. Required.
@@ -410,9 +410,7 @@ spec:
                       namespace:
                         description: |-
                           Namespace is the namespace of the referenced Gateway. When empty, the
-                          Gateway is assumed to live in the Keystone CR's namespace. Cross-namespace
-                          references require a ReferenceGrant in the target namespace (out of scope
-                          for this operator).
+                          Gateway is assumed to live in the referencing CR's namespace.
                         type: string
                       sectionName:
                         description: |-
@@ -425,8 +423,8 @@ spec:
                     type: object
                   path:
                     description: |-
-                      Path is the URL path prefix matched by the HTTPRoute. Defaults to "/".
-                      The reconciler applies the default when the field is empty.
+                      Path is the URL path prefix matched by the HTTPRoute. Defaults to "/" when
+                      empty.
                     type: string
                 required:
                 - hostname

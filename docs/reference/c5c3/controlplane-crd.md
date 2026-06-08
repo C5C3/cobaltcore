@@ -244,19 +244,22 @@ Keystone service.
 | `image` | [`*commonv1.ImageSpec`](../keystone/keystone-crd.md#imagespec) | No | `nil` | Overrides the Keystone container image. When `nil`, the reconciler derives the image as `ghcr.io/c5c3/keystone:{spec.openStackRelease}`. When set, the whole image reference is used verbatim. |
 | `policyOverrides` | [`*commonv1.PolicySpec`](../keystone/keystone-crd.md#policyspec) | No | `nil` | Per-service oslo.policy overrides for Keystone. When set, these take precedence over `spec.global` for the Keystone service. |
 | `rotationInterval` | `*metav1.Duration` | No | `nil` | Overrides the Fernet / credential-key rotation interval the reconciler derives for the projected Keystone CR. When `nil`, the reconciler derives a default schedule. When set, the duration is converted to a cron expression and applied to both `fernet.rotationSchedule` and `credentialKeys.rotationSchedule` on the projected Keystone CR; an unconvertible interval surfaces `KeystoneReady=False` with reason `InvalidRotationInterval`. |
-| `gateway` | [`*GatewaySpec`](#gatewayspec) | No | `nil` | Exposes the projected Keystone API externally via a Gateway API HTTPRoute. When `nil`, no HTTPRoute is projected and the Keystone API is reachable in-cluster only (its ClusterIP Service). When set, the reconciler projects it onto the Keystone CR's `spec.gateway`, so the Keystone operator attaches an HTTPRoute to the referenced Gateway. |
+| `gateway` | [`*commonv1.GatewaySpec`](#gatewayspec) | No | `nil` | Exposes the projected Keystone API externally via a Gateway API HTTPRoute. When `nil`, no HTTPRoute is projected and the Keystone API is reachable in-cluster only (its ClusterIP Service). When set, the reconciler projects it onto the Keystone CR's `spec.gateway`, so the Keystone operator attaches an HTTPRoute to the referenced Gateway. |
 | `publicEndpoint` | `string` | No | `""` | Externally routable Keystone identity endpoint URL (e.g. `https://keystone.example.com/v3`). Projected into the Keystone bootstrap (`--bootstrap-public-url`) and used for the K-ORC identity catalog Endpoint, so external clients resolve the same URL Keystone advertises. When empty and `gateway` is set, the reconciler derives `https://{gateway.hostname}/v3` (the default-443 form); set it explicitly when the externally reachable port differs (e.g. a kind host-port mapping like `:8443`). |
 
 ---
 
 ## GatewaySpec
 
-A **curated local subset** of the Gateway API HTTPRoute knobs the ControlPlane
-exposes for the projected Keystone service. Mirrors the Keystone operator's
-[`GatewaySpec`](../keystone/keystone-crd.md#gatewayspec) field-for-field; the
-reconciler (L2) maps it onto the projected Keystone CR's `spec.gateway`. As with
-`ServiceKeystoneSpec`, this is intentionally **not** an import of the keystone
-module — it keeps the L1 API package dependency-free.
+The shared `commonv1.GatewaySpec` (`internal/common/types`), the **single source
+of truth** for the Gateway API HTTPRoute knobs reused by both the ControlPlane
+and the Keystone CRD — see the [Keystone CRD →
+GatewaySpec](../keystone/keystone-crd.md#gatewayspec) for the same shape on the
+projected child. The reconciler (L2) maps it onto the projected Keystone CR's
+`spec.gateway`. As with the other `commonv1` shapes, reusing this type still
+keeps the L1 API package free of a dependency on the keystone module (the
+formerly hand-curated local copy was consolidated into `commonv1`; the L1
+package imports only `commonv1`, never the keystone module).
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
@@ -270,7 +273,9 @@ module — it keeps the L1 API package dependency-free.
 ## GatewayParentRefSpec
 
 References a pre-existing Gateway that the projected Keystone's HTTPRoute
-attaches to. Mirrors the Keystone operator's `GatewayParentRefSpec`.
+attaches to. The shared `commonv1.GatewayParentRefSpec` (`internal/common/types`),
+nested under [`commonv1.GatewaySpec`](#gatewayspec) and reused by both the
+ControlPlane and the Keystone CRD.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
