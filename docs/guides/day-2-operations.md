@@ -152,6 +152,8 @@ kubectl delete job keystone-manual-fernet-rotate keystone-manual-credential-rota
 ## Further reading
 
 - [Observability & Diagnostics](./observability.md) — reading conditions, events, and status fields while operations run
+- [Rotate the Keystone Admin Password](./keystone-admin-password-rotation.md) — manual admin-password rotation at the OpenBao source
+- [Schedule Keystone Admin Password Rotation](./keystone-admin-password-scheduled-rotation.md) — CronJob-driven scheduled admin-password rotation
 - [Keystone Upgrade Flow](../reference/keystone/keystone-upgrade-flow.md) — state machine, job names, retry behavior
 - [Keystone Controller Events](../reference/keystone/keystone-events.md) — full event catalogue for upgrade, rotation, and scale events
 - [Advanced Configuration](./advanced-configuration.md) — brownfield DB, autoscaling, network policy, and more
