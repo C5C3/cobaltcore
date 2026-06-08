@@ -34,6 +34,19 @@ Both flows converge on the same final hop — `reconcileBootstrap` re-runs
 
 ---
 
+## Prerequisites
+
+- A bootstrapped Keystone CR (`BootstrapReady=True`) with the **manual** admin-password
+  flow already working — scheduled rotation reuses the same ESO/OpenBao path and final
+  re-bootstrap hop. See [Rotate the Keystone Admin Password](keystone-admin-password-rotation.md).
+- The per-CR OpenBao path `bootstrap/<ns>/<ks>/admin` already seeded **and** stamped with
+  `custom_metadata managed-by=external-secrets`; without that marker ESO refuses the very
+  first PushSecret. `deploy/openbao/bootstrap/write-bootstrap-secrets.sh` stamps it for the
+  default CR (see [Topology](#2-topology-what-the-operator-stands-up) below).
+- `kubectl` access to the CR's namespace (`<ns>`).
+
+---
+
 ## 1. Enable scheduled rotation
 
 Scheduled rotation is opt-in. Add a `spec.bootstrap.passwordRotation` block to the
@@ -162,13 +175,14 @@ The `SCHEDULE` column should show your `spec.bootstrap.passwordRotation.schedule
 Instantiate a one-shot Job from the CronJob template and wait for it to finish:
 
 ```bash
-kubectl -n <ns> create job \
-  --from=cronjob/<ks>-admin-password-rotate \
-  <ks>-admin-password-rotate-manual
+JOB=<ks>-admin-password-rotate-manual-$(date +%s)
+kubectl -n <ns> create job --from=cronjob/<ks>-admin-password-rotate "$JOB"
 
-kubectl -n <ns> wait --for=condition=complete \
-  job/<ks>-admin-password-rotate-manual --timeout=120s
+kubectl -n <ns> wait --for=condition=complete job/"$JOB" --timeout=120s
 ```
+
+The timestamp suffix keeps the Job name unique, so re-running this step never
+collides with a prior manual Job (`AlreadyExists`) before it is cleaned up.
 
 The Job's pod mints a fresh password and PATCHes it onto the staging Secret
 `<ks>-admin-password-rotation`.
@@ -311,4 +325,5 @@ Secrets, the RBAC trio, the PushSecret, and the script ConfigMap — and reports
 - [`reconcilePasswordRotation`](../reference/keystone/keystone-reconciler.md#reconcilepasswordrotation) — the authoritative contract for the Model B sub-reconciler: validation rules, event reasons, the clobber-safe PushSecret gate, and the split RBAC.
 - [`reconcileBootstrap`](../reference/keystone/keystone-reconciler.md#reconcilebootstrap) — the bootstrap sub-reconciler and the `admin-password-hash` re-run gate that applies the rotated credential.
 - [Rotate the Keystone Admin Password](keystone-admin-password-rotation.md) — the manual rotation guide whose verification steps (3–7) this guide cross-links.
+- [Rotate Keystone Fernet and Credential Keys](keystone-key-rotation.md) — the key-rotation counterpart, which uses an analogous staging→production split.
 - Chainsaw test: `tests/e2e/keystone/admin-password-scheduled-rotation/chainsaw-test.yaml` asserts this guide's evidence chain end-to-end — CronJob run → push-source commit → OpenBao change → ESO sync → re-bootstrap `BootstrapReady=True` → new-password `201` / old-password `401`, and the disable→teardown `RotationDisabled` posture.

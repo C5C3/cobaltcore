@@ -66,8 +66,10 @@ GRANT ALL PRIVILEGES ON keystone.* TO 'keystone'@'%';
 FLUSH PRIVILEGES;
 ```
 
-The secret referenced by `secretRef` must contain a `password` key matching the SQL
-user. Once those exist, `db_sync` will create the Keystone schema on first reconcile.
+The secret referenced by `secretRef` must contain both a `username` and a `password`
+key matching the SQL user — the operator gates `SecretsReady` on both, so a Secret with
+only `password` leaves the CR stuck at `SecretsReady=False`. Once those exist, `db_sync`
+will create the Keystone schema on first reconcile.
 :::
 
 The webhook enforces that exactly one of `clusterRef` or `host` is set — never both —
@@ -149,6 +151,10 @@ is blocked by default — **including kubelet probes from other namespaces, whic
 normally not an issue because probes originate from the node, but verify in your
 cluster topology.**
 
+For brownfield or external targets that the auto-derivation cannot see (an off-cluster
+MariaDB host, an external IdP), append explicit rules with `spec.networkPolicy.additionalEgress`
+— they are added after the auto-derived ones rather than replacing them.
+
 Removing `spec.networkPolicy` deletes the NetworkPolicy and restores unrestricted
 traffic. See the [NetworkPolicy reference](../reference/keystone/keystone-crd.md#networkpolicyspec)
 for the auto-derived egress rules (Keystone API → MariaDB, Memcached, DNS).
@@ -188,7 +194,7 @@ a link to the full reference.
 
 | Feature | Field | What it does | Reference |
 |---------|-------|--------------|-----------|
-| Credential-key rotation | `spec.credentialKeys` | Separate rotation schedule for the credential encryption key | [CredentialKeysSpec](../reference/keystone/keystone-crd.md#credentialkeysspec) |
+| Credential-key tuning | `spec.credentialKeys` | Credential-key rotation is always on; this field only tunes the rotation schedule and max active keys | [CredentialKeysSpec](../reference/keystone/keystone-crd.md#credentialkeysspec) |
 | Trust flush | `spec.trustFlush` | CronJob running `keystone-manage trust_flush` on a schedule. Default-on (hourly) — to pause without deleting the CronJob, set `spec.trustFlush.suspend: true` rather than removing the field | [TrustFlushSpec](../reference/keystone/keystone-crd.md#trustflushspec) |
 | uWSGI tuning | `spec.uwsgi` | Worker processes, threads, HTTP keep-alive | [UWSGISpec](../reference/keystone/keystone-crd.md#uwsgispec) |
 | Topology spread | `spec.topologySpreadConstraints` | Pod spread across zones/hostnames | [TopologySpreadConstraints](../reference/keystone/keystone-crd.md#topologyspreadconstraints) |

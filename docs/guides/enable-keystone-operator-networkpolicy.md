@@ -157,7 +157,7 @@ once the new pod reaches `Ready`.
 
 ---
 
-## Verification
+## 4. Verify
 
 ### 4.1 NetworkPolicy exists and matches the pod
 
@@ -192,7 +192,7 @@ kubectl -n openstack get keystone <name> \
   -o jsonpath='{.status.conditions[?(@.type=="Ready")]}{"\n"}'
 ```
 
-If `Ready` stays `False` for more than one reconcile budget, jump to
+If `Ready` stays `False` for more than a couple of reconcile cycles, jump to
 **Troubleshooting** below.
 
 ### 4.3 Controller-runtime is talking to the API server

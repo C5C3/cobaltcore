@@ -30,9 +30,11 @@ Watch the rollout:
 kubectl rollout status deploy/keystone -n openstack
 ```
 
-Scale down the same way. With a `PodDisruptionBudget` in place (created by the operator
-based on `spec.replicas`), Kubernetes will not drain the last healthy pod during a
-voluntary disruption.
+Scale down the same way. The operator maintains a `PodDisruptionBudget` sized from
+`spec.replicas`: at `replicas > 1` it sets `minAvailable=1` so a voluntary disruption
+never drains the last healthy pod; at `replicas == 1` it sets `maxUnavailable=1`
+instead, deliberately allowing eviction so a node drain cannot deadlock on a
+single-replica CR.
 
 ::: tip Prefer autoscaling?
 For load-driven scaling use `spec.autoscaling` instead of hand-patching `spec.replicas`
@@ -96,54 +98,58 @@ to restore the database from backup, then patch `spec.image.tag` back. There is 
 
 ## Rotate Fernet keys manually
 
-The operator ships a `CronJob` that rotates the Fernet Secret on the schedule in
+The operator ships a `CronJob` that rotates the Fernet keys on the schedule in
 `spec.fernet.rotationSchedule` (default weekly). You can trigger a rotation immediately
 without waiting for the cron job to fire — useful after a suspected key compromise.
 
+Rotation uses a split staging→production path: the CronJob writes the new key set to a
+*staging* Secret, and the operator validates it and applies it to the production
+`keystone-fernet-keys` Secret on its next reconcile. So the right signal that a manual
+rotation landed is the operator's event on the CR, not the production Secret's contents
+immediately after the Job finishes.
+
 ```bash
 # Trigger an on-demand rotation by creating a Job from the CronJob
-kubectl create job keystone-manual-fernet-rotate \
+kubectl -n openstack create job \
   --from=cronjob/keystone-fernet-rotate \
-  -n openstack
-
-kubectl wait --for=condition=complete \
-  job/keystone-manual-fernet-rotate -n openstack --timeout=120s
+  keystone-fernet-rotate-manual-$(date +%s)
 ```
 
-Verify the Secret actually changed:
+Confirm the operator applied the staged rotation:
 
 ```bash
-kubectl get secret keystone-fernet-keys -n openstack \
-  -o jsonpath='{.data}' | sha256sum
+kubectl -n openstack describe keystone keystone | grep FernetKeysRotated
 ```
 
 ### What to expect
 
-- The Fernet key Secret now holds a new primary key. Older keys stay in the Secret
-  until `spec.fernet.maxActiveKeys` is exceeded — tokens issued before rotation
-  remain valid through the overlap window.
-- **No Deployment rollout happens.** The API pods pick up the new keys via the
-  Secret remount — their UIDs stay unchanged. Verify with:
+- The production Secret now holds a new primary key. Older keys stay until
+  `spec.fernet.maxActiveKeys` is exceeded — tokens issued before rotation remain valid
+  through the overlap window.
+- **No Deployment rollout happens.** Running pods pick up the new keys via the in-place
+  Secret projection (~60s) — their UIDs stay unchanged.
+- Credential keys rotate the same way and are **always managed** (independent of whether
+  `spec.credentialKeys` is set, which only tunes the schedule). Swap `fernet` →
+  `credential` in the CronJob name:
 
   ```bash
-  kubectl get pods -n openstack -l app.kubernetes.io/name=keystone \
-    -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.metadata.uid}{"\n"}{end}'
-  ```
-- The same pattern works for credential keys — if you have configured
-  `spec.credentialKeys`, use a distinct Job name so both rotation recipes can run
-  side-by-side without colliding:
-
-  ```bash
-  kubectl create job keystone-manual-credential-rotate \
+  kubectl -n openstack create job \
     --from=cronjob/keystone-credential-rotate \
-    -n openstack
+    keystone-credential-rotate-manual-$(date +%s)
   ```
+
+For the full staging-aware verification flow, the operator's validation contract, and
+recovery from a rejected rotation (`RotationRejected`), see
+[Rotate Keystone Fernet and Credential Keys](./keystone-key-rotation.md).
 
 ::: tip Cleanup
-Manual rotation Jobs accumulate if you run them often — delete after verification:
+Manual rotation Jobs are not garbage-collected automatically and accumulate if you run
+them often — delete them after verification:
 
 ```bash
-kubectl delete job keystone-manual-fernet-rotate keystone-manual-credential-rotate -n openstack --ignore-not-found
+kubectl -n openstack get jobs -o name \
+  | grep -E '/keystone-(fernet|credential)-rotate-manual-' \
+  | xargs -r kubectl -n openstack delete
 ```
 :::
 
@@ -152,6 +158,7 @@ kubectl delete job keystone-manual-fernet-rotate keystone-manual-credential-rota
 ## Further reading
 
 - [Observability & Diagnostics](./observability.md) — reading conditions, events, and status fields while operations run
+- [Rotate Keystone Fernet and Credential Keys](./keystone-key-rotation.md) — the full staging→production rotation flow, validation contract, and recovery
 - [Rotate the Keystone Admin Password](./keystone-admin-password-rotation.md) — manual admin-password rotation at the OpenBao source
 - [Schedule Keystone Admin Password Rotation](./keystone-admin-password-scheduled-rotation.md) — CronJob-driven scheduled admin-password rotation
 - [Keystone Upgrade Flow](../reference/keystone/keystone-upgrade-flow.md) — state machine, job names, retry behavior

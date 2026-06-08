@@ -21,22 +21,29 @@ at the repository root.
 Renovate is configured via `config:recommended` plus a small set of custom
 regex managers and package rules. The high-level split is:
 
-| What Renovate does on its own                                                    | What needs a human                                |
-| -------------------------------------------------------------------------------- | ------------------------------------------------- |
-| Opens PRs for every dependency it understands (Go, Docker, GitHub Actions, npm). | Reviewing major-version bumps.                    |
-| Auto-merges grouped patch/minor PRs after a 3-day cooldown — see rules below.    | Reviewing anything touching coupled stacks (k8s). |
-| Maintains Docker image digests (`@sha256:…`) alongside floating tags.            | Updating Go workspace and `go.mod` directives.    |
-| Pins GitHub Actions to commit SHAs (annotated with a `# vX.Y` tag).              | Triaging security advisories (CVEs).              |
+| What Renovate does on its own                                                    | What needs a human                                            |
+| -------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| Opens PRs for every dependency it understands (Go, Docker, GitHub Actions, npm). | **Merging** native-manager PRs — Go/Docker/Actions/npm bumps are opened but not auto-merged. |
+| Auto-merges only the custom-regex–managed pins (patch/minor) after a 3-day cooldown — see below. | Reviewing major-version bumps.                |
+| Maintains Docker image digests (`@sha256:…`) alongside floating tags.            | Reviewing anything touching coupled stacks (k8s).             |
+| Pins GitHub Actions to commit SHAs (annotated with a `# vX.Y` tag).              | Updating the Go workspace / `go.mod` directives; triaging CVEs. |
 
-Custom regex managers track non-`go.mod`/non-Docker pins:
+Renovate combines the `config:recommended` native managers (Go modules, Dockerfiles,
+GitHub Actions, npm) with **fourteen** custom regex managers that track pins those
+native managers cannot see. Auto-merge (patch/minor, 3-day cooldown) is wired **only**
+onto the custom-regex managers; native-manager PRs always wait for a human merge
+(`config:recommended` does not auto-merge, and no top-level `automerge` is set).
 
-- OpenStack source tags in `releases/*/source-refs.yaml`
-- `FLUX_OPERATOR_VERSION` in `hack/deploy-infra.sh` and `deploy/kind/base/flux-web.yaml`
-- Envoy Gateway version in `deploy/kind/base/envoy-gateway.yaml`
+The custom managers cover:
 
-Major updates are **disabled** for all custom-regex managers — these touch
-deploy-time CRDs and OpenStack release matrices where a major bump always
-needs human-driven coordination.
+- **OpenStack release refs** — git tags in `releases/*/source-refs.yaml` and PyPI pins in `releases/*/test-refs.yaml`.
+- **Test tooling in `hack/`** — Chainsaw, Flux CLI, kind, and kubectl versions in `hack/install-test-deps.sh`, plus `FLUX_OPERATOR_VERSION` in `hack/deploy-infra.sh`.
+- **kind deploy components** — `flux-web.yaml`, `envoy-gateway.yaml`, and `headlamp.yaml` under `deploy/kind/base/`.
+- **Go build tooling in `Makefile` / `.github/workflows/*.yaml`** — `gofumpt`, `controller-gen`, `golangci-lint`, and `yq`.
+
+Major updates are **disabled** for all custom-regex managers — these touch deploy-time
+CRDs, the OpenStack release matrix, and build tooling where a major bump always needs
+human-driven coordination.
 
 ---
 
@@ -66,6 +73,7 @@ fail CI because `go.work` and the per-module `go.mod` directives must agree.
 | `operators/keystone/go.mod`        | `go 1.X.Y`                           | Keystone operator module.                                                    |
 | `operators/c5c3/go.mod`            | `go 1.X.Y`                           | C5C3 ControlPlane orchestrator module.                                       |
 | `operators/keystone/Dockerfile`    | `FROM golang:1.X@sha256:…`           | Renovate maintains the floating tag and digest; only minor bumps need touching here. |
+| `operators/c5c3/Dockerfile`        | `FROM golang:1.X@sha256:…`           | Same builder line and digest as the keystone Dockerfile — keep both in lockstep.     |
 | `.github/workflows/ci.yaml`        | *No change.*                         | All `actions/setup-go` steps use `go-version-file: go.work`.                 |
 
 There is **no `toolchain` directive** anywhere in the workspace. We rely on
@@ -76,7 +84,9 @@ to individual `go.mod` files.
 
 ### Worked example: 1.25.10 → 1.26.3
 
-This is the upgrade performed alongside this document (issue #347).
+An illustrative past minor upgrade (the workspace has since moved on — at the time of
+writing all four files are on `go 1.26.4`). Substitute the current and target versions
+for your own bump; the mechanics below are unchanged.
 
 ```bash
 # 1. Bump the version in all four files. Each file has exactly one
@@ -98,14 +108,17 @@ go work sync
 (cd operators/keystone      && go build ./... && go vet ./...)
 (cd operators/c5c3          && go build ./... && go vet ./...)
 
-# 4. Run unit tests for the shared library and the operators that have them.
-(cd internal/common && go test -short -timeout 5m ./...)
+# 4. Run unit tests for all three modules — each has its own suite.
+(cd internal/common    && go test -short -timeout 5m ./...)
+(cd operators/keystone && go test -short -timeout 5m ./...)
+(cd operators/c5c3     && go test -short -timeout 5m ./...)
 ```
 
-The `operators/keystone/Dockerfile` `FROM golang:1.26@sha256:…` line is
-maintained by Renovate — confirm that the digest update has landed on `main`
-*before* opening the minor-bump PR, otherwise the builder image lags behind
-the `go.mod` directive and CI fails on the image-build job.
+Both operator Dockerfiles (`operators/keystone/Dockerfile` and
+`operators/c5c3/Dockerfile`) carry the same `FROM golang:1.26@sha256:…` builder line,
+maintained by Renovate — confirm that the digest update has landed on `main` *before*
+opening the minor-bump PR, otherwise the builder image lags behind the `go.mod`
+directive and CI fails on the image-build job.
 
 Commit messages follow the repository convention (English, no Co-Authored-By,
 SAP AI-assisted / On-behalf-of / Signed-off-by trailers).
@@ -118,11 +131,11 @@ Required CI checks gate the upgrade:
   a minor bump; fix in the same PR or temporarily disable the offending
   linter in `.golangci.yml` with a TODO referencing the upgrade PR.
 - `format-check` — `gofumpt -l` must be silent.
-- `unit-tests` — per-module `go test ./...`.
-- `vuln-scan` — `govulncheck` runs against the new toolchain.
-- `e2e-keystone`, `e2e-infra`, `e2e-prometheus`, `e2e-chaos` — Chainsaw suites
-  against a kind cluster; these catch runtime regressions that pure Go-level
-  tests miss.
+- `test` — per-module `go test ./...`.
+- `govulncheck` — runs against the new toolchain.
+- `e2e-operator (keystone)` / `e2e-operator (c5c3)`, `e2e-infra`, `e2e-prometheus`,
+  `e2e-chaos` — Chainsaw suites against a kind cluster (e2e runs as a per-operator
+  matrix); these catch runtime regressions that pure Go-level tests miss.
 
 For local pre-flight, the minimal smoke is `go work sync && (cd internal/common && go test -short -timeout 5m ./...)`.
 
@@ -165,14 +178,16 @@ production:
 
 ### Classification
 
-| Type  | Renovate behaviour                              | Reviewer depth                                                            |
-| ----- | ----------------------------------------------- | ------------------------------------------------------------------------- |
-| Patch | Grouped, auto-merged after 3 days of stability. | Skim the diff for unexpected indirect bumps; otherwise trust auto-merge.  |
-| Minor | Grouped, auto-merged after 3 days of stability. | Confirm CHANGELOG mentions no behavior change in modules we depend on.    |
-| Major | Always opened, never auto-merged.               | Read full upstream release notes; check for migrations; run e2e locally.  |
+| Type  | Renovate behaviour                                      | Reviewer depth                                                            |
+| ----- | ------------------------------------------------------- | ------------------------------------------------------------------------- |
+| Patch | Grouped into a PR; **not** auto-merged — a human merges. | Skim the diff for unexpected indirect bumps, then merge once green.       |
+| Minor | Grouped into a PR; **not** auto-merged.                  | Confirm the CHANGELOG mentions no behavior change in modules we depend on, then merge. |
+| Major | Always opened, never auto-merged.                       | Read full upstream release notes; check for migrations; run e2e locally.  |
 
-Custom-regex managers (OpenStack tags, flux-operator, envoy-gateway) follow
-the same shape: patch/minor auto-merge with cooldown, major disabled.
+This is the behaviour for the **native** managers (Go modules, Docker, Actions, npm).
+The **custom-regex** managers (OpenStack tags, the `hack/` test tooling, kind deploy
+components, Go build tooling) are the only ones that *do* auto-merge: patch/minor
+auto-merge after the 3-day cooldown, major disabled.
 
 ### Coupled stacks (k8s)
 
@@ -329,10 +344,10 @@ Renovate auto-merge fires only after the full required-checks set is
 green. The set is enforced by branch protection on `main`; the most
 load-bearing for dependency PRs are:
 
-- `lint`, `format-check`, `vuln-scan`
-- `unit-tests` (all three modules)
-- `e2e-keystone`, `e2e-infra` (and `e2e-prometheus`, `e2e-chaos` when
-  their path filters trigger)
+- `lint`, `format-check`, `govulncheck`
+- `test` (all three modules)
+- `e2e-operator (keystone)` / `e2e-operator (c5c3)`, `e2e-infra` (and `e2e-prometheus`,
+  `e2e-chaos` when their path filters trigger)
 - `helm-validate` (when chart files change)
 - `build-e2e-images` (when image or workflow files change)
 

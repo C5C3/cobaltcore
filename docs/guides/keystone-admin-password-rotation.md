@@ -28,6 +28,19 @@ in [Keystone Reconciler Architecture](../reference/keystone/keystone-reconciler.
 
 ---
 
+## Prerequisites
+
+- A bootstrapped Keystone CR (`BootstrapReady=True`) — see [Observability & Diagnostics](./observability.md).
+- The admin password projected via ESO: the `keystone-admin` ExternalSecret is present
+  and `Ready`. Plain (non-ESO) admin Secrets never go `Ready` — rotate at the OpenBao
+  source, not by editing the Secret.
+- `bao` CLI access to the OpenBao KV mount (in kind, OpenBao enforces mTLS, so the CLI
+  needs a client certificate signed by the OpenBao CA — a connection reset without one
+  is expected, not a pod defect).
+- `kubectl` access to the CR's namespace (`<ns>`).
+
+---
+
 ## Background: How a Password Rotation Reaches Keystone
 
 The admin password is not stored on the Keystone CR. It flows through three hops:
@@ -36,15 +49,19 @@ The admin password is not stored on the Keystone CR. It flows through three hops
 | --- | --- | --- |
 | Operator/secrets-tooling | OpenBao path `kv-v2/bootstrap/<ns>/<ks>/admin` (key `password`) | — |
 | External Secrets Operator (ESO) | The admin Secret `<admin-secret>` (key `password`, `creationPolicy: Owner`) | OpenBao path `bootstrap/<ns>/<ks>/admin`, property `password` |
-| Keystone operator | The `{ks}-bootstrap` Job's pod template | The admin Secret `<admin-secret>` (key `password`) |
+| Keystone operator | The `<ks>-bootstrap` Job's pod template | The admin Secret `<admin-secret>` (key `password`) |
 
 On every reconcile the operator reads the `password` key of the admin Secret,
 computes `hex(SHA-256(password))`, and stamps it onto the bootstrap Job's pod
-template as the `forge.c5c3.io/admin-password-hash` annotation. Because the
-Job's `forge.c5c3.io/pod-spec-hash` gate hashes the *full* pod template, a
-changed password changes that gate. `job.RunJob` then deletes the stale
-`{ks}-bootstrap` Job and recreates it, re-running `keystone-manage bootstrap`,
-which updates the admin credential to the new password.
+template as the `forge.c5c3.io/admin-password-hash` annotation. It passes that
+same digest to `job.RunJobWithRerunKey` as the bootstrap Job's **re-run key** —
+so the Job re-runs when, and only when, the admin password changes. The re-run
+gate is keyed on the password digest *alone*, deliberately **not** on the full
+pod template: an image-tag change must not re-run bootstrap, because re-running
+`keystone-manage bootstrap` after a cross-version DB migration fails on the
+already-migrated admin user. When the password digest changes, the operator
+deletes the stale `<ks>-bootstrap` Job and recreates it, re-running
+`keystone-manage bootstrap`, which updates the admin credential to the new password.
 
 The operator also watches the admin Secret directly (`secretToKeystoneMapper`),
 so an ESO write triggers a reconcile with **no CR edit**. During the re-run
@@ -138,10 +155,13 @@ UID:
 kubectl -n <ns> get job <ks>-bootstrap -o jsonpath='{.metadata.uid}{"\n"}'
 ```
 
-> **TTL note.** The bootstrap Job carries `TTLSecondsAfterFinished: 300`. A
-> completed Job is garbage-collected ~5 minutes after it finishes; the next
-> reconcile recreates it with the same (current) hash. A momentary absence of
-> the Job between GC and recreation is normal, not a failure.
+> **Job retention.** The bootstrap Job carries no `TTLSecondsAfterFinished` — it
+> is intentionally left unset. The completed Job is the operator's record of the
+> applied password digest (its re-run key), so it is retained, not
+> garbage-collected, and is removed only when the Keystone CR is deleted via
+> owner-reference GC. The steady state is therefore a single completed
+> `<ks>-bootstrap` Job present at all times; a rotation deletes and recreates it
+> in place rather than leaving a gap.
 
 ---
 
@@ -286,4 +306,5 @@ only new authentications with the old password are rejected.
 - [reconcileBootstrap](../reference/keystone/keystone-reconciler.md#reconcilebootstrap) — the authoritative contract for the bootstrap sub-reconciler and the admin-password-hash re-run gate.
 - [Labels and Annotations](../reference/keystone/keystone-reconciler.md#labels-and-annotations) — stable metadata keys, including `forge.c5c3.io/admin-password-hash` and `forge.c5c3.io/pod-spec-hash`.
 - See also [Schedule Keystone Admin Password Rotation](keystone-admin-password-scheduled-rotation.md) — the Model B scheduled flow, where a CronJob mints the password instead of an operator writing OpenBao by hand.
+- See also [Rotate Keystone Fernet and Credential Keys](keystone-key-rotation.md) — the key-rotation counterpart to this admin-password rotation.
 - Chainsaw test: `tests/e2e/keystone/admin-password-rotation/chainsaw-test.yaml` asserts this guide's happy path end-to-end — re-bootstrap on Secret change, old-password `401` / new-password `201` cutover, and unchanged API pod UIDs.

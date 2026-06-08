@@ -10,6 +10,17 @@ In this mode the operator uses a `Role` / `RoleBinding` instead of
 `ClusterRole` / `ClusterRoleBinding` and restricts its cache, watches, and
 reconciliation to a single namespace.
 
+::: tip Two different "multi-tenant" axes
+This guide covers running the **Keystone operator itself** namespace-scoped — one
+operator instance confined to one namespace. That is distinct from the higher-level
+tenancy unit, the **`ControlPlane` CR**: a validating webhook enforces **at most one
+`ControlPlane` per namespace**, so each tenant lives in its own namespace with its own
+ControlPlane and per-CR-scoped credentials (admin password, K-ORC application
+credential, Keystone keys). If you are standing tenants up as ControlPlanes, start from
+the [ControlPlane Quick Start](../quick-start-controlplane.md); the namespace-scoped
+operator RBAC described here is the complementary, lower-level concern.
+:::
+
 ## Prerequisites
 
 Before deploying the operator in namespace-scoped mode, ensure:
@@ -168,3 +179,18 @@ If you manage CRDs separately (e.g., via a GitOps pipeline or a dedicated
 CRD-management chart), ensure they are applied **before** deploying any
 namespace-scoped operator instance. A missing CRD causes the operator to crash
 on startup because the informer cache cannot watch the unknown resource type.
+
+::: tip Local chart path vs. published OCI chart
+The `helm install` examples above use the in-repo chart path
+`operators/keystone/helm/keystone-operator/`, which assumes a checked-out repository.
+For deployments off a checkout, use the published OCI chart instead —
+`oci://ghcr.io/c5c3/charts/keystone-operator` — with the same `--set` flags.
+:::
+
+---
+
+## Further reading
+
+- [ControlPlane Quick Start](../quick-start-controlplane.md) — standing up a tenant as a `ControlPlane` CR (the one-per-namespace tenancy aggregate).
+- [Enable the Keystone Operator NetworkPolicy](./enable-keystone-operator-networkpolicy.md) — confine the namespace-scoped operator's egress.
+- [Helm Values Schema](../reference/backend/helm-values-schema.md) — the full `rbac.*` / `webhook.*` value reference.

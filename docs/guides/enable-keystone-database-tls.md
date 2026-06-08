@@ -131,7 +131,7 @@ condition:
 | `NotRequired` | `tls` is `nil` or `enabled=false` — plaintext connection. |
 | `CertificatePending` | Managed mode; cert-manager has not yet issued the leaf. |
 | `CertificateIssued` | Managed mode; client keypair ready and mounted. |
-| `ExternallyManaged` | Brownfield mode (`spec.database.host` set) — the client keypair must be supplied out-of-band. |
+| `ExternallyManaged` | Brownfield mode (`spec.database.clusterRef` unset / `host` set) — the client keypair must be supplied out-of-band. |
 
 ---
 
@@ -202,8 +202,10 @@ encrypted — re-check `DatabaseTLSReady` and confirm the MariaDB CR has
 
 Because the MariaDB CR sets `spec.tls.required=true`, any
 connection that does not negotiate TLS is rejected at the transport layer
-before authentication. Probe from inside the Keystone Pod by deliberately
-omitting the `ssl=` kwarg:
+before authentication. The `probe`/`probe` credentials below are deliberately
+bogus — they are never checked, because the server rejects the plaintext
+handshake before it reaches authentication. Probe from inside the Keystone Pod
+by deliberately omitting the `ssl=` kwarg:
 
 ```bash
 kubectl -n openstack exec "$POD" -c keystone -- python3 -c '

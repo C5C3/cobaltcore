@@ -28,14 +28,14 @@ kubectl get keystones -A
 ```
 
 ```
-NAMESPACE   NAME       READY   ENDPOINT                                              RELEASE   AGE
-openstack   keystone   True    http://keystone.openstack.svc.cluster.local:5000      2025.2    12m
+NAMESPACE   NAME       READY   ENDPOINT                                                 RELEASE   AGE
+openstack   keystone   True    http://keystone.openstack.svc.cluster.local:5000/v3      2025.2    12m
 ```
 
 | Column | Source | Meaning |
 |--------|--------|---------|
 | `READY` | `.status.conditions[?(@.type=='Ready')].status` | Aggregate health |
-| `ENDPOINT` | `.status.endpoint` | In-cluster Keystone API URL |
+| `ENDPOINT` | `.status.endpoint` | In-cluster Keystone API URL (`…:5000/v3`) |
 | `RELEASE` | `.status.installedRelease` | OpenStack release currently deployed |
 | `AGE` | `.metadata.creationTimestamp` | CR age |
 
@@ -43,21 +43,24 @@ openstack   keystone   True    http://keystone.openstack.svc.cluster.local:5000 
 
 ## Status conditions
 
-`.status.conditions[]` follows the standard Kubernetes pattern (`type`, `status`, `reason`, `message`, `lastTransitionTime`, `observedGeneration`). Eleven sub-conditions feed into the aggregate `Ready` — some are only reported when the matching optional spec field is set:
+`.status.conditions[]` follows the standard Kubernetes pattern (`type`, `status`, `reason`, `message`, `lastTransitionTime`, `observedGeneration`). Fourteen sub-conditions feed into the aggregate `Ready`. All are always reported; the ones tied to an optional spec field carry a "not required" / "disabled" reason when that field is unset rather than disappearing:
 
 | Condition | Means |
 |-----------|-------|
 | `SecretsReady` | Referenced database and admin Secrets are available |
 | `FernetKeysReady` | Fernet key Secret and rotation CronJob exist |
-| `CredentialKeysReady` | Credential key Secret and rotation CronJob exist (if `spec.credentialKeys` is set) |
+| `CredentialKeysReady` | Credential key Secret and rotation CronJob exist (always managed; `spec.credentialKeys` only tunes the schedule and max active keys) |
 | `DatabaseReady` | `db_sync` Job completed successfully (and schema check passed) |
+| `DatabaseTLSReady` | Database TLS client certificate issued, or `NotRequired` — see [Enable Keystone Database TLS](./enable-keystone-database-tls.md) |
 | `PolicyValidReady` | `spec.policyOverrides` validated against `oslo.policy` |
 | `DeploymentReady` | API Deployment has available replicas |
 | `KeystoneAPIReady` | Keystone API is responding to `/v3` health probes |
 | `HPAReady` | HorizontalPodAutoscaler created (if `spec.autoscaling` is set) |
 | `NetworkPolicyReady` | NetworkPolicy created (if `spec.networkPolicy` is set) |
+| `HTTPRouteReady` | Gateway API HTTPRoute reconciled, or not required when `spec.gateway` is unset |
 | `BootstrapReady` | Bootstrap Job completed (admin user, region, endpoints) |
 | `TrustFlushReady` | Trust-flush CronJob created — defaults to hourly |
+| `PasswordRotationReady` | Scheduled admin-password rotation reconciled, or `RotationDisabled` when `spec.bootstrap.passwordRotation` is unset — see [Schedule Keystone Admin Password Rotation](./keystone-admin-password-scheduled-rotation.md) |
 | `Ready` | All of the above are `True` |
 
 Read them as a tree:
@@ -126,7 +129,7 @@ kubectl get events -n openstack \
 
 | Reason | Type | When you see it |
 |--------|------|-----------------|
-| `BootstrapComplete` | Normal | First reconciliation finished |
+| `BootstrapComplete` | Normal | Bootstrap Job finished (admin user, region, endpoints created) |
 | `DatabaseSynced` | Normal | `db_sync` finished, schema matches Alembic head |
 | `FernetKeysGenerated` | Normal | Fernet Secret was created or rotated |
 | `UpgradeInitiated` | Normal | `spec.image.tag` change triggered an upgrade |
@@ -152,15 +155,17 @@ kubectl logs -n openstack -l app.kubernetes.io/name=keystone --tail=200 -f
 
 Two distinct streams are interleaved on the same stdout/stderr:
 
-- **uWSGI access lines** — emitted per HTTP request via `--log-master --log-format`, e.g.
+- **uWSGI access lines** — emitted per HTTP request via an always-on `--log-master
+  --log-format` literal, e.g.
   `GET /v3/auth/tokens => generated 1234 bytes in 12 msecs (HTTP/1.1 201)`.
   Useful for traffic-shape questions (latency, status code distribution).
 - **oslo.log application records** — emitted by Keystone code paths (auth, federation,
   middleware), formatted by `oslo.log` per `spec.logging`. Useful for "why did this
   request fail" questions.
 
-Both streams honour `spec.logging.format`. The default is `text` (oslo.log line
-format, human-readable). Switch to JSON for direct ingest by Loki/OpenSearch:
+Only the oslo.log stream honours `spec.logging.format`; the uWSGI access lines use a
+fixed plain-text format regardless. The oslo.log default is `text` (line format,
+human-readable). Switch to JSON for direct ingest by Loki/OpenSearch:
 
 ```bash
 kubectl patch keystone -n openstack keystone --type=merge \

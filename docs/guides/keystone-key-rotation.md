@@ -23,15 +23,24 @@ under the Fernet and credential sub-reconciler sections in
 
 ---
 
+## Prerequisites
+
+- A healthy Keystone CR (`Ready=True`) — see [Observability & Diagnostics](./observability.md).
+- `kubectl` access to the CR's namespace (`<ns>`).
+- The rotation CronJobs already reconciled —
+  `kubectl -n <ns> get cronjob <ks>-fernet-rotate <ks>-credential-rotate` returns both.
+
+---
+
 ## Background: Who Writes What
 
 Earlier the rotation CronJob wrote directly to the production
-`{ks}-fernet-keys` Secret with `patch` RBAC. The current design splits that path:
+`<ks>-fernet-keys` Secret with `patch` RBAC. The current design splits that path:
 
 | Actor | Writes to | Reads from |
 | --- | --- | --- |
-| Rotation CronJob (ServiceAccount `{ks}-fernet-rotate`) | Staging Secret `{ks}-fernet-keys-rotation` (via `patch`) | Production Secret `{ks}-fernet-keys` (via `get`, mounted as volume) |
-| Operator (controller-manager ServiceAccount) | Production Secret `{ks}-fernet-keys` (via `patch`) | Staging Secret `{ks}-fernet-keys-rotation` (validates, then deletes) |
+| Rotation CronJob (ServiceAccount `<ks>-fernet-rotate`) | Staging Secret `<ks>-fernet-keys-rotation` (via `patch`) | Production Secret `<ks>-fernet-keys` (via `get`, mounted as volume) |
+| Operator (controller-manager ServiceAccount) | Production Secret `<ks>-fernet-keys` (via `patch`) | Staging Secret `<ks>-fernet-keys-rotation` (validates, then deletes) |
 
 The staging Secret carries one controller-observable marker — the
 `forge.c5c3.io/rotation-completed-at` annotation — that tells the operator
@@ -44,8 +53,8 @@ Secret.
 ## 1. Trigger a manual rotation
 
 Rotations run on the `spec.fernet.rotationSchedule` / `spec.credentialKeys.rotationSchedule`
-cron schedule by default. To trigger one on demand, create a one-shot Job
-from the CronJob template:
+cron schedule by default (both default to `0 0 * * 0` — weekly, Sunday 00:00 UTC).
+To trigger one on demand, create a one-shot Job from the CronJob template:
 
 ```bash
 kubectl -n <ns> create job --from=cronjob/<ks>-fernet-rotate \
@@ -250,6 +259,12 @@ aging-out.
 > property of the rotation flow, not a regression.
 
 ---
+
+## See also
+
+- [Rotate the Keystone Admin Password](./keystone-admin-password-rotation.md) — the *admin-password* counterpart to this key rotation, driven from the OpenBao source.
+- [Schedule Keystone Admin Password Rotation](./keystone-admin-password-scheduled-rotation.md) — CronJob-driven scheduled admin-password rotation.
+- [Day 2 Operations](./day-2-operations.md) — a condensed on-demand rotation trigger alongside scaling and upgrades.
 
 ## Related reference
 

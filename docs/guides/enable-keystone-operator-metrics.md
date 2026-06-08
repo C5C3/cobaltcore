@@ -5,7 +5,6 @@ SPDX-License-Identifier: Apache-2.0
 ---
 title: Enable the Keystone Operator Metrics Endpoint
 quadrant: operator
-
 ---
 
 <!-- operator namespace is `keystone-system`; workload (Keystone CR) stays in `openstack`. -->
@@ -143,9 +142,11 @@ Port-forward Prometheus and check the target list:
 kubectl -n monitoring port-forward svc/prometheus-operated 9090:9090
 ```
 
-Open <http://localhost:9090/targets> and filter for
-`keystone-operator`; the target must report `State=UP` and `Last
-Scrape` within the configured interval.
+`prometheus-operated` is the headless Service the prometheus-operator always
+creates; if you run the kube-prometheus-stack the release-named
+`kube-prometheus-stack-prometheus` Service works too. Open
+<http://localhost:9090/targets> and filter for `keystone-operator`; the target
+must report `State=UP` and `Last Scrape` within the configured interval.
 
 Equivalent API query:
 
@@ -210,36 +211,41 @@ mismatch is in the `serviceMonitorSelector` (see Prerequisites).
 
 ## Security & network considerations
 
-The operator's metrics endpoint is wired in
+The operator's metrics endpoint is bound via the `--metrics-bind-address` flag
+(default `:8080`), wired in
 [`internal/common/bootstrap/manager.go`](https://github.com/c5c3/forge/blob/main/internal/common/bootstrap/manager.go)
-via `metricsserver.Options{BindAddress: ":8080"}`. That bind address
-serves **plain HTTP with no authentication and no TLS** on every Pod
-network interface. It is intended for cluster-internal scraping by a
-Prometheus instance that already lives on the same trust boundary
-(typical kube-prometheus-stack / namespaced Prometheus deployments
-satisfy this).
+as `metricsserver.Options{BindAddress: metricsAddr}`. The chart passes the flag from
+the `metrics.port` value (rendered as `--metrics-bind-address=:<metrics.port>`), so the
+*port* is configurable without a code change. What is **not** configurable from the chart is the
+scheme: the endpoint serves **plain HTTP with no authentication and no TLS** on every
+Pod network interface. It is intended for cluster-internal scraping by a Prometheus
+instance that already lives on the same trust boundary (typical kube-prometheus-stack /
+namespaced Prometheus deployments satisfy this).
 
 Operators with stricter cluster policies must take extra steps:
 
 - **Plain-HTTP NetworkPolicy denial.** Clusters that block plain HTTP
   east-west traffic by default need an explicit ingress
   NetworkPolicy permitting the Prometheus Pod's selector to reach the
-  operator on port `8080`. Without it the ServiceMonitor renders
-  successfully but every scrape times out and the target reports
-  `Down`.
+  operator on port `8080`. The operator chart ships this as
+  `networkPolicy.allowMetricsFrom` — see
+  [Enable the Keystone Operator NetworkPolicy](./enable-keystone-operator-networkpolicy.md).
+  Without it the ServiceMonitor renders successfully but every scrape
+  times out and the target reports `Down`.
 - **mTLS service mesh enforcement.** When a service mesh (Istio,
   Linkerd, Cilium service mesh) requires mTLS for in-cluster traffic,
   inject a sidecar that terminates mTLS in front of the operator's
   `:8080` endpoint, OR exempt the operator Pod from strict-mTLS
   enforcement for the metrics port.
-- **Required TLS / authn at the controller-runtime level.** If the
-  threat model demands the operator itself serve metrics over HTTPS or
-  enforce a token-based AuthN, swap `BindAddress: ":8080"` for the
-  controller-runtime `SecureServing` configuration in
-  `internal/common/bootstrap/manager.go` and bind a cert/key pair (for
-  example by mounting a cert-manager-issued Secret on the operator
-  Deployment). The chart does not ship this configuration — it is a
-  forge-wide bootstrap change rather than a per-operator override.
+- **Required TLS / authn at the controller-runtime level.** Changing the
+  *port* is a chart value (`metrics.port`), but changing the *scheme* is not:
+  if the threat model demands the operator itself serve metrics over HTTPS or
+  enforce a token-based AuthN, switch the `metricsserver.Options` in
+  `internal/common/bootstrap/manager.go` to the controller-runtime
+  `SecureServing` configuration and bind a cert/key pair (for example by
+  mounting a cert-manager-issued Secret on the operator Deployment). The chart
+  does not ship this configuration — it is a forge-wide bootstrap change rather
+  than a per-operator override.
 
 The metrics endpoint deliberately exposes **no credentials, secrets,
 or per-tenant payloads** — only Prometheus collector samples described
