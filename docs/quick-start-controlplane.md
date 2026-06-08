@@ -172,3 +172,6 @@ make teardown-infra
 - [ControlPlane Reconciler](./reference/c5c3/controlplane-reconciler.md) — the
   sub-reconciler ordering and gating semantics.
 - [Quick Start](./quick-start.md) — the compact per-service Keystone path.
+- [Deploy a Tenant as a ControlPlane](./guides/deploy-controlplane-tenant.md) —
+  onboarding additional tenants: the one-per-namespace contract, per-CR
+  credential scoping, and teardown.

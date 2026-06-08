@@ -33,6 +33,7 @@ export default defineConfig({
           { text: 'Rotate Keystone Admin Password', link: '/guides/keystone-admin-password-rotation' },
           { text: 'Schedule Keystone Admin Password Rotation', link: '/guides/keystone-admin-password-scheduled-rotation' },
           { text: 'Multi-Tenant Deployment', link: '/guides/multi-tenant-deployment' },
+          { text: 'Deploy a Tenant as a ControlPlane', link: '/guides/deploy-controlplane-tenant' },
           { text: 'Enable Keystone Database TLS', link: '/guides/enable-keystone-database-tls' },
           { text: 'Enable Keystone Operator Metrics', link: '/guides/enable-keystone-operator-metrics' },
           { text: 'Enable Keystone Operator NetworkPolicy', link: '/guides/enable-keystone-operator-networkpolicy' },

@@ -16,9 +16,11 @@ operator instance confined to one namespace. That is distinct from the higher-le
 tenancy unit, the **`ControlPlane` CR**: a validating webhook enforces **at most one
 `ControlPlane` per namespace**, so each tenant lives in its own namespace with its own
 ControlPlane and per-CR-scoped credentials (admin password, K-ORC application
-credential, Keystone keys). If you are standing tenants up as ControlPlanes, start from
-the [ControlPlane Quick Start](../quick-start-controlplane.md); the namespace-scoped
-operator RBAC described here is the complementary, lower-level concern.
+credential, Keystone keys). If you are standing tenants up as ControlPlanes, see
+[Deploy a Tenant as a ControlPlane](./deploy-controlplane-tenant.md) (or the
+[ControlPlane Quick Start](../quick-start-controlplane.md) for the single-tenant
+path); the namespace-scoped operator RBAC described here is the complementary,
+lower-level concern.
 :::
 
 ## Prerequisites
@@ -191,6 +193,7 @@ For deployments off a checkout, use the published OCI chart instead —
 
 ## Further reading
 
+- [Deploy a Tenant as a ControlPlane](./deploy-controlplane-tenant.md) — onboarding a tenant in its own namespace: the one-per-namespace contract, per-CR credential scoping, and teardown.
 - [ControlPlane Quick Start](../quick-start-controlplane.md) — standing up a tenant as a `ControlPlane` CR (the one-per-namespace tenancy aggregate).
 - [Enable the Keystone Operator NetworkPolicy](./enable-keystone-operator-networkpolicy.md) — confine the namespace-scoped operator's egress.
 - [Helm Values Schema](../reference/backend/helm-values-schema.md) — the full `rbac.*` / `webhook.*` value reference.
