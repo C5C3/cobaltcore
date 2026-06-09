@@ -228,10 +228,6 @@ main() {
   write_secret_if_missing "kv-v2/infrastructure/mariadb" \
     "root-password=${GENERATED_PASSWORD}"
 
-  write_secret_if_missing "kv-v2/openstack/keystone/db" \
-    "username=keystone" \
-    "password=${GENERATED_PASSWORD}"
-
   # CC-0112 (REQ-009): per-ControlPlane bootstrap seeding. For each
   # "<namespace>/<controlplane>" identity in KORC_CONTROLPLANES (default
   # "openstack/controlplane"), seed BOTH the Model B admin password and the K-ORC
@@ -276,6 +272,15 @@ main() {
     # seeded path with the minted application credential (ESO's managed-by guard
     # rejects an unmarked pre-existing path otherwise — see mark_eso_managed).
     mark_eso_managed "${ac_path}"
+
+    # CC-0116 (REQ-007): per-ControlPlane Keystone DB credential. Replaces the
+    # legacy flat openstack/keystone/db seed so two ControlPlanes never collide on
+    # the cluster-global OpenBao backend. Deliberately NOT marked ESO-managed: the
+    # credential is read-only (consumed by the c5c3-operator's per-CP keystone-db
+    # ExternalSecret) and never written back via PushSecret.
+    write_secret_if_missing "kv-v2/openstack/keystone/${cp_ns}/${cp_name}/db" \
+      "username=keystone" \
+      "password=${GENERATED_PASSWORD}"
   done
 
   log "=== Done ==="

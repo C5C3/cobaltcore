@@ -12,6 +12,9 @@ path "kv-v2/data/bootstrap/*" {
   capabilities = ["read"]
 }
 
+# kv-v2/data/openstack/* already covers the per-ControlPlane Keystone DB
+# credential at kv-v2/data/openstack/keystone/{namespace}/{name}/db (CC-0116);
+# the wildcard needs no widening for the per-CP scoping.
 path "kv-v2/data/openstack/*" {
   capabilities = ["read"]
 }
