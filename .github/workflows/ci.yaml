@@ -837,8 +837,11 @@ jobs:
   # the run-chaos PR label is applied), and only after all pre-flight checks
   # have passed or been skipped.
   #
-  # CC-0049, REQ-006: timeout reduced to 45m and e2e-operator dependency
-  # removed so e2e-chaos runs in parallel with e2e-operator.
+  # Chaos tests run only after every e2e-operator matrix leg has finished
+  # without failure: a failed e2e-operator run skips e2e-chaos, a
+  # path-filter-skipped one does not block it (always() + the
+  # failure/cancelled guards below). This supersedes CC-0049 REQ-006,
+  # which had removed the dependency to run both jobs in parallel.
   #
   # CC-0049, REQ-007: run-chaos PR label trigger added for on-demand chaos
   # validation of operator code changes.
@@ -848,7 +851,7 @@ jobs:
   # runs to consider making this job blocking and adding it to publish
   # dependencies.
   e2e-chaos:
-    needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]
+    needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images, e2e-operator]
     # always(): allow the job to run when upstream Go jobs are skipped
     # (e.g. pure E2E test-definition PRs where go=false). The explicit
     # failure/cancelled guard still blocks if any upstream actually failed.
@@ -1044,8 +1047,14 @@ jobs:
   # suite against them.  Currently tests Keystone; designed so additional
   # services can be added to this single job without needing separate runs.
   # CC-0051: Matrix over OpenStack releases to validate each release independently.
+  #
+  # Runs only after every E2E job has finished without failure: a failed
+  # E2E job skips tempest, a path-filter-skipped one does not block it
+  # (always() + the failure/cancelled guards below). e2e-chaos is
+  # continue-on-error, so its result is always 'success' — it merely delays
+  # tempest until it finishes, it cannot block it.
   tempest:
-    needs: [changes, build-e2e-images]
+    needs: [changes, build-e2e-images, e2e-infra, e2e-operator, e2e-chaos, e2e-prometheus]
     if: |
       always() &&
       github.event_name == 'pull_request' &&
