@@ -25,5 +25,5 @@ features:
   - title: Day 2 Operations
     details: Guides for observability, key rotation, multi-tenant deployment, and advanced configuration.
   - title: Maintenance & Dependencies
-    details: <a href="/forge/guides/dependency-management">Dependency Management</a> — Go version upgrades, library updates, and the Renovate workflow.
+    details: <a href="/forge/contributing/dependency-management">Dependency Management</a> — Go version upgrades, library updates, and the Renovate workflow.
 ---

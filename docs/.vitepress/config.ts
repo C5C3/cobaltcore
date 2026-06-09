@@ -36,7 +36,6 @@ export default defineConfig({
           { text: 'Enable Keystone Database TLS', link: '/guides/enable-keystone-database-tls' },
           { text: 'Enable Keystone Operator Metrics', link: '/guides/enable-keystone-operator-metrics' },
           { text: 'Enable Keystone Operator NetworkPolicy', link: '/guides/enable-keystone-operator-networkpolicy' },
-          { text: 'Dependency Management', link: '/guides/dependency-management' },
         ],
       },
       {
@@ -107,6 +106,7 @@ export default defineConfig({
       {
         text: 'Contributing',
         items: [
+          { text: 'Dependency Management', link: '/contributing/dependency-management' },
           { text: 'Claude Code Skills', link: '/contributing/claude-skills' },
         ],
       },
