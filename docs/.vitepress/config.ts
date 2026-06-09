@@ -105,6 +105,12 @@ export default defineConfig({
         ],
       },
       {
+        text: 'Explanation',
+        items: [
+          { text: 'DB Credential Scoping (c5c3)', link: '/explanation/c5c3/db-credential-scoping' },
+        ],
+      },
+      {
         text: 'Contributing',
         items: [
           { text: 'Claude Code Skills', link: '/contributing/claude-skills' },

@@ -119,6 +119,7 @@ sub-reconcilers project, and the admin-password `Secret`:
 | K-ORC `ApplicationCredential` | `Owns()` | Re-reconciles when the minted admin credential's `Available` condition or `status.id` changes |
 | K-ORC `Service` | `Owns()` | Re-reconciles when the identity catalog Service changes |
 | K-ORC `Endpoint` | `Owns()` | Re-reconciles when the public identity Endpoint changes |
+| ExternalSecret (ESO) | `Owns()` | Re-reconciles the owning ControlPlane when the per-ControlPlane DB-credential ExternalSecret's sync status changes (CC-0116) |
 | `Secret` | `Watches()` | Maps Secret events to referencing ControlPlane CRs via the `ControlPlaneSecretNameIndexKey` field indexer (`secretToControlPlaneMapper`) |
 
 The `Secret` watch uses `Watches()` with a `MapFunc` rather than `Owns()`
@@ -233,6 +234,13 @@ holds only `update`/`patch` (not `create`/`delete`) on K-ORC
 │           │  early-return if !result.IsZero() || err                         │
 │           ▼                                                                  │
 │  ┌──────────────────────────┐                                                │
+│  │ reconcileDBCredentials   │  Ensure per-CP DB-credential ExternalSecret    │
+│  │  (gate: none)            │  Sets: DBCredentialsReady                      │
+│  └────────┬─────────────────┘  Requeue: 10s while ES not Ready               │
+│           │  early-return if !result.IsZero() || err                         │
+│           │  (brownfield: True immediately, no ExternalSecret)               │
+│           ▼                                                                  │
+│  ┌──────────────────────────┐                                                │
 │  │ reconcileKeystone        │  Project the Keystone child CR                 │
 │  │  (gate: InfraReady)      │  Sets: KeystoneReady                           │
 │  └────────┬─────────────────┘  Requeue: 5s gated / 15s child not Ready       │
@@ -267,7 +275,7 @@ holds only `update`/`patch` (not `create`/`delete`) on K-ORC
 
 ### Execution Model
 
-All five sub-reconcilers run **strictly sequentially** — there is no parallel
+All six sub-reconcilers run **strictly sequentially** — there is no parallel
 group. Each sub-reconciler call is wrapped in `instrumentSubReconciler` (see
 [Metrics Instrumentation](#metrics-instrumentation)) and follows the same
 early-return contract:
@@ -289,7 +297,7 @@ This guarantees:
 3. Status conditions from the failing/requeuing sub-reconciler are **always
    persisted** via `updateStatus()` before returning.
 
-Only when all five sub-reconcilers return a zero result with no error does
+Only when all six sub-reconcilers return a zero result with no error does
 control reach `setReadyCondition(&cp)` and the final `updateStatus(ctx, &cp,
 ctrl.Result{}, nil)`.
 
@@ -322,11 +330,11 @@ sub-condition type is `True` using `aggregateReady()`, which delegates to
 | Yes | `Status: True` | `AllReady` | `All sub-conditions are ready` |
 | No (any missing or False) | `Status: False` | `NotAllReady` | `One or more sub-conditions are not ready` |
 
-The five aggregated sub-condition types (the source-of-truth `subConditionTypes`
+The six aggregated sub-condition types (the source-of-truth `subConditionTypes`
 slice in `controlplane_controller.go`) are:
 
 ```text
-InfrastructureReady, KeystoneReady, KORCReady, AdminCredentialReady, CatalogReady
+InfrastructureReady, DBCredentialsReady, KeystoneReady, KORCReady, AdminCredentialReady, CatalogReady
 ```
 
 The `Ready` condition carries `ObservedGeneration = cp.Generation` so clients can
@@ -383,6 +391,37 @@ occurs; readiness is evaluated collectively afterwards.
 > (`unstructuredReady`), where a missing/malformed list is treated as not-ready
 > rather than an error.
 
+### reconcileDBCredentials
+
+| Aspect | Value |
+| --- | --- |
+| File | `reconcile_dbcredentials.go` |
+| Condition | `DBCredentialsReady` |
+| Gate | none (runs right after Infrastructure, before Keystone) |
+| Projects / Owns | managed-mode only: one `ExternalSecret` named `{controlplane.Name}-keystone-db-credentials` (`dbCredentialSecretName`) in `childNamespace(cp)`, which ESO materialises into a same-named `Secret` from the per-CP OpenBao key `openstack/keystone/{cp.Namespace}/{cp.Name}/db` (`dbCredentialRemoteKeyFor`) |
+| Requeue | `dbCredentialsRequeueAfter` = **10s** while the per-CP DB-credential ExternalSecret is not yet Ready |
+
+`reconcileDBCredentials` scopes the Keystone database credential to the owning
+ControlPlane (CC-0116, REQ-001/REQ-002/REQ-005). In **brownfield** mode
+(`database.clusterRef` nil) the operator provisions no database, so it manufactures
+no credential: it sets `DBCredentialsReady=True`/`BrownfieldDatabase` immediately,
+creates no ExternalSecret, and leaves the user-supplied `secretRef` in place. In
+**managed** mode (`database.clusterRef != nil`) it ensures the per-CP
+`ExternalSecret` via `controllerutil.CreateOrUpdate` + `SetControllerReference`,
+then gates `DBCredentialsReady` on `secrets.WaitForExternalSecret` reporting the
+materialised Secret Ready. It runs **before** [`reconcileKeystone`](#reconcilekeystone)
+so the projected Keystone CR is never pointed at a DB-credential Secret that does
+not yet exist; `reconcileKeystone` then substitutes this Secret into the projected
+Keystone CR's `spec.database.secretRef` in managed mode (CC-0116, REQ-002).
+
+| Path | Status | Reason | Notes |
+| --- | --- | --- | --- |
+| Brownfield (database `ClusterRef` nil) | True | `BrownfieldDatabase` | no ExternalSecret created; user-supplied secretRef left in place |
+| ExternalSecret create/update fails | False | `ExternalSecretError` | returns the error |
+| Per-CP DB-credential ExternalSecret not yet Ready | False | `WaitingForDBCredentialSecret` | requeue 10s |
+| ExternalSecret readiness check errors | False | `ExternalSecretError` | returns the error |
+| ExternalSecret Ready | True | `DBCredentialsReady` | — |
+
 ### reconcileKeystone
 
 | Aspect | Value |
@@ -403,7 +442,13 @@ the ControlPlane provisioned:
   whole image reference when set.
 - **Database / Cache:** `keystone.Spec.Database = cp.Spec.Infrastructure.Database`
   and `keystone.Spec.Cache = cp.Spec.Infrastructure.Cache` (the same `clusterRef`s,
-  reused unchanged).
+  reused unchanged). In **managed mode** (`database.clusterRef != nil`) the projected
+  `keystone.Spec.Database.SecretRef` is then **overridden** to the operator-owned
+  per-ControlPlane DB-credential Secret `{controlplane.Name}-keystone-db-credentials`
+  (key `password`) materialised by [`reconcileDBCredentials`](#reconciledbcredentials),
+  so Keystone reads the operator-scoped credential rather than the
+  infrastructure-supplied `secretRef`; brownfield mode leaves the user-supplied
+  `secretRef` untouched (CC-0116, REQ-002).
 - **Bootstrap:** the admin-password Secret ref is `cp.Spec.KORC.AdminCredential.PasswordSecretRef`
   (so Keystone and K-ORC agree on the admin-password source) and the region is
   `cp.Spec.Region`.
@@ -731,6 +776,8 @@ owner).
 | `MariaDB` | `{spec.infrastructure.database.clusterRef.name}` | ControlPlane CR | managed mode only |
 | `Memcached` (unstructured) | `{spec.infrastructure.cache.clusterRef.name}` | ControlPlane CR | managed mode only |
 | `Keystone` | `{name}-keystone` | ControlPlane CR | — |
+| `ExternalSecret` | `{name}-keystone-db-credentials` | ControlPlane CR | managed mode only; materialises the per-CP DB credential from OpenBao (CC-0116) |
+| `Secret` | `{name}-keystone-db-credentials` | the ExternalSecret (ESO CreationPolicy: Owner) | managed mode only; data materialised by ESO from `openstack/keystone/{namespace}/{name}/db` (CC-0116) |
 | `ApplicationCredential` | `{name}-admin-app-credential` | ControlPlane CR | carries `forge.c5c3.io/admin-password-hash` |
 | `Secret` | `{name}-admin-app-credential` | ControlPlane CR | data written by K-ORC, not the operator |
 | `PushSecret` | `{name}-admin-app-credential-backup` | ControlPlane CR | `DeletionPolicy: None` |
@@ -804,6 +851,7 @@ The `condition_type` label is resolved from the package-private
 | `sub_reconciler` | `condition_type` |
 | --- | --- |
 | `Infrastructure` | `InfrastructureReady` |
+| `DBCredentials` | `DBCredentialsReady` |
 | `Keystone` | `KeystoneReady` |
 | `KORC` | `KORCReady` |
 | `AdminCredential` | `AdminCredentialReady` |
@@ -860,6 +908,7 @@ inversion on the AC, and the identity `Service`/`Endpoint` shape.
 | --- | --- |
 | `controlplane_controller_test.go` | `Reconcile` orchestration, sequential early-return, Ready aggregation, `updateStatus` error-join, idempotency |
 | `reconcile_infrastructure_test.go` | Managed/brownfield MariaDB + Memcached, unstructured readiness, condition contract, `ObservedGeneration` |
+| `reconcile_dbcredentials_test.go` | DBCredentials sub-reconciler: per-CP ExternalSecret build, remote-key/secret-name scoping, managed/brownfield/wait/error condition contract |
 | `reconcile_keystone_test.go` | Keystone projection, infra gate, image/rotation/policy projection, condition contract, `ObservedGeneration` |
 | `reconcile_korc_test.go` | AC mint, restricted↔unrestricted inversion, hash annotation/re-mint, missing-CRD safety, admin-credential push, catalog, condition contract |
 | `reconcile_credentialrotation_test.go` | Nudge model, one-per-namespace resolution, bootstrap, deferred scheduled fields, target enum |
@@ -889,6 +938,7 @@ operators/c5c3/
     │   │                                        SetupWithManager
     │   ├── reconcile_infrastructure.go          reconcileInfrastructure (MariaDB + Memcached),
     │   │                                        childNamespace, memcachedGVK
+    │   ├── reconcile_dbcredentials.go           reconcileDBCredentials per-CP DB-credential ExternalSecret
     │   ├── reconcile_keystone.go                reconcileKeystone projection
     │   ├── reconcile_korc.go                    reconcileKORC + reconcileAdminCredential +
     │   │                                        reconcileCatalog, computeAdminPasswordHash
@@ -898,6 +948,7 @@ operators/c5c3/
     │   ├── helpers.go                           intervalToCron, projectPolicyOverrides
     │   ├── controlplane_controller_test.go      Orchestration tests
     │   ├── reconcile_infrastructure_test.go     Infrastructure tests
+    │   ├── reconcile_dbcredentials_test.go      DBCredentials sub-reconciler tests
     │   ├── reconcile_keystone_test.go           Keystone projection tests
     │   ├── reconcile_korc_test.go               K-ORC / admin-credential / catalog tests
     │   ├── reconcile_credentialrotation_test.go CredentialRotation tests
@@ -936,14 +987,25 @@ admin password; `FernetKeysReady` / `CredentialKeysReady` for the signing keys).
 | Admin application credential (K-ORC) | `openstack/keystone/admin/app-credential` | `openstack/keystone/{namespace}/{name}/admin/app-credential` |
 | Admin bootstrap password (Model B) | `bootstrap/keystone-admin` | `bootstrap/{namespace}/{name}/admin` |
 | Fernet / credential keys (boundary-4) | `openstack/keystone/{name}/{fernet,credential}-keys` | `openstack/keystone/{namespace}/{name}/{fernet,credential}-keys` |
+| Keystone DB credential (per-CP, read-only) | `openstack/keystone/db` | `openstack/keystone/{namespace}/{name}/db` |
 
-For the admin AC the `{namespace}/{name}` is the **ControlPlane** CR's
-(`adminAppCredentialRemoteKeyFor`); for the admin password and the Fernet /
-credential keys it is the projected **Keystone** CR's (`{cp.Name}-keystone`). The
+For the admin AC and the per-CP DB credential the `{namespace}/{name}` is the
+**ControlPlane** CR's (`adminAppCredentialRemoteKeyFor` / `dbCredentialRemoteKeyFor`);
+for the admin password and the Fernet / credential keys it is the projected
+**Keystone** CR's (`{cp.Name}-keystone`). The
 Fernet / credential move adds the namespace segment **on top of** the prior
 flat→per-name migration (see the keystone reconciler's
 [Migration note: legacy flat paths](../keystone/keystone-reconciler.md#migration-note-legacy-flat-paths));
 this change only adds the leading `{namespace}/` segment.
+
+Unlike the admin / fernet / password families, the per-CP DB-credential path is
+**read-only**: `write-bootstrap-secrets.sh` seeds it and the operator-projected
+`{name}-keystone-db-credentials` ExternalSecret only **reads** it (no PushSecret
+writes back), so there is **no write-ACL to re-apply** for it — the existing read
+policies (`eso-management`, `eso-control-plane`) already cover it via their
+`…/openstack/keystone/*` / `…/openstack/*` wildcards. The legacy static
+`deploy/eso/externalsecrets/keystone-db.yaml` ExternalSecret (which consumed the
+flat `openstack/keystone/db`) was removed (CC-0116).
 
 **One-time copy (preserve the last-pushed value so nothing is locked out):**
 
@@ -985,6 +1047,7 @@ bao kv metadata delete kv-v2/openstack/keystone/admin/app-credential
 bao kv metadata delete kv-v2/bootstrap/keystone-admin
 bao kv metadata delete kv-v2/openstack/keystone/<name>/fernet-keys
 bao kv metadata delete kv-v2/openstack/keystone/<name>/credential-keys
+bao kv metadata delete kv-v2/openstack/keystone/db
 ```
 
 `metadata delete` removes the current version and all historical versions at the

@@ -76,6 +76,11 @@ spec:
       clusterRef:
         name: mariadb
       database: keystone
+      # In managed mode (clusterRef set) the operator OWNS the projected
+      # Keystone DB secretRef: reconcileDBCredentials materialises
+      # controlplane-keystone-db-credentials and reconcileKeystone substitutes
+      # it into the projected Keystone CR (CC-0116). This user-supplied
+      # secretRef is honoured only in brownfield mode (database.host set).
       secretRef:
         name: keystone-db-credentials
         key: password
@@ -198,15 +203,22 @@ per-service CRs validate the database/cache the same way.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `database` | [`commonv1.DatabaseSpec`](../keystone/keystone-crd.md#databasespec) | Yes | — | MariaDB connection parameters shared by the control plane. Supports managed (`clusterRef`) and brownfield (`host`) modes; exactly one must be set (enforced by the validating webhook — see [Validation Rules](#validation-rules)). |
+| `database` | [`commonv1.DatabaseSpec`](../keystone/keystone-crd.md#databasespec) | Yes | — | MariaDB connection parameters shared by the control plane. Supports managed (`clusterRef`) and brownfield (`host`) modes; exactly one must be set (enforced by the validating webhook — see [Validation Rules](#validation-rules)). In managed mode the projected Keystone CR's `database.secretRef` is operator-owned (substituted to `{name}-keystone-db-credentials`); brownfield mode uses the user-supplied `secretRef` as-is (CC-0116). |
 | `cache` | [`commonv1.CacheSpec`](../keystone/keystone-crd.md#cachespec) | Yes | — | Memcached configuration shared by the control plane. Supports managed (`clusterRef`) and brownfield (`servers`) modes; exactly one must be set (enforced by the validating webhook). |
 
 In managed mode the reconciler provisions an owned `MariaDB` CR (named after
 `database.clusterRef.name`) and an owned `Memcached` CR (named after
 `cache.clusterRef.name`) in the ControlPlane's own namespace. The Keystone CR
 the reconciler projects points at the **same** `DatabaseSpec` / `CacheSpec`
-verbatim, so the aggregate and the projected service agree on the backing
-services.
+with **one** managed-mode substitution: the projected `spec.database.secretRef`
+is replaced with the operator-owned per-ControlPlane DB-credential Secret
+`{name}-keystone-db-credentials` (key `password`) that the
+[DBCredentials sub-reconciler](./controlplane-reconciler.md#reconciledbcredentials)
+materialises from OpenBao key `openstack/keystone/{namespace}/{name}/db`;
+brownfield mode (`database.host` set) keeps the user-supplied `secretRef`
+untouched; the rest of the `DatabaseSpec` and the whole `CacheSpec` are
+projected verbatim (CC-0116), so the aggregate and the projected service agree
+on the backing services.
 
 ---
 
@@ -673,7 +685,7 @@ func (w *ControlPlaneWebhook) ValidateDelete(_ context.Context, _ *ControlPlane)
 
 ## Status Conditions
 
-The ControlPlane status is driven by five sub-reconcilers, each owning one
+The ControlPlane status is driven by six sub-reconcilers, each owning one
 condition type, plus an aggregate `Ready` condition. The condition-type
 constants in `controlplane_controller.go` are the single source of truth; call
 sites reference the constants rather than inline literals.
@@ -682,10 +694,10 @@ The sub-reconcilers run in dependency order, each **gated** on the previous
 one's condition being `True`:
 
 ```
-InfrastructureReady → KeystoneReady → KORCReady → AdminCredentialReady → CatalogReady
+InfrastructureReady → DBCredentialsReady → KeystoneReady → KORCReady → AdminCredentialReady → CatalogReady
 ```
 
-`Ready` is `True` (reason `AllReady`) **only** when all five sub-conditions are
+`Ready` is `True` (reason `AllReady`) **only** when all six sub-conditions are
 `True` (via `conditions.AllTrue`); otherwise it is `False` (reason
 `NotAllReady`). For the full flow, see the
 [ControlPlane Reconciler reference](./controlplane-reconciler.md).
@@ -701,6 +713,21 @@ Set by `reconcileInfrastructure`.
 | `False` | `WaitingForCache` | Managed Memcached is ensured but not yet Ready. |
 | `False` | `MariaDBError` | Error create-or-updating the MariaDB child. |
 | `False` | `MemcachedError` | Error create-or-updating the Memcached child. |
+
+### DBCredentialsReady
+
+Set by `reconcileDBCredentials` (runs after Infrastructure, before Keystone).
+In managed mode it ensures an operator-owned `ExternalSecret`
+(`{name}-keystone-db-credentials`) that ESO materialises from the OpenBao key
+`openstack/keystone/{namespace}/{name}/db`, and the projected Keystone CR's
+`database.secretRef` is pointed at the resulting Secret (CC-0116).
+
+| Status | Reason | When |
+| --- | --- | --- |
+| `True` | `DBCredentialsReady` | The per-ControlPlane DB-credential ExternalSecret is Ready (managed mode). |
+| `True` | `BrownfieldDatabase` | The database is brownfield (`database.host` set); no operator-owned DB credential is provisioned and the user-supplied `secretRef` is left in place. |
+| `False` | `WaitingForDBCredentialSecret` | The DB-credential ExternalSecret is ensured but not yet Ready. |
+| `False` | `ExternalSecretError` | Error ensuring or checking the DB-credential ExternalSecret. |
 
 ### KeystoneReady
 
@@ -760,7 +787,7 @@ Set by `setReadyCondition`.
 
 | Status | Reason | When |
 | --- | --- | --- |
-| `True` | `AllReady` | All five sub-conditions above are `True`. |
+| `True` | `AllReady` | All six sub-conditions above are `True`. |
 | `False` | `NotAllReady` | One or more sub-conditions are not `True`. |
 
 ---
@@ -769,7 +796,8 @@ Set by `setReadyCondition`.
 
 > **DECISION:** every child the reconciler projects — the `MariaDB`,
 > `Memcached`, and `Keystone` CRs, the K-ORC `ApplicationCredential` /
-> `Service` / `Endpoint` CRs, the owned Secret, and the OpenBao `PushSecret` —
+> `Service` / `Endpoint` CRs, the per-ControlPlane DB-credential
+> `ExternalSecret`, the owned Secret, and the OpenBao `PushSecret` —
 > is created in the **ControlPlane's own namespace** (`childNamespace =
 > cp.Namespace`), **not** a hardcoded `"openstack"` literal.
 
@@ -783,9 +811,9 @@ GC cascade intact. In production the ControlPlane is deployed into the
 `openstack` exactly as expected — the namespace is now **derived from the
 owner** rather than assumed. Projected child names are deterministic and derived
 from the ControlPlane name (e.g. `{name}-keystone`,
-`{name}-admin-app-credential`, `{name}-identity-service`,
-`{name}-identity-endpoint`) so a single namespace can host the children of
-multiple ControlPlanes without clashing.
+`{name}-keystone-db-credentials`, `{name}-admin-app-credential`,
+`{name}-identity-service`, `{name}-identity-endpoint`) so a single namespace
+can host the children of multiple ControlPlanes without clashing (CC-0116).
 
 ---
 
