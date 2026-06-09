@@ -113,6 +113,15 @@ func (r *ControlPlaneReconciler) reconcileKeystone(ctx context.Context, cp *c5c3
 		keystone.Spec.Database = cp.Spec.Infrastructure.Database
 		keystone.Spec.Cache = cp.Spec.Infrastructure.Cache
 
+		// In managed mode the operator owns the Keystone DB credential: substitute
+		// the per-ControlPlane DB-credential Secret reconcileDBCredentials
+		// materialises for the infrastructure-supplied secretRef, so Keystone reads
+		// the operator-scoped credential (CC-0116, REQ-002). Brownfield mode
+		// (ClusterRef nil) keeps the user-supplied secretRef untouched.
+		if cp.Spec.Infrastructure.Database.ClusterRef != nil {
+			keystone.Spec.Database.SecretRef = commonv1.SecretRefSpec{Name: dbCredentialSecretName(cp), Key: "password"}
+		}
+
 		// Bootstrap admin password is delivered via the K-ORC admin credential
 		// Secret so Keystone and K-ORC agree on the admin password source.
 		keystone.Spec.Bootstrap.AdminPasswordSecretRef = cp.Spec.KORC.AdminCredential.PasswordSecretRef

@@ -97,6 +97,7 @@ func setupControlPlaneEnvTest(t testing.TB) (client.Client, context.Context, con
 				Owns(&orcv1alpha1.ApplicationCredential{}).
 				Owns(&orcv1alpha1.Service{}).
 				Owns(&orcv1alpha1.Endpoint{}).
+				Owns(&esov1.ExternalSecret{}).
 				Owns(memcached).
 				Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(
 					secretToControlPlaneMapper(mgr.GetClient()),
@@ -256,6 +257,23 @@ func simulateApplicationCredentialAvailableWhenPresent(t testing.TB, ctx context
 	g.Expect(c.Status().Update(ctx, ac)).To(Succeed(), "set ApplicationCredential Available=True")
 }
 
+// simulateDBCredentialExternalSecretSyncedWhenPresent waits for the operator to
+// create the per-ControlPlane DB-credential ExternalSecret (reconcileDBCredentials
+// owns it), then sets its Ready condition True via the shared simulator. There is
+// no ESO controller in envtest, so reconcileDBCredentials — which gates
+// DBCredentialsReady on that ExternalSecret actually syncing from OpenBao (CC-0116,
+// REQ-005) — would otherwise wait forever, blocking the chain before Keystone.
+func simulateDBCredentialExternalSecretSyncedWhenPresent(t testing.TB, ctx context.Context, c client.Client, key client.ObjectKey) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+
+	g.Eventually(func() error {
+		return c.Get(ctx, key, &esov1.ExternalSecret{})
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "DB-credential ExternalSecret should be created")
+	g.Expect(simulators.SimulateExternalSecretSync(ctx, c, key)).
+		To(Succeed(), "simulate DB-credential ExternalSecret sync")
+}
+
 // simulatePushSecretSyncedWhenPresent waits for the named PushSecret to be
 // created, then sets its Ready condition True via the shared simulator. There is
 // no ESO controller in envtest, so reconcileAdminCredential — which gates
@@ -324,6 +342,13 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	simulateMemcachedReadyWhenPresent(t, ctx, c, client.ObjectKey{Name: "openstack-memcached", Namespace: ns.Name})
 	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeInfrastructureReady, metav1.ConditionTrue, itEventuallyTimeout)
 
+	// --- Phase 1b: DB credentials. The operator creates the per-ControlPlane
+	// DB-credential ExternalSecret; simulate its ESO sync so DBCredentialsReady
+	// advances and the chain reaches Keystone (CC-0116, REQ-005). ---
+	simulateDBCredentialExternalSecretSyncedWhenPresent(t, ctx, c,
+		client.ObjectKey{Name: dbCredentialSecretName(cp), Namespace: ns.Name})
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeDBCredentialsReady, metav1.ConditionTrue, itEventuallyTimeout)
+
 	// --- Phase 2: Keystone child. ---
 	simulateKeystoneReadyWhenPresent(t, ctx, c, client.ObjectKey{Name: keystoneName(cp), Namespace: ns.Name})
 	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeKeystoneReady, metav1.ConditionTrue, itEventuallyTimeout)
@@ -353,6 +378,7 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 
 	for _, condType := range []string{
 		conditionTypeInfrastructureReady,
+		conditionTypeDBCredentialsReady,
 		conditionTypeKeystoneReady,
 		conditionTypeKORCReady,
 		conditionTypeAdminCredentialReady,
@@ -493,6 +519,11 @@ func driveControlPlaneToAdminCredentialReady(
 	simulateMariaDBReadyWhenPresent(t, ctx, c, client.ObjectKey{Name: "openstack-db", Namespace: ns})
 	simulateMemcachedReadyWhenPresent(t, ctx, c, client.ObjectKey{Name: "openstack-memcached", Namespace: ns})
 	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeInfrastructureReady, metav1.ConditionTrue, itEventuallyTimeout)
+
+	// --- Phase 1b: DB credentials (managed mode gates Keystone on it). ---
+	simulateDBCredentialExternalSecretSyncedWhenPresent(t, ctx, c,
+		client.ObjectKey{Name: dbCredentialSecretName(cp), Namespace: ns})
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeDBCredentialsReady, metav1.ConditionTrue, itEventuallyTimeout)
 
 	// --- Phase 2: Keystone child. ---
 	simulateKeystoneReadyWhenPresent(t, ctx, c, client.ObjectKey{Name: keystoneName(cp), Namespace: ns})

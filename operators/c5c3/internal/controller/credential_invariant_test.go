@@ -123,8 +123,12 @@ func availableAC(cp *c5c3v1alpha1.ControlPlane) *orcv1alpha1.ApplicationCredenti
 }
 
 // driveCredentialChain runs the credential-minting sub-reconcilers in dependency
-// order (KORC -> AdminCredential -> Catalog -> Keystone) against the one fake
-// client so the asserts below see the full set of objects the operator created.
+// order (KORC -> AdminCredential -> Catalog -> DBCredentials -> Keystone) against
+// the one fake client so the asserts below see the full set of objects the
+// operator created. reconcileDBCredentials runs immediately BEFORE reconcileKeystone
+// to mirror the production ordering invariant — the Keystone CR must never be
+// projected against a DB-credential Secret that has not yet been ensured (CC-0116,
+// REQ-005).
 func driveCredentialChain(t *testing.T, r *ControlPlaneReconciler, cp *c5c3v1alpha1.ControlPlane) {
 	t.Helper()
 	ctx := context.Background()
@@ -136,6 +140,9 @@ func driveCredentialChain(t *testing.T, r *ControlPlaneReconciler, cp *c5c3v1alp
 	}
 	if _, err := r.reconcileCatalog(ctx, cp); err != nil {
 		t.Fatalf("reconcileCatalog: %v", err)
+	}
+	if _, err := r.reconcileDBCredentials(ctx, cp); err != nil {
+		t.Fatalf("reconcileDBCredentials: %v", err)
 	}
 	if _, err := r.reconcileKeystone(ctx, cp); err != nil {
 		t.Fatalf("reconcileKeystone: %v", err)
@@ -298,6 +305,44 @@ func TestCredentialInvariant_PasswordCloudConfinedToAC(t *testing.T) {
 	g.Expect(workloadCount).To(BeZero())
 	g.Expect(leaks).To(BeEmpty(),
 		"no operator-created workload Pod template may reference the password-cloud. Leaks: %v", leaks)
+}
+
+// TestCredentialInvariant_DriveChainIncludesDBCredentialsBeforeKeystone asserts
+// that driveCredentialChain runs the DB-credential sub-reconciler before the
+// Keystone projection, mirroring the production ordering invariant that Keystone
+// must never be projected against a DB-credential Secret that does not yet exist
+// (CC-0116, REQ-005). It checks the observable result of that ordering: the
+// per-ControlPlane DB-credential ExternalSecret is created (and controller-owned),
+// and the projected Keystone CR consumes that exact Secret as its database
+// secretRef — which is only possible if DBCredentials ran before Keystone.
+func TestCredentialInvariant_DriveChainIncludesDBCredentialsBeforeKeystone(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := invariantScheme(t)
+	cp := invariantControlPlane() // managed: database ClusterRef set
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(cp, adminPasswordSecret(), availableAC(cp), readyCloudsYamlES(cp)).
+		Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	driveCredentialChain(t, r, cp)
+
+	// The DB-credential sub-reconciler ran: its per-CP ExternalSecret exists and is
+	// controller-owned by the ControlPlane.
+	es, ok := getDBCredentialES(t, c, cp)
+	g.Expect(ok).To(BeTrue(),
+		"driveCredentialChain must run reconcileDBCredentials, creating the per-CP DB-credential ExternalSecret")
+	g.Expect(es.OwnerReferences).To(HaveLen(1))
+	g.Expect(es.OwnerReferences[0].Name).To(Equal(cp.Name))
+
+	// Keystone, projected after it, consumes that exact DB-credential Secret — only
+	// possible if DBCredentials ran before Keystone in the chain (CC-0116, REQ-002).
+	k := &keystonev1alpha1.Keystone{}
+	g.Expect(c.Get(context.Background(), client.ObjectKey{
+		Name: keystoneName(cp), Namespace: childNamespace(cp),
+	}, k)).To(Succeed())
+	g.Expect(k.Spec.Database.SecretRef.Name).To(Equal(dbCredentialSecretName(cp)),
+		"the projected Keystone CR must consume the per-ControlPlane DB-credential Secret")
 }
 
 // --- shared walkers / helpers ---

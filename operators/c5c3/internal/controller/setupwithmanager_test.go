@@ -11,6 +11,7 @@ import (
 	"context"
 	"testing"
 
+	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -141,4 +142,50 @@ func TestSecretToControlPlaneMapper_ScopedToNamespace(t *testing.T) {
 	g.Expect(reqs).To(HaveLen(1),
 		"only the ControlPlane in the Secret's namespace must be enqueued")
 	g.Expect(reqs[0].NamespacedName).To(Equal(types.NamespacedName{Namespace: "ns-a", Name: "cp-a"}))
+}
+
+// --- SetupWithManager Owns(ExternalSecret) ---
+
+// TestSetupWithManager_OwnsExternalSecret verifies the two preconditions the
+// SetupWithManager Owns(&esov1.ExternalSecret{}) wiring depends on so an event on
+// the operator-owned, per-ControlPlane DB-credential ExternalSecret retriggers
+// reconcile of its ControlPlane (CC-0116, REQ-012). controller-runtime cannot be
+// introspected for its registered Owns watches without a live manager, so the
+// contract is asserted through its two observable halves:
+//
+//  1. esov1.ExternalSecret is a kind known to the reconciler scheme — Owns
+//     registers a watch by GVK, which panics at manager startup for an
+//     unregistered type.
+//  2. The ExternalSecret the reconciler creates carries a CONTROLLER owner
+//     reference to the ControlPlane — the linkage controller-runtime's
+//     EnqueueRequestForOwner handler (installed by Owns) walks to map an
+//     ExternalSecret event back to the owning ControlPlane.
+func TestSetupWithManager_OwnsExternalSecret(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	// korcTestScheme registers esov1 alongside c5c3; controllerTestScheme does not.
+	s := korcTestScheme(t)
+
+	// (1) Owns can only register a watch for a scheme-known kind.
+	_, _, err := s.ObjectKinds(&esov1.ExternalSecret{})
+	g.Expect(err).NotTo(HaveOccurred(),
+		"esov1.ExternalSecret must be registered in the reconciler scheme so Owns can watch it")
+
+	// (2) The owned ExternalSecret must be controller-owned by the ControlPlane.
+	cp := dbCredsManagedControlPlane()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err = r.reconcileDBCredentials(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	es, ok := getDBCredentialES(t, c, cp)
+	g.Expect(ok).To(BeTrue(), "the per-ControlPlane DB-credential ExternalSecret must be created")
+	g.Expect(es.OwnerReferences).To(HaveLen(1))
+	owner := es.OwnerReferences[0]
+	g.Expect(owner.Kind).To(Equal("ControlPlane"))
+	g.Expect(owner.Name).To(Equal(cp.Name))
+	g.Expect(owner.Controller).NotTo(BeNil())
+	g.Expect(*owner.Controller).To(BeTrue(),
+		"the Owns(ExternalSecret) watch resolves an ExternalSecret event via its controller owner reference")
 }

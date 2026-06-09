@@ -393,3 +393,61 @@ func TestReconcileKeystone_MirrorsChildReady(t *testing.T) {
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 }
+
+// TestReconcileKeystone_ManagedDBSecretRefOverridden asserts that in managed mode
+// (database ClusterRef set) the projected Keystone CR's database secretRef is
+// REPLACED with the per-ControlPlane DB-credential Secret reconcileDBCredentials
+// materialises (key "password"), not the infrastructure-supplied secretRef — so
+// Keystone consumes the operator-owned, per-CP DB credential (CC-0116, REQ-002).
+func TestReconcileKeystone_ManagedDBSecretRefOverridden(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := keystoneTestScheme(t)
+	cp := keystoneControlPlane() // managed: Database.ClusterRef set, SecretRef "keystone-db"
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileKeystone(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	k := getProjectedKeystone(t, c, cp)
+	g.Expect(k.Spec.Database.SecretRef.Name).To(Equal(dbCredentialSecretName(cp)),
+		"managed mode must project the per-ControlPlane DB-credential Secret name")
+	g.Expect(k.Spec.Database.SecretRef.Name).To(Equal("cp-keystone-db-credentials"))
+	g.Expect(k.Spec.Database.SecretRef.Key).To(Equal("password"),
+		"the DB-credential Secret exposes the password under the \"password\" key")
+	g.Expect(k.Spec.Database.SecretRef.Name).NotTo(Equal("keystone-db"),
+		"the infrastructure-supplied secretRef must be replaced, not retained")
+
+	// The clusterRef/database identity is still derived from infrastructure; only
+	// the secretRef is substituted.
+	g.Expect(k.Spec.Database.ClusterRef).NotTo(BeNil())
+	g.Expect(k.Spec.Database.ClusterRef.Name).To(Equal("openstack-db"))
+}
+
+// TestReconcileKeystone_BrownfieldDBSecretRefUntouched asserts that in brownfield
+// mode (database ClusterRef nil) the operator provisions no DB credential and so
+// leaves the user-supplied database secretRef exactly as given on the projected
+// Keystone CR (CC-0116, REQ-002).
+func TestReconcileKeystone_BrownfieldDBSecretRefUntouched(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := keystoneTestScheme(t)
+	cp := keystoneControlPlane()
+	cp.Spec.Infrastructure.Database = commonv1.DatabaseSpec{
+		Host:      "db.example.com",
+		Database:  "keystone",
+		SecretRef: commonv1.SecretRefSpec{Name: "user-supplied-db-secret", Key: "password"},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileKeystone(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	k := getProjectedKeystone(t, c, cp)
+	g.Expect(k.Spec.Database.ClusterRef).To(BeNil(), "brownfield database has no clusterRef")
+	g.Expect(k.Spec.Database.SecretRef.Name).To(Equal("user-supplied-db-secret"),
+		"brownfield must keep the user-supplied database secretRef untouched")
+	g.Expect(k.Spec.Database.SecretRef.Key).To(Equal("password"))
+}

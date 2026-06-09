@@ -11,6 +11,7 @@ import (
 	"fmt"
 
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
+	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
@@ -104,6 +105,17 @@ func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// REQ-007, REQ-026).
 	if result, err := instrumentSubReconciler(ctx, "Infrastructure", func(ctx context.Context) (ctrl.Result, error) {
 		return r.reconcileInfrastructure(ctx, &cp)
+	}); !result.IsZero() || err != nil {
+		return r.updateStatus(ctx, &cp, result, err)
+	}
+
+	// DBCredentials runs BEFORE Keystone so the projected Keystone CR is never
+	// pointed at a per-ControlPlane DB-credential Secret that does not yet exist
+	// (CC-0116, REQ-005). In brownfield mode it is a no-op that reports
+	// DBCredentialsReady=True; in managed mode it gates until the operator-owned
+	// DB-credential ExternalSecret has synced.
+	if result, err := instrumentSubReconciler(ctx, "DBCredentials", func(ctx context.Context) (ctrl.Result, error) {
+		return r.reconcileDBCredentials(ctx, &cp)
 	}); !result.IsZero() || err != nil {
 		return r.updateStatus(ctx, &cp, result, err)
 	}
@@ -247,11 +259,12 @@ func secretToControlPlaneMapper(c client.Reader) handler.MapFunc {
 }
 
 // SetupWithManager registers the ControlPlaneReconciler with the controller
-// manager. It Owns every child CR the sub-reconcilers project (MariaDB,
-// Keystone, the K-ORC ApplicationCredential/Service/Endpoint, and the Memcached
-// CR) so an upstream child status transition retriggers reconcile, and Watches
-// Secrets so an admin-password rotation wakes the owning ControlPlane via the
-// field indexer (CC-0110, REQ-012).
+// manager. It Owns every child the sub-reconcilers project (MariaDB, Keystone,
+// the K-ORC ApplicationCredential/Service/Endpoint/User/Domain, the
+// per-ControlPlane DB-credential ExternalSecret, and the Memcached CR) so an
+// upstream child status transition retriggers reconcile, and Watches Secrets so
+// an admin-password rotation wakes the owning ControlPlane via the field indexer
+// (CC-0110, REQ-012; CC-0116, REQ-012).
 //
 // DECISION (Memcached Owns): memcached.c5c3.io ships no Go module (see
 // memcachedGVK in reconcile_infrastructure.go), so the Memcached child is owned
@@ -277,6 +290,7 @@ func (r *ControlPlaneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&orcv1alpha1.Endpoint{}).
 		Owns(&orcv1alpha1.User{}).
 		Owns(&orcv1alpha1.Domain{}).
+		Owns(&esov1.ExternalSecret{}).
 		Owns(memcached).
 		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(
 			secretToControlPlaneMapper(mgr.GetClient()),
