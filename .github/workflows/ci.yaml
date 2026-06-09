@@ -161,7 +161,7 @@ jobs:
 
   lint:
     needs: [changes]
-    if: needs.changes.outputs.go == 'true'
+    if: github.event_name == 'pull_request' && needs.changes.outputs.go == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -192,7 +192,7 @@ jobs:
   # diff (gofumpt -d) on failure so developers can see exactly what to fix.
   format-check:
     needs: [changes]
-    if: needs.changes.outputs.go == 'true'
+    if: github.event_name == 'pull_request' && needs.changes.outputs.go == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -225,6 +225,7 @@ jobs:
   # early.  shellcheck is pre-installed on ubuntu-latest runners.
   # Runs unconditionally — it is fast and hack/ scripts are exercised in E2E.
   shellcheck:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -239,6 +240,7 @@ jobs:
   # of skipping their kustomize-build checks. The renovate/ tests pull
   # renovate-config-validator via npx, taking ~30s on a cold runner.
   test-shell:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -262,6 +264,7 @@ jobs:
   # sub-second and python3 is preinstalled on ubuntu-latest runners — no
   # untrusted GitHub event input is read, so no injection surface is added.
   verify-invalid-cr-fixtures:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -276,6 +279,7 @@ jobs:
   # Always-on: no cluster needed; chainsaw is restored from the shared testdeps
   # cache via the same composite action setup-e2e-infra uses internally.
   chainsaw-lint:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -288,7 +292,7 @@ jobs:
   # into a single leg (review comment #7/#8).
   test:
     needs: [changes]
-    if: needs.changes.outputs.go == 'true'
+    if: github.event_name == 'pull_request' && needs.changes.outputs.go == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
@@ -319,7 +323,7 @@ jobs:
   # (REQ-004). Includes internal/common to meet 80% codecov target (review comment #5).
   test-integration:
     needs: [changes]
-    if: needs.changes.outputs.go == 'true'
+    if: github.event_name == 'pull_request' && needs.changes.outputs.go == 'true'
     # 4 vCPU (was 2): the keystone envtest leg sat at ~14m on a 2-vCPU runner
     # against the 15m timeout, and the CC-0109 password-rotation integration
     # tests tipped it over. envtest is CPU-bound, so the larger runner pulls the
@@ -371,7 +375,7 @@ jobs:
   # race conditions are non-deterministic, so cached results could mask real races.
   test-race:
     needs: [changes]
-    if: needs.changes.outputs.go == 'true'
+    if: github.event_name == 'pull_request' && needs.changes.outputs.go == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -390,7 +394,7 @@ jobs:
   # defeats the purpose of vulnerability scanning.
   govulncheck:
     needs: [changes]
-    if: needs.changes.outputs.go == 'true'
+    if: github.event_name == 'pull_request' && needs.changes.outputs.go == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -407,7 +411,7 @@ jobs:
   # and up-to-date. Fails if make manifests or make generate produces uncommitted diffs.
   verify-codegen:
     needs: [changes]
-    if: needs.changes.outputs.go == 'true'
+    if: github.event_name == 'pull_request' && needs.changes.outputs.go == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -440,7 +444,7 @@ jobs:
 
   docs:
     needs: [changes]
-    if: needs.changes.outputs.docs == 'true'
+    if: github.event_name == 'pull_request' && needs.changes.outputs.docs == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -466,7 +470,7 @@ jobs:
   # helm-unittest to catch chart regressions early without requiring a cluster.
   helm-validate:
     needs: [changes]
-    if: needs.changes.outputs.helm == 'true'
+    if: github.event_name == 'pull_request' && needs.changes.outputs.helm == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -498,7 +502,7 @@ jobs:
   # of all operators, CRs, and ExternalSecrets via Chainsaw assertions.
   e2e-infra:
     needs: [changes]
-    if: needs.changes.outputs.e2e-infra == 'true'
+    if: github.event_name == 'pull_request' && needs.changes.outputs.e2e-infra == 'true'
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 20
     steps:
@@ -559,6 +563,7 @@ jobs:
     # the 5-minute download-artifact timeouts that GH-310 fixed.
     if: |
       always() &&
+      github.event_name == 'pull_request' &&
       (needs.changes.outputs.has-e2e-operators == 'true' || needs.changes.outputs.e2e-chaos == 'true' || needs.changes.outputs.e2e-prometheus == 'true') &&
       github.event.pull_request.head.repo.fork != true &&
       !contains(needs.*.result, 'failure') &&
@@ -720,6 +725,7 @@ jobs:
     needs: [changes, build-e2e-images]
     if: |
       always() &&
+      github.event_name == 'pull_request' &&
       needs.changes.outputs.has-e2e-operators == 'true' &&
       needs.build-e2e-images.result == 'success' &&
       !contains(needs.*.result, 'failure') &&
@@ -848,6 +854,7 @@ jobs:
     # failure/cancelled guard still blocks if any upstream actually failed.
     if: |
       always() &&
+      github.event_name == 'pull_request' &&
       (needs.changes.outputs.e2e-chaos == 'true' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'run-chaos'))) &&
       needs.build-e2e-images.result == 'success' &&
       !contains(needs.*.result, 'failure') &&
@@ -965,6 +972,7 @@ jobs:
     # failure/cancelled guard still blocks if any upstream actually failed.
     if: |
       always() &&
+      github.event_name == 'pull_request' &&
       needs.changes.outputs.e2e-prometheus == 'true' &&
       needs.build-e2e-images.result == 'success' &&
       !contains(needs.*.result, 'failure') &&
@@ -1040,6 +1048,7 @@ jobs:
     needs: [changes, build-e2e-images]
     if: |
       always() &&
+      github.event_name == 'pull_request' &&
       needs.changes.outputs.has-e2e-operators == 'true' &&
       needs.build-e2e-images.result == 'success' &&
       !contains(needs.*.result, 'failure') &&
@@ -1160,8 +1169,12 @@ jobs:
   build-and-push:
     runs-on: ${{ matrix.platform.runner }}
     timeout-minutes: 15
-    needs: [changes, e2e-operator]
-    if: github.event_name == 'push' && needs.e2e-operator.result == 'success'
+    # Publish-only-on-merge: the merged commit's PR was already green, so we do
+    # not re-run the E2E suite on push. This job depends only on `changes` (for
+    # the operator matrix) and builds the image from its own cache scope,
+    # independent of build-e2e-images.
+    needs: [changes]
+    if: github.event_name == 'push' && needs.changes.outputs.has-e2e-operators == 'true'
     permissions:
       contents: read
       packages: write
@@ -1290,8 +1303,10 @@ jobs:
   helm-push:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [changes, e2e-operator]
-    if: github.event_name == 'push' && needs.e2e-operator.result == 'success'
+    # Publish-only-on-merge: see build-and-push. The chart is packaged and pushed
+    # for every changed operator on push without re-running the E2E suite.
+    needs: [changes]
+    if: github.event_name == 'push' && needs.changes.outputs.has-e2e-operators == 'true'
     permissions:
       contents: read
       packages: write

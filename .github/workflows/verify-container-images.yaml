@@ -4,22 +4,11 @@
 ---
 name: Verify Container Images
 
+# Pure static-verification/test jobs that emit no artifact, so they add no value
+# after merge — the PR that introduced the change already ran them green. Run on
+# pull_request only; the build-images workflow still verifies the images it
+# actually publishes on push.
 "on":
-  push:
-    branches:
-      - main
-      - stable/**
-    paths:
-      - images/**
-      - releases/**
-      - patches/**
-      - scripts/**
-      - hack/tempest/**
-      - tests/container-images/**
-      - tests/scripts/**
-      - tests/tempest/test_retry_helpers.py
-      - .github/workflows/build-images.yaml
-      - .github/workflows/verify-container-images.yaml
   pull_request:
     paths:
       - images/**
