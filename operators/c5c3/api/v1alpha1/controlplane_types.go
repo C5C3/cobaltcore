@@ -208,7 +208,15 @@ type AdminCredentialSpec struct {
 // within it that K-ORC authenticates as (CC-0110).
 type CloudCredentialsRef struct {
 	// CloudName is the entry in clouds.yaml K-ORC authenticates as.
-	CloudName string `json:"cloudName"`
+	// DECISION (CC-0115): defaults to "admin" via both the CRD schema default and
+	// the defaulting webhook (for callers that bypass the CRD default), mirroring
+	// the sibling SecretName field. The webhook is the load-bearing mechanism when
+	// the whole korc block is omitted (the marker only fires when the parent
+	// cloudCredentialsRef object is present), so cloudName is safe to drop from the
+	// CRD's required list.
+	// +kubebuilder:default="admin"
+	// +optional
+	CloudName string `json:"cloudName,omitempty"`
 
 	// SecretName is the name of the Secret holding the clouds.yaml document.
 	// DECISION (CC-0110): defaults to "k-orc-clouds-yaml" via both the CRD schema

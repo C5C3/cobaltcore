@@ -50,14 +50,20 @@ Docker drop the override and use port `443`. Expect **5–10 minutes**.
 ## Step 3 — Create the ControlPlane CR
 
 Apply a `ControlPlane` CR — the c5c3-operator reconciles it into the whole stack.
-The c5c3-operator now seeds the K-ORC bootstrap `clouds.yaml` per-CR, deriving the
-in-cluster Keystone auth URL from the CR's own name, so the CR name is no longer
-pinned by a pre-seeded `clouds.yaml`. To use a different name, pass
-`CONTROLPLANE_NAME=foo` to Step 2 — it renames the bundled CR and seeds the
-matching admin password. The `clusterRef` / `secretRef` /
-`passwordSecretRef` values point at the MariaDB, Memcached, and OpenBao-seeded
-Secrets the infrastructure layer already provides — the operator consumes them,
-it does not invent credentials. Every other field is defaulted.
+You only supply `openStackRelease` and the `services.keystone` block: the
+defaulting webhook fills the infrastructure and admin-credential references with
+their well-known names — `openstack-db` (managed MariaDB), `openstack-memcached`
+(managed Memcached), `keystone-db` (DB credentials Secret), `keystone-admin` /
+`password` (admin password Secret and key), `k-orc-clouds-yaml` with cloud entry
+`admin` (K-ORC clouds.yaml) — which match the Secrets and clusters the
+infrastructure layer (Step 2) seeds. The c5c3-operator seeds the K-ORC bootstrap
+`clouds.yaml` per-CR, deriving the in-cluster Keystone auth URL from the CR's own
+name, so the CR name is no longer pinned by a pre-seeded `clouds.yaml`; to use a
+different name, pass `CONTROLPLANE_NAME=foo` to Step 2 — it renames the bundled CR
+and seeds the matching admin password. The defaulting only fills the
+names/references; the operator still **consumes** the pre-seeded Secret *content*
+(DB credentials, admin password) and materialises the bootstrap `clouds.yaml`
+itself, so it does **not invent** credentials.
 
 ```yaml
 # controlplane.yaml
@@ -68,6 +74,36 @@ metadata:
   namespace: openstack
 spec:
   openStackRelease: "2025.2"
+  services:
+    keystone:
+      replicas: 1
+      # Drop publicEndpoint on the default port 443 — the operator then derives
+      # https://keystone.127-0-0-1.nip.io/v3 from the gateway hostname.
+      publicEndpoint: https://keystone.127-0-0-1.nip.io:8443/v3
+      gateway:
+        parentRef:
+          name: openstack-gw
+        hostname: keystone.127-0-0-1.nip.io
+        path: /
+```
+
+```bash
+kubectl apply -f controlplane.yaml
+```
+
+<details>
+<summary>Equivalent fully-expanded form (what the webhook defaults to)</summary>
+
+```yaml
+# controlplane.yaml
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: controlplane
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  region: RegionOne
   infrastructure:
     database:
       clusterRef:
@@ -82,8 +118,6 @@ spec:
   services:
     keystone:
       replicas: 1
-      # Drop publicEndpoint on the default port 443 — the operator then derives
-      # https://keystone.127-0-0-1.nip.io/v3 from the gateway hostname.
       publicEndpoint: https://keystone.127-0-0-1.nip.io:8443/v3
       gateway:
         parentRef:
@@ -93,18 +127,17 @@ spec:
   korc:
     adminCredential:
       cloudCredentialsRef:
-        cloudName: admin           # entry in the operator-materialised k-orc-clouds-yaml Secret
+        cloudName: admin             # entry in the operator-materialised k-orc-clouds-yaml Secret
+        secretName: k-orc-clouds-yaml
       passwordSecretRef:
-        name: keystone-admin       # admin password, seeded by infra via ESO
+        name: keystone-admin         # admin password, seeded by infra via ESO
         key: password
       applicationCredential:
         rotation:
           mode: PasswordDriven
 ```
 
-```bash
-kubectl apply -f controlplane.yaml
-```
+</details>
 
 ## Step 4 — Watch the chain reconcile
 

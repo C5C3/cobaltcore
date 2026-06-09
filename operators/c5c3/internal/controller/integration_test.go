@@ -156,6 +156,29 @@ func integrationManagedControlPlane(name, namespace string) *c5c3v1alpha1.Contro
 	}
 }
 
+// integrationMinimalControlPlane returns a ControlPlane with ONLY the two
+// genuinely-required user inputs set — openStackRelease and the keystone service
+// block — and spec.infrastructure / spec.korc OMITTED (zero structs). The
+// defaulting webhook (CC-0115) must therefore construct the database, cache, and
+// admin-credential blocks from its well-known defaults; TestIntegration_MinimalManagedToReady
+// asserts it does and that the CR still converges to Ready=True.
+func integrationMinimalControlPlane(name, namespace string) *c5c3v1alpha1.ControlPlane {
+	return &c5c3v1alpha1.ControlPlane{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Spec: c5c3v1alpha1.ControlPlaneSpec{
+			OpenStackRelease: "2025.2",
+			Services: c5c3v1alpha1.ServicesSpec{
+				Keystone: c5c3v1alpha1.ServiceKeystoneSpec{
+					Replicas: ptr.To(int32(1)),
+				},
+			},
+		},
+	}
+}
+
 // waitForControlPlaneCondition polls the ControlPlane CR until the named
 // condition reaches the expected status, or the timeout is reached. Returns the
 // observed condition.
@@ -459,13 +482,111 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 		"admin app-credential PushSecret RemoteKey must be the per-CR OpenBao path (CC-0112, REQ-013)")
 }
 
+// TestIntegration_MinimalManagedToReady drives the SMALLEST valid ControlPlane —
+// only openStackRelease + services.keystone — to the aggregate Ready=True. The CR
+// omits spec.infrastructure and spec.korc entirely, so the defaulting webhook
+// (CC-0115) must construct the database, cache, and admin-credential blocks from
+// its well-known defaults before the validating webhook's required-checks run.
+// The test asserts all eight CC-0115 defaults on the converged spec, then drives
+// every sub-reconciler to Ready exactly as TestIntegration_FullReconcile_ManagedToReady
+// does, and finally asserts the projected Keystone CR's clusterRefs are wired to
+// the defaulted managed infra — proving the defaults flow through projection.
+func TestIntegration_MinimalManagedToReady(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupControlPlaneEnvTest(t)
+
+	// Isolated test namespace per run (namespace-per-test with GenerateName).
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-minimal-cp-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed(), "create test namespace")
+
+	// Create the MINIMAL ControlPlane CR. Create succeeds because the defaulting
+	// webhook fills passwordSecretRef.name (and the whole infra/korc blocks) BEFORE
+	// the validating webhook's required-check runs (CC-0115).
+	cp := integrationMinimalControlPlane("cp", ns.Name)
+	g.Expect(c.Create(ctx, cp)).To(Succeed(),
+		"create minimal ControlPlane CR (required fields satisfied by the defaulting webhook)")
+	cpKey := types.NamespacedName{Name: cp.Name, Namespace: ns.Name}
+
+	// --- Core of the test: assert the CC-0115 well-known defaults (plus the CC-0110
+	// cloudCredentialsRef.secretName) on the spec the webhook constructed from the
+	// omitted infrastructure/korc blocks. ---
+	defaulted := &c5c3v1alpha1.ControlPlane{}
+	g.Expect(c.Get(ctx, cpKey, defaulted)).To(Succeed(), "re-fetch defaulted ControlPlane")
+	db := defaulted.Spec.Infrastructure.Database
+	cache := defaulted.Spec.Infrastructure.Cache
+	cred := defaulted.Spec.KORC.AdminCredential
+	g.Expect(db.Database).To(Equal(c5c3v1alpha1.DefaultDatabaseName),
+		"defaulting webhook must materialize database.database")
+	g.Expect(db.SecretRef.Name).To(Equal(c5c3v1alpha1.DefaultDatabaseSecretName),
+		"defaulting webhook must materialize database.secretRef.name")
+	g.Expect(db.ClusterRef).NotTo(BeNil(), "defaulting webhook must materialize database.clusterRef")
+	g.Expect(db.ClusterRef.Name).To(Equal(c5c3v1alpha1.DefaultDatabaseClusterRefName),
+		"defaulting webhook must materialize database.clusterRef.name")
+	g.Expect(cache.Backend).To(Equal(c5c3v1alpha1.DefaultCacheBackend),
+		"defaulting webhook must materialize cache.backend")
+	g.Expect(cache.ClusterRef).NotTo(BeNil(), "defaulting webhook must materialize cache.clusterRef")
+	g.Expect(cache.ClusterRef.Name).To(Equal(c5c3v1alpha1.DefaultCacheClusterRefName),
+		"defaulting webhook must materialize cache.clusterRef.name")
+	g.Expect(cred.PasswordSecretRef.Name).To(Equal(c5c3v1alpha1.DefaultAdminPasswordSecretName),
+		"defaulting webhook must materialize korc.adminCredential.passwordSecretRef.name")
+	g.Expect(cred.PasswordSecretRef.Key).To(Equal(c5c3v1alpha1.DefaultAdminPasswordSecretKey),
+		"defaulting webhook must materialize korc.adminCredential.passwordSecretRef.key")
+	g.Expect(cred.CloudCredentialsRef.CloudName).To(Equal(c5c3v1alpha1.DefaultCloudName),
+		"defaulting webhook must materialize korc.adminCredential.cloudCredentialsRef.cloudName")
+	g.Expect(cred.CloudCredentialsRef.SecretName).To(Equal(c5c3v1alpha1.DefaultCloudCredentialsSecretName),
+		"defaulting webhook must materialize korc.adminCredential.cloudCredentialsRef.secretName (CC-0110)")
+
+	// --- Phases 1-4: provision the per-ControlPlane dependency set (admin Secret,
+	// clouds.yaml ExternalSecret) and drive Infrastructure -> Keystone -> KORC ->
+	// AdminCredential to Ready. The shared helper provisions those dependencies and
+	// the managed infra children at the DEFAULTED well-known names (via the same
+	// Default* constants asserted above), so reusing it here still proves the
+	// CC-0115 defaults flow through to the reconciler. ---
+	driveControlPlaneToAdminCredentialReady(t, ctx, c, cp)
+
+	// --- Phase 5: Catalog. The minimal CR sets no gateway/publicEndpoint, so
+	// keystoneCatalogURL falls back to the in-cluster Service URL — CatalogReady
+	// still flips. ---
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeCatalogReady, metav1.ConditionTrue, itEventuallyTimeout)
+
+	// --- Aggregate: Ready=True. ---
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeReady, metav1.ConditionTrue, itEventuallyTimeout)
+
+	// --- The defaulted managed infra must flow through to the projected Keystone
+	// CR's clusterRefs (proving the webhook defaults are honoured by projection). ---
+	final := &c5c3v1alpha1.ControlPlane{}
+	g.Expect(c.Get(ctx, cpKey, final)).To(Succeed(), "get converged ControlPlane")
+	ks := &keystonev1alpha1.Keystone{}
+	g.Expect(c.Get(ctx, types.NamespacedName{Name: keystoneName(final), Namespace: ns.Name}, ks)).
+		To(Succeed(), "get projected Keystone CR")
+	g.Expect(ks.Spec.Database.ClusterRef).NotTo(BeNil(), "Keystone database clusterRef must be wired")
+	g.Expect(ks.Spec.Database.ClusterRef.Name).To(Equal(c5c3v1alpha1.DefaultDatabaseClusterRefName),
+		"Keystone database clusterRef must reference the defaulted managed MariaDB")
+	g.Expect(ks.Spec.Cache.ClusterRef).NotTo(BeNil(), "Keystone cache clusterRef must be wired")
+	g.Expect(ks.Spec.Cache.ClusterRef.Name).To(Equal(c5c3v1alpha1.DefaultCacheClusterRefName),
+		"Keystone cache clusterRef must reference the defaulted managed Memcached")
+}
+
 // driveControlPlaneToAdminCredentialReady provisions the full per-ControlPlane
 // dependency set in cp.Namespace and drives the CR through phases 1-4 of the
 // sub-reconciler chain (Infrastructure -> Keystone -> KORC -> AdminCredential) to
 // conditionTypeAdminCredentialReady=True, simulating each external dependency's
 // readiness exactly as TestIntegration_FullReconcile_ManagedToReady does. It
-// stops short of the Catalog/aggregate-Ready phases, which the multi-CP test
-// (CC-0112, REQ-012) does not need. The namespace and the CR must already exist.
+// stops short of the Catalog/aggregate-Ready phases. The namespace and the CR
+// must already exist.
+//
+// All provisioned names — the admin password Secret/key and the two managed
+// infra clusterRef children — use the shared CC-0115 Default* constants, which
+// equal the literal names integrationManagedControlPlane sets explicitly. This
+// lets both consumers reuse the helper:
+//   - TestIntegration_MultiControlPlane_DistinctAdminCredentialPaths (CC-0112,
+//     REQ-012), whose CRs set those names explicitly, and
+//   - TestIntegration_MinimalManagedToReady (CC-0115), whose minimal CR omits the
+//     infra/korc blocks so the defaulting webhook materializes the very same
+//     names — so driving the simulators at the Default* names still proves the
+//     CC-0115 defaults flow through to the reconciler.
 func driveControlPlaneToAdminCredentialReady(
 	t testing.TB, ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane,
 ) {
@@ -473,18 +594,24 @@ func driveControlPlaneToAdminCredentialReady(
 	g := NewGomegaWithT(t)
 	ns := cp.Namespace
 
-	// Admin password Secret the KORC sub-reconciler hashes to drive the mint.
+	// Admin password Secret the KORC sub-reconciler hashes to drive the mint, at
+	// the defaulted name/key.
 	adminSecret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "keystone-admin", Namespace: ns},
-		Data:       map[string][]byte{"password": []byte("super-secret-admin-password")},
+		ObjectMeta: metav1.ObjectMeta{Name: c5c3v1alpha1.DefaultAdminPasswordSecretName, Namespace: ns},
+		Data: map[string][]byte{
+			c5c3v1alpha1.DefaultAdminPasswordSecretKey: []byte("super-secret-admin-password"),
+		},
 	}
 	g.Expect(c.Create(ctx, adminSecret)).To(Succeed(), "create admin password Secret")
 
 	cpKey := types.NamespacedName{Name: cp.Name, Namespace: ns}
 
-	// --- Phase 1: Infrastructure (MariaDB + Memcached). ---
-	simulateMariaDBReadyWhenPresent(t, ctx, c, client.ObjectKey{Name: "openstack-db", Namespace: ns})
-	simulateMemcachedReadyWhenPresent(t, ctx, c, client.ObjectKey{Name: "openstack-memcached", Namespace: ns})
+	// --- Phase 1: Infrastructure (MariaDB + Memcached) at the defaulted clusterRef
+	// names. ---
+	simulateMariaDBReadyWhenPresent(t, ctx, c,
+		client.ObjectKey{Name: c5c3v1alpha1.DefaultDatabaseClusterRefName, Namespace: ns})
+	simulateMemcachedReadyWhenPresent(t, ctx, c,
+		client.ObjectKey{Name: c5c3v1alpha1.DefaultCacheClusterRefName, Namespace: ns})
 	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeInfrastructureReady, metav1.ConditionTrue, itEventuallyTimeout)
 
 	// --- Phase 2: Keystone child. ---

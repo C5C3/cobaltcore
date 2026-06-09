@@ -7,13 +7,24 @@
 # operator stack from `WITH_CONTROLPLANE=true make deploy-infra` is up, or re-run
 # deploy-infra with WITH_CONTROLPLANE_CR=true to have it applied automatically.
 #
-# Managed mode: database/cache reference managed clusters by clusterRef, so the
-# c5c3-operator provisions the MariaDB ("openstack-db") and Memcached
-# ("openstack-memcached") itself — which is why deploy-infra does NOT create them
-# when WITH_CONTROLPLANE=true (hack/deploy-infra.sh). The c5c3-operator then
-# projects a {name}-keystone Keystone CR, mints the K-ORC admin Application
+# Managed mode: the c5c3-operator provisions the MariaDB ("openstack-db") and
+# Memcached ("openstack-memcached") itself — which is why deploy-infra does NOT
+# create them when WITH_CONTROLPLANE=true (hack/deploy-infra.sh). The c5c3-operator
+# then projects a {name}-keystone Keystone CR, mints the K-ORC admin Application
 # Credential from the admin password, mirrors it to OpenBao, and registers the
 # identity catalog.
+#
+# CC-0115: this CR is intentionally minimal. The c5c3-operator defaulting webhook
+# fills the omitted infrastructure/korc references with well-known defaults, so the
+# managed-mode references above no longer need to be spelled out here:
+#   region                                  -> RegionOne
+#   infrastructure.database.clusterRef.name -> openstack-db (managed MariaDB)
+#   infrastructure.database.database        -> keystone
+#   infrastructure.database.secretRef.name  -> keystone-db
+#   infrastructure.cache.clusterRef.name    -> openstack-memcached (managed Memcached)
+#   infrastructure.cache.backend            -> dogpile.cache.pymemcache
+#   korc ... passwordSecretRef              -> keystone-admin / key "password"
+#   korc ... cloudCredentialsRef.cloudName  -> admin (secretName k-orc-clouds-yaml)
 #
 # keystone replicas are pinned to 1 to fit the single-node kind cluster; the
 # MariaDB/Memcached topology is operator-derived (not exposed on the ControlPlane
@@ -30,18 +41,6 @@ metadata:
   namespace: openstack
 spec:
   openStackRelease: "2025.2"
-  region: RegionOne
-  infrastructure:
-    database:
-      clusterRef:
-        name: openstack-db
-      database: keystone
-      secretRef:
-        name: keystone-db
-    cache:
-      clusterRef:
-        name: openstack-memcached
-      backend: dogpile.cache.pymemcache
   services:
     keystone:
       replicas: 1
@@ -60,15 +59,3 @@ spec:
       # hostname. When KIND_HOST_PORT is overridden (e.g. 8443 on macOS) deploy-infra
       # injects spec.services.keystone.publicEndpoint carrying the host port so
       # Keystone advertises the reachable URL in its catalog.
-  korc:
-    adminCredential:
-      cloudCredentialsRef:
-        cloudName: admin
-        secretName: k-orc-clouds-yaml
-      passwordSecretRef:
-        name: keystone-admin
-        key: password
-      applicationCredential:
-        restricted: true
-        rotation:
-          mode: PasswordDriven

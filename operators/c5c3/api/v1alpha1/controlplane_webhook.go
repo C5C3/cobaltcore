@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation/field"
@@ -32,6 +33,38 @@ const (
 	// DefaultCloudCredentialsSecretName is materialized when
 	// spec.korc.adminCredential.cloudCredentialsRef.secretName is empty.
 	DefaultCloudCredentialsSecretName = "k-orc-clouds-yaml" //nolint:gosec // G101 false positive: Secret name, not a credential
+	// CC-0115: well-known defaults for the database, cache, and admin-credential
+	// fields so a minimal managed-mode ControlPlane can omit spec.infrastructure
+	// and the spec.korc.adminCredential body. The shared commonv1 leaves
+	// (DatabaseSpec, CacheSpec, SecretRefSpec) are defaulted webhook-only — never
+	// via a +kubebuilder:default marker — because the keystone operator reuses
+	// those types and a c5c3-specific default would leak.
+	//
+	// DefaultDatabaseName is materialized when spec.infrastructure.database.database is empty.
+	DefaultDatabaseName = "keystone"
+	// DefaultDatabaseSecretName is materialized when spec.infrastructure.database.secretRef.name is empty.
+	DefaultDatabaseSecretName = "keystone-db" //nolint:gosec // G101 false positive: Secret name, not a credential
+	// DefaultDatabaseClusterRefName is the managed MariaDB CR name materialized when
+	// spec.infrastructure.database is in managed mode (host unset).
+	DefaultDatabaseClusterRefName = "openstack-db"
+	// DefaultCacheBackend is materialized when spec.infrastructure.cache.backend is empty.
+	DefaultCacheBackend = "dogpile.cache.pymemcache"
+	// DefaultCacheClusterRefName is the managed Memcached CR name materialized when
+	// spec.infrastructure.cache is in managed mode (servers unset).
+	DefaultCacheClusterRefName = "openstack-memcached"
+	// DefaultAdminPasswordSecretName is materialized when
+	// spec.korc.adminCredential.passwordSecretRef.name is empty.
+	DefaultAdminPasswordSecretName = "keystone-admin" //nolint:gosec // G101 false positive: Secret name, not a credential
+	// DefaultAdminPasswordSecretKey is materialized when
+	// spec.korc.adminCredential.passwordSecretRef.key is empty. Unlike the Secret
+	// *name* constants above (which carry a //nolint:gosec G101 false-positive
+	// annotation), "password" is the Secret data KEY — the field name within the
+	// Secret (SecretRefSpec.Key), not credential material — so it correctly needs
+	// no G101 nolint.
+	DefaultAdminPasswordSecretKey = "password"
+	// DefaultCloudName is materialized when
+	// spec.korc.adminCredential.cloudCredentialsRef.cloudName is empty.
+	DefaultCloudName = "admin"
 )
 
 // controlPlaneReleaseRegexp mirrors the +kubebuilder:validation:Pattern marker
@@ -75,11 +108,59 @@ func (w *ControlPlaneWebhook) Default(_ context.Context, obj *ControlPlane) erro
 		obj.Spec.Region = DefaultRegion
 	}
 
+	// CC-0115: well-known infrastructure defaults so a minimal managed-mode CR can
+	// omit spec.infrastructure entirely. The mode-neutral leaves (database name,
+	// secretRef.name, cache backend) are defaulted in BOTH managed and brownfield
+	// mode; the managed clusterRef is only invented when the brownfield
+	// discriminator (database.host / cache.servers) is unset, so the validating
+	// webhook's database/cache XOR check still passes for a brownfield CR — the
+	// webhook never coerces an explicit brownfield endpoint into managed mode.
+	db := &obj.Spec.Infrastructure.Database
+	if db.Database == "" {
+		db.Database = DefaultDatabaseName
+	}
+	if db.SecretRef.Name == "" {
+		db.SecretRef.Name = DefaultDatabaseSecretName
+	}
+	if db.Host == "" {
+		if db.ClusterRef == nil {
+			db.ClusterRef = &corev1.LocalObjectReference{Name: DefaultDatabaseClusterRefName}
+		} else if db.ClusterRef.Name == "" {
+			db.ClusterRef.Name = DefaultDatabaseClusterRefName
+		}
+	}
+
+	cache := &obj.Spec.Infrastructure.Cache
+	if cache.Backend == "" {
+		cache.Backend = DefaultCacheBackend
+	}
+	if len(cache.Servers) == 0 {
+		if cache.ClusterRef == nil {
+			cache.ClusterRef = &corev1.LocalObjectReference{Name: DefaultCacheClusterRefName}
+		} else if cache.ClusterRef.Name == "" {
+			cache.ClusterRef.Name = DefaultCacheClusterRefName
+		}
+	}
+
 	// K-ORC admin-credential defaults. cloudCredentialsRef.secretName defaults to
 	// the documented shared Secret name.
 	korc := &obj.Spec.KORC.AdminCredential
 	if korc.CloudCredentialsRef.SecretName == "" {
 		korc.CloudCredentialsRef.SecretName = DefaultCloudCredentialsSecretName
+	}
+	// CC-0115: cloudCredentialsRef.cloudName defaults to the conventional admin
+	// cloud entry; passwordSecretRef.name/.key default to the conventional admin
+	// Secret and its data key. Defaulting .key makes the stored spec explicit and
+	// consistent with the reconciler's existing readAdminPassword "password"
+	// fallback. These are webhook-only (no marker on the shared commonv1 types).
+	if korc.CloudCredentialsRef.CloudName == "" {
+		korc.CloudCredentialsRef.CloudName = DefaultCloudName
+	}
+	if korc.PasswordSecretRef.Name == "" {
+		korc.PasswordSecretRef.Name = DefaultAdminPasswordSecretName
+	}
+	if korc.PasswordSecretRef.Key == "" {
+		korc.PasswordSecretRef.Key = DefaultAdminPasswordSecretKey
 	}
 
 	// applicationCredential.restricted defaults to true (least-privilege). The

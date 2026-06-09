@@ -183,10 +183,10 @@ status:
 | --- | --- | --- | --- | --- |
 | `openStackRelease` | `string` | Yes | — | OpenStack release the control plane targets (e.g. `"2025.2"`). The reconciler (L2) projects this into each service CR's image tag. Must match the date-based release pattern `^\d{4}\.\d$`, enforced by both the CRD `+kubebuilder:validation:Pattern` marker and the validating webhook. |
 | `region` | `string` | No | `"RegionOne"` | OpenStack region name applied across the control plane. Projected into the Keystone CR's `bootstrap.region`. Defaulted to `RegionOne` by **both** the `+kubebuilder:default` marker (normal admission) and the defaulting webhook (callers that bypass the CRD default). |
-| `infrastructure` | [`InfrastructureSpec`](#infrastructurespec) | Yes | — | Shared backing services (database, cache) the control plane's services connect to. |
+| `infrastructure` | [`InfrastructureSpec`](#infrastructurespec) | No | managed-mode defaulted | Shared backing services (database, cache) the control plane's services connect to. Optional — the defaulting webhook materializes a managed-mode `database`/`cache` when omitted; see [InfrastructureSpec](#infrastructurespec). |
 | `services` | [`ServicesSpec`](#servicesspec) | Yes | — | Per-service configuration projected into the individual service CRs. |
 | `global` | [`*commonv1.PolicySpec`](../keystone/keystone-crd.md#policyspec) | No | `nil` | oslo.policy overrides applied across every service in the control plane. Per-service overrides (e.g. `services.keystone.policyOverrides`) take precedence over these global rules when both are set. |
-| `korc` | [`KORCSpec`](#korcspec) | Yes | — | K-ORC integration used to bootstrap and rotate the admin application credential and any declared bootstrap resources. |
+| `korc` | [`KORCSpec`](#korcspec) | No | defaulted | K-ORC integration used to bootstrap and rotate the admin application credential and any declared bootstrap resources. Optional — the defaulting webhook fills `adminCredential` (cloudCredentialsRef, passwordSecretRef, applicationCredential restriction/rotation) from well-known defaults when omitted. |
 
 ---
 
@@ -196,10 +196,27 @@ Declares the shared backing services for the control plane. Both
 fields reuse the canonical `commonv1` shapes so the ControlPlane and the
 per-service CRs validate the database/cache the same way.
 
+`spec.infrastructure` (and each of its `database` / `cache` blocks)
+may be **omitted entirely** on a minimal managed-mode ControlPlane. The
+defaulting webhook constructs a managed-mode database (`clusterRef:
+openstack-db`, `database: keystone`, `secretRef.name: keystone-db`) and a
+managed-mode cache (`clusterRef: openstack-memcached`, `backend:
+dogpile.cache.pymemcache`) before validation runs. The two managed `clusterRef`
+names are only invented when the brownfield discriminator (`database.host` /
+`cache.servers`) is unset, so the database/cache XOR rule below still passes for
+a brownfield CR — the webhook never coerces an explicit brownfield endpoint into
+managed mode. See the [Defaulting Webhook](#defaulting-webhook) for the exact
+conditions and mechanism.
+
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `database` | [`commonv1.DatabaseSpec`](../keystone/keystone-crd.md#databasespec) | Yes | — | MariaDB connection parameters shared by the control plane. Supports managed (`clusterRef`) and brownfield (`host`) modes; exactly one must be set (enforced by the validating webhook — see [Validation Rules](#validation-rules)). |
-| `cache` | [`commonv1.CacheSpec`](../keystone/keystone-crd.md#cachespec) | Yes | — | Memcached configuration shared by the control plane. Supports managed (`clusterRef`) and brownfield (`servers`) modes; exactly one must be set (enforced by the validating webhook). |
+| `database` | [`commonv1.DatabaseSpec`](../keystone/keystone-crd.md#databasespec) | No | managed `clusterRef: openstack-db`, `database: keystone`, `secretRef.name: keystone-db` | MariaDB connection parameters shared by the control plane. Supports managed (`clusterRef`) and brownfield (`host`) modes; exactly one must hold **after defaulting** (enforced by the validating webhook — see [Validation Rules](#validation-rules)). Optional because the defaulting webhook materializes a managed-mode block when omitted. |
+| `cache` | [`commonv1.CacheSpec`](../keystone/keystone-crd.md#cachespec) | No | managed `clusterRef: openstack-memcached`, `backend: dogpile.cache.pymemcache` | Memcached configuration shared by the control plane. Supports managed (`clusterRef`) and brownfield (`servers`) modes; exactly one must hold **after defaulting** (enforced by the validating webhook). Optional because the defaulting webhook materializes a managed-mode block when omitted. |
+
+<!-- DECISION: `database`/`cache` Required flipped from Yes to No because the
+     defaulting webhook now constructs a managed-mode block when the field is omitted.
+     The validating webhook still enforces the clusterRef/host (resp. servers) XOR after
+     defaulting, so a brownfield CR that sets host/servers is unaffected. -->
 
 In managed mode the reconciler provisions an owned `MariaDB` CR (named after
 `database.clusterRef.name`) and an owned `Memcached` CR (named after
@@ -305,7 +322,7 @@ policy for the control plane.
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `cloudCredentialsRef` | [`CloudCredentialsRef`](#cloudcredentialsref) | Yes | — | References the `clouds.yaml` Secret and cloud entry K-ORC authenticates as. |
-| `passwordSecretRef` | [`commonv1.SecretRefSpec`](../keystone/keystone-crd.md#secretrefspec) | Yes | — | References the Secret holding the admin password used to (re-)mint the application credential. The `name` is required (enforced by the validating webhook — see [Validation Rules](#validation-rules)); a missing key defaults to `"password"` in the reconciler. This Secret is also projected into the Keystone CR's `bootstrap.adminPasswordSecretRef` so Keystone and K-ORC agree on the admin password source. |
+| `passwordSecretRef` | [`commonv1.SecretRefSpec`](../keystone/keystone-crd.md#secretrefspec) | No | name `"keystone-admin"`, key `"password"` | References the Secret holding the admin password used to (re-)mint the application credential. The defaulting webhook materializes a missing `name` to `keystone-admin` and a missing `key` to `password`, so the block may be omitted on a minimal CR. The validating webhook still enforces `passwordSecretRef.name` non-empty as defense-in-depth (see [Validation Rules](#validation-rules)), but the defaulting webhook always satisfies it before validation runs, so a user may leave it unset. The reconciler's existing `"password"` key fallback also remains. This Secret is projected into the Keystone CR's `bootstrap.adminPasswordSecretRef` so Keystone and K-ORC agree on the admin password source. |
 | `applicationCredential` | [`ApplicationCredentialSpec`](#applicationcredentialspec) | Yes | — | Policy for the K-ORC admin application credential (restriction, access rules, rotation mode). |
 | `bootstrapResources` | [`[]BootstrapResourceSpec`](#bootstrapresourcespec) | No | `nil` | OpenStack resources K-ORC bootstraps alongside the admin credential (e.g. the projects/roles a fresh control plane needs). The element shape is intentionally minimal at L1; the reconciler interprets it. |
 
@@ -318,7 +335,7 @@ authenticates as.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `cloudName` | `string` | Yes | — | The entry in `clouds.yaml` K-ORC authenticates as. Also used by the reconciler as the conventional K-ORC `User` reference name (defaulting to `admin` when empty) and projected onto the catalog `Service`/`Endpoint` CRs. |
+| `cloudName` | `string` | No | `"admin"` | The entry in `clouds.yaml` K-ORC authenticates as. Also used by the reconciler as the conventional K-ORC `User` reference name and projected onto the catalog `Service`/`Endpoint` CRs. Defaulted to `admin` by **both** the `+kubebuilder:default` marker (normal admission) and the defaulting webhook (callers that bypass the CRD default). |
 | `secretName` | `string` | No | `"k-orc-clouds-yaml"` | Name of the Secret holding the `clouds.yaml` document. Defaulted to `k-orc-clouds-yaml` by **both** the `+kubebuilder:default` marker and the defaulting webhook. The Secret is namespace-local to the ControlPlane's child namespace; because the operator enforces one ControlPlane per namespace, the shared default name does not collide across control planes. The operator (`reconcileKORC` → `ensureKORCCloudsYAMLExternalSecret`) **creates and owns** a per-ControlPlane ExternalSecret of this name in the child namespace that materialises the Secret, reading the per-CR OpenBao path — so the shared default name is safe and needs no per-CR manifest. |
 
 ---
@@ -640,19 +657,60 @@ func (w *ControlPlaneWebhook) Default(_ context.Context, obj *ControlPlane) erro
 
 Fills only zero-valued fields with their documented defaults, leaving any
 explicit value untouched. It is **idempotent**: applying it twice produces the
-same result. Each default is also expressed as a `+kubebuilder:default` marker
-on the corresponding spec field, so the two layers agree — the markers cover the
-normal admission path; the webhook covers callers that bypass the CRD default.
-The defaulting constants `DefaultRegion` (`"RegionOne"`) and
-`DefaultCloudCredentialsSecretName` (`"k-orc-clouds-yaml"`) are the single source
-of truth shared with the markers' documented values.
+same result. The defaults split across **two layers** that do **not** uniformly
+overlap:
 
-| Field | Condition | Default Value |
-| --- | --- | --- |
-| `spec.region` | `== ""` | `"RegionOne"` |
-| `spec.korc.adminCredential.cloudCredentialsRef.secretName` | `== ""` | `"k-orc-clouds-yaml"` |
-| `spec.korc.adminCredential.applicationCredential.restricted` | `== nil` | `true` (pointer set to `true`; an explicit `false` is preserved) |
-| `spec.korc.adminCredential.applicationCredential.rotation.mode` | `== ""` | `PasswordDriven` |
+- **Dual-layer defaults** — also expressed as a `+kubebuilder:default` marker on
+  the corresponding spec field, so the marker covers the normal admission path
+  and the webhook covers callers that bypass the CRD default. These are `region`,
+  `cloudCredentialsRef.secretName`, `applicationCredential.restricted`,
+  `applicationCredential.rotation.mode`, and
+  `cloudCredentialsRef.cloudName`.
+- **Webhook-only defaults** — materialized by the webhook with **no**
+  `+kubebuilder:default` marker. These are the shared-`commonv1`-leaf defaults
+  (`database.database`, `database.secretRef.name`, `cache.backend`,
+  `passwordSecretRef.name`, `passwordSecretRef.key`) and the two managed
+  `clusterRef` names (`openstack-db`, `openstack-memcached`). They carry no
+  marker because the `commonv1` `DatabaseSpec` / `CacheSpec` / `SecretRefSpec`
+  types are reused by the Keystone CRD, and a c5c3-specific `+kubebuilder:default`
+  on those shared types would leak into Keystone's CRD. The two managed
+  `clusterRef` names are **brownfield-guarded**: they are only invented when the
+  brownfield discriminator (`database.host` / `cache.servers`) is unset, so the
+  database/cache XOR validation still passes for a brownfield CR.
+
+The defaulting constants in `controlplane_webhook.go` (e.g. `DefaultRegion`
+`"RegionOne"`, `DefaultDatabaseName` `"keystone"`, `DefaultCacheBackend`
+`"dogpile.cache.pymemcache"`) are the single source of truth shared with the
+markers' documented values where a marker also exists.
+
+| Field | Condition | Default Value | Mechanism |
+| --- | --- | --- | --- |
+| `spec.region` | `== ""` | `"RegionOne"` | Marker + webhook |
+| `spec.korc.adminCredential.cloudCredentialsRef.secretName` | `== ""` | `"k-orc-clouds-yaml"` | Marker + webhook |
+| `spec.korc.adminCredential.applicationCredential.restricted` | `== nil` | `true` (pointer set to `true`; an explicit `false` is preserved) | Marker + webhook |
+| `spec.korc.adminCredential.applicationCredential.rotation.mode` | `== ""` | `PasswordDriven` | Marker + webhook |
+| `spec.korc.adminCredential.cloudCredentialsRef.cloudName` | `== ""` | `"admin"` | Marker + webhook |
+| `spec.infrastructure.database.database` | `== ""` | `"keystone"` | Webhook-only |
+| `spec.infrastructure.database.secretRef.name` | `== ""` | `"keystone-db"` | Webhook-only |
+| `spec.infrastructure.database.clusterRef.name` | `host == ""` (managed mode) | `"openstack-db"` | Webhook-only, brownfield-guarded |
+| `spec.infrastructure.cache.backend` | `== ""` | `"dogpile.cache.pymemcache"` | Webhook-only |
+| `spec.infrastructure.cache.clusterRef.name` | `len(servers) == 0` (managed mode) | `"openstack-memcached"` | Webhook-only, brownfield-guarded |
+| `spec.korc.adminCredential.passwordSecretRef.name` | `== ""` | `"keystone-admin"` | Webhook-only |
+| `spec.korc.adminCredential.passwordSecretRef.key` | `== ""` | `"password"` | Webhook-only |
+
+> **Operational contract.** The webhook only materializes the Secret
+> *names and references* — it never invents credential material. A ControlPlane
+> that omits `spec.korc` (or `spec.infrastructure.database.secretRef`) therefore
+> relies on the cluster operator having **pre-seeded** the referenced Secrets in
+> the ControlPlane's namespace before the credential sub-reconcilers can advance:
+> the admin password Secret (`keystone-admin`, key `password`) and the K-ORC
+> `clouds.yaml` ExternalSecret/Secret (`k-orc-clouds-yaml`). The infrastructure
+> layer seeds these (see the [quick-start](../../quick-start-controlplane.md)). A
+> missing admin password Secret degrades to `KORCReady=False` /
+> `WaitingForAdminPassword`, and a not-yet-synced `clouds.yaml` to
+> `AdminCredentialReady=False` / `WaitingForCloudsYaml` — never a silent
+> authentication. `TestIntegration_MinimalManagedToReady` encodes this contract by
+> pre-creating those Secrets at the defaulted names.
 
 ### Validating Webhook
 
