@@ -50,9 +50,11 @@ Docker drop the override and use port `443`. Expect **5–10 minutes**.
 ## Step 3 — Create the ControlPlane CR
 
 Apply a `ControlPlane` CR — the c5c3-operator reconciles it into the whole stack.
-Keep the name `controlplane`: the OpenBao seed from Step 2 points K-ORC at the
-projected `controlplane-keystone` Service (pass `CONTROLPLANE_NAME=foo` to Step 2
-to use a different name, then name the CR `foo`). The `clusterRef` / `secretRef` /
+The c5c3-operator now seeds the K-ORC bootstrap `clouds.yaml` per-CR, deriving the
+in-cluster Keystone auth URL from the CR's own name, so the CR name is no longer
+pinned by a pre-seeded `clouds.yaml`. To use a different name, pass
+`CONTROLPLANE_NAME=foo` to Step 2 — it renames the bundled CR and seeds the
+matching admin password. The `clusterRef` / `secretRef` /
 `passwordSecretRef` values point at the MariaDB, Memcached, and OpenBao-seeded
 Secrets the infrastructure layer already provides — the operator consumes them,
 it does not invent credentials. Every other field is defaulted.
@@ -91,7 +93,7 @@ spec:
   korc:
     adminCredential:
       cloudCredentialsRef:
-        cloudName: admin           # entry in the seeded k-orc-clouds-yaml Secret
+        cloudName: admin           # entry in the operator-materialised k-orc-clouds-yaml Secret
       passwordSecretRef:
         name: keystone-admin       # admin password, seeded by infra via ESO
         key: password
@@ -118,16 +120,7 @@ kubectl get controlplane controlplane -n openstack \
   -o jsonpath='{range .status.conditions[*]}{.type}={.status} ({.reason}){"\n"}{end}'
 ```
 
-If `AdminCredentialReady` lingers on `WaitingForCloudsYaml`, force the
-`k-orc-clouds-yaml` ExternalSecret to sync (deploy-infra does not wait on it, so
-it may otherwise refresh only on its hourly interval):
-
-```bash
-kubectl annotate externalsecret/k-orc-clouds-yaml -n openstack \
-  force-sync="$(date +%s)" --overwrite
-```
-
-Then wait for the aggregate condition:
+Wait for the aggregate condition:
 
 ```bash
 kubectl wait controlplane/controlplane -n openstack \

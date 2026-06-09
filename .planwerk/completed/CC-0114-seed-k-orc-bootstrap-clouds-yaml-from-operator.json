@@ -2,8 +2,8 @@
   "feature_id": "CC-0114",
   "title": "Seed K-ORC bootstrap clouds.yaml from operator",
   "slug": "seed-k-orc-bootstrap-clouds-yaml-from-operator",
-  "status": "prepared",
-  "phase": null,
+  "status": "completed",
+  "phase": "awaiting_external_review",
   "summary": "",
   "description": "# GitHub Issue #412: feat(c5c3-operator): seed the K-ORC bootstrap clouds.yaml from the operator to drop the ControlPlane-name coupling\n\n**Description:**\n\nK-ORC (the OpenStack Resource Controller) needs a working password-based `clouds.yaml` to authenticate the *first* admin application-credential mint — the credential-based `clouds.yaml` does not exist until the c5c3-operator mints it, so the very first authentication is a chicken-and-egg problem. Today that first `clouds.yaml` is **pre-seeded by deploy-infra tooling before any `ControlPlane` CR exists**, and the seed has to guess the projected Keystone Service name (`{name}-keystone`) up front to build the in-cluster `auth_url`. This couples the OpenBao bootstrap shell to the CR name through two knobs (`CONTROLPLANE_NAME`, `KORC_KEYSTONE_AUTH_URL`) and a static, single-identity ExternalSecret. This issue moves the seed into the c5c3-operator, which already computes the projected name at reconcile time, so no name has to be known ahead of time.\n\nThe codebase already contains almost all the machinery needed; this issue closes the last gap. The boundaries below pair what already exists against what this issue adds.\n\n**Concrete boundary 1 — the projected auth_url already lives in the operator.**\n`keystoneEndpointURL(cp)` in `operators/c5c3/internal/controller/reconcile_korc.go:1242` returns exactly `http://{keystoneName(cp)}.{childNamespace(cp)}.svc:5000/v3`, where `keystoneName(cp)` = `cp.Name + \"-keystone\"` (`reconcile_keystone.go:41`, suffix at `reconcile_keystone.go:29`) and `childNamespace(cp)` = `cp.Namespace` (`reconcile_infrastructure.go:43`). For the default CR this is `http://controlplane-keystone.openstack.svc:5000/v3` — byte-identical to the URL the shell seed derives. **This issue adds** nothing new for the URL: the seed the operator writes reuses this function, so the operator-owned seed is automatically correct for any CR name.\n\n**Concrete boundary 2 — the operator already builds the password-based clouds.yaml.**\n`buildPasswordCloudsYAML(cp, password)` (`reconcile_korc.go:250`) renders the exact `clouds:` document the shell seed writes, including the critical `endpoint_type: internal` key (NOT `interface`) and the in-cluster `auth_url`. It is already called by `ensureAdminPasswordCloud` (`reconcile_korc.go:221`) to populate the `{cp.Name}-admin-password-cloud` Secret the ApplicationCredential mints against. **This issue adds** a second use of `buildPasswordCloudsYAML`: seeding the bootstrap `clouds.yaml` key so K-ORC's admin imports and the AdminCredential gate can proceed without a shell seed. The `endpoint_type: internal` triage consideration is satisfied for free by reusing this function.\n\n**Concrete boundary 3 — the per-CR OpenBao path and the PushSecret already exist.**\n`adminAppCredentialRemoteKeyFor(cp)` (`reconcile_korc.go:61`) returns `openstack/keystone/{cp.Namespace}/{cp.Name}/admin/app-credential`, and `adminAppCredentialPushSecret(cp)` (`reconcile_korc.go:1074`) mirrors the `{cp.Name}-admin-app-credential` Secret's `clouds.yaml` key (`appCredCloudsYAMLKey` = `\"clouds.yaml\"`, `reconcile_korc.go:126`) to that path via `secrets.EnsurePushSecret`. Today that PushSecret is created only inside `reconcileAdminCredential` (`reconcile_korc.go:1004-1005`), *after* the mint. **This issue adds** an earlier, ungated creation of the same PushSecret in `reconcileKORC`, sourced from a password-based `clouds.yaml` written into the same Secret key, so the path is populated before the credential exists.\n\n**Concrete boundary 4 — the gate is a deliberate chicken-and-egg that the shell seed breaks.**\n`reconcileAdminCredential` gates the credential push on the `k-orc-clouds-yaml` ExternalSecret being Ready in `childNamespace(cp)` (`reconcile_korc.go:886-908`), but that ExternalSecret materializes *from* the OpenBao path the push *writes*. On a fresh cluster the path is empty, so the gate never opens and the push never runs — a permanent deadlock unless something seeds the path first. The unit test `TestReconcileAdminCredential_FreshClusterWithoutCloudsYamlSeedDoesNotPush` (`reconcile_korc_test.go:383`) *asserts this exact deadlock holds* (\"no PushSecret may be created while the clouds.yaml ExternalSecret is unseeded\"). **This issue adds** the operator-owned seed that breaks the cycle and **reworks that test** to assert the operator now seeds and the chain converges.\n\n**Concrete boundary 5 — the seed is currently shell, keyed on names known up front.**\n`seed_korc_bootstrap_clouds_yaml()` (`deploy/openbao/bootstrap/write-bootstrap-secrets.sh:158-218`) writes the password `clouds.yaml` to `kv-v2/openstack/keystone/${ns}/${cp}/admin/app-credential` with `auth_url=${KORC_KEYSTONE_AUTH_URL:-http://${keystone}.${ns}.svc:5000/v3}`, called from `main()` at line 274 per `KORC_CONTROLPLANES` identity, followed by `mark_eso_managed \"${ac_path}\"` (line 278). `hack/deploy-infra.sh:1198-1201` exports `KORC_CONTROLPLANES=\"openstack/${CONTROLPLANE_NAME}\"` and `KORC_KEYSTONE_AUTH_URL=\"http://${CONTROLPLANE_NAME}-keystone.openstack.svc:5000/v3\"` under `WITH_CONTROLPLANE=true`. **This issue removes** the `seed_korc_bootstrap_clouds_yaml` definition + call, the now-unused `ac_path` local and its `mark_eso_managed` call, the `KORC_KEYSTONE_AUTH_URL` knob entirely (it has no other consumer — confirmed by grep), and the `KORC_KEYSTONE_AUTH_URL` export in deploy-infra.\n\n**Concrete boundary 6 — the static ExternalSecret is a single-identity shim that names this issue.**\n`deploy/eso/externalsecrets/k-orc-clouds-yaml.yaml` defines two ExternalSecrets (namespaces `openstack` and `orc-system`), both reading the hardcoded key `openstack/keystone/openstack/controlplane/admin/app-credential`. Its own comment (lines 24-28) says: *\"This static, single-identity remoteRef.key is a deployment shim: https://github.com/.../issues/412 supersedes it with operator-owned per-CR templating ... Until then, bringing up a non-default ControlPlane requires editing this key (and CONTROLPLANE_NAME in `make deploy-infra`) in lockstep.\"* For an arbitrary CR name the hardcoded key does not match `adminAppCredentialRemoteKeyFor(cp)`. **This issue adds** an operator-created, owner-referenced, per-CR `k-orc-clouds-yaml` ExternalSecret in `childNamespace(cp)` (reading `adminAppCredentialRemoteKeyFor(cp)`), and **removes the `openstack`-namespace document** from the static manifest to avoid two controllers owning the same object. The `orc-system` document is kept static (see boundary 7).\n\n**Concrete boundary 7 — the `orc-system` copy is off the AdminCredential critical path.**\nK-ORC resolves each resource's `CloudCredentialsRef` in the resource's *own* namespace, so the credential critical path (`AdminCredentialReady`) only needs the `childNamespace(cp)` copy — confirmed by the gate at `reconcile_korc.go:886-887` and the co-location note in the manifest (lines 30-41). The `orc-system` copy serves K-ORC's \"global default mount\" and the e2e verify job (`tests/e2e/c5c3/full-controlplane-keystone/01-openstack-verify-job.yaml`, which runs in `orc-system`). Cross-namespace owner references are disallowed (a ControlPlane in namespace `openstack` cannot own an object in `orc-system`), so the operator cannot own it. **This issue keeps** the `orc-system` document static (default-identity only) and documents it as the remaining off-critical-path shim. The \"arbitrary CR name\" acceptance criterion targets `AdminCredentialReady`, which the per-CR `childNamespace` copy fully satisfies.\n\n**Concrete boundary 8 — the operator already has the RBAC and condition wiring.**\nThe kubebuilder marker `controlplane_controller.go:82` already grants `external-secrets.io` `externalsecrets;pushsecrets` `create;update;patch;delete`, and the Helm ClusterRole mirrors it (`operators/c5c3/helm/c5c3-operator/templates/_helpers.tpl:195-200`). The instrumentation map `instrumentation.go:40-44` already maps the `KORC` and `AdminCredential` sub-reconcilers to their condition types. **This issue adds** no new RBAC group/resource and no new sub-reconciler or status condition, so neither the RBAC-sync pattern nor the condition-coverage drift guard is triggered.\n\n**Concrete boundary 9 — the idempotency guard reuses an existing key check.**\nThe acceptance requirement \"never overwrites a minted credential-based `clouds.yaml`\" maps to a write-if-empty guard on the `appCredCloudsYAMLKey` of the `{cp.Name}-admin-app-credential` Secret: the operator writes the password seed only when that key is absent/empty. After the mint, `reconcileAdminCredential` fills it with the credential version (`reconcile_korc.go:984-986`), so the seed step becomes a no-op on every subsequent pass. On a re-mint, `regenerateAppCredentialSecretValue` deletes that key (`reconcile_korc.go:657`), so the seed gracefully repopulates the password version and bridges the re-authentication gap until the new credential is assembled. This mirrors the existing \"write if missing\" discipline of the shell seed (`write-bootstrap-secrets.sh:196-199`) and the `Kubernetes Operator Reconciliation` idempotency pattern.\n\n### Recommended implementation (so the plan is executable)\n\nKeep the OpenBao+ESO approach (it is the existing architecture, materializes both namespaces from one push, and keeps step 3 of the proposal unchanged). Do NOT switch to a direct in-cluster Secret write — it would conflict with the ESO-owned `k-orc-clouds-yaml` Secret (`creationPolicy: Owner`) and would not cover the `orc-system` copy the verify job reads.\n\nIn `reconcileKORC` (`reconcile_korc.go:306`), after `ensureAdminPasswordCloud` and `ensureAppCredentialSecret` succeed and **before** `ensureKORCAdminImports` (`reconcile_korc.go:383`), add three steps:\n\n1. `seedBootstrapCloudsYAML(ctx, cp, password)` — `CreateOrUpdate` the `{cp.Name}-admin-app-credential` Secret; if `secret.Data[appCredCloudsYAMLKey]` is empty, set it to `[]byte(buildPasswordCloudsYAML(cp, password))`; leave the `value` key untouched; set the controller reference. (Write-if-empty = boundary 9.)\n2. `secrets.EnsurePushSecret(ctx, r.Client, r.Scheme, cp, adminAppCredentialPushSecret(cp))` — ensure the `{cp.Name}-admin-app-credential-backup` PushSecret exists now, not only after the mint. It is already clobber-safe/idempotent (DeepEqual guard inside `EnsurePushSecret`), so the later call in `reconcileAdminCredential` is a harmless no-op.\n3. `ensureKORCCloudsYAMLExternalSecret(ctx, cp)` — `CreateOrUpdate` an `external-secrets.io/v1` `ExternalSecret` named `cp.Spec.KORC.AdminCredential.CloudCredentialsRef.SecretName` (defaulted to `k-orc-clouds-yaml`, `controlplane_webhook.go:34`) in `childNamespace(cp)`, owner-referenced to `cp`, `secretStoreRef` `{Kind: ClusterSecretStore, Name: openBaoClusterStoreName}`, `target.name` the same Secret name with `creationPolicy: Owner`, and one `data` entry `{secretKey: \"clouds.yaml\", remoteRef: {key: adminAppCredentialRemoteKeyFor(cp), property: \"clouds.yaml\"}}`.\n\nNo surrounding logic in `ensureKORCAdminImports`, the mint, or `reconcileAdminCredential` changes; `importCredRef` keeps using `k-orc-clouds-yaml` (now operator-seeded). K-ORC's admin Domain/User CRs are created immediately and K-ORC retries authentication asynchronously until ESO materializes the Secret, so no explicit wait is needed.\n\n**Motivation:**\n\nBringing up a `ControlPlane` with any name other than `controlplane` today requires editing three coupled artifacts in lockstep — `CONTROLPLANE_NAME` / `KORC_KEYSTONE_AUTH_URL` in `make deploy-infra`, and the hardcoded `remoteRef.key` in the static `k-orc-clouds-yaml` ExternalSecret — and the seed runs in bootstrap shell that has no way to learn the projected Keystone name. The operator already computes that name at reconcile time. Keeping the seed in shell means the operator and tooling must agree on a naming convention forever, and the `multi-controlplane` e2e fixtures (`tenant-a/controlplane-a`, `tests/e2e/c5c3/multi-controlplane/00-tenant-a-controlplane.yaml`) cannot work on the default `deploy-infra` path at all.\n\nThe decoupling also removes a fragile bootstrap ordering. The current flow depends on a human (or `WITH_CONTROLPLANE_CR`) keeping the applied CR name equal to the seed identity; a mismatch yields a silent failure mode the issue body documents — K-ORC resolves the unreachable external Gateway endpoint, swallows the connection error, and reports the admin Domain/User imports as empty (\"Waiting for OpenStack resource to be created externally\") with no credential ever minted. Centralizing the seed in the operator, which derives both the path and the `auth_url` from the same `ControlPlane` object, makes that mismatch structurally impossible.\n\nThis is the last shim between the c5c3-operator and a fully self-contained ControlPlane bootstrap. Boundaries 1-3 show the operator already owns the password `clouds.yaml`, the OpenBao path, and the PushSecret; only the *first* write and the per-CR ExternalSecret are still external. Closing that gap unblocks arbitrary-name and multi-tenant ControlPlanes on the default deploy path and lets the static-shim comment in `deploy/eso/externalsecrets/k-orc-clouds-yaml.yaml` (which names this issue) be deleted.\n\n**Affected Areas:**\n\n- operators/c5c3/internal/controller/reconcile_korc.go — add `seedBootstrapCloudsYAML(ctx, cp, password)` (write-if-empty password `clouds.yaml` into the `{cp.Name}-admin-app-credential` Secret's `clouds.yaml` key) and `ensureKORCCloudsYAMLExternalSecret(ctx, cp)` (per-CR, owner-referenced ExternalSecret in `childNamespace(cp)`); call both plus `secrets.EnsurePushSecret(...adminAppCredentialPushSecret(cp))` inside `reconcileKORC` before `ensureKORCAdminImports`. No changes to `importCredRef`, the mint, or `reconcileAdminCredential` beyond the idempotent PushSecret call already there.\n- operators/c5c3/internal/controller/reconcile_korc_test.go — rework `TestReconcileAdminCredential_FreshClusterWithoutCloudsYamlSeedDoesNotPush` (it asserts the old deadlock); add tests: seed writes the password `clouds.yaml` when the key is empty; seed does NOT overwrite a non-empty (minted) `clouds.yaml`; `reconcileKORC` creates the per-CR ExternalSecret with the right `remoteRef.key` (= `adminAppCredentialRemoteKeyFor(cp)`), namespace (= `childNamespace(cp)`), `secretKey`/`property` (= `clouds.yaml`), and a controller owner reference; the seeded `clouds.yaml` parses with `endpoint_type: internal` and the projected `auth_url`. Reuse helpers `korcControlPlane()`, `korcTestScheme(t)`, `setKORCReady(cp)`, `mintedAppCredSecret(cp)`, `readyCloudsYamlES(cp)`.\n- operators/c5c3/internal/controller/integration_test.go — the brownfield/managed integration tests pre-create the `k-orc-clouds-yaml` ExternalSecret to simulate the shell seed (lines 305-315); change them to assert the operator creates it instead, then `SimulateExternalSecretSync` against the operator-created object.\n- deploy/openbao/bootstrap/write-bootstrap-secrets.sh — delete `seed_korc_bootstrap_clouds_yaml()` (lines 158-218), its call (line 274), the now-unused `ac_path` local (line 255) and its `mark_eso_managed \"${ac_path}\"` (line 278); keep the Model B admin-password seed (lines 261-266) and its `mark_eso_managed \"${admin_path}\"`. Update the `KORC_CONTROLPLANES` header comment (lines 23-34) to stop describing the AC-clouds.yaml seed.\n- hack/deploy-infra.sh — delete the `KORC_KEYSTONE_AUTH_URL` export (line 1200); keep the `KORC_CONTROLPLANES` export (line 1199 — still needed for the Model B admin-password path). Update the surrounding comment block (lines 1170-1197) and the parenthetical at lines 1188-1190 that points at the now-removed coupling. Update the `WITH_CONTROLPLANE_CR` user guidance (lines 1320-1321) that tells users to keep `CONTROLPLANE_NAME` in lockstep with the K-ORC seed.\n- deploy/eso/externalsecrets/k-orc-clouds-yaml.yaml — remove the `openstack`-namespace ExternalSecret document (lines 44-65) now owned by the operator; keep the `orc-system` document (lines 66-85) as the off-critical-path default-identity copy; rewrite the header comment to delete the \"issue #412 supersedes it\" shim language and describe the new operator-owned/static split.\n- deploy/eso/kustomization.yaml — `k-orc-clouds-yaml.yaml` (line 18) stays (it still ships the `orc-system` document).\n- tests/e2e/c5c3/full-controlplane-keystone/chainsaw-test.yaml — the link-by-link assertions and diagnostics reference the seed and the `orc-system` ExternalSecret (lines 227-305); confirm the default-name run still passes end-to-end with the operator-owned seed (it should, unchanged path key); update any comment that attributes the seed to `write-bootstrap-secrets.sh`.\n- tests/e2e/c5c3/multi-controlplane/ — this suite (`controlplane-a`/`tenant-a`, `controlplane-b`/`tenant-b`) becomes runnable on the default deploy path; verify the per-CR ExternalSecret materializes for the non-default names and `AdminCredentialReady=True` is reached without per-identity seed overrides.\n- docs/quick-start-controlplane.md, docs/reference/c5c3/controlplane-reconciler.md, docs/reference/c5c3/controlplane-crd.md, docs/reference/infrastructure/infrastructure-manifests.md — update prose that describes the bootstrap `clouds.yaml` as deploy-infra-seeded, the `CONTROLPLANE_NAME`/`KORC_KEYSTONE_AUTH_URL` lockstep requirement, and the static `k-orc-clouds-yaml` ExternalSecret; describe the operator-owned seed and per-CR ExternalSecret instead.\n\n**Acceptance Criteria:**\n\n- [ ] On a fresh kind cluster with `WITH_CONTROLPLANE=true`, a `ControlPlane` with an arbitrary name and namespace reaches `AdminCredentialReady=True` **without** `write-bootstrap-secrets.sh` running `seed_korc_bootstrap_clouds_yaml` (the function no longer exists) — verified by the e2e `full-controlplane-keystone` suite plus a non-default-name run (e.g. the `multi-controlplane` fixtures).\n- [ ] `grep -rn KORC_KEYSTONE_AUTH_URL` over the repo returns no matches in `hack/` or `deploy/openbao/bootstrap/` (the knob is fully removed); `make deploy-infra WITH_CONTROLPLANE=true` succeeds with no `KORC_KEYSTONE_AUTH_URL` set.\n- [ ] `reconcileKORC` creates a `k-orc-clouds-yaml` ExternalSecret in `childNamespace(cp)`, owner-referenced to the `ControlPlane`, whose single `data` entry has `remoteRef.key == adminAppCredentialRemoteKeyFor(cp)`, `secretKey == \"clouds.yaml\"`, and `property == \"clouds.yaml\"` — asserted by a new unit test.\n- [ ] The seeded `clouds.yaml` (from `buildPasswordCloudsYAML`) contains `endpoint_type: internal` and `auth_url: http://{cp.Name}-keystone.{cp.Namespace}.svc:5000/v3` — asserted by a unit test that parses the rendered document, not just the input.\n- [ ] Re-running `reconcileKORC` after the credential is minted leaves the `{cp.Name}-admin-app-credential` Secret's `clouds.yaml` key holding the credential-based document (the seed never overwrites it) — asserted by a unit test that sets a non-empty credential `clouds.yaml`, runs the seed, and checks the bytes are unchanged.\n- [ ] The reworked `TestReconcileAdminCredential_FreshClusterWithoutCloudsYamlSeedDoesNotPush` (or its replacement) asserts the new behavior: with the operator seed present, the PushSecret IS created and the OpenBao path IS written; the old \"no push on a fresh cluster\" assertion is gone.\n- [ ] `go test ./operators/c5c3/...` passes, including the updated `integration_test.go` that asserts the operator creates the `k-orc-clouds-yaml` ExternalSecret rather than pre-creating it.\n- [ ] `deploy/eso/externalsecrets/k-orc-clouds-yaml.yaml` no longer contains an `openstack`-namespace ExternalSecret (only the `orc-system` one), and `kubectl apply -k deploy/eso/` applies cleanly with no duplicate-owner conflict against the operator-created object.\n- [ ] E2E `full-controlplane-keystone` passes with the new flow (the issue's named gate).\n\n**Non-Goals:**\n\n- **Removing `CONTROLPLANE_NAME` entirely.** It remains required for the Model B admin-password seed (`bootstrap/{ns}/{keystone}/admin`, `write-bootstrap-secrets.sh:261-266`) and for the bundled-CR rename under `WITH_CONTROLPLANE_CR` (`hack/deploy-infra.sh:1285-1289`). Those are the keystone-operator password-bootstrap mechanism, not the K-ORC `clouds.yaml`; decoupling them is a separate concern.\n- **Making the `orc-system` `k-orc-clouds-yaml` copy per-CR.** Cross-namespace owner references are disallowed, and that copy is off the `AdminCredentialReady` critical path (boundary 7). It stays a static default-identity manifest for the global mount and the e2e verify job.\n- **Changing the AC's mint credential (`importCredRef` / `acCredRef`) or the re-mint logic.** The imports keep authenticating via `k-orc-clouds-yaml` and the AC keeps minting via `{cp.Name}-admin-password-cloud`; the integration test that \"locks in that split\" (`integration_test.go:415-426`) is unchanged. This issue only changes *who writes the first seed*.\n- **Touching the standalone (per-service) Keystone path.** K-ORC seeding only runs on the ControlPlane stack; the standalone keystone deployment does not seed a K-ORC `clouds.yaml`, so nothing there changes.\n- **Adding new RBAC, CRD fields, or status conditions.** The operator already has `externalsecrets;pushsecrets` RBAC (kubebuilder marker + Helm mirror) and the `KORC`/`AdminCredential` condition wiring; no `*_types.go` change means no `make manifests`/`make generate` regeneration is in scope.\n\n**References:**\n\n- `operators/c5c3/internal/controller/reconcile_korc.go` — `reconcileKORC` (306), `reconcileAdminCredential` (860), `buildPasswordCloudsYAML` (250), `ensureAdminPasswordCloud` (221), `ensureAppCredentialSecret` (134), `adminAppCredentialRemoteKeyFor` (61), `adminAppCredentialPushSecret` (1074), `keystoneEndpointURL` (1242), `appCredCloudsYAMLKey` (126), `korcCloudsYamlSecretName` (87), `regenerateAppCredentialSecretValue` (641).\n- `operators/c5c3/internal/controller/reconcile_keystone.go:41` (`keystoneName`), `reconcile_infrastructure.go:43` (`childNamespace`), `controlplane_controller.go:82` (ESO RBAC marker) and `:103-131` (sub-reconciler order), `instrumentation.go:40-44` (condition map).\n- `operators/c5c3/api/v1alpha1/controlplane_webhook.go:34` (`DefaultCloudCredentialsSecretName`), `:112-116` (one-ControlPlane-per-namespace).\n- `operators/c5c3/internal/controller/reconcile_korc_test.go:383` (the deadlock test to rework) and helpers at `:1015`, `:1029`, `:1065`; `integration_test.go:305-315` (ExternalSecret pre-create to flip).\n- `deploy/openbao/bootstrap/write-bootstrap-secrets.sh:158-218,274,278` (seed to remove); `hack/deploy-infra.sh:102,1198-1201,1320-1321` (knobs to drop/update); `deploy/eso/externalsecrets/k-orc-clouds-yaml.yaml:24-28,44-85` (static shim that names this issue); `deploy/eso/kustomization.yaml:18`.\n- `deploy/kind/controlplane/controlplane.yaml` (default CR), `tests/e2e/c5c3/full-controlplane-keystone/` and `tests/e2e/c5c3/multi-controlplane/` (e2e suites), `operators/c5c3/helm/c5c3-operator/templates/_helpers.tpl:195-200` (Helm RBAC mirror).\n- Review patterns grounding this elaboration: **Kubernetes Operator Reconciliation** (idempotent create-or-update; write-if-empty seed never clobbers the minted credential), **Kubernetes Secrets Management** / External Secrets (OpenBao+ESO over direct Secret writes), **GitOps Principles** (operator owns the per-CR ExternalSecret; the static `orc-system` copy stays declarative), **Kubernetes Server-Side Apply / field ownership** (remove the `openstack`-namespace static ExternalSecret so two controllers never own one object), and the project patterns *Hardcoded sub-resource names prevent multi-instance support* and *Sync RBAC markers with Helm ClusterRole templates* (no new RBAC, so the markers and `_helpers.tpl` already match).\n- Related: #403 (shared `commonv1` types), #411 (default well-known database/cache/secret fields), prior work CC-0110 (ControlPlane reconciler), CC-0112 (per-ControlPlane credential scoping).\n\n---\n\n_Elaborated by [planwerk-review](https://github.com/planwerk/planwerk-review) with Claude Code_\n\n\n**Labels:** enhancement\n\n---\nSource: https://github.com/C5C3/forge/issues/412",
   "stories": [
@@ -460,6 +460,7 @@
       "title": "Add esov1 import and ensureKORCCloudsYAMLExternalSecret(ctx, cp) to reconcile_korc.go: inline controllerutil.CreateOrUpdate of an esov1.ExternalSecret in childNamespace(cp) named CloudCredentialsRef.SecretName (fallback korcCloudsYamlSecretName), SecretStoreRef{ClusterSecretStore, openBaoClusterStoreName}, Target{Name, CreatePolicyOwner}, Data[{SecretKey: appCredCloudsYAMLKey, RemoteRef{Key: adminAppCredentialRemoteKeyFor(cp), Property: appCredCloudsYAMLKey}}], SetControllerReference last. Add unit tests TestEnsureKORCCloudsYAMLExternalSecret_ShapeAndOwnerRef, _PerCRRemoteKeyForNonDefaultName, _IdempotentNoChurn (REQ-002).",
       "level": 1,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-002"
       ]
@@ -469,6 +470,7 @@
       "title": "Add seedBootstrapCloudsYAML(ctx, cp, password) to reconcile_korc.go: controllerutil.CreateOrUpdate on the {cp.Name}-admin-app-credential Secret, write []byte(buildPasswordCloudsYAML(cp, password)) into appCredCloudsYAMLKey ONLY when empty, never touch the value key, SetControllerReference last. Add unit tests TestSeedBootstrapCloudsYAML_WritesWhenCloudsYamlKeyEmpty and _DoesNotOverwriteMintedCloudsYaml (REQ-001, REQ-005).",
       "level": 1,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-005"
@@ -479,6 +481,7 @@
       "title": "Add unit test TestSeedBootstrapCloudsYAML_RenderedDocumentParsesWithInternalEndpointAndProjectedAuthURL using sigs.k8s.io/yaml to Unmarshal the seeded clouds.yaml and assert clouds.<cloud>.endpoint_type == 'internal' and auth.auth_url == http://{cp.Name}-keystone.{cp.Namespace}.svc:5000/v3 (parse the rendered document, not the input) (REQ-004).",
       "level": 1,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-004"
       ]
@@ -488,6 +491,7 @@
       "title": "Wire the three steps into reconcileKORC immediately AFTER ensureAppCredentialSecret (reconcile_korc.go:410) and BEFORE the re-mint/CreateOrUpdate AC decision (line 428): (1) seedBootstrapCloudsYAML(ctx, cp, password); (2) secrets.EnsurePushSecret(ctx, r.Client, r.Scheme, cp, adminAppCredentialPushSecret(cp)); (3) ensureKORCCloudsYAMLExternalSecret(ctx, cp); each on failure sets KORCReady=False with a distinct Reason and returns. Leave a DECISION comment explaining placement (see implementation_notes) (REQ-001, REQ-002, REQ-003).",
       "level": 1,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-001",
         "REQ-002",
@@ -499,6 +503,7 @@
       "title": "Rework the deadlock test: rename/replace TestReconcileAdminCredential_FreshClusterWithoutCloudsYamlSeedDoesNotPush to TestReconcileKORC_FreshClusterSeedsCloudsYamlAndCreatesPushSecretAndExternalSecret driving reconcileKORC (cp + adminPasswordSecret(), no pre-existing ExternalSecret); assert PushSecret + per-CR ExternalSecret created and password clouds.yaml seeded; remove the 'no PushSecret may be created' assertion. Add TestReconcileKORC_PushSecretRemoteKeyMatchesPerCRPath (REQ-003, REQ-009).",
       "level": 1,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-009"
@@ -509,6 +514,7 @@
       "title": "Add edge-case unit tests: TestReconcileKORC_DefersBeforeSeedWhenAdminPasswordMissing (no admin password -> WaitingForAdminPassword, no PushSecret/ExternalSecret created) and TestReconcileKORC_SteadyStateDoesNotOverwriteMintedCloudsYaml (pre-existing minted clouds.yaml survives a reconcileKORC pass) (REQ-003, REQ-005).",
       "level": 1,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-003",
         "REQ-005"
@@ -519,6 +525,7 @@
       "title": "Rework integration_test.go TestIntegration_FullReconcile_ManagedToReady (lines ~298-315): delete the c.Create of cloudsYamlES; instead g.Eventually-Get the operator-created k-orc-clouds-yaml ExternalSecret in ns.Name (assert remoteRef.key == adminAppCredentialRemoteKeyFor(cp), secretKey/property == clouds.yaml, controller ownerRef), then SimulateExternalSecretSync against it. Update the stale 'seeded by write-bootstrap-secrets.sh' comment (REQ-010).",
       "level": 2,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-010"
       ]
@@ -528,6 +535,7 @@
       "title": "Rework the multi-CP drive helper in integration_test.go (lines ~478-488) the same way: wait for each per-CR operator-created ExternalSecret before SimulateExternalSecretSync; confirm TestIntegration_MultiControlPlane_DistinctAdminCredentialPaths still asserts keyA != keyB. Leave the mint-credential split lock (lines ~415-426) unchanged (REQ-010, REQ-002).",
       "level": 2,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-010",
         "REQ-002"
@@ -538,6 +546,7 @@
       "title": "Edit deploy/openbao/bootstrap/write-bootstrap-secrets.sh: delete seed_korc_bootstrap_clouds_yaml() and its doc comment (lines ~121-218), its call + comment in the KORC_CONTROLPLANES loop (lines ~268-278), the ac_path local (line ~255), and the mark_eso_managed \"${ac_path}\" (line ~278). Keep the Model B admin-password seed (lines ~259-266) and its mark_eso_managed \"${admin_path}\". Update the KORC_CONTROLPLANES header comment (lines ~23-34) to drop the app-credential clouds.yaml seed bullet. Verify with bash -n (REQ-007).",
       "level": 3,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-007"
       ]
@@ -547,6 +556,7 @@
       "title": "Edit hack/deploy-infra.sh: delete the KORC_KEYSTONE_AUTH_URL export (line ~1200); keep the KORC_CONTROLPLANES export (line ~1199). Update the comment block (lines ~1170-1197), the parenthetical (lines ~1188-1190), the CONTROLPLANE_NAME context (lines ~95-102), and the WITH_CONTROLPLANE_CR guidance (lines ~1320-1321) to stop describing the K-ORC seed lockstep. Verify grep -rn KORC_KEYSTONE_AUTH_URL over hack/ + deploy/openbao/bootstrap/ returns nothing; bash -n passes (REQ-006).",
       "level": 3,
       "estimate_minutes": 25,
+      "status": "done",
       "requirements": [
         "REQ-006"
       ]
@@ -556,6 +566,7 @@
       "title": "Edit deploy/eso/externalsecrets/k-orc-clouds-yaml.yaml: remove the openstack-namespace ExternalSecret document (lines ~44-65); keep the orc-system document (lines ~66-85) with its default-identity remoteRef.key. Rewrite the header comment (lines ~5-43) to delete the 'issue #412 supersedes it' shim language and describe the operator-owned per-CR (childNamespace) ExternalSecret + the retained static orc-system copy. Leave deploy/eso/kustomization.yaml line 18 in place (REQ-008).",
       "level": 3,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-008"
       ]
@@ -565,6 +576,7 @@
       "title": "Update docs/reference/c5c3/controlplane-reconciler.md: the clouds.yaml gate section (lines ~518-525) to attribute the bootstrap clouds.yaml to the operator's reconcileKORC seed (seedBootstrapCloudsYAML) instead of write-bootstrap-secrets.sh; update the data-flow ASCII (lines ~652-653) and the round-trip reference (line ~1010) to show the operator-owned per-CR ExternalSecret. Reference CC-0114 (REQ-010).",
       "level": 4,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-010"
       ]
@@ -574,6 +586,7 @@
       "title": "Update docs/quick-start-controlplane.md: remove the 'keep the name controlplane / CONTROLPLANE_NAME lockstep' instruction (lines ~53-55), update the inline sample comment about the seeded Secret (line ~94), and remove the WaitingForCloudsYaml force-sync workaround (lines ~121-127) since the operator now seeds. Reference CC-0114 (REQ-010).",
       "level": 4,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-010"
       ]
@@ -583,6 +596,7 @@
       "title": "Update docs/reference/c5c3/controlplane-crd.md: the CloudCredentialsRef.secretName field doc (line ~322), defaulting section (lines ~647-653), and the WaitingForCloudsYaml condition row (lines ~739-740) to describe the operator-created per-CR ExternalSecret. Update docs/reference/infrastructure/infrastructure-manifests.md Admin Credential Chain / ESO ExternalSecrets section (lines ~676-700), the two-namespace table (lines ~682-685), and the K-ORC notes (lines ~448-453) to describe operator-owned childNamespace ExternalSecret + static orc-system copy; delete the #412 follow-up wording. Reference CC-0114 (REQ-010).",
       "level": 4,
       "estimate_minutes": 30,
+      "status": "done",
       "requirements": [
         "REQ-010"
       ]
@@ -592,6 +606,7 @@
       "title": "Cross-check the remaining infra docs for stale seed prose: docs/reference/infrastructure/openbao-bootstrap.md (confirm only the Model B admin-password row at line ~325 remains and no app-credential clouds.yaml seed is described) and docs/reference/infrastructure/e2e-deployment.md; update any sentence that still attributes the K-ORC clouds.yaml to the shell seed or KORC_KEYSTONE_AUTH_URL. Reference CC-0114 (REQ-010).",
       "level": 4,
       "estimate_minutes": 15,
+      "status": "done",
       "requirements": [
         "REQ-010"
       ]
@@ -601,6 +616,7 @@
       "title": "E2E verification (full-controlplane-keystone): confirm the default-name Chainsaw suite still reaches AdminCredentialReady=True with the operator-owned seed (path key unchanged) and update any comment that attributes the seed to write-bootstrap-secrets.sh. Document that execution requires a kind cluster (not runnable in the sandbox) and note the result. Reference CC-0114 (REQ-012).",
       "level": 5,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-012"
       ]
@@ -610,6 +626,7 @@
       "title": "E2E verification (multi-controlplane): with tenant-a/tenant-b prerequisites present, verify each per-CR operator-created ExternalSecret materializes and AdminCredentialReady=True is reached without per-identity overrides; confirm the presence guard still SKIPs cleanly when the stack is absent. Note that wiring the tenant prerequisites into kind CI remains a documented fast-follow (deferred). Reference CC-0114 (REQ-012).",
       "level": 5,
       "estimate_minutes": 20,
+      "status": "done",
       "requirements": [
         "REQ-012"
       ]
@@ -797,6 +814,237 @@
       "story": "The c5c3-operator self-seeds the bootstrap clouds.yaml and per-CR ExternalSecret",
       "expected": "[integration] git diff after make manifests && make generate shows no change under operators/c5c3/config/crd/bases, the Helm crds copy, or the +kubebuilder:rbac markers — no *_types.go change occurred; CC-0114 REQ-011",
       "requirement_id": "REQ-011"
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileKORC_RestrictedTrueGivesUnrestrictedFalse",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileKORC_RestrictedFalseGivesUnrestrictedTrue",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileKORC_RestrictedNilDefaultsToUnrestrictedFalse",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileKORC_AccessRulesProjected",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileKORC_OwnerRefAndCloudCredsAndManagementPolicy",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileKORC_PasswordHashAnnotationStamped",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileKORC_KORCReadyTrueWhenACAvailable",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileKORC_KORCReadyFalseWhileACNotAvailable",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileKORC_MissingCRDNoPanic",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileKORC_WaitsForAdminPassword",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileAdminCredential_GatedOnKORC",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileAdminCredential_MissingAppCredSecretDefers",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileAdminCredential_PushSecretBuiltAndReady",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestAdminAppCredentialRemoteKeyFor_EmbedsNamespaceAndName",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileAdminCredential_PushSecretClobberSafeNoChurn",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileKORC_HashMismatchDeletesACForRemint",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileKORC_RemintStalledAfterTimeout",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileKORC_RemintTerminatingReportsReMinting",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileKORC_HashMatchNoRemint",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileKORC_FreshMintUsesPasswordCloud",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileKORC_PasswordCloudTracksRotation",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileKORC_RecreatePreservesRegeneratedValue",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileKORC_FreshCredentialIDAdvancesLastRotation",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileCatalog_GatedOnAdminCredential",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileCatalog_RegistersServiceAndEndpoint",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileCatalog_Idempotent",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileCatalog_MissingCRDNoPanic",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestKeystoneEndpointURL_DerivesFromProjectedService",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestKeystoneCatalogURL_PrefersPublicEndpoint",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestEnsureKORCAdminImports_CreatesUnmanagedUserAndDomain",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestAdminUserRef_IsControlPlaneScoped",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileKORC_CreatesAppCredentialSecretWithValue",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
+    },
+    {
+      "test_file": "operators/c5c3/internal/controller/reconcile_korc_test.go",
+      "test_function": "TestReconcileAdminCredential_WaitsForPushSecretSync",
+      "story": "",
+      "expected": "Discovered during implementation",
+      "requirement_id": ""
     }
   ],
   "affected_files": [],
@@ -827,8 +1075,18 @@
     "prepared": {
       "github_account": "berendt",
       "timestamp": "2026-06-08T14:31:12.845730"
+    },
+    "processing": {
+      "github_account": "berendt",
+      "timestamp": "2026-06-08T16:55:32.054760"
+    },
+    "completed": {
+      "github_account": "berendt",
+      "timestamp": "2026-06-09T11:15:10.046013"
     }
   },
+  "github_pr": "https://github.com/C5C3/forge/pull/424",
+  "pr_number": 424,
   "execution_history": [
     {
       "run_id": "0421a67b-841a-44e3-a551-11258afd72af",
@@ -840,6 +1098,50 @@
           "name": "prepare",
           "duration": 1644.0855371952057,
           "type": "prepare",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "run_id": "fd77809d-c234-4d90-9b5a-320b45549d99",
+      "timestamp": "2026-06-08T18:36:31.890124",
+      "total_duration": 5525.599084615707,
+      "status": "completed",
+      "timings": [
+        {
+          "name": "Level 1 (6 tasks)",
+          "duration": 1143.509477853775,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 2 (2 tasks)",
+          "duration": 1114.4320724010468,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 3 (3 tasks)",
+          "duration": 536.9479696750641,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 4 (4 tasks)",
+          "duration": 980.8981120586395,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "Level 5 (2 tasks)",
+          "duration": 1033.1936385631561,
+          "type": "level",
+          "status": "done"
+        },
+        {
+          "name": "[CC-0114] Code Review",
+          "duration": 716.6178140640259,
+          "type": "review",
           "status": "done"
         }
       ]

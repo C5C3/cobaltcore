@@ -16,6 +16,7 @@ import (
 
 	"github.com/go-logr/logr"
 
+	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
@@ -272,6 +273,45 @@ func buildPasswordCloudsYAML(cp *c5c3v1alpha1.ControlPlane, password string) str
 		korcAdminUsername, korcAdminDomainName, korcAdminDomainName, region)
 }
 
+// seedBootstrapCloudsYAML writes the PASSWORD-based clouds.yaml into the
+// {cp.Name}-admin-app-credential Secret's clouds.yaml key, but ONLY when that key
+// is empty (write-if-empty). It breaks the AdminCredentialReady chicken-and-egg
+// deadlock on a fresh cluster (CC-0114, REQ-001): the per-CR OpenBao path the
+// k-orc-clouds-yaml ExternalSecret reads is empty until something pushes to it, so
+// the operator seeds a password-based document here that lets K-ORC's admin
+// imports authenticate before the application credential is ever minted —
+// previously this was seeded by deploy/openbao/bootstrap/write-bootstrap-secrets.sh.
+//
+// Write-if-empty is the idempotency guard (CC-0114, REQ-005): once
+// reconcileAdminCredential fills the key with the minted credential-based
+// clouds.yaml (buildAppCredCloudsYAML) the seed becomes a no-op and never clobbers
+// the minted document. On a re-mint, regenerateAppCredentialSecretValue deletes
+// the key, so the next reconcileKORC pass re-seeds the password version and bridges
+// the re-authentication gap. The "value" key (owned by ensureAppCredentialSecret)
+// is never touched.
+func (r *ControlPlaneReconciler) seedBootstrapCloudsYAML(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, password string) error {
+	cloudsYAML := []byte(buildPasswordCloudsYAML(cp, password))
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      adminAppCredentialSecretName(cp),
+			Namespace: childNamespace(cp),
+		},
+	}
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
+		if secret.Data == nil {
+			secret.Data = map[string][]byte{}
+		}
+		// Write-if-empty: never overwrite a minted credential-based clouds.yaml.
+		if len(secret.Data[appCredCloudsYAMLKey]) == 0 {
+			secret.Data[appCredCloudsYAMLKey] = cloudsYAML
+		}
+		return controllerutil.SetControllerReference(cp, secret, r.Scheme)
+	}); err != nil {
+		return fmt.Errorf("seeding bootstrap clouds.yaml into secret %q: %w", secret.Name, err)
+	}
+	return nil
+}
+
 // adminAppCredentialPushSecretName returns the PushSecret name backing up the
 // minted application credential to OpenBao.
 func adminAppCredentialPushSecretName(cp *c5c3v1alpha1.ControlPlane) string {
@@ -414,6 +454,54 @@ func (r *ControlPlaneReconciler) reconcileKORC(ctx context.Context, cp *c5c3v1al
 			ObservedGeneration: cp.Generation,
 			Reason:             "SecretError",
 			Message:            fmt.Sprintf("ensuring application-credential secret: %v", err),
+		})
+		return ctrl.Result{}, err
+	}
+
+	// Seed the bootstrap clouds.yaml, mirror it to OpenBao, and create the per-CR
+	// ExternalSecret that reads it back — all BEFORE the AC is minted, so the
+	// AdminCredentialReady chicken-and-egg gate opens on a fresh cluster without any
+	// external shell seed (CC-0114, REQ-001/REQ-002/REQ-003). The seed is
+	// write-if-empty, so once the credential is minted these become no-ops that never
+	// clobber the minted clouds.yaml.
+	//
+	// DECISION (placement): the issue says "after ensureAdminPasswordCloud and
+	// ensureAppCredentialSecret AND before ensureKORCAdminImports", but the real call
+	// order is ensureAdminPasswordCloud -> ensureKORCAdminImports ->
+	// ensureAppCredentialSecret, so those two constraints are inconsistent. Chose to
+	// insert the three steps immediately AFTER ensureAppCredentialSecret (so the seed
+	// updates the very Secret that call just created/owns rather than racing two
+	// CreateOrUpdate passes over it) and BEFORE the re-mint/CreateOrUpdate AC
+	// decision. The "before the imports" intent is moot: K-ORC retries authentication
+	// asynchronously, so the relative order within one synchronous pass does not
+	// change convergence. Reviewer: please verify.
+	if err := r.seedBootstrapCloudsYAML(ctx, cp, password); err != nil {
+		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+			Type:               conditionTypeKORCReady,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: cp.Generation,
+			Reason:             "SeedCloudsYamlError",
+			Message:            fmt.Sprintf("seeding bootstrap clouds.yaml: %v", err),
+		})
+		return ctrl.Result{}, err
+	}
+	if err := secrets.EnsurePushSecret(ctx, r.Client, r.Scheme, cp, adminAppCredentialPushSecret(cp)); err != nil {
+		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+			Type:               conditionTypeKORCReady,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: cp.Generation,
+			Reason:             "PushSecretError",
+			Message:            fmt.Sprintf("ensuring admin app-credential PushSecret: %v", err),
+		})
+		return ctrl.Result{}, err
+	}
+	if err := r.ensureKORCCloudsYAMLExternalSecret(ctx, cp); err != nil {
+		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+			Type:               conditionTypeKORCReady,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: cp.Generation,
+			Reason:             "ExternalSecretError",
+			Message:            fmt.Sprintf("ensuring k-orc clouds.yaml ExternalSecret: %v", err),
 		})
 		return ctrl.Result{}, err
 	}
@@ -1097,6 +1185,55 @@ func adminAppCredentialPushSecret(cp *c5c3v1alpha1.ControlPlane) *esov1alpha1.Pu
 			}},
 		},
 	}
+}
+
+// ensureKORCCloudsYAMLExternalSecret create-or-updates the per-ControlPlane,
+// operator-owned ExternalSecret that materialises the admin clouds.yaml Secret
+// K-ORC authenticates with, replacing the retired static single-identity manifest
+// (CC-0114, REQ-002). It is created in childNamespace(cp) — co-located with the
+// K-ORC resource CRs because K-ORC resolves CloudCredentialsRef in the resource's
+// own namespace (C1) — and reads the per-CR OpenBao path
+// adminAppCredentialRemoteKeyFor(cp), so an arbitrarily named ControlPlane resolves
+// to the correct key with no manifest edit.
+//
+// The Secret name follows the spec's CloudCredentialsRef.SecretName (defaulted to
+// korcCloudsYamlSecretName by the webhook; the fallback covers a webhook-bypass
+// edge case). CreationPolicy Owner makes ESO own the materialised Secret, and the
+// ExternalSecret itself is owner-referenced to the ControlPlane for GC. The
+// ExternalSecret type is esov1 (NOT esov1alpha1 as the PushSecret above is).
+func (r *ControlPlaneReconciler) ensureKORCCloudsYAMLExternalSecret(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) error {
+	name := cp.Spec.KORC.AdminCredential.CloudCredentialsRef.SecretName
+	if name == "" {
+		name = korcCloudsYamlSecretName
+	}
+	es := &esov1.ExternalSecret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: childNamespace(cp),
+		},
+	}
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, es, func() error {
+		es.Spec.RefreshInterval = &metav1.Duration{Duration: time.Hour}
+		es.Spec.SecretStoreRef = esov1.SecretStoreRef{
+			Kind: "ClusterSecretStore",
+			Name: openBaoClusterStoreName,
+		}
+		es.Spec.Target = esov1.ExternalSecretTarget{
+			Name:           name,
+			CreationPolicy: esov1.CreatePolicyOwner,
+		}
+		es.Spec.Data = []esov1.ExternalSecretData{{
+			SecretKey: appCredCloudsYAMLKey,
+			RemoteRef: esov1.ExternalSecretDataRemoteRef{
+				Key:      adminAppCredentialRemoteKeyFor(cp),
+				Property: appCredCloudsYAMLKey,
+			},
+		}}
+		return controllerutil.SetControllerReference(cp, es, r.Scheme)
+	}); err != nil {
+		return fmt.Errorf("ensuring k-orc clouds.yaml ExternalSecret %q: %w", es.Name, err)
+	}
+	return nil
 }
 
 // reconcileCatalog registers the OpenStack service catalog entries for Keystone

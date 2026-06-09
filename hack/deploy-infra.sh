@@ -94,8 +94,7 @@ WITH_CONTROLPLANE_CR="${WITH_CONTROLPLANE_CR:-false}"
 
 # Name of the ControlPlane CR brought up under WITH_CONTROLPLANE=true. The
 # c5c3-operator projects its Keystone Service as "{CONTROLPLANE_NAME}-keystone",
-# and the OpenBao bootstrap seeds the K-ORC admin clouds.yaml with that Service's
-# in-cluster auth_url — which must be correct before the first credential mint.
+# and the per-CR Model B admin-password bootstrap path is derived from it (CC-0114).
 # Keep this in lockstep with metadata.name of the CR you apply (by hand, or the
 # bundled one under WITH_CONTROLPLANE_CR=true, which is renamed to match). Defaults
 # to "controlplane". Ignored unless WITH_CONTROLPLANE=true.
@@ -1168,36 +1167,30 @@ main() {
   # Step 7: OpenBao bootstrap (init, unseal, configure)
   log "=== Step 7/8: OpenBao bootstrap ==="
   # WITH_CONTROLPLANE: the bootstrap (write-bootstrap-secrets.sh, run inside
-  # openbao_bootstrap below) seeds the K-ORC admin clouds.yaml AND the Model B
-  # admin password on per-ControlPlane OpenBao paths (CC-0112, REQ-009).
+  # openbao_bootstrap below) seeds the per-ControlPlane Model B admin password on
+  # per-CR OpenBao paths (CC-0112, REQ-009).
   #
   # DECISION (CC-0112, REQ-009): the default deployment's ControlPlane identity is
   # "openstack/${CONTROLPLANE_NAME}". The ControlPlane CR always lives in the
   # "openstack" namespace (deploy/kind/controlplane/controlplane.yaml; there is no
   # CONTROLPLANE_NAMESPACE knob), and its name is CONTROLPLANE_NAME (default
   # "controlplane"). Export it as KORC_CONTROLPLANES so write-bootstrap-secrets.sh
-  # seeds bootstrap/openstack/${CONTROLPLANE_NAME}-keystone/admin and
-  # openstack/keystone/openstack/${CONTROLPLANE_NAME}/admin/app-credential — the
-  # exact paths the keystone-operator Model B rotation PushSecret and the
-  # c5c3-operator admin Application Credential PushSecret target. Pre-CC-0112 the
-  # AC path was a single identity-agnostic leaf, so a CONTROLPLANE_NAME override
-  # needed no seed change; now the seed must track CONTROLPLANE_NAME explicitly.
-  # With the default CONTROLPLANE_NAME this equals write-bootstrap-secrets.sh's
-  # built-in KORC_CONTROLPLANES default ("openstack/controlplane"), so the
-  # canonical single-CR deploy path is unchanged. Reviewer: please verify.
-  # (The static keystone-admin / k-orc-clouds-yaml ExternalSecrets are pinned to
-  # the default identity; a CONTROLPLANE_NAME override also requires editing those
-  # two manifests until issue #412 replaces them with per-CR templating.)
-  #
-  # auth_url must also point at the Keystone Service the ControlPlane projects,
-  # "${CONTROLPLANE_NAME}-keystone" (keystoneName() in reconcile_korc.go). The seed
-  # now derives http://<keystone>.<namespace>.svc:5000/v3 per identity, which for
-  # this identity already equals the URL below; the explicit override is kept for
-  # clarity. K-ORC needs it correct before the first mint. Keep CONTROLPLANE_NAME
-  # in lockstep with the applied CR.
+  # seeds bootstrap/openstack/${CONTROLPLANE_NAME}-keystone/admin — the exact path
+  # the keystone-operator Model B rotation PushSecret targets. KORC_CONTROLPLANES
+  # must therefore track CONTROLPLANE_NAME. With the default CONTROLPLANE_NAME this
+  # equals write-bootstrap-secrets.sh's built-in KORC_CONTROLPLANES default
+  # ("openstack/controlplane"), so the canonical single-CR deploy path is unchanged.
+  # Reviewer: please verify.
+  # CC-0114: the K-ORC clouds.yaml is now seeded by the operator (reconcileKORC →
+  # seedBootstrapCloudsYAML), which also derives the in-cluster auth_url itself, so
+  # the shell stack no longer seeds it or exports a K-ORC auth_url override.
+  # (The static keystone-admin ExternalSecret is pinned to the default identity; a
+  # CONTROLPLANE_NAME override also requires editing that manifest until issue #412
+  # replaces it with per-CR templating. The K-ORC clouds.yaml ExternalSecret is now
+  # created per-CR by the operator (CC-0114 supersedes issue #412 for it) and needs
+  # no manifest edit.)
   if [[ "${WITH_CONTROLPLANE}" == "true" ]]; then
     export KORC_CONTROLPLANES="openstack/${CONTROLPLANE_NAME}"
-    export KORC_KEYSTONE_AUTH_URL="http://${CONTROLPLANE_NAME}-keystone.openstack.svc:5000/v3"
   fi
   openbao_init_unseal
   openbao_bootstrap
@@ -1317,8 +1310,10 @@ main() {
       log "  Operator stack is up. The ControlPlane CR is NOT applied automatically —"
       log "  create and apply it yourself (see docs/quick-start-controlplane.md), e.g.:"
       log "    kubectl apply -f deploy/kind/controlplane/controlplane.yaml"
-      log "  Name the CR '${CONTROLPLANE_NAME}' (the OpenBao seed points K-ORC at the"
-      log "  ${CONTROLPLANE_NAME}-keystone Service — set CONTROLPLANE_NAME to change it);"
+      log "  Name the CR '${CONTROLPLANE_NAME}' (CONTROLPLANE_NAME must match the applied"
+      log "  CR name — the per-CR Model B admin-password bootstrap path and the projected"
+      log "  ${CONTROLPLANE_NAME}-keystone Service both derive from it; set CONTROLPLANE_NAME"
+      log "  to change it);"
       log "  on a KIND_HOST_PORT override set spec.services.keystone.publicEndpoint to"
       log "  the matching :<port> URL. Or re-run with WITH_CONTROLPLANE_CR=true to apply"
       log "  the bundled CR for you."

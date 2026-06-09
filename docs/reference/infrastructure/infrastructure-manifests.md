@@ -449,8 +449,10 @@ The upstream installer has no global-cloud-config knob (the previous HelmRelease
 `globalCloudConfig.secretName`). That is not on the credential critical path: K-ORC
 authenticates **per resource** via each CR's `CloudCredentialsRef`, resolved in the
 CR's own (control-plane) namespace, so the credential chain below materialises a
-co-located `k-orc-clouds-yaml` copy there. The `orc-system` copy remains for any global
-default K-ORC mounts. See [Admin Credential Chain](#admin-credential-chain) below.
+co-located `k-orc-clouds-yaml` copy there via the per-ControlPlane ExternalSecret the
+c5c3-operator creates and owns (`reconcileKORC`). The `orc-system` copy
+remains a static manifest for any global default K-ORC mounts. See
+[Admin Credential Chain](#admin-credential-chain) below.
 
 ### c5c3-operator
 
@@ -670,34 +672,43 @@ shipped by the [memcached-operator](https://github.com/C5C3/memcached-operator) 
 
 The c5c3-operator mints a single restricted admin Application Credential per cluster and
 mirrors it to OpenBao, from where the External Secrets Operator materialises it as the
-`clouds.yaml` Secret that K-ORC authenticates with. Two manifests wire this
-chain:
+`clouds.yaml` Secret that K-ORC authenticates with. The chain has two
+`ExternalSecret`s materialising the Kubernetes Secret `k-orc-clouds-yaml`, but only
+one of them is a static manifest:
 
-**ESO ExternalSecrets** — `deploy/eso/externalsecrets/k-orc-clouds-yaml.yaml`
+| Namespace | Source | Purpose |
+| --- | --- | --- |
+| `openstack` (control-plane) | **operator-created per-CR** (`reconcileKORC` → `ensureKORCCloudsYAMLExternalSecret`) | **C1 co-location** — the c5c3-operator creates the K-ORC `ApplicationCredential`/`Service`/`Endpoint` CRs in the control-plane namespace, and K-ORC resolves each CR's `CloudCredentialsRef` Secret in that *same* namespace, so the admin clouds.yaml must live here for K-ORC to authenticate. This is the copy the `AdminCredentialReady` gate waits on. |
+| `orc-system` | **static manifest** — `deploy/eso/externalsecrets/k-orc-clouds-yaml.yaml` | The copy K-ORC mounts as its global default `clouds.yaml` (off the credential critical path — see the [K-ORC section](#k-orc-openstack-resource-controller)). |
 
-The file declares **two** `ExternalSecret`s (both `external-secrets.io/v1`, store
-`openbao-cluster-store`, `creationPolicy: Owner`, `refreshInterval: 1h`), each
-materialising the Kubernetes Secret `k-orc-clouds-yaml` from the same OpenBao key:
-
-| Namespace | Purpose |
-| --- | --- |
-| `openstack` (control-plane) | **C1 co-location** — the c5c3-operator creates the K-ORC `ApplicationCredential`/`Service`/`Endpoint` CRs in the control-plane namespace, and K-ORC resolves each CR's `CloudCredentialsRef` Secret in that *same* namespace, so the admin clouds.yaml must live here for K-ORC to authenticate. This is the copy the `AdminCredentialReady` gate waits on. |
-| `orc-system` | The copy K-ORC mounts as its global default `clouds.yaml` (off the credential critical path — see the [K-ORC section](#k-orc-openstack-resource-controller)). |
-
-Both read the per-ControlPlane OpenBao key
+**Control-plane copy (operator-created per ControlPlane)** — the
+control-plane-namespace `k-orc-clouds-yaml` ExternalSecret is **not** a static
+manifest: the c5c3-operator creates and owns one **per ControlPlane**
+(`reconcileKORC` → `ensureKORCCloudsYAMLExternalSecret`), owner-ref'd to
+the CR for GC and created in the ControlPlane's child namespace. It is named after
+`spec.korc.adminCredential.cloudCredentialsRef.secretName` (default
+`k-orc-clouds-yaml`) and reads the per-CR OpenBao key
 `openstack/keystone/{namespace}/{name}/admin/app-credential` (property
-`clouds.yaml`, store-relative to the KV-v2 mount) — keyed by the ControlPlane's
-namespace and name so each CR owns an isolated admin-credential path.
-For the default deployment identity (ControlPlane `openstack/controlplane`) this
-resolves to `openstack/keystone/openstack/controlplane/admin/app-credential`, and
-both ExternalSecrets currently read that single per-CR default key as a static
-single-identity deployment shim — operator-owned per-CR ExternalSecret templating
-is a follow-up (#412). On a fresh cluster that key is
-seeded with a password-based bootstrap clouds.yaml by
-`deploy/openbao/bootstrap/write-bootstrap-secrets.sh` so the
-ExternalSecrets can materialise before any credential is minted; once the
-c5c3-operator mints the admin Application Credential its PushSecret overwrites the
-key with the App-Cred-based clouds.yaml.
+`clouds.yaml`, store-relative to the KV-v2 mount) via the `openbao-cluster-store`
+`ClusterSecretStore`, with `creationPolicy: Owner` and `refreshInterval: 1h`.
+Because both the ExternalSecret name and the OpenBao key are derived per-CR, an
+arbitrarily named ControlPlane resolves to the correct key with **no manifest
+edit** — the operator now resolves what was previously deferred for this ExternalSecret.
+
+**`orc-system` copy (static manifest)** — `deploy/eso/externalsecrets/k-orc-clouds-yaml.yaml`
+now declares **only** the `orc-system` `ExternalSecret` (`external-secrets.io/v1`,
+store `openbao-cluster-store`, `creationPolicy: Owner`, `refreshInterval: 1h`),
+K-ORC's global default `clouds.yaml` mount. For the default deployment identity
+(ControlPlane `openstack/controlplane`) it reads the per-CR default key
+`openstack/keystone/openstack/controlplane/admin/app-credential`.
+
+On a fresh cluster the bootstrap `clouds.yaml` at the per-CR OpenBao key is seeded
+by the **operator** (`reconcileKORC` → `seedBootstrapCloudsYAML`, write-if-empty):
+it writes a password-based bootstrap `clouds.yaml` into the admin
+Application Credential Secret, and the operator's PushSecret mirrors it to OpenBao
+so the ExternalSecrets can materialise before any credential is minted. Once the
+c5c3-operator mints the admin Application Credential the same PushSecret overwrites
+the key with the App-Cred-based `clouds.yaml`.
 
 **OpenBao policy** — `deploy/openbao/policies/push-app-credentials.hcl`
 

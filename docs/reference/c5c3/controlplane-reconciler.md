@@ -519,10 +519,13 @@ OpenBao:
   `secrets.WaitForExternalSecret(childNamespace(cp)/CloudCredentialsRef.SecretName)`
   so the credential is never published before K-ORC can actually authenticate.
   The Secret is co-located with the K-ORC CRs (C1) because K-ORC resolves
-  `CloudCredentialsRef` in the resource's own namespace; on a fresh cluster the
-  underlying OpenBao path is seeded with a password-based bootstrap clouds.yaml by
-  `write-bootstrap-secrets.sh` so the ExternalSecret can
-  materialise — the c5c3 PushSecret then overwrites it with the minted credential.
+  `CloudCredentialsRef` in the resource's own namespace; on a fresh cluster
+  `reconcileKORC` itself seeds a password-based bootstrap clouds.yaml into the
+  `{controlplane.Name}-admin-app-credential` Secret (`seedBootstrapCloudsYAML`,
+  write-if-empty) and the PushSecret mirrors it to the per-ControlPlane
+  OpenBao path, so the operator-created per-CR ExternalSecret can materialise
+  before any credential is minted — once the AC is minted the PushSecret carries
+  the minted credential-based clouds.yaml instead.
 - **PushSecret to OpenBao.** `secrets.EnsurePushSecret` (idempotent; only Updates
   on a `DeepEqual` diff so ESO is not woken to re-push an unchanged credential)
   builds the PushSecret to `openbao-cluster-store` at the per-ControlPlane remote
@@ -650,7 +653,9 @@ PushSecret  →  OpenBao kv  openstack/keystone/{cp.Namespace}/{cp.Name}/admin/a
         │
         ▼
 ExternalSecret  →  {control-plane ns}/k-orc-clouds-yaml  (the clouds.yaml gate;
-        │            a copy also lands in orc-system for K-ORC's global mount)
+        │            operator-created per-CR by reconcileKORC, owner-ref'd to
+        │            the ControlPlane; the orc-system copy is the retained
+        │            STATIC manifest for K-ORC's global mount)
         ▼
 K-ORC controller authenticates with the admin clouds.yaml and reconciles
    the catalog Service + Endpoint                              (reconcileCatalog)
@@ -1007,4 +1012,5 @@ design source for this reconciler:
   chart constraint.
 - `architecture/docs/05-deployment/01-gitops-fluxcd/01-credential-lifecycle.md` —
   the restricted, password-driven admin Application Credential lifecycle and the
-  bootstrap-seed → mint → PushSecret → ESO round-trip.
+  operator bootstrap-seed → mint → PushSecret → operator-owned per-CR
+  ExternalSecret round-trip.

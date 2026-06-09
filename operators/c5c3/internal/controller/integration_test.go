@@ -295,25 +295,6 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	}
 	g.Expect(c.Create(ctx, adminSecret)).To(Succeed(), "create admin password Secret")
 
-	// The K-ORC clouds.yaml ExternalSecret AdminCredentialReady gates on. Per the
-	// C1 co-location fix it lives in the SAME namespace as the K-ORC resource CRs
-	// (the ControlPlane namespace), NOT a fixed orc-system one, because K-ORC
-	// resolves CloudCredentialsRef in the resource's own namespace. Create it and
-	// simulate its ESO sync so WaitForExternalSecret reports Ready. On a live
-	// cluster this Secret is seeded with a password-based bootstrap clouds.yaml by
-	// write-bootstrap-secrets.sh and later overwritten by the operator's PushSecret.
-	cloudsYamlES := &esov1.ExternalSecret{
-		ObjectMeta: metav1.ObjectMeta{Name: korcCloudsYamlSecretName, Namespace: ns.Name},
-		Spec: esov1.ExternalSecretSpec{
-			SecretStoreRef: esov1.SecretStoreRef{Kind: "ClusterSecretStore", Name: "openbao-cluster-store"},
-			Target:         esov1.ExternalSecretTarget{Name: korcCloudsYamlSecretName},
-		},
-	}
-	g.Expect(c.Create(ctx, cloudsYamlES)).To(Succeed(), "create k-orc clouds.yaml ExternalSecret")
-	g.Expect(simulators.SimulateExternalSecretSync(ctx, c,
-		client.ObjectKey{Namespace: ns.Name, Name: korcCloudsYamlSecretName})).
-		To(Succeed(), "simulate k-orc clouds.yaml ExternalSecret sync")
-
 	// Create the ControlPlane CR (the defaulting webhook fills region etc.).
 	cp := integrationManagedControlPlane("cp", ns.Name)
 	g.Expect(c.Create(ctx, cp)).To(Succeed(), "create ControlPlane CR")
@@ -332,6 +313,32 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	simulateApplicationCredentialAvailableWhenPresent(t, ctx, c,
 		client.ObjectKey{Name: adminAppCredentialName(cp), Namespace: ns.Name})
 	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeKORCReady, metav1.ConditionTrue, itEventuallyTimeout)
+
+	// The K-ORC clouds.yaml ExternalSecret AdminCredentialReady gates on is now
+	// CREATED BY THE OPERATOR (reconcileKORC -> ensureKORCCloudsYAMLExternalSecret),
+	// co-located in the ControlPlane namespace because K-ORC resolves
+	// CloudCredentialsRef in the resource's own namespace — it is no longer seeded by
+	// write-bootstrap-secrets.sh (CC-0114, REQ-010). reconcileKORC creates it before
+	// the AC-Available gate, so it exists by the time KORCReady flips True (above).
+	// Assert its operator-rendered shape, then simulate the ESO sync (no ESO
+	// controller in envtest) so WaitForExternalSecret reports Ready and Phase 4 can
+	// progress.
+	cloudsYamlES := &esov1.ExternalSecret{}
+	g.Eventually(func() error {
+		return c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: korcCloudsYamlSecretName}, cloudsYamlES)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "operator must create the k-orc clouds.yaml ExternalSecret")
+	g.Expect(cloudsYamlES.Spec.Data).To(HaveLen(1), "clouds.yaml ExternalSecret must declare exactly one Data entry")
+	g.Expect(cloudsYamlES.Spec.Data[0].SecretKey).To(Equal(appCredCloudsYAMLKey))
+	g.Expect(cloudsYamlES.Spec.Data[0].RemoteRef.Key).To(Equal(adminAppCredentialRemoteKeyFor(cp)),
+		"clouds.yaml ExternalSecret must read the per-CR OpenBao path")
+	g.Expect(cloudsYamlES.Spec.Data[0].RemoteRef.Property).To(Equal(appCredCloudsYAMLKey))
+	owner := metav1.GetControllerOf(cloudsYamlES)
+	g.Expect(owner).NotTo(BeNil(), "clouds.yaml ExternalSecret must be controller-owned by the ControlPlane")
+	g.Expect(owner.Kind).To(Equal("ControlPlane"))
+	g.Expect(owner.Name).To(Equal(cp.Name))
+	g.Expect(simulators.SimulateExternalSecretSync(ctx, c,
+		client.ObjectKey{Namespace: ns.Name, Name: korcCloudsYamlSecretName})).
+		To(Succeed(), "simulate k-orc clouds.yaml ExternalSecret sync")
 
 	// --- Phase 4: AdminCredential push. Gated on the clouds.yaml ES (synced
 	// above) AND on the admin app-credential PushSecret syncing to OpenBao
@@ -473,20 +480,6 @@ func driveControlPlaneToAdminCredentialReady(
 	}
 	g.Expect(c.Create(ctx, adminSecret)).To(Succeed(), "create admin password Secret")
 
-	// The K-ORC clouds.yaml ExternalSecret AdminCredentialReady gates on, in the
-	// CR's own namespace (the C1 co-location fix), plus its simulated ESO sync.
-	cloudsYamlES := &esov1.ExternalSecret{
-		ObjectMeta: metav1.ObjectMeta{Name: korcCloudsYamlSecretName, Namespace: ns},
-		Spec: esov1.ExternalSecretSpec{
-			SecretStoreRef: esov1.SecretStoreRef{Kind: "ClusterSecretStore", Name: "openbao-cluster-store"},
-			Target:         esov1.ExternalSecretTarget{Name: korcCloudsYamlSecretName},
-		},
-	}
-	g.Expect(c.Create(ctx, cloudsYamlES)).To(Succeed(), "create k-orc clouds.yaml ExternalSecret")
-	g.Expect(simulators.SimulateExternalSecretSync(ctx, c,
-		client.ObjectKey{Namespace: ns, Name: korcCloudsYamlSecretName})).
-		To(Succeed(), "simulate k-orc clouds.yaml ExternalSecret sync")
-
 	cpKey := types.NamespacedName{Name: cp.Name, Namespace: ns}
 
 	// --- Phase 1: Infrastructure (MariaDB + Memcached). ---
@@ -502,6 +495,24 @@ func driveControlPlaneToAdminCredentialReady(
 	simulateApplicationCredentialAvailableWhenPresent(t, ctx, c,
 		client.ObjectKey{Name: adminAppCredentialName(cp), Namespace: ns})
 	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeKORCReady, metav1.ConditionTrue, itEventuallyTimeout)
+
+	// The K-ORC clouds.yaml ExternalSecret is created per-CR BY THE OPERATOR
+	// (reconcileKORC -> ensureKORCCloudsYAMLExternalSecret) in the CR's own
+	// namespace, no longer seeded by write-bootstrap-secrets.sh (CC-0114, REQ-010).
+	// Each CR reads a DISTINCT per-CR OpenBao path (adminAppCredentialRemoteKeyFor) —
+	// the meaningful multi-CP check here; full distinctness across CRs is asserted by
+	// the caller via the PushSecret RemoteKeys. Assert the per-CR path, then simulate
+	// its ESO sync so Phase 4 can progress.
+	cloudsYamlES := &esov1.ExternalSecret{}
+	g.Eventually(func() error {
+		return c.Get(ctx, client.ObjectKey{Namespace: ns, Name: korcCloudsYamlSecretName}, cloudsYamlES)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "operator must create the k-orc clouds.yaml ExternalSecret")
+	g.Expect(cloudsYamlES.Spec.Data).To(HaveLen(1), "clouds.yaml ExternalSecret must declare exactly one Data entry")
+	g.Expect(cloudsYamlES.Spec.Data[0].RemoteRef.Key).To(Equal(adminAppCredentialRemoteKeyFor(cp)),
+		"clouds.yaml ExternalSecret must read this CR's per-CR OpenBao path")
+	g.Expect(simulators.SimulateExternalSecretSync(ctx, c,
+		client.ObjectKey{Namespace: ns, Name: korcCloudsYamlSecretName})).
+		To(Succeed(), "simulate k-orc clouds.yaml ExternalSecret sync")
 
 	// --- Phase 4: AdminCredential push (gated on the synced clouds.yaml ES and the
 	// admin app-credential PushSecret syncing to OpenBao). ---

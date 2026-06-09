@@ -2,67 +2,42 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# ExternalSecret(s) for the K-ORC admin Application Credential clouds.yaml.
+# ExternalSecret for the K-ORC global default clouds.yaml (orc-system copy).
 #
-# Both ExternalSecrets pull the admin clouds.yaml from the per-ControlPlane
-# OpenBao path "openstack/keystone/openstack/controlplane/admin/app-credential"
-# (store-relative to the kv-v2 mount) and materialise it as the Kubernetes Secret
-# "k-orc-clouds-yaml". On a fresh cluster that OpenBao path is SEEDED with a
-# password-based bootstrap clouds.yaml by
-# deploy/openbao/bootstrap/write-bootstrap-secrets.sh (CC-0110, REQ-024); once
-# the c5c3-operator mints the admin Application Credential its PushSecret
+# The per-ControlPlane K-ORC admin clouds.yaml ExternalSecret — the Secret K-ORC
+# resolves per-resource via CloudCredentialsRef, co-located with the K-ORC
+# ApplicationCredential/Service/Endpoint CRs in the ControlPlane's child
+# namespace — is now CREATED AND OWNED BY THE c5c3-operator
+# (ensureKORCCloudsYAMLExternalSecret / reconcileKORC, CC-0114). It is no longer
+# a static manifest here: the operator renders one per ControlPlane with the
+# correct per-CR target name and the per-ControlPlane OpenBao remoteRef.key.
+#
+# CC-0110, C1 (co-location) — why the operator creates that ExternalSecret in the
+# child namespace: cross-namespace owner references are disallowed, so the
+# c5c3-operator creates the K-ORC ApplicationCredential/Service/Endpoint CRs in
+# the ControlPlane's OWN (child) namespace, and K-ORC resolves each CR's
+# CloudCredentialsRef Secret in that SAME namespace (vendored
+# api/v1alpha1/credentials_ref.go GetCloudCredentialsRef returns the resource's
+# own Namespace). The admin clouds.yaml Secret MUST therefore exist in the child
+# namespace for K-ORC to authenticate — hence the operator materialises it there
+# rather than this manifest pinning a single static namespace.
+#
+# What remains here: the static orc-system copy of the admin clouds.yaml, which
+# backs K-ORC's GLOBAL DEFAULT clouds.yaml mount (deploy/flux-system/releases/
+# k-orc.yaml applies the upstream installer). This copy is NOT on the per-resource
+# credential critical path — K-ORC authenticates each CR via its own
+# CloudCredentialsRef Secret in the child namespace (C1 above), not via the global
+# mount. It pulls the admin clouds.yaml from the default-identity OpenBao path
+# "openstack/keystone/openstack/controlplane/admin/app-credential" (store-relative
+# to the kv-v2 mount) and materialises it as the Kubernetes Secret
+# "k-orc-clouds-yaml" in orc-system. That path is SEEDED on a fresh cluster by the
+# c5c3-operator's reconcileKORC (CC-0114): seedBootstrapCloudsYAML writes a
+# password-based bootstrap clouds.yaml into the admin Application Credential Secret
+# and the admin AC PushSecret pushes it to this OpenBao path; once the operator
+# mints the default ControlPlane's admin Application Credential the same PushSecret
 # overwrites the path with the App-Cred-based clouds.yaml.
 #
-# CC-0112 (REQ-011): the admin Application Credential path is now scoped per
-# ControlPlane (openstack/keystone/{namespace}/{name}/admin/app-credential, see
-# adminAppCredentialRemoteKeyFor in reconcile_korc.go) so two ControlPlanes never
-# clobber each other's admin credential on the cluster-global OpenBao backend.
-# The identity below is the default ControlPlane Quick Start's CR: ControlPlane
-# "controlplane" in namespace "openstack" (deploy/kind/controlplane/
-# controlplane.yaml).
-#
-# This static, single-identity remoteRef.key is a deployment shim:
-# https://github.com/.../issues/412 supersedes it with operator-owned per-CR
-# templating that renders one k-orc-clouds-yaml ExternalSecret per ControlPlane
-# automatically. Until then, bringing up a non-default ControlPlane requires
-# editing this key (and CONTROLPLANE_NAME in `make deploy-infra`) in lockstep.
-#
-# CC-0110, C1 (co-location): the c5c3-operator creates the K-ORC
-# ApplicationCredential/Service/Endpoint CRs in the ControlPlane's OWN namespace
-# (the control-plane namespace, "openstack"), because cross-namespace owner
-# references are disallowed. K-ORC resolves each CR's CloudCredentialsRef Secret
-# in that SAME namespace (api/v1alpha1/credentials_ref.go GetCloudCredentialsRef
-# returns the resource's own Namespace). The admin clouds.yaml Secret MUST
-# therefore exist in "openstack" for K-ORC to authenticate — the first document
-# below. The second document keeps a copy in "orc-system" for any global default
-# clouds.yaml mount K-ORC uses there (deploy/flux-system/releases/k-orc.yaml
-# applies the upstream installer; the global mount is not on the credential
-# critical path — see C1 above). Both read the same OpenBao path, so both stay
-# in lockstep.
-#
-# Feature: CC-0110, REQ-023, REQ-024
----
-# Co-located with the K-ORC ApplicationCredential/Service/Endpoint CRs the
-# c5c3-operator projects (control-plane namespace). This is the Secret K-ORC
-# resolves per-resource via CloudCredentialsRef.
-apiVersion: external-secrets.io/v1
-kind: ExternalSecret
-metadata:
-  name: k-orc-clouds-yaml
-  namespace: openstack
-spec:
-  refreshInterval: 1h
-  secretStoreRef:
-    name: openbao-cluster-store
-    kind: ClusterSecretStore
-  target:
-    name: k-orc-clouds-yaml
-    creationPolicy: Owner
-  data:
-    - secretKey: clouds.yaml
-      remoteRef:
-        key: openstack/keystone/openstack/controlplane/admin/app-credential
-        property: clouds.yaml
+# Feature: CC-0110, CC-0114, REQ-023, REQ-024
 ---
 # Copy in orc-system for K-ORC's global default clouds.yaml mount.
 apiVersion: external-secrets.io/v1

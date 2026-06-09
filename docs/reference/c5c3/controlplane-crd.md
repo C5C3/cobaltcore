@@ -319,7 +319,7 @@ authenticates as.
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `cloudName` | `string` | Yes | — | The entry in `clouds.yaml` K-ORC authenticates as. Also used by the reconciler as the conventional K-ORC `User` reference name (defaulting to `admin` when empty) and projected onto the catalog `Service`/`Endpoint` CRs. |
-| `secretName` | `string` | No | `"k-orc-clouds-yaml"` | Name of the Secret holding the `clouds.yaml` document. Defaulted to `k-orc-clouds-yaml` by **both** the `+kubebuilder:default` marker and the defaulting webhook. The Secret is namespace-local to the ControlPlane's child namespace; because the operator enforces one ControlPlane per namespace, the shared default name does not collide across control planes. |
+| `secretName` | `string` | No | `"k-orc-clouds-yaml"` | Name of the Secret holding the `clouds.yaml` document. Defaulted to `k-orc-clouds-yaml` by **both** the `+kubebuilder:default` marker and the defaulting webhook. The Secret is namespace-local to the ControlPlane's child namespace; because the operator enforces one ControlPlane per namespace, the shared default name does not collide across control planes. The operator (`reconcileKORC` → `ensureKORCCloudsYAMLExternalSecret`) **creates and owns** a per-ControlPlane ExternalSecret of this name in the child namespace that materialises the Secret, reading the per-CR OpenBao path — so the shared default name is safe and needs no per-CR manifest. |
 
 ---
 
@@ -736,7 +736,7 @@ Set by `reconcileAdminCredential` (gated on `KORCReady` **and** the K-ORC
 | --- | --- | --- |
 | `True` | `AdminCredentialReady` | The admin application credential is committed to the owned Secret and mirrored to OpenBao. |
 | `False` | `WaitingForKORC` | `KORCReady` is not `True`; credential push deferred. |
-| `False` | `WaitingForCloudsYaml` | The `k-orc-clouds-yaml` ExternalSecret in the control-plane namespace (co-located with the K-ORC CRs per C1) is not yet Ready. |
+| `False` | `WaitingForCloudsYaml` | The operator-created per-ControlPlane `k-orc-clouds-yaml` ExternalSecret in the control-plane namespace (co-located with the K-ORC CRs per C1; created and owned by `reconcileKORC`) is not yet Ready. |
 | `False` | `CloudsYamlError` | Error checking the `clouds.yaml` ExternalSecret. |
 | `False` | `SecretError` | Error ensuring the operator-owned application-credential Secret. |
 | `False` | `PushSecretError` | Error ensuring the OpenBao PushSecret. |

@@ -18,6 +18,16 @@
 # orc-system/k-orc-clouds-yaml. restricted:true keeps the credential
 # least-privilege so a leak is scoped (REQ-013).
 #
+# CC-0114, REQ-012: the FIRST authentication uses a password-based clouds.yaml
+# that the c5c3-operator now SEEDS ITSELF (seedBootstrapCloudsYAML, write-if-
+# empty) into the controlplane-keystone-admin-app-credential Secret at reconcile
+# time — it is no longer pre-seeded by deploy tooling ahead of this CR. The seed
+# never clobbers a minted credential-based clouds.yaml. The per-CR
+# k-orc-clouds-yaml ExternalSecret in this CR's own namespace (openstack) is
+# likewise OPERATOR-CREATED (ensureKORCCloudsYAMLExternalSecret), reading the
+# per-CR OpenBao path; the orc-system/k-orc-clouds-yaml copy is the retained
+# static ExternalSecret that K-ORC's globalCloudConfig mounts.
+#
 # `global.rules` carries one oslo.policy override so the test can assert that the
 # reconciler merges policy into the projected Keystone CR's spec.policyOverrides
 # (the per-service override path is left empty here so the global rule wins).

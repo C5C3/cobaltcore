@@ -1,0 +1,69 @@
+{
+  "summary": "Testing review of CC-0114 (operator-owned K-ORC bootstrap clouds.yaml seed). Every acceptance criterion has a passing, meaningful test: ES shape+ownerRef+per-CR remoteRef, write-if-empty/non-overwrite/repopulate-after-remint, rendered-document parsing (yaml.Unmarshal of the SEEDED bytes, not the format-string input) asserting endpoint_type:internal and a genuinely-distinct projected auth_url for both default and non-default CRs, the reworked deadlock test (old 'no push' assertion removed; now asserts seed+PushSecret+ES are created), the two edge cases (defer-before-seed asserts ABSENCE of PushSecret+ES; steady-state asserts a stable ResourceVersion against a fixture where both ensureAppCredentialSecret and the seed are provably no-ops), and the integration test which now waits for (never pre-creates) the operator-rendered ES before SimulateExternalSecretSync across both the full and multi-CP paths. All 18 CC-0114 unit subtests pass. Index-based container assertions are uniformly guarded by HaveLen(1), so they are not brittle. One MINOR finding: TestReconcileKORC_FreshClusterSeedsPasswordCloudsYaml is a near-duplicate of TestReconcileKORC_FreshClusterSeedsCloudsYamlAndCreatesPushSecretAndExternalSecret (same reconcileKORC fixture/path; only unique coverage is the 'username:' substring) and is a consolidation candidate. No correctness or coverage gaps.",
+  "verdict": "APPROVED",
+  "tests_checklist": [
+    {"item": "ES shape+ownerRef+per-CR remoteRef.key covered (ShapeAndOwnerRef asserts ClusterSecretStore/openBaoClusterStoreName, Target.Name, CreatePolicyOwner, single Data, SecretKey=clouds.yaml, RemoteRef.Key=adminAppCredentialRemoteKeyFor, Property=clouds.yaml, controller ownerRef Kind=ControlPlane *Controller=true)", "checked": true},
+    {"item": "Per-CR remoteRef tracks arbitrary name/namespace (PerCRRemoteKeyForNonDefaultName asserts literal openstack/keystone/tenant-a/controlplane-a/admin/app-credential)", "checked": true},
+    {"item": "ES idempotency proven via ResourceVersion stability across two passes (IdempotentNoChurn)", "checked": true},
+    {"item": "write-if-empty seed covered (WritesWhenCloudsYamlKeyEmpty; also asserts the 'value' key is preserved byte-for-byte)", "checked": true},
+    {"item": "Non-overwrite of minted clouds.yaml covered (DoesNotOverwriteMintedCloudsYaml asserts byte-for-byte equality with the pre-set minted document)", "checked": true},
+    {"item": "Repopulate-after-remint covered (RepopulatesAfterReMintDeletesKey, post-remint state = only 'value' present)", "checked": true},
+    {"item": "Rendered clouds.yaml is PARSED not input-asserted (seedAndReadCloudsYAML reads the Secret then yaml.Unmarshal; asserts endpoint_type:internal and auth_url) for BOTH default and non-default CR with genuinely-distinct projected auth_urls (controlplane-keystone.openstack vs cp-keystone.default), cross-checked against keystoneEndpointURL(cp)", "checked": true},
+    {"item": "endpoint_type-key-not-interface boundary covered (UsesEndpointTypeKeyNotInterface asserts HaveKey endpoint_type, NotTo HaveKey interface)", "checked": true},
+    {"item": "Reworked deadlock test drives reconcileKORC (not reconcileAdminCredential) and asserts seed+PushSecret+ES all created; old IsNotFound 'no push' assertion is removed", "checked": true},
+    {"item": "Edge: DefersBeforeSeedWhenAdminPasswordMissing asserts WaitingForAdminPassword AND absence (IsNotFound) of both PushSecret and ExternalSecret", "checked": true},
+    {"item": "Edge: SteadyStateDoesNotOverwriteMintedCloudsYaml asserts RV stable on a fixture where ensureAppCredentialSecret (value set, ownerRef set) and seed (clouds.yaml set) are both verifiably no-ops, so a non-zero RV delta could only be a seed regression — not vacuous", "checked": true},
+    {"item": "Integration test no longer pre-creates the ES (manual c.Create removed); asserts operator creates it via Eventually+Get, validates Data len/SecretKey/RemoteRef.Key/Property and controller ownerRef, then SimulateExternalSecretSync; applied to both FullReconcile and multi-CP driver", "checked": true},
+    {"item": "Index-based container assertions (Spec.Data[0], SecretStoreRefs[0]) are all preceded by HaveLen(1) guards — not brittle", "checked": true},
+    {"item": "Old test name fully removed (no dangling FreshClusterWithoutCloudsYamlSeedDoesNotPush reference outside the replacement comment)", "checked": true},
+    {"item": "PushSecret remoteRef target asserted to match per-CR path and openBaoClusterStoreName (PushSecretRemoteKeyMatchesPerCRPath)", "checked": true},
+    {"item": "All 18 CC-0114 unit subtests pass locally", "checked": true}
+  ],
+  "code_quality_checklist": [
+    {"item": "Test helpers (seedAndReadCloudsYAML, defaultNamedControlPlane) use t.Helper() and read the rendered Secret, not the input format string", "checked": true},
+    {"item": "Tests do not rely on implicit defaults (SecretName explicitly 'k-orc-clouds-yaml' on the CR; non-default test sets distinct name+namespace+UID)", "checked": true},
+    {"item": "Test names accurately describe their scope", "checked": true}
+  ],
+  "security_checklist": [
+    {"item": "No new test introduces a plaintext credential into a host process arg; password materialised into a Secret only", "checked": true}
+  ],
+  "architecture_checklist": [
+    {"item": "Tests assert the ES type is esov1 (external-secrets.io/v1) and PushSecret stays esov1alpha1", "checked": true}
+  ],
+  "dry_yagni_checklist": [
+    {"item": "TestReconcileKORC_FreshClusterSeedsPasswordCloudsYaml overlaps heavily with the reworked deadlock test (same fixture/path); flagged as a consolidation candidate (MINOR)", "checked": false}
+  ],
+  "fail_fast_checklist": [
+    {"item": "Each seed step in reconcileKORC carries a distinct KORCReady=False Reason (SeedCloudsYamlError/PushSecretError/ExternalSecretError); the defer-before-seed edge case proves the early WaitingForAdminPassword return", "checked": true}
+  ],
+  "defensive_checklist": [
+    {"item": "Absence-of-old-state asserted in mutation/defer tests (no PushSecret/ES before password; no application_credential_id in fresh seed; minted doc unchanged)", "checked": true}
+  ],
+  "security_findings": [],
+  "architecture_findings": [],
+  "issues_found": [
+    {
+      "check_id": "consolidate-near-duplicate-tests",
+      "severity": "MINOR",
+      "description": "TestReconcileKORC_FreshClusterSeedsPasswordCloudsYaml is a near-duplicate of TestReconcileKORC_FreshClusterSeedsCloudsYamlAndCreatesPushSecretAndExternalSecret. Both build the identical fresh-cluster fixture (cp + adminPasswordSecret), drive reconcileKORC, and assert the seeded clouds.yaml is the password document (ContainSubstring password:, NotTo ContainSubstring application_credential_id). The only coverage unique to the standalone test is the extra ContainSubstring(\"username:\") assertion, which could fold into the reworked deadlock test, removing the duplicate.",
+      "location": "operators/c5c3/internal/controller/reconcile_korc_test.go:447",
+      "fix": "Delete TestReconcileKORC_FreshClusterSeedsPasswordCloudsYaml and add g.Expect(string(sec.Data[appCredCloudsYAMLKey])).To(ContainSubstring(\"username:\")) to TestReconcileKORC_FreshClusterSeedsCloudsYamlAndCreatesPushSecretAndExternalSecret.",
+      "evidence": "func TestReconcileKORC_FreshClusterSeedsPasswordCloudsYaml(t *testing.T) {\n\t...\n\tc := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, adminPasswordSecret()).Build()\n\t...\n\t_, err := r.reconcileKORC(context.Background(), cp)\n\t...\n\tg.Expect(clouds).To(ContainSubstring(\"username:\"))\n\tg.Expect(clouds).To(ContainSubstring(\"password:\"))\n\tg.Expect(clouds).NotTo(ContainSubstring(\"application_credential_id\"))",
+      "confidence": "8",
+      "fix_classification": "ASK"
+    }
+  ],
+  "suggested_improvements": [
+    "Optional: in TestSeedBootstrapCloudsYAML_RenderedDocumentParsesWithInternalEndpointAndProjectedAuthURL, also assert the parsed auth.username/password equal the projected korcAdminUsername/testAdminPassword to lock the credential projection alongside the endpoint projection (currently those are only covered by ContainSubstring checks in sibling tests)."
+  ],
+  "next_steps": [],
+  "detected_patterns": [
+    "Reject vacuous test assertions behind conditional guards: none found",
+    "Assert absence of old state in mutation tests: satisfied (DefersBeforeSeed IsNotFound, SteadyState RV stable, no application_credential_id)",
+    "Avoid brittle index-based container assertions: satisfied (all [0] indexes guarded by HaveLen(1))",
+    "Tests must not rely on implicit default values: satisfied (SecretName + non-default name/ns set explicitly)",
+    "Ensure test names accurately describe coverage scope: satisfied",
+    "Consolidate near-duplicate tests: one candidate flagged (MINOR)",
+    "Parse rendered output not input: satisfied (yaml.Unmarshal of seeded Secret bytes)"
+  ]
+}

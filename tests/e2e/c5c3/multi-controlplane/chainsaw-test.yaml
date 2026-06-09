@@ -43,6 +43,17 @@
 # infra in tenant-a/tenant-b) so this test exercises rather than skips is a
 # documented fast-follow on the CC-0110 GitOps/CI wiring (REQ-022/REQ-023).
 #
+# NOTE (CC-0114, REQ-012): the per-CR `k-orc-clouds-yaml` ExternalSecret each
+# tenant references is now OPERATOR-created — reconcileKORC's
+# ensureKORCCloudsYAMLExternalSecret materialises a per-CR, controller-owned
+# ExternalSecret reading that CR's per-CR OpenBao path, with NO per-identity
+# KORC_KEYSTONE_AUTH_URL seed override. The section after the Ready waits asserts
+# this materialisation (ownership + per-CR remoteRef.key) for both tenants — the
+# in-suite proof of REQ-012's "non-default-name materialises per-CR
+# ExternalSecret" scenario. Wiring the per-tenant prerequisites into kind CI so
+# this suite EXERCISES rather than SKIPs remains the documented, DEFERRED
+# fast-follow above (CC-0110 GitOps/CI, REQ-022/REQ-023).
+#
 # ── DECISION: "credentials differ" comparison field ──────────────────────────
 # The c5c3-operator pushes the operator-owned admin-credential Secret to OpenBao;
 # its key `clouds.yaml` (appCredCloudsYAMLKey in reconcile_korc.go) is the
@@ -53,7 +64,7 @@
 # "the actual secret material differs" signal. We hash it (sha256) before logging
 # so the comparison is deterministic and no credential material is printed.
 #
-# Feature: CC-0112, REQ-012
+# Feature: CC-0112, REQ-012, CC-0114 REQ-012
 ---
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -66,14 +77,16 @@ spec:
   # OpenBao round-trip) plus a rotation are long-running, so the consolidated
   # script and its diagnostic catch get generous bounds above the suite default.
   #
-  # Timeout budget (CC-0112, REQ-012): the single consolidated script runs its
-  # polls SEQUENTIALLY, and their own per-poll deadlines sum to a worst case of
-  # 3000s — wait_cp_condition Ready 900 + 900 (both ControlPlanes) +
-  # wait_bao_clouds_sha 300 + 300 (both per-CR paths) + the 600s rotation wait.
+  # Timeout budget (CC-0112, REQ-012; CC-0114, REQ-012): the single consolidated
+  # script runs its polls SEQUENTIALLY, and their own per-poll deadlines sum to a
+  # worst case of 3120s — wait_cp_condition Ready 900 + 900 (both ControlPlanes) +
+  # wait_ready_condition externalsecret k-orc-clouds-yaml 60 + 60 (the two per-CR
+  # operator-created ExternalSecrets, CC-0114) + wait_bao_clouds_sha 300 + 300
+  # (both per-CR paths) + the 600s rotation wait.
   # exec / script.timeout MUST exceed that sum so that, on a genuine hang, the
   # offending poll prints its precise "condition/path X not … within Ns" error
   # rather than chainsaw killing the whole script with a generic timeout that
-  # hides which poll stalled. 55m (3300s) clears the 3000s worst case with margin
+  # hides which poll stalled. 55m (3300s) clears the 3120s worst case with margin
   # for the apply + token-extract overhead.
   timeouts:
     assert: 5m
@@ -169,6 +182,29 @@ spec:
             done
           }
 
+          # Poll an arbitrary resource's Ready condition to True (ExternalSecret
+          # exposes a "Ready" condition). Same explicit-poll rationale as
+          # wait_cp_condition: a briefly-absent/False condition simply retries and
+          # the failure message names the last-observed status (CC-0114, REQ-012).
+          wait_ready_condition() { # <resource> <name> <namespace> <timeoutSeconds>
+            local res="$1" name="$2" ns="$3" timeout="$4"
+            local deadline status
+            deadline=$(( $(date +%s) + timeout ))
+            while true; do
+              status="$(kubectl get "${res}" "${name}" -n "${ns}" \
+                -o "jsonpath={.status.conditions[?(@.type=='Ready')].status}" 2>/dev/null || true)"
+              if [ "${status}" = "True" ]; then
+                echo "OK: ${res}/${name} Ready=True"
+                return 0
+              fi
+              if [ "$(date +%s)" -ge "${deadline}" ]; then
+                echo "ERROR: ${res}/${name} Ready not True within ${timeout}s (last: '${status:-<none>}')"
+                return 1
+              fi
+              sleep 5
+            done
+          }
+
           assert_eq() { # <description> <expected> <actual>
             if [ "$2" != "$3" ]; then
               echo "ERROR: $1 — expected '$2', got '$3'"
@@ -258,6 +294,30 @@ spec:
           fi
           echo "OK: both ControlPlanes report a non-empty admin AC id"
           assert_ne "admin AC ids of the two ControlPlanes" "${ID_A}" "${ID_B}"
+
+          # ── CC-0114, REQ-012: per-CR operator-created ExternalSecret materialises ──
+          # CC-0114 moved the K-ORC clouds.yaml seed into the c5c3-operator: during
+          # reconcileKORC, ensureKORCCloudsYAMLExternalSecret CREATES a per-CR,
+          # controller-owned ExternalSecret `k-orc-clouds-yaml` in each CR's own
+          # namespace, reading that CR's per-CR OpenBao path with NO per-identity
+          # KORC_KEYSTONE_AUTH_URL override and no per-CR remoteRef.key manifest
+          # edit — the operator computes everything from the CR. This is exactly
+          # what lets a non-default-name ControlPlane reach AdminCredentialReady
+          # without manifest edits. Ready=True (above) subsumes the operator's ES
+          # creation, so a SHORT poll suffices to confirm prior materialisation.
+          # The remoteRef.key has NO kv-v2/ read prefix (PATH_A/PATH_B carry it).
+          wait_ready_condition externalsecret k-orc-clouds-yaml "${NS_A}" 60
+          assert_eq "tenant-a k-orc-clouds-yaml ExternalSecret owned by ${CP_A}" "${CP_A}" \
+            "$(kubectl get externalsecret k-orc-clouds-yaml -n "${NS_A}" -o "jsonpath={.metadata.ownerReferences[?(@.kind=='ControlPlane')].name}" 2>/dev/null || true)"
+          assert_eq "tenant-a k-orc-clouds-yaml ExternalSecret reads per-CR path" \
+            "openstack/keystone/${NS_A}/${CP_A}/admin/app-credential" \
+            "$(kubectl get externalsecret k-orc-clouds-yaml -n "${NS_A}" -o "jsonpath={.spec.data[0].remoteRef.key}" 2>/dev/null || true)"
+          wait_ready_condition externalsecret k-orc-clouds-yaml "${NS_B}" 60
+          assert_eq "tenant-b k-orc-clouds-yaml ExternalSecret owned by ${CP_B}" "${CP_B}" \
+            "$(kubectl get externalsecret k-orc-clouds-yaml -n "${NS_B}" -o "jsonpath={.metadata.ownerReferences[?(@.kind=='ControlPlane')].name}" 2>/dev/null || true)"
+          assert_eq "tenant-b k-orc-clouds-yaml ExternalSecret reads per-CR path" \
+            "openstack/keystone/${NS_B}/${CP_B}/admin/app-credential" \
+            "$(kubectl get externalsecret k-orc-clouds-yaml -n "${NS_B}" -o "jsonpath={.spec.data[0].remoteRef.key}" 2>/dev/null || true)"
 
           # ── Task 7.2a: both per-CR OpenBao paths exist with DIFFERENT material ─
           echo "== bao kv get ${PATH_A} (expect present) =="

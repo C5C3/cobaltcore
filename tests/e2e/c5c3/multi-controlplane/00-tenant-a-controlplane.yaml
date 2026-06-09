@@ -11,6 +11,10 @@
 #   openstack/keystone/tenant-a/controlplane-a/admin/app-credential
 # (adminAppCredentialRemoteKeyFor; read back via `bao kv get` as the kv-v2 path
 #   kv-v2/openstack/keystone/tenant-a/controlplane-a/admin/app-credential).
+# CC-0114, REQ-012: the c5c3-operator now also CREATES the per-CR,
+# controller-owned `k-orc-clouds-yaml` ExternalSecret in THIS tenant's namespace
+# (reconcileKORC's ensureKORCCloudsYAMLExternalSecret) reading that per-CR path —
+# no per-identity KORC_KEYSTONE_AUTH_URL seed override is needed.
 # Tenant-B (01-tenant-b-controlplane.yaml) lives in a DIFFERENT namespace with a
 # DIFFERENT name so its path can never collide with this one. The two axes are
 # both distinct on purpose, mirroring the completed envtest

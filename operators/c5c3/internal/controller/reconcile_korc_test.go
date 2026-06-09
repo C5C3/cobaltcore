@@ -30,6 +30,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/yaml"
 
 	"github.com/c5c3/forge/internal/common/conditions"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
@@ -368,47 +370,99 @@ func TestReconcileAdminCredential_GatedOnKORC(t *testing.T) {
 	g.Expect(cond.Reason).To(Equal("WaitingForKORC"))
 }
 
-// TestReconcileAdminCredential_FreshClusterWithoutCloudsYamlSeedDoesNotPush is
-// the NON-MASKING bootstrap test (CC-0110, FC4/TE9). It reproduces a FRESH
-// cluster: KORC has minted the AC, but the k-orc-clouds-yaml ExternalSecret is
-// absent (its per-CR OpenBao path openstack/keystone/{ns}/{name}/admin/app-credential
-// is empty until deploy/openbao/bootstrap/write-bootstrap-secrets.sh seeds a
-// password-based bootstrap clouds.yaml). It asserts the gate holds AND, crucially,
-// that NO PushSecret is created — proving the OpenBao path is never written while
-// the clouds.yaml is unseeded. This is exactly the circular dependency the
-// bootstrap seed breaks: without the seed the ExternalSecret never goes Ready, so
-// the push that would populate the path never runs. Unlike the happy-path tests,
-// this one deliberately does NOT pre-populate a Ready clouds.yaml ExternalSecret,
-// so a regression that drops the gate (or silently pushes) fails here.
-func TestReconcileAdminCredential_FreshClusterWithoutCloudsYamlSeedDoesNotPush(t *testing.T) {
+// TestReconcileKORC_FreshClusterSeedsCloudsYamlAndCreatesPushSecretAndExternalSecret
+// is the reworked fresh-cluster bootstrap test (CC-0114, REQ-003, REQ-009). It
+// REPLACES TestReconcileAdminCredential_FreshClusterWithoutCloudsYamlSeedDoesNotPush,
+// which asserted the OLD deadlock ("no PushSecret may be created while the
+// clouds.yaml ExternalSecret is unseeded"). The operator now OWNS that seed, so the
+// deadlock is broken on purpose: on a fresh cluster — admin password present, NO
+// pre-existing clouds.yaml ExternalSecret — reconcileKORC must (1) seed the
+// password-based clouds.yaml into the {cp.Name}-admin-app-credential Secret,
+// (2) create the backup PushSecret that mirrors it to OpenBao, and (3) create the
+// per-CR ExternalSecret that reads it back. The old "no push" assertion is gone.
+func TestReconcileKORC_FreshClusterSeedsCloudsYamlAndCreatesPushSecretAndExternalSecret(t *testing.T) {
 	g := NewGomegaWithT(t)
 
 	s := korcTestScheme(t)
 	cp := korcControlPlane()
-	setKORCReady(cp)
-	// No k-orc-clouds-yaml ExternalSecret => WaitForExternalSecret returns (false,nil).
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	// Fresh cluster: admin password present, but NO pre-existing clouds.yaml ExternalSecret.
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, adminPasswordSecret()).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-	res, err := r.reconcileAdminCredential(context.Background(), cp)
+	_, err := r.reconcileKORC(context.Background(), cp)
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
 
-	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeAdminCredentialReady)
-	g.Expect(cond).NotTo(BeNil())
-	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-	g.Expect(cond.Reason).To(Equal("WaitingForCloudsYaml"))
+	// (1) The password-based clouds.yaml is seeded into the app-credential Secret.
+	sec := &corev1.Secret{}
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Name: adminAppCredentialSecretName(cp), Namespace: childNamespace(cp),
+	}, sec)).To(Succeed())
+	g.Expect(sec.Data).To(HaveKey(appCredCloudsYAMLKey))
+	g.Expect(string(sec.Data[appCredCloudsYAMLKey])).To(ContainSubstring("password:"))
+	g.Expect(string(sec.Data[appCredCloudsYAMLKey])).NotTo(ContainSubstring("application_credential_id"),
+		"a fresh-cluster seed must be the PASSWORD clouds.yaml, not a minted credential")
 
-	// The push that writes the per-CR openstack/keystone/{ns}/{name}/admin/app-credential
-	// path to OpenBao must NOT have happened — the path stays empty, which is precisely why a
-	// fresh cluster needs the bootstrap seed to break the cycle.
+	// (2) The backup PushSecret IS created (the old test asserted it must NOT be).
 	ps := &esov1alpha1.PushSecret{}
-	err = c.Get(context.Background(), types.NamespacedName{
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
 		Name: adminAppCredentialPushSecretName(cp), Namespace: childNamespace(cp),
-	}, ps)
-	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(),
-		"no PushSecret may be created while the clouds.yaml ExternalSecret is unseeded; "+
-			"otherwise the bootstrap cycle is masked")
+	}, ps)).To(Succeed())
+
+	// (3) The per-CR ExternalSecret IS created in the ControlPlane's own namespace.
+	es := &esov1.ExternalSecret{}
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Name: korcCloudsYamlSecretName, Namespace: childNamespace(cp),
+	}, es)).To(Succeed())
+	g.Expect(es.Spec.Data).To(HaveLen(1))
+	g.Expect(es.Spec.Data[0].RemoteRef.Key).To(Equal(adminAppCredentialRemoteKeyFor(cp)))
+}
+
+// TestReconcileKORC_PushSecretRemoteKeyMatchesPerCRPath locks in that the
+// operator-created backup PushSecret targets the OpenBao ClusterSecretStore and the
+// per-CR remote key the matching ExternalSecret reads (CC-0114, REQ-003).
+func TestReconcileKORC_PushSecretRemoteKeyMatchesPerCRPath(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := korcControlPlane()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, adminPasswordSecret()).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileKORC(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	ps := &esov1alpha1.PushSecret{}
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Name: adminAppCredentialPushSecretName(cp), Namespace: childNamespace(cp),
+	}, ps)).To(Succeed())
+	g.Expect(ps.Spec.SecretStoreRefs).To(HaveLen(1))
+	g.Expect(ps.Spec.SecretStoreRefs[0].Name).To(Equal(openBaoClusterStoreName))
+	g.Expect(ps.Spec.Data).To(HaveLen(1))
+	g.Expect(ps.Spec.Data[0].Match.RemoteRef.RemoteKey).To(Equal(adminAppCredentialRemoteKeyFor(cp)))
+}
+
+// TestReconcileKORC_FreshClusterSeedsPasswordCloudsYaml asserts the seeded
+// clouds.yaml is the PASSWORD-based document (username/password keys), NOT a minted
+// application-credential document (CC-0114, REQ-009).
+func TestReconcileKORC_FreshClusterSeedsPasswordCloudsYaml(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := korcControlPlane()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, adminPasswordSecret()).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileKORC(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	sec := &corev1.Secret{}
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Name: adminAppCredentialSecretName(cp), Namespace: childNamespace(cp),
+	}, sec)).To(Succeed())
+	clouds := string(sec.Data[appCredCloudsYAMLKey])
+	g.Expect(clouds).To(ContainSubstring("username:"))
+	g.Expect(clouds).To(ContainSubstring("password:"))
+	g.Expect(clouds).NotTo(ContainSubstring("application_credential_id"))
 }
 
 // TestReconcileAdminCredential_MissingAppCredSecretDefers verifies the Get-and-fail
@@ -1221,4 +1275,336 @@ func TestReconcileAdminCredential_WaitsForPushSecretSync(t *testing.T) {
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal("WaitingForPushSecret"))
+}
+
+// --- CC-0114: seedBootstrapCloudsYAML (write-if-empty bootstrap clouds.yaml) ---
+
+// TestSeedBootstrapCloudsYAML_WritesWhenCloudsYamlKeyEmpty asserts the seed writes
+// the password-based clouds.yaml into the app-credential Secret's clouds.yaml key
+// when that key is empty, leaving the "value" key untouched (CC-0114, REQ-001).
+func TestSeedBootstrapCloudsYAML_WritesWhenCloudsYamlKeyEmpty(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := korcControlPlane()
+	// A Secret with only the generated "value" — the state ensureAppCredentialSecret leaves.
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, mintedAppCredSecret(cp)).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	g.Expect(r.seedBootstrapCloudsYAML(context.Background(), cp, testAdminPassword)).To(Succeed())
+
+	sec := &corev1.Secret{}
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Name: adminAppCredentialSecretName(cp), Namespace: childNamespace(cp),
+	}, sec)).To(Succeed())
+	clouds := string(sec.Data[appCredCloudsYAMLKey])
+	g.Expect(clouds).To(ContainSubstring("username:"))
+	g.Expect(clouds).To(ContainSubstring("password:"))
+	g.Expect(clouds).NotTo(ContainSubstring("application_credential_id"))
+	// The "value" key (owned by ensureAppCredentialSecret) is preserved.
+	g.Expect(sec.Data[appCredSecretValueKey]).To(Equal([]byte("generated-app-cred-secret")))
+}
+
+// TestSeedBootstrapCloudsYAML_DoesNotOverwriteMintedCloudsYaml asserts write-if-empty:
+// when clouds.yaml already holds a minted credential-based document, the seed leaves
+// it byte-for-byte unchanged (CC-0114, REQ-001, REQ-005).
+func TestSeedBootstrapCloudsYAML_DoesNotOverwriteMintedCloudsYaml(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := korcControlPlane()
+	minted := []byte(buildAppCredCloudsYAML(cp, "ac-id", "minted-secret"))
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: adminAppCredentialSecretName(cp), Namespace: childNamespace(cp)},
+		Data: map[string][]byte{
+			appCredSecretValueKey: []byte("minted-secret"),
+			appCredCloudsYAMLKey:  minted,
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, secret).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	g.Expect(r.seedBootstrapCloudsYAML(context.Background(), cp, testAdminPassword)).To(Succeed())
+
+	sec := &corev1.Secret{}
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Name: adminAppCredentialSecretName(cp), Namespace: childNamespace(cp),
+	}, sec)).To(Succeed())
+	g.Expect(sec.Data[appCredCloudsYAMLKey]).To(Equal(minted),
+		"the seed must never clobber a minted credential-based clouds.yaml")
+}
+
+// TestSeedBootstrapCloudsYAML_RepopulatesAfterReMintDeletesKey asserts that after a
+// re-mint dropped the clouds.yaml key (regenerateAppCredentialSecretValue), the seed
+// re-writes the password-based clouds.yaml, bridging the re-authentication gap
+// (CC-0114, REQ-001).
+func TestSeedBootstrapCloudsYAML_RepopulatesAfterReMintDeletesKey(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := korcControlPlane()
+	// Post-re-mint state: only "value" present, clouds.yaml deleted.
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, mintedAppCredSecret(cp)).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	g.Expect(r.seedBootstrapCloudsYAML(context.Background(), cp, testAdminPassword)).To(Succeed())
+
+	sec := &corev1.Secret{}
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Name: adminAppCredentialSecretName(cp), Namespace: childNamespace(cp),
+	}, sec)).To(Succeed())
+	g.Expect(string(sec.Data[appCredCloudsYAMLKey])).To(ContainSubstring("password:"))
+	g.Expect(string(sec.Data[appCredCloudsYAMLKey])).NotTo(ContainSubstring("application_credential_id"))
+}
+
+// seedAndReadCloudsYAML runs seedBootstrapCloudsYAML for cp and returns the rendered
+// clouds.yaml bytes from the app-credential Secret (the SEEDED document, not the
+// format-string input).
+func seedAndReadCloudsYAML(t *testing.T, cp *c5c3v1alpha1.ControlPlane) []byte {
+	t.Helper()
+	s := korcTestScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+	if err := r.seedBootstrapCloudsYAML(context.Background(), cp, testAdminPassword); err != nil {
+		t.Fatalf("seeding clouds.yaml: %v", err)
+	}
+	sec := &corev1.Secret{}
+	if err := c.Get(context.Background(), types.NamespacedName{
+		Name: adminAppCredentialSecretName(cp), Namespace: childNamespace(cp),
+	}, sec); err != nil {
+		t.Fatalf("getting seeded secret: %v", err)
+	}
+	return sec.Data[appCredCloudsYAMLKey]
+}
+
+// defaultNamedControlPlane returns a ControlPlane named "controlplane" in namespace
+// "openstack" (the default deploy identity) carrying the K-ORC admin spec.
+func defaultNamedControlPlane() *c5c3v1alpha1.ControlPlane {
+	cp := korcControlPlane()
+	cp.Name = "controlplane"
+	cp.Namespace = "openstack"
+	cp.UID = types.UID("controlplane-uid")
+	return cp
+}
+
+// TestSeedBootstrapCloudsYAML_RenderedDocumentParsesWithInternalEndpointAndProjectedAuthURL
+// parses the SEEDED clouds.yaml (not the format-string input) and asserts the
+// in-cluster identity endpoint type and the projected per-CR auth_url (CC-0114, REQ-004).
+func TestSeedBootstrapCloudsYAML_RenderedDocumentParsesWithInternalEndpointAndProjectedAuthURL(t *testing.T) {
+	type cloudAuth struct {
+		AuthURL string `json:"auth_url"`
+	}
+	type cloud struct {
+		Auth         cloudAuth `json:"auth"`
+		EndpointType string    `json:"endpoint_type"`
+	}
+	type cloudsDoc struct {
+		Clouds map[string]cloud `json:"clouds"`
+	}
+
+	for _, tc := range []struct {
+		name        string
+		cp          *c5c3v1alpha1.ControlPlane
+		wantAuthURL string
+	}{
+		{
+			name:        "default CR",
+			cp:          defaultNamedControlPlane(),
+			wantAuthURL: "http://controlplane-keystone.openstack.svc:5000/v3",
+		},
+		{
+			name:        "non-default CR",
+			cp:          korcControlPlane(),
+			wantAuthURL: "http://cp-keystone.default.svc:5000/v3",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			var doc cloudsDoc
+			g.Expect(yaml.Unmarshal(seedAndReadCloudsYAML(t, tc.cp), &doc)).To(Succeed())
+			parsed, ok := doc.Clouds["admin"]
+			g.Expect(ok).To(BeTrue(), "rendered clouds.yaml must contain the \"admin\" cloud")
+			g.Expect(parsed.EndpointType).To(Equal("internal"))
+			g.Expect(parsed.Auth.AuthURL).To(Equal(tc.wantAuthURL))
+			g.Expect(parsed.Auth.AuthURL).To(Equal(keystoneEndpointURL(tc.cp)))
+		})
+	}
+}
+
+// TestSeedBootstrapCloudsYAML_UsesEndpointTypeKeyNotInterface asserts the rendered
+// cloud uses the "endpoint_type" key (which K-ORC's scope builder honours) and NOT
+// an "interface" key (which it drops) — boundary 2 (CC-0114, REQ-004).
+func TestSeedBootstrapCloudsYAML_UsesEndpointTypeKeyNotInterface(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := korcControlPlane()
+	var doc map[string]map[string]map[string]interface{}
+	g.Expect(yaml.Unmarshal(seedAndReadCloudsYAML(t, cp), &doc)).To(Succeed())
+	cloud := doc["clouds"]["admin"]
+	g.Expect(cloud).To(HaveKey("endpoint_type"))
+	g.Expect(cloud).NotTo(HaveKey("interface"))
+	g.Expect(cloud["endpoint_type"]).To(Equal("internal"))
+}
+
+// --- CC-0114: ensureKORCCloudsYAMLExternalSecret (per-CR operator-owned ES) ---
+
+// TestEnsureKORCCloudsYAMLExternalSecret_ShapeAndOwnerRef asserts the operator-owned
+// per-CR ExternalSecret has the OpenBao ClusterSecretStore, Owner creation policy, a
+// single clouds.yaml data entry reading the per-CR remote key, and a controller
+// owner reference to the ControlPlane (CC-0114, REQ-002).
+func TestEnsureKORCCloudsYAMLExternalSecret_ShapeAndOwnerRef(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := korcControlPlane()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	g.Expect(r.ensureKORCCloudsYAMLExternalSecret(context.Background(), cp)).To(Succeed())
+
+	es := &esov1.ExternalSecret{}
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Name: korcCloudsYamlSecretName, Namespace: childNamespace(cp),
+	}, es)).To(Succeed())
+
+	g.Expect(es.Spec.SecretStoreRef.Kind).To(Equal("ClusterSecretStore"))
+	g.Expect(es.Spec.SecretStoreRef.Name).To(Equal(openBaoClusterStoreName))
+	g.Expect(es.Spec.Target.Name).To(Equal(korcCloudsYamlSecretName))
+	g.Expect(es.Spec.Target.CreationPolicy).To(Equal(esov1.CreatePolicyOwner))
+	g.Expect(es.Spec.Data).To(HaveLen(1))
+	g.Expect(es.Spec.Data[0].SecretKey).To(Equal(appCredCloudsYAMLKey))
+	g.Expect(es.Spec.Data[0].RemoteRef.Key).To(Equal(adminAppCredentialRemoteKeyFor(cp)))
+	g.Expect(es.Spec.Data[0].RemoteRef.Property).To(Equal(appCredCloudsYAMLKey))
+
+	g.Expect(es.OwnerReferences).To(HaveLen(1))
+	g.Expect(es.OwnerReferences[0].Kind).To(Equal("ControlPlane"))
+	g.Expect(es.OwnerReferences[0].Controller).NotTo(BeNil())
+	g.Expect(*es.OwnerReferences[0].Controller).To(BeTrue())
+}
+
+// TestEnsureKORCCloudsYAMLExternalSecret_PerCRRemoteKeyForNonDefaultName asserts the
+// remote key tracks an arbitrary CR name/namespace, so a non-default ControlPlane
+// resolves to the correct OpenBao path with no manifest edit (CC-0114, REQ-002).
+func TestEnsureKORCCloudsYAMLExternalSecret_PerCRRemoteKeyForNonDefaultName(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := korcControlPlane()
+	cp.Name = "controlplane-a"
+	cp.Namespace = "tenant-a"
+	cp.UID = types.UID("controlplane-a-uid")
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	g.Expect(r.ensureKORCCloudsYAMLExternalSecret(context.Background(), cp)).To(Succeed())
+
+	es := &esov1.ExternalSecret{}
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Name: korcCloudsYamlSecretName, Namespace: "tenant-a",
+	}, es)).To(Succeed())
+	g.Expect(es.Spec.Data[0].RemoteRef.Key).
+		To(Equal("openstack/keystone/tenant-a/controlplane-a/admin/app-credential"))
+}
+
+// TestEnsureKORCCloudsYAMLExternalSecret_IdempotentNoChurn asserts a second pass over
+// an unchanged spec does not bump the ExternalSecret's ResourceVersion (CC-0114, REQ-002).
+func TestEnsureKORCCloudsYAMLExternalSecret_IdempotentNoChurn(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := korcControlPlane()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+	esKey := types.NamespacedName{Name: korcCloudsYamlSecretName, Namespace: childNamespace(cp)}
+
+	g.Expect(r.ensureKORCCloudsYAMLExternalSecret(context.Background(), cp)).To(Succeed())
+	first := &esov1.ExternalSecret{}
+	g.Expect(c.Get(context.Background(), esKey, first)).To(Succeed())
+
+	g.Expect(r.ensureKORCCloudsYAMLExternalSecret(context.Background(), cp)).To(Succeed())
+	second := &esov1.ExternalSecret{}
+	g.Expect(c.Get(context.Background(), esKey, second)).To(Succeed())
+
+	g.Expect(second.ResourceVersion).To(Equal(first.ResourceVersion),
+		"an unchanged ExternalSecret spec must not churn on re-reconcile")
+}
+
+// --- CC-0114: reconcileKORC edge cases around the seed steps ---
+
+// TestReconcileKORC_DefersBeforeSeedWhenAdminPasswordMissing asserts that with no
+// admin-password Secret, reconcileKORC defers with WaitingForAdminPassword BEFORE the
+// seed steps run — so neither the PushSecret nor the ExternalSecret is created
+// (CC-0114, REQ-003).
+func TestReconcileKORC_DefersBeforeSeedWhenAdminPasswordMissing(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := korcControlPlane()
+	// No admin-password Secret present.
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	res, err := r.reconcileKORC(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeKORCReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("WaitingForAdminPassword"))
+
+	ps := &esov1alpha1.PushSecret{}
+	psErr := c.Get(context.Background(), types.NamespacedName{
+		Name: adminAppCredentialPushSecretName(cp), Namespace: childNamespace(cp),
+	}, ps)
+	g.Expect(apierrors.IsNotFound(psErr)).To(BeTrue(),
+		"no PushSecret may be created before the admin password exists")
+
+	es := &esov1.ExternalSecret{}
+	esErr := c.Get(context.Background(), types.NamespacedName{
+		Name: korcCloudsYamlSecretName, Namespace: childNamespace(cp),
+	}, es)
+	g.Expect(apierrors.IsNotFound(esErr)).To(BeTrue(),
+		"no ExternalSecret may be created before the admin password exists")
+}
+
+// TestReconcileKORC_SteadyStateDoesNotOverwriteMintedCloudsYaml asserts that a
+// reconcileKORC pass over a Secret whose clouds.yaml already holds the minted
+// credential-based document leaves it unchanged (still contains
+// application_credential_id) and does not churn the Secret via the seed
+// (CC-0114, REQ-005).
+func TestReconcileKORC_SteadyStateDoesNotOverwriteMintedCloudsYaml(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := korcControlPlane()
+	minted := []byte(buildAppCredCloudsYAML(cp, "ac-id-steady", "minted-secret-value"))
+	// Fully steady-state app-cred Secret: owner ref + value + minted clouds.yaml, so
+	// ensureAppCredentialSecret and the seed are both no-ops and only a regression
+	// that re-writes clouds.yaml would bump the ResourceVersion.
+	appSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: adminAppCredentialSecretName(cp), Namespace: childNamespace(cp)},
+		Data: map[string][]byte{
+			appCredSecretValueKey: []byte("minted-secret-value"),
+			appCredCloudsYAMLKey:  minted,
+		},
+	}
+	g.Expect(controllerutil.SetControllerReference(cp, appSecret, s)).To(Succeed())
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, adminPasswordSecret(), appSecret).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+	secKey := types.NamespacedName{Name: adminAppCredentialSecretName(cp), Namespace: childNamespace(cp)}
+
+	before := &corev1.Secret{}
+	g.Expect(c.Get(context.Background(), secKey, before)).To(Succeed())
+
+	_, err := r.reconcileKORC(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	after := &corev1.Secret{}
+	g.Expect(c.Get(context.Background(), secKey, after)).To(Succeed())
+	g.Expect(after.Data[appCredCloudsYAMLKey]).To(Equal(minted),
+		"the seed must not overwrite a minted credential-based clouds.yaml")
+	g.Expect(string(after.Data[appCredCloudsYAMLKey])).To(ContainSubstring("application_credential_id"))
+	g.Expect(after.ResourceVersion).To(Equal(before.ResourceVersion),
+		"a steady-state pass must not churn the app-credential Secret via the seed")
 }
