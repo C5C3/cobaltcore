@@ -1,0 +1,317 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for per-ControlPlane Keystone DB-credential scoping
+# (CC-0116, REQ-001). It brings up ONE managed-mode ControlPlane and asserts,
+# end-to-end against a live OpenBao, that the c5c3-operator scopes the Keystone
+# DATABASE credential PER ControlPlane: it projects an operator-owned, per-CP
+# DB-credential ExternalSecret that reads from the per-CP OpenBao path
+#   openstack/keystone/{namespace}/{name}/db
+# (kv-v2 read view: kv-v2/openstack/keystone/{namespace}/{name}/db), the
+# ExternalSecret becomes Ready and is owned by the ControlPlane, and that per-CP
+# OpenBao DB path exists and is readable:
+#
+#   Namespace db-cred-scope / ControlPlane controlplane
+#     ExternalSecret controlplane-keystone-db-credentials
+#       → kv-v2/openstack/keystone/db-cred-scope/controlplane/db
+#
+# This path is the kv-v2-prefixed read view of dbCredentialRemoteKeyFor
+# (operators/c5c3/internal/controller/reconcile_dbcredentials.go), which returns
+#   openstack/keystone/{cp.Namespace}/{cp.Name}/db.
+# The ExternalSecret name is dbCredentialSecretName == keystoneName(cp) +
+# "-db-credentials" == "<cp>-keystone-db-credentials". The OpenBao value carries
+# username + password fields; the credential is READ-ONLY (the operator never
+# writes it back via PushSecret — see reconcile_dbcredentials.go / the deploy
+# bootstrap which deliberately does NOT mark this path ESO-managed).
+#
+# ── DECISION: belt-and-braces presence guard + single consolidated script ────
+# Mirrors full-controlplane-keystone / multi-controlplane exactly. The c5c3 +
+# K-ORC + keystone stack is NOT installed by the current kind E2E wiring
+# (hack/deploy-infra.sh + hack/ci-deploy-operator.sh), and the suite runs
+# failFast:true (tests/e2e/chainsaw-config.yaml), so a pure declarative test
+# would HARD-FAIL the whole e2e-operator job on any cluster missing that stack —
+# including the PR that introduces this file. A runtime presence guard probes for
+# the required CRDs + the OpenBao ClusterSecretStore + the openbao-init-keys
+# Secret (needed to read the bao token to seed/read the per-CP DB path) and exits
+# 0 with a SKIP line when the stack is absent, so the test is default-safe; when
+# the stack IS present it asserts the full DB-credential scoping contract.
+# Because chainsaw has no step-level skip, the guard and all assertions live in
+# ONE script step (declarative asserts in sibling steps would time out and fail
+# even after the guard exited 0).
+# Reviewer: please verify, and note the kind E2E wiring to deploy K-ORC + the
+# c5c3-operator AND the per-tenant prerequisites (admin password Secret + managed
+# infra in db-cred-scope) so this test exercises rather than skips is a documented
+# fast-follow on the CC-0110 GitOps/CI wiring (REQ-022/REQ-023).
+#
+# ── DECISION: dedicated namespace + in-test seed of the per-CP DB path ────────
+# The validating webhook (CC-0112) enforces ONE ControlPlane per namespace, so
+# this test MUST NOT add a second ControlPlane to the `openstack` namespace that
+# full-controlplane-keystone already occupies (CP "controlplane-keystone") under
+# parallel:4 — concurrent CREATE there is webhook-rejected. We use a DEDICATED
+# namespace (db-cred-scope, bundled in 00-controlplane-cr.yaml) with CP name
+# "controlplane". The deploy bootstrap (deploy/openbao/bootstrap/
+# write-bootstrap-secrets.sh) only seeds the per-CP DB path for the default
+# KORC_CONTROLPLANES identity (openstack/controlplane), NOT for db-cred-scope, so
+# this test SEEDS its own per-CP DB path before applying the CR — mirroring
+# multi-controlplane's bao-token-extract + `bao kv put` pattern — making the test
+# self-contained. The seeded path EQUALS the one the ExternalSecret reads, so the
+# scope is internally consistent: we prove the ExternalSecret syncs from exactly
+# the per-CP path it was projected with.
+#
+# ── DECISION: test depth = DB credentials only (stop at DBCredentialsReady) ───
+# This suite is scoped to the DB-credential link, not the full chain, so it gates
+# on InfrastructureReady → DBCredentialsReady (the sub-reconciler order in
+# controlplane_controller.go: reconcileInfrastructure → reconcileDBCredentials →
+# reconcileKeystone) and stops there rather than driving Keystone/K-ORC/Ready
+# (which full-controlplane-keystone already covers). Because we stop before
+# KeystoneReady, we assert the ExternalSecret's spec.data[].remoteRef.key equals
+# the per-CP path (proving the SCOPE directly on the projected resource) instead
+# of asserting the projected Keystone CR's spec.database.secretRef.name (which
+# would require the full chain to reach KeystoneReady).
+#
+# Feature: CC-0116, REQ-001
+---
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: db-credential-scoping
+# NOTE: no spec.namespace — the fixture declares its own namespace
+# (db-cred-scope); the one-CP-per-namespace webhook keeps it isolated from the
+# openstack namespace full-controlplane-keystone occupies.
+spec:
+  # Managed-mode infra bring-up (Galera + Memcached) before DBCredentials runs is
+  # long-running, so the consolidated script and its diagnostic catch get generous
+  # bounds well above the 120s suite default. Worst-case sum of the sequential
+  # per-poll deadlines below: wait_cp_condition InfrastructureReady 600 +
+  # wait_cp_condition DBCredentialsReady 300 + wait_ready_condition externalsecret
+  # 300 = 1200s; 25m (1500s) clears it with margin for the seed + apply overhead.
+  timeouts:
+    assert: 5m
+    exec: 25m
+  steps:
+  # ── Step 1: Presence-gate, seed the per-CP DB path, apply the CR, assert ────
+  - try:
+    - script:
+        # 25m > the 1200s worst-case sum of the sequential per-poll deadlines
+        # below so a hung poll surfaces its own precise error instead of a generic
+        # chainsaw script-timeout kill (CC-0116).
+        timeout: 25m
+        # Chainsaw defaults to `sh`, which rejects `set -o pipefail`; every
+        # infra/keystone e2e script pins bash for the same reason.
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          CP_NS=db-cred-scope
+          CP_NAME=controlplane
+          # Projected Keystone CR name == {cp.Name}-keystone (keystoneName).
+          KEYSTONE_CR="${CP_NAME}-keystone"
+          # DB-credential ExternalSecret name == keystoneName(cp) + "-db-credentials"
+          # (dbCredentialSecretName), materialised in the CP's own namespace
+          # (childNamespace(cp) == cp.Namespace).
+          DB_ES="${KEYSTONE_CR}-db-credentials"
+          # Per-CP OpenBao DB path. The remoteRef.key in the ExternalSecret is the
+          # bare key (no kv-v2 prefix); the kv-v2 mount prefix is added on read.
+          DB_REMOTE_KEY="openstack/keystone/${CP_NS}/${CP_NAME}/db"
+          DB_BAO_PATH="kv-v2/${DB_REMOTE_KEY}"
+
+          # OpenBao server lives in openbao-system (deploy/openbao/bootstrap).
+          BAO_NS="openbao-system"
+          BAO_POD="openbao-0"
+          BAO_SECRET="openbao-init-keys"
+          BAO_ADDR="https://127.0.0.1:8200"
+          VAULT_CACERT="/openbao/tls/ca.crt"
+
+          # ── Presence guard (CC-0116, REQ-001) ──────────────────────────────
+          # Probe every CRD the chain spans plus the OpenBao ClusterSecretStore
+          # and the init-keys Secret (we need its root token to seed/read bao).
+          # Their absence unambiguously means the c5c3-operator + K-ORC +
+          # keystone-operator stack is not deployed here — SKIP cleanly (exit 0).
+          # MariaDB + Memcached CRDs are required because the managed-mode CR
+          # waits on InfrastructureReady before DBCredentials runs.
+          missing=""
+          for crd in \
+            controlplanes.c5c3.io \
+            keystones.keystone.openstack.c5c3.io \
+            mariadbs.k8s.mariadb.com \
+            memcacheds.memcached.c5c3.io \
+            externalsecrets.external-secrets.io; do
+            if ! kubectl get crd "$crd" >/dev/null 2>&1; then
+              missing="${missing} ${crd}"
+            fi
+          done
+          if [ -n "${missing}" ]; then
+            echo "SKIP: required CRDs not present:${missing}"
+            echo "      The c5c3-operator + keystone-operator + infra stack is"
+            echo "      not deployed on this cluster, so per-ControlPlane DB"
+            echo "      credential scoping cannot be exercised here."
+            exit 0
+          fi
+          if ! kubectl get clustersecretstore openbao-cluster-store >/dev/null 2>&1; then
+            echo "SKIP: openbao-cluster-store ClusterSecretStore not present;"
+            echo "      the DB-credential ExternalSecret cannot sync from OpenBao."
+            exit 0
+          fi
+          if ! kubectl get secret "${BAO_SECRET}" -n "${BAO_NS}" >/dev/null 2>&1; then
+            echo "SKIP: ${BAO_NS}/${BAO_SECRET} not present; cannot read the"
+            echo "      OpenBao root token to seed/verify the per-CP DB path."
+            exit 0
+          fi
+          echo "OK: c5c3 + keystone CRDs, infra CRDs and OpenBao present —"
+          echo "    running the per-ControlPlane DB-credential scoping test."
+
+          # ── Helpers ────────────────────────────────────────────────────────
+          # Poll a ControlPlane status condition to True. Implemented as an
+          # explicit poll (not `kubectl wait`) so a condition that is briefly
+          # absent or False simply retries instead of erroring out, and so the
+          # failure message names the last-observed status for triage.
+          wait_cp_condition() { # <name> <namespace> <conditionType> <timeoutSeconds>
+            local name="$1" ns="$2" ctype="$3" timeout="$4"
+            local deadline status
+            deadline=$(( $(date +%s) + timeout ))
+            while true; do
+              status="$(kubectl get controlplane "${name}" -n "${ns}" \
+                -o "jsonpath={.status.conditions[?(@.type=='${ctype}')].status}" 2>/dev/null || true)"
+              if [ "${status}" = "True" ]; then
+                echo "OK: ControlPlane ${ns}/${name} condition ${ctype}=True"
+                return 0
+              fi
+              if [ "$(date +%s)" -ge "${deadline}" ]; then
+                echo "ERROR: ControlPlane ${ns}/${name} condition ${ctype} not True within ${timeout}s (last: '${status:-<none>}')"
+                return 1
+              fi
+              sleep 5
+            done
+          }
+
+          # Poll an arbitrary resource's Ready condition (ExternalSecret exposes a
+          # "Ready" condition).
+          wait_ready_condition() { # <resource> <name> <namespace> <timeoutSeconds>
+            local res="$1" name="$2" ns="$3" timeout="$4"
+            local deadline status
+            deadline=$(( $(date +%s) + timeout ))
+            while true; do
+              status="$(kubectl get "${res}" "${name}" -n "${ns}" \
+                -o "jsonpath={.status.conditions[?(@.type=='Ready')].status}" 2>/dev/null || true)"
+              if [ "${status}" = "True" ]; then
+                echo "OK: ${res}/${name} Ready=True"
+                return 0
+              fi
+              if [ "$(date +%s)" -ge "${deadline}" ]; then
+                echo "ERROR: ${res}/${name} Ready not True within ${timeout}s (last: '${status:-<none>}')"
+                return 1
+              fi
+              sleep 5
+            done
+          }
+
+          assert_eq() { # <description> <expected> <actual>
+            if [ "$2" != "$3" ]; then
+              echo "ERROR: $1 — expected '$2', got '$3'"
+              exit 1
+            fi
+            echo "OK: $1 ('$3')"
+          }
+
+          owner_of() { # <resource> <name> <namespace>  → controller ControlPlane name
+            kubectl get "$1" "$2" -n "$3" \
+              -o "jsonpath={.metadata.ownerReferences[?(@.kind=='ControlPlane')].name}" 2>/dev/null || true
+          }
+
+          # Extract the BAO root token once for the seed + read below.
+          BAO_TOKEN=$(kubectl get secret "${BAO_SECRET}" -n "${BAO_NS}" \
+            -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token')
+          if [ -z "${BAO_TOKEN}" ] || [ "${BAO_TOKEN}" = "null" ]; then
+            echo "ERROR: could not extract root token from ${BAO_NS}/${BAO_SECRET}"
+            exit 1
+          fi
+
+          # ── Seed the per-CP DB credential path BEFORE applying the CR ───────
+          # The deploy bootstrap only seeds the default openstack/controlplane
+          # identity, not db-cred-scope, so seed this CP's per-CP DB path here
+          # (idempotent overwrite) so the operator's per-CP ExternalSecret has a
+          # source to sync from. username/password mirror the bootstrap's seed
+          # shape (write-bootstrap-secrets.sh: username=keystone, generated pw).
+          echo "== bao kv put ${DB_BAO_PATH} (seed per-CP DB credential) =="
+          kubectl exec -n "${BAO_NS}" "${BAO_POD}" -- \
+            env BAO_ADDR="${BAO_ADDR}" BAO_TOKEN="${BAO_TOKEN}" \
+                VAULT_CACERT="${VAULT_CACERT}" \
+                bao kv put "${DB_BAO_PATH}" username=keystone password=keystone-db-pw
+          echo "OK: seeded ${DB_BAO_PATH}"
+
+          # Apply the ControlPlane CR (and its bundled namespace) now that the
+          # presence guard has passed. Chainsaw runs scripts with the test
+          # directory as CWD.
+          kubectl apply -f 00-controlplane-cr.yaml
+
+          # ── Assert 1: Infrastructure ready (gates DBCredentials) ───────────
+          # Managed mode brings up MariaDB + Memcached first; reconcileDBCredentials
+          # runs only after InfrastructureReady (controlplane_controller.go order).
+          wait_cp_condition "${CP_NAME}" "${CP_NS}" InfrastructureReady 600
+
+          # ── Assert 2: DBCredentialsReady=True ──────────────────────────────
+          wait_cp_condition "${CP_NAME}" "${CP_NS}" DBCredentialsReady 300
+
+          # ── Assert 3: the DB-credential ExternalSecret reaches Ready ───────
+          wait_ready_condition externalsecret "${DB_ES}" "${CP_NS}" 300
+
+          # ── Assert 4: the ExternalSecret is owned by the ControlPlane ──────
+          assert_eq "DB-credential ExternalSecret owned by ControlPlane" "${CP_NAME}" \
+            "$(owner_of externalsecret "${DB_ES}" "${CP_NS}")"
+
+          # ── Assert 5: the ExternalSecret reads the per-CP scoped OpenBao key ─
+          # spec.data[].remoteRef.key MUST be the per-CP path (not the legacy flat
+          # openstack/keystone/db) — this proves the credential is SCOPED to this
+          # ControlPlane. Both data entries (username + property, password +
+          # property) share the same key, so checking the first is sufficient.
+          assert_eq "DB-credential ExternalSecret reads the per-CP scoped OpenBao key" \
+            "${DB_REMOTE_KEY}" \
+            "$(kubectl get externalsecret "${DB_ES}" -n "${CP_NS}" -o 'jsonpath={.spec.data[0].remoteRef.key}')"
+
+          # ── Assert 6: the per-CP OpenBao DB path is present and readable ────
+          # `bao kv get -field=username` returns "keystone" iff the per-CP path the
+          # ExternalSecret reads from exists and is the scoped path we seeded.
+          echo "== bao kv get ${DB_BAO_PATH} (expect present, username=keystone) =="
+          DB_USERNAME=$(kubectl exec -n "${BAO_NS}" "${BAO_POD}" -- \
+            env BAO_ADDR="${BAO_ADDR}" BAO_TOKEN="${BAO_TOKEN}" \
+                VAULT_CACERT="${VAULT_CACERT}" \
+                bao kv get -field=username "${DB_BAO_PATH}")
+          assert_eq "per-CP OpenBao DB path readable (username)" "keystone" "${DB_USERNAME}"
+
+          echo "OK: per-ControlPlane DB-credential scoping verified —"
+          echo "    operator-owned per-CP ExternalSecret ${DB_ES} is Ready, owned"
+          echo "    by the ControlPlane, reads the scoped key ${DB_REMOTE_KEY}, and"
+          echo "    the per-CP OpenBao DB path is present (CC-0116, REQ-001)."
+    catch:
+    - script:
+        shell: bash
+        content: |
+          echo "=== ControlPlane describe ==="
+          kubectl describe controlplane controlplane -n db-cred-scope 2>&1 || true
+          echo "=== ControlPlane status.conditions ==="
+          kubectl get controlplane controlplane -n db-cred-scope \
+            -o jsonpath='{range .status.conditions[*]}{.type}={.status} ({.reason}: {.message}){"\n"}{end}' 2>&1 || true
+          echo "=== Infrastructure child CRs ==="
+          kubectl get mariadb,memcacheds.memcached.c5c3.io -n db-cred-scope 2>&1 || true
+          echo "=== DB-credential ExternalSecret + materialised Secret ==="
+          kubectl describe externalsecret controlplane-keystone-db-credentials -n db-cred-scope 2>&1 || true
+          kubectl get secret controlplane-keystone-db-credentials -n db-cred-scope 2>&1 || true
+          echo "=== c5c3-operator logs (last 200 lines) ==="
+          kubectl logs -n c5c3-system -l app.kubernetes.io/name=c5c3-operator --tail=200 --all-containers 2>&1 || true
+          echo "=== external-secrets controller logs (last 100 lines) ==="
+          kubectl logs -n external-secrets -l app.kubernetes.io/name=external-secrets --tail=100 --all-containers 2>&1 || true
+          echo "=== openbao pods ==="
+          kubectl get pods -n openbao-system -l app.kubernetes.io/name=openbao 2>&1 || true
+          echo "=== Events (db-cred-scope ns, last 30) ==="
+          kubectl get events -n db-cred-scope --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+    finally:
+    - script:
+        shell: bash
+        content: |
+          # The ControlPlane, its owned children (MariaDB, Memcached, the
+          # DB-credential ExternalSecret + Secret) and the namespace are GC'd by
+          # chainsaw's namespace teardown. The seeded OpenBao DB path is harmless
+          # to leave (read-only, scoped to db-cred-scope/controlplane, re-seeded
+          # idempotently on the next run), so no extra cleanup is required.
+          echo "finally: nothing to clean up beyond chainsaw's namespace teardown."

@@ -99,6 +99,8 @@ jobs:
             # CC-0041: Helm chart changes trigger the helm-validate job.
             helm:
               - 'operators/keystone/helm/**'
+              # CC-0116, REQ-010: c5c3 chart changes also run helm-validate.
+              - 'operators/c5c3/helm/**'
             e2e_infra:
               - 'tests/e2e/infrastructure/**'
               - 'hack/**'
@@ -490,8 +492,11 @@ jobs:
           helm template test "$CHART" --set resources.limits.cpu=100m --set resources.limits.memory=64Mi
           echo "--- Scenario 5: namespace-scoped RBAC ---"
           helm template test "$CHART" --set rbac.namespaceScoped=true --set webhook.enabled=false
-      - name: Helm unittest
+      - name: Helm unittest (keystone)
         run: helm unittest operators/keystone/helm/keystone-operator/
+      # CC-0116, REQ-010: also run the c5c3 chart's helm-unittest suite.
+      - name: Helm unittest (c5c3)
+        run: helm unittest operators/c5c3/helm/c5c3-operator/
 
   # CC-0010, REQ-009: End-to-end infrastructure deployment and Chainsaw test.
   # Deploys the full infrastructure stack to a kind cluster and validates health

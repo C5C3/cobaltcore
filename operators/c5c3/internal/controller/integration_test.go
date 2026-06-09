@@ -25,6 +25,7 @@ import (
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -617,4 +618,196 @@ func TestIntegration_MultiControlPlane_DistinctAdminCredentialPaths(t *testing.T
 	g.Expect(userA.Name).To(Equal(adminUserRef(cpA)), "cp-a admin User CR must be named per-CR")
 	g.Expect(userB.Name).To(Equal(adminUserRef(cpB)), "cp-b admin User CR must be named per-CR")
 	g.Expect(userA.Name).NotTo(Equal(userB.Name), "the two ControlPlanes' admin User CR names must be distinct")
+}
+
+// TestIntegration_FullReconcile_DBCredentialsBeforeKeystone proves the
+// DBCredentials sub-reconciler runs BEFORE Keystone and gates it: the projected
+// Keystone CR is NOT created until the per-ControlPlane DB-credential
+// ExternalSecret has synced from OpenBao, and once it has, the Keystone CR's
+// spec.database.secretRef points at the operator-owned per-CP DB-credential
+// Secret (CC-0116, REQ-005, REQ-002).
+//
+// In envtest there is no ESO controller, so the ExternalSecret reconcileDBCredentials
+// creates never syncs on its own. This test exploits that to capture the ordering
+// gate directly: after Infrastructure is Ready the operator HAS created the
+// DB-credential ExternalSecret, but DBCredentialsReady stays False
+// (WaitingForDBCredentialSecret) and the Keystone CR is Consistently absent until
+// the ES sync is simulated. Only then does the chain advance to Keystone.
+func TestIntegration_FullReconcile_DBCredentialsBeforeKeystone(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupControlPlaneEnvTest(t)
+
+	// Isolated test namespace per run (namespace-per-test with GenerateName).
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-db-before-ks-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed(), "create test namespace")
+
+	// Admin password Secret + clouds.yaml ExternalSecret so the chain can progress
+	// past KORC/AdminCredential after Keystone — copied verbatim from
+	// TestIntegration_FullReconcile_ManagedToReady's proven setup.
+	adminSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "keystone-admin", Namespace: ns.Name},
+		Data:       map[string][]byte{"password": []byte("super-secret-admin-password")},
+	}
+	g.Expect(c.Create(ctx, adminSecret)).To(Succeed(), "create admin password Secret")
+
+	cloudsYamlES := &esov1.ExternalSecret{
+		ObjectMeta: metav1.ObjectMeta{Name: korcCloudsYamlSecretName, Namespace: ns.Name},
+		Spec: esov1.ExternalSecretSpec{
+			SecretStoreRef: esov1.SecretStoreRef{Kind: "ClusterSecretStore", Name: "openbao-cluster-store"},
+			Target:         esov1.ExternalSecretTarget{Name: korcCloudsYamlSecretName},
+		},
+	}
+	g.Expect(c.Create(ctx, cloudsYamlES)).To(Succeed(), "create k-orc clouds.yaml ExternalSecret")
+	g.Expect(simulators.SimulateExternalSecretSync(ctx, c,
+		client.ObjectKey{Namespace: ns.Name, Name: korcCloudsYamlSecretName})).
+		To(Succeed(), "simulate k-orc clouds.yaml ExternalSecret sync")
+
+	// Create the ControlPlane CR (the defaulting webhook fills region etc.).
+	cp := integrationManagedControlPlane("cp", ns.Name)
+	g.Expect(c.Create(ctx, cp)).To(Succeed(), "create ControlPlane CR")
+	cpKey := types.NamespacedName{Name: cp.Name, Namespace: ns.Name}
+
+	// --- Phase 1: Infrastructure (MariaDB + Memcached) -> InfrastructureReady. ---
+	simulateMariaDBReadyWhenPresent(t, ctx, c, client.ObjectKey{Name: "openstack-db", Namespace: ns.Name})
+	simulateMemcachedReadyWhenPresent(t, ctx, c, client.ObjectKey{Name: "openstack-memcached", Namespace: ns.Name})
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeInfrastructureReady, metav1.ConditionTrue, itEventuallyTimeout)
+
+	// --- The ordering gate. With Infrastructure ready, reconcileDBCredentials runs
+	// and CREATES the per-CP DB-credential ExternalSecret. Wait for it to exist. ---
+	dbESKey := client.ObjectKey{Name: dbCredentialSecretName(cp), Namespace: ns.Name}
+	g.Eventually(func() error {
+		return c.Get(ctx, dbESKey, &esov1.ExternalSecret{})
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+		"reconcileDBCredentials must create the per-CP DB-credential ExternalSecret")
+
+	// Because there is no ESO controller in envtest, the ExternalSecret stays
+	// unsynced — so DBCredentialsReady must be False (WaitingForDBCredentialSecret)
+	// and, critically, the Keystone CR must NOT yet exist: DBCredentials gates
+	// Keystone. Assert Consistently over a short window that Keystone is NotFound.
+	ksKey := types.NamespacedName{Name: keystoneName(cp), Namespace: ns.Name}
+	g.Consistently(func() bool {
+		err := c.Get(ctx, ksKey, &keystonev1alpha1.Keystone{})
+		return apierrors.IsNotFound(err)
+	}, 2*time.Second, 200*time.Millisecond).Should(BeTrue(),
+		"Keystone CR must NOT be projected while the DB-credential ExternalSecret is unsynced (CC-0116, REQ-005)")
+
+	// And DBCredentialsReady is currently NOT True (the operator is blocked waiting
+	// for the ExternalSecret to sync).
+	dbCond := &c5c3v1alpha1.ControlPlane{}
+	g.Expect(c.Get(ctx, cpKey, dbCond)).To(Succeed(), "get ControlPlane for DBCredentials condition check")
+	cond := meta.FindStatusCondition(dbCond.Status.Conditions, conditionTypeDBCredentialsReady)
+	g.Expect(cond).NotTo(BeNil(), "DBCredentialsReady condition should be present")
+	g.Expect(cond.Status).NotTo(Equal(metav1.ConditionTrue),
+		"DBCredentialsReady must not be True while the ExternalSecret is unsynced")
+	g.Expect(cond.Reason).To(Equal("WaitingForDBCredentialSecret"),
+		"DBCredentialsReady reason must be WaitingForDBCredentialSecret while gating")
+
+	// --- Release the gate: simulate the ESO sync of the DB-credential ExternalSecret. ---
+	g.Expect(simulators.SimulateExternalSecretSync(ctx, c, dbESKey)).
+		To(Succeed(), "simulate DB-credential ExternalSecret sync")
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeDBCredentialsReady, metav1.ConditionTrue, itEventuallyTimeout)
+
+	// Now (and only now) the Keystone CR is projected and can go Ready.
+	simulateKeystoneReadyWhenPresent(t, ctx, c, client.ObjectKey{Name: keystoneName(cp), Namespace: ns.Name})
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeKeystoneReady, metav1.ConditionTrue, itEventuallyTimeout)
+
+	// --- FINAL ASSERTION (REQ-002): the projected Keystone CR reads the
+	// operator-owned per-CP DB-credential Secret, not the infra-supplied secretRef. ---
+	ks := &keystonev1alpha1.Keystone{}
+	g.Expect(c.Get(ctx, ksKey, ks)).To(Succeed(), "get projected Keystone CR")
+	g.Expect(ks.Spec.Database.SecretRef.Name).To(Equal(dbCredentialSecretName(cp)),
+		"Keystone spec.database.secretRef.Name must be the per-CP DB-credential Secret (CC-0116, REQ-002)")
+	g.Expect(ks.Spec.Database.SecretRef.Key).To(Equal("password"),
+		"Keystone spec.database.secretRef.Key must be \"password\"")
+}
+
+// TestIntegration_MultiControlPlane_DistinctDBPaths brings up TWO ControlPlanes in
+// distinct namespaces and asserts each CR's Keystone DB credential is scoped
+// per-ControlPlane and distinct: the operator-created DB-credential ExternalSecret
+// reads from a per-CP OpenBao remote-key path (dbCredentialRemoteKeyFor) and
+// materialises into a per-CP Secret/ExternalSecret name (dbCredentialSecretName),
+// so two ControlPlanes never clobber each other's DB credential on the
+// cluster-global OpenBao backend (CC-0116, REQ-003).
+//
+// DECISION: the DB path/name derivation is deterministic from the CR identity, so
+// the chain only needs to advance far enough for the operator to CREATE the
+// DB-credential ExternalSecret — i.e. InfrastructureReady. Asserting on the
+// operator-created ExternalSecret (rather than a builder call) verifies the real
+// projection. The two ControlPlanes use DIFFERENT names (cp-a, cp-b) in DIFFERENT
+// namespaces, mirroring TestIntegration_MultiControlPlane_DistinctAdminCredentialPaths.
+func TestIntegration_MultiControlPlane_DistinctDBPaths(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupControlPlaneEnvTest(t)
+
+	// Two isolated namespaces (namespace-per-CR with GenerateName).
+	nsA := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-mcp-db-a-"}}
+	nsB := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-mcp-db-b-"}}
+	g.Expect(c.Create(ctx, nsA)).To(Succeed(), "create namespace A")
+	g.Expect(c.Create(ctx, nsB)).To(Succeed(), "create namespace B")
+
+	// Distinct names in distinct namespaces.
+	cpA := integrationManagedControlPlane("cp-a", nsA.Name)
+	cpB := integrationManagedControlPlane("cp-b", nsB.Name)
+	g.Expect(c.Create(ctx, cpA)).To(Succeed(), "create ControlPlane A")
+	g.Expect(c.Create(ctx, cpB)).To(Succeed(), "create ControlPlane B")
+
+	// Drive each CP only as far as InfrastructureReady — enough for
+	// reconcileDBCredentials to create the per-CP DB-credential ExternalSecret.
+	driveControlPlaneToDBCredentialExternalSecret := func(cp *c5c3v1alpha1.ControlPlane) *esov1.ExternalSecret {
+		ns := cp.Namespace
+		cpKey := types.NamespacedName{Name: cp.Name, Namespace: ns}
+		simulateMariaDBReadyWhenPresent(t, ctx, c, client.ObjectKey{Name: "openstack-db", Namespace: ns})
+		simulateMemcachedReadyWhenPresent(t, ctx, c, client.ObjectKey{Name: "openstack-memcached", Namespace: ns})
+		waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeInfrastructureReady, metav1.ConditionTrue, itEventuallyTimeout)
+
+		es := &esov1.ExternalSecret{}
+		g.Eventually(func() error {
+			return c.Get(ctx, client.ObjectKey{Name: dbCredentialSecretName(cp), Namespace: ns}, es)
+		}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+			"reconcileDBCredentials must create the per-CP DB-credential ExternalSecret")
+		return es
+	}
+
+	esA := driveControlPlaneToDBCredentialExternalSecret(cpA)
+	esB := driveControlPlaneToDBCredentialExternalSecret(cpB)
+
+	// --- Assert each ExternalSecret reads from its own per-CP OpenBao remote key. ---
+	keyA := dbCredentialRemoteKeyFor(cpA)
+	keyB := dbCredentialRemoteKeyFor(cpB)
+
+	g.Expect(esA.Spec.Data).NotTo(BeEmpty(), "cp-a DB-credential ExternalSecret must declare Data entries")
+	g.Expect(esB.Spec.Data).NotTo(BeEmpty(), "cp-b DB-credential ExternalSecret must declare Data entries")
+	for _, d := range esA.Spec.Data {
+		g.Expect(d.RemoteRef.Key).To(Equal(keyA),
+			"every cp-a DB-credential data entry must read the per-CP OpenBao path (CC-0116, REQ-003)")
+	}
+	for _, d := range esB.Spec.Data {
+		g.Expect(d.RemoteRef.Key).To(Equal(keyB),
+			"every cp-b DB-credential data entry must read the per-CP OpenBao path (CC-0116, REQ-003)")
+	}
+
+	// The two OpenBao DB paths are distinct and each scoped by its own CR's
+	// Namespace AND Name.
+	g.Expect(keyA).NotTo(Equal(keyB), "the two ControlPlanes' DB OpenBao paths must be distinct")
+	g.Expect(keyA).To(ContainSubstring(cpA.Namespace), "cp-a DB path must contain cp-a's namespace")
+	g.Expect(keyA).To(ContainSubstring(cpA.Name), "cp-a DB path must contain cp-a's name")
+	g.Expect(keyB).To(ContainSubstring(cpB.Namespace), "cp-b DB path must contain cp-b's namespace")
+	g.Expect(keyB).To(ContainSubstring(cpB.Name), "cp-b DB path must contain cp-b's name")
+
+	// The materialised Secret/ExternalSecret names are per-CP and distinct, and the
+	// ExternalSecret target mirrors the builder (Owner creation policy, target name).
+	g.Expect(dbCredentialSecretName(cpA)).NotTo(Equal(dbCredentialSecretName(cpB)),
+		"the two ControlPlanes' DB-credential Secret names must be distinct")
+	g.Expect(esA.Spec.Target.Name).To(Equal(dbCredentialSecretName(cpA)),
+		"cp-a ExternalSecret target name must be the per-CP DB-credential Secret name")
+	g.Expect(esB.Spec.Target.Name).To(Equal(dbCredentialSecretName(cpB)),
+		"cp-b ExternalSecret target name must be the per-CP DB-credential Secret name")
+	g.Expect(esA.Spec.Target.CreationPolicy).To(Equal(esov1.CreatePolicyOwner),
+		"cp-a DB-credential ExternalSecret must own its target Secret")
+	g.Expect(esB.Spec.Target.CreationPolicy).To(Equal(esov1.CreatePolicyOwner),
+		"cp-b DB-credential ExternalSecret must own its target Secret")
 }
