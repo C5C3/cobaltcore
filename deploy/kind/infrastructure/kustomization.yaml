@@ -19,6 +19,11 @@ resources:
   # Feature: CC-0088
   - envoy-nodeport.yaml
   - keystone-nip-io-tls-certificate.yaml
+  # kind-only: standalone Keystone CRs (Quick Start, keystone e2e/tempest/
+  # chaos suites) reference the Secret "keystone-db"; ControlPlane-based
+  # deployments use the operator-projected per-ControlPlane ExternalSecret
+  # instead, so the production stack ships none (CC-0116).
+  - keystone-db-externalsecret.yaml
 
 patches:
   # MariaDB: single replica, no Galera, no MaxScale, standard storage.

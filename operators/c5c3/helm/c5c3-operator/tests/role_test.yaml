@@ -292,6 +292,34 @@ tests:
               - patch
               - delete
 
+  # CC-0116 (REQ-009): reconcileDBCredentials uses CreateOrUpdate on a
+  # per-ControlPlane externalsecret, which requires both create and update.
+  # The full externalsecrets rule (which includes create and update) must be
+  # present so the reconciler is permitted to CreateOrUpdate the ExternalSecret.
+  - it: should allow create and update on externalsecrets so reconcileDBCredentials can CreateOrUpdate (CC-0116, REQ-009)
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - external-secrets.io
+            resources:
+              - externalsecrets
+              - pushsecrets
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
   - it: should grant read-only on clustersecretstores
     set:
       rbac:

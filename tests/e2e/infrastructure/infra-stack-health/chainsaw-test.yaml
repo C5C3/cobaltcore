@@ -141,6 +141,18 @@ spec:
   # then completed the application-layer login. A regression in any link of
   # that chain (missing client cert, wrong CA, listener misconfig) flips
   # Ready=False here.
+  #
+  # CC-0116: keystone-db is the kind-only default-identity ExternalSecret
+  # (deploy/kind/infrastructure/keystone-db-externalsecret.yaml) serving
+  # standalone Keystone CRs — it reads the per-ControlPlane path
+  # openstack/keystone/openstack/controlplane/db that the deploy-infra seed
+  # writes for the default KORC_CONTROLPLANES identity. The production stack
+  # (deploy/eso/) ships no keystone-db ExternalSecret. The operator-created
+  # per-ControlPlane ExternalSecret (controlplane-keystone-db-credentials)
+  # does not exist after a bare `make deploy-infra` (no ControlPlane CR yet)
+  # and is asserted by tests/e2e/c5c3/db-credential-scoping/ instead. This
+  # suite always runs against the kind overlay, so the assertion is valid
+  # here.
   - try:
     - assert:
         resource:

@@ -22,9 +22,11 @@ path "kv-v2/data/infrastructure/*" {
 # DEVIATION from architecture/docs/09-implementation/09-openbao-deployment.md:
 # The architecture doc specifies only bootstrap/* and infrastructure/* paths
 # for the eso-management policy. The openstack/keystone/* path is added because
-# the keystone-db ExternalSecret (deploy/eso/externalsecrets/keystone-db.yaml)
-# reads from kv-v2/openstack/keystone/db, which requires this capability
-# on the management cluster's ESO role (CC-0009).
+# the per-ControlPlane DB credentials now live at the namespace+name-scoped path
+# 'kv-v2/data/openstack/keystone/{namespace}/{name}/db', materialised by the
+# c5c3 operator's reconcileDBCredentials per-ControlPlane DB-credential
+# ExternalSecret, which reads from that path and requires this read capability
+# on the management cluster's ESO role (CC-0116, REQ-006).
 # Scoped to keystone/* rather than openstack/* to maintain least-privilege —
 # other OpenStack service credentials (nova, neutron, etc.) are excluded.
 #
@@ -40,6 +42,10 @@ path "kv-v2/data/infrastructure/*" {
 # credential-keys}`. The trailing `*` wildcard already matches any remaining
 # depth, so it covers these new shapes with no widening required; this policy
 # stays read-only.
+# CC-0116 verification: the per-ControlPlane DB credential path
+# `openstack/keystone/{namespace}/{name}/db` (REQ-006) is likewise matched by
+# the same trailing `*` wildcard, so no widening is required and this policy
+# remains READ-ONLY.
 path "kv-v2/data/openstack/keystone/*" {
   capabilities = ["read"]
 }

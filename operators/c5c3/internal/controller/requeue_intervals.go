@@ -14,6 +14,14 @@ const (
 	// child is still converging to Ready.
 	infraRequeueAfter = 15 * time.Second
 
+	// dbCredentialsRequeueAfter is the backoff the DB-credentials sub-reconciler
+	// uses while waiting for the per-ControlPlane DB-credential ExternalSecret to
+	// sync to Ready (CC-0116, REQ-001, REQ-008). DECISION: a dedicated named
+	// constant (rather than reusing korcRequeueAfter) matches the
+	// per-sub-reconciler naming convention already established here, so the wait
+	// cadence of each sub-reconciler is independently documented and tunable.
+	dbCredentialsRequeueAfter = 10 * time.Second
+
 	// keystoneInfraGateRequeueAfter is the short backoff used while the Keystone
 	// sub-reconciler is gated on InfrastructureReady; it is small so the Keystone
 	// CR is projected promptly once the infrastructure converges.

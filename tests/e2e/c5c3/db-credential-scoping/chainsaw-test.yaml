@@ -1,0 +1,177 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for per-ControlPlane service DB-credential scoping
+# (CC-0116, REQ-010, REQ-001). It applies the canonical ControlPlane
+# ("controlplane" in namespace "openstack") and asserts that the c5c3-operator's
+# reconcileDBCredentials sub-reconciler projects a per-ControlPlane,
+# OpenBao-backed DB credential:
+#
+#   - an ExternalSecret named "controlplane-keystone-db-credentials" in the
+#     ControlPlane namespace, owned by the ControlPlane, whose username and
+#     password remoteRefs both read the per-CP OpenBao key
+#     "openstack/keystone/openstack/controlplane/db"
+#     ( = openstack/keystone/{cp.Namespace}/{cp.Name}/db ); and
+#   - the materialised Secret of the same name carrying the username + password
+#     keys ESO synced from that path.
+#
+# The per-CP path is what the deploy-infra seed writes for the default
+# KORC_CONTROLPLANES entry "openstack/controlplane"
+# (deploy/openbao/bootstrap/write-bootstrap-secrets.sh, CC-0116 REQ-006); the
+# legacy flat shared-key DB static ExternalSecret is removed (REQ-006).
+#
+# ── DECISION: belt-and-braces presence guard + single consolidated script ────
+# Mirrors tests/e2e/c5c3/full-controlplane-keystone: the c5c3-operator + OpenBao
+# stack the DB-credential link spans is NOT installed by the current kind E2E
+# wiring (hack/deploy-infra.sh + hack/ci-deploy-operator.sh), and the suite runs
+# under execution.failFast: true (tests/e2e/chainsaw-config.yaml), so a pure
+# declarative `assert` test would HARD-FAIL every cluster missing that stack —
+# including the PR that introduces this file. A runtime presence guard probes for
+# the required CRDs + the OpenBao ClusterSecretStore and exits 0 with a SKIP line
+# when the stack is absent; when present it asserts the link. Because chainsaw has
+# no step-level skip, the guard and all assertions live in ONE script step.
+# Reviewer: please verify, and note that wiring the c5c3-operator + OpenBao into
+# kind E2E (so this test exercises rather than skips) is the documented CC-0110
+# fast-follow (REQ-022/REQ-023).
+#
+# Feature: CC-0116, REQ-010, REQ-001
+---
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: db-credential-scoping
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+    exec: 10m
+  steps:
+  # ── Step 1: Presence-gate, apply the ControlPlane, assert the DB link ──────
+  - try:
+    - script:
+        timeout: 10m
+        # Chainsaw defaults to `sh`, which rejects `set -o pipefail`; every
+        # infra/keystone e2e script pins bash for the same reason.
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          CP_NS=openstack
+          CP_NAME=controlplane
+          DB_SECRET=controlplane-keystone-db-credentials
+          DB_REMOTE_KEY=openstack/keystone/openstack/controlplane/db
+
+          # ── Presence guard (CC-0116, REQ-010) ──────────────────────────────
+          # Probe for the CRDs the DB-credential link spans plus the OpenBao
+          # ClusterSecretStore the ExternalSecret reads through. Their absence
+          # means the c5c3-operator + OpenBao stack is not deployed here — SKIP
+          # cleanly (exit 0).
+          missing=""
+          for crd in \
+            controlplanes.c5c3.io \
+            keystones.keystone.openstack.c5c3.io \
+            externalsecrets.external-secrets.io; do
+            if ! kubectl get crd "$crd" >/dev/null 2>&1; then
+              missing="${missing} ${crd}"
+            fi
+          done
+          if [ -n "${missing}" ]; then
+            echo "SKIP: required CRDs not present:${missing}"
+            echo "      The c5c3-operator + OpenBao stack is not deployed on this"
+            echo "      cluster, so the DB-credential scoping link cannot be"
+            echo "      exercised here."
+            exit 0
+          fi
+          if ! kubectl get clustersecretstore openbao-cluster-store >/dev/null 2>&1; then
+            echo "SKIP: openbao-cluster-store ClusterSecretStore not present;"
+            echo "      the DB-credential ExternalSecret cannot sync."
+            exit 0
+          fi
+          echo "OK: c5c3 + ESO CRDs and OpenBao store present — running the"
+          echo "    per-ControlPlane DB-credential scoping assertions."
+
+          # ── Helpers ────────────────────────────────────────────────────────
+          assert_eq() { # <description> <expected> <actual>
+            if [ "$2" != "$3" ]; then
+              echo "ERROR: $1 — expected '$2', got '$3'"
+              exit 1
+            fi
+            echo "OK: $1 ('$3')"
+          }
+
+          wait_ready_condition() { # <resource> <name> <namespace> <timeoutSeconds>
+            local res="$1" name="$2" ns="$3" timeout="$4"
+            local deadline status
+            deadline=$(( $(date +%s) + timeout ))
+            while true; do
+              status="$(kubectl get "${res}" "${name}" -n "${ns}" \
+                -o "jsonpath={.status.conditions[?(@.type=='Ready')].status}" 2>/dev/null || true)"
+              if [ "${status}" = "True" ]; then
+                echo "OK: ${res}/${name} Ready=True"
+                return 0
+              fi
+              if [ "$(date +%s)" -ge "${deadline}" ]; then
+                echo "ERROR: ${res}/${name} Ready not True within ${timeout}s (last: '${status:-<none>}')"
+                return 1
+              fi
+              sleep 5
+            done
+          }
+
+          # Apply the canonical ControlPlane now that the presence guard passed.
+          # Chainsaw runs scripts with the test directory as CWD. The CR is the
+          # same name/namespace the deploy stack provisions, so this apply is
+          # idempotent on a cluster that already carries it.
+          kubectl apply -f 00-controlplane-cr.yaml
+
+          # ── Assert the DB-credential ExternalSecret shape ──────────────────
+          # The operator projects it owner-referenced to the ControlPlane, reading
+          # the per-CP OpenBao path for both username and password.
+          wait_ready_condition externalsecret "${DB_SECRET}" "${CP_NS}" 300
+
+          assert_eq "DB-credential ExternalSecret owned by ControlPlane" "${CP_NAME}" \
+            "$(kubectl get externalsecret "${DB_SECRET}" -n "${CP_NS}" \
+              -o "jsonpath={.metadata.ownerReferences[?(@.kind=='ControlPlane')].name}")"
+          assert_eq "DB-credential ExternalSecret store" "openbao-cluster-store" \
+            "$(kubectl get externalsecret "${DB_SECRET}" -n "${CP_NS}" \
+              -o 'jsonpath={.spec.secretStoreRef.name}')"
+          assert_eq "username remoteRef key is per-CP path" "${DB_REMOTE_KEY}" \
+            "$(kubectl get externalsecret "${DB_SECRET}" -n "${CP_NS}" \
+              -o "jsonpath={.spec.data[?(@.secretKey=='username')].remoteRef.key}")"
+          assert_eq "password remoteRef key is per-CP path" "${DB_REMOTE_KEY}" \
+            "$(kubectl get externalsecret "${DB_SECRET}" -n "${CP_NS}" \
+              -o "jsonpath={.spec.data[?(@.secretKey=='password')].remoteRef.key}")"
+
+          # ── Assert the materialised Secret carries username + password ─────
+          kubectl get secret "${DB_SECRET}" -n "${CP_NS}" >/dev/null
+          for key in username password; do
+            val="$(kubectl get secret "${DB_SECRET}" -n "${CP_NS}" \
+              -o "jsonpath={.data.${key}}" 2>/dev/null || true)"
+            if [ -z "${val}" ]; then
+              echo "ERROR: DB-credential Secret ${DB_SECRET} has no '${key}' key"
+              exit 1
+            fi
+            echo "OK: DB-credential Secret carries '${key}'"
+          done
+
+          # ── Assert the ControlPlane DBCredentialsReady condition ───────────
+          assert_eq "ControlPlane DBCredentialsReady" "True" \
+            "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" \
+              -o "jsonpath={.status.conditions[?(@.type=='DBCredentialsReady')].status}")"
+          echo "OK: per-ControlPlane DB-credential scoping verified."
+    catch:
+    - script:
+        shell: bash
+        content: |
+          echo "=== ControlPlane status.conditions ==="
+          kubectl get controlplane controlplane -n openstack \
+            -o jsonpath='{range .status.conditions[*]}{.type}={.status} ({.reason}: {.message}){"\n"}{end}' 2>&1 || true
+          echo "=== DB-credential ExternalSecret ==="
+          kubectl describe externalsecret controlplane-keystone-db-credentials -n openstack 2>&1 || true
+          echo "=== DB-credential Secret (keys only, no values) ==="
+          kubectl describe secret controlplane-keystone-db-credentials -n openstack 2>&1 || true
+          echo "=== c5c3-operator logs (last 100 lines) ==="
+          kubectl logs -n c5c3-system -l app.kubernetes.io/name=c5c3-operator --tail=100 --all-containers 2>&1 || true
+          echo "=== Events (openstack ns, last 30) ==="
+          kubectl get events -n openstack --sort-by='.lastTimestamp' 2>&1 | tail -30 || true

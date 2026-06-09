@@ -45,6 +45,7 @@ const ControlPlaneSecretNameIndexKey = "spec.korc.adminCredential.passwordSecret
 // the no-inline-literals drift guard (CC-0110, REQ-007).
 const (
 	conditionTypeInfrastructureReady  = "InfrastructureReady"
+	conditionTypeDBCredentialsReady   = "DBCredentialsReady" //nolint:gosec // G101 false positive: condition type name, not a credential.
 	conditionTypeKeystoneReady        = "KeystoneReady"
 	conditionTypeKORCReady            = "KORCReady"
 	conditionTypeAdminCredentialReady = "AdminCredentialReady" //nolint:gosec // G101 false positive: condition type name, not a credential.
@@ -56,6 +57,7 @@ const (
 // The Ready condition is True only when all of these are True (CC-0110, REQ-007).
 var subConditionTypes = []string{
 	conditionTypeInfrastructureReady,
+	conditionTypeDBCredentialsReady,
 	conditionTypeKeystoneReady,
 	conditionTypeKORCReady,
 	conditionTypeAdminCredentialReady,
@@ -102,6 +104,12 @@ func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// REQ-007, REQ-026).
 	if result, err := instrumentSubReconciler(ctx, "Infrastructure", func(ctx context.Context) (ctrl.Result, error) {
 		return r.reconcileInfrastructure(ctx, &cp)
+	}); !result.IsZero() || err != nil {
+		return r.updateStatus(ctx, &cp, result, err)
+	}
+
+	if result, err := instrumentSubReconciler(ctx, "DBCredentials", func(ctx context.Context) (ctrl.Result, error) {
+		return r.reconcileDBCredentials(ctx, &cp)
 	}); !result.IsZero() || err != nil {
 		return r.updateStatus(ctx, &cp, result, err)
 	}

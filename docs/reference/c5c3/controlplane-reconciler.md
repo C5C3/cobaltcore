@@ -233,6 +233,12 @@ holds only `update`/`patch` (not `create`/`delete`) on K-ORC
 │           │  early-return if !result.IsZero() || err                         │
 │           ▼                                                                  │
 │  ┌──────────────────────────┐                                                │
+│  │ reconcileDBCredentials   │  Project per-CP DB-credential ExternalSecret   │
+│  │  (gate: none)            │  Sets: DBCredentialsReady                      │
+│  └────────┬─────────────────┘  Requeue: 10s while the ES is not yet synced   │
+│           │                                                                  │
+│           ▼                                                                  │
+│  ┌──────────────────────────┐                                                │
 │  │ reconcileKeystone        │  Project the Keystone child CR                 │
 │  │  (gate: InfraReady)      │  Sets: KeystoneReady                           │
 │  └────────┬─────────────────┘  Requeue: 5s gated / 15s child not Ready       │
@@ -267,7 +273,7 @@ holds only `update`/`patch` (not `create`/`delete`) on K-ORC
 
 ### Execution Model
 
-All five sub-reconcilers run **strictly sequentially** — there is no parallel
+All six sub-reconcilers run **strictly sequentially** — there is no parallel
 group. Each sub-reconciler call is wrapped in `instrumentSubReconciler` (see
 [Metrics Instrumentation](#metrics-instrumentation)) and follows the same
 early-return contract:
@@ -289,7 +295,7 @@ This guarantees:
 3. Status conditions from the failing/requeuing sub-reconciler are **always
    persisted** via `updateStatus()` before returning.
 
-Only when all five sub-reconcilers return a zero result with no error does
+Only when all six sub-reconcilers return a zero result with no error does
 control reach `setReadyCondition(&cp)` and the final `updateStatus(ctx, &cp,
 ctrl.Result{}, nil)`.
 
@@ -322,11 +328,11 @@ sub-condition type is `True` using `aggregateReady()`, which delegates to
 | Yes | `Status: True` | `AllReady` | `All sub-conditions are ready` |
 | No (any missing or False) | `Status: False` | `NotAllReady` | `One or more sub-conditions are not ready` |
 
-The five aggregated sub-condition types (the source-of-truth `subConditionTypes`
+The six aggregated sub-condition types (the source-of-truth `subConditionTypes`
 slice in `controlplane_controller.go`) are:
 
 ```text
-InfrastructureReady, KeystoneReady, KORCReady, AdminCredentialReady, CatalogReady
+InfrastructureReady, DBCredentialsReady, KeystoneReady, KORCReady, AdminCredentialReady, CatalogReady
 ```
 
 The `Ready` condition carries `ObservedGeneration = cp.Generation` so clients can
@@ -382,6 +388,44 @@ occurs; readiness is evaluated collectively afterwards.
 > from the unstructured `status.conditions[type=Ready].status == "True"`
 > (`unstructuredReady`), where a missing/malformed list is treated as not-ready
 > rather than an error.
+
+### reconcileDBCredentials
+
+| Aspect | Value |
+| --- | --- |
+| File | `reconcile_dbcredentials.go` |
+| Condition | `DBCredentialsReady` |
+| Gate | none — runs unconditionally, positioned after Infrastructure and before Keystone so the Keystone CR is never projected before the DB-credential Secret exists |
+| Projects / Owns | Managed-mode (`spec.infrastructure.database.clusterRef != nil`) one owner-referenced `external-secrets.io/v1` `ExternalSecret` named `{controlplane.Name}-keystone-db-credentials` (`dbCredentialSecretName`) in `childNamespace(cp)`; brownfield projects nothing |
+| Requeue | `dbCredentialsRequeueAfter` = **10s** while the ExternalSecret is not yet Ready |
+
+`reconcileDBCredentials` projects the per-ControlPlane service database
+credential as an OpenBao-backed `ExternalSecret`, so the projected Keystone CR
+consumes a DB credential scoped to its own ControlPlane. It mirrors
+`reconcileAdminCredential`'s wait/condition
+handling. The database is **managed** when `spec.infrastructure.database.clusterRef`
+is set and **brownfield** when the user supplies a `host`-based connection:
+
+- **Brownfield is a pure no-op.** When `clusterRef == nil` the user owns the DB
+  credential Secret out-of-band, so the operator projects **no** ExternalSecret
+  and never references OpenBao or the `ClusterSecretStore`; `DBCredentialsReady`
+  is reported `True` immediately so the chain proceeds to Keystone.
+- **Managed projects the ExternalSecret.** The owned ExternalSecret has
+  `RefreshInterval` 1h, `SecretStoreRef` `Kind: ClusterSecretStore, Name: openbao-cluster-store`,
+  and `Target.CreationPolicy: Owner` (so ESO owns the materialised Secret of the
+  same name). Its `username` / `password` `Data` keys both read from the per-CP
+  remote key `openstack/keystone/{cp.Namespace}/{cp.Name}/db`
+  (`dbCredentialRemoteKeyFor`) via the matching `Property`. The builder
+  `dbCredentialExternalSecret(cp)` sets **no** owner reference; the reconciler
+  sets the ControlPlane controller reference inside the `CreateOrUpdate` mutate
+  closure for GC.
+
+| Path | Status | Reason | Notes |
+| --- | --- | --- | --- |
+| Brownfield (`clusterRef == nil`) | True | `BrownfieldUserSuppliedCredential` | no ExternalSecret projected; user supplies the DB credential Secret out-of-band |
+| ExternalSecret create/update or read fails | False | `ExternalSecretError` | returns the error |
+| ExternalSecret not yet synced | False | `WaitingForDBCredentialSecret` | requeue 10s |
+| ExternalSecret Ready | True | `DBCredentialsReady` | — |
 
 ### reconcileKeystone
 
@@ -695,6 +739,13 @@ cluster without sharing OpenBao state.
   `admin` (set via the import `Filter.Name`) — the K8s-name and the OpenStack-name
   are deliberately split so the per-CR Kubernetes object is unique while the
   OpenStack identity is unchanged.
+- **Per-CR OpenBao path for the service DB credential.** The managed-mode service
+  database credential is read from the per-ControlPlane key
+  `openstack/keystone/{cp.Namespace}/{cp.Name}/db`
+  (`dbCredentialRemoteKeyFor`), scoped by **both** namespace and name (mirroring
+  `adminAppCredentialRemoteKeyFor`) so two ControlPlanes never collide on the
+  cluster-global OpenBao backend. `reconcileDBCredentials`
+  projects an owned ExternalSecret reading `username`/`password` from this key.
 - **Running multiple control planes.** Because the webhook caps a namespace at one
   ControlPlane and the OpenBao paths are keyed by `{namespace}/{name}`, operating
   several control planes means deploying each into its **own** namespace. Each gets
@@ -735,6 +786,7 @@ owner).
 | --- | --- | --- | --- |
 | `MariaDB` | `{spec.infrastructure.database.clusterRef.name}` | ControlPlane CR | managed mode only |
 | `Memcached` (unstructured) | `{spec.infrastructure.cache.clusterRef.name}` | ControlPlane CR | managed mode only |
+| `ExternalSecret` (DB credential) | `{name}-keystone-db-credentials` | ControlPlane CR | managed mode only; ESO owns the materialised Secret of the same name |
 | `Keystone` | `{name}-keystone` | ControlPlane CR | — |
 | `ApplicationCredential` | `{name}-admin-app-credential` | ControlPlane CR | carries `forge.c5c3.io/admin-password-hash` |
 | `Secret` | `{name}-admin-app-credential` | ControlPlane CR | data written by K-ORC, not the operator |
@@ -809,6 +861,7 @@ The `condition_type` label is resolved from the package-private
 | `sub_reconciler` | `condition_type` |
 | --- | --- |
 | `Infrastructure` | `InfrastructureReady` |
+| `DBCredentials` | `DBCredentialsReady` |
 | `Keystone` | `KeystoneReady` |
 | `KORC` | `KORCReady` |
 | `AdminCredential` | `AdminCredentialReady` |
@@ -865,6 +918,7 @@ inversion on the AC, and the identity `Service`/`Endpoint` shape.
 | --- | --- |
 | `controlplane_controller_test.go` | `Reconcile` orchestration, sequential early-return, Ready aggregation, `updateStatus` error-join, idempotency |
 | `reconcile_infrastructure_test.go` | Managed/brownfield MariaDB + Memcached, unstructured readiness, condition contract, `ObservedGeneration` |
+| `reconcile_dbcredentials_test.go` | Managed ExternalSecret projection (name/store/data/owner-ref), brownfield no-op `Ready=True`, not-ready requeue + condition contract, distinct per-CP remote key/secret name |
 | `reconcile_keystone_test.go` | Keystone projection, infra gate, image/rotation/policy projection, condition contract, `ObservedGeneration` |
 | `reconcile_korc_test.go` | AC mint, restricted↔unrestricted inversion, hash annotation/re-mint, missing-CRD safety, admin-credential push, catalog, condition contract |
 | `reconcile_credentialrotation_test.go` | Nudge model, one-per-namespace resolution, bootstrap, deferred scheduled fields, target enum |
@@ -894,15 +948,17 @@ operators/c5c3/
     │   │                                        SetupWithManager
     │   ├── reconcile_infrastructure.go          reconcileInfrastructure (MariaDB + Memcached),
     │   │                                        childNamespace, memcachedGVK
+    │   ├── reconcile_dbcredentials.go           reconcileDBCredentials (per-CP DB-credential ExternalSecret)
     │   ├── reconcile_keystone.go                reconcileKeystone projection
     │   ├── reconcile_korc.go                    reconcileKORC + reconcileAdminCredential +
     │   │                                        reconcileCatalog, computeAdminPasswordHash
     │   ├── reconcile_credentialrotation.go      CredentialRotationReconciler (nudge model)
-    │   ├── requeue_intervals.go                 infra/keystone/korc/credentialRotation backoffs
+    │   ├── requeue_intervals.go                 infra/dbCredentials/keystone/korc/credentialRotation backoffs
     │   ├── instrumentation.go                   instrumentSubReconciler + drift-guard map
     │   ├── helpers.go                           intervalToCron, projectPolicyOverrides
     │   ├── controlplane_controller_test.go      Orchestration tests
     │   ├── reconcile_infrastructure_test.go     Infrastructure tests
+    │   ├── reconcile_dbcredentials_test.go      DBCredentials tests
     │   ├── reconcile_keystone_test.go           Keystone projection tests
     │   ├── reconcile_korc_test.go               K-ORC / admin-credential / catalog tests
     │   ├── reconcile_credentialrotation_test.go CredentialRotation tests

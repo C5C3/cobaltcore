@@ -393,3 +393,58 @@ func TestReconcileKeystone_MirrorsChildReady(t *testing.T) {
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 }
+
+func TestReconcileKeystone_ManagedOverridesDBSecretRef(t *testing.T) {
+	// In MANAGED mode (Database.ClusterRef != nil) the projected Keystone CR's
+	// database.secretRef must point at the operator-owned per-ControlPlane
+	// DB-credential Secret, not the cp-level default. The override must not
+	// mutate cp.Spec (CC-0116, REQ-003).
+	g := NewGomegaWithT(t)
+
+	s := keystoneTestScheme(t)
+	cp := keystoneControlPlane()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileKeystone(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	k := getProjectedKeystone(t, c, cp)
+	g.Expect(k.Spec.Database.SecretRef.Name).To(Equal(dbCredentialSecretName(cp)),
+		"managed mode must point the child at the per-ControlPlane DB-credential Secret")
+	g.Expect(k.Spec.Database.SecretRef.Key).To(Equal("password"))
+	// The rest of the database spec must still flow through (so the test can't
+	// pass by clearing the whole struct).
+	g.Expect(k.Spec.Database.ClusterRef).NotTo(BeNil())
+	g.Expect(k.Spec.Database.ClusterRef.Name).To(Equal("openstack-db"))
+	// The override must not mutate the source spec.
+	g.Expect(cp.Spec.Infrastructure.Database.SecretRef.Name).To(Equal("keystone-db"),
+		"the secretRef override must not mutate cp.Spec")
+}
+
+func TestReconcileKeystone_BrownfieldLeavesSuppliedSecretRef(t *testing.T) {
+	// In BROWNFIELD mode (Database.ClusterRef == nil) the user owns the DB Secret
+	// out-of-band, so the operator must leave the supplied secretRef untouched
+	// (CC-0116, REQ-003).
+	g := NewGomegaWithT(t)
+
+	s := keystoneTestScheme(t)
+	cp := keystoneControlPlane()
+	// Keep the InfrastructureReady=True condition set by keystoneControlPlane so
+	// the gate passes; only replace the database with a brownfield spec.
+	cp.Spec.Infrastructure.Database = commonv1.DatabaseSpec{
+		Host:      "db.example.com",
+		Database:  "keystone",
+		SecretRef: commonv1.SecretRefSpec{Name: "user-supplied-db-secret", Key: "pw"},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileKeystone(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	k := getProjectedKeystone(t, c, cp)
+	g.Expect(k.Spec.Database.SecretRef.Name).To(Equal("user-supplied-db-secret"),
+		"brownfield mode must leave the user-supplied secretRef untouched")
+	g.Expect(k.Spec.Database.SecretRef.Key).To(Equal("pw"))
+}

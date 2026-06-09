@@ -111,6 +111,19 @@ func (r *ControlPlaneReconciler) reconcileKeystone(ctx context.Context, cp *c5c3
 		// Point Keystone at the SAME backing services the ControlPlane
 		// provisioned by reusing the infrastructure specs verbatim.
 		keystone.Spec.Database = cp.Spec.Infrastructure.Database
+
+		// CC-0116 (REQ-003): in managed mode the operator OWNS the service DB
+		// credential — reconcileDBCredentials materialises it into a per-ControlPlane
+		// Secret named dbCredentialSecretName(cp). Override the projected Keystone CR's
+		// database.secretRef to that operator-owned Secret (key "password") so Keystone
+		// consumes the scoped credential rather than the cp-level default name. This
+		// reassigns only the projected child's SecretRef value; cp.Spec is left
+		// untouched. Brownfield (Database.ClusterRef == nil) leaves the user-supplied
+		// secretRef in place — the user owns that Secret out-of-band.
+		if cp.Spec.Infrastructure.Database.ClusterRef != nil {
+			keystone.Spec.Database.SecretRef = commonv1.SecretRefSpec{Name: dbCredentialSecretName(cp), Key: "password"}
+		}
+
 		keystone.Spec.Cache = cp.Spec.Infrastructure.Cache
 
 		// Bootstrap admin password is delivered via the K-ORC admin credential

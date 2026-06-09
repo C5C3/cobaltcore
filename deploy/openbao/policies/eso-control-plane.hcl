@@ -12,6 +12,8 @@ path "kv-v2/data/bootstrap/*" {
   capabilities = ["read"]
 }
 
+# CC-0116 (REQ-006): this grant already covers the per-ControlPlane Keystone DB
+# path 'openstack/keystone/{namespace}/{name}/db', so no widening is required.
 path "kv-v2/data/openstack/*" {
   capabilities = ["read"]
 }

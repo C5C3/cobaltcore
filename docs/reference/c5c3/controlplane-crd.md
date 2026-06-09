@@ -76,6 +76,12 @@ spec:
       clusterRef:
         name: mariadb
       database: keystone
+      # In managed mode (clusterRef set) database.secretRef is
+      # operator-owned — reconcileDBCredentials materialises a per-ControlPlane
+      # Secret and the projected Keystone CR's secretRef is overridden to
+      # {name}-keystone-db-credentials (key "password"); the value below is not
+      # what Keystone consumes. A brownfield CR (database.host) must instead
+      # supply its own database.secretRef Secret out-of-band.
       secretRef:
         name: keystone-db-credentials
         key: password
@@ -208,9 +214,15 @@ a brownfield CR — the webhook never coerces an explicit brownfield endpoint in
 managed mode. See the [Defaulting Webhook](#defaulting-webhook) for the exact
 conditions and mechanism.
 
+The defaulted `database.secretRef.name` (`keystone-db`) is a **managed-mode
+convenience name only** — in managed mode `database.secretRef` is operator-owned
+and the projected Keystone CR's `secretRef` is overridden to a per-ControlPlane
+Secret, and a brownfield CR must supply its own. See the [`database` field
+notes](#infrastructurespec) below.
+
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `database` | [`commonv1.DatabaseSpec`](../keystone/keystone-crd.md#databasespec) | No | managed `clusterRef: openstack-db`, `database: keystone`, `secretRef.name: keystone-db` | MariaDB connection parameters shared by the control plane. Supports managed (`clusterRef`) and brownfield (`host`) modes; exactly one must hold **after defaulting** (enforced by the validating webhook — see [Validation Rules](#validation-rules)). Optional because the defaulting webhook materializes a managed-mode block when omitted. |
+| `database` | [`commonv1.DatabaseSpec`](../keystone/keystone-crd.md#databasespec) | No | managed `clusterRef: openstack-db`, `database: keystone`, `secretRef.name: keystone-db` | MariaDB connection parameters shared by the control plane. Supports managed (`clusterRef`) and brownfield (`host`) modes; exactly one must hold **after defaulting** (enforced by the validating webhook — see [Validation Rules](#validation-rules)). Optional because the defaulting webhook materializes a managed-mode block when omitted. **`database.secretRef` ownership:** in managed mode this reference is **operator-owned** — `reconcileDBCredentials` materialises a per-ControlPlane DB-credential Secret and the reconciler overrides the projected Keystone CR's `spec.database.secretRef` to point at it, so the `keystone-db` default `secretRef.name` is only a managed-mode convenience name (it is **not** what Keystone consumes and no longer resolves to a cluster Secret). A **brownfield** ControlPlane (`database.host` set, no `clusterRef`) **MUST supply** its own `database.secretRef` Secret out-of-band — the operator projects no ExternalSecret in brownfield mode. See [managed-mode provisioning](#infrastructurespec) below. |
 | `cache` | [`commonv1.CacheSpec`](../keystone/keystone-crd.md#cachespec) | No | managed `clusterRef: openstack-memcached`, `backend: dogpile.cache.pymemcache` | Memcached configuration shared by the control plane. Supports managed (`clusterRef`) and brownfield (`servers`) modes; exactly one must hold **after defaulting** (enforced by the validating webhook). Optional because the defaulting webhook materializes a managed-mode block when omitted. |
 
 <!-- DECISION: `database`/`cache` Required flipped from Yes to No because the
@@ -224,6 +236,33 @@ In managed mode the reconciler provisions an owned `MariaDB` CR (named after
 the reconciler projects points at the **same** `DatabaseSpec` / `CacheSpec`
 verbatim, so the aggregate and the projected service agree on the backing
 services.
+
+> **`database.secretRef` is operator-owned in managed mode.** The
+> `DatabaseSpec` is projected onto the Keystone CR verbatim **except** for its
+> `secretRef`. In managed mode the `reconcileDBCredentials` sub-reconciler
+> create-or-updates a per-ControlPlane DB-credential `ExternalSecret` named
+> `{controlplane.Name}-keystone-db-credentials` in the ControlPlane namespace
+> (reading OpenBao path `openstack/keystone/{namespace}/{name}/db`), and
+> `reconcileKeystone` then **overrides** the projected Keystone CR's
+> `spec.database.secretRef` to `{name: "{controlplane.Name}-keystone-db-credentials",
+> key: "password"}` — the operator-owned Secret. The source `cp.Spec` is left
+> untouched; only the projected child's `secretRef` value is reassigned. The
+> Secret that Keystone actually consumes is therefore the one this reconciler
+> materialises, **not** a Secret literally named after `database.secretRef.name`.
+> Consequently the `keystone-db` default for `database.secretRef.name` is
+> a **managed-mode convenience name only**: the production deploy stack ships
+> no `keystone-db` ExternalSecret (only the kind overlay materialises one, for
+> standalone Keystone instances), and a managed ControlPlane never consumes
+> it either way.
+>
+> A **brownfield** ControlPlane (`database.host` set, `clusterRef == nil`)
+> **MUST supply** `spec.infrastructure.database.secretRef` pointing to a Secret
+> it owns out-of-band. In brownfield mode `reconcileDBCredentials` is a no-op
+> (it reports `DBCredentialsReady=True`, reason `BrownfieldUserSuppliedCredential`)
+> and projects no ExternalSecret, so the operator never materialises the Secret
+> — and the `keystone-db` default no longer resolves to a cluster Secret. See the
+> [ControlPlane Reconciler reference](./controlplane-reconciler.md) for the
+> `reconcileDBCredentials` flow.
 
 ---
 
@@ -691,12 +730,29 @@ markers' documented values where a marker also exists.
 | `spec.korc.adminCredential.applicationCredential.rotation.mode` | `== ""` | `PasswordDriven` | Marker + webhook |
 | `spec.korc.adminCredential.cloudCredentialsRef.cloudName` | `== ""` | `"admin"` | Marker + webhook |
 | `spec.infrastructure.database.database` | `== ""` | `"keystone"` | Webhook-only |
-| `spec.infrastructure.database.secretRef.name` | `== ""` | `"keystone-db"` | Webhook-only |
+| `spec.infrastructure.database.secretRef.name` | `== ""` | `"keystone-db"` [†](#secretref-default-note) | Webhook-only |
 | `spec.infrastructure.database.clusterRef.name` | `host == ""` (managed mode) | `"openstack-db"` | Webhook-only, brownfield-guarded |
 | `spec.infrastructure.cache.backend` | `== ""` | `"dogpile.cache.pymemcache"` | Webhook-only |
 | `spec.infrastructure.cache.clusterRef.name` | `len(servers) == 0` (managed mode) | `"openstack-memcached"` | Webhook-only, brownfield-guarded |
 | `spec.korc.adminCredential.passwordSecretRef.name` | `== ""` | `"keystone-admin"` | Webhook-only |
 | `spec.korc.adminCredential.passwordSecretRef.key` | `== ""` | `"password"` | Webhook-only |
+
+<a id="secretref-default-note"></a>
+> **† `database.secretRef.name` default — managed-mode convenience name only.**
+> The webhook still defaults `secretRef.name` to the `keystone-db` value
+> (unchanged), but that default is no longer the Secret Keystone consumes. In
+> **managed mode** `database.secretRef` is **operator-owned**: `reconcileDBCredentials`
+> materialises a per-ControlPlane `ExternalSecret` and `reconcileKeystone`
+> overrides the projected Keystone CR's `spec.database.secretRef` to the
+> operator-owned Secret `{controlplane.Name}-keystone-db-credentials` (key
+> `"password"`) — see [managed-mode provisioning](#infrastructurespec). In
+> production the bare name `keystone-db` does not resolve to any cluster
+> Secret (only the kind overlay ships a `keystone-db` ExternalSecret, pinned
+> to the default identity's path for standalone Keystone instances); a
+> managed ControlPlane never consumes it either way.
+> A **brownfield** ControlPlane (`database.host` set,
+> `clusterRef == nil`) **MUST supply** its own `database.secretRef` Secret
+> out-of-band; the operator projects no ExternalSecret in brownfield mode.
 
 > **Operational contract.** The webhook only materializes the Secret
 > *names and references* — it never invents credential material. A ControlPlane

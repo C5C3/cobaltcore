@@ -24,6 +24,8 @@ BAO_TOKEN="${BAO_TOKEN:?BAO_TOKEN must be set}"
 # identities to seed per-ControlPlane bootstrap secrets for (CC-0112, REQ-009).
 # For each identity the script seeds:
 #   - the Model B admin password at  kv-v2/bootstrap/<namespace>/<controlplane>-keystone/admin
+#   - the per-ControlPlane Keystone DB credential at
+#     kv-v2/openstack/keystone/<namespace>/<controlplane>/db (CC-0116, REQ-006)
 # The K-ORC bootstrap clouds.yaml is no longer seeded here: the operator now seeds
 # it from reconcileKORC (seedBootstrapCloudsYAML) — CC-0114.
 # The default is the single canonical ControlPlane the Quick Start brings up
@@ -130,10 +132,6 @@ main() {
   write_secret_if_missing "kv-v2/infrastructure/mariadb" \
     "root-password=${GENERATED_PASSWORD}"
 
-  write_secret_if_missing "kv-v2/openstack/keystone/db" \
-    "username=keystone" \
-    "password=${GENERATED_PASSWORD}"
-
   # CC-0112 (REQ-009): per-ControlPlane bootstrap seeding. For each
   # "<namespace>/<controlplane>" identity in KORC_CONTROLPLANES (default
   # "openstack/controlplane"), seed ONLY the per-CR Model B admin password on the
@@ -167,6 +165,26 @@ main() {
     # pre-seeded path (ESO's managed-by guard rejects it otherwise). See
     # mark_eso_managed.
     mark_eso_managed "${admin_path}"
+
+    # CC-0116 (REQ-006): per-ControlPlane Keystone DB credentials. The flat
+    # kv-v2/openstack/keystone/db seed is removed; each ControlPlane now gets its
+    # own DB credential path read by the c5c3 operator's reconcileDBCredentials
+    # ExternalSecret (remoteRef key openstack/keystone/{ns}/{name}/db). The
+    # default identity's path is additionally read by the kind-only keystone-db
+    # ExternalSecret (deploy/kind/infrastructure/keystone-db-externalsecret.yaml)
+    # that serves standalone Keystone instances. The path uses ${cp_name}
+    # directly (NOT keystone_name) to match the operator's
+    # dbCredentialRemoteKeyFor = openstack/keystone/{namespace}/{name}/db.
+    local db_path="kv-v2/openstack/keystone/${cp_ns}/${cp_name}/db"
+    write_secret_if_missing "${db_path}" \
+      "username=keystone" \
+      "password=${GENERATED_PASSWORD}"
+    # DECISION: chose to include mark_eso_managed to follow the 3.2 spec's "mirror
+    # exactly (including any mark_eso_managed call)" instruction and keep symmetry
+    # with the admin seed; it is currently inert because no PushSecret targets the
+    # DB path yet (the push-keystone-db.hcl policy is deferred to issue #439).
+    # Reviewer: please verify this is intended.
+    mark_eso_managed "${db_path}"
   done
 
   log "=== Done ==="

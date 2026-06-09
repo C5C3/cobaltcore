@@ -40,7 +40,9 @@
 #     uses: the per-CR admin password at
 #     `bootstrap/openstack/controlplane-keystone/admin` (CC-0112; the legacy
 #     flat `bootstrap/keystone-admin` is no longer seeded) and the keystone DB
-#     credentials at `openstack/keystone/db`; the `eso-management` policy
+#     credentials at the per-ControlPlane path
+#     `openstack/keystone/openstack/controlplane/db` (CC-0116; the legacy flat
+#     shared DB path is no longer seeded); the `eso-management` policy
 #     (deploy/openbao/policies/eso-management.hcl) covers both paths so no
 #     new OpenBao policy work is required (REQ-003).
 #

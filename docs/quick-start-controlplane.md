@@ -53,10 +53,12 @@ Apply a `ControlPlane` CR — the c5c3-operator reconciles it into the whole sta
 You only supply `openStackRelease` and the `services.keystone` block: the
 defaulting webhook fills the infrastructure and admin-credential references with
 their well-known names — `openstack-db` (managed MariaDB), `openstack-memcached`
-(managed Memcached), `keystone-db` (DB credentials Secret), `keystone-admin` /
-`password` (admin password Secret and key), `k-orc-clouds-yaml` with cloud entry
-`admin` (K-ORC clouds.yaml) — which match the Secrets and clusters the
-infrastructure layer (Step 2) seeds. The c5c3-operator seeds the K-ORC bootstrap
+(managed Memcached), `keystone-db` (DB-credential placeholder — in managed mode
+the operator projects a per-ControlPlane `{name}-keystone-db-credentials`
+Secret and points the Keystone CR at it instead), `keystone-admin` / `password`
+(admin password Secret and key), `k-orc-clouds-yaml` with cloud entry `admin`
+(K-ORC clouds.yaml) — which match the Secrets and clusters the infrastructure
+layer (Step 2) seeds. The c5c3-operator seeds the K-ORC bootstrap
 `clouds.yaml` per-CR, deriving the in-cluster Keystone auth URL from the CR's own
 name, so the CR name is no longer pinned by a pre-seeded `clouds.yaml`; to use a
 different name, pass `CONTROLPLANE_NAME=foo` to Step 2 — it renames the bundled CR
@@ -110,7 +112,8 @@ spec:
         name: openstack-db        # MariaDB the operator provisions (managed mode)
       database: keystone
       secretRef:
-        name: keystone-db         # DB credentials, seeded by infra via ESO
+        name: keystone-db         # placeholder default — the operator replaces it
+                                  # with {name}-keystone-db-credentials (managed mode)
     cache:
       clusterRef:
         name: openstack-memcached
