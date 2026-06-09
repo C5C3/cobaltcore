@@ -6,7 +6,7 @@ quadrant: operator
 # DB Credential Scoping (per-ControlPlane)
 
 This document explains how the Keystone database credential is scoped per
-`ControlPlane` (feature `CC-0116`), why the OpenBao path layout was chosen the
+`ControlPlane`, why the OpenBao path layout was chosen the
 way it is, and the direction the credential model is expected to take next. It
 records both the **implemented** state and the **deferred** stage-b direction so
 the reserved path shapes and migration story are captured before the work
@@ -25,11 +25,11 @@ credential signing keys, which the c5c3 operator now keys per CR (see the
 reconciler's
 [Migration: legacy flat paths → per-ControlPlane paths](../../reference/c5c3/controlplane-reconciler.md#migration-legacy-flat-paths--per-controlplane-paths)).
 
-`CC-0116` brings the Keystone DB credential into line with that model: the path
-is keyed by the owning `ControlPlane`'s `{namespace}/{name}`, so multiple
+Per-ControlPlane scoping brings the Keystone DB credential into line with that
+model: the path is keyed by the owning `ControlPlane`'s `{namespace}/{name}`, so multiple
 control planes — one per namespace — never collide in OpenBao.
 
-## Per-ControlPlane DB path layout (implemented, CC-0116)
+## Per-ControlPlane DB path layout (implemented)
 
 The Keystone DB credential lives at the per-ControlPlane KV path
 
@@ -43,7 +43,7 @@ where `{namespace}/{name}` is the `ControlPlane` CR's own coordinates
 `openstack/controlplane`, this resolves to
 `openstack/keystone/openstack/controlplane/db`.
 
-| Concern | Implemented behaviour (CC-0116) |
+| Concern | Implemented behaviour |
 | --- | --- |
 | KV path | `openstack/keystone/{namespace}/{name}/db` |
 | Keys | `username`, `password` |
@@ -51,7 +51,7 @@ where `{namespace}/{name}` is the `ControlPlane` CR's own coordinates
 | Seeded by | `deploy/openbao/bootstrap/write-bootstrap-secrets.sh` (in its `KORC_CONTROLPLANES` loop) |
 | Seed value | `username=keystone`, generated `password` |
 | ESO-managed? | **No** — deliberately not marked managed; the operator never pushes it back |
-| Consumed by | operator-projected `{controlplane.Name}-keystone-db-credentials` ExternalSecret |
+| Consumed by | operator-projected `{controlplane.Name}-keystone-db-credentials` ExternalSecret (managed-mode ControlPlanes) and the static `keystone-db` ExternalSecret pinned to the default identity (bare-Keystone Quick Start / e2e) |
 
 The bootstrap script seeds the path **read-only**: it writes
 `username=keystone` and a generated password once, per `ControlPlane` identity,
@@ -147,7 +147,7 @@ own short-lived, auto-revoked credential rather than a static KV password.
 The credential model migrates in stages, each one strictly forward from the
 last:
 
-1. **Today (CC-0116).** Per-ControlPlane static KV credential at
+1. **Today.** Per-ControlPlane static KV credential at
    `openstack/keystone/{namespace}/{name}/db` — seeded once by the bootstrap
    script, long-lived, read-only (no operator write-back).
 2. **Interim (deferred, §4).** Operator-owned generation + `PushSecret` writing

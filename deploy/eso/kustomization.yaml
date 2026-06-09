@@ -13,5 +13,6 @@ kind: Kustomization
 resources:
   - clustersecretstore.yaml
   - externalsecrets/keystone-admin.yaml
+  - externalsecrets/keystone-db.yaml
   - externalsecrets/mariadb-root-password.yaml
   - externalsecrets/k-orc-clouds-yaml.yaml

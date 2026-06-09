@@ -119,7 +119,7 @@ sub-reconcilers project, and the admin-password `Secret`:
 | K-ORC `ApplicationCredential` | `Owns()` | Re-reconciles when the minted admin credential's `Available` condition or `status.id` changes |
 | K-ORC `Service` | `Owns()` | Re-reconciles when the identity catalog Service changes |
 | K-ORC `Endpoint` | `Owns()` | Re-reconciles when the public identity Endpoint changes |
-| ExternalSecret (ESO) | `Owns()` | Re-reconciles the owning ControlPlane when the per-ControlPlane DB-credential ExternalSecret's sync status changes (CC-0116) |
+| ExternalSecret (ESO) | `Owns()` | Re-reconciles the owning ControlPlane when the per-ControlPlane DB-credential ExternalSecret's sync status changes |
 | `Secret` | `Watches()` | Maps Secret events to referencing ControlPlane CRs via the `ControlPlaneSecretNameIndexKey` field indexer (`secretToControlPlaneMapper`) |
 
 The `Secret` watch uses `Watches()` with a `MapFunc` rather than `Owns()`
@@ -402,7 +402,7 @@ occurs; readiness is evaluated collectively afterwards.
 | Requeue | `dbCredentialsRequeueAfter` = **10s** while the per-CP DB-credential ExternalSecret is not yet Ready |
 
 `reconcileDBCredentials` scopes the Keystone database credential to the owning
-ControlPlane (CC-0116, REQ-001/REQ-002/REQ-005). In **brownfield** mode
+ControlPlane. In **brownfield** mode
 (`database.clusterRef` nil) the operator provisions no database, so it manufactures
 no credential: it sets `DBCredentialsReady=True`/`BrownfieldDatabase` immediately,
 creates no ExternalSecret, and leaves the user-supplied `secretRef` in place. In
@@ -412,7 +412,7 @@ then gates `DBCredentialsReady` on `secrets.WaitForExternalSecret` reporting the
 materialised Secret Ready. It runs **before** [`reconcileKeystone`](#reconcilekeystone)
 so the projected Keystone CR is never pointed at a DB-credential Secret that does
 not yet exist; `reconcileKeystone` then substitutes this Secret into the projected
-Keystone CR's `spec.database.secretRef` in managed mode (CC-0116, REQ-002).
+Keystone CR's `spec.database.secretRef` in managed mode.
 
 | Path | Status | Reason | Notes |
 | --- | --- | --- | --- |
@@ -448,7 +448,7 @@ the ControlPlane provisioned:
   (key `password`) materialised by [`reconcileDBCredentials`](#reconciledbcredentials),
   so Keystone reads the operator-scoped credential rather than the
   infrastructure-supplied `secretRef`; brownfield mode leaves the user-supplied
-  `secretRef` untouched (CC-0116, REQ-002).
+  `secretRef` untouched.
 - **Bootstrap:** the admin-password Secret ref is `cp.Spec.KORC.AdminCredential.PasswordSecretRef`
   (so Keystone and K-ORC agree on the admin-password source) and the region is
   `cp.Spec.Region`.
@@ -776,8 +776,8 @@ owner).
 | `MariaDB` | `{spec.infrastructure.database.clusterRef.name}` | ControlPlane CR | managed mode only |
 | `Memcached` (unstructured) | `{spec.infrastructure.cache.clusterRef.name}` | ControlPlane CR | managed mode only |
 | `Keystone` | `{name}-keystone` | ControlPlane CR | — |
-| `ExternalSecret` | `{name}-keystone-db-credentials` | ControlPlane CR | managed mode only; materialises the per-CP DB credential from OpenBao (CC-0116) |
-| `Secret` | `{name}-keystone-db-credentials` | the ExternalSecret (ESO CreationPolicy: Owner) | managed mode only; data materialised by ESO from `openstack/keystone/{namespace}/{name}/db` (CC-0116) |
+| `ExternalSecret` | `{name}-keystone-db-credentials` | ControlPlane CR | managed mode only; materialises the per-CP DB credential from OpenBao |
+| `Secret` | `{name}-keystone-db-credentials` | the ExternalSecret (ESO CreationPolicy: Owner) | managed mode only; data materialised by ESO from `openstack/keystone/{namespace}/{name}/db` |
 | `ApplicationCredential` | `{name}-admin-app-credential` | ControlPlane CR | carries `forge.c5c3.io/admin-password-hash` |
 | `Secret` | `{name}-admin-app-credential` | ControlPlane CR | data written by K-ORC, not the operator |
 | `PushSecret` | `{name}-admin-app-credential-backup` | ControlPlane CR | `DeletionPolicy: None` |
@@ -1003,9 +1003,13 @@ Unlike the admin / fernet / password families, the per-CP DB-credential path is
 `{name}-keystone-db-credentials` ExternalSecret only **reads** it (no PushSecret
 writes back), so there is **no write-ACL to re-apply** for it — the existing read
 policies (`eso-management`, `eso-control-plane`) already cover it via their
-`…/openstack/keystone/*` / `…/openstack/*` wildcards. The legacy static
-`deploy/eso/externalsecrets/keystone-db.yaml` ExternalSecret (which consumed the
-flat `openstack/keystone/db`) was removed (CC-0116).
+`…/openstack/keystone/*` / `…/openstack/*` wildcards. The static
+`deploy/eso/externalsecrets/keystone-db.yaml` ExternalSecret was **re-pointed**
+from the flat `openstack/keystone/db` to the default ControlPlane's per-CP path
+`openstack/keystone/openstack/controlplane/db`; it is retained for the
+bare-Keystone Quick Start and the e2e suites that apply a Keystone CR directly
+with `secretRef.name: keystone-db`, mirroring how the static `keystone-admin`
+ExternalSecret tracks the default identity's admin-password path.
 
 **One-time copy (preserve the last-pushed value so nothing is locked out):**
 

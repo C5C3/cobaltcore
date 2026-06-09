@@ -79,7 +79,7 @@ spec:
       # In managed mode (clusterRef set) the operator OWNS the projected
       # Keystone DB secretRef: reconcileDBCredentials materialises
       # controlplane-keystone-db-credentials and reconcileKeystone substitutes
-      # it into the projected Keystone CR (CC-0116). This user-supplied
+      # it into the projected Keystone CR. This user-supplied
       # secretRef is honoured only in brownfield mode (database.host set).
       secretRef:
         name: keystone-db-credentials
@@ -203,7 +203,7 @@ per-service CRs validate the database/cache the same way.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `database` | [`commonv1.DatabaseSpec`](../keystone/keystone-crd.md#databasespec) | Yes | — | MariaDB connection parameters shared by the control plane. Supports managed (`clusterRef`) and brownfield (`host`) modes; exactly one must be set (enforced by the validating webhook — see [Validation Rules](#validation-rules)). In managed mode the projected Keystone CR's `database.secretRef` is operator-owned (substituted to `{name}-keystone-db-credentials`); brownfield mode uses the user-supplied `secretRef` as-is (CC-0116). |
+| `database` | [`commonv1.DatabaseSpec`](../keystone/keystone-crd.md#databasespec) | Yes | — | MariaDB connection parameters shared by the control plane. Supports managed (`clusterRef`) and brownfield (`host`) modes; exactly one must be set (enforced by the validating webhook — see [Validation Rules](#validation-rules)). In managed mode the projected Keystone CR's `database.secretRef` is operator-owned (substituted to `{name}-keystone-db-credentials`); brownfield mode uses the user-supplied `secretRef` as-is. |
 | `cache` | [`commonv1.CacheSpec`](../keystone/keystone-crd.md#cachespec) | Yes | — | Memcached configuration shared by the control plane. Supports managed (`clusterRef`) and brownfield (`servers`) modes; exactly one must be set (enforced by the validating webhook). |
 
 In managed mode the reconciler provisions an owned `MariaDB` CR (named after
@@ -217,7 +217,7 @@ is replaced with the operator-owned per-ControlPlane DB-credential Secret
 materialises from OpenBao key `openstack/keystone/{namespace}/{name}/db`;
 brownfield mode (`database.host` set) keeps the user-supplied `secretRef`
 untouched; the rest of the `DatabaseSpec` and the whole `CacheSpec` are
-projected verbatim (CC-0116), so the aggregate and the projected service agree
+projected verbatim, so the aggregate and the projected service agree
 on the backing services.
 
 ---
@@ -720,7 +720,7 @@ Set by `reconcileDBCredentials` (runs after Infrastructure, before Keystone).
 In managed mode it ensures an operator-owned `ExternalSecret`
 (`{name}-keystone-db-credentials`) that ESO materialises from the OpenBao key
 `openstack/keystone/{namespace}/{name}/db`, and the projected Keystone CR's
-`database.secretRef` is pointed at the resulting Secret (CC-0116).
+`database.secretRef` is pointed at the resulting Secret.
 
 | Status | Reason | When |
 | --- | --- | --- |
@@ -813,7 +813,7 @@ owner** rather than assumed. Projected child names are deterministic and derived
 from the ControlPlane name (e.g. `{name}-keystone`,
 `{name}-keystone-db-credentials`, `{name}-admin-app-credential`,
 `{name}-identity-service`, `{name}-identity-endpoint`) so a single namespace
-can host the children of multiple ControlPlanes without clashing (CC-0116).
+can host the children of multiple ControlPlanes without clashing.
 
 ---
 

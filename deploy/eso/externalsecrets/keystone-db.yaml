@@ -1,0 +1,44 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# ExternalSecret for the Keystone database credentials.
+# Pulls username and password from the per-ControlPlane OpenBao path
+# "openstack/keystone/openstack/controlplane/db" and materialises them as a
+# Kubernetes Secret named "keystone-db" in the openstack namespace.
+#
+# CC-0116: the DB-credential path is now scoped per ControlPlane
+# (openstack/keystone/{namespace}/{controlplane}/db) so two ControlPlanes never
+# collide on the cluster-global OpenBao backend. The identity below is the
+# default ControlPlane Quick Start's: ControlPlane "controlplane" in namespace
+# "openstack", which deploy/openbao/bootstrap/write-bootstrap-secrets.sh seeds
+# at openstack/keystone/openstack/controlplane/db. Keep this key in lockstep
+# with the CONTROLPLANE_NAME used by `make deploy-infra` (default
+# "controlplane"). A managed-mode ControlPlane additionally projects its own
+# owned "{name}-keystone-db-credentials" ExternalSecret reading the same path;
+# this static manifest serves the bare-Keystone Quick Start and the e2e tests
+# that apply a Keystone CR directly (secretRef.name: keystone-db).
+# Feature: CC-0009, CC-0116
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: keystone-db
+  namespace: openstack
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: openbao-cluster-store
+    kind: ClusterSecretStore
+  target:
+    name: keystone-db
+    creationPolicy: Owner
+  data:
+    - secretKey: username
+      remoteRef:
+        key: openstack/keystone/openstack/controlplane/db
+        property: username
+    - secretKey: password
+      remoteRef:
+        key: openstack/keystone/openstack/controlplane/db
+        property: password

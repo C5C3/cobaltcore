@@ -323,7 +323,7 @@ into the KV v2 secret engine.
 | --- | --- | --- |
 | `kv-v2/bootstrap/<namespace>/<keystone>/admin` | `password` | Keystone admin user password, scoped per ControlPlane. One entry per `KORC_CONTROLPLANES` identity; the default `openstack/controlplane` seeds `kv-v2/bootstrap/openstack/controlplane-keystone/admin`. |
 | `kv-v2/infrastructure/mariadb` | `root-password` | MariaDB root password |
-| `kv-v2/openstack/keystone/<namespace>/<controlplane>/db` | `username`, `password` | Per-ControlPlane Keystone database credentials (username is `keystone`). Seeded once per `KORC_CONTROLPLANES` identity inside the loop; the default `openstack/controlplane` seeds `kv-v2/openstack/keystone/openstack/controlplane/db`. Deliberately NOT marked ESO-managed — read-only, consumed by the c5c3-operator's per-CP keystone-db ExternalSecret and never written back via PushSecret (CC-0116). |
+| `kv-v2/openstack/keystone/<namespace>/<controlplane>/db` | `username`, `password` | Per-ControlPlane Keystone database credentials (username is `keystone`). Seeded once per `KORC_CONTROLPLANES` identity inside the loop; the default `openstack/controlplane` seeds `kv-v2/openstack/keystone/openstack/controlplane/db`. Deliberately NOT marked ESO-managed — read-only, consumed by the static `keystone-db` ExternalSecret (default identity) and the c5c3-operator's per-CP `<controlplane>-keystone-db-credentials` ExternalSecret, and never written back via PushSecret. |
 
 **Password generation:** Each password is generated **inside the OpenBao pod** using
 `openssl rand -base64 32` via `sh -c` within `kubectl exec`, producing a 32-byte
@@ -403,12 +403,18 @@ Kubernetes.
 | ExternalSecret | Namespace | Remote Path | Remote Property | K8s Secret Name | K8s Secret Key |
 | --- | --- | --- | --- | --- | --- |
 | `keystone-admin` | `openstack` | `bootstrap/openstack/controlplane-keystone/admin` | `password` | `keystone-admin-credentials` | `password` |
+| `keystone-db` (static, default identity) | `openstack` | `openstack/keystone/openstack/controlplane/db` | `username`, `password` | `keystone-db` | `username`, `password` |
 | `<controlplane>-keystone-db-credentials` (c5c3-operator-projected, per ControlPlane) | `openstack` | `openstack/keystone/openstack/controlplane/db` | `username`, `password` | `<controlplane>-keystone-db-credentials` | `username`, `password` |
 | `mariadb-root-password` | `openstack` | `infrastructure/mariadb` | `root-password` | `mariadb-root-password` | `password` |
 
-**Note:** The keystone-db ExternalSecret is no longer a static manifest under
-`deploy/eso/externalsecrets/` — it is projected per-ControlPlane by the
-c5c3-operator's DBCredentials sub-reconciler, reading the per-CP path (CC-0116).
+**Note:** There are two consumers of the per-ControlPlane DB-credential path.
+The static `keystone-db` ExternalSecret under `deploy/eso/externalsecrets/` is
+pinned to the default identity `openstack/keystone/openstack/controlplane/db`
+(mirroring the static `keystone-admin`), serving the bare-Keystone Quick Start
+and the e2e suites that apply a Keystone CR directly. A managed-mode
+ControlPlane additionally projects its own `<controlplane>-keystone-db-credentials`
+ExternalSecret, reading the same per-CP path, via the c5c3-operator's
+DBCredentials sub-reconciler.
 
 **Note:** The ExternalSecret `remoteRef.key` is the path **under** the store's mount
 path. The ClusterSecretStore already sets `path: kv-v2`, so ExternalSecrets use
