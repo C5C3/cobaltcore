@@ -5,7 +5,7 @@ go 1.26.4
 require (
 	github.com/c5c3/forge/internal/common v0.0.0
 	github.com/c5c3/forge/operators/keystone v0.0.0
-	github.com/external-secrets/external-secrets/apis v0.0.0-20260608131842-6c144f4bcfc4
+	github.com/external-secrets/external-secrets/apis v0.0.0-20260608204623-62d1adfd2036
 	github.com/go-logr/logr v1.4.3
 	github.com/k-orc/openstack-resource-controller/v2 v2.5.0
 	github.com/mariadb-operator/mariadb-operator v0.38.1

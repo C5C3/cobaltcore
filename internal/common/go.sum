@@ -26,6 +26,8 @@ github.com/external-secrets/external-secrets/apis v0.0.0-20260603083646-a38e5b08
 github.com/external-secrets/external-secrets/apis v0.0.0-20260603083646-a38e5b08e076/go.mod h1:HQ9meq5potOFFYrr1rDYrIRyCMJ2MmbfhyDdRDqVpt0=
 github.com/external-secrets/external-secrets/apis v0.0.0-20260608131842-6c144f4bcfc4 h1:K0wvbnzRGjQB7eZMVrmKBljUsvJVRzSVe1zz1Xzz66w=
 github.com/external-secrets/external-secrets/apis v0.0.0-20260608131842-6c144f4bcfc4/go.mod h1:oISE/9XT7wiPhVYajGSsY1RYy3DPvdP/4GIR5NOZYKY=
+github.com/external-secrets/external-secrets/apis v0.0.0-20260608204623-62d1adfd2036 h1:FzOBIV+ttBx1JPKmLBhER+CU8qrYn0GDcj+46ZC1lyA=
+github.com/external-secrets/external-secrets/apis v0.0.0-20260608204623-62d1adfd2036/go.mod h1:oISE/9XT7wiPhVYajGSsY1RYy3DPvdP/4GIR5NOZYKY=
 github.com/fsnotify/fsnotify v1.9.0 h1:2Ml+OJNzbYCTzsxtv8vKSFD9PbJjmhYF14k/jKC7S9k=
 github.com/fsnotify/fsnotify v1.9.0/go.mod h1:8jBTzvmWwFyi3Pb8djgCCO5IBqzKJ/Jwo8TRcHyHii0=
 github.com/fxamacker/cbor/v2 v2.9.0 h1:NpKPmjDBgUfBms6tr6JZkTHtfFGcMKsw3eGcmD/sapM=
