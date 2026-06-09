@@ -39,6 +39,7 @@ const subReconcilerConditionTypeUnknown = "UNKNOWN"
 // surfaces in alerts.
 var subReconcilerConditionTypes = map[string]string{
 	"Infrastructure":  conditionTypeInfrastructureReady,
+	"DBCredentials":   conditionTypeDBCredentialsReady,
 	"Keystone":        conditionTypeKeystoneReady,
 	"KORC":            conditionTypeKORCReady,
 	"AdminCredential": conditionTypeAdminCredentialReady,

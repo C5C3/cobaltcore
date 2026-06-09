@@ -27,6 +27,13 @@ const (
 	// (CC-0110, REQ-010, REQ-011, REQ-014).
 	korcRequeueAfter = 10 * time.Second
 
+	// dbCredentialsRequeueAfter is the backoff the DBCredentials sub-reconciler
+	// uses while waiting on the operator-generated per-ControlPlane DB-credential
+	// ExternalSecret to materialise (report Ready) before the Keystone CR is
+	// projected against it (CC-0116, REQ-005). Matches korcRequeueAfter's cadence:
+	// both wait on an ESO sync against the cluster-global OpenBao backend.
+	dbCredentialsRequeueAfter = 10 * time.Second
+
 	// credentialRotationWaitInterval is the short backoff the CredentialRotation
 	// reconciler uses while waiting for the ControlPlane reconciler to mint the
 	// admin ApplicationCredential CR (Bootstrap) or for a ControlPlane / admin

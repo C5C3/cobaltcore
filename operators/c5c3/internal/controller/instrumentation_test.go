@@ -221,3 +221,22 @@ func TestSubReconcilerConditionTypesCoversAllNames(t *testing.T) {
 				"update subConditionTypes or fix the mapping (CC-0110, REQ-026)", name, condType)
 	}
 }
+
+// TestDBCredentialsConditionTypeRegistered is the belt-and-suspenders guard that
+// the DBCredentials sub-reconciler's condition is wired into BOTH status-contract
+// maps. The data-driven TestSubReconcilerConditionTypesCoversAllNames only proves
+// every map VALUE is a member of subConditionTypes; it would still pass if the
+// "DBCredentials" key were dropped entirely. This test pins the exact key→value
+// mapping and the subConditionTypes membership so a regression that drops either
+// (which would resolve the sub_reconciler metric label to UNKNOWN and exclude the
+// condition from the aggregate Ready rollup) fails loudly (CC-0116, REQ-006).
+func TestDBCredentialsConditionTypeRegistered(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	g.Expect(subReconcilerConditionTypes).To(HaveKeyWithValue("DBCredentials", conditionTypeDBCredentialsReady),
+		"sub_reconciler \"DBCredentials\" must map to conditionTypeDBCredentialsReady so the error metric "+
+			"condition_type label resolves (never UNKNOWN)")
+	g.Expect(subConditionTypes).To(ContainElement(conditionTypeDBCredentialsReady),
+		"conditionTypeDBCredentialsReady must be in subConditionTypes so the aggregate Ready condition "+
+			"gates on it")
+}
