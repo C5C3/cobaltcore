@@ -1,0 +1,14 @@
+{
+  "timestamp": "2026-06-09T15:44:30.603090+00:00",
+  "feature_id": "CC-0116",
+  "task_type": "commit",
+  "session_key": "CC-0116",
+  "model": "opus",
+  "caller": "run_claude_cli",
+  "status": "ok",
+  "returncode": 0,
+  "duration_s": 10.333409598097205,
+  "response_length": 643,
+  "response": "plan(CC-0116): scope service DB credentials per ControlPlane\n\nCapture the plan to move each Keystone instance off the shared, flat\nOpenBao path (`openstack/keystone/db`) and onto credentials scoped per\nControlPlane and per database. The current single source secret gives\nevery tenant's Keystone the same password, so rotation or compromise\nhas a fleet-wide blast radius. This work brings service DB credentials\nin line with the per-ControlPlane scoping CC-0112 already established\nfor the admin credential.\n\nAI-assisted: Claude Code\nOn-behalf-of: @SAP christian.berendt@sap.com\nSigned-off-by: Christian Berendt <berendt@23technologies.cloud>\n",
+  "stderr": ""
+}
