@@ -5,7 +5,7 @@ go 1.26.4
 require (
 	github.com/c5c3/forge/internal/common v0.0.0
 	github.com/c5c3/forge/operators/keystone v0.0.0
-	github.com/external-secrets/external-secrets/apis v0.0.0-20260609213341-40c4a41c7813
+	github.com/external-secrets/external-secrets/apis v0.0.0-20260610124725-6ed692570e7e
 	github.com/go-logr/logr v1.4.3
 	github.com/k-orc/openstack-resource-controller/v2 v2.5.0
 	github.com/mariadb-operator/mariadb-operator v0.38.1
@@ -67,7 +67,7 @@ require (
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/net v0.55.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
-	golang.org/x/sync v0.20.0 // indirect
+	golang.org/x/sync v0.21.0 // indirect
 	golang.org/x/sys v0.45.0 // indirect
 	golang.org/x/term v0.43.0 // indirect
 	golang.org/x/text v0.37.0 // indirect
