@@ -329,6 +329,16 @@
       "automerge": true,
       "minimumReleaseAge": "3 days",
       "groupName": "venv-builder base packages"
+    },
+    {
+      "matchDatasources": ["docker", "go"],
+      "matchPackageNames": [
+        "golang",
+        "ubuntu",
+        "ghcr.io/astral-sh/uv",
+        "github.com/external-secrets/external-secrets/apis"
+      ],
+      "schedule": ["before 6am on monday"]
     }
   ]
 }
