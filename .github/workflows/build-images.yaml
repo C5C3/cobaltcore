@@ -138,6 +138,15 @@ jobs:
           artifact-name: digests-python-base-${{ steps.platform-pair.outputs.value }}
           digest-dir: /tmp/digests/python-base
 
+      # ghcr.io is eventually consistent: the freshly-pushed python-base digest
+      # is occasionally not yet resolvable when venv-builder consumes it as a
+      # --build-context source, failing the build with a 404. Wait for it to
+      # propagate first (same backoff as ci-merge-manifest.sh).
+      - name: Wait for python-base digest to propagate
+        env:
+          REF: ghcr.io/${{ needs.prepare.outputs.image-owner }}/python-base@${{ steps.build-python-base.outputs.digest }}
+        run: hack/ci-wait-for-image.sh
+
       - name: Build and push venv-builder
         id: build-venv-builder
         uses: ./.github/actions/build-push-image
