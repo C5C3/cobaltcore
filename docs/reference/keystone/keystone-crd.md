@@ -937,7 +937,7 @@ spec:
 | --- | --- |
 | `nil` | No priority class is configured; the cluster default applies. |
 | `""` (empty string) | No priority class — explicit opt-out, useful when clearing a previously set value via `kubectl patch`. |
-| Non-empty string | Value is written to the Deployment PodSpec. The webhook performs a cluster-scoped `Get` of the `PriorityClass` at admission time and rejects unknown names with `field.NotFound`. |
+| Non-empty string | Value is written to the Deployment PodSpec. The webhook performs a direct (uncached) cluster-scoped `Get` of the `PriorityClass` at admission time and rejects unknown names with `field.NotFound`. |
 
 The rotation CronJobs (Fernet, credential) reuse the same `priorityClassName`
 to stay co-scheduled with the API pods.
@@ -1242,7 +1242,7 @@ single `apierrors.NewInvalid` error. It does **not** short-circuit on the first 
 | Resource request exceeds limit | `spec.resources.requests.<resource>` | `field.Invalid` | A resource request exceeds its corresponding limit (e.g., CPU request 1000m > limit 500m). Checked per resource type when both requests and limits are set. |
 | Trust flush schedule required | `spec.trustFlush.schedule` | `field.Required` | `trustFlush` is set but `schedule` is empty. Defense-in-depth — the `+kubebuilder:default` marker normally prevents this, but bypass paths (e.g., `kubectl patch`) may produce an empty string. |
 | Trust flush cron expression | `spec.trustFlush.schedule` | `field.Invalid` | `cron.ParseStandard()` fails on `trustFlush.schedule`. Error message includes the parse failure details. |
-| PriorityClass existence | `spec.priorityClassName` | `field.NotFound` / `field.InternalError` | The webhook performs a cluster-scoped `Get` of the referenced `scheduling.k8s.io/v1` `PriorityClass` when the field is non-empty. Missing classes produce `NotFound`; transient API errors produce `InternalError`. |
+| PriorityClass existence | `spec.priorityClassName` | `field.NotFound` / `field.InternalError` | The webhook performs a direct (uncached) cluster-scoped `Get` of the referenced `scheduling.k8s.io/v1` `PriorityClass` when the field is non-empty, so a just-created class is never rejected off a stale cache. Missing classes produce `NotFound`; transient API errors produce `InternalError`. |
 | TopologySpread labelSelector required | `spec.topologySpreadConstraints[i].labelSelector` | `field.Required` | Entry has no `labelSelector`. |
 | TopologySpread matchLabels mismatch | `spec.topologySpreadConstraints[i].labelSelector` | `field.Invalid` | `matchLabels` does not exactly equal `{app.kubernetes.io/name: keystone, app.kubernetes.io/instance: {CR name}}`. |
 | TopologySpread matchExpressions forbidden | `spec.topologySpreadConstraints[i].labelSelector.matchExpressions` | `field.Invalid` | `matchExpressions` is non-empty. Only exact `matchLabels` are allowed. |

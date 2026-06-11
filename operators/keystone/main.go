@@ -62,7 +62,12 @@ func main() {
 				return err
 			}
 			if webhooks {
-				if err := (&keystonev1alpha1.KeystoneWebhook{Client: mgr.GetClient()}).SetupWebhookWithManager(mgr); err != nil {
+				// DECISION: the webhook reads through mgr.GetAPIReader() (direct,
+				// uncached) rather than mgr.GetClient(). The PriorityClass existence
+				// check must not reject a just-created PriorityClass from a stale
+				// informer cache, and the cached client's lazy informer start would
+				// otherwise happen inside the webhook timeout.
+				if err := (&keystonev1alpha1.KeystoneWebhook{Client: mgr.GetAPIReader()}).SetupWebhookWithManager(mgr); err != nil {
 					return err
 				}
 			}

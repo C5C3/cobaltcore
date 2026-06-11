@@ -74,7 +74,9 @@ func setupControlPlaneEnvTest(t testing.TB) (client.Client, context.Context, con
 		t,
 		c5c3v1alpha1.AddToScheme,
 		func(mgr ctrl.Manager) error {
-			return (&c5c3v1alpha1.ControlPlaneWebhook{Client: mgr.GetClient()}).SetupWebhookWithManager(mgr)
+			// mgr.GetAPIReader() mirrors the production wiring in main.go: webhook
+			// admission lookups read the API server directly, never a stale cache.
+			return (&c5c3v1alpha1.ControlPlaneWebhook{Client: mgr.GetAPIReader()}).SetupWebhookWithManager(mgr)
 		},
 		func(mgr ctrl.Manager) error {
 			r := &ControlPlaneReconciler{

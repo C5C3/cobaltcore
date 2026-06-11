@@ -76,6 +76,9 @@ var controlPlaneReleaseRegexp = regexp.MustCompile(`^\d{4}\.\d$`)
 // ControlPlaneWebhook implements defaulting and validation webhooks for the
 // ControlPlane CRD (CC-0110). Client is injected at startup and used by
 // ValidateCreate to enforce one ControlPlane per namespace (CC-0112, REQ-010).
+// Production wiring injects mgr.GetAPIReader() — a direct, uncached reader —
+// so concurrent or cache-sync-window CREATEs cannot both pass the check
+// against an empty informer cache.
 // +kubebuilder:object:generate=false
 type ControlPlaneWebhook struct {
 	Client client.Reader
@@ -292,13 +295,16 @@ func (w *ControlPlaneWebhook) validate(cp *ControlPlane) error {
 // (CC-0112, REQ-010). It lists existing ControlPlanes in the new object's
 // namespace; any pre-existing CR (len >= 1, since the object under admission is
 // not yet persisted) makes this CREATE a Forbidden error naming the incumbent.
+// The List goes through the injected uncached API reader (mgr.GetAPIReader() in
+// production), so the check cannot admit a second CR off a stale or still-empty
+// informer cache.
 //
 // DECISION: when w.Client is nil (spec-level unit tests that construct a bare
 // &ControlPlaneWebhook{}, or any caller that did not inject a client) the check
 // is skipped rather than panicking. Production and envtest wiring always inject
-// mgr.GetClient() (operators/c5c3/main.go, integration_test.go), so the guard
-// never trips at runtime; it only keeps the spec-validation unit tests
-// client-free. Reviewer: please verify.
+// mgr.GetAPIReader() (operators/c5c3/main.go, integration_test.go), so the
+// guard never trips at runtime; it only keeps the spec-validation unit tests
+// client-free.
 func (w *ControlPlaneWebhook) validateUniqueInNamespace(ctx context.Context, obj *ControlPlane) error {
 	if w.Client == nil {
 		return nil

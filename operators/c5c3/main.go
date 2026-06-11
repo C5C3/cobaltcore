@@ -80,9 +80,13 @@ func main() {
 			}
 			if webhooks {
 				// DECISION (CC-0112, REQ-010): Client must be non-nil for the
-				// one-ControlPlane-per-namespace ValidateCreate check; mgr.GetClient()
-				// satisfies it (a client.Reader implementing List).
-				if err := (&c5c3v1alpha1.ControlPlaneWebhook{Client: mgr.GetClient()}).SetupWebhookWithManager(mgr); err != nil {
+				// one-ControlPlane-per-namespace ValidateCreate check. It reads
+				// through mgr.GetAPIReader() (direct, uncached) rather than
+				// mgr.GetClient(): two concurrent CREATEs must not both see an
+				// empty informer cache and both be admitted, and even sequential
+				// creates within the cache-sync window would both pass against
+				// the cached client.
+				if err := (&c5c3v1alpha1.ControlPlaneWebhook{Client: mgr.GetAPIReader()}).SetupWebhookWithManager(mgr); err != nil {
 					return err
 				}
 			}

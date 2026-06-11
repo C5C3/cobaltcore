@@ -84,7 +84,10 @@ var (
 )
 
 // KeystoneWebhook implements defaulting and validation webhooks for the Keystone CRD (CC-0011).
-// Client is injected at startup for cluster-scoped resource lookups (e.g. PriorityClass validation, CC-0075 REQ-006).
+// Client is injected at startup for cluster-scoped resource lookups (e.g. PriorityClass
+// validation, CC-0075 REQ-006). Production wiring injects mgr.GetAPIReader() — a direct,
+// uncached reader — so admission never rejects a just-created object from a stale
+// informer cache and no lazy informer start happens inside the webhook timeout.
 // +kubebuilder:object:generate=false
 type KeystoneWebhook struct {
 	Client client.Reader

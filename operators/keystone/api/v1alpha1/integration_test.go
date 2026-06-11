@@ -37,7 +37,9 @@ import (
 func setupEnvTest(t testing.TB) (client.Client, context.Context, context.CancelFunc) {
 	t.Helper()
 	return testutil.SetupKeystoneEnvTest(t, AddToScheme, func(mgr ctrl.Manager) error {
-		return (&KeystoneWebhook{Client: mgr.GetClient()}).SetupWebhookWithManager(mgr)
+		// mgr.GetAPIReader() mirrors the production wiring in main.go: webhook
+		// admission lookups read the API server directly, never a stale cache.
+		return (&KeystoneWebhook{Client: mgr.GetAPIReader()}).SetupWebhookWithManager(mgr)
 	})
 }
 

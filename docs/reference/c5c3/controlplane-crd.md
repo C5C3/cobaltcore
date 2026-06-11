@@ -692,9 +692,12 @@ admission webhooks for the `ControlPlane` CRD via the typed-generic
 interfaces from controller-runtime. `CredentialRotation` and `SecretAggregate`
 have no webhook at this level.
 
-The struct carries a `Client client.Reader`, injected at startup for any future
-cluster-scoped lookups; it is currently unused by `validate()` but kept to
-mirror the `KeystoneWebhook` shape and avoid a signature change later.
+The struct carries a `Client client.Reader`, injected at startup with the
+manager's **uncached API reader** (`mgr.GetAPIReader()`). `ValidateCreate` uses
+it to enforce one ControlPlane per namespace; reading the API server directly
+ensures concurrent or cache-sync-window CREATEs cannot both pass the check
+against an empty informer cache. The spec-level `validate()` rules do not touch
+the client.
 
 ### Registration
 
@@ -811,8 +814,12 @@ func (w *ControlPlaneWebhook) ValidateDelete(_ context.Context, _ *ControlPlane)
 
 - `ValidateCreate` and `ValidateUpdate` both delegate to the internal
   `validate()` method (see [Validating-webhook rules](#validating-webhook-rules)).
-  There are no create-specific or update-specific rules — `ValidateUpdate`
-  validates the new object only.
+  `ValidateCreate` additionally enforces the one-ControlPlane-per-namespace
+  contract: it lists existing ControlPlanes in the new object's namespace
+  through the uncached API reader and rejects the CREATE with a `Forbidden`
+  error naming the incumbent when one already exists. The check runs only on
+  CREATE so an existing CR stays mutable; `ValidateUpdate` validates the new
+  object only.
 - `ValidateDelete` always returns `nil, nil`. It exists only to satisfy the
   `admission.Validator` interface and is **never invoked** — the validating
   webhook does not register the `delete` verb, so **deletion is unconditionally
