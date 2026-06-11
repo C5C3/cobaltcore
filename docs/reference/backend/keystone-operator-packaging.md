@@ -149,7 +149,7 @@ docker run --rm keystone-operator:dev --help
 | `name` | `keystone-operator` |
 | `description` | `A Helm chart for deploying the Keystone OpenStack operator` |
 | `type` | `application` |
-| `version` | `0.1.0` |
+| `version` | `0.5.0` |
 | `appVersion` | `0.1.0` |
 
 ### Shared Library Subchart
@@ -250,6 +250,7 @@ The chart renders the following Kubernetes resources with default values:
 | ClusterRoleBinding | `rbac.authorization.k8s.io/v1/ClusterRoleBinding` | `{fullname}` | Always |
 | Deployment | `apps/v1/Deployment` | `{fullname}` | Always |
 | Service | `v1/Service` | `{fullname}` | Always |
+| PodDisruptionBudget | `policy/v1/PodDisruptionBudget` | `{fullname}` | `replicas > 1` |
 | MutatingWebhookConfiguration | `admissionregistration.k8s.io/v1` | `{fullname}-mutating` | `webhook.enabled` |
 | ValidatingWebhookConfiguration | `admissionregistration.k8s.io/v1` | `{fullname}-validating` | `webhook.enabled` |
 
@@ -262,7 +263,7 @@ All resources include standard Helm labels via the `operator-library.labels` hel
 
 | Label | Value |
 | --- | --- |
-| `helm.sh/chart` | `keystone-operator-0.1.0` |
+| `helm.sh/chart` | `keystone-operator-0.5.0` |
 | `app.kubernetes.io/name` | `keystone-operator` |
 | `app.kubernetes.io/instance` | `{release-name}` |
 | `app.kubernetes.io/version` | `0.1.0` |
@@ -323,6 +324,16 @@ configurable via Helm values.
 | `capabilities.drop` | `[ALL]` |
 | `readOnlyRootFilesystem` | `true` |
 | `seccompProfile.type` | `RuntimeDefault` |
+
+**Scheduling and disruption:**
+
+The pod template carries a best-effort topology spread constraint (`maxSkew: 1`,
+`topologyKey: kubernetes.io/hostname`, `whenUnsatisfiable: ScheduleAnyway`) so
+replicas land on different nodes where possible while single-node clusters
+(kind) stay schedulable. Together with the `PodDisruptionBudget`
+(`minAvailable: 1`, rendered only when `replicas > 1`), a voluntary disruption
+such as a node drain can never evict every replica — and with it the in-process
+admission webhook — at once.
 
 ### Service Configuration
 

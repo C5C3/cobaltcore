@@ -34,6 +34,16 @@ spec:
         fsGroup: 65532
         seccompProfile:
           type: RuntimeDefault
+      # Best-effort spread across nodes so a single node drain cannot evict
+      # every replica — and with it the in-process admission webhook — at once.
+      # ScheduleAnyway keeps single-node (kind) clusters schedulable.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              {{- include "operator-library.selectorLabels" . | nindent 14 }}
       containers:
         - name: manager
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"

@@ -217,3 +217,22 @@ tests:
       - notContains:
           path: spec.template.spec.containers[0].args
           content: --zap-devel=true
+
+  - it: should spread replicas across nodes best-effort
+    asserts:
+      - equal:
+          path: spec.template.spec.topologySpreadConstraints[0].maxSkew
+          value: 1
+      - equal:
+          path: spec.template.spec.topologySpreadConstraints[0].topologyKey
+          value: kubernetes.io/hostname
+      # ScheduleAnyway (soft) so single-node clusters (kind) stay schedulable.
+      - equal:
+          path: spec.template.spec.topologySpreadConstraints[0].whenUnsatisfiable
+          value: ScheduleAnyway
+      - equal:
+          path: spec.template.spec.topologySpreadConstraints[0].labelSelector.matchLabels["app.kubernetes.io/name"]
+          value: keystone-operator
+      - equal:
+          path: spec.template.spec.topologySpreadConstraints[0].labelSelector.matchLabels["app.kubernetes.io/instance"]
+          value: RELEASE-NAME

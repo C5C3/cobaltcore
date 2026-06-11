@@ -2,7 +2,7 @@ apiVersion: v2
 name: c5c3-operator
 description: A Helm chart for deploying the c5c3 ControlPlane operator
 type: application
-version: 0.2.0
+version: 0.3.0
 appVersion: "0.1.0"
 # The shared naming/label helpers and the Deployment skeleton live in the
 # operator-library library chart so they are defined once for both operator
@@ -19,3 +19,7 @@ annotations:
       description: Initial c5c3 ControlPlane operator chart (CC-0110)
     - kind: added
       description: Expose operator log level, encoder, and development mode as chart values
+    - kind: added
+      description: PodDisruptionBudget (minAvailable 1, replicas > 1) and best-effort node spread for the operator Deployment
+    - kind: changed
+      description: Validating webhook no longer intercepts DELETE, so a down operator cannot block CR or namespace deletion
