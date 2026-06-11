@@ -21,6 +21,21 @@ the [ControlPlane Quick Start](../quick-start-controlplane.md); the namespace-sc
 operator RBAC described here is the complementary, lower-level concern.
 :::
 
+::: tip Recommended for single-namespace production
+When a control plane is confined to **one namespace**, deploy the operator
+namespace-scoped (`rbac.namespaceScoped: true`). This replaces the operator's
+cluster-wide `ClusterRole` — which grants read/write on **every** `Secret` in
+**every** namespace — with a `Role` bound to a single namespace, so a
+compromised operator pod can reach only that namespace's Secrets. The
+[Security trade-off](#security-trade-off-the-cluster-wide-rbac-default) below
+explains the privilege-escalation path this closes.
+
+The chart still ships cluster-wide (`rbac.namespaceScoped: false`) by default
+because some capabilities still need cluster scope — see
+[When cluster-wide RBAC is still required](#when-cluster-wide-rbac-is-still-required).
+Adopt namespace-scoped mode when your deployment fits in one namespace.
+:::
+
 ## Prerequisites
 
 Before deploying the operator in namespace-scoped mode, ensure:
@@ -46,6 +61,83 @@ Before deploying the operator in namespace-scoped mode, ensure:
   must not hold cluster-wide permissions.
 - **Multiple operator instances** — you need several independent Keystone
   operators, each managing a different namespace.
+
+---
+
+## When cluster-wide RBAC is still required
+
+Keep the default (`rbac.namespaceScoped: false`) when any of these apply — each
+needs cluster scope, which namespace-scoped mode cannot provide:
+
+- **Cross-namespace CR management** — a single operator instance reconciles
+  `Keystone` (or `ControlPlane`) CRs in more than one namespace. A
+  namespace-scoped operator only watches and reconciles its own namespace.
+- **Admission webhooks** — the defaulting and validating webhooks register
+  through cluster-scoped `ValidatingWebhookConfiguration` /
+  `MutatingWebhookConfiguration` objects, which only a `ClusterRole` can manage
+  (see [Webhook caveat](#webhook-caveat)).
+
+---
+
+## Security trade-off: the cluster-wide RBAC default
+
+The default (`rbac.namespaceScoped: false`) binds the operator's ServiceAccount
+to a **`ClusterRole`**. Among its rules, that ClusterRole grants:
+
+- `get` / `list` / `watch` / `create` / `update` / `patch` / `delete` on
+  **`secrets`** in **every** namespace, and
+- `create` on `serviceaccounts` plus full CRUD on `roles` and `rolebindings` —
+  which the operator needs to mint the per-CronJob rotation RBAC described
+  [below](#contrast-the-per-cronjob-rotation-rbac).
+
+### Privilege-escalation path
+
+A compromised operator pod — or a leaked ServiceAccount token — can therefore:
+
+1. **Read every Secret in the cluster.** Database passwords, TLS keys, service
+   credentials, and the OpenStack admin password, in any namespace.
+2. **Make the compromise durable.** Because the same ClusterRole grants `create`
+   on `rolebindings`, an attacker can bind an existing `Role` (or the operator's
+   own permissions) to a subject they control, turning a transient pod
+   compromise into a standing, cluster-wide secret-read credential that outlives
+   the pod being killed.
+
+The ControlPlane operator widens the blast radius further: it projects the
+OpenStack admin password **in cleartext** into a `clouds.yaml` `Secret` in each
+tenant's child namespace (see
+[ControlPlane Reconciler → RBAC Permissions](../reference/c5c3/controlplane-reconciler.md#rbac-permissions)).
+Cluster-wide Secret read access exposes every one of those projected passwords.
+
+### Contrast: the per-CronJob rotation RBAC
+
+The RBAC the operator *generates* for its rotation CronJobs is the model to
+follow. Each CronJob gets a namespaced `Role` with `get` on exactly the
+push-source `Secret` and `get` + `patch` on exactly the staging `Secret`, both
+pinned by `resourceNames`; the CronJob never holds write access to a Secret a
+privileged workload consumes. Namespace-scoping the operator brings the
+operator's *own* footprint closer to that least-privilege shape.
+
+### Why the cluster-wide Secret rule cannot simply be narrowed
+
+A natural question is whether the cluster-wide `secrets` rule could be pinned to
+specific names or labels instead of switching to namespace scope. For the
+cluster-wide deployment model, it cannot:
+
+- **`resourceNames` does not apply to `list` / `watch`.** The operator's
+  controller-runtime cache `list`s and `watch`es Secrets to stay in sync, and an
+  RBAC rule carrying `resourceNames` does not authorize collection
+  (`list` / `watch`) requests — pinning names would break the cache.
+- **The names are dynamic and per-CR.** Managed Secrets (the Fernet keys, the
+  credential keys, the database-connection Secret, the projected `clouds.yaml`)
+  are named after each CR and spread across namespaces, so there is no static
+  set of names to enumerate.
+- **RBAC has no label or field selectors.** Authorization is all-or-nothing for
+  a resource type within the granted scope. The informer cache *can* be
+  label-filtered, but that reduces memory, not the ServiceAccount's authority.
+
+The supported way to bound the blast radius is therefore to **reduce the
+scope**, not the rule: `rbac.namespaceScoped: true` confines both the RBAC grant
+and the informer cache to a single namespace.
 
 ---
 
