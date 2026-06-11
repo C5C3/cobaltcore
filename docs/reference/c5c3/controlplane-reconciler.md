@@ -211,6 +211,27 @@ holds only `update`/`patch` (not `create`/`delete`) on K-ORC
 | `core` | `secrets` | get, list, watch |
 | `core` | `events` | create, patch |
 
+### Blast radius and namespace scoping
+
+By default the chart binds these markers to a cluster-wide `ClusterRole`, so the
+`secrets` rule lets a compromised operator pod read and write every `Secret` in
+every namespace; the
+[Multi-Tenant Deployment → Security trade-off](../../guides/multi-tenant-deployment.md#security-trade-off-the-cluster-wide-rbac-default)
+details that privilege-escalation path. Two specifics apply to this operator:
+
+- It amplifies the exposure itself: `reconcileAdminPassword` and `reconcileKORC`
+  project the OpenStack admin password **in cleartext** into a `clouds.yaml`
+  `Secret`, so cluster-wide read access exposes every projected admin password.
+- Unlike the keystone operator, this `ClusterRole` holds no `roles` /
+  `rolebindings` verbs, so it lacks the RoleBinding-forgery escalation
+  primitive — the cluster-wide Secret read is the dominant risk.
+
+Because `childNamespace` co-locates every projected resource in the
+ControlPlane's own namespace, a single-namespace deployment can run the operator
+namespace-scoped (`rbac.namespaceScoped: true`), bounding both the RBAC grant
+and the informer cache to that namespace. Keep the default only when
+[cluster-wide RBAC is still required](../../guides/multi-tenant-deployment.md#when-cluster-wide-rbac-is-still-required).
+
 ---
 
 ## Reconciliation Flow
