@@ -21,6 +21,10 @@ rbac:
   # CC-0043: Set to true to deploy with namespace-scoped Role/RoleBinding
   # instead of ClusterRole/ClusterRoleBinding. Restricts the operator to its
   # release namespace. Requires webhook.enabled=false.
+  # Recommended for single-namespace production deployments: the default
+  # ClusterRole grants cluster-wide Secret CRUD, so namespace scoping bounds a
+  # compromised operator pod to a single namespace. See the Multi-Tenant
+  # Deployment guide for the cluster-wide privilege-escalation trade-off.
   namespaceScoped: false
 
 leaderElection:

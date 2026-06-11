@@ -79,6 +79,14 @@ rule. Namespace-scoped RBAC cannot coexist with webhooks because
 `ValidatingWebhookConfiguration` and `MutatingWebhookConfiguration` are cluster-scoped
 resources that require a `ClusterRole` to manage.
 
+**Production recommendation:** For a control plane confined to a single
+namespace, set `rbac.namespaceScoped: true` to bound a compromised operator pod
+to one namespace's Secrets instead of the cluster-wide Secret access the default
+`ClusterRole` grants — see
+[Multi-Tenant Deployment → Security trade-off](../../guides/multi-tenant-deployment.md#security-trade-off-the-cluster-wide-rbac-default)
+for the privilege-escalation path this closes. The default stays `false` because
+[some capabilities still need cluster scope](../../guides/multi-tenant-deployment.md#when-cluster-wide-rbac-is-still-required).
+
 ### leaderElection
 
 | Field | Type | Constraint | Default |
