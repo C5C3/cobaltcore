@@ -88,7 +88,7 @@ var (
 )
 
 // +kubebuilder:webhook:path=/mutate-c5c3-io-v1alpha1-controlplane,mutating=true,failurePolicy=fail,sideEffects=None,groups=c5c3.io,resources=controlplanes,verbs=create;update,versions=v1alpha1,name=mcontrolplane.kb.io,admissionReviewVersions=v1
-// +kubebuilder:webhook:path=/validate-c5c3-io-v1alpha1-controlplane,mutating=false,failurePolicy=fail,sideEffects=None,groups=c5c3.io,resources=controlplanes,verbs=create;update;delete,versions=v1alpha1,name=vcontrolplane.kb.io,admissionReviewVersions=v1
+// +kubebuilder:webhook:path=/validate-c5c3-io-v1alpha1-controlplane,mutating=false,failurePolicy=fail,sideEffects=None,groups=c5c3.io,resources=controlplanes,verbs=create;update,versions=v1alpha1,name=vcontrolplane.kb.io,admissionReviewVersions=v1
 
 // SetupWebhookWithManager registers the defaulting and validating webhooks with the manager.
 func (w *ControlPlaneWebhook) SetupWebhookWithManager(mgr ctrl.Manager) error {
@@ -202,8 +202,11 @@ func (w *ControlPlaneWebhook) ValidateUpdate(_ context.Context, _, newObj *Contr
 	return nil, w.validate(newObj)
 }
 
-// ValidateDelete implements admission.Validator[*ControlPlane].
-// Deletion is always allowed.
+// ValidateDelete implements admission.Validator[*ControlPlane]. The method is
+// required by the Validator interface but is never invoked: the validating
+// webhook registers only create/update (no delete verb), so with
+// failurePolicy=Fail a down operator can never block ControlPlane CR — and
+// thereby namespace — deletion.
 func (w *ControlPlaneWebhook) ValidateDelete(_ context.Context, _ *ControlPlane) (admission.Warnings, error) {
 	return nil, nil
 }

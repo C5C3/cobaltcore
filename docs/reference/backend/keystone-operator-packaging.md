@@ -390,13 +390,17 @@ Two webhook configurations are rendered when `webhook.enabled=true`:
 | --- | --- |
 | Webhook name | `vkeystone.kb.io` |
 | Path | `/validate-keystone-openstack-c5c3-io-v1alpha1-keystone` |
-| Operations | `CREATE`, `UPDATE`, `DELETE` |
+| Operations | `CREATE`, `UPDATE` |
 | API group | `keystone.openstack.c5c3.io` |
 | API version | `v1alpha1` |
 | Resource | `keystones` |
 | Failure policy | `Fail` |
 | Side effects | `None` |
 | Admission review versions | `v1` |
+
+Neither configuration intercepts `DELETE`: the webhook is served in-process by
+the operator, so with `failurePolicy: Fail` a `DELETE` rule would let a down
+operator block CR — and thereby namespace — deletion.
 
 Both configurations include the annotation:
 

@@ -47,7 +47,6 @@ webhooks:
     operations:
     - CREATE
     - UPDATE
-    - DELETE
     resources:
     - controlplanes
   sideEffects: None

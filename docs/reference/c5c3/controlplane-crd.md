@@ -706,9 +706,11 @@ Registers both webhooks with the manager using
 `builder.WebhookManagedBy[*ControlPlane]`. The generated webhook paths are
 `/mutate-c5c3-io-v1alpha1-controlplane` (mutating) and
 `/validate-c5c3-io-v1alpha1-controlplane` (validating); both use
-`failurePolicy=fail`, `sideEffects=None`, and `admissionReviewVersions=v1`. The
-mutating webhook fires on `create`/`update`; the validating webhook on
-`create`/`update`/`delete`.
+`failurePolicy=fail`, `sideEffects=None`, and `admissionReviewVersions=v1`.
+Both webhooks fire on `create`/`update` only. `delete` is deliberately **not**
+registered: the webhook is served in-process by the operator, so with
+`failurePolicy=fail` a `delete` rule would let a down operator block CR — and
+thereby namespace — deletion.
 
 ### Defaulting Webhook
 
@@ -811,8 +813,10 @@ func (w *ControlPlaneWebhook) ValidateDelete(_ context.Context, _ *ControlPlane)
   `validate()` method (see [Validating-webhook rules](#validating-webhook-rules)).
   There are no create-specific or update-specific rules — `ValidateUpdate`
   validates the new object only.
-- `ValidateDelete` always returns `nil, nil` — **deletion is unconditionally
-  allowed**.
+- `ValidateDelete` always returns `nil, nil`. It exists only to satisfy the
+  `admission.Validator` interface and is **never invoked** — the validating
+  webhook does not register the `delete` verb, so **deletion is unconditionally
+  allowed** even while the operator is down.
 
 ---
 

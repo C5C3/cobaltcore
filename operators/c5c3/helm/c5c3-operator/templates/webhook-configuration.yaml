@@ -53,10 +53,12 @@ webhooks:
           - c5c3.io
         apiVersions:
           - v1alpha1
+        # No DELETE: the webhook is served in-process by the operator, so with
+        # failurePolicy=Fail a DELETE rule would let a down operator block CR
+        # and namespace deletion. ValidateDelete is a no-op anyway.
         operations:
           - CREATE
           - UPDATE
-          - DELETE
         resources:
           - controlplanes
 {{- end }}

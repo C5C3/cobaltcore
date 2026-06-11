@@ -52,7 +52,9 @@ tests:
       - contains:
           path: webhooks[0].rules[0].operations
           content: UPDATE
-      - contains:
+      # DELETE must NOT be intercepted: with failurePolicy=Fail a down operator
+      # would otherwise block CR and namespace deletion.
+      - notContains:
           path: webhooks[0].rules[0].operations
           content: DELETE
 
