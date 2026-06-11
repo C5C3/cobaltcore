@@ -120,6 +120,36 @@ const appCredSecretValueKey = "value"
 // k-orc-clouds-yaml ExternalSecret reads it back as the "clouds.yaml" property.
 const appCredCloudsYAMLKey = "clouds.yaml"
 
+// ensureOwnedSecret create-or-updates an operator-owned corev1.Secret named
+// `name` in childNamespace(cp), with cp set as the controller owner reference.
+// The Secret's Data map is guaranteed non-nil before `mutate` runs, so callers
+// only set the keys they own; `mutate` may return an error to abort the write
+// (e.g. when generating a random value fails). It centralises the four
+// near-identical owned-Secret CreateOrUpdate wrappers (ensureAppCredentialSecret,
+// ensureAdminPasswordCloud, seedBootstrapCloudsYAML and
+// regenerateAppCredentialSecretValue); each keeps its own error wrapping so the
+// failure context stays specific.
+func (r *ControlPlaneReconciler) ensureOwnedSecret(
+	ctx context.Context, cp *c5c3v1alpha1.ControlPlane, name string, mutate func(*corev1.Secret) error,
+) error {
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: childNamespace(cp),
+		},
+	}
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
+		if secret.Data == nil {
+			secret.Data = map[string][]byte{}
+		}
+		if err := mutate(secret); err != nil {
+			return err
+		}
+		return controllerutil.SetControllerReference(cp, secret, r.Scheme)
+	})
+	return err
+}
+
 // ensureAppCredentialSecret ensures the operator-owned Secret that K-ORC reads the
 // application-credential secret from exists with a generated "value". K-ORC's
 // managed ApplicationCredential reads Secret.Data["value"] and creates the AC in
@@ -127,16 +157,7 @@ const appCredCloudsYAMLKey = "clouds.yaml"
 // generated once and preserved across reconciles — regenerating it would force a
 // re-mint and invalidate the stored clouds.yaml.
 func (r *ControlPlaneReconciler) ensureAppCredentialSecret(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) error {
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      adminAppCredentialSecretName(cp),
-			Namespace: childNamespace(cp),
-		},
-	}
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
-		if secret.Data == nil {
-			secret.Data = map[string][]byte{}
-		}
+	if err := r.ensureOwnedSecret(ctx, cp, adminAppCredentialSecretName(cp), func(secret *corev1.Secret) error {
 		if len(secret.Data[appCredSecretValueKey]) == 0 {
 			v, gerr := generateAppCredSecretValue()
 			if gerr != nil {
@@ -144,9 +165,9 @@ func (r *ControlPlaneReconciler) ensureAppCredentialSecret(ctx context.Context, 
 			}
 			secret.Data[appCredSecretValueKey] = []byte(v)
 		}
-		return controllerutil.SetControllerReference(cp, secret, r.Scheme)
+		return nil
 	}); err != nil {
-		return fmt.Errorf("ensuring app-credential secret %q: %w", secret.Name, err)
+		return fmt.Errorf("ensuring app-credential secret %q: %w", adminAppCredentialSecretName(cp), err)
 	}
 	return nil
 }
@@ -214,21 +235,11 @@ func buildAppCredCloudsYAML(cp *c5c3v1alpha1.ControlPlane, acID, secret string) 
 // The Secret lives in childNamespace(cp) — the same namespace as the K-ORC CRs —
 // because K-ORC resolves CloudCredentialsRef in the resource's own namespace (C1).
 func (r *ControlPlaneReconciler) ensureAdminPasswordCloud(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, password string) error {
-	cloudsYAML := []byte(buildPasswordCloudsYAML(cp, password))
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      adminPasswordCloudSecretName(cp),
-			Namespace: childNamespace(cp),
-		},
-	}
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
-		if secret.Data == nil {
-			secret.Data = map[string][]byte{}
-		}
-		secret.Data[appCredCloudsYAMLKey] = cloudsYAML
-		return controllerutil.SetControllerReference(cp, secret, r.Scheme)
+	if err := r.ensureOwnedSecret(ctx, cp, adminPasswordCloudSecretName(cp), func(secret *corev1.Secret) error {
+		secret.Data[appCredCloudsYAMLKey] = []byte(buildPasswordCloudsYAML(cp, password))
+		return nil
 	}); err != nil {
-		return fmt.Errorf("ensuring admin password-cloud secret %q: %w", secret.Name, err)
+		return fmt.Errorf("ensuring admin password-cloud secret %q: %w", adminPasswordCloudSecretName(cp), err)
 	}
 	return nil
 }
@@ -284,24 +295,14 @@ func buildPasswordCloudsYAML(cp *c5c3v1alpha1.ControlPlane, password string) str
 // the re-authentication gap. The "value" key (owned by ensureAppCredentialSecret)
 // is never touched.
 func (r *ControlPlaneReconciler) seedBootstrapCloudsYAML(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, password string) error {
-	cloudsYAML := []byte(buildPasswordCloudsYAML(cp, password))
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      adminAppCredentialSecretName(cp),
-			Namespace: childNamespace(cp),
-		},
-	}
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
-		if secret.Data == nil {
-			secret.Data = map[string][]byte{}
-		}
+	if err := r.ensureOwnedSecret(ctx, cp, adminAppCredentialSecretName(cp), func(secret *corev1.Secret) error {
 		// Write-if-empty: never overwrite a minted credential-based clouds.yaml.
 		if len(secret.Data[appCredCloudsYAMLKey]) == 0 {
-			secret.Data[appCredCloudsYAMLKey] = cloudsYAML
+			secret.Data[appCredCloudsYAMLKey] = []byte(buildPasswordCloudsYAML(cp, password))
 		}
-		return controllerutil.SetControllerReference(cp, secret, r.Scheme)
+		return nil
 	}); err != nil {
-		return fmt.Errorf("seeding bootstrap clouds.yaml into secret %q: %w", secret.Name, err)
+		return fmt.Errorf("seeding bootstrap clouds.yaml into secret %q: %w", adminAppCredentialSecretName(cp), err)
 	}
 	return nil
 }
@@ -310,6 +311,25 @@ func (r *ControlPlaneReconciler) seedBootstrapCloudsYAML(ctx context.Context, cp
 // minted application credential to OpenBao.
 func adminAppCredentialPushSecretName(cp *c5c3v1alpha1.ControlPlane) string {
 	return cp.Name + "-admin-app-credential-backup"
+}
+
+// conditionFailer returns a closure bound to cp and condType that stamps a
+// metav1.ConditionFalse status (with cp.Generation as the observed generation)
+// onto cp.Status.Conditions. It collapses the ~30 identical
+// SetCondition(... ConditionFalse ...) blocks across the K-ORC, admin-credential
+// and catalog sub-reconcilers into a single fail(reason, message) call; the
+// caller keeps its own (Result, error) return so the requeue-vs-hard-error
+// decision stays explicit at each site.
+func conditionFailer(cp *c5c3v1alpha1.ControlPlane, condType string) func(reason, message string) {
+	return func(reason, message string) {
+		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+			Type:               condType,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: cp.Generation,
+			Reason:             reason,
+			Message:            message,
+		})
+	}
 }
 
 // reconcileKORC reconciles the K-ORC (OpenStack Resource Controller)
@@ -342,6 +362,7 @@ func adminAppCredentialPushSecretName(cp *c5c3v1alpha1.ControlPlane) string {
 // deleted after the manager had started (#476).
 func (r *ControlPlaneReconciler) reconcileKORC(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
+	fail := conditionFailer(cp, conditionTypeKORCReady)
 
 	adminCred := cp.Spec.KORC.AdminCredential
 
@@ -354,22 +375,10 @@ func (r *ControlPlaneReconciler) reconcileKORC(ctx context.Context, cp *c5c3v1al
 	if err != nil {
 		if secrets.IsMissingSecretOrKey(err) {
 			logger.Info("admin password not yet available, deferring K-ORC mint")
-			conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
-				Type:               conditionTypeKORCReady,
-				Status:             metav1.ConditionFalse,
-				ObservedGeneration: cp.Generation,
-				Reason:             "WaitingForAdminPassword",
-				Message:            "admin password Secret is not yet available; deferring application-credential mint",
-			})
+			fail("WaitingForAdminPassword", "admin password Secret is not yet available; deferring application-credential mint")
 			return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
 		}
-		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
-			Type:               conditionTypeKORCReady,
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: cp.Generation,
-			Reason:             "AdminPasswordError",
-			Message:            fmt.Sprintf("reading admin password: %v", err),
-		})
+		fail("AdminPasswordError", fmt.Sprintf("reading admin password: %v", err))
 		return ctrl.Result{}, err
 	}
 	pwHash := hashAdminPassword(password)
@@ -380,13 +389,7 @@ func (r *ControlPlaneReconciler) reconcileKORC(ctx context.Context, cp *c5c3v1al
 	// as admin even while k-orc-clouds-yaml still holds the (about-to-be-revoked)
 	// app credential.
 	if err := r.ensureAdminPasswordCloud(ctx, cp, password); err != nil {
-		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
-			Type:               conditionTypeKORCReady,
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: cp.Generation,
-			Reason:             "PasswordCloudError",
-			Message:            fmt.Sprintf("ensuring admin password-cloud secret: %v", err),
-		})
+		fail("PasswordCloudError", fmt.Sprintf("ensuring admin password-cloud secret: %v", err))
 		return ctrl.Result{}, err
 	}
 
@@ -418,13 +421,7 @@ func (r *ControlPlaneReconciler) reconcileKORC(ctx context.Context, cp *c5c3v1al
 	// before minting — otherwise the AC blocks forever on "Waiting for User/admin
 	// to be created".
 	if err := r.ensureKORCAdminImports(ctx, cp, importCredRef); err != nil {
-		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
-			Type:               conditionTypeKORCReady,
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: cp.Generation,
-			Reason:             "AdminImportError",
-			Message:            fmt.Sprintf("ensuring K-ORC admin User/Domain imports: %v", err),
-		})
+		fail("AdminImportError", fmt.Sprintf("ensuring K-ORC admin User/Domain imports: %v", err))
 		return ctrl.Result{}, err
 	}
 
@@ -434,13 +431,7 @@ func (r *ControlPlaneReconciler) reconcileKORC(ctx context.Context, cp *c5c3v1al
 	// Secret MUST exist with a generated "value" BEFORE the AC is reconciled —
 	// otherwise the AC blocks on "Waiting for Secret … to be created".
 	if err := r.ensureAppCredentialSecret(ctx, cp); err != nil {
-		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
-			Type:               conditionTypeKORCReady,
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: cp.Generation,
-			Reason:             "SecretError",
-			Message:            fmt.Sprintf("ensuring application-credential secret: %v", err),
-		})
+		fail("SecretError", fmt.Sprintf("ensuring application-credential secret: %v", err))
 		return ctrl.Result{}, err
 	}
 
@@ -462,33 +453,15 @@ func (r *ControlPlaneReconciler) reconcileKORC(ctx context.Context, cp *c5c3v1al
 	// asynchronously, so the relative order within one synchronous pass does not
 	// change convergence. Reviewer: please verify.
 	if err := r.seedBootstrapCloudsYAML(ctx, cp, password); err != nil {
-		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
-			Type:               conditionTypeKORCReady,
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: cp.Generation,
-			Reason:             "SeedCloudsYamlError",
-			Message:            fmt.Sprintf("seeding bootstrap clouds.yaml: %v", err),
-		})
+		fail("SeedCloudsYamlError", fmt.Sprintf("seeding bootstrap clouds.yaml: %v", err))
 		return ctrl.Result{}, err
 	}
 	if err := secrets.EnsurePushSecret(ctx, r.Client, r.Scheme, cp, adminAppCredentialPushSecret(cp)); err != nil {
-		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
-			Type:               conditionTypeKORCReady,
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: cp.Generation,
-			Reason:             "PushSecretError",
-			Message:            fmt.Sprintf("ensuring admin app-credential PushSecret: %v", err),
-		})
+		fail("PushSecretError", fmt.Sprintf("ensuring admin app-credential PushSecret: %v", err))
 		return ctrl.Result{}, err
 	}
 	if err := r.ensureKORCCloudsYAMLExternalSecret(ctx, cp); err != nil {
-		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
-			Type:               conditionTypeKORCReady,
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: cp.Generation,
-			Reason:             "ExternalSecretError",
-			Message:            fmt.Sprintf("ensuring k-orc clouds.yaml ExternalSecret: %v", err),
-		})
+		fail("ExternalSecretError", fmt.Sprintf("ensuring k-orc clouds.yaml ExternalSecret: %v", err))
 		return ctrl.Result{}, err
 	}
 
@@ -511,13 +484,7 @@ func (r *ControlPlaneReconciler) reconcileKORC(ctx context.Context, cp *c5c3v1al
 	case apierrors.IsNotFound(getErr):
 		// First mint, or the recreate after a re-mint delete: CreateOrUpdate below.
 	default:
-		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
-			Type:               conditionTypeKORCReady,
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: cp.Generation,
-			Reason:             "ApplicationCredentialError",
-			Message:            fmt.Sprintf("reading ApplicationCredential: %v", getErr),
-		})
+		fail("ApplicationCredentialError", fmt.Sprintf("reading ApplicationCredential: %v", getErr))
 		return ctrl.Result{}, getErr
 	}
 
@@ -554,13 +521,7 @@ func (r *ControlPlaneReconciler) reconcileKORC(ctx context.Context, cp *c5c3v1al
 		return controllerutil.SetControllerReference(cp, ac, r.Scheme)
 	})
 	if err != nil {
-		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
-			Type:               conditionTypeKORCReady,
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: cp.Generation,
-			Reason:             "ApplicationCredentialError",
-			Message:            fmt.Sprintf("create-or-update ApplicationCredential: %v", err),
-		})
+		fail("ApplicationCredentialError", fmt.Sprintf("create-or-update ApplicationCredential: %v", err))
 		return ctrl.Result{}, err
 	}
 	if op != controllerutil.OperationResultNone {
@@ -578,13 +539,7 @@ func (r *ControlPlaneReconciler) reconcileKORC(ctx context.Context, cp *c5c3v1al
 	// converges, requeue with KORCReady=False.
 	if !orcv1alpha1.IsAvailable(ac) {
 		logger.Info("ApplicationCredential not yet Available, requeuing", "name", ac.Name)
-		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
-			Type:               conditionTypeKORCReady,
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: cp.Generation,
-			Reason:             "WaitingForApplicationCredential",
-			Message:            fmt.Sprintf("ApplicationCredential %q is not yet Available", ac.Name),
-		})
+		fail("WaitingForApplicationCredential", fmt.Sprintf("ApplicationCredential %q is not yet Available", ac.Name))
 		return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
 	}
 
@@ -614,6 +569,7 @@ func (r *ControlPlaneReconciler) remintAdminApplicationCredential(
 	ctx context.Context, cp *c5c3v1alpha1.ControlPlane, ac *orcv1alpha1.ApplicationCredential,
 ) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
+	fail := conditionFailer(cp, conditionTypeKORCReady)
 
 	// Already Terminating: wait for K-ORC's finalizer to revoke + remove the AC
 	// before the next pass recreates it. Escalate to ReMintStalled past the timeout.
@@ -627,13 +583,7 @@ func (r *ControlPlaneReconciler) remintAdminApplicationCredential(
 			logger.Info("admin application credential re-mint stalled",
 				"name", ac.Name, "terminatingSince", ac.DeletionTimestamp.Time)
 		}
-		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
-			Type:               conditionTypeKORCReady,
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: cp.Generation,
-			Reason:             reason,
-			Message:            message,
-		})
+		fail(reason, message)
 		return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
 	}
 
@@ -641,35 +591,17 @@ func (r *ControlPlaneReconciler) remintAdminApplicationCredential(
 	// recreated AC mints a fresh credential (a NotFound on delete is benign — the
 	// AC is already gone, the recreate happens next pass).
 	if err := r.Delete(ctx, ac); err != nil && !apierrors.IsNotFound(err) {
-		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
-			Type:               conditionTypeKORCReady,
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: cp.Generation,
-			Reason:             "ApplicationCredentialError",
-			Message:            fmt.Sprintf("deleting ApplicationCredential for re-mint: %v", err),
-		})
+		fail("ApplicationCredentialError", fmt.Sprintf("deleting ApplicationCredential for re-mint: %v", err))
 		return ctrl.Result{}, err
 	}
 
 	if err := r.regenerateAppCredentialSecretValue(ctx, cp); err != nil {
-		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
-			Type:               conditionTypeKORCReady,
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: cp.Generation,
-			Reason:             "SecretError",
-			Message:            fmt.Sprintf("regenerating application-credential secret value for re-mint: %v", err),
-		})
+		fail("SecretError", fmt.Sprintf("regenerating application-credential secret value for re-mint: %v", err))
 		return ctrl.Result{}, err
 	}
 
 	logger.Info("deleted admin application credential to trigger re-mint", "name", ac.Name)
-	conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
-		Type:               conditionTypeKORCReady,
-		Status:             metav1.ConditionFalse,
-		ObservedGeneration: cp.Generation,
-		Reason:             "ReMinting",
-		Message:            fmt.Sprintf("deleted admin application credential %q; a fresh credential will be minted from the rotated admin password", ac.Name),
-	})
+	fail("ReMinting", fmt.Sprintf("deleted admin application credential %q; a fresh credential will be minted from the rotated admin password", ac.Name))
 	return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
 }
 
@@ -679,23 +611,14 @@ func (r *ControlPlaneReconciler) remintAdminApplicationCredential(
 // clouds.yaml forces reconcileAdminCredential to rebuild it from the fresh id+value
 // rather than keep serving the just-revoked credential.
 func (r *ControlPlaneReconciler) regenerateAppCredentialSecretValue(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) error {
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      adminAppCredentialSecretName(cp),
-			Namespace: childNamespace(cp),
-		},
-	}
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
+	if err := r.ensureOwnedSecret(ctx, cp, adminAppCredentialSecretName(cp), func(secret *corev1.Secret) error {
 		v, gerr := generateAppCredSecretValue()
 		if gerr != nil {
 			return gerr
 		}
-		if secret.Data == nil {
-			secret.Data = map[string][]byte{}
-		}
 		secret.Data[appCredSecretValueKey] = []byte(v)
 		delete(secret.Data, appCredCloudsYAMLKey)
-		return controllerutil.SetControllerReference(cp, secret, r.Scheme)
+		return nil
 	}); err != nil {
 		return fmt.Errorf("regenerating app-credential secret value: %w", err)
 	}
@@ -903,17 +826,12 @@ func (r *ControlPlaneReconciler) updateAdminApplicationCredentialStatus(
 // authenticate with its admin cloud.
 func (r *ControlPlaneReconciler) reconcileAdminCredential(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
+	fail := conditionFailer(cp, conditionTypeAdminCredentialReady)
 
 	// Gate on KORCReady.
 	if !conditions.AllTrue(cp.Status.Conditions, conditionTypeKORCReady) {
 		logger.Info("KORC not ready, deferring admin credential push")
-		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
-			Type:               conditionTypeAdminCredentialReady,
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: cp.Generation,
-			Reason:             "WaitingForKORC",
-			Message:            "KORCReady is not True; admin credential push deferred",
-		})
+		fail("WaitingForKORC", "KORCReady is not True; admin credential push deferred")
 		return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
 	}
 
@@ -953,24 +871,12 @@ func (r *ControlPlaneReconciler) reconcileAdminCredential(ctx context.Context, c
 	ready, err := secrets.WaitForExternalSecret(ctx, r.Client,
 		types.NamespacedName{Namespace: childNamespace(cp), Name: cloudsYamlName})
 	if err != nil {
-		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
-			Type:               conditionTypeAdminCredentialReady,
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: cp.Generation,
-			Reason:             "CloudsYamlError",
-			Message:            fmt.Sprintf("checking k-orc clouds.yaml ExternalSecret: %v", err),
-		})
+		fail("CloudsYamlError", fmt.Sprintf("checking k-orc clouds.yaml ExternalSecret: %v", err))
 		return ctrl.Result{}, err
 	}
 	if !ready {
 		logger.Info("k-orc clouds.yaml ExternalSecret not ready, requeuing")
-		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
-			Type:               conditionTypeAdminCredentialReady,
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: cp.Generation,
-			Reason:             "WaitingForCloudsYaml",
-			Message:            "k-orc clouds.yaml ExternalSecret is not yet Ready",
-		})
+		fail("WaitingForCloudsYaml", "k-orc clouds.yaml ExternalSecret is not yet Ready")
 		return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
 	}
 
@@ -986,13 +892,7 @@ func (r *ControlPlaneReconciler) reconcileAdminCredential(ctx context.Context, c
 	}
 	if acID == "" {
 		logger.Info("admin application credential id not yet reported, deferring credential assembly")
-		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
-			Type:               conditionTypeAdminCredentialReady,
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: cp.Generation,
-			Reason:             "WaitingForCredentialID",
-			Message:            "minted application credential id is not yet reported by K-ORC",
-		})
+		fail("WaitingForCredentialID", "minted application credential id is not yet reported by K-ORC")
 		return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
 	}
 
@@ -1012,36 +912,18 @@ func (r *ControlPlaneReconciler) reconcileAdminCredential(ctx context.Context, c
 	if err := r.Get(ctx, secretKey, secret); err != nil {
 		if apierrors.IsNotFound(err) {
 			logger.Info("app-credential secret not found, deferring credential assembly", "secret", secretKey.Name)
-			conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
-				Type:               conditionTypeAdminCredentialReady,
-				Status:             metav1.ConditionFalse,
-				ObservedGeneration: cp.Generation,
-				Reason:             "WaitingForAppCredentialSecret",
-				Message:            fmt.Sprintf("app-credential secret %q does not exist yet", secretKey.Name),
-			})
+			fail("WaitingForAppCredentialSecret", fmt.Sprintf("app-credential secret %q does not exist yet", secretKey.Name))
 			return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
 		}
-		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
-			Type:               conditionTypeAdminCredentialReady,
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: cp.Generation,
-			Reason:             "SecretError",
-			Message:            fmt.Sprintf("reading admin app-credential secret %q: %v", secretKey.Name, err),
-		})
+		fail("SecretError", fmt.Sprintf("reading admin app-credential secret %q: %v", secretKey.Name, err))
 		return ctrl.Result{}, err
 	}
 
 	value := secret.Data[appCredSecretValueKey]
 	if len(value) == 0 {
 		logger.Info("app-credential secret has no value yet, deferring credential assembly", "secret", secretKey.Name)
-		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
-			Type:               conditionTypeAdminCredentialReady,
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: cp.Generation,
-			Reason:             "WaitingForAppCredentialSecret",
-			Message: fmt.Sprintf("app-credential secret %q has no %q key (mint not complete?)",
-				secret.Name, appCredSecretValueKey),
-		})
+		fail("WaitingForAppCredentialSecret", fmt.Sprintf("app-credential secret %q has no %q key (mint not complete?)",
+			secret.Name, appCredSecretValueKey))
 		return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
 	}
 
@@ -1052,13 +934,7 @@ func (r *ControlPlaneReconciler) reconcileAdminCredential(ctx context.Context, c
 	if !bytes.Equal(secret.Data[appCredCloudsYAMLKey], cloudsYAML) {
 		secret.Data[appCredCloudsYAMLKey] = cloudsYAML
 		if err := r.Update(ctx, secret); err != nil {
-			conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
-				Type:               conditionTypeAdminCredentialReady,
-				Status:             metav1.ConditionFalse,
-				ObservedGeneration: cp.Generation,
-				Reason:             "SecretError",
-				Message:            fmt.Sprintf("assembling admin app-credential clouds.yaml: %v", err),
-			})
+			fail("SecretError", fmt.Sprintf("assembling admin app-credential clouds.yaml: %v", err))
 			return ctrl.Result{}, err
 		}
 	}
@@ -1070,13 +946,7 @@ func (r *ControlPlaneReconciler) reconcileAdminCredential(ctx context.Context, c
 	// re-push an unchanged credential.
 	ps := adminAppCredentialPushSecret(cp)
 	if err := secrets.EnsurePushSecret(ctx, r.Client, r.Scheme, cp, ps); err != nil {
-		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
-			Type:               conditionTypeAdminCredentialReady,
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: cp.Generation,
-			Reason:             "PushSecretError",
-			Message:            fmt.Sprintf("ensuring admin app-credential PushSecret: %v", err),
-		})
+		fail("PushSecretError", fmt.Sprintf("ensuring admin app-credential PushSecret: %v", err))
 		return ctrl.Result{}, err
 	}
 
@@ -1086,24 +956,12 @@ func (r *ControlPlaneReconciler) reconcileAdminCredential(ctx context.Context, c
 	// Ready while OpenBao still serves the password-based bootstrap clouds.yaml.
 	pushed := &esov1alpha1.PushSecret{}
 	if err := r.Get(ctx, types.NamespacedName{Name: ps.Name, Namespace: ps.Namespace}, pushed); err != nil {
-		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
-			Type:               conditionTypeAdminCredentialReady,
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: cp.Generation,
-			Reason:             "PushSecretError",
-			Message:            fmt.Sprintf("reading admin app-credential PushSecret: %v", err),
-		})
+		fail("PushSecretError", fmt.Sprintf("reading admin app-credential PushSecret: %v", err))
 		return ctrl.Result{}, err
 	}
 	if !pushSecretReady(pushed) {
 		logger.Info("admin app-credential PushSecret not yet synced, requeuing")
-		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
-			Type:               conditionTypeAdminCredentialReady,
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: cp.Generation,
-			Reason:             "WaitingForPushSecret",
-			Message:            "admin app-credential PushSecret has not synced to OpenBao yet",
-		})
+		fail("WaitingForPushSecret", "admin app-credential PushSecret has not synced to OpenBao yet")
 		return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
 	}
 
@@ -1227,17 +1085,12 @@ func (r *ControlPlaneReconciler) ensureKORCCloudsYAMLExternalSecret(ctx context.
 // generic error returns below (#476).
 func (r *ControlPlaneReconciler) reconcileCatalog(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
+	fail := conditionFailer(cp, conditionTypeCatalogReady)
 
 	// Gate on AdminCredentialReady.
 	if !conditions.AllTrue(cp.Status.Conditions, conditionTypeAdminCredentialReady) {
 		logger.Info("AdminCredential not ready, deferring catalog registration")
-		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
-			Type:               conditionTypeCatalogReady,
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: cp.Generation,
-			Reason:             "WaitingForAdminCredential",
-			Message:            "AdminCredentialReady is not True; catalog registration deferred",
-		})
+		fail("WaitingForAdminCredential", "AdminCredentialReady is not True; catalog registration deferred")
 		return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
 	}
 
@@ -1271,13 +1124,7 @@ func (r *ControlPlaneReconciler) reconcileCatalog(ctx context.Context, cp *c5c3v
 		service.Spec.Resource.Enabled = ptr.To(true)
 		return controllerutil.SetControllerReference(cp, service, r.Scheme)
 	}); err != nil {
-		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
-			Type:               conditionTypeCatalogReady,
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: cp.Generation,
-			Reason:             "ServiceError",
-			Message:            fmt.Sprintf("create-or-update identity Service: %v", err),
-		})
+		fail("ServiceError", fmt.Sprintf("create-or-update identity Service: %v", err))
 		return ctrl.Result{}, err
 	}
 
@@ -1307,13 +1154,7 @@ func (r *ControlPlaneReconciler) reconcileCatalog(ctx context.Context, cp *c5c3v
 		endpoint.Spec.Resource.Enabled = ptr.To(true)
 		return controllerutil.SetControllerReference(cp, endpoint, r.Scheme)
 	}); err != nil {
-		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
-			Type:               conditionTypeCatalogReady,
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: cp.Generation,
-			Reason:             "EndpointError",
-			Message:            fmt.Sprintf("create-or-update identity Endpoint: %v", err),
-		})
+		fail("EndpointError", fmt.Sprintf("create-or-update identity Endpoint: %v", err))
 		return ctrl.Result{}, err
 	}
 
