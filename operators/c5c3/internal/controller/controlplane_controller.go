@@ -104,6 +104,22 @@ func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, fmt.Errorf("fetching ControlPlane: %w", err)
 	}
 
+	// Defense-in-depth for the one-ControlPlane-per-namespace contract
+	// (CC-0112, REQ-010): the validating webhook rejects duplicate CREATEs,
+	// but CRs that predate the guard, raced through the API server, or were
+	// written with the webhook bypassed can still coexist. Park every
+	// ControlPlane except the oldest so two reconcilers never operate on the
+	// namespace's shared credential paths and child resources at once —
+	// mirroring the CredentialRotation reconciler's AmbiguousControlPlane
+	// handling.
+	incumbent, err := r.duplicateControlPlaneIncumbent(ctx, &cp)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if incumbent != "" {
+		return r.parkDuplicateControlPlane(ctx, &cp, incumbent)
+	}
+
 	// Run sub-reconcilers in dependency order. Every sub-reconciler call is
 	// routed through instrumentSubReconciler so that duration samples and error
 	// counters are emitted under a stable sub_reconciler label (CC-0110,
@@ -198,6 +214,63 @@ func setReadyCondition(cp *c5c3v1alpha1.ControlPlane) {
 			Message:            "One or more sub-conditions are not ready",
 		})
 	}
+}
+
+// duplicateControlPlaneIncumbent returns the name of the ControlPlane that owns
+// cp's namespace when cp is NOT it — i.e. when cp must be parked. The owner is
+// the oldest ControlPlane in the namespace by CreationTimestamp, with the
+// lexically smallest Name breaking creation-time ties, so every evaluation
+// deterministically picks the same incumbent. An empty string means cp itself
+// is the incumbent (or the only ControlPlane) and reconciliation may proceed.
+// The List goes through the informer cache: unlike the admission-time webhook
+// check this guard runs on every reconcile, so eventual consistency is enough
+// — a briefly stale cache only delays the parking by one requeue.
+func (r *ControlPlaneReconciler) duplicateControlPlaneIncumbent(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) (string, error) {
+	var cps c5c3v1alpha1.ControlPlaneList
+	if err := r.List(ctx, &cps, client.InNamespace(cp.Namespace)); err != nil {
+		return "", fmt.Errorf("listing ControlPlanes in namespace %q for the duplicate guard: %w", cp.Namespace, err)
+	}
+	incumbent := cp
+	for i := range cps.Items {
+		other := &cps.Items[i]
+		if other.UID == cp.UID {
+			continue
+		}
+		if other.CreationTimestamp.Before(&incumbent.CreationTimestamp) ||
+			(other.CreationTimestamp.Equal(&incumbent.CreationTimestamp) && other.Name < incumbent.Name) {
+			incumbent = other
+		}
+	}
+	if incumbent.UID == cp.UID {
+		return "", nil
+	}
+	return incumbent.Name, nil
+}
+
+// parkDuplicateControlPlane sets Ready=False with reason DuplicateControlPlane
+// naming the incumbent, persists the status, and requeues. It deliberately
+// bypasses updateStatus: setReadyCondition would recompute Ready from the
+// sub-conditions and overwrite the DuplicateControlPlane reason. The periodic
+// requeue lets the parked CR take over automatically once the incumbent is
+// fully deleted — no watch event fires on the duplicate's behalf when that
+// happens.
+func (r *ControlPlaneReconciler) parkDuplicateControlPlane(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, incumbent string) (ctrl.Result, error) {
+	conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+		Type:               conditionTypeReady,
+		Status:             metav1.ConditionFalse,
+		ObservedGeneration: cp.Generation,
+		Reason:             "DuplicateControlPlane",
+		Message: fmt.Sprintf(
+			"parked: ControlPlane %q is older and owns namespace %q; only one ControlPlane is permitted per namespace (CC-0112)",
+			incumbent, cp.Namespace,
+		),
+	})
+	cp.Status.ObservedGeneration = cp.Generation
+	if err := r.Status().Update(ctx, cp); err != nil {
+		log.FromContext(ctx).Error(err, "unable to update ControlPlane status")
+		return ctrl.Result{}, fmt.Errorf("updating status: %w", err)
+	}
+	return ctrl.Result{RequeueAfter: duplicateControlPlaneRequeueAfter}, nil
 }
 
 // controlPlaneSecretNameExtractor is the controller-runtime IndexerFunc registered

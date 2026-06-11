@@ -56,4 +56,11 @@ const (
 	// "ReMinting" indefinitely with no operator-visible signal. The window is
 	// generous so a slow-but-progressing revoke is not flagged as stalled.
 	remintStallTimeout = 5 * time.Minute
+
+	// duplicateControlPlaneRequeueAfter is the backoff a parked duplicate
+	// ControlPlane uses while an older ControlPlane owns its namespace
+	// (CC-0112, REQ-010 defense-in-depth). Deleting the incumbent enqueues no
+	// event for the parked CR, so this periodic requeue is what lets the
+	// parked ControlPlane take over once the incumbent is fully gone.
+	duplicateControlPlaneRequeueAfter = 30 * time.Second
 )

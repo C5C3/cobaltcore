@@ -841,9 +841,13 @@ one's condition being `True`:
 InfrastructureReady → KeystoneReady → KORCReady → AdminCredentialReady → CatalogReady
 ```
 
-`Ready` is `True` (reason `AllReady`) **only** when all five sub-conditions are
+`Ready` is `True` (reason `AllReady`) **only** when all sub-conditions are
 `True` (via `conditions.AllTrue`); otherwise it is `False` (reason
-`NotAllReady`). For the full flow, see the
+`NotAllReady`). One exception bypasses the aggregation: when a namespace holds
+more than one ControlPlane (possible only for CRs that predate the
+one-per-namespace webhook guard or bypassed it), every CR except the oldest is
+parked with `Ready=False` reason `DuplicateControlPlane` naming the incumbent,
+and none of its sub-reconcilers run. For the full flow, see the
 [ControlPlane Reconciler reference](./controlplane-reconciler.md).
 
 ### InfrastructureReady

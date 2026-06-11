@@ -297,7 +297,10 @@ func (w *ControlPlaneWebhook) validate(cp *ControlPlane) error {
 // not yet persisted) makes this CREATE a Forbidden error naming the incumbent.
 // The List goes through the injected uncached API reader (mgr.GetAPIReader() in
 // production), so the check cannot admit a second CR off a stale or still-empty
-// informer cache.
+// informer cache. The reconciler's duplicate-ControlPlane guard
+// (duplicateControlPlaneIncumbent in operators/c5c3/internal/controller) is the
+// defense-in-depth for CREATEs that race within the API server itself or bypass
+// the webhook entirely.
 //
 // DECISION: when w.Client is nil (spec-level unit tests that construct a bare
 // &ControlPlaneWebhook{}, or any caller that did not inject a client) the check

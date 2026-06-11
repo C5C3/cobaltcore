@@ -8,6 +8,7 @@ package controller
 import (
 	"context"
 	"testing"
+	"time"
 
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -103,4 +104,130 @@ func TestReconcile_NotFound_EarlyReturn(t *testing.T) {
 		"Reconcile on a missing ControlPlane must not error")
 	g.Expect(res).To(Equal(ctrl.Result{}),
 		"Reconcile on a missing ControlPlane must return a zero result")
+}
+
+// --- Duplicate-ControlPlane guard tests (CC-0112, REQ-010 defense-in-depth) ---
+
+// duplicateGuardControlPlane returns a minimal ControlPlane with the given
+// identity and creation time for the duplicate-guard tests. The guard runs
+// before any spec interpretation, so an empty spec is sufficient.
+func duplicateGuardControlPlane(name, namespace, uid string, created time.Time) *c5c3v1alpha1.ControlPlane {
+	return &c5c3v1alpha1.ControlPlane{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              name,
+			Namespace:         namespace,
+			UID:               types.UID(uid),
+			CreationTimestamp: metav1.NewTime(created),
+		},
+	}
+}
+
+func TestReconcile_DuplicateControlPlane_ParksYounger(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := controllerTestScheme(t)
+	now := time.Now()
+	older := duplicateGuardControlPlane("alpha", "default", "uid-alpha", now.Add(-time.Hour))
+	younger := duplicateGuardControlPlane("bravo", "default", "uid-bravo", now)
+	// The scheme deliberately registers no child types (MariaDB, Keystone, ...):
+	// if the guard ever failed to park the duplicate, the sub-reconciler chain
+	// would error on the unregistered kinds and fail this test.
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(older, younger).
+		WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}).
+		Build()
+
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	res, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: "default", Name: "bravo"},
+	})
+
+	g.Expect(err).NotTo(HaveOccurred(), "parking a duplicate must not error")
+	g.Expect(res.RequeueAfter).To(Equal(duplicateControlPlaneRequeueAfter),
+		"a parked duplicate must requeue so it can take over once the incumbent is gone")
+
+	var parked c5c3v1alpha1.ControlPlane
+	g.Expect(c.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "bravo"}, &parked)).To(Succeed())
+	ready := conditions.GetCondition(parked.Status.Conditions, conditionTypeReady)
+	g.Expect(ready).NotTo(BeNil(), "the parked duplicate must carry a Ready condition")
+	g.Expect(ready.Status).To(Equal(metav1.ConditionFalse),
+		"a parked duplicate must report Ready=False")
+	g.Expect(ready.Reason).To(Equal("DuplicateControlPlane"),
+		"a parked duplicate must report reason DuplicateControlPlane")
+	g.Expect(ready.Message).To(ContainSubstring(`"alpha"`),
+		"the Ready message must name the incumbent")
+	g.Expect(parked.Status.ObservedGeneration).To(Equal(parked.Generation),
+		"the parked status must stamp ObservedGeneration")
+}
+
+func TestReconcile_DuplicateControlPlane_TieBreakByName(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := controllerTestScheme(t)
+	created := metav1.Now().Time
+	// Identical creation timestamps: the lexically smallest name wins.
+	first := duplicateGuardControlPlane("alpha", "default", "uid-alpha", created)
+	second := duplicateGuardControlPlane("bravo", "default", "uid-bravo", created)
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(first, second).
+		WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}).
+		Build()
+
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: "default", Name: "bravo"},
+	})
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var parked c5c3v1alpha1.ControlPlane
+	g.Expect(c.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "bravo"}, &parked)).To(Succeed())
+	ready := conditions.GetCondition(parked.Status.Conditions, conditionTypeReady)
+	g.Expect(ready).NotTo(BeNil())
+	g.Expect(ready.Reason).To(Equal("DuplicateControlPlane"),
+		"on a creation-time tie the lexically larger name must be parked")
+	g.Expect(ready.Message).To(ContainSubstring(`"alpha"`),
+		"the tie-break incumbent must be the lexically smallest name")
+}
+
+func TestDuplicateControlPlaneIncumbent_OldestProceeds(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := controllerTestScheme(t)
+	now := time.Now()
+	older := duplicateGuardControlPlane("alpha", "default", "uid-alpha", now.Add(-time.Hour))
+	younger := duplicateGuardControlPlane("bravo", "default", "uid-bravo", now)
+	// A ControlPlane in another namespace must not influence the guard.
+	unrelated := duplicateGuardControlPlane("older-elsewhere", "other", "uid-other", now.Add(-2*time.Hour))
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(older, younger, unrelated).
+		Build()
+
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	incumbent, err := r.duplicateControlPlaneIncumbent(context.Background(), older)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(incumbent).To(BeEmpty(),
+		"the oldest ControlPlane in the namespace must proceed")
+
+	incumbent, err = r.duplicateControlPlaneIncumbent(context.Background(), younger)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(incumbent).To(Equal("alpha"),
+		"a younger ControlPlane must be parked behind the namespace's oldest")
+}
+
+func TestDuplicateControlPlaneIncumbent_SingleControlPlane(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := controllerTestScheme(t)
+	only := duplicateGuardControlPlane("solo", "default", "uid-solo", time.Now())
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(only).Build()
+
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	incumbent, err := r.duplicateControlPlaneIncumbent(context.Background(), only)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(incumbent).To(BeEmpty(),
+		"a namespace's only ControlPlane must proceed")
 }

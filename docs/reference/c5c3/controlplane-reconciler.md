@@ -247,6 +247,10 @@ and the informer cache to that namespace. Keep the default only when
 │  Fetch ControlPlane CR (return empty result if NotFound)                     │
 │         │                                                                    │
 │         ▼                                                                    │
+│  Duplicate guard — park all but the oldest ControlPlane in the namespace     │
+│  (Ready=False / DuplicateControlPlane, requeue 30s; see Multi-instance)      │
+│         │                                                                    │
+│         ▼                                                                    │
 │  ┌──────────────────────────┐                                                │
 │  │ reconcileInfrastructure  │  Ensure managed MariaDB + Memcached children   │
 │  │  (gate: none)            │  Sets: InfrastructureReady                     │
@@ -364,6 +368,11 @@ InfrastructureReady, DBCredentialsReady, KeystoneReady, KORCReady, AdminCredenti
 
 The `Ready` condition carries `ObservedGeneration = cp.Generation` so clients can
 detect a stale aggregate.
+
+One path bypasses the aggregation entirely: a ControlPlane parked by the
+duplicate guard (see [Multi-instance](#multi-instance)) gets `Ready=False` with
+reason `DuplicateControlPlane` written directly — `setReadyCondition()` would
+otherwise overwrite the reason with `NotAllReady` on the next status update.
 
 ---
 
@@ -814,11 +823,22 @@ cluster without sharing OpenBao state.
 - **One ControlPlane per namespace (admission-enforced).** The ControlPlane
   validating webhook's `validateUniqueInNamespace` check runs in
   `ValidateCreate` **only** (not `ValidateUpdate`): it lists ControlPlanes in the
-  object's namespace and returns `field.Forbidden` naming the incumbent if one
-  already exists. The cluster therefore admits **exactly one** ControlPlane per
-  namespace. This is what makes the CredentialRotation reconciler's
-  `AmbiguousControlPlane` branch defense-in-depth (see
+  object's namespace through the uncached API reader and returns
+  `field.Forbidden` naming the incumbent if one already exists. The cluster
+  therefore admits **exactly one** ControlPlane per namespace. This is what
+  makes the CredentialRotation reconciler's `AmbiguousControlPlane` branch
+  defense-in-depth (see
   [CredentialRotation reconciler](#credentialrotation-reconciler)).
+- **Duplicate guard (reconciler-enforced).** As defense-in-depth for CRs that
+  predate the webhook guard, raced through the API server, or were written with
+  the webhook bypassed, `Reconcile` runs `duplicateControlPlaneIncumbent`
+  before the sub-reconciler chain: it lists ControlPlanes in the CR's namespace
+  and parks every CR except the oldest (by `creationTimestamp`, lexically
+  smallest name breaking ties). A parked duplicate gets `Ready=False` with
+  reason `DuplicateControlPlane` naming the incumbent, runs **no**
+  sub-reconcilers, and requeues every 30s — so it takes over automatically once
+  the incumbent is fully deleted (no watch event fires on the duplicate's
+  behalf when that happens).
 - **Per-CR OpenBao path for the admin AC.** The admin application credential is
   pushed to the per-ControlPlane key
   `openstack/keystone/{cp.Namespace}/{cp.Name}/admin/app-credential`
