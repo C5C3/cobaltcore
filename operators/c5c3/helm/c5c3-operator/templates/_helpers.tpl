@@ -1,63 +1,9 @@
 {{/*
-Expand the name of the chart.
+The naming, label, and service-account helpers (.name, .fullname, .chart,
+.labels, .selectorLabels, .serviceAccountName) live in the operator-library
+library chart so both operator charts share one definition. Templates reference
+them as "operator-library.<helper>". Only chart-specific helpers stay here.
 */}}
-{{- define "c5c3-operator.name" -}}
-{{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" }}
-{{- end }}
-
-{{/*
-Create a default fully qualified app name.
-*/}}
-{{- define "c5c3-operator.fullname" -}}
-{{- if .Values.fullnameOverride }}
-{{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" }}
-{{- else }}
-{{- $name := default .Chart.Name .Values.nameOverride }}
-{{- if contains $name .Release.Name }}
-{{- .Release.Name | trunc 63 | trimSuffix "-" }}
-{{- else }}
-{{- printf "%s-%s" .Release.Name $name | trunc 63 | trimSuffix "-" }}
-{{- end }}
-{{- end }}
-{{- end }}
-
-{{/*
-Create chart name and version as used by the chart label.
-*/}}
-{{- define "c5c3-operator.chart" -}}
-{{- printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" }}
-{{- end }}
-
-{{/*
-Common labels.
-*/}}
-{{- define "c5c3-operator.labels" -}}
-helm.sh/chart: {{ include "c5c3-operator.chart" . }}
-{{ include "c5c3-operator.selectorLabels" . }}
-{{- if .Chart.AppVersion }}
-app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
-{{- end }}
-app.kubernetes.io/managed-by: {{ .Release.Service }}
-{{- end }}
-
-{{/*
-Selector labels.
-*/}}
-{{- define "c5c3-operator.selectorLabels" -}}
-app.kubernetes.io/name: {{ include "c5c3-operator.name" . }}
-app.kubernetes.io/instance: {{ .Release.Name }}
-{{- end }}
-
-{{/*
-Create the name of the service account to use.
-*/}}
-{{- define "c5c3-operator.serviceAccountName" -}}
-{{- if .Values.serviceAccount.create }}
-{{- default (include "c5c3-operator.fullname" .) .Values.serviceAccount.name }}
-{{- else }}
-{{- default "default" .Values.serviceAccount.name }}
-{{- end }}
-{{- end }}
 
 {{/*
 RBAC rules shared between ClusterRole and namespace-scoped Role (CC-0043).

@@ -1,14 +1,14 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "c5c3-operator.fullname" . }}
+  name: {{ include "operator-library.fullname" . }}
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "c5c3-operator.labels" . | nindent 4 }}
+    {{- include "operator-library.labels" . | nindent 4 }}
 spec:
   type: ClusterIP
   selector:
-    {{- include "c5c3-operator.selectorLabels" . | nindent 4 }}
+    {{- include "operator-library.selectorLabels" . | nindent 4 }}
   ports:
     {{- if .Values.webhook.enabled }}
     - name: webhook
