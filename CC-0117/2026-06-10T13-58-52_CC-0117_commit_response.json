@@ -1,0 +1,14 @@
+{
+  "timestamp": "2026-06-10T13:58:52.472524+00:00",
+  "feature_id": "CC-0117",
+  "task_type": "commit",
+  "session_key": "CC-0117",
+  "model": "opus",
+  "caller": "run_claude_cli",
+  "status": "ok",
+  "returncode": 0,
+  "duration_s": 8.672374160960317,
+  "response_length": 622,
+  "response": "plan(CC-0117): replace static ExternalSecrets\n\nAdd the planning document for migrating the three remaining static\nExternalSecrets (keystone-admin, mariadb-root-password,\nk-orc-clouds-yaml) to operator-owned per-ControlPlane projection,\nextending the CC-0116 pattern from PR #442. The plan scopes one\noperator feature, one manifest relocation to a kind-only shim, and\none consumer removal, so ControlPlanes are no longer pinned to the\ndefault Quick Start identity in namespace openstack.\n\nAI-assisted: Claude Code\nOn-behalf-of: @SAP christian.berendt@sap.com\nSigned-off-by: Christian Berendt <berendt@23technologies.cloud>\n",
+  "stderr": ""
+}
