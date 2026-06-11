@@ -5,7 +5,7 @@ go 1.26.4
 require (
 	github.com/c5c3/forge/internal/common v0.0.0
 	github.com/c5c3/forge/operators/keystone v0.0.0
-	github.com/external-secrets/external-secrets/apis v0.0.0-20260610195611-999a26d9beed
+	github.com/external-secrets/external-secrets/apis v0.0.0-20260611143133-fda6430a2d65
 	github.com/go-logr/logr v1.4.3
 	github.com/k-orc/openstack-resource-controller/v2 v2.6.0
 	github.com/mariadb-operator/mariadb-operator v0.38.1
@@ -23,7 +23,7 @@ require (
 
 require (
 	github.com/beorn7/perks v1.0.1 // indirect
-	github.com/cert-manager/cert-manager v1.17.1 // indirect
+	github.com/cert-manager/cert-manager v1.20.2 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/distribution/reference v0.6.0 // indirect
