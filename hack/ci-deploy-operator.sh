@@ -59,6 +59,15 @@ kubectl apply -f "${CHART_PATH}/crds/"
 kubectl wait crd --all --for condition=Established --timeout=60s
 
 # ---------------------------------------------------------------------------
+# 1b. Vendor chart dependencies
+# ---------------------------------------------------------------------------
+# The operator chart depends on the operator-library library chart via a
+# file:// path, so `helm install` needs it vendored into charts/ first.
+# --skip-refresh: the dependency is local, so no chart-repository refresh is
+# required (and it avoids failing on a developer's stale repo cache).
+helm dependency build --skip-refresh "${CHART_PATH}/"
+
+# ---------------------------------------------------------------------------
 # 2. Deploy operator via Helm
 # ---------------------------------------------------------------------------
 # Build the Helm --set arguments. The ServiceMonitor template is gated on

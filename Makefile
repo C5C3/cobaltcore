@@ -336,11 +336,26 @@ docker-build:
 		$(if $(DOCKER_CACHE_TO),--cache-to $(DOCKER_CACHE_TO)) \
 		.
 
+.PHONY: helm-deps
+# helm-deps vendors the operator-library library subchart into each operator
+# chart's charts/ directory (helm dependency build reads the committed
+# Chart.lock). Run before helm lint/template/unittest locally; CI helm-validate
+# runs it too. --skip-refresh: the dependency is local, so no chart-repository
+# refresh is needed (and it avoids failing on a stale repo cache).
+helm-deps:
+	@for op in $(OPERATORS); do \
+		echo "Building Helm dependencies for operators/$$op..."; \
+		helm dependency build --skip-refresh operators/$$op/helm/$$op-operator/; \
+	done
+
 .PHONY: helm-package
 # helm-package packages the operator Helm chart (CC-0018, REQ-011).
 # Usage: make helm-package OPERATOR=keystone [CHART_VERSION=1.2.3]
+# Vendors the operator-library subchart first so the packaged tarball is
+# self-contained (helm package fails on an unresolved dependency).
 helm-package:
 	$(if $(OPERATOR),,$(error helm-package requires OPERATOR, e.g. make helm-package OPERATOR=keystone))
+	helm dependency build --skip-refresh operators/$(OPERATOR)/helm/$(OPERATOR)-operator/
 	helm package operators/$(OPERATOR)/helm/$(OPERATOR)-operator/ $(if $(CHART_VERSION),--version $(CHART_VERSION))
 
 # ============================================================================

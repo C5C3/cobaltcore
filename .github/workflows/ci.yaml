@@ -96,9 +96,17 @@ jobs:
               - 'package.json'
               - 'package-lock.json'
               - '.github/workflows/ci.yaml'
-            # CC-0041: Helm chart changes trigger the helm-validate job.
+            # CC-0041: Helm chart changes trigger the helm-validate job. Both
+            # operator charts share the operator-library library chart and a
+            # values.schema.json generator, so a change to either chart, the
+            # shared library, the generator, or the Makefile targets it backs
+            # must re-run Helm validation.
             helm:
               - 'operators/keystone/helm/**'
+              - 'operators/c5c3/helm/**'
+              - 'operators/shared/helm/**'
+              - 'hack/gen-helm-values-schema.py'
+              - 'Makefile'
             e2e_infra:
               - 'tests/e2e/infrastructure/**'
               - 'hack/**'
@@ -124,6 +132,8 @@ jobs:
               - 'hack/deploy-infra.sh'
               - 'operators/keystone/helm/keystone-operator/templates/servicemonitor.yaml'
               - 'operators/keystone/helm/keystone-operator/values.yaml'
+              # The ServiceMonitor's labels render via the operator-library helper.
+              - 'operators/shared/helm/**'
               - 'operators/keystone/dashboards/keystone-operator.json'
               - '.github/actions/setup-e2e-infra/action.yaml'
               - '.github/workflows/ci.yaml'
@@ -467,7 +477,10 @@ jobs:
 
   # CC-0041: Validate Helm chart structure, template rendering, and unit tests.
   # Runs helm lint, helm template with multiple value override scenarios, and
-  # helm-unittest to catch chart regressions early without requiring a cluster.
+  # helm-unittest for both operator charts to catch regressions early without a
+  # cluster. Both charts share the operator-library subchart and a generated
+  # values.schema.json, so the job verifies the schema is in sync and vendors
+  # the subchart (make helm-deps) before rendering.
   helm-validate:
     needs: [changes]
     if: github.event_name == 'pull_request' && needs.changes.outputs.helm == 'true'
@@ -479,23 +492,37 @@ jobs:
       - name: Install helm-unittest plugin
         # NOTE: --verify=false because helm-unittest does not publish GPG signatures for plugin releases.
         run: helm plugin install https://github.com/helm-unittest/helm-unittest --version v1.0.3 --verify=false
+      - name: Verify values.schema.json is generated from the shared source
+        run: make verify-helm-schema
+      - name: Build chart dependencies (vendor operator-library)
+        run: make helm-deps
       - name: Helm lint
-        run: helm lint operators/keystone/helm/keystone-operator/
+        run: |
+          for chart in operators/keystone/helm/keystone-operator operators/c5c3/helm/c5c3-operator; do
+            echo "--- lint $chart ---"
+            helm lint "$chart"
+          done
       - name: Helm template
         run: |
-          CHART=operators/keystone/helm/keystone-operator
-          echo "--- Scenario 1: default values ---"
-          helm template test "$CHART"
-          echo "--- Scenario 2: webhook disabled ---"
-          helm template test "$CHART" --set webhook.enabled=false
-          echo "--- Scenario 3: external service account ---"
-          helm template test "$CHART" --set serviceAccount.create=false --set serviceAccount.name=existing-sa
-          echo "--- Scenario 4: custom resources ---"
-          helm template test "$CHART" --set resources.limits.cpu=100m --set resources.limits.memory=64Mi
-          echo "--- Scenario 5: namespace-scoped RBAC ---"
-          helm template test "$CHART" --set rbac.namespaceScoped=true --set webhook.enabled=false
+          for chart in operators/keystone/helm/keystone-operator operators/c5c3/helm/c5c3-operator; do
+            echo "=== $chart ==="
+            echo "--- Scenario 1: default values ---"
+            helm template test "$chart"
+            echo "--- Scenario 2: webhook disabled ---"
+            helm template test "$chart" --set webhook.enabled=false
+            echo "--- Scenario 3: external service account ---"
+            helm template test "$chart" --set serviceAccount.create=false --set serviceAccount.name=existing-sa
+            echo "--- Scenario 4: custom resources ---"
+            helm template test "$chart" --set resources.limits.cpu=100m --set resources.limits.memory=64Mi
+            echo "--- Scenario 5: namespace-scoped RBAC ---"
+            helm template test "$chart" --set rbac.namespaceScoped=true --set webhook.enabled=false
+          done
       - name: Helm unittest
-        run: helm unittest operators/keystone/helm/keystone-operator/
+        run: |
+          for chart in operators/keystone/helm/keystone-operator operators/c5c3/helm/c5c3-operator; do
+            echo "--- unittest $chart ---"
+            helm unittest "$chart"
+          done
 
   # CC-0010, REQ-009: End-to-end infrastructure deployment and Chainsaw test.
   # Deploys the full infrastructure stack to a kind cluster and validates health
