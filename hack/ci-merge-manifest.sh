@@ -80,13 +80,25 @@ done
 read -r first_tag _ <<< "$TAGS"
 inspect_tag="${INSPECT_TAG:-${first_tag}}"
 
-digest=$(docker buildx imagetools inspect "${inspect_tag}" \
-  --format '{{json .Manifest.Digest}}' | tr -d '"')
-
-if [[ -z "${digest}" ]]; then
-  echo "::error::Failed to extract digest from ${inspect_tag}"
-  exit 1
-fi
+# Retry the inspect for the same reason the create above is retried: ghcr.io's
+# eventual-consistency window also affects reads, so an `imagetools inspect`
+# issued immediately after a successful push can still return 404 ("not found")
+# for the tag it just wrote. Same backoff as create: 5s, 15s, 30s.
+digest=""
+delay=5
+for attempt in $(seq 1 "${attempts}"); do
+  if digest=$(docker buildx imagetools inspect "${inspect_tag}" \
+    --format '{{json .Manifest.Digest}}' | tr -d '"') && [[ -n "${digest}" ]]; then
+    break
+  fi
+  if [[ "${attempt}" -eq "${attempts}" ]]; then
+    echo "::error::Failed to extract digest from ${inspect_tag} after ${attempts} attempts"
+    exit 1
+  fi
+  echo "::warning::imagetools inspect attempt ${attempt} failed; retrying in ${delay}s"
+  sleep "${delay}"
+  delay=$((delay * 3))
+done
 
 # ---------------------------------------------------------------------------
 # 5. Write output and confirmation
