@@ -77,6 +77,18 @@ func cacheOptions(syncPeriod time.Duration, namespace string) cache.Options {
 	return opts
 }
 
+// zapOptions returns the base zap logging options shared by all operators.
+// Development is false so the production operator binaries default to the
+// controller-runtime production logging profile: JSON encoder, info-level
+// verbosity, and stacktraces only at error level. A true value would ship a
+// console encoder, debug-level verbosity, and a DPanic that panics — none of
+// which is appropriate for a production binary. Operators opt back into
+// development logging explicitly via the --zap-devel, --zap-log-level, and
+// --zap-encoder flags that BindFlags registers against these options.
+func zapOptions() zap.Options {
+	return zap.Options{Development: false}
+}
+
 // Run bootstraps and starts a controller-runtime manager with standard flag
 // parsing, zap logging, metrics, and health/ready probes. It blocks until the
 // manager stops or an error occurs.
@@ -115,7 +127,7 @@ func Run(cfg ManagerConfig) error {
 			"Used for namespace-scoped deployments (CC-0043). "+
 			"Overrides ManagerConfig.Namespace when provided.")
 
-	opts := zap.Options{Development: true}
+	opts := zapOptions()
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 
