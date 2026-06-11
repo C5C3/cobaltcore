@@ -43,7 +43,7 @@ func TestIntegration_EnsureCertificate(t *testing.T) {
 		},
 		Spec: certmanagerv1.CertificateSpec{
 			SecretName: "integration-cert-tls",
-			IssuerRef: cmmeta.ObjectReference{
+			IssuerRef: cmmeta.IssuerReference{
 				Name: "test-issuer",
 				Kind: "ClusterIssuer",
 			},
@@ -95,7 +95,7 @@ func TestIntegration_EnsureCertificate_idempotent(t *testing.T) {
 		},
 		Spec: certmanagerv1.CertificateSpec{
 			SecretName: "idem-cert-tls",
-			IssuerRef: cmmeta.ObjectReference{
+			IssuerRef: cmmeta.IssuerReference{
 				Name: "test-issuer",
 				Kind: "ClusterIssuer",
 			},

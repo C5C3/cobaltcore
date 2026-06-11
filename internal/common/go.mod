@@ -3,7 +3,7 @@ module github.com/c5c3/forge/internal/common
 go 1.26.4
 
 require (
-	github.com/cert-manager/cert-manager v1.17.1
+	github.com/cert-manager/cert-manager v1.20.2
 	github.com/external-secrets/external-secrets/apis v0.0.0-20260610195611-999a26d9beed
 	github.com/mariadb-operator/mariadb-operator v0.38.1
 	github.com/onsi/gomega v1.41.0

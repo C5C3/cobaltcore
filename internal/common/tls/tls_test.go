@@ -46,7 +46,7 @@ func testCertificate() *certmanagerv1.Certificate {
 		},
 		Spec: certmanagerv1.CertificateSpec{
 			SecretName: "test-cert-tls",
-			IssuerRef: cmmeta.ObjectReference{
+			IssuerRef: cmmeta.IssuerReference{
 				Name: "test-issuer",
 				Kind: "ClusterIssuer",
 			},

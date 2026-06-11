@@ -147,7 +147,7 @@ func dbClientCertificate(keystone *keystonev1alpha1.Keystone) *certmanagerv1.Cer
 		Spec: certmanagerv1.CertificateSpec{
 			SecretName: name,
 			CommonName: keystone.Name,
-			IssuerRef: cmmeta.ObjectReference{
+			IssuerRef: cmmeta.IssuerReference{
 				Name:  dbCAIssuerName,
 				Kind:  "ClusterIssuer",
 				Group: "cert-manager.io",

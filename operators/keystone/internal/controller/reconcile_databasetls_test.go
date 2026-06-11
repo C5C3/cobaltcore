@@ -146,7 +146,7 @@ func TestReconcileDatabaseTLS_ConditionTrueWhenIssued(t *testing.T) {
 		Spec: certmanagerv1.CertificateSpec{
 			SecretName: "test-keystone-db-client",
 			CommonName: "test-keystone",
-			IssuerRef:  cmmeta.ObjectReference{Name: dbCAIssuerName, Kind: "ClusterIssuer", Group: "cert-manager.io"},
+			IssuerRef:  cmmeta.IssuerReference{Name: dbCAIssuerName, Kind: "ClusterIssuer", Group: "cert-manager.io"},
 			Usages: []certmanagerv1.KeyUsage{
 				certmanagerv1.UsageClientAuth,
 				certmanagerv1.UsageDigitalSignature,
