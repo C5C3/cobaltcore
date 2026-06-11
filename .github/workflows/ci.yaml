@@ -1119,7 +1119,12 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: tempest-${{ matrix.release }}-results
-          path: _output/tempest/
+          # The rendered tempest.conf carries the cleartext Keystone admin
+          # password substituted by hack/ci-run-tempest.sh; keep it out of the
+          # retained artifact. The JUnit/subunit results carry no secrets.
+          path: |
+            _output/tempest/
+            !_output/tempest/config/tempest.conf
           retention-days: 14
       # CC-0050: Use shared diagnostic dump script (REQ-001).
       - name: Dump diagnostic info
