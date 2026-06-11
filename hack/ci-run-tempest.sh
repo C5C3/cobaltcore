@@ -108,8 +108,12 @@ fi
 # 4. Generate Tempest config from template
 # ---------------------------------------------------------------------------
 # Escape sed metacharacters in the password to prevent substitution failures
-# if ADMIN_PASSWORD contains |, &, or \ (CC-0050, review #2 comment 4).
-ADMIN_PASSWORD_ESCAPED=$(printf '%s\n' "${ADMIN_PASSWORD}" | sed 's/[&/\|]/\\&/g')
+# if ADMIN_PASSWORD contains \, &, |, or / (CC-0050, review #2 comment 4).
+# Escape backslashes first in their own pass, then the remaining metacharacters
+# with a class that has no backslash, so an arbitrary password is rendered
+# literally (a single [&/\|] class makes \ ambiguous in GNU sed).
+ADMIN_PASSWORD_ESCAPED=$(printf '%s\n' "${ADMIN_PASSWORD}" \
+  | sed -e 's/\\/\\\\/g' -e 's/[&|/]/\\&/g')
 # Replace both FQDN and short DNS forms of the service URL (CC-0050, review #2 comment 6).
 sed -e "s|${SERVICE_K8S_NAME}\\.${NAMESPACE}\\.svc\\.cluster\\.local:5000|localhost:5000|" \
     -e "s|${SERVICE_K8S_NAME}\\.${NAMESPACE}\\.svc:5000|localhost:5000|" \

@@ -242,9 +242,17 @@ run_tempest() {
   local etc_dir="${OUTPUT_DIR}/config"
   mkdir -p "${etc_dir}"
 
+  # Escape sed metacharacters in the password to prevent substitution failures
+  # if admin_password contains \, &, |, or / (mirrors hack/ci-run-tempest.sh).
+  # Escape backslashes first in their own pass, then the remaining metacharacters
+  # with a class that has no backslash, so an arbitrary password is rendered
+  # literally (a single [&/\|] class makes \ ambiguous in GNU sed).
+  local admin_password_escaped
+  admin_password_escaped=$(printf '%s\n' "${admin_password}" \
+    | sed -e 's/\\/\\\\/g' -e 's/[&|/]/\\&/g')
   sed \
     -e "s|http://[^/]*:5000|http://${container_host}:5000|" \
-    -e "s|\${KEYSTONE_ADMIN_PASSWORD}|${admin_password}|" \
+    -e "s|\${KEYSTONE_ADMIN_PASSWORD}|${admin_password_escaped}|" \
     "${config_dir}/tempest.conf" > "${etc_dir}/tempest.conf"
   [[ -f "${config_dir}/exclude-tests.txt" ]] && cp "${config_dir}/exclude-tests.txt" "${etc_dir}/"
 
