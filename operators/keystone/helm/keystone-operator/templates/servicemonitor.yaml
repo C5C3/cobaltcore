@@ -8,14 +8,14 @@ installed in the cluster.
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
-  name: {{ include "keystone-operator.fullname" . }}
+  name: {{ include "operator-library.fullname" . }}
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "keystone-operator.labels" . | nindent 4 }}
+    {{- include "operator-library.labels" . | nindent 4 }}
 spec:
   selector:
     matchLabels:
-      {{- include "keystone-operator.selectorLabels" . | nindent 6 }}
+      {{- include "operator-library.selectorLabels" . | nindent 6 }}
   endpoints:
     - port: metrics
       path: /metrics

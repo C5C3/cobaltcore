@@ -4,6 +4,13 @@ description: A Helm chart for deploying the Keystone OpenStack operator
 type: application
 version: 0.3.0
 appVersion: "0.1.0"
+# The shared naming/label helpers and the Deployment skeleton live in the
+# operator-library library chart so they are defined once for both operator
+# charts. It is vendored into charts/ at package time (helm dependency build).
+dependencies:
+  - name: operator-library
+    version: 0.1.0
+    repository: "file://../../../shared/helm/operator-library"
 # CC-0069, REQ-007: Helm validates values against values.schema.json automatically.
 annotations:
   artifacthub.io/prerelease: "true"

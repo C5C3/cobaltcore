@@ -2,15 +2,15 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: {{ include "keystone-operator.fullname" . }}
+  name: {{ include "operator-library.fullname" . }}
   labels:
-    {{- include "keystone-operator.labels" . | nindent 4 }}
+    {{- include "operator-library.labels" . | nindent 4 }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: {{ include "keystone-operator.fullname" . }}
+  name: {{ include "operator-library.fullname" . }}
 subjects:
   - kind: ServiceAccount
-    name: {{ include "keystone-operator.serviceAccountName" . }}
+    name: {{ include "operator-library.serviceAccountName" . }}
     namespace: {{ .Release.Namespace }}
 {{- end }}

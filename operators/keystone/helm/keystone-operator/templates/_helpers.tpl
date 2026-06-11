@@ -1,67 +1,14 @@
 {{/*
-Expand the name of the chart.
+The naming, label, and service-account helpers (.name, .fullname, .chart,
+.labels, .selectorLabels, .serviceAccountName) live in the operator-library
+library chart so both operator charts share one definition. Templates reference
+them as "operator-library.<helper>". Only chart-specific helpers stay here.
 */}}
-{{- define "keystone-operator.name" -}}
-{{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" }}
-{{- end }}
-
-{{/*
-Create a default fully qualified app name.
-*/}}
-{{- define "keystone-operator.fullname" -}}
-{{- if .Values.fullnameOverride }}
-{{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" }}
-{{- else }}
-{{- $name := default .Chart.Name .Values.nameOverride }}
-{{- if contains $name .Release.Name }}
-{{- .Release.Name | trunc 63 | trimSuffix "-" }}
-{{- else }}
-{{- printf "%s-%s" .Release.Name $name | trunc 63 | trimSuffix "-" }}
-{{- end }}
-{{- end }}
-{{- end }}
-
-{{/*
-Create chart name and version as used by the chart label.
-*/}}
-{{- define "keystone-operator.chart" -}}
-{{- printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" }}
-{{- end }}
-
-{{/*
-Common labels.
-*/}}
-{{- define "keystone-operator.labels" -}}
-helm.sh/chart: {{ include "keystone-operator.chart" . }}
-{{ include "keystone-operator.selectorLabels" . }}
-{{- if .Chart.AppVersion }}
-app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
-{{- end }}
-app.kubernetes.io/managed-by: {{ .Release.Service }}
-{{- end }}
-
-{{/*
-Selector labels.
-*/}}
-{{- define "keystone-operator.selectorLabels" -}}
-app.kubernetes.io/name: {{ include "keystone-operator.name" . }}
-app.kubernetes.io/instance: {{ .Release.Name }}
-{{- end }}
-
-{{/*
-Create the name of the service account to use.
-*/}}
-{{- define "keystone-operator.serviceAccountName" -}}
-{{- if .Values.serviceAccount.create }}
-{{- default (include "keystone-operator.fullname" .) .Values.serviceAccount.name }}
-{{- else }}
-{{- default "default" .Values.serviceAccount.name }}
-{{- end }}
-{{- end }}
 
 {{/*
 RBAC rules shared between ClusterRole and namespace-scoped Role (CC-0043).
-Extracted into a named template to prevent drift when rules change.
+Extracted into a named template to prevent drift when rules change. These rules
+are keystone-specific, so they stay in this chart rather than the library.
 */}}
 {{- define "keystone-operator.rbacRules" -}}
 # keystone.openstack.c5c3.io - keystones (CC-0017)

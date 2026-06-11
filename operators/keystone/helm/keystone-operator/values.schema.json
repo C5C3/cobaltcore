@@ -287,6 +287,10 @@
       "type": "string",
       "description": "Override the full resource name prefix, skipping release-name prefixing",
       "default": ""
+    },
+    "operator-library": {
+      "type": "object",
+      "description": "Reserved values namespace for the operator-library library subchart. The library carries no configurable values; Helm injects this (empty) key during values coalescing, so additionalProperties:false at the root must permit it."
     }
   },
   "allOf": [

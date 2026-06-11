@@ -2,26 +2,26 @@
 apiVersion: cert-manager.io/v1
 kind: Issuer
 metadata:
-  name: {{ include "keystone-operator.fullname" . }}-selfsigned
+  name: {{ include "operator-library.fullname" . }}-selfsigned
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "keystone-operator.labels" . | nindent 4 }}
+    {{- include "operator-library.labels" . | nindent 4 }}
 spec:
   selfSigned: {}
 ---
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
-  name: {{ include "keystone-operator.fullname" . }}-webhook
+  name: {{ include "operator-library.fullname" . }}-webhook
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "keystone-operator.labels" . | nindent 4 }}
+    {{- include "operator-library.labels" . | nindent 4 }}
 spec:
   dnsNames:
-    - {{ include "keystone-operator.fullname" . }}.{{ .Release.Namespace }}.svc
-    - {{ include "keystone-operator.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local
+    - {{ include "operator-library.fullname" . }}.{{ .Release.Namespace }}.svc
+    - {{ include "operator-library.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local
   issuerRef:
     kind: Issuer
-    name: {{ include "keystone-operator.fullname" . }}-selfsigned
-  secretName: {{ include "keystone-operator.fullname" . }}-webhook-cert
+    name: {{ include "operator-library.fullname" . }}-selfsigned
+  secretName: {{ include "operator-library.fullname" . }}-webhook-cert
 {{- end }}
