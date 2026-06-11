@@ -877,13 +877,17 @@ func computeAdminPasswordHash(ctx context.Context, c client.Client, cp *c5c3v1al
 	return hashAdminPassword(pw), nil
 }
 
-// readAdminPassword reads the cleartext admin password from the configured
-// PasswordSecretRef (data key defaults to "password"). reconcileKORC needs the
-// cleartext — not just its hash — to render the password-based clouds.yaml the
-// admin ApplicationCredential mints with, so the read is factored out here and the
+// readAdminPassword reads the cleartext admin password from the EFFECTIVE
+// admin-password Secret (data key defaults to "password"). The effective ref
+// (CC-0117, REQ-005) is the operator-owned per-ControlPlane Secret
+// adminPasswordSecretName(cp) in managed mode and the user-supplied
+// cp.Spec.KORC.AdminCredential.PasswordSecretRef in brownfield mode — see
+// effectiveAdminPasswordSecretRef. reconcileKORC needs the cleartext — not just
+// its hash — to render the password-based clouds.yaml the admin
+// ApplicationCredential mints with, so the read is factored out here and the
 // hash derived from it via hashAdminPassword.
 func readAdminPassword(ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane) (string, error) {
-	ref := cp.Spec.KORC.AdminCredential.PasswordSecretRef
+	ref := effectiveAdminPasswordSecretRef(cp)
 	key := ref.Key
 	if key == "" {
 		key = "password"

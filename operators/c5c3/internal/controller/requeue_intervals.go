@@ -22,6 +22,14 @@ const (
 	// cadence of each sub-reconciler is independently documented and tunable.
 	dbCredentialsRequeueAfter = 10 * time.Second
 
+	// adminPasswordRequeueAfter is the backoff the AdminPassword sub-reconciler
+	// uses while waiting for the per-ControlPlane admin-password ExternalSecret to
+	// sync to Ready (CC-0117, REQ-003). DECISION: a dedicated named constant
+	// (rather than reusing korcRequeueAfter) matches the per-sub-reconciler naming
+	// convention already established here, so the wait cadence of each
+	// sub-reconciler is independently documented and tunable.
+	adminPasswordRequeueAfter = 10 * time.Second
+
 	// keystoneInfraGateRequeueAfter is the short backoff used while the Keystone
 	// sub-reconciler is gated on InfrastructureReady; it is small so the Keystone
 	// CR is projected promptly once the infrastructure converges.

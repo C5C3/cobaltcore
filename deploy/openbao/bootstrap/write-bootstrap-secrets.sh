@@ -157,8 +157,12 @@ main() {
 
     log "--- Seeding ControlPlane '${identity}' (keystone='${keystone_name}') ---"
 
-    # Model B admin password (the bootstrap source the keystone-admin
-    # ExternalSecret reads and the rotation PushSecret later overwrites).
+    # Model B admin password. This bootstrap source is now read by (a) the
+    # operator-projected per-ControlPlane admin-password ExternalSecret (c5c3
+    # operator reconcileAdminPassword, CC-0117) and (b) the kind-only
+    # default-identity shim
+    # (deploy/kind/infrastructure/keystone-admin-externalsecret.yaml); it is
+    # later overwritten by the keystone-operator Model B rotation PushSecret.
     write_secret_if_missing "${admin_path}" \
       "password=${GENERATED_PASSWORD}"
     # CC-0109: let the Model B admin-password rotation PushSecret overwrite this

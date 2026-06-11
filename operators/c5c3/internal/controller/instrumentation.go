@@ -43,6 +43,7 @@ var subReconcilerConditionTypes = map[string]string{
 	"Keystone":        conditionTypeKeystoneReady,
 	"KORC":            conditionTypeKORCReady,
 	"AdminCredential": conditionTypeAdminCredentialReady,
+	"AdminPassword":   conditionTypeAdminPasswordReady,
 	"Catalog":         conditionTypeCatalogReady,
 }
 

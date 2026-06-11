@@ -11,6 +11,10 @@
 # CC-0112: the per-CR bootstrap admin password now lives at
 # `bootstrap/{namespace}/{name}/admin`. The trailing `*` already matches that
 # extra depth, so this read grant covers the new shape with no widening needed.
+# CC-0117 verification: the operator-projected admin-password ExternalSecret
+# (c5c3 reconcileAdminPassword) reads `bootstrap/{namespace}/{keystone}/admin`,
+# which is already covered by this `kv-v2/data/bootstrap/*` read grant —
+# read-only, no widening required.
 path "kv-v2/data/bootstrap/*" {
   capabilities = ["read"]
 }

@@ -5,13 +5,17 @@
 # OpenStack client verification Job for the full-controlplane-keystone E2E test
 # (CC-0110, REQ-028, Link 7b). It authenticates with the materialised admin
 # clouds.yaml (the minted, OpenBao-round-tripped application credential
-# delivered to orc-system/k-orc-clouds-yaml by the credential chain) and runs
-# `openstack token issue` + `openstack catalog list` to prove the credential
-# actually works end-to-end and the identity service is catalogued.
+# delivered to the per-CR k-orc-clouds-yaml Secret by the credential chain) and
+# runs `openstack token issue` + `openstack catalog list` to prove the
+# credential actually works end-to-end and the identity service is catalogued.
 #
-# Runs in orc-system (where k-orc-clouds-yaml lives). Applied by the chainsaw
-# script via `kubectl apply -f` after the chain has converged, and deleted in
-# the test's `finally` block.
+# CC-0117, REQ-011: the orc-system copy of k-orc-clouds-yaml was removed; the
+# operator now materialises the per-CR k-orc-clouds-yaml Secret ONLY into the
+# ControlPlane namespace (openstack). This Job therefore runs in the
+# ControlPlane namespace `openstack` and mounts the operator-owned per-CR
+# k-orc-clouds-yaml Secret materialised there. Applied by the chainsaw script
+# via `kubectl apply -f` after the chain has converged, and deleted in the
+# test's `finally` block.
 #
 # DECISION (CC-0110): image is the repo's own tempest image, which bundles the
 # OpenStack client. The kind-E2E fast-follow that deploys the c5c3 + K-ORC stack
@@ -23,7 +27,7 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: cp-openstack-verify
-  namespace: orc-system
+  namespace: openstack
 spec:
   backoffLimit: 1
   template:

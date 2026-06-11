@@ -3,15 +3,14 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Kustomization for External Secrets Operator (ESO) resources.
-# Includes the ClusterSecretStore that connects to OpenBao and all
-# ExternalSecret resources that materialise secrets into the openstack
-# namespace.
-# Feature: CC-0009
+# Ships ONLY the ClusterSecretStore that connects to OpenBao. The static
+# ExternalSecret resources that used to materialise secrets into the openstack
+# namespace are gone: all ExternalSecrets are now operator-projected per
+# ControlPlane (c5c3 operator, CC-0117), or — for standalone/kind flows — live
+# in the kind overlay (deploy/kind/infrastructure/).
+# Feature: CC-0009, CC-0117
 ---
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
   - clustersecretstore.yaml
-  - externalsecrets/keystone-admin.yaml
-  - externalsecrets/mariadb-root-password.yaml
-  - externalsecrets/k-orc-clouds-yaml.yaml

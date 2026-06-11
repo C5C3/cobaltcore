@@ -69,7 +69,7 @@ created.
 | `openstack` | Infrastructure instance CRs (MariaDB cluster, Memcached cluster) |
 | `openbao-system` | OpenBao HA Raft cluster |
 | `c5c3-system` | c5c3-operator controller; the `ControlPlane` and its child CRs are created in the `ControlPlane`'s own namespace |
-| `orc-system` | K-ORC (OpenStack Resource Controller) and the `k-orc-clouds-yaml` admin Secret |
+| `orc-system` | K-ORC (OpenStack Resource Controller) and its installer resources |
 
 The `chaos-mesh` namespace is **not** part of the production base. It is created
 inline by the kind-only opt-in overlay at `deploy/kind/chaos-mesh/` when
@@ -450,8 +450,10 @@ The upstream installer has no global-cloud-config knob (the previous HelmRelease
 authenticates **per resource** via each CR's `CloudCredentialsRef`, resolved in the
 CR's own (control-plane) namespace, so the credential chain below materialises a
 co-located `k-orc-clouds-yaml` copy there via the per-ControlPlane ExternalSecret the
-c5c3-operator creates and owns (`reconcileKORC`). The `orc-system` copy
-remains a static manifest for any global default K-ORC mounts. See
+c5c3-operator creates and owns (`reconcileKORC`). K-ORC therefore needs no global
+default `clouds.yaml` mount, so there is no longer an `orc-system` copy — the static
+manifest that previously declared it has been removed. The `orc-system` Namespace
+itself remains because the K-ORC installer's own resources land there. See
 [Admin Credential Chain](#admin-credential-chain) below.
 
 ### c5c3-operator
@@ -591,7 +593,19 @@ by the mariadb-operator. MaxScale is enabled with 2 replicas to provide intellig
 routing and read/write splitting across the Galera nodes.
 
 The root password is sourced from a Kubernetes Secret (`mariadb-root-password`, key
-`password`) — secret provisioning is handled by the External Secrets Operator integration.
+`password`). The production stack ships **no** `ExternalSecret` for it — a non-kind Flux
+MariaDB baseline is expected to provide the `mariadb-root-password` Secret itself. On
+kind, a kind-only overlay shim
+(`deploy/kind/infrastructure/mariadb-root-password-externalsecret.yaml`) materialises it
+from the OpenBao path `infrastructure/mariadb` so the single-node Quick Start stays
+self-contained.
+
+> **Non-Goal — operator-owned root credential.** Unlike the Keystone admin password
+> (which the c5c3-operator now projects per ControlPlane as a dedicated
+> `ExternalSecret`), the MariaDB **root** password is deliberately **not**
+> operator-owned. Provisioning it is left to the MariaDB baseline — the kind shim above,
+> or a production Flux baseline — keeping the operator off the database superuser
+> credential path.
 
 **Services:**
 
@@ -672,14 +686,13 @@ shipped by the [memcached-operator](https://github.com/C5C3/memcached-operator) 
 
 The c5c3-operator mints a single restricted admin Application Credential per cluster and
 mirrors it to OpenBao, from where the External Secrets Operator materialises it as the
-`clouds.yaml` Secret that K-ORC authenticates with. The chain has two
-`ExternalSecret`s materialising the Kubernetes Secret `k-orc-clouds-yaml`, but only
-one of them is a static manifest:
+`clouds.yaml` Secret that K-ORC authenticates with. The chain materialises the
+Kubernetes Secret `k-orc-clouds-yaml` via a single `ExternalSecret`, created per
+ControlPlane by the operator:
 
 | Namespace | Source | Purpose |
 | --- | --- | --- |
 | `openstack` (control-plane) | **operator-created per-CR** (`reconcileKORC` → `ensureKORCCloudsYAMLExternalSecret`) | **C1 co-location** — the c5c3-operator creates the K-ORC `ApplicationCredential`/`Service`/`Endpoint` CRs in the control-plane namespace, and K-ORC resolves each CR's `CloudCredentialsRef` Secret in that *same* namespace, so the admin clouds.yaml must live here for K-ORC to authenticate. This is the copy the `AdminCredentialReady` gate waits on. |
-| `orc-system` | **static manifest** — `deploy/eso/externalsecrets/k-orc-clouds-yaml.yaml` | The copy K-ORC mounts as its global default `clouds.yaml` (off the credential critical path — see the [K-ORC section](#k-orc-openstack-resource-controller)). |
 
 **Control-plane copy (operator-created per ControlPlane)** — the
 control-plane-namespace `k-orc-clouds-yaml` ExternalSecret is **not** a static
@@ -695,12 +708,13 @@ Because both the ExternalSecret name and the OpenBao key are derived per-CR, an
 arbitrarily named ControlPlane resolves to the correct key with **no manifest
 edit** — the operator now resolves what was previously deferred for this ExternalSecret.
 
-**`orc-system` copy (static manifest)** — `deploy/eso/externalsecrets/k-orc-clouds-yaml.yaml`
-now declares **only** the `orc-system` `ExternalSecret` (`external-secrets.io/v1`,
-store `openbao-cluster-store`, `creationPolicy: Owner`, `refreshInterval: 1h`),
-K-ORC's global default `clouds.yaml` mount. For the default deployment identity
-(ControlPlane `openstack/controlplane`) it reads the per-CR default key
-`openstack/keystone/openstack/controlplane/admin/app-credential`.
+**No `orc-system` copy** — the static `deploy/eso/externalsecrets/k-orc-clouds-yaml.yaml`
+manifest that previously declared K-ORC's global default `clouds.yaml` mount has been
+removed. K-ORC authenticates **per resource** via each CR's `CloudCredentialsRef`,
+resolved in the control-plane namespace, so no cluster-global default mount is needed.
+The `orc-system` Namespace itself is retained (co-declared in
+`deploy/flux-system/namespaces.yaml`) because the K-ORC installer's own resources land
+there — it no longer hosts a `clouds.yaml` copy.
 
 On a fresh cluster the bootstrap `clouds.yaml` at the per-CR OpenBao key is seeded
 by the **operator** (`reconcileKORC` → `seedBootstrapCloudsYAML`, write-if-empty):
@@ -829,11 +843,12 @@ for the operators to finish installing and retry.
 > works.
 
 > **Expected transient failure:** The MariaDB cluster references a
-> `rootPasswordSecretKeyRef` Secret (`mariadb-root-password`) that is provisioned by
-> the External Secrets Operator integration. Until that Secret exists, the
+> `rootPasswordSecretKeyRef` Secret (`mariadb-root-password`). On kind, the overlay
+> shim materialises it from OpenBao via the External Secrets Operator; in production a
+> Flux MariaDB baseline must provide it. Until that Secret exists, the
 > mariadb-operator will enter a failed reconciliation loop with
 > `Secret "mariadb-root-password" not found` errors. This is expected and resolves
-> automatically once OpenBao bootstrap is applied.
+> automatically once the Secret is provisioned.
 
 ### Validate manifests locally
 

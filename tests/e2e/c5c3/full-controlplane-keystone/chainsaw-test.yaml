@@ -23,8 +23,9 @@
 #                        ("…-admin-app-credential-backup") → OpenBao →
 #                        ExternalSecret "k-orc-clouds-yaml" Ready in the
 #                        control-plane namespace (this is the AdminCredentialReady
-#                        gate after the C1 co-location fix; a copy also lands in
-#                        orc-system for K-ORC's globalCloudConfig mount);
+#                        gate after the C1 co-location fix; the clouds.yaml
+#                        ExternalSecret is operator-created per-CR in the
+#                        control-plane namespace only);
 #                        AdminCredentialReady=True.
 #                        (CC-0114, REQ-012: the control-plane-namespace
 #                        k-orc-clouds-yaml ExternalSecret is now OPERATOR-CREATED
@@ -85,7 +86,15 @@
 # Wiring K-ORC + the c5c3-operator into kind E2E so this suite EXERCISES rather
 # than skips remains the documented CC-0110 fast-follow (REQ-022/REQ-023).
 #
-# Feature: CC-0110, REQ-028, CC-0114 REQ-012
+# ── NOTE: CC-0117 operator-projected ExternalSecret (CC-0117, REQ-011) ────────
+# The orc-system copy of the k-orc-clouds-yaml ExternalSecret/Secret was removed:
+# the operator now materialises the per-CR k-orc-clouds-yaml Secret ONLY into the
+# ControlPlane namespace (openstack). Link 4 therefore no longer waits for an
+# orc-system copy, and the Link 7b verify Job + its diagnostics moved to the
+# ControlPlane namespace. The K-ORC controller itself still runs in orc-system,
+# so the controller-log diagnostic in the catch block stays on that namespace.
+#
+# Feature: CC-0110, REQ-028, CC-0114 REQ-012, CC-0117 REQ-011
 ---
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -112,7 +121,6 @@ spec:
 
           CP_NS=openstack
           CP_NAME=controlplane-keystone
-          ORC_NS=orc-system
           KEYSTONE_CR="${CP_NAME}-keystone"
           AC_NAME="${CP_NAME}-admin-app-credential"
           PUSH_SECRET="${CP_NAME}-admin-app-credential-backup"
@@ -245,9 +253,9 @@ spec:
           # ── Link 4: credential chain → k-orc-clouds-yaml (control-plane ns) ─
           # C1: AdminCredentialReady gates on the clouds.yaml ExternalSecret in the
           # CONTROL-PLANE namespace (co-located with the K-ORC CRs K-ORC resolves
-          # CloudCredentialsRef against), not the orc-system copy. Assert the
-          # gate-relevant CP_NS ExternalSecret/Secret first, then confirm the
-          # orc-system copy K-ORC's globalCloudConfig mounts also materialised.
+          # CloudCredentialsRef against). CC-0117, REQ-011: the orc-system copy was
+          # removed, so the clouds.yaml ExternalSecret/Secret now exists in the
+          # CP_NS only — assert the gate-relevant CP_NS ExternalSecret/Secret here.
           # CC-0114, REQ-012: the CP_NS k-orc-clouds-yaml ExternalSecret and the
           # bootstrap password clouds.yaml are now seeded/created by the
           # c5c3-operator during reconcileKORC (seedBootstrapCloudsYAML +
@@ -268,7 +276,6 @@ spec:
           wait_ready_condition pushsecret "${PUSH_SECRET}" "${CP_NS}" 300
           wait_ready_condition externalsecret "${CLOUDS_SECRET}" "${CP_NS}" 300
           kubectl get secret "${CLOUDS_SECRET}" -n "${CP_NS}" >/dev/null
-          wait_ready_condition externalsecret "${CLOUDS_SECRET}" "${ORC_NS}" 300
           wait_cp_condition AdminCredentialReady 600
 
           # ── Link 5: catalog (K-ORC Service + Endpoint, owned) ──────────────
@@ -300,16 +307,16 @@ spec:
           # Authenticate with the materialised admin clouds.yaml (the minted,
           # OpenBao-round-tripped application credential) and prove a token can
           # be issued and the identity service appears in the catalog. The Job
-          # manifest lives in a sibling fixture (01-openstack-verify-job.yaml) so
-          # the orc-system Job lands in its own namespace untouched by chainsaw's
-          # test-namespace injection.
+          # manifest lives in a sibling fixture (01-openstack-verify-job.yaml); it
+          # runs in the ControlPlane namespace and mounts the per-CR
+          # k-orc-clouds-yaml Secret materialised there (CC-0117, REQ-011).
           echo "== openstack token issue + catalog list (cloud: admin) =="
-          kubectl delete job cp-openstack-verify -n "${ORC_NS}" --ignore-not-found
+          kubectl delete job cp-openstack-verify -n "${CP_NS}" --ignore-not-found
           kubectl apply -f 01-openstack-verify-job.yaml
-          kubectl wait --for=condition=complete job/cp-openstack-verify -n "${ORC_NS}" --timeout=5m
+          kubectl wait --for=condition=complete job/cp-openstack-verify -n "${CP_NS}" --timeout=5m
           echo "=== openstack client output ==="
-          kubectl logs -n "${ORC_NS}" job/cp-openstack-verify
-          kubectl logs -n "${ORC_NS}" job/cp-openstack-verify | grep -qi "identity" \
+          kubectl logs -n "${CP_NS}" job/cp-openstack-verify
+          kubectl logs -n "${CP_NS}" job/cp-openstack-verify | grep -qi "identity" \
             || { echo "ERROR: identity (keystone) service not listed in the catalog"; exit 1; }
           echo "OK: token issued and identity service catalogued — full chain verified."
     catch:
@@ -326,19 +333,20 @@ spec:
           kubectl get applicationcredentials.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud -n openstack 2>&1 || true
           echo "=== Credential chain (PushSecret / ExternalSecret) ==="
           kubectl describe pushsecret controlplane-keystone-admin-app-credential-backup -n openstack 2>&1 || true
-          kubectl describe externalsecret k-orc-clouds-yaml -n orc-system 2>&1 || true
+          kubectl describe externalsecret k-orc-clouds-yaml -n openstack 2>&1 || true
           echo "=== c5c3-operator logs (last 200 lines) ==="
           kubectl logs -n c5c3-system -l app.kubernetes.io/name=c5c3-operator --tail=200 --all-containers 2>&1 || true
           echo "=== K-ORC controller logs (last 100 lines) ==="
           kubectl logs -n orc-system -l app.kubernetes.io/name=openstack-resource-controller --tail=100 --all-containers 2>&1 || true
           echo "=== openstack verify Job logs ==="
-          kubectl logs -n orc-system job/cp-openstack-verify --tail=100 2>&1 || true
+          kubectl logs -n openstack job/cp-openstack-verify --tail=100 2>&1 || true
           echo "=== Events (openstack ns, last 30) ==="
           kubectl get events -n openstack --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
     finally:
     - script:
         shell: bash
         content: |
-          # Best-effort cleanup of the orc-system verify Job (the ControlPlane
-          # and its owned children are GC'd by chainsaw's namespace teardown).
-          kubectl delete job cp-openstack-verify -n orc-system --ignore-not-found 2>&1 || true
+          # Best-effort cleanup of the verify Job, which now lives in the
+          # openstack namespace (the ControlPlane and its owned children are GC'd
+          # by chainsaw's namespace teardown).
+          kubectl delete job cp-openstack-verify -n openstack --ignore-not-found 2>&1 || true

@@ -126,9 +126,16 @@ func (r *ControlPlaneReconciler) reconcileKeystone(ctx context.Context, cp *c5c3
 
 		keystone.Spec.Cache = cp.Spec.Infrastructure.Cache
 
-		// Bootstrap admin password is delivered via the K-ORC admin credential
-		// Secret so Keystone and K-ORC agree on the admin password source.
-		keystone.Spec.Bootstrap.AdminPasswordSecretRef = cp.Spec.KORC.AdminCredential.PasswordSecretRef
+		// CC-0117 (REQ-005): in managed mode the operator OWNS the admin password —
+		// reconcileAdminPassword projects it from OpenBao into a per-ControlPlane
+		// Secret named adminPasswordSecretName(cp). Point the projected Keystone CR's
+		// bootstrap admin-password ref (via effectiveAdminPasswordSecretRef) at that
+		// operator-owned Secret (key "password") so Keystone consumes the scoped
+		// credential rather than the cp-level default name. This reassigns only the
+		// projected child's ref value; cp.Spec is left untouched. Brownfield
+		// (Database.ClusterRef == nil) leaves the user-supplied ref in place — the
+		// user owns that Secret out-of-band.
+		keystone.Spec.Bootstrap.AdminPasswordSecretRef = effectiveAdminPasswordSecretRef(cp)
 		keystone.Spec.Bootstrap.Region = cp.Spec.Region
 
 		// Project external exposure onto the Keystone CR's spec.gateway, then

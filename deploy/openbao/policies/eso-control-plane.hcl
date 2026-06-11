@@ -8,6 +8,9 @@
 # kubernetes/control-plane auth mount.
 # Feature: CC-0009
 
+# CC-0117 verification: the operator-projected admin-password ExternalSecret
+# (c5c3 reconcileAdminPassword) reads `bootstrap/{namespace}/{keystone}/admin`
+# under this existing bootstrap read grant — read-only, no widening required.
 path "kv-v2/data/bootstrap/*" {
   capabilities = ["read"]
 }

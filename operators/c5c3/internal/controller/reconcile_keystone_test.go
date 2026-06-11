@@ -166,8 +166,8 @@ func TestReconcileKeystone_ClusterRefsDerivedFromInfrastructure(t *testing.T) {
 	g.Expect(k.Spec.Database.Database).To(Equal("keystone"))
 	g.Expect(k.Spec.Cache.ClusterRef).NotTo(BeNil())
 	g.Expect(k.Spec.Cache.ClusterRef.Name).To(Equal("openstack-memcached"))
-	// Admin password derived from the K-ORC admin credential.
-	g.Expect(k.Spec.Bootstrap.AdminPasswordSecretRef.Name).To(Equal("keystone-admin"))
+	// Admin password derived from the operator-projected per-CP Secret in managed mode.
+	g.Expect(k.Spec.Bootstrap.AdminPasswordSecretRef.Name).To(Equal(adminPasswordSecretName(cp)))
 	g.Expect(k.Spec.Bootstrap.Region).To(Equal("RegionOne"))
 }
 
@@ -447,4 +447,56 @@ func TestReconcileKeystone_BrownfieldLeavesSuppliedSecretRef(t *testing.T) {
 	g.Expect(k.Spec.Database.SecretRef.Name).To(Equal("user-supplied-db-secret"),
 		"brownfield mode must leave the user-supplied secretRef untouched")
 	g.Expect(k.Spec.Database.SecretRef.Key).To(Equal("pw"))
+}
+
+func TestReconcileKeystone_ManagedOverridesAdminPasswordSecretRef(t *testing.T) {
+	// In MANAGED mode (Database.ClusterRef != nil) the projected Keystone CR's
+	// bootstrap admin-password ref must point at the operator-owned per-ControlPlane
+	// admin-password Secret, not the cp-level default. The override must not
+	// mutate cp.Spec (CC-0117, REQ-005).
+	g := NewGomegaWithT(t)
+
+	s := keystoneTestScheme(t)
+	cp := keystoneControlPlane()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileKeystone(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	k := getProjectedKeystone(t, c, cp)
+	g.Expect(k.Spec.Bootstrap.AdminPasswordSecretRef.Name).To(Equal(adminPasswordSecretName(cp)),
+		"managed mode must point the child at the per-ControlPlane admin-password Secret")
+	g.Expect(k.Spec.Bootstrap.AdminPasswordSecretRef.Key).To(Equal("password"))
+	// The override must not mutate the source spec.
+	g.Expect(cp.Spec.KORC.AdminCredential.PasswordSecretRef.Name).To(Equal("keystone-admin"),
+		"the admin-password ref override must not mutate cp.Spec")
+}
+
+func TestReconcileKeystone_BrownfieldLeavesSuppliedAdminPasswordRef(t *testing.T) {
+	// In BROWNFIELD mode (Database.ClusterRef == nil) the user owns the admin-password
+	// Secret out-of-band, so the operator must leave the supplied ref untouched
+	// (CC-0117, REQ-005).
+	g := NewGomegaWithT(t)
+
+	s := keystoneTestScheme(t)
+	cp := keystoneControlPlane()
+	// Keep the InfrastructureReady=True condition set by keystoneControlPlane so
+	// the gate passes; only replace the database with a brownfield spec.
+	cp.Spec.Infrastructure.Database = commonv1.DatabaseSpec{
+		Host:      "db.example.com",
+		Database:  "keystone",
+		SecretRef: commonv1.SecretRefSpec{Name: "user-supplied-db-secret", Key: "pw"},
+	}
+	cp.Spec.KORC.AdminCredential.PasswordSecretRef = commonv1.SecretRefSpec{Name: "user-supplied-admin", Key: "pw"}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileKeystone(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	k := getProjectedKeystone(t, c, cp)
+	g.Expect(k.Spec.Bootstrap.AdminPasswordSecretRef.Name).To(Equal("user-supplied-admin"),
+		"brownfield mode must leave the user-supplied admin-password ref untouched")
+	g.Expect(k.Spec.Bootstrap.AdminPasswordSecretRef.Key).To(Equal("pw"))
 }

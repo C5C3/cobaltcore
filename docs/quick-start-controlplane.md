@@ -56,7 +56,9 @@ their well-known names — `openstack-db` (managed MariaDB), `openstack-memcache
 (managed Memcached), `keystone-db` (DB-credential placeholder — in managed mode
 the operator projects a per-ControlPlane `{name}-keystone-db-credentials`
 Secret and points the Keystone CR at it instead), `keystone-admin` / `password`
-(admin password Secret and key), `k-orc-clouds-yaml` with cloud entry `admin`
+(admin-password placeholder — in managed mode the operator projects a per-ControlPlane
+`{name}-keystone-admin-credentials` Secret and points the Keystone CR at it instead),
+`k-orc-clouds-yaml` with cloud entry `admin`
 (K-ORC clouds.yaml) — which match the Secrets and clusters the infrastructure
 layer (Step 2) seeds. The c5c3-operator seeds the K-ORC bootstrap
 `clouds.yaml` per-CR, deriving the in-cluster Keystone auth URL from the CR's own
@@ -133,7 +135,9 @@ spec:
         cloudName: admin             # entry in the operator-materialised k-orc-clouds-yaml Secret
         secretName: k-orc-clouds-yaml
       passwordSecretRef:
-        name: keystone-admin         # admin password, seeded by infra via ESO
+        name: keystone-admin         # spec-level/brownfield default — in managed mode the
+                                     # operator projects {name}-keystone-admin-credentials
+                                     # and points the Keystone child at it instead
         key: password
       applicationCredential:
         rotation:
@@ -178,12 +182,18 @@ Then issue a token with the admin password:
 ```bash
 export OS_AUTH_URL=https://keystone.127-0-0-1.nip.io:8443/v3
 export OS_USERNAME=admin
-export OS_PASSWORD=$(kubectl get secret keystone-admin -n openstack -o jsonpath='{.data.password}' | base64 -d)
+export OS_PASSWORD=$(kubectl get secret controlplane-keystone-admin-credentials -n openstack -o jsonpath='{.data.password}' | base64 -d)
 export OS_PROJECT_NAME=admin
 export OS_USER_DOMAIN_NAME=Default
 export OS_PROJECT_DOMAIN_NAME=Default
 openstack --insecure token issue
 ```
+
+> The admin password is read from the operator-owned per-ControlPlane Secret
+> `controlplane-keystone-admin-credentials` (named `{ControlPlane name}-keystone-admin-credentials`).
+> In managed mode the c5c3-operator always projects this Secret, so the command holds
+> for any identity — if you set `CONTROLPLANE_NAME=foo` in Step 2, read
+> `foo-keystone-admin-credentials` instead.
 
 > With the default `KIND_HOST_PORT=443` use `https://keystone.127-0-0-1.nip.io/v3`
 > and drop the `publicEndpoint` line from the CR in Step 3.

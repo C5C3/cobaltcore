@@ -1184,11 +1184,12 @@ main() {
   # CC-0114: the K-ORC clouds.yaml is now seeded by the operator (reconcileKORC →
   # seedBootstrapCloudsYAML), which also derives the in-cluster auth_url itself, so
   # the shell stack no longer seeds it or exports a K-ORC auth_url override.
-  # (The static keystone-admin ExternalSecret is pinned to the default identity; a
-  # CONTROLPLANE_NAME override also requires editing that manifest until issue #412
-  # replaces it with per-CR templating. The K-ORC clouds.yaml ExternalSecret is now
-  # created per-CR by the operator (CC-0114 supersedes issue #412 for it) and needs
-  # no manifest edit.)
+  # (The admin-password ExternalSecret is now operator-projected per-ControlPlane
+  # (reconcileAdminPassword, CC-0117); the kind overlay shim
+  # (deploy/kind/infrastructure/keystone-admin-externalsecret.yaml) pins only the
+  # default identity, so a CONTROLPLANE_NAME override no longer requires editing
+  # that manifest on the ControlPlane path. The K-ORC clouds.yaml ExternalSecret is
+  # likewise created per-CR by the operator (CC-0114) and needs no manifest edit.)
   if [[ "${WITH_CONTROLPLANE}" == "true" ]]; then
     export KORC_CONTROLPLANES="openstack/${CONTROLPLANE_NAME}"
   fi

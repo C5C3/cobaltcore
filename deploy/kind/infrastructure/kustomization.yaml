@@ -23,7 +23,15 @@ resources:
   # chaos suites) reference the Secret "keystone-db"; ControlPlane-based
   # deployments use the operator-projected per-ControlPlane ExternalSecret
   # instead, so the production stack ships none (CC-0116).
+  #
+  # keystone-admin and mariadb-root-password are likewise kind-only shims for
+  # standalone flows; production deploy/eso ships none of the three. The admin
+  # password is operator-projected per-ControlPlane by the c5c3 operator
+  # (reconcileAdminPassword, CC-0117); the MariaDB root password is expected
+  # from a non-kind Flux MariaDB baseline (CC-0117).
   - keystone-db-externalsecret.yaml
+  - keystone-admin-externalsecret.yaml
+  - mariadb-root-password-externalsecret.yaml
 
 patches:
   # MariaDB: single replica, no Galera, no MaxScale, standard storage.

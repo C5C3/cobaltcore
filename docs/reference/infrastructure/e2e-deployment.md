@@ -141,6 +141,13 @@ Step 8 ── Wait for ExternalSecrets synced
               mariadb-root-password
 ```
 
+**kind-only ExternalSecret shims.** The `keystone-admin`, `keystone-db`, and
+`mariadb-root-password` ExternalSecrets shown above are **kind-overlay shims**
+(`deploy/kind/infrastructure/`), not part of the production base. The production
+`deploy/eso/` stack ships only the `ClusterSecretStore`: in a ControlPlane-based
+deployment the admin password is projected per ControlPlane by the c5c3-operator, and a
+non-kind Flux MariaDB baseline provides the `mariadb-root-password` Secret itself.
+
 **Why two-phase kustomize?** The base kustomization contains only built-in Kubernetes
 types (Namespaces, HelmRepository, HelmRelease). The infrastructure kustomization
 contains CRD-dependent resources (ClusterIssuer, MariaDB CR, Memcached CR) that require

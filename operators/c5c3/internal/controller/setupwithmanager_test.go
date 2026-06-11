@@ -59,11 +59,27 @@ func mapperControlPlane(name, namespace, secretName string) *c5c3v1alpha1.Contro
 func TestControlPlaneSecretNameExtractor_ReturnsPasswordSecretRefName(t *testing.T) {
 	g := NewGomegaWithT(t)
 
+	// mapperControlPlane sets no Database.ClusterRef, so this is the BROWNFIELD
+	// case: the effective admin-password Secret is the user-supplied passwordSecretRef.
 	cp := mapperControlPlane("cp", "default", "keystone-admin")
 	got := controlPlaneSecretNameExtractor(cp)
 
 	g.Expect(got).To(ConsistOf("keystone-admin"),
 		"extractor must return the admin passwordSecretRef name")
+}
+
+func TestControlPlaneSecretNameExtractor_ManagedReturnsEffectiveName(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	// Managed mode (Database.ClusterRef != nil): the operator projects the admin
+	// password into a per-ControlPlane Secret, so the indexed name must be the
+	// operator-owned adminPasswordSecretName(cp), NOT the spec passwordSecretRef.
+	cp := mapperControlPlane("cp", "default", "keystone-admin")
+	cp.Spec.Infrastructure.Database.ClusterRef = &corev1.LocalObjectReference{Name: "openstack-db"}
+	got := controlPlaneSecretNameExtractor(cp)
+
+	g.Expect(got).To(ConsistOf(adminPasswordSecretName(cp)),
+		"in managed mode the extractor must index the operator-owned per-CP admin-password Secret name")
 }
 
 func TestControlPlaneSecretNameExtractor_EmptyWhenUnset(t *testing.T) {

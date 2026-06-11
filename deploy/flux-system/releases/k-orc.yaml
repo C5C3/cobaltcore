@@ -12,17 +12,19 @@
 # it. The path has no kustomization.yaml, so the kustomize-controller generates one
 # over all manifests in ./dist and applies install.yaml verbatim. install.yaml
 # already declares the orc-system Namespace and namespaces every resource into it,
-# so no spec.targetNamespace is set (orc-system is also declared in
-# deploy/flux-system/namespaces.yaml, which co-manages it for the ESO ExternalSecret
-# that must exist before this Kustomization reconciles).
+# so no spec.targetNamespace is set (the installer already declares + namespaces
+# orc-system; orc-system is also declared in deploy/flux-system/namespaces.yaml,
+# where we co-declare it — because the K-ORC installer's own resources land there —
+# so the Namespace exists before this Kustomization reconciles, CC-0117).
 #
 # Credentials: the previous HelmRelease set globalCloudConfig.secretName, the chart
 # value for K-ORC's GLOBAL default clouds.yaml mount. The upstream installer has no
-# such knob, and it is not on the critical path: per CC-0110 C1 the c5c3-operator's
-# K-ORC CRs each carry a per-resource CloudCredentialsRef that K-ORC resolves in the
-# CR's OWN (control-plane) namespace. The orc-system copy of k-orc-clouds-yaml
-# (deploy/eso/externalsecrets/k-orc-clouds-yaml.yaml) remains for any global default
-# K-ORC mounts; both copies read the same OpenBao path.
+# such knob. There is NO static orc-system clouds.yaml copy anymore — the static
+# deploy/eso/externalsecrets/k-orc-clouds-yaml.yaml has been removed (CC-0117).
+# K-ORC needs no global default clouds.yaml mount because (per CC-0110 C1) every
+# c5c3-operator K-ORC CR carries a per-resource CloudCredentialsRef that K-ORC
+# resolves in the CR's OWN (control-plane) namespace; the upstream installer ships
+# no globalCloudConfig knob.
 ---
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization

@@ -100,6 +100,19 @@ func invariantControlPlane() *c5c3v1alpha1.ControlPlane {
 	return cp
 }
 
+// invariantAdminPasswordSecret returns the admin-password Secret the managed
+// invariantControlPlane's credential chain reads. invariantControlPlane is MANAGED
+// (Database.ClusterRef != nil), so the effective admin-password ref (CC-0117,
+// REQ-005) is the operator-owned per-ControlPlane Secret adminPasswordSecretName(cp)
+// — NOT the cp-level "keystone-admin" of the brownfield adminPasswordSecret() helper.
+// readAdminPassword/computeAdminPasswordHash resolve this Secret to the cleartext.
+func invariantAdminPasswordSecret(cp *c5c3v1alpha1.ControlPlane) *corev1.Secret {
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: adminPasswordSecretName(cp), Namespace: cp.Namespace},
+		Data:       map[string][]byte{"password": []byte(testAdminPassword)},
+	}
+}
+
 // availableAC pre-seeds an Available ApplicationCredential whose stamped password
 // hash already matches, so reconcileKORC flips KORCReady=True on its single pass
 // (a missing/mismatched hash would instead trigger a delete+recreate re-mint).
@@ -148,7 +161,7 @@ func TestCredentialInvariant_MintedACIsRestricted(t *testing.T) {
 	s := invariantScheme(t)
 	cp := invariantControlPlane()
 	c := fake.NewClientBuilder().WithScheme(s).
-		WithObjects(cp, adminPasswordSecret(), availableAC(cp), readyCloudsYamlES(cp)).
+		WithObjects(cp, invariantAdminPasswordSecret(cp), availableAC(cp), readyCloudsYamlES(cp)).
 		Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
@@ -167,7 +180,7 @@ func TestCredentialInvariant_AppCredentialSecretAbsentFromKeystoneSpec(t *testin
 	s := invariantScheme(t)
 	cp := invariantControlPlane()
 	c := fake.NewClientBuilder().WithScheme(s).
-		WithObjects(cp, adminPasswordSecret(), availableAC(cp), readyCloudsYamlES(cp)).
+		WithObjects(cp, invariantAdminPasswordSecret(cp), availableAC(cp), readyCloudsYamlES(cp)).
 		Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
@@ -186,8 +199,9 @@ func TestCredentialInvariant_AppCredentialSecretAbsentFromKeystoneSpec(t *testin
 	// bootstrap — that is DISTINCT and allowed. Assert the allowed reference is
 	// present (and distinct) so the test cannot pass by Keystone referencing
 	// neither secret.
-	g.Expect(k.Spec.Bootstrap.AdminPasswordSecretRef.Name).To(Equal("keystone-admin"),
-		"the admin PASSWORD secret reference is allowed and expected for bootstrap")
+	g.Expect(k.Spec.Bootstrap.AdminPasswordSecretRef.Name).To(Equal(adminPasswordSecretName(cp)),
+		"the admin PASSWORD secret reference is allowed and expected for bootstrap "+
+			"(operator-projected per-CP Secret in managed mode, CC-0117 REQ-005)")
 	g.Expect(k.Spec.Bootstrap.AdminPasswordSecretRef.Name).NotTo(Equal(appCredSecret),
 		"the bootstrap password secret MUST be distinct from the minted app-credential secret")
 }
@@ -198,7 +212,7 @@ func TestCredentialInvariant_AppCredentialSecretReferencedOnlyByPushSecretAndAC(
 	s := invariantScheme(t)
 	cp := invariantControlPlane()
 	c := fake.NewClientBuilder().WithScheme(s).
-		WithObjects(cp, adminPasswordSecret(), availableAC(cp), readyCloudsYamlES(cp)).
+		WithObjects(cp, invariantAdminPasswordSecret(cp), availableAC(cp), readyCloudsYamlES(cp)).
 		Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
@@ -238,7 +252,7 @@ func TestCredentialInvariant_NoWorkloadReferencesAppCredentialSecret(t *testing.
 	s := invariantScheme(t)
 	cp := invariantControlPlane()
 	c := fake.NewClientBuilder().WithScheme(s).
-		WithObjects(cp, adminPasswordSecret(), availableAC(cp), readyCloudsYamlES(cp)).
+		WithObjects(cp, invariantAdminPasswordSecret(cp), availableAC(cp), readyCloudsYamlES(cp)).
 		Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
@@ -273,7 +287,7 @@ func TestCredentialInvariant_PasswordCloudConfinedToAC(t *testing.T) {
 	s := invariantScheme(t)
 	cp := invariantControlPlane()
 	c := fake.NewClientBuilder().WithScheme(s).
-		WithObjects(cp, adminPasswordSecret(), availableAC(cp), readyCloudsYamlES(cp)).
+		WithObjects(cp, invariantAdminPasswordSecret(cp), availableAC(cp), readyCloudsYamlES(cp)).
 		Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 

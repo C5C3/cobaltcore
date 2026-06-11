@@ -150,6 +150,16 @@ func integrationManagedControlPlane(name, namespace string) *c5c3v1alpha1.Contro
 					CloudCredentialsRef: c5c3v1alpha1.CloudCredentialsRef{
 						CloudName: "admin",
 					},
+					// DECISION (CC-0117, task 4.1): the spec-level ref is kept at the canonical
+					// brownfield default "keystone-admin" (== DefaultAdminPasswordSecretName)
+					// rather than renamed to adminPasswordSecretName(cp). In managed mode
+					// effectiveAdminPasswordSecretRef ALWAYS overrides to adminPasswordSecretName(cp)
+					// regardless of this value, so keeping it distinct makes the projected-child
+					// admin-ref assertions below genuinely prove the override (the projected name
+					// differs from this spec ref) — exactly mirroring the DB-credential fixture,
+					// whose spec ref stays "keystone-db" != dbCredentialSecretName(cp). The
+					// pre-created cleartext Secret is named adminPasswordSecretName(cp) (the name
+					// readAdminPassword resolves via the effective ref). Reviewer: please verify.
 					PasswordSecretRef: commonv1.SecretRefSpec{Name: "keystone-admin", Key: "password"},
 				},
 			},
@@ -297,6 +307,38 @@ func simulatePushSecretSyncedWhenPresent(t testing.TB, ctx context.Context, c cl
 		"admin app-credential PushSecret should be created and synced")
 }
 
+// simulateAdminPasswordExternalSecretSyncWhenPresent waits for the operator-created
+// per-ControlPlane admin-password ExternalSecret (named adminPasswordSecretName(cp)
+// in childNamespace(cp)), asserts it reads this CR's keystone-NAME-scoped OpenBao
+// path (adminPasswordRemoteKeyFor) and is controller-owned by the ControlPlane, then
+// simulates the ESO sync. SimulateExternalSecretSync patches ONLY the ExternalSecret
+// .status — it never creates the backing Secret — so the pre-created plain Secret
+// (named adminPasswordSecretName(cp)) remains the cleartext source readAdminPassword
+// reads. This is the admin-password analog of the inline DB-credential ExternalSecret
+// sync, gating the Keystone projection on AdminPasswordReady (CC-0117, REQ-003).
+func simulateAdminPasswordExternalSecretSyncWhenPresent(
+	t testing.TB, ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane,
+) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+
+	es := &esov1.ExternalSecret{}
+	g.Eventually(func() error {
+		return c.Get(ctx, client.ObjectKey{Namespace: childNamespace(cp), Name: adminPasswordSecretName(cp)}, es)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+		"operator must create the per-CP admin password ExternalSecret")
+	g.Expect(es.Spec.Data).NotTo(BeEmpty(), "admin password ExternalSecret must declare Data entries")
+	g.Expect(es.Spec.Data[0].RemoteRef.Key).To(Equal(adminPasswordRemoteKeyFor(cp)),
+		"admin password ExternalSecret must read this CR's keystone-name-scoped OpenBao path (CC-0117, REQ-002)")
+	owner := metav1.GetControllerOf(es)
+	g.Expect(owner).NotTo(BeNil(), "admin password ExternalSecret must be controller-owned by the ControlPlane")
+	g.Expect(owner.Kind).To(Equal("ControlPlane"))
+	g.Expect(owner.Name).To(Equal(cp.Name))
+	g.Expect(simulators.SimulateExternalSecretSync(ctx, c,
+		client.ObjectKey{Namespace: childNamespace(cp), Name: adminPasswordSecretName(cp)})).
+		To(Succeed(), "simulate per-CP admin password ExternalSecret sync")
+}
+
 // TestIntegration_FullReconcile_ManagedToReady drives a managed-mode ControlPlane
 // through every sub-reconciler to the aggregate Ready=True, simulating each
 // external dependency's readiness in dependency order. It is the single primary
@@ -311,16 +353,22 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-controlplane-"}}
 	g.Expect(c.Create(ctx, ns)).To(Succeed(), "create test namespace")
 
-	// Admin password Secret the KORC sub-reconciler hashes to drive the mint
-	// (read from cp.Namespace, key "password").
+	// Create the ControlPlane CR (the defaulting webhook fills region etc.).
+	cp := integrationManagedControlPlane("cp", ns.Name)
+
+	// Admin password Secret the KORC sub-reconciler hashes to drive the mint. In
+	// managed mode readAdminPassword resolves the operator-owned per-CP name
+	// (effectiveAdminPasswordSecretRef -> adminPasswordSecretName(cp)), so pre-create
+	// the cleartext Secret under that name. ESO would own this Secret in production;
+	// envtest has no ESO, and SimulateExternalSecretSync patches only the ES status,
+	// so this plain Secret remains the cleartext source readAdminPassword reads
+	// (CC-0117, REQ-014).
 	adminSecret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "keystone-admin", Namespace: ns.Name},
+		ObjectMeta: metav1.ObjectMeta{Name: adminPasswordSecretName(cp), Namespace: ns.Name},
 		Data:       map[string][]byte{"password": []byte("super-secret-admin-password")},
 	}
 	g.Expect(c.Create(ctx, adminSecret)).To(Succeed(), "create admin password Secret")
 
-	// Create the ControlPlane CR (the defaulting webhook fills region etc.).
-	cp := integrationManagedControlPlane("cp", ns.Name)
 	g.Expect(c.Create(ctx, cp)).To(Succeed(), "create ControlPlane CR")
 	cpKey := types.NamespacedName{Name: cp.Name, Namespace: ns.Name}
 
@@ -344,6 +392,16 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 		client.ObjectKey{Namespace: ns.Name, Name: dbCredentialSecretName(cp)})).
 		To(Succeed(), "simulate per-CP DB credential ExternalSecret sync")
 	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeDBCredentialsReady, metav1.ConditionTrue, itEventuallyTimeout)
+
+	// --- Phase 1.5: AdminPassword (between Infrastructure/DBCredentials and Keystone).
+	// The keystone-operator's SecretsReady gate needs the admin Secret backed by a
+	// Ready ExternalSecret, so reconcileAdminPassword must create+ready the per-CP
+	// admin-password ExternalSecret before the Keystone child is projected. Assert the
+	// operator-rendered shape (keystone-name-scoped OpenBao path + controller owner-ref),
+	// simulate the ESO sync (status-only — the renamed plain Secret above stays the
+	// cleartext source), then AdminPasswordReady flips True (CC-0117, REQ-003, REQ-014). ---
+	simulateAdminPasswordExternalSecretSyncWhenPresent(t, ctx, c, cp)
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeAdminPasswordReady, metav1.ConditionTrue, itEventuallyTimeout)
 
 	// --- Phase 2: Keystone child. ---
 	simulateKeystoneReadyWhenPresent(t, ctx, c, client.ObjectKey{Name: keystoneName(cp), Namespace: ns.Name})
@@ -448,6 +506,14 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	g.Expect(ks.Spec.Database.SecretRef.Name).To(Equal(dbCredentialSecretName(final)),
 		"managed Keystone DB secretRef must point at the operator-owned per-CP DB-credential Secret (CC-0116, REQ-003)")
 	g.Expect(ks.Spec.Database.SecretRef.Key).To(Equal("password"))
+	// Admin-ref analog (CC-0117, REQ-005): in managed mode reconcileKeystone overrides
+	// the projected child's bootstrap admin-password ref via effectiveAdminPasswordSecretRef
+	// to the operator-owned per-CP Secret. Because the spec ref stays "keystone-admin"
+	// (see the fixture DECISION), this differs from the spec ref and genuinely proves
+	// the override fired.
+	g.Expect(ks.Spec.Bootstrap.AdminPasswordSecretRef.Name).To(Equal(adminPasswordSecretName(final)),
+		"managed Keystone admin-password secretRef must point at the operator-owned per-CP admin Secret (CC-0117, REQ-005)")
+	g.Expect(ks.Spec.Bootstrap.AdminPasswordSecretRef.Key).To(Equal("password"))
 	g.Expect(ks.Spec.Cache.ClusterRef).NotTo(BeNil(), "Keystone cache clusterRef must be wired")
 	g.Expect(ks.Spec.Cache.ClusterRef.Name).To(Equal("openstack-memcached"))
 	g.Expect(ks.Spec.PolicyOverrides).NotTo(BeNil(), "merged policy must be projected")
@@ -588,6 +654,11 @@ func TestIntegration_MinimalManagedToReady(t *testing.T) {
 	g.Expect(ks.Spec.Database.SecretRef.Name).To(Equal(dbCredentialSecretName(final)),
 		"managed Keystone DB secretRef must point at the operator-owned per-CP DB-credential Secret (CC-0116, REQ-003)")
 	g.Expect(ks.Spec.Database.SecretRef.Key).To(Equal("password"))
+	// Admin-ref analog (CC-0117, REQ-005): the defaulted managed CR also gets the
+	// operator-owned per-CP admin-password ref projected into the Keystone child.
+	g.Expect(ks.Spec.Bootstrap.AdminPasswordSecretRef.Name).To(Equal(adminPasswordSecretName(final)),
+		"managed Keystone admin-password secretRef must point at the operator-owned per-CP admin Secret (CC-0117, REQ-005)")
+	g.Expect(ks.Spec.Bootstrap.AdminPasswordSecretRef.Key).To(Equal("password"))
 	g.Expect(ks.Spec.Cache.ClusterRef).NotTo(BeNil(), "Keystone cache clusterRef must be wired")
 	g.Expect(ks.Spec.Cache.ClusterRef.Name).To(Equal(c5c3v1alpha1.DefaultCacheClusterRefName),
 		"Keystone cache clusterRef must reference the defaulted managed Memcached")
@@ -612,17 +683,18 @@ func TestIntegration_DBCredentialsGate_BlocksKeystoneUntilSecretExists(t *testin
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-dbgate-"}}
 	g.Expect(c.Create(ctx, ns)).To(Succeed(), "create test namespace")
 
-	// Admin password Secret (mirrors driveControlPlaneToAdminCredentialReady) so the
-	// later sub-reconcilers don't error — this test stops at the gate, but create it
-	// for realism/consistency.
+	// Create the ControlPlane CR (the defaulting webhook fills region etc.).
+	cp := integrationManagedControlPlane("cp", ns.Name)
+
+	// Admin password Secret (mirrors driveControlPlaneToAdminCredentialReady) at the
+	// operator-owned per-CP name so the later sub-reconcilers don't error — this test
+	// stops at the gate, but create it for realism/consistency.
 	adminSecret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "keystone-admin", Namespace: ns.Name},
+		ObjectMeta: metav1.ObjectMeta{Name: adminPasswordSecretName(cp), Namespace: ns.Name},
 		Data:       map[string][]byte{"password": []byte("super-secret-admin-password")},
 	}
 	g.Expect(c.Create(ctx, adminSecret)).To(Succeed(), "create admin password Secret")
 
-	// Create the ControlPlane CR (the defaulting webhook fills region etc.).
-	cp := integrationManagedControlPlane("cp", ns.Name)
 	g.Expect(c.Create(ctx, cp)).To(Succeed(), "create ControlPlane CR")
 	cpKey := types.NamespacedName{Name: cp.Name, Namespace: ns.Name}
 
@@ -660,6 +732,12 @@ func TestIntegration_DBCredentialsGate_BlocksKeystoneUntilSecretExists(t *testin
 		To(Succeed(), "simulate per-CP DB credential ExternalSecret sync")
 	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeDBCredentialsReady, metav1.ConditionTrue, itEventuallyTimeout)
 
+	// CC-0117: with DBCredentials open the chain reaches the admin-password gate, which
+	// ALSO blocks Keystone. Sync the operator-created admin-password ExternalSecret so
+	// AdminPasswordReady flips True and the Keystone projection can proceed.
+	simulateAdminPasswordExternalSecretSyncWhenPresent(t, ctx, c, cp)
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeAdminPasswordReady, metav1.ConditionTrue, itEventuallyTimeout)
+
 	// Now the Keystone CR is projected, pointing at the operator-owned DB-credential Secret.
 	gatedKs := &keystonev1alpha1.Keystone{}
 	g.Eventually(func() error {
@@ -670,6 +748,96 @@ func TestIntegration_DBCredentialsGate_BlocksKeystoneUntilSecretExists(t *testin
 		"projected Keystone DB secretRef must point at the per-CP DB-credential Secret (CC-0116, REQ-003)")
 }
 
+// TestIntegration_AdminPasswordGate_BlocksKeystoneUntilExternalSecretReady proves the
+// AdminPassword gate blocks Keystone projection until the per-CP admin-password
+// ExternalSecret is Ready (CC-0117, REQ-003): once Infrastructure and the DB-credential
+// gate are satisfied the chain reaches reconcileAdminPassword, which creates the
+// admin-password ExternalSecret — but AdminPasswordReady stays False with reason
+// WaitingForAdminPasswordSecret and NO Keystone CR is projected until the
+// ExternalSecret syncs. Simulating the sync then flips AdminPasswordReady True and the
+// Keystone CR appears, its bootstrap admin-password ref pointing at the operator-owned
+// per-CP admin Secret. This is the admin-password counterpart to
+// TestIntegration_DBCredentialsGate_BlocksKeystoneUntilSecretExists: it pins that the
+// gate genuinely holds Keystone back rather than projecting it early.
+func TestIntegration_AdminPasswordGate_BlocksKeystoneUntilExternalSecretReady(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupControlPlaneEnvTest(t)
+
+	// Isolated test namespace per run (namespace-per-test with GenerateName).
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-adminpwgate-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed(), "create test namespace")
+
+	// Create the ControlPlane CR (the defaulting webhook fills region etc.).
+	cp := integrationManagedControlPlane("cp", ns.Name)
+
+	// Admin password Secret at the operator-owned per-CP name. This test stops at the
+	// admin-password gate, but create it for realism/consistency with the full path.
+	adminSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: adminPasswordSecretName(cp), Namespace: ns.Name},
+		Data:       map[string][]byte{"password": []byte("super-secret-admin-password")},
+	}
+	g.Expect(c.Create(ctx, adminSecret)).To(Succeed(), "create admin password Secret")
+
+	g.Expect(c.Create(ctx, cp)).To(Succeed(), "create ControlPlane CR")
+	cpKey := types.NamespacedName{Name: cp.Name, Namespace: ns.Name}
+
+	// --- Phase 1: Infrastructure (MariaDB + Memcached) -> InfrastructureReady. ---
+	simulateMariaDBReadyWhenPresent(t, ctx, c, client.ObjectKey{Name: "openstack-db", Namespace: ns.Name})
+	simulateMemcachedReadyWhenPresent(t, ctx, c, client.ObjectKey{Name: "openstack-memcached", Namespace: ns.Name})
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeInfrastructureReady, metav1.ConditionTrue, itEventuallyTimeout)
+
+	// --- Open the DB-credential gate so the chain advances to the admin-password gate. ---
+	g.Eventually(func() error {
+		return c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: dbCredentialSecretName(cp)}, &esov1.ExternalSecret{})
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "operator must create the per-CP DB credential ExternalSecret")
+	g.Expect(simulators.SimulateExternalSecretSync(ctx, c,
+		client.ObjectKey{Namespace: ns.Name, Name: dbCredentialSecretName(cp)})).
+		To(Succeed(), "simulate per-CP DB credential ExternalSecret sync")
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeDBCredentialsReady, metav1.ConditionTrue, itEventuallyTimeout)
+
+	// The operator creates the per-CP admin-password ExternalSecret as soon as the
+	// chain reaches reconcileAdminPassword (DB-credential gate open).
+	g.Eventually(func() error {
+		return c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: adminPasswordSecretName(cp)}, &esov1.ExternalSecret{})
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "operator must create the per-CP admin password ExternalSecret")
+
+	// --- The gate: BEFORE simulating the admin-password ExternalSecret sync,
+	// AdminPasswordReady must be False with reason WaitingForAdminPasswordSecret, and
+	// NO Keystone CR may exist. ---
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeAdminPasswordReady, metav1.ConditionFalse, itEventuallyTimeout)
+	gated := &c5c3v1alpha1.ControlPlane{}
+	g.Expect(c.Get(ctx, cpKey, gated)).To(Succeed(), "get gated ControlPlane")
+	pwCond := meta.FindStatusCondition(gated.Status.Conditions, conditionTypeAdminPasswordReady)
+	g.Expect(pwCond).NotTo(BeNil(), "AdminPasswordReady condition must exist while gated")
+	g.Expect(pwCond.Reason).To(Equal("WaitingForAdminPasswordSecret"),
+		"AdminPasswordReady must report it is waiting on the admin password Secret (CC-0117, REQ-003)")
+
+	// No premature/flapping Keystone CR: it must stay NotFound across a short window.
+	g.Consistently(func() bool {
+		err := c.Get(ctx, types.NamespacedName{Name: keystoneName(cp), Namespace: ns.Name}, &keystonev1alpha1.Keystone{})
+		return apierrors.IsNotFound(err)
+	}, 2*time.Second, itPollInterval).Should(BeTrue(),
+		"Keystone CR must NOT be projected while the admin password gate is closed (CC-0117, REQ-003)")
+
+	// --- Open the gate: simulate the admin-password ExternalSecret sync. ---
+	g.Expect(simulators.SimulateExternalSecretSync(ctx, c,
+		client.ObjectKey{Namespace: ns.Name, Name: adminPasswordSecretName(cp)})).
+		To(Succeed(), "simulate per-CP admin password ExternalSecret sync")
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeAdminPasswordReady, metav1.ConditionTrue, itEventuallyTimeout)
+
+	// Now the Keystone CR is projected, its bootstrap admin-password ref pointing at
+	// the operator-owned per-CP admin Secret.
+	gatedKs := &keystonev1alpha1.Keystone{}
+	g.Eventually(func() error {
+		return c.Get(ctx, types.NamespacedName{Name: keystoneName(cp), Namespace: ns.Name}, gatedKs)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+		"Keystone CR must be projected once the admin password gate opens (CC-0117, REQ-003)")
+	g.Expect(gatedKs.Spec.Bootstrap.AdminPasswordSecretRef.Name).To(Equal(adminPasswordSecretName(cp)),
+		"projected Keystone admin-password ref must point at the per-CP admin Secret (CC-0117, REQ-005)")
+}
+
 // driveControlPlaneToAdminCredentialReady provisions the full per-ControlPlane
 // dependency set in cp.Namespace and drives the CR through phases 1-4 of the
 // sub-reconciler chain (Infrastructure -> Keystone -> KORC -> AdminCredential) to
@@ -678,14 +846,16 @@ func TestIntegration_DBCredentialsGate_BlocksKeystoneUntilSecretExists(t *testin
 // stops short of the Catalog/aggregate-Ready phases. The namespace and the CR
 // must already exist.
 //
-// All provisioned names — the admin password Secret/key and the two managed
-// infra clusterRef children — use the shared CC-0115 Default* constants, which
-// equal the literal names integrationManagedControlPlane sets explicitly. This
-// lets both consumers reuse the helper:
+// The two managed infra clusterRef children use the shared CC-0115 Default*
+// constants (which equal the literal names integrationManagedControlPlane sets
+// explicitly), while the admin password Secret uses the per-ControlPlane
+// operator-owned name adminPasswordSecretName(cp) that effectiveAdminPasswordSecretRef
+// resolves in managed mode (CC-0117, REQ-005) — derived from cp.Name, so it is
+// distinct per CR. This lets both consumers reuse the helper:
 //   - TestIntegration_MultiControlPlane_DistinctAdminCredentialPaths (CC-0112,
-//     REQ-012), whose CRs set those names explicitly, and
+//     REQ-012), whose CRs set the infra names explicitly, and
 //   - TestIntegration_MinimalManagedToReady (CC-0115), whose minimal CR omits the
-//     infra/korc blocks so the defaulting webhook materializes the very same
+//     infra/korc blocks so the defaulting webhook materializes the very same infra
 //     names — so driving the simulators at the Default* names still proves the
 //     CC-0115 defaults flow through to the reconciler.
 func driveControlPlaneToAdminCredentialReady(
@@ -695,13 +865,12 @@ func driveControlPlaneToAdminCredentialReady(
 	g := NewGomegaWithT(t)
 	ns := cp.Namespace
 
-	// Admin password Secret the KORC sub-reconciler hashes to drive the mint, at
-	// the defaulted name/key.
+	// Admin password Secret the KORC sub-reconciler hashes to drive the mint, at the
+	// operator-owned per-CP name effectiveAdminPasswordSecretRef resolves in managed
+	// mode (CC-0117, REQ-005) — readAdminPassword reads the cleartext via that ref.
 	adminSecret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: c5c3v1alpha1.DefaultAdminPasswordSecretName, Namespace: ns},
-		Data: map[string][]byte{
-			c5c3v1alpha1.DefaultAdminPasswordSecretKey: []byte("super-secret-admin-password"),
-		},
+		ObjectMeta: metav1.ObjectMeta{Name: adminPasswordSecretName(cp), Namespace: ns},
+		Data:       map[string][]byte{"password": []byte("super-secret-admin-password")},
 	}
 	g.Expect(c.Create(ctx, adminSecret)).To(Succeed(), "create admin password Secret")
 
@@ -731,6 +900,12 @@ func driveControlPlaneToAdminCredentialReady(
 		client.ObjectKey{Namespace: ns, Name: dbCredentialSecretName(cp)})).
 		To(Succeed(), "simulate per-CP DB credential ExternalSecret sync")
 	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeDBCredentialsReady, metav1.ConditionTrue, itEventuallyTimeout)
+
+	// CC-0117 (REQ-003): gate Keystone on the per-CP admin-password ExternalSecret.
+	// Sync-simulating here keeps this helper's callers bisectable (full suite green),
+	// mirroring the DB-credential sync above.
+	simulateAdminPasswordExternalSecretSyncWhenPresent(t, ctx, c, cp)
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeAdminPasswordReady, metav1.ConditionTrue, itEventuallyTimeout)
 
 	// --- Phase 2: Keystone child. ---
 	simulateKeystoneReadyWhenPresent(t, ctx, c, client.ObjectKey{Name: keystoneName(cp), Namespace: ns})

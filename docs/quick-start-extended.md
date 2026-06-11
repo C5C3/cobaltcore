@@ -170,6 +170,16 @@ Internally this performs the following steps:
 The script also triggers a re-reconciliation of the `openstack-db` MariaDB CR and waits for it to
 become `Ready` before returning.
 
+::: tip kind-only ExternalSecret shims
+The `keystone-admin`, `keystone-db`, and `mariadb-root-password` ExternalSecrets applied
+in Step 5 and awaited in Step 8 are **kind-overlay shims**
+(`deploy/kind/infrastructure/`) that keep this standalone Keystone flow self-contained.
+The production stack (`deploy/eso/`) ships only the `ClusterSecretStore`: in a
+ControlPlane-based deployment the admin password is projected per ControlPlane by the
+c5c3-operator, and the MariaDB root password is expected from a non-kind Flux MariaDB
+baseline.
+:::
+
 Expected duration: **5–10 minutes** on first run (image pulls dominate).
 
 ::: tip Configurable timeouts

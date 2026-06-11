@@ -32,16 +32,28 @@ initial credentials required by downstream services.
 │         │                                                           │
 │  ┌──────▼──────┐  ┌──────────────┐  ┌──────────────────────────┐    │
 │  │ ExternalSec │  │ ExternalSec  │  │ ExternalSecret           │    │
-│  │ keystone-   │  │ {cp}-        │  │ mariadb-root-password    │    │
-│  │ admin       │  │ keystone-db- │  │                          │    │
-│  │             │  │ credentials  │  │                          │    │
+│  │ {cp}-       │  │ {cp}-        │  │ (kind overlay shims:     │    │
+│  │ keystone-   │  │ keystone-db- │  │  keystone-admin,         │    │
+│  │ admin-creds │  │ credentials  │  │  mariadb-root-password)  │    │
 │  └─────────────┘  └──────────────┘  └──────────────────────────┘    │
+│   operator-projected per-ControlPlane          kind-only             │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-The `{cp}-keystone-db-credentials` ExternalSecret is **not** a static deploy-time
-resource; it is created **per-ControlPlane** by the c5c3 operator's
-`reconcileDBCredentials` sub-reconciler, one per ControlPlane (default
+The production stack (`deploy/eso/`, included by `deploy/flux-system/`) ships
+**no** ExternalSecret resources — its kustomization renders only
+`clustersecretstore.yaml`. The per-ControlPlane admin and database
+ExternalSecrets are operator-projected, and the standalone `keystone-admin`,
+`mariadb-root-password`, and `keystone-db` ExternalSecrets survive only as kind
+overlay shims (`deploy/kind/infrastructure/`).
+
+The `{cp}-keystone-admin-credentials` ExternalSecret is created
+**per-ControlPlane** by the c5c3 operator's `reconcileAdminPassword`
+sub-reconciler (default `controlplane-keystone-admin-credentials`), reading the
+per-ControlPlane remote path `bootstrap/{ns}/{name}-keystone/admin`. Likewise
+the `{cp}-keystone-db-credentials` ExternalSecret is **not** a static deploy-time
+resource; it is created **per-ControlPlane** by the operator's
+`reconcileDBCredentials` sub-reconciler (default
 `controlplane-keystone-db-credentials`), reading the per-ControlPlane remote path
 `openstack/keystone/{ns}/{name}/db`. Standalone Keystone instances (no
 ControlPlane CR) instead reference a Secret named `keystone-db`; the **kind
@@ -98,17 +110,26 @@ deploy/
 │       ├── ci-cd-provisioner.hcl       CI/CD pipeline provisioning policy
 │       └── pki-issuer.hcl             cert-manager PKI issuing policy
 ├── eso/
-│   ├── kustomization.yaml              Kustomize entrypoint for ESO resources
-│   ├── clustersecretstore.yaml         ClusterSecretStore for OpenBao
-│   └── externalsecrets/
-│       ├── keystone-admin.yaml         Keystone admin credentials
-│       └── mariadb-root-password.yaml  MariaDB root password
+│   ├── kustomization.yaml              Kustomize entrypoint (renders ONLY the ClusterSecretStore)
+│   └── clustersecretstore.yaml         ClusterSecretStore for OpenBao
+├── kind/
+│   └── infrastructure/                 kind-overlay-only ExternalSecret shims (standalone flows)
+│       ├── keystone-admin-externalsecret.yaml        Secret keystone-admin
+│       ├── mariadb-root-password-externalsecret.yaml Secret mariadb-root-password
+│       └── keystone-db-externalsecret.yaml           Secret keystone-db
 └── flux-system/
     ├── releases/
     │   └── openbao.yaml                HelmRelease for OpenBao HA cluster
     └── infrastructure/
         └── openbao-tls-cert.yaml       cert-manager Certificate for TLS
 ```
+
+**Note:** The static `deploy/eso/externalsecrets/` directory has been removed.
+The production ESO kustomization now renders only `clustersecretstore.yaml`, so
+the production stack ships **no** ExternalSecret resources. The per-ControlPlane
+admin and database ExternalSecrets are projected by the c5c3 operator, and the
+`keystone-admin`, `mariadb-root-password`, and `keystone-db` ExternalSecrets
+survive only as kind overlay shims under `deploy/kind/infrastructure/`.
 
 **Note:** The flat OpenBao path `openstack/keystone/db` is no longer seeded —
 Keystone database credentials live at per-control-plane paths
@@ -412,8 +433,8 @@ All secrets are stored under the `kv-v2/` mount point (KV version 2 engine).
 
 | Path | Keys | Provisioned By | Consumed By |
 | --- | --- | --- | --- |
-| `kv-v2/bootstrap/<namespace>/<keystone>/admin` | `password` | `write-bootstrap-secrets.sh` | ExternalSecret `keystone-admin` |
-| `kv-v2/infrastructure/mariadb` | `root-password` | `write-bootstrap-secrets.sh` | ExternalSecret `mariadb-root-password` |
+| `kv-v2/bootstrap/<namespace>/<keystone>/admin` | `password` | `write-bootstrap-secrets.sh` (per ControlPlane; default `.../openstack/controlplane-keystone/admin`) | Operator-created ExternalSecret `{controlplane.Name}-keystone-admin-credentials` (default `controlplane-keystone-admin-credentials`); on kind additionally the overlay's `keystone-admin` ExternalSecret (default identity) |
+| `kv-v2/infrastructure/mariadb` | `root-password` | `write-bootstrap-secrets.sh` | On kind the overlay's `mariadb-root-password` ExternalSecret; in production a non-kind Flux MariaDB baseline provides the `mariadb-root-password` Secret itself |
 | `kv-v2/openstack/keystone/{ns}/{name}/db` | `username`, `password` | `write-bootstrap-secrets.sh` (per ControlPlane; default `.../openstack/controlplane/db`) | Operator-created ExternalSecret `{controlplane.Name}-keystone-db-credentials` (default `controlplane-keystone-db-credentials`); on kind additionally the overlay's `keystone-db` ExternalSecret (default identity) |
 
 **Note:** The Keystone database-credential path is scoped **per
@@ -431,23 +452,36 @@ Kubernetes.
 
 | ExternalSecret | Namespace | Remote Path | Remote Property | K8s Secret Name | K8s Secret Key |
 | --- | --- | --- | --- | --- | --- |
-| `keystone-admin` | `openstack` | `bootstrap/openstack/controlplane-keystone/admin` | `password` | `keystone-admin-credentials` | `password` |
+| `{controlplane.Name}-keystone-admin-credentials` | `openstack` | `bootstrap/{ns}/{name}-keystone/admin` (default `bootstrap/openstack/controlplane-keystone/admin`) | `password` | `{controlplane.Name}-keystone-admin-credentials` | `password` |
 | `{controlplane.Name}-keystone-db-credentials` | `openstack` | `openstack/keystone/{ns}/{name}/db` (default `openstack/keystone/openstack/controlplane/db`) | `username`, `password` | `{controlplane.Name}-keystone-db-credentials` | `username`, `password` |
+| `keystone-admin` (kind only) | `openstack` | `bootstrap/openstack/controlplane-keystone/admin` | `password` | `keystone-admin` | `password` |
+| `mariadb-root-password` (kind only) | `openstack` | `infrastructure/mariadb` | `root-password` | `mariadb-root-password` | `password` |
 | `keystone-db` (kind only) | `openstack` | `openstack/keystone/openstack/controlplane/db` | `username`, `password` | `keystone-db` | `username`, `password` |
-| `mariadb-root-password` | `openstack` | `infrastructure/mariadb` | `root-password` | `mariadb-root-password` | `password` |
 
-**Note:** Unlike `keystone-admin` and `mariadb-root-password` — static
-ExternalSecrets shipped under `deploy/eso/externalsecrets/` — the
-`{controlplane.Name}-keystone-db-credentials` ExternalSecret is **not** part of
-the deploy stack: it is created **per-ControlPlane** by the c5c3 operator's
-`reconcileDBCredentials` sub-reconciler, reading the per-ControlPlane remote
-key `openstack/keystone/{ns}/{name}/db` (the flat path `openstack/keystone/db`
-is no longer seeded; the reserved multi-DB form
+**Note:** The static `deploy/eso/externalsecrets/` directory has been removed, so
+the production stack ships **no** ExternalSecret resources — its ESO
+kustomization renders only `clustersecretstore.yaml`. The admin and database
+ExternalSecrets are now projected **per-ControlPlane** by the c5c3 operator: the
+`{controlplane.Name}-keystone-admin-credentials` ExternalSecret by the
+`reconcileAdminPassword` sub-reconciler (remote key
+`bootstrap/{ns}/{name}-keystone/admin`), and the
+`{controlplane.Name}-keystone-db-credentials` ExternalSecret by the
+`reconcileDBCredentials` sub-reconciler (remote key
+`openstack/keystone/{ns}/{name}/db`). The flat database path
+`openstack/keystone/db` is no longer seeded; the reserved multi-DB form
 `openstack/keystone/{ns}/{name}/db/<dbname>` leaves room for multiple databases
-per ControlPlane). The `keystone-db` ExternalSecret is a **kind-overlay-only**
-resource (`deploy/kind/infrastructure/keystone-db-externalsecret.yaml`) pinned
-to the default identity's path; it serves standalone Keystone instances and is
-not deployed in production.
+per ControlPlane.
+
+**Note:** The `keystone-admin`, `mariadb-root-password`, and `keystone-db`
+ExternalSecrets survive only as **kind-overlay-only** resources under
+`deploy/kind/infrastructure/`
+(`keystone-admin-externalsecret.yaml`, `mariadb-root-password-externalsecret.yaml`,
+`keystone-db-externalsecret.yaml`). They keep the standalone flows — the Quick
+Start and the keystone/infrastructure e2e, tempest, and chaos suites that
+reference plain Secret names — working, and are **not** deployed in production.
+Outside kind, a standalone Keystone instance has to materialise the
+`keystone-admin` and `keystone-db` Secrets itself, and a non-kind Flux MariaDB
+baseline is expected to provide the `mariadb-root-password` Secret itself.
 
 **Note:** The ExternalSecret `remoteRef.key` is the path **under** the store's mount
 path. The ClusterSecretStore already sets `path: kv-v2`, so ExternalSecrets use
@@ -681,5 +715,5 @@ reconciled (`kubectl get helmrelease openbao -n openbao-system`).
 - `deploy/flux-system/releases/openbao.yaml` — OpenBao HelmRelease
 - `deploy/flux-system/infrastructure/openbao-tls-cert.yaml` — server TLS Certificate
 - `deploy/flux-system/infrastructure/openbao-client-tls-cert.yaml` — client TLS Certificates
-- `deploy/eso/clustersecretstore.yaml` — ClusterSecretStore configuration (now uses client-cert mTLS)
-- `deploy/eso/externalsecrets/` — ExternalSecret resources
+- `deploy/eso/clustersecretstore.yaml` — ClusterSecretStore configuration (now uses client-cert mTLS); the only resource the production ESO kustomization renders
+- `deploy/kind/infrastructure/` — kind-overlay-only ExternalSecret shims (`keystone-admin`, `mariadb-root-password`, `keystone-db`)

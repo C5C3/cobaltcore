@@ -239,6 +239,12 @@ holds only `update`/`patch` (not `create`/`delete`) on K-ORC
 │           │                                                                  │
 │           ▼                                                                  │
 │  ┌──────────────────────────┐                                                │
+│  │ reconcileAdminPassword   │  Project per-CP admin-password ExternalSecret  │
+│  │  (gate: none)            │  Sets: AdminPasswordReady                      │
+│  └────────┬─────────────────┘  Requeue: 10s while the ES is not yet synced   │
+│           │                                                                  │
+│           ▼                                                                  │
+│  ┌──────────────────────────┐                                                │
 │  │ reconcileKeystone        │  Project the Keystone child CR                 │
 │  │  (gate: InfraReady)      │  Sets: KeystoneReady                           │
 │  └────────┬─────────────────┘  Requeue: 5s gated / 15s child not Ready       │
@@ -273,7 +279,7 @@ holds only `update`/`patch` (not `create`/`delete`) on K-ORC
 
 ### Execution Model
 
-All six sub-reconcilers run **strictly sequentially** — there is no parallel
+All seven sub-reconcilers run **strictly sequentially** — there is no parallel
 group. Each sub-reconciler call is wrapped in `instrumentSubReconciler` (see
 [Metrics Instrumentation](#metrics-instrumentation)) and follows the same
 early-return contract:
@@ -295,7 +301,7 @@ This guarantees:
 3. Status conditions from the failing/requeuing sub-reconciler are **always
    persisted** via `updateStatus()` before returning.
 
-Only when all six sub-reconcilers return a zero result with no error does
+Only when all seven sub-reconcilers return a zero result with no error does
 control reach `setReadyCondition(&cp)` and the final `updateStatus(ctx, &cp,
 ctrl.Result{}, nil)`.
 
@@ -328,11 +334,11 @@ sub-condition type is `True` using `aggregateReady()`, which delegates to
 | Yes | `Status: True` | `AllReady` | `All sub-conditions are ready` |
 | No (any missing or False) | `Status: False` | `NotAllReady` | `One or more sub-conditions are not ready` |
 
-The six aggregated sub-condition types (the source-of-truth `subConditionTypes`
+The seven aggregated sub-condition types (the source-of-truth `subConditionTypes`
 slice in `controlplane_controller.go`) are:
 
 ```text
-InfrastructureReady, DBCredentialsReady, KeystoneReady, KORCReady, AdminCredentialReady, CatalogReady
+InfrastructureReady, DBCredentialsReady, KeystoneReady, KORCReady, AdminCredentialReady, AdminPasswordReady, CatalogReady
 ```
 
 The `Ready` condition carries `ObservedGeneration = cp.Generation` so clients can
@@ -427,6 +433,58 @@ is set and **brownfield** when the user supplies a `host`-based connection:
 | ExternalSecret not yet synced | False | `WaitingForDBCredentialSecret` | requeue 10s |
 | ExternalSecret Ready | True | `DBCredentialsReady` | — |
 
+### reconcileAdminPassword
+
+| Aspect | Value |
+| --- | --- |
+| File | `reconcile_adminpassword.go` |
+| Condition | `AdminPasswordReady` |
+| Gate | none — runs unconditionally, positioned after DBCredentials and before Keystone so the Keystone CR is never projected before the admin-password Secret exists |
+| Projects / Owns | Managed-mode (`spec.infrastructure.database.clusterRef != nil`) one owner-referenced `external-secrets.io/v1` `ExternalSecret` named `{controlplane.Name}-keystone-admin-credentials` (`adminPasswordSecretName`) in `childNamespace(cp)`; brownfield projects nothing |
+| Requeue | `adminPasswordRequeueAfter` = **10s** while the ExternalSecret is not yet Ready |
+
+`reconcileAdminPassword` projects the per-ControlPlane Keystone admin password
+as an OpenBao-backed `ExternalSecret`, so the projected Keystone CR's bootstrap
+admin-password ref consumes a credential scoped to its own ControlPlane. It
+mirrors `reconcileDBCredentials`'s wait/condition handling. The database is
+**managed** when `spec.infrastructure.database.clusterRef` is set and
+**brownfield** when the user supplies a `host`-based connection:
+
+- **Brownfield is a pure no-op.** When `clusterRef == nil` the user owns the
+  admin-password Secret out-of-band, so the operator projects **no**
+  ExternalSecret and never references OpenBao or the `ClusterSecretStore`;
+  `AdminPasswordReady` is reported `True` immediately so the chain proceeds to
+  Keystone.
+- **Managed projects the ExternalSecret.** The owned ExternalSecret has
+  `RefreshInterval` 1h, `SecretStoreRef` `Kind: ClusterSecretStore, Name: openbao-cluster-store`,
+  and `Target.CreationPolicy: Owner` (so ESO owns the materialised Secret of the
+  same name). Its single `password` `Data` key reads from the per-CP remote key
+  `bootstrap/{cp.Namespace}/{cp.Name}-keystone/admin`
+  (`adminPasswordRemoteKeyFor`) with `Property: password`. Unlike the
+  DB-credential path this key is **Keystone-name-scoped**
+  (`{cp.Name}-keystone`, not `{cp.Name}`) so it matches the bootstrap seeder and
+  the keystone-operator's Model-B rotation `PushSecret` at
+  `bootstrap/{keystone.Namespace}/{keystone.Name}/admin`; the
+  `{namespace}/{keystone-name}` scoping still keeps two ControlPlanes from
+  colliding on the cluster-global OpenBao backend. The builder
+  `adminPasswordExternalSecret(cp)` sets **no** owner reference; the reconciler
+  sets the ControlPlane controller reference inside the `CreateOrUpdate` mutate
+  closure for GC.
+
+The managed-mode effective admin-password ref (`effectiveAdminPasswordSecretRef`)
+points the projected Keystone child's `spec.bootstrap.adminPasswordSecretRef` at
+this materialised Secret's `password` key
+(`{controlplane.Name}-keystone-admin-credentials`); in brownfield mode it stays
+the user-declared `spec.korc.adminCredential.passwordSecretRef` verbatim. The
+cp-level spec default for `passwordSecretRef` remains `keystone-admin`.
+
+| Path | Status | Reason | Notes |
+| --- | --- | --- | --- |
+| Brownfield (`clusterRef == nil`) | True | `BrownfieldUserSuppliedCredential` | no ExternalSecret projected; user supplies the admin-password Secret out-of-band |
+| ExternalSecret create/update or read fails | False | `ExternalSecretError` | returns the error |
+| ExternalSecret not yet synced | False | `WaitingForAdminPasswordSecret` | requeue 10s |
+| ExternalSecret Ready | True | `AdminPasswordReady` | — |
+
 ### reconcileKeystone
 
 | Aspect | Value |
@@ -448,8 +506,12 @@ the ControlPlane provisioned:
 - **Database / Cache:** `keystone.Spec.Database = cp.Spec.Infrastructure.Database`
   and `keystone.Spec.Cache = cp.Spec.Infrastructure.Cache` (the same `clusterRef`s,
   reused unchanged).
-- **Bootstrap:** the admin-password Secret ref is `cp.Spec.KORC.AdminCredential.PasswordSecretRef`
-  (so Keystone and K-ORC agree on the admin-password source) and the region is
+- **Bootstrap:** the admin-password Secret ref is the effective ref
+  (`effectiveAdminPasswordSecretRef`) — in managed mode the operator-projected
+  per-CP Secret `{controlplane.Name}-keystone-admin-credentials` (see
+  [reconcileAdminPassword](#reconcileadminpassword)), in brownfield mode the
+  user-declared `cp.Spec.KORC.AdminCredential.PasswordSecretRef` verbatim (so
+  Keystone and K-ORC agree on the admin-password source) — and the region is
   `cp.Spec.Region`.
 - **Replicas:** copied from `spec.services.keystone.replicas` when set.
 - **Policy:** `projectPolicyOverrides(cp.Spec.Global, cp.Spec.Services.Keystone.PolicyOverrides)`
@@ -681,7 +743,13 @@ The end-to-end path that delivers the admin application credential to the K-ORC
 controller spans three sub-reconcilers and the ESO/OpenBao backend:
 
 ```text
-keystone-admin Secret (admin password; ESO-managed, read by c5c3-operator)
+OpenBao kv  bootstrap/{cp.Namespace}/{cp.Name}-keystone/admin   (admin password)
+        │  (managed mode; reconcileAdminPassword, owner-ref'd to the ControlPlane)
+        ▼
+ExternalSecret  →  {control-plane ns}/{controlplane.Name}-keystone-admin-credentials
+        │            (ESO owns the materialised Secret; CreationPolicy: Owner)
+        ▼
+admin-password Secret (the effective admin-password ref; read by c5c3-operator)
         │  SHA-256 → forge.c5c3.io/admin-password-hash annotation
         ▼
 c5c3-operator mints a RESTRICTED ApplicationCredential        (reconcileKORC)
@@ -787,6 +855,7 @@ owner).
 | `MariaDB` | `{spec.infrastructure.database.clusterRef.name}` | ControlPlane CR | managed mode only |
 | `Memcached` (unstructured) | `{spec.infrastructure.cache.clusterRef.name}` | ControlPlane CR | managed mode only |
 | `ExternalSecret` (DB credential) | `{name}-keystone-db-credentials` | ControlPlane CR | managed mode only; ESO owns the materialised Secret of the same name |
+| `ExternalSecret` (admin password) | `{name}-keystone-admin-credentials` | ControlPlane CR | managed mode only; ESO owns the materialised Secret of the same name |
 | `Keystone` | `{name}-keystone` | ControlPlane CR | — |
 | `ApplicationCredential` | `{name}-admin-app-credential` | ControlPlane CR | carries `forge.c5c3.io/admin-password-hash` |
 | `Secret` | `{name}-admin-app-credential` | ControlPlane CR | data written by K-ORC, not the operator |
@@ -865,6 +934,7 @@ The `condition_type` label is resolved from the package-private
 | `Keystone` | `KeystoneReady` |
 | `KORC` | `KORCReady` |
 | `AdminCredential` | `AdminCredentialReady` |
+| `AdminPassword` | `AdminPasswordReady` |
 | `Catalog` | `CatalogReady` |
 
 If `instrumentSubReconciler` is ever called with a name absent from the map, the
@@ -900,7 +970,8 @@ test that drives the full chain in a real manager against a live API server.
 builder is kept byte-for-byte in step with `SetupWithManager`) and drives a
 managed-mode ControlPlane through every sub-reconciler to the aggregate
 `Ready=True`. It simulates each external dependency's readiness **in dependency
-order** — MariaDB and Memcached Ready → Keystone child Ready → K-ORC
+order** — MariaDB and Memcached Ready → the operator-created admin-password
+`ExternalSecret` synced → Keystone child Ready → K-ORC
 `ApplicationCredential` `Available` with a `status.id` → the
 `{control-plane ns}/k-orc-clouds-yaml` `ExternalSecret` synced — and asserts that
 every sub-condition and the aggregate `Ready` (reason `AllReady`) reach `True`,
@@ -912,6 +983,15 @@ image tag derived from `openStackRelease`, the database/cache `clusterRef`s wire
 to the infra CRs, the merged `policyOverrides`, the `restricted→Unrestricted=false`
 inversion on the AC, and the identity `Service`/`Endpoint` shape.
 
+A phase between Infrastructure and Keystone exercises the new admin-password
+projection: it waits for the operator-created per-CP admin-password
+`ExternalSecret`, asserts its `RemoteRef.Key` equals `adminPasswordRemoteKeyFor(cp)`
+and that it is controller-owned by the ControlPlane, then simulates the ESO sync —
+`SimulateExternalSecretSync` patches **only** the ExternalSecret's status, so the
+renamed plain Secret (pre-created under the same name) stays the cleartext source
+the operator reads — and waits for `AdminPasswordReady` to reach `True` before the
+Keystone child is projected.
+
 ### Test Files
 
 | File | Coverage |
@@ -919,6 +999,7 @@ inversion on the AC, and the identity `Service`/`Endpoint` shape.
 | `controlplane_controller_test.go` | `Reconcile` orchestration, sequential early-return, Ready aggregation, `updateStatus` error-join, idempotency |
 | `reconcile_infrastructure_test.go` | Managed/brownfield MariaDB + Memcached, unstructured readiness, condition contract, `ObservedGeneration` |
 | `reconcile_dbcredentials_test.go` | Managed ExternalSecret projection (name/store/data/owner-ref), brownfield no-op `Ready=True`, not-ready requeue + condition contract, distinct per-CP remote key/secret name |
+| `reconcile_adminpassword_test.go` | Managed ExternalSecret projection (name/store/data/owner-ref), brownfield no-op `Ready=True`, not-ready requeue + condition contract, distinct per-CP remote key/secret name |
 | `reconcile_keystone_test.go` | Keystone projection, infra gate, image/rotation/policy projection, condition contract, `ObservedGeneration` |
 | `reconcile_korc_test.go` | AC mint, restricted↔unrestricted inversion, hash annotation/re-mint, missing-CRD safety, admin-credential push, catalog, condition contract |
 | `reconcile_credentialrotation_test.go` | Nudge model, one-per-namespace resolution, bootstrap, deferred scheduled fields, target enum |
@@ -949,16 +1030,19 @@ operators/c5c3/
     │   ├── reconcile_infrastructure.go          reconcileInfrastructure (MariaDB + Memcached),
     │   │                                        childNamespace, memcachedGVK
     │   ├── reconcile_dbcredentials.go           reconcileDBCredentials (per-CP DB-credential ExternalSecret)
+    │   ├── reconcile_adminpassword.go           reconcileAdminPassword (per-CP admin-password ExternalSecret),
+    │   │                                        effectiveAdminPasswordSecretRef
     │   ├── reconcile_keystone.go                reconcileKeystone projection
     │   ├── reconcile_korc.go                    reconcileKORC + reconcileAdminCredential +
     │   │                                        reconcileCatalog, computeAdminPasswordHash
     │   ├── reconcile_credentialrotation.go      CredentialRotationReconciler (nudge model)
-    │   ├── requeue_intervals.go                 infra/dbCredentials/keystone/korc/credentialRotation backoffs
+    │   ├── requeue_intervals.go                 infra/dbCredentials/adminPassword/keystone/korc/credentialRotation backoffs
     │   ├── instrumentation.go                   instrumentSubReconciler + drift-guard map
     │   ├── helpers.go                           intervalToCron, projectPolicyOverrides
     │   ├── controlplane_controller_test.go      Orchestration tests
     │   ├── reconcile_infrastructure_test.go     Infrastructure tests
     │   ├── reconcile_dbcredentials_test.go      DBCredentials tests
+    │   ├── reconcile_adminpassword_test.go      AdminPassword tests
     │   ├── reconcile_keystone_test.go           Keystone projection tests
     │   ├── reconcile_korc_test.go               K-ORC / admin-credential / catalog tests
     │   ├── reconcile_credentialrotation_test.go CredentialRotation tests

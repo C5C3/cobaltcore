@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# ControlPlane CR fixture for the admin-password-scoping E2E test
+# (CC-0117, REQ-015).
+#
+# This is the canonical kind ControlPlane ("controlplane" in namespace
+# "openstack") — spec-equivalent to deploy/kind/controlplane/controlplane.yaml.
+# Its name/namespace are LOAD-BEARING for this suite: the c5c3-operator's
+# reconcileAdminPassword derives the per-ControlPlane admin-password
+# ExternalSecret/Secret name
+#   keystoneName(cp) + "-admin-credentials" = "controlplane-keystone-admin-credentials"
+# and the OpenBao remoteRef key
+#   bootstrap/{cp.Namespace}/{keystoneName(cp)}/admin
+#     = bootstrap/openstack/controlplane-keystone/admin
+# which is exactly the per-CP path the deploy-infra seed writes for the default
+# identity (the bootstrap/{ns}/{keystoneName}/admin path the seeder provisions and
+# the keystone-operator Model B rotation reads/writes).
+#
+# ── DECISION: reuse the canonical "controlplane" CR (idempotent apply) ───────
+# Ambiguity: the assertions pin the admin-password names to
+# "controlplane-keystone-admin-credentials" / "bootstrap/openstack/
+# controlplane-keystone/admin", which ONLY the ControlPlane name="controlplane",
+# namespace="openstack" produces, and only that CR's OpenBao path is seeded by
+# default. Chose: ship that exact CR (spec-equivalent to deploy's, gateway block
+# included) so that on a cluster where deploy-infra already applied it
+# (WITH_CONTROLPLANE_CR=true) the chainsaw `kubectl apply` is a no-op rather than
+# a disruptive 3-way-merge prune, and on a cluster where it was not applied the
+# suite creates it. Behind the presence guard this only runs on a full c5c3 +
+# OpenBao stack. Reviewer: please verify the spec stays equivalent to deploy's CR.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: controlplane
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  services:
+    keystone:
+      replicas: 1
+      gateway:
+        parentRef:
+          name: openstack-gw
+        hostname: keystone.127-0-0-1.nip.io
+        path: /

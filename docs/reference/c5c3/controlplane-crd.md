@@ -361,9 +361,31 @@ policy for the control plane.
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `cloudCredentialsRef` | [`CloudCredentialsRef`](#cloudcredentialsref) | Yes | — | References the `clouds.yaml` Secret and cloud entry K-ORC authenticates as. |
-| `passwordSecretRef` | [`commonv1.SecretRefSpec`](../keystone/keystone-crd.md#secretrefspec) | No | name `"keystone-admin"`, key `"password"` | References the Secret holding the admin password used to (re-)mint the application credential. The defaulting webhook materializes a missing `name` to `keystone-admin` and a missing `key` to `password`, so the block may be omitted on a minimal CR. The validating webhook still enforces `passwordSecretRef.name` non-empty as defense-in-depth (see [Validation Rules](#validation-rules)), but the defaulting webhook always satisfies it before validation runs, so a user may leave it unset. The reconciler's existing `"password"` key fallback also remains. This Secret is projected into the Keystone CR's `bootstrap.adminPasswordSecretRef` so Keystone and K-ORC agree on the admin password source. |
+| `passwordSecretRef` | [`commonv1.SecretRefSpec`](../keystone/keystone-crd.md#secretrefspec) | No | name `"keystone-admin"`, key `"password"` | References the Secret holding the admin password used to (re-)mint the application credential. The defaulting webhook materializes a missing `name` to `keystone-admin` and a missing `key` to `password`, so the block may be omitted on a minimal CR. The validating webhook still enforces `passwordSecretRef.name` non-empty as defense-in-depth (see [Validation Rules](#validation-rules)), but the defaulting webhook always satisfies it before validation runs, so a user may leave it unset. The reconciler's existing `"password"` key fallback also remains. **Mode-dependent use:** the `keystone-admin` default is the **brownfield / spec-level default**. In **brownfield mode** (`database.clusterRef == nil`) this field is used verbatim — the user supplies the admin-password Secret out-of-band and the operator projects no ExternalSecret, so this reference is projected onto the Keystone CR's `bootstrap.adminPasswordSecretRef` so Keystone and K-ORC agree on the admin password source. In **managed mode** (`database.clusterRef` set) the operator instead projects a per-ControlPlane admin ExternalSecret named `{controlplane.Name}-keystone-admin-credentials` (materialising the admin password from OpenBao) and **overrides** the projected Keystone CR's `bootstrap.adminPasswordSecretRef` to point at that operator-owned per-CP Secret's `password` key — the cp-level `passwordSecretRef` is **not** used as the child's ref in managed mode. See the [managed-mode admin-password provisioning](#admincredentialspec) note below. |
 | `applicationCredential` | [`ApplicationCredentialSpec`](#applicationcredentialspec) | Yes | — | Policy for the K-ORC admin application credential (restriction, access rules, rotation mode). |
 | `bootstrapResources` | [`[]BootstrapResourceSpec`](#bootstrapresourcespec) | No | `nil` | OpenStack resources K-ORC bootstraps alongside the admin credential (e.g. the projects/roles a fresh control plane needs). The element shape is intentionally minimal at L1; the reconciler interprets it. |
+
+> **`passwordSecretRef` is operator-owned in managed mode.** The
+> `keystone-admin` default is the **brownfield / spec-level default** only. In
+> **managed mode** (`database.clusterRef` set) the operator projects a
+> per-ControlPlane admin `ExternalSecret` named
+> `{controlplane.Name}-keystone-admin-credentials` in the ControlPlane namespace
+> that materialises the admin password from OpenBao path
+> `bootstrap/{namespace}/{controlplane.Name}-keystone/admin` (canonical:
+> `bootstrap/openstack/controlplane-keystone/admin`, property `password`), and
+> **overrides** the projected Keystone CR's `bootstrap.adminPasswordSecretRef` to
+> point at that operator-owned per-CP Secret's `password` key. The cp-level
+> `passwordSecretRef` is therefore **not** used as the child's ref in managed
+> mode — the source `cp.Spec` is left untouched; only the projected child's ref
+> is reassigned.
+>
+> In **brownfield mode** (`database.clusterRef == nil`, a Host-based DB) the
+> operator projects **no** admin ExternalSecret: the user supplies the
+> admin-password Secret out-of-band and the cp-level `passwordSecretRef` (default
+> `keystone-admin`) is projected onto the Keystone CR's
+> `bootstrap.adminPasswordSecretRef` verbatim. See the
+> [ControlPlane Reconciler reference](./controlplane-reconciler.md) for the
+> admin-credential flow.
 
 ---
 
@@ -755,18 +777,27 @@ markers' documented values where a marker also exists.
 > out-of-band; the operator projects no ExternalSecret in brownfield mode.
 
 > **Operational contract.** The webhook only materializes the Secret
-> *names and references* — it never invents credential material. A ControlPlane
-> that omits `spec.korc` (or `spec.infrastructure.database.secretRef`) therefore
-> relies on the cluster operator having **pre-seeded** the referenced Secrets in
-> the ControlPlane's namespace before the credential sub-reconcilers can advance:
-> the admin password Secret (`keystone-admin`, key `password`) and the K-ORC
-> `clouds.yaml` ExternalSecret/Secret (`k-orc-clouds-yaml`). The infrastructure
-> layer seeds these (see the [quick-start](../../quick-start-controlplane.md)). A
-> missing admin password Secret degrades to `KORCReady=False` /
-> `WaitingForAdminPassword`, and a not-yet-synced `clouds.yaml` to
-> `AdminCredentialReady=False` / `WaitingForCloudsYaml` — never a silent
-> authentication. `TestIntegration_MinimalManagedToReady` encodes this contract by
-> pre-creating those Secrets at the defaulted names.
+> *names and references* — it never invents credential material. In **managed
+> mode** (`database.clusterRef` set) the operator itself projects the admin
+> password: it creates a per-ControlPlane admin `ExternalSecret`
+> (`{controlplane.Name}-keystone-admin-credentials`) materialising the password
+> from OpenBao and **overrides** the projected Keystone CR's
+> `bootstrap.adminPasswordSecretRef` onto it, so the cp-level `passwordSecretRef`
+> (default `keystone-admin`) is **not** the Secret the child consumes — see the
+> [`passwordSecretRef` managed-mode note](#admincredentialspec) above. In
+> **brownfield mode** (`database.clusterRef == nil`) the operator projects no
+> admin ExternalSecret, so a ControlPlane that omits `spec.korc` (or
+> `spec.infrastructure.database.secretRef`) relies on the cluster operator having
+> **pre-seeded** the referenced Secrets in the ControlPlane's namespace before the
+> credential sub-reconcilers can advance: the admin password Secret
+> (`keystone-admin`, key `password`) and the K-ORC `clouds.yaml`
+> ExternalSecret/Secret (`k-orc-clouds-yaml`). The infrastructure layer seeds
+> these (see the [quick-start](../../quick-start-controlplane.md)). A missing
+> admin password Secret degrades to `KORCReady=False` / `WaitingForAdminPassword`,
+> and a not-yet-synced `clouds.yaml` to `AdminCredentialReady=False` /
+> `WaitingForCloudsYaml` — never a silent authentication.
+> `TestIntegration_MinimalManagedToReady` encodes this contract by pre-creating
+> those Secrets at the defaulted names.
 
 ### Validating Webhook
 

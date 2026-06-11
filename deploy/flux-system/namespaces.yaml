@@ -17,7 +17,9 @@
 # CC-0110 (REQ-023): c5c3-system hosts the c5c3-operator controller in its own
 # dedicated Namespace (mirroring keystone-system), and orc-system hosts the
 # K-ORC (OpenStack Resource Controller) manager that provides the declarative
-# Keystone resource CRDs the c5c3-operator drives.
+# Keystone resource CRDs the c5c3-operator drives. The orc-system Namespace is
+# co-declared here because the K-ORC installer's own resources land there; it no
+# longer hosts a static k-orc-clouds-yaml ExternalSecret (removed, CC-0117).
 ---
 apiVersion: v1
 kind: Namespace

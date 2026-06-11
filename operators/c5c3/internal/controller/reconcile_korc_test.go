@@ -351,6 +351,30 @@ func TestReconcileKORC_WaitsForAdminPassword(t *testing.T) {
 	g.Expect(cond.Reason).To(Equal("WaitingForAdminPassword"))
 }
 
+// TestReadAdminPassword_ManagedReadsOperatorOwnedSecret proves that in managed
+// mode (Database.ClusterRef != nil) readAdminPassword resolves the EFFECTIVE ref
+// (CC-0117, REQ-005) — the operator-owned per-ControlPlane Secret
+// adminPasswordSecretName(cp) — and NOT the user's spec PasswordSecretRef
+// ("keystone-admin").
+func TestReadAdminPassword_ManagedReadsOperatorOwnedSecret(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := korcControlPlane()
+	cp.Spec.Infrastructure.Database.ClusterRef = &corev1.LocalObjectReference{Name: "openstack-db"}
+
+	// The operator-owned admin-password Secret the managed effective ref points at.
+	managedSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: adminPasswordSecretName(cp), Namespace: cp.Namespace},
+		Data:       map[string][]byte{"password": []byte(testAdminPassword)},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, managedSecret).Build()
+
+	pw, err := readAdminPassword(context.Background(), c, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(pw).To(Equal(testAdminPassword), "managed mode must read the operator-owned per-CP Secret")
+}
+
 // --- 2.7: reconcileAdminCredential push + ES gate ---
 
 func TestReconcileAdminCredential_GatedOnKORC(t *testing.T) {

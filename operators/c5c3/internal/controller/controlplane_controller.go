@@ -30,11 +30,15 @@ import (
 )
 
 // ControlPlaneSecretNameIndexKey is the field-indexer key under which ControlPlane
-// CRs are indexed by the union of their referenced Secret names. Today that is
-// the single admin-password Secret (spec.korc.adminCredential.passwordSecretRef.name).
-// SetupWithManager registers the indexer and secretToControlPlaneMapper uses it
-// for an O(1) reverse lookup from a Secret event to the referencing ControlPlane(s),
-// mirroring the keystone operator's KeystoneSecretNameIndexKey (CC-0110, REQ-012).
+// CRs are indexed by the union of their referenced Secret names. Today that is the
+// single EFFECTIVE admin-password Secret name (CC-0117, REQ-005): in managed mode
+// (Database.ClusterRef != nil) the operator-owned per-ControlPlane Secret
+// adminPasswordSecretName(cp), and in brownfield mode the user-supplied
+// spec.korc.adminCredential.passwordSecretRef.name. SetupWithManager registers the
+// indexer and secretToControlPlaneMapper uses it for an O(1) reverse lookup from a
+// Secret event to the referencing ControlPlane(s), mirroring the keystone operator's
+// KeystoneSecretNameIndexKey (CC-0110, REQ-012). The constant's string value remains
+// the spec passwordSecretRef field path because it is only an index-key identifier.
 // #nosec G101 -- field-indexer key (a JSONPath-like field selector), not a credential.
 const ControlPlaneSecretNameIndexKey = "spec.korc.adminCredential.passwordSecretRef.name"
 
@@ -49,6 +53,7 @@ const (
 	conditionTypeKeystoneReady        = "KeystoneReady"
 	conditionTypeKORCReady            = "KORCReady"
 	conditionTypeAdminCredentialReady = "AdminCredentialReady" //nolint:gosec // G101 false positive: condition type name, not a credential.
+	conditionTypeAdminPasswordReady   = "AdminPasswordReady"   //nolint:gosec // G101 false positive: condition type name, not a credential.
 	conditionTypeCatalogReady         = "CatalogReady"
 	conditionTypeReady                = "Ready"
 )
@@ -61,6 +66,7 @@ var subConditionTypes = []string{
 	conditionTypeKeystoneReady,
 	conditionTypeKORCReady,
 	conditionTypeAdminCredentialReady,
+	conditionTypeAdminPasswordReady,
 	conditionTypeCatalogReady,
 }
 
@@ -110,6 +116,15 @@ func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	if result, err := instrumentSubReconciler(ctx, "DBCredentials", func(ctx context.Context) (ctrl.Result, error) {
 		return r.reconcileDBCredentials(ctx, &cp)
+	}); !result.IsZero() || err != nil {
+		return r.updateStatus(ctx, &cp, result, err)
+	}
+
+	// AdminPassword runs BEFORE Keystone (CC-0117): the keystone-operator's
+	// SecretsReady gate needs the admin-password ExternalSecret to exist before the
+	// projected Keystone child references it.
+	if result, err := instrumentSubReconciler(ctx, "AdminPassword", func(ctx context.Context) (ctrl.Result, error) {
+		return r.reconcileAdminPassword(ctx, &cp)
 	}); !result.IsZero() || err != nil {
 		return r.updateStatus(ctx, &cp, result, err)
 	}
@@ -187,10 +202,12 @@ func setReadyCondition(cp *c5c3v1alpha1.ControlPlane) {
 
 // controlPlaneSecretNameExtractor is the controller-runtime IndexerFunc registered
 // under ControlPlaneSecretNameIndexKey. It returns the deduplicated, non-empty
-// set of Secret names a ControlPlane CR references — currently only the admin
-// password Secret (spec.korc.adminCredential.passwordSecretRef.name) — so the
-// field indexer can resolve a Secret event to the referencing CR(s) without
-// listing every ControlPlane in the namespace (CC-0110, REQ-012).
+// set of Secret names a ControlPlane CR references — currently only the EFFECTIVE
+// admin-password Secret name (CC-0117, REQ-005): the operator-owned per-ControlPlane
+// Secret name in managed mode, the user-supplied spec.korc.adminCredential
+// .passwordSecretRef.name in brownfield mode — so the field indexer can resolve a
+// Secret event to the referencing CR(s) without listing every ControlPlane in the
+// namespace (CC-0110, REQ-012).
 func controlPlaneSecretNameExtractor(obj client.Object) []string {
 	cp, ok := obj.(*c5c3v1alpha1.ControlPlane)
 	if !ok {
@@ -198,7 +215,7 @@ func controlPlaneSecretNameExtractor(obj client.Object) []string {
 		// return is safer than a panic if it ever does.
 		return nil
 	}
-	name := cp.Spec.KORC.AdminCredential.PasswordSecretRef.Name
+	name := effectiveAdminPasswordSecretRef(cp).Name
 	if name == "" {
 		return []string{}
 	}

@@ -153,6 +153,17 @@ spec:
   # and is asserted by tests/e2e/c5c3/db-credential-scoping/ instead. This
   # suite always runs against the kind overlay, so the assertion is valid
   # here.
+  #
+  # CC-0117: keystone-admin and mariadb-root-password are now ALSO kind-only
+  # shims (deploy/kind/infrastructure/keystone-admin-externalsecret.yaml and
+  # mariadb-root-password-externalsecret.yaml) — the production stack
+  # (deploy/eso/) ships NONE of these static ExternalSecrets. The admin
+  # password specifically is now operator-projected per-ControlPlane
+  # (reconcileAdminPassword) into the per-CP Secret
+  # controlplane-keystone-admin-credentials, asserted by
+  # tests/e2e/c5c3/admin-password-scoping/. Because this suite always runs
+  # against the kind overlay, the three ExternalSecret Ready assertions below
+  # remain valid here.
   - try:
     - assert:
         resource:
