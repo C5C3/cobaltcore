@@ -315,6 +315,20 @@
       "automerge": true,
       "minimumReleaseAge": "3 days",
       "groupName": "Go build tooling"
+    },
+    {
+      "matchManagers": ["pip_requirements"],
+      "matchFileNames": ["images/venv-builder/requirements.txt"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
+      "matchManagers": ["pip_requirements"],
+      "matchFileNames": ["images/venv-builder/requirements.txt"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "automerge": true,
+      "minimumReleaseAge": "3 days",
+      "groupName": "venv-builder base packages"
     }
   ]
 }
