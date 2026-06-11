@@ -473,3 +473,48 @@ tests:
     asserts:
       - isKind:
           of: Deployment
+
+  # ---------------------------------------------------------------------------
+  # logging schema constraints
+  # ---------------------------------------------------------------------------
+  - it: should reject non-boolean logging.development
+    set:
+      logging:
+        development: "yes"
+    asserts:
+      - failedTemplate:
+          errorPattern: "/logging/development.*want boolean"
+
+  - it: should reject invalid logging.encoder enum value
+    set:
+      logging:
+        encoder: xml
+    asserts:
+      - failedTemplate:
+          errorPattern: "/logging/encoder.*must be one of"
+
+  - it: should reject invalid logging.level value
+    set:
+      logging:
+        level: verbose
+    asserts:
+      - failedTemplate:
+          errorPattern: "/logging/level.*does not match pattern"
+
+  - it: should reject unknown property in logging
+    set:
+      logging:
+        timeEncoding: iso8601
+    asserts:
+      - failedTemplate:
+          errorPattern: "/logging.*additional properties.*not allowed"
+
+  - it: should accept valid logging overrides
+    set:
+      logging:
+        development: true
+        level: debug
+        encoder: console
+    asserts:
+      - isKind:
+          of: Deployment

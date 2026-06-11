@@ -185,3 +185,35 @@ tests:
       - contains:
           path: spec.template.spec.containers[0].args
           content: --health-probe-bind-address=:8081
+
+  # Operator logging (zap) configuration tests.
+  - it: should not render zap flags with default logging values
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --zap-devel=true
+
+  - it: should render --zap-devel=true when logging.development is true
+    set:
+      logging:
+        development: true
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --zap-devel=true
+
+  - it: should render --zap-log-level and --zap-encoder when set
+    set:
+      logging:
+        level: debug
+        encoder: console
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --zap-log-level=debug
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --zap-encoder=console
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --zap-devel=true

@@ -6,7 +6,7 @@ Consuming charts render it with a one-line template that passes the root context
     {{- include "operator-library.deployment" . }}
 
 All settings (image, replicas, resources, webhook, leaderElection, metrics,
-rbac.namespaceScoped) are read from the consuming chart's .Values.
+rbac.namespaceScoped, logging) are read from the consuming chart's .Values.
 */}}
 {{- define "operator-library.deployment" -}}
 apiVersion: apps/v1
@@ -50,6 +50,15 @@ spec:
             {{- end }}
             - --metrics-bind-address=:{{ .Values.metrics.port }}
             - --health-probe-bind-address=:8081
+            {{- if .Values.logging.development }}
+            - --zap-devel=true
+            {{- end }}
+            {{- with .Values.logging.level }}
+            - --zap-log-level={{ . }}
+            {{- end }}
+            {{- with .Values.logging.encoder }}
+            - --zap-encoder={{ . }}
+            {{- end }}
           ports:
             - name: metrics
               containerPort: {{ .Values.metrics.port }}

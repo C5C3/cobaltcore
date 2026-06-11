@@ -36,6 +36,23 @@ webhook:
 metrics:
   port: 8080
 
+# Operator logging configuration (controller-runtime zap logger). The operator
+# defaults to the production profile (development=false): JSON encoder, info
+# level, and stack traces only at error level — suitable for log aggregation.
+# Override these to restore human-readable console output during local
+# development; each value maps to a controller-runtime --zap-* flag and is
+# omitted from the operator args when left at its default.
+logging:
+  # When true, passes --zap-devel: console encoder, debug verbosity, warn-level
+  # stack traces, and a DPanic that panics. Leave false for production.
+  development: false
+  # --zap-log-level: one of debug, info, error, panic, or a positive integer
+  # for custom verbosity. Empty uses the mode default (info in production).
+  level: ""
+  # --zap-encoder: json or console. Empty uses the mode default (json in
+  # production).
+  encoder: ""
+
 # CC-0089, REQ-006: Prometheus ServiceMonitor integration.
 # When enabled, renders a monitoring.coreos.com/v1 ServiceMonitor targeting the
 # operator's metrics port; prometheus-operator CRDs must be installed in-cluster.

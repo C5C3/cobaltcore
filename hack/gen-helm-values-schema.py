@@ -7,7 +7,7 @@
 
 The keystone-operator and c5c3-operator charts share the bulk of their Helm
 values schema: the resourceQuantity definition, the image / replicas /
-resources / rbac / leaderElection / webhook / metrics / monitoring /
+resources / rbac / leaderElection / webhook / metrics / logging / monitoring /
 serviceAccount / name-override properties, the operator-library subchart-values
 property, and the rbac->webhook constraint. This script holds that shared
 schema once and emits each chart's values.schema.json, layering the
@@ -181,6 +181,31 @@ METRICS = {
             "minimum": 1,
             "maximum": 65535,
         }
+    },
+}
+
+LOGGING = {
+    "type": "object",
+    "description": "Operator zap logger configuration. Production defaults (development=false): JSON encoder, info level, error-level stack traces.",
+    "additionalProperties": False,
+    "properties": {
+        "development": {
+            "type": "boolean",
+            "description": "Enable development logging mode (--zap-devel): console encoder, debug verbosity, warn-level stack traces. Leave false for production.",
+            "default": False,
+        },
+        "level": {
+            "type": "string",
+            "description": "Zap log level (--zap-log-level): debug, info, error, panic, or a positive integer for custom verbosity. Empty uses the mode default.",
+            "default": "",
+            "pattern": r"^(|debug|info|error|panic|[1-9][0-9]*)$",
+        },
+        "encoder": {
+            "type": "string",
+            "description": "Zap log encoder (--zap-encoder): json or console. Empty uses the mode default.",
+            "default": "",
+            "enum": ["", "json", "console"],
+        },
     },
 }
 
@@ -397,6 +422,7 @@ def build_schema(chart):
         "leaderElection": LEADER_ELECTION,
         "webhook": webhook_property(chart["webhook_enabled_description"]),
         "metrics": METRICS,
+        "logging": LOGGING,
         "monitoring": MONITORING,
         "serviceAccount": SERVICE_ACCOUNT,
     }

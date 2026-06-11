@@ -160,6 +160,34 @@
         }
       }
     },
+    "logging": {
+      "type": "object",
+      "description": "Operator zap logger configuration. Production defaults (development=false): JSON encoder, info level, error-level stack traces.",
+      "additionalProperties": false,
+      "properties": {
+        "development": {
+          "type": "boolean",
+          "description": "Enable development logging mode (--zap-devel): console encoder, debug verbosity, warn-level stack traces. Leave false for production.",
+          "default": false
+        },
+        "level": {
+          "type": "string",
+          "description": "Zap log level (--zap-log-level): debug, info, error, panic, or a positive integer for custom verbosity. Empty uses the mode default.",
+          "default": "",
+          "pattern": "^(|debug|info|error|panic|[1-9][0-9]*)$"
+        },
+        "encoder": {
+          "type": "string",
+          "description": "Zap log encoder (--zap-encoder): json or console. Empty uses the mode default.",
+          "default": "",
+          "enum": [
+            "",
+            "json",
+            "console"
+          ]
+        }
+      }
+    },
     "monitoring": {
       "type": "object",
       "description": "Observability integration configuration (CC-0089)",

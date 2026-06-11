@@ -2,7 +2,7 @@ apiVersion: v2
 name: keystone-operator
 description: A Helm chart for deploying the Keystone OpenStack operator
 type: application
-version: 0.3.0
+version: 0.4.0
 appVersion: "0.1.0"
 # The shared naming/label helpers and the Deployment skeleton live in the
 # operator-library library chart so they are defined once for both operator
@@ -19,3 +19,5 @@ annotations:
       description: JSON Schema validation for chart values (CC-0069)
     - kind: added
       description: Opt-in NetworkPolicy for operator pod egress/ingress restriction (CC-0090)
+    - kind: added
+      description: Expose operator log level, encoder, and development mode as chart values
