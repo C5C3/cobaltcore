@@ -1,5 +1,0 @@
-CC-0100 / REQ-006 non-regression check vs origin/main (b839aacf, 2026-04-28): production stack untouched.
-Verified via `git diff origin/main -- deploy/flux-system/kustomization.yaml deploy/flux-system/sources/ deploy/flux-system/releases/ deploy/kind/base/kustomization.yaml operators/keystone/helm/keystone-operator/values.yaml operators/keystone/helm/keystone-operator/values.schema.json` — zero diff lines, all six paths byte-identical.
-Production overlay `deploy/flux-system/` carries no kube-prometheus-stack reference; no file added under `sources/` or `releases/` — the existing `prometheus-community` HelmRepository is reused.
-Kind base overlay `deploy/kind/base/kustomization.yaml` is unchanged; the new `deploy/kind/prometheus/` overlay is opt-in only and is not referenced by the base.
-Operator chart defaults (`monitoring.serviceMonitor.enabled=false` in `values.yaml`, schema in `values.schema.json`) are unchanged; ServiceMonitor enablement is performed solely by the WITH_PROMETHEUS=true post-apply `kubectl patch` in `hack/deploy-infra.sh`.
