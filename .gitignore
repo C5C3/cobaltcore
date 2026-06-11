@@ -31,9 +31,22 @@ node_modules/
 docs/.vitepress/cache/
 docs/.vitepress/dist/
 
-# Local developer scratch
+# Local developer scratch — throwaway CRs kept out of version control. Bare
+# names match by basename in any directory; already-tracked manifests such as
+# deploy/kind/controlplane/controlplane.yaml stay tracked regardless.
 keystone.yaml
 keystone-ca.crt
+controlplane.yaml
+cp2.yml
+demo/
+
+# Key material / credentials — never commit private keys or client bundles
+# (e.g. the OpenBao mTLS openbao-client.p12). Use `git add -f` for the rare
+# fixture that is meant to be tracked.
+*.p12
+*.pem
+*.key
+*.pfx
 
 # CC-0100 — Build artifact: copied at deploy time from operators/keystone/dashboards/
 # (WITH_PROMETHEUS=true) so kustomize's configMapGenerator can reference it from
