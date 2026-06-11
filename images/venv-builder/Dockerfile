@@ -25,14 +25,13 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # Prepare virtual environment
 RUN python3 -m venv /var/lib/openstack
 
-# Common base packages for all services (no --constraint: venv-builder is
-# release-independent; constraints are applied in service Dockerfiles)
-RUN uv pip install --prefix /var/lib/openstack \
-    cryptography \
-    pymemcache \
-    pymysql \
-    python-memcached \
-    uwsgi
+# Common base packages for all services, version-pinned via requirements.txt
+# for a reproducible venv. venv-builder stays release-independent: the
+# OpenStack-dependency subset is re-pinned per release in service Dockerfiles
+# via --constraint upper-constraints.txt, while uwsgi (not an OpenStack
+# dependency) is fixed here. Renovate tracks the pins (see renovate.json).
+RUN --mount=type=bind,source=requirements.txt,target=/tmp/requirements.txt \
+    uv pip install --prefix /var/lib/openstack -r /tmp/requirements.txt
 
 # CC-0031: Static OCI Image Spec annotations for local builds.
 # CI-generated labels from docker/metadata-action supplement these at push time.

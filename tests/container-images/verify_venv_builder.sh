@@ -26,6 +26,9 @@ if [[ -z "$EXPECTED_UV_VERSION" ]]; then
   echo "ERROR: Could not extract uv version from $SCRIPT_DIR/../../images/venv-builder/Dockerfile" >&2
   exit 1
 fi
+
+# Source of truth for the pinned base-package versions asserted by Test 3.
+REQUIREMENTS="$SCRIPT_DIR/../../images/venv-builder/requirements.txt"
 test_uv_version_is_pinned() {
   echo "Test: uv version is $EXPECTED_UV_VERSION"
   local version exit_code=0
@@ -44,17 +47,55 @@ test_virtualenv_exists() {
   assert_eq "/var/lib/openstack/bin/python3 is executable" "0" "$exit_code"
 }
 
-# --- Test 3: common packages are installed ---
-test_common_packages_installed() {
-  echo "Test: common packages are installed in virtualenv"
-  local pip_list exit_code=0
-  pip_list=$(docker run --rm "$IMAGE" /var/lib/openstack/bin/pip list 2>&1) || exit_code=$?
+# --- Test 3: common packages are installed at their pinned versions ---
+# Asserts every pin in images/venv-builder/requirements.txt is installed at
+# exactly that version, so a drift back to "whatever is latest on PyPI" is
+# caught. Expected values are derived from the requirements file (the source
+# of truth), not hard-coded here.
+test_common_packages_pinned() {
+  echo "Test: common packages are installed at their pinned versions"
 
+  if [[ ! -f "$REQUIREMENTS" ]]; then
+    echo "  FAIL: requirements file not found at $REQUIREMENTS"
+    FAIL=$((FAIL + 1))
+    return
+  fi
+
+  local freeze exit_code=0
+  freeze=$(docker run --rm "$IMAGE" /var/lib/openstack/bin/pip list --format=freeze 2>&1) || exit_code=$?
   assert_eq "pip list exits 0" "0" "$exit_code"
-  assert_contains "cryptography installed" "$pip_list" "cryptography"
-  assert_contains "pymysql installed" "$pip_list" "PyMySQL"
-  assert_contains "python-memcached installed" "$pip_list" "python-memcached"
-  assert_contains "uwsgi installed" "$pip_list" "uWSGI"
+
+  # Collect "name==version" pins (skip SPDX header, comments, and blanks).
+  local pins=() line
+  while IFS= read -r line; do
+    [[ "$line" =~ ^[A-Za-z0-9._-]+==[^[:space:]]+$ ]] && pins+=("$line")
+  done < "$REQUIREMENTS"
+
+  if [[ "${#pins[@]}" -eq 0 ]]; then
+    echo "  FAIL: no pins parsed from $REQUIREMENTS"
+    FAIL=$((FAIL + 1))
+    return
+  fi
+
+  # Match each pin against a whole freeze line, anchored, so a pin can't match
+  # a substring of another package (e.g. "pymysql==1.2.0" inside
+  # "pymysql==1.2.0.post1", or a different project whose line merely contains
+  # the string). pip canonicalises name casing (PyMySQL, uWSGI), so match
+  # case-insensitively; "." is escaped so it stays literal in the ERE.
+  local pin name version pattern
+  for pin in "${pins[@]}"; do
+    name="${pin%%==*}"
+    version="${pin#*==}"
+    pattern="^${name//./\\.}==${version//./\\.}$"
+    if echo "$freeze" | grep -iqE "$pattern"; then
+      echo "  PASS: $pin installed at pinned version"
+      PASS=$((PASS + 1))
+    else
+      echo "  FAIL: $pin not installed at pinned version"
+      echo "    pip freeze: $freeze"
+      FAIL=$((FAIL + 1))
+    fi
+  done
 }
 
 # --- Run all tests ---
@@ -65,7 +106,7 @@ test_uv_version_is_pinned
 echo ""
 test_virtualenv_exists
 echo ""
-test_common_packages_installed
+test_common_packages_pinned
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 

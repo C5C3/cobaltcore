@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Base Python packages pre-installed into the shared virtualenv by the
+# venv-builder image. Pinned so the venv-builder image is reproducible:
+# without pins these resolve to whatever is latest on PyPI at build time.
+#
+# venv-builder is release-independent (one image for every OpenStack release),
+# so these pins are deliberately NOT taken from any single release's
+# upper-constraints.txt. The OpenStack-dependency subset (cryptography,
+# pymemcache, pymysql, python-memcached) is authoritatively re-pinned by each
+# service build via `uv pip install --constraint upper-constraints.txt`; uwsgi
+# is not an OpenStack dependency and is absent from upper-constraints, so its
+# version is fixed here.
+#
+# Renovate keeps these current via the native pip_requirements manager (see
+# renovate.json: minor/patch automerged after 3 days, majors gated for review).
+cryptography==48.0.1
+pymemcache==4.0.0
+pymysql==1.2.0
+python-memcached==1.62
+uwsgi==2.0.31
