@@ -105,6 +105,21 @@ for the privilege-escalation path this closes. The default stays `false` because
 | --- | --- | --- | --- |
 | `metrics.port` | `integer` | minimum: `1`, maximum: `65535` | `8080` |
 
+### logging
+
+The operator runs the controller-runtime zap logger in the production profile by
+default (`development: false`): JSON encoder, info-level verbosity, and stack traces
+only at error level. Override these for human-readable console output during local
+development. Each value maps to a controller-runtime `--zap-*` flag and is omitted
+from the operator args when left at its default, so the production profile is the
+behaviour unless a field is set explicitly.
+
+| Field | Type | Constraint | Default |
+| --- | --- | --- | --- |
+| `logging.development` | `boolean` | — | `false` |
+| `logging.level` | `string` | pattern: `debug`, `info`, `error`, `panic`, or a positive integer (empty allowed) | `""` |
+| `logging.encoder` | `string` | enum: `json`, `console` (empty allowed) | `""` |
+
 ### serviceAccount
 
 | Field | Type | Constraint | Default |
@@ -166,6 +181,7 @@ Schema validation is tested with helm-unittest in
 | Invalid quantities | `resources.limits.cpu: "not-valid"` |
 | Exponent+suffix | `cpu: "1e3m"`, `memory: "1e3Ki"` |
 | Conditional constraint | `rbac.namespaceScoped=true` with `webhook.enabled=true` |
+| Logging constraints | `logging.development: "yes"`, `logging.encoder: "xml"`, `logging.level: "verbose"` |
 
 ### Positive Tests (acceptance)
 
@@ -177,3 +193,4 @@ Schema validation is tested with helm-unittest in
 | Numeric resource quantities | `cpu: 0.5` |
 | Exponent-only quantities | `cpu: "1e3"` |
 | Conditional constraint | `rbac.namespaceScoped=true` with `webhook.enabled=false` |
+| Logging overrides | `development: true`, `level: debug`, `encoder: console` |
