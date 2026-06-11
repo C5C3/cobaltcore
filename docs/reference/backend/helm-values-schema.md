@@ -15,6 +15,14 @@ during `helm install`, `helm upgrade`, `helm lint`, and `helm template`.
 operators/keystone/helm/keystone-operator/values.schema.json
 ```
 
+::: warning Generated file
+This schema is generated from the shared source in
+`hack/gen-helm-values-schema.py`, which also emits the c5c3-operator schema from
+the same definitions so the two cannot drift. Edit the generator and run
+`make gen-helm-schema`; do not hand-edit `values.schema.json` —
+`make verify-helm-schema` (run in CI) fails on drift.
+:::
+
 ## Schema Overview
 
 The schema uses JSON Schema Draft-07 and defines constraints for every configurable

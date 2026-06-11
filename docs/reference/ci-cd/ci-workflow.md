@@ -440,24 +440,29 @@ Builds the VitePress documentation site to catch broken links and build errors.
 
 ### helm-validate
 
-Validates Helm chart structure, template rendering, and unit tests without requiring a
-cluster. Runs `helm lint`, `helm template` with five value override scenarios,
-and `helm unittest` to catch chart regressions at PR time.
+Validates Helm chart structure, template rendering, and unit tests for both
+operator charts without requiring a cluster. Verifies the generated
+`values.schema.json` is in sync with its shared source, vendors the shared
+`operator-library` subchart, then runs `helm lint`, `helm template` with five
+value override scenarios, and `helm unittest` for each chart to catch
+regressions at PR time.
 
 **Dependencies:** `needs: [changes]`
 **Condition:** `if: needs.changes.outputs.helm == 'true'`
-**Path filter:** `operators/keystone/helm/**` (forced `true` on `v*` tag pushes)
+**Path filter:** `operators/keystone/helm/**`, `operators/c5c3/helm/**`, `operators/shared/helm/**`, `hack/gen-helm-values-schema.py`, `Makefile` (forced `true` on `v*` tag pushes)
 
 | Step | Action | Details |
 | --- | --- | --- |
 | 1 | `actions/checkout@v6` | Checks out the repository (SHA-pinned) |
 | 2 | `azure/setup-helm@v5` | Installs Helm CLI (SHA-pinned) |
 | 3 | `helm plugin install helm-unittest` | Installs helm-unittest plugin (pinned to `v1.0.3`) |
-| 4 | `helm lint` | Validates chart structure and syntax for `operators/keystone/helm/keystone-operator/` |
-| 5 | `helm template` (5 scenarios) | Renders chart with value overrides to catch broken conditionals and invalid YAML |
-| 6 | `helm unittest` | Runs unit test suites from `operators/keystone/helm/keystone-operator/tests/` |
+| 4 | `make verify-helm-schema` | Fails if either chart's `values.schema.json` has drifted from the shared generator |
+| 5 | `make helm-deps` | Vendors the `operator-library` subchart into each chart's `charts/` |
+| 6 | `helm lint` | Validates chart structure and syntax for both operator charts |
+| 7 | `helm template` (5 scenarios) | Renders each chart with value overrides to catch broken conditionals and invalid YAML |
+| 8 | `helm unittest` | Runs the unit test suites under each chart's `tests/` directory |
 
-**Template scenarios (step 5):**
+**Template scenarios (step 7), run against each operator chart:**
 
 | Scenario | Values | Purpose |
 | --- | --- | --- |
@@ -467,7 +472,8 @@ and `helm unittest` to catch chart regressions at PR time.
 | 4 — custom resources | `resources.limits.cpu=100m`, `resources.limits.memory=64Mi` | Validates resource override wiring |
 | 5 — namespace-scoped RBAC | `rbac.namespaceScoped=true`, `webhook.enabled=false` | Validates Role/RoleBinding rendering instead of ClusterRole/ClusterRoleBinding |
 
-**Unit test suites (step 6):**
+**Unit test suites (step 8):** each operator chart runs its own `tests/`
+suites; the keystone-operator suites are listed below as representative.
 
 | Test File | Template Under Test | Key Assertions |
 | --- | --- | --- |

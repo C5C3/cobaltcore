@@ -152,6 +152,31 @@ docker run --rm keystone-operator:dev --help
 | `version` | `0.1.0` |
 | `appVersion` | `0.1.0` |
 
+### Shared Library Subchart
+
+The chart depends on the `operator-library` library chart
+(`operators/shared/helm/operator-library`), declared in `Chart.yaml`:
+
+```yaml
+dependencies:
+  - name: operator-library
+    version: 0.1.0
+    repository: "file://../../../shared/helm/operator-library"
+```
+
+The library holds, in one place, the naming and label helpers
+(`operator-library.fullname`, `operator-library.labels`,
+`operator-library.selectorLabels`, `operator-library.serviceAccountName`) and
+the operator `Deployment` skeleton (`operator-library.deployment`) that both the
+keystone-operator and c5c3-operator charts render. The chart-specific RBAC rule
+template (`keystone-operator.rbacRules`) stays in this chart.
+
+`Chart.lock` pins the dependency and is committed; the vendored copy under
+`charts/` is a build artifact (git-ignored). `helm dependency build` vendors it
+from the local path — run `make helm-deps` before `helm lint`/`template`/
+`unittest`, and `make helm-package` does it automatically so the published
+tarball is self-contained.
+
 ### Configuration Reference
 
 **File:** `values.yaml`
@@ -233,7 +258,7 @@ The `{fullname}` pattern resolves to `{release-name}-keystone-operator` unless
 
 ### Standard Labels
 
-All resources include standard Helm labels via the `keystone-operator.labels` helper:
+All resources include standard Helm labels via the `operator-library.labels` helper:
 
 | Label | Value |
 | --- | --- |
@@ -377,7 +402,7 @@ Both configurations include the annotation:
 
 ::: v-pre
 ```yaml
-cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "keystone-operator.fullname" . }}-webhook
+cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "operator-library.fullname" . }}-webhook
 ```
 :::
 

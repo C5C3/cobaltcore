@@ -244,7 +244,7 @@ monitoring:
 ```
 
 The ServiceMonitor selector targets the operator Service by
-`keystone-operator.selectorLabels` on port `metrics`, scraping the path
+`operator-library.selectorLabels` on port `metrics`, scraping the path
 `/metrics` at the configured interval. Prometheus-operator CRDs
 (`ServiceMonitor`) must be installed in the cluster; the chart does
 **not** install them. For the end-to-end operator-side enablement flow,

@@ -11,7 +11,7 @@ distinct from the per-CR NetworkPolicy emitted by
 [`reconcileNetworkPolicy`](./keystone-reconciler.md#sub-reconciler-contracts), which protects Keystone API pods rendered *from* a `Keystone` CR.
 
 - **Scope:** the operator Deployment pod selected by
-  `keystone-operator.selectorLabels`.
+  `operator-library.selectorLabels`.
 - **Chart:** `operators/keystone/helm/keystone-operator`.
 - **Template:** `templates/networkpolicy.yaml`.
 - **Values schema:** the authoritative contract for all tunables is
@@ -61,7 +61,7 @@ through the enablement steps.
 ## Rules rendered
 
 All rules below are emitted on a single `NetworkPolicy` object named after
-`include "keystone-operator.fullname" .` in the release namespace, with
+`include "operator-library.fullname" .` in the release namespace, with
 `spec.podSelector` matching the operator Deployment's selector labels.
 
 ### Egress
