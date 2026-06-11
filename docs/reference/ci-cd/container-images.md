@@ -97,18 +97,26 @@ for multi-stage service builds.
 
 **Pre-installed common packages:**
 
-The virtualenv includes four packages shared by all OpenStack services:
+The virtualenv includes five packages shared by all OpenStack services, version-pinned in
+`images/venv-builder/requirements.txt`:
 
 | Package | Purpose |
 | --- | --- |
 | `cryptography` | TLS, token encryption, Fernet keys |
+| `pymemcache` | Memcached client (pure-Python `pymemcache` backend) |
 | `pymysql` | MySQL/MariaDB database driver |
 | `python-memcached` | Memcached client for caching |
 | `uwsgi` | WSGI application server |
 
-These packages are installed **without** the `--constraint` flag. The `venv-builder` image
-is release-independent — version constraints are release-specific and applied only in
-service Dockerfiles when installing the actual service.
+These packages are **version-pinned** in `requirements.txt` so the `venv-builder` image is
+reproducible — without pins they would resolve to whatever is latest on PyPI at build time.
+The image stays release-independent: the pins are deliberately not taken from any single
+release's `upper-constraints.txt`. The OpenStack-dependency subset (`cryptography`,
+`pymemcache`, `pymysql`, `python-memcached`) is authoritatively re-pinned per release by
+service Dockerfiles via `uv pip install --constraint upper-constraints.txt`; `uwsgi` is not
+an OpenStack dependency (it is absent from `upper-constraints.txt`), so its version is fixed
+here. Renovate tracks these pins through its native `pip_requirements` manager — major bumps
+are gated for manual review, minor/patch are automerged after a three-day soak.
 
 **OCI labels:** Same static `LABEL` pattern as `python-base` — title, description,
 licenses, and vendor are embedded in the Dockerfile for local build visibility.
