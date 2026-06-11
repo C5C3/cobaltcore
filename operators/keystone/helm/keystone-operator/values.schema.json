@@ -51,7 +51,11 @@
           "type": "string",
           "description": "Image pull policy",
           "default": "IfNotPresent",
-          "enum": ["Always", "IfNotPresent", "Never"]
+          "enum": [
+            "Always",
+            "IfNotPresent",
+            "Never"
+          ]
         }
       }
     },
@@ -74,12 +78,20 @@
             "cpu": {
               "description": "CPU resource limit",
               "default": "500m",
-              "allOf": [{"$ref": "#/definitions/resourceQuantity"}]
+              "allOf": [
+                {
+                  "$ref": "#/definitions/resourceQuantity"
+                }
+              ]
             },
             "memory": {
               "description": "Memory resource limit",
               "default": "128Mi",
-              "allOf": [{"$ref": "#/definitions/resourceQuantity"}]
+              "allOf": [
+                {
+                  "$ref": "#/definitions/resourceQuantity"
+                }
+              ]
             }
           }
         },
@@ -91,12 +103,20 @@
             "cpu": {
               "description": "CPU resource request",
               "default": "10m",
-              "allOf": [{"$ref": "#/definitions/resourceQuantity"}]
+              "allOf": [
+                {
+                  "$ref": "#/definitions/resourceQuantity"
+                }
+              ]
             },
             "memory": {
               "description": "Memory resource request",
               "default": "64Mi",
-              "allOf": [{"$ref": "#/definitions/resourceQuantity"}]
+              "allOf": [
+                {
+                  "$ref": "#/definitions/resourceQuantity"
+                }
+              ]
             }
           }
         }
@@ -171,7 +191,7 @@
               "type": "string",
               "description": "Scrape interval (Go duration: e.g., 15s, 30s, 1m, or 0 to use the global default)",
               "default": "30s",
-              "pattern": "^(0|([0-9]+(ns|us|\u00b5s|ms|s|m|h))+)$"
+              "pattern": "^(0|([0-9]+(ns|us|µs|ms|s|m|h))+)$"
             }
           }
         }
@@ -213,7 +233,11 @@
               "type": "array",
               "description": "List of kube-apiserver CIDR blocks the operator may reach for egress and receive webhook calls from",
               "items": {
-                "allOf": [{"$ref": "#/definitions/cidr"}]
+                "allOf": [
+                  {
+                    "$ref": "#/definitions/cidr"
+                  }
+                ]
               },
               "default": []
             },
@@ -241,15 +265,27 @@
             },
             "namespaceSelector": {
               "description": "namespaceSelector matchLabels for the DNS peer (defaults to kube-system). minProperties:1 prevents an empty map from silently broadening the DNS peer to match all namespaces (CC-0090, REQ-005).",
-              "allOf": [{"$ref": "#/definitions/stringMap"}],
+              "allOf": [
+                {
+                  "$ref": "#/definitions/stringMap"
+                }
+              ],
               "minProperties": 1,
-              "default": {"kubernetes.io/metadata.name": "kube-system"}
+              "default": {
+                "kubernetes.io/metadata.name": "kube-system"
+              }
             },
             "podSelector": {
               "description": "podSelector matchLabels for the DNS peer (defaults to k8s-app=kube-dns). minProperties:1 prevents an empty map from silently broadening the DNS peer to match all pods (CC-0090, REQ-005).",
-              "allOf": [{"$ref": "#/definitions/stringMap"}],
+              "allOf": [
+                {
+                  "$ref": "#/definitions/stringMap"
+                }
+              ],
               "minProperties": 1,
-              "default": {"k8s-app": "kube-dns"}
+              "default": {
+                "k8s-app": "kube-dns"
+              }
             }
           }
         },
@@ -270,7 +306,11 @@
               "type": "array",
               "description": "CIDR blocks permitted to call the webhook on 9443. When empty, falls back to kubeApiServer.cidrs",
               "items": {
-                "allOf": [{"$ref": "#/definitions/cidr"}]
+                "allOf": [
+                  {
+                    "$ref": "#/definitions/cidr"
+                  }
+                ]
               },
               "default": []
             }
@@ -299,18 +339,26 @@
         "properties": {
           "rbac": {
             "properties": {
-              "namespaceScoped": { "const": true }
+              "namespaceScoped": {
+                "const": true
+              }
             },
-            "required": ["namespaceScoped"]
+            "required": [
+              "namespaceScoped"
+            ]
           }
         },
-        "required": ["rbac"]
+        "required": [
+          "rbac"
+        ]
       },
       "then": {
         "properties": {
           "webhook": {
             "properties": {
-              "enabled": { "const": false }
+              "enabled": {
+                "const": false
+              }
             }
           }
         }
@@ -321,12 +369,18 @@
         "properties": {
           "networkPolicy": {
             "properties": {
-              "enabled": { "const": true }
+              "enabled": {
+                "const": true
+              }
             },
-            "required": ["enabled"]
+            "required": [
+              "enabled"
+            ]
           }
         },
-        "required": ["networkPolicy"]
+        "required": [
+          "networkPolicy"
+        ]
       },
       "then": {
         "properties": {
@@ -334,13 +388,22 @@
             "properties": {
               "kubeApiServer": {
                 "properties": {
-                  "cidrs": { "minItems": 1 },
-                  "ports": { "minItems": 1 }
+                  "cidrs": {
+                    "minItems": 1
+                  },
+                  "ports": {
+                    "minItems": 1
+                  }
                 },
-                "required": ["cidrs", "ports"]
+                "required": [
+                  "cidrs",
+                  "ports"
+                ]
               }
             },
-            "required": ["kubeApiServer"]
+            "required": [
+              "kubeApiServer"
+            ]
           }
         }
       }

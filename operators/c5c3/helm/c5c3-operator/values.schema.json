@@ -39,7 +39,11 @@
           "type": "string",
           "description": "Image pull policy",
           "default": "IfNotPresent",
-          "enum": ["Always", "IfNotPresent", "Never"]
+          "enum": [
+            "Always",
+            "IfNotPresent",
+            "Never"
+          ]
         }
       }
     },
@@ -62,12 +66,20 @@
             "cpu": {
               "description": "CPU resource limit",
               "default": "500m",
-              "allOf": [{"$ref": "#/definitions/resourceQuantity"}]
+              "allOf": [
+                {
+                  "$ref": "#/definitions/resourceQuantity"
+                }
+              ]
             },
             "memory": {
               "description": "Memory resource limit",
               "default": "128Mi",
-              "allOf": [{"$ref": "#/definitions/resourceQuantity"}]
+              "allOf": [
+                {
+                  "$ref": "#/definitions/resourceQuantity"
+                }
+              ]
             }
           }
         },
@@ -79,12 +91,20 @@
             "cpu": {
               "description": "CPU resource request",
               "default": "10m",
-              "allOf": [{"$ref": "#/definitions/resourceQuantity"}]
+              "allOf": [
+                {
+                  "$ref": "#/definitions/resourceQuantity"
+                }
+              ]
             },
             "memory": {
               "description": "Memory resource request",
               "default": "64Mi",
-              "allOf": [{"$ref": "#/definitions/resourceQuantity"}]
+              "allOf": [
+                {
+                  "$ref": "#/definitions/resourceQuantity"
+                }
+              ]
             }
           }
         }
@@ -203,18 +223,26 @@
         "properties": {
           "rbac": {
             "properties": {
-              "namespaceScoped": { "const": true }
+              "namespaceScoped": {
+                "const": true
+              }
             },
-            "required": ["namespaceScoped"]
+            "required": [
+              "namespaceScoped"
+            ]
           }
         },
-        "required": ["rbac"]
+        "required": [
+          "rbac"
+        ]
       },
       "then": {
         "properties": {
           "webhook": {
             "properties": {
-              "enabled": { "const": false }
+              "enabled": {
+                "const": false
+              }
             }
           }
         }

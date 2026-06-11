@@ -305,6 +305,19 @@ verify-crd-sync:
 	fi; \
 	echo "CRD sync check passed."
 
+.PHONY: gen-helm-schema
+# gen-helm-schema regenerates both operator charts' values.schema.json from the
+# single shared source in hack/gen-helm-values-schema.py. Edit the shared schema
+# there, then run this target so keystone-operator and c5c3-operator stay in sync.
+gen-helm-schema:
+	python3 hack/gen-helm-values-schema.py
+
+.PHONY: verify-helm-schema
+# verify-helm-schema fails if either committed values.schema.json has drifted
+# from the shared generator source (run in CI; mirrors verify-crd-sync).
+verify-helm-schema:
+	python3 hack/gen-helm-values-schema.py --check
+
 # ============================================================================
 # Deployment and Docker Targets
 # ============================================================================
