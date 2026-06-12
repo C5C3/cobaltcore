@@ -12,7 +12,6 @@ import (
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
-	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
@@ -166,80 +165,13 @@ func (r *KeystoneReconciler) reconcileCredentialKeys(ctx context.Context,
 	return ctrl.Result{}, nil
 }
 
-// ensureCredentialRotationRBAC creates the ServiceAccount, Role, and RoleBinding
-// needed by the credential rotation CronJob.
-//
-// The Role is split into two PolicyRules per to
-// enforce least-privilege on the CronJob ServiceAccount:
-//
-//  1. Read-only on the production credential-keys Secret — only `get`, so a
-//     compromised CronJob cannot write arbitrary credential keys into the
-//     production Secret and cause credential forgery.
-//  2. `get` + `patch` on the dedicated staging Secret (scoped by
-//     `resourceNames`) — the CronJob writes the rotation output there; the
-//     operator owns creation and deletion of the staging Secret, so `create`
-//     and `delete` are intentionally not granted.
+// ensureCredentialRotationRBAC ensures the ServiceAccount, Role, and RoleBinding
+// for the credential rotation CronJob via the shared ensureRotationRBAC helper:
+// read-only `get` on the production credential-keys Secret and `get`+`patch` on
+// the dedicated staging Secret.
 func (r *KeystoneReconciler) ensureCredentialRotationRBAC(ctx context.Context, keystone *keystonev1alpha1.Keystone, secretName string) error {
-	saName := fmt.Sprintf("%s-credential-rotate", keystone.Name)
-	stagingSecretName := credentialStagingSecretName(keystone)
-
-	// ServiceAccount
-	sa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: saName, Namespace: keystone.Namespace}}
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, sa, func() error {
-		return controllerutil.SetControllerReference(keystone, sa, r.Scheme)
-	}); err != nil {
-		return fmt.Errorf("ensuring ServiceAccount %s: %w", saName, err)
-	}
-
-	// Role with minimal permissions split into two PolicyRules
-	//   - production Secret: read-only (`get`) so a compromised CronJob
-	//     cannot write arbitrary credential keys to production.
-	//   - staging Secret: `get` + `patch` (no `create`/`delete`) so the
-	//     CronJob can write the rotation output while the operator retains
-	//     lifecycle ownership.
-	role := &rbacv1.Role{ObjectMeta: metav1.ObjectMeta{Name: saName, Namespace: keystone.Namespace}}
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, role, func() error {
-		role.Rules = []rbacv1.PolicyRule{
-			{
-				APIGroups:     []string{""},
-				Resources:     []string{"secrets"},
-				Verbs:         []string{"get"},
-				ResourceNames: []string{secretName},
-			},
-			{
-				APIGroups:     []string{""},
-				Resources:     []string{"secrets"},
-				Verbs:         []string{"get", "patch"},
-				ResourceNames: []string{stagingSecretName},
-			},
-		}
-		return controllerutil.SetControllerReference(keystone, role, r.Scheme)
-	}); err != nil {
-		return fmt.Errorf("ensuring Role %s: %w", saName, err)
-	}
-
-	// RoleBinding
-	rb := &rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Name: saName, Namespace: keystone.Namespace}}
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, rb, func() error {
-		rb.Subjects = []rbacv1.Subject{{
-			Kind:      "ServiceAccount",
-			Name:      saName,
-			Namespace: keystone.Namespace,
-		}}
-		// RoleRef is immutable after creation; only set on new objects.
-		if rb.RoleRef.Name == "" {
-			rb.RoleRef = rbacv1.RoleRef{
-				APIGroup: "rbac.authorization.k8s.io",
-				Kind:     "Role",
-				Name:     saName,
-			}
-		}
-		return controllerutil.SetControllerReference(keystone, rb, r.Scheme)
-	}); err != nil {
-		return fmt.Errorf("ensuring RoleBinding %s: %w", saName, err)
-	}
-
-	return nil
+	return r.ensureRotationRBAC(ctx, keystone,
+		fmt.Sprintf("%s-credential-rotate", keystone.Name), secretName, credentialStagingSecretName(keystone))
 }
 
 // ensureCredentialStagingSecret ensures the credential staging Secret exists

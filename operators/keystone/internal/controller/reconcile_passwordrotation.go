@@ -326,66 +326,13 @@ func (r *KeystoneReconciler) ensureAdminPasswordPushSourceSecret(ctx context.Con
 	return nil
 }
 
-// ensureAdminPasswordRotationRBAC creates the ServiceAccount, Role, and
-// RoleBinding for the admin-password rotation CronJob, mirroring
-// ensureFernetRotationRBAC's split-RBAC shape. The Role is
-// split into two PolicyRules: read-only `get` on the operator-owned push-source
-// Secret and `get`+`patch` scoped to the dedicated staging Secret. The operator,
-// not the CronJob, writes the push-source Secret — keeping the token-forgery
-// primitive (write access to a Secret consumed by privileged workloads) out of
-// the CronJob's attack surface.
+// ensureAdminPasswordRotationRBAC ensures the ServiceAccount, Role, and
+// RoleBinding for the admin-password rotation CronJob via the shared
+// ensureRotationRBAC helper: read-only `get` on the operator-owned push-source
+// Secret and `get`+`patch` on the dedicated staging Secret.
 func (r *KeystoneReconciler) ensureAdminPasswordRotationRBAC(ctx context.Context, keystone *keystonev1alpha1.Keystone) error {
-	saName := adminPasswordRotateSAName(keystone)
-
-	sa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: saName, Namespace: keystone.Namespace}}
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, sa, func() error {
-		return controllerutil.SetControllerReference(keystone, sa, r.Scheme)
-	}); err != nil {
-		return fmt.Errorf("ensuring ServiceAccount %s: %w", saName, err)
-	}
-
-	role := &rbacv1.Role{ObjectMeta: metav1.ObjectMeta{Name: saName, Namespace: keystone.Namespace}}
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, role, func() error {
-		role.Rules = []rbacv1.PolicyRule{
-			{
-				APIGroups:     []string{""},
-				Resources:     []string{"secrets"},
-				Verbs:         []string{"get"},
-				ResourceNames: []string{adminPasswordNextSecretName(keystone)},
-			},
-			{
-				APIGroups:     []string{""},
-				Resources:     []string{"secrets"},
-				Verbs:         []string{"get", "patch"},
-				ResourceNames: []string{adminPasswordStagingSecretName(keystone)},
-			},
-		}
-		return controllerutil.SetControllerReference(keystone, role, r.Scheme)
-	}); err != nil {
-		return fmt.Errorf("ensuring Role %s: %w", saName, err)
-	}
-
-	rb := &rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Name: saName, Namespace: keystone.Namespace}}
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, rb, func() error {
-		rb.Subjects = []rbacv1.Subject{{
-			Kind:      "ServiceAccount",
-			Name:      saName,
-			Namespace: keystone.Namespace,
-		}}
-		// RoleRef is immutable after creation; only set on new objects.
-		if rb.RoleRef.Name == "" {
-			rb.RoleRef = rbacv1.RoleRef{
-				APIGroup: "rbac.authorization.k8s.io",
-				Kind:     "Role",
-				Name:     saName,
-			}
-		}
-		return controllerutil.SetControllerReference(keystone, rb, r.Scheme)
-	}); err != nil {
-		return fmt.Errorf("ensuring RoleBinding %s: %w", saName, err)
-	}
-
-	return nil
+	return r.ensureRotationRBAC(ctx, keystone,
+		adminPasswordRotateSAName(keystone), adminPasswordNextSecretName(keystone), adminPasswordStagingSecretName(keystone))
 }
 
 // adminPasswordRotationCronJob builds the CronJob that mints a fresh admin

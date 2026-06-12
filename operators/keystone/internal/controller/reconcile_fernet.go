@@ -14,7 +14,6 @@ import (
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
-	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
@@ -158,70 +157,13 @@ func (r *KeystoneReconciler) reconcileFernetKeys(ctx context.Context,
 	return ctrl.Result{}, nil
 }
 
-// ensureFernetRotationRBAC creates the ServiceAccount, Role, and RoleBinding
-// needed by the Fernet rotation CronJob. The Role is split into two
-// PolicyRules read-only `get` on the production fernet keys Secret
-// and `get`+`patch` scoped to the dedicated staging Secret. The operator, not
-// the CronJob, writes the production Secret — removing the token-forgery
-// primitive from the CronJob's attack surface.
+// ensureFernetRotationRBAC ensures the ServiceAccount, Role, and RoleBinding for
+// the Fernet rotation CronJob via the shared ensureRotationRBAC helper:
+// read-only `get` on the production fernet keys Secret and `get`+`patch` on the
+// dedicated staging Secret.
 func (r *KeystoneReconciler) ensureFernetRotationRBAC(ctx context.Context, keystone *keystonev1alpha1.Keystone, secretName string) error {
-	saName := fmt.Sprintf("%s-fernet-rotate", keystone.Name)
-
-	// ServiceAccount
-	sa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: saName, Namespace: keystone.Namespace}}
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, sa, func() error {
-		return controllerutil.SetControllerReference(keystone, sa, r.Scheme)
-	}); err != nil {
-		return fmt.Errorf("ensuring ServiceAccount %s: %w", saName, err)
-	}
-
-	// Role split into two PolicyRules
-	//   1. `get` on the production fernet keys Secret (read-only; operator owns writes).
-	//   2. `get`+`patch` on the staging Secret only; no `create`/`delete` because
-	//      the operator manages the staging Secret's lifecycle.
-	role := &rbacv1.Role{ObjectMeta: metav1.ObjectMeta{Name: saName, Namespace: keystone.Namespace}}
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, role, func() error {
-		role.Rules = []rbacv1.PolicyRule{
-			{
-				APIGroups:     []string{""},
-				Resources:     []string{"secrets"},
-				Verbs:         []string{"get"},
-				ResourceNames: []string{secretName},
-			},
-			{
-				APIGroups:     []string{""},
-				Resources:     []string{"secrets"},
-				Verbs:         []string{"get", "patch"},
-				ResourceNames: []string{fernetStagingSecretName(keystone)},
-			},
-		}
-		return controllerutil.SetControllerReference(keystone, role, r.Scheme)
-	}); err != nil {
-		return fmt.Errorf("ensuring Role %s: %w", saName, err)
-	}
-
-	// RoleBinding
-	rb := &rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Name: saName, Namespace: keystone.Namespace}}
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, rb, func() error {
-		rb.Subjects = []rbacv1.Subject{{
-			Kind:      "ServiceAccount",
-			Name:      saName,
-			Namespace: keystone.Namespace,
-		}}
-		// RoleRef is immutable after creation; only set on new objects.
-		if rb.RoleRef.Name == "" {
-			rb.RoleRef = rbacv1.RoleRef{
-				APIGroup: "rbac.authorization.k8s.io",
-				Kind:     "Role",
-				Name:     saName,
-			}
-		}
-		return controllerutil.SetControllerReference(keystone, rb, r.Scheme)
-	}); err != nil {
-		return fmt.Errorf("ensuring RoleBinding %s: %w", saName, err)
-	}
-
-	return nil
+	return r.ensureRotationRBAC(ctx, keystone,
+		fmt.Sprintf("%s-fernet-rotate", keystone.Name), secretName, fernetStagingSecretName(keystone))
 }
 
 // ensureFernetStagingSecret ensures the Fernet staging Secret exists with the
