@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Patch to abort the in-flight upgrade by reverting spec.image.tag back to the
+# installed release (2026.1). The operator clears upgradePhase/targetRelease,
+# deletes the db-expand/db-migrate/db-contract Jobs, emits an UpgradeAborted
+# event, and returns to the steady-state db_sync path.
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone-upgrade-abort
+  namespace: openstack
+spec:
+  image:
+    tag: "2026.1"

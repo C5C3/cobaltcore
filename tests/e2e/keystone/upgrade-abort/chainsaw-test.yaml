@@ -1,0 +1,186 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for aborting an in-flight upgrade by reverting the image tag.
+# Verifies:
+#   (1) Fresh deployment at 2026.1 reaches Ready with installedRelease=2026.1
+#   (2) Upgrading to 2026.1 -> 2026.2 wedges in the Expanding phase, because the
+#       2026.2 image is not pre-loaded into kind (db-expand Pod ImagePullBackOff)
+#   (3) Reverting spec.image.tag to 2026.1 aborts the upgrade: upgradePhase and
+#       targetRelease clear, the db-expand/db-migrate/db-contract Jobs are
+#       deleted, an UpgradeAborted event fires, and the CR returns to Ready
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-upgrade-abort
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply Keystone CR at release 2026.1 ───────────────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+  # ── Step 2: Assert Ready and installedRelease set ─────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-upgrade-abort
+            namespace: openstack
+          status:
+            installedRelease: "2026.1"
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: |
+          echo "=== Keystone status ==="
+          kubectl get keystone keystone-upgrade-abort -n $NAMESPACE -o yaml 2>&1 | tail -60 || true
+          echo "=== Pods (workload + jobs) ==="
+          kubectl get pods -n $NAMESPACE -o wide 2>&1 | tail -30 || true
+          for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Job status ==="
+          kubectl get jobs -n $NAMESPACE -o wide 2>&1 || true
+          echo "=== keystone-operator logs (current + previous) ==="
+          for ns in keystone-system default openstack; do
+            kubectl logs -n "$ns" -l app.kubernetes.io/name=keystone-operator --all-containers --tail=200 2>&1 || true
+            kubectl logs -n "$ns" -l app.kubernetes.io/name=keystone-operator --all-containers --tail=200 --previous 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -40 || true
+  # ── Step 3: Patch image tag to 2026.2 to start the upgrade ────────────
+  - try:
+    - patch:
+        file: 01-patch-stuck-upgrade.yaml
+  # ── Step 4: Assert the upgrade wedges in the Expanding phase ──────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-upgrade-abort
+            namespace: openstack
+          status:
+            installedRelease: "2026.1"
+            targetRelease: "2026.2"
+            upgradePhase: Expanding
+            (conditions[?type == 'DatabaseReady']):
+            - status: "False"
+              reason: ExpandInProgress
+    # Proof the expand phase actually started: the db-expand Job exists.
+    - script:
+        content: |
+          set -eu
+          JOB="keystone-upgrade-abort-db-expand"
+          if kubectl get job "$JOB" -n $NAMESPACE >/dev/null 2>&1; then
+            echo "OK: Job $JOB exists (expand phase started)"
+          else
+            echo "ERROR: Job $JOB not found"
+            exit 1
+          fi
+    catch:
+    - script:
+        content: |
+          echo "=== Keystone status ==="
+          kubectl get keystone keystone-upgrade-abort -n $NAMESPACE -o yaml 2>&1 | tail -60 || true
+          echo "=== Pods (workload + jobs) ==="
+          kubectl get pods -n $NAMESPACE -o wide 2>&1 | tail -30 || true
+          for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Job status ==="
+          kubectl get jobs -n $NAMESPACE -o wide 2>&1 || true
+          echo "=== keystone-operator logs (current + previous) ==="
+          for ns in keystone-system default openstack; do
+            kubectl logs -n "$ns" -l app.kubernetes.io/name=keystone-operator --all-containers --tail=200 2>&1 || true
+            kubectl logs -n "$ns" -l app.kubernetes.io/name=keystone-operator --all-containers --tail=200 --previous 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -40 || true
+  # ── Step 5: Revert image tag to 2026.1 to abort the upgrade ───────────
+  - try:
+    - patch:
+        file: 02-patch-abort.yaml
+  # ── Step 6: Assert the upgrade aborted and the CR is Ready again ──────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-upgrade-abort
+            namespace: openstack
+          status:
+            installedRelease: "2026.1"
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    # Verify the abort mechanics directly: state cleared, phase Jobs gone, event
+    # emitted. The old state (db-expand Job) is asserted absent before trusting
+    # the recovered Ready state.
+    - script:
+        content: |
+          set -eu
+          echo "=== Verify upgrade state cleared ==="
+          PHASE="$(kubectl get keystone keystone-upgrade-abort -n $NAMESPACE -o jsonpath='{.status.upgradePhase}')"
+          if [ -n "$PHASE" ]; then
+            echo "ERROR: upgradePhase still set to '$PHASE' after abort"
+            exit 1
+          fi
+          TARGET="$(kubectl get keystone keystone-upgrade-abort -n $NAMESPACE -o jsonpath='{.status.targetRelease}')"
+          if [ -n "$TARGET" ]; then
+            echo "ERROR: targetRelease still set to '$TARGET' after abort"
+            exit 1
+          fi
+          echo "OK: upgradePhase and targetRelease cleared"
+          echo "=== Verify upgrade phase Jobs deleted ==="
+          for phase in expand migrate contract; do
+            JOB="keystone-upgrade-abort-db-${phase}"
+            if kubectl get job "$JOB" -n $NAMESPACE >/dev/null 2>&1; then
+              echo "ERROR: Job $JOB still exists after abort"
+              exit 1
+            fi
+            echo "OK: Job $JOB deleted"
+          done
+          echo "=== Verify UpgradeAborted event emitted ==="
+          if ! kubectl get events -n $NAMESPACE \
+               --field-selector reason=UpgradeAborted,involvedObject.name=keystone-upgrade-abort \
+               -o name 2>/dev/null | grep -q .; then
+            echo "ERROR: no UpgradeAborted event found"
+            exit 1
+          fi
+          echo "OK: UpgradeAborted event present"
+    catch:
+    - script:
+        content: |
+          echo "=== Keystone status ==="
+          kubectl get keystone keystone-upgrade-abort -n $NAMESPACE -o yaml 2>&1 | tail -60 || true
+          echo "=== Pods (workload + jobs) ==="
+          kubectl get pods -n $NAMESPACE -o wide 2>&1 | tail -30 || true
+          for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Job status ==="
+          kubectl get jobs -n $NAMESPACE -o wide 2>&1 || true
+          echo "=== keystone-operator logs (current + previous) ==="
+          for ns in keystone-system default openstack; do
+            kubectl logs -n "$ns" -l app.kubernetes.io/name=keystone-operator --all-containers --tail=200 2>&1 || true
+            kubectl logs -n "$ns" -l app.kubernetes.io/name=keystone-operator --all-containers --tail=200 --previous 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -40 || true

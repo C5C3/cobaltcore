@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Patch to start a sequential upgrade from 2026.1 to 2026.2. 2026.2 is a valid
+# sequential target (same year, minor 1 -> 2) but no image for it is pre-loaded
+# into kind, so the db-expand Job pod stays in ImagePullBackOff and the upgrade
+# wedges in the Expanding phase — a deterministic in-flight upgrade to abort.
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone-upgrade-abort
+  namespace: openstack
+spec:
+  image:
+    tag: "2026.2"
