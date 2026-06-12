@@ -69,8 +69,12 @@ func (r *KeystoneReconciler) reconcileCredentialKeys(ctx context.Context,
 			Reason:             "GeneratingKeys",
 			Message:            "Initial credential keys have been generated",
 		})
-		// Requeue to confirm the secret is available before proceeding (CC-0036).
-		return ctrl.Result{Requeue: true}, nil
+		// Requeue to confirm the secret is available before proceeding. Uses
+		// RequeueAfter (not the deprecated ctrl.Result.Requeue field) so the
+		// parallel group's shortestRequeue propagates this non-zero result and
+		// the chain short-circuits, instead of dropping it and continuing in the
+		// same pass (issue #467; CC-0036).
+		return ctrl.Result{RequeueAfter: RequeueSecretPolling}, nil
 	}
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("getting credential keys secret: %w", err)
@@ -118,7 +122,11 @@ func (r *KeystoneReconciler) reconcileCredentialKeys(ctx context.Context,
 			Reason:             "CredentialKeysRotated",
 			Message:            "rotation applied; staging secret cleared",
 		})
-		return ctrl.Result{Requeue: true}, nil
+		// Short-circuit the rest of the step chain via RequeueAfter (not the
+		// deprecated ctrl.Result.Requeue field) so the parallel group's
+		// shortestRequeue propagates it and the next pass re-enters the happy
+		// path with the production Secret already updated (issue #467; CC-0081).
+		return ctrl.Result{RequeueAfter: RequeueSecretPolling}, nil
 	}
 
 	// 4. Ensure the RBAC resources for the rotation CronJob exist.

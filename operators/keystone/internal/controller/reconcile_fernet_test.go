@@ -97,8 +97,10 @@ func TestReconcileFernetKeys_NoSecret_CreatesSecretAndRequeues(t *testing.T) {
 	result, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123")
 
 	g.Expect(err).NotTo(HaveOccurred())
-	// Must requeue to confirm the secret is available before proceeding (CC-0013).
-	g.Expect(result).To(Equal(ctrl.Result{Requeue: true}))
+	// Must requeue to confirm the secret is available before proceeding. Uses
+	// RequeueAfter (not the deprecated Requeue field) so the parallel group's
+	// shortestRequeue propagates it (issue #467; CC-0013).
+	g.Expect(result).To(Equal(ctrl.Result{RequeueAfter: RequeueSecretPolling}))
 
 	// Verify the Secret was created with the right number of keys.
 	var secret corev1.Secret
@@ -1228,7 +1230,9 @@ func TestReconcileFernetKeys_AppliesStagedKeysWhenAnnotationPresent(t *testing.T
 
 	result, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123")
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result).To(Equal(ctrl.Result{Requeue: true}))
+	// Rotation applied: short-circuit via RequeueAfter so the parallel group's
+	// shortestRequeue propagates it (issue #467).
+	g.Expect(result).To(Equal(ctrl.Result{RequeueAfter: RequeueSecretPolling}))
 
 	// Production Secret now contains the exact data from staging.
 	var updated corev1.Secret

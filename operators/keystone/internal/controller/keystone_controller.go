@@ -591,6 +591,13 @@ func aggregateReady(conds []metav1.Condition) bool {
 // shortestRequeue returns the ctrl.Result with the shortest non-zero
 // RequeueAfter from the given results. If no result requests a requeue,
 // a zero ctrl.Result is returned (CC-0071, REQ-003).
+//
+// Sub-reconcilers signal a requeue exclusively via RequeueAfter — the
+// non-deprecated requeue field — so this function intentionally keys off
+// RequeueAfter only. The fernet/credential reconcilers in particular return
+// RequeueAfter (not the deprecated ctrl.Result.Requeue) precisely so their
+// short-circuit intent survives this aggregation in the parallel group
+// (issue #467).
 func shortestRequeue(results ...ctrl.Result) ctrl.Result {
 	var shortest ctrl.Result
 	for _, r := range results {

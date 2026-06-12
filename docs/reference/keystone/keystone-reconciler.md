@@ -1544,8 +1544,8 @@ and disaster recovery backup to OpenBao.
 
 | Status | Reason | Message | RequeueAfter |
 | --- | --- | --- | --- |
-| `False` | `GeneratingKeys` | "Initial Fernet keys have been generated" | — |
-| `True` | `FernetKeysRotated` | "rotation applied; staging secret cleared" | — (transient: apply-success short-circuit at `reconcile_fernet.go:97-103`; operators see this immediately after a rotation apply via `kubectl describe`, before the next reconcile transitions to the steady-state Reason) |
+| `False` | `GeneratingKeys` | "Initial Fernet keys have been generated" | `RequeueSecretPolling` (15s) |
+| `True` | `FernetKeysRotated` | "rotation applied; staging secret cleared" | `RequeueSecretPolling` (15s) (transient: apply-success short-circuit in `reconcileFernetKeys`; operators see this immediately after a rotation apply via `kubectl describe`, before the next reconcile transitions to the steady-state Reason) |
 | `True` | `FernetKeysAvailable` | "Fernet keys Secret exists and rotation CronJob is configured" | — |
 
 **Versioned Script ConfigMap:**
@@ -1720,8 +1720,8 @@ with credential migration, and disaster recovery backup to OpenBao.
 
 | Status | Reason | Message | RequeueAfter |
 | --- | --- | --- | --- |
-| `False` | `GeneratingKeys` | "Initial credential keys have been generated" | — |
-| `True` | `CredentialKeysRotated` | "rotation applied; staging secret cleared" | — (transient: apply-success short-circuit at `reconcile_credential.go:107-113`; operators see this immediately after a rotation apply via `kubectl describe`, before the next reconcile transitions to the steady-state Reason) |
+| `False` | `GeneratingKeys` | "Initial credential keys have been generated" | `RequeueSecretPolling` (15s) |
+| `True` | `CredentialKeysRotated` | "rotation applied; staging secret cleared" | `RequeueSecretPolling` (15s) (transient: apply-success short-circuit in `reconcileCredentialKeys`; operators see this immediately after a rotation apply via `kubectl describe`, before the next reconcile transitions to the steady-state Reason) |
 | `True` | `CredentialKeysAvailable` | "Credential keys Secret exists and rotation CronJob is configured" | — |
 
 **Versioned Script ConfigMap:**

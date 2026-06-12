@@ -607,6 +607,54 @@ func TestReconcile_EarlyReturnOnDatabaseNotReady(t *testing.T) {
 		"BootstrapReady should not be set when database is not ready")
 }
 
+// TestReconcile_ParallelGroupRequeueShortCircuitsChain reproduces issue #467
+// Problem 2. When reconcileFernetKeys/reconcileCredentialKeys create their
+// initial key Secret they request a requeue. That requeue flows through the
+// parallel group's shortestRequeue, which keys off RequeueAfter — so the
+// chain must short-circuit and NOT advance to reconcileDatabase in the same
+// pass. The fixture is identical to TestReconcile_EarlyReturnOnDatabaseNotReady
+// except the Fernet and credential Secrets are deliberately absent so the
+// parallel group generates them and requeues.
+//
+// Before the fix, the producers returned the deprecated ctrl.Result{Requeue:
+// true}; shortestRequeue zeroed it, the parallel group returned a zero result,
+// and the chain wrongly continued into reconcileDatabase (DatabaseReady would
+// be set). Asserting DatabaseReady is absent pins the short-circuit.
+func TestReconcile_ParallelGroupRequeueShortCircuitsChain(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+	// Secrets and DB credentials are ready, but the Fernet and credential key
+	// Secrets do NOT exist yet — the parallel group must generate them and
+	// request a requeue.
+	objs := append([]runtime.Object{ks, testDBCredentialsSecret(), testAdminCredentialsSecret()}, testReadyExternalSecrets()...)
+	r := newTestReconciler(objs...)
+
+	ctx := context.Background()
+	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}}
+
+	result, err := r.Reconcile(ctx, req)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter > 0).To(BeTrue(),
+		"the fernet/credential requeue must short-circuit the chain (issue #467)")
+
+	var updated keystonev1alpha1.Keystone
+	g.Expect(r.Get(ctx, types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}, &updated)).To(Succeed())
+
+	// The parallel group ran: FernetKeysReady/CredentialKeysReady are set False
+	// (keys just generated, awaiting confirmation).
+	for _, condType := range []string{"FernetKeysReady", "CredentialKeysReady"} {
+		cond := meta.FindStatusCondition(updated.Status.Conditions, condType)
+		g.Expect(cond).NotTo(BeNil(), "%s should be set by the parallel group", condType)
+		g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	}
+
+	// DatabaseReady must be ABSENT: the parallel group's requeue short-circuited
+	// the chain before reconcileDatabase ran. With the pre-fix Requeue:true the
+	// result was dropped and the chain would have reached Database.
+	g.Expect(meta.FindStatusCondition(updated.Status.Conditions, "DatabaseReady")).To(BeNil(),
+		"DatabaseReady must NOT be set — the parallel-group requeue short-circuited before reconcileDatabase (issue #467)")
+}
+
 func TestReconcile_SequentialProgression(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()

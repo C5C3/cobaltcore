@@ -101,8 +101,10 @@ func TestReconcileCredentialKeys_NoSecret_CreatesSecretAndRequeues(t *testing.T)
 	result, err := r.reconcileCredentialKeys(context.Background(), ks, "test-keystone-config-abc123")
 
 	g.Expect(err).NotTo(HaveOccurred())
-	// Must requeue to confirm the secret is available before proceeding (CC-0036).
-	g.Expect(result).To(Equal(ctrl.Result{Requeue: true}))
+	// Must requeue to confirm the secret is available before proceeding. Uses
+	// RequeueAfter (not the deprecated Requeue field) so the parallel group's
+	// shortestRequeue propagates it (issue #467; CC-0036).
+	g.Expect(result).To(Equal(ctrl.Result{RequeueAfter: RequeueSecretPolling}))
 
 	// Verify the Secret was created with the right number of keys.
 	var secret corev1.Secret
@@ -1284,7 +1286,9 @@ func TestReconcileCredentialKeys_AppliesStagedKeysWhenAnnotationPresent(t *testi
 	result, err := r.reconcileCredentialKeys(context.Background(), ks, "test-keystone-config-abc123")
 
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.Requeue).To(BeTrue()) //nolint:staticcheck // SA1019: asserts the reconciler's Requeue:true contract (CC-0036).
+	// Rotation applied: short-circuit via RequeueAfter so the parallel group's
+	// shortestRequeue propagates it (issue #467; CC-0036).
+	g.Expect(result).To(Equal(ctrl.Result{RequeueAfter: RequeueSecretPolling}))
 
 	// Production Secret data was swapped for the staged data.
 	var gotProd corev1.Secret
