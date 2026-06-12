@@ -97,9 +97,10 @@ Set after the first successful `db_sync` Job completion. For fresh deployments
 ### targetRelease
 
 Set to `spec.image.tag` when an upgrade is initiated. Cleared (set to `""`) when
-the upgrade completes successfully. During an active upgrade, if `spec.image.tag`
-is changed to a value that differs from both `installedRelease` and `targetRelease`,
-the operator blocks with an `UpgradeTargetChanged` condition.
+the upgrade completes successfully or is aborted. During an active upgrade,
+reverting `spec.image.tag` to `installedRelease` aborts the upgrade (see
+[Aborting an Upgrade](#aborting-an-upgrade)); changing it to any other value that
+differs from `targetRelease` blocks with an `UpgradeTargetChanged` condition.
 
 ### upgradePhase
 
@@ -245,7 +246,8 @@ in the main reconcile loop:
 reconcileDatabase (called first in reconciler chain)
   |
   +- Active upgrade? (upgradePhase != "")
-  |  +- Tag changed during upgrade? -> block with UpgradeTargetChanged
+  |  +- Tag reverted to installedRelease? -> abort: delete phase Jobs, clear state, requeue
+  |  +- Tag changed to another value? -> block with UpgradeTargetChanged
   |  +- Delegate to reconcileUpgrade() -> dispatch by phase
   |
   +- isUpgrade()? (installedRelease != "" && tag != installedRelease && !patchOnly)
@@ -324,6 +326,46 @@ because all state is persisted in the Keystone CR status:
 | Operator restarts after expand Job completed | Reconciler detects completion, transitions to Migrating |
 | Operator restarts during RollingUpdate | Reconciler checks Deployment readiness, transitions to Contracting when ready |
 | Operator restarts during Contracting, contract Job completed | Reconciler detects completion, finalizes upgrade |
+
+---
+
+## Aborting an Upgrade
+
+A sequential upgrade can be aborted before it completes by reverting
+`spec.image.tag` to the value in `status.installedRelease`. This is the
+supported escape hatch when an upgrade is wedged — for example, an expand or
+migrate Job that fails permanently (exceeds its backoff limit) or whose Pod
+cannot pull the target image.
+
+When the operator observes `spec.image.tag == status.installedRelease` while an
+upgrade is active (`status.upgradePhase` is set), it:
+
+1. Deletes the `<cr-name>-db-expand`, `<cr-name>-db-migrate`, and
+   `<cr-name>-db-contract` Jobs (with background propagation, so their Pods are
+   removed too).
+2. Clears `status.upgradePhase` and `status.targetRelease`.
+3. Emits an `UpgradeAborted` event on the Keystone CR.
+4. Requeues, so the next reconcile takes the steady-state `db_sync` path and
+   restores `DatabaseReady` against the installed release.
+
+```bash
+# Abort an in-flight upgrade by reverting the tag to the installed release.
+kubectl patch keystone <name> --type=merge \
+  -p '{"spec":{"image":{"tag":"<installed-release>"}}}'
+```
+
+::: warning Abort is only safe before the contract phase
+Expand and migrate are **additive** by design: they add the new columns and
+tables and backfill data without dropping anything the installed release still
+reads, so the pre-contract schema is a superset both releases run against.
+Aborting during **Expanding**, **Migrating**, or **RollingUpdate** is therefore
+safe. The **contract** phase drops the columns the new release no longer needs;
+aborting during **Contracting** can leave the installed release pointed at a
+schema missing fields it expects. The operator clears the upgrade state from any
+active phase, so validate the database before relying on a Contracting-phase
+abort. Once contract completes, the upgrade is finished and reverting the tag is
+a downgrade, which the operator rejects.
+:::
 
 ---
 
@@ -541,9 +583,16 @@ below).
 **Cause:** `spec.image.tag` was changed during an active upgrade to a value
 different from the current `targetRelease`.
 
-**Resolution:** Either revert `spec.image.tag` to match `status.targetRelease` to
-continue the current upgrade, or wait for the current upgrade to complete before
-changing the tag again. The operator does not support changing the upgrade target
+**Resolution:** Choose one of:
+
+- Revert `spec.image.tag` to `status.targetRelease` to continue the current
+  upgrade.
+- Revert `spec.image.tag` to `status.installedRelease` to abort the upgrade and
+  return to the installed release (see
+  [Aborting an Upgrade](#aborting-an-upgrade)).
+- Wait for the current upgrade to complete before changing the tag again.
+
+The operator does not support retargeting an upgrade to a third release
 mid-flight.
 
 #### ExpandFailed / MigrateFailed / ContractFailed
@@ -716,7 +765,10 @@ subsequent reconciles.
    Each intermediate release must be applied in order.
 
 2. **No automatic rollback.** If an upgrade fails, manual intervention is required.
-   The operator does not automatically revert to the previous release.
+   The operator does not automatically revert to the previous release, but an
+   in-flight upgrade can be aborted before the contract phase by reverting
+   `spec.image.tag` to `status.installedRelease` (see
+   [Aborting an Upgrade](#aborting-an-upgrade)).
 
 3. **Single-service scope.** This feature covers only the Keystone operator's
    internal upgrade flow. Cross-service upgrade orchestration is handled by the

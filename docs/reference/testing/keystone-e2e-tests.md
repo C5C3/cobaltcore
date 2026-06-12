@@ -64,13 +64,13 @@ namespace, enabling parallel execution.
 │  │                   │  │  detection        │  │                       │   │
 │  └───────────────────┘  └───────────────────┘  └───────────────────────┘   │
 │  ┌───────────────────┐  ┌───────────────────┐  ┌───────────────────────┐   │
-│  │ trust-flush       │  │ trust-flush-      │  │ upgrade-flow          │   │
+│  │ trust-flush       │  │ trust-flush-      │  │ upgrade-abort         │   │
 │  │                   │  │  default          │  │                       │   │
 │  └───────────────────┘  └───────────────────┘  └───────────────────────┘   │
-│  ┌───────────────────┐                                                     │
-│  │ uwsgi             │                                                     │
-│  │                   │                                                     │
-│  └───────────────────┘                                                     │
+│  ┌───────────────────┐  ┌───────────────────┐                              │
+│  │ upgrade-flow      │  │ uwsgi             │                              │
+│  │                   │  │                   │                              │
+│  └───────────────────┘  └───────────────────┘                              │
 │                                                                            │
 │  Most tests run in: namespace openstack                                    │
 │  pod-security-restricted: own namespace keystone-pss-restricted-test       │
@@ -1011,6 +1011,11 @@ tests/e2e/keystone/
 ├── trust-flush-default/
 │   ├── chainsaw-test.yaml              Default-on trust flush via webhook materialization
 │   └── 00-keystone-cr.yaml             Keystone CR omitting trustFlush — webhook injects hourly schedule
+├── upgrade-abort/
+│   ├── chainsaw-test.yaml              Abort an in-flight upgrade by reverting the image tag
+│   ├── 00-keystone-cr.yaml             Keystone CR at release 2026.1
+│   ├── 01-patch-stuck-upgrade.yaml     Patch to 2026.2 (no image — wedges in Expanding)
+│   └── 02-patch-abort.yaml             Patch back to 2026.1 to abort
 ├── upgrade-flow/
 │   ├── chainsaw-test.yaml              Expand-migrate-contract upgrade
 │   ├── 00-keystone-cr.yaml             Keystone CR with initial release
