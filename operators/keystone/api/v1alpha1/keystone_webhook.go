@@ -23,6 +23,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+
+	"github.com/c5c3/forge/internal/common/policy"
 )
 
 // Graceful-termination effective defaults.
@@ -470,16 +472,15 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 			))
 		}
 
-		// Detect empty policy rule names.
-		for name := range k.Spec.PolicyOverrides.Rules {
-			if name == "" {
-				allErrs = append(allErrs, field.Invalid(
-					specPath.Child("policyOverrides", "rules"),
-					name,
-					"policy rule name must not be empty",
-				))
-			}
-		}
+		// Detect empty policy rule names AND empty rule values via the shared
+		// validator. The empty-value check closes the gap the audit reported
+		// (issue #479): a rule with an empty value previously passed the webhook
+		// and reached oslo.policy. ValidatePolicyRules reports field.Required on
+		// the per-key path (e.g. spec.policyOverrides.rules[<key>]).
+		allErrs = append(allErrs, policy.ValidatePolicyRules(
+			k.Spec.PolicyOverrides.Rules,
+			specPath.Child("policyOverrides", "rules"),
+		)...)
 	}
 
 	// Defense-in-depth uWSGI validation alongside

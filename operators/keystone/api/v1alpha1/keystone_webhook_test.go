@@ -883,7 +883,7 @@ func TestValidate_PolicyOverridesWithNoSources(t *testing.T) {
 	g.Expect(err.Error()).To(ContainSubstring("policyOverrides"))
 }
 
-// --- Empty policy rule name tests ---
+// --- Empty policy rule name/value tests ---
 
 func TestValidate_EmptyPolicyRuleNameRejected(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -895,7 +895,7 @@ func TestValidate_EmptyPolicyRuleNameRejected(t *testing.T) {
 
 	_, err := w.ValidateCreate(context.Background(), k)
 	g.Expect(err).To(HaveOccurred())
-	g.Expect(err.Error()).To(ContainSubstring("rules"))
+	g.Expect(err.Error()).To(ContainSubstring("policy rule name must not be empty"))
 }
 
 func TestValidate_NonEmptyPolicyRuleNamesAccepted(t *testing.T) {
@@ -911,6 +911,24 @@ func TestValidate_NonEmptyPolicyRuleNamesAccepted(t *testing.T) {
 
 	_, err := w.ValidateCreate(context.Background(), k)
 	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// TestValidate_EmptyPolicyRuleValueRejected covers the gap the audit reported
+// (issue #479): a rule with an empty value previously passed admission and
+// reached oslo.policy. The webhook now delegates to policy.ValidatePolicyRules,
+// which rejects it with "policy rule value must not be empty".
+func TestValidate_EmptyPolicyRuleValueRejected(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.PolicyOverrides = &commonv1.PolicySpec{
+		Rules: map[string]string{"identity:get_user": ""},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("policy rule value must not be empty"))
+	g.Expect(err.Error()).To(ContainSubstring("policyOverrides"))
 }
 
 // --- UWSGI validation tests ---
@@ -1394,8 +1412,14 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 		{Name: "a", ConfigSection: "dup"},
 		{Name: "b", ConfigSection: "dup"},
 	}
+	// Break policyOverrides on BOTH rule constraints: an empty rule name and an
+	// empty rule value (the empty-value path is the issue #479 addition). Both
+	// must participate in the aggregated error.
 	k.Spec.PolicyOverrides = &commonv1.PolicySpec{
-		Rules: map[string]string{"": "rule:admin"},
+		Rules: map[string]string{
+			"":                  "rule:admin",
+			"identity:get_user": "",
+		},
 	}
 	// Break cache mutual-exclusivity — set both clusterRef and servers.
 	k.Spec.Cache.ClusterRef = &corev1.LocalObjectReference{Name: "memcached"}
@@ -1514,6 +1538,8 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 	g.Expect(errMsg).To(ContainSubstring("rotationSchedule"))
 	g.Expect(errMsg).To(ContainSubstring("configSection"))
 	g.Expect(errMsg).To(ContainSubstring("policyOverrides"))
+	g.Expect(errMsg).To(ContainSubstring("policy rule name must not be empty"))
+	g.Expect(errMsg).To(ContainSubstring("policy rule value must not be empty"))
 	g.Expect(errMsg).To(ContainSubstring("cache"))
 	g.Expect(errMsg).To(ContainSubstring("database"))
 	g.Expect(errMsg).To(ContainSubstring("credentialKeys"))

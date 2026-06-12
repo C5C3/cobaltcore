@@ -1224,7 +1224,8 @@ single `apierrors.NewInvalid` error. It does **not** short-circuit on the first 
 | CredentialKeys cron expression | `spec.credentialKeys.rotationSchedule` | `field.Invalid` | `cron.ParseStandard()` fails. |
 | Duplicate plugin sections | `spec.plugins[i].configSection` | `field.Duplicate` | Two or more plugins share the same `configSection` value. |
 | Policy source required | `spec.policyOverrides` | `field.Required` | `policyOverrides` is set but both `rules` and `configMapRef` are nil/empty. |
-| Empty policy rule name | `spec.policyOverrides.rules` | `field.Invalid` | A key in `rules` map is the empty string. |
+| Empty policy rule name | `spec.policyOverrides.rules[<key>]` | `field.Required` | A key in the `rules` map is the empty string. Enforced via the shared `policy.ValidatePolicyRules`. |
+| Empty policy rule value | `spec.policyOverrides.rules[<key>]` | `field.Required` | A value in the `rules` map is the empty string. Enforced via the shared `policy.ValidatePolicyRules`. |
 | Autoscaling maxReplicas minimum | `spec.autoscaling.maxReplicas` | `field.Invalid` | `maxReplicas < 1`. Defense-in-depth alongside the `+kubebuilder:validation:Minimum=1` marker. |
 | Autoscaling minReplicas minimum | `spec.autoscaling.minReplicas` | `field.Invalid` | `minReplicas < 1` when set. Defense-in-depth alongside the `+kubebuilder:validation:Minimum=1` marker. |
 | Autoscaling min exceeds max | `spec.autoscaling.minReplicas` | `field.Invalid` | `minReplicas > maxReplicas` when set. |
