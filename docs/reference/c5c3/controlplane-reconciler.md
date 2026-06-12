@@ -967,9 +967,12 @@ bootstrap secret rather than being locked out mid-rotation.
 
 Every sub-reconciler invocation is instrumented for Prometheus via a single
 helper, `instrumentSubReconciler`, defined in
-`operators/c5c3/internal/controller/instrumentation.go`. `Reconcile` wraps every
-sub-reconciler call with it; a direct call that bypasses the helper is a contract
-violation.
+`operators/c5c3/internal/controller/instrumentation.go`. The helper delegates to
+the shared `internal/common/instrumentation` package — the duration/error metric
+pair and the wrapper logic are identical across all forge operators and live
+there; the c5c3 file supplies only the `c5c3_operator` prefix and the
+`subReconcilerConditionTypes` map. `Reconcile` wraps every sub-reconciler call
+with it; a direct call that bypasses the helper is a contract violation.
 
 ```go
 func instrumentSubReconciler(
@@ -1080,7 +1083,7 @@ Keystone child is projected.
 | `reconcile_korc_test.go` | AC mint, restricted↔unrestricted inversion, hash annotation/re-mint, missing-CRD safety, admin-credential push, catalog, condition contract |
 | `reconcile_credentialrotation_test.go` | Nudge model, one-per-namespace resolution, bootstrap, deferred scheduled fields, target enum |
 | `credential_invariant_test.go` | Security invariants (restricted mint, app-credential Secret not on any workload) |
-| `instrumentation_test.go` | Duration/error emission, name→`condition_type` resolution, drift guards |
+| `instrumentation_test.go` | Wiring smoke test (records through the instrumenter), condition_type drift guard |
 | `setupwithmanager_test.go` | `For`/`Owns`/`Watches` wiring, field-indexer registration |
 | `helpers_test.go` | `intervalToCron`, `projectPolicyOverrides` |
 | `integration_test.go` | Full envtest reconciliation to `Ready=True` (build tag `integration`) |
