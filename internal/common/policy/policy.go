@@ -77,35 +77,68 @@ func RenderPolicyYAML(rules map[string]string) (string, error) {
 	return string(ordered), nil
 }
 
-// MergePolicies merges two PolicySpec objects. Override rules take precedence
-// over base rules for matching keys. If override has ConfigMapRef, it replaces
-// the base ConfigMapRef. Returns a new PolicySpec without mutating inputs.
-func MergePolicies(base, override types.PolicySpec) types.PolicySpec {
-	result := types.PolicySpec{}
+// MergePolicies merges a base policy with an override policy into a single
+// freshly allocated *types.PolicySpec. Override values win on conflict:
+//
+//   - Rules: start from base.Rules, then override rules overwrite on key
+//     conflict.
+//   - ConfigMapRef: override wins when set, otherwise base's is used.
+//
+// Nil handling: both nil returns nil; if exactly one side is nil a fresh copy
+// of the other is returned. The inputs are never mutated or aliased — the
+// returned struct, its Rules map, and its ConfigMapRef are independent copies.
+func MergePolicies(base, override *types.PolicySpec) *types.PolicySpec {
+	if base == nil && override == nil {
+		return nil
+	}
+	if base == nil {
+		return copyPolicySpec(override)
+	}
+	if override == nil {
+		return copyPolicySpec(base)
+	}
 
-	// Merge rules: copy base first, then overlay override.
+	merged := &types.PolicySpec{}
+
+	// Merge Rules: base is the base, override overwrites on key conflict.
 	if base.Rules != nil || override.Rules != nil {
-		result.Rules = make(map[string]string)
+		rules := make(map[string]string, len(base.Rules)+len(override.Rules))
 		for k, v := range base.Rules {
-			result.Rules[k] = v
+			rules[k] = v
 		}
 		for k, v := range override.Rules {
-			result.Rules[k] = v
+			rules[k] = v
 		}
+		merged.Rules = rules
 	}
 
-	// Handle ConfigMapRef: override wins if set.
-	if override.ConfigMapRef != nil {
-		result.ConfigMapRef = &corev1.LocalObjectReference{
-			Name: override.ConfigMapRef.Name,
-		}
-	} else if base.ConfigMapRef != nil {
-		result.ConfigMapRef = &corev1.LocalObjectReference{
-			Name: base.ConfigMapRef.Name,
-		}
+	// ConfigMapRef: override wins when set, else fall back to base.
+	switch {
+	case override.ConfigMapRef != nil:
+		merged.ConfigMapRef = override.ConfigMapRef.DeepCopy()
+	case base.ConfigMapRef != nil:
+		merged.ConfigMapRef = base.ConfigMapRef.DeepCopy()
 	}
 
-	return result
+	return merged
+}
+
+// copyPolicySpec returns a fresh *types.PolicySpec whose Rules map and
+// ConfigMapRef are independent copies of src's, so callers can mutate the
+// result without affecting the original. src must be non-nil.
+func copyPolicySpec(src *types.PolicySpec) *types.PolicySpec {
+	out := &types.PolicySpec{}
+	if src.Rules != nil {
+		rules := make(map[string]string, len(src.Rules))
+		for k, v := range src.Rules {
+			rules[k] = v
+		}
+		out.Rules = rules
+	}
+	if src.ConfigMapRef != nil {
+		out.ConfigMapRef = src.ConfigMapRef.DeepCopy()
+	}
+	return out
 }
 
 // ValidatePolicyRules validates policy rules for empty keys and values.
@@ -134,11 +167,11 @@ func ValidatePolicyRules(rules map[string]string, fldPath *field.Path) field.Err
 	for _, k := range keys {
 		keyPath := fldPath.Key(k)
 		if k == "" {
-			allErrs = append(allErrs, field.Required(keyPath, "rule key must not be empty"))
+			allErrs = append(allErrs, field.Required(keyPath, "policy rule name must not be empty"))
 			continue // value check is meaningless for an empty key
 		}
 		if rules[k] == "" {
-			allErrs = append(allErrs, field.Required(keyPath, "rule value must not be empty"))
+			allErrs = append(allErrs, field.Required(keyPath, "policy rule value must not be empty"))
 		}
 	}
 
