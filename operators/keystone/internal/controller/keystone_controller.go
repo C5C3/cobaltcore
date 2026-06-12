@@ -154,6 +154,17 @@ func isGatewayAPIAvailable(mapper meta.RESTMapper) bool {
 	return true
 }
 
+// subReconcilerStep is one entry in the sequential reconcile pipeline driven by
+// Reconcile. name is the sub_reconciler metric label resolved via
+// subReconcilerConditionTypes. A step with an empty name is NOT wrapped in
+// instrumentSubReconciler because it either self-instruments its members (the
+// parallel group, whose parallelSubReconciler entries instrument individually)
+// or is intentionally uninstrumented (config pruning) (CC-0089, issue #467).
+type subReconcilerStep struct {
+	name string
+	fn   func(ctx context.Context) (ctrl.Result, error)
+}
+
 // +kubebuilder:rbac:groups=keystone.openstack.c5c3.io,resources=keystones,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=keystone.openstack.c5c3.io,resources=keystones/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=keystone.openstack.c5c3.io,resources=keystones/finalizers,verbs=update
@@ -230,159 +241,147 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{Requeue: true}, nil
 	}
 
-	// Run sub-reconcilers in dependency order; independent groups run concurrently.
-	// Every sub-reconciler call is routed through instrumentSubReconciler so that
-	// duration samples and error counters are emitted under a stable
-	// sub_reconciler label (CC-0089, REQ-001, REQ-002).
-	if result, err := instrumentSubReconciler(ctx, "Secrets", func(ctx context.Context) (ctrl.Result, error) {
-		return r.reconcileSecrets(ctx, &keystone)
-	}); !result.IsZero() || err != nil {
-		return r.updateStatus(ctx, &keystone, result, err)
-	}
-
-	// reconcileDatabaseTLS provisions the client certificate Keystone presents
-	// to MariaDB/MaxScale for mutual TLS. It runs after reconcileSecrets (the
-	// CA/client-cert Secret material referenced by spec.database.tls must be
-	// synced first) and before reconcileDBConnectionSecret (which appends the
-	// ssl_* DSN parameters pointing at the issued client keypair)
-	// (CC-0106, REQ-002, REQ-014).
-	if result, err := instrumentSubReconciler(ctx, "DatabaseTLS", func(ctx context.Context) (ctrl.Result, error) {
-		return r.reconcileDatabaseTLS(ctx, &keystone)
-	}); !result.IsZero() || err != nil {
-		return r.updateStatus(ctx, &keystone, result, err)
-	}
-
-	// reconcileDBConnectionSecret materialises the DB URL into the derived
-	// <keystone.Name>-db-connection Secret so that keystone.conf can reference
-	// the placeholder while the real credentials live in a Secret consumed via
-	// OS_DATABASE__CONNECTION. It must run after reconcileSecrets (upstream
-	// credentials must be synced) and before reconcileConfig (the derived
-	// Secret is consumed by downstream pods/Jobs that reference the ConfigMap).
-	// Failures set SecretsReady=False — the same condition used by
-	// reconcileSecrets — so no new subConditionTypes entry is required
-	// (CC-0080, REQ-005).
-	if result, err := instrumentSubReconciler(ctx, "DBConnectionSecret", func(ctx context.Context) (ctrl.Result, error) {
-		return r.reconcileDBConnectionSecret(ctx, &keystone)
-	}); !result.IsZero() || err != nil {
-		return r.updateStatus(ctx, &keystone, result, err)
-	}
-
-	// reconcileConfig must run before reconcileFernetKeys and reconcileDatabase
-	// because both the fernet rotation CronJob and the db_sync Job require the
-	// keystone.conf ConfigMap. reconcileConfig returns (string, error) rather
-	// than the standard (ctrl.Result, error); wrap it so the helper can still
-	// emit duration/error metrics while we capture the name via closure.
+	// Run the sub-reconciler pipeline. Steps are attempted in dependency order;
+	// the first to return a non-zero result or an error short-circuits the chain
+	// and funnels through updateStatus, so conditions and the requeue/error are
+	// persisted by construction on every exit path. Named steps are wrapped in
+	// instrumentSubReconciler (emitting duration/error series under their
+	// sub_reconciler label); the two empty-name steps are not wrapped because
+	// they either self-instrument their members (the parallel group) or are
+	// intentionally uninstrumented (config pruning) (CC-0089, issue #467).
 	var configMapName string
-	if _, err := instrumentSubReconciler(ctx, "Config", func(ctx context.Context) (ctrl.Result, error) {
-		var cmErr error
-		configMapName, cmErr = r.reconcileConfig(ctx, &keystone)
-		return ctrl.Result{}, cmErr
-	}); err != nil {
-		return r.updateStatus(ctx, &keystone, ctrl.Result{}, err)
+	pipeline := []subReconcilerStep{
+		{name: "Secrets", fn: func(ctx context.Context) (ctrl.Result, error) {
+			return r.reconcileSecrets(ctx, &keystone)
+		}},
+		// reconcileDatabaseTLS provisions the client certificate Keystone
+		// presents to MariaDB/MaxScale for mutual TLS. It runs after Secrets (the
+		// CA/client-cert material referenced by spec.database.tls must be synced
+		// first) and before DBConnectionSecret (which appends the ssl_* DSN
+		// parameters pointing at the issued client keypair) (CC-0106, REQ-002,
+		// REQ-014).
+		{name: "DatabaseTLS", fn: func(ctx context.Context) (ctrl.Result, error) {
+			return r.reconcileDatabaseTLS(ctx, &keystone)
+		}},
+		// reconcileDBConnectionSecret materialises the DB URL into the derived
+		// <keystone.Name>-db-connection Secret. It runs after Secrets (upstream
+		// credentials must be synced) and before Config (the derived Secret is
+		// consumed by downstream pods/Jobs). Failures set SecretsReady=False —
+		// the same condition used by reconcileSecrets (CC-0080, REQ-005).
+		{name: "DBConnectionSecret", fn: func(ctx context.Context) (ctrl.Result, error) {
+			return r.reconcileDBConnectionSecret(ctx, &keystone)
+		}},
+		// reconcileConfig must run before the Fernet/credential CronJobs and the
+		// db_sync Job, which all require the keystone.conf ConfigMap. It returns
+		// (string, error) rather than the standard (ctrl.Result, error): the
+		// wrapper captures the ConfigMap name via closure and, on failure, flips
+		// SecretsReady=False via markConfigFailed so the aggregate Ready cannot
+		// stay stale-True at the new generation (issue #467).
+		{name: "Config", fn: func(ctx context.Context) (ctrl.Result, error) {
+			var err error
+			configMapName, err = r.reconcileConfig(ctx, &keystone)
+			if err != nil {
+				markConfigFailed(&keystone, err)
+			}
+			return ctrl.Result{}, err
+		}},
+		// FernetKeys, CredentialKeys, and NetworkPolicy are independent of each
+		// other and run concurrently. All three depend on Config having
+		// completed. NetworkPolicy has no data dependency on the Deployment — it
+		// uses selectorLabels derived from the CR. The group's members
+		// self-instrument, so the step carries no sub_reconciler name
+		// (CC-0039, CC-0071, REQ-001).
+		{fn: func(ctx context.Context) (ctrl.Result, error) {
+			return r.reconcileParallelGroup(ctx, &keystone, []parallelSubReconciler{
+				{
+					name:          "FernetKeys",
+					conditionType: "FernetKeysReady",
+					fn: func(ctx context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
+						return r.reconcileFernetKeys(ctx, ks, configMapName)
+					},
+				},
+				{
+					name:          "CredentialKeys",
+					conditionType: "CredentialKeysReady",
+					fn: func(ctx context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
+						return r.reconcileCredentialKeys(ctx, ks, configMapName)
+					},
+				},
+				{
+					name:          "NetworkPolicy",
+					conditionType: "NetworkPolicyReady",
+					fn: func(ctx context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
+						return r.reconcileNetworkPolicy(ctx, ks)
+					},
+				},
+			})
+		}},
+		{name: "Database", fn: func(ctx context.Context) (ctrl.Result, error) {
+			return r.reconcileDatabase(ctx, &keystone, configMapName)
+		}},
+		// Policy validation gates the Deployment: invalid oslo.policy overrides
+		// must be caught before reaching running pods (CC-0058).
+		{name: "PolicyValidation", fn: func(ctx context.Context) (ctrl.Result, error) {
+			return r.reconcilePolicyValidation(ctx, &keystone, configMapName)
+		}},
+		{name: "Deployment", fn: func(ctx context.Context) (ctrl.Result, error) {
+			return r.reconcileDeployment(ctx, &keystone, configMapName)
+		}},
+		// Prune stale immutable ConfigMaps after Deployment is ready so all pods
+		// run the new config before old ConfigMaps are deleted. Uninstrumented
+		// (no sub_reconciler name); a prune failure is a config-concern failure,
+		// so it flips SecretsReady=False via markConfigFailed rather than leaving
+		// the aggregate Ready stale-True (CC-0077, REQ-007; issue #467).
+		{fn: func(ctx context.Context) (ctrl.Result, error) {
+			if err := r.pruneStaleConfigMaps(ctx, &keystone, configMapName); err != nil {
+				markConfigFailed(&keystone, err)
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{}, nil
+		}},
+		// HTTPRoute runs after the Deployment/Service are ensured so the backend
+		// Service is present before the Gateway controller resolves backendRefs
+		// (CC-0065, REQ-009, REQ-010).
+		{name: "HTTPRoute", fn: func(ctx context.Context) (ctrl.Result, error) {
+			return r.reconcileHTTPRoute(ctx, &keystone)
+		}},
+		// Health check runs after Deployment because it depends on
+		// Status.Endpoint, which reconcileDeployment sets (CC-0067, REQ-007).
+		{name: "HealthCheck", fn: func(ctx context.Context) (ctrl.Result, error) {
+			return r.reconcileHealthCheck(ctx, &keystone)
+		}},
+		{name: "HPA", fn: func(ctx context.Context) (ctrl.Result, error) {
+			return r.reconcileHPA(ctx, &keystone)
+		}},
+		{name: "Bootstrap", fn: func(ctx context.Context) (ctrl.Result, error) {
+			return r.reconcileBootstrap(ctx, &keystone, configMapName)
+		}},
+		{name: "TrustFlush", fn: func(ctx context.Context) (ctrl.Result, error) {
+			return r.reconcileTrustFlush(ctx, &keystone, configMapName)
+		}},
+		// Scheduled admin-password rotation (Model B). Runs after Bootstrap has
+		// seeded the initial admin credential so the rotation CronJob and
+		// PushSecret never race the bootstrap seed; configMapName is accepted for
+		// call-site symmetry only — the rotate script needs no keystone config
+		// (CC-0109, REQ-002, REQ-003, REQ-009).
+		{name: "PasswordRotation", fn: func(ctx context.Context) (ctrl.Result, error) {
+			return r.reconcilePasswordRotation(ctx, &keystone, configMapName)
+		}},
 	}
 
-	// FernetKeys, CredentialKeys, and NetworkPolicy are independent of each
-	// other and can run concurrently. All three depend on reconcileConfig
-	// (above) having completed. NetworkPolicy has no data dependency on the
-	// Deployment — it uses selectorLabels derived from the CR
-	// (CC-0039, CC-0071, REQ-001).
-	if result, err := r.reconcileParallelGroup(ctx, &keystone, []parallelSubReconciler{
-		{
-			name:          "FernetKeys",
-			conditionType: "FernetKeysReady",
-			fn: func(ctx context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
-				return r.reconcileFernetKeys(ctx, ks, configMapName)
-			},
-		},
-		{
-			name:          "CredentialKeys",
-			conditionType: "CredentialKeysReady",
-			fn: func(ctx context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
-				return r.reconcileCredentialKeys(ctx, ks, configMapName)
-			},
-		},
-		{
-			name:          "NetworkPolicy",
-			conditionType: "NetworkPolicyReady",
-			fn: func(ctx context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
-				return r.reconcileNetworkPolicy(ctx, ks)
-			},
-		},
-	}); !result.IsZero() || err != nil {
-		return r.updateStatus(ctx, &keystone, result, err)
-	}
-
-	if result, err := instrumentSubReconciler(ctx, "Database", func(ctx context.Context) (ctrl.Result, error) {
-		return r.reconcileDatabase(ctx, &keystone, configMapName)
-	}); !result.IsZero() || err != nil {
-		return r.updateStatus(ctx, &keystone, result, err)
-	}
-
-	// Policy validation gates the Deployment: invalid oslo.policy overrides
-	// must be caught before reaching running pods (CC-0058).
-	if result, err := instrumentSubReconciler(ctx, "PolicyValidation", func(ctx context.Context) (ctrl.Result, error) {
-		return r.reconcilePolicyValidation(ctx, &keystone, configMapName)
-	}); !result.IsZero() || err != nil {
-		return r.updateStatus(ctx, &keystone, result, err)
-	}
-
-	if result, err := instrumentSubReconciler(ctx, "Deployment", func(ctx context.Context) (ctrl.Result, error) {
-		return r.reconcileDeployment(ctx, &keystone, configMapName)
-	}); !result.IsZero() || err != nil {
-		return r.updateStatus(ctx, &keystone, result, err)
-	}
-
-	// Prune stale immutable ConfigMaps after Deployment is ready to ensure
-	// all pods are running the new config before old ConfigMaps are deleted
-	// (CC-0077, REQ-007).
-	if err := r.pruneStaleConfigMaps(ctx, &keystone, configMapName); err != nil {
-		return r.updateStatus(ctx, &keystone, ctrl.Result{}, err)
-	}
-
-	// HTTPRoute reconciliation runs after the Deployment/Service are ensured
-	// so that the backend Service is present before the Gateway controller
-	// resolves backendRefs (CC-0065, REQ-009, REQ-010).
-	if result, err := instrumentSubReconciler(ctx, "HTTPRoute", func(ctx context.Context) (ctrl.Result, error) {
-		return r.reconcileHTTPRoute(ctx, &keystone)
-	}); !result.IsZero() || err != nil {
-		return r.updateStatus(ctx, &keystone, result, err)
-	}
-
-	// Health check runs after Deployment because it depends on
-	// Status.Endpoint which reconcileDeployment sets (CC-0067, REQ-007).
-	if result, err := instrumentSubReconciler(ctx, "HealthCheck", func(ctx context.Context) (ctrl.Result, error) {
-		return r.reconcileHealthCheck(ctx, &keystone)
-	}); !result.IsZero() || err != nil {
-		return r.updateStatus(ctx, &keystone, result, err)
-	}
-
-	if result, err := instrumentSubReconciler(ctx, "HPA", func(ctx context.Context) (ctrl.Result, error) {
-		return r.reconcileHPA(ctx, &keystone)
-	}); !result.IsZero() || err != nil {
-		return r.updateStatus(ctx, &keystone, result, err)
-	}
-
-	if result, err := instrumentSubReconciler(ctx, "Bootstrap", func(ctx context.Context) (ctrl.Result, error) {
-		return r.reconcileBootstrap(ctx, &keystone, configMapName)
-	}); !result.IsZero() || err != nil {
-		return r.updateStatus(ctx, &keystone, result, err)
-	}
-
-	if result, err := instrumentSubReconciler(ctx, "TrustFlush", func(ctx context.Context) (ctrl.Result, error) {
-		return r.reconcileTrustFlush(ctx, &keystone, configMapName)
-	}); !result.IsZero() || err != nil {
-		return r.updateStatus(ctx, &keystone, result, err)
-	}
-
-	// Scheduled admin-password rotation (Model B). Runs after Bootstrap has
-	// seeded the initial admin credential so the rotation CronJob and PushSecret
-	// never race the bootstrap seed; configMapName is accepted for call-site
-	// symmetry only — the rotate script needs no keystone config (CC-0109,
-	// REQ-002, REQ-003, REQ-009).
-	if result, err := instrumentSubReconciler(ctx, "PasswordRotation", func(ctx context.Context) (ctrl.Result, error) {
-		return r.reconcilePasswordRotation(ctx, &keystone, configMapName)
-	}); !result.IsZero() || err != nil {
-		return r.updateStatus(ctx, &keystone, result, err)
+	for _, s := range pipeline {
+		var (
+			result ctrl.Result
+			err    error
+		)
+		if s.name == "" {
+			result, err = s.fn(ctx)
+		} else {
+			result, err = instrumentSubReconciler(ctx, s.name, s.fn)
+		}
+		if !result.IsZero() || err != nil {
+			return r.updateStatus(ctx, &keystone, result, err)
+		}
 	}
 
 	// The aggregate Ready condition is recomputed inside updateStatus, which
@@ -586,6 +585,30 @@ func setReadyCondition(keystone *keystonev1alpha1.Keystone) {
 // aggregateReady returns true if all sub-condition types are True.
 func aggregateReady(conds []metav1.Condition) bool {
 	return conditions.AllTrue(conds, subConditionTypes...)
+}
+
+// conditionReasonConfigError is the SecretsReady=False reason set when
+// reconcileConfig or config pruning fails. Config artefacts (the rendered
+// keystone.conf ConfigMap and its pruning) gate the same downstream graph as
+// the upstream credential Secrets, so failures reuse SecretsReady rather than a
+// dedicated condition — matching the subReconcilerConditionTypes "Config" ->
+// "SecretsReady" mapping and reconcileDBConnectionSecret (CC-0080, issue #467).
+const conditionReasonConfigError = "ConfigError"
+
+// markConfigFailed flips SecretsReady to False so a reconcileConfig or config
+// prune failure cannot leave the aggregate Ready condition stale-True at the
+// new ObservedGeneration. Before this, both error paths returned a naked error
+// and setReadyCondition re-aggregated the still-True sub-conditions, persisting
+// Ready=True at the new generation; the failure was visible only in logs and
+// the reconcile_errors counter (issue #467).
+func markConfigFailed(keystone *keystonev1alpha1.Keystone, err error) {
+	conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
+		Type:               "SecretsReady",
+		Status:             metav1.ConditionFalse,
+		ObservedGeneration: keystone.Generation,
+		Reason:             conditionReasonConfigError,
+		Message:            err.Error(),
+	})
 }
 
 // shortestRequeue returns the ctrl.Result with the shortest non-zero

@@ -375,22 +375,42 @@ Sub-reconcilers execute in a defined order using two execution modes:
    the Keystone CR to prevent data races. See
    [Parallel Group Architecture](#parallel-group-architecture) for details.
 
-The sequential call pattern for each sub-reconciler (except `reconcileConfig`) is:
+The chain is a table-driven pipeline. Each step is a `subReconcilerStep`
+(`name` + `fn`); the loop attempts the steps in order and funnels every exit
+path through `updateStatus` by construction:
 
 ```go
-if result, err := r.reconcileX(ctx, &keystone); !result.IsZero() || err != nil {
-    return r.updateStatus(ctx, &keystone, result, err)
+for _, s := range pipeline {
+    var result ctrl.Result
+    var err error
+    if s.name == "" {
+        // Parallel group / config pruning: not wrapped, they self-instrument
+        // or are intentionally uninstrumented.
+        result, err = s.fn(ctx)
+    } else {
+        result, err = instrumentSubReconciler(ctx, s.name, s.fn)
+    }
+    if !result.IsZero() || err != nil {
+        return r.updateStatus(ctx, &keystone, result, err)
+    }
 }
+return r.updateStatus(ctx, &keystone, ctrl.Result{}, nil)
 ```
 
 This guarantees:
 
-1. A sub-reconciler error **propagates immediately** — subsequent sub-reconcilers are
-   skipped.
-2. A non-zero result (`RequeueAfter > 0` or `Requeue: true`) causes an **early
-   return** — status is persisted and the reconciler exits.
-3. Status conditions from the failing/requeuing sub-reconciler are **always persisted**
+1. A step error **propagates immediately** — subsequent steps are skipped.
+2. A non-zero result (`!result.IsZero()`) causes an **early return** — status is
+   persisted and the reconciler exits.
+3. Status conditions from the failing/requeuing step are **always persisted**
    via `updateStatus()` before returning.
+
+`reconcileConfig` and `pruneStaleConfigMaps` are ordinary steps in this pipeline.
+They signal failure with a bare `error` rather than a status condition of their
+own, so each wraps its call to flip `SecretsReady=False` (via `markConfigFailed`)
+on failure. Without that, `setReadyCondition` would re-aggregate the still-True
+sub-conditions and persist a stale `Ready=True` at the new generation — the
+failure would be visible only in logs and the error counter.
 
 The parallel group follows a different contract: all three sub-reconcilers run
 simultaneously, errors cancel the errgroup context, and conditions from completed
@@ -470,14 +490,14 @@ output (other than conditions merged after the group completes).
 | Sub-Reconciler | Inputs | Condition Type | Dependencies | Parallel |
 | --- | --- | --- | --- | --- |
 | `reconcileSecrets` | CR spec | `SecretsReady` | none | no (must run first) |
-| `reconcileConfig` | CR spec, DB secret | *(returns configMapName)* | Secrets | no (produces configMapName) |
+| `reconcileConfig` | CR spec, DB secret | `SecretsReady` (False on failure; *returns configMapName*) | Secrets | no (produces configMapName) |
 | `reconcileFernetKeys` | configMapName | `FernetKeysReady` | Config | **yes** |
 | `reconcileCredentialKeys` | configMapName | `CredentialKeysReady` | Config | **yes** |
 | `reconcileNetworkPolicy` | CR spec | `NetworkPolicyReady` | none | **yes** |
 | `reconcileDatabase` | configMapName | `DatabaseReady` | Config | no (complex state machine) |
 | `reconcilePolicyValidation` | configMapName | `PolicyValidReady` | Config | no (gates Deployment) |
 | `reconcileDeployment` | configMapName | `DeploymentReady` | Database (implicit) | no |
-| `pruneStaleConfigMaps` | configMapName | *(none)* | Deployment (must be ready) | no |
+| `pruneStaleConfigMaps` | configMapName | `SecretsReady` (False on failure) | Deployment (must be ready) | no |
 | `reconcileHTTPRoute` | CR spec | `HTTPRouteReady` | Deployment (ensures backend Service exists) | no |
 | `reconcileHealthCheck` | status.endpoint | `KeystoneAPIReady` | Deployment (sets endpoint) | no |
 | `reconcileHPA` | CR spec | `HPAReady` | Deployment (naming) | no |
@@ -1831,8 +1851,14 @@ ConfigMap with a content-hash suffix. Returns the ConfigMap name for use by
 `reconcileDeployment`.
 
 > **Note:** This sub-reconciler has a different signature — it returns
-> `(string, error)` instead of `(ctrl.Result, error)`. It does not set any status
-> condition and does not request requeues.
+> `(string, error)` instead of `(ctrl.Result, error)`, and `reconcileConfig`
+> itself sets no status condition and requests no requeue. Its pipeline step
+> wraps the call so that a failure flips `SecretsReady=False` (via
+> `markConfigFailed`); otherwise the aggregate `Ready` would re-aggregate the
+> still-True sub-conditions and persist a stale `Ready=True` at the new
+> generation. `SecretsReady` is reused rather than introducing a
+> dedicated `ConfigReady`, matching the `subReconcilerConditionTypes`
+> `"Config" -> "SecretsReady"` mapping.
 
 **Configuration Pipeline:**
 
@@ -2893,13 +2919,13 @@ apply it. See the [Labels and Annotations](#labels-and-annotations) entries for
 | `reconcileSecrets` | ESO not synced | 15s | API error → exponential backoff |
 | `reconcileDatabase` | MariaDB CRs not ready | 30s | `ErrJobFailed` from db_sync |
 | `reconcileDatabase` | db_sync running | 30s | API error → exponential backoff |
-| `reconcileFernetKeys` | — | — | API error → exponential backoff |
-| `reconcileCredentialKeys` | — | — | API error → exponential backoff |
+| `reconcileFernetKeys` | Initial key generation / rotation applied | 15s | API error → exponential backoff |
+| `reconcileCredentialKeys` | Initial key generation / rotation applied | 15s | API error → exponential backoff |
 | `reconcileNetworkPolicy` | — | — | API error → exponential backoff |
-| `reconcileConfig` | — | — | Secret read failure, render failure → exponential backoff |
+| `reconcileConfig` | — | — | Secret read / render / ConfigMap failure → `SecretsReady=False`, exponential backoff |
 | `reconcilePolicyValidation` | Job running | 15s | `ErrJobFailed` from validation → descriptive error |
 | `reconcileDeployment` | Deployment not available | 10s | API error → exponential backoff |
-| `pruneStaleConfigMaps` | — | — | List/delete failure → exponential backoff |
+| `pruneStaleConfigMaps` | — | — | List/delete failure → `SecretsReady=False`, exponential backoff |
 | `reconcileHTTPRoute` | Gateway has not yet set `Accepted=True` on parent status | 10s | API error on ensure/get/delete → exponential backoff |
 | `reconcileHealthCheck` | Non-2xx, timeout, DNS, connection refused | 10s | Malformed URL → exponential backoff |
 | `reconcileHPA` | — | — | API error → exponential backoff |
@@ -3252,11 +3278,14 @@ place without the other fails CI.
 
 ### Contract: wrap every new sub-reconciler
 
-Whenever a new sub-reconciler is added to `Reconcile` (sequential
-section or `reconcileParallelGroup` member), it MUST be:
+Whenever a new sub-reconciler is added to `Reconcile` (as a pipeline
+`subReconcilerStep` or a `reconcileParallelGroup` member), it MUST be:
 
-1. Invoked through `instrumentSubReconciler(ctx, "<Name>", fn)` rather
-   than called directly.
+1. Added to the `pipeline` in `Reconcile` as a `subReconcilerStep` with a
+   non-empty `name`. The loop wraps named steps in
+   `instrumentSubReconciler(ctx, s.name, s.fn)`; only the parallel group
+   (whose members self-instrument) and config pruning use an empty name and
+   bypass the wrapper.
 2. Added to `subConditionTypes` in `keystone_controller.go` (so its
    readiness participates in the aggregate `Ready`).
 3. Added to `subReconcilerConditionTypes` in `instrumentation.go` with

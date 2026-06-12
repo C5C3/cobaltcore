@@ -655,6 +655,65 @@ func TestReconcile_ParallelGroupRequeueShortCircuitsChain(t *testing.T) {
 		"DatabaseReady must NOT be set — the parallel-group requeue short-circuited before reconcileDatabase (issue #467)")
 }
 
+// TestReconcile_ConfigFailureDoesNotLeaveReadyTrue reproduces issue #467
+// Problem 1. A previously-healthy CR (every sub-condition True, Ready True)
+// whose reconcileConfig then fails — here because policyOverrides.configMapRef
+// points at a ConfigMap that does not exist — must flip Ready to False, not
+// re-aggregate the stale-True sub-conditions into Ready=True at the new
+// generation.
+//
+// Before the fix the Config step returned a naked error and setReadyCondition
+// re-aggregated the still-True sub-conditions, so Ready stayed True and the
+// failure was visible only in logs and the error counter. markConfigFailed now
+// flips SecretsReady=False on the same path.
+func TestReconcile_ConfigFailureDoesNotLeaveReadyTrue(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+	// Break reconcileConfig: point policyOverrides at a ConfigMap that does not
+	// exist so buildPolicyYAML → LoadPolicyFromConfigMap returns NotFound.
+	ks.Spec.PolicyOverrides = &commonv1.PolicySpec{
+		ConfigMapRef: &corev1.LocalObjectReference{Name: "missing-policy-cm"},
+	}
+	// Seed every sub-condition True to simulate a CR that was already Ready. The
+	// aggregate would therefore be Ready=True without the fix.
+	for _, ct := range subConditionTypes {
+		meta.SetStatusCondition(&ks.Status.Conditions, metav1.Condition{
+			Type:   ct,
+			Status: metav1.ConditionTrue,
+			Reason: "Seeded",
+		})
+	}
+	// Ready secrets + DB credentials so Secrets/DatabaseTLS/DBConnectionSecret
+	// all pass and the chain reaches Config. Fernet/credential Secrets are not
+	// needed — Config runs before the parallel group.
+	objs := append([]runtime.Object{ks, testDBCredentialsSecret(), testAdminCredentialsSecret()}, testReadyExternalSecrets()...)
+	r := newTestReconciler(objs...)
+
+	ctx := context.Background()
+	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}}
+
+	_, err := r.Reconcile(ctx, req)
+	// reconcileConfig surfaces the error so controller-runtime backs off.
+	g.Expect(err).To(HaveOccurred(), "reconcileConfig must surface the missing-ConfigMap error")
+
+	var updated keystonev1alpha1.Keystone
+	g.Expect(r.Get(ctx, types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}, &updated)).To(Succeed())
+
+	// The config failure flipped SecretsReady=False with the dedicated reason.
+	secretsCond := meta.FindStatusCondition(updated.Status.Conditions, "SecretsReady")
+	g.Expect(secretsCond).NotTo(BeNil())
+	g.Expect(secretsCond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(secretsCond.Reason).To(Equal(conditionReasonConfigError))
+
+	// The aggregate Ready must follow it to False at the observed generation —
+	// it must NOT stay stale-True (issue #467).
+	readyCond := meta.FindStatusCondition(updated.Status.Conditions, "Ready")
+	g.Expect(readyCond).NotTo(BeNil(), "Ready condition should be set")
+	g.Expect(readyCond.Status).To(Equal(metav1.ConditionFalse),
+		"Ready must be False when reconcileConfig fails, not stale-True (issue #467)")
+	g.Expect(readyCond.ObservedGeneration).To(Equal(updated.Generation))
+}
+
 func TestReconcile_SequentialProgression(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
