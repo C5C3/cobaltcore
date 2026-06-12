@@ -7,7 +7,9 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -153,6 +155,46 @@ func (r *KeystoneReconciler) reconcileUpgrade(ctx context.Context, keystone *key
 	}
 }
 
+// upgradePhaseStep describes one job-running upgrade phase. The expand, migrate,
+// and contract phases share an identical build/run/record/fail/requeue skeleton
+// (runUpgradePhase) and differ only in the phase name, the Job builder, the
+// failure event reason, and what completion does.
+type upgradePhaseStep struct {
+	// name is the phase name ("Expand"); it derives the "{name}InProgress" and
+	// "{name}Failed" condition reasons and the failure event/error wording.
+	name string
+	// jobSuffix is the recordDBJobTerminalState key ("db-expand").
+	jobSuffix string
+	// buildJob builds the phase Job for the given image tag.
+	buildJob func(keystone *keystonev1alpha1.Keystone, configMapName, imageTag string) *batchv1.Job
+	// failReason is the Warning event reason emitted when the Job fails.
+	failReason string
+	// onComplete runs the phase-specific transition once the Job succeeds.
+	onComplete func(r *KeystoneReconciler, ctx context.Context, keystone *keystonev1alpha1.Keystone) (ctrl.Result, error)
+}
+
+// runUpgradePhase executes the shared build/run/record/fail/requeue skeleton for
+// one job-running upgrade phase, delegating the phase-specific transition to
+// step.onComplete. The Job runs with the target image (spec.image.tag);
+// see reconcileExpand for why expand and migrate also use the new release.
+func (r *KeystoneReconciler) runUpgradePhase(ctx context.Context, keystone *keystonev1alpha1.Keystone, configMapName string, step upgradePhaseStep) (ctrl.Result, error) {
+	phaseJob := step.buildJob(keystone, configMapName, keystone.Spec.Image.Tag)
+	done, err := job.RunJob(ctx, r.Client, r.Scheme, keystone, phaseJob)
+	// Emit db_sync metrics for the phase Job so the dashboard panel and
+	// failure-rate alerts continue to observe activity during upgrades.
+	r.recordDBJobTerminalState(ctx, keystone, step.jobSuffix)
+	if err != nil {
+		setUpgradeJobFailed(keystone, step.name, phaseJob.Name, err)
+		r.Recorder.Eventf(keystone, corev1.EventTypeWarning, step.failReason, "%s job %s failed: %v", step.name, phaseJob.Name, err)
+		return ctrl.Result{}, fmt.Errorf("running %s job: %w", strings.ToLower(step.name), err)
+	}
+	if !done {
+		setUpgradePhaseRunning(keystone, step.name)
+		return ctrl.Result{RequeueAfter: RequeueUpgradeWait}, nil
+	}
+	return step.onComplete(r, ctx, keystone)
+}
+
 // reconcileExpand runs the db_sync --expand Job using the NEW image (spec.image.tag).
 //
 // Per the OpenStack Keystone rolling upgrade procedure, expand migrations are
@@ -162,21 +204,18 @@ func (r *KeystoneReconciler) reconcileUpgrade(ctx context.Context, keystone *key
 // run with the new binary then fails keystone's _validate_upgrade_order check
 // with "upgrade contract ahead of expand".
 func (r *KeystoneReconciler) reconcileExpand(ctx context.Context, keystone *keystonev1alpha1.Keystone, configMapName string) (ctrl.Result, error) {
-	expandJob := buildExpandJob(keystone, configMapName, keystone.Spec.Image.Tag)
-	done, err := job.RunJob(ctx, r.Client, r.Scheme, keystone, expandJob)
-	// Emit db_sync metrics for the expand-phase Job so the dashboard panel
-	// and failure-rate alerts continue to observe activity during upgrades.
-	r.recordDBJobTerminalState(ctx, keystone, "db-expand")
-	if err != nil {
-		setUpgradeJobFailed(keystone, "Expand", expandJob.Name, err)
-		r.Recorder.Eventf(keystone, corev1.EventTypeWarning, conditionReasonExpandFailed, "Expand job %s failed: %v", expandJob.Name, err)
-		return ctrl.Result{}, fmt.Errorf("running expand job: %w", err)
-	}
-	if !done {
-		setUpgradePhaseRunning(keystone, "Expand")
-		return ctrl.Result{RequeueAfter: RequeueUpgradeWait}, nil
-	}
+	return r.runUpgradePhase(ctx, keystone, configMapName, upgradePhaseStep{
+		name:       "Expand",
+		jobSuffix:  "db-expand",
+		buildJob:   buildExpandJob,
+		failReason: conditionReasonExpandFailed,
+		onComplete: (*KeystoneReconciler).completeExpand,
+	})
+}
 
+// completeExpand transitions the upgrade from Expanding to Migrating after the
+// expand Job succeeds.
+func (r *KeystoneReconciler) completeExpand(ctx context.Context, keystone *keystonev1alpha1.Keystone) (ctrl.Result, error) {
 	// Expand complete \u2014 transition to Migrating.
 	keystone.Status.UpgradePhase = keystonev1alpha1.UpgradePhaseMigrating
 	conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
@@ -196,21 +235,18 @@ func (r *KeystoneReconciler) reconcileExpand(ctx context.Context, keystone *keys
 // alembic data-migration steps defined in the new release are applied (see
 // reconcileExpand for the full rationale).
 func (r *KeystoneReconciler) reconcileMigrate(ctx context.Context, keystone *keystonev1alpha1.Keystone, configMapName string) (ctrl.Result, error) {
-	migrateJob := buildMigrateJob(keystone, configMapName, keystone.Spec.Image.Tag)
-	done, err := job.RunJob(ctx, r.Client, r.Scheme, keystone, migrateJob)
-	// Emit db_sync metrics for the migrate-phase Job so the dashboard panel
-	// and failure-rate alerts continue to observe activity during upgrades.
-	r.recordDBJobTerminalState(ctx, keystone, "db-migrate")
-	if err != nil {
-		setUpgradeJobFailed(keystone, "Migrate", migrateJob.Name, err)
-		r.Recorder.Eventf(keystone, corev1.EventTypeWarning, conditionReasonMigrateFailed, "Migrate job %s failed: %v", migrateJob.Name, err)
-		return ctrl.Result{}, fmt.Errorf("running migrate job: %w", err)
-	}
-	if !done {
-		setUpgradePhaseRunning(keystone, "Migrate")
-		return ctrl.Result{RequeueAfter: RequeueUpgradeWait}, nil
-	}
+	return r.runUpgradePhase(ctx, keystone, configMapName, upgradePhaseStep{
+		name:       "Migrate",
+		jobSuffix:  "db-migrate",
+		buildJob:   buildMigrateJob,
+		failReason: conditionReasonMigrateFailed,
+		onComplete: (*KeystoneReconciler).completeMigrate,
+	})
+}
 
+// completeMigrate transitions the upgrade from Migrating to RollingUpdate after
+// the migrate Job succeeds.
+func (r *KeystoneReconciler) completeMigrate(ctx context.Context, keystone *keystonev1alpha1.Keystone) (ctrl.Result, error) {
 	// Migrate complete \u2014 transition to RollingUpdate.
 	keystone.Status.UpgradePhase = keystonev1alpha1.UpgradePhaseRollingUpdate
 	conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
@@ -240,21 +276,19 @@ func (r *KeystoneReconciler) reconcileRollingUpdate(ctx context.Context, keyston
 // reconcileContract runs the db_sync --contract Job using the NEW image (spec.image.tag)
 // and finalizes the upgrade on completion.
 func (r *KeystoneReconciler) reconcileContract(ctx context.Context, keystone *keystonev1alpha1.Keystone, configMapName string) (ctrl.Result, error) {
-	contractJob := buildContractJob(keystone, configMapName, keystone.Spec.Image.Tag)
-	done, err := job.RunJob(ctx, r.Client, r.Scheme, keystone, contractJob)
-	// Emit db_sync metrics for the contract-phase Job so the dashboard panel
-	// and failure-rate alerts continue to observe activity during upgrades.
-	r.recordDBJobTerminalState(ctx, keystone, "db-contract")
-	if err != nil {
-		setUpgradeJobFailed(keystone, "Contract", contractJob.Name, err)
-		r.Recorder.Eventf(keystone, corev1.EventTypeWarning, conditionReasonContractFailed, "Contract job %s failed: %v", contractJob.Name, err)
-		return ctrl.Result{}, fmt.Errorf("running contract job: %w", err)
-	}
-	if !done {
-		setUpgradePhaseRunning(keystone, "Contract")
-		return ctrl.Result{RequeueAfter: RequeueUpgradeWait}, nil
-	}
+	return r.runUpgradePhase(ctx, keystone, configMapName, upgradePhaseStep{
+		name:       "Contract",
+		jobSuffix:  "db-contract",
+		buildJob:   buildContractJob,
+		failReason: conditionReasonContractFailed,
+		onComplete: (*KeystoneReconciler).completeContract,
+	})
+}
 
+// completeContract finalizes the upgrade after the contract Job succeeds: it
+// promotes TargetRelease to InstalledRelease, clears the upgrade state, and
+// reports DatabaseReady=True.
+func (r *KeystoneReconciler) completeContract(ctx context.Context, keystone *keystonev1alpha1.Keystone) (ctrl.Result, error) {
 	// Contract complete \u2014 upgrade finished.
 	from := keystone.Status.InstalledRelease
 	to := keystone.Status.TargetRelease
