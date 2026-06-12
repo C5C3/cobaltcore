@@ -9,7 +9,6 @@ import (
 	"fmt"
 
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
-	batchv1 "k8s.io/api/batch/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -17,7 +16,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	"github.com/c5c3/forge/internal/common/conditions"
-	"github.com/c5c3/forge/internal/common/job"
 )
 
 // EnsureDatabase creates a MariaDB Database CR if it does not exist or updates
@@ -155,11 +153,4 @@ func IsUserReady(user *mariadbv1alpha1.User) bool {
 // True.
 func IsGrantReady(grant *mariadbv1alpha1.Grant) bool {
 	return conditions.IsReady(grant.Status.Conditions)
-}
-
-// RunDBSyncJob creates a database synchronization Job if it does not already
-// exist and reports whether the Job has completed successfully. It delegates
-// to job.RunJob.
-func RunDBSyncJob(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, syncJob *batchv1.Job) (bool, error) {
-	return job.RunJob(ctx, c, scheme, owner, syncJob)
 }

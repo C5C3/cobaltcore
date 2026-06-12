@@ -14,7 +14,6 @@ import (
 	envtestutil "github.com/c5c3/forge/internal/common/testutil/envtest"
 	"github.com/c5c3/forge/internal/common/testutil/simulators"
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
-	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -283,53 +282,4 @@ func TestIntegration_EnsureDatabaseUser_idempotent(t *testing.T) {
 	grantList := &mariadbv1alpha1.GrantList{}
 	g.Expect(c.List(ctx, grantList, client.InNamespace(ns.Name))).To(Succeed())
 	g.Expect(grantList.Items).To(HaveLen(1))
-}
-
-func TestIntegration_RunDBSyncJob(t *testing.T) {
-	envtestutil.SkipIfEnvTestUnavailable(t)
-	g := NewGomegaWithT(t)
-
-	c, ctx, _ := envtestutil.SetupEnvTest(t)
-	scheme := envtestutil.SharedScheme()
-
-	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "test-db-sync"}}
-	g.Expect(c.Create(ctx, ns)).To(Succeed())
-
-	owner := &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{Name: "sync-owner", Namespace: ns.Name},
-	}
-	g.Expect(c.Create(ctx, owner)).To(Succeed())
-
-	syncJob := &batchv1.Job{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "integration-sync-job",
-			Namespace: ns.Name,
-		},
-		Spec: batchv1.JobSpec{
-			Template: corev1.PodTemplateSpec{
-				Spec: corev1.PodSpec{
-					RestartPolicy: corev1.RestartPolicyNever,
-					Containers: []corev1.Container{
-						{Name: "sync", Image: "busybox:latest", Command: []string{"echo", "sync"}},
-					},
-				},
-			},
-		},
-	}
-
-	// First call creates the Job.
-	ready, err := RunDBSyncJob(ctx, c, scheme, owner, syncJob)
-	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(ready).To(BeFalse())
-
-	// Verify the Job exists with owner reference.
-	created := &batchv1.Job{}
-	g.Expect(c.Get(ctx, client.ObjectKeyFromObject(syncJob), created)).To(Succeed())
-	g.Expect(created.OwnerReferences).To(HaveLen(1))
-	g.Expect(created.OwnerReferences[0].Name).To(Equal("sync-owner"))
-
-	// Second call is idempotent — returns false (not complete) without error.
-	ready, err = RunDBSyncJob(ctx, c, scheme, owner, syncJob)
-	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(ready).To(BeFalse())
 }

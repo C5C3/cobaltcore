@@ -68,19 +68,6 @@ type DatabaseTLSSpec struct {
 	ClientCertSecretRef SecretRefSpec `json:"clientCertSecretRef"`
 }
 
-// MessagingSpec supports managed (ClusterRef) and brownfield (explicit) modes.
-// Exactly one of ClusterRef or Hosts must be set.
-type MessagingSpec struct {
-	// ClusterRef references a RabbitMQ CR in the cluster (managed mode).
-	// +optional
-	ClusterRef *corev1.LocalObjectReference `json:"clusterRef,omitempty"`
-	// Hosts is the list of RabbitMQ endpoints (brownfield mode).
-	// +optional
-	Hosts []string `json:"hosts,omitempty"`
-	// SecretRef references the K8s Secret with credentials.
-	SecretRef SecretRefSpec `json:"secretRef"`
-}
-
 // CacheSpec supports managed (ClusterRef) and brownfield (explicit) modes.
 // Exactly one of ClusterRef or Servers must be set; the XValidation rule below
 // enforces that invariant at the schema layer for every operator that embeds a

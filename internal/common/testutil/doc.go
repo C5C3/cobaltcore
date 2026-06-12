@@ -3,6 +3,5 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package testutil provides shared test infrastructure for CobaltCore operator
-// integration tests, including fake CRD schemas, fluent builders for test data,
-// and custom assertion helpers.
+// integration tests, including fake CRD schemas and envtest harness helpers.
 package testutil

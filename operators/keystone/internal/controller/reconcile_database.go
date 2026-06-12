@@ -349,7 +349,7 @@ func (r *KeystoneReconciler) reconcileDatabase(ctx context.Context, keystone *ke
 	}
 
 	// Non-upgrade path: simple db_sync.
-	done, err := database.RunDBSyncJob(ctx, r.Client, r.Scheme, keystone, buildDBSyncJob(keystone, configMapName))
+	done, err := job.RunJob(ctx, r.Client, r.Scheme, keystone, buildDBSyncJob(keystone, configMapName))
 	// Emit db_sync metrics on the terminal-transition observation path
 	// regardless of (done, err). In-progress Jobs are no-ops; the per-phase
 	// UID annotation on the Keystone CR guarantees at-most-once emission per

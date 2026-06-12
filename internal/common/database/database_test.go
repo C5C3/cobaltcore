@@ -19,8 +19,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-
-	"github.com/c5c3/forge/internal/common/job"
 )
 
 func newScheme() *runtime.Scheme {
@@ -95,25 +93,6 @@ func testGrant() *mariadbv1alpha1.Grant {
 			Table:      "*",
 			Username:   "appuser",
 			Host:       &host,
-		},
-	}
-}
-
-func testSyncJob() *batchv1.Job {
-	return &batchv1.Job{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-sync-job",
-			Namespace: "default",
-		},
-		Spec: batchv1.JobSpec{
-			Template: corev1.PodTemplateSpec{
-				Spec: corev1.PodSpec{
-					RestartPolicy: corev1.RestartPolicyNever,
-					Containers: []corev1.Container{
-						{Name: "sync", Image: "busybox:latest", Command: []string{"echo", "sync"}},
-					},
-				},
-			},
 		},
 	}
 }
@@ -485,66 +464,4 @@ func TestIsGrantReady_false(t *testing.T) {
 	g := NewGomegaWithT(t)
 	grant := &mariadbv1alpha1.Grant{}
 	g.Expect(IsGrantReady(grant)).To(BeFalse())
-}
-
-// --- RunDBSyncJob ---
-
-func TestRunDBSyncJob_creates(t *testing.T) {
-	g := NewGomegaWithT(t)
-	s := newScheme()
-	owner := testOwner()
-
-	c := fake.NewClientBuilder().
-		WithScheme(s).
-		WithObjects(owner).
-		Build()
-
-	ready, err := RunDBSyncJob(context.Background(), c, s, owner, testSyncJob())
-	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(ready).To(BeFalse(), "newly created job should not be complete")
-
-	created := &batchv1.Job{}
-	g.Expect(c.Get(context.Background(), client.ObjectKey{Name: "test-sync-job", Namespace: "default"}, created)).To(Succeed())
-	g.Expect(created.OwnerReferences).To(HaveLen(1))
-	g.Expect(created.OwnerReferences[0].Name).To(Equal("test-owner"))
-}
-
-func TestRunDBSyncJob_complete(t *testing.T) {
-	g := NewGomegaWithT(t)
-	s := newScheme()
-	owner := testOwner()
-
-	// Simulate a completed Job that was created via RunJob (carries hash
-	// annotation matching the desired PodSpec). API-server defaults may be
-	// present on the stored spec, but the hash refers to the original
-	// desired spec.
-	desired := testSyncJob()
-	now := metav1.Now()
-	syncJob := testSyncJob()
-	for i := range syncJob.Spec.Template.Spec.Containers {
-		syncJob.Spec.Template.Spec.Containers[i].ImagePullPolicy = corev1.PullAlways
-		syncJob.Spec.Template.Spec.Containers[i].TerminationMessagePath = corev1.TerminationMessagePathDefault
-		syncJob.Spec.Template.Spec.Containers[i].TerminationMessagePolicy = corev1.TerminationMessageReadFile
-	}
-	syncJob.Annotations = map[string]string{
-		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template),
-	}
-	syncJob.Status.Succeeded = 1
-	syncJob.Status.CompletionTime = &now
-	syncJob.Status.Conditions = []batchv1.JobCondition{
-		{
-			Type:   batchv1.JobComplete,
-			Status: corev1.ConditionTrue,
-		},
-	}
-
-	c := fake.NewClientBuilder().
-		WithScheme(s).
-		WithObjects(owner, syncJob).
-		WithStatusSubresource(syncJob).
-		Build()
-
-	ready, err := RunDBSyncJob(context.Background(), c, s, owner, testSyncJob())
-	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(ready).To(BeTrue())
 }

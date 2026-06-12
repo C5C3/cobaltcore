@@ -9,7 +9,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"regexp"
 	"sort"
 	"strings"
 
@@ -21,9 +20,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
-
-// placeholderRe matches {{KEY}} placeholders in config values.
-var placeholderRe = regexp.MustCompile(`\{\{([^}]+)\}\}`)
 
 // RenderINI renders a map of INI sections into an INI format string.
 // Sections are sorted alphabetically for deterministic output.
@@ -86,26 +82,6 @@ func MergeDefaults(userConfig, defaults map[string]map[string]string) map[string
 		}
 	}
 
-	return result
-}
-
-// InjectSecrets replaces {{SECRET_KEY}} placeholders in config values
-// with the corresponding values from the secrets map. Returns a new map
-// without mutating the input config. Unresolved placeholders are left as-is.
-func InjectSecrets(config map[string]map[string]string, secrets map[string]string) map[string]map[string]string {
-	result := make(map[string]map[string]string, len(config))
-	for section, kvs := range config {
-		result[section] = make(map[string]string, len(kvs))
-		for k, v := range kvs {
-			result[section][k] = placeholderRe.ReplaceAllStringFunc(v, func(match string) string {
-				key := match[2 : len(match)-2] // strip {{ and }}
-				if secret, ok := secrets[key]; ok {
-					return secret
-				}
-				return match
-			})
-		}
-	}
 	return result
 }
 

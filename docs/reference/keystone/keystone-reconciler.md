@@ -1498,12 +1498,12 @@ schema matches the expected Alembic migration head. See
 | `True` | `DatabaseSynced` | "Database schema is up to date (revision verified)" | — |
 
 **Error handling:** Errors from `database.EnsureDatabase()`,
-`database.EnsureDatabaseUser()`, and `database.RunDBSyncJob()` are wrapped with
+`database.EnsureDatabaseUser()`, and `job.RunJob()` (db_sync) are wrapped with
 context and returned. The `DBSyncFailed` condition is set before returning the error
 so that the failure reason is visible in the CR status.
 
 **Shared library calls:** `database.EnsureDatabase()`, `database.EnsureDatabaseUser()`,
-`database.RunDBSyncJob()`, `job.RunJob()` (schema-check)
+`job.RunJob()` (db_sync and schema-check)
 
 ---
 
@@ -1990,7 +1990,7 @@ the corresponding test invariants.
 **Error handling:** All errors are wrapped with context and returned. No conditions
 are set by this sub-reconciler.
 
-**Shared library calls:** `secrets.GetSecretValue()`, `config.InjectSecrets()`,
+**Shared library calls:** `secrets.GetSecretValue()`,
 `config.MergeDefaults()`, `config.InjectOsloPolicyConfig()`, `config.RenderINI()`,
 `config.CreateImmutableConfigMap()`, `plugins.RenderPluginConfig()`,
 `plugins.RenderPastePipelineINI()`, `policy.LoadPolicyFromConfigMap()`,

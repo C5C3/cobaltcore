@@ -10,7 +10,6 @@ import (
 
 	certmanagerv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	cmmeta "github.com/cert-manager/cert-manager/pkg/apis/meta/v1"
-	corev1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -63,23 +62,4 @@ func IsCertificateReady(cert *certmanagerv1.Certificate) bool {
 		}
 	}
 	return false
-}
-
-// GetTLSSecret retrieves the TLS certificate and private key from the Secret
-// identified by key. It returns an error if the Secret is not found or is
-// missing the expected tls.crt / tls.key entries.
-func GetTLSSecret(ctx context.Context, c client.Client, key client.ObjectKey) (certPEM []byte, keyPEM []byte, err error) {
-	secret := &corev1.Secret{}
-	if err := c.Get(ctx, key, secret); err != nil {
-		return nil, nil, fmt.Errorf("getting TLS Secret %s: %w", key, err)
-	}
-	certPEM, ok := secret.Data["tls.crt"]
-	if !ok {
-		return nil, nil, fmt.Errorf("TLS Secret %s is missing key %q", key, "tls.crt")
-	}
-	keyPEM, ok = secret.Data["tls.key"]
-	if !ok {
-		return nil, nil, fmt.Errorf("TLS Secret %s is missing key %q", key, "tls.key")
-	}
-	return certPEM, keyPEM, nil
 }

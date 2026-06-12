@@ -276,24 +276,6 @@ func IsGrantReady(grant *mariadbv1alpha1.Grant) bool
 
 Pure function. Returns `true` if the Grant has a `Ready` condition with status `True`.
 
-### RunDBSyncJob
-
-```go
-func RunDBSyncJob(
-    ctx context.Context,
-    c client.Client,
-    scheme *runtime.Scheme,
-    owner client.Object,
-    syncJob *batchv1.Job,
-) (bool, error)
-```
-
-Creates a database synchronization Job if it does not already exist and reports completion
-status. Delegates directly to `job.RunJob`.
-
-**Returns:** `(true, nil)` when the Job has completed; `(false, nil)` when still running;
-`(false, error)` on failure.
-
 ---
 
 ## Package: `deployment`
@@ -651,7 +633,6 @@ Creates or updates a cert-manager Certificate CR.
 - On update: overwrites `existing.Spec` with the provided spec.
 - Readiness is determined by `IsCertificateReady` on the existing resource.
 - cert-manager creates a Secret with the TLS certificate once the Certificate is ready.
-  Use `GetTLSSecret` to retrieve it.
 
 ### IsCertificateReady
 
@@ -662,37 +643,13 @@ func IsCertificateReady(cert *certmanagerv1.Certificate) bool
 Pure function. Returns `true` if the Certificate has a `Ready` condition
 (`CertificateConditionReady`) with status `True` (`cmmeta.ConditionTrue`).
 
-### GetTLSSecret
-
-```go
-func GetTLSSecret(
-    ctx context.Context,
-    c client.Client,
-    key client.ObjectKey,
-) (*corev1.Secret, error)
-```
-
-Retrieves a Secret by key. Intended for obtaining TLS secrets created by cert-manager.
-
-**Returns:** The Secret object, or an error if the Secret does not exist.
-
-**Behavior:**
-
-- Returns the full `*corev1.Secret` including `Data` with `tls.crt` and `tls.key` entries
-  (when created by cert-manager).
-- Returns a wrapped error on `NotFound` — callers can check with
-  `apierrors.IsNotFound(err)`.
-
 ---
 
 ## Cross-Package Dependencies
 
-```text
-database/ ──depends-on──▶ job/
-```
-
-The `database` package imports `job` to delegate `RunDBSyncJob` to `job.RunJob`. All other
-packages are independent of each other.
+These `internal/common` packages are independent of each other; reconcilers
+compose them directly (for example a Keystone sub-reconciler calls
+`job.RunJob` and `database.EnsureDatabase` side by side).
 
 ## Reconciler Integration Pattern
 
@@ -701,11 +658,11 @@ A typical reconciler calls these packages in its sub-reconciler phases:
 ```text
 SecretsReady      → secrets.WaitForExternalSecret, secrets.IsSecretReady
 DatabaseReady     → database.EnsureDatabase, database.EnsureDatabaseUser,
-                    database.RunDBSyncJob
+                    job.RunJob
 ConfigReady       → config.CreateImmutableConfigMap
 DeploymentReady   → deployment.EnsureDeployment, deployment.EnsureService
 ConfigMapPruning  → config.PruneImmutableConfigMaps (after DeploymentReady)
-TLSReady          → tls.EnsureCertificate, tls.GetTLSSecret
+TLSReady          → tls.EnsureCertificate
 PolicyReady       → policy.LoadPolicyFromConfigMap
 ```
 
