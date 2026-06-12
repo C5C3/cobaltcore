@@ -620,7 +620,7 @@ func adminPasswordPushSecret(keystone *keystonev1alpha1.Keystone) *esov1alpha1.P
 			DeletionPolicy: esov1alpha1.PushSecretDeletionPolicyNone,
 			SecretStoreRefs: []esov1alpha1.PushSecretStoreRef{{
 				Kind: "ClusterSecretStore",
-				Name: "openbao-cluster-store",
+				Name: openBaoClusterStoreName,
 			}},
 			Selector: esov1alpha1.PushSecretSelector{
 				Secret: &esov1alpha1.PushSecretSecret{
