@@ -325,6 +325,45 @@ func TestReconcilePolicyValidation_JobFailed_ConditionFalse(t *testing.T) {
 	g.Expect(cond.Reason).To(Equal(conditionReasonPolicyValidationFailed))
 }
 
+// TestReconcilePolicyValidation_JobFailed_PolicyFixed_Recreates verifies the
+// #460 fix at the policy-validation caller: when a validation Job has
+// permanently failed and spec.policyOverrides is then fixed (producing a new
+// immutable ConfigMap, hence a new pod-template hash), the failed Job is
+// re-created and PolicyValidReady transitions back to False/InProgress instead
+// of staying stuck on the previous failure (CC-0058).
+func TestReconcilePolicyValidation_JobFailed_PolicyFixed_Recreates(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := policyValidationTestScheme()
+	ks := policyValidationKeystoneWithPolicy()
+
+	// Failed validation Job whose stored hash matches the OLD config
+	// (keystone-config-abc123).
+	r := newPolicyValidationTestReconciler(s, ks, failedPolicyValidationJob(ks))
+
+	// Fixing spec.policyOverrides yields a new immutable ConfigMap name; the
+	// reconciler is called with it, so the desired pod template — and its hash —
+	// differ from the failed Job's stored key.
+	const newConfigMap = "keystone-config-def456"
+	result, err := r.reconcilePolicyValidation(context.Background(), ks, newConfigMap)
+	g.Expect(err).NotTo(HaveOccurred(), "fixing the policy must re-run the failed validation Job, not surface ErrJobFailed")
+	g.Expect(result.RequeueAfter).To(Equal(RequeueValidationWait))
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, conditionTypePolicyValidReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(conditionReasonPolicyValidationInProgress))
+
+	// The recreated Job carries the hash of the new (fixed) template.
+	var recreated batchv1.Job
+	g.Expect(r.Client.Get(context.Background(), client.ObjectKey{
+		Name:      "test-keystone-policy-validation",
+		Namespace: "default",
+	}, &recreated)).To(Succeed())
+	wantHash := job.PodSpecHash(&buildPolicyValidationJob(ks, newConfigMap).Spec.Template)
+	g.Expect(recreated.Annotations[job.PodSpecHashAnnotation]).To(Equal(wantHash),
+		"recreated validation Job should carry the hash of the fixed template")
+}
+
 // --- Descriptive error extraction (REQ-006) ---
 
 // TestReconcilePolicyValidation_JobFailed_DescriptiveErrorMessage verifies that

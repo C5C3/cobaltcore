@@ -318,6 +318,41 @@ func TestReconcileBootstrap_StaleJobDetection(t *testing.T) {
 	g.Expect(newJob.Annotations[job.PodSpecHashAnnotation]).To(Equal(bootstrapAdminPasswordHash()))
 }
 
+// TestReconcileBootstrap_JobFailed_PasswordRotated_Recreates verifies the #460
+// fix at the bootstrap caller: when the bootstrap Job has permanently failed and
+// the admin password is then rotated (a new re-run key), the failed Job is
+// re-created and BootstrapReady transitions back to False/BootstrapInProgress
+// instead of staying stuck on ErrJobFailed.
+func TestReconcileBootstrap_JobFailed_PasswordRotated_Recreates(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := bootstrapTestScheme()
+	ks := bootstrapKeystone()
+
+	// Failed bootstrap Job stamped with a stale re-run key (the pre-rotation
+	// admin-password digest).
+	failed := failedBootstrapJob(ks)
+	failed.Annotations[job.PodSpecHashAnnotation] = "stale-key-from-previous-password"
+
+	r := newBootstrapTestReconciler(s, ks, failed, bootstrapAdminSecret(ks))
+
+	result, err := r.reconcileBootstrap(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred(), "a rotated admin password must re-run the failed bootstrap Job, not surface ErrJobFailed")
+	g.Expect(result.RequeueAfter).To(Equal(RequeueBootstrapWait))
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "BootstrapReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("BootstrapInProgress"))
+
+	// The recreated Job carries the current re-run key (the admin-password digest).
+	var newJob batchv1.Job
+	g.Expect(r.Client.Get(context.Background(), client.ObjectKey{
+		Name:      "test-keystone-bootstrap",
+		Namespace: "default",
+	}, &newJob)).To(Succeed())
+	g.Expect(newJob.Annotations[job.PodSpecHashAnnotation]).To(Equal(bootstrapAdminPasswordHash()))
+}
+
 func TestReconcileBootstrap_JobFailed_ConditionMessage(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := bootstrapTestScheme()
