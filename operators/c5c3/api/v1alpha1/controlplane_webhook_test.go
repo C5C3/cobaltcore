@@ -345,6 +345,64 @@ func TestValidateCreate_RejectsMissingPasswordSecretRef(t *testing.T) {
 	g.Expect(err.Error()).To(ContainSubstring("passwordSecretRef"))
 }
 
+// --- Policy rule name/value tests (#479) ---
+//
+// The c5c3 webhook previously validated policy rules not at all, so an invalid
+// rule on spec.global or spec.services.keystone.policyOverrides wedged the
+// control plane indirectly via the keystone webhook. The validate() method now
+// delegates to the shared policy.ValidatePolicyRules on both fields.
+
+func TestValidateCreate_RejectsEmptyGlobalPolicyRuleName(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Spec.Global = &commonv1.PolicySpec{Rules: map[string]string{"": "role:admin"}}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("global"))
+	g.Expect(err.Error()).To(ContainSubstring("policy rule name must not be empty"))
+}
+
+func TestValidateCreate_RejectsEmptyGlobalPolicyRuleValue(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Spec.Global = &commonv1.PolicySpec{Rules: map[string]string{"identity:get_user": ""}}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("global"))
+	g.Expect(err.Error()).To(ContainSubstring("policy rule value must not be empty"))
+}
+
+func TestValidateCreate_RejectsEmptyServicePolicyRuleValue(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Spec.Services.Keystone.PolicyOverrides = &commonv1.PolicySpec{
+		Rules: map[string]string{"identity:get_user": ""},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("policyOverrides"))
+	g.Expect(err.Error()).To(ContainSubstring("policy rule value must not be empty"))
+}
+
+func TestValidateCreate_AcceptsValidPolicyRules(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Spec.Global = &commonv1.PolicySpec{Rules: map[string]string{"identity:get_user": "role:admin"}}
+	cp.Spec.Services.Keystone.PolicyOverrides = &commonv1.PolicySpec{
+		Rules: map[string]string{"identity:list_user": "role:reader"},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
 // TestValidateCreate_AccumulatesAllErrors puts EVERY validation rule into a
 // broken state simultaneously and asserts the returned error names every field,
 // pinning the webhook's no-short-circuit (accumulate-all) contract. If a future change short-circuits on the first error, this test
@@ -365,6 +423,13 @@ func TestValidateCreate_AccumulatesAllErrors(t *testing.T) {
 	cp.Spec.KORC.AdminCredential.PasswordSecretRef.Name = ""
 	// Unsupported rotation interval (not a whole number of days).
 	cp.Spec.Services.Keystone.RotationInterval = &metav1.Duration{Duration: 5 * time.Hour}
+	// Policy rules: an empty name on the global policy and an empty value on the
+	// per-service override (the empty-value path is the issue #479 addition). Both
+	// must participate in the aggregated error.
+	cp.Spec.Global = &commonv1.PolicySpec{Rules: map[string]string{"": "role:admin"}}
+	cp.Spec.Services.Keystone.PolicyOverrides = &commonv1.PolicySpec{
+		Rules: map[string]string{"identity:get_user": ""},
+	}
 
 	_, err := w.ValidateCreate(context.Background(), cp)
 	g.Expect(err).To(HaveOccurred())
@@ -375,6 +440,10 @@ func TestValidateCreate_AccumulatesAllErrors(t *testing.T) {
 	g.Expect(msg).To(ContainSubstring("cache"), "cache XOR error must be present")
 	g.Expect(msg).To(ContainSubstring("passwordSecretRef"), "required passwordSecretRef error must be present")
 	g.Expect(msg).To(ContainSubstring("rotationInterval"), "rotation interval error must be present")
+	g.Expect(msg).To(ContainSubstring("global"), "global policy rule-name error must be present")
+	g.Expect(msg).To(ContainSubstring("policyOverrides"), "per-service policy rule-value error must be present")
+	g.Expect(msg).To(ContainSubstring("policy rule name must not be empty"))
+	g.Expect(msg).To(ContainSubstring("policy rule value must not be empty"))
 }
 
 // TestValidateCreate_RejectsBadRotationInterval verifies a rotationInterval the

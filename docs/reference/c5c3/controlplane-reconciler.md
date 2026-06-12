@@ -571,9 +571,9 @@ the ControlPlane provisioned:
   Keystone and K-ORC agree on the admin-password source) — and the region is
   `cp.Spec.Region`.
 - **Replicas:** copied from `spec.services.keystone.replicas` when set.
-- **Policy:** `projectPolicyOverrides(cp.Spec.Global, cp.Spec.Services.Keystone.PolicyOverrides)`
-  merges the global base with per-service overrides (per-service wins on
-  conflict).
+- **Policy:** `policy.MergePolicies(cp.Spec.Global, cp.Spec.Services.Keystone.PolicyOverrides)`
+  (the shared `internal/common/policy` helper) merges the global base with
+  per-service overrides (per-service wins on conflict).
 - **Rotation:** when `spec.services.keystone.rotationInterval` is set,
   `intervalToCron` converts it to a cron schedule applied to **both**
   `Fernet.RotationSchedule` and `CredentialKeys.RotationSchedule`. Only `168h`
@@ -1085,7 +1085,7 @@ Keystone child is projected.
 | `credential_invariant_test.go` | Security invariants (restricted mint, app-credential Secret not on any workload) |
 | `instrumentation_test.go` | Wiring smoke test (records through the instrumenter), condition_type drift guard |
 | `setupwithmanager_test.go` | `For`/`Owns`/`Watches` wiring, field-indexer registration |
-| `helpers_test.go` | `intervalToCron`, `projectPolicyOverrides` |
+| `helpers_test.go` | `intervalToCron` |
 | `integration_test.go` | Full envtest reconciliation to `Ready=True` (build tag `integration`) |
 
 ---
@@ -1117,7 +1117,7 @@ operators/c5c3/
     │   ├── reconcile_credentialrotation.go      CredentialRotationReconciler (nudge model)
     │   ├── requeue_intervals.go                 infra/dbCredentials/adminPassword/keystone/korc/credentialRotation backoffs
     │   ├── instrumentation.go                   instrumentSubReconciler + drift-guard map
-    │   ├── helpers.go                           intervalToCron, projectPolicyOverrides
+    │   ├── helpers.go                           intervalToCron
     │   ├── controlplane_controller_test.go      Orchestration tests
     │   ├── reconcile_infrastructure_test.go     Infrastructure tests
     │   ├── reconcile_dbcredentials_test.go      DBCredentials tests

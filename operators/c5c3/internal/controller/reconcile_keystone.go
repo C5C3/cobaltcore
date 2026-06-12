@@ -14,6 +14,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/c5c3/forge/internal/common/conditions"
+	"github.com/c5c3/forge/internal/common/policy"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
@@ -109,7 +110,7 @@ func (r *ControlPlaneReconciler) reconcileKeystone(ctx context.Context, cp *c5c3
 		rotationSchedule = cron
 	}
 
-	policy := projectPolicyOverrides(cp.Spec.Global, cp.Spec.Services.Keystone.PolicyOverrides)
+	merged := policy.MergePolicies(cp.Spec.Global, cp.Spec.Services.Keystone.PolicyOverrides)
 
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, keystone, func() error {
 		keystone.Spec.Image = image
@@ -169,7 +170,7 @@ func (r *ControlPlaneReconciler) reconcileKeystone(ctx context.Context, cp *c5c3
 			keystone.Spec.Replicas = *cp.Spec.Services.Keystone.Replicas
 		}
 
-		keystone.Spec.PolicyOverrides = policy
+		keystone.Spec.PolicyOverrides = merged
 
 		if rotationSchedule != "" {
 			keystone.Spec.Fernet.RotationSchedule = rotationSchedule

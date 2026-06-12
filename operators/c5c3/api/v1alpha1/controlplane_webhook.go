@@ -18,6 +18,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+
+	"github.com/c5c3/forge/internal/common/policy"
 )
 
 // ControlPlane defaulting constants. These are the single source of
@@ -302,6 +304,22 @@ func (w *ControlPlaneWebhook) validate(cp *ControlPlane) field.ErrorList {
 			specPath.Child("services", "keystone", "gateway", "hostname"),
 			"must be set when a gateway is configured",
 		))
+	}
+
+	// Reject empty policy rule names and values on both the global policy and the
+	// per-service Keystone override. The c5c3 webhook previously validated policy
+	// rules not at all; this mirrors the keystone webhook and the CEL rule on
+	// commonv1.PolicySpec, closing the empty-value gap the audit reported
+	// (issue #479).
+	if g := cp.Spec.Global; g != nil {
+		allErrs = append(allErrs, policy.ValidatePolicyRules(
+			g.Rules, specPath.Child("global", "rules"),
+		)...)
+	}
+	if po := cp.Spec.Services.Keystone.PolicyOverrides; po != nil {
+		allErrs = append(allErrs, policy.ValidatePolicyRules(
+			po.Rules, specPath.Child("services", "keystone", "policyOverrides", "rules"),
+		)...)
 	}
 
 	return allErrs
