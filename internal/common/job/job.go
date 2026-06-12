@@ -60,22 +60,25 @@ var ErrJobFailed = errors.New("job has permanently failed")
 
 // RunJob creates a Job if it does not already exist and reports whether the
 // Job has completed successfully. It returns (true, nil) when the Job has
-// finished, (false, nil) when the Job exists but is still running,
-// (false, error) when the Job has permanently failed (e.g. exceeded
-// backoffLimit), and (false, error) on unexpected failures (CC-0005).
+// finished, (false, nil) when the Job exists but is still running or was
+// re-created, (false, error) when the Job has permanently failed (e.g. exceeded
+// backoffLimit) and its pod template is unchanged, and (false, error) on
+// unexpected failures (CC-0005).
 //
-// A completed Job is re-run when its full pod template changes — the correct
-// trigger for migration-style Jobs (db-sync, expand/migrate/contract,
-// schema-check) that must re-execute against a new container image on an
-// operator/release upgrade.
+// A completed or permanently failed Job is re-run when its full pod template
+// changes — the correct trigger for migration-style Jobs (db-sync,
+// expand/migrate/contract, schema-check) that must re-execute against a new
+// container image on an operator/release upgrade. Re-running a permanently
+// failed Job once its spec is fixed avoids wedging the Job until a manual
+// `kubectl delete job` (#460).
 func RunJob(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, job *batchv1.Job) (bool, error) {
 	return RunJobWithRerunKey(ctx, c, scheme, owner, job, PodSpecHash(&job.Spec.Template))
 }
 
 // RunJobWithRerunKey behaves like RunJob but uses an explicit rerunKey, rather
-// than the full pod-template hash, to decide whether a *completed* Job must be
-// re-run. The key is stored at creation time and compared on subsequent passes;
-// a completed Job is re-run only when the key changes.
+// than the full pod-template hash, to decide whether a *completed or permanently
+// failed* Job must be re-run. The key is stored at creation time and compared on
+// subsequent passes; a terminal Job is re-run only when the key changes.
 //
 // This lets a Job opt out of image-sensitive re-runs. The keystone bootstrap
 // Job uses the admin-password digest as its key so it re-runs when the password
@@ -83,7 +86,9 @@ func RunJob(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner 
 // upgrade: re-running keystone-manage bootstrap after the cross-version DB
 // migration fails on the already-migrated admin user (oslo_db DBDuplicateEntry
 // 'default-admin'), which would otherwise hold BootstrapReady — and the
-// aggregate Ready — False for the whole upgrade (CC-0113).
+// aggregate Ready — False for the whole upgrade (CC-0113). A failed bootstrap
+// Job follows the same rule: a release-upgrade image change does not re-run it,
+// but a rotated admin password (a new key) does (#460).
 func RunJobWithRerunKey(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, job *batchv1.Job, rerunKey string) (bool, error) {
 	existing := &batchv1.Job{}
 	err := c.Get(ctx, client.ObjectKeyFromObject(job), existing)
@@ -96,6 +101,22 @@ func RunJobWithRerunKey(ctx context.Context, c client.Client, scheme *runtime.Sc
 	}
 
 	if IsJobFailed(existing) {
+		// A permanently failed Job (exceeded backoffLimit) is re-run when its
+		// re-run key changes — the desired spec was fixed since the failure
+		// (e.g. a new container image after a release upgrade, a corrected
+		// policyOverrides ConfigMap, or a rotated admin password for the
+		// bootstrap Job). Without this, the re-run-key gate that exists for the
+		// fixed-spec case would never fire once backoffLimit is exhausted,
+		// wedging the Job until a manual `kubectl delete job` (#460). A failed
+		// Job whose key is unchanged stays failed and returns ErrJobFailed, so a
+		// genuinely-stuck Job does not requeue forever.
+		existingKey := existing.Annotations[PodSpecHashAnnotation]
+		if rerunKey != existingKey {
+			if err := recreateStaleJob(ctx, c, scheme, owner, job, existing, rerunKey); err != nil {
+				return false, err
+			}
+			return false, nil
+		}
 		return false, fmt.Errorf("%w: %s/%s", ErrJobFailed, existing.Namespace, existing.Name)
 	}
 
@@ -108,18 +129,7 @@ func RunJobWithRerunKey(ctx context.Context, c client.Client, scheme *runtime.Sc
 		// (CC-0005, CC-0113).
 		existingKey := existing.Annotations[PodSpecHashAnnotation]
 		if rerunKey != existingKey {
-			// Intentional behavioral alignment: explicitly set Background propagation
-			// policy for both envtest and production consistency. The default on most
-			// API servers is already Background, so this is a no-op in production but
-			// prevents envtest from adding an `orphan` finalizer that would block the
-			// subsequent Create with AlreadyExists. Verified: only the keystone
-			// operator uses RunJob; no other operator in the monorepo is affected
-			// (CC-0056).
-			propagation := metav1.DeletePropagationBackground
-			if err := c.Delete(ctx, existing, &client.DeleteOptions{PropagationPolicy: &propagation}); err != nil {
-				return false, fmt.Errorf("deleting stale Job %s/%s: %w", existing.Namespace, existing.Name, err)
-			}
-			if err := createJobWithRerunKey(ctx, c, scheme, owner, job, rerunKey); err != nil {
+			if err := recreateStaleJob(ctx, c, scheme, owner, job, existing, rerunKey); err != nil {
 				return false, err
 			}
 			return false, nil
@@ -150,6 +160,25 @@ func createJobWithRerunKey(ctx context.Context, c client.Client, scheme *runtime
 		return fmt.Errorf("creating Job %s/%s: %w", job.Namespace, job.Name, err)
 	}
 	return nil
+}
+
+// recreateStaleJob deletes a terminal Job (completed or permanently failed)
+// whose stored re-run key no longer matches the desired template, then creates
+// a replacement carrying the new key. It is the shared delete-and-recreate path
+// for both terminal-state branches of RunJobWithRerunKey (CC-0005).
+//
+// The Background propagation policy is set explicitly for envtest/production
+// consistency: the default on most API servers is already Background, so this is
+// a no-op in production but prevents envtest from adding an `orphan` finalizer
+// that would block the subsequent Create with AlreadyExists. Verified: only the
+// keystone operator uses RunJob; no other operator in the monorepo is affected
+// (CC-0056).
+func recreateStaleJob(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, job, existing *batchv1.Job, rerunKey string) error {
+	propagation := metav1.DeletePropagationBackground
+	if err := c.Delete(ctx, existing, &client.DeleteOptions{PropagationPolicy: &propagation}); err != nil {
+		return fmt.Errorf("deleting stale Job %s/%s: %w", existing.Namespace, existing.Name, err)
+	}
+	return createJobWithRerunKey(ctx, c, scheme, owner, job, rerunKey)
 }
 
 // EnsureCronJob creates a CronJob if it does not exist or updates its spec if

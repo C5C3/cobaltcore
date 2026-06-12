@@ -86,6 +86,31 @@ func testCompletedJobWithHash() *batchv1.Job {
 	return j
 }
 
+// testFailedJobWithHash returns a permanently failed Job that carries the
+// pod-spec-hash annotation matching the testJob() PodSpec, simulating a Job
+// created via RunJob that then exhausted its backoffLimit. As with
+// testCompletedJobWithHash, API-server defaults may be present on the stored
+// spec, but the hash annotation refers to the original desired spec — so a
+// failed Job whose spec is unchanged stays failed (#460).
+func testFailedJobWithHash() *batchv1.Job {
+	desired := testJob()
+	j := testJob()
+	// Simulate API-server defaults on the stored spec.
+	for i := range j.Spec.Template.Spec.Containers {
+		j.Spec.Template.Spec.Containers[i].ImagePullPolicy = corev1.PullAlways
+		j.Spec.Template.Spec.Containers[i].TerminationMessagePath = corev1.TerminationMessagePathDefault
+		j.Spec.Template.Spec.Containers[i].TerminationMessagePolicy = corev1.TerminationMessageReadFile
+	}
+	j.Annotations = map[string]string{
+		PodSpecHashAnnotation: PodSpecHash(&desired.Spec.Template),
+	}
+	j.Status.Failed = 3
+	j.Status.Conditions = []batchv1.JobCondition{
+		{Type: batchv1.JobFailed, Status: corev1.ConditionTrue, Reason: "BackoffLimitExceeded"},
+	}
+	return j
+}
+
 func testCronJob() *batchv1.CronJob {
 	return &batchv1.CronJob{
 		ObjectMeta: metav1.ObjectMeta{
@@ -175,15 +200,10 @@ func TestRunJob_existingFailed(t *testing.T) {
 	s := newScheme()
 	owner := testOwner()
 
-	job := testJob()
-	job.Status.Failed = 3
-	job.Status.Conditions = []batchv1.JobCondition{
-		{
-			Type:   batchv1.JobFailed,
-			Status: corev1.ConditionTrue,
-			Reason: "BackoffLimitExceeded",
-		},
-	}
+	// A permanently failed Job whose stored re-run key still matches the
+	// desired template: the spec has not been fixed, so it stays failed and
+	// returns ErrJobFailed rather than re-running forever (#460).
+	job := testFailedJobWithHash()
 
 	c := fake.NewClientBuilder().
 		WithScheme(s).
@@ -196,6 +216,73 @@ func TestRunJob_existingFailed(t *testing.T) {
 	g.Expect(errors.Is(err, ErrJobFailed)).To(BeTrue(), "error should wrap ErrJobFailed sentinel")
 	g.Expect(err.Error()).To(ContainSubstring("default/test-job"))
 	g.Expect(ready).To(BeFalse())
+}
+
+// TestRunJob_existingFailed_specChanged verifies the #460 fix: a permanently
+// failed Job is deleted and re-created when the desired pod template changes
+// (here a new container image), instead of returning ErrJobFailed forever. This
+// is the failed-then-fixed path shared by the default-hash callers (db-sync,
+// schema-check, expand/migrate/contract, policy validation).
+func TestRunJob_existingFailed_specChanged(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+
+	// Failed Job whose stored hash matches the OLD template.
+	oldJob := testFailedJobWithHash()
+
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(owner, oldJob).
+		WithStatusSubresource(oldJob).
+		Build()
+
+	// New desired Job with a different container image (the fixed spec).
+	newJob := testJob()
+	newJob.Spec.Template.Spec.Containers[0].Image = "busybox:v2"
+
+	ready, err := RunJob(context.Background(), c, s, owner, newJob)
+	g.Expect(err).NotTo(HaveOccurred(), "a failed Job must be re-run when the spec is fixed, not return ErrJobFailed")
+	g.Expect(ready).To(BeFalse(), "should recreate the failed Job when the spec changes")
+
+	// Verify the failed Job was replaced with one carrying the new image and hash.
+	fetched := &batchv1.Job{}
+	g.Expect(c.Get(context.Background(), client.ObjectKey{Name: "test-job", Namespace: "default"}, fetched)).To(Succeed())
+	g.Expect(fetched.Spec.Template.Spec.Containers[0].Image).To(Equal("busybox:v2"))
+	g.Expect(fetched.OwnerReferences).To(HaveLen(1))
+	g.Expect(fetched.Annotations[PodSpecHashAnnotation]).To(Equal(PodSpecHash(&newJob.Spec.Template)),
+		"replacement Job should carry the hash of the new template")
+}
+
+// TestRunJob_existingFailed_noHashAnnotation verifies that a permanently failed
+// Job without a hash annotation (e.g. one that failed before the operator was
+// upgraded to a hash-aware version) is treated as stale and re-created rather
+// than wedged on ErrJobFailed (#460). Mirrors the completed-Job counterpart.
+func TestRunJob_existingFailed_noHashAnnotation(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+
+	oldJob := testJob()
+	oldJob.Status.Failed = 3
+	oldJob.Status.Conditions = []batchv1.JobCondition{
+		{Type: batchv1.JobFailed, Status: corev1.ConditionTrue, Reason: "BackoffLimitExceeded"},
+	}
+	// No hash annotation on the old Job.
+
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(owner, oldJob).
+		WithStatusSubresource(oldJob).
+		Build()
+
+	ready, err := RunJob(context.Background(), c, s, owner, testJob())
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(ready).To(BeFalse(), "should recreate the failed Job when the hash annotation is missing")
+
+	fetched := &batchv1.Job{}
+	g.Expect(c.Get(context.Background(), client.ObjectKey{Name: "test-job", Namespace: "default"}, fetched)).To(Succeed())
+	g.Expect(fetched.Annotations[PodSpecHashAnnotation]).NotTo(BeEmpty())
 }
 
 func TestRunJob_existingComplete_specChanged(t *testing.T) {
@@ -266,6 +353,20 @@ func completedJobWithRerunKey(key string) *batchv1.Job {
 	return j
 }
 
+// failedJobWithRerunKey returns a permanently failed Job stamped with an
+// explicit re-run key in the PodSpecHashAnnotation, simulating a Job created via
+// RunJobWithRerunKey that then exhausted its backoffLimit (#460).
+func failedJobWithRerunKey(key string) *batchv1.Job {
+	j := testJob()
+	j.UID = "existing-uid"
+	j.Annotations = map[string]string{PodSpecHashAnnotation: key}
+	j.Status.Failed = 3
+	j.Status.Conditions = []batchv1.JobCondition{
+		{Type: batchv1.JobFailed, Status: corev1.ConditionTrue, Reason: "BackoffLimitExceeded"},
+	}
+	return j
+}
+
 // TestRunJobWithRerunKey_keyUnchanged_imageChanged locks the CC-0113 behavior:
 // with an explicit re-run key, a completed Job is NOT re-run on a pod-template
 // change (here a new container image) as long as the key is unchanged. The
@@ -321,6 +422,68 @@ func TestRunJobWithRerunKey_keyChanged(t *testing.T) {
 	fetched := &batchv1.Job{}
 	g.Expect(c.Get(context.Background(), client.ObjectKey{Name: "test-job", Namespace: "default"}, fetched)).To(Succeed())
 	g.Expect(fetched.Annotations[PodSpecHashAnnotation]).To(Equal("rerun-key-2"), "replacement Job must carry the new re-run key")
+}
+
+// TestRunJobWithRerunKey_failed_keyChanged verifies the #460 fix for the
+// explicit-key caller (the keystone bootstrap Job): a permanently failed Job is
+// re-run when the supplied re-run key changes — e.g. a rotated admin password —
+// and the replacement carries the new key.
+func TestRunJobWithRerunKey_failed_keyChanged(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+
+	existing := failedJobWithRerunKey("rerun-key-1")
+
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(owner, existing).
+		WithStatusSubresource(existing).
+		Build()
+
+	ready, err := RunJobWithRerunKey(context.Background(), c, s, owner, testJob(), "rerun-key-2")
+	g.Expect(err).NotTo(HaveOccurred(), "a changed re-run key must re-run the failed Job, not return ErrJobFailed")
+	g.Expect(ready).To(BeFalse(), "should recreate the failed Job when the re-run key changes")
+
+	fetched := &batchv1.Job{}
+	g.Expect(c.Get(context.Background(), client.ObjectKey{Name: "test-job", Namespace: "default"}, fetched)).To(Succeed())
+	g.Expect(fetched.Annotations[PodSpecHashAnnotation]).To(Equal("rerun-key-2"), "replacement Job must carry the new re-run key")
+}
+
+// TestRunJobWithRerunKey_failed_keyUnchanged_imageChanged locks the CC-0113
+// behavior for a *failed* Job: with an explicit re-run key, a failed Job is NOT
+// re-run on a pod-template change (here a new container image) as long as the
+// key is unchanged — it returns ErrJobFailed. The keystone bootstrap Job relies
+// on this so a release-upgrade image change does not re-run keystone-manage
+// bootstrap against the already-migrated admin user after a transient failure
+// (#460).
+func TestRunJobWithRerunKey_failed_keyUnchanged_imageChanged(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+
+	existing := failedJobWithRerunKey("rerun-key-1")
+
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(owner, existing).
+		WithStatusSubresource(existing).
+		Build()
+
+	// Desired Job has a DIFFERENT image but the SAME re-run key.
+	newJob := testJob()
+	newJob.Spec.Template.Spec.Containers[0].Image = "busybox:v2"
+
+	ready, err := RunJobWithRerunKey(context.Background(), c, s, owner, newJob, "rerun-key-1")
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(errors.Is(err, ErrJobFailed)).To(BeTrue(), "unchanged re-run key must keep a failed Job failed despite an image change (CC-0113)")
+	g.Expect(ready).To(BeFalse())
+
+	// The original failed Job must be retained unchanged (same UID, original image).
+	fetched := &batchv1.Job{}
+	g.Expect(c.Get(context.Background(), client.ObjectKey{Name: "test-job", Namespace: "default"}, fetched)).To(Succeed())
+	g.Expect(fetched.UID).To(Equal(existing.UID), "failed Job must be retained, not recreated")
+	g.Expect(fetched.Spec.Template.Spec.Containers[0].Image).To(Equal("busybox:latest"))
 }
 
 // TestRunJob_existingComplete_noHashAnnotation verifies that a completed Job
