@@ -89,6 +89,12 @@ spec:
                       Inline rules take precedence over ConfigMap rules.
                     type: object
                 type: object
+                x-kubernetes-validations:
+                - message: policy rule name must not be empty
+                  rule: '!has(self.rules) || self.rules.all(k, size(k) > 0)'
+                - message: policy rule value must not be empty
+                  rule: '!has(self.rules) || self.rules.all(k, size(self.rules[k])
+                    > 0)'
               infrastructure:
                 description: |-
                   Infrastructure declares the shared backing services (database, cache)
@@ -512,6 +518,12 @@ spec:
                               Inline rules take precedence over ConfigMap rules.
                             type: object
                         type: object
+                        x-kubernetes-validations:
+                        - message: policy rule name must not be empty
+                          rule: '!has(self.rules) || self.rules.all(k, size(k) > 0)'
+                        - message: policy rule value must not be empty
+                          rule: '!has(self.rules) || self.rules.all(k, size(self.rules[k])
+                            > 0)'
                       publicEndpoint:
                         description: |-
                           PublicEndpoint is the externally routable Keystone identity endpoint URL

@@ -112,7 +112,9 @@ type KeystoneSpec struct {
 	// oslo_policy.policy_file automatically.
 	// +optional
 	// +kubebuilder:validation:XValidation:rule="(has(self.rules) && size(self.rules) > 0) || self.configMapRef != null",message="at least one of rules or configMapRef must be set"
-	// +kubebuilder:validation:XValidation:rule="!has(self.rules) || self.rules.all(k, k != '')",message="policy rule name must not be empty"
+	// The empty rule-name and rule-value constraints are enforced by the
+	// XValidation markers on commonv1.PolicySpec itself, so they apply to every
+	// PolicySpec field across operators without per-field duplication.
 	PolicyOverrides *commonv1.PolicySpec `json:"policyOverrides,omitempty"`
 
 	// Autoscaling configures horizontal pod autoscaling for the Keystone API deployment.

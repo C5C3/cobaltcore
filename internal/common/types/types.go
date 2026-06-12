@@ -104,6 +104,14 @@ type SecretRefSpec struct {
 }
 
 // PolicySpec defines oslo.policy override configuration for an OpenStack service.
+// The two XValidation rules below reject empty rule names and empty rule values
+// at the schema layer, mirroring policy.ValidatePolicyRules in the admission
+// webhooks so the invariant still holds when a webhook is bypassed.
+// The empty checks use size() rather than a string literal so the marker
+// carries no embedded quotes.
+//
+// +kubebuilder:validation:XValidation:rule="!has(self.rules) || self.rules.all(k, size(k) > 0)",message="policy rule name must not be empty"
+// +kubebuilder:validation:XValidation:rule="!has(self.rules) || self.rules.all(k, size(self.rules[k]) > 0)",message="policy rule value must not be empty"
 type PolicySpec struct {
 	// Rules contains inline policy rule overrides.
 	// Keys are oslo.policy rule names (e.g., "compute:create").

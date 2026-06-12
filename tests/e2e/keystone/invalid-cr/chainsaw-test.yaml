@@ -166,3 +166,19 @@ spec:
         - check:
             ($error != null): true
             (contains($error, 'maxActiveKeys')): true
+  # spec.policyOverrides.rules with an empty VALUE must be
+  # rejected — the empty-value counterpart to 06-policy-overrides-empty-rule-key.yaml, closing the validation
+  # gap the 2026-06 audit reported (issue #479). The empty rule-value CEL rule
+  # is embedded on the policyOverrides field via its PolicySpec type, so the
+  # apiserver emits the error at the parent path spec.policyOverrides (the CEL
+  # layer fails first and short-circuits the webhook's deeper-path message).
+  # The assertion matches only the parent path so it stays stable across
+  # rule-relocation refactors.
+  - try:
+    - apply:
+        file: 13-policy-overrides-empty-rule-value.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.policyOverrides')): true
+            (contains($error, 'policy rule value must not be empty')): true

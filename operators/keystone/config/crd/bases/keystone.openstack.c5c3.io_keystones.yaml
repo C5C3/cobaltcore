@@ -777,6 +777,9 @@ spec:
                   PolicyOverrides defines custom oslo.policy rules for the service.
                   When set, the operator renders a policy.yaml and configures
                   oslo_policy.policy_file automatically.
+                  The empty rule-name and rule-value constraints are enforced by the
+                  XValidation markers on commonv1.PolicySpec itself, so they apply to every
+                  PolicySpec field across operators without per-field duplication.
                 properties:
                   configMapRef:
                     description: |-
@@ -809,7 +812,10 @@ spec:
                   rule: (has(self.rules) && size(self.rules) > 0) || self.configMapRef
                     != null
                 - message: policy rule name must not be empty
-                  rule: '!has(self.rules) || self.rules.all(k, k != '''')'
+                  rule: '!has(self.rules) || self.rules.all(k, size(k) > 0)'
+                - message: policy rule value must not be empty
+                  rule: '!has(self.rules) || self.rules.all(k, size(self.rules[k])
+                    > 0)'
               preStopSleepSeconds:
                 description: |-
                   PreStopSleepSeconds is the sleep duration (seconds) of the preStop

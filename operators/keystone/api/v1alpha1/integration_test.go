@@ -219,6 +219,55 @@ func TestIntegration_CELRejectsPolicyOverridesEmpty(t *testing.T) {
 	g.Expect(err.Error()).To(ContainSubstring("policyOverrides"))
 }
 
+// TestIntegration_CELRejectsPolicyRuleEmptyValue pins the empty-rule-value
+// constraint added by issue #479: a policyOverrides rule whose value is the
+// empty string previously passed admission and reached oslo.policy. The
+// XValidation rule on commonv1.PolicySpec now rejects it; this is the
+// webhook-enabled flavour (the CRD-only variant below proves the CEL layer
+// alone is sufficient).
+func TestIntegration_CELRejectsPolicyRuleEmptyValue(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTest(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-cel-policyval-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	k := validIntegrationKeystone("policy-empty-value", ns.Name)
+	k.Spec.PolicyOverrides = &commonv1.PolicySpec{Rules: map[string]string{"identity:get_user": ""}}
+
+	err := c.Create(ctx, k)
+	g.Expect(err).To(HaveOccurred(), "empty policy rule value should be rejected")
+	g.Expect(apierrors.IsInvalid(err) || apierrors.IsForbidden(err)).To(BeTrue(),
+		fmt.Sprintf("expected Invalid or Forbidden status error, got: %v", err))
+	g.Expect(err.Error()).To(ContainSubstring("policyOverrides"))
+}
+
+// TestIntegration_CRD_CELOnly_RejectsPolicyRuleEmptyValue proves the empty
+// rule-value rejection holds when the validating webhook is NOT installed —
+// the CEL XValidation marker on commonv1.PolicySpec is the authoritative gate
+// closing the audit's empty-value gap (issue #479).
+func TestIntegration_CRD_CELOnly_RejectsPolicyRuleEmptyValue(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestNoWebhook(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-celonly-policyval-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	k := validIntegrationKeystone("policy-empty-value-celonly", ns.Name)
+	k.Spec.PolicyOverrides = &commonv1.PolicySpec{Rules: map[string]string{"identity:get_user": ""}}
+
+	err := c.Create(ctx, k)
+	g.Expect(err).To(HaveOccurred(),
+		"CRD CEL rule alone must reject an empty policy rule value (#479)")
+	g.Expect(apierrors.IsInvalid(err) || apierrors.IsForbidden(err)).To(BeTrue(),
+		fmt.Sprintf("expected Invalid or Forbidden status error, got: %v", err))
+	g.Expect(err.Error()).To(ContainSubstring("policy rule value must not be empty"))
+}
+
 // TestIntegration_CRD_CELRejectsInvalidTLS verifies the CEL rule on
 // spec.database: when database.tls.enabled is true, both caBundleSecretRef.name
 // and clientCertSecretRef.name must be non-empty. The base CR uses brownfield

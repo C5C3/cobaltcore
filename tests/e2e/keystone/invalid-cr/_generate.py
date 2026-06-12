@@ -216,8 +216,8 @@ FIXTURES: list[Fixture] = [
         comment="""\
 # Keystone CR with spec.policyOverrides.rules containing
 # an empty-string map key. Forbidden by the CEL XValidation rule on
-# KeystoneSpec.PolicyOverrides (`self.rules.all(k, k != '')` in
-# keystone_types.go) and by the validating webhook (keystone_webhook.go).
+# commonv1.PolicySpec (`self.rules.all(k, size(k) > 0)` in types.go) and by
+# policy.ValidatePolicyRules in the validating webhook (keystone_webhook.go).
 # Admission must reject this CR with an $error referencing the parent
 # fieldPath spec.policyOverrides and the message "policy rule name must
 # not be empty". The chainsaw assertion intentionally matches the parent
@@ -313,6 +313,30 @@ FIXTURES: list[Fixture] = [
 # Admission must reject this CR with an $error referencing the substring
 # "maxActiveKeys". Either layer's message satisfies the assertion — see
 # plan on layer-order tolerance.""",
+    ),
+    Fixture(
+        filename="13-policy-overrides-empty-rule-value.yaml",
+        name="invalid-policy-overrides-empty-rule-value",
+        trailing="""\
+  policyOverrides:
+    rules:
+      "identity:get_user": ""
+""",
+        comment="""\
+# Keystone CR with spec.policyOverrides.rules containing a
+# rule whose VALUE is the empty string. This closes the validation gap the
+# 2026-06 audit reported (issue #479): empty rule values previously passed
+# admission and reached oslo.policy. Forbidden by the CEL XValidation rule on
+# commonv1.PolicySpec (`self.rules.all(k, self.rules[k] != '')` in types.go)
+# and by policy.ValidatePolicyRules in the validating webhook
+# (keystone_webhook.go). Admission must reject this CR with an $error
+# referencing the parent fieldPath spec.policyOverrides and the message
+# "policy rule value must not be empty". As with the empty-key sibling
+# (06-policy-overrides-empty-rule-key.yaml), the chainsaw assertion matches the parent path
+# (spec.policyOverrides) because the CEL XValidation, embedded on the
+# policyOverrides field via its PolicySpec type, runs before the validating
+# webhook and emits the error at that field. The key is quoted to keep its
+# embedded colon unambiguous to the YAML parser.""",
     ),
 ]
 

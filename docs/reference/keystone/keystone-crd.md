@@ -199,7 +199,8 @@ webhooks are invoked:
 | `spec.database.tls.mode` | Enum: `prefer`, `require`, `verify-ca`, `verify-full` | — |
 | `spec.cache` | `has(self.clusterRef) != (has(self.servers) && size(self.servers) > 0)` | "exactly one of clusterRef or servers must be set" |
 | `spec.policyOverrides` | `(has(self.rules) && size(self.rules) > 0) \|\| self.configMapRef != null` | "at least one of rules or configMapRef must be set" |
-| `spec.policyOverrides.rules` | `!has(self.rules) \|\| self.rules.all(k, k != '')` | "policy rule name must not be empty" |
+| `spec.policyOverrides.rules` | `!has(self.rules) \|\| self.rules.all(k, size(k) > 0)` | "policy rule name must not be empty" |
+| `spec.policyOverrides.rules` | `!has(self.rules) \|\| self.rules.all(k, size(self.rules[k]) > 0)` | "policy rule value must not be empty" |
 | `spec.autoscaling` | `has(self.targetCPUUtilization) \|\| has(self.targetMemoryUtilization)` | "at least one of targetCPUUtilization or targetMemoryUtilization must be set" |
 | `spec.networkPolicy` | `size(self.ingress) > 0` | "at least one ingress source must be specified" |
 | `spec.replicas` | Minimum: 1 | — |
@@ -1093,11 +1094,14 @@ condition using these typed reasons:
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `rules` | `map[string]string` | No | Inline policy rule overrides. Keys are oslo.policy rule names; values are rule definitions. Inline rules take precedence over ConfigMap rules. |
+| `rules` | `map[string]string` | No | Inline policy rule overrides. Keys are oslo.policy rule names; values are rule definitions. Inline rules take precedence over ConfigMap rules. Both the key and the value of every rule must be non-empty. |
 | `configMapRef` | `*corev1.LocalObjectReference` | No | Reference to a ConfigMap containing a `policy.yaml` key with rule overrides. |
 
 When `policyOverrides` is set on `KeystoneSpec`, at least one of `rules` or
-`configMapRef` must be provided (enforced by both CEL validation and the webhook).
+`configMapRef` must be provided. Every `rules` entry must have a non-empty name
+and a non-empty value — an empty value previously passed admission and reached
+oslo.policy. All three constraints are enforced by both CEL validation on the
+shared `PolicySpec` type and the validating webhook.
 
 ### PluginSpec
 
@@ -1327,6 +1331,7 @@ All integration tests use the `//go:build integration` tag and call
 | `TestIntegration_CELRejectsReplicasBelowMinimum` | Minimum constraint | `replicas = -1` (note: 0 is converted to 3 by the defaulting webhook, so -1 is used) | Invalid/Forbidden |
 | `TestIntegration_CELRejectsMaxActiveKeysBelowMinimum` | Minimum constraint | `fernet.maxActiveKeys = 1` (below minimum of 3; 0 is defaulted to 3 by webhook) | Invalid/Forbidden |
 | `TestIntegration_CELRejectsPolicyOverridesEmpty` | Policy source required | `policyOverrides` set with neither `rules` nor `configMapRef` | Invalid/Forbidden containing "policyOverrides" |
+| `TestIntegration_CELRejectsPolicyRuleEmptyValue` | Non-empty rule values | `policyOverrides.rules` with a rule whose value is the empty string | Invalid/Forbidden containing "policyOverrides" |
 
 **Admission pipeline note:** In Kubernetes, the admission order is: mutating webhooks
 then schema validation (CEL) then validating webhooks. The defaulting webhook converts
@@ -1387,6 +1392,7 @@ is pinned by a Chainsaw step.
 | `hpa-min-greater-than-max-rejected` | `10-hpa-min-greater-than-max.yaml` | minReplicas ≤ maxReplicas | Error containing "spec.autoscaling.minReplicas" and "must not exceed maxReplicas" |
 | `fernet-maxactivekeys-below-minimum-rejected` | `11-fernet-maxactivekeys-below-minimum.yaml` | Fernet maxActiveKeys Minimum=3 | Error containing "maxActiveKeys" |
 | `credentialkeys-maxactivekeys-below-minimum-rejected` | `12-credentialkeys-maxactivekeys-below-minimum.yaml` | CredentialKeys maxActiveKeys Minimum=3 | Error containing "maxActiveKeys" |
+| `policy-overrides-empty-rule-value-rejected` | `13-policy-overrides-empty-rule-value.yaml` | Non-empty rule values | Error containing "spec.policyOverrides" and "policy rule value must not be empty" |
 
 Each step uses `apply` with `expect` to assert that the `$error` variable is non-null
 and contains the expected field-level error message. Kubernetes admission evaluates

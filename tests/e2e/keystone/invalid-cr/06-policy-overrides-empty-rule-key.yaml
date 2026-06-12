@@ -4,8 +4,8 @@
 
 # Keystone CR with spec.policyOverrides.rules containing
 # an empty-string map key. Forbidden by the CEL XValidation rule on
-# KeystoneSpec.PolicyOverrides (`self.rules.all(k, k != '')` in
-# keystone_types.go) and by the validating webhook (keystone_webhook.go).
+# commonv1.PolicySpec (`self.rules.all(k, size(k) > 0)` in types.go) and by
+# policy.ValidatePolicyRules in the validating webhook (keystone_webhook.go).
 # Admission must reject this CR with an $error referencing the parent
 # fieldPath spec.policyOverrides and the message "policy rule name must
 # not be empty". The chainsaw assertion intentionally matches the parent
