@@ -1503,6 +1503,127 @@ func TestReconcileDatabase_TagChangedDuringUpgrade_Blocks(t *testing.T) {
 	expectEvent(g, r, "Warning UpgradeTargetChanged")
 }
 
+// --- Upgrade abort tests (#468) ---
+
+// TestReconcileDatabase_RevertToInstalledRelease_AbortsDuringExpand verifies that
+// reverting spec.image.tag to status.installedRelease during the Expanding phase
+// aborts the upgrade: the expand/migrate/contract Jobs are deleted, upgradePhase
+// and targetRelease are cleared, installedRelease is left untouched, an
+// UpgradeAborted event is emitted, and the reconcile requeues so the steady-state
+// db_sync path takes over (#468).
+func TestReconcileDatabase_RevertToInstalledRelease_AbortsDuringExpand(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := upgradingKeystone(keystonev1alpha1.UpgradePhaseExpanding)
+	// Operator reverts the tag from the in-flight target (2026.1) back to the
+	// installed release (2025.2) to abort.
+	ks.Spec.Image.Tag = "2025.2"
+
+	// Pre-create the expand and migrate phase Jobs so the abort has something to
+	// clean up (the contract Job is never created during Expanding).
+	expandJob := buildExpandJob(ks, "keystone-config-abc123", "2026.1")
+	migrateJob := buildMigrateJob(ks, "keystone-config-abc123", "2026.1")
+
+	r := newDBTestReconciler(s, ks, expandJob, migrateJob)
+
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).To(Equal(ctrl.Result{Requeue: true}))
+
+	// Upgrade state cleared; installed release untouched.
+	g.Expect(ks.Status.UpgradePhase).To(BeEmpty())
+	g.Expect(ks.Status.TargetRelease).To(BeEmpty())
+	g.Expect(ks.Status.InstalledRelease).To(Equal("2025.2"))
+
+	// Assert absence of old state: every upgrade phase Job is gone.
+	for _, suffix := range []string{"db-expand", "db-migrate", "db-contract"} {
+		var jb batchv1.Job
+		getErr := r.Get(context.Background(), client.ObjectKey{
+			Name:      "test-keystone-" + suffix,
+			Namespace: "default",
+		}, &jb)
+		g.Expect(apierrors.IsNotFound(getErr)).To(BeTrue(),
+			"%s Job must be absent after abort", suffix)
+	}
+
+	expectEvent(g, r, "Normal UpgradeAborted")
+}
+
+// TestReconcileDatabase_RevertToInstalledRelease_AbortsFromAnyPhase verifies the
+// abort path fires from every active upgrade phase — not just Expanding — and
+// that reverting to the installed release never returns the UpgradeTargetChanged
+// hard error a revert would otherwise trip (the reverted tag also differs from
+// targetRelease). No phase Jobs are pre-created, so this also covers the
+// idempotent NotFound delete path (#468).
+func TestReconcileDatabase_RevertToInstalledRelease_AbortsFromAnyPhase(t *testing.T) {
+	phases := []keystonev1alpha1.UpgradePhase{
+		keystonev1alpha1.UpgradePhaseExpanding,
+		keystonev1alpha1.UpgradePhaseMigrating,
+		keystonev1alpha1.UpgradePhaseRollingUpdate,
+		keystonev1alpha1.UpgradePhaseContracting,
+	}
+	for _, phase := range phases {
+		t.Run(string(phase), func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			s := dbTestScheme()
+			ks := upgradingKeystone(phase)
+			ks.Spec.Image.Tag = ks.Status.InstalledRelease
+
+			r := newDBTestReconciler(s, ks)
+
+			result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(result).To(Equal(ctrl.Result{Requeue: true}))
+
+			g.Expect(ks.Status.UpgradePhase).To(BeEmpty())
+			g.Expect(ks.Status.TargetRelease).To(BeEmpty())
+			g.Expect(ks.Status.InstalledRelease).To(Equal("2025.2"))
+
+			expectEvent(g, r, "Normal UpgradeAborted")
+		})
+	}
+}
+
+// TestReconcileDatabase_AbortUpgrade_DeleteErrorRetainsState verifies that when
+// deleting an upgrade phase Job fails with a non-NotFound error, the abort
+// surfaces the error and leaves status.upgradePhase/targetRelease intact so the
+// next reconcile retries the abort rather than dropping into the steady-state
+// path with orphaned phase Jobs (#468).
+func TestReconcileDatabase_AbortUpgrade_DeleteErrorRetainsState(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := upgradingKeystone(keystonev1alpha1.UpgradePhaseExpanding)
+	ks.Spec.Image.Tag = "2025.2"
+
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(ks).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Delete: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+				if _, ok := obj.(*batchv1.Job); ok {
+					return fmt.Errorf("simulated API server error")
+				}
+				return cl.Delete(ctx, obj, opts...)
+			},
+		}).
+		Build()
+	r := &KeystoneReconciler{
+		Client:   c,
+		Scheme:   s,
+		Recorder: record.NewFakeRecorder(10),
+	}
+
+	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("simulated API server error"))
+
+	// Upgrade state must survive a failed abort so the retry can complete it.
+	g.Expect(ks.Status.UpgradePhase).To(Equal(keystonev1alpha1.UpgradePhaseExpanding))
+	g.Expect(ks.Status.TargetRelease).To(Equal("2026.1"))
+
+	expectNoEvent(g, r)
+}
+
 // --- Schema check tests (CC-0064) ---
 
 // TestBuildSchemaCheckJob_Name verifies that the schema-check Job has the correct

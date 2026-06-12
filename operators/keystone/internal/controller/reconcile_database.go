@@ -97,7 +97,14 @@ const (
 	conditionReasonExpandComplete        = "ExpandComplete"
 	conditionReasonMigrateComplete       = "MigrateComplete"
 	conditionReasonUpgradeComplete       = "UpgradeComplete"
+	conditionReasonUpgradeAborted        = "UpgradeAborted"
 )
+
+// upgradeJobSuffixes lists the buildDBJob nameSuffixes for the Jobs created
+// during the expand-migrate-contract upgrade flow. abortUpgrade deletes exactly
+// these (and not db-sync or schema-check, which belong to the steady-state path)
+// so reverting an in-flight upgrade leaves no stale phase Jobs behind (#468).
+var upgradeJobSuffixes = []string{"db-expand", "db-migrate", "db-contract"}
 
 // recordDBJobTerminalState observes the named DB-related Job's terminal
 // condition and emits keystone_operator_db_sync_total /
@@ -311,6 +318,14 @@ func (r *KeystoneReconciler) reconcileDatabase(ctx context.Context, keystone *ke
 
 	// Active upgrade: delegate to phase-specific handling (CC-0056).
 	if keystone.Status.UpgradePhase != "" {
+		// Abort path: reverting spec.image.tag back to the installed release
+		// cancels the in-flight upgrade and unblocks a stuck or permanently
+		// failed expand/migrate phase (#468). Checked before the
+		// target-changed guard below because a revert also satisfies
+		// tag != targetRelease and would otherwise return a hard error.
+		if keystone.Spec.Image.Tag == keystone.Status.InstalledRelease {
+			return r.abortUpgrade(ctx, keystone)
+		}
 		// Detect tag change during an active upgrade (CC-0056, REQ-009).
 		if keystone.Spec.Image.Tag != keystone.Status.TargetRelease {
 			logger.Info("Image tag changed during active upgrade",
@@ -503,6 +518,73 @@ func (r *KeystoneReconciler) initiateUpgrade(ctx context.Context, keystone *keys
 	logger.Info("Upgrade detected", "from", from.Raw, "to", to.Raw, "phase", keystonev1alpha1.UpgradePhaseExpanding)
 	r.Recorder.Eventf(keystone, corev1.EventTypeNormal, conditionReasonUpgradeInitiated, "Upgrade initiated: %s \u2192 %s", from.Raw, to.Raw)
 	return ctrl.Result{Requeue: true}, nil
+}
+
+// abortUpgrade cancels an in-flight upgrade when spec.image.tag is reverted to
+// status.installedRelease. It deletes the expand/migrate/contract Jobs, clears
+// status.upgradePhase/targetRelease, emits an UpgradeAborted event, and requeues
+// so the steady-state db_sync path takes over and re-derives DatabaseReady on
+// the next pass. This is the only escape from an upgrade wedged on a stuck or
+// permanently failed expand/migrate Job (#468).
+//
+// Aborting is only safe before the contract phase has run. Expand and migrate
+// are additive by design: they create the new columns/tables and backfill data
+// without dropping anything the installed release still reads, so the
+// pre-contract schema is a superset both releases run against. Contract drops
+// the now-unused columns; once it has started, the installed release would be
+// pointed at a schema missing fields it expects, so a post-contract revert is
+// not a safe rollback. The reverted release is the operator's responsibility to
+// validate. The controller does not gate the abort on the current phase.
+func (r *KeystoneReconciler) abortUpgrade(ctx context.Context, keystone *keystonev1alpha1.Keystone) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+	abortedTarget := keystone.Status.TargetRelease
+	abortedPhase := keystone.Status.UpgradePhase
+
+	// Delete the phase Jobs before clearing status so a transient delete error
+	// leaves the upgrade state intact and the next reconcile retries the abort
+	// rather than dropping into the steady-state path with orphaned Jobs (#468).
+	if err := r.deleteUpgradeJobs(ctx, keystone); err != nil {
+		return ctrl.Result{}, fmt.Errorf("deleting upgrade jobs during abort: %w", err)
+	}
+
+	keystone.Status.UpgradePhase = ""
+	keystone.Status.TargetRelease = ""
+
+	logger.Info("Upgrade aborted: spec.image.tag reverted to installed release",
+		"installedRelease", keystone.Status.InstalledRelease,
+		"abortedTarget", abortedTarget,
+		"abortedPhase", abortedPhase)
+	r.Recorder.Eventf(keystone, corev1.EventTypeNormal, conditionReasonUpgradeAborted,
+		"Upgrade %s \u2192 %s aborted: spec.image.tag reverted to installed release %s",
+		keystone.Status.InstalledRelease, abortedTarget, keystone.Status.InstalledRelease)
+	return ctrl.Result{Requeue: true}, nil
+}
+
+// deleteUpgradeJobs deletes the expand/migrate/contract Jobs owned by keystone.
+// NotFound is tolerated so the call is idempotent across requeues, and
+// Background propagation removes each Job's owned Pods too rather than orphaning
+// them (CC-0058, #468).
+func (r *KeystoneReconciler) deleteUpgradeJobs(ctx context.Context, keystone *keystonev1alpha1.Keystone) error {
+	logger := log.FromContext(ctx)
+	for _, suffix := range upgradeJobSuffixes {
+		jobName := fmt.Sprintf("%s-%s", keystone.Name, suffix)
+		j := &batchv1.Job{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      jobName,
+				Namespace: keystone.Namespace,
+			},
+		}
+		err := r.Delete(ctx, j, client.PropagationPolicy(metav1.DeletePropagationBackground))
+		switch {
+		case apierrors.IsNotFound(err):
+			logger.V(1).Info("upgrade phase job already absent during abort", "job", jobName)
+		case err != nil:
+			return fmt.Errorf("deleting %s: %w", jobName, err)
+		default:
+			logger.V(1).Info("deleted upgrade phase job during abort", "job", jobName)
+		}
+	}
+	return nil
 }
 
 // setUpgradePhaseRunning sets DatabaseReady=False with reason "{phase}InProgress"
