@@ -147,70 +147,107 @@ func (r *KeystoneReconciler) ensureStagingSecret(
 	return nil
 }
 
-// applyRotationOutput copies a completed staging Secret onto the main keys
-// Secret and deletes the staging Secret. It is the operator-side commit for
-// the split-compute-write rotation architecture
+// rotationCommitSpec parameterises commitStagedRotation for one rotation
+// flavour (Fernet keys, credential keys, or the Model B admin password). Every
+// difference between the flavours is captured here; the commit sequence itself
+// is identical.
+type rotationCommitSpec struct {
+	// stagingSecretName is the CronJob-written staging Secret to commit from;
+	// targetSecretName is the operator-owned Secret committed into.
+	stagingSecretName string
+	targetSecretName  string
+	// targetNoun names the target Secret in returned error messages
+	// ("main secret" for keys, "push-source secret" for the admin password).
+	targetNoun string
+	// validate enforces the per-flavour staging-payload contract; a non-nil
+	// error rejects the commit and retains the staging Secret for inspection.
+	validate func(data map[string][]byte) error
+	// clearStagingOnReject, when true, wipes the staged .data and the
+	// completion annotation when validate rejects the payload, so the next
+	// CronJob strategic-merge PATCH starts from an empty base rather than
+	// accumulating leftover key indices over the rejected payload. The
+	// Fernet/credential key flavours set this because their .data is a
+	// multi-key map; the admin-password flavour leaves it false because its
+	// single `password` key cannot accumulate stale indices and the rejected
+	// value is retained verbatim for operator inspection (issue #475).
+	clearStagingOnReject bool
+	// annotationInvalidReason / rejectedReason are the Warning event reasons
+	// emitted when the completion annotation is malformed or the payload is
+	// rejected; the commit is retried on the next CronJob run.
+	annotationInvalidReason string
+	rejectedReason          string
+	// appliedReason / appliedMessage build the Normal event emitted on a
+	// successful commit. appliedMessage receives the staging Secret name and
+	// the committed data so flavours can vary the wording (e.g. the key
+	// flavours append the active-key count; the password flavour does not).
+	appliedReason  string
+	appliedMessage func(stagingSecretName string, data map[string][]byte) string
+}
+
+// commitStagedRotation copies a completed staging Secret onto an operator-owned
+// target Secret and deletes the staging Secret. It is the operator-side commit
+// for the split-compute-write rotation architecture, shared by every rotation
+// flavour via rotationCommitSpec:
 //
 //  1. GET the staging Secret. If absent, return (false, nil) — nothing to do.
 //  2. Require RotationCompletedAnnotation to be present and parseable as
-//     RFC3339; a malformed annotation emits a Warning event and is retried on
-//     the next CronJob run (no requeue-with-error).
-//  3. Validate the Secret's Data via validateRotationOutput; a rejection
-//     emits a Warning event and clears the staged Data and completion
-//     annotation (the staging Secret object is kept) so the next CronJob
-//     strategic-merge PATCH starts from an empty base rather than
-//     accumulating leftover key indices over a rejected payload. The Warning
-//     event message — not the now-empty staging Data — is the diagnostic.
-//  4. GET the main Secret, replace its Data with the staging payload verbatim,
-//     and Update — full-object replacement guarantees the atomic-swap
-//     semantics (stale indices not in the staging payload are removed).
+//     RFC3339; a malformed annotation emits spec.annotationInvalidReason and is
+//     retried on the next CronJob run (no requeue-with-error).
+//  3. Validate the Secret's Data via spec.validate; a rejection emits
+//     spec.rejectedReason. When spec.clearStagingOnReject is set the staged
+//     Data and completion annotation are cleared (the staging Secret object is
+//     kept) so the next CronJob strategic-merge PATCH starts from an empty base
+//     rather than accumulating leftover key indices over a rejected payload;
+//     otherwise the staging Secret is retained verbatim for operator
+//     inspection.
+//  4. GET the target Secret, replace its Data with the staging payload
+//     verbatim, stamp the annotation, and Update — full-object replacement
+//     guarantees the atomic-swap semantics (stale indices not in the staging
+//     payload are removed).
 //  5. DELETE the staging Secret under client.Preconditions{UID,
 //     ResourceVersion} from the step-1 read; tolerate NotFound and Conflict.
-//  6. Emit a Normal event with the given eventReason.
+//  6. Emit a Normal event built from spec.appliedReason / spec.appliedMessage.
 //
-// DECISION UPDATE-then-DELETE ordering — if DELETE fails, the
-// production Secret is already updated; a subsequent reconcile will no-op on
-// the next CronJob PATCH because the annotation flips to a new timestamp
-// (and a stale, pre-this-run annotation would fail validation the same way
-// on retry). Tolerating NotFound on DELETE handles the common race where a
-// human operator removed the staging Secret by hand.
+// DECISION: UPDATE-then-DELETE ordering — if DELETE fails, the target Secret is
+// already updated; a subsequent reconcile will no-op on the next CronJob PATCH
+// because the annotation flips to a new timestamp (and a stale, pre-this-run
+// annotation would fail validation the same way on retry). Tolerating NotFound
+// on DELETE handles the common race where a human operator removed the staging
+// Secret by hand.
 //
-// DECISION the step-5 DELETE carries client.Preconditions with the
-// UID and ResourceVersion read in step 1. An unconditional DELETE would
-// silently remove a staging Secret the CronJob had PATCHed with fresh rotation
-// output between the step-1 Get and the DELETE, losing that output uncommitted.
-// With the preconditions the API server returns 409 Conflict instead; the
-// newer payload survives on the staging Secret and commits on the next
-// reconcile. Both Conflict (concurrent PATCH) and NotFound (concurrent delete)
-// are therefore tolerated — this run's payload is already on the production
-// Secret, so the apply is complete either way.
+// DECISION: the step-5 DELETE carries client.Preconditions with the UID and
+// ResourceVersion read in step 1. An unconditional DELETE would silently remove
+// a staging Secret the CronJob had PATCHed with fresh rotation output between
+// the step-1 Get and the DELETE, losing that output uncommitted. With the
+// preconditions the API server returns 409 Conflict instead; the newer payload
+// survives on the staging Secret and commits on the next reconcile. Both
+// Conflict (concurrent PATCH) and NotFound (concurrent delete) are therefore
+// tolerated — this run's payload is already on the target Secret, so the apply
+// is complete either way.
 //
-// DECISION The production Secret's `.data` field is fully
-// replaced under the controller-owned ResourceVersion via a GET+Update
-// round-trip. A strategic-merge PATCH would merge map entries by key rather
-// than replace the map (corev1.Secret.Data has no patchStrategy tag), which
-// would allow stale key indices — e.g. those trimmed by a
-// max_active_keys reduction or renumbered by keystone-manage fernet_rotate —
-// to accumulate indefinitely on the production Secret. Full replacement is
-// the only semantic that realises the intended atomic swap.
-func (r *KeystoneReconciler) applyRotationOutput(
-	ctx context.Context,
-	keystone *keystonev1alpha1.Keystone,
-	stagingSecretName string,
-	mainSecretName string,
-	eventReason string,
-	minKeys, maxKeys int,
-) (applied bool, err error) {
+// DECISION: The target Secret's `.data` field is fully replaced under the
+// controller-owned ResourceVersion via a GET+Update round-trip. A
+// strategic-merge PATCH would merge map entries by key rather than replace the
+// map (corev1.Secret.Data has no patchStrategy tag), which would allow stale
+// key indices — e.g. those trimmed by a max_active_keys reduction or renumbered
+// by keystone-manage fernet_rotate — to accumulate indefinitely. Full
+// replacement is the only semantic that realises the intended atomic swap.
+//
+// Persisting the annotation on the target Secret is also what makes the
+// keystone_operator_key_rotation_age_seconds gauge refresh on every reconcile:
+// the staging Secret is deleted on step 5, so the target Secret is the only
+// durable record of the last successful rotation timestamp.
+func (r *KeystoneReconciler) commitStagedRotation(ctx context.Context, keystone *keystonev1alpha1.Keystone, spec rotationCommitSpec) (applied bool, err error) {
 	// 1. GET staging Secret.
 	var staging corev1.Secret
 	if getErr := r.Get(ctx, types.NamespacedName{
-		Name:      stagingSecretName,
+		Name:      spec.stagingSecretName,
 		Namespace: keystone.Namespace,
 	}, &staging); getErr != nil {
 		if apierrors.IsNotFound(getErr) {
 			return false, nil
 		}
-		return false, fmt.Errorf("getting staging secret %s: %w", stagingSecretName, getErr)
+		return false, fmt.Errorf("getting staging secret %s: %w", spec.stagingSecretName, getErr)
 	}
 
 	// 2. Require RotationCompletedAnnotation present and well-formed RFC3339.
@@ -224,7 +261,7 @@ func (r *KeystoneReconciler) applyRotationOutput(
 			log.FromContext(ctx).V(1).Info(
 				"staging secret has data without completion annotation; "+
 					"skipping apply until next CronJob run writes the annotation",
-				"staging", stagingSecretName,
+				"staging", spec.stagingSecretName,
 				"annotation", RotationCompletedAnnotation,
 				"dataKeys", len(staging.Data),
 			)
@@ -232,62 +269,61 @@ func (r *KeystoneReconciler) applyRotationOutput(
 		return false, nil
 	}
 	if _, parseErr := time.Parse(time.RFC3339, completedAt); parseErr != nil {
-		r.Recorder.Eventf(keystone, corev1.EventTypeWarning, "RotationAnnotationInvalid",
+		r.Recorder.Eventf(keystone, corev1.EventTypeWarning, spec.annotationInvalidReason,
 			"staging secret %s has malformed %s annotation: %v",
-			stagingSecretName, RotationCompletedAnnotation, parseErr)
+			spec.stagingSecretName, RotationCompletedAnnotation, parseErr)
 		return false, nil
 	}
 
-	// 3. Validate staging payload. On rejection, clear the staged Data and the
-	//    completion annotation before returning. The rotation scripts PATCH the
-	//    staging Secret with strategic-merge semantics over a multi-key `.data`
-	//    map (scripts/fernet_rotate.sh, credential_rotate.sh), so leftover key
+	// 3. Validate staging payload. On rejection, emit the Warning event; when
+	//    spec.clearStagingOnReject is set, clear the staged Data and completion
+	//    annotation before returning. The key-rotation scripts PATCH the staging
+	//    Secret with strategic-merge semantics over a multi-key `.data` map
+	//    (scripts/fernet_rotate.sh, credential_rotate.sh), so leftover key
 	//    indices from a rejected payload would otherwise survive and merge under
-	//    the next CronJob run — letting validateRotationOutput accept a key set
+	//    the next CronJob run — letting the validator accept a key set
 	//    keystone-manage never produced together. Clearing makes the next PATCH
-	//    start from an empty base. The RotationRejected event message (not the
+	//    start from an empty base. The rejection event message (not the
 	//    now-empty staging Data) is the diagnostic of record (issue #475).
-	if valErr := validateRotationOutput(staging.Data, minKeys, maxKeys); valErr != nil {
-		r.Recorder.Eventf(keystone, corev1.EventTypeWarning, "RotationRejected",
-			"staging secret %s rejected: %v", stagingSecretName, valErr)
-		staging.Data = nil
-		delete(staging.Annotations, RotationCompletedAnnotation)
-		if updErr := r.Update(ctx, &staging); updErr != nil {
-			if !apierrors.IsConflict(updErr) && !apierrors.IsNotFound(updErr) {
-				return false, fmt.Errorf("clearing rejected staging secret %s: %w", stagingSecretName, updErr)
+	if valErr := spec.validate(staging.Data); valErr != nil {
+		r.Recorder.Eventf(keystone, corev1.EventTypeWarning, spec.rejectedReason,
+			"staging secret %s rejected: %v", spec.stagingSecretName, valErr)
+		if spec.clearStagingOnReject {
+			staging.Data = nil
+			delete(staging.Annotations, RotationCompletedAnnotation)
+			if updErr := r.Update(ctx, &staging); updErr != nil {
+				if !apierrors.IsConflict(updErr) && !apierrors.IsNotFound(updErr) {
+					return false, fmt.Errorf("clearing rejected staging secret %s: %w", spec.stagingSecretName, updErr)
+				}
+				// A concurrent CronJob PATCH (Conflict) or a manual delete
+				// (NotFound) raced the clear; the next reconcile re-reads and
+				// re-validates, so the stale base cannot survive (issue #475).
+				log.FromContext(ctx).V(1).Info(
+					"rejected staging secret changed since read; clear retried next reconcile",
+					"staging", spec.stagingSecretName,
+				)
 			}
-			// A concurrent CronJob PATCH (Conflict) or a manual delete
-			// (NotFound) raced the clear; the next reconcile re-reads and
-			// re-validates, so the stale base cannot survive (issue #475).
-			log.FromContext(ctx).V(1).Info(
-				"rejected staging secret changed since read; clear retried next reconcile",
-				"staging", stagingSecretName,
-			)
 		}
 		return false, nil
 	}
 
-	// 4. GET main Secret, replace Data verbatim, stamp the rotation-completed
+	// 4. GET target Secret, replace Data verbatim, stamp the rotation-completed
 	//    annotation, and Update. Full Data replacement is required — see the
-	//    DECISION comment above. Persisting the annotation on the production
-	//    Secret is what makes the keystone_operator_key_rotation_age_seconds
-	//    gauge refresh on every reconcile the staging
-	//    Secret is deleted on step 5, so the production Secret is the only
-	//    durable record of the last successful rotation timestamp.
-	var mainSecret corev1.Secret
+	//    DECISION comment above.
+	var target corev1.Secret
 	if getErr := r.Get(ctx, types.NamespacedName{
-		Name:      mainSecretName,
+		Name:      spec.targetSecretName,
 		Namespace: keystone.Namespace,
-	}, &mainSecret); getErr != nil {
-		return false, fmt.Errorf("getting main secret %s: %w", mainSecretName, getErr)
+	}, &target); getErr != nil {
+		return false, fmt.Errorf("getting %s %s: %w", spec.targetNoun, spec.targetSecretName, getErr)
 	}
-	mainSecret.Data = staging.Data
-	if mainSecret.Annotations == nil {
-		mainSecret.Annotations = map[string]string{}
+	target.Data = staging.Data
+	if target.Annotations == nil {
+		target.Annotations = map[string]string{}
 	}
-	mainSecret.Annotations[RotationCompletedAnnotation] = completedAt
-	if updateErr := r.Update(ctx, &mainSecret); updateErr != nil {
-		return false, fmt.Errorf("updating main secret %s: %w", mainSecretName, updateErr)
+	target.Annotations[RotationCompletedAnnotation] = completedAt
+	if updateErr := r.Update(ctx, &target); updateErr != nil {
+		return false, fmt.Errorf("updating %s %s: %w", spec.targetNoun, spec.targetSecretName, updateErr)
 	}
 
 	// 5. DELETE staging Secret under the UID + ResourceVersion observed at the
@@ -295,24 +331,52 @@ func (r *KeystoneReconciler) applyRotationOutput(
 	//    rotation output written between the read and this DELETE) surface as
 	//    409 Conflict rather than being silently deleted uncommitted; the newer
 	//    payload then commits on the next reconcile. Conflict and NotFound are
-	//    both tolerated — this run's payload is already on the production Secret
-	//   .
+	//    both tolerated — this run's payload is already on the target Secret.
 	delOpts := client.Preconditions{UID: &staging.UID, ResourceVersion: &staging.ResourceVersion}
 	if delErr := r.Delete(ctx, &staging, delOpts); delErr != nil {
 		if !apierrors.IsNotFound(delErr) && !apierrors.IsConflict(delErr) {
-			return false, fmt.Errorf("deleting staging secret %s: %w", stagingSecretName, delErr)
+			return false, fmt.Errorf("deleting staging secret %s: %w", spec.stagingSecretName, delErr)
 		}
 		log.FromContext(ctx).V(1).Info(
 			"staging secret changed since read; newer rotation output applied next reconcile",
-			"staging", stagingSecretName,
+			"staging", spec.stagingSecretName,
 		)
 	}
 
-	// 6. Emit a success event. Count reflects the number of active keys now
-	//    in the production Secret (len(staging.Data) == len(mainSecret.Data)
-	//    after the full-replacement Update).
-	r.Recorder.Eventf(keystone, corev1.EventTypeNormal, eventReason,
-		"rotation applied from staging secret %s (%d active keys)", stagingSecretName, len(staging.Data))
+	// 6. Emit a success event.
+	r.Recorder.Event(keystone, corev1.EventTypeNormal, spec.appliedReason,
+		spec.appliedMessage(spec.stagingSecretName, staging.Data))
 
 	return true, nil
+}
+
+// applyRotationOutput commits a completed Fernet/credential key rotation from
+// the staging Secret onto the main keys Secret via commitStagedRotation. The
+// staged key set is validated against [minKeys, maxKeys] and the success event
+// reports the resulting active-key count. A rejected payload clears the staging
+// Data so a stale key set cannot survive as a strategic-merge base for the next
+// CronJob run (issue #475).
+func (r *KeystoneReconciler) applyRotationOutput(
+	ctx context.Context,
+	keystone *keystonev1alpha1.Keystone,
+	stagingSecretName string,
+	mainSecretName string,
+	eventReason string,
+	minKeys, maxKeys int,
+) (applied bool, err error) {
+	return r.commitStagedRotation(ctx, keystone, rotationCommitSpec{
+		stagingSecretName:       stagingSecretName,
+		targetSecretName:        mainSecretName,
+		targetNoun:              "main secret",
+		validate:                func(data map[string][]byte) error { return validateRotationOutput(data, minKeys, maxKeys) },
+		clearStagingOnReject:    true,
+		annotationInvalidReason: "RotationAnnotationInvalid",
+		rejectedReason:          "RotationRejected",
+		appliedReason:           eventReason,
+		appliedMessage: func(stagingSecretName string, data map[string][]byte) string {
+			// Count reflects the number of active keys now in the production
+			// Secret (len(staging.Data) == len(main.Data) after replacement).
+			return fmt.Sprintf("rotation applied from staging secret %s (%d active keys)", stagingSecretName, len(data))
+		},
+	})
 }

@@ -10,19 +10,16 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
-	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/c5c3/forge/internal/common/conditions"
 	"github.com/c5c3/forge/internal/common/config"
@@ -415,116 +412,35 @@ func validateAdminPasswordRotationOutput(data map[string][]byte, minLength int) 
 	return nil
 }
 
-// applyAdminPasswordRotation copies a completed staging Secret onto the
-// operator-owned push-source Secret and deletes the staging Secret. It mirrors applyRotationOutput's split-compute-write commit
-// but validates a password rather than a key set and targets the push-source
-// Secret. It is additive and does not touch applyRotationOutput.
+// applyAdminPasswordRotation commits a completed admin-password rotation from
+// the staging Secret onto the operator-owned push-source Secret via the shared
+// commitStagedRotation helper. It validates a password rather than a key set,
+// so the success event omits any key count, and the password value is never
+// logged or echoed in events.
 //
-//  1. GET the staging Secret. If absent, return (false, nil).
-//  2. Require RotationCompletedAnnotation present and parseable as RFC3339; a
-//     malformed annotation emits a Warning and retains staging for retry.
-//  3. Validate the staged password; a rejection emits a Warning and retains the
-//     staging Secret for operator inspection.
-//  4. GET the push-source Secret, replace its Data with the staged payload,
-//     stamp the rotation-completed annotation, and Update.
-//  5. DELETE the staging Secret under client.Preconditions{UID,
-//     ResourceVersion} from the step-1 read; tolerate NotFound and Conflict.
-//  6. Emit AdminPasswordRotated.
-//
-// The password value itself is never logged or echoed in events.
-//
-// NOTE: unlike applyRotationOutput, a validation rejection here does
-// NOT clear staging.Data. The staging Secret carries a single `password` key,
-// not a multi-key map, so the strategic-merge accumulation of stale indices
-// that motivates clearing the fernet/credential staging payload cannot occur;
-// the rejected password is retained verbatim for operator inspection.
+// Unlike the key flavours, a validation rejection here does NOT clear the
+// staged Data (clearStagingOnReject is left false): the staging Secret carries
+// a single `password` key, not a multi-key map, so the strategic-merge
+// accumulation of stale indices that motivates clearing the fernet/credential
+// staging payload cannot occur; the rejected password is retained verbatim for
+// operator inspection (issue #475).
 func (r *KeystoneReconciler) applyAdminPasswordRotation(
 	ctx context.Context,
 	keystone *keystonev1alpha1.Keystone,
 	minLength int,
 ) (applied bool, err error) {
-	stagingSecretName := adminPasswordStagingSecretName(keystone)
-	pushSourceSecretName := adminPasswordNextSecretName(keystone)
-
-	// 1. GET staging Secret.
-	var staging corev1.Secret
-	if getErr := r.Get(ctx, types.NamespacedName{Name: stagingSecretName, Namespace: keystone.Namespace}, &staging); getErr != nil {
-		if apierrors.IsNotFound(getErr) {
-			return false, nil
-		}
-		return false, fmt.Errorf("getting staging secret %s: %w", stagingSecretName, getErr)
-	}
-
-	// 2. Require RotationCompletedAnnotation present and well-formed RFC3339.
-	completedAt := staging.Annotations[RotationCompletedAnnotation]
-	if completedAt == "" {
-		if len(staging.Data) > 0 {
-			log.FromContext(ctx).V(1).Info(
-				"staging secret has data without completion annotation; "+
-					"skipping apply until next CronJob run writes the annotation",
-				"staging", stagingSecretName,
-				"annotation", RotationCompletedAnnotation,
-				"dataKeys", len(staging.Data),
-			)
-		}
-		return false, nil
-	}
-	if _, parseErr := time.Parse(time.RFC3339, completedAt); parseErr != nil {
-		r.Recorder.Eventf(keystone, corev1.EventTypeWarning, "AdminPasswordRotationAnnotationInvalid",
-			"staging secret %s has malformed %s annotation: %v",
-			stagingSecretName, RotationCompletedAnnotation, parseErr)
-		return false, nil
-	}
-
-	// 3. Validate the staged password.
-	if valErr := validateAdminPasswordRotationOutput(staging.Data, minLength); valErr != nil {
-		r.Recorder.Eventf(keystone, corev1.EventTypeWarning, "AdminPasswordRotationRejected",
-			"staging secret %s rejected: %v", stagingSecretName, valErr)
-		return false, nil
-	}
-
-	// 4. GET push-source Secret, replace Data verbatim, stamp the annotation,
-	//    and Update. The push-source Secret is the durable record of the last
-	//    successful rotation timestamp once staging is deleted, so the
-	//    rotation-age gauge can refresh on every reconcile. NOTE (issue #475):
-	//    this annotation marks commit-to-push-source, which precedes the
-	//    password going live by the full ESO round-trip + bootstrap re-run
-	//    (~1h+); the gauge under-reports time-since-live for admin-password.
-	var pushSource corev1.Secret
-	if getErr := r.Get(ctx, types.NamespacedName{Name: pushSourceSecretName, Namespace: keystone.Namespace}, &pushSource); getErr != nil {
-		return false, fmt.Errorf("getting push-source secret %s: %w", pushSourceSecretName, getErr)
-	}
-	pushSource.Data = staging.Data
-	if pushSource.Annotations == nil {
-		pushSource.Annotations = map[string]string{}
-	}
-	pushSource.Annotations[RotationCompletedAnnotation] = completedAt
-	if updateErr := r.Update(ctx, &pushSource); updateErr != nil {
-		return false, fmt.Errorf("updating push-source secret %s: %w", pushSourceSecretName, updateErr)
-	}
-
-	// 5. DELETE staging Secret under the UID + ResourceVersion observed at the
-	//    step-1 Get, mirroring applyRotationOutput. The preconditions
-	//    make a concurrent CronJob PATCH surface as 409 Conflict instead of
-	//    being silently deleted uncommitted; the newer password then commits on
-	//    the next reconcile. Conflict and NotFound are both tolerated — this
-	//    run's password is already on the push-source Secret.
-	delOpts := client.Preconditions{UID: &staging.UID, ResourceVersion: &staging.ResourceVersion}
-	if delErr := r.Delete(ctx, &staging, delOpts); delErr != nil {
-		if !apierrors.IsNotFound(delErr) && !apierrors.IsConflict(delErr) {
-			return false, fmt.Errorf("deleting staging secret %s: %w", stagingSecretName, delErr)
-		}
-		log.FromContext(ctx).V(1).Info(
-			"staging secret changed since read; newer rotation output applied next reconcile",
-			"staging", stagingSecretName,
-		)
-	}
-
-	// 6. Emit a success event. The password value is intentionally omitted.
-	r.Recorder.Eventf(keystone, corev1.EventTypeNormal, "AdminPasswordRotated",
-		"admin password rotation applied from staging secret %s", stagingSecretName)
-
-	return true, nil
+	return r.commitStagedRotation(ctx, keystone, rotationCommitSpec{
+		stagingSecretName:       adminPasswordStagingSecretName(keystone),
+		targetSecretName:        adminPasswordNextSecretName(keystone),
+		targetNoun:              "push-source secret",
+		validate:                func(data map[string][]byte) error { return validateAdminPasswordRotationOutput(data, minLength) },
+		annotationInvalidReason: "AdminPasswordRotationAnnotationInvalid",
+		rejectedReason:          "AdminPasswordRotationRejected",
+		appliedReason:           "AdminPasswordRotated",
+		appliedMessage: func(stagingSecretName string, _ map[string][]byte) string {
+			return fmt.Sprintf("admin password rotation applied from staging secret %s", stagingSecretName)
+		},
+	})
 }
 
 // adminPasswordPushSourceReady reports whether the push-source Secret holds a
