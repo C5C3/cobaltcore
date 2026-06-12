@@ -121,12 +121,13 @@ func TestDashboardReferencesOnlyRegisteredMetrics(t *testing.T) {
 	// probe samples clearly distinguishable if they ever leak into a
 	// live registry.
 	//
-	// DECISION: use metrics.* public helpers (not the private
-	// newCollectorsForTest) so this test exercises the exact code path
-	// that wires production collectors onto ctrlmetrics.Registry
+	// DECISION: use the production metrics surface (the lazily-registered
+	// metrics.SubReconciler instance and the metrics.* per-CR helpers, not
+	// the private newCollectorsForTest) so this test exercises the exact
+	// code path that wires production collectors onto ctrlmetrics.Registry.
 	const probe = "dashboard_test_probe"
-	metrics.ObserveReconcileDuration(probe, 0)
-	metrics.RecordReconcileError(probe, probe)
+	metrics.SubReconciler.ObserveReconcileDuration(probe, 0)
+	metrics.SubReconciler.RecordReconcileError(probe, probe)
 	g.Expect(metrics.SetKeyRotationAge(probe, probe, probe, time.Now())).To(Succeed())
 	metrics.RecordDBSync(probe, probe, "succeeded", 0)
 

@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Tests for the sub-reconciler instrumentation helper.
+// Tests for the sub-reconciler instrumentation wiring.
 package controller
 
 import (
@@ -16,7 +16,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 
-	"github.com/c5c3/forge/operators/keystone/internal/metrics"
+	"github.com/c5c3/forge/internal/common/instrumentation"
 )
 
 // findMetricByLabels searches the gather output for a MetricFamily with the
@@ -107,127 +107,49 @@ func histogramSampleSum(t *testing.T, famName string, labels map[string]string) 
 	return m.GetHistogram().GetSampleSum()
 }
 
-// withTestRecorder swaps the package-level instrumentation hooks for a
-// recorder bound to a fresh prometheus.NewRegistry() so tests verify
-// behaviour without polluting the controller-runtime production registry
-// The registry is returned so tests can
-// gather it directly. Restoration is registered via t.Cleanup.
-func withTestRecorder(t *testing.T) *prometheus.Registry {
+// withTestInstrumenter swaps the package-level instrumenter for one bound to a
+// fresh prometheus.NewRegistry() so tests verify the wiring without polluting
+// the controller-runtime production registry. The
+// registry is returned so tests can gather it directly. Restoration is
+// registered via t.Cleanup.
+func withTestInstrumenter(t *testing.T) *prometheus.Registry {
 	t.Helper()
 	reg := prometheus.NewRegistry()
-	rec := metrics.NewTestRecorder(reg)
+	m := instrumentation.NewMetricsOnRegistry("keystone_operator", reg)
 
-	prevObs := instrumentObserveDuration
-	prevErr := instrumentRecordError
-	instrumentObserveDuration = rec.ObserveReconcileDuration
-	instrumentRecordError = rec.RecordReconcileError
-	t.Cleanup(func() {
-		instrumentObserveDuration = prevObs
-		instrumentRecordError = prevErr
-	})
+	prev := instrumenter
+	instrumenter = instrumentation.NewInstrumenter(m, subReconcilerConditionTypes)
+	t.Cleanup(func() { instrumenter = prev })
 	return reg
 }
 
-func TestInstrumentSubReconciler_Success_RecordsDuration(t *testing.T) {
+// TestInstrumentSubReconciler_RecordsThroughInstrumenter proves the local
+// instrumentSubReconciler delegate records duration on success and attributes
+// errors to the condition_type resolved from subReconcilerConditionTypes — the
+// behaviour of the shared Instrumenter is exercised in
+// internal/common/instrumentation; this test only verifies the keystone
+// wiring (the map and the metrics.SubReconciler prefix).
+func TestInstrumentSubReconciler_RecordsThroughInstrumenter(t *testing.T) {
 	g := NewGomegaWithT(t)
-	reg := withTestRecorder(t)
+	reg := withTestInstrumenter(t)
 
-	const name = "TestSuccessSub"
+	const name = "Database"
 	durLabels := map[string]string{"sub_reconciler": name}
-	errLabels := map[string]string{"sub_reconciler": name, "condition_type": ""}
+	errLabels := map[string]string{"sub_reconciler": name, "condition_type": "DatabaseReady"}
 
-	res, err := instrumentSubReconciler(context.Background(), name, func(_ context.Context) (ctrl.Result, error) {
+	_, err := instrumentSubReconciler(context.Background(), name, func(_ context.Context) (ctrl.Result, error) {
 		return ctrl.Result{}, nil
 	})
-
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(res).To(Equal(ctrl.Result{}))
-
 	g.Expect(histogramSampleCountOn(t, reg, "keystone_operator_reconcile_duration_seconds", durLabels)).
-		To(Equal(uint64(1)),
-			"success path must observe exactly one duration sample")
-	g.Expect(counterValueOn(t, reg, "keystone_operator_reconcile_errors_total", errLabels)).
-		To(Equal(0.0),
-			"success path must NOT increment the reconcile_errors counter")
-}
+		To(Equal(uint64(1)), "success path must observe exactly one duration sample")
 
-func TestInstrumentSubReconciler_Error_RecordsDurationAndError(t *testing.T) {
-	g := NewGomegaWithT(t)
-	reg := withTestRecorder(t)
-
-	// Use a real sub_reconciler name so condition_type resolves to a non-empty
-	// value via subReconcilerConditionTypes.
-	const name = "Database"
-	const wantCondition = "DatabaseReady"
-	durLabels := map[string]string{"sub_reconciler": name}
-	errLabels := map[string]string{"sub_reconciler": name, "condition_type": wantCondition}
-
-	sentinel := errors.New("boom")
-	_, err := instrumentSubReconciler(context.Background(), name, func(_ context.Context) (ctrl.Result, error) {
-		return ctrl.Result{}, sentinel
-	})
-
-	g.Expect(err).To(MatchError(sentinel))
-
-	g.Expect(histogramSampleCountOn(t, reg, "keystone_operator_reconcile_duration_seconds", durLabels)).
-		To(Equal(uint64(1)),
-			"error path must still observe duration")
-	g.Expect(counterValueOn(t, reg, "keystone_operator_reconcile_errors_total", errLabels)).
-		To(Equal(1.0),
-			"error path must increment reconcile_errors for (sub_reconciler, condition_type)")
-}
-
-// TestInstrumentSubReconciler_UnknownNameFallback verifies that a sub_reconciler
-// name absent from subReconcilerConditionTypes records the error counter with
-// condition_type=subReconcilerConditionTypeUnknown ("UNKNOWN") rather than an
-// empty string. The static drift guards
-// (TestSubReconcilerConditionTypesCoversAllNames /
-// TestSubReconcilerConditionTypesCoversAllCallSites) should keep this fallback
-// from firing in production, but if drift slips through the alert noise must be
-// visible — not silently labelled "".
-func TestInstrumentSubReconciler_UnknownNameFallback(t *testing.T) {
-	g := NewGomegaWithT(t)
-	reg := withTestRecorder(t)
-
-	const name = "TestUnmappedSub"
-	errLabels := map[string]string{"sub_reconciler": name, "condition_type": subReconcilerConditionTypeUnknown}
-	emptyLabels := map[string]string{"sub_reconciler": name, "condition_type": ""}
-
-	_, err := instrumentSubReconciler(context.Background(), name, func(_ context.Context) (ctrl.Result, error) {
+	_, err = instrumentSubReconciler(context.Background(), name, func(_ context.Context) (ctrl.Result, error) {
 		return ctrl.Result{}, errors.New("boom")
 	})
 	g.Expect(err).To(HaveOccurred())
-
 	g.Expect(counterValueOn(t, reg, "keystone_operator_reconcile_errors_total", errLabels)).
-		To(Equal(1.0),
-			"unmapped sub_reconciler name MUST surface as condition_type=%q in the error counter",
-			subReconcilerConditionTypeUnknown)
-	g.Expect(counterValueOn(t, reg, "keystone_operator_reconcile_errors_total", emptyLabels)).
-		To(Equal(0.0),
-			"unmapped sub_reconciler name MUST NOT emit reconcile_errors with an empty condition_type label")
-}
-
-func TestInstrumentSubReconciler_PanicSafe(t *testing.T) {
-	g := NewGomegaWithT(t)
-	reg := withTestRecorder(t)
-
-	const name = "TestPanicSub"
-	durLabels := map[string]string{"sub_reconciler": name}
-
-	var recovered any
-	func() {
-		defer func() { recovered = recover() }()
-		_, _ = instrumentSubReconciler(context.Background(), name, func(_ context.Context) (ctrl.Result, error) {
-			panic("kaboom")
-		})
-	}()
-
-	g.Expect(recovered).To(Equal("kaboom"),
-		"panic must propagate to the caller — instrumentSubReconciler must not recover")
-
-	g.Expect(histogramSampleCountOn(t, reg, "keystone_operator_reconcile_duration_seconds", durLabels)).
-		To(Equal(uint64(1)),
-			"deferred duration emission MUST fire before the panic unwinds")
+		To(Equal(1.0), "error path must attribute the error to condition_type=DatabaseReady via the map")
 }
 
 // TestSubReconcilerConditionTypesCoversAllNames is a drift guard: every

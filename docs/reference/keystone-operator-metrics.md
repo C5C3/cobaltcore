@@ -7,16 +7,27 @@ quadrant: operator
 # Keystone Operator Prometheus Metrics
 
 Reference catalogue for every Prometheus collector the Keystone operator
-exposes on the controller-runtime metrics endpoint. Every metric name, label set, and histogram bucket list below
-is authoritative — the contract test
-`operators/keystone/internal/metrics/contract_test.go` fails the build if
-this document drifts from the registered collectors.
+exposes on the controller-runtime metrics endpoint. Every metric name,
+label set, and histogram bucket list below is authoritative. The
+sub-reconciler duration and error metrics are verified by the tests in
+[`internal/common/instrumentation`](https://github.com/c5c3/forge/blob/main/internal/common/instrumentation/instrumentation_test.go);
+the per-CR collectors by
+[`collectors_test.go`](https://github.com/c5c3/forge/blob/main/operators/keystone/internal/metrics/collectors_test.go);
+and `dashboards/dashboard_test.go` fails the build if the bundled Grafana
+dashboard references a metric the operator does not register.
 
-All metrics are registered via the process-wide `sync.Once` initializer
-`globalCollectors()` in
-[`operators/keystone/internal/metrics/collectors.go`](https://github.com/c5c3/forge/blob/main/operators/keystone/internal/metrics/collectors.go)
-and attached to the controller-runtime registry
-(`sigs.k8s.io/controller-runtime/pkg/metrics`). They are served on the
+The sub-reconciler duration/error pair
+(`keystone_operator_reconcile_duration_seconds` and
+`keystone_operator_reconcile_errors_total`) is shared with the other
+forge operators. It lives in the
+[`internal/common/instrumentation`](https://github.com/c5c3/forge/blob/main/internal/common/instrumentation/instrumentation.go)
+package and is exposed as the `metrics.SubReconciler` instance, which
+registers on the controller-runtime registry lazily on first use. The
+per-CR collectors (rotation age and `db_sync`) register via the
+process-wide `sync.Once` initializer `globalCollectors()` in
+[`operators/keystone/internal/metrics/collectors.go`](https://github.com/c5c3/forge/blob/main/operators/keystone/internal/metrics/collectors.go).
+All collectors attach to the controller-runtime registry
+(`sigs.k8s.io/controller-runtime/pkg/metrics`) and are served on the
 operator's metrics listener at `:8080/metrics` by default; see
 [How to enable the Keystone operator metrics endpoint](../guides/enable-keystone-operator-metrics.md)
 for cluster-side wiring.

@@ -12,17 +12,17 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
+
+	"github.com/c5c3/forge/internal/common/instrumentation"
 )
 
-// reconcileDurationBuckets are the histogram bucket boundaries for
-// keystone_operator_reconcile_duration_seconds.
-//
-// The buckets span the observed sub-reconciler latency range — from fast
-// no-op reconciles (10 ms) up to long-running DB sync jobs (30 s). The set
-// is intentionally fixed by contract; see the cardinality drift-guard test.
-var reconcileDurationBuckets = []float64{
-	0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30,
-}
+// SubReconciler holds the shared sub-reconciler instrumentation metrics
+// (keystone_operator_reconcile_duration_seconds and
+// keystone_operator_reconcile_errors_total). The vectors register lazily on
+// the controller-runtime registry the first time a sample is recorded. The
+// controller's instrumentation layer drives these via an
+// instrumentation.Instrumenter.
+var SubReconciler = instrumentation.NewMetrics("keystone_operator")
 
 // dbSyncDurationBuckets are the histogram bucket boundaries for
 // keystone_operator_db_sync_duration_seconds. DB sync
@@ -34,31 +34,22 @@ var reconcileDurationBuckets = []float64{
 // plan explicitly lists them.
 var dbSyncDurationBuckets = []float64{1, 5, 10, 30, 60, 120, 300, 600}
 
-// collectors bundles every metric vector the operator exposes. The struct
-// exists so tests can bind an isolated instance to a private registry;
+// collectors bundles the per-CR metric vectors the operator exposes. The
+// struct exists so tests can bind an isolated instance to a private registry;
 // production code uses the package-level globalColls registered on
-// ctrlmetrics.Registry exactly once.
+// ctrlmetrics.Registry exactly once. The sub-reconciler
+// duration/error pair lives in the shared instrumentation package; only the
+// per-CR collectors stay here.
 type collectors struct {
-	reconcileDuration *prometheus.HistogramVec
-	reconcileErrors   *prometheus.CounterVec
-	keyRotationAge    *prometheus.GaugeVec
-	dbSyncTotal       *prometheus.CounterVec
-	dbSyncDuration    *prometheus.HistogramVec
+	keyRotationAge *prometheus.GaugeVec
+	dbSyncTotal    *prometheus.CounterVec
+	dbSyncDuration *prometheus.HistogramVec
 }
 
 // newCollectors builds a fresh set of collector vectors. It does NOT
 // register them — callers choose the registry.
 func newCollectors() *collectors {
 	return &collectors{
-		reconcileDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
-			Name:    "keystone_operator_reconcile_duration_seconds",
-			Help:    "Wall-clock duration of a Keystone sub-reconciler invocation, in seconds.",
-			Buckets: reconcileDurationBuckets,
-		}, []string{"sub_reconciler"}),
-		reconcileErrors: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "keystone_operator_reconcile_errors_total",
-			Help: "Count of Keystone sub-reconciler errors, partitioned by sub-reconciler and the condition type it failed to satisfy.",
-		}, []string{"sub_reconciler", "condition_type"}),
 		keyRotationAge: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "keystone_operator_key_rotation_age_seconds",
 			Help: "Age in seconds of the most recent successful key rotation for a given Keystone CR and key type.",
@@ -80,8 +71,6 @@ func newCollectors() *collectors {
 // controller-runtime global registry if callers register twice.
 func (c *collectors) register(reg prometheus.Registerer) error {
 	for _, coll := range []prometheus.Collector{
-		c.reconcileDuration,
-		c.reconcileErrors,
 		c.keyRotationAge,
 		c.dbSyncTotal,
 		c.dbSyncDuration,
@@ -91,44 +80,6 @@ func (c *collectors) register(reg prometheus.Registerer) error {
 		}
 	}
 	return nil
-}
-
-// TestRecorder exposes the same recording surface as the package-level
-// metric helpers but bound to a private collector set on a caller-supplied
-// Registerer. It is intended for tests in dependent packages (e.g. the
-// controller package's instrumentation_test.go) that must verify
-// instrumentation behaviour without polluting the controller-runtime
-// production registry. Production code MUST use the package-level
-// ObserveReconcileDuration / RecordReconcileError functions.
-type TestRecorder struct {
-	c *collectors
-}
-
-// NewTestRecorder builds a fresh collector set on reg and returns a
-// TestRecorder that drives those collectors. The returned recorder is
-// safe to use in a single test goroutine; tests that swap it into
-// production code MUST restore the original via t.Cleanup.
-func NewTestRecorder(reg prometheus.Registerer) *TestRecorder {
-	c := newCollectors()
-	if err := c.register(reg); err != nil {
-		// Test registries are always empty in new Prometheus registries;
-		// a registration error here is a programmer bug in the test
-		// setup and must be surfaced loudly.
-		panic(fmt.Sprintf("metrics: test registry rejected collectors: %v", err))
-	}
-	return &TestRecorder{c: c}
-}
-
-// ObserveReconcileDuration records a duration sample on the recorder's
-// private collector set, mirroring the package-level helper signature.
-func (r *TestRecorder) ObserveReconcileDuration(subReconciler string, d time.Duration) {
-	r.c.observeReconcileDuration(subReconciler, d)
-}
-
-// RecordReconcileError increments the recorder's private error counter,
-// mirroring the package-level helper signature.
-func (r *TestRecorder) RecordReconcileError(subReconciler, conditionType string) {
-	r.c.recordReconcileError(subReconciler, conditionType)
 }
 
 // globalColls is the single production instance, registered on the
@@ -153,18 +104,6 @@ func globalCollectors() *collectors {
 	return globalColls
 }
 
-// ObserveReconcileDuration records the wall-clock duration of a single
-// sub-reconciler invocation.
-func ObserveReconcileDuration(subReconciler string, d time.Duration) {
-	globalCollectors().observeReconcileDuration(subReconciler, d)
-}
-
-// RecordReconcileError increments the reconcile-error counter for a given
-// sub-reconciler and the condition type it failed to drive to True.
-func RecordReconcileError(subReconciler, conditionType string) {
-	globalCollectors().recordReconcileError(subReconciler, conditionType)
-}
-
 // SetKeyRotationAge publishes the age in seconds of the most recent key
 // rotation for (keystone, namespace, keyType). Returns an error and does
 // NOT update the gauge if completedAt is the zero Time (e.g. when the CR
@@ -186,29 +125,20 @@ func RecordDBSync(keystone, namespace, result string, duration time.Duration) {
 }
 
 // DeleteForKeystone drops every series tagged with the given keystone name
-// and namespace from the per-CR collectors (rotation age and db-sync). It
-// is a no-op for the sub-reconciler metrics because those intentionally
-// carry no CR labels.
+// and namespace from the per-CR collectors (rotation age and db-sync). The
+// sub-reconciler metrics intentionally carry no CR labels, so there is
+// nothing to delete there.
 func DeleteForKeystone(name, namespace string) {
 	globalCollectors().deleteForKeystone(name, namespace)
 }
 
 // --- internal methods (bound to an instance) -------------------------------
 //
-// Each public package-level helper above (ObserveReconcileDuration,
-// RecordReconcileError, SetKeyRotationAge, RecordDBSync, DeleteForKeystone)
-// is a thin wrapper that resolves globalCollectors() and forwards to the
-// matching method below. The methods are also exercised directly by
-// collectors_test.go against an isolated registry so they are not
-// test-only.
-
-func (c *collectors) observeReconcileDuration(subReconciler string, d time.Duration) {
-	c.reconcileDuration.WithLabelValues(subReconciler).Observe(d.Seconds())
-}
-
-func (c *collectors) recordReconcileError(subReconciler, conditionType string) {
-	c.reconcileErrors.WithLabelValues(subReconciler, conditionType).Inc()
-}
+// Each public package-level helper above (SetKeyRotationAge, RecordDBSync,
+// DeleteForKeystone) is a thin wrapper that resolves globalCollectors() and
+// forwards to the matching method below. The methods are also exercised
+// directly by collectors_test.go against an isolated registry so they are
+// not test-only.
 
 func (c *collectors) setKeyRotationAge(keystone, namespace, keyType string, completedAt time.Time) error {
 	if completedAt.IsZero() {

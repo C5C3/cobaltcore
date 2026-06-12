@@ -5,6 +5,7 @@
 package metrics
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -13,20 +14,19 @@ import (
 	dto "github.com/prometheus/client_model/go"
 )
 
-// expectedReconcileDurationBuckets are the exact buckets prescribed by
-// for the keystone_operator_reconcile_duration_seconds
-// histogram.
-var expectedReconcileDurationBuckets = []float64{
-	0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30,
-}
-
-// newCollectorsForTest is a test-only constructor that returns a fresh
-// collectors set bound to reg. It delegates to NewTestRecorder so the
-// registration-and-panic logic lives in exactly one place. Each unit
-// test gets a new Registerer so gather output is deterministic and free
-// of cross-test interference.
+// newCollectorsForTest returns a fresh per-CR collectors set bound to reg.
+// Each unit test gets a new Registerer so gather output is deterministic and
+// free of cross-test interference. The sub-reconciler
+// duration/error pair is tested in internal/common/instrumentation.
 func newCollectorsForTest(reg prometheus.Registerer) *collectors {
-	return NewTestRecorder(reg).c
+	c := newCollectors()
+	if err := c.register(reg); err != nil {
+		// Test registries are always empty in new Prometheus registries;
+		// a registration error here is a programmer bug in the test setup
+		// and must be surfaced loudly.
+		panic(fmt.Sprintf("metrics: test registry rejected collectors: %v", err))
+	}
+	return c
 }
 
 // gatherMetric returns the first MetricFamily whose Name matches. If not
@@ -42,80 +42,6 @@ func gatherMetric(t *testing.T, reg prometheus.Gatherer, name string) *dto.Metri
 		}
 	}
 	return nil
-}
-
-func TestReconcileDurationHistogramRegistered(t *testing.T) {
-	g := NewGomegaWithT(t)
-
-	reg := prometheus.NewRegistry()
-	c := newCollectorsForTest(reg)
-	g.Expect(c).NotTo(BeNil())
-
-	// Bucket enumeration requires at least one observation, so record one
-	// with zero duration under a dummy sub_reconciler. This is purely a
-	// gather trigger; the bucket list is a property of the descriptor.
-	c.observeReconcileDuration("dummy", 0)
-
-	fam := gatherMetric(t, reg, "keystone_operator_reconcile_duration_seconds")
-	g.Expect(fam).NotTo(BeNil(), "histogram keystone_operator_reconcile_duration_seconds must be registered")
-	g.Expect(fam.GetType()).To(Equal(dto.MetricType_HISTOGRAM))
-
-	metrics := fam.GetMetric()
-	g.Expect(metrics).NotTo(BeEmpty())
-	buckets := metrics[0].GetHistogram().GetBucket()
-	got := make([]float64, 0, len(buckets))
-	for _, b := range buckets {
-		got = append(got, b.GetUpperBound())
-	}
-	g.Expect(got).To(Equal(expectedReconcileDurationBuckets),
-		"reconcile_duration bucket boundaries MUST match exactly")
-}
-
-func TestReconcileErrorsCounterLabels(t *testing.T) {
-	g := NewGomegaWithT(t)
-
-	reg := prometheus.NewRegistry()
-	c := newCollectorsForTest(reg)
-
-	c.recordReconcileError("fernet", "FernetKeysReady")
-
-	fam := gatherMetric(t, reg, "keystone_operator_reconcile_errors_total")
-	g.Expect(fam).NotTo(BeNil())
-	g.Expect(fam.GetType()).To(Equal(dto.MetricType_COUNTER))
-	g.Expect(fam.GetMetric()).To(HaveLen(1))
-
-	labels := fam.GetMetric()[0].GetLabel()
-	names := make([]string, 0, len(labels))
-	values := map[string]string{}
-	for _, l := range labels {
-		names = append(names, l.GetName())
-		values[l.GetName()] = l.GetValue()
-	}
-	g.Expect(names).To(ConsistOf("sub_reconciler", "condition_type"),
-		"reconcile_errors label set MUST be exactly {sub_reconciler, condition_type}")
-	g.Expect(values["sub_reconciler"]).To(Equal("fernet"))
-	g.Expect(values["condition_type"]).To(Equal("FernetKeysReady"))
-	g.Expect(fam.GetMetric()[0].GetCounter().GetValue()).To(Equal(1.0))
-}
-
-func TestErrorCounterNotIncrementedOnSuccess(t *testing.T) {
-	g := NewGomegaWithT(t)
-
-	reg := prometheus.NewRegistry()
-	c := newCollectorsForTest(reg)
-
-	// Success path: duration observation only, no error.
-	c.observeReconcileDuration("fernet", 42*time.Millisecond)
-
-	fam := gatherMetric(t, reg, "keystone_operator_reconcile_errors_total")
-	// A counter with no observations and no labels pre-created is absent
-	// from the gather output, which is the desired outcome.
-	if fam != nil {
-		for _, m := range fam.GetMetric() {
-			g.Expect(m.GetCounter().GetValue()).To(Equal(0.0),
-				"success path must never increment reconcile_errors")
-		}
-	}
 }
 
 func TestKeyRotationAgeGaugePresentAndAbsent(t *testing.T) {
@@ -303,41 +229,4 @@ func TestDbSyncDurationHistogramObservedOnce(t *testing.T) {
 		"each RecordDBSync call records exactly one sample")
 	g.Expect(hist.GetSampleSum()).To(BeNumerically("~", duration.Seconds(), 1e-9),
 		"sample sum must equal the duration in seconds")
-}
-
-// TestSubReconcilerMetricsHaveNoCRLabels is the cardinality drift-guard for
-// Adding a `keystone` or `namespace` label to either the
-// reconcile_duration histogram or the reconcile_errors counter would
-// explode cardinality (O(#CRs × #sub-reconcilers)) and is forbidden by the
-// design. This test fails CI if either label ever appears on those
-// metrics.
-func TestSubReconcilerMetricsHaveNoCRLabels(t *testing.T) {
-	g := NewGomegaWithT(t)
-
-	reg := prometheus.NewRegistry()
-	c := newCollectorsForTest(reg)
-
-	// Emit one observation per metric so the gather output contains the
-	// descriptor's label set (prometheus descriptors are enumerated via
-	// actual samples, not up-front).
-	c.observeReconcileDuration("fernet", time.Millisecond)
-	c.recordReconcileError("fernet", "FernetKeysReady")
-
-	forbidden := map[string]struct{}{"keystone": {}, "namespace": {}}
-	checkNames := []string{
-		"keystone_operator_reconcile_duration_seconds",
-		"keystone_operator_reconcile_errors_total",
-	}
-	for _, name := range checkNames {
-		fam := gatherMetric(t, reg, name)
-		g.Expect(fam).NotTo(BeNil(), "metric %s must be registered", name)
-		for _, m := range fam.GetMetric() {
-			for _, l := range m.GetLabel() {
-				_, bad := forbidden[l.GetName()]
-				g.Expect(bad).To(BeFalse(),
-					"metric %s must NOT have label %q — cardinality guard",
-					name, l.GetName())
-			}
-		}
-	}
 }
