@@ -8,7 +8,6 @@ import (
 	"context"
 	_ "embed"
 	"fmt"
-	"strconv"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -17,7 +16,6 @@ import (
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	"github.com/c5c3/forge/internal/common/conditions"
 	"github.com/c5c3/forge/internal/common/config"
@@ -57,7 +55,7 @@ func (r *KeystoneReconciler) reconcileCredentialKeys(ctx context.Context,
 	existing := &corev1.Secret{}
 	err := r.Get(ctx, client.ObjectKey{Namespace: keystone.Namespace, Name: secretName}, existing)
 	if apierrors.IsNotFound(err) {
-		if err := r.createCredentialKeysSecret(ctx, keystone, secretName); err != nil {
+		if err := r.createKeysSecret(ctx, keystone, secretName, normalizedCredentialMaxActiveKeys(keystone)); err != nil {
 			return ctrl.Result{}, fmt.Errorf("creating credential keys secret: %w", err)
 		}
 		r.Recorder.Event(keystone, corev1.EventTypeNormal, "CredentialKeysGenerated", "Initial credential encryption keys have been generated")
@@ -182,187 +180,24 @@ func (r *KeystoneReconciler) ensureCredentialStagingSecret(ctx context.Context, 
 	return r.ensureStagingSecret(ctx, keystone, credentialStagingSecretName(keystone), "credential-keys")
 }
 
-// createCredentialKeysSecret generates credential keys and creates a Secret to store them.
-// Credential keys use the same format as Fernet keys (32 bytes, base64url-encoded).
-func (r *KeystoneReconciler) createCredentialKeysSecret(ctx context.Context,
-	keystone *keystonev1alpha1.Keystone, secretName string,
-) error {
-	numKeys := normalizedCredentialMaxActiveKeys(keystone)
-
-	data := make(map[string][]byte, numKeys)
-	for i := 0; i < numKeys; i++ {
-		key, err := generateFernetKey()
-		if err != nil {
-			return err
-		}
-		data[strconv.Itoa(i)] = []byte(key)
-	}
-
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      secretName,
-			Namespace: keystone.Namespace,
-			Labels:    commonLabels(keystone),
-		},
-		Data: data,
-	}
-
-	if err := controllerutil.SetControllerReference(keystone, secret, r.Scheme); err != nil {
-		return fmt.Errorf("setting owner reference on credential keys secret: %w", err)
-	}
-
-	if err := r.Create(ctx, secret); err != nil {
-		return fmt.Errorf("creating credential keys secret: %w", err)
-	}
-
-	return nil
-}
-
-// credentialRotationCronJob builds the CronJob that rotates credential keys, migrates
-// existing encrypted credentials, and persists the result back to the Kubernetes Secret
-// via the API. The CronJob:
-//  1. Mounts the existing credential keys Secret as a read-only volume.
-//  2. Uses an init container to copy keys to a writable emptyDir.
-//  3. Mounts the rotation script from a versioned ConfigMap at /scripts/.
-//  4. Runs /scripts/credential_rotate.sh against the emptyDir.
-//  5. Pushes the updated keys to the K8s API using the pod's ServiceAccount.
+// credentialRotationCronJob builds the CronJob that rotates credential keys
+// (running credential_migrate against the DB) and PATCHes the result onto the
+// staging Secret via the API. Thin wrapper over the shared keyRotationCronJob
+// builder; see rotation_cronjob.go for the Pod spec.
 func credentialRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName string, scriptConfigMapName string) *batchv1.CronJob {
-	secretName := fmt.Sprintf("%s-credential-keys", keystone.Name)
-	stagingSecretName := credentialStagingSecretName(keystone)
-	fernetSecretName := fmt.Sprintf("%s-fernet-keys", keystone.Name)
-	saName := fmt.Sprintf("%s-credential-rotate", keystone.Name)
-	image := fmt.Sprintf("%s:%s", keystone.Spec.Image.Repository, keystone.Spec.Image.Tag)
-
-	return &batchv1.CronJob{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      fmt.Sprintf("%s-credential-rotate", keystone.Name),
-			Namespace: keystone.Namespace,
-			Labels:    commonLabels(keystone),
-		},
-		Spec: batchv1.CronJobSpec{
-			Schedule: keystone.Spec.CredentialKeys.RotationSchedule,
-			Suspend:  ptr.To(keystone.Spec.CredentialKeys.Suspend),
-			JobTemplate: batchv1.JobTemplateSpec{
-				Spec: batchv1.JobSpec{
-					Template: corev1.PodTemplateSpec{
-						ObjectMeta: metav1.ObjectMeta{
-							Labels: commonLabels(keystone),
-						},
-						Spec: corev1.PodSpec{
-							ServiceAccountName: saName,
-							RestartPolicy:      corev1.RestartPolicyOnFailure,
-							PriorityClassName:  priorityClassName(keystone),
-							// FSGroup makes the kubelet group-own mounted Secret volumes by
-							// the openstack GID so DefaultMode 0o400 still lets the openstack
-							// UID read the keys via the group bit. Without it, kubelet would
-							// project files as root:root mode 0o400 and the openstack process
-							// could not read them; upstream Keystone logs a "key_repository is
-							// world readable" WARNING via fernet_utils._check_key_repository
-							// for any default-mode (0o644) workaround.
-							SecurityContext: &corev1.PodSecurityContext{FSGroup: ptr.To(openstackUID)},
-							InitContainers: []corev1.Container{{
-								Name:  "copy-keys",
-								Image: image,
-								// `install -m 0400` materialises each key in the writable emptyDir
-								// at owner-read-only mode. A plain `cp` would inherit the kubelet
-								// emptyDir mode and re-introduce the world-readable directory that
-								// fixes for the rotation Pod.
-								Command:         []string{"sh", "-c", "install -m 0400 /credential-keys-src/* /etc/keystone/credential-keys/"},
-								SecurityContext: restrictedSecurityContext(),
-								VolumeMounts: []corev1.VolumeMount{
-									{Name: "credential-keys-src", MountPath: "/credential-keys-src", ReadOnly: true},
-									{Name: "credential-keys", MountPath: "/etc/keystone/credential-keys"},
-								},
-							}},
-							Containers: []corev1.Container{{
-								Name:  "credential-rotate",
-								Image: image,
-								// TODO Wire spec.Resources (or a smaller Job-specific default) to
-								// this container. Currently runs as BestEffort QoS. See reconcile_deployment.go
-								// containerResources() for the pattern used by the keystone container.
-								Command:         []string{"/scripts/credential_rotate.sh"},
-								SecurityContext: restrictedSecurityContext(),
-								Env: []corev1.EnvVar{
-									// SECRET_NAME points at the staging Secret — the CronJob SA
-									// is only permitted to patch the staging Secret, never the
-									// production Secret.
-									{Name: "SECRET_NAME", Value: stagingSecretName},
-									{Name: "SECRET_NAMESPACE", ValueFrom: &corev1.EnvVarSource{
-										FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.namespace"},
-									}},
-									// oslo.config honours OS_<GROUP>__<KEY> env var overrides, so this
-									// takes precedence over the compiled-in default (3) without needing
-									// to mount the ConfigMap. Uses the normalized value to stay
-									// consistent with the Secret's minimum floor of 3.
-									{
-										Name:  "OS_credential__max_active_keys",
-										Value: strconv.Itoa(normalizedCredentialMaxActiveKeys(keystone)),
-									},
-									// Override [database].connection via oslo.config env-var so the
-									// credential-rotate CronJob (which runs credential_migrate against
-									// the DB) reads the DB URL from the derived Secret instead of the
-									// ConfigMap.
-									buildDBConnectionEnvVar(keystone),
-								},
-								VolumeMounts: []corev1.VolumeMount{
-									{Name: "credential-keys", MountPath: "/etc/keystone/credential-keys"},
-									{Name: "fernet-keys", MountPath: "/etc/keystone/fernet-keys", ReadOnly: true},
-									{Name: "config", MountPath: "/etc/keystone/keystone.conf.d/", ReadOnly: true},
-									{Name: "scripts", MountPath: "/scripts", ReadOnly: true},
-								},
-							}},
-							Volumes: []corev1.Volume{
-								{
-									Name: "credential-keys-src",
-									VolumeSource: corev1.VolumeSource{
-										Secret: &corev1.SecretVolumeSource{
-											SecretName:  secretName,
-											DefaultMode: ptr.To(int32(0o400)),
-										},
-									},
-								},
-								{
-									Name: "credential-keys",
-									VolumeSource: corev1.VolumeSource{
-										EmptyDir: &corev1.EmptyDirVolumeSource{},
-									},
-								},
-								{
-									// keystone-manage reads the full config which references both
-									// key repositories; mount fernet-keys read-only so the directory
-									// exists even though this job only rotates credential keys.
-									Name: "fernet-keys",
-									VolumeSource: corev1.VolumeSource{
-										Secret: &corev1.SecretVolumeSource{
-											SecretName:  fernetSecretName,
-											DefaultMode: ptr.To(int32(0o400)),
-										},
-									},
-								},
-								{
-									Name: "config",
-									VolumeSource: corev1.VolumeSource{
-										ConfigMap: &corev1.ConfigMapVolumeSource{
-											LocalObjectReference: corev1.LocalObjectReference{Name: configMapName},
-										},
-									},
-								},
-								{
-									Name: "scripts",
-									VolumeSource: corev1.VolumeSource{
-										ConfigMap: &corev1.ConfigMapVolumeSource{
-											LocalObjectReference: corev1.LocalObjectReference{Name: scriptConfigMapName},
-											DefaultMode:          ptr.To(int32(0o555)),
-										},
-									},
-								},
-							},
-						},
-					},
-				},
-			},
-		},
-	}
+	cronJob := keyRotationCronJob(keystone, configMapName, scriptConfigMapName, keyRotationParams{
+		keyKind:           "credential",
+		otherKeyKind:      "fernet",
+		stagingSecretName: credentialStagingSecretName(keystone),
+		schedule:          keystone.Spec.CredentialKeys.RotationSchedule,
+		maxActiveKeysEnv:  "OS_credential__max_active_keys",
+		maxActiveKeys:     normalizedCredentialMaxActiveKeys(keystone),
+	})
+	// Suspend pauses the rotation CronJob without changing its cadence. It reads
+	// the per-flavour spec field, so it is applied here rather than in the shared
+	// keyRotationCronJob builder.
+	cronJob.Spec.Suspend = ptr.To(keystone.Spec.CredentialKeys.Suspend)
+	return cronJob
 }
 
 // credentialKeysPushSecret builds the PushSecret CR that backs up credential keys to OpenBao.
