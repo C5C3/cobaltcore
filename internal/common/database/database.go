@@ -51,12 +51,12 @@ func EnsureDatabase(ctx context.Context, c client.Client, scheme *runtime.Scheme
 		}
 	}
 
-	return IsDatabaseReady(existing), nil
+	return isDatabaseReady(existing), nil
 }
 
-// IsDatabaseReady returns true if the Database has a Ready condition with
+// isDatabaseReady returns true if the Database has a Ready condition with
 // status True.
-func IsDatabaseReady(db *mariadbv1alpha1.Database) bool {
+func isDatabaseReady(db *mariadbv1alpha1.Database) bool {
 	return conditions.IsReady(db.Status.Conditions)
 }
 
@@ -108,7 +108,7 @@ func ensureUser(ctx context.Context, c client.Client, scheme *runtime.Scheme, ow
 		}
 	}
 
-	return IsUserReady(existing), nil
+	return isUserReady(existing), nil
 }
 
 func ensureGrant(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, grant *mariadbv1alpha1.Grant) (bool, error) {
@@ -140,17 +140,17 @@ func ensureGrant(ctx context.Context, c client.Client, scheme *runtime.Scheme, o
 		}
 	}
 
-	return IsGrantReady(existing), nil
+	return isGrantReady(existing), nil
 }
 
-// IsUserReady returns true if the User has a Ready condition with status
+// isUserReady returns true if the User has a Ready condition with status
 // True.
-func IsUserReady(user *mariadbv1alpha1.User) bool {
+func isUserReady(user *mariadbv1alpha1.User) bool {
 	return conditions.IsReady(user.Status.Conditions)
 }
 
-// IsGrantReady returns true if the Grant has a Ready condition with status
+// isGrantReady returns true if the Grant has a Ready condition with status
 // True.
-func IsGrantReady(grant *mariadbv1alpha1.Grant) bool {
+func isGrantReady(grant *mariadbv1alpha1.Grant) bool {
 	return conditions.IsReady(grant.Status.Conditions)
 }

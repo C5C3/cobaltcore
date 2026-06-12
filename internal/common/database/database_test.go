@@ -204,7 +204,7 @@ func TestEnsureDatabase_idempotent(t *testing.T) {
 	g.Expect(list.Items).To(HaveLen(1))
 }
 
-// --- IsDatabaseReady ---
+// --- isDatabaseReady ---
 
 func TestIsDatabaseReady_true(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -214,13 +214,13 @@ func TestIsDatabaseReady_true(t *testing.T) {
 		Status: metav1.ConditionTrue,
 		Reason: "Created",
 	})
-	g.Expect(IsDatabaseReady(db)).To(BeTrue())
+	g.Expect(isDatabaseReady(db)).To(BeTrue())
 }
 
 func TestIsDatabaseReady_false_noConditions(t *testing.T) {
 	g := NewGomegaWithT(t)
 	db := &mariadbv1alpha1.Database{}
-	g.Expect(IsDatabaseReady(db)).To(BeFalse())
+	g.Expect(isDatabaseReady(db)).To(BeFalse())
 }
 
 func TestIsDatabaseReady_false_notTrue(t *testing.T) {
@@ -231,7 +231,7 @@ func TestIsDatabaseReady_false_notTrue(t *testing.T) {
 		Status: metav1.ConditionFalse,
 		Reason: "Pending",
 	})
-	g.Expect(IsDatabaseReady(db)).To(BeFalse())
+	g.Expect(isDatabaseReady(db)).To(BeFalse())
 }
 
 // --- EnsureDatabaseUser ---
@@ -430,7 +430,7 @@ func TestEnsureDatabaseUser_idempotent(t *testing.T) {
 	g.Expect(grantList.Items).To(BeEmpty())
 }
 
-// --- IsUserReady / IsGrantReady ---
+// --- isUserReady / isGrantReady ---
 
 func TestIsUserReady_true(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -440,13 +440,13 @@ func TestIsUserReady_true(t *testing.T) {
 		Status: metav1.ConditionTrue,
 		Reason: "Created",
 	})
-	g.Expect(IsUserReady(user)).To(BeTrue())
+	g.Expect(isUserReady(user)).To(BeTrue())
 }
 
 func TestIsUserReady_false(t *testing.T) {
 	g := NewGomegaWithT(t)
 	user := &mariadbv1alpha1.User{}
-	g.Expect(IsUserReady(user)).To(BeFalse())
+	g.Expect(isUserReady(user)).To(BeFalse())
 }
 
 func TestIsGrantReady_true(t *testing.T) {
@@ -457,11 +457,11 @@ func TestIsGrantReady_true(t *testing.T) {
 		Status: metav1.ConditionTrue,
 		Reason: "Created",
 	})
-	g.Expect(IsGrantReady(grant)).To(BeTrue())
+	g.Expect(isGrantReady(grant)).To(BeTrue())
 }
 
 func TestIsGrantReady_false(t *testing.T) {
 	g := NewGomegaWithT(t)
 	grant := &mariadbv1alpha1.Grant{}
-	g.Expect(IsGrantReady(grant)).To(BeFalse())
+	g.Expect(isGrantReady(grant)).To(BeFalse())
 }

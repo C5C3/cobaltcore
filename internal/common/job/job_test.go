@@ -736,7 +736,7 @@ func TestEnsureCronJob_idempotent(t *testing.T) {
 	g.Expect(list.Items).To(HaveLen(1))
 }
 
-// --- IsJobComplete ---
+// --- isJobComplete ---
 
 func TestIsJobComplete_true(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -747,13 +747,13 @@ func TestIsJobComplete_true(t *testing.T) {
 			},
 		},
 	}
-	g.Expect(IsJobComplete(job)).To(BeTrue())
+	g.Expect(isJobComplete(job)).To(BeTrue())
 }
 
 func TestIsJobComplete_false_noConditions(t *testing.T) {
 	g := NewGomegaWithT(t)
 	job := &batchv1.Job{}
-	g.Expect(IsJobComplete(job)).To(BeFalse())
+	g.Expect(isJobComplete(job)).To(BeFalse())
 }
 
 func TestIsJobComplete_false_failed(t *testing.T) {
@@ -765,7 +765,7 @@ func TestIsJobComplete_false_failed(t *testing.T) {
 			},
 		},
 	}
-	g.Expect(IsJobComplete(job)).To(BeFalse())
+	g.Expect(isJobComplete(job)).To(BeFalse())
 }
 
 func TestIsJobComplete_false_completeNotTrue(t *testing.T) {
@@ -777,10 +777,10 @@ func TestIsJobComplete_false_completeNotTrue(t *testing.T) {
 			},
 		},
 	}
-	g.Expect(IsJobComplete(job)).To(BeFalse())
+	g.Expect(isJobComplete(job)).To(BeFalse())
 }
 
-// --- IsJobFailed ---
+// --- isJobFailed ---
 
 func TestIsJobFailed_true(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -791,13 +791,13 @@ func TestIsJobFailed_true(t *testing.T) {
 			},
 		},
 	}
-	g.Expect(IsJobFailed(job)).To(BeTrue())
+	g.Expect(isJobFailed(job)).To(BeTrue())
 }
 
 func TestIsJobFailed_false_noConditions(t *testing.T) {
 	g := NewGomegaWithT(t)
 	job := &batchv1.Job{}
-	g.Expect(IsJobFailed(job)).To(BeFalse())
+	g.Expect(isJobFailed(job)).To(BeFalse())
 }
 
 func TestIsJobFailed_false_failedNotTrue(t *testing.T) {
@@ -809,5 +809,5 @@ func TestIsJobFailed_false_failedNotTrue(t *testing.T) {
 			},
 		},
 	}
-	g.Expect(IsJobFailed(job)).To(BeFalse())
+	g.Expect(isJobFailed(job)).To(BeFalse())
 }

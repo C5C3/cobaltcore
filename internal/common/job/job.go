@@ -98,7 +98,7 @@ func RunJobWithRerunKey(ctx context.Context, c client.Client, scheme *runtime.Sc
 		return false, fmt.Errorf("getting Job %s/%s: %w", job.Namespace, job.Name, err)
 	}
 
-	if IsJobFailed(existing) {
+	if isJobFailed(existing) {
 		// A permanently failed Job (exceeded backoffLimit) is re-run when its
 		// re-run key changes — the desired spec was fixed since the failure
 		// (e.g. a new container image after a release upgrade, a corrected
@@ -118,7 +118,7 @@ func RunJobWithRerunKey(ctx context.Context, c client.Client, scheme *runtime.Sc
 		return false, fmt.Errorf("%w: %s/%s", ErrJobFailed, existing.Namespace, existing.Name)
 	}
 
-	if IsJobComplete(existing) {
+	if isJobComplete(existing) {
 		// Guard against stale completed Jobs: if the re-run key has changed
 		// (e.g. a new container image for migration Jobs, or a rotated admin
 		// password for the bootstrap Job) delete the old Job and create a new
@@ -206,9 +206,9 @@ func EnsureCronJob(ctx context.Context, c client.Client, scheme *runtime.Scheme,
 	return nil
 }
 
-// IsJobComplete returns true if the given Job has a Complete condition with
+// isJobComplete returns true if the given Job has a Complete condition with
 // status True.
-func IsJobComplete(job *batchv1.Job) bool {
+func isJobComplete(job *batchv1.Job) bool {
 	for _, c := range job.Status.Conditions {
 		if c.Type == batchv1.JobComplete && c.Status == corev1.ConditionTrue {
 			return true
@@ -217,10 +217,10 @@ func IsJobComplete(job *batchv1.Job) bool {
 	return false
 }
 
-// IsJobFailed returns true if the given Job has a Failed condition with
+// isJobFailed returns true if the given Job has a Failed condition with
 // status True, indicating it has permanently failed (e.g. exceeded its
 // backoffLimit).
-func IsJobFailed(job *batchv1.Job) bool {
+func isJobFailed(job *batchv1.Job) bool {
 	for _, c := range job.Status.Conditions {
 		if c.Type == batchv1.JobFailed && c.Status == corev1.ConditionTrue {
 			return true

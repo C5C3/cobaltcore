@@ -163,7 +163,7 @@ func TestEnsureCertificate_idempotent(t *testing.T) {
 	g.Expect(list.Items).To(HaveLen(1))
 }
 
-// --- IsCertificateReady ---
+// --- isCertificateReady ---
 
 func TestIsCertificateReady_true(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -179,13 +179,13 @@ func TestIsCertificateReady_true(t *testing.T) {
 			},
 		},
 	}
-	g.Expect(IsCertificateReady(cert)).To(BeTrue())
+	g.Expect(isCertificateReady(cert)).To(BeTrue())
 }
 
 func TestIsCertificateReady_false_noConditions(t *testing.T) {
 	g := NewGomegaWithT(t)
 	cert := &certmanagerv1.Certificate{}
-	g.Expect(IsCertificateReady(cert)).To(BeFalse())
+	g.Expect(isCertificateReady(cert)).To(BeFalse())
 }
 
 func TestIsCertificateReady_false_notTrue(t *testing.T) {
@@ -202,5 +202,5 @@ func TestIsCertificateReady_false_notTrue(t *testing.T) {
 			},
 		},
 	}
-	g.Expect(IsCertificateReady(cert)).To(BeFalse())
+	g.Expect(isCertificateReady(cert)).To(BeFalse())
 }

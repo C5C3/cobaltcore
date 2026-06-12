@@ -50,12 +50,12 @@ func EnsureCertificate(ctx context.Context, c client.Client, scheme *runtime.Sch
 		}
 	}
 
-	return IsCertificateReady(existing), nil
+	return isCertificateReady(existing), nil
 }
 
-// IsCertificateReady returns true if the Certificate has a Ready condition
+// isCertificateReady returns true if the Certificate has a Ready condition
 // with status True.
-func IsCertificateReady(cert *certmanagerv1.Certificate) bool {
+func isCertificateReady(cert *certmanagerv1.Certificate) bool {
 	for _, cond := range cert.Status.Conditions {
 		if cond.Type == certmanagerv1.CertificateConditionReady && cond.Status == cmmeta.ConditionTrue {
 			return true

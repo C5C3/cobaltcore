@@ -226,16 +226,8 @@ Creates or updates a MariaDB Database CR.
 
 - On create: sets controller owner reference, creates the resource, returns `(false, nil)`.
 - On update: overwrites `existing.Spec` with the provided spec.
-- Readiness is determined by `IsDatabaseReady` on the existing resource.
-
-### IsDatabaseReady
-
-```go
-func IsDatabaseReady(db *mariadbv1alpha1.Database) bool
-```
-
-Pure function. Returns `true` if the Database has a `Ready` condition with status `True`.
-Uses `meta.IsStatusConditionTrue` from `k8s.io/apimachinery`.
+- Readiness is determined by the package-internal `isDatabaseReady` helper on the
+  existing resource.
 
 ### EnsureDatabaseUser
 
@@ -259,22 +251,8 @@ Creates or updates a MariaDB User CR and a Grant CR in a single call.
 
 - Processes User first, then Grant. If User creation/update fails, Grant is not attempted.
 - Both resources receive controller owner references.
-
-### IsUserReady
-
-```go
-func IsUserReady(user *mariadbv1alpha1.User) bool
-```
-
-Pure function. Returns `true` if the User has a `Ready` condition with status `True`.
-
-### IsGrantReady
-
-```go
-func IsGrantReady(grant *mariadbv1alpha1.Grant) bool
-```
-
-Pure function. Returns `true` if the Grant has a `Ready` condition with status `True`.
+- Readiness of the User and Grant is determined by the package-internal
+  `isUserReady` and `isGrantReady` helpers.
 
 ---
 
@@ -379,14 +357,15 @@ exceeded backoffLimit) and its re-run key is unchanged;
 
 - If the Job does not exist: creates it with a controller owner reference, returns
   `(false, nil)` (newly created Jobs are never immediately complete).
-- If the Job already exists: checks completion via `IsJobComplete` and permanent
-  failure via `IsJobFailed`. A completed **or permanently failed** Job whose stored
-  re-run key (the `forge.c5c3.io/pod-spec-hash` annotation) no longer matches the
-  desired pod template is deleted (background propagation) and re-created — so a
-  Job that failed under a since-fixed spec (new container image, corrected
-  ConfigMap, rotated password) re-runs instead of wedging. A permanently failed
-  Job whose re-run key is unchanged returns an error wrapping `ErrJobFailed` to
-  prevent infinite requeue loops. Jobs are never updated in place.
+- If the Job already exists: checks completion via the package-internal
+  `isJobComplete` helper and permanent failure via `isJobFailed`. A completed
+  **or permanently failed** Job whose stored re-run key (the
+  `forge.c5c3.io/pod-spec-hash` annotation) no longer matches the desired pod
+  template is deleted (background propagation) and re-created — so a Job that
+  failed under a since-fixed spec (new container image, corrected ConfigMap,
+  rotated password) re-runs instead of wedging. A permanently failed Job whose
+  re-run key is unchanged returns an error wrapping `ErrJobFailed` to prevent
+  infinite requeue loops. Jobs are never updated in place.
 - Reconcilers should call `RunJob` on each reconciliation loop. The function is
   idempotent: calling it when the Job already exists and is complete returns
   `(true, nil)` without side effects.
@@ -411,40 +390,8 @@ Creates or updates a CronJob with a controller owner reference.
 - On update: overwrites `existing.Spec` with the provided spec. CronJob spec updates
   take effect on the next scheduled run.
 
-### IsJobComplete
-
-```go
-func IsJobComplete(job *batchv1.Job) bool
-```
-
-Pure function. Returns `true` if the Job has a `Complete` condition with status `True`.
-
-**Edge cases:**
-
-| Scenario | Result |
-| --- | --- |
-| No conditions | `false` |
-| `Failed` condition only | `false` |
-| `Complete` condition with status `False` | `false` |
-| `Complete` condition with status `True` | `true` |
-
-### IsJobFailed
-
-```go
-func IsJobFailed(job *batchv1.Job) bool
-```
-
-Pure function. Returns `true` if the Job has a `Failed` condition with status `True`,
-indicating the Job has permanently failed (e.g. exceeded its backoffLimit).
-
-**Edge cases:**
-
-| Scenario | Result |
-| --- | --- |
-| No conditions | `false` |
-| `Complete` condition only | `false` |
-| `Failed` condition with status `False` | `false` |
-| `Failed` condition with status `True` | `true` |
+The Job completion and permanent-failure checks (`isJobComplete` / `isJobFailed`)
+are package-internal helpers consumed by `RunJob`.
 
 ---
 
@@ -631,17 +578,9 @@ Creates or updates a cert-manager Certificate CR.
 
 - On create: sets controller owner reference, creates the resource, returns `(false, nil)`.
 - On update: overwrites `existing.Spec` with the provided spec.
-- Readiness is determined by `IsCertificateReady` on the existing resource.
+- Readiness is determined by the package-internal `isCertificateReady` helper on
+  the existing resource.
 - cert-manager creates a Secret with the TLS certificate once the Certificate is ready.
-
-### IsCertificateReady
-
-```go
-func IsCertificateReady(cert *certmanagerv1.Certificate) bool
-```
-
-Pure function. Returns `true` if the Certificate has a `Ready` condition
-(`CertificateConditionReady`) with status `True` (`cmmeta.ConditionTrue`).
 
 ---
 
