@@ -385,18 +385,26 @@ func RunJob(
 
 Creates a Job if it does not already exist and reports completion status.
 
-**Returns:** `(true, nil)` when the Job has a `Complete` condition with status `True`;
-`(false, nil)` when the Job exists but is still running;
-`(false, error)` when the Job has permanently failed (e.g. exceeded backoffLimit);
+**Returns:** `(true, nil)` when the Job has a `Complete` condition with status `True`
+and its re-run key is unchanged;
+`(false, nil)` when the Job exists but is still running, or was deleted and
+re-created because its re-run key changed;
+`(false, error)` wrapping `ErrJobFailed` when the Job has permanently failed (e.g.
+exceeded backoffLimit) and its re-run key is unchanged;
 `(false, error)` on unexpected API failures.
 
 **Behavior:**
 
 - If the Job does not exist: creates it with a controller owner reference, returns
   `(false, nil)` (newly created Jobs are never immediately complete).
-- If the Job already exists: first checks for permanent failure via `IsJobFailed`
-  (returns an error to prevent infinite requeue loops), then checks completion
-  via `IsJobComplete`. Jobs are immutable after creation — they are not updated.
+- If the Job already exists: checks completion via `IsJobComplete` and permanent
+  failure via `IsJobFailed`. A completed **or permanently failed** Job whose stored
+  re-run key (the `forge.c5c3.io/pod-spec-hash` annotation) no longer matches the
+  desired pod template is deleted (background propagation) and re-created — so a
+  Job that failed under a since-fixed spec (new container image, corrected
+  ConfigMap, rotated password) re-runs instead of wedging. A permanently failed
+  Job whose re-run key is unchanged returns an error wrapping `ErrJobFailed` to
+  prevent infinite requeue loops. Jobs are never updated in place.
 - Reconcilers should call `RunJob` on each reconciliation loop. The function is
   idempotent: calling it when the Job already exists and is complete returns
   `(true, nil)` without side effects.
