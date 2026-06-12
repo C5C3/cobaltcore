@@ -139,6 +139,10 @@ spec:
                     required:
                     - backend
                     type: object
+                    x-kubernetes-validations:
+                    - message: exactly one of clusterRef or servers must be set
+                      rule: has(self.clusterRef) != (has(self.servers) && size(self.servers)
+                        > 0)
                   database:
                     description: |-
                       Database defines the MariaDB connection parameters shared by the control
@@ -242,6 +246,9 @@ spec:
                     - database
                     - secretRef
                     type: object
+                    x-kubernetes-validations:
+                    - message: exactly one of clusterRef or host must be set
+                      rule: has(self.clusterRef) != has(self.host)
                 required:
                 - cache
                 - database

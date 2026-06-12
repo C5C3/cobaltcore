@@ -645,16 +645,17 @@ Keystone discipline:
    simple field markers.
 
 > **CEL `x-kubernetes-validations` on this CRD.** The ControlPlane CRD carries
-> CEL `XValidation` rules for the policy-rule name/value constraints inherited
-> from the shared `commonv1.PolicySpec` type — they apply wherever a `PolicySpec`
-> is used (`spec.global` and `spec.services.keystone.policyOverrides`). The
-> database/cache mutual-exclusivity and the required `passwordSecretRef.name`
-> remain enforced **only by the validating webhook**: a cluster that disables or
-> bypasses the webhook (e.g. envtest without the webhook wired up, or a direct
-> etcd write) will not reject a malformed `ControlPlane` on those three rules,
-> only on the policy-rule CEL and the pattern/enum/minimum markers below. The
-> markers and webhook together are defense-in-depth for the fields that **can**
-> be expressed at both layers.
+> CEL `XValidation` rules inherited from the shared `commonv1` types: the
+> database clusterRef/host and cache clusterRef/servers mutual-exclusivity (from
+> `DatabaseSpec`/`CacheSpec`, applied to `spec.infrastructure.database` and
+> `spec.infrastructure.cache`), and the policy-rule name/value constraints (from
+> `PolicySpec`, applied to `spec.global` and `spec.services.keystone.policyOverrides`).
+> The required `passwordSecretRef.name` remains enforced **only by the validating
+> webhook**: a cluster that disables or bypasses the webhook (e.g. envtest without
+> the webhook wired up, or a direct etcd write) will not reject a `ControlPlane`
+> on that one rule, only on the CEL rules and the pattern/enum/minimum markers
+> below. The markers and webhook together are defense-in-depth for the fields
+> that **can** be expressed at both layers.
 
 ### CRD schema markers (API-server enforced)
 
@@ -668,6 +669,8 @@ Keystone discipline:
 | `CredentialRotation spec.preRotationDays` | Minimum: 0 |
 | `CredentialRotation spec.gracePeriodDays` | Minimum: 0 |
 | `status.updatePhase` | Enum: `Idle`, `Updating`, `UpdatingServices`, `Verifying`, `RollingBack` |
+| `spec.infrastructure.database` (CEL) | `has(self.clusterRef) != has(self.host)` → "exactly one of clusterRef or host must be set" |
+| `spec.infrastructure.cache` (CEL) | `has(self.clusterRef) != (has(self.servers) && size(self.servers) > 0)` → "exactly one of clusterRef or servers must be set" |
 | `spec.global`, `spec.services.keystone.policyOverrides` (CEL) | `!has(self.rules) \|\| self.rules.all(k, size(k) > 0)` → "policy rule name must not be empty" |
 | `spec.global`, `spec.services.keystone.policyOverrides` (CEL) | `!has(self.rules) \|\| self.rules.all(k, size(self.rules[k]) > 0)` → "policy rule value must not be empty" |
 
@@ -681,8 +684,8 @@ short-circuit on the first error.
 | Rule | Field Path | Error Type | Condition |
 | --- | --- | --- | --- |
 | Release pattern | `spec.openStackRelease` | `field.Invalid` | Value does not match `^\d{4}\.\d$`. Defense-in-depth alongside the CRD `+kubebuilder:validation:Pattern` marker. |
-| Database mutual exclusivity | `spec.infrastructure.database` | `field.Invalid` | Both `clusterRef` and `host` set, or neither (`(clusterRef != nil) == (host != "")`). **Webhook-only** — there is no CEL rule for this on the c5c3 CRD. |
-| Cache mutual exclusivity | `spec.infrastructure.cache` | `field.Invalid` | Both `clusterRef` and `servers` set, or neither (`(clusterRef != nil) == (len(servers) > 0)`). **Webhook-only**. |
+| Database mutual exclusivity | `spec.infrastructure.database` | `field.Invalid` | Both `clusterRef` and `host` set, or neither (`(clusterRef != nil) == (host != "")`). Defense-in-depth alongside the CEL `XValidation` rule on `commonv1.DatabaseSpec`. |
+| Cache mutual exclusivity | `spec.infrastructure.cache` | `field.Invalid` | Both `clusterRef` and `servers` set, or neither (`(clusterRef != nil) == (len(servers) > 0)`). Defense-in-depth alongside the CEL `XValidation` rule on `commonv1.CacheSpec`. |
 | Admin password Secret required | `spec.korc.adminCredential.passwordSecretRef.name` | `field.Required` | `name` is empty — without it the reconciler cannot (re-)mint the admin application credential. **Webhook-only**. |
 | Gateway hostname required | `spec.services.keystone.gateway.hostname` | `field.Required` | A `gateway` is configured but its `hostname` is empty. Mirrors the `+kubebuilder:validation:MinLength=1` marker on `commonv1.GatewaySpec.Hostname`; without it the reconciler derives an empty `https:///v3` public endpoint. |
 | Empty policy rule name | `spec.global.rules[<key>]`, `spec.services.keystone.policyOverrides.rules[<key>]` | `field.Required` | A rule name (map key) is the empty string. Enforced via the shared `policy.ValidatePolicyRules`, mirrored by the CEL rule on `commonv1.PolicySpec`. |

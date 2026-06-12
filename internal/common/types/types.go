@@ -15,7 +15,11 @@ type ImageSpec struct {
 }
 
 // DatabaseSpec supports managed (ClusterRef) and brownfield (explicit) modes.
-// Exactly one of ClusterRef or Host must be set.
+// Exactly one of ClusterRef or Host must be set; the XValidation rule below
+// enforces that invariant at the schema layer for every operator that embeds a
+// DatabaseSpec, so it holds even when a validating webhook is bypassed.
+//
+// +kubebuilder:validation:XValidation:rule="has(self.clusterRef) != has(self.host)",message="exactly one of clusterRef or host must be set"
 type DatabaseSpec struct {
 	// ClusterRef references a MariaDB CR in the cluster (managed mode).
 	// +optional
@@ -78,7 +82,11 @@ type MessagingSpec struct {
 }
 
 // CacheSpec supports managed (ClusterRef) and brownfield (explicit) modes.
-// Exactly one of ClusterRef or Servers must be set.
+// Exactly one of ClusterRef or Servers must be set; the XValidation rule below
+// enforces that invariant at the schema layer for every operator that embeds a
+// CacheSpec, so it holds even when a validating webhook is bypassed.
+//
+// +kubebuilder:validation:XValidation:rule="has(self.clusterRef) != (has(self.servers) && size(self.servers) > 0)",message="exactly one of clusterRef or servers must be set"
 type CacheSpec struct {
 	// ClusterRef references a Memcached CR in the cluster (managed mode).
 	// +optional

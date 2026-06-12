@@ -67,13 +67,16 @@ type KeystoneSpec struct {
 	// on DatabaseTLSSpec.Mode (prefer;require;verify-ca;verify-full). Adding a
 	// mode CEL here would be redundant with that schema-level enum and risks
 	// drifting from it.
-	// +kubebuilder:validation:XValidation:rule="has(self.clusterRef) != has(self.host)",message="exactly one of clusterRef or host must be set"
+	//
+	// The clusterRef/host mutual-exclusivity rule lives on commonv1.DatabaseSpec
+	// itself, so it is inherited here without per-field duplication. The TLS
+	// rule below stays field-level because it is keystone-specific.
 	// +kubebuilder:validation:XValidation:rule="!has(self.tls) || !self.tls.enabled || (self.tls.caBundleSecretRef.name != '' && self.tls.clientCertSecretRef.name != '')",message="when database.tls.enabled is true, both database.tls.caBundleSecretRef.name and database.tls.clientCertSecretRef.name must be set"
 	Database commonv1.DatabaseSpec `json:"database"`
 
 	// Cache defines the Memcached cache configuration.
-	// Supports managed (clusterRef) and brownfield (servers) modes.
-	// +kubebuilder:validation:XValidation:rule="has(self.clusterRef) != (has(self.servers) && size(self.servers) > 0)",message="exactly one of clusterRef or servers must be set"
+	// Supports managed (clusterRef) and brownfield (servers) modes. The
+	// clusterRef/servers mutual-exclusivity rule lives on commonv1.CacheSpec.
 	Cache commonv1.CacheSpec `json:"cache"`
 
 	// Fernet configures Fernet key rotation.

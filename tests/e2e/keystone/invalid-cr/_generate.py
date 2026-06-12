@@ -158,7 +158,7 @@ FIXTURES: list[Fixture] = [
         comment="""\
 # Keystone CR that sets BOTH spec.database.clusterRef AND
 # spec.database.host. Mutual-exclusivity is enforced by the CEL XValidation
-# rule on KeystoneSpec.Database (keystone_types.go) and by defense-in-depth
+# rule on the shared commonv1.DatabaseSpec (types.go) and by defense-in-depth
 # in the validating webhook (keystone_webhook.go). Admission must reject
 # this CR with an $error referencing spec.database and the message
 # "exactly one of clusterRef or host must be set".""",
@@ -170,7 +170,7 @@ FIXTURES: list[Fixture] = [
         comment="""\
 # Keystone CR that sets BOTH spec.cache.clusterRef AND
 # a non-empty spec.cache.servers list. Mutual-exclusivity is enforced by
-# the CEL XValidation rule on KeystoneSpec.Cache (keystone_types.go) and
+# the CEL XValidation rule on the shared commonv1.CacheSpec (types.go) and
 # by the validating webhook (keystone_webhook.go). Admission must reject
 # this CR with an $error referencing spec.cache and the message
 # "exactly one of clusterRef or servers must be set". A non-empty servers

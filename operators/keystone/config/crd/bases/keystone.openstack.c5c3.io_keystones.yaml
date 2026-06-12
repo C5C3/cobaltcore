@@ -162,7 +162,8 @@ spec:
               cache:
                 description: |-
                   Cache defines the Memcached cache configuration.
-                  Supports managed (clusterRef) and brownfield (servers) modes.
+                  Supports managed (clusterRef) and brownfield (servers) modes. The
+                  clusterRef/servers mutual-exclusivity rule lives on commonv1.CacheSpec.
                 properties:
                   backend:
                     description: Backend is the cache backend (e.g. dogpile.cache.pymemcache).
@@ -233,6 +234,10 @@ spec:
                   on DatabaseTLSSpec.Mode (prefer;require;verify-ca;verify-full). Adding a
                   mode CEL here would be redundant with that schema-level enum and risks
                   drifting from it.
+
+                  The clusterRef/host mutual-exclusivity rule lives on commonv1.DatabaseSpec
+                  itself, so it is inherited here without per-field duplication. The TLS
+                  rule below stays field-level because it is keystone-specific.
                 properties:
                   clusterRef:
                     description: ClusterRef references a MariaDB CR in the cluster
@@ -332,12 +337,12 @@ spec:
                 - secretRef
                 type: object
                 x-kubernetes-validations:
-                - message: exactly one of clusterRef or host must be set
-                  rule: has(self.clusterRef) != has(self.host)
                 - message: when database.tls.enabled is true, both database.tls.caBundleSecretRef.name
                     and database.tls.clientCertSecretRef.name must be set
                   rule: '!has(self.tls) || !self.tls.enabled || (self.tls.caBundleSecretRef.name
                     != '''' && self.tls.clientCertSecretRef.name != '''')'
+                - message: exactly one of clusterRef or host must be set
+                  rule: has(self.clusterRef) != has(self.host)
               extraConfig:
                 additionalProperties:
                   additionalProperties:
