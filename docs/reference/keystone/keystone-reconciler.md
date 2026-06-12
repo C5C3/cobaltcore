@@ -3139,7 +3139,8 @@ operators/keystone/
 │   └── ...
 └── internal/
     ├── controller/
-    │   ├── keystone_controller.go              Reconciler struct, Reconcile(), SetupWithManager
+    │   ├── keystone_controller.go              Reconciler struct, Reconcile() pipeline, SetupWithManager
+    │   ├── keystone_watches.go                 Secret/MariaDB/ClusterSecretStore/PushSecret event mappers + predicate
     │   ├── reconcile_secrets.go                reconcileSecrets sub-reconciler
     │   ├── reconcile_database.go               reconcileDatabase sub-reconciler
     │   ├── reconcile_fernet.go                 reconcileFernetKeys sub-reconciler
