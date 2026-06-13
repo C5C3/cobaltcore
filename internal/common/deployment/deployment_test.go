@@ -334,6 +334,65 @@ func TestEnsureDeployment_merges_annotations_on_update(t *testing.T) {
 	g.Expect(fetched.Annotations).To(HaveKeyWithValue("new-ann", "new-val"))
 }
 
+// TestEnsureDeployment_preservesLiveReplicasWhenDesiredNil verifies that when
+// the desired Deployment leaves .spec.replicas nil (the caller deferred the
+// field to an HPA), the update path keeps the live replica count instead of
+// resetting it. This is the mechanism that stops the operator from fighting
+// the HPA every reconcile (issue #462).
+func TestEnsureDeployment_preservesLiveReplicasWhenDesiredNil(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+
+	// The live Deployment has been scaled to 5 by the HPA.
+	existing := testDeployment()
+	existing.Spec.Replicas = ptr(int32(5))
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(owner, existing).
+		WithStatusSubresource(existing).
+		Build()
+
+	// The desired Deployment leaves replicas unset (HPA owns the count).
+	desired := testDeployment()
+	desired.Spec.Replicas = nil
+
+	_, err := EnsureDeployment(context.Background(), c, s, owner, desired)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	fetched := &appsv1.Deployment{}
+	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(existing), fetched)).To(Succeed())
+	g.Expect(fetched.Spec.Replicas).NotTo(BeNil())
+	g.Expect(*fetched.Spec.Replicas).To(Equal(int32(5)), "live HPA-owned replica count must be preserved when desired replicas is nil")
+}
+
+// TestEnsureDeployment_createsWithExplicitReplicasWhenDesiredNil verifies that
+// the create path writes an explicit replica count even when the desired
+// Deployment leaves .spec.replicas nil, so the object is not left for the API
+// server to implicitly default. The fake client performs no defaulting, so a
+// nil here would prove the operator failed to set the field (issue #462).
+func TestEnsureDeployment_createsWithExplicitReplicasWhenDesiredNil(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(owner).
+		Build()
+
+	desired := testDeployment()
+	desired.Spec.Replicas = nil
+
+	_, err := EnsureDeployment(context.Background(), c, s, owner, desired)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	created := &appsv1.Deployment{}
+	g.Expect(c.Get(context.Background(), client.ObjectKey{Name: "test-deploy", Namespace: "default"}, created)).To(Succeed())
+	g.Expect(created.Spec.Replicas).NotTo(BeNil(), "create path must set an explicit replica count, not rely on API-server defaulting")
+	g.Expect(*created.Spec.Replicas).To(Equal(int32(1)))
+}
+
 // --- EnsureService ---
 
 func TestEnsureService_creates(t *testing.T) {

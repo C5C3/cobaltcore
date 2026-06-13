@@ -32,6 +32,15 @@ func EnsureDeployment(ctx context.Context, c client.Client, scheme *runtime.Sche
 	err := c.Get(ctx, client.ObjectKeyFromObject(deploy), existing)
 
 	if apierrors.IsNotFound(err) {
+		// Write an explicit replica count on create so the API server does not
+		// implicitly default a nil .spec.replicas to 1. A nil here means the
+		// caller deferred ownership to an HPA (see the update path below); the
+		// operator picks an explicit starting value of 1 and the HPA scales it
+		// up to its minReplicas on its first sync (issue #462).
+		if deploy.Spec.Replicas == nil {
+			replicas := int32(1)
+			deploy.Spec.Replicas = &replicas
+		}
 		if err := controllerutil.SetControllerReference(owner, deploy, scheme); err != nil {
 			return false, fmt.Errorf("setting owner reference on Deployment %s/%s: %w", deploy.Namespace, deploy.Name, err)
 		}
@@ -86,6 +95,16 @@ func EnsureDeployment(ctx context.Context, c client.Client, scheme *runtime.Sche
 		for k, v := range deploy.Annotations {
 			existing.Annotations[k] = v
 		}
+	}
+
+	// Preserve the live replica count when the caller leaves it unset. A nil
+	// desired .spec.replicas signals that an HPA owns the field, so the
+	// operator must not reset it to a static value on every reconcile —
+	// otherwise each write fights the HPA and the resulting watch event
+	// re-triggers reconciliation, producing a scale-up/scale-down loop with
+	// real pod churn (issue #462).
+	if deploy.Spec.Replicas == nil {
+		deploy.Spec.Replicas = existing.Spec.Replicas
 	}
 
 	// Always update the spec to the desired state. This avoids maintaining
