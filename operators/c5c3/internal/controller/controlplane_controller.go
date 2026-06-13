@@ -23,6 +23,7 @@ import (
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -59,6 +60,16 @@ const (
 	conditionTypeCatalogReady         = "CatalogReady"
 	conditionTypeReady                = "Ready"
 )
+
+// controlPlaneORCFinalizer blocks the ControlPlane CR from leaving etcd until
+// the operator has torn down the K-ORC CRs it owns
+// (ApplicationCredential/Service/Endpoint/User/Domain). Those CRs carry K-ORC
+// finalizers that revoke/delete against the Keystone API; holding the
+// ControlPlane CR in etcd defers the owner-reference GC cascade that would
+// otherwise tear Keystone (and its MariaDB) down concurrently, keeping Keystone
+// reachable so K-ORC can finish. Defined once as the single source of truth for
+// Reconcile, reconcileDelete, tests, and docs.
+const controlPlaneORCFinalizer = "c5c3.io/orc-teardown"
 
 // subConditionTypes lists the condition types set by individual sub-reconcilers.
 // The Ready condition is True only when all of these are True.
@@ -106,6 +117,24 @@ func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, fmt.Errorf("fetching ControlPlane: %w", err)
 	}
 
+	// Handle deletion via the ORC-teardown finalizer: delete the operator-owned
+	// K-ORC CRs first and hold the ControlPlane CR (which defers the owner-ref GC
+	// cascade so Keystone/MariaDB stay reachable) until they disappear, then
+	// release the finalizer so GC tears down the rest. reconcileDelete requeues
+	// while ORC CRs are still Terminating; route that path through updateStatus so
+	// the KORCReady=False/FinalizingORC condition is persisted. On the terminal
+	// release path it returns a zero result and removes the finalizer, so skip the
+	// status write — the CR is about to be garbage-collected. Deletion is handled
+	// before the duplicate guard so a Terminating ControlPlane that carries the
+	// finalizer always releases it (reconcileDelete is a no-op when the finalizer
+	// is absent), instead of being parked and wedged.
+	if !cp.DeletionTimestamp.IsZero() {
+		if result, err := r.reconcileDelete(ctx, &cp); !result.IsZero() || err != nil {
+			return r.updateStatus(ctx, &cp, result, err)
+		}
+		return ctrl.Result{}, nil
+	}
+
 	// Defense-in-depth for the one-ControlPlane-per-namespace contract
 	// the validating webhook rejects duplicate CREATEs,
 	// but CRs that predate the guard, raced through the API server, or were
@@ -120,6 +149,21 @@ func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 	if incumbent != "" {
 		return r.parkDuplicateControlPlane(ctx, &cp, incumbent)
+	}
+
+	// Ensure the ORC-teardown finalizer is installed before any sub-reconciler
+	// projects a K-ORC CR, so a deletion issued between now and the next pass
+	// still funnels through reconcileDelete. Installed after the duplicate guard
+	// so only the active incumbent — the ControlPlane that actually projects K-ORC
+	// CRs — carries the finalizer; parked duplicates return above and never need
+	// it. Returning Requeue=true after the Update guarantees the next reconcile
+	// observes the persisted finalizer.
+	if !controllerutil.ContainsFinalizer(&cp, controlPlaneORCFinalizer) {
+		controllerutil.AddFinalizer(&cp, controlPlaneORCFinalizer)
+		if err := r.Update(ctx, &cp); err != nil {
+			return ctrl.Result{}, fmt.Errorf("adding finalizer: %w", err)
+		}
+		return ctrl.Result{Requeue: true}, nil
 	}
 
 	// Run sub-reconcilers in dependency order. Every sub-reconciler call is

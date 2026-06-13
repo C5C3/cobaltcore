@@ -72,4 +72,17 @@ const (
 	// event for the parked CR, so this periodic requeue is what lets the
 	// parked ControlPlane take over once the incumbent is fully gone.
 	duplicateControlPlaneRequeueAfter = 30 * time.Second
+
+	// orcTeardownStallTimeout bounds how long the ControlPlane finalizer waits for
+	// the operator-owned K-ORC CRs (ApplicationCredential/Service/Endpoint/User/
+	// Domain) to disappear during deletion before force-removing their K-ORC
+	// finalizers and releasing the ControlPlane finalizer anyway. Those K-ORC
+	// finalizers revoke/delete against the Keystone API; if Keystone (and in
+	// managed mode its MariaDB) is already gone, K-ORC can never complete and the
+	// ControlPlane/namespace would otherwise hang indefinitely on Terminating ORC
+	// CRs. After this window reconcileDelete strips the openstack.k-orc.cloud/*
+	// finalizers and emits a Warning event so the wedge is operator-visible. The
+	// window mirrors remintStallTimeout: generous enough that a slow-but-
+	// progressing revoke is not cut short.
+	orcTeardownStallTimeout = 5 * time.Minute
 )
