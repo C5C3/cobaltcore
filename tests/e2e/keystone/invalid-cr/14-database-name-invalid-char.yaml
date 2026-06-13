@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Validation-marker wave: Keystone CR whose spec.database.database uses a
+# hyphen, outside the MySQL identifier character set. Rejected by the
+# DatabaseSpec.Database Pattern marker (^[A-Za-z0-9_]+$). Admission must
+# reject this CR with an $error referencing the substring "database".
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: invalid-database-name-char
+spec:
+  replicas: 3
+  image:
+    repository: ghcr.io/c5c3/keystone
+    tag: "2025.2"
+  database:
+    host: db.example.com
+    port: 3306
+    database: keystone-prod
+    secretRef:
+      name: keystone-db
+  cache:
+    backend: dogpile.cache.pymemcache
+    servers:
+    - "mc:11211"
+  fernet:
+    rotationSchedule: "0 0 * * 0"
+    maxActiveKeys: 3
+  bootstrap:
+    adminUser: admin
+    adminPasswordSecretRef:
+      name: keystone-admin
+    region: RegionOne

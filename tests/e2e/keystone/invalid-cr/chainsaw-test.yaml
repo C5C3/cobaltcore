@@ -10,15 +10,17 @@
 # admission $error, and asserts the field-path plus message substring.
 #
 # The create-rejection fixtures (02-…, 03-…, 04-…, 05-…, 06-…, 07-…,
-# 09-…, 10-…, 11-…, 12-…, 13-policy-overrides-empty-rule-value) share the
-# same minimal valid Keystone scaffold and differ only by the field under
-# test. The update-rejection fixtures (13-immutable-base, 14-…, 15-…, 16-…,
-# 17-…, #466) share the name "immutable-fields": 13-immutable-base is the
-# valid base CR applied first, and 14-17 are applied as UPDATEs
-# that the CRD CEL transition rules reject. To prevent scaffold drift
-# across these 16 files (sourcery-ai review #1), they are generated from a
-# single source of truth in `_generate.py`. After editing the canonical
-# scaffold or any per-fixture override, regenerate via:
+# 09-…, 10-…, 11-…, 12-…, 13-policy-overrides-empty-rule-value, and the
+# validation-marker-wave set 13-image-empty-tag through
+# 20-perloggerlevels-invalid-value) share the same minimal valid Keystone
+# scaffold and are each applied once and rejected at admission. The
+# update-rejection fixtures (13-immutable-base, 14-…, 15-…, 16-…, 17-…,
+# #466) share the name "immutable-fields": 13-immutable-base is the valid
+# base CR applied first, and 14-17 are applied as UPDATEs that the CRD CEL
+# transition rules reject. To prevent scaffold drift across these fixtures
+# (sourcery-ai review #1), they are generated from a single source of truth
+# in `_generate.py`. After editing the canonical scaffold or any per-fixture
+# override, regenerate via:
 #   python3 tests/e2e/keystone/invalid-cr/_generate.py
 # CI runs `make verify-invalid-cr-fixtures` (the
 # `verify-invalid-cr-fixtures` job in .github/workflows/ci.yaml), which
@@ -141,14 +143,20 @@ spec:
         - check:
             ($error != null): true
             (contains($error, 'replicas')): true
-  # spec.autoscaling.minReplicas > maxReplicas must be rejected.
+  # spec.autoscaling.minReplicas > maxReplicas must be rejected. The CEL
+  # XValidation rule is declared on AutoscalingSpec, so the apiserver emits the
+  # error at fieldPath spec.autoscaling (the parent), NOT
+  # spec.autoscaling.minReplicas. The validating webhook's deeper-path message
+  # never reaches Chainsaw because CEL fails first and short-circuits the
+  # admission pipeline. The assertion therefore matches only the parent path
+  # so the test is stable across rule-relocation refactors.
   - try:
     - apply:
         file: 10-hpa-min-greater-than-max.yaml
         expect:
         - check:
             ($error != null): true
-            (contains($error, 'spec.autoscaling.minReplicas')): true
+            (contains($error, 'spec.autoscaling')): true
             (contains($error, 'must not exceed maxReplicas')): true
   # spec.fernet.maxActiveKeys below the minimum (3) must
   # be rejected by either CRD schema (Minimum=3) or webhook. The assertion
@@ -231,3 +239,80 @@ spec:
             ($error != null): true
             (contains($error, 'region')): true
             (contains($error, 'immutable')): true
+  # Validation-marker wave: empty spec.image.tag rejected by the ImageSpec.Tag
+  # MinLength=1 marker (CRD schema).
+  - try:
+    - apply:
+        file: 13-image-empty-tag.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'image.tag')): true
+  # Validation-marker wave: spec.database.database with a hyphen rejected by the
+  # DatabaseSpec.Database Pattern marker (CRD schema).
+  - try:
+    - apply:
+        file: 14-database-name-invalid-char.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'database.database')): true
+  # Validation-marker wave: empty spec.database.secretRef.name rejected by the
+  # shared SecretRefSpec.Name MinLength=1 marker (CRD schema).
+  - try:
+    - apply:
+        file: 15-database-secretref-empty-name.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'secretRef.name')): true
+  # Validation-marker wave: spec.middleware[].position outside before;after
+  # rejected by the PipelinePosition Enum marker (CRD schema).
+  - try:
+    - apply:
+        file: 16-middleware-bad-position.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'position')): true
+            (contains($error, 'sideways')): true
+  # Validation-marker wave: spec.uwsgi.httpKeepAliveTimeout set while
+  # httpKeepAlive is false rejected by the UWSGISpec cross-field CEL rule. The
+  # CEL rule fires first (CRD validation precedes the validating webhook), so
+  # the assertion matches its message.
+  - try:
+    - apply:
+        file: 17-uwsgi-keepalive-timeout-conflict.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'httpKeepAliveTimeout')): true
+  # Validation-marker wave: spec.preStopSleepSeconds not strictly less than
+  # spec.terminationGracePeriodSeconds rejected by the KeystoneSpec drain-window
+  # CEL rule.
+  - try:
+    - apply:
+        file: 18-prestop-not-less-than-grace.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'preStopSleepSeconds')): true
+            (contains($error, 'terminationGracePeriodSeconds')): true
+  # Validation-marker wave: non-URL spec.bootstrap.publicEndpoint rejected by the
+  # BootstrapSpec.PublicEndpoint Pattern marker (CRD schema).
+  - try:
+    - apply:
+        file: 19-publicendpoint-not-url.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'publicEndpoint')): true
+  # Validation-marker wave: spec.logging.perLoggerLevels with a value outside
+  # the level enum rejected by the LoggingSpec.PerLoggerLevels CEL rule.
+  - try:
+    - apply:
+        file: 20-perloggerlevels-invalid-value.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'perLoggerLevels')): true

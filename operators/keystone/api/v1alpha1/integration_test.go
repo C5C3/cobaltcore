@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	. "github.com/onsi/gomega"
@@ -17,7 +18,10 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -913,4 +917,178 @@ func TestIntegration_CRDSchemaContainsLoggingSpec(t *testing.T) {
 		"spec.logging.perLoggerLevels.additionalProperties must carry a schema")
 	g.Expect(perLogger.AdditionalProperties.Schema.Type).To(Equal("string"),
 		"spec.logging.perLoggerLevels values must be string-typed")
+}
+
+// --- Validation-marker wave (issue #469): CRD-only rejection coverage ---
+
+// TestIntegration_CRD_CELOnly_RejectsValidationMarkers pins the validation-marker
+// wave (image refs, DB endpoints, secret refs, middleware enum, CEL parity)
+// against an envtest API server with NO validating webhook installed, so a
+// dropped marker or CEL rule fails here immediately — the webhook's
+// defense-in-depth checks cannot mask it. Each case mutates exactly one field of
+// an otherwise-valid CR, so the rejection is attributable to that field.
+//
+// The uwsgi httpKeepAlive/timeout cross-field rule is intentionally NOT covered
+// here: a typed Go client drops httpKeepAlive: false via omitempty before the
+// CRD default re-adds it, so the rule cannot fire through this client. The
+// raw-YAML invalid-cr Chainsaw fixture (17-uwsgi-keepalive-timeout-conflict.yaml)
+// is its primary coverage.
+func TestIntegration_CRD_CELOnly_RejectsValidationMarkers(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+
+	c, ctx, _ := setupEnvTestNoWebhook(t)
+
+	cases := []struct {
+		name   string
+		mutate func(*Keystone)
+	}{
+		{"empty image repository", func(k *Keystone) { k.Spec.Image.Repository = "" }},
+		{"empty image tag", func(k *Keystone) { k.Spec.Image.Tag = "" }},
+		{"database port above max", func(k *Keystone) { k.Spec.Database.Port = 70000 }},
+		{"database port negative", func(k *Keystone) { k.Spec.Database.Port = -1 }},
+		{"database name empty", func(k *Keystone) { k.Spec.Database.Database = "" }},
+		{"database name invalid char", func(k *Keystone) { k.Spec.Database.Database = "keystone-prod" }},
+		{"database name too long", func(k *Keystone) { k.Spec.Database.Database = strings.Repeat("a", 65) }},
+		{"empty database secretRef name", func(k *Keystone) { k.Spec.Database.SecretRef.Name = "" }},
+		{"empty admin password secretRef name", func(k *Keystone) {
+			k.Spec.Bootstrap.AdminPasswordSecretRef.Name = ""
+		}},
+		{"middleware bad position", func(k *Keystone) {
+			k.Spec.Middleware = []commonv1.MiddlewareSpec{{
+				Name:          "audit",
+				FilterFactory: "audit:filter_factory",
+				Position:      "sideways",
+			}}
+		}},
+		{"duplicate plugin config section", func(k *Keystone) {
+			k.Spec.Plugins = []commonv1.PluginSpec{
+				{Name: "a", ConfigSection: "dup"},
+				{Name: "b", ConfigSection: "dup"},
+			}
+		}},
+		{"autoscaling min greater than max", func(k *Keystone) {
+			k.Spec.Autoscaling = &AutoscalingSpec{
+				MinReplicas:          ptr.To(int32(10)),
+				MaxReplicas:          5,
+				TargetCPUUtilization: ptr.To(int32(80)),
+			}
+		}},
+		{"prestop not less than grace period", func(k *Keystone) {
+			k.Spec.PreStopSleepSeconds = ptr.To(int64(20))
+			k.Spec.TerminationGracePeriodSeconds = ptr.To(int64(15))
+		}},
+		{"perLoggerLevels invalid value", func(k *Keystone) {
+			k.Spec.Logging = &LoggingSpec{
+				Format:          "text",
+				Level:           "INFO",
+				PerLoggerLevels: map[string]string{"sqlalchemy.engine": "BOGUS"},
+			}
+		}},
+		{"perLoggerLevels empty key", func(k *Keystone) {
+			k.Spec.Logging = &LoggingSpec{
+				Format:          "text",
+				Level:           "INFO",
+				PerLoggerLevels: map[string]string{"": "INFO"},
+			}
+		}},
+		{"non-URL bootstrap publicEndpoint", func(k *Keystone) {
+			k.Spec.Bootstrap.PublicEndpoint = "keystone.example.com"
+		}},
+	}
+
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-celonly-marker-"}}
+			g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+			k := validIntegrationKeystone(fmt.Sprintf("marker-reject-%d", i), ns.Name)
+			tc.mutate(k)
+
+			err := c.Create(ctx, k)
+			g.Expect(err).To(HaveOccurred(), "CRD schema alone must reject: %s", tc.name)
+			g.Expect(apierrors.IsInvalid(err) || apierrors.IsForbidden(err)).To(BeTrue(),
+				fmt.Sprintf("expected Invalid or Forbidden status error for %q, got: %v", tc.name, err))
+		})
+	}
+}
+
+// TestIntegration_CRD_CELOnly_RejectsKeepAliveTimeoutWithoutKeepAlive pins the
+// UWSGISpec cross-field CEL rule against an envtest API server with NO validating
+// webhook installed. The CR is built as an *unstructured.Unstructured so
+// httpKeepAlive: false survives to the API server — a typed Go client drops it
+// via omitempty and the CRD default then re-adds true, which would mask the rule.
+func TestIntegration_CRD_CELOnly_RejectsKeepAliveTimeoutWithoutKeepAlive(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestNoWebhook(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-celonly-keepalive-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	raw, err := runtime.DefaultUnstructuredConverter.ToUnstructured(
+		validIntegrationKeystone("keepalive-timeout", ns.Name),
+	)
+	g.Expect(err).NotTo(HaveOccurred())
+	u := &unstructured.Unstructured{Object: raw}
+	u.SetGroupVersionKind(GroupVersion.WithKind("Keystone"))
+	g.Expect(unstructured.SetNestedField(u.Object, false, "spec", "uwsgi", "httpKeepAlive")).To(Succeed())
+	g.Expect(unstructured.SetNestedField(u.Object, int64(30), "spec", "uwsgi", "httpKeepAliveTimeout")).To(Succeed())
+
+	err = c.Create(ctx, u)
+	g.Expect(err).To(HaveOccurred(),
+		"httpKeepAliveTimeout set while httpKeepAlive is false must be rejected by the CRD CEL rule")
+	g.Expect(apierrors.IsInvalid(err) || apierrors.IsForbidden(err)).To(BeTrue(),
+		fmt.Sprintf("expected Invalid or Forbidden status error, got: %v", err))
+	g.Expect(err.Error()).To(ContainSubstring("httpKeepAliveTimeout"))
+}
+
+// TestIntegration_AcceptsValidNonDefaultMarkers verifies the validation-marker
+// wave accepts valid NON-DEFAULT values, so a future over-restrictive marker
+// edit (e.g. a too-narrow pattern) is caught — the positive-coverage counterpart
+// to the rejection table above.
+func TestIntegration_AcceptsValidNonDefaultMarkers(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTest(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-valid-markers-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	k := validIntegrationKeystone("valid-markers", ns.Name)
+	// Non-default image (different repository + tag with separators).
+	k.Spec.Image = commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone-operator", Tag: "2025.2-upgraded"}
+	// Brownfield DB with an explicit non-default port and an underscore name.
+	k.Spec.Database.Host = "db.internal.svc.cluster.local"
+	k.Spec.Database.Port = 13306
+	k.Spec.Database.Database = "keystone_prod"
+	// Middleware with a valid position; plugins with distinct config sections.
+	k.Spec.Middleware = []commonv1.MiddlewareSpec{{
+		Name:          "audit",
+		FilterFactory: "audit:filter_factory",
+		Position:      commonv1.PipelinePositionAfter,
+	}}
+	k.Spec.Plugins = []commonv1.PluginSpec{
+		{Name: "ldap", ConfigSection: "ldap"},
+		{Name: "federation", ConfigSection: "federation"},
+	}
+	// Valid HTTP(S) public endpoint (no gateway, so the webhook host check is skipped).
+	k.Spec.Bootstrap.PublicEndpoint = "https://keystone.example.com/v3"
+	// Valid per-logger levels and a valid keepalive+timeout combination.
+	k.Spec.Logging = &LoggingSpec{
+		Format:          "json",
+		Level:           "WARNING",
+		PerLoggerLevels: map[string]string{"sqlalchemy.engine": "WARNING"},
+	}
+	k.Spec.UWSGI = &UWSGISpec{
+		Processes:            4,
+		Threads:              2,
+		HTTPKeepAlive:        true,
+		HTTPKeepAliveTimeout: ptr.To(int32(30)),
+	}
+
+	g.Expect(c.Create(ctx, k)).To(Succeed(),
+		"valid non-default validation-marker values should be accepted")
 }

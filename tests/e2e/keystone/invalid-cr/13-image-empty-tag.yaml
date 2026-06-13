@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Validation-marker wave: Keystone CR with an empty spec.image.tag. The
+# shared ImageSpec.Tag now carries +kubebuilder:validation:MinLength=1, so
+# an empty tag (which "required" alone admitted) is rejected by the CRD
+# schema. Admission must reject this CR with an $error referencing the
+# substring "image.tag".
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: invalid-image-empty-tag
+spec:
+  replicas: 3
+  image:
+    repository: ghcr.io/c5c3/keystone
+    tag: ""
+  database:
+    host: db.example.com
+    port: 3306
+    database: keystone
+    secretRef:
+      name: keystone-db
+  cache:
+    backend: dogpile.cache.pymemcache
+    servers:
+    - "mc:11211"
+  fernet:
+    rotationSchedule: "0 0 * * 0"
+    maxActiveKeys: 3
+  bootstrap:
+    adminUser: admin
+    adminPasswordSecretRef:
+      name: keystone-admin
+    region: RegionOne

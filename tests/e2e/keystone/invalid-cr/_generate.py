@@ -20,7 +20,7 @@ Two fixture categories share this scaffold:
   rules (``self == oldSelf``, evaluated only on UPDATE) reject the field change.
 
 The reviewer concern this generator addresses (sourcery-ai review #1):
-without a single source of truth the 16 fixtures could drift out of sync with
+without a single source of truth the fixtures could drift out of sync with
 each other and with KeystoneSpec over time. This script enforces a single
 canonical scaffold; per-fixture overrides change only what is necessary to
 trigger the rejection path under test.
@@ -159,6 +159,52 @@ BOOTSTRAP_RENAMED_REGION = """\
     region: RegionTwo
 """
 
+# Default image block used by every fixture whose rejection is unrelated to the
+# image fields. Parameterized (rather than inlined in render) so the
+# validation-marker fixtures can mutate just the image to exercise the
+# ImageSpec MinLength/Pattern markers.
+IMAGE_DEFAULT = """\
+    repository: ghcr.io/c5c3/keystone
+    tag: "2025.2"
+"""
+
+# Image with an empty tag — rejected by the ImageSpec.Tag MinLength=1 marker.
+IMAGE_EMPTY_TAG = """\
+    repository: ghcr.io/c5c3/keystone
+    tag: ""
+"""
+
+# Database whose name uses a character outside the MySQL identifier set
+# (the hyphen) — rejected by the DatabaseSpec.Database Pattern marker.
+DATABASE_INVALID_NAME = """\
+    host: db.example.com
+    port: 3306
+    database: keystone-prod
+    secretRef:
+      name: keystone-db
+"""
+
+# Database whose secretRef.name is empty — rejected by the shared
+# SecretRefSpec.Name MinLength=1 marker.
+DATABASE_EMPTY_SECRETREF_NAME = """\
+    host: db.example.com
+    port: 3306
+    database: keystone
+    secretRef:
+      name: ""
+"""
+
+# Bootstrap whose publicEndpoint is not an HTTP(S) URL — rejected by the
+# BootstrapSpec.PublicEndpoint Pattern marker.
+BOOTSTRAP_BAD_PUBLIC_ENDPOINT = """\
+  bootstrap:
+    adminUser: admin
+    adminPasswordSecretRef:
+      name: keystone-admin
+    region: RegionOne
+    publicEndpoint: not-a-url
+"""
+
 
 @dataclass(frozen=True)
 class Fixture:
@@ -168,6 +214,7 @@ class Fixture:
     name: str
     comment: str
     replicas: int = 3
+    image: str = IMAGE_DEFAULT
     database: str = DATABASE_HOST_ONLY
     cache: str = CACHE_SERVERS_ONLY
     fernet_max_active_keys: int = 3
@@ -188,8 +235,7 @@ def render(fixture: Fixture) -> str:
         "spec:\n",
         f"  replicas: {fixture.replicas}\n",
         "  image:\n",
-        "    repository: ghcr.io/c5c3/keystone\n",
-        '    tag: "2025.2"\n',
+        fixture.image,
         "  database:\n",
         fixture.database,
         "  cache:\n",
@@ -459,6 +505,114 @@ FIXTURES: list[Fixture] = [
 # rule on BootstrapSpec.Region (self == oldSelf, keystone_types.go) rejects
 # the change on UPDATE. Admission must reject this UPDATE with an $error
 # referencing the substrings "region" and "immutable".""",
+    ),
+    Fixture(
+        filename="13-image-empty-tag.yaml",
+        name="invalid-image-empty-tag",
+        image=IMAGE_EMPTY_TAG,
+        comment="""\
+# Validation-marker wave: Keystone CR with an empty spec.image.tag. The
+# shared ImageSpec.Tag now carries +kubebuilder:validation:MinLength=1, so
+# an empty tag (which "required" alone admitted) is rejected by the CRD
+# schema. Admission must reject this CR with an $error referencing the
+# substring "image.tag".""",
+    ),
+    Fixture(
+        filename="14-database-name-invalid-char.yaml",
+        name="invalid-database-name-char",
+        database=DATABASE_INVALID_NAME,
+        comment="""\
+# Validation-marker wave: Keystone CR whose spec.database.database uses a
+# hyphen, outside the MySQL identifier character set. Rejected by the
+# DatabaseSpec.Database Pattern marker (^[A-Za-z0-9_]+$). Admission must
+# reject this CR with an $error referencing the substring "database".""",
+    ),
+    Fixture(
+        filename="15-database-secretref-empty-name.yaml",
+        name="invalid-database-secretref-empty-name",
+        database=DATABASE_EMPTY_SECRETREF_NAME,
+        comment="""\
+# Validation-marker wave: Keystone CR whose spec.database.secretRef.name is
+# empty. The shared SecretRefSpec.Name now carries MinLength=1, so an empty
+# Secret name (previously admitted by "required") is rejected at the CRD
+# schema layer. Admission must reject this CR with an $error referencing the
+# substring "secretRef".""",
+    ),
+    Fixture(
+        filename="16-middleware-bad-position.yaml",
+        name="invalid-middleware-position",
+        trailing="""\
+  middleware:
+  - name: audit
+    filterFactory: audit:filter_factory
+    position: sideways
+""",
+        comment="""\
+# Validation-marker wave: Keystone CR with a spec.middleware[].position
+# value outside the documented enum. The shared PipelinePosition type now
+# carries +kubebuilder:validation:Enum=before;after, so "sideways" — which
+# would corrupt the api-paste.ini pipeline — is rejected at the CRD schema
+# layer. Admission must reject this CR with an $error referencing the
+# substring "position".""",
+    ),
+    Fixture(
+        filename="17-uwsgi-keepalive-timeout-conflict.yaml",
+        name="invalid-uwsgi-keepalive-timeout",
+        trailing="""\
+  uwsgi:
+    httpKeepAlive: false
+    httpKeepAliveTimeout: 30
+""",
+        comment="""\
+# Validation-marker wave: Keystone CR that sets spec.uwsgi.httpKeepAliveTimeout
+# while spec.uwsgi.httpKeepAlive is false. The cross-field CEL XValidation
+# rule on UWSGISpec (and the validating webhook) reject the combination
+# because the --http-keepalive-timeout flag is never emitted without
+# keep-alive. Admission must reject this CR with an $error referencing the
+# substring "httpKeepAliveTimeout". This raw-YAML fixture is the primary
+# coverage for the rule: a typed Go client drops httpKeepAlive: false via
+# omitempty before the schema default re-adds it.""",
+    ),
+    Fixture(
+        filename="18-prestop-not-less-than-grace.yaml",
+        name="invalid-prestop-grace-window",
+        trailing="""\
+  preStopSleepSeconds: 20
+  terminationGracePeriodSeconds: 15
+""",
+        comment="""\
+# Validation-marker wave: Keystone CR with spec.preStopSleepSeconds (20) not
+# strictly less than spec.terminationGracePeriodSeconds (15). The drain-window
+# CEL XValidation rule on KeystoneSpec (and the validating webhook) require a
+# non-zero drain window. Admission must reject this CR with an $error
+# referencing the substring "preStopSleepSeconds".""",
+    ),
+    Fixture(
+        filename="19-publicendpoint-not-url.yaml",
+        name="invalid-publicendpoint-not-url",
+        bootstrap=BOOTSTRAP_BAD_PUBLIC_ENDPOINT,
+        comment="""\
+# Validation-marker wave: Keystone CR whose spec.bootstrap.publicEndpoint is
+# not an HTTP(S) URL. The BootstrapSpec.PublicEndpoint Pattern marker
+# (^https?://) now rejects it unconditionally (previously the webhook only
+# checked the URL when spec.gateway was set). Admission must reject this CR
+# with an $error referencing the substring "publicEndpoint".""",
+    ),
+    Fixture(
+        filename="20-perloggerlevels-invalid-value.yaml",
+        name="invalid-perloggerlevels-value",
+        trailing="""\
+  logging:
+    perLoggerLevels:
+      sqlalchemy.engine: BOGUS
+""",
+        comment="""\
+# Validation-marker wave: Keystone CR with a spec.logging.perLoggerLevels
+# value outside DEBUG/INFO/WARNING/ERROR/CRITICAL. The map-value CEL
+# XValidation rule on LoggingSpec.PerLoggerLevels (and the validating
+# webhook) reject it; a plain enum on additionalProperties is not
+# expressible in CRD v1. Admission must reject this CR with an $error
+# referencing the substring "perLoggerLevels".""",
     ),
 ]
 

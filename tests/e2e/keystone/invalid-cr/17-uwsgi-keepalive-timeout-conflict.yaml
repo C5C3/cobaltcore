@@ -1,0 +1,42 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Validation-marker wave: Keystone CR that sets spec.uwsgi.httpKeepAliveTimeout
+# while spec.uwsgi.httpKeepAlive is false. The cross-field CEL XValidation
+# rule on UWSGISpec (and the validating webhook) reject the combination
+# because the --http-keepalive-timeout flag is never emitted without
+# keep-alive. Admission must reject this CR with an $error referencing the
+# substring "httpKeepAliveTimeout". This raw-YAML fixture is the primary
+# coverage for the rule: a typed Go client drops httpKeepAlive: false via
+# omitempty before the schema default re-adds it.
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: invalid-uwsgi-keepalive-timeout
+spec:
+  replicas: 3
+  image:
+    repository: ghcr.io/c5c3/keystone
+    tag: "2025.2"
+  database:
+    host: db.example.com
+    port: 3306
+    database: keystone
+    secretRef:
+      name: keystone-db
+  cache:
+    backend: dogpile.cache.pymemcache
+    servers:
+    - "mc:11211"
+  fernet:
+    rotationSchedule: "0 0 * * 0"
+    maxActiveKeys: 3
+  bootstrap:
+    adminUser: admin
+    adminPasswordSecretRef:
+      name: keystone-admin
+    region: RegionOne
+  uwsgi:
+    httpKeepAlive: false
+    httpKeepAliveTimeout: 30
