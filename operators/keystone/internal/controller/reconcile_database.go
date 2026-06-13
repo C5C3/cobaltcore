@@ -931,9 +931,14 @@ func buildDBSyncJob(keystone *keystonev1alpha1.Keystone, configMapName string) *
 }
 
 // buildUpgradeJob creates a db_sync Job for one of the expand-migrate-contract
-// upgrade phases (CC-0056). The imageTag parameter allows callers to pin the
-// image independently of spec.Image.Tag (expand/migrate use the old release,
-// contract uses the new release).
+// upgrade phases (CC-0056). All three phases run with the NEW release image:
+// reconcileExpand, reconcileMigrate, and reconcileContract each pass
+// keystone.Spec.Image.Tag, per the OpenStack rolling-upgrade procedure where
+// the N+1 alembic tree owns the schema deltas (see reconcileExpand for the
+// full rationale). The imageTag parameter is retained so a caller could pin a
+// phase to a different image, but the upgrade flow always passes the target
+// release to all three — do not read this comment as "expand/migrate use the
+// old release" when triaging a stuck upgrade.
 func buildUpgradeJob(keystone *keystonev1alpha1.Keystone, configMapName, imageTag, phase, flag string) *batchv1.Job {
 	return buildDBJob(keystone, configMapName, imageTag, fmt.Sprintf("db-%s", phase),
 		[]string{"keystone-manage", "--config-dir=/etc/keystone/keystone.conf.d/", "db_sync", flag})

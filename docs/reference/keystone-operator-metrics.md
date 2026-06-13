@@ -27,7 +27,7 @@ for cluster-side wiring.
 | --- | --- | --- | --- |
 | `keystone_operator_reconcile_duration_seconds` | Histogram | `sub_reconciler` | Latency of each sub-reconciler invocation |
 | `keystone_operator_reconcile_errors_total` | Counter | `sub_reconciler`, `condition_type` | Count of sub-reconciler failures per Ready sub-condition |
-| `keystone_operator_key_rotation_age_seconds` | Gauge | `keystone`, `namespace`, `key_type` | Age of the most recent successful Fernet/credential rotation |
+| `keystone_operator_key_rotation_age_seconds` | Gauge | `keystone`, `namespace`, `key_type` | Age of the most recent successful Fernet/credential/admin-password rotation |
 | `keystone_operator_db_sync_total` | Counter | `keystone`, `namespace`, `result` | Terminal `db_sync` Job outcomes |
 | `keystone_operator_db_sync_duration_seconds` | Histogram | `keystone`, `namespace` | Wall-clock duration of terminated `db_sync` Jobs |
 
@@ -106,9 +106,18 @@ at reconcile time.
 | --- | --- |
 | Type | Gauge |
 | Labels | `keystone`, `namespace`, `key_type` |
-| Call site | `reconcileFernetKeys` / `reconcileCredentialKeys` on every reconcile pass |
+| Call site | `reconcileFernetKeys` / `reconcileCredentialKeys` / `reconcilePasswordRotation` on every reconcile pass |
 
-**`key_type` values.** Exactly `fernet` or `credential`.
+**`key_type` values.** `fernet`, `credential`, or `admin-password`.
+
+**`admin-password` caveat.** For `key_type="admin-password"` the gauge
+measures age since the operator committed the rotated password to its
+push-source Secret — not since the password went live. The new password
+becomes live only after ESO mirrors it to OpenBao, the `keystone-admin`
+ExternalSecret syncs it back, and bootstrap re-runs (~1h+). The gauge
+therefore under-reports time-since-live for `admin-password` relative to
+`fernet` and `credential`, which go live the instant the operator updates
+the keys Secret.
 
 **Annotation source.** The gauge reads the
 `forge.c5c3.io/rotation-completed-at` annotation from the **production**

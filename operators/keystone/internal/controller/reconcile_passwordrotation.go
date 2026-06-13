@@ -195,6 +195,15 @@ func (r *KeystoneReconciler) reconcilePasswordRotation(ctx context.Context,
 	//    falls back to staging for the pre-first-apply window. Called before
 	//    applyAdminPasswordRotation so the next reconcile picks up the freshest
 	//    timestamp once the apply re-stamps the push-source annotation.
+	//
+	//    Semantics caveat (issue #475): for key_type="admin-password" this
+	//    timestamp marks the commit-to-push-source instant, NOT the moment the
+	//    password goes live. The new password is live only after ESO mirrors
+	//    the push-source Secret to OpenBao, the keystone-admin ExternalSecret
+	//    syncs it back, and bootstrap re-runs (~1h+). The gauge therefore
+	//    under-reports time-since-live for admin-password compared with fernet
+	//    and credential, which go live the instant the operator updates the
+	//    keys Secret.
 	r.observeRotationAge(ctx, keystone, adminPasswordNextSecretName(keystone),
 		adminPasswordStagingSecretName(keystone), "admin-password")
 
@@ -531,7 +540,10 @@ func (r *KeystoneReconciler) applyAdminPasswordRotation(
 	// 4. GET push-source Secret, replace Data verbatim, stamp the annotation,
 	//    and Update. The push-source Secret is the durable record of the last
 	//    successful rotation timestamp once staging is deleted, so the
-	//    rotation-age gauge can refresh on every reconcile.
+	//    rotation-age gauge can refresh on every reconcile. NOTE (issue #475):
+	//    this annotation marks commit-to-push-source, which precedes the
+	//    password going live by the full ESO round-trip + bootstrap re-run
+	//    (~1h+); the gauge under-reports time-since-live for admin-password.
 	var pushSource corev1.Secret
 	if getErr := r.Get(ctx, types.NamespacedName{Name: pushSourceSecretName, Namespace: keystone.Namespace}, &pushSource); getErr != nil {
 		return false, fmt.Errorf("getting push-source secret %s: %w", pushSourceSecretName, getErr)
