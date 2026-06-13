@@ -72,6 +72,21 @@ func getDBCredES(t *testing.T, r *ControlPlaneReconciler, cp *c5c3v1alpha1.Contr
 	return es, err
 }
 
+// readyClusterSecretStore returns the OpenBao-backed ClusterSecretStore with a
+// Ready status condition so IsClusterSecretStoreReady reports the store ready
+// without an ESO controller in the fake client. Seed it whenever a managed-mode
+// sub-reconciler must pass its ClusterSecretStore gate (#476).
+func readyClusterSecretStore() *esov1.ClusterSecretStore {
+	return &esov1.ClusterSecretStore{
+		ObjectMeta: metav1.ObjectMeta{Name: openBaoClusterStoreName},
+		Status: esov1.SecretStoreStatus{
+			Conditions: []esov1.SecretStoreStatusCondition{
+				{Type: esov1.SecretStoreReady, Status: corev1.ConditionTrue},
+			},
+		},
+	}
+}
+
 // readyDBCredES builds a Ready DB-credential ExternalSecret at the derived
 // name/namespace, mirroring readyCloudsYamlES so WaitForExternalSecret reports
 // Ready without an ESO controller in the fake client.
@@ -94,7 +109,7 @@ func TestReconcileDBCredentials_Managed_CreatesExternalSecret(t *testing.T) {
 
 	s := korcTestScheme(t)
 	cp := dbCredManagedControlPlane()
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, readyClusterSecretStore()).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
 	// No Ready status on the freshly-created ES, so the call requeues with
@@ -135,7 +150,7 @@ func TestReconcileDBCredentials_NotReady_SetsConditionFalseAndRequeues(t *testin
 
 	s := korcTestScheme(t)
 	cp := dbCredManagedControlPlane()
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, readyClusterSecretStore()).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
 	result, err := r.reconcileDBCredentials(context.Background(), cp)
@@ -156,7 +171,7 @@ func TestReconcileDBCredentials_Ready_SetsConditionTrue(t *testing.T) {
 
 	s := korcTestScheme(t)
 	cp := dbCredManagedControlPlane()
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, readyDBCredES(cp)).Build()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, readyClusterSecretStore(), readyDBCredES(cp)).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
 	result, err := r.reconcileDBCredentials(context.Background(), cp)
@@ -191,6 +206,35 @@ func TestReconcileDBCredentials_Brownfield_NoExternalSecret_ReadyTrue(t *testing
 	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeDBCredentialsReady)
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+}
+
+// TestReconcileDBCredentials_StoreNotReady_SetsConditionFalse (#476): when the
+// OpenBao-backed ClusterSecretStore is not Ready (here: absent), the managed-mode
+// sub-reconciler flips DBCredentialsReady=False with reason SecretStoreNotReady
+// and requeues, instead of leaving a stale Ready=True between resyncs. No
+// ExternalSecret is projected while the store is unreachable.
+func TestReconcileDBCredentials_StoreNotReady_SetsConditionFalse(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := dbCredManagedControlPlane()
+	// No ClusterSecretStore seeded => IsClusterSecretStoreReady reports not ready.
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	result, err := r.reconcileDBCredentials(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(BeNumerically(">", 0), "must requeue while the store is not ready")
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeDBCredentialsReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("SecretStoreNotReady"))
+
+	// No ExternalSecret may be projected while the store is unreachable.
+	_, getErr := getDBCredES(t, r, cp)
+	g.Expect(apierrors.IsNotFound(getErr)).To(BeTrue(),
+		"no DB-credential ExternalSecret may be created while the store is not ready")
 }
 
 // TestDBCredentialRemoteKeyFor_And_SecretName_DistinctPerControlPlane

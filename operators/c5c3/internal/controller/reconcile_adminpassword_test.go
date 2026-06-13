@@ -98,7 +98,7 @@ func TestReconcileAdminPassword_Managed_CreatesExternalSecret(t *testing.T) {
 
 	s := korcTestScheme(t)
 	cp := adminPwManagedControlPlane()
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, readyClusterSecretStore()).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
 	// No Ready status on the freshly-created ES, so the call requeues with
@@ -136,7 +136,7 @@ func TestReconcileAdminPassword_NotReady_SetsConditionFalseAndRequeues(t *testin
 
 	s := korcTestScheme(t)
 	cp := adminPwManagedControlPlane()
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, readyClusterSecretStore()).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
 	result, err := r.reconcileAdminPassword(context.Background(), cp)
@@ -158,7 +158,7 @@ func TestReconcileAdminPassword_Ready_SetsConditionTrue(t *testing.T) {
 
 	s := korcTestScheme(t)
 	cp := adminPwManagedControlPlane()
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, readyAdminPwES(cp)).Build()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, readyClusterSecretStore(), readyAdminPwES(cp)).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
 	result, err := r.reconcileAdminPassword(context.Background(), cp)
@@ -198,6 +198,35 @@ func TestReconcileAdminPassword_Brownfield_NoExternalSecret_ReadyTrue(t *testing
 
 	g.Expect(cp.Spec.KORC.AdminCredential.PasswordSecretRef).To(Equal(userRef),
 		"brownfield must not mutate the user-declared admin PasswordSecretRef")
+}
+
+// TestReconcileAdminPassword_StoreNotReady_SetsConditionFalse (#476): when the
+// OpenBao-backed ClusterSecretStore is not Ready (here: absent), the managed-mode
+// sub-reconciler flips AdminPasswordReady=False with reason SecretStoreNotReady
+// and requeues, instead of leaving a stale Ready=True between resyncs. No
+// ExternalSecret is projected while the store is unreachable.
+func TestReconcileAdminPassword_StoreNotReady_SetsConditionFalse(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := adminPwManagedControlPlane()
+	// No ClusterSecretStore seeded => IsClusterSecretStoreReady reports not ready.
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	result, err := r.reconcileAdminPassword(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(Equal(adminPasswordRequeueAfter),
+		"must requeue while the store is not ready")
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeAdminPasswordReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("SecretStoreNotReady"))
+
+	_, getErr := getAdminPwES(t, r, cp)
+	g.Expect(apierrors.IsNotFound(getErr)).To(BeTrue(),
+		"no admin-password ExternalSecret may be created while the store is not ready")
 }
 
 // TestAdminPasswordRemoteKeyFor_And_SecretName_DistinctPerControlPlane the OpenBao remote key is scoped by both Namespace and keystoneName,

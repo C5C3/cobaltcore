@@ -11,6 +11,8 @@ import (
 	"fmt"
 
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
+	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
+	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
@@ -365,18 +367,59 @@ func secretToControlPlaneMapper(c client.Reader) handler.MapFunc {
 	}
 }
 
+// clusterSecretStoreToControlPlaneMapper returns a MapFunc that enqueues every
+// ControlPlane in the cluster when the OpenBao-backed ClusterSecretStore
+// changes. The store is cluster-scoped and shared across namespaces, so any
+// status transition (e.g. ESO losing the backend connection) must retrigger
+// reconcile on all ControlPlanes that route credentials through it; otherwise
+// DBCredentialsReady / AdminPasswordReady / AdminCredentialReady would stay
+// stale-True until the next periodic resync. Mirrors the keystone operator's
+// clusterSecretStoreToKeystoneMapper (#476). On a List error the mapper logs and
+// returns nil per the handler.MapFunc contract.
+func clusterSecretStoreToControlPlaneMapper(c client.Reader) handler.MapFunc {
+	return func(ctx context.Context, obj client.Object) []reconcile.Request {
+		if obj.GetName() != openBaoClusterStoreName {
+			return nil
+		}
+
+		var cps c5c3v1alpha1.ControlPlaneList
+		if err := c.List(ctx, &cps); err != nil {
+			log.FromContext(ctx).Error(err, "listing ControlPlane CRs for ClusterSecretStore watch")
+			return nil
+		}
+
+		requests := make([]reconcile.Request, 0, len(cps.Items))
+		for i := range cps.Items {
+			requests = append(requests, reconcile.Request{
+				NamespacedName: client.ObjectKeyFromObject(&cps.Items[i]),
+			})
+		}
+		return requests
+	}
+}
+
 // SetupWithManager registers the ControlPlaneReconciler with the controller
 // manager. It Owns every child CR the sub-reconcilers project (MariaDB,
-// Keystone, the K-ORC ApplicationCredential/Service/Endpoint, and the Memcached
-// CR) so an upstream child status transition retriggers reconcile, and Watches
-// Secrets so an admin-password rotation wakes the owning ControlPlane via the
-// field indexer.
+// Keystone, the K-ORC ApplicationCredential/Service/Endpoint, the Memcached CR,
+// and the ESO ExternalSecret/PushSecret) so an upstream child status transition
+// retriggers reconcile, Watches Secrets so an admin-password rotation wakes the
+// owning ControlPlane via the field indexer, and Watches the OpenBao-backed
+// ClusterSecretStore so an ESO/OpenBao outage reflects in the credential
+// conditions promptly rather than after the next periodic resync (#476).
 //
 // DECISION (Memcached Owns): memcached.c5c3.io ships no Go module (see
 // memcachedGVK in reconcile_infrastructure.go), so the Memcached child is owned
 // as an *unstructured.Unstructured carrying that shared GVK rather than a typed
 // client object — exactly how ensureMemcached creates it. The same memcachedGVK
 // constant is reused so the watch and the create-or-update agree on the kind.
+//
+// DECISION (ESO Owns): the ExternalSecret and PushSecret children are owned via
+// SetControllerReference by the DB-credential, admin-password and K-ORC
+// sub-reconcilers, so Owns() is the direct wiring (no name-based mapper needed).
+// It wakes the ControlPlane on every ESO status tick, which is acceptable for
+// the goal of reflecting ESO sync/outage transitions in the credential
+// conditions promptly; a relevance predicate could be added later if the
+// reconcile volume becomes a concern.
 func (r *ControlPlaneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Register the field indexer before Watches so secretToControlPlaneMapper can
 	// rely on it for its MatchingFields lookup.
@@ -397,8 +440,13 @@ func (r *ControlPlaneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&orcv1alpha1.User{}).
 		Owns(&orcv1alpha1.Domain{}).
 		Owns(memcached).
+		Owns(&esov1.ExternalSecret{}).
+		Owns(&esov1alpha1.PushSecret{}).
 		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(
 			secretToControlPlaneMapper(mgr.GetClient()),
+		)).
+		Watches(&esov1.ClusterSecretStore{}, handler.EnqueueRequestsFromMapFunc(
+			clusterSecretStoreToControlPlaneMapper(mgr.GetClient()),
 		)).
 		Complete(r)
 }

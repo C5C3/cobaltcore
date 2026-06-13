@@ -962,6 +962,29 @@ func (r *ControlPlaneReconciler) reconcileAdminCredential(ctx context.Context, c
 		return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
 	}
 
+	// Gate on the OpenBao-backed ClusterSecretStore so an ESO/OpenBao outage
+	// surfaces as AdminCredentialReady=False promptly. The clouds.yaml
+	// ExternalSecret read below would eventually requeue on its own, but ESO only
+	// re-syncs at the refreshInterval (default 1h); the ClusterSecretStore watch
+	// wakes the ControlPlane the moment ESO flips the store condition, so the
+	// credential condition does not stay stale-True through a short outage (#476).
+	storeReady, err := secrets.IsClusterSecretStoreReady(ctx, r.Client, openBaoClusterStoreName)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if !storeReady {
+		logger.Info("ClusterSecretStore not ready, deferring admin credential push")
+		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+			Type:               conditionTypeAdminCredentialReady,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: cp.Generation,
+			Reason:             "SecretStoreNotReady",
+			Message: fmt.Sprintf("ClusterSecretStore %q is not ready; upstream secret backend unreachable",
+				openBaoClusterStoreName),
+		})
+		return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
+	}
+
 	// Gate on the K-ORC clouds.yaml ExternalSecret being Ready. It MUST materialise
 	// in the SAME namespace as the K-ORC resource CRs (childNamespace) because
 	// K-ORC resolves CloudCredentialsRef in the resource's own namespace (C1). The

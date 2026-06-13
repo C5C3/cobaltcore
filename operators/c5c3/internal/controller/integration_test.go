@@ -191,6 +191,36 @@ func integrationMinimalControlPlane(name, namespace string) *c5c3v1alpha1.Contro
 	}
 }
 
+// ensureReadyClusterSecretStore creates the cluster-scoped OpenBao-backed
+// ClusterSecretStore the DB-credential, admin-password and admin-credential
+// sub-reconcilers gate on (#476) and marks it Ready. It is idempotent across the
+// shared envtest cluster: the store is cluster-scoped, so a second test reuses
+// the existing object and only refreshes its Ready status. Call it before
+// creating a ControlPlane so the first reconcile sees the store Ready and the
+// credential gates open; without it the chain stalls at DBCredentialsReady=False
+// with reason SecretStoreNotReady. Mirrors the keystone operator's helper.
+func ensureReadyClusterSecretStore(t testing.TB, ctx context.Context, c client.Client) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+
+	store := &esov1.ClusterSecretStore{
+		ObjectMeta: metav1.ObjectMeta{Name: openBaoClusterStoreName},
+	}
+	err := c.Get(ctx, client.ObjectKeyFromObject(store), store)
+	if apierrors.IsNotFound(err) {
+		g.Expect(c.Create(ctx, store)).To(Succeed(), "create ClusterSecretStore")
+	} else {
+		g.Expect(err).NotTo(HaveOccurred(), "get ClusterSecretStore")
+	}
+
+	store.Status = esov1.SecretStoreStatus{
+		Conditions: []esov1.SecretStoreStatusCondition{
+			{Type: esov1.SecretStoreReady, Status: corev1.ConditionTrue},
+		},
+	}
+	g.Expect(c.Status().Update(ctx, store)).To(Succeed(), "update ClusterSecretStore status")
+}
+
 // waitForControlPlaneCondition polls the ControlPlane CR until the named
 // condition reaches the expected status, or the timeout is reached. Returns the
 // observed condition.
@@ -349,6 +379,10 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	g := NewGomegaWithT(t)
 
 	c, ctx, _ := setupControlPlaneEnvTest(t)
+
+	// The OpenBao-backed ClusterSecretStore must be Ready before the chain
+	// reaches the credential gates (#476).
+	ensureReadyClusterSecretStore(t, ctx, c)
 
 	// Isolated test namespace per run (namespace-per-test with GenerateName).
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-controlplane-"}}
@@ -584,6 +618,10 @@ func TestIntegration_MinimalManagedToReady(t *testing.T) {
 
 	c, ctx, _ := setupControlPlaneEnvTest(t)
 
+	// The OpenBao-backed ClusterSecretStore must be Ready before the chain
+	// reaches the credential gates (#476).
+	ensureReadyClusterSecretStore(t, ctx, c)
+
 	// Isolated test namespace per run (namespace-per-test with GenerateName).
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-minimal-cp-"}}
 	g.Expect(c.Create(ctx, ns)).To(Succeed(), "create test namespace")
@@ -678,6 +716,10 @@ func TestIntegration_DBCredentialsGate_BlocksKeystoneUntilSecretExists(t *testin
 
 	c, ctx, _ := setupControlPlaneEnvTest(t)
 
+	// The OpenBao-backed ClusterSecretStore must be Ready before the chain
+	// reaches the credential gates (#476).
+	ensureReadyClusterSecretStore(t, ctx, c)
+
 	// Isolated test namespace per run (namespace-per-test with GenerateName).
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-dbgate-"}}
 	g.Expect(c.Create(ctx, ns)).To(Succeed(), "create test namespace")
@@ -763,6 +805,10 @@ func TestIntegration_AdminPasswordGate_BlocksKeystoneUntilExternalSecretReady(t 
 	g := NewGomegaWithT(t)
 
 	c, ctx, _ := setupControlPlaneEnvTest(t)
+
+	// The OpenBao-backed ClusterSecretStore must be Ready before the chain
+	// reaches the credential gates (#476).
+	ensureReadyClusterSecretStore(t, ctx, c)
 
 	// Isolated test namespace per run (namespace-per-test with GenerateName).
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-adminpwgate-"}}
@@ -961,6 +1007,10 @@ func TestIntegration_MultiControlPlane_DistinctAdminCredentialPaths(t *testing.T
 
 	c, ctx, _ := setupControlPlaneEnvTest(t)
 
+	// The OpenBao-backed ClusterSecretStore must be Ready before either chain
+	// reaches the credential gates (#476).
+	ensureReadyClusterSecretStore(t, ctx, c)
+
 	// Two isolated namespaces (namespace-per-CR with GenerateName).
 	nsA := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-mcp-a-"}}
 	nsB := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-mcp-b-"}}
@@ -1036,6 +1086,10 @@ func TestIntegration_MultiControlPlane_DistinctDBCredentialPaths(t *testing.T) {
 	g := NewGomegaWithT(t)
 
 	c, ctx, _ := setupControlPlaneEnvTest(t)
+
+	// The OpenBao-backed ClusterSecretStore must be Ready before either chain
+	// reaches the credential gates (#476).
+	ensureReadyClusterSecretStore(t, ctx, c)
 
 	// Two isolated namespaces (namespace-per-CR with GenerateName).
 	nsA := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-mcpdb-a-"}}

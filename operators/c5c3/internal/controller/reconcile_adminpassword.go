@@ -125,6 +125,27 @@ func (r *ControlPlaneReconciler) reconcileAdminPassword(ctx context.Context, cp 
 		return ctrl.Result{}, nil
 	}
 
+	// Check the OpenBao-backed ClusterSecretStore first so an ESO/OpenBao outage
+	// surfaces as AdminPasswordReady=False even while the per-ExternalSecret cache
+	// still reports Ready=True from its last successful sync (#476). Mirrors
+	// reconcileDBCredentials and the keystone operator's reconcile_secrets.go.
+	storeReady, err := secrets.IsClusterSecretStoreReady(ctx, r.Client, openBaoClusterStoreName)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if !storeReady {
+		logger.Info("ClusterSecretStore not ready, requeuing admin password projection")
+		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+			Type:               conditionTypeAdminPasswordReady,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: cp.Generation,
+			Reason:             "SecretStoreNotReady",
+			Message: fmt.Sprintf("ClusterSecretStore %q is not ready; upstream secret backend unreachable",
+				openBaoClusterStoreName),
+		})
+		return ctrl.Result{RequeueAfter: adminPasswordRequeueAfter}, nil
+	}
+
 	// Managed mode: create-or-update the per-CP admin-password ExternalSecret,
 	// owner-referencing it to the ControlPlane so it is garbage-collected with the CR.
 	desired := adminPasswordExternalSecret(cp)

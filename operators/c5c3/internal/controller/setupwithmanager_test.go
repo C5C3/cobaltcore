@@ -10,6 +10,7 @@ import (
 	"context"
 	"testing"
 
+	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -156,4 +157,52 @@ func TestSecretToControlPlaneMapper_ScopedToNamespace(t *testing.T) {
 	g.Expect(reqs).To(HaveLen(1),
 		"only the ControlPlane in the Secret's namespace must be enqueued")
 	g.Expect(reqs[0].NamespacedName).To(Equal(types.NamespacedName{Namespace: "ns-a", Name: "cp-a"}))
+}
+
+// --- clusterSecretStoreToControlPlaneMapper (#476) ---
+
+// TestClusterSecretStoreToControlPlaneMapper_EnqueuesAllControlPlanes verifies
+// that a status change on the OpenBao-backed ClusterSecretStore enqueues every
+// ControlPlane in the cluster (across namespaces), since the cluster-scoped store
+// is shared and an ESO/OpenBao outage affects all of them.
+func TestClusterSecretStoreToControlPlaneMapper_EnqueuesAllControlPlanes(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cpA := mapperControlPlane("cp-a", "ns-a", "secret-a")
+	cpB := mapperControlPlane("cp-b", "ns-b", "secret-b")
+	c := newControlPlaneMapperClient(t, cpA, cpB)
+	mapper := clusterSecretStoreToControlPlaneMapper(c)
+
+	store := &esov1.ClusterSecretStore{
+		ObjectMeta: metav1.ObjectMeta{Name: openBaoClusterStoreName},
+	}
+	reqs := mapper(context.Background(), store)
+
+	names := make([]types.NamespacedName, 0, len(reqs))
+	for _, r := range reqs {
+		names = append(names, r.NamespacedName)
+	}
+	g.Expect(names).To(ConsistOf(
+		types.NamespacedName{Namespace: "ns-a", Name: "cp-a"},
+		types.NamespacedName{Namespace: "ns-b", Name: "cp-b"},
+	), "a ClusterSecretStore change must enqueue every ControlPlane in the cluster")
+}
+
+// TestClusterSecretStoreToControlPlaneMapper_IgnoresOtherStores verifies the
+// mapper only reacts to the OpenBao-backed store the operator routes credentials
+// through, not to unrelated ClusterSecretStores.
+func TestClusterSecretStoreToControlPlaneMapper_IgnoresOtherStores(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := mapperControlPlane("cp", "default", "secret")
+	c := newControlPlaneMapperClient(t, cp)
+	mapper := clusterSecretStoreToControlPlaneMapper(c)
+
+	other := &esov1.ClusterSecretStore{
+		ObjectMeta: metav1.ObjectMeta{Name: "some-other-store"},
+	}
+	reqs := mapper(context.Background(), other)
+
+	g.Expect(reqs).To(BeEmpty(),
+		"a change to an unrelated ClusterSecretStore must enqueue nothing")
 }

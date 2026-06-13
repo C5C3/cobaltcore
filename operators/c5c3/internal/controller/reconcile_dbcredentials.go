@@ -96,6 +96,30 @@ func (r *ControlPlaneReconciler) reconcileDBCredentials(ctx context.Context, cp 
 		return ctrl.Result{}, nil
 	}
 
+	// Check the OpenBao-backed ClusterSecretStore first so an ESO/OpenBao outage
+	// surfaces as DBCredentialsReady=False even while the per-ExternalSecret cache
+	// still reports Ready=True from its last successful sync. ESO only re-syncs
+	// ExternalSecrets at their refreshInterval (default 1h), so relying on the
+	// ExternalSecret Ready alone would miss short-lived outages; the
+	// ClusterSecretStore watch wakes the ControlPlane the moment ESO flips the
+	// store condition (#476). Mirrors reconcile_secrets.go in the keystone operator.
+	storeReady, err := secrets.IsClusterSecretStoreReady(ctx, r.Client, openBaoClusterStoreName)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if !storeReady {
+		logger.Info("ClusterSecretStore not ready, requeuing DB credential projection")
+		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+			Type:               conditionTypeDBCredentialsReady,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: cp.Generation,
+			Reason:             "SecretStoreNotReady",
+			Message: fmt.Sprintf("ClusterSecretStore %q is not ready; upstream secret backend unreachable",
+				openBaoClusterStoreName),
+		})
+		return ctrl.Result{RequeueAfter: dbCredentialsRequeueAfter}, nil
+	}
+
 	// Managed mode: create-or-update the per-CP DB-credential ExternalSecret,
 	// owner-referencing it to the ControlPlane so it is garbage-collected with the CR.
 	desired := dbCredentialExternalSecret(cp)

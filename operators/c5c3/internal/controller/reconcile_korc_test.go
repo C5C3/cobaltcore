@@ -394,6 +394,31 @@ func TestReconcileAdminCredential_GatedOnKORC(t *testing.T) {
 	g.Expect(cond.Reason).To(Equal("WaitingForKORC"))
 }
 
+// TestReconcileAdminCredential_StoreNotReady_SetsConditionFalse (#476): once
+// KORCReady is True, reconcileAdminCredential gates on the OpenBao-backed
+// ClusterSecretStore. When the store is not Ready (here: absent) it flips
+// AdminCredentialReady=False with reason SecretStoreNotReady and requeues,
+// instead of leaving a stale Ready=True between resyncs.
+func TestReconcileAdminCredential_StoreNotReady_SetsConditionFalse(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := korcControlPlane()
+	setKORCReady(cp)
+	// No ClusterSecretStore seeded => IsClusterSecretStoreReady reports not ready.
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	res, err := r.reconcileAdminCredential(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter), "must requeue while the store is not ready")
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeAdminCredentialReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("SecretStoreNotReady"))
+}
+
 // TestReconcileKORC_FreshClusterSeedsCloudsYamlAndCreatesPushSecretAndExternalSecret
 // is the reworked fresh-cluster bootstrap test. It
 // REPLACES TestReconcileAdminCredential_FreshClusterWithoutCloudsYamlSeedDoesNotPush,
@@ -503,7 +528,7 @@ func TestReconcileAdminCredential_MissingAppCredSecretDefers(t *testing.T) {
 	setKORCReady(cp)
 	cp.Status.AdminApplicationCredential = &c5c3v1alpha1.AdminApplicationCredentialStatus{ID: "test-ac-id"}
 	// clouds.yaml ExternalSecret is Ready, but the app-credential Secret is absent.
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, readyCloudsYamlES(cp)).Build()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, readyClusterSecretStore(), readyCloudsYamlES(cp)).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
 	res, err := r.reconcileAdminCredential(context.Background(), cp)
@@ -541,7 +566,7 @@ func TestReconcileAdminCredential_PushSecretBuiltAndReady(t *testing.T) {
 	setKORCReady(cp)
 	cp.Status.AdminApplicationCredential = &c5c3v1alpha1.AdminApplicationCredentialStatus{ID: "test-ac-id"}
 	c := fake.NewClientBuilder().WithScheme(s).
-		WithObjects(cp, readyCloudsYamlES(cp), mintedAppCredSecret(cp), readyAppCredPushSecret(cp)).Build()
+		WithObjects(cp, readyClusterSecretStore(), readyCloudsYamlES(cp), mintedAppCredSecret(cp), readyAppCredPushSecret(cp)).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
 	_, err := r.reconcileAdminCredential(context.Background(), cp)
@@ -632,7 +657,7 @@ func TestReconcileAdminCredential_PushSecretClobberSafeNoChurn(t *testing.T) {
 	setKORCReady(cp)
 	cp.Status.AdminApplicationCredential = &c5c3v1alpha1.AdminApplicationCredentialStatus{ID: "test-ac-id"}
 	c := fake.NewClientBuilder().WithScheme(s).
-		WithObjects(cp, readyCloudsYamlES(cp), mintedAppCredSecret(cp), readyAppCredPushSecret(cp)).Build()
+		WithObjects(cp, readyClusterSecretStore(), readyCloudsYamlES(cp), mintedAppCredSecret(cp), readyAppCredPushSecret(cp)).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
 	_, err := r.reconcileAdminCredential(context.Background(), cp)
@@ -1323,7 +1348,7 @@ func TestReconcileAdminCredential_WaitsForPushSecretSync(t *testing.T) {
 	// No pre-existing Ready PushSecret — EnsurePushSecret creates it, but it has not
 	// synced to the backend yet.
 	c := fake.NewClientBuilder().WithScheme(s).
-		WithObjects(cp, readyCloudsYamlES(cp), mintedAppCredSecret(cp)).Build()
+		WithObjects(cp, readyClusterSecretStore(), readyCloudsYamlES(cp), mintedAppCredSecret(cp)).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
 	_, err := r.reconcileAdminCredential(context.Background(), cp)
