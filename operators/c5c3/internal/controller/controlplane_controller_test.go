@@ -88,6 +88,33 @@ func TestAggregateReady_OneFalse(t *testing.T) {
 		"aggregate Ready must be false when any sub-condition is False")
 }
 
+// TestSetServicesStatus_WritesPhaseAndKeystoneReadiness verifies that
+// setServicesStatus populates the previously-unwritten status.updatePhase (fixed
+// at Idle) and status.services["keystone"], deriving the service readiness from
+// the KeystoneReady sub-condition and the release from spec (#476).
+func TestSetServicesStatus_WritesPhaseAndKeystoneReadiness(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := &c5c3v1alpha1.ControlPlane{
+		ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "openstack"},
+		Spec:       c5c3v1alpha1.ControlPlaneSpec{OpenStackRelease: "2025.2"},
+	}
+
+	// KeystoneReady absent => service reported not Ready.
+	setServicesStatus(cp)
+	g.Expect(cp.Status.UpdatePhase).To(Equal(c5c3v1alpha1.UpdatePhaseIdle))
+	svc, ok := cp.Status.Services["keystone"]
+	g.Expect(ok).To(BeTrue(), "status.services must report the projected keystone service")
+	g.Expect(svc.Ready).To(BeFalse(), "keystone service must be not Ready while KeystoneReady is absent")
+	g.Expect(svc.Release).To(Equal("2025.2"))
+
+	// KeystoneReady True => service reported Ready.
+	conditions.SetCondition(&cp.Status.Conditions, trueCondition(conditionTypeKeystoneReady))
+	setServicesStatus(cp)
+	g.Expect(cp.Status.Services["keystone"].Ready).To(BeTrue(),
+		"keystone service must be Ready once KeystoneReady is True")
+}
+
 func TestReconcile_NotFound_EarlyReturn(t *testing.T) {
 	g := NewGomegaWithT(t)
 

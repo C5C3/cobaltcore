@@ -186,6 +186,7 @@ func (r *ControlPlaneReconciler) updateStatus(ctx context.Context, cp *c5c3v1alp
 	// subConditionTypes, not the Ready condition itself, so this is not
 	// self-referential.
 	setReadyCondition(cp)
+	setServicesStatus(cp)
 	cp.Status.ObservedGeneration = cp.Generation
 	if err := r.Status().Update(ctx, cp); err != nil {
 		log.FromContext(ctx).Error(err, "unable to update ControlPlane status")
@@ -270,6 +271,28 @@ func (r *ControlPlaneReconciler) parkDuplicateControlPlane(ctx context.Context, 
 		return ctrl.Result{}, fmt.Errorf("updating status: %w", err)
 	}
 	return ctrl.Result{RequeueAfter: duplicateControlPlaneRequeueAfter}, nil
+}
+
+// keystoneServiceKey is the key under which status.services reports the
+// projected Keystone service readiness.
+const keystoneServiceKey = "keystone"
+
+// setServicesStatus records status.services and status.updatePhase on every
+// status write (#476). Both fields were declared on ControlPlaneStatus but never
+// written. status.updatePhase is fixed at Idle until the release-update state
+// machine is implemented — the other UpdatePhase values are reserved (see the
+// UpdatePhase DECISION comment), and "no update in progress" is the honest L1
+// state. status.services maps each projected service to its observed readiness,
+// derived from the corresponding sub-condition, with the release the service is
+// being driven to.
+func setServicesStatus(cp *c5c3v1alpha1.ControlPlane) {
+	cp.Status.UpdatePhase = c5c3v1alpha1.UpdatePhaseIdle
+	cp.Status.Services = map[string]c5c3v1alpha1.ServiceStatus{
+		keystoneServiceKey: {
+			Ready:   conditions.AllTrue(cp.Status.Conditions, conditionTypeKeystoneReady),
+			Release: cp.Spec.OpenStackRelease,
+		},
+	}
 }
 
 // controlPlaneSecretNameExtractor is the controller-runtime IndexerFunc registered
