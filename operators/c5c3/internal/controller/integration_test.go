@@ -35,6 +35,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 
 	"github.com/c5c3/forge/internal/common/testutil/simulators"
@@ -1243,4 +1244,125 @@ func TestIntegration_MultiControlPlane_DistinctDBCredentialPaths(t *testing.T) {
 	// materialised Secret in the (separate) namespaces.
 	g.Expect(dbCredentialSecretName(cpA)).NotTo(Equal(dbCredentialSecretName(cpB)),
 		"the two ControlPlanes' DB credential Secret names must be distinct")
+}
+
+// fakeKORCFinalizer mimics the finalizer K-ORC adds to the ApplicationCredential
+// it manages. envtest runs no K-ORC controller, so the test injects this
+// finalizer to hold the AC Terminating exactly as a real revoke-against-Keystone
+// finalizer would, then removes it to let teardown complete.
+const fakeKORCFinalizer = "openstack.k-orc.cloud/applicationcredential"
+
+// TestIntegration_ControlPlaneDeletion_SequencesORCTeardown proves the
+// ORC-teardown finalizer sequences deletion: the operator deletes the owned
+// K-ORC ApplicationCredential FIRST and holds the ControlPlane CR (and thus,
+// via the deferred owner-ref GC cascade, the projected Keystone child) until the
+// AC is gone, then releases the finalizer so the rest can be garbage-collected.
+//
+// envtest runs no garbage collector, so the owner-ref cascade that tears down
+// Keystone/MariaDB once the ControlPlane CR is removed is asserted in the e2e
+// test, not here. What this test pins is the sequencing invariant the finalizer
+// adds on top of GC: while a K-ORC CR is still Terminating, the ControlPlane CR
+// is held and Keystone is NOT yet torn down.
+func TestIntegration_ControlPlaneDeletion_SequencesORCTeardown(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupControlPlaneEnvTest(t)
+
+	// The OpenBao-backed ClusterSecretStore must be Ready before the chain
+	// reaches the credential gates (#476); otherwise reconcileDBCredentials
+	// short-circuits at SecretStoreNotReady and never projects the DB-credential
+	// ExternalSecret driveControlPlaneToAdminCredentialReady waits for.
+	ensureReadyClusterSecretStore(t, ctx, c)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-cp-deletion-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed(), "create test namespace")
+
+	cp := integrationMinimalControlPlane("cp", ns.Name)
+	g.Expect(c.Create(ctx, cp)).To(Succeed(), "create ControlPlane CR")
+	cpKey := types.NamespacedName{Name: cp.Name, Namespace: ns.Name}
+
+	// Drive the chain until the K-ORC ApplicationCredential and the projected
+	// Keystone child exist.
+	driveControlPlaneToAdminCredentialReady(t, ctx, c, cp)
+
+	acKey := types.NamespacedName{Name: adminAppCredentialName(cp), Namespace: ns.Name}
+	ksKey := types.NamespacedName{Name: keystoneName(cp), Namespace: ns.Name}
+	g.Expect(c.Get(ctx, ksKey, &keystonev1alpha1.Keystone{})).To(Succeed(),
+		"projected Keystone child must exist before deletion")
+
+	// The ControlPlane must carry the ORC-teardown finalizer once reconciled.
+	g.Eventually(func() bool {
+		got := &c5c3v1alpha1.ControlPlane{}
+		if err := c.Get(ctx, cpKey, got); err != nil {
+			return false
+		}
+		return controllerutil.ContainsFinalizer(got, controlPlaneORCFinalizer)
+	}, itEventuallyTimeout, itPollInterval).Should(BeTrue(), "ControlPlane must carry the ORC-teardown finalizer")
+
+	// Inject a fake K-ORC finalizer onto the AC so deleting it leaves it
+	// Terminating (as a real revoke-against-Keystone finalizer would), rather
+	// than removing it outright in the GC-less envtest.
+	g.Eventually(func() error {
+		ac := &orcv1alpha1.ApplicationCredential{}
+		if err := c.Get(ctx, acKey, ac); err != nil {
+			return err
+		}
+		if controllerutil.ContainsFinalizer(ac, fakeKORCFinalizer) {
+			return nil
+		}
+		controllerutil.AddFinalizer(ac, fakeKORCFinalizer)
+		return c.Update(ctx, ac)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "inject fake K-ORC finalizer on the AC")
+
+	// Delete the ControlPlane.
+	g.Expect(c.Delete(ctx, cp)).To(Succeed(), "delete ControlPlane CR")
+
+	// Teardown must be initiated: the operator deletes the AC, which is held
+	// Terminating by the fake K-ORC finalizer.
+	g.Eventually(func() bool {
+		ac := &orcv1alpha1.ApplicationCredential{}
+		if err := c.Get(ctx, acKey, ac); err != nil {
+			return false
+		}
+		return !ac.DeletionTimestamp.IsZero()
+	}, itEventuallyTimeout, itPollInterval).Should(BeTrue(), "operator must delete the owned AC first")
+
+	// Sequencing invariant: while the AC is still Terminating, the ControlPlane
+	// CR is HELD (finalizer not released) and the Keystone child is NOT torn down.
+	g.Consistently(func() bool {
+		gotCP := &c5c3v1alpha1.ControlPlane{}
+		if err := c.Get(ctx, cpKey, gotCP); err != nil {
+			return false
+		}
+		if !controllerutil.ContainsFinalizer(gotCP, controlPlaneORCFinalizer) {
+			return false
+		}
+		return c.Get(ctx, ksKey, &keystonev1alpha1.Keystone{}) == nil
+	}, 3*time.Second, itPollInterval).Should(BeTrue(),
+		"ControlPlane finalizer must hold (and Keystone must survive) while the K-ORC CR is Terminating")
+
+	// Release the AC by removing the fake finalizer; the operator then releases
+	// the ControlPlane finalizer.
+	g.Eventually(func() error {
+		ac := &orcv1alpha1.ApplicationCredential{}
+		err := c.Get(ctx, acKey, ac)
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		controllerutil.RemoveFinalizer(ac, fakeKORCFinalizer)
+		return c.Update(ctx, ac)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "remove fake K-ORC finalizer from the AC")
+
+	// Once the AC is gone the operator releases the ControlPlane finalizer, so
+	// both objects disappear.
+	g.Eventually(func() bool {
+		acErr := c.Get(ctx, acKey, &orcv1alpha1.ApplicationCredential{})
+		cpErr := c.Get(ctx, cpKey, &c5c3v1alpha1.ControlPlane{})
+		return apierrors.IsNotFound(acErr) && apierrors.IsNotFound(cpErr)
+	}, itEventuallyTimeout, itPollInterval).Should(BeTrue(),
+		"AC and ControlPlane must be removed once the K-ORC finalizer clears")
 }
