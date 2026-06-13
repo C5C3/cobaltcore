@@ -191,16 +191,17 @@ mariadb-operator-crds     (no dependencies)
 
 K-ORC is **not** in this graph: it is applied by a Flux `Kustomization`, not a
 HelmRelease, and a HelmRelease `dependsOn` can only reference other HelmReleases. The
-c5c3-operator therefore does **not** `dependsOn` K-ORC — the reconciler tolerates the
-K-ORC CRDs being absent (it surfaces `KORCReady=False` / `KORCCRDNotInstalled` rather
-than crash-looping) and converges once they appear.
+c5c3-operator therefore does **not** `dependsOn` K-ORC even though K-ORC is a **hard
+dependency**: `SetupWithManager` `Owns` the K-ORC kinds, so the manager only starts
+once those CRDs are installed (until then the pod restarts), and converges once they
+appear.
 
 The `c5c3-operator` HelmRelease sits at the top of this graph: it
 `dependsOn` the four operators whose CRs it projects (keystone-operator,
 external-secrets, mariadb-operator, memcached-operator). It also drives K-ORC's
 ApplicationCredential / Service / Endpoint CRDs, but K-ORC is applied by the separate
-Flux `Kustomization` above, so it is not a `dependsOn` edge — the c5c3-operator simply
-waits out `KORCCRDNotInstalled` until those CRDs are present.
+Flux `Kustomization` above, so it cannot be a `dependsOn` edge — the c5c3-operator's
+manager instead requires those CRDs to be present at startup.
 
 FluxCD resolves this dependency graph and installs operators in the correct order.
 If cert-manager is not ready, dependent operators are held in a pending state.
@@ -474,8 +475,9 @@ it projects — `keystone-operator` for the Keystone instance, `external-secrets
 `mariadb-operator` and `memcached-operator` for the supporting platform services. It
 also drives K-ORC's `ApplicationCredential` / `Service` / `Endpoint` CRDs to register
 the catalog and rotate the admin credential, but K-ORC is the separate Flux
-`Kustomization` above, not a `dependsOn` edge (the reconciler tolerates those CRDs being
-absent — `KORCCRDNotInstalled` — until they appear). The operator child CRs are created
+`Kustomization` above, not a `dependsOn` edge (so K-ORC, like the other CRD providers,
+is a hard dependency the manager requires at startup rather than tolerating). The
+operator child CRs are created
 in the `ControlPlane`'s own namespace, not a hard-coded one. For the reconciliation
 contract see the upstream design chapter
 `architecture/docs/09-implementation/08-c5c3-operator.md`.

@@ -108,7 +108,9 @@ can interact with the typed child CRDs:
 ### Watches
 
 The controller watches the primary `ControlPlane` CR, every child CR the
-sub-reconcilers project, and the admin-password `Secret`:
+sub-reconcilers project (including the owned ESO `ExternalSecret` and
+`PushSecret`), the admin-password `Secret`, and the OpenBao-backed
+`ClusterSecretStore`:
 
 | Resource | Watch Type | Effect |
 | --- | --- | --- |
@@ -119,7 +121,10 @@ sub-reconcilers project, and the admin-password `Secret`:
 | K-ORC `ApplicationCredential` | `Owns()` | Re-reconciles when the minted admin credential's `Available` condition or `status.id` changes |
 | K-ORC `Service` | `Owns()` | Re-reconciles when the identity catalog Service changes |
 | K-ORC `Endpoint` | `Owns()` | Re-reconciles when the public identity Endpoint changes |
+| `ExternalSecret` | `Owns()` | Re-reconciles when an owned ESO ExternalSecret (DB credential, admin password, K-ORC clouds.yaml) syncs or fails, so the credential conditions track ESO promptly |
+| `PushSecret` | `Owns()` | Re-reconciles when the owned admin-credential PushSecret status changes |
 | `Secret` | `Watches()` | Maps Secret events to referencing ControlPlane CRs via the `ControlPlaneSecretNameIndexKey` field indexer (`secretToControlPlaneMapper`) |
+| `ClusterSecretStore` | `Watches()` | Maps a status change on the OpenBao-backed store (`openbao-cluster-store`) to **every** ControlPlane in the cluster (`clusterSecretStoreToControlPlaneMapper`) |
 
 The `Secret` watch uses `Watches()` with a `MapFunc` rather than `Owns()`
 because the admin-password Secret
@@ -129,6 +134,15 @@ owner-reference filter would never match it. The index-backed namespace List is
 exactly what wakes the ControlPlane when its admin password rotates, so the
 re-mint chain (see [K-ORC admin credential chain](#k-orc-admin-credential-chain))
 converges on watch delivery instead of waiting for the next periodic requeue.
+
+The `ClusterSecretStore` watch is cluster-scoped: the OpenBao-backed store is
+shared across namespaces, so any status transition (for example ESO losing the
+backend connection) enqueues every ControlPlane. This is why the DB-credential,
+admin-password, and admin-credential sub-reconcilers can flip their conditions to
+`SecretStoreNotReady` the moment the backend becomes unreachable instead of
+waiting up to a full ESO refresh interval (default 1h) for the next per-secret
+re-sync. The `ExternalSecret`/`PushSecret` children are owned (controller
+reference), so `Owns()` wires them directly.
 
 #### Secret Field Indexer
 
@@ -332,11 +346,12 @@ ctrl.Result{}, nil)`.
 
 ### Status Update Pattern
 
-`updateStatus()` stamps `cp.Status.ObservedGeneration = cp.Generation`, persists
-all condition changes via `r.Status().Update()`, and returns the provided
-`(result, error)` pair. When both a reconcile error and the status update fail,
-both errors are preserved via `errors.Join` so the original reconcile failure
-remains visible in controller-runtime logs:
+`updateStatus()` stamps `cp.Status.ObservedGeneration = cp.Generation`, records
+the per-service status (`setServicesStatus()`, see below), persists all condition
+changes via `r.Status().Update()`, and returns the provided `(result, error)`
+pair. When both a reconcile error and the status update fail, both errors are
+preserved via `errors.Join` so the original reconcile failure remains visible in
+controller-runtime logs:
 
 | reconcileErr | `Status().Update()` | Returned error |
 | --- | --- | --- |
@@ -373,6 +388,16 @@ One path bypasses the aggregation entirely: a ControlPlane parked by the
 duplicate guard (see [Multi-instance](#multi-instance)) gets `Ready=False` with
 reason `DuplicateControlPlane` written directly — `setReadyCondition()` would
 otherwise overwrite the reason with `NotAllReady` on the next status update.
+
+### Services and Update Phase
+
+`setServicesStatus()` runs on every `updateStatus` call and populates two status
+fields that the schema declared but the reconciler previously never wrote:
+
+| Field | Value |
+| --- | --- |
+| `status.updatePhase` | Fixed at `Idle` — the release-update state machine is not implemented and the other `UpdatePhase` values are reserved, so "no update in progress" is the current state |
+| `status.services["keystone"]` | `ready` mirrors the `KeystoneReady` sub-condition (via `conditions.AllTrue`); `release` is `spec.openStackRelease` |
 
 ---
 
@@ -459,6 +484,7 @@ is set and **brownfield** when the user supplies a `host`-based connection:
 | Path | Status | Reason | Notes |
 | --- | --- | --- | --- |
 | Brownfield (`clusterRef == nil`) | True | `BrownfieldUserSuppliedCredential` | no ExternalSecret projected; user supplies the DB credential Secret out-of-band |
+| ClusterSecretStore not Ready | False | `SecretStoreNotReady` | requeue 10s; managed mode only, checked before the ExternalSecret is projected so an OpenBao/ESO outage surfaces promptly |
 | ExternalSecret create/update or read fails | False | `ExternalSecretError` | returns the error |
 | ExternalSecret not yet synced | False | `WaitingForDBCredentialSecret` | requeue 10s |
 | ExternalSecret Ready | True | `DBCredentialsReady` | — |
@@ -511,6 +537,7 @@ cp-level spec default for `passwordSecretRef` remains `keystone-admin`.
 | Path | Status | Reason | Notes |
 | --- | --- | --- | --- |
 | Brownfield (`clusterRef == nil`) | True | `BrownfieldUserSuppliedCredential` | no ExternalSecret projected; user supplies the admin-password Secret out-of-band |
+| ClusterSecretStore not Ready | False | `SecretStoreNotReady` | requeue 10s; managed mode only, checked before the ExternalSecret is projected |
 | ExternalSecret create/update or read fails | False | `ExternalSecretError` | returns the error |
 | ExternalSecret not yet synced | False | `WaitingForAdminPasswordSecret` | requeue 10s |
 | ExternalSecret Ready | True | `AdminPasswordReady` | — |
@@ -556,7 +583,7 @@ the ControlPlane provisioned:
 | Path | Status | Reason | Notes |
 | --- | --- | --- | --- |
 | `InfrastructureReady` not True | False | `WaitingForInfrastructure` | requeue 5s; no Keystone CR is created while infra is unready |
-| Invalid `rotationInterval` | False | `InvalidRotationInterval` | **no requeue, no error** — a bad interval surfaces a clean condition rather than a partial apply or backoff loop |
+| Invalid `rotationInterval` | False | `InvalidRotationInterval` | **returns the error** so the reconcile chain stops at Keystone and the manager requeues with backoff (the validating webhook already rejects unrepresentable intervals at admission, so this is defense-in-depth) |
 | Keystone create/update fails | False | `KeystoneError` | returns the error |
 | Keystone child not yet Ready | False | `WaitingForKeystone` | requeue 15s |
 | Keystone child Ready | True | `KeystoneReady` | — |
@@ -626,7 +653,6 @@ that instructs K-ORC to mint the admin application credential, and drives re-min
 | Admin password Secret/key missing | False | `WaitingForAdminPassword` | requeue 10s (via `secrets.IsMissingSecretOrKey`) |
 | Admin password read fails otherwise | False | `AdminPasswordError` | returns the error |
 | Password-cloud ensure fails | False | `PasswordCloudError` | returns the error |
-| K-ORC AC CRD not installed | False | `KORCCRDNotInstalled` | requeue 10s (no hard error) |
 | Hash mismatch → AC deleted for re-mint | False | `ReMinting` | requeue 10s; AC deleted + `value` regenerated, recreated next pass |
 | Re-mint stuck `Terminating` past `remintStallTimeout` (5m) | False | `ReMintStalled` | requeue 10s; finalizer cannot revoke the old credential |
 | AC create/update/delete/read fails otherwise | False | `ApplicationCredentialError` | returns the error |
@@ -634,13 +660,21 @@ that instructs K-ORC to mint the admin application credential, and drives re-min
 | AC not yet `Available` | False | `WaitingForApplicationCredential` | requeue 10s; gated on `orcv1alpha1.IsAvailable(ac)` (K-ORC uses `Available`, not `Ready`) |
 | AC minted and Available | True | `ApplicationCredentialMinted` | — |
 
+> **Hard CRD dependency.** K-ORC (like Memcached, ESO, MariaDB, and Keystone) is
+> a hard dependency: `SetupWithManager` `Owns`/`Watches` its kinds, so the
+> manager fails fast at startup if any CRD is absent. A missing K-ORC CRD never
+> reaches the reconcile path, so there is no dedicated CRD-not-installed
+> condition; a no-match error that could only occur if a CRD were deleted after
+> startup propagates as a hard error (`ApplicationCredentialError` /
+> `ServiceError`) and the manager requeues with backoff.
+
 ### reconcileAdminCredential
 
 | Aspect | Value |
 | --- | --- |
 | File | `reconcile_korc.go` |
 | Condition | `AdminCredentialReady` |
-| Gate | `KORCReady == True` **and** the K-ORC clouds.yaml `ExternalSecret` (`{childNamespace(cp)}/{CloudCredentialsRef.SecretName}`, co-located with the K-ORC CRs per C1) is Ready |
+| Gate | `KORCReady == True`, the OpenBao-backed `ClusterSecretStore` is Ready, **and** the K-ORC clouds.yaml `ExternalSecret` (`{childNamespace(cp)}/{CloudCredentialsRef.SecretName}`, co-located with the K-ORC CRs per C1) is Ready |
 | Owns | the operator-owned `Secret` `{controlplane.Name}-admin-app-credential` and the `PushSecret` `{controlplane.Name}-admin-app-credential-backup`, both in `childNamespace(cp)` |
 | Requeue | `korcRequeueAfter` = **10s** while either gate is unmet |
 
@@ -675,6 +709,7 @@ OpenBao:
 | Path | Status | Reason | Notes |
 | --- | --- | --- | --- |
 | `KORCReady` not True | False | `WaitingForKORC` | requeue 10s |
+| ClusterSecretStore not Ready | False | `SecretStoreNotReady` | requeue 10s; checked after the `KORCReady` gate so an OpenBao/ESO outage surfaces before the clouds.yaml wait |
 | clouds.yaml ES check errors | False | `CloudsYamlError` | returns the error |
 | clouds.yaml ES not Ready | False | `WaitingForCloudsYaml` | requeue 10s |
 | operator Secret ensure fails | False | `SecretError` | returns the error |
@@ -689,20 +724,20 @@ OpenBao:
 | Condition | `CatalogReady` (also sets `cp.Status.CatalogReady = true`) |
 | Gate | `AdminCredentialReady == True` |
 | Owns | a K-ORC identity `Service` (`{controlplane.Name}-identity-service`) and its public `Endpoint` (`{controlplane.Name}-identity-endpoint`) in `childNamespace(cp)` |
-| Requeue | `korcRequeueAfter` = **10s** while gated or while the K-ORC CRD is missing |
+| Requeue | `korcRequeueAfter` = **10s** while gated |
 
 `reconcileCatalog` registers the OpenStack service-catalog entries for Keystone
 as owned K-ORC CRs: an `identity`-type `Service` named
 `keystone`, plus a `public` `Endpoint` whose URL defaults to the conventional
 in-cluster identity URL `http://keystone.<namespace>.svc:5000/v3` and whose
 `serviceRef` points at the identity Service. Both children are idempotent
-create-or-updates; the K-ORC missing-CRD safety mirrors `reconcileKORC` via
-`catalogCRDMissing`.
+create-or-updates. K-ORC is a hard CRD dependency (see the note above), so a
+missing Service/Endpoint CRD never reaches this path and there is no
+CRD-not-installed condition.
 
 | Path | Status | Reason | Notes |
 | --- | --- | --- | --- |
 | `AdminCredentialReady` not True | False | `WaitingForAdminCredential` | requeue 10s |
-| K-ORC Service/Endpoint CRD missing | False | `KORCCRDNotInstalled` | requeue 10s (no hard error) |
 | Service create/update fails | False | `ServiceError` | returns the error |
 | Endpoint create/update fails | False | `EndpointError` | returns the error |
 | both registered | True | `CatalogRegistered` | also sets `status.catalogReady = true` |

@@ -299,8 +299,8 @@ Keystone service.
 | `replicas` | `*int32` | No | `nil` (Keystone operator default, 3) | Overrides the number of Keystone API replicas. When `nil`, the reconciler leaves `replicas` unset on the projected Keystone CR, so the Keystone operator applies its own default. Minimum: 1. |
 | `image` | [`*commonv1.ImageSpec`](../keystone/keystone-crd.md#imagespec) | No | `nil` | Overrides the Keystone container image. When `nil`, the reconciler derives the image as `ghcr.io/c5c3/keystone:{spec.openStackRelease}`. When set, the whole image reference is used verbatim. |
 | `policyOverrides` | [`*commonv1.PolicySpec`](../keystone/keystone-crd.md#policyspec) | No | `nil` | Per-service oslo.policy overrides for Keystone. When set, these take precedence over `spec.global` for the Keystone service. |
-| `rotationInterval` | `*metav1.Duration` | No | `nil` | Overrides the Fernet / credential-key rotation interval the reconciler derives for the projected Keystone CR. When `nil`, the reconciler derives a default schedule. When set, the duration is converted to a cron expression and applied to both `fernet.rotationSchedule` and `credentialKeys.rotationSchedule` on the projected Keystone CR; an unconvertible interval surfaces `KeystoneReady=False` with reason `InvalidRotationInterval`. |
-| `gateway` | [`*commonv1.GatewaySpec`](#gatewayspec) | No | `nil` | Exposes the projected Keystone API externally via a Gateway API HTTPRoute. When `nil`, no HTTPRoute is projected and the Keystone API is reachable in-cluster only (its ClusterIP Service). When set, the reconciler projects it onto the Keystone CR's `spec.gateway`, so the Keystone operator attaches an HTTPRoute to the referenced Gateway. |
+| `rotationInterval` | `*metav1.Duration` | No | `nil` | Overrides the Fernet / credential-key rotation interval the reconciler derives for the projected Keystone CR. When `nil`, the reconciler derives a default schedule. When set, the duration is converted to a cron expression and applied to both `fernet.rotationSchedule` and `credentialKeys.rotationSchedule` on the projected Keystone CR. An unconvertible interval (not a positive whole number of days) is **rejected at admission** by the validating webhook; if the webhook is bypassed, the reconciler surfaces `KeystoneReady=False` with reason `InvalidRotationInterval` and returns the error so the reconcile chain stops and requeues with backoff. |
+| `gateway` | [`*commonv1.GatewaySpec`](#gatewayspec) | No | `nil` | Exposes the projected Keystone API externally via a Gateway API HTTPRoute. When `nil`, no HTTPRoute is projected and the Keystone API is reachable in-cluster only (its ClusterIP Service). When set, the reconciler projects it onto the Keystone CR's `spec.gateway`, so the Keystone operator attaches an HTTPRoute to the referenced Gateway. When a `gateway` is set its `hostname` must be non-empty — enforced at admission by the validating webhook (see [Validation Rules](#validation-rules)). |
 | `publicEndpoint` | `string` | No | `""` | Externally routable Keystone identity endpoint URL (e.g. `https://keystone.example.com/v3`). Projected into the Keystone bootstrap (`--bootstrap-public-url`) and used for the K-ORC identity catalog Endpoint, so external clients resolve the same URL Keystone advertises. When empty and `gateway` is set, the reconciler derives `https://{gateway.hostname}/v3` (the default-443 form); set it explicitly when the externally reachable port differs (e.g. a kind host-port mapping like `:8443`). |
 
 ---
@@ -481,8 +481,8 @@ the kind/name and applies it.
 | --- | --- | --- |
 | `conditions` | `[]metav1.Condition` | Latest available observations of the control-plane state. Each condition carries an `observedGeneration`. See [Status Conditions](#status-conditions). |
 | `observedGeneration` | `int64` | The `.metadata.generation` the controller last reconciled, so a stale status is distinguishable from a current one. |
-| `updatePhase` | [`UpdatePhase`](#updatephase) | Current phase of a control-plane release update. Empty / `Idle` outside an update. |
-| `services` | `map[string]ServiceStatus` | Per-service readiness of the projected service CRs, keyed by service name (e.g. `"keystone"`). See [ServiceStatus](#servicestatus). |
+| `updatePhase` | [`UpdatePhase`](#updatephase) | Current phase of a control-plane release update. Written on every status update; fixed at `Idle` in the current implementation because the release-update state machine is reserved (the other `UpdatePhase` values are not yet set). |
+| `services` | `map[string]ServiceStatus` | Per-service readiness of the projected service CRs, keyed by service name. Written on every status update with a `"keystone"` entry whose `ready` mirrors the `KeystoneReady` condition and whose `release` is `spec.openStackRelease`. See [ServiceStatus](#servicestatus). |
 | `adminApplicationCredential` | [`*AdminApplicationCredentialStatus`](#adminapplicationcredentialstatus) | Observed state of the K-ORC admin application credential. |
 | `catalogReady` | `bool` | Whether the OpenStack service catalog has been observed as fully populated for the control plane. Flipped `true` by the catalog sub-reconciler once the identity `Service` and `Endpoint` are registered. |
 
@@ -681,6 +681,28 @@ short-circuit on the first error.
 | Database mutual exclusivity | `spec.infrastructure.database` | `field.Invalid` | Both `clusterRef` and `host` set, or neither (`(clusterRef != nil) == (host != "")`). **Webhook-only** — there is no CEL rule for this on the c5c3 CRD. |
 | Cache mutual exclusivity | `spec.infrastructure.cache` | `field.Invalid` | Both `clusterRef` and `servers` set, or neither (`(clusterRef != nil) == (len(servers) > 0)`). **Webhook-only**. |
 | Admin password Secret required | `spec.korc.adminCredential.passwordSecretRef.name` | `field.Required` | `name` is empty — without it the reconciler cannot (re-)mint the admin application credential. **Webhook-only**. |
+| Gateway hostname required | `spec.services.keystone.gateway.hostname` | `field.Required` | A `gateway` is configured but its `hostname` is empty. Mirrors the `+kubebuilder:validation:MinLength=1` marker on `commonv1.GatewaySpec.Hostname`; without it the reconciler derives an empty `https:///v3` public endpoint. |
+
+### Update-only immutability rules
+
+On **update** the validating webhook additionally rejects changes to the
+create-only fields below, accumulating them into the same `field.ErrorList` as
+the spec checks above. These fields are **webhook-only** (the affected leaves
+live in the shared `commonv1.DatabaseSpec`/`CacheSpec`, which the keystone
+operator reuses and which must not carry c5c3-specific CEL immutability markers).
+Flipping the database/cache mode or renaming a managed `clusterRef` would leave
+the previously-projected MariaDB/Memcached child (and its per-ControlPlane
+credential) orphaned and owned until the ControlPlane is deleted; renaming
+`cloudCredentialsRef.secretName` would leak the previously-projected K-ORC
+clouds.yaml ExternalSecret.
+
+| Rule | Field Path | Condition |
+| --- | --- | --- |
+| Database mode immutable | `spec.infrastructure.database` | `clusterRef` nil-ness changed (managed ↔ brownfield) |
+| Database clusterRef.name immutable | `spec.infrastructure.database.clusterRef.name` | Both managed, but the name changed |
+| Cache mode immutable | `spec.infrastructure.cache` | `clusterRef` nil-ness changed (managed ↔ brownfield) |
+| Cache clusterRef.name immutable | `spec.infrastructure.cache.clusterRef.name` | Both managed, but the name changed |
+| Cloud secretName immutable | `spec.korc.adminCredential.cloudCredentialsRef.secretName` | The value changed |
 
 ---
 
@@ -883,19 +905,20 @@ Set by `reconcileKORC`.
 | `True` | `ApplicationCredentialMinted` | The K-ORC admin `ApplicationCredential` is minted and reports `Available=True`. |
 | `False` | `WaitingForAdminPassword` | The admin password Secret/key is not yet available; minting deferred. |
 | `False` | `WaitingForApplicationCredential` | The `ApplicationCredential` CR is ensured but not yet `Available`. |
-| `False` | `KORCCRDNotInstalled` | The K-ORC `ApplicationCredential` CRD is not installed (no-match error); surfaced cleanly without crash-looping the operator. |
 | `False` | `AdminPasswordError` | Non-missing error reading the admin password. |
 | `False` | `ApplicationCredentialError` | Error create-or-updating the `ApplicationCredential` CR. |
 
 ### AdminCredentialReady
 
-Set by `reconcileAdminCredential` (gated on `KORCReady` **and** the K-ORC
-`clouds.yaml` ExternalSecret being Ready).
+Set by `reconcileAdminCredential` (gated on `KORCReady`, the OpenBao-backed
+`ClusterSecretStore` being Ready, **and** the K-ORC `clouds.yaml` ExternalSecret
+being Ready).
 
 | Status | Reason | When |
 | --- | --- | --- |
 | `True` | `AdminCredentialReady` | The admin application credential is committed to the owned Secret and mirrored to OpenBao. |
 | `False` | `WaitingForKORC` | `KORCReady` is not `True`; credential push deferred. |
+| `False` | `SecretStoreNotReady` | The OpenBao-backed `ClusterSecretStore` is not Ready; the secret backend is unreachable. |
 | `False` | `WaitingForCloudsYaml` | The operator-created per-ControlPlane `k-orc-clouds-yaml` ExternalSecret in the control-plane namespace (co-located with the K-ORC CRs per C1; created and owned by `reconcileKORC`) is not yet Ready. |
 | `False` | `CloudsYamlError` | Error checking the `clouds.yaml` ExternalSecret. |
 | `False` | `SecretError` | Error ensuring the operator-owned application-credential Secret. |
@@ -910,7 +933,6 @@ Also flips `status.catalogReady` to `true`.
 | --- | --- | --- |
 | `True` | `CatalogRegistered` | The Keystone identity `Service` and public `Endpoint` are registered as K-ORC CRs. |
 | `False` | `WaitingForAdminCredential` | `AdminCredentialReady` is not `True`; catalog registration deferred. |
-| `False` | `KORCCRDNotInstalled` | The K-ORC `Service`/`Endpoint` CRD is not installed (no-match error). |
 | `False` | `ServiceError` | Error create-or-updating the identity `Service` CR. |
 | `False` | `EndpointError` | Error create-or-updating the identity `Endpoint` CR. |
 
