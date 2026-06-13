@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	. "github.com/onsi/gomega"
 
@@ -1151,6 +1152,87 @@ func TestFinalizeOpenBaoSecrets_BlocksOnMissingESOAdoption(t *testing.T) {
 	// unadopted name encountered is fernet.
 	g.Expect(cond.Message).To(ContainSubstring("test-keystone-fernet-keys-backup"))
 	g.Expect(cond.ObservedGeneration).To(Equal(ks.Generation))
+}
+
+// TestFinalizeOpenBaoSecrets_ProceedsAfterAdoptionTimeout pins the bounded
+// Pass-0 wait (issue #475): once the Keystone CR has been deleting for longer
+// than OpenBaoAdoptionWaitTimeout, an unadopted backup PushSecret no longer
+// blocks — the handler emits an ESOAdoptionTimedOut Warning and force-deletes
+// it via Pass-1 so CR deletion cannot hang forever at WaitingForESOAdoption.
+func TestFinalizeOpenBaoSecrets_ProceedsAfterAdoptionTimeout(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := secretsTestScheme()
+	ks := secretsTestKeystone()
+	ks.DeletionTimestamp = &metav1.Time{
+		Time: time.Now().Add(-(OpenBaoAdoptionWaitTimeout + time.Minute)),
+	}
+
+	fernet := backupPushSecretUnadopted("test-keystone-fernet-keys-backup")
+	credential := backupPushSecretUnadopted("test-keystone-credential-keys-backup")
+
+	var deleteCount int
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(fernet, credential).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+				deleteCount++
+				return c.Delete(ctx, obj, opts...)
+			},
+		}).
+		Build()
+
+	rec := record.NewFakeRecorder(10)
+	r := &KeystoneReconciler{Client: c, Scheme: s, Recorder: rec}
+
+	done, err := r.finalizeOpenBaoSecrets(context.Background(), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+	// Unadopted PushSecrets carry no finalizer, so the force-delete removes
+	// them outright and Pass-2 observes them gone.
+	g.Expect(done).To(BeTrue())
+	g.Expect(deleteCount).To(BeNumerically(">=", 1),
+		"adoption timeout must force at least one Delete instead of blocking forever")
+	g.Expect(drainEventReasons(rec)).To(ContainElement("ESOAdoptionTimedOut"))
+}
+
+// TestFinalizeOpenBaoSecrets_BlocksWithinAdoptionWindow verifies the bounded
+// wait does not fire early: a CR deleting for less than
+// OpenBaoAdoptionWaitTimeout still blocks on an unadopted PushSecret with
+// WaitingForESOAdoption and fires no Delete (issue #475).
+func TestFinalizeOpenBaoSecrets_BlocksWithinAdoptionWindow(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := secretsTestScheme()
+	ks := secretsTestKeystone()
+	ks.DeletionTimestamp = &metav1.Time{Time: time.Now().Add(-time.Second)}
+
+	fernet := backupPushSecretUnadopted("test-keystone-fernet-keys-backup")
+	credential := backupPushSecretUnadopted("test-keystone-credential-keys-backup")
+
+	var deleteCount int
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(fernet, credential).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+				deleteCount++
+				return c.Delete(ctx, obj, opts...)
+			},
+		}).
+		Build()
+
+	rec := record.NewFakeRecorder(10)
+	r := &KeystoneReconciler{Client: c, Scheme: s, Recorder: rec}
+
+	done, err := r.finalizeOpenBaoSecrets(context.Background(), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(done).To(BeFalse())
+	g.Expect(deleteCount).To(Equal(0),
+		"within the adoption window Pass-0 must still block before any Delete")
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "SecretsReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Reason).To(Equal("WaitingForESOAdoption"))
+	g.Expect(drainEventReasons(rec)).NotTo(ContainElement("ESOAdoptionTimedOut"))
 }
 
 // TestFinalizeOpenBaoSecrets_ProceedsOnceAdopted verifies that once ESO has

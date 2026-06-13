@@ -50,4 +50,14 @@ const (
 	// request. Prevents a hanging Keystone API from blocking the reconcile
 	// loop indefinitely (CC-0067).
 	HealthCheckTimeout = 10 * time.Second
+
+	// OpenBaoAdoptionWaitTimeout bounds how long the OpenBao finalizer's Pass-0
+	// adoption gate blocks Keystone CR deletion while waiting for ESO to stamp
+	// its cleanup finalizer on a backup PushSecret. ESO adoption normally
+	// completes within seconds, so this is generous enough never to trip under
+	// healthy operation; it exists so a renamed or absent ESO finalizer cannot
+	// hang CR deletion forever at WaitingForESOAdoption. Once exceeded, Pass-1
+	// force-deletes the unadopted PushSecret after an ESOAdoptionTimedOut
+	// Warning event (issue #475).
+	OpenBaoAdoptionWaitTimeout = 10 * time.Minute
 )

@@ -7,8 +7,10 @@ package controller
 import (
 	"context"
 	"fmt"
+	"time"
 
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -181,7 +183,11 @@ func openBaoBackupPushSecretNames(keystone *keystonev1alpha1.Keystone) []string 
 //     would never observe a DeletionTimestamp, and the referenced kv-v2 path
 //     in OpenBao would be orphaned. On the first unadopted PushSecret record
 //     WaitingForESOAdoption and return done=false WITHOUT firing any Delete
-//     (CC-0091, REQ-001, REQ-003, REQ-007).
+//     (CC-0091, REQ-001, REQ-003, REQ-007). The wait is bounded by
+//     OpenBaoAdoptionWaitTimeout: past that deadline an unadopted PushSecret no
+//     longer blocks — Pass-1 force-deletes it after an ESOAdoptionTimedOut
+//     Warning — so a renamed/absent ESO finalizer cannot hang CR deletion
+//     forever (issue #475).
 //  1. Issue Delete on every backup PushSecret, tolerating NotFound. Firing all
 //     Deletes up-front lets ESO's cleanup finalizers run in parallel — a
 //     serialised Delete→Get loop doubles the worst-case deletion window when
@@ -212,6 +218,19 @@ func (r *KeystoneReconciler) finalizeOpenBaoSecrets(
 	// any Delete — a racing Delete here would remove the PushSecret object
 	// outright and orphan the kv-v2 path in OpenBao (CC-0091, REQ-001,
 	// REQ-003, REQ-007).
+	//
+	// The wait is bounded by OpenBaoAdoptionWaitTimeout (issue #475): once the
+	// CR has been deleting longer than that, an unadopted PushSecret stops
+	// blocking and Pass-1 force-deletes it (after an ESOAdoptionTimedOut
+	// Warning), so an ESO finalizer rename — or ESO being down — cannot hang CR
+	// deletion forever. The force-delete is still safe when ESO merely renamed
+	// its finalizer: the PushSecret carries that (renamed) finalizer, so Delete
+	// only marks it Terminating and ESO still purges the kv-v2 path via it. The
+	// kv-v2 path is orphaned only if ESO is genuinely not running during the
+	// deletion window — an explicit, event-surfaced trade-off over hanging.
+	adoptionDeadlinePassed := !keystone.DeletionTimestamp.IsZero() &&
+		time.Since(keystone.DeletionTimestamp.Time) > OpenBaoAdoptionWaitTimeout
+
 	for _, name := range names {
 		key := client.ObjectKey{Namespace: keystone.Namespace, Name: name}
 		ps := &esov1alpha1.PushSecret{}
@@ -231,6 +250,17 @@ func (r *KeystoneReconciler) finalizeOpenBaoSecrets(
 			continue
 		}
 		if !hasESOFinalizer(ps) {
+			if adoptionDeadlinePassed {
+				// Bounded wait exceeded — surface the force-delete and break to
+				// Pass-1 rather than blocking forever (issue #475).
+				r.Recorder.Eventf(keystone, corev1.EventTypeWarning, "ESOAdoptionTimedOut",
+					"PushSecret %q not adopted by ESO within %s of deletion; force-deleting "+
+						"to release the openbao-finalizer (the OpenBao kv-v2 path may be "+
+						"orphaned only if ESO is not running)", name, OpenBaoAdoptionWaitTimeout)
+				logger.Info("openbao finalizer adoption wait timed out; proceeding to force-delete",
+					"pushsecret", name, "timeout", OpenBaoAdoptionWaitTimeout)
+				break
+			}
 			setOpenBaoWaitingForESOAdoptionCondition(keystone, name)
 			logger.V(1).Info("openbao finalizer waiting for ESO adoption",
 				"pushsecret", name)
