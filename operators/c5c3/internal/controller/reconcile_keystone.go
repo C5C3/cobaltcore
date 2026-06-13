@@ -98,7 +98,13 @@ func (r *ControlPlaneReconciler) reconcileKeystone(ctx context.Context, cp *c5c3
 				Reason:             "InvalidRotationInterval",
 				Message:            fmt.Sprintf("invalid keystone rotation interval: %v", err),
 			})
-			return ctrl.Result{}, nil
+			// Return the error so the reconcile chain stops here (the guard in
+			// Reconcile keys off err != nil) and the manager requeues with
+			// backoff, rather than returning a zero Result that lets the chain
+			// continue past this failed sub-reconciler (#476). The webhook now
+			// rejects unrepresentable intervals at admission, so this path is
+			// defense-in-depth for callers that bypass it.
+			return ctrl.Result{}, fmt.Errorf("invalid keystone rotation interval: %w", err)
 		}
 		rotationSchedule = cron
 	}

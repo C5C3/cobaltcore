@@ -230,7 +230,12 @@ func TestReconcileKeystone_InvalidRotationIntervalSetsFalse(t *testing.T) {
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
 	_, err := r.reconcileKeystone(context.Background(), cp)
-	g.Expect(err).NotTo(HaveOccurred(), "an invalid interval must not crash the reconciler")
+	// The sub-reconciler now RETURNS the error so the Reconcile chain stops here
+	// (the chain guard keys off err != nil) and the manager requeues with
+	// backoff, rather than returning a zero Result that lets the chain continue
+	// past this failed sub-reconciler (#476).
+	g.Expect(err).To(HaveOccurred(), "an invalid rotation interval must surface as an error")
+	g.Expect(err.Error()).To(ContainSubstring("rotation interval"))
 
 	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeKeystoneReady)
 	g.Expect(cond).NotTo(BeNil())
@@ -239,10 +244,10 @@ func TestReconcileKeystone_InvalidRotationIntervalSetsFalse(t *testing.T) {
 
 	// No Keystone CR must be created when the interval is invalid.
 	k := &keystonev1alpha1.Keystone{}
-	err = c.Get(context.Background(), types.NamespacedName{
+	getErr := c.Get(context.Background(), types.NamespacedName{
 		Name: keystoneName(cp), Namespace: childNamespace(cp),
 	}, k)
-	g.Expect(err).To(HaveOccurred(), "no Keystone CR should be created for an invalid rotation interval")
+	g.Expect(getErr).To(HaveOccurred(), "no Keystone CR should be created for an invalid rotation interval")
 }
 
 func TestReconcileKeystone_ReplicasPassthrough(t *testing.T) {
