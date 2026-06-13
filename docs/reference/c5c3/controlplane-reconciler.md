@@ -27,8 +27,10 @@ owns child CRs (MariaDB, Memcached, Keystone, K-ORC `ApplicationCredential` /
 `Service` / `Endpoint`) and aggregates their readiness. It does **not**
 re-implement the per-service logic those child operators already own. As a
 consequence the c5c3 API surface is deliberately smaller than the
-[Keystone reconciler](../keystone/keystone-reconciler.md)'s: there is no
-finalizer, no parallel sub-reconciler group, and no per-CR metric cardinality.
+[Keystone reconciler](../keystone/keystone-reconciler.md)'s: no parallel
+sub-reconciler group and no per-CR metric cardinality. It does install a single
+finalizer to sequence K-ORC teardown ahead of Keystone/infrastructure teardown
+on deletion — see [Owner-ref / GC model](#owner-ref--gc-model).
 
 ## Controller Registration
 
@@ -974,11 +976,40 @@ ControlPlane CR via `controllerutil.SetControllerReference()`. This enables both
 children) and **watch-based reconciliation** (a child change re-reconciles the
 owner).
 
-> **No finalizer.** Unlike the
-> [Keystone reconciler](../keystone/keystone-reconciler.md#finalizer), the
-> ControlPlane reconciler installs **no finalizer**. Teardown is driven entirely
-> by owner-reference garbage collection — there is no ordered external cleanup
-> the operator must perform before the CR leaves etcd.
+### Deletion ordering — the `c5c3.io/orc-teardown` finalizer
+
+Owner-reference GC alone is **unordered**: deleting the ControlPlane would
+garbage-collect every child at once. That is unsafe for the K-ORC CRs the
+operator owns (`ApplicationCredential`, `Service`, `Endpoint`, `User`,
+`Domain`). Those CRs carry K-ORC finalizers that call the **Keystone API** to
+revoke/delete the credentials and catalog entries they minted; if Keystone (and
+in managed mode its MariaDB) were torn down concurrently, the K-ORC finalizers
+could never complete and the ControlPlane — and its namespace — would hang
+indefinitely on Terminating ORC CRs.
+
+The ControlPlane reconciler therefore installs a single finalizer,
+`c5c3.io/orc-teardown`, added on the first reconcile before any K-ORC CR is
+projected. On deletion it:
+
+1. **Deletes the owned K-ORC CRs first** and holds the ControlPlane CR in etcd.
+   Holding the CR defers the owner-reference GC cascade, so Keystone stays
+   reachable while K-ORC revokes. While ORC CRs are still Terminating the
+   reconciler reports `KORCReady=False` with reason `FinalizingORC` and requeues
+   at the K-ORC cadence.
+2. **Releases the finalizer once the ORC CRs are gone**, letting GC cascade-
+   delete Keystone, the infrastructure, and the remaining children.
+3. **Bounds the wait.** If the ORC CRs stay Terminating longer than the
+   `orcTeardownStallTimeout` (5 minutes) — typically because Keystone is already
+   gone and K-ORC cannot revoke — the reconciler force-removes the stuck
+   `openstack.k-orc.cloud/*` finalizers (preserving any non-K-ORC finalizers),
+   emits a **Warning** `ORCTeardownStalled` event, and releases the ControlPlane
+   finalizer so deletion completes rather than wedging forever.
+
+This mirrors the Keystone reconciler's sequenced-finalizer discipline (MariaDB
+then OpenBao cleanup); see
+[Keystone reconciler — finalizer](../keystone/keystone-reconciler.md#finalizer).
+The `{name}-admin-app-credential-backup` PushSecret is the one child kept on
+`DeletionPolicy: None` so its OpenBao path is not purged on teardown.
 
 > **Children live in the owner's namespace.** Every projected child is created in
 > `childNamespace(cp) = cp.Namespace`, **not** a hardcoded `openstack`. A
