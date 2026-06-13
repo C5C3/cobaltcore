@@ -255,10 +255,11 @@ kubectl -n openstack patch keystone keystone --type json --patch '[
 ```
 
 The `DatabaseTLSReady` condition transitions to `True` with `reason=NotRequired`,
-the `<name>-db-client` Secret is garbage-collected via the cert-manager
-`Certificate` owner reference cascade, and subsequent connections fall back to
-plaintext TCP — but only succeed if MariaDB's `spec.tls.required` is also
-turned off (see warning above).
+the operator deletes the managed `<name>-db-client` `Certificate` (so
+cert-manager stops renewing it), cert-manager then garbage-collects the issued
+Secret via the `Certificate` owner-reference cascade, and subsequent
+connections fall back to plaintext TCP — but only succeed if MariaDB's
+`spec.tls.required` is also turned off (see warning above).
 
 ---
 

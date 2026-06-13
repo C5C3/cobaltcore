@@ -34,6 +34,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/c5c3/forge/internal/common/conditions"
@@ -60,8 +61,15 @@ func (r *KeystoneReconciler) reconcileDatabaseTLS(ctx context.Context,
 	tlsSpec := keystone.Spec.Database.TLS
 
 	// NotRequired: TLS not requested — preserve pre-CC-0106 plaintext
-	// behavior, create no Certificate (CC-0106, REQ-002).
+	// behavior, create no Certificate (CC-0106, REQ-002). If TLS was
+	// previously Managed, delete the now-orphaned <name>-db-client Certificate
+	// so cert-manager stops renewing it and garbage-collects the issued Secret
+	// via the owner-reference cascade — mirroring HPA/NetworkPolicy/HTTPRoute,
+	// which all delete their managed objects on disable (issue #475).
 	if tlsSpec == nil || !tlsSpec.Enabled {
+		if err := r.deleteManagedDBClientCertificate(ctx, keystone); err != nil {
+			return ctrl.Result{}, err
+		}
 		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
 			Type:               conditionTypeDatabaseTLSReady,
 			Status:             metav1.ConditionTrue,
@@ -75,8 +83,14 @@ func (r *KeystoneReconciler) reconcileDatabaseTLS(ctx context.Context,
 	// ExternallyManaged: TLS enabled but the database is brownfield (no
 	// clusterRef). The operator does not own the external database's trust
 	// domain; the client keypair is supplied out-of-band via
-	// spec.database.tls.clientCertSecretRef (CC-0106, REQ-014).
+	// spec.database.tls.clientCertSecretRef (CC-0106, REQ-014). Delete any
+	// previously-issued managed Certificate — a CR switched from managed to
+	// brownfield must not leave the operator-owned <name>-db-client Certificate
+	// being renewed indefinitely (issue #475).
 	if keystone.Spec.Database.ClusterRef == nil {
+		if err := r.deleteManagedDBClientCertificate(ctx, keystone); err != nil {
+			return ctrl.Result{}, err
+		}
 		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
 			Type:               conditionTypeDatabaseTLSReady,
 			Status:             metav1.ConditionTrue,
@@ -127,6 +141,40 @@ func (r *KeystoneReconciler) reconcileDatabaseTLS(ctx context.Context,
 	return ctrl.Result{}, nil
 }
 
+// dbClientCertificateName returns the name of the operator-issued client
+// Certificate (and the Secret cert-manager writes it into):
+// "<keystone.Name>-db-client" (CC-0106, REQ-002).
+func dbClientCertificateName(keystone *keystonev1alpha1.Keystone) string {
+	return fmt.Sprintf("%s-db-client", keystone.Name)
+}
+
+// deleteManagedDBClientCertificate deletes the operator-issued
+// <name>-db-client Certificate when DB TLS is disabled or switched to
+// brownfield mode. It is a no-op when cert-manager is not installed: no
+// Certificate can exist in that case, and an unconditional Delete would fail
+// with "no matches for kind Certificate" — the same CRD-availability gate
+// reconcileHTTPRoute applies before deleting an HTTPRoute (issue #475).
+func (r *KeystoneReconciler) deleteManagedDBClientCertificate(ctx context.Context, keystone *keystonev1alpha1.Keystone) error {
+	if !r.certManagerAvailable {
+		return nil
+	}
+	return deleteDBClientCertificate(ctx, r.Client, keystone.Namespace, dbClientCertificateName(keystone))
+}
+
+// deleteDBClientCertificate deletes the Certificate identified by namespace and
+// name. It tolerates NotFound, mirroring deleteNetworkPolicy / deleteHTTPRoute
+// (issue #475). cert-manager garbage-collects the issued Secret via the
+// Certificate owner-reference cascade once the Certificate is gone.
+func deleteDBClientCertificate(ctx context.Context, c client.Client, namespace, name string) error {
+	cert := &certmanagerv1.Certificate{}
+	cert.SetName(name)
+	cert.SetNamespace(namespace)
+	if err := client.IgnoreNotFound(c.Delete(ctx, cert)); err != nil {
+		return fmt.Errorf("deleting database client Certificate %s/%s: %w", namespace, name, err)
+	}
+	return nil
+}
+
 // dbClientCertificate builds the cert-manager Certificate for the Keystone
 // database client keypair (CC-0106, REQ-002). The Secret it issues is named
 // "<keystone.Name>-db-client" and is mounted into the workloads that open a
@@ -138,7 +186,7 @@ func (r *KeystoneReconciler) reconcileDatabaseTLS(ctx context.Context,
 // include client auth plus digital signature / key encipherment, the
 // standard set for a TLS client keypair.
 func dbClientCertificate(keystone *keystonev1alpha1.Keystone) *certmanagerv1.Certificate {
-	name := fmt.Sprintf("%s-db-client", keystone.Name)
+	name := dbClientCertificateName(keystone)
 	return &certmanagerv1.Certificate{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,

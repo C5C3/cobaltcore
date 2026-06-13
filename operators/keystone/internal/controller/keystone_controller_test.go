@@ -2780,6 +2780,25 @@ func TestIsGatewayAPIAvailable_CRDMissing_ReturnsFalse(t *testing.T) {
 	g.Expect(isGatewayAPIAvailable(m)).To(BeFalse())
 }
 
+// --- isCertManagerAvailable (issue #475, DB-TLS Certificate lifecycle) ---
+
+func TestIsCertManagerAvailable_NilMapper_ReturnsFalse(t *testing.T) {
+	g := NewGomegaWithT(t)
+	g.Expect(isCertManagerAvailable(nil)).To(BeFalse())
+}
+
+func TestIsCertManagerAvailable_CRDPresent_ReturnsTrue(t *testing.T) {
+	g := NewGomegaWithT(t)
+	m := &fakeRESTMapper{available: map[string]bool{"Certificate.cert-manager.io": true}}
+	g.Expect(isCertManagerAvailable(m)).To(BeTrue())
+}
+
+func TestIsCertManagerAvailable_CRDMissing_ReturnsFalse(t *testing.T) {
+	g := NewGomegaWithT(t)
+	m := &fakeRESTMapper{available: map[string]bool{}}
+	g.Expect(isCertManagerAvailable(m)).To(BeFalse())
+}
+
 // ---------------------------------------------------------------------------
 // reconcileDBConnectionSecret wiring tests (CC-0080, REQ-005, REQ-006)
 // ---------------------------------------------------------------------------

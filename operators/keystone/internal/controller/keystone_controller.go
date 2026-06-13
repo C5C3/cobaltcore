@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 
+	certmanagerv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
@@ -128,6 +129,15 @@ type KeystoneReconciler struct {
 	// reconcileHTTPRoute surfaces a clear HTTPRouteReady=False condition if
 	// the user nonetheless sets spec.gateway (CC-0065).
 	gatewayAPIAvailable bool
+
+	// certManagerAvailable is set during SetupWithManager from the cluster's
+	// RESTMapper and indicates whether the cert-manager.io/v1 Certificate CRD
+	// is installed. When false, the controller skips the Certificate watch and
+	// reconcileDatabaseTLS skips the disable-path Certificate delete (no
+	// Certificate can exist), so the default no-TLS configuration never errors
+	// with "no matches for kind Certificate" on clusters without cert-manager
+	// (issue #475).
+	certManagerAvailable bool
 }
 
 // httpRouteGVK identifies the HTTPRoute kind the operator would watch when
@@ -149,6 +159,30 @@ func isGatewayAPIAvailable(mapper meta.RESTMapper) bool {
 		return false
 	}
 	if _, err := mapper.RESTMapping(httpRouteGVK.GroupKind(), httpRouteGVK.Version); err != nil {
+		return false
+	}
+	return true
+}
+
+// certificateGVK identifies the cert-manager Certificate kind the operator
+// owns when cert-manager is installed.
+var certificateGVK = schema.GroupVersionKind{
+	Group:   certmanagerv1.SchemeGroupVersion.Group,
+	Version: certmanagerv1.SchemeGroupVersion.Version,
+	Kind:    "Certificate",
+}
+
+// isCertManagerAvailable probes the manager's RESTMapper for the Certificate
+// kind, mirroring isGatewayAPIAvailable. Returns false when the mapper has no
+// mapping (CRD not installed); other mapper errors are treated conservatively
+// as "not available" so the operator starts without the Certificate watch and
+// reconcileDatabaseTLS skips the disable-path delete rather than erroring with
+// "no matches for kind Certificate" (issue #475).
+func isCertManagerAvailable(mapper meta.RESTMapper) bool {
+	if mapper == nil {
+		return false
+	}
+	if _, err := mapper.RESTMapping(certificateGVK.GroupKind(), certificateGVK.Version); err != nil {
 		return false
 	}
 	return true
@@ -733,6 +767,18 @@ func (r *KeystoneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		setupLog.Info("Gateway API not installed; HTTPRoute watch disabled, spec.gateway will be rejected via HTTPRouteReady condition")
 	}
 
+	// Detect cert-manager so the operator can Owns(Certificate) — surfacing
+	// later DB-client Certificate issuance failures in DatabaseTLSReady — and
+	// so reconcileDatabaseTLS knows whether a managed Certificate can exist on
+	// the TLS-disable path. spec.database.tls is optional, so the operator must
+	// run on clusters without cert-manager (issue #475).
+	r.certManagerAvailable = isCertManagerAvailable(mgr.GetRESTMapper())
+	if r.certManagerAvailable {
+		setupLog.Info("cert-manager detected; enabling Certificate watch for DatabaseTLSReady")
+	} else {
+		setupLog.Info("cert-manager not installed; Certificate watch disabled, managed DB-TLS Certificates will not be reconciled")
+	}
+
 	// Register the Keystone field indexer before Watches so
 	// secretToKeystoneMapper can rely on it for its MatchingFields lookup
 	// (CC-0087, REQ-001, REQ-006).
@@ -753,6 +799,10 @@ func (r *KeystoneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 	if r.gatewayAPIAvailable {
 		b = b.Owns(&gatewayv1.HTTPRoute{})
+	}
+
+	if r.certManagerAvailable {
+		b = b.Owns(&certmanagerv1.Certificate{})
 	}
 
 	return b.

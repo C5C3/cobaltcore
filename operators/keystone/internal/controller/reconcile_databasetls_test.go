@@ -72,7 +72,10 @@ func dbTLSBaseKeystone() *keystonev1alpha1.Keystone {
 
 func dbTLSReconciler(s *runtime.Scheme, objs ...client.Object) *KeystoneReconciler {
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(objs...).Build()
-	return &KeystoneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
+	// certManagerAvailable mirrors a cluster with cert-manager installed (the
+	// hard infra dependency for DB TLS); the disable-path Certificate delete is
+	// gated on it (issue #475).
+	return &KeystoneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10), certManagerAvailable: true}
 }
 
 // expectDBTLSProjection asserts that the projected volume sources the
@@ -224,4 +227,103 @@ func TestReconcileDatabaseTLS_BrownfieldExternallyManaged(t *testing.T) {
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 	g.Expect(cond.Reason).To(Equal(reasonExternallyManaged))
+}
+
+// TestReconcileDatabaseTLS_DisabledDeletesManagedCertificate verifies issue
+// #475: disabling spec.database.tls deletes the operator-issued
+// <name>-db-client Certificate (so cert-manager stops renewing it and
+// garbage-collects the issued Secret via the owner-reference cascade) and
+// records NotRequired — matching the HPA/NetworkPolicy/HTTPRoute
+// delete-on-disable behavior rather than leaking the Certificate until CR
+// deletion.
+func TestReconcileDatabaseTLS_DisabledDeletesManagedCertificate(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTLSTestScheme()
+	ks := dbTLSBaseKeystone() // TLS == nil → NotRequired
+
+	// A leftover Certificate from a prior managed configuration.
+	existing := &certmanagerv1.Certificate{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-keystone-db-client", Namespace: "default"},
+	}
+	r := dbTLSReconciler(s, ks, existing)
+
+	result, err := r.reconcileDatabaseTLS(context.Background(), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).To(Equal(ctrl.Result{}))
+
+	getErr := r.Get(context.Background(),
+		client.ObjectKey{Name: "test-keystone-db-client", Namespace: "default"}, &certmanagerv1.Certificate{})
+	g.Expect(apierrors.IsNotFound(getErr)).To(BeTrue(),
+		"managed Certificate must be deleted when TLS is disabled (issue #475)")
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, conditionTypeDatabaseTLSReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal(reasonNotRequired))
+}
+
+// TestReconcileDatabaseTLS_BrownfieldDeletesManagedCertificate verifies issue
+// #475: switching a managed CR to brownfield (TLS enabled, ClusterRef cleared)
+// deletes the operator-issued Certificate and records ExternallyManaged.
+func TestReconcileDatabaseTLS_BrownfieldDeletesManagedCertificate(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTLSTestScheme()
+	ks := dbTLSBaseKeystone()
+	ks.Spec.Database.Host = "db.example.com"
+	ks.Spec.Database.Port = 3306
+	ks.Spec.Database.TLS = &commonv1.DatabaseTLSSpec{
+		Enabled:             true,
+		Mode:                "verify-full",
+		CABundleSecretRef:   commonv1.SecretRefSpec{Name: "db-server-ca"},
+		ClientCertSecretRef: commonv1.SecretRefSpec{Name: "external-db-client"},
+	}
+
+	existing := &certmanagerv1.Certificate{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-keystone-db-client", Namespace: "default"},
+	}
+	r := dbTLSReconciler(s, ks, existing)
+
+	result, err := r.reconcileDatabaseTLS(context.Background(), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).To(Equal(ctrl.Result{}))
+
+	getErr := r.Get(context.Background(),
+		client.ObjectKey{Name: "test-keystone-db-client", Namespace: "default"}, &certmanagerv1.Certificate{})
+	g.Expect(apierrors.IsNotFound(getErr)).To(BeTrue(),
+		"managed Certificate must be deleted when switched to brownfield mode (issue #475)")
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, conditionTypeDatabaseTLSReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal(reasonExternallyManaged))
+}
+
+// TestReconcileDatabaseTLS_DisabledSkipsDeleteWhenCertManagerAbsent verifies
+// the CRD-availability gate (issue #475): on a cluster without cert-manager the
+// disable path must NOT attempt the Certificate delete, since there is no
+// Certificate kind and an unconditional Delete would fail with "no matches for
+// kind Certificate". A seeded Certificate (modeling a stale object) survives
+// because the gate short-circuits before any Delete.
+func TestReconcileDatabaseTLS_DisabledSkipsDeleteWhenCertManagerAbsent(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTLSTestScheme()
+	ks := dbTLSBaseKeystone() // TLS == nil → NotRequired
+
+	existing := &certmanagerv1.Certificate{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-keystone-db-client", Namespace: "default"},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(ks, existing).Build()
+	r := &KeystoneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10), certManagerAvailable: false}
+
+	result, err := r.reconcileDatabaseTLS(context.Background(), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).To(Equal(ctrl.Result{}))
+
+	// Certificate untouched because the cert-manager gate skipped the delete.
+	g.Expect(r.Get(context.Background(),
+		client.ObjectKey{Name: "test-keystone-db-client", Namespace: "default"}, &certmanagerv1.Certificate{})).To(Succeed())
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, conditionTypeDatabaseTLSReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Reason).To(Equal(reasonNotRequired))
 }
