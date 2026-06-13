@@ -1262,6 +1262,14 @@ func (r *ControlPlaneReconciler) reconcileCatalog(ctx context.Context, cp *c5c3v
 	}
 
 	secretName := cp.Spec.KORC.AdminCredential.CloudCredentialsRef.SecretName
+	// Fall back to the conventional name when SecretName is empty, matching
+	// reconcileAdminCredential and ensureKORCCloudsYAMLExternalSecret so a
+	// webhook-bypass CR resolves to the same clouds.yaml Secret name everywhere
+	// (#476). Without this the catalog Service/Endpoint would reference an empty
+	// CloudCredentialsRef.SecretName.
+	if secretName == "" {
+		secretName = korcCloudsYamlSecretName
+	}
 	cloudName := cp.Spec.KORC.AdminCredential.CloudCredentialsRef.CloudName
 	credRef := orcv1alpha1.CloudCredentialsReference{SecretName: secretName, CloudName: cloudName}
 

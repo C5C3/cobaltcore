@@ -1021,6 +1021,40 @@ func TestReconcileCatalog_RegistersServiceAndEndpoint(t *testing.T) {
 	g.Expect(cp.Status.CatalogReady).To(BeTrue())
 }
 
+// TestReconcileCatalog_EmptySecretNameFallsBack verifies that when a
+// webhook-bypass CR carries an empty CloudCredentialsRef.SecretName,
+// reconcileCatalog resolves the catalog Service/Endpoint CloudCredentialsRef to
+// the conventional korcCloudsYamlSecretName instead of referencing an empty
+// Secret name — matching the fallback used in reconcileAdminCredential and
+// ensureKORCCloudsYAMLExternalSecret (#476).
+func TestReconcileCatalog_EmptySecretNameFallsBack(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := korcControlPlane()
+	cp.Spec.KORC.AdminCredential.CloudCredentialsRef.SecretName = ""
+	setAdminCredentialReady(cp)
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileCatalog(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	svc := &orcv1alpha1.Service{}
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Name: keystoneServiceName(cp), Namespace: childNamespace(cp),
+	}, svc)).To(Succeed())
+	g.Expect(svc.Spec.CloudCredentialsRef.SecretName).To(Equal(korcCloudsYamlSecretName),
+		"empty CloudCredentialsRef.SecretName must fall back to the conventional name")
+
+	ep := &orcv1alpha1.Endpoint{}
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Name: keystoneEndpointName(cp), Namespace: childNamespace(cp),
+	}, ep)).To(Succeed())
+	g.Expect(ep.Spec.CloudCredentialsRef.SecretName).To(Equal(korcCloudsYamlSecretName),
+		"empty CloudCredentialsRef.SecretName must fall back to the conventional name")
+}
+
 func TestReconcileCatalog_Idempotent(t *testing.T) {
 	g := NewGomegaWithT(t)
 
