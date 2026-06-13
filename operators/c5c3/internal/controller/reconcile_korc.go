@@ -14,14 +14,11 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/go-logr/logr"
-
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
@@ -336,10 +333,13 @@ func adminAppCredentialPushSecretName(cp *c5c3v1alpha1.ControlPlane) string {
 // resource K-ORC reacts to; reconcileAdminCredential only commits/pushes the
 // already-(re-)minted secret.
 //
-// MISSING-CRD SAFETY: if the K-ORC CRD is not installed the apiserver / RESTMapper
-// returns a no-match error; this is detected via meta.IsNoMatchError and surfaced
-// as KORCReady=False (Reason "KORCCRDNotInstalled") WITHOUT returning a hard error
-// that would crash-loop the operator.
+// HARD CRD DEPENDENCY: K-ORC (and Memcached, ESO, MariaDB, Keystone) are hard
+// dependencies of the ControlPlane operator. SetupWithManager Owns/Watches their
+// kinds, so the manager fails fast at startup if any CRD is absent — a missing
+// K-ORC CRD never reaches this reconcile path. No-match errors are therefore
+// handled by the generic error returns below (manager backoff requeue) rather
+// than a dedicated KORCReady=False branch that could only fire if a CRD were
+// deleted after the manager had started (#476).
 func (r *ControlPlaneReconciler) reconcileKORC(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
@@ -418,17 +418,6 @@ func (r *ControlPlaneReconciler) reconcileKORC(ctx context.Context, cp *c5c3v1al
 	// before minting — otherwise the AC blocks forever on "Waiting for User/admin
 	// to be created".
 	if err := r.ensureKORCAdminImports(ctx, cp, importCredRef); err != nil {
-		if meta.IsNoMatchError(err) {
-			logger.Info("K-ORC User/Domain CRD not installed; KORCReady=False")
-			conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
-				Type:               conditionTypeKORCReady,
-				Status:             metav1.ConditionFalse,
-				ObservedGeneration: cp.Generation,
-				Reason:             "KORCCRDNotInstalled",
-				Message:            "K-ORC User/Domain CRD is not installed",
-			})
-			return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
-		}
 		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
 			Type:               conditionTypeKORCReady,
 			Status:             metav1.ConditionFalse,
@@ -521,16 +510,6 @@ func (r *ControlPlaneReconciler) reconcileKORC(ctx context.Context, cp *c5c3v1al
 		// converges the spec without re-minting (no-op when nothing changed).
 	case apierrors.IsNotFound(getErr):
 		// First mint, or the recreate after a re-mint delete: CreateOrUpdate below.
-	case meta.IsNoMatchError(getErr):
-		logger.Info("K-ORC ApplicationCredential CRD not installed; KORCReady=False")
-		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
-			Type:               conditionTypeKORCReady,
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: cp.Generation,
-			Reason:             "KORCCRDNotInstalled",
-			Message:            "K-ORC ApplicationCredential CRD is not installed",
-		})
-		return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
 	default:
 		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
 			Type:               conditionTypeKORCReady,
@@ -575,19 +554,6 @@ func (r *ControlPlaneReconciler) reconcileKORC(ctx context.Context, cp *c5c3v1al
 		return controllerutil.SetControllerReference(cp, ac, r.Scheme)
 	})
 	if err != nil {
-		// MISSING-CRD SAFETY: a no-match error means the K-ORC CRD is absent.
-		// Surface a clean condition instead of crash-looping.
-		if meta.IsNoMatchError(err) {
-			logger.Info("K-ORC ApplicationCredential CRD not installed; KORCReady=False")
-			conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
-				Type:               conditionTypeKORCReady,
-				Status:             metav1.ConditionFalse,
-				ObservedGeneration: cp.Generation,
-				Reason:             "KORCCRDNotInstalled",
-				Message:            "K-ORC ApplicationCredential CRD is not installed",
-			})
-			return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
-		}
 		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
 			Type:               conditionTypeKORCReady,
 			Status:             metav1.ConditionFalse,
@@ -675,17 +641,6 @@ func (r *ControlPlaneReconciler) remintAdminApplicationCredential(
 	// recreated AC mints a fresh credential (a NotFound on delete is benign — the
 	// AC is already gone, the recreate happens next pass).
 	if err := r.Delete(ctx, ac); err != nil && !apierrors.IsNotFound(err) {
-		if meta.IsNoMatchError(err) {
-			logger.Info("K-ORC ApplicationCredential CRD not installed; KORCReady=False")
-			conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
-				Type:               conditionTypeKORCReady,
-				Status:             metav1.ConditionFalse,
-				ObservedGeneration: cp.Generation,
-				Reason:             "KORCCRDNotInstalled",
-				Message:            "K-ORC ApplicationCredential CRD is not installed",
-			})
-			return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
-		}
 		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
 			Type:               conditionTypeKORCReady,
 			Status:             metav1.ConditionFalse,
@@ -1267,7 +1222,9 @@ func (r *ControlPlaneReconciler) ensureKORCCloudsYAMLExternalSecret(ctx context.
 // It is GATED on AdminCredentialReady: the admin credential must be available
 // before K-ORC can register catalog entries. Both child CRs are create-or-updated
 // idempotently; CatalogReady (and cp.Status.CatalogReady) flip True once both are
-// registered. MISSING-CRD SAFETY mirrors reconcileKORC.
+// registered. K-ORC is a hard CRD dependency (see reconcileKORC), so a missing
+// Service/Endpoint CRD never reaches here — no-match errors fall through to the
+// generic error returns below (#476).
 func (r *ControlPlaneReconciler) reconcileCatalog(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
@@ -1314,9 +1271,6 @@ func (r *ControlPlaneReconciler) reconcileCatalog(ctx context.Context, cp *c5c3v
 		service.Spec.Resource.Enabled = ptr.To(true)
 		return controllerutil.SetControllerReference(cp, service, r.Scheme)
 	}); err != nil {
-		if meta.IsNoMatchError(err) {
-			return r.catalogCRDMissing(cp, logger)
-		}
 		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
 			Type:               conditionTypeCatalogReady,
 			Status:             metav1.ConditionFalse,
@@ -1353,9 +1307,6 @@ func (r *ControlPlaneReconciler) reconcileCatalog(ctx context.Context, cp *c5c3v
 		endpoint.Spec.Resource.Enabled = ptr.To(true)
 		return controllerutil.SetControllerReference(cp, endpoint, r.Scheme)
 	}); err != nil {
-		if meta.IsNoMatchError(err) {
-			return r.catalogCRDMissing(cp, logger)
-		}
 		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
 			Type:               conditionTypeCatalogReady,
 			Status:             metav1.ConditionFalse,
@@ -1375,20 +1326,6 @@ func (r *ControlPlaneReconciler) reconcileCatalog(ctx context.Context, cp *c5c3v
 		Message:            "Keystone identity Service and Endpoint are registered",
 	})
 	return ctrl.Result{}, nil
-}
-
-// catalogCRDMissing surfaces the MISSING-CRD safety condition for the catalog
-// sub-reconciler (mirrors reconcileKORC's KORCCRDNotInstalled handling).
-func (r *ControlPlaneReconciler) catalogCRDMissing(cp *c5c3v1alpha1.ControlPlane, logger logr.Logger) (ctrl.Result, error) {
-	logger.Info("K-ORC Service/Endpoint CRD not installed; CatalogReady=False")
-	conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
-		Type:               conditionTypeCatalogReady,
-		Status:             metav1.ConditionFalse,
-		ObservedGeneration: cp.Generation,
-		Reason:             "KORCCRDNotInstalled",
-		Message:            "K-ORC Service/Endpoint CRD is not installed",
-	})
-	return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
 }
 
 // keystoneServiceName / keystoneEndpointName return the deterministic names of

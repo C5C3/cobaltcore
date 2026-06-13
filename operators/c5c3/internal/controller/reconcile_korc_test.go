@@ -303,8 +303,14 @@ func TestReconcileKORC_KORCReadyFalseWhileACNotAvailable(t *testing.T) {
 	g.Expect(cond.Reason).To(Equal("WaitingForApplicationCredential"))
 }
 
-// MISSING-CRD: a no-match error on the AC CR must surface KORCReady=False with no panic / no hard error.
-func TestReconcileKORC_MissingCRDNoPanic(t *testing.T) {
+// HARD CRD DEPENDENCY: K-ORC is a hard dependency (SetupWithManager Owns its
+// kinds, so the manager fails fast at startup if the CRD is absent). The
+// dedicated KORCCRDNotInstalled branch was therefore removed (#476): a no-match
+// error reaching reconcileKORC (only possible if the CRD is deleted after start)
+// now propagates as a hard error so the manager requeues with backoff, with
+// KORCReady=False/ApplicationCredentialError on the CR. This test asserts the
+// no-match error is handled without a panic via that generic path.
+func TestReconcileKORC_MissingCRDReturnsError(t *testing.T) {
 	g := NewGomegaWithT(t)
 
 	s := korcTestScheme(t)
@@ -320,16 +326,16 @@ func TestReconcileKORC_MissingCRDNoPanic(t *testing.T) {
 		}).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
+	var err error
 	g.Expect(func() {
-		res, err := r.reconcileKORC(context.Background(), cp)
-		g.Expect(err).NotTo(HaveOccurred(), "missing CRD must NOT return a hard error")
-		g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+		_, err = r.reconcileKORC(context.Background(), cp)
 	}).NotTo(Panic())
+	g.Expect(err).To(HaveOccurred(), "a no-match error must propagate so the manager requeues with backoff")
 
 	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeKORCReady)
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-	g.Expect(cond.Reason).To(Equal("KORCCRDNotInstalled"))
+	g.Expect(cond.Reason).To(Equal("ApplicationCredentialError"))
 }
 
 func TestReconcileKORC_WaitsForAdminPassword(t *testing.T) {
@@ -1118,7 +1124,11 @@ func TestReconcileCatalog_Idempotent(t *testing.T) {
 	g.Expect(ep2.ResourceVersion).To(Equal(ep1.ResourceVersion), "Endpoint must not churn on re-reconcile")
 }
 
-func TestReconcileCatalog_MissingCRDNoPanic(t *testing.T) {
+// HARD CRD DEPENDENCY: as for reconcileKORC, the catalog sub-reconciler's
+// dedicated KORCCRDNotInstalled branch was removed (#476). A no-match error on
+// the Service CRD (only possible post-startup) now propagates as a hard error
+// with CatalogReady=False/ServiceError.
+func TestReconcileCatalog_MissingCRDReturnsError(t *testing.T) {
 	g := NewGomegaWithT(t)
 
 	s := korcTestScheme(t)
@@ -1135,16 +1145,16 @@ func TestReconcileCatalog_MissingCRDNoPanic(t *testing.T) {
 		}).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
+	var err error
 	g.Expect(func() {
-		res, err := r.reconcileCatalog(context.Background(), cp)
-		g.Expect(err).NotTo(HaveOccurred(), "missing CRD must NOT return a hard error")
-		g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+		_, err = r.reconcileCatalog(context.Background(), cp)
 	}).NotTo(Panic())
+	g.Expect(err).To(HaveOccurred(), "a no-match error must propagate so the manager requeues with backoff")
 
 	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeCatalogReady)
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-	g.Expect(cond.Reason).To(Equal("KORCCRDNotInstalled"))
+	g.Expect(cond.Reason).To(Equal("ServiceError"))
 }
 
 // --- helpers ---
