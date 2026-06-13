@@ -1066,6 +1066,11 @@ The deletion handler proceeds as follows:
      ESO had a chance to install `DeletionPolicy=Delete`, orphaning the
      kv-v2 path in OpenBao (see
      [Three-pass lifecycle with two blocked states](#three-pass-lifecycle-with-two-blocked-states)).
+     The wait is **bounded** by `OpenBaoAdoptionWaitTimeout` (10m): once the
+     CR has been deleting longer than that, an unadopted PushSecret stops
+     blocking — the handler emits an `ESOAdoptionTimedOut` Warning event and
+     proceeds to Pass-1's `Delete` — so a renamed or absent ESO finalizer
+     cannot hang CR deletion forever at `WaitingForESOAdoption`.
    - **Pass-1 — parallel Delete.** Issue `Delete` on every backup
      PushSecret (tolerating `NotFound`), so ESO's cleanup finalizers
      fire on all of them in parallel rather than in a serialised
@@ -1154,7 +1159,7 @@ reading controller logs:
 
 | Reason | Pass | When Emitted | Typical Remediation |
 | --- | --- | --- | --- |
-| `WaitingForESOAdoption` | Pre-Delete adoption wait (Pass-0) | A backup PushSecret exists, is not Terminating, and does **not** yet carry ESO's cleanup finalizer. | Resolves itself on ESO workqueue drain. Check `kubectl -n external-secrets logs deploy/external-secrets` for backlog or errors. |
+| `WaitingForESOAdoption` | Pre-Delete adoption wait (Pass-0) | A backup PushSecret exists, is not Terminating, and does **not** yet carry ESO's adoption finalizer (`pushsecret.externalsecrets.io/finalizer`). | Resolves itself on ESO workqueue drain. Check `kubectl -n external-secrets logs deploy/external-secrets` for backlog or errors. The wait is bounded by `OpenBaoAdoptionWaitTimeout` (10m); past that the handler emits an `ESOAdoptionTimedOut` Warning and force-deletes so CR deletion never hangs. |
 | `OpenBaoFinalizerBlocked` | Post-Delete wait-for-gone (Pass-2) | A backup PushSecret is still present in the API server after `Delete` was issued, typically in Terminating state behind ESO's cleanup finalizer. | ESO is running `DeletionPolicy=Delete` against OpenBao. A persistent block here may indicate OpenBao unreachable or ClusterSecretStore auth revoked. |
 
 The three passes execute in strict order:
@@ -1164,7 +1169,14 @@ The three passes execute in strict order:
    `metadata.finalizers` for
    `pushsecret.externalsecrets.io/finalizer`. On the
    first unadopted PushSecret it records `WaitingForESOAdoption` and
-   returns `(done=false, nil)` **without** firing any `Delete`.
+   returns `(done=false, nil)` **without** firing any `Delete`. This wait is
+   bounded by `OpenBaoAdoptionWaitTimeout` (10m): past that deadline the
+   unadopted PushSecret no longer blocks — the handler emits an
+   `ESOAdoptionTimedOut` Warning and breaks to Pass-1's force-`Delete`. The
+   force-delete stays safe when ESO merely renamed its finalizer (the
+   PushSecret carries the renamed finalizer, so `Delete` only marks it
+   Terminating and ESO still purges the kv-v2 path); the path is orphaned
+   only if ESO is genuinely not running during the deletion window.
 2. **Pass-1 — parallel Delete.** Once every still-present PushSecret is
    adopted (ESO finalizer present) or already Terminating, the handler
    issues `Delete` on every name in a single pass so the cleanup

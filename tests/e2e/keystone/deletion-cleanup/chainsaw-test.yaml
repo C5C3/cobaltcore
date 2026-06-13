@@ -52,6 +52,23 @@ spec:
             (conditions[?type == 'Ready']):
             - status: "True"
               reason: AllReady
+    # Pin the ESO adoption-finalizer literal against the deployed ESO version.
+    # The operator's openbao-finalizer Pass-0 adoption gate (and its bounded
+    # adoption-wait timeout) branch on exactly this string; if an ESO upgrade
+    # renames its finalizer, this assertion fails the suite loudly instead of
+    # silently turning CR deletion into a WaitingForESOAdoption hang. Chainsaw
+    # compares the JMESPath result for equality, so contains() (a bool) is
+    # matched against the bool true; the `|| `[]`` fallback lets the assert
+    # retry while the finalizers list is still nil (pre-adoption) rather than
+    # raising a non-retryable type error.
+    - assert:
+        resource:
+          apiVersion: external-secrets.io/v1alpha1
+          kind: PushSecret
+          metadata:
+            name: keystone-cleanup-fernet-keys-backup
+            namespace: openstack
+            (contains(finalizers || `[]`, 'pushsecret.externalsecrets.io/finalizer')): true
     catch:
     - script:
         content: |

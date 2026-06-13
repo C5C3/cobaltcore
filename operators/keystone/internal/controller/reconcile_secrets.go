@@ -39,21 +39,26 @@ const openBaoClusterStoreName = "openbao-cluster-store"
 // REQ-005).
 const keystoneOpenBaoFinalizer = "keystone.openstack.c5c3.io/openbao-finalizer"
 
-// esoPushSecretFinalizer is the cleanup finalizer ESO installs on every
-// PushSecret it adopts. The openbao-finalizer handler must observe this
-// finalizer on each backup PushSecret before issuing Delete — otherwise the
-// operator's Delete can race ahead of ESO's first reconcile, remove the
-// PushSecret object outright, and leave the referenced KV-v2 path orphaned
-// in OpenBao (CC-0091, REQ-007). Declared once as the single source of truth
-// for the handler and tests.
+// esoPushSecretFinalizer is the finalizer ESO installs on a PushSecret when it
+// adopts (begins managing) the object. Its presence is the Pass-0 *adoption*
+// signal — NOT a remote-cleanup marker: finalizeOpenBaoSecrets requires it on
+// each backup PushSecret before issuing Delete, because a Delete that races
+// ahead of ESO's first reconcile would remove the PushSecret outright and
+// leave the referenced KV-v2 path orphaned in OpenBao (CC-0091, REQ-007). This
+// is the literal hasESOFinalizer checks and the only ESO finalizer production
+// code branches on. The pinned ESO version's use of this exact string is
+// asserted by the deletion-cleanup e2e suite, so an upstream rename fails CI
+// loudly instead of hanging CR deletion at WaitingForESOAdoption (issue #475).
+// Declared once as the single source of truth for the handler and tests.
 const esoPushSecretFinalizer = "pushsecret.externalsecrets.io/finalizer"
 
-// esoCleanupFinalizer is the cleanup finalizer external-secrets installs on a
-// PushSecret while it purges the remote kv-v2 path (spec.deletionPolicy=Delete).
-// The operator does not add or remove this finalizer itself; it is declared
-// here as the single source of truth so both unit tests (default build) and
-// integration tests (//go:build integration) reference one identical string
-// rather than hard-coding the literal in two places (CC-0092, REQ-004).
+// esoCleanupFinalizer is the *remote-purge* finalizer external-secrets uses
+// while it deletes the kv-v2 path for a PushSecret with
+// spec.deletionPolicy=Delete. Production code never adds, removes, or branches
+// on it; it is declared here only so the tests can simulate ESO holding a
+// PushSecret Terminating during remote cleanup, using one identical string in
+// both unit tests (default build) and integration tests (//go:build
+// integration) rather than hard-coding the literal twice (CC-0092, REQ-004).
 const esoCleanupFinalizer = "external-secrets.io/cleanup"
 
 // reconcileSecrets checks that ESO-provided Kubernetes Secrets exist before
