@@ -27,6 +27,7 @@ import (
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
@@ -339,6 +340,71 @@ func TestApplyAdminPasswordRotation_ValidCommit(t *testing.T) {
 	g.Expect(apierrors.IsNotFound(getErr)).To(BeTrue())
 
 	g.Expect(drainEventReasons(rec)).To(ContainElement("AdminPasswordRotated"))
+}
+
+// TestApplyAdminPasswordRotation_ConcurrentStagingPatchTolerated mirrors the
+// fernet/credential staging-delete guard (issue #475, Problem 1a): the step-5
+// Delete carries client.Preconditions{UID, ResourceVersion} from the step-1
+// read, and a 409 Conflict (a CronJob PATCH landing between read and delete) is
+// tolerated as a completed apply with the staging Secret left intact.
+func TestApplyAdminPasswordRotation_ConcurrentStagingPatchTolerated(t *testing.T) {
+	g := NewWithT(t)
+	ks := pwRotationTestKeystone()
+	s := pwRotationTestScheme()
+
+	pushSource := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+		Name: adminPasswordNextSecretName(ks), Namespace: ks.Namespace,
+	}}
+	staging := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        adminPasswordStagingSecretName(ks),
+			Namespace:   ks.Namespace,
+			UID:         "staging-uid",
+			Annotations: validCompletedAnnotation(),
+		},
+		Data: map[string][]byte{"password": []byte(validTestPassword)},
+	}
+
+	var sawPreconditions *metav1.Preconditions
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(ks, pushSource, staging).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Delete: func(ctx context.Context, wc client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+				if sec, ok := obj.(*corev1.Secret); ok && sec.Name == adminPasswordStagingSecretName(ks) {
+					do := &client.DeleteOptions{}
+					for _, o := range opts {
+						o.ApplyToDelete(do)
+					}
+					sawPreconditions = do.Preconditions
+					return apierrors.NewConflict(corev1.Resource("secrets"), sec.Name,
+						fmt.Errorf("simulated concurrent rotation PATCH"))
+				}
+				return wc.Delete(ctx, obj, opts...)
+			},
+		}).
+		Build()
+	r := &KeystoneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(20)}
+
+	applied, err := r.applyAdminPasswordRotation(context.Background(), ks, 24)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(applied).To(BeTrue(), "a Conflict on the staging Delete must be tolerated as a completed apply")
+
+	g.Expect(sawPreconditions).NotTo(BeNil(), "staging Delete must carry client.Preconditions")
+	g.Expect(sawPreconditions.UID).NotTo(BeNil())
+	g.Expect(*sawPreconditions.UID).To(Equal(types.UID("staging-uid")))
+	g.Expect(sawPreconditions.ResourceVersion).NotTo(BeNil())
+	g.Expect(*sawPreconditions.ResourceVersion).NotTo(BeEmpty())
+
+	// Push-source carries this run's password; staging Secret still present.
+	var committed corev1.Secret
+	g.Expect(r.Get(context.Background(), types.NamespacedName{
+		Name: adminPasswordNextSecretName(ks), Namespace: ks.Namespace,
+	}, &committed)).To(Succeed())
+	g.Expect(committed.Data).To(HaveKeyWithValue("password", []byte(validTestPassword)))
+	g.Expect(r.Get(context.Background(), types.NamespacedName{
+		Name: adminPasswordStagingSecretName(ks), Namespace: ks.Namespace,
+	}, &corev1.Secret{})).To(Succeed())
 }
 
 func TestApplyAdminPasswordRotation_RejectsShortPassword(t *testing.T) {

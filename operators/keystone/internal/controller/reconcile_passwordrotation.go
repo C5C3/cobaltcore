@@ -472,10 +472,17 @@ func validateAdminPasswordRotationOutput(data map[string][]byte, minLength int) 
 //     staging Secret for operator inspection.
 //  4. GET the push-source Secret, replace its Data with the staged payload,
 //     stamp the rotation-completed annotation, and Update.
-//  5. DELETE the staging Secret (tolerate NotFound).
+//  5. DELETE the staging Secret under client.Preconditions{UID,
+//     ResourceVersion} from the step-1 read; tolerate NotFound and Conflict.
 //  6. Emit AdminPasswordRotated.
 //
 // The password value itself is never logged or echoed in events.
+//
+// NOTE: unlike applyRotationOutput (CC-0081), a validation rejection here does
+// NOT clear staging.Data. The staging Secret carries a single `password` key,
+// not a multi-key map, so the strategic-merge accumulation of stale indices
+// that motivates clearing the fernet/credential staging payload cannot occur;
+// the rejected password is retained verbatim for operator inspection.
 func (r *KeystoneReconciler) applyAdminPasswordRotation(
 	ctx context.Context,
 	keystone *keystonev1alpha1.Keystone,
@@ -538,9 +545,21 @@ func (r *KeystoneReconciler) applyAdminPasswordRotation(
 		return false, fmt.Errorf("updating push-source secret %s: %w", pushSourceSecretName, updateErr)
 	}
 
-	// 5. DELETE staging Secret; tolerate NotFound for races.
-	if delErr := r.Delete(ctx, &staging); delErr != nil && !apierrors.IsNotFound(delErr) {
-		return false, fmt.Errorf("deleting staging secret %s: %w", stagingSecretName, delErr)
+	// 5. DELETE staging Secret under the UID + ResourceVersion observed at the
+	//    step-1 Get, mirroring applyRotationOutput (CC-0081). The preconditions
+	//    make a concurrent CronJob PATCH surface as 409 Conflict instead of
+	//    being silently deleted uncommitted; the newer password then commits on
+	//    the next reconcile. Conflict and NotFound are both tolerated — this
+	//    run's password is already on the push-source Secret.
+	delOpts := client.Preconditions{UID: &staging.UID, ResourceVersion: &staging.ResourceVersion}
+	if delErr := r.Delete(ctx, &staging, delOpts); delErr != nil {
+		if !apierrors.IsNotFound(delErr) && !apierrors.IsConflict(delErr) {
+			return false, fmt.Errorf("deleting staging secret %s: %w", stagingSecretName, delErr)
+		}
+		log.FromContext(ctx).V(1).Info(
+			"staging secret changed since read; newer rotation output applied next reconcile",
+			"staging", stagingSecretName,
+		)
 	}
 
 	// 6. Emit a success event. The password value is intentionally omitted.

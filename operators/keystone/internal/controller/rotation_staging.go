@@ -17,6 +17,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -161,7 +162,8 @@ func (r *KeystoneReconciler) ensureStagingSecret(
 //  4. GET the main Secret, replace its Data with the staging payload verbatim,
 //     and Update — full-object replacement guarantees the atomic-swap
 //     semantics (stale indices not in the staging payload are removed).
-//  5. DELETE the staging Secret (tolerate NotFound for races).
+//  5. DELETE the staging Secret under client.Preconditions{UID,
+//     ResourceVersion} from the step-1 read; tolerate NotFound and Conflict.
 //  6. Emit a Normal event with the given eventReason.
 //
 // DECISION (CC-0081): UPDATE-then-DELETE ordering — if DELETE fails, the
@@ -170,6 +172,16 @@ func (r *KeystoneReconciler) ensureStagingSecret(
 // (and a stale, pre-this-run annotation would fail validation the same way
 // on retry). Tolerating NotFound on DELETE handles the common race where a
 // human operator removed the staging Secret by hand.
+//
+// DECISION (CC-0081): the step-5 DELETE carries client.Preconditions with the
+// UID and ResourceVersion read in step 1. An unconditional DELETE would
+// silently remove a staging Secret the CronJob had PATCHed with fresh rotation
+// output between the step-1 Get and the DELETE, losing that output uncommitted.
+// With the preconditions the API server returns 409 Conflict instead; the
+// newer payload survives on the staging Secret and commits on the next
+// reconcile. Both Conflict (concurrent PATCH) and NotFound (concurrent delete)
+// are therefore tolerated — this run's payload is already on the production
+// Secret, so the apply is complete either way.
 //
 // DECISION (CC-0081): The production Secret's `.data` field is fully
 // replaced under the controller-owned ResourceVersion via a GET+Update
@@ -254,9 +266,22 @@ func (r *KeystoneReconciler) applyRotationOutput(
 		return false, fmt.Errorf("updating main secret %s: %w", mainSecretName, updateErr)
 	}
 
-	// 5. DELETE staging Secret; tolerate NotFound for races.
-	if delErr := r.Delete(ctx, &staging); delErr != nil && !apierrors.IsNotFound(delErr) {
-		return false, fmt.Errorf("deleting staging secret %s: %w", stagingSecretName, delErr)
+	// 5. DELETE staging Secret under the UID + ResourceVersion observed at the
+	//    step-1 Get. The preconditions make a concurrent CronJob PATCH (fresh
+	//    rotation output written between the read and this DELETE) surface as
+	//    409 Conflict rather than being silently deleted uncommitted; the newer
+	//    payload then commits on the next reconcile. Conflict and NotFound are
+	//    both tolerated — this run's payload is already on the production Secret
+	//    (CC-0081).
+	delOpts := client.Preconditions{UID: &staging.UID, ResourceVersion: &staging.ResourceVersion}
+	if delErr := r.Delete(ctx, &staging, delOpts); delErr != nil {
+		if !apierrors.IsNotFound(delErr) && !apierrors.IsConflict(delErr) {
+			return false, fmt.Errorf("deleting staging secret %s: %w", stagingSecretName, delErr)
+		}
+		log.FromContext(ctx).V(1).Info(
+			"staging secret changed since read; newer rotation output applied next reconcile",
+			"staging", stagingSecretName,
+		)
 	}
 
 	// 6. Emit a success event. Count reflects the number of active keys now

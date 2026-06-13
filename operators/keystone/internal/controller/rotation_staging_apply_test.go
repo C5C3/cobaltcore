@@ -12,6 +12,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"testing"
 	"time"
@@ -24,6 +25,7 @@ import (
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
@@ -321,6 +323,91 @@ func TestApplyRotationOutput_HappyPath(t *testing.T) {
 	err = r.Get(context.Background(),
 		types.NamespacedName{Name: fernetStagingSecretName(ks), Namespace: "default"}, &gotStaging)
 	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "staging Secret should be deleted after apply")
+
+	expectEvent(g, r, "Normal FernetKeysRotated")
+}
+
+// TestApplyRotationOutput_ConcurrentStagingPatchTolerated is the regression
+// guard for the staging-delete race (issue #475, Problem 1a): the step-5 Delete
+// must carry client.Preconditions{UID, ResourceVersion} from the step-1 read so
+// that a rotation CronJob PATCHing fresh output between the read and the Delete
+// is rejected with 409 Conflict instead of being silently deleted uncommitted.
+// applyRotationOutput must tolerate that Conflict (this run's payload is already
+// on the production Secret) and leave the staging Secret intact so its newer
+// payload commits on the next reconcile (CC-0081).
+func TestApplyRotationOutput_ConcurrentStagingPatchTolerated(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := applyTestKeystone()
+	s := testScheme()
+
+	stagingData := makeValidFernetKeys(t, 3)
+	staging := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      fernetStagingSecretName(ks),
+			Namespace: "default",
+			UID:       "staging-uid",
+			Annotations: map[string]string{
+				RotationCompletedAnnotation: time.Now().UTC().Format(time.RFC3339),
+			},
+		},
+		Data: stagingData,
+	}
+	prod := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-keystone-fernet-keys", Namespace: "default"},
+		Data:       map[string][]byte{"0": []byte("existing")},
+	}
+
+	var sawPreconditions *metav1.Preconditions
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(staging, prod).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Delete: func(ctx context.Context, wc client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+				if sec, ok := obj.(*corev1.Secret); ok && sec.Name == fernetStagingSecretName(ks) {
+					do := &client.DeleteOptions{}
+					for _, o := range opts {
+						o.ApplyToDelete(do)
+					}
+					sawPreconditions = do.Preconditions
+					// Simulate a CronJob PATCH landing between the operator's
+					// read and this Delete: the precondition no longer matches,
+					// so the API server rejects the Delete with 409 Conflict.
+					return apierrors.NewConflict(corev1.Resource("secrets"), sec.Name,
+						fmt.Errorf("simulated concurrent rotation PATCH"))
+				}
+				return wc.Delete(ctx, obj, opts...)
+			},
+		}).
+		Build()
+	r := &KeystoneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
+
+	applied, err := r.applyRotationOutput(
+		context.Background(), ks,
+		fernetStagingSecretName(ks),
+		"test-keystone-fernet-keys",
+		"FernetKeysRotated",
+		1, 10,
+	)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(applied).To(BeTrue(), "a Conflict on the staging Delete must be tolerated as a completed apply")
+
+	// The Delete carried the UID + ResourceVersion observed at the step-1 read.
+	g.Expect(sawPreconditions).NotTo(BeNil(), "staging Delete must carry client.Preconditions")
+	g.Expect(sawPreconditions.UID).NotTo(BeNil())
+	g.Expect(*sawPreconditions.UID).To(Equal(types.UID("staging-uid")))
+	g.Expect(sawPreconditions.ResourceVersion).NotTo(BeNil())
+	g.Expect(*sawPreconditions.ResourceVersion).NotTo(BeEmpty())
+
+	// Production carries this run's payload (step 4 completed before the Delete).
+	var gotProd corev1.Secret
+	g.Expect(r.Get(context.Background(),
+		types.NamespacedName{Name: "test-keystone-fernet-keys", Namespace: "default"}, &gotProd)).To(Succeed())
+	g.Expect(gotProd.Data).To(HaveLen(len(stagingData)))
+
+	// Staging Secret still present — its newer payload was NOT deleted, so it
+	// commits on the next reconcile rather than being lost (issue #475).
+	g.Expect(r.Get(context.Background(),
+		types.NamespacedName{Name: fernetStagingSecretName(ks), Namespace: "default"}, &corev1.Secret{})).To(Succeed())
 
 	expectEvent(g, r, "Normal FernetKeysRotated")
 }
