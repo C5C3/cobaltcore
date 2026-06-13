@@ -48,6 +48,13 @@ type KeystoneList struct {
 }
 
 // KeystoneSpec defines the desired state of Keystone.
+//
+// The drain-window CEL rule mirrors the validating webhook: when one
+// or both of the nil-preserving pointers is unset, the rule substitutes the same
+// effective defaults the reconciler applies. The literals 5 and 30 must stay in
+// sync with DefaultPreStopSleepSeconds and DefaultTerminationGracePeriodSeconds
+// in keystone_webhook.go — kubebuilder/CEL rules cannot reference Go constants.
+// +kubebuilder:validation:XValidation:rule="(has(self.preStopSleepSeconds) ? self.preStopSleepSeconds : 5) < (has(self.terminationGracePeriodSeconds) ? self.terminationGracePeriodSeconds : 30)",message="preStopSleepSeconds must be strictly less than terminationGracePeriodSeconds"
 type KeystoneSpec struct {
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:default=3
@@ -128,8 +135,14 @@ type KeystoneSpec struct {
 	// +optional
 	Middleware []commonv1.MiddlewareSpec `json:"middleware,omitempty"`
 
-	// Plugins defines service plugins/drivers to configure.
+	// Plugins defines service plugins/drivers to configure. Modeled as a
+	// list-map keyed by configSection so the API server rejects duplicate
+	// sections structurally (parity with the validating webhook's duplicate
+	// check) and server-side apply merges entries by section instead of
+	// replacing the whole list.
 	// +optional
+	// +listType=map
+	// +listMapKey=configSection
 	Plugins []commonv1.PluginSpec `json:"plugins,omitempty"`
 
 	// PolicyOverrides defines custom oslo.policy rules for the service.
@@ -252,6 +265,7 @@ type KeystoneSpec struct {
 
 // AutoscalingSpec defines the parameters for horizontal pod autoscaling.
 // +kubebuilder:validation:XValidation:rule="has(self.targetCPUUtilization) || has(self.targetMemoryUtilization)",message="at least one of targetCPUUtilization or targetMemoryUtilization must be set"
+// +kubebuilder:validation:XValidation:rule="!has(self.minReplicas) || self.minReplicas <= self.maxReplicas",message="minReplicas must not exceed maxReplicas"
 type AutoscalingSpec struct {
 	// MinReplicas is the lower bound for the number of replicas.
 	// Defaults to the current spec.replicas value if unset.
@@ -314,6 +328,10 @@ type NetworkPolicyIngressSource struct {
 // UWSGISpec defines the uWSGI application server parameters.
 // Exposed as an optional pointer field on KeystoneSpec so that existing CRs
 // without spec.uwsgi continue to work with hardcoded defaults in the reconciler.
+// The cross-field CEL rule mirrors the validating webhook: httpKeepAliveTimeout
+// is only meaningful when httpKeepAlive is true, otherwise the
+// --http-keepalive-timeout flag is never emitted.
+// +kubebuilder:validation:XValidation:rule="!has(self.httpKeepAliveTimeout) || self.httpKeepAlive",message="httpKeepAliveTimeout may only be set when httpKeepAlive is true"
 type UWSGISpec struct {
 	// Processes is the number of uWSGI worker processes.
 	// +kubebuilder:validation:Minimum=1
@@ -495,8 +513,11 @@ type BootstrapSpec struct {
 	// PublicEndpoint is the externally routable Keystone endpoint URL used for
 	// --bootstrap-public-url. When unset, the cluster-local service DNS is used
 	// as a fallback. External clients (CLI users, Horizon, federation partners)
-	// require a routable address here.
+	// require a routable address here. The pattern enforces an HTTP(S)
+	// URL shape unconditionally; the webhook additionally cross-checks the host
+	// against spec.gateway.hostname when a gateway is configured.
 	// +optional
+	// +kubebuilder:validation:Pattern=`^https?://`
 	PublicEndpoint string `json:"publicEndpoint,omitempty"`
 
 	// PasswordRotation optionally enables scheduled rotation of the admin
@@ -586,10 +607,14 @@ type LoggingSpec struct {
 	// PerLoggerLevels overrides the level of named loggers, mirroring
 	// oslo.log's `default_log_levels`. Example:
 	// {"sqlalchemy.engine": "WARNING", "keystone.middleware": "DEBUG"}.
-	// Each value must be one of DEBUG/INFO/WARNING/ERROR/CRITICAL —
-	// enforced by the validating webhook, not the CRD enum (additionalProperties
-	// does not support enum constraints in CRD v1).
+	// Each value must be one of DEBUG/INFO/WARNING/ERROR/CRITICAL and every
+	// logger name must be non-empty. These are now enforced by the CRD CEL
+	// XValidation rules below as well as by the validating webhook (a plain
+	// enum on additionalProperties is still not expressible in CRD v1, so the
+	// value constraint is written as an `in [...]` CEL rule rather than an enum).
 	// +optional
+	// +kubebuilder:validation:XValidation:rule="self.all(k, k != '')",message="logger name must not be empty"
+	// +kubebuilder:validation:XValidation:rule="self.all(k, self[k] in ['DEBUG','INFO','WARNING','ERROR','CRITICAL'])",message="per-logger level must be one of DEBUG, INFO, WARNING, ERROR, CRITICAL"
 	PerLoggerLevels map[string]string `json:"perLoggerLevels,omitempty"`
 }
 
