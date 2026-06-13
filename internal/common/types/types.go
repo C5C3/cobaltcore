@@ -8,10 +8,30 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
+// DefaultCacheBackend is the oslo.cache backend materialized when a Spec leaves
+// CacheSpec.Backend empty. It lives here as the single source of truth shared by
+// the keystone and c5c3 defaulting webhooks so the default cannot drift across
+// operators (kubebuilder markers cannot reference Go constants, so leaf markers
+// keep the literal in sync separately).
+const DefaultCacheBackend = "dogpile.cache.pymemcache"
+
 // ImageSpec defines a container image reference.
 type ImageSpec struct {
+	// Repository is the OCI image repository, optionally including the registry
+	// host (e.g. "ghcr.io/c5c3/keystone" or "c5c3/keystone"). The pattern is a
+	// permissive OCI reference — lowercase alphanumeric components separated by
+	// ".", "_", "-", "/", or ":" (registry port) — so mirror and host:port forms
+	// are accepted while an empty string (which "required" alone admits) and
+	// obvious garbage are rejected.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]+([._:/-][a-z0-9]+)*$`
 	Repository string `json:"repository"`
-	Tag        string `json:"tag"`
+	// Tag is the OCI image tag (e.g. "2025.2"). It follows the OCI tag grammar:
+	// up to 128 characters of word characters, dots, and dashes, and must not
+	// begin with a dot or dash.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern=`^[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}$`
+	Tag string `json:"tag"`
 }
 
 // DatabaseSpec supports managed (ClusterRef) and brownfield (explicit) modes.
@@ -24,13 +44,26 @@ type DatabaseSpec struct {
 	// ClusterRef references a MariaDB CR in the cluster (managed mode).
 	// +optional
 	ClusterRef *corev1.LocalObjectReference `json:"clusterRef,omitempty"`
-	// Host is the database hostname (brownfield mode).
+	// Host is the database hostname (brownfield mode). The pattern is a
+	// permissive host matcher that accepts DNS names, IPv4, and IPv6 literals
+	// while rejecting empty strings and shell/path metacharacters; it is not a
+	// strict RFC-1123 validator, deliberately, so airgapped/mirror endpoints are
+	// not rejected at admission.
 	// +optional
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern=`^[a-zA-Z0-9._:-]+$`
 	Host string `json:"host,omitempty"`
-	// Port is the database port (brownfield mode, default 3306).
+	// Port is the database port (brownfield mode, default 3306). Omitted (managed
+	// mode) leaves it unset; an explicit value must be a valid TCP port.
 	// +optional
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
 	Port int32 `json:"port,omitempty"`
-	// Database is the database name within the cluster.
+	// Database is the database name within the cluster. Constrained to the MySQL
+	// identifier character set and the 64-character identifier limit.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=64
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9_]+$`
 	Database string `json:"database"`
 	// SecretRef references the K8s Secret with credentials.
 	SecretRef SecretRefSpec `json:"secretRef"`
@@ -94,6 +127,13 @@ type CacheSpec struct {
 
 // SecretRefSpec references a Kubernetes Secret.
 type SecretRefSpec struct {
+	// Name is the referenced Secret's name. It must be a non-empty DNS-1123
+	// subdomain (the Kubernetes object-name grammar). Tightening the shared type
+	// fixes every consumer at once — keystone adminPasswordSecretRef /
+	// database.secretRef / messaging / TLS cert refs and the c5c3
+	// passwordSecretRef — so an empty name no longer slips through "required".
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
 	Name string `json:"name"`
 	Key  string `json:"key,omitempty"`
 }
@@ -131,6 +171,7 @@ type PluginSpec struct {
 }
 
 // PipelinePosition defines where middleware is inserted in api-paste.ini.
+// +kubebuilder:validation:Enum=before;after
 type PipelinePosition string
 
 const (
