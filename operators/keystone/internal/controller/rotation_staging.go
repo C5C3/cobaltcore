@@ -157,8 +157,11 @@ func (r *KeystoneReconciler) ensureStagingSecret(
 //     RFC3339; a malformed annotation emits a Warning event and is retried on
 //     the next CronJob run (no requeue-with-error).
 //  3. Validate the Secret's Data via validateRotationOutput; a rejection
-//     emits a Warning event and retains the staging Secret for operator
-//     inspection.
+//     emits a Warning event and clears the staged Data and completion
+//     annotation (the staging Secret object is kept) so the next CronJob
+//     strategic-merge PATCH starts from an empty base rather than
+//     accumulating leftover key indices over a rejected payload. The Warning
+//     event message — not the now-empty staging Data — is the diagnostic.
 //  4. GET the main Secret, replace its Data with the staging payload verbatim,
 //     and Update — full-object replacement guarantees the atomic-swap
 //     semantics (stale indices not in the staging payload are removed).
@@ -236,10 +239,32 @@ func (r *KeystoneReconciler) applyRotationOutput(
 		return false, nil
 	}
 
-	// 3. Validate staging payload.
+	// 3. Validate staging payload. On rejection, clear the staged Data and the
+	//    completion annotation before returning. The rotation scripts PATCH the
+	//    staging Secret with strategic-merge semantics over a multi-key `.data`
+	//    map (scripts/fernet_rotate.sh, credential_rotate.sh), so leftover key
+	//    indices from a rejected payload would otherwise survive and merge under
+	//    the next CronJob run — letting validateRotationOutput accept a key set
+	//    keystone-manage never produced together. Clearing makes the next PATCH
+	//    start from an empty base. The RotationRejected event message (not the
+	//    now-empty staging Data) is the diagnostic of record (issue #475).
 	if valErr := validateRotationOutput(staging.Data, minKeys, maxKeys); valErr != nil {
 		r.Recorder.Eventf(keystone, corev1.EventTypeWarning, "RotationRejected",
 			"staging secret %s rejected: %v", stagingSecretName, valErr)
+		staging.Data = nil
+		delete(staging.Annotations, RotationCompletedAnnotation)
+		if updErr := r.Update(ctx, &staging); updErr != nil {
+			if !apierrors.IsConflict(updErr) && !apierrors.IsNotFound(updErr) {
+				return false, fmt.Errorf("clearing rejected staging secret %s: %w", stagingSecretName, updErr)
+			}
+			// A concurrent CronJob PATCH (Conflict) or a manual delete
+			// (NotFound) raced the clear; the next reconcile re-reads and
+			// re-validates, so the stale base cannot survive (issue #475).
+			log.FromContext(ctx).V(1).Info(
+				"rejected staging secret changed since read; clear retried next reconcile",
+				"staging", stagingSecretName,
+			)
+		}
 		return false, nil
 	}
 

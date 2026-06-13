@@ -2831,8 +2831,10 @@ func TestRotationApplyEndToEnd_EnvTest(t *testing.T) {
 // TestRotationApplyRejectsMalformedKeys_EnvTest verifies that a staging Secret
 // with malformed Fernet keys (32-byte raw strings instead of 44-byte base64url)
 // is rejected by the operator's validation step: production Secret is
-// untouched, staging Secret is retained for inspection, and a
-// RotationRejected Warning event is emitted (CC-0081, Task 4.2, REQ-006).
+// untouched, the staging Secret object is retained but its payload is cleared
+// (Data emptied, completion annotation removed) so the next CronJob
+// strategic-merge PATCH starts from an empty base, and a RotationRejected
+// Warning event is emitted (CC-0081, Task 4.2, REQ-006; issue #475).
 func TestRotationApplyRejectsMalformedKeys_EnvTest(t *testing.T) {
 	g := NewGomegaWithT(t)
 	c, ctx, ks, ns := setupRotationEnvTest(t, "test-rotation-reject-")
@@ -2872,12 +2874,24 @@ func TestRotationApplyRejectsMalformedKeys_EnvTest(t *testing.T) {
 			"production Secret must not be mutated by a rejected rotation (CC-0081)")
 	}, 2*time.Second, pollInterval).Should(Succeed())
 
-	// Staging Secret is retained with the malformed data + annotation (CC-0081).
-	retained := &corev1.Secret{}
-	g.Expect(c.Get(ctx, stagingKey, retained)).To(Succeed(),
-		"staging Secret should be retained after a rejected apply (CC-0081)")
-	g.Expect(retained.Data).To(Equal(malformed))
-	g.Expect(retained.Annotations).To(HaveKey(RotationCompletedAnnotation))
+	// Staging Secret retained but cleared: the operator empties Data and drops
+	// the completion annotation on rejection so the next CronJob strategic-merge
+	// PATCH starts from an empty base rather than accumulating leftover key
+	// indices over the rejected payload (issue #475). The object itself is kept —
+	// the RotationRejected event message, not the now-empty Data, is the
+	// diagnostic of record. Wrapped in Eventually because the clearing Update
+	// lands just after the RotationRejected event the wait above keys on
+	// (CC-0081, issue #475).
+	g.Eventually(func(ig Gomega) {
+		retained := &corev1.Secret{}
+		ig.Expect(c.Get(ctx, stagingKey, retained)).To(Succeed(),
+			"staging Secret should be retained (not deleted) after a rejected apply (issue #475)")
+		ig.Expect(retained.Data).To(BeEmpty(),
+			"rejected staging Data must be cleared (issue #475)")
+		ig.Expect(retained.Annotations).NotTo(HaveKey(RotationCompletedAnnotation),
+			"rejected staging completion annotation must be removed (issue #475)")
+	}, eventuallyTimeout, pollInterval).Should(Succeed(),
+		"staging Secret must be retained but cleared after a rejected apply (issue #475)")
 }
 
 // cronJobStrategicMergePatch emits the exact strategic-merge PATCH shape the

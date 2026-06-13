@@ -228,10 +228,15 @@ func TestApplyRotationOutput_ValidationFailsWrongLength(t *testing.T) {
 		types.NamespacedName{Name: "test-keystone-fernet-keys", Namespace: "default"}, &gotProd)).To(Succeed())
 	g.Expect(gotProd.Data).To(HaveKeyWithValue("0", []byte("existing")))
 
-	// Staging retained.
+	// Staging Secret retained but cleared: Data emptied and the completion
+	// annotation removed so the next CronJob strategic-merge PATCH starts from
+	// an empty base rather than accumulating over the rejected payload (#475).
 	var gotStaging corev1.Secret
 	g.Expect(r.Get(context.Background(),
 		types.NamespacedName{Name: fernetStagingSecretName(ks), Namespace: "default"}, &gotStaging)).To(Succeed())
+	g.Expect(gotStaging.Data).To(BeEmpty(), "rejected staging Data must be cleared (issue #475)")
+	g.Expect(gotStaging.Annotations).NotTo(HaveKey(RotationCompletedAnnotation),
+		"rejected staging completion annotation must be removed (issue #475)")
 
 	expectEvent(g, r, "Warning RotationRejected")
 }
@@ -272,6 +277,15 @@ func TestApplyRotationOutput_ValidationFailsDuplicates(t *testing.T) {
 	)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(applied).To(BeFalse())
+
+	// Rejected staging payload is cleared (Data emptied, annotation removed)
+	// so a duplicate-key payload cannot persist as a strategic-merge base for
+	// the next CronJob run (issue #475).
+	var gotStaging corev1.Secret
+	g.Expect(r.Get(context.Background(),
+		types.NamespacedName{Name: fernetStagingSecretName(ks), Namespace: "default"}, &gotStaging)).To(Succeed())
+	g.Expect(gotStaging.Data).To(BeEmpty())
+	g.Expect(gotStaging.Annotations).NotTo(HaveKey(RotationCompletedAnnotation))
 
 	expectEvent(g, r, "Warning RotationRejected")
 }

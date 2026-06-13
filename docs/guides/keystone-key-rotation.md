@@ -167,8 +167,12 @@ subsequent rotations.
 ## 5. Recover from `RotationRejected`
 
 The operator validates every staged rotation before copying it onto the
-production Secret. On failure it emits a Warning event and **keeps the
-staging Secret in place** so you can inspect what the CronJob produced.
+production Secret. On failure it emits a Warning event and **clears the
+staged payload** — the staging Secret object is kept, but its `.data` and
+the `forge.c5c3.io/rotation-completed-at` annotation are removed so the
+next CronJob run starts from an empty base rather than merging over a
+rejected payload. The Warning event message, not the staging Secret
+contents, is the record of what was rejected.
 
 ### Symptoms
 
@@ -189,13 +193,11 @@ The companion Warning reason `RotationAnnotationInvalid` indicates the
 annotation was present but did not parse as RFC3339; the remediation path
 is the same.
 
-### Inspect the staging Secret
+### Match the rejection reason
 
-```bash
-kubectl -n <ns> get secret <ks>-fernet-keys-rotation -o yaml
-```
-
-Match the event message against the operator's validation contract
+Because the staged `.data` is cleared on rejection, the `RotationRejected`
+event message above — not the staging Secret — is what tells you which
+rule failed. Match it against the operator's validation contract
 (see [Operator validation rules](../reference/keystone/keystone-reconciler.md#key-rotation-rbac-split)):
 
 | Event message contains | Likely cause |
@@ -212,16 +214,18 @@ The recovery sequence is always:
 
 1. Fix the cause (CronJob image, script, or CR spec) so the next rotation
    will produce valid output.
-2. Force a fresh rotation:
+2. Force a fresh rotation. The operator already cleared the staged data on
+   rejection, so deleting the staging Secret by hand is optional
+   belt-and-suspenders:
 
    ```bash
-   kubectl -n <ns> delete secret <ks>-fernet-keys-rotation
+   kubectl -n <ns> delete secret <ks>-fernet-keys-rotation   # optional
    kubectl -n <ns> create job --from=cronjob/<ks>-fernet-rotate \
      <ks>-fernet-rotate-recover-$(date +%s)
    ```
 
-   The operator re-creates an empty staging Secret on the next reconcile;
-   the new Job PATCHes it; the operator validates and applies.
+   The new Job PATCHes the (already-empty) staging Secret; the operator
+   validates and applies.
 3. Confirm apply by repeating steps 2-4 above.
 
 > **Production safety note.** The production Secret is never modified
