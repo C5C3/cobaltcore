@@ -209,7 +209,14 @@ validating webhook is unavailable.
 | `spec.policyOverrides.rules` | `!has(self.rules) \|\| self.rules.all(k, size(k) > 0)` | "policy rule name must not be empty" |
 | `spec.policyOverrides.rules` | `!has(self.rules) \|\| self.rules.all(k, size(self.rules[k]) > 0)` | "policy rule value must not be empty" |
 | `spec.autoscaling` | `has(self.targetCPUUtilization) \|\| has(self.targetMemoryUtilization)` | "at least one of targetCPUUtilization or targetMemoryUtilization must be set" |
+| `spec.autoscaling` | `!has(self.minReplicas) \|\| self.minReplicas <= self.maxReplicas` | "minReplicas must not exceed maxReplicas" |
 | `spec.networkPolicy` | `size(self.ingress) > 0` | "at least one ingress source must be specified" |
+| `spec` | drain window: effective `preStopSleepSeconds` (default 5) must be `<` effective `terminationGracePeriodSeconds` (default 30) | "preStopSleepSeconds must be strictly less than terminationGracePeriodSeconds" |
+| `spec.uwsgi` | `!has(self.httpKeepAliveTimeout) \|\| self.httpKeepAlive` | "httpKeepAliveTimeout may only be set when httpKeepAlive is true" |
+| `spec.logging.perLoggerLevels` | `self.all(k, k != '')` | "logger name must not be empty" |
+| `spec.logging.perLoggerLevels` | `self.all(k, self[k] in ['DEBUG','INFO','WARNING','ERROR','CRITICAL'])` | "per-logger level must be one of DEBUG, INFO, WARNING, ERROR, CRITICAL" |
+| `spec.plugins` | list-map keyed by `configSection` (`x-kubernetes-list-type: map`) | "Duplicate value" (a repeated `configSection` is rejected by the API server) |
+| `spec.bootstrap.publicEndpoint` | Pattern: `^https?://` | (non-URL value rejected by API server) |
 | `spec.replicas` | Minimum: 1 | — |
 | `spec.fernet.maxActiveKeys` | Minimum: 3 | — |
 | `spec.credentialKeys.maxActiveKeys` | Minimum: 3 | — |
@@ -506,7 +513,7 @@ full event/condition contract.
 | `format` | `string` | No | `text` | On-wire layout of oslo.log records. `text` emits the standard oslo.log line format; `json` emits one JSON object per record for direct ingest by Loki/OpenSearch. Enforced as `+kubebuilder:validation:Enum=text;json`. |
 | `level` | `string` | No | `INFO` | Root logger level applied to oslo.log. One of `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. Enforced as `+kubebuilder:validation:Enum=DEBUG;INFO;WARNING;ERROR;CRITICAL`. |
 | `debug` | `bool` | No | `false` | Toggles oslo.log `[DEFAULT] debug=true`. Independent of `level` because oslo.log gates several extra-verbose code paths on the debug flag specifically (SQL echo, auth-backend tracing). |
-| `perLoggerLevels` | `map[string]string` | No | `nil` | Overrides the level of named loggers, mirroring oslo.log's `default_log_levels`. Each value must be one of `DEBUG`/`INFO`/`WARNING`/`ERROR`/`CRITICAL` — enforced by the validating webhook (CRD v1 `additionalProperties` does not support enum constraints). Empty-string keys are rejected. Rendered into `[DEFAULT].default_log_levels` in deterministic alphabetical order to keep ConfigMap content-hashes stable across reconciles. |
+| `perLoggerLevels` | `map[string]string` | No | `nil` | Overrides the level of named loggers, mirroring oslo.log's `default_log_levels`. Each value must be one of `DEBUG`/`INFO`/`WARNING`/`ERROR`/`CRITICAL` and every logger name must be non-empty — enforced by CRD CEL `XValidation` rules (a plain enum on `additionalProperties` is not expressible in CRD v1, so the value constraint is written as an `in [...]` CEL rule) and by the validating webhook. Rendered into `[DEFAULT].default_log_levels` in deterministic alphabetical order to keep ConfigMap content-hashes stable across reconciles. |
 
 ### Example
 
@@ -989,7 +996,7 @@ Configures the initial Keystone bootstrap.
 | `adminUser` | `string` | No | `"admin"` | Admin username for the bootstrap. Immutable after create (CEL transition rule): re-bootstrapping with a different admin user duplicates or strands catalog entries. |
 | `adminPasswordSecretRef` | [`SecretRefSpec`](#secretrefspec) | Yes | — | Secret containing the admin password. |
 | `region` | `string` | No | `"RegionOne"` | Keystone region name. Immutable after create (CEL transition rule): changing the region strands catalog entries under the old region. |
-| `publicEndpoint` | `string` | No | Cluster-local service DNS | Externally routable Keystone endpoint URL. Used for the `--bootstrap-public-url` argument passed to `keystone-manage bootstrap`. Required by external clients (CLI users, Horizon, federation partners) that cannot resolve the cluster-local service DNS. |
+| `publicEndpoint` | `string` | No | Cluster-local service DNS | Externally routable Keystone endpoint URL. Used for the `--bootstrap-public-url` argument passed to `keystone-manage bootstrap`. Required by external clients (CLI users, Horizon, federation partners) that cannot resolve the cluster-local service DNS. When set, it must be an HTTP(S) URL (`+kubebuilder:validation:Pattern=^https?://`), enforced unconditionally by the CRD schema; when `spec.gateway` is also set the webhook additionally requires the host to equal `spec.gateway.hostname`. |
 
 ---
 
@@ -1037,17 +1044,17 @@ operator CRDs.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `repository` | `string` | Yes | Container image repository (e.g., `c5c3/keystone`). |
-| `tag` | `string` | Yes | Image tag (e.g., `2025.1`). |
+| `repository` | `string` | Yes | Container image repository (e.g., `c5c3/keystone`). Must be non-empty (`MinLength=1`) and match a permissive OCI reference `Pattern` (`^[a-z0-9]+([._:/-][a-z0-9]+)*$`) that accepts registry-host and `host:port` forms. |
+| `tag` | `string` | Yes | Image tag (e.g., `2025.1`). Must be non-empty (`MinLength=1`) and match the OCI tag grammar `Pattern` (`^[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}$`). |
 
 ### DatabaseSpec
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `clusterRef` | `*corev1.LocalObjectReference` | No | Reference to a MariaDB CR (managed mode). |
-| `host` | `string` | No | Database hostname (brownfield mode). |
-| `port` | `int32` | No | Database port (brownfield mode, default 3306). |
-| `database` | `string` | Yes | Database name. Immutable after create (CEL transition rule): renaming re-points `db_sync` at a fresh, empty schema and silently orphans the existing data. |
+| `host` | `string` | No | Database hostname (brownfield mode). When set, `MinLength=1` plus a permissive host `Pattern` (`^[a-zA-Z0-9._:-]+$`) that accepts DNS names, IPv4, and IPv6 literals. |
+| `port` | `int32` | No | Database port (brownfield mode, default 3306). When set, range `Minimum=1`/`Maximum=65535`; omitted (managed mode) leaves it unset. |
+| `database` | `string` | Yes | Database name. Constrained to the MySQL identifier set and length: `MinLength=1`, `MaxLength=64`, `Pattern=^[A-Za-z0-9_]+$`. Immutable after create (CEL transition rule): renaming re-points `db_sync` at a fresh, empty schema and silently orphans the existing data. |
 | `secretRef` | [`SecretRefSpec`](#secretrefspec) | Yes | Secret with database credentials. |
 | `tls` | [`*DatabaseTLSSpec`](#databasetlsspec) | No | Optional TLS/mTLS configuration. The pointer keeps the field opt-in and non-mutating: a `nil` `tls` means plaintext TCP, preserving the previous behavior for all existing CRs. |
 
@@ -1114,7 +1121,7 @@ condition using these typed reasons:
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `name` | `string` | Yes | Name of the Kubernetes Secret. |
+| `name` | `string` | Yes | Name of the Kubernetes Secret. Must be a non-empty DNS-1123 subdomain (`MinLength=1` plus `Pattern=^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`). Tightening the shared type rejects an empty Secret name on every consumer (database/admin/messaging/TLS refs). |
 | `key` | `string` | No | Key within the Secret's data. |
 
 ### PolicySpec
@@ -1135,7 +1142,7 @@ shared `PolicySpec` type and the validating webhook.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `name` | `string` | Yes | Plugin name (e.g., `keystone-keycloak-backend`). |
-| `configSection` | `string` | Yes | INI section name (e.g., `keycloak`). Must be unique across all plugins. |
+| `configSection` | `string` | Yes | INI section name (e.g., `keycloak`). Must be unique across all plugins — enforced structurally by the CRD (`spec.plugins` is an `x-kubernetes-list-type: map` keyed by `configSection`), so a duplicate is rejected by the API server before the webhook runs. |
 | `config` | `map[string]string` | No | Key-value pairs for the plugin's INI section. |
 
 ### MiddlewareSpec
@@ -1144,7 +1151,7 @@ shared `PolicySpec` type and the validating webhook.
 | --- | --- | --- | --- |
 | `name` | `string` | Yes | Filter name (e.g., `audit`). |
 | `filterFactory` | `string` | Yes | Python entry point (e.g., `audit_middleware:filter_factory`). |
-| `position` | `PipelinePosition` | Yes | Pipeline insertion point: `"before"` or `"after"`. |
+| `position` | `PipelinePosition` | Yes | Pipeline insertion point: `"before"` or `"after"`. Constrained by `+kubebuilder:validation:Enum=before;after` on the shared `PipelinePosition` type, so any other value is rejected at admission. |
 | `config` | `map[string]string` | No | Key-value pairs for the filter section. |
 
 ### GatewaySpec
@@ -1426,6 +1433,14 @@ is pinned by a Chainsaw step.
 | `immutable-database-mode-rejected` | `15-immutable-database-mode.yaml` | `spec.database` mode (clusterRef ↔ host) immutable on UPDATE | Error containing "database mode" and "immutable" |
 | `immutable-adminuser-rejected` | `16-immutable-adminuser.yaml` | `spec.bootstrap.adminUser` immutable on UPDATE | Error containing "adminUser" and "immutable" |
 | `immutable-region-rejected` | `17-immutable-region.yaml` | `spec.bootstrap.region` immutable on UPDATE | Error containing "region" and "immutable" |
+| `image-empty-tag-rejected` | `13-image-empty-tag.yaml` | ImageSpec.Tag MinLength=1 | Error containing "image.tag" |
+| `database-name-invalid-char-rejected` | `14-database-name-invalid-char.yaml` | DatabaseSpec.Database Pattern | Error containing "database.database" |
+| `database-secretref-empty-name-rejected` | `15-database-secretref-empty-name.yaml` | SecretRefSpec.Name MinLength=1 | Error containing "secretRef.name" |
+| `middleware-bad-position-rejected` | `16-middleware-bad-position.yaml` | PipelinePosition Enum=before;after | Error containing "position" and "sideways" |
+| `uwsgi-keepalive-timeout-conflict-rejected` | `17-uwsgi-keepalive-timeout-conflict.yaml` | httpKeepAliveTimeout requires httpKeepAlive (CEL) | Error containing "httpKeepAliveTimeout" |
+| `prestop-not-less-than-grace-rejected` | `18-prestop-not-less-than-grace.yaml` | drain window preStop < TGPS (CEL) | Error containing "preStopSleepSeconds" and "terminationGracePeriodSeconds" |
+| `publicendpoint-not-url-rejected` | `19-publicendpoint-not-url.yaml` | BootstrapSpec.PublicEndpoint Pattern | Error containing "publicEndpoint" |
+| `perloggerlevels-invalid-value-rejected` | `20-perloggerlevels-invalid-value.yaml` | perLoggerLevels value enum (CEL) | Error containing "perLoggerLevels" |
 
 Steps `14`-`17` reuse the `immutable-fields` name from `13-immutable-base.yaml`,
 so each is applied as an UPDATE of the base CR and is rejected by the
@@ -1468,20 +1483,24 @@ the field name, so the loose-substring assertion (`maxActiveKeys`) keeps the tes
 stable regardless of which layer fires first and across upstream Kubernetes
 admission-pipeline changes.
 
-The 16 generated fixtures (`02-…` through `17-…`, with the `08-replicas-zero.yaml`
+The 24 generated fixtures (`02-…` through `20-…`, with the `08-replicas-zero.yaml`
 gap explained above) share an otherwise-identical minimal valid Keystone scaffold.
-The create-rejection fixtures (`02-…` through `12-…`, plus
-`13-policy-overrides-empty-rule-value.yaml`) differ only by the field under test;
-the update-rejection fixtures (`13-immutable-base.yaml` through `17-…`) share the
+The create-rejection fixtures (`02-…` through `12-…`,
+`13-policy-overrides-empty-rule-value.yaml`, and the validation-marker set
+`13-image-empty-tag.yaml` through `20-perloggerlevels-invalid-value.yaml`) differ
+only by the field under test; the update-rejection fixtures
+(`13-immutable-base.yaml` through `17-immutable-region.yaml`) share the
 `immutable-fields` name so `13-immutable-base.yaml` is the base and `14`-`17` are
-applied as UPDATEs.
+applied as UPDATEs. The create-rejection, update-rejection, and validation-marker
+sets deliberately reuse the `13`-`17` numeric prefixes with distinct filenames, so
+those prefixes recur across the suite.
 To prevent that scaffold from drifting across files, the fixtures are generated
 from a single canonical source in `tests/e2e/keystone/invalid-cr/_generate.py`.
 After editing the scaffold or any per-fixture override, regenerate via
 `python3 tests/e2e/keystone/invalid-cr/_generate.py`. The
 `verify-invalid-cr-fixtures` CI job (and the matching
 `make verify-invalid-cr-fixtures` Makefile target) runs `_generate.py --check`
-in drift mode and the `test_generate.py` unit suite (`len(FIXTURES) == 16` plus
+in drift mode and the `test_generate.py` unit suite (`len(FIXTURES) == 24` plus
 a cross-reference assertion that every `Fixture.filename` appears as a
 `file:` step in `chainsaw-test.yaml`), so a hand-edit to any generated fixture
 — or a rename/removal that desynchs `FIXTURES` from `chainsaw-test.yaml` —

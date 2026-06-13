@@ -221,8 +221,8 @@ notes](#infrastructurespec) below.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `database` | [`commonv1.DatabaseSpec`](../keystone/keystone-crd.md#databasespec) | No | managed `clusterRef: openstack-db`, `database: keystone`, `secretRef.name: keystone-db` | MariaDB connection parameters shared by the control plane. Supports managed (`clusterRef`) and brownfield (`host`) modes; exactly one must hold **after defaulting** (enforced by the validating webhook — see [Validation Rules](#validation-rules)). Optional because the defaulting webhook materializes a managed-mode block when omitted. **`database.secretRef` ownership:** in managed mode this reference is **operator-owned** — `reconcileDBCredentials` materialises a per-ControlPlane DB-credential Secret and the reconciler overrides the projected Keystone CR's `spec.database.secretRef` to point at it, so the `keystone-db` default `secretRef.name` is only a managed-mode convenience name (it is **not** what Keystone consumes and no longer resolves to a cluster Secret). A **brownfield** ControlPlane (`database.host` set, no `clusterRef`) **MUST supply** its own `database.secretRef` Secret out-of-band — the operator projects no ExternalSecret in brownfield mode. See [managed-mode provisioning](#infrastructurespec) below. |
-| `cache` | [`commonv1.CacheSpec`](../keystone/keystone-crd.md#cachespec) | No | managed `clusterRef: openstack-memcached`, `backend: dogpile.cache.pymemcache` | Memcached configuration shared by the control plane. Supports managed (`clusterRef`) and brownfield (`servers`) modes; exactly one must hold **after defaulting** (enforced by the validating webhook). Optional because the defaulting webhook materializes a managed-mode block when omitted. |
+| `database` | [`commonv1.DatabaseSpec`](../keystone/keystone-crd.md#databasespec) | No | managed `clusterRef: openstack-db`, `database: keystone`, `secretRef.name: keystone-db` | MariaDB connection parameters shared by the control plane. Supports managed (`clusterRef`) and brownfield (`host`) modes; exactly one must hold **after defaulting** (enforced by the CRD CEL `XValidation` rule and the validating webhook — see [Validation Rules](#validation-rules)). Optional because the defaulting webhook materializes a managed-mode block when omitted. **`database.secretRef` ownership:** in managed mode this reference is **operator-owned** — `reconcileDBCredentials` materialises a per-ControlPlane DB-credential Secret and the reconciler overrides the projected Keystone CR's `spec.database.secretRef` to point at it, so the `keystone-db` default `secretRef.name` is only a managed-mode convenience name (it is **not** what Keystone consumes and no longer resolves to a cluster Secret). A **brownfield** ControlPlane (`database.host` set, no `clusterRef`) **MUST supply** its own `database.secretRef` Secret out-of-band — the operator projects no ExternalSecret in brownfield mode. See [managed-mode provisioning](#infrastructurespec) below. |
+| `cache` | [`commonv1.CacheSpec`](../keystone/keystone-crd.md#cachespec) | No | managed `clusterRef: openstack-memcached`, `backend: dogpile.cache.pymemcache` | Memcached configuration shared by the control plane. Supports managed (`clusterRef`) and brownfield (`servers`) modes; exactly one must hold **after defaulting** (enforced by the CRD CEL `XValidation` rule and the validating webhook). Optional because the defaulting webhook materializes a managed-mode block when omitted. |
 
 <!-- DECISION: `database`/`cache` Required flipped from Yes to No because the
      defaulting webhook now constructs a managed-mode block when the field is omitted.
@@ -300,7 +300,7 @@ Keystone service.
 | `policyOverrides` | [`*commonv1.PolicySpec`](../keystone/keystone-crd.md#policyspec) | No | `nil` | Per-service oslo.policy overrides for Keystone. When set, these take precedence over `spec.global` for the Keystone service. |
 | `rotationInterval` | `*metav1.Duration` | No | `nil` | Overrides the Fernet / credential-key rotation interval the reconciler derives for the projected Keystone CR. When `nil`, the reconciler derives a default schedule. When set, the duration is converted to a cron expression and applied to both `fernet.rotationSchedule` and `credentialKeys.rotationSchedule` on the projected Keystone CR. An unconvertible interval (not a positive whole number of days) is **rejected at admission** by the validating webhook; if the webhook is bypassed, the reconciler surfaces `KeystoneReady=False` with reason `InvalidRotationInterval` and returns the error so the reconcile chain stops and requeues with backoff. |
 | `gateway` | [`*commonv1.GatewaySpec`](#gatewayspec) | No | `nil` | Exposes the projected Keystone API externally via a Gateway API HTTPRoute. When `nil`, no HTTPRoute is projected and the Keystone API is reachable in-cluster only (its ClusterIP Service). When set, the reconciler projects it onto the Keystone CR's `spec.gateway`, so the Keystone operator attaches an HTTPRoute to the referenced Gateway. When a `gateway` is set its `hostname` must be non-empty — enforced at admission by the validating webhook (see [Validation Rules](#validation-rules)). |
-| `publicEndpoint` | `string` | No | `""` | Externally routable Keystone identity endpoint URL (e.g. `https://keystone.example.com/v3`). Projected into the Keystone bootstrap (`--bootstrap-public-url`) and used for the K-ORC identity catalog Endpoint, so external clients resolve the same URL Keystone advertises. When empty and `gateway` is set, the reconciler derives `https://{gateway.hostname}/v3` (the default-443 form); set it explicitly when the externally reachable port differs (e.g. a kind host-port mapping like `:8443`). |
+| `publicEndpoint` | `string` | No | `""` | Externally routable Keystone identity endpoint URL (e.g. `https://keystone.example.com/v3`). Projected into the Keystone bootstrap (`--bootstrap-public-url`) and used for the K-ORC identity catalog Endpoint, so external clients resolve the same URL Keystone advertises. When set, it must be an HTTP(S) URL (`+kubebuilder:validation:Pattern=^https?://`), so a malformed endpoint fails at admission rather than wedging the projected Keystone CR. When empty and `gateway` is set, the reconciler derives `https://{gateway.hostname}/v3` (the default-443 form); set it explicitly when the externally reachable port differs (e.g. a kind host-port mapping like `:8443`). |
 
 ---
 
@@ -435,8 +435,8 @@ mirroring the Keystone application-credential access-rule shape.
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `service` | `string` | Yes | — | OpenStack service type the rule applies to (e.g. `"compute"`). The reconciler uses this verbatim as the name of the referenced K-ORC `Service` CR (`serviceRef`). |
-| `method` | `string` | Yes | — | HTTP method the rule allows (e.g. `"GET"`, `"POST"`). Projected onto the K-ORC typed `HTTPMethod` enum. |
-| `path` | `string` | Yes | — | Request path the rule allows (e.g. `"/v2.1/servers"`). |
+| `method` | `string` | No | — | HTTP method the rule allows (e.g. `"GET"`, `"POST"`). Projected onto the K-ORC typed `HTTPMethod` enum; constrained by `+kubebuilder:validation:Enum=CONNECT;DELETE;GET;HEAD;OPTIONS;PATCH;POST;PUT;TRACE` (mirrors that enum). Optional — omitted from the projected rule when empty. |
+| `path` | `string` | No | — | Request path the rule allows (e.g. `"/v2.1/servers"`). When set it must be an absolute path (`+kubebuilder:validation:Pattern=^/`). Optional — omitted from the projected rule when empty. |
 
 ---
 
@@ -469,7 +469,7 @@ the kind/name and applies it.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `kind` | `string` | Yes | — | The K-ORC resource kind to bootstrap (e.g. `"Project"`, `"Role"`). |
+| `kind` | `string` | Yes | — | The K-ORC resource kind to bootstrap. Constrained to the kinds the control plane bootstraps today by `+kubebuilder:validation:Enum=Project;Role`; widen the enum when the reconciler learns to interpret additional kinds. |
 | `name` | `string` | Yes | — | Name of the bootstrapped resource. |
 
 ---
@@ -662,6 +662,10 @@ Keystone discipline:
 | Field | Rule |
 | --- | --- |
 | `spec.openStackRelease` | Pattern `^\d{4}\.\d$` |
+| `spec.services.keystone.publicEndpoint` | Pattern `^https?://` |
+| `spec.korc.adminCredential.applicationCredential.accessRules[].method` | Enum: `CONNECT`, `DELETE`, `GET`, `HEAD`, `OPTIONS`, `PATCH`, `POST`, `PUT`, `TRACE` |
+| `spec.korc.adminCredential.applicationCredential.accessRules[].path` | Pattern `^/` |
+| `spec.korc.adminCredential.bootstrapResources[].kind` | Enum: `Project`, `Role` |
 | `spec.korc.adminCredential.applicationCredential.rotation.mode` | Enum: `PasswordDriven`, `Scheduled`, `Manual` |
 | `spec.services.keystone.replicas` | Minimum: 1 |
 | `CredentialRotation spec.target` | Enum: `adminApplicationCredential` |
