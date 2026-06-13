@@ -1,0 +1,227 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for ControlPlane deletion orchestration: the ORC-teardown
+# finalizer (c5c3.io/orc-teardown) must sequence the deletion of the operator-
+# owned K-ORC CRs (ApplicationCredential/Service/Endpoint/User/Domain) and let
+# ControlPlane deletion COMPLETE even when Keystone is already gone — so the
+# managed control plane (and its namespace) never hangs forever on a Terminating
+# ApplicationCredential whose K-ORC finalizer can never revoke against a dead
+# Keystone.
+#
+# Scenario ("Keystone already gone"):
+#   1. Apply a managed ControlPlane and drive it to Ready (infra + Keystone +
+#      minted K-ORC ApplicationCredential + identity catalog).
+#   2. Initiate ControlPlane deletion (async). The operator enters its deletion
+#      branch and stops re-projecting children.
+#   3. Take Keystone down (delete the projected Keystone CR; the c5c3-operator no
+#      longer recreates it while the ControlPlane is Terminating). K-ORC can now
+#      no longer revoke the admin credential against the Keystone API.
+#   4. Assert ControlPlane deletion COMPLETES within a window larger than the
+#      bounded stall timeout (orcTeardownStallTimeout = 5m): the finalizer waits,
+#      then force-removes the stuck openstack.k-orc.cloud/* finalizers and
+#      releases the ControlPlane.
+#   5. Assert the projected Keystone, MariaDB, Memcached, and all five K-ORC CRs
+#      are garbage-collected, and that an ORC-teardown event was emitted.
+#
+# Whether step 3 wins the race against an in-flight revoke or not, the regression
+# guard is identical: deletion must COMPLETE (the happy path emits
+# ORCTeardownComplete; the stalled path emits a Warning ORCTeardownStalled and
+# force-removes). The deterministic stall/force-remove escalation itself is also
+# covered by the fast fake-client unit test
+# (TestReconcileDelete_ForceRemovesORCFinalizersAfterStall).
+#
+# ── DECISION: belt-and-braces presence guard + single consolidated script ────
+# Like tests/e2e/c5c3/full-controlplane-keystone, the full c5c3 + K-ORC +
+# keystone stack is NOT wired into the current kind E2E (hack/deploy-infra.sh +
+# hack/ci-deploy-operator.sh do not install K-ORC or the c5c3-operator), and the
+# suite runs under execution.failFast. So a runtime presence guard probes the
+# required CRDs + the OpenBao ClusterSecretStore and exits 0 with a SKIP line
+# when the stack is absent; chainsaw has no step-level skip, so the guard and all
+# assertions live in ONE script step. Wiring the stack into kind so this suite
+# EXERCISES rather than skips is the documented c5c3 GitOps/CI fast-follow.
+---
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: deletion-orchestration
+spec:
+  namespace: openstack
+  # The full chain bring-up plus the bounded stall (5m) and GC cascade is long-
+  # running, so the consolidated script and its diagnostic catch get generous
+  # bounds well above the 120s suite default.
+  timeouts:
+    assert: 5m
+    exec: 30m
+  steps:
+  - try:
+    - script:
+        timeout: 30m
+        # Chainsaw defaults to `sh`, which rejects `set -o pipefail`; every
+        # infra/keystone/c5c3 e2e script pins bash for the same reason.
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          CP_NS=openstack
+          CP_NAME=deletion-orch
+          KEYSTONE_CR="${CP_NAME}-keystone"
+          AC_NAME="${CP_NAME}-admin-app-credential"
+          SVC_CR="${CP_NAME}-identity-service"
+          EP_CR="${CP_NAME}-identity-endpoint"
+          USER_CR="${CP_NAME}-user-admin"
+          DOMAIN_CR="${CP_NAME}-domain-default"
+          FINALIZER="c5c3.io/orc-teardown"
+
+          # ── Presence guard ─────────────────────────────────────────────────
+          missing=""
+          for crd in \
+            controlplanes.c5c3.io \
+            keystones.keystone.openstack.c5c3.io \
+            applicationcredentials.openstack.k-orc.cloud \
+            services.openstack.k-orc.cloud \
+            endpoints.openstack.k-orc.cloud \
+            users.openstack.k-orc.cloud \
+            domains.openstack.k-orc.cloud \
+            externalsecrets.external-secrets.io; do
+            if ! kubectl get crd "$crd" >/dev/null 2>&1; then
+              missing="${missing} ${crd}"
+            fi
+          done
+          if [ -n "${missing}" ]; then
+            echo "SKIP: required CRDs not present:${missing}"
+            echo "      The c5c3-operator + K-ORC + keystone-operator stack is"
+            echo "      not deployed on this cluster, so ControlPlane deletion"
+            echo "      orchestration cannot be exercised here."
+            exit 0
+          fi
+          if ! kubectl get clustersecretstore openbao-cluster-store >/dev/null 2>&1; then
+            echo "SKIP: openbao-cluster-store ClusterSecretStore not present;"
+            echo "      the admin-credential chain cannot complete."
+            exit 0
+          fi
+          echo "OK: stack present — running ControlPlane deletion orchestration."
+
+          # ── Helpers ────────────────────────────────────────────────────────
+          wait_cp_condition() { # <conditionType> <timeoutSeconds>
+            local ctype="$1" timeout="$2" deadline status
+            deadline=$(( $(date +%s) + timeout ))
+            while true; do
+              status="$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" \
+                -o "jsonpath={.status.conditions[?(@.type=='${ctype}')].status}" 2>/dev/null || true)"
+              if [ "${status}" = "True" ]; then
+                echo "OK: ControlPlane condition ${ctype}=True"
+                return 0
+              fi
+              if [ "$(date +%s)" -ge "${deadline}" ]; then
+                echo "ERROR: ControlPlane condition ${ctype} not True within ${timeout}s (last: '${status:-<none>}')"
+                return 1
+              fi
+              sleep 5
+            done
+          }
+
+          wait_gone() { # <resource> <name> <timeoutSeconds>
+            local res="$1" name="$2" timeout="$3" deadline
+            deadline=$(( $(date +%s) + timeout ))
+            while kubectl get "${res}" "${name}" -n "${CP_NS}" >/dev/null 2>&1; do
+              if [ "$(date +%s)" -ge "${deadline}" ]; then
+                echo "ERROR: ${res}/${name} still present after ${timeout}s"
+                return 1
+              fi
+              sleep 5
+            done
+            echo "OK: ${res}/${name} is gone"
+          }
+
+          # ── Bring the ControlPlane up to Ready ─────────────────────────────
+          kubectl apply -f 00-controlplane-cr.yaml
+          wait_cp_condition Ready 900
+
+          # The ORC-teardown finalizer must be installed, and the five owned
+          # K-ORC CRs must exist before we tear down.
+          kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" \
+            -o jsonpath='{.metadata.finalizers}' | grep -qF "${FINALIZER}" \
+            || { echo "ERROR: ${FINALIZER} not installed on the ControlPlane"; exit 1; }
+          for kv in \
+            "applicationcredential ${AC_NAME}" \
+            "services.openstack.k-orc.cloud ${SVC_CR}" \
+            "endpoints.openstack.k-orc.cloud ${EP_CR}" \
+            "users.openstack.k-orc.cloud ${USER_CR}" \
+            "domains.openstack.k-orc.cloud ${DOMAIN_CR}"; do
+            set -- $kv
+            kubectl get "$1" "$2" -n "${CP_NS}" >/dev/null \
+              || { echo "ERROR: expected K-ORC CR $1/$2 missing before teardown"; exit 1; }
+          done
+          echo "OK: finalizer installed and all five K-ORC CRs present."
+
+          # ── Simulate "Keystone already gone" during teardown ───────────────
+          # Initiate deletion first (async) so the operator enters its deletion
+          # branch and stops re-projecting the Keystone child, THEN delete the
+          # Keystone CR so K-ORC can no longer revoke against a live Keystone.
+          echo "== deleting ControlPlane (async) and taking Keystone down =="
+          kubectl delete controlplane "${CP_NAME}" -n "${CP_NS}" --wait=false
+          kubectl delete keystone "${KEYSTONE_CR}" -n "${CP_NS}" --ignore-not-found --wait=false
+
+          # ── Deletion must COMPLETE despite Keystone being gone ──────────────
+          # The finalizer waits up to orcTeardownStallTimeout (5m), then force-
+          # removes the stuck openstack.k-orc.cloud/* finalizers and releases the
+          # ControlPlane. 10m bounds that with comfortable headroom.
+          echo "== waiting for ControlPlane deletion to complete (<=10m) =="
+          kubectl wait --for=delete "controlplane/${CP_NAME}" -n "${CP_NS}" --timeout=10m
+          echo "OK: ControlPlane deletion completed — did not hang on Terminating ORC CRs."
+
+          # ── GC cascade: every owned child must be reclaimed ────────────────
+          wait_gone applicationcredential "${AC_NAME}" 300
+          wait_gone services.openstack.k-orc.cloud "${SVC_CR}" 300
+          wait_gone endpoints.openstack.k-orc.cloud "${EP_CR}" 300
+          wait_gone users.openstack.k-orc.cloud "${USER_CR}" 300
+          wait_gone domains.openstack.k-orc.cloud "${DOMAIN_CR}" 300
+          wait_gone keystone "${KEYSTONE_CR}" 300
+          wait_gone mariadb openstack-db 300
+          wait_gone memcacheds.memcached.c5c3.io openstack-memcached 300
+
+          # ── The ORC-teardown finalizer must have run ───────────────────────
+          # Either ORCTeardownComplete (revoke won the race) or ORCTeardownStalled
+          # (Keystone gone first → force-remove) proves the finalizer drove the
+          # sequenced teardown rather than GC tearing everything down at once.
+          echo "== ORC-teardown events =="
+          reasons="$(kubectl get events -n "${CP_NS}" \
+            -o jsonpath='{range .items[*]}{.reason}{"\n"}{end}' 2>/dev/null || true)"
+          echo "${reasons}" | grep -E 'FinalizingORC|ORCTeardown' || true
+          if echo "${reasons}" | grep -qE 'ORCTeardownStalled|ORCTeardownComplete'; then
+            echo "OK: ORC-teardown finalizer ran to completion."
+          else
+            echo "ERROR: no ORCTeardownStalled/ORCTeardownComplete event observed"
+            exit 1
+          fi
+          echo "OK: ControlPlane deletion orchestration verified."
+    catch:
+    - script:
+        shell: bash
+        content: |
+          echo "=== ControlPlane (may be Terminating or gone) ==="
+          kubectl get controlplane deletion-orch -n openstack -o yaml 2>&1 || true
+          echo "=== ControlPlane status.conditions ==="
+          kubectl get controlplane deletion-orch -n openstack \
+            -o jsonpath='{range .status.conditions[*]}{.type}={.status} ({.reason}: {.message}){"\n"}{end}' 2>&1 || true
+          echo "=== K-ORC CRs (may be Terminating) ==="
+          kubectl get applicationcredentials.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,users.openstack.k-orc.cloud,domains.openstack.k-orc.cloud -n openstack 2>&1 || true
+          echo "=== Projected child CRs ==="
+          kubectl get mariadb,memcacheds.memcached.c5c3.io,keystone -n openstack 2>&1 || true
+          echo "=== c5c3-operator logs (last 200 lines) ==="
+          kubectl logs -n c5c3-system -l app.kubernetes.io/name=c5c3-operator --tail=200 --all-containers 2>&1 || true
+          echo "=== K-ORC controller logs (last 100 lines) ==="
+          kubectl logs -n orc-system -l app.kubernetes.io/name=openstack-resource-controller --tail=100 --all-containers 2>&1 || true
+          echo "=== Events (openstack ns, last 40) ==="
+          kubectl get events -n openstack --sort-by='.lastTimestamp' 2>&1 | tail -40 || true
+    finally:
+    - script:
+        shell: bash
+        content: |
+          # Best-effort cleanup if the test failed mid-flight: force-release the
+          # ControlPlane and Keystone so the shared namespace is not left wedged
+          # for the next suite. Successful runs already deleted everything.
+          kubectl delete controlplane deletion-orch -n openstack --ignore-not-found --wait=false 2>&1 || true
+          kubectl delete keystone deletion-orch-keystone -n openstack --ignore-not-found --wait=false 2>&1 || true

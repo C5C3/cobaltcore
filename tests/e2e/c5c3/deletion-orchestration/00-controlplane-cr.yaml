@@ -1,0 +1,58 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# ControlPlane CR fixture for the deletion-orchestration E2E test.
+#
+# Managed mode: database and cache reference managed clusters by clusterRef, so
+# the c5c3-operator projects an owned MariaDB ("openstack-db") and Memcached
+# ("openstack-memcached") in the ControlPlane's own namespace (openstack) — the
+# same cluster names the deploy stack and the full-controlplane-keystone suite
+# use, so this test exercises the production-shaped infrastructure.
+#
+# This CR exists to be DELETED: the suite drives it far enough to mint the K-ORC
+# admin ApplicationCredential, takes Keystone down to simulate "Keystone already
+# gone", then deletes the ControlPlane and asserts the ORC-teardown finalizer
+# sequences the teardown and ultimately lets deletion COMPLETE (rather than
+# hanging forever on a Terminating ApplicationCredential whose K-ORC finalizer
+# can never revoke against a dead Keystone).
+#
+# The name "deletion-orch" is distinct from the canonical "controlplane" /
+# "controlplane-keystone" CRs so the suite never clobbers them; the c5c3 suite
+# runs serially (one ControlPlane per namespace, enforced by the webhook), and
+# this CR is removed by the test itself.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: deletion-orch
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  region: RegionOne
+  infrastructure:
+    database:
+      clusterRef:
+        name: openstack-db
+      database: keystone
+      secretRef:
+        name: keystone-db
+    cache:
+      clusterRef:
+        name: openstack-memcached
+      backend: dogpile.cache.pymemcache
+      replicas: 3
+  services:
+    keystone:
+      replicas: 1
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+        secretName: k-orc-clouds-yaml
+      passwordSecretRef:
+        name: keystone-admin
+        key: password
+      applicationCredential:
+        restricted: true
+        rotation:
+          mode: PasswordDriven
