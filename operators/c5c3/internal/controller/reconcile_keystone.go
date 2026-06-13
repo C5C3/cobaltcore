@@ -109,8 +109,13 @@ func (r *ControlPlaneReconciler) reconcileKeystone(ctx context.Context, cp *c5c3
 		keystone.Spec.Image = image
 
 		// Point Keystone at the SAME backing services the ControlPlane
-		// provisioned by reusing the infrastructure specs verbatim.
-		keystone.Spec.Database = cp.Spec.Infrastructure.Database
+		// provisioned by reusing the infrastructure specs. DeepCopy (over a plain
+		// struct copy) is required because DatabaseSpec carries pointer fields
+		// (ClusterRef, TLS): a shallow copy would share those pointers with
+		// cp.Spec, so the SecretRef override below — or any later mutation of
+		// either spec — could alias the ControlPlane's own spec, exactly as the
+		// Gateway projection already guards against with DeepCopy (#476).
+		keystone.Spec.Database = *cp.Spec.Infrastructure.Database.DeepCopy()
 
 		// in managed mode the operator OWNS the service DB
 		// credential — reconcileDBCredentials materialises it into a per-ControlPlane
@@ -124,7 +129,10 @@ func (r *ControlPlaneReconciler) reconcileKeystone(ctx context.Context, cp *c5c3
 			keystone.Spec.Database.SecretRef = commonv1.SecretRefSpec{Name: dbCredentialSecretName(cp), Key: "password"}
 		}
 
-		keystone.Spec.Cache = cp.Spec.Infrastructure.Cache
+		// DeepCopy for the same reason as Database above: CacheSpec carries a
+		// pointer ClusterRef and a Servers slice, so a shallow copy would alias
+		// cp.Spec (#476).
+		keystone.Spec.Cache = *cp.Spec.Infrastructure.Cache.DeepCopy()
 
 		// in managed mode the operator OWNS the admin password —
 		// reconcileAdminPassword projects it from OpenBao into a per-ControlPlane
