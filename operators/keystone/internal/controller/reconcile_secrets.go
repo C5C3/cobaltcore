@@ -291,7 +291,8 @@ func setOpenBaoFinalizerBlockedCondition(keystone *keystonev1alpha1.Keystone, st
 		Reason:             "OpenBaoFinalizerBlocked",
 		Message: fmt.Sprintf(
 			"Waiting for PushSecret %q to be garbage-collected before releasing openbao-finalizer",
-			stuckName),
+			stuckName,
+		),
 	})
 }
 
@@ -324,6 +325,7 @@ func setOpenBaoWaitingForESOAdoptionCondition(keystone *keystonev1alpha1.Keyston
 		Reason:             "WaitingForESOAdoption",
 		Message: fmt.Sprintf(
 			"Waiting for ESO to adopt PushSecret %q (cleanup finalizer not yet installed)",
-			unadoptedName),
+			unadoptedName,
+		),
 	})
 }

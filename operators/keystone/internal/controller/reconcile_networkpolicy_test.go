@@ -384,7 +384,8 @@ func TestBuildKeystoneNetworkPolicy_GatewaySet_EmptyParentNamespace_UsesKeystone
 	gatewayPeer := np.Spec.Ingress[0].From[1]
 	g.Expect(gatewayPeer.NamespaceSelector.MatchLabels).To(
 		HaveKeyWithValue("kubernetes.io/metadata.name", "keystone-ns"),
-		"empty parentRef.namespace must fall back to the Keystone CR's namespace")
+		"empty parentRef.namespace must fall back to the Keystone CR's namespace",
+	)
 }
 
 // TestReconcileNetworkPolicy_GatewaySet_NetworkPolicyNil_NoNetworkPolicyCreated
@@ -535,7 +536,8 @@ func TestReconcileNetworkPolicy_NetworkPolicyEnabled_NetworkPolicyUpdated(t *tes
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// Add a second ingress source and re-reconcile.
-	ks.Spec.NetworkPolicy.Ingress = append(ks.Spec.NetworkPolicy.Ingress,
+	ks.Spec.NetworkPolicy.Ingress = append(
+		ks.Spec.NetworkPolicy.Ingress,
 		keystonev1alpha1.NetworkPolicyIngressSource{
 			NamespaceSelector: map[string]string{"kubernetes.io/metadata.name": "monitoring"},
 		},

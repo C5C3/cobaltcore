@@ -106,7 +106,8 @@ func SimulateMemcachedReady(ctx context.Context, c client.Client, key client.Obj
 		servers[i] = s
 	}
 
-	return setUnstructuredReadyStatus(ctx, c, key,
+	return setUnstructuredReadyStatus(
+		ctx, c, key,
 		schema.GroupVersionKind{Group: "memcached.c5c3.io", Version: "v1beta1", Kind: "Memcached"},
 		"MemcachedReady",
 		"Memcached is ready",

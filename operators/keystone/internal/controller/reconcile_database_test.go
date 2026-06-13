@@ -275,7 +275,8 @@ func TestReconcileDatabase_Managed_AllReady_DatabaseSynced(t *testing.T) {
 	s := dbTestScheme()
 	ks := managedKeystone()
 
-	r := newDBTestReconciler(s, ks,
+	r := newDBTestReconciler(
+		s, ks,
 		readyMariaDBCluster(ks),
 		readyDatabase(ks),
 		readyUser(ks),
@@ -323,7 +324,8 @@ func TestReconcileDatabase_Managed_UserNotReady_Requeues(t *testing.T) {
 	ks := managedKeystone()
 
 	// Database is ready, but User is not.
-	r := newDBTestReconciler(s, ks,
+	r := newDBTestReconciler(
+		s, ks,
 		readyMariaDBCluster(ks),
 		readyDatabase(ks),
 		buildUser(ks), // exists but not ready
@@ -381,7 +383,8 @@ func TestReconcileDatabase_Managed_ClusterNotReady_FlipsDatabaseReadyFalse(t *te
 		Reason: conditionReasonDatabaseSynced,
 	})
 
-	r := newDBTestReconciler(s, ks,
+	r := newDBTestReconciler(
+		s, ks,
 		notReadyMariaDBCluster(ks),
 		readyDatabase(ks),
 		readyUser(ks),
@@ -982,7 +985,8 @@ func TestReconcileDatabase_Managed_ConditionMessages(t *testing.T) {
 	t.Run("UserNotReady", func(t *testing.T) {
 		g := NewGomegaWithT(t)
 		ks := managedKeystone()
-		r := newDBTestReconciler(s, ks,
+		r := newDBTestReconciler(
+			s, ks,
 			readyMariaDBCluster(ks),
 			readyDatabase(ks),
 			buildUser(ks), // exists but not ready
@@ -1019,7 +1023,8 @@ func TestReconcileDatabase_Managed_ConditionMessages(t *testing.T) {
 	t.Run("DatabaseSynced", func(t *testing.T) {
 		g := NewGomegaWithT(t)
 		ks := managedKeystone()
-		r := newDBTestReconciler(s, ks,
+		r := newDBTestReconciler(
+			s, ks,
 			readyMariaDBCluster(ks),
 			readyDatabase(ks),
 			readyUser(ks),
@@ -1686,7 +1691,8 @@ func TestReconcileDatabase_Managed_AllReady_WithSchemaCheck(t *testing.T) {
 	s := dbTestScheme()
 	ks := managedKeystone()
 
-	r := newDBTestReconciler(s, ks,
+	r := newDBTestReconciler(
+		s, ks,
 		readyMariaDBCluster(ks),
 		readyDatabase(ks),
 		readyUser(ks),
@@ -1850,7 +1856,8 @@ func TestReconcileDatabase_ConditionObservedGeneration(t *testing.T) {
 	ks3 := managedKeystone()
 	ks3.Generation = 5
 
-	r3 := newDBTestReconciler(s, ks3,
+	r3 := newDBTestReconciler(
+		s, ks3,
 		readyMariaDBCluster(ks3),
 		readyDatabase(ks3),
 		buildUser(ks3), // exists but not ready
@@ -1893,7 +1900,8 @@ func TestReconcileDatabase_ConditionObservedGeneration(t *testing.T) {
 	ks2 := managedKeystone()
 	ks2.Generation = 12
 
-	r2 := newDBTestReconciler(s, ks2,
+	r2 := newDBTestReconciler(
+		s, ks2,
 		readyMariaDBCluster(ks2),
 		readyDatabase(ks2),
 		readyUser(ks2),

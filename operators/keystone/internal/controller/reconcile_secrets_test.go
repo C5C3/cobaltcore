@@ -1097,7 +1097,8 @@ func TestSetOpenBaoWaitingForESOAdoptionCondition(t *testing.T) {
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal("WaitingForESOAdoption"))
 	g.Expect(cond.Message).To(Equal(
-		`Waiting for ESO to adopt PushSecret "test-keystone-credential-keys-backup" (cleanup finalizer not yet installed)`))
+		`Waiting for ESO to adopt PushSecret "test-keystone-credential-keys-backup" (cleanup finalizer not yet installed)`,
+	))
 	g.Expect(cond.ObservedGeneration).To(Equal(ks.Generation))
 }
 

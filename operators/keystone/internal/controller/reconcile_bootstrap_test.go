@@ -785,7 +785,8 @@ func TestBuildBootstrapJob_AdminPasswordHashAnnotation(t *testing.T) {
 	job := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys", bootstrapAdminPasswordHash())
 
 	g.Expect(job.Spec.Template.ObjectMeta.Annotations).To(HaveKeyWithValue(
-		"forge.c5c3.io/admin-password-hash", bootstrapAdminPasswordHash()),
+		"forge.c5c3.io/admin-password-hash", bootstrapAdminPasswordHash(),
+	),
 		"pod template must carry the admin-password-hash annotation (CC-0108, REQ-002)")
 
 	// Pin the hashing input: the annotation must equal hex(sha256("admin-password")).
@@ -840,7 +841,8 @@ func TestReconcileBootstrap_PasswordChangeRecreatesJob(t *testing.T) {
 		Namespace: "default",
 	}, &newJob)).To(Succeed())
 	g.Expect(newJob.Spec.Template.ObjectMeta.Annotations).To(HaveKeyWithValue(
-		"forge.c5c3.io/admin-password-hash", bootstrapAdminPasswordHash()),
+		"forge.c5c3.io/admin-password-hash", bootstrapAdminPasswordHash(),
+	),
 		"recreated Job must carry the current admin-password-hash (CC-0108, REQ-003)")
 
 	// The new re-run key must be the current admin-password digest and differ
@@ -1065,7 +1067,8 @@ func TestReconcileBootstrap_RecreatedRotationJob_HasNoTTL(t *testing.T) {
 		Namespace: "default",
 	}, &newJob)).To(Succeed())
 	g.Expect(newJob.Spec.Template.ObjectMeta.Annotations).To(HaveKeyWithValue(
-		"forge.c5c3.io/admin-password-hash", bootstrapAdminPasswordHash()),
+		"forge.c5c3.io/admin-password-hash", bootstrapAdminPasswordHash(),
+	),
 		"recreated rotation Job must carry the current admin-password-hash (CC-0113, #415, REQ-004)")
 
 	// CC-0113 (#415, REQ-004): the recreated rotation Job must have no TTL —

@@ -92,7 +92,8 @@ func (r *KeystoneReconciler) reconcileFernetKeys(ctx context.Context,
 	//    REQ-005, REQ-006). On a valid apply we short-circuit the rest of
 	//    the step chain and requeue so the next pass re-enters the happy
 	//    path with the production Secret already updated.
-	applied, err := r.applyRotationOutput(ctx, keystone,
+	applied, err := r.applyRotationOutput(
+		ctx, keystone,
 		fernetStagingSecretName(keystone),
 		secretName,
 		"FernetKeysRotated",

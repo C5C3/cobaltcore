@@ -303,7 +303,8 @@ func (w *ControlPlaneWebhook) validateUniqueInNamespace(ctx context.Context, obj
 	var existing ControlPlaneList
 	if err := w.Client.List(ctx, &existing, client.InNamespace(obj.Namespace)); err != nil {
 		return apierrors.NewInternalError(
-			fmt.Errorf("listing ControlPlanes in namespace %q to enforce one-per-namespace: %w", obj.Namespace, err))
+			fmt.Errorf("listing ControlPlanes in namespace %q to enforce one-per-namespace: %w", obj.Namespace, err),
+		)
 	}
 	if len(existing.Items) == 0 {
 		return nil

@@ -51,7 +51,8 @@ func TestReconcileDBConnectionSecret_CreatesSecretWithCorrectURL_Brownfield(t *t
 	g.Expect(derived.OwnerReferences[0].UID).To(Equal(ks.UID))
 	g.Expect(derived.Data).To(HaveLen(1))
 	g.Expect(string(derived.Data[dbConnectionSecretKey])).To(Equal(
-		"mysql+pymysql://ks_user:ks_pass@db.example.com:3306/keystone?charset=utf8"))
+		"mysql+pymysql://ks_user:ks_pass@db.example.com:3306/keystone?charset=utf8",
+	))
 }
 
 func TestReconcileDBConnectionSecret_CreatesSecretWithCorrectURL_Managed(t *testing.T) {
@@ -81,7 +82,8 @@ func TestReconcileDBConnectionSecret_CreatesSecretWithCorrectURL_Managed(t *test
 
 	g.Expect(derived.Data).To(HaveLen(1))
 	g.Expect(string(derived.Data[dbConnectionSecretKey])).To(Equal(
-		"mysql+pymysql://test-keystone:secret123@mariadb-cluster.default.svc:3306/keystone?charset=utf8"))
+		"mysql+pymysql://test-keystone:secret123@mariadb-cluster.default.svc:3306/keystone?charset=utf8",
+	))
 }
 
 func TestReconcileDBConnectionSecret_UpdatesOnPasswordRotation(t *testing.T) {

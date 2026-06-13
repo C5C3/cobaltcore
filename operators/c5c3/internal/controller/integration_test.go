@@ -70,7 +70,8 @@ const (
 // exercises the real wiring.
 func setupControlPlaneEnvTest(t testing.TB) (client.Client, context.Context, context.CancelFunc) {
 	t.Helper()
-	return testutil.SetupC5c3EnvTestWithController(t,
+	return testutil.SetupC5c3EnvTestWithController(
+		t,
 		c5c3v1alpha1.AddToScheme,
 		func(mgr ctrl.Manager) error {
 			return (&c5c3v1alpha1.ControlPlaneWebhook{Client: mgr.GetClient()}).SetupWebhookWithManager(mgr)

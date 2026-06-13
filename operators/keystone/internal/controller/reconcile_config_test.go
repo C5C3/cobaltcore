@@ -1137,7 +1137,8 @@ func TestReconcileConfig_LoggingJSONPathRendersLoggingConfAndAppend(t *testing.T
 
 	keystoneConf := cm.Data["keystone.conf"]
 	g.Expect(keystoneConf).To(ContainSubstring(
-		"log_config_append = /etc/keystone/keystone.conf.d/logging.conf"))
+		"log_config_append = /etc/keystone/keystone.conf.d/logging.conf",
+	))
 }
 
 // TestReconcileConfig_LoggingJSONToTextDropsLoggingConf verifies that a
@@ -1200,7 +1201,8 @@ func TestReconcileConfig_LoggingPerLoggerLevelsDeterministicOrder(t *testing.T) 
 	cm, err := getCreatedConfigMap(context.Background(), r.Client, "default", cmName)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(cm.Data["keystone.conf"]).To(ContainSubstring(
-		"default_log_levels = amqp=ERROR,keystone.middleware=DEBUG,sqlalchemy.engine=WARNING"))
+		"default_log_levels = amqp=ERROR,keystone.middleware=DEBUG,sqlalchemy.engine=WARNING",
+	))
 
 	ks2 := configTestKeystone()
 	ks2.Spec.Logging = &keystonev1alpha1.LoggingSpec{
@@ -1282,9 +1284,11 @@ func TestReconcileConfig_LoggingJSONPlusPerLoggerLevels(t *testing.T) {
 
 	keystoneConf := cm.Data["keystone.conf"]
 	g.Expect(keystoneConf).To(ContainSubstring(
-		"log_config_append = /etc/keystone/keystone.conf.d/logging.conf"))
+		"log_config_append = /etc/keystone/keystone.conf.d/logging.conf",
+	))
 	g.Expect(keystoneConf).To(ContainSubstring(
-		"default_log_levels = amqp=ERROR,keystone.middleware=DEBUG,sqlalchemy.engine=WARNING"))
+		"default_log_levels = amqp=ERROR,keystone.middleware=DEBUG,sqlalchemy.engine=WARNING",
+	))
 
 	loggingConf := cm.Data["logging.conf"]
 	g.Expect(loggingConf).To(ContainSubstring("keys = root"),

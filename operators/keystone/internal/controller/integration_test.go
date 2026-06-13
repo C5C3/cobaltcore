@@ -72,7 +72,8 @@ const (
 // the v1alpha1 scheme, webhook, and controller registration callbacks (CC-0014).
 func setupEnvTestWithController(t testing.TB) (client.Client, context.Context, context.CancelFunc) {
 	t.Helper()
-	return testutil.SetupKeystoneEnvTestWithController(t,
+	return testutil.SetupKeystoneEnvTestWithController(
+		t,
 		keystonev1alpha1.AddToScheme,
 		func(mgr ctrl.Manager) error {
 			return (&keystonev1alpha1.KeystoneWebhook{Client: mgr.GetClient()}).SetupWebhookWithManager(mgr)
@@ -1384,7 +1385,8 @@ func TestIntegration_FreshDeployment_InstalledReleaseTracking(t *testing.T) {
 		"keystone-manage", "--config-dir=/etc/keystone/keystone.conf.d/", "db_sync",
 	}), "db-sync command should be standard db_sync without --expand/--migrate/--contract")
 	g.Expect(container.Image).To(Equal(
-		fmt.Sprintf("%s:%s", ks.Spec.Image.Repository, ks.Spec.Image.Tag)),
+		fmt.Sprintf("%s:%s", ks.Spec.Image.Repository, ks.Spec.Image.Tag),
+	),
 		"db-sync Job image should match spec.image.tag")
 
 	// Verify no upgrade Jobs were created (CC-0056).
@@ -1632,7 +1634,8 @@ func TestIntegration_UpgradeCycle_ExpandMigrateContract(t *testing.T) {
 	g.Expect(c.Get(ctx, key, final)).To(Succeed())
 	g.Expect(final.Status.InstalledRelease).To(Equal("2025.2"))
 	g.Expect(final.Status.Endpoint).To(Equal(
-		fmt.Sprintf("http://test-keystone.%s.svc.cluster.local:5000/v3", ns.Name)),
+		fmt.Sprintf("http://test-keystone.%s.svc.cluster.local:5000/v3", ns.Name),
+	),
 		"endpoint should still be set after upgrade")
 }
 
@@ -3856,7 +3859,8 @@ func TestIntegrationKeystone_PushSecretRemoteKeyIsPerCR(t *testing.T) {
 			t.Run("same-namespace/different-name", func(t *testing.T) {
 				assertFernetCredentialRemoteKeysDisjoint(
 					t, ctx, c, tc.material, tc.requirement,
-					"keystone-a", "keystone-b", false /* differentNamespaces */)
+					"keystone-a", "keystone-b", false, /* differentNamespaces */
+				)
 			})
 
 			// Axis 2 — same name, different namespace (CC-0112, REQ-004): with
@@ -3865,7 +3869,8 @@ func TestIntegrationKeystone_PushSecretRemoteKeyIsPerCR(t *testing.T) {
 			t.Run("same-name/different-namespace", func(t *testing.T) {
 				assertFernetCredentialRemoteKeysDisjoint(
 					t, ctx, c, tc.material, "REQ-004",
-					"keystone-shared", "keystone-shared", true /* differentNamespaces */)
+					"keystone-shared", "keystone-shared", true, /* differentNamespaces */
+				)
 			})
 		})
 	}
@@ -4164,7 +4169,8 @@ func TestMetricsEndpointServesKeystoneOperatorCollectors(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred(), "read /metrics body")
 
 	g.Expect(string(body)).To(ContainSubstring(
-		"# TYPE keystone_operator_reconcile_duration_seconds histogram"),
+		"# TYPE keystone_operator_reconcile_duration_seconds histogram",
+	),
 		"Prometheus text exposition must declare the reconcile duration histogram")
 }
 
@@ -4470,7 +4476,8 @@ func TestIntegration_AdminPasswordRotationCutover(t *testing.T) {
 	g.Expect(oldUID).NotTo(BeEmpty())
 	oldSum := sha256.Sum256([]byte("admin-password"))
 	g.Expect(oldJob.Spec.Template.ObjectMeta.Annotations).To(HaveKeyWithValue(
-		adminPasswordHashAnnotation, hex.EncodeToString(oldSum[:])),
+		adminPasswordHashAnnotation, hex.EncodeToString(oldSum[:]),
+	),
 		"initial bootstrap Job must carry the initial admin-password hash (CC-0108, REQ-010)")
 
 	// Rotate the admin password by updating the keystone-admin Secret directly,
@@ -4491,7 +4498,8 @@ func TestIntegration_AdminPasswordRotationCutover(t *testing.T) {
 		ig.Expect(j.UID).NotTo(Equal(oldUID),
 			"rotated password must recreate the bootstrap Job with a new UID (CC-0108, REQ-010)")
 		ig.Expect(j.Spec.Template.ObjectMeta.Annotations).To(HaveKeyWithValue(
-			adminPasswordHashAnnotation, newHash),
+			adminPasswordHashAnnotation, newHash,
+		),
 			"recreated bootstrap Job must carry the rotated admin-password hash (CC-0108, REQ-010)")
 	}, eventuallyTimeout, pollInterval).Should(Succeed())
 

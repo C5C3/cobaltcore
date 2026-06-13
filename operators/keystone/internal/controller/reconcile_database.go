@@ -837,7 +837,8 @@ func buildDBJob(keystone *keystonev1alpha1.Keystone, configMapName, imageTag, na
 		tlsVol, tlsMount := dbTLSVolumeAndMount(keystone)
 		job.Spec.Template.Spec.Volumes = append(job.Spec.Template.Spec.Volumes, tlsVol)
 		job.Spec.Template.Spec.Containers[0].VolumeMounts = append(
-			job.Spec.Template.Spec.Containers[0].VolumeMounts, tlsMount)
+			job.Spec.Template.Spec.Containers[0].VolumeMounts, tlsMount,
+		)
 	}
 	return job
 }

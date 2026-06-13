@@ -762,7 +762,8 @@ func (r *KeystoneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// RequeueSecretPolling (15s) to watch-event delivery latency while
 		// avoiding the duplicate-enqueue churn of the prior Owns() wiring
 		// (CC-0092, REQ-001, REQ-004).
-		Watches(&esov1alpha1.PushSecret{},
+		Watches(
+			&esov1alpha1.PushSecret{},
 			handler.EnqueueRequestsFromMapFunc(pushSecretToKeystoneMapper(mgr.GetClient())),
 			builder.WithPredicates(pushSecretRelevantChangePredicate),
 		).
@@ -791,7 +792,8 @@ func secretToKeystoneMapper(c client.Reader) handler.MapFunc {
 		seen := make(map[types.NamespacedName]struct{})
 
 		var keystones keystonev1alpha1.KeystoneList
-		if err := c.List(ctx, &keystones,
+		if err := c.List(
+			ctx, &keystones,
 			client.InNamespace(namespace),
 			client.MatchingFields{KeystoneSecretNameIndexKey: secretName},
 		); err != nil {

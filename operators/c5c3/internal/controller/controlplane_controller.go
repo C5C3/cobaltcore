@@ -248,7 +248,8 @@ func registerControlPlaneSecretNameIndex(ctx context.Context, indexer client.Fie
 func secretToControlPlaneMapper(c client.Reader) handler.MapFunc {
 	return func(ctx context.Context, obj client.Object) []reconcile.Request {
 		var cps c5c3v1alpha1.ControlPlaneList
-		if err := c.List(ctx, &cps,
+		if err := c.List(
+			ctx, &cps,
 			client.InNamespace(obj.GetNamespace()),
 			client.MatchingFields{ControlPlaneSecretNameIndexKey: obj.GetName()},
 		); err != nil {

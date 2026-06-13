@@ -282,7 +282,8 @@ func TestValidateAdminPasswordRotationOutput(t *testing.T) {
 
 	// Valid.
 	g.Expect(validateAdminPasswordRotationOutput(
-		map[string][]byte{"password": []byte(validTestPassword)}, 24)).To(Succeed())
+		map[string][]byte{"password": []byte(validTestPassword)}, 24,
+	)).To(Succeed())
 
 	// Missing key.
 	err := validateAdminPasswordRotationOutput(map[string][]byte{}, 24)

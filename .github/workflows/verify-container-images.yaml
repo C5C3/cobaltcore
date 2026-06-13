@@ -38,8 +38,8 @@ jobs:
 
       - name: Install yq
         env:
-          YQ_VERSION: v4.45.1
-          YQ_SHA256: 654d2943ca1d3be2024089eb4f270f4070f491a0610481d128509b2834870049
+          YQ_VERSION: v4.53.3
+          YQ_SHA256: fa52a4e758c63d38299163fbdd1edfb4c4963247918bf9c1c5d31d84789eded4
         run: |
           sudo wget -qO /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
           echo "${YQ_SHA256}  /usr/local/bin/yq" | sha256sum --check --strict

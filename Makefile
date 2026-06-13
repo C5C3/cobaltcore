@@ -28,7 +28,7 @@ SETUP_ENVTEST ?= $(shell go env GOPATH)/bin/setup-envtest
 
 # CC-0053: Pin gofumpt version to match CI (single source of truth for local dev).
 # Must be kept in sync with GOFUMPT_VERSION in .github/workflows/ci.yaml.
-GOFUMPT_VERSION ?= v0.9.2
+GOFUMPT_VERSION ?= v0.10.0
 GOFUMPT ?= gofumpt
 
 # Kubernetes version for envtest binary downloads (CC-0018).

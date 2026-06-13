@@ -314,7 +314,8 @@ func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName 
 		tlsVol, tlsMount := dbTLSVolumeAndMount(keystone)
 		deploy.Spec.Template.Spec.Volumes = append(deploy.Spec.Template.Spec.Volumes, tlsVol)
 		deploy.Spec.Template.Spec.Containers[0].VolumeMounts = append(
-			deploy.Spec.Template.Spec.Containers[0].VolumeMounts, tlsMount)
+			deploy.Spec.Template.Spec.Containers[0].VolumeMounts, tlsMount,
+		)
 	}
 	return deploy
 }
@@ -396,11 +397,13 @@ func uwsgiCommand(uwsgi *keystonev1alpha1.UWSGISpec) []string {
 	// Unconditional: REQ-006 makes uWSGI master logging always-on so request
 	// lines reach stderr in every configuration, regardless of keep-alive
 	// (CC-0098, REQ-006).
-	cmd = append(cmd,
+	cmd = append(
+		cmd,
 		"--log-master",
 		"--log-format", "%(method) %(uri) => generated %(rsize) bytes in %(msecs) msecs (%(proto) %(status))",
 	)
-	cmd = append(cmd,
+	cmd = append(
+		cmd,
 		"--wsgi-file", "/var/lib/openstack/bin/keystone-wsgi-public",
 		"--master",
 		"--lazy-apps",

@@ -108,7 +108,8 @@ func getValidationErrorMessage(ctx context.Context, c client.Client, jobName, na
 	)
 
 	var pods corev1.PodList
-	if err := c.List(ctx, &pods,
+	if err := c.List(
+		ctx, &pods,
 		client.InNamespace(namespace),
 		client.MatchingLabels{"job-name": jobName},
 	); err != nil {

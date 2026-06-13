@@ -84,7 +84,8 @@ func (r *KeystoneReconciler) reconcileDatabaseTLS(ctx context.Context,
 			Reason:             reasonExternallyManaged,
 			Message: fmt.Sprintf(
 				"Database TLS uses externally managed client certificate Secret %q (brownfield database)",
-				tlsSpec.ClientCertSecretRef.Name),
+				tlsSpec.ClientCertSecretRef.Name,
+			),
 		})
 		return ctrl.Result{}, nil
 	}

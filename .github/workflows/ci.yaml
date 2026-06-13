@@ -23,9 +23,9 @@ env:
   # CLUSTER_NAME default in hack/deploy-infra.sh.
   KIND_CLUSTER: forge
   # CC-0018: Pin tool versions for CI reproducibility (single source of truth).
-  CONTROLLER_GEN_VERSION: v0.20.1
-  GOFUMPT_VERSION: v0.9.2  # CC-0053
-  GOLANGCI_LINT_VERSION: v2.11.4
+  CONTROLLER_GEN_VERSION: v0.21.0
+  GOFUMPT_VERSION: v0.10.0  # CC-0053
+  GOLANGCI_LINT_VERSION: v2.12.2
 
 concurrency:
   group: ${{ github.ref }}-${{ github.workflow }}

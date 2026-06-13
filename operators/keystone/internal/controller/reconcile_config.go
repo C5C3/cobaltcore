@@ -268,7 +268,8 @@ func (r *KeystoneReconciler) recordLoggingHealth(
 			ObservedGeneration: keystone.Generation,
 			Message: fmt.Sprintf(
 				"spec.extraConfig set [DEFAULT].use_stderr=%q; container logs will not reach kubectl logs (CC-0098)",
-				useStderr),
+				useStderr,
+			),
 		})
 		return
 	}
