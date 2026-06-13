@@ -351,6 +351,66 @@ func TestReconcileDeployment_DeploymentSpec(t *testing.T) {
 	g.Expect(svc.Spec.Selector).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-keystone"))
 }
 
+// TestBuildKeystoneDeployment_NilReplicasWhenAutoscaling verifies that the
+// Deployment builder leaves .spec.replicas nil when spec.autoscaling is set (so
+// the HorizontalPodAutoscaler owns the count) and sets it to spec.replicas
+// otherwise. This is the source side of the fix that stops the operator from
+// fighting the HPA over the replica count (issue #462).
+func TestBuildKeystoneDeployment_NilReplicasWhenAutoscaling(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	// Autoscaling enabled: replicas must be left unmanaged.
+	ksAuto := deployTestKeystone()
+	ksAuto.Spec.Autoscaling = &keystonev1alpha1.AutoscalingSpec{
+		MaxReplicas:          6,
+		TargetCPUUtilization: int32Ptr(80),
+	}
+	deployAuto := buildKeystoneDeployment(ksAuto, "keystone-config-abc123")
+	g.Expect(deployAuto.Spec.Replicas).To(BeNil(), "replicas must be nil when autoscaling is set so the HPA owns the count")
+
+	// Autoscaling disabled: replicas must equal spec.replicas.
+	ksStatic := deployTestKeystone()
+	ksStatic.Spec.Replicas = 3
+	deployStatic := buildKeystoneDeployment(ksStatic, "keystone-config-abc123")
+	g.Expect(deployStatic.Spec.Replicas).NotTo(BeNil())
+	g.Expect(*deployStatic.Spec.Replicas).To(Equal(int32(3)))
+}
+
+// TestReconcileDeployment_AutoscalingPreservesLiveReplicas verifies the
+// end-to-end behavior the issue describes: with autoscaling enabled and a live
+// Deployment whose replica count was scaled by the HPA to a value different
+// from spec.replicas, reconcileDeployment must not reset .spec.replicas — the
+// HPA-owned count is preserved instead of triggering a scale-up/scale-down loop
+// (issue #462).
+func TestReconcileDeployment_AutoscalingPreservesLiveReplicas(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := deployTestScheme()
+	ks := deployTestKeystone()
+	ks.Spec.Replicas = 3
+	ks.Spec.Autoscaling = &keystonev1alpha1.AutoscalingSpec{
+		MaxReplicas:          6,
+		TargetCPUUtilization: int32Ptr(80),
+	}
+
+	// Seed a live Deployment that the HPA has already scaled to 5. The selector
+	// is produced by buildKeystoneDeployment, so EnsureDeployment takes the
+	// update path (not the selector-migration delete path).
+	live := readyDeployment(ks, "keystone-config-abc123")
+	live.Spec.Replicas = int32Ptr(5)
+	live.Status.ReadyReplicas = 5
+	r := newDeployTestReconciler(s, ks, live)
+
+	_, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var deploy appsv1.Deployment
+	g.Expect(r.Client.Get(context.Background(), types.NamespacedName{
+		Name: "test-keystone", Namespace: "default",
+	}, &deploy)).To(Succeed())
+	g.Expect(deploy.Spec.Replicas).NotTo(BeNil())
+	g.Expect(*deploy.Spec.Replicas).To(Equal(int32(5)), "HPA-scaled replica count must be preserved, not reset to spec.replicas")
+}
+
 // Feature: CC-0099 — restrict mode on mounted Fernet/credential key Secret volumes.
 
 // TestBuildKeystoneDeployment_PodSecurityContextSetsFSGroup verifies that the

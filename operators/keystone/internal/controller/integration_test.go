@@ -1318,6 +1318,24 @@ func TestIntegration_HPADeletedWhenAutoscalingRemoved(t *testing.T) {
 	updated.Spec.Autoscaling = nil
 	g.Expect(c.Update(ctx, updated)).To(Succeed())
 
+	// Removing autoscaling restores the static spec.replicas on the Deployment.
+	// A real HPA holds the Deployment at its minReplicas, but envtest runs no
+	// HPA or Deployment controller, so the Deployment was left at its
+	// create-time count of 1 and transiently goes not-ready when spec.replicas
+	// is restored. Wait for the reconciler to write the restored count, then
+	// re-simulate the Deployment Ready so the reconcile chain proceeds past the
+	// Deployment readiness gate to the HPA cleanup step (issue #462).
+	deployKey := client.ObjectKey{Namespace: ns.Name, Name: ks.Name}
+	deploy := &appsv1.Deployment{}
+	g.Eventually(func() bool {
+		if err := c.Get(ctx, deployKey, deploy); err != nil {
+			return false
+		}
+		return ptr.Deref(deploy.Spec.Replicas, 0) == updated.Spec.Replicas
+	}, eventuallyTimeout, pollInterval).Should(BeTrue(), "Deployment replicas should be restored to spec.replicas after autoscaling is removed")
+	g.Expect(simulators.SimulateDeploymentReady(ctx, c, deployKey, ptr.Deref(deploy.Spec.Replicas, 1))).
+		To(Succeed(), "simulate Deployment ready at restored replica count")
+
 	// Wait for the HPA to be deleted (CC-0038).
 	g.Eventually(func() bool {
 		h := &autoscalingv2.HorizontalPodAutoscaler{}

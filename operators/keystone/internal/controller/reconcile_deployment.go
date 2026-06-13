@@ -190,10 +190,23 @@ func selectorLabels(keystone *keystonev1alpha1.Keystone) map[string]string {
 	}
 }
 
+// deploymentReplicas returns the desired .spec.replicas for the Keystone API
+// Deployment. When spec.autoscaling is set, it returns nil so the field is left
+// unmanaged and the HorizontalPodAutoscaler owns the replica count; otherwise
+// it returns spec.replicas. Pinning replicas to spec.replicas while an HPA also
+// targets the Deployment causes the operator and the HPA to fight over the
+// field, and each write re-triggers reconciliation in a scale-up/scale-down
+// loop (issue #462). EnsureDeployment preserves the live count when this is nil.
+func deploymentReplicas(keystone *keystonev1alpha1.Keystone) *int32 {
+	if keystone.Spec.Autoscaling != nil {
+		return nil
+	}
+	return ptr.To(int32(keystone.Spec.Replicas))
+}
+
 func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName string) *appsv1.Deployment {
 	selector := selectorLabels(keystone)
 	labels := commonLabels(keystone)
-	replicas := int32(keystone.Spec.Replicas)
 	fernetSecretName := fmt.Sprintf("%s-fernet-keys", keystone.Name)
 	credentialSecretName := fmt.Sprintf("%s-credential-keys", keystone.Name)
 	deploy := &appsv1.Deployment{
@@ -203,7 +216,7 @@ func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName 
 			Labels:    labels,
 		},
 		Spec: appsv1.DeploymentSpec{
-			Replicas: &replicas,
+			Replicas: deploymentReplicas(keystone),
 			Selector: &metav1.LabelSelector{
 				MatchLabels: selector,
 			},
