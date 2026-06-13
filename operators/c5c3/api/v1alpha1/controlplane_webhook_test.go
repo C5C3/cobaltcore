@@ -423,6 +423,121 @@ func TestValidateUpdate_AcceptsValidChange(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 }
 
+// managedControlPlane returns a valid managed-mode ControlPlane: database and
+// cache point at managed clusterRefs (not brownfield host/servers). The
+// immutability tests start from this baseline so a clusterRef name or a mode
+// flip is the only delta under test.
+func managedControlPlane() *ControlPlane {
+	cp := validControlPlane()
+	cp.Spec.Infrastructure.Database = commonv1.DatabaseSpec{
+		ClusterRef: &corev1.LocalObjectReference{Name: "openstack-db"},
+		Database:   "openstack",
+		SecretRef:  commonv1.SecretRefSpec{Name: "db-creds"},
+	}
+	cp.Spec.Infrastructure.Cache = commonv1.CacheSpec{
+		ClusterRef: &corev1.LocalObjectReference{Name: "openstack-memcached"},
+		Backend:    "dogpile.cache.pymemcache",
+	}
+	cp.Spec.KORC.AdminCredential.CloudCredentialsRef.SecretName = "k-orc-clouds-yaml"
+	return cp
+}
+
+// TestValidateUpdate_RejectsDatabaseModeFlip verifies that flipping the database
+// between managed (clusterRef) and brownfield (host) mode is rejected on UPDATE,
+// since the previously-projected MariaDB child would otherwise be orphaned (#476).
+func TestValidateUpdate_RejectsDatabaseModeFlip(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+
+	// managed -> brownfield.
+	oldCP := managedControlPlane()
+	newCP := managedControlPlane()
+	newCP.Spec.Infrastructure.Database = commonv1.DatabaseSpec{
+		Host: "db.example.com", Database: "openstack", SecretRef: commonv1.SecretRefSpec{Name: "db-creds"},
+	}
+	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("database mode"))
+
+	// brownfield -> managed (the reverse direction).
+	_, err = w.ValidateUpdate(context.Background(), newCP, oldCP)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("database mode"))
+}
+
+// TestValidateUpdate_RejectsDatabaseClusterRefRename verifies that renaming a
+// managed database clusterRef is rejected on UPDATE, since the old MariaDB child
+// would otherwise be orphaned while a new one is provisioned (#476).
+func TestValidateUpdate_RejectsDatabaseClusterRefRename(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	oldCP := managedControlPlane()
+	newCP := managedControlPlane()
+	newCP.Spec.Infrastructure.Database.ClusterRef = &corev1.LocalObjectReference{Name: "openstack-db-2"}
+
+	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("clusterRef.name"))
+}
+
+// TestValidateUpdate_RejectsCacheModeFlipAndRename verifies the cache mode flip
+// and managed clusterRef rename are both rejected on UPDATE (#476).
+func TestValidateUpdate_RejectsCacheModeFlipAndRename(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+
+	// managed -> brownfield (servers) cache mode flip.
+	oldCP := managedControlPlane()
+	flipped := managedControlPlane()
+	flipped.Spec.Infrastructure.Cache = commonv1.CacheSpec{
+		Servers: []string{"mc:11211"}, Backend: "dogpile.cache.pymemcache",
+	}
+	_, err := w.ValidateUpdate(context.Background(), oldCP, flipped)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("cache mode"))
+
+	// managed clusterRef rename.
+	renamed := managedControlPlane()
+	renamed.Spec.Infrastructure.Cache.ClusterRef = &corev1.LocalObjectReference{Name: "openstack-memcached-2"}
+	_, err = w.ValidateUpdate(context.Background(), oldCP, renamed)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("clusterRef.name"))
+}
+
+// TestValidateUpdate_RejectsCloudSecretNameChange verifies that renaming
+// cloudCredentialsRef.secretName is rejected on UPDATE, since the old K-ORC
+// clouds.yaml ExternalSecret would otherwise be leaked (#476).
+func TestValidateUpdate_RejectsCloudSecretNameChange(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	oldCP := managedControlPlane()
+	newCP := managedControlPlane()
+	newCP.Spec.KORC.AdminCredential.CloudCredentialsRef.SecretName = "renamed-clouds-yaml"
+
+	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("secretName"))
+}
+
+// TestValidateUpdate_AllowsMutableFieldChanges verifies that updates which only
+// touch mutable fields (region, replicas, the release) are accepted on an
+// otherwise-unchanged managed ControlPlane, so the immutability guard does not
+// over-restrict legitimate edits (#476).
+func TestValidateUpdate_AllowsMutableFieldChanges(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	oldCP := managedControlPlane()
+
+	newCP := managedControlPlane()
+	newCP.Spec.Region = "EU-West"
+	newCP.Spec.OpenStackRelease = "2026.1"
+	replicas := int32(3)
+	newCP.Spec.Services.Keystone.Replicas = &replicas
+
+	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
 func TestValidateDelete_AlwaysAllowed(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &ControlPlaneWebhook{}

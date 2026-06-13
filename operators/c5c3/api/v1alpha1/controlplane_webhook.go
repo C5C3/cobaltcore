@@ -193,15 +193,27 @@ func (w *ControlPlaneWebhook) Default(_ context.Context, obj *ControlPlane) erro
 // The check runs only on CREATE (not UPDATE) so an existing CR stays mutable.
 // Reviewer: please verify boundary 6 = option (a).
 func (w *ControlPlaneWebhook) ValidateCreate(ctx context.Context, obj *ControlPlane) (admission.Warnings, error) {
-	if err := w.validate(obj); err != nil {
+	if err := newInvalidIfErrs(obj, w.validate(obj)); err != nil {
 		return nil, err
 	}
 	return nil, w.validateUniqueInNamespace(ctx, obj)
 }
 
 // ValidateUpdate implements admission.Validator[*ControlPlane].
-func (w *ControlPlaneWebhook) ValidateUpdate(_ context.Context, _, newObj *ControlPlane) (admission.Warnings, error) {
-	return nil, w.validate(newObj)
+// In addition to the spec checks in validate(), it enforces the create-only
+// immutable fields between oldObj and newObj: flipping the database/cache mode
+// or renaming a managed clusterRef would orphan the previously-projected
+// MariaDB/Memcached child (and its credentials), and renaming
+// cloudCredentialsRef.secretName would leak the previously-projected K-ORC
+// clouds.yaml ExternalSecret. Restricting these at admission is the smallest
+// change that prevents every such orphan/leak the sub-reconcilers would
+// otherwise create on the next reconcile (#476). Spec errors and immutability
+// errors are accumulated into a single Invalid response so a reviewer sees all
+// problems at once.
+func (w *ControlPlaneWebhook) ValidateUpdate(_ context.Context, oldObj, newObj *ControlPlane) (admission.Warnings, error) {
+	allErrs := w.validate(newObj)
+	allErrs = append(allErrs, validateImmutable(oldObj, newObj)...)
+	return nil, newInvalidIfErrs(newObj, allErrs)
 }
 
 // ValidateDelete implements admission.Validator[*ControlPlane]. The method is
@@ -213,11 +225,14 @@ func (w *ControlPlaneWebhook) ValidateDelete(_ context.Context, _ *ControlPlane)
 	return nil, nil
 }
 
-// validate runs all validation rules against the ControlPlane spec. The kubebuilder markers / CEL rules on the CRD are the primary
-// enforcement point at admission time; the checks below are defense-in-depth
-// (mirroring the KeystoneWebhook discipline) so callers that bypass CRD schema
-// admission still get field-specific errors.
-func (w *ControlPlaneWebhook) validate(cp *ControlPlane) error {
+// validate accumulates all spec validation errors for cp.
+// The kubebuilder markers / CEL rules on the CRD are the primary enforcement
+// point at admission time; the checks below are defense-in-depth (mirroring the
+// KeystoneWebhook discipline) so callers that bypass CRD schema admission still
+// get field-specific errors. It returns the accumulated field errors; callers
+// wrap them via newInvalidIfErrs so ValidateUpdate can fold in the immutability
+// errors before constructing a single Invalid response.
+func (w *ControlPlaneWebhook) validate(cp *ControlPlane) field.ErrorList {
 	var allErrs field.ErrorList
 	specPath := field.NewPath("spec")
 
@@ -279,14 +294,80 @@ func (w *ControlPlaneWebhook) validate(cp *ControlPlane) error {
 		}
 	}
 
-	if len(allErrs) > 0 {
-		return apierrors.NewInvalid(
-			schema.GroupKind{Group: GroupVersion.Group, Kind: "ControlPlane"},
-			cp.Name,
-			allErrs,
-		)
+	return allErrs
+}
+
+// newInvalidIfErrs wraps a non-empty field.ErrorList in an apierrors.NewInvalid
+// for the ControlPlane GroupKind, or returns nil when there are no errors. It is
+// the single point where the validating webhook turns accumulated field errors
+// into the admission response, so ValidateCreate and ValidateUpdate share an
+// identical error shape.
+func newInvalidIfErrs(cp *ControlPlane, allErrs field.ErrorList) error {
+	if len(allErrs) == 0 {
+		return nil
 	}
-	return nil
+	return apierrors.NewInvalid(
+		schema.GroupKind{Group: GroupVersion.Group, Kind: "ControlPlane"},
+		cp.Name,
+		allErrs,
+	)
+}
+
+// validateImmutable accumulates errors for every create-only-immutable field
+// that changed between oldObj and newObj (#476). The validating webhook is the
+// load-bearing mechanism here because the affected leaves live in the shared
+// commonv1.DatabaseSpec/CacheSpec types, which the keystone operator reuses and
+// which therefore must not carry c5c3-specific CEL immutability markers.
+//
+//   - Database/cache MODE (managed clusterRef vs brownfield host/servers):
+//     flipping it leaves the previously-projected MariaDB/Memcached child (and,
+//     in managed mode, its per-ControlPlane credential ExternalSecret) running
+//     and owned until the ControlPlane is deleted.
+//   - A managed clusterRef.NAME change re-points the projection at a new child
+//     and orphans the old one the same way.
+//   - A cloudCredentialsRef.secretName change re-points the K-ORC clouds.yaml
+//     projection and leaks the previously-named ExternalSecret.
+//
+// validate() already enforces the database/cache XOR (exactly one of clusterRef
+// or host/servers), so clusterRef nil-ness is an unambiguous mode discriminator
+// here.
+func validateImmutable(oldObj, newObj *ControlPlane) field.ErrorList {
+	var allErrs field.ErrorList
+
+	dbPath := field.NewPath("spec", "infrastructure", "database")
+	oldDB := oldObj.Spec.Infrastructure.Database
+	newDB := newObj.Spec.Infrastructure.Database
+	switch {
+	case (oldDB.ClusterRef != nil) != (newDB.ClusterRef != nil):
+		allErrs = append(allErrs, field.Invalid(dbPath, newDB,
+			"database mode (managed clusterRef vs brownfield host) is immutable"))
+	case oldDB.ClusterRef != nil && newDB.ClusterRef != nil && oldDB.ClusterRef.Name != newDB.ClusterRef.Name:
+		allErrs = append(allErrs, field.Invalid(dbPath.Child("clusterRef", "name"),
+			newDB.ClusterRef.Name, "managed database clusterRef.name is immutable"))
+	}
+
+	cachePath := field.NewPath("spec", "infrastructure", "cache")
+	oldCache := oldObj.Spec.Infrastructure.Cache
+	newCache := newObj.Spec.Infrastructure.Cache
+	switch {
+	case (oldCache.ClusterRef != nil) != (newCache.ClusterRef != nil):
+		allErrs = append(allErrs, field.Invalid(cachePath, newCache,
+			"cache mode (managed clusterRef vs brownfield servers) is immutable"))
+	case oldCache.ClusterRef != nil && newCache.ClusterRef != nil && oldCache.ClusterRef.Name != newCache.ClusterRef.Name:
+		allErrs = append(allErrs, field.Invalid(cachePath.Child("clusterRef", "name"),
+			newCache.ClusterRef.Name, "managed cache clusterRef.name is immutable"))
+	}
+
+	oldSecretName := oldObj.Spec.KORC.AdminCredential.CloudCredentialsRef.SecretName
+	newSecretName := newObj.Spec.KORC.AdminCredential.CloudCredentialsRef.SecretName
+	if oldSecretName != newSecretName {
+		allErrs = append(allErrs, field.Invalid(
+			field.NewPath("spec", "korc", "adminCredential", "cloudCredentialsRef", "secretName"),
+			newSecretName, "cloudCredentialsRef.secretName is immutable",
+		))
+	}
+
+	return allErrs
 }
 
 // validateUniqueInNamespace enforces the one-ControlPlane-per-namespace contract
