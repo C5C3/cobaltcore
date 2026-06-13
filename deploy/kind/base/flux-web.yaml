@@ -46,7 +46,7 @@
 #
 # Version pin: `spec.inputs[0].version` is a SemVer range locked to the
 # minor track of `FLUX_OPERATOR_VERSION` in hack/deploy-infra.sh (today
-# v0.50.0 → 0.50.x). Bump both together when upgrading the operator.
+# v0.52.0 → 0.52.x). Bump both together when upgrading the operator.
 #
 # Feature: CC-0086, REQ-001
 ---
@@ -64,7 +64,7 @@ spec:
   # This keeps the kind-only addon self-contained — no extra
   # ResourceSetInputProvider CR to maintain. Feature: CC-0086, REQ-001
   inputs:
-    - version: "0.50.x"
+    - version: "0.52.x"
   resources:
     - apiVersion: source.toolkit.fluxcd.io/v1
       kind: OCIRepository

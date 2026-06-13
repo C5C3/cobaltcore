@@ -138,7 +138,7 @@ test_kustomize_build_emits_resourceset() {
 # --- Test 3: chart version pin is a SemVer range locked to the minor
 #             track shipped by hack/deploy-infra.sh (CC-0086, REQ-001) ---
 test_chart_version_pin_is_semver_range() {
-  echo "Test: ResourceSet spec.inputs[0].version is 0.50.x and matches FLUX_OPERATOR_VERSION minor track (CC-0086, REQ-001)"
+  echo "Test: ResourceSet spec.inputs[0].version is 0.52.x and matches FLUX_OPERATOR_VERSION minor track (CC-0086, REQ-001)"
 
   if [[ ! -f "$FLUX_WEB_FILE" ]]; then
     echo "  FAIL: $FLUX_WEB_FILE does not exist"
@@ -152,12 +152,12 @@ test_chart_version_pin_is_semver_range() {
   else
     local version
     version="$(yq -r '.spec.inputs[0].version' "$FLUX_WEB_FILE" 2>/dev/null | head -n1)"
-    assert_eq "spec.inputs[0].version pins the 0.50.x SemVer range" "0.50.x" "$version"
+    assert_eq "spec.inputs[0].version pins the 0.52.x SemVer range" "0.52.x" "$version"
   fi
 
-  assert_file_contains "hack/deploy-infra.sh still declares FLUX_OPERATOR_VERSION=\"v0.50.0\"" \
+  assert_file_contains "hack/deploy-infra.sh still declares FLUX_OPERATOR_VERSION=\"v0.52.0\"" \
     "$DEPLOY_INFRA_SH" \
-    'FLUX_OPERATOR_VERSION="v0.50.0"'
+    'FLUX_OPERATOR_VERSION="v0.52.0"'
 }
 
 # --- Test 4: kind kustomization lists flux-web.yaml after headlamp.yaml (CC-0086, REQ-002) ---
