@@ -61,8 +61,10 @@ const adminPasswordSecretKey = "password" //nolint:gosec // G101 false positive:
 // password length, mirroring the +kubebuilder:validation:Minimum=24 marker on
 // PasswordRotationSpec.PasswordLength. The webhook defaults PasswordLength to
 // DefaultPasswordRotationLength (32) when rotation is enabled, but this floor
-// protects callers that bypass the webhook (e.g. envtest).
-const adminPasswordMinLength int32 = 24
+// protects callers that bypass the webhook (e.g. envtest). It aliases
+// the api package's DefaultAdminPasswordMinLength so the floor has a single
+// source of truth shared with the validating webhook.
+const adminPasswordMinLength = keystonev1alpha1.DefaultAdminPasswordMinLength
 
 // ErrAdminPasswordMissing is returned when the staged Secret has no non-empty
 // password value.

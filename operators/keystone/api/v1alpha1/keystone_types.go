@@ -334,17 +334,20 @@ type NetworkPolicyIngressSource struct {
 // +kubebuilder:validation:XValidation:rule="!has(self.httpKeepAliveTimeout) || self.httpKeepAlive",message="httpKeepAliveTimeout may only be set when httpKeepAlive is true"
 type UWSGISpec struct {
 	// Processes is the number of uWSGI worker processes.
+	// The default literal mirrors DefaultUWSGIProcesses in keystone_webhook.go.
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:default=2
 	Processes int32 `json:"processes,omitempty"`
 
 	// Threads is the number of threads per uWSGI worker process.
+	// The default literal mirrors DefaultUWSGIThreads in keystone_webhook.go.
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:default=1
 	Threads int32 `json:"threads,omitempty"`
 
 	// HTTPKeepAlive enables the --http-keepalive flag on the uWSGI process.
-	// When false, the flag is omitted from the command.
+	// When false, the flag is omitted from the command. The default literal
+	// mirrors DefaultUWSGIHTTPKeepAlive in keystone_webhook.go.
 	// +kubebuilder:default=true
 	HTTPKeepAlive bool `json:"httpKeepAlive,omitempty"`
 
@@ -480,8 +483,9 @@ type PasswordRotationSpec struct {
 	Suspend bool `json:"suspend,omitempty"`
 
 	// PasswordLength is the length of the generated password. The kubebuilder
-	// default literal below must stay in sync with DefaultPasswordRotationLength
-	// in keystone_webhook.go.
+	// default literal below must stay in sync with DefaultPasswordRotationLength,
+	// and the Minimum literal with DefaultAdminPasswordMinLength, both in
+	// keystone_webhook.go.
 	// +kubebuilder:validation:Minimum=24
 	// +kubebuilder:default=32
 	PasswordLength int32 `json:"passwordLength,omitempty"`

@@ -25,6 +25,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	"github.com/c5c3/forge/internal/common/policy"
+	commonv1 "github.com/c5c3/forge/internal/common/types"
 )
 
 // Graceful-termination effective defaults.
@@ -71,6 +72,23 @@ const (
 	// into. It is the single source of truth shared by Default() and the
 	// webhook validation enum so the baseline cannot drift across call sites.
 	DefaultDatabaseTLSMode = "require"
+
+	// DefaultUWSGIProcesses / DefaultUWSGIThreads / DefaultUWSGIHTTPKeepAlive are
+	// the uWSGI defaults applied by the defaulting webhook (Processes/Threads)
+	// and the reconciler (uwsgiCommand, when spec.uwsgi is nil). They are the
+	// single source of truth so the webhook and reconcile_deployment.go cannot
+	// drift; the +kubebuilder:default markers on UWSGISpec keep the same literals
+	// in sync separately (markers cannot reference Go constants).
+	DefaultUWSGIProcesses     int32 = 2
+	DefaultUWSGIThreads       int32 = 1
+	DefaultUWSGIHTTPKeepAlive       = true
+
+	// DefaultAdminPasswordMinLength is the floor for the generated admin-password
+	// length. It is the single source of truth shared by the webhook
+	// defense-in-depth check and the reconciler floor (reconcile_passwordrotation.go);
+	// the +kubebuilder:validation:Minimum=24 marker on
+	// PasswordRotationSpec.PasswordLength keeps the same literal in sync.
+	DefaultAdminPasswordMinLength int32 = 24
 )
 
 // Default resource requests and limits for the Keystone API container.
@@ -126,7 +144,7 @@ func (w *KeystoneWebhook) Default(_ context.Context, obj *Keystone) error {
 		obj.Spec.CredentialKeys.MaxActiveKeys = 3
 	}
 	if obj.Spec.Cache.Backend == "" {
-		obj.Spec.Cache.Backend = "dogpile.cache.pymemcache"
+		obj.Spec.Cache.Backend = commonv1.DefaultCacheBackend
 	}
 	if obj.Spec.Bootstrap.AdminUser == "" {
 		obj.Spec.Bootstrap.AdminUser = "admin"
@@ -171,10 +189,10 @@ func (w *KeystoneWebhook) Default(_ context.Context, obj *Keystone) error {
 	// admission path; uwsgiCommand uses the CRD default at runtime.
 	if obj.Spec.UWSGI != nil {
 		if obj.Spec.UWSGI.Processes == 0 {
-			obj.Spec.UWSGI.Processes = 2
+			obj.Spec.UWSGI.Processes = DefaultUWSGIProcesses
 		}
 		if obj.Spec.UWSGI.Threads == 0 {
-			obj.Spec.UWSGI.Threads = 1
+			obj.Spec.UWSGI.Threads = DefaultUWSGIThreads
 		}
 	}
 	// Default zero-valued sub-fields of spec.logging.
@@ -438,15 +456,16 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 		// out-of-range value if CRD schema admission is bypassed, matching the
 		// defense-in-depth convention every other Minimum-marked field in this
 		// webhook follows (Fernet/CredentialKeys maxActiveKeys, UWSGI harakiri /
-		// httpKeepAliveTimeout, terminationGracePeriodSeconds). The literal 24
-		// mirrors the marker — kubebuilder markers cannot reference Go constants,
-		// and the api package cannot import the controller's adminPasswordMinLength
-		// without a cycle.
-		if pr.PasswordLength != 0 && pr.PasswordLength < 24 {
+		// httpKeepAliveTimeout, terminationGracePeriodSeconds). The check uses
+		// DefaultAdminPasswordMinLength (the single source of truth in this
+		// package, also referenced by the reconciler floor); the
+		// +kubebuilder:validation:Minimum marker keeps the literal in sync,
+		// since markers cannot reference Go constants.
+		if pr.PasswordLength != 0 && pr.PasswordLength < DefaultAdminPasswordMinLength {
 			allErrs = append(allErrs, field.Invalid(
 				prPath.Child("passwordLength"),
 				pr.PasswordLength,
-				"passwordLength must be at least 24",
+				fmt.Sprintf("passwordLength must be at least %d", DefaultAdminPasswordMinLength),
 			))
 		}
 	}

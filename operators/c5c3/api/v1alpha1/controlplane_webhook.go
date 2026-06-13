@@ -21,6 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	"github.com/c5c3/forge/internal/common/policy"
+	commonv1 "github.com/c5c3/forge/internal/common/types"
 )
 
 // ControlPlane defaulting constants. These are the single source of
@@ -50,8 +51,10 @@ const (
 	// DefaultDatabaseClusterRefName is the managed MariaDB CR name materialized when
 	// spec.infrastructure.database is in managed mode (host unset).
 	DefaultDatabaseClusterRefName = "openstack-db"
-	// DefaultCacheBackend is materialized when spec.infrastructure.cache.backend is empty.
-	DefaultCacheBackend = "dogpile.cache.pymemcache"
+	// DefaultCacheBackend is materialized when spec.infrastructure.cache.backend
+	// is empty. It aliases commonv1.DefaultCacheBackend so the keystone and c5c3
+	// operators share one source of truth for the cache backend default.
+	DefaultCacheBackend = commonv1.DefaultCacheBackend
 	// DefaultCacheClusterRefName is the managed Memcached CR name materialized when
 	// spec.infrastructure.cache is in managed mode (servers unset).
 	DefaultCacheClusterRefName = "openstack-memcached"

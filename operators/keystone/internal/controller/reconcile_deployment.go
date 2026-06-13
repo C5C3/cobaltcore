@@ -383,9 +383,9 @@ func buildPodDisruptionBudget(keystone *keystonev1alpha1.Keystone) *policyv1.Pod
 // --http-keepalive[-timeout] block and --wsgi-file so request lines reach
 // stderr in every configuration, including when keep-alive is disabled.
 func uwsgiCommand(uwsgi *keystonev1alpha1.UWSGISpec) []string {
-	processes := int32(2)
-	threads := int32(1)
-	httpKeepAlive := true
+	processes := keystonev1alpha1.DefaultUWSGIProcesses
+	threads := keystonev1alpha1.DefaultUWSGIThreads
+	httpKeepAlive := keystonev1alpha1.DefaultUWSGIHTTPKeepAlive
 
 	if uwsgi != nil {
 		processes = uwsgi.Processes
