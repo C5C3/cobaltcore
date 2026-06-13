@@ -235,6 +235,12 @@ no HPA is created and the `HPAReady` condition is set to `True` with reason
 created targeting the `{name}` Deployment. Removing the field deletes the
 existing HPA.
 
+While `spec.autoscaling` is set, the operator leaves the Deployment's
+`.spec.replicas` unmanaged (nil) so the HPA owns the replica count and the
+reconciler does not reset it on each pass. `spec.replicas` is then used only
+as the initial replica count and as the `minReplicas` default when
+`autoscaling.minReplicas` is unset.
+
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `minReplicas` | `*int32` | No | `spec.replicas` | Lower bound for the number of replicas. Minimum: 1. Defaults to `spec.replicas` when unset, allowing the HPA to scale down to the static replica count. |

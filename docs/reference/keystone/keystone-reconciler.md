@@ -2068,7 +2068,7 @@ CronJob rotates keys → Secret data changes → kubelet projects new keys
 | Field | Value |
 | --- | --- |
 | Name | `{name}` (bare CR name) |
-| Replicas | `spec.replicas` |
+| Replicas | `spec.replicas`; left `nil` when `spec.autoscaling` is set, so the HorizontalPodAutoscaler owns the count and the operator does not reset it each reconcile |
 | Labels | `app.kubernetes.io/name=keystone`, `app.kubernetes.io/instance={name}`, `app.kubernetes.io/managed-by=keystone-operator` |
 | Selector | `app.kubernetes.io/name=keystone`, `app.kubernetes.io/instance={name}` |
 | Container name | `keystone` |
