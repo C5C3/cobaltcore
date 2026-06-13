@@ -101,7 +101,9 @@ spec:
                     description: |-
                       Cache defines the Memcached configuration shared by the control plane.
                       Supports managed (clusterRef) and brownfield (servers) modes; exactly one
-                      must be set (enforced by the validating webhook, mirroring keystone).
+                      must be set. That invariant is carried by the embedded commonv1.CacheSpec
+                      type-level CEL rule (and the validating webhook), mirroring keystone — no
+                      field-level marker is needed here, and duplicating it would emit the rule twice.
                     properties:
                       backend:
                         description: Backend is the cache backend (e.g. dogpile.cache.pymemcache).
@@ -147,7 +149,9 @@ spec:
                     description: |-
                       Database defines the MariaDB connection parameters shared by the control
                       plane. Supports managed (clusterRef) and brownfield (host) modes; exactly
-                      one must be set (enforced by the validating webhook, mirroring keystone).
+                      one must be set. That invariant is carried by the embedded commonv1.DatabaseSpec
+                      type-level CEL rule (and the validating webhook), mirroring keystone — no
+                      field-level marker is needed here, and duplicating it would emit the rule twice.
                     properties:
                       clusterRef:
                         description: ClusterRef references a MariaDB CR in the cluster
@@ -165,15 +169,30 @@ spec:
                         type: object
                         x-kubernetes-map-type: atomic
                       database:
-                        description: Database is the database name within the cluster.
+                        description: |-
+                          Database is the database name within the cluster. Constrained to the MySQL
+                          identifier character set and the 64-character identifier limit.
+                        maxLength: 64
+                        minLength: 1
+                        pattern: ^[A-Za-z0-9_]+$
                         type: string
                       host:
-                        description: Host is the database hostname (brownfield mode).
+                        description: |-
+                          Host is the database hostname (brownfield mode). The pattern is a
+                          permissive host matcher that accepts DNS names, IPv4, and IPv6 literals
+                          while rejecting empty strings and shell/path metacharacters; it is not a
+                          strict RFC-1123 validator, deliberately, so airgapped/mirror endpoints are
+                          not rejected at admission.
+                        minLength: 1
+                        pattern: ^[a-zA-Z0-9._:-]+$
                         type: string
                       port:
-                        description: Port is the database port (brownfield mode, default
-                          3306).
+                        description: |-
+                          Port is the database port (brownfield mode, default 3306). Omitted (managed
+                          mode) leaves it unset; an explicit value must be a valid TCP port.
                         format: int32
+                        maximum: 65535
+                        minimum: 1
                         type: integer
                       secretRef:
                         description: SecretRef references the K8s Secret with credentials.
@@ -181,6 +200,14 @@ spec:
                           key:
                             type: string
                           name:
+                            description: |-
+                              Name is the referenced Secret's name. It must be a non-empty DNS-1123
+                              subdomain (the Kubernetes object-name grammar). Tightening the shared type
+                              fixes every consumer at once — keystone adminPasswordSecretRef /
+                              database.secretRef / messaging / TLS cert refs and the c5c3
+                              passwordSecretRef — so an empty name no longer slips through "required".
+                            minLength: 1
+                            pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
                             type: string
                         required:
                         - name
@@ -199,6 +226,14 @@ spec:
                               key:
                                 type: string
                               name:
+                                description: |-
+                                  Name is the referenced Secret's name. It must be a non-empty DNS-1123
+                                  subdomain (the Kubernetes object-name grammar). Tightening the shared type
+                                  fixes every consumer at once — keystone adminPasswordSecretRef /
+                                  database.secretRef / messaging / TLS cert refs and the c5c3
+                                  passwordSecretRef — so an empty name no longer slips through "required".
+                                minLength: 1
+                                pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
                                 type: string
                             required:
                             - name
@@ -211,6 +246,14 @@ spec:
                               key:
                                 type: string
                               name:
+                                description: |-
+                                  Name is the referenced Secret's name. It must be a non-empty DNS-1123
+                                  subdomain (the Kubernetes object-name grammar). Tightening the shared type
+                                  fixes every consumer at once — keystone adminPasswordSecretRef /
+                                  database.secretRef / messaging / TLS cert refs and the c5c3
+                                  passwordSecretRef — so an empty name no longer slips through "required".
+                                minLength: 1
+                                pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
                                 type: string
                             required:
                             - name
@@ -281,20 +324,35 @@ spec:
                                 rule shape (service / method / path).
                               properties:
                                 method:
-                                  description: Method is the HTTP method the rule
-                                    allows (e.g. "GET", "POST").
+                                  description: |-
+                                    Method is the HTTP method the rule allows (e.g. "GET", "POST"). Optional:
+                                    projectAccessRules omits it from the projected K-ORC rule when empty. The
+                                    enum mirrors K-ORC's HTTPMethod type (the value is cast to it), so a value
+                                    the downstream ApplicationCredentialAccessRule would reject is caught at
+                                    admission instead.
+                                  enum:
+                                  - CONNECT
+                                  - DELETE
+                                  - GET
+                                  - HEAD
+                                  - OPTIONS
+                                  - PATCH
+                                  - POST
+                                  - PUT
+                                  - TRACE
                                   type: string
                                 path:
-                                  description: Path is the request path the rule allows
-                                    (e.g. "/v2.1/servers").
+                                  description: |-
+                                    Path is the request path the rule allows (e.g. "/v2.1/servers"). Optional:
+                                    projectAccessRules omits it when empty. When set it must be an absolute
+                                    path (leading slash).
+                                  pattern: ^/
                                   type: string
                                 service:
                                   description: Service is the OpenStack service type
                                     the rule applies to (e.g. "compute").
                                   type: string
                               required:
-                              - method
-                              - path
                               - service
                               type: object
                             type: array
@@ -337,8 +395,13 @@ spec:
                             reconciler (L2) interprets the kind/name and applies it.
                           properties:
                             kind:
-                              description: Kind is the K-ORC resource kind to bootstrap
-                                (e.g. "Project", "Role").
+                              description: |-
+                                Kind is the K-ORC resource kind to bootstrap. Constrained to the kinds the
+                                control plane bootstraps today; widen the enum when the L2 reconciler
+                                learns to interpret additional kinds.
+                              enum:
+                              - Project
+                              - Role
                               type: string
                             name:
                               description: Name is the name of the bootstrapped resource.
@@ -381,6 +444,14 @@ spec:
                           key:
                             type: string
                           name:
+                            description: |-
+                              Name is the referenced Secret's name. It must be a non-empty DNS-1123
+                              subdomain (the Kubernetes object-name grammar). Tightening the shared type
+                              fixes every consumer at once — keystone adminPasswordSecretRef /
+                              database.secretRef / messaging / TLS cert refs and the c5c3
+                              passwordSecretRef — so an empty name no longer slips through "required".
+                            minLength: 1
+                            pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
                             type: string
                         required:
                         - name
@@ -484,8 +555,23 @@ spec:
                           reconciler derives the image from spec.openStackRelease.
                         properties:
                           repository:
+                            description: |-
+                              Repository is the OCI image repository, optionally including the registry
+                              host (e.g. "ghcr.io/c5c3/keystone" or "c5c3/keystone"). The pattern is a
+                              permissive OCI reference — lowercase alphanumeric components separated by
+                              ".", "_", "-", "/", or ":" (registry port) — so mirror and host:port forms
+                              are accepted while an empty string (which "required" alone admits) and
+                              obvious garbage are rejected.
+                            minLength: 1
+                            pattern: ^[a-z0-9]+([._:/-][a-z0-9]+)*$
                             type: string
                           tag:
+                            description: |-
+                              Tag is the OCI image tag (e.g. "2025.2"). It follows the OCI tag grammar:
+                              up to 128 characters of word characters, dots, and dashes, and must not
+                              begin with a dot or dash.
+                            minLength: 1
+                            pattern: ^[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}$
                             type: string
                         required:
                         - repository
@@ -538,6 +624,10 @@ spec:
                           "https://{gateway.hostname}/v3" (the default-443 form); set it explicitly
                           when the externally reachable port differs (e.g. a kind host-port mapping
                           like :8443), since the port cannot be derived from the hostname alone.
+                          The pattern enforces an HTTP(S) URL shape so a malformed endpoint is
+                          rejected at admission rather than wedging the projected Keystone CR (the
+                          keystone webhook later rejects a non-URL publicEndpoint post-admission).
+                        pattern: ^https?://
                         type: string
                       replicas:
                         description: |-

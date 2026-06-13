@@ -50,7 +50,14 @@ spec:
           metadata:
             type: object
           spec:
-            description: KeystoneSpec defines the desired state of Keystone.
+            description: |-
+              KeystoneSpec defines the desired state of Keystone.
+
+              The drain-window CEL rule mirrors the validating webhook: when one
+              or both of the nil-preserving pointers is unset, the rule substitutes the same
+              effective defaults the reconciler applies. The literals 5 and 30 must stay in
+              sync with DefaultPreStopSleepSeconds and DefaultTerminationGracePeriodSeconds
+              in keystone_webhook.go — kubebuilder/CEL rules cannot reference Go constants.
             properties:
               autoscaling:
                 description: |-
@@ -92,6 +99,8 @@ spec:
                 - message: at least one of targetCPUUtilization or targetMemoryUtilization
                     must be set
                   rule: has(self.targetCPUUtilization) || has(self.targetMemoryUtilization)
+                - message: minReplicas must not exceed maxReplicas
+                  rule: '!has(self.minReplicas) || self.minReplicas <= self.maxReplicas'
               bootstrap:
                 description: Bootstrap configures the initial Keystone bootstrap.
                 properties:
@@ -102,6 +111,14 @@ spec:
                       key:
                         type: string
                       name:
+                        description: |-
+                          Name is the referenced Secret's name. It must be a non-empty DNS-1123
+                          subdomain (the Kubernetes object-name grammar). Tightening the shared type
+                          fixes every consumer at once — keystone adminPasswordSecretRef /
+                          database.secretRef / messaging / TLS cert refs and the c5c3
+                          passwordSecretRef — so an empty name no longer slips through "required".
+                        minLength: 1
+                        pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
                         type: string
                     required:
                     - name
@@ -135,8 +152,9 @@ spec:
                         default: 32
                         description: |-
                           PasswordLength is the length of the generated password. The kubebuilder
-                          default literal below must stay in sync with DefaultPasswordRotationLength
-                          in keystone_webhook.go.
+                          default literal below must stay in sync with DefaultPasswordRotationLength,
+                          and the Minimum literal with DefaultAdminPasswordMinLength, both in
+                          keystone_webhook.go.
                         format: int32
                         minimum: 24
                         type: integer
@@ -158,7 +176,10 @@ spec:
                       PublicEndpoint is the externally routable Keystone endpoint URL used for
                       --bootstrap-public-url. When unset, the cluster-local service DNS is used
                       as a fallback. External clients (CLI users, Horizon, federation partners)
-                      require a routable address here.
+                      require a routable address here. The pattern enforces an HTTP(S)
+                      URL shape unconditionally; the webhook additionally cross-checks the host
+                      against spec.gateway.hostname when a gateway is configured.
+                    pattern: ^https?://
                     type: string
                   region:
                     default: RegionOne
@@ -287,15 +308,30 @@ spec:
                     type: object
                     x-kubernetes-map-type: atomic
                   database:
-                    description: Database is the database name within the cluster.
+                    description: |-
+                      Database is the database name within the cluster. Constrained to the MySQL
+                      identifier character set and the 64-character identifier limit.
+                    maxLength: 64
+                    minLength: 1
+                    pattern: ^[A-Za-z0-9_]+$
                     type: string
                   host:
-                    description: Host is the database hostname (brownfield mode).
+                    description: |-
+                      Host is the database hostname (brownfield mode). The pattern is a
+                      permissive host matcher that accepts DNS names, IPv4, and IPv6 literals
+                      while rejecting empty strings and shell/path metacharacters; it is not a
+                      strict RFC-1123 validator, deliberately, so airgapped/mirror endpoints are
+                      not rejected at admission.
+                    minLength: 1
+                    pattern: ^[a-zA-Z0-9._:-]+$
                     type: string
                   port:
-                    description: Port is the database port (brownfield mode, default
-                      3306).
+                    description: |-
+                      Port is the database port (brownfield mode, default 3306). Omitted (managed
+                      mode) leaves it unset; an explicit value must be a valid TCP port.
                     format: int32
+                    maximum: 65535
+                    minimum: 1
                     type: integer
                   secretRef:
                     description: SecretRef references the K8s Secret with credentials.
@@ -303,6 +339,14 @@ spec:
                       key:
                         type: string
                       name:
+                        description: |-
+                          Name is the referenced Secret's name. It must be a non-empty DNS-1123
+                          subdomain (the Kubernetes object-name grammar). Tightening the shared type
+                          fixes every consumer at once — keystone adminPasswordSecretRef /
+                          database.secretRef / messaging / TLS cert refs and the c5c3
+                          passwordSecretRef — so an empty name no longer slips through "required".
+                        minLength: 1
+                        pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
                         type: string
                     required:
                     - name
@@ -321,6 +365,14 @@ spec:
                           key:
                             type: string
                           name:
+                            description: |-
+                              Name is the referenced Secret's name. It must be a non-empty DNS-1123
+                              subdomain (the Kubernetes object-name grammar). Tightening the shared type
+                              fixes every consumer at once — keystone adminPasswordSecretRef /
+                              database.secretRef / messaging / TLS cert refs and the c5c3
+                              passwordSecretRef — so an empty name no longer slips through "required".
+                            minLength: 1
+                            pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
                             type: string
                         required:
                         - name
@@ -333,6 +385,14 @@ spec:
                           key:
                             type: string
                           name:
+                            description: |-
+                              Name is the referenced Secret's name. It must be a non-empty DNS-1123
+                              subdomain (the Kubernetes object-name grammar). Tightening the shared type
+                              fixes every consumer at once — keystone adminPasswordSecretRef /
+                              database.secretRef / messaging / TLS cert refs and the c5c3
+                              passwordSecretRef — so an empty name no longer slips through "required".
+                            minLength: 1
+                            pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
                             type: string
                         required:
                         - name
@@ -491,8 +551,23 @@ spec:
                   ControlPlane webhook is bypassed.
                 properties:
                   repository:
+                    description: |-
+                      Repository is the OCI image repository, optionally including the registry
+                      host (e.g. "ghcr.io/c5c3/keystone" or "c5c3/keystone"). The pattern is a
+                      permissive OCI reference — lowercase alphanumeric components separated by
+                      ".", "_", "-", "/", or ":" (registry port) — so mirror and host:port forms
+                      are accepted while an empty string (which "required" alone admits) and
+                      obvious garbage are rejected.
+                    minLength: 1
+                    pattern: ^[a-z0-9]+([._:/-][a-z0-9]+)*$
                     type: string
                   tag:
+                    description: |-
+                      Tag is the OCI image tag (e.g. "2025.2"). It follows the OCI tag grammar:
+                      up to 128 characters of word characters, dots, and dashes, and must not
+                      begin with a dot or dash.
+                    minLength: 1
+                    pattern: ^[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}$
                     type: string
                 required:
                 - repository
@@ -539,10 +614,18 @@ spec:
                       PerLoggerLevels overrides the level of named loggers, mirroring
                       oslo.log's `default_log_levels`. Example:
                       {"sqlalchemy.engine": "WARNING", "keystone.middleware": "DEBUG"}.
-                      Each value must be one of DEBUG/INFO/WARNING/ERROR/CRITICAL —
-                      enforced by the validating webhook, not the CRD enum (additionalProperties
-                      does not support enum constraints in CRD v1).
+                      Each value must be one of DEBUG/INFO/WARNING/ERROR/CRITICAL and every
+                      logger name must be non-empty. These are now enforced by the CRD CEL
+                      XValidation rules below as well as by the validating webhook (a plain
+                      enum on additionalProperties is still not expressible in CRD v1, so the
+                      value constraint is written as an `in [...]` CEL rule rather than an enum).
                     type: object
+                    x-kubernetes-validations:
+                    - message: logger name must not be empty
+                      rule: self.all(k, k != '')
+                    - message: per-logger level must be one of DEBUG, INFO, WARNING,
+                        ERROR, CRITICAL
+                      rule: self.all(k, self[k] in ['DEBUG','INFO','WARNING','ERROR','CRITICAL'])
                 type: object
               middleware:
                 description: Middleware defines WSGI middleware filters for the api-paste.ini
@@ -567,6 +650,9 @@ spec:
                     position:
                       description: Position defines where in the pipeline this filter
                         is inserted
+                      enum:
+                      - before
+                      - after
                       type: string
                   required:
                   - filterFactory
@@ -812,7 +898,12 @@ spec:
                 - message: at least one ingress source must be specified
                   rule: size(self.ingress) > 0
               plugins:
-                description: Plugins defines service plugins/drivers to configure.
+                description: |-
+                  Plugins defines service plugins/drivers to configure. Modeled as a
+                  list-map keyed by configSection so the API server rejects duplicate
+                  sections structurally (parity with the validating webhook's duplicate
+                  check) and server-side apply merges entries by section instead of
+                  replacing the whole list.
                 items:
                   description: PluginSpec defines a service plugin/driver configuration.
                   properties:
@@ -833,6 +924,9 @@ spec:
                   - name
                   type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - configSection
+                x-kubernetes-list-type: map
               policyOverrides:
                 description: |-
                   PolicyOverrides defines custom oslo.policy rules for the service.
@@ -1260,7 +1354,8 @@ spec:
                     default: true
                     description: |-
                       HTTPKeepAlive enables the --http-keepalive flag on the uWSGI process.
-                      When false, the flag is omitted from the command.
+                      When false, the flag is omitted from the command. The default literal
+                      mirrors DefaultUWSGIHTTPKeepAlive in keystone_webhook.go.
                     type: boolean
                   httpKeepAliveTimeout:
                     description: |-
@@ -1277,24 +1372,36 @@ spec:
                     type: integer
                   processes:
                     default: 2
-                    description: Processes is the number of uWSGI worker processes.
+                    description: |-
+                      Processes is the number of uWSGI worker processes.
+                      The default literal mirrors DefaultUWSGIProcesses in keystone_webhook.go.
                     format: int32
                     minimum: 1
                     type: integer
                   threads:
                     default: 1
-                    description: Threads is the number of threads per uWSGI worker
-                      process.
+                    description: |-
+                      Threads is the number of threads per uWSGI worker process.
+                      The default literal mirrors DefaultUWSGIThreads in keystone_webhook.go.
                     format: int32
                     minimum: 1
                     type: integer
                 type: object
+                x-kubernetes-validations:
+                - message: httpKeepAliveTimeout may only be set when httpKeepAlive
+                    is true
+                  rule: '!has(self.httpKeepAliveTimeout) || self.httpKeepAlive'
             required:
             - bootstrap
             - cache
             - database
             - image
             type: object
+            x-kubernetes-validations:
+            - message: preStopSleepSeconds must be strictly less than terminationGracePeriodSeconds
+              rule: '(has(self.preStopSleepSeconds) ? self.preStopSleepSeconds : 5)
+                < (has(self.terminationGracePeriodSeconds) ? self.terminationGracePeriodSeconds
+                : 30)'
           status:
             description: KeystoneStatus defines the observed state of Keystone.
             properties:
