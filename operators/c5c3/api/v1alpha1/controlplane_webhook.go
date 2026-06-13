@@ -294,6 +294,16 @@ func (w *ControlPlaneWebhook) validate(cp *ControlPlane) field.ErrorList {
 		}
 	}
 
+	// When a gateway is configured, its hostname must be set. Mirrors the
+	// +kubebuilder:validation:MinLength=1 marker on commonv1.GatewaySpec.Hostname;
+	// without it the reconciler derives an empty "https:///v3" public endpoint.
+	if g := cp.Spec.Services.Keystone.Gateway; g != nil && g.Hostname == "" {
+		allErrs = append(allErrs, field.Required(
+			specPath.Child("services", "keystone", "gateway", "hostname"),
+			"must be set when a gateway is configured",
+		))
+	}
+
 	return allErrs
 }
 

@@ -412,6 +412,50 @@ func TestValidateCreate_AcceptsDailyAndWeeklyRotationIntervals(t *testing.T) {
 	}
 }
 
+// TestValidateCreate_RejectsGatewayWithoutHostname verifies that configuring a
+// gateway without a hostname is rejected at admission, so the reconciler never
+// derives an empty "https:///v3" public endpoint (#476).
+func TestValidateCreate_RejectsGatewayWithoutHostname(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Spec.Services.Keystone.Gateway = &commonv1.GatewaySpec{
+		ParentRef: commonv1.GatewayParentRefSpec{Name: "openstack-gw"},
+		// Hostname intentionally empty.
+	}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("hostname"))
+}
+
+// TestValidateCreate_AcceptsGatewayWithHostname verifies a gateway carrying a
+// non-empty hostname passes admission (#476).
+func TestValidateCreate_AcceptsGatewayWithHostname(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Spec.Services.Keystone.Gateway = &commonv1.GatewaySpec{
+		ParentRef: commonv1.GatewayParentRefSpec{Name: "openstack-gw"},
+		Hostname:  "keystone.127-0-0-1.nip.io",
+	}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// TestValidateCreate_AcceptsNilGateway verifies the gateway hostname check does
+// not fire when no gateway is configured (the field is optional) (#476).
+func TestValidateCreate_AcceptsNilGateway(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Spec.Services.Keystone.Gateway = nil
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
 func TestValidateUpdate_AcceptsValidChange(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &ControlPlaneWebhook{}
