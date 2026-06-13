@@ -83,12 +83,16 @@ type ControlPlaneSpec struct {
 type InfrastructureSpec struct {
 	// Database defines the MariaDB connection parameters shared by the control
 	// plane. Supports managed (clusterRef) and brownfield (host) modes; exactly
-	// one must be set (enforced by the validating webhook, mirroring keystone).
+	// one must be set. That invariant is carried by the embedded commonv1.DatabaseSpec
+	// type-level CEL rule (and the validating webhook), mirroring keystone — no
+	// field-level marker is needed here, and duplicating it would emit the rule twice.
 	Database commonv1.DatabaseSpec `json:"database"`
 
 	// Cache defines the Memcached configuration shared by the control plane.
 	// Supports managed (clusterRef) and brownfield (servers) modes; exactly one
-	// must be set (enforced by the validating webhook, mirroring keystone).
+	// must be set. That invariant is carried by the embedded commonv1.CacheSpec
+	// type-level CEL rule (and the validating webhook), mirroring keystone — no
+	// field-level marker is needed here, and duplicating it would emit the rule twice.
 	Cache commonv1.CacheSpec `json:"cache"`
 }
 
@@ -168,7 +172,11 @@ type ServiceKeystoneSpec struct {
 	// "https://{gateway.hostname}/v3" (the default-443 form); set it explicitly
 	// when the externally reachable port differs (e.g. a kind host-port mapping
 	// like :8443), since the port cannot be derived from the hostname alone.
+	// The pattern enforces an HTTP(S) URL shape so a malformed endpoint is
+	// rejected at admission rather than wedging the projected Keystone CR (the
+	// keystone webhook later rejects a non-URL publicEndpoint post-admission).
 	// +optional
+	// +kubebuilder:validation:Pattern=`^https?://`
 	PublicEndpoint string `json:"publicEndpoint,omitempty"`
 }
 
@@ -255,11 +263,21 @@ type AccessRule struct {
 	// Service is the OpenStack service type the rule applies to (e.g. "compute").
 	Service string `json:"service"`
 
-	// Method is the HTTP method the rule allows (e.g. "GET", "POST").
-	Method string `json:"method"`
+	// Method is the HTTP method the rule allows (e.g. "GET", "POST"). Optional:
+	// projectAccessRules omits it from the projected K-ORC rule when empty. The
+	// enum mirrors K-ORC's HTTPMethod type (the value is cast to it), so a value
+	// the downstream ApplicationCredentialAccessRule would reject is caught at
+	// admission instead.
+	// +optional
+	// +kubebuilder:validation:Enum=CONNECT;DELETE;GET;HEAD;OPTIONS;PATCH;POST;PUT;TRACE
+	Method string `json:"method,omitempty"`
 
-	// Path is the request path the rule allows (e.g. "/v2.1/servers").
-	Path string `json:"path"`
+	// Path is the request path the rule allows (e.g. "/v2.1/servers"). Optional:
+	// projectAccessRules omits it when empty. When set it must be an absolute
+	// path (leading slash).
+	// +optional
+	// +kubebuilder:validation:Pattern=`^/`
+	Path string `json:"path,omitempty"`
 }
 
 // RotationMode selects how the K-ORC admin application credential is rotated
@@ -292,7 +310,10 @@ type RotationSpec struct {
 // the control plane. The shape is intentionally minimal at L1 — the
 // reconciler (L2) interprets the kind/name and applies it.
 type BootstrapResourceSpec struct {
-	// Kind is the K-ORC resource kind to bootstrap (e.g. "Project", "Role").
+	// Kind is the K-ORC resource kind to bootstrap. Constrained to the kinds the
+	// control plane bootstraps today; widen the enum when the L2 reconciler
+	// learns to interpret additional kinds.
+	// +kubebuilder:validation:Enum=Project;Role
 	Kind string `json:"kind"`
 
 	// Name is the name of the bootstrapped resource.
