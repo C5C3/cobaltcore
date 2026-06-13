@@ -1366,3 +1366,104 @@ func TestIntegration_ControlPlaneDeletion_SequencesORCTeardown(t *testing.T) {
 	}, itEventuallyTimeout, itPollInterval).Should(BeTrue(),
 		"AC and ControlPlane must be removed once the K-ORC finalizer clears")
 }
+
+// TestIntegration_ControlPlane_ValidationMarkers pins the validation-marker wave
+// on the ControlPlane CRD against the envtest API server (CRD schema + CEL +
+// validating webhook). Each rejection case mutates one field of an otherwise
+// valid managed ControlPlane in its own namespace (the webhook enforces one
+// ControlPlane per namespace); the final case asserts valid non-default
+// accessRules, bootstrapResources, and publicEndpoint are accepted.
+func TestIntegration_ControlPlane_ValidationMarkers(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+
+	c, ctx, _ := setupControlPlaneEnvTest(t)
+
+	cases := []struct {
+		name    string
+		mutate  func(*c5c3v1alpha1.ControlPlane)
+		wantErr bool
+	}{
+		{
+			name:    "database both clusterRef and host",
+			wantErr: true,
+			mutate: func(cp *c5c3v1alpha1.ControlPlane) {
+				cp.Spec.Infrastructure.Database.Host = "db.example.com"
+			},
+		},
+		{
+			name:    "cache both clusterRef and servers",
+			wantErr: true,
+			mutate: func(cp *c5c3v1alpha1.ControlPlane) {
+				cp.Spec.Infrastructure.Cache.Servers = []string{"mc:11211"}
+			},
+		},
+		{
+			name:    "non-URL keystone publicEndpoint",
+			wantErr: true,
+			mutate: func(cp *c5c3v1alpha1.ControlPlane) {
+				cp.Spec.Services.Keystone.PublicEndpoint = "keystone.example.com"
+			},
+		},
+		{
+			name:    "accessRule invalid method",
+			wantErr: true,
+			mutate: func(cp *c5c3v1alpha1.ControlPlane) {
+				cp.Spec.KORC.AdminCredential.ApplicationCredential.AccessRules = []c5c3v1alpha1.AccessRule{
+					{Service: "compute", Method: "FETCH", Path: "/v2.1/servers"},
+				}
+			},
+		},
+		{
+			name:    "accessRule non-absolute path",
+			wantErr: true,
+			mutate: func(cp *c5c3v1alpha1.ControlPlane) {
+				cp.Spec.KORC.AdminCredential.ApplicationCredential.AccessRules = []c5c3v1alpha1.AccessRule{
+					{Service: "compute", Method: "GET", Path: "v2.1/servers"},
+				}
+			},
+		},
+		{
+			name:    "bootstrapResource invalid kind",
+			wantErr: true,
+			mutate: func(cp *c5c3v1alpha1.ControlPlane) {
+				cp.Spec.KORC.AdminCredential.BootstrapResources = []c5c3v1alpha1.BootstrapResourceSpec{
+					{Kind: "Network", Name: "ext"},
+				}
+			},
+		},
+		{
+			name:    "valid access rules, bootstrap resources, and public endpoint",
+			wantErr: false,
+			mutate: func(cp *c5c3v1alpha1.ControlPlane) {
+				cp.Spec.Services.Keystone.PublicEndpoint = "https://keystone.example.com/v3"
+				cp.Spec.KORC.AdminCredential.ApplicationCredential.AccessRules = []c5c3v1alpha1.AccessRule{
+					{Service: "compute", Method: "GET", Path: "/v2.1/servers"},
+				}
+				cp.Spec.KORC.AdminCredential.BootstrapResources = []c5c3v1alpha1.BootstrapResourceSpec{
+					{Kind: "Project", Name: "service"},
+					{Kind: "Role", Name: "admin"},
+				}
+			},
+		},
+	}
+
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-cp-marker-"}}
+			g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+			cp := integrationManagedControlPlane(fmt.Sprintf("cp-marker-%d", i), ns.Name)
+			tc.mutate(cp)
+
+			err := c.Create(ctx, cp)
+			if tc.wantErr {
+				g.Expect(err).To(HaveOccurred(), "admission must reject: %s", tc.name)
+				g.Expect(apierrors.IsInvalid(err) || apierrors.IsForbidden(err)).To(BeTrue(),
+					fmt.Sprintf("expected Invalid or Forbidden status error for %q, got: %v", tc.name, err))
+			} else {
+				g.Expect(err).NotTo(HaveOccurred(), "admission must accept: %s", tc.name)
+			}
+		})
+	}
+}
