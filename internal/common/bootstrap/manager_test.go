@@ -79,6 +79,102 @@ func TestManagerConfig_validate_validWithNamespace(t *testing.T) {
 	}
 }
 
+// TestParseRunOptions_defaults verifies the flag defaults when no args are
+// supplied, including that namespace defaults to ManagerConfig.Namespace.
+func TestParseRunOptions_defaults(t *testing.T) {
+	cfg := ManagerConfig{Scheme: runtime.NewScheme(), LeaderElectionID: "test.c5c3.io", Namespace: "tenant-a"}
+
+	opts, err := parseRunOptions(cfg, nil)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if opts.metricsAddr != ":8080" {
+		t.Fatalf("metricsAddr = %q, want :8080", opts.metricsAddr)
+	}
+	if opts.probeAddr != ":8081" {
+		t.Fatalf("probeAddr = %q, want :8081", opts.probeAddr)
+	}
+	if !opts.enableWebhooks {
+		t.Fatal("enableWebhooks = false, want true (default)")
+	}
+	if opts.enableLeaderElection {
+		t.Fatal("enableLeaderElection = true, want false (default)")
+	}
+	if opts.syncPeriod != 10*time.Minute {
+		t.Fatalf("syncPeriod = %v, want 10m", opts.syncPeriod)
+	}
+	if opts.namespace != "tenant-a" {
+		t.Fatalf("namespace = %q, want tenant-a (from cfg)", opts.namespace)
+	}
+}
+
+// TestParseRunOptions_injectedArgs verifies that flag values are read from the
+// supplied args, and that --namespace overrides ManagerConfig.Namespace.
+func TestParseRunOptions_injectedArgs(t *testing.T) {
+	cfg := ManagerConfig{Scheme: runtime.NewScheme(), LeaderElectionID: "test.c5c3.io", Namespace: "tenant-a"}
+
+	args := []string{
+		"--metrics-bind-address=:9090",
+		"--health-probe-bind-address=:9091",
+		"--leader-elect=true",
+		"--enable-webhooks=false",
+		"--sync-period=5m",
+		"--namespace=tenant-b",
+	}
+	opts, err := parseRunOptions(cfg, args)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if opts.metricsAddr != ":9090" || opts.probeAddr != ":9091" {
+		t.Fatalf("addresses = %q/%q, want :9090/:9091", opts.metricsAddr, opts.probeAddr)
+	}
+	if !opts.enableLeaderElection {
+		t.Fatal("enableLeaderElection = false, want true")
+	}
+	if opts.enableWebhooks {
+		t.Fatal("enableWebhooks = true, want false")
+	}
+	if opts.syncPeriod != 5*time.Minute {
+		t.Fatalf("syncPeriod = %v, want 5m", opts.syncPeriod)
+	}
+	if opts.namespace != "tenant-b" {
+		t.Fatalf("namespace = %q, want tenant-b (CLI override)", opts.namespace)
+	}
+}
+
+// TestParseRunOptions_reentrant proves the parser is callable more than once
+// with different args, without the flag-redefinition panic that the previous
+// flag.CommandLine + flag.Parse implementation would raise on a second call.
+func TestParseRunOptions_reentrant(t *testing.T) {
+	cfg := ManagerConfig{Scheme: runtime.NewScheme(), LeaderElectionID: "test.c5c3.io"}
+
+	first, err := parseRunOptions(cfg, []string{"--metrics-bind-address=:1111"})
+	if err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	second, err := parseRunOptions(cfg, []string{"--metrics-bind-address=:2222"})
+	if err != nil {
+		t.Fatalf("second call: %v", err)
+	}
+	if first.metricsAddr != ":1111" {
+		t.Fatalf("first.metricsAddr = %q, want :1111", first.metricsAddr)
+	}
+	if second.metricsAddr != ":2222" {
+		t.Fatalf("second.metricsAddr = %q, want :2222", second.metricsAddr)
+	}
+}
+
+// TestParseRunOptions_invalidArgReturnsError verifies that an unknown flag is
+// reported as an error rather than exiting the process (ContinueOnError),
+// keeping the parser testable.
+func TestParseRunOptions_invalidArgReturnsError(t *testing.T) {
+	cfg := ManagerConfig{Scheme: runtime.NewScheme(), LeaderElectionID: "test.c5c3.io"}
+
+	if _, err := parseRunOptions(cfg, []string{"--no-such-flag"}); err == nil {
+		t.Fatal("expected an error for an unknown flag, got nil")
+	}
+}
+
 // TestCacheOptions_withNamespace verifies that cacheOptions with a non-empty
 // namespace returns cache.Options with DefaultNamespaces containing that
 // namespace key.

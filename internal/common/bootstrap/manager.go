@@ -8,6 +8,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"os"
 	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
@@ -84,6 +85,56 @@ func zapOptions() zap.Options {
 	return zap.Options{Development: false}
 }
 
+// runOptions holds the values parsed from the command-line flags. It is
+// produced by parseRunOptions and consumed by run, keeping flag parsing
+// separate from manager construction so each can be tested in isolation.
+type runOptions struct {
+	metricsAddr          string
+	probeAddr            string
+	enableLeaderElection bool
+	enableWebhooks       bool
+	syncPeriod           time.Duration
+	namespace            string
+	zapOpts              zap.Options
+}
+
+// parseRunOptions registers the operator's flags on a fresh flag.FlagSet and
+// parses args into a runOptions. Using a dedicated FlagSet (rather than the
+// process-global flag.CommandLine) makes parsing reentrant and testable: it can
+// be called more than once and with injected args without a flag-redefinition
+// panic. The namespace flag defaults to cfg.Namespace so a programmatically
+// configured manager can opt into namespace scoping without a CLI flag.
+func parseRunOptions(cfg ManagerConfig, args []string) (runOptions, error) {
+	fs := flag.NewFlagSet("manager", flag.ContinueOnError)
+
+	var o runOptions
+	fs.StringVar(&o.metricsAddr, "metrics-bind-address", ":8080",
+		"The address the metric endpoint binds to.")
+	fs.StringVar(&o.probeAddr, "health-probe-bind-address", ":8081",
+		"The address the probe endpoint binds to.")
+	fs.BoolVar(&o.enableLeaderElection, "leader-elect", false,
+		"Enable leader election for controller manager, "+
+			"ensuring only one active controller manager.")
+	fs.BoolVar(&o.enableWebhooks, "enable-webhooks", true,
+		"Enable admission webhooks. Set to false for namespace-scoped "+
+			"deployments where webhook infrastructure is not available.")
+	fs.DurationVar(&o.syncPeriod, "sync-period", 10*time.Minute,
+		"The minimum frequency at which watched resources are reconciled "+
+			"(e.g. 10m). Ensures eventual consistency if watch events are missed.")
+	fs.StringVar(&o.namespace, "namespace", cfg.Namespace,
+		"If set, restricts the operator to watch resources in this namespace only. "+
+			"Used for namespace-scoped deployments. "+
+			"Overrides ManagerConfig.Namespace when provided.")
+
+	o.zapOpts = zapOptions()
+	o.zapOpts.BindFlags(fs)
+
+	if err := fs.Parse(args); err != nil {
+		return runOptions{}, fmt.Errorf("parsing flags: %w", err)
+	}
+	return o, nil
+}
+
 // Run bootstraps and starts a controller-runtime manager with standard flag
 // parsing, zap logging, metrics, and health/ready probes. It blocks until the
 // manager stops or an error occurs.
@@ -94,47 +145,28 @@ func Run(cfg ManagerConfig) error {
 	if err := cfg.validate(); err != nil {
 		return err
 	}
+	opts, err := parseRunOptions(cfg, os.Args[1:])
+	if err != nil {
+		return err
+	}
+	return run(cfg, opts)
+}
 
-	var metricsAddr string
-	var probeAddr string
-	var enableLeaderElection bool
-	var enableWebhooks bool
-	var syncPeriod time.Duration
-	var namespace string
-
-	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080",
-		"The address the metric endpoint binds to.")
-	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081",
-		"The address the probe endpoint binds to.")
-	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
-		"Enable leader election for controller manager, "+
-			"ensuring only one active controller manager.")
-	flag.BoolVar(&enableWebhooks, "enable-webhooks", true,
-		"Enable admission webhooks. Set to false for namespace-scoped "+
-			"deployments where webhook infrastructure is not available.")
-	flag.DurationVar(&syncPeriod, "sync-period", 10*time.Minute,
-		"The minimum frequency at which watched resources are reconciled "+
-			"(e.g. 10m). Ensures eventual consistency if watch events are missed.")
-	flag.StringVar(&namespace, "namespace", cfg.Namespace,
-		"If set, restricts the operator to watch resources in this namespace only. "+
-			"Used for namespace-scoped deployments. "+
-			"Overrides ManagerConfig.Namespace when provided.")
-
-	opts := zapOptions()
-	opts.BindFlags(flag.CommandLine)
-	flag.Parse()
-
-	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+// run constructs and starts the manager from already-parsed options. It is the
+// side-effecting core that Run wraps after flag parsing; splitting it out keeps
+// Run a thin, reentrant entry point.
+func run(cfg ManagerConfig, opts runOptions) error {
+	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts.zapOpts)))
 	setupLog := ctrl.Log.WithName("setup")
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme: cfg.Scheme,
-		Cache:  cacheOptions(syncPeriod, namespace),
+		Cache:  cacheOptions(opts.syncPeriod, opts.namespace),
 		Metrics: metricsserver.Options{
-			BindAddress: metricsAddr,
+			BindAddress: opts.metricsAddr,
 		},
-		HealthProbeBindAddress: probeAddr,
-		LeaderElection:         enableLeaderElection,
+		HealthProbeBindAddress: opts.probeAddr,
+		LeaderElection:         opts.enableLeaderElection,
 		LeaderElectionID:       cfg.LeaderElectionID,
 	})
 	if err != nil {
@@ -142,7 +174,7 @@ func Run(cfg ManagerConfig) error {
 	}
 
 	if cfg.SetupFunc != nil {
-		if err := cfg.SetupFunc(mgr, enableWebhooks); err != nil {
+		if err := cfg.SetupFunc(mgr, opts.enableWebhooks); err != nil {
 			return fmt.Errorf("unable to set up controllers: %w", err)
 		}
 	}
@@ -154,8 +186,8 @@ func Run(cfg ManagerConfig) error {
 		return fmt.Errorf("unable to set up ready check: %w", err)
 	}
 
-	if namespace != "" {
-		setupLog.Info("namespace-scoped mode enabled", "namespace", namespace)
+	if opts.namespace != "" {
+		setupLog.Info("namespace-scoped mode enabled", "namespace", opts.namespace)
 	}
 	setupLog.Info("starting manager")
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
