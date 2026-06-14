@@ -90,6 +90,48 @@ func TestIsMissingSecretOrKey(t *testing.T) {
 	}
 }
 
+// --- AdminPasswordDigest ---
+
+// TestAdminPasswordDigest pins the cross-operator admin-password digest to
+// known SHA-256 hex vectors. Both the keystone bootstrap re-run gate and the
+// c5c3 application-credential annotation depend on this exact derivation; the
+// known-answer vectors (computed independently of Go's crypto) guard against a
+// silent change that would break the gate on one side only.
+func TestAdminPasswordDigest(t *testing.T) {
+	cases := []struct {
+		name     string
+		password string
+		want     string
+	}{
+		{
+			name:     "empty password",
+			password: "",
+			want:     "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+		},
+		{
+			name:     "short password",
+			password: "hunter2",
+			want:     "f52fbd32b2b3b86ff88ef6c490628285f482af15ddcb29541f94bcf526a3f6c7",
+		},
+		{
+			name:     "admin password with symbols",
+			password: "S3cr3t-Admin-Pa55w0rd!",
+			want:     "98993606415aecfb6a16cb37a183e39e51c5bb95f0cdcd155760db05c52bdaf4",
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			got := AdminPasswordDigest(tc.password)
+			g.Expect(got).To(Equal(tc.want))
+			// Determinism: a second call yields the identical digest.
+			g.Expect(AdminPasswordDigest(tc.password)).To(Equal(got))
+		})
+	}
+}
+
 // --- WaitForExternalSecret ---
 
 func TestWaitForExternalSecret_ready(t *testing.T) {

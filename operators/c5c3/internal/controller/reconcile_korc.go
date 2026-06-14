@@ -108,7 +108,7 @@ func (r *ControlPlaneReconciler) reconcileKORC(ctx context.Context, cp *c5c3v1al
 		fail("AdminPasswordError", fmt.Sprintf("reading admin password: %v", err))
 		return ctrl.Result{}, err
 	}
-	pwHash := hashAdminPassword(password)
+	pwHash := secrets.AdminPasswordDigest(password)
 
 	// Ensure the operator-owned password-based clouds.yaml the AC mints with always
 	// tracks the current admin password. This is what breaks the self-referential

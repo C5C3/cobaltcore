@@ -6,9 +6,7 @@ package controller
 
 import (
 	"context"
-	"crypto/sha256"
 	_ "embed"
-	"encoding/hex"
 	"fmt"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -82,8 +80,7 @@ func (r *KeystoneReconciler) reconcileBootstrap(ctx context.Context, keystone *k
 		return ctrl.Result{}, fmt.Errorf("admin password Secret %s/%s has an empty %q value",
 			adminSecretKey.Namespace, adminSecretKey.Name, "password")
 	}
-	sum := sha256.Sum256([]byte(password))
-	adminPasswordHash := hex.EncodeToString(sum[:])
+	adminPasswordHash := secrets.AdminPasswordDigest(password)
 
 	fernetSecretName := fmt.Sprintf("%s-fernet-keys", keystone.Name)
 	// Gate the bootstrap re-run on the admin-password digest only — NOT the full

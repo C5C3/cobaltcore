@@ -6,6 +6,8 @@ package secrets
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 
@@ -32,6 +34,19 @@ var ErrKeyNotFound = errors.New("key not found in Secret")
 // absent so errors.Is walks the chain for the missing-data-key case
 func IsMissingSecretOrKey(err error) bool {
 	return apierrors.IsNotFound(err) || errors.Is(err, ErrKeyNotFound)
+}
+
+// AdminPasswordDigest returns the SHA-256 of the admin password as a lowercase
+// hex string. This is the single source of truth for the cross-operator
+// admin-password digest contract: the keystone operator gates the bootstrap
+// Job re-run on it (forge.c5c3.io/admin-password-hash), while the c5c3 operator
+// stamps the same digest onto the application-credential CR annotation. Both
+// must compute it identically — a drift between the two would break the
+// bootstrap re-run / re-mint gate, so the derivation lives here rather than
+// being reimplemented per operator.
+func AdminPasswordDigest(password string) string {
+	sum := sha256.Sum256([]byte(password))
+	return hex.EncodeToString(sum[:])
 }
 
 // WaitForExternalSecret checks whether the ExternalSecret identified by key
