@@ -7,14 +7,11 @@ package testutil
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
-	"net"
 	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
-	"time"
 
 	certmanagerv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
@@ -28,7 +25,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
-	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	commonenvtest "github.com/c5c3/forge/internal/common/testutil/envtest"
@@ -60,99 +56,13 @@ func SetupKeystoneEnvTest(
 
 	crdDir, webhookDir := keystonePaths()
 
-	env := &envtest.Environment{
-		CRDDirectoryPaths:     []string{crdDir},
-		ErrorIfCRDPathMissing: true,
-		WebhookInstallOptions: envtest.WebhookInstallOptions{
-			Paths: []string{webhookDir},
-		},
-	}
-
-	cfg, err := env.Start()
-	if err != nil {
-		t.Fatalf("failed to start Keystone envtest environment: %v", err)
-	}
-
-	s := buildScheme(addToScheme)
-
-	// Create a controller-runtime manager to host the webhook server.
-	// The manager's webhook server binds to the host/port/certDir that
-	// envtest allocated and patched into the webhook configurations.
-	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
-		Scheme: s,
-		WebhookServer: webhook.NewServer(webhook.Options{
-			Host:    env.WebhookInstallOptions.LocalServingHost,
-			Port:    env.WebhookInstallOptions.LocalServingPort,
-			CertDir: env.WebhookInstallOptions.LocalServingCertDir,
-		}),
-		Metrics:                metricsserver.Options{BindAddress: "0"},
-		HealthProbeBindAddress: "0",
+	return commonenvtest.StartManagedEnvTest(t, commonenvtest.ManagedEnvTestConfig{
+		Name:              "Keystone",
+		Scheme:            buildScheme(addToScheme),
+		CRDDirectoryPaths: []string{crdDir},
+		WebhookDir:        webhookDir,
+		RegisterWebhooks:  registerWebhooks,
 	})
-	if err != nil {
-		if stopErr := env.Stop(); stopErr != nil {
-			t.Logf("additionally failed to stop envtest environment: %v", stopErr)
-		}
-		t.Fatalf("failed to create controller-runtime manager: %v", err)
-	}
-
-	// Register the Keystone defaulting and validating webhooks with the manager.
-	if err := registerWebhooks(mgr); err != nil {
-		if stopErr := env.Stop(); stopErr != nil {
-			t.Logf("additionally failed to stop envtest environment: %v", stopErr)
-		}
-		t.Fatalf("failed to register Keystone webhooks: %v", err)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-
-	// Start the manager (and webhook server) in a background goroutine.
-	// mgrStopped is closed when mgr.Start returns, so cleanup can block
-	// until the manager has fully released its ports.
-	mgrStopped := make(chan struct{})
-	go func() {
-		defer close(mgrStopped)
-		if err := mgr.Start(ctx); err != nil {
-			// Use t.Errorf instead of t.Fatalf because this runs in a goroutine.
-			t.Errorf("manager exited with error: %v", err)
-		}
-	}()
-
-	// Wait for the webhook server to become ready before returning.
-	if err := waitForWebhookServer(
-		env.WebhookInstallOptions.LocalServingHost,
-		env.WebhookInstallOptions.LocalServingPort,
-		10*time.Second,
-	); err != nil {
-		cancel()
-		<-mgrStopped
-		if stopErr := env.Stop(); stopErr != nil {
-			t.Logf("additionally failed to stop envtest environment: %v", stopErr)
-		}
-		t.Fatalf("webhook server did not become ready: %v", err)
-	}
-
-	// Use a direct (non-caching) client for test assertions. The manager's
-	// caching client can return stale data on immediate Create→Get sequences
-	// because the informer may not have processed the object yet.
-	c, err := client.New(cfg, client.Options{Scheme: s})
-	if err != nil {
-		cancel()
-		<-mgrStopped
-		if stopErr := env.Stop(); stopErr != nil {
-			t.Logf("additionally failed to stop envtest environment: %v", stopErr)
-		}
-		t.Fatalf("failed to create direct client: %v", err)
-	}
-
-	t.Cleanup(func() {
-		cancel()
-		<-mgrStopped // ensure manager has fully stopped and ports are released
-		if err := env.Stop(); err != nil {
-			t.Errorf("failed to stop Keystone envtest environment: %v", err)
-		}
-	})
-
-	return c, ctx, cancel
 }
 
 // SetupKeystoneEnvTestNoWebhook starts an envtest API server with only the
@@ -209,25 +119,6 @@ func SetupKeystoneEnvTestNoWebhook(
 	})
 
 	return c, ctx, cancel
-}
-
-// waitForWebhookServer polls the webhook server's TLS endpoint until it
-// accepts connections or the timeout is reached.
-func waitForWebhookServer(host string, port int, timeout time.Duration) error {
-	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
-	deadline := time.Now().Add(timeout)
-	dialer := &net.Dialer{Timeout: time.Second}
-	tlsCfg := &tls.Config{InsecureSkipVerify: true} //nolint:gosec // envtest self-signed cert
-
-	for time.Now().Before(deadline) {
-		conn, err := tls.DialWithDialer(dialer, "tcp", addr, tlsCfg) //nolint:noctx // test utility polling loop, context propagation not needed
-		if err == nil {
-			_ = conn.Close()
-			return nil
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	return fmt.Errorf("webhook server at %s not ready within %v", addr, timeout)
 }
 
 // keystonePaths returns absolute paths to the Keystone CRD and webhook
@@ -385,92 +276,12 @@ func SetupKeystoneEnvTestWithController(
 	// Combine Keystone CRD dir with common fake CRD dirs.
 	crdDirs := append([]string{crdDir}, commonFakeCRDsDirs()...)
 
-	env := &envtest.Environment{
-		CRDDirectoryPaths:     crdDirs,
-		ErrorIfCRDPathMissing: true,
-		WebhookInstallOptions: envtest.WebhookInstallOptions{
-			Paths: []string{webhookDir},
-		},
-	}
-
-	cfg, err := env.Start()
-	if err != nil {
-		t.Fatalf("failed to start Keystone envtest environment: %v", err)
-	}
-
-	s := buildControllerScheme(addToScheme)
-
-	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
-		Scheme: s,
-		WebhookServer: webhook.NewServer(webhook.Options{
-			Host:    env.WebhookInstallOptions.LocalServingHost,
-			Port:    env.WebhookInstallOptions.LocalServingPort,
-			CertDir: env.WebhookInstallOptions.LocalServingCertDir,
-		}),
-		Metrics:                metricsserver.Options{BindAddress: "0"},
-		HealthProbeBindAddress: "0",
+	return commonenvtest.StartManagedEnvTest(t, commonenvtest.ManagedEnvTestConfig{
+		Name:               "Keystone",
+		Scheme:             buildControllerScheme(addToScheme),
+		CRDDirectoryPaths:  crdDirs,
+		WebhookDir:         webhookDir,
+		RegisterWebhooks:   registerWebhooks,
+		RegisterController: registerController,
 	})
-	if err != nil {
-		if stopErr := env.Stop(); stopErr != nil {
-			t.Logf("additionally failed to stop envtest environment: %v", stopErr)
-		}
-		t.Fatalf("failed to create controller-runtime manager: %v", err)
-	}
-
-	if err := registerWebhooks(mgr); err != nil {
-		if stopErr := env.Stop(); stopErr != nil {
-			t.Logf("additionally failed to stop envtest environment: %v", stopErr)
-		}
-		t.Fatalf("failed to register Keystone webhooks: %v", err)
-	}
-
-	if err := registerController(mgr); err != nil {
-		if stopErr := env.Stop(); stopErr != nil {
-			t.Logf("additionally failed to stop envtest environment: %v", stopErr)
-		}
-		t.Fatalf("failed to register Keystone controller: %v", err)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-
-	mgrStopped := make(chan struct{})
-	go func() {
-		defer close(mgrStopped)
-		if err := mgr.Start(ctx); err != nil {
-			t.Errorf("manager exited with error: %v", err)
-		}
-	}()
-
-	if err := waitForWebhookServer(
-		env.WebhookInstallOptions.LocalServingHost,
-		env.WebhookInstallOptions.LocalServingPort,
-		10*time.Second,
-	); err != nil {
-		cancel()
-		<-mgrStopped
-		if stopErr := env.Stop(); stopErr != nil {
-			t.Logf("additionally failed to stop envtest environment: %v", stopErr)
-		}
-		t.Fatalf("webhook server did not become ready: %v", err)
-	}
-
-	c, err := client.New(cfg, client.Options{Scheme: s})
-	if err != nil {
-		cancel()
-		<-mgrStopped
-		if stopErr := env.Stop(); stopErr != nil {
-			t.Logf("additionally failed to stop envtest environment: %v", stopErr)
-		}
-		t.Fatalf("failed to create direct client: %v", err)
-	}
-
-	t.Cleanup(func() {
-		cancel()
-		<-mgrStopped
-		if err := env.Stop(); err != nil {
-			t.Errorf("failed to stop Keystone envtest environment: %v", err)
-		}
-	})
-
-	return c, ctx, cancel
 }
