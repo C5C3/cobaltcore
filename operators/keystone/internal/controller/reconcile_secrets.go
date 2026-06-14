@@ -88,17 +88,21 @@ func (r *KeystoneReconciler) reconcileSecrets(ctx context.Context,
 	adminSecretKey := client.ObjectKey{Namespace: keystone.Namespace, Name: keystone.Spec.Bootstrap.AdminPasswordSecretRef.Name}
 
 	// Check DB credentials ExternalSecret sync status.
-	ready, err := secrets.WaitForExternalSecret(ctx, r.Client, dbSecretKey)
+	dbExists, dbReady, err := secrets.WaitForExternalSecret(ctx, r.Client, dbSecretKey)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	if !ready {
+	if !dbReady {
+		msg := "Waiting for ESO to sync database credentials from OpenBao"
+		if !dbExists {
+			msg = fmt.Sprintf("Database credentials ExternalSecret %s/%s not found yet", dbSecretKey.Namespace, dbSecretKey.Name)
+		}
 		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
 			Type:               "SecretsReady",
 			Status:             metav1.ConditionFalse,
 			ObservedGeneration: keystone.Generation,
 			Reason:             "WaitingForDBCredentials",
-			Message:            "Waiting for ESO to sync database credentials from OpenBao",
+			Message:            msg,
 		})
 		return ctrl.Result{RequeueAfter: RequeueSecretPolling}, nil
 	}
@@ -122,17 +126,21 @@ func (r *KeystoneReconciler) reconcileSecrets(ctx context.Context,
 	}
 
 	// Check admin credentials ExternalSecret sync status.
-	ready, err = secrets.WaitForExternalSecret(ctx, r.Client, adminSecretKey)
+	adminExists, adminReady, err := secrets.WaitForExternalSecret(ctx, r.Client, adminSecretKey)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	if !ready {
+	if !adminReady {
+		msg := "Waiting for ESO to sync admin credentials from OpenBao"
+		if !adminExists {
+			msg = fmt.Sprintf("Admin credentials ExternalSecret %s/%s not found yet", adminSecretKey.Namespace, adminSecretKey.Name)
+		}
 		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
 			Type:               "SecretsReady",
 			Status:             metav1.ConditionFalse,
 			ObservedGeneration: keystone.Generation,
 			Reason:             "WaitingForAdminCredentials",
-			Message:            "Waiting for ESO to sync admin credentials from OpenBao",
+			Message:            msg,
 		})
 		return ctrl.Result{RequeueAfter: RequeueSecretPolling}, nil
 	}

@@ -46,9 +46,10 @@ func TestIntegration_WaitForExternalSecret(t *testing.T) {
 	}
 	g.Expect(c.Create(ctx, es)).To(Succeed())
 
-	// Not ready initially.
-	ready, err := WaitForExternalSecret(ctx, c, client.ObjectKeyFromObject(es))
+	// Created but not ready initially: exists is true, ready is false.
+	exists, ready, err := WaitForExternalSecret(ctx, c, client.ObjectKeyFromObject(es))
 	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(exists).To(BeTrue())
 	g.Expect(ready).To(BeFalse())
 }
 

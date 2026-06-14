@@ -164,7 +164,7 @@ func (r *ControlPlaneReconciler) reconcileAdminPassword(ctx context.Context, cp 
 		return ctrl.Result{}, err
 	}
 
-	ready, err := secrets.WaitForExternalSecret(ctx, r.Client,
+	exists, ready, err := secrets.WaitForExternalSecret(ctx, r.Client,
 		types.NamespacedName{Namespace: childNamespace(cp), Name: adminPasswordSecretName(cp)})
 	if err != nil {
 		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
@@ -177,7 +177,10 @@ func (r *ControlPlaneReconciler) reconcileAdminPassword(ctx context.Context, cp 
 		return ctrl.Result{}, err
 	}
 	if !ready {
-		logger.Info("admin password ExternalSecret not ready, requeuing")
+		// The reconciler ensures this ExternalSecret just above, so exists is
+		// almost always true here; a false value indicates a transient cache
+		// lag and is surfaced in the log rather than the user-facing status.
+		logger.Info("admin password ExternalSecret not ready, requeuing", "exists", exists)
 		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
 			Type:               conditionTypeAdminPasswordReady,
 			Status:             metav1.ConditionFalse,

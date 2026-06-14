@@ -159,8 +159,9 @@ func TestWaitForExternalSecret_ready(t *testing.T) {
 		WithStatusSubresource(es).
 		Build()
 
-	ready, err := WaitForExternalSecret(context.Background(), c, client.ObjectKeyFromObject(es))
+	exists, ready, err := WaitForExternalSecret(context.Background(), c, client.ObjectKeyFromObject(es))
 	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(exists).To(BeTrue())
 	g.Expect(ready).To(BeTrue())
 }
 
@@ -180,8 +181,11 @@ func TestWaitForExternalSecret_notReady(t *testing.T) {
 		WithObjects(es).
 		Build()
 
-	ready, err := WaitForExternalSecret(context.Background(), c, client.ObjectKeyFromObject(es))
+	// Present but no Ready=True condition: exists is true, ready is false so
+	// callers can distinguish this from the not-found case.
+	exists, ready, err := WaitForExternalSecret(context.Background(), c, client.ObjectKeyFromObject(es))
 	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(exists).To(BeTrue())
 	g.Expect(ready).To(BeFalse())
 }
 
@@ -193,9 +197,12 @@ func TestWaitForExternalSecret_notFound(t *testing.T) {
 		WithScheme(s).
 		Build()
 
-	// NotFound is a normal "not ready" state, not an error.
-	ready, err := WaitForExternalSecret(context.Background(), c, client.ObjectKey{Name: "missing", Namespace: "default"})
+	// NotFound is a normal "not ready" state, not an error. The tri-state
+	// reports exists=false so callers can surface a clearer status than the
+	// generic "not ready".
+	exists, ready, err := WaitForExternalSecret(context.Background(), c, client.ObjectKey{Name: "missing", Namespace: "default"})
 	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(exists).To(BeFalse())
 	g.Expect(ready).To(BeFalse())
 }
 

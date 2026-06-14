@@ -49,24 +49,35 @@ func AdminPasswordDigest(password string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// WaitForExternalSecret checks whether the ExternalSecret identified by key
-// has a Ready condition with status True. It returns (true, nil) when ready,
-// (false, nil) when not yet ready, and (false, error) on unexpected failures
-func WaitForExternalSecret(ctx context.Context, c client.Client, key client.ObjectKey) (bool, error) {
+// WaitForExternalSecret reports the sync status of the ExternalSecret
+// identified by key as a tri-state: exists distinguishes "the ExternalSecret
+// does not exist yet" from "it exists but is not yet Ready", and ready is true
+// only when it has a Ready condition with status True. The return tuple is
+// (exists, ready, err):
+//
+//   - (false, false, nil) — the ExternalSecret was not found.
+//   - (true, false, nil)  — it exists but has not synced (no Ready=True).
+//   - (true, true, nil)   — it exists and is Ready.
+//   - (false, false, err) — an unexpected client failure.
+//
+// Callers can use exists to surface a clearer status — "ExternalSecret not
+// found yet" versus "waiting for ESO to sync" — instead of collapsing both
+// into a single "not ready" signal.
+func WaitForExternalSecret(ctx context.Context, c client.Client, key client.ObjectKey) (exists, ready bool, err error) {
 	es := &esov1.ExternalSecret{}
 	if err := c.Get(ctx, key, es); err != nil {
 		if apierrors.IsNotFound(err) {
-			return false, nil
+			return false, false, nil
 		}
-		return false, fmt.Errorf("getting ExternalSecret %s/%s: %w", key.Namespace, key.Name, err)
+		return false, false, fmt.Errorf("getting ExternalSecret %s/%s: %w", key.Namespace, key.Name, err)
 	}
 
 	for _, cond := range es.Status.Conditions {
 		if cond.Type == esov1.ExternalSecretReady && cond.Status == corev1.ConditionTrue {
-			return true, nil
+			return true, true, nil
 		}
 	}
-	return false, nil
+	return true, false, nil
 }
 
 // IsClusterSecretStoreReady checks whether the ClusterSecretStore identified

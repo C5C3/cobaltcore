@@ -201,6 +201,42 @@ func TestReconcileSecrets_DBCredentialsNotReady(t *testing.T) {
 	g.Expect(cond.ObservedGeneration).To(Equal(ks.Generation))
 }
 
+// TestReconcileSecrets_DBCredentialsExternalSecretMissing exercises the
+// tri-state WaitForExternalSecret: when the DB credentials ExternalSecret does
+// not exist yet (as opposed to existing-but-not-synced) the surfaced status
+// message names the missing object rather than the generic ESO-sync wording,
+// so operators can tell "not created yet" from "still syncing".
+func TestReconcileSecrets_DBCredentialsExternalSecretMissing(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := secretsTestScheme()
+	ks := secretsTestKeystone()
+
+	// Store is ready, but no DB ExternalSecret object exists at all.
+	store := readyClusterSecretStore("openbao-cluster-store")
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(store).
+		WithStatusSubresource(store).
+		Build()
+
+	r := &KeystoneReconciler{
+		Client:   c,
+		Scheme:   s,
+		Recorder: record.NewFakeRecorder(10),
+	}
+
+	result, err := r.reconcileSecrets(context.Background(), ks)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(Equal(RequeueSecretPolling))
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "SecretsReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("WaitingForDBCredentials"))
+	g.Expect(cond.Message).To(Equal("Database credentials ExternalSecret default/keystone-db not found yet"))
+}
+
 func TestReconcileSecrets_AdminCredentialsNotReady(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := secretsTestScheme()

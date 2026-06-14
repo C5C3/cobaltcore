@@ -76,14 +76,17 @@ func (r *ControlPlaneReconciler) reconcileAdminCredential(ctx context.Context, c
 	if cloudsYamlName == "" {
 		cloudsYamlName = korcCloudsYamlSecretName
 	}
-	ready, err := secrets.WaitForExternalSecret(ctx, r.Client,
+	exists, ready, err := secrets.WaitForExternalSecret(ctx, r.Client,
 		types.NamespacedName{Namespace: childNamespace(cp), Name: cloudsYamlName})
 	if err != nil {
 		fail("CloudsYamlError", fmt.Sprintf("checking k-orc clouds.yaml ExternalSecret: %v", err))
 		return ctrl.Result{}, err
 	}
 	if !ready {
-		logger.Info("k-orc clouds.yaml ExternalSecret not ready, requeuing")
+		// k-orc writes this clouds.yaml Secret upstream, so exists is normally
+		// true here; a false value is surfaced in the log rather than the
+		// user-facing status.
+		logger.Info("k-orc clouds.yaml ExternalSecret not ready, requeuing", "exists", exists)
 		fail("WaitingForCloudsYaml", "k-orc clouds.yaml ExternalSecret is not yet Ready")
 		return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
 	}
