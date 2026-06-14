@@ -9,7 +9,7 @@ require (
 	github.com/go-logr/logr v1.4.3
 	github.com/k-orc/openstack-resource-controller/v2 v2.6.0
 	github.com/mariadb-operator/mariadb-operator v0.38.1
-	github.com/onsi/gomega v1.41.0
+	github.com/onsi/gomega v1.42.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
 	k8s.io/api v0.36.2

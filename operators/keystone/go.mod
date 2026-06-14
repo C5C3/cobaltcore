@@ -8,7 +8,7 @@ require (
 	github.com/external-secrets/external-secrets/apis v0.0.0-20260611143133-fda6430a2d65
 	github.com/go-logr/logr v1.4.3
 	github.com/mariadb-operator/mariadb-operator v0.38.1
-	github.com/onsi/gomega v1.41.0
+	github.com/onsi/gomega v1.42.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
 	github.com/robfig/cron/v3 v3.0.1
