@@ -175,7 +175,7 @@ func TestIntegration_PruneImmutableConfigMaps(t *testing.T) {
 	// Re-read the owner so we have the UID assigned by the API server.
 	g.Expect(c.Get(ctx, client.ObjectKey{Name: owner.Name, Namespace: ns.Name}, owner)).To(Succeed())
 
-	err := PruneImmutableConfigMaps(ctx, c, owner, baseName, ns.Name, currentName, 3)
+	err := PruneImmutableConfigMaps(ctx, c, owner, PruneOptions{BaseName: baseName, Namespace: ns.Name, CurrentName: currentName, Retain: 3})
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// List remaining ConfigMaps that match the baseName prefix.
@@ -231,11 +231,11 @@ func TestIntegration_PruneImmutableConfigMaps_idempotent(t *testing.T) {
 	g.Expect(c.Get(ctx, client.ObjectKey{Name: owner.Name, Namespace: ns.Name}, owner)).To(Succeed())
 
 	// First prune call.
-	err := PruneImmutableConfigMaps(ctx, c, owner, baseName, ns.Name, currentName, 3)
+	err := PruneImmutableConfigMaps(ctx, c, owner, PruneOptions{BaseName: baseName, Namespace: ns.Name, CurrentName: currentName, Retain: 3})
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// Second prune call (idempotent).
-	err = PruneImmutableConfigMaps(ctx, c, owner, baseName, ns.Name, currentName, 3)
+	err = PruneImmutableConfigMaps(ctx, c, owner, PruneOptions{BaseName: baseName, Namespace: ns.Name, CurrentName: currentName, Retain: 3})
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// Verify the same result after both calls.

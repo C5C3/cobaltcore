@@ -282,7 +282,12 @@ func (r *KeystoneReconciler) recordLoggingHealth(
 // currently active one.
 func (r *KeystoneReconciler) pruneStaleConfigMaps(ctx context.Context, keystone *keystonev1alpha1.Keystone, configMapName string) error {
 	baseName := fmt.Sprintf("%s-config", keystone.Name)
-	return config.PruneImmutableConfigMaps(ctx, r.Client, keystone, baseName, keystone.Namespace, configMapName, defaultConfigMapRetainCount)
+	return config.PruneImmutableConfigMaps(ctx, r.Client, keystone, config.PruneOptions{
+		BaseName:    baseName,
+		Namespace:   keystone.Namespace,
+		CurrentName: configMapName,
+		Retain:      defaultConfigMapRetainCount,
+	})
 }
 
 // resolveCacheServers returns the memcache server list based on the cache spec.

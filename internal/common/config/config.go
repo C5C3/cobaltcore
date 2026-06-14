@@ -182,11 +182,35 @@ func InjectOsloPolicyConfig(config map[string]map[string]string, policyFilePath 
 	return result
 }
 
+// PruneOptions parameterizes PruneImmutableConfigMaps. Grouping the three
+// previously-positional string arguments (BaseName, Namespace, CurrentName)
+// into a named struct removes the transposition hazard of a four-string
+// signature and makes call sites self-documenting.
+type PruneOptions struct {
+	// BaseName is the ConfigMap base name (the ConfigBaseLabelKey value) whose
+	// hash-suffixed history is pruned.
+	BaseName string
+	// Namespace is the namespace the ConfigMaps live in.
+	Namespace string
+	// CurrentName is the actively-mounted ConfigMap that must never be pruned.
+	// Empty prunes every historical ConfigMap for the base name.
+	CurrentName string
+	// Retain is the number of newest historical ConfigMaps to keep in addition
+	// to CurrentName. Negative values are clamped to zero.
+	Retain int
+}
+
 // PruneImmutableConfigMaps deletes stale immutable ConfigMaps that were
 // previously created by CreateImmutableConfigMap. It retains the newest
-// `retain` historical ConfigMaps (by CreationTimestamp) plus the currently
-// active one identified by currentName. This prevents unbounded accumulation
-// of immutable ConfigMaps across reconcile cycles.
+// opts.Retain historical ConfigMaps (by CreationTimestamp) plus the currently
+// active one identified by opts.CurrentName. This prevents unbounded
+// accumulation of immutable ConfigMaps across reconcile cycles.
+//
+// Among ConfigMaps that share a CreationTimestamp — common because the
+// timestamp has one-second granularity and several may be written in the same
+// reconcile — the sort breaks ties deterministically by name (descending), so
+// repeated runs prune and retain the same objects rather than an arbitrary
+// subset.
 //
 // Known limitation: ConfigMaps created before the ConfigBaseLabelKey label was
 // introduced lack the label and are invisible to the server-side
@@ -194,26 +218,27 @@ func InjectOsloPolicyConfig(config map[string]map[string]string, policyFilePath 
 // pruned but are bounded in number (no new unlabeled ConfigMaps are created
 // after the upgrade) and will be garbage-collected by Kubernetes when the
 // owning CR is deleted, since they carry a controller owner reference.
-func PruneImmutableConfigMaps(ctx context.Context, c client.Client, owner client.Object, baseName, namespace, currentName string, retain int) error {
+func PruneImmutableConfigMaps(ctx context.Context, c client.Client, owner client.Object, opts PruneOptions) error {
 	logger := log.FromContext(ctx)
 
 	// Clamp negative retain to 0 to prevent panics from misconfigured values.
+	retain := opts.Retain
 	if retain < 0 {
 		retain = 0
 	}
 
 	var allConfigMaps corev1.ConfigMapList
-	if err := c.List(ctx, &allConfigMaps, client.InNamespace(namespace), client.MatchingLabels{ConfigBaseLabelKey: baseName}); err != nil {
-		return fmt.Errorf("listing ConfigMaps in namespace %s: %w", namespace, err)
+	if err := c.List(ctx, &allConfigMaps, client.InNamespace(opts.Namespace), client.MatchingLabels{ConfigBaseLabelKey: opts.BaseName}); err != nil {
+		return fmt.Errorf("listing ConfigMaps in namespace %s: %w", opts.Namespace, err)
 	}
 
-	prefix := baseName + "-"
+	prefix := opts.BaseName + "-"
 	var candidates []corev1.ConfigMap
 	for _, cm := range allConfigMaps.Items {
 		if !strings.HasPrefix(cm.Name, prefix) {
 			continue
 		}
-		if cm.Name == currentName {
+		if cm.Name == opts.CurrentName {
 			continue
 		}
 		controllerRef := metav1.GetControllerOf(&cm)
@@ -223,9 +248,15 @@ func PruneImmutableConfigMaps(ctx context.Context, c client.Client, owner client
 		candidates = append(candidates, cm)
 	}
 
-	// Sort candidates by CreationTimestamp descending (newest first).
-	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].CreationTimestamp.After(candidates[j].CreationTimestamp.Time)
+	// Sort candidates by CreationTimestamp descending (newest first). Use a
+	// stable sort with a name tie-break so same-second ConfigMaps retain a
+	// deterministic order across runs.
+	sort.SliceStable(candidates, func(i, j int) bool {
+		ti, tj := candidates[i].CreationTimestamp.Time, candidates[j].CreationTimestamp.Time
+		if ti.Equal(tj) {
+			return candidates[i].Name > candidates[j].Name
+		}
+		return ti.After(tj)
 	})
 
 	if len(candidates) <= retain {
@@ -235,9 +266,9 @@ func PruneImmutableConfigMaps(ctx context.Context, c client.Client, owner client
 	for i := retain; i < len(candidates); i++ {
 		cm := candidates[i]
 		if err := client.IgnoreNotFound(c.Delete(ctx, &cm)); err != nil {
-			return fmt.Errorf("deleting stale ConfigMap %s/%s: %w", namespace, cm.Name, err)
+			return fmt.Errorf("deleting stale ConfigMap %s/%s: %w", opts.Namespace, cm.Name, err)
 		}
-		logger.Info("pruned stale immutable ConfigMap", "name", cm.Name, "namespace", namespace, "baseName", baseName, "ownerName", owner.GetName(), "ownerUID", owner.GetUID())
+		logger.Info("pruned stale immutable ConfigMap", "name", cm.Name, "namespace", opts.Namespace, "baseName", opts.BaseName, "ownerName", owner.GetName(), "ownerUID", owner.GetUID())
 	}
 
 	return nil

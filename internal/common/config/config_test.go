@@ -520,7 +520,7 @@ func TestPruneImmutableConfigMaps_deletesStaleConfigMaps(t *testing.T) {
 
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(owner, cm1, cm2, cm3, cm4, cm5, current).Build()
 
-	err := PruneImmutableConfigMaps(ctx, c, owner, "my-config", "default", currentName, 3)
+	err := PruneImmutableConfigMaps(ctx, c, owner, PruneOptions{BaseName: "my-config", Namespace: "default", CurrentName: currentName, Retain: 3})
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var cmList corev1.ConfigMapList
@@ -561,7 +561,7 @@ func TestPruneImmutableConfigMaps_retainsNewestByCreationTimestamp(t *testing.T)
 
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(owner, cmZzz, cmAaa, cmBbb, current).Build()
 
-	err := PruneImmutableConfigMaps(ctx, c, owner, "my-config", "default", currentName, 1)
+	err := PruneImmutableConfigMaps(ctx, c, owner, PruneOptions{BaseName: "my-config", Namespace: "default", CurrentName: currentName, Retain: 1})
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var cmList corev1.ConfigMapList
@@ -582,6 +582,48 @@ func TestPruneImmutableConfigMaps_retainsNewestByCreationTimestamp(t *testing.T)
 	g.Expect(remaining).NotTo(ContainElement("my-config-aaaaaaaa"))
 }
 
+// TestPruneImmutableConfigMaps_deterministicTieBreakAmongSameTimestamp pins the
+// CreationTimestamp tie-break: because the timestamp has one-second granularity,
+// several historical ConfigMaps can share it, and a non-stable sort would prune
+// an arbitrary subset across runs. The name-descending tie-break must retain the
+// two highest names deterministically.
+func TestPruneImmutableConfigMaps_deterministicTieBreakAmongSameTimestamp(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+	ctx := context.Background()
+
+	// All four historical ConfigMaps share the identical CreationTimestamp.
+	sameTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	currentName := "my-config-current1"
+
+	cmA := ownedConfigMap("my-config-aaaaaaaa", "default", "my-config", owner, sameTime)
+	cmB := ownedConfigMap("my-config-bbbbbbbb", "default", "my-config", owner, sameTime)
+	cmC := ownedConfigMap("my-config-cccccccc", "default", "my-config", owner, sameTime)
+	cmD := ownedConfigMap("my-config-dddddddd", "default", "my-config", owner, sameTime)
+	current := ownedConfigMap(currentName, "default", "my-config", owner, sameTime.Add(time.Hour))
+
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(owner, cmA, cmB, cmC, cmD, current).Build()
+
+	err := PruneImmutableConfigMaps(ctx, c, owner, PruneOptions{BaseName: "my-config", Namespace: "default", CurrentName: currentName, Retain: 2})
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var cmList corev1.ConfigMapList
+	g.Expect(c.List(ctx, &cmList, client.InNamespace("default"))).To(Succeed())
+	remaining := make([]string, 0)
+	for _, cm := range cmList.Items {
+		if cm.Name != "test-owner" {
+			remaining = append(remaining, cm.Name)
+		}
+	}
+
+	// retain=2 with a name-descending tie-break keeps the two highest names
+	// (dddd, cccc) plus the current ConfigMap; the two lowest are deleted.
+	g.Expect(remaining).To(ConsistOf(currentName, "my-config-dddddddd", "my-config-cccccccc"))
+	g.Expect(remaining).NotTo(ContainElement("my-config-bbbbbbbb"))
+	g.Expect(remaining).NotTo(ContainElement("my-config-aaaaaaaa"))
+}
+
 func TestPruneImmutableConfigMaps_retainZeroDeletesAllHistorical(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := newScheme()
@@ -598,7 +640,7 @@ func TestPruneImmutableConfigMaps_retainZeroDeletesAllHistorical(t *testing.T) {
 
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(owner, cm1, cm2, cm3, current).Build()
 
-	err := PruneImmutableConfigMaps(ctx, c, owner, "my-config", "default", currentName, 0)
+	err := PruneImmutableConfigMaps(ctx, c, owner, PruneOptions{BaseName: "my-config", Namespace: "default", CurrentName: currentName, Retain: 0})
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var cmList corev1.ConfigMapList
@@ -632,11 +674,11 @@ func TestPruneImmutableConfigMaps_idempotentOnSecondCall(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(owner, cm1, cm2, cm3, current).Build()
 
 	// First call: should delete cm1 (oldest), retain cm2, cm3, current
-	err := PruneImmutableConfigMaps(ctx, c, owner, "my-config", "default", currentName, 2)
+	err := PruneImmutableConfigMaps(ctx, c, owner, PruneOptions{BaseName: "my-config", Namespace: "default", CurrentName: currentName, Retain: 2})
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// Second call: nothing more to delete
-	err = PruneImmutableConfigMaps(ctx, c, owner, "my-config", "default", currentName, 2)
+	err = PruneImmutableConfigMaps(ctx, c, owner, PruneOptions{BaseName: "my-config", Namespace: "default", CurrentName: currentName, Retain: 2})
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var cmList corev1.ConfigMapList
@@ -674,7 +716,7 @@ func TestPruneImmutableConfigMaps_ignoresNotFoundOnDelete(t *testing.T) {
 	g.Expect(c.Delete(ctx, cm1)).To(Succeed())
 
 	// Prune with retain=1: should try to delete cm1 (already gone) and succeed
-	err := PruneImmutableConfigMaps(ctx, c, owner, "my-config", "default", currentName, 1)
+	err := PruneImmutableConfigMaps(ctx, c, owner, PruneOptions{BaseName: "my-config", Namespace: "default", CurrentName: currentName, Retain: 1})
 	g.Expect(err).NotTo(HaveOccurred())
 }
 
@@ -702,7 +744,7 @@ func TestPruneImmutableConfigMaps_skipsConfigMapsOwnedByDifferentController(t *t
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(owner, otherOwner, cmOther, cmOwned, current).Build()
 
 	// retain=0 should only delete owner's historical ConfigMaps
-	err := PruneImmutableConfigMaps(ctx, c, owner, "my-config", "default", currentName, 0)
+	err := PruneImmutableConfigMaps(ctx, c, owner, PruneOptions{BaseName: "my-config", Namespace: "default", CurrentName: currentName, Retain: 0})
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var cmList corev1.ConfigMapList
@@ -745,7 +787,7 @@ func TestPruneImmutableConfigMaps_skipsConfigMapsWithoutOwnerReference(t *testin
 
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(owner, unowned, cmOwned, current).Build()
 
-	err := PruneImmutableConfigMaps(ctx, c, owner, "my-config", "default", currentName, 0)
+	err := PruneImmutableConfigMaps(ctx, c, owner, PruneOptions{BaseName: "my-config", Namespace: "default", CurrentName: currentName, Retain: 0})
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var cmList corev1.ConfigMapList
@@ -780,7 +822,7 @@ func TestPruneImmutableConfigMaps_neverDeletesCurrentConfigMap(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(owner, cm1, cm2, current).Build()
 
 	// retain=0: delete all historical, but never current
-	err := PruneImmutableConfigMaps(ctx, c, owner, "my-config", "default", currentName, 0)
+	err := PruneImmutableConfigMaps(ctx, c, owner, PruneOptions{BaseName: "my-config", Namespace: "default", CurrentName: currentName, Retain: 0})
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var cmList corev1.ConfigMapList
@@ -812,7 +854,7 @@ func TestPruneImmutableConfigMaps_noopWhenFewerThanRetain(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(owner, cm1, cm2, current).Build()
 
 	// retain=3 with only 2 historical: no deletions
-	err := PruneImmutableConfigMaps(ctx, c, owner, "my-config", "default", currentName, 3)
+	err := PruneImmutableConfigMaps(ctx, c, owner, PruneOptions{BaseName: "my-config", Namespace: "default", CurrentName: currentName, Retain: 3})
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var cmList corev1.ConfigMapList
@@ -840,7 +882,7 @@ func TestPruneImmutableConfigMaps_noopWhenNoHistoricalConfigMaps(t *testing.T) {
 
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(owner, current).Build()
 
-	err := PruneImmutableConfigMaps(ctx, c, owner, "my-config", "default", currentName, 3)
+	err := PruneImmutableConfigMaps(ctx, c, owner, PruneOptions{BaseName: "my-config", Namespace: "default", CurrentName: currentName, Retain: 3})
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var cmList corev1.ConfigMapList
@@ -873,7 +915,7 @@ func TestPruneImmutableConfigMaps_skipsMismatchedPrefix(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(owner, cmOther, cmOwned, current).Build()
 
 	// retain=0 should only delete "my-config-" prefixed historical ones
-	err := PruneImmutableConfigMaps(ctx, c, owner, "my-config", "default", currentName, 0)
+	err := PruneImmutableConfigMaps(ctx, c, owner, PruneOptions{BaseName: "my-config", Namespace: "default", CurrentName: currentName, Retain: 0})
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var cmList corev1.ConfigMapList
@@ -911,7 +953,7 @@ func TestPruneImmutableConfigMaps_handlesOverlappingPrefixCorrectly(t *testing.T
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(owner, cmMatch, cmOverlap, current).Build()
 
 	// Prune with baseName "test-config-extra": should only match "test-config-extra-def12345"
-	err := PruneImmutableConfigMaps(ctx, c, owner, "test-config-extra", "default", currentName, 0)
+	err := PruneImmutableConfigMaps(ctx, c, owner, PruneOptions{BaseName: "test-config-extra", Namespace: "default", CurrentName: currentName, Retain: 0})
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var cmList corev1.ConfigMapList
@@ -947,7 +989,7 @@ func TestPruneImmutableConfigMaps_negativeRetainClampedToZero(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(owner, cm1, cm2, current).Build()
 
 	// Negative retain should behave like retain=0: delete all historical, keep current.
-	err := PruneImmutableConfigMaps(ctx, c, owner, "my-config", "default", currentName, -5)
+	err := PruneImmutableConfigMaps(ctx, c, owner, PruneOptions{BaseName: "my-config", Namespace: "default", CurrentName: currentName, Retain: -5})
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var cmList corev1.ConfigMapList
