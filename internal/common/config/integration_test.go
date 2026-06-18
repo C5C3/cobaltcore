@@ -27,8 +27,6 @@ import (
 // guarantees distinct, monotonically increasing timestamps in envtest.
 const creationTimestampGranularity = 1100 * time.Millisecond
 
-// Feature: CC-0005
-
 func TestIntegration_CreateImmutableConfigMap(t *testing.T) {
 	envtestutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)
@@ -138,8 +136,6 @@ func TestIntegration_CreateImmutableConfigMap_idempotent(t *testing.T) {
 	var cm corev1.ConfigMap
 	g.Expect(c.Get(ctx, client.ObjectKey{Name: name1, Namespace: ns.Name}, &cm)).To(Succeed())
 }
-
-// Feature: CC-0077
 
 func TestIntegration_PruneImmutableConfigMaps(t *testing.T) {
 	envtestutil.SkipIfEnvTestUnavailable(t)

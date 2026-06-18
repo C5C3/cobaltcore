@@ -5,6 +5,4 @@
 // Package job manages Kubernetes Jobs and CronJobs for CobaltCore operators.
 // It provides functions for creating one-shot Jobs, ensuring CronJobs exist,
 // and checking Job completion status.
-//
-// Feature: CC-0005
 package job

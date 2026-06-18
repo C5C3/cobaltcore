@@ -15,6 +15,4 @@
 //	mariadb-operator/    — k8s.mariadb.com CRDs (MariaDB, Database, Grant, User)
 //	memcached-operator/  — memcached.c5c3.io CRDs (Memcached)
 //	rabbitmq-operator/   — rabbitmq.com CRDs (RabbitmqCluster)
-//
-// Feature: CC-0002, CC-0110
 package fake_crds

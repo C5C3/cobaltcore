@@ -5,6 +5,4 @@
 // Package bootstrap provides shared controller-runtime manager setup used by
 // all CobaltCore operators. Centralising flag parsing, logging, metrics, and
 // health-probe wiring here prevents drift when these concerns change.
-//
-// Feature: CC-0001
 package bootstrap

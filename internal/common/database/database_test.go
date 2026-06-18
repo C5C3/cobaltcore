@@ -23,8 +23,6 @@ import (
 	"github.com/c5c3/forge/internal/common/job"
 )
 
-// Feature: CC-0005
-
 func newScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = corev1.AddToScheme(s)
@@ -281,7 +279,7 @@ func TestEnsureDatabaseUser_creates_userOnly(t *testing.T) {
 
 	// Grant should NOT be created because the User is not yet ready.
 	// The MariaDB operator requires the MySQL-level user to exist before
-	// a GRANT can succeed (CC-0005).
+	// a GRANT can succeed.
 	createdGrant := &mariadbv1alpha1.Grant{}
 	err = c.Get(context.Background(), client.ObjectKey{Name: "test-grant", Namespace: "default"}, createdGrant)
 	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "grant should not be created when user is not ready")
@@ -388,7 +386,7 @@ func TestEnsureDatabaseUser_updates_userOnly(t *testing.T) {
 	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(existingUser), fetchedUser)).To(Succeed())
 	g.Expect(fetchedUser.Spec.MaxUserConnections).To(Equal(int32(20)))
 
-	// Grant spec should NOT be updated because user is not ready (CC-0005).
+	// Grant spec should NOT be updated because user is not ready.
 	fetchedGrant := &mariadbv1alpha1.Grant{}
 	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(existingGrant), fetchedGrant)).To(Succeed())
 	g.Expect(fetchedGrant.Spec.Privileges).To(Equal([]string{"ALL PRIVILEGES"}), "grant should remain unchanged when user is not ready")
@@ -421,7 +419,7 @@ func TestEnsureDatabaseUser_updatesGrant_whenUserReady(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(ready).To(BeFalse())
 
-	// Grant spec should be updated because user is ready (CC-0005).
+	// Grant spec should be updated because user is ready.
 	fetchedGrant := &mariadbv1alpha1.Grant{}
 	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(existingGrant), fetchedGrant)).To(Succeed())
 	g.Expect(fetchedGrant.Spec.Privileges).To(Equal([]string{"SELECT", "INSERT"}))
@@ -447,7 +445,7 @@ func TestEnsureDatabaseUser_idempotent(t *testing.T) {
 	g.Expect(c.List(ctx, userList, client.InNamespace("default"))).To(Succeed())
 	g.Expect(userList.Items).To(HaveLen(1))
 
-	// Grant should not be created because user is never ready (CC-0005).
+	// Grant should not be created because user is never ready.
 	grantList := &mariadbv1alpha1.GrantList{}
 	g.Expect(c.List(ctx, grantList, client.InNamespace("default"))).To(Succeed())
 	g.Expect(grantList.Items).To(BeEmpty())
@@ -519,7 +517,7 @@ func TestRunDBSyncJob_complete(t *testing.T) {
 	// Simulate a completed Job that was created via RunJob (carries hash
 	// annotation matching the desired PodSpec). API-server defaults may be
 	// present on the stored spec, but the hash refers to the original
-	// desired spec (CC-0005).
+	// desired spec.
 	desired := testSyncJob()
 	now := metav1.Now()
 	syncJob := testSyncJob()

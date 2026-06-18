@@ -20,8 +20,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
-// Feature: CC-0002
-
 // mockT captures whether t.Errorf or t.Fatalf was called.
 type mockT struct {
 	testing.TB

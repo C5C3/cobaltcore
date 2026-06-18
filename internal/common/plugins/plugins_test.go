@@ -12,8 +12,6 @@ import (
 	"github.com/c5c3/forge/internal/common/types"
 )
 
-// Feature: CC-0004
-
 func TestRenderPastePipeline(t *testing.T) {
 	tests := []struct {
 		name string
@@ -174,7 +172,7 @@ func TestRenderPastePipeline(t *testing.T) {
 			},
 		},
 		{
-			name: "Config with paste.filter_factory key does not overwrite FilterFactory field (CC-0004)",
+			name: "Config with paste.filter_factory key does not overwrite FilterFactory field",
 			spec: PipelineSpec{
 				PipelineName: "main",
 				AppName:      "app",
@@ -454,7 +452,7 @@ func TestRenderPluginConfig(t *testing.T) {
 			},
 		},
 		{
-			name: "plugin with nil Config produces empty section (CC-0004)",
+			name: "plugin with nil Config produces empty section",
 			plugins: []types.PluginSpec{
 				{
 					Name:          "nil-config-plugin",

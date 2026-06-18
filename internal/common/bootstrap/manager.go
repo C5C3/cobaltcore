@@ -21,8 +21,6 @@ import (
 // ManagerConfig holds per-operator configuration for the shared manager
 // bootstrap. Every operator provides its own Scheme (with custom API types
 // registered) and a unique LeaderElectionID.
-//
-// Feature: CC-0001
 type ManagerConfig struct {
 	// Scheme is the runtime scheme with all required API types registered.
 	// Must not be nil.
@@ -39,7 +37,6 @@ type ManagerConfig struct {
 	// flag. If the --namespace flag is also set, the flag value takes
 	// precedence.
 	//
-	// Feature: CC-0043
 	Namespace string
 
 	// SetupFunc is an optional callback invoked after manager creation to
@@ -63,8 +60,6 @@ func (c *ManagerConfig) validate() error {
 // cacheOptions builds cache.Options with the given sync period and optional
 // namespace restriction. When namespace is non-empty, DefaultNamespaces is
 // populated to restrict the informer cache to that single namespace.
-//
-// Feature: CC-0043
 func cacheOptions(syncPeriod time.Duration, namespace string) cache.Options {
 	opts := cache.Options{
 		SyncPeriod: &syncPeriod,
@@ -95,8 +90,6 @@ func zapOptions() zap.Options {
 //
 // Callers retain control over scheme registration (including kubebuilder
 // scaffold markers) and controller setup via [ManagerConfig].
-//
-// Feature: CC-0001
 func Run(cfg ManagerConfig) error {
 	if err := cfg.validate(); err != nil {
 		return err
@@ -118,13 +111,13 @@ func Run(cfg ManagerConfig) error {
 			"ensuring only one active controller manager.")
 	flag.BoolVar(&enableWebhooks, "enable-webhooks", true,
 		"Enable admission webhooks. Set to false for namespace-scoped "+
-			"deployments where webhook infrastructure is not available (CC-0043).")
+			"deployments where webhook infrastructure is not available.")
 	flag.DurationVar(&syncPeriod, "sync-period", 10*time.Minute,
 		"The minimum frequency at which watched resources are reconciled "+
 			"(e.g. 10m). Ensures eventual consistency if watch events are missed.")
 	flag.StringVar(&namespace, "namespace", cfg.Namespace,
 		"If set, restricts the operator to watch resources in this namespace only. "+
-			"Used for namespace-scoped deployments (CC-0043). "+
+			"Used for namespace-scoped deployments. "+
 			"Overrides ManagerConfig.Namespace when provided.")
 
 	opts := zapOptions()

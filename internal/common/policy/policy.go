@@ -17,18 +17,14 @@ import (
 	"github.com/c5c3/forge/internal/common/types"
 )
 
-// Feature: CC-0004
-
-// Feature: CC-0005
-
 // PolicyConfigMapKey is the ConfigMap data key that holds oslo.policy rules.
 // This key is part of the operator-user contract: users must store their
-// policy YAML under this key in the referenced ConfigMap (CC-0005).
+// policy YAML under this key in the referenced ConfigMap.
 const PolicyConfigMapKey = "policy.yaml"
 
 // LoadPolicyFromConfigMap reads the PolicyConfigMapKey key from a ConfigMap and
 // parses it into a map of policy rules. Returns an error if the ConfigMap
-// does not exist or does not contain the expected key (CC-0005).
+// does not exist or does not contain the expected key.
 func LoadPolicyFromConfigMap(ctx context.Context, c client.Client, key client.ObjectKey) (map[string]string, error) {
 	var cm corev1.ConfigMap
 	if err := c.Get(ctx, key, &cm); err != nil {
@@ -139,7 +135,7 @@ func ValidatePolicyRules(rules map[string]string, fldPath *field.Path) field.Err
 		keyPath := fldPath.Key(k)
 		if k == "" {
 			allErrs = append(allErrs, field.Required(keyPath, "rule key must not be empty"))
-			continue // value check is meaningless for an empty key (CC-0004)
+			continue // value check is meaningless for an empty key
 		}
 		if rules[k] == "" {
 			allErrs = append(allErrs, field.Required(keyPath, "rule value must not be empty"))

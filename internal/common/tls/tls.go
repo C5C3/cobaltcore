@@ -18,13 +18,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
-// Feature: CC-0005
-
 // EnsureCertificate creates a cert-manager Certificate if it does not exist or
 // updates its spec if it already exists. It returns (true, nil) when the
 // Certificate has a Ready condition with status True, (false, nil) when it
 // exists but is not yet ready, and (false, error) on unexpected failures
-// (CC-0005).
 func EnsureCertificate(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, cert *certmanagerv1.Certificate) (bool, error) {
 	existing := &certmanagerv1.Certificate{}
 	err := c.Get(ctx, client.ObjectKeyFromObject(cert), existing)
@@ -48,7 +45,7 @@ func EnsureCertificate(ctx context.Context, c client.Client, scheme *runtime.Sch
 			return false, fmt.Errorf("updating Certificate %s/%s: %w", cert.Namespace, cert.Name, err)
 		}
 		// Re-fetch to avoid evaluating stale status from before the spec
-		// update (CC-0005).
+		// update.
 		if err := c.Get(ctx, client.ObjectKeyFromObject(cert), existing); err != nil {
 			return false, fmt.Errorf("re-fetching Certificate %s/%s after update: %w", cert.Namespace, cert.Name, err)
 		}
@@ -58,7 +55,7 @@ func EnsureCertificate(ctx context.Context, c client.Client, scheme *runtime.Sch
 }
 
 // IsCertificateReady returns true if the Certificate has a Ready condition
-// with status True (CC-0005).
+// with status True.
 func IsCertificateReady(cert *certmanagerv1.Certificate) bool {
 	for _, cond := range cert.Status.Conditions {
 		if cond.Type == certmanagerv1.CertificateConditionReady && cond.Status == cmmeta.ConditionTrue {
@@ -70,7 +67,7 @@ func IsCertificateReady(cert *certmanagerv1.Certificate) bool {
 
 // GetTLSSecret retrieves the TLS certificate and private key from the Secret
 // identified by key. It returns an error if the Secret is not found or is
-// missing the expected tls.crt / tls.key entries (CC-0005).
+// missing the expected tls.crt / tls.key entries.
 func GetTLSSecret(ctx context.Context, c client.Client, key client.ObjectKey) (certPEM []byte, keyPEM []byte, err error) {
 	secret := &corev1.Secret{}
 	if err := c.Get(ctx, key, secret); err != nil {

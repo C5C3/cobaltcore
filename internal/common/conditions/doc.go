@@ -4,6 +4,4 @@
 
 // Package conditions provides helpers for managing metav1.Condition entries
 // on Kubernetes resource status objects.
-//
-// Feature: CC-0004
 package conditions

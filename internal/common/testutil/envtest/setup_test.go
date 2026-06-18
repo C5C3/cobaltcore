@@ -13,8 +13,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
-// Feature: CC-0002
-
 func TestFakeCRDsDirs_returnsSubdirectories(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -49,8 +47,6 @@ func TestSetupEnvTest(t *testing.T) {
 	g.Expect(c).NotTo(BeNil())
 	g.Expect(ctx).NotTo(BeNil())
 }
-
-// Feature: CC-0005
 
 func TestSharedScheme_registersExternalOperatorTypes(t *testing.T) {
 	s := SharedScheme()

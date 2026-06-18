@@ -19,8 +19,6 @@ import (
 	"github.com/c5c3/forge/internal/common/types"
 )
 
-// Feature: CC-0004
-
 func TestRenderPolicyYAML(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -223,7 +221,7 @@ func TestMergePolicies(t *testing.T) {
 			},
 		},
 		{
-			name: "both empty-but-non-nil rules preserves non-nil result (CC-0004)",
+			name: "both empty-but-non-nil rules preserves non-nil result",
 			base: types.PolicySpec{
 				Rules: map[string]string{},
 			},
@@ -282,7 +280,7 @@ func TestMergePolicies_doesNotMutateInputs(t *testing.T) {
 	g.Expect(base.Rules).NotTo(HaveKey("new_rule"))
 	g.Expect(override.Rules).NotTo(HaveKey("new_rule"))
 
-	// Mutating result.ConfigMapRef should not affect base.ConfigMapRef (CC-0004).
+	// Mutating result.ConfigMapRef should not affect base.ConfigMapRef.
 	if result.ConfigMapRef != nil && base.ConfigMapRef != nil {
 		result.ConfigMapRef.Name = "mutated"
 		g.Expect(base.ConfigMapRef.Name).To(Equal("base-policy"))
@@ -334,7 +332,7 @@ func TestValidatePolicyRules(t *testing.T) {
 			wantMsg:   "rule key must not be empty",
 		},
 		{
-			name:      "rule with empty key and empty value returns one error (CC-0004)",
+			name:      "rule with empty key and empty value returns one error",
 			rules:     map[string]string{"": ""},
 			wantCount: 1,
 			wantField: "spec.policy.rules[]",
@@ -375,8 +373,6 @@ func TestValidatePolicyRules_nilFldPathDefaultsToRules(t *testing.T) {
 	g.Expect(errs[0].Field).To(Equal("rules[compute:delete]"))
 	g.Expect(errs[0].Detail).To(Equal("rule value must not be empty"))
 }
-
-// Feature: CC-0005
 
 func newPolicyScheme() *runtime.Scheme {
 	s := runtime.NewScheme()

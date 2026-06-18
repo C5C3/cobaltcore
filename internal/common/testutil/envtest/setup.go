@@ -25,8 +25,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 )
 
-// Feature: CC-0002
-
 // SetupEnvTest starts an envtest API server with etcd, installs fake CRDs, and
 // returns a configured controller-runtime client, a context, and its cancel
 // function. The environment is torn down automatically via t.Cleanup().
@@ -71,14 +69,14 @@ func SetupEnvTest(t testing.TB) (client.Client, context.Context, context.CancelF
 // SkipIfEnvTestUnavailable skips the calling test if the KUBEBUILDER_ASSETS
 // environment variable is not set or the expected etcd binary is not present.
 // This is the single, authoritative skip guard for all envtest-based
-// integration tests (CC-0002).
+// integration tests.
 func SkipIfEnvTestUnavailable(t testing.TB) {
 	t.Helper()
 	assets := os.Getenv("KUBEBUILDER_ASSETS")
 	if assets == "" {
 		t.Skip("KUBEBUILDER_ASSETS not set, skipping integration test")
 	}
-	if _, err := os.Stat(filepath.Join(assets, "etcd")); err != nil { //nolint:gosec // G703: assets path from KUBEBUILDER_ASSETS env var, not user input (CC-0059)
+	if _, err := os.Stat(filepath.Join(assets, "etcd")); err != nil { //nolint:gosec // G703: assets path from KUBEBUILDER_ASSETS env var, not user input
 		t.Skipf("envtest binaries not found at %s, skipping integration test", assets)
 	}
 }
@@ -91,7 +89,7 @@ var (
 
 // SharedScheme returns a runtime.Scheme pre-populated with the core, batch,
 // apiextensions, and external operator API groups. The scheme is constructed
-// once and reused across all callers (CC-0002, extended CC-0005).
+// once and reused across all callers (extended).
 func SharedScheme() *k8sruntime.Scheme {
 	sharedSchemeOnce.Do(func() {
 		sharedScheme = k8sruntime.NewScheme()
@@ -101,7 +99,7 @@ func SharedScheme() *k8sruntime.Scheme {
 		// apiextensionsv1 is needed for CRD list/get operations in integration
 		// tests.
 		utilruntime.Must(apiextensionsv1.AddToScheme(sharedScheme))
-		// External operator types for typed client operations (CC-0005).
+		// External operator types for typed client operations.
 		utilruntime.Must(mariadbv1alpha1.AddToScheme(sharedScheme))
 		utilruntime.Must(esov1.AddToScheme(sharedScheme))
 		utilruntime.Must(esov1alpha1.AddToScheme(sharedScheme))
@@ -112,7 +110,7 @@ func SharedScheme() *k8sruntime.Scheme {
 
 // fakeCRDsDirs returns the absolute paths to all controller-specific
 // subdirectories under fake_crds/. Each subdirectory groups CRDs by the
-// external operator that owns them (CC-0002).
+// external operator that owns them.
 func fakeCRDsDirs() []string {
 	_, thisFile, _, ok := runtime.Caller(0)
 	if !ok {

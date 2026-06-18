@@ -16,8 +16,6 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 )
 
-// Feature: CC-0002
-
 func TestNewSecretBuilder_basic(t *testing.T) {
 	g := NewGomegaWithT(t)
 	secret := NewSecretBuilder("my-secret", "default").Build()

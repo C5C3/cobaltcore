@@ -24,8 +24,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
-// Feature: CC-0002
-
 func newUnstructured(group, version, kind, name, namespace string) *unstructured.Unstructured {
 	obj := &unstructured.Unstructured{}
 	obj.SetGroupVersionKind(schema.GroupVersionKind{
@@ -384,8 +382,6 @@ func TestSimulateJobComplete_notFound(t *testing.T) {
 	err := SimulateJobComplete(context.Background(), c, key)
 	g.Expect(err).To(HaveOccurred())
 }
-
-// Feature: CC-0014
 
 // --- SimulateDeploymentReady ---
 

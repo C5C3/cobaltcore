@@ -6,6 +6,4 @@
 // Secrets for CobaltCore operators. It provides functions for checking
 // ExternalSecret readiness, verifying Secret existence, reading Secret values,
 // and ensuring PushSecret resources exist.
-//
-// Feature: CC-0005
 package secrets

@@ -23,8 +23,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
-// Feature: CC-0005
-
 func newScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = corev1.AddToScheme(s)
@@ -49,7 +47,7 @@ func testOwner() *corev1.ConfigMap {
 // independently of GetSecretValue's wrapping details so call sites in
 // reconcileDBConnectionSecret (operators/keystone) and any future consumers can
 // rely on a stable classification of "upstream Secret absent or required key
-// missing" (CC-0080, W-001).
+// missing".
 func TestIsMissingSecretOrKey(t *testing.T) {
 	notFound := apierrors.NewNotFound(
 		schema.GroupResource{Group: "", Resource: "secrets"},
@@ -153,7 +151,7 @@ func TestWaitForExternalSecret_notFound(t *testing.T) {
 		WithScheme(s).
 		Build()
 
-	// NotFound is a normal "not ready" state, not an error (CC-0005).
+	// NotFound is a normal "not ready" state, not an error.
 	ready, err := WaitForExternalSecret(context.Background(), c, client.ObjectKey{Name: "missing", Namespace: "default"})
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(ready).To(BeFalse())
@@ -218,7 +216,7 @@ func TestIsClusterSecretStoreReady_notFound(t *testing.T) {
 		Build()
 
 	// NotFound is treated as not-ready so the caller can reflect upstream
-	// outages without special-casing a missing store (CC-0047).
+	// outages without special-casing a missing store.
 	ready, err := IsClusterSecretStoreReady(context.Background(), c, "missing")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(ready).To(BeFalse())
@@ -392,9 +390,8 @@ func TestGetSecretValue_keyNotPresent(t *testing.T) {
 	g.Expect(err).To(HaveOccurred())
 	// The missing-data-key case must wrap the ErrKeyNotFound sentinel so
 	// callers can use errors.Is instead of fragile substring matching
-	// (CC-0080, W-001).
 	g.Expect(errors.Is(err, ErrKeyNotFound)).To(BeTrue(),
-		"missing-key error must wrap ErrKeyNotFound (CC-0080, W-001)")
+		"missing-key error must wrap ErrKeyNotFound")
 	g.Expect(err.Error()).To(ContainSubstring(`key "password"`))
 	g.Expect(err.Error()).To(ContainSubstring("Secret default/test-secret"))
 }

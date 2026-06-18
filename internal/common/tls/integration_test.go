@@ -19,8 +19,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// Feature: CC-0005
-
 func TestIntegration_EnsureCertificate(t *testing.T) {
 	envtestutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)

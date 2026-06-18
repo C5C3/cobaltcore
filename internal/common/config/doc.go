@@ -6,6 +6,4 @@
 // CobaltCore operators. It provides pure functions for rendering structured
 // configuration data into INI format, merging defaults, injecting secrets,
 // and configuring oslo.policy integration.
-//
-// Feature: CC-0004
 package config

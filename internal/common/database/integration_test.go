@@ -20,8 +20,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// Feature: CC-0005
-
 func TestIntegration_EnsureDatabase(t *testing.T) {
 	envtestutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)

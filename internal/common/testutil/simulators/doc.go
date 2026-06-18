@@ -4,6 +4,4 @@
 
 // Package simulators provides test helpers that simulate external operator
 // behavior by updating resource status fields during envtest integration tests.
-//
-// Feature: CC-0002
 package simulators

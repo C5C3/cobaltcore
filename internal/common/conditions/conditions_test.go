@@ -12,8 +12,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// Feature: CC-0004
-
 func TestSetCondition(t *testing.T) {
 	tests := []struct {
 		name       string

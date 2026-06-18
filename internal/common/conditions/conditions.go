@@ -9,8 +9,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// Feature: CC-0004
-
 // SetCondition upserts condition into conditions, delegating to
 // meta.SetStatusCondition which enforces the Kubernetes API conventions
 // (non-empty Reason, non-negative ObservedGeneration).

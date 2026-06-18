@@ -11,8 +11,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
-// Feature: CC-0002
-
 // SecretBuilder provides a fluent API for constructing corev1.Secret objects
 // in tests.
 type SecretBuilder struct {

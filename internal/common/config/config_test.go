@@ -18,8 +18,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
-// Feature: CC-0004
-
 func TestRenderINI(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -338,7 +336,7 @@ func TestInjectOsloPolicyConfig(t *testing.T) {
 		want           map[string]map[string]string
 	}{
 		{
-			name:           "nil config with non-empty path creates oslo_policy section (CC-0004)",
+			name:           "nil config with non-empty path creates oslo_policy section",
 			config:         nil,
 			policyFilePath: "/etc/keystone/policy.yaml",
 			want: map[string]map[string]string{
@@ -448,8 +446,6 @@ func TestInjectOsloPolicyConfig_emptyPathReturnsOriginalReference(t *testing.T) 
 	g.Expect(config).To(HaveKey("mutated"))
 }
 
-// Feature: CC-0005
-
 func newScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = corev1.AddToScheme(s)
@@ -545,7 +541,7 @@ func TestCreateImmutableConfigMap_newlineInValueIsUnambiguous(t *testing.T) {
 	ctx := context.Background()
 
 	// A single key whose value contains an embedded newline that could look
-	// like a second key=value entry under a naive encoding (CC-0005).
+	// like a second key=value entry under a naive encoding.
 	c1 := fake.NewClientBuilder().WithScheme(s).WithObjects(owner).Build()
 	name1, err := CreateImmutableConfigMap(ctx, c1, s, owner, "cfg", "default",
 		map[string]string{"key1": "x\nb=y"})
@@ -594,8 +590,6 @@ func TestCreateImmutableConfigMap_rejectsUnownedExisting(t *testing.T) {
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("not owned by"))
 }
-
-// Feature: CC-0077
 
 func ownedConfigMap(name, namespace, baseName string, owner *corev1.ConfigMap, creationTime time.Time) *corev1.ConfigMap {
 	isController := true
@@ -1047,7 +1041,7 @@ func TestPruneImmutableConfigMaps_handlesOverlappingPrefixCorrectly(t *testing.T
 	g.Expect(remaining).NotTo(ContainElement("test-config-extra-def12345"))
 }
 
-// CC-0077: Verify negative retain is clamped to 0, deleting all historical ConfigMaps.
+// Verify negative retain is clamped to 0, deleting all historical ConfigMaps.
 func TestPruneImmutableConfigMaps_negativeRetainClampedToZero(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := newScheme()

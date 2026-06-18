@@ -5,6 +5,4 @@
 // Package deployment manages Kubernetes Deployments and Services for CobaltCore
 // operators. It provides functions for creating and updating Deployments,
 // ensuring Services exist, and checking Deployment readiness.
-//
-// Feature: CC-0005
 package deployment

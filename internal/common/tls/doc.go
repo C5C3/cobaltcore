@@ -5,6 +5,4 @@
 // Package tls manages TLS certificates and secrets for CobaltCore operators.
 // It provides functions for ensuring cert-manager Certificate resources exist
 // and retrieving the resulting TLS secrets.
-//
-// Feature: CC-0005
 package tls

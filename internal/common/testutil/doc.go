@@ -5,6 +5,4 @@
 // Package testutil provides shared test infrastructure for CobaltCore operator
 // integration tests, including fake CRD schemas, fluent builders for test data,
 // and custom assertion helpers.
-//
-// Feature: CC-0002
 package testutil

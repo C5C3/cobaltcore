@@ -8,8 +8,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
-// Feature: CC-0004
-
 // ImageSpec defines a container image reference.
 type ImageSpec struct {
 	Repository string `json:"repository"`
@@ -32,16 +30,15 @@ type DatabaseSpec struct {
 	Database string `json:"database"`
 	// SecretRef references the K8s Secret with credentials.
 	SecretRef SecretRefSpec `json:"secretRef"`
-	// TLS optionally enables TLS/mTLS for the database connection (CC-0106,
-	// REQ-001). The pointer keeps the field opt-in and non-mutating: a nil
-	// TLS means plaintext TCP, preserving the pre-CC-0106 behavior for all
+	// TLS optionally enables TLS/mTLS for the database connection. The pointer keeps the field opt-in and non-mutating: a nil
+	// TLS means plaintext TCP, preserving the pre-existing behavior for all
 	// existing DatabaseSpec consumers.
 	// +optional
 	TLS *DatabaseTLSSpec `json:"tls,omitempty"`
 }
 
 // DatabaseTLSSpec configures opt-in TLS (and mutual TLS) for a database
-// connection (CC-0106, REQ-001). It is referenced as an optional pointer from
+// connection. It is referenced as an optional pointer from
 // DatabaseSpec so the canonical shape can be reused by sibling operators.
 type DatabaseTLSSpec struct {
 	// Enabled turns on TLS for the database connection. When true the
@@ -152,8 +149,6 @@ type MiddlewareSpec struct {
 	// Config contains key-value pairs for the filter section
 	Config map[string]string `json:"config,omitempty"`
 }
-
-// Feature: CC-0111
 
 // GatewaySpec configures the Gateway API HTTPRoute used to expose an OpenStack
 // service externally. It is the single source of truth for the shared Gateway

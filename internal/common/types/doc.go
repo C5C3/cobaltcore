@@ -5,7 +5,5 @@
 // Package types provides shared Go struct definitions used across CobaltCore
 // operator CRDs.
 //
-// Feature: CC-0004
-//
 // +kubebuilder:object:generate=true
 package types

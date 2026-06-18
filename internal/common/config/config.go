@@ -22,8 +22,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-// Feature: CC-0004
-
 // placeholderRe matches {{KEY}} placeholders in config values.
 var placeholderRe = regexp.MustCompile(`\{\{([^}]+)\}\}`)
 
@@ -111,24 +109,22 @@ func InjectSecrets(config map[string]map[string]string, secrets map[string]strin
 	return result
 }
 
-// Feature: CC-0005
-
 // ConfigBaseLabelKey is the label key applied to immutable ConfigMaps created
 // by CreateImmutableConfigMap, identifying the base name that generated them.
 // PruneImmutableConfigMaps uses this label as a server-side selector to avoid
-// listing all ConfigMaps in the namespace (CC-0077).
+// listing all ConfigMaps in the namespace.
 const ConfigBaseLabelKey = "forge.c5c3.io/config-base"
 
 // hashTruncateLen is the number of hex characters kept from the SHA-256
 // content hash when building immutable ConfigMap name suffixes. 8 hex chars
 // (32 bits) yield a collision probability of ~1 in 4 billion per base name,
-// which is acceptable for ConfigMap naming (CC-0005).
+// which is acceptable for ConfigMap naming.
 const hashTruncateLen = 8
 
 // CreateImmutableConfigMap creates an immutable ConfigMap with a content-hash
 // suffix appended to the base name. The hash ensures configuration changes
 // result in new ConfigMap names, triggering pod restarts. It returns the
-// actual name of the created ConfigMap (with hash suffix) (CC-0005).
+// actual name of the created ConfigMap (with hash suffix).
 //
 // Note: Old ConfigMaps with the same baseName but different hash suffixes
 // accumulate during the owner's lifetime since GC only removes them when the
@@ -175,7 +171,7 @@ func CreateImmutableConfigMap(ctx context.Context, c client.Client, scheme *runt
 		}
 		// Verify the existing ConfigMap is owned by the expected owner
 		// to guard against stale GC artefacts or accidental name
-		// collisions (CC-0005).
+		// collisions.
 		existingCM := &corev1.ConfigMap{}
 		if getErr := c.Get(ctx, client.ObjectKey{Name: name, Namespace: namespace}, existingCM); getErr != nil {
 			return "", fmt.Errorf("fetching existing ConfigMap %s/%s: %w", namespace, name, getErr)
@@ -210,8 +206,6 @@ func InjectOsloPolicyConfig(config map[string]map[string]string, policyFilePath 
 	return result
 }
 
-// Feature: CC-0077
-
 // PruneImmutableConfigMaps deletes stale immutable ConfigMaps that were
 // previously created by CreateImmutableConfigMap. It retains the newest
 // `retain` historical ConfigMaps (by CreationTimestamp) plus the currently
@@ -219,7 +213,7 @@ func InjectOsloPolicyConfig(config map[string]map[string]string, policyFilePath 
 // of immutable ConfigMaps across reconcile cycles.
 //
 // Known limitation: ConfigMaps created before the ConfigBaseLabelKey label was
-// introduced (CC-0077) lack the label and are invisible to the server-side
+// introduced lack the label and are invisible to the server-side
 // selector used by this function. These pre-existing ConfigMaps will not be
 // pruned but are bounded in number (no new unlabeled ConfigMaps are created
 // after the upgrade) and will be garbage-collected by Kubernetes when the
@@ -227,7 +221,7 @@ func InjectOsloPolicyConfig(config map[string]map[string]string, policyFilePath 
 func PruneImmutableConfigMaps(ctx context.Context, c client.Client, owner client.Object, baseName, namespace, currentName string, retain int) error {
 	logger := log.FromContext(ctx)
 
-	// Clamp negative retain to 0 to prevent panics from misconfigured values. (CC-0077)
+	// Clamp negative retain to 0 to prevent panics from misconfigured values.
 	if retain < 0 {
 		retain = 0
 	}

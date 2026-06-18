@@ -19,12 +19,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
-// Feature: CC-0005
-
 // ErrKeyNotFound is returned (wrapped) by GetSecretValue when the requested
 // data key is absent from the Secret. Callers use errors.Is to distinguish
 // this recoverable condition (e.g. wait-for-credentials) from transport or
-// permission errors (CC-0080, W-001).
+// permission errors.
 var ErrKeyNotFound = errors.New("key not found in Secret")
 
 // IsMissingSecretOrKey reports whether err indicates either an absent upstream
@@ -32,7 +30,6 @@ var ErrKeyNotFound = errors.New("key not found in Secret")
 // GetSecretValue wraps the IsNotFound from c.Get with %w so apierrors.IsNotFound
 // walks the chain, and wraps ErrKeyNotFound when the requested data key is
 // absent so errors.Is walks the chain for the missing-data-key case
-// (CC-0080, W-001).
 func IsMissingSecretOrKey(err error) bool {
 	return apierrors.IsNotFound(err) || errors.Is(err, ErrKeyNotFound)
 }
@@ -40,7 +37,6 @@ func IsMissingSecretOrKey(err error) bool {
 // WaitForExternalSecret checks whether the ExternalSecret identified by key
 // has a Ready condition with status True. It returns (true, nil) when ready,
 // (false, nil) when not yet ready, and (false, error) on unexpected failures
-// (CC-0005).
 func WaitForExternalSecret(ctx context.Context, c client.Client, key client.ObjectKey) (bool, error) {
 	es := &esov1.ExternalSecret{}
 	if err := c.Get(ctx, key, es); err != nil {
@@ -87,7 +83,7 @@ func IsClusterSecretStoreReady(ctx context.Context, c client.Client, name string
 // provided, it only checks for Secret existence. It returns (true, nil) when
 // the Secret exists and all expected keys are present, (false, nil) when the
 // Secret is not found or is missing expected keys, and (false, error) on
-// unexpected failures (CC-0005).
+// unexpected failures.
 func IsSecretReady(ctx context.Context, c client.Client, key client.ObjectKey, expectedKeys ...string) (bool, error) {
 	secret := &corev1.Secret{}
 	err := c.Get(ctx, key, secret)
@@ -108,7 +104,7 @@ func IsSecretReady(ctx context.Context, c client.Client, key client.ObjectKey, e
 
 // GetSecretValue retrieves the value of a specific data key from the Secret
 // identified by key. It returns an error if the Secret is not found or if the
-// data key is not present (CC-0005).
+// data key is not present.
 func GetSecretValue(ctx context.Context, c client.Client, key client.ObjectKey, dataKey string) (string, error) {
 	secret := &corev1.Secret{}
 	if err := c.Get(ctx, key, secret); err != nil {
@@ -124,7 +120,7 @@ func GetSecretValue(ctx context.Context, c client.Client, key client.ObjectKey, 
 
 // EnsurePushSecret creates a PushSecret if it does not exist or updates its
 // spec if it already exists. An owner reference is set on the PushSecret so
-// that it is garbage-collected when the owning resource is deleted (CC-0005).
+// that it is garbage-collected when the owning resource is deleted.
 func EnsurePushSecret(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, ps *esov1alpha1.PushSecret) error {
 	existing := &esov1alpha1.PushSecret{}
 	err := c.Get(ctx, client.ObjectKeyFromObject(ps), existing)

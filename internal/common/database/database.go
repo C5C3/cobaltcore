@@ -20,12 +20,10 @@ import (
 	"github.com/c5c3/forge/internal/common/job"
 )
 
-// Feature: CC-0005
-
 // EnsureDatabase creates a MariaDB Database CR if it does not exist or updates
 // its spec if it already exists. It returns (true, nil) when the Database has a
 // Ready condition with status True, (false, nil) when it exists but is not yet
-// ready, and (false, error) on unexpected failures (CC-0005).
+// ready, and (false, error) on unexpected failures.
 func EnsureDatabase(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, db *mariadbv1alpha1.Database) (bool, error) {
 	existing := &mariadbv1alpha1.Database{}
 	err := c.Get(ctx, client.ObjectKeyFromObject(db), existing)
@@ -49,7 +47,7 @@ func EnsureDatabase(ctx context.Context, c client.Client, scheme *runtime.Scheme
 			return false, fmt.Errorf("updating Database %s/%s: %w", db.Namespace, db.Name, err)
 		}
 		// Re-fetch to avoid evaluating stale status from before the spec
-		// update (CC-0005).
+		// update.
 		if err := c.Get(ctx, client.ObjectKeyFromObject(db), existing); err != nil {
 			return false, fmt.Errorf("re-fetching Database %s/%s after update: %w", db.Namespace, db.Name, err)
 		}
@@ -59,7 +57,7 @@ func EnsureDatabase(ctx context.Context, c client.Client, scheme *runtime.Scheme
 }
 
 // IsDatabaseReady returns true if the Database has a Ready condition with
-// status True (CC-0005).
+// status True.
 func IsDatabaseReady(db *mariadbv1alpha1.Database) bool {
 	return conditions.IsReady(db.Status.Conditions)
 }
@@ -67,7 +65,7 @@ func IsDatabaseReady(db *mariadbv1alpha1.Database) bool {
 // EnsureDatabaseUser creates or updates a MariaDB User CR and a Grant CR. It
 // returns (true, nil) when both User and Grant have a Ready condition with
 // status True, (false, nil) when either is not yet ready, and (false, error)
-// on unexpected failures (CC-0005).
+// on unexpected failures.
 func EnsureDatabaseUser(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, user *mariadbv1alpha1.User, grant *mariadbv1alpha1.Grant) (bool, error) {
 	userReady, err := ensureUser(ctx, c, scheme, owner, user)
 	if err != nil {
@@ -76,7 +74,7 @@ func EnsureDatabaseUser(ctx context.Context, c client.Client, scheme *runtime.Sc
 	if !userReady {
 		// Wait for the MySQL-level user to exist before creating the Grant.
 		// The MariaDB operator requires the user to be reconciled into an
-		// actual MySQL user before a GRANT statement can succeed (CC-0005).
+		// actual MySQL user before a GRANT statement can succeed.
 		return false, nil
 	}
 
@@ -106,7 +104,7 @@ func ensureUser(ctx context.Context, c client.Client, scheme *runtime.Scheme, ow
 			return false, fmt.Errorf("updating User %s/%s: %w", user.Namespace, user.Name, err)
 		}
 		// Re-fetch to avoid evaluating stale status from before the spec
-		// update (CC-0005).
+		// update.
 		if err := c.Get(ctx, client.ObjectKeyFromObject(user), existing); err != nil {
 			return false, fmt.Errorf("re-fetching User %s/%s after update: %w", user.Namespace, user.Name, err)
 		}
@@ -138,7 +136,7 @@ func ensureGrant(ctx context.Context, c client.Client, scheme *runtime.Scheme, o
 			return false, fmt.Errorf("updating Grant %s/%s: %w", grant.Namespace, grant.Name, err)
 		}
 		// Re-fetch to avoid evaluating stale status from before the spec
-		// update (CC-0005).
+		// update.
 		if err := c.Get(ctx, client.ObjectKeyFromObject(grant), existing); err != nil {
 			return false, fmt.Errorf("re-fetching Grant %s/%s after update: %w", grant.Namespace, grant.Name, err)
 		}
@@ -148,20 +146,20 @@ func ensureGrant(ctx context.Context, c client.Client, scheme *runtime.Scheme, o
 }
 
 // IsUserReady returns true if the User has a Ready condition with status
-// True (CC-0005).
+// True.
 func IsUserReady(user *mariadbv1alpha1.User) bool {
 	return conditions.IsReady(user.Status.Conditions)
 }
 
 // IsGrantReady returns true if the Grant has a Ready condition with status
-// True (CC-0005).
+// True.
 func IsGrantReady(grant *mariadbv1alpha1.Grant) bool {
 	return conditions.IsReady(grant.Status.Conditions)
 }
 
 // RunDBSyncJob creates a database synchronization Job if it does not already
 // exist and reports whether the Job has completed successfully. It delegates
-// to job.RunJob (CC-0005).
+// to job.RunJob.
 func RunDBSyncJob(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, syncJob *batchv1.Job) (bool, error) {
 	return job.RunJob(ctx, c, scheme, owner, syncJob)
 }

@@ -19,8 +19,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 )
 
-// Feature: CC-0002
-
 // expectedCRD describes a CRD that is expected to be installed by SetupEnvTest.
 type expectedCRD struct {
 	// name is the fully qualified CRD name (e.g. "mariadbs.k8s.mariadb.com").
@@ -43,7 +41,7 @@ func allExpectedCRDs() []expectedCRD {
 		{name: "clustersecretstores.external-secrets.io", group: "external-secrets.io", version: "v1", kind: "ClusterSecretStore", namespaced: false},
 		{name: "databases.k8s.mariadb.com", group: "k8s.mariadb.com", version: "v1alpha1", kind: "Database", namespaced: true},
 		{name: "externalsecrets.external-secrets.io", group: "external-secrets.io", version: "v1", kind: "ExternalSecret", namespaced: true},
-		// K-ORC fake CRDs (CC-0110): the c5c3 ControlPlane reconciler mints/owns
+		// K-ORC fake CRDs the c5c3 ControlPlane reconciler mints/owns
 		// these openstack.k-orc.cloud kinds; they are faked here to keep envtest
 		// forgiving (the real CRDs carry strict CEL rules). Domain and User are
 		// imported as UNMANAGED resources to anchor the admin ApplicationCredential.
@@ -63,7 +61,7 @@ func allExpectedCRDs() []expectedCRD {
 
 // TestSetupEnvTest_StartStop verifies that SetupEnvTest starts a working
 // environment and returns non-nil client/context, and that teardown completes
-// without errors and cancels the context (REQ-001, REQ-002).
+// without errors and cancels the context.
 func TestSetupEnvTest_StartStop(t *testing.T) {
 	SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)
@@ -91,7 +89,6 @@ func TestSetupEnvTest_StartStop(t *testing.T) {
 
 // TestSetupEnvTest_CRDsInstalled verifies that all fake CRDs from the
 // fake_crds/ directory are installed and discoverable via the API server
-// (REQ-001).
 func TestSetupEnvTest_CRDsInstalled(t *testing.T) {
 	SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)
@@ -115,7 +112,6 @@ func TestSetupEnvTest_CRDsInstalled(t *testing.T) {
 
 // TestSetupEnvTest_CreateUnstructuredObjects verifies that the client can
 // create an unstructured custom resource for each installed fake CRD kind
-// (REQ-001).
 func TestSetupEnvTest_CreateUnstructuredObjects(t *testing.T) {
 	SkipIfEnvTestUnavailable(t)
 
@@ -159,7 +155,7 @@ func TestSetupEnvTest_CreateUnstructuredObjects(t *testing.T) {
 
 // TestSetupEnvTest_TeardownCancelsContext verifies that after the test cleanup
 // runs (which tears down envtest), the context returned by SetupEnvTest is
-// cancelled (REQ-002).
+// cancelled.
 func TestSetupEnvTest_TeardownCancelsContext(t *testing.T) {
 	SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)

@@ -21,8 +21,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
-// Feature: CC-0005
-
 func newScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = corev1.AddToScheme(s)
@@ -160,7 +158,7 @@ func TestEnsureDeployment_notReadyWhenGenerationLags(t *testing.T) {
 	owner := testOwner()
 
 	// Simulate a deployment where the controller has not yet processed the
-	// latest spec change: Generation > ObservedGeneration (CC-0005).
+	// latest spec change: Generation > ObservedGeneration.
 	existing := testDeployment()
 	existing.Generation = 2
 	existing.Status.ObservedGeneration = 1
@@ -276,7 +274,7 @@ func TestEnsureDeployment_merges_labels_on_update(t *testing.T) {
 
 	fetched := &appsv1.Deployment{}
 	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(existing), fetched)).To(Succeed())
-	// Both the user-added and operator-managed labels must be present (CC-0038).
+	// Both the user-added and operator-managed labels must be present.
 	g.Expect(fetched.Labels).To(HaveKeyWithValue("user-key", "user-value"))
 	g.Expect(fetched.Labels).To(HaveKeyWithValue("operator-key", "operator-value"))
 }
@@ -305,7 +303,7 @@ func TestEnsureDeployment_preserves_labels_when_desired_labels_nil(t *testing.T)
 	fetched := &appsv1.Deployment{}
 	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(existing), fetched)).To(Succeed())
 
-	// User labels must be preserved when desired.Labels is nil (CC-0038).
+	// User labels must be preserved when desired.Labels is nil.
 	g.Expect(fetched.Labels).To(HaveKeyWithValue("user-key", "user-value"))
 }
 
@@ -477,7 +475,7 @@ func TestEnsureService_doesNotMutateCallerObject(t *testing.T) {
 	err := EnsureService(context.Background(), c, s, owner, desired)
 	g.Expect(err).NotTo(HaveOccurred())
 
-	// The caller's object must remain unchanged (CC-0005).
+	// The caller's object must remain unchanged.
 	g.Expect(desired.Spec.ClusterIP).To(Equal(originalClusterIP), "caller's ClusterIP must not be mutated")
 	g.Expect(desired.Spec.ClusterIPs).To(Equal(originalClusterIPs), "caller's ClusterIPs must not be mutated")
 	g.Expect(desired.Spec.Ports[0].NodePort).To(Equal(originalNodePort), "caller's NodePort must not be mutated")
@@ -532,7 +530,7 @@ func TestEnsureService_preservesNodePortWhenProtocolOmitted(t *testing.T) {
 		WithObjects(owner, existing).
 		Build()
 
-	// Caller omits Protocol (zero value ""), NodePort left at 0 (CC-0005).
+	// Caller omits Protocol (zero value ""), NodePort left at 0.
 	updated := testService()
 	updated.Spec.Type = corev1.ServiceTypeNodePort
 	updated.Spec.Ports = []corev1.ServicePort{
@@ -568,7 +566,7 @@ func TestEnsureService_idempotent(t *testing.T) {
 
 // TestEnsureService_failsOnClusterIPConflict verifies that EnsureService returns
 // an error when the desired spec explicitly sets ClusterIP to a value that
-// differs from the existing Service (CC-0005).
+// differs from the existing Service.
 func TestEnsureService_failsOnClusterIPConflict(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := newScheme()
@@ -594,7 +592,7 @@ func TestEnsureService_failsOnClusterIPConflict(t *testing.T) {
 
 // TestEnsureService_failsOnClusterIPsConflict verifies that EnsureService
 // returns an error when the desired spec explicitly sets ClusterIPs to values
-// that differ from the existing Service (CC-0005).
+// that differ from the existing Service.
 func TestEnsureService_failsOnClusterIPsConflict(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := newScheme()
@@ -618,7 +616,7 @@ func TestEnsureService_failsOnClusterIPsConflict(t *testing.T) {
 
 // TestEnsureService_failsOnIPFamiliesConflict verifies that EnsureService
 // returns an error when the desired spec explicitly sets IPFamilies to values
-// that differ from the existing Service (CC-0005).
+// that differ from the existing Service.
 func TestEnsureService_failsOnIPFamiliesConflict(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := newScheme()
@@ -642,7 +640,7 @@ func TestEnsureService_failsOnIPFamiliesConflict(t *testing.T) {
 
 // TestEnsureService_allowsMatchingImmutableFields verifies that EnsureService
 // succeeds when the desired spec sets ClusterIP/ClusterIPs/IPFamilies to
-// values that match the existing Service (CC-0005).
+// values that match the existing Service.
 func TestEnsureService_allowsMatchingImmutableFields(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := newScheme()
@@ -710,7 +708,7 @@ func TestEnsureService_merges_labels_on_update(t *testing.T) {
 
 	fetched := &corev1.Service{}
 	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(existing), fetched)).To(Succeed())
-	// Both the user-added and operator-managed labels must be present (CC-0038).
+	// Both the user-added and operator-managed labels must be present.
 	g.Expect(fetched.Labels).To(HaveKeyWithValue("user-key", "user-value"))
 	g.Expect(fetched.Labels).To(HaveKeyWithValue("operator-key", "operator-value"))
 }
@@ -738,7 +736,7 @@ func TestEnsureService_preserves_labels_when_desired_labels_nil(t *testing.T) {
 	fetched := &corev1.Service{}
 	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(existing), fetched)).To(Succeed())
 
-	// User labels must be preserved when desired.Labels is nil (CC-0038).
+	// User labels must be preserved when desired.Labels is nil.
 	g.Expect(fetched.Labels).To(HaveKeyWithValue("user-key", "user-value"))
 }
 
@@ -844,7 +842,7 @@ func TestIsDeploymentReady_nilReplicas_defaults1(t *testing.T) {
 	g.Expect(IsDeploymentReady(deploy)).To(BeTrue())
 }
 
-// --- EnsurePDB (CC-0037) ---
+// --- EnsurePDB ---
 
 func testPDB() *policyv1.PodDisruptionBudget {
 	minAvailable := intstr.FromInt32(1)
@@ -969,7 +967,7 @@ func TestEnsurePDB_merges_labels_on_update(t *testing.T) {
 
 	fetched := &policyv1.PodDisruptionBudget{}
 	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(existing), fetched)).To(Succeed())
-	// Both the user-added and operator-managed labels must be present (CC-0037).
+	// Both the user-added and operator-managed labels must be present.
 	g.Expect(fetched.Labels).To(HaveKeyWithValue("user-key", "user-value"))
 	g.Expect(fetched.Labels).To(HaveKeyWithValue("operator-key", "operator-value"))
 }
@@ -997,7 +995,7 @@ func TestEnsurePDB_preserves_labels_when_desired_labels_nil(t *testing.T) {
 	fetched := &policyv1.PodDisruptionBudget{}
 	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(existing), fetched)).To(Succeed())
 
-	// User labels must be preserved when desired.Labels is nil (CC-0038).
+	// User labels must be preserved when desired.Labels is nil.
 	g.Expect(fetched.Labels).To(HaveKeyWithValue("user-key", "user-value"))
 }
 
@@ -1025,7 +1023,7 @@ func TestEnsurePDB_merges_annotations_on_update(t *testing.T) {
 	g.Expect(fetched.Annotations).To(HaveKeyWithValue("new-ann", "new-val"))
 }
 
-// --- EnsureHPA (CC-0038) ---
+// --- EnsureHPA ---
 
 func testHPA() *autoscalingv2.HorizontalPodAutoscaler {
 	return &autoscalingv2.HorizontalPodAutoscaler{
@@ -1160,7 +1158,7 @@ func TestEnsureHPA_merges_labels_on_update(t *testing.T) {
 
 	fetched := &autoscalingv2.HorizontalPodAutoscaler{}
 	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(existing), fetched)).To(Succeed())
-	// Both the user-added and operator-managed labels must be present (CC-0038).
+	// Both the user-added and operator-managed labels must be present.
 	g.Expect(fetched.Labels).To(HaveKeyWithValue("user-key", "user-value"))
 	g.Expect(fetched.Labels).To(HaveKeyWithValue("operator-key", "operator-value"))
 }
@@ -1188,7 +1186,7 @@ func TestEnsureHPA_preserves_labels_when_desired_labels_nil(t *testing.T) {
 	fetched := &autoscalingv2.HorizontalPodAutoscaler{}
 	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(existing), fetched)).To(Succeed())
 
-	// User labels must be preserved when desired.Labels is nil (CC-0038).
+	// User labels must be preserved when desired.Labels is nil.
 	g.Expect(fetched.Labels).To(HaveKeyWithValue("user-key", "user-value"))
 }
 
@@ -1216,7 +1214,7 @@ func TestEnsureHPA_merges_annotations_on_update(t *testing.T) {
 	g.Expect(fetched.Annotations).To(HaveKeyWithValue("new-ann", "new-val"))
 }
 
-// --- DeleteHPA (CC-0038) ---
+// --- DeleteHPA ---
 
 func TestDeleteHPA_deletes(t *testing.T) {
 	g := NewGomegaWithT(t)

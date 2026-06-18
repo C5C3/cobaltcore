@@ -4,6 +4,4 @@
 
 // Package policy provides pure functions for OpenStack oslo.policy rule
 // rendering, merging, and validation.
-//
-// Feature: CC-0004
 package policy

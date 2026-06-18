@@ -19,8 +19,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
-// Feature: CC-0005
-
 func newScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = corev1.AddToScheme(s)
@@ -241,7 +239,7 @@ func TestGetTLSSecret_missingTLSKeys(t *testing.T) {
 	s := newScheme()
 
 	// Secret exists but does not contain the expected tls.crt/tls.key keys
-	// (e.g. cert-manager has not yet populated the Secret) (CC-0005).
+	// (e.g. cert-manager has not yet populated the Secret).
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-tls-secret",

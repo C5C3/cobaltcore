@@ -3,9 +3,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package types unit tests for the shared spec types. This file covers the
-// CC-0106 DatabaseTLSSpec / DatabaseSpec.TLS deep-copy contract (REQ-001):
+// DatabaseTLSSpec / DatabaseSpec.TLS deep-copy contract
 // a populated DatabaseTLSSpec deep-copies into an independent equal value and
-// a nil TLS pointer deep-copies to nil, preserving pre-CC-0106 behavior.
+// a nil TLS pointer deep-copies to nil, preserving pre-existing behavior.
 package types
 
 import (
@@ -13,7 +13,7 @@ import (
 	"testing"
 )
 
-// TestDatabaseTLSSpec_DeepCopy backs REQ-001: DeepCopy of a populated
+// TestDatabaseTLSSpec_DeepCopy backs: DeepCopy of a populated
 // DatabaseTLSSpec returns an independent, equal value, and DeepCopy of a nil
 // *DatabaseTLSSpec returns nil.
 func TestDatabaseTLSSpec_DeepCopy(t *testing.T) {
@@ -56,7 +56,7 @@ func TestDatabaseTLSSpec_DeepCopy(t *testing.T) {
 	}
 }
 
-// TestDatabaseSpec_TLSField_OptionalPointer backs REQ-001: a DatabaseSpec with
+// TestDatabaseSpec_TLSField_OptionalPointer backs: a DatabaseSpec with
 // TLS == nil deep-copies to TLS == nil (unchanged plaintext behavior), and a
 // DatabaseSpec with TLS set round-trips through DeepCopy without aliasing the
 // TLS pointer.
@@ -97,9 +97,7 @@ func TestDatabaseSpec_TLSField_OptionalPointer(t *testing.T) {
 	}
 }
 
-// Feature: CC-0111
-
-// TestGatewaySpec_DeepCopy backs REQ-001 for the shared commonv1 Gateway shape:
+// TestGatewaySpec_DeepCopy backs for the shared commonv1 Gateway shape:
 // DeepCopy of a populated GatewaySpec (non-empty Annotations map, populated
 // nested ParentRef) returns an independent, equal value, and DeepCopy of a nil
 // *GatewaySpec returns nil. GatewaySpec contains a map, so it is not comparable
@@ -152,7 +150,7 @@ func TestGatewaySpec_DeepCopy(t *testing.T) {
 	}
 }
 
-// TestGatewayParentRefSpec_DeepCopy backs REQ-001: GatewayParentRefSpec holds
+// TestGatewayParentRefSpec_DeepCopy backs: GatewayParentRefSpec holds
 // only scalar fields, so DeepCopy returns an independent, equal value, and
 // DeepCopy of a nil *GatewayParentRefSpec returns nil.
 func TestGatewayParentRefSpec_DeepCopy(t *testing.T) {

@@ -12,8 +12,6 @@ import (
 	"github.com/c5c3/forge/internal/common/types"
 )
 
-// Feature: CC-0004
-
 // PipelineSpec defines the input for rendering an api-paste.ini pipeline.
 type PipelineSpec struct {
 	// PipelineName is the INI pipeline section name (e.g., "api_v3").
@@ -48,8 +46,8 @@ type PipelineSpec struct {
 // Each middleware also generates a [filter:<name>] section with its
 // paste.filter_factory and config entries.
 // Returns an error if two middleware entries share the same Name, since the
-// second would silently overwrite the first filter section (CC-0004).
-// Returns an error if a middleware has an unrecognised Position value (CC-0004).
+// second would silently overwrite the first filter section.
+// Returns an error if a middleware has an unrecognised Position value.
 // Returns a map suitable for use with config.RenderINI.
 func RenderPastePipeline(spec PipelineSpec) (map[string]map[string]string, error) {
 	if spec.PipelineName == "" {
@@ -61,7 +59,7 @@ func RenderPastePipeline(spec PipelineSpec) (map[string]map[string]string, error
 	var beforeFilters, afterFilters []string
 	// All validation (empty Name, empty FilterFactory, duplicate Name,
 	// unknown Position) is performed in this single loop to fail fast
-	// and keep control flow uniform (CC-0004).
+	// and keep control flow uniform.
 	seen := make(map[string]struct{}, len(spec.Middleware))
 	for _, mw := range spec.Middleware {
 		if mw.Name == "" {
@@ -85,7 +83,7 @@ func RenderPastePipeline(spec PipelineSpec) (map[string]map[string]string, error
 	}
 
 	// Validate BaseFilters entries — empty strings produce malformed pipeline
-	// directives that PasteDeploy may reject at runtime (CC-0004).
+	// directives that PasteDeploy may reject at runtime.
 	for i, f := range spec.BaseFilters {
 		if f == "" {
 			return nil, fmt.Errorf("pipeline %q has an empty BaseFilters entry at index %d", spec.PipelineName, i)
@@ -112,7 +110,7 @@ func RenderPastePipeline(spec PipelineSpec) (map[string]map[string]string, error
 	}
 
 	// Generate filter sections for each middleware.
-	// Duplicate Names are already rejected in the validation loop above (CC-0004).
+	// Duplicate Names are already rejected in the validation loop above.
 	for _, mw := range spec.Middleware {
 		filterSection := fmt.Sprintf("filter:%s", mw.Name)
 		filterConfig := map[string]string{
@@ -120,14 +118,14 @@ func RenderPastePipeline(spec PipelineSpec) (map[string]map[string]string, error
 		}
 		for k, v := range mw.Config {
 			if k == "paste.filter_factory" {
-				continue // FilterFactory field takes precedence (CC-0004)
+				continue // FilterFactory field takes precedence
 			}
 			filterConfig[k] = v
 		}
 		result[filterSection] = filterConfig
 	}
 
-	// Generate [app:<AppName>] section when AppFactory is set (CC-0018).
+	// Generate [app:<AppName>] section when AppFactory is set.
 	if spec.AppFactory != "" && spec.AppName != "" {
 		appSection := fmt.Sprintf("app:%s", spec.AppName)
 		result[appSection] = map[string]string{
@@ -135,7 +133,7 @@ func RenderPastePipeline(spec PipelineSpec) (map[string]map[string]string, error
 		}
 	}
 
-	// Generate [filter:<name>] sections for base filter factories (CC-0018).
+	// Generate [filter:<name>] sections for base filter factories.
 	for name, factory := range spec.BaseFilterFactories {
 		filterSection := fmt.Sprintf("filter:%s", name)
 		filterConfig := map[string]string{
@@ -149,7 +147,7 @@ func RenderPastePipeline(spec PipelineSpec) (map[string]map[string]string, error
 		result[filterSection] = filterConfig
 	}
 
-	// Generate [composite:main] section when CompositeRoutes is set (CC-0018).
+	// Generate [composite:main] section when CompositeRoutes is set.
 	if len(spec.CompositeRoutes) > 0 {
 		compositeConfig := map[string]string{
 			"use": "egg:Paste#urlmap",
@@ -166,7 +164,7 @@ func RenderPastePipeline(spec PipelineSpec) (map[string]map[string]string, error
 // RenderPluginConfig renders plugin configuration as INI sections.
 // Each plugin's ConfigSection becomes a section name with its Config
 // key-value pairs. Returns an error if two plugins share the same
-// ConfigSection, since the second would silently overwrite the first (CC-0004).
+// ConfigSection, since the second would silently overwrite the first.
 // Returns a map suitable for merging with config.MergeDefaults
 // and rendering with config.RenderINI.
 func RenderPluginConfig(plugins []types.PluginSpec) (map[string]map[string]string, error) {
@@ -196,7 +194,7 @@ func RenderPluginConfig(plugins []types.PluginSpec) (map[string]map[string]strin
 // Returns an error if RenderPastePipeline returns one — see RenderPastePipeline
 // for the full list of validation errors (empty PipelineName, empty middleware
 // Name or FilterFactory, unknown Position, empty BaseFilters entries, duplicate
-// middleware Names, and an entirely empty pipeline directive) (CC-0004).
+// middleware Names, and an entirely empty pipeline directive).
 func RenderPastePipelineINI(spec PipelineSpec) (string, error) {
 	sections, err := RenderPastePipeline(spec)
 	if err != nil {

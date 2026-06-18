@@ -21,12 +21,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
-// Feature: CC-0005
-
 // EnsureDeployment creates a Deployment if it does not exist or updates its
 // spec if it already exists. It returns (true, nil) when all replicas are
 // available, (false, nil) when the Deployment exists but is not yet ready,
-// and (false, error) on unexpected failures (CC-0005).
+// and (false, error) on unexpected failures.
 func EnsureDeployment(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, deploy *appsv1.Deployment) (bool, error) {
 	existing := &appsv1.Deployment{}
 	err := c.Get(ctx, client.ObjectKeyFromObject(deploy), existing)
@@ -56,7 +54,7 @@ func EnsureDeployment(ctx context.Context, c client.Client, scheme *runtime.Sche
 	// If the selector has changed, the Deployment must be deleted and re-created:
 	// Kubernetes rejects .spec.selector mutations as immutable after creation.
 	// Returning (false, nil) causes the reconciler to requeue; on the next pass
-	// the Deployment no longer exists and will be created fresh (CC-0005).
+	// the Deployment no longer exists and will be created fresh.
 	if !reflect.DeepEqual(existing.Spec.Selector, deploy.Spec.Selector) {
 		if err := c.Delete(ctx, existing); err != nil {
 			return false, fmt.Errorf("deleting Deployment %s/%s for selector migration: %w", deploy.Namespace, deploy.Name, err)
@@ -68,16 +66,16 @@ func EnsureDeployment(ctx context.Context, c client.Client, scheme *runtime.Sche
 	// to align sibling Ensure* functions in the same package. DeepEqual spec guard
 	// is NOT added because the mandatory pattern for mutable resources (Deployments)
 	// specifies unconditional spec updates to avoid maintaining a normalization
-	// layer. Reviewer: please verify. (CC-0038)
+	// layer. Reviewer: please verify.
 
 	// Ensure controller owner reference is enforced so garbage collection
-	// behaves correctly even if the ref was removed out-of-band (CC-0038).
+	// behaves correctly even if the ref was removed out-of-band.
 	if err := controllerutil.SetControllerReference(owner, existing, scheme); err != nil {
 		return false, fmt.Errorf("updating owner reference on Deployment %s/%s: %w", existing.Namespace, existing.Name, err)
 	}
 
 	// Merge desired labels into existing labels; extra user-added keys are
-	// preserved, keys present on the desired Deployment are authoritative (CC-0038).
+	// preserved, keys present on the desired Deployment are authoritative.
 	if deploy.Labels != nil {
 		if existing.Labels == nil {
 			existing.Labels = make(map[string]string, len(deploy.Labels))
@@ -87,7 +85,7 @@ func EnsureDeployment(ctx context.Context, c client.Client, scheme *runtime.Sche
 		}
 	}
 
-	// Merge desired annotations into existing annotations (CC-0038).
+	// Merge desired annotations into existing annotations.
 	if deploy.Annotations != nil {
 		if existing.Annotations == nil {
 			existing.Annotations = make(map[string]string, len(deploy.Annotations))
@@ -109,7 +107,7 @@ func EnsureDeployment(ctx context.Context, c client.Client, scheme *runtime.Sche
 
 	// Always update the spec to the desired state. This avoids maintaining
 	// a normalization layer to replicate API-server defaulting logic, which
-	// would be an unmanageable maintenance burden (CC-0005).
+	// would be an unmanageable maintenance burden.
 	existing.Spec = deploy.Spec
 	if err := c.Update(ctx, existing); err != nil {
 		return false, fmt.Errorf("updating Deployment %s/%s: %w", deploy.Namespace, deploy.Name, err)
@@ -120,7 +118,7 @@ func EnsureDeployment(ctx context.Context, c client.Client, scheme *runtime.Sche
 	// just been bumped, the cache may still return the pre-update object (with
 	// matching Generation and Status.ObservedGeneration), causing
 	// IsDeploymentReady to incorrectly report Ready=true and the upgrade state
-	// machine to skip the RollingUpdate phase (CC-0056).
+	// machine to skip the RollingUpdate phase.
 
 	return IsDeploymentReady(existing), nil
 }
@@ -129,7 +127,7 @@ func EnsureDeployment(ctx context.Context, c client.Client, scheme *runtime.Sche
 // if it already exists. Server-assigned fields (ClusterIP, ClusterIPs,
 // IPFamilies) are preserved on updates. If the desired spec explicitly sets
 // any of these fields to a value that differs from the existing service, an
-// error is returned to signal an API usage problem (CC-0005).
+// error is returned to signal an API usage problem.
 func EnsureService(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, svc *corev1.Service) error {
 	existing := &corev1.Service{}
 	err := c.Get(ctx, client.ObjectKeyFromObject(svc), existing)
@@ -149,21 +147,21 @@ func EnsureService(ctx context.Context, c client.Client, scheme *runtime.Scheme,
 
 	// Fail fast if the desired spec explicitly sets immutable/server-assigned
 	// fields to values that conflict with what the API server has already
-	// assigned. This indicates a programming error in the caller (CC-0005).
+	// assigned. This indicates a programming error in the caller.
 	if err := validateImmutableServiceFields(svc, existing); err != nil {
 		return err
 	}
 
 	// DECISION: I-001 — Backported metadata reconciliation from EnsurePDB/EnsureHPA.
-	// DeepEqual spec guard is NOT added — see EnsureDeployment. (CC-0038)
+	// DeepEqual spec guard is NOT added — see EnsureDeployment.
 
 	// Ensure controller owner reference is enforced so garbage collection
-	// behaves correctly even if the ref was removed out-of-band (CC-0038).
+	// behaves correctly even if the ref was removed out-of-band.
 	if err := controllerutil.SetControllerReference(owner, existing, scheme); err != nil {
 		return fmt.Errorf("updating owner reference on Service %s/%s: %w", existing.Namespace, existing.Name, err)
 	}
 
-	// Merge desired labels into existing labels (CC-0038).
+	// Merge desired labels into existing labels.
 	if svc.Labels != nil {
 		if existing.Labels == nil {
 			existing.Labels = make(map[string]string, len(svc.Labels))
@@ -173,7 +171,7 @@ func EnsureService(ctx context.Context, c client.Client, scheme *runtime.Scheme,
 		}
 	}
 
-	// Merge desired annotations into existing annotations (CC-0038).
+	// Merge desired annotations into existing annotations.
 	if svc.Annotations != nil {
 		if existing.Annotations == nil {
 			existing.Annotations = make(map[string]string, len(svc.Annotations))
@@ -184,16 +182,15 @@ func EnsureService(ctx context.Context, c client.Client, scheme *runtime.Scheme,
 	}
 
 	// Work on a copy of the desired spec so the caller's svc is never
-	// mutated — consistent with the other Ensure* functions (CC-0005).
+	// mutated — consistent with the other Ensure* functions.
 	newSpec := *svc.Spec.DeepCopy()
 	// Preserve the ClusterIP assigned by the API server.
 	newSpec.ClusterIP = existing.Spec.ClusterIP
 	newSpec.ClusterIPs = existing.Spec.ClusterIPs
-	newSpec.IPFamilies = existing.Spec.IPFamilies // preserve API-server-assigned IP families (CC-0005)
+	newSpec.IPFamilies = existing.Spec.IPFamilies // preserve API-server-assigned IP families
 	// Preserve NodePort values assigned by the API server when the desired
 	// spec does not explicitly set them. Matching falls back to Port-only
 	// when Protocol is unset, since the API server defaults it to "TCP"
-	// (CC-0005).
 	for i := range newSpec.Ports {
 		if newSpec.Ports[i].NodePort != 0 {
 			continue
@@ -205,7 +202,7 @@ func EnsureService(ctx context.Context, c client.Client, scheme *runtime.Scheme,
 			}
 		}
 	}
-	// Always update the spec to the desired state (CC-0005).
+	// Always update the spec to the desired state.
 	existing.Spec = newSpec
 	if err := c.Update(ctx, existing); err != nil {
 		return fmt.Errorf("updating Service %s/%s: %w", svc.Namespace, svc.Name, err)
@@ -217,7 +214,7 @@ func EnsureService(ctx context.Context, c client.Client, scheme *runtime.Scheme,
 // spec and metadata if it already exists. An owner reference is set on the PDB
 // so that it is garbage-collected when the owning resource is deleted. On the
 // update path, owner references, labels, and annotations are reconciled to
-// correct any out-of-band drift (CC-0037).
+// correct any out-of-band drift.
 func EnsurePDB(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, pdb *policyv1.PodDisruptionBudget) error {
 	existing := &policyv1.PodDisruptionBudget{}
 	err := c.Get(ctx, client.ObjectKeyFromObject(pdb), existing)
@@ -237,17 +234,17 @@ func EnsurePDB(ctx context.Context, c client.Client, scheme *runtime.Scheme, own
 	}
 
 	// PDB exists: reconcile metadata (ownerRefs/labels/annotations) and spec.
-	// Snapshot before mutations to detect whether an update is necessary (CC-0037).
+	// Snapshot before mutations to detect whether an update is necessary.
 	before := existing.DeepCopy()
 
 	// Ensure controller owner reference is enforced so garbage collection
-	// behaves correctly even if the ref was removed out-of-band (CC-0037).
+	// behaves correctly even if the ref was removed out-of-band.
 	if err := controllerutil.SetControllerReference(owner, existing, scheme); err != nil {
 		return fmt.Errorf("updating owner reference on PodDisruptionBudget %s/%s: %w", existing.Namespace, existing.Name, err)
 	}
 
 	// Merge desired labels into existing labels; extra user-added keys are
-	// preserved, keys present on the desired PDB are authoritative (CC-0037).
+	// preserved, keys present on the desired PDB are authoritative.
 	if pdb.Labels != nil {
 		if existing.Labels == nil {
 			existing.Labels = make(map[string]string, len(pdb.Labels))
@@ -257,7 +254,7 @@ func EnsurePDB(ctx context.Context, c client.Client, scheme *runtime.Scheme, own
 		}
 	}
 
-	// Merge desired annotations into existing annotations (CC-0037).
+	// Merge desired annotations into existing annotations.
 	if pdb.Annotations != nil {
 		if existing.Annotations == nil {
 			existing.Annotations = make(map[string]string, len(pdb.Annotations))
@@ -267,11 +264,11 @@ func EnsurePDB(ctx context.Context, c client.Client, scheme *runtime.Scheme, own
 		}
 	}
 
-	// Reconcile spec to the desired state (CC-0037).
+	// Reconcile spec to the desired state.
 	existing.Spec = pdb.Spec
 
 	// Only issue an API update when something actually changed to avoid
-	// unnecessary write load and events (CC-0037).
+	// unnecessary write load and events.
 	if !apiequality.Semantic.DeepEqual(existing.Spec, before.Spec) ||
 		!apiequality.Semantic.DeepEqual(normalizeMap(existing.Labels), normalizeMap(before.Labels)) ||
 		!apiequality.Semantic.DeepEqual(normalizeMap(existing.Annotations), normalizeMap(before.Annotations)) ||
@@ -288,7 +285,7 @@ func EnsurePDB(ctx context.Context, c client.Client, scheme *runtime.Scheme, own
 // its spec and metadata if it already exists. An owner reference is set on the
 // HPA so that it is garbage-collected when the owning resource is deleted. On
 // the update path, owner references, labels, and annotations are reconciled to
-// correct any out-of-band drift (CC-0038).
+// correct any out-of-band drift.
 func EnsureHPA(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, hpa *autoscalingv2.HorizontalPodAutoscaler) error {
 	existing := &autoscalingv2.HorizontalPodAutoscaler{}
 	err := c.Get(ctx, client.ObjectKeyFromObject(hpa), existing)
@@ -308,17 +305,17 @@ func EnsureHPA(ctx context.Context, c client.Client, scheme *runtime.Scheme, own
 	}
 
 	// HPA exists: reconcile metadata (ownerRefs/labels/annotations) and spec.
-	// Snapshot before mutations to detect whether an update is necessary (CC-0038).
+	// Snapshot before mutations to detect whether an update is necessary.
 	before := existing.DeepCopy()
 
 	// Ensure controller owner reference is enforced so garbage collection
-	// behaves correctly even if the ref was removed out-of-band (CC-0038).
+	// behaves correctly even if the ref was removed out-of-band.
 	if err := controllerutil.SetControllerReference(owner, existing, scheme); err != nil {
 		return fmt.Errorf("updating owner reference on HorizontalPodAutoscaler %s/%s: %w", existing.Namespace, existing.Name, err)
 	}
 
 	// Merge desired labels into existing labels; extra user-added keys are
-	// preserved, keys present on the desired HPA are authoritative (CC-0038).
+	// preserved, keys present on the desired HPA are authoritative.
 	if hpa.Labels != nil {
 		if existing.Labels == nil {
 			existing.Labels = make(map[string]string, len(hpa.Labels))
@@ -328,7 +325,7 @@ func EnsureHPA(ctx context.Context, c client.Client, scheme *runtime.Scheme, own
 		}
 	}
 
-	// Merge desired annotations into existing annotations (CC-0038).
+	// Merge desired annotations into existing annotations.
 	if hpa.Annotations != nil {
 		if existing.Annotations == nil {
 			existing.Annotations = make(map[string]string, len(hpa.Annotations))
@@ -338,11 +335,11 @@ func EnsureHPA(ctx context.Context, c client.Client, scheme *runtime.Scheme, own
 		}
 	}
 
-	// Reconcile spec to the desired state (CC-0038).
+	// Reconcile spec to the desired state.
 	existing.Spec = hpa.Spec
 
 	// Only issue an API update when something actually changed to avoid
-	// unnecessary write load and events (CC-0038).
+	// unnecessary write load and events.
 	if !apiequality.Semantic.DeepEqual(existing.Spec, before.Spec) ||
 		!apiequality.Semantic.DeepEqual(normalizeMap(existing.Labels), normalizeMap(before.Labels)) ||
 		!apiequality.Semantic.DeepEqual(normalizeMap(existing.Annotations), normalizeMap(before.Annotations)) ||
@@ -356,7 +353,7 @@ func EnsureHPA(ctx context.Context, c client.Client, scheme *runtime.Scheme, own
 }
 
 // DeleteHPA deletes the HorizontalPodAutoscaler identified by namespace and
-// name. It is a no-op if the HPA does not exist (CC-0038).
+// name. It is a no-op if the HPA does not exist.
 func DeleteHPA(ctx context.Context, c client.Client, namespace, name string) error {
 	hpa := &autoscalingv2.HorizontalPodAutoscaler{}
 	hpa.SetName(name)
@@ -368,7 +365,7 @@ func DeleteHPA(ctx context.Context, c client.Client, namespace, name string) err
 }
 
 // normalizeMap converts empty maps to nil so apiequality.Semantic.DeepEqual
-// does not report spurious diffs between nil and empty maps (CC-0038).
+// does not report spurious diffs between nil and empty maps.
 func normalizeMap(m map[string]string) map[string]string {
 	if len(m) == 0 {
 		return nil
@@ -379,23 +376,23 @@ func normalizeMap(m map[string]string) map[string]string {
 // validateImmutableServiceFields returns an error if the desired Service spec
 // explicitly sets ClusterIP, ClusterIPs, or IPFamilies to values that differ
 // from the existing Service. These fields are immutable after creation and
-// silently overwriting them would hide API usage problems (CC-0005).
+// silently overwriting them would hide API usage problems.
 func validateImmutableServiceFields(desired, existing *corev1.Service) error {
 	if desired.Spec.ClusterIP != "" && existing.Spec.ClusterIP != "" && desired.Spec.ClusterIP != existing.Spec.ClusterIP {
 		return fmt.Errorf(
-			"desired ClusterIP %q conflicts with existing %q on Service %s/%s: ClusterIP is immutable after creation (CC-0005)",
+			"desired ClusterIP %q conflicts with existing %q on Service %s/%s: ClusterIP is immutable after creation",
 			desired.Spec.ClusterIP, existing.Spec.ClusterIP, desired.Namespace, desired.Name,
 		)
 	}
 	if len(desired.Spec.ClusterIPs) > 0 && len(existing.Spec.ClusterIPs) > 0 && !slices.Equal(desired.Spec.ClusterIPs, existing.Spec.ClusterIPs) {
 		return fmt.Errorf(
-			"desired ClusterIPs %v conflict with existing %v on Service %s/%s: ClusterIPs are immutable after creation (CC-0005)",
+			"desired ClusterIPs %v conflict with existing %v on Service %s/%s: ClusterIPs are immutable after creation",
 			desired.Spec.ClusterIPs, existing.Spec.ClusterIPs, desired.Namespace, desired.Name,
 		)
 	}
 	if len(desired.Spec.IPFamilies) > 0 && len(existing.Spec.IPFamilies) > 0 && !slices.Equal(desired.Spec.IPFamilies, existing.Spec.IPFamilies) {
 		return fmt.Errorf(
-			"desired IPFamilies %v conflict with existing %v on Service %s/%s: IPFamilies are immutable after creation (CC-0005)",
+			"desired IPFamilies %v conflict with existing %v on Service %s/%s: IPFamilies are immutable after creation",
 			desired.Spec.IPFamilies, existing.Spec.IPFamilies, desired.Namespace, desired.Name,
 		)
 	}
@@ -403,11 +400,11 @@ func validateImmutableServiceFields(desired, existing *corev1.Service) error {
 }
 
 // IsDeploymentReady returns true if the Deployment has an Available condition
-// set to True and its ready replicas meet the desired replica count (CC-0005).
+// set to True and its ready replicas meet the desired replica count.
 func IsDeploymentReady(deploy *appsv1.Deployment) bool {
 	// Guard against stale status: after a spec update the API server
 	// increments Generation, but the deployment controller only bumps
-	// ObservedGeneration once it has processed the new spec (CC-0005).
+	// ObservedGeneration once it has processed the new spec.
 	if deploy.Status.ObservedGeneration < deploy.Generation {
 		return false
 	}

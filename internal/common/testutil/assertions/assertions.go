@@ -17,8 +17,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// Feature: CC-0002
-
 // AssertCondition checks that a condition with the given type exists in the
 // conditions slice and has the expected status. It calls t.Helper() and
 // t.Errorf on failure.

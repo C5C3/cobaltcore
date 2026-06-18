@@ -24,8 +24,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// Feature: CC-0002
-
 // Condition field constants shared across unstructured simulators.
 const (
 	conditionTypeReady  = "Ready"
@@ -174,10 +172,8 @@ func SimulateJobComplete(ctx context.Context, c client.Client, key client.Object
 	return c.Status().Update(ctx, job)
 }
 
-// Feature: CC-0005
-
 // SimulateDatabaseReady updates a MariaDB Database resource's status to indicate
-// readiness by setting the Ready condition to True (CC-0005).
+// readiness by setting the Ready condition to True.
 func SimulateDatabaseReady(ctx context.Context, c client.Client, key client.ObjectKey) error {
 	db := &mariadbv1alpha1.Database{}
 	if err := c.Get(ctx, key, db); err != nil {
@@ -195,7 +191,7 @@ func SimulateDatabaseReady(ctx context.Context, c client.Client, key client.Obje
 }
 
 // SimulateUserReady updates a MariaDB User resource's status to indicate
-// readiness by setting the Ready condition to True (CC-0005).
+// readiness by setting the Ready condition to True.
 func SimulateUserReady(ctx context.Context, c client.Client, key client.ObjectKey) error {
 	user := &mariadbv1alpha1.User{}
 	if err := c.Get(ctx, key, user); err != nil {
@@ -213,7 +209,7 @@ func SimulateUserReady(ctx context.Context, c client.Client, key client.ObjectKe
 }
 
 // SimulateGrantReady updates a MariaDB Grant resource's status to indicate
-// readiness by setting the Ready condition to True (CC-0005).
+// readiness by setting the Ready condition to True.
 func SimulateGrantReady(ctx context.Context, c client.Client, key client.ObjectKey) error {
 	grant := &mariadbv1alpha1.Grant{}
 	if err := c.Get(ctx, key, grant); err != nil {
@@ -231,7 +227,7 @@ func SimulateGrantReady(ctx context.Context, c client.Client, key client.ObjectK
 }
 
 // SimulatePushSecretSynced updates a PushSecret resource's status to indicate
-// successful synchronization (CC-0005).
+// successful synchronization.
 func SimulatePushSecretSynced(ctx context.Context, c client.Client, key client.ObjectKey) error {
 	ps := &esov1alpha1.PushSecret{}
 	if err := c.Get(ctx, key, ps); err != nil {
@@ -253,7 +249,7 @@ func SimulatePushSecretSynced(ctx context.Context, c client.Client, key client.O
 }
 
 // SimulateCertificateReady updates a cert-manager Certificate resource's status
-// to indicate readiness by setting the Ready condition to True (CC-0005).
+// to indicate readiness by setting the Ready condition to True.
 func SimulateCertificateReady(ctx context.Context, c client.Client, key client.ObjectKey) error {
 	cert := &certmanagerv1.Certificate{}
 	if err := c.Get(ctx, key, cert); err != nil {
@@ -274,11 +270,9 @@ func SimulateCertificateReady(ctx context.Context, c client.Client, key client.O
 	return c.Status().Update(ctx, cert)
 }
 
-// Feature: CC-0014
-
 // SimulateDeploymentReady updates a Deployment resource's status to indicate
 // availability by setting the Available condition to True, readyReplicas, and
-// observedGeneration to match the Deployment's Generation (CC-0014, REQ-001).
+// observedGeneration to match the Deployment's Generation.
 func SimulateDeploymentReady(ctx context.Context, c client.Client, key client.ObjectKey, replicas int32) error {
 	deploy := &appsv1.Deployment{}
 	if err := c.Get(ctx, key, deploy); err != nil {

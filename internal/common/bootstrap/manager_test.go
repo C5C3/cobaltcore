@@ -14,8 +14,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 )
 
-// Feature: CC-0001
-
 func TestManagerConfig_validate_nilScheme(t *testing.T) {
 	cfg := ManagerConfig{
 		Scheme:           nil,
@@ -69,7 +67,7 @@ func TestManagerConfig_validate_validWithSetupFunc(t *testing.T) {
 
 // TestManagerConfig_validate_validWithNamespace verifies that a ManagerConfig
 // with a Namespace field set passes validation, allowing callers to opt into
-// namespace scoping programmatically (CC-0043).
+// namespace scoping programmatically.
 func TestManagerConfig_validate_validWithNamespace(t *testing.T) {
 	cfg := ManagerConfig{
 		Scheme:           runtime.NewScheme(),
@@ -81,11 +79,9 @@ func TestManagerConfig_validate_validWithNamespace(t *testing.T) {
 	}
 }
 
-// Feature: CC-0043
-
 // TestCacheOptions_withNamespace verifies that cacheOptions with a non-empty
 // namespace returns cache.Options with DefaultNamespaces containing that
-// namespace key (REQ-001).
+// namespace key.
 func TestCacheOptions_withNamespace(t *testing.T) {
 	syncPeriod := 10 * time.Minute
 	opts := cacheOptions(syncPeriod, "tenant-a")
@@ -100,7 +96,7 @@ func TestCacheOptions_withNamespace(t *testing.T) {
 
 // TestCacheOptions_withoutNamespace verifies that cacheOptions with an empty
 // namespace returns cache.Options with nil DefaultNamespaces, allowing
-// cluster-wide watches (REQ-002).
+// cluster-wide watches.
 func TestCacheOptions_withoutNamespace(t *testing.T) {
 	syncPeriod := 10 * time.Minute
 	opts := cacheOptions(syncPeriod, "")
@@ -111,7 +107,7 @@ func TestCacheOptions_withoutNamespace(t *testing.T) {
 }
 
 // TestCacheOptions_syncPeriodPreserved verifies that SyncPeriod is always
-// configured regardless of the namespace value (REQ-001, REQ-002).
+// configured regardless of the namespace value.
 func TestCacheOptions_syncPeriodPreserved(t *testing.T) {
 	syncPeriod := 10 * time.Minute
 
@@ -128,7 +124,6 @@ func TestCacheOptions_syncPeriodPreserved(t *testing.T) {
 
 // TestCacheOptions_singleNamespaceEntry verifies that DefaultNamespaces has
 // exactly one entry with an empty cache.Config value when namespace is set
-// (REQ-001).
 func TestCacheOptions_singleNamespaceEntry(t *testing.T) {
 	syncPeriod := 10 * time.Minute
 	opts := cacheOptions(syncPeriod, "tenant-a")

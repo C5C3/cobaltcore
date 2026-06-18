@@ -4,6 +4,4 @@
 
 // Package envtest provides shared envtest bootstrap utilities for integration
 // tests across all CobaltCore operators.
-//
-// Feature: CC-0002
 package envtest

@@ -4,6 +4,4 @@
 
 // Package builders provides fluent test data builders for creating Kubernetes
 // resources in integration tests.
-//
-// Feature: CC-0002
 package builders

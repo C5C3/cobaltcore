@@ -18,8 +18,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// Feature: CC-0005
-
 func intPtr(v int32) *int32 { return &v }
 
 func TestIntegration_EnsureDeployment(t *testing.T) {

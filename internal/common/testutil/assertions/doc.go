@@ -4,6 +4,4 @@
 
 // Package assertions provides test assertion helpers for verifying Kubernetes
 // resource state in integration and unit tests.
-//
-// Feature: CC-0002
 package assertions

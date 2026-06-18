@@ -22,8 +22,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
-// Feature: CC-0005
-
 func newScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = corev1.AddToScheme(s)
@@ -64,7 +62,6 @@ func testJob() *batchv1.Job {
 // pod-spec-hash annotation matching the testJob() PodSpec, simulating a Job
 // that was created via RunJob. API-server defaults may be present on the
 // stored spec, but the hash annotation refers to the original desired spec
-// (CC-0005).
 func testCompletedJobWithHash() *batchv1.Job {
 	desired := testJob()
 	j := testJob()
@@ -181,7 +178,7 @@ func TestRunJob_existingComplete(t *testing.T) {
 	owner := testOwner()
 
 	// Simulate a completed Job that was created via RunJob (carries hash
-	// annotation), with API-server defaults on the stored spec (CC-0005).
+	// annotation), with API-server defaults on the stored spec.
 	job := testCompletedJobWithHash()
 
 	c := fake.NewClientBuilder().
@@ -291,7 +288,7 @@ func TestRunJob_existingComplete_specChanged(t *testing.T) {
 	owner := testOwner()
 
 	// Simulate a completed Job from a previous operator version. The hash
-	// annotation matches the old spec (CC-0005).
+	// annotation matches the old spec.
 	oldJob := testCompletedJobWithHash()
 
 	c := fake.NewClientBuilder().
@@ -323,7 +320,7 @@ func TestRunJob_existingComplete_specUnchanged(t *testing.T) {
 
 	// Completed Job with the same spec (hash matches desired) should
 	// return (true, nil). API-server defaults on the stored spec do not
-	// matter because comparison is hash-based (CC-0005).
+	// matter because comparison is hash-based.
 	existing := testCompletedJobWithHash()
 
 	c := fake.NewClientBuilder().
@@ -367,7 +364,7 @@ func failedJobWithRerunKey(key string) *batchv1.Job {
 	return j
 }
 
-// TestRunJobWithRerunKey_keyUnchanged_imageChanged locks the CC-0113 behavior:
+// TestRunJobWithRerunKey_keyUnchanged_imageChanged locks the behavior:
 // with an explicit re-run key, a completed Job is NOT re-run on a pod-template
 // change (here a new container image) as long as the key is unchanged. The
 // keystone bootstrap Job relies on this so a release upgrade does not re-run
@@ -391,12 +388,12 @@ func TestRunJobWithRerunKey_keyUnchanged_imageChanged(t *testing.T) {
 
 	ready, err := RunJobWithRerunKey(context.Background(), c, s, owner, newJob, "rerun-key-1")
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(ready).To(BeTrue(), "unchanged re-run key must not re-run the completed Job despite an image change (CC-0113)")
+	g.Expect(ready).To(BeTrue(), "unchanged re-run key must not re-run the completed Job despite an image change")
 
 	// The original Job must be retained unchanged (same UID, original image).
 	fetched := &batchv1.Job{}
 	g.Expect(c.Get(context.Background(), client.ObjectKey{Name: "test-job", Namespace: "default"}, fetched)).To(Succeed())
-	g.Expect(fetched.UID).To(Equal(existing.UID), "completed Job must be retained, not recreated (CC-0113)")
+	g.Expect(fetched.UID).To(Equal(existing.UID), "completed Job must be retained, not recreated")
 	g.Expect(fetched.Spec.Template.Spec.Containers[0].Image).To(Equal("busybox:latest"))
 }
 
@@ -450,7 +447,7 @@ func TestRunJobWithRerunKey_failed_keyChanged(t *testing.T) {
 	g.Expect(fetched.Annotations[PodSpecHashAnnotation]).To(Equal("rerun-key-2"), "replacement Job must carry the new re-run key")
 }
 
-// TestRunJobWithRerunKey_failed_keyUnchanged_imageChanged locks the CC-0113
+// TestRunJobWithRerunKey_failed_keyUnchanged_imageChanged locks the
 // behavior for a *failed* Job: with an explicit re-run key, a failed Job is NOT
 // re-run on a pod-template change (here a new container image) as long as the
 // key is unchanged — it returns ErrJobFailed. The keystone bootstrap Job relies
@@ -476,7 +473,7 @@ func TestRunJobWithRerunKey_failed_keyUnchanged_imageChanged(t *testing.T) {
 
 	ready, err := RunJobWithRerunKey(context.Background(), c, s, owner, newJob, "rerun-key-1")
 	g.Expect(err).To(HaveOccurred())
-	g.Expect(errors.Is(err, ErrJobFailed)).To(BeTrue(), "unchanged re-run key must keep a failed Job failed despite an image change (CC-0113)")
+	g.Expect(errors.Is(err, ErrJobFailed)).To(BeTrue(), "unchanged re-run key must keep a failed Job failed despite an image change")
 	g.Expect(ready).To(BeFalse())
 
 	// The original failed Job must be retained unchanged (same UID, original image).
@@ -488,7 +485,7 @@ func TestRunJobWithRerunKey_failed_keyUnchanged_imageChanged(t *testing.T) {
 
 // TestRunJob_existingComplete_noHashAnnotation verifies that a completed Job
 // without a hash annotation (e.g. created before the hash mechanism was
-// introduced) is treated as stale and recreated (CC-0005).
+// introduced) is treated as stale and recreated.
 func TestRunJob_existingComplete_noHashAnnotation(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := newScheme()
@@ -546,7 +543,7 @@ func TestRunJob_existingComplete_specChanged_alreadyExists(t *testing.T) {
 	owner := testOwner()
 
 	// Simulate a completed Job whose delete is pending (finalizer) so
-	// the replacement Create returns AlreadyExists (CC-0005).
+	// the replacement Create returns AlreadyExists.
 	oldJob := testCompletedJobWithHash()
 
 	createCalls := 0
@@ -574,14 +571,14 @@ func TestRunJob_existingComplete_specChanged_alreadyExists(t *testing.T) {
 	g.Expect(createCalls).To(Equal(1))
 }
 
-// --- PodSpecHash template coverage (CC-0108, REQ-001) ---
+// --- PodSpecHash template coverage ---
 
 // TestPodSpecHash_TemplateAnnotationParticipates verifies that two pod
 // templates with byte-identical PodSpecs but differing pod-template
-// annotations hash to different digests. This is the property CC-0108 relies
+// annotations hash to different digests. This is the property relies
 // on: a content-derived pod-template annotation must change the stored
 // forge.c5c3.io/pod-spec-hash so RunJob re-runs a completed Job even when the
-// PodSpec itself is unchanged (REQ-001).
+// PodSpec itself is unchanged.
 func TestPodSpecHash_TemplateAnnotationParticipates(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -596,7 +593,7 @@ func TestPodSpecHash_TemplateAnnotationParticipates(t *testing.T) {
 
 // TestRunJob_RecreatesOnTemplateAnnotationChange verifies that a completed Job
 // is deleted-and-recreated when the only difference in the desired template is
-// a pod-template annotation — the PodSpec is byte-identical (REQ-001). This
+// a pod-template annotation — the PodSpec is byte-identical. This
 // mirrors the bootstrap password-rotation case, where the password is injected
 // by secretKeyRef and only a pod-template annotation carries the change signal.
 func TestRunJob_RecreatesOnTemplateAnnotationChange(t *testing.T) {
@@ -644,7 +641,7 @@ func TestRunJob_RecreatesOnTemplateAnnotationChange(t *testing.T) {
 // TestRunJob_NoRecreateWhenTemplateUnchanged verifies that a completed Job
 // whose stored hash already matches the desired template — including its
 // pod-template annotations — is retained without a delete-and-recreate
-// (REQ-001). This is the no-churn invariant for an unchanged credential.
+// This is the no-churn invariant for an unchanged credential.
 func TestRunJob_NoRecreateWhenTemplateUnchanged(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := newScheme()

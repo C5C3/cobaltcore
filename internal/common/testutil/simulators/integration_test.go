@@ -21,8 +21,6 @@ import (
 	envtestutil "github.com/c5c3/forge/internal/common/testutil/envtest"
 )
 
-// Feature: CC-0002
-
 // newUnstructuredCR creates a minimal unstructured custom resource with the
 // given GVK, name, and namespace.
 func newUnstructuredCR(group, version, kind, name, namespace string) *unstructured.Unstructured {

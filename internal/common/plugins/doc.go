@@ -4,6 +4,4 @@
 
 // Package plugins provides pure functions for rendering OpenStack api-paste.ini
 // pipeline configurations and plugin INI sections for CobaltCore operators.
-//
-// Feature: CC-0004
 package plugins
