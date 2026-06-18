@@ -1841,7 +1841,7 @@ func TestBuildKeystoneDeployment_StrategyOverrideRecreate(t *testing.T) {
 // container in the Keystone Deployment is named "keystone".
 // Symmetric with Service/<cr-name> and ensures `kubectl logs <pod> -c keystone`
 // resolves without falling back to the legacy name.
-// CC-0095 legacy: pre-rename name documented for traceability (REQ-003).
+// keystone-api-legacy: pre-rename name documented for traceability.
 func TestBuildKeystoneDeployment_ContainerNameIsKeystone(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
@@ -1851,14 +1851,14 @@ func TestBuildKeystoneDeployment_ContainerNameIsKeystone(t *testing.T) {
 	g.Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(1),
 		"Deployment must define exactly one container (CC-0095, REQ-003)")
 	g.Expect(deploy.Spec.Template.Spec.Containers[0].Name).To(Equal("keystone"),
-		"container Name must be 'keystone' (renamed by CC-0095, REQ-003)") // CC-0095 legacy: legacy name "keystone-api" referenced for traceability.
+		"container Name must be 'keystone'") // keystone-api-legacy: legacy name "keystone-api" referenced for traceability.
 }
 
 // TestBuildKeystoneDeployment_NamedPortIsKeystone verifies that the
 // container's named port is "keystone" with ContainerPort 5000.
 // The rename is local-cosmetic: Service targetPort and HTTPRoute backendRef.port
 // continue to reference the int 5000, so no cross-resource changes are required.
-// CC-0095 legacy: pre-rename name documented for traceability (REQ-003).
+// keystone-api-legacy: pre-rename name documented for traceability.
 func TestBuildKeystoneDeployment_NamedPortIsKeystone(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
@@ -1870,7 +1870,7 @@ func TestBuildKeystoneDeployment_NamedPortIsKeystone(t *testing.T) {
 	g.Expect(ports).To(HaveLen(1),
 		"container must define exactly one named port (CC-0095, REQ-003)")
 	g.Expect(ports[0].Name).To(Equal("keystone"),
-		"named port must be 'keystone' (renamed by CC-0095, REQ-003)") // CC-0095 legacy: legacy name "keystone-api" referenced for traceability.
+		"named port must be 'keystone'") // keystone-api-legacy: legacy name "keystone-api" referenced for traceability.
 	g.Expect(ports[0].ContainerPort).To(Equal(int32(5000)),
 		"ContainerPort must remain 5000 — the rename is name-only (CC-0095, REQ-003)")
 }
@@ -1878,8 +1878,7 @@ func TestBuildKeystoneDeployment_NamedPortIsKeystone(t *testing.T) {
 // TestBuildKeystoneDeployment_NameMatchesCR pins the Deployment ObjectMeta.Name
 // to the bare CR name (no `-api` suffix). Symmetric with the Service, PDB, and
 // HPA name guards: together they assert the operator emits sub-resources at
-// `<cr-name>` rather than the legacy `<cr-name>-api` (CC-0095, REQ-003, // CC-0095 legacy: pre-rename name referenced for traceability.
-// REQ-004).
+// `<cr-name>` rather than the legacy `<cr-name>-api`. // keystone-api-legacy: pre-rename name referenced for traceability.
 func TestBuildKeystoneDeployment_NameMatchesCR(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()

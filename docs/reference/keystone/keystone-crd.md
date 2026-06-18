@@ -50,8 +50,8 @@ the operator creates:
 | `HTTPRoute` | `keystone` | — |
 | Container & named port | `keystone` | port 5000 |
 
-This convention replaces the historical `<name>-api` form (where the same CR would
-have produced `keystone-api` Service, Deployment, etc.).
+This convention replaces the historical form that appended an `-api` suffix to each
+sub-resource (so the same CR would have produced `-api`-suffixed sub-resources).
 The change aligns the internal Service DNS with the public Gateway hostname posture
 and removes the redundant suffix that no longer reflected a meaningful split — the
 Keystone CR has only ever owned the API role.

@@ -9,7 +9,7 @@
 apiVersion: chaos-mesh.org/v1alpha1
 kind: PodChaos
 metadata:
-  name: kill-keystone-api  # CC-0095 legacy: chaos-test fixture identifier intentionally retained
+  name: kill-keystone-api  # keystone-api-legacy: chaos-test fixture identifier intentionally retained
   namespace: openstack
 spec:
   action: pod-kill

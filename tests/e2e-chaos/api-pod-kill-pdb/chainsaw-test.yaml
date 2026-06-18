@@ -18,7 +18,7 @@
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
-  name: keystone-api-pod-kill-pdb  # CC-0095 legacy: chaos-test name retained for fixture parity
+  name: keystone-api-pod-kill-pdb  # keystone-api-legacy: chaos-test name retained for fixture parity
 spec:
   namespace: openstack
   timeouts:
@@ -118,7 +118,7 @@ spec:
         ref:
           apiVersion: chaos-mesh.org/v1alpha1
           kind: PodChaos
-          name: kill-keystone-api  # CC-0095 legacy: matches the PodChaos resource name in 01-podchaos.yaml
+          name: kill-keystone-api  # keystone-api-legacy: matches the PodChaos resource name in 01-podchaos.yaml
   # ── Step 7: Assert Ready=True after chaos cleanup ──────────────────────
   - try:
     - assert:

@@ -4113,13 +4113,13 @@ func TestIntegration_ReconcileProducesRenamedSubResources(t *testing.T) {
 // TestIntegration_FreshReconcileEmitsNoLegacyApiSuffixedResources pins the
 // post-rename steady state: starting from an empty namespace, a fresh
 // reconcile must not emit any operator-managed sub-resource at the legacy
-// `<cr-name>-api` name. // CC-0095 legacy: pre-rename name referenced for traceability.
+// `<cr-name>-api` name. // keystone-api-legacy: pre-rename name referenced for traceability.
 // A regression here would either re-introduce the `-api` suffix in a builder,
 // or leave dual-writes after a partial revert — both visible to live clients
 // (CC-0095, REQ-004).
 //
 // This test does NOT exercise upgrade-from-pre-CC-0095 orphan cleanup: it
-// never pre-seeds legacy `<cr-name>-api` Deployment/Service/PDB, // CC-0095 legacy: pre-rename name referenced for traceability.
+// never pre-seeds legacy `<cr-name>-api` Deployment/Service/PDB, // keystone-api-legacy: pre-rename name referenced for traceability.
 // so it cannot detect orphan persistence on a real upgrade path. See
 // docs/reference/keystone-upgrade-flow.md for the manual cleanup runbook
 // that currently covers that scenario (CC-0095).
@@ -4142,15 +4142,15 @@ func TestIntegration_FreshReconcileEmitsNoLegacyApiSuffixedResources(t *testing.
 
 	err := c.Get(ctx, legacyKey, &appsv1.Deployment{})
 	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(),
-		"no legacy <cr-name>-api Deployment must exist after reconcile (CC-0095, REQ-004)") // CC-0095 legacy: assertion pins absence of the pre-rename name.
+		"no legacy <cr-name>-api Deployment must exist after reconcile ") // keystone-api-legacy: assertion pins absence of the pre-rename name.
 
 	err = c.Get(ctx, legacyKey, &corev1.Service{})
 	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(),
-		"no legacy <cr-name>-api Service must exist after reconcile (CC-0095, REQ-004)") // CC-0095 legacy: assertion pins absence of the pre-rename name.
+		"no legacy <cr-name>-api Service must exist after reconcile ") // keystone-api-legacy: assertion pins absence of the pre-rename name.
 
 	err = c.Get(ctx, legacyKey, &policyv1.PodDisruptionBudget{})
 	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(),
-		"no legacy <cr-name>-api PodDisruptionBudget must exist after reconcile (CC-0095, REQ-004)") // CC-0095 legacy: assertion pins absence of the pre-rename name.
+		"no legacy <cr-name>-api PodDisruptionBudget must exist after reconcile ") // keystone-api-legacy: assertion pins absence of the pre-rename name.
 }
 
 // --- Task 7.1: Metrics endpoint exposes Keystone operator collectors (CC-0089, REQ-008) ---

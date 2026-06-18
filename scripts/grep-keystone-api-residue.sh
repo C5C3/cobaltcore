@@ -3,29 +3,30 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# CI-runnable residue scanner for CC-0095 ("drop -api suffix from operator-managed
-# sub-resources"). Greps the source tree for both the literal substring
-# `keystone-api` and its templated/placeholder forms (`{name}-api`,
-# `<name>-api`, `<cr-name>-api`, `{cr-name}-api`) and fails the build if any
-# occurrence is not explicitly annotated as a permitted legacy reference.
+# CI-runnable residue scanner for the operator sub-resource rename that dropped
+# the legacy `-api` suffix from operator-managed sub-resources. Greps the source
+# tree for both the literal substring `keystone-api` and its templated/placeholder
+# forms (`{name}-api`, `<name>-api`, `<cr-name>-api`, `{cr-name}-api`) and fails
+# the build if any occurrence is not explicitly annotated as a permitted legacy
+# reference.
 #
 # Two patterns are scanned:
 #   1. Literal:    `keystone-api`
 #   2. Templated:  `{name}-api`, `<name>-api`, `<cr-name>-api`, `{cr-name}-api`
 #
 # Both patterns share the same marker convention: a line is considered
-# permitted iff it contains the marker `CC-0095 legacy` (in any comment style
-# appropriate to the file format, e.g. `// CC-0095 legacy`, `# CC-0095 legacy`,
-# `<!-- CC-0095 legacy -->`). The marker documents that the author
-# intentionally preserved the legacy name (typically because it explains the
-# rename to readers, or because it is a historical fixture identifier that
-# tests pin against).
+# permitted iff it contains the marker `keystone-api-legacy` (in any comment
+# style appropriate to the file format, e.g. `// keystone-api-legacy`,
+# `# keystone-api-legacy`, `<!-- keystone-api-legacy -->`). The marker documents
+# that the author intentionally preserved the legacy name (typically because it
+# explains the rename to readers, or because it is a historical fixture
+# identifier that tests pin against).
 #
 # Why scan templated forms separately: literal residue typically comes from
 # code/configuration that names the resource directly, while templated residue
-# comes from documentation tables and prose ("`{name}-api`"). The literal-only
-# scan introduced as the original CC-0095 gate missed several stale doc tables
-# that contradicted the new naming convention; this scanner catches both.
+# comes from documentation tables and prose ("`{name}-api`"). A literal-only
+# scan misses stale doc tables that contradict the current naming convention;
+# this scanner catches both.
 #
 # Architecture docs (`architecture/`) are intentionally excluded from the scan:
 # that directory is a git submodule pointing at the upstream C5C3 repository
@@ -58,8 +59,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
-# Search roots — the ones called out in the CC-0095 task spec, minus the
-# `architecture/` submodule (see header comment for rationale).
+# Search roots, minus the `architecture/` submodule (see header comment for
+# rationale).
 SEARCH_ROOTS=(
   "operators"
   "tests"
@@ -73,8 +74,8 @@ SEARCH_ROOTS=(
 # instead of treating it as opaque. Adding a new top-level directory without
 # also adding it to SEARCH_ROOTS or here causes the script to exit 2.
 EXCLUDED_ROOTS=(
-  "architecture"  # git submodule; residue must be fixed upstream (CC-0095, REQ-009)
-  "internal"      # shared Go libs; verified clean of `keystone-api` at CC-0095 close
+  "architecture"  # git submodule; residue must be fixed upstream
+  "internal"      # shared Go libs; verified clean of `keystone-api`
   "scripts"       # contains this script, which references the patterns by design
   "releases"      # generated install manifests; sourced from operators/ which is scanned
   "images"        # binary container assets, not text-greppable
@@ -116,7 +117,7 @@ if [ "${#unknown_roots[@]}" -gt 0 ]; then
     printf 'Add each to SEARCH_ROOTS (to include in the residue scan) or to\n'
     printf 'EXCLUDED_ROOTS (with a one-line rationale) in this script. This gate\n'
     printf 'exists so a newly created top-level directory cannot silently bypass\n'
-    printf 'the CC-0095 residue check (CC-0095, REQ-009).\n'
+    printf 'the keystone-api residue check.\n'
   } >&2
   exit 2
 fi
@@ -149,22 +150,21 @@ if [ -z "${all_hits}" ]; then
   exit 0
 fi
 
-# Filter out lines that carry the explicit `CC-0095 legacy` annotation. Anything
-# that survives is unmarked residue and must be addressed (either by removing
-# the substring or by adding the marker if the reference is intentional).
-unmarked_hits="$(printf '%s\n' "${all_hits}" | grep -v 'CC-0095 legacy' || true)"
+# Filter out lines that carry the explicit `keystone-api-legacy` annotation.
+# Anything that survives is unmarked residue and must be addressed (either by
+# removing the substring or by adding the marker if the reference is intentional).
+unmarked_hits="$(printf '%s\n' "${all_hits}" | grep -v 'keystone-api-legacy' || true)"
 
 if [ -z "${unmarked_hits}" ]; then
   marked_count="$(printf '%s\n' "${all_hits}" | wc -l | tr -d '[:space:]')"
-  echo "ok: all ${marked_count} 'keystone-api' / '{name}-api' occurrences are annotated with 'CC-0095 legacy'"
+  echo "ok: all ${marked_count} 'keystone-api' / '{name}-api' occurrences are annotated with 'keystone-api-legacy'"
   exit 0
 fi
 
 unmarked_count="$(printf '%s\n' "${unmarked_hits}" | wc -l | tr -d '[:space:]')"
 {
   printf 'error: %s unmarked occurrence(s) of literal "keystone-api" or templated\n' "${unmarked_count}"
-  printf '"{name}-api" / "<name>-api" / "<cr-name>-api" / "{cr-name}-api" found\n'
-  printf '(CC-0095, REQ-009):\n\n'
+  printf '"{name}-api" / "<name>-api" / "<cr-name>-api" / "{cr-name}-api" found:\n\n'
   printf '%s\n\n' "${unmarked_hits}"
   printf 'Each occurrence must either be removed (preferred — the operator now\n'
   printf 'emits sub-resources at the bare CR name; docs should describe the\n'
@@ -172,6 +172,6 @@ unmarked_count="$(printf '%s\n' "${unmarked_hits}" | wc -l | tr -d '[:space:]')"
   printf 'intentional (e.g. historical context in a comment, a pinned fixture\n'
   printf 'identifier in a chaos-test, or the upgrade-flow runbook documenting\n'
   printf 'the rename itself), annotated on the same line with the marker\n'
-  printf '`CC-0095 legacy` so this scanner recognises it.\n'
+  printf '`keystone-api-legacy` so this scanner recognises it.\n'
 } >&2
 exit 1

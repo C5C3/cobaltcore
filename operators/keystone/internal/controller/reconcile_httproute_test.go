@@ -842,8 +842,8 @@ func TestReconcileHTTPRoute_GatewayAPIUnavailable_GatewaySet_SurfacesCondition(t
 
 // TestBuildKeystoneHTTPRoute_NameAndBackendRefMatchCR pins the HTTPRoute
 // ObjectMeta.Name and the BackendRef.Name to the bare CR name. Both must point
-// at the Keystone Service emitted at `<cr-name>` (renamed from `<cr-name>-api` // CC-0095 legacy: pre-rename name referenced for traceability.
-// by CC-0095, REQ-004): a mismatched BackendRef would silently 503 every
+// at the Keystone Service emitted at `<cr-name>` (renamed from `<cr-name>-api`): // keystone-api-legacy: pre-rename name referenced for traceability.
+// a mismatched BackendRef would silently 503 every
 // request that the Gateway routes through the API hostname.
 func TestBuildKeystoneHTTPRoute_NameAndBackendRefMatchCR(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -868,7 +868,7 @@ func TestBuildKeystoneHTTPRoute_NameAndBackendRefMatchCR(t *testing.T) {
 // TestInternalAPIURL_UsesBareCRName pins the cluster-internal Keystone URL —
 // the URL the operator hits to verify KeystoneAPIReady — to the bare-CR-name
 // Service DNS form. Any drift here would either (a) regress to the legacy
-// `<cr-name>-api` host and 503 from the Service rename, or (b) skip the // CC-0095 legacy: pre-rename name referenced for traceability.
+// `<cr-name>-api` host and 503 from the Service rename, or (b) skip the // keystone-api-legacy: pre-rename name referenced for traceability.
 // Service entirely and bypass kube-proxy load balancing (CC-0095, REQ-005).
 func TestInternalAPIURL_UsesBareCRName(t *testing.T) {
 	g := NewGomegaWithT(t)

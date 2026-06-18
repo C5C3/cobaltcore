@@ -633,10 +633,10 @@ func TestBuildBootstrapJob_AdminInternalURLsUseBareName(t *testing.T) {
 	legacyHost := fmt.Sprintf("%s-api.%s.svc.cluster.local", ks.Name, ks.Namespace)
 	for _, e := range container.Env {
 		g.Expect(e.Value).NotTo(ContainSubstring(legacyHost),
-			"bootstrap env vars must not embed the legacy `<cr-name>-api.<ns>` host (CC-0095, REQ-002, REQ-005)") // CC-0095 legacy: assertion pins absence of the pre-rename host.
+			"bootstrap env vars must not embed the legacy `<cr-name>-api.<ns>` host") // keystone-api-legacy: assertion pins absence of the pre-rename host.
 	}
 	g.Expect(container.Command[3]).NotTo(ContainSubstring(legacyHost),
-		"bootstrap wrapper script must not embed the legacy `<cr-name>-api.<ns>` host (CC-0095, REQ-002, REQ-005)") // CC-0095 legacy: assertion pins absence of the pre-rename host.
+		"bootstrap wrapper script must not embed the legacy `<cr-name>-api.<ns>` host") // keystone-api-legacy: assertion pins absence of the pre-rename host.
 }
 
 // findVolumeMountByName returns the first VolumeMount with the given name, or

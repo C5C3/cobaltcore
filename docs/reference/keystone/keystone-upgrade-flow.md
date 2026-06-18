@@ -435,7 +435,7 @@ To smooth the transition, either:
    # Replace 2026-04-19T00:00:00Z with a date 7 days before today (UTC, ISO 8601).
    # The literal date is used here instead of $(date -u -d '7 days ago' +%FT%TZ)
    # because GNU `date -d` is not available on macOS/BSD shells.
-   kubectl exec -n openstack deploy/<name>-api -- \
+   kubectl exec -n openstack deploy/<name> -- \
      keystone-manage trust_flush --date 2026-04-19T00:00:00Z
    ```
 
@@ -635,14 +635,14 @@ recover automatically.
 ## Sub-Resource Rename
 
 A previous change dropped the `-api` suffix from operator-managed sub-resources.
-Clusters deployed before this change have sub-resources named `<cr-name>-api`;
+Clusters deployed before this change have sub-resources named `<cr-name>-api`; <!-- keystone-api-legacy: pre-rename name documented by the upgrade runbook. -->
 clusters deployed after that change carry sub-resources named `<cr-name>` (bare CR
 name). When the operator is upgraded across this boundary, the rename takes effect
 on the next reconcile that touches each sub-resource.
 
 ### Affected Sub-Resources
 
-The following sub-resources are renamed from `<cr-name>-api` to `<cr-name>`:
+The following sub-resources are renamed from `<cr-name>-api` to `<cr-name>`: <!-- keystone-api-legacy: pre-rename name documented by the upgrade runbook. -->
 
 - `Deployment`
 - `Service` (ClusterIP)
@@ -653,7 +653,7 @@ The following sub-resources are renamed from `<cr-name>-api` to `<cr-name>`:
 - Container name and named container port (`5000`) inside the Deployment Pod template
 
 The cluster-internal Service DNS therefore changes from
-`http://<cr-name>-api.<namespace>.svc.cluster.local:5000/v3` to
+`http://<cr-name>-api.<namespace>.svc.cluster.local:5000/v3` to <!-- keystone-api-legacy: pre-rename DNS documented by the upgrade runbook. -->
 `http://<cr-name>.<namespace>.svc.cluster.local:5000/v3`. This is reflected
 in `status.endpoint` once the controller re-reconciles. See the
 [Keystone CRD Sub-Resource Naming Convention section](./keystone-crd.md#sub-resource-naming-convention).
@@ -692,10 +692,10 @@ Two paths are supported for the post-upgrade catalog refresh:
    Repeat for the `admin` and `internal` interfaces. The `public` interface
    typically resolves through the Gateway and is unaffected by the rename.
 
-### Manual Cleanup of Legacy `<cr-name>-api` Sub-Resources
+### Manual Cleanup of Legacy Sub-Resources
 
 The renamed sub-resources are new objects with new `metadata.uid` values and
-fresh `ownerReferences` to the Keystone CR. The legacy `<cr-name>-api`
+fresh `ownerReferences` to the Keystone CR. The legacy `<cr-name>-api` <!-- keystone-api-legacy: pre-rename name documented by the upgrade runbook. -->
 sub-resources from earlier operator releases carry their own owner references
 to the same Keystone CR, but the current reconciler does **not** issue
 `Delete` calls for them — it simply stops reconciling those names. As a
@@ -721,17 +721,17 @@ namespace is a no-op for already-removed objects.
 
 ```bash
 # Core API sub-resources (always present on a pre-rename cluster).
-kubectl -n <namespace> delete deployment              <cr-name>-api --ignore-not-found  # legacy: targets the pre-rename Deployment.
-kubectl -n <namespace> delete service                 <cr-name>-api --ignore-not-found  # legacy: targets the pre-rename Service.
-kubectl -n <namespace> delete poddisruptionbudget     <cr-name>-api --ignore-not-found  # legacy: targets the pre-rename PodDisruptionBudget.
+kubectl -n <namespace> delete deployment              <cr-name>-api --ignore-not-found  # keystone-api-legacy: targets the pre-rename Deployment.
+kubectl -n <namespace> delete service                 <cr-name>-api --ignore-not-found  # keystone-api-legacy: targets the pre-rename Service.
+kubectl -n <namespace> delete poddisruptionbudget     <cr-name>-api --ignore-not-found  # keystone-api-legacy: targets the pre-rename PodDisruptionBudget.
 
 # Optional sub-resources — delete only if the corresponding spec.* field
 # was set on the pre-upgrade CR. Running them unconditionally is safe
 # because of --ignore-not-found.
-kubectl -n <namespace> delete horizontalpodautoscaler <cr-name>-api --ignore-not-found  # legacy: targets the pre-rename HPA.
-kubectl -n <namespace> delete networkpolicy           <cr-name>-api --ignore-not-found  # legacy: targets the pre-rename NetworkPolicy.
+kubectl -n <namespace> delete horizontalpodautoscaler <cr-name>-api --ignore-not-found  # keystone-api-legacy: targets the pre-rename HPA.
+kubectl -n <namespace> delete networkpolicy           <cr-name>-api --ignore-not-found  # keystone-api-legacy: targets the pre-rename NetworkPolicy.
 kubectl -n <namespace> delete httproute.gateway.networking.k8s.io \
-                                                      <cr-name>-api --ignore-not-found  # legacy: targets the pre-rename HTTPRoute.
+                                                      <cr-name>-api --ignore-not-found  # keystone-api-legacy: targets the pre-rename HTTPRoute.
 ```
 
 Deleting the legacy `Deployment` cascades to its `ReplicaSet`s and `Pod`s
