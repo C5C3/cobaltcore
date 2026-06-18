@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# CC-0032: Grype vulnerability scanner configuration
+# Grype vulnerability scanner configuration
 # Purpose: Suppress known-accepted CVEs that have been reviewed and deemed
 # non-exploitable or acceptable in this project's context.
 #

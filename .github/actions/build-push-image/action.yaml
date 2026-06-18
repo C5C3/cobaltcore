@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# CC-0055: Composite action encapsulating the OCI metadata generation, Docker
+# Composite action encapsulating the OCI metadata generation, Docker
 # build-push, digest export, and optional PR supply chain scan shared across
 # all image build jobs in the build-images workflow.
 
@@ -97,7 +97,7 @@ outputs:
 runs:
   using: composite
   steps:
-    # CC-0031: Generate OCI annotations
+    # Generate OCI annotations
     - name: Generate OCI metadata
       id: meta
       uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9 # v6
@@ -128,7 +128,7 @@ runs:
         cache-from: type=gha,scope=${{ inputs.cache-scope }}-${{ inputs.platform-pair }}
         cache-to: type=gha,mode=max,scope=${{ inputs.cache-scope }}-${{ inputs.platform-pair }}
 
-    # CC-0055: Export digest for non-PR builds (REQ-007)
+    # Export digest for non-PR builds
     - name: Export digest
       if: inputs.push-by-digest == 'true' && inputs.artifact-name != ''
       uses: ./.github/actions/export-digest
@@ -137,7 +137,7 @@ runs:
         artifact-name: ${{ inputs.artifact-name }}
         digest-dir: ${{ inputs.digest-dir }}
 
-    # CC-0055: Supply chain scan for PR builds (REQ-001)
+    # Supply chain scan for PR builds
     - name: Supply chain scan (PR)
       if: inputs.push-by-digest == 'false' && inputs.grype-category != ''
       uses: ./.github/actions/supply-chain-attest

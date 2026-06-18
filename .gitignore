@@ -18,7 +18,7 @@ vendor/
 operators/keystone/keystone
 operators/c5c3/c5c3
 
-# Go workspace — go.work.sum is tracked for reproducibility (CC-0001 REQ-009).
+# Go workspace — go.work.sum is tracked for reproducibility.
 
 # IDE
 .idea/
@@ -48,7 +48,7 @@ demo/
 *.key
 *.pfx
 
-# CC-0100 — Build artifact: copied at deploy time from operators/keystone/dashboards/
+# Build artifact: copied at deploy time from operators/keystone/dashboards/
 # (WITH_PROMETHEUS=true) so kustomize's configMapGenerator can reference it from
 # the overlay root without a `../../` parent traversal (LoadRestrictionsRootOnly).
 deploy/kind/prometheus/keystone-operator.json

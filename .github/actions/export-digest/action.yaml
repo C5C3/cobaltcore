@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# CC-0055: Composite action encapsulating the digest export + artifact upload
+# Composite action encapsulating the digest export + artifact upload
 # pattern shared across base image, tempest, and service image build jobs.
 
 name: Export digest

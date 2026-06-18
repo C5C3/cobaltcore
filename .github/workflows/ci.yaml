@@ -22,9 +22,9 @@ env:
   # helm/kind-action cluster_name and `kind load --name`. Mirrors the
   # CLUSTER_NAME default in hack/deploy-infra.sh.
   KIND_CLUSTER: forge
-  # CC-0018: Pin tool versions for CI reproducibility (single source of truth).
+  # Pin tool versions for CI reproducibility (single source of truth).
   CONTROLLER_GEN_VERSION: v0.21.0
-  GOFUMPT_VERSION: v0.10.0  # CC-0053
+  GOFUMPT_VERSION: v0.10.0
   GOLANGCI_LINT_VERSION: v2.12.2
 
 concurrency:
@@ -82,7 +82,7 @@ jobs:
             keystone:
               - 'operators/keystone/**'
               - 'images/keystone/**'
-            # CC-0110: c5c3 orchestration operator. K-ORC is deployed from an
+            # c5c3 orchestration operator. K-ORC is deployed from an
             # upstream Helm chart (there is no images/k-orc/ to build), so only
             # the operator source path triggers the c5c3 unit/integration/E2E
             # and image-build/push jobs.
@@ -96,7 +96,7 @@ jobs:
               - 'package.json'
               - 'package-lock.json'
               - '.github/workflows/ci.yaml'
-            # CC-0041: Helm chart changes trigger the helm-validate job. Both
+            # Helm chart changes trigger the helm-validate job. Both
             # operator charts share the operator-library library chart and a
             # values.schema.json generator, so a change to either chart, the
             # shared library, the generator, or the Makefile targets it backs
@@ -112,14 +112,14 @@ jobs:
               - 'hack/**'
               - 'deploy/**'
               - '.github/workflows/ci.yaml'
-            # CC-0054: Chaos E2E tests — separate from e2e_infra to allow independent gating.
+            # Chaos E2E tests — separate from e2e_infra to allow independent gating.
             e2e_chaos:
               - 'tests/e2e-chaos/**'
               - 'hack/**'
               - 'deploy/**'
               - '.github/workflows/ci.yaml'
               - '.github/actions/**'
-            # CC-0100, REQ-010: Prometheus stack E2E tests — separate filter so
+            # Prometheus stack E2E tests — separate filter so
             # the e2e-prometheus job runs only when the kind-only monitoring
             # stack, the keystone-operator ServiceMonitor wiring, the operator
             # values surface that toggles it, the dashboard JSON consumed by
@@ -138,14 +138,14 @@ jobs:
               - '.github/actions/setup-e2e-infra/action.yaml'
               - '.github/workflows/ci.yaml'
               - 'Makefile'
-            # CC-0054 follow-up: Any E2E test-definition change forces all E2E
+            # follow-up: Any E2E test-definition change forces all E2E
             # jobs to run. Kept separate from go_common so pure test edits do
             # not also trigger lint/unit/format/vuln jobs.
             tests_e2e_operator:
               - 'tests/e2e/**'
             tests_tempest:
               - 'tests/tempest/**'
-      # CC-0050: Extracted to hack/ci-resolve-changes.sh (review #2 comment 3).
+      # Extracted to hack/ci-resolve-changes.sh (review #2 comment 3).
       - name: Resolve effective changes
         id: result
         env:
@@ -162,7 +162,7 @@ jobs:
           FILTER_tests_tempest: ${{ steps.filter.outputs.tests_tempest }}
           FILTER_go_common: ${{ steps.filter.outputs.go_common }}
         run: hack/ci-resolve-changes.sh
-      # CC-0051: Derive Tempest release matrix from releases/ directories (review #1).
+      # Derive Tempest release matrix from releases/ directories (review #1).
       # Avoids hardcoding releases in the workflow — adding or removing a release
       # only requires updating releases/ and tests/tempest/, not this file.
       - name: Generate Tempest release matrix
@@ -197,7 +197,7 @@ jobs:
       - name: Run lint
         run: make lint
 
-  # CC-0053: Verify all Go files conform to gofumpt formatting.
+  # Verify all Go files conform to gofumpt formatting.
   # Runs gofumpt -l to detect non-conforming files, then prints a unified
   # diff (gofumpt -d) on failure so developers can see exactly what to fix.
   format-check:
@@ -219,7 +219,7 @@ jobs:
       - name: Install gofumpt
         if: steps.gofumpt-cache.outputs.cache-hit != 'true'
         run: go install mvdan.cc/gofumpt@${{ env.GOFUMPT_VERSION }}
-      # CC-0053: Only check git-tracked Go files to skip generated, vendored,
+      # Only check git-tracked Go files to skip generated, vendored,
       # or tooling code that may not follow gofumpt conventions (review #1).
       - name: Check formatting
         run: |
@@ -231,7 +231,7 @@ jobs:
             exit 1
           fi
 
-  # CC-0010: Validate shell scripts with shellcheck to catch scripting issues
+  # Validate shell scripts with shellcheck to catch scripting issues
   # early.  shellcheck is pre-installed on ubuntu-latest runners.
   # Runs unconditionally — it is fast and hack/ scripts are exercised in E2E.
   shellcheck:
@@ -242,6 +242,19 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       - name: Run shellcheck on hack/*.sh and operator rotation scripts
         run: make shellcheck
+
+  # Always-on gate: the whole tracked tree (code, tests, CI, scripts, docs)
+  # must be free of internal feature/requirement IDs (CC-NNNN / REQ-NNN). Runs
+  # unconditionally on every PR — not path-filtered — so a stray ID added
+  # anywhere is caught. Folds in the former docs-only check.
+  feature-ids:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - name: Check the tree is free of internal feature/requirement IDs
+        run: make check-feature-ids
 
   # Run every shell unit test under tests/unit/ (hack/, deploy/, docs/,
   # renovate/). Repo files only — adds no injection surface. ubuntu-latest
@@ -264,7 +277,7 @@ jobs:
       - name: Run shell unit tests
         run: make test-shell
 
-  # CC-0094: Enforce the canonical-scaffold contract for the invalid-CR
+  # Enforce the canonical-scaffold contract for the invalid-CR
   # Chainsaw fixtures (sourcery-ai review #1, FC1 from review #2). Runs
   # `_generate.py --check` (drift mode) and the test_generate.py unit suite
   # (FIXTURES count + chainsaw-test.yaml cross-reference) so a hand-edit to
@@ -279,7 +292,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-      - name: Verify CC-0094 invalid-CR fixture drift and structure
+      - name: Verify invalid-CR fixture drift and structure
         run: make verify-invalid-cr-fixtures
 
   # Schema-lint every Chainsaw test (tests/**/chainsaw-test.yaml) and config
@@ -298,7 +311,7 @@ jobs:
       - name: Run chainsaw lint
         run: make chainsaw-lint
 
-  # CC-0018: Matrix over [common, keystone, c5c3] to deduplicate common coverage
+  # Matrix over [common, keystone, c5c3] to deduplicate common coverage
   # into a single leg (review comment #7/#8).
   test:
     needs: [changes]
@@ -329,15 +342,15 @@ jobs:
           flags: unit-${{ matrix.target }}
           fail_ci_if_error: false
 
-  # CC-0018, REQ-003: Integration tests with envtest, coverage uploaded to Codecov
-  # (REQ-004). Includes internal/common to meet 80% codecov target (review comment #5).
+  # Integration tests with envtest, coverage uploaded to Codecov
+  # Includes internal/common to meet 80% codecov target (review comment #5).
   test-integration:
     needs: [changes]
     if: github.event_name == 'pull_request' && needs.changes.outputs.go == 'true'
     # 4 vCPU (was 2): the keystone envtest leg sat at ~14m on a 2-vCPU runner
-    # against the 15m timeout, and the CC-0109 password-rotation integration
+    # against the 15m timeout, and the password-rotation integration
     # tests tipped it over. envtest is CPU-bound, so the larger runner pulls the
-    # wall-clock back down (CC-0109). Even so the keystone controller envtest
+    # wall-clock back down. Even so the keystone controller envtest
     # suite alone runs ~14m and intermittently brushed the 15m job wall (a 15m07s
     # run was cancelled), so the limit is raised to 20m for headroom.
     runs-on: blacksmith-4vcpu-ubuntu-2404
@@ -378,7 +391,7 @@ jobs:
           flags: integration-${{ matrix.target }}
           fail_ci_if_error: false
 
-  # CC-0052: Race condition detection for Go tests.
+  # Race condition detection for Go tests.
   # Runs all unit tests with -race to catch data races in concurrent operator code
   # (reconcilers, watches, informer caches). Separate from the main test job because
   # the race detector adds 2-5x overhead. Uses -count=1 to disable test caching —
@@ -396,7 +409,7 @@ jobs:
       - name: Run race-detected tests
         run: make test-race RACE_FLAGS="-count=1"
 
-  # CC-0061: Scan Go modules for reachable vulnerabilities using govulncheck.
+  # Scan Go modules for reachable vulnerabilities using govulncheck.
   # govulncheck is the official Go vulnerability scanner maintained by the Go
   # team — it detects actually reachable vulnerable code paths, not just
   # dependency list matches.  Uses @latest intentionally (not pinned) because
@@ -417,7 +430,7 @@ jobs:
       - name: Run govulncheck
         run: make govulncheck
 
-  # CC-0018, REQ-009: Verify generated code (CRD manifests, deepcopy) is committed
+  # Verify generated code (CRD manifests, deepcopy) is committed
   # and up-to-date. Fails if make manifests or make generate produces uncommitted diffs.
   verify-codegen:
     needs: [changes]
@@ -442,7 +455,7 @@ jobs:
         run: |
           make manifests
           make generate
-      # CC-0018: Verify Helm chart CRD copies match controller-gen output.
+      # Verify Helm chart CRD copies match controller-gen output.
       - name: Verify CRD sync
         run: make verify-crd-sync
       - name: Check for uncommitted changes
@@ -461,11 +474,6 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           fetch-depth: 0
-      # Gate: published docs must describe behaviour, never cite internal
-      # feature/requirement IDs (CC-NNNN / REQ-NNN). Runs first so it fails fast
-      # without needing the Node toolchain.
-      - name: Check docs are free of internal feature IDs
-        run: make check-docs-ids
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version: 24
@@ -475,7 +483,7 @@ jobs:
       - name: Build documentation
         run: npm run docs:build
 
-  # CC-0041: Validate Helm chart structure, template rendering, and unit tests.
+  # Validate Helm chart structure, template rendering, and unit tests.
   # Runs helm lint, helm template with multiple value override scenarios, and
   # helm-unittest for both operator charts to catch regressions early without a
   # cluster. Both charts share the operator-library subchart and a generated
@@ -524,7 +532,7 @@ jobs:
             helm unittest "$chart"
           done
 
-  # CC-0010, REQ-009: End-to-end infrastructure deployment and Chainsaw test.
+  # End-to-end infrastructure deployment and Chainsaw test.
   # Deploys the full infrastructure stack to a kind cluster and validates health
   # of all operators, CRs, and ExternalSecrets via Chainsaw assertions.
   e2e-infra:
@@ -542,14 +550,14 @@ jobs:
         with:
           config: hack/kind-config.yaml
           cluster_name: ${{ env.KIND_CLUSTER }}
-      # CC-0050: Use composite action for shared Flux CLI + test deps + deploy-infra sequence (REQ-005).
+      # Use composite action for shared Flux CLI + test deps + deploy-infra sequence.
       - name: Setup E2E infrastructure
         uses: ./.github/actions/setup-e2e-infra
       - name: Run Chainsaw E2E tests
         run: |
           mkdir -p _output/reports
           chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e/infrastructure/
-      # CC-0050: Use shared diagnostic dump script (REQ-001).
+      # Use shared diagnostic dump script.
       - name: Dump diagnostic info
         if: failure()
         run: hack/ci-dump-diagnostics.sh
@@ -659,7 +667,7 @@ jobs:
       # ci-service-image-releases.sh derives the release list per operator from
       # releases/<release>/source-refs.yaml (the single source of truth, also
       # used by ci-generate-build-matrix.sh). Orchestration operators without a
-      # service image — e.g. c5c3 (CC-0110), which deploys K-ORC via an upstream
+      # service image — e.g. c5c3, which deploys K-ORC via an upstream
       # Helm chart — yield no releases and are skipped, so a changed c5c3 no
       # longer fails this step on a missing source-ref.
       - name: Build service images
@@ -743,7 +751,7 @@ jobs:
             push_image "${IMAGE_PREFIX}/tempest:${release}"
           done
 
-  # CC-0018, REQ-005: End-to-end operator tests using kind cluster and Chainsaw.
+  # End-to-end operator tests using kind cluster and Chainsaw.
   # Loads pre-built images from the build-e2e-images artifact, deploys via Helm,
   # and runs Chainsaw test suites per operator.
   # Only runs when Go/operator code or E2E test definitions change, and only
@@ -778,7 +786,7 @@ jobs:
       # Resolve which images this operator needs: always its operator image,
       # plus one service image per release that ships one. The release list
       # comes from source-refs.yaml (ci-service-image-releases.sh), so an
-      # orchestration operator without a service image — e.g. c5c3 (CC-0110) —
+      # orchestration operator without a service image — e.g. c5c3 —
       # loads only its operator image instead of failing to pull a
       # non-existent c5c3:<release>.
       - name: Resolve E2E images
@@ -819,10 +827,10 @@ jobs:
               "${IMAGE_PREFIX}/${OPERATOR}:2025.2-upgraded"
             kind load docker-image "${IMAGE_PREFIX}/${OPERATOR}:2025.2-upgraded" --name "${KIND_CLUSTER}"
           fi
-      # CC-0050: Use composite action for shared Flux CLI + test deps + deploy-infra sequence (REQ-005).
+      # Use composite action for shared Flux CLI + test deps + deploy-infra sequence.
       - name: Setup E2E infrastructure
         uses: ./.github/actions/setup-e2e-infra
-      # CC-0050: Use shared operator deployment script (REQ-003).
+      # Use shared operator deployment script.
       - name: Deploy operator
         run: hack/ci-deploy-operator.sh
         env:
@@ -833,7 +841,7 @@ jobs:
           OPERATOR: ${{ matrix.operator }}
         run: |
           mkdir -p _output/reports
-          # CC-0090, REQ-010: Operator-chart-level tests (e.g. network-policy-egress)
+          # Operator-chart-level tests (e.g. network-policy-egress)
           # live under tests/e2e/<operator>-operator/ to keep them separate from
           # the per-CR tests under tests/e2e/<operator>/. Include the directory
           # only when it exists so operators without chart-level tests still run.
@@ -842,7 +850,7 @@ jobs:
             test_dirs+=("tests/e2e/${OPERATOR}-operator/")
           fi
           chainsaw test --config tests/e2e/chainsaw-config.yaml "${test_dirs[@]}"
-      # CC-0050: Use shared diagnostic dump script (REQ-001).
+      # Use shared diagnostic dump script.
       - name: Dump diagnostic info
         if: always()
         run: hack/ci-dump-diagnostics.sh
@@ -856,7 +864,7 @@ jobs:
           path: _output/reports/
           retention-days: 14
 
-  # CC-0054, REQ-001: End-to-end chaos tests using kind cluster, Chaos Mesh,
+  # End-to-end chaos tests using kind cluster, Chaos Mesh,
   # and Chainsaw.  Builds the keystone operator image, deploys it with Chaos
   # Mesh infrastructure, and runs chaos test suites (MariaDB pod kill,
   # Memcached pod kill, OpenBao pod kill, network partition, network latency).
@@ -867,13 +875,13 @@ jobs:
   # Chaos tests run only after every e2e-operator matrix leg has finished
   # without failure: a failed e2e-operator run skips e2e-chaos, a
   # path-filter-skipped one does not block it (always() + the
-  # failure/cancelled guards below). This supersedes CC-0049 REQ-006,
+  # failure/cancelled guards below). This supersedes,
   # which had removed the dependency to run both jobs in parallel.
   #
-  # CC-0049, REQ-007: run-chaos PR label trigger added for on-demand chaos
+  # run-chaos PR label trigger added for on-demand chaos
   # validation of operator code changes.
   #
-  # CC-0054, REQ-004: Non-blocking (continue-on-error: true) while chaos test
+  # Non-blocking (continue-on-error: true) while chaos test
   # stability is being proven in CI.  Revisit after 2-4 weeks of successful CI
   # runs to consider making this job blocking and adding it to publish
   # dependencies.
@@ -889,7 +897,7 @@ jobs:
       needs.build-e2e-images.result == 'success' &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
-    # CC-0049: Split into two matrix entries to work around the Blacksmith
+    # Split into two matrix entries to work around the Blacksmith
     # Firecracker microVM kernel, which ships without ip_set/xt_set/sch_netem
     # modules and has no matching linux-modules-extra package. PodChaos runs
     # on Blacksmith for speed; NetworkChaos runs on a GitHub-hosted ubuntu
@@ -904,7 +912,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # CC-0097: tests/e2e/infrastructure/chaos-mesh-health is included in
+          # tests/e2e/infrastructure/chaos-mesh-health is included in
           # both matrix entries so the kind-only chaos-mesh installation is
           # health-checked against the cluster each runner spins up. Both
           # runners set WITH_CHAOS_MESH=true via setup-e2e-infra (env block
@@ -950,13 +958,13 @@ jobs:
         run: |
           kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:2025.2 --name ${{ env.KIND_CLUSTER }}
-      # CC-0050: Use composite action for shared Flux CLI + test deps + deploy-infra sequence (REQ-005).
-      # CC-0097: Opt in to Chaos Mesh - required for the chaos suites; covers both matrix entries.
+      # Use composite action for shared Flux CLI + test deps + deploy-infra sequence.
+      # Opt in to Chaos Mesh - required for the chaos suites; covers both matrix entries.
       - name: Setup E2E infrastructure
         uses: ./.github/actions/setup-e2e-infra
         env:
           WITH_CHAOS_MESH: "true"
-      # CC-0050: Use shared operator deployment script (REQ-003).
+      # Use shared operator deployment script.
       - name: Deploy operator
         run: hack/ci-deploy-operator.sh
         env:
@@ -967,7 +975,7 @@ jobs:
           mkdir -p _output/reports
           chainsaw test --config tests/e2e-chaos/chainsaw-config.yaml \
             ${{ matrix.test_dirs }}
-      # CC-0050: Use shared diagnostic dump script (REQ-001).
+      # Use shared diagnostic dump script.
       - name: Dump diagnostic info
         if: always()
         run: hack/ci-dump-diagnostics.sh
@@ -981,7 +989,7 @@ jobs:
           path: _output/reports/
           retention-days: 14
 
-  # CC-0100, REQ-010: End-to-end Prometheus stack tests using kind cluster,
+  # End-to-end Prometheus stack tests using kind cluster,
   # kube-prometheus-stack, and Chainsaw.  Builds the keystone operator image,
   # deploys it with the monitoring stack (WITH_PROMETHEUS=true on the shared
   # composite action), enables the keystone-operator ServiceMonitor via the
@@ -990,7 +998,7 @@ jobs:
   # presence in openstack, Prometheus target health for keystone-operator,
   # Grafana dashboard presence).
   #
-  # CC-0100, REQ-011: Single matrix entry on the Blacksmith runner — the
+  # Single matrix entry on the Blacksmith runner — the
   # kube-prometheus stack is deterministic, so unlike e2e-chaos this job runs
   # `continue-on-error: false`.  Inherits the e2e-chaos `needs:` chain so the
   # same upstream Go gate applies and an operator code change re-runs the
@@ -1031,19 +1039,19 @@ jobs:
         run: |
           kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:2025.2 --name ${{ env.KIND_CLUSTER }}
-      # CC-0050: Use composite action for shared Flux CLI + test deps + deploy-infra sequence.
-      # CC-0100: Opt in to kube-prometheus-stack — required for the prometheus suite.
+      # Use composite action for shared Flux CLI + test deps + deploy-infra sequence.
+      # Opt in to kube-prometheus-stack — required for the prometheus suite.
       - name: Setup E2E infrastructure
         uses: ./.github/actions/setup-e2e-infra
         env:
           WITH_PROMETHEUS: "true"
-      # CC-0050: Use shared operator deployment script.
-      # CC-0100: WITH_PROMETHEUS=true gates --set monitoring.serviceMonitor.enabled=true
+      # Use shared operator deployment script.
+      # WITH_PROMETHEUS=true gates --set monitoring.serviceMonitor.enabled=true
       # on the helm install. Without it, the chart's gated ServiceMonitor template
       # renders nothing and chainsaw step 2 (servicemonitor-exists) plus step 3
       # (prometheus-target-up) cascade-fail. The kind/base kustomization keeps the
       # keystone-operator HelmRelease suspended, so the patch in deploy-infra.sh
-      # cannot enable the ServiceMonitor reactively (CC-0100, REQ-001).
+      # cannot enable the ServiceMonitor reactively.
       - name: Deploy operator
         run: hack/ci-deploy-operator.sh
         env:
@@ -1055,7 +1063,7 @@ jobs:
           mkdir -p _output/reports
           chainsaw test --config tests/e2e/chainsaw-config.yaml \
             tests/e2e/keystone/prometheus-stack/
-      # CC-0050: Use shared diagnostic dump script.
+      # Use shared diagnostic dump script.
       - name: Dump diagnostic info
         if: always()
         run: hack/ci-dump-diagnostics.sh
@@ -1069,11 +1077,11 @@ jobs:
           path: _output/reports/
           retention-days: 14
 
-  # CC-0035: Tempest API integration tests.
+  # Tempest API integration tests.
   # Deploys services into a kind cluster and runs the OpenStack Tempest test
   # suite against them.  Currently tests Keystone; designed so additional
   # services can be added to this single job without needing separate runs.
-  # CC-0051: Matrix over OpenStack releases to validate each release independently.
+  # Matrix over OpenStack releases to validate each release independently.
   #
   # Runs only after every E2E job has finished without failure: a failed
   # E2E job skips tempest, a path-filter-skipped one does not block it
@@ -1120,10 +1128,10 @@ jobs:
         run: |
           kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:${{ matrix.release }} --name ${{ env.KIND_CLUSTER }}
-      # CC-0050: Use composite action for shared Flux CLI + test deps + deploy-infra sequence (REQ-005).
+      # Use composite action for shared Flux CLI + test deps + deploy-infra sequence.
       - name: Setup E2E infrastructure
         uses: ./.github/actions/setup-e2e-infra
-      # CC-0050: Use shared operator deployment script (REQ-003).
+      # Use shared operator deployment script.
       - name: Deploy operator (keystone)
         run: hack/ci-deploy-operator.sh
         env:
@@ -1134,7 +1142,7 @@ jobs:
           kubectl apply -f ${{ matrix.config-dir }}/00-keystone-cr.yaml
           kubectl wait keystone/${{ matrix.cr-name }} -n openstack \
             --for=condition=Ready --timeout=300s
-      # CC-0050: Use shared Tempest wrapper script (REQ-004).
+      # Use shared Tempest wrapper script.
       - name: Run Tempest API tests
         run: hack/ci-run-tempest.sh
         env:
@@ -1153,7 +1161,7 @@ jobs:
             _output/tempest/
             !_output/tempest/config/tempest.conf
           retention-days: 14
-      # CC-0050: Use shared diagnostic dump script (REQ-001).
+      # Use shared diagnostic dump script.
       - name: Dump diagnostic info
         if: always()
         run: hack/ci-dump-diagnostics.sh
@@ -1204,7 +1212,7 @@ jobs:
           older-than: "0 seconds"
           token: ${{ secrets.GITHUB_TOKEN }}
 
-  # CC-0018, REQ-006: Build operator container images per platform on native runners.
+  # Build operator container images per platform on native runners.
   # Each platform is pushed by digest; merge-operator-images assembles the manifest list.
   # Runs only on push events (main branch or v* tags) after E2E passed.
   build-and-push:
@@ -1244,7 +1252,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # CC-0018: Generate OCI annotations consistent with the two-layer OCI annotation
+      # Generate OCI annotations consistent with the two-layer OCI annotation
       # pattern in build-images.yaml. type=semver strips the v prefix (v0.1.0 -> 0.1.0).
       - name: Generate image metadata
         id: meta
@@ -1282,7 +1290,7 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  # CC-0018, REQ-006: Assemble per-platform digests into multi-arch manifest lists
+  # Assemble per-platform digests into multi-arch manifest lists
   # and push with final tags (SHA, latest, semver).
   merge-operator-images:
     runs-on: ubuntu-latest
@@ -1304,7 +1312,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # CC-0018: Generate OCI tags via docker/metadata-action.
+      # Generate OCI tags via docker/metadata-action.
       # type=semver strips the v prefix (v0.1.0 -> 0.1.0).
       - name: Generate image metadata
         id: meta
@@ -1338,7 +1346,7 @@ jobs:
             $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
             $(printf "${IMAGE}@sha256:%s " *)
 
-  # CC-0018, REQ-007: Package and push operator Helm charts to GHCR OCI registry.
+  # Package and push operator Helm charts to GHCR OCI registry.
   # Runs only on push events after E2E passed. Uses versioned chart packaging
   # for v* tag pushes.
   helm-push:
@@ -1363,7 +1371,7 @@ jobs:
         env:
           OPERATOR: ${{ matrix.operator }}
         run: |
-          # Remove stale chart tarballs to prevent glob ambiguity (CC-0018).
+          # Remove stale chart tarballs to prevent glob ambiguity.
           rm -f "${OPERATOR}"-operator-*.tgz
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             make helm-package OPERATOR="${OPERATOR}" CHART_VERSION="${GITHUB_REF_NAME#v}"
@@ -1372,7 +1380,7 @@ jobs:
           fi
           helm push "${OPERATOR}"-operator-*.tgz oci://${{ env.REGISTRY }}/c5c3/charts
 
-  # CC-0018, REQ-008: Create GitHub release with auto-generated release notes
+  # Create GitHub release with auto-generated release notes
   # on v* tag pushes, after images and charts are published.
   github-release:
     runs-on: ubuntu-latest
@@ -1387,7 +1395,7 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       - uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5
-      # CC-0018: Package Helm chart tarballs to attach as release assets.
+      # Package Helm chart tarballs to attach as release assets.
       - name: Package Helm charts
         run: |
           for op in $(echo '${{ needs.changes.outputs.e2e-operators }}' | jq -r '.operator[]'); do

@@ -2,14 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Makefile for CC-0001 Go Workspace
+# Makefile for Go Workspace
 # Manages build, test, lint, and deployment operations for operators and common modules
 #
-# DEVIATION from architecture/01-project-setup.md (CC-0001):
+# DEVIATION from architecture/01-project-setup.md
 # - Architecture doc lists 9 targets; this Makefile defines 12 (adds deploy-infra,
 #   teardown-infra, install-test-deps) for completeness.
 # - generate/manifests use controller-gen to produce deepcopy functions and CRD/webhook
-#   manifests for each operator module that has an api/ directory (CC-0011).
+#   manifests for each operator module that has an api/ directory.
 
 # Default operators to build and test
 OPERATORS ?= keystone c5c3
@@ -22,21 +22,21 @@ endif
 # controller-gen generates deepcopy functions, CRD manifests, and webhook configs.
 CONTROLLER_GEN ?= controller-gen
 
-# setup-envtest downloads kubebuilder assets for envtest integration tests (CC-0018, REQ-003).
+# setup-envtest downloads kubebuilder assets for envtest integration tests.
 # Default resolves via GOPATH so local runs work without manually exporting GOBIN.
 SETUP_ENVTEST ?= $(shell go env GOPATH)/bin/setup-envtest
 
-# CC-0053: Pin gofumpt version to match CI (single source of truth for local dev).
+# Pin gofumpt version to match CI (single source of truth for local dev).
 # Must be kept in sync with GOFUMPT_VERSION in .github/workflows/ci.yaml.
 GOFUMPT_VERSION ?= v0.10.0
 GOFUMPT ?= gofumpt
 
-# Kubernetes version for envtest binary downloads (CC-0018).
+# Kubernetes version for envtest binary downloads.
 # Pin to a specific version for reproducible integration tests across runs.
 ENVTEST_K8S_VERSION ?= 1.35
 
 # Image tag for docker-build. Uses deferred evaluation so $(OPERATOR) is resolved
-# at recipe expansion time (CC-0018, REQ-010).
+# at recipe expansion time.
 IMG ?= ghcr.io/c5c3/$(OPERATOR)-operator:latest
 
 # ============================================================================
@@ -74,14 +74,14 @@ test:
 	done
 
 .PHONY: test-common
-# test-common runs unit tests for internal/common only (CC-0018).
+# test-common runs unit tests for internal/common only.
 # Used by CI to deduplicate common coverage into a single matrix leg.
 test-common:
 	@echo "Testing internal/common module..."
 	@go test -coverprofile=cover-unit-common.out ./internal/common/...
 
 .PHONY: test-operator
-# test-operator runs unit tests for a single operator without common (CC-0018).
+# test-operator runs unit tests for a single operator without common.
 # Usage: make test-operator OPERATOR=keystone
 test-operator:
 	$(if $(OPERATOR),,$(error test-operator requires OPERATOR, e.g. make test-operator OPERATOR=keystone))
@@ -89,7 +89,7 @@ test-operator:
 	@go test -coverprofile=cover-unit-$(OPERATOR).out ./operators/$(OPERATOR)/...
 
 .PHONY: test-race
-# test-race runs all Go tests with the race detector enabled (CC-0052).
+# test-race runs all Go tests with the race detector enabled.
 # Operator code is inherently concurrent — reconcilers, watches, and informer
 # caches operate across goroutines — so race detection catches data corruption
 # that normal tests miss. CI passes RACE_FLAGS="-count=1" to disable test
@@ -119,11 +119,11 @@ lint:
 	done
 
 # ============================================================================
-# Security Targets (CC-0061)
+# Security Targets
 # ============================================================================
 
 .PHONY: govulncheck
-# govulncheck scans all workspace modules for known Go vulnerabilities (CC-0061).
+# govulncheck scans all workspace modules for known Go vulnerabilities.
 # Delegates to govulncheck per module, matching go.work use directives.
 # CI calls this target instead of hardcoding module paths.
 govulncheck:
@@ -135,11 +135,11 @@ govulncheck:
 	done
 
 # ============================================================================
-# Shell Script Targets (CC-0073)
+# Shell Script Targets
 # ============================================================================
 
 .PHONY: shellcheck
-# shellcheck lints all shell scripts with shellcheck --severity=warning (CC-0073, REQ-006).
+# shellcheck lints all shell scripts with shellcheck --severity=warning.
 # Covers hack/ utility scripts and operator rotation scripts embedded via ConfigMaps.
 shellcheck:
 	@echo "Linting hack/*.sh..."
@@ -180,18 +180,18 @@ test-shell:
 	exit $$status
 
 # ============================================================================
-# Format Targets (CC-0053)
+# Format Targets
 # ============================================================================
 
 .PHONY: fmt
-# fmt formats all tracked Go files with gofumpt (CC-0053).
+# fmt formats all tracked Go files with gofumpt.
 # Only formats git-tracked files to skip generated, vendored, or tooling code.
 fmt:
 	@echo "Formatting Go files with gofumpt..."
 	@git ls-files '*.go' | xargs $(GOFUMPT) -w
 
 .PHONY: format-check
-# format-check verifies all tracked Go files conform to gofumpt formatting (CC-0053).
+# format-check verifies all tracked Go files conform to gofumpt formatting.
 # Mirrors the CI format-check job for local pre-commit validation.
 format-check:
 	@unformatted=$$(git ls-files '*.go' | xargs $(GOFUMPT) -l); \
@@ -204,7 +204,7 @@ format-check:
 	echo "Format check passed."
 
 .PHONY: install-gofumpt
-# install-gofumpt installs gofumpt at the pinned version (CC-0053).
+# install-gofumpt installs gofumpt at the pinned version.
 # Ensures local development uses the same version as CI.
 install-gofumpt:
 	go install mvdan.cc/gofumpt@$(GOFUMPT_VERSION)
@@ -215,7 +215,7 @@ install-gofumpt:
 
 .PHONY: generate
 # generate runs controller-gen object to produce zz_generated.deepcopy.go files
-# for internal/common/types and each operator that has an api/ directory (CC-0011, REQ-009).
+# for internal/common/types and each operator that has an api/ directory.
 generate: generate-common
 	@for op in $(OPERATORS); do \
 		if [ -d "operators/$$op/api" ]; then \
@@ -226,14 +226,14 @@ generate: generate-common
 
 .PHONY: generate-common
 # generate-common runs controller-gen object for internal/common/types with the
-# SPDX header (CC-0011). Separated so it runs alongside operator generation.
+# SPDX header. Separated so it runs alongside operator generation.
 generate-common:
 	@echo "Generating deepcopy for internal/common/types..."
 	@cd internal/common && $(CONTROLLER_GEN) object:headerFile=../../hack/boilerplate.go.txt paths=./types/...
 
 .PHONY: manifests
 # manifests runs controller-gen crd and webhook to produce CRD YAML and webhook
-# configuration for each operator that has an api/ directory (CC-0011, REQ-009).
+# configuration for each operator that has an api/ directory.
 # Output is written to operators/<op>/config/crd/bases/ and operators/<op>/config/webhook/.
 manifests:
 	@for op in $(OPERATORS); do \
@@ -246,7 +246,7 @@ manifests:
 	done
 
 # ============================================================================
-# CRD Sync Targets (CC-0017)
+# CRD Sync Targets
 # ============================================================================
 
 # sync-crds prepends a cross-reference comment header to Helm CRD copies.
@@ -266,7 +266,7 @@ sync-crds: manifests
 				printf '%s\n%s\n%s\n' \
 					"# SOURCE: operators/$$op/config/crd/bases/$$(basename $$crd)" \
 					"# This file must be kept in sync with the source CRD generated by controller-gen." \
-					"# Run 'make verify-crd-sync' to check for drift, or 'make sync-crds' to update (CC-0017)." \
+					"# Run 'make verify-crd-sync' to check for drift, or 'make sync-crds' to update." \
 					> "$$dest"; \
 				cat "$$crd" >> "$$dest"; \
 			done; \
@@ -324,7 +324,7 @@ verify-helm-schema:
 
 .PHONY: docker-build
 # docker-build builds the operator Docker image from operators/$(OPERATOR)/Dockerfile.
-# Build context is the repository root (required by go.work) (CC-0018, REQ-010).
+# Build context is the repository root (required by go.work).
 # Usage: make docker-build OPERATOR=keystone [IMG=custom:tag]
 # Optional: DOCKER_CACHE_FROM=type=gha,scope=... DOCKER_CACHE_TO=type=gha,mode=max,scope=...
 DOCKER_CACHE_FROM ?=
@@ -349,7 +349,7 @@ helm-deps:
 	done
 
 .PHONY: helm-package
-# helm-package packages the operator Helm chart (CC-0018, REQ-011).
+# helm-package packages the operator Helm chart.
 # Usage: make helm-package OPERATOR=keystone [CHART_VERSION=1.2.3]
 # Vendors the operator-library subchart first so the packaged tarball is
 # self-contained (helm package fails on an unresolved dependency).
@@ -363,42 +363,42 @@ helm-package:
 # ============================================================================
 
 .PHONY: verify-invalid-cr-fixtures
-# verify-invalid-cr-fixtures asserts that the CC-0094 invalid-CR fixtures stay
+# verify-invalid-cr-fixtures asserts that the invalid-CR fixtures stay
 # in lockstep with their canonical scaffold and with chainsaw-test.yaml. It
 # runs `_generate.py --check` (drift mode: zero exit only when every on-disk
 # fixture matches the scaffold) and the test_generate.py unit suite (asserts
 # FIXTURES count, uniqueness, and that every Fixture.filename is referenced
 # by chainsaw-test.yaml). Both checks are sub-second and require no cluster.
 verify-invalid-cr-fixtures:
-	@echo "Checking CC-0094 invalid-CR fixture drift..."
+	@echo "Checking invalid-CR fixture drift..."
 	@python3 tests/e2e/keystone/invalid-cr/_generate.py --check
-	@echo "Running CC-0094 invalid-CR fixture unit tests..."
+	@echo "Running invalid-CR fixture unit tests..."
 	@python3 tests/e2e/keystone/invalid-cr/test_generate.py
 
-.PHONY: check-docs-ids
-# check-docs-ids fails if any internal feature / requirement ID (CC-NNNN or
-# REQ-NNN) appears in the published documentation under docs/. User-facing docs
-# describe behaviour, not internal tracking IDs. Mirrors the CI docs-job gate
-# and needs no cluster or toolchain beyond grep.
-check-docs-ids:
-	@bash scripts/check-docs-no-feature-ids.sh
+.PHONY: check-feature-ids
+# check-feature-ids fails if any internal feature / requirement ID (CC-NNNN or
+# REQ-NNN) appears anywhere in the tracked source tree — code, tests, CI,
+# scripts, the Makefile, and the published docs. Source describes behaviour,
+# not internal tracking IDs. Mirrors the always-on CI gate and needs no cluster
+# or toolchain beyond git and grep.
+check-feature-ids:
+	@bash scripts/check-no-feature-ids.sh
 
 .PHONY: e2e
-# CC-0088: chainsaw auto-discovers chainsaw-test.yaml recursively, so new suites
+# chainsaw auto-discovers chainsaw-test.yaml recursively, so new suites
 # under tests/e2e/**/ (e.g. keystone/gateway-quick-start, infrastructure/gateway-quick-start-smoke)
 # are picked up without Makefile changes.
 e2e:
 	chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e/
 
 .PHONY: e2e-chaos
-# e2e-chaos runs Chaos Mesh pod-kill E2E tests against a deployed kind cluster (CC-0047).
-# Chaos Mesh is opt-in in the kind Quick Start (CC-0097, REQ-007); fail fast with a
+# e2e-chaos runs Chaos Mesh pod-kill E2E tests against a deployed kind cluster.
+# Chaos Mesh is opt-in in the kind Quick Start; fail fast with a
 # clear remediation hint when the namespace is missing instead of letting chainsaw
 # attempt the suite against a cluster that lacks the dependency. The two preflights
 # are kept separate so the kubectl/cluster-reachability failure is not conflated with
 # the chaos-mesh-not-installed failure — see review pattern
 # .planwerk/review_patterns/distinguish-collapsed-failure-modes-in-preflight-checks.md
-# (CC-0097).
 e2e-chaos:
 	@kubectl version --request-timeout=2s >/dev/null 2>&1 || { echo 'kubectl is not configured or no cluster is reachable' >&2; exit 1; }
 	@kubectl get ns chaos-mesh >/dev/null 2>&1 || { echo 'chaos-mesh is not installed; run `WITH_CHAOS_MESH=true make deploy-infra` first' >&2; exit 1; }
@@ -406,14 +406,14 @@ e2e-chaos:
 
 .PHONY: e2e-prometheus
 # e2e-prometheus runs the kube-prometheus-stack chainsaw suite against a deployed
-# kind cluster (CC-0100, REQ-011). The Prometheus + Grafana stack is opt-in in the
-# kind Quick Start (CC-0100, REQ-005); fail fast with a clear remediation hint when
+# kind cluster. The Prometheus + Grafana stack is opt-in in the
+# kind Quick Start; fail fast with a clear remediation hint when
 # the monitoring namespace is missing instead of letting chainsaw attempt the suite
 # against a cluster that lacks the dependency. The two preflights are kept separate
 # so the kubectl/cluster-reachability failure is not conflated with the
 # prometheus-not-installed failure — see review pattern
 # .planwerk/review_patterns/distinguish-collapsed-failure-modes-in-preflight-checks.md
-# (CC-0100). This Makefile target also satisfies the CI-to-Makefile parity expected
+# This Makefile target also satisfies the CI-to-Makefile parity expected
 # by .planwerk/review_patterns/maintain-ci-to-makefile-parity-for-new-jobs.md so
 # developers can reproduce the e2e-prometheus CI job locally without reading YAML.
 e2e-prometheus:
@@ -422,7 +422,7 @@ e2e-prometheus:
 	chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e/keystone/prometheus-stack/
 
 .PHONY: tempest-test
-# tempest-test runs Tempest API tests against a deployed OpenStack service (CC-0035 REQ-007).
+# tempest-test runs Tempest API tests against a deployed OpenStack service.
 # Requires a running kind cluster with the service deployed.
 # Usage: make tempest-test SERVICE=keystone
 tempest-test:
@@ -433,7 +433,7 @@ tempest-test:
 # stage-prometheus-dashboard copies the canonical Keystone Operator Grafana
 # dashboard JSON into deploy/kind/prometheus/ so that local kustomize flows
 # (kustomize build, kubectl apply -k, chainsaw lint) can render the
-# configMapGenerator without a parent-dir traversal (CC-0100, REQ-004).
+# configMapGenerator without a parent-dir traversal.
 #
 # The destination file is git-ignored — the canonical source is
 # operators/keystone/dashboards/keystone-operator.json. `make deploy-infra`
@@ -444,7 +444,7 @@ tempest-test:
 # overlay's staging contract.
 stage-prometheus-dashboard:
 	cp -f operators/keystone/dashboards/keystone-operator.json deploy/kind/prometheus/keystone-operator.json
-	@echo "Staged dashboard JSON into deploy/kind/prometheus/ (CC-0100, REQ-004)."
+	@echo "Staged dashboard JSON into deploy/kind/prometheus/."
 
 .PHONY: deploy-infra
 deploy-infra:
@@ -459,7 +459,7 @@ install-test-deps:
 	hack/install-test-deps.sh
 
 .PHONY: test-integration
-# test-integration runs envtest-based integration tests per operator (CC-0018, REQ-003).
+# test-integration runs envtest-based integration tests per operator.
 # Requires setup-envtest (go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest).
 # Usage: make test-integration [OPERATOR=keystone]
 test-integration:
@@ -471,7 +471,7 @@ test-integration:
 	done
 
 .PHONY: test-integration-common
-# test-integration-common runs envtest-based integration tests for internal/common (CC-0018).
+# test-integration-common runs envtest-based integration tests for internal/common.
 # Needed to meet the codecov 80% target for internal/common/**.
 # Usage: make test-integration-common
 test-integration-common:

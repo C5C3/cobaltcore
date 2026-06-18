@@ -3,14 +3,14 @@ version: "2"
 linters:
   default: none
   enable:
-    # Existing linters (CC-0003)
+    # Existing linters
     - errcheck
     - gocritic
     - govet
     - ineffassign
     - staticcheck
     - unused
-    # Security and correctness linters (CC-0059)
+    # Security and correctness linters
     - bodyclose
     - errorlint
     - exhaustive
@@ -21,7 +21,7 @@ linters:
     rules:
       # Suppress gosec G101 (hardcoded credential heuristics) in test files —
       # test fixtures contain fake connection strings and token endpoints that
-      # trigger false positives (CC-0059).
+      # trigger false positives.
       - linters:
           - gosec
         path: "_test\\.go$"

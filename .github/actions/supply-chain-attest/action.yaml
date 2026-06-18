@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# CC-0055: Composite action encapsulating the supply chain security sequence
+# Composite action encapsulating the supply chain security sequence
 # (SBOM generation, vulnerability scanning, SARIF upload, attestation, and
 # cosign signing) repeated across python-base, venv-builder, tempest, and
 # service image build jobs.
@@ -40,7 +40,7 @@ inputs:
 runs:
   using: composite
   steps:
-    # CC-0055: Fail fast when sbom mode is missing required inputs — GitHub Actions
+    # Fail fast when sbom mode is missing required inputs — GitHub Actions
     # does not enforce required:false at runtime, so without this guard a misconfigured
     # caller would get cryptic downstream errors from anchore/sbom-action.
     - name: Validate inputs for sbom mode

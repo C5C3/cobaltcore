@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# CC-0055: Composite action encapsulating the duplicated source checkout
+# Composite action encapsulating the duplicated source checkout
 # sequence shared by build-service-images and test-service-images jobs.
 
 name: Checkout service source

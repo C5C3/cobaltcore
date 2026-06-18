@@ -2,10 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# CC-0050: Composite action encapsulating the Flux CLI + test deps + deploy-infra
+# Composite action encapsulating the Flux CLI + test deps + deploy-infra
 # sequence shared across e2e-infra, e2e-operator, and tempest jobs.
 #
-# CC-0097: WITH_CHAOS_MESH is threaded from the calling job's env context
+# WITH_CHAOS_MESH is threaded from the calling job's env context
 # into the `Deploy infrastructure stack` step's env so callers (e.g. the
 # e2e-chaos job) can opt in to installing Chaos Mesh on top of the otherwise
 # minimal Quick Start. When the calling job leaves WITH_CHAOS_MESH unset,
@@ -13,7 +13,7 @@
 # hack/deploy-infra.sh's `${WITH_CHAOS_MESH:-false}` default keeps Chaos
 # Mesh out of the install.
 #
-# CC-0100: WITH_PROMETHEUS is threaded the same way as WITH_CHAOS_MESH so
+# WITH_PROMETHEUS is threaded the same way as WITH_CHAOS_MESH so
 # callers (e.g. the e2e-prometheus job) can opt in to installing the
 # kube-prometheus-stack on top of the otherwise minimal Quick Start. When
 # the calling job leaves WITH_PROMETHEUS unset, `${{ env.WITH_PROMETHEUS }}`
@@ -25,18 +25,18 @@ name: Setup E2E infrastructure
 description: >
   Install E2E test dependencies and deploy the full infrastructure stack to
   the current kind cluster. The Flux CLI is no longer required for bootstrap
-  (handled by flux-operator + FluxInstance, CC-0085) and is installed here
+  (handled by flux-operator + FluxInstance) and is installed here
   solely so `hack/ci-dump-diagnostics.sh` can call `flux logs` on failed
   runs. Assumes a kind cluster already exists (SKIP_KIND_CREATE is set
   automatically). Set WITH_CHAOS_MESH=true on the calling step to opt in to
-  Chaos Mesh installation (CC-0097); default is to skip it. Set
+  Chaos Mesh installation; default is to skip it. Set
   WITH_PROMETHEUS=true on the calling step to opt in to kube-prometheus-stack
-  installation (CC-0100); default is to skip it.
+  installation; default is to skip it.
 
 runs:
   using: composite
   steps:
-    # Retained for `flux logs` diagnostics only after FluxInstance migration (CC-0085, REQ-004).
+    # Retained for `flux logs` diagnostics only after FluxInstance migration.
     - name: Install Flux CLI
       uses: fluxcd/flux2/action@1fd61a06264d71cf445ed55c4f14d401d26a1c64 # v2.8.8
 
@@ -49,8 +49,8 @@ runs:
       shell: bash
       env:
         SKIP_KIND_CREATE: "true"
-        # CC-0097: opt-in flag — empty when caller does not set it; deploy-infra.sh defaults to false.
+        # opt-in flag — empty when caller does not set it; deploy-infra.sh defaults to false.
         WITH_CHAOS_MESH: ${{ env.WITH_CHAOS_MESH }}
-        # CC-0100: opt-in flag — empty when caller does not set it; deploy-infra.sh defaults to false.
+        # opt-in flag — empty when caller does not set it; deploy-infra.sh defaults to false.
         WITH_PROMETHEUS: ${{ env.WITH_PROMETHEUS }}
       run: make deploy-infra

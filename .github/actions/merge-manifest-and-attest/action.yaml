@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# CC-0055: Composite action encapsulating the download-artifacts, manifest
+# Composite action encapsulating the download-artifacts, manifest
 # merge via ci-merge-manifest.sh, and supply chain attestation sequence
 # shared across all merge jobs in the build-images workflow.
 
@@ -55,7 +55,7 @@ runs:
         path: ${{ inputs.digest-dir }}
         merge-multiple: true
 
-    # CC-0055: Create and push manifest (REQ-004)
+    # Create and push manifest
     - name: Create and push manifest
       id: merge
       shell: bash
@@ -66,7 +66,7 @@ runs:
         INSPECT_TAG: ${{ inputs.inspect-tag }}
       run: hack/ci-merge-manifest.sh
 
-    # CC-0055: Supply chain attestation (REQ-001)
+    # Supply chain attestation
     - name: Supply chain attest
       uses: ./.github/actions/supply-chain-attest
       with:
@@ -75,7 +75,7 @@ runs:
         sbom-output-file: ${{ inputs.sbom-output-file }}
         grype-category: ${{ inputs.grype-category }}
         scan-mode: ${{ inputs.scan-mode }}
-        # CC-0055: Derive scan ref from the freshly-merged digest. Callers cannot
+        # Derive scan ref from the freshly-merged digest. Callers cannot
         # self-reference steps.<id>.outputs within their own `with:` block, so the
         # composite must construct this from inputs it already has.
         image-ref-for-scan: ${{ inputs.image }}@${{ steps.merge.outputs.digest }}

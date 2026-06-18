@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# CC-0055: Composite action encapsulating the Docker buildx + registry login +
+# Composite action encapsulating the Docker buildx + registry login +
 # cosign installation sequence shared across build-images workflow jobs.
 
 name: Setup Docker registry

@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Exclude files not needed in the Docker build context to reduce context size
-# and improve build performance (CC-0017).
+# and improve build performance.
 
 .git
 .github

@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# CC-0018, REQ-012: Codecov configuration with component-level coverage thresholds.
+# Codecov configuration with component-level coverage thresholds.
 # Components enforce per-area coverage targets so regressions are caught at the
 # module level rather than hidden by project-wide averages.
 ---
@@ -18,7 +18,7 @@ coverage:
       default:
         target: 90%
 
-# CC-0018: Flag management links CI-uploaded flags (unit-<operator>,
+# Flag management links CI-uploaded flags (unit-<operator>,
 # integration-<operator>) to coverage tracking rules. Carryforward ensures
 # missing flags (e.g., when only one operator is changed) do not reduce
 # the reported coverage.
