@@ -2,14 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for the trust-flush default-on posture (CC-0096, REQ-007).
+# Chainsaw E2E test for the trust-flush default-on posture.
 # Verifies that when a Keystone CR OMITS spec.trustFlush, the defaulting webhook
 # materializes spec.trustFlush = {schedule: "0 * * * *", suspend: false} and the
 # reconciler creates the trust-flush CronJob with matching settings.
 # Companion suite to tests/e2e/keystone/trust-flush which exercises explicit
-# trustFlush configuration and the suspend: true pause path (REQ-006).
+# trustFlush configuration and the suspend: true pause path.
 #
-# REQ-001, REQ-007 (CC-0096)
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -20,7 +19,7 @@ spec:
     assert: 5m
   steps:
   # ── Step 1: Apply Keystone CR omitting spec.trustFlush ─────────────────
-  # CC-0096, REQ-001: the defaulting webhook must materialize spec.trustFlush
+  # the defaulting webhook must materialize spec.trustFlush
   # on admission so the persisted CR carries the canonical hourly schedule.
   - try:
     - apply:
@@ -55,7 +54,7 @@ spec:
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
   # ── Step 3: Assert persisted spec.trustFlush was materialized by webhook
-  # CC-0096, REQ-001/REQ-007: read-back must show the canonical defaults.
+  #/: read-back must show the canonical defaults.
   - try:
     - assert:
         resource:
@@ -81,7 +80,7 @@ spec:
             schedule: "0 * * * *"
             suspend: false
   # ── Step 5: Assert TrustFlushReady=True with reason TrustFlushReady ────
-  # CC-0096, REQ-007: defaulted CRs traverse the standard reconcile path; the
+  # defaulted CRs traverse the standard reconcile path; the
   # legacy TrustFlushNotRequired bypass reason MUST NOT appear here.
   - try:
     - assert:

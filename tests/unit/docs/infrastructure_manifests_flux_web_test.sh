@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Verify docs/reference/infrastructure-manifests.md documents the new
-# kind-only Flux Web UI addon (CC-0086, REQ-008):
+# kind-only Flux Web UI addon
 #   - a subsection references deploy/kind/base/flux-web.yaml
 #   - the chart URL oci://ghcr.io/controlplaneio-fluxcd/charts/flux-operator
 #     is cited in that subsection
@@ -13,7 +13,6 @@
 #     does NOT reference this file (production stays opt-out)
 #   - the document still parses as a sequence of well-formed Markdown
 #     headers (monotonically non-decreasing depth, no malformed '#' lines)
-# Feature: CC-0086, REQ-008
 # Usage: bash tests/unit/docs/infrastructure_manifests_flux_web_test.sh
 
 set -euo pipefail
@@ -32,7 +31,7 @@ MANIFESTS_DOC="$PROJECT_ROOT/docs/reference/infrastructure/infrastructure-manife
 
 # --- Test 1: document exists ---
 test_doc_exists() {
-  echo "Test: docs/reference/infrastructure-manifests.md exists (CC-0086, REQ-008)"
+  echo "Test: docs/reference/infrastructure-manifests.md exists"
 
   if [[ -f "$MANIFESTS_DOC" ]]; then
     echo "  PASS: $MANIFESTS_DOC exists"
@@ -44,27 +43,27 @@ test_doc_exists() {
 }
 
 # --- Test 2: new subsection references deploy/kind/base/flux-web.yaml
-#             (CC-0086, REQ-008) ---
+#             ---
 test_subsection_references_flux_web_manifest() {
-  echo "Test: a subsection references deploy/kind/base/flux-web.yaml (CC-0086, REQ-008)"
+  echo "Test: a subsection references deploy/kind/base/flux-web.yaml"
 
   assert_file_contains "docs reference the kind-only flux-web manifest path" \
     "$MANIFESTS_DOC" \
     'deploy/kind/base/flux-web.yaml'
 }
 
-# --- Test 3: chart URL cited in the subsection (CC-0086, REQ-008) ---
+# --- Test 3: chart URL cited in the subsection ---
 test_chart_url_cited() {
-  echo "Test: the flux-web subsection cites the flux-operator OCI chart URL (CC-0086, REQ-008)"
+  echo "Test: the flux-web subsection cites the flux-operator OCI chart URL"
 
   assert_file_contains "chart URL oci://ghcr.io/controlplaneio-fluxcd/charts/flux-operator present" \
     "$MANIFESTS_DOC" \
     'oci://ghcr.io/controlplaneio-fluxcd/charts/flux-operator'
 }
 
-# --- Test 4: ResourceSet kind + API version cited (CC-0086, REQ-008) ---
+# --- Test 4: ResourceSet kind + API version cited ---
 test_resourceset_kind_cited() {
-  echo "Test: the flux-web subsection cites Kind ResourceSet and the fluxcd.controlplane.io API group (CC-0086, REQ-008)"
+  echo "Test: the flux-web subsection cites Kind ResourceSet and the fluxcd.controlplane.io API group"
 
   assert_file_contains "API group fluxcd.controlplane.io/v1 cited" \
     "$MANIFESTS_DOC" \
@@ -74,9 +73,9 @@ test_resourceset_kind_cited() {
     'ResourceSet'
 }
 
-# --- Test 5: key Helm values cited (CC-0086, REQ-008) ---
+# --- Test 5: key Helm values cited ---
 test_helm_values_cited() {
-  echo "Test: the flux-web subsection cites web.serverOnly, installCRDs, and fullnameOverride (CC-0086, REQ-008)"
+  echo "Test: the flux-web subsection cites web.serverOnly, installCRDs, and fullnameOverride"
 
   assert_file_contains "web.serverOnly value mentioned" \
     "$MANIFESTS_DOC" \
@@ -86,9 +85,9 @@ test_helm_values_cited() {
     'installCRDs'
 }
 
-# --- Test 6: Renovate customManager cross-reference (CC-0086, REQ-008) ---
+# --- Test 6: Renovate customManager cross-reference ---
 test_renovate_cross_reference() {
-  echo "Test: the flux-web subsection cross-references the Renovate customManager (CC-0086, REQ-008)"
+  echo "Test: the flux-web subsection cross-references the Renovate customManager"
 
   assert_file_contains "Renovate customManager cross-reference present" \
     "$MANIFESTS_DOC" \
@@ -96,29 +95,29 @@ test_renovate_cross_reference() {
 }
 
 # --- Test 7: explicit note that production flux-system does NOT reference
-#             this file (CC-0086, REQ-008) ---
+#             this file ---
 test_production_opt_out_note() {
-  echo "Test: the flux-web subsection notes that deploy/flux-system/kustomization.yaml does not reference this file (CC-0086, REQ-008)"
+  echo "Test: the flux-web subsection notes that deploy/flux-system/kustomization.yaml does not reference this file"
 
   assert_file_contains "production kustomization opt-out note present" \
     "$MANIFESTS_DOC" \
     'deploy/flux-system/kustomization.yaml'
 }
 
-# --- Test 8: Kind Overlay Demo Addons heading present (CC-0086, REQ-008) ---
+# --- Test 8: Kind Overlay Demo Addons heading present ---
 test_kind_overlay_demo_addons_heading() {
-  echo "Test: 'Kind Overlay Demo Addons' heading groups the kind-only manifests (CC-0086, REQ-008)"
+  echo "Test: 'Kind Overlay Demo Addons' heading groups the kind-only manifests"
 
   assert_file_contains "Kind Overlay Demo Addons heading present" \
     "$MANIFESTS_DOC" \
     'Kind Overlay Demo Addons'
 }
 
-# --- Test 9: markdown headers remain well-formed (CC-0086, REQ-008) ---
+# --- Test 9: markdown headers remain well-formed ---
 #   - every line starting with '#' has a space after the marker run
 #   - heading depth never jumps by more than one level at a time
 test_markdown_headers_well_formed() {
-  echo "Test: Markdown headers parse cleanly (no malformed '#' lines, no depth skips) (CC-0086, REQ-008)"
+  echo "Test: Markdown headers parse cleanly (no malformed '#' lines, no depth skips)"
 
   local malformed
   malformed="$(awk '/^#+[^ #]/ {print NR": "$0}' "$MANIFESTS_DOC" || true)"

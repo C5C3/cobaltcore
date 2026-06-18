@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify release configuration files are valid YAML with expected structure (CC-0006 REQ-004, REQ-005)
+# Verify release configuration files are valid YAML with expected structure
 # Usage: bash tests/container-images/verify_release_config.sh
 # Requires: yq
 
@@ -18,7 +18,7 @@ FAIL=0
 # shellcheck source=tests/lib/assertions.sh
 source "$SCRIPT_DIR/../lib/assertions.sh"
 
-# --- Test 1: source-refs.yaml is valid YAML with keystone (CC-0051 REQ-004) ---
+# --- Test 1: source-refs.yaml is valid YAML with keystone ---
 test_source_refs_valid_yaml_with_keystone() {
   echo "Test: source-refs.yaml is valid YAML with keystone"
 
@@ -61,7 +61,7 @@ test_source_refs_valid_yaml_with_keystone() {
   fi
 }
 
-# --- Test 2: extra-packages.yaml has expected structure (CC-0027 REQ-007, CC-0051 REQ-004) ---
+# --- Test 2: extra-packages.yaml has expected structure ---
 test_extra_packages_valid_yaml_structure() {
   echo "Test: extra-packages.yaml has valid YAML structure"
 
@@ -83,7 +83,7 @@ test_extra_packages_valid_yaml_structure() {
       continue
     fi
 
-    # Verify keystone.pip_extras exists and is an array (CC-0051: allow empty lists per review #1)
+    # Verify keystone.pip_extras exists and is an array (: allow empty lists per review #1)
     local pip_extras_tag
     pip_extras_tag=$(yq '.keystone.pip_extras | tag' "$extra_packages")
     if [[ "$pip_extras_tag" == "!!seq" ]]; then
@@ -96,7 +96,7 @@ test_extra_packages_valid_yaml_structure() {
       FAIL=$((FAIL + 1))
     fi
 
-    # Verify keystone.apt_packages exists and is an array (CC-0051: allow empty lists per review #1)
+    # Verify keystone.apt_packages exists and is an array (: allow empty lists per review #1)
     local apt_tag
     apt_tag=$(yq '.keystone.apt_packages | tag' "$extra_packages")
     if [[ "$apt_tag" == "!!seq" ]]; then
@@ -159,7 +159,7 @@ test_extra_packages_valid_yaml_structure() {
   fi
 }
 
-# --- Test 3: Dockerfile and CI workflow support extra-packages.yaml (CC-0027) ---
+# --- Test 3: Dockerfile and CI workflow support extra-packages.yaml ---
 test_extra_packages_build_wiring() {
   echo "Test: Dockerfile and CI workflow support extra-packages.yaml"
 
@@ -209,7 +209,7 @@ test_extra_packages_build_wiring() {
   fi
 }
 
-# --- Test 4: Dockerfile does not hardcode apt package names (CC-0027, CC-0051 REQ-004) ---
+# --- Test 4: Dockerfile does not hardcode apt package names ---
 test_no_hardcoded_apt_packages() {
   echo "Test: Dockerfile does not hardcode apt package names"
 
@@ -249,7 +249,7 @@ test_no_hardcoded_apt_packages() {
   fi
 }
 
-# --- Test 5: test-excludes/*.txt files have valid stestr exclude-list format (CC-0034 REQ-008) ---
+# --- Test 5: test-excludes/*.txt files have valid stestr exclude-list format ---
 test_test_excludes_file_format() {
   echo "Test: test-excludes/*.txt files have valid stestr exclude-list format"
 
@@ -302,7 +302,7 @@ test_test_excludes_file_format() {
   fi
 }
 
-# --- Test 6: test-excludes directory structure is valid (CC-0034 REQ-008) ---
+# --- Test 6: test-excludes directory structure is valid ---
 test_test_excludes_directory_structure() {
   echo "Test: test-excludes directory structure is valid"
 
@@ -334,7 +334,7 @@ test_test_excludes_directory_structure() {
   fi
 }
 
-# --- Test 7: test-excludes filenames match services in source-refs.yaml (CC-0034 REQ-008) ---
+# --- Test 7: test-excludes filenames match services in source-refs.yaml ---
 test_test_excludes_files_match_services() {
   echo "Test: test-excludes filenames match services in source-refs.yaml"
 

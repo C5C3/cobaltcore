@@ -3,8 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify renovate.json has the envoy-gateway customManagers + packageRules
-# described by REQ-010 (CC-0088):
+# Verify renovate.json has the envoy-gateway customManagers + packageRules:
 #   - a customManagers entry targeting deploy/kind/base/envoy-gateway.yaml
 #     whose matchStrings regex extracts the pinned chart version lower bound
 #   - a paired packageRule set that disables majors and automerges minor/patch
@@ -32,9 +31,9 @@ RENOVATE_FILE="$PROJECT_ROOT/renovate.json"
 CHART_FILE="$PROJECT_ROOT/deploy/kind/base/envoy-gateway.yaml"
 
 # --- Test 1: renovate.json passes renovate-config-validator when available
-#             (CC-0088, REQ-010) ---
+#             ---
 test_renovate_config_valid() {
-  echo "Test: renovate.json validates via renovate-config-validator (CC-0088, REQ-010)"
+  echo "Test: renovate.json validates via renovate-config-validator"
 
   if ! command -v npx >/dev/null 2>&1; then
     echo "  SKIP: npx not installed (1 check skipped)"
@@ -58,9 +57,9 @@ test_renovate_config_valid() {
 
 # --- Test 2: the envoy-gateway customManager entry captures the chart
 #             version lower bound from deploy/kind/base/envoy-gateway.yaml
-#             (CC-0088, REQ-010) ---
+#             ---
 test_custom_manager_regex_captures_version() {
-  echo "Test: customManagers regex extracts envoy-gateway chart version from fixture (CC-0088, REQ-010)"
+  echo "Test: customManagers regex extracts envoy-gateway chart version from fixture"
 
   if ! command -v jq >/dev/null 2>&1; then
     echo "  SKIP: jq not installed (5 checks skipped)"
@@ -134,9 +133,9 @@ test_custom_manager_regex_captures_version() {
 
 # --- Test 3: packageRules for envoy-gateway disable majors and automerge
 #             minor/patch with minimumReleaseAge=3 days, groupName=envoy-gateway
-#             (CC-0088, REQ-010) ---
+#             ---
 test_package_rules_disable_majors_and_group() {
-  echo "Test: packageRules disable major envoy-gateway bumps, automerge minor/patch with 3-day cooldown (CC-0088, REQ-010)"
+  echo "Test: packageRules disable major envoy-gateway bumps, automerge minor/patch with 3-day cooldown"
 
   if ! command -v jq >/dev/null 2>&1; then
     echo "  SKIP: jq not installed (5 checks skipped)"

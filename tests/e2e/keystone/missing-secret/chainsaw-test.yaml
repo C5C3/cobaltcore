@@ -2,11 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for secret dependency recovery (CC-0016).
+# Chainsaw E2E test for secret dependency recovery.
 # Verifies the reconciler waits when referenced Secrets don't exist
 # (SecretsReady=False) and recovers to Ready=True once they are created.
 #
-# REQ-004, REQ-012, REQ-013 (CC-0016)
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:

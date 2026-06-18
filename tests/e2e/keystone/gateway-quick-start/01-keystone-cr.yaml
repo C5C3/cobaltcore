@@ -19,7 +19,6 @@
 # (chainsaw-config.yaml sets parallel: 4) against the shared
 # openstack-db MariaDB cluster without colliding on schema names.
 #
-# Feature: CC-0088, REQ-006, REQ-008
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
 kind: Keystone
 metadata:
@@ -52,7 +51,7 @@ spec:
     parentRef:
       name: openstack-gw
     hostname: keystone.127-0-0-1.nip.io
-    # Root path per REQ-008: the quick-start URL is
+    # Root path per: the quick-start URL is
     # https://keystone.127-0-0-1.nip.io/v3 and the HTTPRoute should
     # match the full request path starting at `/`.
     path: /

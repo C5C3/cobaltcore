@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Keystone CR fixture for the fernet-rotation E2E test (CC-0016).
+# Keystone CR fixture for the fernet-rotation E2E test.
 # Managed mode with explicit fernet rotation schedule.
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
 kind: Keystone
@@ -40,7 +40,7 @@ spec:
   # requests, producing a 401 even though the local bootstrap Job created
   # the admin user with the correct password. Tempest does not hit this
   # because it runs in an isolated kind cluster with a single Keystone.
-  # TODO(CC-0074 follow-up): namespace keystone cache keys per CR in the
+  # TODO(follow-up): namespace keystone cache keys per CR in the
   # operator so shared memcached is safe.
   extraConfig:
     cache:

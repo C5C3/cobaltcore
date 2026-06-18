@@ -3,8 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Chainsaw E2E test for Keystone CR reconciling under restricted PodSecurity
-# (CC-0104, parent: #317, parent-of-parent: #277 Phase 1 — security/compliance
-# baseline).
+# (parent: #317, parent-of-parent: #277 Phase 1 — security/compliance baseline).
 #
 # Decisions worth knowing before reading the steps:
 #
@@ -38,13 +37,11 @@
 #     SecretsReady=False/WaitingForDBCredentials. The ExternalSecrets pull
 #     from the same OpenBao paths the cluster's `openstack` namespace already
 #     uses: the per-CR admin password at
-#     `bootstrap/openstack/controlplane-keystone/admin` (CC-0112; the legacy
-#     flat `bootstrap/keystone-admin` is no longer seeded) and the keystone DB
+#     `bootstrap/openstack/controlplane-keystone/admin` (the legacy flat `bootstrap/keystone-admin` is no longer seeded) and the keystone DB
 #     credentials at the per-ControlPlane path
-#     `openstack/keystone/openstack/controlplane/db` (CC-0116; the legacy flat
-#     shared DB path is no longer seeded); the `eso-management` policy
+#     `openstack/keystone/openstack/controlplane/db` (the legacy flat shared DB path is no longer seeded); the `eso-management` policy
 #     (deploy/openbao/policies/eso-management.hcl) covers both paths so no
-#     new OpenBao policy work is required (REQ-003).
+#     new OpenBao policy work is required.
 #
 #   - Manual fernet rotation Job: Ready=True alone does not exercise the
 #     rotation Pod (the CronJob has not fired yet). Step 4 triggers a manual
@@ -66,22 +63,22 @@
 #     `restrictedSecurityContext()`" claim honest), Step 1 applies a minimal
 #     policy ConfigMap (00-policy-cm.yaml) and the Keystone CR
 #     (01-keystone-cr.yaml) sets `spec.policyOverrides.configMapRef` to it
-#     (CC-0104, C-001/W-001).
+#     (C-001/).
 #
-# REQ-001..REQ-008 (CC-0104)
+#.
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
   name: keystone-pod-security-restricted
 spec:
   # Disable Chainsaw's per-test namespace plumbing so Pods land in our
-  # PSS-labelled namespace (REQ-001).
+  # PSS-labelled namespace.
   namespace: ""
   timeouts:
     assert: 5m
   steps:
   # ── Step 1: Apply the labelled namespace + ESO ExternalSecrets + policy CM ─
-  # REQ-001, REQ-002, REQ-003. Asserts the PSS enforce label is present so a
+  #Asserts the PSS enforce label is present so a
   # mis-typed label would surface here, before any Pod is created. Also
   # asserts each ExternalSecret reaches Ready=True so a regression that
   # broke ESO sync would fail here, not deeper in step 3 where the
@@ -132,7 +129,7 @@ spec:
             name: keystone-policy-source
             namespace: keystone-pss-restricted-test
   # ── Step 2: Pre-create brownfield MariaDB Database/User/Grant ──────────
-  # REQ-002, REQ-008. Mirrors the brownfield-database test's Step 0 shape;
+  #Mirrors the brownfield-database test's Step 0 shape;
   # the CRs live in `openstack` (the MariaDB operator's namespace), not in
   # the test namespace, because MariaDB CRs reference `openstack-db` via
   # `mariaDbRef` (LocalObjectReference, same-namespace only). The User CR
@@ -175,7 +172,7 @@ spec:
             (conditions[?type == 'Ready']):
             - status: "True"
   # ── Step 3: Apply the Keystone CR, assert Ready=True/AllReady ──────────
-  # REQ-002, REQ-004. The Ready=True signal is the primary end-to-end
+  #The Ready=True signal is the primary end-to-end
   # gate — every Pod the reconciler creates (API Deployment, bootstrap Job,
   # db-sync Job, policy-validation Job) must have been admitted under
   # restricted PSS for the sub-conditions to flip True.
@@ -239,7 +236,7 @@ spec:
           echo "=== Job status (CR namespace) ==="
           kubectl get jobs -n "$NS" -o wide 2>&1 || true
   # ── Step 4: Trigger a manual fernet rotation Job ───────────────────────
-  # REQ-005. Reaching Ready=True does not exercise the rotation Pod (the
+  #Reaching Ready=True does not exercise the rotation Pod (the
   # CronJob's first scheduled run is at midnight Sunday). To prove the
   # rotation Pod also admits under restricted PSS we create a one-shot Job
   # from the CronJob template and wait for completion. The 2m timeout is
@@ -257,8 +254,8 @@ spec:
           # Idempotency: `kubectl create job` is unconditional, so a re-run
           # within the same chainsaw invocation (retry, second-pass, etc.)
           # would fail with AlreadyExists and abort under `set -e`. Delete
-          # any leftover Job first so REQ-005's idempotency requirement
-          # holds (CC-0104, W-001).
+          # any leftover Job first so the idempotency requirement
+          # holds.
           kubectl delete job "$JOB" -n "$NS" --ignore-not-found=true --wait=true
           kubectl create job "$JOB" --from="cronjob/$CRONJOB" -n "$NS"
           kubectl wait --for=condition=complete \
@@ -293,7 +290,7 @@ spec:
             kubectl describe -n "$NS" "$pod" 2>&1 | tail -30 || true
           done
   # ── Step 5: Assert zero PSS-violation FailedCreate events ──────────────
-  # REQ-006. PSS admission rejection emits a `FailedCreate` event on the
+  #PSS admission rejection emits a `FailedCreate` event on the
   # Pod's parent (Deployment/Job/CronJob) with the violation listed
   # verbatim. A zero-match scan on `violates PodSecurity "restricted:latest"`
   # is the explicit regression net for any future reconciler that forgets

@@ -2,13 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for middleware pipeline customization (CC-0016).
+# Chainsaw E2E test for middleware pipeline customization.
 # Verifies:
 #   - Generated ConfigMap's api-paste.ini contains the custom filter name
 #     ("audit") in the pipeline definition
 #   - The filter factory entry (keystonemiddleware.audit) is present
 #
-# REQ-009, REQ-012, REQ-013 (CC-0016)
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:

@@ -3,16 +3,16 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Fast unit tests for the CC-0094 invalid-CR fixture generator.
+"""Fast unit tests for the invalid-CR fixture generator.
 
 Guards the canonical-scaffold contract that motivated ``_generate.py``
-(sourcery-ai review #1, CC-0094) at a layer that runs without a Kubernetes
+(sourcery-ai review #1) at a layer that runs without a Kubernetes
 cluster — accidental fixture removal/rename is caught here in milliseconds
 instead of waiting for the Chainsaw E2E job to fail at the apply step.
 
-Coverage (each assertion traceable to CC-0094 review-2 finding FC1):
+Coverage (each assertion traceable to review-2 finding FC1):
 
-* ``FIXTURES`` lists exactly the 10 CC-0094 fixtures the chainsaw suite expects.
+* ``FIXTURES`` lists exactly the 10 fixtures the chainsaw suite expects.
 * Every ``Fixture.filename`` is referenced by an ``apply.file:`` entry in
   ``chainsaw-test.yaml`` — guards against renames or accidental deletions.
 * Filenames are unique within ``FIXTURES`` — guards against copy/paste typos
@@ -37,8 +37,8 @@ _HERE = Path(__file__).resolve().parent
 _GENERATOR = _HERE / "_generate.py"
 _CHAINSAW_TEST = _HERE / "chainsaw-test.yaml"
 
-# Number of CC-0094 fixtures emitted by _generate.py. The CC-0012 fixtures
-# (00-, 01-) predate CC-0094 and are intentionally NOT generated. Bumping
+# Number of fixtures emitted by _generate.py. The fixtures
+# (00-, 01-) predate and are intentionally NOT generated. Bumping
 # this value requires adding the matching Fixture entry AND the matching
 # `file: <name>` line in chainsaw-test.yaml.
 _EXPECTED_FIXTURE_COUNT = 10
@@ -59,7 +59,7 @@ _generate = _load_generator()
 
 
 class FixturesContractTests(unittest.TestCase):
-    """The CC-0094 ``FIXTURES`` list pins the chainsaw suite contract."""
+    """The ``FIXTURES`` list pins the chainsaw suite contract."""
 
     def test_fixture_count_matches_expected(self) -> None:
         self.assertEqual(

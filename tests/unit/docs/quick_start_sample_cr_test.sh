@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Verify the Step 7 sample Keystone CR in docs/quick-start.md carries the
-# `spec.gateway` block introduced by CC-0088 (REQ-006/REQ-008):
+# `spec.gateway` block introduced by (/):
 #   - spec.gateway.parentRef.name == "openstack-gw"
 #   - spec.gateway.hostname       == "keystone.127-0-0-1.nip.io"
 #   - spec.gateway.path           == "/"
@@ -73,25 +73,25 @@ if [[ ! -s "$SAMPLE_YAML" ]]; then
   exit 1
 fi
 
-# --- Test 1: parentRef.name (CC-0088, REQ-006) ---
+# --- Test 1: parentRef.name ---
 test_parent_ref_name() {
-  echo "Test: spec.gateway.parentRef.name == openstack-gw (CC-0088, REQ-006)"
+  echo "Test: spec.gateway.parentRef.name == openstack-gw"
   local actual
   actual="$(yq -r '.spec.gateway.parentRef.name' "$SAMPLE_YAML" 2>/dev/null)"
   assert_eq "spec.gateway.parentRef.name value" "openstack-gw" "$actual"
 }
 
-# --- Test 2: hostname (CC-0088, REQ-006) ---
+# --- Test 2: hostname ---
 test_hostname() {
-  echo "Test: spec.gateway.hostname == keystone.127-0-0-1.nip.io (CC-0088, REQ-006)"
+  echo "Test: spec.gateway.hostname == keystone.127-0-0-1.nip.io"
   local actual
   actual="$(yq -r '.spec.gateway.hostname' "$SAMPLE_YAML" 2>/dev/null)"
   assert_eq "spec.gateway.hostname value" "keystone.127-0-0-1.nip.io" "$actual"
 }
 
-# --- Test 3: path (CC-0088, REQ-006) ---
+# --- Test 3: path ---
 test_path() {
-  echo "Test: spec.gateway.path == / (CC-0088, REQ-006)"
+  echo "Test: spec.gateway.path == /"
   local actual
   actual="$(yq -r '.spec.gateway.path' "$SAMPLE_YAML" 2>/dev/null)"
   assert_eq "spec.gateway.path value" "/" "$actual"

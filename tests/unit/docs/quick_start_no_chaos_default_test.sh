@@ -3,15 +3,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify docs/quick-start.md Step 3 contracts for CC-0097:
+# Verify docs/quick-start.md Step 3 contracts:
 #   - The default `make deploy-infra` flow does NOT mention chaos-mesh in
 #     the `What happens` table or the `What gets deployed` snapshot.
 #   - A `::: tip Enabling Chaos Mesh` block documents the
 #     `WITH_CHAOS_MESH=true make deploy-infra` opt-in and links to
 #     docs/reference/chaos-e2e-tests.md.
-#   - The opt-in block carries the CC-0097 feature ID for traceability.
+# - The opt-in block carries the feature ID for traceability.
 #
-# (CC-0097, REQ-006)
+#
 #
 # Usage: bash tests/unit/docs/quick_start_no_chaos_default_test.sh
 
@@ -47,13 +47,13 @@ extract_step3_block() {
 
 STEP3_BLOCK="$(extract_step3_block)"
 
-# --- Test 1: Default `make deploy-infra` flow drops chaos-mesh (CC-0097, REQ-006) ---
+# --- Test 1: Default `make deploy-infra` flow drops chaos-mesh ---
 test_default_flow_table_has_no_chaos_mesh() {
-  echo "Test: Step 3 'What happens' table does not mention chaos-mesh in the default flow (CC-0097, REQ-006)"
+  echo "Test: Step 3 'What happens' table does not mention chaos-mesh in the default flow"
 
   # The "What happens" table rows are lines starting with `| <step> |`.
   # Any of those rows mentioning chaos-mesh would mean chaos-mesh is part
-  # of the default `make deploy-infra` walkthrough, which contradicts CC-0097.
+  # of the default `make deploy-infra` walkthrough, which contradicts.
   local table_rows
   table_rows="$(printf '%s\n' "$STEP3_BLOCK" | grep -E '^\| [0-9]+[a-z]? \|' || true)"
 
@@ -73,9 +73,9 @@ test_default_flow_table_has_no_chaos_mesh() {
   fi
 }
 
-# --- Test 2: `What gets deployed` snapshot has no chaos-mesh row (CC-0097, REQ-006) ---
+# --- Test 2: `What gets deployed` snapshot has no chaos-mesh row ---
 test_snapshot_has_no_chaos_mesh_namespace() {
-  echo "Test: 'What gets deployed' snapshot does not list a chaos-mesh namespace (CC-0097, REQ-006)"
+  echo "Test: 'What gets deployed' snapshot does not list a chaos-mesh namespace"
 
   # The snapshot is the indented block inside `::: details What gets deployed`.
   # Look for a row that places `chaos-mesh` in the namespace column. The
@@ -105,9 +105,9 @@ test_snapshot_has_no_chaos_mesh_namespace() {
   fi
 }
 
-# --- Test 3: Opt-in tip block exists (CC-0097, REQ-006) ---
+# --- Test 3: Opt-in tip block exists ---
 test_optin_tip_block_present() {
-  echo "Test: Step 3 contains a '::: tip Enabling Chaos Mesh' block (CC-0097, REQ-006)"
+  echo "Test: Step 3 contains a '::: tip Enabling Chaos Mesh' block"
 
   # VitePress/Markdown custom container syntax for tip blocks.
   if printf '%s\n' "$STEP3_BLOCK" | grep -qE '^::: tip Enabling Chaos Mesh'; then
@@ -119,9 +119,9 @@ test_optin_tip_block_present() {
   fi
 }
 
-# --- Test 4: Tip block documents WITH_CHAOS_MESH=true command (CC-0097, REQ-006) ---
+# --- Test 4: Tip block documents WITH_CHAOS_MESH=true command ---
 test_optin_tip_block_documents_command() {
-  echo "Test: Tip block documents 'WITH_CHAOS_MESH=true make deploy-infra' (CC-0097, REQ-006)"
+  echo "Test: Tip block documents 'WITH_CHAOS_MESH=true make deploy-infra'"
 
   assert_file_contains \
     "WITH_CHAOS_MESH=true make deploy-infra is documented in quick-start.md" \
@@ -129,9 +129,9 @@ test_optin_tip_block_documents_command() {
     'WITH_CHAOS_MESH=true make deploy-infra'
 }
 
-# --- Test 5: Tip block links to chaos-e2e-tests reference doc (CC-0097, REQ-006) ---
+# --- Test 5: Tip block links to chaos-e2e-tests reference doc ---
 test_optin_tip_block_links_to_chaos_e2e_reference() {
-  echo "Test: Tip block links to docs/reference/chaos-e2e-tests.md (CC-0097, REQ-006)"
+  echo "Test: Tip block links to docs/reference/chaos-e2e-tests.md"
 
   # Markdown link form is `(./reference/chaos-e2e-tests.md)` from quick-start.md
   # (sibling docs/ directory traversal). Accept any link that resolves to the

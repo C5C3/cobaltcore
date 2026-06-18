@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Verify hack/ci-dump-diagnostics.sh guards the chaos-daemon describe with a
-# `kubectl get ns chaos-mesh` check (CC-0097, REQ-008). Chaos Mesh is now
+# `kubectl get ns chaos-mesh` check. Chaos Mesh is now
 # opt-in in the kind Quick Start; the diagnostic dumper must print an explicit
 # SKIP line when the namespace is absent rather than silently swallowing the
 # error, and must still emit the describe output when the namespace exists.
@@ -30,7 +30,7 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
 # write_kubectl_stub <dir> <ns_exit>
 # Creates a kubectl shim in <dir> tightened to only the verbs the dump
-# script under test invokes (CC-0097, REQ-008):
+# script under test invokes
 #   - `get ns chaos-mesh`                          → exits <ns_exit>
 #   - `describe daemonset -n chaos-mesh chaos-daemon` → emits a stub marker
 #   - infra-summary verbs the dump always runs (`get helmrelease`,
@@ -46,7 +46,7 @@ write_kubectl_stub() {
   mkdir -p "$dir"
   cat >"$dir/kubectl" <<STUB
 #!/bin/bash
-# Test stub (CC-0097): tightened kubectl dispatcher — only the verbs the
+# Test stub tightened kubectl dispatcher — only the verbs the
 # dump script under test actually invokes are recognised. See
 # write_kubectl_stub() in tests/unit/hack/ci_dump_diagnostics_chaos_absent_test.sh
 # for the rationale.
@@ -109,7 +109,7 @@ run_dump() {
 # Test A: chaos-mesh namespace ABSENT -> SKIP line, no describe output
 # ---------------------------------------------------------------------------
 test_skip_when_namespace_absent() {
-  echo "Test: prints SKIP when chaos-mesh namespace is absent (CC-0097, REQ-008)"
+  echo "Test: prints SKIP when chaos-mesh namespace is absent"
 
   local tmp
   tmp="$(mktemp -d)"
@@ -132,7 +132,7 @@ test_skip_when_namespace_absent() {
 # Test B: chaos-mesh namespace PRESENT -> describe runs, no SKIP line
 # ---------------------------------------------------------------------------
 test_describe_when_namespace_present() {
-  echo "Test: dumps describe output when chaos-mesh namespace present (CC-0097, REQ-008)"
+  echo "Test: dumps describe output when chaos-mesh namespace present"
 
   local tmp
   tmp="$(mktemp -d)"

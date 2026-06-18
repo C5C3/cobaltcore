@@ -5,7 +5,7 @@
 
 # Verify hack/deploy-infra.sh `render_kind_config` honours the KIND_HOST_PORT
 # override and falls back to the checked-in kind-config.yaml verbatim when the
-# override is unset (CC-0088).
+# override is unset.
 #
 # Sources deploy-infra.sh and invokes the function in a subshell so we can
 # assert against the rendered tempfile without spinning up an actual cluster.
@@ -46,10 +46,10 @@ run_render() {
 # ---------------------------------------------------------------------------
 # Test 1: default (KIND_HOST_PORT=443) copies the file verbatim — byte-equal.
 # This guarantees the CI baseline (Linux + rootful Docker) sees no behaviour
-# change when no override is set (CC-0088).
+# change when no override is set.
 # ---------------------------------------------------------------------------
 test_default_port_byte_equal_copy() {
-  echo "Test: render_kind_config with KIND_HOST_PORT=443 produces a byte-equal copy (CC-0088)"
+  echo "Test: render_kind_config with KIND_HOST_PORT=443 produces a byte-equal copy"
 
   local tmp
   tmp="$(mktemp -d)"
@@ -81,10 +81,10 @@ test_default_port_byte_equal_copy() {
 
 # ---------------------------------------------------------------------------
 # Test 2: override (KIND_HOST_PORT=8443) rewrites only the hostPort field;
-# containerPort, protocol, and listenAddress stay intact (CC-0088).
+# containerPort, protocol, and listenAddress stay intact.
 # ---------------------------------------------------------------------------
 test_override_rewrites_only_hostport() {
-  echo "Test: render_kind_config with KIND_HOST_PORT=8443 rewrites only hostPort (CC-0088)"
+  echo "Test: render_kind_config with KIND_HOST_PORT=8443 rewrites only hostPort"
 
   if ! command -v yq >/dev/null 2>&1; then
     echo "  SKIP: yq not installed (5 checks skipped)"
@@ -149,7 +149,7 @@ test_override_rewrites_only_hostport() {
 # before kind ever runs. Catches typos like `KIND_HOST_PORT=eightthousand`.
 # ---------------------------------------------------------------------------
 test_invalid_port_rejected() {
-  echo "Test: render_kind_config rejects non-numeric and out-of-range ports (CC-0088)"
+  echo "Test: render_kind_config rejects non-numeric and out-of-range ports"
 
   local tmp
   tmp="$(mktemp -d)"
@@ -176,15 +176,15 @@ test_invalid_port_rejected() {
 # ---------------------------------------------------------------------------
 # Test 4: main() wires the rendered tempfile into `kind create cluster`
 # and references the KIND_HOST_PORT env var in its log preamble. Static
-# text checks keep this independent of stub plumbing (CC-0088).
+# text checks keep this independent of stub plumbing.
 # ---------------------------------------------------------------------------
 test_main_uses_rendered_config() {
-  echo "Test: main() invokes render_kind_config and references KIND_HOST_PORT (CC-0088)"
+  echo "Test: main() invokes render_kind_config and references KIND_HOST_PORT"
 
   assert_file_contains "render_kind_config is called from main()" \
     "$DEPLOY_INFRA_SH" "render_kind_config "
   # Match the unique tempfile variable rather than the leading `--config`
-  # flag, since BSD grep parses `--…` as an option (CC-0088).
+  # flag, since BSD grep parses `--…` as an option.
   assert_file_contains "kind create cluster consumes the rendered tempfile" \
     "$DEPLOY_INFRA_SH" 'kind_cfg'
   assert_file_contains "KIND_HOST_PORT is documented in the log preamble" \

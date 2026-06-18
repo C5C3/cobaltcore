@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for infrastructure stack health verification (CC-0010).
+# Chainsaw E2E test for infrastructure stack health verification.
 # Asserts that all deployed infrastructure components are running and healthy
 # after the full deployment sequence (make deploy-infra) completes.
 #
@@ -13,23 +13,22 @@
 #   - Infrastructure CRs: ClusterIssuer, MariaDB, Memcached
 #   - ESO resources: ClusterSecretStore (Valid), ExternalSecrets (SecretSynced)
 #   - flux-operator: FluxInstance Ready, FluxReport entitled, five flux-system
-#     controller Deployments available (CC-0085)
+#     controller Deployments available
 #
-# The kind-only Flux Web UI demo addon (CC-0086) lives in a sibling test —
+# The kind-only Flux Web UI demo addon lives in a sibling test —
 # tests/e2e/infrastructure/flux-web-health/chainsaw-test.yaml — labelled
 # `overlay: kind` so non-kind runs can exclude it via
 # `chainsaw test --selector 'overlay!=kind'`. Splitting it out keeps this
 # overlay-agnostic test unconditional.
 #
-# The kind-only opt-in Chaos Mesh addon (CC-0097) similarly lives in a
+# The kind-only opt-in Chaos Mesh addon similarly lives in a
 # sibling test — tests/e2e/infrastructure/chaos-mesh-health/chainsaw-test.yaml
 # — labelled `overlay: kind` with a runtime presence-check guard. The
-# chaos-mesh assertions previously inhabiting Step 5 of this file (CC-0046)
-# moved out as part of CC-0097, REQ-005 because the production overlay
+# chaos-mesh assertions previously inhabiting Step 5 of this file
+# moved out as part of because the production overlay
 # (deploy/flux-system/) no longer installs chaos-mesh by default — keeping
 # the assertions here would fail on every default `make deploy-infra` run.
 #
-# REQ-008 (CC-0010, CC-0085)
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -130,7 +129,7 @@ spec:
   # Verify that the ClusterSecretStore is Valid and all ExternalSecrets have
   # reached SecretSynced status.
   #
-  # CC-0107 (REQ-010): These assertions now run under enforced mTLS — the
+  # These assertions now run under enforced mTLS — the
   # OpenBao API listener requires and verifies a client certificate
   # (tls_require_and_verify_client_cert = true), and the ClusterSecretStore
   # presents the eso-openbao-client-tls client cert/key on every Vault call.
@@ -142,7 +141,7 @@ spec:
   # that chain (missing client cert, wrong CA, listener misconfig) flips
   # Ready=False here.
   #
-  # CC-0116: keystone-db is the kind-only default-identity ExternalSecret
+  # keystone-db is the kind-only default-identity ExternalSecret
   # (deploy/kind/infrastructure/keystone-db-externalsecret.yaml) serving
   # standalone Keystone CRs — it reads the per-ControlPlane path
   # openstack/keystone/openstack/controlplane/db that the deploy-infra seed
@@ -154,7 +153,7 @@ spec:
   # suite always runs against the kind overlay, so the assertion is valid
   # here.
   #
-  # CC-0117: keystone-admin and mariadb-root-password are now ALSO kind-only
+  # keystone-admin and mariadb-root-password are now ALSO kind-only
   # shims (deploy/kind/infrastructure/keystone-admin-externalsecret.yaml and
   # mariadb-root-password-externalsecret.yaml) — the production stack
   # (deploy/eso/) ships NONE of these static ExternalSecrets. The admin
@@ -208,7 +207,7 @@ spec:
             (conditions[?type == 'Ready']):
             - status: "True"
               reason: SecretSynced
-  # ── Step 5: flux-operator (CC-0085) ──────────────────────────────────
+  # ── Step 5: flux-operator ──────────────────────────────────
   # Verify the flux-operator bootstrap is healthy:
   #   - FluxInstance/flux has a Ready=True condition
   #   - FluxReport/flux exists with a non-empty entitlement (operator has
@@ -244,7 +243,7 @@ spec:
           # comparable". The two-part expression both rejects a missing field
           # (`null != null` is false) and an empty string, without hard-coding
           # a specific literal (e.g. "Verified" / "Issued") that could change
-          # across flux-operator releases (CC-0085, REQ-008).
+          # across flux-operator releases.
           spec:
             distribution:
               (entitlement != null && entitlement != ''): true

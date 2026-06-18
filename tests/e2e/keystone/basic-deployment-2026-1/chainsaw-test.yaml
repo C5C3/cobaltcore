@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for happy-path Keystone deployment (CC-0051).
+# Chainsaw E2E test for happy-path Keystone deployment.
 # Validates the full reconciliation cycle in managed mode:
 #   - All 5 sub-conditions progress to True with expected reasons
 #   - Aggregate Ready=True with reason AllReady
@@ -11,7 +11,6 @@
 #   - ConfigMap with keystone-basic-2026-1-config- prefix exists
 #   - Keystone API at /v3 is accessible via curl
 #
-# REQ-001, REQ-002, REQ-003, REQ-012, REQ-013 (CC-0051)
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:

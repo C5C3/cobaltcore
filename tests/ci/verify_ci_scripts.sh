@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify hack/ci-*.sh scripts meet CI quality standards (CC-0050, review #2 comment 5)
+# Verify hack/ci-*.sh scripts meet CI quality standards (review #2 comment 5)
 # Validates: set -euo pipefail, shellcheck, ::error:: annotations, SPDX headers
 # Usage: bash tests/ci/verify_ci_scripts.sh
 
@@ -121,7 +121,7 @@ test_spdx_headers() {
 }
 
 # --- Run all tests ---
-echo "=== CI script verification tests (CC-0050) ==="
+echo "=== CI script verification tests ==="
 echo ""
 test_set_euo_pipefail
 echo ""

@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw chaos E2E test for API pod kill with PDB enforcement (CC-0048).
+# Chainsaw chaos E2E test for API pod kill with PDB enforcement.
 # Verifies that:
 # 1. The operator creates a PodDisruptionBudget (minAvailable: 1) for
 #    Keystone API pods when replicas > 1.
@@ -14,7 +14,7 @@
 # Uses replicas: 3 in the Keystone CR to trigger PDB creation via
 # buildPodDisruptionBudget() which requires replicas > 1.
 #
-# SC-CHAOS-008, REQ-003, REQ-004, REQ-006, REQ-008 (CC-0048)
+# SC-CHAOS-008,
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -67,7 +67,7 @@ spec:
   # that at least 1 replica remains *available* during an involuntary pod kill.
   # PDB only governs voluntary disruptions (evictions/drains), so these two
   # validations are complementary: Step 3 = PDB config correctness, Step 5 =
-  # runtime availability under involuntary disruption (CC-0048).
+  # runtime availability under involuntary disruption.
   - try:
     - script:
         timeout: 120s

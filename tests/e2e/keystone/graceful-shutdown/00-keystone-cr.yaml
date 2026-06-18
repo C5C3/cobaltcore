@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Keystone CR fixture for the graceful-shutdown E2E test (CC-0063).
+# Keystone CR fixture for the graceful-shutdown E2E test.
 # Minimal CR to verify that the reconciler sets terminationGracePeriodSeconds,
 # startupProbe, and preStop lifecycle hook on the Deployment.
 apiVersion: keystone.openstack.c5c3.io/v1alpha1

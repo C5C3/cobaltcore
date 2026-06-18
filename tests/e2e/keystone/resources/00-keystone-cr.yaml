@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Keystone CR fixture for the resources E2E test (CC-0042).
+# Keystone CR fixture for the resources E2E test.
 # No explicit spec.resources — the defaulting webhook should inject
 # 256Mi/100m requests and 512Mi/500m limits.
 apiVersion: keystone.openstack.c5c3.io/v1alpha1

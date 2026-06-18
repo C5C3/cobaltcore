@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for cross-release upgrade from 2025.2 to 2026.1 (CC-0060).
+# Chainsaw E2E test for cross-release upgrade from 2025.2 to 2026.1.
 # Verifies the full upgrade lifecycle including the expand-migrate-contract
 # database migration path (keystone 28.0.0 → 29.0.0):
 #   (1) Fresh deployment with tag 2025.2 reaches Ready=True with installedRelease=2025.2
@@ -13,7 +13,6 @@
 #   (6) Ready=True with installedRelease=2026.1 after upgrade
 #   (7) Keystone API at /v3 remains accessible after the upgrade
 #
-# REQ-001, REQ-002, REQ-003, REQ-004, REQ-005, REQ-006, REQ-007, REQ-008, REQ-009 (CC-0060)
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:

@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Keystone CR fixture for the concurrent CR conflict E2E test (CC-0066).
+# Keystone CR fixture for the concurrent CR conflict E2E test.
 # Uses unique name (keystone-concurrent-a) and database (keystone_concurrent_a)
 # to avoid conflicts with other test suites. Shares secretRef (keystone-db)
 # and adminPasswordSecretRef (keystone-admin) with keystone-concurrent-b

@@ -2,10 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Keystone CR fixture for the httproute E2E test (CC-0065).
+# Keystone CR fixture for the httproute E2E test.
 # spec.gateway drives the optional HTTPRoute sub-reconciler: the operator
 # creates an HTTPRoute attached to a deliberately-non-existent Gateway
-# (`openstack/not-a-real-gateway`). The CC-0088 kind overlay installs a
+# (`openstack/not-a-real-gateway`). The kind overlay installs a
 # REAL Envoy Gateway controller in the test cluster bound to
 # `Gateway/openstack-gw`, so this fixture used to race that controller:
 # its `kubectl patch --subresource=status --type=merge` against
@@ -16,7 +16,7 @@
 # `keystone.e2e.example.com`). Using a non-existent ParentRef name —
 # which no Gateway resolves — guarantees the real controller never
 # writes a RouteParentStatus slot for this HTTPRoute, so the merge-patch
-# remains the sole writer (CC-0088).
+# remains the sole writer.
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
 kind: Keystone
 metadata:

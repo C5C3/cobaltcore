@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# REQ-008 (CC-0012): Keystone CR with an invalid cron expression.
+# Keystone CR with an invalid cron expression.
 # The validating webhook must reject this with HTTP 422 referencing
 # spec.fernet.rotationSchedule and "invalid cron expression".
 apiVersion: keystone.openstack.c5c3.io/v1alpha1

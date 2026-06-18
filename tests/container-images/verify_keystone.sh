@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify keystone container image meets requirements (CC-0006 REQ-003, REQ-009)
+# Verify keystone container image meets requirements
 # Usage: bash tests/container-images/verify_keystone.sh [image_name]
 # Default image: c5c3/keystone:28.0.0
 # Requires: Docker daemon running

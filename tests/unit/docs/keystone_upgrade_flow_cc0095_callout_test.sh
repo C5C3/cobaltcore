@@ -4,8 +4,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Verify the docs/reference/keystone-upgrade-flow.md "Sub-Resource Rename"
-# callout shipped with CC-0095:
-#   1. The section heading "## Sub-Resource Rename (CC-0095)" exists.
+# callout shipped with:
+#   1. The section heading "## Sub-Resource Rename" exists.
 #   2. The callout enumerates the affected sub-resource kinds.
 #   3. The callout describes catalog self-heal via `keystone-manage bootstrap`.
 #   4. The callout documents the two operator workflows (Generation bump and
@@ -29,9 +29,9 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
 UPGRADE_DOC="$PROJECT_ROOT/docs/reference/keystone/keystone-upgrade-flow.md"
 
-# --- Test 1: callout heading exists (CC-0095, REQ-007) ---
+# --- Test 1: callout heading exists ---
 test_callout_heading_exists() {
-  echo "Test: '## Sub-Resource Rename (CC-0095)' heading exists (CC-0095, REQ-007)"
+  echo "Test: '## Sub-Resource Rename' heading exists"
 
   if [[ ! -f "$UPGRADE_DOC" ]]; then
     echo "  FAIL: $UPGRADE_DOC does not exist"
@@ -44,9 +44,9 @@ test_callout_heading_exists() {
     '## Sub-Resource Rename'
 }
 
-# --- Test 2: affected sub-resources enumerated (CC-0095, REQ-007) ---
+# --- Test 2: affected sub-resources enumerated ---
 test_affected_sub_resources_listed() {
-  echo "Test: callout enumerates the affected sub-resource kinds (CC-0095, REQ-007)"
+  echo "Test: callout enumerates the affected sub-resource kinds"
 
   assert_file_contains "Deployment listed as affected"           "$UPGRADE_DOC" 'Deployment'
   assert_file_contains "Service (ClusterIP) listed as affected"  "$UPGRADE_DOC" 'Service'
@@ -56,9 +56,9 @@ test_affected_sub_resources_listed() {
   assert_file_contains "HTTPRoute listed as affected"            "$UPGRADE_DOC" 'HTTPRoute'
 }
 
-# --- Test 3: catalog self-heal via keystone-manage bootstrap (CC-0095, REQ-007) ---
+# --- Test 3: catalog self-heal via keystone-manage bootstrap ---
 test_catalog_self_heal_described() {
-  echo "Test: callout describes catalog self-heal via keystone-manage bootstrap (CC-0095, REQ-007)"
+  echo "Test: callout describes catalog self-heal via keystone-manage bootstrap"
 
   assert_file_contains "catalog self-heal mentions keystone-manage bootstrap" \
     "$UPGRADE_DOC" \
@@ -68,9 +68,9 @@ test_catalog_self_heal_described() {
     'self-heal'
 }
 
-# --- Test 4: two operator workflows documented (CC-0095, REQ-007) ---
+# --- Test 4: two operator workflows documented ---
 test_two_operator_workflows_documented() {
-  echo "Test: callout documents Generation bump and manual openstack endpoint set workflows (CC-0095, REQ-007)"
+  echo "Test: callout documents Generation bump and manual openstack endpoint set workflows"
 
   assert_file_contains "workflow 1: Generation bump" \
     "$UPGRADE_DOC" \
@@ -80,9 +80,9 @@ test_two_operator_workflows_documented() {
     'openstack endpoint set'
 }
 
-# --- Test 5: cross-link to CRD naming-convention section (CC-0095, REQ-007) ---
+# --- Test 5: cross-link to CRD naming-convention section ---
 test_cross_link_to_crd_naming_convention() {
-  echo "Test: callout cross-links to keystone-crd.md naming-convention section (CC-0095, REQ-007)"
+  echo "Test: callout cross-links to keystone-crd.md naming-convention section"
 
   assert_file_contains "cross-link to CRD naming-convention anchor" \
     "$UPGRADE_DOC" \

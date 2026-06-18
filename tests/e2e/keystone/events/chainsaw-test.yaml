@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for Kubernetes event emission (CC-0070).
+# Chainsaw E2E test for Kubernetes event emission.
 # Validates that the controller emits Kubernetes events for key lifecycle
 # transitions, which unit tests with FakeRecorder cannot fully cover:
 #   - BootstrapComplete event after bootstrap job finishes
@@ -10,7 +10,6 @@
 #   - FernetKeysGenerated event after initial Fernet key creation
 #   - CredentialKeysGenerated event after initial credential key creation
 #
-# REQ-001, REQ-002 (CC-0070)
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:

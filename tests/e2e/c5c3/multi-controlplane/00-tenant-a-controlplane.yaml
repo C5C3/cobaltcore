@@ -3,15 +3,15 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Tenant-A ControlPlane CR fixture for the multi-controlplane E2E test
-# (CC-0112, REQ-012). It owns namespace `tenant-a` and the single ControlPlane
+# It owns namespace `tenant-a` and the single ControlPlane
 # `controlplane-a` in it.
 #
-# CC-0112 scopes the minted admin application credential per-ControlPlane in the
+# scopes the minted admin application credential per-ControlPlane in the
 # cluster-global OpenBao backend: the c5c3-operator mirrors this CR's admin AC to
 #   openstack/keystone/tenant-a/controlplane-a/admin/app-credential
 # (adminAppCredentialRemoteKeyFor; read back via `bao kv get` as the kv-v2 path
 #   kv-v2/openstack/keystone/tenant-a/controlplane-a/admin/app-credential).
-# CC-0114, REQ-012: the c5c3-operator now also CREATES the per-CR,
+# the c5c3-operator now also CREATES the per-CR,
 # controller-owned `k-orc-clouds-yaml` ExternalSecret in THIS tenant's namespace
 # (reconcileKORC's ensureKORCCloudsYAMLExternalSecret) reading that per-CR path —
 # no per-identity KORC_KEYSTONE_AUTH_URL seed override is needed.
@@ -20,16 +20,16 @@
 # both distinct on purpose, mirroring the completed envtest
 # TestIntegration_MultiControlPlane_DistinctAdminCredentialPaths.
 #
-# DECISION (CC-0112, REQ-012): the validating webhook (CC-0112, task 3.1)
+# DECISION the validating webhook
 # enforces ONE ControlPlane per namespace, so the two ControlPlanes MUST live in
 # separate namespaces — hence the bundled Namespace object here.
 #
-# DECISION (CC-0112, REQ-012): the per-namespace prerequisites this CR references
+# DECISION the per-namespace prerequisites this CR references
 # — the keystone-admin password Secret and the managed MariaDB/Memcached
 # infrastructure — are provisioned by the deploy stack in ITS namespace, not in
 # tenant-a/tenant-b. Wiring those per-tenant prerequisites into kind CI is the
 # same documented fast-follow as full-controlplane-keystone's chain wiring
-# (CC-0110 GitOps/CI, REQ-022/REQ-023): this test is behind a presence guard and
+# (GitOps/CI, /): this test is behind a presence guard and
 # SKIPs cleanly when the c5c3 + K-ORC stack (and these prerequisites) are absent,
 # so it never hard-fails the default kind E2E job. We intentionally do NOT invent
 # unrelated infra here; managed-mode mirrors full-controlplane-keystone's shape so
@@ -72,7 +72,7 @@ spec:
         name: keystone-admin
         key: password
       applicationCredential:
-        # restricted:true keeps the admin AC least-privilege (REQ-013) and
+        # restricted:true keeps the admin AC least-privilege and
         # projects to K-ORC's spec.resource.unrestricted=false.
         restricted: true
         rotation:

@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# REQ-001 (CC-0094): Keystone CR that sets BOTH spec.database.clusterRef AND
+# Keystone CR that sets BOTH spec.database.clusterRef AND
 # spec.database.host. Mutual-exclusivity is enforced by the CEL XValidation
 # rule on KeystoneSpec.Database (keystone_types.go) and by defense-in-depth
 # in the validating webhook (keystone_webhook.go). Admission must reject

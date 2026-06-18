@@ -3,11 +3,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Chainsaw E2E test for the kube-prometheus-stack kind-only opt-in addon
-# (CC-0100). Asserts the end-to-end observability path that is enabled
+# Asserts the end-to-end observability path that is enabled
 # when WITH_PROMETHEUS=true is passed to hack/deploy-infra.sh:
 #
 #   Step 1  — HelmRelease/kube-prometheus-stack in monitoring is Ready=True
-#             (CC-0100, REQ-001, REQ-009).
+#            .
 #   Step 1b — kube-prometheus-stack HelmRelease values render exactly the
 #             kind-tuned posture (crds/alertmanager/nodeExporter/
 #             kubeStateMetrics disabled, retention=6h); the Alertmanager,
@@ -17,7 +17,7 @@
 #             prometheus-operator-crds Helm release (no flap with the
 #             kube-prometheus-stack chart that has crds.enabled=false).
 #             Together these guard against a future config drift away from
-#             the canonical kind posture (CC-0100, REQ-002, REQ-009).
+#             the canonical kind posture.
 #   Step 2  — ServiceMonitor/keystone-operator exists in the namespace where
 #             the operator chart is installed in CI (default: hack/ci-deploy-
 #             operator.sh runs `helm install` without `--namespace`, and
@@ -25,30 +25,30 @@
 #             FluxCD HelmRelease to avoid an ownership-annotation conflict).
 #             The presence proves the deploy script's WITH_PROMETHEUS=true
 #             plumbing enabled the operator's monitoring.serviceMonitor.enabled
-#             value (CC-0100, REQ-005, REQ-009).
+#             value.
 #   Step 3  — Prometheus is scraping the keystone-operator job successfully
 #             (.health == "up" via /api/v1/targets), proving the cross-namespace
 #             ServiceMonitor selector tuning in deploy/kind/prometheus/release.yaml
-#             actually works end-to-end (CC-0100, REQ-003, REQ-009).
+#             actually works end-to-end.
 #   Step 4  — Grafana has loaded the bundled keystone-operator dashboard via
 #             the sidecar-discovered grafana_dashboard=1 ConfigMap, proving
 #             the dashboard plumbing in deploy/kind/prometheus/kustomization.yaml
-#             and hack/deploy-infra.sh works (CC-0100, REQ-004, REQ-009).
+#             and hack/deploy-infra.sh works.
 #   Step 4b — The keystone-operator-dashboard ConfigMap.data.keystone-operator.json
 #             is byte-identical (sha256) to the canonical source file at
 #             operators/keystone/dashboards/keystone-operator.json — guards
 #             against a future broken cp -f in deploy-infra.sh that would
 #             still pass the "Grafana loaded a dashboard" check in Step 4
-#             but ship the wrong content (CC-0100, REQ-004, REQ-009).
+#             but ship the wrong content.
 #
-# Scope gating — two independent mechanisms, mirroring CC-0086 flux-web-health
-# and CC-0097 chaos-mesh-health:
+# Scope gating — two independent mechanisms, mirroring flux-web-health
+# and chaos-mesh-health:
 #
 #   1. Label selector (`metadata.labels.overlay: kind`): non-kind invocations
 #      can pass `--selector 'overlay!=kind'` to skip this test entirely
 #      without paying any chainsaw start-up cost. Production
 #      (deploy/flux-system/) does not install kube-prometheus-stack — it is
-#      a kind-only opt-in (CC-0100, REQ-006).
+#      a kind-only opt-in.
 #
 #   2. Runtime presence check at the head of every step's script: an early
 #      `kubectl get helmrelease kube-prometheus-stack -n monitoring` probe.
@@ -59,8 +59,8 @@
 #      and the test is therefore default-safe on any cluster regardless of
 #      selector use.
 #
-#      NOTE (CC-0105): the probe deliberately keys off the HelmRelease, not
-#      `kubectl get ns monitoring`. Since CC-0105 the `monitoring` Namespace
+#      NOTE the probe deliberately keys off the HelmRelease, not
+# `kubectl get ns monitoring`. Since the `monitoring` Namespace
 #      is owned by the always-applied flux base
 #      (deploy/flux-system/namespaces.yaml) so prometheus-operator-crds and
 #      memcached-operator can install into a live Namespace — it now exists
@@ -79,17 +79,13 @@
 # guarding script: chainsaw has no step-level skip — once Step 1 returns 0,
 # Steps 2-4 still execute. Embedding the guard in every step is the only
 # way to keep the SKIP semantics intact across all four assertions while
-# still preserving step-level granularity (distinct catch blocks per step
-# give CI useful per-failure diagnostics — losing that by collapsing into
-# one mega-script would defeat the per-step structure called for in
-# CC-0100, REQ-009).
+# still preserving step-level granularity (distinct catch blocks per step give CI useful per-failure diagnostics — losing that by collapsing into one mega-script would defeat the per-step structure called for).
 #
 # Why scripts and not chainsaw declarative `assert`s for the resources:
 # declarative asserts ignore the presence guard and time out instead of
 # skipping. `kubectl wait` and `kubectl get` give us the same retry+timeout
 # semantics inside a guarded script while preserving default-safe behavior.
 #
-# Feature: CC-0100, REQ-001, REQ-002, REQ-003, REQ-004, REQ-005, REQ-009
 ---
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -100,7 +96,7 @@ metadata:
     # `--selector 'overlay!=kind'` to exclude this test.
     overlay: kind
 spec:
-  # Timeout budget (CC-0100): the six steps' kubectl waits and in-cluster
+  # Timeout budget the six steps' kubectl waits and in-cluster
   # probes have these per-script upper bounds:
   #   Step 1  — kubectl wait HelmRelease Ready:      5m budget,
   #             timeout: 5m  (script timeout matches assert window).
@@ -136,7 +132,6 @@ spec:
     exec: 20m
   steps:
   # ── Step 1 — HelmRelease Ready=True ─────────────────────────────────────
-  # CC-0100, REQ-001, REQ-009
   - name: helmrelease-ready
     try:
     - script:
@@ -148,12 +143,12 @@ spec:
         content: |
           set -euo pipefail
 
-          # ── Presence guard (CC-0100, CC-0105) ──────────────────────
+          # ── Presence guard ──────────────────────
           # The opt-in overlay deploy/kind/prometheus/ creates the
           # kube-prometheus-stack HelmRelease; its absence unambiguously
           # signals WITH_PROMETHEUS=false (or a non-kind cluster). The
           # `monitoring` Namespace is no longer a valid signal — since
-          # CC-0105 it is owned by the always-applied flux base, so it
+          # it is owned by the always-applied flux base, so it
           # exists even without the prometheus opt-in (see header note).
           # Exit 0 with a SKIP line so the test passes without failing on
           # the missing HelmRelease downstream.
@@ -171,7 +166,7 @@ spec:
           # + timeouts.assert.
           kubectl wait --for=condition=Ready \
             helmrelease/kube-prometheus-stack -n monitoring --timeout=5m
-          echo "OK: HelmRelease/kube-prometheus-stack is Ready (CC-0100, REQ-001)"
+          echo "OK: HelmRelease/kube-prometheus-stack is Ready"
     catch:
     # On failure, dump post-mortem state for CI triage. Each command is
     # individually scoped so a missing resource does not short-circuit
@@ -196,7 +191,7 @@ spec:
           kubectl get events -n monitoring --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
 
   # ── Step 1b — kind posture: values, workload absence, CRD ownership ─────
-  # CC-0100, REQ-002, REQ-009. These three assertions guard the
+  #These three assertions guard the
   # kind-tuned posture documented in deploy/kind/prometheus/release.yaml
   # against silent drift:
   #   (a) HelmRelease.spec.values renders the documented kind tuning —
@@ -223,7 +218,7 @@ spec:
           # Same presence guard as Step 1 — chainsaw has no step-level
           # skip, so each step re-checks for default-safe behavior. Keys
           # off the HelmRelease, not the `monitoring` Namespace, which is
-          # always present since CC-0105 (see header note).
+          # always present since (see header note).
           if ! kubectl get helmrelease kube-prometheus-stack -n monitoring >/dev/null 2>&1; then
             echo "SKIP: kube-prometheus-stack HelmRelease not present (WITH_PROMETHEUS=false)."
             exit 0
@@ -241,7 +236,7 @@ spec:
                 .kubeStateMetrics.enabled == false and
                 .prometheus.prometheusSpec.retention == "6h"
               ' >/dev/null
-          echo "OK: HelmRelease values render kind posture (CC-0100, REQ-002)"
+          echo "OK: HelmRelease values render kind posture"
 
           # (b) Alertmanager / node-exporter / kube-state-metrics absent.
           # Three explicit kubectl checks (one per excluded workload kind)
@@ -260,7 +255,7 @@ spec:
               exit 1
             fi
           done
-          echo "OK: alertmanager/node-exporter/kube-state-metrics absent (CC-0100, REQ-002)"
+          echo "OK: alertmanager/node-exporter/kube-state-metrics absent"
 
           # (c) servicemonitors CRD owned by prometheus-operator-crds.
           # Helm sets meta.helm.sh/release-name on every CRD it owns;
@@ -273,7 +268,7 @@ spec:
             echo "FAIL: servicemonitors CRD owner is '${owner}', expected 'prometheus-operator-crds'"
             exit 1
           fi
-          echo "OK: servicemonitors CRD owned by prometheus-operator-crds (CC-0100, REQ-002)"
+          echo "OK: servicemonitors CRD owned by prometheus-operator-crds"
     catch:
     - script:
         content: |
@@ -288,7 +283,6 @@ spec:
             -o jsonpath='{.metadata.annotations}' 2>&1 || true
 
   # ── Step 2 — ServiceMonitor/keystone-operator exists ────────────────────
-  # CC-0100, REQ-005, REQ-009
   - name: servicemonitor-exists
     try:
     - script:
@@ -300,7 +294,7 @@ spec:
           # Same presence guard as Step 1 — chainsaw has no step-level
           # skip, so each step re-checks for default-safe behavior. Keys
           # off the HelmRelease, not the `monitoring` Namespace, which is
-          # always present since CC-0105 (see header note).
+          # always present since (see header note).
           if ! kubectl get helmrelease kube-prometheus-stack -n monitoring >/dev/null 2>&1; then
             echo "SKIP: kube-prometheus-stack HelmRelease not present (WITH_PROMETHEUS=false)."
             exit 0
@@ -310,7 +304,7 @@ spec:
           # hack/ci-deploy-operator.sh via `helm install ... --namespace
           # "${NAMESPACE}" --create-namespace`, which puts the release
           # (and its rendered ServiceMonitor) in the keystone-system
-          # Namespace by default (CC-0105). The FluxCD HelmRelease in
+          # Namespace by default. The FluxCD HelmRelease in
           # keystone-system is suspended by deploy/kind/base/kustomization.yaml
           # to avoid an ownership-annotation conflict with that install,
           # so only the helm-installed ServiceMonitor renders here. The
@@ -319,7 +313,7 @@ spec:
           # per the keystone-operator.fullname helper.
           kubectl get servicemonitor keystone-operator -n keystone-system \
             >/dev/null
-          echo "OK: ServiceMonitor/keystone-operator exists in keystone-system (CC-0100, REQ-005, CC-0105)"
+          echo "OK: ServiceMonitor/keystone-operator exists in keystone-system"
     catch:
     - script:
         content: |
@@ -334,7 +328,6 @@ spec:
             -o jsonpath='{.status.conditions}' 2>&1 || true
 
   # ── Step 3 — Prometheus is scraping keystone-operator (target up) ───────
-  # CC-0100, REQ-003, REQ-009
   - name: prometheus-target-up
     try:
     - script:
@@ -359,7 +352,7 @@ spec:
           # Same presence guard as Step 1 — chainsaw has no step-level
           # skip, so each step re-checks for default-safe behavior. Keys
           # off the HelmRelease, not the `monitoring` Namespace, which is
-          # always present since CC-0105 (see header note).
+          # always present since (see header note).
           if ! kubectl get helmrelease kube-prometheus-stack -n monitoring >/dev/null 2>&1; then
             echo "SKIP: kube-prometheus-stack HelmRelease not present (WITH_PROMETHEUS=false)."
             exit 0
@@ -376,7 +369,6 @@ spec:
           # SHA-pinned actions). Pre-delete any leftover pod from a
           # previous failed run because `kubectl run --rm` on
           # Restart=Never can leak the pod when the script exits non-zero
-          # (CC-0100, REQ-003).
           kubectl delete pod prom-targets-probe -n monitoring \
             --ignore-not-found=true --grace-period=0 --force >/dev/null 2>&1 || true
 
@@ -416,7 +408,7 @@ spec:
               echo "FAIL: keystone-operator target never reached health=up within 24 attempts (~360s)"
               exit 1
             '
-          echo "OK: Prometheus is scraping keystone-operator (CC-0100, REQ-003)"
+          echo "OK: Prometheus is scraping keystone-operator"
     catch:
     - script:
         content: |
@@ -436,7 +428,6 @@ spec:
           kubectl get pods -n monitoring -l app.kubernetes.io/name=prometheus -o wide 2>&1 || true
 
   # ── Step 4 — Grafana exposes the keystone-operator dashboard ────────────
-  # CC-0100, REQ-004, REQ-009
   - name: grafana-dashboard-loaded
     try:
     - script:
@@ -455,7 +446,7 @@ spec:
           # Same presence guard as Step 1 — chainsaw has no step-level
           # skip, so each step re-checks for default-safe behavior. Keys
           # off the HelmRelease, not the `monitoring` Namespace, which is
-          # always present since CC-0105 (see header note).
+          # always present since (see header note).
           if ! kubectl get helmrelease kube-prometheus-stack -n monitoring >/dev/null 2>&1; then
             echo "SKIP: kube-prometheus-stack HelmRelease not present (WITH_PROMETHEUS=false)."
             exit 0
@@ -469,7 +460,7 @@ spec:
           # grafana_dashboard=1 and loads them as dashboards — see
           # deploy/kind/prometheus/kustomization.yaml configMapGenerator.
           # length>=1 proves the bundled keystone-operator.json was
-          # discovered and parsed (CC-0100, REQ-004).
+          # discovered and parsed.
           kubectl delete pod grafana-search-probe -n monitoring \
             --ignore-not-found=true --grace-period=0 --force >/dev/null 2>&1 || true
 
@@ -503,7 +494,7 @@ spec:
               echo "FAIL: Grafana search returned 0 dashboards for query=Keystone+Operator (~60s)"
               exit 1
             '
-          echo "OK: Grafana has loaded the keystone-operator dashboard (CC-0100, REQ-004)"
+          echo "OK: Grafana has loaded the keystone-operator dashboard"
     catch:
     - script:
         content: |
@@ -526,7 +517,7 @@ spec:
           kubectl get pods -n monitoring -l app.kubernetes.io/name=grafana -o wide 2>&1 || true
 
   # ── Step 4b — Dashboard ConfigMap is byte-identical to the canonical ────
-  # ── source (CC-0100, REQ-004, REQ-009) ──────────────────────────────────
+  # ── source ──────────────────────────────────
   # Step 4 proves Grafana loaded *some* dashboard whose title contains
   # "Keystone Operator". Step 4b additionally proves that the exact bytes
   # in the keystone-operator-dashboard ConfigMap match the canonical
@@ -553,7 +544,7 @@ spec:
           # Same presence guard as Step 1 — chainsaw has no step-level
           # skip, so each step re-checks for default-safe behavior. Keys
           # off the HelmRelease, not the `monitoring` Namespace, which is
-          # always present since CC-0105 (see header note).
+          # always present since (see header note).
           if ! kubectl get helmrelease kube-prometheus-stack -n monitoring >/dev/null 2>&1; then
             echo "SKIP: kube-prometheus-stack HelmRelease not present (WITH_PROMETHEUS=false)."
             exit 0
@@ -572,7 +563,7 @@ spec:
             echo "  configmap sha256: ${CM_HASH}"
             exit 1
           fi
-          echo "OK: keystone-operator-dashboard ConfigMap byte-identical to source (CC-0100, REQ-004)"
+          echo "OK: keystone-operator-dashboard ConfigMap byte-identical to source"
           echo "    sha256=${SRC_HASH}"
     catch:
     - script:

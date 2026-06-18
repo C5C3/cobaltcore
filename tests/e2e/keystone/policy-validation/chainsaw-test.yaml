@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for policy validation gating feature (CC-0058).
+# Chainsaw E2E test for policy validation gating feature.
 # Verifies:
 #   - PolicyValidReady transitions through False/PolicyValidationInProgress
 #     to True/PolicyValidationPassed when policyOverrides is set
@@ -11,7 +11,6 @@
 #   - PolicyValidReady transitions to True/PolicyValidationNotRequired when
 #     policyOverrides is removed, and the validation Job is cleaned up
 #
-# REQ-001, REQ-002, REQ-003, REQ-005 (CC-0058)
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -148,7 +147,7 @@ spec:
   - try:
     - script:
         content: |
-          # Verify validation Job no longer exists (CC-0058, REQ-003).
+          # Verify validation Job no longer exists.
           if kubectl get job keystone-policy-validation-policy-validation -n $NAMESPACE 2>/dev/null; then
             echo "FAIL: Validation Job should have been deleted"
             exit 1

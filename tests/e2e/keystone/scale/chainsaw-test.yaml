@@ -2,14 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for replica scaling (CC-0016) and PDB policy (CC-0037).
+# Chainsaw E2E test for replica scaling and PDB policy.
 # Verifies that patching spec.replicas propagates to the Deployment and PDB:
 #   - Initial deployment with replicas: 3 (PDB: minAvailable=1)
 #   - Scale up to 5 replicas (PDB: minAvailable=1)
 #   - Scale down to 2 replicas (PDB: minAvailable=1)
 #   - Scale down to 1 replica (PDB: maxUnavailable=1)
 #
-# REQ-006, REQ-012, REQ-013 (CC-0016, CC-0037)
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -47,7 +46,7 @@ spec:
             replicas: 3
           status:
             (availableReplicas >= `3`): true
-    # PDB should use minAvailable=1 for replicas > 1 (CC-0037).
+    # PDB should use minAvailable=1 for replicas > 1.
     - assert:
         resource:
           apiVersion: policy/v1
@@ -106,7 +105,7 @@ spec:
             replicas: 5
           status:
             (availableReplicas >= `5`): true
-    # PDB still uses minAvailable=1 for replicas > 1 (CC-0037).
+    # PDB still uses minAvailable=1 for replicas > 1.
     - assert:
         resource:
           apiVersion: policy/v1
@@ -138,7 +137,7 @@ spec:
             replicas: 2
           status:
             availableReplicas: 2
-    # PDB still uses minAvailable=1 for replicas > 1 (CC-0037).
+    # PDB still uses minAvailable=1 for replicas > 1.
     - assert:
         resource:
           apiVersion: policy/v1
@@ -148,11 +147,11 @@ spec:
             namespace: openstack
           spec:
             minAvailable: 1
-  # ── Step 7: Scale down to 1 replica (CC-0037) ───────────────────────────
+  # ── Step 7: Scale down to 1 replica ───────────────────────────
   - try:
     - patch:
         file: 03-patch-scale-to-one.yaml
-  # ── Step 8: Assert PDB switches to maxUnavailable (CC-0037) ─────────────
+  # ── Step 8: Assert PDB switches to maxUnavailable ─────────────
   # When replicas == 1, the PDB must use maxUnavailable=1 instead of
   # minAvailable=1 to avoid drain deadlock.
   - try:

@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Keystone CR fixture for the configmap-no-secrets E2E test (CC-0080).
+# Keystone CR fixture for the configmap-no-secrets E2E test.
 # Managed mode, unique name keystone-cc0080 to avoid collision with
 # basic-deployment (keystone-basic) in the shared openstack namespace.
 apiVersion: keystone.openstack.c5c3.io/v1alpha1

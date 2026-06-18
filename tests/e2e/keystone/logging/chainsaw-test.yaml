@@ -3,23 +3,22 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Chainsaw E2E test for spec.logging propagation to oslo.log on the Keystone
-# API container (CC-0098). Validates four scenarios end-to-end:
+# API container. Validates four scenarios end-to-end:
 #
-#   (a) REQ-009 — A Keystone CR with no spec.logging block reaches Ready=True
+# (a) — A Keystone CR with no spec.logging block reaches Ready=True
 #       and `kubectl logs` returns at least one oslo.log-format application
 #       line within 60 s.
-#   (b) REQ-009 — Patching spec.logging.debug=true rolls a new immutable
+# (b) — Patching spec.logging.debug=true rolls a new immutable
 #       ConfigMap (the volume reference on the Deployment changes), the
 #       rollout completes, and the post-rollout pod emits at least one
 #       DEBUG-level oslo.log line from a keystone.* logger.
-#   (c) REQ-009 — Patching spec.logging.format=json rolls a new ConfigMap
+# (c) — Patching spec.logging.format=json rolls a new ConfigMap
 #       and every oslo.log record on the new pod's stderr parses as JSON
 #       via `jq -e .` (uWSGI access lines are excluded by line-prefix).
-#   (d) REQ-002 — A CR with spec.logging.perLoggerLevels[<key>]=VERBOSE is
+# (d) — A CR with spec.logging.perLoggerLevels[<key>]=VERBOSE is
 #       rejected at admission with a field.Invalid error at the precise
 #       field path.
 #
-# REQ-002, REQ-009 (CC-0098)
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -36,7 +35,7 @@ spec:
     - apply:
         file: 00-keystone-cr.yaml
   # ── Step 2: Assert Ready=True and Deployment carries default uWSGI flags
-  # propagated from CC-0098 REQ-006 (--log-master, --log-format) so uWSGI
+  # propagated from (--log-master, --log-format) so uWSGI
   # access lines are visually distinguishable from oslo.log records on the
   # shared stderr stream.
   - name: assert-ready
@@ -83,7 +82,7 @@ spec:
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -40 || true
   # ── Step 3 (a): Assert at least one oslo.log-format line on stderr ─────
-  # REQ-009: `^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} \d+ (DEBUG|INFO|
+  # `^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} \d+ (DEBUG|INFO|
   # WARNING|ERROR|CRITICAL) keystone\.` — the canonical oslo.log line shape.
   # Polled for up to 60 s after Ready=True so the assertion is independent
   # of the (variable) lag between the Ready transition and the first
@@ -131,7 +130,7 @@ spec:
             if echo "$LOGS" | grep -E -q "$PATTERN"; then
               echo "OK: oslo.log-format line observed"
               # Diagnostic dump: tolerate SIGPIPE from `head -3` closing
-              # grep's stdout under `set -o pipefail` (CC-0098).
+              # grep's stdout under `set -o pipefail`.
               echo "$LOGS" | grep -E "$PATTERN" | head -3 || true
               exit 0
             fi
@@ -180,8 +179,7 @@ spec:
           set -euo pipefail
           BEFORE_CM=$(cat /tmp/keystone-logging-cm-before)
           # Wait for the Deployment volume reference to flip to a NEW immutable
-          # ConfigMap (CC-0077 retains BEFORE_CM as a historical revision; the
-          # rollout signal is the volume name, not BEFORE_CM disappearing).
+          # ConfigMap (retains BEFORE_CM as a historical revision; the rollout signal is the volume name, not BEFORE_CM disappearing).
           DEADLINE=$(( $(date +%s) + 90 ))
           AFTER_CM="$BEFORE_CM"
           while [ "$(date +%s)" -lt "$DEADLINE" ]; do
@@ -258,7 +256,7 @@ spec:
           # $LOGS) returns non-zero on EPIPE, the pipeline inherits that
           # non-zero status, and the if branch is silently skipped despite a
           # match. At debug=true the pod emits enough DEBUG records that
-          # --tail=600 reliably exceeds the pipe buffer (CC-0098).
+          # --tail=600 reliably exceeds the pipe buffer.
           PATTERN='[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3} [0-9]+ DEBUG keystone\.'
           DEADLINE=$(( $(date +%s) + 60 ))
           while [ "$(date +%s)" -lt "$DEADLINE" ]; do
@@ -268,7 +266,7 @@ spec:
             if grep -E -q "$PATTERN" <<<"$LOGS"; then
               echo "OK: DEBUG oslo.log line observed after debug toggle on pod=$POD"
               # Diagnostic dump: tolerate SIGPIPE from `head -3` closing
-              # grep's stdout under `set -o pipefail` (CC-0098).
+              # grep's stdout under `set -o pipefail`.
               grep -E "$PATTERN" <<<"$LOGS" | head -3 || true
               exit 0
             fi
@@ -292,11 +290,10 @@ spec:
     - events:
         namespace: openstack
   # ── Step 5 (c): Switch spec.logging.format=json ────────────────────────
-  # Asserts the format toggle rolls a new ConfigMap (its data now carries
-  # `logging.conf` and [DEFAULT].log_config_append per REQ-004) and every
+  # Asserts the format toggle rolls a new ConfigMap (its data now carries `logging.conf` and [DEFAULT].log_config_append) and every
   # JSON-prefixed line on the post-rollout pod's stderr is parseable by
   # `jq -e .`. Lines NOT starting with `{` (uWSGI access lines, master
-  # banner) are excluded — REQ-006's --log-format ensures they remain
+  # banner) are excluded — the --log-format ensures they remain
   # distinguishable from oslo.log JSON records on the shared stream.
   - name: keystone-logging-json-format-rolls-and-parses
     try:
@@ -332,7 +329,7 @@ spec:
             exit 1
           fi
           # Verify the new ConfigMap actually carries logging.conf and that
-          # keystone.conf gained the log_config_append entry (REQ-004).
+          # keystone.conf gained the log_config_append entry.
           if ! kubectl -n openstack get cm "$AFTER_CM" \
               -o jsonpath='{.data.logging\.conf}' | grep -q 'JSONFormatter'; then
             echo "FAIL: new ConfigMap $AFTER_CM is missing logging.conf with JSONFormatter"
@@ -366,19 +363,19 @@ spec:
             LOGS=$(kubectl logs -n openstack \
               -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-logging \
               --tail=600 2>/dev/null || true)
-            # The '^\{' filter relies on the REQ-006 invariant that uWSGI
+            # The '^\{' filter relies on the invariant that uWSGI
             # access lines emitted via --log-format never start with '{', so
             # only oslo.log JSONFormatter records survive the filter.
             JSON_LINES=$(echo "$LOGS" | grep -E '^\{' || true)
             COUNT=$(printf '%s\n' "$JSON_LINES" | grep -c '^{' || true)
             if [ "$COUNT" -ge 1 ]; then
               echo "Found $COUNT JSON-prefixed log line(s); validating with jq -e . and JSONFormatter contract keys"
-              # REQ-009 contract: each oslo.log JSONFormatter record exposes at
+              # contract: each oslo.log JSONFormatter record exposes at
               # minimum `name` (logger), `levelname`, and `message`. A
               # parseable-JSON-only check would silently accept a renderer that
               # produces JSON but loses these fields — exactly the kind of
               # contract drift that breaks a downstream Loki/OpenSearch
-              # ingestion pipeline (CC-0098, REQ-009).
+              # ingestion pipeline.
               FAILED=0
               while IFS= read -r line; do
                 [ -z "$line" ] && continue
@@ -393,7 +390,7 @@ spec:
                 fi
               done <<<"$JSON_LINES"
               if [ "$FAILED" -ne 0 ]; then
-                echo "FAIL: $FAILED JSON-prefixed lines did not satisfy the oslo.log JSONFormatter contract (REQ-009)"
+                echo "FAIL: $FAILED JSON-prefixed lines did not satisfy the oslo.log JSONFormatter contract"
                 exit 1
               fi
               echo "OK: $COUNT JSON oslo.log records parsed and exposed name/levelname/message"
@@ -414,7 +411,7 @@ spec:
     - events:
         namespace: openstack
   # ── Step 6 (d): Invalid perLoggerLevels rejected at admission ──────────
-  # REQ-002 scenario "Invalid per-logger level rejected": the validating
+  # scenario "Invalid per-logger level rejected": the validating
   # webhook returns field.Invalid at spec.logging.perLoggerLevels[<key>]
   # with a message naming the allowed enum.
   - name: keystone-logging-invalid-perloggerlevel-rejected

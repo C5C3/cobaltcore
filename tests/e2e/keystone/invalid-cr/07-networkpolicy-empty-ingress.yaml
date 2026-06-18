@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# REQ-006 (CC-0094): Keystone CR with spec.networkPolicy set but
+# Keystone CR with spec.networkPolicy set but
 # spec.networkPolicy.ingress as an empty array. The constraint is enforced
 # by the CEL XValidation rule on NetworkPolicySpec (keystone_types.go) and
 # by the validating webhook (keystone_webhook.go). Admission must reject

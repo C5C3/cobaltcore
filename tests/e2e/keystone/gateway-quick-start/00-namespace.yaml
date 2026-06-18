@@ -11,7 +11,6 @@
 # `apply` is idempotent on an existing Namespace, which makes the test
 # tolerate being invoked against a bare cluster as well.
 #
-# Feature: CC-0088, REQ-006
 ---
 apiVersion: v1
 kind: Namespace

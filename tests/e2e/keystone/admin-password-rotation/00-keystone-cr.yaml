@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Fixtures for the Keystone admin-password-rotation E2E test (CC-0108, REQ-009).
+# Fixtures for the Keystone admin-password-rotation E2E test.
 # Managed mode; a distinct CR name (keystone-adminpw) and a dedicated logical
 # database (keystone_adminpw) keep this suite isolated from the other Keystone
 # CRs that share the `openstack` namespace under chainsaw `parallel: 4`.
@@ -24,10 +24,7 @@
 # admin path the deploy-infra seed owns: this suite WRITES its rotation source,
 # so giving it a self-seeded, self-owned path keeps the rotation scoped to THIS
 # CR and avoids racing the deploy-infra seed or any other CR's admin password.
-# (Since CC-0112 every production admin password lives at its own per-CR path
-# bootstrap/{namespace}/{keystone}/admin, so there is no longer a shared admin
-# object to collide on — but a dedicated, test-owned path is still the cleanest
-# rotation source.) The eso-management OpenBao policy already grants read on
+# (Since every production admin password lives at its own per-CR path bootstrap/{namespace}/{keystone}/admin, so there is no longer a shared admin object to collide on — but a dedicated, test-owned path is still the cleanest rotation source.) The eso-management OpenBao policy already grants read on
 # kv-v2/data/bootstrap/* (deploy/openbao/policies/eso-management.hcl), so no new
 # policy is required. The path is seeded with a known initial password by
 # chainsaw-test.yaml step 1 (re-seeded every run, so a leftover from a prior run
@@ -37,7 +34,7 @@
 # refreshInterval is short so step 3's rotated value reaches the Secret within
 # one ESO tick — ESO does not watch OpenBao for changes, it re-reads the source
 # on its interval (or on a spec change), so a 1h default would never propagate
-# the rotation inside the test window (CC-0108, REQ-009).
+# the rotation inside the test window.
 ---
 apiVersion: external-secrets.io/v1
 kind: ExternalSecret
@@ -92,8 +89,7 @@ spec:
   # same memcached keys. A concurrent instance's cache entry could answer this
   # suite's auth request with a pre-rotation result, producing a false 201 where
   # this test asserts 401 after rotation. Same rationale as the fernet-rotation
-  # fixture (CC-0074 follow-up: namespace cache keys per CR so shared memcached
-  # is safe).
+  # fixture (follow-up: namespace cache keys per CR so shared memcached is safe).
   extraConfig:
     cache:
       enabled: "false"

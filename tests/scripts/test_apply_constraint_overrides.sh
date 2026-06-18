@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Shell tests for scripts/apply-constraint-overrides.sh (CC-0006 REQ-007)
+# Shell tests for scripts/apply-constraint-overrides.sh
 # Usage: bash tests/scripts/test_apply_constraint_overrides.sh
 
 set -euo pipefail
@@ -141,7 +141,7 @@ EOF
   assert_file_contains "oslo.config untouched" "$workdir/releases/2025.2/upper-constraints.txt" "^oslo.config===9.7.0$"
 }
 
-# --- Test 6: Missing constraints file fails with error (CC-0006 REQ-007) ---
+# --- Test 6: Missing constraints file fails with error ---
 test_missing_constraints_file_fails() {
   echo "Test: missing constraints file fails with error"
   local workdir="$TMPDIR_BASE/test6"
@@ -156,7 +156,7 @@ test_missing_constraints_file_fails() {
   assert_contains "error mentions missing file" "$output" "upper-constraints.txt"
 }
 
-# --- Test 7: Case-insensitive package matching (CC-0006) ---
+# --- Test 7: Case-insensitive package matching ---
 test_case_insensitive_package_matching() {
   echo "Test: case-insensitive package matching"
   local workdir="$TMPDIR_BASE/test7"

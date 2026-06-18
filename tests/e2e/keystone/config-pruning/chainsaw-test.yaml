@@ -2,14 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for immutable ConfigMap pruning (CC-0077).
+# Chainsaw E2E test for immutable ConfigMap pruning.
 # Verifies:
 #   - After multiple config changes, stale ConfigMaps are pruned
 #   - The number of ConfigMaps matching the base prefix never exceeds
 #     retain + 1 (current + 3 historical = 4 max)
 #   - Ready=True is maintained throughout
 #
-# REQ-007 (CC-0077)
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:

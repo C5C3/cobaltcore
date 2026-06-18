@@ -5,7 +5,7 @@
 
 # Verify hack/kind-config.yaml exposes the host :443 → container :31443 port
 # mapping that bridges `https://keystone.127-0-0-1.nip.io/v3` to the Envoy
-# Gateway NodePort data plane (CC-0088, REQ-004).
+# Gateway NodePort data plane.
 #
 # Uses `yq` to assert the presence and shape of the port mapping so that
 # formatting changes (indentation, key order) do not break the test. Skipped
@@ -27,24 +27,10 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
 KIND_CONFIG_FILE="$PROJECT_ROOT/hack/kind-config.yaml"
 
-# --- Test 1: kind-config.yaml has SPDX header and feature ID (CC-0088, REQ-004) ---
-test_feature_id_comment() {
-  echo "Test: hack/kind-config.yaml carries CC-0088 feature ID comment (CC-0088, REQ-004)"
-
-  if [[ ! -f "$KIND_CONFIG_FILE" ]]; then
-    echo "  FAIL: $KIND_CONFIG_FILE does not exist"
-    FAIL=$((FAIL + 1))
-    return
-  fi
-
-  assert_file_contains "CC-0088 feature ID appears near the port mapping" \
-    "$KIND_CONFIG_FILE" "CC-0088"
-}
-
 # --- Test 2: nodes[0] has the hostPort:443 extraPortMapping with the
-#             expected shape (CC-0088, REQ-004) ---
+#             expected shape ---
 test_port_mapping_shape() {
-  echo "Test: nodes[0].extraPortMappings[hostPort==443] is containerPort=31443 TCP (CC-0088, REQ-004)"
+  echo "Test: nodes[0].extraPortMappings[hostPort==443] is containerPort=31443 TCP"
 
   if ! command -v yq >/dev/null 2>&1; then
     echo "  SKIP: yq not installed (5 checks skipped)"
@@ -89,7 +75,6 @@ test_port_mapping_shape() {
 }
 
 # --- Run ---
-test_feature_id_comment
 test_port_mapping_shape
 
 echo ""

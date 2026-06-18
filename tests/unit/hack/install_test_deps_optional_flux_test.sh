@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Verify hack/install-test-deps.sh gates install_flux behind WITH_FLUX_CLI
-# after the FluxInstance bootstrap migration (CC-0085, REQ-004):
+# after the FluxInstance bootstrap migration
 #   - Default run (WITH_FLUX_CLI unset) skips install_flux entirely.
 #   - WITH_FLUX_CLI=true invokes install_flux and reaches verify_sha256.
 #
@@ -147,7 +147,7 @@ STUB
 
 # Populate <dir>/flux with a stub whose `version --client` output matches the
 # pinned FLUX_VERSION, so install_flux's "already installed" short-circuit
-# branch fires (CC-0085, REQ-004). Used by test 3 to cover the branch that
+# branch fires. Used by test 3 to cover the branch that
 # tests 1 and 2 deliberately skip.
 prepopulate_flux_with_correct_version() {
   local dir="$1"
@@ -184,10 +184,10 @@ run_install_script() {
 
 # ---------------------------------------------------------------------------
 # Test 1: default run — WITH_FLUX_CLI unset → install_flux is not invoked.
-# (CC-0085, REQ-004)
+#
 # ---------------------------------------------------------------------------
 test_default_skips_install_flux() {
-  echo "Test: default run skips install_flux (CC-0085, REQ-004)"
+  echo "Test: default run skips install_flux"
 
   local tmp
   tmp="$(mktemp -d)"
@@ -218,10 +218,10 @@ test_default_skips_install_flux() {
 
 # ---------------------------------------------------------------------------
 # Test 2: WITH_FLUX_CLI=true — install_flux runs end-to-end and verify_sha256
-# is invoked (observed via its success log line). (CC-0085, REQ-004)
+# is invoked (observed via its success log line).
 # ---------------------------------------------------------------------------
 test_with_flux_cli_true_invokes_install_flux() {
-  echo "Test: WITH_FLUX_CLI=true invokes install_flux and verify_sha256 (CC-0085, REQ-004)"
+  echo "Test: WITH_FLUX_CLI=true invokes install_flux and verify_sha256"
 
   local tmp
   tmp="$(mktemp -d)"
@@ -259,10 +259,10 @@ test_with_flux_cli_true_invokes_install_flux() {
 # version — install_flux short-circuits (no download, no verify_sha256).
 # This complements test 2, which forces the full install path by leaving
 # $tmp/install/flux absent. Together they cover both branches of the
-# version-check guard in install_flux (CC-0085, REQ-004).
+# version-check guard in install_flux.
 # ---------------------------------------------------------------------------
 test_with_flux_cli_true_short_circuits_on_correct_version() {
-  echo "Test: WITH_FLUX_CLI=true short-circuits when flux is already installed (CC-0085, REQ-004)"
+  echo "Test: WITH_FLUX_CLI=true short-circuits when flux is already installed"
 
   local tmp
   tmp="$(mktemp -d)"

@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # ControlPlane CR fixture for the db-credential-scoping E2E test
-# (CC-0116, REQ-010, REQ-001).
 #
 # This is the canonical kind ControlPlane ("controlplane" in namespace
 # "openstack") — spec-equivalent to deploy/kind/controlplane/controlplane.yaml.
@@ -16,7 +15,7 @@
 #     = openstack/keystone/openstack/controlplane/db
 # which is exactly the per-CP path the deploy-infra seed writes for the default
 # KORC_CONTROLPLANES entry "openstack/controlplane"
-# (deploy/openbao/bootstrap/write-bootstrap-secrets.sh, CC-0116 REQ-006).
+# (deploy/openbao/bootstrap/write-bootstrap-secrets.sh).
 #
 # ── DECISION: reuse the canonical "controlplane" CR (idempotent apply) ───────
 # Ambiguity: the assertions pin the DB-credential names to

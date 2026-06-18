@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify chaos E2E CI pipeline changes meet requirements (CC-0054, REQ-002)
+# Verify chaos E2E CI pipeline changes meet requirements
 # Validates: path filter, output wiring, ci-resolve-changes.sh integration
 # Usage: bash tests/ci/verify_chaos_ci_pipeline.sh
 
@@ -22,10 +22,10 @@ source "$SCRIPT_DIR/../lib/assertions.sh"
 CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
 RESOLVE_SCRIPT="$PROJECT_ROOT/hack/ci-resolve-changes.sh"
 
-echo "=== Chaos E2E CI pipeline verification (CC-0054, REQ-002) ==="
+echo "=== Chaos E2E CI pipeline verification ==="
 echo ""
 
-# ── Helpers (CC-0054, review #1) ──────────────────────────────────────────
+# ── Helpers (review #1) ──────────────────────────────────────────
 
 # Extract a YAML job section from a workflow file by job name.
 # Centralizes the extraction pattern to reduce brittleness (review #1, comment 2).

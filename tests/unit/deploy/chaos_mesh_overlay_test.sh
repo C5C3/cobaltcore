@@ -3,12 +3,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify the Chaos Mesh opt-in overlay introduced by CC-0097:
+# Verify the Chaos Mesh opt-in overlay:
 #   - deploy/flux-system/kustomization.yaml no longer references
 #     sources/chaos-mesh.yaml or releases/chaos-mesh.yaml in its resources
 #     list, and the corresponding files are no longer present under
-#     deploy/flux-system/{sources,releases}/ (they were relocated into the
-#     opt-in overlay so the overlay is self-contained — CC-0097, REQ-001).
+#     deploy/flux-system/{sources,releases}/ (they were relocated into the opt-in overlay so the overlay is self-contained).
 #   - deploy/flux-system/namespaces.yaml no longer creates the chaos-mesh
 #     Namespace.
 #   - deploy/kind/base/kustomization.yaml no longer carries the chaos-mesh
@@ -24,7 +23,6 @@
 #     kind/chaos-mesh renders Namespace + HelmRepository + HelmRelease
 #     with the kind-tuning values applied and dependsOn: cert-manager
 #     preserved.
-# Feature: CC-0097, REQ-001, REQ-002, REQ-009
 # Usage: bash tests/unit/deploy/chaos_mesh_overlay_test.sh
 
 set -uo pipefail
@@ -53,9 +51,9 @@ KIND_CHAOS_SOURCE="$KIND_CHAOS_DIR/source.yaml"
 KIND_CHAOS_RELEASE="$KIND_CHAOS_DIR/release.yaml"
 
 # --- Test 1: production overlay no longer lists chaos-mesh source/release
-#             files in its resources block (CC-0097, REQ-001) ---
+#             files in its resources block ---
 test_flux_system_kustomization_drops_chaos_mesh_entries() {
-  echo "Test: deploy/flux-system/kustomization.yaml resources list contains no chaos-mesh entries (CC-0097, REQ-001)"
+  echo "Test: deploy/flux-system/kustomization.yaml resources list contains no chaos-mesh entries"
 
   if [[ ! -f "$FLUX_SYSTEM_KUSTOMIZATION" ]]; then
     echo "  FAIL: $FLUX_SYSTEM_KUSTOMIZATION does not exist"
@@ -75,9 +73,9 @@ test_flux_system_kustomization_drops_chaos_mesh_entries() {
 
 # --- Test 2: chaos-mesh source/release files live INSIDE the opt-in overlay
 #             so the overlay is self-contained — kustomize build does not need
-#             --load-restrictor=LoadRestrictionsNone (CC-0097, REQ-001/REQ-003) ---
+#             --load-restrictor=LoadRestrictionsNone (/) ---
 test_chaos_mesh_files_local_to_overlay() {
-  echo "Test: chaos-mesh source/release files live inside the opt-in overlay (CC-0097, REQ-001)"
+  echo "Test: chaos-mesh source/release files live inside the opt-in overlay"
 
   if [[ -f "$KIND_CHAOS_SOURCE" ]]; then
     echo "  PASS: $KIND_CHAOS_SOURCE exists"
@@ -119,9 +117,9 @@ test_chaos_mesh_files_local_to_overlay() {
 }
 
 # --- Test 3: production namespaces.yaml no longer declares the chaos-mesh
-#             Namespace (CC-0097, REQ-001) ---
+#             Namespace ---
 test_flux_system_namespaces_drops_chaos_mesh() {
-  echo "Test: deploy/flux-system/namespaces.yaml no longer creates the chaos-mesh Namespace (CC-0097, REQ-001)"
+  echo "Test: deploy/flux-system/namespaces.yaml no longer creates the chaos-mesh Namespace"
 
   if [[ ! -f "$FLUX_SYSTEM_NAMESPACES" ]]; then
     echo "  FAIL: $FLUX_SYSTEM_NAMESPACES does not exist"
@@ -138,9 +136,9 @@ test_flux_system_namespaces_drops_chaos_mesh() {
 }
 
 # --- Test 4: deploy/kind/base/kustomization.yaml no longer carries a patch
-#             whose target is the chaos-mesh HelmRelease (CC-0097, REQ-009) ---
+#             whose target is the chaos-mesh HelmRelease ---
 test_kind_base_kustomization_drops_chaos_mesh_patch() {
-  echo "Test: deploy/kind/base/kustomization.yaml no longer patches the chaos-mesh HelmRelease (CC-0097, REQ-009)"
+  echo "Test: deploy/kind/base/kustomization.yaml no longer patches the chaos-mesh HelmRelease"
 
   if [[ ! -f "$KIND_BASE_KUSTOMIZATION" ]]; then
     echo "  FAIL: $KIND_BASE_KUSTOMIZATION does not exist"
@@ -166,9 +164,9 @@ test_kind_base_kustomization_drops_chaos_mesh_patch() {
 }
 
 # --- Test 5: deploy/kind/chaos-mesh/ overlay exists with the expected
-#             on-disk shape (CC-0097, REQ-002) ---
+#             on-disk shape ---
 test_kind_chaos_overlay_files_exist() {
-  echo "Test: deploy/kind/chaos-mesh/{kustomization,namespace}.yaml exist with SPDX + Feature ID (CC-0097, REQ-002)"
+  echo "Test: deploy/kind/chaos-mesh/{kustomization,namespace}.yaml exist with SPDX + Feature ID"
 
   if [[ ! -f "$KIND_CHAOS_KUSTOMIZATION" ]]; then
     echo "  FAIL: $KIND_CHAOS_KUSTOMIZATION does not exist"
@@ -188,9 +186,6 @@ test_kind_chaos_overlay_files_exist() {
   assert_file_contains "kustomization.yaml has SPDX-License-Identifier: Apache-2.0" \
     "$KIND_CHAOS_KUSTOMIZATION" \
     "SPDX-License-Identifier: Apache-2.0"
-  assert_file_contains "kustomization.yaml cites Feature: CC-0097" \
-    "$KIND_CHAOS_KUSTOMIZATION" \
-    "CC-0097"
   assert_file_contains "kustomization.yaml references the local source.yaml" \
     "$KIND_CHAOS_KUSTOMIZATION" \
     "source.yaml$"
@@ -203,7 +198,7 @@ test_kind_chaos_overlay_files_exist() {
 
   # Pin the no-parent-dir contract: a `../../` reference would re-introduce
   # the kubectl#948 load-restrictor failure documented at the top of this
-  # test file (CC-0097, REQ-003).
+  # test file.
   local parent_refs
   parent_refs="$( { grep -E '^[[:space:]]*-[[:space:]]+\.\./\.\.' "$KIND_CHAOS_KUSTOMIZATION" || true; } | wc -l)"
   assert_eq "kustomization.yaml has no '../../' parent-directory resource entries" \
@@ -218,9 +213,9 @@ test_kind_chaos_overlay_files_exist() {
 }
 
 # --- Test 6: kustomize build of production flux-system renders zero
-#             chaos-mesh resources (CC-0097, REQ-001) ---
+#             chaos-mesh resources ---
 test_kustomize_build_flux_system_renders_no_chaos_mesh() {
-  echo "Test: kustomize build deploy/flux-system renders no chaos-mesh resources (CC-0097, REQ-001)"
+  echo "Test: kustomize build deploy/flux-system renders no chaos-mesh resources"
 
   if ! command -v kustomize >/dev/null 2>&1; then
     echo "  SKIP: kustomize not installed (3 checks skipped)"
@@ -268,9 +263,9 @@ test_kustomize_build_flux_system_renders_no_chaos_mesh() {
 }
 
 # --- Test 7: kustomize build of kind/base succeeds (no orphan patch error)
-#             and renders no chaos-mesh resources (CC-0097, REQ-009) ---
+#             and renders no chaos-mesh resources ---
 test_kustomize_build_kind_base_succeeds_without_chaos_mesh() {
-  echo "Test: kustomize build deploy/kind/base succeeds and renders no chaos-mesh resources (CC-0097, REQ-009)"
+  echo "Test: kustomize build deploy/kind/base succeeds and renders no chaos-mesh resources"
 
   if ! command -v kustomize >/dev/null 2>&1; then
     echo "  SKIP: kustomize not installed (2 checks skipped)"
@@ -296,7 +291,7 @@ test_kustomize_build_kind_base_succeeds_without_chaos_mesh() {
 
 # --- Test 8: kustomize build of the new opt-in overlay renders the full
 #             Chaos Mesh bundle with kind tuning + dependsOn cert-manager
-#             preserved (CC-0097, REQ-002) ---
+#             preserved ---
 #
 # The overlay is self-contained — all resource references are local to
 # deploy/kind/chaos-mesh/. Kustomize's default security model
@@ -305,7 +300,7 @@ test_kustomize_build_kind_base_succeeds_without_chaos_mesh() {
 # hack/deploy-infra.sh (kubectl does not expose --load-restrictor —
 # kubernetes/kubectl#948 — so the no-flag build is the production caller).
 test_kustomize_build_kind_chaos_overlay_renders_full_bundle() {
-  echo "Test: kustomize build deploy/kind/chaos-mesh renders Namespace + HelmRepository + HelmRelease with kind tuning (CC-0097, REQ-002)"
+  echo "Test: kustomize build deploy/kind/chaos-mesh renders Namespace + HelmRepository + HelmRelease with kind tuning"
 
   if ! command -v kustomize >/dev/null 2>&1; then
     echo "  SKIP: kustomize not installed (8 checks skipped)"
@@ -321,7 +316,7 @@ test_kustomize_build_kind_chaos_overlay_renders_full_bundle() {
   # Mirror the production invocation: NO --load-restrictor flag. kubectl's
   # embedded kustomize (used by hack/deploy-infra.sh) does not expose one,
   # so the unit test must pass without it or the test would approve a
-  # rendering that fails for the production caller (CC-0097, REQ-003).
+  # rendering that fails for the production caller.
   local rendered
   if ! rendered="$(kustomize build "$KIND_CHAOS_DIR" 2>&1)"; then
     echo "  FAIL: kustomize build $KIND_CHAOS_DIR failed (default LoadRestrictionsRootOnly):"

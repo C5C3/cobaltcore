@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Keystone CR fixture for the autoscaling E2E test (CC-0038).
+# Keystone CR fixture for the autoscaling E2E test.
 # Managed mode with initial replicas: 3 and CPU-based autoscaling.
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
 kind: Keystone

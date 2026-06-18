@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Keystone CR fixture for the MariaDB network-latency chaos test (CC-0049).
+# Keystone CR fixture for the MariaDB network-latency chaos test.
 # Uses unique name (keystone-chaos-net-lat) and database (keystone_chaos_net_lat)
 # to avoid conflicts with other test suites.
 apiVersion: keystone.openstack.c5c3.io/v1alpha1

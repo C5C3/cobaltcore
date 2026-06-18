@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify build-images workflow refactoring meets requirements REQ-001 through REQ-009 (CC-0055)
+# Verify build-images workflow refactoring meets requirements through
 # Validates: line count, deduplication, composite action usage, script references
 # Usage: bash tests/ci/verify_build_images_refactor.sh
 
@@ -26,7 +26,7 @@ if [[ ! -f "$WORKFLOW" ]]; then
   exit 1
 fi
 
-echo "=== Build-images workflow refactor verification (CC-0055) ==="
+echo "=== Build-images workflow refactor verification ==="
 echo "Workflow: $WORKFLOW"
 echo ""
 
@@ -73,7 +73,7 @@ test_normalize_owner_count() {
 }
 
 # --- Test 4: supply-chain-attest composite action usage ---
-# CC-0055: supply-chain-attest is now used via build-push-image and
+# supply-chain-attest is now used via build-push-image and
 # merge-manifest-and-attest composites, so search all action files.
 test_supply_chain_attest_usage() {
   echo "Test: supply-chain-attest composite action used >= 2 times (across actions)"
@@ -120,7 +120,7 @@ test_checkout_service_source_usage() {
 }
 
 # --- Test 7: export-digest composite action usage ---
-# CC-0055: export-digest is now used via build-push-image composite.
+# export-digest is now used via build-push-image composite.
 test_export_digest_usage() {
   echo "Test: export-digest composite action used >= 1 time (across actions)"
 
@@ -136,7 +136,7 @@ test_export_digest_usage() {
 }
 
 # --- Test 8: ci-merge-manifest.sh script usage ---
-# CC-0055: ci-merge-manifest.sh is now used via merge-manifest-and-attest composite.
+# ci-merge-manifest.sh is now used via merge-manifest-and-attest composite.
 test_ci_merge_manifest_usage() {
   echo "Test: ci-merge-manifest.sh referenced >= 1 time (across actions)"
 
@@ -241,7 +241,7 @@ test_merge_manifest_and_attest_usage() {
   fi
 }
 
-# --- Test 13: Path triggers include composite actions and hack scripts (CC-0055, B-001) ---
+# --- Test 13: Path triggers include composite actions and hack scripts (B-001) ---
 test_path_triggers_include_extracted_components() {
   echo "Test: path triggers include .github/actions/** and hack/ci-*"
 

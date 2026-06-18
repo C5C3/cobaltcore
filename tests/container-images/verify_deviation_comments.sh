@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify DEVIATION comments are present in Dockerfiles (CC-0006 REQ-010)
+# Verify DEVIATION comments are present in Dockerfiles
 # Usage: bash tests/container-images/verify_deviation_comments.sh
 
 set -euo pipefail

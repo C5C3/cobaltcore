@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# NetworkChaos CR to inject latency on MariaDB traffic (CC-0049).
+# NetworkChaos CR to inject latency on MariaDB traffic.
 # Injects 10s latency with 2s jitter at 100% correlation on traffic FROM
 # keystone pods TO mariadb pods (unidirectional), simulating degraded
 # network conditions without full outage.

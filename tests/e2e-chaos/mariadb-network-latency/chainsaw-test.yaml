@@ -2,12 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw chaos E2E test for MariaDB network latency (CC-0049).
+# Chainsaw chaos E2E test for MariaDB network latency.
 # Verifies the Keystone operator tolerates slow MariaDB responses
 # (10s latency, 2s jitter) without crash-looping or losing Ready
 # status, confirming adequate timeout configuration.
 #
-# SC-CHAOS-007, REQ-003, REQ-004, REQ-008 (CC-0049)
+# SC-CHAOS-007,
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -42,7 +42,7 @@ spec:
     - apply:
         file: 01-networkchaos.yaml
   # ── Step 4: Assert operator tolerates latency — no crash-loop, Ready maintained ─
-  # Verify operator pod restartCount remains 0 (REQ-004) and Keystone CR
+  # Verify operator pod restartCount remains 0 and Keystone CR
   # maintains Ready=True under latency injection.
   - try:
     - script:
@@ -58,7 +58,7 @@ spec:
 
           # Wait for NetworkChaos to be fully injected before checking
           # effects. Replaces a fixed sleep with a deterministic check
-          # that confirms the fault is active (CC-0049).
+          # that confirms the fault is active.
           echo "Waiting for NetworkChaos latency-mariadb injection..."
           kubectl wait networkchaos/latency-mariadb -n openstack \
             --for=condition=AllInjected --timeout=60s
@@ -70,7 +70,7 @@ spec:
           # ensures at least one full cycle has run under latency.
           sleep 15
 
-          # CC-0105: the operator is deployed to the dedicated
+          # the operator is deployed to the dedicated
           # `keystone-system` namespace because hack/ci-deploy-operator.sh
           # now invokes `helm install --namespace keystone-system
           # --create-namespace`. Labels are set by the Helm chart
@@ -92,7 +92,7 @@ spec:
           fi
           echo "Found operator pod(s): ${POD_NAMES}"
 
-          # Verify restart count is 0 for ALL operator pods (CC-0049).
+          # Verify restart count is 0 for ALL operator pods.
           # Iterates every matched pod so scaled deployments cannot hide
           # partial instability behind a healthy first replica.
           FAILED=0

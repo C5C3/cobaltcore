@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Keystone CR fixture for the operator pod kill chaos test (CC-0066).
+# Keystone CR fixture for the operator pod kill chaos test.
 # Uses unique name (keystone-chaos-opk) and database (keystone_chaos_opk)
 # to avoid conflicts with other test suites including operator-pod-crash.
 apiVersion: keystone.openstack.c5c3.io/v1alpha1

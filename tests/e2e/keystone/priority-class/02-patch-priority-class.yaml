@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Patch to set spec.priorityClassName to the test PriorityClass (CC-0075).
+# Patch to set spec.priorityClassName to the test PriorityClass.
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
 kind: Keystone
 metadata:

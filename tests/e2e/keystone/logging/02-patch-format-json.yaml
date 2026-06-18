@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Patch to flip spec.logging.format to json (CC-0098, REQ-004, REQ-009).
+# Patch to flip spec.logging.format to json.
 # After the rolling update completes, every non-empty oslo.log line on the
 # pod's stderr must parse as JSON via `jq -e .` for downstream Loki/OpenSearch
 # ingest (uWSGI access lines are filtered out by the chainsaw script).

@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Keystone CR fixture for the CronJob rotation failure chaos test (CC-0048).
+# Keystone CR fixture for the CronJob rotation failure chaos test.
 # Uses unique name (keystone-chaos-cron) and database (keystone_chaos_cron)
 # to avoid conflicts with other test suites.
 apiVersion: keystone.openstack.c5c3.io/v1alpha1

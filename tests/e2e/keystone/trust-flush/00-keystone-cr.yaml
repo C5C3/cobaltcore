@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Keystone CR fixture for the trust-flush E2E test (CC-0057).
+# Keystone CR fixture for the trust-flush E2E test.
 # Managed mode with explicit trust flush schedule.
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
 kind: Keystone

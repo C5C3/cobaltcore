@@ -6,7 +6,7 @@
 # Verify renovate.json declares a customManagers entry that targets the
 # chart `version` input inside deploy/kind/base/flux-web.yaml, plus the
 # paired packageRules that mirror the hack/deploy-infra.sh rule
-# (CC-0086, REQ-004):
+#
 #   - the matchStrings regex captures the chart pin currently declared in
 #     deploy/kind/base/flux-web.yaml
 #   - packageRules disable major bumps and automerge minor/patch with a
@@ -18,7 +18,7 @@
 # validator fetches the Renovate package on every invocation and taking
 # that hit once per feature touching renovate.json multiplies the cost
 # linearly. The validation is centralised in the sibling
-# tests/unit/renovate/fluxoperator_custommanager_test.sh (CC-0085),
+# tests/unit/renovate/fluxoperator_custommanager_test.sh,
 # which runs against the same renovate.json file — a schema regression
 # in the flux-web customManager entry fails that test too, so coverage
 # is preserved without duplicating the npx download.
@@ -40,16 +40,16 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 RENOVATE_FILE="$PROJECT_ROOT/renovate.json"
 FLUX_WEB_FILE="$PROJECT_ROOT/deploy/kind/base/flux-web.yaml"
 
-# NOTE (CC-0086): renovate-config-validator schema check is run by the
-# sibling tests/unit/renovate/fluxoperator_custommanager_test.sh (CC-0085)
+# NOTE renovate-config-validator schema check is run by the
+# sibling tests/unit/renovate/fluxoperator_custommanager_test.sh
 # — see the header of this file for the rationale behind not duplicating
 # the npx-driven validation here.
 
 # --- Test 1: customManager targets deploy/kind/base/flux-web.yaml and
 #             captures the chart pin currently declared in that file
-#             (CC-0086, REQ-004) ---
+#             ---
 test_custom_manager_regex_captures_chart_pin() {
-  echo "Test: customManagers regex matches chart version input in deploy/kind/base/flux-web.yaml (CC-0086)"
+  echo "Test: customManagers regex matches chart version input in deploy/kind/base/flux-web.yaml"
 
   if ! command -v jq >/dev/null 2>&1; then
     echo "  SKIP: jq not installed (5 checks skipped)"
@@ -120,9 +120,9 @@ test_custom_manager_regex_captures_chart_pin() {
 
 # --- Test 2: packageRules cover the new file with the same flux-operator
 #             rules — disable major, automerge minor/patch with
-#             minimumReleaseAge=3 days (CC-0086, REQ-004) ---
+#             minimumReleaseAge=3 days ---
 test_package_rules_cover_flux_web() {
-  echo "Test: packageRules disable major bumps and automerge minor/patch for deploy/kind/base/flux-web.yaml (CC-0086)"
+  echo "Test: packageRules disable major bumps and automerge minor/patch for deploy/kind/base/flux-web.yaml"
 
   if ! command -v jq >/dev/null 2>&1; then
     echo "  SKIP: jq not installed (5 checks skipped)"

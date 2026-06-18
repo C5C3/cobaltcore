@@ -2,14 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for spec.topologySpreadConstraints (CC-0075).
+# Chainsaw E2E test for spec.topologySpreadConstraints.
 # Validates that:
 #   - A Keystone CR without explicit TSC gets 2 default constraints
 #     (zone-spread + hostname-spread, MaxSkew=1, ScheduleAnyway)
 #   - Patching with custom TSC performs verbatim pass-through
 #   - Patching with an empty slice disables all constraints
 #
-# REQ-005 (CC-0075)
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:

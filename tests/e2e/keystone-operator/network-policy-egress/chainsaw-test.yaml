@@ -3,9 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Chainsaw E2E test for the keystone-operator NetworkPolicy egress restriction
-# (CC-0090, REQ-010, REQ-011).
 #
-# SCOPE CAVEAT — enforcement is NOT exercised here (CC-0090):
+# SCOPE CAVEAT — enforcement is NOT exercised here
 #   The CI kind cluster uses the default kindnet CNI, which silently ignores
 #   NetworkPolicy objects. This test therefore validates only that:
 #     1. The chart renders the NetworkPolicy (Helm install + Step 2 assert).
@@ -37,13 +36,13 @@
 # tests/e2e/keystone/namespace-scoped-rbac/chainsaw-test.yaml.
 #
 # Verifies:
-#   - NetworkPolicy is emitted in the release namespace (REQ-010)
-#   - Operator pod starts and stays Ready under the policy (REQ-010)
-#   - A Keystone CR reconciles to Ready=True under the policy (REQ-010, REQ-011)
+#   - NetworkPolicy is emitted in the release namespace
+#   - Operator pod starts and stays Ready under the policy
+#   - A Keystone CR reconciles to Ready=True under the policy
 #   - Failures produce enough diagnostic output to debug egress regressions
-#     without re-running locally (REQ-011)
+#     without re-running locally
 #
-# CC-0105: operator NetworkPolicy lives in keystone-system; the Keystone CR
+# operator NetworkPolicy lives in keystone-system; the Keystone CR
 # remains in openstack to exercise cross-Namespace operator-→-workload semantics.
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -81,7 +80,7 @@ spec:
           kubectl get networkpolicy keystone-operator-netpol -n keystone-system -o yaml 2>&1 || true
           echo "=== Events ==="
           kubectl get events -n keystone-system --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
-  # ── Step 2: Assert NetworkPolicy exists in release namespace (REQ-010) ──
+  # ── Step 2: Assert NetworkPolicy exists in release namespace ──
   - try:
     - assert:
         resource:
@@ -102,7 +101,7 @@ spec:
             policyTypes:
             - Ingress
             - Egress
-  # ── Step 3: Apply minimal Keystone CR (REQ-011) ──────────────────────────
+  # ── Step 3: Apply minimal Keystone CR ──────────────────────────
   - try:
     - apply:
         file: 01-keystone-cr.yaml

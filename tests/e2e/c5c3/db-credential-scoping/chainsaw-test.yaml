@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Chainsaw E2E test for per-ControlPlane service DB-credential scoping
-# (CC-0116, REQ-010, REQ-001). It applies the canonical ControlPlane
+# It applies the canonical ControlPlane
 # ("controlplane" in namespace "openstack") and asserts that the c5c3-operator's
 # reconcileDBCredentials sub-reconciler projects a per-ControlPlane,
 # OpenBao-backed DB credential:
@@ -18,8 +18,8 @@
 #
 # The per-CP path is what the deploy-infra seed writes for the default
 # KORC_CONTROLPLANES entry "openstack/controlplane"
-# (deploy/openbao/bootstrap/write-bootstrap-secrets.sh, CC-0116 REQ-006); the
-# legacy flat shared-key DB static ExternalSecret is removed (REQ-006).
+# (deploy/openbao/bootstrap/write-bootstrap-secrets.sh); the
+# legacy flat shared-key DB static ExternalSecret is removed.
 #
 # ── DECISION: belt-and-braces presence guard + single consolidated script ────
 # Mirrors tests/e2e/c5c3/full-controlplane-keystone: the c5c3-operator + OpenBao
@@ -32,10 +32,9 @@
 # when the stack is absent; when present it asserts the link. Because chainsaw has
 # no step-level skip, the guard and all assertions live in ONE script step.
 # Reviewer: please verify, and note that wiring the c5c3-operator + OpenBao into
-# kind E2E (so this test exercises rather than skips) is the documented CC-0110
-# fast-follow (REQ-022/REQ-023).
+# kind E2E (so this test exercises rather than skips) is the documented
+# fast-follow (/).
 #
-# Feature: CC-0116, REQ-010, REQ-001
 ---
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -62,7 +61,7 @@ spec:
           DB_SECRET=controlplane-keystone-db-credentials
           DB_REMOTE_KEY=openstack/keystone/openstack/controlplane/db
 
-          # ── Presence guard (CC-0116, REQ-010) ──────────────────────────────
+          # ── Presence guard ──────────────────────────────
           # Probe for the CRDs the DB-credential link spans plus the OpenBao
           # ClusterSecretStore the ExternalSecret reads through. Their absence
           # means the c5c3-operator + OpenBao stack is not deployed here — SKIP

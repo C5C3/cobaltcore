@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Patch to trigger a skip-level upgrade from 2026.1 to 2027.2, which must
-# be rejected by the controller (CC-0056).
+# be rejected by the controller.
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
 kind: Keystone
 metadata:

@@ -2,11 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Keystone CR fixture for the logging E2E test (CC-0098).
+# Keystone CR fixture for the logging E2E test.
 # spec.logging is intentionally OMITTED so the defaulting webhook materializes
 # the production baseline (Format=text, Level=INFO, Debug=false). The chainsaw
 # test then asserts that oslo.log lines appear on the pod's stderr without any
-# explicit logging configuration, exercising REQ-009 scenario "Default path
+# explicit logging configuration, exercising scenario "Default path
 # emits oslo.log lines".
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
 kind: Keystone

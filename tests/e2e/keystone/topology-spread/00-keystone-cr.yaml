@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Keystone CR fixture for the topology-spread E2E test (CC-0075).
+# Keystone CR fixture for the topology-spread E2E test.
 # No explicit spec.topologySpreadConstraints — the operator should inject
 # two default constraints: zone-spread and hostname-spread.
 apiVersion: keystone.openstack.c5c3.io/v1alpha1

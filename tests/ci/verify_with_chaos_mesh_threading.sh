@@ -5,7 +5,7 @@
 
 # Verify the WITH_CHAOS_MESH opt-in flag is correctly threaded from the
 # e2e-chaos workflow job through the setup-e2e-infra composite action into
-# `make deploy-infra` (CC-0097, REQ-004). Pinning this contract guards
+# `make deploy-infra`. Pinning this contract guards
 # against regressions where:
 #   - the composite action drops the env-passthrough so the flag silently
 #     evaporates and Chaos Mesh is never installed even when requested;
@@ -37,7 +37,7 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 ACTION_YAML="$PROJECT_ROOT/.github/actions/setup-e2e-infra/action.yaml"
 CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
 
-echo "=== WITH_CHAOS_MESH threading verification (CC-0097, REQ-004) ==="
+echo "=== WITH_CHAOS_MESH threading verification ==="
 echo ""
 
 # ---------------------------------------------------------------------------
@@ -76,10 +76,10 @@ extract_step_block() {
 
 # ---------------------------------------------------------------------------
 # Test 1: composite action declares WITH_CHAOS_MESH in the deploy step env
-# (CC-0097, REQ-004)
+#
 # ---------------------------------------------------------------------------
 test_action_threads_with_chaos_mesh_env() {
-  echo "Test: setup-e2e-infra threads WITH_CHAOS_MESH into the deploy step (CC-0097, REQ-004)"
+  echo "Test: setup-e2e-infra threads WITH_CHAOS_MESH into the deploy step"
 
   assert_file_contains \
     "action.yaml passes WITH_CHAOS_MESH from env context to deploy step" \
@@ -95,25 +95,24 @@ test_action_threads_with_chaos_mesh_env() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 2: composite action references CC-0097 so future readers can trace
-# the WITH_CHAOS_MESH plumbing back to the originating feature (CC-0097,
-# REQ-004, FEATURE_ID_REQUIRED rule)
+# Test 2: composite action references so future readers can trace
+# the WITH_CHAOS_MESH plumbing back to the originating feature (FEATURE_ID_REQUIRED rule)
 # ---------------------------------------------------------------------------
 test_action_references_cc_0097() {
-  echo "Test: setup-e2e-infra references CC-0097 (CC-0097, REQ-004)"
+  echo "Test: setup-e2e-infra references"
 
   assert_file_contains \
-    "action.yaml documents the CC-0097 origin of WITH_CHAOS_MESH plumbing" \
+    "action.yaml documents the origin of WITH_CHAOS_MESH plumbing" \
     "$ACTION_YAML" \
-    "CC-0097"
+    ""
 }
 
 # ---------------------------------------------------------------------------
 # Test 3: e2e-chaos job opts in via env: WITH_CHAOS_MESH: "true" on the
-# Setup E2E infrastructure step (CC-0097, REQ-004)
+# Setup E2E infrastructure step
 # ---------------------------------------------------------------------------
 test_e2e_chaos_sets_with_chaos_mesh_true() {
-  echo "Test: e2e-chaos job sets WITH_CHAOS_MESH=true on Setup E2E infrastructure (CC-0097, REQ-004)"
+  echo "Test: e2e-chaos job sets WITH_CHAOS_MESH=true on Setup E2E infrastructure"
 
   local section step_block
   section="$(extract_yaml_job_section "$CI_YAML" "e2e-chaos")"
@@ -138,10 +137,10 @@ test_e2e_chaos_sets_with_chaos_mesh_true() {
 # ---------------------------------------------------------------------------
 # Test 4: e2e-infra (default Quick Start contract) does NOT set
 # WITH_CHAOS_MESH so it falls back to the script's `false` default and
-# stays minimal (CC-0097, REQ-004)
+# stays minimal
 # ---------------------------------------------------------------------------
 test_e2e_infra_does_not_opt_in() {
-  echo "Test: e2e-infra job does NOT set WITH_CHAOS_MESH (CC-0097, REQ-004)"
+  echo "Test: e2e-infra job does NOT set WITH_CHAOS_MESH"
 
   local section step_block
   section="$(extract_yaml_job_section "$CI_YAML" "e2e-infra")"

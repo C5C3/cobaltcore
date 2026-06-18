@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Keystone CR fixture for the PSS-restricted E2E test (CC-0104, REQ-002).
+# Keystone CR fixture for the PSS-restricted E2E test.
 #
 # Brownfield mode (database.host + cache.servers, no `clusterRef`): the CR
 # lives in the labelled `keystone-pss-restricted-test` namespace, but
@@ -58,7 +58,6 @@ spec:
   # and the policy-validation Pod is never admitted, leaving
   # `restrictedSecurityContext()` on that Pod uncovered by this regression net.
   # The ConfigMap is pre-applied by 00-policy-cm.yaml in this same namespace
-  # (CC-0104).
   policyOverrides:
     configMapRef:
       name: keystone-policy-source

@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Patch to upgrade Keystone image tag (CC-0016).
+# Patch to upgrade Keystone image tag.
 # DECISION: upgrade tag value
 # Ambiguity: which image tag to use for the upgrade target.
 # Chose: "2025.2-upgraded" because the CI pipeline must pre-load this tag

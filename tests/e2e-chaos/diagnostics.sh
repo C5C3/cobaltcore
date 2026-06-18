@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Shared chaos test diagnostics helper (CC-0047).
+# Shared chaos test diagnostics helper.
 # Called from Chainsaw catch blocks to collect uniform diagnostic output
 # when a test step fails.
 #
@@ -76,7 +76,7 @@ case "$MODE" in
     fi
 
     # ── Chaos: Chaos Mesh experiment status ──────────────────────────────────
-    # CC-0049, REQ-005: Report both PodChaos and NetworkChaos experiments.
+    # Report both PodChaos and NetworkChaos experiments.
     echo "=== Chaos Mesh experiment status ==="
     kubectl get podchaos,networkchaos -n "$NAMESPACE" -o wide 2>&1 || true
 

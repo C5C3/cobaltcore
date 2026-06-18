@@ -2,8 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E smoke test for the Gateway API quick-start path (CC-0088).
-# Exercises REQ-013 end-to-end:
+# Chainsaw E2E smoke test for the Gateway API quick-start path.
+# Exercises end-to-end:
 #   `curl -k https://keystone.127-0-0-1.nip.io/v3` returns HTTP 200 with
 #   a non-empty Keystone v3 JSON response (containing `version`).
 #
@@ -22,12 +22,12 @@
 # suspends the keystone-operator HelmRelease
 # (`deploy/kind/base/kustomization.yaml`), so a smoke suite under
 # `tests/e2e/infrastructure/` would never be able to apply a Keystone CR
-# and the curl step could never actually exercise REQ-013 (CC-0088).
+# and the curl step could never actually exercise.
 #
 # ── DECISION: curl from the chainsaw host (Option B) ─────────────────
 # We run curl directly from the chainsaw script step on the developer's
 # or CI host, NOT from an ephemeral in-cluster pod. Rationale:
-#   1. REQ-013 explicitly targets the URL from the host perspective
+# 1. explicitly targets the URL from the host perspective
 #      ("from the CI host"), because the nip.io → 127.0.0.1 mapping is
 #      an external DNS concern, not an in-cluster concern.
 #   2. `hack/kind-config.yaml` already bridges host 127.0.0.1:443 to the
@@ -46,7 +46,7 @@
 # and resolution at the top of the file.
 #
 # ── DECISION: accept HTTP 200 only (not 200 OR 404) ──────────────────
-# Re-reading REQ-013, the requirement is "HTTP 200 with non-empty
+# Re-reading, the requirement is "HTTP 200 with non-empty
 # Keystone JSON" — a 404 would prove the Gateway data-plane is
 # reachable but would NOT prove the HTTPRoute is attached and the
 # Keystone backend is serving. The latter is the actual feature under
@@ -63,7 +63,7 @@
 # Production overlays never apply `deploy/kind/base/openstack-gateway.yaml`
 # nor install Envoy Gateway, so those probes default-skip the test off
 # any non-kind cluster — no chainsaw `--selector` flag is required from
-# callers (CC-0088).
+# callers.
 #
 # The health check runs as a single `script` operation rather than
 # chainsaw declarative `assert`s because chainsaw has no step-level
@@ -71,14 +71,13 @@
 # guard script exited 0. Consolidating into one script is the only way
 # to keep the presence-check short-circuit default-safe.
 #
-# Feature: CC-0088, REQ-013
 ---
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
   name: gateway-quick-start-smoke
 spec:
-  # Timeout budget (CC-0088): the script's sequential waits have
+  # Timeout budget the script's sequential waits have
   # per-call upper bounds of 5m (Gateway Programmed) + 5m (Keystone
   # HTTPRouteReady) + ~30s (curl retries) = ~10.5m worst case — but the
   # two waits are effectively sequential phases of a single reconcile
@@ -121,7 +120,7 @@ spec:
         content: |
           set -euo pipefail
 
-          # ── Presence guard (CC-0088) ──────────────────────────────
+          # ── Presence guard ──────────────────────────────
           # The kind overlay alone applies
           # `deploy/kind/base/openstack-gateway.yaml`, which materialises
           # GatewayClass/envoy and Gateway/openstack-gw. Their absence
@@ -146,7 +145,7 @@ spec:
           # `e2e-operator` matrix job installs the operator so the CRD
           # is present and this guard passes; on infra-only or
           # production clusters where the operator is suspended/absent,
-          # the guard exits 0 and the suite skips cleanly (CC-0088).
+          # the guard exits 0 and the suite skips cleanly.
           if ! kubectl get crd keystones.keystone.openstack.c5c3.io >/dev/null 2>&1; then
             echo "SKIP: Keystone CRD not present on this cluster"
             echo "      (operator not deployed). The curl smoke check"
@@ -168,7 +167,7 @@ spec:
           # startup (cert issuance + Envoy pod roll-out take 30-60s).
           kubectl wait --for=condition=Programmed \
             gateway/openstack-gw -n openstack --timeout=5m
-          echo "OK: Gateway/openstack-gw is Programmed (CC-0088, REQ-013)"
+          echo "OK: Gateway/openstack-gw is Programmed"
 
           # ── Pre-flight: Keystone HTTPRouteReady=True ──────────────
           # The Keystone Operator only marks HTTPRouteReady=True after
@@ -185,9 +184,9 @@ spec:
           # generic script-timeout kill.
           kubectl wait --for=condition=HTTPRouteReady \
             keystone/keystone-smoke -n openstack --timeout=5m
-          echo "OK: Keystone/keystone-smoke HTTPRouteReady=True (CC-0088, REQ-013)"
+          echo "OK: Keystone/keystone-smoke HTTPRouteReady=True"
 
-          # ── REQ-013: HTTP 200 from the CI host ────────────────────
+          # ──: HTTP 200 from the CI host ────────────────────
           # `-k` accepts the self-signed certificate issued by
           # selfsigned-cluster-issuer; this matches docs/quick-start.md
           # guidance ("Your browser will warn that the certificate is
@@ -223,7 +222,7 @@ spec:
           # Non-empty body assertion: a 200 with an empty body would
           # mean the HTTPRoute is attached but the Keystone backend
           # returned nothing (pod starting, probe race, misconfigured
-          # uWSGI). Feature: CC-0088, REQ-013
+          # uWSGI).
           if [ ! -s /tmp/body ]; then
             echo "ERROR: $URL returned HTTP 200 with empty body"
             exit 1
@@ -255,7 +254,7 @@ spec:
             echo "OK: response body contains literal 'version' key (grep fallback)"
           fi
 
-          echo "OK: Keystone v3 responded 200 on https://keystone.127-0-0-1.nip.io/v3 (CC-0088, REQ-013)"
+          echo "OK: Keystone v3 responded 200 on https://keystone.127-0-0-1.nip.io/v3"
     catch:
     # On failure, dump post-mortem state to help CI triage. Each
     # resource is individually scoped so a missing one (the smoke

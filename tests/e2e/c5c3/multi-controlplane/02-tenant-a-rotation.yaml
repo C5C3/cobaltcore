@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # CredentialRotation fixture that rotates ONLY tenant-a's admin application
-# credential for the multi-controlplane E2E test (CC-0112, REQ-012).
+# credential for the multi-controlplane E2E test.
 #
 # The CredentialRotation reconciler resolves its target ControlPlane in its OWN
 # namespace (one-CP-per-namespace; r.List(..., client.InNamespace(cr.Namespace))

@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Keystone patch to scale replicas from 1 to 2 after operator pod
-# failover (CC-0066). Used to verify the new leader can reconcile
+# failover. Used to verify the new leader can reconcile
 # spec changes, proving operational capability beyond just running.
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
 kind: Keystone

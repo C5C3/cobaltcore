@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw chaos E2E test for MariaDB network partition (CC-0049).
+# Chainsaw chaos E2E test for MariaDB network partition.
 # The partition severs keystone <-> MariaDB traffic. It is enforced on the
 # MariaDB (server) side so it catches the ClusterIP-routed connection keystone
 # actually uses (see 01-networkchaos.yaml for why a client-side rule would be a
@@ -14,7 +14,7 @@
 # the partition is lifted the probe succeeds again and the CR returns to
 # Ready=True autonomously.
 #
-# SC-CHAOS-006, REQ-001, REQ-002, REQ-008 (CC-0049)
+# SC-CHAOS-006,
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -56,7 +56,7 @@ spec:
   - try:
     - apply:
         file: 01-networkchaos.yaml
-  # ── Step 4: Assert NetworkChaos injection is active (CC-0049) ──────────
+  # ── Step 4: Assert NetworkChaos injection is active ──────────
   # Confirms the fault is actually applied before checking effects. Without
   # this, a mis-targeted selector could allow the CR to be accepted but have
   # no effect, causing the DatabaseReady check to pass vacuously.

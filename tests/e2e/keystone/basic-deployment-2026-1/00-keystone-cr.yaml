@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Keystone CR fixture for the basic-deployment E2E test (CC-0051).
+# Keystone CR fixture for the basic-deployment E2E test.
 # Managed mode: database via clusterRef to openstack-db,
 # cache via clusterRef to openstack-memcached.
 apiVersion: keystone.openstack.c5c3.io/v1alpha1

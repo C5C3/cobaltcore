@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# REQ-005 (CC-0094): Keystone CR with spec.policyOverrides.rules containing
+# Keystone CR with spec.policyOverrides.rules containing
 # an empty-string map key. Forbidden by the CEL XValidation rule on
 # KeystoneSpec.PolicyOverrides (`self.rules.all(k, k != '')` in
 # keystone_types.go) and by the validating webhook (keystone_webhook.go).

@@ -5,7 +5,7 @@
 
 # Verify hack/deploy-infra.sh gates chaos-mesh behind WITH_CHAOS_MESH so the
 # kind Quick Start stays minimal by default and only installs Chaos Mesh when
-# explicitly requested (CC-0097, REQ-003).
+# explicitly requested.
 #
 # Implementation: bash + tests/lib/assertions.sh (project-native, matches the
 # sibling tests/unit/hack/deploy_infra_preflight_test.sh pattern). The repo
@@ -43,7 +43,7 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # Sources deploy-infra.sh in a subshell with the supplied env overrides and
 # echoes the resolved value of WITH_CHAOS_MESH after the configuration block
 # runs. The `BASH_SOURCE[0] == ${0}` guard at the bottom of deploy-infra.sh
-# keeps main() from auto-running when the script is sourced (CC-0097).
+# keeps main() from auto-running when the script is sourced.
 resolve_with_chaos_mesh() {
   (
     # Apply each env override in the subshell before sourcing.
@@ -57,10 +57,10 @@ resolve_with_chaos_mesh() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 1: WITH_CHAOS_MESH defaults to false (CC-0097, REQ-003)
+# Test 1: WITH_CHAOS_MESH defaults to false
 # ---------------------------------------------------------------------------
 test_default_is_false() {
-  echo "Test: WITH_CHAOS_MESH defaults to false (CC-0097, REQ-003)"
+  echo "Test: WITH_CHAOS_MESH defaults to false"
 
   # Unset any inherited value so we observe the script's own default.
   local resolved
@@ -69,10 +69,10 @@ test_default_is_false() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 2: explicit WITH_CHAOS_MESH=true (CC-0097, REQ-003)
+# Test 2: explicit WITH_CHAOS_MESH=true
 # ---------------------------------------------------------------------------
 test_explicit_true() {
-  echo "Test: WITH_CHAOS_MESH=true is preserved (CC-0097, REQ-003)"
+  echo "Test: WITH_CHAOS_MESH=true is preserved"
 
   local resolved
   resolved="$(resolve_with_chaos_mesh WITH_CHAOS_MESH=true)"
@@ -80,10 +80,10 @@ test_explicit_true() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 3: explicit WITH_CHAOS_MESH=false (CC-0097, REQ-003)
+# Test 3: explicit WITH_CHAOS_MESH=false
 # ---------------------------------------------------------------------------
 test_explicit_false() {
-  echo "Test: WITH_CHAOS_MESH=false is preserved (CC-0097, REQ-003)"
+  echo "Test: WITH_CHAOS_MESH=false is preserved"
 
   local resolved
   resolved="$(resolve_with_chaos_mesh WITH_CHAOS_MESH=false)"
@@ -91,13 +91,13 @@ test_explicit_false() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 4: defensive non-true value (CC-0097, REQ-003)
+# Test 4: defensive non-true value
 # A typo like WITH_CHAOS_MESH=yes should NOT enable chaos-mesh because every
 # gate site uses the strict `== "true"` comparison. We assert the value
 # passes through verbatim AND that the three gate sites use exact-match.
 # ---------------------------------------------------------------------------
 test_non_true_value_does_not_trigger_install() {
-  echo "Test: WITH_CHAOS_MESH=yes passes through but does not trigger install (CC-0097, REQ-003)"
+  echo "Test: WITH_CHAOS_MESH=yes passes through but does not trigger install"
 
   local resolved
   resolved="$(resolve_with_chaos_mesh WITH_CHAOS_MESH=yes)"
@@ -111,12 +111,12 @@ test_non_true_value_does_not_trigger_install() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 5: chaos-mesh overlay apply is conditional (CC-0097, REQ-003)
+# Test 5: chaos-mesh overlay apply is conditional
 # The kustomize apply for deploy/kind/chaos-mesh must live inside the
 # WITH_CHAOS_MESH gate so the default Quick Start does not install it.
 # ---------------------------------------------------------------------------
 test_chaos_mesh_kustomize_is_gated() {
-  echo "Test: chaos-mesh kustomize apply is gated by WITH_CHAOS_MESH (CC-0097, REQ-003)"
+  echo "Test: chaos-mesh kustomize apply is gated by WITH_CHAOS_MESH"
 
   # The apply line itself exists.
   assert_file_contains \
@@ -135,12 +135,12 @@ test_chaos_mesh_kustomize_is_gated() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 6: kernel-module load is gated (CC-0097, REQ-003)
+# Test 6: kernel-module load is gated
 # load_chaos_mesh_kernel_modules must only run when WITH_CHAOS_MESH=true so
 # the default Quick Start does not require sudo / modprobe.
 # ---------------------------------------------------------------------------
 test_kernel_module_call_is_gated() {
-  echo "Test: load_chaos_mesh_kernel_modules call is gated by WITH_CHAOS_MESH (CC-0097, REQ-003)"
+  echo "Test: load_chaos_mesh_kernel_modules call is gated by WITH_CHAOS_MESH"
 
   local call_line gate_line
   # Find the call site (not the function definition). The call is invoked
@@ -154,12 +154,12 @@ test_kernel_module_call_is_gated() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 7: chaos-mesh dropped from the default helm-release wait list (CC-0097)
+# Test 7: chaos-mesh dropped from the default helm-release wait list
 # The Phase 3 wait must NOT statically include chaos-mesh; it must be
 # appended dynamically inside the gate.
 # ---------------------------------------------------------------------------
 test_chaos_mesh_not_in_default_helm_releases() {
-  echo "Test: chaos-mesh is appended dynamically to the helm-release wait list (CC-0097, REQ-003)"
+  echo "Test: chaos-mesh is appended dynamically to the helm-release wait list"
 
   # The static (legacy) one-liner that contained chaos-mesh inline must be
   # gone. Asserting on the surviving order is the strongest contract.
@@ -183,10 +183,10 @@ test_chaos_mesh_not_in_default_helm_releases() {
 
 # ---------------------------------------------------------------------------
 # Test 8: production-caller contract — the chaos-mesh apply mirrors the
-# unit-test render and works under kubectl's embedded kustomize (CC-0097, REQ-003).
+# unit-test render and works under kubectl's embedded kustomize.
 #
 # kubectl apply -k uses the embedded kustomize, which does NOT expose
-# --load-restrictor (kubernetes/kubectl#948). The first review of CC-0097
+# --load-restrictor (kubernetes/kubectl#948). The first review of
 # caught a contract drift: the unit test rendered the overlay with
 # `kustomize build --load-restrictor=LoadRestrictionsNone` while
 # deploy-infra.sh used `kubectl apply -k` with no flag — a green unit test
@@ -206,7 +206,7 @@ test_chaos_mesh_not_in_default_helm_releases() {
 # pipeline (and the standalone `kustomize` CLI is added to install-test-deps).
 # ---------------------------------------------------------------------------
 test_production_caller_matches_self_contained_overlay() {
-  echo "Test: production caller and overlay agree on the no-load-restrictor contract (CC-0097, REQ-003)"
+  echo "Test: production caller and overlay agree on the no-load-restrictor contract"
 
   # (a) The apply line is the bare kubectl form — no pipe, no flag.
   local raw

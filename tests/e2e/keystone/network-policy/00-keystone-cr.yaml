@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Keystone CR fixture for the network-policy E2E test (CC-0039).
+# Keystone CR fixture for the network-policy E2E test.
 # Managed mode with networkPolicy defining ingress from envoy-gateway-system namespace.
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
 kind: Keystone

@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Shared shell test assertion helpers (CC-0006)
+# Shared shell test assertion helpers
 # Source this file from test scripts after defining PASS=0 and FAIL=0.
 
 assert_eq() {

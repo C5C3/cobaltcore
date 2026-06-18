@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify SPDX license headers on all Dockerfiles, YAML configs, and scripts (CC-0006 REQ-008)
+# Verify SPDX license headers on all Dockerfiles, YAML configs, and scripts
 # Usage: bash tests/container-images/verify_spdx_headers.sh
 
 set -euo pipefail

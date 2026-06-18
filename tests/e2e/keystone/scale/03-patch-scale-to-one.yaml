@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Patch to scale down Keystone replicas from 2 to 1 (CC-0037).
+# Patch to scale down Keystone replicas from 2 to 1.
 # Tests the PDB boundary: replicas == 1 switches from minAvailable to maxUnavailable.
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
 kind: Keystone

@@ -2,9 +2,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# PodChaos CR to kill the Keystone operator pod (CC-0048, CC-0105).
+# PodChaos CR to kill the Keystone operator pod.
 # One-shot pod-kill action — the Deployment controller will restart the pod.
-# CC-0105: the operator pod lives in the dedicated `keystone-system` namespace
+# the operator pod lives in the dedicated `keystone-system` namespace
 # (hack/ci-deploy-operator.sh now invokes `helm install --namespace
 # keystone-system --create-namespace`). The PodChaos resource itself stays in
 # `openstack` (the test namespace), but its selector targets the operator's namespace.

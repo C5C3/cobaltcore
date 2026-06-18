@@ -2,13 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for credential key rotation (CC-0036, CC-0074).
+# Chainsaw E2E test for credential key rotation.
 # Verifies:
 #   - CronJob schedule matches spec.credentialKeys.rotationSchedule
 #   - Manual rotation via kubectl create job --from=cronjob changes Secret data
-#   - Pod UIDs remain unchanged after rotation (no Deployment rollout) (CC-0074)
+#   - Pod UIDs remain unchanged after rotation (no Deployment rollout)
 #
-# REQ-001 through REQ-012 (CC-0036), REQ-001, REQ-002, REQ-003 (CC-0074), REQ-002, REQ-011 (CC-0081)
+# through
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -85,7 +85,7 @@ spec:
           # Record pre-rotation state: pod UIDs and Secret data hash.
           # The pod-template-hash label is set only on Deployment-owned pods by
           # the ReplicaSet controller, so the selector excludes CronJob-managed
-          # rotation pods that share commonLabels with the API pods (CC-0074).
+          # rotation pods that share commonLabels with the API pods.
           BEFORE_UIDS=$(kubectl get pods -n openstack \
             -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-credential,pod-template-hash \
             -o jsonpath='{range .items[*]}{.metadata.uid}{"\n"}{end}' | sort)
@@ -100,7 +100,7 @@ spec:
 
           # The CronJob writes new keys to the staging Secret only; the
           # operator promotes them to the production Secret on the next
-          # reconcile triggered by the staging Secret watch (CC-0081). Poll
+          # reconcile triggered by the staging Secret watch. Poll
           # for the production Secret hash to change rather than asserting
           # immediately after Job completion.
           AFTER_HASH="$BEFORE_HASH"
@@ -117,9 +117,9 @@ spec:
           echo "OK: Credential Secret data changed"
 
           # No kubelet projection wait needed: pod UID stability is independent
-          # of kubelet Secret projection timing (CC-0074).
+          # of kubelet Secret projection timing.
 
-          # Verify pod UIDs are unchanged (no Deployment rollout) (CC-0074).
+          # Verify pod UIDs are unchanged (no Deployment rollout).
           AFTER_UIDS=$(kubectl get pods -n openstack \
             -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-credential,pod-template-hash \
             -o jsonpath='{range .items[*]}{.metadata.uid}{"\n"}{end}' | sort)
@@ -149,12 +149,12 @@ spec:
             -o wide 2>&1 || true
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -20 || true
-  # ── Step 4.5: Assert rotation Role RBAC split (CC-0081) ─────────
+  # ── Step 4.5: Assert rotation Role RBAC split ─────────
   # The Role `keystone-credential-credential-rotate` must be read-only on the
   # production Secret (`keystone-credential-credential-keys`) and allow `patch`
   # only on the staging Secret (`keystone-credential-credential-keys-rotation`).
   # A compromised CronJob must not be able to overwrite production credential
-  # keys (REQ-002, REQ-011 CC-0081).
+  # keys.
   - try:
     - script:
         timeout: 60s
@@ -165,20 +165,20 @@ spec:
           ROLE_JSON=$(kubectl get role keystone-credential-credential-rotate -n openstack -o json)
 
           # Assertion 1: NO PolicyRule may grant `patch` scoped to the
-          # production Secret `keystone-credential-credential-keys` (CC-0081).
+          # production Secret `keystone-credential-credential-keys`.
           PROD_PATCH=$(echo "$ROLE_JSON" | jq '[.rules[] | select(.resourceNames // [] | index("keystone-credential-credential-keys")) | select(.verbs // [] | index("patch"))] | length')
           if [ "$PROD_PATCH" != "0" ]; then
-            echo "ERROR: Role keystone-credential-credential-rotate grants 'patch' on production Secret keystone-credential-credential-keys (CC-0081 violation)"
+            echo "ERROR: Role keystone-credential-credential-rotate grants 'patch' on production Secret keystone-credential-credential-keys (violation)"
             echo "$ROLE_JSON" | jq '.rules'
             exit 1
           fi
           echo "OK: Role has no 'patch' verb scoped to production Secret keystone-credential-credential-keys"
 
           # Assertion 2: At least ONE PolicyRule must grant `patch` scoped to
-          # the staging Secret `keystone-credential-credential-keys-rotation` (CC-0081).
+          # the staging Secret `keystone-credential-credential-keys-rotation`.
           STAGING_PATCH=$(echo "$ROLE_JSON" | jq '[.rules[] | select(.resourceNames // [] | index("keystone-credential-credential-keys-rotation")) | select(.verbs // [] | index("patch"))] | length')
           if [ "$STAGING_PATCH" -lt 1 ]; then
-            echo "ERROR: Role keystone-credential-credential-rotate is missing 'patch' verb on staging Secret keystone-credential-credential-keys-rotation (CC-0081 violation)"
+            echo "ERROR: Role keystone-credential-credential-rotate is missing 'patch' verb on staging Secret keystone-credential-credential-keys-rotation (violation)"
             echo "$ROLE_JSON" | jq '.rules'
             exit 1
           fi

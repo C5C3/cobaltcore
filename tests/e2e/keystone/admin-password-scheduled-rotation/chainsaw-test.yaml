@@ -3,33 +3,33 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Chainsaw E2E test for Keystone Model B scheduled admin-password rotation
-# (CC-0109). Verifies the full evidence chain (REQ-007, REQ-011) end to end:
+# Verifies the full evidence chain end to end:
 #   - The operator schedules a rotation CronJob
 #     (keystone-adminpw-sched-admin-password-rotate) carrying the spec schedule
-#     (REQ-003, REQ-010).
+#    .
 #   - A CronJob run PATCHes a fresh password + the
 #     forge.c5c3.io/rotation-completed-at annotation onto the staging Secret
 #     (<cr>-admin-password-rotation); the operator validates it, commits it onto
 #     the push-source Secret (<cr>-admin-password-next), deletes staging, and
-#     emits AdminPasswordRotated (REQ-007).
+#     emits AdminPasswordRotated.
 #   - The backup PushSecret (<cr>-admin-password-backup) mirrors the push-source
 #     Secret to the per-CR OpenBao path bootstrap/<namespace>/<cr>/admin
-#     (REQ-007, REQ-014, CC-0112); ESO (refreshInterval: 10s) projects it back
+# ESO (refreshInterval: 10s) projects it back
 #     into the admin Secret (<cr>-admin-password); the operator's
 #     secretToKeystoneMapper observes the change and re-runs the idempotent
 #     bootstrap Job with the new forge.c5c3.io/admin-password-hash; BootstrapReady
 #     returns to True and the new password authenticates (201) while the old one
 #     is rejected (401).
 #   - Disabling rotation tears down every Model B resource and reports
-#     PasswordRotationReady=True / RotationDisabled (REQ-002).
+#     PasswordRotationReady=True / RotationDisabled.
 #
-# Parallel-safe — since CC-0112 the Model B PushSecret writes to the per-CR path
+# Parallel-safe — since the Model B PushSecret writes to the per-CR path
 # bootstrap/{namespace}/{name}/admin (here
 # bootstrap/openstack/keystone-adminpw-sched/admin; see adminPasswordPushSecret
 # in reconcile_passwordrotation.go), so this suite re-seeds and rotates an
 # OpenBao object that no other CR — nor the production keystone-admin
 # ExternalSecret — reads. It therefore runs in the execution.parallel:4 pool like
-# its sibling admin-password-rotation suite (CC-0108); see the DECISION block in
+# its sibling admin-password-rotation suite; see the DECISION block in
 # 00-keystone-cr.yaml.
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -57,7 +57,7 @@ spec:
           # a prior run is overwritten. OpenBao access mirrors
           # tests/e2e/keystone/admin-password-rotation step 1.
           #
-          # Since CC-0112 the Model B backup PushSecret writes to the per-CR path
+          # Since the Model B backup PushSecret writes to the per-CR path
           # bootstrap/{namespace}/{name}/admin (reconcile_passwordrotation.go), so
           # this object is private to keystone-adminpw-sched — neither another CR
           # nor the production keystone-admin ExternalSecret reads it. That
@@ -96,7 +96,7 @@ spec:
           # the metadata endpoint and must be set with `bao kv metadata put` —
           # `bao kv put` has no -custom-metadata flag in this OpenBao build. This
           # makes the suite self-contained and mirrors mark_eso_managed in
-          # deploy/openbao/bootstrap/write-bootstrap-secrets.sh (CC-0109).
+          # deploy/openbao/bootstrap/write-bootstrap-secrets.sh.
           kubectl exec -n "${BAO_NS}" "${POD}" -- \
             env BAO_ADDR="${BAO_ADDR}" BAO_TOKEN="${BAO_TOKEN}" \
                 VAULT_CACERT="${VAULT_CACERT}" \
@@ -160,7 +160,7 @@ spec:
   # running to exhaustion — is ~1020s. That already exceeds the global
   # exec: 30s / assert: 5m budgets, so the per-step timeout MUST exceed it or
   # Chainsaw kills the script mid-run on a slow runner and masks the real
-  # failure with a generic script-timeout (CC-0109, CC-0076). 1800s leaves
+  # failure with a generic script-timeout. 1800s leaves
   # headroom for per-iteration kubectl/exec overhead while still tripping a
   # genuinely hung script.
   - try:
@@ -182,7 +182,7 @@ spec:
 
           # The pod-template-hash label is set only on Deployment-owned pods by
           # the ReplicaSet controller, so the selector excludes any Job-managed
-          # pods that share commonLabels (CC-0074).
+          # pods that share commonLabels.
           POD=$(kubectl get pods -n "$NS" -l "$SELECTOR" \
             -o jsonpath='{.items[0].metadata.name}')
 
@@ -229,7 +229,6 @@ spec:
           # completed Job can be GC'd and then recreated by a later reconcile,
           # leaving a short window where it is momentarily absent. A bounded wait
           # absorbs that window without masking a genuine "never created" failure
-          # (CC-0108).
           OLD_JOB_UID=""
           for _ in $(seq 1 30); do
             OLD_JOB_UID=$(kubectl get job "$BOOTSTRAP_JOB" -n "$NS" \
@@ -288,7 +287,6 @@ spec:
           # operator validates and PROMOTES it onto the push-source Secret, then
           # deletes staging. Poll until the push-source `password` becomes
           # non-empty and differs from the BEFORE value — proves apply+commit
-          # (REQ-007, REQ-011).
           AFTER_PUSH_B64="$BEFORE_PUSH_B64"
           for _ in $(seq 1 60); do
             AFTER_PUSH_B64=$(kubectl get secret "$PUSH_SOURCE_SECRET" -n "$NS" \
@@ -299,7 +297,7 @@ spec:
             sleep 2
           done
           if [ -z "$AFTER_PUSH_B64" ] || [ "$AFTER_PUSH_B64" = "$BEFORE_PUSH_B64" ]; then
-            echo "ERROR: push-source Secret $PUSH_SOURCE_SECRET was not promoted after rotation (REQ-007)"
+            echo "ERROR: push-source Secret $PUSH_SOURCE_SECRET was not promoted after rotation"
             exit 1
           fi
           echo "OK: operator promoted rotated password onto push-source Secret $PUSH_SOURCE_SECRET"
@@ -315,7 +313,7 @@ spec:
           # The PushSecret mirrors the push-source Secret to OpenBao. Poll until
           # bootstrap/openstack/keystone-adminpw-sched/admin changes from the
           # seeded initial value — proves the push-source → PushSecret → OpenBao
-          # hop (REQ-007, REQ-014).
+          # hop.
           AFTER_BAO="$BEFORE_BAO"
           for _ in $(seq 1 60); do
             AFTER_BAO=$(bao_password)
@@ -420,17 +418,17 @@ spec:
           echo "OK: old password rejected after rotation -> 401"
 
           # The push-source Secret (<cr>-admin-password-next) and the admin Secret
-          # (<cr>-admin-password) are distinct objects (REQ-011): the operator
+          # (<cr>-admin-password) are distinct objects the operator
           # commits onto the push-source Secret and never clobbers the live admin
           # credential the running Keystone uses until ESO has synced the new value
           # back. Assert the names differ so this test documents the separation.
           if [ "$PUSH_SOURCE_SECRET" = "$ADMIN_SECRET" ]; then
-            echo "ERROR: push-source Secret name equals admin Secret name; REQ-011 separation violated"
+            echo "ERROR: push-source Secret name equals admin Secret name; separation violated"
             echo "  push-source: $PUSH_SOURCE_SECRET"
             echo "  admin:       $ADMIN_SECRET"
             exit 1
           fi
-          echo "OK: push-source Secret ($PUSH_SOURCE_SECRET) is a distinct object from the admin Secret ($ADMIN_SECRET) (REQ-011)"
+          echo "OK: push-source Secret ($PUSH_SOURCE_SECRET) is a distinct object from the admin Secret ($ADMIN_SECRET)"
     catch:
     - script:
         content: |
@@ -474,8 +472,8 @@ spec:
           # OpenBao log is the authoritative source for a PushSecret 403 against
           # bootstrap/openstack/keystone-adminpw-sched/admin — neither is captured
           # by the $NAMESPACE pod
-          # dumps above (CC-0109, CC-0083). The keystone-operator namespace
-          # differs between deployment paths: under Flux (CC-0105) it runs in
+          # dumps above. The keystone-operator namespace
+          # differs between deployment paths: under Flux it runs in
           # keystone-system, while the CI E2E helm install lands it in
           # default/openstack — dump all candidates so the diagnostic works
           # regardless of provisioning path.
@@ -504,9 +502,9 @@ spec:
             - status: "True"
               reason: AllReady
   # ── Step 6: Disable rotation, assert teardown + RotationDisabled ───────
-  # DECISION: [how to prove the REQ-002 disabled posture in an E2E suite without
+  # DECISION: [how to prove the disabled posture in an E2E suite without
   # a second full Keystone deploy] — Chose the enable→disable teardown on THIS
-  # CR. REQ-002 covers BOTH the nil-default and enabled:false cases with the same
+  # CR. covers BOTH the nil-default and enabled:false cases with the same
   # RotationDisabled reason. The controller short-circuits sub-reconcilers
   # (keystone_controller.go) so a separate always-disabled control CR would not
   # even reach the PasswordRotation sub-reconciler until it is fully Ready (a full
@@ -523,14 +521,14 @@ spec:
           set -euo pipefail
           # Disable Model B rotation via a merge patch on spec.bootstrap.
           # passwordRotation.enabled. The operator tears down every Model B
-          # resource on the next reconcile (REQ-002).
+          # resource on the next reconcile.
           kubectl patch keystone keystone-adminpw-sched -n openstack \
             --type merge \
             -p '{"spec":{"bootstrap":{"passwordRotation":{"enabled":false}}}}'
           echo "OK: disabled spec.bootstrap.passwordRotation on keystone-adminpw-sched"
   # ── Step 7: Assert every Model B resource is gone + RotationDisabled ───
   - try:
-    # CronJob removed (REQ-002).
+    # CronJob removed.
     - error:
         resource:
           apiVersion: batch/v1
@@ -586,7 +584,7 @@ spec:
           metadata:
             name: keystone-adminpw-sched-admin-password-backup
             namespace: openstack
-    # PasswordRotationReady stays True but flips to reason RotationDisabled (REQ-002).
+    # PasswordRotationReady stays True but flips to reason RotationDisabled.
     - assert:
         resource:
           apiVersion: keystone.openstack.c5c3.io/v1alpha1

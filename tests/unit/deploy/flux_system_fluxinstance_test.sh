@@ -4,11 +4,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Verify deploy/flux-system/fluxinstance.yaml renders through kustomize with
-# the FluxInstance spec mandated by REQ-006 (CC-0085). Covers the three
-# test_specifications bound to REQ-006:
-#   - kustomize build renders FluxInstance with required spec (CC-0085)
-#   - kustomize build of kind overlay renders the same FluxInstance (CC-0085)
-#   - fluxinstance.yaml has SPDX header (CC-0085)
+# the FluxInstance spec. Covers the three
+# test_specifications:
+#   - kustomize build renders FluxInstance with required spec
+#   - kustomize build of kind overlay renders the same FluxInstance
+#   - fluxinstance.yaml has SPDX header
 # Usage: bash tests/unit/deploy/flux_system_fluxinstance_test.sh
 
 set -euo pipefail
@@ -27,9 +27,9 @@ FLUXINSTANCE_FILE="$PROJECT_ROOT/deploy/flux-system/fluxinstance.yaml"
 FLUX_SYSTEM_DIR="$PROJECT_ROOT/deploy/flux-system"
 KIND_BASE_DIR="$PROJECT_ROOT/deploy/kind/base"
 
-# --- Test 1: fluxinstance.yaml has SPDX header (CC-0085, REQ-006) ---
+# --- Test 1: fluxinstance.yaml has SPDX header ---
 test_spdx_header() {
-  echo "Test: deploy/flux-system/fluxinstance.yaml has SPDX header (CC-0085)"
+  echo "Test: deploy/flux-system/fluxinstance.yaml has SPDX header"
 
   if [[ ! -f "$FLUXINSTANCE_FILE" ]]; then
     echo "  FAIL: $FLUXINSTANCE_FILE does not exist"
@@ -52,9 +52,9 @@ test_spdx_header() {
 }
 
 # --- Test 2: kustomize build deploy/flux-system/ renders FluxInstance
-#             with required spec (CC-0085, REQ-006) ---
+#             with required spec ---
 test_kustomize_build_flux_system() {
-  echo "Test: kustomize build deploy/flux-system/ renders FluxInstance with required spec (CC-0085)"
+  echo "Test: kustomize build deploy/flux-system/ renders FluxInstance with required spec"
 
   if ! command -v kustomize >/dev/null 2>&1; then
     echo "  SKIP: kustomize not installed (6 checks skipped)"
@@ -124,9 +124,9 @@ test_kustomize_build_flux_system() {
 }
 
 # --- Test 3: kustomize build deploy/kind/base/ includes the FluxInstance
-#             unchanged (CC-0085, REQ-006) ---
+#             unchanged ---
 test_kustomize_build_kind_base() {
-  echo "Test: kustomize build deploy/kind/base/ renders the FluxInstance unchanged (CC-0085)"
+  echo "Test: kustomize build deploy/kind/base/ renders the FluxInstance unchanged"
 
   if ! command -v kustomize >/dev/null 2>&1; then
     echo "  SKIP: kustomize not installed (2 checks skipped)"

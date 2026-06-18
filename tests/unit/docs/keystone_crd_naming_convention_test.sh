@@ -4,8 +4,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Verify the docs/reference/keystone-crd.md "Sub-Resource Naming Convention"
-# section shipped with CC-0095:
-#   1. The section heading "## Sub-Resource Naming Convention (CC-0095)"
+# section shipped with:
+#   1. The section heading "## Sub-Resource Naming Convention"
 #      exists.
 #   2. The section asserts the new convention (no `-api` suffix) — checks
 #      for the bare `keystone.openstack.svc.cluster.local` Service DNS
@@ -29,9 +29,9 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
 CRD_DOC="$PROJECT_ROOT/docs/reference/keystone/keystone-crd.md"
 
-# --- Test 1: heading exists (CC-0095, REQ-008) ---
+# --- Test 1: heading exists ---
 test_heading_exists() {
-  echo "Test: '## Sub-Resource Naming Convention (CC-0095)' heading exists (CC-0095, REQ-008)"
+  echo "Test: '## Sub-Resource Naming Convention' heading exists"
 
   if [[ ! -f "$CRD_DOC" ]]; then
     echo "  FAIL: $CRD_DOC does not exist"
@@ -44,9 +44,9 @@ test_heading_exists() {
     '## Sub-Resource Naming Convention'
 }
 
-# --- Test 2: section asserts the bare-name convention (CC-0095, REQ-008) ---
+# --- Test 2: section asserts the bare-name convention ---
 test_bare_name_convention_described() {
-  echo "Test: section describes the bare CR-name convention (no '-api' suffix) (CC-0095, REQ-008)"
+  echo "Test: section describes the bare CR-name convention (no '-api' suffix)"
 
   assert_file_contains "section calls out 'no \`-api\` suffix'" \
     "$CRD_DOC" \
@@ -56,9 +56,9 @@ test_bare_name_convention_described() {
     'keystone.openstack.svc.cluster.local'
 }
 
-# --- Test 3: cross-link to the upgrade-flow reference (CC-0095, REQ-008) ---
+# --- Test 3: cross-link to the upgrade-flow reference ---
 test_cross_link_to_upgrade_flow() {
-  echo "Test: section links to keystone-upgrade-flow.md for migration semantics (CC-0095, REQ-008)"
+  echo "Test: section links to keystone-upgrade-flow.md for migration semantics"
 
   assert_file_contains "cross-link to upgrade-flow reference" \
     "$CRD_DOC" \

@@ -2,13 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for spec.priorityClassName (CC-0075).
+# Chainsaw E2E test for spec.priorityClassName.
 # Validates that:
 #   - A Keystone CR without priorityClassName has no priority class on the Deployment
 #   - Patching with a valid priorityClassName sets it on the Deployment
 #   - Patching with empty string removes it from the Deployment
 #
-# REQ-004 (CC-0075)
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:

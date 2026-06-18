@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Keystone CR fixture for the priority-class E2E test (CC-0075).
+# Keystone CR fixture for the priority-class E2E test.
 # No explicit spec.priorityClassName — the Deployment should have no
 # priority class configured (cluster default applies).
 apiVersion: keystone.openstack.c5c3.io/v1alpha1

@@ -5,7 +5,7 @@
 
 # Verify renovate.json declares a customManagers entry that targets the
 # FLUX_OPERATOR_VERSION constant in hack/deploy-infra.sh, plus the paired
-# packageRules that mirror the OpenStack tags rule (CC-0085, REQ-007):
+# packageRules that mirror the OpenStack tags rule
 #   - renovate.json validates via `renovate-config-validator`
 #   - the matchStrings regex captures the current FLUX_OPERATOR_VERSION value
 #   - packageRules disable major bumps and automerge minor/patch with a
@@ -27,9 +27,9 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 RENOVATE_FILE="$PROJECT_ROOT/renovate.json"
 DEPLOY_INFRA_FILE="$PROJECT_ROOT/hack/deploy-infra.sh"
 
-# --- Test 1: renovate.json passes renovate-config-validator (CC-0085, REQ-007) ---
+# --- Test 1: renovate.json passes renovate-config-validator ---
 test_renovate_config_valid() {
-  echo "Test: renovate.json validates via renovate-config-validator (CC-0085)"
+  echo "Test: renovate.json validates via renovate-config-validator"
 
   if ! command -v npx >/dev/null 2>&1; then
     echo "  SKIP: npx not installed (1 check skipped)"
@@ -52,9 +52,9 @@ test_renovate_config_valid() {
 }
 
 # --- Test 2: customManager targets hack/deploy-infra.sh and captures the
-#             current FLUX_OPERATOR_VERSION value (CC-0085, REQ-007) ---
+#             current FLUX_OPERATOR_VERSION value ---
 test_custom_manager_regex_captures_version() {
-  echo "Test: customManagers regex matches FLUX_OPERATOR_VERSION in hack/deploy-infra.sh (CC-0085)"
+  echo "Test: customManagers regex matches FLUX_OPERATOR_VERSION in hack/deploy-infra.sh"
 
   if ! command -v jq >/dev/null 2>&1; then
     echo "  SKIP: jq not installed (5 checks skipped)"
@@ -64,7 +64,7 @@ test_custom_manager_regex_captures_version() {
 
   # Locate the flux-operator customManagers entry — identified by the
   # hack/deploy-infra.sh managerFilePatterns so the assertions don't
-  # collide with the deploy/kind/base/flux-web.yaml entry (CC-0086) that
+  # collide with the deploy/kind/base/flux-web.yaml entry that
   # shares the controlplaneio-fluxcd/flux-operator packageNameTemplate.
   local entry
   entry="$(jq -c '.customManagers[]
@@ -129,9 +129,9 @@ test_custom_manager_regex_captures_version() {
 
 # --- Test 3: packageRules mirror the OpenStack pattern — disable major,
 #             automerge minor/patch with minimumReleaseAge=3 days
-#             (CC-0085, REQ-007) ---
+#             ---
 test_package_rules_mirror_openstack_pattern() {
-  echo "Test: packageRules disable major bumps and automerge minor/patch (CC-0085)"
+  echo "Test: packageRules disable major bumps and automerge minor/patch"
 
   if ! command -v jq >/dev/null 2>&1; then
     echo "  SKIP: jq not installed (4 checks skipped)"

@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Keystone CR fixture for the missing-secret E2E test (CC-0016).
+# Keystone CR fixture for the missing-secret E2E test.
 # References non-existent Secrets (missing-secret-keystone-db,
 # missing-secret-keystone-admin) to test SecretsReady=False recovery.
 # Uses managed mode (clusterRef) so the MariaDB User CR is created

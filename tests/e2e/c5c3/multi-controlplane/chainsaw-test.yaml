@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Chainsaw E2E test for per-ControlPlane admin-credential isolation in the
-# cluster-global OpenBao backend (CC-0112, REQ-012). It brings up TWO
+# cluster-global OpenBao backend. It brings up TWO
 # ControlPlanes in TWO namespaces and asserts, end-to-end against a live OpenBao,
 # that the c5c3-operator scopes each CR's minted admin application credential to
 # a DISTINCT per-CR path so two ControlPlanes never clobber each other:
@@ -41,18 +41,18 @@
 # Reviewer: please verify, and note the kind E2E wiring to deploy K-ORC + the
 # c5c3-operator AND the per-tenant prerequisites (admin password Secret + managed
 # infra in tenant-a/tenant-b) so this test exercises rather than skips is a
-# documented fast-follow on the CC-0110 GitOps/CI wiring (REQ-022/REQ-023).
+# documented fast-follow on the GitOps/CI wiring (/).
 #
-# NOTE (CC-0114, REQ-012): the per-CR `k-orc-clouds-yaml` ExternalSecret each
+# NOTE the per-CR `k-orc-clouds-yaml` ExternalSecret each
 # tenant references is now OPERATOR-created — reconcileKORC's
 # ensureKORCCloudsYAMLExternalSecret materialises a per-CR, controller-owned
 # ExternalSecret reading that CR's per-CR OpenBao path, with NO per-identity
 # KORC_KEYSTONE_AUTH_URL seed override. The section after the Ready waits asserts
 # this materialisation (ownership + per-CR remoteRef.key) for both tenants — the
-# in-suite proof of REQ-012's "non-default-name materialises per-CR
+# in-suite proof of the "non-default-name materialises per-CR
 # ExternalSecret" scenario. Wiring the per-tenant prerequisites into kind CI so
 # this suite EXERCISES rather than SKIPs remains the documented, DEFERRED
-# fast-follow above (CC-0110 GitOps/CI, REQ-022/REQ-023).
+# fast-follow above (GitOps/CI, /).
 #
 # ── DECISION: "credentials differ" comparison field ──────────────────────────
 # The c5c3-operator pushes the operator-owned admin-credential Secret to OpenBao;
@@ -64,7 +64,6 @@
 # "the actual secret material differs" signal. We hash it (sha256) before logging
 # so the comparison is deterministic and no credential material is printed.
 #
-# Feature: CC-0112, REQ-012, CC-0114 REQ-012
 ---
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -77,11 +76,10 @@ spec:
   # OpenBao round-trip) plus a rotation are long-running, so the consolidated
   # script and its diagnostic catch get generous bounds above the suite default.
   #
-  # Timeout budget (CC-0112, REQ-012; CC-0114, REQ-012): the single consolidated
+  # Timeout budget the single consolidated
   # script runs its polls SEQUENTIALLY, and their own per-poll deadlines sum to a
   # worst case of 3120s — wait_cp_condition Ready 900 + 900 (both ControlPlanes) +
-  # wait_ready_condition externalsecret k-orc-clouds-yaml 60 + 60 (the two per-CR
-  # operator-created ExternalSecrets, CC-0114) + wait_bao_clouds_sha 300 + 300
+  # wait_ready_condition externalsecret k-orc-clouds-yaml 60 + 60 (the two per-CR operator-created ExternalSecrets) + wait_bao_clouds_sha 300 + 300
   # (both per-CR paths) + the 600s rotation wait.
   # exec / script.timeout MUST exceed that sum so that, on a genuine hang, the
   # offending poll prints its precise "condition/path X not … within Ns" error
@@ -97,7 +95,7 @@ spec:
     - script:
         # 55m > the 3000s worst-case sum of the sequential per-poll deadlines
         # below (see spec.timeouts above) so a hung poll surfaces its own precise
-        # error instead of a generic chainsaw script-timeout kill (CC-0112).
+        # error instead of a generic chainsaw script-timeout kill.
         timeout: 55m
         # Chainsaw defaults to `sh`, which rejects `set -o pipefail`; every
         # infra/keystone e2e script pins bash for the same reason.
@@ -122,7 +120,7 @@ spec:
           BAO_ADDR="https://127.0.0.1:8200"
           VAULT_CACERT="/openbao/tls/ca.crt"
 
-          # ── Presence guard (CC-0112, REQ-012) ──────────────────────────────
+          # ── Presence guard ──────────────────────────────
           # Probe every CRD the chain spans plus the OpenBao ClusterSecretStore
           # and the init-keys Secret (we need its root token to read bao).
           # Their absence unambiguously means the c5c3-operator + K-ORC +
@@ -185,7 +183,7 @@ spec:
           # Poll an arbitrary resource's Ready condition to True (ExternalSecret
           # exposes a "Ready" condition). Same explicit-poll rationale as
           # wait_cp_condition: a briefly-absent/False condition simply retries and
-          # the failure message names the last-observed status (CC-0114, REQ-012).
+          # the failure message names the last-observed status.
           wait_ready_condition() { # <resource> <name> <namespace> <timeoutSeconds>
             local res="$1" name="$2" ns="$3" timeout="$4"
             local deadline status
@@ -295,8 +293,8 @@ spec:
           echo "OK: both ControlPlanes report a non-empty admin AC id"
           assert_ne "admin AC ids of the two ControlPlanes" "${ID_A}" "${ID_B}"
 
-          # ── CC-0114, REQ-012: per-CR operator-created ExternalSecret materialises ──
-          # CC-0114 moved the K-ORC clouds.yaml seed into the c5c3-operator: during
+          # ──: per-CR operator-created ExternalSecret materialises ──
+          # moved the K-ORC clouds.yaml seed into the c5c3-operator: during
           # reconcileKORC, ensureKORCCloudsYAMLExternalSecret CREATES a per-CR,
           # controller-owned ExternalSecret `k-orc-clouds-yaml` in each CR's own
           # namespace, reading that CR's per-CR OpenBao path with NO per-identity
@@ -380,7 +378,7 @@ spec:
           echo "OK: per-ControlPlane admin-credential isolation verified —"
           echo "    distinct ids + distinct OpenBao paths/material, and tenant-a's"
           echo "    rotation left tenant-b's credential, OpenBao material, and"
-          echo "    K-ORC AC untouched (CC-0112, REQ-012)."
+          echo "    K-ORC AC untouched."
     catch:
     - script:
         shell: bash

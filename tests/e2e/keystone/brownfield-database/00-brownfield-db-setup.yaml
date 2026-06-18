@@ -20,7 +20,6 @@ spec:
   # `keystone_pss_restricted`), so Skip here is symmetry/clarity rather than
   # race avoidance — but it keeps the rationale uniform across all three CRs
   # and removes a future foot-gun if a sibling test ever reuses the name
-  # (CC-0104).
   cleanupPolicy: Skip
   characterSet: utf8
   collate: utf8_general_ci
@@ -38,7 +37,6 @@ spec:
   # teardown. Sibling tests (e.g. tests/e2e/keystone/pod-security-restricted)
   # also manage the same user under `parallel: 4`; without Skip, this test's
   # teardown could drop the user out from under a still-running sibling
-  # (CC-0104, W-002).
   cleanupPolicy: Skip
   name: keystone
   passwordSecretKeyRef:
@@ -53,7 +51,7 @@ metadata:
 spec:
   mariaDbRef:
     name: openstack-db
-  # cleanupPolicy: Skip — see User CR comment above (CC-0104, W-002).
+  # cleanupPolicy: Skip — see User CR comment above.
   cleanupPolicy: Skip
   privileges:
   - "ALL PRIVILEGES"

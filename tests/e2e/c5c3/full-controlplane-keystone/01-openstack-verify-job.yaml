@@ -3,13 +3,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # OpenStack client verification Job for the full-controlplane-keystone E2E test
-# (CC-0110, REQ-028, Link 7b). It authenticates with the materialised admin
+# (Link 7b). It authenticates with the materialised admin
 # clouds.yaml (the minted, OpenBao-round-tripped application credential
 # delivered to the per-CR k-orc-clouds-yaml Secret by the credential chain) and
 # runs `openstack token issue` + `openstack catalog list` to prove the
 # credential actually works end-to-end and the identity service is catalogued.
 #
-# CC-0117, REQ-011: the orc-system copy of k-orc-clouds-yaml was removed; the
+# the orc-system copy of k-orc-clouds-yaml was removed; the
 # operator now materialises the per-CR k-orc-clouds-yaml Secret ONLY into the
 # ControlPlane namespace (openstack). This Job therefore runs in the
 # ControlPlane namespace `openstack` and mounts the operator-owned per-CR
@@ -17,7 +17,7 @@
 # via `kubectl apply -f` after the chain has converged, and deleted in the
 # test's `finally` block.
 #
-# DECISION (CC-0110): image is the repo's own tempest image, which bundles the
+# DECISION image is the repo's own tempest image, which bundles the
 # OpenStack client. The kind-E2E fast-follow that deploys the c5c3 + K-ORC stack
 # must also load this image (mirroring the tempest job); behind the chainsaw
 # presence guard the verify step never runs on a cluster that lacks it.

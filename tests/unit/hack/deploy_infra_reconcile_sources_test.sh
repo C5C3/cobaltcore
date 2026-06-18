@@ -6,7 +6,6 @@
 # Verify hack/deploy-infra.sh `reconcile_helmrepository_sources` after the
 # FluxInstance migration: instead of `flux reconcile source helm`, the
 # bootstrap annotates each HelmRepository with reconcile.fluxcd.io/requestedAt
-# (CC-0085, REQ-003).
 #
 # DECISION: bats vs project-native bash test runner — same as the sibling
 #   deploy_infra_preflight_test.sh; following the established assertions.sh
@@ -77,10 +76,10 @@ run_reconcile() {
 
 # ---------------------------------------------------------------------------
 # Test 1: happy path — annotate is invoked once per HelmRepository name
-# (CC-0085, REQ-003)
+#
 # ---------------------------------------------------------------------------
 test_reconcile_annotates_each_repo() {
-  echo "Test: reconcile_helmrepository_sources annotates each HelmRepository (CC-0085, REQ-003)"
+  echo "Test: reconcile_helmrepository_sources annotates each HelmRepository"
 
   local tmp
   tmp="$(mktemp -d)"
@@ -122,10 +121,10 @@ test_reconcile_annotates_each_repo() {
 
 # ---------------------------------------------------------------------------
 # Test 2: empty list — when no HelmRepositories exist, no annotate is invoked
-# (CC-0085, REQ-003)
+#
 # ---------------------------------------------------------------------------
 test_reconcile_empty_list_is_noop() {
-  echo "Test: reconcile_helmrepository_sources is a no-op when list is empty (CC-0085, REQ-003)"
+  echo "Test: reconcile_helmrepository_sources is a no-op when list is empty"
 
   local tmp
   tmp="$(mktemp -d)"

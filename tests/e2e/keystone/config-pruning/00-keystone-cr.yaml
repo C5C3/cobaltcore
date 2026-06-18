@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Keystone CR fixture for the config-pruning E2E test (CC-0077).
+# Keystone CR fixture for the config-pruning E2E test.
 # Managed mode with minimal config; extraConfig is patched in later steps
 # to trigger new immutable ConfigMap generations.
 apiVersion: keystone.openstack.c5c3.io/v1alpha1

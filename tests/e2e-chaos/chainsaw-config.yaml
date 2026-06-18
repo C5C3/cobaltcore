@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw chaos E2E test configuration (CC-0047).
+# Chainsaw chaos E2E test configuration.
 # Separate from the happy-path config at tests/e2e/chainsaw-config.yaml.
 #
 # Key differences from happy-path:

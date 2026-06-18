@@ -2,15 +2,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Keystone CR fixture for the semantic-invariants E2E test (CC-0101).
+# Keystone CR fixture for the semantic-invariants E2E test.
 # Managed mode: database via clusterRef to openstack-db,
 # cache via clusterRef to openstack-memcached.
 #
-# Intentionally omitted (CC-0101 REQ-001, REQ-006): spec.gateway is unset so
+# Intentionally omitted spec.gateway is unset so
 # status.endpoint resolves to the cluster-local URL; spec.networkPolicy and
 # spec.autoscaling are unset so the corresponding sub-conditions settle on
 # their NotRequired/NotConfigured reasons. This keeps the observedGeneration
-# assertion (CC-0101 REQ-003) simple — every condition must catch up
+# assertion simple — every condition must catch up
 # regardless of reason.
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
 kind: Keystone

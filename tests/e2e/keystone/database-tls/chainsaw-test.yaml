@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for Keystone <-> MariaDB/MaxScale TLS/mTLS (CC-0106, REQ-011).
+# Chainsaw E2E test for Keystone <-> MariaDB/MaxScale TLS/mTLS.
 # Verifies the full TLS path end-to-end on a live cluster:
 #   - Managed-mode Keystone CR with spec.database.tls.enabled=true, mode=verify-full
 #     reconciles to Ready=True (AllReady) AND DatabaseTLSReady=True with
@@ -12,7 +12,7 @@
 #   - A plaintext connection (no ssl_*) is rejected by MariaDB/MaxScale when
 #     deploy/flux-system/infrastructure/mariadb.yaml sets spec.tls.required=true.
 #
-# Scope gating — runtime presence check (CC-0106 + the chaos-mesh-health pattern):
+# Scope gating — runtime presence check (+ the chaos-mesh-health pattern):
 #
 # Production (deploy/flux-system/infrastructure/mariadb.yaml) enables TLS via
 # serverCertIssuerRef/clientCertIssuerRef on a full Galera+MaxScale cluster.
@@ -35,7 +35,6 @@
 # earlier guard exited 0. Consolidating into one `script` keeps the SKIP
 # short-circuit default-safe.
 #
-# Feature: CC-0106, REQ-011
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -69,7 +68,7 @@ spec:
         content: |
           set -euo pipefail
 
-          # ── Precondition guard (CC-0106, kind/production split) ──────────
+          # ── Precondition guard (kind/production split) ──────────
           # spec.tls.enabled on the shared MariaDB CR is the authoritative
           # signal that this cluster terminates TLS against the
           # openstack-db-ca-issuer. Absent or false means the assertions below
@@ -81,10 +80,10 @@ spec:
             echo "      Production (deploy/flux-system/infrastructure/mariadb.yaml) enables TLS;"
             echo "      the kind overlay (deploy/kind/infrastructure/kustomization.yaml) disables"
             echo "      it for single-node Galera/MaxScale constraints. Re-enable spec.tls in the"
-            echo "      kind overlay (and Galera/MaxScale) to exercise the full CC-0106 path here."
+            echo " kind overlay (and Galera/MaxScale) to exercise the full path here."
             exit 0
           fi
-          echo "OK: MariaDB spec.tls.enabled=true — running CC-0106 chainsaw assertions"
+          echo "OK: MariaDB spec.tls.enabled=true — running chainsaw assertions"
 
           # ── Step 1: Apply the Keystone CR (managed-mode, verify-full) ─────
           kubectl apply -f 00-keystone-cr.yaml
@@ -123,7 +122,7 @@ spec:
           # and reconcile_bootstrap.go's pre-insert script, so its presence is a
           # known invariant of the keystone image; sqlalchemy is a transitive
           # dependency whose importability under the runtime venv layout is not
-          # part of the CC-0106 contract. The DSN scheme is rewritten from
+          # part of the contract. The DSN scheme is rewritten from
           # mysql+pymysql:// to a pymysql URL the same way the bootstrap script does.
           POD=$(kubectl get pods -n openstack \
             -l app.kubernetes.io/instance=keystone-dbtls,app.kubernetes.io/name=keystone \
@@ -171,8 +170,7 @@ spec:
           echo "OK: Live database connection is encrypted (Ssl_cipher=${CIPHER})"
 
           # ── Step 4: Assert plaintext rejected (only when tls.required=true) ─
-          # MariaDB spec.tls.required=true (deploy/flux-system/infrastructure/
-          # mariadb.yaml, CC-0106) forces the server to reject any connection
+          # MariaDB spec.tls.required=true (deploy/flux-system/infrastructure/ mariadb.yaml) forces the server to reject any connection
           # that does not negotiate TLS. We connect from inside the keystone
           # container using pymysql.connect() WITHOUT the ssl={} kwarg; the
           # connection MUST fail.
@@ -233,7 +231,7 @@ spec:
             echo "OK: plaintext connection was rejected by MariaDB/MaxScale"
           fi
 
-          echo "OK: full CC-0106 TLS/mTLS flow verified"
+          echo "OK: full TLS/mTLS flow verified"
     catch:
     - script:
         content: |

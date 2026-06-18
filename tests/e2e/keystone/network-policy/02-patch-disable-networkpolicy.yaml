@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Patch to disable networkPolicy by removing the networkPolicy field (CC-0039).
+# Patch to disable networkPolicy by removing the networkPolicy field.
 # Chainsaw merge-patches with this manifest, setting networkPolicy to null.
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
 kind: Keystone

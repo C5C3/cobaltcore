@@ -3,15 +3,15 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Tenant-B ControlPlane CR fixture for the multi-controlplane E2E test
-# (CC-0112, REQ-012). It owns namespace `tenant-b` and the single ControlPlane
+# It owns namespace `tenant-b` and the single ControlPlane
 # `controlplane-b` in it.
 #
-# CC-0112 scopes the minted admin application credential per-ControlPlane: the
+# scopes the minted admin application credential per-ControlPlane: the
 # c5c3-operator mirrors this CR's admin AC to
 #   openstack/keystone/tenant-b/controlplane-b/admin/app-credential
 # (read back via `bao kv get` as the kv-v2 path
 #   kv-v2/openstack/keystone/tenant-b/controlplane-b/admin/app-credential).
-# CC-0114, REQ-012: the c5c3-operator now also CREATES the per-CR,
+# the c5c3-operator now also CREATES the per-CR,
 # controller-owned `k-orc-clouds-yaml` ExternalSecret in THIS tenant's namespace
 # (reconcileKORC's ensureKORCCloudsYAMLExternalSecret) reading that per-CR path —
 # no per-identity KORC_KEYSTONE_AUTH_URL seed override is needed.
@@ -22,8 +22,8 @@
 # admin AC must leave THIS CR's credential, OpenBao material, and K-ORC AC
 # unchanged.
 #
-# DECISION (CC-0112, REQ-012): one ControlPlane per namespace is enforced by the
-# validating webhook (CC-0112, task 3.1), so this CR carries its own Namespace.
+# DECISION one ControlPlane per namespace is enforced by the
+# validating webhook, so this CR carries its own Namespace.
 # The per-tenant prerequisite wiring (admin password Secret + managed infra) is
 # the same documented fast-follow as tenant-a — see the DECISION block in
 # 00-tenant-a-controlplane.yaml. Behind the presence guard this test SKIPs when
@@ -65,7 +65,7 @@ spec:
         name: keystone-admin
         key: password
       applicationCredential:
-        # restricted:true keeps the admin AC least-privilege (REQ-013) and
+        # restricted:true keeps the admin AC least-privilege and
         # projects to K-ORC's spec.resource.unrestricted=false.
         restricted: true
         rotation:

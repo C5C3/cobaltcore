@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Keystone CR fixture for the API pod kill with PDB chaos test (CC-0048).
+# Keystone CR fixture for the API pod kill with PDB chaos test.
 # Uses unique name (keystone-chaos-api) and database (keystone_chaos_api)
 # to avoid conflicts with other test suites.
 # NOTE: replicas: 3 (unlike other chaos CRs) to trigger PDB creation

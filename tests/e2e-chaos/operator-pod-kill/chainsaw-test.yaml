@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Chainsaw chaos E2E test for operator pod kill with leader election
-# failover (CC-0066). Verifies that:
+# failover. Verifies that:
 # 1. Killing ALL operator pods (mode: all) triggers Deployment controller
 #    restart and leader re-election.
 # 2. The Keystone CR maintains Ready=True after failover (status conditions
@@ -11,10 +11,9 @@
 # 3. The new leader can reconcile spec changes (replica patch 1->2), proving
 #    full operational capability beyond just running.
 #
-# Differs from operator-pod-crash (SC-CHAOS-004, CC-0048) which uses mode: one
+# Differs from operator-pod-crash (SC-CHAOS-004) which uses mode: one
 # and does not verify post-failover reconciliation.
 #
-# REQ-005, REQ-006, REQ-007, REQ-008 (CC-0066)
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -54,7 +53,7 @@ spec:
   # polling began). Tracking UIDs proves replacement happened regardless of
   # timing. Apply + poll live in one script so the pre-chaos snapshot and
   # the wait share state.
-  # NOTE: CC-0105 — operator runs in the dedicated `keystone-system` namespace
+  # NOTE: — operator runs in the dedicated `keystone-system` namespace
   # because hack/ci-deploy-operator.sh now invokes `helm install --namespace
   # keystone-system --create-namespace`. The Deployment name is
   # `keystone-operator` (release name contains the chart name, so fullname
@@ -62,7 +61,7 @@ spec:
   - try:
     - script:
         # Timeout budget: Phase 1 (60×2s=120s) + Phase 2 (60×2s=120s) = 240s
-        # worst case. 270s gives 30s margin, matching CC-0076 review #1.
+        # worst case. 270s gives 30s margin, matching review #1.
         timeout: 270s
         content: |
           # NOTE: set -euo pipefail is intentionally omitted. The polling
@@ -71,7 +70,7 @@ spec:
           # conditions are checked explicitly rather than via exit codes.
 
           # Read desired replica count from the Deployment so the test stays
-          # valid if the operator replica count changes (CC-0076 review #1).
+          # valid if the operator replica count changes (review #1).
           DESIRED=$(kubectl get deployment keystone-operator -n keystone-system -o jsonpath='{.spec.replicas}')
           if [ -z "$DESIRED" ] || [ "$DESIRED" -lt 1 ]; then
             echo "ERROR: could not determine desired replica count from keystone-operator Deployment"

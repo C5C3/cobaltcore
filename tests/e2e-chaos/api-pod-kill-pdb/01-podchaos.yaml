@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# PodChaos CR to kill one Keystone API pod (CC-0048).
+# PodChaos CR to kill one Keystone API pod.
 # One-shot pod-kill action — the Deployment controller will create a
 # replacement pod. Selector uses both name and instance labels to target
 # only the API pods belonging to the keystone-chaos-api CR instance.

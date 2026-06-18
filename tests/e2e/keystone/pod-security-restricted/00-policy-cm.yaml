@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Policy source ConfigMap for the PSS-restricted E2E test (CC-0104, REQ-002).
+# Policy source ConfigMap for the PSS-restricted E2E test.
 #
 # Without `spec.policyOverrides` on the Keystone CR, `reconcilePolicyValidation`
 # short-circuits and the policy-validation Job is never created. To exercise

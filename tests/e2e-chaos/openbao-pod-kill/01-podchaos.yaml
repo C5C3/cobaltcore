@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# PodChaos CR to kill an OpenBao pod (CC-0047).
+# PodChaos CR to kill an OpenBao pod.
 # One-shot pod-kill action — the StatefulSet controller will restart the pod.
 #
 # NOTE: OpenBao runs in openbao-system, NOT openstack. The selector

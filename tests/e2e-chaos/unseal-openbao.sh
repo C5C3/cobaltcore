@@ -15,7 +15,7 @@
 # cluster unsealed; that recovery path does not exist with one replica. This
 # helper bridges the gap so the openbao-pod-kill chaos test can validate
 # operator-side recovery (SecretsReady False -> True) without depending on
-# OpenBao auto-recovery that the kind topology cannot provide (CC-0047).
+# OpenBao auto-recovery that the kind topology cannot provide.
 #
 # Idempotent: if the pod is already unsealed, the script exits 0 without
 # touching anything.

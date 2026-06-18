@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Keystone CR fixture for the key-repository-mode E2E test (CC-0099, REQ-006).
+# Keystone CR fixture for the key-repository-mode E2E test.
 # Minimal managed-mode CR cloned from tests/e2e/keystone/basic-deployment;
 # the test only inspects the keystone container's startup log for the
 # upstream `key_repository is world readable` warning, so a single replica

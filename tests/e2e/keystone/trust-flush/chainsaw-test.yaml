@@ -2,18 +2,17 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for trust flush CronJob feature (CC-0057, CC-0096).
+# Chainsaw E2E test for trust flush CronJob feature.
 # Verifies:
 #   - CronJob creation when spec.trustFlush is set
 #   - CronJob schedule and suspend match spec.trustFlush
 #   - TrustFlushReady condition set with reason TrustFlushReady
 #   - Manual trigger via kubectl create job --from=cronjob executes successfully
 #   - Pausing trust flush via spec.trustFlush.suspend: true preserves the CronJob
-#     with spec.suspend == true and keeps reason TrustFlushReady (CC-0096, REQ-006)
+#     with spec.suspend == true and keeps reason TrustFlushReady
 #   - No new Job pods are created while suspended
 #
-# REQ-001, REQ-002, REQ-003, REQ-004, REQ-005, REQ-006 (CC-0057)
-# REQ-006 (CC-0096) — suspend: true is the documented pause path; nil-back is no
+# suspend: true is the documented pause path; nil-back is no
 # longer asserted because the defaulting webhook re-materializes the field.
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -137,13 +136,13 @@ spec:
             - status: "True"
               reason: AllReady
   # ── Step 7: Pause trust flush (set spec.trustFlush.suspend: true) ──────
-  # CC-0096, REQ-006: suspend: true is the supported pause path. The defaulting
+  # suspend: true is the supported pause path. The defaulting
   # webhook re-materializes spec.trustFlush, so nil-back is no longer exercised.
   - try:
     - patch:
         file: 01-patch-suspend-trust-flush.yaml
   # ── Step 8: Assert TrustFlushReady=True with reason TrustFlushReady ────
-  # CC-0096, REQ-006: pausing via suspend keeps the CronJob and the
+  # pausing via suspend keeps the CronJob and the
   # TrustFlushReady reason; TrustFlushNotRequired is now the legacy bypass-only
   # reason for nil-spec posture (envtest / webhook-less clusters).
   - try:
@@ -159,7 +158,7 @@ spec:
             - status: "True"
               reason: TrustFlushReady
   # ── Step 9: Assert CronJob preserved with spec.suspend == true ─────────
-  # CC-0096, REQ-006: the CronJob persists across pause/resume so resume is a
+  # the CronJob persists across pause/resume so resume is a
   # no-churn operation and the next scheduled tick fires immediately.
   - try:
     - assert:
@@ -173,7 +172,7 @@ spec:
             schedule: "0 * * * *"
             suspend: true
   # ── Step 10: Assert no new Job pods created AFTER suspend was applied ──
-  # CC-0096, REQ-006: while suspend is true the controller MUST NOT create new
+  # while suspend is true the controller MUST NOT create new
   # Jobs from the CronJob. The hourly schedule "0 * * * *" can race with the
   # earlier steps if Step 1 ran before a `:00` minute boundary and Step 7
   # (suspend patch) ran after — a legitimate pre-suspend Job may then exist

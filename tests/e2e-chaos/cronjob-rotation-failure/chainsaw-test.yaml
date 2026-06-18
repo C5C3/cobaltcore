@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw chaos E2E test for CronJob fernet rotation failure (CC-0048).
+# Chainsaw chaos E2E test for CronJob fernet rotation failure.
 # Verifies the Keystone operator maintains FernetKeysReady=True and
 # Ready=True even when a manually triggered fernet rotation Job's pods
 # are killed by PodChaos. Existing fernet keys remain valid; the failed
@@ -11,7 +11,7 @@
 # The PodChaos CR is applied BEFORE creating the Job so that Chaos Mesh
 # intercepts the Job's pods on creation (pod-failure action, mode: all).
 #
-# SC-CHAOS-005, REQ-002, REQ-006, REQ-008 (CC-0048)
+# SC-CHAOS-005,
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:

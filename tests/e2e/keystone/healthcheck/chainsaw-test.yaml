@@ -2,14 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for Keystone API health check (CC-0067).
+# Chainsaw E2E test for Keystone API health check.
 # Validates that reconcileHealthCheck verifies the Keystone API is actually
 # serving requests after the Deployment reports ready:
 #   - DeploymentReady=True transitions before KeystoneAPIReady
 #   - KeystoneAPIReady=True with reason APIHealthy
 #   - Ready=True (aggregate) requires KeystoneAPIReady=True
 #
-# REQ-001, REQ-005 (CC-0067)
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:

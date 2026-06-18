@@ -5,7 +5,7 @@
 
 # Verify hack/deploy-infra.sh `preflight_checks` after the FluxInstance
 # bootstrap migration: the Flux CLI is no longer required, but kubectl still
-# is (CC-0085, REQ-005).
+# is.
 #
 # DECISION: bats vs project-native bash test runner
 # Ambiguity: task spec asked for `*.bats`, but the repo has zero .bats files,
@@ -71,7 +71,7 @@ run_preflight() {
 
 # run_preflight_with_controlplane <stub_dir>
 # As run_preflight, but with WITH_CONTROLPLANE=true exported so the yq gate on
-# the ControlPlane path is exercised (CC-0110).
+# the ControlPlane path is exercised.
 run_preflight_with_controlplane() {
   local stub_dir="$1"
   (
@@ -86,10 +86,10 @@ run_preflight_with_controlplane() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 1: preflight passes when flux is absent (CC-0085, REQ-005)
+# Test 1: preflight passes when flux is absent
 # ---------------------------------------------------------------------------
 test_preflight_passes_without_flux() {
-  echo "Test: preflight_checks passes without flux on PATH (CC-0085, REQ-005)"
+  echo "Test: preflight_checks passes without flux on PATH"
 
   local tmp
   tmp="$(mktemp -d)"
@@ -109,10 +109,10 @@ test_preflight_passes_without_flux() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 2: preflight fails when kubectl is absent (CC-0085, REQ-005)
+# Test 2: preflight fails when kubectl is absent
 # ---------------------------------------------------------------------------
 test_preflight_fails_without_kubectl() {
-  echo "Test: preflight_checks fails when kubectl is missing (CC-0085, REQ-005)"
+  echo "Test: preflight_checks fails when kubectl is missing"
 
   local tmp
   tmp="$(mktemp -d)"
@@ -130,10 +130,10 @@ test_preflight_fails_without_kubectl() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 3: preflight fails when WITH_CONTROLPLANE=true but yq is absent (CC-0110)
+# Test 3: preflight fails when WITH_CONTROLPLANE=true but yq is absent
 # ---------------------------------------------------------------------------
 test_preflight_fails_without_yq_when_controlplane() {
-  echo "Test: preflight_checks fails when WITH_CONTROLPLANE=true and yq is missing (CC-0110)"
+  echo "Test: preflight_checks fails when WITH_CONTROLPLANE=true and yq is missing"
 
   local tmp
   tmp="$(mktemp -d)"
@@ -152,10 +152,10 @@ test_preflight_fails_without_yq_when_controlplane() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 4: preflight passes when WITH_CONTROLPLANE=true and yq is present (CC-0110)
+# Test 4: preflight passes when WITH_CONTROLPLANE=true and yq is present
 # ---------------------------------------------------------------------------
 test_preflight_passes_with_yq_when_controlplane() {
-  echo "Test: preflight_checks passes when WITH_CONTROLPLANE=true and yq is present (CC-0110)"
+  echo "Test: preflight_checks passes when WITH_CONTROLPLANE=true and yq is present"
 
   local tmp
   tmp="$(mktemp -d)"

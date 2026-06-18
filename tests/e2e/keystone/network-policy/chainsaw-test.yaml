@@ -2,14 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for NetworkPolicy reconciliation (CC-0039).
+# Chainsaw E2E test for NetworkPolicy reconciliation.
 # Verifies that the operator creates, updates, and deletes NetworkPolicies
 # based on spec.networkPolicy:
 #   - Initial deployment with ingress from envoy-gateway-system namespace
 #   - Update ingress sources (add monitoring namespace)
 #   - Disable networkPolicy (NetworkPolicy deleted)
 #
-# REQ-001, REQ-003, REQ-004 (CC-0039)
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -27,8 +26,8 @@ spec:
   # Only NetworkPolicyReady is asserted here — the aggregate Ready condition
   # is deliberately not checked because this test's NetworkPolicy only permits
   # ingress from envoy-gateway-system, which blocks the operator's
-  # post-deployment health check (CC-0067) and leaves KeystoneAPIReady=False.
-  # The CC-0039 reconciler behaviour under test is fully covered by the
+  # post-deployment health check and leaves KeystoneAPIReady=False.
+  # The reconciler behaviour under test is fully covered by the
   # NetworkPolicyReady condition and the NetworkPolicy resource assertion below.
   - try:
     - assert:
@@ -143,7 +142,7 @@ spec:
               reason: NetworkPolicyNotRequired
     - script:
         content: |
-          # Verify NetworkPolicy no longer exists (CC-0039, REQ-003).
+          # Verify NetworkPolicy no longer exists.
           if kubectl get networkpolicy keystone-netpol -n $NAMESPACE 2>/dev/null; then
             echo "FAIL: NetworkPolicy should have been deleted"
             exit 1

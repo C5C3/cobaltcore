@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for namespace-scoped RBAC deployment (CC-0043).
+# Chainsaw E2E test for namespace-scoped RBAC deployment.
 # Validates the operator deployed with rbac.namespaceScoped=true and
 # webhook.enabled=false can successfully reconcile a Keystone CR:
 #   - Operator deployed via Helm with namespace-scoped RBAC
@@ -13,10 +13,9 @@
 # (MariaDB, Memcached, Secrets) lives, so standard managed mode (clusterRef)
 # works exactly as in all other E2E tests.
 #
-# REQ-001, REQ-002 (CC-0043)
 #
-# Namespace-scoped carve-out (CC-0105): the new cluster-scoped default deploys
-# keystone-operator into the dedicated "keystone-system" Namespace (REQ-001/REQ-010).
+# Namespace-scoped carve-out the new cluster-scoped default deploys
+# keystone-operator into the dedicated "keystone-system" Namespace (/).
 # This test intentionally exercises a DIFFERENT release Namespace ("openstack") with
 # namespace-scoped RBAC, proving the operator is not hard-wired to "keystone-system"
 # and that the namespaceScoped=true code path still produces Role/RoleBinding (not

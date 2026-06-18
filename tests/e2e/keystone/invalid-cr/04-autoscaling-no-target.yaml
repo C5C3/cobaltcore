@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# REQ-003 (CC-0094): Keystone CR with spec.autoscaling configured but
+# Keystone CR with spec.autoscaling configured but
 # neither targetCPUUtilization nor targetMemoryUtilization set. The
 # requirement is enforced by the CEL XValidation rule on AutoscalingSpec
 # (keystone_types.go) and by the validating webhook (keystone_webhook.go).

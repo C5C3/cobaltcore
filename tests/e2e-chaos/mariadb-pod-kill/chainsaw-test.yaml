@@ -2,12 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw chaos E2E test for MariaDB pod kill (CC-0047).
+# Chainsaw chaos E2E test for MariaDB pod kill.
 # Verifies the Keystone operator detects a MariaDB outage
 # (DatabaseReady=False) and recovers autonomously when the
 # StatefulSet restarts the killed pod.
 #
-# SC-CHAOS-001, REQ-003, REQ-004, REQ-008, REQ-009 (CC-0047)
+# SC-CHAOS-001,
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:

@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for concurrent CR conflict handling (CC-0066).
+# Chainsaw E2E test for concurrent CR conflict handling.
 # Deploys two Keystone CRs that share the same secretRef and
 # adminPasswordSecretRef, verifies both reach Ready=True with unique
 # owned resources, then deletes one CR and asserts the other remains
@@ -60,11 +60,11 @@ spec:
           done
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
-  # ── Step 3: Assert per-CR OpenBao kv-v2 isolation (CC-0093/REQ-005, CC-0112/REQ-007) ─
-  # CC-0093 parameterizes the OpenBao RemoteKey per Keystone CR so that
+  # ── Step 3: Assert per-CR OpenBao kv-v2 isolation (/, /) ─
+  # parameterizes the OpenBao RemoteKey per Keystone CR so that
   # concurrent CRs push their fernet-keys / credential-keys to distinct
-  # kv-v2 paths instead of colliding on a single shared path. CC-0112
-  # (boundary 4, REQ-007) further inserts the Keystone CR's NAMESPACE as a
+  # kv-v2 paths instead of colliding on a single shared path.
+  # (boundary 4) further inserts the Keystone CR's NAMESPACE as a
   # path segment ahead of the CR name, so the operator RemoteKey is now
   #   openstack/keystone/{keystone.Namespace}/{keystone.Name}/<material>
   # (read back through the kv-v2 mount as kv-v2/openstack/keystone/<ns>/<name>/…).
@@ -77,10 +77,10 @@ spec:
   # proving the RemoteKey templating is actually writing under
   # <namespace>/<cr-name>/<material>. We additionally assert these now-absent
   # paths:
-  #   - the pre-CC-0093 flat paths
+  # - the pre-existing flat paths
   #       kv-v2/openstack/keystone/fernet-keys
   #       kv-v2/openstack/keystone/credential-keys
-  #   - the superseded CC-0093 non-namespace per-CR paths
+  # - the superseded non-namespace per-CR paths
   #       kv-v2/openstack/keystone/keystone-concurrent-a/fernet-keys
   #       kv-v2/openstack/keystone/keystone-concurrent-a/credential-keys
   #       kv-v2/openstack/keystone/keystone-concurrent-b/fernet-keys
@@ -88,9 +88,9 @@ spec:
   # do NOT exist. This is a regression guard with two failure modes:
   #   1. A revert of the per-CR RemoteKey template to a hard-coded string
   #      makes both CRs race to write the flat paths and silently overwrite
-  #      each other's key material (the original CC-0093 hazard).
-  #   2. A revert from the CC-0112 namespace-segmented shape back to the
-  #      CC-0093 non-namespace shape is the exact regression boundary 4 must
+  #      each other's key material (the original hazard).
+  # 2. A revert from the namespace-segmented shape back to the
+  # non-namespace shape is the exact regression boundary 4 must
   #      catch; asserting the intermediate non-namespace per-CR paths are
   #      absent makes the guard precise about which revert occurred.
   # Seeing any of those superseded paths reappear here fails the test
@@ -155,10 +155,10 @@ spec:
               fi
             done
             # Expect-absent set guards against two regressions (see step header):
-            #   - the pre-CC-0093 flat paths (shared-path collision hazard)
-            #   - the superseded CC-0093 non-namespace per-CR paths, whose
-            #     reappearance means a revert from the CC-0112 namespace-
-            #     segmented shape back to the CC-0093 shape (REQ-007).
+            # - the pre-existing flat paths (shared-path collision hazard)
+            # - the superseded non-namespace per-CR paths, whose
+            # reappearance means a revert from the namespace-
+            # segmented shape back to the shape.
             for path in "kv-v2/openstack/keystone/fernet-keys" \
                         "kv-v2/openstack/keystone/credential-keys" \
                         "kv-v2/openstack/keystone/keystone-concurrent-a/fernet-keys" \
@@ -188,7 +188,7 @@ spec:
 
           # Timeout: name each still-wrong path on stderr so chainsaw's
           # failure surface identifies exactly which kv-v2 path regressed
-          # (CC-0093/REQ-005, CC-0112/REQ-007).
+          # (/, /).
           for path in ${missing}; do
             echo "ERROR: ${path} missing after 60s (PushSecret did not sync to per-CR path)" >&2
           done
@@ -291,7 +291,7 @@ spec:
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
   # ── Step 6: Delete CR-A and assert cleanup ───────────────────────────────
-  # CC-0078: the Keystone finalizer blocks deletion until MariaDB
+  # the Keystone finalizer blocks deletion until MariaDB
   # Database/User/Grant CRs are fully gone; under parallel:4 this exceeds
   # the global 30s delete timeout, so raise it to match deletion-cleanup.
   - try:

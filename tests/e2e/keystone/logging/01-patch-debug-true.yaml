@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Patch to flip spec.logging.debug to true (CC-0098, REQ-003, REQ-009).
+# Patch to flip spec.logging.debug to true.
 # The reconciler must roll a new immutable <name>-config-<hash> ConfigMap,
 # which in turn rolls a new ReplicaSet (config-hash annotation on the
 # Deployment.spec.template changes). The post-rollout pod must emit at least

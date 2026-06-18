@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Tempest include list for Keystone identity API tests (CC-0051 REQ-004).
+# Tempest include list for Keystone identity API tests.
 #
 # One regex pattern per line. Lines starting with # are comments.
 # Blank lines are ignored. Patterns are matched against test IDs.

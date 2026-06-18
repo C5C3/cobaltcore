@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Keystone CR fixture for the deletion-cleanup E2E test (CC-0016).
+# Keystone CR fixture for the deletion-cleanup E2E test.
 # Managed mode: same pattern as basic-deployment, unique name keystone-cleanup.
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
 kind: Keystone

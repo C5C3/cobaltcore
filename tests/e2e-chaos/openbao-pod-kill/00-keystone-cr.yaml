@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Keystone CR fixture for the OpenBao pod-kill chaos test (CC-0047).
+# Keystone CR fixture for the OpenBao pod-kill chaos test.
 # Uses unique name (keystone-chaos-bao) and database (keystone_chaos_bao)
 # to avoid conflicts with other test suites.
 apiVersion: keystone.openstack.c5c3.io/v1alpha1

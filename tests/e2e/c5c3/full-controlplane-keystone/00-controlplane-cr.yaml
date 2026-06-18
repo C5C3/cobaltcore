@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # ControlPlane CR fixture for the full-controlplane-keystone E2E test
-# (CC-0110, REQ-028).
 #
 # Managed mode: database and cache reference managed clusters by clusterRef, so
 # the c5c3-operator reconcileInfrastructure sub-reconciler projects an owned
@@ -16,9 +15,9 @@
 # (keystone-admin, materialised by deploy/eso/externalsecrets/keystone-admin.yaml)
 # and the minted application credential is mirrored to OpenBao and back to
 # orc-system/k-orc-clouds-yaml. restricted:true keeps the credential
-# least-privilege so a leak is scoped (REQ-013).
+# least-privilege so a leak is scoped.
 #
-# CC-0114, REQ-012: the FIRST authentication uses a password-based clouds.yaml
+# the FIRST authentication uses a password-based clouds.yaml
 # that the c5c3-operator now SEEDS ITSELF (seedBootstrapCloudsYAML, write-if-
 # empty) into the controlplane-keystone-admin-app-credential Secret at reconcile
 # time — it is no longer pre-seeded by deploy tooling ahead of this CR. The seed

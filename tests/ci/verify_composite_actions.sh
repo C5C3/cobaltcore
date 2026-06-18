@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# CC-0055: Verify composite actions meet quality standards (REQ-010)
+# Verify composite actions meet quality standards
 # Validates: SPDX headers, feature-ID comments, shell: bash, SHA-pinned actions
 # Usage: bash tests/ci/verify_composite_actions.sh
 
@@ -32,16 +32,6 @@ fi
 echo "Found ${#ACTION_FILES[@]} composite action files to verify"
 echo ""
 
-# CC-0055 actions that require the feature-ID comment
-CC0055_ACTIONS=(
-  "setup-docker-registry"
-  "export-digest"
-  "checkout-service-source"
-  "supply-chain-attest"
-  "build-push-image"
-  "merge-manifest-and-attest"
-)
-
 # --- Test 1: All action.yaml files have SPDX license headers ---
 test_spdx_headers() {
   echo "Test: all action.yaml files have SPDX license headers"
@@ -64,31 +54,6 @@ test_spdx_headers() {
     else
       echo "  FAIL: $dir_name/action.yaml missing SPDX header (copyright=$has_copyright, license=$has_license)"
       FAIL=$((FAIL + 1))
-    fi
-  done
-}
-
-# --- Test 2: CC-0055 actions have feature-ID comment ---
-test_feature_id_comment() {
-  echo "Test: CC-0055 actions have feature-ID comment"
-
-  for action_file in "${ACTION_FILES[@]}"; do
-    local dir_name
-    dir_name="$(basename "$(dirname "$action_file")")"
-
-    local is_cc0055=false
-    for cc_action in "${CC0055_ACTIONS[@]}"; do
-      if [[ "$dir_name" == "$cc_action" ]]; then
-        is_cc0055=true
-        break
-      fi
-    done
-
-    if $is_cc0055; then
-      assert_file_contains "$dir_name/action.yaml has CC-0055 comment" "$action_file" "# CC-0055"
-    else
-      echo "  SKIP: $dir_name/action.yaml is not a CC-0055 action"
-      SKIP=$((SKIP + 1))
     fi
   done
 }
@@ -150,7 +115,7 @@ test_sha_pinned_actions() {
   done
 }
 
-# --- Test 5: supply-chain-attest validates required inputs in sbom mode (CC-0055) ---
+# --- Test 5: supply-chain-attest validates required inputs in sbom mode ---
 test_supply_chain_attest_input_validation() {
   echo "Test: supply-chain-attest validates image-digest and sbom-output-file in sbom mode"
 
@@ -160,11 +125,9 @@ test_supply_chain_attest_input_validation() {
 }
 
 # --- Run all tests ---
-echo "=== Composite action verification tests (CC-0055, REQ-010) ==="
+echo "=== Composite action verification tests ==="
 echo ""
 test_spdx_headers
-echo ""
-test_feature_id_comment
 echo ""
 test_shell_explicit
 echo ""

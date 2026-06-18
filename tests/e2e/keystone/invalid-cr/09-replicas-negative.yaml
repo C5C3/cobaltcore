@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# REQ-008 (CC-0094): Keystone CR with spec.replicas: -1. The
+# Keystone CR with spec.replicas: -1. The
 # +kubebuilder:validation:Minimum=1 marker on KeystoneSpec.Replicas
 # (keystone_types.go) is a structural CRD check that runs before any
 # defaulting path could coerce a negative value. The defaulting webhook

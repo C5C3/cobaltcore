@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Fixtures for the Keystone admin-password-scheduled-rotation E2E test
-# (CC-0109, Model B — REQ-002, REQ-007, REQ-010, REQ-011). Managed mode; a
+# (Model B). Managed mode; a
 # distinct CR name (keystone-adminpw-sched) and a dedicated logical database
 # (keystone_adminpw_sched) keep this suite's Keystone instance isolated from the
 # other Keystone CRs that share the `openstack` namespace.
@@ -17,7 +17,7 @@
 #
 # DECISION: [which OpenBao path this suite's admin ExternalSecret reads] — read
 # the per-CR path bootstrap/openstack/keystone-adminpw-sched/admin, because since
-# CC-0112 the Model B PushSecret derives its RemoteKey from the CR identity as
+# the Model B PushSecret derives its RemoteKey from the CR identity as
 # bootstrap/{namespace}/{name}/admin (see adminPasswordPushSecret in
 # operators/keystone/internal/controller/reconcile_passwordrotation.go). The
 # operator's backup PushSecret therefore writes the rotated password to
@@ -31,18 +31,18 @@
 # deploy/eso/externalsecrets/keystone-admin.yaml (which reads its own per-CR
 # path) — observes the change. The suite is therefore parallel-safe and runs in
 # the execution.parallel:4 pool like its sibling admin-password-rotation suite
-# (CC-0108); chainsaw-test.yaml re-seeds this per-CR path with a known initial
+# chainsaw-test.yaml re-seeds this per-CR path with a known initial
 # password at the start for cross-run determinism.
 #
 # Every resource this suite owns is per-CR: the Keystone instance, its database,
-# the materialised admin Secret, AND (since CC-0112) the OpenBao source object.
+# the materialised admin Secret, AND (since) the OpenBao source object.
 # So this test owns its own Deployment, bootstrap Job, rotation resources, and
 # OpenBao path without colliding on names in the shared `openstack` namespace.
 #
 # refreshInterval is short so the rotated value reaches the admin Secret within
 # one ESO tick — ESO does not watch OpenBao for changes, it re-reads the source
 # on its interval (or on a spec change), so a 1h default would never propagate
-# the rotation inside the test window (mirrors CC-0108).
+# the rotation inside the test window (mirrors).
 ---
 apiVersion: external-secrets.io/v1
 kind: ExternalSecret
@@ -60,7 +60,7 @@ spec:
   data:
     - secretKey: password
       remoteRef:
-        # Per-CR path — see the DECISION block above. Since CC-0112 the Model B
+        # Per-CR path — see the DECISION block above. Since the Model B
         # backup PushSecret writes the rotated password to
         # bootstrap/{namespace}/{name}/admin, so this ExternalSecret must read the
         # same per-CR object to observe the rotation.
@@ -95,7 +95,7 @@ spec:
     adminPasswordSecretRef:
       name: keystone-adminpw-sched-admin
     region: RegionOne
-    # Model B scheduled admin-password rotation (CC-0109, REQ-010). The
+    # Model B scheduled admin-password rotation. The
     # defaulting webhook fills passwordLength=32 and suspend=false when rotation
     # is enabled; they are set explicitly here for reviewer clarity. The monthly
     # schedule is never actually due during the test — chainsaw-test.yaml step 4
@@ -111,8 +111,7 @@ spec:
   # memcached keys. A cache entry could answer this suite's auth request with a
   # pre-rotation result, producing a false 201 where this test asserts 401 after
   # rotation. Same rationale as the fernet-rotation and admin-password-rotation
-  # fixtures (CC-0074 follow-up: namespace cache keys per CR so shared memcached
-  # is safe).
+  # fixtures (follow-up: namespace cache keys per CR so shared memcached is safe).
   extraConfig:
     cache:
       enabled: "false"

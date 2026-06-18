@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Patch to disable topology spread constraints by setting an empty slice (CC-0075).
+# Patch to disable topology spread constraints by setting an empty slice.
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
 kind: Keystone
 metadata:

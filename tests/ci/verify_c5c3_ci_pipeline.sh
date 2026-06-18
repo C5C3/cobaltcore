@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify c5c3 operator CI pipeline wiring meets requirements (CC-0110, REQ-022).
+# Verify c5c3 operator CI pipeline wiring meets requirements.
 # Validates: c5c3 paths-filter block, FILTER_c5c3 env, ALL_OPERATORS membership,
 # cleanup-e2e-tags package list, and that ci-resolve-changes.sh emits c5c3 in the
 # e2e-operators matrix once c5c3 is a known operator.
@@ -24,7 +24,7 @@ source "$SCRIPT_DIR/../lib/assertions.sh"
 CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
 RESOLVE_SCRIPT="$PROJECT_ROOT/hack/ci-resolve-changes.sh"
 
-echo "=== c5c3 operator CI pipeline verification (CC-0110, REQ-022) ==="
+echo "=== c5c3 operator CI pipeline verification ==="
 echo ""
 
 # ── Helpers ─────────────────────────────────────────────────────────────────

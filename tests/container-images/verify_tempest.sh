@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify tempest container image meets requirements (CC-0035 REQ-005, REQ-011)
+# Verify tempest container image meets requirements
 # Usage: bash tests/container-images/verify_tempest.sh [image_name]
 # Default image: c5c3/tempest:45.0.0
 # Requires: Docker daemon running

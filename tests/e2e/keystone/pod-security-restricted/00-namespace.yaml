@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Test namespace + ExternalSecrets fixture for the PSS-restricted E2E test
-# (CC-0104, REQ-001, REQ-003).
 #
 # The namespace carries both `pod-security.kubernetes.io/enforce=restricted`
 # AND `pod-security.kubernetes.io/enforce-version=latest`. Without the
@@ -18,13 +17,8 @@
 # SecretsReady=False/WaitingForDBCredentials and never reach Ready=True. The
 # ExternalSecrets pull from the same OpenBao paths the in-cluster
 # `openstack` namespace uses: the per-CR admin password at
-# `bootstrap/openstack/controlplane-keystone/admin` (the CC-0112 per-CR path the
-# deploy-infra seed writes; the legacy flat `bootstrap/keystone-admin` is no
-# longer seeded) and the `keystone` MariaDB user at the per-ControlPlane path
-# `openstack/keystone/openstack/controlplane/db` (the CC-0116 per-CP path the
-# deploy-infra seed writes for the default ControlPlane "controlplane" in
-# namespace "openstack"; the legacy flat shared DB path is no longer
-# seeded); the `eso-management` policy
+# `bootstrap/openstack/controlplane-keystone/admin` (the per-CR path the deploy-infra seed writes; the legacy flat `bootstrap/keystone-admin` is no longer seeded) and the `keystone` MariaDB user at the per-ControlPlane path
+# `openstack/keystone/openstack/controlplane/db` (the per-CP path the deploy-infra seed writes for the default ControlPlane "controlplane" in namespace "openstack"; the legacy flat shared DB path is no longer seeded); the `eso-management` policy
 # (deploy/openbao/policies/eso-management.hcl) grants read access to both paths
 # via its `kv-v2/data/bootstrap/*` and `kv-v2/data/openstack/keystone/*`
 # wildcards, so no new OpenBao policy work is required.

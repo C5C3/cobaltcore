@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Keystone CR fixture for the MariaDB network-partition chaos test (CC-0049).
+# Keystone CR fixture for the MariaDB network-partition chaos test.
 # Uses unique name (keystone-chaos-net-part) and database (keystone_chaos_net_part)
 # to avoid conflicts with other test suites.
 apiVersion: keystone.openstack.c5c3.io/v1alpha1

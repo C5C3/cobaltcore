@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Keystone CR fixture for the rolling-update-zero-downtime E2E test (CC-0084).
+# Keystone CR fixture for the rolling-update-zero-downtime E2E test.
 #
 # Intent: three replicas with default rolling-update strategy (operator-injected
 # maxUnavailable=0 / maxSurge=1) so that a subsequent spec.image.tag patch
@@ -13,7 +13,7 @@
 # preStopSleepSeconds, uwsgi.harakiri, uwsgi.httpKeepAliveTimeout) are left at
 # their defaults. This test exercises the defaults end-to-end — operators
 # overriding them get coverage via unit tests in operators/keystone/internal/
-# controller/reconcile_deployment_test.go (CC-0084).
+# controller/reconcile_deployment_test.go.
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
 kind: Keystone
 metadata:

@@ -2,13 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for CC-0080: secrets must not leak into the ConfigMap.
+# Chainsaw E2E test for: secrets must not leak into the ConfigMap.
 # Validates the full oslo.config env-override split:
 #   - keystone.conf carries only the placeholder URL (no DB password)
 #   - the derived <name>-db-connection Secret exists with a real pymysql URL
 #   - the Deployment pod spec injects OS_DATABASE__CONNECTION from that Secret
 #
-# REQ-001, REQ-002, REQ-003 (CC-0080)
 # Ref: https://review.opendev.org/c/openstack/oslo.config/+/585850
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -50,7 +49,7 @@ spec:
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
   # ── Step 3: Assert ConfigMap contains placeholder, not DB password ─────
   # The [database].connection key in keystone.conf must be the placeholder
-  # URL written by reconcileConfig (CC-0080, REQ-001). The real upstream
+  # URL written by reconcileConfig. The real upstream
   # DB password (read from the keystone-db Secret) must NOT appear anywhere
   # in the rendered ConfigMap data.
   - try:
@@ -83,7 +82,7 @@ spec:
             exit 1
           fi
 
-          # Assert placeholder URL present (REQ-001).
+          # Assert placeholder URL present.
           if ! printf '%s' "$CONF" | grep -qF "$PLACEHOLDER"; then
             echo "FAIL: placeholder $PLACEHOLDER not found in keystone.conf"
             printf '%s\n' "$CONF" | grep -A1 '^\[database\]' || true
@@ -92,7 +91,7 @@ spec:
           echo "OK: placeholder present in keystone.conf"
 
           # Assert the upstream DB password does NOT appear in the ConfigMap
-          # (REQ-001). Read the password from the Secret referenced by the CR
+          # Read the password from the Secret referenced by the CR
           # and grep it out of the rendered config.
           DB_SECRET_NAME=$(kubectl get keystone "$CR_NAME" -n "$NS" \
             -o jsonpath='{.spec.database.secretRef.name}')
@@ -110,7 +109,7 @@ spec:
   # ── Step 4: Assert derived db-connection Secret exists with real URL ───
   # reconcileDBConnectionSecret materialises the upstream credentials into
   # a plain corev1.Secret named <name>-db-connection with a single
-  # "connection" key (CC-0080, REQ-002).
+  # "connection" key.
   - try:
     - assert:
         resource:
@@ -126,7 +125,7 @@ spec:
               controller: true
     # The `connection` data key below mirrors the Go constant
     # `dbConnectionSecretKey` in operators/keystone/internal/controller/
-    # reconcile_dbconnection_secret.go (CC-0080, I-001). Keep in sync.
+    # reconcile_dbconnection_secret.go (I-001). Keep in sync.
     - script:
         timeout: 15s
         content: |
@@ -150,7 +149,7 @@ spec:
           echo "OK: db-connection Secret carries a real pymysql URL"
   # ── Step 5: Assert Deployment env wires OS_DATABASE__CONNECTION ────────
   # The keystone container must read its DB URL from the derived Secret
-  # via the oslo.config OS_<GROUP>__<OPTION> override (CC-0080, REQ-003).
+  # via the oslo.config OS_<GROUP>__<OPTION> override.
   - try:
     - assert:
         resource:

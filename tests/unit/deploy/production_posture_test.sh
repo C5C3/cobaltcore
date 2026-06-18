@@ -3,15 +3,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify the CC-0088 Envoy Gateway work did NOT alter the production overlay
-# (CC-0088, REQ-012). The operator stays platform-agnostic; kind-only
+# Verify the Envoy Gateway work did NOT alter the production overlay
+# The operator stays platform-agnostic; kind-only
 # addons must live under deploy/kind/ and deploy/flux-system/ must be
 # byte-identical to origin/main for the following paths:
 #
 #   - deploy/flux-system/fluxinstance.yaml
 #   - deploy/flux-system/releases/*
 #
-# CC-0097 deliberately removes chaos-mesh from the production overlay
+# deliberately removes chaos-mesh from the production overlay
 # entirely:
 #   - the `sources/chaos-mesh.yaml` and `releases/chaos-mesh.yaml` files
 #     are relocated into the kind-only opt-in overlay at
@@ -23,7 +23,7 @@
 # suite asserts the resulting posture (production renders zero chaos-mesh
 # resources; the overlay renders the full bundle).
 #
-# CC-0107 enforces OpenBao mTLS by editing
+# enforces OpenBao mTLS by editing
 # deploy/flux-system/releases/openbao.yaml in place:
 #   - the HA raft listener requires & verifies client certs
 #     (tls_client_ca_file + tls_require_and_verify_client_cert = true);
@@ -71,9 +71,9 @@ preflight() {
 }
 
 # --- Test 1: tracked production-overlay files are unchanged vs origin/main
-#             (CC-0088, REQ-012) ---
+#             ---
 test_production_overlay_unchanged() {
-  echo "Test: deploy/flux-system/{fluxinstance,releases/*} unchanged vs origin/main (CC-0088, REQ-012)"
+  echo "Test: deploy/flux-system/{fluxinstance,releases/*} unchanged vs origin/main"
 
   if ! preflight; then
     echo "  SKIP: git / origin/main unavailable (1 check skipped)"
@@ -82,14 +82,14 @@ test_production_overlay_unchanged() {
   fi
 
   # `git diff --exit-code` returns non-zero when the worktree differs from
-  # the ref. The CC-0097 chaos-mesh relocation deliberately removes
+  # the ref. The chaos-mesh relocation deliberately removes
   # deploy/flux-system/releases/chaos-mesh.yaml (now at
   # deploy/kind/chaos-mesh/release.yaml), so it is carved out per-path with
   # `:(exclude)…` pathspecs. fluxinstance.yaml has no carve-out — it must
   # remain byte-identical.
   local groups_label=(
     "deploy/flux-system/fluxinstance.yaml"
-    "deploy/flux-system/releases (excluding chaos-mesh.yaml relocated by CC-0097, openbao.yaml edited in place by CC-0107, external-secrets.yaml edited in place by CC-0110, and the c5c3-operator.yaml/k-orc.yaml releases added by CC-0110)"
+    "deploy/flux-system/releases (excluding chaos-mesh.yaml relocated, openbao.yaml edited in place, external-secrets.yaml edited in place, and the c5c3-operator.yaml/k-orc.yaml releases added)"
   )
   local groups_specs=(
     "deploy/flux-system/fluxinstance.yaml"
@@ -123,9 +123,9 @@ test_production_overlay_unchanged() {
 }
 
 # --- Test 2: any added file under deploy/flux-system/sources/ contains
-#             only HelmRepository objects (CC-0088, REQ-012) ---
+#             only HelmRepository objects ---
 test_added_sources_are_helmrepository_only() {
-  echo "Test: added deploy/flux-system/sources/* files contain only HelmRepository objects (CC-0088, REQ-012)"
+  echo "Test: added deploy/flux-system/sources/* files contain only HelmRepository objects"
 
   if ! preflight; then
     echo "  SKIP: git / origin/main unavailable (1 check skipped)"
@@ -153,7 +153,7 @@ test_added_sources_are_helmrepository_only() {
       continue
     fi
     # Extract all `kind:` values from the file; any non-HelmRepository value
-    # is a policy violation per REQ-012.
+    # is a policy violation.
     local offending
     offending="$(awk '/^kind:[[:space:]]+/{print $2}' "$abs" | grep -vE '^HelmRepository$' || true)"
     if [[ -n "$offending" ]]; then

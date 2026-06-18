@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# REQ-004 (CC-0094): Keystone CR with spec.policyOverrides set to an empty
+# Keystone CR with spec.policyOverrides set to an empty
 # object — neither rules nor configMapRef populated. The constraint is
 # enforced by the CEL XValidation rule on KeystoneSpec.PolicyOverrides
 # (keystone_types.go) and by the validating webhook (keystone_webhook.go).

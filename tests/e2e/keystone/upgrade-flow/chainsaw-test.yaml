@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for the expand-migrate-contract upgrade flow (CC-0056).
+# Chainsaw E2E test for the expand-migrate-contract upgrade flow.
 # Verifies:
 #   (1) Fresh deployment sets status.installedRelease
 #   (2) Sequential upgrade (2025.2 -> 2026.1) triggers expand-migrate-contract phases
@@ -20,7 +20,7 @@ spec:
   - try:
     - apply:
         file: 00-keystone-cr.yaml
-  # ── Step 2: Assert Ready and installedRelease set (CC-0056, REQ-008) ──
+  # ── Step 2: Assert Ready and installedRelease set ──
   - try:
     - assert:
         resource:

@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Keystone CR fixture for the policy-validation E2E test (CC-0058).
+# Keystone CR fixture for the policy-validation E2E test.
 # Managed mode with policyOverrides.configMapRef pointing to
 # the keystone-policy-validation-source ConfigMap.
 apiVersion: keystone.openstack.c5c3.io/v1alpha1

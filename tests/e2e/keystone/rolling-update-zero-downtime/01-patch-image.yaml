@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Patch that bumps spec.image.tag to trigger a rolling update for the
-# rolling-update-zero-downtime E2E test (CC-0084).
+# rolling-update-zero-downtime E2E test.
 #
 # DECISION: reuse the '2025.2-upgraded' tag already pre-loaded by CI for the
 # image-upgrade test (see tests/e2e/keystone/image-upgrade/01-patch-image.yaml).

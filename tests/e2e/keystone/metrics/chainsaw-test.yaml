@@ -2,13 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# CC-0105: operator metrics endpoints are now in keystone-system; Keystone CR workload remains in openstack
-# Chainsaw E2E test for the operator metrics ServiceMonitor (CC-0089, REQ-006).
+# operator metrics endpoints are now in keystone-system; Keystone CR workload remains in openstack
+# Chainsaw E2E test for the operator metrics ServiceMonitor.
 # Verifies that the keystone-operator chart renders (and later removes) a
 # monitoring.coreos.com/v1 ServiceMonitor pointing at the operator's
 # /metrics endpoint when monitoring.serviceMonitor.enabled is toggled.
 #
-# REQ-006 (CC-0089)
 #
 # DEPLOYMENT NOTE — why this test installs its own Helm release:
 # The keystone-operator HelmRelease at keystone-system/keystone-operator is
@@ -23,20 +22,20 @@
 # directly produces and tears down the ServiceMonitor under assertion.
 #
 # DECISION: Prometheus target-Up polling is intentionally NOT implemented here.
-# The CC-0089 plan calls for "poll Prometheus API until
+# The plan calls for "poll Prometheus API until
 # keystone_operator_reconcile_duration_seconds target is Up", but the test
 # cluster only installs prometheus-operator-crds (see
 # deploy/flux-system/releases/prometheus-operator-crds.yaml) and does NOT run
 # a Prometheus instance — so there is no /api/v1/targets endpoint to poll.
-# This deferral is recorded against REQ-006 in
-# .planwerk/progress/CC-0089-add-prometheus-metrics-and-servicemonitor-sub.json
-# (see acceptance_criteria_deferred). TODO(CC-0089): once a Prometheus
+# This deferral is recorded against in
+# planwerk/progress/-add-prometheus-metrics-and-servicemonitor-sub.json
+# (see acceptance_criteria_deferred). TODO once a Prometheus
 # instance is deployed in the e2e cluster, add a third step that issues
 #   curl -sf http://prometheus.monitoring.svc:9090/api/v1/targets \
 #     | jq '.data.activeTargets[] | select(.labels.job=="keystone-operator")
 #                                  | select(.health=="up")'
 # and asserts at least one target is healthy. The structural ServiceMonitor
-# assertion below is a strict subset of REQ-006 (CRD shape, selector,
+# assertion below is a strict subset of (CRD shape, selector,
 # endpoints port/path/interval) and is what this cluster can honestly verify.
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -117,7 +116,7 @@ spec:
           helm get values keystone-operator-metrics -n keystone-system 2>&1 || true
   # ── Step 3: (deferred) Poll Prometheus API for target=Up ─────────────────
   # See DECISION comment at top of this file. No Prometheus instance is
-  # deployed in this cluster, so the target-Up polling required by REQ-006
+  # deployed in this cluster, so the target-Up polling
   # cannot be exercised here. This step is left as a documented gap.
   # ── Step 4: Uninstall the test release (cleanup) ─────────────────────────
   - try:
@@ -130,7 +129,6 @@ spec:
     - script:
         content: |
           # Verify the ServiceMonitor is gone after helm uninstall
-          # (CC-0089, REQ-006).
           for i in $(seq 1 12); do
             if ! kubectl get servicemonitor keystone-operator-metrics -n keystone-system >/dev/null 2>&1; then
               echo "PASS: ServiceMonitor correctly removed"

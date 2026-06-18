@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify python-base container image meets requirements (CC-0006 REQ-001, REQ-009)
+# Verify python-base container image meets requirements
 # Usage: bash tests/container-images/verify_python_base.sh [image_name]
 # Default image: c5c3/python-base:3.12-noble
 # Requires: Docker daemon running

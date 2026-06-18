@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for the Tempest retry helpers (CC-0035).
+"""Unit tests for the Tempest retry helpers.
 
 Covers hack/tempest/extract-failed.py end-to-end and
 hack/tempest/merge-retry-junit.py via its importable rewrite_junit() entry

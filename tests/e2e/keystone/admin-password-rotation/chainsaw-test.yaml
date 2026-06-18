@@ -2,18 +2,18 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for Keystone admin-password rotation (CC-0108).
-# Verifies (REQ-009, REQ-004, REQ-012):
+# Chainsaw E2E test for Keystone admin-password rotation.
+# Verifies
 #   - A Ready Keystone re-bootstraps when its admin-password Secret changes: the
 #     operator deletes the stale bootstrap Job (whose
 #     forge.c5c3.io/admin-password-hash no longer matches the Secret) and
 #     recreates one carrying the new SHA-256 digest, then BootstrapReady cuts
-#     back to True (REQ-009).
+#     back to True.
 #   - After cutover the OLD password is rejected (401) and the NEW password is
 #     accepted (201) — keystone-manage bootstrap updated the admin credential
-#     (REQ-012).
+#    .
 #   - API pod UIDs are unchanged across the rotation: re-bootstrap is a Job
-#     re-run, not a Deployment rollout (REQ-004).
+#     re-run, not a Deployment rollout.
 #
 # The admin password is rotated the production-faithful way: by writing a new
 # value to the dedicated OpenBao path `bootstrap/keystone-adminpw` (the source of
@@ -126,7 +126,7 @@ spec:
 
           # Record pre-rotation state. The pod-template-hash label is set only on
           # Deployment-owned pods by the ReplicaSet controller, so the selector
-          # excludes any Job-managed pods that share commonLabels (CC-0074).
+          # excludes any Job-managed pods that share commonLabels.
           BEFORE_UIDS=$(kubectl get pods -n "$NS" -l "$SELECTOR" \
             -o jsonpath='{range .items[*]}{.metadata.uid}{"\n"}{end}' | sort)
 
@@ -144,7 +144,7 @@ spec:
           # bootstrap completion the completed Job can be GC'd and then recreated
           # by a later reconcile, leaving a short window where it is momentarily
           # absent. A bounded wait absorbs that window without masking a genuine
-          # "never created" failure (CC-0108).
+          # "never created" failure.
           OLD_JOB_UID=""
           for _ in $(seq 1 30); do
             OLD_JOB_UID=$(kubectl get job "$BOOTSTRAP_JOB" -n "$NS" \
@@ -309,7 +309,7 @@ spec:
           echo "OK: new password accepted after rotation -> 201"
 
           # API pod UIDs must be unchanged: re-bootstrap is a Job re-run, not a
-          # Deployment rollout (CC-0108, REQ-004).
+          # Deployment rollout.
           AFTER_UIDS=$(kubectl get pods -n "$NS" -l "$SELECTOR" \
             -o jsonpath='{range .items[*]}{.metadata.uid}{"\n"}{end}' | sort)
           if [ "$BEFORE_UIDS" != "$AFTER_UIDS" ]; then

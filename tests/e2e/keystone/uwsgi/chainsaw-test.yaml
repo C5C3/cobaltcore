@@ -2,13 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for spec.uwsgi propagation to Deployment command (CC-0040).
+# Chainsaw E2E test for spec.uwsgi propagation to Deployment command.
 # Validates that:
 #   - A Keystone CR without explicit spec.uwsgi gets default uWSGI command
 #     (processes=2, threads=1, --http-keepalive) propagated to the Deployment
 #   - Patching spec.uwsgi updates the Deployment container command
 #
-# REQ-007 (CC-0040)
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:

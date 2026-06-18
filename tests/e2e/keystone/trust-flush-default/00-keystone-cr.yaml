@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Keystone CR fixture for the trust-flush-default E2E test (CC-0096, REQ-007).
+# Keystone CR fixture for the trust-flush-default E2E test.
 # Mirrors tests/e2e/keystone/trust-flush/00-keystone-cr.yaml but OMITS the
 # `trustFlush:` block entirely so the defaulting webhook materializes
 # spec.trustFlush = {schedule: "0 * * * *", suspend: false}. The CR uses a

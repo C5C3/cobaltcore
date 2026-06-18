@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Patch to unset spec.gateway on the Keystone CR (CC-0065, REQ-002).
+# Patch to unset spec.gateway on the Keystone CR.
 # Chainsaw merge-patches with this manifest, clearing the gateway field so
 # the operator deletes the HTTPRoute and sets HTTPRouteReady with reason
 # HTTPRouteNotRequired.

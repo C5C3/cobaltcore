@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# REQ-002 (CC-0094): Keystone CR that sets BOTH spec.cache.clusterRef AND
+# Keystone CR that sets BOTH spec.cache.clusterRef AND
 # a non-empty spec.cache.servers list. Mutual-exclusivity is enforced by
 # the CEL XValidation rule on KeystoneSpec.Cache (keystone_types.go) and
 # by the validating webhook (keystone_webhook.go). Admission must reject

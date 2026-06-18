@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Keystone CR fixture for the database-tls E2E test (CC-0106, REQ-011).
+# Keystone CR fixture for the database-tls E2E test.
 # Managed mode: database via clusterRef to the openstack-db MariaDB Galera
 # cluster, cache via clusterRef to openstack-memcached. The spec.database.tls
 # block exercises the full TLS/mTLS path:

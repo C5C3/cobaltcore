@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for happy-path Keystone deployment (CC-0016).
+# Chainsaw E2E test for happy-path Keystone deployment.
 # Validates the full reconciliation cycle in managed mode:
 #   - All 5 sub-conditions progress to True with expected reasons
 #   - Aggregate Ready=True with reason AllReady
@@ -11,7 +11,6 @@
 #   - ConfigMap with keystone-basic-config- prefix exists
 #   - Keystone API at /v3 is accessible via curl
 #
-# REQ-001, REQ-002, REQ-003, REQ-012, REQ-013 (CC-0016)
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -165,8 +164,8 @@ spec:
           metadata:
             name: keystone-basic-fernet-keys-backup
             namespace: openstack
-  # ── Step 5: Assert OpenBao PushSecret sync (CC-0083) ───────────────────
-  # CC-0083: assert both PushSecrets successfully synced to OpenBao. Catches 403
+  # ── Step 5: Assert OpenBao PushSecret sync ───────────────────
+  # assert both PushSecrets successfully synced to OpenBao. Catches 403
   # regressions from the ESO token missing write capability on the Keystone KV
   # paths. Condition type "Ready" is defined by external-secrets.io/v1alpha1
   # PushSecretConditionType (pushsecret_types.go:213). Consolidating the fernet
@@ -201,7 +200,7 @@ spec:
           kubectl -n openstack describe pushsecret keystone-basic-fernet-keys-backup keystone-basic-credential-keys-backup 2>&1 || true
           echo "=== external-secrets controller logs (last 200 lines) ==="
           kubectl -n external-secrets logs -l app.kubernetes.io/name=external-secrets --tail=200 2>&1 || true
-          # CC-0083: OpenBao's audit/server log records the denied KV path and
+          # OpenBao's audit/server log records the denied KV path and
           # the bound policy on a 403, which the ESO controller log does not —
           # dumping both lets a single CI run identify missing write capability
           # vs. a mis-targeted path without a rerun.

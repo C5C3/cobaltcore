@@ -46,9 +46,9 @@ access_line="$( { grep -n '^## Access Keystone from your local machine$' "$QUICK
 fallback_line="$( { grep -n '^### Fallback — ' "$QUICK_START" || true; } | head -n1 | cut -d: -f1)"
 accept_line="$( { grep -n '^### Accept the self-signed certificate$' "$QUICK_START" || true; } | head -n1 | cut -d: -f1)"
 
-# --- Test 1: primary section heading exists (CC-0088, REQ-007) ---
+# --- Test 1: primary section heading exists ---
 test_primary_section_heading() {
-  echo "Test: '## Access Keystone from your local machine' heading exists (CC-0088, REQ-007)"
+  echo "Test: '## Access Keystone from your local machine' heading exists"
   if [[ -n "$access_line" ]]; then
     echo "  PASS: found at line $access_line"
     PASS=$((PASS + 1))
@@ -58,9 +58,9 @@ test_primary_section_heading() {
   fi
 }
 
-# --- Test 2: no `kubectl port-forward svc/keystone` before Fallback (CC-0088, REQ-007) ---
+# --- Test 2: no `kubectl port-forward svc/keystone` before Fallback ---
 test_no_portforward_before_fallback() {
-  echo "Test: no 'kubectl port-forward svc/keystone' appears in the primary section (CC-0088, REQ-007)"
+  echo "Test: no 'kubectl port-forward svc/keystone' appears in the primary section"
 
   if [[ -z "$access_line" || -z "$fallback_line" ]]; then
     echo "  FAIL: missing anchor heading(s); cannot perform range check"
@@ -87,9 +87,9 @@ test_no_portforward_before_fallback() {
   fi
 }
 
-# --- Test 3: nip.io explainer sits inside the primary section (CC-0088, REQ-007) ---
+# --- Test 3: nip.io explainer sits inside the primary section ---
 test_nip_io_explainer_present() {
-  echo "Test: nip.io explainer paragraph appears inside the primary section (CC-0088, REQ-007)"
+  echo "Test: nip.io explainer paragraph appears inside the primary section"
 
   if [[ -z "$access_line" || -z "$fallback_line" ]]; then
     echo "  FAIL: missing anchor heading(s); cannot perform range check"
@@ -109,9 +109,9 @@ test_nip_io_explainer_present() {
   fi
 }
 
-# --- Test 4: `### Accept the self-signed certificate` subsection exists (CC-0088, REQ-007) ---
+# --- Test 4: `### Accept the self-signed certificate` subsection exists ---
 test_accept_self_signed_subsection() {
-  echo "Test: '### Accept the self-signed certificate' subsection exists (CC-0088, REQ-007)"
+  echo "Test: '### Accept the self-signed certificate' subsection exists"
   if [[ -n "$accept_line" ]]; then
     echo "  PASS: found at line $accept_line"
     PASS=$((PASS + 1))
@@ -121,9 +121,9 @@ test_accept_self_signed_subsection() {
   fi
 }
 
-# --- Test 5: Fallback subsection exists and contains the port-forward command (CC-0088, REQ-007) ---
+# --- Test 5: Fallback subsection exists and contains the port-forward command ---
 test_fallback_contains_portforward() {
-  echo "Test: Fallback subsection contains kubectl port-forward svc/keystone (CC-0088, REQ-007)"
+  echo "Test: Fallback subsection contains kubectl port-forward svc/keystone"
 
   if [[ -z "$fallback_line" ]]; then
     echo "  FAIL: Fallback heading not found"

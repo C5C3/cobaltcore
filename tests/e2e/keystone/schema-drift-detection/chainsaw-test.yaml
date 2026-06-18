@@ -2,12 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for schema drift detection (CC-0064).
+# Chainsaw E2E test for schema drift detection.
 # Validates that after a successful deployment:
 #   - DatabaseReady=True with message containing "revision verified"
 #   - The schema-check Job exists and completes successfully
 #
-# REQ-003, REQ-004 (CC-0064)
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:

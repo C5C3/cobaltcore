@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Brownfield MariaDB Database/User/Grant pre-creation for the PSS-restricted
-# E2E test (CC-0104, REQ-002, REQ-003, REQ-008).
+# E2E test.
 #
 # The Keystone CR lives in the labelled `keystone-pss-restricted-test`
 # namespace, but `Database.ClusterRef` / `Cache.ClusterRef` are
@@ -23,11 +23,11 @@
 # user with the same password value (no race). `cleanupPolicy: Skip`
 # keeps the user alive when this test's User CR is deleted, so a sibling
 # test still managing the same user (e.g. brownfield-database) is not
-# stranded mid-flight (REQ-008).
+# stranded mid-flight.
 #
 # All resource names are prefixed `keystone-pss-restricted-` and the
 # database name is `keystone_pss_restricted` so this fixture cannot collide
-# with sibling tests under `parallel: 4` (REQ-008). The Grant scopes
+# with sibling tests under `parallel: 4`. The Grant scopes
 # `keystone` user's privileges to the test-only `keystone_pss_restricted`
 # database, isolating PSS test data from other brownfield-mode tests that
 # share the same canonical user.

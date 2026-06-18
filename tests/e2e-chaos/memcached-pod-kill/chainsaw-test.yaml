@@ -2,12 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw chaos E2E test for Memcached pod kill (CC-0047).
+# Chainsaw chaos E2E test for Memcached pod kill.
 # Verifies the Keystone operator maintains Ready=True (no condition
 # regression) when a Memcached pod is killed, confirming that cache
 # failures are treated as performance degradation only.
 #
-# SC-CHAOS-002, REQ-005, REQ-008, REQ-009 (CC-0047)
+# SC-CHAOS-002,
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -46,12 +46,12 @@ spec:
   # on individual Pods. kubectl wait resolves the label selector once at query
   # time and watches the specific Pod object — when Chaos Mesh deletes the Pod,
   # the watch errors with NotFound instead of re-resolving onto the replacement
-  # Pod (CC-0076, issue #214). Deployment-level polling is resilient to Pod
+  # Pod (issue #214). Deployment-level polling is resilient to Pod
   # replacement, following the operator-pod-crash and api-pod-kill-pdb pattern.
   - try:
     - script:
         # Timeout budget: Phase 1 (15×2s=30s) + Phase 2 (45×2s=90s) = 120s
-        # worst case. 150s gives 30s margin (CC-0076, review #1).
+        # worst case. 150s gives 30s margin (review #1).
         timeout: 150s
         content: |
           # NOTE: set -euo pipefail is intentionally omitted. The polling loop
@@ -60,7 +60,7 @@ spec:
           # is checked explicitly rather than relying on exit codes.
 
           # Read desired replica count from Deployment spec so the test remains
-          # valid if the memcached replica count changes (CC-0076, review #1).
+          # valid if the memcached replica count changes (review #1).
           DESIRED=$(kubectl get deployment openstack-memcached -n $NAMESPACE -o jsonpath='{.spec.replicas}')
           if [ -z "$DESIRED" ] || [ "$DESIRED" -lt 1 ]; then
             echo "ERROR: could not determine desired replica count from openstack-memcached Deployment"
@@ -70,7 +70,7 @@ spec:
 
           # Phase 1: poll until readyReplicas drops below DESIRED (chaos took effect).
           # 15 iterations × 2s = 30s max. Pod kill with gracePeriod=0 is near-instant,
-          # so 30s is generous (CC-0076, review #1).
+          # so 30s is generous (review #1).
           for i in $(seq 1 15); do
             READY=$(kubectl get deployment openstack-memcached -n $NAMESPACE -o jsonpath='{.status.readyReplicas}')
             if [ "${READY:-0}" -lt "$DESIRED" ]; then
@@ -85,7 +85,7 @@ spec:
           echo "Pod kill confirmed: readyReplicas=${READY:-0}"
 
           # Phase 2: poll until readyReplicas returns to DESIRED (memcached recovered).
-          # 45 iterations × 2s = 90s max (CC-0076, review #1).
+          # 45 iterations × 2s = 90s max (review #1).
           for i in $(seq 1 45); do
             READY=$(kubectl get deployment openstack-memcached -n $NAMESPACE -o jsonpath='{.status.readyReplicas}')
             if [ "${READY:-0}" -eq "$DESIRED" ]; then

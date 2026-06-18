@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Keystone CR fixture for the uwsgi E2E test (CC-0040).
+# Keystone CR fixture for the uwsgi E2E test.
 # No explicit spec.uwsgi — the reconciler uses hardcoded defaults
 # (processes=2, threads=1, httpKeepAlive=true).
 apiVersion: keystone.openstack.c5c3.io/v1alpha1

@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Verify the `make e2e-chaos` recipe gates execution behind a chaos-mesh
-# namespace preflight (CC-0097, REQ-007). Chaos Mesh is now opt-in in the kind
+# namespace preflight. Chaos Mesh is now opt-in in the kind
 # Quick Start, so invoking the chaos suite without the namespace must
 # fast-fail with a clear remediation message instead of letting chainsaw
 # attempt the suite against a cluster that lacks the dependency.
@@ -51,7 +51,7 @@ write_stubs() {
 
   cat >"$dir/kubectl" <<STUB
 #!/bin/bash
-# Test stub (CC-0097): kubectl dispatcher tightened to the exact verbs the
+# Test stub kubectl dispatcher tightened to the exact verbs the
 # Makefile recipe under test invokes (\`kubectl version\` and
 # \`kubectl get ns chaos-mesh\`). Any other call exits non-zero so a
 # future kubectl call introduced by the recipe cannot accidentally pass
@@ -69,7 +69,7 @@ STUB
 
   cat >"$dir/chainsaw" <<STUB
 #!/bin/bash
-# Test stub (CC-0097): record invocation so the test can assert whether the
+# Test stub record invocation so the test can assert whether the
 # Makefile recipe reached the chainsaw step after the preflight.
 touch "${dir}/CHAINSAW_INVOKED"
 exit 0
@@ -81,8 +81,7 @@ STUB
 # Runs `make e2e-chaos` against the project Makefile with PATH limited to
 # <stub_dir> plus /usr/bin and /bin so make itself, plus core utilities the
 # recipe uses (echo), still resolve. Captures stdout and stderr to separate
-# files so callers can assert per-stream contents (REQ-007 specifies the
-# remediation message must land on stderr). Returns the make exit code.
+# files so callers can assert per-stream contents (specifies the remediation message must land on stderr). Returns the make exit code.
 run_make_e2e_chaos() {
   local stub_dir="$1" stdout_file="$2" stderr_file="$3"
   (
@@ -94,10 +93,10 @@ run_make_e2e_chaos() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 1: chaos-mesh namespace ABSENT -> fast-fail, no chainsaw (REQ-007)
+# Test 1: chaos-mesh namespace ABSENT -> fast-fail, no chainsaw
 # ---------------------------------------------------------------------------
 test_fast_fail_when_namespace_absent() {
-  echo "Test: e2e-chaos fast-fails when chaos-mesh namespace is absent (CC-0097, REQ-007)"
+  echo "Test: e2e-chaos fast-fails when chaos-mesh namespace is absent"
 
   local tmp
   tmp="$(mktemp -d)"
@@ -118,7 +117,7 @@ test_fast_fail_when_namespace_absent() {
     "$stderr" "WITH_CHAOS_MESH=true make deploy-infra"
   assert_contains "remediation message on stderr states chaos-mesh is not installed" \
     "$stderr" "chaos-mesh is not installed"
-  assert_not_contains "remediation message does NOT land on stdout (REQ-007 stderr contract)" \
+  assert_not_contains "remediation message does NOT land on stdout (stderr contract)" \
     "$stdout" "chaos-mesh is not installed"
 
   if [ -e "$tmp/CHAINSAW_INVOKED" ]; then
@@ -131,10 +130,10 @@ test_fast_fail_when_namespace_absent() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 2: chaos-mesh namespace PRESENT -> chainsaw runs (REQ-007)
+# Test 2: chaos-mesh namespace PRESENT -> chainsaw runs
 # ---------------------------------------------------------------------------
 test_happy_path_when_namespace_present() {
-  echo "Test: e2e-chaos invokes chainsaw when chaos-mesh namespace present (CC-0097, REQ-007)"
+  echo "Test: e2e-chaos invokes chainsaw when chaos-mesh namespace present"
 
   local tmp
   tmp="$(mktemp -d)"
@@ -167,7 +166,7 @@ test_happy_path_when_namespace_present() {
 
 # ---------------------------------------------------------------------------
 # Test 3: kubectl cannot reach the cluster -> distinct fast-fail message,
-# namespace probe AND chainsaw are short-circuited (CC-0097, REQ-007)
+# namespace probe AND chainsaw are short-circuited
 #
 # Pins the split-failure-mode behaviour introduced for the external review
 # (berendt I-002): the `kubectl version` probe must run first, emit its own
@@ -178,7 +177,7 @@ test_happy_path_when_namespace_present() {
 # fail.
 # ---------------------------------------------------------------------------
 test_fast_fail_when_kubectl_unreachable() {
-  echo "Test: e2e-chaos fast-fails with cluster-unreachable message when kubectl version exits non-zero (CC-0097, REQ-007)"
+  echo "Test: e2e-chaos fast-fails with cluster-unreachable message when kubectl version exits non-zero"
 
   local tmp
   tmp="$(mktemp -d)"

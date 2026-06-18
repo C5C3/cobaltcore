@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Policy source ConfigMap for the policy-validation E2E test (CC-0058).
+# Policy source ConfigMap for the policy-validation E2E test.
 # Contains valid oslo.policy rules referenced by the Keystone CR's
 # policyOverrides.configMapRef.
 apiVersion: v1

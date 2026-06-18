@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify docs/reference/infrastructure-manifests.md contracts for CC-0097:
+# Verify docs/reference/infrastructure-manifests.md contracts:
 #   - The Namespaces table no longer lists chaos-mesh as an always-on
 #     production namespace.
 #   - The HelmRelease–HelmRepository cross-reference table no longer lists
@@ -13,7 +13,7 @@
 #     `deploy/kind/chaos-mesh/kustomization.yaml`.
 #   - The kind-only subsection documents the WITH_CHAOS_MESH opt-in flag.
 #
-# (CC-0097, REQ-006)
+#
 #
 # Usage: bash tests/unit/docs/infrastructure_manifests_chaos_kind_only_test.sh
 
@@ -67,9 +67,9 @@ extract_kind_overlay_section() {
   ' "$DOC"
 }
 
-# --- Test 1: Namespaces table has no chaos-mesh row (CC-0097, REQ-006) ---
+# --- Test 1: Namespaces table has no chaos-mesh row ---
 test_namespaces_table_has_no_chaos_mesh_row() {
-  echo "Test: Namespaces table no longer lists chaos-mesh as an always-on namespace (CC-0097, REQ-006)"
+  echo "Test: Namespaces table no longer lists chaos-mesh as an always-on namespace"
 
   local namespaces_section
   namespaces_section="$(extract_namespaces_section)"
@@ -92,9 +92,9 @@ test_namespaces_table_has_no_chaos_mesh_row() {
   fi
 }
 
-# --- Test 2: Cross-reference table has no chaos-mesh row (CC-0097, REQ-006) ---
+# --- Test 2: Cross-reference table has no chaos-mesh row ---
 test_cross_reference_table_has_no_chaos_mesh_row() {
-  echo "Test: HelmRelease–HelmRepository cross-reference table has no chaos-mesh row (CC-0097, REQ-006)"
+  echo "Test: HelmRelease–HelmRepository cross-reference table has no chaos-mesh row"
 
   local xref_section
   xref_section="$(extract_cross_reference_section)"
@@ -116,9 +116,9 @@ test_cross_reference_table_has_no_chaos_mesh_row() {
   fi
 }
 
-# --- Test 3: Kind-only opt-in subsection exists (CC-0097, REQ-006) ---
+# --- Test 3: Kind-only opt-in subsection exists ---
 test_kind_only_subsection_present() {
-  echo "Test: '### Chaos Mesh (kind-only opt-in)' subsection exists in 'Kind Overlay Demo Addons' (CC-0097, REQ-006)"
+  echo "Test: '### Chaos Mesh (kind-only opt-in)' subsection exists in 'Kind Overlay Demo Addons'"
 
   local kind_section
   kind_section="$(extract_kind_overlay_section)"
@@ -138,9 +138,9 @@ test_kind_only_subsection_present() {
   fi
 }
 
-# --- Test 4: Subsection points at deploy/kind/chaos-mesh/kustomization.yaml (CC-0097, REQ-006) ---
+# --- Test 4: Subsection points at deploy/kind/chaos-mesh/kustomization.yaml ---
 test_kind_only_subsection_points_at_overlay_file() {
-  echo "Test: Kind-only subsection 'File:' line points at deploy/kind/chaos-mesh/kustomization.yaml (CC-0097, REQ-006)"
+  echo "Test: Kind-only subsection 'File:' line points at deploy/kind/chaos-mesh/kustomization.yaml"
 
   local subsection
   subsection="$(awk '
@@ -162,7 +162,7 @@ test_kind_only_subsection_points_at_overlay_file() {
     "deploy/kind/chaos-mesh/kustomization.yaml"
 
   # Also check that the obsolete deploy/flux-system/releases/chaos-mesh.yaml
-  # path (used pre-CC-0097) is NOT cited as the primary file in the
+  # path (used pre-) is NOT cited as the primary file in the
   # subsection's "File:" line. The on-disk file is reused from the kind
   # overlay, which the subsection prose can mention, but the **File:**
   # marker should point at the new overlay-root kustomization.
@@ -175,9 +175,9 @@ test_kind_only_subsection_points_at_overlay_file() {
   fi
 }
 
-# --- Test 5: Subsection documents WITH_CHAOS_MESH opt-in flag (CC-0097, REQ-006) ---
+# --- Test 5: Subsection documents WITH_CHAOS_MESH opt-in flag ---
 test_kind_only_subsection_documents_optin_flag() {
-  echo "Test: Kind-only subsection documents 'WITH_CHAOS_MESH=true make deploy-infra' (CC-0097, REQ-006)"
+  echo "Test: Kind-only subsection documents 'WITH_CHAOS_MESH=true make deploy-infra'"
 
   assert_file_contains \
     "infrastructure-manifests.md cites WITH_CHAOS_MESH=true make deploy-infra" \

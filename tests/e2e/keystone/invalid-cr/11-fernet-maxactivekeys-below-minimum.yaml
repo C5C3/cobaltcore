@@ -2,14 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# REQ-010 (CC-0094): Keystone CR with spec.fernet.maxActiveKeys: 2 — below
+# Keystone CR with spec.fernet.maxActiveKeys: 2 — below
 # the documented minimum. Enforced by the +kubebuilder:validation:Minimum=3
 # marker on FernetSpec.MaxActiveKeys (keystone_types.go) and by
 # defense-in-depth in the validating webhook (keystone_webhook.go).
 # Admission must reject this CR with an $error referencing the substring
 # "maxActiveKeys". Either layer's message ("should be greater than or
 # equal to 3" from CRD schema, "maxActiveKeys must be at least 3" from
-# webhook) satisfies the assertion — see CC-0094 plan on layer-order
+# webhook) satisfies the assertion — see plan on layer-order
 # tolerance.
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
 kind: Keystone

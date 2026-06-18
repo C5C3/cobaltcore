@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Verify renovate.json has the source-refs.yaml customManager + packageRules
-# described by CC-0017 (OpenStack release tag tracking):
+# described by (OpenStack release tag tracking):
 #   - a customManagers entry targeting releases/<release>/source-refs.yaml
 #     whose matchStrings regex extracts (depName, x.y.z) from every entry
 #   - a paired packageRule set that disables majors and automerges minor/patch
@@ -32,7 +32,7 @@ RENOVATE_FILE="$PROJECT_ROOT/renovate.json"
 SOURCE_REFS_FILE="$PROJECT_ROOT/releases/2026.1/source-refs.yaml"
 
 test_renovate_config_valid() {
-  echo "Test: renovate.json validates via renovate-config-validator (CC-0017)"
+  echo "Test: renovate.json validates via renovate-config-validator"
 
   if ! command -v npx >/dev/null 2>&1; then
     echo "  SKIP: npx not installed (1 check skipped)"
@@ -55,7 +55,7 @@ test_renovate_config_valid() {
 }
 
 test_custom_manager_regex_captures_depname_and_version() {
-  echo "Test: customManagers regex extracts (depName, x.y.z) from source-refs.yaml (CC-0017)"
+  echo "Test: customManagers regex extracts (depName, x.y.z) from source-refs.yaml"
 
   if ! command -v jq >/dev/null 2>&1; then
     echo "  SKIP: jq not installed (5 checks skipped)"
@@ -121,7 +121,7 @@ test_custom_manager_regex_captures_depname_and_version() {
 }
 
 test_package_rules_disable_majors_and_group() {
-  echo "Test: packageRules disable major source-refs bumps, automerge minor/patch (CC-0017)"
+  echo "Test: packageRules disable major source-refs bumps, automerge minor/patch"
 
   if ! command -v jq >/dev/null 2>&1; then
     echo "  SKIP: jq not installed (5 checks skipped)"

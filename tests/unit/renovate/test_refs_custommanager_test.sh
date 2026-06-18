@@ -3,8 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify renovate.json has the test-refs.yaml (PyPI) customManager described
-# by CC-0051 REQ-001:
+# Verify renovate.json has the test-refs.yaml (PyPI) customManager:
 #   - a customManagers entry targeting releases/<release>/test-refs.yaml
 #     whose matchStrings regex extracts (depName, x.y.z) per PyPI pin
 #   - datasource=pypi, versioning=pep440 (distinct from source-refs.yaml)
@@ -29,7 +28,7 @@ RENOVATE_FILE="$PROJECT_ROOT/renovate.json"
 TEST_REFS_FILE="$PROJECT_ROOT/releases/2026.1/test-refs.yaml"
 
 test_custom_manager_uses_pypi_datasource() {
-  echo "Test: test-refs.yaml customManager uses datasource=pypi, versioning=pep440 (CC-0051)"
+  echo "Test: test-refs.yaml customManager uses datasource=pypi, versioning=pep440"
 
   if ! command -v jq >/dev/null 2>&1; then
     echo "  SKIP: jq not installed (3 checks skipped)"
@@ -60,7 +59,7 @@ test_custom_manager_uses_pypi_datasource() {
 }
 
 test_regex_captures_tempest_and_plugin() {
-  echo "Test: test-refs.yaml regex captures tempest and keystone-tempest-plugin (CC-0051)"
+  echo "Test: test-refs.yaml regex captures tempest and keystone-tempest-plugin"
 
   if ! command -v jq >/dev/null 2>&1; then
     echo "  SKIP: jq not installed (2 checks skipped)"
@@ -101,7 +100,7 @@ test_regex_captures_tempest_and_plugin() {
 }
 
 test_package_rules_for_test_refs() {
-  echo "Test: packageRules disable major test-refs bumps, automerge minor/patch (CC-0051)"
+  echo "Test: packageRules disable major test-refs bumps, automerge minor/patch"
 
   if ! command -v jq >/dev/null 2>&1; then
     echo "  SKIP: jq not installed (5 checks skipped)"

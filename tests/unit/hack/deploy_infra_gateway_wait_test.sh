@@ -6,7 +6,7 @@
 # Verify hack/deploy-infra.sh `wait_for_gateway_programmed` polls the Gateway
 # object until its `.status.conditions[type=Programmed].status == True` and
 # surfaces diagnostics (`kubectl describe` + envoy-gateway-system pod logs)
-# on timeout (CC-0088, REQ-005).
+# on timeout.
 #
 # Follows the stub-kubectl + source-and-invoke pattern established by
 # deploy_infra_reconcile_sources_test.sh.
@@ -105,10 +105,10 @@ run_wait() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 1: happy path — Programmed=True on first poll returns 0 (CC-0088, REQ-005)
+# Test 1: happy path — Programmed=True on first poll returns 0
 # ---------------------------------------------------------------------------
 test_happy_path_returns_zero() {
-  echo "Test: wait_for_gateway_programmed returns 0 when Programmed=True (CC-0088, REQ-005)"
+  echo "Test: wait_for_gateway_programmed returns 0 when Programmed=True"
 
   local tmp
   tmp="$(mktemp -d)"
@@ -140,10 +140,10 @@ test_happy_path_returns_zero() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 2: timeout path — surfaces diagnostics and exits non-zero (CC-0088, REQ-005)
+# Test 2: timeout path — surfaces diagnostics and exits non-zero
 # ---------------------------------------------------------------------------
 test_timeout_dumps_diagnostics() {
-  echo "Test: wait_for_gateway_programmed dumps describe + logs and exits non-zero on timeout (CC-0088, REQ-005)"
+  echo "Test: wait_for_gateway_programmed dumps describe + logs and exits non-zero on timeout"
 
   local tmp
   tmp="$(mktemp -d)"
@@ -170,7 +170,7 @@ test_timeout_dumps_diagnostics() {
     "Gateway description:"
   # Match the header prefix rather than the exact trailing text so
   # future tweaks to the diagnostic window (e.g. `--since=10m, tail
-  # 200`) don't require retuning this assertion (CC-0088).
+  # 200`) don't require retuning this assertion.
   assert_contains "envoy-gateway-system pod log header surfaced" "$output" \
     "envoy-gateway-system pod logs"
 
@@ -190,7 +190,7 @@ test_timeout_dumps_diagnostics() {
     "$KUBECTL_LOGS_LOG" "envoy-gateway-system"
   # The `--since=10m` filter keeps diagnostic output focused on the
   # recent failure window — verify it's wired so the log-focus fix is
-  # traceable to this test (CC-0088). Pattern omits the leading `--`
+  # traceable to this test. Pattern omits the leading `--`
   # so the shared `assert_file_contains` helper (which calls `grep -q`
   # without an `--` separator) matches the flag literally.
   assert_file_contains "logs request a --since=10m window to bound the diagnostic output" \
@@ -199,12 +199,12 @@ test_timeout_dumps_diagnostics() {
 
 # ---------------------------------------------------------------------------
 # Test 3: the script wires envoy-gateway into the Phase-3 wait list
-# and calls wait_for_gateway_programmed afterwards (CC-0088, REQ-005).
+# and calls wait_for_gateway_programmed afterwards.
 # Static-text check so this test stays independent of the stub plumbing
 # above.
 # ---------------------------------------------------------------------------
 test_main_calls_gateway_wait_after_phase_3() {
-  echo "Test: main() wires envoy-gateway into Phase 3 and invokes wait_for_gateway_programmed (CC-0088, REQ-005)"
+  echo "Test: main() wires envoy-gateway into Phase 3 and invokes wait_for_gateway_programmed"
 
   assert_file_contains "envoy-gateway appears in the Phase-3 HelmRelease wait list" \
     "$DEPLOY_INFRA_SH" "envoy-gateway"

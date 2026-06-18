@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw chaos E2E test for OpenBao pod kill (CC-0047).
+# Chainsaw chaos E2E test for OpenBao pod kill.
 # Verifies the Keystone operator detects an OpenBao outage
 # (SecretsReady=False) and recovers when OpenBao returns and
 # ESO resumes syncing ExternalSecrets.
@@ -22,7 +22,7 @@
 # side recovery (SecretsReady False -> True) without depending on automatic
 # OpenBao recovery the kind topology cannot provide.
 #
-# SC-CHAOS-003, REQ-006, REQ-007, REQ-008, REQ-009 (CC-0047)
+# SC-CHAOS-003,
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:

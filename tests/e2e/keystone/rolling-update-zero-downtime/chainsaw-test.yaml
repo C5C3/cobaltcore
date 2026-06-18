@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for zero-downtime rolling update (CC-0084).
+# Chainsaw E2E test for zero-downtime rolling update.
 #
 # Validates the full graceful-termination chain end-to-end during an image-tag
 # rolling update:
@@ -22,7 +22,6 @@
 #                                           never drops below spec.replicas
 #                                           during the rollout.
 #
-# REQ-014 (CC-0084)
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -63,7 +62,7 @@ spec:
             replicas: 3
           status:
             # Steady-state checkpoint pre-rollout: exact equality is deterministic.
-            # Restores the CC-0066 exact-match pattern (CC-0084, review #2 W-003).
+            # Restores the exact-match pattern (review #2).
             availableReplicas: 3
     catch:
     - script:
@@ -111,7 +110,7 @@ spec:
             namespace: openstack
             labels:
               app.kubernetes.io/name: keystone-rolling-update-loadgen
-              test.c5c3.io/feature: CC-0084
+              test.c5c3.io/feature:
           spec:
             backoffLimit: 0
             activeDeadlineSeconds: 180
@@ -130,7 +129,7 @@ spec:
                   args:
                   - "-c"
                   - |
-                    # CC-0084: Steady HTTP load against the Keystone Service
+                    # Steady HTTP load against the Keystone Service
                     # during an image-tag rolling update. Records any 5xx or
                     # connection-reset response as a failure.
                     import sys, time, urllib.request, urllib.error
@@ -182,7 +181,7 @@ spec:
                         f"other_err={other_err}",
                         flush=True,
                     )
-                    # REQ-014: zero 5xx, zero connection resets, and at least
+                    # zero 5xx, zero connection resets, and at least
                     # 200 requests completed (≈240 at 0.25 s interval).
                     if fail_5xx != 0 or conn_reset != 0:
                         sys.exit(1)
@@ -207,7 +206,7 @@ spec:
   # minimum. The default strategy (maxUnavailable=0, maxSurge=1) must keep
   # availableReplicas >= spec.replicas at every sampling point.
   #
-  # BUDGET NOTE (CC-0084): The 75 s sampling window is sized against the default
+  # BUDGET NOTE The 75 s sampling window is sized against the default
   # terminationGracePeriodSeconds=30 s + default preStopSleepSeconds=5 s (see
   # keystonev1alpha1.DefaultTerminationGracePeriodSeconds and
   # DefaultPreStopSleepSeconds). In practice a surge-then-drain cycle for an
@@ -228,7 +227,7 @@ spec:
           # replicas in the future. Precedent:
           # tests/e2e-chaos/memcached-pod-kill/chainsaw-test.yaml:64,
           # tests/e2e-chaos/operator-pod-kill/chainsaw-test.yaml:74
-          # (CC-0084, review #2 W-002).
+          # (review #2).
           EXPECTED_REPLICAS=$(kubectl -n openstack get deploy keystone-rolling-update \
             -o jsonpath='{.spec.replicas}')
           if [ -z "$EXPECTED_REPLICAS" ]; then
@@ -345,7 +344,7 @@ spec:
             replicas: 3
           status:
             # Steady-state checkpoint post-rollout: exact equality is deterministic.
-            # Restores the CC-0066 exact-match pattern (CC-0084, review #2 W-003).
+            # Restores the exact-match pattern (review #2).
             availableReplicas: 3
             (updatedReplicas == replicas): true
     - assert:

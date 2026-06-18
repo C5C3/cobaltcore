@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Keystone CR fixture for the Memcached pod-kill chaos test (CC-0047).
+# Keystone CR fixture for the Memcached pod-kill chaos test.
 # Uses unique name (keystone-chaos-mc) and database (keystone_chaos_mc)
 # to avoid conflicts with other test suites.
 apiVersion: keystone.openstack.c5c3.io/v1alpha1

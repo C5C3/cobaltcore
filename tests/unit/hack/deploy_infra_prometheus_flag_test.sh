@@ -6,7 +6,6 @@
 # Verify hack/deploy-infra.sh gates kube-prometheus-stack behind WITH_PROMETHEUS
 # so the kind Quick Start stays minimal by default and only installs the
 # monitoring stack (Prometheus + Grafana) when explicitly requested
-# (CC-0100, REQ-005).
 #
 # Implementation: bash + tests/lib/assertions.sh — mirrors the sibling
 # tests/unit/hack/deploy_infra_chaos_flag_test.sh pattern. The repo has zero
@@ -47,7 +46,7 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # Sources deploy-infra.sh in a subshell with the supplied env overrides and
 # echoes the resolved value of WITH_PROMETHEUS after the configuration block
 # runs. The `BASH_SOURCE[0] == ${0}` guard at the bottom of deploy-infra.sh
-# keeps main() from auto-running when the script is sourced (CC-0100).
+# keeps main() from auto-running when the script is sourced.
 resolve_with_prometheus() {
   (
     for assignment in "$@"; do
@@ -60,10 +59,10 @@ resolve_with_prometheus() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 1: WITH_PROMETHEUS defaults to false (CC-0100, REQ-005)
+# Test 1: WITH_PROMETHEUS defaults to false
 # ---------------------------------------------------------------------------
 test_default_is_false() {
-  echo "Test: WITH_PROMETHEUS defaults to false (CC-0100, REQ-005)"
+  echo "Test: WITH_PROMETHEUS defaults to false"
 
   # Unset any inherited value so we observe the script's own default.
   local resolved
@@ -72,10 +71,10 @@ test_default_is_false() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 2: explicit WITH_PROMETHEUS=true (CC-0100, REQ-005)
+# Test 2: explicit WITH_PROMETHEUS=true
 # ---------------------------------------------------------------------------
 test_explicit_true() {
-  echo "Test: WITH_PROMETHEUS=true is preserved (CC-0100, REQ-005)"
+  echo "Test: WITH_PROMETHEUS=true is preserved"
 
   local resolved
   resolved="$(resolve_with_prometheus WITH_PROMETHEUS=true)"
@@ -83,10 +82,10 @@ test_explicit_true() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 3: explicit WITH_PROMETHEUS=false (CC-0100, REQ-005)
+# Test 3: explicit WITH_PROMETHEUS=false
 # ---------------------------------------------------------------------------
 test_explicit_false() {
-  echo "Test: WITH_PROMETHEUS=false is preserved (CC-0100, REQ-005)"
+  echo "Test: WITH_PROMETHEUS=false is preserved"
 
   local resolved
   resolved="$(resolve_with_prometheus WITH_PROMETHEUS=false)"
@@ -94,13 +93,13 @@ test_explicit_false() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 4: defensive non-true value (CC-0100, REQ-005)
+# Test 4: defensive non-true value
 # A typo like WITH_PROMETHEUS=yes must NOT enable the stack; every gate uses
 # the strict `== "true"` comparison. We assert the value passes through
 # verbatim AND that all gate sites use exact-match.
 # ---------------------------------------------------------------------------
 test_non_true_value_does_not_trigger_install() {
-  echo "Test: WITH_PROMETHEUS=yes passes through but does not trigger install (CC-0100, REQ-005)"
+  echo "Test: WITH_PROMETHEUS=yes passes through but does not trigger install"
 
   local resolved
   resolved="$(resolve_with_prometheus WITH_PROMETHEUS=yes)"
@@ -117,13 +116,13 @@ test_non_true_value_does_not_trigger_install() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 5: configuration banner line (CC-0100, REQ-005)
+# Test 5: configuration banner line
 # The user-visible summary must surface the WITH_PROMETHEUS state next to
 # WITH_CHAOS_MESH so operators can spot accidental opt-ins / opt-outs at a
 # glance. The expected line shape mirrors the chaos-mesh banner exactly.
 # ---------------------------------------------------------------------------
 test_banner_includes_prometheus_line() {
-  echo "Test: configuration banner surfaces WITH_PROMETHEUS state (CC-0100, REQ-005)"
+  echo "Test: configuration banner surfaces WITH_PROMETHEUS state"
 
   assert_file_contains \
     "deploy-infra.sh banner mentions Prometheus stack" \
@@ -137,12 +136,12 @@ test_banner_includes_prometheus_line() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 6: prometheus overlay apply is conditional (CC-0100, REQ-005)
+# Test 6: prometheus overlay apply is conditional
 # The kustomize apply for deploy/kind/prometheus must live inside the
 # WITH_PROMETHEUS gate so the default Quick Start does not install it.
 # ---------------------------------------------------------------------------
 test_prometheus_kustomize_is_gated() {
-  echo "Test: prometheus kustomize apply is gated by WITH_PROMETHEUS (CC-0100, REQ-005)"
+  echo "Test: prometheus kustomize apply is gated by WITH_PROMETHEUS"
 
   # The apply line itself exists.
   assert_file_contains \
@@ -161,14 +160,14 @@ test_prometheus_kustomize_is_gated() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 7: dashboard copy is gated and precedes the apply (CC-0100, REQ-004)
+# Test 7: dashboard copy is gated and precedes the apply
 # The Grafana dashboard JSON must be copied into the overlay root before
 # kubectl apply -k renders the configMapGenerator, otherwise kustomize emits
 # 'open keystone-operator.json: no such file or directory'. Both the copy and
 # the apply must live inside the same WITH_PROMETHEUS gate.
 # ---------------------------------------------------------------------------
 test_dashboard_copy_precedes_apply() {
-  echo "Test: dashboard JSON copy is gated and precedes the prometheus apply (CC-0100, REQ-004)"
+  echo "Test: dashboard JSON copy is gated and precedes the prometheus apply"
 
   local copy_line apply_line gate_line
   copy_line="$(grep -n 'cp -f "\${REPO_ROOT}/operators/keystone/dashboards/keystone-operator.json"' "$DEPLOY_INFRA_SH" | head -1 | cut -d: -f1)"
@@ -191,14 +190,14 @@ test_dashboard_copy_precedes_apply() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 8: kube-prometheus-stack appended to helm-release wait list (CC-0100, REQ-005)
+# Test 8: kube-prometheus-stack appended to helm-release wait list
 # The Phase 3 wait list must NOT statically include kube-prometheus-stack;
 # it must be appended dynamically inside the WITH_PROMETHEUS gate, after the
 # chaos-mesh append, so the relative ordering of the seven base releases is
 # preserved.
 # ---------------------------------------------------------------------------
 test_kube_prometheus_stack_appended_dynamically() {
-  echo "Test: kube-prometheus-stack is appended dynamically to the helm-release wait list (CC-0100, REQ-005)"
+  echo "Test: kube-prometheus-stack is appended dynamically to the helm-release wait list"
 
   # The base array must NOT include kube-prometheus-stack inline.
   assert_file_not_contains \
@@ -221,13 +220,13 @@ test_kube_prometheus_stack_appended_dynamically() {
 
 # ---------------------------------------------------------------------------
 # Test 9: enable_keystone_operator_servicemonitor exists and is gated
-# (CC-0100, REQ-005)
+#
 # The helper must (a) be defined as a function in the script and (b) be
 # called from main() only when WITH_PROMETHEUS=true so the default Quick
 # Start does not poke the operator HelmRelease.
 # ---------------------------------------------------------------------------
 test_servicemonitor_helper_is_defined_and_gated() {
-  echo "Test: enable_keystone_operator_servicemonitor is defined and gated (CC-0100, REQ-005)"
+  echo "Test: enable_keystone_operator_servicemonitor is defined and gated"
 
   assert_file_contains \
     "enable_keystone_operator_servicemonitor function is defined" \
@@ -250,7 +249,7 @@ test_servicemonitor_helper_is_defined_and_gated() {
 
 # ---------------------------------------------------------------------------
 # Test 10: production-caller contract — the prometheus apply mirrors the
-# chaos-mesh contract under kubectl's embedded kustomize (CC-0100, REQ-004/REQ-005).
+# chaos-mesh contract under kubectl's embedded kustomize (/).
 #
 # kubectl apply -k uses the embedded kustomize, which does NOT expose
 # --load-restrictor (kubernetes/kubectl#948). The chaos-mesh review captured
@@ -264,7 +263,7 @@ test_servicemonitor_helper_is_defined_and_gated() {
 #       check is satisfied and the apply succeeds without any flag.
 # ---------------------------------------------------------------------------
 test_production_caller_matches_self_contained_overlay() {
-  echo "Test: production caller and overlay agree on the no-load-restrictor contract (CC-0100, REQ-004/REQ-005)"
+  echo "Test: production caller and overlay agree on the no-load-restrictor contract (/)"
 
   # (a) The apply line is the bare kubectl form — no pipe, no flag.
   local raw

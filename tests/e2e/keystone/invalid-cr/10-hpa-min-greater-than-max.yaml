@@ -2,15 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# REQ-009 (CC-0094): Keystone CR with spec.autoscaling.minReplicas greater
+# Keystone CR with spec.autoscaling.minReplicas greater
 # than spec.autoscaling.maxReplicas. The validating webhook
 # (keystone_webhook.go) rejects the cross-field combination because an HPA
 # rendered with min > max would itself be rejected by the API server.
 # Admission must reject this CR with an $error referencing
 # spec.autoscaling.minReplicas and the message "must not exceed
 # maxReplicas". A targetCPUUtilization is set so the rejection is
-# attributable solely to the min/max ordering, not the no-target rule
-# from REQ-003.
+# attributable solely to the min/max ordering, not the no-target rule.
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
 kind: Keystone
 metadata:

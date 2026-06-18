@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Keystone CR fixture for the brownfield-database E2E test (CC-0016).
+# Keystone CR fixture for the brownfield-database E2E test.
 # Uses explicit database.host (no clusterRef) to validate brownfield mode:
 # no MariaDB CRs should be created by the reconciler.
 # Points to the existing openstack-db MariaDB instance for the db-sync Job.

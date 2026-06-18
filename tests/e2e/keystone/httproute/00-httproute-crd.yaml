@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Minimal HTTPRoute CRD for the E2E test cluster (CC-0065, W-003).
+# Minimal HTTPRoute CRD for the E2E test cluster.
 #
 # The E2E kind cluster does not install a Gateway controller, so the upstream
 # sigs.k8s.io/gateway-api CRDs are not present by default. This minimal CRD

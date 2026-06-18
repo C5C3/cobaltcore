@@ -5,7 +5,7 @@
 # Minimal Keystone CR fixture for the Gateway quick-start smoke test.
 #
 # This smoke test exercises the end-to-end TLS + Gateway data-plane path
-# documented by REQ-013 of CC-0088: `curl -k https://keystone.127-0-0-1.nip.io/v3`
+# documented by of: `curl -k https://keystone.127-0-0-1.nip.io/v3`
 # must return HTTP 200 with a non-empty Keystone JSON response. That
 # requires a Keystone CR whose spec.gateway produces an HTTPRoute
 # attaching to the kind overlay's `openstack-gw` Gateway.
@@ -40,7 +40,6 @@
 # on `Certificate/keystone-nip-io-tls` so the listener's TLS Secret
 # matches the SNI presented by the client.
 #
-# Feature: CC-0088, REQ-013
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
 kind: Keystone
 metadata:
@@ -78,5 +77,5 @@ spec:
     # `RouteRuleConflict` race when both CRs reconcile in parallel (see
     # the header's "HTTPRoute path isolation" block). The smoke curl
     # only hits https://keystone.127-0-0-1.nip.io/v3, so a /v3-scoped
-    # route is functionally identical for this test (CC-0088, REQ-013).
+    # route is functionally identical for this test.
     path: /v3

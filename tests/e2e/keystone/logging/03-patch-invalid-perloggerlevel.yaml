@@ -3,8 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Negative fixture: spec.logging.perLoggerLevels carries a value outside the
-# {DEBUG, INFO, WARNING, ERROR, CRITICAL} enum (CC-0098, REQ-002 scenario
-# "Invalid per-logger level rejected"). The chainsaw test applies this patch
+# {DEBUG, INFO, WARNING, ERROR, CRITICAL} enum (scenario "Invalid per-logger level rejected"). The chainsaw test applies this patch
 # and asserts the validating webhook returns a field.Invalid error at the
 # precise field path spec.logging.perLoggerLevels[keystone.middleware] before
 # the resource is persisted.

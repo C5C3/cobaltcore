@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify the kind-only Flux Web UI overlay introduced by CC-0086:
+# Verify the kind-only Flux Web UI overlay:
 #   - deploy/kind/base/flux-web.yaml declares a ResourceSet/flux-web in
 #     flux-system that renders the flux-operator chart with the Web UI
 #     sub-chart (web.serverOnly=true, installCRDs=false, fullnameOverride).
@@ -12,7 +12,6 @@
 #     entry point for the Web UI demo addon.
 #   - deploy/flux-system/ (production overlay) is NOT affected: no
 #     ResourceSet is rendered and the flux-web string never appears.
-# Feature: CC-0086, REQ-001, REQ-002
 # Usage: bash tests/unit/deploy/kind_base_flux_web_test.sh
 
 set -euo pipefail
@@ -35,9 +34,9 @@ FLUX_SYSTEM_KUSTOMIZATION="$FLUX_SYSTEM_DIR/kustomization.yaml"
 FLUX_SYSTEM_FLUXINSTANCE="$FLUX_SYSTEM_DIR/fluxinstance.yaml"
 DEPLOY_INFRA_SH="$PROJECT_ROOT/hack/deploy-infra.sh"
 
-# --- Test 1: flux-web.yaml has SPDX header + Feature marker (CC-0086, REQ-001) ---
+# --- Test 1: flux-web.yaml has SPDX header + Feature marker ---
 test_spdx_header() {
-  echo "Test: deploy/kind/base/flux-web.yaml has SPDX header and Feature marker (CC-0086, REQ-001)"
+  echo "Test: deploy/kind/base/flux-web.yaml has SPDX header and Feature marker"
 
   if [[ ! -f "$FLUX_WEB_FILE" ]]; then
     echo "  FAIL: $FLUX_WEB_FILE does not exist"
@@ -57,16 +56,12 @@ test_spdx_header() {
   assert_eq "line 3 is SPDX-License-Identifier Apache-2.0" \
     "# SPDX-License-Identifier: Apache-2.0" \
     "$line3"
-
-  assert_file_contains "flux-web.yaml cites Feature: CC-0086, REQ-001" \
-    "$FLUX_WEB_FILE" \
-    "Feature: CC-0086, REQ-001"
 }
 
 # --- Test 2: kustomize build of deploy/kind/base/ emits a ResourceSet with
-#             the required nested OCIRepository and HelmRelease (CC-0086, REQ-001) ---
+#             the required nested OCIRepository and HelmRelease ---
 test_kustomize_build_emits_resourceset() {
-  echo "Test: kustomize build deploy/kind/base/ emits ResourceSet/flux-web with required nested resources (CC-0086, REQ-001)"
+  echo "Test: kustomize build deploy/kind/base/ emits ResourceSet/flux-web with required nested resources"
 
   if ! command -v kustomize >/dev/null 2>&1; then
     echo "  SKIP: kustomize not installed (7 checks skipped)"
@@ -136,9 +131,9 @@ test_kustomize_build_emits_resourceset() {
 }
 
 # --- Test 3: chart version pin is a SemVer range locked to the minor
-#             track shipped by hack/deploy-infra.sh (CC-0086, REQ-001) ---
+#             track shipped by hack/deploy-infra.sh ---
 test_chart_version_pin_is_semver_range() {
-  echo "Test: ResourceSet spec.inputs[0].version is 0.52.x and matches FLUX_OPERATOR_VERSION minor track (CC-0086, REQ-001)"
+  echo "Test: ResourceSet spec.inputs[0].version is 0.52.x and matches FLUX_OPERATOR_VERSION minor track"
 
   if [[ ! -f "$FLUX_WEB_FILE" ]]; then
     echo "  FAIL: $FLUX_WEB_FILE does not exist"
@@ -160,9 +155,9 @@ test_chart_version_pin_is_semver_range() {
     'FLUX_OPERATOR_VERSION="v0.52.0"'
 }
 
-# --- Test 4: kind kustomization lists flux-web.yaml after headlamp.yaml (CC-0086, REQ-002) ---
+# --- Test 4: kind kustomization lists flux-web.yaml after headlamp.yaml ---
 test_kustomization_lists_flux_web() {
-  echo "Test: deploy/kind/base/kustomization.yaml resources list contains flux-web.yaml after headlamp.yaml (CC-0086, REQ-002)"
+  echo "Test: deploy/kind/base/kustomization.yaml resources list contains flux-web.yaml after headlamp.yaml"
 
   if [[ ! -f "$KIND_KUSTOMIZATION" ]]; then
     echo "  FAIL: $KIND_KUSTOMIZATION does not exist"
@@ -199,9 +194,9 @@ test_kustomization_lists_flux_web() {
   fi
 }
 
-# --- Test 5: production overlay has NO flux-web / ResourceSet (CC-0086, REQ-002) ---
+# --- Test 5: production overlay has NO flux-web / ResourceSet ---
 test_production_overlay_has_no_flux_web() {
-  echo "Test: kustomize build deploy/flux-system/ renders no ResourceSet and no flux-web string (CC-0086, REQ-002)"
+  echo "Test: kustomize build deploy/flux-system/ renders no ResourceSet and no flux-web string"
 
   if ! command -v kustomize >/dev/null 2>&1; then
     echo "  SKIP: kustomize not installed (2 checks skipped)"
@@ -226,9 +221,9 @@ test_production_overlay_has_no_flux_web() {
 }
 
 # --- Test 6: production kustomization + fluxinstance are unchanged vs. origin/main
-#             (CC-0086, REQ-002) ---
+#             ---
 test_production_kustomization_unchanged() {
-  echo "Test: deploy/flux-system/{kustomization.yaml,fluxinstance.yaml} have no diff vs. origin/main (CC-0086, REQ-002)"
+  echo "Test: deploy/flux-system/{kustomization.yaml,fluxinstance.yaml} have no diff vs. origin/main"
 
   if ! git -C "$PROJECT_ROOT" rev-parse --verify origin/main >/dev/null 2>&1; then
     echo "  SKIP: origin/main ref is not available in this checkout (1 check skipped)"

@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# PodChaos CR to inject failures into CronJob-spawned rotation pods (CC-0048).
+# PodChaos CR to inject failures into CronJob-spawned rotation pods.
 # Uses pod-failure action (not pod-kill) with 60s duration to simulate
 # transient failures in fernet rotation Job pods. Mode: all ensures every
 # pod spawned by the targeted Job is affected.

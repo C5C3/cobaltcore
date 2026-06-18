@@ -2,10 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# PodChaos CR to kill ALL Keystone operator pods (CC-0066, CC-0105).
+# PodChaos CR to kill ALL Keystone operator pods.
 # Uses mode: all (unlike operator-pod-crash which uses mode: one) to kill
 # every operator pod, forcing the Deployment controller to restart all pods
-# and trigger leader re-election. CC-0105: the operator pod lives in the
+# and trigger leader re-election.: the operator pod lives in the
 # dedicated `keystone-system` namespace (hack/ci-deploy-operator.sh now
 # invokes `helm install --namespace keystone-system --create-namespace`).
 apiVersion: chaos-mesh.org/v1alpha1

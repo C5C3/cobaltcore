@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Dedicated Keystone CR for Tempest API tests (CC-0035).
+# Dedicated Keystone CR for Tempest API tests.
 # Uses a separate database (keystone_tempest_2025_2) to avoid stale state
 # from prior Chainsaw E2E tests that reuse the same kind cluster.
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
@@ -19,7 +19,7 @@ spec:
   # 256Mi/512Mi memory). The default CPU limit of 500m throttles the
   # keystone-API pod to half a core, which more than doubled the Tempest
   # run-time and pushed the job past its CI timeout. Give the tempest
-  # workload headroom so it matches the pre-CC-0042 behaviour (no limits).
+  # workload headroom so it matches the pre-existing behaviour (no limits).
   resources:
     requests:
       cpu: 100m

@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Verify renovate.json has customManagers for the four tool pins in
-# hack/install-test-deps.sh (CC-0010): CHAINSAW_VERSION, FLUX_VERSION,
+# hack/install-test-deps.sh CHAINSAW_VERSION, FLUX_VERSION,
 # KIND_VERSION, KUBECTL_VERSION.
 #
 # For each, assert:
@@ -39,7 +39,7 @@ TOOLS=(
 )
 
 test_each_tool_has_manager_and_regex_matches() {
-  echo "Test: every install-test-deps.sh pin has a customManager whose regex matches (CC-0010)"
+  echo "Test: every install-test-deps.sh pin has a customManager whose regex matches"
 
   if ! command -v jq >/dev/null 2>&1; then
     echo "  SKIP: jq not installed"
@@ -92,7 +92,7 @@ test_each_tool_has_manager_and_regex_matches() {
 }
 
 test_package_rule_disables_majors() {
-  echo "Test: packageRule disables major updates for install-test-deps tools (CC-0010)"
+  echo "Test: packageRule disables major updates for install-test-deps tools"
 
   if ! command -v jq >/dev/null 2>&1; then
     echo "  SKIP: jq not installed (3 checks skipped)"

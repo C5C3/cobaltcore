@@ -2,26 +2,24 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for the Chaos Mesh kind-only opt-in addon (CC-0097).
+# Chainsaw E2E test for the Chaos Mesh kind-only opt-in addon.
 # Asserts the health invariants of the Chaos Mesh installation deployed
 # by deploy/kind/chaos-mesh/ when WITH_CHAOS_MESH=true:
 #   - Deployment/chaos-controller-manager in chaos-mesh has at least one
 #     available replica (mirrors today's infra-stack-health Step 5
-#     `(availableReplicas > 0): true` assertion — CC-0097, REQ-005)
+# `(availableReplicas > 0): true` assertion)
 #   - DaemonSet/chaos-daemon in chaos-mesh is rolled out with at least
 #     one ready node (mirrors today's `(numberReady >= 1): true`
-#     assertion — CC-0097, REQ-005)
+# assertion)
 #
-# Scope gating — two independent mechanisms, mirroring the CC-0086
+# Scope gating — two independent mechanisms, mirroring the
 # flux-web-health pattern:
 #
 #   1. Label selector (`metadata.labels.overlay: kind`): lets the
 #      chainsaw CLI filter this test out on non-kind invocations via
 #      `chainsaw test --selector 'overlay!=kind' tests/e2e/infrastructure/`.
 #      This is the preferred gate for pipelines that know they run
-#      against production clusters (which never install Chaos Mesh —
-#      the sources/releases manifests were dropped from
-#      deploy/flux-system/kustomization.yaml in CC-0097, REQ-001).
+#      against production clusters (which never install Chaos Mesh — the sources/releases manifests were dropped from deploy/flux-system/kustomization.yaml).
 #
 #   2. Runtime presence check (first line of the script): an early
 #      `kubectl get ns chaos-mesh` probe. If the namespace is absent,
@@ -50,7 +48,6 @@
 # retry+timeout semantics, and the `catch` below still runs
 # `describe` for post-mortem on failure.
 #
-# Feature: CC-0097, REQ-005
 ---
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -61,7 +58,7 @@ metadata:
     # `--selector 'overlay!=kind'` to exclude this test.
     overlay: kind
 spec:
-  # Timeout budget (CC-0097): the script's sequential kubectl waits
+  # Timeout budget the script's sequential kubectl waits
   # have per-call upper bounds of 2m (Deployment Available) + 2m
   # (DaemonSet rollout) = 4m worst case. In the realistic success
   # path both return in <1s because deploy-infra's Phase 3
@@ -87,7 +84,7 @@ spec:
         content: |
           set -euo pipefail
 
-          # ── Presence guard (CC-0097) ──────────────────────────────
+          # ── Presence guard ──────────────────────────────
           # The opt-in overlay deploy/kind/chaos-mesh/ creates the
           # chaos-mesh Namespace; its absence unambiguously signals
           # WITH_CHAOS_MESH=false (or a non-kind cluster). Exit 0
@@ -102,16 +99,16 @@ spec:
           fi
           echo "OK: chaos-mesh namespace present — running health checks"
 
-          # ── REQ-005: Deployment Available ──────────────────────────
+          # ──: Deployment Available ──────────────────────────
           # kubectl wait retries until the condition is met or the
           # timeout fires, giving us the same semantics as chainsaw's
           # declarative assert + timeouts.assert. Mirrors today's
           # infra-stack-health Step 5 `(availableReplicas > 0): true`.
           kubectl wait --for=condition=Available \
             deployment/chaos-controller-manager -n chaos-mesh --timeout=2m
-          echo "OK: Deployment/chaos-controller-manager is Available (CC-0097, REQ-005)"
+          echo "OK: Deployment/chaos-controller-manager is Available"
 
-          # ── REQ-005: DaemonSet rolled out ──────────────────────────
+          # ──: DaemonSet rolled out ──────────────────────────
           # rollout status blocks until the DaemonSet's
           # numberReady == desiredNumberScheduled (or the timeout
           # fires). Stronger than today's `(numberReady >= 1): true`
@@ -119,7 +116,7 @@ spec:
           # selected node to host a ready chaos-daemon pod.
           kubectl rollout status daemonset/chaos-daemon \
             -n chaos-mesh --timeout=2m
-          echo "OK: DaemonSet/chaos-daemon is rolled out (CC-0097, REQ-005)"
+          echo "OK: DaemonSet/chaos-daemon is rolled out"
     catch:
     # On failure, dump post-mortem state to help CI triage (mirrors
     # the diagnostic pattern used by other infra tests). Each

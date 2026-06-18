@@ -2,13 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for graceful shutdown (CC-0063).
+# Chainsaw E2E test for graceful shutdown.
 # Validates that the reconciler configures the Deployment with:
-#   - terminationGracePeriodSeconds: 30 (REQ-002)
-#   - preStop lifecycle hook: sleep 5 via exec (REQ-001)
-#   - startupProbe: HTTP GET /v3:5000 with failureThreshold 30 (REQ-003)
+#   - terminationGracePeriodSeconds: 30
+#   - preStop lifecycle hook: sleep 5 via exec
+#   - startupProbe: HTTP GET /v3:5000 with failureThreshold 30
 #
-# REQ-001, REQ-002, REQ-003 (CC-0063)
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:

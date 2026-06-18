@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Keystone CR fixture for the middleware-config E2E test (CC-0016).
+# Keystone CR fixture for the middleware-config E2E test.
 # Managed mode with custom middleware entries for api-paste.ini pipeline
 # customization.
 apiVersion: keystone.openstack.c5c3.io/v1alpha1

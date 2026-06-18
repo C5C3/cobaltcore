@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# CC-0061: Verify govulncheck Makefile target covers all go.work modules
+# Verify govulncheck Makefile target covers all go.work modules
 # Parses go.work use directives and compares against the modules scanned by
 # the govulncheck Makefile target, failing if they diverge.
 # Usage: bash tests/ci/verify_govulncheck_modules.sh
@@ -63,7 +63,7 @@ done
 IFS=$'\n' gowork_sorted=($(sort <<< "${gowork_modules[*]}")); unset IFS
 IFS=$'\n' makefile_sorted=($(sort <<< "${makefile_modules[*]}")); unset IFS
 
-echo "=== govulncheck module coverage verification (CC-0061) ==="
+echo "=== govulncheck module coverage verification ==="
 echo ""
 echo "go.work modules:  ${gowork_sorted[*]}"
 echo "Makefile modules: ${makefile_sorted[*]}"

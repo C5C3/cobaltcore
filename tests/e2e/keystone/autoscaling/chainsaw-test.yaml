@@ -2,14 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for HorizontalPodAutoscaler reconciliation (CC-0038).
+# Chainsaw E2E test for HorizontalPodAutoscaler reconciliation.
 # Verifies that the operator creates, updates, and deletes HPAs based on
 # spec.autoscaling:
 #   - Initial deployment with CPU autoscaling (maxReplicas: 6, CPU: 80%)
 #   - Add memory metric (CPU: 80%, Memory: 70%)
 #   - Disable autoscaling (HPA deleted)
 #
-# REQ-001, REQ-003, REQ-004 (CC-0038)
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -141,7 +140,7 @@ spec:
               reason: HPANotRequired
     - script:
         content: |
-          # Verify HPA no longer exists (CC-0038, REQ-003).
+          # Verify HPA no longer exists.
           if kubectl get hpa keystone-autoscaling -n $NAMESPACE 2>/dev/null; then
             echo "FAIL: HPA should have been deleted"
             exit 1

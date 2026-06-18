@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Minimal Keystone CR fixture for the network-policy-egress E2E test
-# (CC-0090, REQ-010, REQ-011). Managed mode: database via clusterRef to the
+# Managed mode: database via clusterRef to the
 # shared openstack-db MariaDB, cache via clusterRef to openstack-memcached,
 # reusing the infrastructure stack deployed by setup-e2e-infra.
 apiVersion: keystone.openstack.c5c3.io/v1alpha1

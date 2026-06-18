@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# NetworkChaos CR to partition keystone <-> MariaDB traffic (CC-0049).
+# NetworkChaos CR to partition keystone <-> MariaDB traffic.
 #
 # The partition is enforced on the MariaDB (server) side on purpose. keystone
 # does not connect to a MariaDB pod IP — it connects to the ClusterIP Service

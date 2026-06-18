@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Patch to scale down Keystone replicas from 5 to 2 (CC-0016).
+# Patch to scale down Keystone replicas from 5 to 2.
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
 kind: Keystone
 metadata:

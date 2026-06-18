@@ -2,17 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for garbage collection on Keystone CR deletion (CC-0016),
-# finalizer-driven MariaDB CR cleanup (CC-0078), and OpenBao PushSecret
-# finalizer cleanup (CC-0079). Deploys a Keystone CR, waits for Ready=True,
+# Chainsaw E2E test for garbage collection on Keystone CR deletion,
+# finalizer-driven MariaDB CR cleanup, and OpenBao PushSecret
+# finalizer cleanup. Deploys a Keystone CR, waits for Ready=True,
 # asserts both finalizers (cleanup + openbao) are present, deletes the CR,
 # then asserts all owned resources, MariaDB CRs, and backup PushSecrets are
 # absent (NotFound), and that the remote OpenBao KV-v2 paths backing those
 # PushSecrets have been purged, within a bounded deletion window.
 #
-# REQ-007, REQ-012, REQ-013 (CC-0016)
-# REQ-008 (CC-0078)
-# REQ-010 (CC-0079)
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -27,10 +24,10 @@ spec:
     - apply:
         file: 00-keystone-cr.yaml
   # ── Step 2: Wait for Ready=True and assert finalizers present ──────────
-  # REQ-008 (CC-0078): The cleanup finalizer is added on first reconcile so
+  # The cleanup finalizer is added on first reconcile so
   # deletion can trigger MariaDB CR cleanup before the Keystone CR is removed
   # from etcd.
-  # REQ-010 (CC-0079): The openbao-finalizer is also added on first reconcile
+  # The openbao-finalizer is also added on first reconcile
   # so that the two backup PushSecrets (fernet-keys-backup, credential-keys-
   # backup) can be deleted — which drives ESO to purge the remote KV-v2 paths
   # — before the Keystone CR is removed from etcd.
@@ -98,7 +95,7 @@ spec:
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
   # ── Step 3: Delete the Keystone CR ─────────────────────────────────────
-  # REQ-008 (CC-0078): Bounded timeout (<= 2m) to keep deletion responsive;
+  # Bounded timeout (<= 2m) to keep deletion responsive;
   # fails the test if the finalizer blocks removal for longer than this.
   - try:
     - delete:
@@ -160,7 +157,7 @@ spec:
             name: keystone-cleanup-fernet-rotate
             namespace: openstack
     # Both backup PushSecrets are deleted by the openbao-finalizer handler so
-    # ESO can purge the corresponding kv-v2 paths (REQ-010, CC-0079).
+    # ESO can purge the corresponding kv-v2 paths.
     - error:
         resource:
           apiVersion: external-secrets.io/v1alpha1
@@ -184,7 +181,7 @@ spec:
             namespace: openstack
     # MariaDB CRs created by reconcileDatabase in managed mode (clusterRef).
     # Owner references are set on these CRs, so they must be garbage-collected
-    # when the Keystone CR is deleted (CC-0016).
+    # when the Keystone CR is deleted.
     - error:
         resource:
           apiVersion: k8s.mariadb.com/v1alpha1
@@ -209,7 +206,7 @@ spec:
   # ── Step 5: Assert dynamically-named ConfigMap deleted ─────────────────
   # The ConfigMap has a content-hash suffix so it cannot use a static error
   # assertion. A script step with an inverted grep verifies no ConfigMap
-  # with the expected prefix remains after garbage collection (CC-0016).
+  # with the expected prefix remains after garbage collection.
   - try:
     - script:
         content: |
@@ -220,8 +217,8 @@ spec:
           fi
           echo "OK: No ConfigMap matching keystone-cleanup-config-* found"
   # ── Step 6: Assert OpenBao KV-v2 paths are absent ──────────────────────
-  # REQ-004 (CC-0093): RemoteKey is scoped per Keystone CR. REQ-007
-  # (CC-0112, boundary 4) further inserts the Keystone CR's NAMESPACE as a
+  # RemoteKey is scoped per Keystone CR.
+  # (boundary 4) further inserts the Keystone CR's NAMESPACE as a
   # path segment, so the operator RemoteKey is now
   # openstack/keystone/{keystone.Namespace}/{keystone.Name}/<leaf>; this step
   # checks the paths under the openstack/keystone-cleanup sub-tree only.
@@ -229,21 +226,21 @@ spec:
   # structurally possible — each test's kv-v2 paths live in a disjoint
   # sub-tree.
   #
-  # DECISION: this step is updated under boundary 4 (CC-0112/REQ-007) for
+  # DECISION: this step is updated under boundary 4 (/) for
   # consistency with the operator's actual write path. Before the namespace
   # segment was added, asserting the non-namespace path returned NotFound;
   # because the operator never writes that path anymore, the check would be
   # a vacuous false-positive (NotFound for a path that was never written).
   # The namespace-segmented path below is the one ESO actually purges.
   #
-  # REQ-010 (CC-0079): PushSecret deletion with DeletionPolicy=Delete drives
+  # PushSecret deletion with DeletionPolicy=Delete drives
   # ESO to purge the remote kv-v2/openstack/keystone/openstack/keystone-cleanup/
   # {fernet-keys,credential-keys} paths. PushSecret NotFound alone does not
   # guarantee the remote purge succeeded, so this step execs bao-cli inside
   # the openbao-0 pod and asserts both paths return a non-zero exit (path
   # not found / no value).
   #
-  # REQ-004 (CC-0091): ESO's remote DeleteSecret completes asynchronously
+  # ESO's remote DeleteSecret completes asynchronously
   # after the PushSecret object is garbage-collected — typically 1-3 s, but
   # may lag under workqueue contention. Poll each kv-v2 path every 3 s for
   # up to 30 s (10 iterations) and exit 0 on the first all-clear sweep, so
@@ -311,7 +308,6 @@ spec:
 
           # Timeout: name each still-present path on stderr so chainsaw's
           # failure surface identifies exactly which kv-v2 path leaked
-          # (REQ-004, CC-0091).
           for path in ${still_present}; do
             echo "ERROR: ${path} still present after 30s" >&2
           done

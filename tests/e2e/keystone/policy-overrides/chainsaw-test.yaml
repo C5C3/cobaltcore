@@ -2,13 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for policy override injection (CC-0016).
+# Chainsaw E2E test for policy override injection.
 # Verifies:
 #   - Generated ConfigMap contains a policy.yaml data key with rules
 #     from the referenced source ConfigMap
 #   - keystone.conf contains the [oslo_policy] section with policy_file
 #
-# REQ-008, REQ-012, REQ-013 (CC-0016)
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:

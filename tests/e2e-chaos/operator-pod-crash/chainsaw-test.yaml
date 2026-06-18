@@ -2,13 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw chaos E2E test for operator pod crash recovery (CC-0048).
+# Chainsaw chaos E2E test for operator pod crash recovery.
 # Verifies the Keystone operator self-recovers after one of its pods is killed
 # and maintains Ready=True throughout — the operator crash should be
 # invisible to the Keystone CR conditions since the Deployment controller
 # restarts the operator pod and reconciliation resumes.
 #
-# SC-CHAOS-004, REQ-001, REQ-005, REQ-006, REQ-008 (CC-0048)
+# SC-CHAOS-004,
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -46,8 +46,8 @@ spec:
   # (loop then sees readyReplicas=2 throughout). mode: one kills exactly one
   # of the two replicas, so "at least one pre-chaos UID gone" proves the kill
   # took effect. Apply + poll live in one script so the pre-chaos snapshot
-  # and the wait share state. Mirrors the CC-0076 fix on operator-pod-kill.
-  # NOTE: CC-0105 — operator runs in the dedicated `keystone-system` namespace
+  # and the wait share state. Mirrors the fix on operator-pod-kill.
+  # NOTE: — operator runs in the dedicated `keystone-system` namespace
   # because hack/ci-deploy-operator.sh now invokes `helm install --namespace
   # keystone-system --create-namespace`. The Deployment name is
   # `keystone-operator` (release name contains the chart name, so fullname

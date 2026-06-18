@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for the optional HTTPRoute sub-reconciler (CC-0065).
+# Chainsaw E2E test for the optional HTTPRoute sub-reconciler.
 # Verifies the full lifecycle of spec.gateway driven by the Keystone CR:
 #   - Install the HTTPRoute CRD (no Gateway controller runs in the kind cluster).
 #   - Apply a Keystone CR with spec.gateway and assert the HTTPRoute is created
@@ -15,7 +15,6 @@
 #   - Unset spec.gateway and assert the HTTPRoute is deleted and HTTPRouteReady
 #     is True with reason HTTPRouteNotRequired.
 #
-# REQ-001, REQ-002, REQ-003, REQ-005, REQ-006 (CC-0065)
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -55,7 +54,7 @@ spec:
           spec:
             parentRefs:
             # Deliberately non-existent: keeps the real Envoy Gateway
-            # controller introduced by CC-0088 from writing its own
+            # controller introduced by from writing its own
             # RouteParentStatus slot and racing the merge-patch in
             # step 5 (see 01-keystone-cr.yaml header).
             - name: not-a-real-gateway
@@ -77,7 +76,7 @@ spec:
           echo "=== HTTPRoute ==="
           kubectl get httproute -n $NAMESPACE -o yaml 2>&1 || true
           echo "=== Operator pod logs ==="
-          # CC-0105: keystone-operator pod now runs in keystone-system Namespace
+          # keystone-operator pod now runs in keystone-system Namespace
           for pod in $(kubectl get pods -n keystone-system -o name 2>/dev/null); do
             echo "--- $pod ---"
             kubectl logs -n keystone-system "$pod" --all-containers --tail=120 2>&1 || true
@@ -144,7 +143,7 @@ spec:
           echo "=== HTTPRoute with status ==="
           kubectl get httproute keystone-httproute -n $NAMESPACE -o yaml 2>&1 || true
           echo "=== Operator pod logs ==="
-          # CC-0105: keystone-operator pod now runs in keystone-system Namespace
+          # keystone-operator pod now runs in keystone-system Namespace
           for pod in $(kubectl get pods -n keystone-system -o name 2>/dev/null); do
             echo "--- $pod ---"
             kubectl logs -n keystone-system "$pod" --all-containers --tail=120 2>&1 || true
@@ -168,7 +167,7 @@ spec:
               reason: HTTPRouteNotRequired
     - script:
         content: |
-          # Verify HTTPRoute no longer exists (CC-0065, REQ-002).
+          # Verify HTTPRoute no longer exists.
           if kubectl get httproute keystone-httproute -n $NAMESPACE 2>/dev/null; then
             echo "FAIL: HTTPRoute should have been deleted"
             exit 1

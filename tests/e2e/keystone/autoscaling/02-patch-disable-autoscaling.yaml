@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Patch to disable autoscaling by removing the autoscaling field (CC-0038).
+# Patch to disable autoscaling by removing the autoscaling field.
 # Chainsaw merge-patches with this manifest, setting autoscaling to null.
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
 kind: Keystone

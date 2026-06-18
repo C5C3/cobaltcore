@@ -2,14 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for fernet key rotation (CC-0016, CC-0074).
+# Chainsaw E2E test for fernet key rotation.
 # Verifies:
 #   - CronJob schedule matches spec.fernet.rotationSchedule
 #   - Manual rotation via kubectl create job --from=cronjob changes Secret data
-#   - Pod UIDs remain unchanged after rotation (no Deployment rollout) (CC-0074)
-#   - A fernet token obtained before rotation validates after rotation (CC-0074)
+#   - Pod UIDs remain unchanged after rotation (no Deployment rollout)
+#   - A fernet token obtained before rotation validates after rotation
 #
-# REQ-005, REQ-012, REQ-013 (CC-0016), REQ-001, REQ-002, REQ-003 (CC-0074), REQ-001, REQ-011 (CC-0081)
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -86,7 +85,7 @@ spec:
           # Record pre-rotation state: pod UIDs and Secret data hash.
           # The pod-template-hash label is set only on Deployment-owned pods by
           # the ReplicaSet controller, so the selector excludes CronJob-managed
-          # rotation pods that share commonLabels with the API pods (CC-0074).
+          # rotation pods that share commonLabels with the API pods.
           BEFORE_UIDS=$(kubectl get pods -n openstack \
             -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-fernet,pod-template-hash \
             -o jsonpath='{range .items[*]}{.metadata.uid}{"\n"}{end}' | sort)
@@ -128,7 +127,7 @@ spec:
 
           # The CronJob writes new keys to the staging Secret only; the
           # operator promotes them to the production Secret on the next
-          # reconcile triggered by the staging Secret watch (CC-0081). Poll
+          # reconcile triggered by the staging Secret watch. Poll
           # for the production Secret hash to change rather than asserting
           # immediately after Job completion.
           AFTER_HASH="$BEFORE_HASH"
@@ -145,9 +144,9 @@ spec:
           echo "OK: Fernet Secret data changed"
 
           # No kubelet projection wait needed: the token validation below is the
-          # real semantic guarantee that rotated keys are functional (CC-0074).
+          # real semantic guarantee that rotated keys are functional.
 
-          # Verify pod UIDs are unchanged (no Deployment rollout) (CC-0074).
+          # Verify pod UIDs are unchanged (no Deployment rollout).
           AFTER_UIDS=$(kubectl get pods -n openstack \
             -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-fernet,pod-template-hash \
             -o jsonpath='{range .items[*]}{.metadata.uid}{"\n"}{end}' | sort)
@@ -159,7 +158,7 @@ spec:
           fi
           echo "OK: Pod UIDs unchanged after fernet rotation (no rollout)"
 
-          # Validate the pre-rotation token still works (multi-key overlap) (CC-0074).
+          # Validate the pre-rotation token still works (multi-key overlap).
           # Same python-over-stdin pattern: keystone image has no curl, and
           # piping the token avoids embedding it in a quoted -c argument.
           HTTP_CODE=$(printf '%s' "$TOKEN" | kubectl exec -i -n openstack "$POD" -- python3 -c '
@@ -196,12 +195,11 @@ spec:
             -o wide 2>&1 || true
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -20 || true
-  # ── Step 4.5: Assert rotation Role RBAC split (CC-0081) ─────────
+  # ── Step 4.5: Assert rotation Role RBAC split ─────────
   # Verifies the `keystone-fernet-fernet-rotate` Role grants `patch` ONLY on
   # the staging Secret (`keystone-fernet-fernet-keys-rotation`) and NEVER on
   # the production Secret (`keystone-fernet-fernet-keys`). This is the
-  # regression guard for the split-compute-write architecture introduced by
-  # CC-0081 (REQ-001, REQ-011).
+  # regression guard for the split-compute-write architecture.
   - try:
     - script:
         shell: bash
@@ -211,20 +209,20 @@ spec:
           ROLE_JSON=$(kubectl get role keystone-fernet-fernet-rotate -n openstack -o json)
 
           # Assertion 1: NO PolicyRule may grant `patch` scoped to the
-          # production Secret `keystone-fernet-fernet-keys` (CC-0081).
+          # production Secret `keystone-fernet-fernet-keys`.
           PROD_PATCH=$(echo "$ROLE_JSON" | jq '[.rules[] | select(.resourceNames // [] | index("keystone-fernet-fernet-keys")) | select(.verbs // [] | index("patch"))] | length')
           if [ "$PROD_PATCH" != "0" ]; then
-            echo "ERROR: Role keystone-fernet-fernet-rotate grants 'patch' on production Secret keystone-fernet-fernet-keys (CC-0081 violation)"
+            echo "ERROR: Role keystone-fernet-fernet-rotate grants 'patch' on production Secret keystone-fernet-fernet-keys (violation)"
             echo "$ROLE_JSON" | jq '.rules'
             exit 1
           fi
           echo "OK: Role has no 'patch' verb scoped to production Secret keystone-fernet-fernet-keys"
 
           # Assertion 2: At least ONE PolicyRule must grant `patch` scoped to
-          # the staging Secret `keystone-fernet-fernet-keys-rotation` (CC-0081).
+          # the staging Secret `keystone-fernet-fernet-keys-rotation`.
           STAGING_PATCH=$(echo "$ROLE_JSON" | jq '[.rules[] | select(.resourceNames // [] | index("keystone-fernet-fernet-keys-rotation")) | select(.verbs // [] | index("patch"))] | length')
           if [ "$STAGING_PATCH" -lt 1 ]; then
-            echo "ERROR: Role keystone-fernet-fernet-rotate is missing 'patch' verb on staging Secret keystone-fernet-fernet-keys-rotation (CC-0081 violation)"
+            echo "ERROR: Role keystone-fernet-fernet-rotate is missing 'patch' verb on staging Secret keystone-fernet-fernet-keys-rotation (violation)"
             echo "$ROLE_JSON" | jq '.rules'
             exit 1
           fi

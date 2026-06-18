@@ -2,12 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for rolling image upgrade (CC-0016).
+# Chainsaw E2E test for rolling image upgrade.
 # Verifies:
 #   - Patching spec.image.tag updates the Deployment container image
 #   - Ready=True is maintained after the rollout completes
 #
-# REQ-011, REQ-012, REQ-013 (CC-0016)
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:

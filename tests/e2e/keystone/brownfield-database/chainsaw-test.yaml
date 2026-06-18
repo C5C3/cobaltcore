@@ -2,16 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for brownfield database mode (CC-0016).
+# Chainsaw E2E test for brownfield database mode.
 # Verifies:
 #   - No MariaDB CRs (Database, User, Grant) are created when using
 #     explicit database.host (no clusterRef)
 #   - Derived <name>-db-connection Secret carries a pymysql URL pointing at
-#     the explicit host (since CC-0080 the host no longer appears in the
-#     ConfigMap — keystone.conf only holds the placeholder URL)
+#     the explicit host (since the host no longer appears in the ConfigMap — keystone.conf only holds the placeholder URL)
 #   - Reconciliation completes to Ready=True via the existing database
 #
-# REQ-010, REQ-012, REQ-013 (CC-0016), CC-0080
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -124,7 +122,7 @@ spec:
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
   # ── Step 4: Verify derived db-connection Secret points at explicit host ─
-  # Since CC-0080 the real connection URL (and thus the brownfield host)
+  # Since the real connection URL (and thus the brownfield host)
   # lives in the derived <name>-db-connection Secret, not in keystone.conf
   # (which carries the placeholder URL consumed via OS_DATABASE__CONNECTION).
   - try:
