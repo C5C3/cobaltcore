@@ -26,10 +26,16 @@ CONTROLLER_GEN ?= controller-gen
 # Default resolves via GOPATH so local runs work without manually exporting GOBIN.
 SETUP_ENVTEST ?= $(shell go env GOPATH)/bin/setup-envtest
 
+# Local tool binaries are installed under bin/ (gitignored) so local dev pins
+# the same versions as CI without depending on whatever sits on $PATH.
+LOCALBIN ?= $(CURDIR)/bin
+
 # Pin gofumpt version to match CI (single source of truth for local dev).
 # Must be kept in sync with GOFUMPT_VERSION in .github/workflows/ci.yaml.
+# GOFUMPT resolves to the bin/ copy managed by install-gofumpt at the pinned
+# version, so a stale $PATH gofumpt can never silently format differently.
 GOFUMPT_VERSION ?= v0.10.0
-GOFUMPT ?= gofumpt
+GOFUMPT ?= $(LOCALBIN)/gofumpt
 
 # Kubernetes version for envtest binary downloads.
 # Pin to a specific version for reproducible integration tests across runs.
@@ -186,14 +192,14 @@ test-shell:
 .PHONY: fmt
 # fmt formats all tracked Go files with gofumpt.
 # Only formats git-tracked files to skip generated, vendored, or tooling code.
-fmt:
+fmt: install-gofumpt
 	@echo "Formatting Go files with gofumpt..."
 	@git ls-files '*.go' | xargs $(GOFUMPT) -w
 
 .PHONY: format-check
 # format-check verifies all tracked Go files conform to gofumpt formatting.
 # Mirrors the CI format-check job for local pre-commit validation.
-format-check:
+format-check: install-gofumpt
 	@unformatted=$$(git ls-files '*.go' | xargs $(GOFUMPT) -l); \
 	if [ -n "$$unformatted" ]; then \
 		echo "The following files are not formatted with gofumpt:"; \
@@ -204,10 +210,14 @@ format-check:
 	echo "Format check passed."
 
 .PHONY: install-gofumpt
-# install-gofumpt installs gofumpt at the pinned version.
-# Ensures local development uses the same version as CI.
+# install-gofumpt installs gofumpt at the pinned version into bin/.
+# Re-installs when the binary is missing or its version drifts from the pin so
+# fmt/format-check always run the exact version the CI format-check job uses.
 install-gofumpt:
-	go install mvdan.cc/gofumpt@$(GOFUMPT_VERSION)
+	@if ! test -x '$(GOFUMPT)' || ! '$(GOFUMPT)' --version | grep -qF '$(GOFUMPT_VERSION)'; then \
+		echo "Installing gofumpt $(GOFUMPT_VERSION) into $(LOCALBIN)..."; \
+		GOBIN='$(LOCALBIN)' go install mvdan.cc/gofumpt@$(GOFUMPT_VERSION); \
+	fi
 
 # ============================================================================
 # Code Generation Targets
