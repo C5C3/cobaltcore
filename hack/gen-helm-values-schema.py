@@ -394,7 +394,6 @@ CHARTS = [
     {
         "path": "operators/keystone/helm/keystone-operator/values.schema.json",
         "name": "keystone-operator",
-        "feature_id": "",
         "image_repository_default": "ghcr.io/c5c3/keystone-operator",
         "webhook_enabled_description": "Enable admission webhooks for Keystone CR validation and defaulting",
         "network_policy": True,
@@ -402,7 +401,6 @@ CHARTS = [
     {
         "path": "operators/c5c3/helm/c5c3-operator/values.schema.json",
         "name": "c5c3-operator",
-        "feature_id": "",
         "image_repository_default": "ghcr.io/c5c3/c5c3-operator",
         "webhook_enabled_description": "Enable admission webhooks for ControlPlane CR validation and defaulting",
         "network_policy": False,
@@ -441,7 +439,7 @@ def build_schema(chart):
     return {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "title": f"{chart['name']} Helm Values",
-        "description": f"Schema for the {chart['name']} Helm chart values ({chart['feature_id']})",
+        "description": f"Schema for the {chart['name']} Helm chart values",
         "type": "object",
         "additionalProperties": False,
         "definitions": definitions,

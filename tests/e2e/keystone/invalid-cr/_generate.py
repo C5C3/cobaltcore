@@ -279,8 +279,7 @@ FIXTURES: list[Fixture] = [
 # Admission must reject this CR with an $error referencing
 # spec.autoscaling.minReplicas and the message "must not exceed
 # maxReplicas". A targetCPUUtilization is set so the rejection is
-# attributable solely to the min/max ordering, not the no-target rule
-# from.""",
+# attributable solely to the min/max ordering, not the no-target rule.""",
     ),
     Fixture(
         filename="11-fernet-maxactivekeys-below-minimum.yaml",
