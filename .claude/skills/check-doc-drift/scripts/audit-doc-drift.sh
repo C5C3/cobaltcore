@@ -10,7 +10,7 @@
 #   D2  count of reconcile_*.go matches doc-side sub-reconciler section count
 #   D3  every doc-side reconcileX() heading names a real function
 #   D4  every condition type literal set in reconcile_*.go is documented
-#   D5  every CC-NNNN cited in architecture/docs/ has a code anchor
+#   D5  retired (internal feature/requirement IDs removed repo-wide)
 #   D6  every deploy/<component>/ named in architecture/docs/09-implementation/
 #       still exists
 #
@@ -103,29 +103,14 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# D5 — every CC-NNNN cited in architecture/docs/ has a code anchor
+# D5 — RETIRED. This check cross-referenced internal CC-NNNN feature-ID markers
+# in the code against the architecture docs. Those internal IDs have been
+# removed from the repository (a repo-wide gate, scripts/check-no-feature-ids.sh,
+# now forbids them), so there are no code anchors left to cross-reference.
 # ---------------------------------------------------------------------------
-hdr "D5: CC-NNNN citations in architecture/docs/ have a code anchor"
-if [[ -d architecture/docs ]]; then
-  doc_ccs=$(grep -rhoE 'CC-[0-9]{4}' architecture/docs/ | sort -u)
-  code_ccs=$(grep -rhoE 'CC-[0-9]{4}' \
-    --include='*.go' --include='*.sh' --include='*.yaml' --include='*.yml' \
-    --include='Makefile' --include='*.toml' \
-    operators/ internal/ tests/ hack/ scripts/ deploy/ Makefile 2>/dev/null | sort -u || true)
-  missing_anchor=0
-  for cc in ${doc_ccs}; do
-    if ! echo "${code_ccs}" | grep -qx "${cc}"; then
-      info "doc cites ${cc} with no code anchor — confirm by hand (issue-only or stale?)"
-      missing_anchor=$((missing_anchor + 1))
-    fi
-  done
-  total_doc_ccs=$(echo "${doc_ccs}" | wc -w | tr -d ' ')
-  total_code_ccs=$(echo "${code_ccs}" | wc -w | tr -d ' ')
-  info "CC-NNNN totals: docs=${total_doc_ccs} unique; code=${total_code_ccs} unique; docs without code anchor=${missing_anchor}"
-  pass "D5 complete (informational — see [INFO] above)"
-else
-  info "skipping D5: no architecture/docs/ directory"
-fi
+hdr "D5: code-anchor cross-reference (retired)"
+info "D5 retired: internal feature/requirement IDs were removed repo-wide, so there are no code markers to cross-reference"
+pass "D5 skipped (retired)"
 
 # ---------------------------------------------------------------------------
 # D6 — every deploy/<component> named in architecture/docs/09-implementation/

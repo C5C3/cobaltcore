@@ -3,9 +3,8 @@ name: check-doc-drift
 description: >-
   Audit the forge documentation for drift against the implementation —
   the architecture/docs/ chapters vs the operator code, the docs/
-  user-facing reference vs the deploy/ infrastructure stack, and the
-  CC-NNNN feature IDs cited in prose vs the markers that appear in the
-  code. Use when asked to check documentation drift, after adding or
+  user-facing reference vs the deploy/ infrastructure stack. Use when
+  asked to check documentation drift, after adding or
   removing a sub-reconciler, status condition, operator binary, or
   infrastructure component, or before tagging a release.
 ---
@@ -14,7 +13,7 @@ description: >-
 
 This skill verifies that the forge documentation still **describes what
 the code actually does**: every sub-reconciler, status condition,
-operator binary, CRD field, FluxCD component, and CC-NNNN feature ID
+operator binary, CRD field, and FluxCD component
 named in `architecture/docs/` or `docs/` (and `README.md`) is checked
 against its source of truth, so a reader is never handed a reference
 page that contradicts the implementation.
@@ -25,14 +24,13 @@ that touched a documented surface, or before cutting a release.
 ## What documentation drift means here
 
 Drift is any place a doc and the code it documents disagree. The audit
-splits the corpus into four areas, each with a single source of truth:
+splits the corpus into three areas, each with a single source of truth:
 
 | Doc area | Files | Source of truth |
 |---|---|---|
 | Operator architecture | `architecture/docs/09-implementation/04-keystone-reconciler.md`, `architecture/docs/09-implementation/02-shared-library.md`, `architecture/docs/04-architecture/*.md` | `operators/keystone/internal/controller/reconcile_*.go` + `operators/keystone/api/v1alpha1/keystone_types.go` + `internal/common/` |
 | CRD reference | `architecture/docs/09-implementation/03-crd-implementation.md` | `operators/keystone/api/v1alpha1/keystone_types.go` and the generated CRD under `operators/keystone/config/crd/bases/` |
 | Infrastructure stack | `architecture/docs/09-implementation/01-project-setup.md`, `architecture/docs/09-implementation/05-keystone-dependencies.md`, `architecture/docs/09-implementation/09-openbao-deployment.md`, `docs/guides/`, `docs/quick-start*.md` | `deploy/` kustomize tree + `hack/deploy-infra.sh` + `releases/<version>/source-refs.yaml` |
-| Feature ID coverage | every `architecture/docs/**/*.md` that names a `CC-NNNN` | every `// CC-NNNN` / `# CC-NNNN` / `Feature: CC-NNNN` marker in `operators/`, `internal/`, `tests/`, `hack/`, `Makefile`, `deploy/` |
 
 A doc that contradicts its source is a defect even when the build is
 green: the compiler never reads prose. The audit's job is to surface
@@ -69,12 +67,10 @@ inventory. Exit code `1` means at least one `[FAIL]`. Interpret:
   string in `meta.SetStatusCondition` / `conditions.SetCondition`
   calls) is documented under
   `architecture/docs/09-implementation/03-crd-implementation.md`.
-- **D5** — every `CC-NNNN` cited in `architecture/docs/` has at
-  least one matching marker in the code tree. A doc that cites a
-  feature ID with no implementation anchor is either premature (the
-  feature is not done) or stale (the markers were cleaned up). Cited
-  but unreferenced IDs are flagged as `[INFO]`, not `[FAIL]`, because
-  some architectural CCs are tracked only in issues — confirm by hand.
+- **D5** — retired. The audit used to cross-reference internal feature-ID
+  markers in the code against `architecture/docs/`; those IDs have been
+  removed repo-wide (a gate, `scripts/check-no-feature-ids.sh`, now forbids
+  them), so the check is obsolete and reports nothing.
 - **D6** — every `deploy/<component>/` directory mentioned by name in
   `architecture/docs/09-implementation/` exists. A renamed or removed
   infra component leaves the doc page pointing at nothing.
@@ -83,7 +79,7 @@ inventory. Exit code `1` means at least one `[FAIL]`. Interpret:
   "three states"), every FluxCD release name documented vs declared.
   Cross-reference each by hand in step 2.
 
-### 2. Cross-reference the four areas by hand
+### 2. Cross-reference the three areas by hand
 
 The script cannot read prose meaning. For each area, open the doc and
 its source of truth and confirm they agree. This is the real work —
@@ -103,11 +99,6 @@ delegate the four areas to parallel sub-agents for a large corpus.
   `01-project-setup.md` and `05-keystone-dependencies.md`, confirm a
   matching directory exists under `deploy/` and that
   `hack/deploy-infra.sh` still installs it in the documented order.
-- **Feature ID coverage** — for each `CC-NNNN` flagged by D5, decide
-  whether the doc is premature (delete the citation) or the markers
-  were prematurely cleaned (restore at least one anchor in code, or
-  cross-reference a GitHub issue).
-
 Flag any pair where the doc and the source disagree.
 
 ### 3. Report
@@ -123,9 +114,8 @@ Produce a concise summary grouped by severity:
   the code that is not documented; a Spec field with a `+kubebuilder`
   marker that is not described in the CRD reference doc; a numeric
   claim ("11 sub-conditions") that no longer matches the code count.
-- **LOW** — a `CC-NNNN` cited in the docs with no code anchor
-  (informational, may be tracked elsewhere); a stale link target
-  inside `architecture/docs/`; a typo or formatting drift.
+- **LOW** — a stale link target inside `architecture/docs/`; a typo or
+  formatting drift.
 
 For each finding give one line with a `file:line` reference for both
 the doc side and the source side. End with a two- to three-sentence
@@ -152,10 +142,7 @@ These recurring shapes are worth grepping for first:
    `operators/` but the Makefile default still lists only the
    originals. `make test` / `make lint` silently skip the new
    operator until someone notices a CI gap.
-5. **Stale CC-NNNN citation.** A feature page in `architecture/docs/`
-   cites a `CC-NNNN` that was never implemented or was rolled into
-   another ID. The doc still reads as authoritative.
-6. **Renamed infra release.** `deploy/<component>/` was renamed
+5. **Renamed infra release.** `deploy/<component>/` was renamed
    (e.g. `cert-manager` ⇢ `cert-manager-istio`) but
    `01-project-setup.md` or `05-keystone-dependencies.md` still uses
    the old name. New operators copy the wrong reference.
@@ -165,10 +152,6 @@ These recurring shapes are worth grepping for first:
 - This skill is read-only; the deterministic script edits nothing.
   Apply fixes (update the doc, delete the stale citation, add the
   missing condition row) as a separate, explicitly-scoped task.
-- The CC-NNNN check is intentionally informational. Some feature IDs
-  exist only as architecture-level tracking and never receive a code
-  marker; treat D5 findings as a prompt to confirm by hand, not as a
-  hard failure.
 - Pair this with [[check-crd-drift]] — that skill confirms the CRD
   YAML still mirrors the Go source; this skill confirms the prose
   reference still mirrors both.
