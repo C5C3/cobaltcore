@@ -18,7 +18,6 @@
 #       the Keystone operator issues from the same ClusterIssuer
 #       (operators/keystone/internal/controller/reconcile_databasetls.go).
 #
-# Feature: CC-0008, CC-0106, REQ-005, REQ-009
 ---
 apiVersion: k8s.mariadb.com/v1alpha1
 kind: MariaDB
@@ -39,7 +38,7 @@ spec:
     tls:
       enabled: true
   # The mariadb-root-password Secret will be provisioned by the External
-  # Secrets Operator integration (CC-0009).
+  # Secrets Operator integration.
   rootPasswordSecretKeyRef:
     name: mariadb-root-password
     key: password
@@ -52,7 +51,7 @@ spec:
     type: ClusterIP
   secondaryService:
     type: ClusterIP
-  # TLS to the database (CC-0106, REQ-009). Galera inter-node, MaxScale
+  # TLS to the database. Galera inter-node, MaxScale
   # listener, and Keystone client all sit inside the OpenStack DB trust
   # domain rooted at the "openstack-db-ca-issuer" ClusterIssuer defined
   # in db-ca-issuer.yaml.

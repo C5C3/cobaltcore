@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Feature: CC-0110, REQ-023 — K-ORC (OpenStack Resource Controller) provides the
+# K-ORC (OpenStack Resource Controller) provides the
 # declarative Keystone resource CRDs (ApplicationCredential, Service, Endpoint,
 # ...) that the c5c3-operator drives.
 #

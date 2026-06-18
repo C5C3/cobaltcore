@@ -7,7 +7,6 @@
 # the OpenBao HelmRelease to standalone mode (1 replica, HA disabled,
 # no retry_join peers, standard storage class) suitable for a
 # single-node kind cluster.
-# Feature: CC-0010, REQ-003, CC-0105, REQ-007
 ---
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
@@ -16,11 +15,11 @@ resources:
   - ../../flux-system
   # Headlamp UI — kind-only demo addon (see headlamp.yaml header).
   - headlamp.yaml
-  # Flux Web UI — kind-only demo addon (see flux-web.yaml header). Feature: CC-0086, REQ-002
+  # Flux Web UI — kind-only demo addon (see flux-web.yaml header).
   - flux-web.yaml
-  # Envoy Gateway controller + EnvoyProxy NodePort config (kind-only). Feature: CC-0088, REQ-001, REQ-002
+  # Envoy Gateway controller + EnvoyProxy NodePort config (kind-only).
   - envoy-gateway.yaml
-  # GatewayClass/envoy + Certificate + Gateway/openstack-gw (kind-only). Feature: CC-0088, REQ-003
+  # GatewayClass/envoy + Certificate + Gateway/openstack-gw (kind-only).
   - openstack-gateway.yaml
 
 patches:
@@ -45,7 +44,7 @@ patches:
             standalone:
               enabled: true
               config: |
-                # CC-0082: kind-only — production keeps ui = false
+                # kind-only — production keeps ui = false
                 ui = true
 
                 listener "tcp" {
@@ -54,7 +53,7 @@ patches:
                   cluster_address = "[::]:8201"
                   tls_cert_file   = "/openbao/tls/tls.crt"
                   tls_key_file    = "/openbao/tls/tls.key"
-                  # CC-0107: kind matches production mTLS posture
+                  # kind matches production mTLS posture
                   tls_client_ca_file               = "/openbao/tls/ca.crt"
                   tls_require_and_verify_client_cert = true
                 }
@@ -90,7 +89,7 @@ patches:
   # keystone-operator: suspend Flux management in kind so that the e2e CI
   # job can install it manually with a locally built dev image. Both Flux
   # and the CI's `helm install` now target the keystone-system Namespace
-  # (CC-0105, REQ-007), so the historical ownership-annotation conflict
+  # so the historical ownership-annotation conflict
   # caused by the prior openstack-vs-default-namespace mismatch (fix-001)
   # no longer applies. The suspend is still required because the published
   # chart and the locally built dev image cannot share the same release
@@ -114,4 +113,4 @@ patches:
   # reduced resource requests) lives in the opt-in deploy/kind/chaos-mesh/
   # overlay. It cannot stay here because Chaos Mesh is no longer in the base
   # resource list — kustomize would refuse to render with a missing patch
-  # target (CC-0097, REQ-009).
+  # target.

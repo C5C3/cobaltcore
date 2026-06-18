@@ -18,7 +18,7 @@
 #
 # Why a standalone Web UI install instead of `spec.web.enabled` on the
 # operator? The flux-operator itself is installed from the upstream
-# `install.yaml` (static manifest, see hack/deploy-infra.sh, CC-0085).
+# `install.yaml` (static manifest, see hack/deploy-infra.sh).
 # That bootstrap path does not expose the Helm-chart values that would
 # otherwise toggle the Web UI, so we run a second Helm release of the
 # same chart with `web.serverOnly: true`, `installCRDs: false` and
@@ -38,7 +38,7 @@
 # Values validated against flux-operator Helm chart 0.47.x — when
 # bumping to 0.48.x or beyond, re-verify that each flag above still
 # carries the semantics documented here (chart maintainers may rename
-# or restructure `web.*` keys across minor versions). Feature: CC-0086.
+# or restructure `web.*` keys across minor versions).
 #
 # Access (kind quick-start):
 #   kubectl port-forward svc/flux-web -n flux-system 9080:9080
@@ -48,7 +48,6 @@
 # minor track of `FLUX_OPERATOR_VERSION` in hack/deploy-infra.sh (today
 # v0.52.0 → 0.52.x). Bump both together when upgrading the operator.
 #
-# Feature: CC-0086, REQ-001
 ---
 apiVersion: fluxcd.controlplane.io/v1
 kind: ResourceSet
@@ -62,7 +61,7 @@ spec:
   # Web UI instance, so we inline the input with a single `version`
   # entry and hard-code the nested resource names / namespaces below.
   # This keeps the kind-only addon self-contained — no extra
-  # ResourceSetInputProvider CR to maintain. Feature: CC-0086, REQ-001
+  # ResourceSetInputProvider CR to maintain.
   inputs:
     - version: "0.52.x"
   resources:

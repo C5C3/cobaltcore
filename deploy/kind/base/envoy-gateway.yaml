@@ -30,7 +30,7 @@
 # Reason: (a) the Envoy Gateway chart is not known to be mirrored into
 # `c5c3-charts`, (b) adding the repo under `deploy/flux-system/sources/`
 # would still require wiring it into `deploy/flux-system/kustomization.yaml`,
-# which REQ-012 forbids, and (c) `deploy/kind/base/headlamp.yaml` already
+# which forbids, and (c) `deploy/kind/base/headlamp.yaml` already
 # sets the precedent for inlining a per-addon `HelmRepository` in the
 # kind overlay. Result: `deploy/flux-system/` is byte-identical to main.
 #
@@ -39,11 +39,11 @@
 # so CI runners behind shared NAT can occasionally surface TOOMANYREQUESTS
 # from source-controller, causing the envoy-gateway HelmRelease wait in
 # `hack/deploy-infra.sh` Phase 3 to flake. Mitigation is tracked under
-# **CC-0095** ("Mirror Envoy Gateway chart into `oci://ghcr.io/c5c3/charts`")
+# **** ("Mirror Envoy Gateway chart into `oci://ghcr.io/c5c3/charts`")
 # — once that follow-up lands, swap the `url:` below to the mirror and
 # remove this note. Documenting the failure mode here keeps the
 # root-cause diagnosis visible to whoever triages the first rate-limit
-# flake (CC-0088).
+# flake.
 #
 # DECISION: EnvoyProxy NodePort pinning
 # Ambiguity: the EnvoyProxy v1alpha1 schema exposes multiple ways to
@@ -64,7 +64,6 @@
 # majors disabled (see `renovate.json` customManager for
 # `deploy/kind/base/envoy-gateway.yaml`).
 #
-# Feature: CC-0088, REQ-001, REQ-002, REQ-012
 ---
 apiVersion: v1
 kind: Namespace
@@ -111,7 +110,7 @@ spec:
     # apply (Helm's pre-install hook also tries to create it) and the
     # two paths attach divergent `meta.helm.sh/release-namespace`
     # annotations. Leaving it unset (Helm default `false`) lets the
-    # explicit Namespace resource own the object (CC-0088).
+    # explicit Namespace resource own the object.
     remediation:
       retries: 3
   upgrade:

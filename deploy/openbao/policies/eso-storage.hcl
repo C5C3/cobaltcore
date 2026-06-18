@@ -7,7 +7,6 @@
 # newly generated Ceph keys back to OpenBao.
 # Bound to the ESO ServiceAccount in the Storage cluster via
 # kubernetes/storage auth mount.
-# Feature: CC-0009
 
 path "kv-v2/data/ceph/*" {
   capabilities = ["read", "create", "update"]

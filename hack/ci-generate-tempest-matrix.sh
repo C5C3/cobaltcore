@@ -4,7 +4,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # hack/ci-generate-tempest-matrix.sh — Generate Tempest release matrix from releases/ directories.
-# Feature: CC-0051
 #
 # Scans releases/*/ directories and builds a JSON matrix for the Tempest CI job.
 # Each release requires a matching Tempest config directory at
@@ -13,12 +12,12 @@
 # Required env vars:
 #   GITHUB_OUTPUT — GitHub Actions output file (set automatically by Actions)
 #
-# REQ-001: Extracted from ci.yaml inline script (CC-0051, review #2).
-# REQ-007: set -euo pipefail, SPDX Apache-2.0 header, shellcheck-clean.
+# Extracted from ci.yaml inline script (review #2).
+# set -euo pipefail, SPDX Apache-2.0 header, shellcheck-clean.
 
 set -euo pipefail
 
-# Default GITHUB_OUTPUT to /dev/null for local execution (CC-0051).
+# Default GITHUB_OUTPUT to /dev/null for local execution.
 : "${GITHUB_OUTPUT:=/dev/null}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

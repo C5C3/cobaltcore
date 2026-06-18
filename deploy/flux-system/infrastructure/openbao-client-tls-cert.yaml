@@ -29,7 +29,6 @@
 # tls_require_and_verify_client_cert against tls_client_ca_file work:
 # every Secret's ca.crt resolves to the same openbao-ca bundle, so the
 # listener trusts these client certs and ESO trusts the server cert.
-# Feature: CC-0107
 ---
 apiVersion: cert-manager.io/v1
 kind: Certificate

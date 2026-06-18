@@ -7,7 +7,6 @@
 # patches MariaDB CR (1 replica, Galera disabled, MaxScale disabled,
 # standard storage class) and Memcached CR (1 replica) for single-node
 # kind cluster resource constraints.
-# Feature: CC-0010, CC-0106, REQ-003, REQ-009
 ---
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
@@ -16,19 +15,18 @@ resources:
   - ../../flux-system/infrastructure
   # Gateway API Quick Start: CRD-dependent CRs whose CRDs are shipped
   # by the cert-manager / envoy-gateway HelmReleases in Phase 1.
-  # Feature: CC-0088
   - envoy-nodeport.yaml
   - keystone-nip-io-tls-certificate.yaml
   # kind-only: standalone Keystone CRs (Quick Start, keystone e2e/tempest/
   # chaos suites) reference the Secret "keystone-db"; ControlPlane-based
   # deployments use the operator-projected per-ControlPlane ExternalSecret
-  # instead, so the production stack ships none (CC-0116).
+  # instead, so the production stack ships none.
   #
   # keystone-admin and mariadb-root-password are likewise kind-only shims for
   # standalone flows; production deploy/eso ships none of the three. The admin
   # password is operator-projected per-ControlPlane by the c5c3 operator
-  # (reconcileAdminPassword, CC-0117); the MariaDB root password is expected
-  # from a non-kind Flux MariaDB baseline (CC-0117).
+  # (reconcileAdminPassword); the MariaDB root password is expected
+  # from a non-kind Flux MariaDB baseline.
   - keystone-db-externalsecret.yaml
   - keystone-admin-externalsecret.yaml
   - mariadb-root-password-externalsecret.yaml
@@ -36,7 +34,7 @@ resources:
 patches:
   # MariaDB: single replica, no Galera, no MaxScale, standard storage.
   #
-  # Intentional divergence (CC-0106, REQ-009): the kind overlay disables
+  # Intentional divergence the kind overlay disables
   # spec.tls. The production base (deploy/flux-system/infrastructure/
   # mariadb.yaml) enables TLS via serverCertIssuerRef/clientCertIssuerRef
   # because mariadb-operator v0.38.1 issues per-Galera-node server certs and
@@ -47,7 +45,7 @@ patches:
   # in this environment. Disabling TLS in kind keeps the Quick Start path
   # green; the production TLS posture is exercised by the
   # tests/e2e/keystone/database-tls/ chainsaw suite on a full Galera+MaxScale
-  # cluster (CC-0106, REQ-011). To exercise the mTLS path against kind,
+  # cluster. To exercise the mTLS path against kind,
   # remove this spec.tls override and re-enable Galera/MaxScale in this
   # patch.
   - target:

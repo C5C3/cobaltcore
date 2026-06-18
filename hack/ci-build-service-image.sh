@@ -4,7 +4,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # hack/ci-build-service-image.sh — Build an OpenStack service container image.
-# Feature: CC-0050
 #
 # Resolves upstream source refs, clones the project, applies constraint
 # overrides, and builds the full image chain: python-base -> venv-builder ->
@@ -17,8 +16,8 @@
 # Optional env vars:
 #   RELEASE       — Release directory name (default: 2025.2)
 #
-# REQ-002: Reusable service image build script.
-# REQ-007: set -euo pipefail, SPDX Apache-2.0 header, shellcheck-clean.
+# Reusable service image build script.
+# set -euo pipefail, SPDX Apache-2.0 header, shellcheck-clean.
 
 set -euo pipefail
 
@@ -57,7 +56,7 @@ APT_PACKAGES=$(yq -r ".\"${OPERATOR}\".apt_packages // [] | join(\" \")" "${EXTR
 # 3. Clone upstream at pinned ref
 # ---------------------------------------------------------------------------
 # NOTE: Uses mktemp to avoid race conditions during local parallel debugging.
-# Each invocation gets a unique directory (CC-0050, review #2 comment 9).
+# Each invocation gets a unique directory (review #2 comment 9).
 SRC_DIR=$(mktemp -d "/tmp/${OPERATOR}-src.XXXXXX")
 trap 'rm -rf "${SRC_DIR}"' EXIT
 git clone --depth 1 --branch "${SERVICE_REF}" \

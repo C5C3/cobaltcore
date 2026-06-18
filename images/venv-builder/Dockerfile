@@ -33,7 +33,7 @@ RUN python3 -m venv /var/lib/openstack
 RUN --mount=type=bind,source=requirements.txt,target=/tmp/requirements.txt \
     uv pip install --prefix /var/lib/openstack -r /tmp/requirements.txt
 
-# CC-0031: Static OCI Image Spec annotations for local builds.
+# Static OCI Image Spec annotations for local builds.
 # CI-generated labels from docker/metadata-action supplement these at push time.
 LABEL org.opencontainers.image.title="venv-builder" \
       org.opencontainers.image.description="Python virtualenv builder image for OpenStack services" \

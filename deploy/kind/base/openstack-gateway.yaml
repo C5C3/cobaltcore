@@ -31,7 +31,6 @@
 # overlay — the Gateway/GatewayClass stay infrastructure concerns that
 # customers pick for themselves (docs/reference/keystone-crd.md:316-318).
 #
-# Feature: CC-0088, REQ-003
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: GatewayClass

@@ -7,19 +7,16 @@
 #
 # Bundles everything needed to render a working observability stack on a
 # kind cluster:
-#   1. The monitoring Namespace (declared inline so the overlay is
-#      self-contained — production overlays do NOT install
-#      kube-prometheus-stack, so the Namespace lives here, not in
-#      deploy/flux-system/namespaces.yaml; CC-0100, REQ-001).
+#   1. The monitoring Namespace (declared inline so the overlay is self-contained — production overlays do NOT install kube-prometheus-stack, so the Namespace lives here, not in deploy/flux-system/namespaces.yaml).
 #   2. The kube-prometheus-stack HelmRelease with kind-tuned values baked
 #      directly into release.yaml (no separate patch file — the production
 #      stack never references this release, so there is no upstream values
 #      template to patch). The HelmRepository source is the existing
 #      prometheus-community entry under deploy/flux-system/sources/ and is
-#      reused as-is (CC-0100, REQ-001).
+#      reused as-is.
 #   3. A configMapGenerator-produced ConfigMap that wraps the Keystone
 #      Operator Grafana dashboard JSON for sidecar discovery
-#      (CC-0100, REQ-004).
+#     .
 #
 # All resource references are local to this overlay (no parent-directory
 # `../../` paths). The overlay therefore renders cleanly under kustomize's
@@ -29,7 +26,7 @@
 # (kubernetes/kubectl#948), so keeping the overlay self-contained is the
 # only way to ship `kubectl apply -k` as the production caller in
 # hack/deploy-infra.sh — same constraint that drove the chaos-mesh overlay
-# in CC-0097, REQ-003 (CC-0100, REQ-001).
+# in.
 #
 # Single-source-of-truth note for the dashboard JSON: the canonical file
 # lives at operators/keystone/dashboards/keystone-operator.json and is
@@ -38,14 +35,12 @@
 # (gated on WITH_PROMETHEUS=true), and the staged keystone-operator.json
 # here is git-ignored — see .gitignore. That keeps the dashboard JSON in
 # exactly one tracked location while still letting kustomize's
-# LoadRestrictionsRootOnly check pass (CC-0100, REQ-004).
+# LoadRestrictionsRootOnly check pass.
 #
 # Production overlays (deploy/flux-system/kustomization.yaml) do not list
 # any of the resources in this directory — kube-prometheus-stack is a
 # kind-only convenience for the Quick Start observability story
-# (CC-0100, REQ-001).
 #
-# Feature: CC-0100, REQ-001, REQ-004
 ---
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
@@ -58,13 +53,12 @@ namespace: monitoring
 resources:
   # Namespace declared inline so the overlay is self-contained and the
   # monitoring namespace exists before the HelmRelease tries to render
-  # workloads into it (CC-0100, REQ-001).
+  # workloads into it.
   - namespace.yaml
   # HelmRelease for kube-prometheus-stack with kind-tuned values baked in
   # (retention=6h, alertmanager/nodeExporter/kubeStateMetrics disabled,
   # cross-namespace ServiceMonitor selector). Reuses the prometheus-community
   # HelmRepository from deploy/flux-system/sources/ — no source.yaml here
-  # (CC-0100, REQ-001, REQ-002, REQ-003).
   - release.yaml
 
 configMapGenerator:
@@ -76,7 +70,7 @@ configMapGenerator:
   # `kubectl get -l` queries. The `keystone-operator.json` path is a local
   # sibling staged at deploy time by hack/deploy-infra.sh — the file is
   # NOT tracked in git (see .gitignore); the canonical source lives at
-  # operators/keystone/dashboards/keystone-operator.json (CC-0100, REQ-004).
+  # operators/keystone/dashboards/keystone-operator.json.
   - name: keystone-operator-dashboard
     namespace: monitoring
     files:
@@ -84,7 +78,7 @@ configMapGenerator:
     options:
       # disableNameSuffixHash keeps the ConfigMap name stable
       # (`keystone-operator-dashboard` instead of `…-<hash>`) so the
-      # chainsaw assertions in REQ-004 can reference it by a fixed name.
+      # chainsaw assertions in can reference it by a fixed name.
       disableNameSuffixHash: true
       labels:
         grafana_dashboard: "1"

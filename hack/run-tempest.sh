@@ -4,7 +4,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # hack/run-tempest.sh — Run Tempest API tests against a service in the kind cluster.
-# Feature: CC-0035
 #
 # Orchestrates Tempest execution for a given OpenStack service:
 #   1. Validate prerequisites (docker, kubectl, yq, service config directory)
@@ -20,8 +19,8 @@
 #      rather than failures
 #   6. Convert subunit results to JUnit XML for CI artifact upload
 #
-# REQ-006: Local Tempest execution orchestration script.
-# REQ-011: set -euo pipefail, SPDX Apache-2.0 header, CC-0035 reference.
+# Local Tempest execution orchestration script.
+# set -euo pipefail, SPDX Apache-2.0 header, reference.
 
 set -euo pipefail
 

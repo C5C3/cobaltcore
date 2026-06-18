@@ -4,7 +4,6 @@
 
 # Self-signed ClusterIssuer for development environments.
 # Requires cert-manager CRDs to be installed (via the cert-manager HelmRelease).
-# Feature: CC-0008
 ---
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer

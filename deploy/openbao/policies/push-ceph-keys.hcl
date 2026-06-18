@@ -4,7 +4,6 @@
 
 # PushSecret policy for Ceph keys — allows PushSecret CRs to write
 # Ceph client keys back to OpenBao after Ceph generates them.
-# Feature: CC-0009
 
 path "kv-v2/data/ceph/*" {
   capabilities = ["create", "update", "read"]

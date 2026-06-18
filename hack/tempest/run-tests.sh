@@ -4,7 +4,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # hack/tempest/run-tests.sh — In-container Tempest execution helper.
-# Feature: CC-0035, CC-0050
 #
 # Runs Tempest in two sequential stestr phases (core tempest.api.* then
 # keystone_tempest_plugin.*) and retries any failed tests once serially to

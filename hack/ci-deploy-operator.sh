@@ -4,9 +4,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # hack/ci-deploy-operator.sh — Deploy an operator into a kind cluster.
-# Feature: CC-0050, CC-0105
 #
-# CC-0105: operator runs in its own dedicated Namespace (default keystone-system);
+# operator runs in its own dedicated Namespace (default keystone-system);
 # the Keystone workload (custom resources) remains in the openstack Namespace.
 #
 # Installs CRDs, waits for establishment, and deploys the operator via Helm
@@ -20,14 +19,14 @@
 #   IMAGE_TAG          — Image tag (default: dev)
 #   NAMESPACE          — Release Namespace for the operator (default:
 #                        keystone-system). The Namespace is created on demand
-#                        via `helm install --create-namespace` (CC-0105, REQ-011).
+#                        via `helm install --create-namespace`.
 #   WITH_PROMETHEUS    — When "true", enables the chart's gated ServiceMonitor
 #                        template via --set monitoring.serviceMonitor.enabled=true
 #                        (default: false). Used by the e2e-prometheus CI job
-#                        (CC-0100, REQ-001).
+#                       .
 #
-# REQ-003: Reusable operator deployment script.
-# REQ-007: set -euo pipefail, SPDX Apache-2.0 header, shellcheck-clean.
+# Reusable operator deployment script.
+# set -euo pipefail, SPDX Apache-2.0 header, shellcheck-clean.
 
 set -euo pipefail
 
@@ -46,7 +45,7 @@ fi
 IMAGE_REPO="${IMAGE_REPO:?IMAGE_REPO is required (e.g. ghcr.io/c5c3/keystone-operator)}"
 IMAGE_TAG="${IMAGE_TAG:-dev}"
 WITH_PROMETHEUS="${WITH_PROMETHEUS:-false}"
-# CC-0105: dedicated release Namespace for the operator. The Keystone workload
+# dedicated release Namespace for the operator. The Keystone workload
 # CRs themselves are still reconciled in the `openstack` Namespace.
 NAMESPACE="${NAMESPACE:-keystone-system}"
 
@@ -72,14 +71,14 @@ helm dependency build --skip-refresh "${CHART_PATH}/"
 # ---------------------------------------------------------------------------
 # Build the Helm --set arguments. The ServiceMonitor template is gated on
 # monitoring.serviceMonitor.enabled and only enabled when the caller opts in
-# via WITH_PROMETHEUS=true (CC-0100, REQ-001). Without this flag the
+# via WITH_PROMETHEUS=true. Without this flag the
 # kube-prometheus-stack chainsaw suite cannot observe the operator's metrics
 # because the ServiceMonitor never renders.
 #
 # Echo the resolved flag value into the CI log mirroring deploy-infra.sh's
 # banner line ("Prometheus stack : ${WITH_PROMETHEUS} ...") so a reader can
 # pinpoint at which step the gate flipped without grepping back to the
-# workflow YAML (CC-0100).
+# workflow YAML.
 echo "Prometheus stack    : ${WITH_PROMETHEUS} (set WITH_PROMETHEUS=true to enable ServiceMonitor)"
 helm_args=(
   --set "image.repository=${IMAGE_REPO}"
@@ -101,7 +100,7 @@ helm install "${OPERATOR}-operator" \
 # 3. Wait for admission webhook to accept traffic
 # ---------------------------------------------------------------------------
 # The readiness probe checks :8081, but the admission webhook serves TLS on
-# :9443.  After helm --wait returns the webhook listener may not yet be
+# 9443.  After helm --wait returns the webhook listener may not yet be
 # accepting connections (cert not mounted, TLS handshake not ready).
 # Additionally, cert-manager must inject the caBundle into the webhook
 # configurations.  Poll until the caBundle is present and the webhook

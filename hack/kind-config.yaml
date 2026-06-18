@@ -5,7 +5,6 @@
 # Kind cluster configuration for local development and CI.
 # Single control-plane node suitable for CI runners (~7GB RAM, 2 vCPUs).
 # Used by hack/deploy-infra.sh to create the E2E test cluster.
-# Feature: CC-0010, REQ-010
 ---
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
@@ -15,7 +14,7 @@ nodes:
     # reaches the Envoy Gateway data-plane Service (type=NodePort,
     # nodePort=31443; pinned via the EnvoyProxy CR in
     # deploy/kind/base/envoy-gateway.yaml). Listening on 127.0.0.1 keeps
-    # the Quick Start endpoint local-only. Feature: CC-0088, REQ-004
+    # the Quick Start endpoint local-only.
     extraPortMappings:
       - hostPort: 443
         containerPort: 31443

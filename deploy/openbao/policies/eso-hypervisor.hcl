@@ -6,7 +6,6 @@
 # and Nova compute configuration needed on hypervisor nodes.
 # Bound to the ESO ServiceAccount in the Hypervisor cluster via
 # kubernetes/hypervisor auth mount.
-# Feature: CC-0009
 
 path "kv-v2/data/ceph/client-nova" {
   capabilities = ["read"]

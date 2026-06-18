@@ -4,7 +4,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # hack/ci-resolve-extra-packages.sh — Resolve extra packages for service image builds.
-# Feature: CC-0055
 #
 # Reads pip_extras, pip_packages, and apt_packages from release extra-packages.yaml.
 #
@@ -17,7 +16,7 @@
 #   pip-packages  — Space-separated pip packages
 #   apt-packages  — Space-separated apt packages
 #
-# REQ-006: Extracted from inline workflow step to standalone script.
+# Extracted from inline workflow step to standalone script.
 
 set -euo pipefail
 

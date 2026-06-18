@@ -4,7 +4,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # hack/teardown-infra.sh — Delete the kind E2E cluster.
-# Feature: CC-0010
 
 set -euo pipefail
 

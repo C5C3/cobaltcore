@@ -6,7 +6,6 @@
 # Generates the openbao-tls Secret used by the OpenBao StatefulSet for
 # inter-node Raft communication and API TLS termination.
 # Requires cert-manager CRDs to be installed (via the cert-manager HelmRelease).
-# Feature: CC-0009
 ---
 apiVersion: cert-manager.io/v1
 kind: Certificate
@@ -20,7 +19,7 @@ spec:
   # requires pod restarts to avoid Raft peer TLS handshake failures.
   duration: 8760h
   renewBefore: 720h
-  # CC-0107: signed by openbao-ca-issuer so this server cert and the
+  # signed by openbao-ca-issuer so this server cert and the
   # client certs in openbao-client-tls-cert.yaml share one CA bundle.
   # Required for tls_require_and_verify_client_cert against
   # tls_client_ca_file = /openbao/tls/ca.crt.

@@ -28,7 +28,6 @@
 # depending on the chart-generated `name` (which varies with the
 # Gateway's listener name and chart version).
 #
-# Feature: CC-0088, REQ-001, REQ-002
 ---
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyProxy

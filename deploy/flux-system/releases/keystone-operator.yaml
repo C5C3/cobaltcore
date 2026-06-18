@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Feature: CC-0105, REQ-001 — the keystone-operator controller runs in its
+# the keystone-operator controller runs in its
 # own dedicated keystone-system Namespace; the Keystone CR and the
 # operator-managed payload (Deployment, Secrets, HTTPRoute, NetworkPolicy)
 # remain in the openstack tenant Namespace. dependsOn entries are

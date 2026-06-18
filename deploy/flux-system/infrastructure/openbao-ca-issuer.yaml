@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Dedicated cert-manager CA for the OpenBao trust domain (CC-0107).
+# Dedicated cert-manager CA for the OpenBao trust domain.
 # One self-signed CA keypair backs three concerns:
 #   1. openbao-tls — the API/Raft server cert mounted at /openbao/tls
 #      (see openbao-tls-cert.yaml).
@@ -25,7 +25,7 @@
 # through one CA-type Issuer makes server cert + every client cert
 # chain to the same root, so ca.crt in every Secret references the same
 # bundle. Mirrors the precedent for the OpenStack DB trust domain in
-# db-ca-issuer.yaml (CC-0106).
+# db-ca-issuer.yaml.
 #
 # DECISION: CA Certificate placement — Issued the CA Certificate into
 # the cert-manager namespace because cert-manager's default
@@ -38,7 +38,6 @@
 # matches the openstack-db-ca cadence so both trust-domain CAs renew
 # on comparable schedules.
 #
-# Feature: CC-0107
 ---
 # Bootstrap CA keypair Secret. The selfsigned-cluster-issuer mints this
 # self-signed CA, which then becomes the trust root for all openbao

@@ -6,9 +6,8 @@
 # hack/install-test-deps.sh — Install pinned E2E test dependencies.
 #
 # By default installs: chainsaw, kind, kubectl. The Flux CLI is optional after
-# the FluxInstance bootstrap migration (CC-0085, REQ-004) and is installed
+# the FluxInstance bootstrap migration and is installed
 # only when WITH_FLUX_CLI=true is exported.
-# Feature: CC-0010, CC-0085
 
 set -euo pipefail
 
@@ -23,7 +22,7 @@ KIND_VERSION="v0.32.0"
 KUBECTL_VERSION="v1.36.1"
 
 # ---------------------------------------------------------------------------
-# Pinned SHA256 hashes (CC-0010).
+# Pinned SHA256 hashes.
 #
 # Supply-chain hardening: hashes are pinned as constants so that a compromised
 # GitHub Release page cannot substitute both the binary and its checksum file
@@ -151,7 +150,7 @@ install_chainsaw() {
 
   curl -fsSL "${url}" -o "${tmpdir}/chainsaw.tar.gz"
 
-  # Verify download integrity against release checksums (CC-0010).
+  # Verify download integrity against release checksums.
   # NOTE: Chainsaw checksums are fetched from upstream (not pinned) because the
   # release asset naming changed across versions and pinned hashes were not
   # available at authoring time. Pin them in the CHAINSAW_SHA256 array once verified.
@@ -190,7 +189,7 @@ install_flux() {
 
   curl -fsSL "${url}" -o "${tmpdir}/flux.tar.gz"
 
-  # Verify download integrity against pinned SHA256 hash (CC-0010).
+  # Verify download integrity against pinned SHA256 hash.
   local _flux_var="FLUX_SHA256_${OS}_${ARCH}"
   local expected_hash="${!_flux_var:-}"
   if [[ -z "${expected_hash}" ]]; then
@@ -228,7 +227,7 @@ install_kind() {
 
   curl -fsSL "${url}" -o "${tmpdir}/kind"
 
-  # Verify download integrity against pinned SHA256 hash (CC-0010).
+  # Verify download integrity against pinned SHA256 hash.
   local _kind_var="KIND_SHA256_${OS}_${ARCH}"
   local expected_hash="${!_kind_var:-}"
   if [[ -z "${expected_hash}" ]]; then
@@ -265,7 +264,7 @@ install_kubectl() {
 
   curl -fsSL "${url}" -o "${tmpdir}/kubectl"
 
-  # Verify download integrity against pinned SHA256 hash (CC-0010).
+  # Verify download integrity against pinned SHA256 hash.
   local _kubectl_var="KUBECTL_SHA256_${OS}_${ARCH}"
   local expected_hash="${!_kubectl_var:-}"
   if [[ -z "${expected_hash}" ]]; then
@@ -288,7 +287,7 @@ main() {
   install_chainsaw
   # Flux CLI is optional: the kind Quick Start bootstraps Flux via the
   # flux-operator FluxInstance and no longer shells out to `flux`
-  # (CC-0085, REQ-004). Set WITH_FLUX_CLI=true to install it anyway.
+  # Set WITH_FLUX_CLI=true to install it anyway.
   if [[ "${WITH_FLUX_CLI:-false}" == "true" ]]; then
     install_flux
   fi

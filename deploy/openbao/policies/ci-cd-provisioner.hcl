@@ -6,7 +6,6 @@
 # secret provisioning by CI/CD pipelines. No delete capability to prevent
 # accidental secret removal.
 # Bound to the provisioner AppRole via approle/ auth mount.
-# Feature: CC-0009
 
 path "kv-v2/data/*" {
   capabilities = ["create", "update", "read"]

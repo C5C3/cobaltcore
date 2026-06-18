@@ -4,7 +4,6 @@
 
 # PKI Issuer policy — allows cert-manager to issue and sign certificates
 # via the OpenBao PKI secret engine.
-# Feature: CC-0009
 
 path "pki/issue/*" {
   capabilities = ["create", "update"]

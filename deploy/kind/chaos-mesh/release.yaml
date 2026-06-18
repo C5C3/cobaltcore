@@ -5,7 +5,6 @@
 # Chaos Mesh HelmRelease — fault injection platform for chaos engineering.
 # Deployed to chaos-mesh namespace, depends on cert-manager for webhook TLS certificates.
 # See architecture/docs/09-implementation/10-chaos-e2e-testing.md for design rationale.
-# Feature: CC-0046
 ---
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease

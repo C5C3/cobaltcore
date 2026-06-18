@@ -4,19 +4,18 @@
 
 # kube-prometheus-stack HelmRelease — opt-in observability for the kind Quick Start.
 # References the existing prometheus-community HelmRepository in flux-system; no
-# new source is introduced (CC-0100, REQ-001).
-# Kind-tuned values (CC-0100, REQ-002): crds.enabled=false because the
+# new source is introduced.
+# Kind-tuned values crds.enabled=false because the
 # prometheus-operator-crds HelmRelease at deploy/flux-system/releases/prometheus-operator-crds.yaml
 # is the single CRD owner — avoids dual-owner reconcile flap. Alertmanager, nodeExporter,
 # and kubeStateMetrics are disabled since a single-node kind cluster does not need
 # cluster-wide kubelet/cadvisor scraping for this demo, and retention is capped at 6h
 # to fit the small kind PV.
-# Selector tuning (CC-0100, REQ-003): serviceMonitorSelectorNilUsesHelmValues=false
+# Selector tuning serviceMonitorSelectorNilUsesHelmValues=false
 # and an empty serviceMonitorSelector ensure the keystone-operator's
 # app.kubernetes.io/*-labelled ServiceMonitor is picked up cross-namespace, sidestepping
 # the `release: <stack-name>` selector mismatch documented in
 # docs/guides/enable-keystone-operator-metrics.md:40-49.
-# Feature: CC-0100
 ---
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
@@ -36,7 +35,7 @@ spec:
         kind: HelmRepository
         name: prometheus-community
         namespace: flux-system
-  # CC-0100: install.crds=CreateReplace and upgrade.crds=CreateReplace are
+  # install.crds=CreateReplace and upgrade.crds=CreateReplace are
   # set for symmetry with every other HelmRelease under deploy/flux-system/
   # (FluxCD-HelmRelease-common pattern). They have no effect here because
   # values.crds.enabled=false (below) makes the chart render zero CRDs —

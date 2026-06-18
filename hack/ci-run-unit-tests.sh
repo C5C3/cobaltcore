@@ -4,7 +4,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # hack/ci-run-unit-tests.sh — Run OpenStack service unit tests in a container.
-# Feature: CC-0055
 #
 # Runs stestr-based unit tests inside a venv-builder container image. Handles
 # volume mounts for source, constraints, test excludes, and result collection.

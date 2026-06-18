@@ -22,7 +22,6 @@
 # docs/quick-start.md:242-245 ("Your browser will warn that the
 # certificate is not trusted — this is expected for a kind cluster").
 #
-# Feature: CC-0088, REQ-003
 ---
 apiVersion: cert-manager.io/v1
 kind: Certificate

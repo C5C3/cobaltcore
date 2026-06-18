@@ -4,7 +4,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # hack/ci-generate-build-matrix.sh — Generate CI build matrices from release directories.
-# Feature: CC-0055
 #
 # Scans releases/*/ directories, reads source-refs.yaml to build service×release
 # matrices for build, test, and Tempest jobs.
@@ -18,7 +17,7 @@
 #   tempest-matrix       — {release, platform, runner} for Tempest build jobs
 #   tempest-release-matrix — {release} for Tempest merge jobs
 #
-# REQ-006: Extracted from inline workflow step to standalone script.
+# Extracted from inline workflow step to standalone script.
 
 set -euo pipefail
 

@@ -4,11 +4,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # hack/deploy-infra.sh — Deploy full infrastructure stack to a kind cluster.
-# Feature: CC-0010, CC-0085
 #
 # Implements the 8-step deployment sequence:
 #   1. Create kind cluster (using hack/kind-config.yaml)
-#   2. Install flux-operator + apply FluxInstance (CC-0085) — applies the
+#   2. Install flux-operator + apply FluxInstance — applies the
 #      ControlPlane flux-operator release, then the bootstrap-scope
 #      namespaces.yaml + fluxinstance.yaml, then waits for FluxInstance/flux
 #      Ready so the Flux toolkit CRDs are registered before Step 3.
@@ -20,19 +19,19 @@
 #   7. Bootstrap OpenBao (init, unseal, configure)
 #   8. Wait for ExternalSecrets to sync
 #
-# REQ-001 (CC-0085): Fresh-cluster bootstrap installs flux-operator and
+# Fresh-cluster bootstrap installs flux-operator and
 #   applies FluxInstance/flux without requiring the Flux CLI.
-# REQ-002 (CC-0085): wait_for_fluxinstance gates Step 3 on Ready=True.
-# REQ-003 (CC-0085): reconcile_helmrepository_sources replaces
+# wait_for_fluxinstance gates Step 3 on Ready=True.
+# reconcile_helmrepository_sources replaces
 #   `flux reconcile source helm` with a kubectl annotate loop.
-# REQ-005 (CC-0085): preflight_checks drops `flux` from required commands.
-# REQ-001 (CC-0010): Deploys full infrastructure stack to kind cluster.
-# REQ-004 (CC-0010): Applies manifests in two phases with health waits between.
-# REQ-005 (CC-0010): Invokes existing OpenBao bootstrap scripts from
+# preflight_checks drops `flux` from required commands.
+# Deploys full infrastructure stack to kind cluster.
+# Applies manifests in two phases with health waits between.
+# Invokes existing OpenBao bootstrap scripts from
 #   deploy/openbao/bootstrap/.
-# REQ-011 (CC-0010): set -euo pipefail, SPDX Apache-2.0 header, feature ID.
-# REQ-012 (CC-0010): Configurable timeouts via environment variables.
-# REQ-005 (CC-0088): envoy-gateway HelmRelease is gated in Phase 3 and a
+# set -euo pipefail, SPDX Apache-2.0 header, feature ID.
+# Configurable timeouts via environment variables.
+# envoy-gateway HelmRelease is gated in Phase 3 and a
 #   Gateway/openstack-gw Programmed=True wait runs after Step 5 (once the
 #   EnvoyProxy CR that GatewayClass/envoy's parametersRef targets has been
 #   applied via the infrastructure overlay), dumping describe +
@@ -44,7 +43,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 # ---------------------------------------------------------------------------
-# Configuration (REQ-012)
+# Configuration
 # ---------------------------------------------------------------------------
 CLUSTER_NAME="${CLUSTER_NAME:-forge}"
 HELMRELEASE_TIMEOUT="${HELMRELEASE_TIMEOUT:-600}"
@@ -59,22 +58,21 @@ EXTERNALSECRET_TIMEOUT="${EXTERNALSECRET_TIMEOUT:-120}"
 # the `vmnetd` privileged helper, rootless Docker, or Podman. With an
 # override, the endpoint becomes `https://keystone.127-0-0-1.nip.io:${KIND_HOST_PORT}/v3`
 # and any sample CR's `spec.endpoints.public` must include the same `:PORT`
-# suffix. See docs/quick-start.md (CC-0088).
+# suffix. See docs/quick-start.md.
 KIND_HOST_PORT="${KIND_HOST_PORT:-443}"
 
 # Gates the opt-in chaos-mesh kind overlay (deploy/kind/chaos-mesh) and the
 # host-side kernel-module load. Defaults to false so the kind Quick Start
 # stays minimal; set WITH_CHAOS_MESH=true to enable chaos-engineering tests
-# (CC-0097).
 WITH_CHAOS_MESH="${WITH_CHAOS_MESH:-false}"
 
 # Gates the opt-in kube-prometheus-stack kind overlay (deploy/kind/prometheus)
 # which installs Prometheus + Grafana for visualising keystone-operator
 # metrics. Defaults to false so the kind Quick Start stays minimal; set
-# WITH_PROMETHEUS=true to install the monitoring stack (CC-0100, REQ-005).
+# WITH_PROMETHEUS=true to install the monitoring stack.
 WITH_PROMETHEUS="${WITH_PROMETHEUS:-false}"
 
-# Gates the opt-in c5c3 ControlPlane bring-up (CC-0110). When true, deploy-infra
+# Gates the opt-in c5c3 ControlPlane bring-up. When true, deploy-infra
 # does NOT create the shared MariaDB/Memcached CRs — the c5c3 ControlPlane
 # provisions them in managed mode — and the c5c3-operator, K-ORC, and
 # keystone-operator are deployed (not suspended) so a ControlPlane CR can
@@ -94,20 +92,20 @@ WITH_CONTROLPLANE_CR="${WITH_CONTROLPLANE_CR:-false}"
 
 # Name of the ControlPlane CR brought up under WITH_CONTROLPLANE=true. The
 # c5c3-operator projects its Keystone Service as "{CONTROLPLANE_NAME}-keystone",
-# and the per-CR Model B admin-password bootstrap path is derived from it (CC-0114).
+# and the per-CR Model B admin-password bootstrap path is derived from it.
 # Keep this in lockstep with metadata.name of the CR you apply (by hand, or the
 # bundled one under WITH_CONTROLPLANE_CR=true, which is renamed to match). Defaults
 # to "controlplane". Ignored unless WITH_CONTROLPLANE=true.
 CONTROLPLANE_NAME="${CONTROLPLANE_NAME:-controlplane}"
 
 # Gateway API CRD release installed before the keystone-operator HelmRelease so
-# the operator's HTTPRoute watch has a registered kind at startup (CC-0065).
+# the operator's HTTPRoute watch has a registered kind at startup.
 # Keep aligned with sigs.k8s.io/gateway-api in operators/keystone/go.mod.
 GATEWAY_API_VERSION="${GATEWAY_API_VERSION:-v1.1.0}"
 GATEWAY_API_CRDS_URL="${GATEWAY_API_CRDS_URL:-https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_API_VERSION}/standard-install.yaml}"
 
 # flux-operator release applied in Step 2 before the FluxInstance CR is created
-# (CC-0085, REQ-001). Kept as a script-local constant so Renovate can bump it
+# Kept as a script-local constant so Renovate can bump it
 # via renovate.json custom managers.
 FLUX_OPERATOR_VERSION="v0.52.0"
 
@@ -119,7 +117,7 @@ KEY_THRESHOLD=3
 # which defaults to the same value ('openbao-system').  When the NAMESPACE env var
 # is set, both this script and the bootstrap scripts receive it correctly because
 # child processes inherit the environment.  Do NOT set OPENBAO_NAMESPACE directly —
-# set NAMESPACE instead so that both layers stay in sync (CC-0010).
+# set NAMESPACE instead so that both layers stay in sync.
 OPENBAO_NAMESPACE="${NAMESPACE:-openbao-system}"
 BAO_ADDR="${BAO_ADDR:-https://127.0.0.1:8200}"
 VAULT_CACERT="${VAULT_CACERT:-/openbao/tls/ca.crt}"
@@ -199,7 +197,7 @@ wait_for_helmreleases() {
 }
 
 # ---------------------------------------------------------------------------
-# wait_for_fluxinstance — Wait until FluxInstance/flux is Ready (CC-0085, REQ-002).
+# wait_for_fluxinstance — Wait until FluxInstance/flux is Ready.
 #
 # Polls every 10s up to HELMRELEASE_TIMEOUT for
 # `.status.conditions[type=Ready].status == True` on FluxInstance/flux in
@@ -248,7 +246,7 @@ wait_for_fluxinstance() {
 # ---------------------------------------------------------------------------
 # reconcile_helmrepository_sources — Force a reconcile of every HelmRepository
 # in flux-system by annotating with reconcile.fluxcd.io/requestedAt — the
-# kubectl-only equivalent of `flux reconcile source helm` (CC-0085, REQ-003).
+# kubectl-only equivalent of `flux reconcile source helm`.
 #
 # A no-op when no HelmRepositories exist (the for-loop body simply does not
 # run). Each annotate failure is tolerated (`|| true`) so a transient API
@@ -267,7 +265,6 @@ reconcile_helmrepository_sources() {
 
 # ---------------------------------------------------------------------------
 # wait_for_gateway_programmed — Wait for a Gateway CR to report Programmed=True
-# (CC-0088, REQ-005).
 #
 # Polls every 10s up to the supplied timeout for
 # `.status.conditions[type=Programmed].status == True` on the named Gateway.
@@ -318,7 +315,7 @@ wait_for_gateway_programmed() {
       # `--since=10m` keeps the dump focused on the most recent failure
       # window. On long-running timeouts the default --tail=200 may already
       # have rolled past the relevant crash frame; the time filter bounds
-      # the output to a meaningful post-mortem window (CC-0088).
+      # the output to a meaningful post-mortem window.
       for pod in ${gw_pods}; do
         log "--- logs for pod ${pod} ---"
         kubectl logs "${pod}" -n envoy-gateway-system --all-containers=true --since=10m --tail=200 2>/dev/null || true
@@ -522,7 +519,7 @@ preflight_checks() {
   # Check that required CLI tools are available.
   # Flux CLI is intentionally omitted: bootstrap now installs flux-operator and
   # applies a FluxInstance via kubectl, and source reconciles use kubectl
-  # annotate (CC-0085, REQ-005).
+  # annotate.
   for cmd in docker kind kubectl jq; do
     if ! command -v "${cmd}" &>/dev/null; then
       log "ERROR: '${cmd}' is not installed or not in PATH."
@@ -534,7 +531,7 @@ preflight_checks() {
   # rendered infrastructure overlay through `yq eval` to drop the MariaDB/Memcached
   # CRs (the ControlPlane provisions those in managed mode). Check it up front so
   # the run fails here instead of deep in Step 5 after a kind cluster already
-  # exists. The default Quick Start stays yq-free (CC-0110).
+  # exists. The default Quick Start stays yq-free.
   if [[ "${WITH_CONTROLPLANE}" == "true" ]] && ! command -v yq &>/dev/null; then
     log "ERROR: WITH_CONTROLPLANE=true requires 'yq' on PATH (used to drop MariaDB/Memcached from the infrastructure overlay)."
     exit 1
@@ -555,7 +552,7 @@ preflight_checks() {
 # chaos-mesh's NetworkChaos uses ipset/iptables/tc inside the target pod's
 # network namespace via nsenter. The underlying kernel modules must be loaded
 # on the host kernel (Kind nodes share it), otherwise chaos-daemon fails with
-# "unable to flush ip sets for pod …" and AllInjected stays False (CC-0049).
+# "unable to flush ip sets for pod …" and AllInjected stays False.
 #
 # Best-effort: skipped on non-Linux, and on Linux we warn but don't abort if
 # modprobe is unavailable or fails — PodChaos-only flows still work.
@@ -641,7 +638,7 @@ load_chaos_mesh_kernel_modules() {
 # enable_keystone_operator_servicemonitor — Toggle the operator chart's
 # `monitoring.serviceMonitor.enabled` value to true so the kube-prometheus-stack
 # Prometheus instance can scrape the operator metrics endpoint via the
-# rendered ServiceMonitor (CC-0089, REQ-006 / CC-0100, REQ-005).
+# rendered ServiceMonitor (/).
 #
 # Callable only when WITH_PROMETHEUS=true. Patches spec.values via
 # strategic-merge so any other values set on the HelmRelease (including the
@@ -665,7 +662,7 @@ load_chaos_mesh_kernel_modules() {
 enable_keystone_operator_servicemonitor() {
   local timeout="${1:-${HELMRELEASE_TIMEOUT}}"
 
-  log "Enabling keystone-operator ServiceMonitor (CC-0100, REQ-005)..."
+  log "Enabling keystone-operator ServiceMonitor..."
   kubectl patch helmrelease keystone-operator -n keystone-system --type=merge \
     -p '{"spec":{"values":{"monitoring":{"serviceMonitor":{"enabled":true}}}}}'
 
@@ -675,7 +672,7 @@ enable_keystone_operator_servicemonitor() {
   if [[ "${suspended}" == "true" ]]; then
     log "keystone-operator HelmRelease is suspended (kind base patch); skipping reconcile wait."
     log "  spec.values patch is durable — re-enable Flux management or run ci-deploy-operator.sh"
-    log "  with monitoring.serviceMonitor.enabled=true to render the ServiceMonitor (CC-0100, REQ-005)."
+    log "  with monitoring.serviceMonitor.enabled=true to render the ServiceMonitor."
     return 0
   fi
 
@@ -793,7 +790,7 @@ openbao_bootstrap() {
   # Extract root token from the init-keys Secret.
   export BAO_TOKEN
   # Ensure the root token is scrubbed from the environment on any exit path
-  # (success, set -e failure, or signal), not only on success (CC-0010, W-007).
+  # (success, set -e failure, or signal), not only on success.
   trap 'unset BAO_TOKEN' EXIT
   BAO_TOKEN=$(kubectl get secret "${SECRET_NAME}" -n "${OPENBAO_NAMESPACE}" \
     -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token')
@@ -830,7 +827,7 @@ openbao_bootstrap() {
 
 # ---------------------------------------------------------------------------
 # render_kind_config — Produce the kind-config YAML that `kind create cluster`
-# should consume, applying the `KIND_HOST_PORT` override when set (CC-0088).
+# should consume, applying the `KIND_HOST_PORT` override when set.
 #
 # When `KIND_HOST_PORT == 443` (the default), the checked-in
 # hack/kind-config.yaml is copied verbatim — no `yq` dependency at runtime.
@@ -897,7 +894,7 @@ main() {
   # Load chaos-mesh kernel modules on the host before creating the cluster.
   # Kind nodes share the host kernel; NetworkChaos needs ipset/tc modules.
   # Gated on WITH_CHAOS_MESH so the default Quick Start does not require
-  # passwordless sudo or modprobe access (CC-0097).
+  # passwordless sudo or modprobe access.
   if [[ "${WITH_CHAOS_MESH}" == "true" ]]; then
     load_chaos_mesh_kernel_modules
   else
@@ -912,7 +909,7 @@ main() {
     log "Kind cluster '${CLUSTER_NAME}' already exists — skipping creation."
   else
     # Render kind-config.yaml into a tempfile so KIND_HOST_PORT overrides
-    # take effect without mutating the checked-in file (CC-0088). We do not
+    # take effect without mutating the checked-in file. We do not
     # install a cleanup trap here: openbao_bootstrap registers its own EXIT
     # trap later in the run and a second `trap ... EXIT` would overwrite it,
     # leaking BAO_TOKEN into the environment. The tempfile is a few hundred
@@ -929,7 +926,7 @@ main() {
     log "Kind cluster '${CLUSTER_NAME}' created."
   fi
 
-  # Step 2: Install flux-operator and apply FluxInstance (CC-0085, REQ-001/REQ-002)
+  # Step 2: Install flux-operator and apply FluxInstance (/)
   #
   # Only the two bootstrap-scope manifests are applied here — the Namespace
   # resources and the FluxInstance CR. HelmRepository/HelmRelease objects from
@@ -939,7 +936,7 @@ main() {
   # consumed by those objects are materialised only after the flux-operator
   # reconciles this FluxInstance. Applying them before wait_for_fluxinstance
   # would abort the script under `set -euo pipefail` with 'no matches for kind
-  # "HelmRepository" in version "source.toolkit.fluxcd.io/v1"' (CC-0085).
+  # "HelmRepository" in version "source.toolkit.fluxcd.io/v1"'.
   log "=== Step 2/8: Install flux-operator + apply FluxInstance ==="
   kubectl apply -f \
     "https://github.com/controlplaneio-fluxcd/flux-operator/releases/download/${FLUX_OPERATOR_VERSION}/install.yaml"
@@ -948,7 +945,7 @@ main() {
   wait_for_fluxinstance "${HELMRELEASE_TIMEOUT}"
   log "flux-operator installed and FluxInstance/flux is Ready."
 
-  # Gateway API CRDs (CC-0065). Installed before the base kustomize overlay so
+  # Gateway API CRDs. Installed before the base kustomize overlay so
   # the keystone-operator Pod (deployed via HelmRelease in Step 3/4) finds the
   # gateway.networking.k8s.io/v1 HTTPRoute kind at startup. Without this, the
   # operator logs 'no matches for kind HTTPRoute' and never becomes Ready.
@@ -977,12 +974,12 @@ main() {
   # Safe to run only after Step 2's wait_for_fluxinstance succeeds — at that
   # point flux-operator has materialised the Flux toolkit CRDs (source/helm
   # /kustomize/notification), so HelmRepository and HelmRelease objects under
-  # deploy/flux-system/{sources,releases}/ resolve to known Kinds (CC-0085).
+  # deploy/flux-system/{sources,releases}/ resolve to known Kinds.
   log "=== Step 3/8: Apply base kustomize overlay ==="
   kubectl apply -k "${REPO_ROOT}/deploy/kind/base"
   log "Base kustomize overlay applied."
 
-  # Opt-in chaos-mesh overlay (CC-0097). Layered on top of the base so the
+  # Opt-in chaos-mesh overlay. Layered on top of the base so the
   # default Quick Start stays minimal; enable with WITH_CHAOS_MESH=true.
   # The overlay is self-contained (no `../../` parent-dir references), so
   # kubectl's embedded kustomize renders it under the default
@@ -994,14 +991,14 @@ main() {
     log "Chaos Mesh kind overlay applied (WITH_CHAOS_MESH=true)."
   fi
 
-  # Opt-in kube-prometheus-stack overlay (CC-0100, REQ-005). Layered on top of
+  # Opt-in kube-prometheus-stack overlay. Layered on top of
   # the base so the default Quick Start stays minimal; enable with
   # WITH_PROMETHEUS=true. The overlay is self-contained (no `../../` parent-dir
   # references), so kubectl's embedded kustomize renders it under the default
   # LoadRestrictionsRootOnly security check — same contract as the chaos-mesh
   # overlay (no `--load-restrictor` flag required, kubernetes/kubectl#948).
   #
-  # The dashboard JSON copy step (CC-0100, REQ-004) stages the Grafana
+  # The dashboard JSON copy step stages the Grafana
   # dashboard from operators/keystone/dashboards/ into the overlay root so
   # configMapGenerator can reference it without a parent-dir traversal. The
   # single source of truth lives at operators/keystone/dashboards/; the
@@ -1011,12 +1008,12 @@ main() {
   # when kustomize renders the ConfigMap.
   if [[ "${WITH_PROMETHEUS}" == "true" ]]; then
     cp -f "${REPO_ROOT}/operators/keystone/dashboards/keystone-operator.json" "${REPO_ROOT}/deploy/kind/prometheus/keystone-operator.json"
-    log "Dashboard JSON copied into deploy/kind/prometheus/ for kustomize configMapGenerator (WITH_PROMETHEUS=true; CC-0100, REQ-004)."
+    log "Dashboard JSON copied into deploy/kind/prometheus/ for kustomize configMapGenerator (WITH_PROMETHEUS=true)."
     kubectl apply -k "${REPO_ROOT}/deploy/kind/prometheus"
-    log "Prometheus kind overlay applied (WITH_PROMETHEUS=true; CC-0100, REQ-005)."
+    log "Prometheus kind overlay applied (WITH_PROMETHEUS=true)."
   fi
 
-  # CC-0110: the c5c3 ControlPlane stack (c5c3-operator + image and the K-ORC
+  # the c5c3 ControlPlane stack (c5c3-operator + image and the K-ORC
   # GitRepository/Kustomization) is published and valid, so it would reconcile —
   # but running the full chain is opt-in. WITH_CONTROLPLANE=true deploys it; the
   # default leaves it suspended so the bring-up stays light and the keystone E2E
@@ -1035,7 +1032,7 @@ main() {
     # Suspend the stack (best-effort, not awaited — see helm_releases below) so it
     # does not add idle reconcile churn competing with external-secrets /
     # kube-prometheus-stack for the controllers.
-    log "Suspending the CC-0110 ControlPlane stack (c5c3-operator, k-orc); set WITH_CONTROLPLANE=true to deploy it."
+    log "Suspending the ControlPlane stack (c5c3-operator, k-orc); set WITH_CONTROLPLANE=true to deploy it."
     kubectl patch helmrelease c5c3-operator -n c5c3-system \
       --type merge -p '{"spec":{"suspend":true}}' 2>/dev/null || true
     kubectl patch kustomization k-orc -n flux-system \
@@ -1064,10 +1061,10 @@ main() {
   # StatefulSet. The db-ca-issuer manifest creates the OpenStack DB CA
   # keypair Secret and the "openstack-db-ca-issuer" ClusterIssuer that
   # MariaDB/MaxScale and the Keystone DB-client mTLS path consume
-  # (CC-0106, REQ-009). The openbao-ca-issuer manifest creates the
+  # The openbao-ca-issuer manifest creates the
   # OpenBao trust-domain CA keypair Secret and the "openbao-ca-issuer"
   # ClusterIssuer that signs openbao-tls and all openbao client certs
-  # (CC-0107). These resources are also part of the infrastructure
+  # These resources are also part of the infrastructure
   # kustomization (applied in Step 5), but OpenBao and MariaDB cannot
   # become Ready until they exist.
   # Order matters:
@@ -1085,17 +1082,16 @@ main() {
   # envoy-gateway is kind-only (deploy/kind/base/envoy-gateway.yaml) and provides
   # the GatewayClass consumed by Gateway/openstack-gw; gating it here ensures
   # the wait_for_gateway_programmed poll below finds a reconciling controller
-  # (CC-0088, REQ-005).
   log "Phase 3: Waiting for remaining HelmReleases..."
   # Build the release list dynamically so chaos-mesh is only awaited when the
-  # opt-in overlay was applied (CC-0097). The surviving non-chaos order is
+  # opt-in overlay was applied. The surviving non-chaos order is
   # preserved exactly as before; chaos-mesh is appended last to avoid moving
   # any other release's relative position.
   local helm_releases=(prometheus-operator-crds openbao mariadb-operator-crds mariadb-operator external-secrets memcached-operator envoy-gateway)
   if [[ "${WITH_CHAOS_MESH}" == "true" ]]; then
     helm_releases+=(chaos-mesh)
   fi
-  # CC-0100, REQ-005: kube-prometheus-stack is appended last so the relative
+  # kube-prometheus-stack is appended last so the relative
   # ordering of the seven base releases (and chaos-mesh) is preserved exactly.
   local release_wait_timeout="${HELMRELEASE_TIMEOUT}"
   if [[ "${WITH_PROMETHEUS}" == "true" ]]; then
@@ -1103,14 +1099,14 @@ main() {
     # The monitoring stack is heavy (prometheus + grafana + alertmanager +
     # operator); on a loaded 4-vCPU runner it was still Progressing at the 600s
     # mark. Give the wait more headroom, but never shorten a caller-pinned
-    # HELMRELEASE_TIMEOUT that is already larger. CC-0110.
+    # HELMRELEASE_TIMEOUT that is already larger..
     if [[ "${release_wait_timeout}" -lt 1200 ]]; then
       release_wait_timeout=1200
     fi
   fi
   wait_for_helmreleases "${release_wait_timeout}" "${helm_releases[@]}"
 
-  # CC-0100, REQ-005: with kube-prometheus-stack Ready, flip the operator
+  # with kube-prometheus-stack Ready, flip the operator
   # chart's monitoring.serviceMonitor.enabled to true so Prometheus picks up
   # the metrics target. Runs only when WITH_PROMETHEUS=true to keep the
   # default Quick Start free of monitoring-coreos-com CRD lookups.
@@ -1126,7 +1122,7 @@ main() {
   # the API server — the operator pods may still be starting.
   # envoyproxies.gateway.envoyproxy.io is installed by the envoy-gateway
   # HelmRelease (Phase 3 above) and is required by the EnvoyProxy CR in
-  # deploy/kind/infrastructure/envoy-nodeport.yaml (CC-0088).
+  # deploy/kind/infrastructure/envoy-nodeport.yaml.
   wait_for_crds "${POD_TIMEOUT}" \
     memcacheds.memcached.c5c3.io \
     clustersecretstores.external-secrets.io \
@@ -1156,7 +1152,7 @@ main() {
   # its parametersRef on GatewayClass/envoy — so this wait must run
   # AFTER Step 5, not between Phase 3 and Step 5. Downstream HTTPRoute
   # resources (operator-created from the Keystone CR's spec.gateway) need a
-  # Programmed listener to bind to (CC-0088, REQ-005).
+  # Programmed listener to bind to.
   wait_for_gateway_programmed openstack-gw openstack "${HELMRELEASE_TIMEOUT}"
 
   # Step 6: Wait for OpenBao pod to be Running (not Ready — it becomes Ready
@@ -1168,9 +1164,9 @@ main() {
   log "=== Step 7/8: OpenBao bootstrap ==="
   # WITH_CONTROLPLANE: the bootstrap (write-bootstrap-secrets.sh, run inside
   # openbao_bootstrap below) seeds the per-ControlPlane Model B admin password on
-  # per-CR OpenBao paths (CC-0112, REQ-009).
+  # per-CR OpenBao paths.
   #
-  # DECISION (CC-0112, REQ-009): the default deployment's ControlPlane identity is
+  # DECISION the default deployment's ControlPlane identity is
   # "openstack/${CONTROLPLANE_NAME}". The ControlPlane CR always lives in the
   # "openstack" namespace (deploy/kind/controlplane/controlplane.yaml; there is no
   # CONTROLPLANE_NAMESPACE knob), and its name is CONTROLPLANE_NAME (default
@@ -1181,15 +1177,15 @@ main() {
   # equals write-bootstrap-secrets.sh's built-in KORC_CONTROLPLANES default
   # ("openstack/controlplane"), so the canonical single-CR deploy path is unchanged.
   # Reviewer: please verify.
-  # CC-0114: the K-ORC clouds.yaml is now seeded by the operator (reconcileKORC →
+  # the K-ORC clouds.yaml is now seeded by the operator (reconcileKORC →
   # seedBootstrapCloudsYAML), which also derives the in-cluster auth_url itself, so
   # the shell stack no longer seeds it or exports a K-ORC auth_url override.
   # (The admin-password ExternalSecret is now operator-projected per-ControlPlane
-  # (reconcileAdminPassword, CC-0117); the kind overlay shim
+  # (reconcileAdminPassword); the kind overlay shim
   # (deploy/kind/infrastructure/keystone-admin-externalsecret.yaml) pins only the
   # default identity, so a CONTROLPLANE_NAME override no longer requires editing
   # that manifest on the ControlPlane path. The K-ORC clouds.yaml ExternalSecret is
-  # likewise created per-CR by the operator (CC-0114) and needs no manifest edit.)
+  # likewise created per-CR by the operator and needs no manifest edit.)
   if [[ "${WITH_CONTROLPLANE}" == "true" ]]; then
     export KORC_CONTROLPLANES="openstack/${CONTROLPLANE_NAME}"
   fi
@@ -1330,7 +1326,7 @@ main() {
 }
 
 # Run main only when executed directly so unit tests (tests/unit/hack/) can
-# source this script and exercise individual functions (CC-0085, REQ-003/REQ-005).
+# source this script and exercise individual functions (/).
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
   main "$@"
 fi

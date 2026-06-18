@@ -4,7 +4,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # write-bootstrap-secrets.sh — Write initial bootstrap secrets to OpenBao KV-v2.
-# Feature: CC-0009
 #
 # This script is idempotent: each secret is only written when it does not
 # already exist in the KV store.
@@ -21,17 +20,17 @@ source "${SCRIPT_DIR}/common.sh"
 BAO_TOKEN="${BAO_TOKEN:?BAO_TOKEN must be set}"
 
 # KORC_CONTROLPLANES: whitespace-separated list of "<namespace>/<controlplane>"
-# identities to seed per-ControlPlane bootstrap secrets for (CC-0112, REQ-009).
+# identities to seed per-ControlPlane bootstrap secrets.
 # For each identity the script seeds:
 #   - the Model B admin password at  kv-v2/bootstrap/<namespace>/<controlplane>-keystone/admin
 #   - the per-ControlPlane Keystone DB credential at
-#     kv-v2/openstack/keystone/<namespace>/<controlplane>/db (CC-0116, REQ-006)
+#     kv-v2/openstack/keystone/<namespace>/<controlplane>/db
 # The K-ORC bootstrap clouds.yaml is no longer seeded here: the operator now seeds
-# it from reconcileKORC (seedBootstrapCloudsYAML) — CC-0114.
+# it from reconcileKORC (seedBootstrapCloudsYAML).
 # The default is the single canonical ControlPlane the Quick Start brings up
 # (deploy/kind/controlplane/controlplane.yaml: ControlPlane "controlplane" in
 # namespace "openstack"), so the single-CR `make deploy-infra` path is unchanged
-# (CC-0112, REQ-009; see hack/deploy-infra.sh). Override it to bring up several
+# (see hack/deploy-infra.sh). Override it to bring up several
 # ControlPlanes (e.g. KORC_CONTROLPLANES="tenant-a/cp tenant-b/cp"); each entry
 # MUST be "<namespace>/<controlplane>".
 KORC_CONTROLPLANES="${KORC_CONTROLPLANES:-openstack/controlplane}"
@@ -72,7 +71,7 @@ write_secret_if_missing() {
     else
       # Quote non-generated values to guard against shell metacharacters
       # (spaces, equals signs in values, etc.) in the sh -c command string.
-      # Escape embedded single quotes: ' → '\'' (CC-0009)
+      # Escape embedded single quotes: ' → '\''
       local escaped_val="${val//\'/\'\\\'\'}"
       put_args+=" ${key}='${escaped_val}'"
     fi
@@ -99,11 +98,9 @@ write_secret_if_missing() {
 # "secret not managed by external-secrets"
 # (external-secrets providers/v1/vault/client_push.go). A path seeded above with
 # `bao kv put` carries no custom_metadata, so the Model B scheduled
-# admin-password rotation backup PushSecret (per-CR RemoteKey
-# bootstrap/{namespace}/{keystone}/admin, see
-# operators/keystone/internal/controller/reconcile_passwordrotation.go; CC-0112)
+# admin-password rotation backup PushSecret (per-CR RemoteKey bootstrap/{namespace}/{keystone}/admin, see operators/keystone/internal/controller/reconcile_passwordrotation.go)
 # could never mirror the rotated password back into OpenBao without this marker
-# (CC-0109). Stamping the exact marker ESO itself writes lets ESO treat the
+# Stamping the exact marker ESO itself writes lets ESO treat the
 # seeded value as its own on the first push.
 #
 # Idempotent and migration-safe: it runs unconditionally (not gated on
@@ -132,18 +129,17 @@ main() {
   write_secret_if_missing "kv-v2/infrastructure/mariadb" \
     "root-password=${GENERATED_PASSWORD}"
 
-  # CC-0112 (REQ-009): per-ControlPlane bootstrap seeding. For each
+  # per-ControlPlane bootstrap seeding. For each
   # "<namespace>/<controlplane>" identity in KORC_CONTROLPLANES (default
   # "openstack/controlplane"), seed ONLY the per-CR Model B admin password on the
   # per-CR OpenBao path so two ControlPlanes never collide on the cluster-global
   # OpenBao backend. The K-ORC bootstrap clouds.yaml is now seeded by the
-  # operator's reconcileKORC (seedBootstrapCloudsYAML) rather than here (CC-0114).
+  # operator's reconcileKORC (seedBootstrapCloudsYAML) rather than here.
   # The legacy flat writes (bootstrap/keystone-admin,
   # openstack/keystone/admin/app-credential) are gone: the keystone-operator Model
   # B rotation PushSecret and the c5c3-operator admin AC PushSecret now target
   # bootstrap/{ns}/{keystone}/admin and
-  # openstack/keystone/{ns}/{cp}/admin/app-credential respectively (CC-0112,
-  # REQ-001/REQ-002).
+  # openstack/keystone/{ns}/{cp}/admin/app-credential respectively (/).
   # shellcheck disable=SC2086  # KORC_CONTROLPLANES is intentionally word-split on whitespace into identities.
   for identity in ${KORC_CONTROLPLANES}; do
     if [[ "${identity}" != */* ]]; then
@@ -158,19 +154,18 @@ main() {
     log "--- Seeding ControlPlane '${identity}' (keystone='${keystone_name}') ---"
 
     # Model B admin password. This bootstrap source is now read by (a) the
-    # operator-projected per-ControlPlane admin-password ExternalSecret (c5c3
-    # operator reconcileAdminPassword, CC-0117) and (b) the kind-only
+    # operator-projected per-ControlPlane admin-password ExternalSecret (c5c3 operator reconcileAdminPassword) and (b) the kind-only
     # default-identity shim
     # (deploy/kind/infrastructure/keystone-admin-externalsecret.yaml); it is
     # later overwritten by the keystone-operator Model B rotation PushSecret.
     write_secret_if_missing "${admin_path}" \
       "password=${GENERATED_PASSWORD}"
-    # CC-0109: let the Model B admin-password rotation PushSecret overwrite this
+    # let the Model B admin-password rotation PushSecret overwrite this
     # pre-seeded path (ESO's managed-by guard rejects it otherwise). See
     # mark_eso_managed.
     mark_eso_managed "${admin_path}"
 
-    # CC-0116 (REQ-006): per-ControlPlane Keystone DB credentials. The flat
+    # per-ControlPlane Keystone DB credentials. The flat
     # kv-v2/openstack/keystone/db seed is removed; each ControlPlane now gets its
     # own DB credential path read by the c5c3 operator's reconcileDBCredentials
     # ExternalSecret (remoteRef key openstack/keystone/{ns}/{name}/db). The

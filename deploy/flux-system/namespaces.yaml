@@ -4,9 +4,8 @@
 
 # Namespace resources for all infrastructure components.
 # Applied before any namespaced resources to ensure target namespaces exist.
-# Feature: CC-0008, CC-0009, CC-0105, CC-0110
 #
-# CC-0105 (REQ-002, REQ-003, REQ-004): keystone-system is added so the
+# keystone-system is added so the
 # keystone-operator HelmRelease can run in its own dedicated Namespace
 # instead of co-tenanting with the Keystone workload in openstack; the
 # dead monitoring-system Namespace is dropped after the
@@ -14,12 +13,12 @@
 # at the live monitoring Namespace, which the flux base now owns directly
 # (previously only declared in the kind overlay).
 #
-# CC-0110 (REQ-023): c5c3-system hosts the c5c3-operator controller in its own
+# c5c3-system hosts the c5c3-operator controller in its own
 # dedicated Namespace (mirroring keystone-system), and orc-system hosts the
 # K-ORC (OpenStack Resource Controller) manager that provides the declarative
 # Keystone resource CRDs the c5c3-operator drives. The orc-system Namespace is
 # co-declared here because the K-ORC installer's own resources land there; it no
-# longer hosts a static k-orc-clouds-yaml ExternalSecret (removed, CC-0117).
+# longer hosts a static k-orc-clouds-yaml ExternalSecret (removed).
 ---
 apiVersion: v1
 kind: Namespace
@@ -72,4 +71,4 @@ metadata:
   name: orc-system
 # The chaos-mesh Namespace lives in the opt-in overlay deploy/kind/chaos-mesh/,
 # not here, so the privileged PodSecurity label is created only when Chaos Mesh
-# is actually deployed (CC-0097, REQ-001).
+# is actually deployed.

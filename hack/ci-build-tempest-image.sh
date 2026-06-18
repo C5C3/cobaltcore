@@ -4,7 +4,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # hack/ci-build-tempest-image.sh — Build the Tempest test container image.
-# Feature: CC-0050
 #
 # Resolves Tempest and plugin version refs from the release config, then builds
 # the Tempest Docker image with pinned versions.
@@ -16,8 +15,8 @@
 #   RELEASE         — Release directory name (default: 2025.2)
 #   TEMPEST_IMAGE   — Target image name:tag (default: c5c3/tempest:local)
 #
-# REQ-002: Reusable image build script.
-# REQ-007: set -euo pipefail, SPDX Apache-2.0 header, shellcheck-clean.
+# Reusable image build script.
+# set -euo pipefail, SPDX Apache-2.0 header, shellcheck-clean.
 
 set -euo pipefail
 

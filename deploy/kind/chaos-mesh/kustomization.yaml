@@ -9,13 +9,13 @@
 # on a kind cluster:
 #   1. The chaos-mesh Namespace with the privileged PodSecurity label
 #      required by chaos-daemon (host PID/network + containerd socket mount).
-#   2. The HelmRepository source (CC-0097, REQ-001).
-#   3. The HelmRelease (CC-0097, REQ-001).
+#   2. The HelmRepository source.
+#   3. The HelmRelease.
 #   4. The kind-tuning HelmRelease patch (containerd runtime, dashboard
 #      disabled, reduced resource requests) that previously lived in
 #      deploy/kind/base/kustomization.yaml. Kustomize requires the patch
 #      target to exist in the same overlay, which is why the patch moves
-#      here rather than staying in the base (CC-0097, REQ-002, REQ-009).
+#      here rather than staying in the base.
 #
 # All resource references are local to this overlay (no parent-directory
 # `../../` paths). The overlay therefore renders cleanly under kustomize's
@@ -24,14 +24,13 @@
 # kubectl's embedded kustomize does NOT expose `--load-restrictor`
 # (kubernetes/kubectl#948), so keeping the overlay self-contained is the
 # only way to ship `kubectl apply -k` as the production caller in
-# hack/deploy-infra.sh (CC-0097, REQ-003).
+# hack/deploy-infra.sh.
 #
 # Production overlays (deploy/flux-system/kustomization.yaml) do not list
 # Chaos Mesh resources; the source/release files no longer live under
 # deploy/flux-system/{sources,releases}/ — they were relocated to this
-# overlay alongside the kind-tuning patch (CC-0097, REQ-001).
+# overlay alongside the kind-tuning patch.
 #
-# Feature: CC-0097, REQ-002, REQ-009
 ---
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
@@ -39,10 +38,10 @@ kind: Kustomization
 resources:
   # Namespace defined inline so the privileged PodSecurity label travels with
   # the opt-in bundle; the namespace MUST exist before the HelmRelease creates
-  # the chaos-daemon DaemonSet (CC-0097, REQ-002).
+  # the chaos-daemon DaemonSet.
   - namespace.yaml
   # HelmRepository + HelmRelease are local to this overlay — production
-  # overlays no longer include them (CC-0097, REQ-001).
+  # overlays no longer include them.
   - source.yaml
   - release.yaml
 
@@ -50,8 +49,8 @@ patches:
   # Chaos Mesh: configure containerd runtime for kind, disable the dashboard
   # (unnecessary in CI), and reduce resource requests for single-node clusters.
   # Relocated from deploy/kind/base/kustomization.yaml so the patch target
-  # (HelmRelease/chaos-mesh) lives in the same overlay (CC-0097, REQ-009).
-  # Feature: CC-0046, REQ-005 (original kind-tuning rationale)
+  # (HelmRelease/chaos-mesh) lives in the same overlay.
+  # Feature: (original kind-tuning rationale)
   - target:
       group: helm.toolkit.fluxcd.io
       version: v2

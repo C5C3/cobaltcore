@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Feature: CC-0110, REQ-023 — the c5c3-operator controller runs in its own
+# the c5c3-operator controller runs in its own
 # dedicated c5c3-system Namespace and orchestrates the Keystone ControlPlane.
 # It depends on the infrastructure + Keystone operators it projects CRs into.
 #

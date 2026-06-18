@@ -4,7 +4,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # hack/ci-wait-for-image.sh — Wait for a pushed image reference to be resolvable.
-# Feature: CC-0055
 #
 # ghcr.io is eventually consistent: a `docker buildx --push` reports success and
 # returns a digest, but a read of that same digest issued seconds later can still

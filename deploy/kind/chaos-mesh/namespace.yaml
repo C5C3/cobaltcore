@@ -4,7 +4,7 @@
 
 # chaos-mesh Namespace, relocated from deploy/flux-system/namespaces.yaml
 # so the privileged PodSecurity label only lands when the opt-in kind
-# overlay is applied (CC-0097, REQ-001, REQ-002).
+# overlay is applied.
 ---
 apiVersion: v1
 kind: Namespace

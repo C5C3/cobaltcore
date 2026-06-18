@@ -5,7 +5,6 @@
 # Memcached cluster for OpenStack session caching and token caching.
 # The memcached-operator manages this CR and provisions a 3-replica Memcached
 # cluster with stable DNS-based service discovery for operator consumers.
-# Feature: CC-0008, REQ-006
 ---
 apiVersion: memcached.c5c3.io/v1beta1
 kind: Memcached

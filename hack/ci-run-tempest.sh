@@ -4,7 +4,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # hack/ci-run-tempest.sh — Run Tempest API tests in CI.
-# Feature: CC-0050
 #
 # CI-specific Tempest execution wrapper that handles port-forwarding,
 # config generation, and Docker-based test execution. This is the CI
@@ -38,8 +37,8 @@
 #   TEMPEST_CONCURRENCY — stestr worker count (default: 4). Must not exceed the
 #                   request capacity of the Keystone target (replicas × uwsgi.processes).
 #
-# REQ-004: CI-specific Tempest wrapper script.
-# REQ-007: set -euo pipefail, SPDX Apache-2.0 header, shellcheck-clean.
+# CI-specific Tempest wrapper script.
+# set -euo pipefail, SPDX Apache-2.0 header, shellcheck-clean.
 
 set -euo pipefail
 
@@ -59,8 +58,8 @@ TEMPEST_IMAGE="${TEMPEST_IMAGE:-c5c3/tempest:local}"
 TEMPEST_CONCURRENCY="${TEMPEST_CONCURRENCY:-4}"
 
 # Derive the service name used in k8s (e.g. keystone-tempest-2025-2).
-# CC-0051: Allow override for release-specific CR names (e.g. keystone-tempest-2026-1).
-# CC-0095: bare CR name; the historical "-api" suffix was dropped.
+# Allow override for release-specific CR names (e.g. keystone-tempest-2026-1).
+# bare CR name; the historical "-api" suffix was dropped.
 SERVICE_K8S_NAME="${SERVICE_K8S_NAME:-${SERVICE}-tempest-2025-2}"
 CATALOG_SVC="${SERVICE_K8S_NAME}.${NAMESPACE}.svc.cluster.local"
 
@@ -108,13 +107,13 @@ fi
 # 4. Generate Tempest config from template
 # ---------------------------------------------------------------------------
 # Escape sed metacharacters in the password to prevent substitution failures
-# if ADMIN_PASSWORD contains \, &, |, or / (CC-0050, review #2 comment 4).
+# if ADMIN_PASSWORD contains \, &, |, or / (review #2 comment 4).
 # Escape backslashes first in their own pass, then the remaining metacharacters
 # with a class that has no backslash, so an arbitrary password is rendered
 # literally (a single [&/\|] class makes \ ambiguous in GNU sed).
 ADMIN_PASSWORD_ESCAPED=$(printf '%s\n' "${ADMIN_PASSWORD}" \
   | sed -e 's/\\/\\\\/g' -e 's/[&|/]/\\&/g')
-# Replace both FQDN and short DNS forms of the service URL (CC-0050, review #2 comment 6).
+# Replace both FQDN and short DNS forms of the service URL (review #2 comment 6).
 sed -e "s|${SERVICE_K8S_NAME}\\.${NAMESPACE}\\.svc\\.cluster\\.local:5000|localhost:5000|" \
     -e "s|${SERVICE_K8S_NAME}\\.${NAMESPACE}\\.svc:5000|localhost:5000|" \
     -e "s|\${KEYSTONE_ADMIN_PASSWORD}|${ADMIN_PASSWORD_ESCAPED}|" \

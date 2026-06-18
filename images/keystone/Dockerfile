@@ -62,7 +62,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     rm -rf /var/lib/apt/lists/*; \
     fi
 
-# CC-0031: Static OCI Image Spec annotations for local builds (runtime stage only).
+# Static OCI Image Spec annotations for local builds (runtime stage only).
 # CI-generated labels from docker/metadata-action supplement these at push time.
 LABEL org.opencontainers.image.title="keystone" \
       org.opencontainers.image.description="OpenStack keystone service" \

@@ -4,14 +4,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # hack/ci-resolve-ubuntu-digest.sh — Resolve ubuntu:noble pinned manifest digest.
-# Feature: CC-0055
 #
 # Resolves the current manifest digest for ubuntu:noble to pin base image builds.
 #
 # Outputs written to GITHUB_OUTPUT:
 #   digest — The resolved manifest digest (sha256:...)
 #
-# REQ-006: Extracted from inline workflow step to standalone script.
+# Extracted from inline workflow step to standalone script.
 
 set -euo pipefail
 

@@ -8,7 +8,7 @@
 # the ControlPlane Quick Start has you `kubectl apply` it by hand (or re-run with
 # WITH_CONTROLPLANE_CR=true to have deploy-infra apply it). The ControlPlane CR
 # then provisions the shared MariaDB/Memcached (which deploy-infra deliberately
-# does NOT create in this mode) and drives the full chain. Feature: CC-0110.
+# does NOT create in this mode) and drives the full chain.
 ---
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization

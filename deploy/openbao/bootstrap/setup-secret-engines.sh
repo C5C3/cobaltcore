@@ -3,7 +3,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Feature: CC-0009
 # Idempotent script to enable OpenBao secret engines (KV v2 and PKI).
 # Guards each enable operation by checking whether the path already exists.
 

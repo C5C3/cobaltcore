@@ -7,10 +7,9 @@
 # ControlPlane flux-operator, HelmRepository sources, and HelmRelease
 # operators. CRD-dependent infrastructure custom resources are in a
 # separate kustomization at infrastructure/kustomization.yaml.
-# Feature: CC-0008, CC-0009, CC-0085
-# REQ-006 (CC-0085): FluxInstance CR spec consumed by the flux-operator.
+# FluxInstance CR spec consumed by the flux-operator.
 #
-# To add a new operator (e.g., OpenBao for CC-0009):
+# To add a new operator (e.g., OpenBao):
 #   1. Add a new source file in sources/ (e.g., sources/openbao.yaml)
 #   2. Add a new release file in releases/ (e.g., releases/openbao.yaml)
 #   3. Add both paths to the resources list below
@@ -23,13 +22,12 @@ resources:
   # Namespace resources (applied first by kustomize resource ordering)
   - namespaces.yaml
 
-  # FluxInstance CR consumed by the flux-operator (CC-0085, REQ-006)
+  # FluxInstance CR consumed by the flux-operator
   - fluxinstance.yaml
 
   # HelmRepository sources (FluxCD chart registries).
   # Chaos Mesh is intentionally absent: the developer-only fault-injection
-  # platform is opt-in via the deploy/kind/chaos-mesh/ overlay (which carries
-  # its own source.yaml / release.yaml — CC-0097, REQ-001).
+  # platform is opt-in via the deploy/kind/chaos-mesh/ overlay (which carries its own source.yaml / release.yaml).
   - sources/cert-manager.yaml
   - sources/mariadb-operator.yaml
   - sources/external-secrets.yaml
@@ -40,7 +38,6 @@ resources:
 
   # HelmRelease operators (deployed via FluxCD).
   # Chaos Mesh is intentionally absent: opt-in via deploy/kind/chaos-mesh/
-  # (CC-0097, REQ-001).
   - releases/cert-manager.yaml
   - releases/prometheus-operator-crds.yaml
   - releases/mariadb-operator-crds.yaml

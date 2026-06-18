@@ -11,7 +11,6 @@
 # No `spec.sync` block: the kind overlay applies Helm sources and releases
 # directly via `kubectl apply -k deploy/kind/base/`. A git-sync source is a
 # production-only concern and is tracked separately.
-# Feature: CC-0085, REQ-006
 ---
 apiVersion: fluxcd.controlplane.io/v1
 kind: FluxInstance

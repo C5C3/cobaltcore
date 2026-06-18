@@ -3,7 +3,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Feature: CC-0009
 # Idempotent OpenBao initialization and unseal script.
 # Initializes OpenBao with 5-share, 3-threshold Shamir secret sharing,
 # stores init output as a Kubernetes Secret, and unseals all 3 replicas.

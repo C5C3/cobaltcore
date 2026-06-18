@@ -4,7 +4,7 @@
 
 # kind-only opt-in monitoring Namespace for kube-prometheus-stack.
 #
-# DECISION (CC-0105, REQ-008): This Namespace is also declared in
+# DECISION This Namespace is also declared in
 # deploy/flux-system/namespaces.yaml so the prometheus-operator-crds
 # HelmRelease can install into a live `monitoring` Namespace under the
 # production flux-system bundle. The inline copy in this overlay is
@@ -18,12 +18,11 @@
 #      (kubernetes/kubectl#948), so the overlay MUST be self-contained
 #      under the default LoadRestrictionsRootOnly check — a `../../`
 #      reference into deploy/flux-system/namespaces.yaml would refuse to
-#      render (same constraint that drove the chaos-mesh overlay layout
-#      in CC-0097, REQ-003).
+#      render (same constraint that drove the chaos-mesh overlay layout).
 #   3. `kubectl apply -k` is idempotent for Namespace resources: if the
 #      flux-system reconciliation already created `monitoring`, this
 #      overlay's apply is a no-op rather than a conflict.
-# Original justification: CC-0100, REQ-001.
+# Original justification:.
 ---
 apiVersion: v1
 kind: Namespace

@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# stestr exclude-list for Keystone 2025.2 (CC-0034 REQ-008)
+# stestr exclude-list for Keystone 2025.2
 #
 # One regex pattern per line. Lines starting with # are comments.
 # Blank lines are ignored. Patterns are matched against test IDs.

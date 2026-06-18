@@ -5,7 +5,6 @@
 # OpenBao HelmRelease — HA 3-replica Raft cluster with TLS.
 # Deployed to openbao-system namespace, depends on cert-manager for TLS certificates.
 # See architecture/docs/09-implementation/09-openbao-deployment.md for design rationale.
-# Feature: CC-0009
 ---
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
@@ -34,7 +33,7 @@ spec:
       # via the Kubernetes TokenReview API (required for ESO authentication).
       authDelegator:
         enabled: true
-      # CC-0107: the API listener now requires & verifies a client cert
+      # the API listener now requires & verifies a client cert
       # (tls_require_and_verify_client_cert = true), so the default chart
       # readiness/liveness probes (`bao status -tls-skip-verify`) must present
       # one. The bao CLI auto-picks up VAULT_CLIENT_CERT/VAULT_CLIENT_KEY
@@ -58,7 +57,7 @@ spec:
               cluster_address = "[::]:8201"
               tls_cert_file   = "/openbao/tls/tls.crt"
               tls_key_file    = "/openbao/tls/tls.key"
-              # CC-0107: mTLS — require & verify client cert
+              # mTLS — require & verify client cert
               tls_client_ca_file               = "/openbao/tls/ca.crt"
               tls_require_and_verify_client_cert = true
             }
@@ -104,7 +103,7 @@ spec:
         - name: tls
           secret:
             secretName: openbao-tls
-        # CC-0107: client cert for mTLS (Raft retry_join + in-pod bao exec)
+        # client cert for mTLS (Raft retry_join + in-pod bao exec)
         - name: client-tls
           secret:
             secretName: openbao-client-tls

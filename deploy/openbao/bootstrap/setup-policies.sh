@@ -4,7 +4,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # setup-policies.sh — Apply all HCL policies to OpenBao.
-# Feature: CC-0009
 #
 # This script is idempotent: `bao policy write` performs an upsert, so
 # re-running it with the same policy content is a no-op in effect.

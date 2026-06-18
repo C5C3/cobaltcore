@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Tempest API testing image (CC-0035 REQ-002)
+# Tempest API testing image
 # 2-stage build: venv-builder → python-base runtime.
 # Unlike service images, Tempest is installed from PyPI (no git source mount).
 
@@ -31,7 +31,7 @@ FROM python-base
 
 COPY --from=build --link /var/lib/openstack /var/lib/openstack
 
-# CC-0031: Static OCI Image Spec annotations for local builds (runtime stage only).
+# Static OCI Image Spec annotations for local builds (runtime stage only).
 # CI-generated labels from docker/metadata-action supplement these at push time.
 LABEL org.opencontainers.image.title="tempest" \
       org.opencontainers.image.description="OpenStack Tempest testing framework" \

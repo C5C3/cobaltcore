@@ -5,7 +5,6 @@
 
 # hack/ci-service-image-releases.sh — Print the releases for which an operator
 # ships an OpenStack service image.
-# Feature: CC-0110
 #
 # source-refs.yaml is the single source of truth for which (service, release)
 # pairs have a service image (mirrors hack/ci-generate-build-matrix.sh). An
@@ -19,7 +18,7 @@
 # Prints one release name per line, ascending; empty output when the operator
 # has no service image. Reads $OPERATOR from the environment.
 #
-# REQ-007: set -euo pipefail, SPDX Apache-2.0 header, shellcheck-clean.
+# set -euo pipefail, SPDX Apache-2.0 header, shellcheck-clean.
 
 set -euo pipefail
 

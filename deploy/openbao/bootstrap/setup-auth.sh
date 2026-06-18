@@ -4,7 +4,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # setup-auth.sh — Enable and configure OpenBao auth methods (Kubernetes + AppRole).
-# Feature: CC-0009
 #
 # This script is idempotent: auth mounts are only enabled when they do not
 # already exist, and role writes are upserts.
@@ -70,7 +69,7 @@ main() {
 
   # Create ESO roles for each cluster mount (upsert — inherently idempotent).
   #
-  # NOTE(CC-0009): Only the management cluster has its auth config written above.
+  # NOTE Only the management cluster has its auth config written above.
   # The control-plane, hypervisor, and storage clusters do NOT have auth config
   # yet — their `auth/kubernetes/<cluster>/config` is deferred until those
   # clusters are provisioned (they don't exist yet). Until configured, any
@@ -82,8 +81,8 @@ main() {
   # is needed to activate them.
   for cluster in "${CLUSTERS[@]}"; do
     # The management cluster's ESO instance runs the PushSecrets that back up
-    # Keystone fernet-keys / credential-keys (CC-0083) and that write the
-    # operator-rotated admin password to the shared bootstrap path (CC-0109),
+    # Keystone fernet-keys / credential-keys and that write the
+    # operator-rotated admin password to the shared bootstrap path,
     # so its role additionally binds the corresponding write policies (see the
     # management branch below). The other three clusters keep only their own
     # read-only eso-<cluster> policy.
@@ -93,15 +92,14 @@ main() {
     # inherit the previous iteration's `token_policies` under `set -u`.
     local token_policies="eso-${cluster}"
     if [[ "${cluster}" == "management" ]]; then
-      # CC-0083: back up rotated fernet-keys / credential-keys to OpenBao.
+      # back up rotated fernet-keys / credential-keys to OpenBao.
       token_policies+=",push-keystone-keys"
-      # CC-0109 (REQ-008): write the operator-rotated admin password to the
-      # per-ControlPlane bootstrap/{namespace}/{keystone}/admin path (Model B
-      # scheduled rotation; per-CR since CC-0112, REQ-002). eso-management stays
+      # write the operator-rotated admin password to the
+      # per-ControlPlane bootstrap/{namespace}/{keystone}/admin path (Model B scheduled rotation; per-CR since). eso-management stays
       # read-only; write capability lives only in the narrowly-scoped
       # push-keystone-admin policy.
       token_policies+=",push-keystone-admin"
-      # CC-0110 (REQ-011): the c5c3-operator mirrors the minted admin Application
+      # the c5c3-operator mirrors the minted admin Application
       # Credential clouds.yaml to OpenBao via a PushSecret through the
       # openbao-cluster-store (which binds this management role). Without the
       # push-app-credentials policy that PushSecret 403s on the app-credential

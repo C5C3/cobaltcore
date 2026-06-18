@@ -4,7 +4,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # hack/ci-resolve-changes.sh — Resolve effective CI changes for matrix generation.
-# Feature: CC-0050
 #
 # Reads paths-filter outputs (passed as FILTER_* env vars) and determines which
 # operators changed. Emits outputs to GITHUB_OUTPUT for downstream jobs.
@@ -19,14 +18,14 @@
 #
 # Per-operator filter outputs must be set as FILTER_<operator> env vars:
 #   FILTER_keystone           — paths-filter output for keystone paths
-#   FILTER_c5c3               — paths-filter output for c5c3 paths (CC-0110)
+#   FILTER_c5c3               — paths-filter output for c5c3 paths
 #   FILTER_docs               — paths-filter output for docs paths
 #   FILTER_helm               — paths-filter output for helm paths
 #   FILTER_e2e_infra          — paths-filter output for e2e-infra paths
-#   FILTER_e2e_chaos          — paths-filter output for e2e-chaos paths (CC-0054)
-#   FILTER_e2e_prometheus     — paths-filter output for e2e-prometheus paths (CC-0100)
-#   FILTER_tests_e2e_operator — paths-filter output for tests/e2e/** (CC-0054 follow-up)
-#   FILTER_tests_tempest      — paths-filter output for tests/tempest/** (CC-0054 follow-up)
+#   FILTER_e2e_chaos          — paths-filter output for e2e-chaos paths
+#   FILTER_e2e_prometheus     — paths-filter output for e2e-prometheus paths
+#   FILTER_tests_e2e_operator — paths-filter output for tests/e2e/** (follow-up)
+#   FILTER_tests_tempest      — paths-filter output for tests/tempest/** (follow-up)
 #   FILTER_go_common          — paths-filter output for go_common paths
 #
 # To add a new operator (e.g. glance):
@@ -34,8 +33,8 @@
 #   2. Add the operator name to ALL_OPERATORS in the ci.yaml step env block
 #   3. Add a matching FILTER_glance env var in the ci.yaml step env block
 #
-# REQ-001: Extracted from ci.yaml to reduce workflow file size (CC-0050, review #2 comment 3).
-# REQ-007: set -euo pipefail, SPDX Apache-2.0 header, shellcheck-clean.
+# Extracted from ci.yaml to reduce workflow file size (review #2 comment 3).
+# set -euo pipefail, SPDX Apache-2.0 header, shellcheck-clean.
 
 set -euo pipefail
 
@@ -48,7 +47,7 @@ ops=()
 go_changed=false
 any_e2e_tests=false
 
-# CC-0054 follow-up: Any change to an E2E test definition (infrastructure,
+# follow-up: Any change to an E2E test definition (infrastructure,
 # operator, chaos, tempest) should trigger the full E2E suite so that
 # refactoring test infra is validated end-to-end. This is independent of
 # go_changed so lint/unit/format/vuln stay skipped on pure test-only edits.
@@ -102,7 +101,7 @@ fi
 
 echo "go=${go_changed}" >> "$GITHUB_OUTPUT"
 
-# CC-0054: Chaos E2E tests run when chaos test definitions change, when any
+# Chaos E2E tests run when chaos test definitions change, when any
 # Go code changes (so chaos validates the current operator code), or when any
 # other E2E test definition changes (so refactoring shared test infra runs
 # the full E2E suite end-to-end).
@@ -112,7 +111,7 @@ else
   echo "e2e-chaos=false" >> "$GITHUB_OUTPUT"
 fi
 
-# CC-0100, REQ-010: Prometheus stack E2E tests run when prometheus paths change
+# Prometheus stack E2E tests run when prometheus paths change
 # (kind overlay, suite, deploy/composite/operator wiring), when any Go code
 # changes (so the suite re-validates the current operator metrics surface), or
 # when any other E2E test definition changes (so refactoring shared test infra

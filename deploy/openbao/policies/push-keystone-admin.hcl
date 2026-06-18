@@ -13,9 +13,9 @@
 # itself stays read-only. The separation preserves the audit invariant that a
 # leaked management-cluster ESO token on eso-management alone cannot write to
 # OpenBao — write capability lives only in this narrowly-scoped policy
-# (CC-0083). Pattern source: deploy/openbao/policies/push-keystone-keys.hcl.
+# Pattern source: deploy/openbao/policies/push-keystone-keys.hcl.
 #
-# Scope — boundary 8 (CC-0112): a per-CR path shaped
+# Scope — boundary 8 a per-CR path shaped
 # `bootstrap/{namespace}/{name}/admin`, granted via a two-segment `+/+` glob.
 # The production sink for this credential is OpenBao itself (not an in-cluster
 # Secret): a value written here round-trips through ESO into the keystone-admin
@@ -57,7 +57,6 @@
 #
 # `read` is retained for PushSecret pre-flight reads and policy-portability,
 # matching the convention in push-keystone-keys.hcl.
-# Feature: CC-0109
 path "kv-v2/data/bootstrap/+/+/admin" {
   capabilities = ["create", "update", "read", "delete"]
 }

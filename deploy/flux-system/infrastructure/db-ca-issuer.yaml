@@ -3,15 +3,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Dedicated cert-manager CA for the OpenStack database trust domain
-# (CC-0106, REQ-009). One self-signed CA keypair backs three concerns:
+# One self-signed CA keypair backs three concerns:
 #   1. The "openstack-db-ca-issuer" ClusterIssuer that signs leaf
 #      certificates for MariaDB/MaxScale TLS material and for the
-#      Keystone DB-client mTLS keypair (CC-0106, REQ-002, REQ-009).
-#   2. mariadb-operator's server-side TLS (Galera + MaxScale terminate
-#      TLS on certs minted by this issuer; CC-0106, REQ-009).
-#   3. Keystone's client-side mTLS (Keystone presents a client cert
-#      minted by this issuer; MariaDB trusts it because it is signed
-#      by the same CA; CC-0106, REQ-002).
+#      Keystone DB-client mTLS keypair.
+#   2. mariadb-operator's server-side TLS (Galera + MaxScale terminate TLS on certs minted by this issuer).
+#   3. Keystone's client-side mTLS (Keystone presents a client cert minted by this issuer; MariaDB trusts it because it is signed by the same CA).
 #
 # DECISION: separate CA from selfsigned-cluster-issuer — Chose to
 # bootstrap a dedicated CA keypair (Certificate + CA ClusterIssuer)
@@ -19,8 +16,7 @@
 # that issuer is a SelfSigned issuer that mints only self-signed leaf
 # certs; it cannot sign other certificates. A CA-type ClusterIssuer
 # requires a real CA keypair in a Secret. The selfsigned-cluster-
-# issuer is used here only to bootstrap that CA keypair (CC-0008
-# convention preserved).
+# issuer is used here only to bootstrap that CA keypair (convention preserved).
 #
 # DECISION: CA Certificate placement — Issued the CA Certificate into
 # the "cert-manager" namespace because cert-manager's default
@@ -38,7 +34,6 @@
 # burden of re-distributing the trust bundle to MariaDB/MaxScale and
 # all Keystone workloads each rotation.
 #
-# Feature: CC-0106, REQ-009
 ---
 # Bootstrap CA keypair Secret. Issued in the cert-manager namespace
 # because that is cert-manager's default clusterResourceNamespace
@@ -69,7 +64,7 @@ spec:
 # Keystone DB-client mTLS. The name "openstack-db-ca-issuer" is the
 # source-of-truth referenced by operators/keystone/internal/controller/
 # reconcile_databasetls.go (const dbCAIssuerName) and by mariadb.yaml's
-# spec.tls.serverCertIssuerRef / clientCertIssuerRef (CC-0106, REQ-009).
+# spec.tls.serverCertIssuerRef / clientCertIssuerRef.
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
 metadata:

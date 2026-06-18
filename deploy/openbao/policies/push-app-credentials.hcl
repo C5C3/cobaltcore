@@ -5,13 +5,12 @@
 # PushSecret policy for Application Credentials — allows PushSecret CRs
 # to write OpenStack Application Credentials back to OpenBao after
 # operators create them via the Keystone API.
-# Feature: CC-0009
 
 path "kv-v2/data/openstack/*/app-credential" {
   capabilities = ["create", "update", "read"]
 }
 
-# CC-0112 — per-ControlPlane grant for the c5c3-operator's admin Application
+# per-ControlPlane grant for the c5c3-operator's admin Application
 # Credential PushSecret. The operator mints ONE restricted admin AC PER
 # ControlPlane and mirrors it to that ControlPlane's CR-scoped KV-v2 path via the
 # openbao-cluster-store. The path is therefore per-ControlPlane, shaped

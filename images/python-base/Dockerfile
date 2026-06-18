@@ -40,7 +40,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 RUN groupadd -g 42424 openstack && \
     useradd -u 42424 -g 42424 -M -d /var/lib/openstack -s /usr/sbin/nologin openstack
 
-# CC-0031: Static OCI Image Spec annotations for local builds.
+# Static OCI Image Spec annotations for local builds.
 # CI-generated labels from docker/metadata-action supplement these at push time.
 LABEL org.opencontainers.image.title="python-base" \
       org.opencontainers.image.description="Python runtime base image for OpenStack services" \

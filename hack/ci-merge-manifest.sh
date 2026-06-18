@@ -4,7 +4,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # hack/ci-merge-manifest.sh — Merge per-platform digests into a multi-arch manifest.
-# Feature: CC-0055
 #
 # Collects per-platform digest files from DIGEST_DIR, creates a multi-arch
 # manifest using docker buildx imagetools, and outputs the merged digest.
