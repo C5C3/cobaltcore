@@ -3,10 +3,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Tests for the per-ControlPlane admin-password sub-reconciler
-// (CC-0117, REQ-001, REQ-002, REQ-003): reconcileAdminPassword and its
+// reconcileAdminPassword and its
 // pure builder/helpers. The slice is scoped to the ExternalSecret that
 // materialises a per-ControlPlane admin password from OpenBao; the projected
-// secretRef override (REQ-005, effectiveAdminPasswordSecretRef) is wired into
+// secretRef override (effectiveAdminPasswordSecretRef) is wired into
 // consumers in a later level and is NOT exercised here.
 package controller
 
@@ -30,7 +30,7 @@ import (
 
 // adminPwManagedControlPlane builds a managed-mode ControlPlane (Database.ClusterRef
 // set) — the mode in which reconcileAdminPassword projects the per-CP admin-password
-// ExternalSecret (REQ-001).
+// ExternalSecret.
 func adminPwManagedControlPlane() *c5c3v1alpha1.ControlPlane {
 	return &c5c3v1alpha1.ControlPlane{
 		ObjectMeta: metav1.ObjectMeta{
@@ -52,8 +52,7 @@ func adminPwManagedControlPlane() *c5c3v1alpha1.ControlPlane {
 
 // adminPwBrownfieldControlPlane builds a brownfield-mode ControlPlane: the user
 // supplies their own DB connection (Host set, ClusterRef nil) and admin-password
-// Secret, so the operator must NOT project an ExternalSecret (REQ-001, scenario:
-// brownfield early-exit).
+// Secret, so the operator must NOT project an ExternalSecret (scenario: brownfield early-exit).
 func adminPwBrownfieldControlPlane() *c5c3v1alpha1.ControlPlane {
 	cp := adminPwManagedControlPlane()
 	cp.Spec.Infrastructure.Database = commonv1.DatabaseSpec{
@@ -90,7 +89,7 @@ func readyAdminPwES(cp *c5c3v1alpha1.ControlPlane) *esov1.ExternalSecret {
 	return es
 }
 
-// TestReconcileAdminPassword_Managed_CreatesExternalSecret (REQ-001): a managed CP
+// TestReconcileAdminPassword_Managed_CreatesExternalSecret a managed CP
 // drives reconcileAdminPassword to project the per-CP admin-password ExternalSecret
 // with the OpenBao-backed ClusterSecretStore ref, Owner creation policy, the single
 // password Data entry, and a ControlPlane controller owner reference.
@@ -130,8 +129,7 @@ func TestReconcileAdminPassword_Managed_CreatesExternalSecret(t *testing.T) {
 	g.Expect(*owner.Controller).To(BeTrue())
 }
 
-// TestReconcileAdminPassword_NotReady_SetsConditionFalseAndRequeues (REQ-001,
-// REQ-003): while the projected ExternalSecret has not synced, the sub-reconciler
+// TestReconcileAdminPassword_NotReady_SetsConditionFalseAndRequeues while the projected ExternalSecret has not synced, the sub-reconciler
 // requeues and reports AdminPasswordReady=False with the waiting reason.
 func TestReconcileAdminPassword_NotReady_SetsConditionFalseAndRequeues(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -152,7 +150,7 @@ func TestReconcileAdminPassword_NotReady_SetsConditionFalseAndRequeues(t *testin
 	g.Expect(cond.Reason).To(Equal("WaitingForAdminPasswordSecret"))
 }
 
-// TestReconcileAdminPassword_Ready_SetsConditionTrue (REQ-001, REQ-003): once the
+// TestReconcileAdminPassword_Ready_SetsConditionTrue once the
 // projected ExternalSecret reports Ready, AdminPasswordReady flips True and the
 // sub-reconciler stops requeuing.
 func TestReconcileAdminPassword_Ready_SetsConditionTrue(t *testing.T) {
@@ -173,7 +171,7 @@ func TestReconcileAdminPassword_Ready_SetsConditionTrue(t *testing.T) {
 	g.Expect(cond.Reason).To(Equal("AdminPasswordReady"))
 }
 
-// TestReconcileAdminPassword_Brownfield_NoExternalSecret_ReadyTrue (REQ-001): a
+// TestReconcileAdminPassword_Brownfield_NoExternalSecret_ReadyTrue a
 // brownfield CP supplies its own admin password, so the operator projects NO
 // ExternalSecret and reports AdminPasswordReady=True immediately with no requeue,
 // leaving the user-declared PasswordSecretRef untouched.
@@ -202,8 +200,7 @@ func TestReconcileAdminPassword_Brownfield_NoExternalSecret_ReadyTrue(t *testing
 		"brownfield must not mutate the user-declared admin PasswordSecretRef")
 }
 
-// TestAdminPasswordRemoteKeyFor_And_SecretName_DistinctPerControlPlane (REQ-001,
-// REQ-002): the OpenBao remote key is scoped by both Namespace and keystoneName,
+// TestAdminPasswordRemoteKeyFor_And_SecretName_DistinctPerControlPlane the OpenBao remote key is scoped by both Namespace and keystoneName,
 // and the secret name is derived from keystoneName, so two ControlPlanes never
 // resolve to the same OpenBao path or materialised Secret — and neither the name
 // nor the key ever collides with the legacy static "keystone-admin" identifier.

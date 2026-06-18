@@ -30,8 +30,6 @@ import (
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
 
-// Feature: CC-0013
-
 func bootstrapTestScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(s)
@@ -68,18 +66,18 @@ func bootstrapKeystone() *keystonev1alpha1.Keystone {
 
 // bootstrapTestAdminPassword is the admin password held by the admin Secret in
 // the bootstrap reconcile tests; its SHA-256 digest is what buildBootstrapJob must
-// stamp as the admin-password-hash annotation (CC-0108, REQ-002).
+// stamp as the admin-password-hash annotation.
 const bootstrapTestAdminPassword = "admin-password"
 
 // bootstrapAdminPasswordHash returns hex(sha256(bootstrapTestAdminPassword)),
-// matching the digest reconcileBootstrap derives from the admin Secret (CC-0108).
+// matching the digest reconcileBootstrap derives from the admin Secret.
 func bootstrapAdminPasswordHash() string {
 	sum := sha256.Sum256([]byte(bootstrapTestAdminPassword))
 	return hex.EncodeToString(sum[:])
 }
 
 // bootstrapAdminSecret returns the admin password Secret referenced by the CR,
-// holding bootstrapTestAdminPassword under the `password` key (CC-0108).
+// holding bootstrapTestAdminPassword under the `password` key.
 func bootstrapAdminSecret(ks *keystonev1alpha1.Keystone) *corev1.Secret {
 	return &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
@@ -103,7 +101,7 @@ func newBootstrapTestReconciler(s *runtime.Scheme, objs ...client.Object) *Keyst
 // completedBootstrapJob returns a bootstrap Job that matches what buildBootstrapJob
 // produces for the given keystone and is marked as complete with the correct
 // re-run key. The bootstrap Job's re-run key is the admin-password digest (NOT
-// the pod-template hash), so a release upgrade does not re-trigger it (CC-0113).
+// the pod-template hash), so a release upgrade does not re-trigger it.
 func completedBootstrapJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
 	desired := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys", bootstrapAdminPasswordHash())
 	now := metav1.Now()
@@ -170,8 +168,7 @@ func TestReconcileBootstrap_JobCreated(t *testing.T) {
 	g.Expect(container.Name).To(Equal("bootstrap"))
 	g.Expect(container.Command[:3]).To(Equal([]string{"/bin/sh", "-eu", "-c"}))
 	g.Expect(container.Command[3]).To(ContainSubstring("keystone-manage --config-dir=/etc/keystone/keystone.conf.d/ bootstrap"))
-	// The bootstrap URLs and region id are passed via env vars (CC-0095,
-	// REQ-002; CC-0106 review-1 follow-up), so the wrapper string references
+	// The bootstrap URLs and region id are passed via env vars (review-1 follow-up), so the wrapper string references
 	// them as $BOOTSTRAP_*_URL / $BOOTSTRAP_REGION_ID rather than embedding
 	// the cluster-local Service URL or region literal directly.
 	g.Expect(container.Command[3]).To(ContainSubstring(`--bootstrap-internal-url "$BOOTSTRAP_INTERNAL_URL"`))
@@ -180,9 +177,9 @@ func TestReconcileBootstrap_JobCreated(t *testing.T) {
 
 	// Verify env: BOOTSTRAP_PASSWORD first (from admin Secret), then
 	// OS_DATABASE__CONNECTION override sourced from the derived DB connection
-	// Secret (CC-0080, REQ-004, REQ-007, REQ-009), then the BOOTSTRAP_*
+	// Secret, then the BOOTSTRAP_*
 	// parameter env vars consumed by the embedded Python and the
-	// keystone-manage flags (CC-0095, REQ-002; CC-0106 review-1 follow-up).
+	// keystone-manage flags (review-1 follow-up).
 	// Ordering is asserted so future edits cannot reorder or drop entries
 	// unnoticed.
 	g.Expect(container.Env).To(HaveLen(6))
@@ -202,13 +199,13 @@ func TestReconcileBootstrap_JobCreated(t *testing.T) {
 	g.Expect(container.Env[5].Name).To(Equal("BOOTSTRAP_PUBLIC_URL"))
 	g.Expect(container.Env[5].Value).To(Equal(expectedServiceURL))
 
-	// Verify config volume mount is present (CC-0013: bootstrap needs keystone.conf for DB connection).
+	// Verify config volume mount is present (: bootstrap needs keystone.conf for DB connection).
 	g.Expect(container.VolumeMounts).To(HaveLen(2))
 	g.Expect(container.VolumeMounts[0].Name).To(Equal("config"))
 	g.Expect(container.VolumeMounts[0].MountPath).To(Equal("/etc/keystone/keystone.conf.d/"))
 	g.Expect(container.VolumeMounts[0].ReadOnly).To(BeTrue())
 
-	// Verify fernet-keys volume mount (CC-0018: bootstrap needs fernet keys).
+	// Verify fernet-keys volume mount (: bootstrap needs fernet keys).
 	g.Expect(container.VolumeMounts[1].Name).To(Equal("fernet-keys"))
 	g.Expect(container.VolumeMounts[1].MountPath).To(Equal("/etc/keystone/fernet-keys/"))
 	g.Expect(container.VolumeMounts[1].ReadOnly).To(BeTrue())
@@ -392,7 +389,7 @@ func TestReconcileBootstrap_JobComplete_ConditionMessageAndGeneration(t *testing
 
 // TestBuildBootstrapJob_SecurityContext verifies that the bootstrap container in the Job
 // returned by buildBootstrapJob() has a restricted SecurityContext with all four PSS
-// Restricted profile fields set correctly (CC-0045: REQ-001, REQ-002, REQ-003, REQ-004).
+// Restricted profile fields set correctly.
 func TestBuildBootstrapJob_SecurityContext(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := bootstrapKeystone()
@@ -431,7 +428,7 @@ func TestReconcileBootstrap_PublicEndpoint(t *testing.T) {
 	}
 	g.Expect(envByName).To(HaveKeyWithValue("BOOTSTRAP_ADMIN_URL", internalURL))
 	g.Expect(envByName).To(HaveKeyWithValue("BOOTSTRAP_INTERNAL_URL", internalURL))
-	// Public URL should use the explicit PublicEndpoint (CC-0013).
+	// Public URL should use the explicit PublicEndpoint.
 	g.Expect(envByName).To(HaveKeyWithValue("BOOTSTRAP_PUBLIC_URL", "https://keystone.example.com/v3"))
 }
 
@@ -451,7 +448,7 @@ func TestReconcileBootstrap_JobSpec_TTLAndBackoff(t *testing.T) {
 		Namespace: "default",
 	}, &createdJob)).To(Succeed())
 
-	// CC-0113 (#415): TTLSecondsAfterFinished must be unset so the finished
+	// (#415): TTLSecondsAfterFinished must be unset so the finished
 	// bootstrap Job is not garbage-collected by the TTL controller; a deleted
 	// Job would otherwise be re-created on the next reconcile, causing a
 	// TTL-driven re-creation loop.
@@ -469,7 +466,7 @@ func TestReconcileBootstrap_JobSpec_TTLAndBackoff(t *testing.T) {
 // TestReconcileBootstrap_ConditionObservedGeneration verifies that
 // ObservedGeneration is set on the BootstrapReady condition for the
 // False (BootstrapInProgress, BootstrapFailed) and True (BootstrapComplete)
-// paths with distinct generation values (CC-0072, REQ-002, REQ-003).
+// paths with distinct generation values.
 func TestReconcileBootstrap_ConditionObservedGeneration(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := bootstrapTestScheme()
@@ -515,7 +512,7 @@ func TestReconcileBootstrap_ConditionObservedGeneration(t *testing.T) {
 }
 
 // TestBuildBootstrapJob_PriorityClassNameSet verifies that when spec.PriorityClassName
-// is set, the bootstrap Job PodSpec includes the configured priority class (CC-0075).
+// is set, the bootstrap Job PodSpec includes the configured priority class.
 func TestBuildBootstrapJob_PriorityClassNameSet(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := bootstrapKeystone()
@@ -528,7 +525,7 @@ func TestBuildBootstrapJob_PriorityClassNameSet(t *testing.T) {
 }
 
 // TestBuildBootstrapJob_PriorityClassNameNil verifies that when spec.PriorityClassName
-// is nil, the bootstrap Job PodSpec has an empty priority class name (CC-0075).
+// is nil, the bootstrap Job PodSpec has an empty priority class name.
 func TestBuildBootstrapJob_PriorityClassNameNil(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := bootstrapKeystone()
@@ -541,9 +538,9 @@ func TestBuildBootstrapJob_PriorityClassNameNil(t *testing.T) {
 // TestBuildBootstrapJob_PreInsertScriptReadsDBConnectionEnvVar asserts the
 // inline Python pre-insert script resolves the DB URL from the
 // OS_DATABASE__CONNECTION env var and only falls back to keystone.conf when
-// the env var is unset (CC-0080, C-001).
+// the env var is unset (C-001).
 //
-// Since CC-0080 the [database] connection key in keystone.conf is a
+// Since the [database] connection key in keystone.conf is a
 // placeholder ("mysql+pymysql://placeholder") and the real URL is injected
 // via oslo.config's OS_<GROUP>__<OPTION> override. stdlib configparser has no
 // knowledge of this override, so a script that reads keystone.conf only would
@@ -562,16 +559,16 @@ func TestBuildBootstrapJob_PreInsertScriptReadsDBConnectionEnvVar(t *testing.T) 
 	script := container.Command[3]
 
 	g.Expect(script).To(ContainSubstring(`os.environ.get("OS_DATABASE__CONNECTION")`),
-		"pre-insert script must read OS_DATABASE__CONNECTION from the environment first (CC-0080, C-001)")
+		"pre-insert script must read OS_DATABASE__CONNECTION from the environment first (C-001)")
 	g.Expect(script).To(ContainSubstring("configparser"),
-		"pre-insert script must still fall back to keystone.conf when the env var is unset (CC-0080, C-001)")
+		"pre-insert script must still fall back to keystone.conf when the env var is unset (C-001)")
 	g.Expect(script).To(MatchRegexp(`(?s)os\.environ\.get\("OS_DATABASE__CONNECTION"\).*configparser`),
-		"env-var lookup must precede the configparser fallback (CC-0080, C-001)")
+		"env-var lookup must precede the configparser fallback (C-001)")
 }
 
 // TestBootstrapServiceURL_ComposesViaHelper verifies that
 // bootstrapServiceURL() composes its return value from subResourceName(),
-// the namespace, and the :5000/v3 suffix (CC-0095, REQ-002). The helper
+// the namespace, and the :5000/v3 suffix. The helper
 // output is the single source of truth for the host segment.
 func TestBootstrapServiceURL_ComposesViaHelper(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -582,13 +579,13 @@ func TestBootstrapServiceURL_ComposesViaHelper(t *testing.T) {
 	url := bootstrapServiceURL(ks)
 
 	g.Expect(url).To(Equal("http://keystone.openstack.svc.cluster.local:5000/v3"),
-		"bootstrapServiceURL must produce host == subResourceName(ks) (CC-0095, REQ-002)")
+		"bootstrapServiceURL must produce host == subResourceName(ks)")
 	g.Expect(url).To(ContainSubstring(subResourceName(ks)),
-		"bootstrapServiceURL host segment must equal subResourceName(ks) so future helper changes propagate (CC-0095, REQ-002)")
+		"bootstrapServiceURL host segment must equal subResourceName(ks) so future helper changes propagate")
 }
 
 // TestBootstrapServiceURL_NoApiLiteral guards against re-introducing the
-// literal "-api." substring in the bootstrap URL (CC-0095, REQ-002). After
+// literal "-api." substring in the bootstrap URL. After
 // the rename the URL must not contain the legacy suffix in any form.
 func TestBootstrapServiceURL_NoApiLiteral(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -599,18 +596,17 @@ func TestBootstrapServiceURL_NoApiLiteral(t *testing.T) {
 	url := bootstrapServiceURL(ks)
 
 	g.Expect(url).NotTo(ContainSubstring("-api."),
-		"bootstrapServiceURL must not contain the legacy '-api.' suffix (CC-0095, REQ-002)")
+		"bootstrapServiceURL must not contain the legacy '-api.' suffix")
 	g.Expect(url).NotTo(ContainSubstring("-api:"),
-		"bootstrapServiceURL must not contain a stray '-api:' segment (CC-0095, REQ-002)")
+		"bootstrapServiceURL must not contain a stray '-api:' segment")
 }
 
 // TestBuildBootstrapJob_AdminInternalURLsUseBareName pins the BOOTSTRAP_ADMIN_URL
 // and BOOTSTRAP_INTERNAL_URL env values consumed by the bootstrap script to
 // the bare-CR-name Service URL produced by bootstrapServiceURL(). After the
-// CC-0095 rename these values must never embed the legacy "-api." segment in
+// rename these values must never embed the legacy "-api." segment in
 // the host: any drift would write a stale catalog entry on the next bootstrap
-// run, sending in-cluster clients to a non-existent Service (CC-0095,
-// REQ-002, REQ-005).
+// run, sending in-cluster clients to a non-existent Service.
 func TestBuildBootstrapJob_AdminInternalURLsUseBareName(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := bootstrapKeystone()
@@ -626,9 +622,9 @@ func TestBuildBootstrapJob_AdminInternalURLsUseBareName(t *testing.T) {
 		envByName[e.Name] = e.Value
 	}
 	g.Expect(envByName).To(HaveKeyWithValue("BOOTSTRAP_ADMIN_URL", expectedURL),
-		"BOOTSTRAP_ADMIN_URL must use the bare-CR-name Service URL (CC-0095, REQ-002, REQ-005)")
+		"BOOTSTRAP_ADMIN_URL must use the bare-CR-name Service URL")
 	g.Expect(envByName).To(HaveKeyWithValue("BOOTSTRAP_INTERNAL_URL", expectedURL),
-		"BOOTSTRAP_INTERNAL_URL must use the bare-CR-name Service URL (CC-0095, REQ-002, REQ-005)")
+		"BOOTSTRAP_INTERNAL_URL must use the bare-CR-name Service URL")
 
 	legacyHost := fmt.Sprintf("%s-api.%s.svc.cluster.local", ks.Name, ks.Namespace)
 	for _, e := range container.Env {
@@ -661,9 +657,9 @@ func findVolumeByName(vols []corev1.Volume, name string) *corev1.Volume {
 	return nil
 }
 
-// TestBuildBootstrapJob_DBTLSDisabled_NoDBTLSVolume backs CC-0106 task 4.3
-// REQ-005: when spec.database.tls is nil the bootstrap Job must not mount the
-// db-tls Secret. The pre-CC-0106 plaintext path stays byte-equivalent.
+// TestBuildBootstrapJob_DBTLSDisabled_NoDBTLSVolume backs task 4.3
+// when spec.database.tls is nil the bootstrap Job must not mount the
+// db-tls Secret. The pre-existing plaintext path stays byte-equivalent.
 func TestBuildBootstrapJob_DBTLSDisabled_NoDBTLSVolume(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := bootstrapKeystone()
@@ -674,13 +670,13 @@ func TestBuildBootstrapJob_DBTLSDisabled_NoDBTLSVolume(t *testing.T) {
 	container := findContainerByName(job.Spec.Template.Spec.Containers, "bootstrap")
 	g.Expect(container).NotTo(BeNil())
 	g.Expect(findVolumeMountByName(container.VolumeMounts, "db-tls")).To(BeNil(),
-		"db-tls VolumeMount must be absent when DB TLS is not enabled (CC-0106, REQ-005)")
+		"db-tls VolumeMount must be absent when DB TLS is not enabled")
 	g.Expect(findVolumeByName(job.Spec.Template.Spec.Volumes, "db-tls")).To(BeNil(),
-		"db-tls Volume must be absent when DB TLS is not enabled (CC-0106, REQ-005)")
+		"db-tls Volume must be absent when DB TLS is not enabled")
 }
 
-// TestBuildBootstrapJob_DBTLSDisabledExplicit_NoDBTLSVolume backs CC-0106
-// task 4.3 REQ-005: when spec.database.tls is non-nil but Enabled is false the
+// TestBuildBootstrapJob_DBTLSDisabledExplicit_NoDBTLSVolume verifies that when spec.database.tls is non-nil but
+// Enabled is false the
 // bootstrap Job still must not mount the db-tls Secret — the enable flag is
 // the single gate (matches the reconcileDatabaseTLS NotRequired path).
 func TestBuildBootstrapJob_DBTLSDisabledExplicit_NoDBTLSVolume(t *testing.T) {
@@ -701,8 +697,8 @@ func TestBuildBootstrapJob_DBTLSDisabledExplicit_NoDBTLSVolume(t *testing.T) {
 	g.Expect(findVolumeByName(job.Spec.Template.Spec.Volumes, "db-tls")).To(BeNil())
 }
 
-// TestBuildBootstrapJob_DBTLSEnabled_MountsClientSecret backs CC-0106 task 4.3
-// REQ-005: when DB TLS is enabled the bootstrap Job projects ca.crt from
+// TestBuildBootstrapJob_DBTLSEnabled_MountsClientSecret backs task 4.3
+// when DB TLS is enabled the bootstrap Job projects ca.crt from
 // caBundleSecretRef and tls.crt/tls.key from clientCertSecretRef read-only at
 // /etc/keystone/db-tls/. The mount path must match dbtls_mode.dbTLSPaths so
 // the DSN ssl_ca/ssl_cert/ssl_key file paths resolve.
@@ -723,15 +719,15 @@ func TestBuildBootstrapJob_DBTLSEnabled_MountsClientSecret(t *testing.T) {
 
 	mount := findVolumeMountByName(container.VolumeMounts, "db-tls")
 	g.Expect(mount).NotTo(BeNil(),
-		"db-tls VolumeMount must be present when DB TLS is enabled (CC-0106, REQ-005)")
+		"db-tls VolumeMount must be present when DB TLS is enabled")
 	g.Expect(mount.MountPath).To(Equal("/etc/keystone/db-tls/"))
 	g.Expect(mount.ReadOnly).To(BeTrue(),
-		"db-tls VolumeMount must be ReadOnly (CC-0106, REQ-005)")
+		"db-tls VolumeMount must be ReadOnly")
 
 	vol := findVolumeByName(job.Spec.Template.Spec.Volumes, "db-tls")
 	g.Expect(vol).NotTo(BeNil())
 	g.Expect(vol.Projected).NotTo(BeNil(),
-		"db-tls Volume must be a Projected VolumeSource sourcing both Secret refs (CC-0106, REQ-005, REQ-014)")
+		"db-tls Volume must be a Projected VolumeSource sourcing both Secret refs")
 	expectDBTLSProjection(g, vol.Projected, "db-server-ca", "test-keystone-db-client")
 }
 
@@ -739,7 +735,7 @@ func TestBuildBootstrapJob_DBTLSEnabled_MountsClientSecret(t *testing.T) {
 // backs the BLOCKER fix from review #1: when a brownfield deployment supplies
 // caBundleSecretRef and clientCertSecretRef pointing to two distinct Secrets
 // (the canonical enterprise-PKI shape), the bootstrap Job must reference both
-// names verbatim (CC-0106, REQ-002, REQ-014).
+// names verbatim.
 func TestBuildBootstrapJob_DBTLSEnabled_BrownfieldUsesUserSuppliedSecretNames(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := bootstrapKeystone()
@@ -756,15 +752,15 @@ func TestBuildBootstrapJob_DBTLSEnabled_BrownfieldUsesUserSuppliedSecretNames(t 
 
 	vol := findVolumeByName(job.Spec.Template.Spec.Volumes, "db-tls")
 	g.Expect(vol).NotTo(BeNil(),
-		"CC-0106: db-tls Volume must be present in brownfield mode when TLS is enabled (REQ-002, REQ-014)")
+		"db-tls Volume must be present in brownfield mode when TLS is enabled")
 	g.Expect(vol.Projected).NotTo(BeNil(),
-		"CC-0106: db-tls Volume must be Projected (REQ-002)")
+		"db-tls Volume must be Projected")
 	expectDBTLSProjection(g, vol.Projected,
 		"enterprise-root-ca-bundle", "site-specific-client-keypair")
 }
 
-// TestBuildBootstrapJob_PreInsertScript_ParsesSSLDSNParams backs CC-0106 task
-// 4.3 REQ-005: the inline python3 pre-insert script extracts the pymysql
+// TestBuildBootstrapJob_PreInsertScript_ParsesSSLDSNParams backs task
+// 4.3: the inline python3 pre-insert script extracts the pymysql
 // ssl_ca/ssl_cert/ssl_key + ssl_verify_cert/ssl_verify_identity query keys out
 // of the DSN, maps them onto a pymysql ssl={...} dict (ca/cert/key plus
 // verify_mode and check_hostname), and only passes the ssl kwarg when at
@@ -783,16 +779,16 @@ func TestBuildBootstrapJob_PreInsertScript_ParsesSSLDSNParams(t *testing.T) {
 	// The wrapper invokes the embedded Python via a 'PY' quoted heredoc so the
 	// script content survives verbatim, with no shell interpolation.
 	g.Expect(script).To(ContainSubstring("python3 - <<'PY'"),
-		"wrapper must invoke python3 via a quoted heredoc so the embedded Python is preserved verbatim (CC-0073)")
+		"wrapper must invoke python3 via a quoted heredoc so the embedded Python is preserved verbatim")
 	g.Expect(script).To(ContainSubstring("\nPY\n"),
-		"wrapper heredoc must terminate with the PY sentinel on its own line (CC-0073)")
+		"wrapper heredoc must terminate with the PY sentinel on its own line")
 
 	// The embedded script must be the bootstrapDBSeedScript variable populated
 	// via go:embed — verifies the directive is wired correctly.
 	g.Expect(bootstrapDBSeedScript).NotTo(BeEmpty(),
-		"bootstrapDBSeedScript must not be empty — check go:embed directive (CC-0073)")
+		"bootstrapDBSeedScript must not be empty — check go:embed directive")
 	g.Expect(script).To(ContainSubstring(bootstrapDBSeedScript),
-		"wrapper must inline the embedded Python content (CC-0073)")
+		"wrapper must inline the embedded Python content")
 
 	// keystone-manage is invoked via env-var-parameterised flags so the
 	// wrapper string carries no caller-substituted literals.
@@ -804,7 +800,7 @@ func TestBuildBootstrapJob_PreInsertScript_ParsesSSLDSNParams(t *testing.T) {
 		`--bootstrap-region-id "$BOOTSTRAP_REGION_ID"`,
 	} {
 		g.Expect(script).To(ContainSubstring(flag),
-			"wrapper must pass keystone-manage flag from env var (CC-0095, REQ-002)")
+			"wrapper must pass keystone-manage flag from env var")
 	}
 }
 
@@ -812,7 +808,6 @@ func TestBuildBootstrapJob_PreInsertScript_ParsesSSLDSNParams(t *testing.T) {
 // buildBootstrapJob stamps the SHA-256 digest of the admin password onto the
 // pod template's admin-password-hash annotation, so a rotated password
 // changes the pod-spec-hash gate and re-runs the idempotent bootstrap
-// (CC-0108, REQ-002).
 func TestBuildBootstrapJob_AdminPasswordHashAnnotation(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := bootstrapKeystone()
@@ -822,20 +817,20 @@ func TestBuildBootstrapJob_AdminPasswordHashAnnotation(t *testing.T) {
 	g.Expect(job.Spec.Template.ObjectMeta.Annotations).To(HaveKeyWithValue(
 		"forge.c5c3.io/admin-password-hash", bootstrapAdminPasswordHash(),
 	),
-		"pod template must carry the admin-password-hash annotation (CC-0108, REQ-002)")
+		"pod template must carry the admin-password-hash annotation")
 
 	// Pin the hashing input: the annotation must equal hex(sha256("admin-password")).
 	sum := sha256.Sum256([]byte("admin-password"))
 	g.Expect(job.Spec.Template.ObjectMeta.Annotations["forge.c5c3.io/admin-password-hash"]).
 		To(Equal(hex.EncodeToString(sum[:])),
-			"admin-password-hash must be hex(sha256(admin password)) (CC-0108, REQ-002)")
+			"admin-password-hash must be hex(sha256(admin password))")
 }
 
 // TestReconcileBootstrap_PasswordChangeRecreatesJob verifies that when the
 // admin password rotates, the previously completed bootstrap Job (stamped with
 // the OLD password's hash) is detected as stale, deleted, and recreated with
 // the new admin-password-hash annotation — forcing the idempotent bootstrap to
-// re-run with the rotated credential (CC-0108, REQ-003).
+// re-run with the rotated credential.
 func TestReconcileBootstrap_PasswordChangeRecreatesJob(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := bootstrapTestScheme()
@@ -849,7 +844,7 @@ func TestReconcileBootstrap_PasswordChangeRecreatesJob(t *testing.T) {
 
 	// Build an OLD completed bootstrap Job stamped with a DIFFERENT password's
 	// re-run key. The bootstrap re-run key is the admin-password digest, NOT the
-	// pod-template hash, so the image plays no part (CC-0113).
+	// pod-template hash, so the image plays no part.
 	oldDesired := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys", hashOf("old-password"))
 	oldHash := hashOf("old-password")
 	oldJob := oldDesired.DeepCopy()
@@ -867,7 +862,7 @@ func TestReconcileBootstrap_PasswordChangeRecreatesJob(t *testing.T) {
 	result, err := r.reconcileBootstrap(context.Background(), ks, "keystone-config-abc123")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(RequeueBootstrapWait),
-		"stale Job recreation must requeue while the new Job runs (CC-0108, REQ-003)")
+		"stale Job recreation must requeue while the new Job runs")
 
 	// A new Job must exist carrying the CURRENT admin-password-hash.
 	var newJob batchv1.Job
@@ -878,21 +873,21 @@ func TestReconcileBootstrap_PasswordChangeRecreatesJob(t *testing.T) {
 	g.Expect(newJob.Spec.Template.ObjectMeta.Annotations).To(HaveKeyWithValue(
 		"forge.c5c3.io/admin-password-hash", bootstrapAdminPasswordHash(),
 	),
-		"recreated Job must carry the current admin-password-hash (CC-0108, REQ-003)")
+		"recreated Job must carry the current admin-password-hash")
 
 	// The new re-run key must be the current admin-password digest and differ
 	// from the old stamped key.
 	curHash := bootstrapAdminPasswordHash()
 	g.Expect(newJob.Annotations[job.PodSpecHashAnnotation]).To(Equal(curHash),
-		"recreated Job's re-run key must be the current admin-password digest (CC-0108, REQ-003)")
+		"recreated Job's re-run key must be the current admin-password digest")
 	g.Expect(curHash).NotTo(Equal(oldHash),
-		"a rotated admin password must change the bootstrap re-run gate (CC-0108, REQ-003)")
+		"a rotated admin password must change the bootstrap re-run gate")
 }
 
 // TestReconcileBootstrap_UnchangedPasswordRetainsJob verifies that when the
 // admin password is unchanged, the completed bootstrap Job (stamped with the
 // current password hash) is recognised as current and is NOT deleted/recreated
-// — the bootstrap completes idempotently without churn (CC-0108, REQ-004).
+// — the bootstrap completes idempotently without churn.
 func TestReconcileBootstrap_UnchangedPasswordRetainsJob(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := bootstrapTestScheme()
@@ -908,7 +903,7 @@ func TestReconcileBootstrap_UnchangedPasswordRetainsJob(t *testing.T) {
 	result, err := r.reconcileBootstrap(context.Background(), ks, "keystone-config-abc123")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(BeZero(),
-		"unchanged password must not requeue — bootstrap is complete (CC-0108, REQ-004)")
+		"unchanged password must not requeue — bootstrap is complete")
 
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "BootstrapReady")
 	g.Expect(cond).NotTo(BeNil())
@@ -922,14 +917,13 @@ func TestReconcileBootstrap_UnchangedPasswordRetainsJob(t *testing.T) {
 		Namespace: "default",
 	}, &retained)).To(Succeed())
 	g.Expect(retained.UID).To(Equal(completed.UID),
-		"unchanged password must retain the existing Job (same UID) (CC-0108, REQ-004)")
+		"unchanged password must retain the existing Job (same UID)")
 }
 
 // TestReconcileBootstrap_CutoverConditionTransitions verifies the full cutover:
 // with only the admin Secret present, the first reconcile creates the Job and
 // reports BootstrapReady=False/BootstrapInProgress; once the Job completes, a
-// second reconcile reports BootstrapReady=True/BootstrapComplete (CC-0108,
-// REQ-003).
+// second reconcile reports BootstrapReady=True/BootstrapComplete.
 func TestReconcileBootstrap_CutoverConditionTransitions(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := bootstrapTestScheme()
@@ -975,7 +969,7 @@ func TestReconcileBootstrap_CutoverConditionTransitions(t *testing.T) {
 // TestReconcileBootstrap_MissingPasswordKeyCleanError verifies that an admin
 // Secret lacking the `password` key produces a clean error (no panic),
 // BootstrapReady=False/AdminSecretInvalid, a Warning event, and NO bootstrap
-// Job (CC-0108, REQ-005).
+// Job.
 func TestReconcileBootstrap_MissingPasswordKeyCleanError(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := bootstrapTestScheme()
@@ -994,7 +988,7 @@ func TestReconcileBootstrap_MissingPasswordKeyCleanError(t *testing.T) {
 
 	_, err := r.reconcileBootstrap(context.Background(), ks, "keystone-config-abc123")
 	g.Expect(err).To(HaveOccurred(),
-		"a missing password key must return an error (CC-0108, REQ-005)")
+		"a missing password key must return an error")
 
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "BootstrapReady")
 	g.Expect(cond).NotTo(BeNil())
@@ -1010,13 +1004,13 @@ func TestReconcileBootstrap_MissingPasswordKeyCleanError(t *testing.T) {
 		Namespace: "default",
 	}, &createdJob)
 	g.Expect(apierrors.IsNotFound(getErr)).To(BeTrue(),
-		"no bootstrap Job may be created when the admin password is invalid (CC-0108, REQ-005)")
+		"no bootstrap Job may be created when the admin password is invalid")
 }
 
 // TestReconcileBootstrap_EmptyPasswordCleanError verifies that an admin Secret
 // with an empty `password` value produces a clean error (no panic),
 // BootstrapReady=False/AdminSecretInvalid, a Warning event, and NO bootstrap
-// Job (CC-0108, REQ-005).
+// Job.
 func TestReconcileBootstrap_EmptyPasswordCleanError(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := bootstrapTestScheme()
@@ -1035,7 +1029,7 @@ func TestReconcileBootstrap_EmptyPasswordCleanError(t *testing.T) {
 
 	_, err := r.reconcileBootstrap(context.Background(), ks, "keystone-config-abc123")
 	g.Expect(err).To(HaveOccurred(),
-		"an empty password value must return an error (CC-0108, REQ-005)")
+		"an empty password value must return an error")
 
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "BootstrapReady")
 	g.Expect(cond).NotTo(BeNil())
@@ -1050,15 +1044,14 @@ func TestReconcileBootstrap_EmptyPasswordCleanError(t *testing.T) {
 		Namespace: "default",
 	}, &createdJob)
 	g.Expect(apierrors.IsNotFound(getErr)).To(BeTrue(),
-		"no bootstrap Job may be created when the admin password is empty (CC-0108, REQ-005)")
+		"no bootstrap Job may be created when the admin password is empty")
 }
 
-// TestReconcileBootstrap_RecreatedRotationJob_HasNoTTL locks the CC-0113
-// (#415, REQ-004) invariant on the password-rotation path: when the admin
+// TestReconcileBootstrap_RecreatedRotationJob_HasNoTTL locks the
+// (#415) invariant on the password-rotation path: when the admin
 // password rotates, the previously completed bootstrap Job (stamped with the
 // OLD password's hash) is detected as stale and recreated — and the recreated
-// Job must carry NO TTLSecondsAfterFinished. The TTL was removed (commit on
-// feature/CC-0113) so the finished Job lingers as the RunJob pod-spec-hash
+// Job must carry NO TTLSecondsAfterFinished. The TTL was removed (commit on feature/) so the finished Job lingers as the RunJob pod-spec-hash
 // state record; recreation must ride the pod-spec-hash gate (a changed
 // admin-password-hash annotation), NOT a TTL that garbage-collects the Job and
 // triggers a TTL-driven re-creation loop. This complements
@@ -1077,7 +1070,7 @@ func TestReconcileBootstrap_RecreatedRotationJob_HasNoTTL(t *testing.T) {
 
 	// Build an OLD completed bootstrap Job stamped with a DIFFERENT password's
 	// re-run key. The bootstrap re-run key is the admin-password digest, NOT the
-	// pod-template hash, so the image plays no part (CC-0113).
+	// pod-template hash, so the image plays no part.
 	oldDesired := buildBootstrapJob(ks, "keystone-config-abc123", "test-keystone-fernet-keys", hashOf("old-password"))
 	oldHash := hashOf("old-password")
 	oldJob := oldDesired.DeepCopy()
@@ -1104,18 +1097,18 @@ func TestReconcileBootstrap_RecreatedRotationJob_HasNoTTL(t *testing.T) {
 	g.Expect(newJob.Spec.Template.ObjectMeta.Annotations).To(HaveKeyWithValue(
 		"forge.c5c3.io/admin-password-hash", bootstrapAdminPasswordHash(),
 	),
-		"recreated rotation Job must carry the current admin-password-hash (CC-0113, #415, REQ-004)")
+		"recreated rotation Job must carry the current admin-password-hash (#415)")
 
-	// CC-0113 (#415, REQ-004): the recreated rotation Job must have no TTL —
+	// (#415): the recreated rotation Job must have no TTL —
 	// rotation rides the pod-spec-hash gate, not a deleted TTL.
 	g.Expect(newJob.Spec.TTLSecondsAfterFinished).To(BeNil(),
-		"recreated rotation Job must not set TTLSecondsAfterFinished (CC-0113, #415, REQ-004)")
+		"recreated rotation Job must not set TTLSecondsAfterFinished (#415)")
 }
 
 // TestReconcileBootstrap_CompletedSameHash_NotRecreated_NoTTL locks the
-// CC-0113 (#415, REQ-005) steady-state regression: once the bootstrap Job has
+// (#415) steady-state regression: once the bootstrap Job has
 // completed with the current pod-spec hash, subsequent reconciles must NOT
-// churn it. Before CC-0113 the finished Job carried a TTL; the TTL controller
+// churn it. Before the finished Job carried a TTL; the TTL controller
 // would garbage-collect it and the next reconcile would re-create it, an
 // endless delete/recreate loop. With the TTL removed the completed Job lingers
 // as the pod-spec-hash state record and reconcile reaches steady state. This
@@ -1137,12 +1130,12 @@ func TestReconcileBootstrap_CompletedSameHash_NotRecreated_NoTTL(t *testing.T) {
 	result, err := r.reconcileBootstrap(context.Background(), ks, "keystone-config-abc123")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(BeZero(),
-		"steady-state bootstrap must not requeue — no churn (CC-0113, #415, REQ-005)")
+		"steady-state bootstrap must not requeue — no churn (#415)")
 
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "BootstrapReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue),
-		"completed bootstrap must report BootstrapReady=True (CC-0113, #415, REQ-005)")
+		"completed bootstrap must report BootstrapReady=True (#415)")
 
 	// The Job must be the same object (unchanged UID) — not deleted/recreated.
 	var retained batchv1.Job
@@ -1151,15 +1144,15 @@ func TestReconcileBootstrap_CompletedSameHash_NotRecreated_NoTTL(t *testing.T) {
 		Namespace: "default",
 	}, &retained)).To(Succeed())
 	g.Expect(retained.UID).To(Equal(completed.UID),
-		"steady-state must retain the existing Job (same UID), not recreate it (CC-0113, #415, REQ-005)")
+		"steady-state must retain the existing Job (same UID), not recreate it (#415)")
 
-	// CC-0113 (#415, REQ-005): the lingering completed Job carries no TTL, so
+	// (#415): the lingering completed Job carries no TTL, so
 	// the TTL controller cannot garbage-collect it and re-trigger the loop.
 	g.Expect(retained.Spec.TTLSecondsAfterFinished).To(BeNil(),
-		"lingering completed Job must not set TTLSecondsAfterFinished (CC-0113, #415, REQ-005)")
+		"lingering completed Job must not set TTLSecondsAfterFinished (#415)")
 }
 
-// TestReconcileBootstrap_ImageChangeRetainsJob locks the CC-0113 regression: a
+// TestReconcileBootstrap_ImageChangeRetainsJob locks the regression: a
 // release upgrade (changed container image) must NOT re-run the completed
 // bootstrap Job while the admin password is unchanged. The bootstrap re-run is
 // gated on the admin-password digest only, so the image change is ignored.
@@ -1186,12 +1179,12 @@ func TestReconcileBootstrap_ImageChangeRetainsJob(t *testing.T) {
 	result, err := r.reconcileBootstrap(context.Background(), ks, "keystone-config-abc123")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(BeZero(),
-		"an image-only change must not re-run the bootstrap Job (CC-0113)")
+		"an image-only change must not re-run the bootstrap Job")
 
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "BootstrapReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue),
-		"image-only change must keep BootstrapReady=True (CC-0113)")
+		"image-only change must keep BootstrapReady=True")
 	g.Expect(cond.Reason).To(Equal("BootstrapComplete"))
 
 	// The Job must be the same object (unchanged UID) — not deleted/recreated.
@@ -1201,5 +1194,5 @@ func TestReconcileBootstrap_ImageChangeRetainsJob(t *testing.T) {
 		Namespace: "default",
 	}, &retained)).To(Succeed())
 	g.Expect(retained.UID).To(Equal(completed.UID),
-		"an image-only change must retain the existing bootstrap Job (same UID) (CC-0113)")
+		"an image-only change must retain the existing bootstrap Job (same UID)")
 }

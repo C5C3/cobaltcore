@@ -3,7 +3,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.21.0
+    controller-gen.kubebuilder.io/version: v0.20.1
   name: keystones.keystone.openstack.c5c3.io
 spec:
   group: keystone.openstack.c5c3.io
@@ -113,7 +113,7 @@ spec:
                   passwordRotation:
                     description: |-
                       PasswordRotation optionally enables scheduled rotation of the admin
-                      password (CC-0109). Nil (the default) leaves the feature off and the
+                      password. Nil (the default) leaves the feature off and the
                       sub-reconciler is a clean no-op. See PasswordRotationSpec for the opt-in
                       and per-CR semantics.
                     properties:
@@ -150,7 +150,7 @@ spec:
                       PublicEndpoint is the externally routable Keystone endpoint URL used for
                       --bootstrap-public-url. When unset, the cluster-local service DNS is used
                       as a fallback. External clients (CLI users, Horizon, federation partners)
-                      require a routable address here (CC-0013).
+                      require a routable address here.
                     type: string
                   region:
                     default: RegionOne
@@ -224,11 +224,11 @@ spec:
                 description: |-
                   Database defines the MariaDB connection parameters.
                   Supports managed (clusterRef) and brownfield (host/port) modes.
-                  TLS/mTLS is opt-in via database.tls (CC-0106): when enabled, both the
+                  TLS/mTLS is opt-in via database.tls when enabled, both the
                   CA bundle and client keypair Secret references must be supplied so the
                   reconciler can establish a verified, mutually-authenticated connection.
 
-                  DECISION (CC-0106): no CEL rule is added for tls.mode — the out-of-enum
+                  DECISION no CEL rule is added for tls.mode — the out-of-enum
                   case is already rejected by the leaf +kubebuilder:validation:Enum marker
                   on DatabaseTLSSpec.Mode (prefer;require;verify-ca;verify-full). Adding a
                   mode CEL here would be redundant with that schema-level enum and risks
@@ -272,9 +272,8 @@ spec:
                     type: object
                   tls:
                     description: |-
-                      TLS optionally enables TLS/mTLS for the database connection (CC-0106,
-                      REQ-001). The pointer keeps the field opt-in and non-mutating: a nil
-                      TLS means plaintext TCP, preserving the pre-CC-0106 behavior for all
+                      TLS optionally enables TLS/mTLS for the database connection. The pointer keeps the field opt-in and non-mutating: a nil
+                      TLS means plaintext TCP, preserving the pre-existing behavior for all
                       existing DatabaseSpec consumers.
                     properties:
                       caBundleSecretRef:
@@ -375,7 +374,7 @@ spec:
               gateway:
                 description: |-
                   Gateway configures external exposure of the Keystone API via a Gateway API
-                  HTTPRoute (CC-0065). When set, the operator creates an HTTPRoute targeting
+                  HTTPRoute. When set, the operator creates an HTTPRoute targeting
                   the {name} Service on port 5000 and attaches it to the referenced
                   pre-existing Gateway. When removed (nil), the HTTPRoute is deleted.
                   The Gateway and GatewayClass are infrastructure concerns managed outside
@@ -440,7 +439,7 @@ spec:
                 type: object
               logging:
                 description: |-
-                  Logging configures oslo.log output for the Keystone API container (CC-0098).
+                  Logging configures oslo.log output for the Keystone API container.
                   When unset, the defaulting webhook materializes a LoggingSpec with
                   Format=text, Level=INFO, Debug=false — equivalent to the documented
                   production baseline (stdout/stderr, oslo.log format, no debug noise).
@@ -722,7 +721,7 @@ spec:
                     items:
                       description: |-
                         NetworkPolicyIngressSource defines a source from which traffic is allowed
-                        to reach the Keystone API pods on TCP 5000 (CC-0039).
+                        to reach the Keystone API pods on TCP 5000.
                       properties:
                         namespaceSelector:
                           additionalProperties:
@@ -815,7 +814,7 @@ spec:
                 description: |-
                   PreStopSleepSeconds is the sleep duration (seconds) of the preStop
                   lifecycle hook, configured independently of the overall grace period
-                  (CC-0084). This covers the window between EndpointSlice removal and
+                  This covers the window between EndpointSlice removal and
                   kube-proxy/ingress-controller propagation so new requests stop arriving
                   before SIGTERM reaches uWSGI. When nil, the reconciler applies a default
                   of 5s. Zero is permitted to disable the sleep. The cross-field rule
@@ -826,7 +825,7 @@ spec:
                 type: integer
               priorityClassName:
                 description: |-
-                  PriorityClassName sets the priority class for Keystone API pods (CC-0075).
+                  PriorityClassName sets the priority class for Keystone API pods.
                   When set, the operator passes the value through to the PodSpec, allowing
                   cluster administrators to control scheduling priority and preemption.
                   When unset, no priority class is configured and the cluster default applies.
@@ -841,7 +840,7 @@ spec:
                   Resources defines the CPU and memory requests and limits for the Keystone API
                   container. When unset, the defaulting webhook injects sensible defaults
                   (256Mi/512Mi memory, 100m/500m CPU) to ensure Burstable QoS class and
-                  enable HPA utilization calculations (CC-0042).
+                  enable HPA utilization calculations.
                 properties:
                   claims:
                     description: |-
@@ -902,7 +901,7 @@ spec:
               strategy:
                 description: |-
                   Strategy overrides the Deployment rollout strategy for the Keystone API
-                  Deployment (CC-0084). When nil, the reconciler applies RollingUpdate
+                  Deployment. When nil, the reconciler applies RollingUpdate
                   with MaxUnavailable=0 and MaxSurge=1 to guarantee surge-before-remove
                   behavior — available capacity never dips below spec.replicas during an
                   image-tag patch. Set this to customize maxSurge/maxUnavailable, or to
@@ -956,7 +955,7 @@ spec:
                 description: |-
                   TerminationGracePeriodSeconds is the grace period (seconds) granted to
                   Keystone API pods between SIGTERM and SIGKILL during rolling updates
-                  (CC-0084). Extend this to cover slow upstream token validation (LDAP/DB)
+                  Extend this to cover slow upstream token validation (LDAP/DB)
                   so in-flight requests finish before the kubelet forcibly kills uWSGI.
                   When nil, the reconciler omits the field from the pod template and the
                   Kubernetes default of 30s applies. Must be at least 10s when set.
@@ -966,7 +965,7 @@ spec:
               topologySpreadConstraints:
                 description: |-
                   TopologySpreadConstraints describes how pods should be spread across
-                  topology domains (zones, nodes) to achieve high availability (CC-0075).
+                  topology domains (zones, nodes) to achieve high availability.
                   When nil (unset), the operator injects two default constraints:
                   zone-spread (topology.kubernetes.io/zone) and hostname-spread
                   (kubernetes.io/hostname), both MaxSkew=1 with ScheduleAnyway.
@@ -1147,7 +1146,7 @@ spec:
               trustFlush:
                 description: |-
                   TrustFlush configures periodic purging of expired trust delegations
-                  (CC-0057, CC-0096). The defaulting webhook materializes a populated
+                  The defaulting webhook materializes a populated
                   TrustFlushSpec when the field is unset so that the operator runs
                   keystone-manage trust_flush hourly by default — there is no nil-back
                   path on a webhook-enabled cluster, because admission re-defaults the
@@ -1172,7 +1171,7 @@ spec:
                 type: object
               uwsgi:
                 description: |-
-                  UWSGI configures the uWSGI application server parameters (CC-0040).
+                  UWSGI configures the uWSGI application server parameters.
                   When set, the operator uses these values for the uWSGI command in the
                   Deployment. When nil, hardcoded defaults (processes=2, threads=1,
                   httpKeepAlive=true) are used.
@@ -1180,7 +1179,7 @@ spec:
                   harakiri:
                     description: |-
                       Harakiri caps the per-request worker lifetime (seconds) via the uWSGI
-                      --harakiri flag (CC-0084). A request blocked longer than this bound is
+                      --harakiri flag. A request blocked longer than this bound is
                       killed so a single stuck LDAP/DB lookup cannot prevent other in-flight
                       requests from completing cleanly before graceful shutdown ends. When
                       nil, the --harakiri flag is omitted from the uWSGI command entirely
@@ -1199,7 +1198,7 @@ spec:
                   httpKeepAliveTimeout:
                     description: |-
                       HTTPKeepAliveTimeout bounds the idle timeout (seconds) of keep-alive
-                      connections via the uWSGI --http-keepalive-timeout flag (CC-0084).
+                      connections via the uWSGI --http-keepalive-timeout flag.
                       A bounded timeout forces clients to reconnect through the Service so
                       they never reuse a socket to a removed pod. When nil, the flag is
                       omitted from the uWSGI command. Zero is rejected to avoid the
@@ -1295,15 +1294,14 @@ spec:
                 type: string
               installedRelease:
                 description: InstalledRelease is the OpenStack release version currently
-                  deployed (CC-0056).
+                  deployed.
                 type: string
               targetRelease:
                 description: TargetRelease is the upgrade target release during an
-                  active upgrade (CC-0056).
+                  active upgrade.
                 type: string
               upgradePhase:
-                description: UpgradePhase is the current phase of a database upgrade
-                  (CC-0056).
+                description: UpgradePhase is the current phase of a database upgrade.
                 enum:
                 - Expanding
                 - Migrating

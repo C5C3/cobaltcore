@@ -27,8 +27,6 @@ import (
 	"github.com/c5c3/forge/operators/keystone/internal/testutil"
 )
 
-// Feature: CC-0012
-
 // --- Helpers ---
 
 // setupEnvTest wraps testutil.SetupKeystoneEnvTest with the v1alpha1 scheme
@@ -221,7 +219,7 @@ func TestIntegration_CELRejectsPolicyOverridesEmpty(t *testing.T) {
 	g.Expect(err.Error()).To(ContainSubstring("policyOverrides"))
 }
 
-// TestIntegration_CRD_CELRejectsInvalidTLS verifies the CC-0106 CEL rule on
+// TestIntegration_CRD_CELRejectsInvalidTLS verifies the CEL rule on
 // spec.database: when database.tls.enabled is true, both caBundleSecretRef.name
 // and clientCertSecretRef.name must be non-empty. The base CR uses brownfield
 // Host mode (no clusterRef), so the clusterRef/host XOR rule stays satisfied
@@ -243,7 +241,7 @@ func TestIntegration_CRD_CELRejectsInvalidTLS(t *testing.T) {
 
 	k := validIntegrationKeystone("db-tls-incomplete", ns.Name)
 	// tls.enabled=true but both Secret references are left empty, which the
-	// CC-0106 CEL rule rejects.
+	// CEL rule rejects.
 	k.Spec.Database.TLS = &commonv1.DatabaseTLSSpec{
 		Enabled: true,
 		Mode:    "verify-full",
@@ -260,13 +258,13 @@ func TestIntegration_CRD_CELRejectsInvalidTLS(t *testing.T) {
 // setupEnvTestNoWebhook wraps testutil.SetupKeystoneEnvTestNoWebhook with the
 // v1alpha1 scheme registration, avoiding the import cycle between testutil and
 // this package. Used by the CRD-only CEL tests below so the validating webhook
-// cannot mask a missing CEL rule (CC-0106 review #1).
+// cannot mask a missing CEL rule (review #1).
 func setupEnvTestNoWebhook(t testing.TB) (client.Client, context.Context, context.CancelFunc) {
 	t.Helper()
 	return testutil.SetupKeystoneEnvTestNoWebhook(t, AddToScheme)
 }
 
-// TestIntegration_CRD_CELOnly_RejectsInvalidTLS pins the CC-0106 CEL rule on
+// TestIntegration_CRD_CELOnly_RejectsInvalidTLS pins the CEL rule on
 // spec.database (caBundle + clientCert refs required when tls.enabled=true)
 // against an envtest API server with NO validating webhook installed. If the
 // CEL rule is ever removed from the CRD schema, this test fails immediately —
@@ -289,18 +287,18 @@ func TestIntegration_CRD_CELOnly_RejectsInvalidTLS(t *testing.T) {
 
 	err := c.Create(ctx, k)
 	g.Expect(err).To(HaveOccurred(),
-		"CRD CEL rule alone must reject database.tls.enabled=true without secret refs (CC-0106, REQ-007)")
+		"CRD CEL rule alone must reject database.tls.enabled=true without secret refs")
 	g.Expect(apierrors.IsInvalid(err) || apierrors.IsForbidden(err)).To(BeTrue(),
 		fmt.Sprintf("expected Invalid or Forbidden status error, got: %v", err))
 	g.Expect(err.Error()).To(ContainSubstring("database"))
 }
 
-// TestIntegration_CRD_CELOnly_RejectsOutOfEnumTLSMode pins the CC-0106
+// TestIntegration_CRD_CELOnly_RejectsOutOfEnumTLSMode pins the
 // +kubebuilder:validation:Enum constraint on DatabaseTLSSpec.Mode against an
 // envtest API server with NO validating webhook installed. A mode value
 // outside {prefer, require, verify-ca, verify-full} must be rejected by the
-// CRD schema alone (CC-0106, REQ-007). This covers the second half of the
-// REQ-007 contract that the original TestIntegration_CRD_CELRejectsInvalidTLS
+// CRD schema alone. This covers the second half of the
+// contract that the original TestIntegration_CRD_CELRejectsInvalidTLS
 // did not exercise.
 func TestIntegration_CRD_CELOnly_RejectsOutOfEnumTLSMode(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
@@ -324,7 +322,7 @@ func TestIntegration_CRD_CELOnly_RejectsOutOfEnumTLSMode(t *testing.T) {
 
 	err := c.Create(ctx, k)
 	g.Expect(err).To(HaveOccurred(),
-		"CRD enum on database.tls.mode must reject out-of-enum values (CC-0106, REQ-007)")
+		"CRD enum on database.tls.mode must reject out-of-enum values")
 	g.Expect(apierrors.IsInvalid(err) || apierrors.IsForbidden(err)).To(BeTrue(),
 		fmt.Sprintf("expected Invalid or Forbidden status error, got: %v", err))
 	g.Expect(err.Error()).To(SatisfyAny(
@@ -443,7 +441,7 @@ func TestIntegration_WebhookDefaultsPreservesExplicit(t *testing.T) {
 	g.Expect(got.Spec.Bootstrap.Region).To(Equal("EU-West"), "explicit bootstrap.region should be preserved")
 }
 
-// --- Task CC-0042: Resources defaulting and validation integration tests ---
+// --- Task: Resources defaulting and validation integration tests ---
 
 func TestIntegration_ResourcesDefaultedWhenNil(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
@@ -529,7 +527,7 @@ func TestIntegration_ResourcesRequestExceedsLimitRejected(t *testing.T) {
 	g.Expect(err.Error()).To(ContainSubstring("resources"))
 }
 
-// --- Task CC-0040: UWSGI defaulting and validation integration tests ---
+// --- Task: UWSGI defaulting and validation integration tests ---
 
 func TestIntegration_UWSGINilPreserved(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
@@ -692,7 +690,7 @@ func TestIntegration_UWSGIThreadsBelowMinimumRejected(t *testing.T) {
 	))
 }
 
-// CC-0098 REQ-008: CRD schema must surface spec.logging with Format/Level enum constraints, Debug boolean, and PerLoggerLevels map<string,string>.
+// CRD schema must surface spec.logging with Format/Level enum constraints, Debug boolean, and PerLoggerLevels map<string,string>.
 func TestIntegration_CRDSchemaContainsLoggingSpec(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)
@@ -736,7 +734,7 @@ func TestIntegration_CRDSchemaContainsLoggingSpec(t *testing.T) {
 	g.Expect(ok).To(BeTrue(), "openAPIV3Schema must declare a spec property")
 
 	logging, ok := specSchema.Properties["logging"]
-	g.Expect(ok).To(BeTrue(), "spec.properties.logging must exist (CC-0098 REQ-008)")
+	g.Expect(ok).To(BeTrue(), "spec.properties.logging must exist")
 
 	format, ok := logging.Properties["format"]
 	g.Expect(ok).To(BeTrue(), "spec.logging.format must exist")

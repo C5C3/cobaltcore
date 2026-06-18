@@ -50,7 +50,7 @@ func validControlPlane() *ControlPlane {
 	}
 }
 
-// --- Defaulting webhook tests (CC-0110, REQ-005) ---
+// --- Defaulting webhook tests ---
 
 func TestDefault_SetsZeroValueDefaults(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -65,14 +65,14 @@ func TestDefault_SetsZeroValueDefaults(t *testing.T) {
 	g.Expect(*cp.Spec.KORC.AdminCredential.ApplicationCredential.Restricted).To(BeTrue())
 	g.Expect(cp.Spec.KORC.AdminCredential.ApplicationCredential.Rotation.Mode).To(Equal(RotationModePasswordDriven))
 
-	// CC-0115: the eight well-known database/cache/admin-credential defaults on a
+	// the eight well-known database/cache/admin-credential defaults on a
 	// bare &ControlPlane{}.
 	infra := cp.Spec.Infrastructure
 	g.Expect(infra.Database.Database).To(Equal(DefaultDatabaseName))
 	g.Expect(infra.Database.SecretRef.Name).To(Equal(DefaultDatabaseSecretName))
 	g.Expect(infra.Database.ClusterRef).NotTo(BeNil())
 	g.Expect(infra.Database.ClusterRef.Name).To(Equal(DefaultDatabaseClusterRefName))
-	// database.secretRef.key is intentionally NOT defaulted (CC-0115, REQ-001).
+	// database.secretRef.key is intentionally NOT defaulted.
 	g.Expect(infra.Database.SecretRef.Key).To(BeEmpty())
 	g.Expect(infra.Cache.Backend).To(Equal(DefaultCacheBackend))
 	g.Expect(infra.Cache.ClusterRef).NotTo(BeNil())
@@ -84,7 +84,7 @@ func TestDefault_SetsZeroValueDefaults(t *testing.T) {
 }
 
 // TestDefault_IsIdempotent verifies applying Default twice produces the same
-// result (CC-0110, REQ-005).
+// result.
 func TestDefault_IsIdempotent(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &ControlPlaneWebhook{}
@@ -102,7 +102,7 @@ func TestDefault_IsIdempotent(t *testing.T) {
 	g.Expect(cp.Spec.KORC.AdminCredential.ApplicationCredential.Rotation.Mode).
 		To(Equal(first.Spec.KORC.AdminCredential.ApplicationCredential.Rotation.Mode))
 
-	// CC-0115: the eight new defaults are identical on a second pass.
+	// the eight new defaults are identical on a second pass.
 	g.Expect(cp.Spec.Infrastructure.Database.Database).
 		To(Equal(first.Spec.Infrastructure.Database.Database))
 	g.Expect(cp.Spec.Infrastructure.Database.SecretRef.Name).
@@ -125,7 +125,7 @@ func TestDefault_IsIdempotent(t *testing.T) {
 
 // TestDefault_PreservesExplicitValues verifies the defaulting webhook never
 // overwrites operator-supplied values, including an explicit restricted:false
-// (CC-0110, REQ-005). The *bool lets us distinguish unset from explicit false.
+// The *bool lets us distinguish unset from explicit false.
 func TestDefault_PreservesExplicitValues(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &ControlPlaneWebhook{}
@@ -168,7 +168,7 @@ func TestDefault_PreservesExplicitValues(t *testing.T) {
 	g.Expect(*cp.Spec.KORC.AdminCredential.ApplicationCredential.Restricted).To(BeFalse())
 	g.Expect(cp.Spec.KORC.AdminCredential.ApplicationCredential.Rotation.Mode).To(Equal(RotationModeManual))
 
-	// CC-0115: every explicitly-supplied well-known field is preserved.
+	// every explicitly-supplied well-known field is preserved.
 	g.Expect(cp.Spec.Infrastructure.Database.ClusterRef).NotTo(BeNil())
 	g.Expect(cp.Spec.Infrastructure.Database.ClusterRef.Name).To(Equal("my-db"))
 	g.Expect(cp.Spec.Infrastructure.Database.Database).To(Equal("mydb"))
@@ -185,7 +185,7 @@ func TestDefault_PreservesExplicitValues(t *testing.T) {
 // never coerces an explicit brownfield database/cache into managed mode: when a
 // brownfield discriminator (database.host / cache.servers) is set, the matching
 // clusterRef is left nil so the validating webhook's XOR check still passes,
-// while the mode-neutral leaves are still defaulted (CC-0115, REQ-002, REQ-003).
+// while the mode-neutral leaves are still defaulted.
 func TestDefault_DoesNotInventModeForBrownfield(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &ControlPlaneWebhook{}
@@ -230,8 +230,7 @@ func TestDefault_DoesNotInventModeForBrownfield(t *testing.T) {
 // that is present but carries an empty Name (the CRD schema permits a bare `{}`
 // clusterRef). The webhook must fill the well-known managed name in place —
 // preserving the existing clusterRef pointer — so the validating webhook's
-// database/cache XOR check still passes after defaulting (CC-0115, REQ-002,
-// REQ-003). Without this case the `else if clusterRef.Name == ""` arm of Default
+// database/cache XOR check still passes after defaulting. Without this case the `else if clusterRef.Name == ""` arm of Default
 // is unexercised.
 func TestDefault_FillsEmptyNameOnPresentClusterRef(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -268,7 +267,7 @@ func TestDefault_FillsEmptyNameOnPresentClusterRef(t *testing.T) {
 		"a filled managed clusterRef must satisfy the database/cache XOR after defaulting")
 }
 
-// --- Validation webhook tests (CC-0110, REQ-006) ---
+// --- Validation webhook tests ---
 
 func TestValidateCreate_AcceptsValidControlPlane(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -348,8 +347,7 @@ func TestValidateCreate_RejectsMissingPasswordSecretRef(t *testing.T) {
 
 // TestValidateCreate_AccumulatesAllErrors puts EVERY validation rule into a
 // broken state simultaneously and asserts the returned error names every field,
-// pinning the webhook's no-short-circuit (accumulate-all) contract (CC-0110,
-// REQ-006). If a future change short-circuits on the first error, this test
+// pinning the webhook's no-short-circuit (accumulate-all) contract. If a future change short-circuits on the first error, this test
 // fails because the later field substrings go missing.
 func TestValidateCreate_AccumulatesAllErrors(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -381,7 +379,7 @@ func TestValidateCreate_AccumulatesAllErrors(t *testing.T) {
 
 // TestValidateCreate_RejectsBadRotationInterval verifies a rotationInterval the
 // reconciler's intervalToCron cannot represent is rejected at admission rather
-// than surfacing as a steady-state KeystoneReady=False (CC-0110, REQ-006).
+// than surfacing as a steady-state KeystoneReady=False.
 func TestValidateCreate_RejectsBadRotationInterval(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &ControlPlaneWebhook{}
@@ -401,7 +399,6 @@ func TestValidateCreate_RejectsBadRotationInterval(t *testing.T) {
 // TestValidateCreate_AcceptsDailyAndWeeklyRotationIntervals verifies the
 // rotationInterval values intervalToCron supports (any positive whole number of
 // days, including the canonical 24h daily and 168h weekly) pass admission
-// (CC-0110, REQ-006).
 func TestValidateCreate_AcceptsDailyAndWeeklyRotationIntervals(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &ControlPlaneWebhook{}
@@ -434,7 +431,7 @@ func TestValidateDelete_AlwaysAllowed(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 }
 
-// --- One-ControlPlane-per-namespace tests (CC-0112, REQ-010) ---
+// --- One-ControlPlane-per-namespace tests ---
 
 // webhookScheme builds a runtime.Scheme with the c5c3 API types registered, for
 // the fake client backing the one-ControlPlane-per-namespace tests.
@@ -448,7 +445,7 @@ func webhookScheme(t *testing.T) *runtime.Scheme {
 
 // TestValidateCreate_RejectsSecondControlPlaneInNamespace verifies the
 // one-ControlPlane-per-namespace contract: a CREATE is Forbidden when another
-// ControlPlane already exists in the same namespace (CC-0112, REQ-010).
+// ControlPlane already exists in the same namespace.
 func TestValidateCreate_RejectsSecondControlPlaneInNamespace(t *testing.T) {
 	g := NewGomegaWithT(t)
 	existing := validControlPlane()
@@ -469,7 +466,7 @@ func TestValidateCreate_RejectsSecondControlPlaneInNamespace(t *testing.T) {
 
 // TestValidateCreate_AllowsFirstControlPlane_AndUpdate verifies the first CREATE
 // in an empty namespace is allowed, and that UPDATE never trips the
-// one-per-namespace check even though the CR is present (CC-0112, REQ-010).
+// one-per-namespace check even though the CR is present.
 func TestValidateCreate_AllowsFirstControlPlane_AndUpdate(t *testing.T) {
 	g := NewGomegaWithT(t)
 	c := fake.NewClientBuilder().WithScheme(webhookScheme(t)).Build()

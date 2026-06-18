@@ -25,17 +25,16 @@ import (
 // conditionTypeRotationReady is the single Ready condition the CredentialRotation
 // reconciler reports. Like the ControlPlane condition constants it is the source
 // of truth for the status contract so a rename is caught by the compiler
-// (CC-0110, REQ-015).
 const conditionTypeRotationReady = "Ready"
 
 // credentialRotationRequeueAfter is the short backoff used while a Bootstrap
 // rotation waits for the ControlPlane reconciler to mint the admin
-// ApplicationCredential CR (CC-0110, REQ-015).
+// ApplicationCredential CR.
 const credentialRotationRequeueAfter = credentialRotationWaitInterval
 
 // CredentialRotationReconciler reconciles a CredentialRotation object. It drives
 // one-shot rotations of a control-plane credential by NUDGING the ControlPlane
-// reconciler rather than duplicating any mint logic (CC-0110, REQ-015).
+// reconciler rather than duplicating any mint logic.
 type CredentialRotationReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
@@ -200,7 +199,7 @@ type controlPlaneCondition struct {
 // zero/multiple-match it returns a nil ControlPlane plus the result+condition the
 // caller should persist (see the DECISION on Reconcile). The multiple-match case
 // is defense-in-depth: the ControlPlane validating webhook now enforces one
-// ControlPlane per namespace on CREATE (CC-0112, REQ-010), so it should be
+// ControlPlane per namespace on CREATE, so it should be
 // unreachable in practice and only fires for CRs that predate the guard or
 // callers that bypass the webhook.
 func (r *CredentialRotationReconciler) resolveControlPlane(
@@ -225,7 +224,7 @@ func (r *CredentialRotationReconciler) resolveControlPlane(
 			message: fmt.Sprintf("no ControlPlane found in namespace %q", cr.Namespace),
 		}
 	default:
-		// AmbiguousControlPlane is defense-in-depth (CC-0112, REQ-010): the
+		// AmbiguousControlPlane is defense-in-depth the
 		// ControlPlane validating webhook enforces one ControlPlane per namespace
 		// on CREATE (operators/c5c3/api/v1alpha1/controlplane_webhook.go), so a
 		// namespace should never hold two. This branch remains as an explicit,
@@ -271,7 +270,7 @@ func (r *CredentialRotationReconciler) clearPasswordHashAnnotation(
 // finish sets the Ready condition + ObservedGeneration and persists status,
 // returning the given result. It mirrors the ControlPlane reconciler's
 // updateStatus discipline so a stale status is distinguishable from a current
-// one (CC-0110, REQ-015).
+// one.
 func (r *CredentialRotationReconciler) finish(
 	ctx context.Context, cr *c5c3v1alpha1.CredentialRotation, result ctrl.Result,
 	status metav1.ConditionStatus, reason, message string,

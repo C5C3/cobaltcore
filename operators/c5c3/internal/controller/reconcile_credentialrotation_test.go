@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Tests for the CredentialRotation reconciler (CC-0110, REQ-015): bootstrap
+// Tests for the CredentialRotation reconciler bootstrap
 // idempotence, the re-mint nudge, password-hash-change detection, unsupported
 // targets, and the deferred scheduled-rotation fields.
 package controller
@@ -142,7 +142,7 @@ func TestRotation_ReMintClearsHashAnnotation(t *testing.T) {
 }
 
 // TestRotation_ReMintFullCycleReStampsHash drives the COMPLETE re-mint mutation
-// cycle, not just the nudge half (CC-0110, TE7). It (1) runs the CredentialRotation
+// cycle, not just the nudge half (TE7). It (1) runs the CredentialRotation
 // reconciler to clear the password-hash annotation (the nudge), then runs two
 // reconcileKORC passes against the SAME client to prove the nudge is consumed:
 // (2a) the cleared annotation drives reconcileKORC to DELETE the AC (the re-mint
@@ -269,8 +269,7 @@ func TestRotation_NoControlPlaneReadyFalse(t *testing.T) {
 }
 
 // TestResolveControlPlane_AmbiguousIsDefenseInDepth verifies that when two
-// ControlPlanes coexist in a namespace (a state the ControlPlane validating
-// webhook now prevents on CREATE — CC-0112, REQ-010), the CredentialRotation
+// ControlPlanes coexist in a namespace (a state the ControlPlane validating webhook now prevents on CREATE), the CredentialRotation
 // reconciler fails safe with Ready=False reason "AmbiguousControlPlane" rather
 // than silently picking one. This branch is defense-in-depth for CRs that
 // predate the webhook guard or callers that bypass it.

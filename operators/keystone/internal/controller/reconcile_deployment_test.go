@@ -31,8 +31,6 @@ import (
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
 
-// Feature: CC-0013
-
 func deployTestScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(s)
@@ -230,7 +228,7 @@ func TestReconcileDeployment_DeploymentSpec(t *testing.T) {
 	g.Expect(container.Ports[0].ContainerPort).To(Equal(int32(5000)))
 	g.Expect(container.Ports[0].Name).To(Equal("keystone"))
 
-	// Verify liveness probe uses TCPSocket (CC-0062): a TCP-only check ensures
+	// Verify liveness probe uses TCPSocket a TCP-only check ensures
 	// the uWSGI process is alive without exercising the database code path,
 	// preventing unnecessary pod restarts during transient DB outages.
 	g.Expect(container.LivenessProbe).NotTo(BeNil())
@@ -260,7 +258,7 @@ func TestReconcileDeployment_DeploymentSpec(t *testing.T) {
 	g.Expect(container.ReadinessProbe.TimeoutSeconds).To(Equal(int32(25)))
 	g.Expect(container.ReadinessProbe.FailureThreshold).To(Equal(int32(3)))
 
-	// Verify startup probe (CC-0063, REQ-003): httpGet /v3 port 5000 with generous
+	// Verify startup probe httpGet /v3 port 5000 with generous
 	// failure threshold to survive slow cold starts (large DB, cold caches).
 	g.Expect(container.StartupProbe).NotTo(BeNil())
 	g.Expect(container.StartupProbe.HTTPGet).NotTo(BeNil())
@@ -269,7 +267,7 @@ func TestReconcileDeployment_DeploymentSpec(t *testing.T) {
 	g.Expect(container.StartupProbe.FailureThreshold).To(Equal(int32(30)))
 	g.Expect(container.StartupProbe.PeriodSeconds).To(Equal(int32(10)))
 
-	// Verify preStop lifecycle hook (CC-0063, REQ-001): 5-second sleep before
+	// Verify preStop lifecycle hook 5-second sleep before
 	// SIGTERM gives kube-proxy time to propagate endpoint removal.
 	g.Expect(container.Lifecycle).NotTo(BeNil())
 	g.Expect(container.Lifecycle.PreStop).NotTo(BeNil())
@@ -277,7 +275,7 @@ func TestReconcileDeployment_DeploymentSpec(t *testing.T) {
 	g.Expect(container.Lifecycle.PreStop.Exec.Command).To(Equal([]string{"/bin/sh", "-c", "sleep 5"}))
 	g.Expect(container.Lifecycle.PreStop.HTTPGet).To(BeNil(), "preStop must use exec, not httpGet")
 
-	// Verify terminationGracePeriodSeconds (CC-0063, REQ-002): 30s gives 5s for
+	// Verify terminationGracePeriodSeconds 30s gives 5s for
 	// preStop sleep + 25s for uWSGI to drain in-flight requests.
 	g.Expect(deploy.Spec.Template.Spec.TerminationGracePeriodSeconds).NotTo(BeNil())
 	g.Expect(*deploy.Spec.Template.Spec.TerminationGracePeriodSeconds).To(Equal(int64(30)))
@@ -302,7 +300,7 @@ func TestReconcileDeployment_DeploymentSpec(t *testing.T) {
 	g.Expect(credentialMount.MountPath).To(Equal("/etc/keystone/credential-keys/"))
 	g.Expect(credentialMount.ReadOnly).To(BeTrue())
 
-	// Verify SecurityContext satisfies PSS Restricted profile (CC-0045).
+	// Verify SecurityContext satisfies PSS Restricted profile.
 	expectRestrictedSecurityContext(g, &container)
 
 	// Verify volumes.
@@ -324,7 +322,7 @@ func TestReconcileDeployment_DeploymentSpec(t *testing.T) {
 	g.Expect(fernetVol.Secret.SecretName).To(Equal("test-keystone-fernet-keys"))
 	g.Expect(credentialVol.Secret).NotTo(BeNil())
 	g.Expect(credentialVol.Secret.SecretName).To(Equal("test-keystone-credential-keys"))
-	g.Expect(credentialVol.Secret.Optional).To(BeNil(), "credential-keys volume should not be optional now that credential key management is implemented (CC-0036)")
+	g.Expect(credentialVol.Secret.Optional).To(BeNil(), "credential-keys volume should not be optional now that credential key management is implemented")
 
 	// Verify labels on Deployment ObjectMeta, pod template, and selector.
 	g.Expect(deploy.Labels).To(HaveKeyWithValue("app.kubernetes.io/name", "keystone"))
@@ -411,44 +409,44 @@ func TestReconcileDeployment_AutoscalingPreservesLiveReplicas(t *testing.T) {
 	g.Expect(*deploy.Spec.Replicas).To(Equal(int32(5)), "HPA-scaled replica count must be preserved, not reset to spec.replicas")
 }
 
-// Feature: CC-0099 — restrict mode on mounted Fernet/credential key Secret volumes.
+// restrict mode on mounted Fernet/credential key Secret volumes.
 
 // TestBuildKeystoneDeployment_PodSecurityContextSetsFSGroup verifies that the
 // Pod template carries SecurityContext.FSGroup = openstackUID so that mounted
 // Secret volumes are owned by the openstack group, satisfying the upstream
-// Keystone "key_repository is world readable" check (CC-0099, REQ-001, REQ-008).
+// Keystone "key_repository is world readable" check.
 // All other PodSecurityContext fields must remain nil — Pod-level FSGroup is
-// orthogonal to the container-level CC-0045 PSS-Restricted SecurityContext.
+// orthogonal to the container-level PSS-Restricted SecurityContext.
 func TestBuildKeystoneDeployment_PodSecurityContextSetsFSGroup(t *testing.T) {
 	g := NewGomegaWithT(t)
 
 	deploy := buildKeystoneDeployment(deployTestKeystone(), "keystone-config-abc123")
 
 	psc := deploy.Spec.Template.Spec.SecurityContext
-	g.Expect(psc).NotTo(BeNil(), "CC-0099: PodSecurityContext must be set so FSGroup applies")
-	g.Expect(psc.FSGroup).NotTo(BeNil(), "CC-0099: FSGroup must be set on PodSecurityContext")
-	g.Expect(*psc.FSGroup).To(Equal(openstackUID), "CC-0099: FSGroup must equal the openstack UID/GID (42424)")
+	g.Expect(psc).NotTo(BeNil(), "PodSecurityContext must be set so FSGroup applies")
+	g.Expect(psc.FSGroup).NotTo(BeNil(), "FSGroup must be set on PodSecurityContext")
+	g.Expect(*psc.FSGroup).To(Equal(openstackUID), "FSGroup must equal the openstack UID/GID (42424)")
 
-	// CC-0099: do not set any other Pod-level SecurityContext field. Pod-level
+	// do not set any other Pod-level SecurityContext field. Pod-level
 	// RunAs* / Seccomp / SELinux / AppArmor would conflict with or override
-	// the container-level CC-0045 SecurityContext.
-	g.Expect(psc.RunAsUser).To(BeNil(), "CC-0099: RunAsUser must stay container-level (CC-0045)")
-	g.Expect(psc.RunAsGroup).To(BeNil(), "CC-0099: RunAsGroup must stay container-level (CC-0045)")
-	g.Expect(psc.RunAsNonRoot).To(BeNil(), "CC-0099: RunAsNonRoot must stay container-level (CC-0045)")
-	g.Expect(psc.SeccompProfile).To(BeNil(), "CC-0099: SeccompProfile must stay container-level (CC-0045)")
-	g.Expect(psc.FSGroupChangePolicy).To(BeNil(), "CC-0099: FSGroupChangePolicy must remain unset (default Always is intentional)")
-	g.Expect(psc.SupplementalGroups).To(BeNil(), "CC-0099: SupplementalGroups must remain unset")
-	g.Expect(psc.SELinuxOptions).To(BeNil(), "CC-0099: SELinuxOptions must remain unset")
-	g.Expect(psc.WindowsOptions).To(BeNil(), "CC-0099: WindowsOptions must remain unset")
-	g.Expect(psc.Sysctls).To(BeNil(), "CC-0099: Sysctls must remain unset")
-	g.Expect(psc.AppArmorProfile).To(BeNil(), "CC-0099: AppArmorProfile must remain unset")
+	// the container-level SecurityContext.
+	g.Expect(psc.RunAsUser).To(BeNil(), "RunAsUser must stay container-level")
+	g.Expect(psc.RunAsGroup).To(BeNil(), "RunAsGroup must stay container-level")
+	g.Expect(psc.RunAsNonRoot).To(BeNil(), "RunAsNonRoot must stay container-level")
+	g.Expect(psc.SeccompProfile).To(BeNil(), "SeccompProfile must stay container-level")
+	g.Expect(psc.FSGroupChangePolicy).To(BeNil(), "FSGroupChangePolicy must remain unset (default Always is intentional)")
+	g.Expect(psc.SupplementalGroups).To(BeNil(), "SupplementalGroups must remain unset")
+	g.Expect(psc.SELinuxOptions).To(BeNil(), "SELinuxOptions must remain unset")
+	g.Expect(psc.WindowsOptions).To(BeNil(), "WindowsOptions must remain unset")
+	g.Expect(psc.Sysctls).To(BeNil(), "Sysctls must remain unset")
+	g.Expect(psc.AppArmorProfile).To(BeNil(), "AppArmorProfile must remain unset")
 }
 
 // TestBuildKeystoneDeployment_FernetAndCredentialVolumesSetDefaultMode0400 verifies
 // that the fernet-keys and credential-keys Secret volumes mount with file mode
 // 0o400 (owner read-only), so the Keystone process running under the openstack
 // UID/GID can read the keys while the volume is not group- or world-readable
-// (CC-0099, REQ-002). The config ConfigMap volume must NOT receive a
+// The config ConfigMap volume must NOT receive a
 // DefaultMode — it is out of scope and changing it would be scope creep.
 func TestBuildKeystoneDeployment_FernetAndCredentialVolumesSetDefaultMode0400(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -467,31 +465,31 @@ func TestBuildKeystoneDeployment_FernetAndCredentialVolumesSetDefaultMode0400(t 
 		}
 	}
 
-	g.Expect(fernetVol.Secret).NotTo(BeNil(), "CC-0099: fernet-keys Secret volume source must be set")
-	g.Expect(fernetVol.Secret.DefaultMode).NotTo(BeNil(), "CC-0099: fernet-keys must set DefaultMode")
-	g.Expect(*fernetVol.Secret.DefaultMode).To(Equal(int32(0o400)), "CC-0099: fernet-keys DefaultMode must be 0o400 (owner read-only)")
+	g.Expect(fernetVol.Secret).NotTo(BeNil(), "fernet-keys Secret volume source must be set")
+	g.Expect(fernetVol.Secret.DefaultMode).NotTo(BeNil(), "fernet-keys must set DefaultMode")
+	g.Expect(*fernetVol.Secret.DefaultMode).To(Equal(int32(0o400)), "fernet-keys DefaultMode must be 0o400 (owner read-only)")
 
-	g.Expect(credentialVol.Secret).NotTo(BeNil(), "CC-0099: credential-keys Secret volume source must be set")
-	g.Expect(credentialVol.Secret.DefaultMode).NotTo(BeNil(), "CC-0099: credential-keys must set DefaultMode")
-	g.Expect(*credentialVol.Secret.DefaultMode).To(Equal(int32(0o400)), "CC-0099: credential-keys DefaultMode must be 0o400 (owner read-only)")
+	g.Expect(credentialVol.Secret).NotTo(BeNil(), "credential-keys Secret volume source must be set")
+	g.Expect(credentialVol.Secret.DefaultMode).NotTo(BeNil(), "credential-keys must set DefaultMode")
+	g.Expect(*credentialVol.Secret.DefaultMode).To(Equal(int32(0o400)), "credential-keys DefaultMode must be 0o400 (owner read-only)")
 
-	// Regression guard: do not tighten the config ConfigMap volume. CC-0099 is
+	// Regression guard: do not tighten the config ConfigMap volume. is
 	// scoped to the two Fernet-related Secret volumes only.
-	g.Expect(configVol.ConfigMap).NotTo(BeNil(), "CC-0099 scope guard: config volume must remain a ConfigMap source")
-	g.Expect(configVol.ConfigMap.DefaultMode).To(BeNil(), "CC-0099 scope guard: config ConfigMap DefaultMode must remain unset")
+	g.Expect(configVol.ConfigMap).NotTo(BeNil(), "scope guard: config volume must remain a ConfigMap source")
+	g.Expect(configVol.ConfigMap.DefaultMode).To(BeNil(), "scope guard: config ConfigMap DefaultMode must remain unset")
 }
 
 // TestBuildKeystoneDeployment_ContainerSecurityContextUnchangedByCC0099 is an
-// active regression guard: CC-0099 must NOT touch the container-level
-// SecurityContext established by CC-0045. Pod-level FSGroup and container-level
-// RunAsUser/RunAsGroup/etc. are independent fields (CC-0099, REQ-008).
+// active regression guard: building the Deployment must NOT touch the
+// container-level SecurityContext. Pod-level FSGroup and container-level
+// RunAsUser/RunAsGroup/etc. are independent fields.
 func TestBuildKeystoneDeployment_ContainerSecurityContextUnchangedByCC0099(t *testing.T) {
 	g := NewGomegaWithT(t)
 
 	deploy := buildKeystoneDeployment(deployTestKeystone(), "keystone-config-abc123")
 
 	container := findContainerByName(deploy.Spec.Template.Spec.Containers, "keystone")
-	g.Expect(container).NotTo(BeNil(), "CC-0099: keystone container must exist")
+	g.Expect(container).NotTo(BeNil(), "keystone container must exist")
 	expectRestrictedSecurityContext(g, container)
 }
 
@@ -499,15 +497,15 @@ func TestBuildKeystoneDeployment_ContainerSecurityContextUnchangedByCC0099(t *te
 // the choice to leave FSGroupChangePolicy unset so the kubelet's default
 // "Always" recursive chown applies on every mount. Setting "OnRootMismatch"
 // would skip the chown when the volume already has the right group, which is
-// brittle for in-place key rotation (CC-0099, REQ-001).
+// brittle for in-place key rotation.
 func TestBuildKeystoneDeployment_NoFSGroupChangePolicyOrUnsupportedFields(t *testing.T) {
 	g := NewGomegaWithT(t)
 
 	deploy := buildKeystoneDeployment(deployTestKeystone(), "keystone-config-abc123")
 
 	psc := deploy.Spec.Template.Spec.SecurityContext
-	g.Expect(psc).NotTo(BeNil(), "CC-0099: PodSecurityContext must be set")
-	g.Expect(psc.FSGroupChangePolicy).To(BeNil(), "CC-0099: FSGroupChangePolicy must remain unset (kubelet default Always is intentional)")
+	g.Expect(psc).NotTo(BeNil(), "PodSecurityContext must be set")
+	g.Expect(psc.FSGroupChangePolicy).To(BeNil(), "FSGroupChangePolicy must remain unset (kubelet default Always is intentional)")
 }
 
 func TestReconcileDeployment_NotReady_ConditionMessageAndGeneration(t *testing.T) {
@@ -580,15 +578,13 @@ func TestReconcileDeployment_ServiceCreatedAlongsideDeployment(t *testing.T) {
 	g.Expect(svc.OwnerReferences).To(HaveLen(1))
 }
 
-// Feature: CC-0074
-
 // TestBuildKeystoneDeployment_StablePodTemplate verifies that two calls to
 // buildKeystoneDeployment with the same Keystone CR and configMapName return
 // Deployments with deeply equal Spec.Template fields. This asserts that
 // buildKeystoneDeployment is deterministic for identical inputs and that no
 // new fields (e.g., hashes or timestamps) are added to the pod template that
-// could cause spurious rollouts (CC-0074). It does not exercise scenarios
-// with differing Secret contents as described in REQ-002; those must be
+// could cause spurious rollouts. It does not exercise scenarios
+// with differing Secret contents as described in; those must be
 // covered by higher-level reconciliation tests.
 func TestBuildKeystoneDeployment_StablePodTemplate(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -598,14 +594,13 @@ func TestBuildKeystoneDeployment_StablePodTemplate(t *testing.T) {
 	deploy2 := buildKeystoneDeployment(ks, "keystone-config-abc123")
 
 	g.Expect(deploy1.Spec.Template).To(Equal(deploy2.Spec.Template),
-		"pod template must be stable across invocations (CC-0074)")
+		"pod template must be stable across invocations")
 }
 
 // TestBuildKeystoneDeployment_VolumesMaintained verifies that buildKeystoneDeployment
 // returns a Deployment with config, fernet-keys, and credential-keys volumes and
 // matching volume mounts at the expected paths, confirming that these mounts
 // survive hash removal without relying on a fixed volume or container count
-// (CC-0074, REQ-003).
 func TestBuildKeystoneDeployment_VolumesMaintained(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
@@ -637,11 +632,9 @@ func TestBuildKeystoneDeployment_VolumesMaintained(t *testing.T) {
 	g.Expect(mountPaths).To(HaveKeyWithValue("credential-keys", "/etc/keystone/credential-keys/"))
 }
 
-// Feature: CC-0080
-
 // TestBuildDBConnectionEnvVar verifies that the helper emits an EnvVar named
 // OS_DATABASE__CONNECTION sourcing its value from the derived
-// <keystone.Name>-db-connection Secret's "connection" key (CC-0080, REQ-003).
+// <keystone.Name>-db-connection Secret's "connection" key.
 func TestBuildDBConnectionEnvVar(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
@@ -660,7 +653,7 @@ func TestBuildDBConnectionEnvVar(t *testing.T) {
 // TestBuildKeystoneDeployment_DBConnectionEnv verifies that the keystone
 // container has the OS_DATABASE__CONNECTION env var wired to the derived
 // connection Secret so oslo.config overrides the [database] connection value
-// (CC-0080, REQ-003, REQ-007). Volumes and mounts must remain unchanged.
+// Volumes and mounts must remain unchanged.
 func TestBuildKeystoneDeployment_DBConnectionEnv(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
@@ -670,9 +663,9 @@ func TestBuildKeystoneDeployment_DBConnectionEnv(t *testing.T) {
 	container := findContainerByName(deploy.Spec.Template.Spec.Containers, "keystone")
 	g.Expect(container).NotTo(BeNil())
 	g.Expect(container.Env).To(ContainElement(buildDBConnectionEnvVar(ks)),
-		"keystone container must consume DB connection via OS_DATABASE__CONNECTION (CC-0080, REQ-003)")
+		"keystone container must consume DB connection via OS_DATABASE__CONNECTION")
 
-	// Volumes/mounts must remain unchanged (REQ-007).
+	// Volumes/mounts must remain unchanged.
 	volumeNames := make([]string, 0, len(deploy.Spec.Template.Spec.Volumes))
 	for _, v := range deploy.Spec.Template.Spec.Volumes {
 		volumeNames = append(volumeNames, v.Name)
@@ -682,7 +675,7 @@ func TestBuildKeystoneDeployment_DBConnectionEnv(t *testing.T) {
 
 // TestReconcileDeployment_NoSecretReadRequired verifies that reconcileDeployment
 // succeeds and creates a Deployment even when fernet-keys and credential-keys
-// Secrets do not exist (CC-0074, REQ-001).
+// Secrets do not exist.
 func TestReconcileDeployment_NoSecretReadRequired(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := deployTestScheme()
@@ -714,16 +707,14 @@ func TestReconcileDeployment_NoSecretReadRequired(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(RequeueDeploymentPolling))
 	g.Expect(secretGetCalled).To(BeFalse(),
-		"reconcileDeployment must not read Secrets after hash removal (CC-0074)")
+		"reconcileDeployment must not read Secrets after hash removal")
 }
-
-// Feature: CC-0037
 
 func TestReconcileDeployment_PDBCreated(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := deployTestScheme()
 	ks := deployTestKeystone()
-	ks.Spec.Replicas = 3 // explicit: PDB expectations depend on this value (CC-0037)
+	ks.Spec.Replicas = 3 // explicit: PDB expectations depend on this value
 	r := newDeployTestReconciler(s, ks)
 
 	_, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123")
@@ -752,12 +743,12 @@ func TestReconcileDeployment_PDBLabelsAndSelector(t *testing.T) {
 		Name: "test-keystone", Namespace: "default",
 	}, &pdb)).To(Succeed())
 
-	// PDB labels match commonLabels (CC-0037).
+	// PDB labels match commonLabels.
 	g.Expect(pdb.Labels).To(HaveKeyWithValue("app.kubernetes.io/name", "keystone"))
 	g.Expect(pdb.Labels).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-keystone"))
 	g.Expect(pdb.Labels).To(HaveKeyWithValue("app.kubernetes.io/managed-by", "keystone-operator"))
 
-	// PDB selector matches selectorLabels (CC-0037).
+	// PDB selector matches selectorLabels.
 	g.Expect(pdb.Spec.Selector).NotTo(BeNil())
 	g.Expect(pdb.Spec.Selector.MatchLabels).To(HaveKeyWithValue("app.kubernetes.io/name", "keystone"))
 	g.Expect(pdb.Spec.Selector.MatchLabels).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-keystone"))
@@ -767,7 +758,7 @@ func TestReconcileDeployment_PDBMinAvailableForMultipleReplicas(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := deployTestScheme()
 	ks := deployTestKeystone()
-	ks.Spec.Replicas = 3 // explicit: PDB expectations depend on this value (CC-0037)
+	ks.Spec.Replicas = 3 // explicit: PDB expectations depend on this value
 	r := newDeployTestReconciler(s, ks)
 
 	_, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123")
@@ -807,7 +798,7 @@ func TestReconcileDeployment_PDBUpdatedOnReplicaChange(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := deployTestScheme()
 	ks := deployTestKeystone()
-	ks.Spec.Replicas = 3 // explicit: PDB expectations depend on this value (CC-0037)
+	ks.Spec.Replicas = 3 // explicit: PDB expectations depend on this value
 	r := newDeployTestReconciler(s, ks)
 
 	ctx := context.Background()
@@ -876,13 +867,11 @@ func TestBuildPodDisruptionBudget_ZeroReplicas(t *testing.T) {
 
 	pdb := buildPodDisruptionBudget(ks)
 
-	// Zero replicas explicitly sets MaxUnavailable=1 for clarity (CC-0037).
+	// Zero replicas explicitly sets MaxUnavailable=1 for clarity.
 	g.Expect(pdb.Spec.MaxUnavailable).NotTo(BeNil())
 	g.Expect(*pdb.Spec.MaxUnavailable).To(Equal(intstr.FromInt32(1)))
 	g.Expect(pdb.Spec.MinAvailable).To(BeNil())
 }
-
-// Feature: CC-0042
 
 func TestReconcileDeployment_ContainerResources(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -925,7 +914,7 @@ func TestReconcileDeployment_CustomResources(t *testing.T) {
 // TestReconcileDeployment_NilResources verifies the nil-safety fallback in
 // containerResources(): when spec.Resources is nil (e.g. pre-existing CRs that
 // bypassed the webhook), the container gets a zero-value ResourceRequirements
-// instead of a nil-pointer panic (CC-0042).
+// instead of a nil-pointer panic.
 func TestReconcileDeployment_NilResources(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
@@ -942,9 +931,9 @@ func TestReconcileDeployment_PDBEnsureError(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := deployTestScheme()
 	ks := deployTestKeystone()
-	ks.Spec.Replicas = 3 // explicit: PDB expectations depend on this value (CC-0037)
+	ks.Spec.Replicas = 3 // explicit: PDB expectations depend on this value
 
-	// Use an interceptor to inject an error when creating a PodDisruptionBudget (CC-0037).
+	// Use an interceptor to inject an error when creating a PodDisruptionBudget.
 	c := fake.NewClientBuilder().
 		WithScheme(s).
 		WithObjects(ks).
@@ -972,10 +961,8 @@ func TestReconcileDeployment_PDBEnsureError(t *testing.T) {
 	g.Expect(err.Error()).To(ContainSubstring("simulated PDB creation error"))
 }
 
-// Feature: CC-0040
-
 // TestUWSGICommand_NilUWSGI verifies that uwsgiCommand(nil) returns the command
-// with hardcoded defaults: --processes 2 --threads 1 --http-keepalive (CC-0040, REQ-004).
+// with hardcoded defaults: --processes 2 --threads 1 --http-keepalive.
 func TestUWSGICommand_NilUWSGI(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -997,7 +984,7 @@ func TestUWSGICommand_NilUWSGI(t *testing.T) {
 }
 
 // TestUWSGICommand_CustomValues verifies that uwsgiCommand with processes=4,
-// threads=8 returns --processes 4 --threads 8 in the command (CC-0040, REQ-004).
+// threads=8 returns --processes 4 --threads 8 in the command.
 func TestUWSGICommand_CustomValues(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -1019,7 +1006,7 @@ func TestUWSGICommand_CustomValues(t *testing.T) {
 }
 
 // TestUWSGICommand_KeepAliveDisabled verifies that uwsgiCommand with
-// httpKeepAlive=false omits --http-keepalive from the command (CC-0040, REQ-004).
+// httpKeepAlive=false omits --http-keepalive from the command.
 func TestUWSGICommand_KeepAliveDisabled(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -1033,7 +1020,7 @@ func TestUWSGICommand_KeepAliveDisabled(t *testing.T) {
 }
 
 // TestUWSGICommand_KeepAliveEnabled verifies that uwsgiCommand with
-// httpKeepAlive=true includes --http-keepalive in the command (CC-0040, REQ-004).
+// httpKeepAlive=true includes --http-keepalive in the command.
 func TestUWSGICommand_KeepAliveEnabled(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -1048,7 +1035,7 @@ func TestUWSGICommand_KeepAliveEnabled(t *testing.T) {
 
 // TestUWSGICommand_FixedFlagsAlwaysPresent verifies that regardless of uwsgi
 // config, the command always includes --http :5000, --wsgi-file, --master,
-// --lazy-apps, --need-app, and --pyargv (CC-0040, REQ-004).
+// --lazy-apps, --need-app, and --pyargv.
 func TestUWSGICommand_FixedFlagsAlwaysPresent(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -1073,11 +1060,9 @@ func TestUWSGICommand_FixedFlagsAlwaysPresent(t *testing.T) {
 	}
 }
 
-// Feature: CC-0075
-
 // TestBuildKeystoneDeployment_DefaultTopologySpreadConstraints verifies that when
 // spec.TopologySpreadConstraints is nil, the deployment builder injects two default
-// constraints: zone-spread and hostname-spread, both with ScheduleAnyway (CC-0075).
+// constraints: zone-spread and hostname-spread, both with ScheduleAnyway.
 func TestBuildKeystoneDeployment_DefaultTopologySpreadConstraints(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
@@ -1104,7 +1089,7 @@ func TestBuildKeystoneDeployment_DefaultTopologySpreadConstraints(t *testing.T) 
 
 // TestBuildKeystoneDeployment_EmptyTopologySpreadConstraintsDisablesDefaults verifies
 // that setting spec.TopologySpreadConstraints to an empty non-nil slice disables
-// default TSC injection, resulting in no constraints on the pod spec (CC-0075).
+// default TSC injection, resulting in no constraints on the pod spec.
 func TestBuildKeystoneDeployment_EmptyTopologySpreadConstraintsDisablesDefaults(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
@@ -1117,7 +1102,7 @@ func TestBuildKeystoneDeployment_EmptyTopologySpreadConstraintsDisablesDefaults(
 
 // TestBuildKeystoneDeployment_DefaultTopologySpreadConstraints_LabelSelectorMatchesSelectorLabels
 // explicitly verifies that the default TSC LabelSelector equals selectorLabels(ks),
-// ensuring the TSC targets the correct pods (CC-0075).
+// ensuring the TSC targets the correct pods.
 func TestBuildKeystoneDeployment_DefaultTopologySpreadConstraints_LabelSelectorMatchesSelectorLabels(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
@@ -1134,7 +1119,7 @@ func TestBuildKeystoneDeployment_DefaultTopologySpreadConstraints_LabelSelectorM
 
 // TestBuildKeystoneDeployment_CustomTopologySpreadConstraints verifies that when
 // spec.TopologySpreadConstraints is set, the deployment uses those constraints
-// verbatim without merging with defaults (CC-0075).
+// verbatim without merging with defaults.
 func TestBuildKeystoneDeployment_CustomTopologySpreadConstraints(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
@@ -1167,7 +1152,7 @@ func TestBuildKeystoneDeployment_CustomTopologySpreadConstraints(t *testing.T) {
 
 // TestBuildKeystoneDeployment_PriorityClassNameSet verifies that when
 // spec.PriorityClassName is set, the deployment PodSpec includes the
-// configured priority class name (CC-0075).
+// configured priority class name.
 func TestBuildKeystoneDeployment_PriorityClassNameSet(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
@@ -1181,7 +1166,7 @@ func TestBuildKeystoneDeployment_PriorityClassNameSet(t *testing.T) {
 
 // TestBuildKeystoneDeployment_PriorityClassNameNil verifies that when
 // spec.PriorityClassName is nil, the deployment PodSpec has an empty
-// priority class name, deferring to the cluster default (CC-0075).
+// priority class name, deferring to the cluster default.
 func TestBuildKeystoneDeployment_PriorityClassNameNil(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
@@ -1191,11 +1176,9 @@ func TestBuildKeystoneDeployment_PriorityClassNameNil(t *testing.T) {
 	g.Expect(deploy.Spec.Template.Spec.PriorityClassName).To(BeEmpty())
 }
 
-// Feature: CC-0056
-
 // TestReconcileDeployment_RollingUpdate_ReadyDeployment_TransitionsToContracting verifies that
 // when the Deployment becomes ready during an active upgrade in the RollingUpdate phase,
-// reconcileDeployment transitions UpgradePhase to Contracting and requeues immediately (CC-0056, REQ-004).
+// reconcileDeployment transitions UpgradePhase to Contracting and requeues immediately.
 func TestReconcileDeployment_RollingUpdate_ReadyDeployment_TransitionsToContracting(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := deployTestScheme()
@@ -1230,7 +1213,7 @@ func TestReconcileDeployment_RollingUpdate_ReadyDeployment_TransitionsToContract
 
 // TestReconcileDeployment_RollingUpdate_NotReady_Requeues verifies that when the Deployment
 // is not ready during an active upgrade in the RollingUpdate phase, the operator requeues
-// with the standard polling interval and does NOT transition phases (CC-0056).
+// with the standard polling interval and does NOT transition phases.
 func TestReconcileDeployment_RollingUpdate_NotReady_Requeues(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := deployTestScheme()
@@ -1260,7 +1243,7 @@ func TestReconcileDeployment_RollingUpdate_NotReady_Requeues(t *testing.T) {
 
 // TestReconcileDeployment_NoUpgrade_Ready_SetsEndpoint verifies that when there is no active
 // upgrade (empty UpgradePhase), the normal ready path sets the endpoint and DeploymentReady=True
-// without any phase transition (CC-0056 regression guard).
+// without any phase transition (regression guard).
 func TestReconcileDeployment_NoUpgrade_Ready_SetsEndpoint(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := deployTestScheme()
@@ -1294,7 +1277,7 @@ func TestReconcileDeployment_NoUpgrade_Ready_SetsEndpoint(t *testing.T) {
 // TestReconcileDeployment_OtherPhase_Ready_SetsEndpoint verifies that when an upgrade is
 // in a phase OTHER than RollingUpdate (e.g. Expanding), the deployment-ready path follows
 // the normal flow: sets endpoint, DeploymentReady=True, no phase transition. Only
-// RollingUpdate triggers the Contracting transition (CC-0056).
+// RollingUpdate triggers the Contracting transition.
 func TestReconcileDeployment_OtherPhase_Ready_SetsEndpoint(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := deployTestScheme()
@@ -1328,7 +1311,7 @@ func TestReconcileDeployment_OtherPhase_Ready_SetsEndpoint(t *testing.T) {
 // TestReconcileDeployment_ConditionObservedGeneration verifies that
 // ObservedGeneration is set on the DeploymentReady condition for both
 // the False (WaitingForDeployment) and True (DeploymentReady) paths
-// with distinct generation values (CC-0072, REQ-002, REQ-003).
+// with distinct generation values.
 func TestReconcileDeployment_ConditionObservedGeneration(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := deployTestScheme()
@@ -1371,14 +1354,12 @@ func indexOf(slice []string, s string) int {
 	return -1
 }
 
-// Feature: CC-0084
-
 // TestBuildKeystoneDeployment_TerminationGracePeriodDefault verifies that when
 // spec.TerminationGracePeriodSeconds is nil, the reconciler falls back to the
 // shared DefaultTerminationGracePeriodSeconds constant — the same value the
 // validating webhook resolves nil against for cross-field arithmetic. Pinning
 // both sides to the shared constant guarantees the reconciler and webhook
-// cannot silently drift on REQ-007's drain-window invariant (CC-0084, REQ-001).
+// cannot silently drift on the drain-window invariant.
 func TestBuildKeystoneDeployment_TerminationGracePeriodDefault(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
@@ -1393,7 +1374,6 @@ func TestBuildKeystoneDeployment_TerminationGracePeriodDefault(t *testing.T) {
 
 // TestBuildKeystoneDeployment_TerminationGracePeriodCustom verifies that a set
 // spec.TerminationGracePeriodSeconds propagates verbatim to the PodSpec
-// (CC-0084, REQ-001).
 func TestBuildKeystoneDeployment_TerminationGracePeriodCustom(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
@@ -1411,7 +1391,7 @@ func TestBuildKeystoneDeployment_TerminationGracePeriodCustom(t *testing.T) {
 // DefaultPreStopSleepSeconds constant — the same value the validating webhook
 // resolves nil against for cross-field arithmetic. Pinning both sides to the
 // shared constant guarantees the reconciler and webhook cannot silently drift
-// on REQ-007's drain-window invariant (CC-0084, REQ-002, REQ-009).
+// on the drain-window invariant.
 func TestBuildKeystoneDeployment_PreStopSleepDefault(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
@@ -1431,7 +1411,7 @@ func TestBuildKeystoneDeployment_PreStopSleepDefault(t *testing.T) {
 
 // TestBuildKeystoneDeployment_PreStopSleepCustom verifies that a set
 // spec.PreStopSleepSeconds propagates into the preStop exec command as
-// "sleep <n>" (CC-0084, REQ-002, REQ-010).
+// "sleep <n>".
 func TestBuildKeystoneDeployment_PreStopSleepCustom(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
@@ -1447,7 +1427,7 @@ func TestBuildKeystoneDeployment_PreStopSleepCustom(t *testing.T) {
 
 // TestBuildKeystoneDeployment_PreStopSleepZero verifies that setting
 // spec.PreStopSleepSeconds=0 emits "sleep 0" rather than falling back to the
-// default — zero is a permitted opt-out value (CC-0084, REQ-002, REQ-010).
+// default — zero is a permitted opt-out value.
 func TestBuildKeystoneDeployment_PreStopSleepZero(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
@@ -1465,9 +1445,8 @@ func TestBuildKeystoneDeployment_PreStopSleepZero(t *testing.T) {
 // for terminationGracePeriodSeconds and preStopSleepSeconds to the shared
 // keystonev1alpha1.Default* constants that the validating webhook uses for
 // cross-field arithmetic. If a future refactor re-introduces a literal on
-// either side, this test fails — protecting REQ-007's drain-window invariant
-// (preStopSleep < terminationGracePeriod) from silent drift (CC-0084, REQ-001,
-// REQ-002, REQ-007).
+// either side, this test fails — protecting the drain-window invariant
+// (preStopSleep < terminationGracePeriod) from silent drift.
 func TestReconcileAndWebhookDefaultsAgree(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
@@ -1492,11 +1471,11 @@ func TestReconcileAndWebhookDefaultsAgree(t *testing.T) {
 
 	g.Expect(keystonev1alpha1.DefaultPreStopSleepSeconds).
 		To(BeNumerically("<", keystonev1alpha1.DefaultTerminationGracePeriodSeconds),
-			"shared defaults must satisfy the REQ-007 invariant preStopSleep < terminationGracePeriod")
+			"shared defaults must satisfy the invariant preStopSleep < terminationGracePeriod")
 }
 
 // TestUwsgiCommand_HarakiriSet verifies that a non-nil UWSGISpec.Harakiri
-// appends "--harakiri <n>" to the command (CC-0084, REQ-003).
+// appends "--harakiri <n>" to the command.
 func TestUwsgiCommand_HarakiriSet(t *testing.T) {
 	g := NewGomegaWithT(t)
 	harakiri := int32(25)
@@ -1515,7 +1494,7 @@ func TestUwsgiCommand_HarakiriSet(t *testing.T) {
 
 // TestUwsgiCommand_HarakiriNilOmitted verifies that when UWSGISpec.Harakiri
 // is nil, the --harakiri flag is not emitted — the field is an explicit opt-in
-// with no hidden default (CC-0084, REQ-003).
+// with no hidden default.
 func TestUwsgiCommand_HarakiriNilOmitted(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -1530,7 +1509,7 @@ func TestUwsgiCommand_HarakiriNilOmitted(t *testing.T) {
 
 // TestUwsgiCommand_KeepAliveTimeoutSet verifies that a non-nil
 // UWSGISpec.HTTPKeepAliveTimeout combined with HTTPKeepAlive=true appends
-// "--http-keepalive-timeout <n>" to the command (CC-0084, REQ-004).
+// "--http-keepalive-timeout <n>" to the command.
 func TestUwsgiCommand_KeepAliveTimeoutSet(t *testing.T) {
 	g := NewGomegaWithT(t)
 	timeout := int32(4)
@@ -1548,7 +1527,7 @@ func TestUwsgiCommand_KeepAliveTimeoutSet(t *testing.T) {
 }
 
 // TestUwsgiCommand_KeepAliveTimeoutNilOmitted verifies that when
-// UWSGISpec.HTTPKeepAliveTimeout is nil, the flag is not emitted (CC-0084, REQ-004).
+// UWSGISpec.HTTPKeepAliveTimeout is nil, the flag is not emitted.
 func TestUwsgiCommand_KeepAliveTimeoutNilOmitted(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -1564,7 +1543,7 @@ func TestUwsgiCommand_KeepAliveTimeoutNilOmitted(t *testing.T) {
 // TestUwsgiCommand_KeepAliveTimeoutIgnoredWhenKeepAliveDisabled verifies that
 // HTTPKeepAliveTimeout is silently ignored when HTTPKeepAlive=false — the flag
 // is meaningless without the parent feature, and the webhook forbids this
-// combination, so the command builder just omits it defensively (CC-0084, REQ-011).
+// combination, so the command builder just omits it defensively.
 func TestUwsgiCommand_KeepAliveTimeoutIgnoredWhenKeepAliveDisabled(t *testing.T) {
 	g := NewGomegaWithT(t)
 	timeout := int32(4)
@@ -1583,9 +1562,9 @@ func TestUwsgiCommand_KeepAliveTimeoutIgnoredWhenKeepAliveDisabled(t *testing.T)
 // TestUwsgiCommand_IncludesLogMasterAndLogFormat verifies that uwsgiCommand
 // always emits --log-master and --log-format <literal> between the
 // --http-keepalive[-timeout] block and the --wsgi-file line, regardless of
-// HTTPKeepAlive/HTTPKeepAliveTimeout state. REQ-006 requires uWSGI master
+// HTTPKeepAlive/HTTPKeepAliveTimeout state. requires uWSGI master
 // logging to be unconditionally on so request lines reach stderr in every
-// configuration (CC-0098, REQ-006).
+// configuration.
 func TestUwsgiCommand_IncludesLogMasterAndLogFormat(t *testing.T) {
 	const expectedFormat = "%(method) %(uri) => generated %(rsize) bytes in %(msecs) msecs (%(proto) %(status))"
 
@@ -1631,14 +1610,14 @@ func TestUwsgiCommand_IncludesLogMasterAndLogFormat(t *testing.T) {
 			logFormatIdx := indexOf(cmd, "--log-format")
 			wsgiFileIdx := indexOf(cmd, "--wsgi-file")
 
-			g.Expect(logMasterIdx).NotTo(Equal(-1), "--log-master must be present (CC-0098, REQ-006)")
-			g.Expect(logFormatIdx).NotTo(Equal(-1), "--log-format must be present (CC-0098, REQ-006)")
+			g.Expect(logMasterIdx).NotTo(Equal(-1), "--log-master must be present")
+			g.Expect(logFormatIdx).NotTo(Equal(-1), "--log-format must be present")
 			g.Expect(wsgiFileIdx).NotTo(Equal(-1))
 
 			// --log-format must be followed immediately by the exact literal value
 			// as a single argument (not split).
 			g.Expect(cmd[logFormatIdx+1]).To(Equal(expectedFormat),
-				"--log-format value must be the exact literal format string (CC-0098, REQ-006)")
+				"--log-format value must be the exact literal format string")
 
 			// Insertion point: after --http-keepalive[-timeout] block (when
 			// present) and before --wsgi-file.
@@ -1669,8 +1648,7 @@ func TestUwsgiCommand_IncludesLogMasterAndLogFormat(t *testing.T) {
 // TestUwsgiCommand_IncludesLogMasterAndLogFormat: pinning the canonical
 // indices (e.g. --log-master at 6, --log-format at 7) would make this test
 // brittle to any future flag inserted before --log-master even when the
-// layout is still semantically correct (CC-0084, CC-0098, REQ-003, REQ-004,
-// REQ-006).
+// layout is still semantically correct.
 func TestUwsgiCommand_FlagOrderDeterministic(t *testing.T) {
 	g := NewGomegaWithT(t)
 	harakiri := int32(25)
@@ -1691,21 +1669,21 @@ func TestUwsgiCommand_FlagOrderDeterministic(t *testing.T) {
 	// Assert the layout invariant by relative position rather than absolute
 	// index: --log-master/--log-format must precede --wsgi-file, and
 	// --log-format must immediately follow --log-master so that --log-format's
-	// literal value is its argument (CC-0098, REQ-006).
+	// literal value is its argument.
 	g.Expect(indexOf(first, "--log-master")).NotTo(Equal(-1),
-		"--log-master must be present (CC-0098, REQ-006)")
+		"--log-master must be present")
 	g.Expect(indexOf(first, "--log-format")).NotTo(Equal(-1),
-		"--log-format must be present (CC-0098, REQ-006)")
+		"--log-format must be present")
 	g.Expect(indexOf(first, "--log-master")).To(BeNumerically("<", indexOf(first, "--wsgi-file")),
-		"--log-master must precede --wsgi-file (CC-0098, REQ-006)")
+		"--log-master must precede --wsgi-file")
 	g.Expect(indexOf(first, "--log-format")).To(Equal(indexOf(first, "--log-master")+1),
-		"--log-format must immediately follow --log-master so its literal value is the next argv element (CC-0098, REQ-006)")
+		"--log-format must immediately follow --log-master so its literal value is the next argv element")
 }
 
 // TestBuildKeystoneDeployment_DefaultRollingUpdateStrategy verifies that when
 // spec.Strategy is nil, the reconciler injects a RollingUpdate strategy with
 // MaxUnavailable=0 and MaxSurge=1 so available capacity never dips below
-// spec.replicas during an image-tag patch (CC-0084, REQ-005).
+// spec.replicas during an image-tag patch.
 func TestBuildKeystoneDeployment_DefaultRollingUpdateStrategy(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
@@ -1723,10 +1701,10 @@ func TestBuildKeystoneDeployment_DefaultRollingUpdateStrategy(t *testing.T) {
 
 // TestBuildKeystoneDeployment_StrategyStableAcrossReconciles verifies that two
 // calls to buildKeystoneDeployment with identical input produce deeply equal
-// Strategy blocks (CC-0084, REQ-005, REQ-006).
+// Strategy blocks.
 //
 // Drift note: EnsureDeployment unconditionally assigns `existing.Spec =
-// deploy.Spec` (CC-0005), so it does not gate the update on a drift check.
+// deploy.Spec`, so it does not gate the update on a drift check.
 // The stability contract we need is that buildKeystoneDeployment returns the
 // same Strategy for the same input — this guarantees the repeated Update
 // calls produce a no-op spec diff at the API server, which in turn keeps the
@@ -1750,7 +1728,7 @@ func TestBuildKeystoneDeployment_StrategyStableAcrossReconciles(t *testing.T) {
 // to RollingUpdate 25%/25%. After the upgrade, buildKeystoneDeployment emits
 // the new 0/1 default, and a single reconcile must overwrite the server
 // default without error. A second reconcile must then produce a stable spec
-// (no further Strategy changes) (CC-0084, REQ-005).
+// (no further Strategy changes).
 func TestEnsureDeployment_StrategyConvergesFromServerDefault(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := deployTestScheme()
@@ -1799,7 +1777,7 @@ func TestEnsureDeployment_StrategyConvergesFromServerDefault(t *testing.T) {
 
 // TestBuildKeystoneDeployment_StrategyOverrideRollingCustomPercents verifies
 // that a user-provided RollingUpdate strategy with percentage-based surge and
-// unavailable values passes through verbatim (CC-0084, REQ-006).
+// unavailable values passes through verbatim.
 func TestBuildKeystoneDeployment_StrategyOverrideRollingCustomPercents(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
@@ -1823,7 +1801,7 @@ func TestBuildKeystoneDeployment_StrategyOverrideRollingCustomPercents(t *testin
 
 // TestBuildKeystoneDeployment_StrategyOverrideRecreate verifies that a
 // user-provided Recreate strategy passes through verbatim without the default
-// RollingUpdate block being layered on top (CC-0084, REQ-006).
+// RollingUpdate block being layered on top.
 func TestBuildKeystoneDeployment_StrategyOverrideRecreate(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
@@ -1849,7 +1827,7 @@ func TestBuildKeystoneDeployment_ContainerNameIsKeystone(t *testing.T) {
 	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123")
 
 	g.Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(1),
-		"Deployment must define exactly one container (CC-0095, REQ-003)")
+		"Deployment must define exactly one container")
 	g.Expect(deploy.Spec.Template.Spec.Containers[0].Name).To(Equal("keystone"),
 		"container Name must be 'keystone'") // keystone-api-legacy: legacy name "keystone-api" referenced for traceability.
 }
@@ -1868,11 +1846,11 @@ func TestBuildKeystoneDeployment_NamedPortIsKeystone(t *testing.T) {
 	g.Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(1))
 	ports := deploy.Spec.Template.Spec.Containers[0].Ports
 	g.Expect(ports).To(HaveLen(1),
-		"container must define exactly one named port (CC-0095, REQ-003)")
+		"container must define exactly one named port")
 	g.Expect(ports[0].Name).To(Equal("keystone"),
 		"named port must be 'keystone'") // keystone-api-legacy: legacy name "keystone-api" referenced for traceability.
 	g.Expect(ports[0].ContainerPort).To(Equal(int32(5000)),
-		"ContainerPort must remain 5000 — the rename is name-only (CC-0095, REQ-003)")
+		"ContainerPort must remain 5000 — the rename is name-only")
 }
 
 // TestBuildKeystoneDeployment_NameMatchesCR pins the Deployment ObjectMeta.Name
@@ -1886,16 +1864,15 @@ func TestBuildKeystoneDeployment_NameMatchesCR(t *testing.T) {
 	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123")
 
 	g.Expect(deploy.Name).To(Equal(ks.Name),
-		"Deployment Name must equal the CR name (CC-0095, REQ-003)")
+		"Deployment Name must equal the CR name")
 	g.Expect(deploy.Name).NotTo(HaveSuffix("-api"),
-		"Deployment Name must not carry the legacy `-api` suffix (CC-0095, REQ-003)")
+		"Deployment Name must not carry the legacy `-api` suffix")
 }
 
 // TestBuildKeystoneService_NameMatchesCR pins the Service ObjectMeta.Name to
 // the bare CR name. The cluster-internal Keystone URL is
 // `http://<cr-name>.<ns>.svc...:5000/v3`, so any drift here would silently
-// break in-cluster clients that follow the documented DNS form (CC-0095,
-// REQ-004, REQ-005).
+// break in-cluster clients that follow the documented DNS form.
 func TestBuildKeystoneService_NameMatchesCR(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
@@ -1903,15 +1880,14 @@ func TestBuildKeystoneService_NameMatchesCR(t *testing.T) {
 	svc := buildKeystoneService(ks)
 
 	g.Expect(svc.Name).To(Equal(ks.Name),
-		"Service Name must equal the CR name (CC-0095, REQ-004)")
+		"Service Name must equal the CR name")
 	g.Expect(svc.Name).NotTo(HaveSuffix("-api"),
-		"Service Name must not carry the legacy `-api` suffix (CC-0095, REQ-004)")
+		"Service Name must not carry the legacy `-api` suffix")
 }
 
 // TestBuildPodDisruptionBudget_NameMatchesCR pins the PDB ObjectMeta.Name to
 // the bare CR name. Chaos e2e tests look up the PDB by `<cr-name>`, so any
 // drift here would break the chaos suite's PDB-availability assertion
-// (CC-0095, REQ-004).
 func TestBuildPodDisruptionBudget_NameMatchesCR(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
@@ -1919,18 +1895,16 @@ func TestBuildPodDisruptionBudget_NameMatchesCR(t *testing.T) {
 	pdb := buildPodDisruptionBudget(ks)
 
 	g.Expect(pdb.Name).To(Equal(ks.Name),
-		"PodDisruptionBudget Name must equal the CR name (CC-0095, REQ-004)")
+		"PodDisruptionBudget Name must equal the CR name")
 	g.Expect(pdb.Name).NotTo(HaveSuffix("-api"),
-		"PodDisruptionBudget Name must not carry the legacy `-api` suffix (CC-0095, REQ-004)")
+		"PodDisruptionBudget Name must not carry the legacy `-api` suffix")
 }
-
-// Feature: CC-0106
 
 // TestBuildKeystoneDeployment_DBTLSVolumeAndMount_WhenEnabled verifies that
 // the API pod gets a Projected "db-tls" Volume sourcing ca.crt from
 // caBundleSecretRef and tls.crt/tls.key from clientCertSecretRef, and a
 // matching read-only VolumeMount at /etc/keystone/db-tls/, when
-// spec.database.tls.enabled=true (CC-0106, REQ-002, REQ-014). The user-supplied
+// spec.database.tls.enabled=true. The user-supplied
 // Secret names must be honored verbatim. Name-based assertions only — additive
 // volumes must not perturb the existing volume order.
 func TestBuildKeystoneDeployment_DBTLSVolumeAndMount_WhenEnabled(t *testing.T) {
@@ -1955,13 +1929,13 @@ func TestBuildKeystoneDeployment_DBTLSVolumeAndMount_WhenEnabled(t *testing.T) {
 		}
 	}
 	g.Expect(tlsVolFound).To(BeTrue(),
-		"CC-0106: db-tls Volume must be present when TLS is enabled (REQ-002)")
+		"db-tls Volume must be present when TLS is enabled")
 	g.Expect(tlsVol.Projected).NotTo(BeNil(),
-		"CC-0106: db-tls Volume must be Projected so both Secret refs are honored (REQ-002, REQ-014)")
+		"db-tls Volume must be Projected so both Secret refs are honored")
 	g.Expect(tlsVol.Projected.DefaultMode).NotTo(BeNil(),
-		"CC-0106: db-tls Volume must set DefaultMode (REQ-014)")
+		"db-tls Volume must set DefaultMode")
 	g.Expect(*tlsVol.Projected.DefaultMode).To(Equal(int32(0o400)),
-		"CC-0106: db-tls Volume DefaultMode must be 0o400 (owner read-only, REQ-014)")
+		"db-tls Volume DefaultMode must be 0o400 (owner read-only)")
 	expectDBTLSProjection(g, tlsVol.Projected, "db-server-ca", "test-keystone-db-client")
 
 	container := findContainerByName(deploy.Spec.Template.Spec.Containers, "keystone")
@@ -1976,11 +1950,11 @@ func TestBuildKeystoneDeployment_DBTLSVolumeAndMount_WhenEnabled(t *testing.T) {
 		}
 	}
 	g.Expect(tlsMountFound).To(BeTrue(),
-		"CC-0106: db-tls VolumeMount must be present on keystone container when TLS enabled (REQ-002)")
+		"db-tls VolumeMount must be present on keystone container when TLS enabled")
 	g.Expect(tlsMount.MountPath).To(Equal("/etc/keystone/db-tls/"),
-		"CC-0106: db-tls VolumeMount path must match ssl_* DSN parameter directory (REQ-014)")
+		"db-tls VolumeMount path must match ssl_* DSN parameter directory")
 	g.Expect(tlsMount.ReadOnly).To(BeTrue(),
-		"CC-0106: db-tls VolumeMount must be read-only (REQ-014)")
+		"db-tls VolumeMount must be read-only")
 }
 
 // TestBuildKeystoneDeployment_DBTLSVolume_UsesUserSuppliedSecretNames verifies
@@ -1988,7 +1962,7 @@ func TestBuildKeystoneDeployment_DBTLSVolumeAndMount_WhenEnabled(t *testing.T) {
 // user-supplied caBundleSecretRef.Name and clientCertSecretRef.Name verbatim
 // (not the hardcoded "<name>-db-client" baked into the previous implementation).
 // This is the brownfield-PKI shape where the trust bundle and client keypair
-// live in two distinct Secrets (CC-0106, REQ-002, REQ-014).
+// live in two distinct Secrets.
 func TestBuildKeystoneDeployment_DBTLSVolume_UsesUserSuppliedSecretNames(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
@@ -2003,16 +1977,16 @@ func TestBuildKeystoneDeployment_DBTLSVolume_UsesUserSuppliedSecretNames(t *test
 
 	tlsVol := findVolumeByName(deploy.Spec.Template.Spec.Volumes, "db-tls")
 	g.Expect(tlsVol).NotTo(BeNil(),
-		"CC-0106: db-tls Volume must be present when TLS is enabled (REQ-002)")
+		"db-tls Volume must be present when TLS is enabled")
 	g.Expect(tlsVol.Projected).NotTo(BeNil(),
-		"CC-0106: db-tls Volume must be Projected so both Secret refs are honored (REQ-002)")
+		"db-tls Volume must be Projected so both Secret refs are honored")
 	expectDBTLSProjection(g, tlsVol.Projected,
 		"enterprise-root-ca-bundle", "site-specific-client-keypair")
 }
 
 // TestBuildKeystoneDeployment_DBTLSVolumeAbsent_WhenNil verifies that no
 // db-tls Volume or VolumeMount is added when spec.database.tls is nil
-// (CC-0106 must preserve pre-feature behaviour; REQ-002).
+// (must preserve pre-feature behaviour).
 func TestBuildKeystoneDeployment_DBTLSVolumeAbsent_WhenNil(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone() // TLS == nil
@@ -2023,19 +1997,19 @@ func TestBuildKeystoneDeployment_DBTLSVolumeAbsent_WhenNil(t *testing.T) {
 
 	for _, v := range deploy.Spec.Template.Spec.Volumes {
 		g.Expect(v.Name).NotTo(Equal("db-tls"),
-			"CC-0106: db-tls Volume must NOT be present when TLS is nil (REQ-002)")
+			"db-tls Volume must NOT be present when TLS is nil")
 	}
 	container := findContainerByName(deploy.Spec.Template.Spec.Containers, "keystone")
 	g.Expect(container).NotTo(BeNil())
 	for _, m := range container.VolumeMounts {
 		g.Expect(m.Name).NotTo(Equal("db-tls"),
-			"CC-0106: db-tls VolumeMount must NOT be present when TLS is nil (REQ-002)")
+			"db-tls VolumeMount must NOT be present when TLS is nil")
 	}
 }
 
 // TestBuildKeystoneDeployment_DBTLSVolumeAbsent_WhenDisabled verifies that
 // the db-tls Volume/Mount are gated on Enabled=true; an explicitly disabled
-// TLS block must not project the keypair into the pod (CC-0106, REQ-002).
+// TLS block must not project the keypair into the pod.
 func TestBuildKeystoneDeployment_DBTLSVolumeAbsent_WhenDisabled(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
@@ -2050,12 +2024,12 @@ func TestBuildKeystoneDeployment_DBTLSVolumeAbsent_WhenDisabled(t *testing.T) {
 
 	for _, v := range deploy.Spec.Template.Spec.Volumes {
 		g.Expect(v.Name).NotTo(Equal("db-tls"),
-			"CC-0106: db-tls Volume must NOT be present when TLS.Enabled is false (REQ-002)")
+			"db-tls Volume must NOT be present when TLS.Enabled is false")
 	}
 	container := findContainerByName(deploy.Spec.Template.Spec.Containers, "keystone")
 	g.Expect(container).NotTo(BeNil())
 	for _, m := range container.VolumeMounts {
 		g.Expect(m.Name).NotTo(Equal("db-tls"),
-			"CC-0106: db-tls VolumeMount must NOT be present when TLS.Enabled is false (REQ-002)")
+			"db-tls VolumeMount must NOT be present when TLS.Enabled is false")
 	}
 }

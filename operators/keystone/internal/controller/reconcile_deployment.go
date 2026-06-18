@@ -23,21 +23,19 @@ import (
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
 
-// Feature: CC-0013
-
 // Condition reason constants for DeploymentReady.
 const conditionReasonDeploymentRolloutComplete = "DeploymentRolloutComplete"
 
 // dbConnectionEnvVarName is the oslo.config env override key for
 // [database].connection. The OS_<GROUP>__<OPTION> form wins over the ConfigMap
 // value at runtime, so keystone containers read the real DB URL from the
-// derived Secret instead of from the ConfigMap (CC-0080, REQ-003).
+// derived Secret instead of from the ConfigMap.
 const dbConnectionEnvVarName = "OS_DATABASE__CONNECTION"
 
 // buildDBConnectionEnvVar returns the EnvVar that overrides
 // [database].connection in keystone.conf by sourcing the URL from the derived
 // <keystone.Name>-db-connection Secret produced by reconcileDBConnectionSecret
-// (CC-0080, REQ-003). Every pod-spec builder that needs database access uses
+// Every pod-spec builder that needs database access uses
 // this helper to avoid string duplication.
 func buildDBConnectionEnvVar(keystone *keystonev1alpha1.Keystone) corev1.EnvVar {
 	return corev1.EnvVar{
@@ -104,11 +102,11 @@ func dbReadinessProbe() *corev1.Probe {
 
 // reconcileDeployment ensures the Keystone API Deployment and Service exist
 // with the correct spec. It sets the DeploymentReady condition and the
-// status endpoint when the Deployment becomes available (CC-0013, REQ-006, REQ-012).
+// status endpoint when the Deployment becomes available.
 //
 // Key rotation (fernet + credential) is handled in-place via kubelet Secret
 // projection. The pod template does not include hash annotations, so Secret
-// data changes do not trigger Deployment rollouts (CC-0074).
+// data changes do not trigger Deployment rollouts.
 func (r *KeystoneReconciler) reconcileDeployment(ctx context.Context, keystone *keystonev1alpha1.Keystone, configMapName string) (ctrl.Result, error) {
 	deploy := buildKeystoneDeployment(keystone, configMapName)
 	ready, err := deployment.EnsureDeployment(ctx, r.Client, r.Scheme, keystone, deploy)
@@ -138,7 +136,7 @@ func (r *KeystoneReconciler) reconcileDeployment(ctx context.Context, keystone *
 		return ctrl.Result{RequeueAfter: RequeueDeploymentPolling}, nil
 	}
 
-	// Transition from RollingUpdate to Contracting when Deployment is ready (CC-0056, REQ-004).
+	// Transition from RollingUpdate to Contracting when Deployment is ready.
 	if keystone.Status.UpgradePhase == keystonev1alpha1.UpgradePhaseRollingUpdate {
 		keystone.Status.UpgradePhase = keystonev1alpha1.UpgradePhaseContracting
 		r.Recorder.Eventf(keystone, corev1.EventTypeNormal, conditionReasonDeploymentRolloutComplete, "Deployment rollout complete during upgrade %s \u2192 %s", keystone.Status.InstalledRelease, keystone.Status.TargetRelease)
@@ -156,7 +154,7 @@ func (r *KeystoneReconciler) reconcileDeployment(ctx context.Context, keystone *
 
 	// Status.Endpoint derivation is delegated to keystoneStatusEndpoint so that
 	// the gateway-aware public URL is used when spec.gateway is set, and the
-	// cluster-local URL otherwise (CC-0065, REQ-004).
+	// cluster-local URL otherwise.
 	keystone.Status.Endpoint = keystoneStatusEndpoint(keystone)
 	conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
 		Type:               "DeploymentReady",
@@ -182,7 +180,7 @@ func commonLabels(keystone *keystonev1alpha1.Keystone) map[string]string {
 // selector. It is a subset of commonLabels and must remain stable for the
 // lifetime of a Deployment (selectors are immutable after creation).
 // The label keys and app name are sourced from exported constants in the API
-// package (CC-0075) to stay in sync with webhook TSC validation.
+// package to stay in sync with webhook TSC validation.
 func selectorLabels(keystone *keystonev1alpha1.Keystone) map[string]string {
 	return map[string]string{
 		keystonev1alpha1.LabelKeyName:     keystonev1alpha1.AppName,
@@ -320,9 +318,9 @@ func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName 
 			},
 		},
 	}
-	// CC-0106: project the db-tls client keypair into the API pod when DB
+	// project the db-tls client keypair into the API pod when DB
 	// TLS is enabled; the gate is centralised in dbTLSEnabled so deployment
-	// and job builders decide identically (REQ-002, REQ-014).
+	// and job builders decide identically.
 	if dbTLSEnabled(keystone) {
 		tlsVol, tlsMount := dbTLSVolumeAndMount(keystone)
 		deploy.Spec.Template.Spec.Volumes = append(deploy.Spec.Template.Spec.Volumes, tlsVol)
@@ -333,15 +331,13 @@ func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName 
 	return deploy
 }
 
-// Feature: CC-0037
-
 // buildPodDisruptionBudget constructs the desired PDB for the Keystone API
 // deployment. When replicas > 1, minAvailable=1 guarantees at least one pod
 // remains during voluntary disruptions. When replicas == 1, maxUnavailable=1
 // is used instead to avoid drain deadlock (a PDB with minAvailable=1 on a
 // single-replica deployment would block all evictions). When replicas == 0
 // (e.g. during scale-down), maxUnavailable=1 is set explicitly for clarity
-// even though it has no practical effect with zero pods (CC-0037).
+// even though it has no practical effect with zero pods.
 func buildPodDisruptionBudget(keystone *keystonev1alpha1.Keystone) *policyv1.PodDisruptionBudget {
 	pdb := &policyv1.PodDisruptionBudget{
 		ObjectMeta: metav1.ObjectMeta{
@@ -371,18 +367,18 @@ func buildPodDisruptionBudget(keystone *keystonev1alpha1.Keystone) *policyv1.Pod
 // When uwsgi is nil, hardcoded defaults (processes=2, threads=1,
 // httpKeepAlive=true) are used. Fixed flags (--http :5000, --wsgi-file,
 // --master, --lazy-apps, --need-app, --pyargv) are always included regardless
-// of configuration (CC-0040, REQ-004).
+// of configuration.
 //
-// Optional graceful-termination tuning (CC-0084): when UWSGISpec.Harakiri is
+// Optional graceful-termination tuning when UWSGISpec.Harakiri is
 // non-nil, "--harakiri <n>" is appended so a single stuck request cannot hold
-// a worker past the shutdown envelope (REQ-003). When HTTPKeepAliveTimeout is
+// a worker past the shutdown envelope. When HTTPKeepAliveTimeout is
 // non-nil AND httpKeepAlive is true, "--http-keepalive-timeout <n>" is
-// appended so idle keep-alive sockets close before SIGTERM (REQ-004). The
+// appended so idle keep-alive sockets close before SIGTERM. The
 // timeout flag is silently dropped when keep-alive is disabled — the flag has
 // no meaning without the parent feature, and the webhook rejects this
-// combination at admission (REQ-011).
+// combination at admission.
 //
-// Always-on uWSGI request logging (CC-0098, REQ-006): "--log-master" and
+// Always-on uWSGI request logging "--log-master" and
 // "--log-format <literal>" are appended unconditionally between the
 // --http-keepalive[-timeout] block and --wsgi-file so request lines reach
 // stderr in every configuration, including when keep-alive is disabled.
@@ -407,9 +403,8 @@ func uwsgiCommand(uwsgi *keystonev1alpha1.UWSGISpec) []string {
 			cmd = append(cmd, "--http-keepalive-timeout", strconv.Itoa(int(*uwsgi.HTTPKeepAliveTimeout)))
 		}
 	}
-	// Unconditional: REQ-006 makes uWSGI master logging always-on so request
+	// Unconditional: makes uWSGI master logging always-on so request
 	// lines reach stderr in every configuration, regardless of keep-alive
-	// (CC-0098, REQ-006).
 	cmd = append(
 		cmd,
 		"--log-master",
@@ -434,7 +429,7 @@ func uwsgiCommand(uwsgi *keystonev1alpha1.UWSGISpec) []string {
 // containerResources returns the ResourceRequirements for the keystone
 // container. It dereferences spec.Resources if set, falling back to a zero
 // value if nil (safe fallback for CRs that bypassed the webhook, e.g.
-// pre-existing CRs during operator upgrade) (CC-0042, CC-0095).
+// pre-existing CRs during operator upgrade).
 func containerResources(keystone *keystonev1alpha1.Keystone) corev1.ResourceRequirements {
 	if keystone.Spec.Resources != nil {
 		return *keystone.Spec.Resources
@@ -446,7 +441,7 @@ func containerResources(keystone *keystonev1alpha1.Keystone) corev1.ResourceRequ
 // Keystone API pods. If spec.TopologySpreadConstraints is non-nil, those are
 // used verbatim (an empty slice disables defaults). Otherwise, two default
 // constraints are injected: one zone-spread and one hostname-spread, both with
-// ScheduleAnyway to distribute pods across zones and nodes (CC-0075).
+// ScheduleAnyway to distribute pods across zones and nodes.
 func topologySpreadConstraints(keystone *keystonev1alpha1.Keystone) []corev1.TopologySpreadConstraint {
 	if keystone.Spec.TopologySpreadConstraints != nil {
 		return keystone.Spec.TopologySpreadConstraints
@@ -470,7 +465,7 @@ func topologySpreadConstraints(keystone *keystonev1alpha1.Keystone) []corev1.Top
 
 // priorityClassName returns the priority class name for the Keystone API pods.
 // If spec.PriorityClassName is set, that value is used. Otherwise, an empty
-// string is returned, leaving the cluster default in effect (CC-0075).
+// string is returned, leaving the cluster default in effect.
 func priorityClassName(keystone *keystonev1alpha1.Keystone) string {
 	if keystone.Spec.PriorityClassName != nil {
 		return *keystone.Spec.PriorityClassName
@@ -479,11 +474,10 @@ func priorityClassName(keystone *keystonev1alpha1.Keystone) string {
 }
 
 // terminationGracePeriodSeconds returns the PodSpec TerminationGracePeriodSeconds
-// value. When spec.TerminationGracePeriodSeconds is nil (existing CR, pre-CC-0084
-// upgrade), it falls back to keystonev1alpha1.DefaultTerminationGracePeriodSeconds,
+// value. When spec.TerminationGracePeriodSeconds is nil (existing CR, pre- upgrade), it falls back to keystonev1alpha1.DefaultTerminationGracePeriodSeconds,
 // the shared constant that the validating webhook also resolves against for
 // cross-field arithmetic. Routing both sides through the same constant prevents
-// silent drift (CC-0084, REQ-001).
+// silent drift.
 func terminationGracePeriodSeconds(keystone *keystonev1alpha1.Keystone) int64 {
 	if keystone.Spec.TerminationGracePeriodSeconds != nil {
 		return *keystone.Spec.TerminationGracePeriodSeconds
@@ -496,8 +490,7 @@ func terminationGracePeriodSeconds(keystone *keystonev1alpha1.Keystone) int64 {
 // keystonev1alpha1.DefaultPreStopSleepSeconds, the shared constant that the
 // validating webhook also resolves against for cross-field arithmetic. Zero is
 // a permitted opt-out value and emits "sleep 0" verbatim. Routing both sides
-// through the same constant prevents silent drift (CC-0084, REQ-002, REQ-009,
-// REQ-010).
+// through the same constant prevents silent drift.
 func preStopSleepCommand(keystone *keystonev1alpha1.Keystone) []string {
 	seconds := keystonev1alpha1.DefaultPreStopSleepSeconds
 	if keystone.Spec.PreStopSleepSeconds != nil {
@@ -512,7 +505,6 @@ func preStopSleepCommand(keystone *keystonev1alpha1.Keystone) []string {
 // MaxUnavailable=0 and MaxSurge=1 is synthesized so available capacity never
 // drops below spec.replicas during a rolling image-tag patch — the default
 // surge-before-remove behavior that guards Keystone's rolling-update SLO
-// (CC-0084, REQ-005, REQ-006).
 func deploymentStrategy(keystone *keystonev1alpha1.Keystone) appsv1.DeploymentStrategy {
 	if keystone.Spec.Strategy != nil {
 		return *keystone.Spec.Strategy.DeepCopy()

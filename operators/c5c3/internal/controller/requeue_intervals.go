@@ -7,7 +7,7 @@ package controller
 import "time"
 
 // Requeue intervals used by the ControlPlane sub-reconcilers while waiting on a
-// projected child CR to converge (CC-0110, REQ-008, REQ-009). Centralised here
+// projected child CR to converge. Centralised here
 // so the wait cadence is consistent and tunable in one place.
 const (
 	// infraRequeueAfter is the backoff used while a managed MariaDB/Memcached
@@ -16,7 +16,7 @@ const (
 
 	// dbCredentialsRequeueAfter is the backoff the DB-credentials sub-reconciler
 	// uses while waiting for the per-ControlPlane DB-credential ExternalSecret to
-	// sync to Ready (CC-0116, REQ-001, REQ-008). DECISION: a dedicated named
+	// sync to Ready. DECISION: a dedicated named
 	// constant (rather than reusing korcRequeueAfter) matches the
 	// per-sub-reconciler naming convention already established here, so the wait
 	// cadence of each sub-reconciler is independently documented and tunable.
@@ -24,7 +24,7 @@ const (
 
 	// adminPasswordRequeueAfter is the backoff the AdminPassword sub-reconciler
 	// uses while waiting for the per-ControlPlane admin-password ExternalSecret to
-	// sync to Ready (CC-0117, REQ-003). DECISION: a dedicated named constant
+	// sync to Ready. DECISION: a dedicated named constant
 	// (rather than reusing korcRequeueAfter) matches the per-sub-reconciler naming
 	// convention already established here, so the wait cadence of each
 	// sub-reconciler is independently documented and tunable.
@@ -40,13 +40,12 @@ const (
 	// AdminCredentialReady, the K-ORC clouds.yaml ExternalSecret) or on a K-ORC
 	// child CR (ApplicationCredential/Service/Endpoint) to converge, and while a
 	// missing K-ORC CRD keeps the sub-reconciler from making progress
-	// (CC-0110, REQ-010, REQ-011, REQ-014).
 	korcRequeueAfter = 10 * time.Second
 
 	// credentialRotationWaitInterval is the short backoff the CredentialRotation
 	// reconciler uses while waiting for the ControlPlane reconciler to mint the
 	// admin ApplicationCredential CR (Bootstrap) or for a ControlPlane / admin
-	// password Secret to appear (CC-0110, REQ-015).
+	// password Secret to appear.
 	credentialRotationWaitInterval = 10 * time.Second
 
 	// remintStallTimeout bounds how long the admin ApplicationCredential may stay
@@ -59,7 +58,7 @@ const (
 
 	// duplicateControlPlaneRequeueAfter is the backoff a parked duplicate
 	// ControlPlane uses while an older ControlPlane owns its namespace
-	// (CC-0112, REQ-010 defense-in-depth). Deleting the incumbent enqueues no
+	// (defense-in-depth). Deleting the incumbent enqueues no
 	// event for the parked CR, so this periodic requeue is what lets the
 	// parked ControlPlane take over once the incumbent is fully gone.
 	duplicateControlPlaneRequeueAfter = 30 * time.Second

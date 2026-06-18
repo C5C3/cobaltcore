@@ -21,9 +21,7 @@ import (
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
 
-// Feature: CC-0067
-
-// Condition type and reason constants for KeystoneAPIReady (CC-0067, W-002).
+// Condition type and reason constants for KeystoneAPIReady.
 const (
 	conditionTypeKeystoneAPIReady     = "KeystoneAPIReady"
 	conditionReasonEndpointNotReady   = "EndpointNotReady"
@@ -54,7 +52,7 @@ func (r *KeystoneReconciler) httpClient() HTTPDoer {
 // The probe target is always the in-cluster Service URL returned by
 // internalAPIURL, independent of spec.gateway: we are verifying API readiness,
 // not the ingress/DNS/cert/Gateway path that keystone.Status.Endpoint may
-// advertise externally (CC-0065, CC-0067, REQ-001, REQ-004).
+// advertise externally.
 func (r *KeystoneReconciler) reconcileHealthCheck(ctx context.Context, keystone *keystonev1alpha1.Keystone) (ctrl.Result, error) {
 	if keystone.Status.Endpoint == "" {
 		log.FromContext(ctx).Info("Keystone API endpoint not yet configured, requeuing")
@@ -108,7 +106,7 @@ func (r *KeystoneReconciler) reconcileHealthCheck(ctx context.Context, keystone 
 
 // handleHealthCheckError classifies the HTTP client error and sets the
 // KeystoneAPIReady condition with an appropriate Reason. All network errors
-// result in a requeue rather than a hard error (CC-0067, REQ-002, REQ-003).
+// result in a requeue rather than a hard error.
 func (r *KeystoneReconciler) handleHealthCheckError(ctx context.Context, keystone *keystonev1alpha1.Keystone, err error) ctrl.Result {
 	reason, message := classifyHealthCheckError(err)
 	log.FromContext(ctx).Info("Keystone API health check error", "reason", reason, "error", err)
@@ -123,7 +121,7 @@ func (r *KeystoneReconciler) handleHealthCheckError(ctx context.Context, keyston
 }
 
 // classifyHealthCheckError returns the condition Reason and Message for the
-// given HTTP client error (CC-0067, REQ-002, REQ-003).
+// given HTTP client error.
 func classifyHealthCheckError(err error) (reason, message string) {
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, os.ErrDeadlineExceeded) {
 		return conditionReasonHealthCheckTimeout, "health check timed out"

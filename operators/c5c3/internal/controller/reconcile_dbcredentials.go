@@ -23,13 +23,13 @@ import (
 
 // dbCredentialSecretNameSuffix is appended to keystoneName(cp) to derive the
 // deterministic, collision-free name of the per-ControlPlane service DB-credential
-// Secret/ExternalSecret (CC-0116, REQ-001), mirroring the *Suffix discipline used
+// Secret/ExternalSecret, mirroring the *Suffix discipline used
 // by the K-ORC admin-credential names so a single namespace can host the DB
 // credential of multiple ControlPlanes.
 const dbCredentialSecretNameSuffix = "-db-credentials" //nolint:gosec // G101 false positive: Secret name suffix, not a credential.
 
 // dbCredentialRemoteKeyFor returns the per-ControlPlane OpenBao path the service
-// DB credential is read from (CC-0116, REQ-001). The path is scoped by both the
+// DB credential is read from. The path is scoped by both the
 // ControlPlane's Namespace and Name so two ControlPlanes never resolve to the
 // same key on the cluster-global OpenBao backend.
 func dbCredentialRemoteKeyFor(cp *c5c3v1alpha1.ControlPlane) string {
@@ -45,7 +45,7 @@ func dbCredentialSecretName(cp *c5c3v1alpha1.ControlPlane) string {
 
 // dbCredentialExternalSecret builds the per-ControlPlane, OpenBao-backed
 // ExternalSecret that materialises the service DB credential into childNamespace(cp)
-// (CC-0116, REQ-001). It is a PURE builder: no owner reference is set here — the
+// It is a PURE builder: no owner reference is set here — the
 // reconciler adds the ControlPlane controller reference in the CreateOrUpdate mutate
 // closure (so GC is wired) while keeping this builder usable for shape assertions.
 // The ExternalSecret type is esov1 (the v1 API), matching ensureKORCCloudsYAMLExternalSecret.
@@ -68,7 +68,6 @@ func dbCredentialExternalSecret(cp *c5c3v1alpha1.ControlPlane) *esov1.ExternalSe
 
 // reconcileDBCredentials projects (in managed mode) the per-ControlPlane service
 // DB-credential ExternalSecret and drives the DBCredentialsReady condition
-// (CC-0116, REQ-001, REQ-002, REQ-008).
 //
 // Brownfield CONTROL: when the ControlPlane supplies its own database connection
 // (Database.ClusterRef == nil, i.e. Host-based brownfield mode), the user owns the

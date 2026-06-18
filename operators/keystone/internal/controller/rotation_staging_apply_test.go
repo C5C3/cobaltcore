@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Tests for KeystoneReconciler.applyRotationOutput (CC-0081, Task 2.3).
+// Tests for KeystoneReconciler.applyRotationOutput.
 //
 // These tests exercise the controller's "apply staging to production" path:
 // GET staging Secret, check RotationCompletedAnnotation, validate payload,
@@ -31,7 +31,7 @@ import (
 )
 
 // applyTestKeystone returns a minimal Keystone CR suitable for applyRotationOutput
-// tests (CC-0081).
+// tests.
 func applyTestKeystone() *keystonev1alpha1.Keystone {
 	return &keystonev1alpha1.Keystone{
 		ObjectMeta: metav1.ObjectMeta{
@@ -43,7 +43,7 @@ func applyTestKeystone() *keystonev1alpha1.Keystone {
 }
 
 // makeValidFernetKeys generates n unique valid Fernet keys (44-byte base64url)
-// suitable for use as staging Secret Data (CC-0081).
+// suitable for use as staging Secret Data.
 func makeValidFernetKeys(t *testing.T, n int) map[string][]byte {
 	t.Helper()
 	out := make(map[string][]byte, n)
@@ -59,7 +59,7 @@ func makeValidFernetKeys(t *testing.T, n int) map[string][]byte {
 
 // newApplyTestReconciler builds a KeystoneReconciler wired to a fake client
 // preloaded with the given objects and a FakeRecorder large enough for tests
-// that may emit several events (CC-0081).
+// that may emit several events.
 func newApplyTestReconciler(objs ...client.Object) *KeystoneReconciler {
 	s := testScheme()
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(objs...).Build()
@@ -348,7 +348,7 @@ func TestApplyRotationOutput_HappyPath(t *testing.T) {
 // is rejected with 409 Conflict instead of being silently deleted uncommitted.
 // applyRotationOutput must tolerate that Conflict (this run's payload is already
 // on the production Secret) and leave the staging Secret intact so its newer
-// payload commits on the next reconcile (CC-0081).
+// payload commits on the next reconcile.
 func TestApplyRotationOutput_ConcurrentStagingPatchTolerated(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := applyTestKeystone()
@@ -427,13 +427,13 @@ func TestApplyRotationOutput_ConcurrentStagingPatchTolerated(t *testing.T) {
 }
 
 // TestApplyRotationOutput_StampsCompletionAnnotationOnProduction is the
-// regression guard for the M1 review finding (CC-0089): the
+// regression guard for the M1 review finding the
 // keystone_operator_key_rotation_age_seconds gauge needs a durable timestamp
 // so it can refresh on every reconcile after the staging Secret is deleted.
 // applyRotationOutput must therefore copy the staging Secret's
 // RotationCompletedAnnotation onto the production Secret (verbatim, so the
 // gauge measures wall-clock age rather than apply time) before the staging
-// Secret is removed (CC-0089, REQ-003).
+// Secret is removed.
 func TestApplyRotationOutput_StampsCompletionAnnotationOnProduction(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := applyTestKeystone()
@@ -473,7 +473,7 @@ func TestApplyRotationOutput_StampsCompletionAnnotationOnProduction(t *testing.T
 		types.NamespacedName{Name: "test-keystone-fernet-keys", Namespace: "default"}, &gotProd)).To(Succeed())
 	g.Expect(gotProd.Annotations).To(HaveKeyWithValue(RotationCompletedAnnotation, completedAt),
 		"production Secret must carry the staging completion annotation verbatim "+
-			"so the rotation-age gauge stays accurate after staging is deleted (CC-0089, REQ-003)")
+			"so the rotation-age gauge stays accurate after staging is deleted")
 }
 
 // TestApplyRotationOutput_ReplacesDisjointIndices asserts that a successful
@@ -482,8 +482,8 @@ func TestApplyRotationOutput_StampsCompletionAnnotationOnProduction(t *testing.T
 // a historical "7" vs staging {"0","1","2"}). This is the regression guard
 // for the strategic-merge-vs-replace bug: under strategic-merge on
 // `map[string][]byte` the stale "7" would be preserved by key-merge, causing
-// decommissioned keys to accumulate and violate REQ-006's bounded-keys
-// contract (CC-0081).
+// decommissioned keys to accumulate and violate the bounded-keys
+// contract.
 func TestApplyRotationOutput_ReplacesDisjointIndices(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := applyTestKeystone()
@@ -524,9 +524,9 @@ func TestApplyRotationOutput_ReplacesDisjointIndices(t *testing.T) {
 	g.Expect(r.Get(context.Background(),
 		types.NamespacedName{Name: "test-keystone-fernet-keys", Namespace: "default"}, &gotProd)).To(Succeed())
 	g.Expect(gotProd.Data).To(HaveLen(len(stagingData)),
-		"production Data must contain exactly the staging keys (CC-0081, REQ-006)")
+		"production Data must contain exactly the staging keys")
 	g.Expect(gotProd.Data).NotTo(HaveKey("7"),
-		"stale disjoint index must be removed by the full-replacement Update (CC-0081)")
+		"stale disjoint index must be removed by the full-replacement Update")
 	for k, v := range stagingData {
 		g.Expect(gotProd.Data).To(HaveKeyWithValue(k, v))
 	}

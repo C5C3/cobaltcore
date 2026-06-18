@@ -33,23 +33,23 @@ import (
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
 
-// Feature: CC-0109 — Model B scheduled admin password rotation.
+// Model B scheduled admin password rotation.
 
 // adminPasswordRotateScript is the shell script executed by the admin-password
 // rotation CronJob. It mints a fresh strong password and PATCHes it onto the
 // staging Secret via the K8s API using the pod's ServiceAccount token. Only
 // Python standard-library modules are used to avoid image dependencies
-// (CC-0013). Extracted to scripts/admin_password_rotate.sh for independent
-// linting and testing, mirroring fernet_rotate.sh (CC-0073, CC-0081).
+// Extracted to scripts/admin_password_rotate.sh for independent
+// linting and testing, mirroring fernet_rotate.sh.
 //
 //go:embed scripts/admin_password_rotate.sh
 var adminPasswordRotateScript string
 
 // conditionTypePasswordRotationReady is the Status condition the
-// PasswordRotation sub-reconciler drives (CC-0109, REQ-009). It is registered
+// PasswordRotation sub-reconciler drives. It is registered
 // in subConditionTypes and subReconcilerConditionTypes by the controller
 // wiring (task 3.1). Declared in a const block to match the indented form of
-// the package's other conditionType<X>Ready constants (CC-0109, REQ-009).
+// the package's other conditionType<X>Ready constants.
 const (
 	conditionTypePasswordRotationReady = "PasswordRotationReady"
 )
@@ -57,14 +57,14 @@ const (
 // adminPasswordSecretKey is the .data key holding the admin password in the
 // staging, push-source, and admin Secrets. It matches the key the bootstrap
 // reconciler reads (reconcile_bootstrap.go) and the property the keystone-admin
-// ExternalSecret pulls from OpenBao (CC-0108, CC-0109).
+// ExternalSecret pulls from OpenBao.
 const adminPasswordSecretKey = "password" //nolint:gosec // G101 false positive: Secret data key name, not a credential
 
 // adminPasswordMinLength is the defense-in-depth floor for the generated
 // password length, mirroring the +kubebuilder:validation:Minimum=24 marker on
 // PasswordRotationSpec.PasswordLength. The webhook defaults PasswordLength to
 // DefaultPasswordRotationLength (32) when rotation is enabled, but this floor
-// protects callers that bypass the webhook (e.g. envtest) (CC-0109).
+// protects callers that bypass the webhook (e.g. envtest).
 const adminPasswordMinLength int32 = 24
 
 // ErrAdminPasswordMissing is returned when the staged Secret has no non-empty
@@ -76,7 +76,7 @@ var ErrAdminPasswordMissing = errors.New("admin password missing")
 var ErrAdminPasswordTooShort = errors.New("admin password too short")
 
 // adminPasswordStagingSecretName returns the staging Secret name the rotation
-// CronJob PATCHes into: `<keystone>-admin-password-rotation` (CC-0109),
+// CronJob PATCHes into: `<keystone>-admin-password-rotation`,
 // mirroring fernetStagingSecretName.
 func adminPasswordStagingSecretName(keystone *keystonev1alpha1.Keystone) string {
 	return fmt.Sprintf("%s-admin-password-rotation", keystone.Name)
@@ -87,7 +87,7 @@ func adminPasswordStagingSecretName(keystone *keystonev1alpha1.Keystone) string 
 // here; the PushSecret selects this Secret and mirrors it to OpenBao. Keeping
 // the push path separate from the live admin Secret means a reconcile never
 // clobbers the credential the running Keystone is using until ESO has synced
-// the new value back (CC-0109).
+// the new value back.
 func adminPasswordNextSecretName(keystone *keystonev1alpha1.Keystone) string {
 	return fmt.Sprintf("%s-admin-password-next", keystone.Name)
 }
@@ -119,9 +119,9 @@ func adminPasswordPushSecretName(keystone *keystonev1alpha1.Keystone) string {
 // normalizedAdminPasswordLength returns the effective generated-password length.
 // It defaults an unset value to DefaultPasswordRotationLength (32) and applies a
 // floor of adminPasswordMinLength (24) for defense-in-depth against callers that
-// bypass the defaulting webhook (CC-0109).
+// bypass the defaulting webhook.
 //
-// DECISION: minimum length for validateAdminPasswordRotationOutput — REQ-007
+// DECISION: minimum length for validateAdminPasswordRotationOutput
 // says ">= minimum length" without fixing the bound. Chose the normalized
 // PasswordLength (defaulted/floored as above) so the operator-side check tracks
 // the same length the CronJob was told to generate. token_urlsafe(n) yields
@@ -139,7 +139,6 @@ func normalizedAdminPasswordLength(keystone *keystonev1alpha1.Keystone) int32 {
 }
 
 // reconcilePasswordRotation drives Model B scheduled admin-password rotation
-// (CC-0109, REQ-002, REQ-003, REQ-009).
 //
 // DECISION: the third parameter is the shared config ConfigMap name, accepted
 // only for sub-reconciler call-site symmetry with reconcileFernetKeys /
@@ -150,16 +149,16 @@ func normalizedAdminPasswordLength(keystone *keystonev1alpha1.Keystone) int32 {
 //
 // Two lifecycle paths:
 //   - passwordRotation nil or Enabled=false: tear down every Model B resource
-//     and report PasswordRotationReady=True / RotationDisabled (REQ-002).
+//     and report PasswordRotationReady=True / RotationDisabled.
 //   - passwordRotation Enabled: ensure the push-source Secret, staging Secret,
 //     apply any completed rotation, RBAC, script ConfigMap, CronJob, and the
-//     clobber-safe PushSecret, then report PasswordRotationReady=True (REQ-003).
+//     clobber-safe PushSecret, then report PasswordRotationReady=True.
 func (r *KeystoneReconciler) reconcilePasswordRotation(ctx context.Context,
 	keystone *keystonev1alpha1.Keystone, _ string,
 ) (ctrl.Result, error) {
 	pr := keystone.Spec.Bootstrap.PasswordRotation
 
-	// Disabled/teardown branch (REQ-002). Nil pointer means the feature was
+	// Disabled/teardown branch. Nil pointer means the feature was
 	// never opted into (the defaulting webhook deliberately does not
 	// materialize it); Enabled=false means it was switched off. Both tear down
 	// all Model B resources and report ready.
@@ -191,7 +190,7 @@ func (r *KeystoneReconciler) reconcilePasswordRotation(ctx context.Context,
 	}
 
 	// 3. Refresh the key_rotation_age gauge from the rotation-completed
-	//    annotation (REQ-012). Reads the durable push-source Secret first and
+	//    annotation. Reads the durable push-source Secret first and
 	//    falls back to staging for the pre-first-apply window. Called before
 	//    applyAdminPasswordRotation so the next reconcile picks up the freshest
 	//    timestamp once the apply re-stamps the push-source annotation.
@@ -207,7 +206,7 @@ func (r *KeystoneReconciler) reconcilePasswordRotation(ctx context.Context,
 	r.observeRotationAge(ctx, keystone, adminPasswordNextSecretName(keystone),
 		adminPasswordStagingSecretName(keystone), "admin-password")
 
-	// 4. Apply any completed rotation staged by the CronJob (REQ-007, REQ-011).
+	// 4. Apply any completed rotation staged by the CronJob.
 	//    On a valid apply, short-circuit and requeue so the next pass re-enters
 	//    the happy path with the push-source Secret already updated.
 	applied, err := r.applyAdminPasswordRotation(ctx, keystone, minLength)
@@ -230,7 +229,7 @@ func (r *KeystoneReconciler) reconcilePasswordRotation(ctx context.Context,
 		return ctrl.Result{}, fmt.Errorf("ensuring admin password rotation RBAC: %w", err)
 	}
 
-	// 6. Create the immutable ConfigMap containing the rotation script (CC-0073).
+	// 6. Create the immutable ConfigMap containing the rotation script.
 	scriptConfigMapName, err := config.CreateImmutableConfigMap(ctx, r.Client, r.Scheme, keystone,
 		adminPasswordRotateScriptBaseName(keystone), keystone.Namespace,
 		map[string]string{"admin_password_rotate.sh": adminPasswordRotateScript})
@@ -244,11 +243,11 @@ func (r *KeystoneReconciler) reconcilePasswordRotation(ctx context.Context,
 		return ctrl.Result{}, fmt.Errorf("ensuring admin password rotation cronjob: %w", err)
 	}
 
-	// 8. Clobber-safe PushSecret (REQ-007, REQ-011, REQ-014): only mirror the
+	// 8. Clobber-safe PushSecret only mirror the
 	//    push-source Secret to the per-CR OpenBao path once it actually holds a
 	//    valid password. Before the first rotation completes the push-source
 	//    Secret is empty; pushing it would overwrite the seeded per-CR
-	//    bootstrap/{namespace}/{name}/admin value with nothing (CC-0112).
+	//    bootstrap/{namespace}/{name}/admin value with nothing.
 	if r.adminPasswordPushSourceReady(ctx, keystone, minLength) {
 		ps := adminPasswordPushSecret(keystone)
 		if err := secrets.EnsurePushSecret(ctx, r.Client, r.Scheme, keystone, ps); err != nil {
@@ -267,7 +266,7 @@ func (r *KeystoneReconciler) reconcilePasswordRotation(ctx context.Context,
 	return ctrl.Result{}, nil
 }
 
-// teardownPasswordRotation deletes every Model B resource (REQ-002). All
+// teardownPasswordRotation deletes every Model B resource. All
 // deletes tolerate NotFound so the teardown is idempotent and safe to run on a
 // CR that never enabled rotation. The PushSecret uses DeletionPolicy=None (see
 // adminPasswordPushSecret), so deleting it here leaves the last-pushed password
@@ -304,7 +303,7 @@ func (r *KeystoneReconciler) teardownPasswordRotation(ctx context.Context, keyst
 }
 
 // ensureAdminPasswordPushSourceSecret ensures the operator-owned push-source
-// Secret exists (CC-0109). The operator owns the metadata and the `.data` field
+// Secret exists. The operator owns the metadata and the `.data` field
 // (committed by applyAdminPasswordRotation via a full GET+Update replacement);
 // `.data` is deliberately left untouched here so a reconcile never clobbers a
 // previously committed password.
@@ -327,7 +326,7 @@ func (r *KeystoneReconciler) ensureAdminPasswordPushSourceSecret(ctx context.Con
 
 // ensureAdminPasswordRotationRBAC creates the ServiceAccount, Role, and
 // RoleBinding for the admin-password rotation CronJob, mirroring
-// ensureFernetRotationRBAC's split-RBAC shape (CC-0081, CC-0109). The Role is
+// ensureFernetRotationRBAC's split-RBAC shape. The Role is
 // split into two PolicyRules: read-only `get` on the operator-owned push-source
 // Secret and `get`+`patch` scoped to the dedicated staging Secret. The operator,
 // not the CronJob, writes the push-source Secret — keeping the token-forgery
@@ -388,11 +387,10 @@ func (r *KeystoneReconciler) ensureAdminPasswordRotationRBAC(ctx context.Context
 }
 
 // adminPasswordRotationCronJob builds the CronJob that mints a fresh admin
-// password and PATCHes it onto the staging Secret via the K8s API (CC-0109,
-// REQ-003, REQ-005). The CronJob mounts only the rotation script: it needs no
+// password and PATCHes it onto the staging Secret via the K8s API. The CronJob mounts only the rotation script: it needs no
 // keystone configuration or key repositories because it never runs
 // keystone-manage. SECRET_NAME points at the staging Secret — the CronJob SA is
-// only permitted to patch staging, never the push-source Secret (CC-0081).
+// only permitted to patch staging, never the push-source Secret.
 func adminPasswordRotationCronJob(keystone *keystonev1alpha1.Keystone, scriptConfigMapName string) *batchv1.CronJob {
 	pr := keystone.Spec.Bootstrap.PasswordRotation
 	image := fmt.Sprintf("%s:%s", keystone.Spec.Image.Repository, keystone.Spec.Image.Tag)
@@ -451,8 +449,8 @@ func adminPasswordRotationCronJob(keystone *keystonev1alpha1.Keystone, scriptCon
 	}
 }
 
-// validateAdminPasswordRotationOutput enforces the CC-0109 rotation-output
-// contract (REQ-007, REQ-011): the staged Secret must carry a non-empty
+// validateAdminPasswordRotationOutput enforces the rotation-output
+// contract the staged Secret must carry a non-empty
 // `password` value of at least minLength bytes. Errors are wrapped so callers
 // can match with errors.Is against ErrAdminPasswordMissing or
 // ErrAdminPasswordTooShort. Defense-in-depth: even a compromised CronJob cannot
@@ -469,8 +467,7 @@ func validateAdminPasswordRotationOutput(data map[string][]byte, minLength int) 
 }
 
 // applyAdminPasswordRotation copies a completed staging Secret onto the
-// operator-owned push-source Secret and deletes the staging Secret (CC-0109,
-// REQ-007, REQ-011). It mirrors applyRotationOutput's split-compute-write commit
+// operator-owned push-source Secret and deletes the staging Secret. It mirrors applyRotationOutput's split-compute-write commit
 // but validates a password rather than a key set and targets the push-source
 // Secret. It is additive and does not touch applyRotationOutput.
 //
@@ -487,7 +484,7 @@ func validateAdminPasswordRotationOutput(data map[string][]byte, minLength int) 
 //
 // The password value itself is never logged or echoed in events.
 //
-// NOTE: unlike applyRotationOutput (CC-0081), a validation rejection here does
+// NOTE: unlike applyRotationOutput, a validation rejection here does
 // NOT clear staging.Data. The staging Secret carries a single `password` key,
 // not a multi-key map, so the strategic-merge accumulation of stale indices
 // that motivates clearing the fernet/credential staging payload cannot occur;
@@ -558,7 +555,7 @@ func (r *KeystoneReconciler) applyAdminPasswordRotation(
 	}
 
 	// 5. DELETE staging Secret under the UID + ResourceVersion observed at the
-	//    step-1 Get, mirroring applyRotationOutput (CC-0081). The preconditions
+	//    step-1 Get, mirroring applyRotationOutput. The preconditions
 	//    make a concurrent CronJob PATCH surface as 409 Conflict instead of
 	//    being silently deleted uncommitted; the newer password then commits on
 	//    the next reconcile. Conflict and NotFound are both tolerated — this
@@ -582,9 +579,9 @@ func (r *KeystoneReconciler) applyAdminPasswordRotation(
 }
 
 // adminPasswordPushSourceReady reports whether the push-source Secret holds a
-// valid password (CC-0109, REQ-007). Used to gate the PushSecret so the per-CR
+// valid password. Used to gate the PushSecret so the per-CR
 // OpenBao bootstrap/{namespace}/{name}/admin value is never overwritten with an
-// empty payload before the first rotation completes (CC-0112). Any read error or
+// empty payload before the first rotation completes. Any read error or
 // invalid payload is treated as "not ready" (best-effort gate).
 func (r *KeystoneReconciler) adminPasswordPushSourceReady(ctx context.Context, keystone *keystonev1alpha1.Keystone, minLength int) bool {
 	var pushSource corev1.Secret
@@ -599,12 +596,12 @@ func (r *KeystoneReconciler) adminPasswordPushSourceReady(ctx context.Context, k
 
 // adminPasswordPushSecret builds the PushSecret that mirrors the operator-owned
 // push-source Secret to OpenBao at the per-CR path
-// bootstrap/{keystone.Namespace}/{keystone.Name}/admin (CC-0112, REQ-002). The
+// bootstrap/{keystone.Namespace}/{keystone.Name}/admin. The
 // RemoteKey embeds both the CR namespace and name as path segments so two
 // Model-B-enabled Keystone CRs never collide on a shared OpenBao object; the
 // matching keystone-admin ExternalSecret reads the same per-CR path.
 //
-// DECISION: DeletionPolicy=None — unspecified by REQ-007; chose None (not the
+// DECISION: DeletionPolicy=None — unspecified by; chose None (not the
 // fernet PushSecret's Delete) because the admin bootstrap path is a persistent
 // bootstrap secret that the keystone-admin ExternalSecret and the OpenBao seed
 // both depend on. Disabling rotation deletes this PushSecret

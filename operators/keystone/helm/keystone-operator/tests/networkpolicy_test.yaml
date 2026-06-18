@@ -1,4 +1,4 @@
-# CC-0090: NetworkPolicy unit tests for the keystone-operator Helm chart.
+# NetworkPolicy unit tests for the keystone-operator Helm chart.
 # Verifies default-off posture, rule shape, fail-closed guards, and absence
 # of the health-probe (8081) ingress rule.
 suite: NetworkPolicy
@@ -6,14 +6,14 @@ templates:
   - templates/networkpolicy.yaml
 tests:
   # ---------------------------------------------------------------------------
-  # REQ-001, REQ-002: Default-off posture and base NetworkPolicy structure.
+  # Default-off posture and base NetworkPolicy structure.
   # ---------------------------------------------------------------------------
-  - it: should not render any document when networkPolicy.enabled is false (default) (CC-0090, REQ-001)
+  - it: should not render any document when networkPolicy.enabled is false (default)
     asserts:
       - hasDocuments:
           count: 0
 
-  - it: should render exactly one NetworkPolicy when enabled (CC-0090, REQ-001)
+  - it: should render exactly one NetworkPolicy when enabled
     set:
       networkPolicy:
         enabled: true
@@ -29,7 +29,7 @@ tests:
           path: apiVersion
           value: networking.k8s.io/v1
 
-  - it: should set standard chart labels on the NetworkPolicy (CC-0090, REQ-002)
+  - it: should set standard chart labels on the NetworkPolicy
     set:
       networkPolicy:
         enabled: true
@@ -46,7 +46,7 @@ tests:
       - isNotNullOrEmpty:
           path: metadata.labels["app.kubernetes.io/instance"]
 
-  - it: should select the operator pod via selectorLabels (CC-0090, REQ-002)
+  - it: should select the operator pod via selectorLabels
     set:
       networkPolicy:
         enabled: true
@@ -60,7 +60,7 @@ tests:
       - isNotNullOrEmpty:
           path: spec.podSelector.matchLabels["app.kubernetes.io/instance"]
 
-  - it: should set policyTypes to Ingress and Egress exactly (CC-0090, REQ-002)
+  - it: should set policyTypes to Ingress and Egress exactly
     set:
       networkPolicy:
         enabled: true
@@ -75,9 +75,9 @@ tests:
             - Egress
 
   # ---------------------------------------------------------------------------
-  # REQ-003: DNS egress rule — default selectors, override, disable.
+  # DNS egress rule — default selectors, override, disable.
   # ---------------------------------------------------------------------------
-  - it: should render DNS egress with default kube-system/kube-dns selectors (CC-0090, REQ-003)
+  - it: should render DNS egress with default kube-system/kube-dns selectors
     set:
       networkPolicy:
         enabled: true
@@ -99,7 +99,7 @@ tests:
             - protocol: TCP
               port: 53
 
-  - it: should honor overridden DNS namespaceSelector and podSelector (CC-0090, REQ-003)
+  - it: should honor overridden DNS namespaceSelector and podSelector
     set:
       networkPolicy:
         enabled: true
@@ -119,7 +119,7 @@ tests:
           path: spec.egress[0].to[0].podSelector.matchLabels["custom-app"]
           value: coredns
 
-  - it: should not render a DNS egress rule when dns.enabled is false (CC-0090, REQ-003)
+  - it: should not render a DNS egress rule when dns.enabled is false
     set:
       networkPolicy:
         enabled: true
@@ -145,10 +145,10 @@ tests:
               port: 6443
 
   # ---------------------------------------------------------------------------
-  # REQ-004: kube-apiserver egress — single rule combining all CIDRs + ports.
+  # kube-apiserver egress — single rule combining all CIDRs + ports.
   # DNS is disabled in these tests to keep spec.egress indexed at 0.
   # ---------------------------------------------------------------------------
-  - it: should render a single egress rule with one CIDR and one port (CC-0090, REQ-004)
+  - it: should render a single egress rule with one CIDR and one port
     set:
       networkPolicy:
         enabled: true
@@ -172,7 +172,7 @@ tests:
             - protocol: TCP
               port: 6443
 
-  - it: should combine multiple CIDRs into a single egress rule (CC-0090, REQ-004)
+  - it: should combine multiple CIDRs into a single egress rule
     set:
       networkPolicy:
         enabled: true
@@ -201,7 +201,7 @@ tests:
           path: spec.egress[0].ports
           count: 1
 
-  - it: should combine multiple ports into a single egress rule (CC-0090, REQ-004)
+  - it: should combine multiple ports into a single egress rule
     set:
       networkPolicy:
         enabled: true
@@ -228,9 +228,9 @@ tests:
           count: 1
 
   # ---------------------------------------------------------------------------
-  # REQ-007: Webhook ingress — TCP 9443 from webhook clients or apiserver CIDRs.
+  # Webhook ingress — TCP 9443 from webhook clients or apiserver CIDRs.
   # ---------------------------------------------------------------------------
-  - it: should render webhook ingress falling back to kubeApiServer.cidrs when webhookClients.cidrs is empty (CC-0090, REQ-007)
+  - it: should render webhook ingress falling back to kubeApiServer.cidrs when webhookClients.cidrs is empty
     set:
       networkPolicy:
         enabled: true
@@ -251,7 +251,7 @@ tests:
             - protocol: TCP
               port: 9443
 
-  - it: should use webhookClients.cidrs when provided (CC-0090, REQ-007)
+  - it: should use webhookClients.cidrs when provided
     set:
       networkPolicy:
         enabled: true
@@ -278,7 +278,7 @@ tests:
             - protocol: TCP
               port: 9443
 
-  - it: should not render webhook ingress when webhook.enabled is false (CC-0090, REQ-007)
+  - it: should not render webhook ingress when webhook.enabled is false
     set:
       networkPolicy:
         enabled: true
@@ -301,10 +301,10 @@ tests:
           value: 8080
 
   # ---------------------------------------------------------------------------
-  # REQ-008: Metrics ingress — opt-in via allowMetricsFrom; peers rendered
+  # Metrics ingress — opt-in via allowMetricsFrom; peers rendered
   # verbatim. Webhook disabled to keep spec.ingress index stable.
   # ---------------------------------------------------------------------------
-  - it: should not render metrics ingress when allowMetricsFrom is empty (CC-0090, REQ-008)
+  - it: should not render metrics ingress when allowMetricsFrom is empty
     set:
       networkPolicy:
         enabled: true
@@ -322,7 +322,7 @@ tests:
           path: spec.ingress[0].ports[0].port
           value: 9443
 
-  - it: should render metrics ingress with one namespace peer (CC-0090, REQ-008)
+  - it: should render metrics ingress with one namespace peer
     set:
       networkPolicy:
         enabled: true
@@ -351,7 +351,7 @@ tests:
             - protocol: TCP
               port: 8080
 
-  - it: should render metrics ingress with multiple peers verbatim (CC-0090, REQ-008)
+  - it: should render metrics ingress with multiple peers verbatim
     set:
       networkPolicy:
         enabled: true
@@ -381,7 +381,7 @@ tests:
                 matchLabels:
                   app.kubernetes.io/name: prometheus
 
-  - it: should honor configured metrics.port in the metrics ingress rule (CC-0090, REQ-008)
+  - it: should honor configured metrics.port in the metrics ingress rule
     set:
       networkPolicy:
         enabled: true
@@ -404,11 +404,11 @@ tests:
               port: 9090
 
   # ---------------------------------------------------------------------------
-  # REQ-006: Fail-closed guards when enabled=true but cidrs or ports are empty.
+  # Fail-closed guards when enabled=true but cidrs or ports are empty.
   # Either the schema (minItems: 1 when enabled=true) or the template `fail`
   # statement will trigger — both reference the offending key name.
   # ---------------------------------------------------------------------------
-  - it: should fail rendering when enabled=true and kubeApiServer.cidrs is empty (CC-0090, REQ-006)
+  - it: should fail rendering when enabled=true and kubeApiServer.cidrs is empty
     set:
       networkPolicy:
         enabled: true
@@ -419,7 +419,7 @@ tests:
       - failedTemplate:
           errorPattern: "cidrs"
 
-  - it: should fail rendering when enabled=true and kubeApiServer.ports is empty (CC-0090, REQ-006)
+  - it: should fail rendering when enabled=true and kubeApiServer.ports is empty
     set:
       networkPolicy:
         enabled: true
@@ -431,11 +431,11 @@ tests:
           errorPattern: "ports"
 
   # ---------------------------------------------------------------------------
-  # REQ-009: Health probe port 8081 is never covered by a NetworkPolicy rule —
+  # Health probe port 8081 is never covered by a NetworkPolicy rule —
   # kubelet calls probes from the node network namespace and is not subject to
   # NetworkPolicy in standard CNIs.
   # ---------------------------------------------------------------------------
-  - it: should never render an ingress rule for health probe port 8081 (CC-0090, REQ-009)
+  - it: should never render an ingress rule for health probe port 8081
     set:
       networkPolicy:
         enabled: true

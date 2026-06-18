@@ -28,7 +28,7 @@ import (
 )
 
 // dbTLSTestScheme registers core, Keystone, and cert-manager types so the
-// fake client can persist the issued client Certificate (CC-0106, REQ-002).
+// fake client can persist the issued client Certificate.
 func dbTLSTestScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(s)
@@ -80,33 +80,33 @@ func dbTLSReconciler(s *runtime.Scheme, objs ...client.Object) *KeystoneReconcil
 
 // expectDBTLSProjection asserts that the projected volume sources the
 // expected ca/cert/key file names from the expected caBundle / clientCert
-// Secret names (CC-0106, REQ-002, REQ-014). Centralising the assertion keeps
+// Secret names. Centralising the assertion keeps
 // every Deployment/Job builder test in lockstep with the helper.
 func expectDBTLSProjection(g Gomega, projected *corev1.ProjectedVolumeSource, caBundleSecretName, clientCertSecretName string) {
 	g.Expect(projected).NotTo(BeNil(), "Projected source must be set on db-tls Volume")
 	g.Expect(projected.Sources).To(HaveLen(2),
-		"Projected sources must reference the CA bundle Secret and the client-cert Secret (CC-0106)")
+		"Projected sources must reference the CA bundle Secret and the client-cert Secret")
 
 	caSrc := projected.Sources[0].Secret
 	g.Expect(caSrc).NotTo(BeNil(),
-		"first Projected source must be the caBundleSecretRef Secret (CC-0106)")
+		"first Projected source must be the caBundleSecretRef Secret")
 	g.Expect(caSrc.Name).To(Equal(caBundleSecretName),
-		"caBundleSecretRef.Name must be honored verbatim (CC-0106, REQ-014)")
+		"caBundleSecretRef.Name must be honored verbatim")
 	g.Expect(caSrc.Items).To(ConsistOf(corev1.KeyToPath{Key: "ca.crt", Path: "ca.crt"}),
-		"caBundleSecretRef must contribute only ca.crt (CC-0106, REQ-014)")
+		"caBundleSecretRef must contribute only ca.crt")
 
 	clientSrc := projected.Sources[1].Secret
 	g.Expect(clientSrc).NotTo(BeNil(),
-		"second Projected source must be the clientCertSecretRef Secret (CC-0106)")
+		"second Projected source must be the clientCertSecretRef Secret")
 	g.Expect(clientSrc.Name).To(Equal(clientCertSecretName),
-		"clientCertSecretRef.Name must be honored verbatim (CC-0106, REQ-014)")
+		"clientCertSecretRef.Name must be honored verbatim")
 	g.Expect(clientSrc.Items).To(ConsistOf(
 		corev1.KeyToPath{Key: "tls.crt", Path: "tls.crt"},
 		corev1.KeyToPath{Key: "tls.key", Path: "tls.key"},
-	), "clientCertSecretRef must contribute tls.crt and tls.key (CC-0106, REQ-014)")
+	), "clientCertSecretRef must contribute tls.crt and tls.key")
 }
 
-// TestReconcileDatabaseTLS_CreatesCertificateWhenEnabled verifies REQ-002:
+// TestReconcileDatabaseTLS_CreatesCertificateWhenEnabled verifies:
 // managed-mode + TLS enabled provisions a cert-manager Certificate named
 // "<name>-db-client" owned by the Keystone CR.
 func TestReconcileDatabaseTLS_CreatesCertificateWhenEnabled(t *testing.T) {
@@ -136,7 +136,7 @@ func TestReconcileDatabaseTLS_CreatesCertificateWhenEnabled(t *testing.T) {
 	g.Expect(cond.ObservedGeneration).To(Equal(ks.Generation))
 }
 
-// TestReconcileDatabaseTLS_ConditionTrueWhenIssued verifies REQ-002: once
+// TestReconcileDatabaseTLS_ConditionTrueWhenIssued verifies: once
 // cert-manager marks the Certificate Ready, the condition flips to
 // True/CertificateIssued and the reconciler stops requeuing.
 func TestReconcileDatabaseTLS_ConditionTrueWhenIssued(t *testing.T) {
@@ -176,7 +176,7 @@ func TestReconcileDatabaseTLS_ConditionTrueWhenIssued(t *testing.T) {
 	g.Expect(cond.ObservedGeneration).To(Equal(ks.Generation))
 }
 
-// TestReconcileDatabaseTLS_DisabledIsNoOp verifies REQ-002: a nil TLS block
+// TestReconcileDatabaseTLS_DisabledIsNoOp verifies: a nil TLS block
 // creates no Certificate and records NotRequired.
 func TestReconcileDatabaseTLS_DisabledIsNoOp(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -198,7 +198,7 @@ func TestReconcileDatabaseTLS_DisabledIsNoOp(t *testing.T) {
 	g.Expect(cond.Reason).To(Equal(reasonNotRequired))
 }
 
-// TestReconcileDatabaseTLS_BrownfieldExternallyManaged verifies REQ-014: a
+// TestReconcileDatabaseTLS_BrownfieldExternallyManaged verifies: a
 // brownfield database (Host set, no ClusterRef) with TLS enabled does not get
 // an operator-issued Certificate; the keypair is externally managed.
 func TestReconcileDatabaseTLS_BrownfieldExternallyManaged(t *testing.T) {

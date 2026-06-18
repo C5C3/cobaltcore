@@ -3,10 +3,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Tests for the per-ControlPlane DB-credentials sub-reconciler
-// (CC-0116, REQ-001, REQ-002, REQ-008): reconcileDBCredentials and its
+// reconcileDBCredentials and its
 // pure builder/helpers. The slice is scoped to the ExternalSecret that
 // materialises a per-ControlPlane service DB credential from OpenBao; the
-// projected secretRef override (REQ-003) is a later level and is NOT exercised
+// projected secretRef override is a later level and is NOT exercised
 // here.
 package controller
 
@@ -30,7 +30,7 @@ import (
 
 // dbCredManagedControlPlane builds a managed-mode ControlPlane (Database.ClusterRef
 // set) — the mode in which reconcileDBCredentials projects the per-CP DB-credential
-// ExternalSecret (REQ-001).
+// ExternalSecret.
 func dbCredManagedControlPlane() *c5c3v1alpha1.ControlPlane {
 	return &c5c3v1alpha1.ControlPlane{
 		ObjectMeta: metav1.ObjectMeta{
@@ -52,7 +52,7 @@ func dbCredManagedControlPlane() *c5c3v1alpha1.ControlPlane {
 
 // dbCredBrownfieldControlPlane builds a brownfield-mode ControlPlane: the user
 // supplies their own DB connection (Host set, ClusterRef nil), so the operator
-// must NOT project an ExternalSecret (REQ-001, scenario: brownfield early-exit).
+// must NOT project an ExternalSecret (scenario: brownfield early-exit).
 func dbCredBrownfieldControlPlane() *c5c3v1alpha1.ControlPlane {
 	cp := dbCredManagedControlPlane()
 	cp.Spec.Infrastructure.Database = commonv1.DatabaseSpec{
@@ -85,7 +85,7 @@ func readyDBCredES(cp *c5c3v1alpha1.ControlPlane) *esov1.ExternalSecret {
 	return es
 }
 
-// TestReconcileDBCredentials_Managed_CreatesExternalSecret (REQ-001): a managed CP
+// TestReconcileDBCredentials_Managed_CreatesExternalSecret a managed CP
 // drives reconcileDBCredentials to project the per-CP DB-credential ExternalSecret
 // with the OpenBao-backed ClusterSecretStore ref, Owner creation policy, the two
 // username/password Data entries, and a ControlPlane controller owner reference.
@@ -128,8 +128,7 @@ func TestReconcileDBCredentials_Managed_CreatesExternalSecret(t *testing.T) {
 	g.Expect(*owner.Controller).To(BeTrue())
 }
 
-// TestReconcileDBCredentials_NotReady_SetsConditionFalseAndRequeues (REQ-001,
-// REQ-008): while the projected ExternalSecret has not synced, the sub-reconciler
+// TestReconcileDBCredentials_NotReady_SetsConditionFalseAndRequeues while the projected ExternalSecret has not synced, the sub-reconciler
 // requeues and reports DBCredentialsReady=False with the waiting reason.
 func TestReconcileDBCredentials_NotReady_SetsConditionFalseAndRequeues(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -149,7 +148,7 @@ func TestReconcileDBCredentials_NotReady_SetsConditionFalseAndRequeues(t *testin
 	g.Expect(cond.Reason).To(Equal("WaitingForDBCredentialSecret"))
 }
 
-// TestReconcileDBCredentials_Ready_SetsConditionTrue (REQ-001, REQ-008): once the
+// TestReconcileDBCredentials_Ready_SetsConditionTrue once the
 // projected ExternalSecret reports Ready, DBCredentialsReady flips True and the
 // sub-reconciler stops requeuing.
 func TestReconcileDBCredentials_Ready_SetsConditionTrue(t *testing.T) {
@@ -170,7 +169,7 @@ func TestReconcileDBCredentials_Ready_SetsConditionTrue(t *testing.T) {
 	g.Expect(cond.Reason).To(Equal("DBCredentialsReady"))
 }
 
-// TestReconcileDBCredentials_Brownfield_NoExternalSecret_ReadyTrue (REQ-001): a
+// TestReconcileDBCredentials_Brownfield_NoExternalSecret_ReadyTrue a
 // brownfield CP supplies its own DB credential, so the operator projects NO
 // ExternalSecret and reports DBCredentialsReady=True immediately with no requeue.
 func TestReconcileDBCredentials_Brownfield_NoExternalSecret_ReadyTrue(t *testing.T) {
@@ -194,7 +193,7 @@ func TestReconcileDBCredentials_Brownfield_NoExternalSecret_ReadyTrue(t *testing
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 }
 
-// TestDBCredentialRemoteKeyFor_And_SecretName_DistinctPerControlPlane (REQ-001):
+// TestDBCredentialRemoteKeyFor_And_SecretName_DistinctPerControlPlane
 // the OpenBao remote key is scoped by both Namespace and Name, and the secret name
 // is derived from keystoneName, so two ControlPlanes never resolve to the same
 // OpenBao path or materialised Secret.

@@ -27,8 +27,6 @@ import (
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
 
-// Feature: CC-0065
-
 func hrTestScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(s)
@@ -84,12 +82,12 @@ func newHRTestReconciler(s *runtime.Scheme, objs ...client.Object) *KeystoneReco
 		// the scheme includes gatewayv1 and the fake client supports
 		// HTTPRoute. Simulate a cluster where the CRD is installed so the
 		// runtime CRD-availability guard in reconcileHTTPRoute does not
-		// short-circuit the tests (CC-0065).
+		// short-circuit the tests.
 		gatewayAPIAvailable: true,
 	}
 }
 
-// --- keystoneStatusEndpoint unit tests (CC-0065, REQ-004) ---
+// --- keystoneStatusEndpoint unit tests ---
 
 func TestKeystoneStatusEndpoint_GatewayNil_ReturnsClusterLocal(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -99,7 +97,7 @@ func TestKeystoneStatusEndpoint_GatewayNil_ReturnsClusterLocal(t *testing.T) {
 	endpoint := keystoneStatusEndpoint(ks)
 
 	g.Expect(endpoint).To(Equal("http://test-keystone.default.svc.cluster.local:5000/v3"),
-		"spec.gateway unset must produce the in-cluster Service DNS endpoint (CC-0065, REQ-004)")
+		"spec.gateway unset must produce the in-cluster Service DNS endpoint")
 }
 
 func TestKeystoneStatusEndpoint_GatewaySet_ReturnsHTTPSHostnameEndpoint(t *testing.T) {
@@ -110,7 +108,7 @@ func TestKeystoneStatusEndpoint_GatewaySet_ReturnsHTTPSHostnameEndpoint(t *testi
 	endpoint := keystoneStatusEndpoint(ks)
 
 	g.Expect(endpoint).To(Equal("https://keystone.example.com/v3"),
-		"spec.gateway.Hostname must drive the public HTTPS endpoint (CC-0065, REQ-004)")
+		"spec.gateway.Hostname must drive the public HTTPS endpoint")
 }
 
 func TestKeystoneStatusEndpoint_PublicEndpointSet_OverridesHostnameDefault(t *testing.T) {
@@ -119,13 +117,13 @@ func TestKeystoneStatusEndpoint_PublicEndpointSet_OverridesHostnameDefault(t *te
 	ks.Spec.Gateway = hrTestGateway()
 	// External port stems from kind extraPortMappings or an edge proxy and is
 	// not captured anywhere in the Keystone or Gateway spec — only
-	// publicEndpoint can express it (CC-0088, REQ-009).
+	// publicEndpoint can express it.
 	ks.Spec.Bootstrap.PublicEndpoint = "https://keystone.example.com:8443/v3"
 
 	endpoint := keystoneStatusEndpoint(ks)
 
 	g.Expect(endpoint).To(Equal("https://keystone.example.com:8443/v3"),
-		"spec.bootstrap.publicEndpoint must take precedence over the synthesised https://{hostname}/v3 default (CC-0088, REQ-009)")
+		"spec.bootstrap.publicEndpoint must take precedence over the synthesised https://{hostname}/v3 default")
 }
 
 func TestKeystoneStatusEndpoint_PublicEndpointEmpty_FallsBackToHostnameDefault(t *testing.T) {
@@ -141,7 +139,7 @@ func TestKeystoneStatusEndpoint_PublicEndpointEmpty_FallsBackToHostnameDefault(t
 	endpoint := keystoneStatusEndpoint(ks)
 
 	g.Expect(endpoint).To(Equal("https://keystone.example.com/v3"),
-		"empty publicEndpoint must fall back to https://{hostname}/v3 (CC-0088, REQ-009)")
+		"empty publicEndpoint must fall back to https://{hostname}/v3")
 }
 
 func TestKeystoneStatusEndpoint_PublicEndpointWithoutGateway_ReturnsClusterLocal(t *testing.T) {
@@ -156,10 +154,10 @@ func TestKeystoneStatusEndpoint_PublicEndpointWithoutGateway_ReturnsClusterLocal
 	endpoint := keystoneStatusEndpoint(ks)
 
 	g.Expect(endpoint).To(Equal("http://test-keystone.default.svc.cluster.local:5000/v3"),
-		"publicEndpoint without spec.gateway must not override the cluster-local fallback (CC-0088, REQ-009)")
+		"publicEndpoint without spec.gateway must not override the cluster-local fallback")
 }
 
-// --- buildKeystoneHTTPRoute unit tests (CC-0065, REQ-001, REQ-003, REQ-006) ---
+// --- buildKeystoneHTTPRoute unit tests ---
 
 func TestBuildKeystoneHTTPRoute_NameAndNamespace(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -266,7 +264,7 @@ func TestBuildKeystoneHTTPRoute_CustomPath(t *testing.T) {
 // TestBuildKeystoneHTTPRoute_PathWithoutLeadingSlash_Normalized verifies that a
 // path like "identity" (missing the leading slash) is normalized to "/identity"
 // so the resulting HTTPRoute is not rejected by Gateway controllers that
-// require HTTPPathMatch.Value to begin with "/" (CC-0065, REQ-001).
+// require HTTPPathMatch.Value to begin with "/".
 func TestBuildKeystoneHTTPRoute_PathWithoutLeadingSlash_Normalized(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := hrTestKeystone()
@@ -279,7 +277,7 @@ func TestBuildKeystoneHTTPRoute_PathWithoutLeadingSlash_Normalized(t *testing.T)
 	g.Expect(route.Spec.Rules[0].Matches).To(HaveLen(1))
 	g.Expect(route.Spec.Rules[0].Matches[0].Path).NotTo(BeNil())
 	g.Expect(*route.Spec.Rules[0].Matches[0].Path.Value).To(Equal("/identity"),
-		"missing leading slash must be normalized (CC-0065, REQ-001)")
+		"missing leading slash must be normalized")
 }
 
 func TestBuildKeystoneHTTPRoute_BackendRef(t *testing.T) {
@@ -297,7 +295,7 @@ func TestBuildKeystoneHTTPRoute_BackendRef(t *testing.T) {
 	g.Expect(backend.Port).NotTo(BeNil())
 	g.Expect(*backend.Port).To(Equal(gatewayv1.PortNumber(5000)))
 
-	// Kind defaults to Service when nil; if set it must be Service (CC-0065, REQ-003).
+	// Kind defaults to Service when nil; if set it must be Service.
 	if backend.Kind != nil {
 		g.Expect(*backend.Kind).To(Equal(gatewayv1.Kind("Service")))
 	}
@@ -327,13 +325,13 @@ func TestBuildKeystoneHTTPRoute_NoAnnotations(t *testing.T) {
 	route := buildKeystoneHTTPRoute(ks)
 
 	// No user-provided annotations — operator does not inject any annotations
-	// beyond what the user specifies (CC-0065, REQ-006).
+	// beyond what the user specifies.
 	g.Expect(route.Annotations).To(BeEmpty())
 }
 
-// --- reconcileHTTPRoute lifecycle unit tests (CC-0065, REQ-001, REQ-002, REQ-005) ---
+// --- reconcileHTTPRoute lifecycle unit tests ---
 
-// --- Path 1: gateway set — create HTTPRoute (REQ-001) ---
+// --- Path 1: gateway set — create HTTPRoute ---
 
 func TestReconcileHTTPRoute_GatewaySet_CreatesHTTPRoute(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -345,7 +343,7 @@ func TestReconcileHTTPRoute_GatewaySet_CreatesHTTPRoute(t *testing.T) {
 	result, err := r.reconcileHTTPRoute(context.Background(), ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	// No Accepted status yet on the fresh HTTPRoute: expect a requeue so the
-	// operator re-checks parent status (CC-0065, REQ-005).
+	// operator re-checks parent status.
 	g.Expect(result.RequeueAfter).NotTo(BeZero())
 
 	var route gatewayv1.HTTPRoute
@@ -357,14 +355,14 @@ func TestReconcileHTTPRoute_GatewaySet_CreatesHTTPRoute(t *testing.T) {
 	g.Expect(route.OwnerReferences[0].Name).To(Equal("test-keystone"))
 
 	// Verify HTTPRouteReady condition is set False/HTTPRouteNotAccepted while
-	// parents have not yet reported Accepted (CC-0065, REQ-005).
+	// parents have not yet reported Accepted.
 	cond := meta.FindStatusCondition(ks.Status.Conditions, conditionTypeHTTPRouteReady)
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal(conditionReasonHTTPRouteNotAccepted))
 }
 
-// --- Path 2: gateway nil — delete HTTPRoute (REQ-002) ---
+// --- Path 2: gateway nil — delete HTTPRoute ---
 
 func TestReconcileHTTPRoute_GatewayNil_NoExisting_SetsNotRequired(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -632,7 +630,7 @@ func TestReconcileHTTPRoute_AnnotationRemoval_RemovesKeyFromLiveRoute(t *testing
 		Name: "test-keystone", Namespace: "default",
 	}, &route)).To(Succeed())
 	g.Expect(route.Annotations).NotTo(HaveKey("konghq.com/plugins"),
-		"annotation removed from spec.gateway.annotations must be removed from the live HTTPRoute (CC-0065, W-001)")
+		"annotation removed from spec.gateway.annotations must be removed from the live HTTPRoute")
 	g.Expect(route.Annotations).To(HaveKeyWithValue("nginx.ingress.k8s.io", "test"),
 		"annotations still present in spec.gateway.annotations must be preserved")
 
@@ -645,7 +643,7 @@ func TestReconcileHTTPRoute_AnnotationRemoval_RemovesKeyFromLiveRoute(t *testing
 		Name: "test-keystone", Namespace: "default",
 	}, &route)).To(Succeed())
 	g.Expect(route.Annotations).NotTo(HaveKey("nginx.ingress.k8s.io"),
-		"clearing spec.gateway.annotations must remove all previously-managed annotation keys (CC-0065, W-001)")
+		"clearing spec.gateway.annotations must remove all previously-managed annotation keys")
 	g.Expect(route.Annotations).NotTo(HaveKey(managedAnnotationsKey),
 		"sentinel annotation must be cleared when no annotations are desired")
 }
@@ -685,10 +683,10 @@ func TestReconcileHTTPRoute_AnnotationRemoval_PreservesUserAddedKey(t *testing.T
 	g.Expect(route.Annotations).NotTo(HaveKey("konghq.com/plugins"),
 		"operator-managed annotation must be removed")
 	g.Expect(route.Annotations).To(HaveKeyWithValue("sidecar.istio.io/inject", "false"),
-		"annotations not in the operator-managed set must be preserved across reconciles (CC-0065, W-001)")
+		"annotations not in the operator-managed set must be preserved across reconciles")
 }
 
-// --- Status tests: Accepted condition tracking (REQ-005) ---
+// --- Status tests: Accepted condition tracking ---
 
 func TestReconcileHTTPRoute_AcceptedCondition_True(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -698,7 +696,6 @@ func TestReconcileHTTPRoute_AcceptedCondition_True(t *testing.T) {
 
 	// Pre-create an HTTPRoute that already reports Accepted=True on its parent,
 	// simulating a Gateway controller that has accepted the attachment
-	// (CC-0065, REQ-005).
 	acceptedRoute := &gatewayv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-keystone",
@@ -732,7 +729,7 @@ func TestReconcileHTTPRoute_AcceptedCondition_True(t *testing.T) {
 
 	result, err := r.reconcileHTTPRoute(context.Background(), ks)
 	g.Expect(err).NotTo(HaveOccurred())
-	// No requeue once Accepted=True is observed (CC-0065, REQ-005).
+	// No requeue once Accepted=True is observed.
 	g.Expect(result.RequeueAfter).To(BeZero())
 
 	cond := meta.FindStatusCondition(ks.Status.Conditions, conditionTypeHTTPRouteReady)
@@ -782,7 +779,7 @@ func TestReconcileHTTPRoute_AcceptedCondition_False_Requeues(t *testing.T) {
 
 	result, err := r.reconcileHTTPRoute(context.Background(), ks)
 	g.Expect(err).NotTo(HaveOccurred())
-	// Requeue so the operator re-checks parent status (CC-0065, REQ-005).
+	// Requeue so the operator re-checks parent status.
 	g.Expect(result.RequeueAfter).NotTo(BeZero())
 
 	cond := meta.FindStatusCondition(ks.Status.Conditions, conditionTypeHTTPRouteReady)
@@ -791,7 +788,7 @@ func TestReconcileHTTPRoute_AcceptedCondition_False_Requeues(t *testing.T) {
 	g.Expect(cond.Reason).To(Equal(conditionReasonHTTPRouteNotAccepted))
 }
 
-// --- Gateway API CRD missing (CC-0065, production-hardening) ---
+// --- Gateway API CRD missing (production-hardening) ---
 
 // TestReconcileHTTPRoute_GatewayAPIUnavailable_GatewayNil_SetsNotRequired
 // verifies that when the Gateway API CRD is not installed, a Keystone CR
@@ -853,23 +850,23 @@ func TestBuildKeystoneHTTPRoute_NameAndBackendRefMatchCR(t *testing.T) {
 	route := buildKeystoneHTTPRoute(ks)
 
 	g.Expect(route.Name).To(Equal(ks.Name),
-		"HTTPRoute Name must equal the CR name (CC-0095, REQ-004)")
+		"HTTPRoute Name must equal the CR name")
 	g.Expect(route.Name).NotTo(HaveSuffix("-api"),
-		"HTTPRoute Name must not carry the legacy `-api` suffix (CC-0095, REQ-004)")
+		"HTTPRoute Name must not carry the legacy `-api` suffix")
 	g.Expect(route.Spec.Rules).NotTo(BeEmpty())
 	g.Expect(route.Spec.Rules[0].BackendRefs).NotTo(BeEmpty())
 	backendName := string(route.Spec.Rules[0].BackendRefs[0].Name)
 	g.Expect(backendName).To(Equal(ks.Name),
-		"BackendRef must point at the Service emitted at `<cr-name>` (CC-0095, REQ-004)")
+		"BackendRef must point at the Service emitted at `<cr-name>`")
 	g.Expect(backendName).NotTo(HaveSuffix("-api"),
-		"BackendRef Name must not carry the legacy `-api` suffix (CC-0095, REQ-004)")
+		"BackendRef Name must not carry the legacy `-api` suffix")
 }
 
 // TestInternalAPIURL_UsesBareCRName pins the cluster-internal Keystone URL —
 // the URL the operator hits to verify KeystoneAPIReady — to the bare-CR-name
 // Service DNS form. Any drift here would either (a) regress to the legacy
 // `<cr-name>-api` host and 503 from the Service rename, or (b) skip the // keystone-api-legacy: pre-rename name referenced for traceability.
-// Service entirely and bypass kube-proxy load balancing (CC-0095, REQ-005).
+// Service entirely and bypass kube-proxy load balancing.
 func TestInternalAPIURL_UsesBareCRName(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := hrTestKeystone()
@@ -878,7 +875,7 @@ func TestInternalAPIURL_UsesBareCRName(t *testing.T) {
 
 	expected := fmt.Sprintf("http://%s.%s.svc.cluster.local:5000/v3", ks.Name, ks.Namespace)
 	g.Expect(url).To(Equal(expected),
-		"internalAPIURL must use the bare CR name (CC-0095, REQ-005)")
+		"internalAPIURL must use the bare CR name")
 	g.Expect(url).NotTo(ContainSubstring(ks.Name+"-api."),
-		"internalAPIURL must not embed the legacy `-api` suffix in the host segment (CC-0095, REQ-005)")
+		"internalAPIURL must not embed the legacy `-api` suffix in the host segment")
 }

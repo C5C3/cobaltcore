@@ -14,7 +14,7 @@ import (
 )
 
 // expectedReconcileDurationBuckets are the exact buckets prescribed by
-// CC-0110 REQ-026 for the c5c3_operator_reconcile_duration_seconds
+// for the c5c3_operator_reconcile_duration_seconds
 // histogram.
 var expectedReconcileDurationBuckets = []float64{
 	0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30,
@@ -24,7 +24,7 @@ var expectedReconcileDurationBuckets = []float64{
 // collectors set bound to reg. It delegates to NewTestRecorder so the
 // registration-and-panic logic lives in exactly one place. Each unit
 // test gets a new Registerer so gather output is deterministic and free
-// of cross-test interference (CC-0110, REQ-026).
+// of cross-test interference.
 func newCollectorsForTest(reg prometheus.Registerer) *collectors {
 	return NewTestRecorder(reg).c
 }
@@ -68,7 +68,7 @@ func TestReconcileDurationHistogramRegistered(t *testing.T) {
 		got = append(got, b.GetUpperBound())
 	}
 	g.Expect(got).To(Equal(expectedReconcileDurationBuckets),
-		"reconcile_duration bucket boundaries MUST match CC-0110 REQ-026 exactly")
+		"reconcile_duration bucket boundaries MUST match exactly")
 }
 
 func TestReconcileErrorsCounterLabels(t *testing.T) {
@@ -92,7 +92,7 @@ func TestReconcileErrorsCounterLabels(t *testing.T) {
 		values[l.GetName()] = l.GetValue()
 	}
 	g.Expect(names).To(ConsistOf("sub_reconciler", "condition_type"),
-		"reconcile_errors label set MUST be exactly {sub_reconciler, condition_type} (CC-0110 REQ-026)")
+		"reconcile_errors label set MUST be exactly {sub_reconciler, condition_type}")
 	g.Expect(values["sub_reconciler"]).To(Equal("controlplane"))
 	g.Expect(values["condition_type"]).To(Equal("ControlPlaneReady"))
 	g.Expect(fam.GetMetric()[0].GetCounter().GetValue()).To(Equal(1.0))
@@ -113,13 +113,13 @@ func TestErrorCounterNotIncrementedOnSuccess(t *testing.T) {
 	if fam != nil {
 		for _, m := range fam.GetMetric() {
 			g.Expect(m.GetCounter().GetValue()).To(Equal(0.0),
-				"success path must never increment reconcile_errors (CC-0110 REQ-026)")
+				"success path must never increment reconcile_errors")
 		}
 	}
 }
 
 // TestSubReconcilerMetricsHaveNoCRLabels is the cardinality drift-guard for
-// CC-0110 REQ-026. Adding a `controlplane` or `namespace` label to either the
+// Adding a `controlplane` or `namespace` label to either the
 // reconcile_duration histogram or the reconcile_errors counter would explode
 // cardinality (O(#CRs × #sub-reconcilers)) and is forbidden by the design.
 // This test fails CI if either label ever appears on those metrics.
@@ -151,11 +151,11 @@ func TestSubReconcilerMetricsHaveNoCRLabels(t *testing.T) {
 			for _, l := range m.GetLabel() {
 				_, bad := forbidden[l.GetName()]
 				g.Expect(bad).To(BeFalse(),
-					"metric %s must NOT have label %q — REQ-026 cardinality guard",
+					"metric %s must NOT have label %q — cardinality guard",
 					name, l.GetName())
 				_, ok := allowed[l.GetName()]
 				g.Expect(ok).To(BeTrue(),
-					"metric %s carries unexpected label %q — only {sub_reconciler, condition_type} are allowed (REQ-026)",
+					"metric %s carries unexpected label %q — only {sub_reconciler, condition_type} are allowed",
 					name, l.GetName())
 			}
 		}
@@ -165,7 +165,7 @@ func TestSubReconcilerMetricsHaveNoCRLabels(t *testing.T) {
 // TestRegisterIsIdempotentlyGuarded proves register() surfaces the
 // duplicate-registration error rather than panicking, mirroring the
 // keystone contract. A fresh registry accepts the collectors once;
-// registering the same set again returns a non-nil error (CC-0110, REQ-026).
+// registering the same set again returns a non-nil error.
 func TestRegisterIsIdempotentlyGuarded(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -175,12 +175,12 @@ func TestRegisterIsIdempotentlyGuarded(t *testing.T) {
 	g.Expect(c.register(reg)).To(Succeed(),
 		"first register on an empty registry must succeed")
 	g.Expect(c.register(reg)).To(HaveOccurred(),
-		"duplicate register on the same registry must return an error (REQ-026)")
+		"duplicate register on the same registry must return an error")
 }
 
 // TestNewCollectorsDoesNotRegister proves newCollectors builds the vectors
 // without touching any registry — a fresh registry gathered immediately
-// after construction must be empty (CC-0110, REQ-026).
+// after construction must be empty.
 func TestNewCollectorsDoesNotRegister(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -190,14 +190,14 @@ func TestNewCollectorsDoesNotRegister(t *testing.T) {
 	families, err := reg.Gather()
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(families).To(BeEmpty(),
-		"newCollectors must not register on any registry (REQ-026)")
+		"newCollectors must not register on any registry")
 }
 
 // TestTestRecorderRecordsThroughPrivateRegistry proves the exported
 // TestRecorder surface (NewTestRecorder + ObserveReconcileDuration +
 // RecordReconcileError) drives a collector set bound to a caller-supplied
 // private registry. This is the contract the controller package's
-// instrumentation tests depend on (CC-0110, REQ-026).
+// instrumentation tests depend on.
 func TestTestRecorderRecordsThroughPrivateRegistry(t *testing.T) {
 	g := NewGomegaWithT(t)
 

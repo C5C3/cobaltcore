@@ -1,4 +1,4 @@
-# CC-0110: Release namespace unit tests.
+# Release namespace unit tests.
 #
 # Verifies that the c5c3-operator Helm chart correctly threads
 # .Release.Namespace through every namespaced resource, the
@@ -29,28 +29,28 @@ tests:
   # Namespaced resources rendered with default values (webhook on, monitoring
   # off, namespaceScoped off).
   # ---------------------------------------------------------------------------
-  - it: should render the Deployment in c5c3-system (CC-0110)
+  - it: should render the Deployment in c5c3-system
     template: templates/deployment.yaml
     asserts:
       - equal:
           path: metadata.namespace
           value: c5c3-system
 
-  - it: should render the ServiceAccount in c5c3-system (CC-0110)
+  - it: should render the ServiceAccount in c5c3-system
     template: templates/serviceaccount.yaml
     asserts:
       - equal:
           path: metadata.namespace
           value: c5c3-system
 
-  - it: should render the Service in c5c3-system (CC-0110)
+  - it: should render the Service in c5c3-system
     template: templates/service.yaml
     asserts:
       - equal:
           path: metadata.namespace
           value: c5c3-system
 
-  - it: should render the self-signed Issuer in c5c3-system (CC-0110)
+  - it: should render the self-signed Issuer in c5c3-system
     template: templates/certificate.yaml
     documentIndex: 0
     asserts:
@@ -60,7 +60,7 @@ tests:
           path: metadata.namespace
           value: c5c3-system
 
-  - it: should render the webhook Certificate in c5c3-system (CC-0110)
+  - it: should render the webhook Certificate in c5c3-system
     template: templates/certificate.yaml
     documentIndex: 1
     asserts:
@@ -70,7 +70,7 @@ tests:
           path: metadata.namespace
           value: c5c3-system
 
-  - it: should reference c5c3-system in the Certificate SAN DNS names (CC-0110)
+  - it: should reference c5c3-system in the Certificate SAN DNS names
     template: templates/certificate.yaml
     documentIndex: 1
     asserts:
@@ -86,7 +86,7 @@ tests:
   # annotation MUST point to the release namespace so cert-manager finds the
   # Certificate object emitted into c5c3-system.
   # ---------------------------------------------------------------------------
-  - it: should set inject-ca-from to c5c3-system/<fullname>-webhook on the MutatingWebhookConfiguration (CC-0110)
+  - it: should set inject-ca-from to c5c3-system/<fullname>-webhook on the MutatingWebhookConfiguration
     template: templates/webhook-configuration.yaml
     documentIndex: 0
     asserts:
@@ -99,7 +99,7 @@ tests:
           path: webhooks[0].clientConfig.service.namespace
           value: c5c3-system
 
-  - it: should set inject-ca-from to c5c3-system/<fullname>-webhook on the ValidatingWebhookConfiguration (CC-0110)
+  - it: should set inject-ca-from to c5c3-system/<fullname>-webhook on the ValidatingWebhookConfiguration
     template: templates/webhook-configuration.yaml
     documentIndex: 1
     asserts:
@@ -116,7 +116,7 @@ tests:
   # ClusterRoleBinding is cluster-scoped but binds a ServiceAccount that lives
   # in the release namespace — subjects[0].namespace MUST be c5c3-system.
   # ---------------------------------------------------------------------------
-  - it: should bind to the ServiceAccount in c5c3-system (CC-0110)
+  - it: should bind to the ServiceAccount in c5c3-system
     template: templates/clusterrolebinding.yaml
     asserts:
       - isKind:
@@ -131,7 +131,7 @@ tests:
   # ---------------------------------------------------------------------------
   # Conditionally-rendered namespaced resources.
   # ---------------------------------------------------------------------------
-  - it: should render the ServiceMonitor in c5c3-system when enabled (CC-0110)
+  - it: should render the ServiceMonitor in c5c3-system when enabled
     template: templates/servicemonitor.yaml
     set:
       monitoring:
@@ -144,7 +144,7 @@ tests:
           path: metadata.namespace
           value: c5c3-system
 
-  - it: should render the RoleBinding in c5c3-system in namespace-scoped mode (CC-0110)
+  - it: should render the RoleBinding in c5c3-system in namespace-scoped mode
     template: templates/rolebinding.yaml
     set:
       rbac:

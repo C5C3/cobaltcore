@@ -3,8 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Tests for the ControlPlane SetupWithManager wiring: the secret-name field
-// indexer extractor and the Secret -> ControlPlane watch mapper (CC-0110,
-// REQ-012).
+// indexer extractor and the Secret -> ControlPlane watch mapper.
 package controller
 
 import (
@@ -25,7 +24,7 @@ import (
 // newControlPlaneMapperClient returns a fake client pre-registered with the
 // ControlPlaneSecretNameIndexKey field indexer so secretToControlPlaneMapper can
 // resolve its MatchingFields lookups, mirroring keystone's
-// newMapperFakeClientBuilder (CC-0110, REQ-012).
+// newMapperFakeClientBuilder.
 func newControlPlaneMapperClient(t *testing.T, objs ...client.Object) client.Client {
 	t.Helper()
 	return fake.NewClientBuilder().

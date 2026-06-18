@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package testutil provides c5c3-specific test utilities for envtest integration
-// tests of the ControlPlane reconciler (CC-0110, REQ-027).
+// tests of the ControlPlane reconciler.
 package testutil
 
 import (
@@ -37,7 +37,7 @@ import (
 
 // SkipIfEnvTestUnavailable re-exports the common skip guard for envtest-based
 // integration tests. Call as the first statement in each integration test
-// function (CC-0110, REQ-027).
+// function.
 var SkipIfEnvTestUnavailable = commonenvtest.SkipIfEnvTestUnavailable
 
 // SetupC5c3EnvTestWithController starts an envtest API server with the c5c3 CRDs,
@@ -47,7 +47,7 @@ var SkipIfEnvTestUnavailable = commonenvtest.SkipIfEnvTestUnavailable
 // configurations, and a controller-runtime Manager running the
 // ControlPlaneReconciler. It returns a direct (non-caching) client, a context,
 // and its cancel function. The environment is torn down automatically via
-// t.Cleanup() (CC-0110, REQ-027).
+// t.Cleanup().
 //
 // Parameters:
 //   - addToScheme registers the c5c3 API types with the runtime scheme. Callers
@@ -59,7 +59,7 @@ var SkipIfEnvTestUnavailable = commonenvtest.SkipIfEnvTestUnavailable
 //     SetupWithManager (or an inline builder for multi-test setups).
 //
 // The scheme is built fresh per test — internal/common's SharedScheme() is NOT
-// modified (CC-0110, REQ-027), mirroring the keystone testutil discipline.
+// modified, mirroring the keystone testutil discipline.
 func SetupC5c3EnvTestWithController(
 	t testing.TB,
 	addToScheme func(*k8sruntime.Scheme) error,
@@ -191,7 +191,7 @@ func waitForWebhookServer(host string, port int, timeout time.Duration) error {
 }
 
 // crdDirectoryPaths returns the absolute CRD directories envtest loads for a
-// ControlPlane integration test (CC-0110, REQ-027), resolved relative to this
+// ControlPlane integration test, resolved relative to this
 // source file via runtime.Caller(0):
 //   - c5c3 CRDs (controlplanes, credentialrotations, secretaggregates).
 //   - the Keystone CRD (the reconciler Owns a Keystone child).
@@ -229,8 +229,7 @@ func callerDir() string {
 // fake CRD tree (internal/common/testutil/fake_crds), resolved relative to this
 // source file. Loading all subdirs mirrors the keystone testutil helper so the
 // c5c3 reconciler's external operator kinds (MariaDB, Memcached, ESO,
-// cert-manager, K-ORC) all resolve without enumerating them here (CC-0110,
-// REQ-027).
+// cert-manager, K-ORC) all resolve without enumerating them here.
 func commonFakeCRDsDirs() []string {
 	// Navigate from operators/c5c3/internal/testutil/ → repo root →
 	// internal/common/testutil/fake_crds/.
@@ -257,16 +256,16 @@ func commonFakeCRDsDirs() []string {
 // by the ControlPlaneReconciler: the c5c3 API types, core K8s types,
 // apiextensions, and the external operator types the reconciler uses as TYPED
 // client objects — MariaDB, Keystone, external-secrets (v1 + v1alpha1), and
-// K-ORC. It is built fresh per test (CC-0110, REQ-027).
+// K-ORC. It is built fresh per test.
 //
-// DECISION (CC-0110, REQ-027): Memcached (memcached.c5c3.io) is deliberately NOT
+// DECISION Memcached (memcached.c5c3.io) is deliberately NOT
 // registered — it ships no Go module, so the reconciler handles it as an
 // *unstructured.Unstructured carrying memcachedGVK (see reconcile_infrastructure.go).
 // Its CRD is still loaded into envtest via the memcached-operator fake CRD dir so
 // the apiserver can serve the unstructured object, but no scheme registration is
 // required.
 //
-// DECISION (CC-0110, REQ-027): cert-manager is NOT registered either — the
+// DECISION cert-manager is NOT registered either — the
 // ControlPlane reconciler references no cert-manager types (unlike the keystone
 // reconciler), so adding certmanagerv1 to the scheme would promote an otherwise
 // indirect dependency for no benefit. Its fake CRD remains loaded for parity with

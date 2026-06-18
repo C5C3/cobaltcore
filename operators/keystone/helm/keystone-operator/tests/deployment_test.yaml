@@ -1,4 +1,4 @@
-# CC-0041, REQ-006: Deployment template unit tests.
+# Deployment template unit tests.
 suite: Deployment
 templates:
   - templates/deployment.yaml
@@ -146,7 +146,7 @@ tests:
           path: spec.template.spec.containers[0].args
           content: --enable-webhooks=false
 
-  # CC-0043: Namespace-scoped deployment tests.
+  # Namespace-scoped deployment tests.
   - it: should include --namespace arg when rbac.namespaceScoped is true
     set:
       rbac:

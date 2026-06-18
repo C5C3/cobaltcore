@@ -1,5 +1,5 @@
-# CC-0110: Webhook configuration unit tests.
-# The ControlPlane CR lives in group c5c3.io (DECISION CC-0110 plan #1). The
+# Webhook configuration unit tests.
+# The ControlPlane CR lives in group c5c3.io (DECISION plan #1). The
 # validating webhook intercepts only CREATE/UPDATE — DELETE is deliberately not
 # registered so a down operator (which serves the webhook in-process with
 # failurePolicy=Fail) can never block CR or namespace deletion.

@@ -58,7 +58,7 @@ func testScheme() *runtime.Scheme {
 	_ = esov1alpha1.SchemeBuilder.AddToScheme(s)
 	_ = esov1.SchemeBuilder.AddToScheme(s)
 	_ = mariadbv1alpha1.AddToScheme(s)
-	// Gateway API types are needed for reconcileHTTPRoute lifecycle tests (CC-0065).
+	// Gateway API types are needed for reconcileHTTPRoute lifecycle tests.
 	_ = gatewayv1.Install(s)
 	return s
 }
@@ -66,8 +66,8 @@ func testScheme() *runtime.Scheme {
 // testKeystone returns a minimal valid Keystone CR for tests. Both finalizers
 // are pre-populated to match steady-state after Reconcile has persisted them,
 // so tests exercising the sub-reconciler chain are not forced to first observe
-// the one-shot AddFinalizer requeues for the MariaDB (CC-0078) and OpenBao
-// (CC-0079) finalizers.
+// the one-shot AddFinalizer requeues for the MariaDB and OpenBao
+// finalizers.
 func testKeystone() *keystonev1alpha1.Keystone {
 	return &keystonev1alpha1.Keystone{
 		ObjectMeta: metav1.ObjectMeta{
@@ -102,7 +102,7 @@ func testKeystone() *keystonev1alpha1.Keystone {
 // testReadyExternalSecrets returns ready ExternalSecret objects for the DB and
 // admin credentials referenced by testKeystone, plus the OpenBao-backed
 // ClusterSecretStore with a Ready=True condition that reconcileSecrets now
-// gates on (CC-0047).
+// gates on.
 func testReadyExternalSecrets() []runtime.Object {
 	dbES := &esov1.ExternalSecret{
 		ObjectMeta: metav1.ObjectMeta{Name: "keystone-db", Namespace: "default"},
@@ -144,7 +144,7 @@ func testDBCredentialsSecret() runtime.Object {
 }
 
 // testAdminCredentialsSecret returns a Secret containing the admin password
-// that reconcileSecrets' IsSecretReady check expects (CC-0013).
+// that reconcileSecrets' IsSecretReady check expects.
 func testAdminCredentialsSecret() runtime.Object {
 	return &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: "keystone-admin", Namespace: "default"},
@@ -169,7 +169,7 @@ func testFernetKeysSecret() runtime.Object {
 }
 
 // testCredentialKeysSecret returns a pre-existing credential keys Secret so that
-// reconcileCredentialKeys does not early-return on the initial-creation path (CC-0036).
+// reconcileCredentialKeys does not early-return on the initial-creation path.
 func testCredentialKeysSecret() runtime.Object {
 	return &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
@@ -204,7 +204,7 @@ func testCompletedDBSyncJob(configMapName string) runtime.Object {
 	return j
 }
 
-// testCompletedSchemaCheckJob returns a completed schema-check Job for testKeystone (CC-0064).
+// testCompletedSchemaCheckJob returns a completed schema-check Job for testKeystone.
 func testCompletedSchemaCheckJob(configMapName string) runtime.Object {
 	ks := testKeystone()
 	desired := buildSchemaCheckJob(ks, configMapName)
@@ -262,10 +262,9 @@ func testCompletedBootstrapJob(configMapName string) runtime.Object {
 	ks := testKeystone()
 	// The full-reconcile tests using this helper include testAdminCredentialsSecret()
 	// whose `password` value is "admin-password". The bootstrap Job's re-run key is
-	// the admin-password digest (NOT the pod-template hash, so a release upgrade does
-	// not re-trigger it — CC-0113); stamp the matching digest so reconcileBootstrap
+	// the admin-password digest (NOT the pod-template hash, so a release upgrade does not re-trigger it); stamp the matching digest so reconcileBootstrap
 	// (which derives the same key from the Secret) does not see the Job as stale
-	// during full reconcile (CC-0108, REQ-004; CC-0113).
+	// during full reconcile.
 	sum := sha256.Sum256([]byte("admin-password"))
 	adminHash := hex.EncodeToString(sum[:])
 	desired := buildBootstrapJob(ks, configMapName, fmt.Sprintf("%s-fernet-keys", ks.Name), adminHash)
@@ -323,7 +322,7 @@ func newTestReconciler(objs ...runtime.Object) *KeystoneReconciler {
 }
 
 // testHealthyHTTPClient returns a mock HTTPDoer that responds with HTTP 200 so
-// that reconcileHealthCheck sets KeystoneAPIReady=True during integration tests (CC-0067).
+// that reconcileHealthCheck sets KeystoneAPIReady=True during integration tests.
 func testHealthyHTTPClient() HTTPDoer {
 	return &mockHTTPDoer{
 		resp: &http.Response{
@@ -364,7 +363,7 @@ func TestReconcile_SetsAllSubConditionsTrue(t *testing.T) {
 	var updated keystonev1alpha1.Keystone
 	g.Expect(r.Get(context.Background(), types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}, &updated)).To(Succeed())
 
-	// CC-0096: TrustFlushReady reason is TrustFlushNotRequired here because tests use a fake client that bypasses the defaulting webhook.
+	// TrustFlushReady reason is TrustFlushNotRequired here because tests use a fake client that bypasses the defaulting webhook.
 	for _, condType := range []string{"SecretsReady", "FernetKeysReady", "CredentialKeysReady", "DatabaseReady", conditionTypePolicyValidReady, "DeploymentReady", conditionTypeKeystoneAPIReady, "HPAReady", "NetworkPolicyReady", "BootstrapReady", "TrustFlushReady"} {
 		cond := meta.FindStatusCondition(updated.Status.Conditions, condType)
 		g.Expect(cond).NotTo(BeNil(), "condition %s should exist", condType)
@@ -516,14 +515,14 @@ func TestAggregateReady_Empty(t *testing.T) {
 
 // TestSubConditionTypes_IncludesPolicyValidReady verifies that the
 // PolicyValidReady condition type is registered in subConditionTypes so that
-// the aggregate Ready condition gates on policy validation (CC-0058, REQ-008).
+// the aggregate Ready condition gates on policy validation.
 func TestSubConditionTypes_IncludesPolicyValidReady(t *testing.T) {
 	g := NewGomegaWithT(t)
 	g.Expect(subConditionTypes).To(ContainElement(conditionTypePolicyValidReady))
 }
 
 // TestRequeueValidationWait_Value verifies the polling interval for policy
-// validation Job completion (CC-0058).
+// validation Job completion.
 func TestRequeueValidationWait_Value(t *testing.T) {
 	g := NewGomegaWithT(t)
 	g.Expect(RequeueValidationWait).To(Equal(15 * time.Second))
@@ -592,7 +591,7 @@ func TestReconcile_EarlyReturnOnDatabaseNotReady(t *testing.T) {
 	g.Expect(dbCond.Status).To(Equal(metav1.ConditionFalse))
 
 	// FernetKeysReady, CredentialKeysReady, and NetworkPolicyReady run in the
-	// parallel group BEFORE Database, so they should be set (CC-0071).
+	// parallel group BEFORE Database, so they should be set.
 	for _, condType := range []string{"FernetKeysReady", "CredentialKeysReady", "NetworkPolicyReady"} {
 		cond := meta.FindStatusCondition(updated.Status.Conditions, condType)
 		g.Expect(cond).NotTo(BeNil(), "%s should be set by the parallel group before database", condType)
@@ -794,7 +793,7 @@ func TestReconcile_ReadyFalseWhenDeploymentNotAvailable(t *testing.T) {
 	// chain short-circuited at the deployment stage — updateStatus recomputes it
 	// on every persist. This is the keystone-side network-partition contract:
 	// a depooled Pod must surface as Ready=False, not a stale Ready=True
-	// (SC-CHAOS-006, CC-0113).
+	// (SC-CHAOS-006).
 	readyCond := meta.FindStatusCondition(updated.Status.Conditions, "Ready")
 	g.Expect(readyCond).NotTo(BeNil(), "Ready condition should be set")
 	g.Expect(readyCond.Status).To(Equal(metav1.ConditionFalse),
@@ -802,7 +801,7 @@ func TestReconcile_ReadyFalseWhenDeploymentNotAvailable(t *testing.T) {
 	g.Expect(readyCond.Reason).To(Equal("NotAllReady"))
 
 	// NetworkPolicyReady runs before Deployment in the reconcile chain, so it
-	// should be set even when the deployment is not available (CC-0039).
+	// should be set even when the deployment is not available.
 	npCond := meta.FindStatusCondition(updated.Status.Conditions, "NetworkPolicyReady")
 	g.Expect(npCond).NotTo(BeNil(),
 		"NetworkPolicyReady should be set because it runs before Deployment")
@@ -819,7 +818,7 @@ func TestReconcile_ReadyFalseWhenDeploymentNotAvailable(t *testing.T) {
 // TestReconcile_HealthCheckStopsChainOnFailure verifies that when the API
 // health check returns a non-2xx response, the reconcile chain short-circuits:
 // conditions before the health check in the chain are set, but conditions
-// after it (HPA, Bootstrap, TrustFlush) are not (CC-0067, REQ-007).
+// after it (HPA, Bootstrap, TrustFlush) are not.
 func TestReconcile_HealthCheckStopsChainOnFailure(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
@@ -865,7 +864,7 @@ func TestReconcile_HealthCheckStopsChainOnFailure(t *testing.T) {
 	// Ready must be re-aggregated to False even though the chain short-circuited
 	// at the health check: updateStatus recomputes it on every persist, so a
 	// KeystoneAPIReady=False (plus the unset downstream conditions) drives the
-	// aggregate to False rather than leaving it stale (SC-CHAOS-006, CC-0113).
+	// aggregate to False rather than leaving it stale (SC-CHAOS-006).
 	readyCond := meta.FindStatusCondition(updated.Status.Conditions, "Ready")
 	g.Expect(readyCond).NotTo(BeNil(), "Ready should be set when the chain short-circuits")
 	g.Expect(readyCond.Status).To(Equal(metav1.ConditionFalse),
@@ -903,7 +902,7 @@ func TestReconcile_ObservedGenerationTracked(t *testing.T) {
 // KeystoneSecretNameIndexKey field indexer so the refactored
 // secretToKeystoneMapper can resolve MatchingFields lookups against the fake
 // client. Tests that need to inject interceptors can extend the returned
-// builder before calling Build (CC-0087, REQ-004).
+// builder before calling Build.
 func newMapperFakeClientBuilder(objs ...client.Object) *fake.ClientBuilder {
 	return fake.NewClientBuilder().
 		WithScheme(testScheme()).
@@ -912,14 +911,14 @@ func newMapperFakeClientBuilder(objs ...client.Object) *fake.ClientBuilder {
 }
 
 // newMapperFakeClient is the common-case shortcut for tests that only need a
-// pre-indexed fake client with the given objects seeded (CC-0087, REQ-004).
+// pre-indexed fake client with the given objects seeded.
 func newMapperFakeClient(objs ...client.Object) client.Client {
 	return newMapperFakeClientBuilder(objs...).Build()
 }
 
 // keystoneOwnerRef returns a well-formed OwnerReference pointing at the given
 // Keystone CR — Kind and APIVersion are set so secretToKeystoneMapper's
-// owner-ref path recognises the reference (CC-0087, REQ-003).
+// owner-ref path recognises the reference.
 func keystoneOwnerRef(ks *keystonev1alpha1.Keystone) metav1.OwnerReference {
 	return metav1.OwnerReference{
 		APIVersion: keystonev1alpha1.GroupVersion.String(),
@@ -1061,8 +1060,7 @@ func TestSecretToKeystoneMapper_OwnedSecrets(t *testing.T) {
 // rotation staging Secret — labelled with StagingSecretLabelKey AND
 // owner-referenced to the Keystone CR — triggers reconcile when it changes.
 // Staging Secrets carry the Keystone as owner, so the owner-ref branch of
-// secretToKeystoneMapper is what enqueues them (CC-0081, REQ-009; CC-0087,
-// REQ-003).
+// secretToKeystoneMapper is what enqueues them.
 func TestSecretToKeystoneMapper_EnqueuesOnStagingSecretUpdate(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
@@ -1105,7 +1103,7 @@ func TestSecretToKeystoneMapper_EnqueuesOnStagingSecretUpdate(t *testing.T) {
 // Secret carrying the rotation-target label but lacking both an owner
 // reference to any Keystone CR AND a matching referenced Secret name does
 // NOT enqueue a reconcile — defensive behavior to avoid reacting to stray
-// Secrets that happen to carry our label (CC-0081, REQ-009).
+// Secrets that happen to carry our label.
 func TestSecretToKeystoneMapper_OrphanStagingSecretNotEnqueued(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
@@ -1128,7 +1126,7 @@ func TestSecretToKeystoneMapper_OrphanStagingSecretNotEnqueued(t *testing.T) {
 	g.Expect(reqs).To(BeEmpty())
 }
 
-// --- updateStatus unit tests (CC-0068) ---
+// --- updateStatus unit tests ---
 
 // newUpdateStatusReconciler builds a KeystoneReconciler with the given Keystone CR
 // pre-loaded and an optional SubResourceUpdate interceptor to simulate status
@@ -1165,7 +1163,7 @@ func newUpdateStatusReconciler(t *testing.T, ks *keystonev1alpha1.Keystone, stat
 
 // TestUpdateStatus_BothErrors_Joined verifies that when reconcileErr is non-nil
 // and Status().Update() fails, the returned error contains both error messages
-// and both are unwrappable (REQ-001, CC-0068).
+// and both are unwrappable.
 func TestUpdateStatus_BothErrors_Joined(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -1185,7 +1183,7 @@ func TestUpdateStatus_BothErrors_Joined(t *testing.T) {
 }
 
 // TestUpdateStatus_JoinedError_IsUnwrappable verifies that the joined error
-// supports errors.Unwrap returning both constituent errors (REQ-001, CC-0068).
+// supports errors.Unwrap returning both constituent errors.
 func TestUpdateStatus_JoinedError_IsUnwrappable(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -1204,7 +1202,7 @@ func TestUpdateStatus_JoinedError_IsUnwrappable(t *testing.T) {
 
 // TestUpdateStatus_ReconcileErrorOnly_Preserved verifies that when reconcileErr
 // is non-nil but Status().Update() succeeds, the returned error equals
-// reconcileErr exactly (REQ-002, CC-0068).
+// reconcileErr exactly.
 func TestUpdateStatus_ReconcileErrorOnly_Preserved(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -1219,7 +1217,7 @@ func TestUpdateStatus_ReconcileErrorOnly_Preserved(t *testing.T) {
 }
 
 // TestUpdateStatus_NoErrors_ReturnsNil verifies that when reconcileErr is nil
-// and Status().Update() succeeds, the returned error is nil (REQ-003, CC-0068).
+// and Status().Update() succeeds, the returned error is nil.
 func TestUpdateStatus_NoErrors_ReturnsNil(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -1233,7 +1231,7 @@ func TestUpdateStatus_NoErrors_ReturnsNil(t *testing.T) {
 
 // TestUpdateStatus_StatusErrorOnly_Returned verifies that when reconcileErr is
 // nil and Status().Update() fails, the returned error wraps only the status
-// error with 'updating status:' prefix (REQ-004, CC-0068).
+// error with 'updating status:' prefix.
 func TestUpdateStatus_StatusErrorOnly_Returned(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -1249,7 +1247,7 @@ func TestUpdateStatus_StatusErrorOnly_Returned(t *testing.T) {
 
 // TestUpdateStatus_StatusErrorOnly_NoNilSegments verifies that when reconcileErr
 // is nil and Status().Update() fails, the error string does not contain '<nil>'
-// or empty segments from errors.Join (REQ-004, CC-0068).
+// or empty segments from errors.Join.
 func TestUpdateStatus_StatusErrorOnly_NoNilSegments(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -1266,7 +1264,7 @@ func TestUpdateStatus_StatusErrorOnly_NoNilSegments(t *testing.T) {
 }
 
 // TestUpdateStatus_ResultPassthrough_DualFailure verifies that when both errors
-// are non-nil, the returned ctrl.Result is ctrl.Result{} (empty) (REQ-001, CC-0068).
+// are non-nil, the returned ctrl.Result is ctrl.Result{} (empty).
 func TestUpdateStatus_ResultPassthrough_DualFailure(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -1282,7 +1280,7 @@ func TestUpdateStatus_ResultPassthrough_DualFailure(t *testing.T) {
 
 // TestUpdateStatus_ResultPassthrough_WithRequeueAfter verifies that when status
 // update succeeds and the input result has RequeueAfter set, the returned
-// ctrl.Result preserves RequeueAfter (REQ-002, CC-0068).
+// ctrl.Result preserves RequeueAfter.
 func TestUpdateStatus_ResultPassthrough_WithRequeueAfter(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -1304,7 +1302,7 @@ func TestUpdateStatus_ResultPassthrough_WithRequeueAfter(t *testing.T) {
 // database-aware readiness probe depools the Pods, reconcileDeployment requeues
 // with DeploymentReady=False, and the aggregate Ready must follow it down. A
 // missing re-aggregation here was why the mariadb-network-partition chaos test
-// timed out waiting for Ready=False (SC-CHAOS-006, CC-0113).
+// timed out waiting for Ready=False (SC-CHAOS-006).
 func TestUpdateStatus_ReaggregatesReadyWhenSubConditionDegrades(t *testing.T) {
 	g := NewGomegaWithT(t)
 	r, ks := newUpdateStatusReconciler(t, testKeystone(), nil)
@@ -1391,7 +1389,7 @@ func TestAggregateReadyAllTrueWithKeystoneAPIReady(t *testing.T) {
 
 // TestSubConditionTypes_IncludesHTTPRouteReady verifies the HTTPRouteReady
 // condition participates in the aggregate Ready gating so that an HTTPRoute
-// rejected by the Gateway controller flips Ready to False (CC-0065, REQ-009).
+// rejected by the Gateway controller flips Ready to False.
 func TestSubConditionTypes_IncludesHTTPRouteReady(t *testing.T) {
 	g := NewGomegaWithT(t)
 	g.Expect(subConditionTypes).To(ContainElement(conditionTypeHTTPRouteReady))
@@ -1399,7 +1397,7 @@ func TestSubConditionTypes_IncludesHTTPRouteReady(t *testing.T) {
 
 // TestAggregateReady_MissingHTTPRouteReady_ReturnsFalse verifies that
 // aggregateReady returns false when the HTTPRouteReady condition is absent,
-// ensuring the Ready aggregate gates on HTTPRoute acceptance (CC-0065, REQ-009).
+// ensuring the Ready aggregate gates on HTTPRoute acceptance.
 func TestAggregateReady_MissingHTTPRouteReady_ReturnsFalse(t *testing.T) {
 	g := NewGomegaWithT(t)
 	// All expected sub-conditions True EXCEPT HTTPRouteReady is missing.
@@ -1417,13 +1415,12 @@ func TestAggregateReady_MissingHTTPRouteReady_ReturnsFalse(t *testing.T) {
 		{Type: "TrustFlushReady", Status: metav1.ConditionTrue},
 	}
 	g.Expect(aggregateReady(conditions)).To(BeFalse(),
-		"aggregateReady should return false when HTTPRouteReady condition is missing (CC-0065)")
+		"aggregateReady should return false when HTTPRouteReady condition is missing")
 }
 
 // TestSubConditionTypes_IncludesPasswordRotationReady verifies the
 // PasswordRotationReady condition participates in the aggregate Ready gating so
 // that a failed scheduled admin-password rotation flips Ready to False
-// (CC-0109, REQ-009).
 func TestSubConditionTypes_IncludesPasswordRotationReady(t *testing.T) {
 	g := NewGomegaWithT(t)
 	g.Expect(subConditionTypes).To(ContainElement(conditionTypePasswordRotationReady))
@@ -1432,15 +1429,14 @@ func TestSubConditionTypes_IncludesPasswordRotationReady(t *testing.T) {
 // TestSubReconcilerConditionTypes_MapsPasswordRotation verifies the
 // "PasswordRotation" sub_reconciler label resolves to the
 // PasswordRotationReady condition_type so error-counter metrics carry the
-// correct condition_type label rather than the UNKNOWN sentinel (CC-0109,
-// CC-0089, REQ-002).
+// correct condition_type label rather than the UNKNOWN sentinel.
 func TestSubReconcilerConditionTypes_MapsPasswordRotation(t *testing.T) {
 	g := NewGomegaWithT(t)
 	g.Expect(subReconcilerConditionTypes).To(HaveKeyWithValue("PasswordRotation", conditionTypePasswordRotationReady))
 }
 
 // ---------------------------------------------------------------------------
-// shortestRequeue tests (CC-0071, REQ-003)
+// shortestRequeue tests
 // ---------------------------------------------------------------------------
 
 // TestShortestRequeue_AllZero verifies that shortestRequeue with all zero
@@ -1484,7 +1480,7 @@ func TestShortestRequeue_PicksMinimum(t *testing.T) {
 }
 
 // TestShortestRequeue_NoArgs verifies that shortestRequeue with zero
-// variadic arguments returns ctrl.Result{} (CC-0071, REQ-003).
+// variadic arguments returns ctrl.Result{}.
 func TestShortestRequeue_NoArgs(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -1495,7 +1491,7 @@ func TestShortestRequeue_NoArgs(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// mergeParallelConditions tests (CC-0071, REQ-004)
+// mergeParallelConditions tests
 // ---------------------------------------------------------------------------
 
 // TestMergeParallelConditions_MergesCorrectly verifies that
@@ -1580,12 +1576,12 @@ func TestMergeParallelConditions_PreservesExistingConditions(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// reconcileParallelGroup tests (CC-0071, REQ-001, REQ-002, REQ-008)
+// reconcileParallelGroup tests
 // ---------------------------------------------------------------------------
 
 // TestReconcileParallelGroup_SuccessPath verifies that all sub-reconcilers run
 // concurrently, their conditions are merged onto the primary keystone, and the
-// shortest non-zero RequeueAfter is returned (CC-0071, REQ-001).
+// shortest non-zero RequeueAfter is returned.
 func TestReconcileParallelGroup_SuccessPath(t *testing.T) {
 	g := NewGomegaWithT(t)
 	r := newTestReconciler()
@@ -1643,7 +1639,7 @@ func TestReconcileParallelGroup_SuccessPath(t *testing.T) {
 
 // TestReconcileParallelGroup_ErrorCancellation verifies that when one
 // sub-reconciler fails, errgroup cancels the derived context and the error is
-// propagated to the caller (CC-0071, REQ-002).
+// propagated to the caller.
 func TestReconcileParallelGroup_ErrorCancellation(t *testing.T) {
 	g := NewGomegaWithT(t)
 	r := newTestReconciler()
@@ -1676,7 +1672,7 @@ func TestReconcileParallelGroup_ErrorCancellation(t *testing.T) {
 
 // TestReconcileParallelGroup_PartialConditionMerge verifies that conditions
 // from successful sub-reconcilers are merged even when a peer fails, so that
-// partial progress is visible in status after updateStatus (CC-0071, REQ-008).
+// partial progress is visible in status after updateStatus.
 func TestReconcileParallelGroup_PartialConditionMerge(t *testing.T) {
 	g := NewGomegaWithT(t)
 	r := newTestReconciler()
@@ -1723,7 +1719,7 @@ func TestReconcileParallelGroup_PartialConditionMerge(t *testing.T) {
 // NetworkPolicyReady — all three conditions produced by reconcileParallelGroup —
 // are set correctly on the Keystone status. This proves the parallel group
 // is wired into Reconcile() and produces the same outcome as sequential
-// execution (CC-0071, REQ-001, TE-008).
+// execution (TE-008).
 func TestReconcile_ParallelGroupSetsAllConditions(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
@@ -1771,12 +1767,11 @@ func TestReconcile_ParallelGroupSetsAllConditions(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Reconcile finalizer lifecycle tests (CC-0078, REQ-001, REQ-002, REQ-004,
-// REQ-006, REQ-007)
+// Reconcile finalizer lifecycle tests
 // ---------------------------------------------------------------------------
 
 // keystoneGroupResource is the GroupResource used when synthesizing apierror
-// values for Keystone in finalizer tests (CC-0078).
+// values for Keystone in finalizer tests.
 var keystoneGroupResource = schema.GroupResource{
 	Group:    "keystone.openstack.c5c3.io",
 	Resource: "keystones",
@@ -1785,7 +1780,7 @@ var keystoneGroupResource = schema.GroupResource{
 // markKeystoneTerminating issues Delete on the given Keystone CR via the fake
 // client so that DeletionTimestamp is set while at least one finalizer blocks
 // actual removal from the store. It returns the refreshed object so the caller
-// sees the current ResourceVersion and DeletionTimestamp (CC-0078).
+// sees the current ResourceVersion and DeletionTimestamp.
 func markKeystoneTerminating(t *testing.T, c client.Client, ks *keystonev1alpha1.Keystone) *keystonev1alpha1.Keystone {
 	t.Helper()
 	g := NewGomegaWithT(t)
@@ -1800,7 +1795,7 @@ func markKeystoneTerminating(t *testing.T, c client.Client, ks *keystonev1alpha1
 // TestReconcile_AddsFinalizerOnFirstReconcile verifies that Reconcile installs
 // the Keystone finalizer on a live CR that lacks it and returns Requeue=true so
 // the next pass observes the persisted finalizer before any sub-reconciler
-// runs (CC-0078, REQ-001, REQ-006).
+// runs.
 func TestReconcile_AddsFinalizerOnFirstReconcile(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
@@ -1830,8 +1825,7 @@ func TestReconcile_AddsFinalizerOnFirstReconcile(t *testing.T) {
 // TestReconcile_FinalizerAlreadyPresent_NoExtraUpdate verifies that when the
 // Keystone CR already carries the finalizer, Reconcile does NOT call Update on
 // the Keystone object (status updates go through SubResourceUpdate, not
-// Update) — proving the AddFinalizer path is skipped (CC-0078, REQ-001,
-// REQ-006).
+// Update) — proving the AddFinalizer path is skipped.
 func TestReconcile_FinalizerAlreadyPresent_NoExtraUpdate(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone() // testKeystone pre-populates the finalizer.
@@ -1870,7 +1864,7 @@ func TestReconcile_FinalizerAlreadyPresent_NoExtraUpdate(t *testing.T) {
 
 // TestReconcile_FinalizerUpdateConflict_ReturnsError verifies that a Conflict
 // on the finalizer-installing Update is propagated as a reconciler error so
-// controller-runtime retries with backoff (CC-0078, REQ-001, REQ-006).
+// controller-runtime retries with backoff.
 func TestReconcile_FinalizerUpdateConflict_ReturnsError(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
@@ -1914,7 +1908,7 @@ func TestReconcile_FinalizerUpdateConflict_ReturnsError(t *testing.T) {
 // terminating with the Keystone finalizer present, Reconcile delegates to
 // reconcileDelete and never invokes any sub-reconciler — proven by the absence
 // of any sub-reconciler condition (e.g. SecretsReady) on the CR after the
-// reconcile (CC-0078, REQ-002, REQ-006).
+// reconcile.
 func TestReconcile_TerminatingCR_SkipsSubReconcilers(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
@@ -1947,8 +1941,7 @@ func TestReconcile_TerminatingCR_SkipsSubReconcilers(t *testing.T) {
 // Reconcile on a terminating CR issues Delete on every MariaDB CR and releases
 // the Keystone finalizer in a single pass, even while the MariaDB CRs are held
 // in Terminating state by another finalizer. Waiting for the MariaDB operator
-// to complete teardown created a deadlock under concurrent deletions (CC-0078,
-// REQ-002).
+// to complete teardown created a deadlock under concurrent deletions.
 func TestReconcile_TerminatingCR_IssuesDeleteAndReleasesFinalizer(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
@@ -2000,7 +1993,7 @@ func TestReconcile_TerminatingCR_IssuesDeleteAndReleasesFinalizer(t *testing.T) 
 // TestReconcile_TerminatingCR_WithoutFinalizer_NoOp verifies that a terminating
 // CR without the Keystone finalizer is a no-op: no events, no Updates, empty
 // result. This mirrors a CR created before this operator version, or one whose
-// finalizer was already released in a prior pass (CC-0078, REQ-002, REQ-006).
+// finalizer was already released in a prior pass.
 func TestReconcile_TerminatingCR_WithoutFinalizer_NoOp(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
@@ -2023,13 +2016,13 @@ func TestReconcile_TerminatingCR_WithoutFinalizer_NoOp(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Reconcile finalizer event-emission tests (CC-0078, REQ-007)
+// Reconcile finalizer event-emission tests
 // ---------------------------------------------------------------------------
 
 // TestReconcile_TerminatingCR_EmitsFinalizingDatabaseEvent verifies that a
 // terminating CR with live MariaDB CRs emits "FinalizingDatabase" to announce
 // cleanup work and "DatabaseFinalized" after issuing the Deletes, both in the
-// same reconcile pass (CC-0078, REQ-007).
+// same reconcile pass.
 func TestReconcile_TerminatingCR_EmitsFinalizingDatabaseEvent(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
@@ -2061,14 +2054,13 @@ drain:
 }
 
 // TestReconcile_TerminatingCR_EmitsFinalizingDatabaseEventOnlyOnce guards the
-// sentinel invariant documented at Reconcile (CC-0078) and in the Events
+// sentinel invariant documented at Reconcile and in the Events
 // section of docs/reference/keystone-reconciler.md: "FinalizingDatabase" is
 // emitted exactly once per termination, suppressed on subsequent reconcile
 // passes while the MariaDB CRs remain Terminating. A regression that re-emits
 // the event on every requeue would still pass the single-pass tests but flood
 // the event stream in production — this test forces a second pass against the
-// same Keystone CR and asserts the event count stays at one (CC-0078,
-// REQ-007).
+// same Keystone CR and asserts the event count stays at one.
 func TestReconcile_TerminatingCR_EmitsFinalizingDatabaseEventOnlyOnce(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
@@ -2128,7 +2120,6 @@ drain:
 // keystoneFinalizer persists, forcing the second pass to re-enter
 // reconcileDelete, observe the now-Terminating MariaDB CRs, and suppress the
 // FinalizingDatabase event via the sentinel rather than the guard
-// (CC-0078, REQ-007).
 func TestReconcile_TerminatingCR_SentinelSuppressesEventAfterUpdateConflict(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
@@ -2236,7 +2227,7 @@ drain:
 // brownfield terminating CR (no MariaDB CRs ever created) emits only the
 // "DatabaseFinalized" Normal event before releasing the Keystone finalizer —
 // the FinalizingDatabase sentinel is false because there is no live cleanup
-// work to announce (CC-0078, REQ-007).
+// work to announce.
 func TestReconcile_TerminatingCR_EmitsDatabaseFinalizedEvent(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
@@ -2274,14 +2265,13 @@ drain:
 }
 
 // ---------------------------------------------------------------------------
-// Reconcile openbao-finalizer lifecycle tests (CC-0079, REQ-001, REQ-002,
-// REQ-004, REQ-006, REQ-007)
+// Reconcile openbao-finalizer lifecycle tests
 // ---------------------------------------------------------------------------
 
 // TestReconcile_AddsOpenBaoFinalizerOnFirstReconcile verifies that Reconcile
 // installs the OpenBao finalizer on a live CR that lacks it and returns
 // Requeue=true so the next pass observes the persisted finalizer before any
-// sub-reconciler runs (CC-0079, REQ-001, REQ-006).
+// sub-reconciler runs.
 func TestReconcile_AddsOpenBaoFinalizerOnFirstReconcile(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
@@ -2314,7 +2304,7 @@ func TestReconcile_AddsOpenBaoFinalizerOnFirstReconcile(t *testing.T) {
 // TestReconcile_OpenBaoFinalizerAlreadyPresent_NoExtraUpdate verifies that
 // when the Keystone CR already carries both finalizers, Reconcile does NOT
 // call Update on the Keystone object — proving the openbao AddFinalizer path
-// is skipped in steady state (CC-0079, REQ-001, REQ-006).
+// is skipped in steady state.
 func TestReconcile_OpenBaoFinalizerAlreadyPresent_NoExtraUpdate(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone() // testKeystone pre-populates BOTH finalizers.
@@ -2353,8 +2343,7 @@ func TestReconcile_OpenBaoFinalizerAlreadyPresent_NoExtraUpdate(t *testing.T) {
 
 // TestReconcile_OpenBaoFinalizerUpdateConflict_ReturnsError verifies that a
 // Conflict on the openbao-finalizer-installing Update is propagated as a
-// reconciler error so controller-runtime retries with backoff (CC-0079,
-// REQ-001, REQ-006).
+// reconciler error so controller-runtime retries with backoff.
 func TestReconcile_OpenBaoFinalizerUpdateConflict_ReturnsError(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
@@ -2401,7 +2390,7 @@ func TestReconcile_OpenBaoFinalizerUpdateConflict_ReturnsError(t *testing.T) {
 // Terminating state by ESO's cleanup finalizer returns
 // ctrl.Result{RequeueAfter: RequeueSecretPolling} and records the
 // OpenBaoFinalizerBlocked condition via updateStatus — keeping the CR alive
-// until ESO has purged the kv-v2 path (CC-0079, REQ-002, REQ-004).
+// until ESO has purged the kv-v2 path.
 func TestReconcile_TerminatingCR_RequeuesWhilePushSecretsExist(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
@@ -2440,8 +2429,7 @@ func TestReconcile_TerminatingCR_RequeuesWhilePushSecretsExist(t *testing.T) {
 // TestReconcile_TerminatingCR_WithoutOpenBaoFinalizer_NoOp verifies that a
 // terminating CR without the openbao finalizer does not emit any openbao
 // event and does not call finalizeOpenBaoSecrets. This mirrors a brownfield
-// Keystone CR created before this operator version (CC-0079, REQ-002,
-// REQ-006).
+// Keystone CR created before this operator version.
 func TestReconcile_TerminatingCR_WithoutOpenBaoFinalizer_NoOp(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
@@ -2478,13 +2466,12 @@ drain:
 }
 
 // ---------------------------------------------------------------------------
-// Reconcile openbao-finalizer event-emission tests (CC-0079, REQ-007)
+// Reconcile openbao-finalizer event-emission tests
 // ---------------------------------------------------------------------------
 
 // TestReconcile_TerminatingCR_EmitsFinalizingOpenBaoSecretsEvent verifies that
 // a terminating CR with a live backup PushSecret emits
 // "FinalizingOpenBaoSecrets" to announce cleanup before issuing Delete
-// (CC-0079, REQ-007).
 func TestReconcile_TerminatingCR_EmitsFinalizingOpenBaoSecretsEvent(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
@@ -2521,7 +2508,7 @@ drain:
 // a brownfield terminating CR (no backup PushSecrets) emits only
 // "OpenBaoSecretsFinalized" before releasing the openbao finalizer — the
 // FinalizingOpenBaoSecrets sentinel is false because there is no live
-// cleanup work to announce (CC-0079, REQ-007).
+// cleanup work to announce.
 func TestReconcile_TerminatingCR_EmitsOpenBaoSecretsFinalizedEvent(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
@@ -2565,7 +2552,6 @@ drain:
 // emitted exactly once per termination, suppressed on subsequent reconcile
 // passes while the PushSecret is Terminating. A regression that re-emits the
 // event on every requeue would flood the event stream in production
-// (CC-0079, REQ-007).
 func TestReconcile_TerminatingCR_NoDuplicateStartEventOnRequeue(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
@@ -2616,7 +2602,6 @@ drain:
 // BenchmarkReconcile_FullReconcile measures ns/op for a full reconcile cycle
 // with a fake client and all sub-resources pre-created. This establishes a
 // baseline for comparing sequential vs parallel execution latency
-// (CC-0071, REQ-007).
 func BenchmarkReconcile_FullReconcile(b *testing.B) {
 	configMapName := testComputeConfigMapName(b)
 	ks := testKeystone()
@@ -2641,7 +2626,7 @@ func BenchmarkReconcile_FullReconcile(b *testing.B) {
 	}
 
 	// Warm-up: run one reconcile so all resources are created/updated.
-	// Verify the result to catch setup issues early (CC-0071).
+	// Verify the result to catch setup issues early.
 	if res, err := r.Reconcile(context.Background(), req); err != nil {
 		b.Fatalf("warm-up reconcile failed: %v", err)
 	} else if !res.IsZero() {
@@ -2660,7 +2645,7 @@ func BenchmarkReconcile_FullReconcile(b *testing.B) {
 // Unlike BenchmarkReconcile_FullReconcile (which uses an in-memory fake client
 // completing in microseconds), this benchmark validates that parallelizing
 // independent sub-reconcilers produces a measurable wall-clock improvement
-// when API calls have realistic round-trip times (CC-0071, REQ-007).
+// when API calls have realistic round-trip times.
 func BenchmarkReconcile_FullReconcile_WithLatency(b *testing.B) {
 	const apiLatency = 5 * time.Millisecond
 
@@ -2689,7 +2674,7 @@ func BenchmarkReconcile_FullReconcile_WithLatency(b *testing.B) {
 	cb = cb.WithStatusSubresource(&keystonev1alpha1.Keystone{}, &esov1.ExternalSecret{})
 
 	// Inject simulated network latency into every client operation so that
-	// parallelization gains become visible in wall-clock time (CC-0071).
+	// parallelization gains become visible in wall-clock time.
 	cb = cb.WithInterceptorFuncs(interceptor.Funcs{
 		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 			time.Sleep(apiLatency)
@@ -2732,7 +2717,7 @@ func BenchmarkReconcile_FullReconcile_WithLatency(b *testing.B) {
 	}
 
 	// Warm-up: run one reconcile so all resources are created/updated.
-	// Verify the result to catch setup issues early (CC-0071).
+	// Verify the result to catch setup issues early.
 	if res, err := r.Reconcile(context.Background(), req); err != nil {
 		b.Fatalf("warm-up reconcile failed: %v", err)
 	} else if !res.IsZero() {
@@ -2746,7 +2731,7 @@ func BenchmarkReconcile_FullReconcile_WithLatency(b *testing.B) {
 	}
 }
 
-// --- isGatewayAPIAvailable (CC-0065, production-hardening) ---
+// --- isGatewayAPIAvailable (production-hardening) ---
 
 // fakeRESTMapper implements meta.RESTMapper just far enough for the
 // RESTMapping call made by isGatewayAPIAvailable. Availability is driven by
@@ -2800,7 +2785,7 @@ func TestIsCertManagerAvailable_CRDMissing_ReturnsFalse(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// reconcileDBConnectionSecret wiring tests (CC-0080, REQ-005, REQ-006)
+// reconcileDBConnectionSecret wiring tests
 // ---------------------------------------------------------------------------
 
 // TestReconcile_DBConnectionSecretCreatedBeforeConfigMap verifies that in a
@@ -2808,7 +2793,7 @@ func TestIsCertManagerAvailable_CRDMissing_ReturnsFalse(t *testing.T) {
 // ConfigMap. The derived Secret is consumed at runtime via the
 // OS_DATABASE__CONNECTION env var; if a ConfigMap referencing the placeholder
 // were rendered first, downstream pods could mount a ConfigMap whose companion
-// Secret does not yet exist (CC-0080, REQ-005).
+// Secret does not yet exist.
 func TestReconcile_DBConnectionSecretCreatedBeforeConfigMap(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
@@ -2888,7 +2873,7 @@ func TestReconcile_DBConnectionSecretCreatedBeforeConfigMap(t *testing.T) {
 // verifies that when reconcileDBConnectionSecret observes the upstream DB
 // credentials Secret as missing, SecretsReady=False with reason
 // WaitingForDBCredentials is persisted on the Keystone CR status and the
-// reconcile chain short-circuits before ConfigMap creation (CC-0080, REQ-005).
+// reconcile chain short-circuits before ConfigMap creation.
 //
 // To isolate the reconcileDBConnectionSecret path from reconcileSecrets (which
 // also checks the upstream Secret), a Get interceptor lets the first Get on
@@ -2964,7 +2949,7 @@ func TestReconcile_DBConnectionSecret_SecretsReadyFalseWhenUpstreamMissing(t *te
 // TestSecretToKeystoneMapper_DerivedDBConnectionSecret verifies that the
 // mapper enqueues a reconcile request for the owning Keystone when a change
 // event arrives on the derived <name>-db-connection Secret, via its
-// ownerReference (CC-0080, REQ-006). The name pattern is operator-chosen and
+// ownerReference. The name pattern is operator-chosen and
 // not referenced by spec.database.secretRef, so the enqueue path MUST be
 // ownership-based.
 func TestSecretToKeystoneMapper_DerivedDBConnectionSecret(t *testing.T) {
@@ -2992,7 +2977,7 @@ func TestSecretToKeystoneMapper_DerivedDBConnectionSecret(t *testing.T) {
 // keystoneSecretNameExtractor returns both spec.database.secretRef.name and
 // spec.bootstrap.adminPasswordSecretRef.name when they hold distinct values,
 // so the field indexer registered under KeystoneSecretNameIndexKey contains
-// one entry per referenced Secret name (CC-0087, REQ-001).
+// one entry per referenced Secret name.
 func TestKeystoneSecretIndexer_ExtractsBothReferencedSecretNames(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
@@ -3008,7 +2993,7 @@ func TestKeystoneSecretIndexer_ExtractsBothReferencedSecretNames(t *testing.T) {
 // TestKeystoneSecretIndexer_DeduplicatesIdenticalNames verifies that when both
 // SecretRef fields hold the same Secret name, the extractor returns it only
 // once so the field indexer does not store duplicate entries for the same CR
-// under the same key (CC-0087, REQ-001).
+// under the same key.
 func TestKeystoneSecretIndexer_DeduplicatesIdenticalNames(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
@@ -3023,7 +3008,7 @@ func TestKeystoneSecretIndexer_DeduplicatesIdenticalNames(t *testing.T) {
 
 // TestKeystoneSecretIndexer_SkipsEmptyNames verifies that the extractor omits
 // empty SecretRef.Name values so unset/optional fields do not pollute the
-// field index with empty-string keys (CC-0087, REQ-001).
+// field index with empty-string keys.
 func TestKeystoneSecretIndexer_SkipsEmptyNames(t *testing.T) {
 	t.Run("admin name empty", func(t *testing.T) {
 		g := NewGomegaWithT(t)
@@ -3062,10 +3047,10 @@ func TestKeystoneSecretIndexer_SkipsEmptyNames(t *testing.T) {
 	})
 }
 
-// --- secretToKeystoneMapper indexed-lookup behaviour (CC-0087) ---
+// --- secretToKeystoneMapper indexed-lookup behaviour ---
 
 // listCall captures the shape of a single List invocation so tests can assert
-// on the ListOptions that secretToKeystoneMapper issued (CC-0087, REQ-002).
+// on the ListOptions that secretToKeystoneMapper issued.
 type listCall struct {
 	options client.ListOptions
 }
@@ -3074,7 +3059,6 @@ type listCall struct {
 // List call's ApplyToList view of the caller's ListOptions and delegates to
 // the wrapped client. A nil listErr lets the real List run; a non-nil listErr
 // is returned instead so the mapper's error branch can be exercised
-// (CC-0087, REQ-002, REQ-007).
 func recordingListInterceptor(listErr error) (*[]listCall, interceptor.Funcs) {
 	calls := &[]listCall{}
 	var mu sync.Mutex
@@ -3098,7 +3082,7 @@ func recordingListInterceptor(listErr error) (*[]listCall, interceptor.Funcs) {
 // TestSecretToKeystoneMapper_UsesIndexedLookup verifies that every List call
 // issued by the refactored mapper carries the KeystoneSecretNameIndexKey
 // field selector set to the Secret's name — i.e. the mapper no longer pulls
-// every Keystone in the namespace (CC-0087, REQ-002).
+// every Keystone in the namespace.
 func TestSecretToKeystoneMapper_UsesIndexedLookup(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
@@ -3126,7 +3110,7 @@ func TestSecretToKeystoneMapper_UsesIndexedLookup(t *testing.T) {
 // TestSecretToKeystoneMapper_IndexedLookupScopedToNamespace verifies that the
 // indexed List is scoped to the Secret's namespace so a Keystone referencing
 // the same Secret name in a different namespace is not enqueued and the List
-// does not fan out cluster-wide (CC-0087, REQ-002).
+// does not fan out cluster-wide.
 func TestSecretToKeystoneMapper_IndexedLookupScopedToNamespace(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -3169,7 +3153,7 @@ func TestSecretToKeystoneMapper_IndexedLookupScopedToNamespace(t *testing.T) {
 // that an error from the indexed List is swallowed — the mapper does not
 // return the error and the owner-ref path still contributes results so that
 // rotation staging Secrets remain wired to their Keystone during a transient
-// indexer failure (CC-0087, REQ-002, REQ-005).
+// indexer failure.
 func TestSecretToKeystoneMapper_IndexedLookupErrorLoggedAndSwallowed(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
@@ -3200,9 +3184,8 @@ func TestSecretToKeystoneMapper_IndexedLookupErrorLoggedAndSwallowed(t *testing.
 // TestSecretToKeystoneMapper_NoUnfilteredListCall pins the invariant that
 // every List the mapper issues carries the KeystoneSecretNameIndexKey field
 // selector; a regression that dropped the MatchingFields option would revert
-// to the pre-CC-0087 unfiltered namespace-scoped List and re-introduce the
+// to the pre-existing unfiltered namespace-scoped List and re-introduce the
 // API server amplification this feature was designed to eliminate
-// (CC-0087, REQ-002, REQ-007).
 func TestSecretToKeystoneMapper_NoUnfilteredListCall(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
@@ -3231,7 +3214,7 @@ func TestSecretToKeystoneMapper_NoUnfilteredListCall(t *testing.T) {
 // reference scan does not issue a List of its own: it operates on the
 // Secret's in-memory metadata. When the indexed List fails, the mapper still
 // emits requests for every Keystone ownerRef on the event — with zero
-// additional API calls (CC-0087, REQ-003, REQ-007).
+// additional API calls.
 func TestSecretToKeystoneMapper_OwnerRefPathDoesNotList(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
@@ -3264,8 +3247,7 @@ func TestSecretToKeystoneMapper_OwnerRefPathDoesNotList(t *testing.T) {
 // Secret simultaneously referenced by name (index hit) and owner-referenced
 // (owner-ref hit) enqueues the target Keystone exactly once — the dedup
 // invariant that keeps workqueue traffic proportional to the set of distinct
-// referencing CRs rather than to the number of relationships (CC-0087,
-// REQ-003, REQ-005).
+// referencing CRs rather than to the number of relationships.
 func TestSecretToKeystoneMapper_DeduplicatesIndexAndOwnerPaths(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
@@ -3295,8 +3277,7 @@ func TestSecretToKeystoneMapper_DeduplicatesIndexAndOwnerPaths(t *testing.T) {
 // TestSecretToKeystoneMapper_MultipleReferencingKeystonesAllEnqueued verifies
 // that when several Keystone CRs in the same namespace reference the same
 // Secret name, every one of them is enqueued on a single Secret event — the
-// field indexer returns the full set, not just the first match (CC-0087,
-// REQ-003).
+// field indexer returns the full set, not just the first match.
 func TestSecretToKeystoneMapper_MultipleReferencingKeystonesAllEnqueued(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -3329,7 +3310,7 @@ func TestSecretToKeystoneMapper_MultipleReferencingKeystonesAllEnqueued(t *testi
 // keystonev1alpha1.GroupVersion.Group, not just an exact APIVersion string.
 // Secrets persisted with an older APIVersion (e.g. v1alpha1) must continue to
 // resolve to their owning Keystone after a future API version bump
-// (e.g. v1beta1) — pinned per CC-0087 review #1.
+// (e.g. v1beta1) — pinned per review #1.
 func TestSecretToKeystoneMapper_OwnerRefGroupMatchIgnoresVersion(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
@@ -3361,7 +3342,7 @@ func TestSecretToKeystoneMapper_OwnerRefGroupMatchIgnoresVersion(t *testing.T) {
 // TestSecretToKeystoneMapper_OwnerRefDifferentGroupIgnored verifies that the
 // owner-ref fallback ignores references with Kind=="Keystone" whose
 // APIVersion is in a different API group (e.g. a foreign Keystone CRD). Only
-// the keystone.openstack.c5c3.io group is considered (CC-0087 review #1).
+// the keystone.openstack.c5c3.io group is considered (review #1).
 func TestSecretToKeystoneMapper_OwnerRefDifferentGroupIgnored(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
@@ -3391,7 +3372,7 @@ func TestSecretToKeystoneMapper_OwnerRefDifferentGroupIgnored(t *testing.T) {
 // TestSecretToKeystoneMapper_OwnerRefMalformedAPIVersionIgnored verifies that
 // an OwnerReference whose APIVersion cannot be parsed as GroupVersion is
 // silently skipped rather than panicking or enqueuing spuriously
-// (CC-0087 review #1).
+// (review #1).
 func TestSecretToKeystoneMapper_OwnerRefMalformedAPIVersionIgnored(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
@@ -3422,7 +3403,7 @@ func TestSecretToKeystoneMapper_OwnerRefMalformedAPIVersionIgnored(t *testing.T)
 // OwnerReference pointing at a Keystone that no longer exists in the cache
 // is dropped from the enqueue set — the cached Get returning NotFound is the
 // signal that the owner-ref is stale or spurious. Prevents enqueuing reconcile
-// work for non-existent CRs (CC-0087 review #1).
+// work for non-existent CRs (review #1).
 func TestSecretToKeystoneMapper_OwnerRefStaleKeystoneSkipped(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
@@ -3450,7 +3431,7 @@ func TestSecretToKeystoneMapper_OwnerRefStaleKeystoneSkipped(t *testing.T) {
 // cause the mapper to drop the ref. The guard's purpose is to eliminate
 // clearly stale references (NotFound); every other outcome must fall through
 // to enqueue so a transient cache blip cannot swallow a legitimate event
-// (CC-0087 review #1).
+// (review #1).
 func TestSecretToKeystoneMapper_OwnerRefTransientGetErrorEnqueues(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
@@ -3480,11 +3461,11 @@ func TestSecretToKeystoneMapper_OwnerRefTransientGetErrorEnqueues(t *testing.T) 
 	g.Expect(reqs[0].NamespacedName.Name).To(Equal(ks.Name))
 }
 
-// --- pushSecretToKeystoneMapper behaviour (CC-0092) ---
+// --- pushSecretToKeystoneMapper behaviour ---
 
 // pushSecretObj builds a minimal PushSecret client.Object with the given name
 // and namespace. The mapper only inspects name/namespace metadata — no spec or
-// status is needed to exercise its enqueue contract (CC-0092, REQ-002).
+// status is needed to exercise its enqueue contract.
 func pushSecretObj(name, namespace string) client.Object {
 	return &esov1alpha1.PushSecret{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
@@ -3494,7 +3475,6 @@ func pushSecretObj(name, namespace string) client.Object {
 // TestPushSecretToKeystoneMapper_FernetBackupEnqueuesKeystone verifies that a
 // PushSecret whose name matches the fernet backup for a Keystone in the same
 // namespace enqueues exactly one reconcile.Request for that Keystone
-// (CC-0092, REQ-001, REQ-002).
 func TestPushSecretToKeystoneMapper_FernetBackupEnqueuesKeystone(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
@@ -3516,7 +3496,6 @@ func TestPushSecretToKeystoneMapper_FernetBackupEnqueuesKeystone(t *testing.T) {
 // TestPushSecretToKeystoneMapper_CredentialBackupEnqueuesKeystone verifies the
 // same contract as the fernet case for the credential backup — both entries of
 // openBaoBackupPushSecretNames must be observed by the mapper
-// (CC-0092, REQ-002).
 func TestPushSecretToKeystoneMapper_CredentialBackupEnqueuesKeystone(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
@@ -3537,8 +3516,7 @@ func TestPushSecretToKeystoneMapper_CredentialBackupEnqueuesKeystone(t *testing.
 
 // TestPushSecretToKeystoneMapper_UnrelatedNameReturnsNil verifies that a
 // PushSecret whose name matches no openBaoBackupPushSecretNames entry for any
-// Keystone in its namespace is dropped by the mapper (CC-0092, REQ-002,
-// REQ-007).
+// Keystone in its namespace is dropped by the mapper.
 func TestPushSecretToKeystoneMapper_UnrelatedNameReturnsNil(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
@@ -3556,7 +3534,6 @@ func TestPushSecretToKeystoneMapper_UnrelatedNameReturnsNil(t *testing.T) {
 // TestPushSecretToKeystoneMapper_MultipleKeystonesOnlyMatchingCREnqueued
 // verifies the shared-namespace no-op dedup contract: in a namespace with two
 // Keystone CRs, a backup PushSecret for one CR must not wake the other
-// (CC-0092, REQ-007).
 func TestPushSecretToKeystoneMapper_MultipleKeystonesOnlyMatchingCREnqueued(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -3586,7 +3563,7 @@ func TestPushSecretToKeystoneMapper_MultipleKeystonesOnlyMatchingCREnqueued(t *t
 // the empty-list path: when the event's (non-empty) namespace contains no
 // Keystone CR, the mapper returns nothing without erroring. PushSecret is a
 // namespaced resource, so the empty-namespace case is precluded by the
-// apiserver and is intentionally not covered here (CC-0092, REQ-003).
+// apiserver and is intentionally not covered here.
 func TestPushSecretToKeystoneMapper_NoKeystonesInNamespaceReturnsNil(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -3605,7 +3582,7 @@ func TestPushSecretToKeystoneMapper_NoKeystonesInNamespaceReturnsNil(t *testing.
 // Keystone that only exists in ns-a, even if the PushSecret's name matches
 // that Keystone's backup pattern. The recording interceptor pins that the
 // List carries client.InNamespace(ps.Namespace) and never fans out
-// cluster-wide (CC-0092, REQ-002).
+// cluster-wide.
 func TestPushSecretToKeystoneMapper_CrossNamespaceReturnsNil(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -3631,7 +3608,7 @@ func TestPushSecretToKeystoneMapper_CrossNamespaceReturnsNil(t *testing.T) {
 // TestPushSecretToKeystoneMapper_ListErrorIsSwallowed verifies that a List
 // error is logged and the mapper returns nil instead of propagating — matching
 // the log-and-swallow contract of secretToKeystoneMapper and the
-// handler.MapFunc signature which has no error return (CC-0092, REQ-003).
+// handler.MapFunc signature which has no error return.
 func TestPushSecretToKeystoneMapper_ListErrorIsSwallowed(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
@@ -3651,12 +3628,12 @@ func TestPushSecretToKeystoneMapper_ListErrorIsSwallowed(t *testing.T) {
 		"exactly one List must be attempted before the error is swallowed")
 }
 
-// --- pushSecretRelevantChangePredicate behaviour (CC-0092, REQ-004) ---
+// --- pushSecretRelevantChangePredicate behaviour ---
 
 // pushSecretWithMeta builds a PushSecret carrying the supplied metadata fields
 // relevant to the predicate: Generation, Finalizers, and DeletionTimestamp.
 // Name/Namespace are fixed since the predicate is purely metadata-driven and
-// name-level filtering belongs to the mapper (CC-0092, REQ-004).
+// name-level filtering belongs to the mapper.
 func pushSecretWithMeta(generation int64, finalizers []string, deletionTS *metav1.Time) *esov1alpha1.PushSecret {
 	ps := &esov1alpha1.PushSecret{
 		ObjectMeta: metav1.ObjectMeta{
@@ -3676,7 +3653,7 @@ func pushSecretWithMeta(generation int64, finalizers []string, deletionTS *metav
 // TestPushSecretPredicate_FinalizerAddAdmitted verifies that gaining a
 // finalizer (ESO installing esoPushSecretFinalizer on first sync — the
 // Pass-0 adoption signal) passes the predicate so Keystone is re-reconciled
-// and can progress past WaitingForESOAdoption (CC-0092, REQ-004).
+// and can progress past WaitingForESOAdoption.
 func TestPushSecretPredicate_FinalizerAddAdmitted(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -3698,7 +3675,7 @@ func TestPushSecretPredicate_FinalizerAddAdmitted(t *testing.T) {
 // remove its own openbao finalizer without waiting for the 15s periodic
 // requeue. Uses the package-level esoCleanupFinalizer constant declared in
 // reconcile_secrets.go as the single source of truth shared with the
-// integration tests (CC-0092, REQ-004).
+// integration tests.
 func TestPushSecretPredicate_FinalizerRemoveAdmitted(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -3717,7 +3694,7 @@ func TestPushSecretPredicate_FinalizerRemoveAdmitted(t *testing.T) {
 // TestPushSecretPredicate_DeletionTimestampSetAdmitted verifies that a
 // PushSecret transitioning from live to Terminating (DeletionTimestamp first
 // set) passes the predicate. This is the edge that kicks Pass-1 of the
-// Keystone delete path (CC-0092, REQ-004).
+// Keystone delete path.
 func TestPushSecretPredicate_DeletionTimestampSetAdmitted(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -3740,7 +3717,6 @@ func TestPushSecretPredicate_DeletionTimestampSetAdmitted(t *testing.T) {
 // status.syncedResourceVersion on every successful sync) must NOT wake the
 // Keystone reconciler. Without this filter the Keystone workqueue would
 // receive one wake-up per ESO sync tick per owned PushSecret
-// (CC-0092, REQ-004).
 func TestPushSecretPredicate_StatusOnlyUpdateSuppressed(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -3768,7 +3744,6 @@ func TestPushSecretPredicate_StatusOnlyUpdateSuppressed(t *testing.T) {
 // PushSecret whose name does not match any Keystone backup pattern. The
 // predicate is deliberately name-agnostic; name-level filtering is the
 // mapper's responsibility and belongs on the Watches() MapFunc, not here
-// (CC-0092, REQ-004).
 func TestPushSecretPredicate_CreateAndDeleteAlwaysAdmitted(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -3799,7 +3774,7 @@ func TestPushSecretPredicate_CreateAndDeleteAlwaysAdmitted(t *testing.T) {
 // mutation (observable as ObjectOld.Generation != ObjectNew.Generation)
 // passes the predicate. ESO would not normally mutate the PushSecret spec
 // itself, but a user or controller doing so must still re-trigger Keystone
-// reconciliation to re-evaluate adoption state (CC-0092, REQ-004).
+// reconciliation to re-evaluate adoption state.
 func TestPushSecretPredicate_GenerationChangeAdmitted(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -3815,7 +3790,7 @@ func TestPushSecretPredicate_GenerationChangeAdmitted(t *testing.T) {
 		"Generation change (spec mutation) must pass the predicate")
 }
 
-// --- registerSecretNameIndex helper (CC-0087, REQ-001, REQ-006) ---
+// --- registerSecretNameIndex helper ---
 
 // recordingFieldIndexer captures each IndexField invocation so tests can
 // assert the key passed to registerSecretNameIndex matches the exported
@@ -3839,7 +3814,7 @@ func (r *recordingFieldIndexer) IndexField(_ context.Context, obj client.Object,
 // TestKeystoneSecretIndexerKey_IsDeclaredAsConst asserts that
 // registerSecretNameIndex sources its index key from the exported
 // KeystoneSecretNameIndexKey constant rather than a duplicated literal,
-// keeping registration and lookup sites in sync (CC-0087, REQ-006).
+// keeping registration and lookup sites in sync.
 func TestKeystoneSecretIndexerKey_IsDeclaredAsConst(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -3856,7 +3831,7 @@ func TestKeystoneSecretIndexerKey_IsDeclaredAsConst(t *testing.T) {
 
 // TestRegisterSecretNameIndex_WrapsErrorWithKey verifies that an IndexField
 // failure is returned wrapped with the index key so manager-startup logs
-// identify which indexer failed to register (CC-0087, REQ-001).
+// identify which indexer failed to register.
 func TestRegisterSecretNameIndex_WrapsErrorWithKey(t *testing.T) {
 	g := NewGomegaWithT(t)
 	rec := &recordingFieldIndexer{err: errors.New("boom")}
@@ -3873,9 +3848,9 @@ func TestRegisterSecretNameIndex_WrapsErrorWithKey(t *testing.T) {
 // TestReconcileEmitsDurationForEverySubReconciler runs a single happy-path
 // Reconcile pass and asserts that the reconcile-duration histogram observed at
 // least one sample for every sub_reconciler name registered in
-// subReconcilerConditionTypes. This is the wiring check for CC-0089 REQ-001:
-// every sub-reconciler call site in Reconcile must flow through
-// instrumentSubReconciler (CC-0089, REQ-001).
+// subReconcilerConditionTypes. This is the wiring check: every
+// sub-reconciler call site in Reconcile must flow through
+// instrumentSubReconciler.
 func TestReconcileEmitsDurationForEverySubReconciler(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
@@ -3914,13 +3889,13 @@ func TestReconcileEmitsDurationForEverySubReconciler(t *testing.T) {
 		after := histogramSampleCount(t, "keystone_operator_reconcile_duration_seconds",
 			map[string]string{"sub_reconciler": name})
 		g.Expect(after-baseline[name]).To(BeNumerically(">=", uint64(1)),
-			"sub_reconciler %q must emit at least one duration sample per Reconcile pass (CC-0089 REQ-001)", name)
+			"sub_reconciler %q must emit at least one duration sample per Reconcile pass", name)
 	}
 }
 
 // TestReconcileErrorsTotalIncrementsOnInducedFailure proves that a real
 // sub-reconciler error in the SecretsReady chain advances the
-// keystone_operator_reconcile_errors_total counter (CC-0089, REQ-002).
+// keystone_operator_reconcile_errors_total counter.
 //
 // The induction mechanism uses interceptor.Funcs to fail every write attempt
 // (Create, Update, Patch) on the derived <name>-db-connection Secret with a
@@ -3960,7 +3935,7 @@ func TestReconcileErrorsTotalIncrementsOnInducedFailure(t *testing.T) {
 	denyDerivedSecretWrite := apierrors.NewForbidden(
 		corev1.Resource("secrets"),
 		derivedName,
-		fmt.Errorf("simulated apiserver rejection (CC-0089 I-001)"),
+		fmt.Errorf("simulated apiserver rejection (I-001)"),
 	)
 	isDerivedSecret := func(obj client.Object) bool {
 		sec, ok := obj.(*corev1.Secret)
@@ -4011,13 +3986,13 @@ func TestReconcileErrorsTotalIncrementsOnInducedFailure(t *testing.T) {
 	g.Expect(after-before).To(BeNumerically(">=", 1.0),
 		"keystone_operator_reconcile_errors_total{sub_reconciler=\"DBConnectionSecret\","+
 			"condition_type=\"SecretsReady\"} must advance by at least 1 after the induced "+
-			"DBConnectionSecret failure (CC-0089, REQ-002)")
+			"DBConnectionSecret failure")
 }
 
 // TestReconcileParallelGroupErrorCountsAreAttributed exercises
 // reconcileParallelGroup with a failing CredentialKeys member and asserts that
 // the error counter is attributed to CredentialKeys (not FernetKeys or
-// NetworkPolicy). This is the wiring check for CC-0089 REQ-002 on the parallel
+// NetworkPolicy). This is the wiring check for on the parallel
 // group: each member must emit its own sub_reconciler label.
 func TestReconcileParallelGroupErrorCountsAreAttributed(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -4075,7 +4050,7 @@ func TestReconcileParallelGroupErrorCountsAreAttributed(t *testing.T) {
 // drops every per-CR metric series (key_rotation_age gauges, db_sync counters
 // and duration samples) after it releases the Keystone finalizer, so a
 // deleted CR never lingers in Prometheus output and a replacement CR with the
-// same name starts with a clean slate (CC-0089, REQ-004, REQ-012).
+// same name starts with a clean slate.
 func TestReconcileDeleteRemovesRotationAgeSeries(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
@@ -4110,7 +4085,7 @@ func TestReconcileDeleteRemovesRotationAgeSeries(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 
 	g.Expect(findMetricByLabels(t, ctrlmetrics.Registry, "keystone_operator_key_rotation_age_seconds", fernetLabels)).
-		To(BeNil(), "reconcileDelete MUST remove the fernet rotation-age gauge series (CC-0089, REQ-004)")
+		To(BeNil(), "reconcileDelete MUST remove the fernet rotation-age gauge series")
 	g.Expect(findMetricByLabels(t, ctrlmetrics.Registry, "keystone_operator_key_rotation_age_seconds", credLabels)).
-		To(BeNil(), "reconcileDelete MUST remove the credential rotation-age gauge series (CC-0089, REQ-004)")
+		To(BeNil(), "reconcileDelete MUST remove the credential rotation-age gauge series")
 }

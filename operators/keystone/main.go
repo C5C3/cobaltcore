@@ -2,9 +2,9 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Package main is the entrypoint for the Keystone operator (CC-0001).
+// Package main is the entrypoint for the Keystone operator.
 //
-// DEVIATION from architecture/01-project-setup.md (CC-0001):
+// DEVIATION from architecture/01-project-setup.md
 // Hand-crafted instead of `operator-sdk init` — the SDK scaffolds config/,
 // internal/controller/, Dockerfile, and a per-module Makefile that would be
 // immediately deleted for this minimal scaffolding phase. The manager setup
@@ -40,8 +40,7 @@ func init() {
 	utilruntime.Must(mariadbv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(gatewayv1.Install(scheme))
 	// cert-manager v1 scheme is required so reconcile_databasetls.go can
-	// create/get cert-manager Certificates via the cached client (CC-0106,
-	// REQ-002). Without this, EnsureCertificate fails with "no kind is
+	// create/get cert-manager Certificates via the cached client. Without this, EnsureCertificate fails with "no kind is
 	// registered for the type v1.Certificate" on every reconcile, leaving
 	// the Keystone CR stuck without a DatabaseTLSReady condition.
 	utilruntime.Must(certmanagerv1.AddToScheme(scheme))

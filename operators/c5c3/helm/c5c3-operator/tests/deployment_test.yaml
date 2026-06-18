@@ -1,4 +1,4 @@
-# CC-0110: Deployment template unit tests.
+# Deployment template unit tests.
 # DECISION: suites live in tests/ (not templates/tests/) to mirror the keystone
 # chart's convention; helm-unittest discovers either location, and keeping a
 # single tests/ directory matches the sibling chart and the CI `helm unittest`
@@ -150,7 +150,7 @@ tests:
           path: spec.template.spec.containers[0].args
           content: --enable-webhooks=false
 
-  # CC-0043: Namespace-scoped deployment tests.
+  # Namespace-scoped deployment tests.
   - it: should include --namespace arg when rbac.namespaceScoped is true
     set:
       rbac:

@@ -33,8 +33,6 @@ import (
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
 
-// Feature: CC-0013
-
 func dbTestScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(s)
@@ -143,13 +141,13 @@ func failedDBSyncJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
 	return j
 }
 
-// --- Schema check test helpers (CC-0064) ---
+// --- Schema check test helpers ---
 
 // completedSchemaCheckJob returns a schema-check Job that matches what
 // buildSchemaCheckJob produces for the given keystone and is marked as
-// complete with the correct pod-spec hash (CC-0064). The UID is set so
+// complete with the correct pod-spec hash. The UID is set so
 // recordDBJobTerminalState can dedupe the per-phase metric emission across
-// reconciles (CC-0089, REQ-005, W-002).
+// reconciles.
 func completedSchemaCheckJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
 	desired := buildSchemaCheckJob(ks, "keystone-config-abc123")
 	now := metav1.Now()
@@ -170,9 +168,8 @@ func completedSchemaCheckJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
 }
 
 // failedSchemaCheckJob returns a schema-check Job that is marked as
-// permanently failed (CC-0064). The UID is set so recordDBJobTerminalState
-// can dedupe the per-phase metric emission across reconciles (CC-0089,
-// REQ-005, W-002).
+// permanently failed. The UID is set so recordDBJobTerminalState
+// can dedupe the per-phase metric emission across reconciles.
 func failedSchemaCheckJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
 	desired := buildSchemaCheckJob(ks, "keystone-config-abc123")
 	j := desired.DeepCopy()
@@ -191,7 +188,7 @@ func failedSchemaCheckJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
 }
 
 // runningSchemaCheckJob returns a schema-check Job that exists but has not
-// completed yet (CC-0064).
+// completed yet.
 func runningSchemaCheckJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
 	desired := buildSchemaCheckJob(ks, "keystone-config-abc123")
 	j := desired.DeepCopy()
@@ -202,7 +199,7 @@ func runningSchemaCheckJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
 }
 
 // readyMariaDBCluster returns a MariaDB cluster CR with Ready=True matching
-// the name referenced by ks.Spec.Database.ClusterRef (CC-0047).
+// the name referenced by ks.Spec.Database.ClusterRef.
 func readyMariaDBCluster(ks *keystonev1alpha1.Keystone) *mariadbv1alpha1.MariaDB {
 	mdb := &mariadbv1alpha1.MariaDB{
 		ObjectMeta: metav1.ObjectMeta{
@@ -219,7 +216,7 @@ func readyMariaDBCluster(ks *keystonev1alpha1.Keystone) *mariadbv1alpha1.MariaDB
 }
 
 // notReadyMariaDBCluster returns a MariaDB cluster CR with Ready=False,
-// simulating an upstream database outage (CC-0047).
+// simulating an upstream database outage.
 func notReadyMariaDBCluster(ks *keystonev1alpha1.Keystone) *mariadbv1alpha1.MariaDB {
 	mdb := &mariadbv1alpha1.MariaDB{
 		ObjectMeta: metav1.ObjectMeta{
@@ -376,7 +373,7 @@ func TestReconcileDatabase_Managed_ClusterNotReady_FlipsDatabaseReadyFalse(t *te
 
 	// Simulate a previously successful reconcile: DatabaseReady=True is set
 	// and the db_sync Job has completed. A downstream MariaDB outage must
-	// flip DatabaseReady back to False on the next reconcile (CC-0047).
+	// flip DatabaseReady back to False on the next reconcile.
 	meta.SetStatusCondition(&ks.Status.Conditions, metav1.Condition{
 		Type:   "DatabaseReady",
 		Status: metav1.ConditionTrue,
@@ -509,7 +506,7 @@ func TestReconcileDatabase_Brownfield_SkipsMariaDBCRs_CreatesDBSyncJob(t *testin
 	}, &syncJob)).To(Succeed())
 	g.Expect(syncJob.Annotations).To(HaveKey(job.PodSpecHashAnnotation))
 
-	// Verify config volume mount is present (CC-0013: db_sync needs keystone.conf for DB connection).
+	// Verify config volume mount is present (: db_sync needs keystone.conf for DB connection).
 	container := syncJob.Spec.Template.Spec.Containers[0]
 	g.Expect(container.VolumeMounts).To(HaveLen(1))
 	g.Expect(container.VolumeMounts[0].Name).To(Equal("config"))
@@ -531,7 +528,7 @@ func TestReconcileDatabase_Brownfield_SkipsMariaDBCRs_CreatesDBSyncJob(t *testin
 
 // TestBuildDBSyncJob_SecurityContext verifies that the db-sync container in the
 // Job returned by buildDBSyncJob has the correct SecurityContext with all four
-// PSS Restricted profile fields (CC-0045, REQ-001 through REQ-004).
+// PSS Restricted profile fields (through).
 func TestBuildDBSyncJob_SecurityContext(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := brownfieldKeystone()
@@ -542,13 +539,11 @@ func TestBuildDBSyncJob_SecurityContext(t *testing.T) {
 	expectRestrictedSecurityContext(g, container)
 }
 
-// Feature: CC-0080
-
 // TestBuildDBJobVariants_DBConnectionEnv verifies that every variant produced
 // by buildDBJob (db-sync, expand, migrate, contract, schema-check) carries the
 // OS_DATABASE__CONNECTION env var sourced from the derived
 // <name>-db-connection Secret so the DB URL is read from a Secret rather than
-// the ConfigMap (CC-0080, REQ-004, REQ-009).
+// the ConfigMap.
 func TestBuildDBJobVariants_DBConnectionEnv(t *testing.T) {
 	ks := brownfieldKeystone()
 	expectedEnv := buildDBConnectionEnvVar(ks)
@@ -571,7 +566,7 @@ func TestBuildDBJobVariants_DBConnectionEnv(t *testing.T) {
 			container := findContainerByName(tc.job.Spec.Template.Spec.Containers, tc.containerName)
 			g.Expect(container).NotTo(BeNil())
 			g.Expect(container.Env).To(ContainElement(expectedEnv),
-				"%s container must source [database].connection from the derived Secret (CC-0080, REQ-004)",
+				"%s container must source [database].connection from the derived Secret",
 				tc.containerName)
 		})
 	}
@@ -604,11 +599,9 @@ func TestReconcileDatabase_StaleDBSyncJob_Recreated(t *testing.T) {
 	g.Expect(newJob.Annotations[job.PodSpecHashAnnotation]).To(Equal(expectedHash))
 }
 
-// Feature: CC-0056
-
 // TestBuildUpgradeJobs verifies all three upgrade-phase Job builders
 // (buildExpandJob, buildMigrateJob, buildContractJob) produce the correct Job
-// metadata, image, command, security context, and config volume (CC-0056).
+// metadata, image, command, security context, and config volume.
 func TestBuildUpgradeJobs(t *testing.T) {
 	cases := []struct {
 		name          string
@@ -703,7 +696,7 @@ func TestBuildUpgradeJobs(t *testing.T) {
 	}
 }
 
-// --- Upgrade detection tests (CC-0056) ---
+// --- Upgrade detection tests ---
 
 func TestIsUpgrade(t *testing.T) {
 	cases := []struct {
@@ -1004,7 +997,7 @@ func TestReconcileDatabase_Managed_ConditionMessages(t *testing.T) {
 	t.Run("DatabaseAndGrantUseSpecDatabaseName", func(t *testing.T) {
 		// Verify that buildDatabase and buildGrant use spec.database.database
 		// (not metadata.name) so the MariaDB database name, Grant, and connection
-		// URL all target the same database (CC-0013).
+		// URL all target the same database.
 		g := NewGomegaWithT(t)
 		ks := managedKeystone()
 		// Deliberately use a CR name that differs from spec.database.database.
@@ -1043,7 +1036,7 @@ func TestReconcileDatabase_Managed_ConditionMessages(t *testing.T) {
 	})
 }
 
-// --- Upgrade phase test helpers (CC-0056) ---
+// --- Upgrade phase test helpers ---
 
 func upgradingKeystone(phase keystonev1alpha1.UpgradePhase) *keystonev1alpha1.Keystone {
 	ks := brownfieldKeystone()
@@ -1084,7 +1077,7 @@ func failedUpgradeJob(ks *keystonev1alpha1.Keystone, configMapName, imageTag, ph
 	return j
 }
 
-// --- Expand phase tests (CC-0056) ---
+// --- Expand phase tests ---
 
 func TestReconcileExpand_NoExistingJob_CreatesJob(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -1185,7 +1178,7 @@ func TestReconcileExpand_JobFailed_ReturnsError(t *testing.T) {
 	expectEvent(g, r, "Warning ExpandFailed")
 }
 
-// --- Migrate phase tests (CC-0056) ---
+// --- Migrate phase tests ---
 
 func TestReconcileMigrate_JobRunning_Requeues(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -1261,7 +1254,7 @@ func TestReconcileMigrate_JobFailed_ReturnsError(t *testing.T) {
 	expectEvent(g, r, "Warning MigrateFailed")
 }
 
-// --- RollingUpdate phase tests (CC-0056) ---
+// --- RollingUpdate phase tests ---
 
 func TestReconcileRollingUpdate_PassesThrough(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -1286,7 +1279,7 @@ func TestReconcileRollingUpdate_PassesThrough(t *testing.T) {
 	expectNoEvent(g, r)
 }
 
-// --- Contract phase tests (CC-0056) ---
+// --- Contract phase tests ---
 
 func TestReconcileContract_NoExistingJob_CreatesJobAndRequeues(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -1423,12 +1416,12 @@ func TestReconcileContract_UsesNewImage(t *testing.T) {
 	g.Expect(createdJob.Spec.Template.Spec.Containers[0].Image).NotTo(ContainSubstring("2025.2"))
 }
 
-// --- Upgrade edge case tests (CC-0056, REQ-009) ---
+// --- Upgrade edge case tests ---
 
 // TestReconcileDatabase_InterruptedExpand_Resumes verifies that after an operator
 // restart during the Expanding phase, reconcileDatabase resumes from the persisted
 // phase and transitions to Migrating when the expand Job is already complete,
-// without re-creating the expand Job (CC-0056, REQ-009).
+// without re-creating the expand Job.
 func TestReconcileDatabase_InterruptedExpand_Resumes(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := dbTestScheme()
@@ -1468,7 +1461,7 @@ func TestReconcileDatabase_InterruptedExpand_Resumes(t *testing.T) {
 // TestReconcileDatabase_TagChangedDuringUpgrade_Blocks verifies that when the
 // image tag is changed during an active upgrade to a value different from
 // targetRelease, the operator blocks with DatabaseReady=False and reason
-// UpgradeTargetChanged (CC-0056, REQ-009).
+// UpgradeTargetChanged.
 func TestReconcileDatabase_TagChangedDuringUpgrade_Blocks(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := dbTestScheme()
@@ -1624,10 +1617,10 @@ func TestReconcileDatabase_AbortUpgrade_DeleteErrorRetainsState(t *testing.T) {
 	expectNoEvent(g, r)
 }
 
-// --- Schema check tests (CC-0064) ---
+// --- Schema check tests ---
 
 // TestBuildSchemaCheckJob_Name verifies that the schema-check Job has the correct
-// name ({keystone.Name}-schema-check) and namespace (CC-0064, REQ-003).
+// name ({keystone.Name}-schema-check) and namespace.
 func TestBuildSchemaCheckJob_Name(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := brownfieldKeystone()
@@ -1639,7 +1632,7 @@ func TestBuildSchemaCheckJob_Name(t *testing.T) {
 }
 
 // TestBuildSchemaCheckJob_Image verifies that the schema-check container uses
-// the correct Keystone image ({spec.image.repository}:{spec.image.tag}) (CC-0064, REQ-003).
+// the correct Keystone image ({spec.image.repository}:{spec.image.tag}).
 func TestBuildSchemaCheckJob_Image(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := brownfieldKeystone()
@@ -1652,7 +1645,7 @@ func TestBuildSchemaCheckJob_Image(t *testing.T) {
 }
 
 // TestBuildSchemaCheckJob_SecurityContext verifies that the schema-check container
-// satisfies the PSS Restricted profile (CC-0064, REQ-003).
+// satisfies the PSS Restricted profile.
 func TestBuildSchemaCheckJob_SecurityContext(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := brownfieldKeystone()
@@ -1664,7 +1657,7 @@ func TestBuildSchemaCheckJob_SecurityContext(t *testing.T) {
 }
 
 // TestBuildSchemaCheckJob_ConfigVolume verifies that the schema-check container
-// mounts the config ConfigMap at /etc/keystone/keystone.conf.d/ read-only (CC-0064, REQ-003).
+// mounts the config ConfigMap at /etc/keystone/keystone.conf.d/ read-only.
 func TestBuildSchemaCheckJob_ConfigVolume(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := brownfieldKeystone()
@@ -1685,7 +1678,7 @@ func TestBuildSchemaCheckJob_ConfigVolume(t *testing.T) {
 }
 
 // TestBuildSchemaCheckJob_BackoffLimit verifies that the schema-check Job has
-// backoffLimit=2 (not the default 4 used by db_sync) (CC-0064, REQ-004).
+// backoffLimit=2 (not the default 4 used by db_sync).
 func TestBuildSchemaCheckJob_BackoffLimit(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := brownfieldKeystone()
@@ -1699,7 +1692,7 @@ func TestBuildSchemaCheckJob_BackoffLimit(t *testing.T) {
 // TestBuildSchemaCheckJob_TTL verifies that the schema-check Job leaves
 // ttlSecondsAfterFinished unset so the completed Job lingers as the RunJob
 // state record instead of being garbage-collected and re-created in a loop
-// (CC-0113, #415).
+// (#415).
 func TestBuildSchemaCheckJob_TTL(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := brownfieldKeystone()
@@ -1710,7 +1703,7 @@ func TestBuildSchemaCheckJob_TTL(t *testing.T) {
 }
 
 // TestBuildSchemaCheckJob_RestartPolicy verifies that the schema-check Job pod
-// has RestartPolicy=Never (CC-0064, REQ-004).
+// has RestartPolicy=Never.
 func TestBuildSchemaCheckJob_RestartPolicy(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := brownfieldKeystone()
@@ -1721,7 +1714,7 @@ func TestBuildSchemaCheckJob_RestartPolicy(t *testing.T) {
 }
 
 // TestBuildSchemaCheckJob_Command verifies that the schema-check container uses
-// /bin/sh -eu -c with keystone-manage db_sync --check (CC-0064, REQ-003).
+// /bin/sh -eu -c with keystone-manage db_sync --check.
 func TestBuildSchemaCheckJob_Command(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := brownfieldKeystone()
@@ -1738,7 +1731,7 @@ func TestBuildSchemaCheckJob_Command(t *testing.T) {
 
 // TestReconcileDatabase_SchemaCheckRunning_Requeues verifies that when db_sync is
 // complete but schema-check is still running, the reconciler requeues with
-// RequeueDatabaseWait and sets the SchemaCheckInProgress condition (CC-0064).
+// RequeueDatabaseWait and sets the SchemaCheckInProgress condition.
 func TestReconcileDatabase_SchemaCheckRunning_Requeues(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := dbTestScheme()
@@ -1760,7 +1753,7 @@ func TestReconcileDatabase_SchemaCheckRunning_Requeues(t *testing.T) {
 
 // TestReconcileDatabase_SchemaCheckComplete_DatabaseSynced verifies that when both
 // db_sync and schema-check complete, DatabaseReady=True with reason DatabaseSynced
-// and message containing 'revision' (CC-0064).
+// and message containing 'revision'.
 func TestReconcileDatabase_SchemaCheckComplete_DatabaseSynced(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := dbTestScheme()
@@ -1783,7 +1776,7 @@ func TestReconcileDatabase_SchemaCheckComplete_DatabaseSynced(t *testing.T) {
 
 // TestReconcileDatabase_SchemaCheckFailed_SchemaDriftDetected verifies that when
 // the schema-check Job fails, DatabaseReady=False with reason SchemaDriftDetected
-// and an error is returned (CC-0064).
+// and an error is returned.
 func TestReconcileDatabase_SchemaCheckFailed_SchemaDriftDetected(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := dbTestScheme()
@@ -1806,7 +1799,7 @@ func TestReconcileDatabase_SchemaCheckFailed_SchemaDriftDetected(t *testing.T) {
 // TestReconcileDatabase_Managed_AllReady_WithSchemaCheck verifies that in managed
 // mode, when all MariaDB CRs are ready and both db_sync and schema-check Jobs
 // complete, DatabaseReady=True with reason DatabaseSynced and message containing
-// 'revision' (CC-0064).
+// 'revision'.
 func TestReconcileDatabase_Managed_AllReady_WithSchemaCheck(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := dbTestScheme()
@@ -1838,7 +1831,7 @@ func TestReconcileDatabase_Managed_AllReady_WithSchemaCheck(t *testing.T) {
 
 // TestReconcileDatabase_SchemaCheckStale_Recreated verifies that a completed
 // schema-check Job with a stale pod-spec hash triggers deletion and recreation,
-// and the reconciler requeues (CC-0064).
+// and the reconciler requeues.
 func TestReconcileDatabase_SchemaCheckStale_Recreated(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := dbTestScheme()
@@ -1868,7 +1861,7 @@ func TestReconcileDatabase_SchemaCheckStale_Recreated(t *testing.T) {
 
 // TestReconcileDatabase_SchemaCheckNotCreatedWhenDBSyncRunning verifies that when
 // db_sync is still running, no schema-check Job is created and the condition
-// remains DBSyncInProgress (CC-0064).
+// remains DBSyncInProgress.
 func TestReconcileDatabase_SchemaCheckNotCreatedWhenDBSyncRunning(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := dbTestScheme()
@@ -1903,7 +1896,7 @@ func TestReconcileDatabase_SchemaCheckNotCreatedWhenDBSyncRunning(t *testing.T) 
 
 // TestReconcileDatabase_SchemaCheckNotCreatedWhenDBSyncFails verifies that when
 // db_sync fails, no schema-check Job is created and the condition is set to
-// DBSyncFailed (CC-0064).
+// DBSyncFailed.
 func TestReconcileDatabase_SchemaCheckNotCreatedWhenDBSyncFails(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := dbTestScheme()
@@ -1933,7 +1926,7 @@ func TestReconcileDatabase_SchemaCheckNotCreatedWhenDBSyncFails(t *testing.T) {
 
 // TestReconcileDatabase_SchemaCheckFailed_InstalledReleaseNotUpdated verifies that
 // when the schema-check Job fails, InstalledRelease is NOT updated to the new
-// tag (CC-0064).
+// tag.
 func TestReconcileDatabase_SchemaCheckFailed_InstalledReleaseNotUpdated(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := dbTestScheme()
@@ -1955,7 +1948,7 @@ func TestReconcileDatabase_SchemaCheckFailed_InstalledReleaseNotUpdated(t *testi
 // ObservedGeneration is set on the DatabaseReady condition for
 // False (ClusterNotReady, WaitingForDatabase, DBSyncFailed,
 // SchemaDriftDetected) and True (DatabaseSynced) paths with distinct
-// generation values (CC-0072, REQ-002, REQ-003).
+// generation values.
 func TestReconcileDatabase_ConditionObservedGeneration(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := dbTestScheme()
@@ -2040,7 +2033,7 @@ func TestReconcileDatabase_ConditionObservedGeneration(t *testing.T) {
 }
 
 // TestBuildDBSyncJob_PriorityClassNameSet verifies that when spec.PriorityClassName
-// is set, the db-sync Job PodSpec includes the configured priority class (CC-0075).
+// is set, the db-sync Job PodSpec includes the configured priority class.
 func TestBuildDBSyncJob_PriorityClassNameSet(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := brownfieldKeystone()
@@ -2053,7 +2046,7 @@ func TestBuildDBSyncJob_PriorityClassNameSet(t *testing.T) {
 }
 
 // TestBuildDBSyncJob_PriorityClassNameNil verifies that when spec.PriorityClassName
-// is nil, the db-sync Job PodSpec has an empty priority class name (CC-0075).
+// is nil, the db-sync Job PodSpec has an empty priority class name.
 func TestBuildDBSyncJob_PriorityClassNameNil(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := brownfieldKeystone()
@@ -2063,12 +2056,12 @@ func TestBuildDBSyncJob_PriorityClassNameNil(t *testing.T) {
 	g.Expect(job.Spec.Template.Spec.PriorityClassName).To(BeEmpty())
 }
 
-// --- Finalizer test helpers (CC-0078) ---
+// --- Finalizer test helpers ---
 
 // mariaDBResources returns Database, User, and Grant CRs matching the names
 // reconcileDatabase would create for the given Keystone CR. The namespace and
 // name follow the same convention (keystone.Name, keystone.Namespace) used by
-// buildDatabase/buildUser/buildGrant (CC-0078).
+// buildDatabase/buildUser/buildGrant.
 func mariaDBResources(ks *keystonev1alpha1.Keystone) (*mariadbv1alpha1.Database, *mariadbv1alpha1.User, *mariadbv1alpha1.Grant) {
 	db := &mariadbv1alpha1.Database{
 		ObjectMeta: metav1.ObjectMeta{Name: ks.Name, Namespace: ks.Namespace},
@@ -2086,7 +2079,6 @@ func mariaDBResources(ks *keystonev1alpha1.Keystone) (*mariadbv1alpha1.Database,
 // fake client's Delete transitions it to Terminating (sets DeletionTimestamp)
 // rather than removing it from the store. This simulates the real MariaDB
 // operator deferring actual deletion while it tears down external resources
-// (CC-0078).
 func withPendingDeleteFinalizer(obj client.Object) client.Object {
 	obj.SetFinalizers([]string{"test.c5c3.io/pending-delete"})
 	return obj
@@ -2095,7 +2087,7 @@ func withPendingDeleteFinalizer(obj client.Object) client.Object {
 // TestFinalizeDatabaseResources_DeletesAllThreeCRs verifies that the handler
 // issues Delete for Database, User, and Grant. The fake client removes objects
 // synchronously when no finalizer is attached, so all three are absent after
-// the single call (CC-0078, REQ-002).
+// the single call.
 func TestFinalizeDatabaseResources_DeletesAllThreeCRs(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := dbTestScheme()
@@ -2121,8 +2113,7 @@ func TestFinalizeDatabaseResources_DeletesAllThreeCRs(t *testing.T) {
 
 // TestFinalizeDatabaseResources_BrownfieldIsNoop verifies that a brownfield
 // Keystone CR (Host-only, no ClusterRef) returns without error because no
-// MariaDB CRs were ever created and every Delete returns NotFound (CC-0078,
-// REQ-002).
+// MariaDB CRs were ever created and every Delete returns NotFound.
 func TestFinalizeDatabaseResources_BrownfieldIsNoop(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := dbTestScheme()
@@ -2138,7 +2129,7 @@ func TestFinalizeDatabaseResources_BrownfieldIsNoop(t *testing.T) {
 // TestFinalizeDatabaseResources_NotFoundIsTolerated verifies that having only a
 // subset of the three MariaDB CRs present does not cause an error. Delete
 // returning NotFound on absent resources is tolerated and the present CR is
-// still deleted (CC-0078, REQ-003).
+// still deleted.
 func TestFinalizeDatabaseResources_NotFoundIsTolerated(t *testing.T) {
 	testCases := []struct {
 		name    string
@@ -2184,7 +2175,7 @@ func TestFinalizeDatabaseResources_NotFoundIsTolerated(t *testing.T) {
 // TestFinalizeDatabaseResources_IsIdempotent verifies that a second invocation
 // after a successful cleanup produces the same outcome without error, so
 // re-entering the finalizer (operator restart, retry, external deletion) never
-// blocks CR removal (CC-0078, REQ-003).
+// blocks CR removal.
 func TestFinalizeDatabaseResources_IsIdempotent(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := dbTestScheme()
@@ -2201,7 +2192,6 @@ func TestFinalizeDatabaseResources_IsIdempotent(t *testing.T) {
 // a MariaDB CR is held in Terminating state by another finalizer, the handler
 // still returns success and marks it for deletion — it no longer blocks the
 // Keystone finalizer on the MariaDB operator completing its teardown
-// (CC-0078, REQ-002).
 func TestFinalizeDatabaseResources_IssuesDeleteWhenTerminating(t *testing.T) {
 	testCases := []struct {
 		name       string
@@ -2251,7 +2241,7 @@ func TestFinalizeDatabaseResources_IssuesDeleteWhenTerminating(t *testing.T) {
 
 // TestFinalizeDatabaseResources_DeleteErrorIsPropagated verifies that a
 // non-NotFound error from Delete propagates as a reconciler error so
-// controller-runtime retries with backoff (CC-0078, REQ-002, REQ-003).
+// controller-runtime retries with backoff.
 func TestFinalizeDatabaseResources_DeleteErrorIsPropagated(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := dbTestScheme()
@@ -2282,7 +2272,7 @@ func TestFinalizeDatabaseResources_DeleteErrorIsPropagated(t *testing.T) {
 	g.Expect(err.Error()).To(ContainSubstring("simulated API server error"))
 }
 
-// --- db_sync metrics tests (CC-0089, REQ-005) ---
+// --- db_sync metrics tests ---
 
 // dbSyncMetricsTestKeystone returns a brownfield Keystone CR with per-test
 // Name/Namespace so db_sync metric tests never share counter series.
@@ -2301,7 +2291,7 @@ func dbSyncMetricsTestKeystone(name, ns string) *keystonev1alpha1.Keystone {
 // independently by per-phase Keystone CR annotation. The duration histogram
 // observes condition.LastTransitionTime minus Job.CreationTimestamp on the
 // db_sync sample. A second reconcile with the same per-phase Job UIDs must
-// not re-emit (CC-0089, REQ-005, W-002).
+// not re-emit.
 func TestDbSyncCompletionRecordsMetric(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := dbTestScheme()
@@ -2353,27 +2343,26 @@ func TestDbSyncCompletionRecordsMetric(t *testing.T) {
 	// db_sync (succeeded, 15 s) and the subsequent schema-check (succeeded,
 	// 0 s — its Job timestamps are unset in the test helper).
 	g.Expect(afterCount-beforeCount).To(Equal(2.0),
-		"succeeded counter must increment by 1 for db_sync and 1 for schema-check on a single reconcile (CC-0089, REQ-005, W-002)")
+		"succeeded counter must increment by 1 for db_sync and 1 for schema-check on a single reconcile")
 	g.Expect(afterSamples-beforeSamples).To(Equal(uint64(2)),
-		"duration histogram must observe one sample per terminated DB-related Job (CC-0089, REQ-005, W-002)")
+		"duration histogram must observe one sample per terminated DB-related Job")
 	g.Expect(afterSum-beforeSum).To(BeNumerically("~", wantDBSyncDuration.Seconds(), 0.01),
 		"histogram sample_sum delta equals the db_sync duration (schema-check helper has zero-valued timestamps so contributes 0)")
 
 	// Idempotence: a second reconcile with the same per-phase Job UIDs must
-	// NOT re-emit (CC-0089, REQ-005). Each phase keeps an independent
+	// NOT re-emit. Each phase keeps an independent
 	// dedupe annotation, so neither db_sync nor schema-check should fire
 	// again.
 	_, _ = r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
 	finalCount := counterValue(t, "keystone_operator_db_sync_total", counterLabels)
 	g.Expect(finalCount).To(Equal(afterCount),
-		"metric MUST be emitted at-most-once per (phase, Job UID) (CC-0089, REQ-005, W-002)")
+		"metric MUST be emitted at-most-once per (phase, Job UID)")
 }
 
 // TestDbSyncFailureRecordsMetric verifies that reconcileDatabase records a
 // "failed" db_sync metric when the db_sync Job transitions to Failed=True.
 // reconcileDatabase propagates the job.ErrJobFailed error to its caller; the
 // metric must still be emitted on the terminal-transition observation path
-// (CC-0089, REQ-005).
 func TestDbSyncFailureRecordsMetric(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := dbTestScheme()
@@ -2420,9 +2409,9 @@ func TestDbSyncFailureRecordsMetric(t *testing.T) {
 	afterSamples := histogramSampleCount(t, "keystone_operator_db_sync_duration_seconds", durationLabels)
 
 	g.Expect(afterCount-beforeCount).To(Equal(1.0),
-		"failed counter must increment by 1 on terminal Failed transition (CC-0089, REQ-005)")
+		"failed counter must increment by 1 on terminal Failed transition")
 	g.Expect(afterSamples-beforeSamples).To(Equal(uint64(1)),
-		"duration histogram must observe exactly one sample on terminal Failed transition (CC-0089, REQ-005)")
+		"duration histogram must observe exactly one sample on terminal Failed transition")
 
 	m := findMetricByLabels(t, ctrlmetrics.Registry, "keystone_operator_db_sync_duration_seconds", durationLabels)
 	g.Expect(m).NotTo(BeNil())
@@ -2433,7 +2422,6 @@ func TestDbSyncFailureRecordsMetric(t *testing.T) {
 // TestDbSyncInProgressDoesNotRecord verifies that reconcileDatabase does NOT
 // emit a db_sync metric while the Job is still running (no terminal
 // condition). Polling an unfinished Job must not inflate the counter
-// (CC-0089, REQ-005).
 func TestDbSyncInProgressDoesNotRecord(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := dbTestScheme()
@@ -2478,16 +2466,16 @@ func TestDbSyncInProgressDoesNotRecord(t *testing.T) {
 	afterSamples := histogramSampleCount(t, "keystone_operator_db_sync_duration_seconds", durationLabels)
 
 	g.Expect(afterSuccess-beforeSuccess).To(Equal(0.0),
-		"running Job must NOT increment the succeeded counter (CC-0089, REQ-005)")
+		"running Job must NOT increment the succeeded counter")
 	g.Expect(afterFailed-beforeFailed).To(Equal(0.0),
-		"running Job must NOT increment the failed counter (CC-0089, REQ-005)")
+		"running Job must NOT increment the failed counter")
 	g.Expect(afterSamples-beforeSamples).To(Equal(uint64(0)),
-		"running Job must NOT observe a duration sample (CC-0089, REQ-005)")
+		"running Job must NOT observe a duration sample")
 }
 
 // TestUpgradePhaseFailureRecordsDBSyncMetric verifies that each
 // expand-migrate-contract phase Job contributes a `failed` increment to the
-// db_sync metric on terminal failure (CC-0089, REQ-005, W-002). Without this,
+// db_sync metric on terminal failure. Without this,
 // the dashboard panel and `keystone_operator_db_sync_total{result="failed"}`
 // alerts go blank for the duration of an upgrade.
 func TestUpgradePhaseFailureRecordsDBSyncMetric(t *testing.T) {
@@ -2537,9 +2525,9 @@ func TestUpgradePhaseFailureRecordsDBSyncMetric(t *testing.T) {
 			afterSamples := histogramSampleCount(t, "keystone_operator_db_sync_duration_seconds", durationLabels)
 
 			g.Expect(afterFailed-beforeFailed).To(Equal(1.0),
-				"%s phase failure must contribute one increment to db_sync_total{result=failed} (CC-0089, REQ-005, W-002)", tc.jobPhase)
+				"%s phase failure must contribute one increment to db_sync_total{result=failed}", tc.jobPhase)
 			g.Expect(afterSamples-beforeSamples).To(Equal(uint64(1)),
-				"%s phase failure must contribute one duration sample (CC-0089, REQ-005, W-002)", tc.jobPhase)
+				"%s phase failure must contribute one duration sample", tc.jobPhase)
 
 			cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
 			g.Expect(cond).NotTo(BeNil())
@@ -2555,10 +2543,10 @@ func TestUpgradePhaseFailureRecordsDBSyncMetric(t *testing.T) {
 // either emits then (after a successful patch) or defers again — but the
 // at-most-once-per-(phase, Job UID) guarantee documented in
 // docs/reference/keystone-operator-metrics.md is preserved against transient
-// apiserver failures (CC-0089, REQ-005, W-003).
+// apiserver failures.
 //
 // Table-driven across every phase that calls recordDBJobTerminalState
-// (CC-0089, review-2 suggestion 2): db-sync, db-expand, db-migrate,
+// (review-2 suggestion 2): db-sync, db-expand, db-migrate,
 // db-contract, schema-check. A regression that re-orders Patch and
 // metrics.RecordDBSync in any single caller is then caught by this test
 // alone, locking the W-003 invariant for the full set of caller sites at
@@ -2645,7 +2633,7 @@ func TestRecordDBJobTerminalState_DefersOnPatchFailure(t *testing.T) {
 				WithInterceptorFuncs(interceptor.Funcs{
 					Patch: func(_ context.Context, _ client.WithWatch, obj client.Object, _ client.Patch, _ ...client.PatchOption) error {
 						if _, isKeystone := obj.(*keystonev1alpha1.Keystone); isKeystone {
-							return fmt.Errorf("simulated apiserver Patch failure (CC-0089 W-003, %s)", tc.jobSuffix)
+							return fmt.Errorf("simulated apiserver Patch failure (%s)", tc.jobSuffix)
 						}
 						return nil
 					},
@@ -2676,9 +2664,9 @@ func TestRecordDBJobTerminalState_DefersOnPatchFailure(t *testing.T) {
 			afterSamples := histogramSampleCount(t, "keystone_operator_db_sync_duration_seconds", durationLabels)
 
 			g.Expect(afterSuccess-beforeSuccess).To(Equal(0.0),
-				"%s: metric MUST NOT be emitted when the dedupe annotation patch fails (CC-0089, REQ-005, W-003)", tc.jobSuffix)
+				"%s: metric MUST NOT be emitted when the dedupe annotation patch fails", tc.jobSuffix)
 			g.Expect(afterSamples-beforeSamples).To(Equal(uint64(0)),
-				"%s: duration histogram MUST NOT receive a sample when the patch fails (CC-0089, REQ-005, W-003)", tc.jobSuffix)
+				"%s: duration histogram MUST NOT receive a sample when the patch fails", tc.jobSuffix)
 			g.Expect(ks.Annotations).NotTo(HaveKey(dbJobUIDAnnotationKey(tc.jobSuffix)),
 				"%s: failed Patch MUST NOT mirror the dedupe annotation back onto the in-memory CR", tc.jobSuffix)
 
@@ -2691,11 +2679,9 @@ func TestRecordDBJobTerminalState_DefersOnPatchFailure(t *testing.T) {
 	}
 }
 
-// Feature: CC-0106
-
 // dbTLSManagedKeystoneForJobs returns a managed-mode Keystone CR (ClusterRef
 // set) with DB TLS enabled, used to assert that every db_sync Job variant
-// projects the db-tls Secret into its pod (CC-0106, REQ-002, REQ-014).
+// projects the db-tls Secret into its pod.
 func dbTLSManagedKeystoneForJobs() *keystonev1alpha1.Keystone {
 	ks := managedKeystone()
 	ks.Spec.Database.TLS = &commonv1.DatabaseTLSSpec{
@@ -2711,7 +2697,7 @@ func dbTLSManagedKeystoneForJobs() *keystonev1alpha1.Keystone {
 // variant produced by buildDBJob (db-sync, expand, migrate, contract,
 // schema-check) carries the Secret-backed "db-tls" Volume and a matching
 // read-only VolumeMount at /etc/keystone/db-tls/ when TLS is enabled
-// (CC-0106, REQ-002, REQ-014). Name-based assertions only — additive
+// Name-based assertions only — additive
 // volumes must not perturb the existing volume ordering.
 func TestBuildDBJobVariants_DBTLSVolumeAndMount_WhenEnabled(t *testing.T) {
 	ks := dbTLSManagedKeystoneForJobs()
@@ -2742,16 +2728,16 @@ func TestBuildDBJobVariants_DBTLSVolumeAndMount_WhenEnabled(t *testing.T) {
 				}
 			}
 			g.Expect(tlsVolFound).To(BeTrue(),
-				"%s: CC-0106 db-tls Volume must be present when TLS enabled (REQ-002)",
+				"%s: db-tls Volume must be present when TLS enabled",
 				tc.name)
 			g.Expect(tlsVol.Projected).NotTo(BeNil(),
-				"%s: CC-0106 db-tls Volume must be Projected so both Secret refs are honored (REQ-002)",
+				"%s: db-tls Volume must be Projected so both Secret refs are honored",
 				tc.name)
 			g.Expect(tlsVol.Projected.DefaultMode).NotTo(BeNil(),
-				"%s: CC-0106 db-tls Volume must set DefaultMode (REQ-014)",
+				"%s: db-tls Volume must set DefaultMode",
 				tc.name)
 			g.Expect(*tlsVol.Projected.DefaultMode).To(Equal(int32(0o400)),
-				"%s: CC-0106 db-tls Volume DefaultMode must be 0o400 (owner read-only, REQ-014)",
+				"%s: db-tls Volume DefaultMode must be 0o400 (owner read-only)",
 				tc.name)
 			expectDBTLSProjection(g, tlsVol.Projected, "db-server-ca", "test-keystone-db-client")
 
@@ -2767,13 +2753,13 @@ func TestBuildDBJobVariants_DBTLSVolumeAndMount_WhenEnabled(t *testing.T) {
 				}
 			}
 			g.Expect(tlsMountFound).To(BeTrue(),
-				"%s: CC-0106 db-tls VolumeMount must be present on container when TLS enabled (REQ-002)",
+				"%s: db-tls VolumeMount must be present on container when TLS enabled",
 				tc.name)
 			g.Expect(tlsMount.MountPath).To(Equal("/etc/keystone/db-tls/"),
-				"%s: CC-0106 db-tls VolumeMount path must match ssl_* DSN parameter directory (REQ-014)",
+				"%s: db-tls VolumeMount path must match ssl_* DSN parameter directory",
 				tc.name)
 			g.Expect(tlsMount.ReadOnly).To(BeTrue(),
-				"%s: CC-0106 db-tls VolumeMount must be read-only (REQ-014)",
+				"%s: db-tls VolumeMount must be read-only",
 				tc.name)
 		})
 	}
@@ -2784,7 +2770,7 @@ func TestBuildDBJobVariants_DBTLSVolumeAndMount_WhenEnabled(t *testing.T) {
 // db-tls Volume must reference the user-supplied caBundleSecretRef.Name and
 // clientCertSecretRef.Name verbatim (not a hardcoded "<name>-db-client" name).
 // This exercises the brownfield/enterprise-PKI shape where the trust bundle
-// and client keypair live in separate Secrets (CC-0106, REQ-002, REQ-014).
+// and client keypair live in separate Secrets.
 func TestBuildDBJobVariants_DBTLSVolume_UsesUserSuppliedSecretNames(t *testing.T) {
 	ks := managedKeystone()
 	ks.Spec.Database.TLS = &commonv1.DatabaseTLSSpec{
@@ -2810,9 +2796,9 @@ func TestBuildDBJobVariants_DBTLSVolume_UsesUserSuppliedSecretNames(t *testing.T
 			g := NewGomegaWithT(t)
 			tlsVol := findVolumeByName(tc.job.Spec.Template.Spec.Volumes, "db-tls")
 			g.Expect(tlsVol).NotTo(BeNil(),
-				"%s: CC-0106 db-tls Volume must be present (REQ-002)", tc.name)
+				"%s: db-tls Volume must be present", tc.name)
 			g.Expect(tlsVol.Projected).NotTo(BeNil(),
-				"%s: CC-0106 db-tls Volume must be Projected (REQ-002)", tc.name)
+				"%s: db-tls Volume must be Projected", tc.name)
 			expectDBTLSProjection(g, tlsVol.Projected,
 				"enterprise-root-ca-bundle", "site-specific-client-keypair")
 		})
@@ -2821,7 +2807,7 @@ func TestBuildDBJobVariants_DBTLSVolume_UsesUserSuppliedSecretNames(t *testing.T
 
 // TestBuildDBJobVariants_DBTLSVolumeAbsent_WhenNil verifies that no db-tls
 // Volume or VolumeMount is added by any db_sync Job variant when
-// spec.database.tls is nil — preserves pre-CC-0106 behaviour (REQ-002).
+// spec.database.tls is nil — preserves pre-existing behaviour.
 func TestBuildDBJobVariants_DBTLSVolumeAbsent_WhenNil(t *testing.T) {
 	ks := brownfieldKeystone() // TLS == nil
 
@@ -2845,14 +2831,14 @@ func TestBuildDBJobVariants_DBTLSVolumeAbsent_WhenNil(t *testing.T) {
 
 			for _, v := range tc.job.Spec.Template.Spec.Volumes {
 				g.Expect(v.Name).NotTo(Equal("db-tls"),
-					"%s: CC-0106 db-tls Volume must NOT be present when TLS is nil (REQ-002)",
+					"%s: db-tls Volume must NOT be present when TLS is nil",
 					tc.name)
 			}
 			container := findContainerByName(tc.job.Spec.Template.Spec.Containers, tc.containerName)
 			g.Expect(container).NotTo(BeNil())
 			for _, m := range container.VolumeMounts {
 				g.Expect(m.Name).NotTo(Equal("db-tls"),
-					"%s: CC-0106 db-tls VolumeMount must NOT be present when TLS is nil (REQ-002)",
+					"%s: db-tls VolumeMount must NOT be present when TLS is nil",
 					tc.name)
 			}
 		})
@@ -2861,7 +2847,7 @@ func TestBuildDBJobVariants_DBTLSVolumeAbsent_WhenNil(t *testing.T) {
 
 // TestBuildDBJobVariants_DBTLSVolumeAbsent_WhenDisabled verifies the
 // Enabled-false gate for every Job variant: a TLS block with Enabled=false
-// must not project the keypair into the Job pod (CC-0106, REQ-002).
+// must not project the keypair into the Job pod.
 func TestBuildDBJobVariants_DBTLSVolumeAbsent_WhenDisabled(t *testing.T) {
 	ks := managedKeystone()
 	ks.Spec.Database.TLS = &commonv1.DatabaseTLSSpec{
@@ -2888,14 +2874,14 @@ func TestBuildDBJobVariants_DBTLSVolumeAbsent_WhenDisabled(t *testing.T) {
 			g := NewGomegaWithT(t)
 			for _, v := range tc.job.Spec.Template.Spec.Volumes {
 				g.Expect(v.Name).NotTo(Equal("db-tls"),
-					"%s: CC-0106 db-tls Volume must NOT be present when TLS.Enabled is false (REQ-002)",
+					"%s: db-tls Volume must NOT be present when TLS.Enabled is false",
 					tc.name)
 			}
 			container := findContainerByName(tc.job.Spec.Template.Spec.Containers, tc.containerName)
 			g.Expect(container).NotTo(BeNil())
 			for _, m := range container.VolumeMounts {
 				g.Expect(m.Name).NotTo(Equal("db-tls"),
-					"%s: CC-0106 db-tls VolumeMount must NOT be present when TLS.Enabled is false (REQ-002)",
+					"%s: db-tls VolumeMount must NOT be present when TLS.Enabled is false",
 					tc.name)
 			}
 		})
@@ -2903,7 +2889,7 @@ func TestBuildDBJobVariants_DBTLSVolumeAbsent_WhenDisabled(t *testing.T) {
 }
 
 // TestReconcileDatabase_CompletedSchemaCheck_SameHash_NotRecreated verifies the
-// CC-0113 steady state (#415, REQ-005): when the schema-check Job is already
+// steady state (#415): when the schema-check Job is already
 // complete and its pod-spec hash matches the desired spec, the reconciler must
 // NOT delete or recreate the Job. Since TTL was removed, the completed Job
 // lingers as the RunJob pod-spec-hash state record and must carry no TTL.
@@ -2937,6 +2923,6 @@ func TestReconcileDatabase_CompletedSchemaCheck_SameHash_NotRecreated(t *testing
 	}, &retained)).To(Succeed())
 	g.Expect(retained.UID).To(Equal(originalUID))
 
-	// The lingering Job carries no TTL (CC-0113: TTL removed to stop the loop).
+	// The lingering Job carries no TTL (: TTL removed to stop the loop).
 	g.Expect(retained.Spec.TTLSecondsAfterFinished).To(BeNil())
 }

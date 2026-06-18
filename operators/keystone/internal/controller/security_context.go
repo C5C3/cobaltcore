@@ -9,15 +9,13 @@ import (
 	"k8s.io/utils/ptr"
 )
 
-// Feature: CC-0045
-
 // openstackUID is the UID/GID of the "openstack" user created in
 // images/python-base/Dockerfile and shared by all service images.
 const openstackUID int64 = 42424
 
 // restrictedSecurityContext returns a container-level SecurityContext that
 // satisfies the Pod Security Standards Restricted profile. All Job and CronJob
-// builders must use this helper to ensure a consistent security posture (CC-0045).
+// builders must use this helper to ensure a consistent security posture.
 func restrictedSecurityContext() *corev1.SecurityContext {
 	return &corev1.SecurityContext{
 		AllowPrivilegeEscalation: ptr.To(false),

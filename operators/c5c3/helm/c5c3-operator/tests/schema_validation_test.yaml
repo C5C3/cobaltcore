@@ -1,4 +1,4 @@
-# CC-0110: Values schema validation unit tests.
+# Values schema validation unit tests.
 # Verifies that values.schema.json correctly rejects invalid inputs.
 suite: Values Schema Validation
 templates:
@@ -295,7 +295,7 @@ tests:
           errorPattern: "webhook/enabled"
 
   # ---------------------------------------------------------------------------
-  # Positive tests: valid non-default values pass schema validation (CC-0110)
+  # Positive tests: valid non-default values pass schema validation
   # ---------------------------------------------------------------------------
   - it: should accept custom replicas
     set:

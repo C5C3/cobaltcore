@@ -27,8 +27,6 @@ import (
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
 
-// Feature: CC-0058
-
 // --- Test Helpers ---
 
 func policyValidationTestScheme() *runtime.Scheme {
@@ -66,7 +64,7 @@ func policyValidationKeystone() *keystonev1alpha1.Keystone {
 }
 
 // policyValidationKeystoneWithPolicy returns a test Keystone CR with
-// PolicyOverrides set (CC-0058).
+// PolicyOverrides set.
 func policyValidationKeystoneWithPolicy() *keystonev1alpha1.Keystone {
 	ks := policyValidationKeystone()
 	ks.Spec.PolicyOverrides = &commonv1.PolicySpec{
@@ -89,7 +87,7 @@ func newPolicyValidationTestReconciler(s *runtime.Scheme, objs ...client.Object)
 
 // completedPolicyValidationJob returns a validation Job that matches what
 // buildPolicyValidationJob produces and is marked as complete with the correct
-// pod-spec hash (CC-0058).
+// pod-spec hash.
 func completedPolicyValidationJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
 	j := buildPolicyValidationJob(ks, "keystone-config-abc123")
 	now := metav1.Now()
@@ -105,7 +103,7 @@ func completedPolicyValidationJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
 }
 
 // failedPolicyValidationJob returns a validation Job that is marked as
-// permanently failed (CC-0058).
+// permanently failed.
 func failedPolicyValidationJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
 	j := buildPolicyValidationJob(ks, "keystone-config-abc123")
 	j.Annotations = map[string]string{
@@ -119,7 +117,7 @@ func failedPolicyValidationJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
 }
 
 // runningPolicyValidationJob returns a validation Job that exists but is still
-// running (no completion or failure conditions) (CC-0058).
+// running (no completion or failure conditions).
 func runningPolicyValidationJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
 	j := buildPolicyValidationJob(ks, "keystone-config-abc123")
 	j.Annotations = map[string]string{
@@ -128,11 +126,11 @@ func runningPolicyValidationJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
 	return j
 }
 
-// --- Path 1: policyOverrides nil — skip validation (REQ-003) ---
+// --- Path 1: policyOverrides nil — skip validation ---
 
 // TestReconcilePolicyValidation_NoPolicyOverrides_SkipsValidation verifies that
 // when policyOverrides is nil, no Job is created and PolicyValidReady=True with
-// reason PolicyValidationNotRequired (CC-0058, REQ-003).
+// reason PolicyValidationNotRequired.
 func TestReconcilePolicyValidation_NoPolicyOverrides_SkipsValidation(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := policyValidationKeystone()
@@ -154,7 +152,7 @@ func TestReconcilePolicyValidation_NoPolicyOverrides_SkipsValidation(t *testing.
 
 // TestReconcilePolicyValidation_PolicyRemoved_JobCleanedUp verifies that when
 // policyOverrides is nil and a validation Job exists from a previous reconcile,
-// the Job is deleted and PolicyValidReady=True/PolicyValidationNotRequired (CC-0058, REQ-003).
+// the Job is deleted and PolicyValidReady=True/PolicyValidationNotRequired.
 func TestReconcilePolicyValidation_PolicyRemoved_JobCleanedUp(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := policyValidationTestScheme()
@@ -207,7 +205,7 @@ func TestReconcilePolicyValidation_PolicyRemoved_JobCleanedUp(t *testing.T) {
 
 // TestReconcilePolicyValidation_PolicyRemoved_NoJob_NoError verifies that when
 // policyOverrides is nil and no validation Job exists, no error occurs and
-// PolicyValidReady=True/PolicyValidationNotRequired (CC-0058, REQ-003).
+// PolicyValidReady=True/PolicyValidationNotRequired.
 func TestReconcilePolicyValidation_PolicyRemoved_NoJob_NoError(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := policyValidationTestScheme()
@@ -226,11 +224,11 @@ func TestReconcilePolicyValidation_PolicyRemoved_NoJob_NoError(t *testing.T) {
 	g.Expect(cond.Message).To(Equal("No policy overrides configured"))
 }
 
-// --- Path 2: policyOverrides set — run validation Job (REQ-001) ---
+// --- Path 2: policyOverrides set — run validation Job ---
 
 // TestReconcilePolicyValidation_PolicySet_JobCreated verifies that when
 // policyOverrides is set and no Job exists, a validation Job is created and
-// PolicyValidReady=False/PolicyValidationInProgress with requeue (CC-0058, REQ-001).
+// PolicyValidReady=False/PolicyValidationInProgress with requeue.
 func TestReconcilePolicyValidation_PolicySet_JobCreated(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := policyValidationTestScheme()
@@ -259,12 +257,11 @@ func TestReconcilePolicyValidation_PolicySet_JobCreated(t *testing.T) {
 	g.Expect(cond.Reason).To(Equal(conditionReasonPolicyValidationInProgress))
 }
 
-// --- Job lifecycle paths (REQ-002) ---
+// --- Job lifecycle paths ---
 
 // TestReconcilePolicyValidation_JobRunning_Requeues verifies that when the
 // validation Job exists but is still running, result has
 // RequeueAfter=RequeueValidationWait and PolicyValidReady=False/PolicyValidationInProgress
-// (CC-0058, REQ-002).
 func TestReconcilePolicyValidation_JobRunning_Requeues(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := policyValidationTestScheme()
@@ -285,7 +282,7 @@ func TestReconcilePolicyValidation_JobRunning_Requeues(t *testing.T) {
 
 // TestReconcilePolicyValidation_JobComplete_ConditionTrue verifies that when
 // the validation Job completes successfully, PolicyValidReady=True/PolicyValidationPassed
-// with ObservedGeneration matching CR generation (CC-0058, REQ-002).
+// with ObservedGeneration matching CR generation.
 func TestReconcilePolicyValidation_JobComplete_ConditionTrue(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := policyValidationTestScheme()
@@ -307,7 +304,7 @@ func TestReconcilePolicyValidation_JobComplete_ConditionTrue(t *testing.T) {
 
 // TestReconcilePolicyValidation_JobFailed_ConditionFalse verifies that when the
 // validation Job fails, PolicyValidReady=False/PolicyValidationFailed and error
-// is returned wrapping job.ErrJobFailed (CC-0058, REQ-002).
+// is returned wrapping job.ErrJobFailed.
 func TestReconcilePolicyValidation_JobFailed_ConditionFalse(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := policyValidationTestScheme()
@@ -330,7 +327,7 @@ func TestReconcilePolicyValidation_JobFailed_ConditionFalse(t *testing.T) {
 // permanently failed and spec.policyOverrides is then fixed (producing a new
 // immutable ConfigMap, hence a new pod-template hash), the failed Job is
 // re-created and PolicyValidReady transitions back to False/InProgress instead
-// of staying stuck on the previous failure (CC-0058).
+// of staying stuck on the previous failure.
 func TestReconcilePolicyValidation_JobFailed_PolicyFixed_Recreates(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := policyValidationTestScheme()
@@ -364,12 +361,12 @@ func TestReconcilePolicyValidation_JobFailed_PolicyFixed_Recreates(t *testing.T)
 		"recreated validation Job should carry the hash of the fixed template")
 }
 
-// --- Descriptive error extraction (REQ-006) ---
+// --- Descriptive error extraction ---
 
 // TestReconcilePolicyValidation_JobFailed_DescriptiveErrorMessage verifies that
 // when the validation Job fails, the PolicyValidReady condition message includes
 // the specific error output from the Pod's termination message, not a generic
-// failure message (CC-0058, REQ-006).
+// failure message.
 func TestReconcilePolicyValidation_JobFailed_DescriptiveErrorMessage(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := policyValidationTestScheme()
@@ -416,7 +413,7 @@ func TestReconcilePolicyValidation_JobFailed_DescriptiveErrorMessage(t *testing.
 // TestReconcilePolicyValidation_JobFailed_FallbackMessage verifies that when
 // the validation Job fails but no Pod termination message is available, the
 // condition message falls back to referencing the Job name and namespace for
-// manual log inspection (CC-0058, REQ-006).
+// manual log inspection.
 func TestReconcilePolicyValidation_JobFailed_FallbackMessage(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := policyValidationTestScheme()
@@ -439,11 +436,11 @@ func TestReconcilePolicyValidation_JobFailed_FallbackMessage(t *testing.T) {
 	g.Expect(cond.Message).To(ContainSubstring("default"))
 }
 
-// --- Stale Job detection (REQ-005) ---
+// --- Stale Job detection ---
 
 // TestReconcilePolicyValidation_StaleJob_DeletedAndRecreated verifies that when
 // a completed Job has a different pod-spec hash (e.g., ConfigMap name changed),
-// the old Job is deleted and a new one is created (CC-0058, REQ-005).
+// the old Job is deleted and a new one is created.
 func TestReconcilePolicyValidation_StaleJob_DeletedAndRecreated(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := policyValidationTestScheme()
@@ -472,11 +469,11 @@ func TestReconcilePolicyValidation_StaleJob_DeletedAndRecreated(t *testing.T) {
 	g.Expect(newJob.Annotations[job.PodSpecHashAnnotation]).To(Equal(expectedHash))
 }
 
-// --- buildPolicyValidationJob specification tests (REQ-007) ---
+// --- buildPolicyValidationJob specification tests ---
 
 // TestBuildPolicyValidationJob_ImageMatchesDeployment verifies that the
 // validation Job container image is {spec.image.repository}:{spec.image.tag},
-// matching the API Deployment (CC-0058, REQ-007).
+// matching the API Deployment.
 func TestBuildPolicyValidationJob_ImageMatchesDeployment(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := policyValidationKeystoneWithPolicy()
@@ -489,7 +486,7 @@ func TestBuildPolicyValidationJob_ImageMatchesDeployment(t *testing.T) {
 }
 
 // TestBuildPolicyValidationJob_SecurityContext verifies that the validator
-// container SecurityContext satisfies PSS Restricted profile (CC-0058, REQ-007).
+// container SecurityContext satisfies PSS Restricted profile.
 func TestBuildPolicyValidationJob_SecurityContext(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := policyValidationKeystoneWithPolicy()
@@ -502,7 +499,7 @@ func TestBuildPolicyValidationJob_SecurityContext(t *testing.T) {
 
 // TestBuildPolicyValidationJob_ConfigMapMount verifies that the ConfigMap is
 // mounted at /etc/keystone/keystone.conf.d/ with readOnly=true and the volume
-// references the ConfigMap by exact name (CC-0058, REQ-007).
+// references the ConfigMap by exact name.
 func TestBuildPolicyValidationJob_ConfigMapMount(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := policyValidationKeystoneWithPolicy()
@@ -524,7 +521,7 @@ func TestBuildPolicyValidationJob_ConfigMapMount(t *testing.T) {
 
 // TestBuildPolicyValidationJob_BackoffAndTTL verifies backoffLimit=2,
 // restartPolicy=Never, and that ttlSecondsAfterFinished is unset so the
-// completed Job lingers as the RunJob state record (CC-0113, #415).
+// completed Job lingers as the RunJob state record (#415).
 func TestBuildPolicyValidationJob_BackoffAndTTL(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := policyValidationKeystoneWithPolicy()
@@ -543,7 +540,6 @@ func TestBuildPolicyValidationJob_BackoffAndTTL(t *testing.T) {
 // oslopolicy-validator with --namespace keystone and --config-dir pointing to
 // the ConfigMap mount. The validator auto-discovers keystone.conf in the dir
 // and reads the [oslo_policy] policy_file setting to locate policy.yaml
-// (CC-0058, REQ-007).
 func TestBuildPolicyValidationJob_Command(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := policyValidationKeystoneWithPolicy()
@@ -561,7 +557,7 @@ func TestBuildPolicyValidationJob_Command(t *testing.T) {
 
 // TestBuildPolicyValidationJob_TerminationMessagePolicy verifies that the
 // container has terminationMessagePolicy=FallbackToLogsOnError set, enabling
-// descriptive error extraction from failed pods (CC-0058, REQ-007).
+// descriptive error extraction from failed pods.
 func TestBuildPolicyValidationJob_TerminationMessagePolicy(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := policyValidationKeystoneWithPolicy()
@@ -573,11 +569,11 @@ func TestBuildPolicyValidationJob_TerminationMessagePolicy(t *testing.T) {
 	g.Expect(container.TerminationMessagePolicy).To(Equal(corev1.TerminationMessageFallbackToLogsOnError))
 }
 
-// --- Cross-cutting: ObservedGeneration (REQ-009) ---
+// --- Cross-cutting: ObservedGeneration ---
 
 // TestReconcilePolicyValidation_ConditionObservedGeneration verifies that all
 // condition updates include ObservedGeneration matching the Keystone CR's
-// current generation (CC-0058, REQ-009).
+// current generation.
 func TestReconcilePolicyValidation_ConditionObservedGeneration(t *testing.T) {
 	s := policyValidationTestScheme()
 
@@ -639,7 +635,7 @@ func TestReconcilePolicyValidation_ConditionObservedGeneration(t *testing.T) {
 }
 
 // TestReconcilePolicyValidation_CompletedSameHash_NotRecreated verifies the
-// CC-0113 steady state (#415, REQ-005): with policy overrides configured and a
+// steady state (#415): with policy overrides configured and a
 // completed validation Job whose pod-spec hash matches the desired spec, the
 // reconciler must NOT delete or recreate the Job. Since TTL was removed, the
 // completed Job lingers as the RunJob pod-spec-hash state record and must carry
@@ -674,6 +670,6 @@ func TestReconcilePolicyValidation_CompletedSameHash_NotRecreated(t *testing.T) 
 	}, &retained)).To(Succeed())
 	g.Expect(retained.UID).To(Equal(originalUID))
 
-	// The lingering Job carries no TTL (CC-0113: TTL removed to stop the loop).
+	// The lingering Job carries no TTL (: TTL removed to stop the loop).
 	g.Expect(retained.Spec.TTLSecondsAfterFinished).To(BeNil())
 }

@@ -25,7 +25,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
-// Graceful-termination effective defaults (CC-0084).
+// Graceful-termination effective defaults.
 // These constants are the single source of truth used by both the validating
 // webhook (for cross-field arithmetic when pointer fields are nil) and the
 // reconciler (task 3.x, which applies them when rendering the Deployment).
@@ -37,7 +37,7 @@ const (
 	DefaultPreStopSleepSeconds int64 = 5
 
 	// DefaultTrustFlushSchedule is the cron expression materialized by the
-	// defaulting webhook when KeystoneSpec.TrustFlush is nil (CC-0096, REQ-001).
+	// defaulting webhook when KeystoneSpec.TrustFlush is nil.
 	// It is the single source of truth used by the webhook (Default + validate
 	// error message) so the cadence cannot drift across call sites. The
 	// +kubebuilder:default marker on TrustFlushSpec.Schedule must be kept in
@@ -47,7 +47,7 @@ const (
 
 	// DefaultPasswordRotationSchedule is the cron expression materialized by the
 	// defaulting webhook when spec.bootstrap.passwordRotation.enabled is true and
-	// schedule is empty (CC-0109, REQ-004). It is the single source of truth
+	// schedule is empty. It is the single source of truth
 	// shared by Default() and the validate() error message so the cadence cannot
 	// drift across call sites. The +kubebuilder:default marker on
 	// PasswordRotationSpec.Schedule must be kept in sync with this constant —
@@ -57,13 +57,13 @@ const (
 
 	// DefaultPasswordRotationLength is the generated-password length materialized
 	// by the defaulting webhook when passwordRotation is enabled and
-	// passwordLength is zero (CC-0109, REQ-004). It is kept in sync with the
+	// passwordLength is zero. It is kept in sync with the
 	// +kubebuilder:default marker on PasswordRotationSpec.PasswordLength.
 	DefaultPasswordRotationLength int32 = 32
 
 	// DefaultDatabaseTLSMode is the verification strength materialized by the
 	// defaulting webhook when spec.database.tls is present with an empty mode
-	// (CC-0106, REQ-013). "require" encrypts the connection without peer
+	// "require" encrypts the connection without peer
 	// verification — the safe, least-surprising baseline that still works
 	// against a self-signed/internal CA before verify-ca/verify-full is opted
 	// into. It is the single source of truth shared by Default() and the
@@ -71,7 +71,7 @@ const (
 	DefaultDatabaseTLSMode = "require"
 )
 
-// Default resource requests and limits for the Keystone API container (CC-0042).
+// Default resource requests and limits for the Keystone API container.
 // These constants are the single source of truth for the defaulting webhook.
 // They ensure Burstable QoS class and enable HPA utilization-based scaling.
 // Exported because the controller package tests (reconcile_deployment_test.go)
@@ -83,9 +83,8 @@ var (
 	DefaultCPULimit      = resource.MustParse("500m")
 )
 
-// KeystoneWebhook implements defaulting and validation webhooks for the Keystone CRD (CC-0011).
-// Client is injected at startup for cluster-scoped resource lookups (e.g. PriorityClass
-// validation, CC-0075 REQ-006). Production wiring injects mgr.GetAPIReader() — a direct,
+// KeystoneWebhook implements defaulting and validation webhooks for the Keystone CRD.
+// Client is injected at startup for cluster-scoped resource lookups (e.g. PriorityClass validation). Production wiring injects mgr.GetAPIReader() — a direct,
 // uncached reader — so admission never rejects a just-created object from a stale
 // informer cache and no lazy informer start happens inside the webhook timeout.
 // +kubebuilder:object:generate=false
@@ -110,10 +109,10 @@ func (w *KeystoneWebhook) SetupWebhookWithManager(mgr ctrl.Manager) error {
 		Complete()
 }
 
-// Default implements admission.Defaulter[*Keystone] (CC-0011, REQ-001).
+// Default implements admission.Defaulter[*Keystone].
 // It sets spec fields to their documented defaults when they carry zero values.
 // Fernet.RotationSchedule is NOT defaulted here — it relies on the Kubebuilder
-// +kubebuilder:default marker only (plan decision #3, CC-0011).
+// +kubebuilder:default marker only (plan decision #3).
 func (w *KeystoneWebhook) Default(_ context.Context, obj *Keystone) error {
 	if obj.Spec.Replicas == 0 {
 		obj.Spec.Replicas = 3
@@ -133,7 +132,7 @@ func (w *KeystoneWebhook) Default(_ context.Context, obj *Keystone) error {
 	if obj.Spec.Bootstrap.Region == "" {
 		obj.Spec.Bootstrap.Region = "RegionOne"
 	}
-	// REQ-001 (CC-0096): Materialize spec.trustFlush so trust delegations are
+	// Materialize spec.trustFlush so trust delegations are
 	// purged by default. The leaf +kubebuilder:default markers on Schedule and
 	// Suspend remain as defense-in-depth for callers that bypass this webhook
 	// (envtest without the defaulter wired up); we set them explicitly here so
@@ -144,7 +143,7 @@ func (w *KeystoneWebhook) Default(_ context.Context, obj *Keystone) error {
 			Suspend:  false,
 		}
 	}
-	// REQ-004 (CC-0109): When scheduled admin-password rotation is enabled, fill
+	// When scheduled admin-password rotation is enabled, fill
 	// the leaf defaults so the sub-reconciler and generated CronJob have a single
 	// source of truth in the production admission path. Unlike TrustFlush, the
 	// block is deliberately NOT materialized when nil — scheduled rotation is
@@ -160,7 +159,7 @@ func (w *KeystoneWebhook) Default(_ context.Context, obj *Keystone) error {
 			pr.PasswordLength = DefaultPasswordRotationLength
 		}
 	}
-	// REQ-002 (CC-0040): Default zero-valued sub-fields of spec.uwsgi when non-nil.
+	// Default zero-valued sub-fields of spec.uwsgi when non-nil.
 	// When the pointer is nil, do nothing — the reconciler uses hardcoded defaults.
 	// HTTPKeepAlive is NOT defaulted here: its bool zero value (false) is
 	// indistinguishable from an explicit false, so we cannot safely override it
@@ -176,7 +175,7 @@ func (w *KeystoneWebhook) Default(_ context.Context, obj *Keystone) error {
 			obj.Spec.UWSGI.Threads = 1
 		}
 	}
-	// REQ-001 (CC-0098): Default zero-valued sub-fields of spec.logging.
+	// Default zero-valued sub-fields of spec.logging.
 	// When the pointer is nil, materialize the production baseline so downstream
 	// reconciler code dereferences spec.logging unconditionally (mirrors the
 	// Resources-when-nil pattern below). When non-nil, partial-fill zero values
@@ -197,7 +196,7 @@ func (w *KeystoneWebhook) Default(_ context.Context, obj *Keystone) error {
 			obj.Spec.Logging.Level = "INFO"
 		}
 	}
-	// REQ-004 (CC-0042): Default resource requests and limits for Burstable QoS
+	// Default resource requests and limits for Burstable QoS
 	// and HPA utilization calculations. Also defaults when Resources is non-nil
 	// but empty (e.g. `resources: {}`), which would otherwise produce BestEffort
 	// QoS and break HPA utilization calculations.
@@ -213,7 +212,7 @@ func (w *KeystoneWebhook) Default(_ context.Context, obj *Keystone) error {
 			},
 		}
 	}
-	// REQ-013 (CC-0106): Non-mutating database TLS defaulting. We deliberately
+	// Non-mutating database TLS defaulting. We deliberately
 	// do NOT materialize spec.database.tls when it is nil, and we never set
 	// .enabled — TLS is strictly opt-in, so an upgrade of a previously
 	// plaintext CR must not silently turn encryption on (which would also
@@ -230,12 +229,12 @@ func (w *KeystoneWebhook) Default(_ context.Context, obj *Keystone) error {
 	return nil
 }
 
-// ValidateCreate implements admission.Validator[*Keystone] (CC-0011, REQ-005).
+// ValidateCreate implements admission.Validator[*Keystone].
 func (w *KeystoneWebhook) ValidateCreate(ctx context.Context, obj *Keystone) (admission.Warnings, error) {
 	return nil, w.validate(ctx, obj)
 }
 
-// ValidateUpdate implements admission.Validator[*Keystone] (CC-0011, REQ-006).
+// ValidateUpdate implements admission.Validator[*Keystone].
 func (w *KeystoneWebhook) ValidateUpdate(ctx context.Context, _, newObj *Keystone) (admission.Warnings, error) {
 	return nil, w.validate(ctx, newObj)
 }
@@ -250,12 +249,12 @@ func (w *KeystoneWebhook) ValidateDelete(_ context.Context, _ *Keystone) (admiss
 }
 
 // validate runs all validation rules against the Keystone spec.
-// ctx is required for cluster-scoped lookups (PriorityClass validation, CC-0075 REQ-006).
+// ctx is required for cluster-scoped lookups (PriorityClass validation).
 func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 	var allErrs field.ErrorList
 	specPath := field.NewPath("spec")
 
-	// REQ-007 (CC-0011): Defense-in-depth replicas check alongside the
+	// Defense-in-depth replicas check alongside the
 	// +kubebuilder:validation:Minimum=1 marker.
 	if k.Spec.Replicas < 1 {
 		allErrs = append(allErrs, field.Invalid(
@@ -265,7 +264,7 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 		))
 	}
 
-	// REQ-007 (CC-0011): Defense-in-depth maxActiveKeys check alongside the
+	// Defense-in-depth maxActiveKeys check alongside the
 	// +kubebuilder:validation:Minimum=3 marker.
 	if k.Spec.Fernet.MaxActiveKeys < 3 && k.Spec.Fernet.MaxActiveKeys != 0 {
 		allErrs = append(allErrs, field.Invalid(
@@ -275,7 +274,7 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 		))
 	}
 
-	// REQ-009 (CC-0036): Defense-in-depth credentialKeys maxActiveKeys check alongside the
+	// Defense-in-depth credentialKeys maxActiveKeys check alongside the
 	// +kubebuilder:validation:Minimum=3 marker.
 	if k.Spec.CredentialKeys.MaxActiveKeys < 3 && k.Spec.CredentialKeys.MaxActiveKeys != 0 {
 		allErrs = append(allErrs, field.Invalid(
@@ -285,7 +284,7 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 		))
 	}
 
-	// REQ-009 (CC-0011): Defense-in-depth cache mutual-exclusivity check alongside the
+	// Defense-in-depth cache mutual-exclusivity check alongside the
 	// +kubebuilder:validation:XValidation CEL rule on KeystoneSpec.Cache.
 	if (k.Spec.Cache.ClusterRef != nil) == (len(k.Spec.Cache.Servers) > 0) {
 		allErrs = append(allErrs, field.Invalid(
@@ -295,7 +294,7 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 		))
 	}
 
-	// REQ-010 (CC-0011): Defense-in-depth database mutual-exclusivity check alongside the
+	// Defense-in-depth database mutual-exclusivity check alongside the
 	// +kubebuilder:validation:XValidation CEL rule on KeystoneSpec.Database.
 	if (k.Spec.Database.ClusterRef != nil) == (k.Spec.Database.Host != "") {
 		allErrs = append(allErrs, field.Invalid(
@@ -305,15 +304,14 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 		))
 	}
 
-	// REQ-007 (CC-0106): Defense-in-depth database TLS validation alongside the
+	// Defense-in-depth database TLS validation alongside the
 	// +kubebuilder:validation:Enum marker on DatabaseTLSSpec.Mode and the
 	// +kubebuilder:validation:XValidation CEL rule on KeystoneSpec.Database
 	// (task 2.1). The tls block is an optional pointer: a nil tls means
-	// plaintext (pre-CC-0106 behavior) and is skipped here. When set, mode
+	// plaintext (pre- behavior) and is skipped here. When set, mode
 	// (when non-empty) must be one of the documented enum values, and an
 	// enabled connection requires both certificate secret references so the
-	// reconciler can mount the trust bundle and client keypair (CC-0106
-	// SHARED TLS CONTRACT, kept consistent with the CRD CEL rule).
+	// reconciler can mount the trust bundle and client keypair (SHARED TLS CONTRACT, kept consistent with the CRD CEL rule).
 	if k.Spec.Database.TLS != nil {
 		tls := k.Spec.Database.TLS
 		tlsPath := specPath.Child("database", "tls")
@@ -351,7 +349,7 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 		}
 	}
 
-	// REQ-002 (CC-0011): Validate cron expression for Fernet key rotation schedule.
+	// Validate cron expression for Fernet key rotation schedule.
 	// NOTE: RotationSchedule is populated by the +kubebuilder:default CRD marker
 	// (applied between the mutating and validating webhook phases in the Kubernetes
 	// admission pipeline). Callers outside that pipeline must set RotationSchedule
@@ -369,7 +367,7 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 		))
 	}
 
-	// REQ-005 (CC-0036): Validate cron expression for credential key rotation schedule.
+	// Validate cron expression for credential key rotation schedule.
 	if k.Spec.CredentialKeys.RotationSchedule == "" {
 		allErrs = append(allErrs, field.Required(
 			specPath.Child("credentialKeys", "rotationSchedule"),
@@ -383,7 +381,7 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 		))
 	}
 
-	// REQ-008 (CC-0057): Validate cron expression for trust flush schedule.
+	// Validate cron expression for trust flush schedule.
 	// Only validated when spec.trustFlush is set (optional pointer field).
 	if k.Spec.TrustFlush != nil {
 		if k.Spec.TrustFlush.Schedule == "" {
@@ -400,14 +398,14 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 		}
 	}
 
-	// REQ-004 / REQ-014 (CC-0109): Validate scheduled admin-password rotation.
+	// / Validate scheduled admin-password rotation.
 	// Only enforced when the feature is enabled — a nil or disabled block leaves
 	// it off (the defaulting webhook does not materialize it), so a malformed
 	// schedule on a disabled block is tolerated. When enabled, the schedule must
 	// be a valid standard cron expression. The admin-password Secret reference is
 	// also required (boundary 3): Model B pushes the new password to OpenBao, from
 	// where the keystone-admin ExternalSecret round-trips it back into that Secret
-	// and Part 1 (CC-0108) re-bootstraps — a missing reference makes rotation a
+	// and Part 1 re-bootstraps — a missing reference makes rotation a
 	// no-op.
 	if pr := k.Spec.Bootstrap.PasswordRotation; pr != nil && pr.Enabled {
 		prPath := specPath.Child("bootstrap", "passwordRotation")
@@ -429,7 +427,7 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 				"adminPasswordSecretRef.name must be set when passwordRotation is enabled",
 			))
 		}
-		// REQ-004 (CC-0109): Defense-in-depth passwordLength check alongside the
+		// Defense-in-depth passwordLength check alongside the
 		// +kubebuilder:validation:Minimum=24 marker on
 		// PasswordRotationSpec.PasswordLength. A zero value is tolerated — the
 		// defaulting webhook materializes DefaultPasswordRotationLength (32) before
@@ -451,7 +449,7 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 		}
 	}
 
-	// REQ-003 (CC-0011): Detect duplicate plugin config sections.
+	// Detect duplicate plugin config sections.
 	seen := make(map[string]bool, len(k.Spec.Plugins))
 	for i, p := range k.Spec.Plugins {
 		if seen[p.ConfigSection] {
@@ -463,7 +461,7 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 		seen[p.ConfigSection] = true
 	}
 
-	// REQ-004 (CC-0011): PolicyOverrides must have at least one source when set.
+	// PolicyOverrides must have at least one source when set.
 	if k.Spec.PolicyOverrides != nil {
 		if len(k.Spec.PolicyOverrides.Rules) == 0 && k.Spec.PolicyOverrides.ConfigMapRef == nil {
 			allErrs = append(allErrs, field.Required(
@@ -472,7 +470,7 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 			))
 		}
 
-		// REQ-008 (CC-0011): Detect empty policy rule names.
+		// Detect empty policy rule names.
 		for name := range k.Spec.PolicyOverrides.Rules {
 			if name == "" {
 				allErrs = append(allErrs, field.Invalid(
@@ -484,7 +482,7 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 		}
 	}
 
-	// REQ-003 (CC-0040): Defense-in-depth uWSGI validation alongside
+	// Defense-in-depth uWSGI validation alongside
 	// +kubebuilder:validation:Minimum=1 markers on UWSGISpec fields.
 	if k.Spec.UWSGI != nil {
 		uwsgiPath := specPath.Child("uwsgi")
@@ -502,7 +500,7 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 				"threads must be at least 1",
 			))
 		}
-		// REQ-003 (CC-0084): Defense-in-depth harakiri range check alongside the
+		// Defense-in-depth harakiri range check alongside the
 		// +kubebuilder:validation:Minimum=1 marker on UWSGISpec.Harakiri.
 		if k.Spec.UWSGI.Harakiri != nil && *k.Spec.UWSGI.Harakiri < 1 {
 			allErrs = append(allErrs, field.Invalid(
@@ -511,10 +509,10 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 				"harakiri must be at least 1",
 			))
 		}
-		// REQ-004 (CC-0084): Defense-in-depth httpKeepAliveTimeout range check
+		// Defense-in-depth httpKeepAliveTimeout range check
 		// alongside the +kubebuilder:validation:Minimum=1 marker. A zero value
 		// would otherwise be interpreted by uWSGI as "unbounded timeout", which
-		// defeats the graceful-termination contract (CC-0084).
+		// defeats the graceful-termination contract.
 		if k.Spec.UWSGI.HTTPKeepAliveTimeout != nil && *k.Spec.UWSGI.HTTPKeepAliveTimeout < 1 {
 			allErrs = append(allErrs, field.Invalid(
 				uwsgiPath.Child("httpKeepAliveTimeout"),
@@ -522,7 +520,7 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 				"httpKeepAliveTimeout must be at least 1",
 			))
 		}
-		// REQ-012 (CC-0084): httpKeepAliveTimeout is only meaningful when
+		// httpKeepAliveTimeout is only meaningful when
 		// httpKeepAlive is true — otherwise the --http-keepalive-timeout flag
 		// is never emitted. Reject the nonsensical combination early so users
 		// do not silently lose the timeout they configured.
@@ -535,7 +533,7 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 		}
 	}
 
-	// REQ-002 (CC-0098): Defense-in-depth logging validation alongside the
+	// Defense-in-depth logging validation alongside the
 	// CRD enum markers on LoggingSpec.Format / .Level. Map values cannot be
 	// expressed as a CRD enum on additionalProperties, so the per-logger level
 	// check has no schema-layer counterpart — the webhook is the only enforcement
@@ -585,7 +583,7 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 		}
 	}
 
-	// REQ-001 (CC-0084): Defense-in-depth range check on
+	// Defense-in-depth range check on
 	// spec.terminationGracePeriodSeconds alongside the
 	// +kubebuilder:validation:Minimum=10 marker on KeystoneSpec.
 	if k.Spec.TerminationGracePeriodSeconds != nil && *k.Spec.TerminationGracePeriodSeconds < 10 {
@@ -595,7 +593,7 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 			"terminationGracePeriodSeconds must be at least 10",
 		))
 	}
-	// REQ-002 (CC-0084): Defense-in-depth range check on
+	// Defense-in-depth range check on
 	// spec.preStopSleepSeconds alongside the
 	// +kubebuilder:validation:Minimum=0 marker on KeystoneSpec. Negative
 	// durations are meaningless for the preStop sleep and are rejected.
@@ -607,7 +605,7 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 		))
 	}
 
-	// REQ-007 (CC-0084): preStopSleepSeconds must be strictly less than
+	// preStopSleepSeconds must be strictly less than
 	// terminationGracePeriodSeconds so there is a non-zero drain window
 	// between the end of the preStop sleep and the forced kubelet kill.
 	// Resolve nil pointers to the reconciler's effective defaults so the
@@ -628,7 +626,7 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 		))
 	}
 
-	// REQ-008 (CC-0084): harakiri must be strictly less than the drain window
+	// harakiri must be strictly less than the drain window
 	// (terminationGracePeriodSeconds - preStopSleepSeconds) so the worst-case
 	// uWSGI per-request kill fits inside the envelope between preStop sleep
 	// completion and SIGKILL. Only applied when spec.uwsgi.harakiri is set.
@@ -644,7 +642,7 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 		}
 	}
 
-	// REQ-006 (CC-0084): spec.strategy sanity check — a Recreate strategy must
+	// spec.strategy sanity check — a Recreate strategy must
 	// not carry a RollingUpdate block because the Deployment controller would
 	// reject the object at apply time. Catch the misconfiguration up-front.
 	if k.Spec.Strategy != nil {
@@ -657,7 +655,7 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 		}
 	}
 
-	// REQ-001 (CC-0038): Defense-in-depth autoscaling validation alongside
+	// Defense-in-depth autoscaling validation alongside
 	// kubebuilder markers and CEL rules.
 	if k.Spec.Autoscaling != nil {
 		autoscalingPath := specPath.Child("autoscaling")
@@ -684,7 +682,7 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 		}
 		// When minReplicas is unset, the reconciler defaults it to spec.replicas.
 		// Reject configurations where the implicit default would exceed maxReplicas,
-		// which would produce an HPA rejected by the API server (CC-0038).
+		// which would produce an HPA rejected by the API server.
 		if k.Spec.Autoscaling.MinReplicas == nil && k.Spec.Replicas > k.Spec.Autoscaling.MaxReplicas {
 			allErrs = append(allErrs, field.Invalid(
 				autoscalingPath.Child("maxReplicas"),
@@ -692,7 +690,7 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 				fmt.Sprintf("maxReplicas must be >= spec.replicas (%d) when minReplicas is not set, because minReplicas defaults to spec.replicas", k.Spec.Replicas),
 			))
 		}
-		// REQ-001 (CC-0038): Defense-in-depth bounds checks for utilization targets
+		// Defense-in-depth bounds checks for utilization targets
 		// alongside +kubebuilder:validation:Minimum=1 and +kubebuilder:validation:Maximum=100 markers.
 		if k.Spec.Autoscaling.TargetCPUUtilization != nil && (*k.Spec.Autoscaling.TargetCPUUtilization < 1 || *k.Spec.Autoscaling.TargetCPUUtilization > 100) {
 			allErrs = append(allErrs, field.Invalid(
@@ -716,8 +714,8 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 		}
 	}
 
-	// REQ-001 (CC-0039): Defense-in-depth networkPolicy ingress check alongside the
-	// +kubebuilder:validation:XValidation CEL rule on NetworkPolicySpec (CC-0039).
+	// Defense-in-depth networkPolicy ingress check alongside the
+	// +kubebuilder:validation:XValidation CEL rule on NetworkPolicySpec.
 	if k.Spec.NetworkPolicy != nil && len(k.Spec.NetworkPolicy.Ingress) == 0 {
 		allErrs = append(allErrs, field.Required(
 			specPath.Child("networkPolicy", "ingress"),
@@ -725,7 +723,7 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 		))
 	}
 
-	// REQ-007 (CC-0065): Defense-in-depth gateway validation alongside the
+	// Defense-in-depth gateway validation alongside the
 	// +kubebuilder:validation:MinLength=1 markers on GatewaySpec.Hostname and
 	// GatewayParentRefSpec.Name. Missing required fields would produce an
 	// invalid HTTPRoute, so reject early with field-specific errors.
@@ -744,7 +742,7 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 			))
 		}
 
-		// REQ-009 (CC-0088): When both spec.gateway and spec.bootstrap.publicEndpoint
+		// When both spec.gateway and spec.bootstrap.publicEndpoint
 		// are set, the publicEndpoint host must equal spec.gateway.hostname.
 		// keystoneStatusEndpoint returns publicEndpoint verbatim and the bootstrap
 		// reconciler writes it into the Keystone service catalog — a mismatched
@@ -777,7 +775,7 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 		}
 	}
 
-	// REQ-004 (CC-0042): Validate that resource requests do not exceed limits.
+	// Validate that resource requests do not exceed limits.
 	if k.Spec.Resources != nil && k.Spec.Resources.Limits != nil {
 		for resourceName, request := range k.Spec.Resources.Requests {
 			if limit, hasLimit := k.Spec.Resources.Limits[resourceName]; hasLimit && request.Cmp(limit) > 0 {
@@ -790,7 +788,7 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 		}
 	}
 
-	// REQ-004 (CC-0075): Validate that spec.priorityClassName references an existing
+	// Validate that spec.priorityClassName references an existing
 	// scheduling.k8s.io/v1 PriorityClass. Catches typos at admission time.
 	if k.Spec.PriorityClassName != nil && *k.Spec.PriorityClassName != "" && w.Client != nil {
 		pc := &schedulingv1.PriorityClass{}
@@ -809,7 +807,7 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 		}
 	}
 
-	// REQ-005 (CC-0075): Validate that custom TopologySpreadConstraints use the correct
+	// Validate that custom TopologySpreadConstraints use the correct
 	// LabelSelector matching the Deployment's selector labels.
 	if k.Spec.TopologySpreadConstraints != nil {
 		expectedLabels := map[string]string{
@@ -832,7 +830,7 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 					fmt.Sprintf("labelSelector.matchLabels must equal the Deployment selector labels %v", expectedLabels),
 				))
 			}
-			// REQ-005 (CC-0075): Reject MatchExpressions to prevent selectors that widen
+			// Reject MatchExpressions to prevent selectors that widen
 			// or narrow beyond the Deployment's intent. Only exact matchLabels are allowed.
 			if len(tsc.LabelSelector.MatchExpressions) > 0 {
 				allErrs = append(allErrs, field.Invalid(

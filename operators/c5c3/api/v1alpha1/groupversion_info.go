@@ -3,11 +3,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package v1alpha1 contains the API types for the c5c3 ControlPlane operator
-// (CC-0110). It defines the ControlPlane aggregate CRD that projects an
+// It defines the ControlPlane aggregate CRD that projects an
 // OpenStack control plane (Keystone today; more services later) plus the
 // CredentialRotation and SecretAggregate helper CRDs.
 //
-// DECISION (CC-0110, plan decision #1): the API group is "c5c3.io" (NOT
+// DECISION (plan decision #1): the API group is "c5c3.io" (NOT
 // keystone.openstack.c5c3.io). The ControlPlane is a cross-service aggregate,
 // so it lives in the vendor-neutral c5c3.io group rather than under a
 // per-service openstack subgroup.
@@ -27,7 +27,7 @@ import (
 
 var (
 	// GroupVersion is group version used to register these objects.
-	// DECISION (CC-0110, plan decision #1): Group is "c5c3.io", version "v1alpha1".
+	// DECISION (plan decision #1): Group is "c5c3.io", version "v1alpha1".
 	GroupVersion = schema.GroupVersion{Group: "c5c3.io", Version: "v1alpha1"}
 
 	// SchemeBuilder is used to add go types to the GroupVersionKind scheme.

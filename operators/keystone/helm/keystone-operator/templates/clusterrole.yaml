@@ -1,5 +1,5 @@
 {{- if not .Values.rbac.namespaceScoped }}
-# NOTE: Rules MUST be kept in sync with role.yaml (CC-0043).
+# NOTE: Rules MUST be kept in sync with role.yaml.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:

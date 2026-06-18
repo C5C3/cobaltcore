@@ -24,9 +24,7 @@ import (
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
 
-// Feature: CC-0065
-
-// Condition type and reason constants for HTTPRoute readiness (CC-0065).
+// Condition type and reason constants for HTTPRoute readiness.
 const (
 	conditionTypeHTTPRouteReady           = "HTTPRouteReady"
 	conditionReasonHTTPRouteAccepted      = "HTTPRouteAccepted"
@@ -36,14 +34,14 @@ const (
 )
 
 // defaultHTTPRoutePath is the URL path prefix applied when spec.gateway.path
-// is empty (CC-0065, REQ-001).
+// is empty.
 const defaultHTTPRoutePath = "/"
 
 // managedAnnotationsKey and managedLabelsKey are sentinel annotations that
 // record the operator-managed annotation/label key sets on an HTTPRoute.
 // On each reconcile, keys present in the previous set but absent from the
 // desired set are removed, enabling removal of annotations/labels that
-// disappear from spec.gateway (CC-0065, W-001). Stored as a comma-separated,
+// disappear from spec.gateway. Stored as a comma-separated,
 // sorted list of key names. The sentinel annotations themselves are never
 // part of the tracked set.
 const (
@@ -52,7 +50,7 @@ const (
 )
 
 // keystoneStatusEndpoint returns the externally reachable Keystone API endpoint
-// URL (CC-0065, REQ-004; CC-0088).
+// URL.
 //
 // Resolution order when spec.gateway is set:
 //  1. spec.bootstrap.publicEndpoint, if non-empty — used verbatim.
@@ -67,10 +65,10 @@ const (
 // and from the URL the operator writes into the Keystone service catalog
 // (reconcile_bootstrap.go), so consumers of status.endpoint would see a
 // stale URL. The webhook enforces that publicEndpoint, when set, uses
-// spec.gateway.hostname as its host (REQ-009), preventing drift.
+// spec.gateway.hostname as its host, preventing drift.
 //
 // spec.gateway.hostname is validated non-empty by both the CRD schema
-// (+kubebuilder:validation:MinLength=1) and the admission webhook (REQ-007),
+// (+kubebuilder:validation:MinLength=1) and the admission webhook,
 // so the fallback branch cannot produce https:///v3 post-admission.
 //
 // When spec.gateway is nil, the cluster-local Service DNS name is returned so
@@ -92,33 +90,33 @@ func keystoneStatusEndpoint(keystone *keystonev1alpha1.Keystone) string {
 // external VIP, TLS trust for Gateway-terminated certs, or the Gateway data
 // plane being healthy — all of which would conflate ingress health with API
 // readiness and break KeystoneAPIReady in environments where the operator pod
-// has no Internet egress (CC-0065, CC-0067).
+// has no Internet egress.
 func internalAPIURL(keystone *keystonev1alpha1.Keystone) string {
 	return fmt.Sprintf("http://%s.%s.svc.cluster.local:5000/v3", subResourceName(keystone), keystone.Namespace)
 }
 
 // keystoneAPIPort is the backend Service port targeted by the HTTPRoute
-// (CC-0065, REQ-003). The Keystone Service is named after the CR
-// (metadata.name, no suffix — CC-0095) and listens on port 5000 in every
+// The Keystone Service is named after the CR
+// (metadata.name, no suffix) and listens on port 5000 in every
 // existing deployment.
 const keystoneAPIPort = gatewayv1.PortNumber(5000)
 
 // requeueHTTPRouteAccepted is the interval for requeuing while waiting for a
 // Gateway controller to report Accepted=True on the HTTPRoute's parent status.
 // Acceptance is typically near-immediate, so a short interval keeps the
-// controller responsive without incurring excessive API load (CC-0065, REQ-005).
+// controller responsive without incurring excessive API load.
 const requeueHTTPRouteAccepted = RequeueDeploymentPolling
 
 // reconcileHTTPRoute ensures the HTTPRoute that exposes the Keystone API
 // through a Gateway matches the desired state. Three lifecycle paths
-// (CC-0065, REQ-001, REQ-002, REQ-005):
+//
 //   - spec.gateway set: create or update the HTTPRoute and reflect the
 //     parent Accepted condition as HTTPRouteReady.
 //   - spec.gateway nil: delete any existing HTTPRoute and set
 //     HTTPRouteReady=True/HTTPRouteNotRequired.
 //   - error: propagate errors from ensure/delete operations.
 func (r *KeystoneReconciler) reconcileHTTPRoute(ctx context.Context, keystone *keystonev1alpha1.Keystone) (ctrl.Result, error) {
-	// Path 0: Gateway API CRD is not installed (CC-0065). The watch was
+	// Path 0: Gateway API CRD is not installed. The watch was
 	// skipped in SetupWithManager; skip the delete attempt too — c.Delete
 	// would fail with "no matches for kind HTTPRoute" — and surface a clear
 	// condition instead of erroring.
@@ -143,7 +141,7 @@ func (r *KeystoneReconciler) reconcileHTTPRoute(ctx context.Context, keystone *k
 		return ctrl.Result{}, nil
 	}
 
-	// Path 2: gateway disabled — delete any existing HTTPRoute (CC-0065, REQ-002).
+	// Path 2: gateway disabled — delete any existing HTTPRoute.
 	if keystone.Spec.Gateway == nil {
 		if err := deleteHTTPRoute(ctx, r.Client, keystone.Namespace, subResourceName(keystone)); err != nil {
 			return ctrl.Result{}, fmt.Errorf("deleting HTTPRoute: %w", err)
@@ -158,14 +156,14 @@ func (r *KeystoneReconciler) reconcileHTTPRoute(ctx context.Context, keystone *k
 		return ctrl.Result{}, nil
 	}
 
-	// Path 1: gateway enabled — create or update the HTTPRoute (CC-0065, REQ-001).
+	// Path 1: gateway enabled — create or update the HTTPRoute.
 	desired := buildKeystoneHTTPRoute(keystone)
 	if err := ensureHTTPRoute(ctx, r.Client, r.Scheme, keystone, desired); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring HTTPRoute: %w", err)
 	}
 
 	// Re-fetch the HTTPRoute to read its parent status, which is written by
-	// the Gateway controller (not the operator) (CC-0065, REQ-005).
+	// the Gateway controller (not the operator).
 	current := &gatewayv1.HTTPRoute{}
 	if err := r.Get(ctx, client.ObjectKeyFromObject(desired), current); err != nil {
 		return ctrl.Result{}, fmt.Errorf("getting HTTPRoute %s/%s: %w", desired.Namespace, desired.Name, err)
@@ -195,8 +193,7 @@ func (r *KeystoneReconciler) reconcileHTTPRoute(ctx context.Context, keystone *k
 // buildKeystoneHTTPRoute constructs the desired HTTPRoute for the Keystone API.
 // It attaches to the Gateway referenced by spec.gateway.parentRef, matches the
 // configured hostname with a PathPrefix match on spec.gateway.path (or "/" when
-// empty), and forwards to the {name} Service on port 5000 (CC-0095 dropped the
-// historical -api suffix; CC-0065, REQ-001, REQ-003, REQ-006).
+// empty), and forwards to the {name} Service on port 5000 (dropped the historical -api suffix).
 func buildKeystoneHTTPRoute(keystone *keystonev1alpha1.Keystone) *gatewayv1.HTTPRoute {
 	gw := keystone.Spec.Gateway
 
@@ -213,7 +210,7 @@ func buildKeystoneHTTPRoute(keystone *keystonev1alpha1.Keystone) *gatewayv1.HTTP
 	// Normalize spec.gateway.path to a valid HTTPPathMatch.Value: empty falls
 	// back to "/", missing leading slashes are prepended so values like
 	// "identity" behave as intended ("/identity") instead of producing an
-	// HTTPRoute that Gateway controllers reject (CC-0065, REQ-001).
+	// HTTPRoute that Gateway controllers reject.
 	path := gw.Path
 	if path == "" {
 		path = defaultHTTPRoutePath
@@ -271,7 +268,7 @@ func buildKeystoneHTTPRoute(keystone *keystonev1alpha1.Keystone) *gatewayv1.HTTP
 // isHTTPRouteAccepted returns true when at least one RouteParentStatus reports
 // the Accepted condition with status True. Gateway controllers that have not
 // observed the route yet leave Parents empty, so an empty slice is treated as
-// "not yet accepted" (CC-0065, REQ-005).
+// "not yet accepted".
 func isHTTPRouteAccepted(route *gatewayv1.HTTPRoute) bool {
 	for _, parent := range route.Status.Parents {
 		for _, cond := range parent.Conditions {
@@ -286,12 +283,11 @@ func isHTTPRouteAccepted(route *gatewayv1.HTTPRoute) bool {
 // ensureHTTPRoute creates an HTTPRoute if it does not exist or updates its
 // spec and metadata if it already exists. An owner reference is set so that
 // the HTTPRoute is garbage-collected when the Keystone CR is deleted
-// (CC-0065, REQ-001).
 //
 // Merge strategy: .Spec is overwritten with the desired state on every
 // reconcile. Labels and annotations use tracked-key merging: operator-managed
 // keys are recorded in sentinel annotations so keys removed from spec.gateway
-// between reconciles are also removed from the live object (CC-0065, W-001),
+// between reconciles are also removed from the live object,
 // while user-added keys not in the managed set are preserved.
 func ensureHTTPRoute(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, route *gatewayv1.HTTPRoute) error {
 	existing := &gatewayv1.HTTPRoute{}
@@ -336,7 +332,7 @@ func ensureHTTPRoute(ctx context.Context, c client.Client, scheme *runtime.Schem
 // stampManagedMetadata records the key sets from route.Annotations and
 // route.Labels in sentinel annotations on the route itself before creation.
 // These sentinels are consulted on subsequent reconciles to remove keys that
-// disappear from the desired set (CC-0065, W-001).
+// disappear from the desired set.
 func stampManagedMetadata(route *gatewayv1.HTTPRoute) {
 	annotationKeys := sortedMapKeys(route.Annotations)
 	labelKeys := sortedMapKeys(route.Labels)
@@ -360,7 +356,7 @@ func stampManagedMetadata(route *gatewayv1.HTTPRoute) {
 // from the sentinel annotations) but absent from the desired set are removed,
 // then desired keys are applied, then the sentinels are updated to reflect the
 // new managed set. This is the removal path that was missing from the naive
-// additive merge (CC-0065, W-001).
+// additive merge.
 func applyManagedMetadata(existing *gatewayv1.HTTPRoute, desiredAnnotations, desiredLabels map[string]string) {
 	prevAnnotationKeys := splitManagedKeys(existing.Annotations[managedAnnotationsKey])
 	prevLabelKeys := splitManagedKeys(existing.Annotations[managedLabelsKey])
@@ -410,7 +406,7 @@ func applyManagedMetadata(existing *gatewayv1.HTTPRoute, desiredAnnotations, des
 }
 
 // splitManagedKeys parses the comma-separated key list stored in a sentinel
-// annotation. An empty or missing value produces a nil slice (CC-0065, W-001).
+// annotation. An empty or missing value produces a nil slice.
 func splitManagedKeys(v string) []string {
 	if v == "" {
 		return nil
@@ -419,7 +415,7 @@ func splitManagedKeys(v string) []string {
 }
 
 // sortedMapKeys returns the keys of m in lexicographic order so the sentinel
-// annotation value is deterministic across reconciles (CC-0065, W-001).
+// annotation value is deterministic across reconciles.
 func sortedMapKeys(m map[string]string) []string {
 	if len(m) == 0 {
 		return nil
@@ -433,7 +429,7 @@ func sortedMapKeys(m map[string]string) []string {
 }
 
 // hrNormalizeMap converts empty maps to nil so apiequality.Semantic.DeepEqual
-// does not report spurious diffs between nil and empty maps (CC-0065).
+// does not report spurious diffs between nil and empty maps.
 func hrNormalizeMap(m map[string]string) map[string]string {
 	if len(m) == 0 {
 		return nil
@@ -442,7 +438,7 @@ func hrNormalizeMap(m map[string]string) map[string]string {
 }
 
 // deleteHTTPRoute deletes the HTTPRoute identified by namespace and name.
-// It is a no-op if the HTTPRoute does not exist (CC-0065, REQ-002).
+// It is a no-op if the HTTPRoute does not exist.
 func deleteHTTPRoute(ctx context.Context, c client.Client, namespace, name string) error {
 	route := &gatewayv1.HTTPRoute{}
 	route.SetName(name)

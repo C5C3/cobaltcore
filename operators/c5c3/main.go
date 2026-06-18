@@ -2,9 +2,9 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Package main is the entrypoint for the C5C3 operator (CC-0001, CC-0110).
+// Package main is the entrypoint for the C5C3 operator.
 //
-// DEVIATION from architecture/01-project-setup.md (CC-0001):
+// DEVIATION from architecture/01-project-setup.md
 // Hand-crafted instead of `operator-sdk init` — the SDK scaffolds config/,
 // internal/controller/, Dockerfile, and a per-module Makefile that would be
 // immediately deleted for this minimal scaffolding phase. The manager setup
@@ -79,7 +79,7 @@ func main() {
 				return err
 			}
 			if webhooks {
-				// DECISION (CC-0112, REQ-010): Client must be non-nil for the
+				// DECISION Client must be non-nil for the
 				// one-ControlPlane-per-namespace ValidateCreate check. It reads
 				// through mgr.GetAPIReader() (direct, uncached) rather than
 				// mgr.GetClient(): two concurrent CREATEs must not both see an

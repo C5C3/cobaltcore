@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package controller — staging Secret helpers for the split-compute-write
-// rotation architecture introduced by CC-0081. The rotation CronJob PATCHes
+// rotation architecture. The rotation CronJob PATCHes
 // a dedicated staging Secret; the operator reads it, validates, and applies
 // the keys to the production Secret using its own privileged ServiceAccount.
 package controller
@@ -26,28 +26,28 @@ import (
 )
 
 // StagingSecretLabelKey labels staging Secrets so operator watches and
-// consumers can distinguish them from the production key Secrets (CC-0081).
+// consumers can distinguish them from the production key Secrets.
 const StagingSecretLabelKey = "forge.c5c3.io/rotation-target" //nolint:gosec // label key, not a credential
 
 // RotationCompletedAnnotation is the RFC3339 UTC timestamp the rotation
 // CronJob writes atomically with its staging Secret PATCH. Its presence is
-// the single-shot commit marker gating the operator's apply path (CC-0081).
+// the single-shot commit marker gating the operator's apply path.
 const RotationCompletedAnnotation = "forge.c5c3.io/rotation-completed-at" //nolint:gosec // annotation key, not a credential
 
 // fernetStagingSecretName returns the staging Secret name for Fernet key
-// rotation: `<keystone>-fernet-keys-rotation` (CC-0081).
+// rotation: `<keystone>-fernet-keys-rotation`.
 func fernetStagingSecretName(keystone *keystonev1alpha1.Keystone) string {
 	return fmt.Sprintf("%s-fernet-keys-rotation", keystone.Name)
 }
 
 // credentialStagingSecretName returns the staging Secret name for credential
-// key rotation: `<keystone>-credential-keys-rotation` (CC-0081).
+// key rotation: `<keystone>-credential-keys-rotation`.
 func credentialStagingSecretName(keystone *keystonev1alpha1.Keystone) string {
 	return fmt.Sprintf("%s-credential-keys-rotation", keystone.Name)
 }
 
 // observeRotationAge refreshes the keystone_operator_key_rotation_age_seconds
-// gauge (CC-0089, REQ-003) from the rotation-completed annotation. It reads
+// gauge from the rotation-completed annotation. It reads
 // the annotation from the production keys Secret first — applyRotationOutput
 // stamps it there on every successful apply, so the annotation is durable
 // across the inter-rotation steady state and the gauge value (computed as
@@ -99,7 +99,7 @@ func (r *KeystoneReconciler) readRotationCompletedAt(
 }
 
 // ensureStagingSecret creates (or ensures) an empty staging Secret that the
-// rotation CronJob PATCHes rotated keys into (CC-0081). The operator owns the
+// rotation CronJob PATCHes rotated keys into. The operator owns the
 // object's metadata and lifecycle — labels, owner reference — while the
 // CronJob owns the `.data` field via a narrow get+patch RBAC grant. Data is
 // deliberately left nil on creation and untouched on update so the CronJob's
@@ -109,7 +109,7 @@ func (r *KeystoneReconciler) readRotationCompletedAt(
 // (e.g. "fernet-keys", "credential-keys") so operators can grep label state
 // per sub-reconciler.
 //
-// Note on CronJob/operator PATCH-vs-Update race (CC-0081): controllerutil.
+// Note on CronJob/operator PATCH-vs-Update race controllerutil.
 // CreateOrUpdate runs Get → mutate → Update. If the CronJob PATCHes the
 // staging Secret's `.data` between this function's Get and Update, the
 // Update carries a stale ResourceVersion and the API server rejects it with
@@ -133,7 +133,7 @@ func (r *KeystoneReconciler) ensureStagingSecret(
 
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
 		// Merge commonLabels with the rotation-target marker. Rebuilt every
-		// call so operator-owned labels stay authoritative (CC-0081).
+		// call so operator-owned labels stay authoritative.
 		labels := commonLabels(keystone)
 		labels[StagingSecretLabelKey] = labelValue
 		secret.Labels = labels
@@ -149,8 +149,7 @@ func (r *KeystoneReconciler) ensureStagingSecret(
 
 // applyRotationOutput copies a completed staging Secret onto the main keys
 // Secret and deletes the staging Secret. It is the operator-side commit for
-// the split-compute-write rotation architecture (CC-0081, REQ-005, REQ-006,
-// REQ-012):
+// the split-compute-write rotation architecture
 //
 //  1. GET the staging Secret. If absent, return (false, nil) — nothing to do.
 //  2. Require RotationCompletedAnnotation to be present and parseable as
@@ -169,14 +168,14 @@ func (r *KeystoneReconciler) ensureStagingSecret(
 //     ResourceVersion} from the step-1 read; tolerate NotFound and Conflict.
 //  6. Emit a Normal event with the given eventReason.
 //
-// DECISION (CC-0081): UPDATE-then-DELETE ordering — if DELETE fails, the
+// DECISION UPDATE-then-DELETE ordering — if DELETE fails, the
 // production Secret is already updated; a subsequent reconcile will no-op on
 // the next CronJob PATCH because the annotation flips to a new timestamp
 // (and a stale, pre-this-run annotation would fail validation the same way
 // on retry). Tolerating NotFound on DELETE handles the common race where a
 // human operator removed the staging Secret by hand.
 //
-// DECISION (CC-0081): the step-5 DELETE carries client.Preconditions with the
+// DECISION the step-5 DELETE carries client.Preconditions with the
 // UID and ResourceVersion read in step 1. An unconditional DELETE would
 // silently remove a staging Secret the CronJob had PATCHed with fresh rotation
 // output between the step-1 Get and the DELETE, losing that output uncommitted.
@@ -186,7 +185,7 @@ func (r *KeystoneReconciler) ensureStagingSecret(
 // are therefore tolerated — this run's payload is already on the production
 // Secret, so the apply is complete either way.
 //
-// DECISION (CC-0081): The production Secret's `.data` field is fully
+// DECISION The production Secret's `.data` field is fully
 // replaced under the controller-owned ResourceVersion via a GET+Update
 // round-trip. A strategic-merge PATCH would merge map entries by key rather
 // than replace the map (corev1.Secret.Data has no patchStrategy tag), which
@@ -220,7 +219,7 @@ func (r *KeystoneReconciler) applyRotationOutput(
 		// Distinguish "CronJob hasn't run yet" (empty staging.Data — expected
 		// steady state between rotations) from "CronJob wrote Data but forgot
 		// to annotate" (non-empty Data — likely a script bug). Logged at V(1)
-		// so normal operation is not spammed (CC-0081).
+		// so normal operation is not spammed.
 		if len(staging.Data) > 0 {
 			log.FromContext(ctx).V(1).Info(
 				"staging secret has data without completion annotation; "+
@@ -272,7 +271,7 @@ func (r *KeystoneReconciler) applyRotationOutput(
 	//    annotation, and Update. Full Data replacement is required — see the
 	//    DECISION comment above. Persisting the annotation on the production
 	//    Secret is what makes the keystone_operator_key_rotation_age_seconds
-	//    gauge refresh on every reconcile (CC-0089, REQ-003): the staging
+	//    gauge refresh on every reconcile the staging
 	//    Secret is deleted on step 5, so the production Secret is the only
 	//    durable record of the last successful rotation timestamp.
 	var mainSecret corev1.Secret
@@ -297,7 +296,7 @@ func (r *KeystoneReconciler) applyRotationOutput(
 	//    409 Conflict rather than being silently deleted uncommitted; the newer
 	//    payload then commits on the next reconcile. Conflict and NotFound are
 	//    both tolerated — this run's payload is already on the production Secret
-	//    (CC-0081).
+	//   .
 	delOpts := client.Preconditions{UID: &staging.UID, ResourceVersion: &staging.ResourceVersion}
 	if delErr := r.Delete(ctx, &staging, delOpts); delErr != nil {
 		if !apierrors.IsNotFound(delErr) && !apierrors.IsConflict(delErr) {

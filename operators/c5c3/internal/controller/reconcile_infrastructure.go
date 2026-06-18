@@ -23,7 +23,7 @@ import (
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 )
 
-// DECISION (CC-0110, task 2.5/2.6): every child CR the ControlPlane projects
+// DECISION (/2.6): every child CR the ControlPlane projects
 // (MariaDB, Memcached, Keystone) is created in the SAME namespace as the owning
 // ControlPlane CR (cp.Namespace), NOT a hardcoded "openstack" literal.
 // Rationale: controllerutil.SetControllerReference rejects cross-namespace owner
@@ -44,7 +44,7 @@ func childNamespace(cp *c5c3v1alpha1.ControlPlane) string {
 	return cp.Namespace
 }
 
-// DECISION (CC-0110, task 2.5): the managed-mode MariaDB CR is provisioned with
+// DECISION the managed-mode MariaDB CR is provisioned with
 // a MINIMAL but VALID spec. The mariadb-operator's webhook requires
 // Storage.Size (or a VolumeClaimTemplate) — see Storage.Validate in the
 // vendored v0.38.1 types — so a 100Gi size and a Galera HA topology are set to
@@ -62,7 +62,7 @@ const (
 )
 
 // memcachedGVK is the GroupVersionKind of the Memcached CR projected in managed
-// cache mode. DECISION (CC-0110, task 2.5): memcached.c5c3.io publishes NO Go
+// cache mode. DECISION memcached.c5c3.io publishes NO Go
 // module, so the Memcached child is built and applied as an
 // unstructured.Unstructured rather than a typed client object. The fake client
 // and the real apiserver both accept an unstructured object carrying this GVK;
@@ -75,7 +75,7 @@ var memcachedGVK = schema.GroupVersionKind{
 
 // reconcileInfrastructure reconciles the shared backing services (MariaDB,
 // Memcached) declared in spec.infrastructure and drives the
-// InfrastructureReady condition (CC-0110, REQ-007, REQ-008).
+// InfrastructureReady condition.
 //
 // Managed mode (ClusterRef set) ensures an owned child CR per backing service;
 // brownfield mode (Host / Servers set) provisions nothing. InfrastructureReady

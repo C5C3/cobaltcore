@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Tests for the c5c3 operator entrypoint wiring (CC-0110, REQ-019). These assert
+// Tests for the c5c3 operator entrypoint wiring. These assert
 // the manager's scheme and leader-election identity WITHOUT standing up a live
 // cluster or envtest: the package-level scheme is populated by init(), so every
 // API type the reconcilers create/own/watch must resolve to a registered GVK,

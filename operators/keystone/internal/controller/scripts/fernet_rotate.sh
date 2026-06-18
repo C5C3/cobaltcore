@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: Apache-2.0
 set -eu
 keystone-manage --config-dir=/etc/keystone/keystone.conf.d/ fernet_rotate
-# NOTE: The Python K8s API PATCH block below MUST stay in sync with credential_rotate.sh (CC-0073, CC-0081, W-004).
+# NOTE: The Python K8s API PATCH block below MUST stay in sync with credential_rotate.sh.
 python3 << 'PYTHON'
 import os, json, base64, glob, ssl, http.client, datetime
 data = {}

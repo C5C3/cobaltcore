@@ -1,4 +1,4 @@
-# CC-0041, REQ-010: Webhook configuration unit tests.
+# Webhook configuration unit tests.
 suite: Webhook Configuration
 templates:
   - templates/webhook-configuration.yaml

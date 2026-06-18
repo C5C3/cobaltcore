@@ -5,14 +5,12 @@
 """Pre-insert the admin region row before keystone-manage bootstrap runs.
 
 This script resolves the database URL exactly the way Keystone does at
-runtime: prefer the OS_DATABASE__CONNECTION env override (set by
-buildDBConnectionEnvVar from the derived <name>-db-connection Secret,
-CC-0080 REQ-004) and fall back to keystone.conf only when the env var is
+runtime: prefer the OS_DATABASE__CONNECTION env override (set by buildDBConnectionEnvVar from the derived <name>-db-connection Secret) and fall back to keystone.conf only when the env var is
 unset. Stdlib configparser has no knowledge of oslo.config env overrides,
 so reading the conf file alone would resolve to the placeholder host
-introduced by CC-0080 and fail DNS.
+introduced by and fail DNS.
 
-CC-0106 REQ-005: the DSN may carry ssl_ca/ssl_cert/ssl_key plus
+: the DSN may carry ssl_ca/ssl_cert/ssl_key plus
 ssl_verify_cert/ssl_verify_identity as pymysql-style query parameters.
 pymysql.connect() ignores unknown URL query keys, so this script parses
 them out of the query string and rebuilds a pymysql ssl={...} dict. The
@@ -24,12 +22,12 @@ mapping is:
     ssl_verify_identity absent -> check_hostname = False
 
 The ssl= kwarg is only passed when at least one ssl_* parameter was
-present so plaintext DSNs (TLS disabled) keep their pre-CC-0106 behavior.
+present so plaintext DSNs (TLS disabled) keep their pre-existing behavior.
 
 Environment inputs:
 
     OS_DATABASE__CONNECTION  oslo.config env override of [database].connection
-                             (CC-0080 REQ-003). When unset the script falls
+                            . When unset the script falls
                              back to /etc/keystone/keystone.conf.d/*.conf.
     BOOTSTRAP_REGION_ID      the region id used for the INSERT IGNORE
                              (matches --bootstrap-region-id passed to

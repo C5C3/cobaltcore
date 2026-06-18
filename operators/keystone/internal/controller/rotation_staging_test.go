@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Tests for the rotation staging helpers (CC-0081).
+// Tests for the rotation staging helpers.
 package controller
 
 import (

@@ -1,6 +1,6 @@
-# CC-0043: Role RBAC tests for namespace-scoped mode.
+# Role RBAC tests for namespace-scoped mode.
 # Individual rule verification tests mirror clusterrole_test.yaml structure
-# to catch regressions in apiGroups, resources, or verbs (CC-0043).
+# to catch regressions in apiGroups, resources, or verbs.
 suite: Role
 templates:
   - templates/role.yaml
@@ -292,11 +292,11 @@ tests:
               - patch
               - delete
 
-  # CC-0116 (REQ-009): reconcileDBCredentials uses CreateOrUpdate on a
+  # reconcileDBCredentials uses CreateOrUpdate on a
   # per-ControlPlane externalsecret, which requires both create and update.
   # The full externalsecrets rule (which includes create and update) must be
   # present so the reconciler is permitted to CreateOrUpdate the ExternalSecret.
-  - it: should allow create and update on externalsecrets so reconcileDBCredentials can CreateOrUpdate (CC-0116, REQ-009)
+  - it: should allow create and update on externalsecrets so reconcileDBCredentials can CreateOrUpdate
     set:
       rbac:
         namespaceScoped: true

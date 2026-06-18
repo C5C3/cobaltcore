@@ -20,7 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
-// ControlPlane defaulting constants (CC-0110). These are the single source of
+// ControlPlane defaulting constants. These are the single source of
 // truth shared by the defaulting webhook and (where relevant) the validation
 // error messages, so the defaults cannot drift across call sites. The matching
 // +kubebuilder:default markers on the spec fields remain as defense-in-depth
@@ -33,7 +33,7 @@ const (
 	// DefaultCloudCredentialsSecretName is materialized when
 	// spec.korc.adminCredential.cloudCredentialsRef.secretName is empty.
 	DefaultCloudCredentialsSecretName = "k-orc-clouds-yaml" //nolint:gosec // G101 false positive: Secret name, not a credential
-	// CC-0115: well-known defaults for the database, cache, and admin-credential
+	// well-known defaults for the database, cache, and admin-credential
 	// fields so a minimal managed-mode ControlPlane can omit spec.infrastructure
 	// and the spec.korc.adminCredential body. The shared commonv1 leaves
 	// (DatabaseSpec, CacheSpec, SecretRefSpec) are defaulted webhook-only — never
@@ -69,13 +69,12 @@ const (
 
 // controlPlaneReleaseRegexp mirrors the +kubebuilder:validation:Pattern marker
 // on ControlPlaneSpec.OpenStackRelease. The validating webhook re-checks it as
-// defense-in-depth for callers that bypass CRD schema admission (CC-0110,
-// REQ-006).
+// defense-in-depth for callers that bypass CRD schema admission.
 var controlPlaneReleaseRegexp = regexp.MustCompile(`^\d{4}\.\d$`)
 
 // ControlPlaneWebhook implements defaulting and validation webhooks for the
-// ControlPlane CRD (CC-0110). Client is injected at startup and used by
-// ValidateCreate to enforce one ControlPlane per namespace (CC-0112, REQ-010).
+// ControlPlane CRD. Client is injected at startup and used by
+// ValidateCreate to enforce one ControlPlane per namespace.
 // Production wiring injects mgr.GetAPIReader() — a direct, uncached reader —
 // so concurrent or cache-sync-window CREATEs cannot both pass the check
 // against an empty informer cache.
@@ -101,7 +100,7 @@ func (w *ControlPlaneWebhook) SetupWebhookWithManager(mgr ctrl.Manager) error {
 		Complete()
 }
 
-// Default implements admission.Defaulter[*ControlPlane] (CC-0110, REQ-005).
+// Default implements admission.Defaulter[*ControlPlane].
 // It fills only zero-valued fields with their documented defaults, leaving any
 // explicit value untouched. It is idempotent: applying it twice produces the
 // same result.
@@ -111,7 +110,7 @@ func (w *ControlPlaneWebhook) Default(_ context.Context, obj *ControlPlane) erro
 		obj.Spec.Region = DefaultRegion
 	}
 
-	// CC-0115: well-known infrastructure defaults so a minimal managed-mode CR can
+	// well-known infrastructure defaults so a minimal managed-mode CR can
 	// omit spec.infrastructure entirely. The mode-neutral leaves (database name,
 	// secretRef.name, cache backend) are defaulted in BOTH managed and brownfield
 	// mode; the managed clusterRef is only invented when the brownfield
@@ -151,7 +150,7 @@ func (w *ControlPlaneWebhook) Default(_ context.Context, obj *ControlPlane) erro
 	if korc.CloudCredentialsRef.SecretName == "" {
 		korc.CloudCredentialsRef.SecretName = DefaultCloudCredentialsSecretName
 	}
-	// CC-0115: cloudCredentialsRef.cloudName defaults to the conventional admin
+	// cloudCredentialsRef.cloudName defaults to the conventional admin
 	// cloud entry; passwordSecretRef.name/.key default to the conventional admin
 	// Secret and its data key. Defaulting .key makes the stored spec explicit and
 	// consistent with the reconciler's existing readAdminPassword "password"
@@ -183,8 +182,8 @@ func (w *ControlPlaneWebhook) Default(_ context.Context, obj *ControlPlane) erro
 	return nil
 }
 
-// ValidateCreate implements admission.Validator[*ControlPlane] (CC-0110, REQ-006).
-// CC-0112, REQ-010 — DECISION boundary 6 = option (a): in addition to the spec
+// ValidateCreate implements admission.Validator[*ControlPlane].
+// DECISION boundary 6 = option (a): in addition to the spec
 // checks in validate(), a CREATE is rejected when another ControlPlane already
 // exists in the same namespace. The per-CR OpenBao credential paths (admin AC,
 // bootstrap admin password, fernet/credential keys) are scoped by namespace+name
@@ -200,7 +199,7 @@ func (w *ControlPlaneWebhook) ValidateCreate(ctx context.Context, obj *ControlPl
 	return nil, w.validateUniqueInNamespace(ctx, obj)
 }
 
-// ValidateUpdate implements admission.Validator[*ControlPlane] (CC-0110, REQ-006).
+// ValidateUpdate implements admission.Validator[*ControlPlane].
 func (w *ControlPlaneWebhook) ValidateUpdate(_ context.Context, _, newObj *ControlPlane) (admission.Warnings, error) {
 	return nil, w.validate(newObj)
 }
@@ -214,8 +213,7 @@ func (w *ControlPlaneWebhook) ValidateDelete(_ context.Context, _ *ControlPlane)
 	return nil, nil
 }
 
-// validate runs all validation rules against the ControlPlane spec (CC-0110,
-// REQ-006). The kubebuilder markers / CEL rules on the CRD are the primary
+// validate runs all validation rules against the ControlPlane spec. The kubebuilder markers / CEL rules on the CRD are the primary
 // enforcement point at admission time; the checks below are defense-in-depth
 // (mirroring the KeystoneWebhook discipline) so callers that bypass CRD schema
 // admission still get field-specific errors.
@@ -223,7 +221,7 @@ func (w *ControlPlaneWebhook) validate(cp *ControlPlane) error {
 	var allErrs field.ErrorList
 	specPath := field.NewPath("spec")
 
-	// REQ-006: openStackRelease must match the date-based release pattern.
+	// openStackRelease must match the date-based release pattern.
 	// Mirrors the +kubebuilder:validation:Pattern marker on
 	// ControlPlaneSpec.OpenStackRelease.
 	if !controlPlaneReleaseRegexp.MatchString(cp.Spec.OpenStackRelease) {
@@ -234,7 +232,7 @@ func (w *ControlPlaneWebhook) validate(cp *ControlPlane) error {
 		))
 	}
 
-	// REQ-006: database must use exactly one of clusterRef or host (mirrors the
+	// database must use exactly one of clusterRef or host (mirrors the
 	// keystone database XOR check / CEL rule).
 	db := cp.Spec.Infrastructure.Database
 	if (db.ClusterRef != nil) == (db.Host != "") {
@@ -245,7 +243,7 @@ func (w *ControlPlaneWebhook) validate(cp *ControlPlane) error {
 		))
 	}
 
-	// REQ-006: cache must use exactly one of clusterRef or servers (mirrors the
+	// cache must use exactly one of clusterRef or servers (mirrors the
 	// keystone cache XOR check / CEL rule).
 	cache := cp.Spec.Infrastructure.Cache
 	if (cache.ClusterRef != nil) == (len(cache.Servers) > 0) {
@@ -256,7 +254,7 @@ func (w *ControlPlaneWebhook) validate(cp *ControlPlane) error {
 		))
 	}
 
-	// REQ-006: the K-ORC admin-credential password Secret reference is required —
+	// the K-ORC admin-credential password Secret reference is required —
 	// without it the reconciler cannot (re-)mint the admin application credential.
 	if cp.Spec.KORC.AdminCredential.PasswordSecretRef.Name == "" {
 		allErrs = append(allErrs, field.Required(
@@ -265,7 +263,7 @@ func (w *ControlPlaneWebhook) validate(cp *ControlPlane) error {
 		))
 	}
 
-	// REQ-006: reject a Keystone rotationInterval the reconciler's intervalToCron
+	// reject a Keystone rotationInterval the reconciler's intervalToCron
 	// cannot represent (only a positive whole number of days — 168h weekly or any
 	// positive multiple of 24h daily) so a bad interval is a clean admission error
 	// rather than a steady-state KeystoneReady=False with no requeue. Mirrors
@@ -292,7 +290,7 @@ func (w *ControlPlaneWebhook) validate(cp *ControlPlane) error {
 }
 
 // validateUniqueInNamespace enforces the one-ControlPlane-per-namespace contract
-// (CC-0112, REQ-010). It lists existing ControlPlanes in the new object's
+// It lists existing ControlPlanes in the new object's
 // namespace; any pre-existing CR (len >= 1, since the object under admission is
 // not yet persisted) makes this CREATE a Forbidden error naming the incumbent.
 // The List goes through the injected uncached API reader (mgr.GetAPIReader() in
@@ -326,7 +324,7 @@ func (w *ControlPlaneWebhook) validateUniqueInNamespace(ctx context.Context, obj
 		obj.Name,
 		field.ErrorList{field.Forbidden(
 			field.NewPath("metadata", "namespace"),
-			fmt.Sprintf("only one ControlPlane is permitted per namespace; %q already exists in namespace %q (CC-0112)",
+			fmt.Sprintf("only one ControlPlane is permitted per namespace; %q already exists in namespace %q",
 				existing.Items[0].Name, obj.Namespace),
 		)},
 	)

@@ -39,7 +39,7 @@ func secretsTestScheme() *runtime.Scheme {
 	_ = keystonev1alpha1.AddToScheme(s)
 	_ = esov1.SchemeBuilder.AddToScheme(s)
 	// esov1alpha1 provides the PushSecret kind consumed by the openbao
-	// finalizer tests (CC-0079, REQ-002).
+	// finalizer tests.
 	_ = esov1alpha1.SchemeBuilder.AddToScheme(s)
 	return s
 }
@@ -100,7 +100,7 @@ func notReadyExternalSecret(name, namespace string) *esov1.ExternalSecret {
 }
 
 // readyClusterSecretStore returns a ClusterSecretStore with a Ready=True
-// status condition so reconcileSecrets proceeds past the store gate (CC-0047).
+// status condition so reconcileSecrets proceeds past the store gate.
 func readyClusterSecretStore(name string) *esov1.ClusterSecretStore {
 	return &esov1.ClusterSecretStore{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
@@ -114,7 +114,7 @@ func readyClusterSecretStore(name string) *esov1.ClusterSecretStore {
 
 // notReadyClusterSecretStore returns a ClusterSecretStore whose Ready
 // condition is explicitly False so reconcileSecrets flips SecretsReady to
-// False with reason SecretStoreNotReady (CC-0047).
+// False with reason SecretStoreNotReady.
 func notReadyClusterSecretStore(name string) *esov1.ClusterSecretStore {
 	return &esov1.ClusterSecretStore{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
@@ -133,7 +133,7 @@ func TestReconcileSecrets_BothReady(t *testing.T) {
 
 	dbES := readyExternalSecret("keystone-db", "default")
 	adminES := readyExternalSecret("keystone-admin", "default")
-	// Materialized K8s Secrets are required by IsSecretReady (CC-0013).
+	// Materialized K8s Secrets are required by IsSecretReady.
 	dbSecret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: "keystone-db", Namespace: "default"},
 		Data:       map[string][]byte{"username": []byte("keystone"), "password": []byte("secret")},
@@ -208,7 +208,7 @@ func TestReconcileSecrets_AdminCredentialsNotReady(t *testing.T) {
 
 	dbES := readyExternalSecret("keystone-db", "default")
 	adminES := notReadyExternalSecret("keystone-admin", "default")
-	// Materialized DB Secret is needed so IsSecretReady passes for DB credentials (CC-0013).
+	// Materialized DB Secret is needed so IsSecretReady passes for DB credentials.
 	dbSecret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: "keystone-db", Namespace: "default"},
 		Data:       map[string][]byte{"username": []byte("keystone"), "password": []byte("secret")},
@@ -245,7 +245,7 @@ func TestReconcileSecrets_ErrorFetchingExternalSecret(t *testing.T) {
 	ks := secretsTestKeystone()
 
 	// A ready ClusterSecretStore lets reconcileSecrets past the store gate so
-	// the interceptor exercises the ExternalSecret Get path (CC-0047).
+	// the interceptor exercises the ExternalSecret Get path.
 	store := readyClusterSecretStore("openbao-cluster-store")
 	// Use an interceptor to inject an error on Get for ExternalSecrets.
 	c := fake.NewClientBuilder().
@@ -311,7 +311,7 @@ func TestReconcileSecrets_AdminNotReady_ConditionMessage(t *testing.T) {
 
 	dbES := readyExternalSecret("keystone-db", "default")
 	adminES := notReadyExternalSecret("keystone-admin", "default")
-	// Materialized DB Secret is needed so IsSecretReady passes for DB credentials (CC-0013).
+	// Materialized DB Secret is needed so IsSecretReady passes for DB credentials.
 	dbSecret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: "keystone-db", Namespace: "default"},
 		Data:       map[string][]byte{"username": []byte("keystone"), "password": []byte("secret")},
@@ -344,7 +344,7 @@ func TestReconcileSecrets_DBSecretMissingKeys(t *testing.T) {
 	s := secretsTestScheme()
 	ks := secretsTestKeystone()
 
-	// ExternalSecret is ready but materialized Secret is missing expected keys (CC-0013).
+	// ExternalSecret is ready but materialized Secret is missing expected keys.
 	dbES := readyExternalSecret("keystone-db", "default")
 	adminES := readyExternalSecret("keystone-admin", "default")
 	dbSecret := &corev1.Secret{
@@ -388,7 +388,7 @@ func TestReconcileSecrets_AdminSecretMissingKeys(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "keystone-db", Namespace: "default"},
 		Data:       map[string][]byte{"username": []byte("keystone"), "password": []byte("secret")},
 	}
-	// Admin Secret exists but is missing the "password" key (CC-0013).
+	// Admin Secret exists but is missing the "password" key.
 	adminSecret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: "keystone-admin", Namespace: "default"},
 		Data:       map[string][]byte{"wrong-key": []byte("val")},
@@ -461,7 +461,7 @@ func TestReconcileSecrets_StoreNotReady(t *testing.T) {
 
 	// ExternalSecrets look healthy — the store condition should still drive
 	// SecretsReady to False so chaos in OpenBao surfaces within the ESO store
-	// reconcile interval rather than the per-ES refreshInterval (CC-0047).
+	// reconcile interval rather than the per-ES refreshInterval.
 	dbES := readyExternalSecret("keystone-db", "default")
 	adminES := readyExternalSecret("keystone-admin", "default")
 	store := notReadyClusterSecretStore("openbao-cluster-store")
@@ -498,7 +498,7 @@ func TestReconcileSecrets_StoreMissing(t *testing.T) {
 
 	// No ClusterSecretStore object exists. IsClusterSecretStoreReady treats
 	// NotFound as not-ready so the operator still reports the upstream
-	// backend as unreachable (CC-0047).
+	// backend as unreachable.
 	c := fake.NewClientBuilder().
 		WithScheme(s).
 		Build()
@@ -528,7 +528,7 @@ func TestReconcileSecrets_StoreGetErrorSurfaces(t *testing.T) {
 	// Transient API-server errors on the ClusterSecretStore Get must be
 	// returned to the caller so controller-runtime requeues the reconcile —
 	// silently setting SecretsReady=False on a flaky API would mask real
-	// outages from everything downstream (CC-0047).
+	// outages from everything downstream.
 	c := fake.NewClientBuilder().
 		WithScheme(s).
 		WithInterceptorFuncs(interceptor.Funcs{
@@ -560,7 +560,7 @@ func TestReconcileSecrets_StoreCheckedBeforeExternalSecret(t *testing.T) {
 
 	// Store not ready AND DB ExternalSecret not ready. The reason must be
 	// SecretStoreNotReady — store outage is the root cause and must win the
-	// ordering so operators do not chase the wrong symptom (CC-0047).
+	// ordering so operators do not chase the wrong symptom.
 	store := notReadyClusterSecretStore("openbao-cluster-store")
 	dbES := notReadyExternalSecret("keystone-db", "default")
 	adminES := notReadyExternalSecret("keystone-admin", "default")
@@ -591,7 +591,7 @@ func TestReconcileSecrets_StoreCheckedBeforeExternalSecret(t *testing.T) {
 // ObservedGeneration is set on the SecretsReady condition for
 // False (SecretStoreNotReady, WaitingForDBCredentials,
 // WaitingForAdminCredentials) and True (SecretsAvailable) paths
-// with distinct generation values (CC-0072, REQ-002, REQ-003).
+// with distinct generation values.
 func TestReconcileSecrets_ConditionObservedGeneration(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := secretsTestScheme()
@@ -726,7 +726,7 @@ func TestReconcileSecrets_ConditionObservedGeneration(t *testing.T) {
 // TestFernetKeysPushSecret_HasDeletionPolicyDelete verifies that the PushSecret
 // builder for the Fernet backup sets Spec.DeletionPolicy=Delete so that
 // deleting the PushSecret triggers ESO to purge the kv-v2 path in OpenBao —
-// the cleanup path that the openbao finalizer depends on (CC-0079, REQ-008).
+// the cleanup path that the openbao finalizer depends on.
 func TestFernetKeysPushSecret_HasDeletionPolicyDelete(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -743,8 +743,7 @@ func TestFernetKeysPushSecret_HasDeletionPolicyDelete(t *testing.T) {
 // TestCredentialKeysPushSecret_HasDeletionPolicyDelete verifies that the
 // PushSecret builder for the credential backup sets Spec.DeletionPolicy=Delete
 // so that deleting the PushSecret triggers ESO to purge the kv-v2 path in
-// OpenBao — the cleanup path that the openbao finalizer depends on (CC-0079,
-// REQ-008).
+// OpenBao — the cleanup path that the openbao finalizer depends on.
 func TestCredentialKeysPushSecret_HasDeletionPolicyDelete(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -761,7 +760,7 @@ func TestCredentialKeysPushSecret_HasDeletionPolicyDelete(t *testing.T) {
 // backupPushSecret builds a minimal PushSecret already adopted by ESO (carries
 // the cleanup finalizer) so existing finalize-handler tests exercise the
 // post-adoption Pass-1/Pass-2 paths. Tests covering the Pass-0 adoption wait
-// should use backupPushSecretUnadopted instead (CC-0079, CC-0091, REQ-001).
+// should use backupPushSecretUnadopted instead.
 func backupPushSecret(name string) *esov1alpha1.PushSecret {
 	return &esov1alpha1.PushSecret{
 		ObjectMeta: metav1.ObjectMeta{
@@ -775,7 +774,6 @@ func backupPushSecret(name string) *esov1alpha1.PushSecret {
 // backupPushSecretUnadopted builds a minimal PushSecret with NO finalizers,
 // modelling the brief window before ESO has installed its cleanup finalizer
 // on a freshly-created PushSecret. Used by the Pass-0 adoption-wait tests
-// (CC-0091, REQ-001, REQ-007).
 func backupPushSecretUnadopted(name string) *esov1alpha1.PushSecret {
 	return &esov1alpha1.PushSecret{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
@@ -786,12 +784,12 @@ func backupPushSecretUnadopted(name string) *esov1alpha1.PushSecret {
 // Terminating (DeletionTimestamp set, object kept in store) when the fake
 // client processes a Delete, because the non-controller finalizer prevents
 // actual removal. This mirrors ESO holding its cleanup finalizer while it
-// purges the kv-v2 path (CC-0079, REQ-004).
+// purges the kv-v2 path.
 func pushSecretWithPendingDelete(name string) *esov1alpha1.PushSecret {
 	ps := backupPushSecret(name)
 	// backupPushSecret already seeds esoPushSecretFinalizer; append the ESO
 	// cleanup finalizer so the fake client holds the object in Terminating
-	// when the handler's Pass-1 Delete fires (CC-0079, CC-0091, REQ-004).
+	// when the handler's Pass-1 Delete fires.
 	ps.Finalizers = append(ps.Finalizers, "external-secrets.io/cleanup")
 	return ps
 }
@@ -799,7 +797,7 @@ func pushSecretWithPendingDelete(name string) *esov1alpha1.PushSecret {
 // TestFinalizeOpenBaoSecrets_DeletesBothPushSecrets verifies that the handler
 // deletes both the fernet-keys-backup and credential-keys-backup PushSecrets
 // and reports done=true once both have been through ESO's cleanup path
-// (CC-0079, CC-0091, REQ-001, REQ-002). After CC-0091, adopted PushSecrets
+// After, adopted PushSecrets
 // carry esoPushSecretFinalizer, so the fake client holds them Terminating on
 // Delete until ESO clears the finalizer — this test models that hand-off.
 func TestFinalizeOpenBaoSecrets_DeletesBothPushSecrets(t *testing.T) {
@@ -859,8 +857,7 @@ func TestFinalizeOpenBaoSecrets_DeletesBothPushSecrets(t *testing.T) {
 
 // TestFinalizeOpenBaoSecrets_NotFoundIsTolerated verifies that partial or
 // fully-absent PushSecret state eventually produces done=true with no error —
-// idempotency for operator restarts and prior cleanups (CC-0079, CC-0091,
-// REQ-001, REQ-003). When a PushSecret is present it carries the ESO cleanup
+// idempotency for operator restarts and prior cleanups. When a PushSecret is present it carries the ESO cleanup
 // finalizer (adopted), so the handler's first call returns done=false
 // (Terminating behind finalizer); once the finalizer is cleared a second call
 // returns done=true.
@@ -939,7 +936,7 @@ func TestFinalizeOpenBaoSecrets_NotFoundIsTolerated(t *testing.T) {
 
 // TestFinalizeOpenBaoSecrets_IsIdempotent verifies that a second invocation
 // against a clean client produces the same outcome so operator restarts or
-// retries never block CR removal (CC-0079, REQ-003).
+// retries never block CR removal.
 func TestFinalizeOpenBaoSecrets_IsIdempotent(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := secretsTestScheme()
@@ -967,7 +964,7 @@ func TestFinalizeOpenBaoSecrets_IsIdempotent(t *testing.T) {
 // handler returning done=false so the Keystone CR finalizer is not released
 // before ESO has purged the kv-v2 path. The blocked-condition message (asserted
 // separately by TestFinalizeOpenBaoSecrets_SetsBlockedConditionOnStall) names
-// the stuck PushSecret (CC-0079, REQ-004).
+// the stuck PushSecret.
 func TestFinalizeOpenBaoSecrets_RequeuesWhilePushSecretTerminating(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := secretsTestScheme()
@@ -1004,7 +1001,7 @@ func TestFinalizeOpenBaoSecrets_RequeuesWhilePushSecretTerminating(t *testing.T)
 // TestFinalizeOpenBaoSecrets_SetsBlockedConditionOnStall verifies that when a
 // PushSecret is stuck Terminating, the handler records
 // SecretsReady=False with reason OpenBaoFinalizerBlocked so operators can see
-// why the Keystone CR has not finished deleting (CC-0079, REQ-004).
+// why the Keystone CR has not finished deleting.
 func TestFinalizeOpenBaoSecrets_SetsBlockedConditionOnStall(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := secretsTestScheme()
@@ -1038,8 +1035,7 @@ func TestFinalizeOpenBaoSecrets_SetsBlockedConditionOnStall(t *testing.T) {
 
 // TestHasESOFinalizer covers each shape the finalizer list can take on a
 // backup PushSecret so the adoption check in finalizeOpenBaoSecrets recognises
-// ESO adoption regardless of ordering or co-resident finalizers (CC-0091,
-// REQ-001, REQ-007).
+// ESO adoption regardless of ordering or co-resident finalizers.
 func TestHasESOFinalizer(t *testing.T) {
 	testCases := []struct {
 		name       string
@@ -1086,7 +1082,6 @@ func TestHasESOFinalizer(t *testing.T) {
 // SecretsReady=False with the WaitingForESOAdoption reason, names the
 // unadopted PushSecret, and pins ObservedGeneration — the signal contract
 // SREs rely on to distinguish pre-Delete from post-Delete blocked states
-// (CC-0091, REQ-002).
 func TestSetOpenBaoWaitingForESOAdoptionCondition(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := secretsTestKeystone()
@@ -1109,8 +1104,7 @@ func TestSetOpenBaoWaitingForESOAdoptionCondition(t *testing.T) {
 // WaitingForESOAdoption and return WITHOUT firing a Delete. A premature
 // Delete would remove the PushSecret object outright — ESO would never see a
 // DeletionTimestamp, never run its DeletionPolicy=Delete branch, and the
-// referenced kv-v2 path would be orphaned in OpenBao (CC-0091, REQ-001,
-// REQ-003, REQ-007).
+// referenced kv-v2 path would be orphaned in OpenBao.
 func TestFinalizeOpenBaoSecrets_BlocksOnMissingESOAdoption(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := secretsTestScheme()
@@ -1240,8 +1234,7 @@ func TestFinalizeOpenBaoSecrets_BlocksWithinAdoptionWindow(t *testing.T) {
 // advances past Pass-0 to Pass-1 (Delete) and Pass-2 (wait-on-gone). On the
 // first call the PushSecrets transition to Terminating held by the ESO
 // finalizer; after the test simulates ESO finishing its remote cleanup by
-// clearing the finalizer, a second call returns done=true (CC-0091, REQ-001,
-// REQ-003).
+// clearing the finalizer, a second call returns done=true.
 func TestFinalizeOpenBaoSecrets_ProceedsOnceAdopted(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := secretsTestScheme()
@@ -1315,8 +1308,7 @@ func TestFinalizeOpenBaoSecrets_ProceedsOnceAdopted(t *testing.T) {
 // per-PushSecret gate: if ANY backup PushSecret lacks the ESO cleanup
 // finalizer the handler aborts BEFORE any Delete fires, even when sibling
 // PushSecrets are fully adopted. Once the laggard PushSecret picks up the
-// finalizer a subsequent call proceeds to Pass-1 for all of them (CC-0091,
-// REQ-001, REQ-003, REQ-007).
+// finalizer a subsequent call proceeds to Pass-1 for all of them.
 func TestFinalizeOpenBaoSecrets_MixedAdoptionState(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := secretsTestScheme()
@@ -1384,7 +1376,7 @@ func TestFinalizeOpenBaoSecrets_MixedAdoptionState(t *testing.T) {
 // instead. A Terminating PushSecret has necessarily been through a prior
 // Delete, so the adoption question was already resolved; re-requiring the
 // finalizer at this point would trap the CR forever if the user strips the
-// finalizer to unblock a stuck cleanup (CC-0091, REQ-001).
+// finalizer to unblock a stuck cleanup.
 func TestFinalizeOpenBaoSecrets_TerminatingCountsAsAdopted(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := secretsTestScheme()
@@ -1439,7 +1431,7 @@ func TestFinalizeOpenBaoSecrets_TerminatingCountsAsAdopted(t *testing.T) {
 // cleanup, or the CR never reached the point of creating them) the handler
 // must return done=true with no error. Separate from
 // TestFinalizeOpenBaoSecrets_IsIdempotent so a future refactor cannot
-// silently remove the empty-client fast path (CC-0091, REQ-003).
+// silently remove the empty-client fast path.
 func TestFinalizeOpenBaoSecrets_AbsentPushSecretIsStillIdempotent(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := secretsTestScheme()
@@ -1463,7 +1455,7 @@ func TestFinalizeOpenBaoSecrets_AbsentPushSecretIsStillIdempotent(t *testing.T) 
 // refactor introduces create/update/patch/list/watch calls, the operator's
 // RBAC must grow to match — this test pins the minimal verb set so
 // unexpected broadening is caught in CI rather than at runtime with
-// permission denied errors (CC-0091, REQ-006).
+// permission denied errors.
 func TestFinalizeOpenBaoSecrets_RBACShape(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := secretsTestScheme()

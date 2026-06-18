@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Package controller implements the ControlPlane reconciler (CC-0110).
+// Package controller implements the ControlPlane reconciler.
 package controller
 
 import (
@@ -31,13 +31,13 @@ import (
 
 // ControlPlaneSecretNameIndexKey is the field-indexer key under which ControlPlane
 // CRs are indexed by the union of their referenced Secret names. Today that is the
-// single EFFECTIVE admin-password Secret name (CC-0117, REQ-005): in managed mode
+// single EFFECTIVE admin-password Secret name in managed mode
 // (Database.ClusterRef != nil) the operator-owned per-ControlPlane Secret
 // adminPasswordSecretName(cp), and in brownfield mode the user-supplied
 // spec.korc.adminCredential.passwordSecretRef.name. SetupWithManager registers the
 // indexer and secretToControlPlaneMapper uses it for an O(1) reverse lookup from a
 // Secret event to the referencing ControlPlane(s), mirroring the keystone operator's
-// KeystoneSecretNameIndexKey (CC-0110, REQ-012). The constant's string value remains
+// KeystoneSecretNameIndexKey. The constant's string value remains
 // the spec passwordSecretRef field path because it is only an index-key identifier.
 // #nosec G101 -- field-indexer key (a JSONPath-like field selector), not a credential.
 const ControlPlaneSecretNameIndexKey = "spec.korc.adminCredential.passwordSecretRef.name"
@@ -46,7 +46,7 @@ const ControlPlaneSecretNameIndexKey = "spec.korc.adminCredential.passwordSecret
 // single source of truth for the status contract: call sites (sub-reconcilers,
 // setReadyCondition, the instrumentation map) MUST reference these constants
 // rather than inline string literals so a rename is caught by the compiler and
-// the no-inline-literals drift guard (CC-0110, REQ-007).
+// the no-inline-literals drift guard.
 const (
 	conditionTypeInfrastructureReady  = "InfrastructureReady"
 	conditionTypeDBCredentialsReady   = "DBCredentialsReady" //nolint:gosec // G101 false positive: condition type name, not a credential.
@@ -59,7 +59,7 @@ const (
 )
 
 // subConditionTypes lists the condition types set by individual sub-reconcilers.
-// The Ready condition is True only when all of these are True (CC-0110, REQ-007).
+// The Ready condition is True only when all of these are True.
 var subConditionTypes = []string{
 	conditionTypeInfrastructureReady,
 	conditionTypeDBCredentialsReady,
@@ -105,7 +105,7 @@ func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 
 	// Defense-in-depth for the one-ControlPlane-per-namespace contract
-	// (CC-0112, REQ-010): the validating webhook rejects duplicate CREATEs,
+	// the validating webhook rejects duplicate CREATEs,
 	// but CRs that predate the guard, raced through the API server, or were
 	// written with the webhook bypassed can still coexist. Park every
 	// ControlPlane except the oldest so two reconcilers never operate on the
@@ -122,8 +122,7 @@ func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	// Run sub-reconcilers in dependency order. Every sub-reconciler call is
 	// routed through instrumentSubReconciler so that duration samples and error
-	// counters are emitted under a stable sub_reconciler label (CC-0110,
-	// REQ-007, REQ-026).
+	// counters are emitted under a stable sub_reconciler label.
 	if result, err := instrumentSubReconciler(ctx, "Infrastructure", func(ctx context.Context) (ctrl.Result, error) {
 		return r.reconcileInfrastructure(ctx, &cp)
 	}); !result.IsZero() || err != nil {
@@ -136,7 +135,7 @@ func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return r.updateStatus(ctx, &cp, result, err)
 	}
 
-	// AdminPassword runs BEFORE Keystone (CC-0117): the keystone-operator's
+	// AdminPassword runs BEFORE Keystone the keystone-operator's
 	// SecretsReady gate needs the admin-password ExternalSecret to exist before the
 	// projected Keystone child references it.
 	if result, err := instrumentSubReconciler(ctx, "AdminPassword", func(ctx context.Context) (ctrl.Result, error) {
@@ -177,13 +176,13 @@ func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request
 // generation so a stale status is distinguishable from a current one. When both
 // reconcileErr and the status update fail, both errors are preserved via
 // errors.Join so that the original reconcile failure is visible in
-// controller-runtime logs (CC-0110, REQ-007).
+// controller-runtime logs.
 func (r *ControlPlaneReconciler) updateStatus(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, result ctrl.Result, reconcileErr error) (ctrl.Result, error) {
 	// Recompute the aggregate Ready condition on EVERY status write — including
 	// the in-progress/early-return paths where a sub-reconciler requeued before
 	// the chain converged — so Status.Ready reflects the current aggregate state
 	// (Ready=False while converging) rather than remaining absent until the full
-	// chain passes (CC-0110, REQ-007). conditions.AllTrue checks only the
+	// chain passes. conditions.AllTrue checks only the
 	// subConditionTypes, not the Ready condition itself, so this is not
 	// self-referential.
 	setReadyCondition(cp)
@@ -261,7 +260,7 @@ func (r *ControlPlaneReconciler) parkDuplicateControlPlane(ctx context.Context, 
 		ObservedGeneration: cp.Generation,
 		Reason:             "DuplicateControlPlane",
 		Message: fmt.Sprintf(
-			"parked: ControlPlane %q is older and owns namespace %q; only one ControlPlane is permitted per namespace (CC-0112)",
+			"parked: ControlPlane %q is older and owns namespace %q; only one ControlPlane is permitted per namespace",
 			incumbent, cp.Namespace,
 		),
 	})
@@ -276,11 +275,11 @@ func (r *ControlPlaneReconciler) parkDuplicateControlPlane(ctx context.Context, 
 // controlPlaneSecretNameExtractor is the controller-runtime IndexerFunc registered
 // under ControlPlaneSecretNameIndexKey. It returns the deduplicated, non-empty
 // set of Secret names a ControlPlane CR references — currently only the EFFECTIVE
-// admin-password Secret name (CC-0117, REQ-005): the operator-owned per-ControlPlane
+// admin-password Secret name the operator-owned per-ControlPlane
 // Secret name in managed mode, the user-supplied spec.korc.adminCredential
 // .passwordSecretRef.name in brownfield mode — so the field indexer can resolve a
 // Secret event to the referencing CR(s) without listing every ControlPlane in the
-// namespace (CC-0110, REQ-012).
+// namespace.
 func controlPlaneSecretNameExtractor(obj client.Object) []string {
 	cp, ok := obj.(*c5c3v1alpha1.ControlPlane)
 	if !ok {
@@ -301,7 +300,7 @@ func controlPlaneSecretNameExtractor(obj client.Object) []string {
 // secretToControlPlaneMapper can resolve a Secret event to the referencing
 // ControlPlane CRs via an O(1) reverse lookup. The returned error is wrapped with
 // the index key so the registration site is identifiable in manager-startup
-// failure logs (CC-0110, REQ-012).
+// failure logs.
 func registerControlPlaneSecretNameIndex(ctx context.Context, indexer client.FieldIndexer) error {
 	if err := indexer.IndexField(ctx, &c5c3v1alpha1.ControlPlane{}, ControlPlaneSecretNameIndexKey, controlPlaneSecretNameExtractor); err != nil {
 		return fmt.Errorf("registering field indexer %q: %w", ControlPlaneSecretNameIndexKey, err)
@@ -315,7 +314,7 @@ func registerControlPlaneSecretNameIndex(ctx context.Context, indexer client.Fie
 // password Secret is typically ESO-managed (owned by the ExternalSecret
 // controller, not the ControlPlane), so an owner-ref watch would never match it;
 // the index-backed namespace-scoped List is what wakes the ControlPlane when its
-// admin password rotates (CC-0110, REQ-012). On a List error the mapper logs via
+// admin password rotates. On a List error the mapper logs via
 // log.FromContext and returns nil per the handler.MapFunc contract, mirroring
 // secretToKeystoneMapper.
 func secretToControlPlaneMapper(c client.Reader) handler.MapFunc {
@@ -348,7 +347,7 @@ func secretToControlPlaneMapper(c client.Reader) handler.MapFunc {
 // Keystone, the K-ORC ApplicationCredential/Service/Endpoint, and the Memcached
 // CR) so an upstream child status transition retriggers reconcile, and Watches
 // Secrets so an admin-password rotation wakes the owning ControlPlane via the
-// field indexer (CC-0110, REQ-012).
+// field indexer.
 //
 // DECISION (Memcached Owns): memcached.c5c3.io ships no Go module (see
 // memcachedGVK in reconcile_infrastructure.go), so the Memcached child is owned
@@ -357,7 +356,7 @@ func secretToControlPlaneMapper(c client.Reader) handler.MapFunc {
 // constant is reused so the watch and the create-or-update agree on the kind.
 func (r *ControlPlaneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Register the field indexer before Watches so secretToControlPlaneMapper can
-	// rely on it for its MatchingFields lookup (CC-0110, REQ-012).
+	// rely on it for its MatchingFields lookup.
 	if err := registerControlPlaneSecretNameIndex(context.Background(), mgr.GetFieldIndexer()); err != nil {
 		return err
 	}

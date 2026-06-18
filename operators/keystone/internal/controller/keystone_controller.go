@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Package controller implements the Keystone reconciler (CC-0013).
+// Package controller implements the Keystone reconciler.
 package controller
 
 import (
@@ -44,7 +44,6 @@ import (
 // that MariaDB Database, User, and Grant CRs are deterministically cleaned up
 // before the Keystone CR is removed from etcd. Defined once as the single
 // source of truth for Reconcile, the finalizer handler, tests, and docs
-// (CC-0078, REQ-005).
 const keystoneFinalizer = "keystone.openstack.c5c3.io/finalizer"
 
 // KeystoneSecretNameIndexKey is the field-indexer key under which Keystone
@@ -52,7 +51,7 @@ const keystoneFinalizer = "keystone.openstack.c5c3.io/finalizer"
 // (spec.database.secretRef.name and spec.bootstrap.adminPasswordSecretRef.name).
 // Used by SetupWithManager to register the indexer and by
 // secretToKeystoneMapper to perform an O(1) reverse lookup, replacing the
-// prior unfiltered List of all Keystone CRs in the namespace (CC-0087, REQ-001, REQ-006).
+// prior unfiltered List of all Keystone CRs in the namespace.
 // #nosec G101 -- field-indexer key (a JSONPath-like field selector), not a credential.
 const KeystoneSecretNameIndexKey = "spec.secretRefs.name"
 
@@ -61,7 +60,7 @@ const KeystoneSecretNameIndexKey = "spec.secretRefs.name"
 // union of Secret names referenced by a Keystone CR — currently
 // spec.database.secretRef.name and spec.bootstrap.adminPasswordSecretRef.name —
 // so the field indexer can resolve a Secret event to the referencing CR(s)
-// without listing every Keystone in the namespace (CC-0087, REQ-001).
+// without listing every Keystone in the namespace.
 func keystoneSecretNameExtractor(obj client.Object) []string {
 	ks, ok := obj.(*keystonev1alpha1.Keystone)
 	if !ok {
@@ -88,7 +87,7 @@ func keystoneSecretNameExtractor(obj client.Object) []string {
 // can resolve a Secret event to the referencing Keystone CRs via an O(1)
 // reverse lookup instead of an unfiltered namespace-scoped List. The returned
 // error is wrapped with the index key so the registration site is identifiable
-// in manager-startup failure logs (CC-0087, REQ-001, REQ-006).
+// in manager-startup failure logs.
 func registerSecretNameIndex(ctx context.Context, indexer client.FieldIndexer) error {
 	if err := indexer.IndexField(ctx, &keystonev1alpha1.Keystone{}, KeystoneSecretNameIndexKey, keystoneSecretNameExtractor); err != nil {
 		return fmt.Errorf("registering field indexer %q: %w", KeystoneSecretNameIndexKey, err)
@@ -127,7 +126,7 @@ type KeystoneReconciler struct {
 	// HTTPRoute CRD is installed. When false, the controller skips the
 	// HTTPRoute watch entirely so it does not crash on a missing kind, and
 	// reconcileHTTPRoute surfaces a clear HTTPRouteReady=False condition if
-	// the user nonetheless sets spec.gateway (CC-0065).
+	// the user nonetheless sets spec.gateway.
 	gatewayAPIAvailable bool
 
 	// certManagerAvailable is set during SetupWithManager from the cluster's
@@ -153,7 +152,7 @@ var httpRouteGVK = schema.GroupVersionKind{
 // when the mapping exists. Other mapper errors are treated as "unknown";
 // returning false in that case is conservative — the operator starts without
 // the HTTPRoute watch and a clear status condition replaces the cryptic
-// controller-runtime "no matches for kind" startup error (CC-0065).
+// controller-runtime "no matches for kind" startup error.
 func isGatewayAPIAvailable(mapper meta.RESTMapper) bool {
 	if mapper == nil {
 		return false
@@ -193,7 +192,7 @@ func isCertManagerAvailable(mapper meta.RESTMapper) bool {
 // subReconcilerConditionTypes. A step with an empty name is NOT wrapped in
 // instrumentSubReconciler because it either self-instruments its members (the
 // parallel group, whose parallelSubReconciler entries instrument individually)
-// or is intentionally uninstrumented (config pruning) (CC-0089, issue #467).
+// or is intentionally uninstrumented (config pruning) (issue #467).
 type subReconcilerStep struct {
 	name string
 	fn   func(ctx context.Context) (ctrl.Result, error)
@@ -234,12 +233,11 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 
 	// Handle CR deletion via finalizers: block removal from etcd until the
-	// MariaDB Database/User/Grant CRs (CC-0078) and the OpenBao backup
-	// PushSecrets (CC-0079) owned by this Keystone are cleaned up. Both
+	// MariaDB Database/User/Grant CRs and the OpenBao backup
+	// PushSecrets owned by this Keystone are cleaned up. Both
 	// finalizers run in the same pass; reconcileDeleteOpenBao may requeue while
 	// a PushSecret is still Terminating, in which case updateStatus persists
-	// the OpenBaoFinalizerBlocked condition (CC-0079, REQ-002, REQ-004,
-	// REQ-006, REQ-007).
+	// the OpenBaoFinalizerBlocked condition.
 	if !keystone.DeletionTimestamp.IsZero() {
 		if result, err := r.reconcileDelete(ctx, &keystone); !result.IsZero() || err != nil {
 			return result, err
@@ -252,7 +250,7 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	// Ensure the MariaDB finalizer is installed before any sub-reconciler runs
 	// so that a deletion issued between now and the next pass still funnels
-	// through reconcileDelete (CC-0078, REQ-001, REQ-006). Returning
+	// through reconcileDelete. Returning
 	// Requeue=true after the Update guarantees the next reconcile observes the
 	// persisted finalizer rather than relying on the in-memory copy.
 	if !controllerutil.ContainsFinalizer(&keystone, keystoneFinalizer) {
@@ -266,7 +264,6 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	// Ensure the OpenBao finalizer is installed so that deleting the Keystone
 	// CR blocks on cleanup of the fernet-keys-backup and credential-keys-backup
 	// PushSecrets, which ESO then uses to purge the kv-v2 paths in OpenBao
-	// (CC-0079, REQ-001, REQ-006).
 	if !controllerutil.ContainsFinalizer(&keystone, keystoneOpenBaoFinalizer) {
 		controllerutil.AddFinalizer(&keystone, keystoneOpenBaoFinalizer)
 		if err := r.Update(ctx, &keystone); err != nil {
@@ -282,7 +279,7 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	// instrumentSubReconciler (emitting duration/error series under their
 	// sub_reconciler label); the two empty-name steps are not wrapped because
 	// they either self-instrument their members (the parallel group) or are
-	// intentionally uninstrumented (config pruning) (CC-0089, issue #467).
+	// intentionally uninstrumented (config pruning) (issue #467).
 	var configMapName string
 	pipeline := []subReconcilerStep{
 		{name: "Secrets", fn: func(ctx context.Context) (ctrl.Result, error) {
@@ -292,8 +289,7 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		// presents to MariaDB/MaxScale for mutual TLS. It runs after Secrets (the
 		// CA/client-cert material referenced by spec.database.tls must be synced
 		// first) and before DBConnectionSecret (which appends the ssl_* DSN
-		// parameters pointing at the issued client keypair) (CC-0106, REQ-002,
-		// REQ-014).
+		// parameters pointing at the issued client keypair).
 		{name: "DatabaseTLS", fn: func(ctx context.Context) (ctrl.Result, error) {
 			return r.reconcileDatabaseTLS(ctx, &keystone)
 		}},
@@ -301,7 +297,7 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		// <keystone.Name>-db-connection Secret. It runs after Secrets (upstream
 		// credentials must be synced) and before Config (the derived Secret is
 		// consumed by downstream pods/Jobs). Failures set SecretsReady=False —
-		// the same condition used by reconcileSecrets (CC-0080, REQ-005).
+		// the same condition used by reconcileSecrets.
 		{name: "DBConnectionSecret", fn: func(ctx context.Context) (ctrl.Result, error) {
 			return r.reconcileDBConnectionSecret(ctx, &keystone)
 		}},
@@ -324,7 +320,6 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		// completed. NetworkPolicy has no data dependency on the Deployment — it
 		// uses selectorLabels derived from the CR. The group's members
 		// self-instrument, so the step carries no sub_reconciler name
-		// (CC-0039, CC-0071, REQ-001).
 		{fn: func(ctx context.Context) (ctrl.Result, error) {
 			return r.reconcileParallelGroup(ctx, &keystone, []parallelSubReconciler{
 				{
@@ -354,7 +349,7 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			return r.reconcileDatabase(ctx, &keystone, configMapName)
 		}},
 		// Policy validation gates the Deployment: invalid oslo.policy overrides
-		// must be caught before reaching running pods (CC-0058).
+		// must be caught before reaching running pods.
 		{name: "PolicyValidation", fn: func(ctx context.Context) (ctrl.Result, error) {
 			return r.reconcilePolicyValidation(ctx, &keystone, configMapName)
 		}},
@@ -365,7 +360,7 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		// run the new config before old ConfigMaps are deleted. Uninstrumented
 		// (no sub_reconciler name); a prune failure is a config-concern failure,
 		// so it flips SecretsReady=False via markConfigFailed rather than leaving
-		// the aggregate Ready stale-True (CC-0077, REQ-007; issue #467).
+		// the aggregate Ready stale-True (issue #467).
 		{fn: func(ctx context.Context) (ctrl.Result, error) {
 			if err := r.pruneStaleConfigMaps(ctx, &keystone, configMapName); err != nil {
 				markConfigFailed(&keystone, err)
@@ -375,12 +370,11 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		}},
 		// HTTPRoute runs after the Deployment/Service are ensured so the backend
 		// Service is present before the Gateway controller resolves backendRefs
-		// (CC-0065, REQ-009, REQ-010).
 		{name: "HTTPRoute", fn: func(ctx context.Context) (ctrl.Result, error) {
 			return r.reconcileHTTPRoute(ctx, &keystone)
 		}},
 		// Health check runs after Deployment because it depends on
-		// Status.Endpoint, which reconcileDeployment sets (CC-0067, REQ-007).
+		// Status.Endpoint, which reconcileDeployment sets.
 		{name: "HealthCheck", fn: func(ctx context.Context) (ctrl.Result, error) {
 			return r.reconcileHealthCheck(ctx, &keystone)
 		}},
@@ -397,7 +391,6 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		// seeded the initial admin credential so the rotation CronJob and
 		// PushSecret never race the bootstrap seed; configMapName is accepted for
 		// call-site symmetry only — the rotate script needs no keystone config
-		// (CC-0109, REQ-002, REQ-003, REQ-009).
 		{name: "PasswordRotation", fn: func(ctx context.Context) (ctrl.Result, error) {
 			return r.reconcilePasswordRotation(ctx, &keystone, configMapName)
 		}},
@@ -436,7 +429,7 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 // the Pod kept its connections open, and the MariaDB operator could not DROP
 // DATABASE. Owner references set by reconcileDatabase ensure the MariaDB CRs
 // are still reclaimed after the Keystone CR is gone — either via their own
-// finalizers or via GC (CC-0078, REQ-002, REQ-007).
+// finalizers or via GC.
 func (r *KeystoneReconciler) reconcileDelete(ctx context.Context, keystone *keystonev1alpha1.Keystone) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(keystone, keystoneFinalizer) {
 		return ctrl.Result{}, nil
@@ -444,7 +437,7 @@ func (r *KeystoneReconciler) reconcileDelete(ctx context.Context, keystone *keys
 
 	// Only emit FinalizingDatabase when at least one MariaDB CR is still live
 	// so brownfield CRs (no MariaDB CRs ever created) do not produce a
-	// misleading "cleaning up" event (CC-0078, REQ-007).
+	// misleading "cleaning up" event.
 	hasLiveCleanupWork, err := r.hasLiveMariaDBResources(ctx, keystone)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -473,7 +466,7 @@ func (r *KeystoneReconciler) reconcileDelete(ctx context.Context, keystone *keys
 // (Database, User, Grant) owned by this Keystone still exists with
 // DeletionTimestamp unset — i.e., real cleanup work remains. Brownfield CRs
 // (no MariaDB CRs ever created) report false so the FinalizingDatabase event
-// is suppressed when there is nothing to announce (CC-0078, REQ-007).
+// is suppressed when there is nothing to announce.
 func (r *KeystoneReconciler) hasLiveMariaDBResources(ctx context.Context, keystone *keystonev1alpha1.Keystone) (bool, error) {
 	key := mariaDBResourceKey(keystone)
 	for _, ctor := range mariaDBResourceCtors {
@@ -501,8 +494,7 @@ func (r *KeystoneReconciler) hasLiveMariaDBResources(ctx context.Context, keysto
 // finalizeOpenBaoSecrets, and on done=true emits OpenBaoSecretsFinalized and
 // releases the finalizer. A PushSecret held Terminating by ESO's cleanup
 // finalizer surfaces as ctrl.Result{RequeueAfter: RequeueSecretPolling} so the
-// Keystone CR stays live until ESO has purged the kv-v2 path (CC-0079,
-// CC-0091, REQ-002, REQ-004, REQ-006, REQ-007).
+// Keystone CR stays live until ESO has purged the kv-v2 path.
 func (r *KeystoneReconciler) reconcileDeleteOpenBao(ctx context.Context, keystone *keystonev1alpha1.Keystone) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(keystone, keystoneOpenBaoFinalizer) {
 		return ctrl.Result{}, nil
@@ -513,10 +505,9 @@ func (r *KeystoneReconciler) reconcileDeleteOpenBao(ctx context.Context, keyston
 	// PushSecret Terminating (DeletionTimestamp set), absent, or still
 	// unadopted and suppress the emit, giving exactly-once semantics per
 	// termination. Gating on ESO adoption is what preserves the exactly-once
-	// contract across the Pass-0 adoption-wait window added by CC-0091:
+	// contract across the Pass-0 adoption-wait window;
 	// without the gate, the 15s RequeueSecretPolling tick would fire a fresh
 	// FinalizingOpenBaoSecrets event on every requeue until ESO adopts
-	// (CC-0079, CC-0091, REQ-007).
 	hasLiveCleanupWork, err := r.hasLiveOpenBaoBackupPushSecrets(ctx, keystone)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -555,8 +546,8 @@ func (r *KeystoneReconciler) reconcileDeleteOpenBao(ctx context.Context, keyston
 //     requeue.
 //   - Adopted=false: Pass-0 is still blocking the Delete, so there is nothing
 //     to announce yet. Without this gate the 15s RequeueSecretPolling tick
-//     would fire a fresh Event on every requeue until ESO adopts, regressing
-//     the exactly-once contract established by CC-0079 (CC-0091, REQ-007).
+//     would fire a fresh Event on every requeue until ESO adopts, regressing the
+//     exactly-once contract.
 func (r *KeystoneReconciler) hasLiveOpenBaoBackupPushSecrets(ctx context.Context, keystone *keystonev1alpha1.Keystone) (bool, error) {
 	for _, name := range openBaoBackupPushSecretNames(keystone) {
 		key := client.ObjectKey{Namespace: keystone.Namespace, Name: name}
@@ -577,7 +568,7 @@ func (r *KeystoneReconciler) hasLiveOpenBaoBackupPushSecrets(ctx context.Context
 
 // updateStatus persists the current status conditions and returns the given result and error.
 // When both reconcileErr and the status update fail, both errors are preserved via errors.Join
-// so that the original reconcile failure is visible in controller-runtime logs (CC-0068).
+// so that the original reconcile failure is visible in controller-runtime logs.
 func (r *KeystoneReconciler) updateStatus(ctx context.Context, keystone *keystonev1alpha1.Keystone, result ctrl.Result, reconcileErr error) (ctrl.Result, error) {
 	// Re-aggregate the Ready condition on every status persist, including the
 	// early-return paths a sub-reconciler takes when it degrades after the CR
@@ -586,7 +577,7 @@ func (r *KeystoneReconciler) updateStatus(ctx context.Context, keystone *keyston
 	// depools the keystone Pods under a network partition. Aggregating only at
 	// the end of a fully-successful chain left Ready stale at True whenever such
 	// an early return short-circuited the chain, so a degraded CR kept
-	// reporting Ready=True (SC-CHAOS-006, CC-0113).
+	// reporting Ready=True (SC-CHAOS-006).
 	setReadyCondition(keystone)
 	if err := r.Status().Update(ctx, keystone); err != nil {
 		log.FromContext(ctx).Error(err, "unable to update Keystone status")
@@ -626,7 +617,7 @@ func aggregateReady(conds []metav1.Condition) bool {
 // keystone.conf ConfigMap and its pruning) gate the same downstream graph as
 // the upstream credential Secrets, so failures reuse SecretsReady rather than a
 // dedicated condition — matching the subReconcilerConditionTypes "Config" ->
-// "SecretsReady" mapping and reconcileDBConnectionSecret (CC-0080, issue #467).
+// "SecretsReady" mapping and reconcileDBConnectionSecret (issue #467).
 const conditionReasonConfigError = "ConfigError"
 
 // markConfigFailed flips SecretsReady to False so a reconcileConfig or config
@@ -647,7 +638,7 @@ func markConfigFailed(keystone *keystonev1alpha1.Keystone, err error) {
 
 // shortestRequeue returns the ctrl.Result with the shortest non-zero
 // RequeueAfter from the given results. If no result requests a requeue,
-// a zero ctrl.Result is returned (CC-0071, REQ-003).
+// a zero ctrl.Result is returned.
 //
 // Sub-reconcilers signal a requeue exclusively via RequeueAfter — the
 // non-deprecated requeue field — so this function intentionally keys off
@@ -670,7 +661,7 @@ func shortestRequeue(results ...ctrl.Result) ctrl.Result {
 
 // mergeParallelConditions copies a single condition of the given type from src
 // into dst. If src does not contain a condition of that type, dst is left
-// unchanged. Pre-existing conditions on dst are preserved (CC-0071, REQ-004).
+// unchanged. Pre-existing conditions on dst are preserved.
 func mergeParallelConditions(dst, src *keystonev1alpha1.Keystone, conditionType string) {
 	cond := conditions.GetCondition(src.Status.Conditions, conditionType)
 	if cond == nil {
@@ -681,11 +672,11 @@ func mergeParallelConditions(dst, src *keystonev1alpha1.Keystone, conditionType 
 
 // parallelSubReconciler describes a sub-reconciler that runs in a parallel
 // group. Each sub-reconciler receives its own DeepCopy of the Keystone CR
-// and sets exactly one condition type (CC-0071, REQ-001).
+// and sets exactly one condition type.
 //
 // name is the sub_reconciler label value used by the metrics helper so that
 // duration/error series are attributed to the individual group member rather
-// than the group as a whole (CC-0089, REQ-001, REQ-002).
+// than the group as a whole.
 type parallelSubReconciler struct {
 	name          string
 	conditionType string
@@ -694,11 +685,11 @@ type parallelSubReconciler struct {
 
 // reconcileParallelGroup runs the given sub-reconcilers concurrently using
 // errgroup.WithContext. Each goroutine operates on a DeepCopy of the Keystone
-// CR to avoid data races (CC-0071, REQ-002). After all goroutines complete,
+// CR to avoid data races. After all goroutines complete,
 // conditions from every sub-reconciler — including those that succeeded before
 // a peer failed — are merged back into the primary keystone so that partial
 // progress is visible in status. On success the shortest non-zero RequeueAfter
-// is returned (CC-0071, REQ-001, REQ-005).
+// is returned.
 func (r *KeystoneReconciler) reconcileParallelGroup(
 	ctx context.Context,
 	keystone *keystonev1alpha1.Keystone,
@@ -720,7 +711,7 @@ func (r *KeystoneReconciler) reconcileParallelGroup(
 		g.Go(func() error {
 			// Route through instrumentSubReconciler so each parallel member
 			// emits its own duration sample and — on failure — its own error
-			// counter tagged with sub.name (CC-0089, REQ-001, REQ-002).
+			// counter tagged with sub.name.
 			res, err := instrumentSubReconciler(gctx, sub.name, func(ctx context.Context) (ctrl.Result, error) {
 				return sub.fn(ctx, ksCopy)
 			})
@@ -754,7 +745,7 @@ func (r *KeystoneReconciler) reconcileParallelGroup(
 // SetupWithManager registers the KeystoneReconciler with the controller manager.
 func (r *KeystoneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Detect whether the Gateway API CRD is installed. spec.gateway is
-	// optional (CC-0065), so the operator must run on clusters without
+	// optional, so the operator must run on clusters without
 	// Gateway API. Adding Owns(HTTPRoute) unconditionally would cause the
 	// controller to fail at Start with "no matches for kind HTTPRoute"
 	// when the CRD is missing, preventing every Keystone CR from being
@@ -781,7 +772,6 @@ func (r *KeystoneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 	// Register the Keystone field indexer before Watches so
 	// secretToKeystoneMapper can rely on it for its MatchingFields lookup
-	// (CC-0087, REQ-001, REQ-006).
 	if err := registerSecretNameIndex(context.Background(), mgr.GetFieldIndexer()); err != nil {
 		return err
 	}
@@ -810,20 +800,20 @@ func (r *KeystoneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// ESO-managed secrets (spec.database.secretRef, spec.bootstrap.adminPasswordSecretRef)
 		// are owned by the ExternalSecret controller, not by the Keystone CR, so
 		// EnqueueRequestForOwner would never match them. This MapFunc performs a
-		// namespace-scoped lookup instead (CC-0013).
+		// namespace-scoped lookup instead.
 		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(
 			secretToKeystoneMapper(mgr.GetClient()),
 		)).
 		// Watch the MariaDB cluster CR referenced by spec.database.clusterRef so
 		// that the operator reflects upstream database outages in DatabaseReady
-		// without waiting for the next periodic requeue (CC-0047).
+		// without waiting for the next periodic requeue.
 		Watches(&mariadbv1alpha1.MariaDB{}, handler.EnqueueRequestsFromMapFunc(
 			mariaDBToKeystoneMapper(mgr.GetClient()),
 		)).
 		// Watch the OpenBao-backed ClusterSecretStore so the operator reflects
 		// upstream secret-backend outages in SecretsReady as soon as ESO flips
 		// the store's Ready condition, rather than waiting for the next periodic
-		// requeue (CC-0047).
+		// requeue.
 		Watches(&esov1.ClusterSecretStore{}, handler.EnqueueRequestsFromMapFunc(
 			clusterSecretStoreToKeystoneMapper(mgr.GetClient()),
 		)).
@@ -836,7 +826,6 @@ func (r *KeystoneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// cuts the openbao-finalizer adoption-wait latency from up to
 		// RequeueSecretPolling (15s) to watch-event delivery latency while
 		// avoiding the duplicate-enqueue churn of the prior Owns() wiring
-		// (CC-0092, REQ-001, REQ-004).
 		Watches(
 			&esov1alpha1.PushSecret{},
 			handler.EnqueueRequestsFromMapFunc(pushSecretToKeystoneMapper(mgr.GetClient())),

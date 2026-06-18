@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "c5c3-operator Helm Values",
-  "description": "Schema for the c5c3-operator Helm chart values (CC-0110)",
+  "description": "Schema for the c5c3-operator Helm chart values",
   "type": "object",
   "additionalProperties": false,
   "definitions": {
@@ -117,7 +117,7 @@
       "properties": {
         "namespaceScoped": {
           "type": "boolean",
-          "description": "Deploy with namespace-scoped Role/RoleBinding instead of ClusterRole/ClusterRoleBinding (CC-0043). Restricts the operator to its release namespace. Requires webhook.enabled=false.",
+          "description": "Deploy with namespace-scoped Role/RoleBinding instead of ClusterRole/ClusterRoleBinding. Restricts the operator to its release namespace. Requires webhook.enabled=false.",
           "default": false
         }
       }
@@ -190,12 +190,12 @@
     },
     "monitoring": {
       "type": "object",
-      "description": "Observability integration configuration (CC-0089)",
+      "description": "Observability integration configuration",
       "additionalProperties": false,
       "properties": {
         "serviceMonitor": {
           "type": "object",
-          "description": "Prometheus Operator ServiceMonitor settings (CC-0089, REQ-006). Requires the monitoring.coreos.com CRDs in-cluster when enabled.",
+          "description": "Prometheus Operator ServiceMonitor settings. Requires the monitoring.coreos.com CRDs in-cluster when enabled.",
           "additionalProperties": false,
           "properties": {
             "enabled": {

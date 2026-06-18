@@ -1,6 +1,6 @@
-# CC-0043: Role RBAC tests for namespace-scoped mode.
+# Role RBAC tests for namespace-scoped mode.
 # Individual rule verification tests mirror clusterrole_test.yaml structure
-# to catch regressions in apiGroups, resources, or verbs (CC-0043).
+# to catch regressions in apiGroups, resources, or verbs.
 suite: Role
 templates:
   - templates/role.yaml
@@ -178,7 +178,7 @@ tests:
               - create
               - patch
 
-  - it: should grant read-only on pods for policy validation error extraction (CC-0058)
+  - it: should grant read-only on pods for policy validation error extraction
     set:
       rbac:
         namespaceScoped: true
@@ -264,7 +264,7 @@ tests:
               - list
               - watch
 
-  - it: should grant full CRUD on cert-manager certificates (CC-0106)
+  - it: should grant full CRUD on cert-manager certificates
     set:
       rbac:
         namespaceScoped: true
@@ -287,7 +287,7 @@ tests:
               - patch
               - delete
 
-  - it: should grant CRUD without delete on externalsecrets (CC-0079)
+  - it: should grant CRUD without delete on externalsecrets
     set:
       rbac:
         namespaceScoped: true
@@ -309,7 +309,7 @@ tests:
               - update
               - patch
 
-  - it: should grant full CRUD on pushsecrets (CC-0079)
+  - it: should grant full CRUD on pushsecrets
     set:
       rbac:
         namespaceScoped: true
@@ -444,7 +444,7 @@ tests:
               - patch
               - delete
 
-  - it: should grant full CRUD on httproutes (CC-0065)
+  - it: should grant full CRUD on httproutes
     set:
       rbac:
         namespaceScoped: true
@@ -467,7 +467,7 @@ tests:
               - patch
               - delete
 
-  - it: should grant read-only on httproutes/status (CC-0065)
+  - it: should grant read-only on httproutes/status
     set:
       rbac:
         namespaceScoped: true
@@ -484,7 +484,7 @@ tests:
             verbs:
               - get
 
-  - it: should grant read-only on priorityclasses for webhook validation (CC-0075)
+  - it: should grant read-only on priorityclasses for webhook validation
     set:
       rbac:
         namespaceScoped: true

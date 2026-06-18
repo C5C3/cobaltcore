@@ -3,7 +3,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Sub-reconciler instrumentation helper for the Keystone controller
-// (CC-0089, REQ-001, REQ-002, REQ-007).
 package controller
 
 import (
@@ -22,12 +21,11 @@ import (
 // TestSubReconcilerConditionTypesCoversAllCallSites should catch every such
 // gap before code lands, but the explicit "UNKNOWN" sentinel makes any escape
 // visible in dashboards/alerts rather than silently emitting an empty label
-// (CC-0089, REQ-002).
 const subReconcilerConditionTypeUnknown = "UNKNOWN"
 
 // subReconcilerConditionTypes maps a sub_reconciler label value to the
 // condition_type it drives. instrumentSubReconciler consults this map to
-// attribute errors to the correct Ready sub-condition (CC-0089, REQ-002).
+// attribute errors to the correct Ready sub-condition.
 //
 // Every value MUST be a member of subConditionTypes; the drift-guard test
 // TestSubReconcilerConditionTypesCoversAllNames asserts this invariant.
@@ -74,7 +72,7 @@ var subReconcilerConditionTypes = map[string]string{
 // package-level vars so unit tests can rebind them to an isolated
 // prometheus.NewRegistry() and avoid leaking test-only label values into
 // the production controller-runtime registry. Production code MUST NOT
-// reassign these (CC-0089, REQ-007, REQ-008).
+// reassign these.
 var (
 	instrumentObserveDuration = metrics.ObserveReconcileDuration
 	instrumentRecordError     = metrics.RecordReconcileError
@@ -89,7 +87,6 @@ var (
 // label, so any drift escaping the static guards
 // (TestSubReconcilerConditionTypesCoversAllNames /
 // TestSubReconcilerConditionTypesCoversAllCallSites) is visible in alerts
-// (CC-0089, REQ-001, REQ-002, REQ-007).
 //
 // Panic-safety: the deferred emission runs before the panic unwinds the
 // stack, so a crashing sub-reconciler still contributes a duration sample.

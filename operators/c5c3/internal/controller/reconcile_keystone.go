@@ -19,7 +19,7 @@ import (
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
 
-// DECISION (CC-0110, task 2.6): the projected Keystone CR is named
+// DECISION the projected Keystone CR is named
 // "{controlplane.Name}-keystone" — a deterministic, collision-free name derived
 // from the owning ControlPlane so a single namespace can host the Keystone CRs
 // of multiple ControlPlanes without clashing, and so re-reconciles always target
@@ -28,7 +28,7 @@ import (
 // childNamespace in reconcile_infrastructure.go.
 const keystoneNameSuffix = "-keystone"
 
-// DECISION (CC-0110, task 2.6): the default Keystone image repository is
+// DECISION the default Keystone image repository is
 // "ghcr.io/c5c3/keystone" — the canonical repo the keystone operator's own
 // fixtures, tempest CRs, and e2e manifests all use (e.g.
 // tests/tempest/keystone-2025-2/00-keystone-cr.yaml). The tag is derived from
@@ -43,7 +43,7 @@ func keystoneName(cp *c5c3v1alpha1.ControlPlane) string {
 }
 
 // reconcileKeystone projects spec.services.keystone into an owned Keystone CR
-// and drives the KeystoneReady condition (CC-0110, REQ-007, REQ-009).
+// and drives the KeystoneReady condition.
 //
 // The sub-reconciler is GATED on InfrastructureReady: until the infrastructure
 // sub-reconciler reports the managed MariaDB/Memcached as Ready, no Keystone CR
@@ -112,7 +112,7 @@ func (r *ControlPlaneReconciler) reconcileKeystone(ctx context.Context, cp *c5c3
 		// provisioned by reusing the infrastructure specs verbatim.
 		keystone.Spec.Database = cp.Spec.Infrastructure.Database
 
-		// CC-0116 (REQ-003): in managed mode the operator OWNS the service DB
+		// in managed mode the operator OWNS the service DB
 		// credential — reconcileDBCredentials materialises it into a per-ControlPlane
 		// Secret named dbCredentialSecretName(cp). Override the projected Keystone CR's
 		// database.secretRef to that operator-owned Secret (key "password") so Keystone
@@ -126,7 +126,7 @@ func (r *ControlPlaneReconciler) reconcileKeystone(ctx context.Context, cp *c5c3
 
 		keystone.Spec.Cache = cp.Spec.Infrastructure.Cache
 
-		// CC-0117 (REQ-005): in managed mode the operator OWNS the admin password —
+		// in managed mode the operator OWNS the admin password —
 		// reconcileAdminPassword projects it from OpenBao into a per-ControlPlane
 		// Secret named adminPasswordSecretName(cp). Point the projected Keystone CR's
 		// bootstrap admin-password ref (via effectiveAdminPasswordSecretRef) at that
@@ -141,7 +141,7 @@ func (r *ControlPlaneReconciler) reconcileKeystone(ctx context.Context, cp *c5c3
 		// Project external exposure onto the Keystone CR's spec.gateway, then
 		// advertise the externally routable URL via the bootstrap public endpoint.
 		//
-		// DECISION (CC-0111): both sides are now commonv1.GatewaySpec, so the L2
+		// DECISION both sides are now commonv1.GatewaySpec, so the L2
 		// mapping is a single DeepCopy instead of a field-by-field copy. DeepCopy
 		// (over a direct pointer share) keeps the projected Keystone CR's gateway an
 		// independent object, so a later mutation of either spec can never alias the

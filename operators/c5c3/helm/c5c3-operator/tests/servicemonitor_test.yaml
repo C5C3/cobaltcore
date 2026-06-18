@@ -1,14 +1,14 @@
-# CC-0089, REQ-006: ServiceMonitor template unit tests.
+# ServiceMonitor template unit tests.
 suite: ServiceMonitor
 templates:
   - templates/servicemonitor.yaml
 tests:
-  - it: should not render when monitoring disabled (CC-0089, REQ-006)
+  - it: should not render when monitoring disabled
     asserts:
       - hasDocuments:
           count: 0
 
-  - it: renders ServiceMonitor with correct fields (CC-0089, REQ-006)
+  - it: renders ServiceMonitor with correct fields
     set:
       monitoring:
         serviceMonitor:
@@ -33,7 +33,7 @@ tests:
           path: spec.selector.matchLabels["app.kubernetes.io/name"]
           value: c5c3-operator
 
-  - it: should honour a custom scrape interval (CC-0089, REQ-006)
+  - it: should honour a custom scrape interval
     set:
       monitoring:
         serviceMonitor:
@@ -46,8 +46,8 @@ tests:
 
   # Prometheus operator's `Duration` type accepts the literal "0" to mean
   # "use the global default scrape interval". The schema regex must allow
-  # this bare-zero form (CC-0089, I-002).
-  - it: should accept "0" as the scrape interval (CC-0089, REQ-006, I-002)
+  # this bare-zero form (I-002).
+  - it: should accept "0" as the scrape interval (I-002)
     set:
       monitoring:
         serviceMonitor:
@@ -58,7 +58,7 @@ tests:
           path: spec.endpoints[0].interval
           value: "0"
 
-  - it: should reject non-duration interval (CC-0089, REQ-006)
+  - it: should reject non-duration interval
     set:
       monitoring:
         serviceMonitor:
@@ -68,7 +68,7 @@ tests:
       - failedTemplate:
           errorPattern: "/monitoring/serviceMonitor/interval.*does not match pattern"
 
-  - it: should reject non-boolean monitoring.serviceMonitor.enabled (CC-0089, REQ-006)
+  - it: should reject non-boolean monitoring.serviceMonitor.enabled
     set:
       monitoring:
         serviceMonitor:
@@ -77,7 +77,7 @@ tests:
       - failedTemplate:
           errorPattern: "/monitoring/serviceMonitor/enabled.*got string, want boolean"
 
-  - it: should reject unknown property under monitoring.serviceMonitor (CC-0089, REQ-006)
+  - it: should reject unknown property under monitoring.serviceMonitor
     set:
       monitoring:
         serviceMonitor:

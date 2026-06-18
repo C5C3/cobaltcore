@@ -6,12 +6,12 @@ them as "operator-library.<helper>". Only chart-specific helpers stay here.
 */}}
 
 {{/*
-RBAC rules shared between ClusterRole and namespace-scoped Role (CC-0043).
+RBAC rules shared between ClusterRole and namespace-scoped Role.
 Extracted into a named template to prevent drift when rules change. These rules
 are keystone-specific, so they stay in this chart rather than the library.
 */}}
 {{- define "keystone-operator.rbacRules" -}}
-# keystone.openstack.c5c3.io - keystones (CC-0017)
+# keystone.openstack.c5c3.io - keystones
 - apiGroups:
     - keystone.openstack.c5c3.io
   resources:
@@ -24,7 +24,7 @@ are keystone-specific, so they stay in this chart rather than the library.
     - update
     - patch
     - delete
-# keystone.openstack.c5c3.io - keystones/status (CC-0017)
+# keystone.openstack.c5c3.io - keystones/status
 - apiGroups:
     - keystone.openstack.c5c3.io
   resources:
@@ -33,14 +33,14 @@ are keystone-specific, so they stay in this chart rather than the library.
     - get
     - update
     - patch
-# keystone.openstack.c5c3.io - keystones/finalizers (CC-0017)
+# keystone.openstack.c5c3.io - keystones/finalizers
 - apiGroups:
     - keystone.openstack.c5c3.io
   resources:
     - keystones/finalizers
   verbs:
     - update
-# apps - deployments (CC-0017)
+# apps - deployments
 - apiGroups:
     - apps
   resources:
@@ -53,7 +53,7 @@ are keystone-specific, so they stay in this chart rather than the library.
     - update
     - patch
     - delete
-# core - services, configmaps, secrets, serviceaccounts (CC-0017)
+# core - services, configmaps, secrets, serviceaccounts
 - apiGroups:
     - ""
   resources:
@@ -69,7 +69,7 @@ are keystone-specific, so they stay in this chart rather than the library.
     - update
     - patch
     - delete
-# core - events (CC-0017)
+# core - events
 - apiGroups:
     - ""
   resources:
@@ -77,7 +77,7 @@ are keystone-specific, so they stay in this chart rather than the library.
   verbs:
     - create
     - patch
-# core - pods (read-only, CC-0058)
+# core - pods (read-only)
 # Required for getValidationErrorMessage to list pods of failed policy
 # validation Jobs and extract error details from terminated container state.
 - apiGroups:
@@ -87,7 +87,7 @@ are keystone-specific, so they stay in this chart rather than the library.
   verbs:
     - get
     - list
-# batch - jobs, cronjobs (CC-0017)
+# batch - jobs, cronjobs
 - apiGroups:
     - batch
   resources:
@@ -101,7 +101,7 @@ are keystone-specific, so they stay in this chart rather than the library.
     - update
     - patch
     - delete
-# k8s.mariadb.com - databases, users, grants (CC-0017)
+# k8s.mariadb.com - databases, users, grants
 - apiGroups:
     - k8s.mariadb.com
   resources:
@@ -116,7 +116,7 @@ are keystone-specific, so they stay in this chart rather than the library.
     - update
     - patch
     - delete
-# k8s.mariadb.com - mariadbs (read-only, CC-0047)
+# k8s.mariadb.com - mariadbs (read-only)
 # Required for the operator to observe the referenced MariaDB cluster's
 # Ready condition and reflect outages in DatabaseReady.
 - apiGroups:
@@ -127,7 +127,7 @@ are keystone-specific, so they stay in this chart rather than the library.
     - get
     - list
     - watch
-# cert-manager.io - certificates (CC-0106)
+# cert-manager.io - certificates
 # Required so the operator can issue the per-Keystone database client
 # Certificate (Spec.Database.TLS) and have cert-manager rotate the keypair
 # Secret consumed by the Keystone workloads.
@@ -143,7 +143,7 @@ are keystone-specific, so they stay in this chart rather than the library.
     - update
     - patch
     - delete
-# external-secrets.io - externalsecrets (CC-0017)
+# external-secrets.io - externalsecrets
 # delete is intentionally NOT granted: the operator only manages externalsecret
 # lifecycles via owner-references, it never calls r.Delete on them directly.
 - apiGroups:
@@ -157,7 +157,7 @@ are keystone-specific, so they stay in this chart rather than the library.
     - create
     - update
     - patch
-# external-secrets.io - pushsecrets (CC-0017, CC-0079)
+# external-secrets.io - pushsecrets
 # delete is required so the openbao-finalizer can tear down the fernet-keys
 # and credential-keys backup PushSecrets on Keystone CR deletion and rely on
 # ESO DeletionPolicy=Delete to purge the kv-v2 paths.
@@ -173,7 +173,7 @@ are keystone-specific, so they stay in this chart rather than the library.
     - update
     - patch
     - delete
-# external-secrets.io - clustersecretstores (read-only, CC-0047)
+# external-secrets.io - clustersecretstores (read-only)
 # Required so the operator can observe the ClusterSecretStore's Ready
 # condition and reflect upstream secret-backend (OpenBao) outages in
 # SecretsReady. ClusterSecretStore is cluster-scoped; the rule is only
@@ -186,7 +186,7 @@ are keystone-specific, so they stay in this chart rather than the library.
     - get
     - list
     - watch
-# rbac.authorization.k8s.io - roles, rolebindings (CC-0017)
+# rbac.authorization.k8s.io - roles, rolebindings
 - apiGroups:
     - rbac.authorization.k8s.io
   resources:
@@ -200,7 +200,7 @@ are keystone-specific, so they stay in this chart rather than the library.
     - update
     - patch
     - delete
-# policy - poddisruptionbudgets (CC-0037)
+# policy - poddisruptionbudgets
 - apiGroups:
     - policy
   resources:
@@ -213,7 +213,7 @@ are keystone-specific, so they stay in this chart rather than the library.
     - update
     - patch
     - delete
-# autoscaling - horizontalpodautoscalers (CC-0038)
+# autoscaling - horizontalpodautoscalers
 - apiGroups:
     - autoscaling
   resources:
@@ -226,7 +226,7 @@ are keystone-specific, so they stay in this chart rather than the library.
     - update
     - patch
     - delete
-# networking.k8s.io - networkpolicies (CC-0039)
+# networking.k8s.io - networkpolicies
 - apiGroups:
     - networking.k8s.io
   resources:
@@ -239,7 +239,7 @@ are keystone-specific, so they stay in this chart rather than the library.
     - update
     - patch
     - delete
-# gateway.networking.k8s.io - httproutes (CC-0065)
+# gateway.networking.k8s.io - httproutes
 # Required to create/update/delete HTTPRoutes that expose Keystone API externally.
 - apiGroups:
     - gateway.networking.k8s.io
@@ -253,7 +253,7 @@ are keystone-specific, so they stay in this chart rather than the library.
     - update
     - patch
     - delete
-# gateway.networking.k8s.io - httproutes/status (read-only, CC-0065)
+# gateway.networking.k8s.io - httproutes/status (read-only)
 # Required so the operator can observe the Accepted condition set by the
 # upstream Gateway controller and reflect it in HTTPRouteReady.
 - apiGroups:
@@ -262,7 +262,7 @@ are keystone-specific, so they stay in this chart rather than the library.
     - httproutes/status
   verbs:
     - get
-# scheduling.k8s.io - priorityclasses (read-only, CC-0075)
+# scheduling.k8s.io - priorityclasses (read-only)
 # Required for the webhook to validate that spec.priorityClassName references
 # an existing PriorityClass at admission time.
 - apiGroups:
@@ -273,7 +273,7 @@ are keystone-specific, so they stay in this chart rather than the library.
     - get
     - list
     - watch
-# coordination.k8s.io - leases for leader election (CC-0018)
+# coordination.k8s.io - leases for leader election
 - apiGroups:
     - coordination.k8s.io
   resources:

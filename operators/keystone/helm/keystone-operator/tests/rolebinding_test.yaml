@@ -1,4 +1,4 @@
-# CC-0043: RoleBinding tests for namespace-scoped mode.
+# RoleBinding tests for namespace-scoped mode.
 suite: RoleBinding
 templates:
   - templates/rolebinding.yaml

@@ -1,4 +1,4 @@
-# CC-0110: Certificate and Issuer unit tests.
+# Certificate and Issuer unit tests.
 suite: Certificate
 templates:
   - templates/certificate.yaml

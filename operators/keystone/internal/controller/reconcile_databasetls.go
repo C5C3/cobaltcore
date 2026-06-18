@@ -4,12 +4,12 @@
 
 // Package controller — reconcile_databasetls.go provisions the client
 // certificate Keystone presents to MariaDB/MaxScale for mutual TLS
-// (CC-0106, REQ-002, REQ-014).
 //
 // The sub-reconciler has three lifecycle paths:
 //
 //   - NotRequired: spec.database.tls is nil or disabled — plaintext TCP,
-//     preserving the pre-CC-0106 behavior. No Certificate is created.
+//
+// preserving the pre-existing behavior. No Certificate is created.
 //   - ExternallyManaged: TLS is enabled but the database is brownfield
 //     (spec.database.host, no clusterRef) — the operator does not own the
 //     external database's trust domain, so the client keypair is supplied
@@ -18,7 +18,7 @@
 //   - Managed: TLS is enabled and the database is a managed MariaDB cluster
 //     (spec.database.clusterRef) — the operator issues a cert-manager
 //     Certificate from the shared OpenStack DB CA issuer so MariaDB/MaxScale
-//     trust it via their clientCASecretRef (CC-0106, REQ-009).
+//     trust it via their clientCASecretRef.
 //
 // The typed condition/reason vocabulary lives in dbtls_mode.go alongside the
 // DSN mode mapping so the whole DB-TLS surface is declared in one place.
@@ -42,26 +42,24 @@ import (
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
 
-// Feature: CC-0106
-
 // dbCAIssuerName is the cluster-scoped cert-manager issuer that anchors the
 // OpenStack DB trust domain. The same issuer is referenced by MariaDB.spec.tls
 // (serverCertIssuerRef + clientCertIssuerRef) so the Keystone client cert and
-// the MariaDB server/client certs share a root of trust (CC-0106, REQ-009).
+// the MariaDB server/client certs share a root of trust.
 // The matching ClusterIssuer is declared in
 // deploy/flux-system/infrastructure/db-ca-issuer.yaml.
 const dbCAIssuerName = "openstack-db-ca-issuer"
 
 // reconcileDatabaseTLS provisions (or, for the disabled/brownfield paths,
 // records the absence of) the client certificate Keystone uses for mutual TLS
-// to the database (CC-0106, REQ-002, REQ-014).
+// to the database.
 func (r *KeystoneReconciler) reconcileDatabaseTLS(ctx context.Context,
 	keystone *keystonev1alpha1.Keystone,
 ) (ctrl.Result, error) {
 	tlsSpec := keystone.Spec.Database.TLS
 
-	// NotRequired: TLS not requested — preserve pre-CC-0106 plaintext
-	// behavior, create no Certificate (CC-0106, REQ-002). If TLS was
+	// NotRequired: TLS not requested — preserve pre-existing plaintext
+	// behavior, create no Certificate. If TLS was
 	// previously Managed, delete the now-orphaned <name>-db-client Certificate
 	// so cert-manager stops renewing it and garbage-collects the issued Secret
 	// via the owner-reference cascade — mirroring HPA/NetworkPolicy/HTTPRoute,
@@ -83,7 +81,7 @@ func (r *KeystoneReconciler) reconcileDatabaseTLS(ctx context.Context,
 	// ExternallyManaged: TLS enabled but the database is brownfield (no
 	// clusterRef). The operator does not own the external database's trust
 	// domain; the client keypair is supplied out-of-band via
-	// spec.database.tls.clientCertSecretRef (CC-0106, REQ-014). Delete any
+	// spec.database.tls.clientCertSecretRef. Delete any
 	// previously-issued managed Certificate — a CR switched from managed to
 	// brownfield must not leave the operator-owned <name>-db-client Certificate
 	// being renewed indefinitely (issue #475).
@@ -105,7 +103,7 @@ func (r *KeystoneReconciler) reconcileDatabaseTLS(ctx context.Context,
 	}
 
 	// Managed: issue the client Certificate from the shared OpenStack DB CA
-	// issuer (CC-0106, REQ-002, REQ-009).
+	// issuer.
 	cert := dbClientCertificate(keystone)
 	ready, err := commontls.EnsureCertificate(ctx, r.Client, r.Scheme, keystone, cert)
 	if err != nil {
@@ -115,7 +113,7 @@ func (r *KeystoneReconciler) reconcileDatabaseTLS(ctx context.Context,
 
 	if !ready {
 		log.FromContext(ctx).Info(
-			"database client Certificate not yet ready; requeuing (CC-0106, REQ-002)",
+			"database client Certificate not yet ready; requeuing",
 			"namespace", cert.Namespace,
 			"name", cert.Name,
 		)
@@ -143,7 +141,7 @@ func (r *KeystoneReconciler) reconcileDatabaseTLS(ctx context.Context,
 
 // dbClientCertificateName returns the name of the operator-issued client
 // Certificate (and the Secret cert-manager writes it into):
-// "<keystone.Name>-db-client" (CC-0106, REQ-002).
+// "<keystone.Name>-db-client".
 func dbClientCertificateName(keystone *keystonev1alpha1.Keystone) string {
 	return fmt.Sprintf("%s-db-client", keystone.Name)
 }
@@ -176,9 +174,9 @@ func deleteDBClientCertificate(ctx context.Context, c client.Client, namespace, 
 }
 
 // dbClientCertificate builds the cert-manager Certificate for the Keystone
-// database client keypair (CC-0106, REQ-002). The Secret it issues is named
+// database client keypair. The Secret it issues is named
 // "<keystone.Name>-db-client" and is mounted into the workloads that open a
-// database connection (mounted by CC-0106 task 4.2).
+// database connection.
 //
 // CommonName is keystone.Name because the managed-mode database username
 // materialised by reconcile_dbconnection_secret.go is the Keystone CR name;
@@ -211,7 +209,7 @@ func dbClientCertificate(keystone *keystonev1alpha1.Keystone) *certmanagerv1.Cer
 }
 
 // dbTLSVolumeName is the Volume / VolumeMount name used for the Keystone
-// database client certificate material (CC-0106, REQ-002, REQ-014). The
+// database client certificate material. The
 // matching in-pod path is dbTLSMountPath declared in
 // reconcile_dbconnection_secret.go (which also derives the ssl_*-file paths
 // fed into the DSN); the constants stay separate so the mount-point owner
@@ -220,14 +218,14 @@ const dbTLSVolumeName = "db-tls"
 
 // dbTLSEnabled reports whether the Keystone CR requests TLS to the database;
 // the helper centralizes the nil/disabled gate so all callers (deployment +
-// job builders) decide identically (CC-0106, REQ-002, REQ-014).
+// job builders) decide identically.
 func dbTLSEnabled(keystone *keystonev1alpha1.Keystone) bool {
 	return keystone.Spec.Database.TLS != nil && keystone.Spec.Database.TLS.Enabled
 }
 
 // dbTLSVolumeAndMount builds the Volume + VolumeMount pair that projects the
 // client TLS material (ca.crt from caBundleSecretRef; tls.crt + tls.key from
-// clientCertSecretRef) into a Keystone workload pod (CC-0106, REQ-002, REQ-014).
+// clientCertSecretRef) into a Keystone workload pod.
 // Callers must only invoke it when dbTLSEnabled(keystone) is true; the helper
 // itself does not check the gate.
 //

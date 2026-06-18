@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Tests for validateRotationOutput (CC-0081, REQ-006).
+// Tests for validateRotationOutput.
 package controller
 
 import (
@@ -17,7 +17,7 @@ import (
 )
 
 // TestValidateRotationOutput_CC0081 drives validateRotationOutput through its
-// documented success and failure paths (CC-0081, REQ-006).
+// documented success and failure paths.
 func TestValidateRotationOutput_CC0081(t *testing.T) {
 	mustGenKey := func(t *testing.T) string {
 		t.Helper()
@@ -121,7 +121,7 @@ func TestValidateRotationOutput_CC0081(t *testing.T) {
 
 // TestValidateRotationOutput_AcceptsRealFernetKeys_CC0081 confirms that
 // keys produced by the real generateFernetKey() helper pass validation
-// across the supported count range (CC-0081, REQ-006).
+// across the supported count range.
 func TestValidateRotationOutput_AcceptsRealFernetKeys_CC0081(t *testing.T) {
 	g := NewGomegaWithT(t)
 

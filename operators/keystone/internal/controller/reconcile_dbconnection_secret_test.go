@@ -167,7 +167,7 @@ func TestReconcileDBConnectionSecret_UpstreamSecretMissing_RequeueAndCondition(t
 // controller level: the upstream credentials Secret exists but is missing the
 // "password" data key (brownfield mode). The reconciler must requeue with a
 // SecretsReady=False / WaitingForDBCredentials condition and never write a
-// derived Secret with partial credentials (CC-0080, REQ-002).
+// derived Secret with partial credentials.
 func TestReconcileDBConnectionSecret_UpstreamSecretMissingKey_RequeueAndCondition(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := configTestScheme()
@@ -215,7 +215,7 @@ func TestReconcileDBConnectionSecret_UpstreamSecretMissingKey_RequeueAndConditio
 	g.Expect(found.Message).To(ContainSubstring(`"password"`))
 }
 
-// TestReconcile_NoPushSecretOrExternalSecretForDBConnection asserts REQ-010:
+// TestReconcile_NoPushSecretOrExternalSecretForDBConnection asserts:
 // the derived db-connection Secret must be a plain corev1.Secret with no
 // PushSecret or ExternalSecret involvement. We verify by listing all Secrets
 // with the derived name in the namespace and confirming exactly one exists
@@ -246,11 +246,11 @@ func TestReconcile_NoPushSecretOrExternalSecretForDBConnection(t *testing.T) {
 		"exactly one corev1.Secret should manage the db-connection material; no PushSecret/ExternalSecret intermediates")
 }
 
-// --- CC-0106 task 4.1: DB-TLS DSN parameters ---
+// --- task 4.1: DB-TLS DSN parameters ---
 //
 // These tests assert that reconcileDBConnectionSecret appends the pymysql ssl_*
-// query parameters produced by modeToSSLParams (CC-0106, REQ-004) to the DSN
-// when spec.database.tls is enabled, while leaving the pre-CC-0106 behaviour
+// query parameters produced by modeToSSLParams to the DSN
+// when spec.database.tls is enabled, while leaving the pre-existing behaviour
 // (charset=utf8 only) unchanged for the plaintext path. The merged query string
 // is asserted via url.Values rather than substring matching so test stability
 // does not depend on url.Values.Encode()'s lexical key ordering.
@@ -336,7 +336,7 @@ func TestReconcileDBConnectionSecret_TLSEnabled_AppendsModeSSLParams(t *testing.
 
 			q := parseDSNQuery(t, string(derived.Data[dbConnectionSecretKey]))
 
-			// charset=utf8 (the pre-CC-0106 parameter) must survive the merge.
+			// charset=utf8 (the pre- parameter) must survive the merge.
 			g.Expect(q.Get("charset")).To(Equal("utf8"))
 
 			// The ssl_ca/ssl_cert/ssl_key triple is present for every mode and

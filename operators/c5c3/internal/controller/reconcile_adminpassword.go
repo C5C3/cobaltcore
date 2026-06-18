@@ -24,13 +24,13 @@ import (
 
 // adminPasswordSecretNameSuffix is appended to keystoneName(cp) to derive the
 // deterministic, collision-free name of the per-ControlPlane admin-password
-// Secret/ExternalSecret (CC-0117, REQ-001), mirroring the *Suffix discipline used
+// Secret/ExternalSecret, mirroring the *Suffix discipline used
 // by the DB-credential and K-ORC admin-credential names so a single namespace can
 // host the admin password of multiple ControlPlanes.
 const adminPasswordSecretNameSuffix = "-admin-credentials" //nolint:gosec // G101 false positive: Secret name suffix, not a credential.
 
 // adminPasswordRemoteKeyFor returns the per-ControlPlane OpenBao path the admin
-// password is read from (CC-0117, REQ-002). Unlike the DB-credential path, this
+// password is read from. Unlike the DB-credential path, this
 // path is keystone-NAME-scoped — bootstrap/{ns}/{keystoneName}/admin, NOT
 // cp-name-scoped — because it must match the seeder and the keystone-operator
 // Model B rotation PushSecret, which both write/read the admin password at
@@ -51,7 +51,7 @@ func adminPasswordSecretName(cp *c5c3v1alpha1.ControlPlane) string {
 
 // adminPasswordExternalSecret builds the per-ControlPlane, OpenBao-backed
 // ExternalSecret that materialises the admin password into childNamespace(cp)
-// (CC-0117, REQ-001). It is a PURE builder: no owner reference is set here — the
+// It is a PURE builder: no owner reference is set here — the
 // reconciler adds the ControlPlane controller reference in the CreateOrUpdate mutate
 // closure (so GC is wired) while keeping this builder usable for shape assertions.
 // The ExternalSecret type is esov1 (the v1 API), matching dbCredentialExternalSecret.
@@ -72,7 +72,7 @@ func adminPasswordExternalSecret(cp *c5c3v1alpha1.ControlPlane) *esov1.ExternalS
 }
 
 // effectiveAdminPasswordSecretRef returns the SecretRef every cp-side admin-password
-// consumer will read (CC-0117, REQ-005). In managed mode (Database.ClusterRef != nil)
+// consumer will read. In managed mode (Database.ClusterRef != nil)
 // the operator projects the admin password from OpenBao into the per-ControlPlane
 // Secret named adminPasswordSecretName(cp), so the effective ref points at that
 // Secret's "password" key. In brownfield mode the user supplies their own admin
@@ -83,7 +83,7 @@ func adminPasswordExternalSecret(cp *c5c3v1alpha1.ControlPlane) *esov1.ExternalS
 // NOTE: callers of effectiveAdminPasswordSecretRef are added in Level 2 — defining
 // it now is intentional; it is not wired into any consumer yet.
 //
-//nolint:unused // declared by CC-0117 task 1.2 (REQ-005); consumed by the Keystone projection, readAdminPassword, and the Secret-name extractor wired in CC-0117 Level 2 (tasks 2.1-2.3).
+//nolint:unused // declared by task 1.2; consumed by the Keystone projection, readAdminPassword, and the Secret-name extractor wired in Level 2 (tasks 2.1-2.3).
 func effectiveAdminPasswordSecretRef(cp *c5c3v1alpha1.ControlPlane) commonv1.SecretRefSpec {
 	if cp.Spec.Infrastructure.Database.ClusterRef != nil {
 		return commonv1.SecretRefSpec{Name: adminPasswordSecretName(cp), Key: "password"}
@@ -93,7 +93,6 @@ func effectiveAdminPasswordSecretRef(cp *c5c3v1alpha1.ControlPlane) commonv1.Sec
 
 // reconcileAdminPassword projects (in managed mode) the per-ControlPlane
 // admin-password ExternalSecret and drives the AdminPasswordReady condition
-// (CC-0117, REQ-001, REQ-002, REQ-003).
 //
 // It runs BEFORE the Keystone sub-reconciler in the chain: the keystone-operator's
 // SecretsReady gate needs the admin-password ExternalSecret to exist before the

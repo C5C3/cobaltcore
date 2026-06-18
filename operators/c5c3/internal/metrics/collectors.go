@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Package metrics exposes Prometheus collectors for the c5c3 operator (CC-0110).
+// Package metrics exposes Prometheus collectors for the c5c3 operator.
 package metrics
 
 import (
@@ -15,7 +15,7 @@ import (
 )
 
 // reconcileDurationBuckets are the histogram bucket boundaries for
-// c5c3_operator_reconcile_duration_seconds (CC-0110, REQ-026).
+// c5c3_operator_reconcile_duration_seconds.
 //
 // The buckets span the observed sub-reconciler latency range — from fast
 // no-op reconciles (10 ms) up to long-running ControlPlane provisioning
@@ -28,9 +28,9 @@ var reconcileDurationBuckets = []float64{
 // collectors bundles every metric vector the operator exposes. The struct
 // exists so tests can bind an isolated instance to a private registry;
 // production code uses the package-level globalColls registered on
-// ctrlmetrics.Registry exactly once (CC-0110, REQ-026).
+// ctrlmetrics.Registry exactly once.
 //
-// DECISION (CC-0110 L2): per-CR c5c3 metrics (e.g. provisioning age,
+// DECISION (L2): per-CR c5c3 metrics (e.g. provisioning age,
 // component-level counters) are intentionally out of scope here. The two
 // sub-reconciler vectors below are the instrumentation contract that the
 // controller's instrumentation layer (task 2.2) consumes; keeping the
@@ -47,12 +47,12 @@ func newCollectors() *collectors {
 	return &collectors{
 		reconcileDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "c5c3_operator_reconcile_duration_seconds",
-			Help:    "Wall-clock duration of a c5c3 sub-reconciler invocation, in seconds (CC-0110, REQ-026).",
+			Help:    "Wall-clock duration of a c5c3 sub-reconciler invocation, in seconds.",
 			Buckets: reconcileDurationBuckets,
 		}, []string{"sub_reconciler"}),
 		reconcileErrors: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "c5c3_operator_reconcile_errors_total",
-			Help: "Count of c5c3 sub-reconciler errors, partitioned by sub-reconciler and the condition type it failed to satisfy (CC-0110, REQ-026).",
+			Help: "Count of c5c3 sub-reconciler errors, partitioned by sub-reconciler and the condition type it failed to satisfy.",
 		}, []string{"sub_reconciler", "condition_type"}),
 	}
 }
@@ -78,8 +78,7 @@ func (c *collectors) register(reg prometheus.Registerer) error {
 // controller package's instrumentation_test.go) that must verify
 // instrumentation behaviour without polluting the controller-runtime
 // production registry. Production code MUST use the package-level
-// ObserveReconcileDuration / RecordReconcileError functions (CC-0110,
-// REQ-026).
+// ObserveReconcileDuration / RecordReconcileError functions.
 type TestRecorder struct {
 	c *collectors
 }
@@ -121,7 +120,6 @@ var (
 // globalCollectors returns the lazily-initialized package-wide collectors,
 // registering them on ctrlmetrics.Registry on first access. Using
 // sync.Once ensures registration is idempotent across repeated test runs
-// (CC-0110, REQ-026).
 func globalCollectors() *collectors {
 	initOnce.Do(func() {
 		globalColls = newCollectors()
@@ -135,14 +133,13 @@ func globalCollectors() *collectors {
 }
 
 // ObserveReconcileDuration records the wall-clock duration of a single
-// sub-reconciler invocation (CC-0110, REQ-026).
+// sub-reconciler invocation.
 func ObserveReconcileDuration(subReconciler string, d time.Duration) {
 	globalCollectors().observeReconcileDuration(subReconciler, d)
 }
 
 // RecordReconcileError increments the reconcile-error counter for a given
-// sub-reconciler and the condition type it failed to drive to True (CC-0110,
-// REQ-026).
+// sub-reconciler and the condition type it failed to drive to True.
 func RecordReconcileError(subReconciler, conditionType string) {
 	globalCollectors().recordReconcileError(subReconciler, conditionType)
 }
@@ -153,7 +150,7 @@ func RecordReconcileError(subReconciler, conditionType string) {
 // RecordReconcileError) is a thin wrapper that resolves globalCollectors()
 // and forwards to the matching method below. The methods are also exercised
 // directly by collectors_test.go against an isolated registry so they are
-// not test-only (CC-0110, REQ-026).
+// not test-only.
 
 func (c *collectors) observeReconcileDuration(subReconciler string, d time.Duration) {
 	c.reconcileDuration.WithLabelValues(subReconciler).Observe(d.Seconds())

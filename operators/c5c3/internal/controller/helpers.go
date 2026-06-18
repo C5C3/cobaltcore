@@ -11,10 +11,8 @@ import (
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 )
 
-// Feature: CC-0110 (REQ-016, REQ-017)
-
 // intervalToCron converts a rotation interval into a cron expression suitable
-// for a Kubernetes CronJob schedule (REQ-016).
+// for a Kubernetes CronJob schedule.
 //
 // Supported intervals:
 //   - 168h (7 days)                -> "0 0 * * 0" (weekly, Sunday midnight)
@@ -24,7 +22,7 @@ import (
 // weekly schedule rather than a daily one. Any interval that is not a positive
 // whole number of days returns an error naming the unsupported value.
 //
-// FIDELITY NOTE (CC-0110): every multi-day interval that is NOT exactly 168h
+// FIDELITY NOTE every multi-day interval that is NOT exactly 168h
 // (e.g. 48h, 72h, 336h) INTENTIONALLY collapses to the same daily schedule —
 // the cron form models only "daily" and "weekly", so the interval magnitude
 // beyond {24h, 168h} is not preserved. This is a deliberate, documented
@@ -50,7 +48,7 @@ func intervalToCron(d time.Duration) (string, error) {
 
 // projectPolicyOverrides merges a global policy (base) with a per-service
 // policy (overrides) into a single freshly allocated *commonv1.PolicySpec
-// (REQ-017). Per-service values win on conflict:
+// Per-service values win on conflict:
 //
 //   - Rules: start from global.Rules, then per-service rules overwrite on key
 //     conflict.

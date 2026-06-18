@@ -29,8 +29,6 @@ import (
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
 
-// Feature: CC-0067
-
 func healthcheckTestScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(s)
@@ -75,7 +73,7 @@ func (m *mockHTTPDoer) Do(_ *http.Request) (*http.Response, error) {
 // caller-constructed URL path. Production code targets the cluster-local
 // Service URL (internalAPIURL), which is unresolvable from unit tests; this
 // wrapper transparently routes the request to an httptest server without
-// changing what the caller built (CC-0065, CC-0067).
+// changing what the caller built.
 type rewritingDoer struct {
 	inner  HTTPDoer
 	target string
@@ -94,7 +92,7 @@ func (r *rewritingDoer) Do(req *http.Request) (*http.Response, error) {
 
 // capturingDoer records the URL of the last request it processed and delegates
 // to an inner doer. Used to assert that the health check targets
-// internalAPIURL regardless of Status.Endpoint (CC-0065, CC-0067).
+// internalAPIURL regardless of Status.Endpoint.
 type capturingDoer struct {
 	inner HTTPDoer
 	url   string
@@ -116,7 +114,7 @@ func (t *trackingReadCloser) Close() error {
 	return t.ReadCloser.Close()
 }
 
-// --- httpClient() tests (REQ-006) ---
+// --- httpClient() tests ---
 
 func TestHttpClientReturnsInjectedClient(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -135,7 +133,7 @@ func TestHttpClientReturnsDefaultClientWhenNil(t *testing.T) {
 	g.Expect(r.httpClient()).To(BeIdenticalTo(http.DefaultClient))
 }
 
-// --- Happy path: HTTP 2xx → True (REQ-001) ---
+// --- Happy path: HTTP 2xx → True ---
 
 func TestReconcileHealthCheck_Healthy200_SetsConditionTrue(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -159,7 +157,7 @@ func TestReconcileHealthCheck_Healthy200_SetsConditionTrue(t *testing.T) {
 	g.Expect(cond.Message).To(ContainSubstring("Keystone API is responding at"))
 }
 
-// --- Unhappy path: HTTP 500 → False (REQ-001) ---
+// --- Unhappy path: HTTP 500 → False ---
 
 func TestReconcileHealthCheck_Unhealthy500_SetsConditionFalse(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -183,7 +181,7 @@ func TestReconcileHealthCheck_Unhealthy500_SetsConditionFalse(t *testing.T) {
 	g.Expect(cond.Message).To(ContainSubstring("500"))
 }
 
-// --- Unhappy path: HTTP 503 → False (REQ-001) ---
+// --- Unhappy path: HTTP 503 → False ---
 
 func TestReconcileHealthCheck_Unhealthy503_SetsConditionFalse(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -209,7 +207,7 @@ func TestReconcileHealthCheck_Unhealthy503_SetsConditionFalse(t *testing.T) {
 // TestReconcileHealthCheck_ConditionObservedGeneration verifies that
 // ObservedGeneration is set on the KeystoneAPIReady condition for both
 // the True (healthy) and False (unhealthy) paths with distinct
-// generation values (CC-0067, CC-0072, REQ-001).
+// generation values.
 func TestReconcileHealthCheck_ConditionObservedGeneration(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -249,7 +247,7 @@ func TestReconcileHealthCheck_ConditionObservedGeneration(t *testing.T) {
 }
 
 // --- Health check always targets the cluster-local internal URL,
-// independent of Status.Endpoint and spec.gateway (CC-0065, REQ-004). ---
+// independent of Status.Endpoint and spec.gateway. ---
 
 func TestReconcileHealthCheck_AlwaysTargetsInternalAPIURL_NoGateway(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -265,7 +263,7 @@ func TestReconcileHealthCheck_AlwaysTargetsInternalAPIURL_NoGateway(t *testing.T
 	_, err := r.reconcileHealthCheck(context.Background(), ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(capture.url).To(Equal("http://test-keystone.default.svc.cluster.local:5000/v3"),
-		"health check must probe the cluster-local Service URL regardless of Status.Endpoint (CC-0065)")
+		"health check must probe the cluster-local Service URL regardless of Status.Endpoint")
 }
 
 func TestReconcileHealthCheck_AlwaysTargetsInternalAPIURL_GatewaySet(t *testing.T) {
@@ -286,10 +284,10 @@ func TestReconcileHealthCheck_AlwaysTargetsInternalAPIURL_GatewaySet(t *testing.
 	_, err := r.reconcileHealthCheck(context.Background(), ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(capture.url).To(Equal("http://test-keystone.default.svc.cluster.local:5000/v3"),
-		"health check must not probe the public Gateway URL; conflating ingress/DNS/cert health with API readiness is a regression (CC-0065)")
+		"health check must not probe the public Gateway URL; conflating ingress/DNS/cert health with API readiness is a regression")
 }
 
-// --- Empty endpoint → EndpointNotReady (REQ-004) ---
+// --- Empty endpoint → EndpointNotReady ---
 
 func TestReconcileHealthCheck_EmptyEndpoint_SetsConditionFalse(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -308,7 +306,7 @@ func TestReconcileHealthCheck_EmptyEndpoint_SetsConditionFalse(t *testing.T) {
 	g.Expect(cond.ObservedGeneration).To(Equal(int64(3)))
 }
 
-// --- Timeout error → HealthCheckTimeout (REQ-002) ---
+// --- Timeout error → HealthCheckTimeout ---
 
 func TestReconcileHealthCheck_Timeout_SetsConditionFalse(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -334,7 +332,7 @@ func TestReconcileHealthCheck_Timeout_SetsConditionFalse(t *testing.T) {
 	g.Expect(cond.ObservedGeneration).To(Equal(int64(5)))
 }
 
-// --- Socket-level deadline → HealthCheckTimeout (REQ-002) ---
+// --- Socket-level deadline → HealthCheckTimeout ---
 
 func TestReconcileHealthCheck_OSDeadlineExceeded_SetsConditionFalse(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -359,7 +357,7 @@ func TestReconcileHealthCheck_OSDeadlineExceeded_SetsConditionFalse(t *testing.T
 	g.Expect(cond.Message).To(ContainSubstring("health check timed out"))
 }
 
-// --- Connection refused → ConnectionFailed (REQ-003) ---
+// --- Connection refused → ConnectionFailed ---
 
 func TestReconcileHealthCheck_ConnectionRefused_SetsConditionFalse(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -389,7 +387,7 @@ func TestReconcileHealthCheck_ConnectionRefused_SetsConditionFalse(t *testing.T)
 	g.Expect(cond.ObservedGeneration).To(Equal(int64(4)))
 }
 
-// --- DNS error → EndpointNotReady (REQ-003) ---
+// --- DNS error → EndpointNotReady ---
 
 func TestReconcileHealthCheck_DNSError_SetsConditionFalse(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -418,7 +416,7 @@ func TestReconcileHealthCheck_DNSError_SetsConditionFalse(t *testing.T) {
 	g.Expect(cond.ObservedGeneration).To(Equal(int64(6)))
 }
 
-// --- Generic network error → HealthCheckFailed (REQ-003) ---
+// --- Generic network error → HealthCheckFailed ---
 
 func TestReconcileHealthCheck_GenericNetworkError_SetsConditionFalse(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -440,7 +438,7 @@ func TestReconcileHealthCheck_GenericNetworkError_SetsConditionFalse(t *testing.
 	g.Expect(cond.ObservedGeneration).To(Equal(int64(2)))
 }
 
-// --- Response body close verification (REQ-008) ---
+// --- Response body close verification ---
 
 func TestReconcileHealthCheck_ResponseBodyClosed_Success(t *testing.T) {
 	g := NewGomegaWithT(t)

@@ -95,9 +95,9 @@ func TestKeystoneSpecFields(t *testing.T) {
 }
 
 // TestKeystoneSpecTerminationGracePeriodSecondsField verifies that the optional
-// *int64 fields added for CC-0084 are settable and round-trip through a
-// DeepCopy unchanged. Backs REQ-001 and REQ-002 at the type-level — webhook
-// range enforcement is covered separately in keystone_webhook_test.go.
+// *int64 fields are settable and round-trip through a DeepCopy
+// unchanged at the type level; webhook range enforcement is covered
+// separately in keystone_webhook_test.go.
 func TestKeystoneSpecTerminationGracePeriodSecondsField(t *testing.T) {
 	grace := int64(120)
 	preStop := int64(15)
@@ -127,9 +127,8 @@ func TestKeystoneSpecTerminationGracePeriodSecondsField(t *testing.T) {
 }
 
 // TestKeystoneSpecStrategyField verifies the optional *appsv1.DeploymentStrategy
-// field added for CC-0084 round-trips through DeepCopy with independent memory
-// for the pointer and nested RollingUpdate block. Backs REQ-006 at the
-// type-level.
+// field round-trips through DeepCopy with independent memory for the
+// pointer and nested RollingUpdate block at the type level.
 func TestKeystoneSpecStrategyField(t *testing.T) {
 	maxUnavailable := intstr.FromInt(0)
 	maxSurge := intstr.FromInt(1)
@@ -182,9 +181,9 @@ func TestUWSGISpecFields(t *testing.T) {
 	}
 }
 
-// TestUWSGISpecOptionalTimeoutFields verifies that CC-0084 adds Harakiri and
-// HTTPKeepAliveTimeout as settable optional *int32 pointers with DeepCopy
-// allocating independent storage. Backs REQ-003 and REQ-004 at the type-level.
+// TestUWSGISpecOptionalTimeoutFields verifies that Harakiri and
+// HTTPKeepAliveTimeout are settable optional *int32 pointers with DeepCopy
+// allocating independent storage, at the type level.
 func TestUWSGISpecOptionalTimeoutFields(t *testing.T) {
 	harakiri := int32(20)
 	keepAlive := int32(5)
@@ -231,7 +230,7 @@ func TestBootstrapSpecFields(t *testing.T) {
 	if bootstrap.Region != "" {
 		t.Errorf("expected empty Region, got %q", bootstrap.Region)
 	}
-	// CC-0109 (REQ-001): PasswordRotation is an optional pointer that defaults
+	// PasswordRotation is an optional pointer that defaults
 	// to nil so the feature stays off unless explicitly enabled.
 	if bootstrap.PasswordRotation != nil {
 		t.Errorf("expected nil PasswordRotation, got %v", bootstrap.PasswordRotation)
@@ -239,10 +238,10 @@ func TestBootstrapSpecFields(t *testing.T) {
 }
 
 // TestBootstrapSpecPasswordRotationField verifies the optional
-// *PasswordRotationSpec field added for CC-0109 (REQ-001) round-trips through
-// DeepCopy with independent memory for the pointer, so mutating the clone does
-// not alias the original. Backs REQ-001 at the type level — webhook
-// defaulting/validation is covered separately in keystone_webhook_test.go.
+// *PasswordRotationSpec field round-trips through DeepCopy with
+// independent memory for the pointer, so mutating the clone does not alias
+// the original; webhook defaulting/validation is covered separately in
+// keystone_webhook_test.go.
 func TestBootstrapSpecPasswordRotationField(t *testing.T) {
 	spec := BootstrapSpec{
 		PasswordRotation: &PasswordRotationSpec{

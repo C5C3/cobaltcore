@@ -2,15 +2,13 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Feature: CC-0044
-
 package controller
 
 import "time"
 
 // Requeue interval constants centralise the polling durations used by each
 // sub-reconciler. Keeping them in a single file makes tuning straightforward
-// and ensures test assertions stay in sync with production code (CC-0044).
+// and ensures test assertions stay in sync with production code.
 const (
 	// RequeueDeploymentPolling is the interval for polling Deployment readiness.
 	// Deployments converge quickly, so a short interval is appropriate.
@@ -33,22 +31,22 @@ const (
 
 	// RequeueUpgradeWait is the interval for polling upgrade Job completion.
 	// Upgrade Jobs (expand, migrate, contract) may take several minutes depending
-	// on database size. A moderate interval balances responsiveness with API load (CC-0056).
+	// on database size. A moderate interval balances responsiveness with API load.
 	RequeueUpgradeWait = 30 * time.Second
 
 	// RequeueValidationWait is the interval for polling policy validation Job
 	// completion. The oslopolicy-validator runs quickly, so a short interval
-	// balances responsiveness with API load (CC-0058).
+	// balances responsiveness with API load.
 	RequeueValidationWait = 15 * time.Second
 
 	// RequeueHealthCheck is the interval for requeuing when the Keystone API
 	// health check fails. The API may take a few seconds to start responding
-	// after the Deployment reports ready, so a moderate interval is appropriate (CC-0067).
+	// after the Deployment reports ready, so a moderate interval is appropriate.
 	RequeueHealthCheck = 10 * time.Second
 
 	// HealthCheckTimeout is the bounded timeout for the HTTP health check
 	// request. Prevents a hanging Keystone API from blocking the reconcile
-	// loop indefinitely (CC-0067).
+	// loop indefinitely.
 	HealthCheckTimeout = 10 * time.Second
 
 	// OpenBaoAdoptionWaitTimeout bounds how long the OpenBao finalizer's Pass-0

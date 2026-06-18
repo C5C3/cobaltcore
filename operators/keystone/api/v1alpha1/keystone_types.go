@@ -15,7 +15,7 @@ import (
 
 // Selector label keys and values used by the Deployment pod selector, webhook
 // TSC validation, and commonLabels(). Exported so that both the webhook and
-// controller reference the same constants — prevents silent drift (CC-0075).
+// controller reference the same constants — prevents silent drift.
 const (
 	LabelKeyName     = "app.kubernetes.io/name"
 	LabelKeyInstance = "app.kubernetes.io/instance"
@@ -58,11 +58,11 @@ type KeystoneSpec struct {
 
 	// Database defines the MariaDB connection parameters.
 	// Supports managed (clusterRef) and brownfield (host/port) modes.
-	// TLS/mTLS is opt-in via database.tls (CC-0106): when enabled, both the
+	// TLS/mTLS is opt-in via database.tls when enabled, both the
 	// CA bundle and client keypair Secret references must be supplied so the
 	// reconciler can establish a verified, mutually-authenticated connection.
 	//
-	// DECISION (CC-0106): no CEL rule is added for tls.mode — the out-of-enum
+	// DECISION no CEL rule is added for tls.mode — the out-of-enum
 	// case is already rejected by the leaf +kubebuilder:validation:Enum marker
 	// on DatabaseTLSSpec.Mode (prefer;require;verify-ca;verify-full). Adding a
 	// mode CEL here would be redundant with that schema-level enum and risks
@@ -83,7 +83,7 @@ type KeystoneSpec struct {
 	CredentialKeys CredentialKeysSpec `json:"credentialKeys,omitempty"`
 
 	// TrustFlush configures periodic purging of expired trust delegations
-	// (CC-0057, CC-0096). The defaulting webhook materializes a populated
+	// The defaulting webhook materializes a populated
 	// TrustFlushSpec when the field is unset so that the operator runs
 	// keystone-manage trust_flush hourly by default — there is no nil-back
 	// path on a webhook-enabled cluster, because admission re-defaults the
@@ -128,7 +128,7 @@ type KeystoneSpec struct {
 	NetworkPolicy *NetworkPolicySpec `json:"networkPolicy,omitempty"`
 
 	// Gateway configures external exposure of the Keystone API via a Gateway API
-	// HTTPRoute (CC-0065). When set, the operator creates an HTTPRoute targeting
+	// HTTPRoute. When set, the operator creates an HTTPRoute targeting
 	// the {name} Service on port 5000 and attaches it to the referenced
 	// pre-existing Gateway. When removed (nil), the HTTPRoute is deleted.
 	// The Gateway and GatewayClass are infrastructure concerns managed outside
@@ -139,40 +139,39 @@ type KeystoneSpec struct {
 	// Resources defines the CPU and memory requests and limits for the Keystone API
 	// container. When unset, the defaulting webhook injects sensible defaults
 	// (256Mi/512Mi memory, 100m/500m CPU) to ensure Burstable QoS class and
-	// enable HPA utilization calculations (CC-0042).
+	// enable HPA utilization calculations.
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
 
-	// UWSGI configures the uWSGI application server parameters (CC-0040).
+	// UWSGI configures the uWSGI application server parameters.
 	// When set, the operator uses these values for the uWSGI command in the
 	// Deployment. When nil, hardcoded defaults (processes=2, threads=1,
 	// httpKeepAlive=true) are used.
 	// +optional
 	UWSGI *UWSGISpec `json:"uwsgi,omitempty"`
 
-	// Logging configures oslo.log output for the Keystone API container (CC-0098).
+	// Logging configures oslo.log output for the Keystone API container.
 	// When unset, the defaulting webhook materializes a LoggingSpec with
 	// Format=text, Level=INFO, Debug=false — equivalent to the documented
 	// production baseline (stdout/stderr, oslo.log format, no debug noise).
 	// +optional
 	Logging *LoggingSpec `json:"logging,omitempty"`
 
-	// Note (CC-0084, internal design decision — kept out of the user-facing
-	// CRD description): Task 1.1 title mentions "default=30" but REQ-001's
+	// Note (internal design decision — kept out of the user-facing CRD description): Task 1.1 title mentions "default=30" but the
 	// scenario explicitly requires "webhook Default() leaves the pointer nil
 	// so an upgrade does not mutate existing CRs". A +kubebuilder:default=30
 	// marker on a pointer field would cause the API server to materialize the
 	// value at admission, mutating pre-existing CRs on operator upgrade —
-	// exactly what REQ-001 forbids. The marker is therefore omitted and the
+	// exactly what that scenario forbids. The marker is therefore omitted and the
 	// effective "default 30" is applied by the reconciler (task 3.x) when the
 	// pointer is nil, mirroring the existing AutoscalingSpec.MinReplicas
 	// pattern. This comment group is separated from the field's godoc by a
 	// blank line so controller-gen excludes it from `kubectl explain` output
-	// (CC-0084, review #2 I-004).
+	// (review #2 I-004).
 
 	// TerminationGracePeriodSeconds is the grace period (seconds) granted to
 	// Keystone API pods between SIGTERM and SIGKILL during rolling updates
-	// (CC-0084). Extend this to cover slow upstream token validation (LDAP/DB)
+	// Extend this to cover slow upstream token validation (LDAP/DB)
 	// so in-flight requests finish before the kubelet forcibly kills uWSGI.
 	// When nil, the reconciler omits the field from the pod template and the
 	// Kubernetes default of 30s applies. Must be at least 10s when set.
@@ -182,7 +181,7 @@ type KeystoneSpec struct {
 
 	// PreStopSleepSeconds is the sleep duration (seconds) of the preStop
 	// lifecycle hook, configured independently of the overall grace period
-	// (CC-0084). This covers the window between EndpointSlice removal and
+	// This covers the window between EndpointSlice removal and
 	// kube-proxy/ingress-controller propagation so new requests stop arriving
 	// before SIGTERM reaches uWSGI. When nil, the reconciler applies a default
 	// of 5s. Zero is permitted to disable the sleep. The cross-field rule
@@ -193,7 +192,7 @@ type KeystoneSpec struct {
 	PreStopSleepSeconds *int64 `json:"preStopSleepSeconds,omitempty"`
 
 	// Strategy overrides the Deployment rollout strategy for the Keystone API
-	// Deployment (CC-0084). When nil, the reconciler applies RollingUpdate
+	// Deployment. When nil, the reconciler applies RollingUpdate
 	// with MaxUnavailable=0 and MaxSurge=1 to guarantee surge-before-remove
 	// behavior — available capacity never dips below spec.replicas during an
 	// image-tag patch. Set this to customize maxSurge/maxUnavailable, or to
@@ -202,7 +201,7 @@ type KeystoneSpec struct {
 	Strategy *appsv1.DeploymentStrategy `json:"strategy,omitempty"`
 
 	// TopologySpreadConstraints describes how pods should be spread across
-	// topology domains (zones, nodes) to achieve high availability (CC-0075).
+	// topology domains (zones, nodes) to achieve high availability.
 	// When nil (unset), the operator injects two default constraints:
 	// zone-spread (topology.kubernetes.io/zone) and hostname-spread
 	// (kubernetes.io/hostname), both MaxSkew=1 with ScheduleAnyway.
@@ -211,7 +210,7 @@ type KeystoneSpec struct {
 	// +optional
 	TopologySpreadConstraints []corev1.TopologySpreadConstraint `json:"topologySpreadConstraints,omitempty"`
 
-	// PriorityClassName sets the priority class for Keystone API pods (CC-0075).
+	// PriorityClassName sets the priority class for Keystone API pods.
 	// When set, the operator passes the value through to the PodSpec, allowing
 	// cluster administrators to control scheduling priority and preemption.
 	// When unset, no priority class is configured and the cluster default applies.
@@ -224,7 +223,7 @@ type KeystoneSpec struct {
 	ExtraConfig map[string]map[string]string `json:"extraConfig,omitempty"`
 }
 
-// AutoscalingSpec defines the parameters for horizontal pod autoscaling (CC-0038).
+// AutoscalingSpec defines the parameters for horizontal pod autoscaling.
 // +kubebuilder:validation:XValidation:rule="has(self.targetCPUUtilization) || has(self.targetMemoryUtilization)",message="at least one of targetCPUUtilization or targetMemoryUtilization must be set"
 type AutoscalingSpec struct {
 	// MinReplicas is the lower bound for the number of replicas.
@@ -250,7 +249,7 @@ type AutoscalingSpec struct {
 	TargetMemoryUtilization *int32 `json:"targetMemoryUtilization,omitempty"`
 }
 
-// NetworkPolicySpec defines network isolation for Keystone API pods (CC-0039).
+// NetworkPolicySpec defines network isolation for Keystone API pods.
 // When applied, the operator creates a NetworkPolicy that restricts ingress
 // to TCP 5000 from the specified sources and auto-derives egress rules for
 // DNS, MariaDB (from database.ClusterRef), and Memcached (from cache.ClusterRef).
@@ -270,7 +269,7 @@ type NetworkPolicySpec struct {
 }
 
 // NetworkPolicyIngressSource defines a source from which traffic is allowed
-// to reach the Keystone API pods on TCP 5000 (CC-0039).
+// to reach the Keystone API pods on TCP 5000.
 type NetworkPolicyIngressSource struct {
 	// NamespaceSelector selects namespaces from which traffic is allowed.
 	// All pods in matching namespaces can reach Keystone on port 5000
@@ -285,7 +284,7 @@ type NetworkPolicyIngressSource struct {
 	PodSelector map[string]string `json:"podSelector,omitempty"`
 }
 
-// UWSGISpec defines the uWSGI application server parameters (CC-0040).
+// UWSGISpec defines the uWSGI application server parameters.
 // Exposed as an optional pointer field on KeystoneSpec so that existing CRs
 // without spec.uwsgi continue to work with hardcoded defaults in the reconciler.
 type UWSGISpec struct {
@@ -305,7 +304,7 @@ type UWSGISpec struct {
 	HTTPKeepAlive bool `json:"httpKeepAlive,omitempty"`
 
 	// Harakiri caps the per-request worker lifetime (seconds) via the uWSGI
-	// --harakiri flag (CC-0084). A request blocked longer than this bound is
+	// --harakiri flag. A request blocked longer than this bound is
 	// killed so a single stuck LDAP/DB lookup cannot prevent other in-flight
 	// requests from completing cleanly before graceful shutdown ends. When
 	// nil, the --harakiri flag is omitted from the uWSGI command entirely
@@ -317,7 +316,7 @@ type UWSGISpec struct {
 	Harakiri *int32 `json:"harakiri,omitempty"`
 
 	// HTTPKeepAliveTimeout bounds the idle timeout (seconds) of keep-alive
-	// connections via the uWSGI --http-keepalive-timeout flag (CC-0084).
+	// connections via the uWSGI --http-keepalive-timeout flag.
 	// A bounded timeout forces clients to reconnect through the Service so
 	// they never reuse a socket to a removed pod. When nil, the flag is
 	// omitted from the uWSGI command. Zero is rejected to avoid the
@@ -354,7 +353,7 @@ type CredentialKeysSpec struct {
 }
 
 // TrustFlushSpec configures periodic purging of expired trust delegations
-// (CC-0057, CC-0096). The defaulting webhook materializes the parent struct on
+// The defaulting webhook materializes the parent struct on
 // KeystoneSpec.TrustFlush when unset, so the leaf +kubebuilder:default markers
 // on Schedule and Suspend below fire deterministically and the trust-flush
 // CronJob is created with the documented hourly schedule by default. The
@@ -386,10 +385,10 @@ type FederationSpec struct {
 }
 
 // PasswordRotationSpec configures scheduled rotation of the Keystone admin
-// password (CC-0109, Model B / Part 2 of #381). When enabled, the operator runs
+// password (Model B / Part 2 of #381). When enabled, the operator runs
 // a CronJob that periodically generates a fresh strong password and delivers it
 // into OpenBao via a PushSecret; the existing keystone-admin ExternalSecret then
-// round-trips it back into the cluster Secret and Part 1 (CC-0108) re-bootstraps
+// round-trips it back into the cluster Secret and Part 1 re-bootstraps
 // Keystone with the new credential.
 //
 // Unlike TrustFlushSpec, the defaulting webhook does NOT materialize this block
@@ -401,7 +400,7 @@ type FederationSpec struct {
 // bypass the webhook (e.g. envtest without the defaulter wired up).
 //
 // The admin-password backup is scoped per Keystone CR: the push path is the
-// per-CR OpenBao key bootstrap/{namespace}/{name}/admin (CC-0112, REQ-002), so
+// per-CR OpenBao key bootstrap/{namespace}/{name}/admin, so
 // enabling rotation on multiple CRs no longer collides on a shared object.
 type PasswordRotationSpec struct {
 	// Enabled turns on scheduled admin-password rotation. Default false: the
@@ -447,12 +446,12 @@ type BootstrapSpec struct {
 	// PublicEndpoint is the externally routable Keystone endpoint URL used for
 	// --bootstrap-public-url. When unset, the cluster-local service DNS is used
 	// as a fallback. External clients (CLI users, Horizon, federation partners)
-	// require a routable address here (CC-0013).
+	// require a routable address here.
 	// +optional
 	PublicEndpoint string `json:"publicEndpoint,omitempty"`
 
 	// PasswordRotation optionally enables scheduled rotation of the admin
-	// password (CC-0109). Nil (the default) leaves the feature off and the
+	// password. Nil (the default) leaves the feature off and the
 	// sub-reconciler is a clean no-op. See PasswordRotationSpec for the opt-in
 	// and per-CR semantics.
 	// +optional
@@ -460,8 +459,7 @@ type BootstrapSpec struct {
 }
 
 // GatewaySpec and GatewayParentRefSpec are aliased to the shared commonv1
-// definitions (CC-0111). The Gateway API HTTPRoute exposure types (originally
-// CC-0065) were consolidated into internal/common/types so every operator
+// definitions. The Gateway API HTTPRoute exposure types (originally) were consolidated into internal/common/types so every operator
 // shares one source of truth; commonv1 carries the canonical per-field godoc
 // and validation markers. These aliases keep existing references —
 // keystonev1alpha1.GatewaySpec and bare GatewaySpec{} literals alike —
@@ -471,7 +469,7 @@ type (
 	GatewayParentRefSpec = commonv1.GatewayParentRefSpec
 )
 
-// UpgradePhase represents the current phase of a database upgrade (CC-0056).
+// UpgradePhase represents the current phase of a database upgrade.
 // +kubebuilder:validation:Enum=Expanding;Migrating;RollingUpdate;Contracting
 type UpgradePhase string
 
@@ -490,17 +488,17 @@ type KeystoneStatus struct {
 	// Endpoint is the Keystone API endpoint URL.
 	Endpoint string `json:"endpoint,omitempty"`
 
-	// InstalledRelease is the OpenStack release version currently deployed (CC-0056).
+	// InstalledRelease is the OpenStack release version currently deployed.
 	InstalledRelease string `json:"installedRelease,omitempty"`
 
-	// TargetRelease is the upgrade target release during an active upgrade (CC-0056).
+	// TargetRelease is the upgrade target release during an active upgrade.
 	TargetRelease string `json:"targetRelease,omitempty"`
 
-	// UpgradePhase is the current phase of a database upgrade (CC-0056).
+	// UpgradePhase is the current phase of a database upgrade.
 	UpgradePhase UpgradePhase `json:"upgradePhase,omitempty"`
 }
 
-// LoggingSpec configures oslo.log output for the Keystone API container (CC-0098, REQ-001).
+// LoggingSpec configures oslo.log output for the Keystone API container.
 // Exposed as an optional pointer field on KeystoneSpec; the defaulting webhook
 // materializes a baseline LoggingSpec when the pointer is nil so downstream
 // reconciler code never sees a nil pointer (mirrors UWSGISpec / Resources precedent).

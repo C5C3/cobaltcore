@@ -1,4 +1,4 @@
-# CC-0110: ClusterRoleBinding unit tests.
+# ClusterRoleBinding unit tests.
 suite: ClusterRoleBinding
 templates:
   - templates/clusterrolebinding.yaml
@@ -27,7 +27,7 @@ tests:
           path: subjects[0].namespace
           value: NAMESPACE
 
-  # CC-0043: ClusterRoleBinding must not render in namespace-scoped mode.
+  # ClusterRoleBinding must not render in namespace-scoped mode.
   - it: should not render ClusterRoleBinding when rbac.namespaceScoped is true
     set:
       rbac:

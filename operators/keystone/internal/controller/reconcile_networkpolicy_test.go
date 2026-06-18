@@ -28,8 +28,6 @@ import (
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
 
-// Feature: CC-0039
-
 func npTestScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(s)
@@ -75,7 +73,7 @@ func newNPTestReconciler(s *runtime.Scheme, objs ...client.Object) *KeystoneReco
 	}
 }
 
-// --- Task 2.2: buildKeystoneNetworkPolicy unit tests (CC-0039) ---
+// --- Task 2.2: buildKeystoneNetworkPolicy unit tests ---
 
 func TestBuildKeystoneNetworkPolicy_NameAndNamespace(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -185,7 +183,7 @@ func TestBuildKeystoneNetworkPolicy_IngressRules_MultipleSources_WithPodSelector
 	g.Expect(np.Spec.Ingress).To(HaveLen(1))
 	g.Expect(np.Spec.Ingress[0].From).To(HaveLen(2))
 
-	// First peer: namespace + pod selector (CC-0039, REQ-004).
+	// First peer: namespace + pod selector.
 	g.Expect(np.Spec.Ingress[0].From[0].NamespaceSelector.MatchLabels).To(
 		HaveKeyWithValue("kubernetes.io/metadata.name", "openstack"),
 	)
@@ -213,7 +211,7 @@ func TestBuildKeystoneNetworkPolicy_AutoDerivedEgress_BrownfieldOnly_DNSOnly(t *
 
 	np := buildKeystoneNetworkPolicy(ks)
 
-	// Only DNS egress should be present in brownfield mode (CC-0039, REQ-005).
+	// Only DNS egress should be present in brownfield mode.
 	g.Expect(np.Spec.Egress).To(HaveLen(1))
 	g.Expect(np.Spec.Egress[0].Ports).To(HaveLen(2))
 	g.Expect(*np.Spec.Egress[0].Ports[0].Protocol).To(Equal(corev1.ProtocolUDP))
@@ -235,7 +233,7 @@ func TestBuildKeystoneNetworkPolicy_AutoDerivedEgress_ManagedDB(t *testing.T) {
 
 	np := buildKeystoneNetworkPolicy(ks)
 
-	// DNS + MariaDB egress (CC-0039, REQ-005).
+	// DNS + MariaDB egress.
 	g.Expect(np.Spec.Egress).To(HaveLen(2))
 	g.Expect(np.Spec.Egress[1].Ports).To(HaveLen(1))
 	g.Expect(*np.Spec.Egress[1].Ports[0].Protocol).To(Equal(corev1.ProtocolTCP))
@@ -255,7 +253,7 @@ func TestBuildKeystoneNetworkPolicy_AutoDerivedEgress_ManagedCache(t *testing.T)
 
 	np := buildKeystoneNetworkPolicy(ks)
 
-	// DNS + Memcached egress (CC-0039, REQ-005).
+	// DNS + Memcached egress.
 	g.Expect(np.Spec.Egress).To(HaveLen(2))
 	g.Expect(np.Spec.Egress[1].Ports).To(HaveLen(1))
 	g.Expect(*np.Spec.Egress[1].Ports[0].Protocol).To(Equal(corev1.ProtocolTCP))
@@ -277,7 +275,7 @@ func TestBuildKeystoneNetworkPolicy_AutoDerivedEgress_BothManaged(t *testing.T) 
 
 	np := buildKeystoneNetworkPolicy(ks)
 
-	// DNS + MariaDB + Memcached egress (CC-0039, REQ-005).
+	// DNS + MariaDB + Memcached egress.
 	g.Expect(np.Spec.Egress).To(HaveLen(3))
 	g.Expect(*np.Spec.Egress[1].Ports[0].Protocol).To(Equal(corev1.ProtocolTCP))
 	g.Expect(np.Spec.Egress[1].Ports[0].Port.IntValue()).To(Equal(3306))
@@ -285,11 +283,11 @@ func TestBuildKeystoneNetworkPolicy_AutoDerivedEgress_BothManaged(t *testing.T) 
 	g.Expect(np.Spec.Egress[2].Ports[0].Port.IntValue()).To(Equal(11211))
 }
 
-// --- Gateway-aware ingress rules (CC-0065, REQ-008) ---
+// --- Gateway-aware ingress rules ---
 
 // TestBuildKeystoneNetworkPolicy_GatewayNil_NoExtraIngressPeer verifies that
 // when spec.gateway is nil the ingress rules only contain the user-defined
-// peers, matching the pre-CC-0065 behavior (CC-0065, REQ-008).
+// peers, matching the pre-existing behavior.
 func TestBuildKeystoneNetworkPolicy_GatewayNil_NoExtraIngressPeer(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := npTestKeystone()
@@ -315,7 +313,6 @@ func TestBuildKeystoneNetworkPolicy_GatewayNil_NoExtraIngressPeer(t *testing.T) 
 // verifies that when both spec.gateway and spec.networkPolicy are set, an
 // additional ingress peer is appended targeting the Gateway's namespace on
 // TCP 5000, so the Gateway data-plane pods can reach the Keystone Service
-// (CC-0065, REQ-008).
 func TestBuildKeystoneNetworkPolicy_GatewaySet_AppendsIngressPeerForGatewayNamespace(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := npTestKeystone()
@@ -355,12 +352,12 @@ func TestBuildKeystoneNetworkPolicy_GatewaySet_AppendsIngressPeerForGatewayNames
 		HaveKeyWithValue("kubernetes.io/metadata.name", "gateway-system"),
 	)
 	g.Expect(gatewayPeer.PodSelector).To(BeNil(),
-		"gateway peer must not restrict pods inside the gateway namespace (CC-0065, REQ-008)")
+		"gateway peer must not restrict pods inside the gateway namespace")
 }
 
 // TestBuildKeystoneNetworkPolicy_GatewaySet_EmptyParentNamespace_UsesKeystoneNamespace
 // verifies that when spec.gateway.parentRef.namespace is empty, the Keystone
-// CR's own namespace is used for the gateway ingress peer (CC-0065, REQ-008).
+// CR's own namespace is used for the gateway ingress peer.
 func TestBuildKeystoneNetworkPolicy_GatewaySet_EmptyParentNamespace_UsesKeystoneNamespace(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := npTestKeystone()
@@ -391,7 +388,7 @@ func TestBuildKeystoneNetworkPolicy_GatewaySet_EmptyParentNamespace_UsesKeystone
 // TestReconcileNetworkPolicy_GatewaySet_NetworkPolicyNil_NoNetworkPolicyCreated
 // verifies that when spec.gateway is set but spec.networkPolicy is nil, no
 // NetworkPolicy is created — the gateway-aware ingress peer is only appended
-// when network isolation is opted in (CC-0065, REQ-008).
+// when network isolation is opted in.
 func TestReconcileNetworkPolicy_GatewaySet_NetworkPolicyNil_NoNetworkPolicyCreated(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := npTestScheme()
@@ -410,7 +407,7 @@ func TestReconcileNetworkPolicy_GatewaySet_NetworkPolicyNil_NoNetworkPolicyCreat
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(BeZero())
 
-	// Verify no NetworkPolicy was created (CC-0065, REQ-008).
+	// Verify no NetworkPolicy was created.
 	var np networkingv1.NetworkPolicy
 	getErr := r.Get(context.Background(), types.NamespacedName{
 		Name: "test-keystone", Namespace: "default",
@@ -445,15 +442,15 @@ func TestBuildKeystoneNetworkPolicy_AdditionalEgress(t *testing.T) {
 
 	np := buildKeystoneNetworkPolicy(ks)
 
-	// DNS + additional egress (brownfield, no MariaDB/Memcached) (CC-0039, REQ-006).
+	// DNS + additional egress (brownfield, no MariaDB/Memcached).
 	g.Expect(np.Spec.Egress).To(HaveLen(2))
 	g.Expect(np.Spec.Egress[1].Ports).To(HaveLen(1))
 	g.Expect(np.Spec.Egress[1].Ports[0].Port.IntValue()).To(Equal(8080))
 }
 
-// --- Task 2.3: reconcileNetworkPolicy lifecycle unit tests (CC-0039) ---
+// --- Task 2.3: reconcileNetworkPolicy lifecycle unit tests ---
 
-// --- Path 1: networkPolicy enabled — create NetworkPolicy (REQ-001) ---
+// --- Path 1: networkPolicy enabled — create NetworkPolicy ---
 
 func TestReconcileNetworkPolicy_NetworkPolicySet_CreatesNetworkPolicy(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -478,7 +475,7 @@ func TestReconcileNetworkPolicy_NetworkPolicySet_CreatesNetworkPolicy(t *testing
 	g.Expect(np.OwnerReferences).To(HaveLen(1))
 	g.Expect(np.OwnerReferences[0].Name).To(Equal("test-keystone"))
 
-	// Verify NetworkPolicyReady condition is set with reason NetworkPolicyReady (CC-0039, REQ-007).
+	// Verify NetworkPolicyReady condition is set with reason NetworkPolicyReady.
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "NetworkPolicyReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
@@ -564,7 +561,7 @@ func TestReconcileNetworkPolicy_NetworkPolicyEnabled_NoChange_SkipsUpdate(t *tes
 	}
 
 	// Track update calls to verify the snapshot-comparison guard skips
-	// no-op updates (CC-0039).
+	// no-op updates.
 	updateCount := 0
 	c := fake.NewClientBuilder().
 		WithScheme(s).
@@ -592,14 +589,14 @@ func TestReconcileNetworkPolicy_NetworkPolicyEnabled_NoChange_SkipsUpdate(t *tes
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(updateCount).To(Equal(0), "create path should not trigger update")
 
-	// Second reconcile with identical spec should skip the update (CC-0039).
+	// Second reconcile with identical spec should skip the update.
 	updateCount = 0
 	_, err = r.reconcileNetworkPolicy(ctx, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(updateCount).To(Equal(0), "idempotent reconciliation should skip update when spec is unchanged")
 }
 
-// --- Path 2: networkPolicy disabled — delete NetworkPolicy (REQ-003) ---
+// --- Path 2: networkPolicy disabled — delete NetworkPolicy ---
 
 func TestReconcileNetworkPolicy_NetworkPolicyNil_NoExistingNP_SetsNotRequired(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -661,7 +658,7 @@ func TestReconcileNetworkPolicy_NetworkPolicyNil_ExistingNP_DeletesNetworkPolicy
 	g.Expect(cond.Reason).To(Equal("NetworkPolicyNotRequired"))
 }
 
-// --- Empty ingress guard (security, CC-0039) ---
+// --- Empty ingress guard (security) ---
 
 func TestReconcileNetworkPolicy_EmptyIngress_ReturnsError(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -685,7 +682,7 @@ func TestReconcileNetworkPolicy_EmptyIngress_ReturnsError(t *testing.T) {
 	g.Expect(client.IgnoreNotFound(getErr)).To(Succeed())
 }
 
-// --- Path 3: error scenarios (REQ-007) ---
+// --- Path 3: error scenarios ---
 
 func TestReconcileNetworkPolicy_EnsureError_Propagated(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -768,7 +765,7 @@ func TestReconcileNetworkPolicy_DeleteError_Propagated(t *testing.T) {
 // TestBuildKeystoneNetworkPolicy_NameMatchesCR pins the NetworkPolicy
 // ObjectMeta.Name to the bare CR name. Symmetric with the Deployment, Service,
 // PDB, and HPA name guards: the rename must hit every operator-managed
-// sub-resource (CC-0095, REQ-004).
+// sub-resource.
 func TestBuildKeystoneNetworkPolicy_NameMatchesCR(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := npTestKeystone()
@@ -781,7 +778,7 @@ func TestBuildKeystoneNetworkPolicy_NameMatchesCR(t *testing.T) {
 	np := buildKeystoneNetworkPolicy(ks)
 
 	g.Expect(np.Name).To(Equal(ks.Name),
-		"NetworkPolicy Name must equal the CR name (CC-0095, REQ-004)")
+		"NetworkPolicy Name must equal the CR name")
 	g.Expect(np.Name).NotTo(HaveSuffix("-api"),
-		"NetworkPolicy Name must not carry the legacy `-api` suffix (CC-0095, REQ-004)")
+		"NetworkPolicy Name must not carry the legacy `-api` suffix")
 }

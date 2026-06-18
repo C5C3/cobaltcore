@@ -7,7 +7,7 @@ FROM golang:1.26@sha256:87a41d2539e5671777734e91f467499ed5eafb1fb1f77221dff2744d
 
 WORKDIR /workspace
 
-# Copy Go workspace and dependency manifests first for layer caching (CC-0017).
+# Copy Go workspace and dependency manifests first for layer caching.
 COPY go.work go.work.sum ./
 COPY internal/common/go.mod internal/common/go.sum ./internal/common/
 COPY operators/keystone/go.mod operators/keystone/go.sum ./operators/keystone/
@@ -31,7 +31,7 @@ WORKDIR /
 
 COPY --from=builder /workspace/operators/keystone/manager .
 
-# CC-0017: Static OCI Image Spec annotations for local builds (runtime stage only).
+# Static OCI Image Spec annotations for local builds (runtime stage only).
 # CI-generated labels from docker/metadata-action supplement these at push time.
 LABEL org.opencontainers.image.title="keystone-operator" \
       org.opencontainers.image.description="CobaltCore Keystone Operator for managing OpenStack Identity Service" \

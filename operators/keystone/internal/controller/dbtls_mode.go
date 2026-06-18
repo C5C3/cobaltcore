@@ -4,13 +4,12 @@
 
 // Package controller — dbtls_mode.go provides the pure, deterministic mapping
 // from a database TLS mode enum to the pymysql ssl_* DSN query parameters
-// (CC-0106, REQ-004), plus the typed condition/reason constants for the
-// DatabaseTLSReady status condition (CC-0106, REQ-002, REQ-014).
+// plus the typed condition/reason constants for the
+// DatabaseTLSReady status condition.
 //
 // The mapping is intentionally isolated and unit-tested so that the
 // verification strength implied by each mode can never be silently downgraded
-// when the DSN is assembled in reconcile_dbconnection_secret.go (CC-0106 task
-// 4.1).
+// when the DSN is assembled in reconcile_dbconnection_secret.go (task 4.1).
 package controller
 
 import (
@@ -28,12 +27,12 @@ type dbTLSPaths struct {
 }
 
 // Typed condition/reason constants for the DatabaseTLSReady status condition
-// (CC-0106, REQ-002, REQ-014). They are declared here alongside the mode
+// They are declared here alongside the mode
 // mapping so the DB-TLS vocabulary lives in one place; the condition itself is
 // wired into the sub-reconciler chain and the subConditionTypes drift map by
-// CC-0106 task 3.2, which is the consumer of these constants.
+// task 3.2, which is the consumer of these constants.
 //
-//nolint:unused // declared by CC-0106 task 1.3; consumed by the reconcileDatabaseTLS sub-reconciler added in CC-0106 task 3.2.
+//nolint:unused // declared by task 1.3; consumed by the reconcileDatabaseTLS sub-reconciler added in task 3.2.
 const (
 	conditionTypeDatabaseTLSReady = "DatabaseTLSReady"
 
@@ -44,7 +43,7 @@ const (
 )
 
 // modeToSSLParams maps a database TLS mode to the ordered pymysql ssl_* DSN
-// query parameters (CC-0106, REQ-004). The exact mapping is:
+// query parameters. The exact mapping is:
 //
 //   - prefer, require:  ssl_ca + ssl_cert + ssl_key only (encrypt, no peer
 //     verification).
@@ -62,7 +61,7 @@ const (
 //
 // DECISION: helper signature — Chose (mode string, basePaths dbTLSPaths)
 // (url.Values, error) returning url.Values + error rather than a raw query
-// string, because the CC-0106 task 4.1 consumer (reconcile_dbconnection_secret.go)
+// string, because the task 4.1 consumer (reconcile_dbconnection_secret.go)
 // builds a *url.URL and will merge these into connURL.RawQuery; url.Values
 // composes cleanly with the existing "charset=utf8" parameter and Encode()
 // guarantees deterministic ordering. Reviewer: please verify this matches the

@@ -23,7 +23,7 @@ import (
 
 // conditionTypeLoggingHealthy reflects whether the merged keystone.conf
 // preserves the safe logging defaults required for kubectl logs / sidecar
-// shippers to receive Keystone application records (CC-0098, REQ-003). The
+// shippers to receive Keystone application records. The
 // only currently-tracked failure mode is the StderrDisabled override emitted
 // by spec.extraConfig; healthy reconciles set the condition to True so
 // transitions are detectable. The condition is informational and is
@@ -34,24 +34,21 @@ const conditionTypeLoggingHealthy = "LoggingHealthy"
 // conditionReasonStderrDisabled is the Reason emitted on the
 // LoggingHealthy=False condition (and on the gated LoggingStderrDisabled
 // Warning event) when spec.extraConfig overrides [DEFAULT].use_stderr to a
-// non-"true" value (CC-0098, REQ-003).
+// non-"true" value.
 const conditionReasonStderrDisabled = "StderrDisabled"
 
 // conditionReasonStderrEnabled is the Reason emitted on the
 // LoggingHealthy=True condition when the merged [DEFAULT].use_stderr is
 // "true" — i.e. container stderr will receive oslo.log records as designed
-// (CC-0098, REQ-003).
 const conditionReasonStderrEnabled = "StderrEnabled"
-
-// Feature: CC-0013
 
 // defaultConfigMapRetainCount is the number of historical immutable ConfigMaps
 // to retain after pruning. Combined with the current active ConfigMap, this
-// allows rollback to 3 previous configurations (CC-0077).
+// allows rollback to 3 previous configurations.
 const defaultConfigMapRetainCount = 3
 
 // dbConnectionPlaceholder is the placeholder URL written to the [database]
-// connection key in keystone.conf (CC-0080, REQ-008). The real URL is injected
+// connection key in keystone.conf. The real URL is injected
 // at runtime via the OS_DATABASE__CONNECTION env var sourced from the derived
 // <keystone.Name>-db-connection Secret, using oslo.config's
 // OS_<GROUP>__<OPTION> environment override. The placeholder MUST be a
@@ -63,8 +60,7 @@ const dbConnectionPlaceholder = "mysql+pymysql://placeholder"
 // oslo.log fileConfig snippet rendered by renderLoggingConf when
 // spec.logging.format == "json". The same value is set as the
 // [DEFAULT].log_config_append entry in keystone.conf, so the renderer and
-// the keystone.conf builder must agree on a single source of truth (CC-0098,
-// REQ-004).
+// the keystone.conf builder must agree on a single source of truth.
 const loggingConfFilePath = "/etc/keystone/keystone.conf.d/logging.conf"
 
 // reconcileConfig builds the Keystone configuration and creates an immutable
@@ -77,11 +73,11 @@ func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, keystone *keys
 		"DEFAULT": {
 			"keystone_user":  "",
 			"keystone_group": "",
-			// CC-0098 REQ-003: route oslo.log records to stderr so kubectl logs
+			// route oslo.log records to stderr so kubectl logs
 			// surfaces them. Users may override via spec.extraConfig — the
 			// post-merge guard below emits a Warning event when they do.
 			"use_stderr": "true",
-			// CC-0098 REQ-003: oslo.log gates several extra-verbose code paths
+			// oslo.log gates several extra-verbose code paths
 			// (SQL echo, auth backend tracing) on the debug flag specifically,
 			// independent of root logger level.
 			"debug": fmt.Sprintf("%t", logging.Debug),
@@ -119,19 +115,19 @@ func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, keystone *keys
 			"connection_recycle_time": "600",
 			// The real URL is materialized by reconcileDBConnectionSecret into a
 			// derived Secret and injected at runtime via OS_DATABASE__CONNECTION
-			// (oslo.config env override). CC-0080, REQ-001.
+			// (oslo.config env override)..
 			"connection": dbConnectionPlaceholder,
 		},
 	}
 
-	// CC-0098 REQ-005: render PerLoggerLevels into oslo.log's default_log_levels
+	// render PerLoggerLevels into oslo.log's default_log_levels
 	// CSV with alphabetically sorted keys for deterministic ConfigMap content
 	// hashing. Empty maps omit the key entirely so oslo.log keeps its compiled-in
 	// defaults rather than overriding them with an empty list.
 	if v := renderDefaultLogLevels(logging.PerLoggerLevels); v != "" {
 		defaults["DEFAULT"]["default_log_levels"] = v
 	}
-	// CC-0098 REQ-004: when format=json the operator renders a logging.conf into
+	// when format=json the operator renders a logging.conf into
 	// the same ConfigMap and points oslo.log at it via log_config_append. Placed
 	// in the defaults map (not after the merge) so users may still override the
 	// path via spec.extraConfig if they ship their own logging.conf alongside.
@@ -162,13 +158,12 @@ func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, keystone *keys
 		merged = config.MergeDefaults(keystone.Spec.ExtraConfig, merged)
 	}
 
-	// CC-0098 REQ-003: surface the corner case where spec.extraConfig overrode
+	// surface the corner case where spec.extraConfig overrode
 	// the safe [DEFAULT].use_stderr=true default. We honour the user's override
 	// (otherwise extraConfig would not be a true escape hatch) but warn loudly
 	// because kubectl logs / sidecar shippers will then see nothing. The
 	// Warning event is gated on a transition into LoggingHealthy=False so the
-	// 10s reconcile poll does not flood the event stream (CC-0091 gated-event
-	// pattern). LoggingHealthy is always set so the condition reflects the
+	// 10s reconcile poll does not flood the event stream (gated-event pattern). LoggingHealthy is always set so the condition reflects the
 	// current state on every reconcile, regardless of transition.
 	r.recordLoggingHealth(keystone, merged)
 
@@ -216,7 +211,7 @@ func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, keystone *keys
 	if policyYAML != "" {
 		data["policy.yaml"] = policyYAML
 	}
-	// CC-0098 REQ-004: when format=json, ship the oslo.log JSONFormatter config
+	// when format=json, ship the oslo.log JSONFormatter config
 	// alongside keystone.conf. log_config_append in [DEFAULT] (set above when
 	// format=json) points oslo.log at this path. Toggling back to format=text
 	// drops both the data key and the log_config_append entry — the resulting
@@ -240,8 +235,7 @@ func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, keystone *keys
 // into LoggingHealthy=False, Reason=StderrDisabled. The 10s polling cadence
 // (RequeueDeploymentPolling) would otherwise flood the event stream because
 // the use_stderr guard is purely a function of user spec and never changes
-// between reconciles for a steady CR (CC-0091 gated-event pattern, CC-0098,
-// REQ-003).
+// between reconciles for a steady CR (gated-event pattern).
 //
 // The condition itself is upserted on every reconcile so status reflects the
 // current logging shape even when no transition occurred — a brand-new CR
@@ -258,7 +252,7 @@ func (r *KeystoneReconciler) recordLoggingHealth(
 		useStderr := merged["DEFAULT"]["use_stderr"]
 		if prev == nil || prev.Status != metav1.ConditionFalse || prev.Reason != conditionReasonStderrDisabled {
 			r.Recorder.Eventf(keystone, corev1.EventTypeWarning, "LoggingStderrDisabled",
-				"spec.extraConfig overrode [DEFAULT].use_stderr to %q; container logs will not reach kubectl logs (CC-0098)",
+				"spec.extraConfig overrode [DEFAULT].use_stderr to %q; container logs will not reach kubectl logs",
 				useStderr)
 		}
 		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
@@ -267,7 +261,7 @@ func (r *KeystoneReconciler) recordLoggingHealth(
 			Reason:             conditionReasonStderrDisabled,
 			ObservedGeneration: keystone.Generation,
 			Message: fmt.Sprintf(
-				"spec.extraConfig set [DEFAULT].use_stderr=%q; container logs will not reach kubectl logs (CC-0098)",
+				"spec.extraConfig set [DEFAULT].use_stderr=%q; container logs will not reach kubectl logs",
 				useStderr,
 			),
 		})
@@ -279,13 +273,13 @@ func (r *KeystoneReconciler) recordLoggingHealth(
 		Status:             metav1.ConditionTrue,
 		Reason:             conditionReasonStderrEnabled,
 		ObservedGeneration: keystone.Generation,
-		Message:            "[DEFAULT].use_stderr is true; oslo.log records reach container stderr (CC-0098)",
+		Message:            "[DEFAULT].use_stderr is true; oslo.log records reach container stderr",
 	})
 }
 
 // pruneStaleConfigMaps removes historical immutable ConfigMaps that exceed
 // the retain count, keeping only the newest historical ConfigMaps plus the
-// currently active one (CC-0077, REQ-007).
+// currently active one.
 func (r *KeystoneReconciler) pruneStaleConfigMaps(ctx context.Context, keystone *keystonev1alpha1.Keystone, configMapName string) error {
 	baseName := fmt.Sprintf("%s-config", keystone.Name)
 	return config.PruneImmutableConfigMaps(ctx, r.Client, keystone, baseName, keystone.Namespace, configMapName, defaultConfigMapRetainCount)
@@ -366,7 +360,7 @@ func buildPolicyYAML(ctx context.Context, c client.Client, keystone *keystonev1a
 // defaulting webhook materializes the same baseline at admission, so this
 // fallback only matters when a CR bypasses the webhook (e.g. a pre-existing
 // CR observed by a freshly upgraded operator). Mirrors the UWSGISpec
-// nil-tolerance pattern at reconcile_deployment.go:317 (CC-0098, REQ-001).
+// nil-tolerance pattern at reconcile_deployment.go:317.
 func effectiveLogging(spec *keystonev1alpha1.LoggingSpec) keystonev1alpha1.LoggingSpec {
 	out := keystonev1alpha1.LoggingSpec{Format: "text", Level: "INFO"}
 	if spec == nil {
@@ -386,7 +380,7 @@ func effectiveLogging(spec *keystonev1alpha1.LoggingSpec) keystonev1alpha1.Loggi
 // default_log_levels CSV ("name=LEVEL,..."), with keys sorted alphabetically
 // so the rendered keystone.conf — and therefore the immutable ConfigMap
 // content hash — is independent of Go's randomized map iteration order
-// (CC-0098, REQ-005). Returns "" for empty input so the caller can omit the
+// Returns "" for empty input so the caller can omit the
 // key entirely rather than overriding oslo.log defaults with an empty list.
 func renderDefaultLogLevels(perLogger map[string]string) string {
 	if len(perLogger) == 0 {
@@ -406,7 +400,7 @@ func renderDefaultLogLevels(perLogger map[string]string) string {
 
 // renderLoggingConf builds the logging.conf written to loggingConfFilePath
 // and consumed by oslo.log via log_config_append when
-// spec.logging.format == "json" (CC-0098, REQ-004). It wires
+// spec.logging.format == "json". It wires
 // oslo_log.formatters.JSONFormatter to a stderr StreamHandler so the
 // Keystone API container emits one JSON record per log line for direct
 // ingest by Loki/OpenSearch.
@@ -438,7 +432,7 @@ func renderLoggingConf(level string) string {
 		// level = NOTSET defers filtering to [logger_root]: the handler emits
 		// every record the root logger forwards. Hardcoding the root level
 		// here would silently shadow spec.logging.level; do not "fix" this to
-		// match the root level (CC-0098, REQ-004).
+		// match the root level.
 		"level = NOTSET",
 		"formatter = json",
 		"",

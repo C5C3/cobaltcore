@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "keystone-operator Helm Values",
-  "description": "Schema for the keystone-operator Helm chart values (CC-0069)",
+  "description": "Schema for the keystone-operator Helm chart values",
   "type": "object",
   "additionalProperties": false,
   "definitions": {
@@ -19,7 +19,7 @@
       ]
     },
     "cidr": {
-      "description": "IPv4 or IPv6 CIDR block (e.g., '10.96.0.1/32', '2001:db8::/32'). IPv4 octets are bounded 0-255 to surface obvious typos (e.g. '999.0.0.1/32') at helm render time rather than as opaque kubectl apply admission errors. The IPv6 half of the pattern is intentionally loose — it matches any hex+colon sequence and does not enforce valid RFC 4291 group counts or '::' rules — because a schema-complete IPv6 regex is disproportionately complex for the stated goal of catching obvious typos; final IPv6 validation is delegated to kubectl/apiserver admission of the rendered NetworkPolicy (CC-0090, REQ-005).",
+      "description": "IPv4 or IPv6 CIDR block (e.g., '10.96.0.1/32', '2001:db8::/32'). IPv4 octets are bounded 0-255 to surface obvious typos (e.g. '999.0.0.1/32') at helm render time rather than as opaque kubectl apply admission errors. The IPv6 half of the pattern is intentionally loose — it matches any hex+colon sequence and does not enforce valid RFC 4291 group counts or '::' rules — because a schema-complete IPv6 regex is disproportionately complex for the stated goal of catching obvious typos; final IPv6 validation is delegated to kubectl/apiserver admission of the rendered NetworkPolicy.",
       "type": "string",
       "pattern": "^(((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)/([0-9]|[12][0-9]|3[0-2])|[0-9a-fA-F:]+/([0-9]|[1-9][0-9]|1[01][0-9]|12[0-8]))$"
     },
@@ -129,7 +129,7 @@
       "properties": {
         "namespaceScoped": {
           "type": "boolean",
-          "description": "Deploy with namespace-scoped Role/RoleBinding instead of ClusterRole/ClusterRoleBinding (CC-0043). Restricts the operator to its release namespace. Requires webhook.enabled=false.",
+          "description": "Deploy with namespace-scoped Role/RoleBinding instead of ClusterRole/ClusterRoleBinding. Restricts the operator to its release namespace. Requires webhook.enabled=false.",
           "default": false
         }
       }
@@ -202,12 +202,12 @@
     },
     "monitoring": {
       "type": "object",
-      "description": "Observability integration configuration (CC-0089)",
+      "description": "Observability integration configuration",
       "additionalProperties": false,
       "properties": {
         "serviceMonitor": {
           "type": "object",
-          "description": "Prometheus Operator ServiceMonitor settings (CC-0089, REQ-006). Requires the monitoring.coreos.com CRDs in-cluster when enabled.",
+          "description": "Prometheus Operator ServiceMonitor settings. Requires the monitoring.coreos.com CRDs in-cluster when enabled.",
           "additionalProperties": false,
           "properties": {
             "enabled": {
@@ -244,17 +244,17 @@
     },
     "networkPolicy": {
       "type": "object",
-      "description": "NetworkPolicy for operator pod egress/ingress restriction (CC-0090). Opt-in via enabled=true.",
+      "description": "NetworkPolicy for operator pod egress/ingress restriction. Opt-in via enabled=true.",
       "additionalProperties": false,
       "properties": {
         "enabled": {
           "type": "boolean",
-          "description": "Render a NetworkPolicy that default-denies operator pod traffic except for the explicit rules below (CC-0090, REQ-001)",
+          "description": "Render a NetworkPolicy that default-denies operator pod traffic except for the explicit rules below",
           "default": false
         },
         "kubeApiServer": {
           "type": "object",
-          "description": "Kubernetes API server reachability. Required (non-empty) when enabled=true — fail-closed (CC-0090, REQ-004, REQ-006)",
+          "description": "Kubernetes API server reachability. Required (non-empty) when enabled=true — fail-closed",
           "additionalProperties": false,
           "properties": {
             "cidrs": {
@@ -283,7 +283,7 @@
         },
         "dns": {
           "type": "object",
-          "description": "DNS egress configuration for kube-dns resolution (CC-0090, REQ-003)",
+          "description": "DNS egress configuration for kube-dns resolution",
           "additionalProperties": false,
           "properties": {
             "enabled": {
@@ -292,7 +292,7 @@
               "default": true
             },
             "namespaceSelector": {
-              "description": "namespaceSelector matchLabels for the DNS peer (defaults to kube-system). minProperties:1 prevents an empty map from silently broadening the DNS peer to match all namespaces (CC-0090, REQ-005).",
+              "description": "namespaceSelector matchLabels for the DNS peer (defaults to kube-system). minProperties:1 prevents an empty map from silently broadening the DNS peer to match all namespaces.",
               "allOf": [
                 {
                   "$ref": "#/definitions/stringMap"
@@ -304,7 +304,7 @@
               }
             },
             "podSelector": {
-              "description": "podSelector matchLabels for the DNS peer (defaults to k8s-app=kube-dns). minProperties:1 prevents an empty map from silently broadening the DNS peer to match all pods (CC-0090, REQ-005).",
+              "description": "podSelector matchLabels for the DNS peer (defaults to k8s-app=kube-dns). minProperties:1 prevents an empty map from silently broadening the DNS peer to match all pods.",
               "allOf": [
                 {
                   "$ref": "#/definitions/stringMap"
@@ -319,7 +319,7 @@
         },
         "allowMetricsFrom": {
           "type": "array",
-          "description": "List of NetworkPolicyPeer objects permitted to scrape the metrics port. Empty disables metrics ingress (CC-0090, REQ-008)",
+          "description": "List of NetworkPolicyPeer objects permitted to scrape the metrics port. Empty disables metrics ingress",
           "items": {
             "type": "object"
           },
@@ -327,7 +327,7 @@
         },
         "webhookClients": {
           "type": "object",
-          "description": "Webhook admission ingress source override. Only consulted when webhook.enabled=true (CC-0090, REQ-007)",
+          "description": "Webhook admission ingress source override. Only consulted when webhook.enabled=true",
           "additionalProperties": false,
           "properties": {
             "cidrs": {

@@ -22,8 +22,6 @@ import (
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
 
-// Feature: CC-0058
-
 const (
 	conditionTypePolicyValidReady              = "PolicyValidReady"
 	conditionReasonPolicyValidationNotRequired = "PolicyValidationNotRequired"
@@ -35,14 +33,14 @@ const (
 // reconcilePolicyValidation ensures custom oslo.policy overrides are validated
 // via oslopolicy-validator before the Deployment is updated. Two lifecycle paths:
 //   - spec.policyOverrides nil: delete any existing validation Job, set
-//     PolicyValidReady=True/PolicyValidationNotRequired (CC-0058, REQ-003)
+//     PolicyValidReady=True/PolicyValidationNotRequired
 //   - spec.policyOverrides set: run validation Job via job.RunJob, track
-//     lifecycle through InProgress/Passed/Failed states (CC-0058, REQ-001, REQ-002)
+//     lifecycle through InProgress/Passed/Failed states
 func (r *KeystoneReconciler) reconcilePolicyValidation(ctx context.Context, keystone *keystonev1alpha1.Keystone, configMapName string) (ctrl.Result, error) {
 	jobName := fmt.Sprintf("%s-policy-validation", keystone.Name)
 
 	// Path 1: no policy overrides — delete any existing validation Job and
-	// set condition to True/PolicyValidationNotRequired (CC-0058, REQ-003).
+	// set condition to True/PolicyValidationNotRequired.
 	if keystone.Spec.PolicyOverrides == nil {
 		if err := deleteValidationJob(ctx, r.Client, keystone.Namespace, jobName); err != nil {
 			return ctrl.Result{}, fmt.Errorf("deleting validation Job: %w", err)
@@ -57,7 +55,7 @@ func (r *KeystoneReconciler) reconcilePolicyValidation(ctx context.Context, keys
 		return ctrl.Result{}, nil
 	}
 
-	// Path 2: policy overrides set — run validation Job (CC-0058, REQ-001).
+	// Path 2: policy overrides set — run validation Job.
 	done, err := job.RunJob(ctx, r.Client, r.Scheme, keystone, buildPolicyValidationJob(keystone, configMapName))
 	if err != nil {
 		msg := fmt.Sprintf("Policy validation failed: %v", err)
@@ -100,7 +98,7 @@ func (r *KeystoneReconciler) reconcilePolicyValidation(ctx context.Context, keys
 // job-name label, finds the most recent Pod with a terminated container, and
 // returns the termination message (truncated to 500 chars). If no termination
 // message is available, it returns a fallback referencing the Job name for
-// manual log inspection (CC-0058, REQ-006).
+// manual log inspection.
 func getValidationErrorMessage(ctx context.Context, c client.Client, jobName, namespace string) string {
 	fallback := fmt.Sprintf(
 		"Policy validation failed; check Job %s logs: kubectl logs -n %s job/%s",
@@ -146,9 +144,9 @@ func getValidationErrorMessage(ctx context.Context, c client.Client, jobName, na
 // mounts the ConfigMap read-only, and has backoffLimit=2. No
 // ttlSecondsAfterFinished is set: the completed Job lingers as the RunJob
 // state record so reconciliation does not re-create it in a loop once it
-// finishes (CC-0113, #415).
+// finishes (#415).
 // oslopolicy-validator reads keystone.conf from the mounted config dir to
-// resolve [oslo_policy] policy_file (CC-0058, REQ-007).
+// resolve [oslo_policy] policy_file.
 func buildPolicyValidationJob(keystone *keystonev1alpha1.Keystone, configMapName string) *batchv1.Job {
 	backoffLimit := int32(2)
 
@@ -165,9 +163,9 @@ func buildPolicyValidationJob(keystone *keystonev1alpha1.Keystone, configMapName
 					Containers: []corev1.Container{{
 						Name:  "validator",
 						Image: fmt.Sprintf("%s:%s", keystone.Spec.Image.Repository, keystone.Spec.Image.Tag),
-						// TODO(CC-0042): Wire spec.Resources (or a smaller Job-specific default) to
+						// TODO Wire spec.Resources (or a smaller Job-specific default) to
 						// this container. Currently runs as BestEffort QoS. See reconcile_deployment.go
-						// containerResources() for the pattern used by the keystone container (CC-0095).
+						// containerResources() for the pattern used by the keystone container.
 						Command: []string{
 							"oslopolicy-validator",
 							"--namespace", "keystone",
@@ -198,7 +196,7 @@ func buildPolicyValidationJob(keystone *keystonev1alpha1.Keystone, configMapName
 }
 
 // deleteValidationJob deletes the validation Job identified by namespace and
-// name. It is a no-op if the Job does not exist (CC-0058, REQ-003).
+// name. It is a no-op if the Job does not exist.
 func deleteValidationJob(ctx context.Context, c client.Client, namespace, name string) error {
 	j := &batchv1.Job{}
 	j.SetName(name)

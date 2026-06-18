@@ -11,15 +11,14 @@ import (
 )
 
 // testDBTLSPaths is the canonical client-cert mount layout used across the
-// modeToSSLParams tests (mirrors the /etc/keystone/db-tls/ mount established by
-// CC-0106 task 4.2).
+// modeToSSLParams tests (mirrors the /etc/keystone/db-tls/ mount).
 var testDBTLSPaths = dbTLSPaths{
 	CA:   "/etc/keystone/db-tls/ca.crt",
 	Cert: "/etc/keystone/db-tls/tls.crt",
 	Key:  "/etc/keystone/db-tls/tls.key",
 }
 
-// TestModeToSSLParams_AllFourModes backs REQ-004: every enum mode produces the
+// TestModeToSSLParams_AllFourModes backs: every enum mode produces the
 // exact ssl_* parameter set — ssl_ca/ssl_cert/ssl_key always present and equal
 // to the supplied paths; ssl_verify_cert only for verify-ca/verify-full;
 // ssl_verify_identity only for verify-full.
@@ -63,7 +62,7 @@ func TestModeToSSLParams_AllFourModes(t *testing.T) {
 	}
 }
 
-// TestModeToSSLParams_DeterministicOrdering backs REQ-004: repeated calls with
+// TestModeToSSLParams_DeterministicOrdering backs: repeated calls with
 // identical input produce byte-identical encoded query strings, so the
 // assembled DSN is stable across reconciles.
 func TestModeToSSLParams_DeterministicOrdering(t *testing.T) {
@@ -85,7 +84,7 @@ func TestModeToSSLParams_DeterministicOrdering(t *testing.T) {
 	))
 }
 
-// TestModeToSSLParams_UnknownModeErrors backs REQ-004: an out-of-enum mode
+// TestModeToSSLParams_UnknownModeErrors backs: an out-of-enum mode
 // (including the empty string) returns a non-nil error and nil params so no
 // partially-formed DSN is ever assembled.
 func TestModeToSSLParams_UnknownModeErrors(t *testing.T) {

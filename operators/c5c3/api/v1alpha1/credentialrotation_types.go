@@ -15,7 +15,7 @@ import (
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
 // CredentialRotation requests a one-shot rotation of a control-plane credential
-// (CC-0110). Today the only supported target is the K-ORC admin application
+// Today the only supported target is the K-ORC admin application
 // credential. The reconciler (L2) re-mints the target credential and reports
 // progress via status conditions.
 type CredentialRotation struct {
@@ -36,7 +36,6 @@ type CredentialRotationList struct {
 }
 
 // RotationTarget selects which credential a CredentialRotation rotates
-// (CC-0110).
 // +kubebuilder:validation:Enum=adminApplicationCredential
 type RotationTarget string
 
@@ -47,7 +46,6 @@ const (
 )
 
 // CredentialRotationSpec defines the desired state of a CredentialRotation
-// (CC-0110).
 type CredentialRotationSpec struct {
 	// Target selects which credential to rotate. Today only
 	// "adminApplicationCredential" is supported.
@@ -64,12 +62,12 @@ type CredentialRotationSpec struct {
 	// +optional
 	ReMint bool `json:"reMint,omitempty"`
 
-	// DECISION (CC-0110, REQ-015): the scheduled-rotation fields below are
+	// DECISION the scheduled-rotation fields below are
 	// DEFERRED. They surface in the CRD schema now so the contract is stable, but
 	// the L1 reconciler ignores them — scheduled rotation (and the two-credential
 	// pre-rotation/grace overlap) is implemented in a later level. They are kept
 	// here, rather than in a future breaking schema change, so dashboards and
-	// GitOps manifests can be written against the final shape. Per REQ-015 the
+	// GitOps manifests can be written against the final shape. Per the
 	// deferral is NOT silent: when any of these fields is set the reconciler emits
 	// a "ScheduledRotationDeferred" event (see the matching DECISION in
 	// reconcile_credentialrotation.go) so an operator knows the loop is not yet
@@ -95,7 +93,6 @@ type CredentialRotationSpec struct {
 }
 
 // CredentialRotationStatus defines the observed state of a CredentialRotation
-// (CC-0110).
 type CredentialRotationStatus struct {
 	// Conditions represent the latest available observations of the rotation
 	// state. Upsert via the shared conditions helper.

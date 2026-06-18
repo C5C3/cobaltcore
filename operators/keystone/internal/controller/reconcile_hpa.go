@@ -18,30 +18,27 @@ import (
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
 
-// Feature: CC-0038
-
 // subResourceName returns the canonical name for Keystone operator-managed
 // sub-resources (Deployment, HPA, Service, PodDisruptionBudget, NetworkPolicy,
 // HTTPRoute). Centralised here so the naming convention is defined in one
-// place. Since CC-0095 the helper returns the bare CR name with no suffix —
-// the historical `-api` suffix was dropped to align internal Service DNS
-// with the public hostname posture established by CC-0088. The name is
+// place. The helper returns the bare CR name with no suffix — the
+// historical `-api` suffix was dropped to align internal Service DNS with
+// the public hostname posture. The name is
 // deliberately neutral (not `apiResourceName`) so future readers do not
 // expect an `-api` suffix or otherwise infer API-specific semantics
-// (CC-0095, REQ-001).
 func subResourceName(keystone *keystonev1alpha1.Keystone) string {
 	return keystone.Name
 }
 
 // reconcileHPA ensures the HorizontalPodAutoscaler for the Keystone API
 // deployment matches the desired state. Three lifecycle paths:
-//   - spec.autoscaling set: create or update HPA targeting the deployment (REQ-001)
-//   - spec.autoscaling nil: delete any existing HPA (REQ-003)
-//   - error: propagate errors from ensure/delete operations (REQ-008)
+//   - spec.autoscaling set: create or update HPA targeting the deployment
+//   - spec.autoscaling nil: delete any existing HPA
+//   - error: propagate errors from ensure/delete operations
 func (r *KeystoneReconciler) reconcileHPA(ctx context.Context, keystone *keystonev1alpha1.Keystone) (ctrl.Result, error) {
 	hpaName := subResourceName(keystone)
 
-	// Path 2: autoscaling disabled — delete any existing HPA (CC-0038, REQ-003).
+	// Path 2: autoscaling disabled — delete any existing HPA.
 	if keystone.Spec.Autoscaling == nil {
 		if err := deployment.DeleteHPA(ctx, r.Client, keystone.Namespace, hpaName); err != nil {
 			return ctrl.Result{}, fmt.Errorf("deleting HorizontalPodAutoscaler: %w", err)
@@ -56,7 +53,7 @@ func (r *KeystoneReconciler) reconcileHPA(ctx context.Context, keystone *keyston
 		return ctrl.Result{}, nil
 	}
 
-	// Path 1: autoscaling enabled — create or update HPA (CC-0038, REQ-001).
+	// Path 1: autoscaling enabled — create or update HPA.
 	hpa := buildKeystoneHPA(keystone)
 	if err := deployment.EnsureHPA(ctx, r.Client, r.Scheme, keystone, hpa); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring HorizontalPodAutoscaler: %w", err)
@@ -74,7 +71,7 @@ func (r *KeystoneReconciler) reconcileHPA(ctx context.Context, keystone *keyston
 // buildKeystoneHPA constructs the desired HorizontalPodAutoscaler for the
 // Keystone API deployment. MinReplicas defaults to spec.replicas when
 // autoscaling.minReplicas is not set. Metrics are added for CPU and/or memory
-// utilization based on the autoscaling spec (CC-0038, REQ-001, REQ-004).
+// utilization based on the autoscaling spec.
 func buildKeystoneHPA(keystone *keystonev1alpha1.Keystone) *autoscalingv2.HorizontalPodAutoscaler {
 	autoscaling := keystone.Spec.Autoscaling
 

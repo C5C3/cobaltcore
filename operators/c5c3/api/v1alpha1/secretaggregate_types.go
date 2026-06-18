@@ -12,14 +12,14 @@ import (
 // +kubebuilder:subresource:status
 
 // SecretAggregate aggregates the Secrets produced by a control plane into a
-// single materialized Secret (CC-0110).
+// single materialized Secret.
 //
-// DECISION (CC-0110): this is TYPES ONLY at L1 — there is no controller. The
-// reconciler is DEFERRED to CC-0023, and the operator RBAC for this kind will
+// DECISION: this is TYPES ONLY at L1 — there is no controller. The
+// reconciler is deferred, and the operator RBAC for this kind will
 // be READ-ONLY (get/list/watch) until that reconciler lands, so the operator
 // can observe SecretAggregate CRs without being granted write access to a kind
 // it does not yet manage. The Spec/Status below are intentionally minimal
-// placeholders; CC-0023 will flesh them out.
+// placeholders.
 type SecretAggregate struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -37,17 +37,17 @@ type SecretAggregateList struct {
 	Items           []SecretAggregate `json:"items"`
 }
 
-// SecretAggregateSpec defines the desired state of a SecretAggregate (CC-0110).
-// Minimal placeholder — see the DECISION on SecretAggregate; CC-0023 extends it.
+// SecretAggregateSpec defines the desired state of a SecretAggregate.
+// Minimal placeholder — see the DECISION on SecretAggregate.
 type SecretAggregateSpec struct {
 	// TargetSecretName is the name of the materialized aggregate Secret the
-	// (deferred, CC-0023) reconciler will produce.
+	// (deferred) reconciler will produce.
 	// +optional
 	TargetSecretName string `json:"targetSecretName,omitempty"`
 }
 
-// SecretAggregateStatus defines the observed state of a SecretAggregate
-// (CC-0110). Minimal placeholder — CC-0023 extends it.
+// SecretAggregateStatus defines the observed state of a SecretAggregate.
+// Minimal placeholder.
 type SecretAggregateStatus struct {
 	// Conditions represent the latest available observations of the aggregate
 	// state. Upsert via the shared conditions helper.

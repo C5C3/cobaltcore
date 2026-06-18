@@ -34,8 +34,8 @@ import (
 // fernetRotateScript is the shell script executed by the Fernet rotation CronJob.
 // It rotates the keys on an emptyDir working copy, then pushes the updated keys
 // back to the Kubernetes Secret via the API using the pod's ServiceAccount token.
-// Only Python standard library modules are used to avoid image dependencies (CC-0013).
-// Extracted to scripts/fernet_rotate.sh for independent linting and testing (CC-0073).
+// Only Python standard library modules are used to avoid image dependencies.
+// Extracted to scripts/fernet_rotate.sh for independent linting and testing.
 //
 //go:embed scripts/fernet_rotate.sh
 var fernetRotateScript string
@@ -68,14 +68,14 @@ func (r *KeystoneReconciler) reconcileFernetKeys(ctx context.Context,
 		// RequeueAfter (not the deprecated ctrl.Result.Requeue field) so the
 		// parallel group's shortestRequeue propagates this non-zero result and
 		// the chain short-circuits, instead of dropping it and continuing in the
-		// same pass (issue #467; CC-0013).
+		// same pass (issue #467).
 		return ctrl.Result{RequeueAfter: RequeueSecretPolling}, nil
 	} else if err != nil {
 		return ctrl.Result{}, fmt.Errorf("getting fernet keys secret: %w", err)
 	}
 
 	// 2. Ensure the staging Secret exists for the rotation CronJob to PATCH
-	//    into (CC-0081). The operator owns the lifecycle (labels, owner ref)
+	//    into. The operator owns the lifecycle (labels, owner ref)
 	//    and the CronJob owns the Data — this is the split-compute-write
 	//    boundary that keeps token-forgery primitives out of the CronJob's
 	//    RBAC on the production Secret.
@@ -84,7 +84,7 @@ func (r *KeystoneReconciler) reconcileFernetKeys(ctx context.Context,
 	}
 
 	// Refresh the key_rotation_age gauge from the rotation-completed
-	// annotation (CC-0089, REQ-003). The helper reads the production Secret
+	// annotation. The helper reads the production Secret
 	// first (durable across the inter-rotation steady state) and falls back
 	// to the staging Secret to cover the very-first-rotation pre-apply
 	// window. Called BEFORE applyRotationOutput so that, when the apply path
@@ -92,8 +92,7 @@ func (r *KeystoneReconciler) reconcileFernetKeys(ctx context.Context,
 	// up the freshest timestamp.
 	r.observeRotationAge(ctx, keystone, secretName, fernetStagingSecretName(keystone), "fernet")
 
-	// 3. Apply any completed rotation staged by the CronJob (CC-0081,
-	//    REQ-005, REQ-006). On a valid apply we short-circuit the rest of
+	// 3. Apply any completed rotation staged by the CronJob. On a valid apply we short-circuit the rest of
 	//    the step chain and requeue so the next pass re-enters the happy
 	//    path with the production Secret already updated.
 	applied, err := r.applyRotationOutput(
@@ -118,7 +117,7 @@ func (r *KeystoneReconciler) reconcileFernetKeys(ctx context.Context,
 		// Short-circuit the rest of the step chain via RequeueAfter (not the
 		// deprecated ctrl.Result.Requeue field) so the parallel group's
 		// shortestRequeue propagates it and the next pass re-enters the happy
-		// path with the production Secret already updated (issue #467; CC-0081).
+		// path with the production Secret already updated (issue #467).
 		return ctrl.Result{RequeueAfter: RequeueSecretPolling}, nil
 	}
 
@@ -127,7 +126,7 @@ func (r *KeystoneReconciler) reconcileFernetKeys(ctx context.Context,
 		return ctrl.Result{}, fmt.Errorf("ensuring fernet rotation RBAC: %w", err)
 	}
 
-	// 5. Create the immutable ConfigMap containing the rotation script (CC-0073).
+	// 5. Create the immutable ConfigMap containing the rotation script.
 	scriptConfigMapName, err := config.CreateImmutableConfigMap(ctx, r.Client, r.Scheme, keystone,
 		fmt.Sprintf("%s-fernet-rotate-script", keystone.Name), keystone.Namespace,
 		map[string]string{"fernet_rotate.sh": fernetRotateScript})
@@ -161,7 +160,7 @@ func (r *KeystoneReconciler) reconcileFernetKeys(ctx context.Context,
 
 // ensureFernetRotationRBAC creates the ServiceAccount, Role, and RoleBinding
 // needed by the Fernet rotation CronJob. The Role is split into two
-// PolicyRules (CC-0081): read-only `get` on the production fernet keys Secret
+// PolicyRules read-only `get` on the production fernet keys Secret
 // and `get`+`patch` scoped to the dedicated staging Secret. The operator, not
 // the CronJob, writes the production Secret — removing the token-forgery
 // primitive from the CronJob's attack surface.
@@ -176,7 +175,7 @@ func (r *KeystoneReconciler) ensureFernetRotationRBAC(ctx context.Context, keyst
 		return fmt.Errorf("ensuring ServiceAccount %s: %w", saName, err)
 	}
 
-	// Role split into two PolicyRules (CC-0081):
+	// Role split into two PolicyRules
 	//   1. `get` on the production fernet keys Secret (read-only; operator owns writes).
 	//   2. `get`+`patch` on the staging Secret only; no `create`/`delete` because
 	//      the operator manages the staging Secret's lifecycle.
@@ -226,7 +225,7 @@ func (r *KeystoneReconciler) ensureFernetRotationRBAC(ctx context.Context, keyst
 }
 
 // ensureFernetStagingSecret ensures the Fernet staging Secret exists with the
-// `fernet-keys` rotation-target label (CC-0081). Thin wrapper over the shared
+// `fernet-keys` rotation-target label. Thin wrapper over the shared
 // ensureStagingSecret helper; see rotation_staging.go for the field-ownership
 // contract.
 func (r *KeystoneReconciler) ensureFernetStagingSecret(ctx context.Context, keystone *keystonev1alpha1.Keystone) error {
@@ -235,7 +234,7 @@ func (r *KeystoneReconciler) ensureFernetStagingSecret(ctx context.Context, keys
 
 // normalizedFernetMaxActiveKeys returns the effective maximum number of active
 // Fernet keys, applying a minimum floor of 3. The webhook defaults 0 to 3, but
-// this provides defense-in-depth for the reconciler (CC-0013).
+// this provides defense-in-depth for the reconciler.
 func normalizedFernetMaxActiveKeys(keystone *keystonev1alpha1.Keystone) int {
 	return max(int(keystone.Spec.Fernet.MaxActiveKeys), 3)
 }
@@ -276,7 +275,7 @@ func (r *KeystoneReconciler) createFernetKeysSecret(ctx context.Context,
 }
 
 // generateFernetKey generates a Fernet-compatible key (32 bytes, base64url-encoded with standard padding).
-// Keystone (via Python's cryptography.fernet.Fernet) expects 44-char base64url strings WITH padding (CC-0013).
+// Keystone (via Python's cryptography.fernet.Fernet) expects 44-char base64url strings WITH padding.
 func generateFernetKey() (string, error) {
 	key := make([]byte, 32)
 	if _, err := rand.Read(key); err != nil {
@@ -289,9 +288,9 @@ func generateFernetKey() (string, error) {
 // the result back to the Kubernetes Secret via the API. The CronJob:
 //  1. Mounts the existing fernet keys Secret as a read-only volume.
 //  2. Uses an init container to copy keys to a writable emptyDir.
-//  3. Mounts the rotation script from a versioned ConfigMap at /scripts/ (CC-0073).
+//  3. Mounts the rotation script from a versioned ConfigMap at /scripts/.
 //  4. Runs /scripts/fernet_rotate.sh against the emptyDir.
-//  5. Pushes the updated keys to the K8s API using the pod's ServiceAccount (CC-0013).
+//  5. Pushes the updated keys to the K8s API using the pod's ServiceAccount.
 func fernetRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName string, scriptConfigMapName string) *batchv1.CronJob {
 	secretName := fmt.Sprintf("%s-fernet-keys", keystone.Name)
 	stagingSecretName := fernetStagingSecretName(keystone)
@@ -323,7 +322,7 @@ func fernetRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName st
 							// project files as root:root mode 0o400 and the openstack process
 							// could not read them; upstream Keystone logs a "key_repository is
 							// world readable" WARNING via fernet_utils._check_key_repository
-							// for any default-mode (0o644) workaround (CC-0099).
+							// for any default-mode (0o644) workaround.
 							SecurityContext: &corev1.PodSecurityContext{FSGroup: ptr.To(openstackUID)},
 							InitContainers: []corev1.Container{{
 								Name:  "copy-keys",
@@ -331,7 +330,7 @@ func fernetRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName st
 								// `install -m 0400` materialises each key in the writable emptyDir
 								// at owner-read-only mode. A plain `cp` would inherit the kubelet
 								// emptyDir mode and re-introduce the world-readable directory that
-								// CC-0099 fixes for the rotation Pod.
+								// fixes for the rotation Pod.
 								Command:         []string{"sh", "-c", "install -m 0400 /fernet-keys-src/* /etc/keystone/fernet-keys/"},
 								SecurityContext: restrictedSecurityContext(),
 								VolumeMounts: []corev1.VolumeMount{
@@ -342,15 +341,15 @@ func fernetRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName st
 							Containers: []corev1.Container{{
 								Name:  "fernet-rotate",
 								Image: image,
-								// TODO(CC-0042): Wire spec.Resources (or a smaller Job-specific default) to
+								// TODO Wire spec.Resources (or a smaller Job-specific default) to
 								// this container. Currently runs as BestEffort QoS. See reconcile_deployment.go
-								// containerResources() for the pattern used by the keystone container (CC-0095).
+								// containerResources() for the pattern used by the keystone container.
 								Command:         []string{"/scripts/fernet_rotate.sh"},
 								SecurityContext: restrictedSecurityContext(),
 								Env: []corev1.EnvVar{
 									// SECRET_NAME points at the staging Secret — the CronJob SA
 									// is only permitted to patch the staging Secret, never the
-									// production Secret (CC-0081).
+									// production Secret.
 									{Name: "SECRET_NAME", Value: stagingSecretName},
 									{Name: "SECRET_NAMESPACE", ValueFrom: &corev1.EnvVarSource{
 										FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.namespace"},
@@ -358,14 +357,14 @@ func fernetRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName st
 									// oslo.config honours OS_<GROUP>__<KEY> env var overrides, so this
 									// takes precedence over the compiled-in default (3) without needing
 									// to mount the ConfigMap. Uses the normalized value to stay
-									// consistent with the Secret's minimum floor of 3 (CC-0013).
+									// consistent with the Secret's minimum floor of 3.
 									{
 										Name:  "OS_fernet_tokens__max_active_keys",
 										Value: strconv.Itoa(normalizedFernetMaxActiveKeys(keystone)),
 									},
 									// Override [database].connection via oslo.config env-var so the
 									// fernet-rotate CronJob reads the DB URL from the derived Secret
-									// instead of the ConfigMap (CC-0080, REQ-004).
+									// instead of the ConfigMap.
 									buildDBConnectionEnvVar(keystone),
 								},
 								VolumeMounts: []corev1.VolumeMount{
@@ -434,15 +433,13 @@ func fernetRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName st
 // The RemoteKey embeds both keystone.Namespace and keystone.Name as path
 // segments (kv-v2/openstack/keystone/{keystone.Namespace}/{keystone.Name}/fernet-keys)
 // so two Keystone CRs sharing a Name in different namespaces never share a
-// backing OpenBao object (CC-0093, REQ-001; namespace segment added in CC-0112,
-// REQ-004).
+// backing OpenBao object (namespace segment).
 //
 // DeletionPolicy=Delete wires the backup PushSecret into the OpenBao finalizer
 // flow: when the keystone.openstack.c5c3.io/openbao-finalizer handler deletes
 // this PushSecret, ESO purges the remote
 // kv-v2/openstack/keystone/{keystone.Namespace}/{keystone.Name}/fernet-keys
-// path before letting the PushSecret object be garbage-collected (CC-0079,
-// REQ-008).
+// path before letting the PushSecret object be garbage-collected.
 func fernetKeysPushSecret(keystone *keystonev1alpha1.Keystone) *esov1alpha1.PushSecret {
 	return &esov1alpha1.PushSecret{
 		ObjectMeta: metav1.ObjectMeta{
@@ -463,7 +460,7 @@ func fernetKeysPushSecret(keystone *keystonev1alpha1.Keystone) *esov1alpha1.Push
 			Data: []esov1alpha1.PushSecretData{{
 				Match: esov1alpha1.PushSecretMatch{
 					RemoteRef: esov1alpha1.PushSecretRemoteRef{
-						// DECISION: boundary 4 (CC-0112, REQ-004) — chose option (a), a keystone.Namespace
+						// DECISION: boundary 4 — chose option (a), a keystone.Namespace
 						// path segment, so two Keystone CRs with the same Name in different namespaces
 						// resolve to distinct OpenBao leaves. Reviewer: please verify.
 						RemoteKey: "openstack/keystone/" + keystone.Namespace + "/" + keystone.Name + "/fernet-keys",

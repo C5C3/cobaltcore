@@ -1,6 +1,6 @@
-# CC-0089, REQ-006: ServiceMonitor template unit tests.
+# ServiceMonitor template unit tests.
 #
-# DECISION: The CC-0089 task spec called for a Go test file
+# DECISION: The task spec called for a Go test file
 # (servicemonitor_test.go using helm template + sigs.k8s.io/yaml). All
 # existing tests/*_test.yaml files in this chart are helm-unittest, and CI
 # runs `helm unittest` per docs/reference/ci-workflow.md — no Go-based
@@ -13,12 +13,12 @@ suite: ServiceMonitor
 templates:
   - templates/servicemonitor.yaml
 tests:
-  - it: TestServiceMonitorOmittedByDefault — should not render when monitoring disabled (CC-0089, REQ-006)
+  - it: TestServiceMonitorOmittedByDefault — should not render when monitoring disabled
     asserts:
       - hasDocuments:
           count: 0
 
-  - it: TestServiceMonitorRenderedWhenEnabled — renders ServiceMonitor with correct fields (CC-0089, REQ-006)
+  - it: TestServiceMonitorRenderedWhenEnabled — renders ServiceMonitor with correct fields
     set:
       monitoring:
         serviceMonitor:
@@ -43,7 +43,7 @@ tests:
           path: spec.selector.matchLabels["app.kubernetes.io/name"]
           value: keystone-operator
 
-  - it: should honour a custom scrape interval (CC-0089, REQ-006)
+  - it: should honour a custom scrape interval
     set:
       monitoring:
         serviceMonitor:
@@ -56,8 +56,8 @@ tests:
 
   # Prometheus operator's `Duration` type accepts the literal "0" to mean
   # "use the global default scrape interval". The schema regex must allow
-  # this bare-zero form (CC-0089, I-002 review feedback).
-  - it: should accept "0" as the scrape interval (CC-0089, REQ-006, I-002)
+  # this bare-zero form (I-002 review feedback).
+  - it: should accept "0" as the scrape interval (I-002)
     set:
       monitoring:
         serviceMonitor:
@@ -68,7 +68,7 @@ tests:
           path: spec.endpoints[0].interval
           value: "0"
 
-  - it: TestValuesSchemaRejectsBadMonitoringInput — rejects non-duration interval (CC-0089, REQ-006)
+  - it: TestValuesSchemaRejectsBadMonitoringInput — rejects non-duration interval
     set:
       monitoring:
         serviceMonitor:
@@ -78,7 +78,7 @@ tests:
       - failedTemplate:
           errorPattern: "/monitoring/serviceMonitor/interval.*does not match pattern"
 
-  - it: should reject non-boolean monitoring.serviceMonitor.enabled (CC-0089, REQ-006)
+  - it: should reject non-boolean monitoring.serviceMonitor.enabled
     set:
       monitoring:
         serviceMonitor:
@@ -87,7 +87,7 @@ tests:
       - failedTemplate:
           errorPattern: "/monitoring/serviceMonitor/enabled.*got string, want boolean"
 
-  - it: should reject unknown property under monitoring.serviceMonitor (CC-0089, REQ-006)
+  - it: should reject unknown property under monitoring.serviceMonitor
     set:
       monitoring:
         serviceMonitor:

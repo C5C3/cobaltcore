@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Tests for the infrastructure sub-reconciler (CC-0110, REQ-008).
+// Tests for the infrastructure sub-reconciler.
 package controller
 
 import (

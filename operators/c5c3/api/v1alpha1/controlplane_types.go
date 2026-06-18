@@ -16,7 +16,7 @@ import (
 // +kubebuilder:printcolumn:name="Release",type="string",JSONPath=".spec.openStackRelease"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
-// ControlPlane is the Schema for the controlplanes API (CC-0110). It is the
+// ControlPlane is the Schema for the controlplanes API. It is the
 // top-level aggregate that projects an OpenStack control plane: it owns shared
 // infrastructure references (database, cache) and a curated set of service
 // specs (today: keystone) that the reconciler (L2) materializes into the
@@ -38,7 +38,7 @@ type ControlPlaneList struct {
 	Items           []ControlPlane `json:"items"`
 }
 
-// ControlPlaneSpec defines the desired state of a ControlPlane (CC-0110).
+// ControlPlaneSpec defines the desired state of a ControlPlane.
 type ControlPlaneSpec struct {
 	// OpenStackRelease is the OpenStack release the control plane targets,
 	// e.g. "2025.2". The reconciler (L2) projects this into each service CR's
@@ -48,7 +48,7 @@ type ControlPlaneSpec struct {
 	OpenStackRelease string `json:"openStackRelease"`
 
 	// Region is the OpenStack region name applied across the control plane.
-	// DECISION (CC-0110, plan decision #4): defaults to "RegionOne" via both the
+	// DECISION (plan decision #4): defaults to "RegionOne" via both the
 	// CRD schema default (normal admission path) and the defaulting webhook
 	// (callers that bypass the CRD default), mirroring BootstrapSpec.Region in the
 	// keystone operator.
@@ -77,7 +77,7 @@ type ControlPlaneSpec struct {
 }
 
 // InfrastructureSpec declares the shared backing services for the control
-// plane (CC-0110). Both fields reuse the canonical commonv1 shapes so the
+// plane. Both fields reuse the canonical commonv1 shapes so the
 // ControlPlane and the per-service CRs validate the database/cache the same
 // way.
 type InfrastructureSpec struct {
@@ -93,7 +93,7 @@ type InfrastructureSpec struct {
 }
 
 // ServicesSpec declares the per-service configuration of the control plane
-// (CC-0110). Today only Keystone is modeled; additional services are added as
+// Today only Keystone is modeled; additional services are added as
 // optional pointer fields as the operator grows.
 type ServicesSpec struct {
 	// Keystone configures the Keystone service projected by the reconciler.
@@ -101,10 +101,10 @@ type ServicesSpec struct {
 }
 
 // ServiceKeystoneSpec is a CURATED LOCAL subset of the knobs the ControlPlane
-// exposes for the Keystone service (CC-0110).
+// exposes for the Keystone service.
 //
-// DECISION (CC-0110, plan decision #2): this is intentionally NOT an import of
-// keystonev1alpha1.KeystoneSpec. Per REQ-009 the reconciler (L2) PROJECTS this
+// DECISION (plan decision #2): this is intentionally NOT an import of
+// keystonev1alpha1.KeystoneSpec. The reconciler (L2) PROJECTS this
 // struct into a Keystone CR; the database, cache, and Fernet rotation schedule
 // of that Keystone CR are DERIVED from the ControlPlane (infrastructure.* and
 // operator policy) rather than set by the user here. Keeping a curated subset
@@ -112,7 +112,7 @@ type ServicesSpec struct {
 // package free of a dependency on the keystone module (see DECISION on L2
 // dependency coordinates below).
 //
-// DECISION (CC-0110, plan decision #3 — L2 dependency coordinates): the L1 api
+// DECISION (plan decision #3 — L2 dependency coordinates): the L1 api
 // package imports ONLY commonv1, k8s.io/apimachinery/*, k8s.io/api/core/v1, and
 // sigs.k8s.io/controller-runtime/* (all already in go.mod). `go mod tidy`
 // therefore prunes any service-module require because nothing here imports
@@ -154,7 +154,7 @@ type ServiceKeystoneSpec struct {
 	// CR's spec.gateway so the keystone-operator attaches an HTTPRoute to the
 	// referenced Gateway.
 	//
-	// CC-0111: this is the shared commonv1.GatewaySpec — the curated local copy
+	// this is the shared commonv1.GatewaySpec — the curated local copy
 	// was consolidated into internal/common/types so both operators reuse one
 	// source of truth.
 	// +optional
@@ -173,7 +173,7 @@ type ServiceKeystoneSpec struct {
 }
 
 // KORCSpec configures the K-ORC (OpenStack Resource Controller) integration of
-// the control plane (CC-0110). It declares how the admin application credential
+// the control plane. It declares how the admin application credential
 // is bootstrapped and rotated and which bootstrap resources are reconciled.
 type KORCSpec struct {
 	// AdminCredential declares the admin OpenStack credential K-ORC uses to
@@ -182,7 +182,7 @@ type KORCSpec struct {
 }
 
 // AdminCredentialSpec declares the admin OpenStack credential and the
-// application-credential rotation policy for the control plane (CC-0110).
+// application-credential rotation policy for the control plane.
 type AdminCredentialSpec struct {
 	// CloudCredentialsRef references the clouds.yaml Secret K-ORC reads the
 	// admin cloud entry from.
@@ -205,10 +205,10 @@ type AdminCredentialSpec struct {
 }
 
 // CloudCredentialsRef references the clouds.yaml Secret and the cloud entry
-// within it that K-ORC authenticates as (CC-0110).
+// within it that K-ORC authenticates as.
 type CloudCredentialsRef struct {
 	// CloudName is the entry in clouds.yaml K-ORC authenticates as.
-	// DECISION (CC-0115): defaults to "admin" via both the CRD schema default and
+	// DECISION defaults to "admin" via both the CRD schema default and
 	// the defaulting webhook (for callers that bypass the CRD default), mirroring
 	// the sibling SecretName field. The webhook is the load-bearing mechanism when
 	// the whole korc block is omitted (the marker only fires when the parent
@@ -219,7 +219,7 @@ type CloudCredentialsRef struct {
 	CloudName string `json:"cloudName,omitempty"`
 
 	// SecretName is the name of the Secret holding the clouds.yaml document.
-	// DECISION (CC-0110): defaults to "k-orc-clouds-yaml" via both the CRD schema
+	// DECISION defaults to "k-orc-clouds-yaml" via both the CRD schema
 	// default and the defaulting webhook (for callers that bypass the CRD default),
 	// mirroring the region defaulting discipline.
 	// +kubebuilder:default="k-orc-clouds-yaml"
@@ -228,7 +228,7 @@ type CloudCredentialsRef struct {
 }
 
 // ApplicationCredentialSpec declares the K-ORC admin application-credential
-// policy (CC-0110).
+// policy.
 type ApplicationCredentialSpec struct {
 	// Restricted controls whether the application credential is unrestricted
 	// (able to create further application credentials) or restricted. Defaults
@@ -249,7 +249,7 @@ type ApplicationCredentialSpec struct {
 }
 
 // AccessRule narrows an application credential to a specific service endpoint
-// and method (CC-0110), mirroring the Keystone application-credential access
+// and method, mirroring the Keystone application-credential access
 // rule shape (service / method / path).
 type AccessRule struct {
 	// Service is the OpenStack service type the rule applies to (e.g. "compute").
@@ -263,7 +263,6 @@ type AccessRule struct {
 }
 
 // RotationMode selects how the K-ORC admin application credential is rotated
-// (CC-0110).
 // +kubebuilder:validation:Enum=PasswordDriven;Scheduled;Manual
 type RotationMode string
 
@@ -272,7 +271,7 @@ const (
 	// underlying admin password changes. This is the default.
 	RotationModePasswordDriven RotationMode = "PasswordDriven"
 	// RotationModeScheduled rotates the application credential on a schedule.
-	// DECISION (CC-0110): surfaced in the enum now so the CRD schema is stable,
+	// DECISION surfaced in the enum now so the CRD schema is stable,
 	// but the scheduled rotation logic is deferred to a later level.
 	RotationModeScheduled RotationMode = "Scheduled"
 	// RotationModeManual rotates only when a CredentialRotation CR requests it.
@@ -280,7 +279,7 @@ const (
 )
 
 // RotationSpec declares the rotation policy for the admin application
-// credential (CC-0110).
+// credential.
 type RotationSpec struct {
 	// Mode selects the rotation strategy. Defaults to PasswordDriven via both the
 	// CRD schema default and the defaulting webhook.
@@ -290,7 +289,7 @@ type RotationSpec struct {
 }
 
 // BootstrapResourceSpec declares an OpenStack resource K-ORC bootstraps with
-// the control plane (CC-0110). The shape is intentionally minimal at L1 — the
+// the control plane. The shape is intentionally minimal at L1 — the
 // reconciler (L2) interprets the kind/name and applies it.
 type BootstrapResourceSpec struct {
 	// Kind is the K-ORC resource kind to bootstrap (e.g. "Project", "Role").
@@ -300,9 +299,9 @@ type BootstrapResourceSpec struct {
 	Name string `json:"name"`
 }
 
-// UpdatePhase represents the current phase of a control-plane update (CC-0110).
+// UpdatePhase represents the current phase of a control-plane update.
 //
-// DECISION (CC-0110): the enum surfaces the FUTURE phases (UpdatingServices,
+// DECISION the enum surfaces the FUTURE phases (UpdatingServices,
 // Verifying, RollingBack) alongside the active ones so the CRD schema is stable
 // across levels and does not need a breaking change when the update state
 // machine is implemented. The phases marked "not yet implemented" below are
@@ -317,17 +316,17 @@ const (
 	// UpdatePhaseUpdating indicates a release update has started.
 	UpdatePhaseUpdating UpdatePhase = "Updating"
 	// UpdatePhaseUpdatingServices indicates per-service CRs are being updated.
-	// DECISION (CC-0110): reserved; not yet implemented.
+	// DECISION reserved; not yet implemented.
 	UpdatePhaseUpdatingServices UpdatePhase = "UpdatingServices"
 	// UpdatePhaseVerifying indicates the control plane is verifying an update.
-	// DECISION (CC-0110): reserved; not yet implemented.
+	// DECISION reserved; not yet implemented.
 	UpdatePhaseVerifying UpdatePhase = "Verifying"
 	// UpdatePhaseRollingBack indicates a failed update is being rolled back.
-	// DECISION (CC-0110): reserved; not yet implemented.
+	// DECISION reserved; not yet implemented.
 	UpdatePhaseRollingBack UpdatePhase = "RollingBack"
 )
 
-// ControlPlaneStatus defines the observed state of a ControlPlane (CC-0110).
+// ControlPlaneStatus defines the observed state of a ControlPlane.
 type ControlPlaneStatus struct {
 	// Conditions represent the latest available observations of the control
 	// plane state. Each condition carries an ObservedGeneration so consumers can
@@ -366,7 +365,7 @@ type ControlPlaneStatus struct {
 }
 
 // ServiceStatus reports the observed readiness of a single projected service
-// CR (CC-0110).
+// CR.
 type ServiceStatus struct {
 	// Ready reports whether the projected service CR is Ready.
 	Ready bool `json:"ready"`
@@ -377,7 +376,7 @@ type ServiceStatus struct {
 }
 
 // AdminApplicationCredentialStatus reports the observed state of the K-ORC
-// admin application credential (CC-0110).
+// admin application credential.
 type AdminApplicationCredentialStatus struct {
 	// ID is the OpenStack application-credential ID currently in use.
 	// +optional

@@ -4,7 +4,7 @@
 
 // Package controller — reconcileDBConnectionSecret materialises the database
 // connection URL into a derived Kubernetes Secret named
-// <keystone.Name>-db-connection (CC-0080, REQ-002, REQ-010).
+// <keystone.Name>-db-connection.
 //
 // The previous design embedded the password into the keystone.conf ConfigMap.
 // ConfigMaps lack encryption-at-rest and have weaker RBAC than Secrets, which
@@ -12,7 +12,7 @@
 // credentials Secret (synced by ESO) and writes the fully-formed pymysql URL
 // into a derived Secret. The Keystone container later consumes the URL via the
 // OS_DATABASE__CONNECTION env var (oslo.config OS_<GROUP>__<OPTION> override),
-// keeping the password out of the ConfigMap entirely. Per REQ-010 the derived
+// keeping the password out of the ConfigMap entirely. The derived
 // Secret is a plain corev1.Secret — no PushSecret or ExternalSecret is created.
 
 package controller
@@ -41,12 +41,10 @@ import (
 // reconciler that consumes it.
 const dbConnectionSecretKey = "connection"
 
-// Feature: CC-0106
-//
 // dbTLSMountPath is the in-pod directory where the db-tls Secret (the client
 // TLS keypair "<keystone.Name>-db-client") is projected; the ssl_ca/ssl_cert/
 // ssl_key DSN parameters reference files inside this directory so the keypair
-// bytes never enter the operator process (CC-0106, REQ-004, REQ-014). The
+// bytes never enter the operator process. The
 // matching VolumeMount is built by dbTLSVolumeAndMount in
 // reconcile_databasetls.go and consumes this constant via dbTLSPathsForMount /
 // the value directly, so the DSN consumer (this file) is the single source of
@@ -59,7 +57,7 @@ const dbConnectionSecretKey = "connection"
 // default keys cert-manager writes into the issued client Secret. If a future
 // task overrides cert-manager's secretTemplate keys, update these constants in
 // lockstep. Reviewer: please verify the chosen file names match the keys
-// produced by the CC-0106 task 3.1 Certificate.
+// produced by the task 3.1 Certificate.
 const (
 	dbTLSMountPath    = "/etc/keystone/db-tls/"
 	dbTLSCAFileName   = "ca.crt"
@@ -71,7 +69,6 @@ const (
 // ssl_ca/ssl_cert/ssl_key DSN parameters when the db-tls Secret is mounted at
 // dbTLSMountPath (declared in reconcile_databasetls.go). Centralising the path
 // layout here keeps the DSN assembly and the workload mount points in lockstep
-// (CC-0106, REQ-004, REQ-005).
 func dbTLSPathsForMount() dbTLSPaths {
 	return dbTLSPaths{
 		CA:   dbTLSMountPath + dbTLSCAFileName,
@@ -81,9 +78,9 @@ func dbTLSPathsForMount() dbTLSPaths {
 }
 
 // appendDBTLSParams merges the pymysql ssl_* DSN parameters into query when
-// spec.database.tls is enabled on the Keystone CR (CC-0106, REQ-003, REQ-004).
+// spec.database.tls is enabled on the Keystone CR.
 // It is a no-op when TLS is nil or .enabled is false, preserving the pre-
-// CC-0106 plaintext DSN. The mode is validated by modeToSSLParams; an unknown
+// plaintext DSN. The mode is validated by modeToSSLParams; an unknown
 // mode (which the webhook + CRD enum reject earlier) is surfaced as an error
 // rather than silently producing a partial DSN.
 func appendDBTLSParams(keystone *keystonev1alpha1.Keystone, query url.Values) error {
@@ -103,7 +100,7 @@ func appendDBTLSParams(keystone *keystonev1alpha1.Keystone, query url.Values) er
 
 // reconcileDBConnectionSecret derives the database connection URL from the
 // upstream credentials Secret and writes it to <keystone.Name>-db-connection
-// (CC-0080, REQ-002). When the upstream Secret or its required keys are
+// When the upstream Secret or its required keys are
 // missing it sets SecretsReady=False with reason WaitingForDBCredentials and
 // requeues; it never writes a derived Secret with empty credentials.
 func (r *KeystoneReconciler) reconcileDBConnectionSecret(ctx context.Context, keystone *keystonev1alpha1.Keystone) (ctrl.Result, error) {
@@ -157,7 +154,7 @@ func (r *KeystoneReconciler) reconcileDBConnectionSecret(ctx context.Context, ke
 	// component per RFC 3986, matching the encoding pymysql expects.
 	//
 	// Build the query parameters via url.Values so the optional ssl_* keys
-	// (CC-0106, REQ-003, REQ-004) compose cleanly with the always-present
+	// compose cleanly with the always-present
 	// charset=utf8. url.Values.Encode() sorts keys lexically, yielding a
 	// deterministic, stable DSN across reconciles.
 	query := url.Values{}
@@ -214,7 +211,7 @@ func (r *KeystoneReconciler) reconcileDBConnectionSecret(ctx context.Context, ke
 			derivedKey.Namespace, derivedKey.Name, err)
 	}
 
-	// Per REQ-002 scenario 2 the derived Secret must contain exactly the one
+	// Per scenario 2 the derived Secret must contain exactly the one
 	// "connection" key; replace Data wholesale on any drift (value change OR
 	// extra keys present).
 	current, ok := existing.Data[dbConnectionSecretKey]

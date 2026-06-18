@@ -1,4 +1,4 @@
-# CC-0041, REQ-007: ClusterRole RBAC rules unit tests.
+# ClusterRole RBAC rules unit tests.
 suite: ClusterRole
 templates:
   - templates/clusterrole.yaml
@@ -105,7 +105,7 @@ tests:
               - create
               - patch
 
-  - it: should grant read-only on pods for policy validation error extraction (CC-0058)
+  - it: should grant read-only on pods for policy validation error extraction
     asserts:
       - contains:
           path: rules
@@ -171,7 +171,7 @@ tests:
               - list
               - watch
 
-  - it: should grant full CRUD on cert-manager certificates (CC-0106)
+  - it: should grant full CRUD on cert-manager certificates
     asserts:
       - contains:
           path: rules
@@ -189,7 +189,7 @@ tests:
               - patch
               - delete
 
-  - it: should grant CRUD without delete on externalsecrets (CC-0079)
+  - it: should grant CRUD without delete on externalsecrets
     asserts:
       - contains:
           path: rules
@@ -206,7 +206,7 @@ tests:
               - update
               - patch
 
-  - it: should grant full CRUD on pushsecrets (CC-0079)
+  - it: should grant full CRUD on pushsecrets
     asserts:
       - contains:
           path: rules
@@ -311,7 +311,7 @@ tests:
               - patch
               - delete
 
-  - it: should grant full CRUD on httproutes (CC-0065)
+  - it: should grant full CRUD on httproutes
     asserts:
       - contains:
           path: rules
@@ -329,7 +329,7 @@ tests:
               - patch
               - delete
 
-  - it: should grant read-only on httproutes/status (CC-0065)
+  - it: should grant read-only on httproutes/status
     asserts:
       - contains:
           path: rules
@@ -341,7 +341,7 @@ tests:
             verbs:
               - get
 
-  - it: should grant read-only on priorityclasses for webhook validation (CC-0075)
+  - it: should grant read-only on priorityclasses for webhook validation
     asserts:
       - contains:
           path: rules
@@ -373,7 +373,7 @@ tests:
               - patch
               - delete
 
-  # CC-0043: ClusterRole must not render in namespace-scoped mode.
+  # ClusterRole must not render in namespace-scoped mode.
   - it: should not render ClusterRole when rbac.namespaceScoped is true
     set:
       rbac:

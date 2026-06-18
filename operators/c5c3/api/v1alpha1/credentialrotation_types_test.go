@@ -25,7 +25,7 @@ func TestSchemeBuilderRegistersCredentialRotation(t *testing.T) {
 }
 
 // TestCredentialRotationSpecDeferredFields verifies the deferred scheduled
-// fields are optional pointers that round-trip through DeepCopy (CC-0110).
+// fields are optional pointers that round-trip through DeepCopy.
 func TestCredentialRotationSpecDeferredFields(t *testing.T) {
 	interval := int32(90)
 	pre := int32(7)

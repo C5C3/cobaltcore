@@ -1,20 +1,20 @@
-# CC-0069: Values schema validation unit tests.
+# Values schema validation unit tests.
 # Verifies that values.schema.json correctly rejects invalid inputs.
 suite: Values Schema Validation
 templates:
   - templates/deployment.yaml
 tests:
   # ---------------------------------------------------------------------------
-  # REQ-001, REQ-002: Type constraints
+  # Type constraints
   # ---------------------------------------------------------------------------
-  - it: should reject non-integer replicas (REQ-002)
+  - it: should reject non-integer replicas
     set:
       replicas: "notanumber"
     asserts:
       - failedTemplate:
           errorPattern: "/replicas.*got string, want integer"
 
-  - it: should reject non-string image.repository (REQ-002)
+  - it: should reject non-string image.repository
     set:
       image:
         repository: 123
@@ -22,7 +22,7 @@ tests:
       - failedTemplate:
           errorPattern: "/image/repository.*got number, want string"
 
-  - it: should reject non-string image.tag (REQ-002)
+  - it: should reject non-string image.tag
     set:
       image:
         tag: true
@@ -30,7 +30,7 @@ tests:
       - failedTemplate:
           errorPattern: "/image/tag.*want string"
 
-  - it: should reject non-boolean leaderElection.enabled (REQ-002)
+  - it: should reject non-boolean leaderElection.enabled
     set:
       leaderElection:
         enabled: "yes"
@@ -38,7 +38,7 @@ tests:
       - failedTemplate:
           errorPattern: "/leaderElection/enabled.*got string, want boolean"
 
-  - it: should reject non-boolean webhook.enabled (REQ-002)
+  - it: should reject non-boolean webhook.enabled
     set:
       webhook:
         enabled: 42
@@ -46,7 +46,7 @@ tests:
       - failedTemplate:
           errorPattern: "/webhook/enabled.*got number, want boolean"
 
-  - it: should reject non-boolean serviceAccount.create (REQ-002)
+  - it: should reject non-boolean serviceAccount.create
     set:
       serviceAccount:
         create: "yes"
@@ -54,7 +54,7 @@ tests:
       - failedTemplate:
           errorPattern: "/serviceAccount/create.*got string, want boolean"
 
-  - it: should reject non-boolean rbac.namespaceScoped (REQ-002)
+  - it: should reject non-boolean rbac.namespaceScoped
     set:
       rbac:
         namespaceScoped: "true"
@@ -62,21 +62,21 @@ tests:
       - failedTemplate:
           errorPattern: "/rbac/namespaceScoped.*got string, want boolean"
 
-  - it: should reject non-string nameOverride (REQ-002)
+  - it: should reject non-string nameOverride
     set:
       nameOverride: 42
     asserts:
       - failedTemplate:
           errorPattern: "/nameOverride.*got number, want string"
 
-  - it: should reject non-string fullnameOverride (REQ-002)
+  - it: should reject non-string fullnameOverride
     set:
       fullnameOverride: true
     asserts:
       - failedTemplate:
           errorPattern: "/fullnameOverride.*want string"
 
-  - it: should reject non-integer metrics.port (REQ-002)
+  - it: should reject non-integer metrics.port
     set:
       metrics:
         port: "http"
@@ -85,9 +85,9 @@ tests:
           errorPattern: "/metrics/port.*got string, want integer"
 
   # ---------------------------------------------------------------------------
-  # REQ-003: Enum constraints
+  # Enum constraints
   # ---------------------------------------------------------------------------
-  - it: should reject invalid image.pullPolicy enum value (REQ-003)
+  - it: should reject invalid image.pullPolicy enum value
     set:
       image:
         pullPolicy: InvalidPolicy
@@ -96,16 +96,16 @@ tests:
           errorPattern: "/image/pullPolicy.*must be one of"
 
   # ---------------------------------------------------------------------------
-  # REQ-004: Minimum/maximum constraints
+  # Minimum/maximum constraints
   # ---------------------------------------------------------------------------
-  - it: should reject replicas below minimum of 1 (REQ-004)
+  - it: should reject replicas below minimum of 1
     set:
       replicas: 0
     asserts:
       - failedTemplate:
           errorPattern: "/replicas.*minimum.*got 0, want 1"
 
-  - it: should reject metrics.port below minimum of 1 (REQ-004)
+  - it: should reject metrics.port below minimum of 1
     set:
       metrics:
         port: 0
@@ -113,7 +113,7 @@ tests:
       - failedTemplate:
           errorPattern: "/metrics/port.*minimum.*got 0, want 1"
 
-  - it: should reject metrics.port above maximum of 65535 (REQ-004)
+  - it: should reject metrics.port above maximum of 65535
     set:
       metrics:
         port: 65536
@@ -122,16 +122,16 @@ tests:
           errorPattern: "/metrics/port.*maximum.*got 65.536, want 65.535"
 
   # ---------------------------------------------------------------------------
-  # REQ-008: additionalProperties: false
+  # additionalProperties: false
   # ---------------------------------------------------------------------------
-  - it: should reject unknown top-level property (REQ-008)
+  - it: should reject unknown top-level property
     set:
       unknownField: true
     asserts:
       - failedTemplate:
           errorPattern: "additional properties.*not allowed"
 
-  - it: should reject unknown property in image (REQ-008)
+  - it: should reject unknown property in image
     set:
       image:
         digest: "sha256:abc"
@@ -139,7 +139,7 @@ tests:
       - failedTemplate:
           errorPattern: "/image.*additional properties.*not allowed"
 
-  - it: should reject unknown property in resources (REQ-008)
+  - it: should reject unknown property in resources
     set:
       resources:
         gpu: 1
@@ -147,7 +147,7 @@ tests:
       - failedTemplate:
           errorPattern: "/resources.*additional properties.*not allowed"
 
-  - it: should reject unknown property in resources.limits (REQ-008)
+  - it: should reject unknown property in resources.limits
     set:
       resources:
         limits:
@@ -156,7 +156,7 @@ tests:
       - failedTemplate:
           errorPattern: "/resources/limits.*additional properties.*not allowed"
 
-  - it: should reject unknown property in metrics (REQ-008)
+  - it: should reject unknown property in metrics
     set:
       metrics:
         enabled: true
@@ -164,7 +164,7 @@ tests:
       - failedTemplate:
           errorPattern: "/metrics.*additional properties.*not allowed"
 
-  - it: should reject unknown property in leaderElection (REQ-008)
+  - it: should reject unknown property in leaderElection
     set:
       leaderElection:
         leaseDuration: "15s"
@@ -172,7 +172,7 @@ tests:
       - failedTemplate:
           errorPattern: "/leaderElection.*additional properties.*not allowed"
 
-  - it: should reject unknown property in serviceAccount (REQ-008)
+  - it: should reject unknown property in serviceAccount
     set:
       serviceAccount:
         annotations: {}
@@ -180,7 +180,7 @@ tests:
       - failedTemplate:
           errorPattern: "/serviceAccount.*additional properties.*not allowed"
 
-  - it: should reject unknown property in rbac (REQ-008)
+  - it: should reject unknown property in rbac
     set:
       rbac:
         extraField: true
@@ -188,7 +188,7 @@ tests:
       - failedTemplate:
           errorPattern: "/rbac.*additional properties.*not allowed"
 
-  - it: should reject unknown property in webhook (REQ-008)
+  - it: should reject unknown property in webhook
     set:
       webhook:
         port: 9443
@@ -196,7 +196,7 @@ tests:
       - failedTemplate:
           errorPattern: "/webhook.*additional properties.*not allowed"
 
-  - it: should reject unknown property in resources.requests (REQ-008)
+  - it: should reject unknown property in resources.requests
     set:
       resources:
         requests:
@@ -206,9 +206,9 @@ tests:
           errorPattern: "/resources/requests.*additional properties.*not allowed"
 
   # ---------------------------------------------------------------------------
-  # REQ-009: Resource quantity pattern validation
+  # Resource quantity pattern validation
   # ---------------------------------------------------------------------------
-  - it: should reject invalid CPU resource format (REQ-009)
+  - it: should reject invalid CPU resource format
     set:
       resources:
         limits:
@@ -217,7 +217,7 @@ tests:
       - failedTemplate:
           errorPattern: "/resources/limits/cpu.*does not match pattern"
 
-  - it: should reject invalid memory resource format (REQ-009)
+  - it: should reject invalid memory resource format
     set:
       resources:
         limits:
@@ -226,7 +226,7 @@ tests:
       - failedTemplate:
           errorPattern: "/resources/limits/memory.*does not match pattern"
 
-  - it: should reject negative CPU resource quantity (REQ-009)
+  - it: should reject negative CPU resource quantity
     set:
       resources:
         limits:
@@ -235,7 +235,7 @@ tests:
       - failedTemplate:
           errorPattern: "/resources/limits/cpu.*minimum.*got -1, want 0"
 
-  - it: should reject invalid request CPU format (REQ-009)
+  - it: should reject invalid request CPU format
     set:
       resources:
         requests:
@@ -244,7 +244,7 @@ tests:
       - failedTemplate:
           errorPattern: "/resources/requests/cpu.*does not match pattern"
 
-  - it: should reject invalid request memory format (REQ-009)
+  - it: should reject invalid request memory format
     set:
       resources:
         requests:
@@ -253,7 +253,7 @@ tests:
       - failedTemplate:
           errorPattern: "/resources/requests/memory.*does not match pattern"
 
-  - it: should reject exponent combined with SI suffix in CPU (REQ-009)
+  - it: should reject exponent combined with SI suffix in CPU
     set:
       resources:
         limits:
@@ -262,7 +262,7 @@ tests:
       - failedTemplate:
           errorPattern: "/resources/limits/cpu.*does not match pattern"
 
-  - it: should reject exponent combined with binary suffix in memory (REQ-009)
+  - it: should reject exponent combined with binary suffix in memory
     set:
       resources:
         limits:
@@ -272,9 +272,9 @@ tests:
           errorPattern: "/resources/limits/memory.*does not match pattern"
 
   # ---------------------------------------------------------------------------
-  # REQ-010: Conditional constraint — namespaceScoped requires webhook disabled
+  # Conditional constraint — namespaceScoped requires webhook disabled
   # ---------------------------------------------------------------------------
-  - it: should reject rbac.namespaceScoped=true when webhook.enabled is true (REQ-010)
+  - it: should reject rbac.namespaceScoped=true when webhook.enabled is true
     set:
       rbac:
         namespaceScoped: true
@@ -285,16 +285,16 @@ tests:
           errorPattern: "webhook/enabled"
 
   # ---------------------------------------------------------------------------
-  # Positive tests: valid non-default values pass schema validation (CC-0069)
+  # Positive tests: valid non-default values pass schema validation
   # ---------------------------------------------------------------------------
-  - it: should accept custom replicas (CC-0069)
+  - it: should accept custom replicas
     set:
       replicas: 5
     asserts:
       - isKind:
           of: Deployment
 
-  - it: should accept custom metrics port (CC-0069)
+  - it: should accept custom metrics port
     set:
       metrics:
         port: 9090
@@ -302,7 +302,7 @@ tests:
       - isKind:
           of: Deployment
 
-  - it: should accept string resource quantities (CC-0069)
+  - it: should accept string resource quantities
     set:
       resources:
         limits:
@@ -312,7 +312,7 @@ tests:
       - isKind:
           of: Deployment
 
-  - it: should accept numeric resource quantities (CC-0069)
+  - it: should accept numeric resource quantities
     set:
       resources:
         limits:
@@ -321,7 +321,7 @@ tests:
       - isKind:
           of: Deployment
 
-  - it: should accept exponent-only resource quantity (CC-0069)
+  - it: should accept exponent-only resource quantity
     set:
       resources:
         limits:
@@ -330,7 +330,7 @@ tests:
       - isKind:
           of: Deployment
 
-  - it: should accept rbac.namespaceScoped=true when webhook.enabled is false (CC-0069)
+  - it: should accept rbac.namespaceScoped=true when webhook.enabled is false
     set:
       rbac:
         namespaceScoped: true
@@ -341,9 +341,9 @@ tests:
           of: Deployment
 
   # ---------------------------------------------------------------------------
-  # CC-0090, REQ-005: networkPolicy schema constraints
+  # networkPolicy schema constraints
   # ---------------------------------------------------------------------------
-  - it: should reject non-boolean networkPolicy.enabled (CC-0090, REQ-005)
+  - it: should reject non-boolean networkPolicy.enabled
     set:
       networkPolicy:
         enabled: "yes"
@@ -351,7 +351,7 @@ tests:
       - failedTemplate:
           errorPattern: "networkPolicy/enabled.*want boolean"
 
-  - it: should reject invalid CIDR in networkPolicy.kubeApiServer.cidrs (CC-0090, REQ-005)
+  - it: should reject invalid CIDR in networkPolicy.kubeApiServer.cidrs
     set:
       networkPolicy:
         enabled: true
@@ -363,7 +363,7 @@ tests:
       - failedTemplate:
           errorPattern: "networkPolicy/kubeApiServer/cidrs.*does not match pattern"
 
-  - it: should reject CIDR with out-of-range prefix length (CC-0090, REQ-005)
+  - it: should reject CIDR with out-of-range prefix length
     set:
       networkPolicy:
         enabled: true
@@ -375,7 +375,7 @@ tests:
       - failedTemplate:
           errorPattern: "networkPolicy/kubeApiServer/cidrs.*does not match pattern"
 
-  - it: should reject kube-apiserver port above maximum of 65535 (CC-0090, REQ-005)
+  - it: should reject kube-apiserver port above maximum of 65535
     set:
       networkPolicy:
         enabled: true
@@ -386,7 +386,7 @@ tests:
       - failedTemplate:
           errorPattern: "networkPolicy/kubeApiServer/ports.*maximum"
 
-  - it: should reject kube-apiserver port below minimum of 1 (CC-0090, REQ-005)
+  - it: should reject kube-apiserver port below minimum of 1
     set:
       networkPolicy:
         enabled: true
@@ -397,7 +397,7 @@ tests:
       - failedTemplate:
           errorPattern: "networkPolicy/kubeApiServer/ports.*minimum"
 
-  - it: should reject networkPolicy.enabled=true with empty cidrs (CC-0090, REQ-005, REQ-006)
+  - it: should reject networkPolicy.enabled=true with empty cidrs
     set:
       networkPolicy:
         enabled: true
@@ -408,7 +408,7 @@ tests:
       - failedTemplate:
           errorPattern: "cidrs"
 
-  - it: should reject networkPolicy.enabled=true with empty ports (CC-0090, REQ-005, REQ-006)
+  - it: should reject networkPolicy.enabled=true with empty ports
     set:
       networkPolicy:
         enabled: true
@@ -419,7 +419,7 @@ tests:
       - failedTemplate:
           errorPattern: "ports"
 
-  - it: should reject unknown property in networkPolicy (CC-0090, REQ-005)
+  - it: should reject unknown property in networkPolicy
     set:
       networkPolicy:
         unknownField: true
@@ -436,7 +436,7 @@ tests:
   # empty and the schema constraint never fires. The guard still matters for a
   # future maintainer who changes the values.yaml default to `{}`.
 
-  - it: should reject CIDR with out-of-range IPv4 octet (CC-0090, REQ-005)
+  - it: should reject CIDR with out-of-range IPv4 octet
     set:
       networkPolicy:
         enabled: true
@@ -448,7 +448,7 @@ tests:
       - failedTemplate:
           errorPattern: "networkPolicy/kubeApiServer/cidrs.*does not match pattern"
 
-  - it: should accept a fully configured networkPolicy (CC-0090, REQ-005)
+  - it: should accept a fully configured networkPolicy
     set:
       networkPolicy:
         enabled: true

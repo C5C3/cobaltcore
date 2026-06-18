@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Tests for the K-ORC admin-application-credential chain sub-reconcilers
-// (CC-0110, REQ-010, REQ-011, REQ-012, REQ-014): reconcileKORC,
+// reconcileKORC,
 // reconcileAdminCredential, reconcileCatalog.
 package controller
 
@@ -227,7 +227,7 @@ func TestReconcileKORC_OwnerRefAndCloudCredsAndManagementPolicy(t *testing.T) {
 
 	// SecretRef points at the operator-owned minted-credential Secret.
 	g.Expect(string(ac.Spec.Resource.SecretRef)).To(Equal(adminAppCredentialSecretName(cp)))
-	// UserRef is the cp.Name-scoped K-ORC User name (CC-0112, REQ-003).
+	// UserRef is the cp.Name-scoped K-ORC User name.
 	g.Expect(string(ac.Spec.Resource.UserRef)).To(Equal("cp-user-admin"))
 }
 
@@ -353,7 +353,7 @@ func TestReconcileKORC_WaitsForAdminPassword(t *testing.T) {
 
 // TestReadAdminPassword_ManagedReadsOperatorOwnedSecret proves that in managed
 // mode (Database.ClusterRef != nil) readAdminPassword resolves the EFFECTIVE ref
-// (CC-0117, REQ-005) — the operator-owned per-ControlPlane Secret
+// — the operator-owned per-ControlPlane Secret
 // adminPasswordSecretName(cp) — and NOT the user's spec PasswordSecretRef
 // ("keystone-admin").
 func TestReadAdminPassword_ManagedReadsOperatorOwnedSecret(t *testing.T) {
@@ -395,7 +395,7 @@ func TestReconcileAdminCredential_GatedOnKORC(t *testing.T) {
 }
 
 // TestReconcileKORC_FreshClusterSeedsCloudsYamlAndCreatesPushSecretAndExternalSecret
-// is the reworked fresh-cluster bootstrap test (CC-0114, REQ-003, REQ-009). It
+// is the reworked fresh-cluster bootstrap test. It
 // REPLACES TestReconcileAdminCredential_FreshClusterWithoutCloudsYamlSeedDoesNotPush,
 // which asserted the OLD deadlock ("no PushSecret may be created while the
 // clouds.yaml ExternalSecret is unseeded"). The operator now OWNS that seed, so the
@@ -443,7 +443,7 @@ func TestReconcileKORC_FreshClusterSeedsCloudsYamlAndCreatesPushSecretAndExterna
 
 // TestReconcileKORC_PushSecretRemoteKeyMatchesPerCRPath locks in that the
 // operator-created backup PushSecret targets the OpenBao ClusterSecretStore and the
-// per-CR remote key the matching ExternalSecret reads (CC-0114, REQ-003).
+// per-CR remote key the matching ExternalSecret reads.
 func TestReconcileKORC_PushSecretRemoteKeyMatchesPerCRPath(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -467,7 +467,7 @@ func TestReconcileKORC_PushSecretRemoteKeyMatchesPerCRPath(t *testing.T) {
 
 // TestReconcileKORC_FreshClusterSeedsPasswordCloudsYaml asserts the seeded
 // clouds.yaml is the PASSWORD-based document (username/password keys), NOT a minted
-// application-credential document (CC-0114, REQ-009).
+// application-credential document.
 func TestReconcileKORC_FreshClusterSeedsPasswordCloudsYaml(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -575,7 +575,7 @@ func TestReconcileAdminCredential_PushSecretBuiltAndReady(t *testing.T) {
 }
 
 // TestAdminAppCredentialRemoteKeyFor_EmbedsNamespaceAndName locks in the per-CR
-// OpenBao path (CC-0112, REQ-001): the RemoteKey is scoped by both the
+// OpenBao path the RemoteKey is scoped by both the
 // ControlPlane's Namespace and Name so two ControlPlanes never clobber each
 // other's admin credential on the cluster-global OpenBao backend, and neither
 // reuses the legacy flat single-AC path.
@@ -813,7 +813,7 @@ func TestReconcileKORC_HashMatchNoRemint(t *testing.T) {
 	// Beyond the no-churn ResourceVersion check, assert the AC ResourceSpec itself
 	// is byte-for-byte unchanged so a future spurious mutation (e.g. re-deriving
 	// UserRef/SecretRef differently) is caught even if it happened to keep the
-	// ResourceVersion stable (CC-0110, TE7 full-mutation-cycle).
+	// ResourceVersion stable (TE7 full-mutation-cycle).
 	g.Expect(*ac2.Spec.Resource).To(Equal(specBefore),
 		"hash match must not otherwise mutate the ApplicationCredential ResourceSpec")
 }
@@ -1139,7 +1139,7 @@ func setAdminCredentialReady(cp *c5c3v1alpha1.ControlPlane) {
 // readyCloudsYamlES builds a Ready k-orc-clouds-yaml ExternalSecret in the SAME
 // namespace as the K-ORC resource CRs (childNamespace(cp)) under the spec's
 // CloudCredentialsRef.SecretName, mirroring the C1 co-location the reconciler
-// gate now resolves against (CC-0110).
+// gate now resolves against.
 func readyCloudsYamlES(cp *c5c3v1alpha1.ControlPlane) *esov1.ExternalSecret {
 	name := cp.Spec.KORC.AdminCredential.CloudCredentialsRef.SecretName
 	if name == "" {
@@ -1225,7 +1225,7 @@ func TestEnsureKORCAdminImports_CreatesUnmanagedUserAndDomain(t *testing.T) {
 	g.Expect(c.Get(context.Background(), types.NamespacedName{
 		Name: adminUserRef(cp), Namespace: childNamespace(cp),
 	}, &user)).To(Succeed())
-	// The User CR name is cp.Name-scoped (CC-0112, REQ-003) so two ControlPlanes
+	// The User CR name is cp.Name-scoped so two ControlPlanes
 	// in one namespace produce distinct User objects.
 	g.Expect(user.Name).To(Equal(cp.Name + "-user-admin"))
 	g.Expect(user.Spec.ManagementPolicy).To(Equal(orcv1alpha1.ManagementPolicyUnmanaged))
@@ -1239,7 +1239,7 @@ func TestEnsureKORCAdminImports_CreatesUnmanagedUserAndDomain(t *testing.T) {
 }
 
 // TestAdminUserRef_IsControlPlaneScoped locks in that the K-ORC User CR name the
-// admin ApplicationCredential references is scoped by cp.Name (CC-0112, REQ-003),
+// admin ApplicationCredential references is scoped by cp.Name,
 // mirroring adminDomainRef, so two ControlPlanes never collide on a shared "admin"
 // User name — and that it no longer returns the bare OpenStack username.
 func TestAdminUserRef_IsControlPlaneScoped(t *testing.T) {
@@ -1301,11 +1301,11 @@ func TestReconcileAdminCredential_WaitsForPushSecretSync(t *testing.T) {
 	g.Expect(cond.Reason).To(Equal("WaitingForPushSecret"))
 }
 
-// --- CC-0114: seedBootstrapCloudsYAML (write-if-empty bootstrap clouds.yaml) ---
+// --- seedBootstrapCloudsYAML (write-if-empty bootstrap clouds.yaml) ---
 
 // TestSeedBootstrapCloudsYAML_WritesWhenCloudsYamlKeyEmpty asserts the seed writes
 // the password-based clouds.yaml into the app-credential Secret's clouds.yaml key
-// when that key is empty, leaving the "value" key untouched (CC-0114, REQ-001).
+// when that key is empty, leaving the "value" key untouched.
 func TestSeedBootstrapCloudsYAML_WritesWhenCloudsYamlKeyEmpty(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -1331,7 +1331,7 @@ func TestSeedBootstrapCloudsYAML_WritesWhenCloudsYamlKeyEmpty(t *testing.T) {
 
 // TestSeedBootstrapCloudsYAML_DoesNotOverwriteMintedCloudsYaml asserts write-if-empty:
 // when clouds.yaml already holds a minted credential-based document, the seed leaves
-// it byte-for-byte unchanged (CC-0114, REQ-001, REQ-005).
+// it byte-for-byte unchanged.
 func TestSeedBootstrapCloudsYAML_DoesNotOverwriteMintedCloudsYaml(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -1361,7 +1361,6 @@ func TestSeedBootstrapCloudsYAML_DoesNotOverwriteMintedCloudsYaml(t *testing.T) 
 // TestSeedBootstrapCloudsYAML_RepopulatesAfterReMintDeletesKey asserts that after a
 // re-mint dropped the clouds.yaml key (regenerateAppCredentialSecretValue), the seed
 // re-writes the password-based clouds.yaml, bridging the re-authentication gap
-// (CC-0114, REQ-001).
 func TestSeedBootstrapCloudsYAML_RepopulatesAfterReMintDeletesKey(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -1413,7 +1412,7 @@ func defaultNamedControlPlane() *c5c3v1alpha1.ControlPlane {
 
 // TestSeedBootstrapCloudsYAML_RenderedDocumentParsesWithInternalEndpointAndProjectedAuthURL
 // parses the SEEDED clouds.yaml (not the format-string input) and asserts the
-// in-cluster identity endpoint type and the projected per-CR auth_url (CC-0114, REQ-004).
+// in-cluster identity endpoint type and the projected per-CR auth_url.
 func TestSeedBootstrapCloudsYAML_RenderedDocumentParsesWithInternalEndpointAndProjectedAuthURL(t *testing.T) {
 	type cloudAuth struct {
 		AuthURL string `json:"auth_url"`
@@ -1457,7 +1456,7 @@ func TestSeedBootstrapCloudsYAML_RenderedDocumentParsesWithInternalEndpointAndPr
 
 // TestSeedBootstrapCloudsYAML_UsesEndpointTypeKeyNotInterface asserts the rendered
 // cloud uses the "endpoint_type" key (which K-ORC's scope builder honours) and NOT
-// an "interface" key (which it drops) — boundary 2 (CC-0114, REQ-004).
+// an "interface" key (which it drops) — boundary 2.
 func TestSeedBootstrapCloudsYAML_UsesEndpointTypeKeyNotInterface(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -1470,12 +1469,12 @@ func TestSeedBootstrapCloudsYAML_UsesEndpointTypeKeyNotInterface(t *testing.T) {
 	g.Expect(cloud["endpoint_type"]).To(Equal("internal"))
 }
 
-// --- CC-0114: ensureKORCCloudsYAMLExternalSecret (per-CR operator-owned ES) ---
+// --- ensureKORCCloudsYAMLExternalSecret (per-CR operator-owned ES) ---
 
 // TestEnsureKORCCloudsYAMLExternalSecret_ShapeAndOwnerRef asserts the operator-owned
 // per-CR ExternalSecret has the OpenBao ClusterSecretStore, Owner creation policy, a
 // single clouds.yaml data entry reading the per-CR remote key, and a controller
-// owner reference to the ControlPlane (CC-0114, REQ-002).
+// owner reference to the ControlPlane.
 func TestEnsureKORCCloudsYAMLExternalSecret_ShapeAndOwnerRef(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -1508,7 +1507,7 @@ func TestEnsureKORCCloudsYAMLExternalSecret_ShapeAndOwnerRef(t *testing.T) {
 
 // TestEnsureKORCCloudsYAMLExternalSecret_PerCRRemoteKeyForNonDefaultName asserts the
 // remote key tracks an arbitrary CR name/namespace, so a non-default ControlPlane
-// resolves to the correct OpenBao path with no manifest edit (CC-0114, REQ-002).
+// resolves to the correct OpenBao path with no manifest edit.
 func TestEnsureKORCCloudsYAMLExternalSecret_PerCRRemoteKeyForNonDefaultName(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -1531,7 +1530,7 @@ func TestEnsureKORCCloudsYAMLExternalSecret_PerCRRemoteKeyForNonDefaultName(t *t
 }
 
 // TestEnsureKORCCloudsYAMLExternalSecret_IdempotentNoChurn asserts a second pass over
-// an unchanged spec does not bump the ExternalSecret's ResourceVersion (CC-0114, REQ-002).
+// an unchanged spec does not bump the ExternalSecret's ResourceVersion.
 func TestEnsureKORCCloudsYAMLExternalSecret_IdempotentNoChurn(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -1553,12 +1552,11 @@ func TestEnsureKORCCloudsYAMLExternalSecret_IdempotentNoChurn(t *testing.T) {
 		"an unchanged ExternalSecret spec must not churn on re-reconcile")
 }
 
-// --- CC-0114: reconcileKORC edge cases around the seed steps ---
+// --- reconcileKORC edge cases around the seed steps ---
 
 // TestReconcileKORC_DefersBeforeSeedWhenAdminPasswordMissing asserts that with no
 // admin-password Secret, reconcileKORC defers with WaitingForAdminPassword BEFORE the
 // seed steps run — so neither the PushSecret nor the ExternalSecret is created
-// (CC-0114, REQ-003).
 func TestReconcileKORC_DefersBeforeSeedWhenAdminPasswordMissing(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -1596,7 +1594,6 @@ func TestReconcileKORC_DefersBeforeSeedWhenAdminPasswordMissing(t *testing.T) {
 // reconcileKORC pass over a Secret whose clouds.yaml already holds the minted
 // credential-based document leaves it unchanged (still contains
 // application_credential_id) and does not churn the Secret via the seed
-// (CC-0114, REQ-005).
 func TestReconcileKORC_SteadyStateDoesNotOverwriteMintedCloudsYaml(t *testing.T) {
 	g := NewGomegaWithT(t)
 

@@ -60,7 +60,7 @@ func TestOpenStackReleasePattern(t *testing.T) {
 }
 
 // TestControlPlaneSpecReusesCommonTypes asserts the ControlPlane reuses the
-// canonical commonv1 shapes for infrastructure and policy (CC-0110), so the
+// canonical commonv1 shapes for infrastructure and policy, so the
 // aggregate and the per-service CRs validate the same way. Assigning the
 // commonv1 zero values to the spec fields is a compile-time type assertion.
 func TestControlPlaneSpecReusesCommonTypes(t *testing.T) {
@@ -85,8 +85,7 @@ func TestControlPlaneSpecReusesCommonTypes(t *testing.T) {
 }
 
 // TestServiceKeystoneSpecDeepCopy verifies the shared keystone subset
-// round-trips through DeepCopy with independent pointer storage (CC-0110,
-// plan decision #2).
+// round-trips through DeepCopy with independent pointer storage (plan decision #2).
 func TestServiceKeystoneSpecDeepCopy(t *testing.T) {
 	replicas := int32(5)
 	spec := ServiceKeystoneSpec{
@@ -107,7 +106,7 @@ func TestServiceKeystoneSpecDeepCopy(t *testing.T) {
 	}
 }
 
-// TestKORCSpecShape exercises the KORC/AdminCredential nested shape (CC-0110)
+// TestKORCSpecShape exercises the KORC/AdminCredential nested shape
 // and the application-credential defaults' field types.
 func TestKORCSpecShape(t *testing.T) {
 	restricted := true

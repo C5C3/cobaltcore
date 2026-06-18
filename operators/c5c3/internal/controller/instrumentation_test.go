@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Tests for the sub-reconciler instrumentation helper (CC-0110, REQ-026).
+// Tests for the sub-reconciler instrumentation helper.
 package controller
 
 import (
@@ -83,7 +83,7 @@ func counterValueOn(t *testing.T, reg prometheus.Gatherer, famName string, label
 
 // withTestRecorder swaps the package-level instrumentation hooks for a recorder
 // bound to a fresh prometheus.NewRegistry() so tests verify behaviour without
-// polluting the controller-runtime production registry (CC-0110, REQ-026). The
+// polluting the controller-runtime production registry. The
 // registry is returned so tests can gather it directly. Restoration is
 // registered via t.Cleanup.
 func withTestRecorder(t *testing.T) *prometheus.Registry {
@@ -154,7 +154,7 @@ func TestInstrumentSubReconciler_Error_RecordsMappedConditionType(t *testing.T) 
 // TestInstrumentSubReconciler_UnknownNameFallback verifies that a sub_reconciler
 // name absent from subReconcilerConditionTypes records the error counter with
 // condition_type=subReconcilerConditionTypeUnknown ("UNKNOWN") rather than an
-// empty string (CC-0110, REQ-026).
+// empty string.
 func TestInstrumentSubReconciler_UnknownNameFallback(t *testing.T) {
 	g := NewGomegaWithT(t)
 	reg := withTestRecorder(t)
@@ -170,7 +170,7 @@ func TestInstrumentSubReconciler_UnknownNameFallback(t *testing.T) {
 
 	g.Expect(counterValueOn(t, reg, reconcileErrorsMetric, errLabels)).
 		To(Equal(1.0),
-			"unmapped sub_reconciler name MUST surface as condition_type=%q in the error counter (CC-0110, REQ-026)",
+			"unmapped sub_reconciler name MUST surface as condition_type=%q in the error counter",
 			subReconcilerConditionTypeUnknown)
 	g.Expect(counterValueOn(t, reg, reconcileErrorsMetric, emptyLabels)).
 		To(Equal(0.0),
@@ -197,7 +197,7 @@ func TestInstrumentSubReconciler_PanicSafe(t *testing.T) {
 
 	g.Expect(histogramSampleCountOn(t, reg, reconcileDurationMetric, durLabels)).
 		To(Equal(uint64(1)),
-			"deferred duration emission MUST fire before the panic unwinds (CC-0110, REQ-026)")
+			"deferred duration emission MUST fire before the panic unwinds")
 }
 
 // TestSubReconcilerConditionTypesCoversAllNames is a drift guard: every
@@ -218,6 +218,6 @@ func TestSubReconcilerConditionTypesCoversAllNames(t *testing.T) {
 		_, ok := known[condType]
 		g.Expect(ok).To(BeTrue(),
 			"sub_reconciler %q maps to condition_type %q which is not in subConditionTypes — "+
-				"update subConditionTypes or fix the mapping (CC-0110, REQ-026)", name, condType)
+				"update subConditionTypes or fix the mapping", name, condType)
 	}
 }

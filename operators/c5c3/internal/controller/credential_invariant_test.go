@@ -2,13 +2,13 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Tests for the credential-confinement invariant (CC-0110, REQ-013): the minted
+// Tests for the credential-confinement invariant the minted
 // admin application credential must be restricted, and the minted APP-CREDENTIAL
 // Secret must never leak into service workloads — only the c5c3-operator and
 // K-ORC may read it.
 //
-// DECISION (REQ-013 mapping to c5c3's CR-projection model):
-// REQ-013 is classically phrased against Pod templates ("the app-credential
+// DECISION (mapping to c5c3's CR-projection model):
+// is classically phrased against Pod templates ("the app-credential
 // Secret must not appear in any service Deployment/StatefulSet/DaemonSet env or
 // volume"). c5c3, however, does NOT create Deployments/StatefulSets/DaemonSets
 // directly: it PROJECTS child CRs (Keystone, MariaDB, Memcached, and the K-ORC
@@ -102,8 +102,7 @@ func invariantControlPlane() *c5c3v1alpha1.ControlPlane {
 
 // invariantAdminPasswordSecret returns the admin-password Secret the managed
 // invariantControlPlane's credential chain reads. invariantControlPlane is MANAGED
-// (Database.ClusterRef != nil), so the effective admin-password ref (CC-0117,
-// REQ-005) is the operator-owned per-ControlPlane Secret adminPasswordSecretName(cp)
+// (Database.ClusterRef != nil), so the effective admin-password ref is the operator-owned per-ControlPlane Secret adminPasswordSecretName(cp)
 // — NOT the cp-level "keystone-admin" of the brownfield adminPasswordSecret() helper.
 // readAdminPassword/computeAdminPasswordHash resolve this Secret to the cleartext.
 func invariantAdminPasswordSecret(cp *c5c3v1alpha1.ControlPlane) *corev1.Secret {
@@ -171,7 +170,7 @@ func TestCredentialInvariant_MintedACIsRestricted(t *testing.T) {
 	g.Expect(ac.Spec.Resource).NotTo(BeNil())
 	g.Expect(ac.Spec.Resource.Unrestricted).NotTo(BeNil())
 	g.Expect(*ac.Spec.Resource.Unrestricted).To(BeFalse(),
-		"REQ-013: the minted admin application credential MUST be restricted (Unrestricted==false)")
+		"the minted admin application credential MUST be restricted (Unrestricted==false)")
 }
 
 func TestCredentialInvariant_AppCredentialSecretAbsentFromKeystoneSpec(t *testing.T) {
@@ -193,7 +192,7 @@ func TestCredentialInvariant_AppCredentialSecretAbsentFromKeystoneSpec(t *testin
 
 	appCredSecret := adminAppCredentialSecretName(cp)
 	g.Expect(renderObjectStrings(k.Spec)).NotTo(ContainSubstring(appCredSecret),
-		"REQ-013: the minted app-credential Secret name MUST NOT appear in the Keystone CR spec")
+		"the minted app-credential Secret name MUST NOT appear in the Keystone CR spec")
 
 	// The Keystone CR may legitimately reference the admin PASSWORD Secret for
 	// bootstrap — that is DISTINCT and allowed. Assert the allowed reference is
@@ -201,7 +200,7 @@ func TestCredentialInvariant_AppCredentialSecretAbsentFromKeystoneSpec(t *testin
 	// neither secret.
 	g.Expect(k.Spec.Bootstrap.AdminPasswordSecretRef.Name).To(Equal(adminPasswordSecretName(cp)),
 		"the admin PASSWORD secret reference is allowed and expected for bootstrap "+
-			"(operator-projected per-CP Secret in managed mode, CC-0117 REQ-005)")
+			"(operator-projected per-CP Secret in managed mode)")
 	g.Expect(k.Spec.Bootstrap.AdminPasswordSecretRef.Name).NotTo(Equal(appCredSecret),
 		"the bootstrap password secret MUST be distinct from the minted app-credential secret")
 }
@@ -242,7 +241,7 @@ func TestCredentialInvariant_AppCredentialSecretReferencedOnlyByPushSecretAndAC(
 	// only references are the two ALLOWED ones above.
 	leaks := findAppCredentialLeaks(ctx, t, c, appCredSecret, ps.Name, ac.Name)
 	g.Expect(leaks).To(BeEmpty(),
-		"REQ-013: the app-credential Secret must flow operator->OpenBao->(ESO)->K-ORC only; "+
+		"the app-credential Secret must flow operator->OpenBao->(ESO)->K-ORC only; "+
 			"no service CR may reference it. Unexpected referrers: %v", leaks)
 }
 
@@ -272,7 +271,7 @@ func TestCredentialInvariant_NoWorkloadReferencesAppCredentialSecret(t *testing.
 		"c5c3 must not create any Deployment/StatefulSet/DaemonSet directly; "+
 			"it projects child CRs whose downstream operators own the workloads")
 	g.Expect(leaks).To(BeEmpty(),
-		"REQ-013: no operator-created workload Pod template may reference the app-credential "+
+		"no operator-created workload Pod template may reference the app-credential "+
 			"or keystone-admin Secret in an env var or volume. Leaks: %v", leaks)
 }
 

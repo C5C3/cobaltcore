@@ -34,21 +34,21 @@ import (
 // to use the new primary key, then pushes the updated keys back to the Kubernetes
 // Secret via the API using the pod's ServiceAccount token.
 // The credential_migrate step is critical: without it, credentials encrypted with the
-// old primary key become inaccessible once that key is purged (CC-0036).
-// Extracted to scripts/credential_rotate.sh for independent linting and testing (CC-0073).
+// old primary key become inaccessible once that key is purged.
+// Extracted to scripts/credential_rotate.sh for independent linting and testing.
 //
 //go:embed scripts/credential_rotate.sh
 var credentialRotateScript string
 
 // normalizedCredentialMaxActiveKeys returns the effective maximum number of active
 // credential keys, applying a minimum floor of 3. The webhook defaults 0 to 3, but
-// this provides defense-in-depth for the reconciler (CC-0036).
+// this provides defense-in-depth for the reconciler.
 func normalizedCredentialMaxActiveKeys(keystone *keystonev1alpha1.Keystone) int {
 	return max(int(keystone.Spec.CredentialKeys.MaxActiveKeys), 3)
 }
 
 // reconcileCredentialKeys ensures that a credential keys Secret exists, a rotation
-// CronJob is configured, and a PushSecret backs up the keys to OpenBao (CC-0036).
+// CronJob is configured, and a PushSecret backs up the keys to OpenBao.
 func (r *KeystoneReconciler) reconcileCredentialKeys(ctx context.Context,
 	keystone *keystonev1alpha1.Keystone, configMapName string,
 ) (ctrl.Result, error) {
@@ -73,7 +73,7 @@ func (r *KeystoneReconciler) reconcileCredentialKeys(ctx context.Context,
 		// RequeueAfter (not the deprecated ctrl.Result.Requeue field) so the
 		// parallel group's shortestRequeue propagates this non-zero result and
 		// the chain short-circuits, instead of dropping it and continuing in the
-		// same pass (issue #467; CC-0036).
+		// same pass (issue #467).
 		return ctrl.Result{RequeueAfter: RequeueSecretPolling}, nil
 	}
 	if err != nil {
@@ -81,7 +81,7 @@ func (r *KeystoneReconciler) reconcileCredentialKeys(ctx context.Context,
 	}
 
 	// 2. Ensure the staging Secret exists for the rotation CronJob to PATCH
-	//    into (CC-0081). The operator owns the lifecycle (labels, owner ref)
+	//    into. The operator owns the lifecycle (labels, owner ref)
 	//    and the CronJob owns the Data — this is the split-compute-write
 	//    boundary that keeps token-forgery primitives out of the CronJob's
 	//    RBAC on the production Secret.
@@ -90,14 +90,14 @@ func (r *KeystoneReconciler) reconcileCredentialKeys(ctx context.Context,
 	}
 
 	// Refresh the key_rotation_age gauge from the rotation-completed
-	// annotation (CC-0089, REQ-003). The helper reads the production Secret
+	// annotation. The helper reads the production Secret
 	// first (durable across the inter-rotation steady state) and falls back
 	// to the staging Secret to cover the very-first-rotation pre-apply
 	// window.
 	r.observeRotationAge(ctx, keystone, secretName, credentialStagingSecretName(keystone), "credential")
 
 	// 3. Apply any completed staging rotation onto the production Secret
-	//    (CC-0081, REQ-005, REQ-006). When applyRotationOutput returns
+	// When applyRotationOutput returns
 	//    applied=true, short-circuit and requeue so the next reconcile
 	//    re-creates the empty staging Secret for the next CronJob run. The
 	//    upper bound on keys is normalized max + 1 to account for the extra
@@ -125,7 +125,7 @@ func (r *KeystoneReconciler) reconcileCredentialKeys(ctx context.Context,
 		// Short-circuit the rest of the step chain via RequeueAfter (not the
 		// deprecated ctrl.Result.Requeue field) so the parallel group's
 		// shortestRequeue propagates it and the next pass re-enters the happy
-		// path with the production Secret already updated (issue #467; CC-0081).
+		// path with the production Secret already updated (issue #467).
 		return ctrl.Result{RequeueAfter: RequeueSecretPolling}, nil
 	}
 
@@ -134,7 +134,7 @@ func (r *KeystoneReconciler) reconcileCredentialKeys(ctx context.Context,
 		return ctrl.Result{}, fmt.Errorf("ensuring credential rotation RBAC: %w", err)
 	}
 
-	// 5. Create the immutable ConfigMap containing the rotation script (CC-0073).
+	// 5. Create the immutable ConfigMap containing the rotation script.
 	scriptConfigMapName, err := config.CreateImmutableConfigMap(ctx, r.Client, r.Scheme, keystone,
 		fmt.Sprintf("%s-credential-rotate-script", keystone.Name), keystone.Namespace,
 		map[string]string{"credential_rotate.sh": credentialRotateScript})
@@ -167,9 +167,9 @@ func (r *KeystoneReconciler) reconcileCredentialKeys(ctx context.Context,
 }
 
 // ensureCredentialRotationRBAC creates the ServiceAccount, Role, and RoleBinding
-// needed by the credential rotation CronJob (CC-0036, CC-0081).
+// needed by the credential rotation CronJob.
 //
-// The Role is split into two PolicyRules per CC-0081 (REQ-002, REQ-003) to
+// The Role is split into two PolicyRules per to
 // enforce least-privilege on the CronJob ServiceAccount:
 //
 //  1. Read-only on the production credential-keys Secret — only `get`, so a
@@ -191,7 +191,7 @@ func (r *KeystoneReconciler) ensureCredentialRotationRBAC(ctx context.Context, k
 		return fmt.Errorf("ensuring ServiceAccount %s: %w", saName, err)
 	}
 
-	// Role with minimal permissions split into two PolicyRules (CC-0081):
+	// Role with minimal permissions split into two PolicyRules
 	//   - production Secret: read-only (`get`) so a compromised CronJob
 	//     cannot write arbitrary credential keys to production.
 	//   - staging Secret: `get` + `patch` (no `create`/`delete`) so the
@@ -243,7 +243,7 @@ func (r *KeystoneReconciler) ensureCredentialRotationRBAC(ctx context.Context, k
 }
 
 // ensureCredentialStagingSecret ensures the credential staging Secret exists
-// with the `credential-keys` rotation-target label (CC-0081). Thin wrapper
+// with the `credential-keys` rotation-target label. Thin wrapper
 // over the shared ensureStagingSecret helper; see rotation_staging.go for the
 // field-ownership contract.
 func (r *KeystoneReconciler) ensureCredentialStagingSecret(ctx context.Context, keystone *keystonev1alpha1.Keystone) error {
@@ -251,7 +251,7 @@ func (r *KeystoneReconciler) ensureCredentialStagingSecret(ctx context.Context, 
 }
 
 // createCredentialKeysSecret generates credential keys and creates a Secret to store them.
-// Credential keys use the same format as Fernet keys (32 bytes, base64url-encoded) (CC-0036).
+// Credential keys use the same format as Fernet keys (32 bytes, base64url-encoded).
 func (r *KeystoneReconciler) createCredentialKeysSecret(ctx context.Context,
 	keystone *keystonev1alpha1.Keystone, secretName string,
 ) error {
@@ -291,9 +291,9 @@ func (r *KeystoneReconciler) createCredentialKeysSecret(ctx context.Context,
 // via the API. The CronJob:
 //  1. Mounts the existing credential keys Secret as a read-only volume.
 //  2. Uses an init container to copy keys to a writable emptyDir.
-//  3. Mounts the rotation script from a versioned ConfigMap at /scripts/ (CC-0073).
+//  3. Mounts the rotation script from a versioned ConfigMap at /scripts/.
 //  4. Runs /scripts/credential_rotate.sh against the emptyDir.
-//  5. Pushes the updated keys to the K8s API using the pod's ServiceAccount (CC-0036).
+//  5. Pushes the updated keys to the K8s API using the pod's ServiceAccount.
 func credentialRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName string, scriptConfigMapName string) *batchv1.CronJob {
 	secretName := fmt.Sprintf("%s-credential-keys", keystone.Name)
 	stagingSecretName := credentialStagingSecretName(keystone)
@@ -325,7 +325,7 @@ func credentialRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapNam
 							// project files as root:root mode 0o400 and the openstack process
 							// could not read them; upstream Keystone logs a "key_repository is
 							// world readable" WARNING via fernet_utils._check_key_repository
-							// for any default-mode (0o644) workaround (CC-0099).
+							// for any default-mode (0o644) workaround.
 							SecurityContext: &corev1.PodSecurityContext{FSGroup: ptr.To(openstackUID)},
 							InitContainers: []corev1.Container{{
 								Name:  "copy-keys",
@@ -333,7 +333,7 @@ func credentialRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapNam
 								// `install -m 0400` materialises each key in the writable emptyDir
 								// at owner-read-only mode. A plain `cp` would inherit the kubelet
 								// emptyDir mode and re-introduce the world-readable directory that
-								// CC-0099 fixes for the rotation Pod.
+								// fixes for the rotation Pod.
 								Command:         []string{"sh", "-c", "install -m 0400 /credential-keys-src/* /etc/keystone/credential-keys/"},
 								SecurityContext: restrictedSecurityContext(),
 								VolumeMounts: []corev1.VolumeMount{
@@ -344,15 +344,15 @@ func credentialRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapNam
 							Containers: []corev1.Container{{
 								Name:  "credential-rotate",
 								Image: image,
-								// TODO(CC-0042): Wire spec.Resources (or a smaller Job-specific default) to
+								// TODO Wire spec.Resources (or a smaller Job-specific default) to
 								// this container. Currently runs as BestEffort QoS. See reconcile_deployment.go
-								// containerResources() for the pattern used by the keystone container (CC-0095).
+								// containerResources() for the pattern used by the keystone container.
 								Command:         []string{"/scripts/credential_rotate.sh"},
 								SecurityContext: restrictedSecurityContext(),
 								Env: []corev1.EnvVar{
 									// SECRET_NAME points at the staging Secret — the CronJob SA
 									// is only permitted to patch the staging Secret, never the
-									// production Secret (CC-0081).
+									// production Secret.
 									{Name: "SECRET_NAME", Value: stagingSecretName},
 									{Name: "SECRET_NAMESPACE", ValueFrom: &corev1.EnvVarSource{
 										FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.namespace"},
@@ -360,7 +360,7 @@ func credentialRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapNam
 									// oslo.config honours OS_<GROUP>__<KEY> env var overrides, so this
 									// takes precedence over the compiled-in default (3) without needing
 									// to mount the ConfigMap. Uses the normalized value to stay
-									// consistent with the Secret's minimum floor of 3 (CC-0036).
+									// consistent with the Secret's minimum floor of 3.
 									{
 										Name:  "OS_credential__max_active_keys",
 										Value: strconv.Itoa(normalizedCredentialMaxActiveKeys(keystone)),
@@ -368,7 +368,7 @@ func credentialRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapNam
 									// Override [database].connection via oslo.config env-var so the
 									// credential-rotate CronJob (which runs credential_migrate against
 									// the DB) reads the DB URL from the derived Secret instead of the
-									// ConfigMap (CC-0080, REQ-004).
+									// ConfigMap.
 									buildDBConnectionEnvVar(keystone),
 								},
 								VolumeMounts: []corev1.VolumeMount{
@@ -437,15 +437,13 @@ func credentialRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapNam
 // The RemoteKey embeds both keystone.Namespace and keystone.Name as path
 // segments (kv-v2/openstack/keystone/{keystone.Namespace}/{keystone.Name}/credential-keys)
 // so two Keystone CRs sharing a Name in different namespaces never share a
-// backing OpenBao object (CC-0093, REQ-002; namespace segment added in CC-0112,
-// REQ-004).
+// backing OpenBao object (namespace segment).
 //
 // DeletionPolicy=Delete wires the backup PushSecret into the OpenBao finalizer
 // flow: when the keystone.openstack.c5c3.io/openbao-finalizer handler deletes
 // this PushSecret, ESO purges the remote
 // kv-v2/openstack/keystone/{keystone.Namespace}/{keystone.Name}/credential-keys
-// path before letting the PushSecret object be garbage-collected (CC-0079,
-// REQ-008).
+// path before letting the PushSecret object be garbage-collected.
 func credentialKeysPushSecret(keystone *keystonev1alpha1.Keystone) *esov1alpha1.PushSecret {
 	return &esov1alpha1.PushSecret{
 		ObjectMeta: metav1.ObjectMeta{
@@ -466,7 +464,7 @@ func credentialKeysPushSecret(keystone *keystonev1alpha1.Keystone) *esov1alpha1.
 			Data: []esov1alpha1.PushSecretData{{
 				Match: esov1alpha1.PushSecretMatch{
 					RemoteRef: esov1alpha1.PushSecretRemoteRef{
-						// DECISION: boundary 4 (CC-0112, REQ-004) — chose option (a), a keystone.Namespace
+						// DECISION: boundary 4 — chose option (a), a keystone.Namespace
 						// path segment, so two Keystone CRs with the same Name in different namespaces
 						// resolve to distinct OpenBao leaves. Reviewer: please verify.
 						RemoteKey: "openstack/keystone/" + keystone.Namespace + "/" + keystone.Name + "/credential-keys",

@@ -153,7 +153,7 @@ func TestReconcileConfig_ManagedDatabase_NoCredentialsInConfigMap(t *testing.T) 
 
 	// Managed database: credentials and host MUST NOT leak into the ConfigMap.
 	// The placeholder is what oslo.config parses before the OS_DATABASE__CONNECTION
-	// env override replaces it at runtime (CC-0080, REQ-001/REQ-008).
+	// env override replaces it at runtime (/).
 	g.Expect(keystoneConf).NotTo(ContainSubstring("secret123"))
 	g.Expect(keystoneConf).NotTo(ContainSubstring("mariadb-cluster.default.svc"))
 	g.Expect(keystoneConf).To(ContainSubstring(dbConnectionPlaceholder))
@@ -161,11 +161,11 @@ func TestReconcileConfig_ManagedDatabase_NoCredentialsInConfigMap(t *testing.T) 
 	// Managed cache: uses Service DNS name.
 	g.Expect(keystoneConf).To(ContainSubstring("memcached-cluster:11211"))
 
-	// keystone.conf must contain [paste_deploy] with config_file (CC-0018).
+	// keystone.conf must contain [paste_deploy] with config_file.
 	g.Expect(keystoneConf).To(ContainSubstring("[paste_deploy]"))
 	g.Expect(keystoneConf).To(ContainSubstring("config_file = /etc/keystone/keystone.conf.d/api-paste.ini"))
 
-	// api-paste.ini must contain complete PasteDeploy configuration (CC-0018).
+	// api-paste.ini must contain complete PasteDeploy configuration.
 	apiPaste := cm.Data["api-paste.ini"]
 	g.Expect(apiPaste).To(ContainSubstring("[pipeline:public_api]"))
 	g.Expect(apiPaste).To(ContainSubstring("[composite:main]"))
@@ -194,13 +194,13 @@ func TestReconcileConfig_BrownfieldDatabase_PlaceholderInsteadOfPassword(t *test
 	g.Expect(err).NotTo(HaveOccurred())
 
 	keystoneConf := cm.Data["keystone.conf"]
-	// Brownfield credentials MUST NOT appear in the ConfigMap (CC-0080, REQ-001).
+	// Brownfield credentials MUST NOT appear in the ConfigMap.
 	g.Expect(keystoneConf).NotTo(ContainSubstring("ks_pass"))
 	g.Expect(keystoneConf).To(ContainSubstring(dbConnectionPlaceholder))
 	// Placeholder appears exactly once — guards against accidental duplicate
 	// rendering or template injection.
 	g.Expect(strings.Count(keystoneConf, dbConnectionPlaceholder)).To(Equal(1))
-	// REQ-001 scenario 1 regression guard: [database] section keeps its other
+	// scenario 1 regression guard: [database] section keeps its other
 	// keys so the runtime config still tunes connection retries/recycling.
 	g.Expect(keystoneConf).To(ContainSubstring("[database]"))
 	g.Expect(keystoneConf).To(ContainSubstring("max_retries = -1"))
@@ -213,7 +213,7 @@ func TestReconcileConfig_SpecialCharactersInCredentials_DoNotLeakToConfigMap(t *
 
 	ks := configTestKeystone()
 	// Credentials with special characters that previously had to be percent-encoded
-	// into the ConfigMap. With CC-0080 they live only in the derived Secret, so
+	// into the ConfigMap. With they live only in the derived Secret, so
 	// neither the raw nor the percent-encoded form should appear in keystone.conf.
 	secret := dbCredentialsSecret("default", "keystone-db-credentials", "user@domain", "p@ss:w/rd")
 	r := newConfigTestReconciler(s, ks, secret)
@@ -514,7 +514,7 @@ func TestReconcileConfig_CredentialKeysSectionPresent(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 
 	keystoneConf := cm.Data["keystone.conf"]
-	// REQ-011 (CC-0036): [credential] section must be present with correct values.
+	// [credential] section must be present with correct values.
 	g.Expect(keystoneConf).To(ContainSubstring("[credential]"))
 	g.Expect(keystoneConf).To(ContainSubstring("key_repository = /etc/keystone/credential-keys"))
 	g.Expect(keystoneConf).To(ContainSubstring("max_active_keys = 3"))
@@ -749,8 +749,6 @@ func TestResolveCacheServers(t *testing.T) {
 	}
 }
 
-// Feature: CC-0077
-
 // pruneTestConfigMap creates a ConfigMap for pruning tests with an explicit
 // CreationTimestamp, config-base label, and controller owner reference pointing
 // to the given Keystone CR.
@@ -780,7 +778,7 @@ func pruneTestConfigMap(name, namespace, baseName string, owner *keystonev1alpha
 
 // TestPruneStaleConfigMaps_deletesOldConfigMaps verifies that
 // pruneStaleConfigMaps deletes ConfigMaps beyond the retain count using the
-// correct baseName pattern (keystone.Name + "-config") (CC-0077, REQ-001).
+// correct baseName pattern (keystone.Name + "-config").
 func TestPruneStaleConfigMaps_deletesOldConfigMaps(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := configTestScheme()
@@ -825,7 +823,7 @@ func TestPruneStaleConfigMaps_deletesOldConfigMaps(t *testing.T) {
 
 // TestPruneStaleConfigMaps_retainsRecentConfigMaps verifies that
 // pruneStaleConfigMaps retains the 3 most recent historical ConfigMaps and
-// the current one (4 total) (CC-0077, REQ-001).
+// the current one (4 total).
 func TestPruneStaleConfigMaps_retainsRecentConfigMaps(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := configTestScheme()
@@ -872,7 +870,6 @@ func TestPruneStaleConfigMaps_retainsRecentConfigMaps(t *testing.T) {
 
 // TestPruneStaleConfigMaps_noopWithNoCandidates verifies that
 // pruneStaleConfigMaps returns nil when only the current ConfigMap exists
-// (CC-0077, REQ-001).
 func TestPruneStaleConfigMaps_noopWithNoCandidates(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := configTestScheme()
@@ -895,7 +892,7 @@ func TestPruneStaleConfigMaps_noopWithNoCandidates(t *testing.T) {
 // TestReconcileConfig_LoggingDefaultsEmitUseStderr verifies that the default
 // LoggingSpec materialized by the webhook (Format=text, Level=INFO, Debug=false)
 // renders use_stderr=true and debug=false into the keystone.conf [DEFAULT]
-// section without emitting any Warning event (CC-0098, REQ-003).
+// section without emitting any Warning event.
 func TestReconcileConfig_LoggingDefaultsEmitUseStderr(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := configTestScheme()
@@ -923,7 +920,7 @@ func TestReconcileConfig_LoggingDefaultsEmitUseStderr(t *testing.T) {
 
 // TestReconcileConfig_LoggingDebugTruePropagates verifies that
 // spec.logging.debug=true propagates into the [DEFAULT].debug key of
-// keystone.conf (CC-0098, REQ-003).
+// keystone.conf.
 func TestReconcileConfig_LoggingDebugTruePropagates(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := configTestScheme()
@@ -948,13 +945,13 @@ func TestReconcileConfig_LoggingDebugTruePropagates(t *testing.T) {
 }
 
 // TestReconcileConfig_LoggingExtraConfigUseStderrFalseEmitsWarningEvent
-// verifies the CC-0098 REQ-003 corner case: when spec.extraConfig overrides
+// verifies the corner case: when spec.extraConfig overrides
 // [DEFAULT].use_stderr to a non-"true" value, the operator still writes the
 // merged ConfigMap (with use_stderr=false honoured) AND emits a Warning event
 // with reason=LoggingStderrDisabled to surface that container logs will no
 // longer reach kubectl logs. The test asserts both the rendered key and the
 // emitted Warning event so a regression that only swallows the override or
-// only swallows the event surfaces explicitly (REQ-003).
+// only swallows the event surfaces explicitly.
 func TestReconcileConfig_LoggingExtraConfigUseStderrFalseEmitsWarningEvent(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := configTestScheme()
@@ -977,18 +974,17 @@ func TestReconcileConfig_LoggingExtraConfigUseStderrFalseEmitsWarningEvent(t *te
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(cm.Data["keystone.conf"]).To(ContainSubstring("use_stderr = false"),
 		"spec.extraConfig override of [DEFAULT].use_stderr must be honoured in the rendered keystone.conf "+
-			"(REQ-003: the controller warns but does not swallow the override)")
+			"(: the controller warns but does not swallow the override)")
 
 	expectEvent(g, r, "Warning LoggingStderrDisabled")
 }
 
 // TestReconcileConfig_LoggingExtraConfigUseStderrFalseEventGatedOnTransition
-// verifies the CC-0091 gated-event invariant for the LoggingStderrDisabled
+// verifies the gated-event invariant for the LoggingStderrDisabled
 // Warning: a second reconcile pass with the same use_stderr=false override
 // must NOT re-emit the event because the LoggingHealthy condition is already
 // False with reason=StderrDisabled. The 10s requeue cadence
 // (RequeueDeploymentPolling) would otherwise flood the event stream
-// (CC-0091, CC-0098, REQ-003).
 func TestReconcileConfig_LoggingExtraConfigUseStderrFalseEventGatedOnTransition(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := configTestScheme()
@@ -1022,7 +1018,7 @@ func TestReconcileConfig_LoggingExtraConfigUseStderrFalseEventGatedOnTransition(
 // TestReconcileConfig_LoggingHealthyConditionTrueOnDefaults verifies that the
 // happy-path reconcile sets LoggingHealthy=True with Reason=StderrEnabled, so
 // status reflects logging health on every reconcile rather than only on the
-// failure path (CC-0098, REQ-003).
+// failure path.
 func TestReconcileConfig_LoggingHealthyConditionTrueOnDefaults(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := configTestScheme()
@@ -1046,7 +1042,7 @@ func TestReconcileConfig_LoggingHealthyConditionTrueOnDefaults(t *testing.T) {
 // that removing the use_stderr=false override on a subsequent reconcile
 // transitions LoggingHealthy back to True/StderrEnabled without emitting an
 // additional Warning event — the gating is one-shot per transition into the
-// failure state (CC-0091, CC-0098, REQ-003).
+// failure state.
 func TestReconcileConfig_LoggingHealthyConditionTransitionsBackToTrue(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := configTestScheme()
@@ -1079,7 +1075,6 @@ func TestReconcileConfig_LoggingHealthyConditionTransitionsBackToTrue(t *testing
 // TestReconcileConfig_LoggingTextPathOmitsLoggingConf verifies that when
 // spec.logging.format=="text" the ConfigMap contains no logging.conf data
 // key and keystone.conf [DEFAULT] does not contain log_config_append
-// (CC-0098, REQ-004).
 func TestReconcileConfig_LoggingTextPathOmitsLoggingConf(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := configTestScheme()
@@ -1106,7 +1101,7 @@ func TestReconcileConfig_LoggingTextPathOmitsLoggingConf(t *testing.T) {
 // that when spec.logging.format=="json" the ConfigMap contains a logging.conf
 // data key wired to oslo_log.formatters.JSONFormatter on stderr and that
 // keystone.conf [DEFAULT] gains log_config_append pointing at the rendered
-// file (CC-0098, REQ-004).
+// file.
 func TestReconcileConfig_LoggingJSONPathRendersLoggingConfAndAppend(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := configTestScheme()
@@ -1144,7 +1139,7 @@ func TestReconcileConfig_LoggingJSONPathRendersLoggingConfAndAppend(t *testing.T
 // TestReconcileConfig_LoggingJSONToTextDropsLoggingConf verifies that a
 // toggle from format=json back to format=text produces a new ConfigMap
 // (different content hash, different name) without the logging.conf data
-// key and without log_config_append in keystone.conf (CC-0098, REQ-004).
+// key and without log_config_append in keystone.conf.
 func TestReconcileConfig_LoggingJSONToTextDropsLoggingConf(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := configTestScheme()
@@ -1177,7 +1172,7 @@ func TestReconcileConfig_LoggingJSONToTextDropsLoggingConf(t *testing.T) {
 // PerLoggerLevels is rendered as default_log_levels with alphabetically
 // sorted keys, and that two reconciles built from maps with different Go
 // iteration orders produce the same ConfigMap content hash (and therefore
-// the same ConfigMap name) — required for stable rollouts (CC-0098, REQ-005).
+// the same ConfigMap name) — required for stable rollouts.
 func TestReconcileConfig_LoggingPerLoggerLevelsDeterministicOrder(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := configTestScheme()
@@ -1222,7 +1217,7 @@ func TestReconcileConfig_LoggingPerLoggerLevelsDeterministicOrder(t *testing.T) 
 
 // TestReconcileConfig_LoggingPerLoggerLevelsEmptyOmitsKey verifies that an
 // empty PerLoggerLevels map omits the [DEFAULT].default_log_levels key
-// entirely (CC-0098, REQ-005). Including the key with an empty value would
+// entirely. Including the key with an empty value would
 // override oslo.log's compiled-in defaults with nothing.
 func TestReconcileConfig_LoggingPerLoggerLevelsEmptyOmitsKey(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -1258,7 +1253,7 @@ func TestReconcileConfig_LoggingPerLoggerLevelsEmptyOmitsKey(t *testing.T) {
 // responsibility across two surfaces (logging.conf fileConfig sections vs
 // keystone.conf [DEFAULT].default_log_levels) regardless of which one
 // oslo.log applies last, so this test catches the structural drift here
-// rather than only at e2e time (CC-0098, REQ-004 + REQ-005).
+// rather than only at e2e time (+).
 func TestReconcileConfig_LoggingJSONPlusPerLoggerLevels(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := configTestScheme()
@@ -1305,7 +1300,7 @@ func TestReconcileConfig_LoggingJSONPlusPerLoggerLevels(t *testing.T) {
 // toggling spec.logging.format text → json → text returns to the original
 // ConfigMap name, confirming that no hidden state is preserved across
 // transitions and that the content hash is symmetric for identical
-// LoggingSpecs (CC-0098, REQ-004).
+// LoggingSpecs.
 func TestReconcileConfig_LoggingFormatToggleSymmetricHash(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := configTestScheme()

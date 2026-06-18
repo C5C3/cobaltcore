@@ -1,6 +1,6 @@
 {{- /*
 ServiceMonitor for Prometheus scraping of the c5c3-operator metrics
-endpoint (CC-0089, REQ-006). Rendered only when monitoring.serviceMonitor.enabled
+endpoint. Rendered only when monitoring.serviceMonitor.enabled
 is true; relies on prometheus-operator CRDs (monitoring.coreos.com/v1) being
 installed in the cluster.
 */ -}}

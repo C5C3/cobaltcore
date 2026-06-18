@@ -48,7 +48,7 @@ func validKeystone() *Keystone {
 	}
 }
 
-// --- Defaulting webhook tests (CC-0011, REQ-001) ---
+// --- Defaulting webhook tests ---
 
 func TestDefault_SetsZeroValueDefaults(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -63,7 +63,7 @@ func TestDefault_SetsZeroValueDefaults(t *testing.T) {
 	g.Expect(k.Spec.Cache.Backend).To(Equal("dogpile.cache.pymemcache"))
 	g.Expect(k.Spec.Bootstrap.AdminUser).To(Equal("admin"))
 	g.Expect(k.Spec.Bootstrap.Region).To(Equal("RegionOne"))
-	// REQ-004 (CC-0042): Verify Resources defaults are applied.
+	// Verify Resources defaults are applied.
 	g.Expect(k.Spec.Resources).NotTo(BeNil())
 	g.Expect(k.Spec.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceMemory, DefaultMemoryRequest))
 	g.Expect(k.Spec.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceCPU, DefaultCPURequest))
@@ -75,7 +75,7 @@ func TestDefault_DoesNotSetFernetRotationSchedule(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{}
 	// Fernet.RotationSchedule relies on the Kubebuilder +default marker only
-	// (plan decision #3, CC-0011). The webhook must NOT set it.
+	// (plan decision #3). The webhook must NOT set it.
 	k := &Keystone{}
 
 	g.Expect(w.Default(context.Background(), k)).To(Succeed())
@@ -90,12 +90,12 @@ func TestDefault_ZeroValueObjectRemainsInvalid(t *testing.T) {
 	g.Expect(w.Default(context.Background(), k)).To(Succeed())
 
 	// After Default() the webhook-managed fields are set — including
-	// Spec.TrustFlush, which CC-0096 (REQ-005) now materializes to a populated
+	// Spec.TrustFlush, which now materializes to a populated
 	// struct so the trust-flush CronJob is created by default. Cache, Database,
 	// and the rotationSchedule fields (CRD-schema-defaulted, not webhook-defaulted)
 	// are still zero-valued — the spec must not pass validation.
 	g.Expect(k.Spec.TrustFlush).NotTo(BeNil(),
-		"CC-0096 REQ-005: defaulting webhook materializes spec.trustFlush")
+		"defaulting webhook materializes spec.trustFlush")
 	g.Expect(k.Spec.TrustFlush.Schedule).To(Equal(DefaultTrustFlushSchedule))
 
 	_, err := w.ValidateCreate(context.Background(), k)
@@ -104,7 +104,7 @@ func TestDefault_ZeroValueObjectRemainsInvalid(t *testing.T) {
 	g.Expect(err.Error()).To(ContainSubstring("database"))
 	g.Expect(err.Error()).To(ContainSubstring("rotationSchedule"))
 	g.Expect(err.Error()).To(ContainSubstring("credentialKeys"))
-	// CC-0096 REQ-005: the validating webhook must accept the webhook-defaulted
+	// the validating webhook must accept the webhook-defaulted
 	// trust-flush schedule (DefaultTrustFlushSchedule), so no trustFlush error is raised.
 	g.Expect(err.Error()).NotTo(ContainSubstring("trustFlush"))
 }
@@ -145,7 +145,7 @@ func TestDefault_PreservesExplicitValues(t *testing.T) {
 
 // TestDefault_TrustFlushNil_MaterializesDefaultSpec verifies that the defaulting
 // webhook materializes a populated TrustFlushSpec when the pointer is nil so the
-// trust-flush CronJob is created by default (CC-0096, REQ-001). The leaf
+// trust-flush CronJob is created by default. The leaf
 // +kubebuilder:default markers on Schedule and Suspend remain in place as
 // defense-in-depth for callers that bypass the webhook.
 func TestDefault_TrustFlushNil_MaterializesDefaultSpec(t *testing.T) {
@@ -162,7 +162,7 @@ func TestDefault_TrustFlushNil_MaterializesDefaultSpec(t *testing.T) {
 }
 
 // TestDefault_TrustFlushSet_PreservesExplicitValues verifies that the defaulting
-// webhook never overwrites a user-supplied TrustFlushSpec (CC-0096, REQ-001).
+// webhook never overwrites a user-supplied TrustFlushSpec.
 func TestDefault_TrustFlushSet_PreservesExplicitValues(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{}
@@ -184,11 +184,11 @@ func TestDefault_TrustFlushSet_PreservesExplicitValues(t *testing.T) {
 	g.Expect(k.Spec.TrustFlush.Args).To(Equal([]string{"--date", "2026-01-01"}))
 }
 
-// --- PasswordRotation defaulting tests (CC-0109, REQ-004) ---
+// --- PasswordRotation defaulting tests ---
 
 // TestDefault_PasswordRotationNil_NotMaterialized verifies the defaulting
 // webhook does NOT materialize spec.bootstrap.passwordRotation when it is
-// absent. Scheduled admin-password rotation is strictly opt-in (REQ-004), so a
+// absent. Scheduled admin-password rotation is strictly opt-in, so a
 // CR that never set the block must keep the feature off.
 func TestDefault_PasswordRotationNil_NotMaterialized(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -201,7 +201,7 @@ func TestDefault_PasswordRotationNil_NotMaterialized(t *testing.T) {
 
 // TestDefault_PasswordRotationDisabled_NotDefaulted verifies the leaf defaults
 // are NOT filled when the block is present but disabled — the sub-reconciler
-// tears everything down when disabled, so there is nothing to default (REQ-004).
+// tears everything down when disabled, so there is nothing to default.
 func TestDefault_PasswordRotationDisabled_NotDefaulted(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{}
@@ -221,7 +221,7 @@ func TestDefault_PasswordRotationDisabled_NotDefaulted(t *testing.T) {
 
 // TestDefault_PasswordRotationEnabled_MaterializesScheduleAndLength verifies the
 // defaulting webhook fills Schedule and PasswordLength when rotation is enabled
-// and those leaves carry zero values (REQ-004).
+// and those leaves carry zero values.
 func TestDefault_PasswordRotationEnabled_MaterializesScheduleAndLength(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{}
@@ -241,7 +241,7 @@ func TestDefault_PasswordRotationEnabled_MaterializesScheduleAndLength(t *testin
 
 // TestDefault_PasswordRotationEnabled_PreservesExplicitValues verifies the
 // defaulting webhook never overwrites operator-supplied Schedule or
-// PasswordLength when rotation is enabled (REQ-004).
+// PasswordLength when rotation is enabled.
 func TestDefault_PasswordRotationEnabled_PreservesExplicitValues(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{}
@@ -275,7 +275,7 @@ func TestDefault_CacheBackendAppliedWhenEmpty(t *testing.T) {
 	g.Expect(k.Spec.Cache.Backend).To(Equal("dogpile.cache.pymemcache"))
 }
 
-// --- UWSGI defaulting tests (CC-0040, REQ-002) ---
+// --- UWSGI defaulting tests ---
 
 func TestDefault_UWSGINilRemainsNil(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -301,7 +301,7 @@ func TestDefault_UWSGIZeroValuedDefaultsProcessesAndThreads(t *testing.T) {
 	// HTTPKeepAlive is NOT defaulted in the webhook — the CRD schema
 	// default (+kubebuilder:default=true) handles it in the normal admission
 	// path. The webhook cannot distinguish "not set" from "explicitly false"
-	// for a bool, so it does not attempt to default it (CC-0040, REQ-002).
+	// for a bool, so it does not attempt to default it.
 	g.Expect(k.Spec.UWSGI.HTTPKeepAlive).To(BeFalse())
 }
 
@@ -330,7 +330,7 @@ func TestDefault_UWSGIDoesNotOverwriteHTTPKeepAlive(t *testing.T) {
 	// httpKeepAlive=false must never be overwritten by the webhook — the user
 	// may have explicitly set it. The CRD schema default (+kubebuilder:default=true)
 	// handles the normal admission case; the webhook never touches HTTPKeepAlive
-	// because bool's zero value is indistinguishable from explicit false (CC-0040).
+	// because bool's zero value is indistinguishable from explicit false.
 	k := &Keystone{
 		Spec: KeystoneSpec{
 			UWSGI: &UWSGISpec{
@@ -351,7 +351,7 @@ func TestDefault_UWSGIZeroProcessesAndThreadsDoNotOverrideExplicitFalse(t *testi
 	w := &KeystoneWebhook{}
 	// Edge case: httpKeepAlive=false with zero processes/threads. This simulates
 	// a CR that bypasses CRD schema defaults (e.g. kubectl patch, upgrades).
-	// The webhook must NOT flip httpKeepAlive to true (CC-0040, REQ-002).
+	// The webhook must NOT flip httpKeepAlive to true.
 	k := &Keystone{
 		Spec: KeystoneSpec{
 			UWSGI: &UWSGISpec{
@@ -385,7 +385,7 @@ func TestDefault_UWSGIPreservesExplicitValues(t *testing.T) {
 	g.Expect(k.Spec.UWSGI.HTTPKeepAlive).To(BeTrue())
 }
 
-// --- Logging defaulting tests (CC-0098, REQ-001) ---
+// --- Logging defaulting tests ---
 
 func TestDefault_LoggingNilMaterializesDefaultSpec(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -442,7 +442,7 @@ func TestDefault_LoggingPartialFillsZeroValuesOnly(t *testing.T) {
 	g.Expect(k.Spec.Logging.PerLoggerLevels).To(BeNil())
 }
 
-// --- Replicas validation tests (CC-0011, REQ-007) ---
+// --- Replicas validation tests ---
 
 func TestValidate_ReplicasZeroRejected(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -476,7 +476,7 @@ func TestValidate_ReplicasOneAccepted(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 }
 
-// --- MaxActiveKeys validation tests (CC-0011, REQ-007) ---
+// --- MaxActiveKeys validation tests ---
 
 func TestValidate_MaxActiveKeysBelowMinimumRejected(t *testing.T) {
 	w := &KeystoneWebhook{}
@@ -534,7 +534,7 @@ func TestValidate_MaxActiveKeysAboveMinimumAccepted(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 }
 
-// --- CredentialKeys MaxActiveKeys validation tests (CC-0036, REQ-009) ---
+// --- CredentialKeys MaxActiveKeys validation tests ---
 
 func TestValidate_CredentialKeysMaxActiveKeysBelowMinimumRejected(t *testing.T) {
 	w := &KeystoneWebhook{}
@@ -580,7 +580,7 @@ func TestValidate_CredentialKeysMaxActiveKeysThreeAccepted(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 }
 
-// --- CredentialKeys Cron validation tests (CC-0036, REQ-005) ---
+// --- CredentialKeys Cron validation tests ---
 
 func TestValidate_CredentialKeysValidCronExpressions(t *testing.T) {
 	w := &KeystoneWebhook{}
@@ -634,7 +634,7 @@ func TestValidate_CredentialKeysEmptyRotationScheduleReturnsRequiredError(t *tes
 	g.Expect(err.Error()).To(ContainSubstring("rotationSchedule"))
 }
 
-// --- Cron validation tests (CC-0011, REQ-002) ---
+// --- Cron validation tests ---
 
 func TestValidate_ValidCronExpressions(t *testing.T) {
 	w := &KeystoneWebhook{}
@@ -690,7 +690,7 @@ func TestValidate_EmptyRotationScheduleReturnsRequiredError(t *testing.T) {
 	g.Expect(err.Error()).To(ContainSubstring("must be set"))
 }
 
-// --- Cache mutual-exclusivity tests (CC-0011, REQ-009) ---
+// --- Cache mutual-exclusivity tests ---
 
 func TestValidate_CacheWithServersOnly(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -737,7 +737,7 @@ func TestValidate_CacheNeitherClusterRefNorServersRejected(t *testing.T) {
 	g.Expect(err.Error()).To(ContainSubstring("cache"))
 }
 
-// --- Database mutual-exclusivity tests (CC-0011, REQ-010) ---
+// --- Database mutual-exclusivity tests ---
 
 func TestValidate_DatabaseWithHostOnly(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -784,7 +784,7 @@ func TestValidate_DatabaseNeitherClusterRefNorHostRejected(t *testing.T) {
 	g.Expect(err.Error()).To(ContainSubstring("database"))
 }
 
-// --- Duplicate plugin detection tests (CC-0011, REQ-003) ---
+// --- Duplicate plugin detection tests ---
 
 func TestValidate_UniquePlugins(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -823,7 +823,7 @@ func TestValidate_NoPlugins(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 }
 
-// --- Policy source requirement tests (CC-0011, REQ-004) ---
+// --- Policy source requirement tests ---
 
 func TestValidate_PolicyOverridesNil(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -883,7 +883,7 @@ func TestValidate_PolicyOverridesWithNoSources(t *testing.T) {
 	g.Expect(err.Error()).To(ContainSubstring("policyOverrides"))
 }
 
-// --- Empty policy rule name tests (CC-0011, REQ-008) ---
+// --- Empty policy rule name tests ---
 
 func TestValidate_EmptyPolicyRuleNameRejected(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -913,7 +913,7 @@ func TestValidate_NonEmptyPolicyRuleNamesAccepted(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 }
 
-// --- UWSGI validation tests (CC-0040, REQ-003) ---
+// --- UWSGI validation tests ---
 
 func TestValidate_UWSGIValidAccepted(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -1023,7 +1023,7 @@ func TestValidate_UWSGIBoundaryValueOneAccepted(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 }
 
-// --- Logging validation tests (CC-0098, REQ-002) ---
+// --- Logging validation tests ---
 
 func TestValidate_LoggingNilSkipsValidation(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -1113,7 +1113,7 @@ func TestValidate_LoggingPerLoggerLevelsRejectsEmptyKey(t *testing.T) {
 	g.Expect(err.Error()).To(ContainSubstring("must not be empty"))
 }
 
-// --- Autoscaling validation tests (CC-0038, REQ-001) ---
+// --- Autoscaling validation tests ---
 
 func TestValidate_Autoscaling_Valid_CPUOnly(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -1213,7 +1213,7 @@ func TestValidate_Autoscaling_Invalid_ImplicitMinExceedsMax(t *testing.T) {
 	k.Spec.Replicas = 5
 	cpu := int32(80)
 	// MinReplicas is nil — defaults to spec.replicas (5) in the reconciler,
-	// which exceeds maxReplicas (3). Validation must reject this (CC-0038).
+	// which exceeds maxReplicas (3). Validation must reject this.
 	k.Spec.Autoscaling = &AutoscalingSpec{
 		MaxReplicas:          3,
 		TargetCPUUtilization: &cpu,
@@ -1232,7 +1232,7 @@ func TestValidate_Autoscaling_Valid_ImplicitMinEqualsMax(t *testing.T) {
 	k.Spec.Replicas = 5
 	cpu := int32(80)
 	// MinReplicas is nil — defaults to spec.replicas (5), which equals maxReplicas.
-	// This is a valid edge case (CC-0038).
+	// This is a valid edge case.
 	k.Spec.Autoscaling = &AutoscalingSpec{
 		MaxReplicas:          5,
 		TargetCPUUtilization: &cpu,
@@ -1339,7 +1339,7 @@ func TestValidate_Autoscaling_Nil_IsValid(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 }
 
-// --- NetworkPolicy validation tests (CC-0039, REQ-001) ---
+// --- NetworkPolicy validation tests ---
 
 func TestValidate_NetworkPolicy_Nil_IsValid(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -1379,7 +1379,7 @@ func TestValidate_NetworkPolicy_EmptyIngress_Rejected(t *testing.T) {
 	g.Expect(err.Error()).To(ContainSubstring("ingress"))
 }
 
-// --- ValidateCreate and ValidateUpdate consistency (CC-0011, REQ-005, REQ-006) ---
+// --- ValidateCreate and ValidateUpdate consistency ---
 
 func TestValidateCreate_RunsAllValidations(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -1397,35 +1397,35 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 	k.Spec.PolicyOverrides = &commonv1.PolicySpec{
 		Rules: map[string]string{"": "rule:admin"},
 	}
-	// REQ-009 (CC-0011): Break cache mutual-exclusivity — set both clusterRef and servers.
+	// Break cache mutual-exclusivity — set both clusterRef and servers.
 	k.Spec.Cache.ClusterRef = &corev1.LocalObjectReference{Name: "memcached"}
-	// REQ-010 (CC-0011): Break database mutual-exclusivity — set both clusterRef and host.
+	// Break database mutual-exclusivity — set both clusterRef and host.
 	k.Spec.Database.ClusterRef = &corev1.LocalObjectReference{Name: "mariadb"}
-	// REQ-007 (CC-0106): Break database TLS — out-of-enum mode and enabled
+	// Break database TLS — out-of-enum mode and enabled
 	// with both certificate secret refs missing. Every new TLS validation
 	// hook must participate in the aggregated error, matching the
-	// CC-0075/CC-0084-style regression guard so a future short-circuit before
+	///-style regression guard so a future short-circuit before
 	// reaching k.Spec.Database.TLS is caught here rather than only at e2e time.
 	k.Spec.Database.TLS = &commonv1.DatabaseTLSSpec{
 		Enabled: true,
 		Mode:    "bogus",
 	}
-	// REQ-001 (CC-0038): Break autoscaling — set out-of-range utilization target.
+	// Break autoscaling — set out-of-range utilization target.
 	invalidCPU := int32(0)
 	k.Spec.Autoscaling = &AutoscalingSpec{
 		MaxReplicas:          5,
 		TargetCPUUtilization: &invalidCPU,
 	}
-	// REQ-001 (CC-0039): Break networkPolicy — set empty ingress.
+	// Break networkPolicy — set empty ingress.
 	k.Spec.NetworkPolicy = &NetworkPolicySpec{
 		Ingress: []NetworkPolicyIngressSource{},
 	}
-	// REQ-007 (CC-0065): Break gateway — empty hostname and empty parentRef.name.
+	// Break gateway — empty hostname and empty parentRef.name.
 	k.Spec.Gateway = &GatewaySpec{
 		ParentRef: GatewayParentRefSpec{Name: ""},
 		Hostname:  "",
 	}
-	// REQ-004 (CC-0042): Break resources — CPU request exceeds limit.
+	// Break resources — CPU request exceeds limit.
 	k.Spec.Resources = &corev1.ResourceRequirements{
 		Requests: corev1.ResourceList{
 			corev1.ResourceCPU: resource.MustParse("1000m"),
@@ -1434,12 +1434,11 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 			corev1.ResourceCPU: resource.MustParse("500m"),
 		},
 	}
-	// REQ-001 (CC-0040) + REQ-003/REQ-004/REQ-008/REQ-012 (CC-0084): Break uWSGI —
+	// +/// Break uWSGI —
 	// processes/threads below minimum, harakiri exceeds the drain window, and
-	// httpKeepAliveTimeout is set while httpKeepAlive is false (which also
-	// breaches REQ-004's minimum=1 check since the value is 0). This ensures
-	// the aggregate test catches regressions in every new CC-0084 uWSGI hook,
-	// guarding against the CC-0075-style omission flagged in review #1.
+	// httpKeepAliveTimeout is set while httpKeepAlive is false (which also breaches 's minimum=1 check since the value is 0). This ensures
+	// the aggregate test catches regressions in every new uWSGI hook,
+	// guarding against the-style omission flagged in review #1.
 	breakingHarakiri := int32(50)
 	breakingKeepAliveTimeout := int32(0)
 	k.Spec.UWSGI = &UWSGISpec{
@@ -1449,7 +1448,7 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 		HTTPKeepAlive:        false,
 		HTTPKeepAliveTimeout: &breakingKeepAliveTimeout,
 	}
-	// REQ-001/REQ-002/REQ-007 (CC-0084): Break graceful-termination fields —
+	//// Break graceful-termination fields —
 	// preStopSleepSeconds (30) is not strictly less than terminationGracePeriodSeconds
 	// (10), so the cross-field rule fires with an error message mentioning both
 	// terminationGracePeriodSeconds and preStopSleepSeconds.
@@ -1457,16 +1456,16 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 	preStop := int64(30)
 	k.Spec.TerminationGracePeriodSeconds = &grace
 	k.Spec.PreStopSleepSeconds = &preStop
-	// REQ-006 (CC-0084): Break deployment strategy — Recreate with a RollingUpdate
+	// Break deployment strategy — Recreate with a RollingUpdate
 	// block is rejected by the Deployment controller and must be caught early.
 	k.Spec.Strategy = &appsv1.DeploymentStrategy{
 		Type:          appsv1.RecreateDeploymentStrategyType,
 		RollingUpdate: &appsv1.RollingUpdateDeployment{},
 	}
-	// REQ-002 (CC-0098): Break logging — invalid Format enum, invalid Level
+	// Break logging — invalid Format enum, invalid Level
 	// enum, an empty per-logger key, and an invalid per-logger value level.
 	// Every new logging validation hook must participate in the aggregated
-	// error, matching the CC-0075/CC-0084-style regression guard pattern so a
+	// error, matching the/-style regression guard pattern so a
 	// future change that short-circuits before reaching k.Spec.Logging is
 	// caught here rather than only at e2e time.
 	k.Spec.Logging = &LoggingSpec{
@@ -1477,10 +1476,10 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 			"amqp": "VERBOSE",
 		},
 	}
-	// REQ-004 (CC-0075): Break PriorityClassName — nonexistent class.
+	// Break PriorityClassName — nonexistent class.
 	pcn := "nonexistent-class"
 	k.Spec.PriorityClassName = &pcn
-	// REQ-005 (CC-0075): Break TSC — wrong label selectors.
+	// Break TSC — wrong label selectors.
 	k.Spec.TopologySpreadConstraints = []corev1.TopologySpreadConstraint{
 		{
 			MaxSkew:           1,
@@ -1494,12 +1493,12 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 			},
 		},
 	}
-	// REQ-004/REQ-014 (CC-0109): Break passwordRotation — enabled with an invalid
+	/// Break passwordRotation — enabled with an invalid
 	// cron schedule, a below-minimum passwordLength, and a cleared
 	// adminPasswordSecretRef. Every new passwordRotation validation hook must
 	// participate in the aggregated error so a future change that short-circuits
 	// before reaching the block is caught here rather than only at e2e time,
-	// matching the CC-0075/CC-0084/CC-0106-style regression guard above.
+	// matching the//-style regression guard above.
 	k.Spec.Bootstrap.AdminPasswordSecretRef.Name = ""
 	k.Spec.Bootstrap.PasswordRotation = &PasswordRotationSpec{
 		Enabled:        true,
@@ -1524,34 +1523,34 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 	g.Expect(errMsg).To(ContainSubstring("uwsgi"))
 	g.Expect(errMsg).To(ContainSubstring("priorityClassName"))
 	g.Expect(errMsg).To(ContainSubstring("topologySpreadConstraints"))
-	// REQ-007 (CC-0065): Verify gateway validation participates in error
+	// Verify gateway validation participates in error
 	// accumulation — both hostname and parentRef.name errors must surface.
 	g.Expect(errMsg).To(ContainSubstring("gateway"))
 	g.Expect(errMsg).To(ContainSubstring("hostname"))
 	g.Expect(errMsg).To(ContainSubstring("parentRef"))
-	// REQ-001/REQ-002/REQ-003/REQ-004/REQ-006/REQ-007/REQ-008/REQ-012 (CC-0084):
+	/////////
 	// Every new graceful-termination validation hook must participate in the
-	// aggregated error, matching the CC-0075-style regression guard for
+	// aggregated error, matching the-style regression guard for
 	// priorityClassName/topologySpreadConstraints above.
 	g.Expect(errMsg).To(ContainSubstring("terminationGracePeriodSeconds"))
 	g.Expect(errMsg).To(ContainSubstring("preStopSleepSeconds"))
 	g.Expect(errMsg).To(ContainSubstring("harakiri"))
 	g.Expect(errMsg).To(ContainSubstring("httpKeepAliveTimeout"))
 	g.Expect(errMsg).To(ContainSubstring("strategy"))
-	// REQ-002 (CC-0098): every new logging validation path must participate
+	// every new logging validation path must participate
 	// in the aggregated error so a future short-circuit is caught here.
 	g.Expect(errMsg).To(ContainSubstring("logging"))
 	g.Expect(errMsg).To(ContainSubstring("format"))
 	g.Expect(errMsg).To(ContainSubstring("level"))
 	g.Expect(errMsg).To(ContainSubstring("perLoggerLevels"))
 	g.Expect(errMsg).To(ContainSubstring("logger name must not be empty"))
-	// REQ-007 (CC-0106): every new database-TLS validation path must
+	// every new database-TLS validation path must
 	// participate in the aggregated error so a future short-circuit before
 	// reaching k.Spec.Database.TLS is caught here rather than only at e2e time.
 	g.Expect(errMsg).To(ContainSubstring("tls.mode"))
 	g.Expect(errMsg).To(ContainSubstring("caBundleSecretRef.name"))
 	g.Expect(errMsg).To(ContainSubstring("clientCertSecretRef.name"))
-	// REQ-004/REQ-014 (CC-0109): every passwordRotation validation path (schedule,
+	/// every passwordRotation validation path (schedule,
 	// passwordLength, adminPasswordSecretRef) must participate in the aggregated
 	// error so a future short-circuit before reaching the block is caught here.
 	g.Expect(errMsg).To(ContainSubstring("passwordRotation"))
@@ -1573,7 +1572,7 @@ func TestValidateUpdate_RunsSameValidation(t *testing.T) {
 
 // TestValidateUpdate_ResourcesRequestExceedsLimit verifies that ValidateUpdate
 // delegates resource validation correctly by submitting resources where the CPU
-// request exceeds the limit (CC-0042, REQ-004).
+// request exceeds the limit.
 func TestValidateUpdate_ResourcesRequestExceedsLimit(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{}
@@ -1603,7 +1602,7 @@ func TestValidateDelete_AlwaysAllows(t *testing.T) {
 	g.Expect(warnings).To(BeNil())
 }
 
-// --- Resources defaulting tests (CC-0042, REQ-004) ---
+// --- Resources defaulting tests ---
 
 func TestDefault_ResourcesSetWhenNil(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -1621,7 +1620,7 @@ func TestDefault_ResourcesSetWhenNil(t *testing.T) {
 
 // TestDefault_ResourcesSetWhenEmpty verifies that `resources: {}` (non-nil but
 // empty ResourceRequirements) triggers defaulting. Without this, the container
-// gets no resources (BestEffort QoS) and HPA breaks (CC-0042).
+// gets no resources (BestEffort QoS) and HPA breaks.
 func TestDefault_ResourcesSetWhenEmpty(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{}
@@ -1669,7 +1668,7 @@ func TestDefault_ResourcesPreservedWhenExplicit(t *testing.T) {
 // TestDefault_ResourcesPreservedWhenPartial verifies that partially-set resources
 // (e.g., only Requests set, Limits empty) are not overwritten by the defaulting
 // webhook. This ensures users can opt into a Guaranteed QoS by setting only
-// requests, or any other partial configuration (CC-0042).
+// requests, or any other partial configuration.
 func TestDefault_ResourcesPreservedWhenPartial(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{}
@@ -1694,7 +1693,7 @@ func TestDefault_ResourcesPreservedWhenPartial(t *testing.T) {
 	g.Expect(k.Spec.Resources.Limits).To(BeEmpty())
 }
 
-// --- Resources validation tests (CC-0042, REQ-004) ---
+// --- Resources validation tests ---
 
 func TestValidate_ResourcesValidAccepted(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -1805,7 +1804,7 @@ func TestValidate_ResourcesRequestsOnlyAccepted(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 }
 
-// --- TrustFlush cron validation tests (CC-0057, REQ-008) ---
+// --- TrustFlush cron validation tests ---
 
 func TestValidate_TrustFlush_ValidCronAccepted(t *testing.T) {
 	w := &KeystoneWebhook{}
@@ -1872,10 +1871,10 @@ func TestValidate_TrustFlush_NilPassesValidation(t *testing.T) {
 }
 
 // TestValidate_TrustFlushDefaulted_AcceptsHourlySchedule verifies that the
-// hourly schedule injected by the defaulting webhook (CC-0096, REQ-001) passes
+// hourly schedule injected by the defaulting webhook passes
 // the cron-parsing block in validate(). Together with the Default() materialization
 // test, this protects the webhook → validate handoff against any future change
-// that would otherwise reject the defaulted value (CC-0096, REQ-005).
+// that would otherwise reject the defaulted value.
 func TestValidate_TrustFlushDefaulted_AcceptsHourlySchedule(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{}
@@ -1890,7 +1889,7 @@ func TestValidate_TrustFlushDefaulted_AcceptsHourlySchedule(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 }
 
-// --- PasswordRotation validation tests (CC-0109, REQ-004, REQ-014) ---
+// --- PasswordRotation validation tests ---
 
 func TestValidate_PasswordRotation_ValidCronAccepted(t *testing.T) {
 	w := &KeystoneWebhook{}
@@ -1948,7 +1947,7 @@ func TestValidate_PasswordRotation_EmptyScheduleRejected(t *testing.T) {
 
 // TestValidate_PasswordRotation_DisabledNotValidated verifies a malformed cron
 // is tolerated when the block is present but disabled — validation is gated on
-// Enabled, mirroring the defaulting webhook (REQ-004).
+// Enabled, mirroring the defaulting webhook.
 func TestValidate_PasswordRotation_DisabledNotValidated(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{}
@@ -1970,7 +1969,7 @@ func TestValidate_PasswordRotation_NilPassesValidation(t *testing.T) {
 }
 
 // TestValidate_PasswordRotation_MissingAdminSecretRefRejected verifies the
-// Part-1 prerequisite invariant (REQ-014, boundary 3): enabling rotation without
+// Part-1 prerequisite invariant (boundary 3): enabling rotation without
 // an admin-password Secret reference is rejected, because the rotated password
 // must round-trip through that Secret to reach Keystone.
 func TestValidate_PasswordRotation_MissingAdminSecretRefRejected(t *testing.T) {
@@ -1986,7 +1985,7 @@ func TestValidate_PasswordRotation_MissingAdminSecretRefRejected(t *testing.T) {
 }
 
 // TestValidate_PasswordRotation_ShortPasswordLengthRejected verifies the
-// defense-in-depth passwordLength guard (REQ-004, CC-0109): an explicit
+// defense-in-depth passwordLength guard an explicit
 // passwordLength below the +kubebuilder:validation:Minimum=24 floor is rejected
 // at admission even when CRD schema validation is bypassed, mirroring the
 // maxActiveKeys / harakiri defense-in-depth checks.
@@ -2007,7 +2006,7 @@ func TestValidate_PasswordRotation_ShortPasswordLengthRejected(t *testing.T) {
 }
 
 // TestValidate_PasswordRotation_MinimumPasswordLengthAccepted verifies the
-// passwordLength guard uses a strict "< 24" boundary (REQ-004, CC-0109): the
+// passwordLength guard uses a strict "< 24" boundary the
 // exact minimum (24) is accepted, proving the defense-in-depth check matches
 // the +kubebuilder:validation:Minimum=24 marker rather than rejecting it.
 func TestValidate_PasswordRotation_MinimumPasswordLengthAccepted(t *testing.T) {
@@ -2024,7 +2023,7 @@ func TestValidate_PasswordRotation_MinimumPasswordLengthAccepted(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 }
 
-// --- Gateway validation tests (CC-0065, REQ-007) ---
+// --- Gateway validation tests ---
 
 func TestValidate_GatewayValid(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -2089,7 +2088,7 @@ func TestValidate_GatewayEmptyParentRefName(t *testing.T) {
 	g.Expect(err.Error()).To(ContainSubstring("name"))
 }
 
-// --- publicEndpoint / gateway.hostname consistency tests (CC-0088, REQ-009) ---
+// --- publicEndpoint / gateway.hostname consistency tests ---
 
 func TestValidate_GatewayPublicEndpointHostMatchesAccepted(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -2193,7 +2192,7 @@ func TestValidate_GatewayNil_Accepted(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 }
 
-// --- PriorityClass validation (CC-0075, REQ-004) ---
+// --- PriorityClass validation ---
 
 // newFakeClient returns a controller-runtime fake client with the core scheduling
 // API types registered. Additional objects can be pre-populated.
@@ -2255,7 +2254,7 @@ func TestValidate_PriorityClassNameNilOrEmpty_SkipsValidation(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 }
 
-// --- TopologySpreadConstraints label selector validation (CC-0075, REQ-005) ---
+// --- TopologySpreadConstraints label selector validation ---
 
 func TestValidate_TopologySpreadConstraintCorrectLabelsAccepted(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -2354,8 +2353,7 @@ func TestValidate_TopologySpreadConstraintMatchExpressionsRejected(t *testing.T)
 	g.Expect(err.Error()).To(ContainSubstring("matchExpressions"))
 }
 
-// --- Graceful termination: termination grace / preStop sleep range checks (Task 2.1, CC-0084) ---
-// REQ-001, REQ-002 (CC-0084)
+// --- Graceful termination: termination grace / preStop sleep range checks ---
 
 func TestValidate_TerminationGracePeriodBelowMinRejected(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -2424,8 +2422,7 @@ func TestValidate_PreStopSleepSecondsNilAccepted(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 }
 
-// --- Graceful termination: preStop vs grace ordering (Task 2.2, CC-0084) ---
-// REQ-007 (CC-0084)
+// --- Graceful termination: preStop vs grace ordering ---
 
 func TestValidate_PreStopEqualsTerminationGraceRejected(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -2480,8 +2477,7 @@ func TestValidate_PreStopAndGraceNilAccepted(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 }
 
-// --- Graceful termination: UWSGI harakiri / keepAliveTimeout range checks (Task 2.3, CC-0084) ---
-// REQ-003, REQ-004 (CC-0084)
+// --- Graceful termination: UWSGI harakiri / keepAliveTimeout range checks ---
 
 func TestValidate_UWSGIHarakiriBelowMinRejected(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -2549,8 +2545,7 @@ func TestValidate_UWSGIKeepAliveTimeoutAtMinAccepted(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 }
 
-// --- Graceful termination: harakiri within drain window (Task 2.4, CC-0084) ---
-// REQ-008 (CC-0084)
+// --- Graceful termination: harakiri within drain window ---
 
 func TestValidate_HarakiriAtDrainBoundaryRejected(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -2609,8 +2604,7 @@ func TestValidate_HarakiriWithinDrainAccepted(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 }
 
-// --- Graceful termination: keepAliveTimeout requires keepAlive (Task 2.5, CC-0084) ---
-// REQ-012 (CC-0084)
+// --- Graceful termination: keepAliveTimeout requires keepAlive ---
 
 func TestValidate_KeepAliveTimeoutWithoutKeepAliveRejected(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -2646,8 +2640,7 @@ func TestValidate_KeepAliveTimeoutWithKeepAliveAccepted(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 }
 
-// --- Graceful termination: deployment strategy sanity (Task 2.6, CC-0084) ---
-// REQ-006 (CC-0084)
+// --- Graceful termination: deployment strategy sanity ---
 
 func TestValidate_StrategyRecreateWithRollingUpdateBlockRejected(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -2709,7 +2702,7 @@ func TestValidate_StrategyNilAccepted(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 }
 
-// --- Database TLS validation/defaulting tests (CC-0106, REQ-007, REQ-013) ---
+// --- Database TLS validation/defaulting tests ---
 
 // validDatabaseTLS returns a fully-populated, valid DatabaseTLSSpec that tests
 // mutate to exercise individual rules (mirrors the validKeystone() pattern).
@@ -2872,7 +2865,7 @@ func TestDefault_DefaultsModeOnlyWhenBlockPresent(t *testing.T) {
 	})
 }
 
-// --- Interface compliance (CC-0011) ---
+// --- Interface compliance ---
 
 func TestKeystoneWebhook_ImplementsInterfaces(t *testing.T) {
 	g := NewGomegaWithT(t)

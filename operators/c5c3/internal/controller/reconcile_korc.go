@@ -39,22 +39,21 @@ import (
 // (operators/keystone/internal/controller/reconcile_secrets.go): the cluster-
 // scoped ESO SecretStore that fronts OpenBao. Defined locally so the c5c3
 // PushSecrets target the same backend without importing the keystone package
-// (CC-0110, REQ-011).
 const openBaoClusterStoreName = "openbao-cluster-store"
 
 // adminAppCredentialNameSuffix is appended to the ControlPlane name to derive
 // the deterministic, collision-free name of the owned K-ORC ApplicationCredential
-// CR (CC-0110, REQ-010), mirroring the keystoneNameSuffix discipline so a single
+// CR, mirroring the keystoneNameSuffix discipline so a single
 // namespace can host the admin AC of multiple ControlPlanes.
 const adminAppCredentialNameSuffix = "-admin-app-credential" //nolint:gosec // G101 false positive: name suffix, not a credential.
 
 // adminAppCredentialSecretSuffix names the operator-owned Secret that K-ORC
 // writes the minted application credential into (Resource.SecretRef). It is the
-// push source for the OpenBao PushSecret (CC-0110, REQ-010, REQ-011).
+// push source for the OpenBao PushSecret.
 const adminAppCredentialSecretSuffix = "-admin-app-credential" //nolint:gosec // G101 false positive: Secret name suffix, not a credential.
 
 // adminAppCredentialRemoteKeyFor returns the per-ControlPlane OpenBao path the
-// minted admin application credential is mirrored to (CC-0112, REQ-001). The
+// minted admin application credential is mirrored to. The
 // path is scoped by both the ControlPlane's Namespace and Name so two
 // ControlPlanes never clobber each other's admin credential on the cluster-
 // global OpenBao backend. The matching read consumer (the per-CR k-orc
@@ -64,10 +63,9 @@ func adminAppCredentialRemoteKeyFor(cp *c5c3v1alpha1.ControlPlane) string {
 }
 
 // adminPasswordHashAnnotation stamps the SHA-256 of the admin password the
-// application credential was last minted against onto the owned AC CR (CC-0110,
-// REQ-012). Mirrors the hash+annotation pattern in the keystone operator's
+// application credential was last minted against onto the owned AC CR. Mirrors the hash+annotation pattern in the keystone operator's
 // password-rotation reconciler. A mismatch on a later pass drives a re-mint.
-const adminPasswordHashAnnotation = "forge.c5c3.io/admin-password-hash" //nolint:gosec // G101 false positive: annotation key, not a credential (CC-0108).
+const adminPasswordHashAnnotation = "forge.c5c3.io/admin-password-hash" //nolint:gosec // G101 false positive: annotation key, not a credential.
 
 // korcCloudsYamlSecretName is the conventional name of the admin clouds.yaml
 // Secret (and its ExternalSecret) K-ORC reads its admin credentials from. It
@@ -76,15 +74,14 @@ const adminPasswordHashAnnotation = "forge.c5c3.io/admin-password-hash" //nolint
 // used only as the fallback when a CR somehow reaches the reconciler without the
 // webhook having defaulted that field.
 //
-// CC-0110, C1 (co-location): the ExternalSecret materialises this Secret into the
+// C1 (co-location): the ExternalSecret materialises this Secret into the
 // SAME namespace as the K-ORC ApplicationCredential/Service/Endpoint CRs the
 // operator projects — the ControlPlane's own namespace (childNamespace(cp)) —
 // because K-ORC resolves CloudCredentialsRef in the resource's own namespace
 // (vendored api/v1alpha1/credentials_ref.go GetCloudCredentialsRef returns the
 // resource's Namespace). The AdminCredentialReady gate therefore waits on the
 // ExternalSecret in childNamespace(cp), NOT a fixed orc-system one, so the minted
-// AC is never pushed before K-ORC can actually authenticate (CC-0110, REQ-011,
-// REQ-023).
+// AC is never pushed before K-ORC can actually authenticate.
 const korcCloudsYamlSecretName = "k-orc-clouds-yaml" //nolint:gosec // G101 false positive: Secret name, not a credential.
 
 // adminPasswordCloudSecretSuffix names the operator-owned Secret holding a
@@ -276,13 +273,13 @@ func buildPasswordCloudsYAML(cp *c5c3v1alpha1.ControlPlane, password string) str
 // seedBootstrapCloudsYAML writes the PASSWORD-based clouds.yaml into the
 // {cp.Name}-admin-app-credential Secret's clouds.yaml key, but ONLY when that key
 // is empty (write-if-empty). It breaks the AdminCredentialReady chicken-and-egg
-// deadlock on a fresh cluster (CC-0114, REQ-001): the per-CR OpenBao path the
+// deadlock on a fresh cluster the per-CR OpenBao path the
 // k-orc-clouds-yaml ExternalSecret reads is empty until something pushes to it, so
 // the operator seeds a password-based document here that lets K-ORC's admin
 // imports authenticate before the application credential is ever minted —
 // previously this was seeded by deploy/openbao/bootstrap/write-bootstrap-secrets.sh.
 //
-// Write-if-empty is the idempotency guard (CC-0114, REQ-005): once
+// Write-if-empty is the idempotency guard once
 // reconcileAdminCredential fills the key with the minted credential-based
 // clouds.yaml (buildAppCredCloudsYAML) the seed becomes a no-op and never clobbers
 // the minted document. On a re-mint, regenerateAppCredentialSecretValue deletes
@@ -319,7 +316,7 @@ func adminAppCredentialPushSecretName(cp *c5c3v1alpha1.ControlPlane) string {
 }
 
 // reconcileKORC reconciles the K-ORC (OpenStack Resource Controller)
-// integration and drives the KORCReady condition (CC-0110, REQ-010, REQ-012).
+// integration and drives the KORCReady condition.
 //
 // It create-or-updates an OWNED ApplicationCredential CR that instructs K-ORC to
 // mint the admin application credential. The CR maps the ControlPlane's
@@ -329,7 +326,7 @@ func adminAppCredentialPushSecretName(cp *c5c3v1alpha1.ControlPlane) string {
 // k-orc-clouds-yaml, so it can always re-authenticate as admin even while the
 // minted app credential is being revoked.
 //
-// RE-MINT (REQ-012): K-ORC's AC actuator implements only Create + Delete, so a
+// RE-MINT K-ORC's AC actuator implements only Create + Delete, so a
 // rotated admin password cannot re-mint the credential in place. reconcileKORC
 // therefore compares the SHA-256 of the current admin password against the
 // adminPasswordHashAnnotation stamped on the AC; on a mismatch it DELETES the AC
@@ -348,7 +345,7 @@ func (r *ControlPlaneReconciler) reconcileKORC(ctx context.Context, cp *c5c3v1al
 
 	adminCred := cp.Spec.KORC.AdminCredential
 
-	// Read the admin password used to (re-)mint the AC (REQ-012). The cleartext is
+	// Read the admin password used to (re-)mint the AC. The cleartext is
 	// needed both to derive the rotation hash AND to render the password-based
 	// clouds.yaml the AC mints with. A read failure (missing Secret/key) is
 	// surfaced as KORCReady False with a requeue rather than a hard error so a
@@ -461,7 +458,7 @@ func (r *ControlPlaneReconciler) reconcileKORC(ctx context.Context, cp *c5c3v1al
 	// Seed the bootstrap clouds.yaml, mirror it to OpenBao, and create the per-CR
 	// ExternalSecret that reads it back — all BEFORE the AC is minted, so the
 	// AdminCredentialReady chicken-and-egg gate opens on a fresh cluster without any
-	// external shell seed (CC-0114, REQ-001/REQ-002/REQ-003). The seed is
+	// external shell seed (//). The seed is
 	// write-if-empty, so once the credential is minted these become no-ops that never
 	// clobber the minted clouds.yaml.
 	//
@@ -559,7 +556,7 @@ func (r *ControlPlaneReconciler) reconcileKORC(ctx context.Context, cp *c5c3v1al
 		if ac.Spec.Resource == nil {
 			ac.Spec.Resource = &orcv1alpha1.ApplicationCredentialResourceSpec{}
 		}
-		// CRITICAL INVERSION (REQ-010): our spec is Restricted; K-ORC's field is
+		// CRITICAL INVERSION our spec is Restricted; K-ORC's field is
 		// Unrestricted. restricted=true => Unrestricted=false (and vice versa).
 		ac.Spec.Resource.Unrestricted = ptr.To(!restricted)
 		ac.Spec.Resource.UserRef = orcv1alpha1.KubernetesNameRef(adminUserRef(cp))
@@ -569,7 +566,7 @@ func (r *ControlPlaneReconciler) reconcileKORC(ctx context.Context, cp *c5c3v1al
 		// Stamp the password hash this credential was minted against. On a later
 		// pass a mismatch (the hash moved because the admin password rotated, or
 		// the CredentialRotation reconciler zeroed the annotation to nudge) is what
-		// the re-mint decision above keys off to delete+recreate the AC (REQ-012).
+		// the re-mint decision above keys off to delete+recreate the AC.
 		if ac.Annotations == nil {
 			ac.Annotations = map[string]string{}
 		}
@@ -604,7 +601,7 @@ func (r *ControlPlaneReconciler) reconcileKORC(ctx context.Context, cp *c5c3v1al
 		logger.Info("ensured K-ORC ApplicationCredential", "name", ac.Name, "operation", op)
 	}
 
-	// Reflect the AC CR's observed state into status on every pass (REQ-012). The
+	// Reflect the AC CR's observed state into status on every pass. The
 	// ID is populated by K-ORC once the credential is minted; Restricted is the
 	// inverse of the K-ORC-reported Unrestricted (falling back to the desired
 	// value while status is empty). LastRotation is stamped on a fresh mint/re-mint.
@@ -755,7 +752,7 @@ func (r *ControlPlaneReconciler) regenerateAppCredentialSecretValue(ctx context.
 // no UserRef field, but K-ORC's ApplicationCredentialResourceSpec.UserRef is
 // REQUIRED, so we derive a deterministic name scoped by cp.Name (mirroring
 // adminDomainRef) — this way two ControlPlanes in one namespace produce DISTINCT
-// User objects rather than colliding on a shared name (CC-0112, REQ-003). The
+// User objects rather than colliding on a shared name. The
 // inner OpenStack username the import resolves to is still "admin": it is set
 // independently via Spec.Import.Filter.Name = OpenStackName(korcAdminUsername) in
 // ensureKORCAdminImports. The matching User CR is provisioned there as an
@@ -821,7 +818,7 @@ func (r *ControlPlaneReconciler) ensureKORCAdminImports(ctx context.Context, cp 
 // projectAccessRules maps our AccessRule{Service,Method,Path} list onto K-ORC's
 // ApplicationCredentialAccessRule list. K-ORC models the service as a serviceRef
 // (a reference to an ORC Service CR named after the service type) and the method
-// as a typed HTTPMethod enum; path is a plain string pointer (CC-0110, REQ-010).
+// as a typed HTTPMethod enum; path is a plain string pointer.
 func projectAccessRules(rules []c5c3v1alpha1.AccessRule) []orcv1alpha1.ApplicationCredentialAccessRule {
 	if len(rules) == 0 {
 		return nil
@@ -861,7 +858,7 @@ func projectAccessRules(rules []c5c3v1alpha1.AccessRule) []orcv1alpha1.Applicati
 
 // computeAdminPasswordHash reads the admin password from the ControlPlane's
 // configured PasswordSecretRef and returns its SHA-256 as a lowercase hex string
-// (CC-0110, REQ-012). The data key defaults to "password" when the SecretRef.Key
+// The data key defaults to "password" when the SecretRef.Key
 // is unset, matching the keystone admin-password Secret convention.
 //
 // DECISION (hash-helper extraction): the hash derivation lives here as a
@@ -879,7 +876,7 @@ func computeAdminPasswordHash(ctx context.Context, c client.Client, cp *c5c3v1al
 
 // readAdminPassword reads the cleartext admin password from the EFFECTIVE
 // admin-password Secret (data key defaults to "password"). The effective ref
-// (CC-0117, REQ-005) is the operator-owned per-ControlPlane Secret
+// is the operator-owned per-ControlPlane Secret
 // adminPasswordSecretName(cp) in managed mode and the user-supplied
 // cp.Spec.KORC.AdminCredential.PasswordSecretRef in brownfield mode — see
 // effectiveAdminPasswordSecretRef. reconcileKORC needs the cleartext — not just
@@ -904,7 +901,7 @@ func hashAdminPassword(pw string) string {
 }
 
 // updateAdminApplicationCredentialStatus reflects the observed AC CR into
-// cp.Status.AdminApplicationCredential (CC-0110, REQ-012). LastRotation is
+// cp.Status.AdminApplicationCredential. LastRotation is
 // (re-)stamped to now whenever the recorded credential ID changes (initial mint
 // or re-mint), so a rotation is observable from status; once the ID is stable it
 // is preserved across reconciles.
@@ -941,7 +938,7 @@ func (r *ControlPlaneReconciler) updateAdminApplicationCredentialStatus(
 
 // reconcileAdminCredential commits the minted application credential into an
 // operator-owned Secret and mirrors it to OpenBao, driving the
-// AdminCredentialReady condition (CC-0110, REQ-011).
+// AdminCredentialReady condition.
 //
 // It is GATED on KORCReady: until reconcileKORC reports the AC minted there is
 // nothing to push. It is additionally gated on the K-ORC clouds.yaml
@@ -1156,7 +1153,7 @@ func pushSecretReady(ps *esov1alpha1.PushSecret) bool {
 // adminAppCredentialPushSecret builds the PushSecret that mirrors the minted
 // admin application-credential Secret to OpenBao at the per-ControlPlane path
 // openstack/keystone/{cp.Namespace}/{cp.Name}/admin/app-credential
-// (CC-0112, REQ-001), scoping the credential so two ControlPlanes never clobber
+// scoping the credential so two ControlPlanes never clobber
 // each other's admin credential on the cluster-global OpenBao backend.
 //
 // DECISION (DeletionPolicy): None — the admin application credential is a shared
@@ -1194,7 +1191,7 @@ func adminAppCredentialPushSecret(cp *c5c3v1alpha1.ControlPlane) *esov1alpha1.Pu
 // ensureKORCCloudsYAMLExternalSecret create-or-updates the per-ControlPlane,
 // operator-owned ExternalSecret that materialises the admin clouds.yaml Secret
 // K-ORC authenticates with, replacing the retired static single-identity manifest
-// (CC-0114, REQ-002). It is created in childNamespace(cp) — co-located with the
+// It is created in childNamespace(cp) — co-located with the
 // K-ORC resource CRs because K-ORC resolves CloudCredentialsRef in the resource's
 // own namespace (C1) — and reads the per-CR OpenBao path
 // adminAppCredentialRemoteKeyFor(cp), so an arbitrarily named ControlPlane resolves
@@ -1242,7 +1239,7 @@ func (r *ControlPlaneReconciler) ensureKORCCloudsYAMLExternalSecret(ctx context.
 
 // reconcileCatalog registers the OpenStack service catalog entries for Keystone
 // (an identity Service plus its public Endpoint) as OWNED K-ORC CRs and drives
-// the CatalogReady condition (CC-0110, REQ-014).
+// the CatalogReady condition.
 //
 // It is GATED on AdminCredentialReady: the admin credential must be available
 // before K-ORC can register catalog entries. Both child CRs are create-or-updated

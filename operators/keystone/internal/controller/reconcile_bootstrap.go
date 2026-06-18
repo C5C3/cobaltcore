@@ -27,10 +27,9 @@ import (
 // bootstrapDBSeedScript is the standalone Python program that pre-inserts the
 // admin region row before keystone-manage bootstrap runs. The same script is
 // invoked under both plaintext and TLS DSNs — TLS handling is encapsulated in
-// the script's ssl-dict mapping (CC-0106, REQ-005). Extracting it to a .py
+// the script's ssl-dict mapping. Extracting it to a .py
 // file (scripts/bootstrap_db_seed.py) makes it independently lintable and
 // pytest-testable, matching the fernet/credential rotation script convention
-// (CC-0073).
 //
 //go:embed scripts/bootstrap_db_seed.py
 var bootstrapDBSeedScript string
@@ -39,29 +38,27 @@ var bootstrapDBSeedScript string
 // (the `password` key of the admin Secret) onto the bootstrap Job's pod
 // template. Because job.PodSpecHash hashes the full PodTemplateSpec, a rotated
 // admin password changes this annotation and therefore the forge.c5c3.io/pod-spec-hash
-// gate, forcing the idempotent bootstrap Job to re-run (CC-0108, REQ-002, REQ-011).
-const adminPasswordHashAnnotation = "forge.c5c3.io/admin-password-hash" //nolint:gosec // annotation key, not a credential (CC-0108)
-
-// Feature: CC-0013
+// gate, forcing the idempotent bootstrap Job to re-run.
+const adminPasswordHashAnnotation = "forge.c5c3.io/admin-password-hash" //nolint:gosec // annotation key, not a credential
 
 // reconcileBootstrap ensures the Keystone bootstrap Job runs with
-// keystone-manage bootstrap and admin credentials (REQ-007).
+// keystone-manage bootstrap and admin credentials.
 func (r *KeystoneReconciler) reconcileBootstrap(ctx context.Context, keystone *keystonev1alpha1.Keystone, configMapName string) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
 	// Re-run the bootstrap Job whenever the admin password rotates: read the
 	// `password` key of the admin Secret and stamp its SHA-256 digest onto the
 	// Job's pod template so a changed password changes the pod-spec-hash gate
-	// (CC-0108, REQ-002, REQ-005). A missing/unreadable Secret, an absent
+	// A missing/unreadable Secret, an absent
 	// `password` key, or an empty value is a hard error — bootstrap cannot run
 	// without an admin password, so surface it via BootstrapReady=False and
 	// requeue rather than building a Job with empty credentials.
 	//
 	// DECISION: missing/empty admin password returns an error (requeue with backoff)
 	// — Chose to return the error rather than the requeue-without-error pattern used
-	// by reconcileDBConnectionSecret, because task 2.2/REQ-005 specify "return the
+	// by reconcileDBConnectionSecret, because task 2.2/ specify "return the
 	// error (requeue)" and an absent admin password is a hard precondition failure.
-	// Reviewer: please verify this matches intent (CC-0108, REQ-005).
+	// Reviewer: please verify this matches intent.
 	adminSecretKey := client.ObjectKey{
 		Namespace: keystone.Namespace,
 		Name:      keystone.Spec.Bootstrap.AdminPasswordSecretRef.Name,
@@ -96,7 +93,6 @@ func (r *KeystoneReconciler) reconcileBootstrap(ctx context.Context, keystone *k
 	// 'default-admin'), which would hold BootstrapReady — and the aggregate
 	// Ready — False for the whole upgrade. Identity bootstrap is one-time; the
 	// only input that must force a re-run is a rotated admin password
-	// (CC-0113, CC-0108).
 	done, err := job.RunJobWithRerunKey(ctx, r.Client, r.Scheme, keystone, buildBootstrapJob(keystone, configMapName, fernetSecretName, adminPasswordHash), adminPasswordHash)
 	if err != nil {
 		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
@@ -137,7 +133,7 @@ func (r *KeystoneReconciler) reconcileBootstrap(ctx context.Context, keystone *k
 // subResourceName(keystone) so the bootstrap-seeded catalog URL automatically
 // tracks any future change to the sub-resource naming convention — divergence
 // between the bootstrap URL and the actual Service hostname is impossible by
-// construction (CC-0095, REQ-002).
+// construction.
 func bootstrapServiceURL(keystone *keystonev1alpha1.Keystone) string {
 	return fmt.Sprintf("http://%s.%s.svc.cluster.local:5000/v3", subResourceName(keystone), keystone.Namespace)
 }
@@ -152,8 +148,8 @@ func buildBootstrapJob(keystone *keystonev1alpha1.Keystone, configMapName string
 	}
 
 	// The pre-insert script seeds the admin region row before keystone-manage
-	// bootstrap runs (CC-0080, REQ-004). Its full contract — DSN resolution
-	// precedence, ssl-dict mapping for CC-0106 REQ-005 — lives in the
+	// bootstrap runs. Its full contract — DSN resolution
+	// precedence, ssl-dict mapping for — lives in the
 	// standalone scripts/bootstrap_db_seed.py file embedded as
 	// bootstrapDBSeedScript. We invoke it via `python3 -` with the embedded
 	// source piped on stdin so a 'PY' quoted heredoc preserves the Python
@@ -202,14 +198,14 @@ exec keystone-manage --config-dir=/etc/keystone/keystone.conf.d/ bootstrap \
 			},
 		},
 	}
-	// CC-0106, REQ-005: when DB TLS is enabled, mount the client-cert Secret
+	// when DB TLS is enabled, mount the client-cert Secret
 	// produced by reconcile_databasetls.go at /etc/keystone/db-tls/ so the
 	// pre-insert pymysql call can read the ssl_ca/ssl_cert/ssl_key file paths
 	// the DSN carries as query parameters (mirrors the dbtls_mode.dbTLSPaths
 	// canonical layout). The volume is omitted entirely for the plaintext path
-	// so the bootstrap Job is unchanged for pre-CC-0106 CRs. The
+	// so the bootstrap Job is unchanged for pre-existing CRs. The
 	// dbTLSEnabled/dbTLSVolumeAndMount helpers are owned by
-	// reconcile_databasetls.go (CC-0106 task 4.2) so the Deployment and the
+	// reconcile_databasetls.go so the Deployment and the
 	// bootstrap Job stay in lockstep.
 	if dbTLSEnabled(keystone) {
 		vol, mount := dbTLSVolumeAndMount(keystone)
@@ -223,7 +219,7 @@ exec keystone-manage --config-dir=/etc/keystone/keystone.conf.d/ bootstrap \
 			Namespace: keystone.Namespace,
 		},
 		Spec: batchv1.JobSpec{
-			// CC-0113 (#415): TTLSecondsAfterFinished is intentionally left unset.
+			// (#415): TTLSecondsAfterFinished is intentionally left unset.
 			// A TTL-expired bootstrap Job would be garbage-collected by the
 			// TTL-after-finished controller and then re-created on the next
 			// reconcile, producing a TTL-driven re-creation loop. Leaving the Job
@@ -242,9 +238,9 @@ exec keystone-manage --config-dir=/etc/keystone/keystone.conf.d/ bootstrap \
 					Containers: []corev1.Container{{
 						Name:  "bootstrap",
 						Image: fmt.Sprintf("%s:%s", keystone.Spec.Image.Repository, keystone.Spec.Image.Tag),
-						// TODO(CC-0042): Wire spec.Resources (or a smaller Job-specific default) to
+						// TODO Wire spec.Resources (or a smaller Job-specific default) to
 						// this container. Currently runs as BestEffort QoS. See reconcile_deployment.go
-						// containerResources() for the pattern used by the keystone container (CC-0095).
+						// containerResources() for the pattern used by the keystone container.
 						Command: []string{"/bin/sh", "-eu", "-c", bootstrapScript},
 						Env: []corev1.EnvVar{
 							{
@@ -260,13 +256,12 @@ exec keystone-manage --config-dir=/etc/keystone/keystone.conf.d/ bootstrap \
 							},
 							// Override [database].connection via oslo.config env-var so the
 							// bootstrap Job reads the DB URL from the derived Secret instead
-							// of the ConfigMap (CC-0080, REQ-004).
+							// of the ConfigMap.
 							buildDBConnectionEnvVar(keystone),
 							// Region id and bootstrap URLs are passed as env vars so the
 							// embedded Python and the keystone-manage call read them at
 							// runtime; this keeps scripts/bootstrap_db_seed.py free of
 							// printf-style placeholders and shell-quoting concerns
-							// (CC-0095, REQ-002; CC-0106, REQ-005).
 							{Name: "BOOTSTRAP_REGION_ID", Value: keystone.Spec.Bootstrap.Region},
 							{Name: "BOOTSTRAP_ADMIN_URL", Value: internalURL},
 							{Name: "BOOTSTRAP_INTERNAL_URL", Value: internalURL},

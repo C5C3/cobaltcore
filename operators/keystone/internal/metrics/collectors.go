@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Package metrics exposes Prometheus collectors for the Keystone operator (CC-0089).
+// Package metrics exposes Prometheus collectors for the Keystone operator.
 package metrics
 
 import (
@@ -15,7 +15,7 @@ import (
 )
 
 // reconcileDurationBuckets are the histogram bucket boundaries for
-// keystone_operator_reconcile_duration_seconds (CC-0089, REQ-001).
+// keystone_operator_reconcile_duration_seconds.
 //
 // The buckets span the observed sub-reconciler latency range — from fast
 // no-op reconciles (10 ms) up to long-running DB sync jobs (30 s). The set
@@ -25,11 +25,11 @@ var reconcileDurationBuckets = []float64{
 }
 
 // dbSyncDurationBuckets are the histogram bucket boundaries for
-// keystone_operator_db_sync_duration_seconds (CC-0089, REQ-005). DB sync
+// keystone_operator_db_sync_duration_seconds. DB sync
 // jobs are measured in seconds-to-minutes, so the range 1 s – 10 min
 // captures the realistic distribution.
 //
-// DECISION: buckets chosen from the REQ-005 "suggested" list verbatim
+// DECISION: buckets chosen from the "suggested" list verbatim
 // because the observability doc does not prescribe alternatives and the
 // plan explicitly lists them.
 var dbSyncDurationBuckets = []float64{1, 5, 10, 30, 60, 120, 300, 600}
@@ -37,7 +37,7 @@ var dbSyncDurationBuckets = []float64{1, 5, 10, 30, 60, 120, 300, 600}
 // collectors bundles every metric vector the operator exposes. The struct
 // exists so tests can bind an isolated instance to a private registry;
 // production code uses the package-level globalColls registered on
-// ctrlmetrics.Registry exactly once (CC-0089, REQ-008).
+// ctrlmetrics.Registry exactly once.
 type collectors struct {
 	reconcileDuration *prometheus.HistogramVec
 	reconcileErrors   *prometheus.CounterVec
@@ -52,24 +52,24 @@ func newCollectors() *collectors {
 	return &collectors{
 		reconcileDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "keystone_operator_reconcile_duration_seconds",
-			Help:    "Wall-clock duration of a Keystone sub-reconciler invocation, in seconds (CC-0089, REQ-001).",
+			Help:    "Wall-clock duration of a Keystone sub-reconciler invocation, in seconds.",
 			Buckets: reconcileDurationBuckets,
 		}, []string{"sub_reconciler"}),
 		reconcileErrors: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "keystone_operator_reconcile_errors_total",
-			Help: "Count of Keystone sub-reconciler errors, partitioned by sub-reconciler and the condition type it failed to satisfy (CC-0089, REQ-002).",
+			Help: "Count of Keystone sub-reconciler errors, partitioned by sub-reconciler and the condition type it failed to satisfy.",
 		}, []string{"sub_reconciler", "condition_type"}),
 		keyRotationAge: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "keystone_operator_key_rotation_age_seconds",
-			Help: "Age in seconds of the most recent successful key rotation for a given Keystone CR and key type (CC-0089, REQ-003).",
+			Help: "Age in seconds of the most recent successful key rotation for a given Keystone CR and key type.",
 		}, []string{"keystone", "namespace", "key_type"}),
 		dbSyncTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "keystone_operator_db_sync_total",
-			Help: "Count of db_sync jobs terminated per Keystone CR, labelled by the terminal state (CC-0089, REQ-005).",
+			Help: "Count of db_sync jobs terminated per Keystone CR, labelled by the terminal state.",
 		}, []string{"keystone", "namespace", "result"}),
 		dbSyncDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "keystone_operator_db_sync_duration_seconds",
-			Help:    "Duration in seconds of terminated db_sync jobs (CC-0089, REQ-005).",
+			Help:    "Duration in seconds of terminated db_sync jobs.",
 			Buckets: dbSyncDurationBuckets,
 		}, []string{"keystone", "namespace"}),
 	}
@@ -99,8 +99,7 @@ func (c *collectors) register(reg prometheus.Registerer) error {
 // controller package's instrumentation_test.go) that must verify
 // instrumentation behaviour without polluting the controller-runtime
 // production registry. Production code MUST use the package-level
-// ObserveReconcileDuration / RecordReconcileError functions (CC-0089,
-// REQ-007, REQ-008).
+// ObserveReconcileDuration / RecordReconcileError functions.
 type TestRecorder struct {
 	c *collectors
 }
@@ -142,7 +141,6 @@ var (
 // globalCollectors returns the lazily-initialized package-wide collectors,
 // registering them on ctrlmetrics.Registry on first access. Using
 // sync.Once ensures registration is idempotent across repeated test runs
-// (CC-0089, REQ-008).
 func globalCollectors() *collectors {
 	initOnce.Do(func() {
 		globalColls = newCollectors()
@@ -156,14 +154,13 @@ func globalCollectors() *collectors {
 }
 
 // ObserveReconcileDuration records the wall-clock duration of a single
-// sub-reconciler invocation (CC-0089, REQ-001).
+// sub-reconciler invocation.
 func ObserveReconcileDuration(subReconciler string, d time.Duration) {
 	globalCollectors().observeReconcileDuration(subReconciler, d)
 }
 
 // RecordReconcileError increments the reconcile-error counter for a given
-// sub-reconciler and the condition type it failed to drive to True (CC-0089,
-// REQ-002).
+// sub-reconciler and the condition type it failed to drive to True.
 func RecordReconcileError(subReconciler, conditionType string) {
 	globalCollectors().recordReconcileError(subReconciler, conditionType)
 }
@@ -171,14 +168,14 @@ func RecordReconcileError(subReconciler, conditionType string) {
 // SetKeyRotationAge publishes the age in seconds of the most recent key
 // rotation for (keystone, namespace, keyType). Returns an error and does
 // NOT update the gauge if completedAt is the zero Time (e.g. when the CR
-// annotation is missing or malformed) (CC-0089, REQ-003).
+// annotation is missing or malformed).
 func SetKeyRotationAge(keystone, namespace, keyType string, completedAt time.Time) error {
 	return globalCollectors().setKeyRotationAge(keystone, namespace, keyType, completedAt)
 }
 
 // RecordDBSync increments the db_sync terminal-state counter and records
 // one observation in the db_sync duration histogram. result is expected
-// to be "succeeded" or "failed" (CC-0089, REQ-005).
+// to be "succeeded" or "failed".
 //
 // DECISION: in-progress jobs MUST NOT call RecordDBSync; the counter
 // represents terminal transitions only, so repeated polling of a running
@@ -191,7 +188,7 @@ func RecordDBSync(keystone, namespace, result string, duration time.Duration) {
 // DeleteForKeystone drops every series tagged with the given keystone name
 // and namespace from the per-CR collectors (rotation age and db-sync). It
 // is a no-op for the sub-reconciler metrics because those intentionally
-// carry no CR labels (CC-0089, REQ-004, REQ-012).
+// carry no CR labels.
 func DeleteForKeystone(name, namespace string) {
 	globalCollectors().deleteForKeystone(name, namespace)
 }
@@ -203,7 +200,7 @@ func DeleteForKeystone(name, namespace string) {
 // is a thin wrapper that resolves globalCollectors() and forwards to the
 // matching method below. The methods are also exercised directly by
 // collectors_test.go against an isolated registry so they are not
-// test-only (CC-0089, REQ-007, REQ-008).
+// test-only.
 
 func (c *collectors) observeReconcileDuration(subReconciler string, d time.Duration) {
 	c.reconcileDuration.WithLabelValues(subReconciler).Observe(d.Seconds())

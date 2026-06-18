@@ -1,4 +1,4 @@
-# CC-0110: ClusterRole RBAC rules unit tests.
+# ClusterRole RBAC rules unit tests.
 # Rules mirror the +kubebuilder:rbac markers on the ControlPlane and
 # CredentialRotation reconcilers (deduplicated), plus the leases rule for
 # leader election — 15 rules total.
@@ -197,11 +197,11 @@ tests:
               - patch
               - delete
 
-  # CC-0116 (REQ-009): reconcileDBCredentials uses CreateOrUpdate on a
+  # reconcileDBCredentials uses CreateOrUpdate on a
   # per-ControlPlane externalsecret, which requires both create and update.
   # The full externalsecrets rule (which includes create and update) must be
   # present so the reconciler is permitted to CreateOrUpdate the ExternalSecret.
-  - it: should allow create and update on externalsecrets so reconcileDBCredentials can CreateOrUpdate (CC-0116, REQ-009)
+  - it: should allow create and update on externalsecrets so reconcileDBCredentials can CreateOrUpdate
     asserts:
       - contains:
           path: rules
@@ -283,7 +283,7 @@ tests:
               - patch
               - delete
 
-  # CC-0043: ClusterRole must not render in namespace-scoped mode.
+  # ClusterRole must not render in namespace-scoped mode.
   - it: should not render ClusterRole when rbac.namespaceScoped is true
     set:
       rbac:

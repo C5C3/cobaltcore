@@ -1,7 +1,7 @@
 {
   "uid": "keystone-operator",
   "title": "Keystone Operator",
-  "tags": ["keystone", "operator", "CC-0089"],
+  "tags": ["keystone", "operator", ""],
   "schemaVersion": 38,
   "version": 1,
   "editable": true,
@@ -31,7 +31,7 @@
       "id": 1,
       "type": "timeseries",
       "title": "Reconcile duration p95 per sub_reconciler",
-      "description": "p95 wall-clock duration of Keystone sub-reconciler invocations, derived from keystone_operator_reconcile_duration_seconds_bucket (CC-0089, REQ-001).",
+      "description": "p95 wall-clock duration of Keystone sub-reconciler invocations, derived from keystone_operator_reconcile_duration_seconds_bucket.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -76,7 +76,7 @@
       "id": 2,
       "type": "timeseries",
       "title": "Reconcile error rate per condition_type",
-      "description": "Rate of keystone_operator_reconcile_errors_total grouped by condition_type (CC-0089, REQ-002).",
+      "description": "Rate of keystone_operator_reconcile_errors_total grouped by condition_type.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -121,7 +121,7 @@
       "id": 3,
       "type": "timeseries",
       "title": "Key rotation age per keystone + key_type",
-      "description": "Age in seconds of the most recent successful key rotation, per Keystone CR and key_type (CC-0089, REQ-003).",
+      "description": "Age in seconds of the most recent successful key rotation, per Keystone CR and key_type.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -166,7 +166,7 @@
       "id": 4,
       "type": "timeseries",
       "title": "db_sync duration p95 and failure rate",
-      "description": "Target A: p95 of keystone_operator_db_sync_duration_seconds_bucket per Keystone CR. Target B: failure rate of keystone_operator_db_sync_total{result=\"failed\"} (CC-0089, REQ-005).",
+      "description": "Target A: p95 of keystone_operator_db_sync_duration_seconds_bucket per Keystone CR. Target B: failure rate of keystone_operator_db_sync_total{result=\"failed\"}.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"

@@ -110,13 +110,13 @@ func drainEventReasons(rec *record.FakeRecorder) []string {
 }
 
 // ---------------------------------------------------------------------------
-// Task 2.1 (CC-0109) — embedded script
+// Task 2.1 — embedded script
 // ---------------------------------------------------------------------------
 
 // TestAdminPasswordRotateScript_EmbeddedContent verifies the go:embed directive
 // loads scripts/admin_password_rotate.sh into adminPasswordRotateScript. A
 // broken embed silently yields an empty string that would fail the CronJob pod
-// at runtime (CC-0109, REQ-006).
+// at runtime.
 func TestAdminPasswordRotateScript_EmbeddedContent(t *testing.T) {
 	g := NewWithT(t)
 
@@ -132,7 +132,7 @@ func TestAdminPasswordRotateScript_EmbeddedContent(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Task 2.2 (CC-0109) — name helpers, push-source/staging Secrets, split RBAC
+// Task 2.2 — name helpers, push-source/staging Secrets, split RBAC
 // ---------------------------------------------------------------------------
 
 func TestAdminPasswordRotation_NameHelpers(t *testing.T) {
@@ -193,7 +193,7 @@ func TestEnsureAdminPasswordRotationRBAC_SplitRoleShape(t *testing.T) {
 
 	// Match each rule by the Secret it scopes (ResourceNames) rather than by a
 	// positional index, so adding or reordering a rule cannot silently
-	// mis-assert (CC-0109).
+	// mis-assert.
 	nextRule := findPolicyRuleByResourceName(role.Rules, adminPasswordNextSecretName(ks))
 	g.Expect(nextRule).NotTo(BeNil(), "expected a rule scoped to the push-source Secret")
 	// Read-only get on the operator-owned push-source Secret.
@@ -216,7 +216,7 @@ func TestEnsureAdminPasswordRotationRBAC_SplitRoleShape(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Task 2.3 (CC-0109) — CronJob builder
+// Task 2.3 — CronJob builder
 // ---------------------------------------------------------------------------
 
 func TestAdminPasswordRotationCronJob_Shape(t *testing.T) {
@@ -275,7 +275,7 @@ func TestAdminPasswordRotationCronJob_Suspend(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Task 2.4 (CC-0109) — validation and apply
+// Task 2.4 — validation and apply
 // ---------------------------------------------------------------------------
 
 func TestValidateAdminPasswordRotationOutput(t *testing.T) {
@@ -498,7 +498,7 @@ func TestApplyAdminPasswordRotation_MalformedAnnotation_Warns(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Task 2.5 (CC-0109) — PushSecret builder + clobber-safe gating
+// Task 2.5 — PushSecret builder + clobber-safe gating
 // ---------------------------------------------------------------------------
 
 func TestAdminPasswordPushSecret_Shape(t *testing.T) {
@@ -513,13 +513,13 @@ func TestAdminPasswordPushSecret_Shape(t *testing.T) {
 	g.Expect(ps.Spec.Selector.Secret.Name).To(Equal(adminPasswordNextSecretName(ks)))
 	// Persistent bootstrap path: never purge OpenBao on PushSecret delete.
 	g.Expect(ps.Spec.DeletionPolicy).To(Equal(esov1alpha1.PushSecretDeletionPolicyNone))
-	// RemoteKey is the per-CR path bootstrap/{namespace}/{name}/admin (CC-0112, REQ-002).
+	// RemoteKey is the per-CR path bootstrap/{namespace}/{name}/admin.
 	g.Expect(ps.Spec.Data).To(HaveLen(1))
 	g.Expect(ps.Spec.Data[0].Match.RemoteRef.RemoteKey).To(Equal(fmt.Sprintf("bootstrap/%s/%s/admin", ks.Namespace, ks.Name)))
 	g.Expect(ps.Spec.Data[0].Match.SecretKey).To(Equal("password"))
 }
 
-// TestAdminPasswordPushSecret_RemoteKeyIsPerCR pins CC-0112 (REQ-002): the
+// TestAdminPasswordPushSecret_RemoteKeyIsPerCR pins the
 // admin-password RemoteKey embeds both the CR namespace and name as path
 // segments, so two Keystone CRs sharing a Name in different namespaces resolve
 // to distinct OpenBao leaves and never clobber each other's bootstrap secret.
@@ -544,7 +544,7 @@ func TestAdminPasswordPushSecret_RemoteKeyIsPerCR(t *testing.T) {
 	g.Expect(keyA).To(Equal("bootstrap/openstack/keystone/admin"))
 	g.Expect(keyB).To(Equal("bootstrap/tenant-b/keystone/admin"))
 	g.Expect(keyA).NotTo(Equal(keyB),
-		"same-named CRs in different namespaces must produce distinct RemoteKeys (CC-0112)")
+		"same-named CRs in different namespaces must produce distinct RemoteKeys")
 }
 
 func TestAdminPasswordPushSourceReady_Gating(t *testing.T) {
@@ -567,7 +567,7 @@ func TestAdminPasswordPushSourceReady_Gating(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Task 2.6 (CC-0109) — enabled-path entry, ordering, gating
+// Task 2.6 — enabled-path entry, ordering, gating
 // ---------------------------------------------------------------------------
 
 func TestReconcilePasswordRotation_Enabled_HappyPath(t *testing.T) {
@@ -606,7 +606,7 @@ func TestReconcilePasswordRotation_Enabled_HappyPath(t *testing.T) {
 // RBAC, and PasswordRotationReady condition are unchanged. Complements the
 // builder-level TestAdminPasswordRotationCronJob_Suspend with a full
 // sub-reconcile pass so a future change that conflated suspend with teardown is
-// caught at the unit level (CC-0109, REQ-006).
+// caught at the unit level.
 func TestReconcilePasswordRotation_Enabled_Suspended(t *testing.T) {
 	g := NewWithT(t)
 	ctx := context.Background()
@@ -691,7 +691,7 @@ func TestReconcilePasswordRotation_AppliesCompletedRotation_Requeues(t *testing.
 }
 
 // ---------------------------------------------------------------------------
-// Task 2.7 (CC-0109) — disabled / teardown branch
+// Task 2.7 — disabled / teardown branch
 // ---------------------------------------------------------------------------
 
 func TestReconcilePasswordRotation_Disabled_TearsDownEverything(t *testing.T) {
@@ -781,7 +781,6 @@ func expectNotFound(g *WithT, r *KeystoneReconciler, obj client.Object, name, na
 // contains target, or nil if none match. Split-RBAC assertions use this to
 // match each rule by the Secret it scopes rather than by a fragile positional
 // index, so a future reorder or inserted rule cannot silently mis-assert
-// (CC-0109).
 func findPolicyRuleByResourceName(rules []rbacv1.PolicyRule, target string) *rbacv1.PolicyRule {
 	for i := range rules {
 		for _, name := range rules[i].ResourceNames {

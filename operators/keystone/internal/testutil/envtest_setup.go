@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Package testutil provides Keystone-specific test utilities for envtest integration tests (CC-0012).
+// Package testutil provides Keystone-specific test utilities for envtest integration tests.
 package testutil
 
 import (
@@ -50,7 +50,7 @@ var SkipIfEnvTestUnavailable = commonenvtest.SkipIfEnvTestUnavailable
 //   - registerWebhooks sets up webhook handlers with the controller-runtime manager.
 //     Callers pass a closure that calls KeystoneWebhook.SetupWebhookWithManager(mgr).
 //
-// The scheme is local to this helper — SharedScheme() in internal/common is NOT modified (CC-0012, REQ-003).
+// The scheme is local to this helper — SharedScheme() in internal/common is NOT modified.
 func SetupKeystoneEnvTest(
 	t testing.TB,
 	addToScheme func(*k8sruntime.Scheme) error,
@@ -107,7 +107,7 @@ func SetupKeystoneEnvTest(
 
 	// Start the manager (and webhook server) in a background goroutine.
 	// mgrStopped is closed when mgr.Start returns, so cleanup can block
-	// until the manager has fully released its ports (CC-0012).
+	// until the manager has fully released its ports.
 	mgrStopped := make(chan struct{})
 	go func() {
 		defer close(mgrStopped)
@@ -133,7 +133,7 @@ func SetupKeystoneEnvTest(
 
 	// Use a direct (non-caching) client for test assertions. The manager's
 	// caching client can return stale data on immediate Create→Get sequences
-	// because the informer may not have processed the object yet (CC-0012).
+	// because the informer may not have processed the object yet.
 	c, err := client.New(cfg, client.Options{Scheme: s})
 	if err != nil {
 		cancel()
@@ -157,14 +157,14 @@ func SetupKeystoneEnvTest(
 
 // SetupKeystoneEnvTestNoWebhook starts an envtest API server with only the
 // Keystone CRD installed — no webhook configurations, no validating webhooks
-// (CC-0106). It returns a direct controller-runtime client so tests can submit
+// It returns a direct controller-runtime client so tests can submit
 // CRs and observe exactly the schema-layer validation the API server enforces
 // (kubebuilder validation markers + x-kubernetes-validations CEL rules)
 // without the defense-in-depth validating webhook short-circuiting the
 // rejection. Tear-down is wired via t.Cleanup().
 //
 // This is intended for tests that must distinguish a CRD CEL rejection from a
-// webhook rejection — e.g. the CC-0106 CRD CEL rule on spec.database that
+// webhook rejection — e.g. the CRD CEL rule on spec.database that
 // requires caBundleSecretRef.name and clientCertSecretRef.name when
 // tls.enabled is true. If the CEL rule were ever removed, the equivalent
 // SetupKeystoneEnvTest-based test would silently keep passing because the
@@ -220,7 +220,7 @@ func waitForWebhookServer(host string, port int, timeout time.Duration) error {
 	tlsCfg := &tls.Config{InsecureSkipVerify: true} //nolint:gosec // envtest self-signed cert
 
 	for time.Now().Before(deadline) {
-		conn, err := tls.DialWithDialer(dialer, "tcp", addr, tlsCfg) //nolint:noctx // test utility polling loop, context propagation not needed (CC-0059)
+		conn, err := tls.DialWithDialer(dialer, "tcp", addr, tlsCfg) //nolint:noctx // test utility polling loop, context propagation not needed
 		if err == nil {
 			_ = conn.Close()
 			return nil
@@ -232,7 +232,7 @@ func waitForWebhookServer(host string, port int, timeout time.Duration) error {
 
 // keystonePaths returns absolute paths to the Keystone CRD and webhook
 // configuration directories, resolved relative to this source file via
-// runtime.Caller(0) (CC-0012, REQ-003).
+// runtime.Caller(0).
 func keystonePaths() (crdDir, webhookDir string) {
 	_, thisFile, _, ok := runtime.Caller(0)
 	if !ok {
@@ -246,7 +246,7 @@ func keystonePaths() (crdDir, webhookDir string) {
 
 // buildScheme creates a runtime.Scheme with core types, apiextensions, and the
 // caller-provided types registered. It is created fresh per test to avoid sharing
-// state between tests and to keep SharedScheme() unmodified (CC-0012, REQ-003).
+// state between tests and to keep SharedScheme() unmodified.
 func buildScheme(addToScheme func(*k8sruntime.Scheme) error) *k8sruntime.Scheme {
 	s := k8sruntime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(s))
@@ -257,7 +257,7 @@ func buildScheme(addToScheme func(*k8sruntime.Scheme) error) *k8sruntime.Scheme 
 
 // commonFakeCRDsDirs returns absolute paths to the fake CRD directories
 // in the shared test infrastructure. Resolved relative to this source file
-// using runtime.Caller(0) (CC-0014, REQ-002).
+// using runtime.Caller(0).
 func commonFakeCRDsDirs() []string {
 	_, thisFile, _, ok := runtime.Caller(0)
 	if !ok {
@@ -287,7 +287,7 @@ func commonFakeCRDsDirs() []string {
 // buildControllerScheme creates a runtime.Scheme that includes all types
 // needed by the KeystoneReconciler: Keystone API types, core K8s types,
 // and all external operator types (MariaDB, ESO, cert-manager).
-// It is created fresh per test (CC-0014, REQ-002).
+// It is created fresh per test.
 func buildControllerScheme(addToScheme func(*k8sruntime.Scheme) error) *k8sruntime.Scheme {
 	s := k8sruntime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(s))
@@ -297,7 +297,7 @@ func buildControllerScheme(addToScheme func(*k8sruntime.Scheme) error) *k8srunti
 	utilruntime.Must(esov1.AddToScheme(s))
 	utilruntime.Must(esov1alpha1.AddToScheme(s))
 	utilruntime.Must(certmanagerv1.AddToScheme(s))
-	// Gateway API types for HTTPRoute reconciliation (CC-0065, REQ-010).
+	// Gateway API types for HTTPRoute reconciliation.
 	utilruntime.Must(gatewayv1.Install(s))
 	// Keystone types.
 	utilruntime.Must(addToScheme(s))
@@ -313,7 +313,6 @@ func buildControllerScheme(addToScheme func(*k8sruntime.Scheme) error) *k8srunti
 //
 // Intended for tests that need a real FieldIndexer against a live API server
 // without paying for the full controller-registration helper
-// (CC-0087, REQ-001).
 func SetupMinimalEnvTest(
 	t testing.TB,
 	addToScheme func(*k8sruntime.Scheme) error,
@@ -367,7 +366,7 @@ func SetupMinimalEnvTest(
 // (MariaDB, ESO, cert-manager), and a controller-runtime Manager running the
 // KeystoneReconciler. It returns a direct (non-caching) client, a context,
 // and its cancel function. The environment is torn down automatically via
-// t.Cleanup() (CC-0014, REQ-002).
+// t.Cleanup().
 //
 // Parameters:
 //   - addToScheme registers the Keystone API types with the runtime scheme.

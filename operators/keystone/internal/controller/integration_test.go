@@ -4,7 +4,7 @@
 
 //go:build integration
 
-// Package controller contains integration tests for the Keystone reconciler (CC-0014, F002).
+// Package controller contains integration tests for the Keystone reconciler (F002).
 package controller
 
 import (
@@ -52,15 +52,13 @@ import (
 	"github.com/c5c3/forge/operators/keystone/internal/testutil"
 )
 
-// Feature: CC-0014
-
-// Test timeout constants for CI tuning (CC-0014).
+// Test timeout constants for CI tuning.
 const (
 	// eventuallyTimeout is the default polling timeout for Eventually assertions.
 	eventuallyTimeout = 30 * time.Second
 	// eventuallyLongTimeout is used for MariaDB User/Grant CR polling, which
 	// depends on the controller's RequeueDatabaseWait delay to discover readiness
-	// changes on unwatched MariaDB types (CC-0044).
+	// changes on unwatched MariaDB types.
 	eventuallyLongTimeout = 2 * RequeueDatabaseWait
 	// pollInterval is the polling interval for Eventually assertions.
 	pollInterval = 500 * time.Millisecond
@@ -69,7 +67,7 @@ const (
 // --- Shared Helpers ---
 
 // setupEnvTestWithController wraps testutil.SetupKeystoneEnvTestWithController with
-// the v1alpha1 scheme, webhook, and controller registration callbacks (CC-0014).
+// the v1alpha1 scheme, webhook, and controller registration callbacks.
 func setupEnvTestWithController(t testing.TB) (client.Client, context.Context, context.CancelFunc) {
 	t.Helper()
 	return testutil.SetupKeystoneEnvTestWithController(
@@ -87,14 +85,13 @@ func setupEnvTestWithController(t testing.TB) (client.Client, context.Context, c
 				// envtest loads the fake HTTPRoute CRD from internal/common/testutil/fake_crds/gateway-api,
 				// so the Gateway API kind is available to the reconciler. Mirror
 				// what SetupWithManager would set from the RESTMapper at startup
-				// (CC-0065).
 				gatewayAPIAvailable: true,
 			}
 			// Register the Keystone field indexer so secretToKeystoneMapper's
 			// MatchingFields lookup works in integration tests, mirroring what
 			// SetupWithManager does in production. Using context.Background()
 			// because the envtest context is not yet available at registration
-			// time — same pattern as keystone_controller.go:525 (CC-0087, REQ-008).
+			// time — same pattern as keystone_controller.go:525.
 			if err := registerSecretNameIndex(context.Background(), mgr.GetFieldIndexer()); err != nil {
 				return err
 			}
@@ -118,7 +115,7 @@ func setupEnvTestWithController(t testing.TB) (client.Client, context.Context, c
 }
 
 // integrationBrownfieldKeystone returns a valid Keystone CR for brownfield mode integration
-// tests (spec.database.host set, no clusterRef) (CC-0014).
+// tests (spec.database.host set, no clusterRef).
 func integrationBrownfieldKeystone(name, namespace string) *keystonev1alpha1.Keystone {
 	return &keystonev1alpha1.Keystone{
 		ObjectMeta: metav1.ObjectMeta{
@@ -152,7 +149,7 @@ func integrationBrownfieldKeystone(name, namespace string) *keystonev1alpha1.Key
 }
 
 // integrationManagedKeystone returns a valid Keystone CR for managed mode integration tests
-// (spec.database.clusterRef set, no host) (CC-0014).
+// (spec.database.clusterRef set, no host).
 func integrationManagedKeystone(name, namespace string) *keystonev1alpha1.Keystone {
 	return &keystonev1alpha1.Keystone{
 		ObjectMeta: metav1.ObjectMeta{
@@ -187,7 +184,7 @@ func integrationManagedKeystone(name, namespace string) *keystonev1alpha1.Keysto
 
 // ensureReadyClusterSecretStore creates or refreshes the OpenBao-backed
 // ClusterSecretStore with a Ready=True condition. reconcileSecrets now gates
-// on this status (CC-0047); without it every integration test would flip to
+// on this status; without it every integration test would flip to
 // SecretsReady=False with reason SecretStoreNotReady. Safe to call multiple
 // times across namespaces since ClusterSecretStore is cluster-scoped.
 func ensureReadyClusterSecretStore(t testing.TB, ctx context.Context, c client.Client) {
@@ -215,13 +212,13 @@ func ensureReadyClusterSecretStore(t testing.TB, ctx context.Context, c client.C
 // createPrerequisites creates the ExternalSecret and Secret resources that the
 // Keystone reconciler expects to find. It creates the DB credentials ExternalSecret
 // and Secret (username+password), the admin credentials ExternalSecret and Secret
-// (password), and calls SimulateExternalSecretSync for both (CC-0014).
+// (password), and calls SimulateExternalSecretSync for both.
 func createPrerequisites(t testing.TB, ctx context.Context, c client.Client, ns string) {
 	t.Helper()
 	g := NewGomegaWithT(t)
 
 	// Ensure the OpenBao-backed ClusterSecretStore reports Ready=True so
-	// reconcileSecrets proceeds past the store gate (CC-0047).
+	// reconcileSecrets proceeds past the store gate.
 	ensureReadyClusterSecretStore(t, ctx, c)
 
 	// Create DB credentials ExternalSecret and Secret.
@@ -301,7 +298,7 @@ func waitForCondition(t testing.TB, ctx context.Context, c client.Client, key ty
 
 // driveFullReconciliation simulates external dependencies to drive the
 // reconciler through all phases to Ready=True. It waits for each phase's
-// resources to appear before simulating their readiness (CC-0014).
+// resources to appear before simulating their readiness.
 func driveFullReconciliation(t testing.TB, ctx context.Context, c client.Client, ksName, ns string) {
 	t.Helper()
 	g := NewGomegaWithT(t)
@@ -321,7 +318,7 @@ func driveFullReconciliation(t testing.TB, ctx context.Context, c client.Client,
 	}, eventuallyTimeout, pollInterval).Should(Succeed(), "db-sync Job should appear")
 	g.Expect(simulators.SimulateJobComplete(ctx, c, dbSyncKey)).To(Succeed(), "simulate db-sync Job completion")
 
-	// Wait for the schema-check Job to appear and simulate its completion (CC-0064).
+	// Wait for the schema-check Job to appear and simulate its completion.
 	schemaCheckKey := client.ObjectKey{Namespace: ns, Name: fmt.Sprintf("%s-schema-check", ksName)}
 	g.Eventually(func() error {
 		return c.Get(ctx, schemaCheckKey, &batchv1.Job{})
@@ -354,7 +351,7 @@ func driveFullReconciliation(t testing.TB, ctx context.Context, c client.Client,
 	waitForCondition(t, ctx, c, key, "Ready", metav1.ConditionTrue, eventuallyTimeout)
 }
 
-// --- Task 2.1: Full reconcile brownfield test (REQ-003, REQ-005, REQ-006, REQ-007) ---
+// --- Task 2.1: Full reconcile brownfield test ---
 
 func TestIntegration_FullReconcile_Brownfield(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
@@ -388,22 +385,22 @@ func TestIntegration_FullReconcile_Brownfield(t *testing.T) {
 		g.Expect(cond.Status).To(Equal(metav1.ConditionTrue), "condition %s should be True", condType)
 	}
 
-	// Verify Ready condition has reason AllReady (REQ-003).
+	// Verify Ready condition has reason AllReady.
 	readyCond := meta.FindStatusCondition(updated.Status.Conditions, "Ready")
 	g.Expect(readyCond.Reason).To(Equal("AllReady"))
 
-	// Verify status.endpoint (REQ-006).
+	// Verify status.endpoint.
 	expectedEndpoint := fmt.Sprintf("http://%s.%s.svc.cluster.local:5000/v3", ks.Name, ns.Name)
 	g.Expect(updated.Status.Endpoint).To(Equal(expectedEndpoint), "status.endpoint should be set correctly")
 
-	// Verify ObservedGeneration on all conditions (REQ-007).
+	// Verify ObservedGeneration on all conditions.
 	for _, cond := range updated.Status.Conditions {
 		g.Expect(cond.ObservedGeneration).To(Equal(updated.Generation),
 			"condition %s ObservedGeneration should match CR generation", cond.Type)
 	}
 }
 
-// --- Task 2.2: Condition progression test (REQ-008) ---
+// --- Task 2.2: Condition progression test ---
 
 func TestIntegration_ConditionProgression(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
@@ -416,7 +413,7 @@ func TestIntegration_ConditionProgression(t *testing.T) {
 
 	// Ensure the ClusterSecretStore gate is open so this test still exercises
 	// the per-ExternalSecret Ready progression rather than short-circuiting on
-	// SecretStoreNotReady (CC-0047).
+	// SecretStoreNotReady.
 	ensureReadyClusterSecretStore(t, ctx, c)
 
 	// Phase 0: Create ExternalSecrets and Secrets but do NOT simulate sync yet.
@@ -498,7 +495,7 @@ func TestIntegration_ConditionProgression(t *testing.T) {
 	}, eventuallyTimeout, pollInterval).Should(Succeed())
 	g.Expect(simulators.SimulateJobComplete(ctx, c, dbSyncKey)).To(Succeed())
 
-	// Wait for schema-check Job and simulate completion (CC-0064).
+	// Wait for schema-check Job and simulate completion.
 	schemaCheckKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-schema-check", ks.Name)}
 	g.Eventually(func() error {
 		return c.Get(ctx, schemaCheckKey, &batchv1.Job{})
@@ -521,7 +518,7 @@ func TestIntegration_ConditionProgression(t *testing.T) {
 
 	waitForCondition(t, ctx, c, key, "DeploymentReady", metav1.ConditionTrue, eventuallyTimeout)
 
-	// HPAReady should be True with reason HPANotRequired (no autoscaling configured, CC-0038).
+	// HPAReady should be True with reason HPANotRequired (no autoscaling configured).
 	hpaCond := waitForCondition(t, ctx, c, key, "HPAReady", metav1.ConditionTrue, eventuallyTimeout)
 	g.Expect(hpaCond.Reason).To(Equal("HPANotRequired"), "HPAReady reason should be HPANotRequired when autoscaling is nil")
 
@@ -531,7 +528,7 @@ func TestIntegration_ConditionProgression(t *testing.T) {
 
 	// Ready should NOT be True while BootstrapReady is False. Using
 	// meta.IsStatusConditionTrue handles both the nil case (condition absent)
-	// and the present-but-False case unconditionally (CC-0014).
+	// and the present-but-False case unconditionally.
 	g.Consistently(func(ig Gomega) {
 		ksState := &keystonev1alpha1.Keystone{}
 		ig.Expect(c.Get(ctx, key, ksState)).To(Succeed())
@@ -551,7 +548,7 @@ func TestIntegration_ConditionProgression(t *testing.T) {
 	g.Expect(readyFinal.Reason).To(Equal("AllReady"))
 }
 
-// --- Task 2.3: Resource creation, status endpoint, and observed generation tests (REQ-005, REQ-006, REQ-007) ---
+// --- Task 2.3: Resource creation, status endpoint, and observed generation tests ---
 
 func TestIntegration_ResourceCreation(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
@@ -569,7 +566,7 @@ func TestIntegration_ResourceCreation(t *testing.T) {
 
 	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
 
-	// Verify all child resources exist (REQ-005).
+	// Verify all child resources exist.
 
 	// Deployment.
 	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: "test-keystone"}, &appsv1.Deployment{})).
@@ -618,7 +615,7 @@ func TestIntegration_ResourceCreation(t *testing.T) {
 	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-fernet-keys-backup"}, &esov1alpha1.PushSecret{})).
 		To(Succeed(), "PushSecret test-keystone-fernet-keys-backup should exist")
 
-	// PodDisruptionBudget (CC-0037).
+	// PodDisruptionBudget.
 	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: "test-keystone"}, &policyv1.PodDisruptionBudget{})).
 		To(Succeed(), "PodDisruptionBudget test-keystone should exist")
 }
@@ -639,7 +636,7 @@ func TestIntegration_StatusEndpoint(t *testing.T) {
 
 	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
 
-	// Verify status.endpoint (REQ-006).
+	// Verify status.endpoint.
 	updated := &keystonev1alpha1.Keystone{}
 	g.Expect(c.Get(ctx, types.NamespacedName{Name: ks.Name, Namespace: ns.Name}, updated)).To(Succeed())
 
@@ -663,7 +660,7 @@ func TestIntegration_ObservedGeneration(t *testing.T) {
 
 	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
 
-	// Verify ObservedGeneration on all conditions (REQ-007).
+	// Verify ObservedGeneration on all conditions.
 	updated := &keystonev1alpha1.Keystone{}
 	g.Expect(c.Get(ctx, types.NamespacedName{Name: ks.Name, Namespace: ns.Name}, updated)).To(Succeed())
 
@@ -673,7 +670,7 @@ func TestIntegration_ObservedGeneration(t *testing.T) {
 	}
 }
 
-// --- Task 2.4: Full reconcile managed mode test (REQ-004) ---
+// --- Task 2.4: Full reconcile managed mode test ---
 
 func TestIntegration_FullReconcile_Managed(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
@@ -688,7 +685,7 @@ func TestIntegration_FullReconcile_Managed(t *testing.T) {
 	createPrerequisites(t, ctx, c, ns.Name)
 
 	// Create a ready MariaDB cluster CR so the reconciler's cluster health
-	// check passes (CC-0047).
+	// check passes.
 	mdbCluster := &mariadbv1alpha1.MariaDB{
 		ObjectMeta: metav1.ObjectMeta{Name: "mariadb", Namespace: ns.Name},
 	}
@@ -753,7 +750,7 @@ func TestIntegration_FullReconcile_Managed(t *testing.T) {
 	}, eventuallyLongTimeout, pollInterval).Should(Succeed(), "db-sync Job should appear")
 	g.Expect(simulators.SimulateJobComplete(ctx, c, dbSyncKey)).To(Succeed())
 
-	// Wait for schema-check Job and simulate completion (CC-0064).
+	// Wait for schema-check Job and simulate completion.
 	schemaCheckKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-schema-check", ks.Name)}
 	g.Eventually(func() error {
 		return c.Get(ctx, schemaCheckKey, &batchv1.Job{})
@@ -808,7 +805,7 @@ func TestIntegration_FullReconcile_Managed(t *testing.T) {
 	g.Expect(c.Get(ctx, grantKey, &mariadbv1alpha1.Grant{})).To(Succeed(), "MariaDB Grant CR should still exist")
 }
 
-// --- Task CC-0015/2.1: CronJob detailed spec test (REQ-006) ---
+// --- Task/2.1: CronJob detailed spec test ---
 
 func TestIntegration_CronJobDetailedSpec(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
@@ -826,7 +823,7 @@ func TestIntegration_CronJobDetailedSpec(t *testing.T) {
 
 	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
 
-	// Fetch the Fernet rotation CronJob (REQ-006).
+	// Fetch the Fernet rotation CronJob.
 	cronJob := &batchv1.CronJob{}
 	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-fernet-rotate"}, cronJob)).
 		To(Succeed(), "CronJob test-keystone-fernet-rotate should exist")
@@ -873,7 +870,7 @@ func TestIntegration_CronJobDetailedSpec(t *testing.T) {
 	}
 	g.Expect(envMap).To(HaveKey("SECRET_NAME"))
 	// SECRET_NAME points at the staging Secret — CronJob SA cannot patch
-	// the production Secret (CC-0081).
+	// the production Secret.
 	g.Expect(envMap["SECRET_NAME"].Value).To(Equal(fmt.Sprintf("%s-fernet-keys-rotation", ks.Name)))
 
 	g.Expect(envMap).To(HaveKey("SECRET_NAMESPACE"))
@@ -930,11 +927,11 @@ func TestIntegration_CronJobDetailedSpec(t *testing.T) {
 	g.Expect(*volMap["scripts"].ConfigMap.DefaultMode).To(Equal(int32(0o555)))
 }
 
-// --- Task CC-0015/2.2: Bootstrap Job detailed spec test (REQ-007) ---
+// --- Task/2.2: Bootstrap Job detailed spec test ---
 
 // driveReconciliationToBootstrapJob drives external dependencies through
 // reconciliation phases until the bootstrap Job appears, without simulating
-// bootstrap completion (CC-0015, REQ-007).
+// bootstrap completion.
 func driveReconciliationToBootstrapJob(t testing.TB, ctx context.Context, c client.Client, ksName, ns string) {
 	t.Helper()
 	g := NewGomegaWithT(t)
@@ -950,7 +947,7 @@ func driveReconciliationToBootstrapJob(t testing.TB, ctx context.Context, c clie
 	}, eventuallyTimeout, pollInterval).Should(Succeed(), "db-sync Job should appear")
 	g.Expect(simulators.SimulateJobComplete(ctx, c, dbSyncKey)).To(Succeed())
 
-	// Wait for schema-check Job and simulate completion (CC-0064).
+	// Wait for schema-check Job and simulate completion.
 	schemaCheckKey := client.ObjectKey{Namespace: ns, Name: fmt.Sprintf("%s-schema-check", ksName)}
 	g.Eventually(func() error {
 		return c.Get(ctx, schemaCheckKey, &batchv1.Job{})
@@ -988,7 +985,7 @@ func TestIntegration_BootstrapJobDetailedSpec(t *testing.T) {
 	ks := integrationBrownfieldKeystone("test-keystone", ns.Name)
 	g.Expect(c.Create(ctx, ks)).To(Succeed())
 
-	// Drive reconciliation until bootstrap Job appears, without completing it (REQ-007).
+	// Drive reconciliation until bootstrap Job appears, without completing it.
 	driveReconciliationToBootstrapJob(t, ctx, c, ks.Name, ns.Name)
 
 	// Fetch the bootstrap Job.
@@ -996,13 +993,13 @@ func TestIntegration_BootstrapJobDetailedSpec(t *testing.T) {
 	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-bootstrap"}, bootstrapJob)).
 		To(Succeed(), "bootstrap Job should exist")
 
-	// Verify backoffLimit (REQ-007).
+	// Verify backoffLimit.
 	g.Expect(bootstrapJob.Spec.BackoffLimit).NotTo(BeNil())
 	g.Expect(*bootstrapJob.Spec.BackoffLimit).To(Equal(int32(4)), "backoffLimit should be 4")
 
-	// CC-0113 (#415): ttlSecondsAfterFinished is intentionally unset so the
+	// (#415): ttlSecondsAfterFinished is intentionally unset so the
 	// finished Job lingers as the RunJob pod-spec-hash state record and does
-	// not trigger a TTL-driven re-creation loop (REQ-001, REQ-007).
+	// not trigger a TTL-driven re-creation loop.
 	g.Expect(bootstrapJob.Spec.TTLSecondsAfterFinished).To(BeNil())
 
 	// Verify container spec.
@@ -1015,8 +1012,8 @@ func TestIntegration_BootstrapJobDetailedSpec(t *testing.T) {
 	expectedImage := fmt.Sprintf("%s:%s", ks.Spec.Image.Repository, ks.Spec.Image.Tag)
 	g.Expect(container.Image).To(Equal(expectedImage))
 
-	// Verify command uses shell wrapper for idempotent bootstrap (REQ-007).
-	// Since CC-0106, the wrapper passes the admin/internal/public URLs and
+	// Verify command uses shell wrapper for idempotent bootstrap.
+	// Since, the wrapper passes the admin/internal/public URLs and
 	// region id through environment variables ($BOOTSTRAP_ADMIN_URL etc.)
 	// rather than baking them into the script; the concrete values are
 	// asserted below against container.Env.
@@ -1026,10 +1023,10 @@ func TestIntegration_BootstrapJobDetailedSpec(t *testing.T) {
 	g.Expect(container.Command[3]).To(ContainSubstring(`--bootstrap-region-id "$BOOTSTRAP_REGION_ID"`))
 	g.Expect(container.Args).To(BeNil())
 
-	// Verify env: BOOTSTRAP_PASSWORD from admin Secret (REQ-007),
+	// Verify env: BOOTSTRAP_PASSWORD from admin Secret,
 	// OS_DATABASE__CONNECTION from the derived db-connection Secret
-	// (CC-0080, REQ-004) and the bootstrap region + URL env-vars passed to
-	// keystone-manage bootstrap (CC-0106, REQ-005).
+	// and the bootstrap region + URL env-vars passed to
+	// keystone-manage bootstrap.
 	expectedServiceURL := fmt.Sprintf("http://%s.%s.svc.cluster.local:5000/v3", ks.Name, ns.Name)
 	g.Expect(container.Env).To(HaveLen(6))
 	pwEnv := container.Env[0]
@@ -1057,13 +1054,13 @@ func TestIntegration_BootstrapJobDetailedSpec(t *testing.T) {
 	g.Expect(container.Env[5].Name).To(Equal("BOOTSTRAP_PUBLIC_URL"))
 	g.Expect(container.Env[5].Value).To(Equal(expectedServiceURL))
 
-	// Verify config volume mount (REQ-007).
+	// Verify config volume mount.
 	g.Expect(container.VolumeMounts).To(HaveLen(2))
 	g.Expect(container.VolumeMounts[0].Name).To(Equal("config"))
 	g.Expect(container.VolumeMounts[0].MountPath).To(Equal("/etc/keystone/keystone.conf.d/"))
 	g.Expect(container.VolumeMounts[0].ReadOnly).To(BeTrue())
 
-	// Verify fernet-keys volume mount (CC-0018: bootstrap needs fernet keys).
+	// Verify fernet-keys volume mount (: bootstrap needs fernet keys).
 	g.Expect(container.VolumeMounts[1].Name).To(Equal("fernet-keys"))
 	g.Expect(container.VolumeMounts[1].MountPath).To(Equal("/etc/keystone/fernet-keys/"))
 	g.Expect(container.VolumeMounts[1].ReadOnly).To(BeTrue())
@@ -1084,7 +1081,7 @@ func TestIntegration_BootstrapJobDetailedSpec(t *testing.T) {
 	g.Expect(podSpec.RestartPolicy).To(Equal(corev1.RestartPolicyNever))
 }
 
-// --- Task CC-0037: PodDisruptionBudget tests ---
+// --- Task: PodDisruptionBudget tests ---
 
 func TestIntegration_PDBSpec(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
@@ -1102,32 +1099,32 @@ func TestIntegration_PDBSpec(t *testing.T) {
 
 	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
 
-	// Fetch the PDB (CC-0037).
+	// Fetch the PDB.
 	pdb := &policyv1.PodDisruptionBudget{}
 	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: "test-keystone"}, pdb)).
 		To(Succeed(), "PDB test-keystone should exist")
 
-	// Verify labels match commonLabels (CC-0037).
+	// Verify labels match commonLabels.
 	g.Expect(pdb.Labels).To(HaveKeyWithValue("app.kubernetes.io/name", "keystone"))
 	g.Expect(pdb.Labels).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-keystone"))
 	g.Expect(pdb.Labels).To(HaveKeyWithValue("app.kubernetes.io/managed-by", "keystone-operator"))
 
-	// Verify selector matches selectorLabels (CC-0037).
+	// Verify selector matches selectorLabels.
 	g.Expect(pdb.Spec.Selector).NotTo(BeNil())
 	g.Expect(pdb.Spec.Selector.MatchLabels).To(HaveKeyWithValue("app.kubernetes.io/name", "keystone"))
 	g.Expect(pdb.Spec.Selector.MatchLabels).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-keystone"))
 
-	// Verify PDB selector matches Deployment selector (CC-0037).
+	// Verify PDB selector matches Deployment selector.
 	deploy := &appsv1.Deployment{}
 	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: "test-keystone"}, deploy)).To(Succeed())
 	g.Expect(pdb.Spec.Selector.MatchLabels).To(Equal(deploy.Spec.Selector.MatchLabels))
 
-	// Replicas=3 → minAvailable=1 (CC-0037).
+	// Replicas=3 → minAvailable=1.
 	g.Expect(pdb.Spec.MinAvailable).NotTo(BeNil())
 	g.Expect(*pdb.Spec.MinAvailable).To(Equal(intstr.FromInt32(1)))
 	g.Expect(pdb.Spec.MaxUnavailable).To(BeNil())
 
-	// Verify owner reference (CC-0037).
+	// Verify owner reference.
 	g.Expect(pdb.OwnerReferences).To(HaveLen(1))
 	g.Expect(pdb.OwnerReferences[0].Name).To(Equal("test-keystone"))
 }
@@ -1151,19 +1148,19 @@ func TestIntegration_PDBUpdatedOnReplicaChange(t *testing.T) {
 	key := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
 	pdbKey := client.ObjectKey{Namespace: ns.Name, Name: "test-keystone"}
 
-	// Initial state: replicas=3 → minAvailable=1 (CC-0037).
+	// Initial state: replicas=3 → minAvailable=1.
 	pdb := &policyv1.PodDisruptionBudget{}
 	g.Expect(c.Get(ctx, pdbKey, pdb)).To(Succeed())
 	g.Expect(pdb.Spec.MinAvailable).NotTo(BeNil())
 	g.Expect(pdb.Spec.MaxUnavailable).To(BeNil())
 
-	// Update replicas to 1 → PDB should switch to maxUnavailable=1 (CC-0037).
+	// Update replicas to 1 → PDB should switch to maxUnavailable=1.
 	updated := &keystonev1alpha1.Keystone{}
 	g.Expect(c.Get(ctx, key, updated)).To(Succeed())
 	updated.Spec.Replicas = 1
 	g.Expect(c.Update(ctx, updated)).To(Succeed())
 
-	// Wait for the controller to reconcile and update the PDB (CC-0037).
+	// Wait for the controller to reconcile and update the PDB.
 	g.Eventually(func() *intstr.IntOrString {
 		p := &policyv1.PodDisruptionBudget{}
 		if err := c.Get(ctx, pdbKey, p); err != nil {
@@ -1177,10 +1174,10 @@ func TestIntegration_PDBUpdatedOnReplicaChange(t *testing.T) {
 	g.Expect(pdb.Spec.MinAvailable).To(BeNil())
 }
 
-// --- HPA integration tests (CC-0038) ---
+// --- HPA integration tests ---
 
 // integrationBrownfieldKeystoneWithAutoscaling returns a valid Keystone CR with autoscaling
-// configured for integration tests (CC-0038).
+// configured for integration tests.
 func integrationBrownfieldKeystoneWithAutoscaling(name, namespace string, maxReplicas int32, cpuUtil *int32) *keystonev1alpha1.Keystone {
 	ks := integrationBrownfieldKeystone(name, namespace)
 	ks.Spec.Autoscaling = &keystonev1alpha1.AutoscalingSpec{
@@ -1207,38 +1204,38 @@ func TestIntegration_HPASpec(t *testing.T) {
 
 	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
 
-	// Fetch the HPA (CC-0038).
+	// Fetch the HPA.
 	hpa := &autoscalingv2.HorizontalPodAutoscaler{}
 	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: "test-keystone"}, hpa)).
 		To(Succeed(), "HPA test-keystone should exist")
 
-	// Verify ScaleTargetRef (CC-0038).
+	// Verify ScaleTargetRef.
 	g.Expect(hpa.Spec.ScaleTargetRef.Kind).To(Equal("Deployment"))
 	g.Expect(hpa.Spec.ScaleTargetRef.Name).To(Equal("test-keystone"))
 	g.Expect(hpa.Spec.ScaleTargetRef.APIVersion).To(Equal("apps/v1"))
 
-	// MinReplicas defaults to spec.replicas (3) when not explicitly set (CC-0038).
+	// MinReplicas defaults to spec.replicas (3) when not explicitly set.
 	g.Expect(hpa.Spec.MinReplicas).NotTo(BeNil())
 	g.Expect(*hpa.Spec.MinReplicas).To(Equal(int32(3)))
 
-	// MaxReplicas (CC-0038).
+	// MaxReplicas.
 	g.Expect(hpa.Spec.MaxReplicas).To(Equal(int32(10)))
 
-	// CPU metric (CC-0038).
+	// CPU metric.
 	g.Expect(hpa.Spec.Metrics).To(HaveLen(1))
 	g.Expect(hpa.Spec.Metrics[0].Resource.Name).To(Equal(corev1.ResourceCPU))
 	g.Expect(*hpa.Spec.Metrics[0].Resource.Target.AverageUtilization).To(Equal(int32(80)))
 
-	// Verify labels (CC-0038).
+	// Verify labels.
 	g.Expect(hpa.Labels).To(HaveKeyWithValue("app.kubernetes.io/name", "keystone"))
 	g.Expect(hpa.Labels).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-keystone"))
 	g.Expect(hpa.Labels).To(HaveKeyWithValue("app.kubernetes.io/managed-by", "keystone-operator"))
 
-	// Verify owner reference (CC-0038).
+	// Verify owner reference.
 	g.Expect(hpa.OwnerReferences).To(HaveLen(1))
 	g.Expect(hpa.OwnerReferences[0].Name).To(Equal("test-keystone"))
 
-	// Verify HPAReady condition (CC-0038).
+	// Verify HPAReady condition.
 	key := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
 	ksState := &keystonev1alpha1.Keystone{}
 	g.Expect(c.Get(ctx, key, ksState)).To(Succeed())
@@ -1268,18 +1265,18 @@ func TestIntegration_HPAUpdatedOnAutoscalingChange(t *testing.T) {
 	hpaKey := client.ObjectKey{Namespace: ns.Name, Name: "test-keystone"}
 	key := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
 
-	// Initial state: maxReplicas=10 (CC-0038).
+	// Initial state: maxReplicas=10.
 	hpa := &autoscalingv2.HorizontalPodAutoscaler{}
 	g.Expect(c.Get(ctx, hpaKey, hpa)).To(Succeed())
 	g.Expect(hpa.Spec.MaxReplicas).To(Equal(int32(10)))
 
-	// Update maxReplicas to 20 (CC-0038).
+	// Update maxReplicas to 20.
 	updated := &keystonev1alpha1.Keystone{}
 	g.Expect(c.Get(ctx, key, updated)).To(Succeed())
 	updated.Spec.Autoscaling.MaxReplicas = 20
 	g.Expect(c.Update(ctx, updated)).To(Succeed())
 
-	// Wait for the controller to reconcile and update the HPA (CC-0038).
+	// Wait for the controller to reconcile and update the HPA.
 	g.Eventually(func() int32 {
 		h := &autoscalingv2.HorizontalPodAutoscaler{}
 		if err := c.Get(ctx, hpaKey, h); err != nil {
@@ -1309,11 +1306,11 @@ func TestIntegration_HPADeletedWhenAutoscalingRemoved(t *testing.T) {
 	hpaKey := client.ObjectKey{Namespace: ns.Name, Name: "test-keystone"}
 	key := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
 
-	// HPA should exist initially (CC-0038).
+	// HPA should exist initially.
 	hpa := &autoscalingv2.HorizontalPodAutoscaler{}
 	g.Expect(c.Get(ctx, hpaKey, hpa)).To(Succeed(), "HPA should exist when autoscaling is configured")
 
-	// Remove autoscaling (CC-0038).
+	// Remove autoscaling.
 	updated := &keystonev1alpha1.Keystone{}
 	g.Expect(c.Get(ctx, key, updated)).To(Succeed())
 	updated.Spec.Autoscaling = nil
@@ -1337,14 +1334,14 @@ func TestIntegration_HPADeletedWhenAutoscalingRemoved(t *testing.T) {
 	g.Expect(simulators.SimulateDeploymentReady(ctx, c, deployKey, ptr.Deref(deploy.Spec.Replicas, 1))).
 		To(Succeed(), "simulate Deployment ready at restored replica count")
 
-	// Wait for the HPA to be deleted (CC-0038).
+	// Wait for the HPA to be deleted.
 	g.Eventually(func() bool {
 		h := &autoscalingv2.HorizontalPodAutoscaler{}
 		err := c.Get(ctx, hpaKey, h)
 		return err != nil
 	}, eventuallyTimeout, pollInterval).Should(BeTrue(), "HPA should be deleted when autoscaling is removed")
 
-	// Verify HPAReady condition switches to HPANotRequired (CC-0038).
+	// Verify HPAReady condition switches to HPANotRequired.
 	g.Eventually(func() string {
 		ksState := &keystonev1alpha1.Keystone{}
 		if err := c.Get(ctx, key, ksState); err != nil {
@@ -1358,7 +1355,7 @@ func TestIntegration_HPADeletedWhenAutoscalingRemoved(t *testing.T) {
 	}, eventuallyTimeout, pollInterval).Should(Equal("HPANotRequired"), "HPAReady reason should be HPANotRequired")
 }
 
-// --- Task CC-0056/4.1: Fresh deployment — InstalledRelease tracking (REQ-008) ---
+// --- Task/4.1: Fresh deployment — InstalledRelease tracking ---
 
 func TestIntegration_FreshDeployment_InstalledReleaseTracking(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
@@ -1371,7 +1368,7 @@ func TestIntegration_FreshDeployment_InstalledReleaseTracking(t *testing.T) {
 
 	createPrerequisites(t, ctx, c, ns.Name)
 
-	// Create brownfield Keystone CR with tag "2025.2" (CC-0056, REQ-008).
+	// Create brownfield Keystone CR with tag "2025.2".
 	ks := integrationBrownfieldKeystone("test-keystone", ns.Name)
 	g.Expect(c.Create(ctx, ks)).To(Succeed())
 
@@ -1384,17 +1381,17 @@ func TestIntegration_FreshDeployment_InstalledReleaseTracking(t *testing.T) {
 	updated := &keystonev1alpha1.Keystone{}
 	g.Expect(c.Get(ctx, key, updated)).To(Succeed())
 
-	// Verify status.installedRelease is set to spec.image.tag (CC-0056, REQ-008).
+	// Verify status.installedRelease is set to spec.image.tag.
 	g.Expect(updated.Status.InstalledRelease).To(Equal("2025.2"),
 		"installedRelease should equal spec.image.tag after fresh deployment")
 
-	// Verify no upgrade was triggered (CC-0056).
+	// Verify no upgrade was triggered.
 	g.Expect(string(updated.Status.UpgradePhase)).To(Equal(""),
 		"upgradePhase should be empty for fresh deployment")
 	g.Expect(updated.Status.TargetRelease).To(Equal(""),
 		"targetRelease should be empty for fresh deployment")
 
-	// Verify the db-sync Job used standard db_sync command without upgrade flags (CC-0056).
+	// Verify the db-sync Job used standard db_sync command without upgrade flags.
 	dbSyncJob := &batchv1.Job{}
 	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-db-sync"}, dbSyncJob)).
 		To(Succeed(), "standard db-sync Job should exist")
@@ -1407,7 +1404,7 @@ func TestIntegration_FreshDeployment_InstalledReleaseTracking(t *testing.T) {
 	),
 		"db-sync Job image should match spec.image.tag")
 
-	// Verify no upgrade Jobs were created (CC-0056).
+	// Verify no upgrade Jobs were created.
 	for _, phase := range []string{"expand", "migrate", "contract"} {
 		j := &batchv1.Job{}
 		err := c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("test-keystone-db-%s", phase)}, j)
@@ -1415,14 +1412,14 @@ func TestIntegration_FreshDeployment_InstalledReleaseTracking(t *testing.T) {
 			fmt.Sprintf("upgrade Job %s should not exist for fresh deployment", phase))
 	}
 
-	// Verify no regression: Ready=True with AllReady reason (CC-0056, REQ-008).
+	// Verify no regression: Ready=True with AllReady reason.
 	readyCond := meta.FindStatusCondition(updated.Status.Conditions, "Ready")
 	g.Expect(readyCond).NotTo(BeNil(), "Ready condition should exist")
 	g.Expect(readyCond.Status).To(Equal(metav1.ConditionTrue), "Ready should be True")
 	g.Expect(readyCond.Reason).To(Equal("AllReady"))
 }
 
-// --- Task CC-0056/4.2: Full expand-migrate-contract upgrade cycle (REQ-001 through REQ-006) ---
+// --- Task/4.2: Full expand-migrate-contract upgrade cycle (through) ---
 
 func TestIntegration_UpgradeCycle_ExpandMigrateContract(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
@@ -1435,7 +1432,7 @@ func TestIntegration_UpgradeCycle_ExpandMigrateContract(t *testing.T) {
 
 	createPrerequisites(t, ctx, c, ns.Name)
 
-	// Create brownfield Keystone with initial release "2025.1" (CC-0056).
+	// Create brownfield Keystone with initial release "2025.1".
 	ks := integrationBrownfieldKeystone("test-keystone", ns.Name)
 	ks.Spec.Image.Tag = "2025.1"
 	g.Expect(c.Create(ctx, ks)).To(Succeed())
@@ -1445,7 +1442,7 @@ func TestIntegration_UpgradeCycle_ExpandMigrateContract(t *testing.T) {
 	// Drive initial deployment to Ready=True.
 	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
 
-	// Verify initial installedRelease (CC-0056, REQ-008).
+	// Verify initial installedRelease.
 	initial := &keystonev1alpha1.Keystone{}
 	g.Expect(c.Get(ctx, key, initial)).To(Succeed())
 	g.Expect(initial.Status.InstalledRelease).To(Equal("2025.1"),
@@ -1454,7 +1451,7 @@ func TestIntegration_UpgradeCycle_ExpandMigrateContract(t *testing.T) {
 	expectedNewImage := fmt.Sprintf("%s:2025.2", ks.Spec.Image.Repository)
 
 	// Capture the completed bootstrap Job from the initial release. A pure image
-	// change must NOT re-run the bootstrap Job (CC-0113): identity bootstrap is
+	// change must NOT re-run the bootstrap Job identity bootstrap is
 	// one-time and gated on the admin-password digest, so it stays put across a
 	// release upgrade while the migration Jobs (db-sync / schema-check /
 	// expand / migrate / contract) re-run with the new image.
@@ -1466,13 +1463,13 @@ func TestIntegration_UpgradeCycle_ExpandMigrateContract(t *testing.T) {
 		"pre-upgrade bootstrap Job should carry the initial image")
 	preUpgradeBootstrapUID := preUpgradeBootstrap.UID
 
-	// --- Trigger upgrade: update image tag to 2025.2 (CC-0056, REQ-001) ---
+	// --- Trigger upgrade: update image tag to 2025.2 ---
 	current := &keystonev1alpha1.Keystone{}
 	g.Expect(c.Get(ctx, key, current)).To(Succeed())
 	current.Spec.Image.Tag = "2025.2"
 	g.Expect(c.Update(ctx, current)).To(Succeed())
 
-	// Phase 1: Expanding — expand Job with NEW image (CC-0056, REQ-002).
+	// Phase 1: Expanding — expand Job with NEW image.
 	g.Eventually(func() keystonev1alpha1.UpgradePhase {
 		ks := &keystonev1alpha1.Keystone{}
 		if err := c.Get(ctx, key, ks); err != nil {
@@ -1482,7 +1479,7 @@ func TestIntegration_UpgradeCycle_ExpandMigrateContract(t *testing.T) {
 	}, eventuallyTimeout, pollInterval).Should(Equal(keystonev1alpha1.UpgradePhaseExpanding),
 		"upgradePhase should transition to Expanding")
 
-	// Verify targetRelease is set (CC-0056, REQ-001).
+	// Verify targetRelease is set.
 	ksState := &keystonev1alpha1.Keystone{}
 	g.Expect(c.Get(ctx, key, ksState)).To(Succeed())
 	g.Expect(ksState.Status.TargetRelease).To(Equal("2025.2"))
@@ -1502,7 +1499,7 @@ func TestIntegration_UpgradeCycle_ExpandMigrateContract(t *testing.T) {
 
 	g.Expect(simulators.SimulateJobComplete(ctx, c, expandKey)).To(Succeed(), "simulate expand Job completion")
 
-	// Phase 2: Migrating — migrate Job with NEW image (CC-0056, REQ-003).
+	// Phase 2: Migrating — migrate Job with NEW image.
 	g.Eventually(func() keystonev1alpha1.UpgradePhase {
 		ks := &keystonev1alpha1.Keystone{}
 		if err := c.Get(ctx, key, ks); err != nil {
@@ -1527,7 +1524,7 @@ func TestIntegration_UpgradeCycle_ExpandMigrateContract(t *testing.T) {
 
 	g.Expect(simulators.SimulateJobComplete(ctx, c, migrateKey)).To(Succeed(), "simulate migrate Job completion")
 
-	// Phase 3: RollingUpdate — Deployment updated with NEW image (CC-0056, REQ-004).
+	// Phase 3: RollingUpdate — Deployment updated with NEW image.
 	g.Eventually(func() keystonev1alpha1.UpgradePhase {
 		ks := &keystonev1alpha1.Keystone{}
 		if err := c.Get(ctx, key, ks); err != nil {
@@ -1537,7 +1534,7 @@ func TestIntegration_UpgradeCycle_ExpandMigrateContract(t *testing.T) {
 	}, eventuallyTimeout, pollInterval).Should(Equal(keystonev1alpha1.UpgradePhaseRollingUpdate),
 		"upgradePhase should transition to RollingUpdate")
 
-	// Wait for Deployment to be updated with new image (CC-0056, REQ-004).
+	// Wait for Deployment to be updated with new image.
 	deployKey := client.ObjectKey{Namespace: ns.Name, Name: ks.Name}
 	g.Eventually(func() string {
 		d := &appsv1.Deployment{}
@@ -1551,13 +1548,13 @@ func TestIntegration_UpgradeCycle_ExpandMigrateContract(t *testing.T) {
 	}, eventuallyTimeout, pollInterval).Should(Equal(expectedNewImage),
 		"Deployment should be updated with new image during RollingUpdate")
 
-	// Simulate Deployment rollout completion (CC-0056, REQ-004).
+	// Simulate Deployment rollout completion.
 	deploy := &appsv1.Deployment{}
 	g.Expect(c.Get(ctx, deployKey, deploy)).To(Succeed())
 	g.Expect(simulators.SimulateDeploymentReady(ctx, c, deployKey, ptr.Deref(deploy.Spec.Replicas, 1))).
 		To(Succeed(), "simulate Deployment rollout with new image")
 
-	// Phase 4: Contracting — contract Job with NEW image (CC-0056, REQ-005).
+	// Phase 4: Contracting — contract Job with NEW image.
 	g.Eventually(func() keystonev1alpha1.UpgradePhase {
 		ks := &keystonev1alpha1.Keystone{}
 		if err := c.Get(ctx, key, ks); err != nil {
@@ -1582,7 +1579,7 @@ func TestIntegration_UpgradeCycle_ExpandMigrateContract(t *testing.T) {
 
 	g.Expect(simulators.SimulateJobComplete(ctx, c, contractKey)).To(Succeed(), "simulate contract Job completion")
 
-	// Verify upgrade completion: installedRelease updated, phase/target cleared (CC-0056, REQ-006).
+	// Verify upgrade completion: installedRelease updated, phase/target cleared.
 	g.Eventually(func() string {
 		ks := &keystonev1alpha1.Keystone{}
 		if err := c.Get(ctx, key, ks); err != nil {
@@ -1600,7 +1597,7 @@ func TestIntegration_UpgradeCycle_ExpandMigrateContract(t *testing.T) {
 		"upgradePhase should be cleared after upgrade completes")
 
 	// Post-upgrade: the operator re-runs db_sync and bootstrap with the new image
-	// because the PodSpec hash changed (CC-0005). Drive the remaining reconciliation.
+	// because the PodSpec hash changed. Drive the remaining reconciliation.
 	dbSyncKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-db-sync", ks.Name)}
 	g.Eventually(func() bool {
 		j := &batchv1.Job{}
@@ -1614,7 +1611,7 @@ func TestIntegration_UpgradeCycle_ExpandMigrateContract(t *testing.T) {
 	}, eventuallyTimeout, pollInterval).Should(BeTrue(), "db-sync Job should be re-created with new image")
 	g.Expect(simulators.SimulateJobComplete(ctx, c, dbSyncKey)).To(Succeed(), "simulate post-upgrade db-sync completion")
 
-	// Wait for schema-check Job re-created with new image (CC-0064).
+	// Wait for schema-check Job re-created with new image.
 	schemaCheckKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-schema-check", ks.Name)}
 	g.Eventually(func() bool {
 		j := &batchv1.Job{}
@@ -1630,23 +1627,23 @@ func TestIntegration_UpgradeCycle_ExpandMigrateContract(t *testing.T) {
 
 	waitForCondition(t, ctx, c, key, "DatabaseReady", metav1.ConditionTrue, eventuallyTimeout)
 
-	// CC-0113: the bootstrap Job is NOT re-created on a pure image change — its
+	// the bootstrap Job is NOT re-created on a pure image change — its
 	// re-run is gated on the admin-password digest only, so the completed
 	// bootstrap Job from the initial release stays in place and BootstrapReady
 	// remains True. Re-running keystone-manage bootstrap across a cross-release
 	// DB migration would otherwise fail on the migrated admin user.
 
-	// Verify the system returns to Ready=True after the full upgrade cycle (CC-0056).
+	// Verify the system returns to Ready=True after the full upgrade cycle.
 	waitForCondition(t, ctx, c, key, "Ready", metav1.ConditionTrue, eventuallyTimeout)
 
 	// The retained bootstrap Job must be the same object (unchanged UID) carrying
-	// the original image — proof the upgrade did not re-run it (CC-0113).
+	// the original image — proof the upgrade did not re-run it.
 	postUpgradeBootstrap := &batchv1.Job{}
 	g.Expect(c.Get(ctx, bootstrapKey, postUpgradeBootstrap)).To(Succeed())
 	g.Expect(postUpgradeBootstrap.UID).To(Equal(preUpgradeBootstrapUID),
-		"bootstrap Job must be retained across an image-only upgrade, not re-created (CC-0113)")
+		"bootstrap Job must be retained across an image-only upgrade, not re-created")
 	g.Expect(postUpgradeBootstrap.Spec.Template.Spec.Containers[0].Image).To(Equal(oldImage),
-		"retained bootstrap Job must keep the original image (CC-0113)")
+		"retained bootstrap Job must keep the original image")
 
 	final := &keystonev1alpha1.Keystone{}
 	g.Expect(c.Get(ctx, key, final)).To(Succeed())
@@ -1657,10 +1654,10 @@ func TestIntegration_UpgradeCycle_ExpandMigrateContract(t *testing.T) {
 		"endpoint should still be set after upgrade")
 }
 
-// --- Task CC-0057/4.1: Trust flush CronJob lifecycle integration tests (REQ-001, REQ-002, REQ-003) ---
+// --- Task/4.1: Trust flush CronJob lifecycle integration tests ---
 
 // integrationBrownfieldKeystoneWithTrustFlush returns a valid Keystone CR with trustFlush
-// configured for integration tests (CC-0057).
+// configured for integration tests.
 func integrationBrownfieldKeystoneWithTrustFlush(name, namespace, schedule string) *keystonev1alpha1.Keystone {
 	ks := integrationBrownfieldKeystone(name, namespace)
 	ks.Spec.TrustFlush = &keystonev1alpha1.TrustFlushSpec{
@@ -1680,28 +1677,28 @@ func TestIntegration_TrustFlush_CronJobCreated(t *testing.T) {
 
 	createPrerequisites(t, ctx, c, ns.Name)
 
-	// Create Keystone CR with trustFlush configured (CC-0057, REQ-001).
+	// Create Keystone CR with trustFlush configured.
 	ks := integrationBrownfieldKeystoneWithTrustFlush("test-keystone", ns.Name, "30 2 * * 0")
 	g.Expect(c.Create(ctx, ks)).To(Succeed())
 
 	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
 
-	// Wait for the trust-flush CronJob to appear (CC-0057, REQ-001).
+	// Wait for the trust-flush CronJob to appear.
 	cronJobKey := client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-trust-flush"}
 	cronJob := &batchv1.CronJob{}
 	g.Eventually(func() error {
 		return c.Get(ctx, cronJobKey, cronJob)
 	}, eventuallyTimeout, pollInterval).Should(Succeed(), "CronJob test-keystone-trust-flush should appear")
 
-	// Verify schedule matches spec.trustFlush.schedule (CC-0057, REQ-001).
+	// Verify schedule matches spec.trustFlush.schedule.
 	g.Expect(cronJob.Spec.Schedule).To(Equal("30 2 * * 0"),
 		"CronJob schedule should match spec.trustFlush.schedule")
 
-	// Verify suspend defaults to false (CC-0057, REQ-003).
+	// Verify suspend defaults to false.
 	g.Expect(cronJob.Spec.Suspend).NotTo(BeNil())
 	g.Expect(*cronJob.Spec.Suspend).To(BeFalse(), "CronJob should not be suspended by default")
 
-	// Verify container image matches spec.image (CC-0057, REQ-004).
+	// Verify container image matches spec.image.
 	podSpec := cronJob.Spec.JobTemplate.Spec.Template.Spec
 	expectedImage := fmt.Sprintf("%s:%s", ks.Spec.Image.Repository, ks.Spec.Image.Tag)
 	g.Expect(podSpec.Containers).To(HaveLen(1))
@@ -1709,12 +1706,12 @@ func TestIntegration_TrustFlush_CronJobCreated(t *testing.T) {
 	g.Expect(container.Name).To(Equal("trust-flush"))
 	g.Expect(container.Image).To(Equal(expectedImage))
 
-	// Verify command includes keystone-manage trust_flush with --config-dir (CC-0057, REQ-005).
+	// Verify command includes keystone-manage trust_flush with --config-dir.
 	g.Expect(container.Command).To(Equal([]string{
 		"keystone-manage", "--config-dir=/etc/keystone/keystone.conf.d/", "trust_flush",
 	}))
 
-	// Verify volume mounts (CC-0057, REQ-006).
+	// Verify volume mounts.
 	g.Expect(container.VolumeMounts).To(HaveLen(3))
 	mountMap := map[string]corev1.VolumeMount{}
 	for _, vm := range container.VolumeMounts {
@@ -1727,7 +1724,7 @@ func TestIntegration_TrustFlush_CronJobCreated(t *testing.T) {
 	g.Expect(mountMap["credential-keys"].MountPath).To(Equal("/etc/keystone/credential-keys"))
 	g.Expect(mountMap["credential-keys"].ReadOnly).To(BeTrue())
 
-	// Verify volumes reference correct ConfigMap and Secrets (CC-0057, REQ-006).
+	// Verify volumes reference correct ConfigMap and Secrets.
 	volMap := map[string]corev1.Volume{}
 	for _, v := range podSpec.Volumes {
 		volMap[v.Name] = v
@@ -1739,18 +1736,18 @@ func TestIntegration_TrustFlush_CronJobCreated(t *testing.T) {
 	g.Expect(volMap["credential-keys"].Secret).NotTo(BeNil())
 	g.Expect(volMap["credential-keys"].Secret.SecretName).To(Equal("test-keystone-credential-keys"))
 
-	// Verify RestartPolicy (CC-0057, REQ-006).
+	// Verify RestartPolicy.
 	g.Expect(podSpec.RestartPolicy).To(Equal(corev1.RestartPolicyOnFailure))
 
-	// Verify commonLabels on CronJob (CC-0057, REQ-009).
+	// Verify commonLabels on CronJob.
 	g.Expect(cronJob.Labels).To(HaveKeyWithValue("app.kubernetes.io/name", "keystone"))
 	g.Expect(cronJob.Labels).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-keystone"))
 
-	// Verify ownerReference points to the Keystone CR (CC-0057, REQ-009).
+	// Verify ownerReference points to the Keystone CR.
 	g.Expect(cronJob.OwnerReferences).To(HaveLen(1))
 	g.Expect(cronJob.OwnerReferences[0].Name).To(Equal("test-keystone"))
 
-	// Verify TrustFlushReady=True (CC-0057, REQ-001).
+	// Verify TrustFlushReady=True.
 	key := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
 	cond := waitForCondition(t, ctx, c, key, "TrustFlushReady", metav1.ConditionTrue, eventuallyTimeout)
 	g.Expect(cond.Reason).To(Equal("TrustFlushReady"))
@@ -1768,13 +1765,13 @@ func TestIntegration_TrustFlush_SuspendTruePreservesCronJob(t *testing.T) {
 
 	createPrerequisites(t, ctx, c, ns.Name)
 
-	// Create Keystone CR with trustFlush configured (CC-0057, CC-0096, REQ-006).
+	// Create Keystone CR with trustFlush configured.
 	ks := integrationBrownfieldKeystoneWithTrustFlush("test-keystone", ns.Name, keystonev1alpha1.DefaultTrustFlushSchedule)
 	g.Expect(c.Create(ctx, ks)).To(Succeed())
 
 	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
 
-	// Verify CronJob exists before suspend (CC-0057, CC-0096, REQ-006).
+	// Verify CronJob exists before suspend.
 	cronJobKey := client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-trust-flush"}
 	g.Eventually(func() error {
 		return c.Get(ctx, cronJobKey, &batchv1.CronJob{})
@@ -1782,7 +1779,7 @@ func TestIntegration_TrustFlush_SuspendTruePreservesCronJob(t *testing.T) {
 
 	// Pause the CronJob by setting spec.trustFlush.suspend=true. The CronJob
 	// must be preserved (not deleted) — Suspend is the operator-supported way
-	// to pause trust flushing without losing the resource (CC-0057, CC-0096, REQ-006).
+	// to pause trust flushing without losing the resource.
 	key := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
 	updated := &keystonev1alpha1.Keystone{}
 	g.Expect(c.Get(ctx, key, updated)).To(Succeed())
@@ -1791,7 +1788,7 @@ func TestIntegration_TrustFlush_SuspendTruePreservesCronJob(t *testing.T) {
 
 	// Wait for the CronJob's *spec.Suspend to become true; the CronJob must
 	// remain present AND the schedule must remain unchanged — pausing must not
-	// alter cadence (CC-0057, CC-0096, REQ-006).
+	// alter cadence.
 	cj := &batchv1.CronJob{}
 	g.Eventually(func() bool {
 		if err := c.Get(ctx, cronJobKey, cj); err != nil {
@@ -1801,11 +1798,11 @@ func TestIntegration_TrustFlush_SuspendTruePreservesCronJob(t *testing.T) {
 	}, eventuallyTimeout, pollInterval).Should(BeTrue(),
 		"CronJob *spec.Suspend should become true and the CronJob must be preserved (not deleted)")
 	g.Expect(cj.Spec.Schedule).To(Equal(keystonev1alpha1.DefaultTrustFlushSchedule),
-		"toggling spec.trustFlush.suspend must not change spec.trustFlush.schedule (CC-0057, CC-0096, REQ-006)")
+		"toggling spec.trustFlush.suspend must not change spec.trustFlush.schedule")
 
 	// Verify TrustFlushReady=True with reason TrustFlushReady — the same
 	// reason string as the condition type, matching the convention in
-	// reconcile_trustflush.go (CC-0057, CC-0096, REQ-006).
+	// reconcile_trustflush.go.
 	g.Eventually(func() string {
 		ksState := &keystonev1alpha1.Keystone{}
 		if err := c.Get(ctx, key, ksState); err != nil {
@@ -1821,11 +1818,11 @@ func TestIntegration_TrustFlush_SuspendTruePreservesCronJob(t *testing.T) {
 }
 
 // TestIntegration_TrustFlush_OmittedFieldMaterializedAndCronJobCreated verifies
-// the new default behaviour introduced by CC-0096: when a user omits
+// the new default behaviour: when a user omits
 // spec.trustFlush, the defaulting webhook materializes
 // &TrustFlushSpec{Schedule: DefaultTrustFlushSchedule, Suspend: false} on
 // admission, the reconciler creates the trust-flush CronJob, and the
-// TrustFlushReady condition reports the configured posture (CC-0096, REQ-001).
+// TrustFlushReady condition reports the configured posture.
 func TestIntegration_TrustFlush_OmittedFieldMaterializedAndCronJobCreated(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)
@@ -1839,14 +1836,14 @@ func TestIntegration_TrustFlush_OmittedFieldMaterializedAndCronJobCreated(t *tes
 
 	// Create Keystone CR without trustFlush (nil); the defaulting webhook
 	// registered in setupEnvTestWithController materializes spec.trustFlush
-	// on admission (CC-0096, REQ-001).
+	// on admission.
 	ks := integrationBrownfieldKeystone("test-keystone", ns.Name)
 	g.Expect(c.Create(ctx, ks)).To(Succeed())
 
 	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
 
 	// Re-fetch the CR and assert the webhook defaulted spec.trustFlush to
-	// the documented hourly schedule with Suspend=false (CC-0096, REQ-001).
+	// the documented hourly schedule with Suspend=false.
 	key := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
 	ksState := &keystonev1alpha1.Keystone{}
 	g.Expect(c.Get(ctx, key, ksState)).To(Succeed())
@@ -1858,14 +1855,14 @@ func TestIntegration_TrustFlush_OmittedFieldMaterializedAndCronJobCreated(t *tes
 		"defaulting webhook must populate spec.trustFlush.suspend=false by default")
 
 	// Assert the trust-flush CronJob EXISTS — the new default contract is
-	// "trust flushing on by default" (CC-0096, REQ-001).
+	// "trust flushing on by default".
 	cronJobKey := client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-trust-flush"}
 	g.Eventually(func() error {
 		return c.Get(ctx, cronJobKey, &batchv1.CronJob{})
 	}, eventuallyTimeout, pollInterval).Should(Succeed(),
 		"trust-flush CronJob should exist when spec.trustFlush is defaulted by the webhook")
 
-	// Assert TrustFlushReady=True with Reason=TrustFlushReady (CC-0096, REQ-001).
+	// Assert TrustFlushReady=True with Reason=TrustFlushReady.
 	cond := waitForCondition(t, ctx, c, key, "TrustFlushReady", metav1.ConditionTrue, eventuallyTimeout)
 	g.Expect(cond.Reason).To(Equal("TrustFlushReady"),
 		"TrustFlushReady reason should be TrustFlushReady when the webhook defaults spec.trustFlush")
@@ -1876,7 +1873,7 @@ func TestIntegration_TrustFlush_OmittedFieldMaterializedAndCronJobCreated(t *tes
 // webhook on update (re-materializing the populated TrustFlushSpec) and that
 // the existing CronJob is preserved (same UID, not delete-and-recreated)
 // because the reconciler's EnsureCronJob path treats the same desired spec as
-// a no-op (CC-0096, REQ-001).
+// a no-op.
 func TestIntegration_TrustFlush_PatchToNullReDefaultsAndPreservesCronJob(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)
@@ -1889,13 +1886,13 @@ func TestIntegration_TrustFlush_PatchToNullReDefaultsAndPreservesCronJob(t *test
 	createPrerequisites(t, ctx, c, ns.Name)
 
 	// Create Keystone CR without trustFlush; the defaulting webhook
-	// materializes spec.trustFlush on admission (CC-0096, REQ-001).
+	// materializes spec.trustFlush on admission.
 	ks := integrationBrownfieldKeystone("test-keystone", ns.Name)
 	g.Expect(c.Create(ctx, ks)).To(Succeed())
 
 	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
 
-	// Capture the CronJob's UID for the post-patch identity check (CC-0096, REQ-001).
+	// Capture the CronJob's UID for the post-patch identity check.
 	cronJobKey := client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-trust-flush"}
 	originalCronJob := &batchv1.CronJob{}
 	g.Eventually(func() error {
@@ -1908,7 +1905,7 @@ func TestIntegration_TrustFlush_PatchToNullReDefaultsAndPreservesCronJob(t *test
 	// Patch spec.trustFlush back to literal JSON null via a JSON merge patch.
 	// MergePatchType honours `null` as "remove this field", which the
 	// defaulting webhook then re-materializes on the update admission pass
-	// (CC-0096, REQ-001). RawPatch keeps the literal `null` on the wire —
+	// RawPatch keeps the literal `null` on the wire —
 	// using client.MergeFrom with an in-memory object would round-trip
 	// through Go's omitempty and never emit the null sentinel.
 	key := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
@@ -1921,7 +1918,7 @@ func TestIntegration_TrustFlush_PatchToNullReDefaultsAndPreservesCronJob(t *test
 	))).To(Succeed(), "patching spec.trustFlush to null must succeed")
 
 	// Re-fetch the CR and assert the webhook re-defaulted spec.trustFlush on
-	// the update admission pass (CC-0096, REQ-001).
+	// the update admission pass.
 	g.Eventually(func() *keystonev1alpha1.TrustFlushSpec {
 		ksState := &keystonev1alpha1.Keystone{}
 		if err := c.Get(ctx, key, ksState); err != nil {
@@ -1938,7 +1935,7 @@ func TestIntegration_TrustFlush_PatchToNullReDefaultsAndPreservesCronJob(t *test
 		"webhook must re-default spec.trustFlush.schedule to the hourly default after patch-to-null")
 
 	// Assert the CronJob still exists AND its UID matches the original —
-	// proving the reconciler did not delete-and-recreate it (CC-0096, REQ-001).
+	// proving the reconciler did not delete-and-recreate it.
 	g.Consistently(func() types.UID {
 		cj := &batchv1.CronJob{}
 		if err := c.Get(ctx, cronJobKey, cj); err != nil {
@@ -1951,7 +1948,7 @@ func TestIntegration_TrustFlush_PatchToNullReDefaultsAndPreservesCronJob(t *test
 
 // TestIntegration_GracefulShutdownSpec verifies that the preStop lifecycle hook,
 // terminationGracePeriodSeconds, and startup probe survive a full reconciliation
-// cycle through the API server (CC-0063, REQ-006).
+// cycle through the API server.
 func TestIntegration_GracefulShutdownSpec(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)
@@ -1968,12 +1965,12 @@ func TestIntegration_GracefulShutdownSpec(t *testing.T) {
 
 	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
 
-	// Fetch the Deployment (CC-0063).
+	// Fetch the Deployment.
 	deploy := &appsv1.Deployment{}
 	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: "test-keystone"}, deploy)).
 		To(Succeed(), "Deployment test-keystone should exist")
 
-	// Verify terminationGracePeriodSeconds (CC-0063, REQ-002): 30s gives 5s for
+	// Verify terminationGracePeriodSeconds 30s gives 5s for
 	// preStop sleep + 25s for uWSGI to drain in-flight requests.
 	g.Expect(deploy.Spec.Template.Spec.TerminationGracePeriodSeconds).NotTo(BeNil(),
 		"terminationGracePeriodSeconds must be set")
@@ -1983,14 +1980,14 @@ func TestIntegration_GracefulShutdownSpec(t *testing.T) {
 	container := findContainerByName(deploy.Spec.Template.Spec.Containers, "keystone")
 	g.Expect(container).NotTo(BeNil(), "keystone container must exist")
 
-	// Verify preStop lifecycle hook (CC-0063, REQ-001): 5-second sleep before
+	// Verify preStop lifecycle hook 5-second sleep before
 	// SIGTERM gives kube-proxy time to propagate endpoint removal.
 	g.Expect(container.Lifecycle).NotTo(BeNil(), "Lifecycle must be set")
 	g.Expect(container.Lifecycle.PreStop).NotTo(BeNil(), "PreStop hook must be set")
 	g.Expect(container.Lifecycle.PreStop.Exec).NotTo(BeNil(), "PreStop must use exec")
 	g.Expect(container.Lifecycle.PreStop.Exec.Command).To(Equal([]string{"/bin/sh", "-c", "sleep 5"}))
 
-	// Verify startup probe (CC-0063, REQ-003): httpGet /v3 port 5000 with generous
+	// Verify startup probe httpGet /v3 port 5000 with generous
 	// failure threshold to survive slow cold starts.
 	g.Expect(container.StartupProbe).NotTo(BeNil(), "StartupProbe must be set")
 	g.Expect(container.StartupProbe.HTTPGet).NotTo(BeNil(), "StartupProbe must use httpGet")
@@ -2017,12 +2014,12 @@ func TestIntegration_GracefulShutdownSpec(t *testing.T) {
 	g.Expect(container.LivenessProbe.TCPSocket).NotTo(BeNil(), "LivenessProbe must use a plain TCP check")
 }
 
-// --- Task CC-0058/3.1: PolicyValidation gating tests (REQ-004, REQ-008) ---
+// --- Task/3.1: PolicyValidation gating tests ---
 
 // driveReconciliationToPolicyValidation drives external dependencies through
 // reconciliation phases until the policy validation Job appears, without
 // simulating its completion. The Keystone CR MUST have spec.policyOverrides
-// set so reconcilePolicyValidation creates a validation Job (CC-0058).
+// set so reconcilePolicyValidation creates a validation Job.
 func driveReconciliationToPolicyValidation(t testing.TB, ctx context.Context, c client.Client, ksName, ns string) {
 	t.Helper()
 	g := NewGomegaWithT(t)
@@ -2042,7 +2039,7 @@ func driveReconciliationToPolicyValidation(t testing.TB, ctx context.Context, c 
 	}, eventuallyTimeout, pollInterval).Should(Succeed(), "db-sync Job should appear")
 	g.Expect(simulators.SimulateJobComplete(ctx, c, dbSyncKey)).To(Succeed(), "simulate db-sync Job completion")
 
-	// Wait for the schema-check Job to appear and simulate its completion (CC-0064).
+	// Wait for the schema-check Job to appear and simulate its completion.
 	schemaCheckKey := client.ObjectKey{Namespace: ns, Name: fmt.Sprintf("%s-schema-check", ksName)}
 	g.Eventually(func() error {
 		return c.Get(ctx, schemaCheckKey, &batchv1.Job{})
@@ -2062,7 +2059,7 @@ func driveReconciliationToPolicyValidation(t testing.TB, ctx context.Context, c 
 // TestIntegration_PolicyValidation_GatesDeployment verifies that when
 // spec.policyOverrides is set, the reconciler creates a validation Job BEFORE
 // the Deployment and does not set DeploymentReady until the validation Job
-// completes (CC-0058, REQ-004, REQ-008).
+// completes.
 func TestIntegration_PolicyValidation_GatesDeployment(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)
@@ -2074,7 +2071,7 @@ func TestIntegration_PolicyValidation_GatesDeployment(t *testing.T) {
 
 	createPrerequisites(t, ctx, c, ns.Name)
 
-	// Create a brownfield Keystone CR WITH inline policy overrides (CC-0058).
+	// Create a brownfield Keystone CR WITH inline policy overrides.
 	ks := integrationBrownfieldKeystone("test-keystone", ns.Name)
 	ks.Spec.PolicyOverrides = &commonv1.PolicySpec{
 		Rules: map[string]string{
@@ -2090,13 +2087,13 @@ func TestIntegration_PolicyValidation_GatesDeployment(t *testing.T) {
 	driveReconciliationToPolicyValidation(t, ctx, c, ks.Name, ns.Name)
 
 	// PolicyValidReady should be False with reason PolicyValidationInProgress
-	// while the validation Job is running (CC-0058, REQ-008).
+	// while the validation Job is running.
 	pvCond := waitForCondition(t, ctx, c, key, conditionTypePolicyValidReady, metav1.ConditionFalse, eventuallyTimeout)
 	g.Expect(pvCond.Reason).To(Equal(conditionReasonPolicyValidationInProgress),
 		"PolicyValidReady reason should be PolicyValidationInProgress")
 
 	// DeploymentReady should be absent (nil) — the Deployment must NOT be
-	// created while policy validation is pending (CC-0058, REQ-004).
+	// created while policy validation is pending.
 	g.Consistently(func(ig Gomega) {
 		ksState := &keystonev1alpha1.Keystone{}
 		ig.Expect(c.Get(ctx, key, ksState)).To(Succeed())
@@ -2140,7 +2137,7 @@ func TestIntegration_PolicyValidation_GatesDeployment(t *testing.T) {
 
 // TestIntegration_PolicyValidation_NotRequired verifies that when
 // spec.policyOverrides is nil, PolicyValidReady is set to True with reason
-// PolicyValidationNotRequired and no validation Job is created (CC-0058, REQ-004).
+// PolicyValidationNotRequired and no validation Job is created.
 func TestIntegration_PolicyValidation_NotRequired(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)
@@ -2159,13 +2156,13 @@ func TestIntegration_PolicyValidation_NotRequired(t *testing.T) {
 	// Drive the full reconciliation to Ready=True.
 	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
 
-	// Verify PolicyValidReady=True with reason PolicyValidationNotRequired (CC-0058, REQ-004).
+	// Verify PolicyValidReady=True with reason PolicyValidationNotRequired.
 	key := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
 	cond := waitForCondition(t, ctx, c, key, conditionTypePolicyValidReady, metav1.ConditionTrue, eventuallyTimeout)
 	g.Expect(cond.Reason).To(Equal(conditionReasonPolicyValidationNotRequired),
 		"PolicyValidReady reason should be PolicyValidationNotRequired when policyOverrides is nil")
 
-	// Verify no policy-validation Job exists (CC-0058, REQ-004).
+	// Verify no policy-validation Job exists.
 	valJobKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-policy-validation", ks.Name)}
 	g.Consistently(func() bool {
 		err := c.Get(ctx, valJobKey, &batchv1.Job{})
@@ -2174,17 +2171,17 @@ func TestIntegration_PolicyValidation_NotRequired(t *testing.T) {
 		"policy-validation Job should not exist when policyOverrides is nil")
 }
 
-// --- Task CC-0065/4.2: HTTPRoute sub-reconciler lifecycle tests (REQ-001, REQ-002, REQ-005) ---
+// --- Task/4.2: HTTPRoute sub-reconciler lifecycle tests ---
 
 // testGatewayParentName is the synthetic Gateway that integration HTTPRoutes
 // attach to. The real Gateway resource is not installed in envtest; only the
-// HTTPRoute is observed, so a name is sufficient (CC-0065, REQ-001).
+// HTTPRoute is observed, so a name is sufficient.
 const testGatewayParentName = "openstack-gateway"
 
 // driveReconciliationToDeployment drives the reconciler through the secrets,
 // fernet, database, and deployment phases until DeploymentReady=True. This
 // leaves the controller positioned to run reconcileHTTPRoute on its next
-// reconcile iteration (CC-0065).
+// reconcile iteration.
 func driveReconciliationToDeployment(t testing.TB, ctx context.Context, c client.Client, ksName, ns string) {
 	t.Helper()
 	g := NewGomegaWithT(t)
@@ -2221,7 +2218,6 @@ func driveReconciliationToDeployment(t testing.TB, ctx context.Context, c client
 
 // integrationKeystoneWithGateway returns a brownfield Keystone CR configured
 // with spec.gateway pointing at testGatewayParentName and the given hostname
-// (CC-0065, REQ-001).
 func integrationKeystoneWithGateway(name, namespace, hostname string) *keystonev1alpha1.Keystone {
 	ks := integrationBrownfieldKeystone(name, namespace)
 	ks.Spec.Gateway = &keystonev1alpha1.GatewaySpec{
@@ -2235,7 +2231,6 @@ func integrationKeystoneWithGateway(name, namespace, hostname string) *keystonev
 // HTTPRoute's status.parents list, emulating the Gateway controller that would
 // otherwise produce this transition. It is required for isHTTPRouteAccepted to
 // return true in envtest, where no Gateway controller is running
-// (CC-0065, REQ-005).
 func simulateHTTPRouteAccepted(t testing.TB, ctx context.Context, c client.Client, key client.ObjectKey) {
 	t.Helper()
 	g := NewGomegaWithT(t)
@@ -2255,7 +2250,7 @@ func simulateHTTPRouteAccepted(t testing.TB, ctx context.Context, c client.Clien
 							Type:               string(gatewayv1.RouteConditionAccepted),
 							Status:             metav1.ConditionTrue,
 							Reason:             "Accepted",
-							Message:            "simulated Accepted=True for envtest (CC-0065)",
+							Message:            "simulated Accepted=True for envtest",
 							LastTransitionTime: metav1.Now(),
 						},
 					},
@@ -2270,7 +2265,7 @@ func simulateHTTPRouteAccepted(t testing.TB, ctx context.Context, c client.Clien
 // spec.gateway on a Keystone CR causes the operator to create an HTTPRoute
 // with the correct parentRef/hostname/backendRef, to set HTTPRouteReady
 // appropriately as acceptance is observed, and to own the HTTPRoute for
-// garbage collection (CC-0065, REQ-001, REQ-003, REQ-005).
+// garbage collection.
 func TestIntegration_HTTPRoute_CreatedWhenGatewaySet(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)
@@ -2295,15 +2290,15 @@ func TestIntegration_HTTPRoute_CreatedWhenGatewaySet(t *testing.T) {
 		return c.Get(ctx, routeKey, route)
 	}, eventuallyTimeout, pollInterval).Should(Succeed(), "HTTPRoute should be created when spec.gateway is set")
 
-	// Validate parentRef (REQ-001) — Gateway referenced by name only.
+	// Validate parentRef — Gateway referenced by name only.
 	g.Expect(route.Spec.ParentRefs).To(HaveLen(1))
 	g.Expect(string(route.Spec.ParentRefs[0].Name)).To(Equal(testGatewayParentName))
 
-	// Validate hostname (REQ-001).
+	// Validate hostname.
 	g.Expect(route.Spec.Hostnames).To(HaveLen(1))
 	g.Expect(string(route.Spec.Hostnames[0])).To(Equal(hostname))
 
-	// Validate backendRef targets the {name} Service on port 5000 (CC-0095, REQ-004).
+	// Validate backendRef targets the {name} Service on port 5000.
 	g.Expect(route.Spec.Rules).To(HaveLen(1))
 	g.Expect(route.Spec.Rules[0].BackendRefs).To(HaveLen(1))
 	backend := route.Spec.Rules[0].BackendRefs[0]
@@ -2317,7 +2312,7 @@ func TestIntegration_HTTPRoute_CreatedWhenGatewaySet(t *testing.T) {
 	g.Expect(route.OwnerReferences[0].Kind).To(Equal("Keystone"))
 
 	// Without a Gateway controller in envtest the route is not yet accepted,
-	// so HTTPRouteReady must be False/HTTPRouteNotAccepted (REQ-005).
+	// so HTTPRouteReady must be False/HTTPRouteNotAccepted.
 	crKey := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
 	cond := waitForCondition(t, ctx, c, crKey, conditionTypeHTTPRouteReady, metav1.ConditionFalse, eventuallyTimeout)
 	g.Expect(cond.Reason).To(Equal(conditionReasonHTTPRouteNotAccepted),
@@ -2325,7 +2320,7 @@ func TestIntegration_HTTPRoute_CreatedWhenGatewaySet(t *testing.T) {
 
 	// Simulate the Gateway controller writing Accepted=True on the HTTPRoute
 	// status. The operator should pick this up on its next reconcile pass and
-	// flip HTTPRouteReady to True/HTTPRouteAccepted (REQ-005).
+	// flip HTTPRouteReady to True/HTTPRouteAccepted.
 	simulateHTTPRouteAccepted(t, ctx, c, routeKey)
 	cond = waitForCondition(t, ctx, c, crKey, conditionTypeHTTPRouteReady, metav1.ConditionTrue, eventuallyTimeout)
 	g.Expect(cond.Reason).To(Equal(conditionReasonHTTPRouteAccepted),
@@ -2334,7 +2329,7 @@ func TestIntegration_HTTPRoute_CreatedWhenGatewaySet(t *testing.T) {
 
 // TestIntegration_HTTPRoute_DeletedWhenGatewayRemoved verifies that removing
 // spec.gateway from a CR deletes the HTTPRoute and transitions HTTPRouteReady
-// to True/HTTPRouteNotRequired (CC-0065, REQ-002).
+// to True/HTTPRouteNotRequired.
 func TestIntegration_HTTPRoute_DeletedWhenGatewayRemoved(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)
@@ -2357,7 +2352,7 @@ func TestIntegration_HTTPRoute_DeletedWhenGatewayRemoved(t *testing.T) {
 	}, eventuallyTimeout, pollInterval).Should(Succeed(), "HTTPRoute should be created initially")
 
 	// Remove spec.gateway via a spec patch to force the reconciler to delete
-	// the HTTPRoute (REQ-002). Use a retry-loop against optimistic concurrency
+	// the HTTPRoute. Use a retry-loop against optimistic concurrency
 	// rejections by re-reading and re-patching until the update sticks.
 	crKey := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
 	g.Eventually(func() error {
@@ -2375,7 +2370,7 @@ func TestIntegration_HTTPRoute_DeletedWhenGatewayRemoved(t *testing.T) {
 		return apierrors.IsNotFound(err)
 	}, eventuallyTimeout, pollInterval).Should(BeTrue(), "HTTPRoute should be deleted after spec.gateway is removed")
 
-	// HTTPRouteReady should transition to True/HTTPRouteNotRequired (REQ-002).
+	// HTTPRouteReady should transition to True/HTTPRouteNotRequired.
 	cond := waitForCondition(t, ctx, c, crKey, conditionTypeHTTPRouteReady, metav1.ConditionTrue, eventuallyTimeout)
 	g.Expect(cond.Reason).To(Equal(conditionReasonHTTPRouteNotRequired),
 		"HTTPRouteReady reason should be HTTPRouteNotRequired when spec.gateway is nil")
@@ -2383,7 +2378,7 @@ func TestIntegration_HTTPRoute_DeletedWhenGatewayRemoved(t *testing.T) {
 
 // TestIntegration_HTTPRoute_UpdatedWhenGatewayChanged verifies that changing
 // spec.gateway.hostname on a CR updates the existing HTTPRoute in place
-// without creating a duplicate (CC-0065, REQ-001).
+// without creating a duplicate.
 func TestIntegration_HTTPRoute_UpdatedWhenGatewayChanged(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)
@@ -2407,7 +2402,7 @@ func TestIntegration_HTTPRoute_UpdatedWhenGatewayChanged(t *testing.T) {
 	}, eventuallyTimeout, pollInterval).Should(Succeed(), "HTTPRoute should be created initially")
 
 	// Patch the hostname. The reconciler should update the existing HTTPRoute
-	// instead of creating a duplicate (REQ-001).
+	// instead of creating a duplicate.
 	updatedHostname := "auth.example.com"
 	crKey := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
 	g.Eventually(func() error {
@@ -2441,7 +2436,6 @@ func TestIntegration_HTTPRoute_UpdatedWhenGatewayChanged(t *testing.T) {
 // TestIntegration_HTTPRoute_EndpointDerivedFromGateway verifies that when
 // spec.gateway is set, status.endpoint reflects the externally reachable URL
 // https://{hostname}/v3 instead of the cluster-local Service DNS name
-// (CC-0065, REQ-004).
 func TestIntegration_HTTPRoute_EndpointDerivedFromGateway(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)
@@ -2472,14 +2466,13 @@ func TestIntegration_HTTPRoute_EndpointDerivedFromGateway(t *testing.T) {
 		"status.endpoint should reflect https://{hostname}/v3 when spec.gateway is set")
 }
 
-// --- Task CC-0078/4.1: Finalizer lifecycle — managed mode (REQ-002, CC-0078) ---
+// --- Task/4.1: Finalizer lifecycle — managed mode ---
 
 // TestIntegration_FinalizerLifecycle_AddAndRemove verifies that the Keystone
 // reconciler installs the finalizer on first observation of a managed-mode CR,
 // and that deleting the CR drives finalizeDatabaseResources to issue Delete on
 // every MariaDB Database, User, and Grant CR owned by the Keystone, followed
 // by release of the Keystone finalizer so the CR is reclaimed from etcd
-// (CC-0078, REQ-002).
 func TestIntegration_FinalizerLifecycle_AddAndRemove(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)
@@ -2492,7 +2485,7 @@ func TestIntegration_FinalizerLifecycle_AddAndRemove(t *testing.T) {
 	createPrerequisites(t, ctx, c, ns.Name)
 
 	// Create a ready MariaDB cluster CR so the reconciler's cluster health
-	// check passes (CC-0047).
+	// check passes.
 	mdbCluster := &mariadbv1alpha1.MariaDB{
 		ObjectMeta: metav1.ObjectMeta{Name: "mariadb", Namespace: ns.Name},
 	}
@@ -2506,7 +2499,7 @@ func TestIntegration_FinalizerLifecycle_AddAndRemove(t *testing.T) {
 	key := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
 
 	// Finalizer must be installed on first reconcile so a subsequent delete
-	// is trapped and routed through reconcileDelete (CC-0078, REQ-001).
+	// is trapped and routed through reconcileDelete.
 	g.Eventually(func() []string {
 		ksState := &keystonev1alpha1.Keystone{}
 		if err := c.Get(ctx, key, ksState); err != nil {
@@ -2541,7 +2534,7 @@ func TestIntegration_FinalizerLifecycle_AddAndRemove(t *testing.T) {
 	// Pass-0 adoption wait passes and the full deletion chain can run.
 	// Without ESO in envtest both PushSecrets would remain unadopted and the
 	// OpenBao finalizer would block forever, shadowing the MariaDB-finalizer
-	// assertion this test is meant to make (CC-0091, REQ-001, REQ-003).
+	// assertion this test is meant to make.
 	fernetBackupKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-fernet-keys-backup", ks.Name)}
 	credBackupKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-credential-keys-backup", ks.Name)}
 	for _, key := range []client.ObjectKey{fernetBackupKey, credBackupKey} {
@@ -2559,7 +2552,7 @@ func TestIntegration_FinalizerLifecycle_AddAndRemove(t *testing.T) {
 	// After Pass-1 has issued Delete on both PushSecrets, clear the ESO
 	// finalizers so the API server garbage-collects them — this mimics ESO
 	// finishing its kv-v2 purge and is what allows Pass-2 to observe NotFound
-	// and release the openbao finalizer (CC-0091, REQ-001).
+	// and release the openbao finalizer.
 	g.Eventually(func(ig Gomega) {
 		for _, key := range []client.ObjectKey{fernetBackupKey, credBackupKey} {
 			ps := &esov1alpha1.PushSecret{}
@@ -2587,19 +2580,19 @@ func TestIntegration_FinalizerLifecycle_AddAndRemove(t *testing.T) {
 
 	// The reconciler releases the finalizer in the same pass that issued the
 	// Deletes, so the API server garbage-collects the Keystone CR without
-	// waiting on the MariaDB operator (CC-0078, REQ-002).
+	// waiting on the MariaDB operator.
 	g.Eventually(func() bool {
 		return apierrors.IsNotFound(c.Get(ctx, key, &keystonev1alpha1.Keystone{}))
 	}, eventuallyLongTimeout, pollInterval).Should(BeTrue(),
 		"Keystone CR should be fully removed from etcd after finalizer release")
 }
 
-// --- Task CC-0078/4.2: Finalizer lifecycle — brownfield mode (REQ-002, CC-0078) ---
+// --- Task/4.2: Finalizer lifecycle — brownfield mode ---
 
 // TestIntegration_FinalizerBrownfieldDeletion verifies that a brownfield
 // Keystone CR (Host-only, no ClusterRef) also carries the finalizer and that
 // deletion completes cleanly without any MariaDB CR operations — since none
-// were ever created (CC-0078, REQ-002).
+// were ever created.
 func TestIntegration_FinalizerBrownfieldDeletion(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)
@@ -2616,7 +2609,7 @@ func TestIntegration_FinalizerBrownfieldDeletion(t *testing.T) {
 	key := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
 
 	// Finalizer must be installed even in brownfield mode so the Reconcile
-	// path is uniform across both modes (CC-0078, REQ-001).
+	// path is uniform across both modes.
 	g.Eventually(func() []string {
 		ksState := &keystonev1alpha1.Keystone{}
 		if err := c.Get(ctx, key, ksState); err != nil {
@@ -2642,7 +2635,7 @@ func TestIntegration_FinalizerBrownfieldDeletion(t *testing.T) {
 	// would block until ESO adopts them. Simulate ESO adoption (both
 	// finalizers) so the deletion chain can run through Pass-1; we clear the
 	// finalizers after Delete so the PushSecrets GC and Pass-2 releases the
-	// openbao finalizer (CC-0091, REQ-001, REQ-003).
+	// openbao finalizer.
 	fernetBackupKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-fernet-keys-backup", ks.Name)}
 	credBackupKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-credential-keys-backup", ks.Name)}
 	for _, key := range []client.ObjectKey{fernetBackupKey, credBackupKey} {
@@ -2658,7 +2651,7 @@ func TestIntegration_FinalizerBrownfieldDeletion(t *testing.T) {
 	// Wait for Pass-1 Delete to flip both PushSecrets into Terminating, then
 	// clear the ESO finalizers to mimic ESO finishing its kv-v2 purge so the
 	// API server GCs the PushSecrets and Pass-2 can release the openbao
-	// finalizer (CC-0091, REQ-001).
+	// finalizer.
 	g.Eventually(func(ig Gomega) {
 		for _, key := range []client.ObjectKey{fernetBackupKey, credBackupKey} {
 			ps := &esov1alpha1.PushSecret{}
@@ -2673,7 +2666,7 @@ func TestIntegration_FinalizerBrownfieldDeletion(t *testing.T) {
 
 	// finalizeDatabaseResources treats every NotFound Delete as success, so
 	// the first pass through reconcileDelete releases the finalizer and the
-	// API server removes the CR from etcd (CC-0078, REQ-002).
+	// API server removes the CR from etcd.
 	g.Eventually(func() bool {
 		return apierrors.IsNotFound(c.Get(ctx, key, &keystonev1alpha1.Keystone{}))
 	}, eventuallyTimeout, pollInterval).Should(BeTrue(),
@@ -2689,11 +2682,11 @@ func TestIntegration_FinalizerBrownfieldDeletion(t *testing.T) {
 		To(BeTrue(), "no Grant CR should exist after brownfield deletion")
 }
 
-// --- Task 4.1 / 4.2: split-compute-write rotation integration tests (CC-0081) ---
+// --- Task 4.1 / 4.2: split-compute-write rotation integration tests ---
 
 // eventuallyFindKeystoneEvent polls the Events API for an Event on the given
 // Keystone CR with the matching reason and type. Returns the first match or
-// fails the Eventually assertion (CC-0081).
+// fails the Eventually assertion.
 func eventuallyFindKeystoneEvent(t testing.TB, ctx context.Context, c client.Client, ks *keystonev1alpha1.Keystone, reason, eventType string) corev1.Event {
 	t.Helper()
 	g := NewGomegaWithT(t)
@@ -2710,13 +2703,13 @@ func eventuallyFindKeystoneEvent(t testing.TB, ctx context.Context, c client.Cli
 		}
 		ig.Expect(fmt.Errorf("no %s %s event yet for %s/%s", eventType, reason, ks.Namespace, ks.Name)).NotTo(HaveOccurred())
 	}, eventuallyTimeout, pollInterval).Should(Succeed(),
-		fmt.Sprintf("CC-0081: expected %s/%s event on Keystone %s/%s", eventType, reason, ks.Namespace, ks.Name))
+		fmt.Sprintf(": expected %s/%s event on Keystone %s/%s", eventType, reason, ks.Namespace, ks.Name))
 	return match
 }
 
 // setupRotationEnvTest drives the envtest controller through its initial
 // reconciliation so the staging Secret, production Fernet Secret, and
-// Keystone CR are all live for rotation-apply scenarios (CC-0081, Task 4.1).
+// Keystone CR are all live for rotation-apply scenarios.
 // It skips the test when envtest is unavailable, creates a per-test Namespace
 // using nsGenerateName as the GenerateName prefix, seeds the namespace with
 // prerequisite Secrets, creates a brownfield Keystone named "test-keystone",
@@ -2744,13 +2737,13 @@ func setupRotationEnvTest(t *testing.T, nsGenerateName string) (
 	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
 
 	g.Expect(c.Get(ctx, types.NamespacedName{Name: ks.Name, Namespace: ns.Name}, ks)).
-		To(Succeed(), "re-fetch Keystone CR post-reconcile (CC-0081)")
+		To(Succeed(), "re-fetch Keystone CR post-reconcile")
 
 	return c, ctx, ks, ns
 }
 
 // TestRotationApplyEndToEnd_EnvTest drives the full split-compute-write Fernet
-// rotation flow in envtest (CC-0081, Task 4.1): the operator creates the empty
+// rotation flow in envtest the operator creates the empty
 // staging Secret, the test simulates the CronJob PATCH with valid keys and a
 // completion annotation, and the reconciler copies the keys onto the production
 // Secret, deletes the staging Secret, and emits a FernetKeysRotated event.
@@ -2759,11 +2752,11 @@ func TestRotationApplyEndToEnd_EnvTest(t *testing.T) {
 	c, ctx, ks, ns := setupRotationEnvTest(t, "test-rotation-apply-")
 
 	// Assert the staging Secret exists with empty Data, correct label, and
-	// an OwnerReference back to the Keystone CR (CC-0081, REQ-005).
+	// an OwnerReference back to the Keystone CR.
 	stagingKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-fernet-keys-rotation", ks.Name)}
 	staging := &corev1.Secret{}
 	g.Expect(c.Get(ctx, stagingKey, staging)).To(Succeed(), "staging Secret should exist")
-	g.Expect(staging.Data).To(BeEmpty(), "staging Secret Data should start empty (CC-0081)")
+	g.Expect(staging.Data).To(BeEmpty(), "staging Secret Data should start empty")
 	g.Expect(staging.Labels).To(HaveKeyWithValue(StagingSecretLabelKey, "fernet-keys"))
 	var ownsKs bool
 	for _, or := range staging.OwnerReferences {
@@ -2772,7 +2765,7 @@ func TestRotationApplyEndToEnd_EnvTest(t *testing.T) {
 			break
 		}
 	}
-	g.Expect(ownsKs).To(BeTrue(), "staging Secret should be owned by the Keystone CR (CC-0081)")
+	g.Expect(ownsKs).To(BeTrue(), "staging Secret should be owned by the Keystone CR")
 
 	// Capture the production Secret's pre-rotation Data for comparison below.
 	prodKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-fernet-keys", ks.Name)}
@@ -2782,7 +2775,7 @@ func TestRotationApplyEndToEnd_EnvTest(t *testing.T) {
 
 	// Simulate the CronJob PATCH with the exact write shape emitted by
 	// fernet_rotate.sh: a strategic-merge PATCH carrying only the `data`
-	// and `metadata.annotations` subtrees (CC-0081, REQ-005, REQ-006, TE2).
+	// and `metadata.annotations` subtrees (TE2).
 	// This exercises the real apply path end-to-end rather than masking it
 	// with a full-object Update.
 	stagedData := map[string][]byte{}
@@ -2792,9 +2785,9 @@ func TestRotationApplyEndToEnd_EnvTest(t *testing.T) {
 		stagedData[fmt.Sprintf("%d", i)] = []byte(k)
 	}
 	g.Expect(cronJobStrategicMergePatch(ctx, c, stagingKey, stagedData)).To(Succeed(),
-		"stage CronJob output onto staging Secret (CC-0081)")
+		"stage CronJob output onto staging Secret")
 
-	// Eventually: production Secret Data == staged Data (CC-0081, REQ-005).
+	// Eventually: production Secret Data == staged Data.
 	g.Eventually(func(ig Gomega) {
 		got := &corev1.Secret{}
 		ig.Expect(c.Get(ctx, prodKey, got)).To(Succeed())
@@ -2803,13 +2796,13 @@ func TestRotationApplyEndToEnd_EnvTest(t *testing.T) {
 			ig.Expect(got.Data).To(HaveKeyWithValue(k, v))
 		}
 	}, eventuallyTimeout, pollInterval).Should(Succeed(),
-		"production Secret Data should be replaced with staged keys (CC-0081)")
+		"production Secret Data should be replaced with staged keys")
 
 	// Eventually: the staging Secret's staged data and completion annotation
 	// are gone. The operator deletes the staging Secret after applying and
 	// ensureFernetStagingSecret re-creates it empty on the next reconcile —
 	// so either NotFound OR a present-but-empty Secret without the
-	// completion annotation is the correct terminal state (CC-0081).
+	// completion annotation is the correct terminal state.
 	g.Eventually(func(ig Gomega) {
 		got := &corev1.Secret{}
 		err := c.Get(ctx, stagingKey, got)
@@ -2818,11 +2811,11 @@ func TestRotationApplyEndToEnd_EnvTest(t *testing.T) {
 		}
 		ig.Expect(err).NotTo(HaveOccurred())
 		ig.Expect(got.Data).To(BeEmpty(),
-			"staging Secret Data should be cleared after apply (CC-0081)")
+			"staging Secret Data should be cleared after apply")
 		ig.Expect(got.Annotations).NotTo(HaveKey(RotationCompletedAnnotation),
-			"staging Secret completion annotation should be gone after apply (CC-0081)")
+			"staging Secret completion annotation should be gone after apply")
 	}, eventuallyTimeout, pollInterval).Should(Succeed(),
-		"staging Secret should be deleted or reset after successful apply (CC-0081)")
+		"staging Secret should be deleted or reset after successful apply")
 
 	// Eventually: a Normal FernetKeysRotated event is emitted on the Keystone CR.
 	eventuallyFindKeystoneEvent(t, ctx, c, ks, "FernetKeysRotated", corev1.EventTypeNormal)
@@ -2834,12 +2827,12 @@ func TestRotationApplyEndToEnd_EnvTest(t *testing.T) {
 // untouched, the staging Secret object is retained but its payload is cleared
 // (Data emptied, completion annotation removed) so the next CronJob
 // strategic-merge PATCH starts from an empty base, and a RotationRejected
-// Warning event is emitted (CC-0081, Task 4.2, REQ-006; issue #475).
+// Warning event is emitted (issue #475).
 func TestRotationApplyRejectsMalformedKeys_EnvTest(t *testing.T) {
 	g := NewGomegaWithT(t)
 	c, ctx, ks, ns := setupRotationEnvTest(t, "test-rotation-reject-")
 
-	// Snapshot production Secret Data before staging malformed keys (CC-0081).
+	// Snapshot production Secret Data before staging malformed keys.
 	prodKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-fernet-keys", ks.Name)}
 	prodBefore := &corev1.Secret{}
 	g.Expect(c.Get(ctx, prodKey, prodBefore)).To(Succeed())
@@ -2850,7 +2843,7 @@ func TestRotationApplyRejectsMalformedKeys_EnvTest(t *testing.T) {
 	}
 
 	// Stage malformed keys: 32-byte raw strings rather than 44-byte base64url
-	// (fails validateRotationOutput on length, CC-0081, REQ-006).
+	// (fails validateRotationOutput on length).
 	stagingKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-fernet-keys-rotation", ks.Name)}
 	malformed := map[string][]byte{
 		"0": []byte("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0"),
@@ -2859,19 +2852,19 @@ func TestRotationApplyRejectsMalformedKeys_EnvTest(t *testing.T) {
 	}
 	// Use the same strategic-merge PATCH shape the CronJob actually emits so
 	// the validation rejection is exercised against the real write path
-	// (CC-0081, TE2).
+	// (TE2).
 	g.Expect(cronJobStrategicMergePatch(ctx, c, stagingKey, malformed)).To(Succeed(),
-		"stage malformed rotation output (CC-0081)")
+		"stage malformed rotation output")
 
 	// Eventually: Warning RotationRejected event appears on the Keystone CR.
 	eventuallyFindKeystoneEvent(t, ctx, c, ks, "RotationRejected", corev1.EventTypeWarning)
 
-	// Consistently: production Secret Data is unchanged (CC-0081, REQ-006).
+	// Consistently: production Secret Data is unchanged.
 	g.Consistently(func(ig Gomega) {
 		got := &corev1.Secret{}
 		ig.Expect(c.Get(ctx, prodKey, got)).To(Succeed())
 		ig.Expect(got.Data).To(Equal(dataBefore),
-			"production Secret must not be mutated by a rejected rotation (CC-0081)")
+			"production Secret must not be mutated by a rejected rotation")
 	}, 2*time.Second, pollInterval).Should(Succeed())
 
 	// Staging Secret retained but cleared: the operator empties Data and drops
@@ -2881,7 +2874,7 @@ func TestRotationApplyRejectsMalformedKeys_EnvTest(t *testing.T) {
 	// the RotationRejected event message, not the now-empty Data, is the
 	// diagnostic of record. Wrapped in Eventually because the clearing Update
 	// lands just after the RotationRejected event the wait above keys on
-	// (CC-0081, issue #475).
+	// (issue #475).
 	g.Eventually(func(ig Gomega) {
 		retained := &corev1.Secret{}
 		ig.Expect(c.Get(ctx, stagingKey, retained)).To(Succeed(),
@@ -2899,7 +2892,7 @@ func TestRotationApplyRejectsMalformedKeys_EnvTest(t *testing.T) {
 // Secret — `{"metadata":{"annotations":{"forge.c5c3.io/rotation-completed-at":"..."}}, "data":{...}}`
 // — and writes it via the controller-runtime client. Using this in envtest
 // (rather than c.Update) exercises the real write path so the operator's
-// apply semantics are covered end-to-end (CC-0081, TE2).
+// apply semantics are covered end-to-end (TE2).
 func cronJobStrategicMergePatch(
 	ctx context.Context,
 	c client.Client,
@@ -2932,7 +2925,7 @@ func cronJobStrategicMergePatch(
 // `{"0","1","2"}`, and asserts the operator's apply path fully replaces the
 // production Data (length == staging length, stale disjoint index removed).
 // This is the envtest regression guard for the strategic-merge-vs-replace
-// bug (CC-0081, T1).
+// bug (T1).
 func TestRotationApplyReplacesDisjointIndices_EnvTest(t *testing.T) {
 	g := NewGomegaWithT(t)
 	c, ctx, ks, ns := setupRotationEnvTest(t, "test-rotation-disjoint-")
@@ -2940,13 +2933,13 @@ func TestRotationApplyReplacesDisjointIndices_EnvTest(t *testing.T) {
 	// Seed production with a key at index "9" that the staging payload below
 	// does NOT mention. Under strategic-merge-by-key (the bug this test
 	// guards against) "9" would survive; under full-replacement Update it is
-	// removed (CC-0081).
+	// removed.
 	prodKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-fernet-keys", ks.Name)}
 	prodBefore := &corev1.Secret{}
 	g.Expect(c.Get(ctx, prodKey, prodBefore)).To(Succeed())
 	prodBefore.Data["9"] = []byte("pre-existing-disjoint-stale-key")
 	g.Expect(c.Update(ctx, prodBefore)).To(Succeed(),
-		"seed production with a disjoint index (CC-0081, T1)")
+		"seed production with a disjoint index (T1)")
 
 	// Stage a 3-key payload at indices {"0","1","2"} via the real CronJob
 	// strategic-merge PATCH shape.
@@ -2958,7 +2951,7 @@ func TestRotationApplyReplacesDisjointIndices_EnvTest(t *testing.T) {
 		stagedData[fmt.Sprintf("%d", i)] = []byte(k)
 	}
 	g.Expect(cronJobStrategicMergePatch(ctx, c, stagingKey, stagedData)).To(Succeed(),
-		"stage CronJob output onto staging Secret (CC-0081, T1)")
+		"stage CronJob output onto staging Secret (T1)")
 
 	// Eventually: production Data exactly equals staging — length, keys,
 	// and values. The disjoint stale index "9" must be gone.
@@ -2966,27 +2959,26 @@ func TestRotationApplyReplacesDisjointIndices_EnvTest(t *testing.T) {
 		got := &corev1.Secret{}
 		ig.Expect(c.Get(ctx, prodKey, got)).To(Succeed())
 		ig.Expect(got.Data).To(HaveLen(len(stagedData)),
-			"production Data length must equal staging length (CC-0081, REQ-006)")
+			"production Data length must equal staging length")
 		ig.Expect(got.Data).NotTo(HaveKey("9"),
-			"stale disjoint index must be removed by full-replacement Update (CC-0081)")
+			"stale disjoint index must be removed by full-replacement Update")
 		for k, v := range stagedData {
 			ig.Expect(got.Data).To(HaveKeyWithValue(k, v))
 		}
 	}, eventuallyTimeout, pollInterval).Should(Succeed(),
-		"production Secret must fully replace to staging keys, not merge (CC-0081, T1)")
+		"production Secret must fully replace to staging keys, not merge (T1)")
 
 	// A Normal FernetKeysRotated event is emitted on the Keystone CR.
 	eventuallyFindKeystoneEvent(t, ctx, c, ks, "FernetKeysRotated", corev1.EventTypeNormal)
 }
 
-// --- CC-0080: ConfigMap/Secret separation via oslo.config env overrides ---
+// --- ConfigMap/Secret separation via oslo.config env overrides ---
 
 // TestIntegration_KeystonePodReachesDatabaseViaEnvOverride verifies the
-// CC-0080 split: the keystone.conf ConfigMap must carry only the placeholder
+// split: the keystone.conf ConfigMap must carry only the placeholder
 // URL (never the real DB password), while the real URL is materialised into
 // the derived <name>-db-connection Secret and injected into the Deployment
-// pod spec via the OS_DATABASE__CONNECTION env var (CC-0080, REQ-001,
-// REQ-002, REQ-003).
+// pod spec via the OS_DATABASE__CONNECTION env var.
 func TestIntegration_KeystonePodReachesDatabaseViaEnvOverride(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)
@@ -3003,7 +2995,7 @@ func TestIntegration_KeystonePodReachesDatabaseViaEnvOverride(t *testing.T) {
 
 	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
 
-	// REQ-001: the rendered keystone.conf ConfigMap carries the placeholder
+	// the rendered keystone.conf ConfigMap carries the placeholder
 	// URL and MUST NOT contain the upstream DB password.
 	configMaps := &corev1.ConfigMapList{}
 	g.Expect(c.List(ctx, configMaps, client.InNamespace(ns.Name))).To(Succeed())
@@ -3016,23 +3008,23 @@ func TestIntegration_KeystonePodReachesDatabaseViaEnvOverride(t *testing.T) {
 	}
 	g.Expect(conf).NotTo(BeEmpty(), "keystone.conf should exist in a test-keystone-config-* ConfigMap")
 	g.Expect(conf).To(ContainSubstring(dbConnectionPlaceholder),
-		"keystone.conf [database] connection must be the placeholder (CC-0080, REQ-001)")
+		"keystone.conf [database] connection must be the placeholder")
 	// Guard against the specific leakage pattern: the rendered DB URL fragment
 	// "<user>:<password>@" produced by url.UserPassword. createPrerequisites
-	// seeds username=keystone, password=secret (CC-0080, REQ-001).
+	// seeds username=keystone, password=secret.
 	g.Expect(conf).NotTo(ContainSubstring("keystone:secret@"),
-		"keystone.conf must not contain the upstream DB credentials (CC-0080, REQ-001)")
+		"keystone.conf must not contain the upstream DB credentials")
 
-	// REQ-002: derived Secret exists with a single "connection" key whose
+	// derived Secret exists with a single "connection" key whose
 	// value is a valid pymysql URL carrying the real credentials.
 	derivedKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-db-connection", ks.Name)}
 	derived := &corev1.Secret{}
 	g.Expect(c.Get(ctx, derivedKey, derived)).To(Succeed(),
-		"derived db-connection Secret must exist (CC-0080, REQ-002)")
+		"derived db-connection Secret must exist")
 	g.Expect(derived.Data).To(HaveLen(1), "derived Secret must contain exactly one key")
 	connStr := string(derived.Data[dbConnectionSecretKey])
 	g.Expect(connStr).To(HavePrefix("mysql+pymysql://"),
-		"derived connection must be a pymysql URL (CC-0080, REQ-002)")
+		"derived connection must be a pymysql URL")
 	g.Expect(connStr).To(ContainSubstring("keystone:secret@"),
 		"derived connection must carry the upstream username and password")
 	g.Expect(connStr).To(ContainSubstring("db.example.com"),
@@ -3040,7 +3032,7 @@ func TestIntegration_KeystonePodReachesDatabaseViaEnvOverride(t *testing.T) {
 	g.Expect(derived.OwnerReferences).NotTo(BeEmpty(),
 		"derived Secret must be owner-referenced by the Keystone CR")
 
-	// REQ-003: the Deployment pod spec injects OS_DATABASE__CONNECTION sourced
+	// the Deployment pod spec injects OS_DATABASE__CONNECTION sourced
 	// from the derived Secret.
 	deploy := &appsv1.Deployment{}
 	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: ks.Name}, deploy)).
@@ -3048,12 +3040,12 @@ func TestIntegration_KeystonePodReachesDatabaseViaEnvOverride(t *testing.T) {
 	container := findContainerByName(deploy.Spec.Template.Spec.Containers, "keystone")
 	g.Expect(container).NotTo(BeNil(), "keystone container must exist")
 	g.Expect(container.Env).To(ContainElement(buildDBConnectionEnvVar(ks)),
-		"Deployment container must carry OS_DATABASE__CONNECTION from derived Secret (CC-0080, REQ-003)")
+		"Deployment container must carry OS_DATABASE__CONNECTION from derived Secret")
 }
 
 // TestIntegration_RecreateDerivedSecretWhenDeleted verifies that deleting the
 // derived <name>-db-connection Secret triggers the secretToKeystoneMapper
-// watch and causes reconciliation to re-create it (CC-0080, REQ-006).
+// watch and causes reconciliation to re-create it.
 func TestIntegration_RecreateDerivedSecretWhenDeleted(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)
@@ -3079,7 +3071,7 @@ func TestIntegration_RecreateDerivedSecretWhenDeleted(t *testing.T) {
 	g.Expect(originalConn).NotTo(BeEmpty(), "derived Secret must carry a connection value")
 
 	// Delete the derived Secret out-of-band, then expect the watch-driven
-	// reconcile to recreate it with the same contents (CC-0080, REQ-006).
+	// reconcile to recreate it with the same contents.
 	g.Expect(c.Delete(ctx, original)).To(Succeed())
 
 	g.Eventually(func(g Gomega) {
@@ -3093,10 +3085,10 @@ func TestIntegration_RecreateDerivedSecretWhenDeleted(t *testing.T) {
 		g.Expect(recreated.OwnerReferences).NotTo(BeEmpty(),
 			"recreated Secret must be owner-referenced by the Keystone CR")
 	}, eventuallyTimeout, pollInterval).Should(Succeed(),
-		"controller must recreate deleted db-connection Secret (CC-0080, REQ-006)")
+		"controller must recreate deleted db-connection Secret")
 }
 
-// --- Task CC-0079/4.1 and 4.2: OpenBao finalizer lifecycle tests ---
+// --- Task/4.1 and 4.2: OpenBao finalizer lifecycle tests ---
 
 // addESOFinalizerToPushSecret simulates full ESO adoption of the PushSecret by
 // attaching both ESO-owned finalizers:
@@ -3105,12 +3097,12 @@ func TestIntegration_RecreateDerivedSecretWhenDeleted(t *testing.T) {
 //     finalizeOpenBaoSecrets. ESO's PushSecret controller installs this on
 //     first reconcile, so its presence is the operator's evidence that ESO
 //     will honour DeletionPolicy=Delete on a subsequent client.Delete
-//     (CC-0091, REQ-001, REQ-007).
+//     .
 //   - esoCleanupFinalizer is the finalizer ESO holds while it purges the
 //     remote kv-v2 path. Its presence keeps the PushSecret in Terminating
 //     state after client.Delete instead of immediate etcd removal, which is
 //     what Pass-2 of finalizeOpenBaoSecrets observes and surfaces as
-//     OpenBaoFinalizerBlocked (CC-0079, REQ-002, REQ-004).
+//     OpenBaoFinalizerBlocked.
 //
 // Installing both mirrors the production pairing — ESO's DeletionPolicy=Delete
 // branch only fires once adoption has happened, at which point both finalizers
@@ -3145,8 +3137,7 @@ func addESOFinalizerToPushSecret(t testing.TB, ctx context.Context, c client.Cli
 // blocks etcd removal, so a subsequent Delete flips the object into
 // Terminating exactly as it does with addESOFinalizerToPushSecret — use
 // this helper when the test only needs to satisfy Pass-0 and does not
-// care about modelling ESO's kv-v2 purge latency (CC-0091, REQ-001,
-// REQ-003, REQ-007).
+// care about modelling ESO's kv-v2 purge latency.
 func addESOAdoptionFinalizerToPushSecret(t testing.TB, ctx context.Context, c client.Client, key client.ObjectKey) {
 	t.Helper()
 	g := NewGomegaWithT(t)
@@ -3164,7 +3155,6 @@ func addESOAdoptionFinalizerToPushSecret(t testing.TB, ctx context.Context, c cl
 // clearESOFinalizerFromPushSecret removes both ESO-owned finalizers, letting
 // the API server garbage-collect the already-Terminating PushSecret —
 // mimicking ESO completing its kv-v2 purge and releasing the object
-// (CC-0079, CC-0091, REQ-002, REQ-004).
 func clearESOFinalizerFromPushSecret(t testing.TB, ctx context.Context, c client.Client, key client.ObjectKey) {
 	t.Helper()
 	g := NewGomegaWithT(t)
@@ -3192,8 +3182,7 @@ func clearESOFinalizerFromPushSecret(t testing.TB, ctx context.Context, c client
 // each PushSecret so that Delete flips them into Terminating state (matching
 // production where ESO holds the object while it purges the kv-v2 path);
 // clearing that finalizer then lets the API server garbage-collect them,
-// which is what unblocks the Keystone CR from etcd (CC-0079, REQ-002,
-// REQ-008).
+// which is what unblocks the Keystone CR from etcd.
 func TestIntegration_OpenBaoFinalizerLifecycle_AddAndRemove(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)
@@ -3205,10 +3194,10 @@ func TestIntegration_OpenBaoFinalizerLifecycle_AddAndRemove(t *testing.T) {
 
 	createPrerequisites(t, ctx, c, ns.Name)
 
-	// Managed mode exercises both the MariaDB (CC-0078) and OpenBao (CC-0079)
+	// Managed mode exercises both the MariaDB and OpenBao
 	// finalizers on the same CR, matching production where a Keystone with
 	// spec.database.clusterRef carries both. A Ready MariaDB cluster CR keeps
-	// reconcileDatabase's cluster-health gate happy (CC-0047).
+	// reconcileDatabase's cluster-health gate happy.
 	mdbCluster := &mariadbv1alpha1.MariaDB{
 		ObjectMeta: metav1.ObjectMeta{Name: "mariadb", Namespace: ns.Name},
 	}
@@ -3224,8 +3213,7 @@ func TestIntegration_OpenBaoFinalizerLifecycle_AddAndRemove(t *testing.T) {
 	credKey := client.ObjectKey{Namespace: ns.Name, Name: fmt.Sprintf("%s-credential-keys-backup", ks.Name)}
 
 	// The OpenBao finalizer must be installed on first reconcile so a
-	// subsequent delete is trapped through reconcileDeleteOpenBao (CC-0079,
-	// REQ-001, REQ-006).
+	// subsequent delete is trapped through reconcileDeleteOpenBao.
 	g.Eventually(func() bool {
 		ksState := &keystonev1alpha1.Keystone{}
 		if err := c.Get(ctx, ksKey, ksState); err != nil {
@@ -3237,7 +3225,7 @@ func TestIntegration_OpenBaoFinalizerLifecycle_AddAndRemove(t *testing.T) {
 
 	// Both backup PushSecrets must be provisioned with DeletionPolicy=Delete
 	// so that ESO purges the remote kv-v2 paths when the finalizer handler
-	// Deletes them (CC-0079, REQ-008).
+	// Deletes them.
 	for _, key := range []client.ObjectKey{fernetKey, credKey} {
 		g.Eventually(func() error {
 			return c.Get(ctx, key, &esov1alpha1.PushSecret{})
@@ -3254,7 +3242,7 @@ func TestIntegration_OpenBaoFinalizerLifecycle_AddAndRemove(t *testing.T) {
 	// the CR. Without it the fake API server would remove them immediately on
 	// the controller's Delete call, and the test would never exercise the
 	// Terminating -> garbage-collected transition finalizeOpenBaoSecrets is
-	// designed to handle (CC-0079, REQ-002).
+	// designed to handle.
 	addESOFinalizerToPushSecret(t, ctx, c, fernetKey)
 	addESOFinalizerToPushSecret(t, ctx, c, credKey)
 
@@ -3263,7 +3251,7 @@ func TestIntegration_OpenBaoFinalizerLifecycle_AddAndRemove(t *testing.T) {
 	// finalizeOpenBaoSecrets now issues Delete on every backup PushSecret
 	// up-front (pass 1) before verifying they are gone (pass 2), so both
 	// PushSecrets transition to Terminating in parallel without ordering
-	// constraints between them (CC-0079, REQ-002, REQ-004).
+	// constraints between them.
 	g.Eventually(func(ig Gomega) {
 		for _, key := range []client.ObjectKey{fernetKey, credKey} {
 			ps := &esov1alpha1.PushSecret{}
@@ -3288,7 +3276,6 @@ func TestIntegration_OpenBaoFinalizerLifecycle_AddAndRemove(t *testing.T) {
 	// finalizeOpenBaoSecrets to done=true, releasing the OpenBao finalizer
 	// (and the MariaDB finalizer was released earlier in the same termination
 	// sequence), so the API server reclaims the Keystone CR from etcd
-	// (CC-0079, REQ-002).
 	g.Eventually(func() bool {
 		return apierrors.IsNotFound(c.Get(ctx, ksKey, &keystonev1alpha1.Keystone{}))
 	}, eventuallyLongTimeout, pollInterval).Should(BeTrue(),
@@ -3300,7 +3287,6 @@ func TestIntegration_OpenBaoFinalizerLifecycle_AddAndRemove(t *testing.T) {
 // the reconciler keeps the Keystone CR alive and surfaces SecretsReady=False
 // with reason OpenBaoFinalizerBlocked naming the stuck PushSecret. Clearing
 // the finalizer then lets the termination complete and the CR is reclaimed
-// (CC-0079, REQ-004, REQ-009).
 func TestIntegration_OpenBaoFinalizer_BlockedWhenPushSecretStuck(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)
@@ -3337,14 +3323,14 @@ func TestIntegration_OpenBaoFinalizer_BlockedWhenPushSecretStuck(t *testing.T) {
 
 	// Attach the ESO cleanup finalizer ONLY to fernet-keys-backup so that a
 	// subsequent client.Delete flips it into Terminating and stays there —
-	// exercising Pass-2 of finalizeOpenBaoSecrets (CC-0079, REQ-004, REQ-009).
+	// exercising Pass-2 of finalizeOpenBaoSecrets.
 	addESOFinalizerToPushSecret(t, ctx, c, fernetKey)
 
 	// Attach only the adoption finalizer to credential-keys-backup so Pass-0
 	// of finalizeOpenBaoSecrets proceeds past it — otherwise the reconciler
 	// would record WaitingForESOAdoption on credential-keys-backup and never
 	// reach Pass-2 on fernet-keys-backup, shadowing the blocked condition
-	// this test is meant to assert (CC-0091, REQ-001, REQ-003).
+	// this test is meant to assert.
 	addESOAdoptionFinalizerToPushSecret(t, ctx, c, credKey)
 
 	g.Expect(c.Delete(ctx, ks)).To(Succeed(), "delete Keystone CR")
@@ -3352,7 +3338,7 @@ func TestIntegration_OpenBaoFinalizer_BlockedWhenPushSecretStuck(t *testing.T) {
 	// Because fernet-keys-backup is held Terminating, finalizeOpenBaoSecrets
 	// returns done=false and records the blocked condition. The status update
 	// persists through updateStatus so operators can see why the Keystone CR
-	// has not finished deleting (CC-0079, REQ-004, REQ-009).
+	// has not finished deleting.
 	g.Eventually(func(ig Gomega) {
 		ksState := &keystonev1alpha1.Keystone{}
 		ig.Expect(c.Get(ctx, ksKey, ksState)).To(Succeed())
@@ -3375,7 +3361,7 @@ func TestIntegration_OpenBaoFinalizer_BlockedWhenPushSecretStuck(t *testing.T) {
 
 	// Simulate ESO finishing its kv-v2 purge on both PushSecrets. The API
 	// server garbage-collects them, the next reconcile observes them NotFound,
-	// and the Keystone CR is reclaimed (CC-0079, CC-0091, REQ-002, REQ-004).
+	// and the Keystone CR is reclaimed.
 	clearESOFinalizerFromPushSecret(t, ctx, c, fernetKey)
 	clearESOFinalizerFromPushSecret(t, ctx, c, credKey)
 
@@ -3386,8 +3372,7 @@ func TestIntegration_OpenBaoFinalizer_BlockedWhenPushSecretStuck(t *testing.T) {
 }
 
 // TestIntegrationKeystone_DeleteRacingESOAdoption exercises the Pass-0
-// adoption wait in finalizeOpenBaoSecrets (CC-0091, REQ-001, REQ-003,
-// REQ-007). When a Keystone CR is deleted before ESO has reconciled the
+// adoption wait in finalizeOpenBaoSecrets. When a Keystone CR is deleted before ESO has reconciled the
 // backup PushSecrets — i.e. before esoPushSecretFinalizer has been
 // installed — the operator must NOT issue Delete on those PushSecrets.
 // A racing Delete in that window would remove the PushSecret from the API
@@ -3437,7 +3422,6 @@ func TestIntegrationKeystone_DeleteRacingESOAdoption(t *testing.T) {
 	// a missing object. We intentionally do NOT install any ESO finalizer
 	// here — this is the point of the test: the operator must tolerate the
 	// window between PushSecret creation and ESO's first reconcile
-	// (CC-0091, REQ-001).
 	for _, key := range []client.ObjectKey{fernetKey, credKey} {
 		g.Eventually(func() error {
 			return c.Get(ctx, key, &esov1alpha1.PushSecret{})
@@ -3446,8 +3430,7 @@ func TestIntegrationKeystone_DeleteRacingESOAdoption(t *testing.T) {
 	}
 
 	// Wait for the OpenBao finalizer so the subsequent Delete goes through
-	// reconcileDeleteOpenBao rather than a straight cascade (CC-0091,
-	// REQ-001, REQ-006).
+	// reconcileDeleteOpenBao rather than a straight cascade.
 	g.Eventually(func() bool {
 		ksState := &keystonev1alpha1.Keystone{}
 		if err := c.Get(ctx, ksKey, ksState); err != nil {
@@ -3463,7 +3446,7 @@ func TestIntegrationKeystone_DeleteRacingESOAdoption(t *testing.T) {
 	// WaitingForESOAdoption and MUST NOT issue Delete on either PushSecret.
 	// The message must name a concrete unadopted PushSecret so an SRE
 	// reading `kubectl describe keystone` can see which resource is
-	// blocking the handler (CC-0091, REQ-001, REQ-002, REQ-003).
+	// blocking the handler.
 	g.Eventually(func(ig Gomega) {
 		ksState := &keystonev1alpha1.Keystone{}
 		ig.Expect(c.Get(ctx, ksKey, ksState)).To(Succeed())
@@ -3482,7 +3465,6 @@ func TestIntegrationKeystone_DeleteRacingESOAdoption(t *testing.T) {
 	// Both PushSecrets must still be live with zero DeletionTimestamp —
 	// this is the core safety property of Pass-0. A single Delete here
 	// would be the production bug the fix is guarding against
-	// (CC-0091, REQ-001).
 	for _, key := range []client.ObjectKey{fernetKey, credKey} {
 		ps := &esov1alpha1.PushSecret{}
 		g.Expect(c.Get(ctx, key, ps)).To(Succeed(),
@@ -3494,7 +3476,7 @@ func TestIntegrationKeystone_DeleteRacingESOAdoption(t *testing.T) {
 
 	// The Keystone CR must still be alive — the openbao finalizer is
 	// holding it, and that finalizer must not be released while Pass-0
-	// is blocking (CC-0091, REQ-001, REQ-006).
+	// is blocking.
 	ksState := &keystonev1alpha1.Keystone{}
 	g.Expect(c.Get(ctx, ksKey, ksState)).To(Succeed())
 	g.Expect(ksState.GetDeletionTimestamp().IsZero()).To(BeFalse(),
@@ -3508,13 +3490,12 @@ func TestIntegrationKeystone_DeleteRacingESOAdoption(t *testing.T) {
 
 	// Across the adoption-wait window (stage 1) the reconciler must emit at
 	// most one FinalizingOpenBaoSecrets event — preserving the exactly-once
-	// contract established by CC-0079. The preceding Eventually already spans
+	// contract. The preceding Eventually already spans
 	// well over one RequeueSecretPolling tick, so any regression that fires
 	// the event per requeue would surface as stage1Finalizing>1 here. The
 	// exactly-once gate (hasLiveOpenBaoBackupPushSecrets skipping unadopted
 	// PushSecrets) means the expected count during stage 1 is 0; ≤1 is the
 	// loosest assertion that still catches the per-requeue regression
-	// (CC-0091, REQ-007).
 	stage1Events := &corev1.EventList{}
 	g.Expect(c.List(ctx, stage1Events, client.InNamespace(ns.Name))).To(Succeed())
 	stage1Finalizing := 0
@@ -3525,20 +3506,19 @@ func TestIntegrationKeystone_DeleteRacingESOAdoption(t *testing.T) {
 	}
 	g.Expect(stage1Finalizing).To(BeNumerically("<=", 1),
 		"FinalizingOpenBaoSecrets must fire at most once across the adoption-wait "+
-			"window; a per-requeue emit regresses the exactly-once contract (CC-0079, CC-0091)")
+			"window; a per-requeue emit regresses the exactly-once contract")
 
 	// Stage 2 — adoption: install both ESO finalizers. addESOFinalizerToPushSecret
 	// installs esoPushSecretFinalizer (the Pass-0 adoption signal) and
 	// esoCleanupFinalizer (the Pass-2 cleanup finalizer), matching the
 	// shape ESO leaves on a DeletionPolicy=Delete PushSecret after its
-	// first reconcile (CC-0091, REQ-001).
+	// first reconcile.
 	addESOFinalizerToPushSecret(t, ctx, c, fernetKey)
 	addESOFinalizerToPushSecret(t, ctx, c, credKey)
 
 	// The handler must now proceed past Pass-0, fire Delete on both
 	// PushSecrets (Pass-1), and — because esoCleanupFinalizer holds them
 	// Terminating — surface OpenBaoFinalizerBlocked from Pass-2
-	// (CC-0091, REQ-001, REQ-002).
 	g.Eventually(func(ig Gomega) {
 		ksState := &keystonev1alpha1.Keystone{}
 		ig.Expect(c.Get(ctx, ksKey, ksState)).To(Succeed())
@@ -3560,7 +3540,7 @@ func TestIntegrationKeystone_DeleteRacingESOAdoption(t *testing.T) {
 	// Stage 3 — ESO finishes its purge: clear both finalizers. The API
 	// server garbage-collects the PushSecrets, Pass-2 observes NotFound,
 	// the handler returns done=true, and the API server reclaims the
-	// Keystone CR (CC-0091, REQ-001, REQ-002, REQ-004).
+	// Keystone CR.
 	clearESOFinalizerFromPushSecret(t, ctx, c, fernetKey)
 	clearESOFinalizerFromPushSecret(t, ctx, c, credKey)
 
@@ -3582,7 +3562,7 @@ func TestIntegrationKeystone_DeleteRacingESOAdoption(t *testing.T) {
 	// requeues see the PushSecrets in Terminating and hasLiveOpenBaoBackup-
 	// PushSecrets returns false. The ≤2 bound also catches a staggered-
 	// adoption regression where each partial adoption could otherwise
-	// trigger a fresh Pass-1 emit (CC-0079, CC-0091, REQ-007). Events are
+	// trigger a fresh Pass-1 emit. Events are
 	// retained namespace-wide and outlive the involved Keystone CR, so the
 	// list survives the final GC above; ksUID was captured in stage 1.
 	allEvents := &corev1.EventList{}
@@ -3596,10 +3576,10 @@ func TestIntegrationKeystone_DeleteRacingESOAdoption(t *testing.T) {
 	g.Expect(totalFinalizing).To(BeNumerically("<=", 2),
 		"FinalizingOpenBaoSecrets must fire at most twice across the full "+
 			"termination (stages 1+2+3); a per-requeue or per-partial-adoption "+
-			"emit regresses the exactly-once contract (CC-0079, CC-0091)")
+			"emit regresses the exactly-once contract")
 }
 
-// --- CC-0087: field-indexer-driven Secret watch ---
+// --- field-indexer-driven Secret watch ---
 
 // TestIntegration_SecretEventTriggersReconcileViaIndexer verifies that the
 // field indexer registered under KeystoneSecretNameIndexKey wires the
@@ -3607,7 +3587,6 @@ func TestIntegrationKeystone_DeleteRacingESOAdoption(t *testing.T) {
 // the referenced Secrets exist, the reconciler observes the current
 // generation via SecretsReady.ObservedGeneration, which is only possible
 // when the indexer-backed mapper enqueued at least one reconcile request
-// (CC-0087, REQ-008).
 func TestIntegration_SecretEventTriggersReconcileViaIndexer(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)
@@ -3634,11 +3613,11 @@ func TestIntegration_SecretEventTriggersReconcileViaIndexer(t *testing.T) {
 		ig.Expect(cond).NotTo(BeNil(),
 			"SecretsReady condition should be set once the indexer-backed mapper enqueues a reconcile")
 		// ObservedGeneration == Generation proves a reconcile has run
-		// against the current spec (REQ-007 / REQ-008).
+		// against the current spec (/).
 		ig.Expect(cond.ObservedGeneration).To(Equal(got.Generation),
 			"SecretsReady.ObservedGeneration must match the current Keystone generation")
 	}, eventuallyTimeout, pollInterval).Should(Succeed(),
-		"indexer-driven Secret watch must cause the controller to reconcile the Keystone CR (CC-0087, REQ-008)")
+		"indexer-driven Secret watch must cause the controller to reconcile the Keystone CR")
 }
 
 // TestIntegration_UnrelatedSecretDoesNotTriggerReconcile verifies the
@@ -3648,7 +3627,7 @@ func TestIntegration_SecretEventTriggersReconcileViaIndexer(t *testing.T) {
 // mapper-enqueued reconcile of the Keystone CR. Without the indexer the
 // mapper would List every Keystone in the namespace and return a request
 // for each, so this is the negative counterpart of
-// TestIntegration_SecretEventTriggersReconcileViaIndexer (CC-0087, REQ-008).
+// TestIntegration_SecretEventTriggersReconcileViaIndexer.
 func TestIntegration_UnrelatedSecretDoesNotTriggerReconcile(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)
@@ -3701,16 +3680,15 @@ func TestIntegration_UnrelatedSecretDoesNotTriggerReconcile(t *testing.T) {
 		got := &keystonev1alpha1.Keystone{}
 		ig.Expect(c.Get(ctx, key, got)).To(Succeed())
 		ig.Expect(got.ResourceVersion).To(Equal(stableRV),
-			"Keystone ResourceVersion must not advance because of an unrelated Secret event (CC-0087, REQ-008)")
+			"Keystone ResourceVersion must not advance because of an unrelated Secret event")
 	}, 1*time.Second, pollInterval/2).Should(Succeed(),
-		"unrelated Secret events must not drive mapper-enqueued reconciles through the indexer (CC-0087, REQ-008)")
+		"unrelated Secret events must not drive mapper-enqueued reconciles through the indexer")
 }
 
 // TestIntegration_IndexerRegistrationFailsManagerStartCleanly verifies that
 // registerSecretNameIndex returns an error when the same key is registered
 // twice against a single FieldIndexer, and that the error message mentions
 // the index key so the failure is actionable in manager-startup logs
-// (CC-0087, REQ-001).
 //
 // Controller-runtime's FieldIndexer keys registrations by (GVK, field); a
 // second registration for the same key returns an "indexer conflict" error.
@@ -3739,15 +3717,15 @@ func TestIntegration_IndexerRegistrationFailsManagerStartCleanly(t *testing.T) {
 	g.Expect(err).To(HaveOccurred(),
 		"duplicate registration of KeystoneSecretNameIndexKey must return an error")
 	g.Expect(err.Error()).To(ContainSubstring(KeystoneSecretNameIndexKey),
-		"error message must mention the index key so manager-startup logs identify the conflict (CC-0087, REQ-001)")
+		"error message must mention the index key so manager-startup logs identify the conflict")
 }
 
-// --- CC-0084: graceful pod termination / rolling update ---
+// --- graceful pod termination / rolling update ---
 
 // TestIntegration_TerminationGracePeriodAppliedToDeployment verifies that user-
 // supplied spec.terminationGracePeriodSeconds and spec.preStopSleepSeconds are
 // propagated verbatim to the Deployment pod template and keystone
-// container's preStop hook (CC-0084, REQ-001).
+// container's preStop hook.
 func TestIntegration_TerminationGracePeriodAppliedToDeployment(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)
@@ -3784,7 +3762,7 @@ func TestIntegration_TerminationGracePeriodAppliedToDeployment(t *testing.T) {
 
 // TestIntegration_DefaultStrategyAppliedToDeployment verifies that when
 // spec.strategy is nil the reconciler applies the default RollingUpdate
-// strategy with MaxUnavailable=0 and MaxSurge=1 (CC-0084, REQ-005).
+// strategy with MaxUnavailable=0 and MaxSurge=1.
 func TestIntegration_DefaultStrategyAppliedToDeployment(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)
@@ -3816,7 +3794,6 @@ func TestIntegration_DefaultStrategyAppliedToDeployment(t *testing.T) {
 
 // TestIntegration_StrategyOverrideAppliedToDeployment verifies that a user-
 // supplied spec.strategy is propagated verbatim to the Deployment
-// (CC-0084, REQ-006).
 func TestIntegration_StrategyOverrideAppliedToDeployment(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)
@@ -3854,21 +3831,21 @@ func TestIntegration_StrategyOverrideAppliedToDeployment(t *testing.T) {
 
 // TestIntegrationKeystone_PushSecretRemoteKeyIsPerCR verifies that two
 // distinct Keystone CRs produce two backup PushSecrets with disjoint,
-// fully-segmented RemoteKey values for the fernet-keys (CC-0093, REQ-001)
-// and credential-keys (CC-0093, REQ-002) materials and for the Model B
-// bootstrap/admin password material (CC-0112, REQ-002).
+// fully-segmented RemoteKey values for the fernet-keys
+// and credential-keys materials and for the Model B
+// bootstrap/admin password material.
 //
 // Two CR-distinctness axes are exercised for every material:
-//   - same namespace, DIFFERENT name (the original CC-0093 guard) — the
+//   - same namespace, DIFFERENT name (the original guard) — the
 //     {name} path segment is what makes the RemoteKeys disjoint; and
-//   - SAME name, DIFFERENT namespace (CC-0112, REQ-004/REQ-002) — names are
+//   - SAME name, DIFFERENT namespace (/) — names are
 //     identical, so disjointness comes entirely from the {namespace} path
 //     segment. This proves the namespace segment is load-bearing and that two
 //     same-named Keystones in different namespaces never collide on the remote
 //     kv-v2 store.
 //
-// Regression guard: before CC-0093, the fernet/credential PushSecrets wrote to
-// the shared path openstack/keystone/<material>; before CC-0112 the per-CR
+// Regression guard: before, the fernet/credential PushSecrets wrote to
+// the shared path openstack/keystone/<material>; before the per-CR
 // paths still omitted the namespace segment, so two same-named CRs in
 // different namespaces would race on the remote kv-v2 store.
 func TestIntegrationKeystone_PushSecretRemoteKeyIsPerCR(t *testing.T) {
@@ -3876,17 +3853,17 @@ func TestIntegrationKeystone_PushSecretRemoteKeyIsPerCR(t *testing.T) {
 
 	cases := []struct {
 		material    string // kv-v2 leaf segment and PushSecret name suffix
-		requirement string // spec requirement this row covers (REQ-001 / REQ-002)
+		requirement string // spec requirement this row covers (/)
 	}{
-		{material: "fernet-keys", requirement: "REQ-001"},
-		{material: "credential-keys", requirement: "REQ-002"},
+		{material: "fernet-keys", requirement: ""},
+		{material: "credential-keys", requirement: ""},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.material, func(t *testing.T) {
 			c, ctx, _ := setupEnvTestWithController(t)
 
-			// Axis 1 — same namespace, different name (original CC-0093 guard):
+			// Axis 1 — same namespace, different name (original guard):
 			// the {name} segment makes the two RemoteKeys disjoint.
 			t.Run("same-namespace/different-name", func(t *testing.T) {
 				assertFernetCredentialRemoteKeysDisjoint(
@@ -3895,20 +3872,16 @@ func TestIntegrationKeystone_PushSecretRemoteKeyIsPerCR(t *testing.T) {
 				)
 			})
 
-			// Axis 2 — same name, different namespace (CC-0112, REQ-004): with
+			// Axis 2 — same name, different namespace with
 			// identical names, disjointness comes solely from the {namespace}
 			// path segment.
 			t.Run("same-name/different-namespace", func(t *testing.T) {
-				assertFernetCredentialRemoteKeysDisjoint(
-					t, ctx, c, tc.material, "REQ-004",
-					"keystone-shared", "keystone-shared", true, /* differentNamespaces */
-				)
+				assertFernetCredentialRemoteKeysDisjoint(t, ctx, c, tc.material, "", "keystone-shared", "keystone-shared", true /* differentNamespaces */)
 			})
 		})
 	}
 
-	// bootstrap/admin (Model B) — same name, different namespace (CC-0112,
-	// REQ-002). The admin-password backup PushSecret is Model B only and
+	// bootstrap/admin (Model B) — same name, different namespace. The admin-password backup PushSecret is Model B only and
 	// clobber-safe, so it must be driven through the rotation apply flow.
 	t.Run("bootstrap-admin/same-name/different-namespace", func(t *testing.T) {
 		assertBootstrapAdminRemoteKeysDisjoint(t)
@@ -3919,7 +3892,7 @@ func TestIntegrationKeystone_PushSecretRemoteKeyIsPerCR(t *testing.T) {
 // (kA, kB), drives each to a full reconciliation, reads the per-material backup
 // PushSecret ({name}-{material}-backup) for each, and asserts the two
 // openstack/keystone/{namespace}/{name}/{material} RemoteKeys are disjoint and
-// per-CR (CC-0093 / CC-0112, REQ-004). When differentNamespaces is false the two
+// per-CR (/). When differentNamespaces is false the two
 // CRs share one namespace and disjointness is driven by the {name} segment; when
 // true each CR lives in its own GenerateName namespace (with its own
 // createPrerequisites) and disjointness is driven by the {namespace} segment —
@@ -3992,7 +3965,7 @@ func assertFernetCredentialRemoteKeysDisjoint(
 
 	// Whichever axis distinguishes the two CRs, both segments must be present
 	// in each RemoteKey; for the same-name/different-namespace axis the
-	// {namespace} segment is the sole source of disjointness (CC-0112, REQ-004).
+	// {namespace} segment is the sole source of disjointness.
 	g.Expect(keyA).To(ContainSubstring(kA.Namespace))
 	g.Expect(keyA).To(ContainSubstring(kA.Name))
 	g.Expect(keyB).To(ContainSubstring(kB.Namespace))
@@ -4004,7 +3977,7 @@ func assertFernetCredentialRemoteKeysDisjoint(
 // rotation apply flow in each so the clobber-safe bootstrap/admin backup
 // PushSecret is ensured, then asserts the two
 // bootstrap/{namespace}/{name}/admin RemoteKeys are per-CR and disjoint with
-// the {namespace} segment as the sole source of disjointness (CC-0112, REQ-002).
+// the {namespace} segment as the sole source of disjointness.
 //
 // The bootstrap/admin PushSecret is withheld until the push-source Secret holds
 // a valid (>=32-byte) password, so each CR must be driven through the same
@@ -4039,7 +4012,7 @@ func assertBootstrapAdminRemoteKeysDisjoint(t *testing.T) {
 		stagingKey := client.ObjectKey{Namespace: ns.Name, Name: ks.Name + "-admin-password-rotation"}
 		g.Expect(cronJobStrategicMergePatch(ctx, c, stagingKey, map[string][]byte{
 			adminPasswordSecretKey: []byte(newPassword),
-		})).To(Succeed(), "stage CronJob rotation output onto the staging Secret (CC-0109, REQ-007)")
+		})).To(Succeed(), "stage CronJob rotation output onto the staging Secret")
 
 		pushSourceKey := client.ObjectKey{Namespace: ns.Name, Name: ks.Name + "-admin-password-next"}
 		g.Eventually(func(ig Gomega) {
@@ -4048,19 +4021,19 @@ func assertBootstrapAdminRemoteKeysDisjoint(t *testing.T) {
 			ig.Expect(got.Data).To(HaveKeyWithValue(adminPasswordSecretKey, []byte(newPassword)))
 			ig.Expect(got.Annotations).To(HaveKey(RotationCompletedAnnotation))
 		}, eventuallyTimeout, pollInterval).Should(Succeed(),
-			"push-source Secret should receive the rotated password and completion annotation (CC-0109, REQ-007)")
+			"push-source Secret should receive the rotated password and completion annotation")
 
 		pushSecretKey := client.ObjectKey{Namespace: ns.Name, Name: ks.Name + "-admin-password-backup"}
 		ps := &esov1alpha1.PushSecret{}
 		g.Eventually(func() error {
 			return c.Get(ctx, pushSecretKey, ps)
 		}, eventuallyTimeout, pollInterval).Should(Succeed(),
-			"bootstrap/admin PushSecret should be ensured once the push-source holds a valid password (CC-0109, REQ-007)")
+			"bootstrap/admin PushSecret should be ensured once the push-source holds a valid password")
 		g.Expect(ps.Spec.Data).To(HaveLen(1))
 
 		key := ps.Spec.Data[0].Match.RemoteRef.RemoteKey
 		g.Expect(key).To(Equal(fmt.Sprintf("bootstrap/%s/%s/admin", ks.Namespace, ks.Name)),
-			"RemoteKey must be the per-CR OpenBao path bootstrap/{namespace}/{name}/admin (CC-0112, REQ-002)")
+			"RemoteKey must be the per-CR OpenBao path bootstrap/{namespace}/{name}/admin")
 		return key, ns.Name
 	}
 
@@ -4069,21 +4042,21 @@ func assertBootstrapAdminRemoteKeysDisjoint(t *testing.T) {
 
 	g.Expect(nsA).ToNot(Equal(nsB), "the two same-name Keystones must live in different namespaces")
 	g.Expect(keyA).To(ContainSubstring(nsA),
-		"each bootstrap/admin RemoteKey must embed its own namespace (CC-0112, REQ-002)")
+		"each bootstrap/admin RemoteKey must embed its own namespace")
 	g.Expect(keyB).To(ContainSubstring(nsB),
-		"each bootstrap/admin RemoteKey must embed its own namespace (CC-0112, REQ-002)")
+		"each bootstrap/admin RemoteKey must embed its own namespace")
 	g.Expect(keyA).ToNot(Equal(keyB),
-		"bootstrap/admin RemoteKeys for two same-name CRs must be disjoint via the namespace segment (CC-0112, REQ-002)")
+		"bootstrap/admin RemoteKeys for two same-name CRs must be disjoint via the namespace segment")
 }
 
-// --- CC-0095: Sub-resource rename to bare CR name (REQ-003, REQ-004) ---
+// --- Sub-resource rename to bare CR name ---
 
 // TestIntegration_ReconcileProducesRenamedSubResources end-to-end-validates
 // that after a full reconciliation the operator emits every sub-resource at
 // `<cr-name>` (no `-api` suffix). Symmetric with the per-builder unit tests
 // (`TestBuildKeystoneDeployment_NameMatchesCR`, etc.) but exercises the live
 // reconciler against envtest so any future regression in name composition is
-// caught at the integration layer (CC-0095, REQ-003, REQ-004).
+// caught at the integration layer.
 func TestIntegration_ReconcileProducesRenamedSubResources(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)
@@ -4103,11 +4076,11 @@ func TestIntegration_ReconcileProducesRenamedSubResources(t *testing.T) {
 	bareKey := client.ObjectKey{Namespace: ns.Name, Name: ks.Name}
 
 	g.Expect(c.Get(ctx, bareKey, &appsv1.Deployment{})).
-		To(Succeed(), "Deployment must exist at <cr-name> (CC-0095, REQ-003)")
+		To(Succeed(), "Deployment must exist at <cr-name>")
 	g.Expect(c.Get(ctx, bareKey, &corev1.Service{})).
-		To(Succeed(), "Service must exist at <cr-name> (CC-0095, REQ-004)")
+		To(Succeed(), "Service must exist at <cr-name>")
 	g.Expect(c.Get(ctx, bareKey, &policyv1.PodDisruptionBudget{})).
-		To(Succeed(), "PodDisruptionBudget must exist at <cr-name> (CC-0095, REQ-004)")
+		To(Succeed(), "PodDisruptionBudget must exist at <cr-name>")
 }
 
 // TestIntegration_FreshReconcileEmitsNoLegacyApiSuffixedResources pins the
@@ -4116,13 +4089,12 @@ func TestIntegration_ReconcileProducesRenamedSubResources(t *testing.T) {
 // `<cr-name>-api` name. // keystone-api-legacy: pre-rename name referenced for traceability.
 // A regression here would either re-introduce the `-api` suffix in a builder,
 // or leave dual-writes after a partial revert — both visible to live clients
-// (CC-0095, REQ-004).
 //
-// This test does NOT exercise upgrade-from-pre-CC-0095 orphan cleanup: it
+// This test does NOT exercise upgrade-from-pre-existing orphan cleanup: it
 // never pre-seeds legacy `<cr-name>-api` Deployment/Service/PDB, // keystone-api-legacy: pre-rename name referenced for traceability.
 // so it cannot detect orphan persistence on a real upgrade path. See
 // docs/reference/keystone-upgrade-flow.md for the manual cleanup runbook
-// that currently covers that scenario (CC-0095).
+// that currently covers that scenario.
 func TestIntegration_FreshReconcileEmitsNoLegacyApiSuffixedResources(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)
@@ -4153,12 +4125,12 @@ func TestIntegration_FreshReconcileEmitsNoLegacyApiSuffixedResources(t *testing.
 		"no legacy <cr-name>-api PodDisruptionBudget must exist after reconcile ") // keystone-api-legacy: assertion pins absence of the pre-rename name.
 }
 
-// --- Task 7.1: Metrics endpoint exposes Keystone operator collectors (CC-0089, REQ-008) ---
+// --- Task 7.1: Metrics endpoint exposes Keystone operator collectors ---
 
 // TestMetricsEndpointServesKeystoneOperatorCollectors proves the Keystone
 // operator's Prometheus collectors are reachable in Prometheus text format on
 // the controller-runtime metrics registry that the operator's metrics server
-// would serve in production (CC-0089, REQ-008).
+// would serve in production.
 func TestMetricsEndpointServesKeystoneOperatorCollectors(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)
@@ -4184,7 +4156,7 @@ func TestMetricsEndpointServesKeystoneOperatorCollectors(t *testing.T) {
 	// ctrlmetrics.Registry — through promhttp.HandlerFor via httptest. This
 	// is contract-equivalent because the production metrics server wraps the
 	// exact same Registry, so any series visible here is visible at the
-	// real /metrics endpoint (CC-0089, REQ-008).
+	// real /metrics endpoint.
 	srv := httptest.NewServer(promhttp.HandlerFor(ctrlmetrics.Registry, promhttp.HandlerOpts{}))
 	t.Cleanup(srv.Close)
 
@@ -4206,7 +4178,7 @@ func TestMetricsEndpointServesKeystoneOperatorCollectors(t *testing.T) {
 		"Prometheus text exposition must declare the reconcile duration histogram")
 }
 
-// --- Task 7.2: Reconcile errors counter increments on induced failure (CC-0089, REQ-002, REQ-008) ---
+// --- Task 7.2: Reconcile errors counter increments on induced failure ---
 
 // The unit test that addresses Task 7.2 lives next to the other testReconciler
 // pattern tests in keystone_controller_test.go, where it can use a fake client
@@ -4214,18 +4186,18 @@ func TestMetricsEndpointServesKeystoneOperatorCollectors(t *testing.T) {
 // reconcileDBConnectionSecret. The interceptor approach is independent of
 // whether the controller materializes the derived Secret via Update or
 // Server-Side Apply, so it survives a future SSA migration without silently
-// passing for the wrong reason (CC-0089 I-001 review feedback).
+// passing for the wrong reason (I-001 review feedback).
 //
 // See: TestReconcileErrorsTotalIncrementsOnInducedFailure in
 // keystone_controller_test.go.
 
-// --- CC-0098: spec.logging end-to-end roll/no-op behaviour (REQ-007) ---
+// --- spec.logging end-to-end roll/no-op behaviour ---
 
 // configVolumeConfigMapName extracts the ConfigMap name backing the "config"
 // volume on the keystone Deployment pod template. The reconciler always
 // emits the keystone-config ConfigMap as a volume named "config" so this
-// helper can be relied on by the CC-0098 logging tests below to detect a
-// content-hash-driven roll (CC-0098, REQ-007).
+// helper can be relied on by the logging tests below to detect a
+// content-hash-driven roll.
 func configVolumeConfigMapName(deploy *appsv1.Deployment) string {
 	for _, v := range deploy.Spec.Template.Spec.Volumes {
 		if v.Name == "config" && v.ConfigMap != nil {
@@ -4240,7 +4212,7 @@ func configVolumeConfigMapName(deploy *appsv1.Deployment) string {
 // config ConfigMap to be re-emitted under a new content-hashed name and
 // that the Deployment's "config" volume is rewritten to reference the new
 // ConfigMap. This is the end-to-end "logging change rolls the pod" guarantee
-// that REQ-007 promises (CC-0098, REQ-007).
+// that promises.
 //
 // The check on the new ConfigMap's keystone.conf data confirms the toggle
 // actually flowed through the renderer (debug=true), not just that some
@@ -4318,15 +4290,15 @@ func TestIntegration_LoggingDebugTogglesRollsConfigMapAndDeployment(t *testing.T
 		name := configVolumeConfigMapName(d)
 		ig.Expect(name).NotTo(BeEmpty(), "config volume must remain present")
 		ig.Expect(name).NotTo(Equal(initialCMName),
-			"toggling spec.logging.debug must rewrite the Deployment's config volume to a new hashed ConfigMap (CC-0098, REQ-007)")
+			"toggling spec.logging.debug must rewrite the Deployment's config volume to a new hashed ConfigMap")
 		newCMName = name
 	}, eventuallyTimeout, pollInterval).Should(Succeed())
 
 	// The Deployment's pod template was rewritten; its generation must have
-	// advanced. A new ReplicaSet would roll on a real cluster (CC-0098, REQ-007).
+	// advanced. A new ReplicaSet would roll on a real cluster.
 	g.Expect(c.Get(ctx, deployKey, deploy)).To(Succeed())
 	g.Expect(deploy.Generation).To(BeNumerically(">", initialGen),
-		"Deployment.Generation must advance when the config volume rolls (CC-0098, REQ-007)")
+		"Deployment.Generation must advance when the config volume rolls")
 
 	// The new ConfigMap must exist and carry debug=true in keystone.conf,
 	// proving the toggle flowed through the renderer end-to-end.
@@ -4334,7 +4306,7 @@ func TestIntegration_LoggingDebugTogglesRollsConfigMapAndDeployment(t *testing.T
 	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: newCMName}, newCM)).
 		To(Succeed(), "new hashed ConfigMap referenced by the rolled Deployment must exist")
 	g.Expect(newCM.Data["keystone.conf"]).To(ContainSubstring("debug = true"),
-		"rolled ConfigMap must carry the toggled spec.logging.debug=true (CC-0098, REQ-007)")
+		"rolled ConfigMap must carry the toggled spec.logging.debug=true")
 }
 
 // TestIntegration_LoggingNoOpReconcileDoesNotRollDeployment is the stability
@@ -4342,8 +4314,8 @@ func TestIntegration_LoggingDebugTogglesRollsConfigMapAndDeployment(t *testing.T
 // once the Deployment+ConfigMap are stable, a no-op reconcile (re-Update with
 // an identical spec) MUST NOT rewrite the Deployment's config volume or
 // advance Deployment.Generation. This pins the idempotence guarantee under
-// REQ-007 — logging-driven config rolls fire only on actual logging changes,
-// not on routine reconciles (CC-0098, REQ-007).
+// logging-driven config rolls fire only on actual logging changes,
+// not on routine reconciles.
 func TestIntegration_LoggingNoOpReconcileDoesNotRollDeployment(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)
@@ -4401,7 +4373,7 @@ func TestIntegration_LoggingNoOpReconcileDoesNotRollDeployment(t *testing.T) {
 	post := &keystonev1alpha1.Keystone{}
 	g.Expect(c.Get(ctx, key, post)).To(Succeed())
 	g.Expect(post.Generation).To(Equal(preGeneration),
-		"Keystone.Generation must not advance on a no-op spec re-Update (CC-0098, REQ-007)")
+		"Keystone.Generation must not advance on a no-op spec re-Update")
 
 	// The Deployment's config volume name and generation must remain stable
 	// across the no-op reconcile window.
@@ -4409,14 +4381,14 @@ func TestIntegration_LoggingNoOpReconcileDoesNotRollDeployment(t *testing.T) {
 		d := &appsv1.Deployment{}
 		ig.Expect(c.Get(ctx, deployKey, d)).To(Succeed())
 		ig.Expect(configVolumeConfigMapName(d)).To(Equal(stableCMName),
-			"no-op reconcile must NOT rewrite the Deployment's config volume (CC-0098, REQ-007)")
+			"no-op reconcile must NOT rewrite the Deployment's config volume")
 		ig.Expect(d.Generation).To(Equal(stableGen),
-			"no-op reconcile must NOT advance Deployment.Generation (CC-0098, REQ-007)")
+			"no-op reconcile must NOT advance Deployment.Generation")
 	}, 2*time.Second, pollInterval).Should(Succeed(),
-		"no-op spec reconcile must be idempotent on the Deployment pod template (CC-0098, REQ-007)")
+		"no-op spec reconcile must be idempotent on the Deployment pod template")
 }
 
-// TestIntegration_DatabaseTLS_CertificateLifecycle verifies CC-0106 REQ-002:
+// TestIntegration_DatabaseTLS_CertificateLifecycle verifies:
 // applying a managed-mode Keystone CR with spec.database.tls.enabled=true
 // causes the reconciler to issue a cert-manager Certificate named
 // "<name>-db-client" owned by the Keystone CR. cert-manager itself is not
@@ -4433,7 +4405,7 @@ func TestIntegration_DatabaseTLS_CertificateLifecycle(t *testing.T) {
 	createPrerequisites(t, ctx, c, ns.Name)
 
 	// Managed-mode CR with DB TLS enabled. The CRD CEL rule + admission
-	// webhook (CC-0106, REQ-007/REQ-010) require both *SecretRef.Name fields
+	// webhook (/) require both *SecretRef.Name fields
 	// to be set when tls.enabled is true; the *Secret objects themselves do
 	// not need to exist for reconcileDatabaseTLS, which only emits the
 	// Certificate spec and never reads the Secret bytes.
@@ -4462,7 +4434,7 @@ func TestIntegration_DatabaseTLS_CertificateLifecycle(t *testing.T) {
 		ig.Expect(owner.Name).To(Equal("test-keystone"))
 		ig.Expect(owner.Kind).To(Equal("Keystone"))
 	}, eventuallyTimeout, pollInterval).Should(Succeed(),
-		"cert-manager Certificate must be created and owned by the Keystone CR (CC-0106, REQ-002)")
+		"cert-manager Certificate must be created and owned by the Keystone CR")
 
 	// 2. DatabaseTLSReady must reach False with reason CertificatePending —
 	//    cert-manager is not running in envtest so the Certificate never
@@ -4470,13 +4442,13 @@ func TestIntegration_DatabaseTLS_CertificateLifecycle(t *testing.T) {
 	cond := waitForCondition(t, ctx, c, key, conditionTypeDatabaseTLSReady, metav1.ConditionFalse, eventuallyTimeout)
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Reason).To(Equal(reasonCertificatePending),
-		"DatabaseTLSReady reason must be CertificatePending while the Certificate has no Ready=True status (CC-0106, REQ-002)")
+		"DatabaseTLSReady reason must be CertificatePending while the Certificate has no Ready=True status")
 }
 
-// --- Task 3.1 (CC-0108, REQ-010): admin-password rotation cutover ---
+// --- Task 3.1 admin-password rotation cutover ---
 
 // TestIntegration_AdminPasswordRotationCutover verifies the end-to-end rotation
-// cutover under envtest (CC-0108, REQ-010): once a Keystone CR is Ready, rotating
+// cutover under envtest once a Keystone CR is Ready, rotating
 // the keystone-admin Secret's `password` makes the operator detect the stale
 // bootstrap Job (its forge.c5c3.io/admin-password-hash no longer matches), delete
 // it, and recreate a bootstrap Job carrying the new SHA-256 digest. Completing the
@@ -4510,7 +4482,7 @@ func TestIntegration_AdminPasswordRotationCutover(t *testing.T) {
 	g.Expect(oldJob.Spec.Template.ObjectMeta.Annotations).To(HaveKeyWithValue(
 		adminPasswordHashAnnotation, hex.EncodeToString(oldSum[:]),
 	),
-		"initial bootstrap Job must carry the initial admin-password hash (CC-0108, REQ-010)")
+		"initial bootstrap Job must carry the initial admin-password hash")
 
 	// Rotate the admin password by updating the keystone-admin Secret directly,
 	// simulating an ESO Owner-policy write of a new OpenBao value.
@@ -4528,11 +4500,11 @@ func TestIntegration_AdminPasswordRotationCutover(t *testing.T) {
 		j := &batchv1.Job{}
 		ig.Expect(c.Get(ctx, bootstrapKey, j)).To(Succeed())
 		ig.Expect(j.UID).NotTo(Equal(oldUID),
-			"rotated password must recreate the bootstrap Job with a new UID (CC-0108, REQ-010)")
+			"rotated password must recreate the bootstrap Job with a new UID")
 		ig.Expect(j.Spec.Template.ObjectMeta.Annotations).To(HaveKeyWithValue(
 			adminPasswordHashAnnotation, newHash,
 		),
-			"recreated bootstrap Job must carry the rotated admin-password hash (CC-0108, REQ-010)")
+			"recreated bootstrap Job must carry the rotated admin-password hash")
 	}, eventuallyTimeout, pollInterval).Should(Succeed())
 
 	// Completing the recreated Job drives BootstrapReady and Ready back to True.
@@ -4541,11 +4513,11 @@ func TestIntegration_AdminPasswordRotationCutover(t *testing.T) {
 	waitForCondition(t, ctx, c, key, "Ready", metav1.ConditionTrue, eventuallyTimeout)
 }
 
-// --- Task 3.2 (CC-0108, REQ-003): admin-password no-churn ---
+// --- Task 3.2 admin-password no-churn ---
 
 // TestIntegration_AdminPasswordUnchangedNoChurn verifies that re-reconciling a
 // Ready Keystone WITHOUT rotating the admin password does not churn the bootstrap
-// Job: its UID stays stable and Ready stays True (CC-0108, REQ-003). This guards
+// Job: its UID stays stable and Ready stays True. This guards
 // the idempotent half of the rotation gate — an unchanged password must not
 // recreate the Job.
 func TestIntegration_AdminPasswordUnchangedNoChurn(t *testing.T) {
@@ -4587,25 +4559,24 @@ func TestIntegration_AdminPasswordUnchangedNoChurn(t *testing.T) {
 	g.Expect(c.Update(ctx, current)).To(Succeed())
 
 	// Across the reconcile window the bootstrap Job UID must remain stable and
-	// Ready must stay True — no delete/recreate churn (CC-0108, REQ-003).
+	// Ready must stay True — no delete/recreate churn.
 	g.Consistently(func(ig Gomega) {
 		j := &batchv1.Job{}
 		ig.Expect(c.Get(ctx, bootstrapKey, j)).To(Succeed())
 		ig.Expect(j.UID).To(Equal(stableUID),
-			"unchanged admin password must not recreate the bootstrap Job (CC-0108, REQ-003)")
+			"unchanged admin password must not recreate the bootstrap Job")
 
 		ksState := &keystonev1alpha1.Keystone{}
 		ig.Expect(c.Get(ctx, key, ksState)).To(Succeed())
 		ig.Expect(meta.IsStatusConditionTrue(ksState.Status.Conditions, "Ready")).To(BeTrue(),
-			"Ready must stay True when the admin password is unchanged (CC-0108, REQ-003)")
+			"Ready must stay True when the admin password is unchanged")
 	}, 3*time.Second, pollInterval).Should(Succeed())
 }
 
-// --- CC-0109 Model B: scheduled admin-password rotation envtest coverage ---
+// --- Model B: scheduled admin-password rotation envtest coverage ---
 
 // integrationBrownfieldKeystoneWithPasswordRotation returns a brownfield Keystone
-// CR with Model B scheduled admin-password rotation enabled (CC-0109, REQ-001,
-// REQ-003), mirroring integrationBrownfieldKeystoneWithTrustFlush. PasswordLength
+// CR with Model B scheduled admin-password rotation enabled, mirroring integrationBrownfieldKeystoneWithTrustFlush. PasswordLength
 // is pinned to DefaultPasswordRotationLength so the generated-password length the
 // CronJob is told to produce — and the operator-side validation floor — are
 // deterministic in envtest regardless of whether the defaulting webhook runs.
@@ -4621,7 +4592,7 @@ func integrationBrownfieldKeystoneWithPasswordRotation(name, namespace, schedule
 
 // TestIntegration_PasswordRotation_CronJobShape verifies the scheduled
 // admin-password rotation CronJob's shape end-to-end through the API server
-// (CC-0109, REQ-003, REQ-005): once a rotation-enabled Keystone reaches Ready,
+// once a rotation-enabled Keystone reaches Ready,
 // the operator creates <name>-admin-password-rotate carrying the spec schedule,
 // the rotate-script command, SECRET_NAME pointing at the staging Secret (never
 // the push-source Secret), and a fieldRef SECRET_NAMESPACE, and reports
@@ -4643,23 +4614,23 @@ func TestIntegration_PasswordRotation_CronJobShape(t *testing.T) {
 
 	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
 
-	// The rotation CronJob must appear (CC-0109, REQ-003).
+	// The rotation CronJob must appear.
 	cronJobKey := client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-admin-password-rotate"}
 	cronJob := &batchv1.CronJob{}
 	g.Eventually(func() error {
 		return c.Get(ctx, cronJobKey, cronJob)
 	}, eventuallyTimeout, pollInterval).Should(Succeed(),
-		"admin-password rotation CronJob should appear (CC-0109, REQ-003)")
+		"admin-password rotation CronJob should appear")
 
-	// Schedule mirrors spec.bootstrap.passwordRotation.schedule (CC-0109, REQ-003).
+	// Schedule mirrors spec.bootstrap.passwordRotation.schedule.
 	g.Expect(cronJob.Spec.Schedule).To(Equal(schedule),
 		"CronJob schedule must match spec.bootstrap.passwordRotation.schedule")
 
-	// Suspend defaults to false (CC-0109, REQ-005).
+	// Suspend defaults to false.
 	g.Expect(cronJob.Spec.Suspend).NotTo(BeNil())
 	g.Expect(*cronJob.Spec.Suspend).To(BeFalse(), "CronJob must not be suspended by default")
 
-	// Container shape: single container, rotate-script command (CC-0109, REQ-005).
+	// Container shape: single container, rotate-script command.
 	podSpec := cronJob.Spec.JobTemplate.Spec.Template.Spec
 	g.Expect(podSpec.Containers).To(HaveLen(1))
 	container := podSpec.Containers[0]
@@ -4667,27 +4638,27 @@ func TestIntegration_PasswordRotation_CronJobShape(t *testing.T) {
 	g.Expect(container.Command).To(Equal([]string{"/scripts/admin_password_rotate.sh"}))
 
 	// Env: SECRET_NAME points at the staging Secret; SECRET_NAMESPACE is a
-	// fieldRef to the pod namespace (CC-0109, REQ-005).
+	// fieldRef to the pod namespace.
 	envMap := map[string]corev1.EnvVar{}
 	for _, e := range container.Env {
 		envMap[e.Name] = e
 	}
 	g.Expect(envMap["SECRET_NAME"].Value).To(Equal("test-keystone-admin-password-rotation"),
-		"SECRET_NAME must point at the staging Secret, never the push-source Secret (CC-0109, REQ-005)")
+		"SECRET_NAME must point at the staging Secret, never the push-source Secret")
 	secretNamespaceEnv, ok := envMap["SECRET_NAMESPACE"]
 	g.Expect(ok).To(BeTrue(), "SECRET_NAMESPACE env must be set")
 	g.Expect(secretNamespaceEnv.ValueFrom).NotTo(BeNil())
 	g.Expect(secretNamespaceEnv.ValueFrom.FieldRef).NotTo(BeNil())
 	g.Expect(secretNamespaceEnv.ValueFrom.FieldRef.FieldPath).To(Equal("metadata.namespace"))
 
-	// ServiceAccount, commonLabels, and ownerRef (CC-0109, REQ-003).
+	// ServiceAccount, commonLabels, and ownerRef.
 	g.Expect(podSpec.ServiceAccountName).To(Equal("test-keystone-admin-password-rotate"))
 	g.Expect(cronJob.Labels).To(HaveKeyWithValue("app.kubernetes.io/name", "keystone"))
 	g.Expect(cronJob.Labels).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-keystone"))
 	g.Expect(cronJob.OwnerReferences).To(HaveLen(1))
 	g.Expect(cronJob.OwnerReferences[0].Name).To(Equal("test-keystone"))
 
-	// PasswordRotationReady=True with reason PasswordRotationConfigured (CC-0109, REQ-009).
+	// PasswordRotationReady=True with reason PasswordRotationConfigured.
 	key := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
 	cond := waitForCondition(t, ctx, c, key, "PasswordRotationReady", metav1.ConditionTrue, eventuallyTimeout)
 	g.Expect(cond.Reason).To(Equal("PasswordRotationConfigured"))
@@ -4696,7 +4667,7 @@ func TestIntegration_PasswordRotation_CronJobShape(t *testing.T) {
 // TestIntegration_PasswordRotation_SuspendTruePreservesSiblings verifies that
 // setting spec.bootstrap.passwordRotation.suspend=true pauses the CronJob
 // (*spec.Suspend becomes true) WITHOUT deleting it or any sibling resource and
-// without altering the schedule (CC-0109, REQ-005). Suspend is the operator's
+// without altering the schedule. Suspend is the operator's
 // supported way to pause rotation; it must never tear down Model B resources.
 func TestIntegration_PasswordRotation_SuspendTruePreservesSiblings(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
@@ -4720,14 +4691,14 @@ func TestIntegration_PasswordRotation_SuspendTruePreservesSiblings(t *testing.T)
 		return c.Get(ctx, cronJobKey, &batchv1.CronJob{})
 	}, eventuallyTimeout, pollInterval).Should(Succeed(), "rotation CronJob should exist before suspend")
 
-	// Pause via spec.bootstrap.passwordRotation.suspend=true (CC-0109, REQ-005).
+	// Pause via spec.bootstrap.passwordRotation.suspend=true.
 	key := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
 	updated := &keystonev1alpha1.Keystone{}
 	g.Expect(c.Get(ctx, key, updated)).To(Succeed())
 	updated.Spec.Bootstrap.PasswordRotation.Suspend = true
 	g.Expect(c.Update(ctx, updated)).To(Succeed())
 
-	// *spec.Suspend must become true while the CronJob is preserved (CC-0109, REQ-005).
+	// *spec.Suspend must become true while the CronJob is preserved.
 	cj := &batchv1.CronJob{}
 	g.Eventually(func() bool {
 		if err := c.Get(ctx, cronJobKey, cj); err != nil {
@@ -4735,12 +4706,11 @@ func TestIntegration_PasswordRotation_SuspendTruePreservesSiblings(t *testing.T)
 		}
 		return cj.Spec.Suspend != nil && *cj.Spec.Suspend
 	}, eventuallyTimeout, pollInterval).Should(BeTrue(),
-		"CronJob *spec.Suspend should become true and the CronJob must be preserved (CC-0109, REQ-005)")
+		"CronJob *spec.Suspend should become true and the CronJob must be preserved")
 	g.Expect(cj.Spec.Schedule).To(Equal(schedule),
-		"toggling spec.bootstrap.passwordRotation.suspend must not change the schedule (CC-0109, REQ-005)")
+		"toggling spec.bootstrap.passwordRotation.suspend must not change the schedule")
 
 	// Every sibling resource must survive suspend — pausing is not teardown
-	// (CC-0109, REQ-005).
 	g.Consistently(func(ig Gomega) {
 		ig.Expect(c.Get(ctx, cronJobKey, &batchv1.CronJob{})).To(Succeed(), "CronJob preserved")
 		ig.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-admin-password-rotation"}, &corev1.Secret{})).
@@ -4750,21 +4720,21 @@ func TestIntegration_PasswordRotation_SuspendTruePreservesSiblings(t *testing.T)
 		ig.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-admin-password-rotate"}, &corev1.ServiceAccount{})).
 			To(Succeed(), "ServiceAccount preserved")
 	}, 2*time.Second, pollInterval).Should(Succeed(),
-		"suspend must pause the CronJob without deleting any sibling resource (CC-0109, REQ-005)")
+		"suspend must pause the CronJob without deleting any sibling resource")
 
-	// Still reported ready while paused (CC-0109, REQ-009).
+	// Still reported ready while paused.
 	cond := waitForCondition(t, ctx, c, key, "PasswordRotationReady", metav1.ConditionTrue, eventuallyTimeout)
 	g.Expect(cond.Reason).To(Equal("PasswordRotationConfigured"))
 }
 
 // TestIntegration_PasswordRotation_ApplyCommitsAndPushes drives the full Model B
-// apply flow in envtest (CC-0109, REQ-007, REQ-011, REQ-014): the operator
+// apply flow in envtest the operator
 // creates the empty push-source Secret and withholds the PushSecret while it is
 // empty; the test simulates the CronJob PATCHing a fresh password + completion
 // annotation onto the staging Secret; the reconciler commits the password onto
 // the push-source Secret, deletes staging, emits AdminPasswordRotated, and — now
 // that the push-source holds a valid password — ensures the clobber-safe
-// PushSecret targeting the per-CR OpenBao path (CC-0112, REQ-002).
+// PushSecret targeting the per-CR OpenBao path.
 func TestIntegration_PasswordRotation_ApplyCommitsAndPushes(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)
@@ -4781,43 +4751,43 @@ func TestIntegration_PasswordRotation_ApplyCommitsAndPushes(t *testing.T) {
 
 	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
 	g.Expect(c.Get(ctx, types.NamespacedName{Name: ks.Name, Namespace: ns.Name}, ks)).
-		To(Succeed(), "re-fetch Keystone CR post-reconcile for event lookups (CC-0109)")
+		To(Succeed(), "re-fetch Keystone CR post-reconcile for event lookups")
 
-	// The operator-owned push-source Secret exists and starts empty (CC-0109, REQ-007).
+	// The operator-owned push-source Secret exists and starts empty.
 	pushSourceKey := client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-admin-password-next"}
 	pushSource := &corev1.Secret{}
 	g.Eventually(func() error {
 		return c.Get(ctx, pushSourceKey, pushSource)
 	}, eventuallyTimeout, pollInterval).Should(Succeed(), "push-source Secret should exist")
-	g.Expect(pushSource.Data).To(BeEmpty(), "push-source Secret Data should start empty (CC-0109, REQ-007)")
+	g.Expect(pushSource.Data).To(BeEmpty(), "push-source Secret Data should start empty")
 
 	// Clobber-safe gate: no PushSecret while the push-source is empty, so the
 	// per-CR bootstrap/{namespace}/{name}/admin OpenBao value is never overwritten
-	// with an empty payload (CC-0109, REQ-011, REQ-014; per-CR path in CC-0112).
+	// with an empty payload (per-CR path).
 	pushSecretKey := client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-admin-password-backup"}
 	g.Consistently(func() bool {
 		return apierrors.IsNotFound(c.Get(ctx, pushSecretKey, &esov1alpha1.PushSecret{}))
 	}, 2*time.Second, pollInterval).Should(BeTrue(),
-		"no PushSecret must exist until the push-source Secret holds a valid password (CC-0109, REQ-011)")
+		"no PushSecret must exist until the push-source Secret holds a valid password")
 
 	// Simulate the CronJob run: stage a fresh >=32-byte password + completion
 	// annotation via the real strategic-merge PATCH shape the rotate script
-	// emits (CC-0109, REQ-007).
+	// emits.
 	const newPassword = "rotated-admin-password-0123456789abcdef" // 39 bytes >= 32 minimum
 	stagingKey := client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-admin-password-rotation"}
 	g.Expect(cronJobStrategicMergePatch(ctx, c, stagingKey, map[string][]byte{
 		adminPasswordSecretKey: []byte(newPassword),
-	})).To(Succeed(), "stage CronJob rotation output onto the staging Secret (CC-0109, REQ-007)")
+	})).To(Succeed(), "stage CronJob rotation output onto the staging Secret")
 
 	// The operator commits the staged password onto the push-source Secret and
-	// stamps the completion annotation (CC-0109, REQ-007).
+	// stamps the completion annotation.
 	g.Eventually(func(ig Gomega) {
 		got := &corev1.Secret{}
 		ig.Expect(c.Get(ctx, pushSourceKey, got)).To(Succeed())
 		ig.Expect(got.Data).To(HaveKeyWithValue(adminPasswordSecretKey, []byte(newPassword)))
 		ig.Expect(got.Annotations).To(HaveKey(RotationCompletedAnnotation))
 	}, eventuallyTimeout, pollInterval).Should(Succeed(),
-		"push-source Secret should receive the rotated password and completion annotation (CC-0109, REQ-007)")
+		"push-source Secret should receive the rotated password and completion annotation")
 
 	// Staging Secret is deleted, or re-created empty without the completion
 	// annotation on the next reconcile (mirrors the Fernet apply terminal state).
@@ -4828,33 +4798,32 @@ func TestIntegration_PasswordRotation_ApplyCommitsAndPushes(t *testing.T) {
 			return
 		}
 		ig.Expect(err).NotTo(HaveOccurred())
-		ig.Expect(got.Data).To(BeEmpty(), "staging Secret Data should be cleared after apply (CC-0109, REQ-007)")
+		ig.Expect(got.Data).To(BeEmpty(), "staging Secret Data should be cleared after apply")
 		ig.Expect(got.Annotations).NotTo(HaveKey(RotationCompletedAnnotation),
-			"staging Secret completion annotation should be gone after apply (CC-0109, REQ-007)")
+			"staging Secret completion annotation should be gone after apply")
 	}, eventuallyTimeout, pollInterval).Should(Succeed(),
-		"staging Secret should be deleted or reset after a successful apply (CC-0109, REQ-007)")
+		"staging Secret should be deleted or reset after a successful apply")
 
-	// A Normal AdminPasswordRotated event is emitted on the Keystone CR (CC-0109, REQ-007).
+	// A Normal AdminPasswordRotated event is emitted on the Keystone CR.
 	eventuallyFindKeystoneEvent(t, ctx, c, ks, "AdminPasswordRotated", corev1.EventTypeNormal)
 
 	// With a valid push-source password, the clobber-safe PushSecret is ensured,
 	// selecting the push-source Secret and targeting the per-CR OpenBao path
-	// bootstrap/{namespace}/{name}/admin (CC-0109, REQ-007, REQ-014; per-CR
-	// scoping added in CC-0112, REQ-002).
+	// bootstrap/{namespace}/{name}/admin (per-CR scoping).
 	ps := &esov1alpha1.PushSecret{}
 	g.Eventually(func() error {
 		return c.Get(ctx, pushSecretKey, ps)
 	}, eventuallyTimeout, pollInterval).Should(Succeed(),
-		"PushSecret should be ensured once the push-source holds a valid password (CC-0109, REQ-007)")
+		"PushSecret should be ensured once the push-source holds a valid password")
 	g.Expect(ps.Spec.Selector.Secret).NotTo(BeNil())
 	g.Expect(ps.Spec.Selector.Secret.Name).To(Equal("test-keystone-admin-password-next"))
 	g.Expect(ps.Spec.Data).To(HaveLen(1))
 	g.Expect(ps.Spec.Data[0].Match.RemoteRef.RemoteKey).To(Equal(fmt.Sprintf("bootstrap/%s/%s/admin", ks.Namespace, ks.Name)),
-		"RemoteKey must be the per-CR OpenBao path bootstrap/{namespace}/{name}/admin (CC-0112, REQ-002)")
+		"RemoteKey must be the per-CR OpenBao path bootstrap/{namespace}/{name}/admin")
 }
 
 // TestIntegration_PasswordRotation_DisableTearsDownAllResources verifies the
-// disabled/teardown branch (CC-0109, REQ-002): flipping
+// disabled/teardown branch flipping
 // spec.bootstrap.passwordRotation.enabled to false removes every Model B
 // resource (CronJob, staging + push-source Secrets, the split RBAC trio, the
 // PushSecret, and the rotate-script ConfigMaps) and reports
@@ -4881,7 +4850,7 @@ func TestIntegration_PasswordRotation_DisableTearsDownAllResources(t *testing.T)
 	saKey := client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-admin-password-rotate"}
 	pushSecretKey := client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-admin-password-backup"}
 
-	// Confirm the Model B resources exist while rotation is enabled (CC-0109, REQ-003).
+	// Confirm the Model B resources exist while rotation is enabled.
 	g.Eventually(func(ig Gomega) {
 		ig.Expect(c.Get(ctx, cronJobKey, &batchv1.CronJob{})).To(Succeed())
 		ig.Expect(c.Get(ctx, stagingKey, &corev1.Secret{})).To(Succeed())
@@ -4890,9 +4859,9 @@ func TestIntegration_PasswordRotation_DisableTearsDownAllResources(t *testing.T)
 		ig.Expect(c.Get(ctx, saKey, &rbacv1.Role{})).To(Succeed())
 		ig.Expect(c.Get(ctx, saKey, &rbacv1.RoleBinding{})).To(Succeed())
 	}, eventuallyTimeout, pollInterval).Should(Succeed(),
-		"Model B resources should exist while rotation is enabled (CC-0109, REQ-003)")
+		"Model B resources should exist while rotation is enabled")
 
-	// Disable rotation: spec.bootstrap.passwordRotation.enabled=false (CC-0109, REQ-002).
+	// Disable rotation: spec.bootstrap.passwordRotation.enabled=false.
 	key := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
 	updated := &keystonev1alpha1.Keystone{}
 	g.Expect(c.Get(ctx, key, updated)).To(Succeed())
@@ -4900,7 +4869,7 @@ func TestIntegration_PasswordRotation_DisableTearsDownAllResources(t *testing.T)
 	g.Expect(c.Update(ctx, updated)).To(Succeed())
 
 	// Every Model B resource must be torn down; deletes tolerate NotFound so the
-	// terminal state is "all gone" (CC-0109, REQ-002).
+	// terminal state is "all gone".
 	g.Eventually(func(ig Gomega) {
 		ig.Expect(apierrors.IsNotFound(c.Get(ctx, cronJobKey, &batchv1.CronJob{}))).To(BeTrue(), "CronJob removed")
 		ig.Expect(apierrors.IsNotFound(c.Get(ctx, stagingKey, &corev1.Secret{}))).To(BeTrue(), "staging Secret removed")
@@ -4910,17 +4879,17 @@ func TestIntegration_PasswordRotation_DisableTearsDownAllResources(t *testing.T)
 		ig.Expect(apierrors.IsNotFound(c.Get(ctx, saKey, &rbacv1.RoleBinding{}))).To(BeTrue(), "RoleBinding removed")
 		ig.Expect(apierrors.IsNotFound(c.Get(ctx, pushSecretKey, &esov1alpha1.PushSecret{}))).To(BeTrue(), "PushSecret removed")
 
-		// No hash-suffixed rotate-script ConfigMap may remain (CC-0109, REQ-002).
+		// No hash-suffixed rotate-script ConfigMap may remain.
 		cmList := &corev1.ConfigMapList{}
 		ig.Expect(c.List(ctx, cmList, client.InNamespace(ns.Name))).To(Succeed())
 		for _, cm := range cmList.Items {
 			ig.Expect(strings.HasPrefix(cm.Name, "test-keystone-admin-password-rotate-script")).To(BeFalse(),
-				"rotate-script ConfigMap %q must be pruned on disable (CC-0109, REQ-002)", cm.Name)
+				"rotate-script ConfigMap %q must be pruned on disable", cm.Name)
 		}
 	}, eventuallyTimeout, pollInterval).Should(Succeed(),
-		"disabling rotation must remove every Model B resource (CC-0109, REQ-002)")
+		"disabling rotation must remove every Model B resource")
 
-	// PasswordRotationReady=True with reason RotationDisabled (CC-0109, REQ-002).
+	// PasswordRotationReady=True with reason RotationDisabled.
 	cond := waitForCondition(t, ctx, c, key, "PasswordRotationReady", metav1.ConditionTrue, eventuallyTimeout)
 	g.Expect(cond.Reason).To(Equal("RotationDisabled"))
 }

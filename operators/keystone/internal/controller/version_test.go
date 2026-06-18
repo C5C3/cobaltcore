@@ -10,8 +10,6 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-// Feature: CC-0056
-
 func TestParseRelease(t *testing.T) {
 	tests := []struct {
 		name      string

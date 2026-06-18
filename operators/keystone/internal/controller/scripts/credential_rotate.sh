@@ -5,7 +5,7 @@
 set -eu
 keystone-manage --config-dir=/etc/keystone/keystone.conf.d/ credential_rotate
 keystone-manage --config-dir=/etc/keystone/keystone.conf.d/ credential_migrate
-# NOTE: The Python K8s API PATCH block below MUST stay in sync with fernet_rotate.sh (CC-0073, CC-0081, W-004).
+# NOTE: The Python K8s API PATCH block below MUST stay in sync with fernet_rotate.sh.
 python3 << 'PYTHON'
 import os, json, base64, glob, ssl, http.client, datetime
 data = {}

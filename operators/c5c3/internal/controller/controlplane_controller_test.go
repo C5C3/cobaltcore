@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Tests for the ControlPlane controller skeleton (CC-0110, REQ-007).
+// Tests for the ControlPlane controller skeleton.
 package controller
 
 import (
@@ -106,7 +106,7 @@ func TestReconcile_NotFound_EarlyReturn(t *testing.T) {
 		"Reconcile on a missing ControlPlane must return a zero result")
 }
 
-// --- Duplicate-ControlPlane guard tests (CC-0112, REQ-010 defense-in-depth) ---
+// --- Duplicate-ControlPlane guard tests (defense-in-depth) ---
 
 // duplicateGuardControlPlane returns a minimal ControlPlane with the given
 // identity and creation time for the duplicate-guard tests. The guard runs

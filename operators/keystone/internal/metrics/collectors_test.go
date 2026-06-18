@@ -14,7 +14,7 @@ import (
 )
 
 // expectedReconcileDurationBuckets are the exact buckets prescribed by
-// CC-0089 REQ-001 for the keystone_operator_reconcile_duration_seconds
+// for the keystone_operator_reconcile_duration_seconds
 // histogram.
 var expectedReconcileDurationBuckets = []float64{
 	0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30,
@@ -24,7 +24,7 @@ var expectedReconcileDurationBuckets = []float64{
 // collectors set bound to reg. It delegates to NewTestRecorder so the
 // registration-and-panic logic lives in exactly one place. Each unit
 // test gets a new Registerer so gather output is deterministic and free
-// of cross-test interference (CC-0089, REQ-008).
+// of cross-test interference.
 func newCollectorsForTest(reg prometheus.Registerer) *collectors {
 	return NewTestRecorder(reg).c
 }
@@ -68,7 +68,7 @@ func TestReconcileDurationHistogramRegistered(t *testing.T) {
 		got = append(got, b.GetUpperBound())
 	}
 	g.Expect(got).To(Equal(expectedReconcileDurationBuckets),
-		"reconcile_duration bucket boundaries MUST match CC-0089 REQ-001 exactly")
+		"reconcile_duration bucket boundaries MUST match exactly")
 }
 
 func TestReconcileErrorsCounterLabels(t *testing.T) {
@@ -92,7 +92,7 @@ func TestReconcileErrorsCounterLabels(t *testing.T) {
 		values[l.GetName()] = l.GetValue()
 	}
 	g.Expect(names).To(ConsistOf("sub_reconciler", "condition_type"),
-		"reconcile_errors label set MUST be exactly {sub_reconciler, condition_type} (CC-0089 REQ-002)")
+		"reconcile_errors label set MUST be exactly {sub_reconciler, condition_type}")
 	g.Expect(values["sub_reconciler"]).To(Equal("fernet"))
 	g.Expect(values["condition_type"]).To(Equal("FernetKeysReady"))
 	g.Expect(fam.GetMetric()[0].GetCounter().GetValue()).To(Equal(1.0))
@@ -113,7 +113,7 @@ func TestErrorCounterNotIncrementedOnSuccess(t *testing.T) {
 	if fam != nil {
 		for _, m := range fam.GetMetric() {
 			g.Expect(m.GetCounter().GetValue()).To(Equal(0.0),
-				"success path must never increment reconcile_errors (CC-0089 REQ-002)")
+				"success path must never increment reconcile_errors")
 		}
 	}
 }
@@ -129,7 +129,7 @@ func TestKeyRotationAgeGaugePresentAndAbsent(t *testing.T) {
 
 	fam := gatherMetric(t, reg, "keystone_operator_key_rotation_age_seconds")
 	g.Expect(fam).NotTo(BeNil(),
-		"key_rotation_age gauge must be visible after SetKeyRotationAge (CC-0089 REQ-003)")
+		"key_rotation_age gauge must be visible after SetKeyRotationAge")
 	g.Expect(fam.GetMetric()).To(HaveLen(1))
 	g.Expect(fam.GetMetric()[0].GetGauge().GetValue()).To(BeNumerically(">", 0))
 
@@ -138,7 +138,7 @@ func TestKeyRotationAgeGaugePresentAndAbsent(t *testing.T) {
 	fam = gatherMetric(t, reg, "keystone_operator_key_rotation_age_seconds")
 	if fam != nil {
 		g.Expect(fam.GetMetric()).To(BeEmpty(),
-			"delete must remove rotation-age gauge series (CC-0089 REQ-003)")
+			"delete must remove rotation-age gauge series")
 	}
 }
 
@@ -150,12 +150,12 @@ func TestKeyRotationGaugeOmitsUnparseableTimestamp(t *testing.T) {
 
 	err := c.setKeyRotationAge("foo", "bar", "fernet", time.Time{})
 	g.Expect(err).To(HaveOccurred(),
-		"SetKeyRotationAge must return error for zero time (CC-0089 REQ-003)")
+		"SetKeyRotationAge must return error for zero time")
 
 	fam := gatherMetric(t, reg, "keystone_operator_key_rotation_age_seconds")
 	if fam != nil {
 		g.Expect(fam.GetMetric()).To(BeEmpty(),
-			"zero-time call MUST NOT set the gauge (CC-0089 REQ-003)")
+			"zero-time call MUST NOT set the gauge")
 	}
 }
 
@@ -180,7 +180,7 @@ func TestDeleteKeystoneSeriesRemovesGauge(t *testing.T) {
 	rotFam := gatherMetric(t, reg, "keystone_operator_key_rotation_age_seconds")
 	g.Expect(rotFam).NotTo(BeNil())
 	g.Expect(rotFam.GetMetric()).To(HaveLen(1),
-		"both key_type series for foo/bar must be removed (CC-0089 REQ-004)")
+		"both key_type series for foo/bar must be removed")
 	for _, l := range rotFam.GetMetric()[0].GetLabel() {
 		if l.GetName() == "keystone" {
 			g.Expect(l.GetValue()).To(Equal("other"))
@@ -194,21 +194,21 @@ func TestDeleteKeystoneSeriesRemovesGauge(t *testing.T) {
 	syncFam := gatherMetric(t, reg, "keystone_operator_db_sync_total")
 	g.Expect(syncFam).NotTo(BeNil())
 	g.Expect(syncFam.GetMetric()).To(HaveLen(1),
-		"db_sync_total series for foo/bar must be removed (CC-0089 REQ-004)")
+		"db_sync_total series for foo/bar must be removed")
 
 	// db_sync_duration_seconds: foo/bar series must be gone.
 	durFam := gatherMetric(t, reg, "keystone_operator_db_sync_duration_seconds")
 	g.Expect(durFam).NotTo(BeNil())
 	g.Expect(durFam.GetMetric()).To(HaveLen(1),
-		"db_sync_duration_seconds series for foo/bar must be removed (CC-0089 REQ-004)")
+		"db_sync_duration_seconds series for foo/bar must be removed")
 }
 
 // TestAdminPasswordRotationAgeGaugeAndDelete proves the
 // keystone_operator_key_rotation_age_seconds gauge accepts the
 // key_type="admin-password" series emitted by reconcilePasswordRotation via
 // observeRotationAge, and that deleteForKeystone reaps it. The admin-password
-// key type is the CC-0109 addition to the existing fernet/credential rotations
-// (REQ-012); because DeletePartialMatch is scoped to (keystone, namespace), an
+// key type is the addition to the existing fernet/credential rotations
+// because DeletePartialMatch is scoped to (keystone, namespace), an
 // unrelated CR's series must survive.
 func TestAdminPasswordRotationAgeGaugeAndDelete(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -223,7 +223,7 @@ func TestAdminPasswordRotationAgeGaugeAndDelete(t *testing.T) {
 
 	fam := gatherMetric(t, reg, "keystone_operator_key_rotation_age_seconds")
 	g.Expect(fam).NotTo(BeNil(),
-		"key_rotation_age gauge must be visible for key_type=admin-password (CC-0109 REQ-012)")
+		"key_rotation_age gauge must be visible for key_type=admin-password")
 	g.Expect(fam.GetMetric()).To(HaveLen(2))
 
 	// Locate the foo/bar/admin-password series and assert its label set + value.
@@ -236,11 +236,11 @@ func TestAdminPasswordRotationAgeGaugeAndDelete(t *testing.T) {
 		if labels["keystone"] == "foo" && labels["namespace"] == "bar" {
 			fooSeries = m
 			g.Expect(labels).To(HaveKeyWithValue("key_type", "admin-password"),
-				"admin-password rotation must be labelled key_type=admin-password (CC-0109 REQ-012)")
+				"admin-password rotation must be labelled key_type=admin-password")
 		}
 	}
 	g.Expect(fooSeries).NotTo(BeNil(),
-		"foo/bar/admin-password series must be present (CC-0109 REQ-012)")
+		"foo/bar/admin-password series must be present")
 	g.Expect(fooSeries.GetGauge().GetValue()).To(BeNumerically(">", 0))
 
 	// DeletePartialMatch is keystone+namespace scoped, so only foo/bar is reaped.
@@ -249,11 +249,11 @@ func TestAdminPasswordRotationAgeGaugeAndDelete(t *testing.T) {
 	fam = gatherMetric(t, reg, "keystone_operator_key_rotation_age_seconds")
 	g.Expect(fam).NotTo(BeNil())
 	g.Expect(fam.GetMetric()).To(HaveLen(1),
-		"deleteForKeystone must remove the foo/bar admin-password series (CC-0109 REQ-012)")
+		"deleteForKeystone must remove the foo/bar admin-password series")
 	for _, l := range fam.GetMetric()[0].GetLabel() {
 		if l.GetName() == "keystone" {
 			g.Expect(l.GetValue()).To(Equal("other"),
-				"unrelated CR's admin-password series must survive the delete (CC-0109 REQ-012)")
+				"unrelated CR's admin-password series must survive the delete")
 		}
 	}
 }
@@ -300,13 +300,13 @@ func TestDbSyncDurationHistogramObservedOnce(t *testing.T) {
 	g.Expect(fam.GetMetric()).To(HaveLen(1))
 	hist := fam.GetMetric()[0].GetHistogram()
 	g.Expect(hist.GetSampleCount()).To(Equal(uint64(1)),
-		"each RecordDBSync call records exactly one sample (CC-0089 REQ-005)")
+		"each RecordDBSync call records exactly one sample")
 	g.Expect(hist.GetSampleSum()).To(BeNumerically("~", duration.Seconds(), 1e-9),
 		"sample sum must equal the duration in seconds")
 }
 
 // TestSubReconcilerMetricsHaveNoCRLabels is the cardinality drift-guard for
-// CC-0089 REQ-012. Adding a `keystone` or `namespace` label to either the
+// Adding a `keystone` or `namespace` label to either the
 // reconcile_duration histogram or the reconcile_errors counter would
 // explode cardinality (O(#CRs × #sub-reconcilers)) and is forbidden by the
 // design. This test fails CI if either label ever appears on those
@@ -335,7 +335,7 @@ func TestSubReconcilerMetricsHaveNoCRLabels(t *testing.T) {
 			for _, l := range m.GetLabel() {
 				_, bad := forbidden[l.GetName()]
 				g.Expect(bad).To(BeFalse(),
-					"metric %s must NOT have label %q — REQ-012 cardinality guard",
+					"metric %s must NOT have label %q — cardinality guard",
 					name, l.GetName())
 			}
 		}

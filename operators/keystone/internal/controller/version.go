@@ -2,8 +2,6 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Feature: CC-0056
-
 package controller
 
 import (
@@ -12,7 +10,7 @@ import (
 	"strings"
 )
 
-// Release represents a parsed OpenStack release version (CC-0056).
+// Release represents a parsed OpenStack release version.
 type Release struct {
 	Year  int    // e.g. 2025
 	Minor int    // e.g. 2 (the N in YYYY.N)
@@ -68,7 +66,7 @@ func ParseRelease(tag string) (Release, error) {
 //   - Year increments by 1, from.Minor=2 -> to.Minor=1: 2025.2 -> 2026.1
 //
 // OpenStack releases 2 versions per year: YYYY.1 and YYYY.2.
-// Patch suffix is ignored for sequential comparison (CC-0056, REQ-007).
+// Patch suffix is ignored for sequential comparison.
 func IsSequentialUpgrade(from, to Release) bool {
 	if from.Year == to.Year && from.Minor == 1 && to.Minor == 2 {
 		return true
@@ -81,13 +79,13 @@ func IsSequentialUpgrade(from, to Release) bool {
 
 // IsDowngrade checks if `to` is an older release than `from`.
 // A release is older if its year is earlier, or the same year with a lower minor.
-// Patch suffix is ignored for comparison (CC-0056).
+// Patch suffix is ignored for comparison.
 func IsDowngrade(from, to Release) bool {
 	return to.Year < from.Year || (to.Year == from.Year && to.Minor < from.Minor)
 }
 
 // IsPatchOnly checks if two releases differ only in their patch suffix.
-// e.g., 2025.2 -> 2025.2-p1 is patch-only. 2025.2 -> 2026.1 is not (CC-0056).
+// e.g., 2025.2 -> 2025.2-p1 is patch-only. 2025.2 -> 2026.1 is not.
 func IsPatchOnly(from, to Release) bool {
 	return from.Year == to.Year && from.Minor == to.Minor
 }

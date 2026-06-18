@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Tests for the Keystone sub-reconciler (CC-0110, REQ-009).
+// Tests for the Keystone sub-reconciler.
 package controller
 
 import (
@@ -96,7 +96,7 @@ func getProjectedKeystone(t *testing.T, c client.Client, cp *c5c3v1alpha1.Contro
 func TestReconcileKeystone_ImageTagFromRelease(t *testing.T) {
 	// Two rows prove the tag is DERIVED from openStackRelease (a different release
 	// yields a different tag), rather than coincidentally matching a single literal
-	// (CC-0110, PR1).
+	// (PR1).
 	for _, tt := range []struct {
 		release string
 		wantTag string
@@ -398,7 +398,7 @@ func TestReconcileKeystone_ManagedOverridesDBSecretRef(t *testing.T) {
 	// In MANAGED mode (Database.ClusterRef != nil) the projected Keystone CR's
 	// database.secretRef must point at the operator-owned per-ControlPlane
 	// DB-credential Secret, not the cp-level default. The override must not
-	// mutate cp.Spec (CC-0116, REQ-003).
+	// mutate cp.Spec.
 	g := NewGomegaWithT(t)
 
 	s := keystoneTestScheme(t)
@@ -425,7 +425,6 @@ func TestReconcileKeystone_ManagedOverridesDBSecretRef(t *testing.T) {
 func TestReconcileKeystone_BrownfieldLeavesSuppliedSecretRef(t *testing.T) {
 	// In BROWNFIELD mode (Database.ClusterRef == nil) the user owns the DB Secret
 	// out-of-band, so the operator must leave the supplied secretRef untouched
-	// (CC-0116, REQ-003).
 	g := NewGomegaWithT(t)
 
 	s := keystoneTestScheme(t)
@@ -453,7 +452,7 @@ func TestReconcileKeystone_ManagedOverridesAdminPasswordSecretRef(t *testing.T) 
 	// In MANAGED mode (Database.ClusterRef != nil) the projected Keystone CR's
 	// bootstrap admin-password ref must point at the operator-owned per-ControlPlane
 	// admin-password Secret, not the cp-level default. The override must not
-	// mutate cp.Spec (CC-0117, REQ-005).
+	// mutate cp.Spec.
 	g := NewGomegaWithT(t)
 
 	s := keystoneTestScheme(t)
@@ -476,7 +475,6 @@ func TestReconcileKeystone_ManagedOverridesAdminPasswordSecretRef(t *testing.T) 
 func TestReconcileKeystone_BrownfieldLeavesSuppliedAdminPasswordRef(t *testing.T) {
 	// In BROWNFIELD mode (Database.ClusterRef == nil) the user owns the admin-password
 	// Secret out-of-band, so the operator must leave the supplied ref untouched
-	// (CC-0117, REQ-005).
 	g := NewGomegaWithT(t)
 
 	s := keystoneTestScheme(t)

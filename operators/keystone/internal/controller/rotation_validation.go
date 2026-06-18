@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Package controller — rotation output validation (CC-0081). The operator
+// Package controller — rotation output validation. The operator
 // validates the contents of the staging Secret before copying its data onto
 // the production keys Secret. Validation is defense-in-depth: even if the
 // rotation CronJob is compromised via a supply-chain attack, malformed or
@@ -28,7 +28,7 @@ var ErrDuplicateKeys = errors.New("duplicate keys detected")
 // the configured [minKeys, maxKeys] inclusive range.
 var ErrKeyCountOutOfRange = errors.New("key count out of range")
 
-// validateRotationOutput enforces the CC-0081 rotation-output contract (REQ-006):
+// validateRotationOutput enforces the rotation-output contract
 //   - len(keys) must lie in [minKeys, maxKeys] inclusive;
 //   - each value must be 44 bytes long and decode via base64.URLEncoding to
 //     exactly 32 bytes (the format produced by generateFernetKey);

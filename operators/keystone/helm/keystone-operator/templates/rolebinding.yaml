@@ -1,5 +1,5 @@
 {{- if .Values.rbac.namespaceScoped }}
-# CC-0043: Namespace-scoped RoleBinding (replaces ClusterRoleBinding).
+# Namespace-scoped RoleBinding (replaces ClusterRoleBinding).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:

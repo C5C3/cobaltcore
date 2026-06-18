@@ -29,8 +29,7 @@ import (
 // requests for Keystone CRs that either reference the Secret by name
 // (resolved via the KeystoneSecretNameIndexKey field indexer) or own it via
 // an OwnerReference with Kind=Keystone and APIVersion in the Keystone API
-// group (e.g. rotation staging Secrets) (CC-0087, REQ-001, REQ-002, REQ-003,
-// REQ-005).
+// group (e.g. rotation staging Secrets).
 //
 // Owner-ref matching is evaluated directly on the event object's metadata and
 // is scoped to ref.Kind=="Keystone" and any version in
@@ -73,7 +72,7 @@ func secretToKeystoneMapper(c client.Reader) handler.MapFunc {
 			key := types.NamespacedName{Namespace: namespace, Name: ref.Name}
 			// Drop stale/spurious owner-refs whose target Keystone no longer
 			// exists. A cached Get is an in-memory lookup — no API server
-			// round-trip (CC-0087 review #1).
+			// round-trip (review #1).
 			var ks keystonev1alpha1.Keystone
 			if err := c.Get(ctx, key, &ks); err != nil {
 				if apierrors.IsNotFound(err) {
@@ -82,7 +81,7 @@ func secretToKeystoneMapper(c client.Reader) handler.MapFunc {
 				// Non-NotFound errors (cache mid-sync, disconnected informer,
 				// unregistered GVK) must not silently drop the event; log at
 				// V(1) and fall through to enqueue so reconcile can resolve
-				// authoritatively (CC-0087 review #3).
+				// authoritatively (review #3).
 				log.FromContext(ctx).V(1).Info("owner-ref Get returned non-NotFound error; enqueueing anyway",
 					"secret", client.ObjectKeyFromObject(obj),
 					"ownerRef", key,
@@ -104,7 +103,7 @@ func secretToKeystoneMapper(c client.Reader) handler.MapFunc {
 
 // mariaDBToKeystoneMapper returns a MapFunc that maps MariaDB cluster events
 // to reconcile requests for Keystone CRs whose spec.database.clusterRef
-// targets the MariaDB by name in the same namespace (CC-0047).
+// targets the MariaDB by name in the same namespace.
 func mariaDBToKeystoneMapper(c client.Reader) handler.MapFunc {
 	return func(ctx context.Context, obj client.Object) []reconcile.Request {
 		var keystones keystonev1alpha1.KeystoneList
@@ -131,7 +130,7 @@ func mariaDBToKeystoneMapper(c client.Reader) handler.MapFunc {
 // Keystone CR in the cluster when the OpenBao-backed ClusterSecretStore
 // changes. The store is cluster-scoped and shared across namespaces, so any
 // status transition (e.g. ESO losing the backend connection) must retrigger
-// reconcile on all Keystones that route secrets through it (CC-0047).
+// reconcile on all Keystones that route secrets through it.
 func clusterSecretStoreToKeystoneMapper(c client.Reader) handler.MapFunc {
 	return func(ctx context.Context, obj client.Object) []reconcile.Request {
 		if obj.GetName() != openBaoClusterStoreName {
@@ -165,7 +164,7 @@ func clusterSecretStoreToKeystoneMapper(c client.Reader) handler.MapFunc {
 // from keystone.Name, so an O(n_keystones_in_ns * 2) string compare is cheaper
 // than registering a dedicated field indexer and avoids any cross-reference
 // invariant between PushSecret creation sites and the mapper. Namespace
-// scoping is load-bearing — REQ-002 requires that a PushSecret event in ns-b
+// scoping is load-bearing — requires that a PushSecret event in ns-b
 // never wake a Keystone that lives in ns-a, so the List MUST carry
 // client.InNamespace(obj.GetNamespace()) only (never cluster-wide). PushSecret
 // is a namespaced resource, so the apiserver guarantees obj.GetNamespace() is
@@ -178,7 +177,7 @@ func clusterSecretStoreToKeystoneMapper(c client.Reader) handler.MapFunc {
 // KeystoneMapper. Owner-ref inspection is deliberately omitted: backup
 // PushSecrets are created by the keystone operator but an Owns() link on the
 // watch would double-enqueue with the name-based mapper, so name match is the
-// single source of truth (CC-0092, REQ-001, REQ-002, REQ-003, REQ-007).
+// single source of truth.
 //
 // On dedup: a given PushSecret name uniquely identifies at most one Keystone
 // today, because openBaoBackupPushSecretNames(ks) returns
@@ -230,7 +229,7 @@ func pushSecretToKeystoneMapper(c client.Reader) handler.MapFunc {
 //
 // Admission rules:
 //   - Create/Delete/Generic: always admitted — name-level filtering is the
-//     mapper's job, not the predicate's (CC-0092, REQ-004).
+//     mapper's job, not the predicate's.
 //   - Update: admitted iff at least one of finalizers set, DeletionTimestamp
 //     presence (nil vs non-nil), or Generation differs between ObjectOld and
 //     ObjectNew. A status-only update (identical finalizers, both
@@ -242,11 +241,10 @@ func pushSecretToKeystoneMapper(c client.Reader) handler.MapFunc {
 // a nil-receiver guard. For DeletionTimestamp specifically the two forms are
 // equivalent — the apiserver never sets the pointer to a non-nil zero-time
 // value — but `== nil` removes the implicit dependency on that guard
-// (CC-0092, REQ-004).
 //
 // Finalizer comparison uses a sorted-slice compare rather than raw slice
 // DeepEqual so a reorder by controllerutil.AddFinalizer / RemoveFinalizer is
-// not mistaken for a semantic change (CC-0092, REQ-004).
+// not mistaken for a semantic change.
 var pushSecretRelevantChangePredicate = predicate.Funcs{
 	CreateFunc:  func(event.CreateEvent) bool { return true },
 	DeleteFunc:  func(event.DeleteEvent) bool { return true },
@@ -269,7 +267,7 @@ var pushSecretRelevantChangePredicate = predicate.Funcs{
 // strings regardless of order. Order is deliberately ignored because
 // controllerutil.AddFinalizer / RemoveFinalizer do not guarantee a stable
 // ordering and a mere reorder is not a semantic change for the adoption /
-// deletion state machine (CC-0092, REQ-004).
+// deletion state machine.
 func finalizersEqualAsSet(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

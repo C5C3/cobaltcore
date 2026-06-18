@@ -5,7 +5,7 @@
 // Package dashboards_test validates the shipped Grafana dashboard JSON
 // against the metrics contract exposed by the Keystone operator.
 //
-// Tests enforce two invariants for CC-0089, REQ-010:
+// Tests enforce two invariants:
 //  1. The dashboard file is syntactically valid JSON and contains the
 //     panel set required by the plan.
 //  2. Every metric referenced in a panel target's PromQL expression
@@ -36,7 +36,6 @@ const dashboardPath = "keystone-operator.json"
 // Prometheus client for histograms. Dashboard expressions use
 // `_bucket` with histogram_quantile(), and occasionally `_sum`/`_count`;
 // strip these before comparing against the registered base name
-// (CC-0089, REQ-010).
 var histogramSuffixes = []string{"_bucket", "_sum", "_count"}
 
 // metricNameRE matches any Prometheus identifier. We later filter the
@@ -76,24 +75,23 @@ func loadDashboard(t *testing.T) dashboard {
 
 	var d dashboard
 	g.Expect(json.Unmarshal(raw, &d)).To(Succeed(),
-		"dashboard %s must be valid JSON (CC-0089, REQ-010)", dashboardPath)
+		"dashboard %s must be valid JSON", dashboardPath)
 	return d
 }
 
 // TestDashboardParsesAsJSON verifies the shipped Grafana file is valid
 // JSON with the required top-level fields and at least four panels
-// (CC-0089, REQ-010).
 func TestDashboardParsesAsJSON(t *testing.T) {
 	g := NewGomegaWithT(t)
 
 	d := loadDashboard(t)
 
 	g.Expect(d.UID).To(Equal("keystone-operator"),
-		"dashboard uid must be stable for provisioning (CC-0089, REQ-010)")
+		"dashboard uid must be stable for provisioning")
 	g.Expect(d.Title).NotTo(BeEmpty(),
 		"dashboard must advertise a human-readable title")
 	g.Expect(len(d.Panels)).To(BeNumerically(">=", 4),
-		"dashboard must contain the four panels required by the plan (CC-0089, REQ-010)")
+		"dashboard must contain the four panels required by the plan")
 
 	// Every panel in the canonical set has at least one target with a
 	// non-empty PromQL expression; a missing expr means the panel would
@@ -111,7 +109,7 @@ func TestDashboardParsesAsJSON(t *testing.T) {
 // TestDashboardReferencesOnlyRegisteredMetrics guards against dashboard
 // drift: every `keystone_operator_*` identifier that appears in a panel
 // target must map to a metric the operator actually registers on
-// ctrlmetrics.Registry (CC-0089, REQ-010). If a collector is renamed or
+// ctrlmetrics.Registry. If a collector is renamed or
 // removed, this test fails loudly before the dashboard ships.
 func TestDashboardReferencesOnlyRegisteredMetrics(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -126,7 +124,6 @@ func TestDashboardReferencesOnlyRegisteredMetrics(t *testing.T) {
 	// DECISION: use metrics.* public helpers (not the private
 	// newCollectorsForTest) so this test exercises the exact code path
 	// that wires production collectors onto ctrlmetrics.Registry
-	// (CC-0089, REQ-008, REQ-010).
 	const probe = "dashboard_test_probe"
 	metrics.ObserveReconcileDuration(probe, 0)
 	metrics.RecordReconcileError(probe, probe)
@@ -169,7 +166,7 @@ func TestDashboardReferencesOnlyRegisteredMetrics(t *testing.T) {
 	for name := range seen {
 		_, ok := registered[name]
 		g.Expect(ok).To(BeTrue(),
-			"dashboard references metric %q which is not registered by the operator (CC-0089, REQ-010)",
+			"dashboard references metric %q which is not registered by the operator",
 			name)
 	}
 }
