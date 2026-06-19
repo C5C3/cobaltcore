@@ -19,6 +19,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+
+	"github.com/c5c3/forge/internal/common/apply"
 )
 
 // PodSpecHashAnnotation stores a Job's re-run gate value at creation time. By
@@ -177,33 +179,14 @@ func recreateStaleJob(ctx context.Context, c client.Client, scheme *runtime.Sche
 	return createJobWithRerunKey(ctx, c, scheme, owner, job, rerunKey)
 }
 
-// EnsureCronJob creates a CronJob if it does not exist or updates its spec if
-// it already exists. An owner reference is set on the CronJob so that it is
-// garbage-collected when the owning resource is deleted.
+// EnsureCronJob creates a CronJob if it does not exist or applies its desired
+// state via Server-Side Apply if it already exists. An owner reference is set on
+// the CronJob so that it is garbage-collected when the owning resource is
+// deleted. Because the field manager owns only the fields the builder sets,
+// server-defaulted CronJob fields no longer participate in the diff and a
+// converged CronJob is applied without a write.
 func EnsureCronJob(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, cronJob *batchv1.CronJob) error {
-	existing := &batchv1.CronJob{}
-	err := c.Get(ctx, client.ObjectKeyFromObject(cronJob), existing)
-
-	if apierrors.IsNotFound(err) {
-		if err := controllerutil.SetControllerReference(owner, cronJob, scheme); err != nil {
-			return fmt.Errorf("setting owner reference on CronJob %s/%s: %w", cronJob.Namespace, cronJob.Name, err)
-		}
-		if err := c.Create(ctx, cronJob); err != nil {
-			return fmt.Errorf("creating CronJob %s/%s: %w", cronJob.Namespace, cronJob.Name, err)
-		}
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("getting CronJob %s/%s: %w", cronJob.Namespace, cronJob.Name, err)
-	}
-
-	// Always update the spec to the desired state. This avoids maintaining
-	// a normalization layer to replicate API-server defaulting logic
-	existing.Spec = cronJob.Spec
-	if err := c.Update(ctx, existing); err != nil {
-		return fmt.Errorf("updating CronJob %s/%s: %w", cronJob.Namespace, cronJob.Name, err)
-	}
-	return nil
+	return apply.EnsureObject(ctx, c, scheme, owner, cronJob, apply.FieldManager)
 }
 
 // isJobComplete returns true if the given Job has a Complete condition with
