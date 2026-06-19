@@ -646,15 +646,16 @@ Configures network isolation for the Keystone API pods. This is a
 pointer field (`*NetworkPolicySpec`) on `KeystoneSpec` — when `nil`, no
 NetworkPolicy is managed and the `NetworkPolicyReady` condition is set to
 `True` with reason `NetworkPolicyNotRequired`. When set, the operator creates
-a NetworkPolicy that restricts ingress on TCP 5000 to the declared sources and
-auto-derives egress rules for DNS, MariaDB (when `database.clusterRef` is set),
-and Memcached (when `cache.clusterRef` is set). Removing the field deletes the
-NetworkPolicy on the next reconcile.
+a NetworkPolicy that restricts ingress on TCP 5000 to the declared sources —
+plus the operator's own namespace (so the operator health check can reach the
+API) and, when `spec.gateway` is set, the gateway namespace — and auto-derives
+egress rules for DNS, the kube-apiserver, the database, and the cache. Removing
+the field deletes the NetworkPolicy on the next reconcile.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `ingress` | `[]NetworkPolicyIngressSource` | Yes | — | Sources allowed to reach Keystone API on TCP 5000. At least one entry required (enforced by CEL and webhook). |
-| `additionalEgress` | `[]networkingv1.NetworkPolicyEgressRule` | No | `nil` | Extra egress rules appended after the auto-derived rules. Use for brownfield backends or external integrations not covered by `ClusterRef` auto-derivation. |
+| `additionalEgress` | `[]networkingv1.NetworkPolicyEgressRule` | No | `nil` | Extra egress rules appended after the auto-derived rules. The auto-derived rules already cover the database and cache in both managed and brownfield modes, so reserve this for external integrations beyond those backends. |
 
 ### NetworkPolicyIngressSource
 
@@ -663,15 +664,29 @@ NetworkPolicy on the next reconcile.
 | `namespaceSelector` | `map[string]string` | Yes | Label selector for source namespaces. All pods in matching namespaces may reach Keystone on TCP 5000 unless `podSelector` narrows the set. |
 | `podSelector` | `map[string]string` | No | Optional label selector restricting allowed pods within the selected namespaces (AND logic within a single peer). |
 
+### Auto-added Ingress peers
+
+Beyond the declared `ingress` sources, the operator appends these ingress peers
+on the TCP 5000 rule:
+
+| Peer | Trigger | Notes |
+| --- | --- | --- |
+| Operator namespace | Operator namespace resolvable | Selected by `kubernetes.io/metadata.name`. The operator's health check GETs the Keystone Service on TCP 5000; without this peer `KeystoneAPIReady` would flip `False` permanently for a healthy deployment. Omitted only when the operator namespace cannot be determined. |
+| Gateway namespace | `spec.gateway` set | Selected by `kubernetes.io/metadata.name` of `parentRef.namespace` (the CR namespace when empty), so the Gateway data plane can reach the API. |
+
 ### Auto-derived Egress
 
-The operator appends the following egress rules before `additionalEgress`:
+The operator appends the following egress rules before `additionalEgress`.
+All rules are port-only — the destination is unrestricted (tightening to
+backend pod labels is deferred). Rule order is deterministic: DNS, apiserver,
+database, cache.
 
 | Rule | Trigger | Notes |
 | --- | --- | --- |
 | DNS UDP+TCP 53 | Always | Destination is unrestricted because CoreDNS may run in any namespace (e.g. NodeLocal DNSCache). |
-| MariaDB TCP 3306 | `database.clusterRef` set | Port-only; destination unrestricted. |
-| Memcached TCP 11211 | `cache.clusterRef` set | Port-only; destination unrestricted. |
+| kube-apiserver TCP 443+6443 | Always | The fernet/credential/admin-password rotation CronJob pods share this policy's pod selector and PATCH the rotated keys back to a Secret via `kubernetes.default.svc`; without apiserver egress every scheduled rotation stops at its first run. `443` is the ClusterIP Service port; `6443` covers the post-DNAT kube-apiserver pod port on enforcing CNIs. |
+| Database TCP `dbPort` | Always | Port from `spec.database.port` (default `3306`), emitted in both managed (`database.clusterRef`) and brownfield (`database.host`) modes — the readiness probe TCP-connects to exactly this port, so an enforcing CNI would otherwise depool every pod. |
+| Cache TCP (derived) | `cache.clusterRef` or `cache.servers` set | Managed mode → `11211`; brownfield mode → the distinct ports parsed from the `cache.servers` `host:port` strings (default `11211` when a server omits the port). |
 
 A defensive guard in the reconciler refuses to create a NetworkPolicy with an
 empty `ingress` list, even if CEL validation was bypassed (stored objects,

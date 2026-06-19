@@ -2376,7 +2376,9 @@ the gateway's namespace by the well-known label
 Gateway data-plane pods reach the Keystone API Service on port 5000 without
 widening the base NetworkPolicy. The peer is added only while `spec.gateway`
 is non-nil and is removed automatically on the next reconcile after
-`spec.gateway` is cleared.
+`spec.gateway` is cleared. The operator's own namespace is whitelisted by a
+separate, always-on ingress peer (see [`reconcileHealthCheck`](#reconcilehealthcheck)),
+independent of `spec.gateway`.
 
 **Error handling:** Errors from `ensureHTTPRoute()` are wrapped with
 "ensuring HTTPRoute" context; errors from `deleteHTTPRoute()` with "deleting
@@ -2412,6 +2414,21 @@ functionally healthy.
 (e.g., `http://keystone.{namespace}.svc.cluster.local:5000/v3`). If the endpoint
 is empty (not yet configured), the health check sets `KeystoneAPIReady=False` with
 reason `EndpointNotReady` and requeues.
+
+**NetworkPolicy interaction:** The operator pod runs in a dedicated namespace
+(e.g. `keystone-system`) distinct from the workload namespace, so a
+`spec.networkPolicy` whose ingress admits only the user-declared sources would
+block this health check and pin `KeystoneAPIReady=False` for a healthy
+deployment. To prevent that, `reconcileNetworkPolicy` appends an always-on
+ingress peer for the operator namespace — resolved at startup from
+`POD_NAMESPACE` or the mounted ServiceAccount namespace file
+(`DetectOperatorNamespace`) — so a correctly deployed operator can always reach
+the API on TCP 5000. On the egress side the same NetworkPolicy auto-derives
+rules for DNS, the kube-apiserver (used by the rotation CronJob pods that share
+the policy's pod selector), the database (port from `spec.database.port`), and
+the cache, in both managed and brownfield modes, so neither the readiness probe
+nor the scheduled key rotations are blocked. See
+[NetworkPolicySpec](./keystone-crd.md#networkpolicyspec) for the full rule set.
 
 **HTTPDoer Interface:**
 
