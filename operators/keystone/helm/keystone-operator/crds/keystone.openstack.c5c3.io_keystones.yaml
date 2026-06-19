@@ -1246,8 +1246,11 @@ spec:
             description: KeystoneStatus defines the observed state of Keystone.
             properties:
               conditions:
-                description: Conditions represent the latest available observations
-                  of the Keystone state.
+                description: |-
+                  Conditions represent the latest available observations of the Keystone
+                  state. Each condition carries an ObservedGeneration so consumers can tell
+                  a stale condition from one reflecting the current spec; use the conditions
+                  helper (internal/common/conditions) to upsert them.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -1303,6 +1306,9 @@ spec:
                   - type
                   type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
               endpoint:
                 description: Endpoint is the Keystone API endpoint URL.
                 type: string
@@ -1310,6 +1316,12 @@ spec:
                 description: InstalledRelease is the OpenStack release version currently
                   deployed.
                 type: string
+              observedGeneration:
+                description: |-
+                  ObservedGeneration is the .metadata.generation the controller last
+                  reconciled, so a stale status is distinguishable from a current one.
+                format: int64
+                type: integer
               targetRelease:
                 description: TargetRelease is the upgrade target release during an
                   active upgrade.

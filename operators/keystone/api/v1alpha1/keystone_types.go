@@ -487,8 +487,21 @@ const (
 
 // KeystoneStatus defines the observed state of Keystone.
 type KeystoneStatus struct {
-	// Conditions represent the latest available observations of the Keystone state.
-	Conditions []metav1.Condition `json:"conditions,omitempty"`
+	// Conditions represent the latest available observations of the Keystone
+	// state. Each condition carries an ObservedGeneration so consumers can tell
+	// a stale condition from one reflecting the current spec; use the conditions
+	// helper (internal/common/conditions) to upsert them.
+	// +optional
+	// +patchMergeKey=type
+	// +patchStrategy=merge
+	// +listType=map
+	// +listMapKey=type
+	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
+
+	// ObservedGeneration is the .metadata.generation the controller last
+	// reconciled, so a stale status is distinguishable from a current one.
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
 	// Endpoint is the Keystone API endpoint URL.
 	Endpoint string `json:"endpoint,omitempty"`

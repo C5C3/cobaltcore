@@ -973,7 +973,8 @@ Configures the initial Keystone bootstrap.
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `conditions` | `[]metav1.Condition` | Latest available observations of the Keystone state. |
+| `conditions` | `[]metav1.Condition` | Latest available observations of the Keystone state. A `listType=map` strategic-merge list keyed by `type`, so concurrent writers (the controller and external tooling) merge per-condition under server-side apply instead of clobbering the whole list. |
+| `observedGeneration` | `int64` | The `.metadata.generation` the controller last reconciled, so a stale status is distinguishable from one reflecting the current spec without scanning conditions. |
 | `endpoint` | `string` | Keystone API endpoint URL (set by the controller when ready). Defaults to `http://{name}.{namespace}.svc.cluster.local:5000/v3`. |
 | `installedRelease` | `string` | OpenStack release version currently deployed. Set by the controller after a successful `db_sync`; reflects the value extracted from `spec.image.tag`. |
 | `targetRelease` | `string` | Upgrade target release during an active upgrade. Set while `upgradePhase` is one of `Expanding`/`Migrating`/`RollingUpdate`/`Contracting`; cleared after `Contracting` completes. |

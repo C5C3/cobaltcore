@@ -567,6 +567,8 @@ func (r *KeystoneReconciler) hasLiveOpenBaoBackupPushSecrets(ctx context.Context
 }
 
 // updateStatus persists the current status conditions and returns the given result and error.
+// It also stamps the top-level status.observedGeneration with the CR's generation so a stale
+// status is distinguishable from one reflecting the current spec without scanning conditions.
 // When both reconcileErr and the status update fail, both errors are preserved via errors.Join
 // so that the original reconcile failure is visible in controller-runtime logs.
 func (r *KeystoneReconciler) updateStatus(ctx context.Context, keystone *keystonev1alpha1.Keystone, result ctrl.Result, reconcileErr error) (ctrl.Result, error) {
@@ -579,6 +581,7 @@ func (r *KeystoneReconciler) updateStatus(ctx context.Context, keystone *keyston
 	// an early return short-circuited the chain, so a degraded CR kept
 	// reporting Ready=True (SC-CHAOS-006).
 	setReadyCondition(keystone)
+	keystone.Status.ObservedGeneration = keystone.Generation
 	if err := r.Status().Update(ctx, keystone); err != nil {
 		log.FromContext(ctx).Error(err, "unable to update Keystone status")
 		return ctrl.Result{}, errors.Join(reconcileErr, fmt.Errorf("updating status: %w", err))

@@ -896,6 +896,9 @@ func TestReconcile_ObservedGenerationTracked(t *testing.T) {
 	g.Expect(readyCond.Status).To(Equal(metav1.ConditionTrue))
 	g.Expect(readyCond.ObservedGeneration).To(Equal(int64(42)),
 		"Ready condition ObservedGeneration should match the Keystone CR's Generation")
+
+	g.Expect(updated.Status.ObservedGeneration).To(Equal(int64(42)),
+		"top-level status.observedGeneration should match the Keystone CR's Generation")
 }
 
 // newMapperFakeClientBuilder returns a ClientBuilder pre-registered with the
