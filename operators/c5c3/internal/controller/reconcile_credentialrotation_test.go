@@ -196,6 +196,59 @@ func TestRotation_ReMintFullCycleReStampsHash(t *testing.T) {
 		"reconcileKORC must recreate the AC and stamp the current password hash (re-mint)")
 }
 
+// TestRotation_ReMintLatchedToGeneration proves the reMint one-shot latch: a
+// `reMint: true` left in the spec must nudge exactly once per spec generation, not
+// on every cache resync or operator restart (the indefinite re-rotation loop this
+// fixes). It runs the reconciler twice against the SAME client with the SAME
+// generation: pass 1 nudges (clears the annotation, records
+// lastTriggeredGeneration), then the annotation is re-stamped to simulate
+// reconcileKORC completing the re-mint, and pass 2 — with reMint STILL true — must
+// observe the latch and report NoRotationNeeded WITHOUT re-clearing the annotation.
+func TestRotation_ReMintLatchedToGeneration(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := korcControlPlane()
+	cr := credentialRotation()
+	cr.Spec.ReMint = true
+	ac := existingAC(cp, testPasswordHash())
+
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(cp, cr, ac, adminPasswordSecret()).
+		WithStatusSubresource(&c5c3v1alpha1.CredentialRotation{}).
+		Build()
+
+	rotator := &CredentialRotationReconciler{Client: c, Scheme: s}
+	crKey := types.NamespacedName{Namespace: "default", Name: "rotate-admin"}
+
+	// --- Pass 1: reMint fires once, clearing the annotation and latching. ---
+	_, err := rotator.Reconcile(context.Background(), ctrl.Request{NamespacedName: crKey})
+	g.Expect(err).NotTo(HaveOccurred())
+
+	got := &c5c3v1alpha1.CredentialRotation{}
+	g.Expect(c.Get(context.Background(), crKey, got)).To(Succeed())
+	g.Expect(rotationReadyCondition(got).Reason).To(Equal("RotationTriggered"))
+	g.Expect(got.Status.LastTriggeredGeneration).To(Equal(int64(3)),
+		"an explicit reMint must latch on the current spec generation")
+	g.Expect(getAC(t, c, cp).Annotations[adminPasswordHashAnnotation]).To(BeEmpty())
+
+	// Simulate reconcileKORC consuming the nudge and re-stamping the fresh hash.
+	reminted := getAC(t, c, cp)
+	reminted.Annotations[adminPasswordHashAnnotation] = testPasswordHash()
+	g.Expect(c.Update(context.Background(), reminted)).To(Succeed())
+
+	// --- Pass 2: reMint is STILL true but the generation is unchanged. ---
+	_, err = rotator.Reconcile(context.Background(), ctrl.Request{NamespacedName: crKey})
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(c.Get(context.Background(), crKey, got)).To(Succeed())
+	g.Expect(rotationReadyCondition(got).Reason).To(Equal("NoRotationNeeded"),
+		"a latched reMint must not re-fire on a subsequent pass of the same generation")
+	g.Expect(getAC(t, c, cp).Annotations[adminPasswordHashAnnotation]).To(Equal(testPasswordHash()),
+		"the latched reMint must leave the re-stamped annotation untouched (no second nudge)")
+}
+
 func TestRotation_PasswordHashChangeTriggersNudge(t *testing.T) {
 	g := NewGomegaWithT(t)
 

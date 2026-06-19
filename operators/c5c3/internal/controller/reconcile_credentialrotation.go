@@ -72,6 +72,19 @@ type CredentialRotationReconciler struct {
 // delete+recreate re-mint, re-stamping the fresh hash. Keeping the AC's resource
 // lifecycle (including the delete) owned solely by the ControlPlane reconciler
 // avoids two controllers racing on the same object.
+//
+// DECISION (reMint is one-shot per spec generation): an explicit spec.reMint is
+// LATCHED on status.lastTriggeredGeneration. Without a latch a `reMint: true` left
+// in the spec would re-fire on every cache resync (~10 min via SyncPeriod) and on
+// every operator restart, revoking + re-minting the admin credential indefinitely
+// and re-opening the stale-credential auth window each cycle. The reconciler
+// therefore nudges for an explicit reMint only while
+// status.lastTriggeredGeneration != metadata.generation, and records the
+// generation once it has nudged; a subsequent pass over the same generation
+// reports NoRotationNeeded. The auto-detect path (password-hash change) is NOT
+// latched: it is already self-limiting (it stops nudging once the hash matches
+// again) and relies on resync to observe an out-of-band password rotation, so a
+// generation latch must not gate it.
 func (r *CredentialRotationReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
@@ -147,9 +160,12 @@ func (r *CredentialRotationReconciler) Reconcile(ctx context.Context, req ctrl.R
 			"admin application credential does not exist yet; cannot rotate")
 	}
 
-	// Decide whether a re-mint nudge is required: explicit ReMint, or the admin
-	// password hash differs from the annotation last stamped by reconcileKORC.
-	nudge := cr.Spec.ReMint
+	// Decide whether a re-mint nudge is required: explicit ReMint (latched to the
+	// current spec generation so it fires once per edit, not on every resync), or
+	// the admin password hash differs from the annotation last stamped by
+	// reconcileKORC.
+	remintRequested := cr.Spec.ReMint && cr.Status.LastTriggeredGeneration != cr.Generation
+	nudge := remintRequested
 	if !nudge {
 		changed, err := r.passwordHashChanged(ctx, cp, ac)
 		if err != nil {
@@ -164,10 +180,12 @@ func (r *CredentialRotationReconciler) Reconcile(ctx context.Context, req ctrl.R
 	}
 
 	if !nudge {
-		// Hash matches and no forced re-mint: nothing to do.
+		// Hash matches and no (un-latched) forced re-mint: nothing to do. A
+		// `reMint: true` left in the spec lands here once it has already fired for
+		// this generation, so it does NOT loop on every resync/restart.
 		return r.finish(ctx, &cr, ctrl.Result{}, metav1.ConditionTrue,
 			"NoRotationNeeded",
-			"admin password unchanged and reMint not requested; no rotation performed")
+			"admin password unchanged and no pending reMint; no rotation performed")
 	}
 
 	// Perform the nudge: clear the password-hash annotation so reconcileKORC
@@ -179,6 +197,15 @@ func (r *CredentialRotationReconciler) Reconcile(ctx context.Context, req ctrl.R
 	if r.Recorder != nil {
 		r.Recorder.Event(&cr, "Normal", "RotationNudged",
 			"cleared admin application credential password-hash annotation to trigger a re-mint by the ControlPlane reconciler")
+	}
+
+	// Latch an explicit reMint to this spec generation so it is a one-shot: the
+	// next reconcile of the same generation observes the recorded generation and
+	// reports NoRotationNeeded instead of nudging again. The auto-detect path is
+	// intentionally not latched (it self-limits once the hash matches), so only
+	// stamp when this pass was driven by an explicit reMint.
+	if remintRequested {
+		cr.Status.LastTriggeredGeneration = cr.Generation
 	}
 
 	return r.finish(ctx, &cr, ctrl.Result{}, metav1.ConditionTrue,

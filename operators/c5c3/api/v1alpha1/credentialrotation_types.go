@@ -107,6 +107,14 @@ type CredentialRotationStatus struct {
 	// reconciled.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// LastTriggeredGeneration is the most recent .metadata.generation for which
+	// the reconciler performed an explicit reMint rotation nudge. It latches a
+	// reMint to a single spec generation so a `reMint: true` left in the spec
+	// fires the nudge once per edit, not on every cache resync or operator
+	// restart.
+	// +optional
+	LastTriggeredGeneration int64 `json:"lastTriggeredGeneration,omitempty"`
 }
 
 func init() {
