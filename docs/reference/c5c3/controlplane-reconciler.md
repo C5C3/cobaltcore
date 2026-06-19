@@ -750,7 +750,7 @@ OpenBao:
 | Aspect | Value |
 | --- | --- |
 | File | `reconcile_korc.go` |
-| Condition | `CatalogReady` (also tracks `cp.Status.CatalogReady`, reset to `false` on every False branch) |
+| Condition | `CatalogReady` |
 | Gate | `AdminCredentialReady == True`, **and** both the identity `Service` and `Endpoint` report `Available` |
 | Owns | a K-ORC identity `Service` (`{controlplane.Name}-identity-service`) and its public `Endpoint` (`{controlplane.Name}-identity-endpoint`) in `childNamespace(cp)` |
 | Requeue | `korcRequeueAfter` = **10s** while gated, while the children are not yet Available, or on a terminal K-ORC failure |
@@ -773,18 +773,15 @@ check — so an endpoint/region edit that moves the catalog URL cannot flip
 `CatalogReady` True before K-ORC re-reconciles the new value), and a terminal K-ORC
 failure (`GetTerminalError`, the documented wrong-endpoint / import-stuck class) is
 surfaced as the distinct `CatalogFailed` reason instead of a false-positive Ready.
-`cp.Status.CatalogReady` tracks the condition: it flips `true` only when both
-children are Available and is reset to `false` on every False branch, so a later
-degradation is never left stale-true.
 
 | Path | Status | Reason | Notes |
 | --- | --- | --- | --- |
-| `AdminCredentialReady` not True | False | `WaitingForAdminCredential` | requeue 10s; resets `status.catalogReady = false` |
-| Service create/update fails | False | `ServiceError` | returns the error; resets `status.catalogReady = false` |
-| Endpoint create/update fails | False | `EndpointError` | returns the error; resets `status.catalogReady = false` |
-| Service/Endpoint reports a terminal K-ORC error | False | `CatalogFailed` | requeue 10s; resets `status.catalogReady = false` |
-| Service/Endpoint registered but not yet Available | False | `WaitingForCatalog` | requeue 10s; resets `status.catalogReady = false` |
-| both registered and Available | True | `CatalogRegistered` | also sets `status.catalogReady = true` |
+| `AdminCredentialReady` not True | False | `WaitingForAdminCredential` | requeue 10s |
+| Service create/update fails | False | `ServiceError` | returns the error |
+| Endpoint create/update fails | False | `EndpointError` | returns the error |
+| Service/Endpoint reports a terminal K-ORC error | False | `CatalogFailed` | requeue 10s |
+| Service/Endpoint registered but not yet Available | False | `WaitingForCatalog` | requeue 10s |
+| both registered and Available | True | `CatalogRegistered` | identity Service and Endpoint registered and Available |
 
 ### CredentialRotation reconciler
 

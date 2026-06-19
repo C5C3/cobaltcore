@@ -133,7 +133,6 @@ status:
     id: 6f3c…
     restricted: true
     lastRotation: "2026-06-02T00:00:00Z"
-  catalogReady: true
 ```
 
 ### Printer Columns
@@ -484,7 +483,6 @@ the kind/name and applies it.
 | `updatePhase` | [`UpdatePhase`](#updatephase) | Current phase of a control-plane release update. Written on every status update; fixed at `Idle` in the current implementation because the release-update state machine is reserved (the other `UpdatePhase` values are not yet set). |
 | `services` | `map[string]ServiceStatus` | Per-service readiness of the projected service CRs, keyed by service name. Written on every status update with a `"keystone"` entry whose `ready` mirrors the `KeystoneReady` condition and whose `release` is `spec.openStackRelease`. See [ServiceStatus](#servicestatus). |
 | `adminApplicationCredential` | [`*AdminApplicationCredentialStatus`](#adminapplicationcredentialstatus) | Observed state of the K-ORC admin application credential. |
-| `catalogReady` | `bool` | Whether the OpenStack service catalog has been observed as fully populated for the control plane. Flipped `true` by the catalog sub-reconciler once the identity `Service` and `Endpoint` are registered **and observed `Available`**, and reset to `false` on any later degradation so it tracks the `CatalogReady` condition. |
 
 ### ServiceStatus
 
@@ -948,9 +946,7 @@ Set by `reconcileCatalog` (gated on `AdminCredentialReady`, **and** both the
 identity `Service` and `Endpoint` reporting `Available` for their current
 generation — `korcAvailableUpToDate`, which refuses a stale `Available` condition
 whose `ObservedGeneration` lags the object, so an endpoint/region edit cannot flip
-`CatalogReady` True before K-ORC re-reconciles). Tracks `status.catalogReady`, which
-flips `true` only when both children are Available and is reset to `false` on every
-False branch.
+`CatalogReady` True before K-ORC re-reconciles).
 
 | Status | Reason | When |
 | --- | --- | --- |

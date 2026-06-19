@@ -584,11 +584,6 @@ spec:
                       is restricted.
                     type: boolean
                 type: object
-              catalogReady:
-                description: |-
-                  CatalogReady reports whether the OpenStack service catalog has been
-                  observed as fully populated for the control plane.
-                type: boolean
               conditions:
                 description: |-
                   Conditions represent the latest available observations of the control

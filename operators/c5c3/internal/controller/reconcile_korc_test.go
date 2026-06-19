@@ -1297,7 +1297,6 @@ func TestReconcileCatalog_GatedOnAdminCredential(t *testing.T) {
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal("WaitingForAdminCredential"))
-	g.Expect(cp.Status.CatalogReady).To(BeFalse())
 }
 
 func TestReconcileCatalog_RegistersServiceAndEndpoint(t *testing.T) {
@@ -1337,13 +1336,12 @@ func TestReconcileCatalog_RegistersServiceAndEndpoint(t *testing.T) {
 	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeCatalogReady)
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
-	g.Expect(cp.Status.CatalogReady).To(BeTrue())
 }
 
 // TestReconcileCatalog_DefersUntilServiceEndpointAvailable asserts that merely
 // registering the Service/Endpoint CRs is not enough: until BOTH report
-// Available=True, CatalogReady stays False/WaitingForCatalog and status.catalogReady
-// is not set, so the aggregate Ready cannot report True against an empty catalog.
+// Available=True, CatalogReady stays False/WaitingForCatalog, so the aggregate
+// Ready cannot report True against an empty catalog.
 func TestReconcileCatalog_DefersUntilServiceEndpointAvailable(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -1373,7 +1371,6 @@ func TestReconcileCatalog_DefersUntilServiceEndpointAvailable(t *testing.T) {
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal("WaitingForCatalog"))
-	g.Expect(cp.Status.CatalogReady).To(BeFalse())
 }
 
 // TestReconcileCatalog_StaleAvailableGenerationDefers asserts CatalogReady is gated
@@ -1407,13 +1404,12 @@ func TestReconcileCatalog_StaleAvailableGenerationDefers(t *testing.T) {
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse),
 		"a stale Available condition (ObservedGeneration < generation) must not satisfy CatalogReady")
 	g.Expect(cond.Reason).To(Equal("WaitingForCatalog"))
-	g.Expect(cp.Status.CatalogReady).To(BeFalse())
 }
 
 // TestReconcileCatalog_TerminalErrorSurfaced asserts that a terminal K-ORC failure
 // on a catalog child (the documented "wrong clouds.yaml endpoint / import stuck on
 // created externally" class) surfaces as CatalogReady=False/CatalogFailed rather
-// than an eternal WaitingForCatalog, and resets the status bool.
+// than an eternal WaitingForCatalog.
 func TestReconcileCatalog_TerminalErrorSurfaced(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -1447,29 +1443,6 @@ func TestReconcileCatalog_TerminalErrorSurfaced(t *testing.T) {
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal("CatalogFailed"))
 	g.Expect(cond.Message).To(ContainSubstring("K-ORC cannot reach the identity endpoint"))
-	g.Expect(cp.Status.CatalogReady).To(BeFalse())
-}
-
-// TestReconcileCatalog_ResetsStatusBoolOnDegradation locks in that the
-// status.catalogReady bool is reset to false on a later degradation rather than
-// left stale-true: a control plane that was previously CatalogReady but whose
-// Service/Endpoint are no longer Available must report catalogReady=false.
-func TestReconcileCatalog_ResetsStatusBoolOnDegradation(t *testing.T) {
-	g := NewGomegaWithT(t)
-
-	s := korcTestScheme(t)
-	cp := korcControlPlane()
-	setAdminCredentialReady(cp)
-	cp.Status.CatalogReady = true // previously registered + Available
-	// On this pass the Service/Endpoint are (re-)created fresh and not Available.
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
-	r := &ControlPlaneReconciler{Client: c, Scheme: s}
-
-	_, err := r.reconcileCatalog(context.Background(), cp)
-	g.Expect(err).NotTo(HaveOccurred())
-
-	g.Expect(cp.Status.CatalogReady).To(BeFalse(),
-		"status.catalogReady must be reset to false when the catalog is no longer Available")
 }
 
 // TestReconcileCatalog_EmptySecretNameFallsBack verifies that when a

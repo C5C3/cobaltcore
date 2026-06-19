@@ -25,8 +25,8 @@ import (
 //
 // It is GATED on AdminCredentialReady: the admin credential must be available
 // before K-ORC can register catalog entries. Both child CRs are create-or-updated
-// idempotently; CatalogReady (and cp.Status.CatalogReady) flip True once both are
-// registered. K-ORC is a hard CRD dependency (see reconcileKORC), so a missing
+// idempotently; the CatalogReady condition flips True once both are registered.
+// K-ORC is a hard CRD dependency (see reconcileKORC), so a missing
 // Service/Endpoint CRD never reaches here — no-match errors fall through to the
 // generic error returns below (#476).
 func (r *ControlPlaneReconciler) reconcileCatalog(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) (ctrl.Result, error) {
@@ -36,7 +36,6 @@ func (r *ControlPlaneReconciler) reconcileCatalog(ctx context.Context, cp *c5c3v
 	// Gate on AdminCredentialReady.
 	if !conditions.AllTrue(cp.Status.Conditions, conditionTypeAdminCredentialReady) {
 		logger.Info("AdminCredential not ready, deferring catalog registration")
-		cp.Status.CatalogReady = false
 		fail("WaitingForAdminCredential", "AdminCredentialReady is not True; catalog registration deferred")
 		return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
 	}
@@ -71,7 +70,6 @@ func (r *ControlPlaneReconciler) reconcileCatalog(ctx context.Context, cp *c5c3v
 		service.Spec.Resource.Enabled = ptr.To(true)
 		return controllerutil.SetControllerReference(cp, service, r.Scheme)
 	}); err != nil {
-		cp.Status.CatalogReady = false
 		fail("ServiceError", fmt.Sprintf("create-or-update identity Service: %v", err))
 		return ctrl.Result{}, err
 	}
@@ -102,7 +100,6 @@ func (r *ControlPlaneReconciler) reconcileCatalog(ctx context.Context, cp *c5c3v
 		endpoint.Spec.Resource.Enabled = ptr.To(true)
 		return controllerutil.SetControllerReference(cp, endpoint, r.Scheme)
 	}); err != nil {
-		cp.Status.CatalogReady = false
 		fail("EndpointError", fmt.Sprintf("create-or-update identity Endpoint: %v", err))
 		return ctrl.Result{}, err
 	}
@@ -113,8 +110,6 @@ func (r *ControlPlaneReconciler) reconcileCatalog(ctx context.Context, cp *c5c3v
 	// Keystone. The documented failure class (wrong clouds.yaml endpoint, K-ORC
 	// swallowing list errors, an import hung on "created externally") otherwise lets
 	// CatalogReady (and the aggregate Ready) report True while the catalog is empty.
-	// status.CatalogReady tracks the condition, so it is reset on every False branch
-	// rather than left stale-true after a later degradation.
 	if termErr := orcv1alpha1.GetTerminalError(service); termErr != nil {
 		return r.catalogTerminalError(cp, "identity Service", service.Name, termErr), nil
 	}
@@ -123,12 +118,10 @@ func (r *ControlPlaneReconciler) reconcileCatalog(ctx context.Context, cp *c5c3v
 	}
 	if !korcAvailableUpToDate(service) || !korcAvailableUpToDate(endpoint) {
 		logger.Info("catalog Service/Endpoint not yet Available, requeuing")
-		cp.Status.CatalogReady = false
 		fail("WaitingForCatalog", "Keystone identity Service and Endpoint are registered but not yet Available")
 		return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
 	}
 
-	cp.Status.CatalogReady = true
 	conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
 		Type:               conditionTypeCatalogReady,
 		Status:             metav1.ConditionTrue,
@@ -139,12 +132,11 @@ func (r *ControlPlaneReconciler) reconcileCatalog(ctx context.Context, cp *c5c3v
 	return ctrl.Result{}, nil
 }
 
-// catalogTerminalError records a terminal K-ORC catalog failure: it resets the
-// status bool and sets CatalogReady=False/CatalogFailed naming the failing child
-// CR. It requeues so a fixed configuration (e.g. a corrected clouds.yaml) is
-// re-evaluated rather than leaving the catalog wedged.
+// catalogTerminalError records a terminal K-ORC catalog failure: it sets
+// CatalogReady=False/CatalogFailed naming the failing child CR. It requeues so a
+// fixed configuration (e.g. a corrected clouds.yaml) is re-evaluated rather than
+// leaving the catalog wedged.
 func (r *ControlPlaneReconciler) catalogTerminalError(cp *c5c3v1alpha1.ControlPlane, kind, name string, termErr error) ctrl.Result {
-	cp.Status.CatalogReady = false
 	conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
 		Type:               conditionTypeCatalogReady,
 		Status:             metav1.ConditionFalse,

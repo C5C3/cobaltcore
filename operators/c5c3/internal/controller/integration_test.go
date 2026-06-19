@@ -621,7 +621,10 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	g.Expect(final.Status.AdminApplicationCredential).NotTo(BeNil(),
 		"status.adminApplicationCredential should be populated")
 	g.Expect(final.Status.AdminApplicationCredential.ID).To(Equal("ac-id-integration"))
-	g.Expect(final.Status.CatalogReady).To(BeTrue(), "status.catalogReady should be true")
+	catalogCond := meta.FindStatusCondition(final.Status.Conditions, conditionTypeCatalogReady)
+	g.Expect(catalogCond).NotTo(BeNil(), "CatalogReady condition should exist")
+	g.Expect(catalogCond.Status).To(Equal(metav1.ConditionTrue),
+		"CatalogReady condition should be True once the catalog is registered")
 
 	// --- Intermediate projected specs (TE7b). Asserting only the final
 	// aggregate condition would not catch a projection regression, so verify the

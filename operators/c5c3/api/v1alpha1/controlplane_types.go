@@ -357,11 +357,6 @@ type ControlPlaneStatus struct {
 	// application credential.
 	// +optional
 	AdminApplicationCredential *AdminApplicationCredentialStatus `json:"adminApplicationCredential,omitempty"`
-
-	// CatalogReady reports whether the OpenStack service catalog has been
-	// observed as fully populated for the control plane.
-	// +optional
-	CatalogReady bool `json:"catalogReady,omitempty"`
 }
 
 // ServiceStatus reports the observed readiness of a single projected service
