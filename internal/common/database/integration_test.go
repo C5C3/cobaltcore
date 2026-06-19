@@ -283,3 +283,58 @@ func TestIntegration_EnsureDatabaseUser_idempotent(t *testing.T) {
 	g.Expect(c.List(ctx, grantList, client.InNamespace(ns.Name))).To(Succeed())
 	g.Expect(grantList.Items).To(HaveLen(1))
 }
+
+// TestIntegration_EnsureUser_preservesServerDefault is the canonical issue #474
+// problem #1 regression test: the User builder never sets
+// .spec.maxUserConnections, which the API server defaults to 10. Under the old
+// DeepEqual-then-Update guard the operator re-zeroed it and the server re-applied
+// the default on every reconcile, never converging. With Server-Side Apply the
+// operator's field manager never owns the field, so the default survives and a
+// repeated apply does not rewrite the object.
+func TestIntegration_EnsureUser_preservesServerDefault(t *testing.T) {
+	envtestutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := envtestutil.SetupEnvTest(t)
+	scheme := envtestutil.SharedScheme()
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "test-db-user-default"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+	owner := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "user-owner-default", Namespace: ns.Name}}
+	g.Expect(c.Create(ctx, owner)).To(Succeed())
+
+	// buildUser-style User: maxUserConnections intentionally left unset.
+	newUser := func() *mariadbv1alpha1.User {
+		return &mariadbv1alpha1.User{
+			ObjectMeta: metav1.ObjectMeta{Name: "default-user", Namespace: ns.Name},
+			Spec: mariadbv1alpha1.UserSpec{
+				MariaDBRef: mariadbv1alpha1.MariaDBRef{
+					ObjectReference: mariadbv1alpha1.ObjectReference{Name: "mariadb"},
+				},
+				PasswordSecretKeyRef: &mariadbv1alpha1.SecretKeySelector{
+					LocalObjectReference: mariadbv1alpha1.LocalObjectReference{Name: "user-secret"},
+					Key:                  "password",
+				},
+				Name: "appuser",
+				Host: "%",
+			},
+		}
+	}
+
+	_, err := ensureUser(ctx, c, scheme, owner, newUser())
+	g.Expect(err).NotTo(HaveOccurred())
+
+	created := &mariadbv1alpha1.User{}
+	g.Expect(c.Get(ctx, client.ObjectKey{Name: "default-user", Namespace: ns.Name}, created)).To(Succeed())
+	g.Expect(created.Spec.MaxUserConnections).To(Equal(int32(10)), "API server default must be applied")
+
+	// Re-apply the same desired User (still omitting maxUserConnections).
+	_, err = ensureUser(ctx, c, scheme, owner, newUser())
+	g.Expect(err).NotTo(HaveOccurred())
+
+	reapplied := &mariadbv1alpha1.User{}
+	g.Expect(c.Get(ctx, client.ObjectKey{Name: "default-user", Namespace: ns.Name}, reapplied)).To(Succeed())
+	g.Expect(reapplied.Spec.MaxUserConnections).To(Equal(int32(10)), "server default must be preserved, not re-zeroed")
+	g.Expect(reapplied.ResourceVersion).To(Equal(created.ResourceVersion),
+		"a converged User must not be rewritten on the next reconcile (issue #474 problem #1)")
+}

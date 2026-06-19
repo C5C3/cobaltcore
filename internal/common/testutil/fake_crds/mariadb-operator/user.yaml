@@ -28,9 +28,14 @@ spec:
           properties:
             spec:
               type: object
+              # Tolerate the non-omitempty struct fields the operator's typed
+              # Server-Side Apply emits (e.g. passwordPlugin) without declaring
+              # every field of the production schema.
+              x-kubernetes-preserve-unknown-fields: true
               properties:
                 mariaDbRef:
                   type: object
+                  x-kubernetes-preserve-unknown-fields: true
                   properties:
                     name:
                       type: string
@@ -43,6 +48,10 @@ spec:
                       type: string
                 maxUserConnections:
                   type: integer
+                  # Mirrors the real CRD's +kubebuilder:default=10 so envtest
+                  # exercises the server-default convergence the operator relies
+                  # on (the builder never sets maxUserConnections).
+                  default: 10
                 name:
                   type: string
                 host:

@@ -28,9 +28,14 @@ spec:
           properties:
             spec:
               type: object
+              # Tolerate the non-omitempty struct fields the operator's typed
+              # Server-Side Apply emits without declaring every field of the
+              # production schema.
+              x-kubernetes-preserve-unknown-fields: true
               properties:
                 mariaDbRef:
                   type: object
+                  x-kubernetes-preserve-unknown-fields: true
                   properties:
                     name:
                       type: string
