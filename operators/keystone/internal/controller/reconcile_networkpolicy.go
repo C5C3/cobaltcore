@@ -63,7 +63,7 @@ func (r *KeystoneReconciler) reconcileNetworkPolicy(ctx context.Context, keyston
 	}
 
 	// Path 1: networkPolicy enabled — create or update NetworkPolicy.
-	np := buildKeystoneNetworkPolicy(keystone)
+	np := buildKeystoneNetworkPolicy(keystone, r.OperatorNamespace)
 	if err := ensureNetworkPolicy(ctx, r.Client, r.Scheme, keystone, np); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring NetworkPolicy: %w", err)
 	}
@@ -85,7 +85,13 @@ func (r *KeystoneReconciler) reconcileNetworkPolicy(ctx context.Context, keyston
 // brownfield modes), and the cache (TCP, ports derived from the cache spec,
 // both managed and brownfield modes). AdditionalEgress rules are appended after
 // auto-derived rules.
-func buildKeystoneNetworkPolicy(keystone *keystonev1alpha1.Keystone) *networkingv1.NetworkPolicy {
+//
+// operatorNamespace is the Namespace the operator Pod runs in. When non-empty,
+// an ingress peer selecting that Namespace is appended so the operator's own
+// health check (reconcileHealthCheck GETs the Keystone Service on TCP 5000) is
+// not blocked by the policy (issue #461). When empty (namespace unknown) no
+// such peer is added.
+func buildKeystoneNetworkPolicy(keystone *keystonev1alpha1.Keystone, operatorNamespace string) *networkingv1.NetworkPolicy {
 	npSpec := keystone.Spec.NetworkPolicy
 
 	// Build ingress peers from spec.networkPolicy.ingress sources.
@@ -125,6 +131,26 @@ func buildKeystoneNetworkPolicy(keystone *keystonev1alpha1.Keystone) *networking
 			NamespaceSelector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{
 					"kubernetes.io/metadata.name": gatewayNS,
+				},
+			},
+		})
+	}
+
+	// DECISION: Append an ingress peer for the operator's own Namespace so
+	// reconcileHealthCheck can reach the Keystone API Service on TCP 5000. The
+	// operator runs in a dedicated Namespace (keystone-system) distinct from the
+	// workload Namespace, and ingress otherwise only admits the user-declared
+	// sources and the gateway namespace — so without this peer KeystoneAPIReady
+	// flips False permanently for a healthy deployment (issue #461). The peer
+	// selects the entire operator Namespace by the well-known
+	// kubernetes.io/metadata.name label rather than the operator's pod labels,
+	// which are not known to this build helper. When operatorNamespace is empty
+	// (namespace could not be resolved) no peer is added.
+	if operatorNamespace != "" {
+		peers = append(peers, networkingv1.NetworkPolicyPeer{
+			NamespaceSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					"kubernetes.io/metadata.name": operatorNamespace,
 				},
 			},
 		})

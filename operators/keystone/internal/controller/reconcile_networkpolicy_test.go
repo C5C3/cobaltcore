@@ -84,7 +84,7 @@ func TestBuildKeystoneNetworkPolicy_NameAndNamespace(t *testing.T) {
 		},
 	}
 
-	np := buildKeystoneNetworkPolicy(ks)
+	np := buildKeystoneNetworkPolicy(ks, "")
 
 	g.Expect(np.Name).To(Equal("test-keystone"))
 	g.Expect(np.Namespace).To(Equal("default"))
@@ -99,7 +99,7 @@ func TestBuildKeystoneNetworkPolicy_Labels(t *testing.T) {
 		},
 	}
 
-	np := buildKeystoneNetworkPolicy(ks)
+	np := buildKeystoneNetworkPolicy(ks, "")
 
 	g.Expect(np.Labels).To(HaveKeyWithValue("app.kubernetes.io/name", "keystone"))
 	g.Expect(np.Labels).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-keystone"))
@@ -115,7 +115,7 @@ func TestBuildKeystoneNetworkPolicy_PodSelector(t *testing.T) {
 		},
 	}
 
-	np := buildKeystoneNetworkPolicy(ks)
+	np := buildKeystoneNetworkPolicy(ks, "")
 
 	g.Expect(np.Spec.PodSelector.MatchLabels).To(HaveKeyWithValue("app.kubernetes.io/name", "keystone"))
 	g.Expect(np.Spec.PodSelector.MatchLabels).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-keystone"))
@@ -131,7 +131,7 @@ func TestBuildKeystoneNetworkPolicy_PolicyTypes(t *testing.T) {
 		},
 	}
 
-	np := buildKeystoneNetworkPolicy(ks)
+	np := buildKeystoneNetworkPolicy(ks, "")
 
 	g.Expect(np.Spec.PolicyTypes).To(ConsistOf(
 		networkingv1.PolicyTypeIngress,
@@ -148,7 +148,7 @@ func TestBuildKeystoneNetworkPolicy_IngressRules_SingleSource(t *testing.T) {
 		},
 	}
 
-	np := buildKeystoneNetworkPolicy(ks)
+	np := buildKeystoneNetworkPolicy(ks, "")
 
 	g.Expect(np.Spec.Ingress).To(HaveLen(1))
 	g.Expect(np.Spec.Ingress[0].Ports).To(HaveLen(1))
@@ -178,7 +178,7 @@ func TestBuildKeystoneNetworkPolicy_IngressRules_MultipleSources_WithPodSelector
 		},
 	}
 
-	np := buildKeystoneNetworkPolicy(ks)
+	np := buildKeystoneNetworkPolicy(ks, "")
 
 	g.Expect(np.Spec.Ingress).To(HaveLen(1))
 	g.Expect(np.Spec.Ingress[0].From).To(HaveLen(2))
@@ -228,7 +228,7 @@ func TestBuildKeystoneNetworkPolicy_AutoDerivedEgress_BrownfieldDBAndCache(t *te
 		},
 	}
 
-	np := buildKeystoneNetworkPolicy(ks)
+	np := buildKeystoneNetworkPolicy(ks, "")
 
 	// Brownfield must still get DNS, apiserver, DB, and cache egress — the
 	// readiness probe TCP-connects to the brownfield DB and the rotation pods
@@ -252,7 +252,7 @@ func TestBuildKeystoneNetworkPolicy_AutoDerivedEgress_ManagedDB(t *testing.T) {
 		},
 	}
 
-	np := buildKeystoneNetworkPolicy(ks)
+	np := buildKeystoneNetworkPolicy(ks, "")
 
 	g.Expect(hasEgressTCPPort(np, 3306)).To(BeTrue(), "managed DB TCP 3306")
 }
@@ -268,7 +268,7 @@ func TestBuildKeystoneNetworkPolicy_AutoDerivedEgress_ManagedCache(t *testing.T)
 		},
 	}
 
-	np := buildKeystoneNetworkPolicy(ks)
+	np := buildKeystoneNetworkPolicy(ks, "")
 
 	g.Expect(hasEgressTCPPort(np, 11211)).To(BeTrue(), "managed cache TCP 11211")
 }
@@ -286,7 +286,7 @@ func TestBuildKeystoneNetworkPolicy_AutoDerivedEgress_BothManaged(t *testing.T) 
 		},
 	}
 
-	np := buildKeystoneNetworkPolicy(ks)
+	np := buildKeystoneNetworkPolicy(ks, "")
 
 	g.Expect(hasEgressTCPPort(np, 3306)).To(BeTrue(), "managed DB TCP 3306")
 	g.Expect(hasEgressTCPPort(np, 11211)).To(BeTrue(), "managed cache TCP 11211")
@@ -319,7 +319,7 @@ func TestBuildKeystoneNetworkPolicy_AutoDerivedEgress_APIServerAlways(t *testing
 				},
 			}
 
-			np := buildKeystoneNetworkPolicy(ks)
+			np := buildKeystoneNetworkPolicy(ks, "")
 
 			g.Expect(hasEgressTCPPort(np, 443)).To(BeTrue(), "apiserver TCP 443")
 			g.Expect(hasEgressTCPPort(np, 6443)).To(BeTrue(), "apiserver TCP 6443")
@@ -352,7 +352,7 @@ func TestBuildKeystoneNetworkPolicy_AutoDerivedEgress_CustomDBPort(t *testing.T)
 				},
 			}
 
-			np := buildKeystoneNetworkPolicy(ks)
+			np := buildKeystoneNetworkPolicy(ks, "")
 
 			g.Expect(hasEgressTCPPort(np, 33060)).To(BeTrue(), "custom DB TCP 33060")
 			g.Expect(hasEgressTCPPort(np, 3306)).To(BeFalse(), "default 3306 must not be emitted")
@@ -374,7 +374,7 @@ func TestBuildKeystoneNetworkPolicy_AutoDerivedEgress_BrownfieldCachePort(t *tes
 		},
 	}
 
-	np := buildKeystoneNetworkPolicy(ks)
+	np := buildKeystoneNetworkPolicy(ks, "")
 
 	g.Expect(hasEgressTCPPort(np, 11212)).To(BeTrue(), "brownfield cache TCP 11212")
 	g.Expect(hasEgressTCPPort(np, 11211)).To(BeFalse(), "default 11211 must not be emitted")
@@ -394,7 +394,7 @@ func TestBuildKeystoneNetworkPolicy_AutoDerivedEgress_NoCacheConfigured(t *testi
 		},
 	}
 
-	np := buildKeystoneNetworkPolicy(ks)
+	np := buildKeystoneNetworkPolicy(ks, "")
 
 	// DNS, apiserver, DB only — no cache rule.
 	g.Expect(np.Spec.Egress).To(HaveLen(3))
@@ -453,7 +453,7 @@ func TestBuildKeystoneNetworkPolicy_GatewayNil_NoExtraIngressPeer(t *testing.T) 
 	}
 	// Gateway is nil — no extra peer should be appended.
 
-	np := buildKeystoneNetworkPolicy(ks)
+	np := buildKeystoneNetworkPolicy(ks, "")
 
 	g.Expect(np.Spec.Ingress).To(HaveLen(1),
 		"spec.gateway nil must not add a separate ingress rule")
@@ -484,7 +484,7 @@ func TestBuildKeystoneNetworkPolicy_GatewaySet_AppendsIngressPeerForGatewayNames
 		Hostname: "keystone.example.com",
 	}
 
-	np := buildKeystoneNetworkPolicy(ks)
+	np := buildKeystoneNetworkPolicy(ks, "")
 
 	// All peers coexist in a single ingress rule targeting TCP 5000.
 	g.Expect(np.Spec.Ingress).To(HaveLen(1),
@@ -530,7 +530,7 @@ func TestBuildKeystoneNetworkPolicy_GatewaySet_EmptyParentNamespace_UsesKeystone
 		Hostname: "keystone.example.com",
 	}
 
-	np := buildKeystoneNetworkPolicy(ks)
+	np := buildKeystoneNetworkPolicy(ks, "")
 
 	g.Expect(np.Spec.Ingress[0].From).To(HaveLen(2))
 	gatewayPeer := np.Spec.Ingress[0].From[1]
@@ -538,6 +538,115 @@ func TestBuildKeystoneNetworkPolicy_GatewaySet_EmptyParentNamespace_UsesKeystone
 		HaveKeyWithValue("kubernetes.io/metadata.name", "keystone-ns"),
 		"empty parentRef.namespace must fall back to the Keystone CR's namespace",
 	)
+}
+
+// --- Operator-namespace ingress peer (issue #461, problem 3) ---
+
+// hasIngressNamespacePeer reports whether any ingress rule admits an entire
+// namespace (selected by kubernetes.io/metadata.name, no pod selector).
+func hasIngressNamespacePeer(np *networkingv1.NetworkPolicy, namespace string) bool {
+	for _, rule := range np.Spec.Ingress {
+		for _, peer := range rule.From {
+			if peer.PodSelector == nil && peer.NamespaceSelector != nil &&
+				peer.NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"] == namespace {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// TestBuildKeystoneNetworkPolicy_OperatorNamespaceIngressPeer verifies that a
+// non-empty operatorNamespace adds an ingress peer for that namespace on the
+// TCP 5000 rule, so reconcileHealthCheck can reach the Keystone API.
+func TestBuildKeystoneNetworkPolicy_OperatorNamespaceIngressPeer(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := npTestKeystone()
+	ks.Spec.NetworkPolicy = &keystonev1alpha1.NetworkPolicySpec{
+		Ingress: []keystonev1alpha1.NetworkPolicyIngressSource{
+			{NamespaceSelector: map[string]string{"kubernetes.io/metadata.name": "openstack"}},
+		},
+	}
+
+	np := buildKeystoneNetworkPolicy(ks, "keystone-system")
+
+	g.Expect(np.Spec.Ingress).To(HaveLen(1),
+		"operator-namespace peer must be appended to the existing TCP 5000 rule")
+	g.Expect(np.Spec.Ingress[0].From).To(HaveLen(2),
+		"exactly one operator-namespace peer added alongside the user peer")
+	g.Expect(hasIngressNamespacePeer(np, "openstack")).To(BeTrue(), "user peer preserved")
+	g.Expect(hasIngressNamespacePeer(np, "keystone-system")).To(BeTrue(),
+		"operator namespace must be whitelisted for the health check")
+}
+
+// TestBuildKeystoneNetworkPolicy_EmptyOperatorNamespace_NoExtraPeer verifies the
+// no-op edge case: an empty operatorNamespace adds no extra ingress peer.
+func TestBuildKeystoneNetworkPolicy_EmptyOperatorNamespace_NoExtraPeer(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := npTestKeystone()
+	ks.Spec.NetworkPolicy = &keystonev1alpha1.NetworkPolicySpec{
+		Ingress: []keystonev1alpha1.NetworkPolicyIngressSource{
+			{NamespaceSelector: map[string]string{"kubernetes.io/metadata.name": "openstack"}},
+		},
+	}
+
+	np := buildKeystoneNetworkPolicy(ks, "")
+
+	g.Expect(np.Spec.Ingress[0].From).To(HaveLen(1),
+		"empty operatorNamespace must not add an ingress peer")
+	g.Expect(hasIngressNamespacePeer(np, "openstack")).To(BeTrue())
+}
+
+// TestBuildKeystoneNetworkPolicy_GatewayAndOperatorNamespacePeers verifies that
+// when both a gateway and an operator namespace are present, both peers are
+// appended alongside the user peer (user, gateway, operator order).
+func TestBuildKeystoneNetworkPolicy_GatewayAndOperatorNamespacePeers(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := npTestKeystone()
+	ks.Spec.NetworkPolicy = &keystonev1alpha1.NetworkPolicySpec{
+		Ingress: []keystonev1alpha1.NetworkPolicyIngressSource{
+			{NamespaceSelector: map[string]string{"kubernetes.io/metadata.name": "openstack"}},
+		},
+	}
+	ks.Spec.Gateway = &keystonev1alpha1.GatewaySpec{
+		ParentRef: keystonev1alpha1.GatewayParentRefSpec{
+			Name:      "public-gateway",
+			Namespace: "gateway-system",
+		},
+		Hostname: "keystone.example.com",
+	}
+
+	np := buildKeystoneNetworkPolicy(ks, "keystone-system")
+
+	g.Expect(np.Spec.Ingress[0].From).To(HaveLen(3))
+	g.Expect(hasIngressNamespacePeer(np, "openstack")).To(BeTrue(), "user peer")
+	g.Expect(hasIngressNamespacePeer(np, "gateway-system")).To(BeTrue(), "gateway peer")
+	g.Expect(hasIngressNamespacePeer(np, "keystone-system")).To(BeTrue(), "operator peer")
+}
+
+// TestReconcileNetworkPolicy_OperatorNamespaceWiredThrough verifies that
+// reconcileNetworkPolicy passes r.OperatorNamespace into the built policy.
+func TestReconcileNetworkPolicy_OperatorNamespaceWiredThrough(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := npTestScheme()
+	ks := npTestKeystone()
+	ks.Spec.NetworkPolicy = &keystonev1alpha1.NetworkPolicySpec{
+		Ingress: []keystonev1alpha1.NetworkPolicyIngressSource{
+			{NamespaceSelector: map[string]string{"kubernetes.io/metadata.name": "openstack"}},
+		},
+	}
+	r := newNPTestReconciler(s, ks)
+	r.OperatorNamespace = "keystone-system"
+
+	_, err := r.reconcileNetworkPolicy(context.Background(), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var np networkingv1.NetworkPolicy
+	g.Expect(r.Get(context.Background(), types.NamespacedName{
+		Name: "test-keystone", Namespace: "default",
+	}, &np)).To(Succeed())
+	g.Expect(hasIngressNamespacePeer(&np, "keystone-system")).To(BeTrue(),
+		"reconcileNetworkPolicy must thread r.OperatorNamespace into the policy")
 }
 
 // TestReconcileNetworkPolicy_GatewaySet_NetworkPolicyNil_NoNetworkPolicyCreated
@@ -595,7 +704,7 @@ func TestBuildKeystoneNetworkPolicy_AdditionalEgress(t *testing.T) {
 		},
 	}
 
-	np := buildKeystoneNetworkPolicy(ks)
+	np := buildKeystoneNetworkPolicy(ks, "")
 
 	// AdditionalEgress is appended after the auto-derived rules (DNS, apiserver,
 	// DB, cache for the brownfield fixture), so it is the last egress rule.
@@ -933,7 +1042,7 @@ func TestBuildKeystoneNetworkPolicy_NameMatchesCR(t *testing.T) {
 		},
 	}
 
-	np := buildKeystoneNetworkPolicy(ks)
+	np := buildKeystoneNetworkPolicy(ks, "")
 
 	g.Expect(np.Name).To(Equal(ks.Name),
 		"NetworkPolicy Name must equal the CR name")
