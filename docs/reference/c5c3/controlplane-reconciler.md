@@ -635,7 +635,18 @@ that instructs K-ORC to mint the admin application credential, and drives re-min
   password-cloud — and **regenerate** the secret `value`, so the next pass recreates
   the AC for a fresh mint. The hash is computed by the package-level
   `computeAdminPasswordHash`, shared with the CredentialRotation reconciler so both
-  agree on one derivation.
+  agree on one derivation. The annotation is (re-)stamped **only on a fresh mint or
+  when it is absent**, never overwriting a present-but-empty value — that empty value
+  is the CredentialRotation reconciler's nudge marker, so preserving it keeps a
+  concurrently-cleared nudge from being silently lost (`shouldStampPasswordHash`).
+- **Re-mint on immutable resource-block drift.** K-ORC declares the AC's whole
+  `spec.resource` block immutable via CEL (`self == oldSelf`), so a legal, webhook-
+  admitted change to `restricted` or `accessRules` cannot be reconciled by an
+  in-place update — it would be rejected on every pass. `reconcileKORC` detects drift
+  on the operator-managed fields (`Unrestricted`, `UserRef`, `SecretRef`,
+  `AccessRules` — never the whole struct, so a K-ORC/CRD-defaulted sub-field can never
+  read as permanent drift) and routes it through the **same** delete+recreate re-mint
+  (`adminACResourceDrifted`).
 - **Re-mint progress / stall.** While the old AC is `Terminating` the condition is
   `KORCReady=False/ReMinting`; if it stays terminating longer than
   `remintStallTimeout` (**5m**) — a finalizer K-ORC cannot clear, e.g. it cannot
@@ -654,6 +665,7 @@ that instructs K-ORC to mint the admin application credential, and drives re-min
 | Admin password read fails otherwise | False | `AdminPasswordError` | returns the error |
 | Password-cloud ensure fails | False | `PasswordCloudError` | returns the error |
 | Hash mismatch → AC deleted for re-mint | False | `ReMinting` | requeue 10s; AC deleted + `value` regenerated, recreated next pass |
+| `spec.resource` drift (`restricted`/`accessRules`) → AC deleted for re-mint | False | `ReMinting` | requeue 10s; the block is CEL-immutable, so the change forces a delete+recreate |
 | Re-mint stuck `Terminating` past `remintStallTimeout` (5m) | False | `ReMintStalled` | requeue 10s; finalizer cannot revoke the old credential |
 | AC create/update/delete/read fails otherwise | False | `ApplicationCredentialError` | returns the error |
 | `value` regeneration fails | False | `SecretError` | returns the error |
@@ -807,6 +819,16 @@ mint logic. Its model:
   re-mint, re-stamping the fresh hash. Keeping the AC's resource lifecycle
   (including the delete) owned solely by the ControlPlane reconciler avoids two
   controllers racing on the same object.
+- **`reMint` is one-shot per spec generation.** An explicit `spec.reMint` is
+  **latched** on `status.lastTriggeredGeneration`: the reconciler nudges only while
+  it differs from `metadata.generation`, then records the generation. A `reMint:
+  true` left in the spec therefore fires the nudge **once per edit**, not on every
+  cache resync (~10 min via the shared `SyncPeriod`) or operator restart — without
+  the latch it would revoke + re-mint the admin credential indefinitely, re-opening
+  the stale-credential window each cycle. A pass over an already-latched generation
+  reports `NoRotationNeeded`. The auto-detect (password-hash change) path is **not**
+  latched: it is self-limiting (it stops once the hash matches) and relies on resync
+  to observe an out-of-band password rotation.
 - **ControlPlane resolution (one-per-namespace).** A `CredentialRotation`
   carries no explicit ControlPlane reference, so `resolveControlPlane` lists
   ControlPlanes in the CredentialRotation's **own** namespace and requires
@@ -837,8 +859,8 @@ mint logic. Its model:
 | bootstrap, AC absent | False | `WaitingForBootstrap` | requeue 10s |
 | rotation, AC absent | False | `WaitingForApplicationCredential` | requeue 10s |
 | admin password not yet readable | False | `WaitingForAdminPassword` | requeue 10s |
-| hash unchanged, `reMint` not set | True | `NoRotationNeeded` | nothing to do |
-| nudge performed | True | `RotationTriggered` | emits `RotationNudged` event |
+| hash unchanged, no pending `reMint` (incl. a `reMint` already latched for this generation) | True | `NoRotationNeeded` | nothing to do |
+| nudge performed | True | `RotationTriggered` | emits `RotationNudged` event; an explicit `reMint` latches `status.lastTriggeredGeneration` |
 
 The CredentialRotation reconciler is registered with the manager via a plain
 `For(&CredentialRotation{})` — it owns no children and registers no watches or

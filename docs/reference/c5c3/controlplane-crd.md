@@ -547,7 +547,7 @@ credential and reports progress via status conditions.
 | --- | --- | --- | --- | --- |
 | `target` | [`RotationTarget`](#rotationtarget) | Yes | — | Which credential to rotate. |
 | `bootstrap` | `bool` | No | `false` | When `true`, requests an initial **mint** of the credential rather than a rotation of an existing one. Idempotent: if the credential already exists it is a no-op. |
-| `reMint` | `bool` | No | `false` | When `true`, forces the reconciler to discard the current credential and mint a fresh one even if the existing credential is still valid. |
+| `reMint` | `bool` | No | `false` | When `true`, forces the reconciler to discard the current credential and mint a fresh one even if the existing credential is still valid. The nudge is **one-shot per spec generation** (latched on `status.lastTriggeredGeneration`), so a `reMint: true` left in the spec does not re-rotate on every resync. |
 | `intervalDays` | `*int32` | No | `nil` | **Deferred** — accepted by the schema but ignored by the L1 reconciler. Rotation cadence in days for scheduled rotation. Minimum: 1. |
 | `preRotationDays` | `*int32` | No | `nil` | **Deferred** — accepted but ignored. Days before expiry a replacement credential is minted (the overlap window). Minimum: 0. |
 | `gracePeriodDays` | `*int32` | No | `nil` | **Deferred** — accepted but ignored. Days the superseded credential remains valid after a rotation before it is revoked. Minimum: 0. |
@@ -575,6 +575,7 @@ credential and reports progress via status conditions.
 | --- | --- | --- |
 | `conditions` | `[]metav1.Condition` | Latest available observations of the rotation state. Upserted via the shared conditions helper. |
 | `observedGeneration` | `int64` | The `.metadata.generation` the controller last reconciled. |
+| `lastTriggeredGeneration` | `int64` | The most recent `.metadata.generation` for which an explicit `reMint` nudge was performed. Latches `reMint` to a single spec generation so a `reMint: true` left in the spec fires once per edit, not on every resync or restart. |
 
 ---
 
