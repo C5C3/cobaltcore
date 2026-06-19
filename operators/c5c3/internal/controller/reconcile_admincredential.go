@@ -156,10 +156,10 @@ func (r *ControlPlaneReconciler) reconcileAdminCredential(ctx context.Context, c
 		}
 	}
 
-	// CLOBBER-SAFE PushSecret: EnsurePushSecret is idempotent — it only Updates
-	// the PushSecret when its desired Spec differs from the stored one
-	// (apiequality.Semantic.DeepEqual guard inside EnsurePushSecret). Repeated
-	// reconciles therefore do not churn the PushSecret, so ESO is not woken to
+	// CLOBBER-SAFE PushSecret: EnsurePushSecret applies via Server-Side Apply
+	// under a fixed field manager that owns only the fields the operator sets, so
+	// repeated applies of an unchanged desired Spec are no-ops at the API server.
+	// Reconciles therefore do not churn the PushSecret, so ESO is not woken to
 	// re-push an unchanged credential.
 	ps := adminAppCredentialPushSecret(cp)
 	if err := secrets.EnsurePushSecret(ctx, r.Client, r.Scheme, cp, ps); err != nil {

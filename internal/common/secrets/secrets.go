@@ -14,11 +14,11 @@ import (
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
-	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+
+	"github.com/c5c3/forge/internal/common/apply"
 )
 
 // ErrKeyNotFound is returned (wrapped) by GetSecretValue when the requested
@@ -144,31 +144,13 @@ func GetSecretValue(ctx context.Context, c client.Client, key client.ObjectKey, 
 	return string(val), nil
 }
 
-// EnsurePushSecret creates a PushSecret if it does not exist or updates its
-// spec if it already exists. An owner reference is set on the PushSecret so
-// that it is garbage-collected when the owning resource is deleted.
+// EnsurePushSecret creates a PushSecret if it does not exist or applies its
+// desired state via Server-Side Apply if it already exists. An owner reference
+// is set on the PushSecret so that it is garbage-collected when the owning
+// resource is deleted. Because the field manager owns only the fields the
+// builder sets, server-defaulted fields (updatePolicy, refreshInterval) are
+// never claimed and a converged PushSecret is applied without a write, so ESO
+// is not woken to re-push an unchanged credential.
 func EnsurePushSecret(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, ps *esov1alpha1.PushSecret) error {
-	existing := &esov1alpha1.PushSecret{}
-	err := c.Get(ctx, client.ObjectKeyFromObject(ps), existing)
-
-	if apierrors.IsNotFound(err) {
-		if err := controllerutil.SetControllerReference(owner, ps, scheme); err != nil {
-			return fmt.Errorf("setting owner reference on PushSecret %s/%s: %w", ps.Namespace, ps.Name, err)
-		}
-		if err := c.Create(ctx, ps); err != nil {
-			return fmt.Errorf("creating PushSecret %s/%s: %w", ps.Namespace, ps.Name, err)
-		}
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("getting PushSecret %s/%s: %w", ps.Namespace, ps.Name, err)
-	}
-
-	if !apiequality.Semantic.DeepEqual(existing.Spec, ps.Spec) {
-		existing.Spec = ps.Spec
-		if err := c.Update(ctx, existing); err != nil {
-			return fmt.Errorf("updating PushSecret %s/%s: %w", ps.Namespace, ps.Name, err)
-		}
-	}
-	return nil
+	return apply.EnsureObject(ctx, c, scheme, owner, ps, apply.FieldManager)
 }

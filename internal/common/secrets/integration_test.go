@@ -137,12 +137,7 @@ func TestIntegration_EnsurePushSecret(t *testing.T) {
 	}
 	g.Expect(c.Create(ctx, owner)).To(Succeed())
 
-	ps := &esov1alpha1.PushSecret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "integration-ps",
-			Namespace: ns.Name,
-		},
-	}
+	ps := validPushSecret("integration-ps", ns.Name)
 
 	// Create.
 	g.Expect(EnsurePushSecret(ctx, c, scheme, owner, ps)).To(Succeed())
@@ -151,6 +146,38 @@ func TestIntegration_EnsurePushSecret(t *testing.T) {
 	g.Expect(c.Get(ctx, client.ObjectKeyFromObject(ps), created)).To(Succeed())
 	g.Expect(created.OwnerReferences).To(HaveLen(1))
 	g.Expect(created.OwnerReferences[0].Name).To(Equal("ps-owner"))
+	g.Expect(created.Spec.SecretStoreRefs).To(HaveLen(1))
+
+	// A second apply of the unchanged desired PushSecret must not rewrite it, so
+	// ESO is not woken to re-push an unchanged credential.
+	g.Expect(EnsurePushSecret(ctx, c, scheme, owner, validPushSecret("integration-ps", ns.Name))).To(Succeed())
+	reapplied := &esov1alpha1.PushSecret{}
+	g.Expect(c.Get(ctx, client.ObjectKeyFromObject(ps), reapplied)).To(Succeed())
+	g.Expect(reapplied.ResourceVersion).To(Equal(created.ResourceVersion),
+		"converged PushSecret must not be rewritten on a repeated apply")
+}
+
+// validPushSecret returns a schema-valid PushSecret mirroring the production
+// builders (a ClusterSecretStore ref, a source Secret selector, and one data
+// match), so the apply is accepted by the API server.
+func validPushSecret(name, namespace string) *esov1alpha1.PushSecret {
+	return &esov1alpha1.PushSecret{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Spec: esov1alpha1.PushSecretSpec{
+			SecretStoreRefs: []esov1alpha1.PushSecretStoreRef{{
+				Kind: "ClusterSecretStore",
+				Name: "openbao-cluster-store",
+			}},
+			Selector: esov1alpha1.PushSecretSelector{
+				Secret: &esov1alpha1.PushSecretSecret{Name: name + "-source"},
+			},
+			Data: []esov1alpha1.PushSecretData{{
+				Match: esov1alpha1.PushSecretMatch{
+					RemoteRef: esov1alpha1.PushSecretRemoteRef{RemoteKey: "openstack/" + name},
+				},
+			}},
+		},
+	}
 }
 
 func TestIntegration_EnsurePushSecret_idempotent(t *testing.T) {
@@ -168,15 +195,8 @@ func TestIntegration_EnsurePushSecret_idempotent(t *testing.T) {
 	}
 	g.Expect(c.Create(ctx, owner)).To(Succeed())
 
-	ps := &esov1alpha1.PushSecret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "idem-ps",
-			Namespace: ns.Name,
-		},
-	}
-
-	g.Expect(EnsurePushSecret(ctx, c, scheme, owner, ps)).To(Succeed())
-	g.Expect(EnsurePushSecret(ctx, c, scheme, owner, ps)).To(Succeed())
+	g.Expect(EnsurePushSecret(ctx, c, scheme, owner, validPushSecret("idem-ps", ns.Name))).To(Succeed())
+	g.Expect(EnsurePushSecret(ctx, c, scheme, owner, validPushSecret("idem-ps", ns.Name))).To(Succeed())
 
 	list := &esov1alpha1.PushSecretList{}
 	g.Expect(c.List(ctx, list, client.InNamespace(ns.Name))).To(Succeed())
