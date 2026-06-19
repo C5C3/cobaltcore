@@ -343,6 +343,12 @@ type FernetSpec struct {
 	// +kubebuilder:validation:Minimum=3
 	// +kubebuilder:default=3
 	MaxActiveKeys int32 `json:"maxActiveKeys,omitempty"`
+
+	// Suspend pauses the Fernet key rotation CronJob without deleting it,
+	// letting an SRE halt rotation during an incident. Matches
+	// TrustFlushSpec.Suspend semantics.
+	// +kubebuilder:default=false
+	Suspend bool `json:"suspend,omitempty"`
 }
 
 // CredentialKeysSpec defines credential key rotation configuration.
@@ -355,6 +361,12 @@ type CredentialKeysSpec struct {
 	// +kubebuilder:validation:Minimum=3
 	// +kubebuilder:default=3
 	MaxActiveKeys int32 `json:"maxActiveKeys,omitempty"`
+
+	// Suspend pauses the credential key rotation CronJob without deleting it,
+	// letting an SRE halt rotation during an incident. Matches
+	// TrustFlushSpec.Suspend semantics.
+	// +kubebuilder:default=false
+	Suspend bool `json:"suspend,omitempty"`
 }
 
 // TrustFlushSpec configures periodic purging of expired trust delegations

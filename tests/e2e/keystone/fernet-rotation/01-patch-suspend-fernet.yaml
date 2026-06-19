@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Patch to pause Fernet key rotation via spec.fernet.suspend: true. This is the
+# incident escape hatch: it suspends the rotation CronJob without deleting it or
+# changing its schedule, so an SRE can resume rotation without churn.
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone-fernet
+  namespace: openstack
+spec:
+  fernet:
+    suspend: true

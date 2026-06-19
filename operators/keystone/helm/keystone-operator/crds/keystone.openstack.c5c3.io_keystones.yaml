@@ -223,6 +223,13 @@ spec:
                     description: RotationSchedule is a cron expression for credential
                       key rotation.
                     type: string
+                  suspend:
+                    default: false
+                    description: |-
+                      Suspend pauses the credential key rotation CronJob without deleting it,
+                      letting an SRE halt rotation during an incident. Matches
+                      TrustFlushSpec.Suspend semantics.
+                    type: boolean
                 type: object
               database:
                 description: |-
@@ -378,6 +385,13 @@ spec:
                     default: 0 0 * * 0
                     description: RotationSchedule is a cron expression for key rotation.
                     type: string
+                  suspend:
+                    default: false
+                    description: |-
+                      Suspend pauses the Fernet key rotation CronJob without deleting it,
+                      letting an SRE halt rotation during an incident. Matches
+                      TrustFlushSpec.Suspend semantics.
+                    type: boolean
                 type: object
               gateway:
                 description: |-

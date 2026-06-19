@@ -994,6 +994,34 @@ func TestFernetRotationCronJob_PriorityClassNameNil(t *testing.T) {
 	g.Expect(cronJob.Spec.JobTemplate.Spec.Template.Spec.PriorityClassName).To(BeEmpty())
 }
 
+// TestFernetRotationCronJob_SuspendDefaultsFalse verifies that when
+// spec.fernet.suspend is unset (false), the rotation CronJob is not suspended.
+func TestFernetRotationCronJob_SuspendDefaultsFalse(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := fernetTestKeystone()
+
+	cronJob := fernetRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-fernet-rotate-script-abc123")
+
+	g.Expect(cronJob.Spec.Suspend).NotTo(BeNil())
+	g.Expect(*cronJob.Spec.Suspend).To(BeFalse())
+}
+
+// TestFernetRotationCronJob_SuspendTrue verifies that setting
+// spec.fernet.suspend pauses the rotation CronJob without changing its schedule
+// (the escape hatch must not alter rotation cadence).
+func TestFernetRotationCronJob_SuspendTrue(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := fernetTestKeystone()
+	ks.Spec.Fernet.Suspend = true
+
+	cronJob := fernetRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-fernet-rotate-script-abc123")
+
+	g.Expect(cronJob.Spec.Suspend).NotTo(BeNil())
+	g.Expect(*cronJob.Spec.Suspend).To(BeTrue())
+	g.Expect(cronJob.Spec.Schedule).To(Equal(ks.Spec.Fernet.RotationSchedule),
+		"toggling suspend must not change the rotation schedule")
+}
+
 // findRuleForResource returns the first PolicyRule whose ResourceNames matches
 // the given resource name exactly. Helper for RBAC split tests.
 func findRuleForResource(rules []rbacv1.PolicyRule, resourceName string) *rbacv1.PolicyRule {

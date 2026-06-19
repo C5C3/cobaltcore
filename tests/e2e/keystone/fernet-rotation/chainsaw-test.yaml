@@ -63,7 +63,7 @@ spec:
           done
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
-  # ── Step 3: Assert CronJob schedule matches spec ───────────────────────
+  # ── Step 3: Assert CronJob schedule matches spec; not suspended by default ─
   - try:
     - assert:
         resource:
@@ -74,6 +74,7 @@ spec:
             namespace: openstack
           spec:
             schedule: "0 0 * * 0"
+            suspend: false
   # ── Step 4: Trigger rotation, verify no rollout, validate token ─────────
   - try:
     - script:
@@ -251,3 +252,21 @@ spec:
             (conditions[?type == 'Ready']):
             - status: "True"
               reason: AllReady
+  # ── Step 6: Pause rotation via spec.fernet.suspend: true (escape hatch) ──
+  - try:
+    - patch:
+        file: 01-patch-suspend-fernet.yaml
+  # ── Step 7: Assert CronJob preserved, suspended, schedule unchanged ─────
+  # suspend pauses rotation without deleting the CronJob and without changing
+  # the rotation cadence, so an SRE can resume without churn.
+  - try:
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: CronJob
+          metadata:
+            name: keystone-fernet-fernet-rotate
+            namespace: openstack
+          spec:
+            schedule: "0 0 * * 0"
+            suspend: true

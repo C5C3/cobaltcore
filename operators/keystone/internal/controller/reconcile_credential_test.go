@@ -1019,6 +1019,35 @@ func TestCredentialRotationCronJob_PriorityClassNameNil(t *testing.T) {
 	g.Expect(cronJob.Spec.JobTemplate.Spec.Template.Spec.PriorityClassName).To(BeEmpty())
 }
 
+// TestCredentialRotationCronJob_SuspendDefaultsFalse verifies that when
+// spec.credentialKeys.suspend is unset (false), the rotation CronJob is not
+// suspended.
+func TestCredentialRotationCronJob_SuspendDefaultsFalse(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := credentialTestKeystone()
+
+	cronJob := credentialRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-credential-rotate-script-abc123")
+
+	g.Expect(cronJob.Spec.Suspend).NotTo(BeNil())
+	g.Expect(*cronJob.Spec.Suspend).To(BeFalse())
+}
+
+// TestCredentialRotationCronJob_SuspendTrue verifies that setting
+// spec.credentialKeys.suspend pauses the rotation CronJob without changing its
+// schedule.
+func TestCredentialRotationCronJob_SuspendTrue(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := credentialTestKeystone()
+	ks.Spec.CredentialKeys.Suspend = true
+
+	cronJob := credentialRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-credential-rotate-script-abc123")
+
+	g.Expect(cronJob.Spec.Suspend).NotTo(BeNil())
+	g.Expect(*cronJob.Spec.Suspend).To(BeTrue())
+	g.Expect(cronJob.Spec.Schedule).To(Equal(ks.Spec.CredentialKeys.RotationSchedule),
+		"toggling suspend must not change the rotation schedule")
+}
+
 // TestEnsureCredentialRotationRBAC_MainSecretIsReadOnly verifies that the Role
 // created by ensureCredentialRotationRBAC grants only `get` on the production
 // credential keys Secret — no patch, update, create, delete, list, watch, or

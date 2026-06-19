@@ -309,6 +309,7 @@ func credentialRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapNam
 		},
 		Spec: batchv1.CronJobSpec{
 			Schedule: keystone.Spec.CredentialKeys.RotationSchedule,
+			Suspend:  ptr.To(keystone.Spec.CredentialKeys.Suspend),
 			JobTemplate: batchv1.JobTemplateSpec{
 				Spec: batchv1.JobSpec{
 					Template: corev1.PodTemplateSpec{

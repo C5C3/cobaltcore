@@ -306,6 +306,7 @@ func fernetRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName st
 		},
 		Spec: batchv1.CronJobSpec{
 			Schedule: keystone.Spec.Fernet.RotationSchedule,
+			Suspend:  ptr.To(keystone.Spec.Fernet.Suspend),
 			JobTemplate: batchv1.JobTemplateSpec{
 				Spec: batchv1.JobSpec{
 					Template: corev1.PodTemplateSpec{
