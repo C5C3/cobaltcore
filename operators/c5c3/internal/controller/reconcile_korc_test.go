@@ -1123,6 +1123,140 @@ func TestReconcileKORC_AccessRulesDriftDeletesACForRemint(t *testing.T) {
 	assertACRemintedForDrift(t, cp, existing)
 }
 
+// TestShouldStampPasswordHash exercises the stamp guard that closes the
+// lost-rotation race: the hash is stamped on a fresh mint or when the annotation is
+// absent, but a present value (even empty) is left untouched so the
+// CredentialRotation reconciler's empty nudge marker is never silently overwritten.
+func TestShouldStampPasswordHash(t *testing.T) {
+	g := NewGomegaWithT(t)
+	nonZero := metav1.Now()
+
+	cases := []struct {
+		name string
+		ac   *orcv1alpha1.ApplicationCredential
+		want bool
+	}{
+		{
+			name: "fresh mint, no annotations",
+			ac:   &orcv1alpha1.ApplicationCredential{},
+			want: true,
+		},
+		{
+			name: "fresh mint, empty marker preset (zero timestamp wins)",
+			ac: &orcv1alpha1.ApplicationCredential{ObjectMeta: metav1.ObjectMeta{
+				Annotations: map[string]string{adminPasswordHashAnnotation: ""},
+			}},
+			want: true,
+		},
+		{
+			name: "existing, annotation absent",
+			ac: &orcv1alpha1.ApplicationCredential{ObjectMeta: metav1.ObjectMeta{
+				CreationTimestamp: nonZero,
+				Annotations:       map[string]string{"other": "x"},
+			}},
+			want: true,
+		},
+		{
+			name: "existing, present empty nudge marker -> preserve",
+			ac: &orcv1alpha1.ApplicationCredential{ObjectMeta: metav1.ObjectMeta{
+				CreationTimestamp: nonZero,
+				Annotations:       map[string]string{adminPasswordHashAnnotation: ""},
+			}},
+			want: false,
+		},
+		{
+			name: "existing, present non-empty hash -> no churn",
+			ac: &orcv1alpha1.ApplicationCredential{ObjectMeta: metav1.ObjectMeta{
+				CreationTimestamp: nonZero,
+				Annotations:       map[string]string{adminPasswordHashAnnotation: testPasswordHash()},
+			}},
+			want: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g.Expect(shouldStampPasswordHash(tc.ac)).To(Equal(tc.want))
+		})
+	}
+}
+
+// TestReconcileKORC_DoesNotOverwriteClearedNudgeMarker reproduces the lost-rotation
+// race end-to-end: the top-level re-mint decision reads a MATCHING hash and falls
+// through, but a concurrent CredentialRotation nudge has zeroed the annotation by the
+// time the CreateOrUpdate mutate runs. The stamp guard must preserve the empty marker
+// (rather than re-stamp pwHash) so the NEXT pass observes the mismatch and re-mints.
+// The race is staged with an interceptor that returns the matching hash on the FIRST
+// AC Get (the top-level read) and the real, zeroed stored AC on the CreateOrUpdate
+// read.
+func TestReconcileKORC_DoesNotOverwriteClearedNudgeMarker(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := korcControlPlane()
+	acKey := types.NamespacedName{Name: adminAppCredentialName(cp), Namespace: childNamespace(cp)}
+
+	// A matching resource block so the top-level read sees no drift and falls through
+	// to CreateOrUpdate (isolating the annotation-stamp path under test).
+	resource := &orcv1alpha1.ApplicationCredentialResourceSpec{
+		Unrestricted: ptr.To(false),
+		UserRef:      orcv1alpha1.KubernetesNameRef(adminUserRef(cp)),
+		SecretRef:    orcv1alpha1.KubernetesNameRef(adminAppCredentialSecretName(cp)),
+	}
+	// The STORED AC carries the empty nudge marker (a concurrent rotation cleared it)
+	// and a non-zero CreationTimestamp so the guard's fresh-mint branch does not fire.
+	stored := &orcv1alpha1.ApplicationCredential{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              adminAppCredentialName(cp),
+			Namespace:         childNamespace(cp),
+			CreationTimestamp: metav1.Now(),
+			Annotations:       map[string]string{adminPasswordHashAnnotation: ""},
+		},
+		Spec: orcv1alpha1.ApplicationCredentialSpec{Resource: resource.DeepCopy()},
+		Status: orcv1alpha1.ApplicationCredentialStatus{
+			ID: ptr.To("ac-id-current"),
+			Conditions: []metav1.Condition{{
+				Type:               orcv1alpha1.ConditionAvailable,
+				Status:             metav1.ConditionTrue,
+				Reason:             orcv1alpha1.ConditionReasonSuccess,
+				LastTransitionTime: metav1.Now(),
+			}},
+		},
+	}
+	// firstView is what the top-level read observes BEFORE the concurrent nudge: the
+	// matching hash, so the re-mint decision falls through to CreateOrUpdate.
+	firstView := stored.DeepCopy()
+	firstView.Annotations[adminPasswordHashAnnotation] = testPasswordHash()
+
+	var acGets int
+	ic := interceptor.Funcs{
+		Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if target, ok := obj.(*orcv1alpha1.ApplicationCredential); ok && key == acKey {
+				acGets++
+				if acGets == 1 {
+					firstView.DeepCopyInto(target)
+					return nil
+				}
+			}
+			return cl.Get(ctx, key, obj, opts...)
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(cp, adminPasswordSecret(), stored, mintedAppCredSecret(cp)).
+		WithInterceptorFuncs(ic).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileKORC(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(acGets).To(BeNumerically(">=", 2),
+		"the test must exercise both the top-level read and the CreateOrUpdate read")
+
+	// The AC must NOT have been deleted this pass, and the empty nudge marker must
+	// survive so the next pass re-mints (overwriting it with pwHash would lose it).
+	reloaded := getAC(t, c, cp)
+	g.Expect(reloaded.Annotations).To(HaveKeyWithValue(adminPasswordHashAnnotation, ""),
+		"a present-but-empty nudge marker must not be overwritten by the hash re-stamp")
+}
+
 // TestReconcileKORC_RemintStalledAfterTimeout asserts the ReMintStalled escape: an
 // AC stuck Terminating longer than remintStallTimeout (a finalizer K-ORC cannot
 // clear because it cannot revoke the old credential) escalates KORCReady from the

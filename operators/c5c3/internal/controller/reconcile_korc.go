@@ -247,14 +247,20 @@ func (r *ControlPlaneReconciler) reconcileKORC(ctx context.Context, cp *c5c3v1al
 		ac.Spec.Resource.SecretRef = orcv1alpha1.KubernetesNameRef(adminAppCredentialSecretName(cp))
 		ac.Spec.Resource.AccessRules = projectAccessRules(adminCred.ApplicationCredential.AccessRules)
 
-		// Stamp the password hash this credential was minted against. On a later
-		// pass a mismatch (the hash moved because the admin password rotated, or
-		// the CredentialRotation reconciler zeroed the annotation to nudge) is what
-		// the re-mint decision above keys off to delete+recreate the AC.
+		// Stamp the password hash this credential was minted against — but ONLY on a
+		// fresh mint or when the annotation is absent (see shouldStampPasswordHash).
+		// A present-but-empty value is the CredentialRotation reconciler's re-mint
+		// nudge marker; if the top-level re-mint decision above read the matching
+		// hash and fell through while a concurrent nudge zeroed the annotation,
+		// re-stamping pwHash here would silently overwrite the marker without a
+		// re-mint (the lost-rotation race). Preserving the empty marker lets the
+		// NEXT pass's re-mint decision observe the mismatch and re-mint.
 		if ac.Annotations == nil {
 			ac.Annotations = map[string]string{}
 		}
-		ac.Annotations[adminPasswordHashAnnotation] = pwHash
+		if shouldStampPasswordHash(ac) {
+			ac.Annotations[adminPasswordHashAnnotation] = pwHash
+		}
 
 		return controllerutil.SetControllerReference(cp, ac, r.Scheme)
 	})
@@ -454,6 +460,23 @@ func accessRulesDrifted(existing, desired []orcv1alpha1.ApplicationCredentialAcc
 		}
 	}
 	return false
+}
+
+// shouldStampPasswordHash reports whether reconcileKORC's CreateOrUpdate may
+// (re-)stamp the password-hash annotation on the AC. It stamps on a fresh mint
+// (zero CreationTimestamp) or when the annotation key is absent, but NEVER when the
+// key is present — even with an empty value. A present-but-empty value is the
+// CredentialRotation reconciler's re-mint nudge marker; overwriting it would
+// silently consume the nudge without a re-mint (the lost-rotation race). A present
+// non-empty value can only equal the current hash on this path (a stale hash would
+// have been caught by the re-mint decision before CreateOrUpdate runs), so leaving
+// it untouched is also a no-op for the steady state.
+func shouldStampPasswordHash(ac *orcv1alpha1.ApplicationCredential) bool {
+	if ac.CreationTimestamp.IsZero() {
+		return true
+	}
+	_, present := ac.Annotations[adminPasswordHashAnnotation]
+	return !present
 }
 
 // updateAdminApplicationCredentialStatus reflects the observed AC CR into
