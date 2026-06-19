@@ -18,6 +18,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/apimachinery/pkg/util/managedfields"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -66,6 +67,11 @@ func npTestKeystone() *keystonev1alpha1.Keystone {
 func newNPTestReconciler(s *runtime.Scheme, objs ...client.Object) *KeystoneReconciler {
 	cb := fake.NewClientBuilder().WithScheme(s).WithObjects(objs...)
 	cb = cb.WithStatusSubresource(&keystonev1alpha1.Keystone{})
+	// The fake client's default typed converter cannot apply an unstructured
+	// NetworkPolicy ("expected objects with types from the same schema"); the
+	// deduced converter applies it uniformly. Server-Side Apply against a real
+	// API server is exercised by the internal/common envtest suites.
+	cb = cb.WithTypeConverters(managedfields.NewDeducedTypeConverter())
 	return &KeystoneReconciler{
 		Client:   cb.Build(),
 		Scheme:   s,
@@ -817,7 +823,13 @@ func TestReconcileNetworkPolicy_NetworkPolicyEnabled_NetworkPolicyUpdated(t *tes
 	g.Expect(np.Spec.Ingress[0].From).To(HaveLen(2))
 }
 
-func TestReconcileNetworkPolicy_NetworkPolicyEnabled_NoChange_SkipsUpdate(t *testing.T) {
+// TestReconcileNetworkPolicy_NetworkPolicyEnabled_RepeatedReconcileIsIdempotent
+// verifies that reconciling an unchanged spec twice leaves exactly one
+// NetworkPolicy with the desired spec. Server-Side Apply converges without a
+// write on a real API server; that no-write property is exercised by the
+// internal/common envtest convergence suites (the fake client bumps
+// resourceVersion on every apply and so cannot assert it here).
+func TestReconcileNetworkPolicy_NetworkPolicyEnabled_RepeatedReconcileIsIdempotent(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := npTestScheme()
 	ks := npTestKeystone()
@@ -826,41 +838,18 @@ func TestReconcileNetworkPolicy_NetworkPolicyEnabled_NoChange_SkipsUpdate(t *tes
 			{NamespaceSelector: map[string]string{"kubernetes.io/metadata.name": "openstack"}},
 		},
 	}
-
-	// Track update calls to verify the snapshot-comparison guard skips
-	// no-op updates.
-	updateCount := 0
-	c := fake.NewClientBuilder().
-		WithScheme(s).
-		WithObjects(ks).
-		WithStatusSubresource(&keystonev1alpha1.Keystone{}).
-		WithInterceptorFuncs(interceptor.Funcs{
-			Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
-				if _, ok := obj.(*networkingv1.NetworkPolicy); ok {
-					updateCount++
-				}
-				return c.Update(ctx, obj, opts...)
-			},
-		}).
-		Build()
-
-	r := &KeystoneReconciler{
-		Client:   c,
-		Scheme:   s,
-		Recorder: record.NewFakeRecorder(10),
-	}
+	r := newNPTestReconciler(s, ks)
 	ctx := context.Background()
 
-	// First reconcile creates the NetworkPolicy (no update call expected).
 	_, err := r.reconcileNetworkPolicy(ctx, ks)
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(updateCount).To(Equal(0), "create path should not trigger update")
-
-	// Second reconcile with identical spec should skip the update.
-	updateCount = 0
 	_, err = r.reconcileNetworkPolicy(ctx, ks)
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(updateCount).To(Equal(0), "idempotent reconciliation should skip update when spec is unchanged")
+
+	list := &networkingv1.NetworkPolicyList{}
+	g.Expect(r.List(ctx, list, client.InNamespace("default"))).To(Succeed())
+	g.Expect(list.Items).To(HaveLen(1))
+	g.Expect(list.Items[0].Spec.Ingress[0].From).To(HaveLen(1))
 }
 
 // --- Path 2: networkPolicy disabled — delete NetworkPolicy ---
@@ -965,12 +954,10 @@ func TestReconcileNetworkPolicy_EnsureError_Propagated(t *testing.T) {
 		WithScheme(s).
 		WithObjects(ks).
 		WithStatusSubresource(&keystonev1alpha1.Keystone{}).
+		WithTypeConverters(managedfields.NewDeducedTypeConverter()).
 		WithInterceptorFuncs(interceptor.Funcs{
-			Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
-				if _, ok := obj.(*networkingv1.NetworkPolicy); ok {
-					return fmt.Errorf("simulated NetworkPolicy creation error")
-				}
-				return c.Create(ctx, obj, opts...)
+			Apply: func(ctx context.Context, c client.WithWatch, obj runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
+				return fmt.Errorf("simulated NetworkPolicy apply error")
 			},
 		}).
 		Build()
@@ -984,7 +971,7 @@ func TestReconcileNetworkPolicy_EnsureError_Propagated(t *testing.T) {
 	_, err := r.reconcileNetworkPolicy(context.Background(), ks)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("ensuring NetworkPolicy"))
-	g.Expect(err.Error()).To(ContainSubstring("simulated NetworkPolicy creation error"))
+	g.Expect(err.Error()).To(ContainSubstring("simulated NetworkPolicy apply error"))
 }
 
 func TestReconcileNetworkPolicy_DeleteError_Propagated(t *testing.T) {

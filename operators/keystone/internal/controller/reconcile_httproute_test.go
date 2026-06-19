@@ -15,6 +15,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/managedfields"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -73,7 +74,14 @@ func hrTestGateway() *keystonev1alpha1.GatewaySpec {
 
 func newHRTestReconciler(s *runtime.Scheme, objs ...client.Object) *KeystoneReconciler {
 	cb := fake.NewClientBuilder().WithScheme(s).WithObjects(objs...)
-	cb = cb.WithStatusSubresource(&keystonev1alpha1.Keystone{})
+	// HTTPRoute carries a status subresource so the operator's main-resource
+	// apply never clobbers the Gateway-controller-written Accepted condition.
+	cb = cb.WithStatusSubresource(&keystonev1alpha1.Keystone{}, &gatewayv1.HTTPRoute{})
+	// The fake client's default typed converter cannot apply an unstructured
+	// HTTPRoute; the deduced converter applies it uniformly. Server-Side Apply
+	// against a real API server is exercised by the internal/common envtest
+	// suites.
+	cb = cb.WithTypeConverters(managedfields.NewDeducedTypeConverter())
 	return &KeystoneReconciler{
 		Client:   cb.Build(),
 		Scheme:   s,
@@ -476,45 +484,28 @@ func TestReconcileHTTPRoute_GatewaySet_HTTPRouteUpdated(t *testing.T) {
 	g.Expect(route.Spec.Hostnames).To(ConsistOf(gatewayv1.Hostname("keystone.new-example.com")))
 }
 
-func TestReconcileHTTPRoute_NoChange_SkipsUpdate(t *testing.T) {
+// TestReconcileHTTPRoute_RepeatedReconcileIsIdempotent verifies that reconciling
+// an unchanged spec twice leaves exactly one HTTPRoute with the desired spec.
+// Server-Side Apply converges without a write on a real API server; that
+// no-write property is exercised by the internal/common envtest convergence
+// suites (the fake client bumps resourceVersion on every apply).
+func TestReconcileHTTPRoute_RepeatedReconcileIsIdempotent(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := hrTestScheme()
 	ks := hrTestKeystone()
 	ks.Spec.Gateway = hrTestGateway()
-
-	updateCount := 0
-	c := fake.NewClientBuilder().
-		WithScheme(s).
-		WithObjects(ks).
-		WithStatusSubresource(&keystonev1alpha1.Keystone{}).
-		WithInterceptorFuncs(interceptor.Funcs{
-			Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
-				if _, ok := obj.(*gatewayv1.HTTPRoute); ok {
-					updateCount++
-				}
-				return c.Update(ctx, obj, opts...)
-			},
-		}).
-		Build()
-
-	r := &KeystoneReconciler{
-		Client:              c,
-		Scheme:              s,
-		Recorder:            record.NewFakeRecorder(10),
-		gatewayAPIAvailable: true,
-	}
+	r := newHRTestReconciler(s, ks)
 	ctx := context.Background()
 
-	// First reconcile creates the HTTPRoute (no update call expected).
 	_, err := r.reconcileHTTPRoute(ctx, ks)
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(updateCount).To(Equal(0), "create path should not trigger update")
-
-	// Second reconcile with identical spec should skip the update.
-	updateCount = 0
 	_, err = r.reconcileHTTPRoute(ctx, ks)
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(updateCount).To(Equal(0), "idempotent reconciliation should skip update when spec is unchanged")
+
+	list := &gatewayv1.HTTPRouteList{}
+	g.Expect(r.List(ctx, list, client.InNamespace("default"))).To(Succeed())
+	g.Expect(list.Items).To(HaveLen(1))
+	g.Expect(list.Items[0].Spec.Hostnames).To(ConsistOf(gatewayv1.Hostname("keystone.example.com")))
 }
 
 // --- Error scenarios ---
@@ -529,12 +520,10 @@ func TestReconcileHTTPRoute_EnsureError_Propagated(t *testing.T) {
 		WithScheme(s).
 		WithObjects(ks).
 		WithStatusSubresource(&keystonev1alpha1.Keystone{}).
+		WithTypeConverters(managedfields.NewDeducedTypeConverter()).
 		WithInterceptorFuncs(interceptor.Funcs{
-			Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
-				if _, ok := obj.(*gatewayv1.HTTPRoute); ok {
-					return fmt.Errorf("simulated HTTPRoute creation error")
-				}
-				return c.Create(ctx, obj, opts...)
+			Apply: func(ctx context.Context, c client.WithWatch, obj runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
+				return fmt.Errorf("simulated HTTPRoute apply error")
 			},
 		}).
 		Build()
@@ -549,7 +538,7 @@ func TestReconcileHTTPRoute_EnsureError_Propagated(t *testing.T) {
 	_, err := r.reconcileHTTPRoute(context.Background(), ks)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("ensuring HTTPRoute"))
-	g.Expect(err.Error()).To(ContainSubstring("simulated HTTPRoute creation error"))
+	g.Expect(err.Error()).To(ContainSubstring("simulated HTTPRoute apply error"))
 }
 
 func TestReconcileHTTPRoute_DeleteError_Propagated(t *testing.T) {
@@ -592,7 +581,7 @@ func TestReconcileHTTPRoute_DeleteError_Propagated(t *testing.T) {
 	g.Expect(err.Error()).To(ContainSubstring("simulated HTTPRoute deletion error"))
 }
 
-// --- W-001: annotation/label removal tracking via sentinel annotations ---
+// --- annotation/label removal via Server-Side Apply field ownership ---
 
 func TestReconcileHTTPRoute_AnnotationRemoval_RemovesKeyFromLiveRoute(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -616,10 +605,10 @@ func TestReconcileHTTPRoute_AnnotationRemoval_RemovesKeyFromLiveRoute(t *testing
 	}, &route)).To(Succeed())
 	g.Expect(route.Annotations).To(HaveKeyWithValue("konghq.com/plugins", "rate-limiting"))
 	g.Expect(route.Annotations).To(HaveKeyWithValue("nginx.ingress.k8s.io", "test"))
-	g.Expect(route.Annotations).To(HaveKey(managedAnnotationsKey),
-		"sentinel annotation must be stamped on create so removal is tracked across reconciles")
 
 	// Remove konghq.com/plugins from spec.gateway.annotations and re-reconcile.
+	// Server-Side Apply relinquishes the no-longer-set key, so the API server
+	// removes it without any sentinel bookkeeping.
 	ks.Spec.Gateway.Annotations = map[string]string{
 		"nginx.ingress.k8s.io": "test",
 	}
@@ -634,7 +623,7 @@ func TestReconcileHTTPRoute_AnnotationRemoval_RemovesKeyFromLiveRoute(t *testing
 	g.Expect(route.Annotations).To(HaveKeyWithValue("nginx.ingress.k8s.io", "test"),
 		"annotations still present in spec.gateway.annotations must be preserved")
 
-	// Remove all annotations and re-reconcile — sentinel and all tracked keys must go.
+	// Remove all annotations and re-reconcile — all previously-owned keys go.
 	ks.Spec.Gateway.Annotations = nil
 	_, err = r.reconcileHTTPRoute(ctx, ks)
 	g.Expect(err).NotTo(HaveOccurred())
@@ -644,47 +633,13 @@ func TestReconcileHTTPRoute_AnnotationRemoval_RemovesKeyFromLiveRoute(t *testing
 	}, &route)).To(Succeed())
 	g.Expect(route.Annotations).NotTo(HaveKey("nginx.ingress.k8s.io"),
 		"clearing spec.gateway.annotations must remove all previously-managed annotation keys")
-	g.Expect(route.Annotations).NotTo(HaveKey(managedAnnotationsKey),
-		"sentinel annotation must be cleared when no annotations are desired")
 }
 
-func TestReconcileHTTPRoute_AnnotationRemoval_PreservesUserAddedKey(t *testing.T) {
-	g := NewGomegaWithT(t)
-	s := hrTestScheme()
-	ks := hrTestKeystone()
-	ks.Spec.Gateway = hrTestGateway()
-	ks.Spec.Gateway.Annotations = map[string]string{
-		"konghq.com/plugins": "rate-limiting",
-	}
-	r := newHRTestReconciler(s, ks)
-	ctx := context.Background()
-
-	// Create the HTTPRoute via reconcile.
-	_, err := r.reconcileHTTPRoute(ctx, ks)
-	g.Expect(err).NotTo(HaveOccurred())
-
-	// Simulate a third party (e.g. a mesh controller) adding an annotation
-	// that the operator does not manage.
-	var route gatewayv1.HTTPRoute
-	g.Expect(r.Get(ctx, types.NamespacedName{
-		Name: "test-keystone", Namespace: "default",
-	}, &route)).To(Succeed())
-	route.Annotations["sidecar.istio.io/inject"] = "false"
-	g.Expect(r.Client.Update(ctx, &route)).To(Succeed())
-
-	// Remove konghq.com/plugins and re-reconcile.
-	ks.Spec.Gateway.Annotations = nil
-	_, err = r.reconcileHTTPRoute(ctx, ks)
-	g.Expect(err).NotTo(HaveOccurred())
-
-	g.Expect(r.Get(ctx, types.NamespacedName{
-		Name: "test-keystone", Namespace: "default",
-	}, &route)).To(Succeed())
-	g.Expect(route.Annotations).NotTo(HaveKey("konghq.com/plugins"),
-		"operator-managed annotation must be removed")
-	g.Expect(route.Annotations).To(HaveKeyWithValue("sidecar.istio.io/inject", "false"),
-		"annotations not in the operator-managed set must be preserved across reconciles")
-}
+// Cross-manager annotation preservation (a third party's annotation surviving
+// the operator dropping its own) depends on the API server's granular ownership
+// of the metadata.annotations map, which the fake client's deduced type
+// converter treats atomically. It is therefore covered by the envtest suite:
+// TestIntegration_HTTPRoute_PreservesThirdPartyAnnotation in integration_test.go.
 
 // --- Status tests: Accepted condition tracking ---
 

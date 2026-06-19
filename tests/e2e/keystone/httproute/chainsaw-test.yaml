@@ -50,7 +50,6 @@ spec:
               app.kubernetes.io/managed-by: keystone-operator
             annotations:
               example.com/test-annotation: initial
-              keystone.openstack.c5c3.io/managed-annotations: example.com/test-annotation
           spec:
             parentRefs:
             # Deliberately non-existent: keeps the real Envoy Gateway

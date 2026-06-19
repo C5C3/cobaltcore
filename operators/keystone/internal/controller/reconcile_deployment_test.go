@@ -933,17 +933,17 @@ func TestReconcileDeployment_PDBEnsureError(t *testing.T) {
 	ks := deployTestKeystone()
 	ks.Spec.Replicas = 3 // explicit: PDB expectations depend on this value
 
-	// Use an interceptor to inject an error when creating a PodDisruptionBudget.
+	// Use an interceptor to inject an error when applying a PodDisruptionBudget.
 	c := fake.NewClientBuilder().
 		WithScheme(s).
 		WithObjects(ks).
 		WithStatusSubresource(&keystonev1alpha1.Keystone{}).
 		WithInterceptorFuncs(interceptor.Funcs{
-			Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
-				if _, ok := obj.(*policyv1.PodDisruptionBudget); ok {
-					return fmt.Errorf("simulated PDB creation error")
+			Apply: func(ctx context.Context, c client.WithWatch, obj runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
+				if co, ok := obj.(client.Object); ok && co.GetObjectKind().GroupVersionKind().Kind == "PodDisruptionBudget" {
+					return fmt.Errorf("simulated PDB apply error")
 				}
-				return c.Create(ctx, obj, opts...)
+				return c.Apply(ctx, obj, opts...)
 			},
 		}).
 		Build()
@@ -958,7 +958,7 @@ func TestReconcileDeployment_PDBEnsureError(t *testing.T) {
 
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("ensuring PodDisruptionBudget"))
-	g.Expect(err.Error()).To(ContainSubstring("simulated PDB creation error"))
+	g.Expect(err.Error()).To(ContainSubstring("simulated PDB apply error"))
 }
 
 // TestUWSGICommand_NilUWSGI verifies that uwsgiCommand(nil) returns the command

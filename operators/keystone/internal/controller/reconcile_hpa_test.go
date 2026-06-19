@@ -282,11 +282,11 @@ func TestReconcileHPA_EnsureError_Propagated(t *testing.T) {
 		WithObjects(ks).
 		WithStatusSubresource(&keystonev1alpha1.Keystone{}).
 		WithInterceptorFuncs(interceptor.Funcs{
-			Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
-				if _, ok := obj.(*autoscalingv2.HorizontalPodAutoscaler); ok {
-					return fmt.Errorf("simulated HPA creation error")
+			Apply: func(ctx context.Context, c client.WithWatch, obj runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
+				if co, ok := obj.(client.Object); ok && co.GetObjectKind().GroupVersionKind().Kind == "HorizontalPodAutoscaler" {
+					return fmt.Errorf("simulated HPA apply error")
 				}
-				return c.Create(ctx, obj, opts...)
+				return c.Apply(ctx, obj, opts...)
 			},
 		}).
 		Build()
@@ -300,7 +300,7 @@ func TestReconcileHPA_EnsureError_Propagated(t *testing.T) {
 	_, err := r.reconcileHPA(context.Background(), ks)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("ensuring HorizontalPodAutoscaler"))
-	g.Expect(err.Error()).To(ContainSubstring("simulated HPA creation error"))
+	g.Expect(err.Error()).To(ContainSubstring("simulated HPA apply error"))
 }
 
 func TestReconcileHPA_DeleteError_Propagated(t *testing.T) {

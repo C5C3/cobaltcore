@@ -12,15 +12,13 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
-	apiequality "k8s.io/apimachinery/pkg/api/equality"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
+	"github.com/c5c3/forge/internal/common/apply"
 	"github.com/c5c3/forge/internal/common/conditions"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
@@ -318,92 +316,17 @@ func cacheEgressPorts(keystone *keystonev1alpha1.Keystone) []int32 {
 // to the common package is warranted when a second operator needs the same
 // create-or-update logic.
 
-// ensureNetworkPolicy creates a NetworkPolicy if it does not exist or updates
-// its spec and metadata if it already exists. An owner reference is set on the
-// NetworkPolicy so that it is garbage-collected when the owning resource is
-// deleted.
+// ensureNetworkPolicy creates or updates the NetworkPolicy via Server-Side
+// Apply under a fixed field manager and sets the Keystone CR as its controller
+// owner so it is garbage-collected with the CR.
 //
-// Merge strategy: the operator is authoritative over .Spec — the entire Spec
-// is overwritten with the desired state on every reconciliation. For labels and
-// annotations, desired keys are written into the existing map (additive merge);
-// user-added keys that the operator does not manage are preserved. Keys that
-// were previously set by the operator but are no longer in the desired state
-// will remain until manually removed. This is intentional: it avoids
-// accidentally stripping third-party metadata (e.g. Istio sidecar annotations)
-// while still ensuring the operator's own labels stay correct.
+// Merge strategy: the field manager owns exactly the fields the builder sets
+// (the whole Spec and the operator's labels). Labels or annotations the
+// operator no longer sets are relinquished and removed by the API server, while
+// keys owned by other managers (e.g. user- or mesh-added metadata) are
+// preserved. A converged NetworkPolicy is applied without a write.
 func ensureNetworkPolicy(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, np *networkingv1.NetworkPolicy) error {
-	existing := &networkingv1.NetworkPolicy{}
-	err := c.Get(ctx, client.ObjectKeyFromObject(np), existing)
-
-	if apierrors.IsNotFound(err) {
-		if err := controllerutil.SetControllerReference(owner, np, scheme); err != nil {
-			return fmt.Errorf("setting owner reference on NetworkPolicy %s/%s: %w", np.Namespace, np.Name, err)
-		}
-		if err := c.Create(ctx, np); err != nil {
-			return fmt.Errorf("creating NetworkPolicy %s/%s: %w", np.Namespace, np.Name, err)
-		}
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("getting NetworkPolicy %s/%s: %w", np.Namespace, np.Name, err)
-	}
-
-	// NetworkPolicy exists: reconcile metadata (ownerRefs/labels/annotations) and spec.
-	// Snapshot before mutations to detect whether an update is necessary.
-	before := existing.DeepCopy()
-
-	// Ensure controller owner reference is enforced so garbage collection
-	// behaves correctly even if the ref was removed out-of-band.
-	if err := controllerutil.SetControllerReference(owner, existing, scheme); err != nil {
-		return fmt.Errorf("updating owner reference on NetworkPolicy %s/%s: %w", existing.Namespace, existing.Name, err)
-	}
-
-	// Merge desired labels into existing labels; extra user-added keys are
-	// preserved, keys present on the desired NetworkPolicy are authoritative.
-	if np.Labels != nil {
-		if existing.Labels == nil {
-			existing.Labels = make(map[string]string, len(np.Labels))
-		}
-		for k, v := range np.Labels {
-			existing.Labels[k] = v
-		}
-	}
-
-	// Merge desired annotations into existing annotations.
-	if np.Annotations != nil {
-		if existing.Annotations == nil {
-			existing.Annotations = make(map[string]string, len(np.Annotations))
-		}
-		for k, v := range np.Annotations {
-			existing.Annotations[k] = v
-		}
-	}
-
-	// Reconcile spec to the desired state.
-	existing.Spec = np.Spec
-
-	// Only issue an API update when something actually changed to avoid
-	// unnecessary write load, spurious watch events, and 409 Conflict
-	// errors.
-	if !apiequality.Semantic.DeepEqual(existing.Spec, before.Spec) ||
-		!apiequality.Semantic.DeepEqual(npNormalizeMap(existing.Labels), npNormalizeMap(before.Labels)) ||
-		!apiequality.Semantic.DeepEqual(npNormalizeMap(existing.Annotations), npNormalizeMap(before.Annotations)) ||
-		!apiequality.Semantic.DeepEqual(existing.OwnerReferences, before.OwnerReferences) {
-		if err := c.Update(ctx, existing); err != nil {
-			return fmt.Errorf("updating NetworkPolicy %s/%s: %w", existing.Namespace, existing.Name, err)
-		}
-	}
-
-	return nil
-}
-
-// npNormalizeMap converts empty maps to nil so apiequality.Semantic.DeepEqual
-// does not report spurious diffs between nil and empty maps.
-func npNormalizeMap(m map[string]string) map[string]string {
-	if len(m) == 0 {
-		return nil
-	}
-	return m
+	return apply.EnsureObject(ctx, c, scheme, owner, np, apply.FieldManager)
 }
 
 // deleteNetworkPolicy deletes the NetworkPolicy identified by namespace and

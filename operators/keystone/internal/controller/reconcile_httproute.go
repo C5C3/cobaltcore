@@ -7,19 +7,16 @@ package controller
 import (
 	"context"
 	"fmt"
-	"sort"
 	"strings"
 
-	apiequality "k8s.io/apimachinery/pkg/api/equality"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
+	"github.com/c5c3/forge/internal/common/apply"
 	"github.com/c5c3/forge/internal/common/conditions"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
@@ -36,18 +33,6 @@ const (
 // defaultHTTPRoutePath is the URL path prefix applied when spec.gateway.path
 // is empty.
 const defaultHTTPRoutePath = "/"
-
-// managedAnnotationsKey and managedLabelsKey are sentinel annotations that
-// record the operator-managed annotation/label key sets on an HTTPRoute.
-// On each reconcile, keys present in the previous set but absent from the
-// desired set are removed, enabling removal of annotations/labels that
-// disappear from spec.gateway. Stored as a comma-separated,
-// sorted list of key names. The sentinel annotations themselves are never
-// part of the tracked set.
-const (
-	managedAnnotationsKey = "keystone.openstack.c5c3.io/managed-annotations"
-	managedLabelsKey      = "keystone.openstack.c5c3.io/managed-labels"
-)
 
 // keystoneStatusEndpoint returns the externally reachable Keystone API endpoint
 // URL.
@@ -280,161 +265,18 @@ func isHTTPRouteAccepted(route *gatewayv1.HTTPRoute) bool {
 	return false
 }
 
-// ensureHTTPRoute creates an HTTPRoute if it does not exist or updates its
-// spec and metadata if it already exists. An owner reference is set so that
-// the HTTPRoute is garbage-collected when the Keystone CR is deleted
+// ensureHTTPRoute creates or updates the HTTPRoute via Server-Side Apply under
+// a fixed field manager and sets the Keystone CR as its controller owner so it
+// is garbage-collected with the CR.
 //
-// Merge strategy: .Spec is overwritten with the desired state on every
-// reconcile. Labels and annotations use tracked-key merging: operator-managed
-// keys are recorded in sentinel annotations so keys removed from spec.gateway
-// between reconciles are also removed from the live object,
-// while user-added keys not in the managed set are preserved.
+// Merge strategy: the field manager owns exactly the fields the builder sets
+// (the whole Spec and the annotations/labels derived from spec.gateway).
+// Annotations or labels that disappear from spec.gateway between reconciles are
+// relinquished and removed by the API server — no sentinel bookkeeping is
+// needed — while keys owned by other managers are preserved. A converged
+// HTTPRoute is applied without a write.
 func ensureHTTPRoute(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, route *gatewayv1.HTTPRoute) error {
-	existing := &gatewayv1.HTTPRoute{}
-	err := c.Get(ctx, client.ObjectKeyFromObject(route), existing)
-
-	if apierrors.IsNotFound(err) {
-		stampManagedMetadata(route)
-		if err := controllerutil.SetControllerReference(owner, route, scheme); err != nil {
-			return fmt.Errorf("setting owner reference on HTTPRoute %s/%s: %w", route.Namespace, route.Name, err)
-		}
-		if err := c.Create(ctx, route); err != nil {
-			return fmt.Errorf("creating HTTPRoute %s/%s: %w", route.Namespace, route.Name, err)
-		}
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("getting HTTPRoute %s/%s: %w", route.Namespace, route.Name, err)
-	}
-
-	before := existing.DeepCopy()
-
-	if err := controllerutil.SetControllerReference(owner, existing, scheme); err != nil {
-		return fmt.Errorf("updating owner reference on HTTPRoute %s/%s: %w", existing.Namespace, existing.Name, err)
-	}
-
-	applyManagedMetadata(existing, route.Annotations, route.Labels)
-
-	existing.Spec = route.Spec
-
-	if !apiequality.Semantic.DeepEqual(existing.Spec, before.Spec) ||
-		!apiequality.Semantic.DeepEqual(hrNormalizeMap(existing.Labels), hrNormalizeMap(before.Labels)) ||
-		!apiequality.Semantic.DeepEqual(hrNormalizeMap(existing.Annotations), hrNormalizeMap(before.Annotations)) ||
-		!apiequality.Semantic.DeepEqual(existing.OwnerReferences, before.OwnerReferences) {
-		if err := c.Update(ctx, existing); err != nil {
-			return fmt.Errorf("updating HTTPRoute %s/%s: %w", existing.Namespace, existing.Name, err)
-		}
-	}
-
-	return nil
-}
-
-// stampManagedMetadata records the key sets from route.Annotations and
-// route.Labels in sentinel annotations on the route itself before creation.
-// These sentinels are consulted on subsequent reconciles to remove keys that
-// disappear from the desired set.
-func stampManagedMetadata(route *gatewayv1.HTTPRoute) {
-	annotationKeys := sortedMapKeys(route.Annotations)
-	labelKeys := sortedMapKeys(route.Labels)
-
-	if len(annotationKeys) == 0 && len(labelKeys) == 0 {
-		return
-	}
-	if route.Annotations == nil {
-		route.Annotations = make(map[string]string, 2)
-	}
-	if len(annotationKeys) > 0 {
-		route.Annotations[managedAnnotationsKey] = strings.Join(annotationKeys, ",")
-	}
-	if len(labelKeys) > 0 {
-		route.Annotations[managedLabelsKey] = strings.Join(labelKeys, ",")
-	}
-}
-
-// applyManagedMetadata reconciles the live object's annotations and labels
-// against the desired sets. Keys present in the previously-managed set (read
-// from the sentinel annotations) but absent from the desired set are removed,
-// then desired keys are applied, then the sentinels are updated to reflect the
-// new managed set. This is the removal path that was missing from the naive
-// additive merge.
-func applyManagedMetadata(existing *gatewayv1.HTTPRoute, desiredAnnotations, desiredLabels map[string]string) {
-	prevAnnotationKeys := splitManagedKeys(existing.Annotations[managedAnnotationsKey])
-	prevLabelKeys := splitManagedKeys(existing.Annotations[managedLabelsKey])
-
-	for _, k := range prevAnnotationKeys {
-		if _, stillDesired := desiredAnnotations[k]; !stillDesired {
-			delete(existing.Annotations, k)
-		}
-	}
-	for _, k := range prevLabelKeys {
-		if _, stillDesired := desiredLabels[k]; !stillDesired {
-			delete(existing.Labels, k)
-		}
-	}
-
-	for k, v := range desiredAnnotations {
-		if existing.Annotations == nil {
-			existing.Annotations = make(map[string]string, len(desiredAnnotations)+2)
-		}
-		existing.Annotations[k] = v
-	}
-	for k, v := range desiredLabels {
-		if existing.Labels == nil {
-			existing.Labels = make(map[string]string, len(desiredLabels))
-		}
-		existing.Labels[k] = v
-	}
-
-	annotationKeys := sortedMapKeys(desiredAnnotations)
-	labelKeys := sortedMapKeys(desiredLabels)
-	if len(annotationKeys) > 0 {
-		if existing.Annotations == nil {
-			existing.Annotations = make(map[string]string, 2)
-		}
-		existing.Annotations[managedAnnotationsKey] = strings.Join(annotationKeys, ",")
-	} else if existing.Annotations != nil {
-		delete(existing.Annotations, managedAnnotationsKey)
-	}
-	if len(labelKeys) > 0 {
-		if existing.Annotations == nil {
-			existing.Annotations = make(map[string]string, 1)
-		}
-		existing.Annotations[managedLabelsKey] = strings.Join(labelKeys, ",")
-	} else if existing.Annotations != nil {
-		delete(existing.Annotations, managedLabelsKey)
-	}
-}
-
-// splitManagedKeys parses the comma-separated key list stored in a sentinel
-// annotation. An empty or missing value produces a nil slice.
-func splitManagedKeys(v string) []string {
-	if v == "" {
-		return nil
-	}
-	return strings.Split(v, ",")
-}
-
-// sortedMapKeys returns the keys of m in lexicographic order so the sentinel
-// annotation value is deterministic across reconciles.
-func sortedMapKeys(m map[string]string) []string {
-	if len(m) == 0 {
-		return nil
-	}
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
-}
-
-// hrNormalizeMap converts empty maps to nil so apiequality.Semantic.DeepEqual
-// does not report spurious diffs between nil and empty maps.
-func hrNormalizeMap(m map[string]string) map[string]string {
-	if len(m) == 0 {
-		return nil
-	}
-	return m
+	return apply.EnsureObject(ctx, c, scheme, owner, route, apply.FieldManager)
 }
 
 // deleteHTTPRoute deletes the HTTPRoute identified by namespace and name.

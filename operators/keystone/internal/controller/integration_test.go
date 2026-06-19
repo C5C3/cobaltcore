@@ -2261,6 +2261,79 @@ func simulateHTTPRouteAccepted(t testing.TB, ctx context.Context, c client.Clien
 	g.Expect(c.Status().Update(ctx, route)).To(Succeed(), "update HTTPRoute status with simulated acceptance")
 }
 
+// TestIntegration_HTTPRoute_PreservesThirdPartyAnnotation verifies the
+// Server-Side Apply merge strategy of ensureHTTPRoute against a real API
+// server: an annotation added by another field manager (e.g. a mesh controller)
+// survives the operator dropping its own annotation, because the operator's
+// field manager only owns the keys it sets. This is the cross-manager guarantee
+// the fake client's deduced converter cannot simulate (it treats the
+// annotations map atomically).
+func TestIntegration_HTTPRoute_PreservesThirdPartyAnnotation(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-httproute-annot-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	createPrerequisites(t, ctx, c, ns.Name)
+
+	ks := integrationKeystoneWithGateway("test-keystone", ns.Name, "keystone.example.com")
+	ks.Spec.Gateway.Annotations = map[string]string{"konghq.com/plugins": "rate-limiting"}
+	g.Expect(c.Create(ctx, ks)).To(Succeed())
+
+	driveReconciliationToDeployment(t, ctx, c, ks.Name, ns.Name)
+
+	routeKey := client.ObjectKey{Namespace: ns.Name, Name: ks.Name}
+	route := &gatewayv1.HTTPRoute{}
+	g.Eventually(func() error {
+		if err := c.Get(ctx, routeKey, route); err != nil {
+			return err
+		}
+		if _, ok := route.Annotations["konghq.com/plugins"]; !ok {
+			return fmt.Errorf("operator annotation not yet present")
+		}
+		return nil
+	}, eventuallyTimeout, pollInterval).Should(Succeed(), "HTTPRoute should carry the operator-managed annotation")
+
+	// A third party (a different field manager) adds an annotation the operator
+	// does not manage.
+	g.Eventually(func() error {
+		if err := c.Get(ctx, routeKey, route); err != nil {
+			return err
+		}
+		if route.Annotations == nil {
+			route.Annotations = map[string]string{}
+		}
+		route.Annotations["sidecar.istio.io/inject"] = "false"
+		return c.Update(ctx, route)
+	}, eventuallyTimeout, pollInterval).Should(Succeed())
+
+	// Drop the operator-managed annotation from the CR and let the operator
+	// re-reconcile.
+	g.Eventually(func() error {
+		latest := &keystonev1alpha1.Keystone{}
+		if err := c.Get(ctx, client.ObjectKeyFromObject(ks), latest); err != nil {
+			return err
+		}
+		latest.Spec.Gateway.Annotations = nil
+		return c.Update(ctx, latest)
+	}, eventuallyTimeout, pollInterval).Should(Succeed())
+
+	// The operator's annotation is removed (it relinquished the key) while the
+	// third party's annotation survives (a different manager owns it).
+	g.Eventually(func() bool {
+		if err := c.Get(ctx, routeKey, route); err != nil {
+			return false
+		}
+		_, operatorKey := route.Annotations["konghq.com/plugins"]
+		_, thirdParty := route.Annotations["sidecar.istio.io/inject"]
+		return !operatorKey && thirdParty
+	}, eventuallyTimeout, pollInterval).Should(BeTrue(),
+		"operator annotation must be removed and third-party annotation preserved")
+}
+
 // TestIntegration_HTTPRoute_CreatedWhenGatewaySet verifies that configuring
 // spec.gateway on a Keystone CR causes the operator to create an HTTPRoute
 // with the correct parentRef/hostname/backendRef, to set HTTPRouteReady

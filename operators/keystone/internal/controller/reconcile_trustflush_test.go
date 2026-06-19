@@ -268,11 +268,11 @@ func TestReconcileTrustFlush_EnsureError_Propagated(t *testing.T) {
 		WithObjects(ks).
 		WithStatusSubresource(&keystonev1alpha1.Keystone{}).
 		WithInterceptorFuncs(interceptor.Funcs{
-			Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
-				if _, ok := obj.(*batchv1.CronJob); ok {
-					return fmt.Errorf("simulated CronJob creation error")
+			Apply: func(ctx context.Context, c client.WithWatch, obj runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
+				if co, ok := obj.(client.Object); ok && co.GetObjectKind().GroupVersionKind().Kind == "CronJob" {
+					return fmt.Errorf("simulated CronJob apply error")
 				}
-				return c.Create(ctx, obj, opts...)
+				return c.Apply(ctx, obj, opts...)
 			},
 		}).
 		Build()
@@ -286,7 +286,7 @@ func TestReconcileTrustFlush_EnsureError_Propagated(t *testing.T) {
 	_, err := r.reconcileTrustFlush(context.Background(), ks, "test-keystone-config-abc123")
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("ensuring trust flush CronJob"))
-	g.Expect(err.Error()).To(ContainSubstring("simulated CronJob creation error"))
+	g.Expect(err.Error()).To(ContainSubstring("simulated CronJob apply error"))
 }
 
 // TestReconcileTrustFlush_DeleteError_Propagated exercises the legacy bypass error path
