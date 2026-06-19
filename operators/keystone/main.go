@@ -54,9 +54,10 @@ func main() {
 		SetupFunc: func(mgr ctrl.Manager, webhooks bool) error {
 			// +kubebuilder:scaffold:builder — register controllers here
 			if err := (&controller.KeystoneReconciler{
-				Client:   mgr.GetClient(),
-				Scheme:   mgr.GetScheme(),
-				Recorder: mgr.GetEventRecorderFor("keystone-controller"), //nolint:staticcheck // SA1019: reconciler consumes record.EventRecorder (old events API); GetEventRecorder returns the incompatible events/v1 type.
+				Client:            mgr.GetClient(),
+				Scheme:            mgr.GetScheme(),
+				Recorder:          mgr.GetEventRecorderFor("keystone-controller"), //nolint:staticcheck // SA1019: reconciler consumes record.EventRecorder (old events API); GetEventRecorder returns the incompatible events/v1 type.
+				OperatorNamespace: controller.DetectOperatorNamespace(),
 			}).SetupWithManager(mgr); err != nil {
 				return err
 			}

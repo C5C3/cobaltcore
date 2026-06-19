@@ -121,6 +121,13 @@ type KeystoneReconciler struct {
 	Recorder   record.EventRecorder
 	HTTPClient HTTPDoer
 
+	// OperatorNamespace is the Namespace the operator Pod runs in (resolved at
+	// startup by DetectOperatorNamespace). reconcileNetworkPolicy appends an
+	// ingress peer for this Namespace so the operator's own health check can
+	// reach the Keystone API on TCP 5000. Empty when the namespace could not be
+	// determined, in which case no operator-namespace peer is added.
+	OperatorNamespace string
+
 	// gatewayAPIAvailable is set during SetupWithManager from the cluster's
 	// RESTMapper and indicates whether the gateway.networking.k8s.io/v1
 	// HTTPRoute CRD is installed. When false, the controller skips the
