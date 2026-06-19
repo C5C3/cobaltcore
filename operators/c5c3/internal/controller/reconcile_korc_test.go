@@ -1032,6 +1032,97 @@ func TestReconcileKORC_HashMismatchDeletesACForRemint(t *testing.T) {
 		"the app-credential secret value must be regenerated on re-mint")
 }
 
+// availableACWithResource builds an Available admin ApplicationCredential whose
+// password-hash annotation already MATCHES the current admin password — so the hash
+// check passes and only a drift in the immutable spec.resource block can drive a
+// re-mint — carrying the given resource spec.
+func availableACWithResource(cp *c5c3v1alpha1.ControlPlane, resource *orcv1alpha1.ApplicationCredentialResourceSpec) *orcv1alpha1.ApplicationCredential {
+	return &orcv1alpha1.ApplicationCredential{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        adminAppCredentialName(cp),
+			Namespace:   childNamespace(cp),
+			Annotations: map[string]string{adminPasswordHashAnnotation: testPasswordHash()},
+		},
+		Spec: orcv1alpha1.ApplicationCredentialSpec{Resource: resource},
+		Status: orcv1alpha1.ApplicationCredentialStatus{
+			ID: ptr.To("ac-id-current"),
+			Conditions: []metav1.Condition{{
+				Type:               orcv1alpha1.ConditionAvailable,
+				Status:             metav1.ConditionTrue,
+				Reason:             orcv1alpha1.ConditionReasonSuccess,
+				LastTransitionTime: metav1.Now(),
+			}},
+		},
+	}
+}
+
+// assertACRemintedForDrift runs reconcileKORC and asserts the existing AC was
+// deleted (the re-mint trigger) with KORCReady=False/ReMinting — the recovery path
+// for a change to the CEL-immutable spec.resource block that an in-place update
+// would otherwise reject forever.
+func assertACRemintedForDrift(t *testing.T, cp *c5c3v1alpha1.ControlPlane, existing *orcv1alpha1.ApplicationCredential) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(cp, adminPasswordSecret(), existing, mintedAppCredSecret(cp)).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	res, err := r.reconcileKORC(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+
+	deleted := &orcv1alpha1.ApplicationCredential{}
+	getErr := c.Get(context.Background(), types.NamespacedName{
+		Name: adminAppCredentialName(cp), Namespace: childNamespace(cp),
+	}, deleted)
+	g.Expect(apierrors.IsNotFound(getErr)).To(BeTrue(),
+		"a spec.resource drift must delete the AC to trigger a re-mint (CEL forbids in-place update)")
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeKORCReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("ReMinting"))
+}
+
+// TestReconcileKORC_RestrictedDriftDeletesACForRemint proves that a change to the
+// restricted flag (which flips the immutable spec.resource.unrestricted field) is
+// routed through delete+recreate rather than an in-place update that K-ORC's CEL
+// self==oldSelf rule rejects. The stamped hash MATCHES, so only the resource drift
+// can be the re-mint trigger.
+func TestReconcileKORC_RestrictedDriftDeletesACForRemint(t *testing.T) {
+	cp := korcControlPlane()
+	cp.Spec.KORC.AdminCredential.ApplicationCredential.Restricted = ptr.To(false) // desired Unrestricted=true
+	// Existing AC is restricted (Unrestricted=false) — every other managed field
+	// matches the desired projection, isolating the restricted/unrestricted drift.
+	existing := availableACWithResource(cp, &orcv1alpha1.ApplicationCredentialResourceSpec{
+		Unrestricted: ptr.To(false),
+		UserRef:      orcv1alpha1.KubernetesNameRef(adminUserRef(cp)),
+		SecretRef:    orcv1alpha1.KubernetesNameRef(adminAppCredentialSecretName(cp)),
+	})
+	assertACRemintedForDrift(t, cp, existing)
+}
+
+// TestReconcileKORC_AccessRulesDriftDeletesACForRemint proves the same delete+recreate
+// routing for a change to the immutable spec.resource.accessRules list: the spec adds
+// a rule the existing AC does not carry, every other managed field matches, and the
+// stamped hash matches — so only the accessRules drift triggers the re-mint.
+func TestReconcileKORC_AccessRulesDriftDeletesACForRemint(t *testing.T) {
+	cp := korcControlPlane()
+	cp.Spec.KORC.AdminCredential.ApplicationCredential.AccessRules = []c5c3v1alpha1.AccessRule{
+		{Service: "identity", Method: "GET", Path: "/v3/users"},
+	}
+	// Existing AC has the matching Unrestricted/UserRef/SecretRef but NO access rules,
+	// so the new rule is pure accessRules drift.
+	existing := availableACWithResource(cp, &orcv1alpha1.ApplicationCredentialResourceSpec{
+		Unrestricted: ptr.To(false), // restricted defaults to true => Unrestricted=false
+		UserRef:      orcv1alpha1.KubernetesNameRef(adminUserRef(cp)),
+		SecretRef:    orcv1alpha1.KubernetesNameRef(adminAppCredentialSecretName(cp)),
+	})
+	assertACRemintedForDrift(t, cp, existing)
+}
+
 // TestReconcileKORC_RemintStalledAfterTimeout asserts the ReMintStalled escape: an
 // AC stuck Terminating longer than remintStallTimeout (a finalizer K-ORC cannot
 // clear because it cannot revoke the old credential) escalates KORCReady from the

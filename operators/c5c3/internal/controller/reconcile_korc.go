@@ -7,6 +7,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"time"
 
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
@@ -207,8 +208,17 @@ func (r *ControlPlaneReconciler) reconcileKORC(ctx context.Context, cp *c5c3v1al
 		if existing.Annotations[adminPasswordHashAnnotation] != pwHash {
 			return r.remintAdminApplicationCredential(ctx, cp, existing)
 		}
-		// Hash matches: fall through to the idempotent CreateOrUpdate below, which
-		// converges the spec without re-minting (no-op when nothing changed).
+		// K-ORC declares spec.resource immutable (CEL self == oldSelf), so an
+		// in-place CreateOrUpdate of a changed restricted/accessRules block is
+		// rejected on every pass — a permanent KORCReady=False loop that only a
+		// manual AC deletion clears. Route a legal, webhook-admitted change to those
+		// fields through the same delete+recreate re-mint instead of the update.
+		if adminACResourceDrifted(existing, cp, restricted) {
+			return r.remintAdminApplicationCredential(ctx, cp, existing)
+		}
+		// Hash matches and the resource block is unchanged: fall through to the
+		// idempotent CreateOrUpdate below, which converges the spec without
+		// re-minting (no-op when nothing changed).
 	case apierrors.IsNotFound(getErr):
 		// First mint, or the recreate after a re-mint delete: CreateOrUpdate below.
 	default:
@@ -395,6 +405,55 @@ func projectAccessRules(rules []c5c3v1alpha1.AccessRule) []orcv1alpha1.Applicati
 		out = append(out, projected)
 	}
 	return out
+}
+
+// adminACResourceDrifted reports whether the immutable K-ORC spec.resource block on
+// the existing admin ApplicationCredential differs from what reconcileKORC would
+// project for the current ControlPlane spec. K-ORC declares the whole resource block
+// immutable (CEL self == oldSelf), so any drift in the operator-managed fields
+// cannot be reconciled by an in-place update — it must be a delete+recreate re-mint.
+//
+// It compares ONLY the fields reconcileKORC sets (Unrestricted, UserRef, SecretRef,
+// AccessRules), never the whole struct: K-ORC and CRD defaulting may populate other
+// sub-fields (Name, RoleRefs, …) that a whole-struct compare would read as permanent
+// drift, which would itself become the re-mint loop this issue fixes. A nil resource
+// block is NOT drift — the CEL self==oldSelf rule does not fire on the initial
+// unset→set transition, so the idempotent CreateOrUpdate is free to populate it
+// (this is also the never-minted fixture state).
+func adminACResourceDrifted(existing *orcv1alpha1.ApplicationCredential, cp *c5c3v1alpha1.ControlPlane, restricted bool) bool {
+	res := existing.Spec.Resource
+	if res == nil {
+		return false
+	}
+	if res.Unrestricted == nil || *res.Unrestricted != !restricted {
+		return true
+	}
+	if res.UserRef != orcv1alpha1.KubernetesNameRef(adminUserRef(cp)) {
+		return true
+	}
+	if res.SecretRef != orcv1alpha1.KubernetesNameRef(adminAppCredentialSecretName(cp)) {
+		return true
+	}
+	return accessRulesDrifted(res.AccessRules,
+		projectAccessRules(cp.Spec.KORC.AdminCredential.ApplicationCredential.AccessRules))
+}
+
+// accessRulesDrifted reports whether two projected access-rule lists differ on the
+// operator-managed sub-fields only (Path, Method, ServiceRef). It deliberately does
+// NOT whole-struct DeepEqual the rules so a K-ORC/CRD-defaulted sub-field can never
+// register as permanent drift.
+func accessRulesDrifted(existing, desired []orcv1alpha1.ApplicationCredentialAccessRule) bool {
+	if len(existing) != len(desired) {
+		return true
+	}
+	for i := range desired {
+		if !reflect.DeepEqual(existing[i].Path, desired[i].Path) ||
+			!reflect.DeepEqual(existing[i].Method, desired[i].Method) ||
+			!reflect.DeepEqual(existing[i].ServiceRef, desired[i].ServiceRef) {
+			return true
+		}
+	}
+	return false
 }
 
 // updateAdminApplicationCredentialStatus reflects the observed AC CR into
