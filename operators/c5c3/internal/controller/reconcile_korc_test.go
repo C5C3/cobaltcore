@@ -939,6 +939,15 @@ func TestAdminAppCredentialRemoteKeyFor_EmbedsNamespaceAndName(t *testing.T) {
 		"two ControlPlanes must not share a RemoteKey")
 }
 
+// TestReconcileAdminCredential_PushSecretClobberSafeNoChurn verifies that
+// repeated reconciles produce a deterministic admin app-credential PushSecret
+// spec, so EnsurePushSecret's Server-Side Apply is a no-op once converged. The
+// fake client's deduced apply bumps resourceVersion on every apply, so the
+// no-write property itself is asserted against a real API server by
+// internal/common/apply's envtest convergence test
+// (TestIntegration_EnsureObject_convergesWithoutRewrite); here we assert the
+// desired spec is stable across reconciles, which is what makes the apply
+// converge.
 func TestReconcileAdminCredential_PushSecretClobberSafeNoChurn(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -958,9 +967,9 @@ func TestReconcileAdminCredential_PushSecretClobberSafeNoChurn(t *testing.T) {
 	g.Expect(c.Get(context.Background(), types.NamespacedName{
 		Name: adminAppCredentialPushSecretName(cp), Namespace: childNamespace(cp),
 	}, ps1)).To(Succeed())
-	rv1 := ps1.ResourceVersion
 
-	// Second reconcile must not churn the PushSecret (same spec => no Update).
+	// Second reconcile must produce an identical desired spec (no drift), so the
+	// Server-Side Apply converges instead of re-pushing the credential.
 	_, err = r.reconcileAdminCredential(context.Background(), cp)
 	g.Expect(err).NotTo(HaveOccurred())
 
@@ -968,7 +977,7 @@ func TestReconcileAdminCredential_PushSecretClobberSafeNoChurn(t *testing.T) {
 	g.Expect(c.Get(context.Background(), types.NamespacedName{
 		Name: adminAppCredentialPushSecretName(cp), Namespace: childNamespace(cp),
 	}, ps2)).To(Succeed())
-	g.Expect(ps2.ResourceVersion).To(Equal(rv1), "repeated reconcile must not churn the PushSecret")
+	g.Expect(ps2.Spec).To(Equal(ps1.Spec), "repeated reconcile must not change the PushSecret spec")
 }
 
 // --- 2.8: re-mint (hash) ---
