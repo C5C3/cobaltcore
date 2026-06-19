@@ -7,6 +7,8 @@ package controller
 import (
 	"context"
 	"fmt"
+	"net"
+	"strconv"
 
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -77,9 +79,11 @@ func (r *KeystoneReconciler) reconcileNetworkPolicy(ctx context.Context, keyston
 
 // buildKeystoneNetworkPolicy constructs the desired NetworkPolicy for the
 // Keystone API pods. It restricts ingress to TCP 5000 from the specified
-// sources and auto-derives egress rules for DNS (UDP+TCP 53), MariaDB
-// (TCP 3306 when database.ClusterRef is set), and Memcached (TCP 11211
-// when cache.ClusterRef is set). AdditionalEgress rules are appended after
+// sources and auto-derives egress rules for DNS (UDP+TCP 53), the
+// kube-apiserver (TCP 443+6443, required by the rotation CronJob pods that
+// share this selector), the database (TCP, port from dbPort, both managed and
+// brownfield modes), and the cache (TCP, ports derived from the cache spec,
+// both managed and brownfield modes). AdditionalEgress rules are appended after
 // auto-derived rules.
 func buildKeystoneNetworkPolicy(keystone *keystonev1alpha1.Keystone) *networkingv1.NetworkPolicy {
 	npSpec := keystone.Spec.NetworkPolicy
@@ -163,8 +167,11 @@ func buildKeystoneNetworkPolicy(keystone *keystonev1alpha1.Keystone) *networking
 	}
 }
 
-// buildAutoEgressRules constructs the auto-derived egress rules for DNS,
-// MariaDB (managed mode only), and Memcached (managed mode only).
+// buildAutoEgressRules constructs the auto-derived egress rules for DNS
+// (UDP+TCP 53), the kube-apiserver (TCP 443+6443), the database (TCP, port from
+// dbPort), and the cache (TCP, ports from cacheEgressPorts). Database and cache
+// egress are emitted in both managed (ClusterRef) and brownfield modes. Rule
+// order is deterministic: DNS, apiserver, database, cache.
 func buildAutoEgressRules(keystone *keystonev1alpha1.Keystone) []networkingv1.NetworkPolicyEgressRule {
 	tcp := corev1.ProtocolTCP
 	udp := corev1.ProtocolUDP
@@ -186,34 +193,97 @@ func buildAutoEgressRules(keystone *keystonev1alpha1.Keystone) []networkingv1.Ne
 		},
 	}
 
-	// MariaDB egress: only in managed mode (database.ClusterRef set).
-	// NOTE: This rule restricts only the port (TCP 3306), not the destination — any
-	// destination is allowed on that port. Tightening this to specific pod labels
-	// requires resolving actual service pod labels from the ClusterRef, which adds
-	// complexity and a potential circular dependency. Deferred to a future iteration.
-	if keystone.Spec.Database.ClusterRef != nil {
-		port3306 := intstr.FromInt32(3306)
-		rules = append(rules, networkingv1.NetworkPolicyEgressRule{
-			Ports: []networkingv1.NetworkPolicyPort{
-				{Protocol: &tcp, Port: &port3306},
-			},
-		})
-	}
+	// kube-apiserver egress: always required (TCP 443+6443).
+	// DECISION: The fernet/credential/admin-password rotation CronJob pods carry
+	// commonLabels — a superset of the Deployment selectorLabels — so they are
+	// selected by this NetworkPolicy's podSelector and share its egress rules.
+	// Those scripts PATCH the rotated keys back to a Kubernetes Secret via
+	// kubernetes.default.svc, so the policy must allow egress to the apiserver or
+	// every scheduled rotation stops at its first run (issue #461). The ClusterIP
+	// Service port is 443; on enforcing CNIs (Calico/Cilium) egress is evaluated
+	// after DNAT against the kube-apiserver pod port, commonly 6443 — both are
+	// allowed (port-only, destination unrestricted). Giving the apiserver port to
+	// the Keystone API pods that share this selector is a small, accepted
+	// attack-surface increase: the Deployment pod selector is immutable, so the
+	// rotation pods cannot be handed a distinct label set without recreating the
+	// Deployment.
+	port443 := intstr.FromInt32(443)
+	port6443 := intstr.FromInt32(6443)
+	rules = append(rules, networkingv1.NetworkPolicyEgressRule{
+		Ports: []networkingv1.NetworkPolicyPort{
+			{Protocol: &tcp, Port: &port443},
+			{Protocol: &tcp, Port: &port6443},
+		},
+	})
 
-	// Memcached egress: only in managed mode (cache.ClusterRef set).
-	// NOTE: Same as MariaDB above — restricts only the port (TCP 11211), not the
-	// destination. Tightening requires resolving service pod labels from ClusterRef.
-	// Deferred to a future iteration.
-	if keystone.Spec.Cache.ClusterRef != nil {
-		port11211 := intstr.FromInt32(11211)
-		rules = append(rules, networkingv1.NetworkPolicyEgressRule{
-			Ports: []networkingv1.NetworkPolicyPort{
-				{Protocol: &tcp, Port: &port11211},
-			},
-		})
+	// Database egress: emitted in both managed (database.ClusterRef) and
+	// brownfield (database.host) modes. The port is derived from dbPort, which
+	// honors spec.database.port (default 3306) — the same value the readiness
+	// probe TCP-connects to via OS_DATABASE__CONNECTION. Without this rule the
+	// probe fails on an enforcing CNI and every pod is depooled (issue #461).
+	// NOTE: port-only — destination unrestricted, see the DNS DECISION above for
+	// why tightening to pod labels is deferred.
+	dbPortValue := intstr.FromInt32(dbPort(keystone))
+	rules = append(rules, networkingv1.NetworkPolicyEgressRule{
+		Ports: []networkingv1.NetworkPolicyPort{
+			{Protocol: &tcp, Port: &dbPortValue},
+		},
+	})
+
+	// Cache egress: emitted in both managed (cache.ClusterRef) and brownfield
+	// (cache.servers) modes. Ports are derived from cacheEgressPorts; in
+	// brownfield mode they come from the "host:port" server strings (issue #461).
+	// Cache egress does not gate readiness, so a wrong cache port degrades
+	// caching without depooling pods. NOTE: port-only — destination unrestricted.
+	if cachePorts := cacheEgressPorts(keystone); len(cachePorts) > 0 {
+		ports := make([]networkingv1.NetworkPolicyPort, 0, len(cachePorts))
+		for i := range cachePorts {
+			cachePort := intstr.FromInt32(cachePorts[i])
+			ports = append(ports, networkingv1.NetworkPolicyPort{Protocol: &tcp, Port: &cachePort})
+		}
+		rules = append(rules, networkingv1.NetworkPolicyEgressRule{Ports: ports})
 	}
 
 	return rules
+}
+
+// cacheEgressPorts returns the distinct Memcached ports the Keystone API pods
+// must reach, derived from the cache spec. In managed mode (cache.clusterRef
+// set) the memcached operator exposes the standard 11211. In brownfield mode
+// (cache.servers set) the ports are parsed from each "host:port" entry,
+// defaulting to 11211 when an entry omits the port or cannot be parsed. The
+// result preserves input order and is deduplicated. It returns nil when no
+// cache is configured (neither ClusterRef nor Servers), in which case no cache
+// egress rule is emitted.
+func cacheEgressPorts(keystone *keystonev1alpha1.Keystone) []int32 {
+	servers := keystone.Spec.Cache.Servers
+	if len(servers) == 0 {
+		if keystone.Spec.Cache.ClusterRef != nil {
+			return []int32{11211}
+		}
+		return nil
+	}
+
+	const defaultMemcachedPort int32 = 11211
+	const maxPort = 65535
+	seen := make(map[int32]struct{}, len(servers))
+	var ports []int32
+	for _, server := range servers {
+		port := defaultMemcachedPort
+		if _, portStr, err := net.SplitHostPort(server); err == nil {
+			// ParseInt with bitSize 32 bounds the result to int32; the explicit
+			// range check rejects non-port values before the conversion.
+			if n, err := strconv.ParseInt(portStr, 10, 32); err == nil && n > 0 && n <= maxPort {
+				port = int32(n)
+			}
+		}
+		if _, ok := seen[port]; ok {
+			continue
+		}
+		seen[port] = struct{}{}
+		ports = append(ports, port)
+	}
+	return ports
 }
 
 // DECISION: ensureNetworkPolicy and deleteNetworkPolicy live in the controller

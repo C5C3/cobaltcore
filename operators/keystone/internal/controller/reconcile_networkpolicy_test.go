@@ -199,10 +199,29 @@ func TestBuildKeystoneNetworkPolicy_IngressRules_MultipleSources_WithPodSelector
 	g.Expect(np.Spec.Ingress[0].From[1].PodSelector).To(BeNil())
 }
 
-func TestBuildKeystoneNetworkPolicy_AutoDerivedEgress_BrownfieldOnly_DNSOnly(t *testing.T) {
+// hasEgressPort reports whether any egress rule in the NetworkPolicy permits
+// the given protocol/port pair. Egress assertions match by port presence rather
+// than by index so the tests stay resilient to rule reordering or additions.
+func hasEgressPort(np *networkingv1.NetworkPolicy, proto corev1.Protocol, port int) bool {
+	for _, rule := range np.Spec.Egress {
+		for _, p := range rule.Ports {
+			if p.Protocol != nil && *p.Protocol == proto && p.Port != nil && p.Port.IntValue() == port {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// hasEgressTCPPort is a convenience wrapper for the common TCP case.
+func hasEgressTCPPort(np *networkingv1.NetworkPolicy, port int) bool {
+	return hasEgressPort(np, corev1.ProtocolTCP, port)
+}
+
+func TestBuildKeystoneNetworkPolicy_AutoDerivedEgress_BrownfieldDBAndCache(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := npTestKeystone()
-	// Brownfield mode: no ClusterRef on either database or cache.
+	// Brownfield mode: database.host + cache.servers, no ClusterRef.
 	ks.Spec.NetworkPolicy = &keystonev1alpha1.NetworkPolicySpec{
 		Ingress: []keystonev1alpha1.NetworkPolicyIngressSource{
 			{NamespaceSelector: map[string]string{"kubernetes.io/metadata.name": "openstack"}},
@@ -211,13 +230,15 @@ func TestBuildKeystoneNetworkPolicy_AutoDerivedEgress_BrownfieldOnly_DNSOnly(t *
 
 	np := buildKeystoneNetworkPolicy(ks)
 
-	// Only DNS egress should be present in brownfield mode.
-	g.Expect(np.Spec.Egress).To(HaveLen(1))
-	g.Expect(np.Spec.Egress[0].Ports).To(HaveLen(2))
-	g.Expect(*np.Spec.Egress[0].Ports[0].Protocol).To(Equal(corev1.ProtocolUDP))
-	g.Expect(np.Spec.Egress[0].Ports[0].Port.IntValue()).To(Equal(53))
-	g.Expect(*np.Spec.Egress[0].Ports[1].Protocol).To(Equal(corev1.ProtocolTCP))
-	g.Expect(np.Spec.Egress[0].Ports[1].Port.IntValue()).To(Equal(53))
+	// Brownfield must still get DNS, apiserver, DB, and cache egress — the
+	// readiness probe TCP-connects to the brownfield DB and the rotation pods
+	// PATCH the apiserver (issue #461).
+	g.Expect(hasEgressPort(np, corev1.ProtocolUDP, 53)).To(BeTrue(), "DNS UDP 53")
+	g.Expect(hasEgressTCPPort(np, 53)).To(BeTrue(), "DNS TCP 53")
+	g.Expect(hasEgressTCPPort(np, 443)).To(BeTrue(), "apiserver TCP 443")
+	g.Expect(hasEgressTCPPort(np, 6443)).To(BeTrue(), "apiserver TCP 6443")
+	g.Expect(hasEgressTCPPort(np, 3306)).To(BeTrue(), "brownfield DB TCP 3306")
+	g.Expect(hasEgressTCPPort(np, 11211)).To(BeTrue(), "brownfield cache TCP 11211")
 }
 
 func TestBuildKeystoneNetworkPolicy_AutoDerivedEgress_ManagedDB(t *testing.T) {
@@ -233,11 +254,7 @@ func TestBuildKeystoneNetworkPolicy_AutoDerivedEgress_ManagedDB(t *testing.T) {
 
 	np := buildKeystoneNetworkPolicy(ks)
 
-	// DNS + MariaDB egress.
-	g.Expect(np.Spec.Egress).To(HaveLen(2))
-	g.Expect(np.Spec.Egress[1].Ports).To(HaveLen(1))
-	g.Expect(*np.Spec.Egress[1].Ports[0].Protocol).To(Equal(corev1.ProtocolTCP))
-	g.Expect(np.Spec.Egress[1].Ports[0].Port.IntValue()).To(Equal(3306))
+	g.Expect(hasEgressTCPPort(np, 3306)).To(BeTrue(), "managed DB TCP 3306")
 }
 
 func TestBuildKeystoneNetworkPolicy_AutoDerivedEgress_ManagedCache(t *testing.T) {
@@ -253,11 +270,7 @@ func TestBuildKeystoneNetworkPolicy_AutoDerivedEgress_ManagedCache(t *testing.T)
 
 	np := buildKeystoneNetworkPolicy(ks)
 
-	// DNS + Memcached egress.
-	g.Expect(np.Spec.Egress).To(HaveLen(2))
-	g.Expect(np.Spec.Egress[1].Ports).To(HaveLen(1))
-	g.Expect(*np.Spec.Egress[1].Ports[0].Protocol).To(Equal(corev1.ProtocolTCP))
-	g.Expect(np.Spec.Egress[1].Ports[0].Port.IntValue()).To(Equal(11211))
+	g.Expect(hasEgressTCPPort(np, 11211)).To(BeTrue(), "managed cache TCP 11211")
 }
 
 func TestBuildKeystoneNetworkPolicy_AutoDerivedEgress_BothManaged(t *testing.T) {
@@ -275,12 +288,154 @@ func TestBuildKeystoneNetworkPolicy_AutoDerivedEgress_BothManaged(t *testing.T) 
 
 	np := buildKeystoneNetworkPolicy(ks)
 
-	// DNS + MariaDB + Memcached egress.
+	g.Expect(hasEgressTCPPort(np, 3306)).To(BeTrue(), "managed DB TCP 3306")
+	g.Expect(hasEgressTCPPort(np, 11211)).To(BeTrue(), "managed cache TCP 11211")
+}
+
+// TestBuildKeystoneNetworkPolicy_AutoDerivedEgress_APIServerAlways verifies the
+// kube-apiserver egress rule (TCP 443+6443) is present in both managed and
+// brownfield modes — the rotation CronJob pods share this policy's selector and
+// PATCH kubernetes.default.svc (issue #461, problem 1).
+func TestBuildKeystoneNetworkPolicy_AutoDerivedEgress_APIServerAlways(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		managed bool
+	}{
+		{name: "brownfield", managed: false},
+		{name: "managed", managed: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ks := npTestKeystone()
+			if tc.managed {
+				ks.Spec.Database.ClusterRef = &corev1.LocalObjectReference{Name: "mariadb"}
+				ks.Spec.Database.Host = ""
+				ks.Spec.Cache.ClusterRef = &corev1.LocalObjectReference{Name: "memcached"}
+				ks.Spec.Cache.Servers = nil
+			}
+			ks.Spec.NetworkPolicy = &keystonev1alpha1.NetworkPolicySpec{
+				Ingress: []keystonev1alpha1.NetworkPolicyIngressSource{
+					{NamespaceSelector: map[string]string{"kubernetes.io/metadata.name": "openstack"}},
+				},
+			}
+
+			np := buildKeystoneNetworkPolicy(ks)
+
+			g.Expect(hasEgressTCPPort(np, 443)).To(BeTrue(), "apiserver TCP 443")
+			g.Expect(hasEgressTCPPort(np, 6443)).To(BeTrue(), "apiserver TCP 6443")
+		})
+	}
+}
+
+// TestBuildKeystoneNetworkPolicy_AutoDerivedEgress_CustomDBPort verifies the DB
+// egress port follows spec.database.port in both managed and brownfield modes,
+// not the hardcoded 3306 (issue #461, problem 2).
+func TestBuildKeystoneNetworkPolicy_AutoDerivedEgress_CustomDBPort(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		managed bool
+	}{
+		{name: "brownfield", managed: false},
+		{name: "managed", managed: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ks := npTestKeystone()
+			ks.Spec.Database.Port = 33060
+			if tc.managed {
+				ks.Spec.Database.ClusterRef = &corev1.LocalObjectReference{Name: "mariadb"}
+				ks.Spec.Database.Host = ""
+			}
+			ks.Spec.NetworkPolicy = &keystonev1alpha1.NetworkPolicySpec{
+				Ingress: []keystonev1alpha1.NetworkPolicyIngressSource{
+					{NamespaceSelector: map[string]string{"kubernetes.io/metadata.name": "openstack"}},
+				},
+			}
+
+			np := buildKeystoneNetworkPolicy(ks)
+
+			g.Expect(hasEgressTCPPort(np, 33060)).To(BeTrue(), "custom DB TCP 33060")
+			g.Expect(hasEgressTCPPort(np, 3306)).To(BeFalse(), "default 3306 must not be emitted")
+		})
+	}
+}
+
+// TestBuildKeystoneNetworkPolicy_AutoDerivedEgress_BrownfieldCachePort verifies
+// brownfield cache egress derives the port from the cache.servers string rather
+// than the hardcoded 11211 (issue #461, problem 2).
+func TestBuildKeystoneNetworkPolicy_AutoDerivedEgress_BrownfieldCachePort(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := npTestKeystone()
+	ks.Spec.Cache.ClusterRef = nil
+	ks.Spec.Cache.Servers = []string{"mc:11212"}
+	ks.Spec.NetworkPolicy = &keystonev1alpha1.NetworkPolicySpec{
+		Ingress: []keystonev1alpha1.NetworkPolicyIngressSource{
+			{NamespaceSelector: map[string]string{"kubernetes.io/metadata.name": "openstack"}},
+		},
+	}
+
+	np := buildKeystoneNetworkPolicy(ks)
+
+	g.Expect(hasEgressTCPPort(np, 11212)).To(BeTrue(), "brownfield cache TCP 11212")
+	g.Expect(hasEgressTCPPort(np, 11211)).To(BeFalse(), "default 11211 must not be emitted")
+}
+
+// TestBuildKeystoneNetworkPolicy_AutoDerivedEgress_NoCacheConfigured verifies
+// that when neither cache.clusterRef nor cache.servers is set, no cache egress
+// rule is emitted, while DNS, apiserver, and DB egress remain.
+func TestBuildKeystoneNetworkPolicy_AutoDerivedEgress_NoCacheConfigured(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := npTestKeystone()
+	ks.Spec.Cache.ClusterRef = nil
+	ks.Spec.Cache.Servers = nil
+	ks.Spec.NetworkPolicy = &keystonev1alpha1.NetworkPolicySpec{
+		Ingress: []keystonev1alpha1.NetworkPolicyIngressSource{
+			{NamespaceSelector: map[string]string{"kubernetes.io/metadata.name": "openstack"}},
+		},
+	}
+
+	np := buildKeystoneNetworkPolicy(ks)
+
+	// DNS, apiserver, DB only — no cache rule.
 	g.Expect(np.Spec.Egress).To(HaveLen(3))
-	g.Expect(*np.Spec.Egress[1].Ports[0].Protocol).To(Equal(corev1.ProtocolTCP))
-	g.Expect(np.Spec.Egress[1].Ports[0].Port.IntValue()).To(Equal(3306))
-	g.Expect(*np.Spec.Egress[2].Ports[0].Protocol).To(Equal(corev1.ProtocolTCP))
-	g.Expect(np.Spec.Egress[2].Ports[0].Port.IntValue()).To(Equal(11211))
+	g.Expect(hasEgressTCPPort(np, 11211)).To(BeFalse(), "no cache egress when cache unset")
+	g.Expect(hasEgressTCPPort(np, 3306)).To(BeTrue(), "DB egress still present")
+	g.Expect(hasEgressTCPPort(np, 443)).To(BeTrue(), "apiserver egress still present")
+}
+
+// TestCacheEgressPorts covers the brownfield port-parsing edge cases of the
+// cacheEgressPorts helper directly.
+func TestCacheEgressPorts(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		clusterRef bool
+		servers    []string
+		want       []int32
+	}{
+		{name: "no cache", want: nil},
+		{name: "managed", clusterRef: true, want: []int32{11211}},
+		{name: "brownfield default port via bare host", servers: []string{"mc"}, want: []int32{11211}},
+		{name: "brownfield explicit port", servers: []string{"mc:11212"}, want: []int32{11212}},
+		{
+			name:    "brownfield distinct ports deduped",
+			servers: []string{"a:11211", "b:11212", "c:11211"},
+			want:    []int32{11211, 11212},
+		},
+		{name: "brownfield ipv6", servers: []string{"[::1]:11213"}, want: []int32{11213}},
+		{name: "brownfield malformed port defaults", servers: []string{"mc:notaport"}, want: []int32{11211}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ks := npTestKeystone()
+			ks.Spec.Cache.Servers = tc.servers
+			if tc.clusterRef {
+				ks.Spec.Cache.ClusterRef = &corev1.LocalObjectReference{Name: "memcached"}
+			} else {
+				ks.Spec.Cache.ClusterRef = nil
+			}
+			g.Expect(cacheEgressPorts(ks)).To(Equal(tc.want))
+		})
+	}
 }
 
 // --- Gateway-aware ingress rules ---
@@ -442,10 +597,13 @@ func TestBuildKeystoneNetworkPolicy_AdditionalEgress(t *testing.T) {
 
 	np := buildKeystoneNetworkPolicy(ks)
 
-	// DNS + additional egress (brownfield, no MariaDB/Memcached).
-	g.Expect(np.Spec.Egress).To(HaveLen(2))
-	g.Expect(np.Spec.Egress[1].Ports).To(HaveLen(1))
-	g.Expect(np.Spec.Egress[1].Ports[0].Port.IntValue()).To(Equal(8080))
+	// AdditionalEgress is appended after the auto-derived rules (DNS, apiserver,
+	// DB, cache for the brownfield fixture), so it is the last egress rule.
+	g.Expect(hasEgressTCPPort(np, 8080)).To(BeTrue(), "additionalEgress TCP 8080")
+	last := np.Spec.Egress[len(np.Spec.Egress)-1]
+	g.Expect(last.Ports).To(HaveLen(1))
+	g.Expect(last.Ports[0].Port.IntValue()).To(Equal(8080),
+		"additionalEgress must be appended after the auto-derived rules")
 }
 
 // --- Task 2.3: reconcileNetworkPolicy lifecycle unit tests ---
