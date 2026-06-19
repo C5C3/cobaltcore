@@ -178,6 +178,93 @@ func TestIntegration_EnsureService(t *testing.T) {
 	g.Expect(fetched.Spec.Ports[0].Port).To(Equal(int32(8080)))
 }
 
+// TestIntegration_EnsureService_preservesNodePort verifies that a NodePort
+// assigned by the API server survives an apply: the builder leaves NodePort
+// unset, so the operator's field manager never owns it and Server-Side Apply
+// keeps the assigned value.
+func TestIntegration_EnsureService_preservesNodePort(t *testing.T) {
+	envtestutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := envtestutil.SetupEnvTest(t)
+	scheme := envtestutil.SharedScheme()
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "test-svc-nodeport"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+	owner := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "svc-owner-np", Namespace: ns.Name}}
+	g.Expect(c.Create(ctx, owner)).To(Succeed())
+
+	svc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: "nodeport-svc", Namespace: ns.Name},
+		Spec: corev1.ServiceSpec{
+			Type:     corev1.ServiceTypeNodePort,
+			Selector: map[string]string{"app": "np"},
+			Ports:    []corev1.ServicePort{{Port: 80, Protocol: corev1.ProtocolTCP}},
+		},
+	}
+	g.Expect(EnsureService(ctx, c, scheme, owner, svc)).To(Succeed())
+
+	created := &corev1.Service{}
+	g.Expect(c.Get(ctx, client.ObjectKeyFromObject(svc), created)).To(Succeed())
+	assignedNodePort := created.Spec.Ports[0].NodePort
+	g.Expect(assignedNodePort).NotTo(BeZero())
+
+	// Re-apply the builder's view (NodePort still unset) and a selector change.
+	updated := svc.DeepCopy()
+	updated.Spec.Selector = map[string]string{"app": "np", "tier": "api"}
+	g.Expect(EnsureService(ctx, c, scheme, owner, updated)).To(Succeed())
+
+	fetched := &corev1.Service{}
+	g.Expect(c.Get(ctx, client.ObjectKeyFromObject(svc), fetched)).To(Succeed())
+	g.Expect(fetched.Spec.Ports[0].NodePort).To(Equal(assignedNodePort), "API-server-assigned NodePort must survive the apply")
+	g.Expect(fetched.Spec.Selector).To(HaveKeyWithValue("tier", "api"))
+}
+
+// TestIntegration_EnsureDeployment_convergedApplyIsNoOp verifies that
+// re-applying an unchanged Deployment does not rewrite it: the resourceVersion
+// is unchanged after the second EnsureDeployment, so the operator no longer
+// issues a write on every reconcile pass.
+func TestIntegration_EnsureDeployment_convergedApplyIsNoOp(t *testing.T) {
+	envtestutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := envtestutil.SetupEnvTest(t)
+	scheme := envtestutil.SharedScheme()
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "test-deploy-noop"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+	owner := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "deploy-owner-noop", Namespace: ns.Name}}
+	g.Expect(c.Create(ctx, owner)).To(Succeed())
+
+	build := func() *appsv1.Deployment {
+		labels := map[string]string{"app": "noop"}
+		return &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{Name: "noop-deploy", Namespace: ns.Name},
+			Spec: appsv1.DeploymentSpec{
+				Replicas: intPtr(1),
+				Selector: &metav1.LabelSelector{MatchLabels: labels},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{Labels: labels},
+					Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: "busybox:latest"}}},
+				},
+			},
+		}
+	}
+
+	_, err := EnsureDeployment(ctx, c, scheme, owner, build())
+	g.Expect(err).NotTo(HaveOccurred())
+	first := &appsv1.Deployment{}
+	g.Expect(c.Get(ctx, client.ObjectKey{Name: "noop-deploy", Namespace: ns.Name}, first)).To(Succeed())
+
+	_, err = EnsureDeployment(ctx, c, scheme, owner, build())
+	g.Expect(err).NotTo(HaveOccurred())
+	second := &appsv1.Deployment{}
+	g.Expect(c.Get(ctx, client.ObjectKey{Name: "noop-deploy", Namespace: ns.Name}, second)).To(Succeed())
+
+	g.Expect(second.ResourceVersion).To(Equal(first.ResourceVersion),
+		"a converged Deployment must not be rewritten on the next reconcile")
+}
+
 func TestIntegration_EnsureService_idempotent(t *testing.T) {
 	envtestutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)

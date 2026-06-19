@@ -14,20 +14,23 @@ import (
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
-	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+
+	"github.com/c5c3/forge/internal/common/apply"
 )
 
-// EnsureDeployment creates a Deployment if it does not exist or updates its
-// spec if it already exists. It returns (true, nil) when all replicas are
-// available, (false, nil) when the Deployment exists but is not yet ready,
-// and (false, error) on unexpected failures.
+// EnsureDeployment creates a Deployment if it does not exist or applies its
+// desired state via Server-Side Apply if it already exists. It returns
+// (true, nil) when all replicas are available, (false, nil) when the Deployment
+// exists but is not yet ready, and (false, error) on unexpected failures.
 func EnsureDeployment(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, deploy *appsv1.Deployment) (bool, error) {
 	existing := &appsv1.Deployment{}
 	err := c.Get(ctx, client.ObjectKeyFromObject(deploy), existing)
+	if err != nil && !apierrors.IsNotFound(err) {
+		return false, fmt.Errorf("getting Deployment %s/%s: %w", deploy.Namespace, deploy.Name, err)
+	}
 
 	if apierrors.IsNotFound(err) {
 		// Write an explicit replica count on create so the API server does not
@@ -39,317 +42,85 @@ func EnsureDeployment(ctx context.Context, c client.Client, scheme *runtime.Sche
 			replicas := int32(1)
 			deploy.Spec.Replicas = &replicas
 		}
-		if err := controllerutil.SetControllerReference(owner, deploy, scheme); err != nil {
-			return false, fmt.Errorf("setting owner reference on Deployment %s/%s: %w", deploy.Namespace, deploy.Name, err)
+	} else {
+		// If the selector has changed, the Deployment must be deleted and
+		// re-created: Kubernetes rejects .spec.selector mutations as immutable
+		// after creation. Returning (false, nil) causes the reconciler to
+		// requeue; on the next pass the Deployment no longer exists and is
+		// created fresh.
+		if !reflect.DeepEqual(existing.Spec.Selector, deploy.Spec.Selector) {
+			if err := c.Delete(ctx, existing); err != nil {
+				return false, fmt.Errorf("deleting Deployment %s/%s for selector migration: %w", deploy.Namespace, deploy.Name, err)
+			}
+			return false, nil
 		}
-		if err := c.Create(ctx, deploy); err != nil {
-			return false, fmt.Errorf("creating Deployment %s/%s: %w", deploy.Namespace, deploy.Name, err)
-		}
-		return false, nil
-	}
-	if err != nil {
-		return false, fmt.Errorf("getting Deployment %s/%s: %w", deploy.Namespace, deploy.Name, err)
-	}
 
-	// If the selector has changed, the Deployment must be deleted and re-created:
-	// Kubernetes rejects .spec.selector mutations as immutable after creation.
-	// Returning (false, nil) causes the reconciler to requeue; on the next pass
-	// the Deployment no longer exists and will be created fresh.
-	if !reflect.DeepEqual(existing.Spec.Selector, deploy.Spec.Selector) {
-		if err := c.Delete(ctx, existing); err != nil {
-			return false, fmt.Errorf("deleting Deployment %s/%s for selector migration: %w", deploy.Namespace, deploy.Name, err)
-		}
-		return false, nil
-	}
-
-	// DECISION: I-001 — Backported metadata reconciliation from EnsurePDB/EnsureHPA
-	// to align sibling Ensure* functions in the same package. DeepEqual spec guard
-	// is NOT added because the mandatory pattern for mutable resources (Deployments)
-	// specifies unconditional spec updates to avoid maintaining a normalization
-	// layer. Reviewer: please verify.
-
-	// Ensure controller owner reference is enforced so garbage collection
-	// behaves correctly even if the ref was removed out-of-band.
-	if err := controllerutil.SetControllerReference(owner, existing, scheme); err != nil {
-		return false, fmt.Errorf("updating owner reference on Deployment %s/%s: %w", existing.Namespace, existing.Name, err)
-	}
-
-	// Merge desired labels into existing labels; extra user-added keys are
-	// preserved, keys present on the desired Deployment are authoritative.
-	if deploy.Labels != nil {
-		if existing.Labels == nil {
-			existing.Labels = make(map[string]string, len(deploy.Labels))
-		}
-		for k, v := range deploy.Labels {
-			existing.Labels[k] = v
+		// Preserve the live replica count when the caller leaves it unset. A nil
+		// desired .spec.replicas signals that an HPA owns the field, so the
+		// operator must not reset it to a static value on every reconcile —
+		// otherwise each write fights the HPA and the resulting watch event
+		// re-triggers reconciliation, producing a scale-up/scale-down loop with
+		// real pod churn (issue #462). Writing back the live value keeps the
+		// Server-Side Apply a no-op while the HPA is in control.
+		if deploy.Spec.Replicas == nil {
+			deploy.Spec.Replicas = existing.Spec.Replicas
 		}
 	}
 
-	// Merge desired annotations into existing annotations.
-	if deploy.Annotations != nil {
-		if existing.Annotations == nil {
-			existing.Annotations = make(map[string]string, len(deploy.Annotations))
-		}
-		for k, v := range deploy.Annotations {
-			existing.Annotations[k] = v
-		}
+	// Server-Side Apply manages only the fields the builder sets, so server
+	// defaults are never clobbered and a converged spec is applied without a
+	// write. The apply response is decoded back into deploy, so readiness is
+	// read from server-fresh state without a re-Get that the reconciler's cache
+	// could answer with a stale (pre-update) object during an upgrade.
+	if err := apply.EnsureObject(ctx, c, scheme, owner, deploy, apply.FieldManager); err != nil {
+		return false, err
 	}
 
-	// Preserve the live replica count when the caller leaves it unset. A nil
-	// desired .spec.replicas signals that an HPA owns the field, so the
-	// operator must not reset it to a static value on every reconcile —
-	// otherwise each write fights the HPA and the resulting watch event
-	// re-triggers reconciliation, producing a scale-up/scale-down loop with
-	// real pod churn (issue #462).
-	if deploy.Spec.Replicas == nil {
-		deploy.Spec.Replicas = existing.Spec.Replicas
-	}
-
-	// Always update the spec to the desired state. This avoids maintaining
-	// a normalization layer to replicate API-server defaulting logic, which
-	// would be an unmanageable maintenance burden.
-	existing.Spec = deploy.Spec
-	if err := c.Update(ctx, existing); err != nil {
-		return false, fmt.Errorf("updating Deployment %s/%s: %w", deploy.Namespace, deploy.Name, err)
-	}
-	// c.Update updates `existing` in-place with the server response, so its
-	// .metadata.generation reflects the post-update value. Do NOT re-fetch via
-	// the reconciler's cached client: during an upgrade where Generation has
-	// just been bumped, the cache may still return the pre-update object (with
-	// matching Generation and Status.ObservedGeneration), causing
-	// IsDeploymentReady to incorrectly report Ready=true and the upgrade state
-	// machine to skip the RollingUpdate phase.
-
-	return IsDeploymentReady(existing), nil
+	return IsDeploymentReady(deploy), nil
 }
 
-// EnsureService creates a Service if it does not exist or updates its spec
-// if it already exists. Server-assigned fields (ClusterIP, ClusterIPs,
-// IPFamilies) are preserved on updates. If the desired spec explicitly sets
-// any of these fields to a value that differs from the existing service, an
-// error is returned to signal an API usage problem.
+// EnsureService creates a Service if it does not exist or applies its desired
+// state via Server-Side Apply if it already exists. Server-assigned fields
+// (ClusterIP, ClusterIPs, IPFamilies, NodePort) are left unset by the builder,
+// so the operator's field manager never owns them and the API server keeps the
+// values it assigned. If the desired spec explicitly sets any of these fields
+// to a value that differs from the existing Service, an error is returned to
+// signal an API usage problem before the apply is attempted.
 func EnsureService(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, svc *corev1.Service) error {
 	existing := &corev1.Service{}
 	err := c.Get(ctx, client.ObjectKeyFromObject(svc), existing)
-
-	if apierrors.IsNotFound(err) {
-		if err := controllerutil.SetControllerReference(owner, svc, scheme); err != nil {
-			return fmt.Errorf("setting owner reference on Service %s/%s: %w", svc.Namespace, svc.Name, err)
-		}
-		if err := c.Create(ctx, svc); err != nil {
-			return fmt.Errorf("creating Service %s/%s: %w", svc.Namespace, svc.Name, err)
-		}
-		return nil
-	}
-	if err != nil {
+	if err != nil && !apierrors.IsNotFound(err) {
 		return fmt.Errorf("getting Service %s/%s: %w", svc.Namespace, svc.Name, err)
 	}
 
-	// Fail fast if the desired spec explicitly sets immutable/server-assigned
-	// fields to values that conflict with what the API server has already
-	// assigned. This indicates a programming error in the caller.
-	if err := validateImmutableServiceFields(svc, existing); err != nil {
-		return err
-	}
-
-	// DECISION: I-001 — Backported metadata reconciliation from EnsurePDB/EnsureHPA.
-	// DeepEqual spec guard is NOT added — see EnsureDeployment.
-
-	// Ensure controller owner reference is enforced so garbage collection
-	// behaves correctly even if the ref was removed out-of-band.
-	if err := controllerutil.SetControllerReference(owner, existing, scheme); err != nil {
-		return fmt.Errorf("updating owner reference on Service %s/%s: %w", existing.Namespace, existing.Name, err)
-	}
-
-	// Merge desired labels into existing labels.
-	if svc.Labels != nil {
-		if existing.Labels == nil {
-			existing.Labels = make(map[string]string, len(svc.Labels))
-		}
-		for k, v := range svc.Labels {
-			existing.Labels[k] = v
+	if err == nil {
+		// Fail fast if the desired spec explicitly sets immutable/server-assigned
+		// fields to values that conflict with what the API server has already
+		// assigned. This indicates a programming error in the caller.
+		if err := validateImmutableServiceFields(svc, existing); err != nil {
+			return err
 		}
 	}
 
-	// Merge desired annotations into existing annotations.
-	if svc.Annotations != nil {
-		if existing.Annotations == nil {
-			existing.Annotations = make(map[string]string, len(svc.Annotations))
-		}
-		for k, v := range svc.Annotations {
-			existing.Annotations[k] = v
-		}
-	}
-
-	// Work on a copy of the desired spec so the caller's svc is never
-	// mutated — consistent with the other Ensure* functions.
-	newSpec := *svc.Spec.DeepCopy()
-	// Preserve the ClusterIP assigned by the API server.
-	newSpec.ClusterIP = existing.Spec.ClusterIP
-	newSpec.ClusterIPs = existing.Spec.ClusterIPs
-	newSpec.IPFamilies = existing.Spec.IPFamilies // preserve API-server-assigned IP families
-	// Preserve NodePort values assigned by the API server when the desired
-	// spec does not explicitly set them. Matching falls back to Port-only
-	// when Protocol is unset, since the API server defaults it to "TCP"
-	for i := range newSpec.Ports {
-		if newSpec.Ports[i].NodePort != 0 {
-			continue
-		}
-		for _, ep := range existing.Spec.Ports {
-			if newSpec.Ports[i].Port == ep.Port && (newSpec.Ports[i].Protocol == "" || newSpec.Ports[i].Protocol == ep.Protocol) {
-				newSpec.Ports[i].NodePort = ep.NodePort
-				break
-			}
-		}
-	}
-	// Always update the spec to the desired state.
-	existing.Spec = newSpec
-	if err := c.Update(ctx, existing); err != nil {
-		return fmt.Errorf("updating Service %s/%s: %w", svc.Namespace, svc.Name, err)
-	}
-	return nil
+	return apply.EnsureObject(ctx, c, scheme, owner, svc, apply.FieldManager)
 }
 
-// EnsurePDB creates a PodDisruptionBudget if it does not exist or updates its
-// spec and metadata if it already exists. An owner reference is set on the PDB
-// so that it is garbage-collected when the owning resource is deleted. On the
-// update path, owner references, labels, and annotations are reconciled to
-// correct any out-of-band drift.
+// EnsurePDB creates a PodDisruptionBudget if it does not exist or applies its
+// desired state via Server-Side Apply if it already exists. An owner reference
+// is set so the PDB is garbage-collected when the owning resource is deleted,
+// and the reference is re-enforced on every apply so out-of-band drift is
+// corrected.
 func EnsurePDB(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, pdb *policyv1.PodDisruptionBudget) error {
-	existing := &policyv1.PodDisruptionBudget{}
-	err := c.Get(ctx, client.ObjectKeyFromObject(pdb), existing)
-
-	// PDB does not exist yet: set owner reference and create.
-	if apierrors.IsNotFound(err) {
-		if err := controllerutil.SetControllerReference(owner, pdb, scheme); err != nil {
-			return fmt.Errorf("setting owner reference on PodDisruptionBudget %s/%s: %w", pdb.Namespace, pdb.Name, err)
-		}
-		if err := c.Create(ctx, pdb); err != nil {
-			return fmt.Errorf("creating PodDisruptionBudget %s/%s: %w", pdb.Namespace, pdb.Name, err)
-		}
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("getting PodDisruptionBudget %s/%s: %w", pdb.Namespace, pdb.Name, err)
-	}
-
-	// PDB exists: reconcile metadata (ownerRefs/labels/annotations) and spec.
-	// Snapshot before mutations to detect whether an update is necessary.
-	before := existing.DeepCopy()
-
-	// Ensure controller owner reference is enforced so garbage collection
-	// behaves correctly even if the ref was removed out-of-band.
-	if err := controllerutil.SetControllerReference(owner, existing, scheme); err != nil {
-		return fmt.Errorf("updating owner reference on PodDisruptionBudget %s/%s: %w", existing.Namespace, existing.Name, err)
-	}
-
-	// Merge desired labels into existing labels; extra user-added keys are
-	// preserved, keys present on the desired PDB are authoritative.
-	if pdb.Labels != nil {
-		if existing.Labels == nil {
-			existing.Labels = make(map[string]string, len(pdb.Labels))
-		}
-		for k, v := range pdb.Labels {
-			existing.Labels[k] = v
-		}
-	}
-
-	// Merge desired annotations into existing annotations.
-	if pdb.Annotations != nil {
-		if existing.Annotations == nil {
-			existing.Annotations = make(map[string]string, len(pdb.Annotations))
-		}
-		for k, v := range pdb.Annotations {
-			existing.Annotations[k] = v
-		}
-	}
-
-	// Reconcile spec to the desired state.
-	existing.Spec = pdb.Spec
-
-	// Only issue an API update when something actually changed to avoid
-	// unnecessary write load and events.
-	if !apiequality.Semantic.DeepEqual(existing.Spec, before.Spec) ||
-		!apiequality.Semantic.DeepEqual(normalizeMap(existing.Labels), normalizeMap(before.Labels)) ||
-		!apiequality.Semantic.DeepEqual(normalizeMap(existing.Annotations), normalizeMap(before.Annotations)) ||
-		!apiequality.Semantic.DeepEqual(existing.OwnerReferences, before.OwnerReferences) {
-		if err := c.Update(ctx, existing); err != nil {
-			return fmt.Errorf("updating PodDisruptionBudget %s/%s: %w", existing.Namespace, existing.Name, err)
-		}
-	}
-
-	return nil
+	return apply.EnsureObject(ctx, c, scheme, owner, pdb, apply.FieldManager)
 }
 
-// EnsureHPA creates a HorizontalPodAutoscaler if it does not exist or updates
-// its spec and metadata if it already exists. An owner reference is set on the
-// HPA so that it is garbage-collected when the owning resource is deleted. On
-// the update path, owner references, labels, and annotations are reconciled to
-// correct any out-of-band drift.
+// EnsureHPA creates a HorizontalPodAutoscaler if it does not exist or applies
+// its desired state via Server-Side Apply if it already exists. An owner
+// reference is set so the HPA is garbage-collected when the owning resource is
+// deleted, and the reference is re-enforced on every apply so out-of-band drift
+// is corrected.
 func EnsureHPA(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, hpa *autoscalingv2.HorizontalPodAutoscaler) error {
-	existing := &autoscalingv2.HorizontalPodAutoscaler{}
-	err := c.Get(ctx, client.ObjectKeyFromObject(hpa), existing)
-
-	// HPA does not exist yet: set owner reference and create.
-	if apierrors.IsNotFound(err) {
-		if err := controllerutil.SetControllerReference(owner, hpa, scheme); err != nil {
-			return fmt.Errorf("setting owner reference on HorizontalPodAutoscaler %s/%s: %w", hpa.Namespace, hpa.Name, err)
-		}
-		if err := c.Create(ctx, hpa); err != nil {
-			return fmt.Errorf("creating HorizontalPodAutoscaler %s/%s: %w", hpa.Namespace, hpa.Name, err)
-		}
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("getting HorizontalPodAutoscaler %s/%s: %w", hpa.Namespace, hpa.Name, err)
-	}
-
-	// HPA exists: reconcile metadata (ownerRefs/labels/annotations) and spec.
-	// Snapshot before mutations to detect whether an update is necessary.
-	before := existing.DeepCopy()
-
-	// Ensure controller owner reference is enforced so garbage collection
-	// behaves correctly even if the ref was removed out-of-band.
-	if err := controllerutil.SetControllerReference(owner, existing, scheme); err != nil {
-		return fmt.Errorf("updating owner reference on HorizontalPodAutoscaler %s/%s: %w", existing.Namespace, existing.Name, err)
-	}
-
-	// Merge desired labels into existing labels; extra user-added keys are
-	// preserved, keys present on the desired HPA are authoritative.
-	if hpa.Labels != nil {
-		if existing.Labels == nil {
-			existing.Labels = make(map[string]string, len(hpa.Labels))
-		}
-		for k, v := range hpa.Labels {
-			existing.Labels[k] = v
-		}
-	}
-
-	// Merge desired annotations into existing annotations.
-	if hpa.Annotations != nil {
-		if existing.Annotations == nil {
-			existing.Annotations = make(map[string]string, len(hpa.Annotations))
-		}
-		for k, v := range hpa.Annotations {
-			existing.Annotations[k] = v
-		}
-	}
-
-	// Reconcile spec to the desired state.
-	existing.Spec = hpa.Spec
-
-	// Only issue an API update when something actually changed to avoid
-	// unnecessary write load and events.
-	if !apiequality.Semantic.DeepEqual(existing.Spec, before.Spec) ||
-		!apiequality.Semantic.DeepEqual(normalizeMap(existing.Labels), normalizeMap(before.Labels)) ||
-		!apiequality.Semantic.DeepEqual(normalizeMap(existing.Annotations), normalizeMap(before.Annotations)) ||
-		!apiequality.Semantic.DeepEqual(existing.OwnerReferences, before.OwnerReferences) {
-		if err := c.Update(ctx, existing); err != nil {
-			return fmt.Errorf("updating HorizontalPodAutoscaler %s/%s: %w", existing.Namespace, existing.Name, err)
-		}
-	}
-
-	return nil
+	return apply.EnsureObject(ctx, c, scheme, owner, hpa, apply.FieldManager)
 }
 
 // DeleteHPA deletes the HorizontalPodAutoscaler identified by namespace and
@@ -362,15 +133,6 @@ func DeleteHPA(ctx context.Context, c client.Client, namespace, name string) err
 		return fmt.Errorf("deleting HorizontalPodAutoscaler %s/%s: %w", namespace, name, err)
 	}
 	return nil
-}
-
-// normalizeMap converts empty maps to nil so apiequality.Semantic.DeepEqual
-// does not report spurious diffs between nil and empty maps.
-func normalizeMap(m map[string]string) map[string]string {
-	if len(m) == 0 {
-		return nil
-	}
-	return m
 }
 
 // validateImmutableServiceFields returns an error if the desired Service spec

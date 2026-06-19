@@ -414,6 +414,10 @@ func TestEnsureService_creates(t *testing.T) {
 	g.Expect(created.Spec.Ports[0].Port).To(Equal(int32(80)))
 }
 
+// TestEnsureService_updatesPreservingClusterIP verifies that the API-server
+// assigned ClusterIP/ClusterIPs survive an apply: the builder never sets these
+// fields, so the operator's field manager never owns them and Server-Side Apply
+// leaves them untouched while still applying an operator-owned change.
 func TestEnsureService_updatesPreservingClusterIP(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := newScheme()
@@ -428,10 +432,9 @@ func TestEnsureService_updatesPreservingClusterIP(t *testing.T) {
 		WithObjects(owner, existing).
 		Build()
 
+	// Change an operator-owned field (the selector) to make this a real update.
 	updated := testService()
-	updated.Spec.Ports = []corev1.ServicePort{
-		{Port: 8080, Protocol: corev1.ProtocolTCP},
-	}
+	updated.Spec.Selector = map[string]string{"app": "test", "tier": "api"}
 
 	err := EnsureService(context.Background(), c, s, owner, updated)
 	g.Expect(err).NotTo(HaveOccurred())
@@ -440,10 +443,14 @@ func TestEnsureService_updatesPreservingClusterIP(t *testing.T) {
 	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(existing), fetched)).To(Succeed())
 	g.Expect(fetched.Spec.ClusterIP).To(Equal("10.0.0.42"))
 	g.Expect(fetched.Spec.ClusterIPs).To(Equal([]string{"10.0.0.42"}))
-	g.Expect(fetched.Spec.Ports[0].Port).To(Equal(int32(8080)))
+	g.Expect(fetched.Spec.Selector).To(HaveKeyWithValue("tier", "api"))
 }
 
-func TestEnsureService_doesNotMutateCallerObject(t *testing.T) {
+// TestEnsureService_decodesServerResponseIntoObject verifies that EnsureService
+// writes the server response back into the caller's object after the apply, so
+// it reflects server-fresh state (e.g. the API-server-assigned ClusterIP and a
+// populated resourceVersion) rather than the pre-apply desired values.
+func TestEnsureService_decodesServerResponseIntoObject(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := newScheme()
 	owner := testOwner()
@@ -451,10 +458,6 @@ func TestEnsureService_doesNotMutateCallerObject(t *testing.T) {
 	existing := testService()
 	existing.Spec.ClusterIP = "10.0.0.42"
 	existing.Spec.ClusterIPs = []string{"10.0.0.42"}
-	existing.Spec.Type = corev1.ServiceTypeNodePort
-	existing.Spec.Ports = []corev1.ServicePort{
-		{Port: 80, Protocol: corev1.ProtocolTCP, NodePort: 30080},
-	}
 
 	c := fake.NewClientBuilder().
 		WithScheme(s).
@@ -462,23 +465,15 @@ func TestEnsureService_doesNotMutateCallerObject(t *testing.T) {
 		Build()
 
 	desired := testService()
-	desired.Spec.Type = corev1.ServiceTypeNodePort
-	desired.Spec.Ports = []corev1.ServicePort{
-		{Port: 80, Protocol: corev1.ProtocolTCP},
-	}
-
-	// Snapshot the desired values before the call.
-	originalClusterIP := desired.Spec.ClusterIP
-	originalClusterIPs := desired.Spec.ClusterIPs
-	originalNodePort := desired.Spec.Ports[0].NodePort
+	g.Expect(desired.Spec.ClusterIP).To(BeEmpty(), "builder leaves ClusterIP unset")
 
 	err := EnsureService(context.Background(), c, s, owner, desired)
 	g.Expect(err).NotTo(HaveOccurred())
 
-	// The caller's object must remain unchanged.
-	g.Expect(desired.Spec.ClusterIP).To(Equal(originalClusterIP), "caller's ClusterIP must not be mutated")
-	g.Expect(desired.Spec.ClusterIPs).To(Equal(originalClusterIPs), "caller's ClusterIPs must not be mutated")
-	g.Expect(desired.Spec.Ports[0].NodePort).To(Equal(originalNodePort), "caller's NodePort must not be mutated")
+	// The apply response is decoded back into the caller's object: it now carries
+	// the server-assigned ClusterIP and a resourceVersion.
+	g.Expect(desired.Spec.ClusterIP).To(Equal("10.0.0.42"))
+	g.Expect(desired.ResourceVersion).NotTo(BeEmpty())
 }
 
 func TestEnsureService_updatesPreservingNodePorts(t *testing.T) {
@@ -879,27 +874,33 @@ func TestEnsurePDB_creates(t *testing.T) {
 	g.Expect(created.OwnerReferences[0].Name).To(Equal("test-owner"))
 }
 
+// TestEnsurePDB_updatesExisting verifies that an operator-owned field is removed
+// when the desired object stops setting it. The PDB is first established via
+// EnsurePDB so the operator's field manager owns .spec.minAvailable; applying a
+// desired object that sets .spec.maxUnavailable instead relinquishes
+// minAvailable, and Server-Side Apply removes the now-unowned field.
 func TestEnsurePDB_updatesExisting(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := newScheme()
 	owner := testOwner()
-	existing := testPDB()
 
 	c := fake.NewClientBuilder().
 		WithScheme(s).
-		WithObjects(owner, existing).
+		WithObjects(owner).
 		Build()
+
+	ctx := context.Background()
+	g.Expect(EnsurePDB(ctx, c, s, owner, testPDB())).To(Succeed())
 
 	updated := testPDB()
 	maxUnavailable := intstr.FromInt32(1)
 	updated.Spec.MinAvailable = nil
 	updated.Spec.MaxUnavailable = &maxUnavailable
 
-	err := EnsurePDB(context.Background(), c, s, owner, updated)
-	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(EnsurePDB(ctx, c, s, owner, updated)).To(Succeed())
 
 	fetched := &policyv1.PodDisruptionBudget{}
-	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(existing), fetched)).To(Succeed())
+	g.Expect(c.Get(ctx, client.ObjectKeyFromObject(updated), fetched)).To(Succeed())
 	g.Expect(fetched.Spec.MinAvailable).To(BeNil())
 	g.Expect(fetched.Spec.MaxUnavailable).NotTo(BeNil())
 	g.Expect(fetched.Spec.MaxUnavailable.IntValue()).To(Equal(1))
