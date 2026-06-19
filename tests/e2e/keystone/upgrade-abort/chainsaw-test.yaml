@@ -78,17 +78,19 @@ spec:
             (conditions[?type == 'DatabaseReady']):
             - status: "False"
               reason: ExpandInProgress
-    # Proof the expand phase actually started: the db-expand Job exists.
-    - script:
-        content: |
-          set -eu
-          JOB="keystone-upgrade-abort-db-expand"
-          if kubectl get job "$JOB" -n $NAMESPACE >/dev/null 2>&1; then
-            echo "OK: Job $JOB exists (expand phase started)"
-          else
-            echo "ERROR: Job $JOB not found"
-            exit 1
-          fi
+    # Proof the expand phase actually started: the db-expand Job exists. The
+    # detection reconcile sets upgradePhase=Expanding and requeues; the
+    # db-expand Job is created on the following reconcile pass, so the status
+    # flip above can be observed before the Job exists. Assert on the Job
+    # (which polls up to the assert timeout) rather than a single-shot
+    # `kubectl get job`, which races the controller's create.
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: keystone-upgrade-abort-db-expand
+            namespace: openstack
     catch:
     - script:
         content: |
