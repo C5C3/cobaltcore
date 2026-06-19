@@ -12,11 +12,16 @@ core Kubernetes resources (Deployments, Services, Jobs, CronJobs, ConfigMaps).
 
 All packages share these conventions:
 
-- **Idempotent create-or-update** — `Ensure*` functions create a resource if it does not
-  exist or update its spec if it already exists. They use `Get` + `Create`/`Update` (not
-  `controllerutil.CreateOrUpdate`) for explicit control.
-- **Owner references** — `controllerutil.SetControllerReference` is called on create so
-  the resource is garbage-collected when the owning CR is deleted.
+- **Idempotent create-or-update via Server-Side Apply** — `Ensure*` functions apply the
+  desired object through the generic `apply.EnsureObject` helper, which uses Server-Side
+  Apply under the fixed field manager `forge-operator`. The field manager owns only the
+  fields the builder sets, so server-defaulted fields the builder omits are never claimed
+  or overwritten and a converged object is applied without a write. The apply is wrapped
+  in `retry.RetryOnConflict`, so a benign field-manager conflict is absorbed as an internal
+  retry rather than surfacing as condition noise.
+- **Owner references** — `controllerutil.SetControllerReference` is called on every apply
+  (not only on create) so the resource is garbage-collected when the owning CR is deleted
+  and the reference is re-enforced if it drifts.
 - **Readiness reporting** — Functions that create resources return `(bool, error)`, where
   `true` means the resource is ready and `false` means it exists but is not yet ready.
 - **Error wrapping** — All errors include context via `fmt.Errorf` with `%w` for
@@ -26,6 +31,7 @@ All packages share these conventions:
 
 | Package | Import Path |
 | --- | --- |
+| `apply` | `github.com/c5c3/forge/internal/common/apply` |
 | `config` | `github.com/c5c3/forge/internal/common/config` |
 | `database` | `github.com/c5c3/forge/internal/common/database` |
 | `deployment` | `github.com/c5c3/forge/internal/common/deployment` |
@@ -46,6 +52,44 @@ These packages import typed Go structs from external operator modules:
 
 > **Note:** The PushSecret API is `v1alpha1` (unstable). Its schema may change in future
 > ESO releases. Pin the ESO module version in `go.mod` to avoid breakage.
+
+---
+
+## Package: `apply`
+
+Provides the generic Server-Side Apply create-or-update primitive that backs the
+`Ensure*` family.
+
+### EnsureObject
+
+```go
+func EnsureObject[T client.Object](
+    ctx context.Context,
+    c client.Client,
+    scheme *runtime.Scheme,
+    owner client.Object,
+    obj T,
+    fieldManager string,
+) error
+```
+
+Creates or updates `obj` via Server-Side Apply under `fieldManager` and sets `owner` as
+the controller reference.
+
+**Behavior:**
+
+- Sets the controller owner reference and stamps the object's GVK (objects built in-code
+  carry an empty `TypeMeta`, which Server-Side Apply requires).
+- Applies the object with `client.FieldOwner(fieldManager)` and `client.ForceOwnership`,
+  wrapped in `retry.RetryOnConflict` so a benign field-manager conflict is retried
+  internally rather than surfaced.
+- The field manager owns only the fields the builder sets, so server-defaulted fields the
+  builder omits are never claimed and a converged object is applied without a write.
+- Decodes the server response back into `obj`, so callers may read fresh status (e.g.
+  readiness) without an extra `Get`.
+
+**Field manager:** the package exports `apply.FieldManager` (`"forge-operator"`), the
+stable field-manager name shared by all `Ensure*` helpers.
 
 ---
 
@@ -224,10 +268,11 @@ Creates or updates a MariaDB Database CR.
 
 **Behavior:**
 
-- On create: sets controller owner reference, creates the resource, returns `(false, nil)`.
-- On update: overwrites `existing.Spec` with the provided spec.
+- Applies the desired Database via `apply.EnsureObject` (Server-Side Apply); the field
+  manager owns only the fields the builder sets, so the server default on
+  `maxUserConnections` is preserved and a converged Database is not rewritten.
 - Readiness is determined by the package-internal `isDatabaseReady` helper on the
-  existing resource.
+  server-fresh apply response.
 
 ### EnsureDatabaseUser
 
@@ -279,9 +324,11 @@ Deployment exists but is not yet ready; `(false, error)` on failure.
 
 **Behavior:**
 
-- On create: sets controller owner reference, creates the resource, returns `(false, nil)`.
-- On update: overwrites `existing.Spec` with the provided spec.
-- Readiness is determined by `IsDeploymentReady` on the existing resource.
+- Applies the desired Deployment via `apply.EnsureObject` (Server-Side Apply); a converged
+  Deployment is not rewritten on every reconcile.
+- Retains a pre-apply `Get` only to delete-and-recreate on an immutable-selector change and
+  to preserve the HPA-owned replica count when `spec.replicas` is left nil.
+- Readiness is determined by `IsDeploymentReady` on the server-fresh apply response.
 
 ### EnsureService
 
@@ -299,10 +346,12 @@ Creates or updates a Service. Does not report readiness (Services are ready imme
 
 **Behavior:**
 
-- On create: sets controller owner reference, creates the resource.
-- On update: preserves the existing `ClusterIP` and `ClusterIPs` values assigned by the
-  API server before overwriting the spec. This prevents accidental ClusterIP reassignment,
-  which would break existing DNS-based service discovery.
+- Applies the desired Service via `apply.EnsureObject` (Server-Side Apply). The builder
+  leaves server-assigned fields (`ClusterIP`, `ClusterIPs`, `IPFamilies`, `NodePort`)
+  unset, so the field manager never owns them and the API server keeps the values it
+  assigned — no hand-rolled preservation is needed.
+- Retains a pre-apply `Get` only to fail fast when the caller explicitly sets one of those
+  immutable fields to a conflicting value.
 
 ### IsDeploymentReady
 
@@ -386,9 +435,8 @@ Creates or updates a CronJob with a controller owner reference.
 
 **Behavior:**
 
-- On create: sets controller owner reference, creates the resource.
-- On update: overwrites `existing.Spec` with the provided spec. CronJob spec updates
-  take effect on the next scheduled run.
+- Applies the desired CronJob via `apply.EnsureObject` (Server-Side Apply); a converged
+  CronJob is not rewritten, and spec changes take effect on the next scheduled run.
 
 The Job completion and permanent-failure checks (`isJobComplete` / `isJobFailed`)
 are package-internal helpers consumed by `RunJob`.
@@ -545,9 +593,10 @@ Creates or updates a PushSecret CR with a controller owner reference.
 
 **Behavior:**
 
-- On create: sets controller owner reference via `SetControllerReference`, creates the
-  resource.
-- On update: overwrites `existing.Spec` with the provided spec.
+- Applies the desired PushSecret via `apply.EnsureObject` (Server-Side Apply). The field
+  manager owns only the fields the builder sets, so the server defaults on `updatePolicy`
+  and `refreshInterval` are preserved and a converged PushSecret is not rewritten — ESO is
+  not woken to re-push an unchanged credential.
 - Uses the ESO `v1alpha1` PushSecret API (unstable — see [External CRD Dependencies](#external-crd-dependencies)).
 
 ---

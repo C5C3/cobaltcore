@@ -1553,6 +1553,7 @@ and disaster recovery backup to OpenBao.
 | --- | --- |
 | Name | `{name}-fernet-rotate` |
 | Schedule | `spec.fernet.rotationSchedule` |
+| Suspend | `spec.fernet.suspend` (default `false`); set `true` to pause rotation during an incident without deleting the CronJob or changing its schedule |
 | ServiceAccount | `{name}-fernet-rotate` |
 | Init container | Copies keys from `fernet-keys-src` (Secret) to `fernet-keys` (emptyDir) |
 | Command | `/scripts/fernet_rotate.sh` |
@@ -1724,6 +1725,7 @@ with credential migration, and disaster recovery backup to OpenBao.
 | --- | --- |
 | Name | `{name}-credential-rotate` |
 | Schedule | `spec.credentialKeys.rotationSchedule` |
+| Suspend | `spec.credentialKeys.suspend` (default `false`); set `true` to pause rotation during an incident without deleting the CronJob or changing its schedule |
 | ServiceAccount | `{name}-credential-rotate` |
 | Init container | Copies keys from `credential-keys-src` (Secret) to `credential-keys` (emptyDir) |
 | Command | `/scripts/credential_rotate.sh` |

@@ -534,6 +534,7 @@ Configures Fernet token key rotation.
 | --- | --- | --- | --- | --- |
 | `rotationSchedule` | `string` | No | `"0 0 * * 0"` | Cron expression (5-field standard format) for key rotation. Validated by `robfig/cron/v3` `ParseStandard`. |
 | `maxActiveKeys` | `int32` | No | `3` | Maximum number of active Fernet keys. Minimum: 3. |
+| `suspend` | `bool` | No | `false` | Suspends the Fernet rotation CronJob without deleting it. Maps to the CronJob `spec.suspend` field. Set `true` to pause key rotation during an incident; the schedule is unchanged so resuming is churn-free. |
 
 ---
 
@@ -551,6 +552,7 @@ ServiceAccount. The Secret is also mirrored to OpenBao through a `PushSecret`.
 | --- | --- | --- | --- | --- |
 | `rotationSchedule` | `string` | No | `"0 0 * * 0"` | Cron expression (5-field standard format). Validated by `robfig/cron/v3` `ParseStandard` in the webhook. |
 | `maxActiveKeys` | `int32` | No | `3` | Maximum number of active credential keys. Minimum: 3. Exposed to `keystone-manage` via the `OS_credential__max_active_keys` environment variable on the rotation CronJob. |
+| `suspend` | `bool` | No | `false` | Suspends the credential rotation CronJob without deleting it. Maps to the CronJob `spec.suspend` field. Set `true` to pause key rotation during an incident; the schedule is unchanged so resuming is churn-free. |
 
 ---
 
