@@ -5,9 +5,17 @@
 # Chainsaw E2E test for NetworkPolicy reconciliation.
 # Verifies that the operator creates, updates, and deletes NetworkPolicies
 # based on spec.networkPolicy:
-#   - Initial deployment with ingress from envoy-gateway-system namespace
+#   - Initial deployment with ingress from envoy-gateway-system namespace, the
+#     auto-whitelisted operator namespace, and auto-derived egress (issue #461)
 #   - Update ingress sources (add monitoring namespace)
 #   - Disable networkPolicy (NetworkPolicy deleted)
+#
+# SCOPE CAVEAT: the CI cluster runs kindnet, which does NOT enforce
+# NetworkPolicy. This suite therefore asserts the NetworkPolicy *spec* the
+# operator renders (ingress peers and egress ports), not runtime enforcement.
+# The egress/operator-namespace fixes in issue #461 only manifest as failures
+# under an enforcing CNI (Calico/Cilium); an enforcing-CNI e2e leg
+# (kind+Calico/Cilium), proposed in issue #461, is out of scope for this suite.
 #
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -23,12 +31,12 @@ spec:
     - apply:
         file: 00-keystone-cr.yaml
   # ── Step 2: Assert NetworkPolicyReady and NetworkPolicy created ──────────
-  # Only NetworkPolicyReady is asserted here — the aggregate Ready condition
-  # is deliberately not checked because this test's NetworkPolicy only permits
-  # ingress from envoy-gateway-system, which blocks the operator's
-  # post-deployment health check and leaves KeystoneAPIReady=False.
-  # The reconciler behaviour under test is fully covered by the
-  # NetworkPolicyReady condition and the NetworkPolicy resource assertion below.
+  # The aggregate Ready condition is not asserted here: it depends on the full
+  # Keystone stack (DB schema sync, bootstrap, key rotation) reaching readiness,
+  # which is exercised by the basic-deployment and rotation suites. This suite
+  # scopes to NetworkPolicy reconciliation — the NetworkPolicyReady condition
+  # plus the rendered ingress peers (user source + auto-whitelisted operator
+  # namespace) and auto-derived egress ports asserted below (issue #461).
   - try:
     - assert:
         resource:
@@ -65,9 +73,45 @@ spec:
               - protocol: TCP
                 port: 5000
               from:
+              # User-declared source.
               - namespaceSelector:
                   matchLabels:
                     kubernetes.io/metadata.name: envoy-gateway-system
+              # Operator namespace, auto-whitelisted so reconcileHealthCheck can
+              # reach the Keystone API (issue #461). NAMESPACE defaults to
+              # keystone-system in the CI deploy (hack/ci-deploy-operator.sh); a
+              # job overriding NAMESPACE must update this peer.
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: keystone-system
+            # Auto-derived egress (issue #461), asserted declaratively in the
+            # reconciler's deterministic order (DNS, kube-apiserver, database,
+            # cache) using the same int-typed scalar form chainsaw matches for
+            # the ingress port above. A JMESPath `contains()` over the port list
+            # does not match here: the rendered ports are integers and chainsaw's
+            # contains() compares values by strict type.
+            egress:
+            # DNS (UDP+TCP 53).
+            - ports:
+              - protocol: UDP
+                port: 53
+              - protocol: TCP
+                port: 53
+            # kube-apiserver (TCP 443+6443) for the rotation CronJob pods that
+            # share this policy's selector.
+            - ports:
+              - protocol: TCP
+                port: 443
+              - protocol: TCP
+                port: 6443
+            # Database (TCP 3306, managed-mode default).
+            - ports:
+              - protocol: TCP
+                port: 3306
+            # Cache (TCP 11211, managed-mode default).
+            - ports:
+              - protocol: TCP
+                port: 11211
     catch:
     - script:
         content: |
@@ -117,12 +161,17 @@ spec:
               - protocol: TCP
                 port: 5000
               from:
+              # User-declared sources (envoy-gateway-system + monitoring) plus
+              # the auto-whitelisted operator namespace, in build order.
               - namespaceSelector:
                   matchLabels:
                     kubernetes.io/metadata.name: envoy-gateway-system
               - namespaceSelector:
                   matchLabels:
                     kubernetes.io/metadata.name: monitoring
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: keystone-system
   # ── Step 5: Disable networkPolicy ────────────────────────────────────────
   - try:
     - patch:
