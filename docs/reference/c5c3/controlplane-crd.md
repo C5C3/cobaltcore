@@ -126,7 +126,7 @@ status:
   observedGeneration: 4
   updatePhase: Idle
   services:
-    keystone:
+    - name: keystone
       ready: true
       release: "2025.2"
   adminApplicationCredential:
@@ -481,7 +481,7 @@ the kind/name and applies it.
 | `conditions` | `[]metav1.Condition` | Latest available observations of the control-plane state. Each condition carries an `observedGeneration`. See [Status Conditions](#status-conditions). |
 | `observedGeneration` | `int64` | The `.metadata.generation` the controller last reconciled, so a stale status is distinguishable from a current one. |
 | `updatePhase` | [`UpdatePhase`](#updatephase) | Current phase of a control-plane release update. Written on every status update; fixed at `Idle` in the current implementation because the release-update state machine is reserved (the other `UpdatePhase` values are not yet set). |
-| `services` | `map[string]ServiceStatus` | Per-service readiness of the projected service CRs, keyed by service name. Written on every status update with a `"keystone"` entry whose `ready` mirrors the `KeystoneReady` condition and whose `release` is `spec.openStackRelease`. See [ServiceStatus](#servicestatus). |
+| `services` | `[]ServiceStatus` | Per-service readiness of the projected service CRs. A `listType=map` list keyed by `name`, so per-service entries merge under server-side apply and can grow per-service conditions cleanly. Written on every status update with a `keystone` entry whose `ready` mirrors the `KeystoneReady` condition and whose `release` is `spec.openStackRelease`. See [ServiceStatus](#servicestatus). |
 | `adminApplicationCredential` | [`*AdminApplicationCredentialStatus`](#adminapplicationcredentialstatus) | Observed state of the K-ORC admin application credential. |
 
 ### ServiceStatus
@@ -490,6 +490,7 @@ Reports the observed readiness of a single projected service CR.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
+| `name` | `string` | Yes | Service name (e.g. `keystone`); keys the `listType=map` `services` list. |
 | `ready` | `bool` | Yes | Whether the projected service CR is Ready. |
 | `release` | `string` | No | The OpenStack release the service currently reports installed. |
 

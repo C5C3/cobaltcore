@@ -289,8 +289,9 @@ const keystoneServiceKey = "keystone"
 // being driven to.
 func setServicesStatus(cp *c5c3v1alpha1.ControlPlane) {
 	cp.Status.UpdatePhase = c5c3v1alpha1.UpdatePhaseIdle
-	cp.Status.Services = map[string]c5c3v1alpha1.ServiceStatus{
-		keystoneServiceKey: {
+	cp.Status.Services = []c5c3v1alpha1.ServiceStatus{
+		{
+			Name:    keystoneServiceKey,
 			Ready:   conditions.AllTrue(cp.Status.Conditions, conditionTypeKeystoneReady),
 			Release: cp.Spec.OpenStackRelease,
 		},

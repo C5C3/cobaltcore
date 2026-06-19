@@ -349,9 +349,13 @@ type ControlPlaneStatus struct {
 	UpdatePhase UpdatePhase `json:"updatePhase,omitempty"`
 
 	// Services reports the per-service readiness of the projected service CRs,
-	// keyed by service name (e.g. "keystone").
+	// as a list keyed by service name (e.g. "keystone"). A listType=map list so
+	// per-service entries merge under server-side apply and can grow
+	// per-service conditions cleanly.
 	// +optional
-	Services map[string]ServiceStatus `json:"services,omitempty"`
+	// +listType=map
+	// +listMapKey=name
+	Services []ServiceStatus `json:"services,omitempty"`
 
 	// AdminApplicationCredential reports the observed state of the K-ORC admin
 	// application credential.
@@ -362,6 +366,10 @@ type ControlPlaneStatus struct {
 // ServiceStatus reports the observed readiness of a single projected service
 // CR.
 type ServiceStatus struct {
+	// Name is the service name (e.g. "keystone"); it keys the listType=map
+	// Services list.
+	Name string `json:"name"`
+
 	// Ready reports whether the projected service CR is Ready.
 	Ready bool `json:"ready"`
 

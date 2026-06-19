@@ -90,8 +90,8 @@ func TestAggregateReady_OneFalse(t *testing.T) {
 
 // TestSetServicesStatus_WritesPhaseAndKeystoneReadiness verifies that
 // setServicesStatus populates the previously-unwritten status.updatePhase (fixed
-// at Idle) and status.services["keystone"], deriving the service readiness from
-// the KeystoneReady sub-condition and the release from spec (#476).
+// at Idle) and the status.services entry named "keystone", deriving the service
+// readiness from the KeystoneReady sub-condition and the release from spec (#476).
 func TestSetServicesStatus_WritesPhaseAndKeystoneReadiness(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -103,16 +103,30 @@ func TestSetServicesStatus_WritesPhaseAndKeystoneReadiness(t *testing.T) {
 	// KeystoneReady absent => service reported not Ready.
 	setServicesStatus(cp)
 	g.Expect(cp.Status.UpdatePhase).To(Equal(c5c3v1alpha1.UpdatePhaseIdle))
-	svc, ok := cp.Status.Services["keystone"]
-	g.Expect(ok).To(BeTrue(), "status.services must report the projected keystone service")
+	svc := findServiceStatus(cp.Status.Services, "keystone")
+	g.Expect(svc).NotTo(BeNil(), "status.services must report the projected keystone service")
+	g.Expect(svc.Name).To(Equal("keystone"))
 	g.Expect(svc.Ready).To(BeFalse(), "keystone service must be not Ready while KeystoneReady is absent")
 	g.Expect(svc.Release).To(Equal("2025.2"))
 
 	// KeystoneReady True => service reported Ready.
 	conditions.SetCondition(&cp.Status.Conditions, trueCondition(conditionTypeKeystoneReady))
 	setServicesStatus(cp)
-	g.Expect(cp.Status.Services["keystone"].Ready).To(BeTrue(),
+	svc = findServiceStatus(cp.Status.Services, "keystone")
+	g.Expect(svc).NotTo(BeNil(), "status.services must still report the projected keystone service")
+	g.Expect(svc.Ready).To(BeTrue(),
 		"keystone service must be Ready once KeystoneReady is True")
+}
+
+// findServiceStatus returns a pointer to the ServiceStatus entry with the given
+// name, or nil when the listType=map status.services list has no such entry.
+func findServiceStatus(services []c5c3v1alpha1.ServiceStatus, name string) *c5c3v1alpha1.ServiceStatus {
+	for i := range services {
+		if services[i].Name == name {
+			return &services[i]
+		}
+	}
+	return nil
 }
 
 func TestReconcile_NotFound_EarlyReturn(t *testing.T) {

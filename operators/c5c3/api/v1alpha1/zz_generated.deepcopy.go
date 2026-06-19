@@ -221,10 +221,8 @@ func (in *ControlPlaneStatus) DeepCopyInto(out *ControlPlaneStatus) {
 	}
 	if in.Services != nil {
 		in, out := &in.Services, &out.Services
-		*out = make(map[string]ServiceStatus, len(*in))
-		for key, val := range *in {
-			(*out)[key] = val
-		}
+		*out = make([]ServiceStatus, len(*in))
+		copy(*out, *in)
 	}
 	if in.AdminApplicationCredential != nil {
 		in, out := &in.AdminApplicationCredential, &out.AdminApplicationCredential

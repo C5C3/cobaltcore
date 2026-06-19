@@ -397,7 +397,7 @@ fields that the schema declared but the reconciler previously never wrote:
 | Field | Value |
 | --- | --- |
 | `status.updatePhase` | Fixed at `Idle` — the release-update state machine is not implemented and the other `UpdatePhase` values are reserved, so "no update in progress" is the current state |
-| `status.services["keystone"]` | `ready` mirrors the `KeystoneReady` sub-condition (via `conditions.AllTrue`); `release` is `spec.openStackRelease` |
+| `status.services` (the `name: keystone` entry) | `ready` mirrors the `KeystoneReady` sub-condition (via `conditions.AllTrue`); `release` is `spec.openStackRelease` |
 
 ---
 

@@ -655,11 +655,21 @@ spec:
                 format: int64
                 type: integer
               services:
-                additionalProperties:
+                description: |-
+                  Services reports the per-service readiness of the projected service CRs,
+                  as a list keyed by service name (e.g. "keystone"). A listType=map list so
+                  per-service entries merge under server-side apply and can grow
+                  per-service conditions cleanly.
+                items:
                   description: |-
                     ServiceStatus reports the observed readiness of a single projected service
                     CR.
                   properties:
+                    name:
+                      description: |-
+                        Name is the service name (e.g. "keystone"); it keys the listType=map
+                        Services list.
+                      type: string
                     ready:
                       description: Ready reports whether the projected service CR
                         is Ready.
@@ -669,12 +679,13 @@ spec:
                         reports installed.
                       type: string
                   required:
+                  - name
                   - ready
                   type: object
-                description: |-
-                  Services reports the per-service readiness of the projected service CRs,
-                  keyed by service name (e.g. "keystone").
-                type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               updatePhase:
                 description: UpdatePhase is the current phase of a control-plane release
                   update.
