@@ -484,7 +484,7 @@ the kind/name and applies it.
 | `updatePhase` | [`UpdatePhase`](#updatephase) | Current phase of a control-plane release update. Written on every status update; fixed at `Idle` in the current implementation because the release-update state machine is reserved (the other `UpdatePhase` values are not yet set). |
 | `services` | `map[string]ServiceStatus` | Per-service readiness of the projected service CRs, keyed by service name. Written on every status update with a `"keystone"` entry whose `ready` mirrors the `KeystoneReady` condition and whose `release` is `spec.openStackRelease`. See [ServiceStatus](#servicestatus). |
 | `adminApplicationCredential` | [`*AdminApplicationCredentialStatus`](#adminapplicationcredentialstatus) | Observed state of the K-ORC admin application credential. |
-| `catalogReady` | `bool` | Whether the OpenStack service catalog has been observed as fully populated for the control plane. Flipped `true` by the catalog sub-reconciler once the identity `Service` and `Endpoint` are registered. |
+| `catalogReady` | `bool` | Whether the OpenStack service catalog has been observed as fully populated for the control plane. Flipped `true` by the catalog sub-reconciler once the identity `Service` and `Endpoint` are registered **and observed `Available`**, and reset to `false` on any later degradation so it tracks the `CatalogReady` condition. |
 
 ### ServiceStatus
 
@@ -822,7 +822,13 @@ markers' documented values where a marker also exists.
 > these (see the [quick-start](../../quick-start-controlplane.md)). A missing
 > admin password Secret degrades to `KORCReady=False` / `WaitingForAdminPassword`,
 > and a not-yet-synced `clouds.yaml` to `AdminCredentialReady=False` /
-> `WaitingForCloudsYaml` — never a silent authentication.
+> `WaitingForCloudsYaml` — never a silent authentication. A `clouds.yaml` that is
+> synced but stale (a re-mint revoked the old credential while ESO has not yet
+> re-materialised the Secret) degrades to `AdminCredentialReady=False` /
+> `WaitingForCloudsYamlSync`: `reconcileAdminCredential` semantically compares the
+> materialised Secret (by parsed application-credential id+secret) against the
+> freshly assembled credential and forces an ESO re-sync, so the gate never passes
+> against a revoked credential.
 > `TestIntegration_MinimalManagedToReady` encodes this contract by pre-creating
 > those Secrets at the defaulted names.
 
@@ -904,35 +910,46 @@ Set by `reconcileKORC`.
 | --- | --- | --- |
 | `True` | `ApplicationCredentialMinted` | The K-ORC admin `ApplicationCredential` is minted and reports `Available=True`. |
 | `False` | `WaitingForAdminPassword` | The admin password Secret/key is not yet available; minting deferred. |
-| `False` | `WaitingForApplicationCredential` | The `ApplicationCredential` CR is ensured but not yet `Available`. |
+| `False` | `ApplicationCredentialFailed` | The `ApplicationCredential` reports a terminal K-ORC error (`GetTerminalError` — an unrecoverable/invalid-config reason such as K-ORC being unable to authenticate); the message folds in any stuck admin Domain/User import. |
+| `False` | `WaitingForApplicationCredential` | The `ApplicationCredential` CR is ensured but not yet `Available`; the message folds in any stuck admin Domain/User import. |
 | `False` | `AdminPasswordError` | Non-missing error reading the admin password. |
 | `False` | `ApplicationCredentialError` | Error create-or-updating the `ApplicationCredential` CR. |
 
 ### AdminCredentialReady
 
 Set by `reconcileAdminCredential` (gated on `KORCReady`, the OpenBao-backed
-`ClusterSecretStore` being Ready, **and** the K-ORC `clouds.yaml` ExternalSecret
-being Ready).
+`ClusterSecretStore` being Ready, the K-ORC `clouds.yaml` ExternalSecret being
+Ready, **and** the materialised `clouds.yaml` Secret semantically matching (parsed
+application-credential id+secret) the freshly assembled credential).
 
 | Status | Reason | When |
 | --- | --- | --- |
-| `True` | `AdminCredentialReady` | The admin application credential is committed to the owned Secret and mirrored to OpenBao. |
+| `True` | `AdminCredentialReady` | The admin application credential is committed to the owned Secret, mirrored to OpenBao, and the materialised `clouds.yaml` Secret matches the assembled credential. |
 | `False` | `WaitingForKORC` | `KORCReady` is not `True`; credential push deferred. |
 | `False` | `SecretStoreNotReady` | The OpenBao-backed `ClusterSecretStore` is not Ready; the secret backend is unreachable. |
 | `False` | `WaitingForCloudsYaml` | The operator-created per-ControlPlane `k-orc-clouds-yaml` ExternalSecret in the control-plane namespace (co-located with the K-ORC CRs per C1; created and owned by `reconcileKORC`) is not yet Ready. |
-| `False` | `CloudsYamlError` | Error checking the `clouds.yaml` ExternalSecret. |
+| `False` | `WaitingForCloudsYamlSync` | The materialised `k-orc-clouds-yaml` Secret is absent or still holds a stale credential (a re-mint revoked the old one but ESO has not re-synced yet). `reconcileAdminCredential` stamps the `external-secrets.io/force-sync` annotation to force an immediate re-sync and compares the materialised Secret semantically (parsed application-credential id+secret) against the assembled credential before reporting Ready, so the condition never reads `True` against a revoked credential. |
+| `False` | `CloudsYamlSyncStuck` | The materialised `k-orc-clouds-yaml` Secret has failed to match the assembled credential for longer than `cloudsYamlSyncStuckTimeout` (measured from the credential's `LastRotation`); the ESO ExternalSecret or OpenBao backend may be unable to sync. Escalated from `WaitingForCloudsYamlSync` so a never-converging sync is alertable and distinguishable from a transient miss. |
+| `False` | `CloudsYamlError` | Error checking the `clouds.yaml` ExternalSecret, forcing its re-sync, or reading the materialised Secret. |
 | `False` | `SecretError` | Error ensuring the operator-owned application-credential Secret. |
 | `False` | `PushSecretError` | Error ensuring the OpenBao PushSecret. |
 
 ### CatalogReady
 
-Set by `reconcileCatalog` (gated on `AdminCredentialReady`).
-Also flips `status.catalogReady` to `true`.
+Set by `reconcileCatalog` (gated on `AdminCredentialReady`, **and** both the
+identity `Service` and `Endpoint` reporting `Available` for their current
+generation — `korcAvailableUpToDate`, which refuses a stale `Available` condition
+whose `ObservedGeneration` lags the object, so an endpoint/region edit cannot flip
+`CatalogReady` True before K-ORC re-reconciles). Tracks `status.catalogReady`, which
+flips `true` only when both children are Available and is reset to `false` on every
+False branch.
 
 | Status | Reason | When |
 | --- | --- | --- |
-| `True` | `CatalogRegistered` | The Keystone identity `Service` and public `Endpoint` are registered as K-ORC CRs. |
+| `True` | `CatalogRegistered` | The Keystone identity `Service` and public `Endpoint` are registered as K-ORC CRs **and** both report `Available`. |
 | `False` | `WaitingForAdminCredential` | `AdminCredentialReady` is not `True`; catalog registration deferred. |
+| `False` | `WaitingForCatalog` | The identity `Service`/`Endpoint` are registered but not yet `Available` for the current generation (the catalog entries have not landed in Keystone, or a stale `Available` condition whose `ObservedGeneration` lags the object does not yet count). |
+| `False` | `CatalogFailed` | The identity `Service` or `Endpoint` reports a terminal K-ORC error (`GetTerminalError` — e.g. a wrong clouds.yaml endpoint or an import stuck on "created externally"). |
 | `False` | `ServiceError` | Error create-or-updating the identity `Service` CR. |
 | `False` | `EndpointError` | Error create-or-updating the identity `Endpoint` CR. |
 

@@ -303,8 +303,8 @@ and the informer cache to that namespace. Keep the default only when
 │           ▼                                                                  │
 │  ┌──────────────────────────┐                                                │
 │  │ reconcileCatalog         │  Register identity Service + public Endpoint   │
-│  │  (gate: AdminCredReady)  │  Sets: CatalogReady                            │
-│  └────────┬─────────────────┘  Requeue: 10s while gated / CRD missing        │
+│  │  (gate: AdminCredReady)  │  Sets: CatalogReady (Service+Endpoint Available)│
+│  └────────┬─────────────────┘  Requeue: 10s gated / not Available / terminal  │
 │           │                                                                  │
 │           ▼                                                                  │
 │  setReadyCondition()  — aggregate Ready = AllTrue(subConditionTypes)         │
@@ -657,8 +657,16 @@ that instructs K-ORC to mint the admin application credential, and drives re-min
 | Re-mint stuck `Terminating` past `remintStallTimeout` (5m) | False | `ReMintStalled` | requeue 10s; finalizer cannot revoke the old credential |
 | AC create/update/delete/read fails otherwise | False | `ApplicationCredentialError` | returns the error |
 | `value` regeneration fails | False | `SecretError` | returns the error |
+| AC reports a terminal K-ORC error | False | `ApplicationCredentialFailed` | requeue 10s; gated on `orcv1alpha1.GetTerminalError(ac)` (an unrecoverable/invalid-config Progressing reason, e.g. K-ORC cannot authenticate with the clouds.yaml) so a credential that will never converge is not reported as an eternal wait |
 | AC not yet `Available` | False | `WaitingForApplicationCredential` | requeue 10s; gated on `orcv1alpha1.IsAvailable(ac)` (K-ORC uses `Available`, not `Ready`) |
 | AC minted and Available | True | `ApplicationCredentialMinted` | — |
+
+Both the `ApplicationCredentialFailed` and `WaitingForApplicationCredential`
+messages fold in the admin Domain/User import status (`ensureKORCAdminImports`
+returns the first import that is terminally failed or not yet Available), so the
+documented endpoint/clouds.yaml failure class — where K-ORC swallows a list error
+and an import hangs on "created externally" — names the stuck dependency instead of
+surfacing as an opaque wait.
 
 > **Hard CRD dependency.** K-ORC (like Memcached, ESO, MariaDB, and Keystone) is
 > a hard dependency: `SetupWithManager` `Owns`/`Watches` its kinds, so the
@@ -674,9 +682,9 @@ that instructs K-ORC to mint the admin application credential, and drives re-min
 | --- | --- |
 | File | `reconcile_korc.go` |
 | Condition | `AdminCredentialReady` |
-| Gate | `KORCReady == True`, the OpenBao-backed `ClusterSecretStore` is Ready, **and** the K-ORC clouds.yaml `ExternalSecret` (`{childNamespace(cp)}/{CloudCredentialsRef.SecretName}`, co-located with the K-ORC CRs per C1) is Ready |
+| Gate | `KORCReady == True`, the OpenBao-backed `ClusterSecretStore` is Ready, the K-ORC clouds.yaml `ExternalSecret` (`{childNamespace(cp)}/{CloudCredentialsRef.SecretName}`, co-located with the K-ORC CRs per C1) is Ready, **and** the materialised clouds.yaml Secret semantically matches (parsed application-credential id+secret) the freshly assembled credential |
 | Owns | the operator-owned `Secret` `{controlplane.Name}-admin-app-credential` and the `PushSecret` `{controlplane.Name}-admin-app-credential-backup`, both in `childNamespace(cp)` |
-| Requeue | `korcRequeueAfter` = **10s** while either gate is unmet |
+| Requeue | `korcRequeueAfter` = **10s** while any gate is unmet (including a stale/absent materialised clouds.yaml) |
 
 `reconcileAdminCredential` commits the minted credential and mirrors it to
 OpenBao:
@@ -705,26 +713,47 @@ OpenBao:
   the PushSecret on ControlPlane teardown (or when rotation is disabled) leaves the
   last-pushed credential intact in OpenBao at that CR's own path, so re-adoption
   works and the admin is never locked out.
+- **Live clouds.yaml gate (stale-credential window).** A re-mint revokes the old
+  credential immediately, but the `k-orc-clouds-yaml` Secret only refreshes from
+  OpenBao at the ExternalSecret's hourly `refreshInterval`, so the PushSecret-Ready
+  check above can pass while the materialised Secret K-ORC actually authenticates
+  with still holds the revoked credential. After assembling the clouds.yaml,
+  `reconcileAdminCredential` stamps the `external-secrets.io/force-sync` annotation
+  (keyed by the content hash; idempotent, so a steady-state pass does not churn the
+  ExternalSecret) to nudge ESO to re-materialise immediately, then **compares the
+  materialised Secret semantically** — by the parsed application-credential id and
+  secret, not byte-for-byte, so a benign ESO/OpenBao re-serialisation (a stripped
+  trailing newline, reordered keys, requoting) cannot wedge the gate permanently —
+  and only reports `AdminCredentialReady=True` when they match. The semantic
+  compare — not the best-effort force-sync — is the correctness guarantee: the
+  condition never reads True against a stale credential. A sync that never converges
+  is bounded: once the materialised Secret has failed to match for longer than
+  `cloudsYamlSyncStuckTimeout` (measured from the credential's `LastRotation`), the
+  reason escalates from the transient `WaitingForCloudsYamlSync` to the alertable
+  `CloudsYamlSyncStuck`, so a permanently broken sync is distinguishable from a
+  2-second transient miss.
 
 | Path | Status | Reason | Notes |
 | --- | --- | --- | --- |
 | `KORCReady` not True | False | `WaitingForKORC` | requeue 10s |
 | ClusterSecretStore not Ready | False | `SecretStoreNotReady` | requeue 10s; checked after the `KORCReady` gate so an OpenBao/ESO outage surfaces before the clouds.yaml wait |
-| clouds.yaml ES check errors | False | `CloudsYamlError` | returns the error |
+| clouds.yaml ES check errors | False | `CloudsYamlError` | returns the error (also covers a force-sync/materialised-Secret read error) |
 | clouds.yaml ES not Ready | False | `WaitingForCloudsYaml` | requeue 10s |
 | operator Secret ensure fails | False | `SecretError` | returns the error |
 | PushSecret ensure fails | False | `PushSecretError` | returns the error |
-| committed and mirrored | True | `AdminCredentialReady` | — |
+| materialised clouds.yaml absent or semantically stale | False | `WaitingForCloudsYamlSync` | requeue 10s; force-sync annotation stamped, semantic compare (parsed id+secret) against the assembled document not yet satisfied |
+| materialised clouds.yaml stuck stale past `cloudsYamlSyncStuckTimeout` | False | `CloudsYamlSyncStuck` | requeue 10s; the sync has not converged since `LastRotation` — alertable, distinguishable from a transient miss |
+| committed, mirrored, and materialised | True | `AdminCredentialReady` | — |
 
 ### reconcileCatalog
 
 | Aspect | Value |
 | --- | --- |
 | File | `reconcile_korc.go` |
-| Condition | `CatalogReady` (also sets `cp.Status.CatalogReady = true`) |
-| Gate | `AdminCredentialReady == True` |
+| Condition | `CatalogReady` (also tracks `cp.Status.CatalogReady`, reset to `false` on every False branch) |
+| Gate | `AdminCredentialReady == True`, **and** both the identity `Service` and `Endpoint` report `Available` |
 | Owns | a K-ORC identity `Service` (`{controlplane.Name}-identity-service`) and its public `Endpoint` (`{controlplane.Name}-identity-endpoint`) in `childNamespace(cp)` |
-| Requeue | `korcRequeueAfter` = **10s** while gated |
+| Requeue | `korcRequeueAfter` = **10s** while gated, while the children are not yet Available, or on a terminal K-ORC failure |
 
 `reconcileCatalog` registers the OpenStack service-catalog entries for Keystone
 as owned K-ORC CRs: an `identity`-type `Service` named
@@ -735,12 +764,27 @@ create-or-updates. K-ORC is a hard CRD dependency (see the note above), so a
 missing Service/Endpoint CRD never reaches this path and there is no
 CRD-not-installed condition.
 
+Registering the child CRs only instructs K-ORC to create the catalog entries — it
+does not mean they exist in Keystone — so `CatalogReady` is gated on both children
+reporting `Available` for their current generation (`korcAvailableUpToDate`, which
+refuses a stale `Available` condition whose `ObservedGeneration` lags the object —
+the same generation gate `GetTerminalError` already applies via its `Progressing`
+check — so an endpoint/region edit that moves the catalog URL cannot flip
+`CatalogReady` True before K-ORC re-reconciles the new value), and a terminal K-ORC
+failure (`GetTerminalError`, the documented wrong-endpoint / import-stuck class) is
+surfaced as the distinct `CatalogFailed` reason instead of a false-positive Ready.
+`cp.Status.CatalogReady` tracks the condition: it flips `true` only when both
+children are Available and is reset to `false` on every False branch, so a later
+degradation is never left stale-true.
+
 | Path | Status | Reason | Notes |
 | --- | --- | --- | --- |
-| `AdminCredentialReady` not True | False | `WaitingForAdminCredential` | requeue 10s |
-| Service create/update fails | False | `ServiceError` | returns the error |
-| Endpoint create/update fails | False | `EndpointError` | returns the error |
-| both registered | True | `CatalogRegistered` | also sets `status.catalogReady = true` |
+| `AdminCredentialReady` not True | False | `WaitingForAdminCredential` | requeue 10s; resets `status.catalogReady = false` |
+| Service create/update fails | False | `ServiceError` | returns the error; resets `status.catalogReady = false` |
+| Endpoint create/update fails | False | `EndpointError` | returns the error; resets `status.catalogReady = false` |
+| Service/Endpoint reports a terminal K-ORC error | False | `CatalogFailed` | requeue 10s; resets `status.catalogReady = false` |
+| Service/Endpoint registered but not yet Available | False | `WaitingForCatalog` | requeue 10s; resets `status.catalogReady = false` |
+| both registered and Available | True | `CatalogRegistered` | also sets `status.catalogReady = true` |
 
 ### CredentialRotation reconciler
 
