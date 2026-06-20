@@ -190,13 +190,20 @@ status:
 ### CEL Validation Rules
 
 The CRD includes structural validation rules enforced by the API server before
-webhooks are invoked:
+webhooks are invoked. Rules that reference `oldSelf` are transition rules: they
+are evaluated only on UPDATE and enforce field immutability. Because they are
+enforced by the API server itself, they keep protecting the field even when the
+validating webhook is unavailable.
 
 | Field | Rule | Error Message |
 | --- | --- | --- |
 | `spec.database` | `has(self.clusterRef) != has(self.host)` | "exactly one of clusterRef or host must be set" |
 | `spec.database` | `!has(self.tls) \|\| !self.tls.enabled \|\| (self.tls.caBundleSecretRef.name != '' && self.tls.clientCertSecretRef.name != '')` | "when database.tls.enabled is true, both database.tls.caBundleSecretRef.name and database.tls.clientCertSecretRef.name must be set" |
+| `spec.database` | `self.database == oldSelf.database` (UPDATE only) | "database name is immutable" |
+| `spec.database` | `has(self.clusterRef) == has(oldSelf.clusterRef)` (UPDATE only) | "database mode (managed clusterRef vs brownfield host) is immutable" |
 | `spec.database.tls.mode` | Enum: `prefer`, `require`, `verify-ca`, `verify-full` | — |
+| `spec.bootstrap.adminUser` | `self == oldSelf` (UPDATE only) | "bootstrap.adminUser is immutable" |
+| `spec.bootstrap.region` | `self == oldSelf` (UPDATE only) | "bootstrap.region is immutable" |
 | `spec.cache` | `has(self.clusterRef) != (has(self.servers) && size(self.servers) > 0)` | "exactly one of clusterRef or servers must be set" |
 | `spec.policyOverrides` | `(has(self.rules) && size(self.rules) > 0) \|\| self.configMapRef != null` | "at least one of rules or configMapRef must be set" |
 | `spec.policyOverrides.rules` | `!has(self.rules) \|\| self.rules.all(k, size(k) > 0)` | "policy rule name must not be empty" |
@@ -979,9 +986,9 @@ Configures the initial Keystone bootstrap.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `adminUser` | `string` | No | `"admin"` | Admin username for the bootstrap. |
+| `adminUser` | `string` | No | `"admin"` | Admin username for the bootstrap. Immutable after create (CEL transition rule): re-bootstrapping with a different admin user duplicates or strands catalog entries. |
 | `adminPasswordSecretRef` | [`SecretRefSpec`](#secretrefspec) | Yes | — | Secret containing the admin password. |
-| `region` | `string` | No | `"RegionOne"` | Keystone region name. |
+| `region` | `string` | No | `"RegionOne"` | Keystone region name. Immutable after create (CEL transition rule): changing the region strands catalog entries under the old region. |
 | `publicEndpoint` | `string` | No | Cluster-local service DNS | Externally routable Keystone endpoint URL. Used for the `--bootstrap-public-url` argument passed to `keystone-manage bootstrap`. Required by external clients (CLI users, Horizon, federation partners) that cannot resolve the cluster-local service DNS. |
 
 ---
@@ -1039,11 +1046,13 @@ operator CRDs.
 | `clusterRef` | `*corev1.LocalObjectReference` | No | Reference to a MariaDB CR (managed mode). |
 | `host` | `string` | No | Database hostname (brownfield mode). |
 | `port` | `int32` | No | Database port (brownfield mode, default 3306). |
-| `database` | `string` | Yes | Database name. |
+| `database` | `string` | Yes | Database name. Immutable after create (CEL transition rule): renaming re-points `db_sync` at a fresh, empty schema and silently orphans the existing data. |
 | `secretRef` | [`SecretRefSpec`](#secretrefspec) | Yes | Secret with database credentials. |
 | `tls` | [`*DatabaseTLSSpec`](#databasetlsspec) | No | Optional TLS/mTLS configuration. The pointer keeps the field opt-in and non-mutating: a `nil` `tls` means plaintext TCP, preserving the previous behavior for all existing CRs. |
 
 Exactly one of `clusterRef` or `host` must be set (enforced by CEL validation).
+The database name and the `clusterRef` ↔ `host` mode are immutable after create
+(CEL transition rules, evaluated only on UPDATE).
 
 ### DatabaseTLSSpec
 
@@ -1411,6 +1420,18 @@ is pinned by a Chainsaw step.
 | `fernet-maxactivekeys-below-minimum-rejected` | `11-fernet-maxactivekeys-below-minimum.yaml` | Fernet maxActiveKeys Minimum=3 | Error containing "maxActiveKeys" |
 | `credentialkeys-maxactivekeys-below-minimum-rejected` | `12-credentialkeys-maxactivekeys-below-minimum.yaml` | CredentialKeys maxActiveKeys Minimum=3 | Error containing "maxActiveKeys" |
 | `policy-overrides-empty-rule-value-rejected` | `13-policy-overrides-empty-rule-value.yaml` | Non-empty rule values | Error containing "spec.policyOverrides" and "policy rule value must not be empty" |
+| `immutable-base-accepted` | `13-immutable-base.yaml` | Valid base CR for the update-rejection cases (applied first) | None (must succeed) |
+| `immutable-database-name-rejected` | `14-immutable-database-name.yaml` | `spec.database.database` immutable on UPDATE | Error containing "database" and "immutable" |
+| `immutable-database-mode-rejected` | `15-immutable-database-mode.yaml` | `spec.database` mode (clusterRef ↔ host) immutable on UPDATE | Error containing "database mode" and "immutable" |
+| `immutable-adminuser-rejected` | `16-immutable-adminuser.yaml` | `spec.bootstrap.adminUser` immutable on UPDATE | Error containing "adminUser" and "immutable" |
+| `immutable-region-rejected` | `17-immutable-region.yaml` | `spec.bootstrap.region` immutable on UPDATE | Error containing "region" and "immutable" |
+
+Steps `14`-`17` reuse the `immutable-fields` name from `13-immutable-base.yaml`,
+so each is applied as an UPDATE of the base CR and is rejected by the
+corresponding CEL transition rule (`self == oldSelf`, evaluated only on UPDATE).
+The base CR is brownfield (host mode), so the operator creates no MariaDB CRs
+and pushes no OpenBao secrets; its finalizer cleanup is a no-op and the
+ephemeral namespace tears down cleanly.
 
 Each step uses `apply` with `expect` to assert that the `$error` variable is non-null
 and contains the expected field-level error message. Kubernetes admission evaluates
@@ -1446,16 +1467,20 @@ the field name, so the loose-substring assertion (`maxActiveKeys`) keeps the tes
 stable regardless of which layer fires first and across upstream Kubernetes
 admission-pipeline changes.
 
-The 10 generated fixtures (`02-…` through `12-…`, with the `08-replicas-zero.yaml`
-gap explained above) share an otherwise-identical minimal valid Keystone scaffold
-and differ only by the field under test. To prevent that scaffold from drifting
-across files, the fixtures are generated from a
-single canonical source in `tests/e2e/keystone/invalid-cr/_generate.py`. After
-editing the scaffold or any per-fixture override, regenerate via
+The 16 generated fixtures (`02-…` through `17-…`, with the `08-replicas-zero.yaml`
+gap explained above) share an otherwise-identical minimal valid Keystone scaffold.
+The create-rejection fixtures (`02-…` through `12-…`, plus
+`13-policy-overrides-empty-rule-value.yaml`) differ only by the field under test;
+the update-rejection fixtures (`13-immutable-base.yaml` through `17-…`) share the
+`immutable-fields` name so `13-immutable-base.yaml` is the base and `14`-`17` are
+applied as UPDATEs.
+To prevent that scaffold from drifting across files, the fixtures are generated
+from a single canonical source in `tests/e2e/keystone/invalid-cr/_generate.py`.
+After editing the scaffold or any per-fixture override, regenerate via
 `python3 tests/e2e/keystone/invalid-cr/_generate.py`. The
 `verify-invalid-cr-fixtures` CI job (and the matching
 `make verify-invalid-cr-fixtures` Makefile target) runs `_generate.py --check`
-in drift mode and the `test_generate.py` unit suite (`len(FIXTURES) == 10` plus
+in drift mode and the `test_generate.py` unit suite (`len(FIXTURES) == 16` plus
 a cross-reference assertion that every `Fixture.filename` appears as a
 `file:` step in `chainsaw-test.yaml`), so a hand-edit to any generated fixture
 — or a rename/removal that desynchs `FIXTURES` from `chainsaw-test.yaml` —
@@ -1469,7 +1494,7 @@ is tracked as its own feature ticket:
 
 - Empty / malformed `spec.image.tag` (no `MinLength` or pattern on `ImageSpec.Tag`).
 - `topologySpreadConstraints[*].maxSkew: 0` (no CRD-level minimum on the upstream type, no defense-in-depth in the Keystone webhook).
-- Mutation of immutable fields (`spec.database.clusterRef`, `spec.cache.clusterRef`) on `ValidateUpdate` — old-vs-new comparison is not yet implemented.
+- Mutation of `spec.cache` mode (`clusterRef` ↔ `servers`) on UPDATE — no transition rule yet. The `spec.database` name and mode and the `spec.bootstrap.adminUser`/`region` fields are now immutable via CEL transition rules (see [CEL Validation Rules](#cel-validation-rules)).
 
 #### uwsgi Suite
 

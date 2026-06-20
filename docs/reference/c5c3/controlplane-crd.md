@@ -187,8 +187,8 @@ status:
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `openStackRelease` | `string` | Yes | — | OpenStack release the control plane targets (e.g. `"2025.2"`). The reconciler (L2) projects this into each service CR's image tag. Must match the date-based release pattern `^\d{4}\.\d$`, enforced by both the CRD `+kubebuilder:validation:Pattern` marker and the validating webhook. |
-| `region` | `string` | No | `"RegionOne"` | OpenStack region name applied across the control plane. Projected into the Keystone CR's `bootstrap.region`. Defaulted to `RegionOne` by **both** the `+kubebuilder:default` marker (normal admission) and the defaulting webhook (callers that bypass the CRD default). |
+| `openStackRelease` | `string` | Yes | — | OpenStack release the control plane targets (e.g. `"2025.2"`). The reconciler (L2) projects this into each service CR's image tag. Must match the date-based release pattern `^\d{4}\.\d$`, enforced by both the CRD `+kubebuilder:validation:Pattern` marker and the validating webhook. Upgrades are allowed on update, but **downgrades are rejected** (Keystone DB migrations are forward-only). |
+| `region` | `string` | No | `"RegionOne"` | OpenStack region name applied across the control plane. Projected into the Keystone CR's `bootstrap.region`. Defaulted to `RegionOne` by **both** the `+kubebuilder:default` marker (normal admission) and the defaulting webhook (callers that bypass the CRD default). Immutable after create (the projected `bootstrap.region` is itself immutable). |
 | `infrastructure` | [`InfrastructureSpec`](#infrastructurespec) | No | managed-mode defaulted | Shared backing services (database, cache) the control plane's services connect to. Optional — the defaulting webhook materializes a managed-mode `database`/`cache` when omitted; see [InfrastructureSpec](#infrastructurespec). |
 | `services` | [`ServicesSpec`](#servicesspec) | Yes | — | Per-service configuration projected into the individual service CRs. |
 | `global` | [`*commonv1.PolicySpec`](../keystone/keystone-crd.md#policyspec) | No | `nil` | oslo.policy overrides applied across every service in the control plane. Per-service overrides (e.g. `services.keystone.policyOverrides`) take precedence over these global rules when both are set. |
@@ -702,15 +702,28 @@ Flipping the database/cache mode or renaming a managed `clusterRef` would leave
 the previously-projected MariaDB/Memcached child (and its per-ControlPlane
 credential) orphaned and owned until the ControlPlane is deleted; renaming
 `cloudCredentialsRef.secretName` would leak the previously-projected K-ORC
-clouds.yaml ExternalSecret.
+clouds.yaml ExternalSecret. The database **name** and the **region** are also
+immutable: both are projected verbatim into the Keystone child's now-immutable
+`spec.database.database` / `spec.bootstrap.region`, so a rename here would make
+the next reconcile attempt an update the Keystone CEL rule rejects, wedging the
+loop — rejecting it at the ControlPlane layer surfaces a clean error instead.
+
+The webhook additionally rejects an **openStackRelease downgrade**: a monotonic
+upgrade check parses the `YYYY.N` release into `(year, minor)` and rejects a
+lower tuple while allowing upgrades and same-release no-ops. Keystone DB
+migrations are forward-only, so a downgrade would project an older image against
+an already-migrated schema — an unrecoverable state.
 
 | Rule | Field Path | Condition |
 | --- | --- | --- |
 | Database mode immutable | `spec.infrastructure.database` | `clusterRef` nil-ness changed (managed ↔ brownfield) |
 | Database clusterRef.name immutable | `spec.infrastructure.database.clusterRef.name` | Both managed, but the name changed |
+| Database name immutable | `spec.infrastructure.database.database` | The database name changed |
 | Cache mode immutable | `spec.infrastructure.cache` | `clusterRef` nil-ness changed (managed ↔ brownfield) |
 | Cache clusterRef.name immutable | `spec.infrastructure.cache.clusterRef.name` | Both managed, but the name changed |
 | Cloud secretName immutable | `spec.korc.adminCredential.cloudCredentialsRef.secretName` | The value changed |
+| Region immutable | `spec.region` | The region changed |
+| Release downgrade rejected | `spec.openStackRelease` | New release `(year, minor)` is lower than the old (upgrades and same-release updates allowed) |
 
 ---
 
