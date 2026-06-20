@@ -380,6 +380,131 @@ func TestIntegration_CRD_CELOnly_RejectsOutOfEnumTLSMode(t *testing.T) {
 	))
 }
 
+// --- Field immutability (CEL transition rules, #466) ---
+
+// updateImmutableFieldRejected is the shared body for the field-immutability
+// rejection tests. It creates a valid Keystone CR, re-reads it, applies the
+// given mutation, and asserts the UPDATE is rejected with every expected
+// message substring. The setup function selects whether the validating webhook
+// is installed: the webhook deliberately discards oldObj and never checks
+// immutability (keystone_webhook.go), so the CRD CEL transition rule is the sole
+// gate. The no-webhook setup pins that the CEL rule rejects the change on its
+// own; a webhook-enabled variant confirms the rule still fires when the webhook
+// is present.
+func updateImmutableFieldRejected(
+	t *testing.T,
+	setup func(testing.TB) (client.Client, context.Context, context.CancelFunc),
+	nsPrefix string,
+	mutate func(*Keystone),
+	wantSubstrings ...string,
+) {
+	t.Helper()
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setup(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: nsPrefix}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	k := validIntegrationKeystone("immutable", ns.Name)
+	g.Expect(c.Create(ctx, k)).To(Succeed(), "valid Keystone CR should be accepted on create")
+
+	got := &Keystone{}
+	g.Expect(c.Get(ctx, types.NamespacedName{Name: "immutable", Namespace: ns.Name}, got)).To(Succeed())
+	mutate(got)
+
+	err := c.Update(ctx, got)
+	g.Expect(err).To(HaveOccurred(), "mutating an immutable field must be rejected on update")
+	g.Expect(apierrors.IsInvalid(err) || apierrors.IsForbidden(err)).To(BeTrue(),
+		fmt.Sprintf("expected Invalid or Forbidden status error, got: %v", err))
+	for _, want := range wantSubstrings {
+		g.Expect(err.Error()).To(ContainSubstring(want))
+	}
+}
+
+// TestIntegration_CRD_CELOnly_RejectsDatabaseNameChange pins the
+// spec.database.database immutability transition rule against an API server with
+// NO validating webhook installed: renaming the database is rejected by the CEL
+// rule alone.
+func TestIntegration_CRD_CELOnly_RejectsDatabaseNameChange(t *testing.T) {
+	updateImmutableFieldRejected(t, setupEnvTestNoWebhook, "test-celonly-dbname-",
+		func(k *Keystone) { k.Spec.Database.Database = "renamed" },
+		"database", "immutable")
+}
+
+// TestIntegration_CRD_CELOnly_RejectsDatabaseModeFlip pins the database
+// managed-vs-brownfield mode immutability rule: flipping the host-mode base CR
+// to clusterRef mode is rejected by the CEL rule alone. The new object still
+// satisfies the clusterRef/host XOR rule, so only the mode transition rule fires.
+func TestIntegration_CRD_CELOnly_RejectsDatabaseModeFlip(t *testing.T) {
+	updateImmutableFieldRejected(t, setupEnvTestNoWebhook, "test-celonly-dbmode-",
+		func(k *Keystone) {
+			k.Spec.Database.ClusterRef = &corev1.LocalObjectReference{Name: "mariadb"}
+			k.Spec.Database.Host = ""
+		},
+		"database mode", "immutable")
+}
+
+// TestIntegration_CRD_CELOnly_RejectsAdminUserChange pins the
+// spec.bootstrap.adminUser immutability rule against an API server with NO
+// validating webhook installed.
+func TestIntegration_CRD_CELOnly_RejectsAdminUserChange(t *testing.T) {
+	updateImmutableFieldRejected(t, setupEnvTestNoWebhook, "test-celonly-adminuser-",
+		func(k *Keystone) { k.Spec.Bootstrap.AdminUser = "root" },
+		"adminUser", "immutable")
+}
+
+// TestIntegration_CRD_CELOnly_RejectsRegionChange pins the spec.bootstrap.region
+// immutability rule against an API server with NO validating webhook installed.
+func TestIntegration_CRD_CELOnly_RejectsRegionChange(t *testing.T) {
+	updateImmutableFieldRejected(t, setupEnvTestNoWebhook, "test-celonly-region-",
+		func(k *Keystone) { k.Spec.Bootstrap.Region = "RegionTwo" },
+		"region", "immutable")
+}
+
+// TestIntegration_CELRejectsDatabaseNameChange is the webhook-enabled flavour of
+// the database-name immutability test: even with the validating webhook
+// installed (which never checks immutability itself), the CRD CEL transition
+// rule still rejects the rename.
+func TestIntegration_CELRejectsDatabaseNameChange(t *testing.T) {
+	updateImmutableFieldRejected(t, setupEnvTest, "test-cel-dbname-",
+		func(k *Keystone) { k.Spec.Database.Database = "renamed" },
+		"database", "immutable")
+}
+
+// TestIntegration_CELAcceptsUnchangedImmutableFields proves the transition rules
+// do not fire on an identity update: changing only a mutable field (replicas)
+// while leaving every immutable field untouched is accepted, guarding against an
+// over-broad rule that would reject same-value re-applies.
+func TestIntegration_CELAcceptsUnchangedImmutableFields(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestNoWebhook(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-celonly-immutable-accept-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	k := validIntegrationKeystone("immutable-accept", ns.Name)
+	g.Expect(c.Create(ctx, k)).To(Succeed())
+
+	got := &Keystone{}
+	key := types.NamespacedName{Name: "immutable-accept", Namespace: ns.Name}
+	g.Expect(c.Get(ctx, key, got)).To(Succeed())
+	// Change only a mutable field; immutable fields stay identical.
+	got.Spec.Replicas = 5
+	g.Expect(c.Update(ctx, got)).To(Succeed(),
+		"updating a mutable field must not trip the immutability transition rules")
+
+	final := &Keystone{}
+	g.Expect(c.Get(ctx, key, final)).To(Succeed())
+	g.Expect(final.Spec.Replicas).To(Equal(int32(5)))
+	g.Expect(final.Spec.Database.Database).To(Equal("keystone"))
+	g.Expect(final.Spec.Bootstrap.AdminUser).To(Equal("admin"))
+	g.Expect(final.Spec.Bootstrap.Region).To(Equal("RegionOne"))
+}
+
 // --- Task 2.3: Webhook defaulting tests ---
 
 func TestIntegration_WebhookDefaultsSetsZeroValues(t *testing.T) {
