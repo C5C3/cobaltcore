@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -179,12 +180,29 @@ func (r *ControlPlaneReconciler) reconcileKeystone(ctx context.Context, cp *c5c3
 
 		return controllerutil.SetControllerReference(cp, keystone, r.Scheme)
 	}); err != nil {
+		reason := "KeystoneError"
+		message := fmt.Sprintf("create-or-update Keystone: %v", err)
+		// An Invalid (HTTP 422) rejection from the Keystone API server is almost
+		// always a now-immutable db/bootstrap field whose CEL transition rule
+		// (self == oldSelf) refuses the projected change — e.g. a spec.region or
+		// spec.database.database edit that landed on the ControlPlane before its
+		// own immutability webhook existed, leaving it diverged from the already-
+		// frozen Keystone child (#466). validateImmutable cannot catch that
+		// pre-webhook edit, so this projection loops forever with no self-heal.
+		// Surface a distinct, actionable reason so the wedge is diagnosable from
+		// the condition instead of being buried under a generic KeystoneError.
+		if apierrors.IsInvalid(err) {
+			reason = "KeystoneProjectionRejected"
+			message = fmt.Sprintf("Keystone API server rejected the projected spec (likely an immutable db/bootstrap field "+
+				"diverged from the frozen Keystone child); reconcile the ControlPlane spec back to the child's values or "+
+				"recreate the Keystone child to recover: %v", err)
+		}
 		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
 			Type:               conditionTypeKeystoneReady,
 			Status:             metav1.ConditionFalse,
 			ObservedGeneration: cp.Generation,
-			Reason:             "KeystoneError",
-			Message:            fmt.Sprintf("create-or-update Keystone: %v", err),
+			Reason:             reason,
+			Message:            message,
 		})
 		return ctrl.Result{}, err
 	}

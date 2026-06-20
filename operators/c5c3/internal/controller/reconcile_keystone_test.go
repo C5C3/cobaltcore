@@ -12,12 +12,16 @@ import (
 
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	"github.com/c5c3/forge/internal/common/conditions"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
@@ -397,6 +401,61 @@ func TestReconcileKeystone_MirrorsChildReady(t *testing.T) {
 	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeKeystoneReady)
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+}
+
+// TestReconcileKeystone_InvalidRejectionSurfacesDistinctReason is the regression
+// guard for #466: when the projected spec collides with a now-immutable Keystone
+// db/bootstrap field (e.g. a spec.region edit that landed on the ControlPlane
+// before its own immutability webhook existed, diverging it from the already-
+// frozen Keystone child), the Keystone API server rejects the UPDATE with an
+// Invalid (422) error and the loop re-attempts it on every requeue with no
+// self-heal. The sub-reconciler must surface a distinct, actionable KeystoneReady
+// reason rather than the generic KeystoneError so the wedge is diagnosable.
+func TestReconcileKeystone_InvalidRejectionSurfacesDistinctReason(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := keystoneTestScheme(t)
+	cp := keystoneControlPlane()
+
+	// A pre-existing Keystone child whose region differs from the ControlPlane's,
+	// so CreateOrUpdate finds it and takes the UPDATE path (which the interceptor
+	// rejects, standing in for the CEL immutability transition rule).
+	existing := &keystonev1alpha1.Keystone{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      keystoneName(cp),
+			Namespace: childNamespace(cp),
+		},
+		Spec: keystonev1alpha1.KeystoneSpec{
+			Bootstrap: keystonev1alpha1.BootstrapSpec{Region: "OldRegion"},
+		},
+	}
+
+	invalidErr := apierrors.NewInvalid(
+		schema.GroupKind{Group: keystonev1alpha1.GroupVersion.Group, Kind: "Keystone"},
+		existing.Name,
+		field.ErrorList{field.Invalid(
+			field.NewPath("spec", "bootstrap", "region"), cp.Spec.Region, "bootstrap.region is immutable",
+		)},
+	)
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, existing).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Update: func(context.Context, client.WithWatch, client.Object, ...client.UpdateOption) error {
+				return invalidErr
+			},
+		}).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileKeystone(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred(), "the Invalid rejection must propagate so the manager requeues with backoff")
+	g.Expect(apierrors.IsInvalid(err)).To(BeTrue())
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeKeystoneReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("KeystoneProjectionRejected"),
+		"an Invalid (422) rejection must surface a distinct, actionable reason, not the generic KeystoneError")
+	g.Expect(cond.Message).To(ContainSubstring("immutable"),
+		"the underlying immutability rejection must be carried into the condition message")
 }
 
 func TestReconcileKeystone_ManagedOverridesDBSecretRef(t *testing.T) {

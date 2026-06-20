@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"strconv"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -203,18 +204,21 @@ func (w *ControlPlaneWebhook) ValidateCreate(ctx context.Context, obj *ControlPl
 
 // ValidateUpdate implements admission.Validator[*ControlPlane].
 // In addition to the spec checks in validate(), it enforces the create-only
-// immutable fields between oldObj and newObj: flipping the database/cache mode
-// or renaming a managed clusterRef would orphan the previously-projected
-// MariaDB/Memcached child (and its credentials), and renaming
+// immutable fields between oldObj and newObj (validateImmutable): flipping the
+// database/cache mode or renaming a managed clusterRef would orphan the
+// previously-projected MariaDB/Memcached child (and its credentials), renaming
 // cloudCredentialsRef.secretName would leak the previously-projected K-ORC
-// clouds.yaml ExternalSecret. Restricting these at admission is the smallest
-// change that prevents every such orphan/leak the sub-reconcilers would
-// otherwise create on the next reconcile (#476). Spec errors and immutability
-// errors are accumulated into a single Invalid response so a reviewer sees all
-// problems at once.
+// clouds.yaml ExternalSecret (#476), and renaming the database or changing the
+// region would re-point the projection at the now-immutable Keystone child
+// fields and wedge the reconcile loop (#466). It additionally rejects an
+// openStackRelease downgrade (validateReleaseNotDowngraded), since Keystone DB
+// migrations are forward-only. Spec errors, immutability errors, and the
+// downgrade error are accumulated into a single Invalid response so a reviewer
+// sees all problems at once.
 func (w *ControlPlaneWebhook) ValidateUpdate(_ context.Context, oldObj, newObj *ControlPlane) (admission.Warnings, error) {
 	allErrs := w.validate(newObj)
 	allErrs = append(allErrs, validateImmutable(oldObj, newObj)...)
+	allErrs = append(allErrs, validateReleaseNotDowngraded(oldObj, newObj)...)
 	return nil, newInvalidIfErrs(newObj, allErrs)
 }
 
@@ -355,6 +359,12 @@ func newInvalidIfErrs(cp *ControlPlane, allErrs field.ErrorList) error {
 //     and orphans the old one the same way.
 //   - A cloudCredentialsRef.secretName change re-points the K-ORC clouds.yaml
 //     projection and leaks the previously-named ExternalSecret.
+//   - The database NAME (spec.infrastructure.database.database) and the region
+//     (spec.region) are projected verbatim into the Keystone child's now-immutable
+//     spec.database.database / spec.bootstrap.region (#466). Renaming either here
+//     would make the next reconcile attempt an update the Keystone CEL rule
+//     rejects, wedging the loop; rejecting the change at the ControlPlane layer
+//     surfaces a clean error instead.
 //
 // validate() already enforces the database/cache XOR (exactly one of clusterRef
 // or host/servers), so clusterRef nil-ness is an unambiguous mode discriminator
@@ -372,6 +382,10 @@ func validateImmutable(oldObj, newObj *ControlPlane) field.ErrorList {
 	case oldDB.ClusterRef != nil && newDB.ClusterRef != nil && oldDB.ClusterRef.Name != newDB.ClusterRef.Name:
 		allErrs = append(allErrs, field.Invalid(dbPath.Child("clusterRef", "name"),
 			newDB.ClusterRef.Name, "managed database clusterRef.name is immutable"))
+	}
+	if oldDB.Database != newDB.Database {
+		allErrs = append(allErrs, field.Invalid(dbPath.Child("database"),
+			newDB.Database, "database name is immutable"))
 	}
 
 	cachePath := field.NewPath("spec", "infrastructure", "cache")
@@ -395,7 +409,54 @@ func validateImmutable(oldObj, newObj *ControlPlane) field.ErrorList {
 		))
 	}
 
+	if oldObj.Spec.Region != newObj.Spec.Region {
+		allErrs = append(allErrs, field.Invalid(
+			field.NewPath("spec", "region"),
+			newObj.Spec.Region, "region is immutable",
+		))
+	}
+
 	return allErrs
+}
+
+// validateReleaseNotDowngraded rejects an openStackRelease downgrade on UPDATE.
+// OpenStack/Keystone DB migrations are forward-only (keystone-manage db_sync has
+// no down-migration path), so re-pointing a live control plane at an older
+// release would project an older image whose schema is behind the already-migrated
+// database -- an unrecoverable state. Upgrades and same-release updates are
+// allowed. Both releases are guarded against controlPlaneReleaseRegexp first; a
+// release that does not match the YYYY.N pattern is left to validate()'s pattern
+// check rather than mis-parsed here, so a malformed value yields the pattern
+// error alone instead of a confusing downgrade message.
+func validateReleaseNotDowngraded(oldObj, newObj *ControlPlane) field.ErrorList {
+	oldRel := oldObj.Spec.OpenStackRelease
+	newRel := newObj.Spec.OpenStackRelease
+	if !controlPlaneReleaseRegexp.MatchString(oldRel) || !controlPlaneReleaseRegexp.MatchString(newRel) {
+		return nil
+	}
+	// Compare the (year, minor) integer tuples rather than the raw strings. The
+	// regex re-check above guarantees both values are well-formed (a 4-digit year,
+	// the dot, then an all-digit minor), so the byte offsets are safe and Atoi
+	// cannot fail. Integer comparison keeps this correct even if
+	// controlPlaneReleaseRegexp is ever loosened to admit a multi-digit minor
+	// (e.g. 2025.10), where lexicographic string ordering would silently invert
+	// ("2025.10" < "2025.2" as strings) and reject a real upgrade while admitting
+	// a real downgrade.
+	parse := func(r string) (year, minor int) {
+		year, _ = strconv.Atoi(r[:4])
+		minor, _ = strconv.Atoi(r[5:])
+		return year, minor
+	}
+	oldYear, oldMinor := parse(oldRel)
+	newYear, newMinor := parse(newRel)
+	if newYear < oldYear || (newYear == oldYear && newMinor < oldMinor) {
+		return field.ErrorList{field.Invalid(
+			field.NewPath("spec", "openStackRelease"),
+			newRel,
+			fmt.Sprintf("openStackRelease downgrade from %q to %q is not permitted; Keystone DB migrations are not reversible", oldRel, newRel),
+		)}
+	}
+	return nil
 }
 
 // validateUniqueInNamespace enforces the one-ControlPlane-per-namespace contract

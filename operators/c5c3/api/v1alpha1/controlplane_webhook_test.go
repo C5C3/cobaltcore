@@ -633,19 +633,101 @@ func TestValidateUpdate_RejectsCloudSecretNameChange(t *testing.T) {
 }
 
 // TestValidateUpdate_AllowsMutableFieldChanges verifies that updates which only
-// touch mutable fields (region, replicas, the release) are accepted on an
-// otherwise-unchanged managed ControlPlane, so the immutability guard does not
-// over-restrict legitimate edits (#476).
+// touch mutable fields (replicas, an openStackRelease upgrade) are accepted on
+// an otherwise-unchanged managed ControlPlane, so the immutability guard does
+// not over-restrict legitimate edits (#476, #466). Region is now immutable
+// (#466), so it is deliberately left unchanged here.
 func TestValidateUpdate_AllowsMutableFieldChanges(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &ControlPlaneWebhook{}
 	oldCP := managedControlPlane()
 
 	newCP := managedControlPlane()
-	newCP.Spec.Region = "EU-West"
 	newCP.Spec.OpenStackRelease = "2026.1"
 	replicas := int32(3)
 	newCP.Spec.Services.Keystone.Replicas = &replicas
+
+	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// TestValidateUpdate_RejectsDatabaseNameChange verifies that renaming the shared
+// database is rejected on UPDATE: the name is projected verbatim into the
+// Keystone child's now-immutable spec.database.database, so a rename here would
+// wedge the reconcile loop (#466). Only the database name changes, so the mode
+// and clusterRef.name immutability checks stay satisfied.
+func TestValidateUpdate_RejectsDatabaseNameChange(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	oldCP := managedControlPlane()
+	newCP := managedControlPlane()
+	newCP.Spec.Infrastructure.Database.Database = "renamed"
+
+	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("database name is immutable"))
+}
+
+// TestValidateUpdate_RejectsRegionChange verifies that changing the region is
+// rejected on UPDATE: the region is projected verbatim into the Keystone child's
+// now-immutable spec.bootstrap.region (#466).
+func TestValidateUpdate_RejectsRegionChange(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	oldCP := managedControlPlane()
+	newCP := managedControlPlane()
+	newCP.Spec.Region = "EU-West"
+
+	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("region is immutable"))
+}
+
+// TestValidateUpdate_RejectsOpenStackReleaseDowngrade verifies that lowering the
+// openStackRelease is rejected on UPDATE, because Keystone DB migrations are
+// forward-only (#466). Both a year downgrade and a same-year minor downgrade are
+// exercised.
+func TestValidateUpdate_RejectsOpenStackReleaseDowngrade(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+
+	// Year downgrade: 2025.2 -> 2024.1.
+	oldCP := managedControlPlane()
+	yearDown := managedControlPlane()
+	yearDown.Spec.OpenStackRelease = "2024.1"
+	_, err := w.ValidateUpdate(context.Background(), oldCP, yearDown)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("downgrade"))
+
+	// Same-year minor downgrade: 2025.2 -> 2025.1.
+	minorDown := managedControlPlane()
+	minorDown.Spec.OpenStackRelease = "2025.1"
+	_, err = w.ValidateUpdate(context.Background(), oldCP, minorDown)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("downgrade"))
+}
+
+// TestValidateUpdate_AcceptsOpenStackReleaseUpgrade verifies that raising the
+// openStackRelease is accepted (the monotonic-upgrade happy path) (#466).
+func TestValidateUpdate_AcceptsOpenStackReleaseUpgrade(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	oldCP := managedControlPlane()
+	newCP := managedControlPlane()
+	newCP.Spec.OpenStackRelease = "2026.1"
+
+	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// TestValidateUpdate_AcceptsSameOpenStackRelease verifies that re-applying the
+// same openStackRelease is accepted, so the downgrade guard does not fire on a
+// no-op update (#466).
+func TestValidateUpdate_AcceptsSameOpenStackRelease(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	oldCP := managedControlPlane()
+	newCP := managedControlPlane()
 
 	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
 	g.Expect(err).NotTo(HaveOccurred())
