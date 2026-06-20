@@ -7,15 +7,21 @@ package controller
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"time"
 
+	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/yaml"
 
 	"github.com/c5c3/forge/internal/common/conditions"
 	"github.com/c5c3/forge/internal/common/secrets"
@@ -173,6 +179,71 @@ func (r *ControlPlaneReconciler) reconcileAdminCredential(ctx context.Context, c
 		return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
 	}
 
+	// Close the post-re-mint stale-credential window. A re-mint revokes the old
+	// Keystone credential immediately, but the k-orc-clouds-yaml Secret only
+	// refreshes from OpenBao at the ExternalSecret's hourly refreshInterval, so the
+	// PushSecret-Ready gate above can pass while the materialized Secret K-ORC
+	// actually authenticates with still holds the revoked credential — up to ~2h of
+	// auth against a dead credential while AdminCredentialReady reads True.
+	//
+	// Force an immediate ESO re-sync (a force-sync annotation keyed by the assembled
+	// content hash — idempotent, so a steady-state pass does not churn the
+	// ExternalSecret) and gate AdminCredentialReady on the materialized Secret bytes
+	// actually matching the freshly assembled clouds.yaml. The byte-compare — not the
+	// best-effort force-sync — is the correctness guarantee: it never reports Ready
+	// while the materialized credential is stale.
+	contentSum := sha256.Sum256(cloudsYAML)
+	contentHash := hex.EncodeToString(contentSum[:])
+	if err := r.forceSyncKORCCloudsYAMLExternalSecret(ctx, cp, cloudsYamlName, contentHash); err != nil {
+		fail("CloudsYamlError", fmt.Sprintf("forcing k-orc clouds.yaml ExternalSecret re-sync: %v", err))
+		return ctrl.Result{}, err
+	}
+
+	materialized := &corev1.Secret{}
+	matKey := types.NamespacedName{Namespace: childNamespace(cp), Name: cloudsYamlName}
+	if err := r.Get(ctx, matKey, materialized); err != nil {
+		if apierrors.IsNotFound(err) {
+			logger.Info("materialized k-orc clouds.yaml Secret not present yet, requeuing")
+			fail("WaitingForCloudsYamlSync",
+				"k-orc clouds.yaml Secret has not yet materialized the assembled application credential")
+			return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
+		}
+		fail("CloudsYamlError", fmt.Sprintf("reading materialized k-orc clouds.yaml Secret: %v", err))
+		return ctrl.Result{}, err
+	}
+	// Compare SEMANTICALLY, not byte-for-byte: a bare bytes.Equal would pin
+	// AdminCredentialReady at False forever if ESO/OpenBao ever re-serialised the
+	// value once (a stripped trailing newline, reordered keys, changed quoting),
+	// even though K-ORC parses the YAML and the credential is functionally
+	// identical. Comparing the parsed application-credential id+secret keeps the
+	// stale-credential guarantee (a revoked credential never reads Ready) without a
+	// brittle byte gate that a benign normalisation could wedge permanently.
+	if !sameAppCredIdentity(materialized.Data[appCredCloudsYAMLKey], cloudsYAML) {
+		// Bound the wait so a never-converging sync is distinguishable from a
+		// 2-second transient miss. LastRotation marks when the current credential id
+		// was (re-)minted, so a materialised Secret that still does not carry it
+		// after cloudsYamlSyncStuckTimeout means ESO/OpenBao is not going to agree on
+		// its own; escalate from the transient WaitingForCloudsYamlSync to the
+		// alertable CloudsYamlSyncStuck so on-call gets a terminal, bounded signal.
+		reason := "WaitingForCloudsYamlSync"
+		message := "materialized k-orc clouds.yaml does not yet match the assembled application credential; awaiting ESO re-sync"
+		var rotatedAt *metav1.Time
+		if cp.Status.AdminApplicationCredential != nil {
+			rotatedAt = cp.Status.AdminApplicationCredential.LastRotation
+		}
+		if rotatedAt != nil && time.Since(rotatedAt.Time) > cloudsYamlSyncStuckTimeout {
+			reason = "CloudsYamlSyncStuck"
+			message = fmt.Sprintf("materialized k-orc clouds.yaml has not matched the assembled application credential "+
+				"for over %s; the ESO ExternalSecret or OpenBao backend may be unable to sync — manual intervention required",
+				cloudsYamlSyncStuckTimeout)
+			logger.Info("materialized k-orc clouds.yaml sync is stuck", "rotatedAt", rotatedAt.Time, "timeout", cloudsYamlSyncStuckTimeout)
+		} else {
+			logger.Info("materialized k-orc clouds.yaml is stale, requeuing for ESO re-sync")
+		}
+		fail(reason, message)
+		return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
+	}
+
 	conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
 		Type:               conditionTypeAdminCredentialReady,
 		Status:             metav1.ConditionTrue,
@@ -192,4 +263,96 @@ func pushSecretReady(ps *esov1alpha1.PushSecret) bool {
 		}
 	}
 	return false
+}
+
+// appCredIdentity is the credential-identifying subset of an assembled
+// app-credential clouds.yaml: the application credential id and secret. The
+// materialized (ESO) and freshly-assembled documents are compared on these parsed
+// fields rather than byte-for-byte (see reconcileAdminCredential).
+type appCredIdentity struct {
+	id     string
+	secret string
+}
+
+// sameAppCredIdentity reports whether two assembled app-credential clouds.yaml
+// documents carry the same application-credential id and secret. A parse failure
+// or a missing id/secret on either side is treated as NOT matching, so the
+// stale-credential gate never reports a credential fresh against malformed,
+// empty, or password-based (non-app-credential) input.
+func sameAppCredIdentity(materialized, assembled []byte) bool {
+	m, mok := parseAppCredIdentity(materialized)
+	a, aok := parseAppCredIdentity(assembled)
+	if !mok || !aok {
+		return false
+	}
+	return m.id == a.id && m.secret == a.secret
+}
+
+// parseAppCredIdentity extracts the application-credential id and secret from the
+// single cloud entry of an assembled clouds.yaml. ok is false when the document
+// does not parse or no cloud carries both an id and a secret (e.g. a password-based
+// bootstrap document), so callers treat such input as a non-match.
+func parseAppCredIdentity(cloudsYAML []byte) (appCredIdentity, bool) {
+	if len(cloudsYAML) == 0 {
+		return appCredIdentity{}, false
+	}
+	var doc struct {
+		Clouds map[string]struct {
+			Auth struct {
+				ApplicationCredentialID     string `json:"application_credential_id"`
+				ApplicationCredentialSecret string `json:"application_credential_secret"`
+			} `json:"auth"`
+		} `json:"clouds"`
+	}
+	if err := yaml.Unmarshal(cloudsYAML, &doc); err != nil {
+		return appCredIdentity{}, false
+	}
+	for _, cloud := range doc.Clouds {
+		if cloud.Auth.ApplicationCredentialID != "" && cloud.Auth.ApplicationCredentialSecret != "" {
+			return appCredIdentity{id: cloud.Auth.ApplicationCredentialID, secret: cloud.Auth.ApplicationCredentialSecret}, true
+		}
+	}
+	return appCredIdentity{}, false
+}
+
+// forceSyncKORCCloudsYAMLExternalSecret nudges ESO to re-materialise the K-ORC
+// clouds.yaml Secret immediately rather than at the next hourly refresh, by
+// stamping the external-secrets.io/force-sync annotation with the content hash of
+// the freshly assembled clouds.yaml. ESO folds the ExternalSecret's annotations
+// into its sync-decision hash, so a changed value forces a re-sync; an unchanged
+// value is a no-op, so a steady-state pass does not churn the ExternalSecret.
+//
+// A missing ExternalSecret is treated as a no-op nil — reconcileKORC owns its
+// creation (ensureKORCCloudsYAMLExternalSecret), and the byte-compare gate in
+// reconcileAdminCredential, not this nudge, is what guarantees the materialized
+// credential is fresh before AdminCredentialReady flips True.
+func (r *ControlPlaneReconciler) forceSyncKORCCloudsYAMLExternalSecret(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, name, hash string) error {
+	key := types.NamespacedName{Namespace: childNamespace(cp), Name: name}
+	// Read-modify-write the force-sync annotation under RetryOnConflict: ESO mutates
+	// this ExternalSecret's status and its own annotations on every refresh (and on
+	// the force-sync it triggers), so a 409 Conflict between our Get and Update is
+	// expected concurrency — NOT a clouds.yaml fault. Re-reading and retrying keeps a
+	// transient conflict from flipping AdminCredentialReady to False/CloudsYamlError
+	// (and incrementing the sub-reconciler error counter) for what self-heals on the
+	// very next attempt.
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		es := &esov1.ExternalSecret{}
+		if err := r.Get(ctx, key, es); err != nil {
+			if apierrors.IsNotFound(err) {
+				return nil
+			}
+			return err
+		}
+		if es.Annotations[esov1.AnnotationForceSync] == hash {
+			return nil
+		}
+		if es.Annotations == nil {
+			es.Annotations = map[string]string{}
+		}
+		es.Annotations[esov1.AnnotationForceSync] = hash
+		return r.Update(ctx, es)
+	}); err != nil {
+		return fmt.Errorf("forcing k-orc clouds.yaml ExternalSecret %q re-sync: %w", name, err)
+	}
+	return nil
 }

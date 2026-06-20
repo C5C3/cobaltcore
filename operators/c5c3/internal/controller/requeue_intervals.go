@@ -56,6 +56,16 @@ const (
 	// generous so a slow-but-progressing revoke is not flagged as stalled.
 	remintStallTimeout = 5 * time.Minute
 
+	// cloudsYamlSyncStuckTimeout bounds how long the materialised K-ORC clouds.yaml
+	// Secret may disagree with the freshly assembled admin credential before
+	// reconcileAdminCredential escalates AdminCredentialReady from the transient
+	// "WaitingForCloudsYamlSync" reason to the alertable "CloudsYamlSyncStuck". A
+	// never-converging ESO/OpenBao sync otherwise looks identical to a 2-second
+	// transient miss, so on-call waits forever with no terminal signal. Measured
+	// from the credential's LastRotation (when the current id was minted); the
+	// window is generous so a healthy force-sync is never flagged as stuck.
+	cloudsYamlSyncStuckTimeout = 15 * time.Minute
+
 	// duplicateControlPlaneRequeueAfter is the backoff a parked duplicate
 	// ControlPlane uses while an older ControlPlane owns its namespace
 	// (defense-in-depth). Deleting the incumbent enqueues no

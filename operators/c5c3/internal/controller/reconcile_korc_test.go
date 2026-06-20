@@ -11,6 +11,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"testing"
 	"time"
 
@@ -659,8 +660,12 @@ func TestReconcileAdminCredential_PushSecretBuiltAndReady(t *testing.T) {
 	cp := korcControlPlane()
 	setKORCReady(cp)
 	cp.Status.AdminApplicationCredential = &c5c3v1alpha1.AdminApplicationCredentialStatus{ID: "test-ac-id"}
+	// The materialized k-orc-clouds-yaml Secret carries the assembled credential the
+	// byte-compare gate checks against (id "test-ac-id", value "generated-app-cred-secret"
+	// from mintedAppCredSecret), so AdminCredentialReady can flip True.
 	c := fake.NewClientBuilder().WithScheme(s).
-		WithObjects(cp, readyClusterSecretStore(), readyCloudsYamlES(cp), mintedAppCredSecret(cp), readyAppCredPushSecret(cp)).Build()
+		WithObjects(cp, readyClusterSecretStore(), readyCloudsYamlES(cp), mintedAppCredSecret(cp), readyAppCredPushSecret(cp),
+			materializedCloudsYamlSecret(cp, "test-ac-id", "generated-app-cred-secret")).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
 	_, err := r.reconcileAdminCredential(context.Background(), cp)
@@ -669,6 +674,16 @@ func TestReconcileAdminCredential_PushSecretBuiltAndReady(t *testing.T) {
 	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeAdminCredentialReady)
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+
+	// The clouds.yaml ExternalSecret carries the force-sync annotation keyed by the
+	// assembled content hash, so ESO re-materialises immediately rather than at the
+	// hourly refresh (closing the stale-credential window after a re-mint).
+	sum := sha256.Sum256([]byte(buildAppCredCloudsYAML(cp, "test-ac-id", "generated-app-cred-secret")))
+	es := &esov1.ExternalSecret{}
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Name: korcCloudsYamlSecretName, Namespace: childNamespace(cp),
+	}, es)).To(Succeed())
+	g.Expect(es.Annotations[esov1.AnnotationForceSync]).To(Equal(hex.EncodeToString(sum[:])))
 
 	// PushSecret created with the right store + remote path.
 	ps := &esov1alpha1.PushSecret{}
@@ -691,6 +706,187 @@ func TestReconcileAdminCredential_PushSecretBuiltAndReady(t *testing.T) {
 	g.Expect(sec.Data).To(HaveKey("clouds.yaml"))
 	g.Expect(string(sec.Data["clouds.yaml"])).To(ContainSubstring("application_credential_id"))
 	g.Expect(string(sec.Data["clouds.yaml"])).To(ContainSubstring("test-ac-id"))
+}
+
+// TestReconcileAdminCredential_DefersUntilCloudsYamlMaterialized asserts the
+// stale-credential gate: every other gate (KORCReady, ClusterSecretStore,
+// clouds.yaml ES Ready, PushSecret synced) is satisfied, but the materialized
+// k-orc-clouds-yaml Secret is absent, so AdminCredentialReady must stay False with
+// WaitingForCloudsYamlSync rather than report Ready against a credential K-ORC
+// cannot yet read. The force-sync annotation must still be stamped so the next ESO
+// sync materialises the fresh credential.
+func TestReconcileAdminCredential_DefersUntilCloudsYamlMaterialized(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := korcControlPlane()
+	setKORCReady(cp)
+	cp.Status.AdminApplicationCredential = &c5c3v1alpha1.AdminApplicationCredentialStatus{ID: "test-ac-id"}
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(cp, readyClusterSecretStore(), readyCloudsYamlES(cp), mintedAppCredSecret(cp), readyAppCredPushSecret(cp)).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	res, err := r.reconcileAdminCredential(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeAdminCredentialReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("WaitingForCloudsYamlSync"))
+
+	sum := sha256.Sum256([]byte(buildAppCredCloudsYAML(cp, "test-ac-id", "generated-app-cred-secret")))
+	es := &esov1.ExternalSecret{}
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Name: korcCloudsYamlSecretName, Namespace: childNamespace(cp),
+	}, es)).To(Succeed())
+	g.Expect(es.Annotations[esov1.AnnotationForceSync]).To(Equal(hex.EncodeToString(sum[:])),
+		"a deferred sync must still stamp the force-sync annotation so ESO re-materialises")
+}
+
+// TestReconcileAdminCredential_SemanticMatchToleratesNormalizedCloudsYaml asserts
+// the stale gate is SEMANTIC, not byte-strict: a materialized clouds.yaml that
+// ESO/OpenBao re-serialised (reordered keys, requoted, stripped a trailing newline)
+// is byte-different from the freshly assembled document but carries the SAME
+// application credential, so AdminCredentialReady must flip True. A byte-strict gate
+// would pin it at False forever.
+func TestReconcileAdminCredential_SemanticMatchToleratesNormalizedCloudsYaml(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := korcControlPlane()
+	setKORCReady(cp)
+	cp.Status.AdminApplicationCredential = &c5c3v1alpha1.AdminApplicationCredentialStatus{ID: "test-ac-id"}
+
+	// Round-trip the assembled clouds.yaml through YAML to simulate an ESO/OpenBao
+	// re-serialisation: byte-different, semantically identical.
+	assembled := []byte(buildAppCredCloudsYAML(cp, "test-ac-id", "generated-app-cred-secret"))
+	var generic map[string]interface{}
+	g.Expect(yaml.Unmarshal(assembled, &generic)).To(Succeed())
+	reserialized, err := yaml.Marshal(generic)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(reserialized).NotTo(Equal(assembled),
+		"the round-trip must be byte-different to actually exercise the semantic gate")
+
+	matSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: korcCloudsYamlSecretName, Namespace: childNamespace(cp)},
+		Data:       map[string][]byte{appCredCloudsYAMLKey: reserialized},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(cp, readyClusterSecretStore(), readyCloudsYamlES(cp), mintedAppCredSecret(cp), readyAppCredPushSecret(cp), matSecret).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err = r.reconcileAdminCredential(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeAdminCredentialReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue),
+		"a semantically-identical but byte-different materialized clouds.yaml must satisfy the gate")
+}
+
+// TestReconcileAdminCredential_StuckCloudsYamlSyncEscalates asserts the bounded
+// escalation: a materialized clouds.yaml that still carries the OLD (revoked)
+// credential long after the current one was minted (LastRotation past
+// cloudsYamlSyncStuckTimeout) is a never-converging sync, so AdminCredentialReady
+// escalates from the transient WaitingForCloudsYamlSync to the alertable
+// CloudsYamlSyncStuck reason — not an eternal, transient-looking wait.
+func TestReconcileAdminCredential_StuckCloudsYamlSyncEscalates(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := korcControlPlane()
+	setKORCReady(cp)
+	rotatedLongAgo := metav1.NewTime(metav1.Now().Add(-2 * cloudsYamlSyncStuckTimeout))
+	cp.Status.AdminApplicationCredential = &c5c3v1alpha1.AdminApplicationCredentialStatus{
+		ID: "new-ac-id", LastRotation: &rotatedLongAgo,
+	}
+	// Materialized Secret still holds the OLD credential id — ESO has not (and will
+	// not) re-sync.
+	staleMat := materializedCloudsYamlSecret(cp, "old-revoked-id", "generated-app-cred-secret")
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(cp, readyClusterSecretStore(), readyCloudsYamlES(cp), mintedAppCredSecret(cp), readyAppCredPushSecret(cp), staleMat).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	res, err := r.reconcileAdminCredential(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeAdminCredentialReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("CloudsYamlSyncStuck"),
+		"a never-converging materialized clouds.yaml past the timeout must escalate to an alertable reason")
+}
+
+// TestReconcileAdminCredential_RecentStaleStaysTransient asserts the escalation is
+// time-bounded, not always-on: a freshly stale materialized clouds.yaml (the current
+// credential was just minted, LastRotation within the timeout) stays on the transient
+// WaitingForCloudsYamlSync reason so a normal ESO sync lag is not mis-reported as stuck.
+func TestReconcileAdminCredential_RecentStaleStaysTransient(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := korcControlPlane()
+	setKORCReady(cp)
+	justRotated := metav1.Now()
+	cp.Status.AdminApplicationCredential = &c5c3v1alpha1.AdminApplicationCredentialStatus{
+		ID: "new-ac-id", LastRotation: &justRotated,
+	}
+	staleMat := materializedCloudsYamlSecret(cp, "old-revoked-id", "generated-app-cred-secret")
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(cp, readyClusterSecretStore(), readyCloudsYamlES(cp), mintedAppCredSecret(cp), readyAppCredPushSecret(cp), staleMat).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	res, err := r.reconcileAdminCredential(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeAdminCredentialReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("WaitingForCloudsYamlSync"),
+		"a freshly stale materialized clouds.yaml within the timeout must stay on the transient reason")
+}
+
+// TestForceSyncKORCCloudsYAMLExternalSecret_RetriesOnConflict asserts that a 409
+// Conflict on the force-sync annotation Update (expected concurrency — ESO mutates
+// the ExternalSecret on every refresh) is retried, not surfaced as a hard error that
+// would flip AdminCredentialReady to False/CloudsYamlError and flap the aggregate.
+func TestForceSyncKORCCloudsYAMLExternalSecret_RetriesOnConflict(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := korcControlPlane()
+	es := &esov1.ExternalSecret{
+		ObjectMeta: metav1.ObjectMeta{Name: korcCloudsYamlSecretName, Namespace: childNamespace(cp)},
+	}
+	conflicts := 0
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(es).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Update: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+				if _, ok := obj.(*esov1.ExternalSecret); ok && conflicts == 0 {
+					conflicts++
+					return apierrors.NewConflict(
+						schema.GroupResource{Group: "external-secrets.io", Resource: "externalsecrets"},
+						korcCloudsYamlSecretName, errors.New("the object has been modified"),
+					)
+				}
+				return cl.Update(ctx, obj, opts...)
+			},
+		}).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	err := r.forceSyncKORCCloudsYAMLExternalSecret(context.Background(), cp, korcCloudsYamlSecretName, "hash-1")
+	g.Expect(err).NotTo(HaveOccurred(), "an expected 409 conflict must be retried, not surfaced as a hard error")
+	g.Expect(conflicts).To(Equal(1), "the first Update must have conflicted and been retried")
+
+	got := &esov1.ExternalSecret{}
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Name: korcCloudsYamlSecretName, Namespace: childNamespace(cp),
+	}, got)).To(Succeed())
+	g.Expect(got.Annotations[esov1.AnnotationForceSync]).To(Equal("hash-1"),
+		"the force-sync annotation must be stamped on the retry that succeeds")
 }
 
 // TestAdminAppCredentialRemoteKeyFor_EmbedsNamespaceAndName locks in the per-CR
@@ -751,7 +947,8 @@ func TestReconcileAdminCredential_PushSecretClobberSafeNoChurn(t *testing.T) {
 	setKORCReady(cp)
 	cp.Status.AdminApplicationCredential = &c5c3v1alpha1.AdminApplicationCredentialStatus{ID: "test-ac-id"}
 	c := fake.NewClientBuilder().WithScheme(s).
-		WithObjects(cp, readyClusterSecretStore(), readyCloudsYamlES(cp), mintedAppCredSecret(cp), readyAppCredPushSecret(cp)).Build()
+		WithObjects(cp, readyClusterSecretStore(), readyCloudsYamlES(cp), mintedAppCredSecret(cp), readyAppCredPushSecret(cp),
+			materializedCloudsYamlSecret(cp, "test-ac-id", "generated-app-cred-secret")).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
 	_, err := r.reconcileAdminCredential(context.Background(), cp)
@@ -1308,6 +1505,25 @@ func readyCloudsYamlES(cp *c5c3v1alpha1.ControlPlane) *esov1.ExternalSecret {
 			Conditions: []esov1.ExternalSecretStatusCondition{
 				{Type: esov1.ExternalSecretReady, Status: corev1.ConditionTrue},
 			},
+		},
+	}
+}
+
+// materializedCloudsYamlSecret returns the plain Secret ESO materialises from
+// OpenBao under the spec's CloudCredentialsRef.SecretName — the k-orc-clouds-yaml
+// Secret K-ORC authenticates with — carrying the assembled app-credential
+// clouds.yaml the AdminCredentialReady byte-compare gate checks against. acID and
+// value must match cp.Status.AdminApplicationCredential.ID and the operator-owned
+// Secret's "value" so the bytes equal what reconcileAdminCredential re-assembles.
+func materializedCloudsYamlSecret(cp *c5c3v1alpha1.ControlPlane, acID, value string) *corev1.Secret {
+	name := cp.Spec.KORC.AdminCredential.CloudCredentialsRef.SecretName
+	if name == "" {
+		name = korcCloudsYamlSecretName
+	}
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: childNamespace(cp)},
+		Data: map[string][]byte{
+			appCredCloudsYAMLKey: []byte(buildAppCredCloudsYAML(cp, acID, value)),
 		},
 	}
 }

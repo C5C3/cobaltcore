@@ -16,6 +16,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -338,6 +339,59 @@ func simulatePushSecretSyncedWhenPresent(t testing.TB, ctx context.Context, c cl
 		"admin app-credential PushSecret should be created and synced")
 }
 
+// simulateCloudsYamlMaterializedWhenPresent performs the ESO round-trip envtest has
+// no controller for: it reads the operator-owned app-credential Secret the PushSecret
+// mirrors to OpenBao and writes its assembled clouds.yaml into the k-orc-clouds-yaml
+// Secret K-ORC authenticates with. reconcileAdminCredential now byte-compares the
+// materialized Secret against the freshly assembled clouds.yaml before flipping
+// AdminCredentialReady True (closing the post-re-mint stale-credential window), so
+// without this materialisation the gate would wait forever.
+func simulateCloudsYamlMaterializedWhenPresent(t testing.TB, ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+
+	name := cp.Spec.KORC.AdminCredential.CloudCredentialsRef.SecretName
+	if name == "" {
+		name = korcCloudsYamlSecretName
+	}
+
+	// Wait for the operator-owned Secret to hold the MINTED application-credential
+	// clouds.yaml, not the password-based bootstrap seed: reconcileKORC creates the
+	// PushSecret (and seeds the password clouds.yaml) before reconcileAdminCredential
+	// overwrites it with the app-credential document, so copying too early would
+	// materialise the wrong bytes and the byte-compare gate would never match.
+	src := &corev1.Secret{}
+	g.Eventually(func() error {
+		if err := c.Get(ctx, client.ObjectKey{Namespace: childNamespace(cp), Name: adminAppCredentialSecretName(cp)}, src); err != nil {
+			return err
+		}
+		if !strings.Contains(string(src.Data[appCredCloudsYAMLKey]), "application_credential_id") {
+			return fmt.Errorf("operator-owned Secret still holds the password seed, not the minted app-credential clouds.yaml")
+		}
+		return nil
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+		"operator must assemble the app-credential clouds.yaml before ESO can materialise it back")
+
+	materialized := &corev1.Secret{}
+	err := c.Get(ctx, client.ObjectKey{Namespace: childNamespace(cp), Name: name}, materialized)
+	switch {
+	case apierrors.IsNotFound(err):
+		materialized = &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: childNamespace(cp)},
+			Data:       map[string][]byte{appCredCloudsYAMLKey: src.Data[appCredCloudsYAMLKey]},
+		}
+		g.Expect(c.Create(ctx, materialized)).To(Succeed(), "materialize the k-orc clouds.yaml Secret")
+	case err == nil:
+		if materialized.Data == nil {
+			materialized.Data = map[string][]byte{}
+		}
+		materialized.Data[appCredCloudsYAMLKey] = src.Data[appCredCloudsYAMLKey]
+		g.Expect(c.Update(ctx, materialized)).To(Succeed(), "refresh the materialized k-orc clouds.yaml Secret")
+	default:
+		g.Expect(err).NotTo(HaveOccurred(), "get materialized k-orc clouds.yaml Secret")
+	}
+}
+
 // simulateAdminPasswordExternalSecretSyncWhenPresent waits for the operator-created
 // per-ControlPlane admin-password ExternalSecret (named adminPasswordSecretName(cp)
 // in childNamespace(cp)), asserts it reads this CR's keystone-NAME-scoped OpenBao
@@ -473,11 +527,13 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 		To(Succeed(), "simulate k-orc clouds.yaml ExternalSecret sync")
 
 	// --- Phase 4: AdminCredential push. Gated on the clouds.yaml ES (synced
-	// above) AND on the admin app-credential PushSecret syncing to OpenBao
-	// The latter is status-gated, so simulate the ESO sync —
-	// otherwise AdminCredentialReady never flips in envtest. ---
+	// above), on the admin app-credential PushSecret syncing to OpenBao, AND on the
+	// materialized k-orc-clouds-yaml Secret matching the assembled credential. The
+	// PushSecret sync is status-gated and the materialisation is the ESO round-trip,
+	// so simulate both — otherwise AdminCredentialReady never flips in envtest. ---
 	simulatePushSecretSyncedWhenPresent(t, ctx, c,
 		client.ObjectKey{Name: adminAppCredentialPushSecretName(cp), Namespace: childNamespace(cp)})
+	simulateCloudsYamlMaterializedWhenPresent(t, ctx, c, cp)
 	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeAdminCredentialReady, metav1.ConditionTrue, itEventuallyTimeout)
 
 	// --- Phase 5: Catalog (Service + Endpoint). Not status-gated. ---
@@ -979,10 +1035,13 @@ func driveControlPlaneToAdminCredentialReady(
 		client.ObjectKey{Namespace: ns, Name: korcCloudsYamlSecretName})).
 		To(Succeed(), "simulate k-orc clouds.yaml ExternalSecret sync")
 
-	// --- Phase 4: AdminCredential push (gated on the synced clouds.yaml ES and the
-	// admin app-credential PushSecret syncing to OpenBao). ---
+	// --- Phase 4: AdminCredential push (gated on the synced clouds.yaml ES, the
+	// admin app-credential PushSecret syncing to OpenBao, AND the materialized
+	// k-orc-clouds-yaml Secret matching the assembled credential — the byte-compare
+	// gate that closes the post-re-mint stale-credential window). ---
 	simulatePushSecretSyncedWhenPresent(t, ctx, c,
 		client.ObjectKey{Name: adminAppCredentialPushSecretName(cp), Namespace: childNamespace(cp)})
+	simulateCloudsYamlMaterializedWhenPresent(t, ctx, c, cp)
 	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeAdminCredentialReady, metav1.ConditionTrue, itEventuallyTimeout)
 }
 
