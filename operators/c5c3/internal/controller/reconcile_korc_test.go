@@ -1306,7 +1306,10 @@ func TestReconcileCatalog_RegistersServiceAndEndpoint(t *testing.T) {
 	s := korcTestScheme(t)
 	cp := korcControlPlane()
 	setAdminCredentialReady(cp)
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	// Pre-create the identity Service and Endpoint reporting Available=True so
+	// CatalogReady can flip True on this pass (registering them is not enough).
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(cp, availableCatalogService(cp), availableCatalogEndpoint(cp)).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
 	_, err := r.reconcileCatalog(context.Background(), cp)
@@ -1335,6 +1338,138 @@ func TestReconcileCatalog_RegistersServiceAndEndpoint(t *testing.T) {
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 	g.Expect(cp.Status.CatalogReady).To(BeTrue())
+}
+
+// TestReconcileCatalog_DefersUntilServiceEndpointAvailable asserts that merely
+// registering the Service/Endpoint CRs is not enough: until BOTH report
+// Available=True, CatalogReady stays False/WaitingForCatalog and status.catalogReady
+// is not set, so the aggregate Ready cannot report True against an empty catalog.
+func TestReconcileCatalog_DefersUntilServiceEndpointAvailable(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := korcControlPlane()
+	setAdminCredentialReady(cp)
+	// No pre-existing Service/Endpoint: they are created fresh (not yet Available).
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	res, err := r.reconcileCatalog(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+
+	// Both CRs were registered...
+	svc := &orcv1alpha1.Service{}
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Name: keystoneServiceName(cp), Namespace: childNamespace(cp),
+	}, svc)).To(Succeed())
+	ep := &orcv1alpha1.Endpoint{}
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Name: keystoneEndpointName(cp), Namespace: childNamespace(cp),
+	}, ep)).To(Succeed())
+
+	// ...but CatalogReady defers because neither is Available yet.
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeCatalogReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("WaitingForCatalog"))
+	g.Expect(cp.Status.CatalogReady).To(BeFalse())
+}
+
+// TestReconcileCatalog_StaleAvailableGenerationDefers asserts CatalogReady is gated
+// on a GENERATION-aware availability check: a Service/Endpoint whose Available
+// condition is True but whose ObservedGeneration lags the object's generation (K-ORC
+// has not re-reconciled the latest spec, e.g. a publicEndpoint/region edit that moved
+// the catalog URL) must NOT satisfy the gate. A generation-blind IsAvailable would
+// flip CatalogReady True against a stale Available, advertising the new catalog URL
+// as live before K-ORC applied it.
+func TestReconcileCatalog_StaleAvailableGenerationDefers(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := korcControlPlane()
+	setAdminCredentialReady(cp)
+	// Available=True but the condition's ObservedGeneration (0) lags the object's
+	// generation (2): the Available condition reflects a previous spec.
+	service := availableCatalogService(cp)
+	service.Generation = 2
+	endpoint := availableCatalogEndpoint(cp)
+	endpoint.Generation = 2
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, service, endpoint).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	res, err := r.reconcileCatalog(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeCatalogReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse),
+		"a stale Available condition (ObservedGeneration < generation) must not satisfy CatalogReady")
+	g.Expect(cond.Reason).To(Equal("WaitingForCatalog"))
+	g.Expect(cp.Status.CatalogReady).To(BeFalse())
+}
+
+// TestReconcileCatalog_TerminalErrorSurfaced asserts that a terminal K-ORC failure
+// on a catalog child (the documented "wrong clouds.yaml endpoint / import stuck on
+// created externally" class) surfaces as CatalogReady=False/CatalogFailed rather
+// than an eternal WaitingForCatalog, and resets the status bool.
+func TestReconcileCatalog_TerminalErrorSurfaced(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := korcControlPlane()
+	setAdminCredentialReady(cp)
+	// Service reports a terminal Progressing reason (ObservedGeneration matches the
+	// object Generation, both 0 under the fake client, so GetTerminalError fires).
+	service := &orcv1alpha1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: keystoneServiceName(cp), Namespace: childNamespace(cp)},
+		Status: orcv1alpha1.ServiceStatus{
+			Conditions: []metav1.Condition{{
+				Type:               orcv1alpha1.ConditionProgressing,
+				Status:             metav1.ConditionFalse,
+				Reason:             orcv1alpha1.ConditionReasonInvalidConfiguration,
+				Message:            "K-ORC cannot reach the identity endpoint",
+				ObservedGeneration: 0,
+				LastTransitionTime: metav1.Now(),
+			}},
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, service).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	res, err := r.reconcileCatalog(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeCatalogReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("CatalogFailed"))
+	g.Expect(cond.Message).To(ContainSubstring("K-ORC cannot reach the identity endpoint"))
+	g.Expect(cp.Status.CatalogReady).To(BeFalse())
+}
+
+// TestReconcileCatalog_ResetsStatusBoolOnDegradation locks in that the
+// status.catalogReady bool is reset to false on a later degradation rather than
+// left stale-true: a control plane that was previously CatalogReady but whose
+// Service/Endpoint are no longer Available must report catalogReady=false.
+func TestReconcileCatalog_ResetsStatusBoolOnDegradation(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := korcControlPlane()
+	setAdminCredentialReady(cp)
+	cp.Status.CatalogReady = true // previously registered + Available
+	// On this pass the Service/Endpoint are (re-)created fresh and not Available.
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileCatalog(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(cp.Status.CatalogReady).To(BeFalse(),
+		"status.catalogReady must be reset to false when the catalog is no longer Available")
 }
 
 // TestReconcileCatalog_EmptySecretNameFallsBack verifies that when a
@@ -1524,6 +1659,39 @@ func materializedCloudsYamlSecret(cp *c5c3v1alpha1.ControlPlane, acID, value str
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: childNamespace(cp)},
 		Data: map[string][]byte{
 			appCredCloudsYAMLKey: []byte(buildAppCredCloudsYAML(cp, acID, value)),
+		},
+	}
+}
+
+// availableCatalogService returns the identity Service CR reporting Available=True,
+// the state K-ORC would report once the catalog entry actually lands in Keystone.
+func availableCatalogService(cp *c5c3v1alpha1.ControlPlane) *orcv1alpha1.Service {
+	return &orcv1alpha1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: keystoneServiceName(cp), Namespace: childNamespace(cp)},
+		Status: orcv1alpha1.ServiceStatus{
+			Conditions: []metav1.Condition{{
+				Type:               orcv1alpha1.ConditionAvailable,
+				Status:             metav1.ConditionTrue,
+				Reason:             orcv1alpha1.ConditionReasonSuccess,
+				Message:            "ready",
+				LastTransitionTime: metav1.Now(),
+			}},
+		},
+	}
+}
+
+// availableCatalogEndpoint returns the identity Endpoint CR reporting Available=True.
+func availableCatalogEndpoint(cp *c5c3v1alpha1.ControlPlane) *orcv1alpha1.Endpoint {
+	return &orcv1alpha1.Endpoint{
+		ObjectMeta: metav1.ObjectMeta{Name: keystoneEndpointName(cp), Namespace: childNamespace(cp)},
+		Status: orcv1alpha1.EndpointStatus{
+			Conditions: []metav1.Condition{{
+				Type:               orcv1alpha1.ConditionAvailable,
+				Status:             metav1.ConditionTrue,
+				Reason:             orcv1alpha1.ConditionReasonSuccess,
+				Message:            "ready",
+				LastTransitionTime: metav1.Now(),
+			}},
 		},
 	}
 }

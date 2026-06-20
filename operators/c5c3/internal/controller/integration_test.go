@@ -392,6 +392,47 @@ func simulateCloudsYamlMaterializedWhenPresent(t testing.TB, ctx context.Context
 	}
 }
 
+// simulateCatalogServiceEndpointAvailableWhenPresent waits for the owned K-ORC
+// identity Service and Endpoint, then sets their Available condition True inline.
+// reconcileCatalog now gates CatalogReady on both child CRs reporting Available
+// (registering them is not enough — the catalog entry must actually land in
+// Keystone), and there is no K-ORC controller in envtest to mark them Available.
+func simulateCatalogServiceEndpointAvailableWhenPresent(t testing.TB, ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+	ns := childNamespace(cp)
+
+	svc := &orcv1alpha1.Service{}
+	g.Eventually(func() error {
+		return c.Get(ctx, client.ObjectKey{Namespace: ns, Name: keystoneServiceName(cp)}, svc)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "identity Service should be registered")
+	meta.SetStatusCondition(&svc.Status.Conditions, metav1.Condition{
+		Type:   orcv1alpha1.ConditionAvailable,
+		Status: metav1.ConditionTrue,
+		Reason: orcv1alpha1.ConditionReasonSuccess,
+		// reconcileCatalog gates on korcAvailableUpToDate, which requires the
+		// Available condition's ObservedGeneration to match the object's
+		// generation — mirror what the real K-ORC actuator stamps so the gate
+		// flips True (the in-cluster apiserver assigns Generation>=1 on create).
+		ObservedGeneration: svc.Generation,
+		Message:            "simulated available",
+	})
+	g.Expect(c.Status().Update(ctx, svc)).To(Succeed(), "set identity Service Available=True")
+
+	ep := &orcv1alpha1.Endpoint{}
+	g.Eventually(func() error {
+		return c.Get(ctx, client.ObjectKey{Namespace: ns, Name: keystoneEndpointName(cp)}, ep)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "identity Endpoint should be registered")
+	meta.SetStatusCondition(&ep.Status.Conditions, metav1.Condition{
+		Type:               orcv1alpha1.ConditionAvailable,
+		Status:             metav1.ConditionTrue,
+		Reason:             orcv1alpha1.ConditionReasonSuccess,
+		ObservedGeneration: ep.Generation,
+		Message:            "simulated available",
+	})
+	g.Expect(c.Status().Update(ctx, ep)).To(Succeed(), "set identity Endpoint Available=True")
+}
+
 // simulateAdminPasswordExternalSecretSyncWhenPresent waits for the operator-created
 // per-ControlPlane admin-password ExternalSecret (named adminPasswordSecretName(cp)
 // in childNamespace(cp)), asserts it reads this CR's keystone-NAME-scoped OpenBao
@@ -536,7 +577,9 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	simulateCloudsYamlMaterializedWhenPresent(t, ctx, c, cp)
 	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeAdminCredentialReady, metav1.ConditionTrue, itEventuallyTimeout)
 
-	// --- Phase 5: Catalog (Service + Endpoint). Not status-gated. ---
+	// --- Phase 5: Catalog (Service + Endpoint). Gated on both child CRs reporting
+	// Available, so simulate the K-ORC actuator marking them Available. ---
+	simulateCatalogServiceEndpointAvailableWhenPresent(t, ctx, c, cp)
 	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeCatalogReady, metav1.ConditionTrue, itEventuallyTimeout)
 
 	// --- Aggregate: Ready=True. ---
@@ -727,8 +770,9 @@ func TestIntegration_MinimalManagedToReady(t *testing.T) {
 	driveControlPlaneToAdminCredentialReady(t, ctx, c, cp)
 
 	// --- Phase 5: Catalog. The minimal CR sets no gateway/publicEndpoint, so
-	// keystoneCatalogURL falls back to the in-cluster Service URL — CatalogReady
-	// still flips. ---
+	// keystoneCatalogURL falls back to the in-cluster Service URL. CatalogReady is
+	// gated on both child CRs reporting Available, so simulate the K-ORC actuator. ---
+	simulateCatalogServiceEndpointAvailableWhenPresent(t, ctx, c, cp)
 	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeCatalogReady, metav1.ConditionTrue, itEventuallyTimeout)
 
 	// --- Aggregate: Ready=True. ---
