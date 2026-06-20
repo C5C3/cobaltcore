@@ -54,6 +54,17 @@ type KeystoneSpec struct {
 	Replicas int32 `json:"replicas,omitempty"`
 
 	// Image defines the Keystone container image reference.
+	//
+	// Unlike the db/bootstrap fields below — whose CEL transition rules
+	// (self == oldSelf) make them immutable even when the validating webhook is
+	// unavailable, because the API server enforces them (#466) — spec.image
+	// carries no immutability rule, since image upgrades are routine and the field
+	// must stay mutable. The ControlPlane operator projects spec.openStackRelease
+	// into this image tag and rejects release downgrades in its validating webhook
+	// (validateReleaseNotDowngraded); that guard is webhook-only and has no
+	// API-server CEL backstop, so a direct edit of this Keystone child's spec.image
+	// can still point an already-migrated deployment at an older release if the
+	// ControlPlane webhook is bypassed.
 	Image commonv1.ImageSpec `json:"image"`
 
 	// Database defines the MariaDB connection parameters.
@@ -71,7 +82,18 @@ type KeystoneSpec struct {
 	// The clusterRef/host mutual-exclusivity rule lives on commonv1.DatabaseSpec
 	// itself, so it is inherited here without per-field duplication. The TLS
 	// rule below stays field-level because it is keystone-specific.
+	//
+	// The database name and the connection mode are immutable after create.
+	// Renaming spec.database.database re-points db_sync at a fresh, empty schema:
+	// Keystone silently "loses" every user/project while the old data is orphaned
+	// (data-loss class). Flipping the managed (clusterRef) ↔ brownfield (host) mode
+	// likewise re-targets the whole connection. The transition rules below
+	// (self == oldSelf, evaluated only on UPDATE) are enforced by the API server
+	// itself, so they keep protecting the field even when the validating webhook
+	// is unavailable (#466).
 	// +kubebuilder:validation:XValidation:rule="!has(self.tls) || !self.tls.enabled || (self.tls.caBundleSecretRef.name != '' && self.tls.clientCertSecretRef.name != '')",message="when database.tls.enabled is true, both database.tls.caBundleSecretRef.name and database.tls.clientCertSecretRef.name must be set"
+	// +kubebuilder:validation:XValidation:rule="self.database == oldSelf.database",message="database name is immutable"
+	// +kubebuilder:validation:XValidation:rule="has(self.clusterRef) == has(oldSelf.clusterRef)",message="database mode (managed clusterRef vs brownfield host) is immutable"
 	Database commonv1.DatabaseSpec `json:"database"`
 
 	// Cache defines the Memcached cache configuration.
@@ -449,15 +471,25 @@ type PasswordRotationSpec struct {
 
 // BootstrapSpec defines Keystone bootstrap parameters.
 type BootstrapSpec struct {
-	// AdminUser is the admin username for the bootstrap.
+	// AdminUser is the admin username for the bootstrap. Immutable after create:
+	// re-bootstrapping against an existing deployment with a different admin user
+	// duplicates or strands catalog entries (known duplicate-admin failure class).
+	// The transition rule (self == oldSelf) is evaluated only on UPDATE and is
+	// enforced by the API server, so it holds even when the webhook is down (#466).
 	// +kubebuilder:default="admin"
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="bootstrap.adminUser is immutable"
 	AdminUser string `json:"adminUser,omitempty"`
 
 	// AdminPasswordSecretRef references the Secret containing the admin password.
 	AdminPasswordSecretRef commonv1.SecretRefSpec `json:"adminPasswordSecretRef"`
 
-	// Region is the Keystone region name.
+	// Region is the Keystone region name. Immutable after create: re-bootstrapping
+	// against an existing deployment in a different region strands catalog entries
+	// under the old region. The transition rule (self == oldSelf) is evaluated only
+	// on UPDATE and is enforced by the API server, so it holds even when the webhook
+	// is down (#466).
 	// +kubebuilder:default="RegionOne"
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="bootstrap.region is immutable"
 	Region string `json:"region,omitempty"`
 
 	// PublicEndpoint is the externally routable Keystone endpoint URL used for
