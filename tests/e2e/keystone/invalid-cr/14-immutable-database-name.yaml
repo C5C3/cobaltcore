@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Update of the immutable-fields base CR that renames
+# spec.database.database from "keystone" to "renamed". The CEL transition
+# rule on KeystoneSpec.Database (self.database == oldSelf.database,
+# keystone_types.go) rejects the change on UPDATE. Only the name differs
+# from the base, so the clusterRef/host mode rule stays satisfied.
+# Admission must reject this UPDATE with an $error referencing the
+# substrings "database" and "immutable".
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: immutable-fields
+spec:
+  replicas: 3
+  image:
+    repository: ghcr.io/c5c3/keystone
+    tag: "2025.2"
+  database:
+    host: db.example.com
+    port: 3306
+    database: renamed
+    secretRef:
+      name: keystone-db
+  cache:
+    backend: dogpile.cache.pymemcache
+    servers:
+    - "mc:11211"
+  fernet:
+    rotationSchedule: "0 0 * * 0"
+    maxActiveKeys: 3
+  bootstrap:
+    adminUser: admin
+    adminPasswordSecretRef:
+      name: keystone-admin
+    region: RegionOne

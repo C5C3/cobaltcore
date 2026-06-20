@@ -9,10 +9,14 @@
 # CR with a single field violating the rule under test, captures the
 # admission $error, and asserts the field-path plus message substring.
 #
-# The fixtures (02-…, 03-…, 04-…, 05-…, 06-…, 07-…, 09-…, 10-…,
-# 11-…, 12-…) share the same minimal valid Keystone scaffold and differ
-# only by the field under test. To prevent scaffold drift across these
-# 10 files (sourcery-ai review #1), they are generated from a
+# The create-rejection fixtures (02-…, 03-…, 04-…, 05-…, 06-…, 07-…,
+# 09-…, 10-…, 11-…, 12-…, 13-policy-overrides-empty-rule-value) share the
+# same minimal valid Keystone scaffold and differ only by the field under
+# test. The update-rejection fixtures (13-immutable-base, 14-…, 15-…, 16-…,
+# 17-…, #466) share the name "immutable-fields": 13-immutable-base is the
+# valid base CR applied first, and 14-17 are applied as UPDATEs
+# that the CRD CEL transition rules reject. To prevent scaffold drift
+# across these 16 files (sourcery-ai review #1), they are generated from a
 # single source of truth in `_generate.py`. After editing the canonical
 # scaffold or any per-fixture override, regenerate via:
 #   python3 tests/e2e/keystone/invalid-cr/_generate.py
@@ -182,3 +186,48 @@ spec:
             ($error != null): true
             (contains($error, 'spec.policyOverrides')): true
             (contains($error, 'policy rule value must not be empty')): true
+  # ── Field immutability (CEL transition rules, #466) ───────────────────
+  # The base CR (13) is applied successfully, then four UPDATEs each mutating a
+  # single immutable field (14-17) are rejected by the CRD CEL transition rules
+  # (self == oldSelf, evaluated only on UPDATE). All five fixtures share the
+  # name "immutable-fields", so applying 14-17 after 13 are UPDATEs of the same
+  # object. The base is brownfield (host mode), so the operator creates no
+  # MariaDB CRs and pushes no OpenBao secrets; its finalizer cleanup is a no-op
+  # and the ephemeral namespace tears down cleanly when the test ends.
+  - try:
+    # Base CR must be admitted (no expect → success expected).
+    - apply:
+        file: 13-immutable-base.yaml
+    # Renaming spec.database.database is rejected on UPDATE.
+    - apply:
+        file: 14-immutable-database-name.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'database')): true
+            (contains($error, 'immutable')): true
+    # Flipping the database mode (brownfield host → managed clusterRef) is
+    # rejected on UPDATE.
+    - apply:
+        file: 15-immutable-database-mode.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'database mode')): true
+            (contains($error, 'immutable')): true
+    # Changing spec.bootstrap.adminUser is rejected on UPDATE.
+    - apply:
+        file: 16-immutable-adminuser.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'adminUser')): true
+            (contains($error, 'immutable')): true
+    # Changing spec.bootstrap.region is rejected on UPDATE.
+    - apply:
+        file: 17-immutable-region.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'region')): true
+            (contains($error, 'immutable')): true

@@ -12,7 +12,7 @@ instead of waiting for the Chainsaw E2E job to fail at the apply step.
 
 Coverage (each assertion traceable to review-2 finding FC1):
 
-* ``FIXTURES`` lists exactly the 10 fixtures the chainsaw suite expects.
+* ``FIXTURES`` lists exactly the 16 fixtures the chainsaw suite expects.
 * Every ``Fixture.filename`` is referenced by an ``apply.file:`` entry in
   ``chainsaw-test.yaml`` — guards against renames or accidental deletions.
 * Filenames are unique within ``FIXTURES`` — guards against copy/paste typos
@@ -37,11 +37,13 @@ _HERE = Path(__file__).resolve().parent
 _GENERATOR = _HERE / "_generate.py"
 _CHAINSAW_TEST = _HERE / "chainsaw-test.yaml"
 
-# Number of fixtures emitted by _generate.py. The fixtures
+# Number of fixtures emitted by _generate.py: eleven create-rejection fixtures
+# (02-12 plus 13-policy-overrides-empty-rule-value) plus five update-rejection
+# fixtures (13-immutable-base and 14-17, #466). The fixtures
 # (00-, 01-) predate and are intentionally NOT generated. Bumping
 # this value requires adding the matching Fixture entry AND the matching
 # `file: <name>` line in chainsaw-test.yaml.
-_EXPECTED_FIXTURE_COUNT = 11
+_EXPECTED_FIXTURE_COUNT = 16
 
 
 def _load_generator() -> types.ModuleType:

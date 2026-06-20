@@ -10,8 +10,17 @@ field of the canonical scaffold so the surrounding CR passes schema validation
 for every rule OTHER than the one under test, ensuring the admission error is
 attributable to that single field.
 
+Two fixture categories share this scaffold:
+
+* Create-rejection fixtures are each applied once and rejected at admission by
+  a CEL XValidation or ``webhook.validate()`` rule.
+* Update-rejection fixtures (#466) share the name ``immutable-fields``:
+  ``13-immutable-base`` is the valid base CR applied first, and the ``14``-
+  ``17`` variants are applied as UPDATEs of that base so the CRD CEL transition
+  rules (``self == oldSelf``, evaluated only on UPDATE) reject the field change.
+
 The reviewer concern this generator addresses (sourcery-ai review #1):
-without a single source of truth the 11 fixtures could drift out of sync with
+without a single source of truth the 16 fixtures could drift out of sync with
 each other and with KeystoneSpec over time. This script enforces a single
 canonical scaffold; per-fixture overrides change only what is necessary to
 trigger the rejection path under test.
@@ -82,6 +91,30 @@ DATABASE_BOTH_MODES = """\
       name: keystone-db
 """
 
+# Same brownfield host mode as DATABASE_HOST_ONLY but with the database NAME
+# changed from "keystone" to "renamed". Used by the update-rejection fixture
+# that exercises the database-name immutability transition rule: only the name
+# differs from the base CR, so the clusterRef/host mode rule stays satisfied.
+DATABASE_HOST_RENAMED = """\
+    host: db.example.com
+    port: 3306
+    database: renamed
+    secretRef:
+      name: keystone-db
+"""
+
+# Managed clusterRef mode (no host) with the same database NAME as the base CR.
+# Used by the update-rejection fixture that exercises the database-mode
+# immutability transition rule: flipping the base brownfield host mode to managed
+# clusterRef mode is rejected.
+DATABASE_CLUSTERREF_ONLY = """\
+    clusterRef:
+      name: openstack-db
+    database: keystone
+    secretRef:
+      name: keystone-db
+"""
+
 CACHE_SERVERS_ONLY = """\
     backend: dogpile.cache.pymemcache
     servers:
@@ -104,6 +137,28 @@ BOOTSTRAP = """\
     region: RegionOne
 """
 
+# Same as BOOTSTRAP but with adminUser changed from "admin" to "root". Used by
+# the update-rejection fixture exercising the bootstrap.adminUser immutability
+# transition rule.
+BOOTSTRAP_RENAMED_ADMIN = """\
+  bootstrap:
+    adminUser: root
+    adminPasswordSecretRef:
+      name: keystone-admin
+    region: RegionOne
+"""
+
+# Same as BOOTSTRAP but with region changed from "RegionOne" to "RegionTwo".
+# Used by the update-rejection fixture exercising the bootstrap.region
+# immutability transition rule.
+BOOTSTRAP_RENAMED_REGION = """\
+  bootstrap:
+    adminUser: admin
+    adminPasswordSecretRef:
+      name: keystone-admin
+    region: RegionTwo
+"""
+
 
 @dataclass(frozen=True)
 class Fixture:
@@ -117,6 +172,7 @@ class Fixture:
     cache: str = CACHE_SERVERS_ONLY
     fernet_max_active_keys: int = 3
     credential_keys: str | None = None
+    bootstrap: str = BOOTSTRAP
     trailing: str | None = None
 
 
@@ -144,7 +200,7 @@ def render(fixture: Fixture) -> str:
     ]
     if fixture.credential_keys is not None:
         parts.append(fixture.credential_keys)
-    parts.append(BOOTSTRAP)
+    parts.append(fixture.bootstrap)
     if fixture.trailing is not None:
         parts.append(fixture.trailing)
     return "".join(parts)
@@ -337,6 +393,72 @@ FIXTURES: list[Fixture] = [
 # policyOverrides field via its PolicySpec type, runs before the validating
 # webhook and emits the error at that field. The key is quoted to keep its
 # embedded colon unambiguous to the YAML parser.""",
+    ),
+    # ── Update-rejection fixtures (#466) ────────────────────────────────
+    # Unlike the create-rejection fixtures above (each applied once and rejected
+    # at admission), these four share name "immutable-fields" with the base CR
+    # below so the chainsaw suite applies the base successfully, then applies each
+    # variant as an UPDATE that the CRD CEL transition rules (self == oldSelf,
+    # evaluated only on UPDATE) reject. The base is brownfield (host mode), so the
+    # operator creates no MariaDB CRs and pushes no OpenBao secrets; its finalizer
+    # cleanup is a no-op and the ephemeral namespace tears down cleanly.
+    Fixture(
+        filename="13-immutable-base.yaml",
+        name="immutable-fields",
+        comment="""\
+# Valid base Keystone CR for the field-immutability update-rejection
+# fixtures (#466). It is applied FIRST and must SUCCEED. The variants
+# 14-17 reuse this name so each is applied as an UPDATE of this object,
+# exercising the CRD CEL transition rules on spec.database.database, the
+# database mode (clusterRef vs host), spec.bootstrap.adminUser, and
+# spec.bootstrap.region.""",
+    ),
+    Fixture(
+        filename="14-immutable-database-name.yaml",
+        name="immutable-fields",
+        database=DATABASE_HOST_RENAMED,
+        comment="""\
+# Update of the immutable-fields base CR that renames
+# spec.database.database from "keystone" to "renamed". The CEL transition
+# rule on KeystoneSpec.Database (self.database == oldSelf.database,
+# keystone_types.go) rejects the change on UPDATE. Only the name differs
+# from the base, so the clusterRef/host mode rule stays satisfied.
+# Admission must reject this UPDATE with an $error referencing the
+# substrings "database" and "immutable".""",
+    ),
+    Fixture(
+        filename="15-immutable-database-mode.yaml",
+        name="immutable-fields",
+        database=DATABASE_CLUSTERREF_ONLY,
+        comment="""\
+# Update of the immutable-fields base CR that flips spec.database from
+# brownfield host mode to managed clusterRef mode. The CEL transition
+# rule on KeystoneSpec.Database (has(self.clusterRef) ==
+# has(oldSelf.clusterRef), keystone_types.go) rejects the mode change on
+# UPDATE. Admission must reject this UPDATE with an $error referencing the
+# substrings "database mode" and "immutable".""",
+    ),
+    Fixture(
+        filename="16-immutable-adminuser.yaml",
+        name="immutable-fields",
+        bootstrap=BOOTSTRAP_RENAMED_ADMIN,
+        comment="""\
+# Update of the immutable-fields base CR that changes
+# spec.bootstrap.adminUser from "admin" to "root". The CEL transition rule
+# on BootstrapSpec.AdminUser (self == oldSelf, keystone_types.go) rejects
+# the change on UPDATE. Admission must reject this UPDATE with an $error
+# referencing the substrings "adminUser" and "immutable".""",
+    ),
+    Fixture(
+        filename="17-immutable-region.yaml",
+        name="immutable-fields",
+        bootstrap=BOOTSTRAP_RENAMED_REGION,
+        comment="""\
+# Update of the immutable-fields base CR that changes
+# spec.bootstrap.region from "RegionOne" to "RegionTwo". The CEL transition
+# rule on BootstrapSpec.Region (self == oldSelf, keystone_types.go) rejects
+# the change on UPDATE. Admission must reject this UPDATE with an $error
+# referencing the substrings "region" and "immutable".""",
     ),
 ]
 
