@@ -50,7 +50,14 @@ func adminDomainRef(cp *c5c3v1alpha1.ControlPlane) string {
 // must import — not create — it, otherwise the ApplicationCredential blocks on
 // "Waiting for User/admin to be created". Both CRs are owned by the ControlPlane
 // for GC and reuse the admin clouds.yaml credentials.
-func (r *ControlPlaneReconciler) ensureKORCAdminImports(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, credRef orcv1alpha1.CloudCredentialsReference) error {
+//
+// It returns a human-readable import-status fragment (empty when both imports are
+// Available with no terminal error) so reconcileKORC can fold the stuck dependency
+// into the KORCReady message — the documented failure class (wrong clouds.yaml
+// endpoint, K-ORC swallowing list errors, an import hanging on "created
+// externally") otherwise surfaces only as an eternal "WaitingForApplicationCredential"
+// with no pointer to the real cause.
+func (r *ControlPlaneReconciler) ensureKORCAdminImports(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, credRef orcv1alpha1.CloudCredentialsReference) (string, error) {
 	domain := &orcv1alpha1.Domain{
 		ObjectMeta: metav1.ObjectMeta{Name: adminDomainRef(cp), Namespace: childNamespace(cp)},
 	}
@@ -62,7 +69,7 @@ func (r *ControlPlaneReconciler) ensureKORCAdminImports(ctx context.Context, cp 
 		}
 		return controllerutil.SetControllerReference(cp, domain, r.Scheme)
 	}); err != nil {
-		return fmt.Errorf("admin Domain import %q: %w", domain.Name, err)
+		return "", fmt.Errorf("admin Domain import %q: %w", domain.Name, err)
 	}
 
 	user := &orcv1alpha1.User{
@@ -79,7 +86,26 @@ func (r *ControlPlaneReconciler) ensureKORCAdminImports(ctx context.Context, cp 
 		}
 		return controllerutil.SetControllerReference(cp, user, r.Scheme)
 	}); err != nil {
-		return fmt.Errorf("admin User import %q: %w", user.Name, err)
+		return "", fmt.Errorf("admin User import %q: %w", user.Name, err)
 	}
-	return nil
+	// Report the first admin import (Domain before User) that is not yet usable —
+	// either a terminal K-ORC error or a not-yet-Available state — or an empty
+	// string when both imports are Available with no terminal error.
+	if frag := korcImportStatusFragment("Domain", domain.Name, domain); frag != "" {
+		return frag, nil
+	}
+	return korcImportStatusFragment("User", user.Name, user), nil
+}
+
+// korcImportStatusFragment reports the import-status fragment for a single K-ORC
+// import resource: a terminal error takes precedence over a not-yet-Available
+// state, and an Available resource with no terminal error yields an empty string.
+func korcImportStatusFragment(kind, name string, obj orcv1alpha1.ObjectWithConditions) string {
+	if termErr := orcv1alpha1.GetTerminalError(obj); termErr != nil {
+		return fmt.Sprintf("admin %s import %q failed terminally: %v", kind, name, termErr)
+	}
+	if !orcv1alpha1.IsAvailable(obj) {
+		return fmt.Sprintf("admin %s import %q is not yet Available", kind, name)
+	}
+	return ""
 }

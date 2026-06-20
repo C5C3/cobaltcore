@@ -303,6 +303,94 @@ func TestReconcileKORC_KORCReadyFalseWhileACNotAvailable(t *testing.T) {
 	g.Expect(cond.Reason).To(Equal("WaitingForApplicationCredential"))
 }
 
+// TestReconcileKORC_ApplicationCredentialFailedOnTerminalError asserts that a
+// terminal K-ORC failure on the AC (the documented "K-ORC cannot authenticate /
+// invalid clouds.yaml" class, reported via an unrecoverable Progressing reason) is
+// surfaced as the distinct KORCReady=False/ApplicationCredentialFailed reason —
+// not the eternal WaitingForApplicationCredential — so on-call sees the credential
+// will never converge without intervention.
+func TestReconcileKORC_ApplicationCredentialFailedOnTerminalError(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := korcControlPlane()
+	// AC stamped with the CURRENT hash (so no re-mint) but reporting a terminal
+	// Progressing reason. ObservedGeneration matches the object Generation (both 0
+	// under the fake client) so GetTerminalError treats it as up to date.
+	existing := &orcv1alpha1.ApplicationCredential{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        adminAppCredentialName(cp),
+			Namespace:   childNamespace(cp),
+			Annotations: map[string]string{adminPasswordHashAnnotation: testPasswordHash()},
+		},
+		Status: orcv1alpha1.ApplicationCredentialStatus{
+			Conditions: []metav1.Condition{{
+				Type:               orcv1alpha1.ConditionProgressing,
+				Status:             metav1.ConditionFalse,
+				Reason:             orcv1alpha1.ConditionReasonUnrecoverableError,
+				Message:            "cannot authenticate with clouds.yaml",
+				ObservedGeneration: 0,
+				LastTransitionTime: metav1.Now(),
+			}},
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, adminPasswordSecret(), existing).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	res, err := r.reconcileKORC(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeKORCReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("ApplicationCredentialFailed"))
+	g.Expect(cond.Message).To(ContainSubstring("cannot authenticate with clouds.yaml"))
+}
+
+// TestReconcileKORC_FoldsImportStatusIntoMessage asserts that a not-yet-Available
+// admin import is named in the KORCReady=False/WaitingForApplicationCredential
+// message, so the documented "import hangs on created externally" failure points
+// at the stuck dependency rather than producing an opaque eternal wait.
+func TestReconcileKORC_FoldsImportStatusIntoMessage(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := korcControlPlane()
+	// Domain import Available, User import NOT Available, so korcImportStatusFragment
+	// reports the User as the stuck dependency. No AC is seeded, so it is created
+	// fresh (not Available) and the WaitingForApplicationCredential branch is taken.
+	domain := &orcv1alpha1.Domain{
+		ObjectMeta: metav1.ObjectMeta{Name: adminDomainRef(cp), Namespace: childNamespace(cp)},
+		Status: orcv1alpha1.DomainStatus{
+			Conditions: []metav1.Condition{{
+				Type:               orcv1alpha1.ConditionAvailable,
+				Status:             metav1.ConditionTrue,
+				Reason:             orcv1alpha1.ConditionReasonSuccess,
+				Message:            "ready",
+				LastTransitionTime: metav1.Now(),
+			}},
+		},
+	}
+	user := &orcv1alpha1.User{
+		ObjectMeta: metav1.ObjectMeta{Name: adminUserRef(cp), Namespace: childNamespace(cp)},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, adminPasswordSecret(), domain, user).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	res, err := r.reconcileKORC(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeKORCReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("WaitingForApplicationCredential"))
+	g.Expect(cond.Message).To(ContainSubstring(adminUserRef(cp)),
+		"the WaitingForApplicationCredential message must name the stuck admin User import")
+	g.Expect(cond.Message).To(ContainSubstring("not yet Available"))
+}
+
 // HARD CRD DEPENDENCY: K-ORC is a hard dependency (SetupWithManager Owns its
 // kinds, so the manager fails fast at startup if the CRD is absent). The
 // dedicated KORCCRDNotInstalled branch was therefore removed (#476): a no-match
@@ -1277,7 +1365,12 @@ func TestEnsureKORCAdminImports_CreatesUnmanagedUserAndDomain(t *testing.T) {
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
 	credRef := orcv1alpha1.CloudCredentialsReference{SecretName: "k-orc-clouds-yaml", CloudName: "admin"}
-	g.Expect(r.ensureKORCAdminImports(context.Background(), cp, credRef)).To(Succeed())
+	// Freshly-created imports are not yet Available, so the status fragment names the
+	// first import (Domain) as the stuck dependency.
+	importMsg, err := r.ensureKORCAdminImports(context.Background(), cp, credRef)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(importMsg).To(ContainSubstring("Domain"))
+	g.Expect(importMsg).To(ContainSubstring("not yet Available"))
 
 	var domain orcv1alpha1.Domain
 	g.Expect(c.Get(context.Background(), types.NamespacedName{

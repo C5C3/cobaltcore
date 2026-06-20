@@ -147,7 +147,8 @@ func (r *ControlPlaneReconciler) reconcileKORC(ctx context.Context, cp *c5c3v1al
 	// Default domain, so import it (and its domain) as UNMANAGED K-ORC resources
 	// before minting — otherwise the AC blocks forever on "Waiting for User/admin
 	// to be created".
-	if err := r.ensureKORCAdminImports(ctx, cp, importCredRef); err != nil {
+	importMsg, err := r.ensureKORCAdminImports(ctx, cp, importCredRef)
+	if err != nil {
 		fail("AdminImportError", fmt.Sprintf("ensuring K-ORC admin User/Domain imports: %v", err))
 		return ctrl.Result{}, err
 	}
@@ -261,12 +262,35 @@ func (r *ControlPlaneReconciler) reconcileKORC(ctx context.Context, cp *c5c3v1al
 	// value while status is empty). LastRotation is stamped on a fresh mint/re-mint.
 	r.updateAdminApplicationCredentialStatus(cp, ac, restricted)
 
+	// Surface a TERMINAL K-ORC failure distinctly: GetTerminalError is non-nil only
+	// when the AC's Progressing condition reports an unrecoverable/invalid-config
+	// reason (e.g. K-ORC cannot authenticate with the clouds.yaml). Without this the
+	// AC would report KORCReady=False/WaitingForApplicationCredential forever even
+	// though it will never converge — keeping on-call MTTR high. Fold the admin
+	// Domain/User import status into the message so the stuck dependency is named.
+	if termErr := orcv1alpha1.GetTerminalError(ac); termErr != nil {
+		logger.Info("ApplicationCredential reported a terminal error", "name", ac.Name, "error", termErr)
+		message := fmt.Sprintf("ApplicationCredential %q failed terminally: %v", ac.Name, termErr)
+		if importMsg != "" {
+			message += "; " + importMsg
+		}
+		fail("ApplicationCredentialFailed", message)
+		return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
+	}
+
 	// Gate KORCReady on the AC CR reporting Available=True. K-ORC uses the
 	// "Available" condition (not "Ready") to signal a usable resource; while it
-	// converges, requeue with KORCReady=False.
+	// converges, requeue with KORCReady=False. Fold the admin Domain/User import
+	// status into the message so an import stuck on "created externally" (the
+	// documented endpoint/clouds.yaml failure class) points at the real dependency
+	// instead of an opaque eternal wait.
 	if !orcv1alpha1.IsAvailable(ac) {
 		logger.Info("ApplicationCredential not yet Available, requeuing", "name", ac.Name)
-		fail("WaitingForApplicationCredential", fmt.Sprintf("ApplicationCredential %q is not yet Available", ac.Name))
+		message := fmt.Sprintf("ApplicationCredential %q is not yet Available", ac.Name)
+		if importMsg != "" {
+			message += "; " + importMsg
+		}
+		fail("WaitingForApplicationCredential", message)
 		return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
 	}
 
