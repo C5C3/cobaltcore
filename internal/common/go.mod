@@ -4,7 +4,7 @@ go 1.26.4
 
 require (
 	github.com/cert-manager/cert-manager v1.20.2
-	github.com/external-secrets/external-secrets/apis v0.0.0-20260614211243-31616d63b983
+	github.com/external-secrets/external-secrets/apis v0.0.0-20260622081536-ec9a121caf0d
 	github.com/mariadb-operator/mariadb-operator v0.38.1
 	github.com/onsi/gomega v1.42.0
 	k8s.io/api v0.36.2
