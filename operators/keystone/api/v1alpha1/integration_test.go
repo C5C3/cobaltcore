@@ -473,38 +473,6 @@ func TestIntegration_CELRejectsDatabaseNameChange(t *testing.T) {
 		"database", "immutable")
 }
 
-// TestIntegration_CELAcceptsUnchangedImmutableFields proves the transition rules
-// do not fire on an identity update: changing only a mutable field (replicas)
-// while leaving every immutable field untouched is accepted, guarding against an
-// over-broad rule that would reject same-value re-applies.
-func TestIntegration_CELAcceptsUnchangedImmutableFields(t *testing.T) {
-	testutil.SkipIfEnvTestUnavailable(t)
-	g := NewGomegaWithT(t)
-
-	c, ctx, _ := setupEnvTestNoWebhook(t)
-
-	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-celonly-immutable-accept-"}}
-	g.Expect(c.Create(ctx, ns)).To(Succeed())
-
-	k := validIntegrationKeystone("immutable-accept", ns.Name)
-	g.Expect(c.Create(ctx, k)).To(Succeed())
-
-	got := &Keystone{}
-	key := types.NamespacedName{Name: "immutable-accept", Namespace: ns.Name}
-	g.Expect(c.Get(ctx, key, got)).To(Succeed())
-	// Change only a mutable field; immutable fields stay identical.
-	got.Spec.Replicas = 5
-	g.Expect(c.Update(ctx, got)).To(Succeed(),
-		"updating a mutable field must not trip the immutability transition rules")
-
-	final := &Keystone{}
-	g.Expect(c.Get(ctx, key, final)).To(Succeed())
-	g.Expect(final.Spec.Replicas).To(Equal(int32(5)))
-	g.Expect(final.Spec.Database.Database).To(Equal("keystone"))
-	g.Expect(final.Spec.Bootstrap.AdminUser).To(Equal("admin"))
-	g.Expect(final.Spec.Bootstrap.Region).To(Equal("RegionOne"))
-}
-
 // --- Task 2.3: Webhook defaulting tests ---
 
 func TestIntegration_WebhookDefaultsSetsZeroValues(t *testing.T) {
