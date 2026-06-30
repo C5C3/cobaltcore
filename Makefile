@@ -130,15 +130,12 @@ lint:
 
 .PHONY: govulncheck
 # govulncheck scans all workspace modules for known Go vulnerabilities.
-# Delegates to govulncheck per module, matching go.work use directives.
-# CI calls this target instead of hardcoding module paths.
+# Delegates to hack/ci-govulncheck.sh, which runs govulncheck per module
+# (matching go.work use directives) and applies a documented allowlist for
+# advisories with no fix and no real exposure. CI calls this target instead of
+# hardcoding module paths.
 govulncheck:
-	@echo "Scanning internal/common module..."
-	@cd internal/common && govulncheck ./...
-	@for op in $(OPERATORS); do \
-		echo "Scanning operators/$$op module..."; \
-		(cd operators/$$op && govulncheck ./...) || exit 1; \
-	done
+	@hack/ci-govulncheck.sh internal/common $(addprefix operators/,$(OPERATORS))
 
 # ============================================================================
 # Shell Script Targets
