@@ -156,14 +156,37 @@ func (r *ControlPlaneReconciler) reconcileAdminCredential(ctx context.Context, c
 		}
 	}
 
+	// Content hash of the assembled clouds.yaml. It keys BOTH the PushSecret
+	// re-push trigger just below and the ExternalSecret force-sync further down, so
+	// each fires exactly once per credential change and a steady-state pass leaves
+	// both untouched.
+	contentSum := sha256.Sum256(cloudsYAML)
+	contentHash := hex.EncodeToString(contentSum[:])
+
 	// CLOBBER-SAFE PushSecret: EnsurePushSecret applies via Server-Side Apply
 	// under a fixed field manager that owns only the fields the operator sets, so
 	// repeated applies of an unchanged desired Spec are no-ops at the API server.
-	// Reconciles therefore do not churn the PushSecret, so ESO is not woken to
-	// re-push an unchanged credential.
 	ps := adminAppCredentialPushSecret(cp)
 	if err := secrets.EnsurePushSecret(ctx, r.Client, r.Scheme, cp, ps); err != nil {
 		fail("PushSecretError", fmt.Sprintf("ensuring admin app-credential PushSecret: %v", err))
+		return ctrl.Result{}, err
+	}
+
+	// Drive an immediate re-push of the (now credential-based) source Secret to
+	// OpenBao. ESO's PushSecret controller does NOT watch its source Secret: its
+	// shouldRefresh gate re-pushes only when the PushSecret object's own
+	// label/annotation hash changes (external-secrets v1.3.2,
+	// pkg/controllers/pushsecret + util.HashMeta), NOT when the referenced Secret's
+	// contents change. On a fresh create the PushSecret first pushes the BOOTSTRAP
+	// clouds.yaml (so K-ORC can authenticate and mint); the credential-based source
+	// update above would then not reach OpenBao until the 1h refreshInterval,
+	// leaving the k-orc-clouds-yaml ExternalSecret materialising the stale bootstrap
+	// credential and AdminCredentialReady stuck False for up to an hour. Stamping a
+	// content-hash annotation changes the PushSecret's metadata hash and forces the
+	// re-push now; it is idempotent (skipped when the hash already matches), so a
+	// converged credential never churns the push.
+	if err := r.forceRepushAdminAppCredential(ctx, cp, ps.Name, contentHash); err != nil {
+		fail("PushSecretError", fmt.Sprintf("forcing admin app-credential PushSecret re-push: %v", err))
 		return ctrl.Result{}, err
 	}
 
@@ -189,14 +212,12 @@ func (r *ControlPlaneReconciler) reconcileAdminCredential(ctx context.Context, c
 	// actually authenticates with still holds the revoked credential — up to ~2h of
 	// auth against a dead credential while AdminCredentialReady reads True.
 	//
-	// Force an immediate ESO re-sync (a force-sync annotation keyed by the assembled
-	// content hash — idempotent, so a steady-state pass does not churn the
+	// Force an immediate ESO re-sync of the materialized Secret (the contentHash
+	// force-sync annotation is idempotent, so a steady-state pass does not churn the
 	// ExternalSecret) and gate AdminCredentialReady on the materialized Secret bytes
 	// actually matching the freshly assembled clouds.yaml. The byte-compare — not the
 	// best-effort force-sync — is the correctness guarantee: it never reports Ready
 	// while the materialized credential is stale.
-	contentSum := sha256.Sum256(cloudsYAML)
-	contentHash := hex.EncodeToString(contentSum[:])
 	if err := r.forceSyncKORCCloudsYAMLExternalSecret(ctx, cp, cloudsYamlName, contentHash); err != nil {
 		fail("CloudsYamlError", fmt.Sprintf("forcing k-orc clouds.yaml ExternalSecret re-sync: %v", err))
 		return ctrl.Result{}, err
@@ -356,6 +377,50 @@ func (r *ControlPlaneReconciler) forceSyncKORCCloudsYAMLExternalSecret(ctx conte
 		return r.Update(ctx, es)
 	}); err != nil {
 		return fmt.Errorf("forcing k-orc clouds.yaml ExternalSecret %q re-sync: %w", name, err)
+	}
+	return nil
+}
+
+// adminAppCredentialPushContentHashAnnotation stamps the assembled clouds.yaml
+// content hash onto the admin app-credential PushSecret. Changing it alters the
+// PushSecret's metadata hash, which is the only input ESO's PushSecret
+// shouldRefresh gate reacts to (it does not watch the source Secret), forcing an
+// immediate re-push of the updated credential.
+const adminAppCredentialPushContentHashAnnotation = "c5c3.io/push-content-hash" //nolint:gosec // G101 false positive: annotation key, not a credential.
+
+// forceRepushAdminAppCredential nudges ESO to re-push the admin app-credential
+// source Secret to OpenBao by stamping a content-hash annotation on the backing
+// PushSecret. ESO's PushSecret controller re-pushes only when the PushSecret
+// object's own metadata hash changes (it does not watch the referenced Secret),
+// so without this stamp a source-Secret update — e.g. the fresh-create handoff
+// from the bootstrap clouds.yaml to the minted credential — would not reach
+// OpenBao until the PushSecret's hourly refreshInterval. The annotation is keyed
+// by the assembled clouds.yaml content hash, so it changes only when the
+// credential changes and a steady-state pass is a no-op.
+func (r *ControlPlaneReconciler) forceRepushAdminAppCredential(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, name, hash string) error {
+	key := types.NamespacedName{Namespace: childNamespace(cp), Name: name}
+	// Read-modify-write under RetryOnConflict: ESO mutates the PushSecret's status
+	// (and re-pushes on the metadata change this triggers), so a 409 Conflict
+	// between our Get and Update is expected concurrency, not a fault — retrying
+	// keeps a transient conflict from surfacing as a PushSecretError.
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		ps := &esov1alpha1.PushSecret{}
+		if err := r.Get(ctx, key, ps); err != nil {
+			if apierrors.IsNotFound(err) {
+				return nil
+			}
+			return err
+		}
+		if ps.Annotations[adminAppCredentialPushContentHashAnnotation] == hash {
+			return nil
+		}
+		if ps.Annotations == nil {
+			ps.Annotations = map[string]string{}
+		}
+		ps.Annotations[adminAppCredentialPushContentHashAnnotation] = hash
+		return r.Update(ctx, ps)
+	}); err != nil {
+		return fmt.Errorf("forcing admin app-credential PushSecret %q re-push: %w", name, err)
 	}
 	return nil
 }

@@ -889,6 +889,64 @@ func TestForceSyncKORCCloudsYAMLExternalSecret_RetriesOnConflict(t *testing.T) {
 		"the force-sync annotation must be stamped on the retry that succeeds")
 }
 
+// TestForceRepushAdminAppCredential_StampsHashRetriesAndIdempotent locks in the
+// PushSecret re-push nudge that makes the fresh-create credential handoff reach
+// OpenBao promptly. ESO's PushSecret controller does not watch its source Secret;
+// it re-pushes only when the PushSecret object's own metadata hash changes. The
+// helper must therefore stamp the content-hash annotation (retrying an expected
+// 409), and must be a no-op when the hash already matches so a converged
+// credential never churns the push every reconcile.
+func TestForceRepushAdminAppCredential_StampsHashRetriesAndIdempotent(t *testing.T) {
+	g := NewWithT(t)
+
+	s := korcTestScheme(t)
+	cp := korcControlPlane()
+	psName := adminAppCredentialPushSecretName(cp)
+	ps := &esov1alpha1.PushSecret{
+		ObjectMeta: metav1.ObjectMeta{Name: psName, Namespace: childNamespace(cp)},
+	}
+	conflicts, updates := 0, 0
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(ps).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Update: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+				if _, ok := obj.(*esov1alpha1.PushSecret); ok {
+					if conflicts == 0 {
+						conflicts++
+						return apierrors.NewConflict(
+							schema.GroupResource{Group: "external-secrets.io", Resource: "pushsecrets"},
+							psName, errors.New("the object has been modified"),
+						)
+					}
+					updates++
+				}
+				return cl.Update(ctx, obj, opts...)
+			},
+		}).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	// First stamp: the annotation is set and the 409 is retried, not surfaced.
+	g.Expect(r.forceRepushAdminAppCredential(context.Background(), cp, psName, "hash-1")).To(Succeed(),
+		"an expected 409 conflict must be retried, not surfaced as a hard error")
+	g.Expect(conflicts).To(Equal(1), "the first Update must have conflicted and been retried")
+	g.Expect(updates).To(Equal(1), "exactly one successful Update stamps the hash")
+
+	got := &esov1alpha1.PushSecret{}
+	g.Expect(c.Get(context.Background(), types.NamespacedName{Name: psName, Namespace: childNamespace(cp)}, got)).To(Succeed())
+	g.Expect(got.Annotations[adminAppCredentialPushContentHashAnnotation]).To(Equal("hash-1"),
+		"the content-hash annotation must be stamped so ESO's shouldRefresh gate re-pushes the credential")
+
+	// Idempotent: a second call with the SAME hash must not Update the PushSecret,
+	// so a converged credential does not churn the push (and thus OpenBao) each pass.
+	g.Expect(r.forceRepushAdminAppCredential(context.Background(), cp, psName, "hash-1")).To(Succeed())
+	g.Expect(updates).To(Equal(1), "an unchanged hash must be a no-op (no second Update)")
+
+	// A changed hash re-stamps so a rotated credential reaches OpenBao promptly.
+	g.Expect(r.forceRepushAdminAppCredential(context.Background(), cp, psName, "hash-2")).To(Succeed())
+	g.Expect(updates).To(Equal(2), "a changed hash must stamp a fresh re-push trigger")
+	g.Expect(c.Get(context.Background(), types.NamespacedName{Name: psName, Namespace: childNamespace(cp)}, got)).To(Succeed())
+	g.Expect(got.Annotations[adminAppCredentialPushContentHashAnnotation]).To(Equal("hash-2"))
+}
+
 // TestAdminAppCredentialRemoteKeyFor_EmbedsNamespaceAndName locks in the per-CR
 // OpenBao path the RemoteKey is scoped by both the
 // ControlPlane's Namespace and Name so two ControlPlanes never clobber each
