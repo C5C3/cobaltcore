@@ -250,7 +250,7 @@ func TestEnsureMariaDB_OwnedReconcilesReplicas(t *testing.T) {
 	ownedMariaDB := &mariadbv1alpha1.MariaDB{
 		ObjectMeta: metav1.ObjectMeta{Name: "openstack-db", Namespace: childNamespace(cp)},
 		Spec: mariadbv1alpha1.MariaDBSpec{
-			Replicas: 1, // drifted below the projected default (infraMariaDBReplicas)
+			Replicas: 1, // drifted below the projected default (infraMariaDBReplicasDefault)
 			Storage: mariadbv1alpha1.Storage{
 				Size:             &existingSize,
 				StorageClassName: "standard",
@@ -270,10 +270,100 @@ func TestEnsureMariaDB_OwnedReconcilesReplicas(t *testing.T) {
 	g.Expect(c.Get(context.Background(), types.NamespacedName{
 		Name: "openstack-db", Namespace: childNamespace(cp),
 	}, &mariadb)).To(Succeed())
-	g.Expect(mariadb.Spec.Replicas).To(Equal(infraMariaDBReplicas),
+	g.Expect(mariadb.Spec.Replicas).To(Equal(infraMariaDBReplicasDefault),
 		"an owned MariaDB must have its replicas reconciled to the projected default")
+	g.Expect(mariadb.Spec.Galera).NotTo(BeNil())
+	g.Expect(mariadb.Spec.Galera.Enabled).To(BeTrue(),
+		"the default 3-replica projection re-enables Galera on an owned MariaDB")
 	g.Expect(mariadb.Spec.Storage.StorageClassName).To(Equal("standard"),
 		"storage stays immutable even for an owned MariaDB")
+}
+
+// TestEnsureMariaDB_OwnedReconcilesGaleraState isolates the Galera-only drift
+// case: an owned MariaDB already sits at the projected replica default, but its
+// Galera flag has drifted off. ensureMariaDB must flip Galera back on without
+// touching the (already-correct) replica count or the immutable storage, proving
+// the update triggers on Galera drift alone and not only on a replica mismatch.
+func TestEnsureMariaDB_OwnedReconcilesGaleraState(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := infraTestScheme(t)
+	cp := managedInfraControlPlane() // Database.Replicas defaults to infraMariaDBReplicasDefault
+
+	existingSize := resource.MustParse("100Gi")
+	ownedMariaDB := &mariadbv1alpha1.MariaDB{
+		ObjectMeta: metav1.ObjectMeta{Name: "openstack-db", Namespace: childNamespace(cp)},
+		Spec: mariadbv1alpha1.MariaDBSpec{
+			Replicas: infraMariaDBReplicasDefault,             // already at the projected default
+			Galera:   &mariadbv1alpha1.Galera{Enabled: false}, // only Galera has drifted off
+			Storage: mariadbv1alpha1.Storage{
+				Size:             &existingSize,
+				StorageClassName: "standard",
+			},
+		},
+	}
+	// Mark the MariaDB as owned by this ControlPlane (controller owner reference).
+	g.Expect(controllerutil.SetControllerReference(cp, ownedMariaDB, s)).To(Succeed())
+
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, ownedMariaDB).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.ensureMariaDB(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var mariadb mariadbv1alpha1.MariaDB
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Name: "openstack-db", Namespace: childNamespace(cp),
+	}, &mariadb)).To(Succeed())
+	g.Expect(mariadb.Spec.Replicas).To(Equal(infraMariaDBReplicasDefault),
+		"replicas already at the default must stay unchanged when only Galera drifted")
+	g.Expect(mariadb.Spec.Galera).NotTo(BeNil())
+	g.Expect(mariadb.Spec.Galera.Enabled).To(BeTrue(),
+		"ensureMariaDB must re-enable Galera when only the Galera flag has drifted on an owned MariaDB")
+	g.Expect(mariadb.Spec.Storage.StorageClassName).To(Equal("standard"),
+		"storage stays immutable while correcting Galera drift")
+}
+
+// TestEnsureMariaDB_ReplicasFromSpec verifies the fresh-create projection honours
+// spec.infrastructure.database.replicas: a single replica yields a non-Galera
+// MariaDB (so it schedules on a single-node kind), three replicas yield a Galera
+// cluster, and a zero value (only reachable when CRD validation is bypassed) is
+// floored to the default with Galera enabled. Storage is always the fixed size.
+func TestEnsureMariaDB_ReplicasFromSpec(t *testing.T) {
+	tests := []struct {
+		name         string
+		specReplicas int32
+		wantReplicas int32
+		wantGalera   bool
+	}{
+		{name: "single replica disables Galera", specReplicas: 1, wantReplicas: 1, wantGalera: false},
+		{name: "three replicas enable Galera", specReplicas: 3, wantReplicas: 3, wantGalera: true},
+		{name: "zero replicas floored to default", specReplicas: 0, wantReplicas: infraMariaDBReplicasDefault, wantGalera: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+
+			s := infraTestScheme(t)
+			cp := managedInfraControlPlane()
+			cp.Spec.Infrastructure.Database.Replicas = tc.specReplicas
+			c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+			r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+			_, err := r.ensureMariaDB(context.Background(), cp)
+			g.Expect(err).NotTo(HaveOccurred())
+
+			var mariadb mariadbv1alpha1.MariaDB
+			g.Expect(c.Get(context.Background(), types.NamespacedName{
+				Name: "openstack-db", Namespace: childNamespace(cp),
+			}, &mariadb)).To(Succeed())
+			g.Expect(mariadb.Spec.Replicas).To(Equal(tc.wantReplicas))
+			g.Expect(mariadb.Spec.Galera).NotTo(BeNil())
+			g.Expect(mariadb.Spec.Galera.Enabled).To(Equal(tc.wantGalera))
+			g.Expect(mariadb.Spec.Storage.Size).NotTo(BeNil(),
+				"storage size is fixed regardless of replica count")
+		})
+	}
 }
 
 // TestEnsureMemcached_OwnedReconcilesReplicas verifies the owner-aware path for

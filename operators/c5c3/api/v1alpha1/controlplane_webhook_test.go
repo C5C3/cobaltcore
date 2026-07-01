@@ -312,6 +312,40 @@ func TestValidateCreate_RejectsDatabaseNeitherSet(t *testing.T) {
 	g.Expect(err.Error()).To(ContainSubstring("database"))
 }
 
+// TestValidateCreate_RejectsDatabaseReplicasTwo verifies that a managed-mode
+// ControlPlane requesting database.replicas: 2 is rejected. The managed MariaDB
+// projection turns any replicas>1 into a Galera cluster, and a two-node Galera
+// cluster cannot hold a quorum majority, so a single pod disruption takes the
+// whole database offline. The CRD marker only enforces Minimum=1, making this
+// webhook the enforcement point.
+func TestValidateCreate_RejectsDatabaseReplicasTwo(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := managedControlPlane()
+	cp.Spec.Infrastructure.Database.Replicas = 2
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("replicas"))
+	g.Expect(err.Error()).To(ContainSubstring("quorum"))
+}
+
+// TestValidateCreate_AcceptsQuorumSafeDatabaseReplicas verifies that the
+// quorum-safe replica counts — 1 (standalone) and 3 (Galera with a majority) —
+// pass validation, so the replicas>1==2 guard does not over-restrict legitimate
+// topologies.
+func TestValidateCreate_AcceptsQuorumSafeDatabaseReplicas(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+
+	for _, replicas := range []int32{1, 3, 5} {
+		cp := managedControlPlane()
+		cp.Spec.Infrastructure.Database.Replicas = replicas
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred(), "replicas=%d should be accepted", replicas)
+	}
+}
+
 func TestValidateCreate_RejectsCacheBothSet(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &ControlPlaneWebhook{}
@@ -666,6 +700,32 @@ func TestValidateUpdate_RejectsDatabaseNameChange(t *testing.T) {
 	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("database name is immutable"))
+}
+
+// TestValidateUpdate_RejectsDatabaseReplicasChange verifies that changing
+// database.replicas is rejected on UPDATE: the count is projected into the owned
+// MariaDB child's replica count and derived Galera topology, so editing it on a
+// live control plane would drive a destructive scale-down or Galera toggle
+// (3->1). Both directions are exercised so neither a scale-up nor a scale-down
+// slips through.
+func TestValidateUpdate_RejectsDatabaseReplicasChange(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+
+	// 3 -> 1 (scale down / Galera toggle off).
+	oldCP := managedControlPlane()
+	oldCP.Spec.Infrastructure.Database.Replicas = 3
+	newCP := managedControlPlane()
+	newCP.Spec.Infrastructure.Database.Replicas = 1
+
+	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("database replicas is immutable"))
+
+	// 1 -> 3 (the reverse direction).
+	_, err = w.ValidateUpdate(context.Background(), newCP, oldCP)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("database replicas is immutable"))
 }
 
 // TestValidateUpdate_RejectsRegionChange verifies that changing the region is

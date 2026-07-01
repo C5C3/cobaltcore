@@ -72,6 +72,18 @@ type DatabaseSpec struct {
 	// existing DatabaseSpec consumers.
 	// +optional
 	TLS *DatabaseTLSSpec `json:"tls,omitempty"`
+	// Replicas is the number of managed MariaDB replicas provisioned in
+	// fresh-create mode. It mirrors CacheSpec.Replicas: only the c5c3 operator's
+	// managed-mode projection honours it (a single replica yields a
+	// single-instance non-Galera MariaDB, three or more yield a Galera cluster),
+	// so a constrained cluster such as a single-node kind can schedule the
+	// fresh-create path. Operators that adopt an existing MariaDB (keystone, and
+	// the c5c3 adopted-infra path) ignore it. Only meaningful when ClusterRef is
+	// set.
+	// +optional
+	// +kubebuilder:default=3
+	// +kubebuilder:validation:Minimum=1
+	Replicas int32 `json:"replicas,omitempty"`
 }
 
 // DatabaseTLSSpec configures opt-in TLS (and mutual TLS) for a database

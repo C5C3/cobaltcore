@@ -47,9 +47,13 @@ func childNamespace(cp *c5c3v1alpha1.ControlPlane) string {
 // DECISION the managed-mode MariaDB CR is provisioned with
 // a MINIMAL but VALID spec. The mariadb-operator's webhook requires
 // Storage.Size (or a VolumeClaimTemplate) — see Storage.Validate in the
-// vendored v0.38.1 types — so a 100Gi size and a Galera HA topology are set to
-// mirror the production baseline (deploy/flux-system/infrastructure/mariadb.yaml
-// uses replicas:3 + galera.enabled + storage.size:100Gi). TLS / issuerRefs are
+// vendored v0.38.1 types — so a 100Gi size is set to mirror the production
+// baseline (deploy/flux-system/infrastructure/mariadb.yaml uses
+// storage.size:100Gi). The replica topology is DERIVED from
+// spec.infrastructure.database.replicas: the default (3) yields a Galera HA
+// cluster matching the production baseline, while a single replica yields a
+// single-instance non-Galera MariaDB so the fresh-create path schedules on a
+// constrained cluster such as a single-node kind. TLS / issuerRefs are
 // deliberately NOT set here: the baseline wires those from cluster-specific
 // ClusterIssuers that are an infrastructure concern outside the aggregate's
 // knowledge, and the keystone DB-client baseline reads TLS from
@@ -58,7 +62,11 @@ func childNamespace(cp *c5c3v1alpha1.ControlPlane) string {
 // platform team.
 const (
 	infraMariaDBStorageSize = "100Gi"
-	infraMariaDBReplicas    = int32(3)
+	// infraMariaDBReplicasDefault is the zero-value floor applied when
+	// spec.infrastructure.database.replicas is unset (0). The CRD default is 3,
+	// so this only fires when validation was bypassed; it keeps the projection
+	// admissible (replicas >= 1) rather than creating a zero-replica MariaDB.
+	infraMariaDBReplicasDefault = int32(3)
 )
 
 // memcachedGVK is the GroupVersionKind of the Memcached CR projected in managed
@@ -170,19 +178,31 @@ func (r *ControlPlaneReconciler) ensureMariaDB(ctx context.Context, cp *c5c3v1al
 		Name:      cp.Spec.Infrastructure.Database.ClusterRef.Name,
 		Namespace: childNamespace(cp),
 	}
+	// Derive the projected topology from the ControlPlane spec. A single replica
+	// yields a single-instance MariaDB with Galera off, so a single-node kind can
+	// schedule the fresh-create path; any multi-replica count (the default is 3)
+	// enables the Galera clustering the production baseline uses. Floor a
+	// zero/negative value (only reachable when CRD validation was bypassed) to
+	// the default.
+	replicas := cp.Spec.Infrastructure.Database.Replicas
+	if replicas < 1 {
+		replicas = infraMariaDBReplicasDefault
+	}
+	galeraEnabled := replicas > 1
+
 	mariadb := &mariadbv1alpha1.MariaDB{}
 	err := r.Get(ctx, key, mariadb)
 	switch {
 	case apierrors.IsNotFound(err):
-		// Create fresh with the projected, production-shaped spec.
+		// Create fresh with the projected, spec-derived topology.
 		size, perr := resource.ParseQuantity(infraMariaDBStorageSize)
 		if perr != nil {
 			return false, fmt.Errorf("parsing MariaDB storage size %q: %w", infraMariaDBStorageSize, perr)
 		}
 		mariadb.Name = key.Name
 		mariadb.Namespace = key.Namespace
-		mariadb.Spec.Replicas = infraMariaDBReplicas
-		mariadb.Spec.Galera = &mariadbv1alpha1.Galera{Enabled: true}
+		mariadb.Spec.Replicas = replicas
+		mariadb.Spec.Galera = &mariadbv1alpha1.Galera{Enabled: galeraEnabled}
 		mariadb.Spec.Storage = mariadbv1alpha1.Storage{Size: &size}
 		if serr := controllerutil.SetControllerReference(cp, mariadb, r.Scheme); serr != nil {
 			return false, fmt.Errorf("setting owner reference on MariaDB %q: %w", key.Name, serr)
@@ -196,10 +216,13 @@ func (r *ControlPlaneReconciler) ensureMariaDB(ctx context.Context, cp *c5c3v1al
 		// A MariaDB with this clusterRef name already exists. Two sub-cases:
 		//
 		//  1. It is OWNED by this ControlPlane (we created it on an earlier pass):
-		//     reconcile the MUTABLE projection — spec.replicas — so a changed
-		//     projection default (infraMariaDBReplicas) takes effect on the cluster
-		//     we own, rather than being frozen at first-creation. spec.storage is
-		//     deliberately NOT re-projected even when owned: the mariadb-operator
+		//     re-assert the spec-derived projection — spec.replicas and the derived
+		//     Galera topology — so external drift on the owned cluster is corrected
+		//     back to the declared topology. spec.infrastructure.database.replicas
+		//     is itself immutable after creation (the ControlPlane validating
+		//     webhook rejects a change), so this never scales down or toggles Galera
+		//     in response to a user edit — only in response to drift. spec.storage
+		//     is deliberately NOT re-projected even when owned: the mariadb-operator
 		//     webhook rejects changing spec.storage.* on an existing CR, so storage
 		//     stays as first created.
 		//
@@ -209,10 +232,14 @@ func (r *ControlPlaneReconciler) ensureMariaDB(ctx context.Context, cp *c5c3v1al
 		//     (immutable storage) or needlessly reshape a running database, and we
 		//     never claim GC ownership of a resource we did not create, so deleting
 		//     the ControlPlane never cascades into shared infra.
-		if metav1.IsControlledBy(mariadb, cp) && mariadb.Spec.Replicas != infraMariaDBReplicas {
-			mariadb.Spec.Replicas = infraMariaDBReplicas
-			if uerr := r.Update(ctx, mariadb); uerr != nil {
-				return false, fmt.Errorf("updating owned MariaDB %q replicas: %w", key.Name, uerr)
+		if metav1.IsControlledBy(mariadb, cp) {
+			currentGalera := mariadb.Spec.Galera != nil && mariadb.Spec.Galera.Enabled
+			if mariadb.Spec.Replicas != replicas || currentGalera != galeraEnabled {
+				mariadb.Spec.Replicas = replicas
+				mariadb.Spec.Galera = &mariadbv1alpha1.Galera{Enabled: galeraEnabled}
+				if uerr := r.Update(ctx, mariadb); uerr != nil {
+					return false, fmt.Errorf("updating owned MariaDB %q topology: %w", key.Name, uerr)
+				}
 			}
 		}
 	}

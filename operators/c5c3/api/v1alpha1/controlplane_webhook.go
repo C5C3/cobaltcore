@@ -267,6 +267,24 @@ func (w *ControlPlaneWebhook) validate(cp *ControlPlane) field.ErrorList {
 		))
 	}
 
+	// database.replicas must be 1 (standalone) or >=3 (a quorum-safe Galera
+	// cluster). Exactly 2 is rejected because the managed-mode MariaDB projection
+	// (ensureMariaDB) turns any replicas>1 into a Galera cluster, and a two-node
+	// Galera cluster cannot hold a majority — a single pod disruption (restart,
+	// OOM-kill, rolling update, network partition) then loses quorum and takes the
+	// whole database offline. The CRD marker only enforces Minimum=1, so this
+	// webhook is the enforcement point; the shared commonv1.DatabaseSpec must not
+	// carry a c5c3-specific CEL rule the keystone operator (which ignores replicas)
+	// would also inherit. A zero value (CRD/webhook default bypassed) is left to
+	// the reconciler's floor, so only an explicit 2 is rejected here.
+	if db.Replicas == 2 {
+		allErrs = append(allErrs, field.Invalid(
+			specPath.Child("infrastructure", "database", "replicas"),
+			db.Replicas,
+			"database replicas must be 1 (standalone) or >=3 (Galera needs quorum); 2 cannot hold a majority",
+		))
+	}
+
 	// cache must use exactly one of clusterRef or servers (mirrors the
 	// keystone cache XOR check / CEL rule).
 	cache := cp.Spec.Infrastructure.Cache
@@ -389,6 +407,18 @@ func validateImmutable(oldObj, newObj *ControlPlane) field.ErrorList {
 	if oldDB.Database != newDB.Database {
 		allErrs = append(allErrs, field.Invalid(dbPath.Child("database"),
 			newDB.Database, "database name is immutable"))
+	}
+	// database.replicas is create-only. It is projected into the managed MariaDB
+	// child's replica count and the derived Galera topology (ensureMariaDB), so
+	// editing it on a live ControlPlane would drive a destructive Update on the
+	// owned cluster — toggling Galera off (3->1) or scaling a running Galera
+	// cluster down. Freezing it here keeps the CR the single source of truth for a
+	// topology that can only be changed safely by recreating the control plane,
+	// mirroring the database name / region / clusterRef.name immutability above.
+	if oldDB.Replicas != newDB.Replicas {
+		allErrs = append(allErrs, field.Invalid(dbPath.Child("replicas"),
+			newDB.Replicas, "database replicas is immutable after creation "+
+				"(toggling Galera or scaling down a live cluster is destructive)"))
 	}
 
 	cachePath := field.NewPath("spec", "infrastructure", "cache")
