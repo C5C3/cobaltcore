@@ -33,10 +33,9 @@ import (
 func drainEvents(rec *record.FakeRecorder) []string {
 	var out []string
 	for {
-		select {
-		case e := <-rec.Events:
-			out = append(out, e)
-		default:
+		if len(rec.Events) > 0 {
+			out = append(out, <-rec.Events)
+		} else {
 			return out
 		}
 	}
