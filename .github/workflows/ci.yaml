@@ -53,6 +53,7 @@ jobs:
       e2e-infra: ${{ steps.result.outputs.e2e-infra }}
       e2e-chaos: ${{ steps.result.outputs.e2e-chaos }}
       e2e-prometheus: ${{ steps.result.outputs.e2e-prometheus }}
+      e2e-controlplane: ${{ steps.result.outputs.e2e-controlplane }}
       has-e2e-operators: ${{ steps.result.outputs.has-e2e-operators }}
       e2e-operators: ${{ steps.result.outputs.e2e-operators }}
       tempest-releases: ${{ steps.tempest-matrix.outputs.tempest-releases }}
@@ -138,6 +139,19 @@ jobs:
               - '.github/actions/setup-e2e-infra/action.yaml'
               - '.github/workflows/ci.yaml'
               - 'Makefile'
+            # Full ControlPlane -> Keystone chain E2E job — separate filter so
+            # the resource-heavy e2e-controlplane job runs only when the c5c3 or
+            # keystone operator code, the full-chain suite, the deploy stack, the
+            # hack scripts (deploy-infra, ci-deploy-korc, ci-deploy-operator), or
+            # the composite actions it uses actually change.
+            e2e_controlplane:
+              - 'operators/c5c3/**'
+              - 'operators/keystone/**'
+              - 'tests/e2e/c5c3/**'
+              - 'deploy/**'
+              - 'hack/**'
+              - '.github/actions/**'
+              - '.github/workflows/ci.yaml'
             # follow-up: Any E2E test-definition change forces all E2E
             # jobs to run. Kept separate from go_common so pure test edits do
             # not also trigger lint/unit/format/vuln jobs.
@@ -158,6 +172,7 @@ jobs:
           FILTER_e2e_infra: ${{ steps.filter.outputs.e2e_infra }}
           FILTER_e2e_chaos: ${{ steps.filter.outputs.e2e_chaos }}
           FILTER_e2e_prometheus: ${{ steps.filter.outputs.e2e_prometheus }}
+          FILTER_e2e_controlplane: ${{ steps.filter.outputs.e2e_controlplane }}
           FILTER_tests_e2e_operator: ${{ steps.filter.outputs.tests_e2e_operator }}
           FILTER_tests_tempest: ${{ steps.filter.outputs.tests_tempest }}
           FILTER_go_common: ${{ steps.filter.outputs.go_common }}
@@ -599,7 +614,7 @@ jobs:
     if: |
       always() &&
       github.event_name == 'pull_request' &&
-      (needs.changes.outputs.has-e2e-operators == 'true' || needs.changes.outputs.e2e-chaos == 'true' || needs.changes.outputs.e2e-prometheus == 'true') &&
+      (needs.changes.outputs.has-e2e-operators == 'true' || needs.changes.outputs.e2e-chaos == 'true' || needs.changes.outputs.e2e-prometheus == 'true' || needs.changes.outputs.e2e-controlplane == 'true') &&
       github.event.pull_request.head.repo.fork != true &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
@@ -630,6 +645,12 @@ jobs:
           ops=$(echo '${{ needs.changes.outputs.e2e-operators }}' | jq -r '.operator[]')
           if ! printf '%s\n' $ops | grep -qx keystone; then
             ops=$(printf '%s\nkeystone' "$ops")
+          fi
+          # The e2e-controlplane job runs the full chain from local dev images, so
+          # both keystone-operator:dev and c5c3-operator:dev must be built when it
+          # runs — even if only the full-chain test definition changed.
+          if [ '${{ needs.changes.outputs.e2e-controlplane }}' = 'true' ] && ! printf '%s\n' $ops | grep -qx c5c3; then
+            ops=$(printf '%s\nc5c3' "$ops")
           fi
           {
             echo "BUILD_OPERATORS<<EOF"
@@ -1074,6 +1095,109 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: e2e-prometheus-junit-report
+          path: _output/reports/
+          retention-days: 14
+
+  # Full ControlPlane -> Keystone chain E2E on kind. Deploys keystone-operator +
+  # K-ORC + c5c3-operator as local dev images (the GHCR-published Flux chart path
+  # is bypassed via CONTROLPLANE_OPERATORS=external) and runs the
+  # full-controlplane-keystone Chainsaw suite with the presence guard set to fail
+  # loudly (E2E_REQUIRE_CONTROLPLANE_STACK=true), so broken wiring in the live
+  # chain fails the build instead of SKIPping.
+  #
+  # A real MariaDB + Memcached + Keystone + three operators + OpenBao + ESO +
+  # K-ORC + cert-manager + Envoy on one node is heavy, so this is a dedicated job
+  # with an extended timeout on the larger runner (matching tempest).
+  e2e-controlplane:
+    needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]
+    # always(): allow the job to run when upstream Go jobs are skipped
+    # (e.g. pure E2E test-definition PRs where go=false). The explicit
+    # failure/cancelled guard still blocks if any upstream actually failed.
+    if: |
+      always() &&
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.fork != true &&
+      needs.changes.outputs.e2e-controlplane == 'true' &&
+      needs.build-e2e-images.result == 'success' &&
+      !contains(needs.*.result, 'failure') &&
+      !contains(needs.*.result, 'cancelled')
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 60
+    continue-on-error: false
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - name: Create kind cluster
+        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
+        with:
+          config: hack/kind-config.yaml
+          cluster_name: ${{ env.KIND_CLUSTER }}
+      # Pull the pre-built dev operator images plus the Keystone service image
+      # and the OpenStack-client (tempest) image the verify Job uses.
+      - name: Load E2E images
+        uses: ./.github/actions/load-e2e-images
+        with:
+          images: |
+            ${{ env.IMAGE_PREFIX }}/keystone-operator:dev
+            ${{ env.IMAGE_PREFIX }}/c5c3-operator:dev
+            ${{ env.IMAGE_PREFIX }}/keystone:2025.2
+            ${{ env.IMAGE_PREFIX }}/tempest:2025.2
+      - name: Load images into kind
+        run: |
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/c5c3-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:2025.2 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/tempest:2025.2 --name ${{ env.KIND_CLUSTER }}
+      # Prepare the shared infra (TLS, OpenBao + per-CR seeding, ESO store) and
+      # suspend the Flux ControlPlane stack; the operators are deployed below.
+      # CONTROLPLANE_NAME must match the fixture CR (controlplane-keystone) so the
+      # OpenBao bootstrap seeds the per-CR admin-password path the chain reads.
+      - name: Setup E2E infrastructure
+        uses: ./.github/actions/setup-e2e-infra
+        env:
+          WITH_CONTROLPLANE: "true"
+          CONTROLPLANE_OPERATORS: external
+          CONTROLPLANE_NAME: controlplane-keystone
+          WITH_CONTROLPLANE_CR: "false"
+      # Deploy K-ORC (CRDs + controller) from the upstream installer at the tag
+      # pinned in deploy/flux-system/sources/k-orc.yaml.
+      - name: Deploy K-ORC
+        run: hack/ci-deploy-korc.sh
+      # keystone-operator first so its CRD exists before c5c3-operator projects
+      # Keystone CRs.
+      - name: Deploy keystone-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: keystone
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/keystone-operator
+          NAMESPACE: keystone-system
+      - name: Deploy c5c3-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: c5c3
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/c5c3-operator
+          NAMESPACE: c5c3-system
+      # E2E_REQUIRE_CONTROLPLANE_STACK=true flips the suite's presence guard from
+      # SKIP to a hard failure, so missing wiring cannot go green.
+      - name: Run full ControlPlane chain E2E test
+        run: |
+          mkdir -p _output/reports
+          chainsaw test --config tests/e2e/chainsaw-config.yaml \
+            tests/e2e/c5c3/full-controlplane-keystone/
+        env:
+          E2E_REQUIRE_CONTROLPLANE_STACK: "true"
+      - name: Dump diagnostic info
+        if: always()
+        run: hack/ci-dump-diagnostics.sh
+        env:
+          OPERATOR: c5c3
+      - name: Upload JUnit report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: e2e-controlplane-junit-report
           path: _output/reports/
           retention-days: 14
 

@@ -24,6 +24,7 @@
 #   FILTER_e2e_infra          — paths-filter output for e2e-infra paths
 #   FILTER_e2e_chaos          — paths-filter output for e2e-chaos paths
 #   FILTER_e2e_prometheus     — paths-filter output for e2e-prometheus paths
+#   FILTER_e2e_controlplane   — paths-filter output for e2e-controlplane paths
 #   FILTER_tests_e2e_operator — paths-filter output for tests/e2e/** (follow-up)
 #   FILTER_tests_tempest      — paths-filter output for tests/tempest/** (follow-up)
 #   FILTER_go_common          — paths-filter output for go_common paths
@@ -120,6 +121,17 @@ if [[ "$go_changed" == "true" || "${FILTER_e2e_prometheus:-false}" == "true" || 
   echo "e2e-prometheus=true" >> "$GITHUB_OUTPUT"
 else
   echo "e2e-prometheus=false" >> "$GITHUB_OUTPUT"
+fi
+
+# The full ControlPlane -> Keystone chain E2E job runs when its own paths change
+# (c5c3/keystone operator code, the full-chain suite, the deploy stack, the hack
+# scripts, or the composite actions it uses), when any Go code changes (so the
+# live chain re-validates the current operator code), or when any other E2E test
+# definition changes (so refactoring shared test infra runs the full suite).
+if [[ "$go_changed" == "true" || "${FILTER_e2e_controlplane:-false}" == "true" || "$any_e2e_tests" == "true" ]]; then
+  echo "e2e-controlplane=true" >> "$GITHUB_OUTPUT"
+else
+  echo "e2e-controlplane=false" >> "$GITHUB_OUTPUT"
 fi
 
 # Emit operator matrix — single codepath for both tag and non-tag.

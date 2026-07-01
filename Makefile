@@ -428,6 +428,26 @@ e2e-prometheus:
 	@kubectl get ns monitoring >/dev/null 2>&1 || { echo 'kube-prometheus-stack is not installed; run `WITH_PROMETHEUS=true make deploy-infra` first' >&2; exit 1; }
 	chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e/keystone/prometheus-stack/
 
+.PHONY: e2e-controlplane
+# e2e-controlplane runs the full ControlPlane -> Keystone chain Chainsaw suite
+# against a deployed kind cluster. The full stack (c5c3-operator + K-ORC +
+# keystone-operator, provisioning MariaDB/Memcached in managed mode) is opt-in;
+# fail fast with a clear remediation hint when the ControlPlane CRD is missing
+# instead of letting chainsaw attempt the suite against a cluster that lacks it.
+# The two preflights are kept separate so the kubectl/cluster-reachability
+# failure is not conflated with the stack-not-installed failure — see review
+# pattern
+# .planwerk/review_patterns/distinguish-collapsed-failure-modes-in-preflight-checks.md
+# This Makefile target satisfies the CI-to-Makefile parity expected by
+# .planwerk/review_patterns/maintain-ci-to-makefile-parity-for-new-jobs.md so
+# developers can reproduce the e2e-controlplane CI job locally. Set
+# E2E_REQUIRE_CONTROLPLANE_STACK=true to make the suite's presence guard fail
+# loudly (as the CI job does) rather than SKIP.
+e2e-controlplane:
+	@kubectl version --request-timeout=2s >/dev/null 2>&1 || { echo 'kubectl is not configured or no cluster is reachable' >&2; exit 1; }
+	@kubectl get crd controlplanes.c5c3.io >/dev/null 2>&1 || { echo 'the c5c3 ControlPlane stack is not installed; run `WITH_CONTROLPLANE=true make deploy-infra` (and deploy K-ORC + the operators) first' >&2; exit 1; }
+	chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e/c5c3/full-controlplane-keystone/
+
 .PHONY: tempest-test
 # tempest-test runs Tempest API tests against a deployed OpenStack service.
 # Requires a running kind cluster with the service deployed.
