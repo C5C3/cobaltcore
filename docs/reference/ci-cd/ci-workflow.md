@@ -113,6 +113,8 @@ E2E Jobs (depends on build-e2e-images):
   e2e-chaos ──────> needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]
   e2e-prometheus ─> needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]
                      if: needs.changes.outputs.e2e-prometheus == 'true'
+  e2e-controlplane > needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]
+                     if: needs.changes.outputs.e2e-controlplane == 'true'
   tempest ────────> needs: [changes, build-e2e-images]
 
 Publish Jobs (main/tags only, depends on E2E):
@@ -124,9 +126,10 @@ Release Job (v* tags only, depends on publish):
   github-release ──> needs: [changes, merge-operator-images, helm-push], if: v* tag
 ```
 
-The five E2E jobs (`e2e-infra`, `e2e-operator`, `e2e-chaos`, `e2e-prometheus`,
-`tempest`) share infrastructure setup via the `setup-e2e-infra` composite action
-and diagnostic teardown via `hack/ci-dump-diagnostics.sh`.
+The six E2E jobs (`e2e-infra`, `e2e-operator`, `e2e-chaos`, `e2e-prometheus`,
+`e2e-controlplane`, `tempest`) share infrastructure setup via the
+`setup-e2e-infra` composite action and diagnostic teardown via
+`hack/ci-dump-diagnostics.sh`.
 
 ## Jobs
 
@@ -687,6 +690,58 @@ genuine regression of the kind-only Quick Start observability story.
 with `e2e-chaos`, any Go code change (`go_changed`) or any E2E test change
 (`any_e2e_tests`) also triggers the job via `ci-resolve-changes.sh`, since
 the prometheus suite scrapes live operator metrics.
+
+### e2e-controlplane
+
+Runs the full c5c3 `ControlPlane` → Keystone chain on kind. It deploys
+`keystone-operator` + K-ORC + `c5c3-operator` as local dev images (rather than
+the GHCR-published Flux chart) and runs the
+`tests/e2e/c5c3/full-controlplane-keystone/` Chainsaw suite, which asserts the
+whole orchestration link by link: managed MariaDB/Memcached provisioning, the
+projected Keystone CR, the minted restricted K-ORC application credential, the
+OpenBao → ESO credential round-trip, the identity catalog, and finally a live
+`openstack token issue` / `catalog list` against the Keystone `/v3` endpoint.
+
+**Dependencies:** `needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]`
+**Condition:** Runs only when `e2e-controlplane == 'true'`, the upstream
+`build-e2e-images` job succeeded, and no dependency failed or was cancelled.
+
+`setup-e2e-infra` is invoked with `WITH_CONTROLPLANE: "true"`,
+`CONTROLPLANE_OPERATORS: external`, and
+`CONTROLPLANE_NAME: controlplane-keystone`. Under `CONTROLPLANE_OPERATORS=external`
+`hack/deploy-infra.sh` prepares only the shared prerequisites (TLS issuers,
+OpenBao with per-CR admin-password seeding, the ESO ClusterSecretStore) and
+suspends the Flux ControlPlane stack, so the dev-image operators deployed by the
+subsequent steps own the reconcile. K-ORC is applied by `hack/ci-deploy-korc.sh`
+at the tag pinned in `deploy/flux-system/sources/k-orc.yaml`.
+
+The suite runs with `E2E_REQUIRE_CONTROLPLANE_STACK: "true"`, which flips its
+presence guard from a silent SKIP to a hard failure — so a broken operator/CRD
+deployment fails the build instead of going green. Like `e2e-prometheus`, the
+job runs with `continue-on-error: false`, and it uses a 60-minute timeout on the
+larger runner because a real MariaDB + Memcached + Keystone + three operators +
+OpenBao + ESO + K-ORC on one node is resource-heavy.
+
+| Step | Action | Details |
+| --- | --- | --- |
+| 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
+| 2 | `helm/kind-action@v1.14.0` | Creates kind cluster (`forge`) |
+| 3 | `load-e2e-images` composite | Restores `keystone-operator:dev`, `c5c3-operator:dev`, `keystone:2025.2`, `tempest:2025.2` from GHCR |
+| 4 | `kind load docker-image` | Loads the four images into kind |
+| 5 | `setup-e2e-infra` composite action | Deploys infra with `WITH_CONTROLPLANE=true CONTROLPLANE_OPERATORS=external CONTROLPLANE_NAME=controlplane-keystone` |
+| 6 | `hack/ci-deploy-korc.sh` | Applies K-ORC CRDs + controller at the pinned tag |
+| 7 | `hack/ci-deploy-operator.sh` (keystone) | Deploys the keystone-operator dev image into `keystone-system` |
+| 8 | `hack/ci-deploy-operator.sh` (c5c3) | Deploys the c5c3-operator dev image into `c5c3-system` |
+| 9 | `chainsaw test` | Runs the full-chain suite with `E2E_REQUIRE_CONTROLPLANE_STACK=true` |
+| 10 | `hack/ci-dump-diagnostics.sh` (always) | Dumps diagnostics with `OPERATOR=c5c3` |
+| 11 | Upload JUnit report | Uploads `_output/reports/` as `e2e-controlplane-junit-report` (14-day retention) |
+
+**Path filter:** `operators/c5c3/**`, `operators/keystone/**`, `tests/e2e/c5c3/**`,
+`deploy/**`, `hack/**`, `.github/actions/**`, `.github/workflows/ci.yaml`. As with
+`e2e-prometheus`, any Go code change (`go_changed`) or any E2E test change
+(`any_e2e_tests`) also triggers the job via `ci-resolve-changes.sh`. When it
+runs, `build-e2e-images` unions `c5c3` into the built operator set so both dev
+images exist even for a full-chain-test-only change.
 
 ### tempest
 

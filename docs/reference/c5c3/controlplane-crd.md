@@ -236,6 +236,16 @@ the reconciler projects points at the **same** `DatabaseSpec` / `CacheSpec`
 verbatim, so the aggregate and the projected service agree on the backing
 services.
 
+The managed-mode MariaDB topology is derived from
+`spec.infrastructure.database.replicas` (default `3`, minimum `1`): the default
+projects a production-shaped Galera HA cluster (3 replicas, `galera.enabled`,
+`100Gi` storage), while `database.replicas: 1` projects a single-instance,
+non-Galera MariaDB so the fresh-create path schedules on a constrained cluster
+such as a single-node kind. `cache.replicas` (also default `3`) drives the
+Memcached replica count the same way. Both are only honoured in managed mode;
+storage stays at `100Gi` regardless of the replica count, and a ControlPlane
+that adopts a pre-existing MariaDB/Memcached leaves its topology untouched.
+
 > **`database.secretRef` is operator-owned in managed mode.** The
 > `DatabaseSpec` is projected onto the Keystone CR verbatim **except** for its
 > `secretRef`. In managed mode the `reconcileDBCredentials` sub-reconciler

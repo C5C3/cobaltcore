@@ -39,6 +39,7 @@ The custom managers cover:
 - **OpenStack release refs** — git tags in `releases/*/source-refs.yaml` and PyPI pins in `releases/*/test-refs.yaml`.
 - **Test tooling in `hack/`** — Chainsaw, Flux CLI, kind, and kubectl versions in `hack/install-test-deps.sh`, plus `FLUX_OPERATOR_VERSION` in `hack/deploy-infra.sh`.
 - **kind deploy components** — `flux-web.yaml`, `envoy-gateway.yaml`, and `headlamp.yaml` under `deploy/kind/base/`.
+- **K-ORC Flux source** — the `ref.tag` of the K-ORC `GitRepository` in `deploy/flux-system/sources/k-orc.yaml` (github-releases). This closes a drift gap: without it the Flux-applied K-ORC CRDs could fall behind the Renovate-tracked `k-orc/openstack-resource-controller` Go module the operator compiles against.
 - **Go build tooling in `Makefile` / `.github/workflows/*.yaml`** — `gofumpt`, `controller-gen`, `golangci-lint`, and `yq`.
 
 Major updates are **disabled** for all custom-regex managers — these touch deploy-time

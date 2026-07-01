@@ -18,8 +18,11 @@ OpenBao, and register the identity catalog — all reconciled to an aggregate
 
 Same toolchain as the [Quick Start](./quick-start.md), plus an internet
 connection (K-ORC is cloned from GitHub at a pinned tag). Docker Desktop needs
-ample CPU/memory — the ControlPlane provisions a production-shaped (Galera)
-MariaDB, heavier than the single-replica database the per-service path uses.
+ample CPU/memory — by default the ControlPlane provisions a production-shaped
+(Galera) MariaDB, heavier than the single-replica database the per-service path
+uses. On a constrained cluster set `spec.infrastructure.database.replicas: 1`
+(and `cache.replicas: 1`) in the ControlPlane CR to provision a single-instance,
+non-Galera MariaDB instead.
 
 ```bash
 make install-test-deps

@@ -1057,6 +1057,7 @@ operator CRDs.
 | `database` | `string` | Yes | Database name. Constrained to the MySQL identifier set and length: `MinLength=1`, `MaxLength=64`, `Pattern=^[A-Za-z0-9_]+$`. Immutable after create (CEL transition rule): renaming re-points `db_sync` at a fresh, empty schema and silently orphans the existing data. |
 | `secretRef` | [`SecretRefSpec`](#secretrefspec) | Yes | Secret with database credentials. |
 | `tls` | [`*DatabaseTLSSpec`](#databasetlsspec) | No | Optional TLS/mTLS configuration. The pointer keeps the field opt-in and non-mutating: a `nil` `tls` means plaintext TCP, preserving the previous behavior for all existing CRs. |
+| `replicas` | `int32` | No | Number of managed MariaDB replicas provisioned in fresh-create mode (default `3`, minimum `1`). This field is shared by the c5c3 `ControlPlane`, whose managed-mode projection derives the MariaDB/Galera topology from it. **The keystone operator ignores it**: Keystone adopts an existing MariaDB (managed mode references it via `clusterRef`, brownfield via `host`) and never provisions its own, so `replicas` has no effect on a standalone Keystone CR. |
 
 Exactly one of `clusterRef` or `host` must be set (enforced by CEL validation).
 The database name and the `clusterRef` ↔ `host` mode are immutable after create
