@@ -16,8 +16,11 @@
 # The clone is scoped to /dist via spec.ignore so the source artifact stays small
 # (the full upstream repo carries a website/, examples/, tooling, etc.).
 #
-# Renovate: the pinned tag below is tracked by a customManager rule (see the
-# follow-up tracked in the GitHub issue that finalises the c5c3-operator stack).
+# Renovate: the pinned tag below is tracked by a customManager rule in
+# renovate.json (matching this file's ref.tag), so it cannot silently drift from
+# the go.mod k-orc module version the operator compiles against. hack/ci-deploy-
+# korc.sh parses this same tag so the CI installer and the Flux source stay in
+# lockstep.
 ---
 apiVersion: source.toolkit.fluxcd.io/v1
 kind: GitRepository

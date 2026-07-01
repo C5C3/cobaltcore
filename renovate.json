@@ -136,6 +136,19 @@
     {
       "customType": "regex",
       "managerFilePatterns": [
+        "/deploy/flux-system/sources/k-orc\\.yaml$/"
+      ],
+      "matchStrings": [
+        "tag:\\s*(?<currentValue>v\\d+\\.\\d+\\.\\d+)"
+      ],
+      "depNameTemplate": "k-orc/openstack-resource-controller",
+      "datasourceTemplate": "github-releases",
+      "packageNameTemplate": "k-orc/openstack-resource-controller",
+      "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
         "/Makefile$/",
         "/\\.github/workflows/.*\\.yaml$/"
       ],
@@ -263,6 +276,22 @@
       "automerge": true,
       "minimumReleaseAge": "3 days",
       "groupName": "headlamp"
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["deploy/flux-system/sources/k-orc.yaml"],
+      "matchPackageNames": ["k-orc/openstack-resource-controller"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["deploy/flux-system/sources/k-orc.yaml"],
+      "matchPackageNames": ["k-orc/openstack-resource-controller"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "automerge": true,
+      "minimumReleaseAge": "3 days",
+      "groupName": "k-orc"
     },
     {
       "matchManagers": ["custom.regex"],
