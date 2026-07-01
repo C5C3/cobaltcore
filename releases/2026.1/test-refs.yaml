@@ -6,5 +6,5 @@
 # This file is the single source of truth for what version of each test tool
 # is installed in test container images. CI workflows resolve versions via yq.
 # Separate from source-refs.yaml which tracks git refs for OpenStack services.
-tempest: "46.2.0"
-keystone-tempest-plugin: "0.20.0"
+tempest: "46.3.0"
+keystone-tempest-plugin: "0.21.0"
