@@ -38,7 +38,7 @@ runs:
   steps:
     # Retained for `flux logs` diagnostics only after FluxInstance migration.
     - name: Install Flux CLI
-      uses: fluxcd/flux2/action@1fd61a06264d71cf445ed55c4f14d401d26a1c64 # v2.8.8
+      uses: fluxcd/flux2/action@dcc7def046cba2fe8d15d9737a4c250100f62fe0 # v2.9.0
 
     # Cache + `make install-test-deps` is shared with the lightweight
     # chainsaw-lint job — keeping it in one composite action ensures the cache
