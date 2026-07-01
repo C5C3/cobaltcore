@@ -20,6 +20,13 @@
 # resolves to an empty string and hack/deploy-infra.sh's
 # `${WITH_PROMETHEUS:-false}` default keeps the monitoring stack out of
 # the install.
+#
+# WITH_CONTROLPLANE, CONTROLPLANE_OPERATORS, CONTROLPLANE_NAME, and
+# WITH_CONTROLPLANE_CR are threaded the same way so the e2e-controlplane job can
+# provision the shared infra for the c5c3 ControlPlane chain and provide the
+# operator stack out of band (CONTROLPLANE_OPERATORS=external). Unset by every
+# other caller, so deploy-infra.sh's defaults keep the ControlPlane stack out of
+# the install.
 
 name: Setup E2E infrastructure
 description: >
@@ -53,4 +60,10 @@ runs:
         WITH_CHAOS_MESH: ${{ env.WITH_CHAOS_MESH }}
         # opt-in flag — empty when caller does not set it; deploy-infra.sh defaults to false.
         WITH_PROMETHEUS: ${{ env.WITH_PROMETHEUS }}
+        # ControlPlane opt-in flags — empty when caller does not set them;
+        # deploy-infra.sh defaults keep the ControlPlane stack out of the install.
+        WITH_CONTROLPLANE: ${{ env.WITH_CONTROLPLANE }}
+        CONTROLPLANE_OPERATORS: ${{ env.CONTROLPLANE_OPERATORS }}
+        CONTROLPLANE_NAME: ${{ env.CONTROLPLANE_NAME }}
+        WITH_CONTROLPLANE_CR: ${{ env.WITH_CONTROLPLANE_CR }}
       run: make deploy-infra

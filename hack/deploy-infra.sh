@@ -98,6 +98,21 @@ WITH_CONTROLPLANE_CR="${WITH_CONTROLPLANE_CR:-false}"
 # to "controlplane". Ignored unless WITH_CONTROLPLANE=true.
 CONTROLPLANE_NAME="${CONTROLPLANE_NAME:-controlplane}"
 
+# Selects HOW the ControlPlane operator stack (keystone-operator, K-ORC,
+# c5c3-operator) is provided under WITH_CONTROLPLANE=true:
+#   flux     — the default: deploy the published c5c3-operator chart and the
+#              K-ORC Flux GitRepository/Kustomization, and un-suspend
+#              keystone-operator so the c5c3-operator dependsOn is satisfied.
+#   external — the operators are deployed OUT OF BAND (e.g. the e2e-controlplane
+#              CI job installs keystone-operator + c5c3-operator as local dev
+#              images via hack/ci-deploy-operator.sh and K-ORC via
+#              hack/ci-deploy-korc.sh). deploy-infra then only prepares the
+#              shared prerequisites (TLS issuers, OpenBao + per-CR seeding, ESO
+#              store) and SUSPENDS the Flux ControlPlane stack so it does not
+#              fight the dev operators or block on the GHCR-published chart.
+# Ignored unless WITH_CONTROLPLANE=true.
+CONTROLPLANE_OPERATORS="${CONTROLPLANE_OPERATORS:-flux}"
+
 # Gateway API CRD release installed before the keystone-operator HelmRelease so
 # the operator's HTTPRoute watch has a registered kind at startup.
 # Keep aligned with sigs.k8s.io/gateway-api in operators/keystone/go.mod.
@@ -886,6 +901,9 @@ main() {
   log "Chaos Mesh         : ${WITH_CHAOS_MESH} (set WITH_CHAOS_MESH=true to install)"
   log "Prometheus stack    : ${WITH_PROMETHEUS} (set WITH_PROMETHEUS=true to install)"
   log "ControlPlane stack  : ${WITH_CONTROLPLANE} (set WITH_CONTROLPLANE=true to provision infra via the c5c3 ControlPlane)"
+  if [[ "${WITH_CONTROLPLANE}" == "true" ]]; then
+    log "ControlPlane operators : ${CONTROLPLANE_OPERATORS} (flux = published chart + K-ORC Flux source; external = operators deployed out of band)"
+  fi
   log ""
 
   # Pre-flight checks
@@ -1018,7 +1036,7 @@ main() {
   # but running the full chain is opt-in. WITH_CONTROLPLANE=true deploys it; the
   # default leaves it suspended so the bring-up stays light and the keystone E2E
   # path is unchanged.
-  if [[ "${WITH_CONTROLPLANE}" == "true" ]]; then
+  if [[ "${WITH_CONTROLPLANE}" == "true" && "${CONTROLPLANE_OPERATORS}" == "flux" ]]; then
     # Deploy the full ControlPlane stack via Flux from the published c5c3-operator
     # chart and the K-ORC GitRepository/Kustomization. The kind base overlay
     # suspends keystone-operator for the local-build E2E path; un-suspend it here
@@ -1028,6 +1046,23 @@ main() {
     log "WITH_CONTROLPLANE=true: deploying the c5c3 ControlPlane stack (keystone-operator, k-orc, c5c3-operator)."
     kubectl patch helmrelease keystone-operator -n keystone-system \
       --type merge -p '{"spec":{"suspend":false}}' 2>/dev/null || true
+  elif [[ "${WITH_CONTROLPLANE}" == "true" ]]; then
+    # CONTROLPLANE_OPERATORS=external: the keystone-operator, K-ORC, and
+    # c5c3-operator are deployed out of band (e.g. the e2e-controlplane CI job
+    # uses local dev images). Suspend the Flux ControlPlane stack — including
+    # keystone-operator, which stays suspended so the base HelmRelease does not
+    # fight the dev image deployed via hack/ci-deploy-operator.sh — and let the
+    # rest of this run only prepare the shared prerequisites (TLS, OpenBao +
+    # per-CR seeding, ESO store).
+    log "WITH_CONTROLPLANE=true: ControlPlane operator stack provided externally (dev images); suspending the Flux stack."
+    kubectl patch helmrelease c5c3-operator -n c5c3-system \
+      --type merge -p '{"spec":{"suspend":true}}' 2>/dev/null || true
+    kubectl patch kustomization k-orc -n flux-system \
+      --type merge -p '{"spec":{"suspend":true}}' 2>/dev/null || true
+    kubectl patch helmrepository c5c3-charts -n flux-system \
+      --type merge -p '{"spec":{"suspend":true}}' 2>/dev/null || true
+    kubectl patch gitrepository k-orc -n flux-system \
+      --type merge -p '{"spec":{"suspend":true}}' 2>/dev/null || true
   else
     # Suspend the stack (best-effort, not awaited — see helm_releases below) so it
     # does not add idle reconcile churn competing with external-secrets /
@@ -1136,12 +1171,21 @@ main() {
   if [[ "${WITH_CONTROLPLANE}" == "true" ]]; then
     # The c5c3 ControlPlane provisions MariaDB/Memcached itself (managed mode), so
     # render the infrastructure overlay and drop those two CRs before applying —
-    # everything else (TLS issuers, OpenBao certs, ESO ExternalSecrets, Gateway
-    # certs) is still required.
+    # the TLS issuers, OpenBao certs, and Gateway certs are still required.
+    #
+    # Also drop the three standalone-shim ExternalSecrets (keystone-admin,
+    # keystone-db, mariadb-root-password). They are pinned to the DEFAULT
+    # identity's OpenBao paths (openstack/controlplane), but WITH_CONTROLPLANE
+    # seeds per-CR paths for openstack/${CONTROLPLANE_NAME} instead (see the
+    # KORC_CONTROLPLANES export below) — so with a non-default CONTROLPLANE_NAME
+    # the shims have no seeded source and would sit in SecretSyncedError forever.
+    # The ControlPlane path does not use them anyway: the c5c3 operator projects
+    # per-ControlPlane credential ExternalSecrets and the ControlPlane provisions
+    # its own MariaDB root password. Step 8's shim wait is skipped to match.
     kubectl kustomize "${REPO_ROOT}/deploy/kind/infrastructure" \
-      | yq eval 'select(.kind != "MariaDB" and .kind != "Memcached")' - \
+      | yq eval 'select(.kind != "MariaDB" and .kind != "Memcached" and (.kind != "ExternalSecret" or (.metadata.name != "keystone-admin" and .metadata.name != "keystone-db" and .metadata.name != "mariadb-root-password")))' - \
       | kubectl apply -f -
-    log "Infrastructure overlay applied WITHOUT MariaDB/Memcached (WITH_CONTROLPLANE=true; the ControlPlane provisions them)."
+    log "Infrastructure overlay applied WITHOUT MariaDB/Memcached and the standalone-shim ExternalSecrets (WITH_CONTROLPLANE=true; the ControlPlane provisions them)."
   else
     kubectl apply -k "${REPO_ROOT}/deploy/kind/infrastructure"
     log "Infrastructure kustomize overlay applied."
@@ -1182,10 +1226,13 @@ main() {
   # the shell stack no longer seeds it or exports a K-ORC auth_url override.
   # (The admin-password ExternalSecret is now operator-projected per-ControlPlane
   # (reconcileAdminPassword); the kind overlay shim
-  # (deploy/kind/infrastructure/keystone-admin-externalsecret.yaml) pins only the
-  # default identity, so a CONTROLPLANE_NAME override no longer requires editing
-  # that manifest on the ControlPlane path. The K-ORC clouds.yaml ExternalSecret is
-  # likewise created per-CR by the operator and needs no manifest edit.)
+  # (deploy/kind/infrastructure/keystone-admin-externalsecret.yaml) pins the
+  # default identity. A non-default CONTROLPLANE_NAME therefore does NOT seed that
+  # shim's source path, so on the ControlPlane path the three standalone-shim
+  # ExternalSecrets are dropped from the overlay apply and skipped in Step 8
+  # rather than re-pointed — see the overlay-apply and Step 8 blocks below. The
+  # K-ORC clouds.yaml ExternalSecret is likewise created per-CR by the operator
+  # and needs no manifest edit.)
   if [[ "${WITH_CONTROLPLANE}" == "true" ]]; then
     export KORC_CONTROLPLANES="openstack/${CONTROLPLANE_NAME}"
   fi
@@ -1205,20 +1252,33 @@ main() {
   # apply-before-dependency reason as the MariaDB reconcile-trigger below.
   local now
   now=$(date +%s)
-  log "Forcing ESO ClusterSecretStore re-validation and ExternalSecret re-sync..."
+  log "Forcing ESO ClusterSecretStore re-validation..."
   kubectl annotate clustersecretstore/openbao-cluster-store \
     "deploy.c5c3.io/reconcile-trigger=${now}" --overwrite || true
   kubectl wait clustersecretstore/openbao-cluster-store \
     --for=condition=Ready --timeout="${POD_TIMEOUT}s" || true
-  for es in keystone-admin keystone-db mariadb-root-password; do
-    kubectl annotate "externalsecret/${es}" -n openstack \
-      "force-sync=${now}" --overwrite || true
-  done
 
-  # Step 8: Wait for ExternalSecrets to sync
-  log "=== Step 8/8: Wait for ExternalSecrets ==="
-  wait_for_externalsecrets "openstack" "${EXTERNALSECRET_TIMEOUT}" \
-    keystone-admin keystone-db mariadb-root-password
+  # The standalone-shim ExternalSecrets (keystone-admin, keystone-db,
+  # mariadb-root-password) are only applied — and only have a seeded OpenBao
+  # source — on the non-ControlPlane path. WITH_CONTROLPLANE drops them from the
+  # overlay apply above and seeds per-CR paths for openstack/${CONTROLPLANE_NAME}
+  # instead, so there is nothing to force-sync or wait for here; the
+  # per-ControlPlane credential ExternalSecrets are projected and verified later
+  # by the c5c3 operator and the chain E2E suite.
+  if [[ "${WITH_CONTROLPLANE}" == "true" ]]; then
+    log "=== Step 8/8: Skipping standalone ExternalSecret wait (WITH_CONTROLPLANE=true) ==="
+  else
+    log "Forcing standalone ExternalSecret re-sync..."
+    for es in keystone-admin keystone-db mariadb-root-password; do
+      kubectl annotate "externalsecret/${es}" -n openstack \
+        "force-sync=${now}" --overwrite || true
+    done
+
+    # Step 8: Wait for ExternalSecrets to sync
+    log "=== Step 8/8: Wait for ExternalSecrets ==="
+    wait_for_externalsecrets "openstack" "${EXTERNALSECRET_TIMEOUT}" \
+      keystone-admin keystone-db mariadb-root-password
+  fi
 
   if [[ "${WITH_CONTROLPLANE}" != "true" ]]; then
     # Trigger MariaDB operator re-reconciliation.
@@ -1241,22 +1301,33 @@ main() {
     # CR can reconcile; whether that CR is applied here or by hand depends on
     # WITH_CONTROLPLANE_CR (default: by hand — see the ControlPlane Quick Start).
     log "=== WITH_CONTROLPLANE: bringing up the c5c3 ControlPlane stack ==="
-    kubectl wait helmrelease/keystone-operator -n keystone-system \
-      --for=condition=Ready --timeout="${HELMRELEASE_TIMEOUT}s" 2>/dev/null \
-      || log "  keystone-operator not Ready yet (continuing; the ControlPlane tolerates it)."
-    kubectl wait kustomization/k-orc -n flux-system \
-      --for=condition=Ready --timeout="${HELMRELEASE_TIMEOUT}s" 2>/dev/null \
-      || log "  k-orc Kustomization not Ready yet (continuing)."
-    kubectl wait helmrelease/c5c3-operator -n c5c3-system \
-      --for=condition=Ready --timeout="${HELMRELEASE_TIMEOUT}s" 2>/dev/null \
-      || log "  c5c3-operator not Ready yet (continuing)."
+    if [[ "${CONTROLPLANE_OPERATORS}" == "flux" ]]; then
+      kubectl wait helmrelease/keystone-operator -n keystone-system \
+        --for=condition=Ready --timeout="${HELMRELEASE_TIMEOUT}s" 2>/dev/null \
+        || log "  keystone-operator not Ready yet (continuing; the ControlPlane tolerates it)."
+      kubectl wait kustomization/k-orc -n flux-system \
+        --for=condition=Ready --timeout="${HELMRELEASE_TIMEOUT}s" 2>/dev/null \
+        || log "  k-orc Kustomization not Ready yet (continuing)."
+      kubectl wait helmrelease/c5c3-operator -n c5c3-system \
+        --for=condition=Ready --timeout="${HELMRELEASE_TIMEOUT}s" 2>/dev/null \
+        || log "  c5c3-operator not Ready yet (continuing)."
 
-    # The projected Keystone references ghcr.io/c5c3/keystone:<release>; preload it
-    # so kind need not pull it in-cluster. Best-effort — the image is public on GHCR.
-    local cp_release="2025.2"
-    if docker pull "ghcr.io/c5c3/keystone:${cp_release}" >/dev/null 2>&1; then
-      kind load docker-image "ghcr.io/c5c3/keystone:${cp_release}" --name "${CLUSTER_NAME}" >/dev/null 2>&1 || true
-      log "  Preloaded ghcr.io/c5c3/keystone:${cp_release} into kind."
+      # The projected Keystone references ghcr.io/c5c3/keystone:<release>; preload it
+      # so kind need not pull it in-cluster. Best-effort — the image is public on GHCR.
+      local cp_release="2025.2"
+      if docker pull "ghcr.io/c5c3/keystone:${cp_release}" >/dev/null 2>&1; then
+        kind load docker-image "ghcr.io/c5c3/keystone:${cp_release}" --name "${CLUSTER_NAME}" >/dev/null 2>&1 || true
+        log "  Preloaded ghcr.io/c5c3/keystone:${cp_release} into kind."
+      fi
+    else
+      # CONTROLPLANE_OPERATORS=external: the Flux stack is suspended and the
+      # operators + service/client images are provided by the caller (the
+      # e2e-controlplane CI job deploys keystone-operator + c5c3-operator via
+      # hack/ci-deploy-operator.sh, K-ORC via hack/ci-deploy-korc.sh, and loads
+      # keystone:2025.2 / tempest:2025.2 into kind). Skip the Flux waits and the
+      # published-image preload — the suspended releases would never report Ready.
+      log "  ControlPlane operators provided externally (CONTROLPLANE_OPERATORS=external);"
+      log "  skipping Flux HelmRelease/Kustomization waits and the published-image preload."
     fi
 
     if [[ "${WITH_CONTROLPLANE_CR}" == "true" ]]; then
