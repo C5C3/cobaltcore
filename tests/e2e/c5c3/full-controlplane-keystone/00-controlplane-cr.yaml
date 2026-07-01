@@ -11,10 +11,16 @@
 # deploy stack provisions (deploy/flux-system/infrastructure/), so the chain
 # reads against the production-shaped infrastructure.
 #
-# The K-ORC admin credential is (re-)minted from the admin password Secret
-# (keystone-admin, materialised by deploy/eso/externalsecrets/keystone-admin.yaml)
-# and the minted application credential is mirrored to OpenBao and back to
-# orc-system/k-orc-clouds-yaml. restricted:true keeps the credential
+# The K-ORC admin credential is (re-)minted from the admin password. In managed
+# mode (this CR sets infrastructure.database.clusterRef) the c5c3-operator
+# projects that password into the per-ControlPlane Secret
+# "controlplane-keystone-keystone-admin-credentials" from the OpenBao bootstrap
+# path bootstrap/openstack/controlplane-keystone-keystone/admin
+# (reconcileAdminPassword); the korc.adminCredential.passwordSecretRef below is a
+# required-but-unused placeholder in managed mode (effectiveAdminPasswordSecretRef
+# overrides it with the projected Secret). The minted application credential is
+# mirrored to OpenBao and read back into the per-CR k-orc-clouds-yaml Secret in
+# this CR's own namespace (openstack). restricted:true keeps the credential
 # least-privilege so a leak is scoped.
 #
 # the FIRST authentication uses a password-based clouds.yaml
@@ -24,8 +30,10 @@
 # never clobbers a minted credential-based clouds.yaml. The per-CR
 # k-orc-clouds-yaml ExternalSecret in this CR's own namespace (openstack) is
 # likewise OPERATOR-CREATED (ensureKORCCloudsYAMLExternalSecret), reading the
-# per-CR OpenBao path; the orc-system/k-orc-clouds-yaml copy is the retained
-# static ExternalSecret that K-ORC's globalCloudConfig mounts.
+# per-CR OpenBao path. There is no orc-system copy and K-ORC has no
+# globalCloudConfig mount: it resolves each CR's cloudCredentialsRef in the CR's
+# own namespace (the C1 co-location), so the openstack-namespace Secret is the
+# only clouds.yaml the chain needs.
 #
 # `global.rules` carries one oslo.policy override so the test can assert that the
 # reconciler merges policy into the projected Keystone CR's spec.policyOverrides
@@ -38,6 +46,11 @@ metadata:
 spec:
   openStackRelease: "2025.2"
   region: RegionOne
+  # Single-replica topology across database, cache, and the Keystone Deployment
+  # so the full fresh-create chain schedules on a single-node kind cluster.
+  # database.replicas:1 drives the operator's fresh-create MariaDB projection to
+  # a single-instance non-Galera MariaDB; cache.replicas:1 to a single Memcached
+  # pod; services.keystone.replicas:1 to a single API pod.
   infrastructure:
     database:
       clusterRef:
@@ -45,14 +58,15 @@ spec:
       database: keystone
       secretRef:
         name: keystone-db
+      replicas: 1
     cache:
       clusterRef:
         name: openstack-memcached
       backend: dogpile.cache.pymemcache
-      replicas: 3
+      replicas: 1
   services:
     keystone:
-      replicas: 3
+      replicas: 1
   global:
     rules:
       "identity:list_users": "role:admin"

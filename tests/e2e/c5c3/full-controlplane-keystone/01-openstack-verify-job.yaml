@@ -18,11 +18,13 @@
 # test's `finally` block.
 #
 # DECISION image is the repo's own tempest image, which bundles the
-# OpenStack client. The kind-E2E fast-follow that deploys the c5c3 + K-ORC stack
-# must also load this image (mirroring the tempest job); behind the chainsaw
-# presence guard the verify step never runs on a cluster that lacks it.
-# Reviewer: please verify the image and the `admin` cloud entry name K-ORC
-# writes into the clouds.yaml.
+# OpenStack client. The e2e-controlplane CI job loads ghcr.io/c5c3/tempest:2025.2
+# into kind (the tag CI builds — there is no :latest), so the image is pinned to
+# that tag with imagePullPolicy: IfNotPresent to use the kind-loaded copy rather
+# than pulling from GHCR. Behind the chainsaw presence guard the verify step
+# never runs on a cluster that lacks the stack. The `admin` cloud entry name is
+# the cloudName K-ORC writes into the clouds.yaml (spec.korc.adminCredential in
+# 00-controlplane-cr.yaml).
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -35,7 +37,8 @@ spec:
       restartPolicy: Never
       containers:
         - name: osc
-          image: ghcr.io/c5c3/tempest:latest
+          image: ghcr.io/c5c3/tempest:2025.2
+          imagePullPolicy: IfNotPresent
           env:
             - name: OS_CLIENT_CONFIG_FILE
               value: /etc/openstack/clouds.yaml

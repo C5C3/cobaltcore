@@ -61,12 +61,12 @@
 # fast-follow on the GitOps/CI wiring (/).
 #
 # ── DECISION: OpenStack client image for token/catalog verification ──────────
-# `openstack token issue` / `openstack catalog list` need the OpenStack CLI. No
-# such image is loaded into the c5c3 e2e cluster today, so the verify Job uses
-# OPENSTACK_CLIENT_IMAGE (default ghcr.io/c5c3/tempest:latest — the repo's own
-# image that bundles the OpenStack client). The full-chain wiring fast-follow
-# must load it (mirroring the tempest job). Behind the presence guard this never
-# runs on a stack that lacks it. Reviewer: please verify the image/cloud name.
+# `openstack token issue` / `openstack catalog list` need the OpenStack CLI. The
+# verify Job (01-openstack-verify-job.yaml) uses ghcr.io/c5c3/tempest:2025.2 —
+# the repo's own image that bundles the OpenStack client. The e2e-controlplane CI
+# job loads that image into kind (mirroring the tempest job) so it need not be
+# pulled from GHCR. Behind the presence guard this never runs on a stack that
+# lacks it.
 #
 # ── NOTE: operator-owned seed execution ───────────
 # The operator-owned bootstrap clouds.yaml seed (seedBootstrapCloudsYAML) and
@@ -124,9 +124,32 @@ spec:
 
           # ── Presence guard ──────────────────────────────
           # Probe for every CRD the chain spans plus the OpenBao
-          # ClusterSecretStore the credential chain pushes through. Their absence
-          # unambiguously means the c5c3-operator + K-ORC + keystone-operator
-          # stack is not deployed on this cluster — SKIP cleanly (exit 0).
+          # ClusterSecretStore the credential chain pushes through.
+          #
+          # E2E_REQUIRE_CONTROLPLANE_STACK gates the failure mode. The dedicated
+          # e2e-controlplane CI job deploys the full stack and sets it to "true",
+          # so a missing operator / CRD FAILS LOUDLY (exit 1) — broken wiring must
+          # not go green there. Every other context (the c5c3 e2e-operator matrix
+          # leg, a local run against a plain cluster) leaves it unset, so the guard
+          # SKIPs cleanly (exit 0) when the stack is absent, keeping this suite
+          # default-safe. Chainsaw script steps inherit the process environment
+          # (the same way KUBECONFIG reaches them), so the job step's env: block
+          # is enough to set it.
+          REQUIRE_STACK="${E2E_REQUIRE_CONTROLPLANE_STACK:-false}"
+          gate_absent() { # <reason...>
+            if [ "${REQUIRE_STACK}" = "true" ]; then
+              echo "ERROR: $*"
+              echo "       E2E_REQUIRE_CONTROLPLANE_STACK=true — the full ControlPlane"
+              echo "       stack is required on this cluster; failing loudly so broken"
+              echo "       wiring cannot go green."
+              exit 1
+            fi
+            echo "SKIP: $*"
+            echo "      The c5c3-operator + K-ORC + keystone-operator stack is not"
+            echo "      deployed here, so the full ControlPlane chain is not exercised."
+            exit 0
+          }
+
           missing=""
           for crd in \
             controlplanes.c5c3.io \
@@ -140,16 +163,10 @@ spec:
             fi
           done
           if [ -n "${missing}" ]; then
-            echo "SKIP: required CRDs not present:${missing}"
-            echo "      The c5c3-operator + K-ORC + keystone-operator stack is"
-            echo "      not deployed on this cluster, so the full ControlPlane"
-            echo "      chain cannot be exercised here."
-            exit 0
+            gate_absent "required CRDs not present:${missing}"
           fi
           if ! kubectl get clustersecretstore openbao-cluster-store >/dev/null 2>&1; then
-            echo "SKIP: openbao-cluster-store ClusterSecretStore not present;"
-            echo "      the admin-credential push chain cannot complete."
-            exit 0
+            gate_absent "openbao-cluster-store ClusterSecretStore not present; the admin-credential push chain cannot complete."
           fi
           echo "OK: c5c3 + K-ORC + keystone CRDs and OpenBao store present —"
           echo "    running the full ControlPlane → Keystone chain."
