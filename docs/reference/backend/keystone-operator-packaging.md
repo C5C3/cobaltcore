@@ -17,7 +17,8 @@ operators/keystone/
 ├── Dockerfile                          Multi-stage operator image build
 ├── helm/
 │   └── keystone-operator/
-│       ├── Chart.yaml                  Helm chart metadata (v0.1.0)
+│       ├── Chart.yaml                  Helm chart metadata (v0.5.0)
+│       ├── Chart.lock                  Pinned operator-library dependency
 │       ├── values.yaml                 Default configuration values
 │       ├── values.schema.json          JSON Schema for values validation
 │       ├── crds/
@@ -25,10 +26,16 @@ operators/keystone/
 │       └── templates/
 │           ├── _helpers.tpl            Template helper functions
 │           ├── serviceaccount.yaml     ServiceAccount (conditional)
-│           ├── clusterrole.yaml        ClusterRole with RBAC rules
-│           ├── clusterrolebinding.yaml ClusterRoleBinding
+│           ├── clusterrole.yaml        ClusterRole (cluster-scoped RBAC, default)
+│           ├── clusterrolebinding.yaml ClusterRoleBinding (default)
+│           ├── role.yaml               Namespace-scoped Role (rbac.namespaceScoped)
+│           ├── rolebinding.yaml        Namespace-scoped RoleBinding (rbac.namespaceScoped)
 │           ├── deployment.yaml         Operator Deployment
 │           ├── service.yaml            ClusterIP Service (webhook + metrics)
+│           ├── pdb.yaml                PodDisruptionBudget (replicas > 1)
+│           ├── certificate.yaml        Self-signed Issuer + webhook Certificate (conditional)
+│           ├── networkpolicy.yaml      Operator pod NetworkPolicy (opt-in)
+│           ├── servicemonitor.yaml     Prometheus ServiceMonitor (opt-in)
 │           └── webhook-configuration.yaml  Mutating + Validating webhooks (conditional)
 deploy/flux-system/
 ├── kustomization.yaml                  Base kustomization (includes keystone-operator release)
@@ -49,7 +56,7 @@ reference sibling modules.
 
 | Stage | Base Image | Purpose |
 | --- | --- | --- |
-| `builder` | `golang:1.25` | Compiles the operator binary with CGO disabled |
+| `builder` | `golang:1.26` (digest-pinned) | Compiles the operator binary with CGO disabled |
 | runtime | `gcr.io/distroless/static:nonroot` | Minimal runtime with no shell or package manager |
 
 ### Image Layers
@@ -206,6 +213,12 @@ All configurable parameters with their types, defaults, and descriptions:
 | `resources.requests.cpu` | `string` | `10m` | CPU request per operator pod |
 | `resources.requests.memory` | `string` | `64Mi` | Memory request per operator pod |
 
+#### RBAC
+
+| Parameter | Type | Default | Description |
+| --- | --- | --- | --- |
+| `rbac.namespaceScoped` | `boolean` | `false` | When `true`, renders a namespace-scoped Role/RoleBinding instead of the ClusterRole/ClusterRoleBinding, restricting the operator to its release namespace. Requires `webhook.enabled=false` (template renders a hard `fail` otherwise). See the [Multi-Tenant Deployment guide](../../guides/multi-tenant-deployment.md) |
+
 #### Leader Election
 
 | Parameter | Type | Default | Description |
@@ -232,6 +245,39 @@ admission validation — CRs are not validated or defaulted at admission time.
 | --- | --- | --- | --- |
 | `metrics.port` | `integer` | `8080` | Port for the Prometheus metrics endpoint. Exposed via both the container port and the Service |
 
+#### Logging
+
+| Parameter | Type | Default | Description |
+| --- | --- | --- | --- |
+| `logging.development` | `boolean` | `false` | When `true`, passes `--zap-devel` (console encoder, debug verbosity). Leave `false` for the production profile (JSON encoder, info level) |
+| `logging.level` | `string` | `""` | `--zap-log-level`: `debug`, `info`, `error`, `panic`, or a positive integer. Empty uses the mode default |
+| `logging.encoder` | `string` | `""` | `--zap-encoder`: `json` or `console`. Empty uses the mode default |
+
+Each value maps to a controller-runtime `--zap-*` flag and is omitted from the
+operator args when left at its default.
+
+#### Monitoring
+
+| Parameter | Type | Default | Description |
+| --- | --- | --- | --- |
+| `monitoring.serviceMonitor.enabled` | `boolean` | `false` | Render a `monitoring.coreos.com/v1` ServiceMonitor targeting the metrics port. Requires prometheus-operator CRDs in the cluster |
+| `monitoring.serviceMonitor.interval` | `string` | `30s` | Scrape interval on the ServiceMonitor endpoint |
+
+See [Enable Keystone Operator Metrics](../../guides/enable-keystone-operator-metrics.md)
+for the end-to-end scraping setup.
+
+#### NetworkPolicy
+
+| Parameter | Type | Default | Description |
+| --- | --- | --- | --- |
+| `networkPolicy.enabled` | `boolean` | `false` | Opt-in NetworkPolicy that default-denies operator pod traffic and opens explicit rules (kube-apiserver, DNS, webhook, metrics) |
+| `networkPolicy.kubeApiServer.cidrs` / `.ports` | `list` | `[]` | API-server egress targets. Both **must** be non-empty when the policy is enabled (fail-closed template guard) |
+| `networkPolicy.dns.*` | — | kube-dns | DNS egress selectors (UDP/TCP 53) |
+| `networkPolicy.allowMetricsFrom` | `list` | `[]` | Ingress peers allowed to scrape metrics |
+| `networkPolicy.webhookClients.cidrs` | `list` | `[]` | Webhook ingress override; falls back to `kubeApiServer.cidrs` |
+
+Full semantics live in the [Operator NetworkPolicy reference](../keystone/keystone-operator-networkpolicy.md).
+
 #### Service Account
 
 | Parameter | Type | Default | Description |
@@ -246,11 +292,17 @@ The chart renders the following Kubernetes resources with default values:
 | Resource | Kind | Name Pattern | Conditional |
 | --- | --- | --- | --- |
 | ServiceAccount | `v1/ServiceAccount` | `{fullname}` | `serviceAccount.create` |
-| ClusterRole | `rbac.authorization.k8s.io/v1/ClusterRole` | `{fullname}` | Always |
-| ClusterRoleBinding | `rbac.authorization.k8s.io/v1/ClusterRoleBinding` | `{fullname}` | Always |
+| ClusterRole | `rbac.authorization.k8s.io/v1/ClusterRole` | `{fullname}` | `rbac.namespaceScoped=false` (default) |
+| ClusterRoleBinding | `rbac.authorization.k8s.io/v1/ClusterRoleBinding` | `{fullname}` | `rbac.namespaceScoped=false` (default) |
+| Role | `rbac.authorization.k8s.io/v1/Role` | `{fullname}` | `rbac.namespaceScoped=true` |
+| RoleBinding | `rbac.authorization.k8s.io/v1/RoleBinding` | `{fullname}` | `rbac.namespaceScoped=true` |
 | Deployment | `apps/v1/Deployment` | `{fullname}` | Always |
 | Service | `v1/Service` | `{fullname}` | Always |
 | PodDisruptionBudget | `policy/v1/PodDisruptionBudget` | `{fullname}` | `replicas > 1` |
+| Issuer | `cert-manager.io/v1/Issuer` | `{fullname}-selfsigned` | `webhook.enabled` |
+| Certificate | `cert-manager.io/v1/Certificate` | `{fullname}-webhook` | `webhook.enabled` |
+| NetworkPolicy | `networking.k8s.io/v1/NetworkPolicy` | `{fullname}` | `networkPolicy.enabled` |
+| ServiceMonitor | `monitoring.coreos.com/v1/ServiceMonitor` | `{fullname}` | `monitoring.serviceMonitor.enabled` |
 | MutatingWebhookConfiguration | `admissionregistration.k8s.io/v1` | `{fullname}-mutating` | `webhook.enabled` |
 | ValidatingWebhookConfiguration | `admissionregistration.k8s.io/v1` | `{fullname}-validating` | `webhook.enabled` |
 
@@ -348,9 +400,10 @@ The Service is type `ClusterIP` with two ports:
 
 ### RBAC Configuration
 
-The ClusterRole includes permissions derived from kubebuilder RBAC markers in
-`operators/keystone/internal/controller/keystone_controller.go`. These are the minimum
-permissions required for the operator to manage Keystone resources and their dependencies:
+The ClusterRole includes permissions derived from kubebuilder RBAC markers spread
+across the reconciler files in `operators/keystone/internal/controller/`. These are
+the minimum permissions required for the operator to manage Keystone resources and
+their dependencies:
 
 | API Group | Resources | Verbs |
 | --- | --- | --- |
@@ -358,24 +411,40 @@ permissions required for the operator to manage Keystone resources and their dep
 | `keystone.openstack.c5c3.io` | `keystones/status` | get, update, patch |
 | `keystone.openstack.c5c3.io` | `keystones/finalizers` | update |
 | `apps` | `deployments` | get, list, watch, create, update, patch, delete |
+| `autoscaling` | `horizontalpodautoscalers` | get, list, watch, create, update, patch, delete |
 | `""` (core) | `services`, `configmaps`, `secrets`, `serviceaccounts` | get, list, watch, create, update, patch, delete |
 | `""` (core) | `events` | create, patch |
+| `""` (core) | `pods` | get, list |
 | `batch` | `jobs`, `cronjobs` | get, list, watch, create, update, patch, delete |
+| `cert-manager.io` | `certificates` | get, list, watch, create, update, patch, delete |
 | `k8s.mariadb.com` | `databases`, `users`, `grants` | get, list, watch, create, update, patch, delete |
 | `k8s.mariadb.com` | `mariadbs` | get, list, watch |
-| `external-secrets.io` | `externalsecrets`, `pushsecrets` | get, list, watch, create, update, patch |
+| `external-secrets.io` | `externalsecrets` | get, list, watch, create, update, patch |
+| `external-secrets.io` | `pushsecrets` | get, list, watch, create, update, patch, delete |
+| `external-secrets.io` | `clustersecretstores` | get, list, watch |
+| `gateway.networking.k8s.io` | `httproutes` | get, list, watch, create, update, patch, delete |
+| `gateway.networking.k8s.io` | `httproutes/status` | get |
+| `networking.k8s.io` | `networkpolicies` | get, list, watch, create, update, patch, delete |
+| `policy` | `poddisruptionbudgets` | get, list, watch, create, update, patch, delete |
 | `rbac.authorization.k8s.io` | `roles`, `rolebindings` | get, list, watch, create, update, patch, delete |
+| `scheduling.k8s.io` | `priorityclasses` | get, list, watch |
 
 **Notable verb restrictions:**
 
 - **`events`** has only `create` and `patch` — the operator emits events but never reads
   or deletes them.
-- **`external-secrets.io` resources** have no `delete` verb — the operator creates and
-  updates ExternalSecret/PushSecret CRs but does not delete them (secret lifecycle is
-  managed by the External Secrets Operator).
+- **`externalsecrets`** has no `delete` verb — ExternalSecret cleanup is left to
+  owner-reference garbage collection. **`pushsecrets`** does include `delete`: the
+  OpenBao finalizer deletes the key-backup PushSecrets when a Keystone CR is
+  deleted so ESO stops pushing to OpenBao.
+- **`mariadbs`, `clustersecretstores`, `priorityclasses`, `pods`, and
+  `httproutes/status`** are read-only — the operator observes them but never
+  mutates them.
 
 The ClusterRoleBinding binds the ClusterRole to the operator's ServiceAccount in the
-release namespace only.
+release namespace only. With `rbac.namespaceScoped=true` the identical rule set is
+rendered as a namespaced Role/RoleBinding instead (the templates share the
+`keystone-operator.rbacRules` partial).
 
 ### Webhook Configuration
 
@@ -422,8 +491,10 @@ cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "operator-li
 :::
 
 This instructs cert-manager to inject the CA bundle from the named Certificate resource
-into the webhook `caBundle` field automatically. The Certificate resource must exist in
-the release namespace with the name `{fullname}-webhook`.
+into the webhook `caBundle` field automatically. The chart renders that Certificate
+itself: `templates/certificate.yaml` creates a self-signed Issuer
+(`{fullname}-selfsigned`) and the `{fullname}-webhook` Certificate in the release
+namespace whenever `webhook.enabled=true`.
 
 ## FluxCD HelmRelease
 
@@ -575,7 +646,9 @@ FluxCD helm-controller
   │
   ├─ 4. Renders templates with merged values (chart defaults + HelmRelease values)
   │     → ServiceAccount, ClusterRole, ClusterRoleBinding, Deployment, Service,
+  │       PodDisruptionBudget, Issuer, Certificate,
   │       MutatingWebhookConfiguration, ValidatingWebhookConfiguration
+  │       (+ opt-in NetworkPolicy / ServiceMonitor when enabled)
   │
   ├─ 5. Applies rendered resources to keystone-system namespace
   │

@@ -47,7 +47,7 @@ These packages import typed Go structs from external operator modules:
 | Operator | Go Module | API Version | Types Used |
 | --- | --- | --- | --- |
 | mariadb-operator | `github.com/mariadb-operator/mariadb-operator` | `v1alpha1` | `Database`, `User`, `Grant` |
-| External Secrets Operator | `github.com/external-secrets/external-secrets` | `v1beta1` (ExternalSecret), `v1alpha1` (PushSecret) | `ExternalSecret`, `PushSecret` |
+| External Secrets Operator | `github.com/external-secrets/external-secrets` | `v1` (ExternalSecret, ClusterSecretStore), `v1alpha1` (PushSecret) | `ExternalSecret`, `PushSecret` |
 | cert-manager | `github.com/cert-manager/cert-manager` | `v1` | `Certificate` |
 
 > **Note:** The PushSecret API is `v1alpha1` (unstable). Its schema may change in future
@@ -507,19 +507,26 @@ func WaitForExternalSecret(
     ctx context.Context,
     c client.Client,
     key client.ObjectKey,
-) (bool, error)
+) (exists, ready bool, err error)
 ```
 
-Checks whether the ExternalSecret identified by `key` has a `Ready` condition with
-status `True` (the ESO `ExternalSecretReady` condition type).
+Checks whether the ExternalSecret identified by `key` exists and has a `Ready`
+condition with status `True` (the ESO `ExternalSecretReady` condition type).
 
-**Returns:** `(true, nil)` when synced; `(false, nil)` when not yet synced;
-`(false, error)` when the ExternalSecret does not exist or API call fails.
+**Returns (tri-state):**
+
+- `(false, false, nil)` — the ExternalSecret was not found.
+- `(true, false, nil)` — it exists but has not synced yet (no `Ready=True`).
+- `(true, true, nil)` — it exists and is Ready.
+- `(false, false, err)` — an unexpected client failure.
 
 **Behavior:**
 
 - This is a point-in-time check, not a blocking wait. Reconcilers should call it on each
-  reconciliation loop and requeue if it returns `false`.
+  reconciliation loop and requeue while `ready` is `false`.
+- The separate `exists` return lets callers surface a clearer status —
+  "ExternalSecret not found yet" versus "waiting for ESO to sync" — instead of
+  collapsing both into a single not-ready signal.
 - Uses the ESO `ExternalSecretReady` condition type constant, not a raw string.
 
 ### IsSecretReady

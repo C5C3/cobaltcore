@@ -137,19 +137,20 @@ spec:
     ingress:
       # Allow the ingress gateway to reach the Keystone API
       - namespaceSelector:
-          matchLabels:
-            kubernetes.io/metadata.name: envoy-gateway-system
+          kubernetes.io/metadata.name: envoy-gateway-system
       # Allow the monitoring namespace to scrape metrics
       - namespaceSelector:
-          matchLabels:
-            kubernetes.io/metadata.name: monitoring
+          kubernetes.io/metadata.name: monitoring
 ```
 
-Each list entry supports `namespaceSelector` and/or `podSelector` (label-selector
-semantics) and an optional `ports` list. When the list is non-empty, all other ingress
-is blocked by default — **including kubelet probes from other namespaces, which is
-normally not an issue because probes originate from the node, but verify in your
-cluster topology.**
+Each list entry requires a `namespaceSelector` and may narrow it with an optional
+`podSelector`. Both are plain label maps (`key: value` pairs), **not** full
+Kubernetes label selectors — there is no `matchLabels`/`matchExpressions` nesting.
+Within one entry the two selectors AND together; multiple entries OR. Ingress is
+always restricted to TCP 5000 — there is no per-entry port configuration. When the
+list is non-empty, all other ingress is blocked by default — **including kubelet
+probes from other namespaces, which is normally not an issue because probes
+originate from the node, but verify in your cluster topology.**
 
 For brownfield or external targets that the auto-derivation cannot see (an off-cluster
 MariaDB host, an external IdP), append explicit rules with `spec.networkPolicy.additionalEgress`
@@ -196,7 +197,10 @@ a link to the full reference.
 |---------|-------|--------------|-----------|
 | Credential-key tuning | `spec.credentialKeys` | Credential-key rotation is always on; this field only tunes the rotation schedule and max active keys | [CredentialKeysSpec](../reference/keystone/keystone-crd.md#credentialkeysspec) |
 | Trust flush | `spec.trustFlush` | CronJob running `keystone-manage trust_flush` on a schedule. Default-on (hourly) — to pause without deleting the CronJob, set `spec.trustFlush.suspend: true` rather than removing the field | [TrustFlushSpec](../reference/keystone/keystone-crd.md#trustflushspec) |
-| uWSGI tuning | `spec.uwsgi` | Worker processes, threads, HTTP keep-alive | [UWSGISpec](../reference/keystone/keystone-crd.md#uwsgispec) |
+| uWSGI tuning | `spec.uwsgi` | Worker processes, threads, HTTP keep-alive, plus `harakiri` (per-request kill timer) and `httpKeepAliveTimeout` (idle-socket bound) | [UWSGISpec](../reference/keystone/keystone-crd.md#uwsgispec) |
+| Logging | `spec.logging` | oslo.log output: `format` (text/json), `level`, `debug`, per-logger level overrides | [LoggingSpec](../reference/keystone/keystone-crd.md#loggingspec) |
+| Rollout strategy | `spec.strategy` | Overrides the Deployment rollout strategy; default is `RollingUpdate` with `maxSurge=1`/`maxUnavailable=0` (surge-before-remove) | [Graceful-termination fields](../reference/keystone/keystone-crd.md#graceful-termination-fields) |
+| Graceful termination | `spec.terminationGracePeriodSeconds`, `spec.preStopSleepSeconds` | SIGTERM→SIGKILL envelope and preStop drain sleep for zero-downtime rolling updates | [Graceful-termination fields](../reference/keystone/keystone-crd.md#graceful-termination-fields) |
 | Topology spread | `spec.topologySpreadConstraints` | Pod spread across zones/hostnames | [TopologySpreadConstraints](../reference/keystone/keystone-crd.md#topologyspreadconstraints) |
 | Priority class | `spec.priorityClassName` | Scheduling priority and preemption class | [PriorityClassName](../reference/keystone/keystone-crd.md#priorityclassname) |
 | Policy overrides | `spec.policyOverrides` | Custom `oslo.policy` rules (inline or ConfigMap) | [PolicySpec](../reference/keystone/keystone-crd.md#policyspec) |

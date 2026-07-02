@@ -55,9 +55,9 @@ and
    Expected: `STATUS=Ready`.
 
 4. **keystone-operator running.** Either via the Helm release in
-   `deploy/flux-system/releases/keystone-operator.yaml` or a local
-   `make deploy-operator`. The operator's RBAC must include the
-   `cert-manager.io/certificates` rule; the chart's
+   `deploy/flux-system/releases/keystone-operator.yaml` or a locally built
+   image deployed with `hack/ci-deploy-operator.sh`. The operator's RBAC must
+   include the `cert-manager.io/certificates` rule; the chart's
    ClusterRole carries it by default.
 
 5. **A `Keystone` CR you control.** New CRs and existing plaintext CRs both

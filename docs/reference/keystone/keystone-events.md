@@ -46,6 +46,7 @@ All events follow these conventions:
 | --- | --- | --- | --- |
 | `BootstrapComplete` | Normal | Bootstrap Job completes successfully | `Keystone bootstrap completed successfully` |
 | `BootstrapFailed` | Warning | Bootstrap Job fails | `Keystone bootstrap job failed: <error>` |
+| `AdminSecretInvalid` | Warning | Admin password Secret is missing, unreadable, or has an empty `password` value | `Admin password Secret openstack/keystone-admin is missing, unreadable, or has an empty "password" value` |
 
 **Source:** `reconcileBootstrap` in `reconcile_bootstrap.go`
 
@@ -56,8 +57,9 @@ All events follow these conventions:
 | `DatabaseSynced` | Normal | `db_sync` and `schema-check` Jobs both complete successfully | `Database schema is up to date` |
 | `DBSyncFailed` | Warning | `db_sync` Job fails | `db_sync job failed: <error>` |
 | `SchemaDriftDetected` | Warning | `schema-check` Job fails after `db_sync` succeeds (schema does not match Alembic head) | `schema-check job failed: <error>` |
+| `DBSyncMetricEmissionDeferred` | Warning | Patching the last-observed Job UID annotation fails, deferring `db_sync` metric emission to the next reconcile | `Patching last-observed db-sync Job UID failed; db_sync metric emission deferred to the next reconcile: <error>` |
 
-**Source:** `reconcileDatabase` in `reconcile_database.go`
+**Source:** `reconcileDatabase` in `reconcile_database.go`; `recordDBJobTerminalState` in `db_job_metrics.go`
 
 ### Upgrade Initiation
 
@@ -68,8 +70,9 @@ All events follow these conventions:
 | `DowngradeNotSupported` | Warning | Target release is older than installed release | `Downgrade from 2026.1 to 2025.2 is not supported` |
 | `UpgradePathInvalid` | Warning | Target release skips an intermediate version (non-sequential upgrade) | `Upgrade from 2025.1 to 2026.1 is not sequential` |
 | `UpgradeTargetChanged` | Warning | `spec.image.tag` changed while an upgrade is already in progress | `Image tag changed to 2026.2 during active upgrade 2025.2 → 2026.1` |
+| `UpgradeAborted` | Normal | `spec.image.tag` reverted to the installed release while an upgrade was in progress; upgrade Jobs are deleted and phase/target reset | `Upgrade 2025.2 → 2026.1 aborted: spec.image.tag reverted to installed release 2025.2` |
 
-**Source:** `initiateUpgrade` and `reconcileDatabase` in `reconcile_database.go`
+**Source:** `initiateUpgrade` in `reconcile_upgrade.go`; `UpgradeTargetChanged` and `UpgradeAborted` from `reconcileDatabase`/`abortUpgrade` in `reconcile_database.go`
 
 ### Upgrade Phases
 
@@ -82,7 +85,8 @@ All events follow these conventions:
 | `UpgradeComplete` | Normal | Contract phase Job completes, finishing the entire upgrade | `Upgrade complete: 2025.2 → 2026.1` |
 | `ContractFailed` | Warning | Contract phase Job fails | `Contract job <name> failed: <error>` |
 
-**Source:** `reconcileExpand`, `reconcileMigrate`, `reconcileContract` in `reconcile_database.go`
+**Source:** `reconcileExpand`, `reconcileMigrate`, `reconcileContract`, and the shared
+`runUpgradePhase` step driver in `reconcile_upgrade.go`
 
 ### Encryption Key Generation
 
@@ -94,7 +98,53 @@ All events follow these conventions:
 **Source:** `reconcileFernetKeys` in `reconcile_fernet.go`, `reconcileCredentialKeys` in `reconcile_credential.go`
 
 > **Note:** These events fire only on initial Secret creation. Subsequent key
-> rotations are handled by CronJobs and do not emit controller events.
+> rotations run as CronJobs; when the controller commits a completed rotation
+> from the staging Secret it emits the events in
+> [Rotation Commit (Staged)](#rotation-commit-staged) below.
+
+### Rotation Commit (Staged)
+
+The Fernet, credential-key, and admin-password rotation CronJobs write their
+output to a staging Secret. The controller validates and commits the staged
+payload onto the production Secret and reports the outcome as events:
+
+| Reason | Type | Trigger Condition | Example Message |
+| --- | --- | --- | --- |
+| `FernetKeysRotated` | Normal | Staged Fernet rotation validated and applied to the main keys Secret | `rotation applied from staging secret keystone-fernet-keys-rotation (3 active keys)` |
+| `CredentialKeysRotated` | Normal | Staged credential-key rotation validated and applied to the main keys Secret | `rotation applied from staging secret keystone-credential-keys-rotation (2 active keys)` |
+| `RotationAnnotationInvalid` | Warning | Staging Secret's `forge.c5c3.io/rotation-completed-at` annotation is not valid RFC3339 (Fernet/credential) | `staging secret <name> has malformed forge.c5c3.io/rotation-completed-at annotation: <error>` |
+| `RotationRejected` | Warning | Staged Fernet/credential key set fails validation (key count outside `[min, max]`); the staged data is cleared | `staging secret <name> rejected: <error>` |
+| `AdminPasswordRotated` | Normal | Staged admin-password rotation validated and applied to the push-source Secret | `admin password rotation applied from staging secret <name>` |
+| `AdminPasswordRotationAnnotationInvalid` | Warning | Admin-password staging Secret's completion annotation is malformed | `staging secret <name> has malformed forge.c5c3.io/rotation-completed-at annotation: <error>` |
+| `AdminPasswordRotationRejected` | Warning | Staged admin password fails validation (e.g. below minimum length); the rejected password is retained for inspection | `staging secret <name> rejected: <error>` |
+
+**Source:** shared `commitStagedRotation` in `rotation_staging.go`, invoked from
+`reconcile_fernet.go`, `reconcile_credential.go`, and `reconcile_passwordrotation.go`
+
+### Trust Flush
+
+| Reason | Type | Trigger Condition | Example Message |
+| --- | --- | --- | --- |
+| `TrustFlushBypass` | Warning | `spec.trustFlush` is nil on a CR that predates webhook defaulting; the existing trust-flush CronJob is deleted | `Trust flush legacy bypass: spec.trustFlush is nil (webhook defaulting did not run); existing CronJob deleted` |
+
+**Source:** `reconcileTrustFlush` in `reconcile_trustflush.go`
+
+### Finalization
+
+Emitted while the two finalizers tear a deleted Keystone CR down. The
+"Finalizing" events are gated on live cleanup work remaining, so brownfield
+CRs (no MariaDB CRs) and repeated requeue polls do not produce noise:
+
+| Reason | Type | Trigger Condition | Example Message |
+| --- | --- | --- | --- |
+| `FinalizingDatabase` | Normal | Deletion begins while MariaDB Database/User/Grant CRs are still live | `Cleaning up MariaDB Database, User, and Grant before removing Keystone` |
+| `DatabaseFinalized` | Normal | MariaDB resources marked for deletion; database finalizer released | `MariaDB Database, User, and Grant marked for deletion; releasing finalizer` |
+| `FinalizingOpenBaoSecrets` | Normal | Deletion begins while OpenBao backup PushSecrets are still live | `Cleaning up OpenBao backup PushSecrets before removing Keystone` |
+| `OpenBaoSecretsFinalized` | Normal | Backup PushSecrets deleted; OpenBao finalizer released | `OpenBao backup PushSecrets deleted; releasing openbao-finalizer` |
+| `ESOAdoptionTimedOut` | Warning | A backup PushSecret was not adopted by ESO within the bounded wait after deletion; the controller force-deletes it to release the finalizer | `PushSecret "<name>" not adopted by ESO within <timeout> of deletion; force-deleting to release the openbao-finalizer (the OpenBao kv-v2 path may be orphaned only if ESO is not running)` |
+
+**Source:** finalizer handlers in `keystone_controller.go`; `ESOAdoptionTimedOut`
+from the adoption-wait pass in `reconcile_secrets.go`
 
 ### Deployment Rollout
 
@@ -201,7 +251,15 @@ groups:
 ```text
 KeystoneReconciler.Reconcile()
   │
+  ├── finalizers (deletionTimestamp set)
+  │     ├─ MariaDB CRs still live         → Normal  FinalizingDatabase
+  │     ├─ MariaDB cleanup done           → Normal  DatabaseFinalized
+  │     ├─ Backup PushSecrets still live  → Normal  FinalizingOpenBaoSecrets
+  │     ├─ ESO adoption wait exceeded     → Warning ESOAdoptionTimedOut
+  │     └─ PushSecrets deleted            → Normal  OpenBaoSecretsFinalized
+  │
   ├── reconcileBootstrap()
+  │     ├─ Admin Secret missing/invalid → Warning AdminSecretInvalid
   │     ├─ Job succeeds  → Normal  BootstrapComplete
   │     └─ Job fails     → Warning BootstrapFailed
   │
@@ -209,10 +267,12 @@ KeystoneReconciler.Reconcile()
   │     ├─ Non-upgrade path:
   │     │     ├─ db_sync fails      → Warning DBSyncFailed
   │     │     ├─ schema-check fails → Warning SchemaDriftDetected
-  │     │     └─ Both succeed       → Normal  DatabaseSynced
+  │     │     ├─ Both succeed       → Normal  DatabaseSynced
+  │     │     └─ Job-UID patch fails → Warning DBSyncMetricEmissionDeferred
   │     │
   │     └─ Upgrade path:
   │           ├─ Tag changed mid-upgrade → Warning UpgradeTargetChanged
+  │           ├─ Tag reverted mid-upgrade → Normal UpgradeAborted
   │           ├─ Version parse error     → Warning VersionParseError
   │           ├─ Downgrade attempted     → Warning DowngradeNotSupported
   │           ├─ Non-sequential upgrade  → Warning UpgradePathInvalid
@@ -225,14 +285,28 @@ KeystoneReconciler.Reconcile()
   │           └─ Contract fails          → Warning ContractFailed
   │
   ├── reconcileFernetKeys()
-  │     └─ Initial Secret created → Normal FernetKeysGenerated
+  │     ├─ Initial Secret created → Normal FernetKeysGenerated
+  │     ├─ Staged rotation applied → Normal FernetKeysRotated
+  │     ├─ Malformed completion annotation → Warning RotationAnnotationInvalid
+  │     └─ Staged key set rejected → Warning RotationRejected
   │
   ├── reconcileCredentialKeys()
-  │     └─ Initial Secret created → Normal CredentialKeysGenerated
+  │     ├─ Initial Secret created → Normal CredentialKeysGenerated
+  │     ├─ Staged rotation applied → Normal CredentialKeysRotated
+  │     ├─ Malformed completion annotation → Warning RotationAnnotationInvalid
+  │     └─ Staged key set rejected → Warning RotationRejected
+  │
+  ├── reconcilePasswordRotation()
+  │     ├─ Staged rotation applied → Normal AdminPasswordRotated
+  │     ├─ Malformed completion annotation → Warning AdminPasswordRotationAnnotationInvalid
+  │     └─ Staged password rejected → Warning AdminPasswordRotationRejected
   │
   ├── reconcileConfig()
   │     └─ spec.extraConfig overrides use_stderr → Warning LoggingStderrDisabled
   │       (gated on transition into LoggingHealthy=False, Reason=StderrDisabled)
+  │
+  ├── reconcileTrustFlush()
+  │     └─ Legacy nil spec.trustFlush bypass → Warning TrustFlushBypass
   │
   └── reconcileDeployment()
         └─ Ready during upgrade rollout → Normal DeploymentRolloutComplete
