@@ -80,7 +80,7 @@ for multi-stage service builds.
 | Property | Value |
 | --- | --- |
 | Base image | `python-base` (local) |
-| Package manager | `uv` 0.6.3 (copied from `ghcr.io/astral-sh/uv:0.6.3`) |
+| Package manager | `uv` 0.11.24 (copied from the digest-pinned `ghcr.io/astral-sh/uv:0.11.24`; tracked by Renovate) |
 | Virtualenv path | `/var/lib/openstack` |
 
 **Build-time packages:**

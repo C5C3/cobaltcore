@@ -384,6 +384,17 @@ path. If the secret already exists, the write is skipped to prevent overwriting
 existing credentials. This is critical — overwriting would create a mismatch between
 the credentials stored in OpenBao and those already provisioned to consuming services.
 
+**ESO PushSecret adoption marker:** After seeding, the script stamps
+`custom_metadata.managed-by=external-secrets` onto the per-ControlPlane admin
+paths via `bao kv metadata put`. ESO refuses to push to a pre-existing secret
+whose metadata lacks this marker (it fails with "secret not managed by
+external-secrets"), so without the stamp the scheduled admin-password rotation
+backup PushSecret (per-CR RemoteKey `bootstrap/{namespace}/{keystone}/admin`)
+could never mirror a rotated password back into OpenBao. The stamp runs
+unconditionally — it also adopts paths a prior deploy created without the
+marker — and `bao kv metadata put` touches only metadata, leaving the stored
+password versions untouched.
+
 ## HCL Access Control Policies
 
 Eight HCL policies enforce least-privilege access for each consumer type. All policy

@@ -29,7 +29,7 @@ regex managers and package rules. The high-level split is:
 | Pins GitHub Actions to commit SHAs (annotated with a `# vX.Y` tag).              | Updating the Go workspace / `go.mod` directives; triaging CVEs. |
 
 Renovate combines the `config:recommended` native managers (Go modules, Dockerfiles,
-GitHub Actions, npm) with **fourteen** custom regex managers that track pins those
+GitHub Actions, npm) with **fifteen** custom regex managers that track pins those
 native managers cannot see. Auto-merge (patch/minor, 3-day cooldown) is wired **only**
 onto the custom-regex managers; native-manager PRs always wait for a human merge
 (`config:recommended` does not auto-merge, and no top-level `automerge` is set).

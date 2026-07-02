@@ -17,10 +17,11 @@ in-depth reference doc for that area.
 ## Lifecycle and Reconciliation
 
 - **Sub-reconciler chain.** A focused pipeline of sub-reconcilers — Secrets →
-  Config → FernetKeys / CredentialKeys / NetworkPolicy → Database →
-  PolicyValidation → Deployment → HTTPRoute → HealthCheck → HPA → Bootstrap →
-  TrustFlush — each emitting a typed sub-condition that aggregates into
-  `Ready`. See [Reconciler Architecture](./keystone-reconciler.md).
+  DatabaseTLS → DBConnectionSecret → Config → FernetKeys / CredentialKeys /
+  NetworkPolicy → Database → PolicyValidation → Deployment → HTTPRoute →
+  HealthCheck → HPA → Bootstrap → TrustFlush → PasswordRotation — each
+  emitting a typed sub-condition that aggregates into `Ready`. See
+  [Reconciler Architecture](./keystone-reconciler.md).
 - **Parallel execution group.** FernetKeys, CredentialKeys and NetworkPolicy
   run concurrently via `errgroup` to cut tail latency on cold reconciles.
 - **Two finalizers.** The standard cleanup finalizer cascades owned resources;
@@ -38,7 +39,7 @@ in-depth reference doc for that area.
   policy overrides, autoscaling, networkPolicy, gateway, resources, uwsgi,
   graceful-termination knobs, topologySpreadConstraints, priorityClassName,
   rollout `strategy`, and free-form `extraConfig`.
-- **Status with sub-conditions.** Eleven typed sub-conditions plus
+- **Status with sub-conditions.** Fourteen typed sub-conditions plus
   `installedRelease`, `targetRelease`, `upgradePhase`, and `endpoint` —
   surfaced via `kubectl get keystones` printer columns.
 - **Validating + Defaulting webhooks.** CEL validation rules enforced by the
@@ -87,6 +88,11 @@ See the [Key Rotation Guide](../../guides/keystone-key-rotation.md).
   knobs are injected via `OS_<GROUP>__<OPTION>` env vars rather than baked
   into the rendered config, so credential rotation does not require a
   ConfigMap re-render.
+- **Optional database TLS.** `spec.database.tls` enables encrypted MariaDB
+  connections up to `verify-full`, with a cert-manager-issued client
+  certificate in managed mode and a dedicated `DatabaseTLSReady`
+  sub-condition. See the
+  [Database TLS guide](../../guides/enable-keystone-database-tls.md).
 
 ## Networking and Exposure
 
@@ -122,6 +128,12 @@ See the [Key Rotation Guide](../../guides/keystone-key-rotation.md).
   admin project/user/role, region and public endpoint.
 - **Trust flush CronJob.** Optional periodic cleanup of expired trust
   delegations.
+- **Admin password rotation.** Manual rotation at the OpenBao source with a
+  digest-gated bootstrap re-run, plus an optional in-cluster scheduled
+  rotation CronJob via `spec.bootstrap.passwordRotation`. See the
+  [rotation](../../guides/keystone-admin-password-rotation.md) and
+  [scheduled rotation](../../guides/keystone-admin-password-scheduled-rotation.md)
+  guides.
 - **Policy validation.** `oslopolicy-validator` Job blocks rollouts on
   invalid policy overrides.
 - **Graceful-termination knobs.** `terminationGracePeriodSeconds`,

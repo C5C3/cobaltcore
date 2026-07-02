@@ -104,14 +104,16 @@ in three ways: (1) it installs from PyPI instead of mounting a git source tree,
 - Declares `ARG TEMPEST_VERSION` and `ARG KEYSTONE_TEMPEST_PLUGIN_VERSION` for
   build-time version injection (resolved from `test-refs.yaml` by CI)
 - Mounts `upper-constraints.txt` from the release directory via named build context
-- Installs four packages into the shared virtualenv via `uv pip install --constraint`:
+- Installs six packages into the shared virtualenv via `uv pip install --constraint`:
 
 | Package | Purpose |
 | --- | --- |
 | `tempest` | OpenStack Tempest testing framework |
 | `keystone-tempest-plugin` | Keystone-specific Tempest test plugins |
+| `python-openstackclient` | `openstack` CLI, used by the full-chain ControlPlane E2E verify Job (`token issue` / `catalog list`); version pinned by `upper-constraints.txt` |
 | `python-subunit` | Subunit test result streaming protocol |
 | `junitxml` | Subunit-to-JUnit XML conversion (`subunit2junitxml`) |
+| `defusedxml` | Hardened XML parsing for the result-processing tooling |
 
 **Stage 2 (runtime)** — extends `python-base`:
 
@@ -126,6 +128,7 @@ in three ways: (1) it installs from PyPI instead of mounting a git source tree,
 | --- | --- |
 | User | `openstack` (UID 42424) |
 | `tempest` CLI | Available via `PATH` (`/var/lib/openstack/bin/tempest`) |
+| `openstack` CLI | Available via `PATH`; verified by `verify_tempest.sh` (`openstack --version`) |
 | `subunit2junitxml` | Available via `PATH` |
 | Build tools | Absent (`gcc`, `python3-dev`, `uv` are not in the final image) |
 

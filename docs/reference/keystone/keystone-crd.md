@@ -997,6 +997,26 @@ Configures the initial Keystone bootstrap.
 | `adminPasswordSecretRef` | [`SecretRefSpec`](#secretrefspec) | Yes | — | Secret containing the admin password. |
 | `region` | `string` | No | `"RegionOne"` | Keystone region name. Immutable after create (CEL transition rule): changing the region strands catalog entries under the old region. |
 | `publicEndpoint` | `string` | No | Cluster-local service DNS | Externally routable Keystone endpoint URL. Used for the `--bootstrap-public-url` argument passed to `keystone-manage bootstrap`. Required by external clients (CLI users, Horizon, federation partners) that cannot resolve the cluster-local service DNS. When set, it must be an HTTP(S) URL (`+kubebuilder:validation:Pattern=^https?://`), enforced unconditionally by the CRD schema; when `spec.gateway` is also set the webhook additionally requires the host to equal `spec.gateway.hostname`. |
+| `passwordRotation` | [`PasswordRotationSpec`](#passwordrotationspec) | No | `nil` (feature off) | Optionally enables scheduled rotation of the admin password. Nil leaves the feature off and the PasswordRotation sub-reconciler is a clean no-op. |
+
+### PasswordRotationSpec
+
+Configures scheduled admin-password rotation. Unlike `TrustFlushSpec`, the
+defaulting webhook does **not** materialize this block when it is absent —
+scheduled rotation is strictly opt-in, so upgrading a CR that never set
+`passwordRotation` never silently enables it. The webhook only fills the leaf
+defaults once `enabled` is true; the `+kubebuilder:default` markers below
+remain as defense-in-depth for callers that bypass the webhook. The rotated
+password is pushed to the per-CR OpenBao key
+`bootstrap/{namespace}/{name}/admin`, so enabling rotation on multiple CRs
+does not collide on a shared object.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `enabled` | `bool` | No | `false` | Turns on scheduled admin-password rotation. Disabling it tears down every rotation resource. |
+| `schedule` | `string` | No | `"0 0 1 * *"` | Cron expression controlling when a new admin password is generated (monthly at midnight on the 1st). |
+| `suspend` | `bool` | No | `false` | Pauses the CronJob without deleting it or any sibling resource, matching `TrustFlushSpec.suspend` semantics. |
+| `passwordLength` | `int32` | No | `32` | Length of the generated password. Minimum 24 (`+kubebuilder:validation:Minimum=24`). |
 
 ---
 
@@ -1561,6 +1581,8 @@ Both targets are parameterized by operator directory in the Makefile. Generated
 - `CredentialKeysSpec`
 - `FederationSpec`
 - `BootstrapSpec`
+- `PasswordRotationSpec`
+- `LoggingSpec`
 
 ---
 

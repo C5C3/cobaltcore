@@ -725,23 +725,27 @@ admission time.
 
 ## Step 8 — Wait for Keystone to become Ready
 
-The operator reconciles the CR through eleven sub-conditions before the aggregate
-`Ready` condition is set — some are only reported when the matching optional spec
-field is configured:
+The operator reconciles the CR through fourteen sub-conditions before the
+aggregate `Ready` condition is set — all are always reported; conditions tied to
+an optional spec field carry a "not required" / "disabled" reason when that
+field is unset:
 
 | Condition | What it waits for |
 |-----------|-------------------|
 | `SecretsReady` | `keystone-db` and `keystone-admin` Secrets are available |
 | `FernetKeysReady` | Fernet key Secret and CronJob created |
-| `CredentialKeysReady` | Credential key Secret and rotation CronJob exist (if `spec.credentialKeys` is set) |
+| `CredentialKeysReady` | Credential key Secret and rotation CronJob exist (`spec.credentialKeys` tunes schedule and max active keys) |
 | `DatabaseReady` | `db_sync` Job completed successfully |
+| `DatabaseTLSReady` | Database TLS client certificate issued, or `NotRequired` when `spec.database.tls` is unset |
 | `PolicyValidReady` | `spec.policyOverrides` validated against `oslo.policy` |
 | `DeploymentReady` | Keystone API Deployment has available replicas |
 | `KeystoneAPIReady` | Keystone API is responding to `/v3` health probes |
 | `HPAReady` | HorizontalPodAutoscaler created (if `spec.autoscaling` is set) |
 | `NetworkPolicyReady` | NetworkPolicy created (if `spec.networkPolicy` is set) |
+| `HTTPRouteReady` | Gateway API HTTPRoute reconciled, or not required when `spec.gateway` is unset |
 | `BootstrapReady` | Bootstrap Job completed (admin user, region, endpoints) |
-| `TrustFlushReady` | Trust-flush CronJob created (if `spec.trustFlush` is set) |
+| `TrustFlushReady` | Trust-flush CronJob created (defaults to hourly) |
+| `PasswordRotationReady` | Scheduled admin-password rotation reconciled, or `RotationDisabled` when `spec.bootstrap.passwordRotation` is unset |
 
 Watch the conditions with:
 
@@ -926,7 +930,8 @@ The project ships a full [Chainsaw](https://kyverno.github.io/chainsaw/) test su
 all operator behaviour. With the cluster running from the steps above, execute:
 
 ```bash
-# All Keystone test suites (10 suites, up to 4 in parallel)
+# The entire tests/e2e/ tree — 45 suites across keystone, keystone-operator,
+# c5c3 (ControlPlane), and infrastructure — up to 4 in parallel
 make e2e
 
 # Or target a specific suite
@@ -935,7 +940,10 @@ chainsaw test \
   tests/e2e/keystone/basic-deployment/
 ```
 
-Available test suites under `tests/e2e/keystone/`:
+A representative selection of the suites under `tests/e2e/keystone/` (the
+directory itself is the canonical inventory; see the
+[E2E test reference](./reference/testing/keystone-e2e-tests.md) for the full
+catalogue):
 
 | Suite | What it validates |
 |-------|-------------------|

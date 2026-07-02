@@ -816,8 +816,9 @@ of scope here. -->
 kubectl apply -k deploy/flux-system/
 ```
 
-This applies 28 resources: 10 namespaces, 1 FluxInstance, 7 HelmRepository
-sources, and 10 HelmRelease operators. FluxCD resolves the dependency graph between
+This applies 28 resources: 10 namespaces, 1 FluxInstance, 7 sources
+(6 HelmRepository + 1 GitRepository for K-ORC), 9 HelmRelease operators, and
+1 Kustomization (K-ORC). FluxCD resolves the dependency graph between
 HelmReleases and installs operators in the correct order. Wait for all operators to
 finish installing before proceeding to step 2.
 
@@ -971,7 +972,7 @@ Quick Start (Step 4a). The `ResourceSet` renders two sibling resources — an
 | Name | `flux-web` |
 | Namespace | `flux-system` |
 | Chart URL | `oci://ghcr.io/controlplaneio-fluxcd/charts/flux-operator` |
-| Version pin (input) | `0.47.x` — SemVer range locked to the minor track of `FLUX_OPERATOR_VERSION` in `hack/deploy-infra.sh` |
+| Version pin (input) | `0.52.x` — SemVer range locked to the minor track of `FLUX_OPERATOR_VERSION` in `hack/deploy-infra.sh` |
 
 **Helm values on the nested `HelmRelease`:**
 

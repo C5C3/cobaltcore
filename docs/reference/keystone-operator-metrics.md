@@ -1,7 +1,6 @@
 ---
 title: Keystone Operator Prometheus Metrics
 quadrant: operator
-
 ---
 
 # Keystone Operator Prometheus Metrics
@@ -56,7 +55,7 @@ Wall-clock duration of a single sub-reconciler invocation in seconds.
 | Call site | `instrumentSubReconciler` in `operators/keystone/internal/controller/instrumentation.go` |
 
 **Label cardinality.** The `sub_reconciler` value is drawn from a closed
-set of 14 strings — the keys of `subReconcilerConditionTypes` — so the
+set of 16 strings — the keys of `subReconcilerConditionTypes` — so the
 series count is bounded regardless of how many Keystone CRs exist. The
 metric deliberately omits a `keystone`/`namespace` label to keep
 cardinality fleet-independent; per-CR attribution is
@@ -86,8 +85,8 @@ and the `status.conditions[]` type it failed to drive to `True`.
 | Labels | `sub_reconciler`, `condition_type` |
 | Call site | `instrumentSubReconciler` (on non-nil error return) |
 
-**Label cardinality.** Both labels are drawn from closed sets: the 14
-sub-reconciler names and the 12 Ready sub-condition types listed in
+**Label cardinality.** Both labels are drawn from closed sets: the 16
+sub-reconciler names and the 14 Ready sub-condition types listed in
 `subConditionTypes`. The `sub_reconciler` → `condition_type` mapping is
 one-to-one for most entries; the exceptions (`Secrets`,
 `DBConnectionSecret`, `Config` all map to `SecretsReady`) collapse into

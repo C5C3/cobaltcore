@@ -21,62 +21,18 @@ deployment automation, see
 The test suites cover the full reconciler lifecycle — from initial deployment through
 scaling, key rotation, image upgrades, cross-release upgrades, and deletion cleanup. Each
 suite is independent and creates its own Keystone CR with a unique name in the `openstack`
-namespace, enabling parallel execution.
+namespace, enabling parallel execution (Chainsaw runs up to 4 suites concurrently).
 
-```text
-┌────────────────────────────────────────────────────────────────────────────┐
-│  Chainsaw E2E Runner (parallel: 4)                                         │
-│                                                                            │
-│  ┌───────────────────┐  ┌───────────────────┐  ┌───────────────────────┐   │
-│  │ autoscaling       │  │ basic-deployment  │  │ basic-deployment-     │   │
-│  │                   │  │                   │  │  2026-1               │   │
-│  └───────────────────┘  └───────────────────┘  └───────────────────────┘   │
-│  ┌───────────────────┐  ┌───────────────────┐  ┌───────────────────────┐   │
-│  │ brownfield-       │  │ concurrent-cr-    │  │ config-pruning        │   │
-│  │  database         │  │  conflicts        │  │                       │   │
-│  └───────────────────┘  └───────────────────┘  └───────────────────────┘   │
-│  ┌───────────────────┐  ┌───────────────────┐  ┌───────────────────────┐   │
-│  │ credential-       │  │ deletion-cleanup  │  │ events                │   │
-│  │  rotation         │  │                   │  │                       │   │
-│  └───────────────────┘  └───────────────────┘  └───────────────────────┘   │
-│  ┌───────────────────┐  ┌───────────────────┐  ┌───────────────────────┐   │
-│  │ fernet-rotation   │  │ graceful-shutdown │  │ healthcheck           │   │
-│  │                   │  │                   │  │                       │   │
-│  └───────────────────┘  └───────────────────┘  └───────────────────────┘   │
-│  ┌───────────────────┐  ┌───────────────────┐  ┌───────────────────────┐   │
-│  │ image-upgrade     │  │ invalid-cr        │  │ middleware-config     │   │
-│  │                   │  │                   │  │                       │   │
-│  └───────────────────┘  └───────────────────┘  └───────────────────────┘   │
-│  ┌───────────────────┐  ┌───────────────────┐  ┌───────────────────────┐   │
-│  │ missing-secret    │  │ namespace-scoped- │  │ network-policy        │   │
-│  │                   │  │  rbac             │  │                       │   │
-│  └───────────────────┘  └───────────────────┘  └───────────────────────┘   │
-│  ┌───────────────────┐  ┌───────────────────┐  ┌───────────────────────┐   │
-│  │ pod-security-     │  │ policy-overrides  │  │ policy-validation     │   │
-│  │  restricted       │  │                   │  │                       │   │
-│  └───────────────────┘  └───────────────────┘  └───────────────────────┘   │
-│  ┌───────────────────┐  ┌───────────────────┐  ┌───────────────────────┐   │
-│  │ priority-class    │  │ release-upgrade   │  │ resources             │   │
-│  │                   │  │                   │  │                       │   │
-│  └───────────────────┘  └───────────────────┘  └───────────────────────┘   │
-│  ┌───────────────────┐  ┌───────────────────┐  ┌───────────────────────┐   │
-│  │ scale             │  │ schema-drift-     │  │ topology-spread       │   │
-│  │                   │  │  detection        │  │                       │   │
-│  └───────────────────┘  └───────────────────┘  └───────────────────────┘   │
-│  ┌───────────────────┐  ┌───────────────────┐  ┌───────────────────────┐   │
-│  │ trust-flush       │  │ trust-flush-      │  │ upgrade-abort         │   │
-│  │                   │  │  default          │  │                       │   │
-│  └───────────────────┘  └───────────────────┘  └───────────────────────┘   │
-│  ┌───────────────────┐  ┌───────────────────┐                              │
-│  │ upgrade-flow      │  │ uwsgi             │                              │
-│  │                   │  │                   │                              │
-│  └───────────────────┘  └───────────────────┘                              │
-│                                                                            │
-│  Most tests run in: namespace openstack                                    │
-│  pod-security-restricted: own namespace keystone-pss-restricted-test       │
-│  Infrastructure: MariaDB, Memcached, ESO, OpenBao (pre-deployed)           │
-└────────────────────────────────────────────────────────────────────────────┘
-```
+`tests/e2e/keystone/` currently holds **45 suites** and is the canonical
+inventory — the [Test Suite Inventory](#test-suite-inventory) below lists all of
+them, and the [Test Suite Details](#test-suite-details) sections walk through a
+representative subset step by step.
+
+Most suites run in the `openstack` namespace; `pod-security-restricted` creates
+its own `keystone-pss-restricted-test` namespace, and the operator-level suites
+(`metrics`, `prometheus-stack`, `namespace-scoped-rbac`) exercise the
+keystone-operator Helm deployment in `keystone-system`. All suites assume the
+pre-deployed infrastructure stack (MariaDB, Memcached, ESO, OpenBao).
 
 ## Prerequisites
 
@@ -150,6 +106,30 @@ Deployment rollout, bootstrap Job).
 | [semantic-invariants](#semantic-invariants) | `keystone-invariants` | `status.endpoint` URL format, `ownerReferences` fan-out, `observedGeneration` tracking, `lastTransitionTime` monotonicity, ConfigMap immutability |
 | [topology-spread](#topology-spread) | `keystone-tsc` | `spec.topologySpreadConstraints`: `nil` injects 2 defaults; non-empty slice passes through verbatim; `[]` disables all constraints |
 | [pod-security-restricted](#pod-security-restricted) | `keystone-pss-restricted` | Reconciliation reaches Ready=True/AllReady inside a `pod-security.kubernetes.io/enforce=restricted` namespace; every Pod the reconciler creates (API Deployment, bootstrap Job, db-sync Job, policy-validation Job, manually-triggered fernet-rotation Job) admits under PSS Restricted; zero `FailedCreate` events carry the literal violation `violates PodSecurity "restricted:latest"` |
+| admin-password-rotation | `keystone-adminpw` | Re-bootstrap on admin-password Secret change: stale bootstrap Job replaced, new password authenticates against `/v3` |
+| admin-password-scheduled-rotation | `keystone-adminpw-sched` | Model B scheduled rotation: rotation CronJob rendered from `spec.bootstrap.passwordRotation`, full OpenBao/ESO evidence chain |
+| autoscaling | `keystone-autoscaling` | HPA create/update/delete driven by `spec.autoscaling` (CPU and memory targets) |
+| basic-deployment-2026-1 | `keystone-basic-2026-1` | Happy-path deployment pinned to the 2026.1 release image |
+| configmap-no-secrets | `keystone-cc0080` | No secrets leak into the ConfigMap: placeholder URL in `keystone.conf`, real DSN only in the derived `<name>-db-connection` Secret |
+| credential-rotation | `keystone-credential` | Credential-key CronJob schedule, manual rotation changes Secret data, `credential_migrate` step |
+| database-tls | `keystone-dbtls` | `spec.database.tls` up to `verify-full`: `DatabaseTLSReady=True`, cert-manager client cert, encrypted MariaDB connection |
+| gateway-quick-start | `keystone-gateway-qs` | Envoy Gateway quick-start wiring: GatewayClass/Gateway Programmed, HTTPRoute attached, endpoint reachable |
+| gateway-quick-start-smoke | `keystone-smoke` | `curl https://keystone.127-0-0-1.nip.io/v3` returns HTTP 200 with a Keystone v3 JSON body |
+| httproute | `keystone-httproute` | `spec.gateway` lifecycle: HTTPRoute created, updated, and removed with the spec block |
+| invalid-cr | multiple (rejected) | Every CEL XValidation and webhook rejection path pinned to a deterministic admission failure |
+| key-repository-mode | `keystone-keymode` | Fernet/credential key volumes are not world-readable (no `key_repository is world readable` startup warning) |
+| logging | `keystone-logging` | `spec.logging` propagation to oslo.log: defaults, level/format overrides, per-logger levels |
+| metrics | — (operator-level) | keystone-operator chart renders and removes the ServiceMonitor; metrics endpoint scrapeable |
+| namespace-scoped-rbac | `keystone-ns-scoped` | Operator deployed with `rbac.namespaceScoped=true` + `webhook.enabled=false` still reconciles to Ready |
+| network-policy | `keystone-netpol` | Per-CR NetworkPolicy create/update/delete driven by `spec.networkPolicy` ingress sources |
+| prometheus-stack | — (operator-level) | `WITH_PROMETHEUS=true` opt-in addon: kube-prometheus-stack scrapes the operator end to end |
+| resources | `keystone-resources` | `spec.resources` webhook defaulting and propagation to the Deployment |
+| rolling-update-zero-downtime | `keystone-rolling-update` | Full graceful-termination chain keeps the API serving during an image-tag rolling update |
+| trust-flush | `keystone-trust-flush` | Trust-flush CronJob creation, schedule and suspend tracking `spec.trustFlush` |
+| trust-flush-default | `keystone-trust-flush-default` | Default-on posture: omitted `spec.trustFlush` materializes the hourly CronJob |
+| upgrade-abort | `keystone-upgrade-abort` | In-flight upgrade abort by reverting the image tag; wedge in `Expanding` recovers cleanly |
+| upgrade-flow | `keystone-upgrade-flow` | Expand-migrate-contract phase progression with `installedRelease`/`targetRelease` bookkeeping |
+| uwsgi | `keystone-uwsgi` | `spec.uwsgi` defaulting and propagation into the uWSGI command line |
 
 ---
 
@@ -884,6 +864,12 @@ single assert step, validating the full progression.
 
 ```text
 tests/e2e/keystone/
+├── admin-password-rotation/
+│   ├── chainsaw-test.yaml              Re-bootstrap on admin-password change
+│   └── 00-keystone-cr.yaml             Keystone CR for rotation test
+├── admin-password-scheduled-rotation/
+│   ├── chainsaw-test.yaml              Model B scheduled rotation chain
+│   └── 00-keystone-cr.yaml             Keystone CR with passwordRotation
 ├── autoscaling/
 │   ├── chainsaw-test.yaml              HPA reconciliation
 │   ├── 00-keystone-cr.yaml             Keystone CR with CPU autoscaling
@@ -906,9 +892,15 @@ tests/e2e/keystone/
 ├── config-pruning/
 │   ├── chainsaw-test.yaml              Immutable ConfigMap pruning
 │   └── 00-keystone-cr.yaml             Keystone CR for pruning test
+├── configmap-no-secrets/
+│   ├── chainsaw-test.yaml              No secrets leak into the ConfigMap
+│   └── 00-keystone-cr.yaml             Keystone CR for env-override split
 ├── credential-rotation/
 │   ├── chainsaw-test.yaml              Credential key rotation
 │   └── 00-keystone-cr.yaml             Keystone CR with rotation schedule
+├── database-tls/
+│   ├── chainsaw-test.yaml              Keystone ↔ MariaDB TLS (verify-full)
+│   └── 00-keystone-cr.yaml             Keystone CR with database.tls
 ├── deletion-cleanup/
 │   ├── chainsaw-test.yaml              Garbage collection
 │   └── 00-keystone-cr.yaml             Keystone CR for cleanup test
@@ -918,12 +910,25 @@ tests/e2e/keystone/
 ├── fernet-rotation/
 │   ├── chainsaw-test.yaml              Fernet key rotation
 │   └── 00-keystone-cr.yaml             Keystone CR with rotation schedule
+├── gateway-quick-start/
+│   ├── chainsaw-test.yaml              Envoy Gateway quick-start wiring
+│   ├── 00-namespace.yaml               Test namespace
+│   └── 01-keystone-cr.yaml             Keystone CR with spec.gateway
+├── gateway-quick-start-smoke/
+│   ├── chainsaw-test.yaml              nip.io HTTPS smoke test
+│   ├── 00-namespace.yaml               Test namespace
+│   └── 01-smoke-keystone-cr.yaml       Keystone CR for smoke test
 ├── graceful-shutdown/
 │   ├── chainsaw-test.yaml              Graceful shutdown
 │   └── 00-keystone-cr.yaml             Keystone CR for graceful shutdown
 ├── healthcheck/
 │   ├── chainsaw-test.yaml              Post-Deployment API health check
 │   └── 00-keystone-cr.yaml             Keystone CR for healthcheck test
+├── httproute/
+│   ├── chainsaw-test.yaml              spec.gateway HTTPRoute lifecycle
+│   ├── 00-httproute-crd.yaml           HTTPRoute CRD install
+│   ├── 01-keystone-cr.yaml             Keystone CR with spec.gateway
+│   └── 02-patch-remove-gateway.yaml    Patch removing spec.gateway
 ├── image-upgrade/
 │   ├── chainsaw-test.yaml              Rolling image upgrade
 │   ├── 00-keystone-cr.yaml             Keystone CR with initial image tag
@@ -944,6 +949,17 @@ tests/e2e/keystone/
 │   ├── 10-hpa-min-greater-than-max.yaml                    HPA minReplicas > maxReplicas (generated)
 │   ├── 11-fernet-maxactivekeys-below-minimum.yaml          Fernet maxActiveKeys < 3 (generated)
 │   └── 12-credentialkeys-maxactivekeys-below-minimum.yaml  CredentialKeys maxActiveKeys < 3 (generated)
+├── key-repository-mode/
+│   ├── chainsaw-test.yaml              Key volumes not world-readable
+│   └── 00-keystone-cr.yaml             Keystone CR for key-mode test
+├── logging/
+│   ├── chainsaw-test.yaml              spec.logging → oslo.log propagation
+│   ├── 00-keystone-cr.yaml             Keystone CR without spec.logging
+│   ├── 01-patch-debug-true.yaml        Patch enabling debug
+│   ├── 02-patch-format-json.yaml       Patch switching to JSON format
+│   └── 03-patch-invalid-perloggerlevel.yaml Invalid per-logger level (rejected)
+├── metrics/
+│   └── chainsaw-test.yaml              Operator ServiceMonitor render/remove
 ├── middleware-config/
 │   ├── chainsaw-test.yaml              Middleware pipeline
 │   └── 00-keystone-cr.yaml             Keystone CR with custom middleware
@@ -979,6 +995,8 @@ tests/e2e/keystone/
 │   ├── 01-keystone-cr.yaml             Keystone CR without priorityClassName
 │   ├── 02-patch-priority-class.yaml    Patch to set priorityClassName
 │   └── 03-patch-empty-priority-class.yaml Patch to clear priorityClassName
+├── prometheus-stack/
+│   └── chainsaw-test.yaml              WITH_PROMETHEUS opt-in addon path
 ├── release-upgrade/
 │   ├── chainsaw-test.yaml              Cross-release upgrade 2025.2→2026.1
 │   ├── 00-keystone-cr.yaml             Keystone CR with initial tag 2025.2
@@ -987,6 +1005,10 @@ tests/e2e/keystone/
 │   ├── chainsaw-test.yaml              Resource defaults and propagation
 │   ├── 00-keystone-cr.yaml             Keystone CR without explicit resources
 │   └── 01-patch-custom-resources.yaml  Patch with custom resource limits
+├── rolling-update-zero-downtime/
+│   ├── chainsaw-test.yaml              Zero-downtime rolling update
+│   ├── 00-keystone-cr.yaml             Keystone CR with initial image tag
+│   └── 01-patch-image.yaml             Patch spec.image.tag
 ├── scale/
 │   ├── chainsaw-test.yaml              Replica scaling and PDB
 │   ├── 00-keystone-cr.yaml             Keystone CR with replicas: 3

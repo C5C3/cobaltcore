@@ -32,7 +32,7 @@ ensuring typos and unsupported keys are caught at deploy time rather than silent
 | Property | Value |
 | --- | --- |
 | JSON Schema Draft | `draft-07` |
-| Chart version | `0.2.0` (bumped from `0.1.0` to signal the schema validation feature) |
+| Chart version | `0.5.0` |
 | `additionalProperties` | `false` at all object levels |
 
 ## Validated Properties
@@ -104,6 +104,27 @@ for the privilege-escalation path this closes. The default stays `false` because
 | Field | Type | Constraint | Default |
 | --- | --- | --- | --- |
 | `metrics.port` | `integer` | minimum: `1`, maximum: `65535` | `8080` |
+
+### monitoring
+
+| Field | Type | Constraint | Default |
+| --- | --- | --- | --- |
+| `monitoring.serviceMonitor.enabled` | `boolean` | requires the `monitoring.coreos.com` CRDs in-cluster when enabled | `false` |
+| `monitoring.serviceMonitor.interval` | `string` | pattern: Go duration (`15s`, `30s`, `1m`) or `0` for the global default | `30s` |
+
+See [How to enable the Keystone operator metrics endpoint](../../guides/enable-keystone-operator-metrics.md).
+
+### networkPolicy
+
+The `networkPolicy` block (default-off operator pod hardening with fail-closed
+render guards) is validated by the schema as well; its fields are documented in
+[Keystone Operator NetworkPolicy](../keystone/keystone-operator-networkpolicy.md).
+
+### operator-library
+
+A reserved, empty values namespace for the `operator-library` library subchart.
+The library carries no configurable values; Helm injects this key during values
+coalescing, so the root-level `additionalProperties: false` must permit it.
 
 ### logging
 
