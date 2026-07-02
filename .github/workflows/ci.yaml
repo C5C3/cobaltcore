@@ -614,7 +614,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
       # Enable BuildKit (required for type=gha cache) as the default builder.
-      - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
 
       - uses: ./.github/actions/registry-login
         with:
@@ -1245,7 +1245,7 @@ jobs:
         with:
           platform: ${{ matrix.platform.name }}
 
-      - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
       - uses: ./.github/actions/registry-login
         with:
           registry: ${{ env.REGISTRY }}
@@ -1305,7 +1305,7 @@ jobs:
       matrix: ${{ fromJson(needs.changes.outputs.e2e-operators) }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
-      - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
       - uses: ./.github/actions/registry-login
         with:
           registry: ${{ env.REGISTRY }}
