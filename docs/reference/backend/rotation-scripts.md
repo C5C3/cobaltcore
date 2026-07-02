@@ -30,10 +30,19 @@ see the sub-reconciler sections in
 operators/keystone/internal/controller/
 ├── scripts/
 │   ├── fernet_rotate.sh          # Fernet key rotation
-│   └── credential_rotate.sh      # Credential key rotation
+│   ├── credential_rotate.sh      # Credential key rotation
+│   ├── admin_password_rotate.sh  # Scheduled admin-password rotation (Model B)
+│   └── bootstrap_db_seed.py      # Database seeding helper
 ├── reconcile_fernet.go           # go:embed + ConfigMap creation
 └── reconcile_credential.go       # go:embed + ConfigMap creation
 ```
+
+The embedded `scripts/` directory also carries `admin_password_rotate.sh` and
+`bootstrap_db_seed.py`, which belong to the scheduled admin-password rotation
+and bootstrap sub-reconcilers; they follow the same go:embed/ConfigMap delivery
+pattern but sit outside the Fernet/credential scope of this page. See the
+`reconcilePasswordRotation` section of the reconciler reference and the
+[scheduled rotation guide](../../guides/keystone-admin-password-scheduled-rotation.md).
 
 ## Script Contract
 

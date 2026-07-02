@@ -116,7 +116,7 @@ keystone-operator   3s
 ### 2. Import the reference Grafana dashboard
 
 The repository ships a reference dashboard in
-[`operators/keystone/dashboards/keystone-operator.json`](../../operators/keystone/dashboards/keystone-operator.json)
+[`operators/keystone/dashboards/keystone-operator.json`](https://github.com/c5c3/forge/blob/main/operators/keystone/dashboards/keystone-operator.json)
 covering the four core SLIs: reconcile p95 per sub-reconciler, error
 rate per condition type, rotation age per key, and `db_sync` duration
 p95 with failure count.
@@ -275,4 +275,4 @@ ServiceMonitor (and therefore the Prometheus scrape) is removed.
 - [Keystone Operator Prometheus Metrics](../reference/keystone-operator-metrics.md) — authoritative metric catalogue.
 - [Keystone Reconciler — Metrics Instrumentation](../reference/keystone/keystone-reconciler.md#metrics-instrumentation) — how sub-reconcilers are instrumented.
 - [Observability & Diagnostics](../guides/observability.md) — conditions, events, and logs.
-- [`operators/keystone/dashboards/keystone-operator.json`](../../operators/keystone/dashboards/keystone-operator.json) — reference Grafana dashboard.
+- [`operators/keystone/dashboards/keystone-operator.json`](https://github.com/c5c3/forge/blob/main/operators/keystone/dashboards/keystone-operator.json) — reference Grafana dashboard.

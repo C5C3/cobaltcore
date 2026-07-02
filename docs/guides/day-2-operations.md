@@ -1,3 +1,8 @@
+---
+title: Day 2 Operations
+quadrant: operator
+---
+
 <!--
 SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 SPDX-License-Identifier: Apache-2.0
@@ -101,6 +106,9 @@ to restore the database from backup, then patch `spec.image.tag` back. There is 
 The operator ships a `CronJob` that rotates the Fernet keys on the schedule in
 `spec.fernet.rotationSchedule` (default weekly). You can trigger a rotation immediately
 without waiting for the cron job to fire — useful after a suspected key compromise.
+The inverse also works: `spec.fernet.suspend: true` (and
+`spec.credentialKeys.suspend: true`) pauses scheduled rotation during an
+incident without deleting the CronJob.
 
 Rotation uses a split staging→production path: the CronJob writes the new key set to a
 *staging* Secret, and the operator validates it and applies it to the production

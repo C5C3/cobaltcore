@@ -184,7 +184,10 @@ are lost:
 
 CRD-level CEL validation rules remain active regardless of webhook status.
 These rules cover structural constraints such as `database` mutual exclusivity,
-`autoscaling` metric requirements, and minimum-value checks.
+`autoscaling` metric requirements, and minimum-value checks, as well as the
+immutability transition rules (`database.name`, the database mode,
+`bootstrap.adminUser`, `bootstrap.region`) — those are enforced by the API
+server itself, so they hold even with the webhook disabled.
 
 ---
 

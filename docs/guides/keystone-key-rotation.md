@@ -54,6 +54,9 @@ Secret.
 
 Rotations run on the `spec.fernet.rotationSchedule` / `spec.credentialKeys.rotationSchedule`
 cron schedule by default (both default to `0 0 * * 0` — weekly, Sunday 00:00 UTC).
+To pause scheduled rotation during an incident without deleting the CronJob or
+any sibling resource, set `spec.fernet.suspend: true` (or
+`spec.credentialKeys.suspend: true`); clearing the flag resumes the schedule.
 To trigger one on demand, create a one-shot Job from the CronJob template:
 
 ```bash
