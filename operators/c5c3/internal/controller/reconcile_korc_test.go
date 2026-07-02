@@ -676,14 +676,16 @@ func TestReconcileAdminCredential_PushSecretBuiltAndReady(t *testing.T) {
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 
 	// The clouds.yaml ExternalSecret carries the force-sync annotation keyed by the
-	// assembled content hash, so ESO re-materialises immediately rather than at the
-	// hourly refresh (closing the stale-credential window after a re-mint).
+	// assembled content hash AND the PushSecret's completed-push marker
+	// (syncedResourceVersion), so ESO re-materialises immediately rather than at the
+	// hourly refresh (closing the stale-credential window after a re-mint) and gets
+	// re-nudged once more after the re-push actually lands in OpenBao.
 	sum := sha256.Sum256([]byte(buildAppCredCloudsYAML(cp, "test-ac-id", "generated-app-cred-secret")))
 	es := &esov1.ExternalSecret{}
 	g.Expect(c.Get(context.Background(), types.NamespacedName{
 		Name: korcCloudsYamlSecretName, Namespace: childNamespace(cp),
 	}, es)).To(Succeed())
-	g.Expect(es.Annotations[esov1.AnnotationForceSync]).To(Equal(hex.EncodeToString(sum[:])))
+	g.Expect(es.Annotations[esov1.AnnotationForceSync]).To(Equal(hex.EncodeToString(sum[:]) + "/" + testPushSyncedRV))
 
 	// PushSecret created with the right store + remote path.
 	ps := &esov1alpha1.PushSecret{}
@@ -740,7 +742,7 @@ func TestReconcileAdminCredential_DefersUntilCloudsYamlMaterialized(t *testing.T
 	g.Expect(c.Get(context.Background(), types.NamespacedName{
 		Name: korcCloudsYamlSecretName, Namespace: childNamespace(cp),
 	}, es)).To(Succeed())
-	g.Expect(es.Annotations[esov1.AnnotationForceSync]).To(Equal(hex.EncodeToString(sum[:])),
+	g.Expect(es.Annotations[esov1.AnnotationForceSync]).To(Equal(hex.EncodeToString(sum[:])+"/"+testPushSyncedRV),
 		"a deferred sync must still stamp the force-sync annotation so ESO re-materialises")
 }
 
@@ -847,6 +849,72 @@ func TestReconcileAdminCredential_RecentStaleStaysTransient(t *testing.T) {
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal("WaitingForCloudsYamlSync"),
 		"a freshly stale materialized clouds.yaml within the timeout must stay on the transient reason")
+}
+
+// TestReconcileAdminCredential_ForceSyncRekeyedAfterRepush locks in the race fix
+// for the fresh-create credential handoff: the re-push nudge (PushSecret) and the
+// force-sync nudge (ExternalSecret) are stamped in the same reconcile pass, but ESO
+// processes them independently — the ExternalSecret refresh can read OpenBao BEFORE
+// the re-push has written it and re-materialise the stale bootstrap document. Keyed
+// on contentHash alone the annotation would then already sit at its final value and
+// ESO would never be nudged again (AdminCredentialReady wedged at
+// WaitingForCloudsYamlSync until the hourly refresh). The trigger must therefore
+// change again once the PushSecret's syncedResourceVersion reports the completed
+// re-push, producing exactly one fresh nudge after the push landed.
+func TestReconcileAdminCredential_ForceSyncRekeyedAfterRepush(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := korcControlPlane()
+	setKORCReady(cp)
+	cp.Status.AdminApplicationCredential = &c5c3v1alpha1.AdminApplicationCredentialStatus{ID: "test-ac-id"}
+	// The materialized Secret still holds the stale BOOTSTRAP document (no
+	// app-credential identity), simulating an ExternalSecret refresh that lost the
+	// race against the re-push write.
+	staleMat := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: korcCloudsYamlSecretName, Namespace: childNamespace(cp)},
+		Data:       map[string][]byte{appCredCloudsYAMLKey: []byte("clouds:\n  admin:\n    auth:\n      username: admin\n      password: bootstrap\n")},
+	}
+	ps := readyAppCredPushSecret(cp)
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(cp, readyClusterSecretStore(), readyCloudsYamlES(cp), mintedAppCredSecret(cp), ps, staleMat).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	// Pass 1: the re-push has not completed yet (syncedResourceVersion is the
+	// pre-stamp value) — the trigger carries that marker and the gate stays False.
+	res, err := r.reconcileAdminCredential(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+
+	sum := sha256.Sum256([]byte(buildAppCredCloudsYAML(cp, "test-ac-id", "generated-app-cred-secret")))
+	hash := hex.EncodeToString(sum[:])
+	es := &esov1.ExternalSecret{}
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Name: korcCloudsYamlSecretName, Namespace: childNamespace(cp),
+	}, es)).To(Succeed())
+	g.Expect(es.Annotations[esov1.AnnotationForceSync]).To(Equal(hash + "/" + testPushSyncedRV))
+
+	// ESO completes the re-push: the PushSecret's syncedResourceVersion moves on.
+	got := &esov1alpha1.PushSecret{}
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Name: adminAppCredentialPushSecretName(cp), Namespace: childNamespace(cp),
+	}, got)).To(Succeed())
+	got.Status.SyncedResourceVersion = "2-after-repush"
+	g.Expect(c.Update(context.Background(), got)).To(Succeed())
+
+	// Pass 2: the trigger must be re-stamped with the completed-push marker — a
+	// CHANGED annotation value, i.e. a fresh ESO nudge issued after the re-push
+	// actually landed in OpenBao.
+	res, err = r.reconcileAdminCredential(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter),
+		"the materialized document is still stale, so the gate must keep requeuing")
+
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Name: korcCloudsYamlSecretName, Namespace: childNamespace(cp),
+	}, es)).To(Succeed())
+	g.Expect(es.Annotations[esov1.AnnotationForceSync]).To(Equal(hash+"/2-after-repush"),
+		"a completed re-push must produce a fresh force-sync trigger so ESO re-materialises after the write")
 }
 
 // TestForceSyncKORCCloudsYAMLExternalSecret_RetriesOnConflict asserts that a 409
@@ -1868,15 +1936,21 @@ func mintedAppCredSecret(cp *c5c3v1alpha1.ControlPlane) *corev1.Secret {
 	}
 }
 
+// testPushSyncedRV is the syncedResourceVersion readyAppCredPushSecret reports —
+// the completed-push marker the ExternalSecret force-sync trigger folds in.
+const testPushSyncedRV = "1-test-synced-rv"
+
 // readyAppCredPushSecret returns the admin app-credential PushSecret with the exact
 // spec the operator builds (so EnsurePushSecret performs no update) plus a Ready
-// condition — the state after ESO has successfully synced it to OpenBao. The
-// AdminCredentialReady gate requires the PushSecret to be Ready.
+// condition and a syncedResourceVersion — the state after ESO has successfully
+// synced it to OpenBao. The AdminCredentialReady gate requires the PushSecret to be
+// Ready, and the force-sync trigger incorporates the syncedResourceVersion.
 func readyAppCredPushSecret(cp *c5c3v1alpha1.ControlPlane) *esov1alpha1.PushSecret {
 	ps := adminAppCredentialPushSecret(cp)
 	ps.Status.Conditions = []esov1alpha1.PushSecretStatusCondition{
 		{Type: esov1alpha1.PushSecretReady, Status: corev1.ConditionTrue},
 	}
+	ps.Status.SyncedResourceVersion = testPushSyncedRV
 	return ps
 }
 

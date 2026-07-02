@@ -212,13 +212,27 @@ func (r *ControlPlaneReconciler) reconcileAdminCredential(ctx context.Context, c
 	// actually authenticates with still holds the revoked credential — up to ~2h of
 	// auth against a dead credential while AdminCredentialReady reads True.
 	//
-	// Force an immediate ESO re-sync of the materialized Secret (the contentHash
-	// force-sync annotation is idempotent, so a steady-state pass does not churn the
+	// Force an immediate ESO re-sync of the materialized Secret (the force-sync
+	// annotation is idempotent, so a steady-state pass does not churn the
 	// ExternalSecret) and gate AdminCredentialReady on the materialized Secret bytes
 	// actually matching the freshly assembled clouds.yaml. The byte-compare — not the
 	// best-effort force-sync — is the correctness guarantee: it never reports Ready
 	// while the materialized credential is stale.
-	if err := r.forceSyncKORCCloudsYAMLExternalSecret(ctx, cp, cloudsYamlName, contentHash); err != nil {
+	//
+	// The trigger is contentHash + the PushSecret's status.syncedResourceVersion,
+	// NOT contentHash alone. Both nudges (re-push above, force-sync here) are
+	// stamped in the same reconcile pass, but ESO processes the PushSecret and the
+	// ExternalSecret independently: keyed on contentHash alone, the ExternalSecret
+	// refresh can read OpenBao BEFORE the re-push has written it, re-materialise
+	// the stale bootstrap document, and — with the annotation already at its final
+	// value — never be nudged again, wedging AdminCredentialReady at
+	// WaitingForCloudsYamlSync until the hourly refresh (lost race observed in the
+	// e2e-controlplane full-chain job). ESO bumps syncedResourceVersion only AFTER
+	// a completed push, so folding it in re-nudges the ExternalSecret exactly once
+	// more as soon as the re-push lands; both inputs are stable once converged, so
+	// a steady-state pass still leaves the ExternalSecret untouched.
+	syncTrigger := contentHash + "/" + pushed.Status.SyncedResourceVersion
+	if err := r.forceSyncKORCCloudsYAMLExternalSecret(ctx, cp, cloudsYamlName, syncTrigger); err != nil {
 		fail("CloudsYamlError", fmt.Sprintf("forcing k-orc clouds.yaml ExternalSecret re-sync: %v", err))
 		return ctrl.Result{}, err
 	}
@@ -341,16 +355,19 @@ func parseAppCredIdentity(cloudsYAML []byte) (appCredIdentity, bool) {
 
 // forceSyncKORCCloudsYAMLExternalSecret nudges ESO to re-materialise the K-ORC
 // clouds.yaml Secret immediately rather than at the next hourly refresh, by
-// stamping the external-secrets.io/force-sync annotation with the content hash of
-// the freshly assembled clouds.yaml. ESO folds the ExternalSecret's annotations
-// into its sync-decision hash, so a changed value forces a re-sync; an unchanged
-// value is a no-op, so a steady-state pass does not churn the ExternalSecret.
+// stamping the external-secrets.io/force-sync annotation with the given trigger
+// (the assembled clouds.yaml content hash combined with the PushSecret's
+// syncedResourceVersion — see the call site in reconcileAdminCredential for why
+// the completed-push marker must be part of it). ESO folds the ExternalSecret's
+// annotations into its sync-decision hash, so a changed value forces a re-sync;
+// an unchanged value is a no-op, so a steady-state pass does not churn the
+// ExternalSecret.
 //
 // A missing ExternalSecret is treated as a no-op nil — reconcileKORC owns its
 // creation (ensureKORCCloudsYAMLExternalSecret), and the byte-compare gate in
 // reconcileAdminCredential, not this nudge, is what guarantees the materialized
 // credential is fresh before AdminCredentialReady flips True.
-func (r *ControlPlaneReconciler) forceSyncKORCCloudsYAMLExternalSecret(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, name, hash string) error {
+func (r *ControlPlaneReconciler) forceSyncKORCCloudsYAMLExternalSecret(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, name, trigger string) error {
 	key := types.NamespacedName{Namespace: childNamespace(cp), Name: name}
 	// Read-modify-write the force-sync annotation under RetryOnConflict: ESO mutates
 	// this ExternalSecret's status and its own annotations on every refresh (and on
@@ -367,13 +384,13 @@ func (r *ControlPlaneReconciler) forceSyncKORCCloudsYAMLExternalSecret(ctx conte
 			}
 			return err
 		}
-		if es.Annotations[esov1.AnnotationForceSync] == hash {
+		if es.Annotations[esov1.AnnotationForceSync] == trigger {
 			return nil
 		}
 		if es.Annotations == nil {
 			es.Annotations = map[string]string{}
 		}
-		es.Annotations[esov1.AnnotationForceSync] = hash
+		es.Annotations[esov1.AnnotationForceSync] = trigger
 		return r.Update(ctx, es)
 	}); err != nil {
 		return fmt.Errorf("forcing k-orc clouds.yaml ExternalSecret %q re-sync: %w", name, err)
