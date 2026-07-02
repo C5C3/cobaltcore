@@ -319,7 +319,7 @@ is assembled by the subsequent `merge-base-images` job.
 | # | Step | Action / Command | Details |
 | --- | --- | --- | --- |
 | 1 | Reject fork PRs | Shell (conditional) | Fails fast with `::error::` if the PR originates from a fork |
-| 2 | Checkout | `actions/checkout@v6` | Checks out the repository |
+| 2 | Checkout | `actions/checkout@v7` | Checks out the repository |
 | 3 | Normalize image owner | Shell script | Outputs lowercase `owner` value from `${{ github.repository_owner }}` for use in image references |
 | 4 | Prepare platform pair | `.github/actions/platform-pair` | Converts `linux/amd64` → `linux-amd64` for use in artifact names and cache scopes |
 | 5 | Setup Docker registry | `.github/actions/setup-docker-registry` | Buildx + GHCR login (cosign disabled); replaces inline buildx + login steps |
@@ -352,7 +352,7 @@ on the final manifests.
 
 | # | Step | Action / Command | Details |
 | --- | --- | --- | --- |
-| 1 | Checkout | `actions/checkout@v6` | Checks out the repository |
+| 1 | Checkout | `actions/checkout@v7` | Checks out the repository |
 | 2 | Normalize image owner | Shell script | Outputs lowercase `owner` value |
 | 3 | Setup Docker registry | `.github/actions/setup-docker-registry` | Buildx + GHCR login + cosign |
 | 4 | Download python-base digests | `actions/download-artifact@v4` | Downloads all `digests-python-base-*` artifacts, merges into `/tmp/digests/python-base/` |
@@ -400,7 +400,7 @@ service image builds begin. Runs after `merge-base-images` and blocks
 
 | # | Step | Action / Command | Details |
 | --- | --- | --- | --- |
-| 1 | Checkout | `actions/checkout@v6` | Checks out the repository (needed for test scripts) |
+| 1 | Checkout | `actions/checkout@v7` | Checks out the repository (needed for test scripts) |
 | 2 | Setup Docker registry | `.github/actions/setup-docker-registry` | GHCR login (cosign disabled); replaces inline login step |
 | 3 | Pull base images | Shell | Pulls both `python-base` and `venv-builder` by digest from `merge-base-images` outputs |
 | 4 | Verify python-base | Shell | Runs `verify_python_base.sh` with the digest-tagged image ref |
@@ -438,7 +438,7 @@ locally for inline verification instead of being pushed to GHCR.
 
 | # | Step | Action / Command | Details |
 | --- | --- | --- | --- |
-| 1 | Checkout | `actions/checkout@v6` | Checks out this repository |
+| 1 | Checkout | `actions/checkout@v7` | Checks out this repository |
 | 2 | Checkout service source | `.github/actions/checkout-service-source` | Resolves source ref, clones upstream, applies patches and constraint overrides |
 | 3 | Resolve extra packages | Shell | Reads `releases/<release>/extra-packages.yaml` via `yq` to extract `pip_extras` (comma-joined), `pip_packages` (space-joined), and `apt_packages` (space-joined). All three fields tolerate empty values — the Dockerfile handles them via conditional guards. |
 | 4 | Derive tags | `.github/actions/derive-service-tags` | Composite action. Computes image name and all tags (see [Tag Schema](#tag-schema)) |
@@ -477,7 +477,7 @@ were computed during the build.
 
 | # | Step | Action / Command | Details |
 | --- | --- | --- | --- |
-| 1 | Checkout | `actions/checkout@v6` | Checks out the repository |
+| 1 | Checkout | `actions/checkout@v7` | Checks out the repository |
 | 2 | Install yq | `mikefarah/yq@v4` | Required by the derive-service-tags composite action |
 | 3 | Normalize image owner | Shell script | Outputs lowercase `owner` value |
 | 4 | Setup Docker registry | `.github/actions/setup-docker-registry` | Buildx + GHCR login + cosign |
@@ -551,7 +551,7 @@ This job runs in parallel with `build-service-images` — both depend on
 
 | # | Step | Action / Command | Details |
 | --- | --- | --- | --- |
-| 1 | Checkout | `actions/checkout@v6` | Checks out the repository |
+| 1 | Checkout | `actions/checkout@v7` | Checks out the repository |
 | 2 | Checkout service source | `.github/actions/checkout-service-source` | Resolves source ref, clones upstream, applies patches and constraint overrides; eliminates "MUST stay in sync" duplication with `build-service-images` |
 | 3 | Resolve pip extras | Shell | Reads `pip_extras` from `extra-packages.yaml` to construct the install spec (e.g. `.[ldap]` or `.`) |
 | 4 | Setup Docker registry | `.github/actions/setup-docker-registry` | GHCR login (cosign disabled); authenticates to pull `venv-builder` image |
@@ -634,7 +634,7 @@ On PRs, the equivalent verification runs as an inline step within `build-service
 
 | # | Step | Action / Command | Details |
 | --- | --- | --- | --- |
-| 1 | Checkout | `actions/checkout@v6` | Checks out the repository (needed for test scripts, `source-refs.yaml`, and patch counting) |
+| 1 | Checkout | `actions/checkout@v7` | Checks out the repository (needed for test scripts, `source-refs.yaml`, and patch counting) |
 | 2 | Setup Docker registry | `.github/actions/setup-docker-registry` | GHCR login (cosign disabled); replaces inline login step |
 | 3 | Derive tags | `.github/actions/derive-service-tags` | Composite action. Reconstructs tags using the same logic as `build-service-images` and `merge-service-images` |
 | 4 | Pull and verify | Shell | `docker pull <image-ref>` then runs `verify_${{ matrix.service }}.sh` with the pulled image ref |
@@ -735,17 +735,20 @@ All actions are pinned to full commit SHAs with version comments, matching the
 convention in `ci.yaml`:
 
 ```yaml
-uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
-uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd  # v4
-uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2  # v4
-uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051  # v5
-uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294  # v7
-uses: anchore/sbom-action@17ae1740179002c89186b61233e0f892c3118b11  # v0
-uses: anchore/scan-action@7037fa011853d5a11690026fb85feee79f4c946c  # v7
-uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26  # v4
-uses: github/codeql-action/upload-sarif@820e3160e279568db735cee8ed8f8e77a6da7818  # v3
+uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7
+uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5  # v4
+uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9  # v6
+uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a  # v7
+uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610  # v0
+uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2  # v7
+uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763  # v4
+uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e  # v3
 uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad  # v4
 ```
+
+(GHCR authentication runs `docker login` via the `registry-login` composite action
+rather than `docker/login-action`; the pinned SHAs above are kept current by
+Renovate, so treat the workflow files as the authoritative source.)
 
 This prevents supply-chain attacks via tag mutation while remaining auditable through
 version comments.
@@ -1340,7 +1343,7 @@ non-zero, the job fails.
 
 | # | Step | Action / Command | Details |
 | --- | --- | --- | --- |
-| 1 | Checkout | `actions/checkout@v6` | Checks out the repository |
+| 1 | Checkout | `actions/checkout@v7` | Checks out the repository |
 | 2 | Install yq | Shell | Downloads `yq` binary from GitHub releases (version-pinned via `YQ_VERSION` env var) |
 | 3 | Verify build-images workflow structure | Shell | Runs `tests/container-images/verify_build_images_workflow.sh` |
 | 4 | Verify deviation comments | Shell | Runs `tests/container-images/verify_deviation_comments.sh` |

@@ -40,9 +40,14 @@ The workflow triggers on three event types:
 | `push` | `tags: ["v*"]` | Runs on every v-prefixed tag push (triggers publish and release jobs) |
 | `pull_request` | `branches: [main]`, `types: [opened, synchronize, reopened, labeled]` | Runs on every pull request targeting main; includes `labeled` type to support on-demand chaos via `run-chaos` label |
 
-Tag pushes (`v*`) enable the full release pipeline: gate jobs, E2E tests, image/chart
-publishing, and GitHub Release creation. Pull requests and main-branch pushes run only
-gate and E2E jobs (publish jobs are skipped via `if` conditions).
+Gate, test, and E2E jobs run **only on `pull_request` events** — every one of them
+carries a `github.event_name == 'pull_request'` guard. Pushes to `main` and tag pushes
+(`v*`) run only the publish and release jobs (`build-and-push`,
+`merge-operator-images`, `helm-push`, `github-release`): the merged commit's PR was
+already green, so the E2E suite is not re-run on push
+("publish-only-on-merge"). On tag pushes the `changes` job forces all areas and all
+operators active, so every operator's images and charts are published regardless of
+which files the tagged commit touched.
 
 ## Environment Variables
 
@@ -53,17 +58,22 @@ for CI reproducibility:
 env:
   REGISTRY: ghcr.io
   IMAGE_PREFIX: ghcr.io/c5c3
-  CONTROLLER_GEN_VERSION: v0.20.1
-  GOFUMPT_VERSION: v0.9.2
+  KIND_CLUSTER: forge
+  CONTROLLER_GEN_VERSION: v0.21.0
+  GOFUMPT_VERSION: v0.10.0
+  GOLANGCI_LINT_VERSION: v2.12.2
 ```
 
 `REGISTRY` and `IMAGE_PREFIX` are referenced by the `build-and-push`, `helm-push`,
 `e2e-operator`, and `tempest` jobs to construct image names and registry URLs.
+`KIND_CLUSTER` is the single source of truth for every E2E job's kind cluster name
+(mirroring the `CLUSTER_NAME` default in `hack/deploy-infra.sh`).
 `CONTROLLER_GEN_VERSION` is used by `verify-codegen` to pin controller-gen to a specific
-version. `GOFUMPT_VERSION` is used by `format-check` to pin gofumpt to a specific version; the same version is mirrored in the Makefile (`GOFUMPT_VERSION ?= v0.9.2`) so
+version. `GOFUMPT_VERSION` is used by `format-check` to pin gofumpt to a specific version; the same version is mirrored in the Makefile (`GOFUMPT_VERSION ?= v0.10.0`) so
 that `make fmt` and `make format-check` use a consistent version locally.
-`setup-envtest` is installed via `@release-0.23` because the sub-module does not
-publish its own release tags.
+`GOLANGCI_LINT_VERSION` pins the golangci-lint binary installed by the `lint` job and
+keys its analysis cache. `setup-envtest` is installed via `@release-0.23` because the
+sub-module does not publish its own release tags.
 
 ## Permissions
 
@@ -85,42 +95,47 @@ Jobs that need elevated access declare per-job `permissions:` blocks:
 
 ## Job Dependency DAG
 
-The workflow defines 24 jobs organised in a directed acyclic graph:
+The workflow defines 27 jobs organised in a directed acyclic graph. Every gate, test,
+and E2E job additionally carries a `github.event_name == 'pull_request'` guard; the
+publish and release jobs run only on push events:
 
 ```
-Gate Jobs (always run):
-  lint ────────────────────────┐
-  format-check ────────────────┤
-  shellcheck ──────────────────┤
-  verify-codegen ──────────────┤
-  verify-invalid-cr-fixtures ──┤
-  chainsaw-lint ───────────────┤
+Gate Jobs (pull requests only):
+  lint ────────────────────────┐   (go == 'true')
+  format-check                 │   (go == 'true')
+  shellcheck ──────────────────┤   (always on PRs)
+  feature-ids                  │   (always on PRs)
+  test-shell                   │   (always on PRs)
+  verify-codegen ──────────────┤   (go == 'true')
+  verify-invalid-cr-fixtures ──┤   (always on PRs)
+  chainsaw-lint ───────────────┤   (always on PRs)
   test (matrix) ───────────────┼──> build-e2e-images ──> E2E Jobs
   test-integration ────────────┘
 
-Conditional Jobs (path-filtered via changes job):
+Conditional Jobs (pull requests only, path-filtered via changes job):
   test-race ────> needs: [changes], if: needs.changes.outputs.go == 'true'
   govulncheck ─> needs: [changes], if: needs.changes.outputs.go == 'true'
   helm-validate ──> needs: [changes], if: needs.changes.outputs.helm == 'true'
   docs ──────────> needs: [changes], if: needs.changes.outputs.docs == 'true'
 
-Image Build (depends on gates):
+Image Build (pull requests only, depends on gates):
   build-e2e-images ──> needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, verify-invalid-cr-fixtures, chainsaw-lint]
 
-E2E Jobs (depends on build-e2e-images):
+E2E Jobs (pull requests only, depend on build-e2e-images):
   e2e-infra ──────> needs: [changes], if: needs.changes.outputs.e2e-infra == 'true'
   e2e-operator ───> needs: [changes, build-e2e-images]
-  e2e-chaos ──────> needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]
+  e2e-chaos ──────> needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images, e2e-operator]
   e2e-prometheus ─> needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]
                      if: needs.changes.outputs.e2e-prometheus == 'true'
   e2e-controlplane > needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]
                      if: needs.changes.outputs.e2e-controlplane == 'true'
-  tempest ────────> needs: [changes, build-e2e-images]
+  tempest ────────> needs: [changes, build-e2e-images, e2e-infra, e2e-operator, e2e-chaos, e2e-prometheus]
+  cleanup-e2e-tags > needs: [build-e2e-images, e2e-operator, e2e-chaos, tempest]
 
-Publish Jobs (main/tags only, depends on E2E):
-  build-and-push (matrix: operator × platform) ──> needs: [changes, e2e-operator], if: push event
+Publish Jobs (push events only — main and v* tags; publish-only-on-merge):
+  build-and-push (matrix: operator × platform) ──> needs: [changes], if: push && has-e2e-operators == 'true'
     └──> merge-operator-images ──> needs: [changes, build-and-push], if: push event
-  helm-push ──> needs: [changes, e2e-operator], if: push event
+  helm-push ──> needs: [changes], if: push && has-e2e-operators == 'true'
 
 Release Job (v* tags only, depends on publish):
   github-release ──> needs: [changes, merge-operator-images, helm-push], if: v* tag
@@ -129,7 +144,9 @@ Release Job (v* tags only, depends on publish):
 The six E2E jobs (`e2e-infra`, `e2e-operator`, `e2e-chaos`, `e2e-prometheus`,
 `e2e-controlplane`, `tempest`) share infrastructure setup via the
 `setup-e2e-infra` composite action and diagnostic teardown via
-`hack/ci-dump-diagnostics.sh`.
+`hack/ci-dump-diagnostics.sh`. They run on `blacksmith-4vcpu-ubuntu-2404` runners
+(as does `test-integration`), except the `e2e-chaos` network suite, which uses a
+GitHub-hosted `ubuntu-24.04` runner for its kernel-module requirements.
 
 ## Jobs
 
@@ -139,10 +156,11 @@ Runs golangci-lint using the project's `.golangci.yml` configuration.
 
 | Step | Action | Details |
 | --- | --- | --- |
-| 1 | `actions/checkout@v6` | Checks out the repository (SHA-pinned) |
+| 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `actions/setup-go@v6` | Sets up Go with `go-version-file: go.work` |
-| 3 | `golangci/golangci-lint-action@v9` | Installs golangci-lint binary (`install-only: true`); version pinned to `v2.11.4` |
-| 4 | `make lint` | Runs golangci-lint per module via the Makefile |
+| 3 | `actions/cache@v5` | Persists the golangci-lint analysis cache, keyed on the Go and golangci-lint versions |
+| 4 | `golangci/golangci-lint-action@v9` | Installs golangci-lint binary (`install-only: true`); version pinned via `GOLANGCI_LINT_VERSION` (`v2.12.2`) |
+| 5 | `make lint` | Runs golangci-lint per module via the Makefile |
 
 The `golangci-lint-action@v9` step is used with `install-only: true`, which installs the
 pinned golangci-lint binary (and caches it) without running lint. The actual linting is
@@ -188,13 +206,13 @@ formatting to all tracked Go files. The Makefile targets use `xargs` without the
 the repository always contains tracked `.go` files.
 
 **Dependencies:** `needs: [changes]`
-**Condition:** `if: needs.changes.outputs.go == 'true'`
+**Condition:** `if: github.event_name == 'pull_request' && needs.changes.outputs.go == 'true'`
 
 | Step | Action | Details |
 | --- | --- | --- |
-| 1 | `actions/checkout@v6` | Checks out the repository (SHA-pinned) |
+| 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `actions/setup-go@v6` | Sets up Go with `go-version-file: go.work` |
-| 3 | `go install mvdan.cc/gofumpt@${{ env.GOFUMPT_VERSION }}` | Installs gofumpt at the pinned version (`v0.9.2`) |
+| 3 | `go install mvdan.cc/gofumpt@${{ env.GOFUMPT_VERSION }}` | Installs gofumpt at the pinned version (`v0.10.0`) |
 | 4 | `git ls-files '*.go' \| xargs -r gofumpt -l` | Lists non-conforming tracked Go files; on failure, prints unified diff and exits 1 |
 
 The check uses `git ls-files '*.go' | xargs -r gofumpt -l` to collect non-conforming files
@@ -211,8 +229,22 @@ The shellcheck binary is pre-installed on `ubuntu-latest` runners.
 
 | Step | Action | Details |
 | --- | --- | --- |
-| 1 | `actions/checkout@v6` | Checks out the repository (SHA-pinned) |
-| 2 | `shellcheck --severity=warning hack/*.sh` | Lints all shell scripts in `hack/` |
+| 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
+| 2 | `make shellcheck` | Runs `shellcheck --severity=warning` over `hack/*.sh` and the operator rotation scripts (`operators/*/internal/controller/scripts/*.sh`) |
+
+Timeout: 5 minutes.
+
+### feature-ids
+
+Verifies the whole tracked tree (code, tests, CI, scripts, docs) is free of internal
+feature/requirement IDs. Runs unconditionally on every pull request — not
+path-filtered — so a stray ID added anywhere is caught. This job folds in the former
+docs-only check.
+
+| Step | Action | Details |
+| --- | --- | --- |
+| 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
+| 2 | `make check-feature-ids` | Greps the tracked tree for internal feature/requirement ID patterns and fails on any hit |
 
 Timeout: 5 minutes.
 
@@ -228,7 +260,7 @@ job runs. Always-on because the check is sub-second and `python3` is preinstalle
 
 | Step | Action | Details |
 | --- | --- | --- |
-| 1 | `actions/checkout@v6` | Checks out the repository (SHA-pinned) |
+| 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `make verify-invalid-cr-fixtures` | Runs `_generate.py --check` and `test_generate.py` |
 
 Timeout: 5 minutes.
@@ -246,7 +278,7 @@ the `setup-test-deps` composite action, the same one consumed internally by
 
 | Step | Action | Details |
 | --- | --- | --- |
-| 1 | `actions/checkout@v6` | Checks out the repository (SHA-pinned) |
+| 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `./.github/actions/setup-test-deps` | Restores the testdeps cache and runs `make install-test-deps` (puts `chainsaw` on `PATH`) |
 | 3 | `make chainsaw-lint` | Runs `chainsaw lint test -f` and `chainsaw lint configuration -f` over every matching file under `tests/` |
 
@@ -264,7 +296,7 @@ explicitly so the deploy/ overlay assertions run their full check set
 
 | Step | Action | Details |
 | --- | --- | --- |
-| 1 | `actions/checkout@v6` | Checks out the repository (SHA-pinned) |
+| 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | Install kustomize | Downloads the pinned kustomize binary into `/usr/local/bin` |
 | 3 | `make test-shell` | Iterates every `tests/unit/**/*_test.sh` and aggregates exit status |
 
@@ -278,7 +310,7 @@ a single coverage profile uploaded to Codecov under a dedicated flag.
 
 | Step | Action | Details |
 | --- | --- | --- |
-| 1 | `actions/checkout@v6` | Checks out the repository (SHA-pinned) |
+| 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `actions/setup-go@v6` | Sets up Go with `go-version-file: go.work` |
 | 3 | `make test-common` or `make test-operator` | Runs unit tests for the matrix target |
 | 4 | `codecov/codecov-action@v5` | Uploads coverage profile with target-specific flag |
@@ -315,7 +347,7 @@ download kubebuilder assets (kube-apiserver, etcd) for the test API server.
 
 | Step | Action | Details |
 | --- | --- | --- |
-| 1 | `actions/checkout@v6` | Checks out the repository (SHA-pinned) |
+| 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `actions/setup-go@v6` | Sets up Go with `go-version-file: go.work` |
 | 3 | `go install setup-envtest@release-0.23` | Installs envtest asset downloader (pinned to release branch) |
 | 4 | `make test-integration-common` or `make test-integration` | Runs integration tests for the matrix target |
@@ -347,12 +379,12 @@ caching, since race conditions are non-deterministic and cached results could ma
 races.
 
 **Dependencies:** `needs: [changes]`
-**Condition:** `if: needs.changes.outputs.go == 'true'`
+**Condition:** `if: github.event_name == 'pull_request' && needs.changes.outputs.go == 'true'`
 **Path filter:** Go source files (same filter as `test` and `test-integration`)
 
 | Step | Action | Details |
 | --- | --- | --- |
-| 1 | `actions/checkout@v6` | Checks out the repository (SHA-pinned) |
+| 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `actions/setup-go@v6` | Sets up Go with `go-version-file: go.work` |
 | 3 | `make test-race RACE_FLAGS="-count=1"` | Delegates to the Makefile so the module list stays in sync |
 
@@ -378,26 +410,32 @@ actually reachable — reducing false positives. Catches supply-chain vulnerabil
 PR stage, before container images are built.
 
 **Dependencies:** `needs: [changes]`
-**Condition:** `if: needs.changes.outputs.go == 'true'`
+**Condition:** `if: github.event_name == 'pull_request' && needs.changes.outputs.go == 'true'`
 **Path filter:** Go source files (same filter as `test`, `test-integration`, and `test-race`)
 
 | Step | Action | Details |
 | --- | --- | --- |
-| 1 | `actions/checkout@v6` | Checks out the repository (SHA-pinned) |
+| 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `actions/setup-go@v6` | Sets up Go with `go-version-file: go.work` |
 | 3 | `go install golang.org/x/vuln/cmd/govulncheck@latest` | Installs the latest govulncheck binary |
-| 4 | `make govulncheck` | Delegates to the Makefile target, which iterates over `internal/common` and all `$(OPERATORS)` modules |
+| 4 | `make govulncheck` | Delegates to `hack/ci-govulncheck.sh`, which scans `internal/common` and all `$(OPERATORS)` modules with an explicit allowlist |
 
 govulncheck uses `@latest` intentionally — unlike other pinned tools (controller-gen,
 gofumpt), pinning govulncheck to an old version defeats the purpose of vulnerability
 scanning because the vulnerability database is updated frequently. This is a deliberate
 deviation from the general pinning policy, justified by the security tool's nature.
 
-The CI step delegates to `make govulncheck`, which iterates over `internal/common` and
-each operator in the `$(OPERATORS)` Makefile variable. The Makefile target exits on the
-first module with a reachable vulnerability. govulncheck exits non-zero only for reachable
-vulnerabilities — dependencies with known CVEs whose vulnerable functions are not called
-in project code are reported as informational but do not fail the job.
+The CI step delegates to `make govulncheck`, which runs `hack/ci-govulncheck.sh` over
+`internal/common` and each operator in the `$(OPERATORS)` Makefile variable. govulncheck
+has no native suppression flag, so the wrapper runs it in JSON mode per module, keeps
+only the *reachable* symbol-level findings (the ones that fail the default text report),
+and drops any whose advisory ID appears in the script's `ALLOWLIST` map. The build fails
+if, and only if, a reachable finding survives the allowlist — matching govulncheck's
+normal failure semantics while letting the project ride out advisories that have no fix
+and no real exposure. Every allowlist entry carries a one-line justification, and if an
+allowlisted advisory is no longer reported, the wrapper prints a notice so the stale
+entry can be removed. Dependencies with known CVEs whose vulnerable functions are not
+called in project code are reported as informational but do not fail the job.
 
 This job runs independently and does **not** appear in any other job's `needs:` array. It
 is not on the critical path for E2E or publish jobs, matching the `test-race` pattern.
@@ -416,7 +454,7 @@ up-to-date. This is a gate job — it blocks merge alongside `lint`,
 
 | Step | Action | Details |
 | --- | --- | --- |
-| 1 | `actions/checkout@v6` | Checks out the repository (SHA-pinned) |
+| 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `actions/setup-go@v6` | Sets up Go with `go-version-file: go.work` |
 | 3 | `go install controller-gen@${{ env.CONTROLLER_GEN_VERSION }}` | Installs the pinned code generator |
 | 4 | `make manifests && make generate` | Regenerates CRD manifests and deepcopy functions |
@@ -431,12 +469,12 @@ instructions to run `make manifests && make generate` locally and commit the res
 Builds the VitePress documentation site to catch broken links and build errors.
 
 **Dependencies:** `needs: [changes]`
-**Condition:** `if: needs.changes.outputs.docs == 'true'`
+**Condition:** `if: github.event_name == 'pull_request' && needs.changes.outputs.docs == 'true'`
 **Path filter:** `docs/**`, `package.json`, `package-lock.json`
 
 | Step | Action | Details |
 | --- | --- | --- |
-| 1 | `actions/checkout@v6` | Full history (`fetch-depth: 0`) for git-based features |
+| 1 | `actions/checkout@v7` | Full history (`fetch-depth: 0`) for git-based features |
 | 2 | `actions/setup-node@v6` | Node.js 24, npm cache enabled |
 | 3 | `npm ci` | Installs dependencies from lockfile |
 | 4 | `npm run docs:build` | Builds the documentation site |
@@ -451,12 +489,12 @@ value override scenarios, and `helm unittest` for each chart to catch
 regressions at PR time.
 
 **Dependencies:** `needs: [changes]`
-**Condition:** `if: needs.changes.outputs.helm == 'true'`
+**Condition:** `if: github.event_name == 'pull_request' && needs.changes.outputs.helm == 'true'`
 **Path filter:** `operators/keystone/helm/**`, `operators/c5c3/helm/**`, `operators/shared/helm/**`, `hack/gen-helm-values-schema.py`, `Makefile` (forced `true` on `v*` tag pushes)
 
 | Step | Action | Details |
 | --- | --- | --- |
-| 1 | `actions/checkout@v6` | Checks out the repository (SHA-pinned) |
+| 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `azure/setup-helm@v5` | Installs Helm CLI (SHA-pinned) |
 | 3 | `helm plugin install helm-unittest` | Installs helm-unittest plugin (pinned to `v1.0.3`) |
 | 4 | `make verify-helm-schema` | Fails if either chart's `values.schema.json` has drifted from the shared generator |
@@ -497,11 +535,11 @@ infrastructure stack (Flux, cert-manager, MariaDB, ESO, OpenBao) to a kind clust
 validates health of all operators, CRs, and ExternalSecrets.
 
 **Dependencies:** `needs: [changes]`
-**Condition:** `if: needs.changes.outputs.e2e-infra == 'true'`
+**Condition:** `if: github.event_name == 'pull_request' && needs.changes.outputs.e2e-infra == 'true'`
 
 | Step | Action | Details |
 | --- | --- | --- |
-| 1 | `actions/checkout@v6` | Checks out the repository (SHA-pinned) |
+| 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `actions/setup-go@v6` | Sets up Go with `go-version-file: go.work` |
 | 3 | `helm/kind-action@v1.14.0` | Creates kind cluster (`forge`) |
 | 4 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack |
@@ -521,7 +559,8 @@ rebuilding, saving ~5-10 min per CI run.
 
 **Dependencies:** `needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, verify-invalid-cr-fixtures, chainsaw-lint]`
 
-**Condition:** Runs only when `has-e2e-operators == 'true'` (or `e2e-chaos == 'true'`)
+**Condition:** Runs only when any of `has-e2e-operators`, `e2e-chaos`,
+`e2e-prometheus`, or `e2e-controlplane` is `'true'`
 and no gate job failed. Uses `always()` so the job runs when upstream Go jobs are
 skipped (e.g. pure E2E test-definition PRs where `go=false`). Skipped on PRs from
 forks (the workflow's `GITHUB_TOKEN` is read-only on `packages:` for forked
@@ -532,7 +571,7 @@ guard.
 
 | Step | Action | Details |
 | --- | --- | --- |
-| 1 | `actions/checkout@v6` | Checks out the repository (SHA-pinned) |
+| 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `docker/setup-buildx-action@v4` | Sets up BuildKit for `type=gha` cache support |
 | 3 | `docker/login-action@v4` | Authenticates to GHCR with `GITHUB_TOKEN` |
 | 4 | Resolve build operators | Unions `e2e-operators` with a fixed `keystone` entry (required by tempest) |
@@ -567,7 +606,7 @@ Chainsaw E2E test suites.
 
 | Step | Action | Details |
 | --- | --- | --- |
-| 1 | `actions/checkout@v6` | Checks out the repository (SHA-pinned) |
+| 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `actions/setup-go@v6` | Sets up Go with `go-version-file: go.work` |
 | 3 | `helm/kind-action@v1.14.0` | Creates kind cluster (`forge`) |
 | 4 | `load-e2e-images` composite action | Pulls run-scoped GHCR tags and re-tags to canonical local refs |
@@ -599,18 +638,25 @@ suites (MariaDB pod kill, Memcached pod kill, OpenBao pod kill, MariaDB network
 partition, MariaDB network latency). See
 [Chaos E2E Test Suites](../testing/chaos-e2e-tests.md) for test suite details.
 
-**Dependencies:** `needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]`
+**Dependencies:** `needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images, e2e-operator]`
 **Condition:** Runs only when `e2e-chaos == 'true'` or the PR has a `run-chaos` label, `build-e2e-images` succeeded, and no dependency failed or was cancelled.
 **Permissions:** `contents: read`, `packages: read` (required for GHCR pull).
 
-The `e2e-chaos` job depends on the standard gate jobs. The `e2e-operator` dependency was
-removed so chaos tests run in parallel with operator E2E tests, reducing
-overall CI wall time. The job uses `continue-on-error: true` while chaos test stability is
+The `e2e-chaos` job depends on the standard gate jobs plus `e2e-operator`, so chaos
+tests run after the happy-path operator E2E suite has passed. The job uses
+`continue-on-error: true` while chaos test stability is
 being proven in CI — failures are visible but do not block merges or the publish pipeline. This will be revisited after 2–4 weeks of successful CI runs.
+
+The job runs as a two-entry matrix split by chaos type: the `pod` suite (PodChaos
+tests) runs on `blacksmith-4vcpu-ubuntu-2404` for speed, while the `network` suite
+(NetworkChaos tests) runs on a GitHub-hosted `ubuntu-24.04` runner, where the
+`linux-modules-extra` kernel modules required by `ip_set`/`sch_netem` are resolvable
+(the Blacksmith Firecracker microVM kernel ships without them). Each matrix entry
+lists its per-suite test directories explicitly.
 
 | Step | Action | Details |
 | --- | --- | --- |
-| 1 | `actions/checkout@v6` | Checks out the repository (SHA-pinned) |
+| 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `helm/kind-action@v1.14.0` | Creates kind cluster (`forge`) |
 | 3 | `load-e2e-images` composite action | Pulls run-scoped GHCR tags and re-tags to canonical local refs |
 | 4 | `kind load docker-image` | Loads keystone operator and 2025.2 service images into kind |
@@ -624,12 +670,12 @@ being proven in CI — failures are visible but do not block merges or the publi
 
 | Aspect | `e2e-operator` | `e2e-chaos` |
 | --- | --- | --- |
-| Matrix | Dynamic per-operator | Single job (keystone only) |
+| Matrix | Dynamic per-operator | Two suites (`pod` / `network`) on different runners |
 | Test config | `tests/e2e/chainsaw-config.yaml` | `tests/e2e-chaos/chainsaw-config.yaml` |
-| Test directory | `tests/e2e/<operator>/` | `tests/e2e-chaos/` |
-| Timeout | 45 minutes | 45 minutes |
+| Test directory | `tests/e2e/<operator>/` | per-suite `test_dirs` under `tests/e2e-chaos/` |
+| Timeout | 45 minutes | 60 minutes |
 | Blocking | Yes | No (`continue-on-error: true`) |
-| Dependencies | Gate jobs | Gate jobs |
+| Dependencies | Gate jobs | Gate jobs + `e2e-operator` |
 | Service images | 2025.2 + 2025.2-upgraded + 2026.1 | 2025.2 only |
 
 The chaos test Chainsaw config uses `parallel: 1` (serial execution) because chaos tests
@@ -675,7 +721,7 @@ genuine regression of the kind-only Quick Start observability story.
 
 | Step | Action | Details |
 | --- | --- | --- |
-| 1 | `actions/checkout@v6` | Checks out the repository (SHA-pinned) |
+| 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `helm/kind-action@v1.14.0` | Creates kind cluster (`forge`) |
 | 3 | `load-e2e-images` composite | Restores prebuilt operator and service images from the build-e2e-images artifact |
 | 4 | `kind load docker-image` | Loads operator and service images into kind |
@@ -750,8 +796,8 @@ cluster and runs the OpenStack Tempest test suite against them. Uses a release m
 configuration, Keystone CRs, and K8s service names. Pulls pre-built images from
 GHCR (run-scoped tag) via the `load-e2e-images` composite action.
 
-**Dependencies:** `needs: [changes, build-e2e-images]`
-**Condition:** Runs only when `has-e2e-operators == 'true'` and `build-e2e-images` succeeded.
+**Dependencies:** `needs: [changes, build-e2e-images, e2e-infra, e2e-operator, e2e-chaos, e2e-prometheus]`
+**Condition:** Runs only when `has-e2e-operators == 'true'`, `build-e2e-images` succeeded, and no other E2E job failed or was cancelled — tempest is the last E2E job in the chain.
 **Permissions:** `contents: read`, `packages: read` (required for GHCR pull).
 
 **Matrix strategy:**
@@ -778,7 +824,7 @@ these via `matrix.release`, `matrix.config-dir`, `matrix.cr-name`, and
 
 | Step | Action | Details |
 | --- | --- | --- |
-| 1 | `actions/checkout@v6` | Checks out the repository (SHA-pinned) |
+| 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `actions/setup-go@v6` | Sets up Go with `go-version-file: go.work` |
 | 3 | `helm/kind-action@v1.14.0` | Creates kind cluster (`forge`) |
 | 4 | `load-e2e-images` composite action | Pulls run-scoped GHCR tags and re-tags to canonical local refs |
@@ -796,8 +842,9 @@ Timeout: 45 minutes.
 
 GH-310. Prunes the run-scoped GHCR tags pushed by `build-e2e-images`
 (`e2e-${run_id}-*`) so they don't accumulate on the package page. Runs as a
-matrix over each E2E target package (`keystone-operator`, `keystone`, `tempest`)
-after every consumer that might still pull the images has finished. The
+matrix over each E2E target package (`keystone-operator`, `keystone`,
+`c5c3-operator`, `tempest`) after every consumer that might still pull the images
+has finished. The
 `always() && needs.build-e2e-images.result == 'success'` condition means the
 cleanup runs on success, failure, cancelled, or skipped consumer outcomes — but
 only when `build-e2e-images` actually pushed something.
@@ -818,13 +865,17 @@ single-arch image by digest. Runs only on push events (main branch or
 v* tags) — skipped on pull requests. The multi-arch manifest list and final tags are
 assembled by the subsequent `merge-operator-images` job.
 
-**Dependencies:** `needs: [changes, e2e-operator]`
-**Condition:** `if: github.event_name == 'push' && needs.e2e-operator.result == 'success'`
+Publish-only-on-merge: the merged commit's PR was already green, so the E2E suite is
+not re-run on push. The job depends only on `changes` (for the operator matrix) and
+builds the image from its own cache scope, independent of `build-e2e-images`.
+
+**Dependencies:** `needs: [changes]`
+**Condition:** `if: github.event_name == 'push' && needs.changes.outputs.has-e2e-operators == 'true'`
 **Permissions:** `contents: read`, `packages: write`
 
 | Step | Action | Details |
 | --- | --- | --- |
-| 1 | `actions/checkout@v6` | Checks out the repository (SHA-pinned) |
+| 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | Prepare platform pair | Shell | Converts `linux/amd64` → `linux-amd64` for artifact names and cache scopes |
 | 3 | `docker/setup-buildx-action@v4` | Sets up Docker Buildx |
 | 4 | `docker/login-action@v4` | Authenticates to GHCR (`github.actor` / `GITHUB_TOKEN`) |
@@ -863,10 +914,10 @@ list, and pushes it with the final tags.
 
 | Step | Action | Details |
 | --- | --- | --- |
-| 1 | `actions/checkout@v6` | Checks out the repository (SHA-pinned) |
+| 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `docker/setup-buildx-action@v4` + `docker/login-action@v4` | Authenticates to GHCR |
 | 3 | `docker/metadata-action@v6` | Generates final image tags |
-| 4 | Download digests | `actions/download-artifact@v4` | Downloads all `digests-operator-<operator>-*` artifacts |
+| 4 | Download digests | `actions/download-artifact@v8` | Downloads all `digests-operator-<operator>-*` artifacts |
 | 5 | Create and push manifest list | Shell | `docker buildx imagetools create` assembles per-platform digests under the final tags from step 3 |
 
 **Matrix strategy:** Same `operator` dimension as `build-and-push` (via `fromJson(needs.changes.outputs.e2e-operators)`).
@@ -884,16 +935,18 @@ Images are published at `ghcr.io/c5c3/<operator>-operator:<tag>`.
 ### helm-push
 
 Packages and pushes operator Helm charts to the GHCR OCI registry.
-Runs only on push events — skipped on pull requests.
+Runs only on push events — skipped on pull requests. Like `build-and-push`, this is
+publish-only-on-merge: the chart is packaged and pushed for every changed operator on
+push without re-running the E2E suite.
 
-**Dependencies:** `needs: [changes, e2e-operator]`
-**Condition:** `if: github.event_name == 'push' && needs.e2e-operator.result == 'success'`
+**Dependencies:** `needs: [changes]`
+**Condition:** `if: github.event_name == 'push' && needs.changes.outputs.has-e2e-operators == 'true'`
 **Permissions:** `contents: read`, `packages: write`
 
 | Step | Action | Details |
 | --- | --- | --- |
-| 1 | `actions/checkout@v6` | Checks out the repository (SHA-pinned) |
-| 2 | `azure/setup-helm@v4` | Installs Helm CLI |
+| 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
+| 2 | `azure/setup-helm@v5` | Installs Helm CLI |
 | 3 | Helm registry login | Authenticates to GHCR via `helm registry login` |
 | 4 | Package and push | Packages chart and pushes to `oci://ghcr.io/c5c3/charts/` |
 
@@ -904,13 +957,9 @@ Runs only on push events — skipped on pull requests.
 | Push to main | Default version from `Chart.yaml` |
 | Push v* tag | SemVer derived from tag (v prefix stripped, e.g. `v0.1.0` → `0.1.0`) |
 
-**Matrix strategy:**
-
-```yaml
-strategy:
-  matrix:
-    operator: [keystone]
-```
+**Matrix strategy:** Same `operator` dimension as `build-and-push` (via
+`fromJson(needs.changes.outputs.e2e-operators)`), so every changed operator's chart is
+packaged and pushed.
 
 The `make helm-package` target packages `operators/<operator>/helm/<operator>-operator/`.
 When `CHART_VERSION` is set (for tag pushes), it overrides the version in `Chart.yaml`.
@@ -925,10 +974,10 @@ Creates a GitHub Release with auto-generated release notes on v* tag pushes.
 
 | Step | Action | Details |
 | --- | --- | --- |
-| 1 | `actions/checkout@v6` | Checks out the repository (SHA-pinned) |
-| 2 | `azure/setup-helm@v4` | Installs Helm CLI for chart packaging |
+| 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
+| 2 | `azure/setup-helm@v5` | Installs Helm CLI for chart packaging |
 | 3 | Package Helm charts | Packages operator Helm charts with release version |
-| 4 | `softprops/action-gh-release@v2` | Creates release with `generate_release_notes: true` and attaches chart tarballs |
+| 4 | `softprops/action-gh-release@v3` | Creates release with `generate_release_notes: true` and attaches chart tarballs |
 
 This job runs only after both `merge-operator-images` and `helm-push` complete
 successfully, ensuring the final multi-arch manifest list and charts are published before
@@ -1089,7 +1138,7 @@ internally).
 
 | Step | Description |
 | --- | --- |
-| 1 | Installs Flux CLI via `fluxcd/flux2/action@v2.8.3` (SHA-pinned) |
+| 1 | Installs Flux CLI via `fluxcd/flux2/action@v2.9.0` (SHA-pinned) |
 | 2 | Delegates to the `setup-test-deps` composite action (cache restore + `make install-test-deps` + `PATH` wiring) |
 | 3 | Runs `make deploy-infra` with `SKIP_KIND_CREATE=true` |
 
@@ -1175,7 +1224,7 @@ All Go-based jobs use `actions/setup-go@v6` with:
 go-version-file: go.work
 ```
 
-This reads the Go version from `go.work` (currently Go 1.25.0) rather than hardcoding a
+This reads the Go version from `go.work` (currently Go 1.26.4) rather than hardcoding a
 `go-version` value. The repository root contains `go.work` (not `go.mod`) because the
 project uses a Go Workspace with multiple modules (`internal/common`, `operators/keystone`,
 `operators/c5c3`). Module dependency caching is enabled by default in `actions/setup-go@v6`.
@@ -1200,7 +1249,7 @@ branches do not cancel each other's runs.
 All GitHub Actions are referenced by full SHA hash with a trailing version comment:
 
 ```yaml
-- uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+- uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 ```
 
 This prevents supply chain attacks via mutable tag retargeting and provides audit

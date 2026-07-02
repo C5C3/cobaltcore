@@ -226,9 +226,10 @@ HELMRELEASE_TIMEOUT=600 make deploy-infra
 
 ## CI Job
 
-The `e2e-infra` job in `.github/workflows/ci.yaml` runs on every push to `main`
-and on every pull request. It runs independently of the `lint` and `test` jobs
-(no `needs:` dependency).
+The `e2e-infra` job in `.github/workflows/ci.yaml` runs only on pull requests
+(`github.event_name == 'pull_request'`) and only when the `e2e-infra` path filter
+of the `changes` job matches. It depends only on `changes` — not on the `lint` or
+`test` jobs — so it starts as soon as the path filters are resolved.
 
 **Job steps:**
 
@@ -282,10 +283,10 @@ the new release artifacts, compute `sha256sum`, and replace the values in the sc
 
 | Tool | Version | SHA256 Pinning |
 | --- | --- | --- |
-| chainsaw | v0.2.14 | upstream (fetched) |
-| flux | 2.8.6 | pinned |
-| kind | v0.31.0 | pinned |
-| kubectl | v1.36.0 | pinned |
+| chainsaw | v0.2.15 | upstream (fetched) |
+| flux | 2.8.8 | pinned |
+| kind | v0.32.0 | pinned |
+| kubectl | v1.36.1 | pinned |
 
 ## Quick Start
 
