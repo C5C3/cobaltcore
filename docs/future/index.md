@@ -1,0 +1,28 @@
+---
+title: Future
+---
+
+# Future
+
+This section collects **idea sketches** for the forge project: explorations of
+where the operators could go next, written down early enough to be discussed,
+challenged, and reshaped before anyone commits to an implementation.
+
+Pages in this section are explicitly **not**:
+
+- **Decided architecture.** Accepted designs and their rationale live in the
+  architecture documentation, not here. A Future page graduates by being
+  triaged through a GitHub issue and, if accepted, turned into a proper
+  design — at which point the sketch here is replaced by a pointer or removed.
+- **Reference documentation.** Nothing described here is guaranteed to exist
+  in the codebase. Where a page describes current behavior, it does so only as
+  the baseline for the proposed change.
+- **A roadmap commitment.** Phases, API shapes, and field names are working
+  material for discussion.
+
+## Current sketches
+
+- [Brownfield Keystone Adoption](./brownfield-keystone-adoption.md) — adopt an
+  existing OpenStack Keystone installation incrementally, starting with a
+  service-less ControlPlane that only manages credentials, service accounts,
+  and catalog entries via K-ORC.

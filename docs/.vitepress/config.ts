@@ -104,6 +104,13 @@ export default defineConfig({
         ],
       },
       {
+        text: 'Future',
+        items: [
+          { text: 'Overview', link: '/future/' },
+          { text: 'Brownfield Keystone Adoption', link: '/future/brownfield-keystone-adoption' },
+        ],
+      },
+      {
         text: 'Contributing',
         items: [
           { text: 'Dependency Management', link: '/contributing/dependency-management' },
