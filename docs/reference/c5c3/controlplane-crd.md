@@ -678,6 +678,8 @@ Keystone discipline:
 | `spec.korc.adminCredential.bootstrapResources[].kind` | Enum: `Project`, `Role` |
 | `spec.korc.adminCredential.applicationCredential.rotation.mode` | Enum: `PasswordDriven`, `Scheduled`, `Manual` |
 | `spec.services.keystone.replicas` | Minimum: 1 |
+| `spec.infrastructure.database.replicas` | Minimum: 1, schema default `3`. The webhook additionally rejects exactly `2` (Galera quorum — see below). |
+| `spec.infrastructure.cache.replicas` | Minimum: 1, schema default `3` |
 | `CredentialRotation spec.target` | Enum: `adminApplicationCredential` |
 | `CredentialRotation spec.intervalDays` | Minimum: 1 |
 | `CredentialRotation spec.preRotationDays` | Minimum: 0 |
@@ -700,6 +702,7 @@ short-circuit on the first error.
 | Release pattern | `spec.openStackRelease` | `field.Invalid` | Value does not match `^\d{4}\.\d$`. Defense-in-depth alongside the CRD `+kubebuilder:validation:Pattern` marker. |
 | Database mutual exclusivity | `spec.infrastructure.database` | `field.Invalid` | Both `clusterRef` and `host` set, or neither (`(clusterRef != nil) == (host != "")`). Defense-in-depth alongside the CEL `XValidation` rule on `commonv1.DatabaseSpec`. |
 | Cache mutual exclusivity | `spec.infrastructure.cache` | `field.Invalid` | Both `clusterRef` and `servers` set, or neither (`(clusterRef != nil) == (len(servers) > 0)`). Defense-in-depth alongside the CEL `XValidation` rule on `commonv1.CacheSpec`. |
+| Database replicas quorum | `spec.infrastructure.database.replicas` | `field.Invalid` | Value is exactly `2`. The managed-mode projection turns any `replicas > 1` into a Galera cluster, and a two-node Galera cluster cannot hold a majority — a single pod disruption then loses quorum. Replicas must be 1 (standalone) or >=3. The CRD marker enforces only `Minimum=1` (the shared `commonv1.DatabaseSpec` must not carry a c5c3-specific CEL rule the keystone operator, which ignores `replicas`, would inherit), so this check is **webhook-only**; a zero value (defaulting bypassed) is left to the reconciler's floor. |
 | Admin password Secret required | `spec.korc.adminCredential.passwordSecretRef.name` | `field.Required` | `name` is empty — without it the reconciler cannot (re-)mint the admin application credential. **Webhook-only**. |
 | Gateway hostname required | `spec.services.keystone.gateway.hostname` | `field.Required` | A `gateway` is configured but its `hostname` is empty. Mirrors the `+kubebuilder:validation:MinLength=1` marker on `commonv1.GatewaySpec.Hostname`; without it the reconciler derives an empty `https:///v3` public endpoint. |
 | Empty policy rule name | `spec.global.rules[<key>]`, `spec.services.keystone.policyOverrides.rules[<key>]` | `field.Required` | A rule name (map key) is the empty string. Enforced via the shared `policy.ValidatePolicyRules`, mirrored by the CEL rule on `commonv1.PolicySpec`. |
@@ -733,6 +736,7 @@ an already-migrated schema — an unrecoverable state.
 | Database mode immutable | `spec.infrastructure.database` | `clusterRef` nil-ness changed (managed ↔ brownfield) |
 | Database clusterRef.name immutable | `spec.infrastructure.database.clusterRef.name` | Both managed, but the name changed |
 | Database name immutable | `spec.infrastructure.database.database` | The database name changed |
+| Database replicas immutable | `spec.infrastructure.database.replicas` | The value changed. `replicas` is projected into the managed MariaDB child's replica count and derived Galera topology, so a live edit would drive a destructive Update on the owned cluster (toggling Galera off or scaling a running Galera cluster down); the topology can only be changed safely by recreating the control plane. |
 | Cache mode immutable | `spec.infrastructure.cache` | `clusterRef` nil-ness changed (managed ↔ brownfield) |
 | Cache clusterRef.name immutable | `spec.infrastructure.cache.clusterRef.name` | Both managed, but the name changed |
 | Cloud secretName immutable | `spec.korc.adminCredential.cloudCredentialsRef.secretName` | The value changed |
@@ -892,16 +896,21 @@ func (w *ControlPlaneWebhook) ValidateDelete(_ context.Context, _ *ControlPlane)
 
 ## Status Conditions
 
-The ControlPlane status is driven by five sub-reconcilers, each owning one
+The ControlPlane status is driven by seven sub-reconcilers, each owning one
 condition type, plus an aggregate `Ready` condition. The condition-type
 constants in `controlplane_controller.go` are the single source of truth; call
 sites reference the constants rather than inline literals.
 
-The sub-reconcilers run in dependency order, each **gated** on the previous
-one's condition being `True`:
+The sub-reconcilers run in dependency order; a stage that has not converged
+requeues and stops the chain, so later conditions are never computed against a
+half-built earlier stage. Three stages additionally gate **explicitly** on an
+earlier condition being `True` (`reconcileKeystone` on `InfrastructureReady`,
+`reconcileAdminCredential` on `KORCReady`, `reconcileCatalog` on
+`AdminCredentialReady`):
 
 ```
-InfrastructureReady → KeystoneReady → KORCReady → AdminCredentialReady → CatalogReady
+InfrastructureReady → DBCredentialsReady → AdminPasswordReady → KeystoneReady
+  → KORCReady → AdminCredentialReady → CatalogReady
 ```
 
 `Ready` is `True` (reason `AllReady`) **only** when all sub-conditions are
@@ -924,6 +933,43 @@ Set by `reconcileInfrastructure`.
 | `False` | `WaitingForCache` | Managed Memcached is ensured but not yet Ready. |
 | `False` | `MariaDBError` | Error create-or-updating the MariaDB child. |
 | `False` | `MemcachedError` | Error create-or-updating the Memcached child. |
+
+### DBCredentialsReady
+
+Set by `reconcileDBCredentials`. In managed mode (`database.clusterRef` set) it
+create-or-updates the per-ControlPlane DB-credential `ExternalSecret`
+(`{name}-keystone-db-credentials`, reading OpenBao path
+`openstack/keystone/{namespace}/{name}/db`, hourly refresh) and mirrors its
+Ready status. The OpenBao-backed `ClusterSecretStore` is checked first so an
+ESO/OpenBao outage surfaces promptly instead of hiding behind the
+ExternalSecret's stale per-object Ready cache.
+
+| Status | Reason | When |
+| --- | --- | --- |
+| `True` | `DBCredentialsReady` | The DB-credential ExternalSecret is Ready; the materialised Secret exists. |
+| `True` | `BrownfieldUserSuppliedCredential` | Brownfield database (`clusterRef` unset): the user supplies the DB-credential Secret out-of-band, so no ExternalSecret is projected and the chain proceeds immediately. |
+| `False` | `SecretStoreNotReady` | The OpenBao-backed `ClusterSecretStore` is not Ready; the secret backend is unreachable. |
+| `False` | `ExternalSecretError` | Error ensuring or checking the DB-credential ExternalSecret. |
+| `False` | `WaitingForDBCredentialSecret` | The ExternalSecret is ensured but ESO has not yet synced it to Ready. |
+
+### AdminPasswordReady
+
+Set by `reconcileAdminPassword`. It runs **before** the Keystone stage because
+the keystone-operator's `SecretsReady` gate needs the admin-password
+ExternalSecret to exist before the projected Keystone child references it. In
+managed mode it create-or-updates the per-ControlPlane admin-password
+`ExternalSecret` (`{name}-keystone-admin-credentials`, reading OpenBao path
+`bootstrap/{namespace}/{name}-keystone/admin` — keystone-**name**-scoped so it
+matches the seeder and the keystone-operator rotation PushSecret) and mirrors
+its Ready status.
+
+| Status | Reason | When |
+| --- | --- | --- |
+| `True` | `AdminPasswordReady` | The admin-password ExternalSecret is Ready; the materialised Secret exists. |
+| `True` | `BrownfieldUserSuppliedCredential` | Brownfield database (`clusterRef` unset): the user supplies the admin-password Secret out-of-band, so no ExternalSecret is projected and the chain proceeds immediately. |
+| `False` | `SecretStoreNotReady` | The OpenBao-backed `ClusterSecretStore` is not Ready; the secret backend is unreachable. |
+| `False` | `ExternalSecretError` | Error ensuring or checking the admin-password ExternalSecret. |
+| `False` | `WaitingForAdminPasswordSecret` | The ExternalSecret is ensured but ESO has not yet synced it to Ready. |
 
 ### KeystoneReady
 
@@ -954,7 +1000,8 @@ Set by `reconcileKORC`.
 
 Set by `reconcileAdminCredential` (gated on `KORCReady`, the OpenBao-backed
 `ClusterSecretStore` being Ready, the K-ORC `clouds.yaml` ExternalSecret being
-Ready, **and** the materialised `clouds.yaml` Secret semantically matching (parsed
+Ready, the admin app-credential `PushSecret` having actually synced to OpenBao,
+**and** the materialised `clouds.yaml` Secret semantically matching (parsed
 application-credential id+secret) the freshly assembled credential).
 
 | Status | Reason | When |
@@ -963,11 +1010,12 @@ application-credential id+secret) the freshly assembled credential).
 | `False` | `WaitingForKORC` | `KORCReady` is not `True`; credential push deferred. |
 | `False` | `SecretStoreNotReady` | The OpenBao-backed `ClusterSecretStore` is not Ready; the secret backend is unreachable. |
 | `False` | `WaitingForCloudsYaml` | The operator-created per-ControlPlane `k-orc-clouds-yaml` ExternalSecret in the control-plane namespace (co-located with the K-ORC CRs per C1; created and owned by `reconcileKORC`) is not yet Ready. |
+| `False` | `WaitingForPushSecret` | The admin app-credential `PushSecret` has not synced the assembled `clouds.yaml` to OpenBao yet. `AdminCredentialReady` is gated on the PushSecret's `Ready` condition — not merely on the CR existing — so a backend permission failure (e.g. the ESO role missing the push policy) cannot yield a false-positive Ready while OpenBao still serves the password-based bootstrap `clouds.yaml`. |
 | `False` | `WaitingForCloudsYamlSync` | The materialised `k-orc-clouds-yaml` Secret is absent or still holds a stale credential (a re-mint revoked the old one but ESO has not re-synced yet). `reconcileAdminCredential` stamps the `external-secrets.io/force-sync` annotation to force an immediate re-sync and compares the materialised Secret semantically (parsed application-credential id+secret) against the assembled credential before reporting Ready, so the condition never reads `True` against a revoked credential. |
 | `False` | `CloudsYamlSyncStuck` | The materialised `k-orc-clouds-yaml` Secret has failed to match the assembled credential for longer than `cloudsYamlSyncStuckTimeout` (measured from the credential's `LastRotation`); the ESO ExternalSecret or OpenBao backend may be unable to sync. Escalated from `WaitingForCloudsYamlSync` so a never-converging sync is alertable and distinguishable from a transient miss. |
 | `False` | `CloudsYamlError` | Error checking the `clouds.yaml` ExternalSecret, forcing its re-sync, or reading the materialised Secret. |
 | `False` | `SecretError` | Error ensuring the operator-owned application-credential Secret. |
-| `False` | `PushSecretError` | Error ensuring the OpenBao PushSecret. |
+| `False` | `PushSecretError` | Error ensuring the OpenBao PushSecret, stamping its content-hash re-push annotation, or reading it back for the sync gate. |
 
 ### CatalogReady
 
@@ -992,7 +1040,7 @@ Set by `setReadyCondition`.
 
 | Status | Reason | When |
 | --- | --- | --- |
-| `True` | `AllReady` | All five sub-conditions above are `True`. |
+| `True` | `AllReady` | All seven sub-conditions above are `True`. |
 | `False` | `NotAllReady` | One or more sub-conditions are not `True`. |
 
 ---

@@ -694,9 +694,9 @@ surfacing as an opaque wait.
 
 | Aspect | Value |
 | --- | --- |
-| File | `reconcile_korc.go` |
+| File | `reconcile_admincredential.go` |
 | Condition | `AdminCredentialReady` |
-| Gate | `KORCReady == True`, the OpenBao-backed `ClusterSecretStore` is Ready, the K-ORC clouds.yaml `ExternalSecret` (`{childNamespace(cp)}/{CloudCredentialsRef.SecretName}`, co-located with the K-ORC CRs per C1) is Ready, **and** the materialised clouds.yaml Secret semantically matches (parsed application-credential id+secret) the freshly assembled credential |
+| Gate | `KORCReady == True`, the OpenBao-backed `ClusterSecretStore` is Ready, the K-ORC clouds.yaml `ExternalSecret` (`{childNamespace(cp)}/{CloudCredentialsRef.SecretName}`, co-located with the K-ORC CRs per C1) is Ready, the admin app-credential `PushSecret` has actually synced to OpenBao (its `Ready` condition is True), **and** the materialised clouds.yaml Secret semantically matches (parsed application-credential id+secret) the freshly assembled credential |
 | Owns | the operator-owned `Secret` `{controlplane.Name}-admin-app-credential` and the `PushSecret` `{controlplane.Name}-admin-app-credential-backup`, both in `childNamespace(cp)` |
 | Requeue | `korcRequeueAfter` = **10s** while any gate is unmet (including a stale/absent materialised clouds.yaml) |
 
@@ -718,8 +718,9 @@ OpenBao:
   OpenBao path, so the operator-created per-CR ExternalSecret can materialise
   before any credential is minted — once the AC is minted the PushSecret carries
   the minted credential-based clouds.yaml instead.
-- **PushSecret to OpenBao.** `secrets.EnsurePushSecret` (idempotent; only Updates
-  on a `DeepEqual` diff so ESO is not woken to re-push an unchanged credential)
+- **PushSecret to OpenBao.** `secrets.EnsurePushSecret` (applied via server-side
+  apply under a fixed field manager that owns only the fields the operator sets,
+  so repeated applies of an unchanged desired spec are no-ops at the API server)
   builds the PushSecret to `openbao-cluster-store` at the per-ControlPlane remote
   key `openstack/keystone/{cp.Namespace}/{cp.Name}/admin/app-credential`
   (`adminAppCredentialRemoteKeyFor`) with **`DeletionPolicy: None`** — the
@@ -727,14 +728,42 @@ OpenBao:
   the PushSecret on ControlPlane teardown (or when rotation is disabled) leaves the
   last-pushed credential intact in OpenBao at that CR's own path, so re-adoption
   works and the admin is never locked out.
+- **Forced re-push on credential change.** ESO's PushSecret controller does
+  **not** watch its source Secret: its refresh gate reacts only to the PushSecret
+  object's own label/annotation hash, so a source-Secret update — e.g. the
+  fresh-create handoff from the password-based bootstrap clouds.yaml to the
+  minted credential — would otherwise not reach OpenBao until the hourly
+  `refreshInterval`, leaving `AdminCredentialReady` stuck False for up to an
+  hour. `forceRepushAdminAppCredential` therefore stamps the assembled
+  clouds.yaml content hash onto the PushSecret (`c5c3.io/push-content-hash`,
+  read-modify-write under `RetryOnConflict`), changing its metadata hash and
+  forcing an immediate re-push. The annotation is keyed by the content hash, so
+  it fires exactly once per credential change and a steady-state pass is a
+  no-op.
+- **PushSecret sync gate.** `AdminCredentialReady` is gated on the PushSecret's
+  `Ready` condition — not merely on the CR existing — so a backend permission
+  failure (e.g. the ESO role missing the push policy) surfaces as
+  `WaitingForPushSecret` instead of a false-positive Ready while OpenBao still
+  serves the password-based bootstrap clouds.yaml.
 - **Live clouds.yaml gate (stale-credential window).** A re-mint revokes the old
   credential immediately, but the `k-orc-clouds-yaml` Secret only refreshes from
   OpenBao at the ExternalSecret's hourly `refreshInterval`, so the PushSecret-Ready
   check above can pass while the materialised Secret K-ORC actually authenticates
   with still holds the revoked credential. After assembling the clouds.yaml,
   `reconcileAdminCredential` stamps the `external-secrets.io/force-sync` annotation
-  (keyed by the content hash; idempotent, so a steady-state pass does not churn the
-  ExternalSecret) to nudge ESO to re-materialise immediately, then **compares the
+  to nudge ESO to re-materialise immediately. The trigger value is
+  `contentHash + "/" + PushSecret.status.syncedResourceVersion`, **not** the
+  content hash alone: both nudges (the PushSecret re-push above and this
+  force-sync) are stamped in the same reconcile pass, but ESO processes the two
+  objects independently — keyed on the content hash alone, the ExternalSecret
+  refresh can read OpenBao *before* the re-push has written it, re-materialise
+  the stale bootstrap document, and (with the annotation already at its final
+  value) never be nudged again, wedging `AdminCredentialReady` at
+  `WaitingForCloudsYamlSync` until the hourly refresh. ESO bumps
+  `syncedResourceVersion` only *after* a completed push, so folding it in
+  re-nudges the ExternalSecret exactly once more as soon as the re-push lands;
+  both inputs are stable once converged, so a steady-state pass still leaves the
+  ExternalSecret untouched. It then **compares the
   materialised Secret semantically** — by the parsed application-credential id and
   secret, not byte-for-byte, so a benign ESO/OpenBao re-serialisation (a stripped
   trailing newline, reordered keys, requoting) cannot wedge the gate permanently —
@@ -754,7 +783,8 @@ OpenBao:
 | clouds.yaml ES check errors | False | `CloudsYamlError` | returns the error (also covers a force-sync/materialised-Secret read error) |
 | clouds.yaml ES not Ready | False | `WaitingForCloudsYaml` | requeue 10s |
 | operator Secret ensure fails | False | `SecretError` | returns the error |
-| PushSecret ensure fails | False | `PushSecretError` | returns the error |
+| PushSecret ensure, re-push stamp, or readback fails | False | `PushSecretError` | returns the error |
+| PushSecret not yet synced to OpenBao | False | `WaitingForPushSecret` | requeue 10s; the PushSecret's `Ready` condition is not True — the assembled credential has not landed in OpenBao yet |
 | materialised clouds.yaml absent or semantically stale | False | `WaitingForCloudsYamlSync` | requeue 10s; force-sync annotation stamped, semantic compare (parsed id+secret) against the assembled document not yet satisfied |
 | materialised clouds.yaml stuck stale past `cloudsYamlSyncStuckTimeout` | False | `CloudsYamlSyncStuck` | requeue 10s; the sync has not converged since `LastRotation` — alertable, distinguishable from a transient miss |
 | committed, mirrored, and materialised | True | `AdminCredentialReady` | — |
@@ -763,7 +793,7 @@ OpenBao:
 
 | Aspect | Value |
 | --- | --- |
-| File | `reconcile_korc.go` |
+| File | `reconcile_catalog.go` |
 | Condition | `CatalogReady` |
 | Gate | `AdminCredentialReady == True`, **and** both the identity `Service` and `Endpoint` report `Available` |
 | Owns | a K-ORC identity `Service` (`{controlplane.Name}-identity-service`) and its public `Endpoint` (`{controlplane.Name}-identity-endpoint`) in `childNamespace(cp)` |
@@ -891,7 +921,10 @@ K-ORC writes the minted credential into the operator-owned Secret
         │
         ▼  (reconcileAdminCredential, gated on KORCReady + clouds.yaml ES)
 PushSecret  →  OpenBao kv  openstack/keystone/{cp.Namespace}/{cp.Name}/admin/app-credential
-   (DeletionPolicy: None — per-ControlPlane bootstrap secret survives teardown)
+   (DeletionPolicy: None — per-ControlPlane bootstrap secret survives teardown;
+    ESO does not watch the source Secret, so a content-hash annotation nudge
+    forces the re-push on credential change, and the clouds.yaml force-sync
+    below is keyed on that hash + the completed push's syncedResourceVersion)
         │
         ▼
 ExternalSecret  →  {control-plane ns}/k-orc-clouds-yaml  (the clouds.yaml gate;
@@ -1206,8 +1239,16 @@ operators/c5c3/
     │   ├── reconcile_adminpassword.go           reconcileAdminPassword (per-CP admin-password ExternalSecret),
     │   │                                        effectiveAdminPasswordSecretRef
     │   ├── reconcile_keystone.go                reconcileKeystone projection
-    │   ├── reconcile_korc.go                    reconcileKORC + reconcileAdminCredential +
-    │   │                                        reconcileCatalog, computeAdminPasswordHash
+    │   ├── reconcile_korc.go                    reconcileKORC (AC mint/re-mint, drift detection)
+    │   ├── reconcile_admincredential.go         reconcileAdminCredential (assemble + push + re-push
+    │   │                                        nudges, semantic clouds.yaml gate)
+    │   ├── reconcile_catalog.go                 reconcileCatalog (identity Service/Endpoint),
+    │   │                                        korcAvailableUpToDate
+    │   ├── reconcile_delete.go                  reconcileDelete (ORC-teardown finalizer sequencing)
+    │   ├── korc_cloudsyaml.go                   clouds.yaml document builders (app-credential + password bootstrap)
+    │   ├── korc_eso.go                          PushSecret + clouds.yaml ExternalSecret builders/ensure
+    │   ├── korc_imports.go                      admin Domain/User import projection
+    │   ├── korc_secrets.go                      app-credential Secret seeding, computeAdminPasswordHash
     │   ├── reconcile_credentialrotation.go      CredentialRotationReconciler (nudge model)
     │   ├── requeue_intervals.go                 infra/dbCredentials/adminPassword/keystone/korc/credentialRotation backoffs
     │   ├── instrumentation.go                   instrumentSubReconciler + drift-guard map
@@ -1218,16 +1259,20 @@ operators/c5c3/
     │   ├── reconcile_adminpassword_test.go      AdminPassword tests
     │   ├── reconcile_keystone_test.go           Keystone projection tests
     │   ├── reconcile_korc_test.go               K-ORC / admin-credential / catalog tests
+    │   ├── reconcile_delete_test.go             Deletion-sequencing (finalizer) tests
     │   ├── reconcile_credentialrotation_test.go CredentialRotation tests
     │   ├── credential_invariant_test.go         Security-invariant tests
     │   ├── instrumentation_test.go              Metrics instrumentation + drift guards
     │   ├── setupwithmanager_test.go             Watch/Owns/indexer wiring tests
     │   ├── helpers_test.go                      helper-function tests
     │   └── integration_test.go                  Envtest integration test (tag: integration)
-    ├── metrics/
-    │   └── collectors.go                        c5c3_operator_* duration/error vectors
     └── testutil/                                c5c3 envtest setup helpers
 ```
+
+The `c5c3_operator_*` duration/error metric vectors are registered by the shared
+`internal/common/instrumentation` package (the former per-operator
+`internal/metrics` package was folded into it); `instrumentation.go` supplies
+only the `c5c3_operator` prefix and the name → `condition_type` map.
 
 ## Migration: legacy flat paths → per-ControlPlane paths
 
