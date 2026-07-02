@@ -39,7 +39,18 @@ test_keystone_tempest_plugin_importable() {
   assert_eq "import keystone_tempest_plugin exits 0" "0" "$exit_code"
 }
 
-# --- Test 3: subunit2junitxml is available on PATH ---
+# --- Test 3: openstack CLI is available (used by the E2E verify Job) ---
+test_openstack_cli_available() {
+  echo "Test: openstack --version succeeds"
+  local version exit_code=0
+  version=$(docker run --rm "$IMAGE" openstack --version 2>&1) || exit_code=$?
+
+  assert_eq "openstack --version exits 0" "0" "$exit_code"
+
+  assert_not_empty "openstack version output is non-empty" "$version"
+}
+
+# --- Test 4: subunit2junitxml is available on PATH ---
 test_subunit2junitxml_available() {
   echo "Test: subunit2junitxml is available"
   local path_output exit_code=0
@@ -49,7 +60,7 @@ test_subunit2junitxml_available() {
   assert_not_empty "subunit2junitxml path is non-empty" "$path_output"
 }
 
-# --- Test 4: runs as openstack user ---
+# --- Test 5: runs as openstack user ---
 test_runs_as_openstack_user() {
   echo "Test: container runs as openstack user"
   local whoami_output exit_code=0
@@ -59,7 +70,7 @@ test_runs_as_openstack_user() {
   assert_eq "whoami outputs openstack" "openstack" "$whoami_output"
 }
 
-# --- Test 5: no build tools in final image ---
+# --- Test 6: no build tools in final image ---
 test_no_build_tools_in_final_image() {
   echo "Test: no build tools in final image"
 
@@ -86,6 +97,8 @@ echo ""
 test_tempest_version
 echo ""
 test_keystone_tempest_plugin_importable
+echo ""
+test_openstack_cli_available
 echo ""
 test_subunit2junitxml_available
 echo ""

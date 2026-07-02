@@ -16,11 +16,15 @@ ARG KEYSTONE_TEMPEST_PLUGIN_VERSION=0.19.0
 
 # Install Tempest and plugins into the shared virtualenv.
 # upper-constraints.txt is passed as a named build context from the release dir.
+# python-openstackclient provides the `openstack` CLI used by the
+# full-controlplane-keystone E2E verify Job (token issue / catalog list);
+# its version is pinned by upper-constraints like the other unversioned deps.
 RUN --mount=type=bind,from=upper-constraints,source=upper-constraints.txt,target=/tmp/upper-constraints.txt \
     uv pip install --prefix /var/lib/openstack \
         --constraint /tmp/upper-constraints.txt \
         tempest==${TEMPEST_VERSION} \
         keystone-tempest-plugin==${KEYSTONE_TEMPEST_PLUGIN_VERSION} \
+        python-openstackclient \
         python-subunit \
         junitxml \
         defusedxml
