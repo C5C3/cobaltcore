@@ -2,4 +2,4 @@ apiVersion: v2
 name: operator-library
 description: Shared library chart for the c5c3 operator charts — naming/label helpers and the operator Deployment skeleton
 type: library
-version: 0.1.0
+version: 0.2.0

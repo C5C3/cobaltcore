@@ -85,6 +85,7 @@ tests:
           path: spec.template.spec.containers[0].args
           value:
             - --leader-elect
+            - --max-concurrent-reconciles=2
             - --metrics-bind-address=:8080
             - --health-probe-bind-address=:8081
 
@@ -185,6 +186,31 @@ tests:
       - contains:
           path: spec.template.spec.containers[0].args
           content: --health-probe-bind-address=:8081
+
+  # Controller concurrency (--max-concurrent-reconciles) tests.
+  - it: should render --max-concurrent-reconciles=2 with default values
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --max-concurrent-reconciles=2
+
+  - it: should render a custom controller.maxConcurrentReconciles value
+    set:
+      controller:
+        maxConcurrentReconciles: 7
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --max-concurrent-reconciles=7
+
+  - it: should omit --max-concurrent-reconciles when the value is null
+    set:
+      controller:
+        maxConcurrentReconciles: null
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --max-concurrent-reconciles=2
 
   # Operator logging (zap) configuration tests.
   - it: should not render zap flags with default logging values

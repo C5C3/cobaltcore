@@ -146,6 +146,19 @@
         }
       }
     },
+    "controller": {
+      "type": "object",
+      "description": "Controller-runtime reconcile-loop tuning for the operator",
+      "additionalProperties": false,
+      "properties": {
+        "maxConcurrentReconciles": {
+          "type": "integer",
+          "description": "Maximum number of CRs that reconcile concurrently (controller-runtime MaxConcurrentReconciles), rendered as --max-concurrent-reconciles. Applied by controllers that opt in; the c5c3 operator accepts the flag but does not yet consume it.",
+          "default": 2,
+          "minimum": 1
+        }
+      }
+    },
     "webhook": {
       "type": "object",
       "description": "Admission webhook configuration",

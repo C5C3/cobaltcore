@@ -58,6 +58,11 @@ spec:
             {{- if not .Values.webhook.enabled }}
             - --enable-webhooks=false
             {{- end }}
+            {{- with .Values.controller }}
+            {{- with .maxConcurrentReconciles }}
+            - --max-concurrent-reconciles={{ . }}
+            {{- end }}
+            {{- end }}
             - --metrics-bind-address=:{{ .Values.metrics.port }}
             - --health-probe-bind-address=:8081
             {{- if .Values.logging.development }}

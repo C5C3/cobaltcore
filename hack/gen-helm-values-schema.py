@@ -153,6 +153,20 @@ LEADER_ELECTION = {
     },
 }
 
+CONTROLLER = {
+    "type": "object",
+    "description": "Controller-runtime reconcile-loop tuning for the operator",
+    "additionalProperties": False,
+    "properties": {
+        "maxConcurrentReconciles": {
+            "type": "integer",
+            "description": "Maximum number of CRs that reconcile concurrently (controller-runtime MaxConcurrentReconciles), rendered as --max-concurrent-reconciles. Applied by controllers that opt in; the c5c3 operator accepts the flag but does not yet consume it.",
+            "default": 2,
+            "minimum": 1,
+        }
+    },
+}
+
 
 def webhook_property(enabled_description):
     return {
@@ -418,6 +432,7 @@ def build_schema(chart):
         "resources": RESOURCES,
         "rbac": RBAC,
         "leaderElection": LEADER_ELECTION,
+        "controller": CONTROLLER,
         "webhook": webhook_property(chart["webhook_enabled_description"]),
         "metrics": METRICS,
         "logging": LOGGING,

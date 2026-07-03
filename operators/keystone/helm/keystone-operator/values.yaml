@@ -30,6 +30,16 @@ rbac:
 leaderElection:
   enabled: true
 
+# Controller-runtime reconcile-loop tuning.
+controller:
+  # Maximum number of Keystone CRs that may reconcile concurrently
+  # (controller-runtime MaxConcurrentReconciles). The upstream default of 1
+  # serialises reconciles across CRs, so one slow or flapping CR delays every
+  # other CR; 2 is a safe default. Raise to 5-10 for fleets with many CRs.
+  # Rendered as --max-concurrent-reconciles; omit the key to fall back to the
+  # operator's built-in default.
+  maxConcurrentReconciles: 2
+
 webhook:
   enabled: true
 
