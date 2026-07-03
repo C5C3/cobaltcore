@@ -49,6 +49,23 @@ const (
 	// loop indefinitely.
 	HealthCheckTimeout = 10 * time.Second
 
+	// HealthCheckCacheTTL bounds how long a successful Keystone API probe is
+	// reused before the operator re-probes. Every reconcile pass otherwise
+	// fires a synchronous HTTP GET (bounded by HealthCheckTimeout, up to 10s on
+	// a flapping API), which dominates hot-path latency once a CR is Ready.
+	// Caching for 30s suppresses re-probes during event/resync bursts.
+	//
+	// Trade-off: a wedged-but-Ready Keystone API — one whose pods still pass
+	// their readiness probe (so DeploymentReady stays True) while requests hang
+	// — is masked for up to HealthCheckCacheTTL after the last good probe.
+	// Within that window reconciles serve KeystoneAPIReady=True from cache
+	// without probing, so failure-detection latency for this case is increased
+	// by up to HealthCheckCacheTTL. The probe-error/non-2xx eviction does NOT
+	// bound this: eviction fires only once a probe runs, and inside the TTL the
+	// cache is exactly what suppresses that probe. Keep this TTL at or below the
+	// KeystoneAPIReady outage-detection SLO.
+	HealthCheckCacheTTL = 30 * time.Second
+
 	// defaultMaxConcurrentReconciles is the fallback worker count applied by
 	// effectiveMaxConcurrentReconciles when the reconciler's
 	// MaxConcurrentReconciles field is unset (<= 0). It matches the shared

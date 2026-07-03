@@ -16,6 +16,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -23,11 +24,42 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/c5c3/forge/internal/common/conditions"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
+
+// scriptedDoer drives the health-probe cache tests. fn maps the 1-based call
+// index to a response/error so a test can make the probe succeed, then fail,
+// then succeed again across reconcile passes while counting invocations.
+type scriptedDoer struct {
+	calls int
+	fn    func(call int) (*http.Response, error)
+}
+
+func (d *scriptedDoer) Do(_ *http.Request) (*http.Response, error) {
+	d.calls++
+	return d.fn(d.calls)
+}
+
+// ok200 returns a fresh HTTP 200 with an empty body on every call so repeated
+// probes never reuse (and re-close) the same body.
+func ok200(_ int) (*http.Response, error) {
+	return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(""))}, nil
+}
+
+// healthyReadyCondition sets KeystoneAPIReady=True on the CR so the cache-hit
+// tests can isolate a single hit criterion (UID, endpoint, TTL) without first
+// running a real probe.
+func healthyReadyCondition(ks *keystonev1alpha1.Keystone) {
+	conditions.SetCondition(&ks.Status.Conditions, metav1.Condition{
+		Type:   conditionTypeKeystoneAPIReady,
+		Status: metav1.ConditionTrue,
+		Reason: conditionReasonAPIHealthy,
+	})
+}
 
 func healthcheckTestScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
@@ -472,4 +504,152 @@ func TestReconcileHealthCheck_ResponseBodyClosed_Error(t *testing.T) {
 	_, err := r.reconcileHealthCheck(context.Background(), ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(tracker.closed).To(BeTrue(), "response body should be closed after failed health check")
+}
+
+// --- Probe cache (A2) ---
+
+// TestReconcileHealthCheck_CacheHit_SkipsProbe verifies that a second reconcile
+// within the TTL, with KeystoneAPIReady already True, does not fire another
+// HTTP GET.
+func TestReconcileHealthCheck_CacheHit_SkipsProbe(t *testing.T) {
+	g := NewGomegaWithT(t)
+	doer := &scriptedDoer{fn: ok200}
+	r := newHealthcheckTestReconciler()
+	r.HTTPClient = doer
+	base := time.Unix(1_700_000_000, 0)
+	r.now = func() time.Time { return base }
+	ks := newTestKeystoneForHealthCheck("http://ignored/v3", 1)
+	ks.UID = "uid-cache-hit"
+
+	_, err := r.reconcileHealthCheck(context.Background(), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(doer.calls).To(Equal(1), "first pass must probe once")
+	g.Expect(conditions.GetCondition(ks.Status.Conditions, conditionTypeKeystoneAPIReady).Status).
+		To(Equal(metav1.ConditionTrue))
+
+	_, err = r.reconcileHealthCheck(context.Background(), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(doer.calls).To(Equal(1), "cache hit within the TTL must not re-probe")
+	g.Expect(conditions.GetCondition(ks.Status.Conditions, conditionTypeKeystoneAPIReady).Status).
+		To(Equal(metav1.ConditionTrue))
+}
+
+// TestReconcileHealthCheck_CacheExpiry_ReProbes verifies the probe fires again
+// once the cached entry ages past HealthCheckCacheTTL.
+func TestReconcileHealthCheck_CacheExpiry_ReProbes(t *testing.T) {
+	g := NewGomegaWithT(t)
+	doer := &scriptedDoer{fn: ok200}
+	r := newHealthcheckTestReconciler()
+	r.HTTPClient = doer
+	clk := time.Unix(1_700_000_000, 0)
+	r.now = func() time.Time { return clk }
+	ks := newTestKeystoneForHealthCheck("http://ignored/v3", 1)
+	ks.UID = "uid-expiry"
+
+	_, err := r.reconcileHealthCheck(context.Background(), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(doer.calls).To(Equal(1))
+
+	clk = clk.Add(HealthCheckCacheTTL + time.Second)
+
+	_, err = r.reconcileHealthCheck(context.Background(), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(doer.calls).To(Equal(2), "an expired cache entry must trigger a fresh probe")
+}
+
+// TestReconcileHealthCheck_ProbeError_EvictsCache verifies that a probe error
+// after a cached success drops the cache entry, so a stale success is not
+// served on the following pass.
+func TestReconcileHealthCheck_ProbeError_EvictsCache(t *testing.T) {
+	g := NewGomegaWithT(t)
+	doer := &scriptedDoer{fn: func(call int) (*http.Response, error) {
+		if call == 1 {
+			return ok200(call)
+		}
+		return nil, &url.Error{Op: "Get", URL: "http://test/v3", Err: errors.New("connection refused")}
+	}}
+	r := newHealthcheckTestReconciler()
+	r.HTTPClient = doer
+	clk := time.Unix(1_700_000_000, 0)
+	r.now = func() time.Time { return clk }
+	ks := newTestKeystoneForHealthCheck("http://ignored/v3", 1)
+	ks.UID = "uid-evict"
+	key := client.ObjectKeyFromObject(ks)
+
+	_, err := r.reconcileHealthCheck(context.Background(), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(r.healthProbeCache).To(HaveKey(key), "successful probe must be cached")
+
+	// Age past the TTL so the next pass re-probes and hits the error branch.
+	clk = clk.Add(HealthCheckCacheTTL + time.Second)
+	result, err := r.reconcileHealthCheck(context.Background(), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(Equal(RequeueHealthCheck))
+	g.Expect(doer.calls).To(Equal(2))
+	g.Expect(r.healthProbeCache).NotTo(HaveKey(key), "a probe error must evict the cached entry")
+}
+
+// TestReconcileHealthCheck_ConditionNotTrue_ReProbes verifies that a fresh
+// cache entry does not short-circuit the probe when KeystoneAPIReady is not
+// already True.
+func TestReconcileHealthCheck_ConditionNotTrue_ReProbes(t *testing.T) {
+	g := NewGomegaWithT(t)
+	doer := &scriptedDoer{fn: ok200}
+	r := newHealthcheckTestReconciler()
+	r.HTTPClient = doer
+	base := time.Unix(1_700_000_000, 0)
+	r.now = func() time.Time { return base }
+	ks := newTestKeystoneForHealthCheck("http://ignored/v3", 1)
+	ks.UID = "uid-cond-false"
+
+	// Seed a fresh, matching cache entry but leave the condition unset so the
+	// hit criterion "condition already True" fails.
+	r.storeHealthProbe(ks, internalAPIURL(ks))
+
+	_, err := r.reconcileHealthCheck(context.Background(), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(doer.calls).To(Equal(1), "a non-True condition must force a probe even with a fresh cache entry")
+}
+
+// TestReconcileHealthCheck_EndpointChange_ReProbes verifies a cached entry for a
+// different endpoint does not satisfy the current pass.
+func TestReconcileHealthCheck_EndpointChange_ReProbes(t *testing.T) {
+	g := NewGomegaWithT(t)
+	doer := &scriptedDoer{fn: ok200}
+	r := newHealthcheckTestReconciler()
+	r.HTTPClient = doer
+	base := time.Unix(1_700_000_000, 0)
+	r.now = func() time.Time { return base }
+	ks := newTestKeystoneForHealthCheck("http://ignored/v3", 1)
+	ks.UID = "uid-endpoint"
+	healthyReadyCondition(ks)
+
+	// Seed a fresh entry for a stale endpoint; the reconcile targets
+	// internalAPIURL, so the endpoints differ and the entry must be a miss.
+	r.storeHealthProbe(ks, "http://stale.endpoint/v3")
+
+	_, err := r.reconcileHealthCheck(context.Background(), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(doer.calls).To(Equal(1), "an endpoint mismatch must force a probe")
+}
+
+// TestReconcileHealthCheck_UIDChange_ReProbes verifies a cached entry whose UID
+// no longer matches (CR recreated under the same name) is a miss.
+func TestReconcileHealthCheck_UIDChange_ReProbes(t *testing.T) {
+	g := NewGomegaWithT(t)
+	doer := &scriptedDoer{fn: ok200}
+	r := newHealthcheckTestReconciler()
+	r.HTTPClient = doer
+	base := time.Unix(1_700_000_000, 0)
+	r.now = func() time.Time { return base }
+	ks := newTestKeystoneForHealthCheck("http://ignored/v3", 1)
+	ks.UID = "uid-old"
+	healthyReadyCondition(ks)
+	r.storeHealthProbe(ks, internalAPIURL(ks))
+
+	// A CR recreated under the same name/namespace carries a new UID.
+	ks.UID = "uid-new"
+	_, err := r.reconcileHealthCheck(context.Background(), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(doer.calls).To(Equal(1), "a UID mismatch must force a probe")
 }

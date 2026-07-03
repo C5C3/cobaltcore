@@ -9,6 +9,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
+	"time"
 
 	certmanagerv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
@@ -27,6 +29,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -156,6 +159,20 @@ type KeystoneReconciler struct {
 	// defaultMaxConcurrentReconciles via effectiveMaxConcurrentReconciles, so
 	// the zero value is safe for programmatically constructed reconcilers.
 	MaxConcurrentReconciles int
+
+	// healthProbeCache memoizes the last successful Keystone API health probe
+	// per CR so a steady-state reconcile does not fire a synchronous HTTP GET
+	// (bounded by HealthCheckTimeout) on every pass. A cache hit re-upserts
+	// KeystoneAPIReady=True without probing; any probe error or non-2xx evicts
+	// the entry. Lazily initialised under healthProbeCacheMu, which also guards
+	// concurrent access now that MaxConcurrentReconciles may exceed 1.
+	healthProbeCache   map[types.NamespacedName]healthProbeCacheEntry
+	healthProbeCacheMu sync.Mutex
+
+	// now is the clock used for the health-probe cache TTL comparison. When
+	// nil it defaults to time.Now; tests inject a controllable clock so the TTL
+	// boundary is deterministic.
+	now func() time.Time
 }
 
 // httpRouteGVK identifies the HTTPRoute kind the operator would watch when
@@ -478,6 +495,10 @@ func (r *KeystoneReconciler) reconcileDelete(ctx context.Context, keystone *keys
 		return ctrl.Result{}, fmt.Errorf("removing finalizer: %w", err)
 	}
 	metrics.DeleteForKeystone(keystone.Name, keystone.Namespace)
+	// Drop the per-CR hot-path caches so a CR recreated under the same
+	// name/namespace never serves a stale health probe or config-render entry
+	// keyed on the deleted CR's UID.
+	r.evictHealthProbe(client.ObjectKeyFromObject(keystone))
 	return ctrl.Result{}, nil
 }
 
