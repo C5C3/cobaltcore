@@ -876,6 +876,59 @@ openbao_bootstrap() {
 }
 
 # ---------------------------------------------------------------------------
+# openbao_onboard_database_tenant — Provision the OpenBao database-engine
+# connection + per-tenant role for a managed ControlPlane, once its MariaDB is
+# Ready. This is the stage-(b) tenant-onboarding step (#439): managed-mode
+# Keystone draws engine-issued credentials from database/mariadb/creds/keystone-
+# <ns>-<cp>, which only exist after setup-database-tenant.sh configures the role.
+#
+# Arguments:
+#   $1 — ControlPlane namespace
+#   $2 — ControlPlane name
+#   $3 — MariaDB CR name (optional, default openstack-db)
+# ---------------------------------------------------------------------------
+openbao_onboard_database_tenant() {
+  local cp_ns="$1"
+  local cp_name="$2"
+  local mariadb_name="${3:-openstack-db}"
+
+  log "--- Onboarding OpenBao database-engine tenant '${cp_ns}/${cp_name}' ---"
+
+  # The ControlPlane projects the MariaDB after it reconciles; wait for the CR to
+  # appear before waiting on its Ready condition (kubectl wait errors on a
+  # not-yet-existent resource).
+  log "Waiting for MariaDB '${mariadb_name}' to be projected in namespace '${cp_ns}'..."
+  local i
+  for i in $(seq 1 30); do
+    if kubectl get "mariadb/${mariadb_name}" -n "${cp_ns}" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 10
+  done
+  log "Waiting for MariaDB '${mariadb_name}' to become Ready..."
+  if ! kubectl wait "mariadb/${mariadb_name}" -n "${cp_ns}" \
+    --for=condition=Ready --timeout="${POD_TIMEOUT}s"; then
+    log "ERROR: MariaDB '${mariadb_name}' in namespace '${cp_ns}' did not become Ready; cannot onboard the database-engine tenant."
+    exit 1
+  fi
+
+  export BAO_TOKEN
+  trap 'unset BAO_TOKEN' EXIT
+  BAO_TOKEN=$(kubectl get secret "${SECRET_NAME}" -n "${OPENBAO_NAMESPACE}" \
+    -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token')
+  if [[ -z "${BAO_TOKEN}" || "${BAO_TOKEN}" == "null" ]]; then
+    log "ERROR: Could not extract root token from ${OPENBAO_NAMESPACE}/${SECRET_NAME}."
+    exit 1
+  fi
+
+  local tenant_script="${REPO_ROOT}/deploy/openbao/bootstrap/setup-database-tenant.sh"
+  log "Running setup-database-tenant.sh ${cp_ns} ${cp_name}..."
+  bash "${tenant_script}" "${cp_ns}" "${cp_name}"
+  unset BAO_TOKEN
+  log "Database-engine tenant '${cp_ns}/${cp_name}' onboarded."
+}
+
+# ---------------------------------------------------------------------------
 # render_kind_config — Produce the kind-config YAML that `kind create cluster`
 # should consume, applying the `KIND_HOST_PORT` override when set.
 #
@@ -1575,6 +1628,14 @@ main() {
       log "    kubectl get controlplane -n openstack -w"
       log "  It provisions MariaDB/Memcached, projects Keystone, mints the K-ORC admin"
       log "  credential, and registers the identity catalog (not awaited here)."
+
+      # Onboard the OpenBao database-engine tenant so managed-mode Keystone can
+      # draw engine-issued (Dynamic) DB credentials (#439). The ControlPlane CR
+      # always lives in the openstack namespace; its MariaDB defaults to
+      # openstack-db. Idempotent, so it is safe even if a downstream suite also
+      # onboards. The e2e-controlplane CI job uses WITH_CONTROLPLANE_CR=false and
+      # runs setup-database-tenant.sh from its own chainsaw suite instead.
+      openbao_onboard_database_tenant "openstack" "${CONTROLPLANE_NAME}"
     else
       log "  Operator stack is up. The ControlPlane CR is NOT applied automatically —"
       log "  create and apply it yourself (see docs/quick-start-controlplane.md), e.g.:"
