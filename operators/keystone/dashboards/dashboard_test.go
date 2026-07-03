@@ -96,7 +96,9 @@ func TestDashboardParsesAsJSON(t *testing.T) {
 	// Every panel in the canonical set has at least one target with a
 	// non-empty PromQL expression; a missing expr means the panel would
 	// render blank in Grafana.
+	titles := make(map[string]struct{}, len(d.Panels))
 	for i, p := range d.Panels {
+		titles[p.Title] = struct{}{}
 		g.Expect(p.Targets).NotTo(BeEmpty(),
 			"panel %d (%q) must define at least one target", i, p.Title)
 		for j, tr := range p.Targets {
@@ -104,6 +106,13 @@ func TestDashboardParsesAsJSON(t *testing.T) {
 				"panel %d target %d expr must not be empty", i, j)
 		}
 	}
+
+	// The end-to-end reconcile panel (D2) surfaces the built-in
+	// controller_runtime_reconcile_time_seconds histogram, which covers
+	// orchestration and status updates that the per-sub-reconciler histogram
+	// does not. Assert it by title so a rename or accidental removal fails here.
+	g.Expect(titles).To(HaveKey("End-to-end reconcile duration (controller-runtime)"),
+		"dashboard must include the controller-runtime end-to-end reconcile panel")
 }
 
 // TestDashboardReferencesOnlyRegisteredMetrics guards against dashboard

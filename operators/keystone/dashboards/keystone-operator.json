@@ -30,8 +30,8 @@
     {
       "id": 1,
       "type": "timeseries",
-      "title": "Reconcile duration p95 per sub_reconciler",
-      "description": "p95 wall-clock duration of Keystone sub-reconciler invocations, derived from keystone_operator_reconcile_duration_seconds_bucket.",
+      "title": "Reconcile duration p50/p95/p99 per sub_reconciler",
+      "description": "p50/p95/p99 wall-clock duration of Keystone sub-reconciler invocations, derived from keystone_operator_reconcile_duration_seconds_bucket. p50 tracks the steady-state hot path; p99 surfaces the tail a speedup roadmap must watch.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -67,8 +67,18 @@
       "targets": [
         {
           "refId": "A",
+          "expr": "histogram_quantile(0.50, sum by (le, sub_reconciler) (rate(keystone_operator_reconcile_duration_seconds_bucket[5m])))",
+          "legendFormat": "p50 {{sub_reconciler}}"
+        },
+        {
+          "refId": "B",
           "expr": "histogram_quantile(0.95, sum by (le, sub_reconciler) (rate(keystone_operator_reconcile_duration_seconds_bucket[5m])))",
-          "legendFormat": "{{sub_reconciler}}"
+          "legendFormat": "p95 {{sub_reconciler}}"
+        },
+        {
+          "refId": "C",
+          "expr": "histogram_quantile(0.99, sum by (le, sub_reconciler) (rate(keystone_operator_reconcile_duration_seconds_bucket[5m])))",
+          "legendFormat": "p99 {{sub_reconciler}}"
         }
       ]
     },
@@ -222,6 +232,61 @@
           "refId": "B",
           "expr": "sum by (namespace, keystone) (rate(keystone_operator_db_sync_total{result=\"failed\"}[5m]))",
           "legendFormat": "failures {{namespace}}/{{keystone}}"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "End-to-end reconcile duration (controller-runtime)",
+      "description": "p50/p95/p99 of controller_runtime_reconcile_time_seconds_bucket for the keystone controller. Unlike keystone_operator_reconcile_duration_seconds (which samples only the sub-reconcilers), this built-in histogram covers the whole Reconcile call — orchestration, status update, and watch handling — so it is the SLO signal for end-to-end reconcile latency.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(controller_runtime_reconcile_time_seconds_bucket{controller=\"keystone\"}[5m])))",
+          "legendFormat": "p50"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(controller_runtime_reconcile_time_seconds_bucket{controller=\"keystone\"}[5m])))",
+          "legendFormat": "p95"
+        },
+        {
+          "refId": "C",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(controller_runtime_reconcile_time_seconds_bucket{controller=\"keystone\"}[5m])))",
+          "legendFormat": "p99"
         }
       ]
     }
