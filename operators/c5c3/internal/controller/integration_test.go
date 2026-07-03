@@ -22,6 +22,7 @@ import (
 
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
+	esgenv1alpha1 "github.com/external-secrets/external-secrets/apis/generators/v1alpha1"
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	. "github.com/onsi/gomega"
@@ -511,13 +512,24 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	// harness sync-simulation lives here to keep this level bisectable (full suite
 	// green); the projected-secretRef assertion is made below in the Keystone block
 	// Reviewer: please verify.
+	// Managed mode defaults to Dynamic (engine-issued) credentials: the operator
+	// projects a per-CP VaultDynamicSecret generator plus an ExternalSecret that
+	// draws from it via dataFrom.sourceRef.generatorRef (no static Data refs).
 	dbCredES := &esov1.ExternalSecret{}
 	g.Eventually(func() error {
 		return c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: dbCredentialSecretName(cp)}, dbCredES)
 	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "operator must create the per-CP DB credential ExternalSecret")
-	g.Expect(dbCredES.Spec.Data).NotTo(BeEmpty(), "DB credential ExternalSecret must declare Data entries")
-	g.Expect(dbCredES.Spec.Data[0].RemoteRef.Key).To(Equal(dbCredentialRemoteKeyFor(cp)),
-		"DB credential ExternalSecret must read this CR's per-CP OpenBao path")
+	g.Expect(dbCredES.Spec.DataFrom).NotTo(BeEmpty(), "Dynamic DB credential ExternalSecret must declare a generatorRef")
+	g.Expect(dbCredES.Spec.DataFrom[0].SourceRef).NotTo(BeNil())
+	g.Expect(dbCredES.Spec.DataFrom[0].SourceRef.GeneratorRef).NotTo(BeNil())
+	g.Expect(dbCredES.Spec.DataFrom[0].SourceRef.GeneratorRef.Kind).To(Equal("VaultDynamicSecret"))
+	g.Expect(dbCredES.Spec.Data).To(BeEmpty(), "Dynamic DB credential ExternalSecret carries no static Data refs")
+	// The per-CP VaultDynamicSecret generator reads this tenant's creds path.
+	vds := &esgenv1alpha1.VaultDynamicSecret{}
+	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: dbCredentialSecretName(cp)}, vds)).
+		To(Succeed(), "operator must create the per-CP VaultDynamicSecret generator")
+	g.Expect(vds.Spec.Path).To(Equal(dbDynamicCredsPathFor(cp)))
+	g.Expect(metav1.GetControllerOf(vds)).NotTo(BeNil(), "VaultDynamicSecret must be owned by the ControlPlane")
 	g.Expect(simulators.SimulateExternalSecretSync(ctx, c,
 		client.ObjectKey{Namespace: ns.Name, Name: dbCredentialSecretName(cp)})).
 		To(Succeed(), "simulate per-CP DB credential ExternalSecret sync")
@@ -1042,9 +1054,10 @@ func driveControlPlaneToAdminCredentialReady(
 	g.Eventually(func() error {
 		return c.Get(ctx, client.ObjectKey{Namespace: ns, Name: dbCredentialSecretName(cp)}, dbCredES)
 	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "operator must create the per-CP DB credential ExternalSecret")
-	g.Expect(dbCredES.Spec.Data).NotTo(BeEmpty(), "DB credential ExternalSecret must declare Data entries")
-	g.Expect(dbCredES.Spec.Data[0].RemoteRef.Key).To(Equal(dbCredentialRemoteKeyFor(cp)),
-		"DB credential ExternalSecret must read this CR's per-CP OpenBao path")
+	// Managed mode defaults to Dynamic: the ExternalSecret draws from the per-CP
+	// VaultDynamicSecret generator (no static Data refs). Per-tenant path
+	// distinctness is asserted by TestIntegration_MultiControlPlane_DistinctDBCredentialPaths.
+	g.Expect(dbCredES.Spec.DataFrom).NotTo(BeEmpty(), "Dynamic DB credential ExternalSecret must declare a generatorRef")
 	g.Expect(simulators.SimulateExternalSecretSync(ctx, c,
 		client.ObjectKey{Namespace: ns, Name: dbCredentialSecretName(cp)})).
 		To(Succeed(), "simulate per-CP DB credential ExternalSecret sync")
@@ -1177,17 +1190,17 @@ func TestIntegration_MultiControlPlane_DistinctAdminCredentialPaths(t *testing.T
 
 // TestIntegration_MultiControlPlane_DistinctDBCredentialPaths brings up TWO
 // ControlPlanes and drives both to AdminCredentialReady=True, then asserts each
-// CR's service DB-credential OpenBao path (the per-CP DB-credential ExternalSecret
-// RemoteRef.Key) and the DB-credential Secret name are scoped per-ControlPlane and
-// distinct, so two ControlPlanes never clobber each other's service DB credential on
-// the cluster-global OpenBao backend.
+// CR's per-tenant dynamic DB-credential engine path (the per-CP VaultDynamicSecret
+// generator's spec.path) and the DB-credential Secret name are scoped
+// per-ControlPlane and distinct, so two ControlPlanes never draw from the same
+// engine role (AC 4).
 //
 // DECISION mirroring the admin-credential multi-CP test, the two
 // ControlPlanes use DIFFERENT names (cp-a, cp-b) in DIFFERENT namespaces (the
 // validating webhook enforces one ControlPlane per namespace), so the CRs MUST live
-// in separate namespaces. The per-CP DB-credential OpenBao path is scoped by BOTH
-// Namespace and Name (dbCredentialRemoteKeyFor), so either axis alone would
-// distinguish them — using both is the realistic deployment shape.
+// in separate namespaces. The per-tenant creds path is scoped by BOTH Namespace
+// and Name (dbDynamicCredsPathFor), so either axis alone would distinguish them —
+// using both is the realistic deployment shape.
 func TestIntegration_MultiControlPlane_DistinctDBCredentialPaths(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)
@@ -1213,7 +1226,35 @@ func TestIntegration_MultiControlPlane_DistinctDBCredentialPaths(t *testing.T) {
 	driveControlPlaneToAdminCredentialReady(t, ctx, c, cpA)
 	driveControlPlaneToAdminCredentialReady(t, ctx, c, cpB)
 
-	// --- Assert the per-CP DB-credential OpenBao paths are per-CR and distinct. ---
+	// --- Assert the per-CP dynamic DB-credential engine paths are per-CR and
+	// distinct (AC 4). In Dynamic mode each ControlPlane owns a VaultDynamicSecret
+	// generator reading its own per-tenant engine role, so a revoke against one
+	// tenant's role cannot affect another. ---
+	vdsA := &esgenv1alpha1.VaultDynamicSecret{}
+	vdsB := &esgenv1alpha1.VaultDynamicSecret{}
+	g.Expect(c.Get(ctx, types.NamespacedName{
+		Namespace: childNamespace(cpA), Name: dbCredentialSecretName(cpA),
+	}, vdsA)).To(Succeed(), "get VaultDynamicSecret for cp-a")
+	g.Expect(c.Get(ctx, types.NamespacedName{
+		Namespace: childNamespace(cpB), Name: dbCredentialSecretName(cpB),
+	}, vdsB)).To(Succeed(), "get VaultDynamicSecret for cp-b")
+
+	pathA := vdsA.Spec.Path
+	pathB := vdsB.Spec.Path
+
+	g.Expect(pathA).To(Equal(dbDynamicCredsPathFor(cpA)),
+		"cp-a dynamic DB credential path must be the per-tenant engine path")
+	g.Expect(pathB).To(Equal(dbDynamicCredsPathFor(cpB)),
+		"cp-b dynamic DB credential path must be the per-tenant engine path")
+	g.Expect(pathA).NotTo(Equal(pathB), "the two ControlPlanes' dynamic DB credential paths must be distinct")
+
+	// Each path is scoped by its own ControlPlane's Namespace AND Name.
+	g.Expect(pathA).To(ContainSubstring(cpA.Namespace), "cp-a path must contain cp-a's namespace")
+	g.Expect(pathA).To(ContainSubstring(cpA.Name), "cp-a path must contain cp-a's name")
+	g.Expect(pathB).To(ContainSubstring(cpB.Namespace), "cp-b path must contain cp-b's namespace")
+	g.Expect(pathB).To(ContainSubstring(cpB.Name), "cp-b path must contain cp-b's name")
+
+	// The generator-backed ExternalSecrets exist and carry no static Data refs.
 	esA := &esov1.ExternalSecret{}
 	esB := &esov1.ExternalSecret{}
 	g.Expect(c.Get(ctx, types.NamespacedName{
@@ -1222,23 +1263,8 @@ func TestIntegration_MultiControlPlane_DistinctDBCredentialPaths(t *testing.T) {
 	g.Expect(c.Get(ctx, types.NamespacedName{
 		Namespace: childNamespace(cpB), Name: dbCredentialSecretName(cpB),
 	}, esB)).To(Succeed(), "get DB credential ExternalSecret for cp-b")
-
-	g.Expect(esA.Spec.Data).NotTo(BeEmpty(), "cp-a DB credential ExternalSecret must declare Data entries")
-	g.Expect(esB.Spec.Data).NotTo(BeEmpty(), "cp-b DB credential ExternalSecret must declare Data entries")
-	keyA := esA.Spec.Data[0].RemoteRef.Key
-	keyB := esB.Spec.Data[0].RemoteRef.Key
-
-	g.Expect(keyA).To(Equal(dbCredentialRemoteKeyFor(cpA)),
-		"cp-a DB credential OpenBao path must be the per-CR path")
-	g.Expect(keyB).To(Equal(dbCredentialRemoteKeyFor(cpB)),
-		"cp-b DB credential OpenBao path must be the per-CR path")
-	g.Expect(keyA).NotTo(Equal(keyB), "the two ControlPlanes' DB credential OpenBao paths must be distinct")
-
-	// Each path is scoped by its own ControlPlane's Namespace AND Name.
-	g.Expect(keyA).To(ContainSubstring(cpA.Namespace), "cp-a path must contain cp-a's namespace")
-	g.Expect(keyA).To(ContainSubstring(cpA.Name), "cp-a path must contain cp-a's name")
-	g.Expect(keyB).To(ContainSubstring(cpB.Namespace), "cp-b path must contain cp-b's namespace")
-	g.Expect(keyB).To(ContainSubstring(cpB.Name), "cp-b path must contain cp-b's name")
+	g.Expect(esA.Spec.Data).To(BeEmpty(), "cp-a Dynamic ExternalSecret carries no static Data refs")
+	g.Expect(esB.Spec.Data).To(BeEmpty(), "cp-b Dynamic ExternalSecret carries no static Data refs")
 
 	// The DB-credential Secret NAMES are distinct too, so the two CRs never share a
 	// materialised Secret in the (separate) namespaces.
