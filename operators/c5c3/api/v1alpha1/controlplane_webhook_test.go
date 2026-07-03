@@ -728,6 +728,91 @@ func TestValidateUpdate_RejectsDatabaseReplicasChange(t *testing.T) {
 	g.Expect(err.Error()).To(ContainSubstring("database replicas is immutable"))
 }
 
+// TestValidateUpdate_RejectsDatabaseStorageSizeChange verifies that changing
+// database.storageSize is rejected on UPDATE: the size is projected into the owned
+// MariaDB child's spec.storage.size, which the mariadb-operator refuses to resize
+// on a live CR, so freezing it at admission surfaces the constraint with a clear
+// message. Both grow and shrink are exercised so neither slips through.
+func TestValidateUpdate_RejectsDatabaseStorageSizeChange(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+
+	// 512Mi -> 100Gi (grow).
+	oldCP := managedControlPlane()
+	oldCP.Spec.Infrastructure.Database.StorageSize = "512Mi"
+	newCP := managedControlPlane()
+	newCP.Spec.Infrastructure.Database.StorageSize = "100Gi"
+
+	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("database storageSize is immutable"))
+
+	// 100Gi -> 512Mi (shrink, the reverse direction).
+	_, err = w.ValidateUpdate(context.Background(), newCP, oldCP)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("database storageSize is immutable"))
+}
+
+// TestValidateUpdate_AcceptsUnchangedDatabaseStorageSize guards against the
+// immutability check over-firing: an UPDATE that leaves storageSize untouched (here
+// while editing a mutable field) must still be accepted.
+func TestValidateUpdate_AcceptsUnchangedDatabaseStorageSize(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+
+	oldCP := managedControlPlane()
+	oldCP.Spec.Infrastructure.Database.StorageSize = "512Mi"
+	newCP := managedControlPlane()
+	newCP.Spec.Infrastructure.Database.StorageSize = "512Mi"
+	replicas := int32(3)
+	newCP.Spec.Services.Keystone.Replicas = &replicas
+
+	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// TestValidateUpdate_AcceptsStorageSizeMigrationFromEmpty covers a ControlPlane
+// created before storageSize existed: "" is persisted, yet its live MariaDB was
+// provisioned at DefaultDatabaseStorageSize. A first UPDATE that pins the field
+// to that default (the size it already runs at) must be admitted as a one-time
+// migration rather than rejected as a resize. Both the empty->default direction
+// and the (defaulting-bypassed) default->empty direction are exercised.
+func TestValidateUpdate_AcceptsStorageSizeMigrationFromEmpty(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+
+	// "" (pre-existing) -> the default it already runs at.
+	oldCP := managedControlPlane()
+	oldCP.Spec.Infrastructure.Database.StorageSize = ""
+	newCP := managedControlPlane()
+	newCP.Spec.Infrastructure.Database.StorageSize = DefaultDatabaseStorageSize
+
+	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// The reverse direction (field cleared back to the default) is equally a no-op.
+	_, err = w.ValidateUpdate(context.Background(), newCP, oldCP)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// TestValidateUpdate_RejectsStorageSizeResizeFromEmpty guards the other half of
+// the migration normalization: pinning a pre-existing ("") ControlPlane to a
+// size OTHER than the default it already runs at is a real resize the
+// mariadb-operator would refuse, so it must still be rejected.
+func TestValidateUpdate_RejectsStorageSizeResizeFromEmpty(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+
+	oldCP := managedControlPlane()
+	oldCP.Spec.Infrastructure.Database.StorageSize = ""
+	newCP := managedControlPlane()
+	newCP.Spec.Infrastructure.Database.StorageSize = "512Mi"
+
+	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("database storageSize is immutable"))
+}
+
 // TestValidateUpdate_RejectsRegionChange verifies that changing the region is
 // rejected on UPDATE: the region is projected verbatim into the Keystone child's
 // now-immutable spec.bootstrap.region (#466).

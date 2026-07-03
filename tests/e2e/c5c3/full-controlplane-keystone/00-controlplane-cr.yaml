@@ -50,7 +50,9 @@ spec:
   # so the full fresh-create chain schedules on a single-node kind cluster.
   # database.replicas:1 drives the operator's fresh-create MariaDB projection to
   # a single-instance non-Galera MariaDB; cache.replicas:1 to a single Memcached
-  # pod; services.keystone.replicas:1 to a single API pod.
+  # pod; services.keystone.replicas:1 to a single API pod. database.storageSize is
+  # pinned to 512Mi so the projected MariaDB requests a test-sized volume instead
+  # of the 100Gi CRD default (the production baseline) that CI never fills.
   infrastructure:
     database:
       clusterRef:
@@ -59,6 +61,7 @@ spec:
       secretRef:
         name: keystone-db
       replicas: 1
+      storageSize: 512Mi
     cache:
       clusterRef:
         name: openstack-memcached

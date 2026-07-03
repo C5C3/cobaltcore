@@ -58,6 +58,14 @@ const (
 	// DefaultCacheClusterRefName is the managed Memcached CR name materialized when
 	// spec.infrastructure.cache is in managed mode (servers unset).
 	DefaultCacheClusterRefName = "openstack-memcached"
+	// DefaultDatabaseStorageSize is the effective per-replica MariaDB volume size
+	// when spec.infrastructure.database.storageSize is empty. It aliases
+	// commonv1.DatabaseStorageSizeDefault (also the CRD +kubebuilder:default and
+	// the c5c3 fresh-create fallback) so validateImmutable normalizes an empty
+	// stored value to the exact size the live MariaDB already uses. StorageSize is
+	// defaulted by the CRD marker rather than Default() below, so this constant is
+	// only consulted by the immutability check, not materialized onto the object.
+	DefaultDatabaseStorageSize = commonv1.DatabaseStorageSizeDefault
 	// DefaultAdminPasswordSecretName is materialized when
 	// spec.korc.adminCredential.passwordSecretRef.name is empty.
 	DefaultAdminPasswordSecretName = "keystone-admin" //nolint:gosec // G101 false positive: Secret name, not a credential
@@ -420,6 +428,25 @@ func validateImmutable(oldObj, newObj *ControlPlane) field.ErrorList {
 			newDB.Replicas, "database replicas is immutable after creation "+
 				"(toggling Galera or scaling down a live cluster is destructive)"))
 	}
+	// database.storageSize is create-only for the same reason: it is projected
+	// into the owned MariaDB's spec.storage.size, which the mariadb-operator
+	// rejects changing on a live CR (its webhook forbids resizing/shrinking the
+	// PVC). Freezing it at the ControlPlane layer surfaces the constraint at
+	// admission with a clear message instead of letting the edit reach — and be
+	// rejected by — the child MariaDB. Mirrors the replicas immutability above.
+	//
+	// The comparison is against the DEFAULTED value on both sides: a ControlPlane
+	// created before storageSize existed has "" persisted (and any read/apply
+	// path that bypasses CRD defaulting, e.g. a fake-client test, can surface ""),
+	// yet its live MariaDB was provisioned at the default size. Normalizing ""
+	// to DefaultDatabaseStorageSize lets such a CR migrate once — an update that
+	// pins the field to the default it already runs at is admitted — while any
+	// OTHER value is still rejected as a resize the mariadb-operator would refuse.
+	if effectiveStorageSize(oldDB.StorageSize) != effectiveStorageSize(newDB.StorageSize) {
+		allErrs = append(allErrs, field.Invalid(dbPath.Child("storageSize"),
+			newDB.StorageSize, "database storageSize is immutable after creation "+
+				"(the mariadb-operator rejects resizing a live volume)"))
+	}
 
 	cachePath := field.NewPath("spec", "infrastructure", "cache")
 	oldCache := oldObj.Spec.Infrastructure.Cache
@@ -450,6 +477,18 @@ func validateImmutable(oldObj, newObj *ControlPlane) field.ErrorList {
 	}
 
 	return allErrs
+}
+
+// effectiveStorageSize resolves an empty database.storageSize to the default the
+// c5c3 fresh-create projection actually provisions (DefaultDatabaseStorageSize),
+// so validateImmutable compares the sizes the live MariaDB runs at rather than
+// the raw spec strings. This is what lets a pre-existing ControlPlane (stored
+// with "" before the field existed) migrate once to an explicit default.
+func effectiveStorageSize(size string) string {
+	if size == "" {
+		return DefaultDatabaseStorageSize
+	}
+	return size
 }
 
 // validateReleaseNotDowngraded rejects an openStackRelease downgrade on UPDATE.

@@ -5,10 +5,12 @@
 
 # Verify hack/deploy-infra.sh `render_controlplane_replicas` pins the projected
 # backing-service footprint from CONTROLPLANE_DB_REPLICAS / CONTROLPLANE_CACHE_REPLICAS
-# and rejects an invalid footprint (non-numeric, < 1, or the quorum-unsafe DB=2)
-# before the CR is applied. Also guards that the checked-in bundled kind CR ships a
-# single-node topology (database.replicas=1, cache.replicas=1) so a laptop-sized
-# single-node kind does not spin up a 3-node Galera cluster and OOM.
+# / CONTROLPLANE_DB_STORAGE and rejects an invalid footprint (non-numeric or < 1
+# replicas, the quorum-unsafe DB=2, or a malformed storage quantity) before the CR
+# is applied. Also guards that the checked-in bundled kind CR ships a single-node
+# topology (database.replicas=1, cache.replicas=1) with a test-sized volume
+# (database.storageSize=512Mi) so a laptop-sized single-node kind does not spin up a
+# 3-node Galera cluster or request a 100Gi volume it never fills.
 #
 # Sources deploy-infra.sh and invokes the function in a subshell so we can assert
 # against a rendered tempfile without spinning up an actual cluster. The yq-backed
@@ -37,17 +39,20 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 FIXTURE_CONTROLPLANE_NAME="controlplane"
 
 # Source the script and call render_controlplane_replicas in a subshell with the
-# given DB/cache replica values, mutating <manifest> in place. Echoes combined
-# output and returns the function's exit status. The subshell isolates env
-# mutations and the BASH_SOURCE guard at the bottom of deploy-infra.sh keeps main
-# from running when sourced.
+# given DB/cache replica values and DB storage size, mutating <manifest> in place.
+# The storage arg is optional (defaults to the single-node 512Mi) so the replica-only
+# call sites stay unchanged. Echoes combined output and returns the function's exit
+# status. The subshell isolates env mutations and the BASH_SOURCE guard at the bottom
+# of deploy-infra.sh keeps main from running when sourced.
 run_render() {
   local manifest="$1"
   local db="$2"
   local cache="$3"
+  local storage="${4:-512Mi}"
   (
     export CONTROLPLANE_DB_REPLICAS="${db}"
     export CONTROLPLANE_CACHE_REPLICAS="${cache}"
+    export CONTROLPLANE_DB_STORAGE="${storage}"
     export CONTROLPLANE_NAME="${FIXTURE_CONTROLPLANE_NAME}"
     # shellcheck source=/dev/null
     source "$DEPLOY_INFRA_SH"
@@ -59,11 +64,11 @@ run_render() {
 # Test 1: the checked-in bundled CR ships a single-node topology.
 # ---------------------------------------------------------------------------
 test_bundled_cr_is_single_node() {
-  echo "Test: bundled kind ControlPlane CR pins database/cache replicas to 1"
+  echo "Test: bundled kind ControlPlane CR pins database/cache replicas to 1 and storage to 512Mi"
 
   if ! command -v yq >/dev/null 2>&1; then
-    echo "  SKIP: yq not installed (2 checks skipped)"
-    SKIP=$((SKIP + 2))
+    echo "  SKIP: yq not installed (3 checks skipped)"
+    SKIP=$((SKIP + 3))
     return
   fi
 
@@ -73,17 +78,20 @@ test_bundled_cr_is_single_node() {
   assert_eq "bundled CR cache.replicas is 1" \
     "1" \
     "$(yq -r 'select(.kind == "ControlPlane") | .spec.infrastructure.cache.replicas' "$BUNDLED_CR")"
+  assert_eq "bundled CR database.storageSize is 512Mi" \
+    "512Mi" \
+    "$(yq -r 'select(.kind == "ControlPlane") | .spec.infrastructure.database.storageSize' "$BUNDLED_CR")"
 }
 
 # ---------------------------------------------------------------------------
 # Test 2: default footprint (both = 1) rewrites to integer 1/1.
 # ---------------------------------------------------------------------------
 test_default_footprint() {
-  echo "Test: render_controlplane_replicas with 1/1 yields integer replicas 1/1"
+  echo "Test: render_controlplane_replicas with 1/1/512Mi yields replicas 1/1 and storage 512Mi"
 
   if ! command -v yq >/dev/null 2>&1; then
-    echo "  SKIP: yq not installed (3 checks skipped)"
-    SKIP=$((SKIP + 3))
+    echo "  SKIP: yq not installed (5 checks skipped)"
+    SKIP=$((SKIP + 5))
     return
   fi
 
@@ -94,10 +102,10 @@ test_default_footprint() {
   cp "$BUNDLED_CR" "$out"
 
   local exit_code
-  run_render "$out" "1" "1" >/dev/null
+  run_render "$out" "1" "1" "512Mi" >/dev/null
   exit_code=$?
 
-  assert_eq "render exits 0 for 1/1" "0" "$exit_code"
+  assert_eq "render exits 0 for 1/1/512Mi" "0" "$exit_code"
   assert_eq "database.replicas is 1" \
     "1" \
     "$(yq -r 'select(.kind == "ControlPlane") | .spec.infrastructure.database.replicas' "$out")"
@@ -105,17 +113,25 @@ test_default_footprint() {
   assert_eq "database.replicas stays an integer node" \
     "!!int" \
     "$(yq -r 'select(.kind == "ControlPlane") | .spec.infrastructure.database.replicas | tag' "$out")"
+  assert_eq "database.storageSize is 512Mi" \
+    "512Mi" \
+    "$(yq -r 'select(.kind == "ControlPlane") | .spec.infrastructure.database.storageSize' "$out")"
+  # storageSize must stay a string node — an unquoted 512Mi is fine, but the CRD
+  # types it as string, so guard the node kind explicitly.
+  assert_eq "database.storageSize stays a string node" \
+    "!!str" \
+    "$(yq -r 'select(.kind == "ControlPlane") | .spec.infrastructure.database.storageSize | tag' "$out")"
 }
 
 # ---------------------------------------------------------------------------
 # Test 3: an HA override (DB=3 Galera, cache=2) is projected as integers.
 # ---------------------------------------------------------------------------
 test_ha_override() {
-  echo "Test: render_controlplane_replicas with 3/2 projects a Galera-sized footprint"
+  echo "Test: render_controlplane_replicas with 3/2/100Gi projects a Galera-sized footprint"
 
   if ! command -v yq >/dev/null 2>&1; then
-    echo "  SKIP: yq not installed (3 checks skipped)"
-    SKIP=$((SKIP + 3))
+    echo "  SKIP: yq not installed (4 checks skipped)"
+    SKIP=$((SKIP + 4))
     return
   fi
 
@@ -126,23 +142,26 @@ test_ha_override() {
   cp "$BUNDLED_CR" "$out"
 
   local exit_code
-  run_render "$out" "3" "2" >/dev/null
+  run_render "$out" "3" "2" "100Gi" >/dev/null
   exit_code=$?
 
-  assert_eq "render exits 0 for 3/2" "0" "$exit_code"
+  assert_eq "render exits 0 for 3/2/100Gi" "0" "$exit_code"
   assert_eq "database.replicas is 3 (Galera)" \
     "3" \
     "$(yq -r 'select(.kind == "ControlPlane") | .spec.infrastructure.database.replicas' "$out")"
   assert_eq "cache.replicas is 2" \
     "2" \
     "$(yq -r 'select(.kind == "ControlPlane") | .spec.infrastructure.cache.replicas' "$out")"
+  assert_eq "database.storageSize is 100Gi (production-sized override)" \
+    "100Gi" \
+    "$(yq -r 'select(.kind == "ControlPlane") | .spec.infrastructure.database.storageSize' "$out")"
 }
 
 # ---------------------------------------------------------------------------
 # Test 4: invalid footprints fail fast (before kubectl apply).
 # ---------------------------------------------------------------------------
 test_invalid_footprint_rejected() {
-  echo "Test: render_controlplane_replicas rejects non-numeric, < 1, and DB=2"
+  echo "Test: render_controlplane_replicas rejects non-numeric, < 1, DB=2, and malformed storage"
 
   local tmp
   tmp="$(mktemp -d)"
@@ -171,6 +190,18 @@ test_invalid_footprint_rejected() {
   assert_nonzero_exit "quorum-unsafe CONTROLPLANE_DB_REPLICAS=2 exits non-zero" "$exit_code"
   assert_contains "DB=2 error explains the Galera quorum constraint" \
     "$output" "quorum"
+
+  # Malformed storage quantities: an SI unit (MB, not the CRD's IEC Mi) and a
+  # bare number with no unit both fail the ^[0-9]+(Mi|Gi|Ti)$ pattern.
+  output="$(run_render "$out" "1" "1" "512MB")"
+  exit_code=$?
+  assert_nonzero_exit "SI-unit CONTROLPLANE_DB_STORAGE=512MB exits non-zero" "$exit_code"
+  assert_contains "malformed storage error surfaces the offending value" \
+    "$output" "CONTROLPLANE_DB_STORAGE='512MB'"
+
+  output="$(run_render "$out" "1" "1" "512")"
+  exit_code=$?
+  assert_nonzero_exit "unit-less CONTROLPLANE_DB_STORAGE=512 exits non-zero" "$exit_code"
 }
 
 # ---------------------------------------------------------------------------
@@ -187,6 +218,8 @@ test_main_wires_knobs() {
     "$DEPLOY_INFRA_SH" 'CONTROLPLANE_DB_REPLICAS="${CONTROLPLANE_DB_REPLICAS:-1}"'
   assert_file_contains "CONTROLPLANE_CACHE_REPLICAS defaults to 1" \
     "$DEPLOY_INFRA_SH" 'CONTROLPLANE_CACHE_REPLICAS="${CONTROLPLANE_CACHE_REPLICAS:-1}"'
+  assert_file_contains "CONTROLPLANE_DB_STORAGE defaults to 512Mi" \
+    "$DEPLOY_INFRA_SH" 'CONTROLPLANE_DB_STORAGE="${CONTROLPLANE_DB_STORAGE:-512Mi}"'
 }
 
 # ---------------------------------------------------------------------------

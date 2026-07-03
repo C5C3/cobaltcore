@@ -365,6 +365,24 @@ spec:
                     required:
                     - name
                     type: object
+                  storageSize:
+                    default: 100Gi
+                    description: |-
+                      StorageSize is the persistent-volume size requested for each managed
+                      MariaDB replica in fresh-create mode. Like Replicas, only the c5c3
+                      operator's managed-mode projection honours it (it is written to the owned
+                      MariaDB's spec.storage.size); operators that adopt an existing MariaDB
+                      (keystone, and the c5c3 adopted-infra path) ignore it. The default 100Gi
+                      mirrors the production baseline (deploy/flux-system/infrastructure/
+                      mariadb.yaml); a constrained cluster such as a single-node kind can pin a
+                      far smaller value (e.g. 512Mi) so CI does not request a 100Gi volume it
+                      never fills. Immutable after creation: the mariadb-operator rejects
+                      changing spec.storage.size on a live CR, so the ControlPlane validating
+                      webhook freezes it too. Only meaningful when ClusterRef is set. The pattern
+                      admits binary IEC units (Mi/Gi/Ti) matching the Kubernetes quantity grammar
+                      the operator parses with resource.ParseQuantity.
+                    pattern: ^[0-9]+(Mi|Gi|Ti)$
+                    type: string
                   tls:
                     description: |-
                       TLS optionally enables TLS/mTLS for the database connection. The pointer keeps the field opt-in and non-mutating: a nil

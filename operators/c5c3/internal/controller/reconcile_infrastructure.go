@@ -20,6 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/c5c3/forge/internal/common/conditions"
+	commonv1 "github.com/c5c3/forge/internal/common/types"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 )
 
@@ -47,21 +48,31 @@ func childNamespace(cp *c5c3v1alpha1.ControlPlane) string {
 // DECISION the managed-mode MariaDB CR is provisioned with
 // a MINIMAL but VALID spec. The mariadb-operator's webhook requires
 // Storage.Size (or a VolumeClaimTemplate) — see Storage.Validate in the
-// vendored v0.38.1 types — so a 100Gi size is set to mirror the production
-// baseline (deploy/flux-system/infrastructure/mariadb.yaml uses
-// storage.size:100Gi). The replica topology is DERIVED from
-// spec.infrastructure.database.replicas: the default (3) yields a Galera HA
-// cluster matching the production baseline, while a single replica yields a
-// single-instance non-Galera MariaDB so the fresh-create path schedules on a
-// constrained cluster such as a single-node kind. TLS / issuerRefs are
-// deliberately NOT set here: the baseline wires those from cluster-specific
-// ClusterIssuers that are an infrastructure concern outside the aggregate's
-// knowledge, and the keystone DB-client baseline reads TLS from
-// cp.Spec.Infrastructure.Database.TLS rather than the MariaDB CR. The minimal
-// spec keeps the CR admissible while leaving site-specific hardening to the
-// platform team.
+// vendored v0.38.1 types — so a size is always set. Both the replica topology
+// and the storage size are DERIVED from the ControlPlane spec:
+// spec.infrastructure.database.replicas drives the topology (the default 3
+// yields a Galera HA cluster matching the production baseline, a single replica
+// a single-instance non-Galera MariaDB so the fresh-create path schedules on a
+// constrained cluster such as a single-node kind), and
+// spec.infrastructure.database.storageSize drives the volume size (default
+// 100Gi mirrors deploy/flux-system/infrastructure/mariadb.yaml; kind/CI pins a
+// far smaller value). TLS / issuerRefs are deliberately NOT set here: the
+// baseline wires those from cluster-specific ClusterIssuers that are an
+// infrastructure concern outside the aggregate's knowledge, and the keystone
+// DB-client baseline reads TLS from cp.Spec.Infrastructure.Database.TLS rather
+// than the MariaDB CR. The minimal spec keeps the CR admissible while leaving
+// site-specific hardening to the platform team.
 const (
-	infraMariaDBStorageSize = "100Gi"
+	// infraMariaDBStorageSizeDefault is the zero-value fallback applied when
+	// spec.infrastructure.database.storageSize is unset (""). The CRD default is
+	// 100Gi, so this only fires when validation was bypassed (e.g. a fake-client
+	// unit test that builds the CR directly); it keeps the projection admissible
+	// (the mariadb-operator requires a non-empty size) and matches the production
+	// baseline rather than requesting a zero-sized volume. It shares
+	// commonv1.DatabaseStorageSizeDefault with the ControlPlane webhook's
+	// migration normalization so the fallback and the webhook cannot disagree
+	// on what "" means.
+	infraMariaDBStorageSizeDefault = commonv1.DatabaseStorageSizeDefault
 	// infraMariaDBReplicasDefault is the zero-value floor applied when
 	// spec.infrastructure.database.replicas is unset (0). The CRD default is 3,
 	// so this only fires when validation was bypassed; it keeps the projection
@@ -190,14 +201,23 @@ func (r *ControlPlaneReconciler) ensureMariaDB(ctx context.Context, cp *c5c3v1al
 	}
 	galeraEnabled := replicas > 1
 
+	// Derive the projected volume size from the spec, falling back to the
+	// production baseline when the field is empty (only reachable when the CRD
+	// default was bypassed). Storage is immutable on the mariadb-operator CR, so
+	// this value is honoured on fresh create only and never re-projected below.
+	storageSize := cp.Spec.Infrastructure.Database.StorageSize
+	if storageSize == "" {
+		storageSize = infraMariaDBStorageSizeDefault
+	}
+
 	mariadb := &mariadbv1alpha1.MariaDB{}
 	err := r.Get(ctx, key, mariadb)
 	switch {
 	case apierrors.IsNotFound(err):
 		// Create fresh with the projected, spec-derived topology.
-		size, perr := resource.ParseQuantity(infraMariaDBStorageSize)
+		size, perr := resource.ParseQuantity(storageSize)
 		if perr != nil {
-			return false, fmt.Errorf("parsing MariaDB storage size %q: %w", infraMariaDBStorageSize, perr)
+			return false, fmt.Errorf("parsing MariaDB storage size %q: %w", storageSize, perr)
 		}
 		mariadb.Name = key.Name
 		mariadb.Namespace = key.Namespace

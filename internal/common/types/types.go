@@ -15,6 +15,16 @@ import (
 // keep the literal in sync separately).
 const DefaultCacheBackend = "dogpile.cache.pymemcache"
 
+// DatabaseStorageSizeDefault is the per-replica managed-MariaDB volume size
+// materialized when DatabaseSpec.StorageSize is left empty. It is the single Go
+// source of truth shared by the c5c3 fresh-create projection (the fallback in
+// reconcile_infrastructure.go) and the ControlPlane validating webhook (the
+// one-time migration normalization for pre-existing CRs), so the two cannot
+// drift. Keep it in lockstep with the +kubebuilder:default marker on
+// DatabaseSpec.StorageSize below — kubebuilder markers cannot reference Go
+// constants, so the leaf marker keeps the literal in sync separately.
+const DatabaseStorageSizeDefault = "100Gi"
+
 // ImageSpec defines a container image reference.
 type ImageSpec struct {
 	// Repository is the OCI image repository, optionally including the registry
@@ -84,6 +94,23 @@ type DatabaseSpec struct {
 	// +kubebuilder:default=3
 	// +kubebuilder:validation:Minimum=1
 	Replicas int32 `json:"replicas,omitempty"`
+	// StorageSize is the persistent-volume size requested for each managed
+	// MariaDB replica in fresh-create mode. Like Replicas, only the c5c3
+	// operator's managed-mode projection honours it (it is written to the owned
+	// MariaDB's spec.storage.size); operators that adopt an existing MariaDB
+	// (keystone, and the c5c3 adopted-infra path) ignore it. The default 100Gi
+	// mirrors the production baseline (deploy/flux-system/infrastructure/
+	// mariadb.yaml); a constrained cluster such as a single-node kind can pin a
+	// far smaller value (e.g. 512Mi) so CI does not request a 100Gi volume it
+	// never fills. Immutable after creation: the mariadb-operator rejects
+	// changing spec.storage.size on a live CR, so the ControlPlane validating
+	// webhook freezes it too. Only meaningful when ClusterRef is set. The pattern
+	// admits binary IEC units (Mi/Gi/Ti) matching the Kubernetes quantity grammar
+	// the operator parses with resource.ParseQuantity.
+	// +optional
+	// +kubebuilder:default="100Gi"
+	// +kubebuilder:validation:Pattern=`^[0-9]+(Mi|Gi|Ti)$`
+	StorageSize string `json:"storageSize,omitempty"`
 }
 
 // DatabaseTLSSpec configures opt-in TLS (and mutual TLS) for a database

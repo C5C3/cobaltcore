@@ -35,6 +35,15 @@ production-shaped topology on a bigger box, set `CONTROLPLANE_DB_REPLICAS=3` and
 Galera needs a quorum). `database.replicas` is immutable after the CR is created,
 so change it on a fresh environment (`make teardown-infra` first).
 
+The bundled CR also pins the MariaDB volume to a test size
+(`spec.infrastructure.database.storageSize: 512Mi`). The CRD default is `100Gi` —
+the production volume size — which a kind/CI run never fills, so the managed MariaDB
+requests a small volume instead. To mirror the production volume on a bigger box,
+set `CONTROLPLANE_DB_STORAGE=100Gi` for Step 2 (any Kubernetes quantity in
+`Mi`/`Gi`/`Ti` is accepted). Like `database.replicas`, `database.storageSize` is
+immutable after the CR is created — the MariaDB operator refuses to resize a live
+volume — so change it on a fresh environment (`make teardown-infra` first).
+
 ```bash
 make install-test-deps
 export PATH="${HOME}/.local/bin:${PATH}"
@@ -96,7 +105,8 @@ spec:
   # 3-node Galera MariaDB plus three Memcached pods), which OOM-kills a small kind.
   infrastructure:
     database:
-      replicas: 1     # single-instance, non-Galera MariaDB (Galera = replicas > 1)
+      replicas: 1         # single-instance, non-Galera MariaDB (Galera = replicas > 1)
+      storageSize: 512Mi  # test-sized volume; omit to default to 100Gi (production)
     cache:
       replicas: 1     # single Memcached pod
   services:
@@ -138,6 +148,7 @@ spec:
         name: keystone-db         # placeholder default — the operator replaces it
                                   # with {name}-keystone-db-credentials (managed mode)
       replicas: 1                 # single-instance, non-Galera; omit to default to 3 (Galera)
+      storageSize: 512Mi          # test-sized volume; omit to default to 100Gi (production)
     cache:
       clusterRef:
         name: openstack-memcached

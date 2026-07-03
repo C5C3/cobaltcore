@@ -366,6 +366,48 @@ func TestEnsureMariaDB_ReplicasFromSpec(t *testing.T) {
 	}
 }
 
+// TestEnsureMariaDB_StorageSizeFromSpec verifies the fresh-create projection
+// honours spec.infrastructure.database.storageSize: an explicit value is written
+// to the owned MariaDB's spec.storage.size verbatim (so kind/CI can request a
+// small test-sized volume), while an empty value (only reachable when the CRD
+// default is bypassed, e.g. a fake-client build like this one) falls back to the
+// production baseline default rather than a zero-sized volume the mariadb-operator
+// would reject.
+func TestEnsureMariaDB_StorageSizeFromSpec(t *testing.T) {
+	tests := []struct {
+		name        string
+		specStorage string
+		wantStorage string
+	}{
+		{name: "explicit small volume projected verbatim", specStorage: "512Mi", wantStorage: "512Mi"},
+		{name: "explicit large volume projected verbatim", specStorage: "100Gi", wantStorage: "100Gi"},
+		{name: "empty falls back to the baseline default", specStorage: "", wantStorage: infraMariaDBStorageSizeDefault},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+
+			s := infraTestScheme(t)
+			cp := managedInfraControlPlane()
+			cp.Spec.Infrastructure.Database.StorageSize = tc.specStorage
+			c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+			r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+			_, err := r.ensureMariaDB(context.Background(), cp)
+			g.Expect(err).NotTo(HaveOccurred())
+
+			var mariadb mariadbv1alpha1.MariaDB
+			g.Expect(c.Get(context.Background(), types.NamespacedName{
+				Name: "openstack-db", Namespace: childNamespace(cp),
+			}, &mariadb)).To(Succeed())
+			g.Expect(mariadb.Spec.Storage.Size).NotTo(BeNil())
+			want := resource.MustParse(tc.wantStorage)
+			g.Expect(mariadb.Spec.Storage.Size.Equal(want)).To(BeTrue(),
+				"projected storage size %s must equal %s", mariadb.Spec.Storage.Size, tc.wantStorage)
+		})
+	}
+}
+
 // TestEnsureMemcached_OwnedReconcilesReplicas verifies the owner-aware path for
 // Memcached: a Memcached this ControlPlane OWNS has spec.replicas reconciled to
 // cp.Spec.Infrastructure.Cache.Replicas when they differ, so a ControlPlane spec

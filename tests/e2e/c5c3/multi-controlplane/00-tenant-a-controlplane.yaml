@@ -55,6 +55,8 @@ spec:
       database: keystone
       secretRef:
         name: keystone-db
+      # Pin a test-sized volume instead of the 100Gi CRD default.
+      storageSize: 512Mi
     cache:
       clusterRef:
         name: openstack-memcached

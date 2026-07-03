@@ -37,6 +37,13 @@
 # CONTROLPLANE_CACHE_REPLICAS (e.g. =3 for a Galera HA cluster on a bigger box; 2 is
 # rejected — Galera needs a quorum). database.replicas is immutable after creation.
 #
+# database.storageSize is pinned to 512Mi for the same reason: the CRD default is
+# 100Gi (the production volume in deploy/flux-system/infrastructure/mariadb.yaml),
+# which a kind/CI run never fills, so the projected MariaDB requests a test-sized
+# volume instead. deploy-infra makes it configurable via CONTROLPLANE_DB_STORAGE
+# (e.g. =100Gi to mirror production on a bigger box). Like replicas, storageSize is
+# immutable after creation (the mariadb-operator rejects resizing a live volume).
+#
 # The projected Keystone is exposed externally via the shared Envoy Gateway
 # (services.keystone.gateway), so it is reachable from the host at
 # https://keystone.127-0-0-1.nip.io:<KIND_HOST_PORT>/v3 — the same path the
@@ -57,6 +64,7 @@ spec:
   infrastructure:
     database:
       replicas: 1
+      storageSize: 512Mi
     cache:
       replicas: 1
   services:
