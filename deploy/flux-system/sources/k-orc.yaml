@@ -31,7 +31,7 @@ spec:
   interval: 1h
   url: https://github.com/k-orc/openstack-resource-controller
   ref:
-    tag: v2.5.0
+    tag: v2.6.0
   ignore: |
     # Vendor only the released installer manifest; skip the rest of the repo.
     /*
