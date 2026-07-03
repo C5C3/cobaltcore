@@ -3,8 +3,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Idempotent script to enable OpenBao secret engines (KV v2 and PKI).
-# Guards each enable operation by checking whether the path already exists.
+# Idempotent script to enable OpenBao secret engines (KV v2, PKI, and the
+# MariaDB database secrets engine). Guards each enable operation by checking
+# whether the path already exists.
 
 set -euo pipefail
 
@@ -66,6 +67,31 @@ enable_pki() {
 }
 
 # ---------------------------------------------------------------------------
+# enable_database
+# Enables the database secrets engine at path database/mariadb/. Skips if the
+# path already exists.
+#
+# NOTE per-tenant connection + role configuration is NOT written here: the
+# managed MariaDB instances do not exist at bootstrap time (deploy-infra
+# bootstraps OpenBao before any MariaDB is Ready), so mounting the engine is the
+# only bootstrap-safe step. Each tenant's connection and role are provisioned
+# later by setup-database-tenant.sh once its MariaDB is Ready. The mount path
+# matches the architecture handbook (database/mariadb/creds/<role>).
+# ---------------------------------------------------------------------------
+enable_database() {
+  local path="database/mariadb/"
+
+  if secrets_list | grep -qx "${path}"; then
+    log "Secret engine already enabled at ${path}. Skipping."
+    return 0
+  fi
+
+  log "Enabling database secret engine at ${path} ..."
+  bao_exec bao secrets enable -path=database/mariadb database
+  log "Database secret engine enabled at ${path}."
+}
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 main() {
@@ -75,6 +101,7 @@ main() {
 
   enable_kv_v2
   enable_pki
+  enable_database
 
   log "=== Done ==="
 }

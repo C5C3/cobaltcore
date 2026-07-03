@@ -117,6 +117,24 @@ main() {
     log "ESO role 'eso-${cluster}' written."
   done
 
+  # keystone-db role on the management cluster's Kubernetes auth mount. The c5c3
+  # operator's per-ControlPlane VaultDynamicSecret generator authenticates with
+  # the "keystone-db-creds" ServiceAccount (projected per ControlPlane namespace)
+  # to read short-lived DB credentials at database/mariadb/creds/keystone-<namespace>.
+  # bound_service_account_namespaces="*" lets any ControlPlane namespace
+  # authenticate; the SA name is fixed and the cross-tenant boundary is enforced by
+  # the keystone-db-dynamic policy, which templates the readable creds path to the
+  # caller's OWN service_account_namespace (an exact match, so a token minted in
+  # namespace A cannot read namespace B's path). TTLs mirror the eso-<cluster> roles.
+  log "Writing keystone-db role on kubernetes/management..."
+  bao_exec bao write "auth/kubernetes/management/role/keystone-db" \
+    bound_service_account_names=keystone-db-creds \
+    bound_service_account_namespaces="*" \
+    token_policies=keystone-db-dynamic \
+    token_ttl=1h \
+    token_max_ttl=4h
+  log "keystone-db role written."
+
   # AppRole auth
   enable_auth_if_missing "approle" "approle"
 
