@@ -70,6 +70,26 @@ func newApplyTestReconciler(objs ...client.Object) *KeystoneReconciler {
 	}
 }
 
+// runApplyRotation fetches the main and (optionally) staging Secrets by name
+// from the client — mirroring the production caller, which threads the objects
+// it already read/ensured this pass — and invokes applyRotationOutput. A
+// staging Secret absent from the client is passed as nil so the no-op path is
+// exercised.
+func runApplyRotation(t *testing.T, r *KeystoneReconciler, ks *keystonev1alpha1.Keystone, stagingName, mainName, reason string, minKeys, maxKeys int) (bool, error) {
+	t.Helper()
+	ctx := context.Background()
+	var main corev1.Secret
+	if err := r.Get(ctx, types.NamespacedName{Name: mainName, Namespace: ks.Namespace}, &main); err != nil {
+		t.Fatalf("getting main secret %s: %v", mainName, err)
+	}
+	var staging *corev1.Secret
+	var s corev1.Secret
+	if err := r.Get(ctx, types.NamespacedName{Name: stagingName, Namespace: ks.Namespace}, &s); err == nil {
+		staging = &s
+	}
+	return r.applyRotationOutput(ctx, ks, staging, &main, reason, minKeys, maxKeys)
+}
+
 func TestApplyRotationOutput_NoStagingSecret(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := applyTestKeystone()
@@ -81,8 +101,7 @@ func TestApplyRotationOutput_NoStagingSecret(t *testing.T) {
 	}
 	r := newApplyTestReconciler(prod)
 
-	applied, err := r.applyRotationOutput(
-		context.Background(), ks,
+	applied, err := runApplyRotation(t, r, ks,
 		fernetStagingSecretName(ks),
 		"test-keystone-fernet-keys",
 		"FernetKeysRotated",
@@ -117,8 +136,7 @@ func TestApplyRotationOutput_NoAnnotation(t *testing.T) {
 	}
 	r := newApplyTestReconciler(staging, prod)
 
-	applied, err := r.applyRotationOutput(
-		context.Background(), ks,
+	applied, err := runApplyRotation(t, r, ks,
 		fernetStagingSecretName(ks),
 		"test-keystone-fernet-keys",
 		"FernetKeysRotated",
@@ -161,8 +179,7 @@ func TestApplyRotationOutput_InvalidAnnotation(t *testing.T) {
 	}
 	r := newApplyTestReconciler(staging, prod)
 
-	applied, err := r.applyRotationOutput(
-		context.Background(), ks,
+	applied, err := runApplyRotation(t, r, ks,
 		fernetStagingSecretName(ks),
 		"test-keystone-fernet-keys",
 		"FernetKeysRotated",
@@ -212,8 +229,7 @@ func TestApplyRotationOutput_ValidationFailsWrongLength(t *testing.T) {
 	}
 	r := newApplyTestReconciler(staging, prod)
 
-	applied, err := r.applyRotationOutput(
-		context.Background(), ks,
+	applied, err := runApplyRotation(t, r, ks,
 		fernetStagingSecretName(ks),
 		"test-keystone-fernet-keys",
 		"FernetKeysRotated",
@@ -268,8 +284,7 @@ func TestApplyRotationOutput_ValidationFailsDuplicates(t *testing.T) {
 	}
 	r := newApplyTestReconciler(staging, prod)
 
-	applied, err := r.applyRotationOutput(
-		context.Background(), ks,
+	applied, err := runApplyRotation(t, r, ks,
 		fernetStagingSecretName(ks),
 		"test-keystone-fernet-keys",
 		"FernetKeysRotated",
@@ -313,8 +328,7 @@ func TestApplyRotationOutput_HappyPath(t *testing.T) {
 	}
 	r := newApplyTestReconciler(staging, prod)
 
-	applied, err := r.applyRotationOutput(
-		context.Background(), ks,
+	applied, err := runApplyRotation(t, r, ks,
 		fernetStagingSecretName(ks),
 		"test-keystone-fernet-keys",
 		"FernetKeysRotated",
@@ -395,8 +409,7 @@ func TestApplyRotationOutput_ConcurrentStagingPatchTolerated(t *testing.T) {
 		Build()
 	r := &KeystoneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
 
-	applied, err := r.applyRotationOutput(
-		context.Background(), ks,
+	applied, err := runApplyRotation(t, r, ks,
 		fernetStagingSecretName(ks),
 		"test-keystone-fernet-keys",
 		"FernetKeysRotated",
@@ -458,8 +471,7 @@ func TestApplyRotationOutput_StampsCompletionAnnotationOnProduction(t *testing.T
 	}
 	r := newApplyTestReconciler(staging, prod)
 
-	applied, err := r.applyRotationOutput(
-		context.Background(), ks,
+	applied, err := runApplyRotation(t, r, ks,
 		fernetStagingSecretName(ks),
 		"test-keystone-fernet-keys",
 		"FernetKeysRotated",
@@ -508,8 +520,7 @@ func TestApplyRotationOutput_ReplacesDisjointIndices(t *testing.T) {
 	}
 	r := newApplyTestReconciler(staging, prod)
 
-	applied, err := r.applyRotationOutput(
-		context.Background(), ks,
+	applied, err := runApplyRotation(t, r, ks,
 		fernetStagingSecretName(ks),
 		"test-keystone-fernet-keys",
 		"FernetKeysRotated",

@@ -16,7 +16,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -47,44 +46,42 @@ func credentialStagingSecretName(keystone *keystonev1alpha1.Keystone) string {
 }
 
 // observeRotationAge refreshes the keystone_operator_key_rotation_age_seconds
-// gauge from the rotation-completed annotation. It reads
-// the annotation from the production keys Secret first — applyRotationOutput
-// stamps it there on every successful apply, so the annotation is durable
-// across the inter-rotation steady state and the gauge value (computed as
-// time.Since(completedAt) on every reconcile) tracks wall-clock time
-// correctly. If the production Secret has no annotation (the very-first
-// rotation has not yet been applied) the helper falls back to the staging
-// Secret to cover the post-CronJob-PATCH/pre-apply window.
+// gauge from the rotation-completed annotation. It reads the annotation from
+// the production keys Secret first — applyRotationOutput stamps it there on
+// every successful apply, so the annotation is durable across the inter-rotation
+// steady state and the gauge value (computed as time.Since(completedAt) on every
+// reconcile) tracks wall-clock time correctly. If the production Secret has no
+// annotation (the very-first rotation has not yet been applied) the helper falls
+// back to the staging Secret to cover the post-CronJob-PATCH/pre-apply window.
 //
-// The gauge is a best-effort observability signal: any error reading either
-// Secret, an absent annotation on both, or a malformed timestamp is silently
-// skipped rather than surfaced as a reconcile failure. PromQL absent(...)
-// remains the alerting signal for "rotation has never completed".
+// Both Secrets are passed in by the caller — the production Secret it already
+// fetched at the top of the pass and the staging Secret returned by
+// ensureStagingSecret — so this helper performs no client reads (issue #361).
+//
+// The gauge is a best-effort observability signal: an absent annotation on both
+// (either Secret may be nil) or a malformed timestamp is silently skipped rather
+// than surfaced as a reconcile failure. PromQL absent(...) remains the alerting
+// signal for "rotation has never completed".
 func (r *KeystoneReconciler) observeRotationAge(
-	ctx context.Context,
 	keystone *keystonev1alpha1.Keystone,
-	mainSecretName, stagingSecretName, keyType string,
+	mainSecret, stagingSecret *corev1.Secret,
+	keyType string,
 ) {
-	if completedAt, ok := r.readRotationCompletedAt(ctx, mainSecretName, keystone.Namespace); ok {
+	if completedAt, ok := rotationCompletedAt(mainSecret); ok {
 		_ = metrics.SetKeyRotationAge(keystone.Name, keystone.Namespace, keyType, completedAt)
 		return
 	}
-	if completedAt, ok := r.readRotationCompletedAt(ctx, stagingSecretName, keystone.Namespace); ok {
+	if completedAt, ok := rotationCompletedAt(stagingSecret); ok {
 		_ = metrics.SetKeyRotationAge(keystone.Name, keystone.Namespace, keyType, completedAt)
 	}
 }
 
-// readRotationCompletedAt fetches the named Secret and parses the
-// RotationCompletedAnnotation. It returns (zero, false) if the Secret is
-// absent, the annotation is missing, or the timestamp does not parse as
-// RFC3339 — all of which are valid steady-state observations for the gauge
-// caller.
-func (r *KeystoneReconciler) readRotationCompletedAt(
-	ctx context.Context,
-	name, namespace string,
-) (time.Time, bool) {
-	var secret corev1.Secret
-	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, &secret); err != nil {
+// rotationCompletedAt parses the RotationCompletedAnnotation off the given
+// Secret. It returns (zero, false) when the Secret is nil, the annotation is
+// missing, or the timestamp does not parse as RFC3339 — all valid steady-state
+// observations for the gauge caller. It performs no client reads.
+func rotationCompletedAt(secret *corev1.Secret) (time.Time, bool) {
+	if secret == nil {
 		return time.Time{}, false
 	}
 	completedAt := secret.Annotations[RotationCompletedAnnotation]
@@ -119,11 +116,16 @@ func (r *KeystoneReconciler) readRotationCompletedAt(
 // Update. Net effect: the CronJob's rotation output is never lost, but
 // transient error-requeue log lines are expected during rotation windows
 // and are not a bug.
+// It returns the ensured Secret so the caller can thread it into
+// observeRotationAge and commitStagedRotation without re-reading it — after
+// CreateOrUpdate the object reflects the server state (including any CronJob
+// PATCH observed at CreateOrUpdate's read), and its UID/ResourceVersion drive
+// the commit's delete preconditions (issue #361).
 func (r *KeystoneReconciler) ensureStagingSecret(
 	ctx context.Context,
 	keystone *keystonev1alpha1.Keystone,
 	name, labelValue string,
-) error {
+) (*corev1.Secret, error) {
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
@@ -141,10 +143,10 @@ func (r *KeystoneReconciler) ensureStagingSecret(
 		// Do NOT touch secret.Data — the CronJob's PATCH owns that field.
 		return controllerutil.SetControllerReference(keystone, secret, r.Scheme)
 	}); err != nil {
-		return fmt.Errorf("ensuring staging secret %s: %w", name, err)
+		return nil, fmt.Errorf("ensuring staging secret %s: %w", name, err)
 	}
 
-	return nil
+	return secret, nil
 }
 
 // rotationCommitSpec parameterises commitStagedRotation for one rotation
@@ -152,10 +154,6 @@ func (r *KeystoneReconciler) ensureStagingSecret(
 // difference between the flavours is captured here; the commit sequence itself
 // is identical.
 type rotationCommitSpec struct {
-	// stagingSecretName is the CronJob-written staging Secret to commit from;
-	// targetSecretName is the operator-owned Secret committed into.
-	stagingSecretName string
-	targetSecretName  string
 	// targetNoun names the target Secret in returned error messages
 	// ("main secret" for keys, "push-source secret" for the admin password).
 	targetNoun string
@@ -237,20 +235,17 @@ type rotationCommitSpec struct {
 // keystone_operator_key_rotation_age_seconds gauge refresh on every reconcile:
 // the staging Secret is deleted on step 5, so the target Secret is the only
 // durable record of the last successful rotation timestamp.
-func (r *KeystoneReconciler) commitStagedRotation(ctx context.Context, keystone *keystonev1alpha1.Keystone, spec rotationCommitSpec) (applied bool, err error) {
-	// 1. GET staging Secret.
-	var staging corev1.Secret
-	if getErr := r.Get(ctx, types.NamespacedName{
-		Name:      spec.stagingSecretName,
-		Namespace: keystone.Namespace,
-	}, &staging); getErr != nil {
-		if apierrors.IsNotFound(getErr) {
-			return false, nil
-		}
-		return false, fmt.Errorf("getting staging secret %s: %w", spec.stagingSecretName, getErr)
+func (r *KeystoneReconciler) commitStagedRotation(ctx context.Context, keystone *keystonev1alpha1.Keystone, staging, target *corev1.Secret, spec rotationCommitSpec) (applied bool, err error) {
+	// staging is the object ensureStagingSecret returned (never nil in
+	// production); target is the operator-owned Secret the caller already read.
+	// Both are threaded in rather than re-read here (issue #361). A nil staging
+	// means there is nothing to commit — treated as a no-op for defence in depth.
+	if staging == nil {
+		return false, nil
 	}
+	stagingName := staging.Name
 
-	// 2. Require RotationCompletedAnnotation present and well-formed RFC3339.
+	// 1. Require RotationCompletedAnnotation present and well-formed RFC3339.
 	completedAt := staging.Annotations[RotationCompletedAnnotation]
 	if completedAt == "" {
 		// Distinguish "CronJob hasn't run yet" (empty staging.Data — expected
@@ -261,7 +256,7 @@ func (r *KeystoneReconciler) commitStagedRotation(ctx context.Context, keystone 
 			log.FromContext(ctx).V(1).Info(
 				"staging secret has data without completion annotation; "+
 					"skipping apply until next CronJob run writes the annotation",
-				"staging", spec.stagingSecretName,
+				"staging", stagingName,
 				"annotation", RotationCompletedAnnotation,
 				"dataKeys", len(staging.Data),
 			)
@@ -271,11 +266,11 @@ func (r *KeystoneReconciler) commitStagedRotation(ctx context.Context, keystone 
 	if _, parseErr := time.Parse(time.RFC3339, completedAt); parseErr != nil {
 		r.Recorder.Eventf(keystone, corev1.EventTypeWarning, spec.annotationInvalidReason,
 			"staging secret %s has malformed %s annotation: %v",
-			spec.stagingSecretName, RotationCompletedAnnotation, parseErr)
+			stagingName, RotationCompletedAnnotation, parseErr)
 		return false, nil
 	}
 
-	// 3. Validate staging payload. On rejection, emit the Warning event; when
+	// 2. Validate staging payload. On rejection, emit the Warning event; when
 	//    spec.clearStagingOnReject is set, clear the staged Data and completion
 	//    annotation before returning. The key-rotation scripts PATCH the staging
 	//    Secret with strategic-merge semantics over a multi-key `.data` map
@@ -287,65 +282,60 @@ func (r *KeystoneReconciler) commitStagedRotation(ctx context.Context, keystone 
 	//    now-empty staging Data) is the diagnostic of record (issue #475).
 	if valErr := spec.validate(staging.Data); valErr != nil {
 		r.Recorder.Eventf(keystone, corev1.EventTypeWarning, spec.rejectedReason,
-			"staging secret %s rejected: %v", spec.stagingSecretName, valErr)
+			"staging secret %s rejected: %v", stagingName, valErr)
 		if spec.clearStagingOnReject {
 			staging.Data = nil
 			delete(staging.Annotations, RotationCompletedAnnotation)
-			if updErr := r.Update(ctx, &staging); updErr != nil {
+			if updErr := r.Update(ctx, staging); updErr != nil {
 				if !apierrors.IsConflict(updErr) && !apierrors.IsNotFound(updErr) {
-					return false, fmt.Errorf("clearing rejected staging secret %s: %w", spec.stagingSecretName, updErr)
+					return false, fmt.Errorf("clearing rejected staging secret %s: %w", stagingName, updErr)
 				}
 				// A concurrent CronJob PATCH (Conflict) or a manual delete
 				// (NotFound) raced the clear; the next reconcile re-reads and
 				// re-validates, so the stale base cannot survive (issue #475).
 				log.FromContext(ctx).V(1).Info(
 					"rejected staging secret changed since read; clear retried next reconcile",
-					"staging", spec.stagingSecretName,
+					"staging", stagingName,
 				)
 			}
 		}
 		return false, nil
 	}
 
-	// 4. GET target Secret, replace Data verbatim, stamp the rotation-completed
-	//    annotation, and Update. Full Data replacement is required — see the
-	//    DECISION comment above.
-	var target corev1.Secret
-	if getErr := r.Get(ctx, types.NamespacedName{
-		Name:      spec.targetSecretName,
-		Namespace: keystone.Namespace,
-	}, &target); getErr != nil {
-		return false, fmt.Errorf("getting %s %s: %w", spec.targetNoun, spec.targetSecretName, getErr)
-	}
+	// 3. Replace the target's Data verbatim, stamp the rotation-completed
+	//    annotation, and Update. The target was read by the caller at the top of
+	//    the pass; only ensureStagingSecret (which touches the staging Secret,
+	//    not this one) ran in between, so its ResourceVersion is still current.
+	//    Full Data replacement is required — see the DECISION comment above.
 	target.Data = staging.Data
 	if target.Annotations == nil {
 		target.Annotations = map[string]string{}
 	}
 	target.Annotations[RotationCompletedAnnotation] = completedAt
-	if updateErr := r.Update(ctx, &target); updateErr != nil {
-		return false, fmt.Errorf("updating %s %s: %w", spec.targetNoun, spec.targetSecretName, updateErr)
+	if updateErr := r.Update(ctx, target); updateErr != nil {
+		return false, fmt.Errorf("updating %s %s: %w", spec.targetNoun, target.Name, updateErr)
 	}
 
-	// 5. DELETE staging Secret under the UID + ResourceVersion observed at the
-	//    step-1 Get. The preconditions make a concurrent CronJob PATCH (fresh
-	//    rotation output written between the read and this DELETE) surface as
-	//    409 Conflict rather than being silently deleted uncommitted; the newer
-	//    payload then commits on the next reconcile. Conflict and NotFound are
-	//    both tolerated — this run's payload is already on the target Secret.
+	// 4. DELETE staging Secret under the UID + ResourceVersion observed when the
+	//    caller ensured it. The preconditions make a concurrent CronJob PATCH
+	//    (fresh rotation output written between the read and this DELETE) surface
+	//    as 409 Conflict rather than being silently deleted uncommitted; the
+	//    newer payload then commits on the next reconcile. Conflict and NotFound
+	//    are both tolerated — this run's payload is already on the target Secret.
 	delOpts := client.Preconditions{UID: &staging.UID, ResourceVersion: &staging.ResourceVersion}
-	if delErr := r.Delete(ctx, &staging, delOpts); delErr != nil {
+	if delErr := r.Delete(ctx, staging, delOpts); delErr != nil {
 		if !apierrors.IsNotFound(delErr) && !apierrors.IsConflict(delErr) {
-			return false, fmt.Errorf("deleting staging secret %s: %w", spec.stagingSecretName, delErr)
+			return false, fmt.Errorf("deleting staging secret %s: %w", stagingName, delErr)
 		}
 		log.FromContext(ctx).V(1).Info(
 			"staging secret changed since read; newer rotation output applied next reconcile",
-			"staging", spec.stagingSecretName,
+			"staging", stagingName,
 		)
 	}
 
-	// 6. Emit a success event.
+	// 5. Emit a success event.
 	r.Recorder.Event(keystone, corev1.EventTypeNormal, spec.appliedReason,
-		spec.appliedMessage(spec.stagingSecretName, staging.Data))
+		spec.appliedMessage(stagingName, staging.Data))
 
 	return true, nil
 }
@@ -359,14 +349,11 @@ func (r *KeystoneReconciler) commitStagedRotation(ctx context.Context, keystone 
 func (r *KeystoneReconciler) applyRotationOutput(
 	ctx context.Context,
 	keystone *keystonev1alpha1.Keystone,
-	stagingSecretName string,
-	mainSecretName string,
+	staging, mainSecret *corev1.Secret,
 	eventReason string,
 	minKeys, maxKeys int,
 ) (applied bool, err error) {
-	return r.commitStagedRotation(ctx, keystone, rotationCommitSpec{
-		stagingSecretName:       stagingSecretName,
-		targetSecretName:        mainSecretName,
+	return r.commitStagedRotation(ctx, keystone, staging, mainSecret, rotationCommitSpec{
 		targetNoun:              "main secret",
 		validate:                func(data map[string][]byte) error { return validateRotationOutput(data, minKeys, maxKeys) },
 		clearStagingOnReject:    true,

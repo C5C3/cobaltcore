@@ -150,7 +150,8 @@ func TestEnsureAdminPasswordPushSourceSecret_CreatesOwnedEmptySecret(t *testing.
 	ks := pwRotationTestKeystone()
 	r, _ := newPWRotationReconciler(ks)
 
-	g.Expect(r.ensureAdminPasswordPushSourceSecret(context.Background(), ks)).To(Succeed())
+	_, err := r.ensureAdminPasswordPushSourceSecret(context.Background(), ks)
+	g.Expect(err).To(Succeed())
 
 	var sec corev1.Secret
 	g.Expect(r.Get(context.Background(), types.NamespacedName{
@@ -167,7 +168,8 @@ func TestEnsureStagingSecret_AdminPasswordLabel(t *testing.T) {
 	ks := pwRotationTestKeystone()
 	r, _ := newPWRotationReconciler(ks)
 
-	g.Expect(r.ensureStagingSecret(context.Background(), ks, adminPasswordStagingSecretName(ks), "admin-password")).To(Succeed())
+	_, err := r.ensureStagingSecret(context.Background(), ks, adminPasswordStagingSecretName(ks), "admin-password")
+	g.Expect(err).To(Succeed())
 
 	var sec corev1.Secret
 	g.Expect(r.Get(context.Background(), types.NamespacedName{
@@ -303,6 +305,30 @@ func validCompletedAnnotation() map[string]string {
 	return map[string]string{RotationCompletedAnnotation: "2026-06-01T00:00:00Z"}
 }
 
+// runApplyAdminPasswordRotation fetches the push-source and (optionally) staging
+// Secrets by name from the client — mirroring the production caller, which
+// threads the objects it already ensured this pass — and invokes
+// applyAdminPasswordRotation. A staging Secret absent from the client is passed
+// as nil so the no-op path is exercised.
+func runApplyAdminPasswordRotation(t *testing.T, r *KeystoneReconciler, ks *keystonev1alpha1.Keystone, minLength int) (bool, error) {
+	t.Helper()
+	ctx := context.Background()
+	var pushSource corev1.Secret
+	if err := r.Get(ctx, types.NamespacedName{
+		Name: adminPasswordNextSecretName(ks), Namespace: ks.Namespace,
+	}, &pushSource); err != nil {
+		t.Fatalf("getting push-source secret: %v", err)
+	}
+	var staging *corev1.Secret
+	var s corev1.Secret
+	if err := r.Get(ctx, types.NamespacedName{
+		Name: adminPasswordStagingSecretName(ks), Namespace: ks.Namespace,
+	}, &s); err == nil {
+		staging = &s
+	}
+	return r.applyAdminPasswordRotation(ctx, ks, staging, &pushSource, minLength)
+}
+
 func TestApplyAdminPasswordRotation_ValidCommit(t *testing.T) {
 	g := NewWithT(t)
 	ks := pwRotationTestKeystone()
@@ -320,7 +346,7 @@ func TestApplyAdminPasswordRotation_ValidCommit(t *testing.T) {
 	}
 	r, rec := newPWRotationReconciler(ks, pushSource, staging)
 
-	applied, err := r.applyAdminPasswordRotation(context.Background(), ks, 24)
+	applied, err := runApplyAdminPasswordRotation(t, r, ks, 24)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(applied).To(BeTrue())
 
@@ -386,7 +412,7 @@ func TestApplyAdminPasswordRotation_ConcurrentStagingPatchTolerated(t *testing.T
 		Build()
 	r := &KeystoneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(20)}
 
-	applied, err := r.applyAdminPasswordRotation(context.Background(), ks, 24)
+	applied, err := runApplyAdminPasswordRotation(t, r, ks, 24)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(applied).To(BeTrue(), "a Conflict on the staging Delete must be tolerated as a completed apply")
 
@@ -424,7 +450,7 @@ func TestApplyAdminPasswordRotation_RejectsShortPassword(t *testing.T) {
 	}
 	r, rec := newPWRotationReconciler(ks, pushSource, staging)
 
-	applied, err := r.applyAdminPasswordRotation(context.Background(), ks, 24)
+	applied, err := runApplyAdminPasswordRotation(t, r, ks, 24)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(applied).To(BeFalse())
 
@@ -449,7 +475,7 @@ func TestApplyAdminPasswordRotation_AbsentStaging_NoOp(t *testing.T) {
 	}}
 	r, _ := newPWRotationReconciler(ks, pushSource)
 
-	applied, err := r.applyAdminPasswordRotation(context.Background(), ks, 24)
+	applied, err := runApplyAdminPasswordRotation(t, r, ks, 24)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(applied).To(BeFalse())
 }
@@ -466,7 +492,7 @@ func TestApplyAdminPasswordRotation_MissingAnnotation_NoOp(t *testing.T) {
 	}
 	r, _ := newPWRotationReconciler(ks, pushSource, staging)
 
-	applied, err := r.applyAdminPasswordRotation(context.Background(), ks, 24)
+	applied, err := runApplyAdminPasswordRotation(t, r, ks, 24)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(applied).To(BeFalse())
 	// Staging retained (no annotation yet → CronJob hasn't completed a write).
@@ -491,7 +517,7 @@ func TestApplyAdminPasswordRotation_MalformedAnnotation_Warns(t *testing.T) {
 	}
 	r, rec := newPWRotationReconciler(ks, pushSource, staging)
 
-	applied, err := r.applyAdminPasswordRotation(context.Background(), ks, 24)
+	applied, err := runApplyAdminPasswordRotation(t, r, ks, 24)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(applied).To(BeFalse())
 	g.Expect(drainEventReasons(rec)).To(ContainElement("AdminPasswordRotationAnnotationInvalid"))
@@ -551,19 +577,21 @@ func TestAdminPasswordPushSourceReady_Gating(t *testing.T) {
 	g := NewWithT(t)
 	ks := pwRotationTestKeystone()
 
-	// Empty push-source → not ready.
+	// Empty push-source → not ready. The push-source object is passed directly,
+	// mirroring the caller that threads the ensured object.
 	emptySource := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
 		Name: adminPasswordNextSecretName(ks), Namespace: ks.Namespace,
 	}}
 	r, _ := newPWRotationReconciler(ks, emptySource)
-	g.Expect(r.adminPasswordPushSourceReady(context.Background(), ks, 32)).To(BeFalse())
+	g.Expect(r.adminPasswordPushSourceReady(emptySource, 32)).To(BeFalse())
 
 	// Populated with a valid password → ready.
-	r2, _ := newPWRotationReconciler(ks, &corev1.Secret{
+	populatedSource := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: adminPasswordNextSecretName(ks), Namespace: ks.Namespace},
 		Data:       map[string][]byte{"password": []byte(validTestPassword)},
-	})
-	g.Expect(r2.adminPasswordPushSourceReady(context.Background(), ks, 32)).To(BeTrue())
+	}
+	r2, _ := newPWRotationReconciler(ks, populatedSource)
+	g.Expect(r2.adminPasswordPushSourceReady(populatedSource, 32)).To(BeTrue())
 }
 
 // ---------------------------------------------------------------------------

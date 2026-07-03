@@ -82,16 +82,19 @@ func (r *KeystoneReconciler) reconcileCredentialKeys(ctx context.Context,
 	//    and the CronJob owns the Data — this is the split-compute-write
 	//    boundary that keeps token-forgery primitives out of the CronJob's
 	//    RBAC on the production Secret.
-	if err := r.ensureCredentialStagingSecret(ctx, keystone); err != nil {
+	staging, err := r.ensureCredentialStagingSecret(ctx, keystone)
+	if err != nil {
 		return ctrl.Result{}, err
 	}
 
 	// Refresh the key_rotation_age gauge from the rotation-completed
-	// annotation. The helper reads the production Secret
-	// first (durable across the inter-rotation steady state) and falls back
-	// to the staging Secret to cover the very-first-rotation pre-apply
-	// window.
-	r.observeRotationAge(ctx, keystone, secretName, credentialStagingSecretName(keystone), "credential")
+	// annotation. The helper reads the production Secret first (durable across
+	// the inter-rotation steady state) and falls back to the staging Secret to
+	// cover the very-first-rotation pre-apply window. Both objects are the ones
+	// already fetched this pass — the production Secret (existing) and the
+	// staging Secret returned by ensureCredentialStagingSecret — so no Secret is
+	// re-read (issue #361).
+	r.observeRotationAge(keystone, existing, staging, "credential")
 
 	// 3. Apply any completed staging rotation onto the production Secret
 	// When applyRotationOutput returns
@@ -99,11 +102,12 @@ func (r *KeystoneReconciler) reconcileCredentialKeys(ctx context.Context,
 	//    re-creates the empty staging Secret for the next CronJob run. The
 	//    upper bound on keys is normalized max + 1 to account for the extra
 	//    incoming primary key produced by `keystone-manage credential_rotate`.
+	//    The staging and production Secrets are threaded in rather than re-read.
 	applied, err := r.applyRotationOutput(
 		ctx,
 		keystone,
-		credentialStagingSecretName(keystone),
-		secretName,
+		staging,
+		existing,
 		"CredentialKeysRotated",
 		3,
 		normalizedCredentialMaxActiveKeys(keystone)+1,
@@ -176,7 +180,7 @@ func (r *KeystoneReconciler) ensureCredentialRotationRBAC(ctx context.Context, k
 // with the `credential-keys` rotation-target label. Thin wrapper
 // over the shared ensureStagingSecret helper; see rotation_staging.go for the
 // field-ownership contract.
-func (r *KeystoneReconciler) ensureCredentialStagingSecret(ctx context.Context, keystone *keystonev1alpha1.Keystone) error {
+func (r *KeystoneReconciler) ensureCredentialStagingSecret(ctx context.Context, keystone *keystonev1alpha1.Keystone) (*corev1.Secret, error) {
 	return r.ensureStagingSecret(ctx, keystone, credentialStagingSecretName(keystone), "credential-keys")
 }
 

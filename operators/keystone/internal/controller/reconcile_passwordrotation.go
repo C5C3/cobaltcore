@@ -15,7 +15,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -179,12 +178,14 @@ func (r *KeystoneReconciler) reconcilePasswordRotation(ctx context.Context,
 
 	// 1. Ensure the operator-owned push-source Secret. applyAdminPasswordRotation
 	//    commits into it and the PushSecret selects it, so it must exist first.
-	if err := r.ensureAdminPasswordPushSourceSecret(ctx, keystone); err != nil {
+	pushSource, err := r.ensureAdminPasswordPushSourceSecret(ctx, keystone)
+	if err != nil {
 		return ctrl.Result{}, err
 	}
 
 	// 2. Ensure the staging Secret the CronJob PATCHes rotated passwords into.
-	if err := r.ensureStagingSecret(ctx, keystone, adminPasswordStagingSecretName(keystone), "admin-password"); err != nil {
+	staging, err := r.ensureStagingSecret(ctx, keystone, adminPasswordStagingSecretName(keystone), "admin-password")
+	if err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -202,13 +203,15 @@ func (r *KeystoneReconciler) reconcilePasswordRotation(ctx context.Context,
 	//    under-reports time-since-live for admin-password compared with fernet
 	//    and credential, which go live the instant the operator updates the
 	//    keys Secret.
-	r.observeRotationAge(ctx, keystone, adminPasswordNextSecretName(keystone),
-		adminPasswordStagingSecretName(keystone), "admin-password")
+	//    Both objects are the ones ensured above — the push-source Secret and the
+	//    staging Secret — so no Secret is re-read (issue #361).
+	r.observeRotationAge(keystone, pushSource, staging, "admin-password")
 
 	// 4. Apply any completed rotation staged by the CronJob.
 	//    On a valid apply, short-circuit and requeue so the next pass re-enters
-	//    the happy path with the push-source Secret already updated.
-	applied, err := r.applyAdminPasswordRotation(ctx, keystone, minLength)
+	//    the happy path with the push-source Secret already updated. The staging
+	//    and push-source Secrets are threaded in rather than re-read.
+	applied, err := r.applyAdminPasswordRotation(ctx, keystone, staging, pushSource, minLength)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("applying admin password rotation output: %w", err)
 	}
@@ -247,7 +250,7 @@ func (r *KeystoneReconciler) reconcilePasswordRotation(ctx context.Context,
 	//    valid password. Before the first rotation completes the push-source
 	//    Secret is empty; pushing it would overwrite the seeded per-CR
 	//    bootstrap/{namespace}/{name}/admin value with nothing.
-	if r.adminPasswordPushSourceReady(ctx, keystone, minLength) {
+	if r.adminPasswordPushSourceReady(pushSource, minLength) {
 		ps := adminPasswordPushSecret(keystone)
 		if err := secrets.EnsurePushSecret(ctx, r.Client, r.Scheme, keystone, ps); err != nil {
 			return ctrl.Result{}, fmt.Errorf("ensuring admin password pushsecret: %w", err)
@@ -308,7 +311,10 @@ func (r *KeystoneReconciler) teardownPasswordRotation(ctx context.Context, keyst
 // (committed by applyAdminPasswordRotation via a full GET+Update replacement);
 // `.data` is deliberately left untouched here so a reconcile never clobbers a
 // previously committed password.
-func (r *KeystoneReconciler) ensureAdminPasswordPushSourceSecret(ctx context.Context, keystone *keystonev1alpha1.Keystone) error {
+// It returns the ensured Secret so the caller can thread it into
+// observeRotationAge, applyAdminPasswordRotation, and adminPasswordPushSourceReady
+// without re-reading it (issue #361).
+func (r *KeystoneReconciler) ensureAdminPasswordPushSourceSecret(ctx context.Context, keystone *keystonev1alpha1.Keystone) (*corev1.Secret, error) {
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      adminPasswordNextSecretName(keystone),
@@ -320,9 +326,9 @@ func (r *KeystoneReconciler) ensureAdminPasswordPushSourceSecret(ctx context.Con
 		// Do NOT touch secret.Data — applyAdminPasswordRotation owns it.
 		return controllerutil.SetControllerReference(keystone, secret, r.Scheme)
 	}); err != nil {
-		return fmt.Errorf("ensuring admin password push-source secret %s: %w", adminPasswordNextSecretName(keystone), err)
+		return nil, fmt.Errorf("ensuring admin password push-source secret %s: %w", adminPasswordNextSecretName(keystone), err)
 	}
-	return nil
+	return secret, nil
 }
 
 // ensureAdminPasswordRotationRBAC ensures the ServiceAccount, Role, and
@@ -429,11 +435,10 @@ func validateAdminPasswordRotationOutput(data map[string][]byte, minLength int) 
 func (r *KeystoneReconciler) applyAdminPasswordRotation(
 	ctx context.Context,
 	keystone *keystonev1alpha1.Keystone,
+	staging, pushSource *corev1.Secret,
 	minLength int,
 ) (applied bool, err error) {
-	return r.commitStagedRotation(ctx, keystone, rotationCommitSpec{
-		stagingSecretName:       adminPasswordStagingSecretName(keystone),
-		targetSecretName:        adminPasswordNextSecretName(keystone),
+	return r.commitStagedRotation(ctx, keystone, staging, pushSource, rotationCommitSpec{
 		targetNoun:              "push-source secret",
 		validate:                func(data map[string][]byte) error { return validateAdminPasswordRotationOutput(data, minLength) },
 		annotationInvalidReason: "AdminPasswordRotationAnnotationInvalid",
@@ -450,12 +455,11 @@ func (r *KeystoneReconciler) applyAdminPasswordRotation(
 // OpenBao bootstrap/{namespace}/{name}/admin value is never overwritten with an
 // empty payload before the first rotation completes. Any read error or
 // invalid payload is treated as "not ready" (best-effort gate).
-func (r *KeystoneReconciler) adminPasswordPushSourceReady(ctx context.Context, keystone *keystonev1alpha1.Keystone, minLength int) bool {
-	var pushSource corev1.Secret
-	if err := r.Get(ctx, types.NamespacedName{
-		Name:      adminPasswordNextSecretName(keystone),
-		Namespace: keystone.Namespace,
-	}, &pushSource); err != nil {
+// pushSource is the operator-owned push-source Secret the caller already
+// ensured this pass; it is threaded in rather than re-read (issue #361). A nil
+// object is treated as "not ready".
+func (r *KeystoneReconciler) adminPasswordPushSourceReady(pushSource *corev1.Secret, minLength int) bool {
+	if pushSource == nil {
 		return false
 	}
 	return validateAdminPasswordRotationOutput(pushSource.Data, minLength) == nil

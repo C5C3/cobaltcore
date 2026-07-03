@@ -78,26 +78,30 @@ func (r *KeystoneReconciler) reconcileFernetKeys(ctx context.Context,
 	//    and the CronJob owns the Data — this is the split-compute-write
 	//    boundary that keeps token-forgery primitives out of the CronJob's
 	//    RBAC on the production Secret.
-	if err := r.ensureFernetStagingSecret(ctx, keystone); err != nil {
+	staging, err := r.ensureFernetStagingSecret(ctx, keystone)
+	if err != nil {
 		return ctrl.Result{}, err
 	}
 
 	// Refresh the key_rotation_age gauge from the rotation-completed
-	// annotation. The helper reads the production Secret
-	// first (durable across the inter-rotation steady state) and falls back
-	// to the staging Secret to cover the very-first-rotation pre-apply
-	// window. Called BEFORE applyRotationOutput so that, when the apply path
-	// runs and re-stamps the production annotation, the next reconcile picks
-	// up the freshest timestamp.
-	r.observeRotationAge(ctx, keystone, secretName, fernetStagingSecretName(keystone), "fernet")
+	// annotation. The helper reads the production Secret first (durable across
+	// the inter-rotation steady state) and falls back to the staging Secret to
+	// cover the very-first-rotation pre-apply window. Both objects are the ones
+	// already fetched this pass — the production Secret (existing) and the
+	// staging Secret returned by ensureFernetStagingSecret — so no Secret is
+	// re-read (issue #361). Called BEFORE applyRotationOutput so that, when the
+	// apply path runs and re-stamps the production annotation, the next reconcile
+	// picks up the freshest timestamp.
+	r.observeRotationAge(keystone, existing, staging, "fernet")
 
 	// 3. Apply any completed rotation staged by the CronJob. On a valid apply we short-circuit the rest of
 	//    the step chain and requeue so the next pass re-enters the happy
-	//    path with the production Secret already updated.
+	//    path with the production Secret already updated. The staging and
+	//    production Secrets are threaded in rather than re-read.
 	applied, err := r.applyRotationOutput(
 		ctx, keystone,
-		fernetStagingSecretName(keystone),
-		secretName,
+		staging,
+		existing,
 		"FernetKeysRotated",
 		3,
 		normalizedFernetMaxActiveKeys(keystone)+1,
@@ -170,7 +174,7 @@ func (r *KeystoneReconciler) ensureFernetRotationRBAC(ctx context.Context, keyst
 // `fernet-keys` rotation-target label. Thin wrapper over the shared
 // ensureStagingSecret helper; see rotation_staging.go for the field-ownership
 // contract.
-func (r *KeystoneReconciler) ensureFernetStagingSecret(ctx context.Context, keystone *keystonev1alpha1.Keystone) error {
+func (r *KeystoneReconciler) ensureFernetStagingSecret(ctx context.Context, keystone *keystonev1alpha1.Keystone) (*corev1.Secret, error) {
 	return r.ensureStagingSecret(ctx, keystone, fernetStagingSecretName(keystone), "fernet-keys")
 }
 
