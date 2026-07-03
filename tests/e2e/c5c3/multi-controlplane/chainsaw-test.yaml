@@ -131,7 +131,8 @@ spec:
             credentialrotations.c5c3.io \
             keystones.keystone.openstack.c5c3.io \
             applicationcredentials.openstack.k-orc.cloud \
-            externalsecrets.external-secrets.io; do
+            externalsecrets.external-secrets.io \
+            vaultdynamicsecrets.generators.external-secrets.io; do
             if ! kubectl get crd "$crd" >/dev/null 2>&1; then
               missing="${missing} ${crd}"
             fi
@@ -276,9 +277,89 @@ spec:
           kubectl apply -f 00-tenant-a-controlplane.yaml
           kubectl apply -f 01-tenant-b-controlplane.yaml
 
+          # ── Onboard each tenant's OpenBao database-engine role (stage b, #439) ─
+          # Both managed ControlPlanes draw engine-issued (Dynamic) DB credentials
+          # from distinct per-tenant roles (keystone-<ns>, keyed on the namespace
+          # alone), so each role must be provisioned once its MariaDB is Ready
+          # before the chain can pass DBCredentialsReady. Idempotent, so safe to re-run.
+          ROLE_A="keystone-${NS_A}"
+          ROLE_B="keystone-${NS_B}"
+          kubectl wait mariadb/openstack-db -n "${NS_A}" --for=condition=Ready --timeout=900s
+          kubectl wait mariadb/openstack-db -n "${NS_B}" --for=condition=Ready --timeout=900s
+          export BAO_TOKEN
+          ../../../../deploy/openbao/bootstrap/setup-database-tenant.sh "${NS_A}" "${CP_A}"
+          ../../../../deploy/openbao/bootstrap/setup-database-tenant.sh "${NS_B}" "${CP_B}"
+
+          # bao_db_exec runs a bao command inside openbao-0 with the mTLS client
+          # material (the DB-engine reads/leases need the client cert, unlike the
+          # kv-only bao_clouds_sha above).
+          bao_db_exec() {
+            kubectl exec -n "${BAO_NS}" "${BAO_POD}" -- \
+              env BAO_ADDR="${BAO_ADDR}" BAO_TOKEN="${BAO_TOKEN}" \
+              VAULT_CACERT="${VAULT_CACERT}" \
+              VAULT_CLIENT_CERT=/openbao/client-tls/tls.crt \
+              VAULT_CLIENT_KEY=/openbao/client-tls/tls.key "$@"
+          }
+          # login_probe <ns> <mariadb-svc-ns> <user> <pass> → 0 iff auth succeeds.
+          login_probe() {
+            kubectl run "mariadb-login-$(date +%s%N)" --image=ghcr.io/c5c3/keystone:2025.2 \
+              --rm -i --restart=Never -n "$1" --command -- \
+              python3 -c "import pymysql; pymysql.connect(host='openstack-db.$2.svc', port=3306, user='$3', password='$4', connect_timeout=10).close()"
+          }
+
           # ── Task 7.1: both Ready=True with distinct, non-empty AC ids ───────
           wait_cp_condition "${CP_A}" "${NS_A}" Ready 900
           wait_cp_condition "${CP_B}" "${NS_B}" Ready 900
+
+          # ── DB-engine isolation (AC 4): distinct per-tenant roles + revoke ──
+          # The two ControlPlanes draw from DISTINCT per-tenant roles/paths.
+          assert_ne "per-tenant dynamic DB roles" "${ROLE_A}" "${ROLE_B}"
+          assert_eq "tenant-a VaultDynamicSecret reads tenant-a creds path" \
+            "database/mariadb/creds/${ROLE_A}" \
+            "$(kubectl get vaultdynamicsecret "${CP_A}-keystone-db-credentials" -n "${NS_A}" -o 'jsonpath={.spec.path}')"
+          assert_eq "tenant-b VaultDynamicSecret reads tenant-b creds path" \
+            "database/mariadb/creds/${ROLE_B}" \
+            "$(kubectl get vaultdynamicsecret "${CP_B}-keystone-db-credentials" -n "${NS_B}" -o 'jsonpath={.spec.path}')"
+
+          # ── Templated-policy tenant isolation (F1/#439) ─────────────────────
+          # A token minted from tenant-a's keystone-db-creds SA may read ONLY
+          # tenant-a's creds path: the keystone-db-dynamic policy templates the
+          # readable path to the caller's own service_account_namespace (an exact
+          # match), so a cross-tenant read is denied even though the shared
+          # keystone-db role binds bound_service_account_namespaces="*".
+          TOKEN_A="$(kubectl create token keystone-db-creds -n "${NS_A}" --duration=10m)"
+          CLIENT_TOKEN_A="$(bao_db_exec bao write -field=token \
+            auth/kubernetes/management/login role=keystone-db jwt="${TOKEN_A}")"
+          if [ -z "${CLIENT_TOKEN_A}" ]; then
+            echo "ERROR: tenant-a keystone-db login returned no token"; exit 1
+          fi
+          # Own path MUST read — proves the login + policy grant work, so the deny
+          # check below cannot pass vacuously on a broken login.
+          if ! bao_db_exec env BAO_TOKEN="${CLIENT_TOKEN_A}" \
+            bao read "database/mariadb/creds/${ROLE_A}" >/dev/null 2>&1; then
+            echo "ERROR: tenant-a token could not read its OWN creds path ${ROLE_A}"; exit 1
+          fi
+          echo "OK: tenant-a token reads its own creds path (${ROLE_A})"
+          # Cross-tenant path MUST be denied by the templated policy.
+          if bao_db_exec env BAO_TOKEN="${CLIENT_TOKEN_A}" \
+            bao read "database/mariadb/creds/${ROLE_B}" >/dev/null 2>&1; then
+            echo "ERROR: tenant-a token READ tenant-b creds path ${ROLE_B}; cross-tenant DB-credential isolation is broken"; exit 1
+          fi
+          echo "OK: tenant-a token denied on tenant-b creds path (${ROLE_B}) — templated-policy isolation holds"
+
+          # Revoke ALL of tenant-a's issued DB credentials by lease prefix, then
+          # prove tenant-b's materialised credential still authenticates against
+          # tenant-b's MariaDB and tenant-b stays Ready — one tenant's revoke does
+          # not affect another.
+          UB="$(kubectl get secret "${CP_B}-keystone-db-credentials" -n "${NS_B}" -o 'jsonpath={.data.username}' | base64 -d)"
+          PB="$(kubectl get secret "${CP_B}-keystone-db-credentials" -n "${NS_B}" -o 'jsonpath={.data.password}' | base64 -d)"
+          bao_db_exec bao lease revoke -prefix "database/mariadb/creds/${ROLE_A}"
+          sleep 5
+          echo "== tenant-b credential must survive tenant-a's revoke =="
+          login_probe "${NS_B}" "${NS_B}" "${UB}" "${PB}"
+          echo "OK: tenant-b credential unaffected by tenant-a's DB revoke (AC 4)"
+          assert_eq "tenant-b ControlPlane still Ready after tenant-a DB revoke" "True" \
+            "$(kubectl get controlplane "${CP_B}" -n "${NS_B}" -o "jsonpath={.status.conditions[?(@.type=='Ready')].status}")"
 
           ID_A="$(cp_ac_id "${CP_A}" "${NS_A}")"
           ID_B="$(cp_ac_id "${CP_B}" "${NS_B}")"

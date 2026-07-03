@@ -157,7 +157,8 @@ spec:
             applicationcredentials.openstack.k-orc.cloud \
             services.openstack.k-orc.cloud \
             endpoints.openstack.k-orc.cloud \
-            externalsecrets.external-secrets.io; do
+            externalsecrets.external-secrets.io \
+            vaultdynamicsecrets.generators.external-secrets.io; do
             if ! kubectl get crd "$crd" >/dev/null 2>&1; then
               missing="${missing} ${crd}"
             fi
@@ -241,8 +242,58 @@ spec:
           assert_eq "Memcached openstack-memcached owned by ControlPlane" "${CP_NAME}" \
             "$(owner_of memcacheds.memcached.c5c3.io openstack-memcached)"
 
+          # ── Onboard the OpenBao database-engine tenant (stage b, #439) ──────
+          # Managed-mode Keystone now draws engine-issued (Dynamic) DB
+          # credentials from database/mariadb/creds/keystone-<ns> (keyed on the
+          # namespace alone). That per-tenant role only exists after
+          # setup-database-tenant.sh configures
+          # it against the now-Ready MariaDB. The e2e-controlplane CI job runs
+          # deploy-infra with WITH_CONTROLPLANE_CR=false, so deploy-infra does not
+          # onboard — this suite must. The script is idempotent, so a second
+          # onboard (e.g. a local WITH_CONTROLPLANE_CR=true run) is safe.
+          kubectl wait mariadb/openstack-db -n "${CP_NS}" --for=condition=Ready --timeout=300s
+          export BAO_TOKEN
+          BAO_TOKEN="$(kubectl get secret openbao-init-keys -n openbao-system \
+            -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token')"
+          if [ -z "${BAO_TOKEN}" ] || [ "${BAO_TOKEN}" = "null" ]; then
+            echo "ERROR: could not extract OpenBao root token for tenant onboarding"; exit 1
+          fi
+          # bao_exec runs a bao command inside openbao-0 with the mTLS client
+          # material (mirrors deploy/openbao/bootstrap/common.sh); reused by the
+          # revocation/isolation link below.
+          bao_exec() {
+            kubectl exec -n openbao-system openbao-0 -- \
+              env BAO_ADDR=https://127.0.0.1:8200 BAO_TOKEN="${BAO_TOKEN}" \
+              VAULT_CACERT=/openbao/tls/ca.crt \
+              VAULT_CLIENT_CERT=/openbao/client-tls/tls.crt \
+              VAULT_CLIENT_KEY=/openbao/client-tls/tls.key "$@"
+          }
+          ../../../../deploy/openbao/bootstrap/setup-database-tenant.sh "${CP_NS}" "${CP_NAME}"
+          echo "OK: OpenBao database-engine tenant onboarded."
+          wait_cp_condition DBCredentialsReady 300
+
+          # ── Assert the DB-credential ExternalSecret is generator-backed ────
+          DB_SECRET="${CP_NAME}-db-credentials"
+          assert_eq "DB-credential ExternalSecret uses a VaultDynamicSecret generator" "VaultDynamicSecret" \
+            "$(kubectl get externalsecret "${DB_SECRET}" -n "${CP_NS}" \
+              -o "jsonpath={.spec.dataFrom[0].sourceRef.generatorRef.kind}")"
+          assert_eq "DB-credential ExternalSecret carries no static Data refs" "" \
+            "$(kubectl get externalsecret "${DB_SECRET}" -n "${CP_NS}" -o 'jsonpath={.spec.data}')"
+          kubectl get vaultdynamicsecret "${DB_SECRET}" -n "${CP_NS}" >/dev/null
+          kubectl get serviceaccount keystone-db-creds -n "${CP_NS}" >/dev/null
+          # The materialised Secret must carry the engine-issued username (a
+          # transient v-kube-... login), not the static "keystone" user.
+          DB_USERNAME="$(kubectl get secret "${DB_SECRET}" -n "${CP_NS}" \
+            -o "jsonpath={.data.username}" | base64 -d)"
+          if [ "${DB_USERNAME}" = "keystone" ] || [ -z "${DB_USERNAME}" ]; then
+            echo "ERROR: DB-credential Secret username '${DB_USERNAME}' is not engine-issued"; exit 1
+          fi
+          echo "OK: DB credential is engine-issued (username '${DB_USERNAME}')"
+
           # ── Link 2: Keystone CR (tag / clusterRefs / merged policy) ────────
           wait_cp_condition KeystoneReady 600
+          assert_eq "Keystone projected with Dynamic credentialsMode" "Dynamic" \
+            "$(kubectl get keystone "${KEYSTONE_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.database.credentialsMode}')"
           assert_eq "Keystone image tag derived from openStackRelease" "2025.2" \
             "$(kubectl get keystone "${KEYSTONE_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.image.tag}')"
           assert_eq "Keystone database clusterRef wired to infra" "openstack-db" \
@@ -303,6 +354,59 @@ spec:
           assert_eq "Aggregate Ready reason" "AllReady" \
             "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o "jsonpath={.status.conditions[?(@.type=='Ready')].reason}")"
 
+          # ── Link 6b: dynamic DB credential engine (no-static / revoke / iso) ─
+          # Per-tenant role is keyed on the namespace alone (dbDynamicRoleFor /
+          # setup-database-tenant.sh: keystone-<ns>).
+          ROLE="keystone-${CP_NS}"
+
+          # AC 2/6: no long-lived static DB password at rest — the retired
+          # stage-(a) per-CP KV path must NOT exist.
+          if bao_exec bao kv get "kv-v2/openstack/keystone/${CP_NS}/${CP_NAME}/db" >/dev/null 2>&1; then
+            echo "ERROR: retired static DB KV path still present at rest"; exit 1
+          fi
+          echo "OK: no static DB password at rest (retired per-CP KV path absent)"
+
+          # login_probe <user> <pass> → exits 0 iff the credential authenticates
+          # against the tenant MariaDB. Uses the keystone image's pymysql (already
+          # a dependency; no extra image to load) from a throwaway pod.
+          login_probe() {
+            kubectl run "mariadb-login-$(date +%s%N)" --image=ghcr.io/c5c3/keystone:2025.2 \
+              --rm -i --restart=Never -n "${CP_NS}" --command -- \
+              python3 -c "import pymysql; pymysql.connect(host='openstack-db.${CP_NS}.svc', port=3306, user='$1', password='$2', connect_timeout=10).close()"
+          }
+
+          # AC 3: an issued credential authenticates, then is rejected after revoke.
+          CREDS="$(bao_exec bao read -format=json "database/mariadb/creds/${ROLE}")"
+          U1="$(echo "${CREDS}" | jq -r '.data.username')"
+          P1="$(echo "${CREDS}" | jq -r '.data.password')"
+          L1="$(echo "${CREDS}" | jq -r '.lease_id')"
+          echo "== issued lease ${L1} (user ${U1}); expect login OK =="
+          login_probe "${U1}" "${P1}"
+          echo "OK: engine-issued credential authenticates"
+          bao_exec bao lease revoke "${L1}"
+          sleep 5
+          echo "== after revoke; expect login REJECTED =="
+          if login_probe "${U1}" "${P1}"; then
+            echo "ERROR: revoked credential still authenticates (AC 3)"; exit 1
+          fi
+          echo "OK: revoked credential is rejected by MariaDB (AC 3)"
+
+          # AC 4 (single-tenant lease isolation): two leases, revoke one, the
+          # other still authenticates and the ControlPlane stays Ready.
+          CREDS_A="$(bao_exec bao read -format=json "database/mariadb/creds/${ROLE}")"
+          CREDS_B="$(bao_exec bao read -format=json "database/mariadb/creds/${ROLE}")"
+          LA="$(echo "${CREDS_A}" | jq -r '.lease_id')"
+          UB="$(echo "${CREDS_B}" | jq -r '.data.username')"
+          PB="$(echo "${CREDS_B}" | jq -r '.data.password')"
+          bao_exec bao lease revoke "${LA}"
+          sleep 5
+          echo "== lease B must survive lease A's revoke =="
+          login_probe "${UB}" "${PB}"
+          echo "OK: an unrelated lease survives another's revoke (AC 4 lease isolation)"
+          assert_eq "ControlPlane still Ready after lease revokes" "True" \
+            "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o "jsonpath={.status.conditions[?(@.type=='Ready')].status}")"
+          unset BAO_TOKEN
+
           # ── Link 7a: Keystone /v3 returns HTTP 200 ─────────────────────────
           # Mirrors tests/e2e/keystone/basic-deployment: GET the in-cluster
           # Keystone v3 root from a throwaway pod using the keystone image's
@@ -345,6 +449,12 @@ spec:
           echo "=== Credential chain (PushSecret / ExternalSecret) ==="
           kubectl describe pushsecret controlplane-keystone-admin-app-credential-backup -n openstack 2>&1 || true
           kubectl describe externalsecret k-orc-clouds-yaml -n openstack 2>&1 || true
+          echo "=== Dynamic DB credential engine (ExternalSecret / VaultDynamicSecret / SA) ==="
+          kubectl describe externalsecret controlplane-keystone-db-credentials -n openstack 2>&1 || true
+          kubectl describe vaultdynamicsecret controlplane-keystone-db-credentials -n openstack 2>&1 || true
+          kubectl get serviceaccount keystone-db-creds -n openstack 2>&1 || true
+          echo "=== OpenBao logs (last 100 lines) ==="
+          kubectl logs -n openbao-system -l app.kubernetes.io/name=openbao --tail=100 --all-containers 2>&1 || true
           echo "=== c5c3-operator logs (last 200 lines) ==="
           kubectl logs -n c5c3-system -l app.kubernetes.io/name=c5c3-operator --tail=200 --all-containers 2>&1 || true
           echo "=== K-ORC controller logs (last 100 lines) ==="

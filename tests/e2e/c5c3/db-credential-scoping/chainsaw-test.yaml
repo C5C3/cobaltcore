@@ -2,24 +2,24 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw E2E test for per-ControlPlane service DB-credential scoping
-# It applies the canonical ControlPlane
-# ("controlplane" in namespace "openstack") and asserts that the c5c3-operator's
-# reconcileDBCredentials sub-reconciler projects a per-ControlPlane,
-# OpenBao-backed DB credential:
+# Chainsaw E2E test for per-ControlPlane service DB-credential scoping (#439).
+# It applies the canonical ControlPlane ("controlplane" in namespace
+# "openstack"), onboards the per-tenant OpenBao database-engine role, and asserts
+# that the c5c3-operator's reconcileDBCredentials sub-reconciler projects a
+# per-ControlPlane, DYNAMIC (engine-issued) DB credential:
 #
-#   - an ExternalSecret named "controlplane-keystone-db-credentials" in the
-#     ControlPlane namespace, owned by the ControlPlane, whose username and
-#     password remoteRefs both read the per-CP OpenBao key
-#     "openstack/keystone/openstack/controlplane/db"
-#     ( = openstack/keystone/{cp.Namespace}/{cp.Name}/db ); and
-#   - the materialised Secret of the same name carrying the username + password
-#     keys ESO synced from that path.
+#   - a VaultDynamicSecret generator named "controlplane-keystone-db-credentials"
+#     reading the per-tenant creds path
+#     "database/mariadb/creds/keystone-openstack"
+#     ( = database/mariadb/creds/keystone-{ns}, keyed on the namespace alone );
+#   - an ExternalSecret of the same name, owned by the ControlPlane, drawing from
+#     that generator via dataFrom.sourceRef.generatorRef (no static Data refs);
+#   - a per-CP ServiceAccount "keystone-db-creds"; and
+#   - the materialised Secret carrying an ENGINE-ISSUED username (a transient
+#     v-kube-... login, not the static "keystone" user).
 #
-# The per-CP path is what the deploy-infra seed writes for the default
-# KORC_CONTROLPLANES entry "openstack/controlplane"
-# (deploy/openbao/bootstrap/write-bootstrap-secrets.sh); the
-# legacy flat shared-key DB static ExternalSecret is removed.
+# The stage-(a) static per-CP KV DB seed is retired (#439): no long-lived static
+# DB password is seeded at rest for managed-mode ControlPlanes.
 #
 # ── DECISION: belt-and-braces presence guard + single consolidated script ────
 # Mirrors tests/e2e/c5c3/full-controlplane-keystone: the c5c3-operator + OpenBao
@@ -59,7 +59,10 @@ spec:
           CP_NS=openstack
           CP_NAME=controlplane
           DB_SECRET=controlplane-keystone-db-credentials
-          DB_REMOTE_KEY=openstack/keystone/openstack/controlplane/db
+          # Per-tenant dynamic role + creds path (must match dbDynamicRoleFor /
+          # setup-database-tenant.sh: keystone-<ns>, keyed on the namespace alone).
+          DB_ROLE=keystone-openstack
+          DB_CREDS_PATH="database/mariadb/creds/${DB_ROLE}"
 
           # ── Presence guard ──────────────────────────────
           # Probe for the CRDs the DB-credential link spans plus the OpenBao
@@ -70,7 +73,8 @@ spec:
           for crd in \
             controlplanes.c5c3.io \
             keystones.keystone.openstack.c5c3.io \
-            externalsecrets.external-secrets.io; do
+            externalsecrets.external-secrets.io \
+            vaultdynamicsecrets.generators.external-secrets.io; do
             if ! kubectl get crd "$crd" >/dev/null 2>&1; then
               missing="${missing} ${crd}"
             fi
@@ -124,41 +128,59 @@ spec:
           # idempotent on a cluster that already carries it.
           kubectl apply -f 00-controlplane-cr.yaml
 
-          # ── Assert the DB-credential ExternalSecret shape ──────────────────
-          # The operator projects it owner-referenced to the ControlPlane, reading
-          # the per-CP OpenBao path for both username and password.
-          wait_ready_condition externalsecret "${DB_SECRET}" "${CP_NS}" 300
+          # ── Onboard the per-tenant OpenBao database-engine role ────────────
+          # Managed-mode Keystone draws engine-issued (Dynamic) credentials; the
+          # role only exists after setup-database-tenant.sh configures it against
+          # the projected, Ready MariaDB. Idempotent, so safe on a cluster the
+          # deploy hook already onboarded.
+          kubectl wait mariadb/openstack-db -n "${CP_NS}" --for=condition=Ready --timeout=600s
+          export BAO_TOKEN
+          BAO_TOKEN="$(kubectl get secret openbao-init-keys -n openbao-system \
+            -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token')"
+          if [ -z "${BAO_TOKEN}" ] || [ "${BAO_TOKEN}" = "null" ]; then
+            echo "ERROR: could not extract OpenBao root token for tenant onboarding"; exit 1
+          fi
+          ../../../../deploy/openbao/bootstrap/setup-database-tenant.sh "${CP_NS}" "${CP_NAME}"
+          unset BAO_TOKEN
 
+          # ── Assert the DB-credential ExternalSecret is generator-backed ────
+          wait_ready_condition externalsecret "${DB_SECRET}" "${CP_NS}" 300
           assert_eq "DB-credential ExternalSecret owned by ControlPlane" "${CP_NAME}" \
             "$(kubectl get externalsecret "${DB_SECRET}" -n "${CP_NS}" \
               -o "jsonpath={.metadata.ownerReferences[?(@.kind=='ControlPlane')].name}")"
-          assert_eq "DB-credential ExternalSecret store" "openbao-cluster-store" \
+          assert_eq "DB-credential ExternalSecret uses a VaultDynamicSecret generator" "VaultDynamicSecret" \
             "$(kubectl get externalsecret "${DB_SECRET}" -n "${CP_NS}" \
-              -o 'jsonpath={.spec.secretStoreRef.name}')"
-          assert_eq "username remoteRef key is per-CP path" "${DB_REMOTE_KEY}" \
+              -o "jsonpath={.spec.dataFrom[0].sourceRef.generatorRef.kind}")"
+          assert_eq "DB-credential ExternalSecret generator name" "${DB_SECRET}" \
             "$(kubectl get externalsecret "${DB_SECRET}" -n "${CP_NS}" \
-              -o "jsonpath={.spec.data[?(@.secretKey=='username')].remoteRef.key}")"
-          assert_eq "password remoteRef key is per-CP path" "${DB_REMOTE_KEY}" \
-            "$(kubectl get externalsecret "${DB_SECRET}" -n "${CP_NS}" \
-              -o "jsonpath={.spec.data[?(@.secretKey=='password')].remoteRef.key}")"
+              -o "jsonpath={.spec.dataFrom[0].sourceRef.generatorRef.name}")"
+          # The old static KV Data refs must be absent (assert absence of old state).
+          assert_eq "DB-credential ExternalSecret carries no static Data refs" "" \
+            "$(kubectl get externalsecret "${DB_SECRET}" -n "${CP_NS}" -o 'jsonpath={.spec.data}')"
 
-          # ── Assert the materialised Secret carries username + password ─────
-          kubectl get secret "${DB_SECRET}" -n "${CP_NS}" >/dev/null
-          for key in username password; do
-            val="$(kubectl get secret "${DB_SECRET}" -n "${CP_NS}" \
-              -o "jsonpath={.data.${key}}" 2>/dev/null || true)"
-            if [ -z "${val}" ]; then
-              echo "ERROR: DB-credential Secret ${DB_SECRET} has no '${key}' key"
-              exit 1
-            fi
-            echo "OK: DB-credential Secret carries '${key}'"
-          done
+          # ── Assert the per-CP generator objects (VDS / SA) ─────────────────
+          assert_eq "VaultDynamicSecret reads the per-tenant creds path" "${DB_CREDS_PATH}" \
+            "$(kubectl get vaultdynamicsecret "${DB_SECRET}" -n "${CP_NS}" -o 'jsonpath={.spec.path}')"
+          assert_eq "VaultDynamicSecret owned by ControlPlane" "${CP_NAME}" \
+            "$(kubectl get vaultdynamicsecret "${DB_SECRET}" -n "${CP_NS}" \
+              -o "jsonpath={.metadata.ownerReferences[?(@.kind=='ControlPlane')].name}")"
+          kubectl get serviceaccount keystone-db-creds -n "${CP_NS}" >/dev/null
+          echo "OK: per-ControlPlane generator objects (ExternalSecret/VaultDynamicSecret/ServiceAccount) present"
+
+          # ── Assert the materialised Secret carries engine-issued creds ─────
+          DB_USERNAME="$(kubectl get secret "${DB_SECRET}" -n "${CP_NS}" \
+            -o "jsonpath={.data.username}" | base64 -d)"
+          if [ "${DB_USERNAME}" = "keystone" ] || [ -z "${DB_USERNAME}" ]; then
+            echo "ERROR: DB-credential Secret username '${DB_USERNAME}' is not engine-issued"
+            exit 1
+          fi
+          echo "OK: DB-credential Secret carries an engine-issued username ('${DB_USERNAME}')"
 
           # ── Assert the ControlPlane DBCredentialsReady condition ───────────
           assert_eq "ControlPlane DBCredentialsReady" "True" \
             "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" \
               -o "jsonpath={.status.conditions[?(@.type=='DBCredentialsReady')].status}")"
-          echo "OK: per-ControlPlane DB-credential scoping verified."
+          echo "OK: per-ControlPlane dynamic DB-credential scoping verified."
     catch:
     - script:
         shell: bash
@@ -166,11 +188,14 @@ spec:
           echo "=== ControlPlane status.conditions ==="
           kubectl get controlplane controlplane -n openstack \
             -o jsonpath='{range .status.conditions[*]}{.type}={.status} ({.reason}: {.message}){"\n"}{end}' 2>&1 || true
-          echo "=== DB-credential ExternalSecret ==="
+          echo "=== DB-credential ExternalSecret / VaultDynamicSecret ==="
           kubectl describe externalsecret controlplane-keystone-db-credentials -n openstack 2>&1 || true
+          kubectl describe vaultdynamicsecret controlplane-keystone-db-credentials -n openstack 2>&1 || true
           echo "=== DB-credential Secret (keys only, no values) ==="
           kubectl describe secret controlplane-keystone-db-credentials -n openstack 2>&1 || true
           echo "=== c5c3-operator logs (last 100 lines) ==="
           kubectl logs -n c5c3-system -l app.kubernetes.io/name=c5c3-operator --tail=100 --all-containers 2>&1 || true
+          echo "=== OpenBao logs (last 80 lines) ==="
+          kubectl logs -n openbao-system -l app.kubernetes.io/name=openbao --tail=80 --all-containers 2>&1 || true
           echo "=== Events (openstack ns, last 30) ==="
           kubectl get events -n openstack --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
