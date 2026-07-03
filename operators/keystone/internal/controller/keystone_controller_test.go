@@ -504,6 +504,94 @@ func TestKeystoneRateLimiter(t *testing.T) {
 	g.Expect(rl.When(req)).To(Equal(rateLimiterBaseDelay), "Forget must reset the backoff")
 }
 
+// TestKeystoneCRPredicate verifies the For(...) watch predicate filters the
+// controller's own status-only updates while admitting spec, label, and
+// annotation changes, as well as the live→Terminating deletionTimestamp
+// transition that would otherwise stall finalizer cleanup.
+func TestKeystoneCRPredicate(t *testing.T) {
+	p := keystoneCRPredicate()
+
+	base := func(gen int64, labels, annotations map[string]string) *keystonev1alpha1.Keystone {
+		return &keystonev1alpha1.Keystone{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:        "ks",
+				Namespace:   "default",
+				Generation:  gen,
+				Labels:      labels,
+				Annotations: annotations,
+			},
+		}
+	}
+
+	// terminating clones base(...) and stamps deletionTimestamp so the update
+	// looks like a CR that has entered Terminating.
+	terminating := func(gen int64, labels, annotations map[string]string) *keystonev1alpha1.Keystone {
+		ks := base(gen, labels, annotations)
+		ts := metav1.Now()
+		ks.DeletionTimestamp = &ts
+		return ks
+	}
+
+	cases := []struct {
+		name  string
+		old   *keystonev1alpha1.Keystone
+		new   *keystonev1alpha1.Keystone
+		admit bool
+	}{
+		{
+			name:  "status-only update filtered",
+			old:   base(3, map[string]string{"a": "b"}, map[string]string{"x": "y"}),
+			new:   base(3, map[string]string{"a": "b"}, map[string]string{"x": "y"}),
+			admit: false,
+		},
+		{
+			name:  "generation change admitted",
+			old:   base(3, nil, nil),
+			new:   base(4, nil, nil),
+			admit: true,
+		},
+		{
+			name:  "label change admitted",
+			old:   base(3, map[string]string{"a": "b"}, nil),
+			new:   base(3, map[string]string{"a": "c"}, nil),
+			admit: true,
+		},
+		{
+			name:  "annotation change admitted",
+			old:   base(3, nil, map[string]string{"x": "y"}),
+			new:   base(3, nil, map[string]string{"x": "z"}),
+			admit: true,
+		},
+		{
+			// kubectl delete keystone sets deletionTimestamp — a metadata-only
+			// mutation that does not bump generation on a status-subresource
+			// CRD — so this transition MUST be admitted or finalizer cleanup
+			// stalls until the next resync.
+			name:  "live to terminating admitted",
+			old:   base(3, nil, nil),
+			new:   terminating(3, nil, nil),
+			admit: true,
+		},
+		{
+			// Once Terminating, a status-only update (same generation, still
+			// deleting) is filtered like any other status write; the deletion
+			// reconcile drives itself via requeue.
+			name:  "already-terminating status update filtered",
+			old:   terminating(3, nil, nil),
+			new:   terminating(3, nil, nil),
+			admit: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			admitted := p.Update(event.UpdateEvent{ObjectOld: tc.old, ObjectNew: tc.new})
+			g.Expect(admitted).To(Equal(tc.admit))
+		})
+	}
+}
+
 func TestAggregateReady_AllTrue(t *testing.T) {
 	g := NewGomegaWithT(t)
 	conditions := []metav1.Condition{

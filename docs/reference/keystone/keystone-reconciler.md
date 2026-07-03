@@ -63,7 +63,7 @@ The controller watches the primary Keystone CR and all owned resources:
 
 | Resource | Watch Type | Effect |
 | --- | --- | --- |
-| `Keystone` | `For()` | Triggers reconciliation on CR changes |
+| `Keystone` | `For()` | Triggers reconciliation on CR changes, filtered by a predicate (see below) so the controller is not re-woken by its own status writes |
 | `Deployment` | `Owns()` | Triggers reconciliation when owned Deployment changes |
 | `Service` | `Owns()` | Triggers reconciliation when owned Service changes |
 | `ConfigMap` | `Owns()` | Triggers reconciliation when owned ConfigMap changes |
@@ -92,6 +92,21 @@ OpenBao-backup finalizer loop: without it the finalizer would requeue at the
 adoption check (Pass-0) and each `DeletionTimestamp` check (Pass-1);
 with it, each stage transition wakes on watch delivery instead — see [PushSecret Name-Match Mapper](#pushsecret-name-match-mapper)
 below.
+
+The `For(Keystone)` watch carries a predicate
+(`Or(GenerationChangedPredicate, LabelChangedPredicate, AnnotationChangedPredicate, terminating)`)
+so a `Status().Update` — which the controller issues on every reconcile — does
+not re-enqueue the CR and spin the loop. The trade-offs are deliberate:
+because the CRD has a status subresource, setting `deletionTimestamp` does
+**not** bump the generation and touches neither labels nor annotations, so the
+dedicated `terminating` predicate admits the live→Terminating transition —
+otherwise finalizer cleanup (and `kubectl delete`) would stall until the next
+resync; the operator's own annotation
+patches pass via `AnnotationChangedPredicate`; the 10-minute informer resync on
+the CR itself is filtered, but every `Owns()`/`Watches()` secondary resource
+still resyncs and enqueues the owner, so drift repair is preserved. A future
+feature that must reconcile on CR *status* written by another actor would be
+filtered by this predicate — an intentional part of the contract.
 
 #### Secret Field Indexer
 
