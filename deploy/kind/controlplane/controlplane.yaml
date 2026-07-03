@@ -27,8 +27,15 @@
 #   korc ... cloudCredentialsRef.cloudName  -> admin (secretName k-orc-clouds-yaml)
 #
 # keystone replicas are pinned to 1 to fit the single-node kind cluster; the
-# MariaDB/Memcached topology is operator-derived (not exposed on the ControlPlane
-# spec), so on kind it follows the c5c3-operator defaults.
+# MariaDB and Memcached topology is pinned the same way via
+# spec.infrastructure.{database,cache}.replicas below. The CRD default for both is
+# 3 (a 3-node Galera cluster plus 3 Memcached pods, matching the production
+# baseline), which OOM-kills a laptop-sized single-node kind, so kind pins them to
+# 1: database.replicas:1 yields a single-instance non-Galera MariaDB (the operator
+# derives Galera from replicas>1) and cache.replicas:1 a single Memcached pod.
+# deploy-infra makes these deploy-time configurable via CONTROLPLANE_DB_REPLICAS /
+# CONTROLPLANE_CACHE_REPLICAS (e.g. =3 for a Galera HA cluster on a bigger box; 2 is
+# rejected — Galera needs a quorum). database.replicas is immutable after creation.
 #
 # The projected Keystone is exposed externally via the shared Envoy Gateway
 # (services.keystone.gateway), so it is reachable from the host at
@@ -41,6 +48,17 @@ metadata:
   namespace: openstack
 spec:
   openStackRelease: "2025.2"
+  # Pin the projected backing services to a single instance for the single-node
+  # kind cluster (see the note above). Only replicas is set here; the c5c3-operator
+  # defaulting webhook fills database.clusterRef/database/secretRef and
+  # cache.clusterRef/backend, exactly as it does for the omitted fields listed
+  # above. deploy-infra overrides these from CONTROLPLANE_DB_REPLICAS /
+  # CONTROLPLANE_CACHE_REPLICAS when WITH_CONTROLPLANE_CR=true.
+  infrastructure:
+    database:
+      replicas: 1
+    cache:
+      replicas: 1
   services:
     keystone:
       replicas: 1

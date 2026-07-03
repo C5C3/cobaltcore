@@ -21,12 +21,19 @@ OpenBao, and register the identity catalog — all reconciled to an aggregate
 ## Prerequisites
 
 Same toolchain as the [Quick Start](./quick-start.md), plus an internet
-connection (K-ORC is cloned from GitHub at a pinned tag). Docker Desktop needs
-ample CPU/memory — by default the ControlPlane provisions a production-shaped
-(Galera) MariaDB, heavier than the single-replica database the per-service path
-uses. On a constrained cluster set `spec.infrastructure.database.replicas: 1`
-(and `cache.replicas: 1`) in the ControlPlane CR to provision a single-instance,
-non-Galera MariaDB instead.
+connection (K-ORC is cloned from GitHub at a pinned tag).
+
+The bundled kind `ControlPlane` CR pins its backing services to a single instance
+(`spec.infrastructure.database.replicas: 1`, `cache.replicas: 1`) so the
+fresh-create chain fits a single-node kind cluster: `database.replicas: 1` yields
+a single-instance, non-Galera MariaDB (the operator derives Galera from
+`replicas > 1`) and `cache.replicas: 1` a single Memcached pod. The CRD default for
+both is `3` — a 3-node Galera cluster plus three Memcached pods, matching the
+production baseline — which OOM-kills a laptop-sized kind. To provision the
+production-shaped topology on a bigger box, set `CONTROLPLANE_DB_REPLICAS=3` and/or
+`CONTROLPLANE_CACHE_REPLICAS=N` for Step 2 (`2` is rejected for the database —
+Galera needs a quorum). `database.replicas` is immutable after the CR is created,
+so change it on a fresh environment (`make teardown-infra` first).
 
 ```bash
 make install-test-deps
@@ -85,6 +92,13 @@ metadata:
   namespace: openstack
 spec:
   openStackRelease: "2025.2"
+  # Single-node backing services for kind. Omit these and both default to 3 (a
+  # 3-node Galera MariaDB plus three Memcached pods), which OOM-kills a small kind.
+  infrastructure:
+    database:
+      replicas: 1     # single-instance, non-Galera MariaDB (Galera = replicas > 1)
+    cache:
+      replicas: 1     # single Memcached pod
   services:
     keystone:
       replicas: 1
@@ -123,10 +137,12 @@ spec:
       secretRef:
         name: keystone-db         # placeholder default — the operator replaces it
                                   # with {name}-keystone-db-credentials (managed mode)
+      replicas: 1                 # single-instance, non-Galera; omit to default to 3 (Galera)
     cache:
       clusterRef:
         name: openstack-memcached
       backend: dogpile.cache.pymemcache
+      replicas: 1                 # single Memcached pod; omit to default to 3
   services:
     keystone:
       replicas: 1

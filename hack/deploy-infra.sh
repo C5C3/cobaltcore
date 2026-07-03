@@ -113,6 +113,22 @@ CONTROLPLANE_NAME="${CONTROLPLANE_NAME:-controlplane}"
 # Ignored unless WITH_CONTROLPLANE=true.
 CONTROLPLANE_OPERATORS="${CONTROLPLANE_OPERATORS:-flux}"
 
+# Single-node footprint of the ControlPlane-projected backing services. On the
+# WITH_CONTROLPLANE path the c5c3-operator provisions MariaDB and Memcached itself
+# from the ControlPlane CR; these two knobs patch spec.infrastructure.{database,
+# cache}.replicas of the bundled CR before it is applied (WITH_CONTROLPLANE_CR=true).
+# Default 1 so a single-node kind gets a single-instance non-Galera MariaDB and a
+# single Memcached pod (the CRD default is 3, which spins up a 3-node Galera cluster
+# plus 3 Memcached pods and OOM-kills a laptop-sized kind).
+#   CONTROLPLANE_DB_REPLICAS=3     — Galera HA cluster (2 is rejected by the c5c3
+#                                    validating webhook: Galera needs a quorum).
+#   CONTROLPLANE_CACHE_REPLICAS=N  — N Memcached pods.
+# database.replicas is IMMUTABLE after the ControlPlane CR is created, so change it
+# on a fresh environment (teardown-infra first); cache.replicas is reconciled live.
+# Ignored unless WITH_CONTROLPLANE=true and WITH_CONTROLPLANE_CR=true.
+CONTROLPLANE_DB_REPLICAS="${CONTROLPLANE_DB_REPLICAS:-1}"
+CONTROLPLANE_CACHE_REPLICAS="${CONTROLPLANE_CACHE_REPLICAS:-1}"
+
 # Gateway API CRD release installed before the keystone-operator HelmRelease so
 # the operator's HTTPRoute watch has a registered kind at startup.
 # Keep aligned with sigs.k8s.io/gateway-api in operators/keystone/go.mod.
@@ -886,6 +902,41 @@ render_kind_config() {
     "${src}" > "${out_path}"
 }
 
+# render_controlplane_replicas rewrites spec.infrastructure.{database,cache}.replicas
+# of the ControlPlane CR(s) named ${CONTROLPLANE_NAME} in the given manifest file,
+# from CONTROLPLANE_DB_REPLICAS / CONTROLPLANE_CACHE_REPLICAS. The values are
+# validated first so an invalid footprint is rejected here, before `kubectl apply`,
+# rather than by the c5c3 validating webhook after the CR is sent: both must be a
+# positive integer, and the database count may not be 2 (a two-node Galera cluster
+# cannot hold a quorum — the webhook rejects it). Returns non-zero on an invalid
+# footprint instead of exiting, so the caller decides how to handle it; main() runs
+# under `set -e`, so the bare call there still fails the deploy fast. Name-scoped to
+# the CR we just (possibly) renamed so a growing overlay is not silently rewritten;
+# tonumber keeps the value an integer (the CRD schema types replicas as integer).
+# Extracted from main() so it is unit-testable
+# (tests/unit/hack/deploy_infra_controlplane_replicas_test.sh).
+render_controlplane_replicas() {
+  local manifest="$1"
+
+  local knob val
+  for knob in CONTROLPLANE_DB_REPLICAS CONTROLPLANE_CACHE_REPLICAS; do
+    val="${!knob}"
+    if [[ ! "${val}" =~ ^[0-9]+$ ]] || (( val < 1 )); then
+      log "ERROR: ${knob}='${val}' is not a positive integer."
+      return 1
+    fi
+  done
+  if (( CONTROLPLANE_DB_REPLICAS == 2 )); then
+    log "ERROR: CONTROLPLANE_DB_REPLICAS=2 is rejected (Galera needs a quorum); use 1 (standalone) or >=3."
+    return 1
+  fi
+
+  CONTROLPLANE_DB_REPLICAS="${CONTROLPLANE_DB_REPLICAS}" CONTROLPLANE_CACHE_REPLICAS="${CONTROLPLANE_CACHE_REPLICAS}" CONTROLPLANE_NAME="${CONTROLPLANE_NAME}" yq -i \
+    '(select(.kind == "ControlPlane" and .metadata.name == strenv(CONTROLPLANE_NAME)) | .spec.infrastructure.database.replicas) = (strenv(CONTROLPLANE_DB_REPLICAS) | tonumber)
+     | (select(.kind == "ControlPlane" and .metadata.name == strenv(CONTROLPLANE_NAME)) | .spec.infrastructure.cache.replicas) = (strenv(CONTROLPLANE_CACHE_REPLICAS) | tonumber)' \
+    "${manifest}"
+}
+
 # ---------------------------------------------------------------------------
 # main — Orchestrate the 8-step deployment sequence.
 # ---------------------------------------------------------------------------
@@ -903,6 +954,7 @@ main() {
   log "ControlPlane stack  : ${WITH_CONTROLPLANE} (set WITH_CONTROLPLANE=true to provision infra via the c5c3 ControlPlane)"
   if [[ "${WITH_CONTROLPLANE}" == "true" ]]; then
     log "ControlPlane operators : ${CONTROLPLANE_OPERATORS} (flux = published chart + K-ORC Flux source; external = operators deployed out of band)"
+    log "ControlPlane backing   : MariaDB replicas=${CONTROLPLANE_DB_REPLICAS} (>1 = Galera), Memcached replicas=${CONTROLPLANE_CACHE_REPLICAS} (override via CONTROLPLANE_DB_REPLICAS / CONTROLPLANE_CACHE_REPLICAS)"
   fi
   log ""
 
@@ -1358,6 +1410,13 @@ main() {
           "${cp_manifest}"
         log "  Set ControlPlane publicEndpoint to https://keystone.127-0-0-1.nip.io:${KIND_HOST_PORT}/v3 (KIND_HOST_PORT override)."
       fi
+
+      # Project the single-node footprint onto the bundled CR. The bundled CR
+      # already carries replicas: 1 for both backing services; this makes the value
+      # deploy-time configurable (CONTROLPLANE_DB_REPLICAS / CONTROLPLANE_CACHE_REPLICAS)
+      # without editing the tracked manifest.
+      render_controlplane_replicas "${cp_manifest}"
+      log "  Set ControlPlane backing-service replicas: MariaDB=${CONTROLPLANE_DB_REPLICAS} (>1 = Galera), Memcached=${CONTROLPLANE_CACHE_REPLICAS}."
 
       # Apply the ControlPlane CR. Retry briefly: the c5c3-operator validating webhook
       # may need a moment after the chart install before it accepts the CR.
