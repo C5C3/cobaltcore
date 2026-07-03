@@ -47,8 +47,8 @@ WAIT_TIMEOUT="${WAIT_TIMEOUT:-180s}"
 # loudly on the bump PR, forcing a human to re-verify the new upstream installer.
 # Recompute with:
 #   curl -fsSL https://github.com/k-orc/openstack-resource-controller/releases/download/<tag>/install.yaml | sha256sum
-KORC_PINNED_TAG="v2.5.0"
-KORC_INSTALL_SHA256="99bf24f0472017585ff1a2df25c1584704fe5503575a711082608517e7fc77f2"
+KORC_PINNED_TAG="v2.6.0"
+KORC_INSTALL_SHA256="affe57ece8c81001d4dacd35fe3bd5bf35662ed6b5c4b1da59f334c685bba109"
 
 if [[ ! -f "${KORC_SOURCE}" ]]; then
   echo "::error::K-ORC source manifest not found: ${KORC_SOURCE}"

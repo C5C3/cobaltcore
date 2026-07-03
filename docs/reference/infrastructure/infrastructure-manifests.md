@@ -140,7 +140,7 @@ namespace, and poll at `interval: 1h`.
 **K-ORC is sourced from Git, not Helm.** K-ORC publishes no Helm chart (its
 `github.io` page serves no Helm index), so `sources/k-orc.yaml` is a `GitRepository`
 — still `source.toolkit.fluxcd.io/v1`, in `flux-system`, polling at `interval: 1h`
-— pinned to the upstream release tag `v2.5.0` and scoped to `/dist` via `spec.ignore`.
+— pinned to the upstream release tag `v2.6.0` and scoped to `/dist` via `spec.ignore`.
 It is applied by a Flux `Kustomization`, not a HelmRelease; see
 [K-ORC (OpenStack Resource Controller)](#k-orc-openstack-resource-controller).
 
@@ -428,7 +428,7 @@ provisioning, memcached-operator for caching, and external-secrets for secret ma
 | --- | --- |
 | Kind | `Kustomization` (`kustomize.toolkit.fluxcd.io/v1`) |
 | Target namespace | `orc-system` (the upstream installer self-namespaces) |
-| Source | `k-orc` `GitRepository` (tag `v2.5.0`) |
+| Source | `k-orc` `GitRepository` (tag `v2.6.0`) |
 | Path | `./dist` |
 | Dependencies | None |
 
@@ -438,7 +438,7 @@ c5c3-operator drives to project a `ControlPlane`'s desired state into Keystone.
 
 K-ORC ships no Helm chart, so it is applied as a Flux `Kustomization` over the upstream
 release manifest rather than a HelmRelease. The `GitRepository` source vendors `./dist`
-from the pinned tag `v2.5.0`; `dist/install.yaml` there is byte-identical to the
+from the pinned tag `v2.6.0`; `dist/install.yaml` there is byte-identical to the
 published `install.yaml` release asset. The path carries no `kustomization.yaml`, so the
 kustomize-controller generates one over `dist/install.yaml` and applies it verbatim
 (`prune: true`, `wait: true`). The installer already declares the `orc-system`
