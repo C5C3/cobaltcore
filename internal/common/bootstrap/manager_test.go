@@ -56,7 +56,7 @@ func TestManagerConfig_validate_validWithSetupFunc(t *testing.T) {
 	cfg := ManagerConfig{
 		Scheme:           runtime.NewScheme(),
 		LeaderElectionID: "test.c5c3.io",
-		SetupFunc: func(_ ctrl.Manager, _ bool) error {
+		SetupFunc: func(_ ctrl.Manager, _ bool, _ int) error {
 			return nil
 		},
 	}
@@ -106,6 +106,11 @@ func TestParseRunOptions_defaults(t *testing.T) {
 	if opts.namespace != "tenant-a" {
 		t.Fatalf("namespace = %q, want tenant-a (from cfg)", opts.namespace)
 	}
+	// The flag defaults to the shared default of 2.
+	if opts.maxConcurrentReconciles != defaultMaxConcurrentReconciles {
+		t.Fatalf("maxConcurrentReconciles = %d, want %d (shared default)",
+			opts.maxConcurrentReconciles, defaultMaxConcurrentReconciles)
+	}
 }
 
 // TestParseRunOptions_injectedArgs verifies that flag values are read from the
@@ -120,6 +125,7 @@ func TestParseRunOptions_injectedArgs(t *testing.T) {
 		"--enable-webhooks=false",
 		"--sync-period=5m",
 		"--namespace=tenant-b",
+		"--max-concurrent-reconciles=8",
 	}
 	opts, err := parseRunOptions(cfg, args)
 	if err != nil {
@@ -127,6 +133,10 @@ func TestParseRunOptions_injectedArgs(t *testing.T) {
 	}
 	if opts.metricsAddr != ":9090" || opts.probeAddr != ":9091" {
 		t.Fatalf("addresses = %q/%q, want :9090/:9091", opts.metricsAddr, opts.probeAddr)
+	}
+	// An explicit --max-concurrent-reconciles wins over the cfg default.
+	if opts.maxConcurrentReconciles != 8 {
+		t.Fatalf("maxConcurrentReconciles = %d, want 8 (CLI)", opts.maxConcurrentReconciles)
 	}
 	if !opts.enableLeaderElection {
 		t.Fatal("enableLeaderElection = false, want true")

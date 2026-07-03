@@ -144,6 +144,14 @@ type KeystoneReconciler struct {
 	// with "no matches for kind Certificate" on clusters without cert-manager
 	// (issue #475).
 	certManagerAvailable bool
+
+	// MaxConcurrentReconciles bounds how many Keystone CRs reconcile
+	// concurrently. It is threaded from the --max-concurrent-reconciles flag
+	// (see internal/common/bootstrap) and applied to the controller's
+	// controller.Options in SetupWithManager. A value <= 0 falls back to
+	// defaultMaxConcurrentReconciles via effectiveMaxConcurrentReconciles, so
+	// the zero value is safe for programmatically constructed reconcilers.
+	MaxConcurrentReconciles int
 }
 
 // httpRouteGVK identifies the HTTPRoute kind the operator would watch when

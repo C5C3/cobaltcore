@@ -51,13 +51,14 @@ func main() {
 	if err := bootstrap.Run(bootstrap.ManagerConfig{
 		Scheme:           scheme,
 		LeaderElectionID: "keystone.openstack.c5c3.io",
-		SetupFunc: func(mgr ctrl.Manager, webhooks bool) error {
+		SetupFunc: func(mgr ctrl.Manager, webhooks bool, maxConcurrentReconciles int) error {
 			// +kubebuilder:scaffold:builder — register controllers here
 			if err := (&controller.KeystoneReconciler{
-				Client:            mgr.GetClient(),
-				Scheme:            mgr.GetScheme(),
-				Recorder:          mgr.GetEventRecorderFor("keystone-controller"), //nolint:staticcheck // SA1019: reconciler consumes record.EventRecorder (old events API); GetEventRecorder returns the incompatible events/v1 type.
-				OperatorNamespace: controller.DetectOperatorNamespace(),
+				Client:                  mgr.GetClient(),
+				Scheme:                  mgr.GetScheme(),
+				Recorder:                mgr.GetEventRecorderFor("keystone-controller"), //nolint:staticcheck // SA1019: reconciler consumes record.EventRecorder (old events API); GetEventRecorder returns the incompatible events/v1 type.
+				OperatorNamespace:       controller.DetectOperatorNamespace(),
+				MaxConcurrentReconciles: maxConcurrentReconciles,
 			}).SetupWithManager(mgr); err != nil {
 				return err
 			}

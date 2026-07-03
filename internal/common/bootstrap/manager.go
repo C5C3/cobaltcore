@@ -43,9 +43,18 @@ type ManagerConfig struct {
 	// SetupFunc is an optional callback invoked after manager creation to
 	// register controllers and webhooks. This is where each operator wires
 	// its reconcilers. Corresponds to the +kubebuilder:scaffold:builder
-	// marker in a standard kubebuilder project.
-	SetupFunc func(mgr ctrl.Manager, webhooks bool) error
+	// marker in a standard kubebuilder project. The third argument is the
+	// resolved --max-concurrent-reconciles value; controllers that do not tune
+	// concurrency may ignore it.
+	SetupFunc func(mgr ctrl.Manager, webhooks bool, maxConcurrentReconciles int) error
 }
+
+// defaultMaxConcurrentReconciles is the default for the
+// --max-concurrent-reconciles flag. The controller-runtime default of 1
+// serialises reconciles across CRs; 2 lets a slow or flapping CR no longer
+// block every other CR while keeping the extra worker footprint modest for a
+// control-plane component.
+const defaultMaxConcurrentReconciles = 2
 
 // validate returns an error if required fields are missing.
 func (c *ManagerConfig) validate() error {
@@ -89,13 +98,14 @@ func zapOptions() zap.Options {
 // produced by parseRunOptions and consumed by run, keeping flag parsing
 // separate from manager construction so each can be tested in isolation.
 type runOptions struct {
-	metricsAddr          string
-	probeAddr            string
-	enableLeaderElection bool
-	enableWebhooks       bool
-	syncPeriod           time.Duration
-	namespace            string
-	zapOpts              zap.Options
+	metricsAddr             string
+	probeAddr               string
+	enableLeaderElection    bool
+	enableWebhooks          bool
+	syncPeriod              time.Duration
+	namespace               string
+	maxConcurrentReconciles int
+	zapOpts                 zap.Options
 }
 
 // parseRunOptions registers the operator's flags on a fresh flag.FlagSet and
@@ -125,6 +135,12 @@ func parseRunOptions(cfg ManagerConfig, args []string) (runOptions, error) {
 		"If set, restricts the operator to watch resources in this namespace only. "+
 			"Used for namespace-scoped deployments. "+
 			"Overrides ManagerConfig.Namespace when provided.")
+
+	fs.IntVar(&o.maxConcurrentReconciles, "max-concurrent-reconciles", defaultMaxConcurrentReconciles,
+		"Maximum number of reconciles that may run concurrently for a controller "+
+			"(controller-runtime MaxConcurrentReconciles). Applied by controllers "+
+			"that opt in; controllers that do not tune concurrency ignore it. "+
+			"Defaults to 2.")
 
 	o.zapOpts = zapOptions()
 	o.zapOpts.BindFlags(fs)
@@ -174,7 +190,7 @@ func run(cfg ManagerConfig, opts runOptions) error {
 	}
 
 	if cfg.SetupFunc != nil {
-		if err := cfg.SetupFunc(mgr, opts.enableWebhooks); err != nil {
+		if err := cfg.SetupFunc(mgr, opts.enableWebhooks, opts.maxConcurrentReconciles); err != nil {
 			return fmt.Errorf("unable to set up controllers: %w", err)
 		}
 	}
