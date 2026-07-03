@@ -168,6 +168,80 @@ func TestReconcileSecrets_BothReady(t *testing.T) {
 	g.Expect(cond.ObservedGeneration).To(Equal(ks.Generation))
 }
 
+// TestReconcileSecrets_MaterializedValid_ESNotReady_StillReady documents the
+// B2 semantic change: because the materialized Secret is checked before the
+// ExternalSecret, a valid Secret keeps SecretsReady=True even when the backing
+// ExternalSecret momentarily reports Ready=False. Pods consume the Secret
+// directly, and the ClusterSecretStore check remains the outage detector.
+func TestReconcileSecrets_MaterializedValid_ESNotReady_StillReady(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := secretsTestScheme()
+	ks := secretsTestKeystone()
+
+	dbES := notReadyExternalSecret("keystone-db", "default")
+	adminES := notReadyExternalSecret("keystone-admin", "default")
+	dbSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "keystone-db", Namespace: "default"},
+		Data:       map[string][]byte{"username": []byte("keystone"), "password": []byte("secret")},
+	}
+	adminSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "keystone-admin", Namespace: "default"},
+		Data:       map[string][]byte{"password": []byte("admin-password")},
+	}
+	store := readyClusterSecretStore("openbao-cluster-store")
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(store, dbES, adminES, dbSecret, adminSecret).
+		WithStatusSubresource(dbES, adminES, store).
+		Build()
+	r := &KeystoneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
+
+	result, err := r.reconcileSecrets(context.Background(), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).To(Equal(ctrl.Result{}))
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "SecretsReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue),
+		"a valid materialized Secret must not be blocked by a not-Ready ExternalSecret")
+	g.Expect(cond.Reason).To(Equal("SecretsAvailable"))
+}
+
+// TestReconcileSecrets_SecretMissingKeys_ESReady_MissingKeysMessage verifies
+// that when the ExternalSecret reports Ready but the materialized Secret is
+// missing an expected key, the consulted-ExternalSecret path still yields the
+// distinct "missing expected keys" message rather than the sync-waiting message.
+func TestReconcileSecrets_SecretMissingKeys_ESReady_MissingKeysMessage(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := secretsTestScheme()
+	ks := secretsTestKeystone()
+
+	dbES := readyExternalSecret("keystone-db", "default")
+	adminES := readyExternalSecret("keystone-admin", "default")
+	// DB Secret exists but is missing the "password" key.
+	dbSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "keystone-db", Namespace: "default"},
+		Data:       map[string][]byte{"username": []byte("keystone")},
+	}
+	store := readyClusterSecretStore("openbao-cluster-store")
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(store, dbES, adminES, dbSecret).
+		WithStatusSubresource(dbES, adminES, store).
+		Build()
+	r := &KeystoneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
+
+	result, err := r.reconcileSecrets(context.Background(), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(Equal(RequeueSecretPolling))
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "SecretsReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("WaitingForDBCredentials"))
+	g.Expect(cond.Message).To(Equal("Database credentials Secret exists but is missing expected keys"))
+}
+
 func TestReconcileSecrets_DBCredentialsNotReady(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := secretsTestScheme()

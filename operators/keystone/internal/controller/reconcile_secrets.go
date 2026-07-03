@@ -87,77 +87,26 @@ func (r *KeystoneReconciler) reconcileSecrets(ctx context.Context,
 	dbSecretKey := client.ObjectKey{Namespace: keystone.Namespace, Name: keystone.Spec.Database.SecretRef.Name}
 	adminSecretKey := client.ObjectKey{Namespace: keystone.Namespace, Name: keystone.Spec.Bootstrap.AdminPasswordSecretRef.Name}
 
-	// Check DB credentials ExternalSecret sync status.
-	dbExists, dbReady, err := secrets.WaitForExternalSecret(ctx, r.Client, dbSecretKey)
-	if err != nil {
+	// Validate DB then admin credentials. Each check reads the materialized
+	// Secret first (the steady-state fast path) and only consults the
+	// ExternalSecret to build a precise SecretsReady=False message when the
+	// Secret is not yet usable. On a not-ready check the helper sets the
+	// condition and the caller requeues.
+	if ready, err := r.checkCredentialSecret(ctx, keystone, dbSecretKey,
+		"WaitingForDBCredentials", "Database credentials",
+		"Waiting for ESO to sync database credentials from OpenBao",
+		"username", "password"); err != nil {
 		return ctrl.Result{}, err
-	}
-	if !dbReady {
-		msg := "Waiting for ESO to sync database credentials from OpenBao"
-		if !dbExists {
-			msg = fmt.Sprintf("Database credentials ExternalSecret %s/%s not found yet", dbSecretKey.Namespace, dbSecretKey.Name)
-		}
-		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
-			Type:               "SecretsReady",
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: keystone.Generation,
-			Reason:             "WaitingForDBCredentials",
-			Message:            msg,
-		})
+	} else if !ready {
 		return ctrl.Result{RequeueAfter: RequeueSecretPolling}, nil
 	}
 
-	// Verify the materialized DB Secret contains the expected keys.
-	// ESO may update the sync-status condition before the Secret is committed
-	// to etcd, so this second check guards against a status-vs-object race.
-	secretReady, err := secrets.IsSecretReady(ctx, r.Client, dbSecretKey, "username", "password")
-	if err != nil {
+	if ready, err := r.checkCredentialSecret(ctx, keystone, adminSecretKey,
+		"WaitingForAdminCredentials", "Admin credentials",
+		"Waiting for ESO to sync admin credentials from OpenBao",
+		"password"); err != nil {
 		return ctrl.Result{}, err
-	}
-	if !secretReady {
-		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
-			Type:               "SecretsReady",
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: keystone.Generation,
-			Reason:             "WaitingForDBCredentials",
-			Message:            "Database credentials Secret exists but is missing expected keys",
-		})
-		return ctrl.Result{RequeueAfter: RequeueSecretPolling}, nil
-	}
-
-	// Check admin credentials ExternalSecret sync status.
-	adminExists, adminReady, err := secrets.WaitForExternalSecret(ctx, r.Client, adminSecretKey)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
-	if !adminReady {
-		msg := "Waiting for ESO to sync admin credentials from OpenBao"
-		if !adminExists {
-			msg = fmt.Sprintf("Admin credentials ExternalSecret %s/%s not found yet", adminSecretKey.Namespace, adminSecretKey.Name)
-		}
-		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
-			Type:               "SecretsReady",
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: keystone.Generation,
-			Reason:             "WaitingForAdminCredentials",
-			Message:            msg,
-		})
-		return ctrl.Result{RequeueAfter: RequeueSecretPolling}, nil
-	}
-
-	// Verify the materialized admin Secret contains the expected keys.
-	secretReady, err = secrets.IsSecretReady(ctx, r.Client, adminSecretKey, "password")
-	if err != nil {
-		return ctrl.Result{}, err
-	}
-	if !secretReady {
-		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
-			Type:               "SecretsReady",
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: keystone.Generation,
-			Reason:             "WaitingForAdminCredentials",
-			Message:            "Admin credentials Secret exists but is missing expected keys",
-		})
+	} else if !ready {
 		return ctrl.Result{RequeueAfter: RequeueSecretPolling}, nil
 	}
 
@@ -168,6 +117,59 @@ func (r *KeystoneReconciler) reconcileSecrets(ctx context.Context,
 		Reason:             "SecretsAvailable",
 	})
 	return ctrl.Result{}, nil
+}
+
+// checkCredentialSecret verifies that a credential Secret is usable, checking
+// the materialized Secret before the ExternalSecret to save a read in steady
+// state. It returns (true, nil) when the Secret exists with all requiredKeys.
+// On a miss it consults the ExternalSecret only to produce a precise
+// SecretsReady=False message — "ExternalSecret not found yet" vs "waiting for
+// ESO to sync" vs "missing expected keys" — sets the condition itself with the
+// given reason, and returns (false, nil).
+//
+// Semantic note: because the materialized Secret is checked first, an
+// ExternalSecret whose Ready condition is momentarily False while the Secret
+// still holds valid keys no longer flips SecretsReady=False. That matches how
+// pods consume the Secret directly; the ClusterSecretStore check in
+// reconcileSecrets remains the authoritative backend-outage detector.
+func (r *KeystoneReconciler) checkCredentialSecret(
+	ctx context.Context,
+	keystone *keystonev1alpha1.Keystone,
+	key client.ObjectKey,
+	reason, noun, waitingMsg string,
+	requiredKeys ...string,
+) (bool, error) {
+	secretReady, err := secrets.IsSecretReady(ctx, r.Client, key, requiredKeys...)
+	if err != nil {
+		return false, err
+	}
+	if secretReady {
+		return true, nil
+	}
+
+	// The materialized Secret is absent or missing keys. Distinguish the cause
+	// via the ExternalSecret so the operator surfaces an actionable message.
+	exists, esReady, err := secrets.WaitForExternalSecret(ctx, r.Client, key)
+	if err != nil {
+		return false, err
+	}
+	msg := waitingMsg
+	if !exists {
+		msg = fmt.Sprintf("%s ExternalSecret %s/%s not found yet", noun, key.Namespace, key.Name)
+	} else if esReady {
+		// The ExternalSecret reports Ready but the Secret lacks a required key —
+		// a status-vs-object race where ESO flipped Ready before committing the
+		// Secret, or a genuinely malformed Secret.
+		msg = fmt.Sprintf("%s Secret exists but is missing expected keys", noun)
+	}
+	conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
+		Type:               "SecretsReady",
+		Status:             metav1.ConditionFalse,
+		ObservedGeneration: keystone.Generation,
+		Reason:             reason,
+		Message:            msg,
+	})
+	return false, nil
 }
 
 // openBaoBackupPushSecretNames returns the names of the backup PushSecrets
