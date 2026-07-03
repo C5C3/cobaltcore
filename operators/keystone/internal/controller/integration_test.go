@@ -416,9 +416,11 @@ func TestIntegration_ConditionProgression(t *testing.T) {
 	// SecretStoreNotReady.
 	ensureReadyClusterSecretStore(t, ctx, c)
 
-	// Phase 0: Create ExternalSecrets and Secrets but do NOT simulate sync yet.
-	// The reconciler should see SecretsReady=False because ESO hasn't set the
-	// Ready condition on the ExternalSecret.
+	// Phase 0: Create the ExternalSecrets but NOT their materialized target
+	// Secrets yet — real ESO creates the target Secret only when it syncs. The
+	// reconciler checks the materialized Secret first (issue #361): with no
+	// usable Secret and the ExternalSecret not yet Ready, SecretsReady stays
+	// False.
 	dbES := &esov1.ExternalSecret{
 		ObjectMeta: metav1.ObjectMeta{Name: "keystone-db", Namespace: ns.Name},
 		Spec: esov1.ExternalSecretSpec{
@@ -428,15 +430,6 @@ func TestIntegration_ConditionProgression(t *testing.T) {
 	}
 	g.Expect(c.Create(ctx, dbES)).To(Succeed())
 
-	dbSecret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "keystone-db", Namespace: ns.Name},
-		Data: map[string][]byte{
-			"username": []byte("keystone"),
-			"password": []byte("secret"),
-		},
-	}
-	g.Expect(c.Create(ctx, dbSecret)).To(Succeed())
-
 	adminES := &esov1.ExternalSecret{
 		ObjectMeta: metav1.ObjectMeta{Name: "keystone-admin", Namespace: ns.Name},
 		Spec: esov1.ExternalSecretSpec{
@@ -445,12 +438,6 @@ func TestIntegration_ConditionProgression(t *testing.T) {
 		},
 	}
 	g.Expect(c.Create(ctx, adminES)).To(Succeed())
-
-	adminSecret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "keystone-admin", Namespace: ns.Name},
-		Data:       map[string][]byte{"password": []byte("admin-password")},
-	}
-	g.Expect(c.Create(ctx, adminSecret)).To(Succeed())
 
 	// Create the Keystone CR.
 	ks := integrationBrownfieldKeystone("test-keystone", ns.Name)
@@ -475,7 +462,22 @@ func TestIntegration_ConditionProgression(t *testing.T) {
 			"BootstrapReady should be absent when SecretsReady is False")
 	}, 2*time.Second, pollInterval).Should(Succeed())
 
-	// Phase 2: Simulate ESO sync → SecretsReady=True, FernetKeysReady=True.
+	// Phase 2: Simulate ESO sync → materialize the target Secrets and flip the
+	// ExternalSecret Ready condition → SecretsReady=True, FernetKeysReady=True.
+	dbSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "keystone-db", Namespace: ns.Name},
+		Data: map[string][]byte{
+			"username": []byte("keystone"),
+			"password": []byte("secret"),
+		},
+	}
+	g.Expect(c.Create(ctx, dbSecret)).To(Succeed())
+	adminSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "keystone-admin", Namespace: ns.Name},
+		Data:       map[string][]byte{"password": []byte("admin-password")},
+	}
+	g.Expect(c.Create(ctx, adminSecret)).To(Succeed())
+
 	g.Expect(simulators.SimulateExternalSecretSync(ctx, c, client.ObjectKey{Namespace: ns.Name, Name: "keystone-db"})).
 		To(Succeed())
 	g.Expect(simulators.SimulateExternalSecretSync(ctx, c, client.ObjectKey{Namespace: ns.Name, Name: "keystone-admin"})).
