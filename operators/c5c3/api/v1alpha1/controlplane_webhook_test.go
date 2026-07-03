@@ -340,6 +340,33 @@ func TestValidateCreate_RejectsDatabaseNeitherSet(t *testing.T) {
 	g.Expect(err.Error()).To(ContainSubstring("database"))
 }
 
+// TestValidateCreate_RejectsDynamicCredentialsWithoutClusterRef verifies the
+// defense-in-depth mirror of the shared DatabaseSpec CEL rule: engine-issued
+// credentials (Dynamic) require managed mode (clusterRef set).
+func TestValidateCreate_RejectsDynamicCredentialsWithoutClusterRef(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane() // brownfield (Host set, ClusterRef nil)
+	cp.Spec.Infrastructure.Database.CredentialsMode = commonv1.CredentialsModeDynamic
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("credentialsMode"))
+	g.Expect(err.Error()).To(ContainSubstring("requires clusterRef"))
+}
+
+// TestValidateCreate_AcceptsDynamicCredentialsWithClusterRef verifies Dynamic is
+// accepted in managed mode.
+func TestValidateCreate_AcceptsDynamicCredentialsWithClusterRef(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := managedControlPlane()
+	cp.Spec.Infrastructure.Database.CredentialsMode = commonv1.CredentialsModeDynamic
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
 // TestValidateCreate_RejectsDatabaseReplicasTwo verifies that a managed-mode
 // ControlPlane requesting database.replicas: 2 is rejected. The managed MariaDB
 // projection turns any replicas>1 into a Galera cluster, and a two-node Galera

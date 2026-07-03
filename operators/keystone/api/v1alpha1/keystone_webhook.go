@@ -263,6 +263,13 @@ func (w *KeystoneWebhook) Default(_ context.Context, obj *Keystone) error {
 	if obj.Spec.Database.TLS != nil && obj.Spec.Database.TLS.Mode == "" {
 		obj.Spec.Database.TLS.Mode = DefaultDatabaseTLSMode
 	}
+	// Default the database credentials mode to Static (operator-managed
+	// MariaDB User/Grant with a long-lived password from secretRef) when unset,
+	// so the reconciler and the leaf +kubebuilder:default marker agree in the
+	// production admission path. Dynamic (engine-issued credentials) is opt-in.
+	if obj.Spec.Database.CredentialsMode == "" {
+		obj.Spec.Database.CredentialsMode = commonv1.CredentialsModeStatic
+	}
 	return nil
 }
 
@@ -349,6 +356,17 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 			specPath.Child("database"),
 			k.Spec.Database,
 			"exactly one of clusterRef or host must be set",
+		))
+	}
+
+	// Defense-in-depth: CredentialsMode Dynamic (engine-issued credentials)
+	// requires managed mode (ClusterRef set), mirroring the second
+	// +kubebuilder:validation:XValidation CEL rule on the shared DatabaseSpec.
+	if k.Spec.Database.CredentialsMode == commonv1.CredentialsModeDynamic && k.Spec.Database.ClusterRef == nil {
+		allErrs = append(allErrs, field.Invalid(
+			specPath.Child("database", "credentialsMode"),
+			k.Spec.Database.CredentialsMode,
+			"credentialsMode Dynamic requires clusterRef (managed mode)",
 		))
 	}
 

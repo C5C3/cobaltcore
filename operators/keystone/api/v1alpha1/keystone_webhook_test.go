@@ -1580,6 +1580,65 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 	g.Expect(errMsg).To(ContainSubstring("adminPasswordSecretRef"))
 }
 
+// managedKeystone returns a valid managed-mode Keystone (ClusterRef set, Host
+// unset) suitable for the credentialsMode tests, which require managed mode.
+func managedKeystone() *Keystone {
+	k := validKeystone()
+	k.Spec.Database = commonv1.DatabaseSpec{
+		ClusterRef: &corev1.LocalObjectReference{Name: "mariadb"},
+		Database:   "keystone",
+		SecretRef:  commonv1.SecretRefSpec{Name: "keystone-db"},
+	}
+	return k
+}
+
+// TestDefault_CredentialsModeDefaultsToStatic verifies the defaulting webhook
+// stamps CredentialsMode=Static when the field is empty, and leaves an explicit
+// Dynamic value untouched.
+func TestDefault_CredentialsModeDefaultsToStatic(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+
+	empty := validKeystone()
+	empty.Spec.Database.CredentialsMode = ""
+	g.Expect(w.Default(context.Background(), empty)).To(Succeed())
+	g.Expect(empty.Spec.Database.CredentialsMode).To(Equal(commonv1.CredentialsModeStatic))
+
+	dynamic := managedKeystone()
+	dynamic.Spec.Database.CredentialsMode = commonv1.CredentialsModeDynamic
+	g.Expect(w.Default(context.Background(), dynamic)).To(Succeed())
+	g.Expect(dynamic.Spec.Database.CredentialsMode).To(Equal(commonv1.CredentialsModeDynamic))
+}
+
+// TestValidateCreate_RejectsDynamicCredentialsWithoutClusterRef verifies the
+// defense-in-depth mirror of the CEL rule: Dynamic requires managed mode. It is
+// a dedicated test rather than a case in TestValidateCreate_RunsAllValidations
+// because triggering it requires ClusterRef nil, which is mutually exclusive
+// with that test's "both clusterRef and host set" database break.
+func TestValidateCreate_RejectsDynamicCredentialsWithoutClusterRef(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{Client: newFakeClient().Build()}
+	k := validKeystone() // brownfield (Host set, ClusterRef nil)
+	k.Spec.Database.CredentialsMode = commonv1.CredentialsModeDynamic
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("credentialsMode"))
+	g.Expect(err.Error()).To(ContainSubstring("requires clusterRef"))
+}
+
+// TestValidateCreate_AcceptsDynamicCredentialsWithClusterRef verifies Dynamic is
+// accepted in managed mode.
+func TestValidateCreate_AcceptsDynamicCredentialsWithClusterRef(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{Client: newFakeClient().Build()}
+	k := managedKeystone()
+	k.Spec.Database.CredentialsMode = commonv1.CredentialsModeDynamic
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
 func TestValidateUpdate_RunsSameValidation(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{}

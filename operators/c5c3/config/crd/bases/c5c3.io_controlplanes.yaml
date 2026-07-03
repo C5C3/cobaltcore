@@ -169,6 +169,19 @@ spec:
                             type: string
                         type: object
                         x-kubernetes-map-type: atomic
+                      credentialsMode:
+                        description: |-
+                          CredentialsMode selects how the service DB credential in SecretRef is
+                          provisioned. "Static" (the default when empty) has the operator manage
+                          the MariaDB User/Grant CRs with a long-lived password from SecretRef.
+                          "Dynamic" has an external secrets engine issue short-lived credentials on
+                          demand: SecretRef then carries both a username and password, no User/Grant
+                          CRs are managed, and no long-lived DB password remains at rest. Dynamic is
+                          only valid in managed mode (ClusterRef set).
+                        enum:
+                        - Static
+                        - Dynamic
+                        type: string
                       database:
                         description: |-
                           Database is the database name within the cluster. Constrained to the MySQL
@@ -319,6 +332,10 @@ spec:
                     x-kubernetes-validations:
                     - message: exactly one of clusterRef or host must be set
                       rule: has(self.clusterRef) != has(self.host)
+                    - message: credentialsMode Dynamic requires clusterRef (managed
+                        mode)
+                      rule: '!has(self.credentialsMode) || self.credentialsMode !=
+                        ''Dynamic'' || has(self.clusterRef)'
                 required:
                 - cache
                 - database

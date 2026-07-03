@@ -25,6 +25,25 @@ const DefaultCacheBackend = "dogpile.cache.pymemcache"
 // constants, so the leaf marker keeps the literal in sync separately.
 const DatabaseStorageSizeDefault = "100Gi"
 
+// Database credential modes select how the service DB credential referenced by
+// DatabaseSpec.SecretRef is provisioned and consumed. They are shared by the
+// keystone and c5c3 defaulting/validation webhooks so the contract cannot drift
+// across operators (kubebuilder markers keep the enum literals in sync
+// separately, since markers cannot reference Go constants).
+const (
+	// CredentialsModeStatic is the default: the operator provisions the MariaDB
+	// User/Grant CRs and the DB password is a long-lived value carried in
+	// SecretRef. It is the backwards-compatible mode and the explicit opt-out
+	// used during (and after) migration to the dynamic engine.
+	CredentialsModeStatic = "Static"
+	// CredentialsModeDynamic issues short-lived credentials from an external
+	// secrets engine (OpenBao database engine). SecretRef then carries both a
+	// username and a password materialised on demand, and the operator does not
+	// manage MariaDB User/Grant CRs — the engine owns the DB user lifecycle.
+	// Only valid in managed mode (ClusterRef set).
+	CredentialsModeDynamic = "Dynamic"
+)
+
 // ImageSpec defines a container image reference. Exactly one of Tag or Digest
 // must be set (enforced by the type-level XValidation rule below), so a
 // supply-chain-sensitive deployment can pin the image by immutable digest while
@@ -71,15 +90,29 @@ func (i ImageSpec) Reference() string {
 }
 
 // DatabaseSpec supports managed (ClusterRef) and brownfield (explicit) modes.
-// Exactly one of ClusterRef or Host must be set; the XValidation rule below
-// enforces that invariant at the schema layer for every operator that embeds a
-// DatabaseSpec, so it holds even when a validating webhook is bypassed.
+// Exactly one of ClusterRef or Host must be set; the first XValidation rule
+// below enforces that invariant at the schema layer for every operator that
+// embeds a DatabaseSpec, so it holds even when a validating webhook is
+// bypassed. The second rule enforces that CredentialsMode Dynamic (engine-issued
+// credentials) is only valid in managed mode, since the dynamic engine issues
+// per-tenant DB users against a cluster the operator provisions.
 //
 // +kubebuilder:validation:XValidation:rule="has(self.clusterRef) != has(self.host)",message="exactly one of clusterRef or host must be set"
+// +kubebuilder:validation:XValidation:rule="!has(self.credentialsMode) || self.credentialsMode != 'Dynamic' || has(self.clusterRef)",message="credentialsMode Dynamic requires clusterRef (managed mode)"
 type DatabaseSpec struct {
 	// ClusterRef references a MariaDB CR in the cluster (managed mode).
 	// +optional
 	ClusterRef *corev1.LocalObjectReference `json:"clusterRef,omitempty"`
+	// CredentialsMode selects how the service DB credential in SecretRef is
+	// provisioned. "Static" (the default when empty) has the operator manage
+	// the MariaDB User/Grant CRs with a long-lived password from SecretRef.
+	// "Dynamic" has an external secrets engine issue short-lived credentials on
+	// demand: SecretRef then carries both a username and password, no User/Grant
+	// CRs are managed, and no long-lived DB password remains at rest. Dynamic is
+	// only valid in managed mode (ClusterRef set).
+	// +optional
+	// +kubebuilder:validation:Enum=Static;Dynamic
+	CredentialsMode string `json:"credentialsMode,omitempty"`
 	// Host is the database hostname (brownfield mode). The pattern is a
 	// permissive host matcher that accepts DNS names, IPv4, and IPv6 literals
 	// while rejecting empty strings and shell/path metacharacters; it is not a

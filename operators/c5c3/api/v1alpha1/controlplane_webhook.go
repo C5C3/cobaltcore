@@ -275,6 +275,17 @@ func (w *ControlPlaneWebhook) validate(cp *ControlPlane) field.ErrorList {
 		))
 	}
 
+	// CredentialsMode Dynamic (engine-issued credentials) requires managed mode
+	// (ClusterRef set), mirroring the second +kubebuilder:validation:XValidation
+	// CEL rule on the shared commonv1.DatabaseSpec.
+	if db.CredentialsMode == commonv1.CredentialsModeDynamic && db.ClusterRef == nil {
+		allErrs = append(allErrs, field.Invalid(
+			specPath.Child("infrastructure", "database", "credentialsMode"),
+			db.CredentialsMode,
+			"credentialsMode Dynamic requires clusterRef (managed mode)",
+		))
+	}
+
 	// database.replicas must be 1 (standalone) or >=3 (a quorum-safe Galera
 	// cluster). Exactly 2 is rejected because the managed-mode MariaDB projection
 	// (ensureMariaDB) turns any replicas>1 into a Galera cluster, and a two-node
