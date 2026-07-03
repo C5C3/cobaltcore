@@ -426,7 +426,18 @@ sub-reconcilers are merged even on partial failure.
 ### Status Update Pattern
 
 `updateStatus()` persists all condition changes via `r.Status().Update()` and returns
-the provided `(result, error)` pair unchanged. If the status update itself fails, the
+the provided `(result, error)` pair unchanged.
+
+`Reconcile` snapshots `keystone.Status` immediately after the initial Get and
+threads that snapshot into `updateStatus`. After aggregating `Ready` and stamping
+`ObservedGeneration`, `updateStatus` compares the result against the snapshot with
+`equality.Semantic.DeepEqual` and **skips** `r.Status().Update()` when nothing
+changed. `meta.SetStatusCondition` preserves `LastTransitionTime` on a no-op
+upsert, so a converged steady-state pass produces a byte-identical status and
+issues no write — no write means no watch event and no `resourceVersion` churn.
+A change to any condition, reason, message, or `ObservedGeneration` still writes.
+
+If the status update itself fails, the
 behavior depends on whether a reconcile error is also present:
 
 | reconcileErr | Status().Update() | Returned error |

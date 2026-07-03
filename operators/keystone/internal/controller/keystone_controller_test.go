@@ -1317,7 +1317,7 @@ func TestUpdateStatus_BothErrors_Joined(t *testing.T) {
 	statusErr := fmt.Errorf("simulated status update error")
 	r, ks := newUpdateStatusReconciler(t, testKeystone(), statusErr)
 
-	_, err := r.updateStatus(context.Background(), ks, ctrl.Result{}, reconcileErr)
+	_, err := r.updateStatus(context.Background(), ks, nil, ctrl.Result{}, reconcileErr)
 
 	g.Expect(err).To(HaveOccurred(), "should return an error when both fail")
 	g.Expect(err.Error()).To(ContainSubstring("database connection refused"),
@@ -1337,7 +1337,7 @@ func TestUpdateStatus_JoinedError_IsUnwrappable(t *testing.T) {
 	statusErr := fmt.Errorf("status update failed")
 	r, ks := newUpdateStatusReconciler(t, testKeystone(), statusErr)
 
-	_, err := r.updateStatus(context.Background(), ks, ctrl.Result{}, reconcileErr)
+	_, err := r.updateStatus(context.Background(), ks, nil, ctrl.Result{}, reconcileErr)
 
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(errors.Is(err, reconcileErr)).To(BeTrue(),
@@ -1355,7 +1355,7 @@ func TestUpdateStatus_ReconcileErrorOnly_Preserved(t *testing.T) {
 	reconcileErr := fmt.Errorf("sub-reconciler failed")
 	r, ks := newUpdateStatusReconciler(t, testKeystone(), nil) // status update succeeds
 
-	_, err := r.updateStatus(context.Background(), ks, ctrl.Result{}, reconcileErr)
+	_, err := r.updateStatus(context.Background(), ks, nil, ctrl.Result{}, reconcileErr)
 
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err).To(Equal(reconcileErr),
@@ -1369,10 +1369,49 @@ func TestUpdateStatus_NoErrors_ReturnsNil(t *testing.T) {
 
 	r, ks := newUpdateStatusReconciler(t, testKeystone(), nil) // status update succeeds
 
-	result, err := r.updateStatus(context.Background(), ks, ctrl.Result{}, nil)
+	result, err := r.updateStatus(context.Background(), ks, nil, ctrl.Result{}, nil)
 
 	g.Expect(err).NotTo(HaveOccurred(), "should return nil when both succeed")
 	g.Expect(result).To(Equal(ctrl.Result{}))
+}
+
+// TestUpdateStatus_SkipsWriteWhenUnchanged verifies the C3 gate: when the
+// snapshot equals the status updateStatus computes, no Status().Update is
+// issued. The reconciler's Status().Update is wired to always fail, so a
+// skipped write is observable as a nil error return.
+func TestUpdateStatus_SkipsWriteWhenUnchanged(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	statusErr := fmt.Errorf("status update must not be called on an unchanged status")
+	r, ks := newUpdateStatusReconciler(t, testKeystone(), statusErr)
+
+	// Bring ks.Status into the exact state updateStatus would compute (Ready
+	// aggregated + ObservedGeneration stamped), then snapshot it — a converged
+	// steady-state pass.
+	setReadyCondition(ks)
+	ks.Status.ObservedGeneration = ks.Generation
+	snapshot := ks.Status.DeepCopy()
+
+	_, err := r.updateStatus(context.Background(), ks, snapshot, ctrl.Result{}, nil)
+	g.Expect(err).NotTo(HaveOccurred(),
+		"an unchanged status must skip the write; the failing Status().Update proves it was not called")
+}
+
+// TestUpdateStatus_WritesWhenChanged verifies the C3 gate still writes when the
+// status differs from the snapshot: a differing snapshot forces the (failing)
+// write, which surfaces the error.
+func TestUpdateStatus_WritesWhenChanged(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	statusErr := fmt.Errorf("status write failed")
+	r, ks := newUpdateStatusReconciler(t, testKeystone(), statusErr)
+
+	// An empty snapshot differs from the final status (which gains a Ready
+	// condition), so the write must be attempted.
+	snapshot := &keystonev1alpha1.KeystoneStatus{}
+	_, err := r.updateStatus(context.Background(), ks, snapshot, ctrl.Result{}, nil)
+	g.Expect(err).To(HaveOccurred(), "a changed status must attempt the write")
+	g.Expect(err.Error()).To(ContainSubstring("updating status:"))
 }
 
 // TestUpdateStatus_StatusErrorOnly_Returned verifies that when reconcileErr is
@@ -1384,7 +1423,7 @@ func TestUpdateStatus_StatusErrorOnly_Returned(t *testing.T) {
 	statusErr := fmt.Errorf("conflict on status update")
 	r, ks := newUpdateStatusReconciler(t, testKeystone(), statusErr)
 
-	_, err := r.updateStatus(context.Background(), ks, ctrl.Result{}, nil)
+	_, err := r.updateStatus(context.Background(), ks, nil, ctrl.Result{}, nil)
 
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("updating status:"))
@@ -1400,7 +1439,7 @@ func TestUpdateStatus_StatusErrorOnly_NoNilSegments(t *testing.T) {
 	statusErr := fmt.Errorf("status write failed")
 	r, ks := newUpdateStatusReconciler(t, testKeystone(), statusErr)
 
-	_, err := r.updateStatus(context.Background(), ks, ctrl.Result{}, nil)
+	_, err := r.updateStatus(context.Background(), ks, nil, ctrl.Result{}, nil)
 
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).NotTo(ContainSubstring("<nil>"),
@@ -1418,7 +1457,7 @@ func TestUpdateStatus_ResultPassthrough_DualFailure(t *testing.T) {
 	statusErr := fmt.Errorf("status error")
 	r, ks := newUpdateStatusReconciler(t, testKeystone(), statusErr)
 
-	result, _ := r.updateStatus(context.Background(), ks, ctrl.Result{RequeueAfter: 5 * time.Second}, reconcileErr)
+	result, _ := r.updateStatus(context.Background(), ks, nil, ctrl.Result{RequeueAfter: 5 * time.Second}, reconcileErr)
 
 	g.Expect(result).To(Equal(ctrl.Result{}),
 		"dual-failure should return empty Result so controller-runtime applies error-based backoff")
@@ -1433,7 +1472,7 @@ func TestUpdateStatus_ResultPassthrough_WithRequeueAfter(t *testing.T) {
 	r, ks := newUpdateStatusReconciler(t, testKeystone(), nil) // status update succeeds
 	inputResult := ctrl.Result{RequeueAfter: 30 * time.Second}
 
-	result, err := r.updateStatus(context.Background(), ks, inputResult, nil)
+	result, err := r.updateStatus(context.Background(), ks, nil, inputResult, nil)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result).To(Equal(inputResult),
@@ -1473,7 +1512,7 @@ func TestUpdateStatus_ReaggregatesReadyWhenSubConditionDegrades(t *testing.T) {
 		Reason: "AllReady",
 	})
 
-	_, err := r.updateStatus(context.Background(), ks, ctrl.Result{RequeueAfter: time.Second}, nil)
+	_, err := r.updateStatus(context.Background(), ks, nil, ctrl.Result{RequeueAfter: time.Second}, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	updated := &keystonev1alpha1.Keystone{}

@@ -24,6 +24,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	policyv1 "k8s.io/api/policy/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -280,6 +281,12 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, fmt.Errorf("fetching Keystone: %w", err)
 	}
 
+	// Snapshot the persisted status so updateStatus can skip the write when a
+	// pass leaves status unchanged (no write → no watch event → no
+	// resourceVersion churn). Taken before any sub-reconciler or finalizer
+	// mutates conditions.
+	statusBefore := keystone.Status.DeepCopy()
+
 	// Handle CR deletion via finalizers: block removal from etcd until the
 	// MariaDB Database/User/Grant CRs and the OpenBao backup
 	// PushSecrets owned by this Keystone are cleaned up. Both
@@ -291,7 +298,7 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			return result, err
 		}
 		if result, err := r.reconcileDeleteOpenBao(ctx, &keystone); !result.IsZero() || err != nil {
-			return r.updateStatus(ctx, &keystone, result, err)
+			return r.updateStatus(ctx, &keystone, statusBefore, result, err)
 		}
 		return ctrl.Result{}, nil
 	}
@@ -492,13 +499,13 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			result, err = instrumentSubReconciler(ctx, s.name, s.fn)
 		}
 		if !result.IsZero() || err != nil {
-			return r.updateStatus(ctx, &keystone, result, err)
+			return r.updateStatus(ctx, &keystone, statusBefore, result, err)
 		}
 	}
 
 	// The aggregate Ready condition is recomputed inside updateStatus, which
 	// every return path — this final success path included — funnels through.
-	return r.updateStatus(ctx, &keystone, ctrl.Result{}, nil)
+	return r.updateStatus(ctx, &keystone, statusBefore, ctrl.Result{}, nil)
 }
 
 // reconcileDelete drives the finalizer cleanup when the Keystone CR is being
@@ -661,7 +668,7 @@ func (r *KeystoneReconciler) hasLiveOpenBaoBackupPushSecrets(ctx context.Context
 // status is distinguishable from one reflecting the current spec without scanning conditions.
 // When both reconcileErr and the status update fail, both errors are preserved via errors.Join
 // so that the original reconcile failure is visible in controller-runtime logs.
-func (r *KeystoneReconciler) updateStatus(ctx context.Context, keystone *keystonev1alpha1.Keystone, result ctrl.Result, reconcileErr error) (ctrl.Result, error) {
+func (r *KeystoneReconciler) updateStatus(ctx context.Context, keystone *keystonev1alpha1.Keystone, statusBefore *keystonev1alpha1.KeystoneStatus, result ctrl.Result, reconcileErr error) (ctrl.Result, error) {
 	// Re-aggregate the Ready condition on every status persist, including the
 	// early-return paths a sub-reconciler takes when it degrades after the CR
 	// was already Ready. reconcileDeployment, for example, requeues with
@@ -672,6 +679,16 @@ func (r *KeystoneReconciler) updateStatus(ctx context.Context, keystone *keyston
 	// reporting Ready=True (SC-CHAOS-006).
 	setReadyCondition(keystone)
 	keystone.Status.ObservedGeneration = keystone.Generation
+
+	// Skip the write when this pass left status byte-for-byte unchanged: no
+	// write means no watch event and no resourceVersion churn. meta.SetStatusCondition
+	// preserves LastTransitionTime on a no-op upsert, so a converged
+	// steady-state pass produces a status identical to the snapshot taken at the
+	// top of Reconcile (issue #361). A nil snapshot (defensive) always writes.
+	if statusBefore != nil && equality.Semantic.DeepEqual(*statusBefore, keystone.Status) {
+		return result, reconcileErr
+	}
+
 	if err := r.Status().Update(ctx, keystone); err != nil {
 		log.FromContext(ctx).Error(err, "unable to update Keystone status")
 		return ctrl.Result{}, errors.Join(reconcileErr, fmt.Errorf("updating status: %w", err))
