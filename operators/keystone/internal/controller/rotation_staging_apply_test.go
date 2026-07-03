@@ -101,7 +101,8 @@ func TestApplyRotationOutput_NoStagingSecret(t *testing.T) {
 	}
 	r := newApplyTestReconciler(prod)
 
-	applied, err := runApplyRotation(t, r, ks,
+	applied, err := runApplyRotation(
+		t, r, ks,
 		fernetStagingSecretName(ks),
 		"test-keystone-fernet-keys",
 		"FernetKeysRotated",
@@ -136,7 +137,8 @@ func TestApplyRotationOutput_NoAnnotation(t *testing.T) {
 	}
 	r := newApplyTestReconciler(staging, prod)
 
-	applied, err := runApplyRotation(t, r, ks,
+	applied, err := runApplyRotation(
+		t, r, ks,
 		fernetStagingSecretName(ks),
 		"test-keystone-fernet-keys",
 		"FernetKeysRotated",
@@ -179,7 +181,8 @@ func TestApplyRotationOutput_InvalidAnnotation(t *testing.T) {
 	}
 	r := newApplyTestReconciler(staging, prod)
 
-	applied, err := runApplyRotation(t, r, ks,
+	applied, err := runApplyRotation(
+		t, r, ks,
 		fernetStagingSecretName(ks),
 		"test-keystone-fernet-keys",
 		"FernetKeysRotated",
@@ -229,7 +232,8 @@ func TestApplyRotationOutput_ValidationFailsWrongLength(t *testing.T) {
 	}
 	r := newApplyTestReconciler(staging, prod)
 
-	applied, err := runApplyRotation(t, r, ks,
+	applied, err := runApplyRotation(
+		t, r, ks,
 		fernetStagingSecretName(ks),
 		"test-keystone-fernet-keys",
 		"FernetKeysRotated",
@@ -284,7 +288,8 @@ func TestApplyRotationOutput_ValidationFailsDuplicates(t *testing.T) {
 	}
 	r := newApplyTestReconciler(staging, prod)
 
-	applied, err := runApplyRotation(t, r, ks,
+	applied, err := runApplyRotation(
+		t, r, ks,
 		fernetStagingSecretName(ks),
 		"test-keystone-fernet-keys",
 		"FernetKeysRotated",
@@ -340,7 +345,8 @@ func TestApplyRotationOutput_AlreadyCommitted_NoOpUpdate(t *testing.T) {
 	g.Expect(r.Get(context.Background(),
 		types.NamespacedName{Name: "test-keystone-fernet-keys", Namespace: "default"}, &before)).To(Succeed())
 
-	applied, err := runApplyRotation(t, r, ks,
+	applied, err := runApplyRotation(
+		t, r, ks,
 		fernetStagingSecretName(ks),
 		"test-keystone-fernet-keys",
 		"FernetKeysRotated",
@@ -389,7 +395,8 @@ func TestApplyRotationOutput_HappyPath(t *testing.T) {
 	}
 	r := newApplyTestReconciler(staging, prod)
 
-	applied, err := runApplyRotation(t, r, ks,
+	applied, err := runApplyRotation(
+		t, r, ks,
 		fernetStagingSecretName(ks),
 		"test-keystone-fernet-keys",
 		"FernetKeysRotated",
@@ -470,7 +477,8 @@ func TestApplyRotationOutput_ConcurrentStagingPatchTolerated(t *testing.T) {
 		Build()
 	r := &KeystoneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
 
-	applied, err := runApplyRotation(t, r, ks,
+	applied, err := runApplyRotation(
+		t, r, ks,
 		fernetStagingSecretName(ks),
 		"test-keystone-fernet-keys",
 		"FernetKeysRotated",
@@ -532,7 +540,8 @@ func TestApplyRotationOutput_StampsCompletionAnnotationOnProduction(t *testing.T
 	}
 	r := newApplyTestReconciler(staging, prod)
 
-	applied, err := runApplyRotation(t, r, ks,
+	applied, err := runApplyRotation(
+		t, r, ks,
 		fernetStagingSecretName(ks),
 		"test-keystone-fernet-keys",
 		"FernetKeysRotated",
@@ -581,7 +590,8 @@ func TestApplyRotationOutput_ReplacesDisjointIndices(t *testing.T) {
 	}
 	r := newApplyTestReconciler(staging, prod)
 
-	applied, err := runApplyRotation(t, r, ks,
+	applied, err := runApplyRotation(
+		t, r, ks,
 		fernetStagingSecretName(ks),
 		"test-keystone-fernet-keys",
 		"FernetKeysRotated",
