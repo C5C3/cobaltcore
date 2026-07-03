@@ -61,6 +61,19 @@ EXTERNALSECRET_TIMEOUT="${EXTERNALSECRET_TIMEOUT:-120}"
 # suffix. See docs/quick-start.md.
 KIND_HOST_PORT="${KIND_HOST_PORT:-443}"
 
+# Soft/hard RLIMIT_NOFILE applied to every kind node's containerd after cluster
+# creation (see cap_node_nofile). Docker Desktop ships containerd with
+# LimitNOFILE=infinity, so pods inherit ~1e9 open files; uWSGI (the Keystone API
+# server) then allocates memory proportional to the fd count at worker startup
+# and is OOM-killed regardless of its memory limit. 1048576 matches the kind node
+# container's own limit and is ample for every workload in this stack. Set to
+# empty to skip the cap entirely (e.g. on a runtime that already ships a sane
+# limit). See #546.
+#
+# Uses `-` (not `:-`) so an explicitly-empty NODE_NOFILE_LIMIT= opts out, while
+# an unset variable still takes the 1048576 default.
+NODE_NOFILE_LIMIT="${NODE_NOFILE_LIMIT-1048576}"
+
 # Gates the opt-in chaos-mesh kind overlay (deploy/kind/chaos-mesh) and the
 # host-side kernel-module load. Defaults to false so the kind Quick Start
 # stays minimal; set WITH_CHAOS_MESH=true to enable chaos-engineering tests
@@ -938,6 +951,99 @@ render_controlplane_replicas() {
 }
 
 # ---------------------------------------------------------------------------
+# cap_node_nofile — Cap RLIMIT_NOFILE on every kind node's containerd.
+#
+# Docker Desktop ships the containerd service with LimitNOFILE=infinity, so pods
+# inherit an ~1e9 open-file limit even though the node container itself is capped
+# at 1048576. uWSGI (the Keystone API server) allocates a structure proportional
+# to the fd count when a worker loads the app, so it immediately tries to
+# allocate multiple GiB and is OOM-killed within seconds — regardless of the
+# container memory limit (raising it to 512Mi/1Gi/2Gi makes no difference). See
+# #546.
+#
+# We write a systemd drop-in that lowers containerd's LimitNOFILE to
+# NODE_NOFILE_LIMIT and restart containerd. This must run BEFORE any workload is
+# scheduled: a containerd restart does not change the limit of already-running
+# containers, so only pods created afterwards inherit the sane value (the target
+# is the fresh-deploy path). Idempotent — re-writing the same drop-in and
+# restarting again is a no-op — and best-effort per node: a node that cannot be
+# patched logs a warning but does not abort the deploy.
+#
+# No-op when NODE_NOFILE_LIMIT is empty (opt out on a runtime that already ships
+# a sane limit).
+# ---------------------------------------------------------------------------
+cap_node_nofile() {
+  if [[ -z "${NODE_NOFILE_LIMIT}" ]]; then
+    log "NODE_NOFILE_LIMIT is empty — skipping containerd RLIMIT_NOFILE cap."
+    return 0
+  fi
+
+  local nodes
+  nodes=$(kind get nodes --name "${CLUSTER_NAME}" 2>/dev/null) || true
+  if [[ -z "${nodes}" ]]; then
+    log "WARNING: no kind nodes found for cluster '${CLUSTER_NAME}' — skipping RLIMIT_NOFILE cap."
+    return 0
+  fi
+
+  log "Capping containerd RLIMIT_NOFILE to ${NODE_NOFILE_LIMIT} on kind node(s): ${nodes//$'\n'/ }"
+
+  local node
+  for node in ${nodes}; do
+    if docker exec "${node}" sh -c '
+      set -e
+      mkdir -p /etc/systemd/system/containerd.service.d
+      printf "[Service]\nLimitNOFILE='"${NODE_NOFILE_LIMIT}"'\n" \
+        > /etc/systemd/system/containerd.service.d/nofile.conf
+      systemctl daemon-reload
+      systemctl restart containerd
+    ' >/dev/null 2>&1; then
+      log "  ${node}: containerd RLIMIT_NOFILE set to ${NODE_NOFILE_LIMIT}."
+    else
+      log "  WARNING: failed to cap RLIMIT_NOFILE on ${node} — uWSGI workloads (Keystone) may OOM-crashloop."
+    fi
+  done
+
+  # containerd was just restarted; give the node a moment to re-register with the
+  # API server before Step 2 starts issuing kubectl apply against it.
+  wait_for_node_ready "${POD_TIMEOUT}"
+}
+
+# ---------------------------------------------------------------------------
+# wait_for_node_ready — Wait until every kind node reports Ready=True.
+#
+# Called after cap_node_nofile restarts containerd, so the subsequent kubectl
+# apply steps do not race a briefly-NotReady kubelet. Polls every 5s up to the
+# supplied timeout; on timeout it logs the node status and returns 0 anyway. The
+# wait is best-effort — like cap_node_nofile itself, it must never abort the
+# deploy, so callers do not check its status.
+# ---------------------------------------------------------------------------
+wait_for_node_ready() {
+  local timeout="$1"
+  local deadline=$(( $(date +%s) + timeout ))
+
+  log "Waiting up to ${timeout}s for all nodes to be Ready..."
+
+  while true; do
+    local not_ready
+    not_ready=$(kubectl get nodes -o json 2>/dev/null \
+      | jq -r '[.items[] | select((.status.conditions[]? | select(.type == "Ready") | .status) != "True")] | length' 2>/dev/null) || true
+
+    if [[ "${not_ready}" == "0" ]]; then
+      log "All nodes are Ready."
+      return 0
+    fi
+
+    if [[ $(date +%s) -ge ${deadline} ]]; then
+      log "WARNING: not all nodes Ready after ${timeout}s; continuing anyway."
+      kubectl get nodes 2>/dev/null || true
+      return 0
+    fi
+
+    sleep 5
+  done
+}
+
+# ---------------------------------------------------------------------------
 # main — Orchestrate the 8-step deployment sequence.
 # ---------------------------------------------------------------------------
 main() {
@@ -949,6 +1055,7 @@ main() {
   log "Pod timeout         : ${POD_TIMEOUT}s"
   log "ExternalSecret timeout : ${EXTERNALSECRET_TIMEOUT}s"
   log "Kind host port      : ${KIND_HOST_PORT} → 31443 (override via KIND_HOST_PORT)"
+  log "Node RLIMIT_NOFILE  : ${NODE_NOFILE_LIMIT:-<unset — skip cap>} (override via NODE_NOFILE_LIMIT)"
   log "Chaos Mesh         : ${WITH_CHAOS_MESH} (set WITH_CHAOS_MESH=true to install)"
   log "Prometheus stack    : ${WITH_PROMETHEUS} (set WITH_PROMETHEUS=true to install)"
   log "ControlPlane stack  : ${WITH_CONTROLPLANE} (set WITH_CONTROLPLANE=true to provision infra via the c5c3 ControlPlane)"
@@ -995,6 +1102,13 @@ main() {
     rm -f "${kind_cfg}"
     log "Kind cluster '${CLUSTER_NAME}' created."
   fi
+
+  # Cap containerd's RLIMIT_NOFILE on every node before any workload lands.
+  # Runs on all three Step-1 paths (fresh create, pre-existing cluster,
+  # SKIP_KIND_CREATE) because the fd limit is a property of the node's
+  # containerd, not of how the cluster came to exist, and a uWSGI workload
+  # (Keystone) scheduled later would otherwise OOM-crashloop. See #546.
+  cap_node_nofile
 
   # Step 2: Install flux-operator and apply FluxInstance (/)
   #
