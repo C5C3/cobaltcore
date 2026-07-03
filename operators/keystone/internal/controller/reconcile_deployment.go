@@ -20,6 +20,7 @@ import (
 
 	"github.com/c5c3/forge/internal/common/conditions"
 	"github.com/c5c3/forge/internal/common/deployment"
+	commonv1 "github.com/c5c3/forge/internal/common/types"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
 
@@ -104,11 +105,17 @@ func dbReadinessProbe() *corev1.Probe {
 // with the correct spec. It sets the DeploymentReady condition and the
 // status endpoint when the Deployment becomes available.
 //
-// Key rotation (fernet + credential) is handled in-place via kubelet Secret
-// projection. The pod template does not include hash annotations, so Secret
-// data changes do not trigger Deployment rollouts.
-func (r *KeystoneReconciler) reconcileDeployment(ctx context.Context, keystone *keystonev1alpha1.Keystone, configMapName string) (ctrl.Result, error) {
-	deploy := buildKeystoneDeployment(keystone, configMapName)
+// Fernet + credential key rotation is handled in-place via kubelet Secret
+// projection, so those Secret data changes do not carry pod-template hash
+// annotations and never trigger Deployment rollouts. The database connection
+// string is the exception: it is consumed via the OS_DATABASE__CONNECTION env
+// var (not a mounted volume), so a rotated credential only takes effect on a
+// Pod restart. In Dynamic credentials mode the DSN changes each time ESO
+// re-issues the engine credential (the dbCredentialRefreshInterval cadence, kept
+// well below the lease TTL), so dbConnectionHash is stamped into a pod-template
+// annotation to roll the Deployment when the engine-issued credential changes.
+func (r *KeystoneReconciler) reconcileDeployment(ctx context.Context, keystone *keystonev1alpha1.Keystone, configMapName, dbConnectionHash string) (ctrl.Result, error) {
+	deploy := buildKeystoneDeployment(keystone, configMapName, dbConnectionHash)
 	ready, err := deployment.EnsureDeployment(ctx, r.Client, r.Scheme, keystone, deploy)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring Deployment: %w", err)
@@ -221,11 +228,27 @@ func deploymentReplicas(keystone *keystonev1alpha1.Keystone) *int32 {
 	return ptr.To(effectiveReplicas(keystone))
 }
 
-func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName string) *appsv1.Deployment {
+// dbConnectionHashAnnotation is the pod-template annotation key stamped with the
+// SHA-256 of the DSN in Dynamic credentials mode so a rotated engine-issued
+// credential rolls the Deployment (the DSN is env-var-consumed, not volume-
+// mounted, so it only takes effect on a Pod restart). It follows the historical
+// keystone.c5c3.io/<x>-hash annotation-key style.
+const dbConnectionHashAnnotation = "keystone.c5c3.io/db-connection-hash"
+
+func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName, dbConnectionHash string) *appsv1.Deployment {
 	selector := selectorLabels(keystone)
 	labels := commonLabels(keystone)
 	fernetSecretName := fmt.Sprintf("%s-fernet-keys", keystone.Name)
 	credentialSecretName := fmt.Sprintf("%s-credential-keys", keystone.Name)
+	// Roll the Deployment when a Dynamic (engine-issued) credential rotates: the
+	// DSN is consumed via OS_DATABASE__CONNECTION, so a changed credential only
+	// takes effect on Pod restart. Static/brownfield modes leave the annotation
+	// absent so their (rare) credential changes keep the existing no-rollout
+	// behavior, consistent with the fernet/credential in-place reload design.
+	var podAnnotations map[string]string
+	if dbConnectionHash != "" && keystone.Spec.Database.CredentialsMode == commonv1.CredentialsModeDynamic {
+		podAnnotations = map[string]string{dbConnectionHashAnnotation: dbConnectionHash}
+	}
 	deploy := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      subResourceName(keystone),
@@ -240,7 +263,8 @@ func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName 
 			Strategy: deploymentStrategy(keystone),
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
-					Labels: labels,
+					Labels:      labels,
+					Annotations: podAnnotations,
 				},
 				Spec: corev1.PodSpec{
 					TerminationGracePeriodSeconds: ptr.To(terminationGracePeriodSeconds(keystone)),

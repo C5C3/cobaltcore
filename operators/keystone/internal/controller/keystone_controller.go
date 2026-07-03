@@ -336,6 +336,12 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	// they either self-instrument their members (the parallel group) or are
 	// intentionally uninstrumented (config pruning) (issue #467).
 	var configMapName string
+	// dbConnectionHash is the SHA-256 of the DSN materialised by
+	// reconcileDBConnectionSecret; it is threaded to reconcileDeployment (like
+	// configMapName) so a rotated Dynamic (engine-issued) credential rolls the
+	// Deployment. DBConnectionSecret runs before Deployment in this pipeline, so
+	// the value is populated by the time the Deployment step reads it.
+	var dbConnectionHash string
 	pipeline := []subReconcilerStep{
 		{name: "Secrets", fn: func(ctx context.Context) (ctrl.Result, error) {
 			return r.reconcileSecrets(ctx, &keystone)
@@ -354,7 +360,12 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		// consumed by downstream pods/Jobs). Failures set SecretsReady=False —
 		// the same condition used by reconcileSecrets.
 		{name: "DBConnectionSecret", fn: func(ctx context.Context) (ctrl.Result, error) {
-			return r.reconcileDBConnectionSecret(ctx, &keystone)
+			var (
+				res ctrl.Result
+				err error
+			)
+			res, dbConnectionHash, err = r.reconcileDBConnectionSecret(ctx, &keystone)
+			return res, err
 		}},
 		// reconcileConfig must run before the Fernet/credential CronJobs and the
 		// db_sync Job, which all require the keystone.conf ConfigMap. It returns
@@ -409,7 +420,7 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			return r.reconcilePolicyValidation(ctx, &keystone, configMapName)
 		}},
 		{name: "Deployment", fn: func(ctx context.Context) (ctrl.Result, error) {
-			return r.reconcileDeployment(ctx, &keystone, configMapName)
+			return r.reconcileDeployment(ctx, &keystone, configMapName, dbConnectionHash)
 		}},
 		// Prune stale immutable ConfigMaps after Deployment is ready so all pods
 		// run the new config before old ConfigMaps are deleted. Uninstrumented

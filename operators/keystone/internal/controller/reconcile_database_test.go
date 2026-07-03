@@ -294,6 +294,72 @@ func TestReconcileDatabase_Managed_AllReady_DatabaseSynced(t *testing.T) {
 	expectEvent(g, r, "Normal DatabaseSynced")
 }
 
+// TestReconcileDatabase_DynamicManaged_CreatesDatabaseButNoUserGrant verifies
+// that in Dynamic credentials mode the operator still provisions the schema
+// (Database CR) but does NOT create MariaDB User/Grant CRs — the OpenBao engine
+// owns the DB user lifecycle.
+func TestReconcileDatabase_DynamicManaged_CreatesDatabaseButNoUserGrant(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := managedKeystone()
+	ks.Spec.Database.CredentialsMode = commonv1.CredentialsModeDynamic
+
+	r := newDBTestReconciler(
+		s, ks,
+		readyMariaDBCluster(ks),
+		readyDatabase(ks),
+		completedDBSyncJob(ks),
+		completedSchemaCheckJob(ks),
+	)
+
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(BeZero())
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal(conditionReasonDatabaseSynced))
+
+	// No User/Grant CRs must have been created — the engine owns the DB user.
+	userList := &mariadbv1alpha1.UserList{}
+	g.Expect(r.Client.List(context.Background(), userList, client.InNamespace("default"))).To(Succeed())
+	g.Expect(userList.Items).To(BeEmpty())
+	grantList := &mariadbv1alpha1.GrantList{}
+	g.Expect(r.Client.List(context.Background(), grantList, client.InNamespace("default"))).To(Succeed())
+	g.Expect(grantList.Items).To(BeEmpty())
+}
+
+// TestReconcileDatabase_DynamicManaged_PreexistingUserGrantSurvive verifies that
+// a User/Grant left over from a Static deployment mid-migration is NOT deleted
+// by a Dynamic reconcile, so its grant overlaps engine-issued logins for a
+// downtime-free cutover.
+func TestReconcileDatabase_DynamicManaged_PreexistingUserGrantSurvive(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := managedKeystone()
+	ks.Spec.Database.CredentialsMode = commonv1.CredentialsModeDynamic
+
+	r := newDBTestReconciler(
+		s, ks,
+		readyMariaDBCluster(ks),
+		readyDatabase(ks),
+		readyUser(ks),  // left over from a prior Static deployment
+		readyGrant(ks), // left over from a prior Static deployment
+		completedDBSyncJob(ks),
+		completedSchemaCheckJob(ks),
+	)
+
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(BeZero())
+
+	// The pre-existing User/Grant must still be present (not deleted).
+	key := mariaDBResourceKey(ks)
+	g.Expect(r.Get(context.Background(), key, &mariadbv1alpha1.User{})).To(Succeed())
+	g.Expect(r.Get(context.Background(), key, &mariadbv1alpha1.Grant{})).To(Succeed())
+}
+
 func TestReconcileDatabase_Managed_DatabaseNotReady_Requeues(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := dbTestScheme()

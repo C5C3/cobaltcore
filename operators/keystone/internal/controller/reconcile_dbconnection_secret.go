@@ -19,6 +19,8 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/url"
 	"strings"
@@ -31,7 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	"github.com/c5c3/forge/internal/common/conditions"
-	"github.com/c5c3/forge/internal/common/secrets"
+	commonv1 "github.com/c5c3/forge/internal/common/types"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
 
@@ -99,57 +101,86 @@ func appendDBTLSParams(keystone *keystonev1alpha1.Keystone, query url.Values) er
 	return nil
 }
 
+// dbConnectionDigest returns the SHA-256 of the assembled DSN as a lowercase
+// hex string. reconcileDeployment stamps it into the pod-template
+// keystone.c5c3.io/db-connection-hash annotation in Dynamic credentials mode so
+// a rotated engine-issued credential rolls the Deployment (the DSN is consumed
+// via the OS_DATABASE__CONNECTION env var, which — unlike the hot-reloaded
+// fernet/credential key volumes — only takes effect on a Pod restart).
+func dbConnectionDigest(connStr string) string {
+	sum := sha256.Sum256([]byte(connStr))
+	return hex.EncodeToString(sum[:])
+}
+
 // reconcileDBConnectionSecret derives the database connection URL from the
 // upstream credentials Secret and writes it to <keystone.Name>-db-connection
 // When the upstream Secret or its required keys are
 // missing it sets SecretsReady=False with reason WaitingForDBCredentials and
 // requeues; it never writes a derived Secret with empty credentials.
-func (r *KeystoneReconciler) reconcileDBConnectionSecret(ctx context.Context, keystone *keystonev1alpha1.Keystone) (ctrl.Result, error) {
+//
+// It returns the SHA-256 digest of the assembled DSN so the deployment step can
+// roll the Pods when a Dynamic (engine-issued) credential rotates without
+// reading the Secret content itself; the digest is empty on the requeue/error
+// paths where no derived Secret was materialised.
+func (r *KeystoneReconciler) reconcileDBConnectionSecret(ctx context.Context, keystone *keystonev1alpha1.Keystone) (ctrl.Result, string, error) {
 	upstreamKey := client.ObjectKey{
 		Namespace: keystone.Namespace,
 		Name:      keystone.Spec.Database.SecretRef.Name,
 	}
 
-	// In managed mode the MariaDB User CR name (= keystone.Name) is the MySQL
-	// username, so we skip the Secret read for it. Brownfield mode reads
-	// "username" from the upstream Secret.
-	var username string
-	if keystone.Spec.Database.ClusterRef != nil {
-		username = keystone.Name
-	} else {
-		u, err := secrets.GetSecretValue(ctx, r.Client, upstreamKey, "username")
-		if err != nil {
-			if secrets.IsMissingSecretOrKey(err) {
-				conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
-					Type:               "SecretsReady",
-					Status:             metav1.ConditionFalse,
-					ObservedGeneration: keystone.Generation,
-					Reason:             "WaitingForDBCredentials",
-					Message: fmt.Sprintf("Upstream database credentials Secret %s/%s missing or missing key %q",
-						upstreamKey.Namespace, upstreamKey.Name, "username"),
-				})
-				return ctrl.Result{RequeueAfter: RequeueSecretPolling}, nil
-			}
-			return ctrl.Result{}, fmt.Errorf("reading database username: %w", err)
-		}
-		username = u
+	// waitForCredentials records SecretsReady=False / WaitingForDBCredentials and
+	// returns the polling requeue with an empty digest, so a derived Secret is
+	// never materialised with partial credentials.
+	waitForCredentials := func(msg string) (ctrl.Result, string, error) {
+		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
+			Type:               "SecretsReady",
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: keystone.Generation,
+			Reason:             "WaitingForDBCredentials",
+			Message:            msg,
+		})
+		return ctrl.Result{RequeueAfter: RequeueSecretPolling}, "", nil
 	}
 
-	password, err := secrets.GetSecretValue(ctx, r.Client, upstreamKey, "password")
-	if err != nil {
-		if secrets.IsMissingSecretOrKey(err) {
-			conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
-				Type:               "SecretsReady",
-				Status:             metav1.ConditionFalse,
-				ObservedGeneration: keystone.Generation,
-				Reason:             "WaitingForDBCredentials",
-				Message: fmt.Sprintf("Upstream database credentials Secret %s/%s missing or missing key %q",
-					upstreamKey.Namespace, upstreamKey.Name, "password"),
-			})
-			return ctrl.Result{RequeueAfter: RequeueSecretPolling}, nil
+	// Read the upstream credentials Secret exactly once so the username and
+	// password are taken from a single, consistent object version. Reading each
+	// half with a separate cache Get opens a window in which ESO's atomic Secret
+	// update can land between the two reads, splicing one dynamic MySQL user's
+	// username onto another user's password and yielding a DSN that can never
+	// authenticate.
+	secret := &corev1.Secret{}
+	if err := r.Get(ctx, upstreamKey, secret); err != nil {
+		if apierrors.IsNotFound(err) {
+			return waitForCredentials(fmt.Sprintf("Upstream database credentials Secret %s/%s not found",
+				upstreamKey.Namespace, upstreamKey.Name))
 		}
-		return ctrl.Result{}, fmt.Errorf("reading database password: %w", err)
+		return ctrl.Result{}, "", fmt.Errorf("reading database credentials Secret %s/%s: %w",
+			upstreamKey.Namespace, upstreamKey.Name, err)
 	}
+
+	// In Static managed mode the MariaDB User CR name (= keystone.Name) is the
+	// MySQL username, so it is not read from the Secret. Brownfield mode and
+	// Dynamic managed mode both take "username" from the upstream Secret — the
+	// dynamic engine issues an ephemeral username (e.g. v-kube-...) alongside
+	// the password, so the username is not derivable from the CR name.
+	var username string
+	if keystone.Spec.Database.ClusterRef != nil && keystone.Spec.Database.CredentialsMode != commonv1.CredentialsModeDynamic {
+		username = keystone.Name
+	} else {
+		u, ok := secret.Data["username"]
+		if !ok {
+			return waitForCredentials(fmt.Sprintf("Upstream database credentials Secret %s/%s missing key %q",
+				upstreamKey.Namespace, upstreamKey.Name, "username"))
+		}
+		username = string(u)
+	}
+
+	p, ok := secret.Data["password"]
+	if !ok {
+		return waitForCredentials(fmt.Sprintf("Upstream database credentials Secret %s/%s missing key %q",
+			upstreamKey.Namespace, upstreamKey.Name, "password"))
+	}
+	password := string(p)
 
 	// url.UserPassword percent-encodes reserved characters in the userinfo
 	// component per RFC 3986, matching the encoding pymysql expects.
@@ -161,7 +192,7 @@ func (r *KeystoneReconciler) reconcileDBConnectionSecret(ctx context.Context, ke
 	query := url.Values{}
 	query.Set("charset", "utf8")
 	if err := appendDBTLSParams(keystone, query); err != nil {
-		return ctrl.Result{}, fmt.Errorf("assembling database TLS DSN parameters: %w", err)
+		return ctrl.Result{}, "", fmt.Errorf("assembling database TLS DSN parameters: %w", err)
 	}
 	connURL := &url.URL{
 		Scheme: "mysql+pymysql",
@@ -178,6 +209,7 @@ func (r *KeystoneReconciler) reconcileDBConnectionSecret(ctx context.Context, ke
 		RawQuery: strings.ReplaceAll(query.Encode(), "%2F", "/"),
 	}
 	connStr := connURL.String()
+	digest := dbConnectionDigest(connStr)
 
 	derivedKey := client.ObjectKey{
 		Namespace: keystone.Namespace,
@@ -185,7 +217,7 @@ func (r *KeystoneReconciler) reconcileDBConnectionSecret(ctx context.Context, ke
 	}
 
 	existing := &corev1.Secret{}
-	err = r.Get(ctx, derivedKey, existing)
+	err := r.Get(ctx, derivedKey, existing)
 	if apierrors.IsNotFound(err) {
 		derived := &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{
@@ -198,17 +230,17 @@ func (r *KeystoneReconciler) reconcileDBConnectionSecret(ctx context.Context, ke
 			},
 		}
 		if err := controllerutil.SetControllerReference(keystone, derived, r.Scheme); err != nil {
-			return ctrl.Result{}, fmt.Errorf("setting owner reference on derived Secret %s/%s: %w",
+			return ctrl.Result{}, "", fmt.Errorf("setting owner reference on derived Secret %s/%s: %w",
 				derived.Namespace, derived.Name, err)
 		}
 		if err := r.Create(ctx, derived); err != nil {
-			return ctrl.Result{}, fmt.Errorf("creating derived Secret %s/%s: %w",
+			return ctrl.Result{}, "", fmt.Errorf("creating derived Secret %s/%s: %w",
 				derived.Namespace, derived.Name, err)
 		}
-		return ctrl.Result{}, nil
+		return ctrl.Result{}, digest, nil
 	}
 	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("getting derived Secret %s/%s: %w",
+		return ctrl.Result{}, "", fmt.Errorf("getting derived Secret %s/%s: %w",
 			derivedKey.Namespace, derivedKey.Name, err)
 	}
 
@@ -221,10 +253,10 @@ func (r *KeystoneReconciler) reconcileDBConnectionSecret(ctx context.Context, ke
 			dbConnectionSecretKey: []byte(connStr),
 		}
 		if err := r.Update(ctx, existing); err != nil {
-			return ctrl.Result{}, fmt.Errorf("updating derived Secret %s/%s: %w",
+			return ctrl.Result{}, "", fmt.Errorf("updating derived Secret %s/%s: %w",
 				existing.Namespace, existing.Name, err)
 		}
 	}
 
-	return ctrl.Result{}, nil
+	return ctrl.Result{}, digest, nil
 }

@@ -20,6 +20,7 @@ import (
 	"github.com/c5c3/forge/internal/common/conditions"
 	"github.com/c5c3/forge/internal/common/database"
 	"github.com/c5c3/forge/internal/common/job"
+	commonv1 "github.com/c5c3/forge/internal/common/types"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
 
@@ -148,20 +149,32 @@ func (r *KeystoneReconciler) reconcileDatabase(ctx context.Context, keystone *ke
 			return ctrl.Result{RequeueAfter: RequeueDatabaseWait}, nil
 		}
 
-		userReady, err := database.EnsureDatabaseUser(ctx, r.Client, r.Scheme, keystone, buildUser(keystone), buildGrant(keystone))
-		if err != nil {
-			return ctrl.Result{}, fmt.Errorf("ensuring database user: %w", err)
-		}
-		if !userReady {
-			logger.Info("MariaDB User/Grant not ready, requeuing")
-			conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
-				Type:               "DatabaseReady",
-				Status:             metav1.ConditionFalse,
-				ObservedGeneration: keystone.Generation,
-				Reason:             conditionReasonWaitingForDatabase,
-				Message:            "MariaDB User or Grant CR is not ready",
-			})
-			return ctrl.Result{RequeueAfter: RequeueDatabaseWait}, nil
+		// In Dynamic credentials mode the OpenBao database engine owns the DB user
+		// lifecycle: it issues short-lived MySQL users on demand (via the role's
+		// creation_statements) and revokes them at lease end, so the operator does
+		// NOT provision a MariaDB User/Grant CR. The engine's GRANT covers the same
+		// database, so the schema (EnsureDatabase above) is still operator-managed.
+		//
+		// A pre-existing operator-provisioned User/Grant (from a Static deployment
+		// mid-migration) is intentionally NOT deleted here so its grant overlaps the
+		// engine-issued logins for a downtime-free cutover; retiring the static user
+		// is a documented migration step (see the migration guide).
+		if keystone.Spec.Database.CredentialsMode != commonv1.CredentialsModeDynamic {
+			userReady, err := database.EnsureDatabaseUser(ctx, r.Client, r.Scheme, keystone, buildUser(keystone), buildGrant(keystone))
+			if err != nil {
+				return ctrl.Result{}, fmt.Errorf("ensuring database user: %w", err)
+			}
+			if !userReady {
+				logger.Info("MariaDB User/Grant not ready, requeuing")
+				conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
+					Type:               "DatabaseReady",
+					Status:             metav1.ConditionFalse,
+					ObservedGeneration: keystone.Generation,
+					Reason:             conditionReasonWaitingForDatabase,
+					Message:            "MariaDB User or Grant CR is not ready",
+				})
+				return ctrl.Result{RequeueAfter: RequeueDatabaseWait}, nil
+			}
 		}
 	}
 

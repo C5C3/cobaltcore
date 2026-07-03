@@ -6,6 +6,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"net/url"
 	"strings"
 	"testing"
@@ -19,6 +20,79 @@ import (
 
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 )
+
+// tornReadUpstreamClient simulates ESO atomically rotating the upstream
+// DB-credentials Secret between reads: every Get of that Secret returns a fresh
+// (u<N>, p<N>) pair. A reconciler that reads the username and password with two
+// separate Gets splices u1 onto p2; a single-Get reconciler reads a consistent
+// u1/p1 pair. All other Gets delegate to the wrapped client.
+type tornReadUpstreamClient struct {
+	client.Client
+	key   client.ObjectKey
+	reads int
+}
+
+func (c *tornReadUpstreamClient) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	if key == c.key {
+		if secret, ok := obj.(*corev1.Secret); ok {
+			c.reads++
+			secret.Namespace = key.Namespace
+			secret.Name = key.Name
+			secret.Data = map[string][]byte{
+				"username": []byte(fmt.Sprintf("u%d", c.reads)),
+				"password": []byte(fmt.Sprintf("p%d", c.reads)),
+			}
+			return nil
+		}
+	}
+	return c.Client.Get(ctx, key, obj, opts...)
+}
+
+// TestReconcileDBConnectionSecret_ReadsCredentialPairAtomically guards against a
+// torn read of the dynamic credential pair: the DSN's username and password must
+// come from the same upstream Secret version (u1/p1), never a spliced pair
+// (u1/p2) that could not authenticate against the ephemeral MySQL user.
+func TestReconcileDBConnectionSecret_ReadsCredentialPairAtomically(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := configTestScheme()
+	ctx := context.Background()
+
+	ks := configTestKeystone()
+	ks.Spec.Database = commonv1.DatabaseSpec{
+		ClusterRef:      &corev1.LocalObjectReference{Name: "mariadb-cluster"},
+		Database:        "keystone",
+		SecretRef:       commonv1.SecretRefSpec{Name: "keystone-db-credentials"},
+		CredentialsMode: commonv1.CredentialsModeDynamic,
+	}
+	// Seed a placeholder so the derived-Secret Get/Create path has a real store;
+	// its content is overridden per-read by the wrapping client.
+	upstream := dbCredentialsSecret("default", "keystone-db-credentials", "seed-user", "seed-pass")
+	base := newConfigTestReconciler(s, ks, upstream)
+	r := &KeystoneReconciler{
+		Client: &tornReadUpstreamClient{
+			Client: base.Client,
+			key:    client.ObjectKey{Namespace: "default", Name: "keystone-db-credentials"},
+		},
+		Scheme:   base.Scheme,
+		Recorder: base.Recorder,
+	}
+
+	_, digest, err := r.reconcileDBConnectionSecret(ctx, ks)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(digest).NotTo(BeEmpty())
+
+	derived := &corev1.Secret{}
+	g.Expect(r.Get(ctx, client.ObjectKey{
+		Namespace: "default",
+		Name:      derivedDBConnectionSecretName(ks.Name),
+	}, derived)).To(Succeed())
+
+	connStr := string(derived.Data[dbConnectionSecretKey])
+	g.Expect(connStr).To(ContainSubstring("u1:p1@"),
+		"username and password must come from the same upstream Secret read")
+	g.Expect(connStr).NotTo(ContainSubstring("u1:p2@"),
+		"a spliced credential pair (username u1 + password p2) must never reach the DSN")
+}
 
 // derivedDBConnectionSecretName mirrors the naming pattern in
 // reconcileDBConnectionSecret; using a helper avoids drift between tests and
@@ -36,7 +110,7 @@ func TestReconcileDBConnectionSecret_CreatesSecretWithCorrectURL_Brownfield(t *t
 	upstream := dbCredentialsSecret("default", "keystone-db-credentials", "ks_user", "ks_pass")
 	r := newConfigTestReconciler(s, ks, upstream)
 
-	result, err := r.reconcileDBConnectionSecret(ctx, ks)
+	result, _, err := r.reconcileDBConnectionSecret(ctx, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(BeZero())
 
@@ -70,7 +144,7 @@ func TestReconcileDBConnectionSecret_CreatesSecretWithCorrectURL_Managed(t *test
 	upstream := dbCredentialsSecret("default", "keystone-db-credentials", "ignored", "secret123")
 	r := newConfigTestReconciler(s, ks, upstream)
 
-	result, err := r.reconcileDBConnectionSecret(ctx, ks)
+	result, _, err := r.reconcileDBConnectionSecret(ctx, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(BeZero())
 
@@ -86,6 +160,118 @@ func TestReconcileDBConnectionSecret_CreatesSecretWithCorrectURL_Managed(t *test
 	))
 }
 
+// TestReconcileDBConnectionSecret_DynamicManaged_UsesSecretUsername verifies
+// that in Dynamic managed mode the DSN username is read from the upstream Secret
+// (the engine issues an ephemeral username such as v-kube-...) rather than being
+// derived from the CR name as Static managed mode does.
+func TestReconcileDBConnectionSecret_DynamicManaged_UsesSecretUsername(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := configTestScheme()
+	ctx := context.Background()
+
+	ks := configTestKeystone()
+	ks.Spec.Database = commonv1.DatabaseSpec{
+		ClusterRef:      &corev1.LocalObjectReference{Name: "mariadb-cluster"},
+		Database:        "keystone",
+		SecretRef:       commonv1.SecretRefSpec{Name: "keystone-db-credentials"},
+		CredentialsMode: commonv1.CredentialsModeDynamic,
+	}
+	upstream := dbCredentialsSecret("default", "keystone-db-credentials", "v-kube-abc123", "leaseSecret")
+	r := newConfigTestReconciler(s, ks, upstream)
+
+	result, digest, err := r.reconcileDBConnectionSecret(ctx, ks)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(BeZero())
+	g.Expect(digest).NotTo(BeEmpty())
+
+	derived := &corev1.Secret{}
+	g.Expect(r.Get(ctx, client.ObjectKey{
+		Namespace: "default",
+		Name:      derivedDBConnectionSecretName(ks.Name),
+	}, derived)).To(Succeed())
+	g.Expect(string(derived.Data[dbConnectionSecretKey])).To(Equal(
+		"mysql+pymysql://v-kube-abc123:leaseSecret@mariadb-cluster.default.svc:3306/keystone?charset=utf8",
+	))
+}
+
+// TestReconcileDBConnectionSecret_DynamicManaged_MissingUsername_Requeues
+// verifies the WaitingForDBCredentials guard fires when the upstream Secret has
+// no username key in Dynamic managed mode (unlike Static managed mode, which
+// never reads username).
+func TestReconcileDBConnectionSecret_DynamicManaged_MissingUsername_Requeues(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := configTestScheme()
+	ctx := context.Background()
+
+	ks := configTestKeystone()
+	ks.Spec.Database = commonv1.DatabaseSpec{
+		ClusterRef:      &corev1.LocalObjectReference{Name: "mariadb-cluster"},
+		Database:        "keystone",
+		SecretRef:       commonv1.SecretRefSpec{Name: "keystone-db-credentials"},
+		CredentialsMode: commonv1.CredentialsModeDynamic,
+	}
+	// Upstream Secret with only a password key (username not yet synced).
+	upstream := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "keystone-db-credentials", Namespace: "default"},
+		Data:       map[string][]byte{"password": []byte("leaseSecret")},
+	}
+	r := newConfigTestReconciler(s, ks, upstream)
+
+	result, digest, err := r.reconcileDBConnectionSecret(ctx, ks)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(Equal(RequeueSecretPolling))
+	g.Expect(digest).To(BeEmpty())
+
+	var cond *metav1.Condition
+	for i := range ks.Status.Conditions {
+		if ks.Status.Conditions[i].Type == "SecretsReady" {
+			cond = &ks.Status.Conditions[i]
+			break
+		}
+	}
+	g.Expect(cond).NotTo(BeNil(), "SecretsReady condition must be set")
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("WaitingForDBCredentials"))
+}
+
+// TestReconcileDBConnectionSecret_DigestChangesWithCredential verifies the
+// returned DSN digest is deterministic for identical inputs and changes when the
+// upstream credential rotates — the signal reconcileDeployment uses to roll the
+// Deployment in Dynamic mode.
+func TestReconcileDBConnectionSecret_DigestChangesWithCredential(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := configTestScheme()
+	ctx := context.Background()
+
+	ks := configTestKeystone()
+	ks.Spec.Database = commonv1.DatabaseSpec{
+		ClusterRef:      &corev1.LocalObjectReference{Name: "mariadb-cluster"},
+		Database:        "keystone",
+		SecretRef:       commonv1.SecretRefSpec{Name: "keystone-db-credentials"},
+		CredentialsMode: commonv1.CredentialsModeDynamic,
+	}
+	upstream := dbCredentialsSecret("default", "keystone-db-credentials", "v-kube-1", "pass-1")
+	r := newConfigTestReconciler(s, ks, upstream)
+
+	_, digest1, err := r.reconcileDBConnectionSecret(ctx, ks)
+	g.Expect(err).NotTo(HaveOccurred())
+	// Second reconcile with unchanged inputs yields the same digest.
+	_, digest1b, err := r.reconcileDBConnectionSecret(ctx, ks)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(digest1b).To(Equal(digest1))
+
+	// Rotate the credential; the digest must change.
+	current := &corev1.Secret{}
+	g.Expect(r.Get(ctx, client.ObjectKey{Namespace: "default", Name: "keystone-db-credentials"}, current)).To(Succeed())
+	current.Data["username"] = []byte("v-kube-2")
+	current.Data["password"] = []byte("pass-2")
+	g.Expect(r.Update(ctx, current)).To(Succeed())
+
+	_, digest2, err := r.reconcileDBConnectionSecret(ctx, ks)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(digest2).NotTo(Equal(digest1))
+}
+
 func TestReconcileDBConnectionSecret_UpdatesOnPasswordRotation(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := configTestScheme()
@@ -96,7 +282,7 @@ func TestReconcileDBConnectionSecret_UpdatesOnPasswordRotation(t *testing.T) {
 	r := newConfigTestReconciler(s, ks, upstream)
 
 	// First reconcile: derived Secret created with the old password.
-	_, err := r.reconcileDBConnectionSecret(ctx, ks)
+	_, _, err := r.reconcileDBConnectionSecret(ctx, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	derivedKey := client.ObjectKey{
@@ -114,7 +300,7 @@ func TestReconcileDBConnectionSecret_UpdatesOnPasswordRotation(t *testing.T) {
 	current.Data["password"] = []byte("new")
 	g.Expect(r.Update(ctx, current)).To(Succeed())
 
-	_, err = r.reconcileDBConnectionSecret(ctx, ks)
+	_, _, err = r.reconcileDBConnectionSecret(ctx, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	second := &corev1.Secret{}
@@ -136,7 +322,7 @@ func TestReconcileDBConnectionSecret_UpstreamSecretMissing_RequeueAndCondition(t
 	// Deliberately do NOT seed the upstream credentials Secret.
 	r := newConfigTestReconciler(s, ks)
 
-	result, err := r.reconcileDBConnectionSecret(ctx, ks)
+	result, _, err := r.reconcileDBConnectionSecret(ctx, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(RequeueSecretPolling))
 
@@ -188,7 +374,7 @@ func TestReconcileDBConnectionSecret_UpstreamSecretMissingKey_RequeueAndConditio
 	}
 	r := newConfigTestReconciler(s, ks, upstream)
 
-	result, err := r.reconcileDBConnectionSecret(ctx, ks)
+	result, _, err := r.reconcileDBConnectionSecret(ctx, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(RequeueSecretPolling))
 
@@ -229,7 +415,7 @@ func TestReconcile_NoPushSecretOrExternalSecretForDBConnection(t *testing.T) {
 	upstream := dbCredentialsSecret("default", "keystone-db-credentials", "ks_user", "ks_pass")
 	r := newConfigTestReconciler(s, ks, upstream)
 
-	_, err := r.reconcileDBConnectionSecret(ctx, ks)
+	_, _, err := r.reconcileDBConnectionSecret(ctx, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	derivedName := derivedDBConnectionSecretName(ks.Name)
@@ -281,7 +467,7 @@ func TestReconcileDBConnectionSecret_TLSDisabled_NoSSLParams(t *testing.T) {
 	upstream := dbCredentialsSecret("default", "keystone-db-credentials", "ks_user", "ks_pass")
 	r := newConfigTestReconciler(s, ks, upstream)
 
-	_, err := r.reconcileDBConnectionSecret(ctx, ks)
+	_, _, err := r.reconcileDBConnectionSecret(ctx, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	derived := &corev1.Secret{}
@@ -324,7 +510,7 @@ func TestReconcileDBConnectionSecret_TLSEnabled_AppendsModeSSLParams(t *testing.
 			upstream := dbCredentialsSecret("default", "keystone-db-credentials", "ks_user", "ks_pass")
 			r := newConfigTestReconciler(s, ks, upstream)
 
-			_, err := r.reconcileDBConnectionSecret(ctx, ks)
+			_, _, err := r.reconcileDBConnectionSecret(ctx, ks)
 			g.Expect(err).NotTo(HaveOccurred())
 
 			derived := &corev1.Secret{}
@@ -380,7 +566,7 @@ func TestReconcileDBConnectionSecret_TLSDisabledMode_NoSSLParams(t *testing.T) {
 	upstream := dbCredentialsSecret("default", "keystone-db-credentials", "ks_user", "ks_pass")
 	r := newConfigTestReconciler(s, ks, upstream)
 
-	_, err := r.reconcileDBConnectionSecret(ctx, ks)
+	_, _, err := r.reconcileDBConnectionSecret(ctx, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	derived := &corev1.Secret{}
@@ -416,7 +602,7 @@ func TestReconcileDBConnectionSecret_TLSEnabled_NoPercentEncodedSlashes(t *testi
 	upstream := dbCredentialsSecret("default", "keystone-db-credentials", "ks_user", "ks_pass")
 	r := newConfigTestReconciler(s, ks, upstream)
 
-	_, err := r.reconcileDBConnectionSecret(ctx, ks)
+	_, _, err := r.reconcileDBConnectionSecret(ctx, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	derived := &corev1.Secret{}
