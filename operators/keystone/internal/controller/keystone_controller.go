@@ -15,6 +15,7 @@ import (
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	"golang.org/x/sync/errgroup"
+	"golang.org/x/time/rate"
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	batchv1 "k8s.io/api/batch/v1"
@@ -27,12 +28,15 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	crcontroller "sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	"github.com/c5c3/forge/internal/common/conditions"
@@ -760,6 +764,34 @@ func (r *KeystoneReconciler) reconcileParallelGroup(
 	return shortestRequeue(results...), nil
 }
 
+// effectiveMaxConcurrentReconciles returns the worker count to hand to
+// controller.Options.MaxConcurrentReconciles, falling back to
+// defaultMaxConcurrentReconciles when the field is unset (<= 0) so a
+// programmatically constructed reconciler still parallelises independent CRs.
+func (r *KeystoneReconciler) effectiveMaxConcurrentReconciles() int {
+	if r.MaxConcurrentReconciles > 0 {
+		return r.MaxConcurrentReconciles
+	}
+	return defaultMaxConcurrentReconciles
+}
+
+// keystoneRateLimiter builds the controller's workqueue rate limiter. It is the
+// same composition as workqueue.DefaultTypedControllerRateLimiter — a per-item
+// exponential failure limiter maxed against a 10 qps / 100 burst token bucket —
+// but with the per-item cap lowered from the controller-runtime default of
+// 1000s to rateLimiterMaxDelay (30s). The 1000s default is far too conservative
+// for an I/O-bound operator: a transiently failing CR would back off toward a
+// ~16-minute retry. Lowering only the per-item cap keeps the overall
+// 10 qps / 100-burst ceiling intact while bounding failure backoff to 30s.
+// Genuinely slow external waits (DB, bootstrap) use explicit RequeueAfter, which
+// enqueues via AddAfter and never touches this failure limiter.
+func keystoneRateLimiter() workqueue.TypedRateLimiter[reconcile.Request] {
+	return workqueue.NewTypedMaxOfRateLimiter(
+		workqueue.NewTypedItemExponentialFailureRateLimiter[reconcile.Request](rateLimiterBaseDelay, rateLimiterMaxDelay),
+		&workqueue.TypedBucketRateLimiter[reconcile.Request]{Limiter: rate.NewLimiter(rate.Limit(10), 100)},
+	)
+}
+
 // SetupWithManager registers the KeystoneReconciler with the controller manager.
 func (r *KeystoneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Detect whether the Gateway API CRD is installed. spec.gateway is
@@ -795,6 +827,14 @@ func (r *KeystoneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 
 	b := ctrl.NewControllerManagedBy(mgr).
+		// MaxConcurrentReconciles lets independent CRs reconcile in parallel
+		// instead of serialising at the controller-runtime default of 1; the
+		// tuned RateLimiter caps per-item failure backoff at 30s rather than the
+		// default 1000s (see keystoneRateLimiter).
+		WithOptions(crcontroller.Options{
+			MaxConcurrentReconciles: r.effectiveMaxConcurrentReconciles(),
+			RateLimiter:             keystoneRateLimiter(),
+		}).
 		For(&keystonev1alpha1.Keystone{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
