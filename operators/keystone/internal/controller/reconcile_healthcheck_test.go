@@ -470,6 +470,51 @@ func TestReconcileHealthCheck_GenericNetworkError_SetsConditionFalse(t *testing.
 	g.Expect(cond.ObservedGeneration).To(Equal(int64(2)))
 }
 
+// --- Peer cancellation in the parallel group must not flip KeystoneAPIReady ---
+
+// TestReconcileHealthCheck_ParentContextCancelled_PropagatesWithoutFlipping
+// reproduces issue #361: the health probe runs inside the parallel
+// post-deployment group under an errgroup context. When a peer (e.g. Bootstrap
+// returning ErrJobFailed) fails, errgroup cancels the group context and the
+// in-flight probe's Do returns context.Canceled. That is not an API-health
+// signal — the reconciler must propagate the cancellation and leave both the
+// KeystoneAPIReady condition and the probe cache untouched.
+func TestReconcileHealthCheck_ParentContextCancelled_PropagatesWithoutFlipping(t *testing.T) {
+	g := NewGomegaWithT(t)
+	r := newHealthcheckTestReconciler()
+	r.HTTPClient = &mockHTTPDoer{
+		err: &url.Error{Op: "Get", URL: "http://test/v3", Err: context.Canceled},
+	}
+	clk := time.Unix(1_700_000_000, 0)
+	r.now = func() time.Time { return clk }
+	ks := newTestKeystoneForHealthCheck("http://ignored/v3", 9)
+	ks.UID = "uid-peer-cancel"
+	healthyReadyCondition(ks)
+
+	// Seed a cache entry, then age it past the TTL so this pass actually
+	// re-probes (a fresh entry would serve from cache and never hit the network).
+	r.storeHealthProbe(ks, internalAPIURL(ks))
+	key := client.ObjectKeyFromObject(ks)
+	clk = clk.Add(HealthCheckCacheTTL + time.Second)
+
+	// A cancelled parent context stands in for the errgroup cancelling gctx after
+	// a peer sub-reconciler failed.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	result, err := r.reconcileHealthCheck(ctx, ks)
+	g.Expect(err).To(MatchError(context.Canceled),
+		"a cancelled parent context must propagate, not be reclassified as an API-health failure")
+	g.Expect(result).To(Equal(ctrl.Result{}))
+
+	cond := conditions.GetCondition(ks.Status.Conditions, conditionTypeKeystoneAPIReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue),
+		"peer cancellation must not flip KeystoneAPIReady to False")
+	g.Expect(r.healthProbeCache).To(HaveKey(key),
+		"peer cancellation must not evict the probe cache")
+}
+
 // --- Response body close verification ---
 
 func TestReconcileHealthCheck_ResponseBodyClosed_Success(t *testing.T) {

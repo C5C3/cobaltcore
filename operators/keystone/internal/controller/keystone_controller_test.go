@@ -865,7 +865,14 @@ func TestReconcile_ReadyFalseWhenDeploymentNotAvailable(t *testing.T) {
 // health check returns a non-2xx response, the reconcile chain short-circuits:
 // conditions before the health check in the chain are set, but conditions
 // after it (HPA, Bootstrap, TrustFlush) are not.
-func TestReconcile_HealthCheckStopsChainOnFailure(t *testing.T) {
+// TestReconcile_HealthCheckFailureDrivesReadyFalse verifies that a failing
+// health check flips KeystoneAPIReady=False and drives the aggregate Ready to
+// False. Since the second parallel group runs HTTPRoute, HealthCheck, HPA,
+// Bootstrap, and TrustFlush concurrently (issue #361), a HealthCheck failure no
+// longer short-circuits the other four — they still run and set their
+// conditions in the same pass, and shortestRequeue surfaces the health-check
+// requeue.
+func TestReconcile_HealthCheckFailureDrivesReadyFalse(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
 	configMapName := testComputeConfigMapName(t)
@@ -883,15 +890,17 @@ func TestReconcile_HealthCheckStopsChainOnFailure(t *testing.T) {
 		NamespacedName: types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace},
 	})
 	g.Expect(err).NotTo(HaveOccurred())
+	// HealthCheck requeues at RequeueHealthCheck (10s); the other group members
+	// resolve to zero or longer requeues, so shortestRequeue returns 10s.
 	g.Expect(result.RequeueAfter).To(Equal(RequeueHealthCheck))
 
 	var updated keystonev1alpha1.Keystone
 	g.Expect(r.Get(ctx, types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}, &updated)).To(Succeed())
 
-	// Conditions set BEFORE health check in the chain should be True.
+	// Conditions set before the second group should be True.
 	for _, condType := range []string{"SecretsReady", "FernetKeysReady", "CredentialKeysReady", "DatabaseReady", "DeploymentReady", "NetworkPolicyReady"} {
 		cond := meta.FindStatusCondition(updated.Status.Conditions, condType)
-		g.Expect(cond).NotTo(BeNil(), "condition %s should exist (runs before health check)", condType)
+		g.Expect(cond).NotTo(BeNil(), "condition %s should exist (runs before the second group)", condType)
 		g.Expect(cond.Status).To(Equal(metav1.ConditionTrue), "condition %s should be True", condType)
 	}
 
@@ -901,20 +910,20 @@ func TestReconcile_HealthCheckStopsChainOnFailure(t *testing.T) {
 	g.Expect(apiCond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(apiCond.Reason).To(Equal("APIUnhealthy"))
 
-	// Conditions set AFTER health check should NOT exist (chain stopped).
-	for _, condType := range []string{"HPAReady", "BootstrapReady", "TrustFlushReady"} {
+	// The other second-group members run in parallel with HealthCheck, so their
+	// conditions are set in the same pass rather than skipped.
+	for _, condType := range []string{"HTTPRouteReady", "HPAReady", "BootstrapReady", "TrustFlushReady"} {
 		cond := meta.FindStatusCondition(updated.Status.Conditions, condType)
-		g.Expect(cond).To(BeNil(), "condition %s should not be set when health check fails", condType)
+		g.Expect(cond).NotTo(BeNil(),
+			"condition %s must be set: the parallel group runs it even when HealthCheck fails", condType)
 	}
 
-	// Ready must be re-aggregated to False even though the chain short-circuited
-	// at the health check: updateStatus recomputes it on every persist, so a
-	// KeystoneAPIReady=False (plus the unset downstream conditions) drives the
-	// aggregate to False rather than leaving it stale (SC-CHAOS-006).
+	// Ready must be re-aggregated to False: KeystoneAPIReady=False drives the
+	// aggregate to False (SC-CHAOS-006).
 	readyCond := meta.FindStatusCondition(updated.Status.Conditions, "Ready")
-	g.Expect(readyCond).NotTo(BeNil(), "Ready should be set when the chain short-circuits")
+	g.Expect(readyCond).NotTo(BeNil(), "Ready should be set")
 	g.Expect(readyCond.Status).To(Equal(metav1.ConditionFalse),
-		"Ready must be False when a sub-condition short-circuits the chain")
+		"Ready must be False when KeystoneAPIReady is False")
 	g.Expect(readyCond.Reason).To(Equal("NotAllReady"))
 }
 

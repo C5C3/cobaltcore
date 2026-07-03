@@ -162,7 +162,18 @@ func (r *KeystoneReconciler) reconcileHealthCheck(ctx context.Context, keystone 
 
 	resp, err := r.httpClient().Do(req)
 	if err != nil {
-		// Any probe error must evict so the next reconcile re-probes rather
+		// A cancelled parent context means a peer in the parallel post-deployment
+		// group failed and errgroup cancelled gctx — the aborted probe is not an
+		// API-health signal. Propagate the cancellation without flipping
+		// KeystoneAPIReady or evicting the probe cache, so an unrelated
+		// Bootstrap/HPA/HTTPRoute/TrustFlush failure cannot masquerade as
+		// "Keystone API down" (issue #361). A genuine probe timeout fires
+		// checkCtx's deadline while the parent ctx stays live (ctx.Err()==nil),
+		// so it still routes through handleHealthCheckError below.
+		if cerr := ctx.Err(); cerr != nil {
+			return ctrl.Result{}, cerr
+		}
+		// Any other probe error must evict so the next reconcile re-probes rather
 		// than serving a stale success.
 		r.evictHealthProbe(key)
 		return r.handleHealthCheckError(ctx, keystone, err), nil

@@ -321,36 +321,21 @@ Fernet and credential sub-reconciler sections for the full contract.
 │  └────────┬────────────────┘  No condition, no requeue                       │
 │           │                                                                  │
 │           ▼                                                                  │
-│  ┌─────────────────────────┐                                                 │
-│  │ reconcileHTTPRoute      │  Create/update/delete HTTPRoute based on        │
-│  │                         │  spec.gateway; reflect parent Accepted status   │
-│  │                         │  Sets: HTTPRouteReady                           │
-│  └────────┬────────────────┘  Requeue: 10s while not Accepted                │
-│           │                                                                  │
-│           ▼                                                                  │
-│  ┌────────────────────────┐                                                  │
-│  │ reconcileHealthCheck   │  HTTP GET to Status.Endpoint                     │
-│  │                        │  Sets: KeystoneAPIReady                          │
-│  └────────┬───────────────┘  Requeue: 10s                                    │
-│           │                                                                  │
-│           ▼                                                                  │
-│  ┌──────────────┐                                                            │
-│  │ reconcileHPA │  Create/update/delete HPA based on spec.autoscaling        │
-│  │              │  Sets: HPAReady                                            │
-│  └────────┬─────┘  Requeue: none                                             │
-│           │                                                                  │
-│           ▼                                                                  │
-│  ┌─────────────────────┐                                                     │
-│  │ reconcileBootstrap  │  Run keystone-manage bootstrap Job                  │
-│  │                     │  Sets: BootstrapReady                               │
-│  └────────┬────────────┘  Requeue: 60s                                       │
-│           │                                                                  │
-│           ▼                                                                  │
-│  ┌────────────────────────┐                                                  │
-│  │ reconcileTrustFlush    │  Ensure trust_flush CronJob (default-on)         │
-│  │                        │  Sets: TrustFlushReady                           │
-│  └────────┬───────────────┘  Requeue: none                                   │
-│           │                                                                  │
+│  ╔═════════════════════════════════════════════════════════════════════════╗ │
+│  ║  reconcileParallelGroup (second group)                                  ║ │
+│  ║                                                                         ║ │
+│  ║  ┌──────────────────────┐  ┌────────────────────────┐                   ║ │
+│  ║  │ reconcileHTTPRoute   │  │ reconcileHealthCheck   │  (concurrent)     ║ │
+│  ║  │ Sets: HTTPRouteReady │  │ Sets: KeystoneAPIReady │                   ║ │
+│  ║  └──────────────────────┘  └────────────────────────┘                   ║ │
+│  ║  ┌──────────────┐  ┌─────────────────────┐  ┌────────────────────────┐  ║ │
+│  ║  │ reconcileHPA │  │ reconcileBootstrap  │  │ reconcileTrustFlush    │  ║ │
+│  ║  │ Sets:HPAReady│  │ Sets: BootstrapReady│  │ Sets: TrustFlushReady  │  ║ │
+│  ║  └──────────────┘  └─────────────────────┘  └────────────────────────┘  ║ │
+│  ║                                                                         ║ │
+│  ║  g.Wait() → mergeParallelConditions → shortestRequeue                   ║ │
+│  ╚═══════════════════════════════╤═════════════════════════════════════════╝ │
+│           ┌──────────────────────┘                                           │
 │           ▼                                                                  │
 │  ┌────────────────────────────┐                                              │
 │  │ reconcilePasswordRotation  │  Ensure admin-password rotation CronJob      │
@@ -371,10 +356,16 @@ Sub-reconcilers execute in a defined order using two execution modes:
 
 1. **Sequential sub-reconcilers** run one at a time. Each is called only if all
    previous sub-reconcilers succeeded without requesting a requeue.
-2. **Parallel group** (`reconcileParallelGroup`) runs three independent sub-reconcilers
+2. **Parallel groups** (`reconcileParallelGroup`) run independent sub-reconcilers
    concurrently via `errgroup.WithContext`. Each goroutine operates on a `DeepCopy` of
-   the Keystone CR to prevent data races. See
-   [Parallel Group Architecture](#parallel-group-architecture) for details.
+   the Keystone CR to prevent data races. There are two groups: the first (after
+   Config) runs FernetKeys / CredentialKeys / NetworkPolicy; the second (after
+   Deployment and config pruning) runs HTTPRoute / HealthCheck / HPA / Bootstrap /
+   TrustFlush, which share no inter-dependency once the Deployment/Service/Config
+   outputs exist. `reconcilePasswordRotation` stays sequential after the second
+   group because it depends on Bootstrap having seeded the initial admin
+   credential. See [Parallel Group Architecture](#parallel-group-architecture) for
+   details.
 
 The chain is a table-driven pipeline. Each step is a `subReconcilerStep`
 (`name` + `fn`); the loop attempts the steps in order and funnels every exit
@@ -454,11 +445,22 @@ clients can detect stale status.
 
 ### Parallel Group Architecture
 
-Three sub-reconcilers — `reconcileFernetKeys`, `reconcileCredentialKeys`, and
-`reconcileNetworkPolicy` — run concurrently via `reconcileParallelGroup` after
-`reconcileConfig` completes and before `reconcileDatabase` begins. These
-sub-reconcilers are eligible for parallelization because they have no data
+The pipeline uses two parallel groups, each driven by `reconcileParallelGroup`:
+
+- **Group 1** — `reconcileFernetKeys`, `reconcileCredentialKeys`, and
+  `reconcileNetworkPolicy` — runs after `reconcileConfig` completes and before
+  `reconcileDatabase` begins.
+- **Group 2** — `reconcileHTTPRoute`, `reconcileHealthCheck`, `reconcileHPA`,
+  `reconcileBootstrap`, and `reconcileTrustFlush` — runs after
+  `reconcileDeployment` and config pruning. Once the Deployment/Service and the
+  config ConfigMap exist, these five share no data dependency on each other.
+
+Both groups' members are eligible for parallelization because they have no data
 dependencies on each other (see [Dependency Graph](#dependency-graph) below).
+`reconcilePasswordRotation` stays sequential after group 2 because it depends on
+Bootstrap having seeded the initial admin credential. A member that returns a
+non-zero result no longer short-circuits its siblings: all members run every
+pass and `shortestRequeue` aggregates their requeues.
 
 **File:** `operators/keystone/internal/controller/keystone_controller.go`
 
@@ -492,18 +494,18 @@ output (other than conditions merged after the group completes).
 | --- | --- | --- | --- | --- |
 | `reconcileSecrets` | CR spec | `SecretsReady` | none | no (must run first) |
 | `reconcileConfig` | CR spec, DB secret | `SecretsReady` (False on failure; *returns configMapName*) | Secrets | no (produces configMapName) |
-| `reconcileFernetKeys` | configMapName | `FernetKeysReady` | Config | **yes** |
-| `reconcileCredentialKeys` | configMapName | `CredentialKeysReady` | Config | **yes** |
-| `reconcileNetworkPolicy` | CR spec | `NetworkPolicyReady` | none | **yes** |
+| `reconcileFernetKeys` | configMapName | `FernetKeysReady` | Config | **yes (group 1)** |
+| `reconcileCredentialKeys` | configMapName | `CredentialKeysReady` | Config | **yes (group 1)** |
+| `reconcileNetworkPolicy` | CR spec | `NetworkPolicyReady` | none | **yes (group 1)** |
 | `reconcileDatabase` | configMapName | `DatabaseReady` | Config | no (complex state machine) |
 | `reconcilePolicyValidation` | configMapName | `PolicyValidReady` | Config | no (gates Deployment) |
 | `reconcileDeployment` | configMapName | `DeploymentReady` | Database (implicit) | no |
 | `pruneStaleConfigMaps` | configMapName | `SecretsReady` (False on failure) | Deployment (must be ready) | no |
-| `reconcileHTTPRoute` | CR spec | `HTTPRouteReady` | Deployment (ensures backend Service exists) | no |
-| `reconcileHealthCheck` | status.endpoint | `KeystoneAPIReady` | Deployment (sets endpoint) | no |
-| `reconcileHPA` | CR spec | `HPAReady` | Deployment (naming) | no |
-| `reconcileBootstrap` | configMapName | `BootstrapReady` | Deployment (API must be running) | no |
-| `reconcileTrustFlush` | configMapName | `TrustFlushReady` | Config | no |
+| `reconcileHTTPRoute` | CR spec | `HTTPRouteReady` | Deployment (ensures backend Service exists) | **yes (group 2)** |
+| `reconcileHealthCheck` | status.endpoint | `KeystoneAPIReady` | Deployment (sets endpoint) | **yes (group 2)** |
+| `reconcileHPA` | CR spec | `HPAReady` | Deployment (naming) | **yes (group 2)** |
+| `reconcileBootstrap` | configMapName | `BootstrapReady` | Config, DB (runs its own Job) | **yes (group 2)** |
+| `reconcileTrustFlush` | configMapName | `TrustFlushReady` | Config | **yes (group 2)** |
 | `reconcilePasswordRotation` | `spec.passwordRotation` | `PasswordRotationReady` | Bootstrap (re-bootstrap is the downstream consumer) | no |
 
 Key constraints that prevent further parallelization:
@@ -513,7 +515,8 @@ Key constraints that prevent further parallelization:
   database being ready.
 - **reconcilePolicyValidation** must gate `reconcileDeployment` — invalid policy
   overrides must be caught before reaching running pods.
-- **reconcileBootstrap** requires the API to be running (depends on Deployment).
+- **reconcilePasswordRotation** stays sequential after group 2 because it depends
+  on Bootstrap having seeded the initial admin credential.
 
 #### DeepCopy Condition Merge Pattern
 

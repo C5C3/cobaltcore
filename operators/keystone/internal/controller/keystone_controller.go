@@ -414,24 +414,61 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			}
 			return ctrl.Result{}, nil
 		}},
-		// HTTPRoute runs after the Deployment/Service are ensured so the backend
-		// Service is present before the Gateway controller resolves backendRefs
-		{name: "HTTPRoute", fn: func(ctx context.Context) (ctrl.Result, error) {
-			return r.reconcileHTTPRoute(ctx, &keystone)
-		}},
-		// Health check runs after Deployment because it depends on
-		// Status.Endpoint, which reconcileDeployment sets.
-		{name: "HealthCheck", fn: func(ctx context.Context) (ctrl.Result, error) {
-			return r.reconcileHealthCheck(ctx, &keystone)
-		}},
-		{name: "HPA", fn: func(ctx context.Context) (ctrl.Result, error) {
-			return r.reconcileHPA(ctx, &keystone)
-		}},
-		{name: "Bootstrap", fn: func(ctx context.Context) (ctrl.Result, error) {
-			return r.reconcileBootstrap(ctx, &keystone, configMapName)
-		}},
-		{name: "TrustFlush", fn: func(ctx context.Context) (ctrl.Result, error) {
-			return r.reconcileTrustFlush(ctx, &keystone, configMapName)
+		// Second parallel group. Once the Deployment/Service/Config outputs are
+		// in place, HTTPRoute, HealthCheck, HPA, Bootstrap, and TrustFlush have
+		// no inter-dependency: HTTPRoute needs the backend Service, HealthCheck
+		// needs Status.Endpoint (both set by reconcileDeployment above), HPA
+		// targets the Deployment, and Bootstrap/TrustFlush run their own Jobs
+		// against the config + DB. Each member sets exactly one condition type,
+		// so they merge back independently via mergeParallelConditions. The
+		// group self-instruments its members, so this step carries no
+		// sub_reconciler name.
+		//
+		// Behaviour note: previously a non-zero result from an earlier step
+		// (e.g. HTTPRoute waiting on Gateway acceptance) short-circuited before
+		// the later steps ran; now all five run every pass and shortestRequeue
+		// aggregates their requeues — the same semantics as the FernetKeys/
+		// CredentialKeys/NetworkPolicy group above (issue #361). PasswordRotation
+		// stays sequential after the group because it depends on Bootstrap having
+		// seeded the initial admin credential.
+		{fn: func(ctx context.Context) (ctrl.Result, error) {
+			return r.reconcileParallelGroup(ctx, &keystone, []parallelSubReconciler{
+				{
+					name:          "HTTPRoute",
+					conditionType: conditionTypeHTTPRouteReady,
+					fn: func(ctx context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
+						return r.reconcileHTTPRoute(ctx, ks)
+					},
+				},
+				{
+					name:          "HealthCheck",
+					conditionType: conditionTypeKeystoneAPIReady,
+					fn: func(ctx context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
+						return r.reconcileHealthCheck(ctx, ks)
+					},
+				},
+				{
+					name:          "HPA",
+					conditionType: "HPAReady",
+					fn: func(ctx context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
+						return r.reconcileHPA(ctx, ks)
+					},
+				},
+				{
+					name:          "Bootstrap",
+					conditionType: "BootstrapReady",
+					fn: func(ctx context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
+						return r.reconcileBootstrap(ctx, ks, configMapName)
+					},
+				},
+				{
+					name:          "TrustFlush",
+					conditionType: "TrustFlushReady",
+					fn: func(ctx context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
+						return r.reconcileTrustFlush(ctx, ks, configMapName)
+					},
+				},
+			})
 		}},
 		// Scheduled admin-password rotation (Model B). Runs after Bootstrap has
 		// seeded the initial admin credential so the rotation CronJob and
