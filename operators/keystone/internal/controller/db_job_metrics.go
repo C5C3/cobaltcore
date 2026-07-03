@@ -11,7 +11,6 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -56,6 +55,10 @@ func dbJobUIDAnnotationKey(jobSuffix string) string {
 // drives a fresh metric observation. Duration is computed as
 // condition.LastTransitionTime minus Job.CreationTimestamp.
 //
+// observed is the Job that RunJob already read this pass, threaded in so this
+// function does not re-Get it (issue #361). A nil observed (the Job was just
+// created, so has no terminal condition yet) is a no-op.
+//
 // Ordering: the dedupe annotation is patched
 // BEFORE metrics.RecordDBSync. If the patch fails (transient apiserver error,
 // stale-RV conflict), the metric is NOT emitted on this pass — the next
@@ -73,16 +76,13 @@ func dbJobUIDAnnotationKey(jobSuffix string) string {
 // levels until an alert fires for missing samples. Emitting at Info plus a
 // CR-visible event ensures cluster operators notice the degradation
 // directly via `kubectl describe keystone` and default-verbosity logs.
-func (r *KeystoneReconciler) recordDBJobTerminalState(ctx context.Context, keystone *keystonev1alpha1.Keystone, jobSuffix string) {
-	annotationKey := dbJobUIDAnnotationKey(jobSuffix)
-	jobName := fmt.Sprintf("%s-%s", keystone.Name, jobSuffix)
-	var dbJob batchv1.Job
-	if err := r.Get(ctx, types.NamespacedName{
-		Name:      jobName,
-		Namespace: keystone.Namespace,
-	}, &dbJob); err != nil {
+func (r *KeystoneReconciler) recordDBJobTerminalState(ctx context.Context, keystone *keystonev1alpha1.Keystone, jobSuffix string, observed *batchv1.Job) {
+	// A just-created Job (RunJob returned nil) has no terminal condition yet.
+	if observed == nil {
 		return
 	}
+	annotationKey := dbJobUIDAnnotationKey(jobSuffix)
+	dbJob := observed
 
 	var (
 		result       string

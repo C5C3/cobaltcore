@@ -141,20 +141,16 @@ func (r *KeystoneReconciler) reconcileHTTPRoute(ctx context.Context, keystone *k
 		return ctrl.Result{}, nil
 	}
 
-	// Path 1: gateway enabled — create or update the HTTPRoute.
+	// Path 1: gateway enabled — create or update the HTTPRoute. ensureHTTPRoute
+	// applies via Server-Side Apply and decodes the server response back into
+	// desired, so its parent status — written by the Gateway controller — is
+	// already populated without a second Get (issue #361).
 	desired := buildKeystoneHTTPRoute(keystone)
 	if err := ensureHTTPRoute(ctx, r.Client, r.Scheme, keystone, desired); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring HTTPRoute: %w", err)
 	}
 
-	// Re-fetch the HTTPRoute to read its parent status, which is written by
-	// the Gateway controller (not the operator).
-	current := &gatewayv1.HTTPRoute{}
-	if err := r.Get(ctx, client.ObjectKeyFromObject(desired), current); err != nil {
-		return ctrl.Result{}, fmt.Errorf("getting HTTPRoute %s/%s: %w", desired.Namespace, desired.Name, err)
-	}
-
-	if isHTTPRouteAccepted(current) {
+	if isHTTPRouteAccepted(desired) {
 		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
 			Type:               conditionTypeHTTPRouteReady,
 			Status:             metav1.ConditionTrue,

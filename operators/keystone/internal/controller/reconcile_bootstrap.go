@@ -90,7 +90,8 @@ func (r *KeystoneReconciler) reconcileBootstrap(ctx context.Context, keystone *k
 	// 'default-admin'), which would hold BootstrapReady — and the aggregate
 	// Ready — False for the whole upgrade. Identity bootstrap is one-time; the
 	// only input that must force a re-run is a rotated admin password
-	done, err := job.RunJobWithRerunKey(ctx, r.Client, r.Scheme, keystone, buildBootstrapJob(keystone, configMapName, fernetSecretName, adminPasswordHash), adminPasswordHash)
+	// The bootstrap Job emits no db_sync metrics, so the observed Job is discarded.
+	done, _, err := job.RunJobWithRerunKey(ctx, r.Client, r.Scheme, keystone, buildBootstrapJob(keystone, configMapName, fernetSecretName, adminPasswordHash), adminPasswordHash)
 	if err != nil {
 		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
 			Type:               "BootstrapReady",

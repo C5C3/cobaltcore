@@ -59,11 +59,16 @@ func PodSpecHash(template *corev1.PodTemplateSpec) string {
 var ErrJobFailed = errors.New("job has permanently failed")
 
 // RunJob creates a Job if it does not already exist and reports whether the
-// Job has completed successfully. It returns (true, nil) when the Job has
-// finished, (false, nil) when the Job exists but is still running or was
-// re-created, (false, error) when the Job has permanently failed (e.g. exceeded
-// backoffLimit) and its pod template is unchanged, and (false, error) on
-// unexpected failures.
+// Job has completed successfully. It returns (true, observed, nil) when the Job
+// has finished, (false, observed, nil) when the Job exists but is still running
+// or was re-created, (false, observed, error) when the Job has permanently
+// failed (e.g. exceeded backoffLimit) and its pod template is unchanged, and
+// (false, nil, error) on unexpected failures.
+//
+// observed is the Job read at the start of the pass: nil when the Job was just
+// created (or a non-NotFound Get failed), the current Job in steady state, and
+// the old terminal Job on the recreate-stale branch — so callers can record
+// terminal metrics for that Job without a second Get (issue #361).
 //
 // A completed or permanently failed Job is re-run when its full pod template
 // changes — the correct trigger for migration-style Jobs (db-sync,
@@ -71,7 +76,7 @@ var ErrJobFailed = errors.New("job has permanently failed")
 // container image on an operator/release upgrade. Re-running a permanently
 // failed Job once its spec is fixed avoids wedging the Job until a manual
 // `kubectl delete job` (#460).
-func RunJob(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, job *batchv1.Job) (bool, error) {
+func RunJob(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, job *batchv1.Job) (bool, *batchv1.Job, error) {
 	return RunJobWithRerunKey(ctx, c, scheme, owner, job, PodSpecHash(&job.Spec.Template))
 }
 
@@ -89,15 +94,19 @@ func RunJob(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner 
 // aggregate Ready — False for the whole upgrade. A failed bootstrap
 // Job follows the same rule: a release-upgrade image change does not re-run it,
 // but a rotated admin password (a new key) does (#460).
-func RunJobWithRerunKey(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, job *batchv1.Job, rerunKey string) (bool, error) {
+//
+// The second return value is the observed Job (see RunJob): nil after a create
+// or a failed Get; the current Job otherwise; and the old terminal Job on the
+// recreate-stale branch so its terminal metrics can still be emitted.
+func RunJobWithRerunKey(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, job *batchv1.Job, rerunKey string) (bool, *batchv1.Job, error) {
 	existing := &batchv1.Job{}
 	err := c.Get(ctx, client.ObjectKeyFromObject(job), existing)
 
 	if apierrors.IsNotFound(err) {
-		return false, createJobWithRerunKey(ctx, c, scheme, owner, job, rerunKey)
+		return false, nil, createJobWithRerunKey(ctx, c, scheme, owner, job, rerunKey)
 	}
 	if err != nil {
-		return false, fmt.Errorf("getting Job %s/%s: %w", job.Namespace, job.Name, err)
+		return false, nil, fmt.Errorf("getting Job %s/%s: %w", job.Namespace, job.Name, err)
 	}
 
 	if isJobFailed(existing) {
@@ -113,11 +122,11 @@ func RunJobWithRerunKey(ctx context.Context, c client.Client, scheme *runtime.Sc
 		existingKey := existing.Annotations[PodSpecHashAnnotation]
 		if rerunKey != existingKey {
 			if err := recreateStaleJob(ctx, c, scheme, owner, job, existing, rerunKey); err != nil {
-				return false, err
+				return false, existing, err
 			}
-			return false, nil
+			return false, existing, nil
 		}
-		return false, fmt.Errorf("%w: %s/%s", ErrJobFailed, existing.Namespace, existing.Name)
+		return false, existing, fmt.Errorf("%w: %s/%s", ErrJobFailed, existing.Namespace, existing.Name)
 	}
 
 	if isJobComplete(existing) {
@@ -129,14 +138,14 @@ func RunJobWithRerunKey(ctx context.Context, c client.Client, scheme *runtime.Sc
 		existingKey := existing.Annotations[PodSpecHashAnnotation]
 		if rerunKey != existingKey {
 			if err := recreateStaleJob(ctx, c, scheme, owner, job, existing, rerunKey); err != nil {
-				return false, err
+				return false, existing, err
 			}
-			return false, nil
+			return false, existing, nil
 		}
-		return true, nil
+		return true, existing, nil
 	}
 
-	return false, nil
+	return false, existing, nil
 }
 
 // createJobWithRerunKey sets the owner reference, stores the re-run key in the

@@ -51,7 +51,7 @@ func TestIntegration_RunJob(t *testing.T) {
 	}
 
 	// First call creates the Job.
-	ready, err := RunJob(ctx, c, scheme, owner, job)
+	ready, _, err := RunJob(ctx, c, scheme, owner, job)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(ready).To(BeFalse())
 
@@ -62,7 +62,7 @@ func TestIntegration_RunJob(t *testing.T) {
 	g.Expect(created.OwnerReferences[0].Name).To(Equal("job-owner"))
 
 	// Second call is idempotent — returns false (not complete) without error.
-	ready, err = RunJob(ctx, c, scheme, owner, job)
+	ready, _, err = RunJob(ctx, c, scheme, owner, job)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(ready).To(BeFalse())
 }

@@ -184,10 +184,11 @@ type upgradePhaseStep struct {
 // see reconcileExpand for why expand and migrate also use the new release.
 func (r *KeystoneReconciler) runUpgradePhase(ctx context.Context, keystone *keystonev1alpha1.Keystone, configMapName string, step upgradePhaseStep) (ctrl.Result, error) {
 	phaseJob := step.buildJob(keystone, configMapName, keystone.Spec.Image.Tag)
-	done, err := job.RunJob(ctx, r.Client, r.Scheme, keystone, phaseJob)
+	done, observed, err := job.RunJob(ctx, r.Client, r.Scheme, keystone, phaseJob)
 	// Emit db_sync metrics for the phase Job so the dashboard panel and
-	// failure-rate alerts continue to observe activity during upgrades.
-	r.recordDBJobTerminalState(ctx, keystone, step.jobSuffix)
+	// failure-rate alerts continue to observe activity during upgrades. The Job
+	// RunJob already read is threaded in to avoid a re-Get.
+	r.recordDBJobTerminalState(ctx, keystone, step.jobSuffix, observed)
 	if err != nil {
 		setUpgradeJobFailed(keystone, step.name, phaseJob.Name, err)
 		r.Recorder.Eventf(keystone, corev1.EventTypeWarning, step.failReason, "%s job %s failed: %v", step.name, phaseJob.Name, err)

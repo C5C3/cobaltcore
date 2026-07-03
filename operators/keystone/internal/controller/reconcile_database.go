@@ -202,12 +202,12 @@ func (r *KeystoneReconciler) reconcileDatabase(ctx context.Context, keystone *ke
 	}
 
 	// Non-upgrade path: simple db_sync.
-	done, err := job.RunJob(ctx, r.Client, r.Scheme, keystone, buildDBSyncJob(keystone, configMapName))
+	done, observed, err := job.RunJob(ctx, r.Client, r.Scheme, keystone, buildDBSyncJob(keystone, configMapName))
 	// Emit db_sync metrics on the terminal-transition observation path
 	// regardless of (done, err). In-progress Jobs are no-ops; the per-phase
 	// UID annotation on the Keystone CR guarantees at-most-once emission per
-	// Job UID.
-	r.recordDBJobTerminalState(ctx, keystone, "db-sync")
+	// Job UID. The Job RunJob already read is threaded in to avoid a re-Get.
+	r.recordDBJobTerminalState(ctx, keystone, "db-sync", observed)
 	if err != nil {
 		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
 			Type:               "DatabaseReady",
@@ -232,11 +232,11 @@ func (r *KeystoneReconciler) reconcileDatabase(ctx context.Context, keystone *ke
 	}
 
 	// Schema drift detection after db_sync.
-	done, err = job.RunJob(ctx, r.Client, r.Scheme, keystone, buildSchemaCheckJob(keystone, configMapName))
+	done, observed, err = job.RunJob(ctx, r.Client, r.Scheme, keystone, buildSchemaCheckJob(keystone, configMapName))
 	// Same terminal-transition emission rule as db_sync above: the metric
 	// must contribute samples for every DB-related Job so dashboards/alerts
 	// observe schema-check failures.
-	r.recordDBJobTerminalState(ctx, keystone, "schema-check")
+	r.recordDBJobTerminalState(ctx, keystone, "schema-check", observed)
 	if err != nil {
 		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
 			Type:               "DatabaseReady",

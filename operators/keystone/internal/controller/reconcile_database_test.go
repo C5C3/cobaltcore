@@ -2359,6 +2359,72 @@ func TestDbSyncCompletionRecordsMetric(t *testing.T) {
 		"metric MUST be emitted at-most-once per (phase, Job UID)")
 }
 
+// TestRecordDBJobTerminalState_NilObserved_NoOp verifies that a nil observed
+// Job (RunJob returns nil after creating the Job) is a no-op: no metric is
+// emitted and no dedupe annotation is set.
+func TestRecordDBJobTerminalState_NilObserved_NoOp(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := dbSyncMetricsTestKeystone("nil-observed", "ns-nil-observed")
+	r := newDBTestReconciler(s, ks)
+
+	labels := map[string]string{"keystone": ks.Name, "namespace": ks.Namespace, "result": "succeeded"}
+	before := counterValue(t, "keystone_operator_db_sync_total", labels)
+
+	r.recordDBJobTerminalState(context.Background(), ks, "db-sync", nil)
+
+	after := counterValue(t, "keystone_operator_db_sync_total", labels)
+	g.Expect(after).To(Equal(before), "a nil observed Job must not emit a metric")
+	g.Expect(ks.Annotations).NotTo(HaveKey(dbJobUIDAnnotationKey("db-sync")))
+}
+
+// TestRecordDBJobTerminalState_UsesObservedWithoutGet verifies that the terminal
+// metric is emitted from the threaded observed Job without re-reading it: an
+// interceptor errors on any Job Get, so a successful emission proves no Get
+// occurred.
+func TestRecordDBJobTerminalState_UsesObservedWithoutGet(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTestScheme()
+	ks := dbSyncMetricsTestKeystone("observed-noget", "ns-observed-noget")
+
+	created := metav1.NewTime(time.Date(2026, 4, 22, 14, 0, 0, 0, time.UTC))
+	terminated := metav1.NewTime(time.Date(2026, 4, 22, 14, 0, 9, 0, time.UTC))
+	observed := buildDBSyncJob(ks, "keystone-config-abc123")
+	observed.UID = types.UID("observed-noget-job-uid")
+	observed.CreationTimestamp = created
+	observed.Status.Succeeded = 1
+	observed.Status.CompletionTime = &terminated
+	observed.Status.Conditions = []batchv1.JobCondition{{
+		Type:               batchv1.JobComplete,
+		Status:             corev1.ConditionTrue,
+		LastTransitionTime: terminated,
+	}}
+
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(ks).
+		WithStatusSubresource(&keystonev1alpha1.Keystone{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, wc client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if _, isJob := obj.(*batchv1.Job); isJob {
+					return fmt.Errorf("recordDBJobTerminalState must not Get the Job; it takes the observed object")
+				}
+				return wc.Get(ctx, key, obj, opts...)
+			},
+		}).
+		Build()
+	r := &KeystoneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
+
+	labels := map[string]string{"keystone": ks.Name, "namespace": ks.Namespace, "result": "succeeded"}
+	before := counterValue(t, "keystone_operator_db_sync_total", labels)
+
+	r.recordDBJobTerminalState(context.Background(), ks, "db-sync", observed)
+
+	after := counterValue(t, "keystone_operator_db_sync_total", labels)
+	g.Expect(after-before).To(Equal(1.0), "the metric must be emitted from the observed Job without a re-Get")
+	g.Expect(ks.Annotations).To(HaveKey(dbJobUIDAnnotationKey("db-sync")))
+}
+
 // TestDbSyncFailureRecordsMetric verifies that reconcileDatabase records a
 // "failed" db_sync metric when the db_sync Job transitions to Failed=True.
 // reconcileDatabase propagates the job.ErrJobFailed error to its caller; the
@@ -2658,7 +2724,7 @@ func TestRecordDBJobTerminalState_DefersOnPatchFailure(t *testing.T) {
 			beforeSuccess := counterValue(t, "keystone_operator_db_sync_total", successLabels)
 			beforeSamples := histogramSampleCount(t, "keystone_operator_db_sync_duration_seconds", durationLabels)
 
-			r.recordDBJobTerminalState(context.Background(), ks, tc.jobSuffix)
+			r.recordDBJobTerminalState(context.Background(), ks, tc.jobSuffix, dbJob)
 
 			afterSuccess := counterValue(t, "keystone_operator_db_sync_total", successLabels)
 			afterSamples := histogramSampleCount(t, "keystone_operator_db_sync_duration_seconds", durationLabels)

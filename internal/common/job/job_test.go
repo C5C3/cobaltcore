@@ -134,6 +134,43 @@ func testCronJob() *batchv1.CronJob {
 
 // --- RunJob ---
 
+// TestRunJob_ObservedReturn verifies the observed Job returned by RunJob: nil
+// after a create, the current Job in steady state, and the old terminal Job on
+// the recreate-stale branch so terminal metrics can still be attributed to it.
+func TestRunJob_ObservedReturn(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+
+	// Create branch: no existing Job → observed is nil.
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(owner).Build()
+	_, observed, err := RunJob(context.Background(), c, s, owner, testJob())
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(observed).To(BeNil(), "a freshly created Job has no observed prior Job")
+
+	// Steady state: completed Job with matching hash → observed is that Job.
+	done := testCompletedJobWithHash()
+	done.UID = "completed-uid"
+	c = fake.NewClientBuilder().WithScheme(s).WithObjects(owner, done).Build()
+	ready, observed, err := RunJob(context.Background(), c, s, owner, testJob())
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(ready).To(BeTrue())
+	g.Expect(observed).NotTo(BeNil())
+	g.Expect(string(observed.UID)).To(Equal("completed-uid"), "steady state must return the current Job")
+
+	// Recreate-stale: completed Job whose rerun key differs → observed is the
+	// OLD Job (so its terminal metrics can still be emitted) and a new Job is
+	// created.
+	stale := testCompletedJobWithHash()
+	stale.UID = "stale-uid"
+	c = fake.NewClientBuilder().WithScheme(s).WithObjects(owner, stale).Build()
+	ready, observed, err = RunJobWithRerunKey(context.Background(), c, s, owner, testJob(), "a-new-key")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(ready).To(BeFalse())
+	g.Expect(observed).NotTo(BeNil())
+	g.Expect(string(observed.UID)).To(Equal("stale-uid"), "recreate-stale must return the old terminal Job")
+}
+
 func TestRunJob_creates(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := newScheme()
@@ -144,7 +181,7 @@ func TestRunJob_creates(t *testing.T) {
 		WithObjects(owner).
 		Build()
 
-	ready, err := RunJob(context.Background(), c, s, owner, testJob())
+	ready, _, err := RunJob(context.Background(), c, s, owner, testJob())
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(ready).To(BeFalse(), "newly created job should not be complete")
 
@@ -167,7 +204,7 @@ func TestRunJob_existingIncomplete(t *testing.T) {
 		WithStatusSubresource(job).
 		Build()
 
-	ready, err := RunJob(context.Background(), c, s, owner, testJob())
+	ready, _, err := RunJob(context.Background(), c, s, owner, testJob())
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(ready).To(BeFalse())
 }
@@ -187,7 +224,7 @@ func TestRunJob_existingComplete(t *testing.T) {
 		WithStatusSubresource(job).
 		Build()
 
-	ready, err := RunJob(context.Background(), c, s, owner, testJob())
+	ready, _, err := RunJob(context.Background(), c, s, owner, testJob())
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(ready).To(BeTrue())
 }
@@ -208,7 +245,7 @@ func TestRunJob_existingFailed(t *testing.T) {
 		WithStatusSubresource(job).
 		Build()
 
-	ready, err := RunJob(context.Background(), c, s, owner, testJob())
+	ready, _, err := RunJob(context.Background(), c, s, owner, testJob())
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(errors.Is(err, ErrJobFailed)).To(BeTrue(), "error should wrap ErrJobFailed sentinel")
 	g.Expect(err.Error()).To(ContainSubstring("default/test-job"))
@@ -238,7 +275,7 @@ func TestRunJob_existingFailed_specChanged(t *testing.T) {
 	newJob := testJob()
 	newJob.Spec.Template.Spec.Containers[0].Image = "busybox:v2"
 
-	ready, err := RunJob(context.Background(), c, s, owner, newJob)
+	ready, _, err := RunJob(context.Background(), c, s, owner, newJob)
 	g.Expect(err).NotTo(HaveOccurred(), "a failed Job must be re-run when the spec is fixed, not return ErrJobFailed")
 	g.Expect(ready).To(BeFalse(), "should recreate the failed Job when the spec changes")
 
@@ -273,7 +310,7 @@ func TestRunJob_existingFailed_noHashAnnotation(t *testing.T) {
 		WithStatusSubresource(oldJob).
 		Build()
 
-	ready, err := RunJob(context.Background(), c, s, owner, testJob())
+	ready, _, err := RunJob(context.Background(), c, s, owner, testJob())
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(ready).To(BeFalse(), "should recreate the failed Job when the hash annotation is missing")
 
@@ -301,7 +338,7 @@ func TestRunJob_existingComplete_specChanged(t *testing.T) {
 	newJob := testJob()
 	newJob.Spec.Template.Spec.Containers[0].Image = "busybox:v2"
 
-	ready, err := RunJob(context.Background(), c, s, owner, newJob)
+	ready, _, err := RunJob(context.Background(), c, s, owner, newJob)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(ready).To(BeFalse(), "should recreate Job when spec changes after completion")
 
@@ -329,7 +366,7 @@ func TestRunJob_existingComplete_specUnchanged(t *testing.T) {
 		WithStatusSubresource(existing).
 		Build()
 
-	ready, err := RunJob(context.Background(), c, s, owner, testJob())
+	ready, _, err := RunJob(context.Background(), c, s, owner, testJob())
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(ready).To(BeTrue(), "should return true when completed Job has unchanged spec")
 }
@@ -386,7 +423,7 @@ func TestRunJobWithRerunKey_keyUnchanged_imageChanged(t *testing.T) {
 	newJob := testJob()
 	newJob.Spec.Template.Spec.Containers[0].Image = "busybox:v2"
 
-	ready, err := RunJobWithRerunKey(context.Background(), c, s, owner, newJob, "rerun-key-1")
+	ready, _, err := RunJobWithRerunKey(context.Background(), c, s, owner, newJob, "rerun-key-1")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(ready).To(BeTrue(), "unchanged re-run key must not re-run the completed Job despite an image change")
 
@@ -412,7 +449,7 @@ func TestRunJobWithRerunKey_keyChanged(t *testing.T) {
 		WithStatusSubresource(existing).
 		Build()
 
-	ready, err := RunJobWithRerunKey(context.Background(), c, s, owner, testJob(), "rerun-key-2")
+	ready, _, err := RunJobWithRerunKey(context.Background(), c, s, owner, testJob(), "rerun-key-2")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(ready).To(BeFalse(), "a changed re-run key must re-run the completed Job")
 
@@ -438,7 +475,7 @@ func TestRunJobWithRerunKey_failed_keyChanged(t *testing.T) {
 		WithStatusSubresource(existing).
 		Build()
 
-	ready, err := RunJobWithRerunKey(context.Background(), c, s, owner, testJob(), "rerun-key-2")
+	ready, _, err := RunJobWithRerunKey(context.Background(), c, s, owner, testJob(), "rerun-key-2")
 	g.Expect(err).NotTo(HaveOccurred(), "a changed re-run key must re-run the failed Job, not return ErrJobFailed")
 	g.Expect(ready).To(BeFalse(), "should recreate the failed Job when the re-run key changes")
 
@@ -471,7 +508,7 @@ func TestRunJobWithRerunKey_failed_keyUnchanged_imageChanged(t *testing.T) {
 	newJob := testJob()
 	newJob.Spec.Template.Spec.Containers[0].Image = "busybox:v2"
 
-	ready, err := RunJobWithRerunKey(context.Background(), c, s, owner, newJob, "rerun-key-1")
+	ready, _, err := RunJobWithRerunKey(context.Background(), c, s, owner, newJob, "rerun-key-1")
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(errors.Is(err, ErrJobFailed)).To(BeTrue(), "unchanged re-run key must keep a failed Job failed despite an image change")
 	g.Expect(ready).To(BeFalse())
@@ -506,7 +543,7 @@ func TestRunJob_existingComplete_noHashAnnotation(t *testing.T) {
 		WithStatusSubresource(oldJob).
 		Build()
 
-	ready, err := RunJob(context.Background(), c, s, owner, testJob())
+	ready, _, err := RunJob(context.Background(), c, s, owner, testJob())
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(ready).To(BeFalse(), "should recreate Job when hash annotation is missing")
 
@@ -528,11 +565,11 @@ func TestRunJob_idempotent(t *testing.T) {
 
 	ctx := context.Background()
 
-	_, err := RunJob(ctx, c, s, owner, testJob())
+	_, _, err := RunJob(ctx, c, s, owner, testJob())
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// Second call should find existing job, not error.
-	ready, err := RunJob(ctx, c, s, owner, testJob())
+	ready, _, err := RunJob(ctx, c, s, owner, testJob())
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(ready).To(BeFalse())
 }
@@ -565,7 +602,7 @@ func TestRunJob_existingComplete_specChanged_alreadyExists(t *testing.T) {
 	newJob := testJob()
 	newJob.Spec.Template.Spec.Containers[0].Image = "busybox:v2"
 
-	ready, err := RunJob(context.Background(), c, s, owner, newJob)
+	ready, _, err := RunJob(context.Background(), c, s, owner, newJob)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(ready).To(BeFalse(), "should return false when old Job is still terminating")
 	g.Expect(createCalls).To(Equal(1))
@@ -625,7 +662,7 @@ func TestRunJob_RecreatesOnTemplateAnnotationChange(t *testing.T) {
 	newJob := testJob()
 	newJob.Spec.Template.Annotations = map[string]string{"forge.c5c3.io/trigger": "rotated"}
 
-	ready, err := RunJob(context.Background(), c, s, owner, newJob)
+	ready, _, err := RunJob(context.Background(), c, s, owner, newJob)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(ready).To(BeFalse(), "should recreate when only the pod-template annotation changed")
 
@@ -668,7 +705,7 @@ func TestRunJob_NoRecreateWhenTemplateUnchanged(t *testing.T) {
 		WithStatusSubresource(existing).
 		Build()
 
-	ready, err := RunJob(context.Background(), c, s, owner, desired)
+	ready, _, err := RunJob(context.Background(), c, s, owner, desired)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(ready).To(BeTrue(), "should retain the completed Job when the template (incl. annotations) is unchanged")
 }

@@ -55,8 +55,9 @@ func (r *KeystoneReconciler) reconcilePolicyValidation(ctx context.Context, keys
 		return ctrl.Result{}, nil
 	}
 
-	// Path 2: policy overrides set — run validation Job.
-	done, err := job.RunJob(ctx, r.Client, r.Scheme, keystone, buildPolicyValidationJob(keystone, configMapName))
+	// Path 2: policy overrides set — run validation Job. Policy validation does
+	// not emit db_sync metrics, so the observed Job is discarded.
+	done, _, err := job.RunJob(ctx, r.Client, r.Scheme, keystone, buildPolicyValidationJob(keystone, configMapName))
 	if err != nil {
 		msg := fmt.Sprintf("Policy validation failed: %v", err)
 		if errors.Is(err, job.ErrJobFailed) {
