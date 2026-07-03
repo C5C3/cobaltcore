@@ -72,6 +72,7 @@ export default defineConfig({
               { text: 'ControlPlane E2E Tests', link: '/reference/testing/controlplane-e2e-tests' },
               { text: 'Chaos E2E Tests', link: '/reference/testing/chaos-e2e-tests' },
               { text: 'Tempest Test Infrastructure', link: '/reference/testing/tempest-test-infrastructure' },
+              { text: 'Reconcile Performance Benchmark', link: '/reference/testing/reconcile-performance-benchmark' },
             ],
           },
           {

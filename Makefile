@@ -477,6 +477,17 @@ stage-prometheus-dashboard:
 deploy-infra:
 	hack/deploy-infra.sh
 
+.PHONY: perf-benchmark
+# perf-benchmark measures reconcile-loop latency against a running kind stack.
+# It applies 1/5/25 Keystone CRs (CR_COUNTS overrides), waits for readiness, and
+# reports p50/p95/p99 for the per-sub-reconciler and end-to-end reconcile
+# histograms. Set GATE_P95_SECONDS to fail when the steady-state end-to-end p95
+# exceeds a target (the D3 SLO as a gate). Deliberately not a CI job — a 25-CR
+# load exceeds CI kind runner capacity. See
+# docs/reference/testing/reconcile-performance-benchmark.md.
+perf-benchmark:
+	hack/perf-reconcile-benchmark.sh
+
 .PHONY: teardown-infra
 teardown-infra:
 	hack/teardown-infra.sh
