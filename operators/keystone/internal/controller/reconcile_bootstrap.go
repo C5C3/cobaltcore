@@ -32,6 +32,22 @@ import (
 //go:embed scripts/bootstrap_db_seed.py
 var bootstrapDBSeedScript string
 
+// bootstrapScript is the bootstrap container's shell program: it pipes the
+// embedded bootstrapDBSeedScript to python3 on stdin (a 'PY' quoted heredoc so
+// the Python is preserved verbatim), then execs keystone-manage bootstrap.
+// Region and bootstrap URLs are passed through the container environment, so the
+// wrapper is parameter-free — built once at package init from constant parts
+// rather than re-concatenated per buildBootstrapJob call (issue #361).
+var bootstrapScript = `python3 - <<'PY'
+` + bootstrapDBSeedScript + `PY
+exec keystone-manage --config-dir=/etc/keystone/keystone.conf.d/ bootstrap \
+  --bootstrap-password "$BOOTSTRAP_PASSWORD" \
+  --bootstrap-admin-url "$BOOTSTRAP_ADMIN_URL" \
+  --bootstrap-internal-url "$BOOTSTRAP_INTERNAL_URL" \
+  --bootstrap-public-url "$BOOTSTRAP_PUBLIC_URL" \
+  --bootstrap-region-id "$BOOTSTRAP_REGION_ID"
+`
+
 // adminPasswordHashAnnotation stamps a SHA-256 digest of the admin password
 // (the `password` key of the admin Secret) onto the bootstrap Job's pod
 // template. Because job.PodSpecHash hashes the full PodTemplateSpec, a rotated
@@ -145,25 +161,10 @@ func buildBootstrapJob(keystone *keystonev1alpha1.Keystone, configMapName string
 		publicURL = keystone.Spec.Bootstrap.PublicEndpoint
 	}
 
-	// The pre-insert script seeds the admin region row before keystone-manage
-	// bootstrap runs. Its full contract — DSN resolution
-	// precedence, ssl-dict mapping for — lives in the
-	// standalone scripts/bootstrap_db_seed.py file embedded as
-	// bootstrapDBSeedScript. We invoke it via `python3 -` with the embedded
-	// source piped on stdin so a 'PY' quoted heredoc preserves the Python
-	// content verbatim (no shell interpolation, no need to escape quotes or
-	// percent signs). Region and bootstrap URLs are passed through the
-	// container environment so the wrapper string is parameter-free.
-	bootstrapScript := `python3 - <<'PY'
-` + bootstrapDBSeedScript + `PY
-exec keystone-manage --config-dir=/etc/keystone/keystone.conf.d/ bootstrap \
-  --bootstrap-password "$BOOTSTRAP_PASSWORD" \
-  --bootstrap-admin-url "$BOOTSTRAP_ADMIN_URL" \
-  --bootstrap-internal-url "$BOOTSTRAP_INTERNAL_URL" \
-  --bootstrap-public-url "$BOOTSTRAP_PUBLIC_URL" \
-  --bootstrap-region-id "$BOOTSTRAP_REGION_ID"
-`
-
+	// The bootstrap container runs the package-level bootstrapScript, which pipes
+	// the embedded pre-insert Python (scripts/bootstrap_db_seed.py) to python3
+	// and then execs keystone-manage bootstrap. See its declaration for the DSN
+	// and heredoc contract.
 	volumeMounts := []corev1.VolumeMount{
 		{
 			Name:      "config",
