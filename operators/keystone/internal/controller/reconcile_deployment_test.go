@@ -2080,7 +2080,8 @@ func TestBuildKeystoneDeployment_DynamicHashAnnotation(t *testing.T) {
 	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "deadbeef")
 
 	g.Expect(deploy.Spec.Template.Annotations).To(
-		HaveKeyWithValue("keystone.c5c3.io/db-connection-hash", "deadbeef"))
+		HaveKeyWithValue("keystone.c5c3.io/db-connection-hash", "deadbeef"),
+	)
 }
 
 // TestBuildKeystoneDeployment_NoHashAnnotation_Static verifies the hash
@@ -2093,14 +2094,16 @@ func TestBuildKeystoneDeployment_NoHashAnnotation_Static(t *testing.T) {
 	// Brownfield (default deployTestKeystone) — CredentialsMode empty.
 	brownfield := buildKeystoneDeployment(deployTestKeystone(), "keystone-config-abc123", "deadbeef")
 	g.Expect(brownfield.Spec.Template.Annotations).NotTo(
-		HaveKey("keystone.c5c3.io/db-connection-hash"))
+		HaveKey("keystone.c5c3.io/db-connection-hash"),
+	)
 
 	// Managed Static — CredentialsMode explicitly Static.
 	staticKS := dynamicManagedDeployKeystone()
 	staticKS.Spec.Database.CredentialsMode = commonv1.CredentialsModeStatic
 	staticDeploy := buildKeystoneDeployment(staticKS, "keystone-config-abc123", "deadbeef")
 	g.Expect(staticDeploy.Spec.Template.Annotations).NotTo(
-		HaveKey("keystone.c5c3.io/db-connection-hash"))
+		HaveKey("keystone.c5c3.io/db-connection-hash"),
+	)
 }
 
 // TestBuildKeystoneDeployment_HashAnnotationChangesWithCredential verifies the
