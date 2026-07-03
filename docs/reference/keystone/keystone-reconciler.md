@@ -1534,6 +1534,16 @@ so that the failure reason is visible in the CR status.
 **Shared library calls:** `database.EnsureDatabase()`, `database.EnsureDatabaseUser()`,
 `job.RunJob()` (db_sync and schema-check)
 
+**Dynamic credentials mode:** when `spec.database.credentialsMode: Dynamic`, the
+OpenBao database engine owns the DB user lifecycle — it issues short-lived MySQL
+users on demand and revokes them at lease end. `reconcileDatabase` therefore
+**skips** `database.EnsureDatabaseUser()` (no MariaDB `User`/`Grant` CR is
+provisioned) while still managing the schema via `database.EnsureDatabase()`. A
+pre-existing operator-provisioned `User`/`Grant` from a prior Static deployment is
+intentionally **not** deleted, so its grant overlaps the engine-issued logins for
+a downtime-free migration; retiring the static user is a documented migration step
+(see [Migrate Keystone DB to Dynamic Credentials](/guides/migrate-keystone-db-to-dynamic-credentials)).
+
 ---
 
 ### reconcileFernetKeys
@@ -1948,9 +1958,18 @@ The following INI sections are generated from CRD spec fields:
 | Managed | `{clusterRef.name}.{namespace}.svc:{port}` | `mysql+pymysql://{username}:{password}@{host}:{port}/keystone` |
 | Brownfield | `{spec.database.host}:{port}` | `mysql+pymysql://{username}:{password}@{host}:{port}/keystone` |
 
-- Username and password are read from `spec.database.secretRef` via
-  `secrets.GetSecretValue()`.
+- The password is always read from `spec.database.secretRef` via
+  `secrets.GetSecretValue()`. The username source depends on the mode: in
+  **Static** managed mode it is derived from the CR name (the MariaDB `User` CR
+  name); in **brownfield** and **Dynamic** managed mode it is read from the
+  Secret's `username` key (the engine issues an ephemeral username alongside the
+  password). A missing `username` key sets `SecretsReady=False` with reason
+  `WaitingForDBCredentials`.
 - Default port is 3306 when `spec.database.port` is 0.
+- `reconcileDBConnectionSecret` returns the SHA-256 of the assembled DSN, which
+  the Deployment step stamps as the `keystone.c5c3.io/db-connection-hash`
+  pod-template annotation in Dynamic mode (see the Deployment section) so a
+  rotated engine-issued credential rolls the Deployment.
 
 **Step 4: Merge plugin config** — If `spec.plugins` is non-empty,
 `plugins.RenderPluginConfig()` generates INI sections that are merged with
@@ -2123,15 +2142,25 @@ spec. Sets `status.endpoint` when the Deployment becomes available.
 Fernet and credential key rotation is handled in-place via kubelet Secret
 projection. When the rotation CronJob updates a Secret, the kubelet
 automatically projects the new data into running pods without requiring a
-Deployment rollout. The pod template does not include hash annotations for
-Secret data, so Secret changes do not trigger rolling restarts. This preserves
-Keystone availability, PDB budget, and uWSGI/Memcached connections during
-routine key rotation.
+Deployment rollout. The pod template does not include hash annotations for the
+fernet/credential key Secrets, so those Secret changes do not trigger rolling
+restarts. This preserves Keystone availability, PDB budget, and uWSGI/Memcached
+connections during routine key rotation.
 
 ```text
 CronJob rotates keys → Secret data changes → kubelet projects new keys
   → running pods see updated key files (no rollout)
 ```
+
+The database connection string is the deliberate exception. It is consumed via
+the `OS_DATABASE__CONNECTION` environment variable (not a mounted volume), so a
+rotated credential only takes effect on a Pod restart. In **Dynamic** credentials
+mode (`spec.database.credentialsMode: Dynamic`) the DSN rotates at the engine
+lease TTL, so `reconcileDeployment` stamps a `keystone.c5c3.io/db-connection-hash`
+pod-template annotation (the SHA-256 of the DSN returned by
+`reconcileDBConnectionSecret`) to roll the Deployment when the engine-issued
+credential changes. Static and brownfield modes leave the annotation absent,
+preserving the no-rollout behavior.
 
 **Deployment Spec:**
 

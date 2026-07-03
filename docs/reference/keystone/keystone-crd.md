@@ -193,6 +193,7 @@ validating webhook is unavailable.
 | Field | Rule | Error Message |
 | --- | --- | --- |
 | `spec.database` | `has(self.clusterRef) != has(self.host)` | "exactly one of clusterRef or host must be set" |
+| `spec.database` | `!has(self.credentialsMode) \|\| self.credentialsMode != 'Dynamic' \|\| has(self.clusterRef)` | "credentialsMode Dynamic requires clusterRef (managed mode)" |
 | `spec.database` | `!has(self.tls) \|\| self.tls.mode == '' \|\| self.tls.mode == 'disabled' \|\| (self.tls.caBundleSecretRef.name != '' && self.tls.clientCertSecretRef.name != '')` | "when database.tls is enabled (mode is neither empty nor 'disabled'), both database.tls.caBundleSecretRef.name and database.tls.clientCertSecretRef.name must be set" |
 | `spec.database` | `self.database == oldSelf.database` (UPDATE only) | "database name is immutable" |
 | `spec.database` | `has(self.clusterRef) == has(oldSelf.clusterRef)` (UPDATE only) | "database mode (managed clusterRef vs brownfield host) is immutable" |
@@ -1083,6 +1084,7 @@ name.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `clusterRef` | `*corev1.LocalObjectReference` | No | Reference to a MariaDB CR (managed mode). |
+| `credentialsMode` | `string` | No | How the `secretRef` credential is provisioned. `Static` (default when empty) — operator-managed MariaDB `User`/`Grant` with a long-lived password. `Dynamic` — short-lived credentials issued by an external secrets engine; `secretRef` carries both a username and password, no `User`/`Grant` CRs are managed, and no long-lived DB password remains at rest. Enum `Static;Dynamic`; `Dynamic` is only valid in managed mode (CEL rule). |
 | `host` | `string` | No | Database hostname (brownfield mode). When set, `MinLength=1` plus a permissive host `Pattern` (`^[a-zA-Z0-9._:-]+$`) that accepts DNS names, IPv4, and IPv6 literals. |
 | `port` | `int32` | No | Database port (brownfield mode, default 3306). When set, range `Minimum=1`/`Maximum=65535`; omitted (managed mode) leaves it unset. |
 | `database` | `string` | Yes | Database name. Constrained to the MySQL identifier set and length: `MinLength=1`, `MaxLength=64`, `Pattern=^[A-Za-z0-9_]+$`. Immutable after create (CEL transition rule): renaming re-points `db_sync` at a fresh, empty schema and silently orphans the existing data. |

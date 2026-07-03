@@ -459,13 +459,12 @@ occurs; readiness is evaluated collectively afterwards.
 | File | `reconcile_dbcredentials.go` |
 | Condition | `DBCredentialsReady` |
 | Gate | none — runs unconditionally, positioned after Infrastructure and before Keystone so the Keystone CR is never projected before the DB-credential Secret exists |
-| Projects / Owns | Managed-mode (`spec.infrastructure.database.clusterRef != nil`) one owner-referenced `external-secrets.io/v1` `ExternalSecret` named `{controlplane.Name}-keystone-db-credentials` (`dbCredentialSecretName`) in `childNamespace(cp)`; brownfield projects nothing |
+| Projects / Owns | Managed-mode (`spec.infrastructure.database.clusterRef != nil`), effective **Dynamic** unless `credentialsMode: Static`: an owner-referenced `VaultDynamicSecret` generator, `ServiceAccount` (`keystone-db-creds`), mTLS client `Certificate`, and an `ExternalSecret` named `{controlplane.Name}-keystone-db-credentials` (`dbCredentialSecretName`) drawing from the generator, all in `childNamespace(cp)`; brownfield projects nothing |
 | Requeue | `dbCredentialsRequeueAfter` = **10s** while the ExternalSecret is not yet Ready |
 
 `reconcileDBCredentials` projects the per-ControlPlane service database
-credential as an OpenBao-backed `ExternalSecret`, so the projected Keystone CR
-consumes a DB credential scoped to its own ControlPlane. It mirrors
-`reconcileAdminCredential`'s wait/condition
+credential so the projected Keystone CR consumes a DB credential scoped to its
+own ControlPlane. It mirrors `reconcileAdminCredential`'s wait/condition
 handling. The database is **managed** when `spec.infrastructure.database.clusterRef`
 is set and **brownfield** when the user supplies a `host`-based connection:
 
@@ -473,20 +472,35 @@ is set and **brownfield** when the user supplies a `host`-based connection:
   credential Secret out-of-band, so the operator projects **no** ExternalSecret
   and never references OpenBao or the `ClusterSecretStore`; `DBCredentialsReady`
   is reported `True` immediately so the chain proceeds to Keystone.
-- **Managed projects the ExternalSecret.** The owned ExternalSecret has
-  `RefreshInterval` 1h, `SecretStoreRef` `Kind: ClusterSecretStore, Name: openbao-cluster-store`,
-  and `Target.CreationPolicy: Owner` (so ESO owns the materialised Secret of the
-  same name). Its `username` / `password` `Data` keys both read from the per-CP
-  remote key `openstack/keystone/{cp.Namespace}/{cp.Name}/db`
-  (`dbCredentialRemoteKeyFor`) via the matching `Property`. The builder
-  `dbCredentialExternalSecret(cp)` sets **no** owner reference; the reconciler
-  sets the ControlPlane controller reference inside the `CreateOrUpdate` mutate
-  closure for GC.
+- **Managed defaults to Dynamic (engine-issued).** After gating on the
+  `openbao-cluster-store` ClusterSecretStore, the operator projects (all
+  owner-referenced): a `keystone-db-creds` `ServiceAccount`, an mTLS client
+  `Certificate` from the cluster-scoped `openbao-ca-issuer`, a
+  `generators.external-secrets.io/v1alpha1` `VaultDynamicSecret` reading
+  `database/mariadb/creds/keystone-{cp.Namespace}`
+  (`dbDynamicCredsPathFor`, keyed on the namespace alone), and an `ExternalSecret`
+  (`RefreshInterval` 24h, `Target.CreationPolicy: Owner`) drawing from that generator via
+  `dataFrom.sourceRef.generatorRef` — **no** static `Data` refs and **no**
+  `SecretStoreRef`. All Secret references are same-namespace (the generator is
+  Namespaced), satisfying the OpenBao listener's require-and-verify-client-cert
+  gate. The materialised Secret carries an engine-issued username and password
+  with a finite lease, so no long-lived static DB password remains at rest.
+- **Managed Static is the opt-out.** With `spec.infrastructure.database.credentialsMode: Static`
+  the operator projects the stage-(a) KV-backed `ExternalSecret`
+  (`SecretStoreRef` `openbao-cluster-store`, `username`/`password` `Data` reading
+  `openstack/keystone/{cp.Namespace}/{cp.Name}/db`) and tears down any leftover
+  dynamic-mode objects. Used for migration staging / brownfield.
+
+`reconcileKeystone` projects the effective mode onto the Keystone CR's
+`spec.database.credentialsMode`, so the Keystone operator consumes the matching
+credential shape.
 
 | Path | Status | Reason | Notes |
 | --- | --- | --- | --- |
 | Brownfield (`clusterRef == nil`) | True | `BrownfieldUserSuppliedCredential` | no ExternalSecret projected; user supplies the DB credential Secret out-of-band |
-| ClusterSecretStore not Ready | False | `SecretStoreNotReady` | requeue 10s; managed mode only, checked before the ExternalSecret is projected so an OpenBao/ESO outage surfaces promptly |
+| ClusterSecretStore not Ready | False | `SecretStoreNotReady` | requeue 10s; managed mode only, checked before projection so an OpenBao/ESO outage surfaces promptly |
+| Dynamic generator/SA/Certificate/ExternalSecret create/update fails | False | `GeneratorError` | returns the error |
+| Static ExternalSecret create/update fails | False | `ExternalSecretError` | returns the error |
 | ExternalSecret create/update or read fails | False | `ExternalSecretError` | returns the error |
 | ExternalSecret not yet synced | False | `WaitingForDBCredentialSecret` | requeue 10s |
 | ExternalSecret Ready | True | `DBCredentialsReady` | — |

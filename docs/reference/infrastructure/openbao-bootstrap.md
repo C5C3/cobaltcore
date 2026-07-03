@@ -96,7 +96,8 @@ deploy/
 │   ├── bootstrap/
 │   │   ├── common.sh                   Shared functions (log, bao_exec) sourced by all scripts
 │   │   ├── init-unseal.sh              Initialize and unseal the cluster
-│   │   ├── setup-secret-engines.sh     Enable KV v2 and PKI secret engines
+│   │   ├── setup-secret-engines.sh     Enable KV v2, PKI, and MariaDB database engines
+│   │   ├── setup-database-tenant.sh     Provision a per-ControlPlane DB engine connection + role
 │   │   ├── setup-auth.sh              Configure Kubernetes and AppRole auth
 │   │   ├── setup-policies.sh           Apply all HCL access control policies
 │   │   └── write-bootstrap-secrets.sh  Generate and seed initial credentials
@@ -108,6 +109,7 @@ deploy/
 │       ├── push-app-credentials.hcl    PushSecret policy for app credentials
 │       ├── push-ceph-keys.hcl          PushSecret policy for Ceph keys
 │       ├── ci-cd-provisioner.hcl       CI/CD pipeline provisioning policy
+│       ├── keystone-db-dynamic.hcl     Per-tenant dynamic DB credential read policy
 │       └── pki-issuer.hcl             cert-manager PKI issuing policy
 ├── eso/
 │   ├── kustomization.yaml              Kustomize entrypoint (renders ONLY the ClusterSecretStore)
@@ -282,7 +284,7 @@ requires the exported keys, so ensure they are recoverable before deletion.
 
 ### setup-secret-engines.sh
 
-**Purpose:** Enable KV version 2 and PKI secret engines.
+**Purpose:** Enable the KV version 2, PKI, and MariaDB `database` secret engines.
 
 **File:** `deploy/openbao/bootstrap/setup-secret-engines.sh`
 
@@ -292,10 +294,50 @@ requires the exported keys, so ensure they are recoverable before deletion.
 | --- | --- | --- |
 | KV v2 | `kv-v2/` | `version=2` |
 | PKI | `pki/` | `max-lease-ttl=87600h` (10 years) |
+| database | `database/mariadb/` | mount only; per-tenant connections/roles are added later by `setup-database-tenant.sh` |
 
 **Idempotency:** Before enabling each engine, the script checks `bao secrets list
 -format=json` for the mount path. If the path already exists, the engine enable is
 skipped with a log message.
+
+**Database engine:** the `database` engine is only mounted here — no connection or
+role is written, because the managed MariaDB instances do not exist at bootstrap
+time. Each managed ControlPlane's connection and per-tenant role are provisioned
+later by `setup-database-tenant.sh` once its MariaDB is Ready. The engine issues
+short-lived, auto-revoked Keystone service-DB credentials at
+`database/mariadb/creds/keystone-{namespace}` (keyed on the namespace alone —
+one ControlPlane per namespace makes it a unique, collision-free tenant key).
+
+### setup-database-tenant.sh
+
+**Purpose:** Provision the per-tenant `database` engine connection and role for one
+managed ControlPlane's Keystone service DB user.
+
+**File:** `deploy/openbao/bootstrap/setup-database-tenant.sh`
+
+**Requires:** `BAO_TOKEN` environment variable; the tenant's MariaDB must be Ready.
+
+**Usage:** `setup-database-tenant.sh <namespace> <controlplane>`
+
+It resolves the MariaDB name, database name, and root credential from the live
+ControlPlane and MariaDB CRs, then writes:
+
+| Object | Path |
+| --- | --- |
+| Connection | `database/mariadb/config/keystone-{namespace}` |
+| Role | `database/mariadb/roles/keystone-{namespace}` |
+
+The role's `creation_statements` create a short-lived MySQL user with `ALL
+PRIVILEGES` on the Keystone database; `revocation_statements` drop it at lease
+end. `default_ttl` (48h) and `max_ttl` (72h) are tunable via `DB_CREDS_DEFAULT_TTL`
+/ `DB_CREDS_MAX_TTL`; `default_ttl` stays a full day above the operator's
+ExternalSecret refresh interval (24h) so the operator has a wide window to roll
+pods onto a fresh credential before the previous, still-in-use lease is revoked —
+long enough that a stalled rollout pages on-call before it can become an outage.
+The role name is keyed on the
+namespace alone and stays in sync with `dbDynamicRoleFor` in the c5c3 operator's
+`reconcile_dbcredentials.go`. Config and role writes are upserts, so re-running is
+idempotent.
 
 ### setup-auth.sh
 
@@ -318,6 +360,21 @@ authentication for CI/CD pipelines.
 Each Kubernetes auth mount creates a role named `eso-<cluster>` that binds to the
 `external-secrets` service account in the `external-secrets` namespace. The role is
 linked to the corresponding `eso-<cluster>` policy.
+
+The management mount additionally carries a `keystone-db` role bound to the
+per-ControlPlane `keystone-db-creds` ServiceAccount (any namespace), linked to the
+`keystone-db-dynamic` policy. The c5c3 operator's per-ControlPlane
+`VaultDynamicSecret` generator authenticates with it to read short-lived DB
+credentials at `database/mariadb/creds/keystone-{namespace}`. The role
+deliberately binds `namespaces="*"` so any ControlPlane namespace may
+authenticate; cross-tenant isolation is enforced by the `keystone-db-dynamic`
+policy, which templates the readable path to the caller's own
+`service_account_namespace` (an exact match — a token minted in one namespace
+cannot read another namespace's path).
+
+| Mount Path | Role | Bound SA | Bound NS | Policy | TTL | Max TTL |
+| --- | --- | --- | --- | --- | --- | --- |
+| `kubernetes/management` | `keystone-db` | `keystone-db-creds` | `*` | `keystone-db-dynamic` | 1h | 4h |
 
 **Note:** The management cluster mount is fully configured — the script explicitly writes
 `auth/kubernetes/management/config` with the in-cluster Kubernetes API endpoint and CA
@@ -366,7 +423,14 @@ into the KV v2 secret engine.
 | --- | --- | --- |
 | `kv-v2/bootstrap/<namespace>/<keystone>/admin` | `password` | Keystone admin user password, scoped per ControlPlane. One entry per `KORC_CONTROLPLANES` identity; the default `openstack/controlplane` seeds `kv-v2/bootstrap/openstack/controlplane-keystone/admin`. |
 | `kv-v2/infrastructure/mariadb` | `root-password` | MariaDB root password |
-| `kv-v2/openstack/keystone/{ns}/{name}/db` | `username`, `password` | Keystone database credentials, scoped per ControlPlane (username is `keystone`). One entry per `KORC_CONTROLPLANES` identity; the default `openstack/controlplane` seeds `kv-v2/openstack/keystone/openstack/controlplane/db`. The reserved multi-DB form `kv-v2/openstack/keystone/{ns}/{name}/db/<dbname>` leaves room for multiple databases per ControlPlane. |
+| `kv-v2/openstack/keystone/standalone/db` | `username`, `password` | Static Keystone DB credential for **standalone** (non-ControlPlane) Keystone demos only (username is `keystone`), read by the kind-only `keystone-db` ExternalSecret. Brownfield-only. |
+
+**Retired (#439):** the stage-(a) per-ControlPlane static DB seed
+`kv-v2/openstack/keystone/{ns}/{name}/db` is **no longer written**. Managed-mode
+ControlPlanes now draw short-lived, engine-issued credentials from the MariaDB
+`database` engine (`database/mariadb/creds/keystone-{ns}`), so no long-lived
+static DB password is seeded at rest. Only the single standalone credential above
+remains.
 
 **Password generation:** Each password is generated **inside the OpenBao pod** using
 `openssl rand -base64 32` via `sh -c` within `kubectl exec`, producing a 32-byte
@@ -427,6 +491,7 @@ Ceph client key for Nova and Nova compute configuration, not broader secret path
 | `push-ceph-keys` | `kv-v2/data/ceph/*` | `create`, `update`, `read` | PushSecret for Ceph client keys |
 | `ci-cd-provisioner` | `kv-v2/data/*` (create/update/read), `kv-v2/metadata/*` (read/list) | `create`, `update`, `read`, `list` | CI/CD pipeline secret provisioning |
 | `pki-issuer` | `pki/issue/*`, `pki/sign/*` | `create`, `update` | cert-manager PKI certificate issuing |
+| `keystone-db-dynamic` | `database/mariadb/creds/keystone-{{…service_account_namespace}}` | `read` | Per-tenant dynamic Keystone DB credential reads (bound to the `keystone-db` role). The path is scoped by ACL identity templating to the caller's own service-account namespace (exact match, no wildcard), so a token minted in one namespace cannot read another tenant's creds path. Read-only: a dynamic engine has no static password to push, so the deferred `push-keystone-db.hcl` is unnecessary and not created (#439). |
 
 **Note:** `ci-cd-provisioner` intentionally lacks `delete` capability. The CI/CD
 pipeline can create, update, and read secrets but cannot delete them, preventing

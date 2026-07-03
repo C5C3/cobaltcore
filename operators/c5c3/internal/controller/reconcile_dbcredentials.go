@@ -48,7 +48,7 @@ const (
 	dbCredentialServiceAccountName = "keystone-db-creds" //nolint:gosec // G101 false positive: ServiceAccount name, not a credential.
 	// dbCredentialClientCertSuffix names the per-ControlPlane cert-manager
 	// Certificate / Secret carrying the mTLS client keypair the generator uses to
-	// satisfy the OpenBao listener's require-and-verify-client-cert gate (CC-0107).
+	// satisfy the OpenBao listener's require-and-verify-client-cert gate.
 	dbCredentialClientCertSuffix = "-db-openbao-client" //nolint:gosec // G101 false positive: cert name suffix, not a credential.
 	// openBaoDefaultServer / openBaoDefaultKubernetesMount are the fallbacks used
 	// when the openbao-cluster-store's provider config cannot be read; they match

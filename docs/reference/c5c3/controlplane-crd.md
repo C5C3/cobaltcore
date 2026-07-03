@@ -76,6 +76,13 @@ spec:
       clusterRef:
         name: mariadb
       database: keystone
+      # credentialsMode selects how the service DB credential is provisioned.
+      # Managed mode defaults to Dynamic (engine-issued, short-lived credentials
+      # from the OpenBao database engine); set Static to opt out (migration
+      # staging / brownfield). reconcileDBCredentials projects a per-ControlPlane
+      # VaultDynamicSecret generator (Dynamic) or the stage-(a) KV-backed
+      # ExternalSecret (Static). Dynamic requires clusterRef (managed mode).
+      # credentialsMode: Dynamic
       # In managed mode (clusterRef set) database.secretRef is
       # operator-owned — reconcileDBCredentials materialises a per-ControlPlane
       # Secret and the projected Keystone CR's secretRef is overridden to

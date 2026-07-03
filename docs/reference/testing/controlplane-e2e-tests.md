@@ -78,10 +78,14 @@ each link on the previous one:
 
 1. **Infrastructure** — owned MariaDB (`openstack-db`) and Memcached
    (`openstack-memcached`) created and owned by the ControlPlane;
-   `InfrastructureReady=True`.
+   `InfrastructureReady=True`. The suite then onboards the per-tenant OpenBao
+   database-engine role (`setup-database-tenant.sh`), waits for
+   `DBCredentialsReady=True`, and asserts the generator-backed ExternalSecret and
+   engine-issued username.
 2. **Keystone** — owned Keystone CR (`controlplane-keystone-keystone`) with
-   the image tag derived from `spec.openStackRelease` and database/cache
-   clusterRefs wired to the infra CRs; `KeystoneReady=True`.
+   the image tag derived from `spec.openStackRelease`, database/cache clusterRefs
+   wired to the infra CRs, and `spec.database.credentialsMode: Dynamic`;
+   `KeystoneReady=True`.
 3. **ApplicationCredential** — owned K-ORC ApplicationCredential minted with
    `restricted: true`; `KORCReady=True`.
 4. **Credential chain** — minted credential → operator Secret → PushSecret →
@@ -89,6 +93,11 @@ each link on the previous one:
    `AdminCredentialReady=True`.
 5. **Catalog** — owned K-ORC Service and Endpoint; `CatalogReady=True`.
 6. **Aggregate** — `Ready=True` with reason `AllReady`.
+6b. **Dynamic DB credential engine** — no static DB password remains at rest (the
+   retired per-CR KV path is absent, AC 2/6); an engine-issued credential
+   authenticates against MariaDB and is rejected after `bao lease revoke` (AC 3);
+   and an unrelated lease survives another's revoke while the ControlPlane stays
+   Ready (AC 4 single-tenant isolation).
 7. **API reachable** — Keystone `/v3` returns HTTP 200, and a verify Job runs
    `openstack token issue` and `openstack catalog list` (using the `openstack`
    CLI bundled in the tempest image) against the materialised admin
@@ -119,24 +128,26 @@ which reads and writes the same key.
 
 ### db-credential-scoping
 
-Asserts that `reconcileDBCredentials` projects a per-ControlPlane,
-OpenBao-backed DB credential: an owned ExternalSecret
-`controlplane-keystone-db-credentials` whose `username` and `password`
-remoteRefs read the per-CR OpenBao key
-`openstack/keystone/{namespace}/{name}/db`, plus the materialised Secret. The
-legacy flat shared-key DB ExternalSecret is gone.
+Onboards the per-tenant OpenBao database-engine role
+(`setup-database-tenant.sh`) and asserts that `reconcileDBCredentials` projects a
+per-ControlPlane, DYNAMIC (engine-issued) DB credential: a `VaultDynamicSecret`
+generator reading `database/mariadb/creds/keystone-{namespace}`, an owned
+`ExternalSecret` `controlplane-keystone-db-credentials` drawing from that
+generator via `dataFrom.sourceRef.generatorRef` (no static Data refs), a
+`keystone-db-creds` ServiceAccount, and a materialised Secret carrying an
+engine-issued username (not the static `keystone` user). The stage-(a) static
+per-CR KV seed is retired (#439).
 
 ### multi-controlplane
 
 Brings up two ControlPlanes in two namespaces (`tenant-a/controlplane-a`,
-`tenant-b/controlplane-b`) and asserts, against a live OpenBao, that each CR's
-minted admin application credential lands on a distinct per-CR path
-(`openstack/keystone/{namespace}/{name}/admin/app-credential`) with different
-material, that both `status.adminApplicationCredential.id` values are
-non-empty and distinct, and that rotating only tenant-a's credential leaves
-tenant-b's status, OpenBao material, and K-ORC ApplicationCredential health
-unchanged. Also asserts the operator-created per-CR `k-orc-clouds-yaml`
-ExternalSecret (ownership and per-CR `remoteRef.key`) for both tenants.
+`tenant-b/controlplane-b`), onboards each tenant's distinct database-engine role,
+and asserts admin-credential isolation (each CR's minted admin application
+credential lands on a distinct per-CR path with different material; rotating only
+tenant-a's credential leaves tenant-b unchanged) **and** dynamic DB-credential
+isolation: the two tenants draw from distinct per-tenant roles, and revoking
+tenant-a's DB leases by prefix leaves tenant-b's credential authenticating and
+tenant-b Ready (AC 4).
 
 ## File Layout
 

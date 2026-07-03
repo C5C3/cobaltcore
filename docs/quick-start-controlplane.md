@@ -126,6 +126,22 @@ spec:
 kubectl apply -f controlplane.yaml
 ```
 
+::: tip Dynamic DB credentials (#439)
+A managed-mode ControlPlane defaults to engine-issued (Dynamic) Keystone DB
+credentials from the OpenBao database engine, so its per-tenant engine role must
+be onboarded once its MariaDB is Ready:
+
+```bash
+BAO_TOKEN=... \
+  deploy/openbao/bootstrap/setup-database-tenant.sh openstack controlplane
+```
+
+`make deploy-infra` with `WITH_CONTROLPLANE_CR=true` runs this for the bundled
+ControlPlane automatically; a ControlPlane you apply by hand needs the one-liner
+above (or set `spec.infrastructure.database.credentialsMode: Static` to stay on a
+static credential). See [Migrate Keystone DB to Dynamic Credentials](/guides/migrate-keystone-db-to-dynamic-credentials).
+:::
+
 <details>
 <summary>Equivalent fully-expanded form (what the webhook defaults to)</summary>
 
