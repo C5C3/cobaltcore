@@ -40,6 +40,15 @@ for cluster-side wiring.
 | `keystone_operator_key_rotation_age_seconds` | Gauge | `keystone`, `namespace`, `key_type` | Age of the most recent successful Fernet/credential/admin-password rotation |
 | `keystone_operator_db_sync_total` | Counter | `keystone`, `namespace`, `result` | Terminal `db_sync` Job outcomes |
 | `keystone_operator_db_sync_duration_seconds` | Histogram | `keystone`, `namespace` | Wall-clock duration of terminated `db_sync` Jobs |
+| `controller_runtime_reconcile_time_seconds` | Histogram | `controller` | End-to-end `Reconcile` latency (externally provided by controller-runtime) |
+
+The last row is not a `keystone_operator_*` metric: controller-runtime
+exports `controller_runtime_reconcile_time_seconds` out of the box for
+every controller, keyed by the `controller` label (`keystone` for this
+operator). Unlike `keystone_operator_reconcile_duration_seconds`, which
+samples only the sub-reconciler functions, this histogram wraps the whole
+`Reconcile` call — orchestration, the status update, and watch handling —
+so it is the signal to use for end-to-end reconcile-latency SLOs.
 
 ---
 
@@ -247,6 +256,55 @@ histogram_quantile(
   )
 )
 ```
+
+---
+
+## Reconcile duration SLOs
+
+These service-level objectives make the reconcile hot path measurable, so
+a latency regression shows up against a documented target instead of only
+as a subjective "the operator feels slow". They are expressed against the
+same histograms the bundled dashboard plots.
+
+| Regime | Signal | Objective |
+| --- | --- | --- |
+| Steady state (all conditions `True`, single CR) | `keystone_operator_reconcile_duration_seconds` per `sub_reconciler` | p95 ≤ **300 ms** |
+| Steady state (all conditions `True`, single CR) | `controller_runtime_reconcile_time_seconds{controller="keystone"}` | p95 ≤ **2 s** |
+| Active rotation or `db_sync`/bootstrap wait | `keystone_operator_reconcile_duration_seconds` per `sub_reconciler` | p95 ≤ **2 s** |
+
+The steady-state per-sub-reconciler target is what the hot-path
+optimisations (probe caching, config-render gating, redundant-read
+elimination) are measured against; the end-to-end target covers the
+orchestration and status-update work that
+`keystone_operator_reconcile_duration_seconds` does not sample, which is
+why it uses the built-in `controller_runtime_reconcile_time_seconds`
+histogram.
+
+**Steady-state per-sub-reconciler p95:**
+
+```promql
+histogram_quantile(
+  0.95,
+  sum by (sub_reconciler, le) (
+    rate(keystone_operator_reconcile_duration_seconds_bucket[5m])
+  )
+)
+```
+
+**End-to-end p95:**
+
+```promql
+histogram_quantile(
+  0.95,
+  sum by (le) (
+    rate(controller_runtime_reconcile_time_seconds_bucket{controller="keystone"}[5m])
+  )
+)
+```
+
+The [reconcile-performance benchmark](./testing/reconcile-performance-benchmark.md)
+scripts a 1/5/25-CR run and reports these percentiles, and can gate on the
+steady-state end-to-end p95 as a regression check.
 
 ---
 
