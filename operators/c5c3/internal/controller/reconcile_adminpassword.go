@@ -54,7 +54,7 @@ func adminPasswordSecretName(cp *c5c3v1alpha1.ControlPlane) string {
 // It is a PURE builder: no owner reference is set here — the
 // reconciler adds the ControlPlane controller reference in the CreateOrUpdate mutate
 // closure (so GC is wired) while keeping this builder usable for shape assertions.
-// The ExternalSecret type is esov1 (the v1 API), matching dbCredentialExternalSecret.
+// The ExternalSecret type is esov1 (the v1 API), matching dbCredentialGeneratorExternalSecret.
 func adminPasswordExternalSecret(cp *c5c3v1alpha1.ControlPlane) *esov1.ExternalSecret {
 	name := adminPasswordSecretName(cp)
 	remoteKey := adminPasswordRemoteKeyFor(cp)

@@ -41,7 +41,7 @@ tests:
       - hasDocuments:
           count: 0
 
-  - it: should have 15 rules matching ClusterRole
+  - it: should have 18 rules matching ClusterRole
     set:
       rbac:
         namespaceScoped: true
@@ -50,7 +50,7 @@ tests:
     asserts:
       - lengthEqual:
           path: rules
-          count: 15
+          count: 18
 
   - it: should grant full CRUD on controlplanes
     set:

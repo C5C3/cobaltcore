@@ -15,10 +15,12 @@ import (
 	"testing"
 
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
+	esgenv1alpha1 "github.com/external-secrets/external-secrets/apis/generators/v1alpha1"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -88,10 +90,10 @@ func readyClusterSecretStore() *esov1.ClusterSecretStore {
 }
 
 // readyDBCredES builds a Ready DB-credential ExternalSecret at the derived
-// name/namespace, mirroring readyCloudsYamlES so WaitForExternalSecret reports
-// Ready without an ESO controller in the fake client.
+// name/namespace (Dynamic default shape), so WaitForExternalSecret reports Ready
+// without an ESO controller in the fake client.
 func readyDBCredES(cp *c5c3v1alpha1.ControlPlane) *esov1.ExternalSecret {
-	es := dbCredentialExternalSecret(cp)
+	es := dbCredentialGeneratorExternalSecret(cp)
 	es.Status = esov1.ExternalSecretStatus{
 		Conditions: []esov1.ExternalSecretStatusCondition{
 			{Type: esov1.ExternalSecretReady, Status: corev1.ConditionTrue},
@@ -100,11 +102,21 @@ func readyDBCredES(cp *c5c3v1alpha1.ControlPlane) *esov1.ExternalSecret {
 	return es
 }
 
-// TestReconcileDBCredentials_Managed_CreatesExternalSecret a managed CP
-// drives reconcileDBCredentials to project the per-CP DB-credential ExternalSecret
-// with the OpenBao-backed ClusterSecretStore ref, Owner creation policy, the two
-// username/password Data entries, and a ControlPlane controller owner reference.
-func TestReconcileDBCredentials_Managed_CreatesExternalSecret(t *testing.T) {
+// getVDS fetches the projected VaultDynamicSecret generator.
+func getVDS(t *testing.T, r *ControlPlaneReconciler, cp *c5c3v1alpha1.ControlPlane) (*esgenv1alpha1.VaultDynamicSecret, error) {
+	t.Helper()
+	vds := &esgenv1alpha1.VaultDynamicSecret{}
+	err := r.Get(context.Background(),
+		types.NamespacedName{Namespace: childNamespace(cp), Name: dbCredentialSecretName(cp)}, vds)
+	return vds, err
+}
+
+// TestReconcileDBCredentials_Managed_ProjectsDynamicObjects a managed CP (default
+// Dynamic mode) drives reconcileDBCredentials to project the generator-backed
+// ExternalSecret (DataFrom.GeneratorRef, no static Data), the VaultDynamicSecret
+// generator, the ServiceAccount, and the mTLS client Certificate — all
+// owner-referenced to the ControlPlane.
+func TestReconcileDBCredentials_Managed_ProjectsDynamicObjects(t *testing.T) {
 	g := NewGomegaWithT(t)
 
 	s := korcTestScheme(t)
@@ -113,34 +125,104 @@ func TestReconcileDBCredentials_Managed_CreatesExternalSecret(t *testing.T) {
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
 	// No Ready status on the freshly-created ES, so the call requeues with
-	// DBCredentialsReady=False — that is expected here; we assert the ES shape.
+	// DBCredentialsReady=False — that is expected here; we assert the shapes.
+	if _, err := r.reconcileDBCredentials(context.Background(), cp); err != nil {
+		t.Fatalf("reconcileDBCredentials: %v", err)
+	}
+
+	// ExternalSecret: generator-backed, no static KV Data.
+	es, err := getDBCredES(t, r, cp)
+	g.Expect(err).NotTo(HaveOccurred(), "operator must create the DB-credential ExternalSecret")
+	g.Expect(es.Spec.Data).To(BeEmpty(), "Dynamic ExternalSecret must carry no static Data refs")
+	g.Expect(es.Spec.SecretStoreRef.Name).To(BeEmpty(), "generator-backed ExternalSecret must not reference a SecretStore")
+	g.Expect(es.Spec.DataFrom).To(HaveLen(1))
+	g.Expect(es.Spec.DataFrom[0].SourceRef).NotTo(BeNil())
+	g.Expect(es.Spec.DataFrom[0].SourceRef.GeneratorRef).NotTo(BeNil())
+	g.Expect(es.Spec.DataFrom[0].SourceRef.GeneratorRef.Kind).To(Equal("VaultDynamicSecret"))
+	g.Expect(es.Spec.DataFrom[0].SourceRef.GeneratorRef.Name).To(Equal(dbCredentialSecretName(cp)))
+	g.Expect(metav1.GetControllerOf(es)).NotTo(BeNil())
+
+	// VaultDynamicSecret: reads the per-tenant creds path, authenticates via the
+	// per-CP SA and mTLS client cert (all same-namespace refs).
+	vds, err := getVDS(t, r, cp)
+	g.Expect(err).NotTo(HaveOccurred(), "operator must create the VaultDynamicSecret generator")
+	g.Expect(vds.Spec.Path).To(Equal(dbDynamicCredsPathFor(cp)))
+	g.Expect(vds.Spec.Method).To(Equal("GET"))
+	g.Expect(vds.Spec.Provider).NotTo(BeNil())
+	g.Expect(vds.Spec.Provider.Server).To(Equal(openBaoDefaultServer))
+	g.Expect(vds.Spec.Provider.Auth.Kubernetes.Path).To(Equal(openBaoDefaultKubernetesMount))
+	g.Expect(vds.Spec.Provider.Auth.Kubernetes.Role).To(Equal(dbDynamicVaultRole))
+	g.Expect(vds.Spec.Provider.Auth.Kubernetes.ServiceAccountRef.Name).To(Equal(dbCredentialServiceAccountName))
+	g.Expect(vds.Spec.Provider.CAProvider.Name).To(Equal(dbCredentialClientCertName(cp)))
+	g.Expect(vds.Spec.Provider.CAProvider.Key).To(Equal("ca.crt"))
+	g.Expect(vds.Spec.Provider.ClientTLS.CertSecretRef.Name).To(Equal(dbCredentialClientCertName(cp)))
+	g.Expect(vds.Spec.Provider.ClientTLS.KeySecretRef.Name).To(Equal(dbCredentialClientCertName(cp)))
+	g.Expect(metav1.GetControllerOf(vds)).NotTo(BeNil())
+
+	// ServiceAccount exists and is owner-referenced.
+	sa := &corev1.ServiceAccount{}
+	g.Expect(r.Get(context.Background(),
+		types.NamespacedName{Namespace: childNamespace(cp), Name: dbCredentialServiceAccountName}, sa)).To(Succeed())
+	g.Expect(metav1.GetControllerOf(sa)).NotTo(BeNil())
+
+	// Certificate (unstructured) exists with the client-auth usage.
+	cert := &unstructured.Unstructured{}
+	cert.SetGroupVersionKind(certificateGVK)
+	g.Expect(r.Get(context.Background(),
+		types.NamespacedName{Namespace: childNamespace(cp), Name: dbCredentialClientCertName(cp)}, cert)).To(Succeed())
+	issuer, _, _ := unstructured.NestedString(cert.Object, "spec", "issuerRef", "name")
+	g.Expect(issuer).To(Equal(openBaoCAIssuerName))
+	g.Expect(metav1.GetControllerOf(cert)).NotTo(BeNil())
+}
+
+// TestReconcileDBCredentials_Static_ProjectsKVExternalSecret verifies the Static
+// opt-out projects the stage-(a) KV-backed ExternalSecret (username/password Data
+// from the per-CP KV path) and projects no VaultDynamicSecret generator.
+func TestReconcileDBCredentials_Static_ProjectsKVExternalSecret(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := dbCredManagedControlPlane()
+	cp.Spec.Infrastructure.Database.CredentialsMode = commonv1.CredentialsModeStatic
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, readyClusterSecretStore()).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
 	if _, err := r.reconcileDBCredentials(context.Background(), cp); err != nil {
 		t.Fatalf("reconcileDBCredentials: %v", err)
 	}
 
 	es, err := getDBCredES(t, r, cp)
-	g.Expect(err).NotTo(HaveOccurred(), "operator must create the DB-credential ExternalSecret")
-
-	g.Expect(es.Spec.SecretStoreRef.Kind).To(Equal("ClusterSecretStore"))
+	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(es.Spec.SecretStoreRef.Name).To(Equal(openBaoClusterStoreName))
-	g.Expect(es.Spec.Target.Name).To(Equal(dbCredentialSecretName(cp)))
-	g.Expect(es.Spec.Target.CreationPolicy).To(Equal(esov1.CreatePolicyOwner))
-
-	remoteKey := dbCredentialRemoteKeyFor(cp)
+	g.Expect(es.Spec.DataFrom).To(BeEmpty(), "Static ExternalSecret must not use a generator")
 	g.Expect(es.Spec.Data).To(HaveLen(2))
-	g.Expect(es.Spec.Data[0].SecretKey).To(Equal("username"))
-	g.Expect(es.Spec.Data[0].RemoteRef.Key).To(Equal(remoteKey))
-	g.Expect(es.Spec.Data[0].RemoteRef.Property).To(Equal("username"))
-	g.Expect(es.Spec.Data[1].SecretKey).To(Equal("password"))
-	g.Expect(es.Spec.Data[1].RemoteRef.Key).To(Equal(remoteKey))
-	g.Expect(es.Spec.Data[1].RemoteRef.Property).To(Equal("password"))
+	g.Expect(es.Spec.Data[0].RemoteRef.Key).To(Equal(dbCredentialRemoteKeyFor(cp)))
 
-	owner := metav1.GetControllerOf(es)
-	g.Expect(owner).NotTo(BeNil(), "DB-credential ExternalSecret must be controller-owned by the ControlPlane")
-	g.Expect(owner.Kind).To(Equal("ControlPlane"))
-	g.Expect(owner.Name).To(Equal(cp.Name))
-	g.Expect(owner.Controller).NotTo(BeNil())
-	g.Expect(*owner.Controller).To(BeTrue())
+	// No VaultDynamicSecret generator in Static mode.
+	_, vdsErr := getVDS(t, r, cp)
+	g.Expect(apierrors.IsNotFound(vdsErr)).To(BeTrue(), "Static mode must not project a VaultDynamicSecret")
+}
+
+// TestReconcileDBCredentials_StaticAfterDynamic_TearsDownGenerator verifies a
+// Dynamic→Static flip deletes the previously-projected VaultDynamicSecret so no
+// live generator is orphaned.
+func TestReconcileDBCredentials_StaticAfterDynamic_TearsDownGenerator(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := dbCredManagedControlPlane()
+	cp.Spec.Infrastructure.Database.CredentialsMode = commonv1.CredentialsModeStatic
+	// Pre-seed a leftover VaultDynamicSecret from a prior Dynamic deployment.
+	leftover := dbCredentialVaultDynamicSecret(cp, openBaoDefaultServer, openBaoDefaultKubernetesMount)
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, readyClusterSecretStore(), leftover).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	if _, err := r.reconcileDBCredentials(context.Background(), cp); err != nil {
+		t.Fatalf("reconcileDBCredentials: %v", err)
+	}
+
+	_, vdsErr := getVDS(t, r, cp)
+	g.Expect(apierrors.IsNotFound(vdsErr)).To(BeTrue(), "Static flip must delete the leftover VaultDynamicSecret")
 }
 
 // TestReconcileDBCredentials_NotReady_SetsConditionFalseAndRequeues while the projected ExternalSecret has not synced, the sub-reconciler
@@ -273,4 +355,37 @@ func TestDBCredentialRemoteKeyFor_And_SecretName_DistinctPerControlPlane(t *test
 		To(Equal("openstack/keystone/openstack/controlplane/db"))
 	g.Expect(dbCredentialSecretName(canonical)).
 		To(Equal("controlplane-keystone-db-credentials"))
+}
+
+// TestDBDynamicRoleFor_DistinctPerControlPlane backs AC 4 at the unit level: two
+// ControlPlanes resolve to distinct per-tenant OpenBao roles and creds paths, so
+// one tenant's revoke cannot affect another. The role-name derivation MUST stay
+// in sync with setup-database-tenant.sh.
+func TestDBDynamicRoleFor_DistinctPerControlPlane(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cpFor := func(name, ns string) *c5c3v1alpha1.ControlPlane {
+		return &c5c3v1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns}}
+	}
+
+	a := cpFor("cp", "tenant-a")
+	b := cpFor("cp", "tenant-b")
+	g.Expect(dbDynamicRoleFor(a)).To(Equal("keystone-tenant-a"))
+	g.Expect(dbDynamicRoleFor(b)).To(Equal("keystone-tenant-b"))
+	g.Expect(dbDynamicRoleFor(a)).NotTo(Equal(dbDynamicRoleFor(b)))
+
+	g.Expect(dbDynamicCredsPathFor(a)).To(Equal("database/mariadb/creds/keystone-tenant-a"))
+	g.Expect(dbDynamicCredsPathFor(b)).To(Equal("database/mariadb/creds/keystone-tenant-b"))
+	g.Expect(dbDynamicCredsPathFor(a)).NotTo(Equal(dbDynamicCredsPathFor(b)))
+
+	// Regression: keying on the namespace alone is collision-free. The former
+	// hyphen-joined <namespace>-<name> derivation flattened distinct ControlPlanes
+	// to the same role — ns=a-b/name=c and ns=a/name=b-c both produced
+	// keystone-a-b-c, so onboarding the second silently overwrote the first
+	// tenant's connection config and role. Namespace-only keying keeps them
+	// distinct (namespaces are cluster-unique).
+	collideX := cpFor("c", "a-b")
+	collideY := cpFor("b-c", "a")
+	g.Expect(dbDynamicRoleFor(collideX)).NotTo(Equal(dbDynamicRoleFor(collideY)))
+	g.Expect(dbDynamicCredsPathFor(collideX)).NotTo(Equal(dbDynamicCredsPathFor(collideY)))
 }

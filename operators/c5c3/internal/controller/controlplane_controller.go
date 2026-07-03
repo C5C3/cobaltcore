@@ -13,6 +13,7 @@ import (
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
+	esgenv1alpha1 "github.com/external-secrets/external-secrets/apis/generators/v1alpha1"
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
@@ -102,7 +103,10 @@ type ControlPlaneReconciler struct {
 // +kubebuilder:rbac:groups=openstack.k-orc.cloud,resources=applicationcredentials;services;endpoints;users;domains,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=external-secrets.io,resources=externalsecrets;pushsecrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=external-secrets.io,resources=clustersecretstores,verbs=get;list;watch
+// +kubebuilder:rbac:groups=generators.external-secrets.io,resources=vaultdynamicsecrets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
 
 // Reconcile is the main reconciliation loop for the ControlPlane CR.
@@ -483,6 +487,12 @@ func (r *ControlPlaneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	memcached := &unstructured.Unstructured{}
 	memcached.SetGroupVersionKind(memcachedGVK)
 
+	// The per-ControlPlane mTLS client Certificate is Owned as an
+	// *unstructured.Unstructured carrying certificateGVK (mirroring the Memcached
+	// Owns) so the c5c3 operator takes no cert-manager Go dependency.
+	certificate := &unstructured.Unstructured{}
+	certificate.SetGroupVersionKind(certificateGVK)
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&c5c3v1alpha1.ControlPlane{}).
 		Owns(&mariadbv1alpha1.MariaDB{}).
@@ -493,8 +503,10 @@ func (r *ControlPlaneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&orcv1alpha1.User{}).
 		Owns(&orcv1alpha1.Domain{}).
 		Owns(memcached).
+		Owns(certificate).
 		Owns(&esov1.ExternalSecret{}).
 		Owns(&esov1alpha1.PushSecret{}).
+		Owns(&esgenv1alpha1.VaultDynamicSecret{}).
 		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(
 			secretToControlPlaneMapper(mgr.GetClient()),
 		)).

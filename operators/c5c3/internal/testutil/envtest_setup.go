@@ -16,6 +16,7 @@ import (
 
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
+	esgenv1alpha1 "github.com/external-secrets/external-secrets/apis/generators/v1alpha1"
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -161,6 +162,7 @@ func buildControllerScheme(addToScheme func(*k8sruntime.Scheme) error) *k8srunti
 	utilruntime.Must(keystonev1alpha1.AddToScheme(s))
 	utilruntime.Must(esov1.AddToScheme(s))
 	utilruntime.Must(esov1alpha1.AddToScheme(s))
+	utilruntime.Must(esgenv1alpha1.AddToScheme(s))
 	utilruntime.Must(orcv1alpha1.AddToScheme(s))
 	// c5c3 API types (ControlPlane, CredentialRotation, ...).
 	utilruntime.Must(addToScheme(s))

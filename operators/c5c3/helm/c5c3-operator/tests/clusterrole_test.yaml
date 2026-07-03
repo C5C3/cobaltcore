@@ -1,7 +1,7 @@
 # ClusterRole RBAC rules unit tests.
 # Rules mirror the +kubebuilder:rbac markers on the ControlPlane and
 # CredentialRotation reconcilers (deduplicated), plus the leases rule for
-# leader election — 15 rules total.
+# leader election — 18 rules total.
 suite: ClusterRole
 templates:
   - templates/clusterrole.yaml
@@ -10,7 +10,7 @@ tests:
     asserts:
       - lengthEqual:
           path: rules
-          count: 15
+          count: 18
 
   - it: should grant full CRUD on controlplanes
     asserts:
@@ -233,6 +233,66 @@ tests:
               - get
               - list
               - watch
+
+  # reconcileDBCredentials projects a per-ControlPlane VaultDynamicSecret
+  # generator in Dynamic credentials mode to issue short-lived DB credentials.
+  - it: should grant full CRUD on generators vaultdynamicsecrets
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - generators.external-secrets.io
+            resources:
+              - vaultdynamicsecrets
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  # reconcileDBCredentials projects a per-ControlPlane mTLS client Certificate
+  # for the VaultDynamicSecret generator's OpenBao connection.
+  - it: should grant full CRUD on cert-manager certificates
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - cert-manager.io
+            resources:
+              - certificates
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  # reconcileDBCredentials projects (and cleans up on a Static flip) the
+  # per-ControlPlane ServiceAccount whose token the generator presents to OpenBao.
+  - it: should grant full CRUD on core serviceaccounts
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - ""
+            resources:
+              - serviceaccounts
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
 
   - it: should grant full CRUD on core secrets
     asserts:

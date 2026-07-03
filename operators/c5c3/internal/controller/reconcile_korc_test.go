@@ -17,6 +17,7 @@ import (
 
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
+	esgenv1alpha1 "github.com/external-secrets/external-secrets/apis/generators/v1alpha1"
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
@@ -59,6 +60,9 @@ func korcTestScheme(t *testing.T) *runtime.Scheme {
 	}
 	if err := esov1alpha1.AddToScheme(s); err != nil {
 		t.Fatalf("adding ESO v1alpha1 scheme: %v", err)
+	}
+	if err := esgenv1alpha1.AddToScheme(s); err != nil {
+		t.Fatalf("adding ESO generators v1alpha1 scheme: %v", err)
 	}
 	return s
 }

@@ -164,11 +164,58 @@ coordination.k8s.io/leases rule required for leader election.
     - get
     - list
     - watch
+# generators.external-secrets.io - vaultdynamicsecrets
+# Required so reconcileDBCredentials can project the per-ControlPlane
+# VaultDynamicSecret generator that issues short-lived DB credentials in
+# Dynamic credentials mode.
+- apiGroups:
+    - generators.external-secrets.io
+  resources:
+    - vaultdynamicsecrets
+  verbs:
+    - get
+    - list
+    - watch
+    - create
+    - update
+    - patch
+    - delete
+# cert-manager.io - certificates
+# Required so reconcileDBCredentials can project the per-ControlPlane mTLS client
+# Certificate the VaultDynamicSecret generator presents to the OpenBao listener.
+- apiGroups:
+    - cert-manager.io
+  resources:
+    - certificates
+  verbs:
+    - get
+    - list
+    - watch
+    - create
+    - update
+    - patch
+    - delete
 # core - secrets
 - apiGroups:
     - ""
   resources:
     - secrets
+  verbs:
+    - get
+    - list
+    - watch
+    - create
+    - update
+    - patch
+    - delete
+# core - serviceaccounts
+# Required so reconcileDBCredentials can project (and clean up on a Static flip)
+# the per-ControlPlane ServiceAccount whose token the VaultDynamicSecret
+# generator presents to OpenBao. delete is used by the Dynamic->Static teardown.
+- apiGroups:
+    - ""
+  resources:
+    - serviceaccounts
   verbs:
     - get
     - list

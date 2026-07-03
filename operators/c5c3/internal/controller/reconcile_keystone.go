@@ -194,6 +194,17 @@ func (r *ControlPlaneReconciler) reconcileKeystone(ctx context.Context, cp *c5c3
 		// secretRef in place — the user owns that Secret out-of-band.
 		if cp.Spec.Infrastructure.Database.ClusterRef != nil {
 			keystone.Spec.Database.SecretRef = commonv1.SecretRefSpec{Name: dbCredentialSecretName(cp), Key: "password"}
+			// Project the EFFECTIVE credentials mode (Dynamic unless the CP opted
+			// into Static) so the Keystone operator consumes the engine-issued
+			// credential, overriding its webhook's Static-when-empty default. This
+			// must match reconcileDBCredentials' effective-mode decision
+			// (dbCredentialsDynamicEnabled) or the projected Keystone would read a
+			// Secret shaped for the other mode.
+			if dbCredentialsDynamicEnabled(cp) {
+				keystone.Spec.Database.CredentialsMode = commonv1.CredentialsModeDynamic
+			} else {
+				keystone.Spec.Database.CredentialsMode = commonv1.CredentialsModeStatic
+			}
 		}
 
 		// DeepCopy for the same reason as Database above: CacheSpec carries a

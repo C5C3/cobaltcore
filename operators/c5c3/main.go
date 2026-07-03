@@ -16,6 +16,7 @@ import (
 
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
+	esgenv1alpha1 "github.com/external-secrets/external-secrets/apis/generators/v1alpha1"
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 
@@ -49,6 +50,9 @@ func init() {
 	// admin-credential push and the K-ORC clouds.yaml gate read/write these.
 	utilruntime.Must(esov1alpha1.SchemeBuilder.AddToScheme(scheme))
 	utilruntime.Must(esov1.SchemeBuilder.AddToScheme(scheme))
+	// ESO VaultDynamicSecret generator — projected and Owned by
+	// reconcileDBCredentials to issue short-lived DB credentials in Dynamic mode.
+	utilruntime.Must(esgenv1alpha1.AddToScheme(scheme))
 	// K-ORC CRs (ApplicationCredential, Service, Endpoint, ...) — minted/Owned by
 	// reconcileKORC and reconcileCatalog.
 	utilruntime.Must(orcv1alpha1.AddToScheme(scheme))
