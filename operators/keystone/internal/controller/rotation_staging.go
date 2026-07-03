@@ -9,8 +9,10 @@
 package controller
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"maps"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -302,18 +304,30 @@ func (r *KeystoneReconciler) commitStagedRotation(ctx context.Context, keystone 
 		return false, nil
 	}
 
-	// 3. Replace the target's Data verbatim, stamp the rotation-completed
-	//    annotation, and Update. The target was read by the caller at the top of
-	//    the pass; only ensureStagingSecret (which touches the staging Secret,
-	//    not this one) ran in between, so its ResourceVersion is still current.
-	//    Full Data replacement is required — see the DECISION comment above.
-	target.Data = staging.Data
-	if target.Annotations == nil {
-		target.Annotations = map[string]string{}
-	}
-	target.Annotations[RotationCompletedAnnotation] = completedAt
-	if updateErr := r.Update(ctx, target); updateErr != nil {
-		return false, fmt.Errorf("updating %s %s: %w", spec.targetNoun, target.Name, updateErr)
+	// 3. Skip the target Update and the success event when the target already
+	//    holds this exact payload and completion timestamp: a prior pass
+	//    committed it, and only its staging delete is outstanding (e.g. a
+	//    transient delete error requeued the pass). Re-Updating would be a no-op
+	//    write and re-emitting the event would double-announce the rotation.
+	//    Secret.Data is map[string][]byte, so compare with maps.EqualFunc over
+	//    bytes.Equal. Step 4 still runs so the staging Secret is cleaned up.
+	alreadyCommitted := maps.EqualFunc(target.Data, staging.Data, bytes.Equal) &&
+		target.Annotations[RotationCompletedAnnotation] == completedAt
+
+	if !alreadyCommitted {
+		// Replace the target's Data verbatim, stamp the rotation-completed
+		// annotation, and Update. The target was read by the caller at the top of
+		// the pass; only ensureStagingSecret (which touches the staging Secret,
+		// not this one) ran in between, so its ResourceVersion is still current.
+		// Full Data replacement is required — see the DECISION comment above.
+		target.Data = staging.Data
+		if target.Annotations == nil {
+			target.Annotations = map[string]string{}
+		}
+		target.Annotations[RotationCompletedAnnotation] = completedAt
+		if updateErr := r.Update(ctx, target); updateErr != nil {
+			return false, fmt.Errorf("updating %s %s: %w", spec.targetNoun, target.Name, updateErr)
+		}
 	}
 
 	// 4. DELETE staging Secret under the UID + ResourceVersion observed when the
@@ -333,7 +347,14 @@ func (r *KeystoneReconciler) commitStagedRotation(ctx context.Context, keystone 
 		)
 	}
 
-	// 5. Emit a success event.
+	// 5. A prior pass already committed this payload — the target write and the
+	//    success event were emitted then, so report applied=false without
+	//    re-announcing.
+	if alreadyCommitted {
+		return false, nil
+	}
+
+	// 6. Emit a success event for the commit performed this pass.
 	r.Recorder.Event(keystone, corev1.EventTypeNormal, spec.appliedReason,
 		spec.appliedMessage(stagingName, staging.Data))
 

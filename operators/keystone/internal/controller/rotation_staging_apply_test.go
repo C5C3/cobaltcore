@@ -305,6 +305,67 @@ func TestApplyRotationOutput_ValidationFailsDuplicates(t *testing.T) {
 	expectEvent(g, r, "Warning RotationRejected")
 }
 
+// TestApplyRotationOutput_AlreadyCommitted_NoOpUpdate covers B3: when the
+// target already holds the exact staging payload and completion timestamp (a
+// prior pass committed it but its staging delete was outstanding), the commit
+// must not re-Update the target or re-emit the success event, but must still
+// delete the staging Secret and report applied=false.
+func TestApplyRotationOutput_AlreadyCommitted_NoOpUpdate(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := applyTestKeystone()
+
+	completedAt := time.Now().UTC().Format(time.RFC3339)
+	payload := makeValidFernetKeys(t, 3)
+	staging := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        fernetStagingSecretName(ks),
+			Namespace:   "default",
+			Annotations: map[string]string{RotationCompletedAnnotation: completedAt},
+		},
+		Data: payload,
+	}
+	// Production already carries the identical payload and completion timestamp.
+	prod := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "test-keystone-fernet-keys",
+			Namespace:   "default",
+			Annotations: map[string]string{RotationCompletedAnnotation: completedAt},
+		},
+		Data: payload,
+	}
+	r := newApplyTestReconciler(staging, prod)
+
+	// Capture the production ResourceVersion before the commit.
+	var before corev1.Secret
+	g.Expect(r.Get(context.Background(),
+		types.NamespacedName{Name: "test-keystone-fernet-keys", Namespace: "default"}, &before)).To(Succeed())
+
+	applied, err := runApplyRotation(t, r, ks,
+		fernetStagingSecretName(ks),
+		"test-keystone-fernet-keys",
+		"FernetKeysRotated",
+		1, 10,
+	)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(applied).To(BeFalse(), "an already-committed payload must report applied=false")
+
+	// Production ResourceVersion unchanged: no redundant Update was issued.
+	var after corev1.Secret
+	g.Expect(r.Get(context.Background(),
+		types.NamespacedName{Name: "test-keystone-fernet-keys", Namespace: "default"}, &after)).To(Succeed())
+	g.Expect(after.ResourceVersion).To(Equal(before.ResourceVersion),
+		"target must not be re-written when the payload is already committed")
+
+	// Staging Secret still deleted so the CronJob's next run starts clean.
+	var leftover corev1.Secret
+	getErr := r.Get(context.Background(),
+		types.NamespacedName{Name: fernetStagingSecretName(ks), Namespace: "default"}, &leftover)
+	g.Expect(apierrors.IsNotFound(getErr)).To(BeTrue(), "staging Secret must still be deleted")
+
+	// No success event: the rotation was announced by the earlier committing pass.
+	expectNoEvent(g, r)
+}
+
 func TestApplyRotationOutput_HappyPath(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := applyTestKeystone()
