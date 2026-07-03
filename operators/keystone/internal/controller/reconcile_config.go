@@ -11,8 +11,11 @@ import (
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/c5c3/forge/internal/common/conditions"
 	"github.com/c5c3/forge/internal/common/config"
@@ -20,6 +23,22 @@ import (
 	"github.com/c5c3/forge/internal/common/policy"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
+
+// configRenderCacheEntry memoizes a successful config render. The (uid,
+// generation, policyCMResourceVersion) tuple is the cache key: generation
+// covers every spec input to the render by construction, uid guards a
+// same-name CR recreation, and policyCMResourceVersion tracks the one render
+// input that lives outside the spec — the external oslo.policy ConfigMap
+// referenced by spec.policyOverrides.configMapRef. useStderr is retained so
+// the LoggingHealthy condition/event contract is preserved on the cache-hit
+// path without re-deriving the merged config.
+type configRenderCacheEntry struct {
+	uid                     types.UID
+	generation              int64
+	policyCMResourceVersion string
+	configMapName           string
+	useStderr               string
+}
 
 // conditionTypeLoggingHealthy reflects whether the merged keystone.conf
 // preserves the safe logging defaults required for kubectl logs / sidecar
@@ -67,6 +86,33 @@ const loggingConfFilePath = "/etc/keystone/keystone.conf.d/logging.conf"
 // ConfigMap containing keystone.conf, api-paste.ini, and optionally policy.yaml.
 // It returns the name of the created ConfigMap (with content-hash suffix).
 func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, keystone *keystonev1alpha1.Keystone) (string, error) {
+	// Cache short-circuit: the rendered ConfigMap is content-addressed and
+	// immutable, and every spec input to the render bumps the CR generation, so
+	// a matching (uid, generation, policy-ConfigMap ResourceVersion) tuple means
+	// the last rendered ConfigMap is still current. Skip the INI/paste/policy
+	// rendering and the immutable-ConfigMap write, but still re-run
+	// recordLoggingHealth so the LoggingHealthy condition/event contract holds
+	// on every pass.
+	policyCMRV, err := r.policyConfigMapResourceVersion(ctx, keystone)
+	if err != nil {
+		return "", err
+	}
+	if name, useStderr, ok := r.configRenderCacheHit(keystone, policyCMRV); ok {
+		// Confirm the cached ConfigMap still exists: an out-of-band delete must
+		// fall through to a full render/recreate. Owns(ConfigMap) enqueues us on
+		// the delete, but the cache would otherwise hand back a deleted name.
+		exists, existsErr := r.configMapExists(ctx, keystone.Namespace, name)
+		if existsErr != nil {
+			return "", existsErr
+		}
+		if exists {
+			r.recordLoggingHealth(keystone, map[string]map[string]string{"DEFAULT": {"use_stderr": useStderr}})
+			return name, nil
+		}
+		r.evictConfigRender(client.ObjectKeyFromObject(keystone))
+		log.FromContext(ctx).V(1).Info("cached config ConfigMap missing; re-rendering", "configMap", name)
+	}
+
 	// Step 1: Build keystone.conf INI sections from CRD spec.
 	logging := effectiveLogging(keystone.Spec.Logging)
 	defaults := map[string]map[string]string{
@@ -228,7 +274,96 @@ func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, keystone *keys
 		return "", fmt.Errorf("creating config ConfigMap: %w", err)
 	}
 
+	// Memoize the render so a subsequent pass at the same generation and policy
+	// ConfigMap ResourceVersion returns this name without re-rendering.
+	r.storeConfigRender(keystone, policyCMRV, configMapName, mergedUseStderr(merged))
+
 	return configMapName, nil
+}
+
+// policyConfigMapResourceVersion returns the ResourceVersion of the external
+// oslo.policy ConfigMap referenced by spec.policyOverrides.configMapRef, or ""
+// when none is referenced. It is the single render input that lives outside the
+// CR spec, so it is folded into the config-render cache key. A NotFound is
+// reported as "" so the render path runs and surfaces the missing-ConfigMap
+// error via buildPolicyYAML rather than caching against a phantom.
+func (r *KeystoneReconciler) policyConfigMapResourceVersion(ctx context.Context, keystone *keystonev1alpha1.Keystone) (string, error) {
+	po := keystone.Spec.PolicyOverrides
+	if po == nil || po.ConfigMapRef == nil {
+		return "", nil
+	}
+	var cm corev1.ConfigMap
+	if err := r.Get(ctx, client.ObjectKey{Namespace: keystone.Namespace, Name: po.ConfigMapRef.Name}, &cm); err != nil {
+		if apierrors.IsNotFound(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("getting policy ConfigMap %s: %w", po.ConfigMapRef.Name, err)
+	}
+	return cm.ResourceVersion, nil
+}
+
+// configRenderCacheHit reports whether the memoized render for this CR is still
+// valid: matching UID, generation, and policy-ConfigMap ResourceVersion.
+func (r *KeystoneReconciler) configRenderCacheHit(keystone *keystonev1alpha1.Keystone, policyCMRV string) (name, useStderr string, ok bool) {
+	r.configRenderCacheMu.Lock()
+	defer r.configRenderCacheMu.Unlock()
+	entry, found := r.configRenderCache[client.ObjectKeyFromObject(keystone)]
+	if !found {
+		return "", "", false
+	}
+	if entry.uid != keystone.UID || entry.generation != keystone.Generation || entry.policyCMResourceVersion != policyCMRV {
+		return "", "", false
+	}
+	return entry.configMapName, entry.useStderr, true
+}
+
+// storeConfigRender memoizes a successful render.
+func (r *KeystoneReconciler) storeConfigRender(keystone *keystonev1alpha1.Keystone, policyCMRV, configMapName, useStderr string) {
+	r.configRenderCacheMu.Lock()
+	defer r.configRenderCacheMu.Unlock()
+	if r.configRenderCache == nil {
+		r.configRenderCache = make(map[types.NamespacedName]configRenderCacheEntry)
+	}
+	r.configRenderCache[client.ObjectKeyFromObject(keystone)] = configRenderCacheEntry{
+		uid:                     keystone.UID,
+		generation:              keystone.Generation,
+		policyCMResourceVersion: policyCMRV,
+		configMapName:           configMapName,
+		useStderr:               useStderr,
+	}
+}
+
+// evictConfigRender drops the memoized render for a CR so the next reconcile
+// re-renders. Called on CR deletion and when the cached ConfigMap has vanished.
+func (r *KeystoneReconciler) evictConfigRender(key types.NamespacedName) {
+	r.configRenderCacheMu.Lock()
+	defer r.configRenderCacheMu.Unlock()
+	delete(r.configRenderCache, key)
+}
+
+// configMapExists reports whether the named ConfigMap is present, treating
+// NotFound as a clean "absent" rather than an error.
+func (r *KeystoneReconciler) configMapExists(ctx context.Context, namespace, name string) (bool, error) {
+	var cm corev1.ConfigMap
+	if err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, &cm); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("checking config ConfigMap %s: %w", name, err)
+	}
+	return true, nil
+}
+
+// mergedUseStderr extracts the effective [DEFAULT].use_stderr value from the
+// merged config, defaulting to "true" (the operator-supplied default) when the
+// key is somehow absent.
+func mergedUseStderr(merged map[string]map[string]string) string {
+	if d := merged["DEFAULT"]; d != nil {
+		if v, ok := d["use_stderr"]; ok {
+			return v
+		}
+	}
+	return "true"
 }
 
 // recordLoggingHealth maintains the LoggingHealthy status condition and

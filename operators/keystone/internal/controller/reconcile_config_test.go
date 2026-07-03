@@ -1073,6 +1073,7 @@ func TestReconcileConfig_LoggingHealthyConditionTransitionsBackToTrue(t *testing
 	s := configTestScheme()
 
 	ks := configTestKeystone()
+	ks.Generation = 1
 	ks.Spec.Logging = &keystonev1alpha1.LoggingSpec{Format: "text", Level: "INFO"}
 	ks.Spec.ExtraConfig = map[string]map[string]string{
 		"DEFAULT": {"use_stderr": "false"},
@@ -1086,7 +1087,11 @@ func TestReconcileConfig_LoggingHealthyConditionTransitionsBackToTrue(t *testing
 
 	// Operator removes the override; the next reconcile must transition the
 	// condition back to True and must NOT emit a transition Warning event.
+	// Removing spec.extraConfig is a spec edit, so it bumps the generation —
+	// exactly as the apiserver would — which the config-render cache keys on, so
+	// the render actually re-runs against the new spec.
 	ks.Spec.ExtraConfig = nil
+	ks.Generation = 2
 	_, err = r.reconcileConfig(context.Background(), ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	expectNoEvent(g, r)
@@ -1170,7 +1175,11 @@ func TestReconcileConfig_LoggingJSONToTextDropsLoggingConf(t *testing.T) {
 	s := configTestScheme()
 	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
 
+	// Distinct generations mirror the apiserver assigning a new generation on
+	// each spec edit; the config-render cache keys on generation so the format
+	// toggle forces a real re-render rather than a cache hit.
 	ksJSON := configTestKeystone()
+	ksJSON.Generation = 1
 	ksJSON.Spec.Logging = &keystonev1alpha1.LoggingSpec{Format: "json", Level: "INFO"}
 	r := newConfigTestReconciler(s, ksJSON, secret)
 	cmJSONName, err := r.reconcileConfig(context.Background(), ksJSON)
@@ -1181,6 +1190,7 @@ func TestReconcileConfig_LoggingJSONToTextDropsLoggingConf(t *testing.T) {
 	g.Expect(cmJSON.Data).To(HaveKey("logging.conf"))
 
 	ksText := configTestKeystone()
+	ksText.Generation = 2
 	ksText.Spec.Logging = &keystonev1alpha1.LoggingSpec{Format: "text", Level: "INFO"}
 	cmTextName, err := r.reconcileConfig(context.Background(), ksText)
 	g.Expect(err).NotTo(HaveOccurred())
@@ -1331,13 +1341,20 @@ func TestReconcileConfig_LoggingFormatToggleSymmetricHash(t *testing.T) {
 	s := configTestScheme()
 	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
 
+	// Each format toggle is a distinct spec edit, so it carries a distinct
+	// generation — exactly as the apiserver would assign in production. The
+	// config-render cache keys on generation, so distinct generations force a
+	// real re-render on every toggle and this test exercises the content-hash
+	// symmetry rather than the cache short-circuit.
 	ks1 := configTestKeystone()
+	ks1.Generation = 1
 	ks1.Spec.Logging = &keystonev1alpha1.LoggingSpec{Format: "text", Level: "INFO"}
 	r := newConfigTestReconciler(s, ks1, secret)
 	firstTextName, err := r.reconcileConfig(context.Background(), ks1)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	ks2 := configTestKeystone()
+	ks2.Generation = 2
 	ks2.Spec.Logging = &keystonev1alpha1.LoggingSpec{Format: "json", Level: "INFO"}
 	jsonName, err := r.reconcileConfig(context.Background(), ks2)
 	g.Expect(err).NotTo(HaveOccurred())
@@ -1345,9 +1362,156 @@ func TestReconcileConfig_LoggingFormatToggleSymmetricHash(t *testing.T) {
 		"format=json must produce a different ConfigMap name than format=text")
 
 	ks3 := configTestKeystone()
+	ks3.Generation = 3
 	ks3.Spec.Logging = &keystonev1alpha1.LoggingSpec{Format: "text", Level: "INFO"}
 	secondTextName, err := r.reconcileConfig(context.Background(), ks3)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(secondTextName).To(Equal(firstTextName),
 		"text→json→text must return to the original ConfigMap name (symmetric content hash)")
+}
+
+// --- Config render cache (A3) ---
+
+// TestReconcileConfig_CacheHit_SameGeneration_ReturnsSameName proves the render
+// gate keys on generation, not content: a second reconcile at the same
+// generation returns the previously rendered ConfigMap name even when
+// spec.extraConfig is mutated in place without a generation bump. In production
+// any spec edit bumps the generation, so this in-place mutation can only happen
+// in a test.
+func TestReconcileConfig_CacheHit_SameGeneration_ReturnsSameName(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := configTestScheme()
+	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
+
+	ks := configTestKeystone()
+	ks.Spec.ExtraConfig = map[string]map[string]string{"custom": {"key": "before"}}
+	r := newConfigTestReconciler(s, ks, secret)
+
+	firstName, err := r.reconcileConfig(context.Background(), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// Mutate the content but NOT the generation.
+	ks.Spec.ExtraConfig = map[string]map[string]string{"custom": {"key": "after"}}
+	secondName, err := r.reconcileConfig(context.Background(), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(secondName).To(Equal(firstName),
+		"same generation must return the cached name; re-rendering would change the content hash")
+}
+
+// TestReconcileConfig_GenerationBump_ReRenders verifies that bumping the
+// generation invalidates the cache and re-renders against the new spec.
+func TestReconcileConfig_GenerationBump_ReRenders(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := configTestScheme()
+	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
+
+	ks := configTestKeystone()
+	ks.Generation = 1
+	ks.Spec.ExtraConfig = map[string]map[string]string{"custom": {"key": "before"}}
+	r := newConfigTestReconciler(s, ks, secret)
+
+	firstName, err := r.reconcileConfig(context.Background(), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	ks.Spec.ExtraConfig = map[string]map[string]string{"custom": {"key": "after"}}
+	ks.Generation = 2
+	secondName, err := r.reconcileConfig(context.Background(), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(secondName).NotTo(Equal(firstName),
+		"a generation bump must re-render against the new spec")
+}
+
+// TestReconcileConfig_PolicyConfigMapChange_ReRenders verifies that a change to
+// the external oslo.policy ConfigMap (a new ResourceVersion) invalidates the
+// cache even at the same generation, because the policy content lives outside
+// the CR spec.
+func TestReconcileConfig_PolicyConfigMapChange_ReRenders(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := configTestScheme()
+	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
+
+	ks := configTestKeystone()
+	ks.Spec.PolicyOverrides = &commonv1.PolicySpec{
+		ConfigMapRef: &corev1.LocalObjectReference{Name: "external-policy"},
+	}
+	policyCM := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "external-policy", Namespace: "default"},
+		Data:       map[string]string{"policy.yaml": "identity:get_user: \"role:reader\"\n"},
+	}
+	r := newConfigTestReconciler(s, ks, secret, policyCM)
+
+	firstName, err := r.reconcileConfig(context.Background(), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// Update the external policy content (fake client bumps the ResourceVersion)
+	// without touching the CR generation.
+	policyCM.Data["policy.yaml"] = "identity:get_user: \"role:admin\"\n"
+	g.Expect(r.Client.Update(context.Background(), policyCM)).To(Succeed())
+
+	secondName, err := r.reconcileConfig(context.Background(), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(secondName).NotTo(Equal(firstName),
+		"a changed policy ConfigMap ResourceVersion must re-render even at the same generation")
+}
+
+// TestReconcileConfig_CachedConfigMapDeleted_ReRenders verifies that an
+// out-of-band deletion of the rendered ConfigMap forces a full render on the
+// next reconcile even though the generation is unchanged, so the ConfigMap is
+// recreated rather than the cache handing back a deleted name.
+func TestReconcileConfig_CachedConfigMapDeleted_ReRenders(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := configTestScheme()
+	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
+
+	ks := configTestKeystone()
+	r := newConfigTestReconciler(s, ks, secret)
+
+	firstName, err := r.reconcileConfig(context.Background(), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// Delete the rendered ConfigMap out of band.
+	g.Expect(r.Client.Delete(context.Background(), &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: firstName, Namespace: "default"},
+	})).To(Succeed())
+	_, err = getCreatedConfigMap(context.Background(), r.Client, "default", firstName)
+	g.Expect(err).To(HaveOccurred(), "ConfigMap must be gone after delete")
+
+	// Same generation: the cache would hit, but the existence check must fall
+	// through to a full render that recreates the (same, content-addressed)
+	// ConfigMap.
+	secondName, err := r.reconcileConfig(context.Background(), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(secondName).To(Equal(firstName))
+	_, err = getCreatedConfigMap(context.Background(), r.Client, "default", secondName)
+	g.Expect(err).NotTo(HaveOccurred(), "the deleted ConfigMap must be recreated")
+}
+
+// TestReconcileConfig_CacheHit_UpsertsLoggingHealthy verifies the cache-hit path
+// still maintains the LoggingHealthy condition from the cached use_stderr value,
+// so the condition contract holds even when the render is skipped.
+func TestReconcileConfig_CacheHit_UpsertsLoggingHealthy(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := configTestScheme()
+	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
+
+	ks := configTestKeystone()
+	ks.Spec.ExtraConfig = map[string]map[string]string{"DEFAULT": {"use_stderr": "false"}}
+	r := newConfigTestReconciler(s, ks, secret)
+
+	_, err := r.reconcileConfig(context.Background(), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "LoggingHealthy")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+
+	// Remove the condition, then reconcile again at the same generation so the
+	// render is served from cache; the cache-hit path must re-upsert
+	// LoggingHealthy from the cached use_stderr value.
+	meta.RemoveStatusCondition(&ks.Status.Conditions, "LoggingHealthy")
+	_, err = r.reconcileConfig(context.Background(), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+	cond = meta.FindStatusCondition(ks.Status.Conditions, "LoggingHealthy")
+	g.Expect(cond).NotTo(BeNil(), "cache hit must re-upsert LoggingHealthy")
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("StderrDisabled"))
 }

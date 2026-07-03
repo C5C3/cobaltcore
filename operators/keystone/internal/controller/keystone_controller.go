@@ -173,6 +173,16 @@ type KeystoneReconciler struct {
 	// nil it defaults to time.Now; tests inject a controllable clock so the TTL
 	// boundary is deterministic.
 	now func() time.Time
+
+	// configRenderCache memoizes the rendered config ConfigMap name per CR,
+	// keyed on the CR UID + generation + the referenced policy ConfigMap's
+	// ResourceVersion, so a steady-state reconcile returns the known name
+	// without re-running RenderINI/RenderPastePipelineINI/RenderPolicyYAML. The
+	// ConfigMap is content-addressed and immutable, so nothing else can change
+	// its content between passes. Lazily initialised under configRenderCacheMu,
+	// which also guards concurrent access under MaxConcurrentReconciles > 1.
+	configRenderCache   map[types.NamespacedName]configRenderCacheEntry
+	configRenderCacheMu sync.Mutex
 }
 
 // httpRouteGVK identifies the HTTPRoute kind the operator would watch when
@@ -499,6 +509,7 @@ func (r *KeystoneReconciler) reconcileDelete(ctx context.Context, keystone *keys
 	// name/namespace never serves a stale health probe or config-render entry
 	// keyed on the deleted CR's UID.
 	r.evictHealthProbe(client.ObjectKeyFromObject(keystone))
+	r.evictConfigRender(client.ObjectKeyFromObject(keystone))
 	return ctrl.Result{}, nil
 }
 
