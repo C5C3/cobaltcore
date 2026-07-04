@@ -273,7 +273,10 @@ spec:
           wait_cp_condition DBCredentialsReady 300
 
           # ── Assert the DB-credential ExternalSecret is generator-backed ────
-          DB_SECRET="${CP_NAME}-db-credentials"
+          # Named after the projected Keystone CR, not the ControlPlane:
+          # dbCredentialSecretName = keystoneName(cp) + "-db-credentials"
+          # (reconcile_dbcredentials.go), i.e. <cp>-keystone-db-credentials.
+          DB_SECRET="${KEYSTONE_CR}-db-credentials"
           assert_eq "DB-credential ExternalSecret uses a VaultDynamicSecret generator" "VaultDynamicSecret" \
             "$(kubectl get externalsecret "${DB_SECRET}" -n "${CP_NS}" \
               -o "jsonpath={.spec.dataFrom[0].sourceRef.generatorRef.kind}")"
@@ -450,8 +453,8 @@ spec:
           kubectl describe pushsecret controlplane-keystone-admin-app-credential-backup -n openstack 2>&1 || true
           kubectl describe externalsecret k-orc-clouds-yaml -n openstack 2>&1 || true
           echo "=== Dynamic DB credential engine (ExternalSecret / VaultDynamicSecret / SA) ==="
-          kubectl describe externalsecret controlplane-keystone-db-credentials -n openstack 2>&1 || true
-          kubectl describe vaultdynamicsecret controlplane-keystone-db-credentials -n openstack 2>&1 || true
+          kubectl describe externalsecret controlplane-keystone-keystone-db-credentials -n openstack 2>&1 || true
+          kubectl describe vaultdynamicsecret controlplane-keystone-keystone-db-credentials -n openstack 2>&1 || true
           kubectl get serviceaccount keystone-db-creds -n openstack 2>&1 || true
           echo "=== OpenBao logs (last 100 lines) ==="
           kubectl logs -n openbao-system -l app.kubernetes.io/name=openbao --tail=100 --all-containers 2>&1 || true
