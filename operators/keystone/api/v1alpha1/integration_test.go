@@ -899,9 +899,11 @@ func TestIntegration_CRDSchemaContainsLoggingSpec(t *testing.T) {
 	debug, ok := logging.Properties["debug"]
 	g.Expect(ok).To(BeTrue(), "spec.logging.debug must exist")
 	g.Expect(debug.Type).To(Equal("boolean"), "spec.logging.debug must be boolean-typed")
-	g.Expect(debug.Default).NotTo(BeNil(), "spec.logging.debug must declare a default")
-	g.Expect(string(debug.Default.Raw)).To(Equal(`false`),
-		"spec.logging.debug default must be false")
+	// debug is a nil-preserving *bool: it carries NO CRD schema default so that
+	// "unset" stays distinguishable from an explicit false; the defaulting webhook
+	// restores false when the pointer is nil.
+	g.Expect(debug.Default).To(BeNil(),
+		"spec.logging.debug must not declare a CRD default (webhook-applied)")
 
 	perLogger, ok := logging.Properties["perLoggerLevels"]
 	g.Expect(ok).To(BeTrue(), "spec.logging.perLoggerLevels must exist")
