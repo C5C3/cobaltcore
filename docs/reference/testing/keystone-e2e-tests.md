@@ -107,7 +107,7 @@ Deployment rollout, bootstrap Job).
 | [topology-spread](#topology-spread) | `keystone-tsc` | `spec.topologySpreadConstraints`: `nil` injects 2 defaults; non-empty slice passes through verbatim; `[]` disables all constraints |
 | [pod-security-restricted](#pod-security-restricted) | `keystone-pss-restricted` | Reconciliation reaches Ready=True/AllReady inside a `pod-security.kubernetes.io/enforce=restricted` namespace; every Pod the reconciler creates (API Deployment, bootstrap Job, db-sync Job, policy-validation Job, manually-triggered fernet-rotation Job) admits under PSS Restricted; zero `FailedCreate` events carry the literal violation `violates PodSecurity "restricted:latest"` |
 | admin-password-rotation | `keystone-adminpw` | Re-bootstrap on admin-password Secret change: stale bootstrap Job replaced, new password authenticates against `/v3` |
-| admin-password-scheduled-rotation | `keystone-adminpw-sched` | Model B scheduled rotation: rotation CronJob rendered from `spec.bootstrap.passwordRotation`, full OpenBao/ESO evidence chain |
+| admin-password-scheduled-rotation | `keystone-adminpw-sched` | Model B scheduled rotation: rotation CronJob rendered from `spec.passwordRotation`, full OpenBao/ESO evidence chain |
 | autoscaling | `keystone-autoscaling` | HPA create/update/delete driven by `spec.autoscaling` (CPU and memory targets) |
 | basic-deployment-2026-1 | `keystone-basic-2026-1` | Happy-path deployment pinned to the 2026.1 release image |
 | configmap-no-secrets | `keystone-cc0080` | No secrets leak into the ConfigMap: placeholder URL in `keystone.conf`, real DSN only in the derived `<name>-db-connection` Secret |

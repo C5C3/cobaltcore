@@ -504,7 +504,7 @@ output (other than conditions merged after the group completes).
 | `reconcileHPA` | CR spec | `HPAReady` | Deployment (naming) | no |
 | `reconcileBootstrap` | configMapName | `BootstrapReady` | Deployment (API must be running) | no |
 | `reconcileTrustFlush` | configMapName | `TrustFlushReady` | Config | no |
-| `reconcilePasswordRotation` | `spec.bootstrap.passwordRotation` | `PasswordRotationReady` | Bootstrap (re-bootstrap is the downstream consumer) | no |
+| `reconcilePasswordRotation` | `spec.passwordRotation` | `PasswordRotationReady` | Bootstrap (re-bootstrap is the downstream consumer) | no |
 
 Key constraints that prevent further parallelization:
 
@@ -2754,7 +2754,7 @@ Operator (ESO) then syncs it back into the admin Secret and
 
 Two lifecycle paths:
 
-1. **Disabled / teardown** (`spec.bootstrap.passwordRotation` is nil OR
+1. **Disabled / teardown** (`spec.passwordRotation` is nil OR
    `enabled: false`): `teardownPasswordRotation` deletes every Model B resource
    (CronJob, staging Secret, push-source Secret, ServiceAccount/Role/RoleBinding,
    PushSecret, and all hash-suffixed script ConfigMaps), every delete tolerating
@@ -2811,8 +2811,8 @@ Two lifecycle paths:
 | --- | --- |
 | Name | `{name}-admin-password-rotate` |
 | Labels | `commonLabels(keystone)` |
-| Schedule | `spec.bootstrap.passwordRotation.schedule` |
-| Suspend | `&spec.bootstrap.passwordRotation.suspend` (pointer to CRD bool) |
+| Schedule | `spec.passwordRotation.schedule` |
+| Suspend | `&spec.passwordRotation.suspend` (pointer to CRD bool) |
 | ServiceAccount | `{name}-admin-password-rotate` |
 | Container name | `admin-password-rotate` |
 | Image | `{spec.image.repository}:{spec.image.tag}` |
@@ -2852,7 +2852,7 @@ PushSecret) means re-adoption works and the admin is never locked out.
 
 | Status | Reason | Message | RequeueAfter | Path |
 | --- | --- | --- | --- | --- |
-| `True` | `RotationDisabled` | "Scheduled admin password rotation is disabled; Model B resources removed" | — | Disabled/teardown — `spec.bootstrap.passwordRotation` nil or `enabled: false` |
+| `True` | `RotationDisabled` | "Scheduled admin password rotation is disabled; Model B resources removed" | — | Disabled/teardown — `spec.passwordRotation` nil or `enabled: false` |
 | `True` | `AdminPasswordRotated` | "rotation applied; staging secret cleared" | — (transient: apply-success short-circuit, requeues — operators see this immediately after an apply via `kubectl describe`, before the next reconcile transitions to steady state) | Enabled path |
 | `True` | `PasswordRotationConfigured` | "Admin password rotation CronJob is configured" | — | Enabled steady state |
 
@@ -3001,14 +3001,14 @@ Keystone CR via `controllerutil.SetControllerReference()`. This enables:
 | HTTPRoute | `{name}` | Keystone CR (only when `spec.gateway` is set; bare CR name) |
 | Job | `{name}-policy-validation` | Keystone CR (only when `spec.policyOverrides` is set) |
 | CronJob | `{name}-trust-flush` | Keystone CR (only when `spec.trustFlush` is set) |
-| Secret | `{name}-admin-password-rotation` | Keystone CR (rotation staging; only when `spec.bootstrap.passwordRotation.enabled`) |
-| Secret | `{name}-admin-password-next` | Keystone CR (rotation push-source; only when `spec.bootstrap.passwordRotation.enabled`) |
-| CronJob | `{name}-admin-password-rotate` | Keystone CR (only when `spec.bootstrap.passwordRotation.enabled`) |
-| PushSecret | `{name}-admin-password-backup` | Keystone CR (only when `spec.bootstrap.passwordRotation.enabled`) |
-| ServiceAccount | `{name}-admin-password-rotate` | Keystone CR (only when `spec.bootstrap.passwordRotation.enabled`) |
-| Role | `{name}-admin-password-rotate` | Keystone CR (only when `spec.bootstrap.passwordRotation.enabled`) |
-| RoleBinding | `{name}-admin-password-rotate` | Keystone CR (only when `spec.bootstrap.passwordRotation.enabled`) |
-| ConfigMap | `{name}-admin-password-rotate-script-{hash}` | Keystone CR (only when `spec.bootstrap.passwordRotation.enabled`) |
+| Secret | `{name}-admin-password-rotation` | Keystone CR (rotation staging; only when `spec.passwordRotation.enabled`) |
+| Secret | `{name}-admin-password-next` | Keystone CR (rotation push-source; only when `spec.passwordRotation.enabled`) |
+| CronJob | `{name}-admin-password-rotate` | Keystone CR (only when `spec.passwordRotation.enabled`) |
+| PushSecret | `{name}-admin-password-backup` | Keystone CR (only when `spec.passwordRotation.enabled`) |
+| ServiceAccount | `{name}-admin-password-rotate` | Keystone CR (only when `spec.passwordRotation.enabled`) |
+| Role | `{name}-admin-password-rotate` | Keystone CR (only when `spec.passwordRotation.enabled`) |
+| RoleBinding | `{name}-admin-password-rotate` | Keystone CR (only when `spec.passwordRotation.enabled`) |
+| ConfigMap | `{name}-admin-password-rotate-script-{hash}` | Keystone CR (only when `spec.passwordRotation.enabled`) |
 | ConfigMap | `{name}-fernet-rotate-script-{hash}` | Keystone CR |
 | ConfigMap | `{name}-credential-rotate-script-{hash}` | Keystone CR |
 | Database | `keystone` | Keystone CR (managed mode only; additionally cleaned up by the finalizer) |

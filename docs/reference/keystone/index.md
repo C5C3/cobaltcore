@@ -130,7 +130,7 @@ See the [Key Rotation Guide](../../guides/keystone-key-rotation.md).
   delegations.
 - **Admin password rotation.** Manual rotation at the OpenBao source with a
   digest-gated bootstrap re-run, plus an optional in-cluster scheduled
-  rotation CronJob via `spec.bootstrap.passwordRotation`. See the
+  rotation CronJob via `spec.passwordRotation`. See the
   [rotation](../../guides/keystone-admin-password-rotation.md) and
   [scheduled rotation](../../guides/keystone-admin-password-scheduled-rotation.md)
   guides.

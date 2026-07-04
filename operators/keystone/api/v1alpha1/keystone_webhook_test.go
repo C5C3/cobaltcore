@@ -188,7 +188,7 @@ func TestDefault_TrustFlushSet_PreservesExplicitValues(t *testing.T) {
 // --- PasswordRotation defaulting tests ---
 
 // TestDefault_PasswordRotationNil_NotMaterialized verifies the defaulting
-// webhook does NOT materialize spec.bootstrap.passwordRotation when it is
+// webhook does NOT materialize spec.passwordRotation when it is
 // absent. Scheduled admin-password rotation is strictly opt-in, so a
 // CR that never set the block must keep the feature off.
 func TestDefault_PasswordRotationNil_NotMaterialized(t *testing.T) {
@@ -197,7 +197,7 @@ func TestDefault_PasswordRotationNil_NotMaterialized(t *testing.T) {
 	k := &Keystone{}
 
 	g.Expect(w.Default(context.Background(), k)).To(Succeed())
-	g.Expect(k.Spec.Bootstrap.PasswordRotation).To(BeNil())
+	g.Expect(k.Spec.PasswordRotation).To(BeNil())
 }
 
 // TestDefault_PasswordRotationDisabled_NotDefaulted verifies the leaf defaults
@@ -208,16 +208,14 @@ func TestDefault_PasswordRotationDisabled_NotDefaulted(t *testing.T) {
 	w := &KeystoneWebhook{}
 	k := &Keystone{
 		Spec: KeystoneSpec{
-			Bootstrap: BootstrapSpec{
-				PasswordRotation: &PasswordRotationSpec{Enabled: false},
-			},
+			PasswordRotation: &PasswordRotationSpec{Enabled: false},
 		},
 	}
 
 	g.Expect(w.Default(context.Background(), k)).To(Succeed())
-	g.Expect(k.Spec.Bootstrap.PasswordRotation).NotTo(BeNil())
-	g.Expect(k.Spec.Bootstrap.PasswordRotation.Schedule).To(BeEmpty())
-	g.Expect(k.Spec.Bootstrap.PasswordRotation.PasswordLength).To(Equal(int32(0)))
+	g.Expect(k.Spec.PasswordRotation).NotTo(BeNil())
+	g.Expect(k.Spec.PasswordRotation.Schedule).To(BeEmpty())
+	g.Expect(k.Spec.PasswordRotation.PasswordLength).To(Equal(int32(0)))
 }
 
 // TestDefault_PasswordRotationEnabled_MaterializesScheduleAndLength verifies the
@@ -228,16 +226,14 @@ func TestDefault_PasswordRotationEnabled_MaterializesScheduleAndLength(t *testin
 	w := &KeystoneWebhook{}
 	k := &Keystone{
 		Spec: KeystoneSpec{
-			Bootstrap: BootstrapSpec{
-				PasswordRotation: &PasswordRotationSpec{Enabled: true},
-			},
+			PasswordRotation: &PasswordRotationSpec{Enabled: true},
 		},
 	}
 
 	g.Expect(w.Default(context.Background(), k)).To(Succeed())
-	g.Expect(k.Spec.Bootstrap.PasswordRotation).NotTo(BeNil())
-	g.Expect(k.Spec.Bootstrap.PasswordRotation.Schedule).To(Equal(DefaultPasswordRotationSchedule))
-	g.Expect(k.Spec.Bootstrap.PasswordRotation.PasswordLength).To(Equal(DefaultPasswordRotationLength))
+	g.Expect(k.Spec.PasswordRotation).NotTo(BeNil())
+	g.Expect(k.Spec.PasswordRotation.Schedule).To(Equal(DefaultPasswordRotationSchedule))
+	g.Expect(k.Spec.PasswordRotation.PasswordLength).To(Equal(DefaultPasswordRotationLength))
 }
 
 // TestDefault_PasswordRotationEnabled_PreservesExplicitValues verifies the
@@ -248,19 +244,17 @@ func TestDefault_PasswordRotationEnabled_PreservesExplicitValues(t *testing.T) {
 	w := &KeystoneWebhook{}
 	k := &Keystone{
 		Spec: KeystoneSpec{
-			Bootstrap: BootstrapSpec{
-				PasswordRotation: &PasswordRotationSpec{
-					Enabled:        true,
-					Schedule:       "*/30 * * * *",
-					PasswordLength: 40,
-				},
+			PasswordRotation: &PasswordRotationSpec{
+				Enabled:        true,
+				Schedule:       "*/30 * * * *",
+				PasswordLength: 40,
 			},
 		},
 	}
 
 	g.Expect(w.Default(context.Background(), k)).To(Succeed())
-	g.Expect(k.Spec.Bootstrap.PasswordRotation.Schedule).To(Equal("*/30 * * * *"))
-	g.Expect(k.Spec.Bootstrap.PasswordRotation.PasswordLength).To(Equal(int32(40)))
+	g.Expect(k.Spec.PasswordRotation.Schedule).To(Equal("*/30 * * * *"))
+	g.Expect(k.Spec.PasswordRotation.PasswordLength).To(Equal(int32(40)))
 }
 
 func TestDefault_CacheBackendAppliedWhenEmpty(t *testing.T) {
@@ -1525,7 +1519,7 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 	// before reaching the block is caught here rather than only at e2e time,
 	// matching the//-style regression guard above.
 	k.Spec.Bootstrap.AdminPasswordSecretRef.Name = ""
-	k.Spec.Bootstrap.PasswordRotation = &PasswordRotationSpec{
+	k.Spec.PasswordRotation = &PasswordRotationSpec{
 		Enabled:        true,
 		Schedule:       "bad-cron",
 		PasswordLength: 8,
@@ -1932,7 +1926,7 @@ func TestValidate_PasswordRotation_ValidCronAccepted(t *testing.T) {
 		t.Run(expr, func(t *testing.T) {
 			g := NewGomegaWithT(t)
 			k := validKeystone()
-			k.Spec.Bootstrap.PasswordRotation = &PasswordRotationSpec{Enabled: true, Schedule: expr}
+			k.Spec.PasswordRotation = &PasswordRotationSpec{Enabled: true, Schedule: expr}
 			_, err := w.ValidateCreate(context.Background(), k)
 			g.Expect(err).NotTo(HaveOccurred())
 		})
@@ -1952,7 +1946,7 @@ func TestValidate_PasswordRotation_InvalidCronRejected(t *testing.T) {
 		t.Run(expr, func(t *testing.T) {
 			g := NewGomegaWithT(t)
 			k := validKeystone()
-			k.Spec.Bootstrap.PasswordRotation = &PasswordRotationSpec{Enabled: true, Schedule: expr}
+			k.Spec.PasswordRotation = &PasswordRotationSpec{Enabled: true, Schedule: expr}
 			_, err := w.ValidateCreate(context.Background(), k)
 			g.Expect(err).To(HaveOccurred())
 			g.Expect(err.Error()).To(ContainSubstring("passwordRotation"))
@@ -1965,7 +1959,7 @@ func TestValidate_PasswordRotation_EmptyScheduleRejected(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{}
 	k := validKeystone()
-	k.Spec.Bootstrap.PasswordRotation = &PasswordRotationSpec{Enabled: true, Schedule: ""}
+	k.Spec.PasswordRotation = &PasswordRotationSpec{Enabled: true, Schedule: ""}
 
 	_, err := w.ValidateCreate(context.Background(), k)
 	g.Expect(err).To(HaveOccurred())
@@ -1980,7 +1974,7 @@ func TestValidate_PasswordRotation_DisabledNotValidated(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{}
 	k := validKeystone()
-	k.Spec.Bootstrap.PasswordRotation = &PasswordRotationSpec{Enabled: false, Schedule: "not-a-cron"}
+	k.Spec.PasswordRotation = &PasswordRotationSpec{Enabled: false, Schedule: "not-a-cron"}
 
 	_, err := w.ValidateCreate(context.Background(), k)
 	g.Expect(err).NotTo(HaveOccurred())
@@ -1990,7 +1984,7 @@ func TestValidate_PasswordRotation_NilPassesValidation(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{}
 	k := validKeystone()
-	k.Spec.Bootstrap.PasswordRotation = nil
+	k.Spec.PasswordRotation = nil
 
 	_, err := w.ValidateCreate(context.Background(), k)
 	g.Expect(err).NotTo(HaveOccurred())
@@ -2005,7 +1999,7 @@ func TestValidate_PasswordRotation_MissingAdminSecretRefRejected(t *testing.T) {
 	w := &KeystoneWebhook{}
 	k := validKeystone()
 	k.Spec.Bootstrap.AdminPasswordSecretRef.Name = ""
-	k.Spec.Bootstrap.PasswordRotation = &PasswordRotationSpec{Enabled: true, Schedule: DefaultPasswordRotationSchedule}
+	k.Spec.PasswordRotation = &PasswordRotationSpec{Enabled: true, Schedule: DefaultPasswordRotationSchedule}
 
 	_, err := w.ValidateCreate(context.Background(), k)
 	g.Expect(err).To(HaveOccurred())
@@ -2021,7 +2015,7 @@ func TestValidate_PasswordRotation_ShortPasswordLengthRejected(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{}
 	k := validKeystone()
-	k.Spec.Bootstrap.PasswordRotation = &PasswordRotationSpec{
+	k.Spec.PasswordRotation = &PasswordRotationSpec{
 		Enabled:        true,
 		Schedule:       DefaultPasswordRotationSchedule,
 		PasswordLength: 8,
@@ -2041,7 +2035,7 @@ func TestValidate_PasswordRotation_MinimumPasswordLengthAccepted(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{}
 	k := validKeystone()
-	k.Spec.Bootstrap.PasswordRotation = &PasswordRotationSpec{
+	k.Spec.PasswordRotation = &PasswordRotationSpec{
 		Enabled:        true,
 		Schedule:       DefaultPasswordRotationSchedule,
 		PasswordLength: 24,

@@ -169,6 +169,7 @@ status:
 | `cache` | [`CacheSpec`](#cachespec) | Yes | — | Memcached cache configuration. |
 | `fernet` | [`FernetSpec`](#fernetspec) | No | See below | Fernet key rotation configuration. |
 | `credentialKeys` | [`CredentialKeysSpec`](#credentialkeysspec) | No | See below | Credential-key rotation configuration. Drives the per-CR CronJob that rotates and `credential_migrate`s the credential keys used for encrypting application credentials. |
+| `passwordRotation` | [`*PasswordRotationSpec`](#passwordrotationspec) | No | `nil` (feature off) | Optionally enables scheduled rotation of the admin password. Day-2 rotation lives at the spec root beside the fernet/credential key rotation config. Nil leaves the feature off and the PasswordRotation sub-reconciler is a clean no-op. |
 | `trustFlush` | [`*TrustFlushSpec`](#trustflushspec) | No | `{schedule: "0 * * * *", suspend: false}` (materialized by the defaulting webhook) | Trust flush CronJob configuration. Default-on: when the field is omitted, the defaulting webhook populates an hourly schedule so `keystone-manage trust_flush` runs by default; there is no nil-back path on a webhook-enabled cluster (a `kubectl patch ... 'spec/trustFlush'='null'` round-trips through admission and is re-materialized). To pause without deleting the CronJob, set `suspend: true` — the resource and `TrustFlushReady=True` condition are preserved. |
 | `federation` | [`*FederationSpec`](#federationspec) | No | `nil` | Federation configuration (optional). |
 | `bootstrap` | [`BootstrapSpec`](#bootstrapspec) | Yes | — | Initial Keystone bootstrap parameters. |
@@ -996,7 +997,6 @@ Configures the initial Keystone bootstrap.
 | `adminPasswordSecretRef` | [`SecretRefSpec`](#secretrefspec) | Yes | — | Secret containing the admin password. |
 | `region` | `string` | No | `"RegionOne"` | Keystone region name. Immutable after create (CEL transition rule): changing the region strands catalog entries under the old region. |
 | `publicEndpoint` | `string` | No | Cluster-local service DNS | Externally routable Keystone endpoint URL. Used for the `--bootstrap-public-url` argument passed to `keystone-manage bootstrap`. Required by external clients (CLI users, Horizon, federation partners) that cannot resolve the cluster-local service DNS. When set, it must be an HTTP(S) URL (`+kubebuilder:validation:Pattern=^https?://`), enforced unconditionally by the CRD schema; when `spec.gateway` is also set the webhook additionally requires the host to equal `spec.gateway.hostname`. |
-| `passwordRotation` | [`PasswordRotationSpec`](#passwordrotationspec) | No | `nil` (feature off) | Optionally enables scheduled rotation of the admin password. Nil leaves the feature off and the PasswordRotation sub-reconciler is a clean no-op. |
 
 ### PasswordRotationSpec
 

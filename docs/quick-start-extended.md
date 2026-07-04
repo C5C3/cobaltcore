@@ -749,7 +749,7 @@ field is unset:
 | `HTTPRouteReady` | Gateway API HTTPRoute reconciled, or not required when `spec.gateway` is unset |
 | `BootstrapReady` | Bootstrap Job completed (admin user, region, endpoints) |
 | `TrustFlushReady` | Trust-flush CronJob created (defaults to hourly) |
-| `PasswordRotationReady` | Scheduled admin-password rotation reconciled, or `RotationDisabled` when `spec.bootstrap.passwordRotation` is unset |
+| `PasswordRotationReady` | Scheduled admin-password rotation reconciled, or `RotationDisabled` when `spec.passwordRotation` is unset |
 
 Watch the conditions with:
 

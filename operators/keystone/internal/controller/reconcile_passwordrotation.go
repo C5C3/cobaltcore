@@ -127,7 +127,7 @@ func adminPasswordPushSecretName(keystone *keystonev1alpha1.Keystone) string {
 // > n characters, so a correctly-generated password always passes. Reviewer:
 // please verify.
 func normalizedAdminPasswordLength(keystone *keystonev1alpha1.Keystone) int32 {
-	pr := keystone.Spec.Bootstrap.PasswordRotation
+	pr := keystone.Spec.PasswordRotation
 	if pr == nil || pr.PasswordLength == 0 {
 		return keystonev1alpha1.DefaultPasswordRotationLength
 	}
@@ -155,7 +155,7 @@ func normalizedAdminPasswordLength(keystone *keystonev1alpha1.Keystone) int32 {
 func (r *KeystoneReconciler) reconcilePasswordRotation(ctx context.Context,
 	keystone *keystonev1alpha1.Keystone, _ string,
 ) (ctrl.Result, error) {
-	pr := keystone.Spec.Bootstrap.PasswordRotation
+	pr := keystone.Spec.PasswordRotation
 
 	// Disabled/teardown branch. Nil pointer means the feature was
 	// never opted into (the defaulting webhook deliberately does not
@@ -340,7 +340,7 @@ func (r *KeystoneReconciler) ensureAdminPasswordRotationRBAC(ctx context.Context
 // keystone-manage. SECRET_NAME points at the staging Secret — the CronJob SA is
 // only permitted to patch staging, never the push-source Secret.
 func adminPasswordRotationCronJob(keystone *keystonev1alpha1.Keystone, scriptConfigMapName string) *batchv1.CronJob {
-	pr := keystone.Spec.Bootstrap.PasswordRotation
+	pr := keystone.Spec.PasswordRotation
 	image := keystone.Spec.Image.Reference()
 
 	return &batchv1.CronJob{

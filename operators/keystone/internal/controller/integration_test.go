@@ -4654,7 +4654,8 @@ func TestIntegration_AdminPasswordUnchangedNoChurn(t *testing.T) {
 // deterministic in envtest regardless of whether the defaulting webhook runs.
 func integrationBrownfieldKeystoneWithPasswordRotation(name, namespace, schedule string) *keystonev1alpha1.Keystone {
 	ks := integrationBrownfieldKeystone(name, namespace)
-	ks.Spec.Bootstrap.PasswordRotation = &keystonev1alpha1.PasswordRotationSpec{
+	ks.Spec.PasswordRotation = &keystonev1alpha1.PasswordRotationSpec{
+		Enabled:        true,
 		Schedule:       schedule,
 		PasswordLength: keystonev1alpha1.DefaultPasswordRotationLength,
 	}
@@ -4693,9 +4694,9 @@ func TestIntegration_PasswordRotation_CronJobShape(t *testing.T) {
 	}, eventuallyTimeout, pollInterval).Should(Succeed(),
 		"admin-password rotation CronJob should appear")
 
-	// Schedule mirrors spec.bootstrap.passwordRotation.schedule.
+	// Schedule mirrors spec.passwordRotation.schedule.
 	g.Expect(cronJob.Spec.Schedule).To(Equal(schedule),
-		"CronJob schedule must match spec.bootstrap.passwordRotation.schedule")
+		"CronJob schedule must match spec.passwordRotation.schedule")
 
 	// Suspend defaults to false.
 	g.Expect(cronJob.Spec.Suspend).NotTo(BeNil())
@@ -4736,7 +4737,7 @@ func TestIntegration_PasswordRotation_CronJobShape(t *testing.T) {
 }
 
 // TestIntegration_PasswordRotation_SuspendTruePreservesSiblings verifies that
-// setting spec.bootstrap.passwordRotation.suspend=true pauses the CronJob
+// setting spec.passwordRotation.suspend=true pauses the CronJob
 // (*spec.Suspend becomes true) WITHOUT deleting it or any sibling resource and
 // without altering the schedule. Suspend is the operator's
 // supported way to pause rotation; it must never tear down Model B resources.
@@ -4762,11 +4763,11 @@ func TestIntegration_PasswordRotation_SuspendTruePreservesSiblings(t *testing.T)
 		return c.Get(ctx, cronJobKey, &batchv1.CronJob{})
 	}, eventuallyTimeout, pollInterval).Should(Succeed(), "rotation CronJob should exist before suspend")
 
-	// Pause via spec.bootstrap.passwordRotation.suspend=true.
+	// Pause via spec.passwordRotation.suspend=true.
 	key := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
 	updated := &keystonev1alpha1.Keystone{}
 	g.Expect(c.Get(ctx, key, updated)).To(Succeed())
-	updated.Spec.Bootstrap.PasswordRotation.Suspend = true
+	updated.Spec.PasswordRotation.Suspend = true
 	g.Expect(c.Update(ctx, updated)).To(Succeed())
 
 	// *spec.Suspend must become true while the CronJob is preserved.
@@ -4779,7 +4780,7 @@ func TestIntegration_PasswordRotation_SuspendTruePreservesSiblings(t *testing.T)
 	}, eventuallyTimeout, pollInterval).Should(BeTrue(),
 		"CronJob *spec.Suspend should become true and the CronJob must be preserved")
 	g.Expect(cj.Spec.Schedule).To(Equal(schedule),
-		"toggling spec.bootstrap.passwordRotation.suspend must not change the schedule")
+		"toggling spec.passwordRotation.suspend must not change the schedule")
 
 	// Every sibling resource must survive suspend — pausing is not teardown
 	g.Consistently(func(ig Gomega) {
@@ -4895,7 +4896,7 @@ func TestIntegration_PasswordRotation_ApplyCommitsAndPushes(t *testing.T) {
 
 // TestIntegration_PasswordRotation_DisableTearsDownAllResources verifies the
 // disabled/teardown branch flipping
-// spec.bootstrap.passwordRotation.enabled to false removes every Model B
+// spec.passwordRotation.enabled to false removes every Model B
 // resource (CronJob, staging + push-source Secrets, the split RBAC trio, the
 // PushSecret, and the rotate-script ConfigMaps) and reports
 // PasswordRotationReady=True / RotationDisabled.
@@ -4932,11 +4933,11 @@ func TestIntegration_PasswordRotation_DisableTearsDownAllResources(t *testing.T)
 	}, eventuallyTimeout, pollInterval).Should(Succeed(),
 		"Model B resources should exist while rotation is enabled")
 
-	// Disable rotation: spec.bootstrap.passwordRotation.enabled=false.
+	// Disable rotation: spec.passwordRotation.enabled=false.
 	key := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
 	updated := &keystonev1alpha1.Keystone{}
 	g.Expect(c.Get(ctx, key, updated)).To(Succeed())
-	updated.Spec.Bootstrap.PasswordRotation.Enabled = false
+	updated.Spec.PasswordRotation.Enabled = false
 	g.Expect(c.Update(ctx, updated)).To(Succeed())
 
 	// Every Model B resource must be torn down; deletes tolerate NotFound so the

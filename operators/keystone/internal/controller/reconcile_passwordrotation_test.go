@@ -69,12 +69,12 @@ func pwRotationTestKeystone() *keystonev1alpha1.Keystone {
 				AdminUser:              "admin",
 				AdminPasswordSecretRef: commonv1.SecretRefSpec{Name: "keystone-admin"},
 				Region:                 "RegionOne",
-				PasswordRotation: &keystonev1alpha1.PasswordRotationSpec{
-					Enabled:        true,
-					Schedule:       "0 0 1 * *",
-					Suspend:        false,
-					PasswordLength: 32,
-				},
+			},
+			PasswordRotation: &keystonev1alpha1.PasswordRotationSpec{
+				Enabled:        true,
+				Schedule:       "0 0 1 * *",
+				Suspend:        false,
+				PasswordLength: 32,
 			},
 		},
 	}
@@ -263,12 +263,12 @@ func TestAdminPasswordRotationCronJob_Suspend(t *testing.T) {
 	g := NewWithT(t)
 	ks := pwRotationTestKeystone()
 
-	ks.Spec.Bootstrap.PasswordRotation.Suspend = true
+	ks.Spec.PasswordRotation.Suspend = true
 	cj := adminPasswordRotationCronJob(ks, "script-cm")
 	g.Expect(cj.Spec.Suspend).NotTo(BeNil())
 	g.Expect(*cj.Spec.Suspend).To(BeTrue())
 
-	ks.Spec.Bootstrap.PasswordRotation.Suspend = false
+	ks.Spec.PasswordRotation.Suspend = false
 	cj2 := adminPasswordRotationCronJob(ks, "script-cm")
 	g.Expect(cj2.Spec.Suspend).NotTo(BeNil())
 	g.Expect(*cj2.Spec.Suspend).To(BeFalse())
@@ -611,7 +611,7 @@ func TestReconcilePasswordRotation_Enabled_Suspended(t *testing.T) {
 	g := NewWithT(t)
 	ctx := context.Background()
 	ks := pwRotationTestKeystone()
-	ks.Spec.Bootstrap.PasswordRotation.Suspend = true
+	ks.Spec.PasswordRotation.Suspend = true
 	r, _ := newPWRotationReconciler(ks)
 
 	res, err := r.reconcilePasswordRotation(ctx, ks, "test-config-cm")
@@ -708,7 +708,7 @@ func TestReconcilePasswordRotation_Disabled_TearsDownEverything(t *testing.T) {
 	g.Expect(r.Get(ctx, types.NamespacedName{Name: adminPasswordRotateCronJobName(ks), Namespace: ks.Namespace}, &batchv1.CronJob{})).To(Succeed())
 
 	// Now disable rotation and reconcile again.
-	ks.Spec.Bootstrap.PasswordRotation.Enabled = false
+	ks.Spec.PasswordRotation.Enabled = false
 	res, err := r.reconcilePasswordRotation(ctx, ks, "test-config-cm")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
@@ -736,7 +736,7 @@ func TestReconcilePasswordRotation_Disabled_TearsDownEverything(t *testing.T) {
 func TestReconcilePasswordRotation_NilSpec_TeardownIdempotent(t *testing.T) {
 	g := NewWithT(t)
 	ks := pwRotationTestKeystone()
-	ks.Spec.Bootstrap.PasswordRotation = nil
+	ks.Spec.PasswordRotation = nil
 	r, _ := newPWRotationReconciler(ks)
 
 	// Two consecutive teardown reconciles must both succeed (idempotent).

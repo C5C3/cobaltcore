@@ -519,13 +519,13 @@ spec:
         shell: bash
         content: |
           set -euo pipefail
-          # Disable Model B rotation via a merge patch on spec.bootstrap.
-          # passwordRotation.enabled. The operator tears down every Model B
+          # Disable Model B rotation via a merge patch on
+          # spec.passwordRotation.enabled. The operator tears down every Model B
           # resource on the next reconcile.
           kubectl patch keystone keystone-adminpw-sched -n openstack \
             --type merge \
-            -p '{"spec":{"bootstrap":{"passwordRotation":{"enabled":false}}}}'
-          echo "OK: disabled spec.bootstrap.passwordRotation on keystone-adminpw-sched"
+            -p '{"spec":{"passwordRotation":{"enabled":false}}}'
+          echo "OK: disabled spec.passwordRotation on keystone-adminpw-sched"
   # ── Step 7: Assert every Model B resource is gone + RotationDisabled ───
   - try:
     # CronJob removed.

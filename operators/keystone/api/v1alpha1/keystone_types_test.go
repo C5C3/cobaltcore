@@ -230,20 +230,15 @@ func TestBootstrapSpecFields(t *testing.T) {
 	if bootstrap.Region != "" {
 		t.Errorf("expected empty Region, got %q", bootstrap.Region)
 	}
-	// PasswordRotation is an optional pointer that defaults
-	// to nil so the feature stays off unless explicitly enabled.
-	if bootstrap.PasswordRotation != nil {
-		t.Errorf("expected nil PasswordRotation, got %v", bootstrap.PasswordRotation)
-	}
 }
 
-// TestBootstrapSpecPasswordRotationField verifies the optional
-// *PasswordRotationSpec field round-trips through DeepCopy with
-// independent memory for the pointer, so mutating the clone does not alias
+// TestKeystoneSpecPasswordRotationField verifies the optional
+// spec.passwordRotation *PasswordRotationSpec field round-trips through DeepCopy
+// with independent memory for the pointer, so mutating the clone does not alias
 // the original; webhook defaulting/validation is covered separately in
 // keystone_webhook_test.go.
-func TestBootstrapSpecPasswordRotationField(t *testing.T) {
-	spec := BootstrapSpec{
+func TestKeystoneSpecPasswordRotationField(t *testing.T) {
+	spec := KeystoneSpec{
 		PasswordRotation: &PasswordRotationSpec{
 			Enabled:        true,
 			Schedule:       "0 0 1 * *",

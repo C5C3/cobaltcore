@@ -50,7 +50,7 @@ const (
 	DefaultTrustFlushSchedule = "0 * * * *"
 
 	// DefaultPasswordRotationSchedule is the cron expression materialized by the
-	// defaulting webhook when spec.bootstrap.passwordRotation.enabled is true and
+	// defaulting webhook when spec.passwordRotation.enabled is true and
 	// schedule is empty. It is the single source of truth
 	// shared by Default() and the validate() error message so the cadence cannot
 	// drift across call sites. The +kubebuilder:default marker on
@@ -172,7 +172,7 @@ func (w *KeystoneWebhook) Default(_ context.Context, obj *Keystone) error {
 	// turned on, and a disabled block is left untouched because the sub-reconciler
 	// tears everything down when disabled. The leaf +kubebuilder:default markers
 	// remain as defense-in-depth for callers that bypass this webhook.
-	if pr := obj.Spec.Bootstrap.PasswordRotation; pr != nil && pr.Enabled {
+	if pr := obj.Spec.PasswordRotation; pr != nil && pr.Enabled {
 		if pr.Schedule == "" {
 			pr.Schedule = DefaultPasswordRotationSchedule
 		}
@@ -443,8 +443,8 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 	// where the keystone-admin ExternalSecret round-trips it back into that Secret
 	// and Part 1 re-bootstraps — a missing reference makes rotation a
 	// no-op.
-	if pr := k.Spec.Bootstrap.PasswordRotation; pr != nil && pr.Enabled {
-		prPath := specPath.Child("bootstrap", "passwordRotation")
+	if pr := k.Spec.PasswordRotation; pr != nil && pr.Enabled {
+		prPath := specPath.Child("passwordRotation")
 		if pr.Schedule == "" {
 			allErrs = append(allErrs, field.Required(
 				prPath.Child("schedule"),

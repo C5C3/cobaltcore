@@ -135,42 +135,6 @@ spec:
                     x-kubernetes-validations:
                     - message: bootstrap.adminUser is immutable
                       rule: self == oldSelf
-                  passwordRotation:
-                    description: |-
-                      PasswordRotation optionally enables scheduled rotation of the admin
-                      password. Nil (the default) leaves the feature off and the
-                      sub-reconciler is a clean no-op. See PasswordRotationSpec for the opt-in
-                      and per-CR semantics.
-                    properties:
-                      enabled:
-                        default: false
-                        description: |-
-                          Enabled turns on scheduled admin-password rotation. Default false: the
-                          feature is opt-in, and disabling it tears down every Model B resource.
-                        type: boolean
-                      passwordLength:
-                        default: 32
-                        description: |-
-                          PasswordLength is the length of the generated password. The kubebuilder
-                          default literal below must stay in sync with DefaultPasswordRotationLength,
-                          and the Minimum literal with DefaultAdminPasswordMinLength, both in
-                          keystone_webhook.go.
-                        format: int32
-                        minimum: 24
-                        type: integer
-                      schedule:
-                        default: 0 0 1 * *
-                        description: |-
-                          Schedule is a cron expression controlling when a new admin password is
-                          generated. Defaults to monthly at midnight on the 1st.
-                        type: string
-                      suspend:
-                        default: false
-                        description: |-
-                          Suspend pauses the CronJob without deleting it or any sibling resource,
-                          matching TrustFlushSpec.Suspend semantics.
-                        type: boolean
-                    type: object
                   publicEndpoint:
                     description: |-
                       PublicEndpoint is the externally routable Keystone endpoint URL used for
@@ -1017,6 +981,44 @@ spec:
                 x-kubernetes-validations:
                 - message: at least one ingress source must be specified
                   rule: size(self.ingress) > 0
+              passwordRotation:
+                description: |-
+                  PasswordRotation optionally enables scheduled rotation of the admin
+                  password. Day-2 admin-password rotation is not a bootstrap concern, so it
+                  lives at the spec root beside the fernet/credential key rotation
+                  configuration. Nil (the default) leaves the feature off and the
+                  sub-reconciler is a clean no-op. See PasswordRotationSpec for the opt-in
+                  and per-CR semantics.
+                properties:
+                  enabled:
+                    default: false
+                    description: |-
+                      Enabled turns on scheduled admin-password rotation. Default false: the
+                      feature is opt-in, and disabling it tears down every Model B resource.
+                    type: boolean
+                  passwordLength:
+                    default: 32
+                    description: |-
+                      PasswordLength is the length of the generated password. The kubebuilder
+                      default literal below must stay in sync with DefaultPasswordRotationLength,
+                      and the Minimum literal with DefaultAdminPasswordMinLength, both in
+                      keystone_webhook.go.
+                    format: int32
+                    minimum: 24
+                    type: integer
+                  schedule:
+                    default: 0 0 1 * *
+                    description: |-
+                      Schedule is a cron expression controlling when a new admin password is
+                      generated. Defaults to monthly at midnight on the 1st.
+                    type: string
+                  suspend:
+                    default: false
+                    description: |-
+                      Suspend pauses the CronJob without deleting it or any sibling resource,
+                      matching TrustFlushSpec.Suspend semantics.
+                    type: boolean
+                type: object
               plugins:
                 description: |-
                   Plugins defines service plugins/drivers to configure. Modeled as a

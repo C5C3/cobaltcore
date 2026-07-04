@@ -65,7 +65,7 @@ openstack   keystone   True    http://keystone.openstack.svc.cluster.local:5000/
 | `HTTPRouteReady` | Gateway API HTTPRoute reconciled, or not required when `spec.gateway` is unset |
 | `BootstrapReady` | Bootstrap Job completed (admin user, region, endpoints) |
 | `TrustFlushReady` | Trust-flush CronJob created — defaults to hourly |
-| `PasswordRotationReady` | Scheduled admin-password rotation reconciled, or `RotationDisabled` when `spec.bootstrap.passwordRotation` is unset — see [Schedule Keystone Admin Password Rotation](./keystone-admin-password-scheduled-rotation.md) |
+| `PasswordRotationReady` | Scheduled admin-password rotation reconciled, or `RotationDisabled` when `spec.passwordRotation` is unset — see [Schedule Keystone Admin Password Rotation](./keystone-admin-password-scheduled-rotation.md) |
 | `Ready` | All of the above are `True` |
 
 Read them as a tree:

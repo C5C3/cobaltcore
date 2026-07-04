@@ -49,7 +49,7 @@ Both flows converge on the same final hop — `reconcileBootstrap` re-runs
 
 ## 1. Enable scheduled rotation
 
-Scheduled rotation is opt-in. Add a `spec.bootstrap.passwordRotation` block to the
+Scheduled rotation is opt-in. Add a `spec.passwordRotation` block to the
 Keystone CR:
 
 ```yaml
@@ -63,11 +63,11 @@ spec:
     adminUser: admin
     adminPasswordSecretRef:
       name: <admin-secret>
-    passwordRotation:
-      enabled: true
-      schedule: "0 0 1 * *"   # monthly, midnight on the 1st (default)
-      suspend: false          # default
-      passwordLength: 32       # default; minimum 24
+  passwordRotation:
+    enabled: true
+    schedule: "0 0 1 * *"   # monthly, midnight on the 1st (default)
+    suspend: false          # default
+    passwordLength: 32       # default; minimum 24
 ```
 
 The four fields of `passwordRotation`:
@@ -167,7 +167,7 @@ can run and confirm.
 kubectl -n <ns> get cronjob <ks>-admin-password-rotate
 ```
 
-The `SCHEDULE` column should show your `spec.bootstrap.passwordRotation.schedule`
+The `SCHEDULE` column should show your `spec.passwordRotation.schedule`
 (e.g. `0 0 1 * *`).
 
 ### 3.2 Trigger a run on demand
@@ -295,7 +295,7 @@ There are two ways to stop rotating, with different blast radius.
 
 ```bash
 kubectl -n <ns> patch keystone <ks> --type merge \
-  -p '{"spec":{"bootstrap":{"passwordRotation":{"suspend":true}}}}'
+  -p '{"spec":{"passwordRotation":{"suspend":true}}}'
 ```
 
 This sets the CronJob's `spec.suspend: true`; the CronJob and all sibling
@@ -305,7 +305,7 @@ resources remain. No new password is minted until you set `suspend: false` again
 
 ```bash
 kubectl -n <ns> patch keystone <ks> --type merge \
-  -p '{"spec":{"bootstrap":{"passwordRotation":{"enabled":false}}}}'
+  -p '{"spec":{"passwordRotation":{"enabled":false}}}'
 ```
 
 Setting `enabled: false` (or removing the `passwordRotation` block entirely)

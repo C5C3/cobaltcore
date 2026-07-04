@@ -115,6 +115,15 @@ type KeystoneSpec struct {
 	// CredentialKeys configures credential key rotation.
 	CredentialKeys CredentialKeysSpec `json:"credentialKeys,omitempty"`
 
+	// PasswordRotation optionally enables scheduled rotation of the admin
+	// password. Day-2 admin-password rotation is not a bootstrap concern, so it
+	// lives at the spec root beside the fernet/credential key rotation
+	// configuration. Nil (the default) leaves the feature off and the
+	// sub-reconciler is a clean no-op. See PasswordRotationSpec for the opt-in
+	// and per-CR semantics.
+	// +optional
+	PasswordRotation *PasswordRotationSpec `json:"passwordRotation,omitempty"`
+
 	// TrustFlush configures periodic purging of expired trust delegations
 	// The defaulting webhook materializes a populated
 	// TrustFlushSpec when the field is unset so that the operator runs
@@ -531,13 +540,6 @@ type BootstrapSpec struct {
 	// +optional
 	// +kubebuilder:validation:Pattern=`^https?://`
 	PublicEndpoint string `json:"publicEndpoint,omitempty"`
-
-	// PasswordRotation optionally enables scheduled rotation of the admin
-	// password. Nil (the default) leaves the feature off and the
-	// sub-reconciler is a clean no-op. See PasswordRotationSpec for the opt-in
-	// and per-CR semantics.
-	// +optional
-	PasswordRotation *PasswordRotationSpec `json:"passwordRotation,omitempty"`
 }
 
 // GatewaySpec and GatewayParentRefSpec are aliased to the shared commonv1

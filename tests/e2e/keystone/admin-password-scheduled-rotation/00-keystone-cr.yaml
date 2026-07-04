@@ -95,16 +95,17 @@ spec:
     adminPasswordSecretRef:
       name: keystone-adminpw-sched-admin
     region: RegionOne
-    # Model B scheduled admin-password rotation. The
-    # defaulting webhook fills passwordLength=32 and suspend=false when rotation
-    # is enabled; they are set explicitly here for reviewer clarity. The monthly
-    # schedule is never actually due during the test — chainsaw-test.yaml step 4
-    # triggers a rotation manually with `kubectl create job --from=cronjob`.
-    passwordRotation:
-      enabled: true
-      schedule: "0 0 1 * *"
-      passwordLength: 32
-      suspend: false
+  # Model B scheduled admin-password rotation. Day-2 rotation lives at the spec
+  # root beside the fernet/credential key rotation config. The defaulting webhook
+  # fills passwordLength=32 and suspend=false when rotation is enabled; they are
+  # set explicitly here for reviewer clarity. The monthly schedule is never
+  # actually due during the test — chainsaw-test.yaml step 4 triggers a rotation
+  # manually with `kubectl create job --from=cronjob`.
+  passwordRotation:
+    enabled: true
+    schedule: "0 0 1 * *"
+    passwordLength: 32
+    suspend: false
   # Disable dogpile.cache for this fixture. The e2e-operator Chainsaw suite runs
   # many Keystone CRs against a single shared `openstack-memcached`, and every
   # instance caches `admin@default` identity-backend lookups under the same
