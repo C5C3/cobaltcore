@@ -25,6 +25,11 @@ import (
 // Returns false for fresh deployments (empty installedRelease), same version,
 // and patch-only changes.
 func isUpgrade(keystone *keystonev1alpha1.Keystone) bool {
+	// Digest-pinned images carry no tag, so the tag-keyed release/upgrade machine
+	// has nothing to compare — skip release detection entirely (Decision E).
+	if keystone.Spec.Image.Tag == "" {
+		return false
+	}
 	if keystone.Status.InstalledRelease == "" {
 		return false
 	}

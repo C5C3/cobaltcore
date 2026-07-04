@@ -60,7 +60,7 @@ func keyRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName, scri
 	name := fmt.Sprintf("%s-%s-rotate", keystone.Name, p.keyKind)
 	secretName := fmt.Sprintf("%s-%s-keys", keystone.Name, p.keyKind)
 	otherSecretName := fmt.Sprintf("%s-%s-keys", keystone.Name, p.otherKeyKind)
-	image := fmt.Sprintf("%s:%s", keystone.Spec.Image.Repository, keystone.Spec.Image.Tag)
+	image := keystone.Spec.Image.Reference()
 
 	keyDir := "/etc/keystone/" + p.keyKind + "-keys"
 	otherKeyDir := "/etc/keystone/" + p.otherKeyKind + "-keys"

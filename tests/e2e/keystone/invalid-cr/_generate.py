@@ -168,10 +168,19 @@ IMAGE_DEFAULT = """\
     tag: "2025.2"
 """
 
-# Image with an empty tag — rejected by the ImageSpec.Tag MinLength=1 marker.
+# Image with an empty tag — rejected by the ImageSpec.Tag Pattern marker
+# (an empty string does not match the tag grammar).
 IMAGE_EMPTY_TAG = """\
     repository: ghcr.io/c5c3/keystone
     tag: ""
+"""
+
+# Image that sets BOTH a tag and a digest — rejected by the ImageSpec
+# tag/digest XOR XValidation rule (exactly one must be set).
+IMAGE_TAG_AND_DIGEST = """\
+    repository: ghcr.io/c5c3/keystone
+    tag: "2025.2"
+    digest: sha256:1111111111111111111111111111111111111111111111111111111111111111
 """
 
 # Database whose name uses a character outside the MySQL identifier set
@@ -511,11 +520,11 @@ FIXTURES: list[Fixture] = [
         name="invalid-image-empty-tag",
         image=IMAGE_EMPTY_TAG,
         comment="""\
-# Validation-marker wave: Keystone CR with an empty spec.image.tag. The
-# shared ImageSpec.Tag now carries +kubebuilder:validation:MinLength=1, so
-# an empty tag (which "required" alone admitted) is rejected by the CRD
-# schema. Admission must reject this CR with an $error referencing the
-# substring "image.tag".""",
+# Validation-marker wave: Keystone CR with an empty spec.image.tag. The shared
+# ImageSpec.Tag is optional but carries a Pattern marker, so an explicit empty
+# tag does not match the tag grammar and is rejected by the CRD schema.
+# Admission must reject this CR with an $error referencing the substring
+# "image.tag".""",
     ),
     Fixture(
         filename="14-database-name-invalid-char.yaml",
@@ -613,6 +622,17 @@ FIXTURES: list[Fixture] = [
 # webhook) reject it; a plain enum on additionalProperties is not
 # expressible in CRD v1. Admission must reject this CR with an $error
 # referencing the substring "perLoggerLevels".""",
+    ),
+    Fixture(
+        filename="21-image-tag-and-digest.yaml",
+        name="invalid-image-tag-and-digest",
+        image=IMAGE_TAG_AND_DIGEST,
+        comment="""\
+# Validation-marker wave: Keystone CR whose spec.image sets BOTH tag and digest.
+# The shared ImageSpec carries an XValidation rule requiring exactly one of tag
+# or digest, so setting both is rejected by the CRD schema (and mirrored by the
+# validating webhook). Admission must reject this CR with an $error referencing
+# the substring "digest".""",
     ),
 ]
 

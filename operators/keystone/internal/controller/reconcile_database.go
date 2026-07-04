@@ -260,8 +260,12 @@ func (r *KeystoneReconciler) reconcileDatabase(ctx context.Context, keystone *ke
 		return ctrl.Result{RequeueAfter: RequeueDatabaseWait}, nil
 	}
 
-	// Track installed release after successful db_sync and schema check
-	keystone.Status.InstalledRelease = keystone.Spec.Image.Tag
+	// Track installed release after successful db_sync and schema check. A
+	// digest-pinned image has no tag, so leave InstalledRelease untouched —
+	// digest mode disables release tracking/upgrades (Decision E).
+	if keystone.Spec.Image.Tag != "" {
+		keystone.Status.InstalledRelease = keystone.Spec.Image.Tag
+	}
 
 	conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
 		Type:               "DatabaseReady",

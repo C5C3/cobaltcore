@@ -1026,7 +1026,7 @@ does not collide on a shared object.
 | `conditions` | `[]metav1.Condition` | Latest available observations of the Keystone state. A `listType=map` strategic-merge list keyed by `type`, so concurrent writers (the controller and external tooling) merge per-condition under server-side apply instead of clobbering the whole list. |
 | `observedGeneration` | `int64` | The `.metadata.generation` the controller last reconciled, so a stale status is distinguishable from one reflecting the current spec without scanning conditions. |
 | `endpoint` | `string` | Keystone API endpoint URL (set by the controller when ready). Defaults to `http://{name}.{namespace}.svc.cluster.local:5000/v3`. |
-| `installedRelease` | `string` | OpenStack release version currently deployed. Set by the controller after a successful `db_sync`; reflects the value extracted from `spec.image.tag`. |
+| `installedRelease` | `string` | OpenStack release version currently deployed. Set by the controller after a successful `db_sync`; reflects the value extracted from `spec.image.tag`. Left unset when the image is pinned by `digest` (digest mode disables release tracking). |
 | `targetRelease` | `string` | Upgrade target release during an active upgrade. Set while `upgradePhase` is one of `Expanding`/`Migrating`/`RollingUpdate`/`Contracting`; cleared after `Contracting` completes. |
 | `upgradePhase` | [`UpgradePhase`](#upgradephase) | Current phase of an active database upgrade. Empty outside upgrades. |
 
@@ -1061,10 +1061,22 @@ operator CRDs.
 
 ### ImageSpec
 
+Exactly one of `tag` or `digest` must be set, enforced by a type-level
+`XValidation` rule (and mirrored by the validating webhook). A pinned digest
+closes the supply-chain gap where a mutable tag can be re-pushed behind a stable
+name.
+
+> **Digest-mode disables release tracking.** Keystone's release tracking and the
+> expand-migrate-contract upgrade flow key entirely on the image tag. When the
+> image is pinned by `digest` (no `tag`), `status.installedRelease` is left unset
+> and no upgrade is ever detected. The managed ControlPlane path always projects
+> a tag, so it is unaffected.
+
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `repository` | `string` | Yes | Container image repository (e.g., `c5c3/keystone`). Must be non-empty (`MinLength=1`) and match a permissive OCI reference `Pattern` (`^[a-z0-9]+([._:/-][a-z0-9]+)*$`) that accepts registry-host and `host:port` forms. |
-| `tag` | `string` | Yes | Image tag (e.g., `2025.1`). Must be non-empty (`MinLength=1`) and match the OCI tag grammar `Pattern` (`^[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}$`). |
+| `tag` | `string` | No (exactly one of `tag`/`digest`) | Image tag (e.g., `2025.1`). When present, must match the OCI tag grammar `Pattern` (`^[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}$`). |
+| `digest` | `string` | No (exactly one of `tag`/`digest`) | Immutable content digest (e.g., `sha256:<64 hex>`). Must match `Pattern` (`^sha256:[a-f0-9]{64}$`). Pinning by digest disables release tracking/upgrades. |
 
 ### DatabaseSpec
 
@@ -1457,7 +1469,8 @@ is pinned by a Chainsaw step.
 | `immutable-database-mode-rejected` | `15-immutable-database-mode.yaml` | `spec.database` mode (clusterRef ↔ host) immutable on UPDATE | Error containing "database mode" and "immutable" |
 | `immutable-adminuser-rejected` | `16-immutable-adminuser.yaml` | `spec.bootstrap.adminUser` immutable on UPDATE | Error containing "adminUser" and "immutable" |
 | `immutable-region-rejected` | `17-immutable-region.yaml` | `spec.bootstrap.region` immutable on UPDATE | Error containing "region" and "immutable" |
-| `image-empty-tag-rejected` | `13-image-empty-tag.yaml` | ImageSpec.Tag MinLength=1 | Error containing "image.tag" |
+| `image-empty-tag-rejected` | `13-image-empty-tag.yaml` | ImageSpec.Tag Pattern | Error containing "image.tag" |
+| `image-tag-and-digest-rejected` | `21-image-tag-and-digest.yaml` | ImageSpec tag/digest XOR | Error containing "digest" |
 | `database-name-invalid-char-rejected` | `14-database-name-invalid-char.yaml` | DatabaseSpec.Database Pattern | Error containing "database.database" |
 | `database-secretref-empty-name-rejected` | `15-database-secretref-empty-name.yaml` | SecretRefSpec.Name MinLength=1 | Error containing "secretRef.name" |
 | `middleware-bad-position-rejected` | `16-middleware-bad-position.yaml` | PipelinePosition Enum=before;after | Error containing "position" and "sideways" |
@@ -1524,7 +1537,7 @@ After editing the scaffold or any per-fixture override, regenerate via
 `python3 tests/e2e/keystone/invalid-cr/_generate.py`. The
 `verify-invalid-cr-fixtures` CI job (and the matching
 `make verify-invalid-cr-fixtures` Makefile target) runs `_generate.py --check`
-in drift mode and the `test_generate.py` unit suite (`len(FIXTURES) == 24` plus
+in drift mode and the `test_generate.py` unit suite (`len(FIXTURES) == 25` plus
 a cross-reference assertion that every `Fixture.filename` appears as a
 `file:` step in `chainsaw-test.yaml`), so a hand-edit to any generated fixture
 — or a rename/removal that desynchs `FIXTURES` from `chainsaw-test.yaml` —
@@ -1536,7 +1549,6 @@ The following follow-up gaps are intentionally **not** covered by this
 suite — they require new validation rules that do not exist yet, and each one
 is tracked as its own feature ticket:
 
-- Empty / malformed `spec.image.tag` (no `MinLength` or pattern on `ImageSpec.Tag`).
 - `topologySpreadConstraints[*].maxSkew: 0` (no CRD-level minimum on the upstream type, no defense-in-depth in the Keystone webhook).
 - Mutation of `spec.cache` mode (`clusterRef` ↔ `servers`) on UPDATE — no transition rule yet. The `spec.database` name and mode and the `spec.bootstrap.adminUser`/`region` fields are now immutable via CEL transition rules (see [CEL Validation Rules](#cel-validation-rules)).
 

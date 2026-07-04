@@ -1403,6 +1403,9 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 	w := &KeystoneWebhook{Client: newFakeClient().Build()}
 	k := validKeystone()
 	k.Spec.Replicas = 0
+	// Break image — set BOTH tag and digest so the tag/digest XOR fires. Every
+	// new image validation hook must participate in the aggregated error.
+	k.Spec.Image.Digest = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
 	k.Spec.Fernet.MaxActiveKeys = 1
 	k.Spec.Fernet.RotationSchedule = "bad-cron"
 	k.Spec.CredentialKeys.MaxActiveKeys = 1
@@ -1532,6 +1535,7 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 	g.Expect(err).To(HaveOccurred())
 	errMsg := err.Error()
 	g.Expect(errMsg).To(ContainSubstring("replicas"))
+	g.Expect(errMsg).To(ContainSubstring("image"))
 	g.Expect(errMsg).To(ContainSubstring("maxActiveKeys"))
 	g.Expect(errMsg).To(ContainSubstring("rotationSchedule"))
 	g.Expect(errMsg).To(ContainSubstring("configSection"))
@@ -2753,6 +2757,41 @@ func TestValidate_TLSValidAccepted(t *testing.T) {
 	w := &KeystoneWebhook{}
 	k := validKeystone()
 	k.Spec.Database.TLS = validDatabaseTLS()
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+func TestValidate_ImageTagAndDigestBothSetRejected(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	// validKeystone() already sets a tag; adding a digest violates the XOR.
+	k.Spec.Image.Digest = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("exactly one of image.tag or image.digest"))
+}
+
+func TestValidate_ImageNeitherTagNorDigestRejected(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.Image.Tag = ""
+	k.Spec.Image.Digest = ""
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("exactly one of image.tag or image.digest"))
+}
+
+func TestValidate_ImageDigestOnlyAccepted(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.Image.Tag = ""
+	k.Spec.Image.Digest = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
 
 	_, err := w.ValidateCreate(context.Background(), k)
 	g.Expect(err).NotTo(HaveOccurred())

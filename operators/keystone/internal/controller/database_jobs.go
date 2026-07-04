@@ -83,10 +83,15 @@ func buildGrant(keystone *keystonev1alpha1.Keystone) *mariadbv1alpha1.Grant {
 // volume mounts, and security context used by both regular db_sync and upgrade phase
 // jobs. This single builder prevents drift when these need to change in the future.
 //
+// The image parameter is the fully-qualified reference the Job runs: the regular
+// db_sync / schema-check jobs use the CR's Image.Reference() (which honors a
+// pinned digest), while the upgrade phases pass a specific "repo:tag" so they
+// can pin the old/new release image independently of spec.image.
+//
 // TODO: Wire spec.Resources (or a smaller Job-specific default) to the
 // container. Currently runs as BestEffort QoS. See reconcile_deployment.go
 // containerResources() for the pattern used by the keystone container.
-func buildDBJob(keystone *keystonev1alpha1.Keystone, configMapName, imageTag, nameSuffix string, command []string) *batchv1.Job {
+func buildDBJob(keystone *keystonev1alpha1.Keystone, configMapName, image, nameSuffix string, command []string) *batchv1.Job {
 	backoffLimit := int32(4)
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
@@ -101,7 +106,7 @@ func buildDBJob(keystone *keystonev1alpha1.Keystone, configMapName, imageTag, na
 					PriorityClassName: priorityClassName(keystone),
 					Containers: []corev1.Container{{
 						Name:            nameSuffix,
-						Image:           fmt.Sprintf("%s:%s", keystone.Spec.Image.Repository, imageTag),
+						Image:           image,
 						Command:         command,
 						SecurityContext: restrictedSecurityContext(),
 						// Override [database].connection via oslo.config env-var so every
@@ -143,16 +148,18 @@ func buildDBJob(keystone *keystonev1alpha1.Keystone, configMapName, imageTag, na
 }
 
 func buildDBSyncJob(keystone *keystonev1alpha1.Keystone, configMapName string) *batchv1.Job {
-	return buildDBJob(keystone, configMapName, keystone.Spec.Image.Tag, "db-sync",
+	return buildDBJob(keystone, configMapName, keystone.Spec.Image.Reference(), "db-sync",
 		[]string{"keystone-manage", "--config-dir=/etc/keystone/keystone.conf.d/", "db_sync"})
 }
 
 // buildUpgradeJob creates a db_sync Job for one of the expand-migrate-contract
 // upgrade phases. The imageTag parameter allows callers to pin the
 // image independently of spec.Image.Tag (expand/migrate use the old release,
-// contract uses the new release).
+// contract uses the new release). Upgrades only run in tag mode, so the "repo:tag"
+// reference is always well-formed here.
 func buildUpgradeJob(keystone *keystonev1alpha1.Keystone, configMapName, imageTag, phase, flag string) *batchv1.Job {
-	return buildDBJob(keystone, configMapName, imageTag, fmt.Sprintf("db-%s", phase),
+	image := keystone.Spec.Image.Repository + ":" + imageTag
+	return buildDBJob(keystone, configMapName, image, fmt.Sprintf("db-%s", phase),
 		[]string{"keystone-manage", "--config-dir=/etc/keystone/keystone.conf.d/", "db_sync", flag})
 }
 
@@ -188,7 +195,7 @@ func buildSchemaCheckJob(keystone *keystonev1alpha1.Keystone, configMapName stri
 	// revision hashes and only reports the expand head (not the contract head).
 	schemaCheckScript := `keystone-manage --config-dir=/etc/keystone/keystone.conf.d/ db_sync --check`
 
-	j := buildDBJob(keystone, configMapName, keystone.Spec.Image.Tag, "schema-check",
+	j := buildDBJob(keystone, configMapName, keystone.Spec.Image.Reference(), "schema-check",
 		[]string{"/bin/sh", "-eu", "-c", schemaCheckScript})
 
 	// Override defaults: fewer retries for a read-only check. The completed Job

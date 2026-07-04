@@ -288,6 +288,22 @@ func TestValidateCreate_RejectsBadOpenStackRelease(t *testing.T) {
 	g.Expect(err.Error()).To(ContainSubstring("openStackRelease"))
 }
 
+func TestValidateCreate_RejectsKeystoneImageTagAndDigestBothSet(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	// Override the Keystone image with BOTH a tag and a digest — XOR violation.
+	cp.Spec.Services.Keystone.Image = &commonv1.ImageSpec{
+		Repository: "ghcr.io/c5c3/keystone",
+		Tag:        "2025.2",
+		Digest:     "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+	}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("exactly one of image.tag or image.digest"))
+}
+
 func TestValidateCreate_RejectsDatabaseBothSet(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &ControlPlaneWebhook{}

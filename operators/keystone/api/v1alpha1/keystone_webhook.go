@@ -288,6 +288,17 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 		))
 	}
 
+	// Defense-in-depth image tag/digest XOR check alongside the
+	// +kubebuilder:validation:XValidation rule on commonv1.ImageSpec: exactly
+	// one of tag or digest must be set.
+	if (k.Spec.Image.Tag != "") == (k.Spec.Image.Digest != "") {
+		allErrs = append(allErrs, field.Invalid(
+			specPath.Child("image"),
+			k.Spec.Image,
+			"exactly one of image.tag or image.digest must be set",
+		))
+	}
+
 	// Defense-in-depth maxActiveKeys check alongside the
 	// +kubebuilder:validation:Minimum=3 marker.
 	if k.Spec.Fernet.MaxActiveKeys < 3 && k.Spec.Fernet.MaxActiveKeys != 0 {

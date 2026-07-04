@@ -2,20 +2,21 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Validation-marker wave: Keystone CR with an empty spec.image.tag. The shared
-# ImageSpec.Tag is optional but carries a Pattern marker, so an explicit empty
-# tag does not match the tag grammar and is rejected by the CRD schema.
-# Admission must reject this CR with an $error referencing the substring
-# "image.tag".
+# Validation-marker wave: Keystone CR whose spec.image sets BOTH tag and digest.
+# The shared ImageSpec carries an XValidation rule requiring exactly one of tag
+# or digest, so setting both is rejected by the CRD schema (and mirrored by the
+# validating webhook). Admission must reject this CR with an $error referencing
+# the substring "digest".
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
 kind: Keystone
 metadata:
-  name: invalid-image-empty-tag
+  name: invalid-image-tag-and-digest
 spec:
   replicas: 3
   image:
     repository: ghcr.io/c5c3/keystone
-    tag: ""
+    tag: "2025.2"
+    digest: sha256:1111111111111111111111111111111111111111111111111111111111111111
   database:
     host: db.example.com
     port: 3306

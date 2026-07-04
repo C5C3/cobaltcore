@@ -13,6 +13,37 @@ import (
 	"testing"
 )
 
+// TestImageSpec_Reference backs the fully-qualified reference helper: a pinned
+// digest yields "repository@digest"; otherwise "repository:tag".
+func TestImageSpec_Reference(t *testing.T) {
+	cases := []struct {
+		name string
+		spec ImageSpec
+		want string
+	}{
+		{
+			name: "tag",
+			spec: ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2025.2"},
+			want: "ghcr.io/c5c3/keystone:2025.2",
+		},
+		{
+			name: "digest",
+			spec: ImageSpec{Repository: "ghcr.io/c5c3/keystone", Digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111"},
+			want: "ghcr.io/c5c3/keystone@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+		},
+		{
+			name: "digest wins over tag",
+			spec: ImageSpec{Repository: "repo", Tag: "2025.2", Digest: "sha256:abc"},
+			want: "repo@sha256:abc",
+		},
+	}
+	for _, tc := range cases {
+		if got := tc.spec.Reference(); got != tc.want {
+			t.Errorf("%s: Reference() = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
 // TestDatabaseTLSSpec_DeepCopy backs: DeepCopy of a populated
 // DatabaseTLSSpec returns an independent, equal value, and DeepCopy of a nil
 // *DatabaseTLSSpec returns nil.

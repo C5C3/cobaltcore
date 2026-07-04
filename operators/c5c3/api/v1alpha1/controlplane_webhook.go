@@ -339,6 +339,17 @@ func (w *ControlPlaneWebhook) validate(cp *ControlPlane) field.ErrorList {
 		))
 	}
 
+	// When the Keystone image is overridden, mirror the ImageSpec tag/digest XOR
+	// (the +kubebuilder:validation:XValidation rule on commonv1.ImageSpec) with a
+	// defense-in-depth check: exactly one of tag or digest must be set.
+	if img := cp.Spec.Services.Keystone.Image; img != nil && (img.Tag != "") == (img.Digest != "") {
+		allErrs = append(allErrs, field.Invalid(
+			specPath.Child("services", "keystone", "image"),
+			img,
+			"exactly one of image.tag or image.digest must be set",
+		))
+	}
+
 	// Reject empty policy rule names and values on both the global policy and the
 	// per-service Keystone override. The c5c3 webhook previously validated policy
 	// rules not at all; this mirrors the keystone webhook and the CEL rule on

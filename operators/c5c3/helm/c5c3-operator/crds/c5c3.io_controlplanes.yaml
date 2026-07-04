@@ -583,6 +583,14 @@ spec:
                           Image optionally overrides the Keystone container image. When nil the
                           reconciler derives the image from spec.openStackRelease.
                         properties:
+                          digest:
+                            description: |-
+                              Digest pins the image by immutable content digest (e.g.
+                              "sha256:<64 hex chars>"). Optional: exactly one of Tag or Digest must be
+                              set. A pinned digest closes the supply-chain gap where a mutable tag can be
+                              re-pushed behind a stable name, at the cost of disabling release tracking.
+                            pattern: ^sha256:[a-f0-9]{64}$
+                            type: string
                           repository:
                             description: |-
                               Repository is the OCI image repository, optionally including the registry
@@ -598,14 +606,17 @@ spec:
                             description: |-
                               Tag is the OCI image tag (e.g. "2025.2"). It follows the OCI tag grammar:
                               up to 128 characters of word characters, dots, and dashes, and must not
-                              begin with a dot or dash.
-                            minLength: 1
+                              begin with a dot or dash. Optional: exactly one of Tag or Digest must be
+                              set. The pattern is enforced only when a tag is present.
                             pattern: ^[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}$
                             type: string
                         required:
                         - repository
-                        - tag
                         type: object
+                        x-kubernetes-validations:
+                        - message: exactly one of image.tag or image.digest must be
+                            set
+                          rule: has(self.tag) != has(self.digest)
                       policyOverrides:
                         description: |-
                           PolicyOverrides defines per-service oslo.policy overrides for Keystone.

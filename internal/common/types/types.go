@@ -25,7 +25,16 @@ const DefaultCacheBackend = "dogpile.cache.pymemcache"
 // constants, so the leaf marker keeps the literal in sync separately.
 const DatabaseStorageSizeDefault = "100Gi"
 
-// ImageSpec defines a container image reference.
+// ImageSpec defines a container image reference. Exactly one of Tag or Digest
+// must be set (enforced by the type-level XValidation rule below), so a
+// supply-chain-sensitive deployment can pin the image by immutable digest while
+// the common case keeps a human-readable tag.
+//
+// Digest-mode (Tag empty, Digest set) disables Keystone release
+// tracking/upgrades, which key on the tag; the managed ControlPlane path always
+// projects a tag, so it is unaffected.
+//
+// +kubebuilder:validation:XValidation:rule="has(self.tag) != has(self.digest)",message="exactly one of image.tag or image.digest must be set"
 type ImageSpec struct {
 	// Repository is the OCI image repository, optionally including the registry
 	// host (e.g. "ghcr.io/c5c3/keystone" or "c5c3/keystone"). The pattern is a
@@ -38,10 +47,27 @@ type ImageSpec struct {
 	Repository string `json:"repository"`
 	// Tag is the OCI image tag (e.g. "2025.2"). It follows the OCI tag grammar:
 	// up to 128 characters of word characters, dots, and dashes, and must not
-	// begin with a dot or dash.
-	// +kubebuilder:validation:MinLength=1
+	// begin with a dot or dash. Optional: exactly one of Tag or Digest must be
+	// set. The pattern is enforced only when a tag is present.
+	// +optional
 	// +kubebuilder:validation:Pattern=`^[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}$`
-	Tag string `json:"tag"`
+	Tag string `json:"tag,omitempty"`
+	// Digest pins the image by immutable content digest (e.g.
+	// "sha256:<64 hex chars>"). Optional: exactly one of Tag or Digest must be
+	// set. A pinned digest closes the supply-chain gap where a mutable tag can be
+	// re-pushed behind a stable name, at the cost of disabling release tracking.
+	// +optional
+	// +kubebuilder:validation:Pattern=`^sha256:[a-f0-9]{64}$`
+	Digest string `json:"digest,omitempty"`
+}
+
+// Reference returns the fully-qualified image reference the workloads consume:
+// "repository@digest" when a digest is pinned, otherwise "repository:tag".
+func (i ImageSpec) Reference() string {
+	if i.Digest != "" {
+		return i.Repository + "@" + i.Digest
+	}
+	return i.Repository + ":" + i.Tag
 }
 
 // DatabaseSpec supports managed (ClusterRef) and brownfield (explicit) modes.

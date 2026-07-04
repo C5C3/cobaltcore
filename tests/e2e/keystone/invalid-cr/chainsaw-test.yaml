@@ -240,7 +240,7 @@ spec:
             (contains($error, 'region')): true
             (contains($error, 'immutable')): true
   # Validation-marker wave: empty spec.image.tag rejected by the ImageSpec.Tag
-  # MinLength=1 marker (CRD schema).
+  # Pattern marker (CRD schema).
   - try:
     - apply:
         file: 13-image-empty-tag.yaml
@@ -316,3 +316,12 @@ spec:
         - check:
             ($error != null): true
             (contains($error, 'perLoggerLevels')): true
+  # Validation-marker wave: spec.image with BOTH tag and digest set, rejected by
+  # the ImageSpec tag/digest XOR XValidation rule (CRD schema).
+  - try:
+    - apply:
+        file: 21-image-tag-and-digest.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'digest')): true

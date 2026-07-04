@@ -234,7 +234,7 @@ exec keystone-manage --config-dir=/etc/keystone/keystone.conf.d/ bootstrap \
 					PriorityClassName: priorityClassName(keystone),
 					Containers: []corev1.Container{{
 						Name:  "bootstrap",
-						Image: fmt.Sprintf("%s:%s", keystone.Spec.Image.Repository, keystone.Spec.Image.Tag),
+						Image: keystone.Spec.Image.Reference(),
 						// TODO Wire spec.Resources (or a smaller Job-specific default) to
 						// this container. Currently runs as BestEffort QoS. See reconcile_deployment.go
 						// containerResources() for the pattern used by the keystone container.

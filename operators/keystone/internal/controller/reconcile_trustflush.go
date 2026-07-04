@@ -90,7 +90,7 @@ func (r *KeystoneReconciler) reconcileTrustFlush(ctx context.Context,
 // delegations. The CronJob runs keystone-manage trust_flush against the
 // database via the mounted keystone configuration.
 func trustFlushCronJob(keystone *keystonev1alpha1.Keystone, configMapName string) *batchv1.CronJob {
-	image := fmt.Sprintf("%s:%s", keystone.Spec.Image.Repository, keystone.Spec.Image.Tag)
+	image := keystone.Spec.Image.Reference()
 	fernetSecretName := fmt.Sprintf("%s-fernet-keys", keystone.Name)
 	credentialSecretName := fmt.Sprintf("%s-credential-keys", keystone.Name)
 

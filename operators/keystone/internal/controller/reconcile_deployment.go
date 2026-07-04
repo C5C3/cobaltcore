@@ -230,7 +230,7 @@ func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName 
 					SecurityContext:               &corev1.PodSecurityContext{FSGroup: ptr.To(openstackUID)},
 					Containers: []corev1.Container{{
 						Name:            "keystone",
-						Image:           fmt.Sprintf("%s:%s", keystone.Spec.Image.Repository, keystone.Spec.Image.Tag),
+						Image:           keystone.Spec.Image.Reference(),
 						Resources:       containerResources(keystone),
 						SecurityContext: restrictedSecurityContext(),
 						Command:         uwsgiCommand(keystone.Spec.UWSGI),

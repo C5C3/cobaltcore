@@ -341,7 +341,7 @@ func (r *KeystoneReconciler) ensureAdminPasswordRotationRBAC(ctx context.Context
 // only permitted to patch staging, never the push-source Secret.
 func adminPasswordRotationCronJob(keystone *keystonev1alpha1.Keystone, scriptConfigMapName string) *batchv1.CronJob {
 	pr := keystone.Spec.Bootstrap.PasswordRotation
-	image := fmt.Sprintf("%s:%s", keystone.Spec.Image.Repository, keystone.Spec.Image.Tag)
+	image := keystone.Spec.Image.Reference()
 
 	return &batchv1.CronJob{
 		ObjectMeta: metav1.ObjectMeta{
