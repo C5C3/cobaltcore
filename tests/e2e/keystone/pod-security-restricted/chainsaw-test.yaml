@@ -38,8 +38,10 @@
 #     from the same OpenBao paths the cluster's `openstack` namespace already
 #     uses: the per-CR admin password at
 #     `bootstrap/openstack/controlplane-keystone/admin` (the legacy flat `bootstrap/keystone-admin` is no longer seeded) and the keystone DB
-#     credentials at the per-ControlPlane path
-#     `openstack/keystone/openstack/controlplane/db` (the legacy flat shared DB path is no longer seeded); the `eso-management` policy
+#     credentials at the standalone static path
+#     `openstack/keystone/standalone/db` (the stage-(a) per-ControlPlane
+#     static path is retired since #439 — managed-mode ControlPlanes draw
+#     engine-issued credentials); the `eso-management` policy
 #     (deploy/openbao/policies/eso-management.hcl) covers both paths so no
 #     new OpenBao policy work is required.
 #

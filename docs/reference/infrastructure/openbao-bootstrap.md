@@ -511,14 +511,16 @@ All secrets are stored under the `kv-v2/` mount point (KV version 2 engine).
 | --- | --- | --- | --- |
 | `kv-v2/bootstrap/<namespace>/<keystone>/admin` | `password` | `write-bootstrap-secrets.sh` (per ControlPlane; default `.../openstack/controlplane-keystone/admin`) | Operator-created ExternalSecret `{controlplane.Name}-keystone-admin-credentials` (default `controlplane-keystone-admin-credentials`); on kind additionally the overlay's `keystone-admin` ExternalSecret (default identity) |
 | `kv-v2/infrastructure/mariadb` | `root-password` | `write-bootstrap-secrets.sh` | On kind the overlay's `mariadb-root-password` ExternalSecret; in production a non-kind Flux MariaDB baseline provides the `mariadb-root-password` Secret itself |
-| `kv-v2/openstack/keystone/{ns}/{name}/db` | `username`, `password` | `write-bootstrap-secrets.sh` (per ControlPlane; default `.../openstack/controlplane/db`) | Operator-created ExternalSecret `{controlplane.Name}-keystone-db-credentials` (default `controlplane-keystone-db-credentials`); on kind additionally the overlay's `keystone-db` ExternalSecret (default identity) |
+| `kv-v2/openstack/keystone/standalone/db` | `username`, `password` | `write-bootstrap-secrets.sh` (standalone/brownfield only) | The kind overlay's `keystone-db` ExternalSecret, serving standalone (non-ControlPlane) Keystone demos |
 
-**Note:** The Keystone database-credential path is scoped **per
-ControlPlane** as `openstack/keystone/{ns}/{name}/db`, matching the c5c3 operator
-helper `dbCredentialRemoteKeyFor`. The default ControlPlane identity
-`openstack/controlplane` resolves to `openstack/keystone/openstack/controlplane/db`.
-The reserved multi-DB form `openstack/keystone/{ns}/{name}/db/<dbname>` is
-forward-compatible room for multiple databases per ControlPlane.
+**Note:** The stage-(a) per-ControlPlane static path
+`openstack/keystone/{ns}/{name}/db` (c5c3 operator helper
+`dbCredentialRemoteKeyFor`) is **no longer seeded** (#439): managed-mode
+ControlPlanes draw short-lived, engine-issued credentials from
+`database/mariadb/creds/keystone-{ns}` instead. The static path derivation is
+retained only for the `credentialsMode: Static` opt-out (brownfield migration),
+whose KV path must then be seeded manually — see
+`docs/guides/migrate-keystone-db-to-dynamic-credentials.md`.
 
 ### ESO Integration
 
@@ -529,10 +531,10 @@ Kubernetes.
 | ExternalSecret | Namespace | Remote Path | Remote Property | K8s Secret Name | K8s Secret Key |
 | --- | --- | --- | --- | --- | --- |
 | `{controlplane.Name}-keystone-admin-credentials` | `openstack` | `bootstrap/{ns}/{name}-keystone/admin` (default `bootstrap/openstack/controlplane-keystone/admin`) | `password` | `{controlplane.Name}-keystone-admin-credentials` | `password` |
-| `{controlplane.Name}-keystone-db-credentials` | `openstack` | `openstack/keystone/{ns}/{name}/db` (default `openstack/keystone/openstack/controlplane/db`) | `username`, `password` | `{controlplane.Name}-keystone-db-credentials` | `username`, `password` |
+| `{controlplane.Name}-keystone-db-credentials` | `openstack` | Dynamic (default): generator-backed via `VaultDynamicSecret` reading `database/mariadb/creds/keystone-{ns}` (no KV remote path); Static opt-out: `openstack/keystone/{ns}/{name}/db` | `username`, `password` | `{controlplane.Name}-keystone-db-credentials` | `username`, `password` |
 | `keystone-admin` (kind only) | `openstack` | `bootstrap/openstack/controlplane-keystone/admin` | `password` | `keystone-admin` | `password` |
 | `mariadb-root-password` (kind only) | `openstack` | `infrastructure/mariadb` | `root-password` | `mariadb-root-password` | `password` |
-| `keystone-db` (kind only) | `openstack` | `openstack/keystone/openstack/controlplane/db` | `username`, `password` | `keystone-db` | `username`, `password` |
+| `keystone-db` (kind only) | `openstack` | `openstack/keystone/standalone/db` | `username`, `password` | `keystone-db` | `username`, `password` |
 
 **Note:** The static `deploy/eso/externalsecrets/` directory has been removed, so
 the production stack ships **no** ExternalSecret resources — its ESO
@@ -542,11 +544,11 @@ ExternalSecrets are now projected **per-ControlPlane** by the c5c3 operator: the
 `reconcileAdminPassword` sub-reconciler (remote key
 `bootstrap/{ns}/{name}-keystone/admin`), and the
 `{controlplane.Name}-keystone-db-credentials` ExternalSecret by the
-`reconcileDBCredentials` sub-reconciler (remote key
-`openstack/keystone/{ns}/{name}/db`). The flat database path
-`openstack/keystone/db` is no longer seeded; the reserved multi-DB form
-`openstack/keystone/{ns}/{name}/db/<dbname>` leaves room for multiple databases
-per ControlPlane.
+`reconcileDBCredentials` sub-reconciler (Dynamic default: backed by a
+`VaultDynamicSecret` generator reading `database/mariadb/creds/keystone-{ns}`;
+Static opt-out: KV remote key `openstack/keystone/{ns}/{name}/db`, seeded
+manually). Neither the flat database path `openstack/keystone/db` nor the
+stage-(a) per-ControlPlane static path is seeded anymore.
 
 **Note:** The `keystone-admin`, `mariadb-root-password`, and `keystone-db`
 ExternalSecrets survive only as **kind-overlay-only** resources under

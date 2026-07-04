@@ -141,11 +141,12 @@ spec:
   # that chain (missing client cert, wrong CA, listener misconfig) flips
   # Ready=False here.
   #
-  # keystone-db is the kind-only default-identity ExternalSecret
+  # keystone-db is the kind-only ExternalSecret
   # (deploy/kind/infrastructure/keystone-db-externalsecret.yaml) serving
-  # standalone Keystone CRs — it reads the per-ControlPlane path
-  # openstack/keystone/openstack/controlplane/db that the deploy-infra seed
-  # writes for the default KORC_CONTROLPLANES identity. The production stack
+  # standalone Keystone CRs — it reads the standalone static path
+  # openstack/keystone/standalone/db that the deploy-infra seed writes (the
+  # stage-(a) per-ControlPlane static path is retired since #439:
+  # managed-mode ControlPlanes draw engine-issued credentials). The production stack
   # (deploy/eso/) ships no keystone-db ExternalSecret. The operator-created
   # per-ControlPlane ExternalSecret (controlplane-keystone-db-credentials)
   # does not exist after a bare `make deploy-infra` (no ControlPlane CR yet)

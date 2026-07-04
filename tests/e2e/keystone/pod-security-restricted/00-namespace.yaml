@@ -17,8 +17,11 @@
 # SecretsReady=False/WaitingForDBCredentials and never reach Ready=True. The
 # ExternalSecrets pull from the same OpenBao paths the in-cluster
 # `openstack` namespace uses: the per-CR admin password at
-# `bootstrap/openstack/controlplane-keystone/admin` (the per-CR path the deploy-infra seed writes; the legacy flat `bootstrap/keystone-admin` is no longer seeded) and the `keystone` MariaDB user at the per-ControlPlane path
-# `openstack/keystone/openstack/controlplane/db` (the per-CP path the deploy-infra seed writes for the default ControlPlane "controlplane" in namespace "openstack"; the legacy flat shared DB path is no longer seeded); the `eso-management` policy
+# `bootstrap/openstack/controlplane-keystone/admin` (the per-CR path the deploy-infra seed writes; the legacy flat `bootstrap/keystone-admin` is no longer seeded) and the `keystone` MariaDB user at the standalone static path
+# `openstack/keystone/standalone/db` (the only static DB credential the seed
+# still writes — the stage-(a) per-ControlPlane path
+# `openstack/keystone/{ns}/{cp}/db` is retired since #439: managed-mode
+# ControlPlanes draw engine-issued credentials instead); the `eso-management` policy
 # (deploy/openbao/policies/eso-management.hcl) grants read access to both paths
 # via its `kv-v2/data/bootstrap/*` and `kv-v2/data/openstack/keystone/*`
 # wildcards, so no new OpenBao policy work is required.
@@ -66,9 +69,9 @@ spec:
   data:
   - secretKey: username
     remoteRef:
-      key: openstack/keystone/openstack/controlplane/db
+      key: openstack/keystone/standalone/db
       property: username
   - secretKey: password
     remoteRef:
-      key: openstack/keystone/openstack/controlplane/db
+      key: openstack/keystone/standalone/db
       property: password

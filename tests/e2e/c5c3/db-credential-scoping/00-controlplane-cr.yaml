@@ -10,19 +10,17 @@
 # reconcileDBCredentials derives the per-ControlPlane DB-credential
 # ExternalSecret/Secret name
 #   keystoneName(cp) + "-db-credentials" = "controlplane-keystone-db-credentials"
-# and the OpenBao remoteRef key
-#   openstack/keystone/{cp.Namespace}/{cp.Name}/db
-#     = openstack/keystone/openstack/controlplane/db
-# which is exactly the per-CP path the deploy-infra seed writes for the default
-# KORC_CONTROLPLANES entry "openstack/controlplane"
-# (deploy/openbao/bootstrap/write-bootstrap-secrets.sh).
+# and the per-tenant dynamic engine creds path
+#   database/mariadb/creds/keystone-{cp.Namespace}
+#     = database/mariadb/creds/keystone-openstack
+# (dbDynamicRoleFor, keyed on the namespace alone), whose engine role the test
+# onboards via deploy/openbao/bootstrap/setup-database-tenant.sh.
 #
 # ── DECISION: reuse the canonical "controlplane" CR (idempotent apply) ───────
 # Ambiguity: the assertions pin the DB-credential names to
-# "controlplane-keystone-db-credentials" / "openstack/keystone/openstack/
-# controlplane/db", which ONLY the ControlPlane name="controlplane",
-# namespace="openstack" produces, and only that CR's OpenBao path is seeded by
-# default. Chose: ship that exact CR (spec-equivalent to deploy's, gateway block
+# "controlplane-keystone-db-credentials" / "database/mariadb/creds/
+# keystone-openstack", which ONLY the ControlPlane name="controlplane",
+# namespace="openstack" produces. Chose: ship that exact CR (spec-equivalent to deploy's, gateway block
 # included) so that on a cluster where deploy-infra already applied it
 # (WITH_CONTROLPLANE_CR=true) the chainsaw `kubectl apply` is a no-op rather than
 # a disruptive 3-way-merge prune, and on a cluster where it was not applied the
