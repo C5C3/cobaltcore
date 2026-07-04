@@ -319,35 +319,39 @@ func (w *ControlPlaneWebhook) validate(cp *ControlPlane) field.ErrorList {
 	// rather than a steady-state KeystoneReady=False with no requeue. Mirrors
 	// intervalToCron in internal/controller/helpers.go and is kept in sync as
 	// defense-in-depth, exactly like the openStackRelease pattern check above.
-	if ri := cp.Spec.Services.Keystone.RotationInterval; ri != nil {
-		if d := ri.Duration; d <= 0 || d%(24*time.Hour) != 0 {
-			allErrs = append(allErrs, field.Invalid(
-				specPath.Child("services", "keystone", "rotationInterval"),
-				d.String(),
-				"must be a positive whole number of days (e.g. 24h, 168h); only daily and weekly Fernet rotation schedules are supported",
+	// services.keystone is optional; all per-service checks below only apply when
+	// the block is present.
+	if ks := cp.Spec.Services.Keystone; ks != nil {
+		if ri := ks.RotationInterval; ri != nil {
+			if d := ri.Duration; d <= 0 || d%(24*time.Hour) != 0 {
+				allErrs = append(allErrs, field.Invalid(
+					specPath.Child("services", "keystone", "rotationInterval"),
+					d.String(),
+					"must be a positive whole number of days (e.g. 24h, 168h); only daily and weekly Fernet rotation schedules are supported",
+				))
+			}
+		}
+
+		// When a gateway is configured, its hostname must be set. Mirrors the
+		// +kubebuilder:validation:MinLength=1 marker on commonv1.GatewaySpec.Hostname;
+		// without it the reconciler derives an empty "https:///v3" public endpoint.
+		if g := ks.Gateway; g != nil && g.Hostname == "" {
+			allErrs = append(allErrs, field.Required(
+				specPath.Child("services", "keystone", "gateway", "hostname"),
+				"must be set when a gateway is configured",
 			))
 		}
-	}
 
-	// When a gateway is configured, its hostname must be set. Mirrors the
-	// +kubebuilder:validation:MinLength=1 marker on commonv1.GatewaySpec.Hostname;
-	// without it the reconciler derives an empty "https:///v3" public endpoint.
-	if g := cp.Spec.Services.Keystone.Gateway; g != nil && g.Hostname == "" {
-		allErrs = append(allErrs, field.Required(
-			specPath.Child("services", "keystone", "gateway", "hostname"),
-			"must be set when a gateway is configured",
-		))
-	}
-
-	// When the Keystone image is overridden, mirror the ImageSpec tag/digest XOR
-	// (the +kubebuilder:validation:XValidation rule on commonv1.ImageSpec) with a
-	// defense-in-depth check: exactly one of tag or digest must be set.
-	if img := cp.Spec.Services.Keystone.Image; img != nil && (img.Tag != "") == (img.Digest != "") {
-		allErrs = append(allErrs, field.Invalid(
-			specPath.Child("services", "keystone", "image"),
-			img,
-			"exactly one of image.tag or image.digest must be set",
-		))
+		// When the Keystone image is overridden, mirror the ImageSpec tag/digest
+		// XOR (the +kubebuilder:validation:XValidation rule on commonv1.ImageSpec)
+		// with a defense-in-depth check: exactly one of tag or digest must be set.
+		if img := ks.Image; img != nil && (img.Tag != "") == (img.Digest != "") {
+			allErrs = append(allErrs, field.Invalid(
+				specPath.Child("services", "keystone", "image"),
+				img,
+				"exactly one of image.tag or image.digest must be set",
+			))
+		}
 	}
 
 	// Reject empty policy rule names and values on both the global policy and the
@@ -360,9 +364,9 @@ func (w *ControlPlaneWebhook) validate(cp *ControlPlane) field.ErrorList {
 			g.Rules, specPath.Child("global", "rules"),
 		)...)
 	}
-	if po := cp.Spec.Services.Keystone.PolicyOverrides; po != nil {
+	if ks := cp.Spec.Services.Keystone; ks != nil && ks.PolicyOverrides != nil {
 		allErrs = append(allErrs, policy.ValidatePolicyRules(
-			po.Rules, specPath.Child("services", "keystone", "policyOverrides", "rules"),
+			ks.PolicyOverrides.Rules, specPath.Child("services", "keystone", "policyOverrides", "rules"),
 		)...)
 	}
 

@@ -70,6 +70,9 @@ func keystoneControlPlane() *c5c3v1alpha1.ControlPlane {
 					Replicas:   3,
 				},
 			},
+			Services: c5c3v1alpha1.ServicesSpec{
+				Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{},
+			},
 			KORC: c5c3v1alpha1.KORCSpec{
 				AdminCredential: c5c3v1alpha1.AdminCredentialSpec{
 					PasswordSecretRef: commonv1.SecretRefSpec{Name: "keystone-admin"},
@@ -131,6 +134,93 @@ func TestReconcileKeystone_ImageTagFromRelease(t *testing.T) {
 			g.Expect(k.OwnerReferences[0].Kind).To(Equal("ControlPlane"))
 		})
 	}
+}
+
+// TestReconcileKeystone_NotManagedWhenServiceUnset verifies that a ControlPlane
+// with spec.services.keystone unset projects no Keystone child and reports
+// KeystoneReady as not-managed (staged adoption / externally-managed Keystone).
+func TestReconcileKeystone_NotManagedWhenServiceUnset(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := keystoneTestScheme(t)
+	cp := keystoneControlPlane()
+	cp.Spec.Services.Keystone = nil
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileKeystone(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// No Keystone child is created.
+	k := &keystonev1alpha1.Keystone{}
+	key := types.NamespacedName{Name: keystoneName(cp), Namespace: childNamespace(cp)}
+	g.Expect(apierrors.IsNotFound(c.Get(context.Background(), key, k))).To(BeTrue(),
+		"no Keystone child must be projected when services.keystone is unset")
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeKeystoneReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal("KeystoneNotManaged"))
+}
+
+// TestReconcileKeystone_PreservesChildOnFlipToNil verifies that flipping
+// spec.services.keystone from set to nil PRESERVES the previously-projected
+// Keystone child by default (no opt-in annotation). Deleting it would cascade to
+// the child's irreplaceable credential-keys Secret, so an accidental unset must
+// be fail-safe rather than fail-destructive.
+func TestReconcileKeystone_PreservesChildOnFlipToNil(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := keystoneTestScheme(t)
+	cp := keystoneControlPlane()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	// First pass projects the Keystone child.
+	_, err := r.reconcileKeystone(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	getProjectedKeystone(t, c, cp)
+
+	// Flip services.keystone to nil and reconcile again, WITHOUT the opt-in
+	// annotation.
+	cp.Spec.Services.Keystone = nil
+	_, err = r.reconcileKeystone(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// The Keystone child is preserved (its credential/fernet keys are safe).
+	getProjectedKeystone(t, c, cp)
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeKeystoneReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Reason).To(Equal("KeystoneNotManaged"))
+	g.Expect(cond.Message).To(ContainSubstring("preserved"),
+		"the not-managed message must tell the operator the child was preserved")
+}
+
+// TestReconcileKeystone_DeletesChildOnFlipToNilWithOptIn verifies that with the
+// explicit keystoneDeletionAllowedAnnotation opt-in, flipping
+// spec.services.keystone to nil deletes the previously-projected Keystone child.
+func TestReconcileKeystone_DeletesChildOnFlipToNilWithOptIn(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := keystoneTestScheme(t)
+	cp := keystoneControlPlane()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	// First pass projects the Keystone child.
+	_, err := r.reconcileKeystone(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	getProjectedKeystone(t, c, cp)
+
+	// Flip services.keystone to nil AND opt in to deletion, then reconcile again.
+	cp.Spec.Services.Keystone = nil
+	cp.Annotations = map[string]string{keystoneDeletionAllowedAnnotation: "true"}
+	_, err = r.reconcileKeystone(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// The opted-in Keystone child is deleted.
+	k := &keystonev1alpha1.Keystone{}
+	key := types.NamespacedName{Name: keystoneName(cp), Namespace: childNamespace(cp)}
+	g.Expect(apierrors.IsNotFound(c.Get(context.Background(), key, k))).To(BeTrue(),
+		"opted-in Keystone child must be deleted on services.keystone set→nil flip")
 }
 
 func TestReconcileKeystone_ImageOverrideWins(t *testing.T) {

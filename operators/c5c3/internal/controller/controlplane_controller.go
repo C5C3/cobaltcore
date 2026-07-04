@@ -333,6 +333,14 @@ const keystoneServiceKey = "keystone"
 // being driven to.
 func setServicesStatus(cp *c5c3v1alpha1.ControlPlane) {
 	cp.Status.UpdatePhase = c5c3v1alpha1.UpdatePhaseIdle
+	// Only report the Keystone service when it is actually managed by this
+	// ControlPlane (spec.services.keystone set). When unset the ControlPlane
+	// manages no Keystone, so status.services stays empty rather than reporting a
+	// service that does not exist.
+	if cp.Spec.Services.Keystone == nil {
+		cp.Status.Services = nil
+		return
+	}
 	cp.Status.Services = []c5c3v1alpha1.ServiceStatus{
 		{
 			Name:    keystoneServiceKey,

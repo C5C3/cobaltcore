@@ -97,7 +97,10 @@ func TestSetServicesStatus_WritesPhaseAndKeystoneReadiness(t *testing.T) {
 
 	cp := &c5c3v1alpha1.ControlPlane{
 		ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "openstack"},
-		Spec:       c5c3v1alpha1.ControlPlaneSpec{OpenStackRelease: "2025.2"},
+		Spec: c5c3v1alpha1.ControlPlaneSpec{
+			OpenStackRelease: "2025.2",
+			Services:         c5c3v1alpha1.ServicesSpec{Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{}},
+		},
 	}
 
 	// KeystoneReady absent => service reported not Ready.

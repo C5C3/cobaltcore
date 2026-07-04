@@ -139,7 +139,7 @@ func integrationManagedControlPlane(name, namespace string) *c5c3v1alpha1.Contro
 				},
 			},
 			Services: c5c3v1alpha1.ServicesSpec{
-				Keystone: c5c3v1alpha1.ServiceKeystoneSpec{
+				Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{
 					Replicas: ptr.To(int32(3)),
 				},
 			},
@@ -185,7 +185,7 @@ func integrationMinimalControlPlane(name, namespace string) *c5c3v1alpha1.Contro
 		Spec: c5c3v1alpha1.ControlPlaneSpec{
 			OpenStackRelease: "2025.2",
 			Services: c5c3v1alpha1.ServicesSpec{
-				Keystone: c5c3v1alpha1.ServiceKeystoneSpec{
+				Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{
 					Replicas: ptr.To(int32(1)),
 				},
 			},

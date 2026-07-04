@@ -71,6 +71,7 @@ func TestControlPlaneSpecReusesCommonTypes(t *testing.T) {
 	spec.Infrastructure.Database = commonv1.DatabaseSpec{Database: "ks", SecretRef: commonv1.SecretRefSpec{Name: "s"}}
 	spec.Infrastructure.Cache = commonv1.CacheSpec{Backend: "dogpile.cache.pymemcache"}
 	spec.Global = &commonv1.PolicySpec{}
+	spec.Services.Keystone = &ServiceKeystoneSpec{}
 	spec.Services.Keystone.Image = &commonv1.ImageSpec{Repository: "r", Tag: "t"}
 	spec.Services.Keystone.PolicyOverrides = &commonv1.PolicySpec{}
 	spec.Services.Keystone.Gateway = &commonv1.GatewaySpec{}

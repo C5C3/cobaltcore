@@ -513,8 +513,12 @@ spec:
                   individual service CRs.
                 properties:
                   keystone:
-                    description: Keystone configures the Keystone service projected
-                      by the reconciler.
+                    description: |-
+                      Keystone configures the Keystone service projected by the reconciler.
+                      Optional: a ControlPlane with services.keystone unset manages no Keystone
+                      service (staged adoption, or an externally-managed Keystone), and the
+                      reconciler reports KeystoneReady as not-managed. Flipping this from set to
+                      nil deletes the previously-projected Keystone child.
                     properties:
                       gateway:
                         description: |-
@@ -680,8 +684,6 @@ spec:
                           derives a default schedule.
                         type: string
                     type: object
-                required:
-                - keystone
                 type: object
             required:
             - infrastructure

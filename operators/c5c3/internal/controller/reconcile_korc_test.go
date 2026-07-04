@@ -77,6 +77,9 @@ func korcControlPlane() *c5c3v1alpha1.ControlPlane {
 		Spec: c5c3v1alpha1.ControlPlaneSpec{
 			OpenStackRelease: "2025.2",
 			Region:           "RegionOne",
+			Services: c5c3v1alpha1.ServicesSpec{
+				Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{},
+			},
 			KORC: c5c3v1alpha1.KORCSpec{
 				AdminCredential: c5c3v1alpha1.AdminCredentialSpec{
 					CloudCredentialsRef: c5c3v1alpha1.CloudCredentialsRef{
@@ -2057,6 +2060,9 @@ func TestKeystoneCatalogURL_PrefersPublicEndpoint(t *testing.T) {
 	g := NewGomegaWithT(t)
 	cp := &c5c3v1alpha1.ControlPlane{
 		ObjectMeta: metav1.ObjectMeta{Name: "controlplane", Namespace: "openstack"},
+		Spec: c5c3v1alpha1.ControlPlaneSpec{
+			Services: c5c3v1alpha1.ServicesSpec{Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{}},
+		},
 	}
 
 	// No external exposure → in-cluster Service URL (unchanged behaviour).

@@ -101,7 +101,12 @@ type InfrastructureSpec struct {
 // optional pointer fields as the operator grows.
 type ServicesSpec struct {
 	// Keystone configures the Keystone service projected by the reconciler.
-	Keystone ServiceKeystoneSpec `json:"keystone"`
+	// Optional: a ControlPlane with services.keystone unset manages no Keystone
+	// service (staged adoption, or an externally-managed Keystone), and the
+	// reconciler reports KeystoneReady as not-managed. Flipping this from set to
+	// nil deletes the previously-projected Keystone child.
+	// +optional
+	Keystone *ServiceKeystoneSpec `json:"keystone,omitempty"`
 }
 
 // ServiceKeystoneSpec is a CURATED LOCAL subset of the knobs the ControlPlane

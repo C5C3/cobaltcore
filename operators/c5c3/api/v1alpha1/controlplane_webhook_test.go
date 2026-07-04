@@ -38,7 +38,7 @@ func validControlPlane() *ControlPlane {
 				},
 			},
 			Services: ServicesSpec{
-				Keystone: ServiceKeystoneSpec{},
+				Keystone: &ServiceKeystoneSpec{},
 			},
 			KORC: KORCSpec{
 				AdminCredential: AdminCredentialSpec{
@@ -275,6 +275,18 @@ func TestValidateCreate_AcceptsValidControlPlane(t *testing.T) {
 
 	_, err := w.ValidateCreate(context.Background(), validControlPlane())
 	g.Expect(err).NotTo(HaveOccurred())
+}
+
+func TestValidateCreate_AcceptsUnsetKeystoneService(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	// Staged adoption / externally-managed Keystone: services.keystone unset.
+	cp.Spec.Services.Keystone = nil
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred(),
+		"a ControlPlane with services.keystone unset must be admitted")
 }
 
 func TestValidateCreate_RejectsBadOpenStackRelease(t *testing.T) {

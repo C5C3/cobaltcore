@@ -7,10 +7,12 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strconv"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -38,10 +40,33 @@ const keystoneNameSuffix = "-keystone"
 // image reference.
 const defaultKeystoneRepository = "ghcr.io/c5c3/keystone"
 
+// keystoneDeletionAllowedAnnotation, when set to a truthy value on a
+// ControlPlane, opts that ControlPlane in to DESTRUCTIVE teardown of a
+// previously-projected Keystone child when spec.services.keystone is unset.
+// Without it the reconciler PRESERVES the running child (see reconcileKeystone),
+// because that child owns irreplaceable state: the <name>-credential-keys Secret
+// encrypts every application-credential / EC2 credential / TOTP secret, and
+// losing those keys — together with their OpenBao backup, which is purged with
+// them via the PushSecret DeletionPolicy=Delete — is permanent (unlike fernet
+// keys, whose loss only forces re-authentication). A single YAML edit that drops
+// the services.keystone block (e.g. a GitOps template that stops rendering it)
+// must therefore not silently destroy that data; deleting the child is opt-in.
+const keystoneDeletionAllowedAnnotation = "c5c3.io/allow-keystone-deletion"
+
 // keystoneName returns the deterministic name of the Keystone CR projected from
 // the given ControlPlane (see keystoneNameSuffix).
 func keystoneName(cp *c5c3v1alpha1.ControlPlane) string {
 	return cp.Name + keystoneNameSuffix
+}
+
+// keystoneDeletionAllowed reports whether cp opts in to deleting its projected
+// Keystone child when spec.services.keystone is unset, via a truthy
+// keystoneDeletionAllowedAnnotation. A missing, malformed, or non-truthy value
+// means "preserve" — the fail-safe default that protects the child's
+// irreplaceable credential/fernet keys.
+func keystoneDeletionAllowed(cp *c5c3v1alpha1.ControlPlane) bool {
+	allowed, err := strconv.ParseBool(cp.Annotations[keystoneDeletionAllowedAnnotation])
+	return err == nil && allowed
 }
 
 // reconcileKeystone projects spec.services.keystone into an owned Keystone CR
@@ -55,6 +80,40 @@ func keystoneName(cp *c5c3v1alpha1.ControlPlane) string {
 // Ready condition back into KeystoneReady.
 func (r *ControlPlaneReconciler) reconcileKeystone(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
+
+	// spec.services.keystone is optional. When unset, this ControlPlane manages
+	// no Keystone service and reports KeystoneReady as not-managed so the
+	// aggregate Ready condition is not blocked (staged adoption).
+	//
+	// A previously-projected Keystone child, however, owns irreplaceable state,
+	// so tearing it down here is DESTRUCTIVE and IRREVERSIBLE: its
+	// <name>-credential-keys Secret (and the OpenBao backup purged with it via the
+	// PushSecret DeletionPolicy=Delete) encrypts every application-credential /
+	// EC2 credential / TOTP secret, which becomes permanently undecryptable once
+	// the keys are gone. A cascade delete on an accidental unset — a single YAML
+	// edit, or a GitOps template that stops rendering the block — would silently
+	// lose that data. Fail safe: preserve the running child by default and only
+	// delete it when the operator explicitly opts in via
+	// keystoneDeletionAllowedAnnotation.
+	if cp.Spec.Services.Keystone == nil {
+		message := "spec.services.keystone is unset; no Keystone service is managed by this ControlPlane"
+		if keystoneDeletionAllowed(cp) {
+			if err := r.deleteOrphanedKeystone(ctx, cp); err != nil {
+				return ctrl.Result{}, err
+			}
+		} else {
+			message += fmt.Sprintf("; any previously-projected Keystone child is preserved to protect its "+
+				"credential/fernet keys (set annotation %s=true to allow deletion)", keystoneDeletionAllowedAnnotation)
+		}
+		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+			Type:               conditionTypeKeystoneReady,
+			Status:             metav1.ConditionTrue,
+			ObservedGeneration: cp.Generation,
+			Reason:             "KeystoneNotManaged",
+			Message:            message,
+		})
+		return ctrl.Result{}, nil
+	}
 
 	// Gate on InfrastructureReady.
 	if !conditions.AllTrue(cp.Status.Conditions, conditionTypeInfrastructureReady) {
@@ -239,10 +298,13 @@ func (r *ControlPlaneReconciler) reconcileKeystone(ctx context.Context, cp *c5c3
 // returns "" — Keystone then falls back to its in-cluster Service DNS and no
 // external URL is advertised.
 //
-// It takes the ServiceKeystoneSpec by value (rather than the ControlPlane) so it
-// operates only on the keystone service block: that field is a required,
-// non-pointer member of ServicesSpec, so there is nothing to nil-check here.
-func keystonePublicEndpoint(ks c5c3v1alpha1.ServiceKeystoneSpec) string {
+// It takes the *ServiceKeystoneSpec (rather than the ControlPlane) so it
+// operates only on the keystone service block. A nil pointer (services.keystone
+// unset) yields "" — no external URL is advertised.
+func keystonePublicEndpoint(ks *c5c3v1alpha1.ServiceKeystoneSpec) string {
+	if ks == nil {
+		return ""
+	}
 	if ks.PublicEndpoint != "" {
 		return ks.PublicEndpoint
 	}
@@ -250,4 +312,33 @@ func keystonePublicEndpoint(ks c5c3v1alpha1.ServiceKeystoneSpec) string {
 		return fmt.Sprintf("https://%s/v3", ks.Gateway.Hostname)
 	}
 	return ""
+}
+
+// deleteOrphanedKeystone removes a previously-projected Keystone child when
+// spec.services.keystone is unset AND the ControlPlane has opted in to deletion
+// via keystoneDeletionAllowedAnnotation (the caller gates this — without the
+// opt-in the child is preserved, since the cascade would destroy its
+// irreplaceable credential/fernet keys). The child carries this ControlPlane as
+// its controller owner reference, so it is only deleted when still owned here;
+// DeletePropagationBackground lets Kubernetes garbage-collect the Keystone's own
+// children (Deployment, Jobs, Secrets) behind it. Not-found and an
+// externally-owned collision are both treated as nothing to do.
+func (r *ControlPlaneReconciler) deleteOrphanedKeystone(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) error {
+	key := client.ObjectKey{Name: keystoneName(cp), Namespace: childNamespace(cp)}
+	keystone := &keystonev1alpha1.Keystone{}
+	if err := r.Get(ctx, key, keystone); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("getting Keystone %s for orphan cleanup: %w", key, err)
+	}
+	if !metav1.IsControlledBy(keystone, cp) {
+		// Not our child (externally managed with a colliding name) — leave it.
+		return nil
+	}
+	if err := r.Delete(ctx, keystone, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("deleting orphaned Keystone %s: %w", key, err)
+	}
+	log.FromContext(ctx).Info("Deleted orphaned Keystone child after services.keystone was unset", "keystone", key)
+	return nil
 }

@@ -283,7 +283,7 @@ operator grows.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `keystone` | [`ServiceKeystoneSpec`](#servicekeystonespec) | Yes | — | Configuration for the Keystone service projected by the reconciler. |
+| `keystone` | [`*ServiceKeystoneSpec`](#servicekeystonespec) | No | `nil` | Configuration for the Keystone service projected by the reconciler. Optional: when unset, this ControlPlane manages no Keystone service (staged adoption, or an externally-managed Keystone) and `KeystoneReady` is reported as not-managed. Flipping it from set to `nil` **preserves** the previously-projected Keystone child by default — deleting it would cascade to the child's irreplaceable `<name>-credential-keys` Secret (and its OpenBao backup), so an accidental unset is fail-safe. Set the `c5c3.io/allow-keystone-deletion: "true"` annotation on the ControlPlane to opt in to deleting the child on unset. |
 
 ---
 
