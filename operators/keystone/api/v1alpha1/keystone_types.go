@@ -48,17 +48,13 @@ type KeystoneList struct {
 }
 
 // KeystoneSpec defines the desired state of Keystone.
-//
-// The drain-window CEL rule mirrors the validating webhook: when one
-// or both of the nil-preserving pointers is unset, the rule substitutes the same
-// effective defaults the reconciler applies. The literals 5 and 30 must stay in
-// sync with DefaultPreStopSleepSeconds and DefaultTerminationGracePeriodSeconds
-// in keystone_webhook.go — kubebuilder/CEL rules cannot reference Go constants.
-// +kubebuilder:validation:XValidation:rule="(has(self.preStopSleepSeconds) ? self.preStopSleepSeconds : 5) < (has(self.terminationGracePeriodSeconds) ? self.terminationGracePeriodSeconds : 30)",message="preStopSleepSeconds must be strictly less than terminationGracePeriodSeconds"
 type KeystoneSpec struct {
-	// +kubebuilder:validation:Minimum=1
-	// +kubebuilder:default=3
-	Replicas int32 `json:"replicas,omitempty"`
+	// Deployment groups the pod-level knobs for the Keystone API Deployment
+	// (replicas, resources, rollout strategy, graceful-termination timings, and
+	// scheduling constraints). Future affinity/tolerations/nodeSelector knobs
+	// land here too, keeping the spec root legible.
+	// +optional
+	Deployment DeploymentSpec `json:"deployment,omitempty"`
 
 	// Image defines the Keystone container image reference.
 	//
@@ -186,13 +182,6 @@ type KeystoneSpec struct {
 	// +optional
 	Gateway *GatewaySpec `json:"gateway,omitempty"`
 
-	// Resources defines the CPU and memory requests and limits for the Keystone API
-	// container. When unset, the defaulting webhook injects sensible defaults
-	// (256Mi/512Mi memory, 100m/500m CPU) to ensure Burstable QoS class and
-	// enable HPA utilization calculations.
-	// +optional
-	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
-
 	// UWSGI configures the uWSGI application server parameters.
 	// When set, the operator uses these values for the uWSGI command in the
 	// Deployment. When nil, hardcoded defaults (processes=2, threads=1,
@@ -207,17 +196,43 @@ type KeystoneSpec struct {
 	// +optional
 	Logging *LoggingSpec `json:"logging,omitempty"`
 
-	// Note (internal design decision — kept out of the user-facing CRD description): Task 1.1 title mentions "default=30" but the
-	// scenario explicitly requires "webhook Default() leaves the pointer nil
-	// so an upgrade does not mutate existing CRs". A +kubebuilder:default=30
+	// ExtraConfig provides free-form INI sections for configuration
+	// not covered by explicit CRD fields.
+	// +optional
+	ExtraConfig map[string]map[string]string `json:"extraConfig,omitempty"`
+}
+
+// DeploymentSpec groups the pod-level knobs for the Keystone API Deployment.
+// Grouping them under spec.deployment keeps the KeystoneSpec root legible as
+// further scheduling knobs (affinity/tolerations/nodeSelector) are added.
+//
+// The drain-window CEL rule mirrors the validating webhook: when one or both of
+// the nil-preserving pointers is unset, the rule substitutes the same effective
+// defaults the reconciler applies. The literals 5 and 30 must stay in sync with
+// DefaultPreStopSleepSeconds and DefaultTerminationGracePeriodSeconds in
+// keystone_webhook.go — kubebuilder/CEL rules cannot reference Go constants.
+// +kubebuilder:validation:XValidation:rule="(has(self.preStopSleepSeconds) ? self.preStopSleepSeconds : 5) < (has(self.terminationGracePeriodSeconds) ? self.terminationGracePeriodSeconds : 30)",message="preStopSleepSeconds must be strictly less than terminationGracePeriodSeconds"
+type DeploymentSpec struct {
+	// Replicas is the desired number of Keystone API pods.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:default=3
+	Replicas int32 `json:"replicas,omitempty"`
+
+	// Resources defines the CPU and memory requests and limits for the Keystone API
+	// container. When unset, the defaulting webhook injects sensible defaults
+	// (256Mi/512Mi memory, 100m/500m CPU) to ensure Burstable QoS class and
+	// enable HPA utilization calculations.
+	// +optional
+	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+
+	// Note (internal design decision — kept out of the user-facing CRD description): a +kubebuilder:default=30
 	// marker on a pointer field would cause the API server to materialize the
 	// value at admission, mutating pre-existing CRs on operator upgrade —
-	// exactly what that scenario forbids. The marker is therefore omitted and the
-	// effective "default 30" is applied by the reconciler (task 3.x) when the
-	// pointer is nil, mirroring the existing AutoscalingSpec.MinReplicas
-	// pattern. This comment group is separated from the field's godoc by a
-	// blank line so controller-gen excludes it from `kubectl explain` output
-	// (review #2 I-004).
+	// exactly what the nil-preserving contract forbids. The marker is therefore
+	// omitted and the effective "default 30" is applied by the reconciler when the
+	// pointer is nil, mirroring the AutoscalingSpec.MinReplicas pattern. This
+	// comment group is separated from the field's godoc by a blank line so
+	// controller-gen excludes it from `kubectl explain` output.
 
 	// TerminationGracePeriodSeconds is the grace period (seconds) granted to
 	// Keystone API pods between SIGTERM and SIGKILL during rolling updates
@@ -244,9 +259,9 @@ type KeystoneSpec struct {
 	// Strategy overrides the Deployment rollout strategy for the Keystone API
 	// Deployment. When nil, the reconciler applies RollingUpdate
 	// with MaxUnavailable=0 and MaxSurge=1 to guarantee surge-before-remove
-	// behavior — available capacity never dips below spec.replicas during an
-	// image-tag patch. Set this to customize maxSurge/maxUnavailable, or to
-	// switch the type to Recreate for site-specific rollout policies.
+	// behavior — available capacity never dips below spec.deployment.replicas
+	// during an image-tag patch. Set this to customize maxSurge/maxUnavailable,
+	// or to switch the type to Recreate for site-specific rollout policies.
 	// +optional
 	Strategy *appsv1.DeploymentStrategy `json:"strategy,omitempty"`
 
@@ -266,11 +281,6 @@ type KeystoneSpec struct {
 	// When unset, no priority class is configured and the cluster default applies.
 	// +optional
 	PriorityClassName *string `json:"priorityClassName,omitempty"`
-
-	// ExtraConfig provides free-form INI sections for configuration
-	// not covered by explicit CRD fields.
-	// +optional
-	ExtraConfig map[string]map[string]string `json:"extraConfig,omitempty"`
 }
 
 // AutoscalingSpec defines the parameters for horizontal pod autoscaling.

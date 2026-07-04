@@ -2,8 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Keystone CR with spec.replicas: -1. The
-# +kubebuilder:validation:Minimum=1 marker on KeystoneSpec.Replicas
+# Keystone CR with spec.deployment.replicas: -1. The
+# +kubebuilder:validation:Minimum=1 marker on DeploymentSpec.Replicas
 # (keystone_types.go) is a structural CRD check that runs before any
 # defaulting path could coerce a negative value. The defaulting webhook
 # only normalizes Replicas == 0 (keystone_webhook.go), so -1 reaches the
@@ -14,7 +14,8 @@ kind: Keystone
 metadata:
   name: invalid-replicas-negative
 spec:
-  replicas: -1
+  deployment:
+    replicas: -1
   image:
     repository: ghcr.io/c5c3/keystone
     tag: "2025.2"

@@ -90,7 +90,7 @@ func TestIntegration_ValidCRAccepted(t *testing.T) {
 	// Verify it can be retrieved.
 	got := &Keystone{}
 	g.Expect(c.Get(ctx, types.NamespacedName{Name: "valid-cr", Namespace: ns.Name}, got)).To(Succeed())
-	g.Expect(got.Spec.Replicas).To(Equal(int32(3)))
+	g.Expect(got.Spec.Deployment.Replicas).To(Equal(int32(3)))
 	g.Expect(got.Spec.Database.Host).To(Equal("db.example.com"))
 }
 
@@ -174,7 +174,7 @@ func TestIntegration_CELRejectsReplicasBelowMinimum(t *testing.T) {
 	// kubebuilder:validation:Minimum=1 CRD schema rule and the validating
 	// webhook both reject negative values.
 	k := validIntegrationKeystone("replicas-neg", ns.Name)
-	k.Spec.Replicas = -1
+	k.Spec.Deployment.Replicas = -1
 
 	err := c.Create(ctx, k)
 	g.Expect(err).To(HaveOccurred(), "negative replicas should be rejected")
@@ -494,8 +494,8 @@ func TestIntegration_WebhookDefaultsSetsZeroValues(t *testing.T) {
 			Namespace: ns.Name,
 		},
 		Spec: KeystoneSpec{
-			Replicas: 0, // webhook defaults to 3
-			Image:    commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2025.2"},
+			Deployment: DeploymentSpec{Replicas: 0}, // webhook defaults to 3
+			Image:      commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2025.2"},
 			Database: commonv1.DatabaseSpec{
 				Host:      "db.example.com",
 				Port:      3306,
@@ -524,7 +524,7 @@ func TestIntegration_WebhookDefaultsSetsZeroValues(t *testing.T) {
 	g.Expect(c.Get(ctx, types.NamespacedName{Name: "defaults-zero", Namespace: ns.Name}, got)).To(Succeed())
 
 	// Verify that the webhook applied defaults for zero-valued fields.
-	g.Expect(got.Spec.Replicas).To(Equal(int32(3)), "replicas should be defaulted to 3")
+	g.Expect(got.Spec.Deployment.Replicas).To(Equal(int32(3)), "replicas should be defaulted to 3")
 	g.Expect(got.Spec.Fernet.MaxActiveKeys).To(Equal(int32(3)), "maxActiveKeys should be defaulted to 3")
 	g.Expect(got.Spec.Cache.Backend).To(Equal("dogpile.cache.pymemcache"), "cache.backend should be defaulted")
 	g.Expect(got.Spec.Bootstrap.AdminUser).To(Equal("admin"), "bootstrap.adminUser should be defaulted")
@@ -547,8 +547,8 @@ func TestIntegration_WebhookDefaultsPreservesExplicit(t *testing.T) {
 			Namespace: ns.Name,
 		},
 		Spec: KeystoneSpec{
-			Replicas: 5,
-			Image:    commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2025.2"},
+			Deployment: DeploymentSpec{Replicas: 5},
+			Image:      commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2025.2"},
 			Database: commonv1.DatabaseSpec{
 				Host:      "db.example.com",
 				Port:      3306,
@@ -577,7 +577,7 @@ func TestIntegration_WebhookDefaultsPreservesExplicit(t *testing.T) {
 	g.Expect(c.Get(ctx, types.NamespacedName{Name: "defaults-explicit", Namespace: ns.Name}, got)).To(Succeed())
 
 	// Verify that the webhook preserved all explicitly set values.
-	g.Expect(got.Spec.Replicas).To(Equal(int32(5)), "explicit replicas should be preserved")
+	g.Expect(got.Spec.Deployment.Replicas).To(Equal(int32(5)), "explicit replicas should be preserved")
 	g.Expect(got.Spec.Fernet.MaxActiveKeys).To(Equal(int32(7)), "explicit maxActiveKeys should be preserved")
 	g.Expect(got.Spec.Cache.Backend).To(Equal("dogpile.cache.memcache"), "explicit cache.backend should be preserved")
 	g.Expect(got.Spec.Bootstrap.AdminUser).To(Equal("custom-admin"), "explicit bootstrap.adminUser should be preserved")
@@ -596,18 +596,18 @@ func TestIntegration_ResourcesDefaultedWhenNil(t *testing.T) {
 	g.Expect(c.Create(ctx, ns)).To(Succeed())
 
 	k := validIntegrationKeystone("res-default", ns.Name)
-	k.Spec.Resources = nil
+	k.Spec.Deployment.Resources = nil
 
 	g.Expect(c.Create(ctx, k)).To(Succeed(), "CR without spec.resources should be accepted")
 
 	got := &Keystone{}
 	g.Expect(c.Get(ctx, types.NamespacedName{Name: "res-default", Namespace: ns.Name}, got)).To(Succeed())
 
-	g.Expect(got.Spec.Resources).NotTo(BeNil(), "resources should be defaulted")
-	g.Expect(got.Spec.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceMemory, DefaultMemoryRequest))
-	g.Expect(got.Spec.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceCPU, DefaultCPURequest))
-	g.Expect(got.Spec.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceMemory, DefaultMemoryLimit))
-	g.Expect(got.Spec.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceCPU, DefaultCPULimit))
+	g.Expect(got.Spec.Deployment.Resources).NotTo(BeNil(), "resources should be defaulted")
+	g.Expect(got.Spec.Deployment.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceMemory, DefaultMemoryRequest))
+	g.Expect(got.Spec.Deployment.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceCPU, DefaultCPURequest))
+	g.Expect(got.Spec.Deployment.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceMemory, DefaultMemoryLimit))
+	g.Expect(got.Spec.Deployment.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceCPU, DefaultCPULimit))
 }
 
 func TestIntegration_ResourcesPreservedWhenExplicit(t *testing.T) {
@@ -620,7 +620,7 @@ func TestIntegration_ResourcesPreservedWhenExplicit(t *testing.T) {
 	g.Expect(c.Create(ctx, ns)).To(Succeed())
 
 	k := validIntegrationKeystone("res-explicit", ns.Name)
-	k.Spec.Resources = &corev1.ResourceRequirements{
+	k.Spec.Deployment.Resources = &corev1.ResourceRequirements{
 		Requests: corev1.ResourceList{
 			corev1.ResourceMemory: resource.MustParse("1Gi"),
 			corev1.ResourceCPU:    resource.MustParse("200m"),
@@ -636,10 +636,10 @@ func TestIntegration_ResourcesPreservedWhenExplicit(t *testing.T) {
 	got := &Keystone{}
 	g.Expect(c.Get(ctx, types.NamespacedName{Name: "res-explicit", Namespace: ns.Name}, got)).To(Succeed())
 
-	g.Expect(got.Spec.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceMemory, resource.MustParse("1Gi")))
-	g.Expect(got.Spec.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceCPU, resource.MustParse("200m")))
-	g.Expect(got.Spec.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceMemory, resource.MustParse("2Gi")))
-	g.Expect(got.Spec.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceCPU, resource.MustParse("1")))
+	g.Expect(got.Spec.Deployment.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceMemory, resource.MustParse("1Gi")))
+	g.Expect(got.Spec.Deployment.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceCPU, resource.MustParse("200m")))
+	g.Expect(got.Spec.Deployment.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceMemory, resource.MustParse("2Gi")))
+	g.Expect(got.Spec.Deployment.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceCPU, resource.MustParse("1")))
 }
 
 func TestIntegration_ResourcesRequestExceedsLimitRejected(t *testing.T) {
@@ -652,7 +652,7 @@ func TestIntegration_ResourcesRequestExceedsLimitRejected(t *testing.T) {
 	g.Expect(c.Create(ctx, ns)).To(Succeed())
 
 	k := validIntegrationKeystone("res-invalid", ns.Name)
-	k.Spec.Resources = &corev1.ResourceRequirements{
+	k.Spec.Deployment.Resources = &corev1.ResourceRequirements{
 		Requests: corev1.ResourceList{
 			corev1.ResourceCPU:    resource.MustParse("1000m"),
 			corev1.ResourceMemory: resource.MustParse("256Mi"),
@@ -969,8 +969,8 @@ func TestIntegration_CRD_CELOnly_RejectsValidationMarkers(t *testing.T) {
 			}
 		}},
 		{"prestop not less than grace period", func(k *Keystone) {
-			k.Spec.PreStopSleepSeconds = ptr.To(int64(20))
-			k.Spec.TerminationGracePeriodSeconds = ptr.To(int64(15))
+			k.Spec.Deployment.PreStopSleepSeconds = ptr.To(int64(20))
+			k.Spec.Deployment.TerminationGracePeriodSeconds = ptr.To(int64(15))
 		}},
 		{"perLoggerLevels invalid value", func(k *Keystone) {
 			k.Spec.Logging = &LoggingSpec{

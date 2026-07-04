@@ -621,7 +621,8 @@ metadata:
   name: keystone
   namespace: openstack
 spec:
-  replicas: 3
+  deployment:
+    replicas: 3
   image:
     repository: ghcr.io/c5c3/keystone
     tag: "<RELEASE>"   # e.g. 2025.2 — must match the image loaded in Step 6
@@ -680,7 +681,8 @@ metadata:
   name: keystone
   namespace: openstack
 spec:
-  replicas: 3
+  deployment:
+    replicas: 3
   image:
     repository: ghcr.io/c5c3/keystone
     tag: "<RELEASE>"   # e.g. 2025.2 — must match the image loaded in Step 6

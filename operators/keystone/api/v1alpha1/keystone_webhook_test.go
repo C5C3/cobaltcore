@@ -28,10 +28,10 @@ import (
 func validKeystone() *Keystone {
 	return &Keystone{
 		Spec: KeystoneSpec{
-			Replicas: 3,
-			Image:    commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2025.2"},
-			Database: commonv1.DatabaseSpec{Host: "db.example.com", Port: 3306, Database: "keystone", SecretRef: commonv1.SecretRefSpec{Name: "keystone-db"}},
-			Cache:    commonv1.CacheSpec{Backend: "dogpile.cache.pymemcache", Servers: []string{"mc:11211"}},
+			Deployment: DeploymentSpec{Replicas: 3},
+			Image:      commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2025.2"},
+			Database:   commonv1.DatabaseSpec{Host: "db.example.com", Port: 3306, Database: "keystone", SecretRef: commonv1.SecretRefSpec{Name: "keystone-db"}},
+			Cache:      commonv1.CacheSpec{Backend: "dogpile.cache.pymemcache", Servers: []string{"mc:11211"}},
 			Fernet: FernetSpec{
 				RotationSchedule: "0 0 * * 0",
 				MaxActiveKeys:    3,
@@ -58,18 +58,18 @@ func TestDefault_SetsZeroValueDefaults(t *testing.T) {
 
 	g.Expect(w.Default(context.Background(), k)).To(Succeed())
 
-	g.Expect(k.Spec.Replicas).To(Equal(int32(3)))
+	g.Expect(k.Spec.Deployment.Replicas).To(Equal(int32(3)))
 	g.Expect(k.Spec.Fernet.MaxActiveKeys).To(Equal(int32(3)))
 	g.Expect(k.Spec.CredentialKeys.MaxActiveKeys).To(Equal(int32(3)))
 	g.Expect(k.Spec.Cache.Backend).To(Equal("dogpile.cache.pymemcache"))
 	g.Expect(k.Spec.Bootstrap.AdminUser).To(Equal("admin"))
 	g.Expect(k.Spec.Bootstrap.Region).To(Equal("RegionOne"))
 	// Verify Resources defaults are applied.
-	g.Expect(k.Spec.Resources).NotTo(BeNil())
-	g.Expect(k.Spec.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceMemory, DefaultMemoryRequest))
-	g.Expect(k.Spec.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceCPU, DefaultCPURequest))
-	g.Expect(k.Spec.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceMemory, DefaultMemoryLimit))
-	g.Expect(k.Spec.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceCPU, DefaultCPULimit))
+	g.Expect(k.Spec.Deployment.Resources).NotTo(BeNil())
+	g.Expect(k.Spec.Deployment.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceMemory, DefaultMemoryRequest))
+	g.Expect(k.Spec.Deployment.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceCPU, DefaultCPURequest))
+	g.Expect(k.Spec.Deployment.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceMemory, DefaultMemoryLimit))
+	g.Expect(k.Spec.Deployment.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceCPU, DefaultCPULimit))
 }
 
 func TestDefault_DoesNotSetFernetRotationSchedule(t *testing.T) {
@@ -115,8 +115,8 @@ func TestDefault_PreservesExplicitValues(t *testing.T) {
 	w := &KeystoneWebhook{}
 	k := &Keystone{
 		Spec: KeystoneSpec{
-			Replicas: 5,
-			Cache:    commonv1.CacheSpec{Backend: "dogpile.cache.memcache"},
+			Deployment: DeploymentSpec{Replicas: 5},
+			Cache:      commonv1.CacheSpec{Backend: "dogpile.cache.memcache"},
 			Fernet: FernetSpec{
 				RotationSchedule: "0 */6 * * *",
 				MaxActiveKeys:    7,
@@ -134,7 +134,7 @@ func TestDefault_PreservesExplicitValues(t *testing.T) {
 
 	g.Expect(w.Default(context.Background(), k)).To(Succeed())
 
-	g.Expect(k.Spec.Replicas).To(Equal(int32(5)))
+	g.Expect(k.Spec.Deployment.Replicas).To(Equal(int32(5)))
 	g.Expect(k.Spec.Fernet.RotationSchedule).To(Equal("0 */6 * * *"))
 	g.Expect(k.Spec.Fernet.MaxActiveKeys).To(Equal(int32(7)))
 	g.Expect(k.Spec.CredentialKeys.RotationSchedule).To(Equal("0 */12 * * *"))
@@ -441,7 +441,7 @@ func TestValidate_ReplicasZeroRejected(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{}
 	k := validKeystone()
-	k.Spec.Replicas = 0
+	k.Spec.Deployment.Replicas = 0
 
 	_, err := w.ValidateCreate(context.Background(), k)
 	g.Expect(err).To(HaveOccurred())
@@ -452,7 +452,7 @@ func TestValidate_ReplicasNegativeRejected(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{}
 	k := validKeystone()
-	k.Spec.Replicas = -1
+	k.Spec.Deployment.Replicas = -1
 
 	_, err := w.ValidateCreate(context.Background(), k)
 	g.Expect(err).To(HaveOccurred())
@@ -463,7 +463,7 @@ func TestValidate_ReplicasOneAccepted(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{}
 	k := validKeystone()
-	k.Spec.Replicas = 1
+	k.Spec.Deployment.Replicas = 1
 
 	_, err := w.ValidateCreate(context.Background(), k)
 	g.Expect(err).NotTo(HaveOccurred())
@@ -1221,9 +1221,9 @@ func TestValidate_Autoscaling_Invalid_ImplicitMinExceedsMax(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{}
 	k := validKeystone()
-	k.Spec.Replicas = 5
+	k.Spec.Deployment.Replicas = 5
 	cpu := int32(80)
-	// MinReplicas is nil — defaults to spec.replicas (5) in the reconciler,
+	// MinReplicas is nil — defaults to spec.deployment.replicas (5) in the reconciler,
 	// which exceeds maxReplicas (3). Validation must reject this.
 	k.Spec.Autoscaling = &AutoscalingSpec{
 		MaxReplicas:          3,
@@ -1233,16 +1233,16 @@ func TestValidate_Autoscaling_Invalid_ImplicitMinExceedsMax(t *testing.T) {
 	_, err := w.ValidateCreate(context.Background(), k)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("maxReplicas"))
-	g.Expect(err.Error()).To(ContainSubstring("spec.replicas"))
+	g.Expect(err.Error()).To(ContainSubstring("spec.deployment.replicas"))
 }
 
 func TestValidate_Autoscaling_Valid_ImplicitMinEqualsMax(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{}
 	k := validKeystone()
-	k.Spec.Replicas = 5
+	k.Spec.Deployment.Replicas = 5
 	cpu := int32(80)
-	// MinReplicas is nil — defaults to spec.replicas (5), which equals maxReplicas.
+	// MinReplicas is nil — defaults to spec.deployment.replicas (5), which equals maxReplicas.
 	// This is a valid edge case.
 	k.Spec.Autoscaling = &AutoscalingSpec{
 		MaxReplicas:          5,
@@ -1396,7 +1396,7 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{Client: newFakeClient().Build()}
 	k := validKeystone()
-	k.Spec.Replicas = 0
+	k.Spec.Deployment.Replicas = 0
 	// Break image — set BOTH tag and digest so the tag/digest XOR fires. Every
 	// new image validation hook must participate in the aggregated error.
 	k.Spec.Image.Digest = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
@@ -1445,7 +1445,7 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 		Hostname:  "",
 	}
 	// Break resources — CPU request exceeds limit.
-	k.Spec.Resources = &corev1.ResourceRequirements{
+	k.Spec.Deployment.Resources = &corev1.ResourceRequirements{
 		Requests: corev1.ResourceList{
 			corev1.ResourceCPU: resource.MustParse("1000m"),
 		},
@@ -1473,11 +1473,11 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 	// terminationGracePeriodSeconds and preStopSleepSeconds.
 	grace := int64(10)
 	preStop := int64(30)
-	k.Spec.TerminationGracePeriodSeconds = &grace
-	k.Spec.PreStopSleepSeconds = &preStop
+	k.Spec.Deployment.TerminationGracePeriodSeconds = &grace
+	k.Spec.Deployment.PreStopSleepSeconds = &preStop
 	// Break deployment strategy — Recreate with a RollingUpdate
 	// block is rejected by the Deployment controller and must be caught early.
-	k.Spec.Strategy = &appsv1.DeploymentStrategy{
+	k.Spec.Deployment.Strategy = &appsv1.DeploymentStrategy{
 		Type:          appsv1.RecreateDeploymentStrategyType,
 		RollingUpdate: &appsv1.RollingUpdateDeployment{},
 	}
@@ -1497,9 +1497,9 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 	}
 	// Break PriorityClassName — nonexistent class.
 	pcn := "nonexistent-class"
-	k.Spec.PriorityClassName = &pcn
+	k.Spec.Deployment.PriorityClassName = &pcn
 	// Break TSC — wrong label selectors.
-	k.Spec.TopologySpreadConstraints = []corev1.TopologySpreadConstraint{
+	k.Spec.Deployment.TopologySpreadConstraints = []corev1.TopologySpreadConstraint{
 		{
 			MaxSkew:           1,
 			TopologyKey:       "topology.kubernetes.io/zone",
@@ -1600,7 +1600,7 @@ func TestValidateUpdate_ResourcesRequestExceedsLimit(t *testing.T) {
 	w := &KeystoneWebhook{}
 	old := validKeystone()
 	updated := validKeystone()
-	updated.Spec.Resources = &corev1.ResourceRequirements{
+	updated.Spec.Deployment.Resources = &corev1.ResourceRequirements{
 		Requests: corev1.ResourceList{
 			corev1.ResourceCPU: resource.MustParse("1000m"),
 		},
@@ -1633,11 +1633,11 @@ func TestDefault_ResourcesSetWhenNil(t *testing.T) {
 
 	g.Expect(w.Default(context.Background(), k)).To(Succeed())
 
-	g.Expect(k.Spec.Resources).NotTo(BeNil())
-	g.Expect(k.Spec.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceMemory, DefaultMemoryRequest))
-	g.Expect(k.Spec.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceCPU, DefaultCPURequest))
-	g.Expect(k.Spec.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceMemory, DefaultMemoryLimit))
-	g.Expect(k.Spec.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceCPU, DefaultCPULimit))
+	g.Expect(k.Spec.Deployment.Resources).NotTo(BeNil())
+	g.Expect(k.Spec.Deployment.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceMemory, DefaultMemoryRequest))
+	g.Expect(k.Spec.Deployment.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceCPU, DefaultCPURequest))
+	g.Expect(k.Spec.Deployment.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceMemory, DefaultMemoryLimit))
+	g.Expect(k.Spec.Deployment.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceCPU, DefaultCPULimit))
 }
 
 // TestDefault_ResourcesSetWhenEmpty verifies that `resources: {}` (non-nil but
@@ -1648,17 +1648,17 @@ func TestDefault_ResourcesSetWhenEmpty(t *testing.T) {
 	w := &KeystoneWebhook{}
 	k := &Keystone{
 		Spec: KeystoneSpec{
-			Resources: &corev1.ResourceRequirements{},
+			Deployment: DeploymentSpec{Resources: &corev1.ResourceRequirements{}},
 		},
 	}
 
 	g.Expect(w.Default(context.Background(), k)).To(Succeed())
 
-	g.Expect(k.Spec.Resources).NotTo(BeNil())
-	g.Expect(k.Spec.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceMemory, DefaultMemoryRequest))
-	g.Expect(k.Spec.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceCPU, DefaultCPURequest))
-	g.Expect(k.Spec.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceMemory, DefaultMemoryLimit))
-	g.Expect(k.Spec.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceCPU, DefaultCPULimit))
+	g.Expect(k.Spec.Deployment.Resources).NotTo(BeNil())
+	g.Expect(k.Spec.Deployment.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceMemory, DefaultMemoryRequest))
+	g.Expect(k.Spec.Deployment.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceCPU, DefaultCPURequest))
+	g.Expect(k.Spec.Deployment.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceMemory, DefaultMemoryLimit))
+	g.Expect(k.Spec.Deployment.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceCPU, DefaultCPULimit))
 }
 
 func TestDefault_ResourcesPreservedWhenExplicit(t *testing.T) {
@@ -1666,14 +1666,16 @@ func TestDefault_ResourcesPreservedWhenExplicit(t *testing.T) {
 	w := &KeystoneWebhook{}
 	k := &Keystone{
 		Spec: KeystoneSpec{
-			Resources: &corev1.ResourceRequirements{
-				Requests: corev1.ResourceList{
-					corev1.ResourceMemory: resource.MustParse("1Gi"),
-					corev1.ResourceCPU:    resource.MustParse("200m"),
-				},
-				Limits: corev1.ResourceList{
-					corev1.ResourceMemory: resource.MustParse("2Gi"),
-					corev1.ResourceCPU:    resource.MustParse("1"),
+			Deployment: DeploymentSpec{
+				Resources: &corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceMemory: resource.MustParse("1Gi"),
+						corev1.ResourceCPU:    resource.MustParse("200m"),
+					},
+					Limits: corev1.ResourceList{
+						corev1.ResourceMemory: resource.MustParse("2Gi"),
+						corev1.ResourceCPU:    resource.MustParse("1"),
+					},
 				},
 			},
 		},
@@ -1681,10 +1683,10 @@ func TestDefault_ResourcesPreservedWhenExplicit(t *testing.T) {
 
 	g.Expect(w.Default(context.Background(), k)).To(Succeed())
 
-	g.Expect(k.Spec.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceMemory, resource.MustParse("1Gi")))
-	g.Expect(k.Spec.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceCPU, resource.MustParse("200m")))
-	g.Expect(k.Spec.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceMemory, resource.MustParse("2Gi")))
-	g.Expect(k.Spec.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceCPU, resource.MustParse("1")))
+	g.Expect(k.Spec.Deployment.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceMemory, resource.MustParse("1Gi")))
+	g.Expect(k.Spec.Deployment.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceCPU, resource.MustParse("200m")))
+	g.Expect(k.Spec.Deployment.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceMemory, resource.MustParse("2Gi")))
+	g.Expect(k.Spec.Deployment.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceCPU, resource.MustParse("1")))
 }
 
 // TestDefault_ResourcesPreservedWhenPartial verifies that partially-set resources
@@ -1696,12 +1698,14 @@ func TestDefault_ResourcesPreservedWhenPartial(t *testing.T) {
 	w := &KeystoneWebhook{}
 	k := &Keystone{
 		Spec: KeystoneSpec{
-			Resources: &corev1.ResourceRequirements{
-				Requests: corev1.ResourceList{
-					corev1.ResourceMemory: resource.MustParse("512Mi"),
-					corev1.ResourceCPU:    resource.MustParse("250m"),
+			Deployment: DeploymentSpec{
+				Resources: &corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceMemory: resource.MustParse("512Mi"),
+						corev1.ResourceCPU:    resource.MustParse("250m"),
+					},
+					// Limits intentionally empty — user only sets requests.
 				},
-				// Limits intentionally empty — user only sets requests.
 			},
 		},
 	}
@@ -1709,10 +1713,10 @@ func TestDefault_ResourcesPreservedWhenPartial(t *testing.T) {
 	g.Expect(w.Default(context.Background(), k)).To(Succeed())
 
 	// Requests must be preserved as-is.
-	g.Expect(k.Spec.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceMemory, resource.MustParse("512Mi")))
-	g.Expect(k.Spec.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceCPU, resource.MustParse("250m")))
+	g.Expect(k.Spec.Deployment.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceMemory, resource.MustParse("512Mi")))
+	g.Expect(k.Spec.Deployment.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceCPU, resource.MustParse("250m")))
 	// Limits must remain empty — the webhook must not inject defaults.
-	g.Expect(k.Spec.Resources.Limits).To(BeEmpty())
+	g.Expect(k.Spec.Deployment.Resources.Limits).To(BeEmpty())
 }
 
 // --- Resources validation tests ---
@@ -1721,7 +1725,7 @@ func TestValidate_ResourcesValidAccepted(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{}
 	k := validKeystone()
-	k.Spec.Resources = &corev1.ResourceRequirements{
+	k.Spec.Deployment.Resources = &corev1.ResourceRequirements{
 		Requests: corev1.ResourceList{
 			corev1.ResourceCPU:    resource.MustParse("100m"),
 			corev1.ResourceMemory: resource.MustParse("256Mi"),
@@ -1740,7 +1744,7 @@ func TestValidate_ResourcesCPURequestExceedsLimitRejected(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{}
 	k := validKeystone()
-	k.Spec.Resources = &corev1.ResourceRequirements{
+	k.Spec.Deployment.Resources = &corev1.ResourceRequirements{
 		Requests: corev1.ResourceList{
 			corev1.ResourceCPU:    resource.MustParse("1000m"),
 			corev1.ResourceMemory: resource.MustParse("256Mi"),
@@ -1762,7 +1766,7 @@ func TestValidate_ResourcesMemoryRequestExceedsLimitRejected(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{}
 	k := validKeystone()
-	k.Spec.Resources = &corev1.ResourceRequirements{
+	k.Spec.Deployment.Resources = &corev1.ResourceRequirements{
 		Requests: corev1.ResourceList{
 			corev1.ResourceCPU:    resource.MustParse("100m"),
 			corev1.ResourceMemory: resource.MustParse("1Gi"),
@@ -1784,7 +1788,7 @@ func TestValidate_ResourcesBothExceedReportsBothErrors(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{}
 	k := validKeystone()
-	k.Spec.Resources = &corev1.ResourceRequirements{
+	k.Spec.Deployment.Resources = &corev1.ResourceRequirements{
 		Requests: corev1.ResourceList{
 			corev1.ResourceCPU:    resource.MustParse("1000m"),
 			corev1.ResourceMemory: resource.MustParse("1Gi"),
@@ -1805,7 +1809,7 @@ func TestValidate_ResourcesNilAccepted(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{}
 	k := validKeystone()
-	k.Spec.Resources = nil
+	k.Spec.Deployment.Resources = nil
 
 	_, err := w.ValidateCreate(context.Background(), k)
 	g.Expect(err).NotTo(HaveOccurred())
@@ -1815,7 +1819,7 @@ func TestValidate_ResourcesRequestsOnlyAccepted(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{}
 	k := validKeystone()
-	k.Spec.Resources = &corev1.ResourceRequirements{
+	k.Spec.Deployment.Resources = &corev1.ResourceRequirements{
 		Requests: corev1.ResourceList{
 			corev1.ResourceCPU:    resource.MustParse("100m"),
 			corev1.ResourceMemory: resource.MustParse("256Mi"),
@@ -2239,7 +2243,7 @@ func TestValidate_PriorityClassNameExistsAccepted(t *testing.T) {
 	k := validKeystone()
 	k.Name = "my-ks"
 	pcn := "system-cluster-critical"
-	k.Spec.PriorityClassName = &pcn
+	k.Spec.Deployment.PriorityClassName = &pcn
 
 	_, err := w.ValidateCreate(context.Background(), k)
 	g.Expect(err).NotTo(HaveOccurred())
@@ -2252,7 +2256,7 @@ func TestValidate_PriorityClassNameNotFoundRejected(t *testing.T) {
 	k := validKeystone()
 	k.Name = "my-ks"
 	pcn := "nonexistent-class"
-	k.Spec.PriorityClassName = &pcn
+	k.Spec.Deployment.PriorityClassName = &pcn
 
 	_, err := w.ValidateCreate(context.Background(), k)
 	g.Expect(err).To(HaveOccurred())
@@ -2283,7 +2287,7 @@ func TestValidate_TopologySpreadConstraintCorrectLabelsAccepted(t *testing.T) {
 	w := &KeystoneWebhook{}
 	k := validKeystone()
 	k.Name = "my-ks"
-	k.Spec.TopologySpreadConstraints = []corev1.TopologySpreadConstraint{
+	k.Spec.Deployment.TopologySpreadConstraints = []corev1.TopologySpreadConstraint{
 		{
 			MaxSkew:           1,
 			TopologyKey:       "topology.kubernetes.io/zone",
@@ -2306,7 +2310,7 @@ func TestValidate_TopologySpreadConstraintWrongLabelsRejected(t *testing.T) {
 	w := &KeystoneWebhook{}
 	k := validKeystone()
 	k.Name = "my-ks"
-	k.Spec.TopologySpreadConstraints = []corev1.TopologySpreadConstraint{
+	k.Spec.Deployment.TopologySpreadConstraints = []corev1.TopologySpreadConstraint{
 		{
 			MaxSkew:           1,
 			TopologyKey:       "topology.kubernetes.io/zone",
@@ -2331,7 +2335,7 @@ func TestValidate_TopologySpreadConstraintNilSelectorRejected(t *testing.T) {
 	w := &KeystoneWebhook{}
 	k := validKeystone()
 	k.Name = "my-ks"
-	k.Spec.TopologySpreadConstraints = []corev1.TopologySpreadConstraint{
+	k.Spec.Deployment.TopologySpreadConstraints = []corev1.TopologySpreadConstraint{
 		{
 			MaxSkew:           1,
 			TopologyKey:       "topology.kubernetes.io/zone",
@@ -2350,7 +2354,7 @@ func TestValidate_TopologySpreadConstraintMatchExpressionsRejected(t *testing.T)
 	w := &KeystoneWebhook{}
 	k := validKeystone()
 	k.Name = "my-ks"
-	k.Spec.TopologySpreadConstraints = []corev1.TopologySpreadConstraint{
+	k.Spec.Deployment.TopologySpreadConstraints = []corev1.TopologySpreadConstraint{
 		{
 			MaxSkew:           1,
 			TopologyKey:       "topology.kubernetes.io/zone",
@@ -2382,7 +2386,7 @@ func TestValidate_TerminationGracePeriodBelowMinRejected(t *testing.T) {
 	w := &KeystoneWebhook{}
 	k := validKeystone()
 	grace := int64(9)
-	k.Spec.TerminationGracePeriodSeconds = &grace
+	k.Spec.Deployment.TerminationGracePeriodSeconds = &grace
 
 	_, err := w.ValidateCreate(context.Background(), k)
 	g.Expect(err).To(HaveOccurred())
@@ -2395,7 +2399,7 @@ func TestValidate_TerminationGracePeriodAtMinAccepted(t *testing.T) {
 	w := &KeystoneWebhook{}
 	k := validKeystone()
 	grace := int64(10)
-	k.Spec.TerminationGracePeriodSeconds = &grace
+	k.Spec.Deployment.TerminationGracePeriodSeconds = &grace
 
 	_, err := w.ValidateCreate(context.Background(), k)
 	g.Expect(err).NotTo(HaveOccurred())
@@ -2405,7 +2409,7 @@ func TestValidate_TerminationGracePeriodNilAccepted(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{}
 	k := validKeystone()
-	k.Spec.TerminationGracePeriodSeconds = nil
+	k.Spec.Deployment.TerminationGracePeriodSeconds = nil
 
 	_, err := w.ValidateCreate(context.Background(), k)
 	g.Expect(err).NotTo(HaveOccurred())
@@ -2416,7 +2420,7 @@ func TestValidate_PreStopSleepSecondsNegativeRejected(t *testing.T) {
 	w := &KeystoneWebhook{}
 	k := validKeystone()
 	preStop := int64(-1)
-	k.Spec.PreStopSleepSeconds = &preStop
+	k.Spec.Deployment.PreStopSleepSeconds = &preStop
 
 	_, err := w.ValidateCreate(context.Background(), k)
 	g.Expect(err).To(HaveOccurred())
@@ -2428,7 +2432,7 @@ func TestValidate_PreStopSleepSecondsZeroAccepted(t *testing.T) {
 	w := &KeystoneWebhook{}
 	k := validKeystone()
 	preStop := int64(0)
-	k.Spec.PreStopSleepSeconds = &preStop
+	k.Spec.Deployment.PreStopSleepSeconds = &preStop
 
 	_, err := w.ValidateCreate(context.Background(), k)
 	g.Expect(err).NotTo(HaveOccurred())
@@ -2438,7 +2442,7 @@ func TestValidate_PreStopSleepSecondsNilAccepted(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{}
 	k := validKeystone()
-	k.Spec.PreStopSleepSeconds = nil
+	k.Spec.Deployment.PreStopSleepSeconds = nil
 
 	_, err := w.ValidateCreate(context.Background(), k)
 	g.Expect(err).NotTo(HaveOccurred())
@@ -2452,8 +2456,8 @@ func TestValidate_PreStopEqualsTerminationGraceRejected(t *testing.T) {
 	k := validKeystone()
 	grace := int64(30)
 	preStop := int64(30)
-	k.Spec.TerminationGracePeriodSeconds = &grace
-	k.Spec.PreStopSleepSeconds = &preStop
+	k.Spec.Deployment.TerminationGracePeriodSeconds = &grace
+	k.Spec.Deployment.PreStopSleepSeconds = &preStop
 
 	_, err := w.ValidateCreate(context.Background(), k)
 	g.Expect(err).To(HaveOccurred())
@@ -2467,8 +2471,8 @@ func TestValidate_PreStopExceedsTerminationGraceRejected(t *testing.T) {
 	k := validKeystone()
 	grace := int64(30)
 	preStop := int64(45)
-	k.Spec.TerminationGracePeriodSeconds = &grace
-	k.Spec.PreStopSleepSeconds = &preStop
+	k.Spec.Deployment.TerminationGracePeriodSeconds = &grace
+	k.Spec.Deployment.PreStopSleepSeconds = &preStop
 
 	_, err := w.ValidateCreate(context.Background(), k)
 	g.Expect(err).To(HaveOccurred())
@@ -2481,8 +2485,8 @@ func TestValidate_PreStopStrictlyLessAccepted(t *testing.T) {
 	k := validKeystone()
 	grace := int64(60)
 	preStop := int64(5)
-	k.Spec.TerminationGracePeriodSeconds = &grace
-	k.Spec.PreStopSleepSeconds = &preStop
+	k.Spec.Deployment.TerminationGracePeriodSeconds = &grace
+	k.Spec.Deployment.PreStopSleepSeconds = &preStop
 
 	_, err := w.ValidateCreate(context.Background(), k)
 	g.Expect(err).NotTo(HaveOccurred())
@@ -2492,8 +2496,8 @@ func TestValidate_PreStopAndGraceNilAccepted(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{}
 	k := validKeystone()
-	k.Spec.TerminationGracePeriodSeconds = nil
-	k.Spec.PreStopSleepSeconds = nil
+	k.Spec.Deployment.TerminationGracePeriodSeconds = nil
+	k.Spec.Deployment.PreStopSleepSeconds = nil
 
 	_, err := w.ValidateCreate(context.Background(), k)
 	g.Expect(err).NotTo(HaveOccurred())
@@ -2577,8 +2581,8 @@ func TestValidate_HarakiriAtDrainBoundaryRejected(t *testing.T) {
 	preStop := int64(5)
 	// drain = 30 - 5 = 25; harakiri == drain must be rejected.
 	harakiri := int32(25)
-	k.Spec.TerminationGracePeriodSeconds = &grace
-	k.Spec.PreStopSleepSeconds = &preStop
+	k.Spec.Deployment.TerminationGracePeriodSeconds = &grace
+	k.Spec.Deployment.PreStopSleepSeconds = &preStop
 	k.Spec.UWSGI = &UWSGISpec{
 		Processes: 2,
 		Threads:   1,
@@ -2597,8 +2601,8 @@ func TestValidate_HarakiriAboveDrainRejected(t *testing.T) {
 	grace := int64(30)
 	preStop := int64(5)
 	harakiri := int32(40)
-	k.Spec.TerminationGracePeriodSeconds = &grace
-	k.Spec.PreStopSleepSeconds = &preStop
+	k.Spec.Deployment.TerminationGracePeriodSeconds = &grace
+	k.Spec.Deployment.PreStopSleepSeconds = &preStop
 	k.Spec.UWSGI = &UWSGISpec{
 		Processes: 2,
 		Threads:   1,
@@ -2670,7 +2674,7 @@ func TestValidate_StrategyRecreateWithRollingUpdateBlockRejected(t *testing.T) {
 	k := validKeystone()
 	maxSurge := intstr.FromInt(1)
 	maxUnavailable := intstr.FromInt(0)
-	k.Spec.Strategy = &appsv1.DeploymentStrategy{
+	k.Spec.Deployment.Strategy = &appsv1.DeploymentStrategy{
 		Type: appsv1.RecreateDeploymentStrategyType,
 		RollingUpdate: &appsv1.RollingUpdateDeployment{
 			MaxSurge:       &maxSurge,
@@ -2688,7 +2692,7 @@ func TestValidate_StrategyRecreateWithoutRollingUpdateAccepted(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{}
 	k := validKeystone()
-	k.Spec.Strategy = &appsv1.DeploymentStrategy{
+	k.Spec.Deployment.Strategy = &appsv1.DeploymentStrategy{
 		Type: appsv1.RecreateDeploymentStrategyType,
 	}
 
@@ -2702,7 +2706,7 @@ func TestValidate_StrategyRollingUpdateAccepted(t *testing.T) {
 	k := validKeystone()
 	maxSurge := intstr.FromInt(1)
 	maxUnavailable := intstr.FromInt(0)
-	k.Spec.Strategy = &appsv1.DeploymentStrategy{
+	k.Spec.Deployment.Strategy = &appsv1.DeploymentStrategy{
 		Type: appsv1.RollingUpdateDeploymentStrategyType,
 		RollingUpdate: &appsv1.RollingUpdateDeployment{
 			MaxSurge:       &maxSurge,
@@ -2718,7 +2722,7 @@ func TestValidate_StrategyNilAccepted(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{}
 	k := validKeystone()
-	k.Spec.Strategy = nil
+	k.Spec.Deployment.Strategy = nil
 
 	_, err := w.ValidateCreate(context.Background(), k)
 	g.Expect(err).NotTo(HaveOccurred())

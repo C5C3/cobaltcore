@@ -674,7 +674,7 @@ next bootstrap reconcile.
 Two paths are supported for the post-upgrade catalog refresh:
 
 1. **Generation bump (recommended).** Apply any change to the Keystone CR
-   `spec` (e.g., bump the image tag, tweak `spec.replicas`, or use a no-op
+   `spec` (e.g., bump the image tag, tweak `spec.deployment.replicas`, or use a no-op
    annotation update on the CR `metadata`). The increased `metadata.generation`
    makes `reconcileBootstrap` re-run the bootstrap Job, which calls
    `keystone-manage bootstrap` with the new bare-name URLs. Catalog endpoints

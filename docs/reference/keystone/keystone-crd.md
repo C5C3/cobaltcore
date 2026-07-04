@@ -71,7 +71,8 @@ metadata:
   name: keystone
   namespace: openstack
 spec:
-  replicas: 3
+  deployment:
+    replicas: 3
   image:
     repository: c5c3/keystone
     tag: "2025.1"
@@ -103,22 +104,6 @@ spec:
       - namespaceSelector:
           matchLabels:
             kubernetes.io/metadata.name: openstack
-  topologySpreadConstraints:
-    - maxSkew: 1
-      topologyKey: topology.kubernetes.io/zone
-      whenUnsatisfiable: ScheduleAnyway
-      labelSelector:
-        matchLabels:
-          app.kubernetes.io/name: keystone
-          app.kubernetes.io/instance: keystone
-  priorityClassName: system-cluster-critical
-  resources:
-    requests:
-      memory: 256Mi
-      cpu: 100m
-    limits:
-      memory: 512Mi
-      cpu: 500m
   uwsgi:
     processes: 4
     threads: 4
@@ -163,7 +148,7 @@ status:
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `replicas` | `int32` | No | `3` | Number of Keystone API replicas. Minimum: 1. The webhook provides a secondary default of 3 when zero. |
+| `deployment` | [`DeploymentSpec`](#deploymentspec) | No | See below | Pod-level knobs for the Keystone API Deployment (replicas, resources, rollout strategy, graceful-termination timings, scheduling constraints). Grouping keeps the spec root legible as future affinity/tolerations/nodeSelector knobs are added. |
 | `image` | [`ImageSpec`](#imagespec) | Yes | — | Keystone container image reference. |
 | `database` | [`DatabaseSpec`](#databasespec) | Yes | — | MariaDB connection configuration. Includes the optional [`tls`](#databasetlsspec) sub-block that opts in to TLS / mTLS for the connection; when `nil`, the connection is plaintext TCP — preserving the previous behavior for all existing CRs. |
 | `cache` | [`CacheSpec`](#cachespec) | Yes | — | Memcached cache configuration. |
@@ -179,15 +164,23 @@ status:
 | `autoscaling` | [`*AutoscalingSpec`](#autoscalingspec) | No | `nil` | Horizontal pod autoscaling configuration. When set, an HPA is created targeting the `{name}` Deployment. When removed, the HPA is deleted. |
 | `networkPolicy` | [`*NetworkPolicySpec`](#networkpolicyspec) | No | `nil` | Network isolation for Keystone API pods. When set, a NetworkPolicy restricting ingress to TCP 5000 and auto-deriving egress rules for DNS, MariaDB, and Memcached is created. When `nil`, no NetworkPolicy is managed and traffic is unrestricted. |
 | `gateway` | [`*GatewaySpec`](#gatewayspec) | No | `nil` | Gateway API HTTPRoute configuration. When set, an HTTPRoute is created targeting the `{name}` Service on port 5000 and attached to the referenced pre-existing Gateway; `status.endpoint` is updated to `https://{hostname}/v3`. When removed, the HTTPRoute is deleted and `status.endpoint` reverts to the cluster-local Service URL. |
-| `resources` | [`*corev1.ResourceRequirements`](https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/pod-v1/#resources) | No | See below | CPU and memory requests and limits for the Keystone API container. When unset, the defaulting webhook injects sensible defaults to ensure Burstable QoS class and enable HPA utilization calculations. |
 | `uwsgi` | [`*UWSGISpec`](#uwsgispec) | No | `nil` | uWSGI application server parameters. When set, the operator uses these values for the Deployment container command. When `nil`, hardcoded defaults (processes=2, threads=1, httpKeepAlive=true) are used in the reconciler. |
 | `logging` | [`*LoggingSpec`](#loggingspec) | No | See below | oslo.log configuration for the Keystone API container. When `nil`, the defaulting webhook materializes a baseline (`format=text`, `level=INFO`, `debug=false`, no per-logger overrides) so downstream reconciler code never sees a nil pointer. When set, zero-valued sub-fields are partially filled with the same baseline. |
+| `extraConfig` | `map[string]map[string]string` | No | `nil` | Free-form INI sections for additional configuration. |
+
+### DeploymentSpec
+
+Groups the pod-level knobs for the Keystone API Deployment under `spec.deployment`.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `replicas` | `int32` | No | `3` | Number of Keystone API replicas. Minimum: 1. The webhook provides a secondary default of 3 when zero. |
+| `resources` | [`*corev1.ResourceRequirements`](https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/pod-v1/#resources) | No | See below | CPU and memory requests and limits for the Keystone API container. When unset, the defaulting webhook injects sensible defaults to ensure Burstable QoS class and enable HPA utilization calculations. |
 | `topologySpreadConstraints` | [`[]corev1.TopologySpreadConstraint`](https://kubernetes.io/docs/concepts/scheduling-eviction/topology-spread-constraints/) | No | See [below](#topologyspreadconstraints) | Scheduler hints for spreading pods across zones and nodes. `nil` injects two defaults (zone + hostname, MaxSkew=1, `ScheduleAnyway`); a non-nil value (including `[]`) is used verbatim. |
 | `priorityClassName` | `*string` | No | `nil` | PriorityClass attached to the Keystone API pod spec. When set, the webhook verifies the class exists; when unset, no priority class is configured. |
 | `terminationGracePeriodSeconds` | `*int64` | No | `nil` | Grace period (seconds) granted to Keystone API pods between SIGTERM and SIGKILL during rolling updates. When `nil`, the reconciler applies `30` (the CRD schema emits no `default:` so pre-existing CRs are not mutated on operator upgrade). Minimum: `10`. Must be strictly greater than `preStopSleepSeconds`. Drives the PodSpec `terminationGracePeriodSeconds`. See [Graceful-termination fields](#graceful-termination-fields) and the HA rollout sequence in `architecture/docs/04-architecture/04-high-availability.md`. |
 | `preStopSleepSeconds` | `*int64` | No | `nil` | Sleep duration (seconds) of the preStop lifecycle hook, covering the window between EndpointSlice removal and kube-proxy/ingress propagation. When `nil`, the reconciler applies `5` (the CRD schema emits no `default:` so pre-existing CRs are not mutated on operator upgrade). Minimum: `0`. Must be strictly less than `terminationGracePeriodSeconds`. See [Graceful-termination fields](#graceful-termination-fields). |
-| `strategy` | [`*appsv1.DeploymentStrategy`](https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/deployment-v1/#DeploymentSpec) | No | `RollingUpdate(maxSurge=1, maxUnavailable=0)` | Overrides the Deployment rollout strategy. When `nil`, the reconciler injects `RollingUpdate` with `maxUnavailable=0` and `maxSurge=1` so available capacity never drops below `spec.replicas` during an image-tag patch. Set to customize surge/unavailable counts or switch to `Recreate`. |
-| `extraConfig` | `map[string]map[string]string` | No | `nil` | Free-form INI sections for additional configuration. |
+| `strategy` | [`*appsv1.DeploymentStrategy`](https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/deployment-v1/#DeploymentSpec) | No | `RollingUpdate(maxSurge=1, maxUnavailable=0)` | Overrides the Deployment rollout strategy. When `nil`, the reconciler injects `RollingUpdate` with `maxUnavailable=0` and `maxSurge=1` so available capacity never drops below `spec.deployment.replicas` during an image-tag patch. Set to customize surge/unavailable counts or switch to `Recreate`. |
 
 ### CEL Validation Rules
 
@@ -213,13 +206,13 @@ validating webhook is unavailable.
 | `spec.autoscaling` | `has(self.targetCPUUtilization) \|\| has(self.targetMemoryUtilization)` | "at least one of targetCPUUtilization or targetMemoryUtilization must be set" |
 | `spec.autoscaling` | `!has(self.minReplicas) \|\| self.minReplicas <= self.maxReplicas` | "minReplicas must not exceed maxReplicas" |
 | `spec.networkPolicy` | `size(self.ingress) > 0` | "at least one ingress source must be specified" |
-| `spec` | drain window: effective `preStopSleepSeconds` (default 5) must be `<` effective `terminationGracePeriodSeconds` (default 30) | "preStopSleepSeconds must be strictly less than terminationGracePeriodSeconds" |
+| `spec.deployment` | drain window: effective `preStopSleepSeconds` (default 5) must be `<` effective `terminationGracePeriodSeconds` (default 30) | "preStopSleepSeconds must be strictly less than terminationGracePeriodSeconds" |
 | `spec.uwsgi` | `!has(self.httpKeepAliveTimeout) \|\| !has(self.httpKeepAlive) \|\| self.httpKeepAlive` | "httpKeepAliveTimeout may only be set when httpKeepAlive is true" |
 | `spec.logging.perLoggerLevels` | `self.all(k, k != '')` | "logger name must not be empty" |
 | `spec.logging.perLoggerLevels` | `self.all(k, self[k] in ['DEBUG','INFO','WARNING','ERROR','CRITICAL'])` | "per-logger level must be one of DEBUG, INFO, WARNING, ERROR, CRITICAL" |
 | `spec.plugins` | list-map keyed by `configSection` (`x-kubernetes-list-type: map`) | "Duplicate value" (a repeated `configSection` is rejected by the API server) |
 | `spec.bootstrap.publicEndpoint` | Pattern: `^https?://` | (non-URL value rejected by API server) |
-| `spec.replicas` | Minimum: 1 | — |
+| `spec.deployment.replicas` | Minimum: 1 | — |
 | `spec.fernet.maxActiveKeys` | Minimum: 3 | — |
 | `spec.credentialKeys.maxActiveKeys` | Minimum: 3 | — |
 | `spec.autoscaling.maxReplicas` | Minimum: 1 | — |
@@ -230,8 +223,8 @@ validating webhook is unavailable.
 | `spec.uwsgi.threads` | Minimum: 1 | — |
 | `spec.uwsgi.harakiri` | Minimum: 1 | — |
 | `spec.uwsgi.httpKeepAliveTimeout` | Minimum: 1 | — |
-| `spec.terminationGracePeriodSeconds` | Minimum: 10 | — |
-| `spec.preStopSleepSeconds` | Minimum: 0 | — |
+| `spec.deployment.terminationGracePeriodSeconds` | Minimum: 10 | — |
+| `spec.deployment.preStopSleepSeconds` | Minimum: 0 | — |
 | `spec.gateway.hostname` | MinLength: 1 | (empty string rejected by API server) |
 | `spec.gateway.parentRef.name` | MinLength: 1 | (empty string rejected by API server) |
 
@@ -254,13 +247,13 @@ existing HPA.
 
 While `spec.autoscaling` is set, the operator leaves the Deployment's
 `.spec.replicas` unmanaged (nil) so the HPA owns the replica count and the
-reconciler does not reset it on each pass. `spec.replicas` is then used only
+reconciler does not reset it on each pass. `spec.deployment.replicas` is then used only
 as the initial replica count and as the `minReplicas` default when
 `autoscaling.minReplicas` is unset.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `minReplicas` | `*int32` | No | `spec.replicas` | Lower bound for the number of replicas. Minimum: 1. Defaults to `spec.replicas` when unset, allowing the HPA to scale down to the static replica count. |
+| `minReplicas` | `*int32` | No | `spec.deployment.replicas` | Lower bound for the number of replicas. Minimum: 1. Defaults to `spec.deployment.replicas` when unset, allowing the HPA to scale down to the static replica count. |
 | `maxReplicas` | `int32` | Yes | — | Upper bound for the number of replicas. Minimum: 1. |
 | `targetCPUUtilization` | `*int32` | No\* | — | Target average CPU utilization as a percentage. Range: 1–100. At least one of `targetCPUUtilization` or `targetMemoryUtilization` must be set. |
 | `targetMemoryUtilization` | `*int32` | No\* | — | Target average memory utilization as a percentage. Range: 1–100. At least one of `targetCPUUtilization` or `targetMemoryUtilization` must be set. |
@@ -279,7 +272,7 @@ The HPA created from this spec has the following shape:
 | `spec.scaleTargetRef.apiVersion` | `apps/v1` |
 | `spec.scaleTargetRef.kind` | `Deployment` |
 | `spec.scaleTargetRef.name` | `{name}` |
-| `spec.minReplicas` | `autoscaling.minReplicas` (or `spec.replicas` if unset) |
+| `spec.minReplicas` | `autoscaling.minReplicas` (or `spec.deployment.replicas` if unset) |
 | `spec.maxReplicas` | `autoscaling.maxReplicas` |
 | `spec.metrics` | CPU and/or memory `Resource` metrics based on which targets are set |
 | `ownerReferences` | Points to the Keystone CR (controller: true) |
@@ -293,7 +286,8 @@ metadata:
   name: keystone
   namespace: openstack
 spec:
-  replicas: 3
+  deployment:
+    replicas: 3
   image:
     repository: c5c3/keystone
     tag: "2025.1"
@@ -369,7 +363,8 @@ metadata:
   name: keystone
   namespace: openstack
 spec:
-  replicas: 3
+  deployment:
+    replicas: 3
   image:
     repository: c5c3/keystone
     tag: "2025.1"
@@ -385,8 +380,8 @@ spec:
 ## Graceful-termination fields
 
 Five CR fields control the shutdown envelope applied during Keystone rolling
-updates — `spec.terminationGracePeriodSeconds`, `spec.preStopSleepSeconds`,
-`spec.strategy`, `spec.uwsgi.harakiri`, and `spec.uwsgi.httpKeepAliveTimeout`.
+updates — `spec.deployment.terminationGracePeriodSeconds`, `spec.deployment.preStopSleepSeconds`,
+`spec.deployment.strategy`, `spec.uwsgi.harakiri`, and `spec.uwsgi.httpKeepAliveTimeout`.
 Each field is listed in its owning section (top-level `KeystoneSpec` or
 `UWSGISpec`); this section consolidates their semantics, interaction rules,
 and defaulting behavior.
@@ -399,9 +394,9 @@ For the rollout sequence diagram and tunable-selection guidance, see
 
 | Field                                     | Type                              | Default                                      | Minimum | Effect                                                                                                                             |
 | ----------------------------------------- | --------------------------------- | -------------------------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `spec.terminationGracePeriodSeconds`      | `*int64`                          | `30`                                         | `10`    | PodSpec `terminationGracePeriodSeconds` — total envelope between SIGTERM and SIGKILL.                                              |
-| `spec.preStopSleepSeconds`                | `*int64`                          | `5`                                          | `0`     | Sleep duration of the preStop hook (`/bin/sh -c 'sleep <n>'`). Covers the EndpointSlice / kube-proxy propagation window.           |
-| `spec.strategy`                           | `*appsv1.DeploymentStrategy`      | `RollingUpdate(maxSurge=1, maxUnavailable=0)` | —       | Deployment rollout strategy. Default guarantees surge-before-remove so capacity never dips below `spec.replicas`.                  |
+| `spec.deployment.terminationGracePeriodSeconds`      | `*int64`                          | `30`                                         | `10`    | PodSpec `terminationGracePeriodSeconds` — total envelope between SIGTERM and SIGKILL.                                              |
+| `spec.deployment.preStopSleepSeconds`                | `*int64`                          | `5`                                          | `0`     | Sleep duration of the preStop hook (`/bin/sh -c 'sleep <n>'`). Covers the EndpointSlice / kube-proxy propagation window.           |
+| `spec.deployment.strategy`                           | `*appsv1.DeploymentStrategy`      | `RollingUpdate(maxSurge=1, maxUnavailable=0)` | —       | Deployment rollout strategy. Default guarantees surge-before-remove so capacity never dips below `spec.deployment.replicas`.                  |
 | `spec.uwsgi.harakiri`                     | `*int32`                          | unset (flag omitted)                         | `1`     | Per-request worker kill bound (`--harakiri <n>`). Prevents a single stuck request from holding a worker past the shutdown envelope. |
 | `spec.uwsgi.httpKeepAliveTimeout`         | `*int32`                          | unset (flag omitted)                         | `1`     | Idle keep-alive socket timeout (`--http-keepalive-timeout <n>`). Only emitted when `httpKeepAlive=true`.                           |
 
@@ -436,9 +431,9 @@ older CRs continue to reconcile without the fields set:
 
 | Field                                | Fallback when `nil`                                         |
 | ------------------------------------ | ----------------------------------------------------------- |
-| `spec.terminationGracePeriodSeconds` | PodSpec receives `30`                                       |
-| `spec.preStopSleepSeconds`           | preStop command is `sleep 5`                                |
-| `spec.strategy`                      | `RollingUpdate` with `maxUnavailable=0`, `maxSurge=1`       |
+| `spec.deployment.terminationGracePeriodSeconds` | PodSpec receives `30`                                       |
+| `spec.deployment.preStopSleepSeconds`           | preStop command is `sleep 5`                                |
+| `spec.deployment.strategy`                      | `RollingUpdate` with `maxUnavailable=0`, `maxSurge=1`       |
 | `spec.uwsgi.harakiri`                | `--harakiri` flag is omitted                                |
 | `spec.uwsgi.httpKeepAliveTimeout`    | `--http-keepalive-timeout` flag is omitted                  |
 
@@ -455,18 +450,19 @@ metadata:
   name: keystone
   namespace: openstack
 spec:
-  replicas: 3
+  deployment:
+    replicas: 3
+    terminationGracePeriodSeconds: 60
+    preStopSleepSeconds: 10
+    strategy:
+      type: RollingUpdate
+      rollingUpdate:
+        maxSurge: 1
+        maxUnavailable: 0
   image:
     repository: c5c3/keystone
     tag: "2025.1"
   # ... other required fields ...
-  terminationGracePeriodSeconds: 60
-  preStopSleepSeconds: 10
-  strategy:
-    type: RollingUpdate
-    rollingUpdate:
-      maxSurge: 1
-      maxUnavailable: 0
   uwsgi:
     processes: 4
     threads: 4
@@ -521,7 +517,8 @@ metadata:
   name: keystone
   namespace: openstack
 spec:
-  replicas: 3
+  deployment:
+    replicas: 3
   image:
     repository: c5c3/keystone
     tag: "2025.1"
@@ -642,7 +639,8 @@ metadata:
   name: keystone
   namespace: openstack
 spec:
-  replicas: 3
+  deployment:
+    replicas: 3
   image:
     repository: c5c3/keystone
     tag: "2025.1"
@@ -874,7 +872,8 @@ metadata:
   name: keystone
   namespace: openstack
 spec:
-  replicas: 3
+  deployment:
+    replicas: 3
   image:
     repository: c5c3/keystone
     tag: "2025.1"
@@ -923,13 +922,13 @@ The operator-managed NetworkPolicy allows ingress from:
 
 ## TopologySpreadConstraints
 
-`spec.topologySpreadConstraints` attaches scheduler spread hints to the
+`spec.deployment.topologySpreadConstraints` attaches scheduler spread hints to the
 Keystone API Deployment's pod template. Uses the upstream
 `corev1.TopologySpreadConstraint` type verbatim, except that the webhook
 restricts `labelSelector` to exact `matchLabels` matching the Deployment
 selector (see below).
 
-| `spec.topologySpreadConstraints` | Effect |
+| `spec.deployment.topologySpreadConstraints` | Effect |
 | --- | --- |
 | `nil` (unset) | Operator injects two defaults: `topology.kubernetes.io/zone` and `kubernetes.io/hostname`, both `MaxSkew=1` with `ScheduleAnyway`, selecting pods via `app.kubernetes.io/name=keystone` + `app.kubernetes.io/instance={name}`. |
 | `[]` (empty slice) | Defaults disabled; no spread constraints configured. Explicit opt-out. |
@@ -948,21 +947,22 @@ spread behavior.
 ```yaml
 spec:
   # ... required fields ...
-  topologySpreadConstraints:
-    - maxSkew: 1
-      topologyKey: topology.kubernetes.io/zone
-      whenUnsatisfiable: DoNotSchedule
-      labelSelector:
-        matchLabels:
-          app.kubernetes.io/name: keystone
-          app.kubernetes.io/instance: keystone
+  deployment:
+    topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: topology.kubernetes.io/zone
+        whenUnsatisfiable: DoNotSchedule
+        labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: keystone
+            app.kubernetes.io/instance: keystone
 ```
 
 ---
 
 ## PriorityClassName
 
-`spec.priorityClassName` (pointer) passes through to
+`spec.deployment.priorityClassName` (pointer) passes through to
 `pod.spec.priorityClassName` on the Keystone API pods. Uses the standard
 `scheduling.k8s.io/v1` `PriorityClass` resource model.
 
@@ -1226,7 +1226,7 @@ Sets spec fields to their documented defaults when they carry zero values. Expli
 
 | Field | Condition | Default Value |
 | --- | --- | --- |
-| `spec.replicas` | `== 0` | `3` |
+| `spec.deployment.replicas` | `== 0` | `3` |
 | `spec.fernet.maxActiveKeys` | `== 0` | `3` |
 | `spec.credentialKeys.maxActiveKeys` | `== 0` | `3` |
 | `spec.cache.backend` | `== ""` | `"dogpile.cache.pymemcache"` |
@@ -1235,14 +1235,14 @@ Sets spec fields to their documented defaults when they carry zero values. Expli
 | `spec.uwsgi.processes` | `== 0` (when `spec.uwsgi` is non-nil) | `2` — webhook only; when `spec.uwsgi` is `nil`, the reconciler applies this default internally. |
 | `spec.uwsgi.threads` | `== 0` (when `spec.uwsgi` is non-nil) | `1` — same nil-pointer caveat as processes. |
 | `spec.uwsgi.httpKeepAlive` | Field absent from JSON payload | `true` — the field is a nil-preserving `*bool`, so the defaulting webhook restores the documented default when the pointer is nil, while preserving an explicit `false`. See [HTTPKeepAlive defaulting](#httpkeepalive-defaulting). |
-| `spec.resources` | `== nil` or empty (`requests` and `limits` both unset) | `{requests: {memory: 256Mi, cpu: 100m}, limits: {memory: 512Mi, cpu: 500m}}` — ensures Burstable QoS class and enables HPA utilization calculations. |
+| `spec.deployment.resources` | `== nil` or empty (`requests` and `limits` both unset) | `{requests: {memory: 256Mi, cpu: 100m}, limits: {memory: 512Mi, cpu: 500m}}` — ensures Burstable QoS class and enables HPA utilization calculations. |
 | `spec.database.tls.mode` | `spec.database.tls != nil && mode == ""` | `"require"` — `DefaultDatabaseTLSMode` in `keystone_webhook.go`. Only materialized when the `tls` block is explicitly present; the webhook never materializes the block itself. |
 
 **Not defaulted by the webhook:**
 
 - `spec.fernet.rotationSchedule`, `spec.credentialKeys.rotationSchedule`,
-  `spec.trustFlush.schedule`, `spec.autoscaling.minReplicas`, `spec.topologySpreadConstraints`,
-  `spec.priorityClassName` — these rely on CRD schema defaults or reconciler-level
+  `spec.trustFlush.schedule`, `spec.autoscaling.minReplicas`, `spec.deployment.topologySpreadConstraints`,
+  `spec.deployment.priorityClassName` — these rely on CRD schema defaults or reconciler-level
   fallbacks. For `topologySpreadConstraints` the reconciler distinguishes `nil`
   (inject zone+hostname defaults) from `[]` (opt out), so the webhook must not
   materialise a struct.
@@ -1280,7 +1280,7 @@ single `apierrors.NewInvalid` error. It does **not** short-circuit on the first 
 
 | Rule | Field Path | Error Type | Condition |
 | --- | --- | --- | --- |
-| Replicas minimum | `spec.replicas` | `field.Invalid` | `replicas < 1`. Defense-in-depth alongside the `+kubebuilder:validation:Minimum=1` marker. |
+| Replicas minimum | `spec.deployment.replicas` | `field.Invalid` | `replicas < 1`. Defense-in-depth alongside the `+kubebuilder:validation:Minimum=1` marker. |
 | Cache mutual exclusivity | `spec.cache` | `field.Invalid` | Both `clusterRef` and `servers` set, or neither. Defense-in-depth alongside the CEL XValidation rule. |
 | Database mutual exclusivity | `spec.database` | `field.Invalid` | Both `clusterRef` and `host` set, or neither. Defense-in-depth alongside the CEL XValidation rule. |
 | Database TLS mode out-of-enum | `spec.database.tls.mode` | `field.NotSupported` | `tls.mode` is non-empty but not one of `disabled`/`prefer`/`require`/`verify-ca`/`verify-full`. Defense-in-depth alongside the `+kubebuilder:validation:Enum` marker. Empty `mode` is tolerated because `Default()` materializes `"require"` before validation in the normal admission path. |
@@ -1299,7 +1299,7 @@ single `apierrors.NewInvalid` error. It does **not** short-circuit on the first 
 | Autoscaling maxReplicas minimum | `spec.autoscaling.maxReplicas` | `field.Invalid` | `maxReplicas < 1`. Defense-in-depth alongside the `+kubebuilder:validation:Minimum=1` marker. |
 | Autoscaling minReplicas minimum | `spec.autoscaling.minReplicas` | `field.Invalid` | `minReplicas < 1` when set. Defense-in-depth alongside the `+kubebuilder:validation:Minimum=1` marker. |
 | Autoscaling min exceeds max | `spec.autoscaling.minReplicas` | `field.Invalid` | `minReplicas > maxReplicas` when set. |
-| Autoscaling maxReplicas vs replicas | `spec.autoscaling.maxReplicas` | `field.Invalid` | `minReplicas` is unset and `spec.replicas > autoscaling.maxReplicas`. Would otherwise produce an HPA the API server rejects, because `minReplicas` defaults to `spec.replicas`. |
+| Autoscaling maxReplicas vs replicas | `spec.autoscaling.maxReplicas` | `field.Invalid` | `minReplicas` is unset and `spec.deployment.replicas > autoscaling.maxReplicas`. Would otherwise produce an HPA the API server rejects, because `minReplicas` defaults to `spec.deployment.replicas`. |
 | Autoscaling CPU utilization range | `spec.autoscaling.targetCPUUtilization` | `field.Invalid` | Value outside `1..100` when set. |
 | Autoscaling memory utilization range | `spec.autoscaling.targetMemoryUtilization` | `field.Invalid` | Value outside `1..100` when set. |
 | Autoscaling no metric targets | `spec.autoscaling` | `field.Required` | Neither `targetCPUUtilization` nor `targetMemoryUtilization` is set. Defense-in-depth alongside the CEL XValidation rule. |
@@ -1309,18 +1309,18 @@ single `apierrors.NewInvalid` error. It does **not** short-circuit on the first 
 | uWSGI harakiri minimum | `spec.uwsgi.harakiri` | `field.Invalid` | `harakiri < 1` when set. Defense-in-depth alongside the `+kubebuilder:validation:Minimum=1` marker. |
 | uWSGI keep-alive timeout minimum | `spec.uwsgi.httpKeepAliveTimeout` | `field.Invalid` | `httpKeepAliveTimeout < 1` when set. A zero value is rejected because uWSGI interprets it as unbounded, defeating the graceful-termination contract. |
 | uWSGI keep-alive timeout without keep-alive | `spec.uwsgi.httpKeepAliveTimeout` | `field.Invalid` | `httpKeepAliveTimeout` is set while `httpKeepAlive=false`. The `--http-keepalive-timeout` flag is only emitted when keep-alive is enabled, so the combination is rejected to avoid silently dropping user intent. |
-| TerminationGracePeriodSeconds minimum | `spec.terminationGracePeriodSeconds` | `field.Invalid` | `terminationGracePeriodSeconds < 10` when set. Defense-in-depth alongside the `+kubebuilder:validation:Minimum=10` marker. |
-| PreStopSleepSeconds minimum | `spec.preStopSleepSeconds` | `field.Invalid` | `preStopSleepSeconds < 0` when set. Defense-in-depth alongside the `+kubebuilder:validation:Minimum=0` marker. |
-| PreStopSleep ≥ grace period | `spec.preStopSleepSeconds` | `field.Invalid` | Resolved `preStopSleepSeconds >= terminationGracePeriodSeconds` (nil pointers resolve to defaults 5/30). Guarantees a non-zero drain window between the end of the preStop sleep and SIGKILL. |
+| TerminationGracePeriodSeconds minimum | `spec.deployment.terminationGracePeriodSeconds` | `field.Invalid` | `terminationGracePeriodSeconds < 10` when set. Defense-in-depth alongside the `+kubebuilder:validation:Minimum=10` marker. |
+| PreStopSleepSeconds minimum | `spec.deployment.preStopSleepSeconds` | `field.Invalid` | `preStopSleepSeconds < 0` when set. Defense-in-depth alongside the `+kubebuilder:validation:Minimum=0` marker. |
+| PreStopSleep ≥ grace period | `spec.deployment.preStopSleepSeconds` | `field.Invalid` | Resolved `preStopSleepSeconds >= terminationGracePeriodSeconds` (nil pointers resolve to defaults 5/30). Guarantees a non-zero drain window between the end of the preStop sleep and SIGKILL. |
 | Harakiri ≥ drain window | `spec.uwsgi.harakiri` | `field.Invalid` | `harakiri >= terminationGracePeriodSeconds − preStopSleepSeconds` (nil pointers resolve to defaults). Guarantees the per-request kill fits inside the shutdown envelope. |
-| Recreate strategy with RollingUpdate | `spec.strategy.rollingUpdate` | `field.Invalid` | `strategy.type = Recreate` combined with a non-nil `strategy.rollingUpdate` block. The Deployment controller would reject the object at apply time; the webhook catches the misconfiguration up-front. |
-| Resource request exceeds limit | `spec.resources.requests.<resource>` | `field.Invalid` | A resource request exceeds its corresponding limit (e.g., CPU request 1000m > limit 500m). Checked per resource type when both requests and limits are set. |
+| Recreate strategy with RollingUpdate | `spec.deployment.strategy.rollingUpdate` | `field.Invalid` | `strategy.type = Recreate` combined with a non-nil `strategy.rollingUpdate` block. The Deployment controller would reject the object at apply time; the webhook catches the misconfiguration up-front. |
+| Resource request exceeds limit | `spec.deployment.resources.requests.<resource>` | `field.Invalid` | A resource request exceeds its corresponding limit (e.g., CPU request 1000m > limit 500m). Checked per resource type when both requests and limits are set. |
 | Trust flush schedule required | `spec.trustFlush.schedule` | `field.Required` | `trustFlush` is set but `schedule` is empty. Defense-in-depth — the `+kubebuilder:default` marker normally prevents this, but bypass paths (e.g., `kubectl patch`) may produce an empty string. |
 | Trust flush cron expression | `spec.trustFlush.schedule` | `field.Invalid` | `cron.ParseStandard()` fails on `trustFlush.schedule`. Error message includes the parse failure details. |
-| PriorityClass existence | `spec.priorityClassName` | `field.NotFound` / `field.InternalError` | The webhook performs a direct (uncached) cluster-scoped `Get` of the referenced `scheduling.k8s.io/v1` `PriorityClass` when the field is non-empty, so a just-created class is never rejected off a stale cache. Missing classes produce `NotFound`; transient API errors produce `InternalError`. |
-| TopologySpread labelSelector required | `spec.topologySpreadConstraints[i].labelSelector` | `field.Required` | Entry has no `labelSelector`. |
-| TopologySpread matchLabels mismatch | `spec.topologySpreadConstraints[i].labelSelector` | `field.Invalid` | `matchLabels` does not exactly equal `{app.kubernetes.io/name: keystone, app.kubernetes.io/instance: {CR name}}`. |
-| TopologySpread matchExpressions forbidden | `spec.topologySpreadConstraints[i].labelSelector.matchExpressions` | `field.Invalid` | `matchExpressions` is non-empty. Only exact `matchLabels` are allowed. |
+| PriorityClass existence | `spec.deployment.priorityClassName` | `field.NotFound` / `field.InternalError` | The webhook performs a direct (uncached) cluster-scoped `Get` of the referenced `scheduling.k8s.io/v1` `PriorityClass` when the field is non-empty, so a just-created class is never rejected off a stale cache. Missing classes produce `NotFound`; transient API errors produce `InternalError`. |
+| TopologySpread labelSelector required | `spec.deployment.topologySpreadConstraints[i].labelSelector` | `field.Required` | Entry has no `labelSelector`. |
+| TopologySpread matchLabels mismatch | `spec.deployment.topologySpreadConstraints[i].labelSelector` | `field.Invalid` | `matchLabels` does not exactly equal `{app.kubernetes.io/name: keystone, app.kubernetes.io/instance: {CR name}}`. |
+| TopologySpread matchExpressions forbidden | `spec.deployment.topologySpreadConstraints[i].labelSelector.matchExpressions` | `field.Invalid` | `matchExpressions` is non-empty. Only exact `matchLabels` are allowed. |
 
 **Error format:** All validation errors are returned as a structured
 `apierrors.StatusError` with `GroupKind{Group: "keystone.openstack.c5c3.io", Kind: "Keystone"}`,
@@ -1416,8 +1416,8 @@ exercise the CRD schema constraints.
 | --- | --- | --- |
 | `TestIntegration_WebhookDefaultsSetsZeroValues` | Defaults applied | Creates a CR with zero-valued defaultable fields; verifies `replicas=3`, `cache.backend="dogpile.cache.pymemcache"`, `bootstrap.adminUser="admin"`, `bootstrap.region="RegionOne"`, `fernet.maxActiveKeys=3` after admission. |
 | `TestIntegration_WebhookDefaultsPreservesExplicit` | Explicit values preserved | Creates a CR with `replicas=5` and `region="EU-West"`; verifies these values are not overwritten by the defaulting webhook. |
-| `TestIntegration_ResourcesDefaultedWhenNil` | Resources defaulted | Creates a CR with `spec.resources` unset (`nil`); verifies the defaulting webhook injects `{requests: {memory: 256Mi, cpu: 100m}, limits: {memory: 512Mi, cpu: 500m}}`. |
-| `TestIntegration_ResourcesPreservedWhenExplicit` | Explicit resources preserved | Creates a CR with explicit `spec.resources` (1Gi/2Gi memory, 200m/1 CPU); verifies the defaulting webhook does not overwrite them. |
+| `TestIntegration_ResourcesDefaultedWhenNil` | Resources defaulted | Creates a CR with `spec.deployment.resources` unset (`nil`); verifies the defaulting webhook injects `{requests: {memory: 256Mi, cpu: 100m}, limits: {memory: 512Mi, cpu: 500m}}`. |
+| `TestIntegration_ResourcesPreservedWhenExplicit` | Explicit resources preserved | Creates a CR with explicit `spec.deployment.resources` (1Gi/2Gi memory, 200m/1 CPU); verifies the defaulting webhook does not overwrite them. |
 | `TestIntegration_UWSGIDefaultsAppliedWhenEmpty` | uWSGI defaults applied | Creates a CR with `spec.uwsgi: {}` (all zero values); verifies processes=2, threads=1, httpKeepAlive=true after admission. |
 | `TestIntegration_UWSGIExplicitValuesPreserved` | Explicit uWSGI preserved | Creates a CR with `spec.uwsgi.processes=4, threads=4`; verifies these values are not overwritten by the defaulting webhook. |
 | `TestIntegration_UWSGIPartialDefaulting` | Partial uWSGI defaults | Creates a CR with only `spec.uwsgi.processes=4`; verifies threads=1 is defaulted while processes=4 is preserved. |
@@ -1427,7 +1427,7 @@ exercise the CRD schema constraints.
 
 | Test | Requirement | Trigger | Expected Error |
 | --- | --- | --- | --- |
-| `TestIntegration_ResourcesRequestExceedsLimitRejected` | Request must not exceed limit | `spec.resources` with CPU request 1000m > limit 500m | Invalid/Forbidden containing "resources". |
+| `TestIntegration_ResourcesRequestExceedsLimitRejected` | Request must not exceed limit | `spec.deployment.resources` with CPU request 1000m > limit 500m | Invalid/Forbidden containing "resources". |
 | `TestIntegration_UWSGIProcessesBelowMinimumRejected` | Processes minimum | `spec.uwsgi.processes` below minimum (bypassing defaulting) | Invalid/Forbidden containing "uwsgi". |
 | `TestIntegration_UWSGIThreadsBelowMinimumRejected` | Threads minimum | `spec.uwsgi.threads` below minimum (bypassing defaulting) | Invalid/Forbidden containing "uwsgi". |
 
@@ -1492,11 +1492,11 @@ validation in a fixed pipeline — **mutating webhook (defaulting) → CRD struc
 schema (incl. CEL `XValidation` rules) → validating webhook** — and the first layer
 that rejects an object is the one whose message Chainsaw sees. The mutating step is
 listed first because it can silently rewrite a value out from under a downstream
-rule: `keystone_webhook.go:80-82` coerces `spec.replicas == 0` to `3` BEFORE the
+rule: `keystone_webhook.go:80-82` coerces `spec.deployment.replicas == 0` to `3` BEFORE the
 `+kubebuilder:validation:Minimum=1` marker is evaluated, so a manifest using
-`spec.replicas: 0` would be silently accepted. This is the precise reason the
+`spec.deployment.replicas: 0` would be silently accepted. This is the precise reason the
 `08-replicas-zero.yaml` case was dropped from the suite: the
-`09-replicas-negative.yaml` fixture (`spec.replicas: -1`) uses a
+`09-replicas-negative.yaml` fixture (`spec.deployment.replicas: -1`) uses a
 value the defaulter does not touch (the defaulter only fires on `== 0`) and exercises
 the same `Minimum=1` and webhook-defense-in-depth path. The same trap applies to
 `maxActiveKeys: 0`, which is why the `maxActiveKeys` fixtures use `2` rather than `0`.
@@ -1649,7 +1649,7 @@ tests/e2e/keystone/
     ├── 05-policy-overrides-no-source.yaml                  PolicyOverrides without rules or configMapRef
     ├── 06-policy-overrides-empty-rule-key.yaml             PolicyOverrides rule with empty key
     ├── 07-networkpolicy-empty-ingress.yaml                 NetworkPolicy with empty ingress array
-    ├── 09-replicas-negative.yaml                           spec.replicas: -1 (subsumes the dropped 08-replicas-zero case)
+    ├── 09-replicas-negative.yaml                           spec.deployment.replicas: -1 (subsumes the dropped 08-replicas-zero case)
     ├── 10-hpa-min-greater-than-max.yaml                    HPA minReplicas > maxReplicas
     ├── 11-fernet-maxactivekeys-below-minimum.yaml          Fernet maxActiveKeys < 3
     └── 12-credentialkeys-maxactivekeys-below-minimum.yaml  CredentialKeys maxActiveKeys < 3

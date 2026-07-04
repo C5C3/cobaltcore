@@ -296,7 +296,7 @@ spec:
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
   # ── Step 4: Assert observedGeneration tracking ───────
-  # Patches spec.replicas (1 → 2) to bump metadata.generation, then asserts
+  # Patches spec.deployment.replicas (1 → 2) to bump metadata.generation, then asserts
   # every status.conditions[*].observedGeneration has caught up.
   # requires every sub-reconciler to set ObservedGeneration on SetCondition;
   # this gate prevents one reconciler from forgetting it.
@@ -321,7 +321,7 @@ spec:
           # Bump metadata.generation. --type=merge keeps the patch minimal
           # and matches what an external automation client would do.
           kubectl patch keystone -n "$NAMESPACE" "$NAME" \
-            --type=merge -p '{"spec":{"replicas":2}}'
+            --type=merge -p '{"spec":{"deployment":{"replicas":2}}}'
 
           # Poll up to the 5m chainsaw assert budget for catch-up. Two
           # invariants must hold simultaneously:
@@ -369,16 +369,16 @@ spec:
   # Captures DeploymentReady.lastTransitionTime (T0), forces a True→False
   # flip via `kubectl scale deploy --replicas=0` (immediate; side-steps
   # progressDeadlineSeconds), polls until DeploymentReady=False, then waits
-  # for the operator to reconcile the Deployment back to spec.replicas (=2,
+  # for the operator to reconcile the Deployment back to spec.deployment.replicas (=2,
   # set by Step 4) and re-flip DeploymentReady to True (T1), and asserts
   # T1 > T0. apimachinery normalises lastTransitionTime to UTC seconds-
   # precision (RFC3339), so a lexicographic string compare suffices for
   # monotonicity.
   #
-  # Note: spec.replicas: 0 cannot be set on the CR (CRD enforces Minimum=1).
+  # Note: spec.deployment.replicas: 0 cannot be set on the CR (CRD enforces Minimum=1).
   # Scaling the Deployment directly is the only way to flip DeploymentReady
   # to False; the operator's watch fires from the scale-to-0 patch and
-  # restores the Deployment to spec.replicas=2, which is sufficient to
+  # restores the Deployment to spec.deployment.replicas=2, which is sufficient to
   # drive the False → True transition without an explicit second scale.
   - try:
     - script:
@@ -424,7 +424,7 @@ spec:
           echo "T0 (DeploymentReady=True, settled): $T0"
 
           # Force True → False. The operator's watch fires from this patch
-          # and reconciles the Deployment back to spec.replicas=2 (set by
+          # and reconciles the Deployment back to spec.deployment.replicas=2 (set by
           # Step 4), so no explicit scale-back is required to drive the
           # False → True transition.
           kubectl scale deploy -n "$NAMESPACE" "$NAME" --replicas=0

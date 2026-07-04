@@ -9,4 +9,5 @@ metadata:
   name: keystone-pc
   namespace: openstack
 spec:
-  priorityClassName: openstack-control-plane
+  deployment:
+    priorityClassName: openstack-control-plane

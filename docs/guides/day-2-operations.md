@@ -20,7 +20,7 @@ The examples assume the CR is named `keystone` in the `openstack` namespace.
 
 ## Scale replicas
 
-`spec.replicas` can be patched at any time; the operator updates the Deployment and the
+`spec.deployment.replicas` can be patched at any time; the operator updates the Deployment and the
 rollout is handled by Kubernetes.
 
 ```bash
@@ -36,13 +36,13 @@ kubectl rollout status deploy/keystone -n openstack
 ```
 
 Scale down the same way. The operator maintains a `PodDisruptionBudget` sized from
-`spec.replicas`: at `replicas > 1` it sets `minAvailable=1` so a voluntary disruption
+`spec.deployment.replicas`: at `replicas > 1` it sets `minAvailable=1` so a voluntary disruption
 never drains the last healthy pod; at `replicas == 1` it sets `maxUnavailable=1`
 instead, deliberately allowing eviction so a node drain cannot deadlock on a
 single-replica CR.
 
 ::: tip Prefer autoscaling?
-For load-driven scaling use `spec.autoscaling` instead of hand-patching `spec.replicas`
+For load-driven scaling use `spec.autoscaling` instead of hand-patching `spec.deployment.replicas`
 — see [Advanced Configuration — Autoscaling (HPA)](./advanced-configuration.md#autoscaling-hpa).
 The HPA then owns `spec.replicas` on the Deployment.
 :::

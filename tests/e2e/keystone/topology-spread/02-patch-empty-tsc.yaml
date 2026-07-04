@@ -9,4 +9,5 @@ metadata:
   name: keystone-tsc
   namespace: openstack
 spec:
-  topologySpreadConstraints: []
+  deployment:
+    topologySpreadConstraints: []

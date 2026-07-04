@@ -327,7 +327,7 @@ Deployment exists but is not yet ready; `(false, error)` on failure.
 - Applies the desired Deployment via `apply.EnsureObject` (Server-Side Apply); a converged
   Deployment is not rewritten on every reconcile.
 - Retains a pre-apply `Get` only to delete-and-recreate on an immutable-selector change and
-  to preserve the HPA-owned replica count when `spec.replicas` is left nil.
+  to preserve the HPA-owned replica count when `spec.deployment.replicas` is left nil.
 - Readiness is determined by `IsDeploymentReady` on the server-fresh apply response.
 
 ### EnsureService

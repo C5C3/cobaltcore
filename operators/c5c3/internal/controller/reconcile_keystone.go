@@ -168,7 +168,7 @@ func (r *ControlPlaneReconciler) reconcileKeystone(ctx context.Context, cp *c5c3
 		keystone.Spec.Bootstrap.PublicEndpoint = keystonePublicEndpoint(cp.Spec.Services.Keystone)
 
 		if cp.Spec.Services.Keystone.Replicas != nil {
-			keystone.Spec.Replicas = *cp.Spec.Services.Keystone.Replicas
+			keystone.Spec.Deployment.Replicas = *cp.Spec.Services.Keystone.Replicas
 		}
 
 		keystone.Spec.PolicyOverrides = merged

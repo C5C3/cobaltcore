@@ -268,7 +268,7 @@ func TestReconcileKeystone_ReplicasPassthrough(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 
 	k := getProjectedKeystone(t, c, cp)
-	g.Expect(k.Spec.Replicas).To(Equal(int32(5)))
+	g.Expect(k.Spec.Deployment.Replicas).To(Equal(int32(5)))
 }
 
 func TestReconcileKeystone_InfraGatingNoKeystoneCreated(t *testing.T) {

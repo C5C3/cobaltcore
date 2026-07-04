@@ -44,8 +44,8 @@ func hpaTestKeystone() *keystonev1alpha1.Keystone {
 			Generation: 1,
 		},
 		Spec: keystonev1alpha1.KeystoneSpec{
-			Replicas: 3,
-			Image:    commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2025.2"},
+			Deployment: keystonev1alpha1.DeploymentSpec{Replicas: 3},
+			Image:      commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2025.2"},
 			Database: commonv1.DatabaseSpec{
 				Host:      "db.example.com",
 				Port:      3306,
@@ -387,7 +387,7 @@ func TestBuildKeystoneHPA_Labels(t *testing.T) {
 func TestBuildKeystoneHPA_MinReplicasDefaultsToSpecReplicas(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := hpaTestKeystone()
-	ks.Spec.Replicas = 3
+	ks.Spec.Deployment.Replicas = 3
 	ks.Spec.Autoscaling = &keystonev1alpha1.AutoscalingSpec{
 		MaxReplicas:          10,
 		TargetCPUUtilization: int32Ptr(80),
@@ -400,10 +400,30 @@ func TestBuildKeystoneHPA_MinReplicasDefaultsToSpecReplicas(t *testing.T) {
 	g.Expect(*hpa.Spec.MinReplicas).To(Equal(int32(3)))
 }
 
+// TestBuildKeystoneHPA_MinReplicasZeroReplicasFallsBackToDefault verifies that a
+// zero-valued spec.deployment.replicas (webhook-bypassed / block-omitting spec)
+// normalizes to the default when it drives the implicit HPA minReplicas, instead
+// of producing an invalid minReplicas=0 the API server would reject.
+func TestBuildKeystoneHPA_MinReplicasZeroReplicasFallsBackToDefault(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := hpaTestKeystone()
+	ks.Spec.Deployment.Replicas = 0
+	ks.Spec.Autoscaling = &keystonev1alpha1.AutoscalingSpec{
+		MaxReplicas:          10,
+		TargetCPUUtilization: int32Ptr(80),
+		// MinReplicas is nil — should default to the effective replica count.
+	}
+
+	hpa := buildKeystoneHPA(ks)
+
+	g.Expect(hpa.Spec.MinReplicas).NotTo(BeNil())
+	g.Expect(*hpa.Spec.MinReplicas).To(Equal(keystonev1alpha1.DefaultReplicas))
+}
+
 func TestBuildKeystoneHPA_ExplicitMinReplicas(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := hpaTestKeystone()
-	ks.Spec.Replicas = 3
+	ks.Spec.Deployment.Replicas = 3
 	ks.Spec.Autoscaling = &keystonev1alpha1.AutoscalingSpec{
 		MinReplicas:          int32Ptr(2),
 		MaxReplicas:          10,
@@ -492,7 +512,7 @@ func TestBuildKeystoneHPA_BothCPUAndMemoryMetrics(t *testing.T) {
 func TestBuildKeystoneHPA_MinReplicasDefaultIndependentOfPointer(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := hpaTestKeystone()
-	ks.Spec.Replicas = 5
+	ks.Spec.Deployment.Replicas = 5
 	ks.Spec.Autoscaling = &keystonev1alpha1.AutoscalingSpec{
 		MaxReplicas:          10,
 		TargetCPUUtilization: int32Ptr(80),
@@ -503,7 +523,7 @@ func TestBuildKeystoneHPA_MinReplicasDefaultIndependentOfPointer(t *testing.T) {
 	// Verify the defaulted minReplicas is independent — mutating spec.replicas
 	// after build should not affect the HPA.
 	g.Expect(*hpa.Spec.MinReplicas).To(Equal(int32(5)))
-	ks.Spec.Replicas = 99
+	ks.Spec.Deployment.Replicas = 99
 	g.Expect(*hpa.Spec.MinReplicas).To(Equal(int32(5)))
 }
 

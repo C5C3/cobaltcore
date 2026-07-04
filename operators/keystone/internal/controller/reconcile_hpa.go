@@ -69,15 +69,18 @@ func (r *KeystoneReconciler) reconcileHPA(ctx context.Context, keystone *keyston
 }
 
 // buildKeystoneHPA constructs the desired HorizontalPodAutoscaler for the
-// Keystone API deployment. MinReplicas defaults to spec.replicas when
-// autoscaling.minReplicas is not set. Metrics are added for CPU and/or memory
-// utilization based on the autoscaling spec.
+// Keystone API deployment. MinReplicas defaults to the effective
+// spec.deployment.replicas when autoscaling.minReplicas is not set — routing
+// through effectiveReplicas normalizes a zero-valued (webhook-bypassed) count to
+// the default, so a bypassed spec never yields an invalid minReplicas=0 the API
+// server would reject. Metrics are added for CPU and/or memory utilization based
+// on the autoscaling spec.
 func buildKeystoneHPA(keystone *keystonev1alpha1.Keystone) *autoscalingv2.HorizontalPodAutoscaler {
 	autoscaling := keystone.Spec.Autoscaling
 
 	minReplicas := autoscaling.MinReplicas
 	if minReplicas == nil {
-		defaultMin := keystone.Spec.Replicas
+		defaultMin := effectiveReplicas(keystone)
 		minReplicas = &defaultMin
 	}
 

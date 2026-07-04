@@ -34,7 +34,8 @@ metadata:
   name: keystone
   namespace: openstack
 spec:
-  replicas: 1
+  deployment:
+    replicas: 1
   image:
     repository: ghcr.io/c5c3/keystone
     tag: "2025.2"
@@ -84,13 +85,14 @@ for both `database` and `cache`.
 
 ## Autoscaling (HPA)
 
-Replace hand-patching `spec.replicas` with a `HorizontalPodAutoscaler` managed by the
+Replace hand-patching `spec.deployment.replicas` with a `HorizontalPodAutoscaler` managed by the
 operator. When `spec.autoscaling` is present, the HPA owns the Deployment's replica
 count.
 
 ```yaml
 spec:
-  replicas: 3       # seeds the Deployment; HPA owns the Deployment replica count once created
+  deployment:
+    replicas: 3       # seeds the Deployment; HPA owns the Deployment replica count once created
   autoscaling:
     minReplicas: 2
     maxReplicas: 10
@@ -99,7 +101,7 @@ spec:
 ```
 
 - At least one of `targetCPUUtilization` or `targetMemoryUtilization` is required.
-- `minReplicas` defaults to `spec.replicas` if unset — omitting it will floor the HPA at your current hand-set replica count, not at 1.
+- `minReplicas` defaults to `spec.deployment.replicas` if unset — omitting it will floor the HPA at your current hand-set replica count, not at 1.
 - The generated HPA references `deploy/keystone` and uses the Kubernetes standard
   `metrics-server`. The Quick Start kind cluster does **not** ship one — the HPA will
   sit at `unknown/80%` until you install it:
@@ -125,7 +127,7 @@ kubectl describe hpa keystone -n openstack
 ```
 
 Removing `spec.autoscaling` deletes the HPA and returns replica control to
-`spec.replicas`. See [HPA Resource Mapping in the CRD reference](../reference/keystone/keystone-crd.md#hpa-resource-mapping)
+`spec.deployment.replicas`. See [HPA Resource Mapping in the CRD reference](../reference/keystone/keystone-crd.md#hpa-resource-mapping)
 for the exact field-to-resource mapping.
 
 ---
@@ -206,15 +208,15 @@ a link to the full reference.
 | Trust flush | `spec.trustFlush` | CronJob running `keystone-manage trust_flush` on a schedule. Default-on (hourly) — to pause without deleting the CronJob, set `spec.trustFlush.suspend: true` rather than removing the field | [TrustFlushSpec](../reference/keystone/keystone-crd.md#trustflushspec) |
 | uWSGI tuning | `spec.uwsgi` | Worker processes, threads, HTTP keep-alive, plus `harakiri` (per-request kill timer) and `httpKeepAliveTimeout` (idle-socket bound) | [UWSGISpec](../reference/keystone/keystone-crd.md#uwsgispec) |
 | Logging | `spec.logging` | oslo.log output: `format` (text/json), `level`, `debug`, per-logger level overrides | [LoggingSpec](../reference/keystone/keystone-crd.md#loggingspec) |
-| Rollout strategy | `spec.strategy` | Overrides the Deployment rollout strategy; default is `RollingUpdate` with `maxSurge=1`/`maxUnavailable=0` (surge-before-remove) | [Graceful-termination fields](../reference/keystone/keystone-crd.md#graceful-termination-fields) |
-| Graceful termination | `spec.terminationGracePeriodSeconds`, `spec.preStopSleepSeconds` | SIGTERM→SIGKILL envelope and preStop drain sleep for zero-downtime rolling updates | [Graceful-termination fields](../reference/keystone/keystone-crd.md#graceful-termination-fields) |
-| Topology spread | `spec.topologySpreadConstraints` | Pod spread across zones/hostnames | [TopologySpreadConstraints](../reference/keystone/keystone-crd.md#topologyspreadconstraints) |
-| Priority class | `spec.priorityClassName` | Scheduling priority and preemption class | [PriorityClassName](../reference/keystone/keystone-crd.md#priorityclassname) |
+| Rollout strategy | `spec.deployment.strategy` | Overrides the Deployment rollout strategy; default is `RollingUpdate` with `maxSurge=1`/`maxUnavailable=0` (surge-before-remove) | [Graceful-termination fields](../reference/keystone/keystone-crd.md#graceful-termination-fields) |
+| Graceful termination | `spec.deployment.terminationGracePeriodSeconds`, `spec.deployment.preStopSleepSeconds` | SIGTERM→SIGKILL envelope and preStop drain sleep for zero-downtime rolling updates | [Graceful-termination fields](../reference/keystone/keystone-crd.md#graceful-termination-fields) |
+| Topology spread | `spec.deployment.topologySpreadConstraints` | Pod spread across zones/hostnames | [TopologySpreadConstraints](../reference/keystone/keystone-crd.md#topologyspreadconstraints) |
+| Priority class | `spec.deployment.priorityClassName` | Scheduling priority and preemption class | [PriorityClassName](../reference/keystone/keystone-crd.md#priorityclassname) |
 | Policy overrides | `spec.policyOverrides` | Custom `oslo.policy` rules (inline or ConfigMap) | [PolicySpec](../reference/keystone/keystone-crd.md#policyspec) |
 | Middleware | `spec.middleware` | Custom WSGI filters in the `api-paste.ini` pipeline | [MiddlewareSpec](../reference/keystone/keystone-crd.md#middlewarespec) |
 | Plugins | `spec.plugins` | Service-side Keystone plugins/drivers | [PluginSpec](../reference/keystone/keystone-crd.md#pluginspec) |
 | Federation | `spec.federation` | Enables Keystone federation (SAML/OIDC, Shibboleth) | [FederationSpec](../reference/keystone/keystone-crd.md#federationspec) |
-| Resource requests/limits | `spec.resources` | CPU/memory requests and limits on API pods | [KeystoneSpec](../reference/keystone/keystone-crd.md#keystonespec) |
+| Resource requests/limits | `spec.deployment.resources` | CPU/memory requests and limits on API pods | [KeystoneSpec](../reference/keystone/keystone-crd.md#keystonespec) |
 | Public endpoint | `spec.bootstrap.publicEndpoint` | External URL written to the Keystone service catalogue | [BootstrapSpec](../reference/keystone/keystone-crd.md#bootstrapspec) |
 
 ---

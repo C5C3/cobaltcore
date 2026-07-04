@@ -62,8 +62,8 @@ func TestKeystoneSpecFields(t *testing.T) {
 	spec := KeystoneSpec{}
 
 	// Verify zero values for struct fields — these will be defaulted by kubebuilder markers at CRD level
-	if spec.Replicas != 0 {
-		t.Errorf("expected zero value for Replicas, got %d", spec.Replicas)
+	if spec.Deployment.Replicas != 0 {
+		t.Errorf("expected zero value for Replicas, got %d", spec.Deployment.Replicas)
 	}
 	if spec.Federation != nil {
 		t.Errorf("expected nil Federation, got %v", spec.Federation)
@@ -83,14 +83,14 @@ func TestKeystoneSpecFields(t *testing.T) {
 	if spec.UWSGI != nil {
 		t.Errorf("expected nil UWSGI, got %v", spec.UWSGI)
 	}
-	if spec.TerminationGracePeriodSeconds != nil {
-		t.Errorf("expected nil TerminationGracePeriodSeconds, got %v", spec.TerminationGracePeriodSeconds)
+	if spec.Deployment.TerminationGracePeriodSeconds != nil {
+		t.Errorf("expected nil TerminationGracePeriodSeconds, got %v", spec.Deployment.TerminationGracePeriodSeconds)
 	}
-	if spec.PreStopSleepSeconds != nil {
-		t.Errorf("expected nil PreStopSleepSeconds, got %v", spec.PreStopSleepSeconds)
+	if spec.Deployment.PreStopSleepSeconds != nil {
+		t.Errorf("expected nil PreStopSleepSeconds, got %v", spec.Deployment.PreStopSleepSeconds)
 	}
-	if spec.Strategy != nil {
-		t.Errorf("expected nil Strategy, got %v", spec.Strategy)
+	if spec.Deployment.Strategy != nil {
+		t.Errorf("expected nil Strategy, got %v", spec.Deployment.Strategy)
 	}
 }
 
@@ -102,27 +102,29 @@ func TestKeystoneSpecTerminationGracePeriodSecondsField(t *testing.T) {
 	grace := int64(120)
 	preStop := int64(15)
 	spec := KeystoneSpec{
-		TerminationGracePeriodSeconds: &grace,
-		PreStopSleepSeconds:           &preStop,
+		Deployment: DeploymentSpec{
+			TerminationGracePeriodSeconds: &grace,
+			PreStopSleepSeconds:           &preStop,
+		},
 	}
 
-	if spec.TerminationGracePeriodSeconds == nil || *spec.TerminationGracePeriodSeconds != 120 {
-		t.Errorf("expected TerminationGracePeriodSeconds=120, got %v", spec.TerminationGracePeriodSeconds)
+	if spec.Deployment.TerminationGracePeriodSeconds == nil || *spec.Deployment.TerminationGracePeriodSeconds != 120 {
+		t.Errorf("expected TerminationGracePeriodSeconds=120, got %v", spec.Deployment.TerminationGracePeriodSeconds)
 	}
-	if spec.PreStopSleepSeconds == nil || *spec.PreStopSleepSeconds != 15 {
-		t.Errorf("expected PreStopSleepSeconds=15, got %v", spec.PreStopSleepSeconds)
+	if spec.Deployment.PreStopSleepSeconds == nil || *spec.Deployment.PreStopSleepSeconds != 15 {
+		t.Errorf("expected PreStopSleepSeconds=15, got %v", spec.Deployment.PreStopSleepSeconds)
 	}
 
 	clone := spec.DeepCopy()
-	if clone.TerminationGracePeriodSeconds == spec.TerminationGracePeriodSeconds {
+	if clone.Deployment.TerminationGracePeriodSeconds == spec.Deployment.TerminationGracePeriodSeconds {
 		t.Errorf("DeepCopy did not allocate a new *int64 for TerminationGracePeriodSeconds")
 	}
-	if clone.PreStopSleepSeconds == spec.PreStopSleepSeconds {
+	if clone.Deployment.PreStopSleepSeconds == spec.Deployment.PreStopSleepSeconds {
 		t.Errorf("DeepCopy did not allocate a new *int64 for PreStopSleepSeconds")
 	}
-	if *clone.TerminationGracePeriodSeconds != 120 || *clone.PreStopSleepSeconds != 15 {
+	if *clone.Deployment.TerminationGracePeriodSeconds != 120 || *clone.Deployment.PreStopSleepSeconds != 15 {
 		t.Errorf("DeepCopy altered values: grace=%d preStop=%d",
-			*clone.TerminationGracePeriodSeconds, *clone.PreStopSleepSeconds)
+			*clone.Deployment.TerminationGracePeriodSeconds, *clone.Deployment.PreStopSleepSeconds)
 	}
 }
 
@@ -133,32 +135,34 @@ func TestKeystoneSpecStrategyField(t *testing.T) {
 	maxUnavailable := intstr.FromInt(0)
 	maxSurge := intstr.FromInt(1)
 	spec := KeystoneSpec{
-		Strategy: &appsv1.DeploymentStrategy{
-			Type: appsv1.RollingUpdateDeploymentStrategyType,
-			RollingUpdate: &appsv1.RollingUpdateDeployment{
-				MaxUnavailable: &maxUnavailable,
-				MaxSurge:       &maxSurge,
+		Deployment: DeploymentSpec{
+			Strategy: &appsv1.DeploymentStrategy{
+				Type: appsv1.RollingUpdateDeploymentStrategyType,
+				RollingUpdate: &appsv1.RollingUpdateDeployment{
+					MaxUnavailable: &maxUnavailable,
+					MaxSurge:       &maxSurge,
+				},
 			},
 		},
 	}
 
-	if spec.Strategy == nil {
+	if spec.Deployment.Strategy == nil {
 		t.Fatal("expected non-nil Strategy")
 	}
-	if spec.Strategy.Type != appsv1.RollingUpdateDeploymentStrategyType {
-		t.Errorf("expected RollingUpdate type, got %q", spec.Strategy.Type)
+	if spec.Deployment.Strategy.Type != appsv1.RollingUpdateDeploymentStrategyType {
+		t.Errorf("expected RollingUpdate type, got %q", spec.Deployment.Strategy.Type)
 	}
 
 	clone := spec.DeepCopy()
-	if clone.Strategy == spec.Strategy {
+	if clone.Deployment.Strategy == spec.Deployment.Strategy {
 		t.Errorf("DeepCopy did not allocate a new *DeploymentStrategy")
 	}
-	if clone.Strategy.RollingUpdate == spec.Strategy.RollingUpdate {
+	if clone.Deployment.Strategy.RollingUpdate == spec.Deployment.Strategy.RollingUpdate {
 		t.Errorf("DeepCopy did not allocate a new *RollingUpdateDeployment")
 	}
-	if clone.Strategy.RollingUpdate.MaxUnavailable.IntVal != 0 ||
-		clone.Strategy.RollingUpdate.MaxSurge.IntVal != 1 {
-		t.Errorf("DeepCopy altered RollingUpdate values: %+v", clone.Strategy.RollingUpdate)
+	if clone.Deployment.Strategy.RollingUpdate.MaxUnavailable.IntVal != 0 ||
+		clone.Deployment.Strategy.RollingUpdate.MaxSurge.IntVal != 1 {
+		t.Errorf("DeepCopy altered RollingUpdate values: %+v", clone.Deployment.Strategy.RollingUpdate)
 	}
 }
 

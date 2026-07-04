@@ -13,7 +13,8 @@ metadata:
   name: keystone-upgrade-abort
   namespace: openstack
 spec:
-  replicas: 1
+  deployment:
+    replicas: 1
   image:
     repository: ghcr.io/c5c3/keystone
     tag: "2026.1"

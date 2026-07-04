@@ -50,8 +50,8 @@ func managedKeystone() *keystonev1alpha1.Keystone {
 			Generation: 1,
 		},
 		Spec: keystonev1alpha1.KeystoneSpec{
-			Replicas: 3,
-			Image:    commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2025.2"},
+			Deployment: keystonev1alpha1.DeploymentSpec{Replicas: 3},
+			Image:      commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2025.2"},
 			Database: commonv1.DatabaseSpec{
 				ClusterRef: &corev1.LocalObjectReference{Name: "mariadb"},
 				Database:   "keystone",
@@ -76,8 +76,8 @@ func brownfieldKeystone() *keystonev1alpha1.Keystone {
 			Generation: 1,
 		},
 		Spec: keystonev1alpha1.KeystoneSpec{
-			Replicas: 3,
-			Image:    commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2025.2"},
+			Deployment: keystonev1alpha1.DeploymentSpec{Replicas: 3},
+			Image:      commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2025.2"},
 			Database: commonv1.DatabaseSpec{
 				Host:      "db.example.com",
 				Port:      3306,
@@ -2038,7 +2038,7 @@ func TestBuildDBSyncJob_PriorityClassNameSet(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := brownfieldKeystone()
 	pcn := "system-cluster-critical"
-	ks.Spec.PriorityClassName = &pcn
+	ks.Spec.Deployment.PriorityClassName = &pcn
 
 	job := buildDBSyncJob(ks, "keystone-config-abc123")
 

@@ -56,8 +56,8 @@ func credentialTestKeystone() *keystonev1alpha1.Keystone {
 			UID:        "test-uid",
 		},
 		Spec: keystonev1alpha1.KeystoneSpec{
-			Replicas: 3,
-			Image:    commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2025.2"},
+			Deployment: keystonev1alpha1.DeploymentSpec{Replicas: 3},
+			Image:      commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2025.2"},
 			Database: commonv1.DatabaseSpec{
 				Host:      "db.example.com",
 				Port:      3306,
@@ -1001,7 +1001,7 @@ func TestCredentialRotationCronJob_PriorityClassNameSet(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := credentialTestKeystone()
 	pcn := "system-cluster-critical"
-	ks.Spec.PriorityClassName = &pcn
+	ks.Spec.Deployment.PriorityClassName = &pcn
 
 	cronJob := credentialRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-credential-rotate-script-abc123")
 

@@ -78,10 +78,10 @@ func testKeystone() *keystonev1alpha1.Keystone {
 			Finalizers: []string{keystoneFinalizer, keystoneOpenBaoFinalizer},
 		},
 		Spec: keystonev1alpha1.KeystoneSpec{
-			Replicas: 3,
-			Image:    commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2025.2"},
-			Database: commonv1.DatabaseSpec{Host: "db.example.com", Port: 3306, Database: "keystone", SecretRef: commonv1.SecretRefSpec{Name: "keystone-db"}},
-			Cache:    commonv1.CacheSpec{Backend: "dogpile.cache.pymemcache", Servers: []string{"mc:11211"}},
+			Deployment: keystonev1alpha1.DeploymentSpec{Replicas: 3},
+			Image:      commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2025.2"},
+			Database:   commonv1.DatabaseSpec{Host: "db.example.com", Port: 3306, Database: "keystone", SecretRef: commonv1.SecretRefSpec{Name: "keystone-db"}},
+			Cache:      commonv1.CacheSpec{Backend: "dogpile.cache.pymemcache", Servers: []string{"mc:11211"}},
 			Fernet: keystonev1alpha1.FernetSpec{
 				RotationSchedule: "0 0 * * 0",
 				MaxActiveKeys:    3,

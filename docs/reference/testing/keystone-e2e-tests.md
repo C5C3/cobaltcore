@@ -101,10 +101,10 @@ Deployment rollout, bootstrap Job).
 | [graceful-shutdown](#graceful-shutdown) | `keystone-graceful-shutdown` | Deployment configured with `terminationGracePeriodSeconds=30`, preStop sleep hook, startup probe |
 | [healthcheck](#healthcheck) | `keystone-healthcheck` | Post-Deployment HTTP health check gates `KeystoneAPIReady=True` with reason `APIHealthy` before aggregate `Ready` flips |
 | [policy-validation](#policy-validation) | `keystone-policy-validation` | `PolicyValidReady` gates the Deployment; validation Job lifecycle on `policyOverrides` add/remove |
-| [priority-class](#priority-class) | `keystone-pc` | `spec.priorityClassName` propagation: unset → empty, set → applied, patched empty → removed |
+| [priority-class](#priority-class) | `keystone-pc` | `spec.deployment.priorityClassName` propagation: unset → empty, set → applied, patched empty → removed |
 | [schema-drift-detection](#schema-drift-detection) | `keystone-schema-drift` | `DatabaseReady=True` with message "revision verified"; schema-check Job runs and completes |
 | [semantic-invariants](#semantic-invariants) | `keystone-invariants` | `status.endpoint` URL format, `ownerReferences` fan-out, `observedGeneration` tracking, `lastTransitionTime` monotonicity, ConfigMap immutability |
-| [topology-spread](#topology-spread) | `keystone-tsc` | `spec.topologySpreadConstraints`: `nil` injects 2 defaults; non-empty slice passes through verbatim; `[]` disables all constraints |
+| [topology-spread](#topology-spread) | `keystone-tsc` | `spec.deployment.topologySpreadConstraints`: `nil` injects 2 defaults; non-empty slice passes through verbatim; `[]` disables all constraints |
 | [pod-security-restricted](#pod-security-restricted) | `keystone-pss-restricted` | Reconciliation reaches Ready=True/AllReady inside a `pod-security.kubernetes.io/enforce=restricted` namespace; every Pod the reconciler creates (API Deployment, bootstrap Job, db-sync Job, policy-validation Job, manually-triggered fernet-rotation Job) admits under PSS Restricted; zero `FailedCreate` events carry the literal violation `violates PodSecurity "restricted:latest"` |
 | admin-password-rotation | `keystone-adminpw` | Re-bootstrap on admin-password Secret change: stale bootstrap Job replaced, new password authenticates against `/v3` |
 | admin-password-scheduled-rotation | `keystone-adminpw-sched` | Model B scheduled rotation: rotation CronJob rendered from `spec.passwordRotation`, full OpenBao/ESO evidence chain |
@@ -123,7 +123,7 @@ Deployment rollout, bootstrap Job).
 | namespace-scoped-rbac | `keystone-ns-scoped` | Operator deployed with `rbac.namespaceScoped=true` + `webhook.enabled=false` still reconciles to Ready |
 | network-policy | `keystone-netpol` | Per-CR NetworkPolicy create/update/delete driven by `spec.networkPolicy` ingress sources |
 | prometheus-stack | — (operator-level) | `WITH_PROMETHEUS=true` opt-in addon: kube-prometheus-stack scrapes the operator end to end |
-| resources | `keystone-resources` | `spec.resources` webhook defaulting and propagation to the Deployment |
+| resources | `keystone-resources` | `spec.deployment.resources` webhook defaulting and propagation to the Deployment |
 | rolling-update-zero-downtime | `keystone-rolling-update` | Full graceful-termination chain keeps the API serving during an image-tag rolling update |
 | trust-flush | `keystone-trust-flush` | Trust-flush CronJob creation, schedule and suspend tracking `spec.trustFlush` |
 | trust-flush-default | `keystone-trust-flush-default` | Default-on posture: omitted `spec.trustFlush` materializes the hourly CronJob |
@@ -220,7 +220,7 @@ previous key set.
 
 **File:** `tests/e2e/keystone/scale/chainsaw-test.yaml`
 
-**Purpose:** Validates that patching `spec.replicas` on the Keystone CR propagates to the
+**Purpose:** Validates that patching `spec.deployment.replicas` on the Keystone CR propagates to the
 underlying Deployment. Tests both scale-up (3→5) and scale-down (5→2).
 
 **Steps:**
@@ -547,7 +547,7 @@ to `True/PolicyValidationNotRequired` and cleans up the Job.
 
 **File:** `tests/e2e/keystone/priority-class/chainsaw-test.yaml`
 
-**Purpose:** Validates `spec.priorityClassName` propagation:
+**Purpose:** Validates `spec.deployment.priorityClassName` propagation:
 a CR without the field yields an empty `priorityClassName` on the Deployment;
 patching with a valid class sets it; patching with empty string removes it.
 
@@ -601,7 +601,7 @@ patching with a valid class sets it; patching with empty string removes it.
 | 1 | Apply Keystone CR and gate on Ready=True | `apply` + `assert` (5m) | Applies `00-keystone-cr.yaml` — Keystone CR `keystone-invariants` — and gates the rest of the suite on `Ready=True/AllReady` |
 | 2 | Assert `status.endpoint` literal | `assert` (5m) | `status.endpoint == http://keystone-invariants.openstack.svc.cluster.local:5000/v3` exactly — fails on any port/scheme/path drift, not only on an empty value |
 | 3 | Assert `ownerReferences` fan-out | `script` (2m) | Reads CR UID, then for every managed kind (Deployment, Service, PodDisruptionBudget; ConfigMap families resolved via `forge.c5c3.io/config-base` label, never by hash suffix; per-CR Secrets `*-db-connection`, `*-fernet-keys`, `*-credential-keys`; ServiceAccount/Role/RoleBinding/CronJob `*-{fernet,credential}-rotate`; PushSecrets `*-{fernet,credential}-keys-backup`) asserts `ownerReferences[0]` is `{kind: Keystone, controller: true, blockOwnerDeletion: true, uid: <CR UID>}` via `jq -e`; reports the offending GVK+name on mismatch |
-| 4 | Assert `observedGeneration` tracking | `script` (6m) | Patches `spec.replicas` `1 → 2` to bump `metadata.generation`, then polls up to 5 minutes until every `status.conditions[*].observedGeneration` matches `metadata.generation`; lists lagging condition types on timeout |
+| 4 | Assert `observedGeneration` tracking | `script` (6m) | Patches `spec.deployment.replicas` `1 → 2` to bump `metadata.generation`, then polls up to 5 minutes until every `status.conditions[*].observedGeneration` matches `metadata.generation`; lists lagging condition types on timeout |
 | 5 | Assert `lastTransitionTime` monotonicity | `script` (12m) | Captures `T0` from `DeploymentReady.lastTransitionTime`, scales the Deployment to 0 replicas (immediate flip; side-steps `progressDeadlineSeconds`), polls for `DeploymentReady=False`, then waits for the operator to reconcile the Deployment back to `spec.replicas=2` (set by Step 4) and captures `T1` once `DeploymentReady=True` again; asserts `T1 > T0` via lexicographic compare on the RFC3339 UTC timestamps |
 | 6 | Assert ConfigMap immutability | `script` | Resolves the active config ConfigMap by `forge.c5c3.io/config-base=keystone-invariants-config` (never by hash suffix), runs `kubectl patch` against `data.keystone.conf`, and asserts non-zero exit with `field is immutable` in stderr |
 
@@ -626,7 +626,7 @@ patching with a valid class sets it; patching with empty string removes it.
 
 **File:** `tests/e2e/keystone/topology-spread/chainsaw-test.yaml`
 
-**Purpose:** Validates `spec.topologySpreadConstraints` behavior:
+**Purpose:** Validates `spec.deployment.topologySpreadConstraints` behavior:
 `nil` (unset) injects the two default constraints (zone + hostname,
 `MaxSkew=1`, `ScheduleAnyway`); a non-empty slice passes through verbatim;
 an empty slice explicitly disables all constraints.

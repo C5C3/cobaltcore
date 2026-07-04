@@ -188,10 +188,29 @@ func selectorLabels(keystone *keystonev1alpha1.Keystone) map[string]string {
 	}
 }
 
+// effectiveReplicas returns the desired Keystone API replica count, normalizing a
+// zero-valued spec.deployment.replicas to keystonev1alpha1.DefaultReplicas. The
+// mutating webhook fills replicas=3 on admission and the CRD carries a
+// +kubebuilder:default=3 on the nested field, but neither fires for a CR that
+// omitted the spec.deployment block (Kubernetes does not descend into an absent
+// object to materialize the nested leaf default) or for any path that bypasses
+// the webhook. Left unnormalized, a zero would make deploymentReplicas scale the
+// Deployment to zero pods. Every replica consumer (deploymentReplicas,
+// buildPodDisruptionBudget, buildKeystoneHPA) routes through this single point so
+// the default is applied consistently, mirroring the
+// terminationGracePeriodSeconds / containerResources webhook-bypass fallbacks in
+// this package.
+func effectiveReplicas(keystone *keystonev1alpha1.Keystone) int32 {
+	if keystone.Spec.Deployment.Replicas == 0 {
+		return keystonev1alpha1.DefaultReplicas
+	}
+	return keystone.Spec.Deployment.Replicas
+}
+
 // deploymentReplicas returns the desired .spec.replicas for the Keystone API
 // Deployment. When spec.autoscaling is set, it returns nil so the field is left
 // unmanaged and the HorizontalPodAutoscaler owns the replica count; otherwise
-// it returns spec.replicas. Pinning replicas to spec.replicas while an HPA also
+// it returns the effective replica count. Pinning replicas while an HPA also
 // targets the Deployment causes the operator and the HPA to fight over the
 // field, and each write re-triggers reconciliation in a scale-up/scale-down
 // loop (issue #462). EnsureDeployment preserves the live count when this is nil.
@@ -199,7 +218,7 @@ func deploymentReplicas(keystone *keystonev1alpha1.Keystone) *int32 {
 	if keystone.Spec.Autoscaling != nil {
 		return nil
 	}
-	return ptr.To(int32(keystone.Spec.Replicas))
+	return ptr.To(effectiveReplicas(keystone))
 }
 
 func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName string) *appsv1.Deployment {
@@ -332,12 +351,13 @@ func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName 
 }
 
 // buildPodDisruptionBudget constructs the desired PDB for the Keystone API
-// deployment. When replicas > 1, minAvailable=1 guarantees at least one pod
-// remains during voluntary disruptions. When replicas == 1, maxUnavailable=1
-// is used instead to avoid drain deadlock (a PDB with minAvailable=1 on a
-// single-replica deployment would block all evictions). When replicas == 0
-// (e.g. during scale-down), maxUnavailable=1 is set explicitly for clarity
-// even though it has no practical effect with zero pods.
+// deployment. It branches on effectiveReplicas — so a zero-valued
+// spec.deployment.replicas normalizes to the default, matching the Deployment's
+// own replica count — rather than the raw spec value. When the effective count
+// is > 1, minAvailable=1 guarantees at least one pod remains during voluntary
+// disruptions. When it is 1, maxUnavailable=1 is used instead to avoid drain
+// deadlock (a PDB with minAvailable=1 on a single-replica deployment would block
+// all evictions).
 func buildPodDisruptionBudget(keystone *keystonev1alpha1.Keystone) *policyv1.PodDisruptionBudget {
 	pdb := &policyv1.PodDisruptionBudget{
 		ObjectMeta: metav1.ObjectMeta{
@@ -352,7 +372,7 @@ func buildPodDisruptionBudget(keystone *keystonev1alpha1.Keystone) *policyv1.Pod
 		},
 	}
 
-	if keystone.Spec.Replicas > 1 {
+	if effectiveReplicas(keystone) > 1 {
 		minAvailable := intstr.FromInt32(1)
 		pdb.Spec.MinAvailable = &minAvailable
 	} else {
@@ -435,8 +455,8 @@ func uwsgiCommand(uwsgi *keystonev1alpha1.UWSGISpec) []string {
 // value if nil (safe fallback for CRs that bypassed the webhook, e.g.
 // pre-existing CRs during operator upgrade).
 func containerResources(keystone *keystonev1alpha1.Keystone) corev1.ResourceRequirements {
-	if keystone.Spec.Resources != nil {
-		return *keystone.Spec.Resources
+	if keystone.Spec.Deployment.Resources != nil {
+		return *keystone.Spec.Deployment.Resources
 	}
 	return corev1.ResourceRequirements{}
 }
@@ -447,8 +467,8 @@ func containerResources(keystone *keystonev1alpha1.Keystone) corev1.ResourceRequ
 // constraints are injected: one zone-spread and one hostname-spread, both with
 // ScheduleAnyway to distribute pods across zones and nodes.
 func topologySpreadConstraints(keystone *keystonev1alpha1.Keystone) []corev1.TopologySpreadConstraint {
-	if keystone.Spec.TopologySpreadConstraints != nil {
-		return keystone.Spec.TopologySpreadConstraints
+	if keystone.Spec.Deployment.TopologySpreadConstraints != nil {
+		return keystone.Spec.Deployment.TopologySpreadConstraints
 	}
 	ls := &metav1.LabelSelector{MatchLabels: selectorLabels(keystone)}
 	return []corev1.TopologySpreadConstraint{
@@ -471,8 +491,8 @@ func topologySpreadConstraints(keystone *keystonev1alpha1.Keystone) []corev1.Top
 // If spec.PriorityClassName is set, that value is used. Otherwise, an empty
 // string is returned, leaving the cluster default in effect.
 func priorityClassName(keystone *keystonev1alpha1.Keystone) string {
-	if keystone.Spec.PriorityClassName != nil {
-		return *keystone.Spec.PriorityClassName
+	if keystone.Spec.Deployment.PriorityClassName != nil {
+		return *keystone.Spec.Deployment.PriorityClassName
 	}
 	return ""
 }
@@ -483,8 +503,8 @@ func priorityClassName(keystone *keystonev1alpha1.Keystone) string {
 // cross-field arithmetic. Routing both sides through the same constant prevents
 // silent drift.
 func terminationGracePeriodSeconds(keystone *keystonev1alpha1.Keystone) int64 {
-	if keystone.Spec.TerminationGracePeriodSeconds != nil {
-		return *keystone.Spec.TerminationGracePeriodSeconds
+	if keystone.Spec.Deployment.TerminationGracePeriodSeconds != nil {
+		return *keystone.Spec.Deployment.TerminationGracePeriodSeconds
 	}
 	return keystonev1alpha1.DefaultTerminationGracePeriodSeconds
 }
@@ -497,8 +517,8 @@ func terminationGracePeriodSeconds(keystone *keystonev1alpha1.Keystone) int64 {
 // through the same constant prevents silent drift.
 func preStopSleepCommand(keystone *keystonev1alpha1.Keystone) []string {
 	seconds := keystonev1alpha1.DefaultPreStopSleepSeconds
-	if keystone.Spec.PreStopSleepSeconds != nil {
-		seconds = *keystone.Spec.PreStopSleepSeconds
+	if keystone.Spec.Deployment.PreStopSleepSeconds != nil {
+		seconds = *keystone.Spec.Deployment.PreStopSleepSeconds
 	}
 	return []string{"/bin/sh", "-c", fmt.Sprintf("sleep %d", seconds)}
 }
@@ -510,8 +530,8 @@ func preStopSleepCommand(keystone *keystonev1alpha1.Keystone) []string {
 // drops below spec.replicas during a rolling image-tag patch — the default
 // surge-before-remove behavior that guards Keystone's rolling-update SLO
 func deploymentStrategy(keystone *keystonev1alpha1.Keystone) appsv1.DeploymentStrategy {
-	if keystone.Spec.Strategy != nil {
-		return *keystone.Spec.Strategy.DeepCopy()
+	if keystone.Spec.Deployment.Strategy != nil {
+		return *keystone.Spec.Deployment.Strategy.DeepCopy()
 	}
 	maxUnavailable := intstr.FromInt32(0)
 	maxSurge := intstr.FromInt32(1)

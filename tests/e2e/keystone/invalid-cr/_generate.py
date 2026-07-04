@@ -223,6 +223,9 @@ class Fixture:
     name: str
     comment: str
     replicas: int = 3
+    # deployment_extra holds additional spec.deployment sub-fields (4-space
+    # indented) emitted inside the deployment block after replicas.
+    deployment_extra: str | None = None
     image: str = IMAGE_DEFAULT
     database: str = DATABASE_HOST_ONLY
     cache: str = CACHE_SERVERS_ONLY
@@ -242,7 +245,12 @@ def render(fixture: Fixture) -> str:
         "metadata:\n",
         f"  name: {fixture.name}\n",
         "spec:\n",
-        f"  replicas: {fixture.replicas}\n",
+        "  deployment:\n",
+        f"    replicas: {fixture.replicas}\n",
+    ]
+    if fixture.deployment_extra is not None:
+        parts.append(fixture.deployment_extra)
+    parts += [
         "  image:\n",
         fixture.image,
         "  database:\n",
@@ -365,8 +373,8 @@ FIXTURES: list[Fixture] = [
         name="invalid-replicas-negative",
         replicas=-1,
         comment="""\
-# Keystone CR with spec.replicas: -1. The
-# +kubebuilder:validation:Minimum=1 marker on KeystoneSpec.Replicas
+# Keystone CR with spec.deployment.replicas: -1. The
+# +kubebuilder:validation:Minimum=1 marker on DeploymentSpec.Replicas
 # (keystone_types.go) is a structural CRD check that runs before any
 # defaulting path could coerce a negative value. The defaulting webhook
 # only normalizes Replicas == 0 (keystone_webhook.go), so -1 reaches the
@@ -585,16 +593,16 @@ FIXTURES: list[Fixture] = [
     Fixture(
         filename="18-prestop-not-less-than-grace.yaml",
         name="invalid-prestop-grace-window",
-        trailing="""\
-  preStopSleepSeconds: 20
-  terminationGracePeriodSeconds: 15
+        deployment_extra="""\
+    preStopSleepSeconds: 20
+    terminationGracePeriodSeconds: 15
 """,
         comment="""\
-# Validation-marker wave: Keystone CR with spec.preStopSleepSeconds (20) not
-# strictly less than spec.terminationGracePeriodSeconds (15). The drain-window
-# CEL XValidation rule on KeystoneSpec (and the validating webhook) require a
-# non-zero drain window. Admission must reject this CR with an $error
-# referencing the substring "preStopSleepSeconds".""",
+# Validation-marker wave: Keystone CR with spec.deployment.preStopSleepSeconds
+# (20) not strictly less than spec.deployment.terminationGracePeriodSeconds (15).
+# The drain-window CEL XValidation rule on DeploymentSpec (and the validating
+# webhook) require a non-zero drain window. Admission must reject this CR with an
+# $error referencing the substring "preStopSleepSeconds".""",
     ),
     Fixture(
         filename="19-publicendpoint-not-url.yaml",

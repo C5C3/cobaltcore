@@ -2,17 +2,20 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Validation-marker wave: Keystone CR with spec.preStopSleepSeconds (20) not
-# strictly less than spec.terminationGracePeriodSeconds (15). The drain-window
-# CEL XValidation rule on KeystoneSpec (and the validating webhook) require a
-# non-zero drain window. Admission must reject this CR with an $error
-# referencing the substring "preStopSleepSeconds".
+# Validation-marker wave: Keystone CR with spec.deployment.preStopSleepSeconds
+# (20) not strictly less than spec.deployment.terminationGracePeriodSeconds (15).
+# The drain-window CEL XValidation rule on DeploymentSpec (and the validating
+# webhook) require a non-zero drain window. Admission must reject this CR with an
+# $error referencing the substring "preStopSleepSeconds".
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
 kind: Keystone
 metadata:
   name: invalid-prestop-grace-window
 spec:
-  replicas: 3
+  deployment:
+    replicas: 3
+    preStopSleepSeconds: 20
+    terminationGracePeriodSeconds: 15
   image:
     repository: ghcr.io/c5c3/keystone
     tag: "2025.2"
@@ -34,5 +37,3 @@ spec:
     adminPasswordSecretRef:
       name: keystone-admin
     region: RegionOne
-  preStopSleepSeconds: 20
-  terminationGracePeriodSeconds: 15

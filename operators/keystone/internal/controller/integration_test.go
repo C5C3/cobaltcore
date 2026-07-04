@@ -123,8 +123,8 @@ func integrationBrownfieldKeystone(name, namespace string) *keystonev1alpha1.Key
 			Namespace: namespace,
 		},
 		Spec: keystonev1alpha1.KeystoneSpec{
-			Replicas: 3,
-			Image:    commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2025.2"},
+			Deployment: keystonev1alpha1.DeploymentSpec{Replicas: 3},
+			Image:      commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2025.2"},
 			Database: commonv1.DatabaseSpec{
 				Host:      "db.example.com",
 				Port:      3306,
@@ -157,8 +157,8 @@ func integrationManagedKeystone(name, namespace string) *keystonev1alpha1.Keysto
 			Namespace: namespace,
 		},
 		Spec: keystonev1alpha1.KeystoneSpec{
-			Replicas: 3,
-			Image:    commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2025.2"},
+			Deployment: keystonev1alpha1.DeploymentSpec{Replicas: 3},
+			Image:      commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2025.2"},
 			Database: commonv1.DatabaseSpec{
 				ClusterRef: &corev1.LocalObjectReference{Name: "mariadb"},
 				Port:       3306,
@@ -1157,7 +1157,7 @@ func TestIntegration_PDBUpdatedOnReplicaChange(t *testing.T) {
 	// Update replicas to 1 → PDB should switch to maxUnavailable=1.
 	updated := &keystonev1alpha1.Keystone{}
 	g.Expect(c.Get(ctx, key, updated)).To(Succeed())
-	updated.Spec.Replicas = 1
+	updated.Spec.Deployment.Replicas = 1
 	g.Expect(c.Update(ctx, updated)).To(Succeed())
 
 	// Wait for the controller to reconcile and update the PDB.
@@ -1329,7 +1329,7 @@ func TestIntegration_HPADeletedWhenAutoscalingRemoved(t *testing.T) {
 		if err := c.Get(ctx, deployKey, deploy); err != nil {
 			return false
 		}
-		return ptr.Deref(deploy.Spec.Replicas, 0) == updated.Spec.Replicas
+		return ptr.Deref(deploy.Spec.Replicas, 0) == updated.Spec.Deployment.Replicas
 	}, eventuallyTimeout, pollInterval).Should(BeTrue(), "Deployment replicas should be restored to spec.replicas after autoscaling is removed")
 	g.Expect(simulators.SimulateDeploymentReady(ctx, c, deployKey, ptr.Deref(deploy.Spec.Replicas, 1))).
 		To(Succeed(), "simulate Deployment ready at restored replica count")
@@ -3811,8 +3811,8 @@ func TestIntegration_TerminationGracePeriodAppliedToDeployment(t *testing.T) {
 	createPrerequisites(t, ctx, c, ns.Name)
 
 	ks := integrationBrownfieldKeystone("test-keystone", ns.Name)
-	ks.Spec.TerminationGracePeriodSeconds = ptr.To(int64(60))
-	ks.Spec.PreStopSleepSeconds = ptr.To(int64(10))
+	ks.Spec.Deployment.TerminationGracePeriodSeconds = ptr.To(int64(60))
+	ks.Spec.Deployment.PreStopSleepSeconds = ptr.To(int64(10))
 	g.Expect(c.Create(ctx, ks)).To(Succeed())
 
 	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
@@ -3848,7 +3848,7 @@ func TestIntegration_DefaultStrategyAppliedToDeployment(t *testing.T) {
 	createPrerequisites(t, ctx, c, ns.Name)
 
 	ks := integrationBrownfieldKeystone("test-keystone", ns.Name)
-	g.Expect(ks.Spec.Strategy).To(BeNil(), "strategy must be left nil for default test")
+	g.Expect(ks.Spec.Deployment.Strategy).To(BeNil(), "strategy must be left nil for default test")
 	g.Expect(c.Create(ctx, ks)).To(Succeed())
 
 	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
@@ -3879,7 +3879,7 @@ func TestIntegration_StrategyOverrideAppliedToDeployment(t *testing.T) {
 	createPrerequisites(t, ctx, c, ns.Name)
 
 	ks := integrationBrownfieldKeystone("test-keystone", ns.Name)
-	ks.Spec.Strategy = &appsv1.DeploymentStrategy{
+	ks.Spec.Deployment.Strategy = &appsv1.DeploymentStrategy{
 		Type: appsv1.RollingUpdateDeploymentStrategyType,
 		RollingUpdate: &appsv1.RollingUpdateDeployment{
 			MaxUnavailable: ptr.To(intstr.FromString("25%")),

@@ -9,11 +9,12 @@ metadata:
   name: keystone-tsc
   namespace: openstack
 spec:
-  topologySpreadConstraints:
-  - maxSkew: 2
-    topologyKey: topology.kubernetes.io/zone
-    whenUnsatisfiable: DoNotSchedule
-    labelSelector:
-      matchLabels:
-        app.kubernetes.io/name: keystone
-        app.kubernetes.io/instance: keystone-tsc
+  deployment:
+    topologySpreadConstraints:
+    - maxSkew: 2
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: DoNotSchedule
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/name: keystone
+          app.kubernetes.io/instance: keystone-tsc

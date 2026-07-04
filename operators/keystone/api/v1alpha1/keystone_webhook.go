@@ -40,6 +40,19 @@ const (
 	// DefaultPreStopSleepSeconds is applied when KeystoneSpec.PreStopSleepSeconds is nil.
 	DefaultPreStopSleepSeconds int64 = 5
 
+	// DefaultReplicas is the desired Keystone API pod count materialized by the
+	// defaulting webhook (Default) when spec.deployment.replicas is zero, and the
+	// fallback the reconciler (effectiveReplicas) applies when it renders the
+	// Deployment/PDB/HPA for a CR that reached the controller with a zero-valued
+	// replica count — a spec that bypassed the mutating webhook, or one that
+	// omitted the spec.deployment block so the nested +kubebuilder:default never
+	// materialized (Kubernetes does not descend into an absent object to apply
+	// leaf defaults). Left unnormalized, a zero would scale the Deployment to zero
+	// pods. It is the single source of truth so the webhook and reconciler cannot
+	// drift; the +kubebuilder:default=3 marker on DeploymentSpec.Replicas keeps the
+	// same literal in sync (markers cannot reference Go constants).
+	DefaultReplicas int32 = 3
+
 	// DefaultTrustFlushSchedule is the cron expression materialized by the
 	// defaulting webhook when KeystoneSpec.TrustFlush is nil.
 	// It is the single source of truth used by the webhook (Default + validate
@@ -135,8 +148,8 @@ func (w *KeystoneWebhook) SetupWebhookWithManager(mgr ctrl.Manager) error {
 // Fernet.RotationSchedule is NOT defaulted here — it relies on the Kubebuilder
 // +kubebuilder:default marker only (plan decision #3).
 func (w *KeystoneWebhook) Default(_ context.Context, obj *Keystone) error {
-	if obj.Spec.Replicas == 0 {
-		obj.Spec.Replicas = 3
+	if obj.Spec.Deployment.Replicas == 0 {
+		obj.Spec.Deployment.Replicas = DefaultReplicas
 	}
 	if obj.Spec.Fernet.MaxActiveKeys == 0 {
 		obj.Spec.Fernet.MaxActiveKeys = 3
@@ -224,8 +237,8 @@ func (w *KeystoneWebhook) Default(_ context.Context, obj *Keystone) error {
 	// and HPA utilization calculations. Also defaults when Resources is non-nil
 	// but empty (e.g. `resources: {}`), which would otherwise produce BestEffort
 	// QoS and break HPA utilization calculations.
-	if obj.Spec.Resources == nil || (len(obj.Spec.Resources.Requests) == 0 && len(obj.Spec.Resources.Limits) == 0) {
-		obj.Spec.Resources = &corev1.ResourceRequirements{
+	if obj.Spec.Deployment.Resources == nil || (len(obj.Spec.Deployment.Resources.Requests) == 0 && len(obj.Spec.Deployment.Resources.Limits) == 0) {
+		obj.Spec.Deployment.Resources = &corev1.ResourceRequirements{
 			Requests: corev1.ResourceList{
 				corev1.ResourceMemory: DefaultMemoryRequest.DeepCopy(),
 				corev1.ResourceCPU:    DefaultCPURequest.DeepCopy(),
@@ -280,10 +293,10 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 
 	// Defense-in-depth replicas check alongside the
 	// +kubebuilder:validation:Minimum=1 marker.
-	if k.Spec.Replicas < 1 {
+	if k.Spec.Deployment.Replicas < 1 {
 		allErrs = append(allErrs, field.Invalid(
-			specPath.Child("replicas"),
-			k.Spec.Replicas,
+			specPath.Child("deployment", "replicas"),
+			k.Spec.Deployment.Replicas,
 			"replicas must be at least 1",
 		))
 	}
@@ -624,10 +637,10 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 	// Defense-in-depth range check on
 	// spec.terminationGracePeriodSeconds alongside the
 	// +kubebuilder:validation:Minimum=10 marker on KeystoneSpec.
-	if k.Spec.TerminationGracePeriodSeconds != nil && *k.Spec.TerminationGracePeriodSeconds < 10 {
+	if k.Spec.Deployment.TerminationGracePeriodSeconds != nil && *k.Spec.Deployment.TerminationGracePeriodSeconds < 10 {
 		allErrs = append(allErrs, field.Invalid(
-			specPath.Child("terminationGracePeriodSeconds"),
-			*k.Spec.TerminationGracePeriodSeconds,
+			specPath.Child("deployment", "terminationGracePeriodSeconds"),
+			*k.Spec.Deployment.TerminationGracePeriodSeconds,
 			"terminationGracePeriodSeconds must be at least 10",
 		))
 	}
@@ -635,10 +648,10 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 	// spec.preStopSleepSeconds alongside the
 	// +kubebuilder:validation:Minimum=0 marker on KeystoneSpec. Negative
 	// durations are meaningless for the preStop sleep and are rejected.
-	if k.Spec.PreStopSleepSeconds != nil && *k.Spec.PreStopSleepSeconds < 0 {
+	if k.Spec.Deployment.PreStopSleepSeconds != nil && *k.Spec.Deployment.PreStopSleepSeconds < 0 {
 		allErrs = append(allErrs, field.Invalid(
-			specPath.Child("preStopSleepSeconds"),
-			*k.Spec.PreStopSleepSeconds,
+			specPath.Child("deployment", "preStopSleepSeconds"),
+			*k.Spec.Deployment.PreStopSleepSeconds,
 			"preStopSleepSeconds must be non-negative",
 		))
 	}
@@ -649,16 +662,16 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 	// Resolve nil pointers to the reconciler's effective defaults so the
 	// cross-field rule holds even when one or both pointers are omitted.
 	resolvedGrace := DefaultTerminationGracePeriodSeconds
-	if k.Spec.TerminationGracePeriodSeconds != nil {
-		resolvedGrace = *k.Spec.TerminationGracePeriodSeconds
+	if k.Spec.Deployment.TerminationGracePeriodSeconds != nil {
+		resolvedGrace = *k.Spec.Deployment.TerminationGracePeriodSeconds
 	}
 	resolvedPreStop := DefaultPreStopSleepSeconds
-	if k.Spec.PreStopSleepSeconds != nil {
-		resolvedPreStop = *k.Spec.PreStopSleepSeconds
+	if k.Spec.Deployment.PreStopSleepSeconds != nil {
+		resolvedPreStop = *k.Spec.Deployment.PreStopSleepSeconds
 	}
 	if resolvedPreStop >= resolvedGrace {
 		allErrs = append(allErrs, field.Invalid(
-			specPath.Child("preStopSleepSeconds"),
+			specPath.Child("deployment", "preStopSleepSeconds"),
 			resolvedPreStop,
 			fmt.Sprintf("preStopSleepSeconds (%d) must be strictly less than terminationGracePeriodSeconds (%d)", resolvedPreStop, resolvedGrace),
 		))
@@ -683,11 +696,11 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 	// spec.strategy sanity check — a Recreate strategy must
 	// not carry a RollingUpdate block because the Deployment controller would
 	// reject the object at apply time. Catch the misconfiguration up-front.
-	if k.Spec.Strategy != nil {
-		if k.Spec.Strategy.Type == appsv1.RecreateDeploymentStrategyType && k.Spec.Strategy.RollingUpdate != nil {
+	if k.Spec.Deployment.Strategy != nil {
+		if k.Spec.Deployment.Strategy.Type == appsv1.RecreateDeploymentStrategyType && k.Spec.Deployment.Strategy.RollingUpdate != nil {
 			allErrs = append(allErrs, field.Invalid(
-				specPath.Child("strategy", "rollingUpdate"),
-				k.Spec.Strategy.RollingUpdate,
+				specPath.Child("deployment", "strategy", "rollingUpdate"),
+				k.Spec.Deployment.Strategy.RollingUpdate,
 				"rollingUpdate must not be set when strategy.type is Recreate",
 			))
 		}
@@ -718,14 +731,14 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 				"minReplicas must not exceed maxReplicas",
 			))
 		}
-		// When minReplicas is unset, the reconciler defaults it to spec.replicas.
+		// When minReplicas is unset, the reconciler defaults it to spec.deployment.replicas.
 		// Reject configurations where the implicit default would exceed maxReplicas,
 		// which would produce an HPA rejected by the API server.
-		if k.Spec.Autoscaling.MinReplicas == nil && k.Spec.Replicas > k.Spec.Autoscaling.MaxReplicas {
+		if k.Spec.Autoscaling.MinReplicas == nil && k.Spec.Deployment.Replicas > k.Spec.Autoscaling.MaxReplicas {
 			allErrs = append(allErrs, field.Invalid(
 				autoscalingPath.Child("maxReplicas"),
 				k.Spec.Autoscaling.MaxReplicas,
-				fmt.Sprintf("maxReplicas must be >= spec.replicas (%d) when minReplicas is not set, because minReplicas defaults to spec.replicas", k.Spec.Replicas),
+				fmt.Sprintf("maxReplicas must be >= spec.deployment.replicas (%d) when minReplicas is not set, because minReplicas defaults to spec.deployment.replicas", k.Spec.Deployment.Replicas),
 			))
 		}
 		// Defense-in-depth bounds checks for utilization targets
@@ -814,11 +827,11 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 	}
 
 	// Validate that resource requests do not exceed limits.
-	if k.Spec.Resources != nil && k.Spec.Resources.Limits != nil {
-		for resourceName, request := range k.Spec.Resources.Requests {
-			if limit, hasLimit := k.Spec.Resources.Limits[resourceName]; hasLimit && request.Cmp(limit) > 0 {
+	if k.Spec.Deployment.Resources != nil && k.Spec.Deployment.Resources.Limits != nil {
+		for resourceName, request := range k.Spec.Deployment.Resources.Requests {
+			if limit, hasLimit := k.Spec.Deployment.Resources.Limits[resourceName]; hasLimit && request.Cmp(limit) > 0 {
 				allErrs = append(allErrs, field.Invalid(
-					specPath.Child("resources", "requests", string(resourceName)),
+					specPath.Child("deployment", "resources", "requests", string(resourceName)),
 					request.String(),
 					fmt.Sprintf("%s request must not exceed limit (%s)", resourceName, limit.String()),
 				))
@@ -828,17 +841,17 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 
 	// Validate that spec.priorityClassName references an existing
 	// scheduling.k8s.io/v1 PriorityClass. Catches typos at admission time.
-	if k.Spec.PriorityClassName != nil && *k.Spec.PriorityClassName != "" && w.Client != nil {
+	if k.Spec.Deployment.PriorityClassName != nil && *k.Spec.Deployment.PriorityClassName != "" && w.Client != nil {
 		pc := &schedulingv1.PriorityClass{}
-		if err := w.Client.Get(ctx, types.NamespacedName{Name: *k.Spec.PriorityClassName}, pc); err != nil {
+		if err := w.Client.Get(ctx, types.NamespacedName{Name: *k.Spec.Deployment.PriorityClassName}, pc); err != nil {
 			if apierrors.IsNotFound(err) {
 				allErrs = append(allErrs, field.NotFound(
-					specPath.Child("priorityClassName"),
-					*k.Spec.PriorityClassName,
+					specPath.Child("deployment", "priorityClassName"),
+					*k.Spec.Deployment.PriorityClassName,
 				))
 			} else {
 				allErrs = append(allErrs, field.InternalError(
-					specPath.Child("priorityClassName"),
+					specPath.Child("deployment", "priorityClassName"),
 					fmt.Errorf("failed to look up PriorityClass: %w", err),
 				))
 			}
@@ -847,13 +860,13 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 
 	// Validate that custom TopologySpreadConstraints use the correct
 	// LabelSelector matching the Deployment's selector labels.
-	if k.Spec.TopologySpreadConstraints != nil {
+	if k.Spec.Deployment.TopologySpreadConstraints != nil {
 		expectedLabels := map[string]string{
 			LabelKeyName:     AppName,
 			LabelKeyInstance: k.Name,
 		}
-		tscPath := specPath.Child("topologySpreadConstraints")
-		for i, tsc := range k.Spec.TopologySpreadConstraints {
+		tscPath := specPath.Child("deployment", "topologySpreadConstraints")
+		for i, tsc := range k.Spec.Deployment.TopologySpreadConstraints {
 			if tsc.LabelSelector == nil {
 				allErrs = append(allErrs, field.Required(
 					tscPath.Index(i).Child("labelSelector"),

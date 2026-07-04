@@ -9,4 +9,5 @@ metadata:
   name: keystone-scale
   namespace: openstack
 spec:
-  replicas: 5
+  deployment:
+    replicas: 5

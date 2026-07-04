@@ -49,8 +49,20 @@ func deployTestKeystone() *keystonev1alpha1.Keystone {
 			Generation: 1,
 		},
 		Spec: keystonev1alpha1.KeystoneSpec{
-			Replicas: 3,
-			Image:    commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2025.2"},
+			Deployment: keystonev1alpha1.DeploymentSpec{
+				Replicas: 3,
+				Resources: &corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceMemory: keystonev1alpha1.DefaultMemoryRequest.DeepCopy(),
+						corev1.ResourceCPU:    keystonev1alpha1.DefaultCPURequest.DeepCopy(),
+					},
+					Limits: corev1.ResourceList{
+						corev1.ResourceMemory: keystonev1alpha1.DefaultMemoryLimit.DeepCopy(),
+						corev1.ResourceCPU:    keystonev1alpha1.DefaultCPULimit.DeepCopy(),
+					},
+				},
+			},
+			Image: commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2025.2"},
 			Database: commonv1.DatabaseSpec{
 				Host:      "db.example.com",
 				Port:      3306,
@@ -62,16 +74,6 @@ func deployTestKeystone() *keystonev1alpha1.Keystone {
 				AdminUser:              "admin",
 				AdminPasswordSecretRef: commonv1.SecretRefSpec{Name: "keystone-admin"},
 				Region:                 "RegionOne",
-			},
-			Resources: &corev1.ResourceRequirements{
-				Requests: corev1.ResourceList{
-					corev1.ResourceMemory: keystonev1alpha1.DefaultMemoryRequest.DeepCopy(),
-					corev1.ResourceCPU:    keystonev1alpha1.DefaultCPURequest.DeepCopy(),
-				},
-				Limits: corev1.ResourceList{
-					corev1.ResourceMemory: keystonev1alpha1.DefaultMemoryLimit.DeepCopy(),
-					corev1.ResourceCPU:    keystonev1alpha1.DefaultCPULimit.DeepCopy(),
-				},
 			},
 		},
 	}
@@ -91,7 +93,7 @@ func newDeployTestReconciler(s *runtime.Scheme, objs ...client.Object) *Keystone
 // would produce, but with status indicating it is available and ready.
 func readyDeployment(ks *keystonev1alpha1.Keystone, configMapName string) *appsv1.Deployment {
 	deploy := buildKeystoneDeployment(ks, configMapName)
-	replicas := int32(ks.Spec.Replicas)
+	replicas := int32(ks.Spec.Deployment.Replicas)
 	deploy.Spec.Replicas = &replicas
 	deploy.Generation = 1
 	deploy.Status.ObservedGeneration = 1
@@ -369,10 +371,30 @@ func TestBuildKeystoneDeployment_NilReplicasWhenAutoscaling(t *testing.T) {
 
 	// Autoscaling disabled: replicas must equal spec.replicas.
 	ksStatic := deployTestKeystone()
-	ksStatic.Spec.Replicas = 3
+	ksStatic.Spec.Deployment.Replicas = 3
 	deployStatic := buildKeystoneDeployment(ksStatic, "keystone-config-abc123")
 	g.Expect(deployStatic.Spec.Replicas).NotTo(BeNil())
 	g.Expect(*deployStatic.Spec.Replicas).To(Equal(int32(3)))
+}
+
+// TestBuildKeystoneDeployment_ZeroReplicasFallsBackToDefault verifies that when a
+// Keystone reaches the reconciler with a zero-valued spec.deployment.replicas — a
+// spec that bypassed the mutating webhook, or one that omitted the spec.deployment
+// block so the nested +kubebuilder:default=3 never materialized — the Deployment
+// is rendered at the default replica count instead of being scaled to zero pods.
+// Without the effectiveReplicas fallback, deploymentReplicas would return a
+// pointer to 0 and patch every non-autoscaled Keystone Deployment to zero.
+func TestBuildKeystoneDeployment_ZeroReplicasFallsBackToDefault(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	ks := deployTestKeystone()
+	ks.Spec.Deployment.Replicas = 0 // webhook-bypassed / deployment-block-omitting spec
+
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123")
+
+	g.Expect(deploy.Spec.Replicas).NotTo(BeNil())
+	g.Expect(*deploy.Spec.Replicas).To(Equal(keystonev1alpha1.DefaultReplicas),
+		"a zero-valued spec.deployment.replicas must normalize to the default, not scale the Deployment to zero")
 }
 
 // TestReconcileDeployment_AutoscalingPreservesLiveReplicas verifies the
@@ -385,7 +407,7 @@ func TestReconcileDeployment_AutoscalingPreservesLiveReplicas(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := deployTestScheme()
 	ks := deployTestKeystone()
-	ks.Spec.Replicas = 3
+	ks.Spec.Deployment.Replicas = 3
 	ks.Spec.Autoscaling = &keystonev1alpha1.AutoscalingSpec{
 		MaxReplicas:          6,
 		TargetCPUUtilization: int32Ptr(80),
@@ -715,7 +737,7 @@ func TestReconcileDeployment_PDBCreated(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := deployTestScheme()
 	ks := deployTestKeystone()
-	ks.Spec.Replicas = 3 // explicit: PDB expectations depend on this value
+	ks.Spec.Deployment.Replicas = 3 // explicit: PDB expectations depend on this value
 	r := newDeployTestReconciler(s, ks)
 
 	_, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123")
@@ -759,7 +781,7 @@ func TestReconcileDeployment_PDBMinAvailableForMultipleReplicas(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := deployTestScheme()
 	ks := deployTestKeystone()
-	ks.Spec.Replicas = 3 // explicit: PDB expectations depend on this value
+	ks.Spec.Deployment.Replicas = 3 // explicit: PDB expectations depend on this value
 	r := newDeployTestReconciler(s, ks)
 
 	_, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123")
@@ -779,7 +801,7 @@ func TestReconcileDeployment_PDBMaxUnavailableForSingleReplica(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := deployTestScheme()
 	ks := deployTestKeystone()
-	ks.Spec.Replicas = 1
+	ks.Spec.Deployment.Replicas = 1
 	r := newDeployTestReconciler(s, ks)
 
 	_, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123")
@@ -799,7 +821,7 @@ func TestReconcileDeployment_PDBUpdatedOnReplicaChange(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := deployTestScheme()
 	ks := deployTestKeystone()
-	ks.Spec.Replicas = 3 // explicit: PDB expectations depend on this value
+	ks.Spec.Deployment.Replicas = 3 // explicit: PDB expectations depend on this value
 	r := newDeployTestReconciler(s, ks)
 
 	ctx := context.Background()
@@ -815,7 +837,7 @@ func TestReconcileDeployment_PDBUpdatedOnReplicaChange(t *testing.T) {
 	g.Expect(pdb.Spec.MinAvailable).NotTo(BeNil())
 
 	// Change to replicas=1 and re-reconcile → maxUnavailable=1.
-	ks.Spec.Replicas = 1
+	ks.Spec.Deployment.Replicas = 1
 	_, err = r.reconcileDeployment(ctx, ks, "keystone-config-abc123")
 	g.Expect(err).NotTo(HaveOccurred())
 
@@ -852,7 +874,7 @@ func TestReconcileDeployment_PDBSelectorMatchesDeployment(t *testing.T) {
 func TestBuildPodDisruptionBudget_BoundaryReplicas2(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
-	ks.Spec.Replicas = 2
+	ks.Spec.Deployment.Replicas = 2
 
 	pdb := buildPodDisruptionBudget(ks)
 
@@ -864,14 +886,17 @@ func TestBuildPodDisruptionBudget_BoundaryReplicas2(t *testing.T) {
 func TestBuildPodDisruptionBudget_ZeroReplicas(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
-	ks.Spec.Replicas = 0
+	ks.Spec.Deployment.Replicas = 0
 
 	pdb := buildPodDisruptionBudget(ks)
 
-	// Zero replicas explicitly sets MaxUnavailable=1 for clarity.
-	g.Expect(pdb.Spec.MaxUnavailable).NotTo(BeNil())
-	g.Expect(*pdb.Spec.MaxUnavailable).To(Equal(intstr.FromInt32(1)))
-	g.Expect(pdb.Spec.MinAvailable).To(BeNil())
+	// A zero-valued replica count normalizes to the default (>1) via
+	// effectiveReplicas, so the PDB uses MinAvailable=1 — consistent with the
+	// Deployment, which is also rendered at the default count rather than scaled
+	// to zero.
+	g.Expect(pdb.Spec.MinAvailable).NotTo(BeNil())
+	g.Expect(*pdb.Spec.MinAvailable).To(Equal(intstr.FromInt32(1)))
+	g.Expect(pdb.Spec.MaxUnavailable).To(BeNil())
 }
 
 func TestReconcileDeployment_ContainerResources(t *testing.T) {
@@ -891,7 +916,7 @@ func TestReconcileDeployment_ContainerResources(t *testing.T) {
 func TestReconcileDeployment_CustomResources(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
-	ks.Spec.Resources = &corev1.ResourceRequirements{
+	ks.Spec.Deployment.Resources = &corev1.ResourceRequirements{
 		Requests: corev1.ResourceList{
 			corev1.ResourceMemory: resource.MustParse("1Gi"),
 			corev1.ResourceCPU:    resource.MustParse("200m"),
@@ -919,7 +944,7 @@ func TestReconcileDeployment_CustomResources(t *testing.T) {
 func TestReconcileDeployment_NilResources(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
-	ks.Spec.Resources = nil
+	ks.Spec.Deployment.Resources = nil
 
 	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123")
 
@@ -932,7 +957,7 @@ func TestReconcileDeployment_PDBEnsureError(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := deployTestScheme()
 	ks := deployTestKeystone()
-	ks.Spec.Replicas = 3 // explicit: PDB expectations depend on this value
+	ks.Spec.Deployment.Replicas = 3 // explicit: PDB expectations depend on this value
 
 	// Use an interceptor to inject an error when applying a PodDisruptionBudget.
 	c := fake.NewClientBuilder().
@@ -1094,7 +1119,7 @@ func TestBuildKeystoneDeployment_DefaultTopologySpreadConstraints(t *testing.T) 
 func TestBuildKeystoneDeployment_EmptyTopologySpreadConstraintsDisablesDefaults(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
-	ks.Spec.TopologySpreadConstraints = []corev1.TopologySpreadConstraint{}
+	ks.Spec.Deployment.TopologySpreadConstraints = []corev1.TopologySpreadConstraint{}
 
 	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123")
 
@@ -1124,7 +1149,7 @@ func TestBuildKeystoneDeployment_DefaultTopologySpreadConstraints_LabelSelectorM
 func TestBuildKeystoneDeployment_CustomTopologySpreadConstraints(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
-	ks.Spec.TopologySpreadConstraints = []corev1.TopologySpreadConstraint{
+	ks.Spec.Deployment.TopologySpreadConstraints = []corev1.TopologySpreadConstraint{
 		{
 			MaxSkew:           2,
 			TopologyKey:       "kubernetes.io/hostname",
@@ -1158,7 +1183,7 @@ func TestBuildKeystoneDeployment_PriorityClassNameSet(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
 	pcn := "system-cluster-critical"
-	ks.Spec.PriorityClassName = &pcn
+	ks.Spec.Deployment.PriorityClassName = &pcn
 
 	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123")
 
@@ -1364,7 +1389,7 @@ func indexOf(slice []string, s string) int {
 func TestBuildKeystoneDeployment_TerminationGracePeriodDefault(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
-	ks.Spec.TerminationGracePeriodSeconds = nil
+	ks.Spec.Deployment.TerminationGracePeriodSeconds = nil
 
 	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123")
 
@@ -1379,7 +1404,7 @@ func TestBuildKeystoneDeployment_TerminationGracePeriodCustom(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
 	custom := int64(90)
-	ks.Spec.TerminationGracePeriodSeconds = &custom
+	ks.Spec.Deployment.TerminationGracePeriodSeconds = &custom
 
 	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123")
 
@@ -1396,7 +1421,7 @@ func TestBuildKeystoneDeployment_TerminationGracePeriodCustom(t *testing.T) {
 func TestBuildKeystoneDeployment_PreStopSleepDefault(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
-	ks.Spec.PreStopSleepSeconds = nil
+	ks.Spec.Deployment.PreStopSleepSeconds = nil
 
 	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123")
 
@@ -1417,7 +1442,7 @@ func TestBuildKeystoneDeployment_PreStopSleepCustom(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
 	custom := int64(12)
-	ks.Spec.PreStopSleepSeconds = &custom
+	ks.Spec.Deployment.PreStopSleepSeconds = &custom
 
 	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123")
 
@@ -1433,7 +1458,7 @@ func TestBuildKeystoneDeployment_PreStopSleepZero(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
 	zero := int64(0)
-	ks.Spec.PreStopSleepSeconds = &zero
+	ks.Spec.Deployment.PreStopSleepSeconds = &zero
 
 	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123")
 
@@ -1451,8 +1476,8 @@ func TestBuildKeystoneDeployment_PreStopSleepZero(t *testing.T) {
 func TestReconcileAndWebhookDefaultsAgree(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
-	ks.Spec.TerminationGracePeriodSeconds = nil
-	ks.Spec.PreStopSleepSeconds = nil
+	ks.Spec.Deployment.TerminationGracePeriodSeconds = nil
+	ks.Spec.Deployment.PreStopSleepSeconds = nil
 
 	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123")
 
@@ -1688,7 +1713,7 @@ func TestUwsgiCommand_FlagOrderDeterministic(t *testing.T) {
 func TestBuildKeystoneDeployment_DefaultRollingUpdateStrategy(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
-	ks.Spec.Strategy = nil
+	ks.Spec.Deployment.Strategy = nil
 
 	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123")
 
@@ -1784,7 +1809,7 @@ func TestBuildKeystoneDeployment_StrategyOverrideRollingCustomPercents(t *testin
 	ks := deployTestKeystone()
 	maxUnavailable := intstr.FromString("25%")
 	maxSurge := intstr.FromString("50%")
-	ks.Spec.Strategy = &appsv1.DeploymentStrategy{
+	ks.Spec.Deployment.Strategy = &appsv1.DeploymentStrategy{
 		Type: appsv1.RollingUpdateDeploymentStrategyType,
 		RollingUpdate: &appsv1.RollingUpdateDeployment{
 			MaxUnavailable: &maxUnavailable,
@@ -1806,7 +1831,7 @@ func TestBuildKeystoneDeployment_StrategyOverrideRollingCustomPercents(t *testin
 func TestBuildKeystoneDeployment_StrategyOverrideRecreate(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
-	ks.Spec.Strategy = &appsv1.DeploymentStrategy{
+	ks.Spec.Deployment.Strategy = &appsv1.DeploymentStrategy{
 		Type: appsv1.RecreateDeploymentStrategyType,
 	}
 

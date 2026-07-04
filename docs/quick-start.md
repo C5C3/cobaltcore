@@ -76,7 +76,8 @@ metadata:
   name: keystone
   namespace: openstack
 spec:
-  replicas: 3
+  deployment:
+    replicas: 3
   image:
     repository: ghcr.io/c5c3/keystone
     tag: "2025.2"

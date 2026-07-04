@@ -34,11 +34,12 @@ in-depth reference doc for that area.
 
 ## CRD Surface
 
-- **Comprehensive spec.** Replicas, image, database, cache, fernet,
-  credentialKeys, trustFlush, bootstrap, federation, middleware, plugins,
-  policy overrides, autoscaling, networkPolicy, gateway, resources, uwsgi,
-  graceful-termination knobs, topologySpreadConstraints, priorityClassName,
-  rollout `strategy`, and free-form `extraConfig`.
+- **Comprehensive spec.** Image, database, cache, fernet, credentialKeys,
+  passwordRotation, trustFlush, bootstrap, federation, middleware, plugins,
+  policy overrides, autoscaling, networkPolicy, gateway, uwsgi, logging,
+  free-form `extraConfig`, and a `deployment` block grouping the pod-level knobs
+  (replicas, resources, rollout `strategy`, graceful-termination timings,
+  topologySpreadConstraints, priorityClassName).
 - **Status with sub-conditions.** Fourteen typed sub-conditions plus
   `installedRelease`, `targetRelease`, `upgradePhase`, and `endpoint` —
   surfaced via `kubectl get keystones` printer columns.

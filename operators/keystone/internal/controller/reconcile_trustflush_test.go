@@ -47,8 +47,8 @@ func trustFlushTestKeystone() *keystonev1alpha1.Keystone {
 			Generation: 1,
 		},
 		Spec: keystonev1alpha1.KeystoneSpec{
-			Replicas: 3,
-			Image:    commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2025.2"},
+			Deployment: keystonev1alpha1.DeploymentSpec{Replicas: 3},
+			Image:      commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2025.2"},
 			Database: commonv1.DatabaseSpec{
 				Host:      "db.example.com",
 				Port:      3306,
@@ -526,7 +526,7 @@ func TestTrustFlushCronJob_PriorityClassNameSet(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := trustFlushTestKeystone()
 	pcn := "system-cluster-critical"
-	ks.Spec.PriorityClassName = &pcn
+	ks.Spec.Deployment.PriorityClassName = &pcn
 	ks.Spec.TrustFlush = &keystonev1alpha1.TrustFlushSpec{
 		Schedule: keystonev1alpha1.DefaultTrustFlushSchedule,
 	}

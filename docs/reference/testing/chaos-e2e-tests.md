@@ -525,7 +525,7 @@ new leader can actively reconcile — proving operational capability beyond just
 **Key difference from operator-pod-crash (SC-CHAOS-004):** SC-CHAOS-004 uses `mode: one`,
 killing a single operator pod while leaving other replicas running. SC-CHAOS-009 uses
 `mode: all`, killing every operator pod simultaneously. SC-CHAOS-004 does not verify
-post-failover reconciliation capability; SC-CHAOS-009 patches `spec.replicas` after
+post-failover reconciliation capability; SC-CHAOS-009 patches `spec.deployment.replicas` after
 recovery to confirm the new leader processes spec changes end-to-end.
 
 **Steps:**
@@ -537,7 +537,7 @@ recovery to confirm the new leader processes spec changes end-to-end.
 | 3 | Inject chaos and verify pod replacement | `script` (270s) | Snapshots operator pod UIDs, applies `01-podchaos.yaml` (PodChaos `kill-operator-all`, `mode: all`, targets `app.kubernetes.io/name: keystone-operator` in `keystone-system`), waits until none of the pre-chaos UIDs remain, then waits until Deployment `readyReplicas` equals `.spec.replicas` |
 | 4 | Delete PodChaos | `delete` | Removes PodChaos `kill-operator-all` to lift the fault |
 | 5 | Assert Ready=True after failover | `assert` (5m) | All 6 conditions: SecretsReady=True, FernetKeysReady=True, DatabaseReady=True, DeploymentReady=True, BootstrapReady=True, Ready=True (AllReady) |
-| 6 | Patch replicas 1→2 | `patch` | Applies `02-patch-replicas.yaml` — patches `spec.replicas` to 2 |
+| 6 | Patch replicas 1→2 | `patch` | Applies `02-patch-replicas.yaml` — patches `spec.deployment.replicas` to 2 |
 | 7 | Assert replica patch and Ready=True | `assert` (5m) | Deployment `keystone-chaos-opk` has `replicas: 2` and `availableReplicas: 2`; Ready=True with reason AllReady |
 
 **Fixtures:** `00-keystone-cr.yaml`, `01-podchaos.yaml`, `02-patch-replicas.yaml`
@@ -673,7 +673,7 @@ Apply CR → Assert Ready=True → Inject PodChaos (mode: all) → Wait readyRep
 3. Poll operator Deployment `readyReplicas`: wait for drop to 0 (kill confirmed), then return to 2 (recovered)
 4. Delete PodChaos to lift the fault
 5. Assert all 6 conditions remain `True` — operator restart is invisible to CR status
-6. Patch `spec.replicas` from 1 to 2
+6. Patch `spec.deployment.replicas` from 1 to 2
 7. Assert Deployment has `replicas: 2` and `availableReplicas: 2`, and `Ready=True`
 
 ## PodChaos CRD Pattern

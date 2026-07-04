@@ -56,8 +56,8 @@ func fernetTestKeystone() *keystonev1alpha1.Keystone {
 			UID:        "test-uid",
 		},
 		Spec: keystonev1alpha1.KeystoneSpec{
-			Replicas: 3,
-			Image:    commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2025.2"},
+			Deployment: keystonev1alpha1.DeploymentSpec{Replicas: 3},
+			Image:      commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2025.2"},
 			Database: commonv1.DatabaseSpec{
 				Host:      "db.example.com",
 				Port:      3306,
@@ -976,7 +976,7 @@ func TestFernetRotationCronJob_PriorityClassNameSet(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := fernetTestKeystone()
 	pcn := "system-cluster-critical"
-	ks.Spec.PriorityClassName = &pcn
+	ks.Spec.Deployment.PriorityClassName = &pcn
 
 	cronJob := fernetRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-fernet-rotate-script-abc123")
 
