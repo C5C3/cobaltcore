@@ -181,6 +181,12 @@ func dbCredentialVaultDynamicSecret(cp *c5c3v1alpha1.ControlPlane, server, mount
 			Method: "GET",
 			Provider: &esov1.VaultProvider{
 				Server: server,
+				// Version has no omitempty, so leaving it unset serializes as ""
+				// and the ESO CRD enum (v1|v2) rejects the object — the CRD
+				// default only applies to ABSENT fields. The value itself is
+				// inert here: KV versioning does not affect the database-engine
+				// read on spec.path, so pin the ESO default.
+				Version: esov1.VaultKVStoreV2,
 				Auth: &esov1.VaultAuth{
 					Kubernetes: &esov1.VaultKubernetesAuth{
 						Path:              mountPath,

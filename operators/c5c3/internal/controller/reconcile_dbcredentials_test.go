@@ -150,6 +150,8 @@ func TestReconcileDBCredentials_Managed_ProjectsDynamicObjects(t *testing.T) {
 	g.Expect(vds.Spec.Method).To(Equal("GET"))
 	g.Expect(vds.Spec.Provider).NotTo(BeNil())
 	g.Expect(vds.Spec.Provider.Server).To(Equal(openBaoDefaultServer))
+	g.Expect(vds.Spec.Provider.Version).To(Equal(esov1.VaultKVStoreV2),
+		"version must be set explicitly — no omitempty, so \"\" fails the CRD enum")
 	g.Expect(vds.Spec.Provider.Auth.Kubernetes.Path).To(Equal(openBaoDefaultKubernetesMount))
 	g.Expect(vds.Spec.Provider.Auth.Kubernetes.Role).To(Equal(dbDynamicVaultRole))
 	g.Expect(vds.Spec.Provider.Auth.Kubernetes.ServiceAccountRef.Name).To(Equal(dbCredentialServiceAccountName))
