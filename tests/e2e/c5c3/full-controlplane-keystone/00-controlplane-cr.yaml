@@ -70,7 +70,7 @@ spec:
   services:
     keystone:
       replicas: 1
-  global:
+  globalPolicyOverrides:
     rules:
       "identity:list_users": "role:admin"
   korc:

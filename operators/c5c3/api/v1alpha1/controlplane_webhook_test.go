@@ -418,7 +418,7 @@ func TestValidateCreate_RejectsEmptyGlobalPolicyRuleName(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &ControlPlaneWebhook{}
 	cp := validControlPlane()
-	cp.Spec.Global = &commonv1.PolicySpec{Rules: map[string]string{"": "role:admin"}}
+	cp.Spec.GlobalPolicyOverrides = &commonv1.PolicySpec{Rules: map[string]string{"": "role:admin"}}
 
 	_, err := w.ValidateCreate(context.Background(), cp)
 	g.Expect(err).To(HaveOccurred())
@@ -430,7 +430,7 @@ func TestValidateCreate_RejectsEmptyGlobalPolicyRuleValue(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &ControlPlaneWebhook{}
 	cp := validControlPlane()
-	cp.Spec.Global = &commonv1.PolicySpec{Rules: map[string]string{"identity:get_user": ""}}
+	cp.Spec.GlobalPolicyOverrides = &commonv1.PolicySpec{Rules: map[string]string{"identity:get_user": ""}}
 
 	_, err := w.ValidateCreate(context.Background(), cp)
 	g.Expect(err).To(HaveOccurred())
@@ -456,7 +456,7 @@ func TestValidateCreate_AcceptsValidPolicyRules(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &ControlPlaneWebhook{}
 	cp := validControlPlane()
-	cp.Spec.Global = &commonv1.PolicySpec{Rules: map[string]string{"identity:get_user": "role:admin"}}
+	cp.Spec.GlobalPolicyOverrides = &commonv1.PolicySpec{Rules: map[string]string{"identity:get_user": "role:admin"}}
 	cp.Spec.Services.Keystone.PolicyOverrides = &commonv1.PolicySpec{
 		Rules: map[string]string{"identity:list_user": "role:reader"},
 	}
@@ -488,7 +488,7 @@ func TestValidateCreate_AccumulatesAllErrors(t *testing.T) {
 	// Policy rules: an empty name on the global policy and an empty value on the
 	// per-service override (the empty-value path is the issue #479 addition). Both
 	// must participate in the aggregated error.
-	cp.Spec.Global = &commonv1.PolicySpec{Rules: map[string]string{"": "role:admin"}}
+	cp.Spec.GlobalPolicyOverrides = &commonv1.PolicySpec{Rules: map[string]string{"": "role:admin"}}
 	cp.Spec.Services.Keystone.PolicyOverrides = &commonv1.PolicySpec{
 		Rules: map[string]string{"identity:get_user": ""},
 	}

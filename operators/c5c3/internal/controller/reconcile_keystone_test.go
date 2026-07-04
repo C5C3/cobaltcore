@@ -270,7 +270,7 @@ func TestReconcileKeystone_PolicyMerge(t *testing.T) {
 
 	s := keystoneTestScheme(t)
 	cp := keystoneControlPlane()
-	cp.Spec.Global = &commonv1.PolicySpec{
+	cp.Spec.GlobalPolicyOverrides = &commonv1.PolicySpec{
 		Rules: map[string]string{
 			"identity:create_user": "role:admin",
 			"identity:list_users":  "role:admin",

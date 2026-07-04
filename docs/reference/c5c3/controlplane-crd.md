@@ -190,7 +190,7 @@ status:
 | `region` | `string` | No | `"RegionOne"` | OpenStack region name applied across the control plane. Projected into the Keystone CR's `bootstrap.region`. Defaulted to `RegionOne` by **both** the `+kubebuilder:default` marker (normal admission) and the defaulting webhook (callers that bypass the CRD default). Immutable after create (the projected `bootstrap.region` is itself immutable). |
 | `infrastructure` | [`InfrastructureSpec`](#infrastructurespec) | No | managed-mode defaulted | Shared backing services (database, cache) the control plane's services connect to. Optional — the defaulting webhook materializes a managed-mode `database`/`cache` when omitted; see [InfrastructureSpec](#infrastructurespec). |
 | `services` | [`ServicesSpec`](#servicesspec) | Yes | — | Per-service configuration projected into the individual service CRs. |
-| `global` | [`*commonv1.PolicySpec`](../keystone/keystone-crd.md#policyspec) | No | `nil` | oslo.policy overrides applied across every service in the control plane. Per-service overrides (e.g. `services.keystone.policyOverrides`) take precedence over these global rules when both are set. |
+| `globalPolicyOverrides` | [`*commonv1.PolicySpec`](../keystone/keystone-crd.md#policyspec) | No | `nil` | oslo.policy overrides applied across every service in the control plane. Per-service overrides (e.g. `services.keystone.policyOverrides`) take precedence over these global rules when both are set. |
 | `korc` | [`KORCSpec`](#korcspec) | No | defaulted | K-ORC integration used to bootstrap and rotate the admin application credential and any declared bootstrap resources. Optional — the defaulting webhook fills `adminCredential` (cloudCredentialsRef, passwordSecretRef, applicationCredential restriction/rotation) from well-known defaults when omitted. |
 
 ---
@@ -307,7 +307,7 @@ Keystone service.
 | --- | --- | --- | --- | --- |
 | `replicas` | `*int32` | No | `nil` (Keystone operator default, 3) | Overrides the number of Keystone API replicas. When `nil`, the reconciler leaves `replicas` unset on the projected Keystone CR, so the Keystone operator applies its own default. Minimum: 1. |
 | `image` | [`*commonv1.ImageSpec`](../keystone/keystone-crd.md#imagespec) | No | `nil` | Overrides the Keystone container image. When `nil`, the reconciler derives the image as `ghcr.io/c5c3/keystone:{spec.openStackRelease}`. When set, the whole image reference is used verbatim. |
-| `policyOverrides` | [`*commonv1.PolicySpec`](../keystone/keystone-crd.md#policyspec) | No | `nil` | Per-service oslo.policy overrides for Keystone. When set, these take precedence over `spec.global` for the Keystone service. |
+| `policyOverrides` | [`*commonv1.PolicySpec`](../keystone/keystone-crd.md#policyspec) | No | `nil` | Per-service oslo.policy overrides for Keystone. When set, these take precedence over `spec.globalPolicyOverrides` for the Keystone service. |
 | `rotationInterval` | `*metav1.Duration` | No | `nil` | Overrides the Fernet / credential-key rotation interval the reconciler derives for the projected Keystone CR. When `nil`, the reconciler derives a default schedule. When set, the duration is converted to a cron expression and applied to both `fernet.rotationSchedule` and `credentialKeys.rotationSchedule` on the projected Keystone CR. An unconvertible interval (not a positive whole number of days) is **rejected at admission** by the validating webhook; if the webhook is bypassed, the reconciler surfaces `KeystoneReady=False` with reason `InvalidRotationInterval` and returns the error so the reconcile chain stops and requeues with backoff. |
 | `gateway` | [`*commonv1.GatewaySpec`](#gatewayspec) | No | `nil` | Exposes the projected Keystone API externally via a Gateway API HTTPRoute. When `nil`, no HTTPRoute is projected and the Keystone API is reachable in-cluster only (its ClusterIP Service). When set, the reconciler projects it onto the Keystone CR's `spec.gateway`, so the Keystone operator attaches an HTTPRoute to the referenced Gateway. When a `gateway` is set its `hostname` must be non-empty — enforced at admission by the validating webhook (see [Validation Rules](#validation-rules)). |
 | `publicEndpoint` | `string` | No | `""` | Externally routable Keystone identity endpoint URL (e.g. `https://keystone.example.com/v3`). Projected into the Keystone bootstrap (`--bootstrap-public-url`) and used for the K-ORC identity catalog Endpoint, so external clients resolve the same URL Keystone advertises. When set, it must be an HTTP(S) URL (`+kubebuilder:validation:Pattern=^https?://`), so a malformed endpoint fails at admission rather than wedging the projected Keystone CR. When empty and `gateway` is set, the reconciler derives `https://{gateway.hostname}/v3` (the default-443 form); set it explicitly when the externally reachable port differs (e.g. a kind host-port mapping like `:8443`). |
@@ -491,7 +491,15 @@ the kind/name and applies it.
 | `conditions` | `[]metav1.Condition` | Latest available observations of the control-plane state. Each condition carries an `observedGeneration`. See [Status Conditions](#status-conditions). |
 | `observedGeneration` | `int64` | The `.metadata.generation` the controller last reconciled, so a stale status is distinguishable from a current one. |
 | `updatePhase` | [`UpdatePhase`](#updatephase) | Current phase of a control-plane release update. Written on every status update; fixed at `Idle` in the current implementation because the release-update state machine is reserved (the other `UpdatePhase` values are not yet set). |
-| `services` | `[]ServiceStatus` | Per-service readiness of the projected service CRs. A `listType=map` list keyed by `name`, so per-service entries merge under server-side apply and can grow per-service conditions cleanly. Written on every status update with a `keystone` entry whose `ready` mirrors the `KeystoneReady` condition and whose `release` is `spec.openStackRelease`. See [ServiceStatus](#servicestatus). |
+| `services` | `[]ServiceStatus` | Per-service readiness of the projected service CRs. A `listType=map` list keyed by `name`, so per-service entries merge under server-side apply and can grow per-service conditions cleanly. Written on every status update with a `keystone` entry whose `ready` mirrors the `KeystoneReady` condition and whose `release` is `spec.openStackRelease` — omitted entirely when `spec.services.keystone` is unset (no Keystone is managed). See [ServiceStatus](#servicestatus). |
+
+> **`updatePhase` vs the Keystone CRD's `upgradePhase`.** These field names are
+> intentionally distinct: `ControlPlane.status.updatePhase` is the control-plane
+> release-update machine (`Idle` / `Updating` / …/ `RollingBack`), while
+> `Keystone.status.upgradePhase` is the live per-service database expand-migrate-
+> contract machine (`Expanding` / `Migrating` / `RollingUpdate` / `Contracting`).
+> They carry different enum vocabularies for different concerns and are not the
+> same field under two names.
 | `adminApplicationCredential` | [`*AdminApplicationCredentialStatus`](#adminapplicationcredentialstatus) | Observed state of the K-ORC admin application credential. |
 
 ### ServiceStatus
@@ -631,7 +639,7 @@ truth.
 | `DatabaseSpec` | `infrastructure.database` | [Keystone CRD → DatabaseSpec](../keystone/keystone-crd.md#databasespec) |
 | `CacheSpec` | `infrastructure.cache` | [Keystone CRD → CacheSpec](../keystone/keystone-crd.md#cachespec) |
 | `SecretRefSpec` | `korc.adminCredential.passwordSecretRef` | [Keystone CRD → SecretRefSpec](../keystone/keystone-crd.md#secretrefspec) |
-| `PolicySpec` | `global`, `services.keystone.policyOverrides` | [Keystone CRD → PolicySpec](../keystone/keystone-crd.md#policyspec) |
+| `PolicySpec` | `globalPolicyOverrides`, `services.keystone.policyOverrides` | [Keystone CRD → PolicySpec](../keystone/keystone-crd.md#policyspec) |
 
 > **Note on `DatabaseSpec.tls` / `CacheSpec`:** the `commonv1` shapes carry the
 > full Keystone field set, including the optional `database.tls` block.
@@ -659,7 +667,7 @@ Keystone discipline:
 > database clusterRef/host and cache clusterRef/servers mutual-exclusivity (from
 > `DatabaseSpec`/`CacheSpec`, applied to `spec.infrastructure.database` and
 > `spec.infrastructure.cache`), and the policy-rule name/value constraints (from
-> `PolicySpec`, applied to `spec.global` and `spec.services.keystone.policyOverrides`).
+> `PolicySpec`, applied to `spec.globalPolicyOverrides` and `spec.services.keystone.policyOverrides`).
 > The required `passwordSecretRef.name` remains enforced **only by the validating
 > webhook**: a cluster that disables or bypasses the webhook (e.g. envtest without
 > the webhook wired up, or a direct etcd write) will not reject a `ControlPlane`
@@ -687,8 +695,8 @@ Keystone discipline:
 | `status.updatePhase` | Enum: `Idle`, `Updating`, `UpdatingServices`, `Verifying`, `RollingBack` |
 | `spec.infrastructure.database` (CEL) | `has(self.clusterRef) != has(self.host)` → "exactly one of clusterRef or host must be set" |
 | `spec.infrastructure.cache` (CEL) | `has(self.clusterRef) != (has(self.servers) && size(self.servers) > 0)` → "exactly one of clusterRef or servers must be set" |
-| `spec.global`, `spec.services.keystone.policyOverrides` (CEL) | `!has(self.rules) \|\| self.rules.all(k, size(k) > 0)` → "policy rule name must not be empty" |
-| `spec.global`, `spec.services.keystone.policyOverrides` (CEL) | `!has(self.rules) \|\| self.rules.all(k, size(self.rules[k]) > 0)` → "policy rule value must not be empty" |
+| `spec.globalPolicyOverrides`, `spec.services.keystone.policyOverrides` (CEL) | `!has(self.rules) \|\| self.rules.all(k, size(k) > 0)` → "policy rule name must not be empty" |
+| `spec.globalPolicyOverrides`, `spec.services.keystone.policyOverrides` (CEL) | `!has(self.rules) \|\| self.rules.all(k, size(self.rules[k]) > 0)` → "policy rule value must not be empty" |
 
 ### Validating-webhook rules
 
@@ -705,8 +713,8 @@ short-circuit on the first error.
 | Database replicas quorum | `spec.infrastructure.database.replicas` | `field.Invalid` | Value is exactly `2`. The managed-mode projection turns any `replicas > 1` into a Galera cluster, and a two-node Galera cluster cannot hold a majority — a single pod disruption then loses quorum. Replicas must be 1 (standalone) or >=3. The CRD marker enforces only `Minimum=1` (the shared `commonv1.DatabaseSpec` must not carry a c5c3-specific CEL rule the keystone operator, which ignores `replicas`, would inherit), so this check is **webhook-only**; a zero value (defaulting bypassed) is left to the reconciler's floor. |
 | Admin password Secret required | `spec.korc.adminCredential.passwordSecretRef.name` | `field.Required` | `name` is empty — without it the reconciler cannot (re-)mint the admin application credential. **Webhook-only**. |
 | Gateway hostname required | `spec.services.keystone.gateway.hostname` | `field.Required` | A `gateway` is configured but its `hostname` is empty. Mirrors the `+kubebuilder:validation:MinLength=1` marker on `commonv1.GatewaySpec.Hostname`; without it the reconciler derives an empty `https:///v3` public endpoint. |
-| Empty policy rule name | `spec.global.rules[<key>]`, `spec.services.keystone.policyOverrides.rules[<key>]` | `field.Required` | A rule name (map key) is the empty string. Enforced via the shared `policy.ValidatePolicyRules`, mirrored by the CEL rule on `commonv1.PolicySpec`. |
-| Empty policy rule value | `spec.global.rules[<key>]`, `spec.services.keystone.policyOverrides.rules[<key>]` | `field.Required` | A rule value is the empty string. Enforced via the shared `policy.ValidatePolicyRules`, mirrored by the CEL rule on `commonv1.PolicySpec`. |
+| Empty policy rule name | `spec.globalPolicyOverrides.rules[<key>]`, `spec.services.keystone.policyOverrides.rules[<key>]` | `field.Required` | A rule name (map key) is the empty string. Enforced via the shared `policy.ValidatePolicyRules`, mirrored by the CEL rule on `commonv1.PolicySpec`. |
+| Empty policy rule value | `spec.globalPolicyOverrides.rules[<key>]`, `spec.services.keystone.policyOverrides.rules[<key>]` | `field.Required` | A rule value is the empty string. Enforced via the shared `policy.ValidatePolicyRules`, mirrored by the CEL rule on `commonv1.PolicySpec`. |
 
 ### Update-only immutability rules
 

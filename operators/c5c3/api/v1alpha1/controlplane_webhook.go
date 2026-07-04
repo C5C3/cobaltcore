@@ -359,9 +359,9 @@ func (w *ControlPlaneWebhook) validate(cp *ControlPlane) field.ErrorList {
 	// rules not at all; this mirrors the keystone webhook and the CEL rule on
 	// commonv1.PolicySpec, closing the empty-value gap the audit reported
 	// (issue #479).
-	if g := cp.Spec.Global; g != nil {
+	if g := cp.Spec.GlobalPolicyOverrides; g != nil {
 		allErrs = append(allErrs, policy.ValidatePolicyRules(
-			g.Rules, specPath.Child("global", "rules"),
+			g.Rules, specPath.Child("globalPolicyOverrides", "rules"),
 		)...)
 	}
 	if ks := cp.Spec.Services.Keystone; ks != nil && ks.PolicyOverrides != nil {

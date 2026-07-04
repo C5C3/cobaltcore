@@ -145,7 +145,7 @@ func integrationManagedControlPlane(name, namespace string) *c5c3v1alpha1.Contro
 			},
 			// One global oslo.policy override so the test can assert the reconciler
 			// merges it into the projected Keystone CR's PolicyOverrides.
-			Global: &commonv1.PolicySpec{
+			GlobalPolicyOverrides: &commonv1.PolicySpec{
 				Rules: map[string]string{"identity:list_users": "role:admin"},
 			},
 			KORC: c5c3v1alpha1.KORCSpec{

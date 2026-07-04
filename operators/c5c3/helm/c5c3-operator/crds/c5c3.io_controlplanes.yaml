@@ -57,11 +57,12 @@ spec:
           spec:
             description: ControlPlaneSpec defines the desired state of a ControlPlane.
             properties:
-              global:
+              globalPolicyOverrides:
                 description: |-
-                  Global defines oslo.policy overrides applied across every service in the
-                  control plane. Per-service overrides (e.g. services.keystone.policyOverrides)
-                  take precedence over these global rules when both are set.
+                  GlobalPolicyOverrides defines oslo.policy overrides applied across every
+                  service in the control plane. Named to parallel
+                  services.keystone.policyOverrides, whose per-service rules take precedence
+                  over these global rules when both are set.
                 properties:
                   configMapRef:
                     description: |-

@@ -64,11 +64,12 @@ type ControlPlaneSpec struct {
 	// individual service CRs.
 	Services ServicesSpec `json:"services"`
 
-	// Global defines oslo.policy overrides applied across every service in the
-	// control plane. Per-service overrides (e.g. services.keystone.policyOverrides)
-	// take precedence over these global rules when both are set.
+	// GlobalPolicyOverrides defines oslo.policy overrides applied across every
+	// service in the control plane. Named to parallel
+	// services.keystone.policyOverrides, whose per-service rules take precedence
+	// over these global rules when both are set.
 	// +optional
-	Global *commonv1.PolicySpec `json:"global,omitempty"`
+	GlobalPolicyOverrides *commonv1.PolicySpec `json:"globalPolicyOverrides,omitempty"`
 
 	// KORC configures the K-ORC (OpenStack Resource Controller) integration used
 	// to bootstrap and rotate the admin application credential and any declared

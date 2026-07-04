@@ -573,7 +573,7 @@ the ControlPlane provisioned:
   Keystone and K-ORC agree on the admin-password source) — and the region is
   `cp.Spec.Region`.
 - **Replicas:** copied from `spec.services.keystone.replicas` when set.
-- **Policy:** `policy.MergePolicies(cp.Spec.Global, cp.Spec.Services.Keystone.PolicyOverrides)`
+- **Policy:** `policy.MergePolicies(cp.Spec.GlobalPolicyOverrides, cp.Spec.Services.Keystone.PolicyOverrides)`
   (the shared `internal/common/policy` helper) merges the global base with
   per-service overrides (per-service wins on conflict).
 - **Rotation:** when `spec.services.keystone.rotationInterval` is set,

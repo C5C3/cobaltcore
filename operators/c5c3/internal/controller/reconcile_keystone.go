@@ -170,7 +170,7 @@ func (r *ControlPlaneReconciler) reconcileKeystone(ctx context.Context, cp *c5c3
 		rotationSchedule = cron
 	}
 
-	merged := policy.MergePolicies(cp.Spec.Global, cp.Spec.Services.Keystone.PolicyOverrides)
+	merged := policy.MergePolicies(cp.Spec.GlobalPolicyOverrides, cp.Spec.Services.Keystone.PolicyOverrides)
 
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, keystone, func() error {
 		keystone.Spec.Image = image
