@@ -143,6 +143,11 @@ spec:
                     other_err = 0
                     total = 0
                     deadline = time.monotonic() + DURATION
+                    # Fixed-rate pacing: sleep only the remainder of each
+                    # 0.25 s slot. A plain sleep(INTERVAL) after each request
+                    # adds the request latency to every cycle and undershoots
+                    # the >= 200 request threshold under CI load.
+                    next_slot = time.monotonic()
                     while time.monotonic() < deadline:
                         total += 1
                         try:
@@ -174,7 +179,8 @@ spec:
                         except Exception as e:
                             other_err += 1
                             print(f"WARN: other err={type(e).__name__}:{e} iter={total}", flush=True)
-                        time.sleep(INTERVAL)
+                        next_slot += INTERVAL
+                        time.sleep(max(0.0, next_slot - time.monotonic()))
                     print(
                         f"RESULT: total={total} ok={ok} "
                         f"fail_5xx={fail_5xx} conn_reset={conn_reset} "
