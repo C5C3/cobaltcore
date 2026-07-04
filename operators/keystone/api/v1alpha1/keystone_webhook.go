@@ -19,6 +19,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation/field"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -181,18 +182,18 @@ func (w *KeystoneWebhook) Default(_ context.Context, obj *Keystone) error {
 	}
 	// Default zero-valued sub-fields of spec.uwsgi when non-nil.
 	// When the pointer is nil, do nothing — the reconciler uses hardcoded defaults.
-	// HTTPKeepAlive is NOT defaulted here: its bool zero value (false) is
-	// indistinguishable from an explicit false, so we cannot safely override it
-	// without risking overriding explicit user intent (e.g. `httpKeepAlive: false`
-	// sent via kubectl patch or weaker schema enforcement paths). The CRD schema
-	// default (+kubebuilder:default=true) handles HTTPKeepAlive in the normal
-	// admission path; uwsgiCommand uses the CRD default at runtime.
+	// HTTPKeepAlive is now a nil-preserving *bool, so "unset" is distinguishable
+	// from an explicit false: the webhook restores the documented default (true)
+	// only when the pointer is nil, and leaves an explicit true/false untouched.
 	if obj.Spec.UWSGI != nil {
 		if obj.Spec.UWSGI.Processes == 0 {
 			obj.Spec.UWSGI.Processes = DefaultUWSGIProcesses
 		}
 		if obj.Spec.UWSGI.Threads == 0 {
 			obj.Spec.UWSGI.Threads = DefaultUWSGIThreads
+		}
+		if obj.Spec.UWSGI.HTTPKeepAlive == nil {
+			obj.Spec.UWSGI.HTTPKeepAlive = ptr.To(DefaultUWSGIHTTPKeepAlive)
 		}
 	}
 	// Default zero-valued sub-fields of spec.logging.
@@ -543,8 +544,10 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 		// httpKeepAliveTimeout is only meaningful when
 		// httpKeepAlive is true — otherwise the --http-keepalive-timeout flag
 		// is never emitted. Reject the nonsensical combination early so users
-		// do not silently lose the timeout they configured.
-		if k.Spec.UWSGI.HTTPKeepAliveTimeout != nil && !k.Spec.UWSGI.HTTPKeepAlive {
+		// do not silently lose the timeout they configured. A nil HTTPKeepAlive
+		// pointer means "unset", which the reconciler treats as the default true,
+		// so only an EXPLICIT false conflicts with a set timeout.
+		if k.Spec.UWSGI.HTTPKeepAliveTimeout != nil && k.Spec.UWSGI.HTTPKeepAlive != nil && !*k.Spec.UWSGI.HTTPKeepAlive {
 			allErrs = append(allErrs, field.Invalid(
 				uwsgiPath.Child("httpKeepAliveTimeout"),
 				*k.Spec.UWSGI.HTTPKeepAliveTimeout,

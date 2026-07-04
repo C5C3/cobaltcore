@@ -17,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	commonv1 "github.com/c5c3/forge/internal/common/types"
@@ -298,11 +299,10 @@ func TestDefault_UWSGIZeroValuedDefaultsProcessesAndThreads(t *testing.T) {
 	g.Expect(w.Default(context.Background(), k)).To(Succeed())
 	g.Expect(k.Spec.UWSGI.Processes).To(Equal(int32(2)))
 	g.Expect(k.Spec.UWSGI.Threads).To(Equal(int32(1)))
-	// HTTPKeepAlive is NOT defaulted in the webhook — the CRD schema
-	// default (+kubebuilder:default=true) handles it in the normal admission
-	// path. The webhook cannot distinguish "not set" from "explicitly false"
-	// for a bool, so it does not attempt to default it.
-	g.Expect(k.Spec.UWSGI.HTTPKeepAlive).To(BeFalse())
+	// HTTPKeepAlive is now a nil-preserving *bool, so the webhook restores the
+	// documented default (true) when the pointer is nil — a zero-valued UWSGI
+	// block gets keep-alive enabled.
+	g.Expect(k.Spec.UWSGI.HTTPKeepAlive).To(HaveValue(BeTrue()))
 }
 
 func TestDefault_UWSGIDefaultsProcessesAndThreadsOnly(t *testing.T) {
@@ -313,7 +313,7 @@ func TestDefault_UWSGIDefaultsProcessesAndThreadsOnly(t *testing.T) {
 	k := &Keystone{
 		Spec: KeystoneSpec{
 			UWSGI: &UWSGISpec{
-				HTTPKeepAlive: true,
+				HTTPKeepAlive: ptr.To(true),
 			},
 		},
 	}
@@ -321,21 +321,20 @@ func TestDefault_UWSGIDefaultsProcessesAndThreadsOnly(t *testing.T) {
 	g.Expect(w.Default(context.Background(), k)).To(Succeed())
 	g.Expect(k.Spec.UWSGI.Processes).To(Equal(int32(2)))
 	g.Expect(k.Spec.UWSGI.Threads).To(Equal(int32(1)))
-	g.Expect(k.Spec.UWSGI.HTTPKeepAlive).To(BeTrue())
+	g.Expect(k.Spec.UWSGI.HTTPKeepAlive).To(HaveValue(BeTrue()))
 }
 
 func TestDefault_UWSGIDoesNotOverwriteHTTPKeepAlive(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{}
-	// httpKeepAlive=false must never be overwritten by the webhook — the user
-	// may have explicitly set it. The CRD schema default (+kubebuilder:default=true)
-	// handles the normal admission case; the webhook never touches HTTPKeepAlive
-	// because bool's zero value is indistinguishable from explicit false.
+	// An explicit httpKeepAlive=false must never be overwritten by the webhook —
+	// the pointer distinguishes "unset" (nil, which the webhook defaults to true)
+	// from an explicit false, so the false is preserved verbatim.
 	k := &Keystone{
 		Spec: KeystoneSpec{
 			UWSGI: &UWSGISpec{
 				Processes:     4,
-				HTTPKeepAlive: false,
+				HTTPKeepAlive: ptr.To(false),
 			},
 		},
 	}
@@ -343,7 +342,7 @@ func TestDefault_UWSGIDoesNotOverwriteHTTPKeepAlive(t *testing.T) {
 	g.Expect(w.Default(context.Background(), k)).To(Succeed())
 	g.Expect(k.Spec.UWSGI.Processes).To(Equal(int32(4)))
 	g.Expect(k.Spec.UWSGI.Threads).To(Equal(int32(1)))
-	g.Expect(k.Spec.UWSGI.HTTPKeepAlive).To(BeFalse())
+	g.Expect(k.Spec.UWSGI.HTTPKeepAlive).To(HaveValue(BeFalse()))
 }
 
 func TestDefault_UWSGIZeroProcessesAndThreadsDoNotOverrideExplicitFalse(t *testing.T) {
@@ -355,7 +354,7 @@ func TestDefault_UWSGIZeroProcessesAndThreadsDoNotOverrideExplicitFalse(t *testi
 	k := &Keystone{
 		Spec: KeystoneSpec{
 			UWSGI: &UWSGISpec{
-				HTTPKeepAlive: false,
+				HTTPKeepAlive: ptr.To(false),
 			},
 		},
 	}
@@ -363,7 +362,7 @@ func TestDefault_UWSGIZeroProcessesAndThreadsDoNotOverrideExplicitFalse(t *testi
 	g.Expect(w.Default(context.Background(), k)).To(Succeed())
 	g.Expect(k.Spec.UWSGI.Processes).To(Equal(int32(2)))
 	g.Expect(k.Spec.UWSGI.Threads).To(Equal(int32(1)))
-	g.Expect(k.Spec.UWSGI.HTTPKeepAlive).To(BeFalse())
+	g.Expect(k.Spec.UWSGI.HTTPKeepAlive).To(HaveValue(BeFalse()))
 }
 
 func TestDefault_UWSGIPreservesExplicitValues(t *testing.T) {
@@ -374,7 +373,7 @@ func TestDefault_UWSGIPreservesExplicitValues(t *testing.T) {
 			UWSGI: &UWSGISpec{
 				Processes:     8,
 				Threads:       4,
-				HTTPKeepAlive: true,
+				HTTPKeepAlive: ptr.To(true),
 			},
 		},
 	}
@@ -382,7 +381,7 @@ func TestDefault_UWSGIPreservesExplicitValues(t *testing.T) {
 	g.Expect(w.Default(context.Background(), k)).To(Succeed())
 	g.Expect(k.Spec.UWSGI.Processes).To(Equal(int32(8)))
 	g.Expect(k.Spec.UWSGI.Threads).To(Equal(int32(4)))
-	g.Expect(k.Spec.UWSGI.HTTPKeepAlive).To(BeTrue())
+	g.Expect(k.Spec.UWSGI.HTTPKeepAlive).To(HaveValue(BeTrue()))
 }
 
 // --- Logging defaulting tests ---
@@ -940,7 +939,7 @@ func TestValidate_UWSGIValidAccepted(t *testing.T) {
 	k.Spec.UWSGI = &UWSGISpec{
 		Processes:     4,
 		Threads:       2,
-		HTTPKeepAlive: true,
+		HTTPKeepAlive: ptr.To(true),
 	}
 
 	_, err := w.ValidateCreate(context.Background(), k)
@@ -974,7 +973,7 @@ func TestValidate_UWSGIProcessesBelowMinimumRejected(t *testing.T) {
 			k.Spec.UWSGI = &UWSGISpec{
 				Processes:     tc.val,
 				Threads:       2,
-				HTTPKeepAlive: true,
+				HTTPKeepAlive: ptr.To(true),
 			}
 			_, err := w.ValidateCreate(context.Background(), k)
 			g.Expect(err).To(HaveOccurred())
@@ -1001,7 +1000,7 @@ func TestValidate_UWSGIThreadsBelowMinimumRejected(t *testing.T) {
 			k.Spec.UWSGI = &UWSGISpec{
 				Processes:     2,
 				Threads:       tc.val,
-				HTTPKeepAlive: true,
+				HTTPKeepAlive: ptr.To(true),
 			}
 			_, err := w.ValidateCreate(context.Background(), k)
 			g.Expect(err).To(HaveOccurred())
@@ -1018,7 +1017,7 @@ func TestValidate_UWSGIBothInvalidReportsBothErrors(t *testing.T) {
 	k.Spec.UWSGI = &UWSGISpec{
 		Processes:     0,
 		Threads:       0,
-		HTTPKeepAlive: true,
+		HTTPKeepAlive: ptr.To(true),
 	}
 
 	_, err := w.ValidateCreate(context.Background(), k)
@@ -1034,7 +1033,7 @@ func TestValidate_UWSGIBoundaryValueOneAccepted(t *testing.T) {
 	k.Spec.UWSGI = &UWSGISpec{
 		Processes:     1,
 		Threads:       1,
-		HTTPKeepAlive: false,
+		HTTPKeepAlive: ptr.To(false),
 	}
 
 	_, err := w.ValidateCreate(context.Background(), k)
@@ -1469,7 +1468,7 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 		Processes:            0,
 		Threads:              0,
 		Harakiri:             &breakingHarakiri,
-		HTTPKeepAlive:        false,
+		HTTPKeepAlive:        ptr.To(false),
 		HTTPKeepAliveTimeout: &breakingKeepAliveTimeout,
 	}
 	//// Break graceful-termination fields —
@@ -2545,7 +2544,7 @@ func TestValidate_UWSGIKeepAliveTimeoutBelowMinRejected(t *testing.T) {
 	k.Spec.UWSGI = &UWSGISpec{
 		Processes:            2,
 		Threads:              1,
-		HTTPKeepAlive:        true,
+		HTTPKeepAlive:        ptr.To(true),
 		HTTPKeepAliveTimeout: &timeout,
 	}
 
@@ -2563,7 +2562,7 @@ func TestValidate_UWSGIKeepAliveTimeoutAtMinAccepted(t *testing.T) {
 	k.Spec.UWSGI = &UWSGISpec{
 		Processes:            2,
 		Threads:              1,
-		HTTPKeepAlive:        true,
+		HTTPKeepAlive:        ptr.To(true),
 		HTTPKeepAliveTimeout: &timeout,
 	}
 
@@ -2640,7 +2639,7 @@ func TestValidate_KeepAliveTimeoutWithoutKeepAliveRejected(t *testing.T) {
 	k.Spec.UWSGI = &UWSGISpec{
 		Processes:            2,
 		Threads:              1,
-		HTTPKeepAlive:        false,
+		HTTPKeepAlive:        ptr.To(false),
 		HTTPKeepAliveTimeout: &timeout,
 	}
 
@@ -2658,7 +2657,7 @@ func TestValidate_KeepAliveTimeoutWithKeepAliveAccepted(t *testing.T) {
 	k.Spec.UWSGI = &UWSGISpec{
 		Processes:            2,
 		Threads:              1,
-		HTTPKeepAlive:        true,
+		HTTPKeepAlive:        ptr.To(true),
 		HTTPKeepAliveTimeout: &timeout,
 	}
 

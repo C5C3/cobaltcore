@@ -1462,11 +1462,13 @@ spec:
                     minimum: 1
                     type: integer
                   httpKeepAlive:
-                    default: true
                     description: |-
                       HTTPKeepAlive enables the --http-keepalive flag on the uWSGI process.
-                      When false, the flag is omitted from the command. The default literal
-                      mirrors DefaultUWSGIHTTPKeepAlive in keystone_webhook.go.
+                      When false, the flag is omitted from the command. It is a nil-preserving
+                      pointer so "unset" is representable: the defaulting webhook restores the
+                      documented default (true, DefaultUWSGIHTTPKeepAlive in keystone_webhook.go)
+                      when the pointer is nil, and the reconciler falls back to the same default
+                      for CRs that bypass the webhook. An explicit false is honored verbatim.
                     type: boolean
                   httpKeepAliveTimeout:
                     description: |-
@@ -1501,7 +1503,8 @@ spec:
                 x-kubernetes-validations:
                 - message: httpKeepAliveTimeout may only be set when httpKeepAlive
                     is true
-                  rule: '!has(self.httpKeepAliveTimeout) || self.httpKeepAlive'
+                  rule: '!has(self.httpKeepAliveTimeout) || !has(self.httpKeepAlive)
+                    || self.httpKeepAlive'
             required:
             - bootstrap
             - cache

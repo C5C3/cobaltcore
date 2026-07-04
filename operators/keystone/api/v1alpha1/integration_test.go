@@ -715,7 +715,7 @@ func TestIntegration_UWSGIDefaultsAppliedWhenEmpty(t *testing.T) {
 	g.Expect(got.Spec.UWSGI).NotTo(BeNil(), "spec.uwsgi should not be nil")
 	g.Expect(got.Spec.UWSGI.Processes).To(Equal(int32(2)), "processes should be defaulted to 2")
 	g.Expect(got.Spec.UWSGI.Threads).To(Equal(int32(1)), "threads should be defaulted to 1")
-	g.Expect(got.Spec.UWSGI.HTTPKeepAlive).To(BeTrue(), "httpKeepAlive should be defaulted to true")
+	g.Expect(got.Spec.UWSGI.HTTPKeepAlive).To(HaveValue(BeTrue()), "httpKeepAlive should be defaulted to true")
 }
 
 func TestIntegration_UWSGIExplicitValuesPreserved(t *testing.T) {
@@ -731,7 +731,7 @@ func TestIntegration_UWSGIExplicitValuesPreserved(t *testing.T) {
 	k.Spec.UWSGI = &UWSGISpec{
 		Processes:     8,
 		Threads:       4,
-		HTTPKeepAlive: true,
+		HTTPKeepAlive: ptr.To(true),
 	}
 
 	g.Expect(c.Create(ctx, k)).To(Succeed(), "CR with explicit uwsgi values should be accepted")
@@ -742,7 +742,7 @@ func TestIntegration_UWSGIExplicitValuesPreserved(t *testing.T) {
 	g.Expect(got.Spec.UWSGI).NotTo(BeNil(), "spec.uwsgi should not be nil")
 	g.Expect(got.Spec.UWSGI.Processes).To(Equal(int32(8)), "explicit processes should be preserved")
 	g.Expect(got.Spec.UWSGI.Threads).To(Equal(int32(4)), "explicit threads should be preserved")
-	g.Expect(got.Spec.UWSGI.HTTPKeepAlive).To(BeTrue(), "explicit httpKeepAlive should be preserved")
+	g.Expect(got.Spec.UWSGI.HTTPKeepAlive).To(HaveValue(BeTrue()), "explicit httpKeepAlive should be preserved")
 }
 
 func TestIntegration_UWSGIPartialDefaulting(t *testing.T) {
@@ -754,11 +754,10 @@ func TestIntegration_UWSGIPartialDefaulting(t *testing.T) {
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-uwsgi-partial-"}}
 	g.Expect(c.Create(ctx, ns)).To(Succeed())
 
-	// Only set processes; threads and httpKeepAlive left at zero values.
-	// The webhook will default threads to 1. httpKeepAlive will NOT be
-	// defaulted by the webhook (processes != 0 means struct is not fully
-	// zero-valued), but the CRD schema default (+kubebuilder:default=true)
-	// will set it to true in the admission pipeline.
+	// Only set processes; threads and httpKeepAlive left unset.
+	// The webhook defaults threads to 1 and, because httpKeepAlive is now a
+	// nil-preserving *bool, restores its documented default (true) when the
+	// pointer is nil — regardless of the other sub-fields.
 	k := validIntegrationKeystone("uwsgi-partial", ns.Name)
 	k.Spec.UWSGI = &UWSGISpec{
 		Processes: 4,
@@ -772,10 +771,9 @@ func TestIntegration_UWSGIPartialDefaulting(t *testing.T) {
 	g.Expect(got.Spec.UWSGI).NotTo(BeNil(), "spec.uwsgi should not be nil")
 	g.Expect(got.Spec.UWSGI.Processes).To(Equal(int32(4)), "explicit processes should be preserved")
 	g.Expect(got.Spec.UWSGI.Threads).To(Equal(int32(1)), "threads should be defaulted to 1")
-	// httpKeepAlive is true via the CRD schema +kubebuilder:default=true marker,
-	// which applies during the admission pipeline even though the webhook
-	// defaulter skips it when the struct is not fully zero-valued.
-	g.Expect(got.Spec.UWSGI.HTTPKeepAlive).To(BeTrue(), "httpKeepAlive should be true via CRD schema default")
+	// httpKeepAlive is true because the defaulting webhook restores the nil
+	// pointer to the documented default (true).
+	g.Expect(got.Spec.UWSGI.HTTPKeepAlive).To(HaveValue(BeTrue()), "httpKeepAlive should be defaulted to true by the webhook")
 }
 
 func TestIntegration_UWSGIProcessesBelowMinimumRejected(t *testing.T) {
@@ -794,7 +792,7 @@ func TestIntegration_UWSGIProcessesBelowMinimumRejected(t *testing.T) {
 	k.Spec.UWSGI = &UWSGISpec{
 		Processes:     -1,
 		Threads:       2,
-		HTTPKeepAlive: true,
+		HTTPKeepAlive: ptr.To(true),
 	}
 
 	err := c.Create(ctx, k)
@@ -823,7 +821,7 @@ func TestIntegration_UWSGIThreadsBelowMinimumRejected(t *testing.T) {
 	k.Spec.UWSGI = &UWSGISpec{
 		Processes:     2,
 		Threads:       -1,
-		HTTPKeepAlive: true,
+		HTTPKeepAlive: ptr.To(true),
 	}
 
 	err := c.Create(ctx, k)
@@ -1085,7 +1083,7 @@ func TestIntegration_AcceptsValidNonDefaultMarkers(t *testing.T) {
 	k.Spec.UWSGI = &UWSGISpec{
 		Processes:            4,
 		Threads:              2,
-		HTTPKeepAlive:        true,
+		HTTPKeepAlive:        ptr.To(true),
 		HTTPKeepAliveTimeout: ptr.To(int32(30)),
 	}
 

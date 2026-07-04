@@ -213,7 +213,7 @@ validating webhook is unavailable.
 | `spec.autoscaling` | `!has(self.minReplicas) \|\| self.minReplicas <= self.maxReplicas` | "minReplicas must not exceed maxReplicas" |
 | `spec.networkPolicy` | `size(self.ingress) > 0` | "at least one ingress source must be specified" |
 | `spec` | drain window: effective `preStopSleepSeconds` (default 5) must be `<` effective `terminationGracePeriodSeconds` (default 30) | "preStopSleepSeconds must be strictly less than terminationGracePeriodSeconds" |
-| `spec.uwsgi` | `!has(self.httpKeepAliveTimeout) \|\| self.httpKeepAlive` | "httpKeepAliveTimeout may only be set when httpKeepAlive is true" |
+| `spec.uwsgi` | `!has(self.httpKeepAliveTimeout) \|\| !has(self.httpKeepAlive) \|\| self.httpKeepAlive` | "httpKeepAliveTimeout may only be set when httpKeepAlive is true" |
 | `spec.logging.perLoggerLevels` | `self.all(k, k != '')` | "logger name must not be empty" |
 | `spec.logging.perLoggerLevels` | `self.all(k, self[k] in ['DEBUG','INFO','WARNING','ERROR','CRITICAL'])` | "per-logger level must be one of DEBUG, INFO, WARNING, ERROR, CRITICAL" |
 | `spec.plugins` | list-map keyed by `configSection` (`x-kubernetes-list-type: map`) | "Duplicate value" (a repeated `configSection` is rejected by the API server) |
@@ -318,7 +318,7 @@ from the spec.
 | --- | --- | --- | --- | --- |
 | `processes` | `int32` | No | `2` | Number of uWSGI worker processes. Minimum: 1. Maps to `--processes` in the container command. |
 | `threads` | `int32` | No | `1` | Number of threads per uWSGI worker process. Minimum: 1. Maps to `--threads` in the container command. |
-| `httpKeepAlive` | `bool` | No | `true` | Enables the `--http-keepalive` flag on the uWSGI process. When `false`, the flag is omitted. See [HTTPKeepAlive defaulting](#httpkeepalive-defaulting-caveat) for the zero-value caveat. |
+| `httpKeepAlive` | `*bool` | No | `true` | Enables the `--http-keepalive` flag on the uWSGI process. When `false`, the flag is omitted. A nil-preserving pointer: unset means the documented default (`true`) is restored by the webhook. See [HTTPKeepAlive defaulting](#httpkeepalive-defaulting). |
 | `harakiri` | `*int32` | No | `nil` (flag omitted) | Caps the per-request worker lifetime (seconds) via `--harakiri`. Minimum: `1`. The webhook additionally enforces `harakiri < terminationGracePeriodSeconds − preStopSleepSeconds` so the worst-case per-request kill fits inside the shutdown drain window. See the HA rollout sequence in `architecture/docs/04-architecture/04-high-availability.md`. |
 | `httpKeepAliveTimeout` | `*int32` | No | `nil` (flag omitted) | Idle timeout (seconds) for keep-alive connections via `--http-keepalive-timeout`. Minimum: `1`. Emitted only when `httpKeepAlive=true` (the webhook rejects a non-nil timeout combined with `httpKeepAlive=false`). Recommended to set `≤ preStopSleepSeconds` so idle sockets close before SIGTERM reaches uWSGI. See the HA rollout sequence in `architecture/docs/04-architecture/04-high-availability.md`. |
 
@@ -341,28 +341,23 @@ of configuration:
 | `--threads <N>` | `spec.uwsgi.threads` (default: 1) |
 | `--pyargv=--config-dir=/etc/keystone/keystone.conf.d/` | Fixed — passes config directory to Keystone |
 
-### HTTPKeepAlive Defaulting Caveat
+### HTTPKeepAlive Defaulting
 
-Go's `bool` zero value is `false`, making it impossible for the webhook to
-distinguish "not set" from "explicitly set to `false`". Therefore, the defaulting
-webhook **does not** touch `httpKeepAlive` at all — it only defaults `processes`
-and `threads`. The CRD schema default (`+kubebuilder:default=true`) handles
-`httpKeepAlive` in the normal admission path (API server applies the schema
-default before the webhook runs). This means:
+`httpKeepAlive` is a nil-preserving `*bool`, so "unset" is distinguishable from
+an explicit `false`. The defaulting webhook restores the documented default
+(`true`) only when the pointer is nil, and preserves an explicit `true` or
+`false` verbatim. This means:
 
-- `uwsgi: {}` → processes=2 (webhook), threads=1 (webhook),
-  httpKeepAlive=true (CRD schema default via normal admission)
-- `uwsgi: {processes: 4}` → processes=4, threads=1 (webhook),
-  httpKeepAlive=true (CRD schema default)
+- `uwsgi: {}` → processes=2, threads=1, httpKeepAlive=true (all webhook-defaulted)
+- `uwsgi: {processes: 4}` → processes=4, threads=1, httpKeepAlive=true
 - `uwsgi: {httpKeepAlive: false}` → httpKeepAlive stays `false` (explicit value
-  is preserved by the API server)
+  is preserved)
 
-**Bypass paths** (e.g., `kubectl patch`, upgrades, or when admission webhooks are
-temporarily unavailable) may not apply the CRD schema default. In those cases,
-`httpKeepAlive` remains at its Go zero value (`false`). The `uwsgiCommand`
-function in the controller applies a defense-in-depth clamp but does not
-override `httpKeepAlive`, so the `--http-keepalive` flag will be omitted from
-the uWSGI invocation in bypass scenarios.
+**Bypass paths** (e.g., `kubectl create` against a cluster where the admission
+webhooks are temporarily unavailable) may leave `httpKeepAlive` nil. The
+`uwsgiCommand` function in the controller falls back to the same default
+(`true`) when the pointer is nil, so keep-alive stays enabled even in bypass
+scenarios.
 
 ### Example
 
@@ -1222,7 +1217,7 @@ Sets spec fields to their documented defaults when they carry zero values. Expli
 | `spec.bootstrap.region` | `== ""` | `"RegionOne"` |
 | `spec.uwsgi.processes` | `== 0` (when `spec.uwsgi` is non-nil) | `2` — webhook only; when `spec.uwsgi` is `nil`, the reconciler applies this default internally. |
 | `spec.uwsgi.threads` | `== 0` (when `spec.uwsgi` is non-nil) | `1` — same nil-pointer caveat as processes. |
-| `spec.uwsgi.httpKeepAlive` | Field absent from JSON payload | `true` — defaulted by the CRD schema (`+kubebuilder:default=true`), **not** by the webhook. The webhook cannot distinguish "not set" from "explicitly false" for a bool field. See [HTTPKeepAlive defaulting](#httpkeepalive-defaulting-caveat). |
+| `spec.uwsgi.httpKeepAlive` | Field absent from JSON payload | `true` — the field is a nil-preserving `*bool`, so the defaulting webhook restores the documented default when the pointer is nil, while preserving an explicit `false`. See [HTTPKeepAlive defaulting](#httpkeepalive-defaulting). |
 | `spec.resources` | `== nil` or empty (`requests` and `limits` both unset) | `{requests: {memory: 256Mi, cpu: 100m}, limits: {memory: 512Mi, cpu: 500m}}` — ensures Burstable QoS class and enables HPA utilization calculations. |
 | `spec.database.tls.mode` | `spec.database.tls != nil && mode == ""` | `"require"` — `DefaultDatabaseTLSMode` in `keystone_webhook.go`. Only materialized when the `tls` block is explicitly present; the webhook never materializes the block itself. |
 

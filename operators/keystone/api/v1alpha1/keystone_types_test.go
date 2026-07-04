@@ -170,8 +170,8 @@ func TestUWSGISpecFields(t *testing.T) {
 	if uwsgi.Threads != 0 {
 		t.Errorf("expected zero value for Threads, got %d", uwsgi.Threads)
 	}
-	if uwsgi.HTTPKeepAlive {
-		t.Errorf("expected false for HTTPKeepAlive, got %v", uwsgi.HTTPKeepAlive)
+	if uwsgi.HTTPKeepAlive != nil {
+		t.Errorf("expected nil HTTPKeepAlive, got %v", *uwsgi.HTTPKeepAlive)
 	}
 	if uwsgi.Harakiri != nil {
 		t.Errorf("expected nil Harakiri, got %v", uwsgi.Harakiri)

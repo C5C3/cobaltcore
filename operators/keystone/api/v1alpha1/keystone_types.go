@@ -334,7 +334,7 @@ type NetworkPolicyIngressSource struct {
 // The cross-field CEL rule mirrors the validating webhook: httpKeepAliveTimeout
 // is only meaningful when httpKeepAlive is true, otherwise the
 // --http-keepalive-timeout flag is never emitted.
-// +kubebuilder:validation:XValidation:rule="!has(self.httpKeepAliveTimeout) || self.httpKeepAlive",message="httpKeepAliveTimeout may only be set when httpKeepAlive is true"
+// +kubebuilder:validation:XValidation:rule="!has(self.httpKeepAliveTimeout) || !has(self.httpKeepAlive) || self.httpKeepAlive",message="httpKeepAliveTimeout may only be set when httpKeepAlive is true"
 type UWSGISpec struct {
 	// Processes is the number of uWSGI worker processes.
 	// The default literal mirrors DefaultUWSGIProcesses in keystone_webhook.go.
@@ -349,10 +349,13 @@ type UWSGISpec struct {
 	Threads int32 `json:"threads,omitempty"`
 
 	// HTTPKeepAlive enables the --http-keepalive flag on the uWSGI process.
-	// When false, the flag is omitted from the command. The default literal
-	// mirrors DefaultUWSGIHTTPKeepAlive in keystone_webhook.go.
-	// +kubebuilder:default=true
-	HTTPKeepAlive bool `json:"httpKeepAlive,omitempty"`
+	// When false, the flag is omitted from the command. It is a nil-preserving
+	// pointer so "unset" is representable: the defaulting webhook restores the
+	// documented default (true, DefaultUWSGIHTTPKeepAlive in keystone_webhook.go)
+	// when the pointer is nil, and the reconciler falls back to the same default
+	// for CRs that bypass the webhook. An explicit false is honored verbatim.
+	// +optional
+	HTTPKeepAlive *bool `json:"httpKeepAlive,omitempty"`
 
 	// Harakiri caps the per-request worker lifetime (seconds) via the uWSGI
 	// --harakiri flag. A request blocked longer than this bound is

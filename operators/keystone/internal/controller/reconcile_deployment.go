@@ -390,7 +390,11 @@ func uwsgiCommand(uwsgi *keystonev1alpha1.UWSGISpec) []string {
 	if uwsgi != nil {
 		processes = uwsgi.Processes
 		threads = uwsgi.Threads
-		httpKeepAlive = uwsgi.HTTPKeepAlive
+		// HTTPKeepAlive is a nil-preserving *bool: nil means "unset", which keeps
+		// the default (true); an explicit true/false is honored verbatim.
+		if uwsgi.HTTPKeepAlive != nil {
+			httpKeepAlive = *uwsgi.HTTPKeepAlive
+		}
 	}
 
 	cmd := []string{

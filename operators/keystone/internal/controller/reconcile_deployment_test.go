@@ -22,6 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -991,7 +992,7 @@ func TestUWSGICommand_CustomValues(t *testing.T) {
 	cmd := uwsgiCommand(&keystonev1alpha1.UWSGISpec{
 		Processes:     4,
 		Threads:       8,
-		HTTPKeepAlive: true,
+		HTTPKeepAlive: ptr.To(true),
 	})
 
 	processesIdx := indexOf(cmd, "--processes")
@@ -1013,7 +1014,7 @@ func TestUWSGICommand_KeepAliveDisabled(t *testing.T) {
 	cmd := uwsgiCommand(&keystonev1alpha1.UWSGISpec{
 		Processes:     2,
 		Threads:       2,
-		HTTPKeepAlive: false,
+		HTTPKeepAlive: ptr.To(false),
 	})
 
 	g.Expect(cmd).NotTo(ContainElement("--http-keepalive"))
@@ -1027,7 +1028,7 @@ func TestUWSGICommand_KeepAliveEnabled(t *testing.T) {
 	cmd := uwsgiCommand(&keystonev1alpha1.UWSGISpec{
 		Processes:     2,
 		Threads:       2,
-		HTTPKeepAlive: true,
+		HTTPKeepAlive: ptr.To(true),
 	})
 
 	g.Expect(cmd).To(ContainElement("--http-keepalive"))
@@ -1041,8 +1042,8 @@ func TestUWSGICommand_FixedFlagsAlwaysPresent(t *testing.T) {
 
 	configs := []*keystonev1alpha1.UWSGISpec{
 		nil,
-		{Processes: 4, Threads: 8, HTTPKeepAlive: true},
-		{Processes: 1, Threads: 1, HTTPKeepAlive: false},
+		{Processes: 4, Threads: 8, HTTPKeepAlive: ptr.To(true)},
+		{Processes: 1, Threads: 1, HTTPKeepAlive: ptr.To(false)},
 	}
 
 	for _, cfg := range configs {
@@ -1483,7 +1484,7 @@ func TestUwsgiCommand_HarakiriSet(t *testing.T) {
 	cmd := uwsgiCommand(&keystonev1alpha1.UWSGISpec{
 		Processes:     2,
 		Threads:       1,
-		HTTPKeepAlive: true,
+		HTTPKeepAlive: ptr.To(true),
 		Harakiri:      &harakiri,
 	})
 
@@ -1501,7 +1502,7 @@ func TestUwsgiCommand_HarakiriNilOmitted(t *testing.T) {
 	cmd := uwsgiCommand(&keystonev1alpha1.UWSGISpec{
 		Processes:     2,
 		Threads:       1,
-		HTTPKeepAlive: true,
+		HTTPKeepAlive: ptr.To(true),
 	})
 
 	g.Expect(cmd).NotTo(ContainElement("--harakiri"))
@@ -1517,7 +1518,7 @@ func TestUwsgiCommand_KeepAliveTimeoutSet(t *testing.T) {
 	cmd := uwsgiCommand(&keystonev1alpha1.UWSGISpec{
 		Processes:            2,
 		Threads:              1,
-		HTTPKeepAlive:        true,
+		HTTPKeepAlive:        ptr.To(true),
 		HTTPKeepAliveTimeout: &timeout,
 	})
 
@@ -1534,7 +1535,7 @@ func TestUwsgiCommand_KeepAliveTimeoutNilOmitted(t *testing.T) {
 	cmd := uwsgiCommand(&keystonev1alpha1.UWSGISpec{
 		Processes:     2,
 		Threads:       1,
-		HTTPKeepAlive: true,
+		HTTPKeepAlive: ptr.To(true),
 	})
 
 	g.Expect(cmd).NotTo(ContainElement("--http-keepalive-timeout"))
@@ -1551,7 +1552,7 @@ func TestUwsgiCommand_KeepAliveTimeoutIgnoredWhenKeepAliveDisabled(t *testing.T)
 	cmd := uwsgiCommand(&keystonev1alpha1.UWSGISpec{
 		Processes:            2,
 		Threads:              1,
-		HTTPKeepAlive:        false,
+		HTTPKeepAlive:        ptr.To(false),
 		HTTPKeepAliveTimeout: &timeout,
 	})
 
@@ -1578,7 +1579,7 @@ func TestUwsgiCommand_IncludesLogMasterAndLogFormat(t *testing.T) {
 			spec: &keystonev1alpha1.UWSGISpec{
 				Processes:     2,
 				Threads:       1,
-				HTTPKeepAlive: true,
+				HTTPKeepAlive: ptr.To(true),
 			},
 		},
 		{
@@ -1586,7 +1587,7 @@ func TestUwsgiCommand_IncludesLogMasterAndLogFormat(t *testing.T) {
 			spec: &keystonev1alpha1.UWSGISpec{
 				Processes:            2,
 				Threads:              1,
-				HTTPKeepAlive:        true,
+				HTTPKeepAlive:        ptr.To(true),
 				HTTPKeepAliveTimeout: &timeout,
 			},
 		},
@@ -1595,7 +1596,7 @@ func TestUwsgiCommand_IncludesLogMasterAndLogFormat(t *testing.T) {
 			spec: &keystonev1alpha1.UWSGISpec{
 				Processes:     2,
 				Threads:       1,
-				HTTPKeepAlive: false,
+				HTTPKeepAlive: ptr.To(false),
 			},
 		},
 	}
@@ -1626,7 +1627,7 @@ func TestUwsgiCommand_IncludesLogMasterAndLogFormat(t *testing.T) {
 			g.Expect(logFormatIdx).To(BeNumerically("<", wsgiFileIdx),
 				"--log-format must precede --wsgi-file")
 
-			if tc.spec.HTTPKeepAlive {
+			if tc.spec.HTTPKeepAlive == nil || *tc.spec.HTTPKeepAlive {
 				keepAliveIdx := indexOf(cmd, "--http-keepalive")
 				g.Expect(keepAliveIdx).NotTo(Equal(-1))
 				g.Expect(logMasterIdx).To(BeNumerically(">", keepAliveIdx),
@@ -1656,7 +1657,7 @@ func TestUwsgiCommand_FlagOrderDeterministic(t *testing.T) {
 	spec := &keystonev1alpha1.UWSGISpec{
 		Processes:            2,
 		Threads:              1,
-		HTTPKeepAlive:        true,
+		HTTPKeepAlive:        ptr.To(true),
 		Harakiri:             &harakiri,
 		HTTPKeepAliveTimeout: &timeout,
 	}
