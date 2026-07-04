@@ -508,7 +508,7 @@ full event/condition contract.
 | --- | --- | --- | --- | --- |
 | `format` | `string` | No | `text` | On-wire layout of oslo.log records. `text` emits the standard oslo.log line format; `json` emits one JSON object per record for direct ingest by Loki/OpenSearch. Enforced as `+kubebuilder:validation:Enum=text;json`. |
 | `level` | `string` | No | `INFO` | Root logger level applied to oslo.log. One of `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. Enforced as `+kubebuilder:validation:Enum=DEBUG;INFO;WARNING;ERROR;CRITICAL`. |
-| `debug` | `bool` | No | `false` | Toggles oslo.log `[DEFAULT] debug=true`. Independent of `level` because oslo.log gates several extra-verbose code paths on the debug flag specifically (SQL echo, auth-backend tracing). |
+| `debug` | `*bool` | No | `false` | Toggles oslo.log `[DEFAULT] debug=true`. Independent of `level` because oslo.log gates several extra-verbose code paths on the debug flag specifically (SQL echo, auth-backend tracing). A nil-preserving pointer: unset means the documented default (`false`) is restored by the webhook. |
 | `perLoggerLevels` | `map[string]string` | No | `nil` | Overrides the level of named loggers, mirroring oslo.log's `default_log_levels`. Each value must be one of `DEBUG`/`INFO`/`WARNING`/`ERROR`/`CRITICAL` and every logger name must be non-empty — enforced by CRD CEL `XValidation` rules (a plain enum on `additionalProperties` is not expressible in CRD v1, so the value constraint is written as an `in [...]` CEL rule) and by the validating webhook. Rendered into `[DEFAULT].default_log_levels` in deterministic alphabetical order to keep ConfigMap content-hashes stable across reconciles. |
 
 ### Example

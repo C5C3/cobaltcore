@@ -611,9 +611,12 @@ type LoggingSpec struct {
 
 	// Debug toggles oslo.log [DEFAULT] debug=true. Independent of Level
 	// because oslo.log gates several extra-verbose code paths on the
-	// debug flag specifically (SQL echo, auth-backend tracing).
-	// +kubebuilder:default=false
-	Debug bool `json:"debug,omitempty"`
+	// debug flag specifically (SQL echo, auth-backend tracing). It is a
+	// nil-preserving pointer so "unset" is representable: the defaulting webhook
+	// restores the documented default (false) when the pointer is nil, and the
+	// reconciler falls back to the same default for CRs that bypass the webhook.
+	// +optional
+	Debug *bool `json:"debug,omitempty"`
 
 	// PerLoggerLevels overrides the level of named loggers, mirroring
 	// oslo.log's `default_log_levels`. Example:

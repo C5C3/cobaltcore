@@ -79,8 +79,9 @@ func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, keystone *keys
 			"use_stderr": "true",
 			// oslo.log gates several extra-verbose code paths
 			// (SQL echo, auth backend tracing) on the debug flag specifically,
-			// independent of root logger level.
-			"debug": fmt.Sprintf("%t", logging.Debug),
+			// independent of root logger level. Debug is a nil-preserving *bool:
+			// nil means "unset", which renders as the default (false).
+			"debug": fmt.Sprintf("%t", logging.Debug != nil && *logging.Debug),
 		},
 		"token": {
 			"provider": "fernet",

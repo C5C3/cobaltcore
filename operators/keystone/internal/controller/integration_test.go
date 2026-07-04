@@ -4327,7 +4327,7 @@ func TestIntegration_LoggingDebugTogglesRollsConfigMapAndDeployment(t *testing.T
 	if updated.Spec.Logging == nil {
 		updated.Spec.Logging = &keystonev1alpha1.LoggingSpec{Format: "text", Level: "INFO"}
 	}
-	updated.Spec.Logging.Debug = true
+	updated.Spec.Logging.Debug = ptr.To(true)
 	g.Expect(c.Update(ctx, updated)).To(Succeed())
 
 	// The spec change makes the keystone-config ConfigMap re-emit under a new
@@ -4407,7 +4407,7 @@ func TestIntegration_LoggingNoOpReconcileDoesNotRollDeployment(t *testing.T) {
 	ks.Spec.Logging = &keystonev1alpha1.LoggingSpec{
 		Format: "text",
 		Level:  "INFO",
-		Debug:  false,
+		Debug:  ptr.To(false),
 	}
 	g.Expect(c.Create(ctx, ks)).To(Succeed())
 

@@ -395,7 +395,7 @@ func TestDefault_LoggingNilMaterializesDefaultSpec(t *testing.T) {
 	g.Expect(k.Spec.Logging).NotTo(BeNil())
 	g.Expect(k.Spec.Logging.Format).To(Equal("text"))
 	g.Expect(k.Spec.Logging.Level).To(Equal("INFO"))
-	g.Expect(k.Spec.Logging.Debug).To(BeFalse())
+	g.Expect(k.Spec.Logging.Debug).To(HaveValue(BeFalse()))
 	g.Expect(k.Spec.Logging.PerLoggerLevels).To(BeNil())
 }
 
@@ -407,7 +407,7 @@ func TestDefault_LoggingPreservesExplicitValues(t *testing.T) {
 			Logging: &LoggingSpec{
 				Format:          "json",
 				Level:           "DEBUG",
-				Debug:           true,
+				Debug:           ptr.To(true),
 				PerLoggerLevels: map[string]string{"keystone.middleware": "DEBUG"},
 			},
 		},
@@ -416,7 +416,7 @@ func TestDefault_LoggingPreservesExplicitValues(t *testing.T) {
 	g.Expect(w.Default(context.Background(), k)).To(Succeed())
 	g.Expect(k.Spec.Logging.Format).To(Equal("json"))
 	g.Expect(k.Spec.Logging.Level).To(Equal("DEBUG"))
-	g.Expect(k.Spec.Logging.Debug).To(BeTrue())
+	g.Expect(k.Spec.Logging.Debug).To(HaveValue(BeTrue()))
 	g.Expect(k.Spec.Logging.PerLoggerLevels).To(HaveKeyWithValue("keystone.middleware", "DEBUG"))
 }
 
@@ -424,8 +424,8 @@ func TestDefault_LoggingPartialFillsZeroValuesOnly(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{}
 	// Mirrors TestDefault_UWSGIDefaultsProcessesAndThreadsOnly — when
-	// the pointer is non-nil but fields are zero-valued, fill the strings
-	// but leave Debug=false (bool zero is indistinguishable from explicit false).
+	// the pointer is non-nil but fields are unset, fill the strings and, because
+	// Debug is now a nil-preserving *bool, restore its documented default (false).
 	k := &Keystone{
 		Spec: KeystoneSpec{
 			Logging: &LoggingSpec{
@@ -437,7 +437,7 @@ func TestDefault_LoggingPartialFillsZeroValuesOnly(t *testing.T) {
 	g.Expect(w.Default(context.Background(), k)).To(Succeed())
 	g.Expect(k.Spec.Logging.Format).To(Equal("json"))
 	g.Expect(k.Spec.Logging.Level).To(Equal("INFO"))
-	g.Expect(k.Spec.Logging.Debug).To(BeFalse())
+	g.Expect(k.Spec.Logging.Debug).To(HaveValue(BeFalse()))
 	g.Expect(k.Spec.Logging.PerLoggerLevels).To(BeNil())
 }
 
@@ -1059,7 +1059,7 @@ func TestValidate_LoggingValidAccepted(t *testing.T) {
 	k.Spec.Logging = &LoggingSpec{
 		Format:          "json",
 		Level:           "DEBUG",
-		Debug:           true,
+		Debug:           ptr.To(true),
 		PerLoggerLevels: map[string]string{"keystone.middleware": "DEBUG", "sqlalchemy.engine": "WARNING"},
 	}
 

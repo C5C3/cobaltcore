@@ -199,15 +199,15 @@ func (w *KeystoneWebhook) Default(_ context.Context, obj *Keystone) error {
 	// Default zero-valued sub-fields of spec.logging.
 	// When the pointer is nil, materialize the production baseline so downstream
 	// reconciler code dereferences spec.logging unconditionally (mirrors the
-	// Resources-when-nil pattern below). When non-nil, partial-fill zero values
-	// (Format, Level) but leave Debug alone — bool's zero value is indistinguishable
-	// from explicit false, so we cannot safely override it (mirrors the
-	// UWSGISpec.HTTPKeepAlive carve-out documented above).
+	// Resources-when-nil pattern below). Debug is now a nil-preserving *bool, so
+	// "unset" is distinguishable from an explicit false: the webhook restores the
+	// documented default (false) when the pointer is nil and leaves an explicit
+	// true/false untouched.
 	if obj.Spec.Logging == nil {
 		obj.Spec.Logging = &LoggingSpec{
 			Format: "text",
 			Level:  "INFO",
-			Debug:  false,
+			Debug:  ptr.To(false),
 		}
 	} else {
 		if obj.Spec.Logging.Format == "" {
@@ -215,6 +215,9 @@ func (w *KeystoneWebhook) Default(_ context.Context, obj *Keystone) error {
 		}
 		if obj.Spec.Logging.Level == "" {
 			obj.Spec.Logging.Level = "INFO"
+		}
+		if obj.Spec.Logging.Debug == nil {
+			obj.Spec.Logging.Debug = ptr.To(false)
 		}
 	}
 	// Default resource requests and limits for Burstable QoS

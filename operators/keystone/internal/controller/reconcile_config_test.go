@@ -901,7 +901,7 @@ func TestReconcileConfig_LoggingDefaultsEmitUseStderr(t *testing.T) {
 	ks.Spec.Logging = &keystonev1alpha1.LoggingSpec{
 		Format: "text",
 		Level:  "INFO",
-		Debug:  false,
+		Debug:  ptr.To(false),
 	}
 	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
 	r := newConfigTestReconciler(s, ks, secret)
@@ -918,6 +918,31 @@ func TestReconcileConfig_LoggingDefaultsEmitUseStderr(t *testing.T) {
 	expectNoEvent(g, r)
 }
 
+// TestReconcileConfig_LoggingDebugNilRendersFalse verifies that a nil
+// spec.logging.debug pointer (a CR that bypassed the defaulting webhook) renders
+// debug=false into keystone.conf rather than panicking on a nil dereference.
+func TestReconcileConfig_LoggingDebugNilRendersFalse(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := configTestScheme()
+
+	ks := configTestKeystone()
+	ks.Spec.Logging = &keystonev1alpha1.LoggingSpec{
+		Format: "text",
+		Level:  "INFO",
+		// Debug left nil — simulates a webhook-bypass CR.
+	}
+	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
+	r := newConfigTestReconciler(s, ks, secret)
+
+	configMapName, err := r.reconcileConfig(context.Background(), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	cm, err := getCreatedConfigMap(context.Background(), r.Client, "default", configMapName)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(cm.Data["keystone.conf"]).To(ContainSubstring("debug = false"))
+}
+
 // TestReconcileConfig_LoggingDebugTruePropagates verifies that
 // spec.logging.debug=true propagates into the [DEFAULT].debug key of
 // keystone.conf.
@@ -929,7 +954,7 @@ func TestReconcileConfig_LoggingDebugTruePropagates(t *testing.T) {
 	ks.Spec.Logging = &keystonev1alpha1.LoggingSpec{
 		Format: "text",
 		Level:  "INFO",
-		Debug:  true,
+		Debug:  ptr.To(true),
 	}
 	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
 	r := newConfigTestReconciler(s, ks, secret)
