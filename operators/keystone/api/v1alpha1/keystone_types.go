@@ -441,11 +441,12 @@ type TrustFlushSpec struct {
 	Args []string `json:"args,omitempty"`
 }
 
-// FederationSpec defines Keystone federation configuration.
-type FederationSpec struct {
-	// Enabled activates federation support.
-	Enabled bool `json:"enabled"`
-}
+// FederationSpec defines Keystone federation configuration. Federation is
+// activated by the presence of the spec.federation pointer itself — a set
+// (non-nil) Federation block signals enabled, so no separate boolean is
+// required. The struct is currently empty and grows federation knobs as they
+// are modeled.
+type FederationSpec struct{}
 
 // PasswordRotationSpec configures scheduled rotation of the Keystone admin
 // password (Model B / Part 2 of #381). When enabled, the operator runs

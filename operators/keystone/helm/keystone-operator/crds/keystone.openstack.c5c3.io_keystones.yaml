@@ -486,12 +486,6 @@ spec:
                 type: object
               federation:
                 description: Federation configures Keystone federation (optional).
-                properties:
-                  enabled:
-                    description: Enabled activates federation support.
-                    type: boolean
-                required:
-                - enabled
                 type: object
               fernet:
                 description: Fernet configures Fernet key rotation.

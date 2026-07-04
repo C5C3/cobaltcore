@@ -984,11 +984,10 @@ to stay co-scheduled with the API pods.
 ## FederationSpec
 
 Configures Keystone federation support. This is a pointer field (`*FederationSpec`)
-on `KeystoneSpec` — when `nil`, federation is disabled.
-
-| Field | Type | Required | Default | Description |
-| --- | --- | --- | --- | --- |
-| `enabled` | `bool` | Yes | — | Activates federation support. |
+on `KeystoneSpec`: federation is activated by the presence of the block itself —
+a set (non-`nil`) `spec.federation` signals enabled, and `nil` (the default)
+disables it. The struct is currently empty and grows federation knobs as they
+are modeled.
 
 ---
 
