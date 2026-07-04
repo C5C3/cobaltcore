@@ -85,7 +85,6 @@ spec:
     secretRef:
       name: keystone-db
     tls:
-      enabled: true
       mode: verify-full
       caBundleSecretRef:
         name: keystone-db-client
@@ -100,7 +99,6 @@ kubectl -n openstack patch keystone keystone --type merge --patch '
 spec:
   database:
     tls:
-      enabled: true
       mode: verify-full
       caBundleSecretRef:
         name: keystone-db-client
@@ -110,9 +108,10 @@ spec:
 ```
 
 The mutating webhook does **not** materialize the `tls` block when it is
-omitted, and never sets `enabled` — TLS is strictly opt-in.
-When `tls` is present with an empty `mode`, the webhook materializes
-`mode: "require"` as the documented baseline.
+omitted — TLS is strictly opt-in. When `tls` is present with an empty `mode`,
+the webhook materializes `mode: "require"` as the documented baseline (a present
+block means "on"). Set `mode: disabled` to keep the block and its certificate
+references while turning TLS off.
 
 ### 2. Wait for the operator to issue the client `Certificate`
 
@@ -124,7 +123,7 @@ condition:
 
 | Condition reason | Meaning |
 | --- | --- |
-| `NotRequired` | `tls` is `nil` or `enabled=false` — plaintext connection. |
+| `NotRequired` | `tls` is `nil`, its `mode` is empty, or its `mode` is `disabled` — plaintext connection. |
 | `CertificatePending` | Managed mode; cert-manager has not yet issued the leaf. |
 | `CertificateIssued` | Managed mode; client keypair ready and mounted. |
 | `ExternallyManaged` | Brownfield mode (`spec.database.clusterRef` unset / `host` set) — the client keypair must be supplied out-of-band. |

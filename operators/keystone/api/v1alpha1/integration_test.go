@@ -296,8 +296,7 @@ func TestIntegration_CRD_CELRejectsInvalidTLS(t *testing.T) {
 	// tls.enabled=true but both Secret references are left empty, which the
 	// CEL rule rejects.
 	k.Spec.Database.TLS = &commonv1.DatabaseTLSSpec{
-		Enabled: true,
-		Mode:    "verify-full",
+		Mode: "verify-full",
 	}
 
 	err := c.Create(ctx, k)
@@ -334,8 +333,7 @@ func TestIntegration_CRD_CELOnly_RejectsInvalidTLS(t *testing.T) {
 
 	k := validIntegrationKeystone("db-tls-incomplete-celonly", ns.Name)
 	k.Spec.Database.TLS = &commonv1.DatabaseTLSSpec{
-		Enabled: true,
-		Mode:    "verify-full",
+		Mode: "verify-full",
 	}
 
 	err := c.Create(ctx, k)
@@ -364,10 +362,9 @@ func TestIntegration_CRD_CELOnly_RejectsOutOfEnumTLSMode(t *testing.T) {
 
 	k := validIntegrationKeystone("db-tls-bad-mode-celonly", ns.Name)
 	// mode is set to a value outside the documented enum. The CRD
-	// +kubebuilder:validation:Enum=prefer;require;verify-ca;verify-full
+	// +kubebuilder:validation:Enum=disabled;prefer;require;verify-ca;verify-full
 	// must reject it without any webhook in the picture.
 	k.Spec.Database.TLS = &commonv1.DatabaseTLSSpec{
-		Enabled:             true,
 		Mode:                "encrypt-all-the-things",
 		CABundleSecretRef:   commonv1.SecretRefSpec{Name: "db-ca"},
 		ClientCertSecretRef: commonv1.SecretRefSpec{Name: "db-client"},

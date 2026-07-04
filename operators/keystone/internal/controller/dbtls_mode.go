@@ -40,6 +40,7 @@ const (
 	reasonCertificatePending = "CertificatePending"
 	reasonNotRequired        = "NotRequired"
 	reasonExternallyManaged  = "ExternallyManaged"
+	reasonMissingCertRefs    = "MissingCertificateRefs"
 )
 
 // modeToSSLParams maps a database TLS mode to the ordered pymysql ssl_* DSN

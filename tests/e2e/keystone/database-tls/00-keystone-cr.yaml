@@ -5,12 +5,13 @@
 # Keystone CR fixture for the database-tls E2E test.
 # Managed mode: database via clusterRef to the openstack-db MariaDB Galera
 # cluster, cache via clusterRef to openstack-memcached. The spec.database.tls
-# block exercises the full TLS/mTLS path:
-#   - .enabled: true        -> reconcileDatabaseTLS provisions a cert-manager
+# block exercises the full TLS/mTLS path. A present tls block with a mode that
+# is neither empty nor "disabled" is enabled:
+#   - .mode: verify-full    -> reconcileDatabaseTLS provisions a cert-manager
 #                              Certificate from the "openstack-db-ca-issuer"
 #                              ClusterIssuer into Secret keystone-dbtls-db-client
-#                              (containing ca.crt / tls.crt / tls.key).
-#   - .mode: verify-full    -> DSN appends ssl_ca/ssl_cert/ssl_key plus
+#                              (containing ca.crt / tls.crt / tls.key), and the
+#                              DSN appends ssl_ca/ssl_cert/ssl_key plus
 #                              ssl_verify_cert=true and ssl_verify_identity=true
 #                              (strongest mode; verifies the server cert chain
 #                              AND its hostname identity).
@@ -20,8 +21,8 @@
 # Certificate writes ca.crt, tls.crt, and tls.key into the same Secret, so a
 # single reference satisfies both fields and avoids fixturing a separate CA
 # bundle Secret. The CRD CEL rule (keystone_types.go, the database block)
-# requires both names to be non-empty when tls.enabled is true. Reviewer:
-# please verify this single-Secret pattern is the intended managed-mode shape.
+# requires both names to be non-empty when TLS is enabled (mode is neither
+# empty nor "disabled").
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
 kind: Keystone
 metadata:
@@ -39,7 +40,6 @@ spec:
     secretRef:
       name: keystone-db
     tls:
-      enabled: true
       mode: verify-full
       caBundleSecretRef:
         name: keystone-dbtls-db-client

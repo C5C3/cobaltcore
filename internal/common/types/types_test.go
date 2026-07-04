@@ -18,8 +18,7 @@ import (
 // *DatabaseTLSSpec returns nil.
 func TestDatabaseTLSSpec_DeepCopy(t *testing.T) {
 	original := &DatabaseTLSSpec{
-		Enabled: true,
-		Mode:    "verify-full",
+		Mode: "verify-full",
 		CABundleSecretRef: SecretRefSpec{
 			Name: "db-ca-bundle",
 			Key:  "ca.crt",
@@ -40,11 +39,10 @@ func TestDatabaseTLSSpec_DeepCopy(t *testing.T) {
 	}
 
 	// Mutating the clone must not affect the original (no aliasing).
-	clone.Enabled = false
 	clone.Mode = "prefer"
 	clone.CABundleSecretRef.Name = "mutated"
 	clone.ClientCertSecretRef.Key = "mutated"
-	if !original.Enabled || original.Mode != "verify-full" ||
+	if original.Mode != "verify-full" ||
 		original.CABundleSecretRef.Name != "db-ca-bundle" ||
 		original.ClientCertSecretRef.Key != "tls.crt" {
 		t.Errorf("mutating the clone altered the original: %+v", *original)
@@ -53,6 +51,34 @@ func TestDatabaseTLSSpec_DeepCopy(t *testing.T) {
 	var nilTLS *DatabaseTLSSpec
 	if nilTLS.DeepCopy() != nil {
 		t.Errorf("DeepCopy of a nil *DatabaseTLSSpec must return nil")
+	}
+}
+
+// TestDatabaseTLSSpec_IsEnabled backs the on/off predicate: a nil receiver, an
+// empty mode, and mode "disabled" are all off; every real verification mode is
+// on.
+func TestDatabaseTLSSpec_IsEnabled(t *testing.T) {
+	var nilTLS *DatabaseTLSSpec
+	if nilTLS.IsEnabled() {
+		t.Errorf("nil *DatabaseTLSSpec must not be enabled")
+	}
+
+	cases := []struct {
+		mode string
+		want bool
+	}{
+		{mode: "", want: false},
+		{mode: "disabled", want: false},
+		{mode: "prefer", want: true},
+		{mode: "require", want: true},
+		{mode: "verify-ca", want: true},
+		{mode: "verify-full", want: true},
+	}
+	for _, tc := range cases {
+		got := (&DatabaseTLSSpec{Mode: tc.mode}).IsEnabled()
+		if got != tc.want {
+			t.Errorf("IsEnabled() for mode %q = %v, want %v", tc.mode, got, tc.want)
+		}
 	}
 }
 
@@ -74,7 +100,6 @@ func TestDatabaseSpec_TLSField_OptionalPointer(t *testing.T) {
 		Database:  "keystone",
 		SecretRef: SecretRefSpec{Name: "keystone-db", Key: "password"},
 		TLS: &DatabaseTLSSpec{
-			Enabled:             true,
 			Mode:                "verify-ca",
 			CABundleSecretRef:   SecretRefSpec{Name: "db-ca-bundle", Key: "ca.crt"},
 			ClientCertSecretRef: SecretRefSpec{Name: "keystone-db-client", Key: "tls.crt"},

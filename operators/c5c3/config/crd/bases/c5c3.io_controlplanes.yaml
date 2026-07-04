@@ -290,16 +290,10 @@ spec:
                             required:
                             - name
                             type: object
-                          enabled:
-                            description: |-
-                              Enabled turns on TLS for the database connection. When true the
-                              operator provisions the client certificate, appends the ssl_* DSN
-                              parameters, and mounts the certificate material into the workloads
-                              that open a connection. Opt-in; defaults to false.
-                            type: boolean
                           mode:
                             description: |-
                               Mode selects the TLS verification strength applied to the connection:
+                                - disabled:       TLS is off; certificate references are ignored.
                                 - prefer/require: encrypt the connection only (no peer verification).
                                 - verify-ca:      additionally verify the server certificate chain
                                                    against the trusted CA bundle.
@@ -307,6 +301,7 @@ spec:
                                                    and that the server hostname matches the
                                                    certificate identity.
                             enum:
+                            - disabled
                             - prefer
                             - require
                             - verify-ca
@@ -315,7 +310,6 @@ spec:
                         required:
                         - caBundleSecretRef
                         - clientCertSecretRef
-                        - enabled
                         type: object
                     required:
                     - database

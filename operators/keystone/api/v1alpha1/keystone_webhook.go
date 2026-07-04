@@ -339,35 +339,36 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 	if k.Spec.Database.TLS != nil {
 		tls := k.Spec.Database.TLS
 		tlsPath := specPath.Child("database", "tls")
-		// Mirror the +kubebuilder:validation:Enum=prefer;require;verify-ca;verify-full
+		// Mirror the +kubebuilder:validation:Enum=disabled;prefer;require;verify-ca;verify-full
 		// marker. Empty mode is tolerated here because Default() materializes
 		// the documented baseline before validation in the normal admission
 		// path; an empty mode reaching validate() is still a valid no-op.
 		switch tls.Mode {
-		case "", "prefer", "require", "verify-ca", "verify-full":
+		case "", "disabled", "prefer", "require", "verify-ca", "verify-full":
 			// Valid (or to-be-defaulted) mode.
 		default:
 			allErrs = append(allErrs, field.NotSupported(
 				tlsPath.Child("mode"),
 				tls.Mode,
-				[]string{"prefer", "require", "verify-ca", "verify-full"},
+				[]string{"disabled", "prefer", "require", "verify-ca", "verify-full"},
 			))
 		}
-		// When TLS is turned on, both the server CA bundle (to verify the
-		// database endpoint) and the client keypair (presented for mutual
-		// TLS) must be referenced. A missing ref would leave the reconciler
-		// unable to assemble the DSN / mount the certificate material.
-		if tls.Enabled {
+		// When TLS is enabled (mode is neither empty nor "disabled"), both the
+		// server CA bundle (to verify the database endpoint) and the client
+		// keypair (presented for mutual TLS) must be referenced. A missing ref
+		// would leave the reconciler unable to assemble the DSN / mount the
+		// certificate material.
+		if tls.IsEnabled() {
 			if tls.CABundleSecretRef.Name == "" {
 				allErrs = append(allErrs, field.Required(
 					tlsPath.Child("caBundleSecretRef", "name"),
-					"caBundleSecretRef.name must be set when database.tls.enabled is true",
+					"caBundleSecretRef.name must be set when database.tls is enabled",
 				))
 			}
 			if tls.ClientCertSecretRef.Name == "" {
 				allErrs = append(allErrs, field.Required(
 					tlsPath.Child("clientCertSecretRef", "name"),
-					"clientCertSecretRef.name must be set when database.tls.enabled is true",
+					"clientCertSecretRef.name must be set when database.tls is enabled",
 				))
 			}
 		}

@@ -79,13 +79,14 @@ func dbTLSPathsForMount() dbTLSPaths {
 
 // appendDBTLSParams merges the pymysql ssl_* DSN parameters into query when
 // spec.database.tls is enabled on the Keystone CR.
-// It is a no-op when TLS is nil or .enabled is false, preserving the pre-
-// plaintext DSN. The mode is validated by modeToSSLParams; an unknown
+// It is a no-op when TLS is nil, its mode is empty, or its mode is "disabled"
+// (DatabaseTLSSpec.IsEnabled), preserving the plaintext DSN. The mode is
+// validated by modeToSSLParams; an unknown
 // mode (which the webhook + CRD enum reject earlier) is surfaced as an error
 // rather than silently producing a partial DSN.
 func appendDBTLSParams(keystone *keystonev1alpha1.Keystone, query url.Values) error {
 	tls := keystone.Spec.Database.TLS
-	if tls == nil || !tls.Enabled {
+	if !tls.IsEnabled() {
 		return nil
 	}
 	sslParams, err := modeToSSLParams(tls.Mode, dbTLSPathsForMount())

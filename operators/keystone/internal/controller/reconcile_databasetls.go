@@ -64,7 +64,7 @@ func (r *KeystoneReconciler) reconcileDatabaseTLS(ctx context.Context,
 	// so cert-manager stops renewing it and garbage-collects the issued Secret
 	// via the owner-reference cascade — mirroring HPA/NetworkPolicy/HTTPRoute,
 	// which all delete their managed objects on disable (issue #475).
-	if tlsSpec == nil || !tlsSpec.Enabled {
+	if !tlsSpec.IsEnabled() {
 		if err := r.deleteManagedDBClientCertificate(ctx, keystone); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -76,6 +76,34 @@ func (r *KeystoneReconciler) reconcileDatabaseTLS(ctx context.Context,
 			Message:            "Database TLS is not enabled; using plaintext connection",
 		})
 		return ctrl.Result{}, nil
+	}
+
+	// Fail closed against a bypassed or upgrade-pruned admission validation:
+	// TLS is enabled, so both certificate secret references must be present —
+	// the deployment and job builders mount them into a projected volume
+	// (dbTLSVolumeAndMount), and an empty Secret name yields an invalid volume
+	// the kubelet rejects, wedging the pod on startup. The validating webhook
+	// enforces this on create/update, but a Keystone persisted under the
+	// pre-mode-enum schema (which carried a separate tls.enabled bool) could
+	// have mode="require" materialized while enabled:false left the refs empty;
+	// once the CRD upgrade prunes the enabled field, IsEnabled() flips to true
+	// against that stored object and no re-admission re-runs the webhook.
+	// Surface a clear DatabaseTLSReady=False condition and stop the chain here,
+	// so the flip degrades to a diagnosable status rather than a pod that will
+	// not start.
+	if tlsSpec.CABundleSecretRef.Name == "" || tlsSpec.ClientCertSecretRef.Name == "" {
+		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
+			Type:               conditionTypeDatabaseTLSReady,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: keystone.Generation,
+			Reason:             reasonMissingCertRefs,
+			Message: "Database TLS is enabled but caBundleSecretRef.name and " +
+				"clientCertSecretRef.name must both be set",
+		})
+		return ctrl.Result{}, fmt.Errorf(
+			"database TLS enabled (mode %q) but caBundleSecretRef.name and/or clientCertSecretRef.name "+
+				"are empty; refusing to build an invalid certificate volume", tlsSpec.Mode,
+		)
 	}
 
 	// ExternallyManaged: TLS enabled but the database is brownfield (no
@@ -220,7 +248,7 @@ const dbTLSVolumeName = "db-tls"
 // the helper centralizes the nil/disabled gate so all callers (deployment +
 // job builders) decide identically.
 func dbTLSEnabled(keystone *keystonev1alpha1.Keystone) bool {
-	return keystone.Spec.Database.TLS != nil && keystone.Spec.Database.TLS.Enabled
+	return keystone.Spec.Database.TLS.IsEnabled()
 }
 
 // dbTLSVolumeAndMount builds the Volume + VolumeMount pair that projects the

@@ -116,20 +116,22 @@ type DatabaseSpec struct {
 // DatabaseTLSSpec configures opt-in TLS (and mutual TLS) for a database
 // connection. It is referenced as an optional pointer from
 // DatabaseSpec so the canonical shape can be reused by sibling operators.
+//
+// The single Mode enum is the on/off discriminator: a present tls block means
+// "on" (the defaulting webhook materializes an empty mode to "require"), and TLS
+// is enabled exactly when mode is neither empty nor "disabled". The "disabled"
+// value lets an operator keep the certificate references while turning
+// verification off, without deleting the block.
 type DatabaseTLSSpec struct {
-	// Enabled turns on TLS for the database connection. When true the
-	// operator provisions the client certificate, appends the ssl_* DSN
-	// parameters, and mounts the certificate material into the workloads
-	// that open a connection. Opt-in; defaults to false.
-	Enabled bool `json:"enabled"`
 	// Mode selects the TLS verification strength applied to the connection:
+	//   - disabled:       TLS is off; certificate references are ignored.
 	//   - prefer/require: encrypt the connection only (no peer verification).
 	//   - verify-ca:      additionally verify the server certificate chain
 	//                      against the trusted CA bundle.
 	//   - verify-full:    additionally verify the server certificate chain
 	//                      and that the server hostname matches the
 	//                      certificate identity.
-	// +kubebuilder:validation:Enum=prefer;require;verify-ca;verify-full
+	// +kubebuilder:validation:Enum=disabled;prefer;require;verify-ca;verify-full
 	// +optional
 	Mode string `json:"mode,omitempty"`
 	// CABundleSecretRef references the K8s Secret holding the server CA
@@ -138,6 +140,15 @@ type DatabaseTLSSpec struct {
 	// ClientCertSecretRef references the K8s Secret holding the client
 	// keypair presented to the database for mutual TLS.
 	ClientCertSecretRef SecretRefSpec `json:"clientCertSecretRef"`
+}
+
+// IsEnabled reports whether the database TLS block requests an encrypted
+// connection. A nil receiver (no tls block) is disabled; a present block is
+// enabled unless its mode is empty or "disabled". The defaulting webhook
+// materializes an empty mode to "require", so an enabled block reaching the
+// reconciler always carries a concrete mode.
+func (t *DatabaseTLSSpec) IsEnabled() bool {
+	return t != nil && t.Mode != "" && t.Mode != "disabled"
 }
 
 // CacheSpec supports managed (ClusterRef) and brownfield (explicit) modes.

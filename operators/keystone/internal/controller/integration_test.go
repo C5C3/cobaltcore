@@ -4484,7 +4484,6 @@ func TestIntegration_DatabaseTLS_CertificateLifecycle(t *testing.T) {
 	// Certificate spec and never reads the Secret bytes.
 	ks := integrationManagedKeystone("test-keystone", ns.Name)
 	ks.Spec.Database.TLS = &commonv1.DatabaseTLSSpec{
-		Enabled:             true,
 		Mode:                "verify-full",
 		CABundleSecretRef:   commonv1.SecretRefSpec{Name: "openstack-db-server-ca"},
 		ClientCertSecretRef: commonv1.SecretRefSpec{Name: "test-keystone-db-client"},
@@ -4656,7 +4655,6 @@ func TestIntegration_AdminPasswordUnchangedNoChurn(t *testing.T) {
 func integrationBrownfieldKeystoneWithPasswordRotation(name, namespace, schedule string) *keystonev1alpha1.Keystone {
 	ks := integrationBrownfieldKeystone(name, namespace)
 	ks.Spec.Bootstrap.PasswordRotation = &keystonev1alpha1.PasswordRotationSpec{
-		Enabled:        true,
 		Schedule:       schedule,
 		PasswordLength: keystonev1alpha1.DefaultPasswordRotationLength,
 	}

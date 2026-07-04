@@ -43,7 +43,6 @@ func dbTLSManagedKeystone(mode string) *keystonev1alpha1.Keystone {
 	ks := dbTLSBaseKeystone()
 	ks.Spec.Database.ClusterRef = &corev1.LocalObjectReference{Name: "openstack-db"}
 	ks.Spec.Database.TLS = &commonv1.DatabaseTLSSpec{
-		Enabled:             true,
 		Mode:                mode,
 		CABundleSecretRef:   commonv1.SecretRefSpec{Name: "db-server-ca"},
 		ClientCertSecretRef: commonv1.SecretRefSpec{Name: "test-keystone-db-client"},
@@ -176,6 +175,60 @@ func TestReconcileDatabaseTLS_ConditionTrueWhenIssued(t *testing.T) {
 	g.Expect(cond.ObservedGeneration).To(Equal(ks.Generation))
 }
 
+// TestReconcileDatabaseTLS_EnabledMissingCertRefsFailsClosed verifies the
+// upgrade-flip defense: a stored tls block that reads mode="require"
+// (IsEnabled() true) but carries EMPTY certificate-secret references — the state
+// a pre-mode-enum CR authored with enabled:false lands in once the CRD upgrade
+// prunes the enabled field, with no re-admission to re-run the webhook — must
+// fail closed. The sub-reconciler records DatabaseTLSReady=False/
+// MissingCertificateRefs and returns an error so the chain stops before a
+// downstream builder mounts an empty Secret name into an invalid projected
+// volume that would wedge the pod on startup. Covered for both the managed
+// (clusterRef) path — which would otherwise issue a Certificate — and the
+// brownfield path — which would otherwise report ExternallyManaged=True.
+func TestReconcileDatabaseTLS_EnabledMissingCertRefsFailsClosed(t *testing.T) {
+	cases := []struct {
+		name       string
+		brownfield bool
+	}{
+		{name: "managed"},
+		{name: "brownfield", brownfield: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			s := dbTLSTestScheme()
+			ks := dbTLSBaseKeystone()
+			if tc.brownfield {
+				ks.Spec.Database.Host = "db.example.com"
+				ks.Spec.Database.Port = 3306
+			} else {
+				ks.Spec.Database.ClusterRef = &corev1.LocalObjectReference{Name: "openstack-db"}
+			}
+			// mode="require" with no cert refs — the pruned enabled:false shape.
+			ks.Spec.Database.TLS = &commonv1.DatabaseTLSSpec{Mode: "require"}
+			r := dbTLSReconciler(s, ks)
+
+			result, err := r.reconcileDatabaseTLS(context.Background(), ks)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(result).To(Equal(ctrl.Result{}))
+
+			// No managed Certificate is issued — the guard fires before the
+			// managed path can call EnsureCertificate.
+			getErr := r.Get(context.Background(),
+				client.ObjectKey{Name: "test-keystone-db-client", Namespace: "default"}, &certmanagerv1.Certificate{})
+			g.Expect(apierrors.IsNotFound(getErr)).To(BeTrue(),
+				"no Certificate must be issued when cert refs are missing")
+
+			cond := meta.FindStatusCondition(ks.Status.Conditions, conditionTypeDatabaseTLSReady)
+			g.Expect(cond).NotTo(BeNil())
+			g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			g.Expect(cond.Reason).To(Equal(reasonMissingCertRefs))
+			g.Expect(cond.ObservedGeneration).To(Equal(ks.Generation))
+		})
+	}
+}
+
 // TestReconcileDatabaseTLS_DisabledIsNoOp verifies: a nil TLS block
 // creates no Certificate and records NotRequired.
 func TestReconcileDatabaseTLS_DisabledIsNoOp(t *testing.T) {
@@ -208,7 +261,6 @@ func TestReconcileDatabaseTLS_BrownfieldExternallyManaged(t *testing.T) {
 	ks.Spec.Database.Host = "db.example.com"
 	ks.Spec.Database.Port = 3306
 	ks.Spec.Database.TLS = &commonv1.DatabaseTLSSpec{
-		Enabled:             true,
 		Mode:                "verify-full",
 		CABundleSecretRef:   commonv1.SecretRefSpec{Name: "db-server-ca"},
 		ClientCertSecretRef: commonv1.SecretRefSpec{Name: "external-db-client"},
@@ -272,7 +324,6 @@ func TestReconcileDatabaseTLS_BrownfieldDeletesManagedCertificate(t *testing.T) 
 	ks.Spec.Database.Host = "db.example.com"
 	ks.Spec.Database.Port = 3306
 	ks.Spec.Database.TLS = &commonv1.DatabaseTLSSpec{
-		Enabled:             true,
 		Mode:                "verify-full",
 		CABundleSecretRef:   commonv1.SecretRefSpec{Name: "db-server-ca"},
 		ClientCertSecretRef: commonv1.SecretRefSpec{Name: "external-db-client"},

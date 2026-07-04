@@ -1430,8 +1430,7 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 	///-style regression guard so a future short-circuit before
 	// reaching k.Spec.Database.TLS is caught here rather than only at e2e time.
 	k.Spec.Database.TLS = &commonv1.DatabaseTLSSpec{
-		Enabled: true,
-		Mode:    "bogus",
+		Mode: "bogus",
 	}
 	// Break autoscaling — set out-of-range utilization target.
 	invalidCPU := int32(0)
@@ -2733,7 +2732,6 @@ func TestValidate_StrategyNilAccepted(t *testing.T) {
 // mutate to exercise individual rules (mirrors the validKeystone() pattern).
 func validDatabaseTLS() *commonv1.DatabaseTLSSpec {
 	return &commonv1.DatabaseTLSSpec{
-		Enabled:             true,
 		Mode:                "require",
 		CABundleSecretRef:   commonv1.SecretRefSpec{Name: "db-ca-bundle", Key: "ca.crt"},
 		ClientCertSecretRef: commonv1.SecretRefSpec{Name: "keystone-db-client", Key: "tls.crt"},
@@ -2764,9 +2762,9 @@ func TestValidate_TLSDisabledWithoutSecretRefsAccepted(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{}
 	k := validKeystone()
-	// enabled:false means the secret refs are not required yet; only mode
-	// must still be a valid enum value (it is here).
-	k.Spec.Database.TLS = &commonv1.DatabaseTLSSpec{Enabled: false, Mode: "require"}
+	// mode: "disabled" means TLS is off, so the secret refs are not required;
+	// the disabled block is accepted with no cert references.
+	k.Spec.Database.TLS = &commonv1.DatabaseTLSSpec{Mode: "disabled"}
 
 	_, err := w.ValidateCreate(context.Background(), k)
 	g.Expect(err).NotTo(HaveOccurred())
@@ -2837,25 +2835,26 @@ func TestValidate_RejectsEnabledWithoutSecretRef(t *testing.T) {
 	})
 }
 
-func TestDefault_DoesNotMaterializeTLSEnabled(t *testing.T) {
+func TestDefault_DoesNotMaterializeTLSBlock(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{}
 	// A CR with no tls block (the upgrade scenario) must remain plaintext:
-	// Default() must not allocate the pointer nor set enabled:true.
+	// Default() must not allocate the pointer.
 	k := validKeystone()
 	k.Spec.Database.TLS = nil
 
 	g.Expect(w.Default(context.Background(), k)).To(Succeed())
 	g.Expect(k.Spec.Database.TLS).To(BeNil())
 
-	// An explicitly-disabled block must keep enabled:false even after
-	// defaulting the mode.
+	// An explicitly-disabled block must stay disabled: mode: "disabled" is a
+	// non-empty mode, so Default() leaves it untouched and IsEnabled stays false.
 	k2 := validKeystone()
-	k2.Spec.Database.TLS = &commonv1.DatabaseTLSSpec{Enabled: false}
+	k2.Spec.Database.TLS = &commonv1.DatabaseTLSSpec{Mode: "disabled"}
 
 	g.Expect(w.Default(context.Background(), k2)).To(Succeed())
 	g.Expect(k2.Spec.Database.TLS).NotTo(BeNil())
-	g.Expect(k2.Spec.Database.TLS.Enabled).To(BeFalse())
+	g.Expect(k2.Spec.Database.TLS.Mode).To(Equal("disabled"))
+	g.Expect(k2.Spec.Database.TLS.IsEnabled()).To(BeFalse())
 }
 
 func TestDefault_DefaultsModeOnlyWhenBlockPresent(t *testing.T) {
@@ -2864,18 +2863,19 @@ func TestDefault_DefaultsModeOnlyWhenBlockPresent(t *testing.T) {
 
 	t.Run("empty mode defaulted to baseline when block present", func(t *testing.T) {
 		k := validKeystone()
-		k.Spec.Database.TLS = &commonv1.DatabaseTLSSpec{Enabled: true, Mode: ""}
+		k.Spec.Database.TLS = &commonv1.DatabaseTLSSpec{Mode: ""}
 
 		g.Expect(w.Default(context.Background(), k)).To(Succeed())
 		g.Expect(k.Spec.Database.TLS.Mode).To(Equal(DefaultDatabaseTLSMode))
 		g.Expect(DefaultDatabaseTLSMode).To(Equal("require"))
-		// enabled must be left exactly as the user set it.
-		g.Expect(k.Spec.Database.TLS.Enabled).To(BeTrue())
+		// A present block with an empty mode means "on": defaulting to require
+		// makes IsEnabled true.
+		g.Expect(k.Spec.Database.TLS.IsEnabled()).To(BeTrue())
 	})
 
 	t.Run("explicit mode preserved", func(t *testing.T) {
 		k := validKeystone()
-		k.Spec.Database.TLS = &commonv1.DatabaseTLSSpec{Enabled: true, Mode: "verify-full"}
+		k.Spec.Database.TLS = &commonv1.DatabaseTLSSpec{Mode: "verify-full"}
 
 		g.Expect(w.Default(context.Background(), k)).To(Succeed())
 		g.Expect(k.Spec.Database.TLS.Mode).To(Equal("verify-full"))

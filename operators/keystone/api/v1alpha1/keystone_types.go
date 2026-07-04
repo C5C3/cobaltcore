@@ -82,9 +82,10 @@ type KeystoneSpec struct {
 	//
 	// DECISION no CEL rule is added for tls.mode — the out-of-enum
 	// case is already rejected by the leaf +kubebuilder:validation:Enum marker
-	// on DatabaseTLSSpec.Mode (prefer;require;verify-ca;verify-full). Adding a
-	// mode CEL here would be redundant with that schema-level enum and risks
-	// drifting from it.
+	// on DatabaseTLSSpec.Mode (disabled;prefer;require;verify-ca;verify-full).
+	// Adding a mode CEL here would be redundant with that schema-level enum and
+	// risks drifting from it. TLS is enabled exactly when mode is neither empty
+	// nor "disabled" (DatabaseTLSSpec.IsEnabled).
 	//
 	// The clusterRef/host mutual-exclusivity rule lives on commonv1.DatabaseSpec
 	// itself, so it is inherited here without per-field duplication. The TLS
@@ -98,7 +99,7 @@ type KeystoneSpec struct {
 	// (self == oldSelf, evaluated only on UPDATE) are enforced by the API server
 	// itself, so they keep protecting the field even when the validating webhook
 	// is unavailable (#466).
-	// +kubebuilder:validation:XValidation:rule="!has(self.tls) || !self.tls.enabled || (self.tls.caBundleSecretRef.name != '' && self.tls.clientCertSecretRef.name != '')",message="when database.tls.enabled is true, both database.tls.caBundleSecretRef.name and database.tls.clientCertSecretRef.name must be set"
+	// +kubebuilder:validation:XValidation:rule="!has(self.tls) || self.tls.mode == '' || self.tls.mode == 'disabled' || (self.tls.caBundleSecretRef.name != '' && self.tls.clientCertSecretRef.name != '')",message="when database.tls is enabled (mode is neither empty nor 'disabled'), both database.tls.caBundleSecretRef.name and database.tls.clientCertSecretRef.name must be set"
 	// +kubebuilder:validation:XValidation:rule="self.database == oldSelf.database",message="database name is immutable"
 	// +kubebuilder:validation:XValidation:rule="has(self.clusterRef) == has(oldSelf.clusterRef)",message="database mode (managed clusterRef vs brownfield host) is immutable"
 	Database commonv1.DatabaseSpec `json:"database"`

@@ -275,9 +275,10 @@ spec:
 
                   DECISION no CEL rule is added for tls.mode — the out-of-enum
                   case is already rejected by the leaf +kubebuilder:validation:Enum marker
-                  on DatabaseTLSSpec.Mode (prefer;require;verify-ca;verify-full). Adding a
-                  mode CEL here would be redundant with that schema-level enum and risks
-                  drifting from it.
+                  on DatabaseTLSSpec.Mode (disabled;prefer;require;verify-ca;verify-full).
+                  Adding a mode CEL here would be redundant with that schema-level enum and
+                  risks drifting from it. TLS is enabled exactly when mode is neither empty
+                  nor "disabled" (DatabaseTLSSpec.IsEnabled).
 
                   The clusterRef/host mutual-exclusivity rule lives on commonv1.DatabaseSpec
                   itself, so it is inherited here without per-field duplication. The TLS
@@ -429,16 +430,10 @@ spec:
                         required:
                         - name
                         type: object
-                      enabled:
-                        description: |-
-                          Enabled turns on TLS for the database connection. When true the
-                          operator provisions the client certificate, appends the ssl_* DSN
-                          parameters, and mounts the certificate material into the workloads
-                          that open a connection. Opt-in; defaults to false.
-                        type: boolean
                       mode:
                         description: |-
                           Mode selects the TLS verification strength applied to the connection:
+                            - disabled:       TLS is off; certificate references are ignored.
                             - prefer/require: encrypt the connection only (no peer verification).
                             - verify-ca:      additionally verify the server certificate chain
                                                against the trusted CA bundle.
@@ -446,6 +441,7 @@ spec:
                                                and that the server hostname matches the
                                                certificate identity.
                         enum:
+                        - disabled
                         - prefer
                         - require
                         - verify-ca
@@ -454,17 +450,18 @@ spec:
                     required:
                     - caBundleSecretRef
                     - clientCertSecretRef
-                    - enabled
                     type: object
                 required:
                 - database
                 - secretRef
                 type: object
                 x-kubernetes-validations:
-                - message: when database.tls.enabled is true, both database.tls.caBundleSecretRef.name
-                    and database.tls.clientCertSecretRef.name must be set
-                  rule: '!has(self.tls) || !self.tls.enabled || (self.tls.caBundleSecretRef.name
-                    != '''' && self.tls.clientCertSecretRef.name != '''')'
+                - message: when database.tls is enabled (mode is neither empty nor
+                    'disabled'), both database.tls.caBundleSecretRef.name and database.tls.clientCertSecretRef.name
+                    must be set
+                  rule: '!has(self.tls) || self.tls.mode == '''' || self.tls.mode
+                    == ''disabled'' || (self.tls.caBundleSecretRef.name != '''' &&
+                    self.tls.clientCertSecretRef.name != '''')'
                 - message: database name is immutable
                   rule: self.database == oldSelf.database
                 - message: database mode (managed clusterRef vs brownfield host) is

@@ -677,14 +677,13 @@ func TestBuildBootstrapJob_DBTLSDisabled_NoDBTLSVolume(t *testing.T) {
 
 // TestBuildBootstrapJob_DBTLSDisabledExplicit_NoDBTLSVolume verifies that when spec.database.tls is non-nil but
 // Enabled is false the
-// bootstrap Job still must not mount the db-tls Secret — the enable flag is
-// the single gate (matches the reconcileDatabaseTLS NotRequired path).
+// bootstrap Job still must not mount the db-tls Secret — the mode is the single
+// gate (matches the reconcileDatabaseTLS NotRequired path).
 func TestBuildBootstrapJob_DBTLSDisabledExplicit_NoDBTLSVolume(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := bootstrapKeystone()
 	ks.Spec.Database.TLS = &commonv1.DatabaseTLSSpec{
-		Enabled:             false,
-		Mode:                "require",
+		Mode:                "disabled",
 		CABundleSecretRef:   commonv1.SecretRefSpec{Name: "db-server-ca"},
 		ClientCertSecretRef: commonv1.SecretRefSpec{Name: "test-keystone-db-client"},
 	}
@@ -706,7 +705,6 @@ func TestBuildBootstrapJob_DBTLSEnabled_MountsClientSecret(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := bootstrapKeystone()
 	ks.Spec.Database.TLS = &commonv1.DatabaseTLSSpec{
-		Enabled:             true,
 		Mode:                "verify-full",
 		CABundleSecretRef:   commonv1.SecretRefSpec{Name: "db-server-ca"},
 		ClientCertSecretRef: commonv1.SecretRefSpec{Name: "test-keystone-db-client"},
@@ -742,7 +740,6 @@ func TestBuildBootstrapJob_DBTLSEnabled_BrownfieldUsesUserSuppliedSecretNames(t 
 	ks.Spec.Database.Host = "db.example.com"
 	ks.Spec.Database.Port = 3306
 	ks.Spec.Database.TLS = &commonv1.DatabaseTLSSpec{
-		Enabled:             true,
 		Mode:                "verify-full",
 		CABundleSecretRef:   commonv1.SecretRefSpec{Name: "enterprise-root-ca-bundle"},
 		ClientCertSecretRef: commonv1.SecretRefSpec{Name: "site-specific-client-keypair"},

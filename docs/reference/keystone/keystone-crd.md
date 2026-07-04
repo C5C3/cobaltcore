@@ -199,10 +199,10 @@ validating webhook is unavailable.
 | Field | Rule | Error Message |
 | --- | --- | --- |
 | `spec.database` | `has(self.clusterRef) != has(self.host)` | "exactly one of clusterRef or host must be set" |
-| `spec.database` | `!has(self.tls) \|\| !self.tls.enabled \|\| (self.tls.caBundleSecretRef.name != '' && self.tls.clientCertSecretRef.name != '')` | "when database.tls.enabled is true, both database.tls.caBundleSecretRef.name and database.tls.clientCertSecretRef.name must be set" |
+| `spec.database` | `!has(self.tls) \|\| self.tls.mode == '' \|\| self.tls.mode == 'disabled' \|\| (self.tls.caBundleSecretRef.name != '' && self.tls.clientCertSecretRef.name != '')` | "when database.tls is enabled (mode is neither empty nor 'disabled'), both database.tls.caBundleSecretRef.name and database.tls.clientCertSecretRef.name must be set" |
 | `spec.database` | `self.database == oldSelf.database` (UPDATE only) | "database name is immutable" |
 | `spec.database` | `has(self.clusterRef) == has(oldSelf.clusterRef)` (UPDATE only) | "database mode (managed clusterRef vs brownfield host) is immutable" |
-| `spec.database.tls.mode` | Enum: `prefer`, `require`, `verify-ca`, `verify-full` | — |
+| `spec.database.tls.mode` | Enum: `disabled`, `prefer`, `require`, `verify-ca`, `verify-full` | — |
 | `spec.bootstrap.adminUser` | `self == oldSelf` (UPDATE only) | "bootstrap.adminUser is immutable" |
 | `spec.bootstrap.region` | `self == oldSelf` (UPDATE only) | "bootstrap.region is immutable" |
 | `spec.cache` | `has(self.clusterRef) != (has(self.servers) && size(self.servers) > 0)` | "exactly one of clusterRef or servers must be set" |
@@ -1089,12 +1089,17 @@ Referenced as an optional pointer from
 [`DatabaseSpec`](#databasespec); a `nil` value preserves the previous plaintext
 behavior.
 
+The single `mode` enum is the on/off discriminator. A present `tls` block means
+"on" (the defaulting webhook materializes an empty `mode` to `"require"`), and
+TLS is **enabled** exactly when `mode` is neither empty nor `"disabled"`. The
+`"disabled"` value lets an operator keep the certificate references while turning
+verification off, without deleting the block.
+
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `enabled` | `bool` | No | `false` | Turns on TLS for the database connection. When `true`, the operator provisions the client certificate (`<name>-db-client`), appends the `ssl_*` DSN parameters, and mounts the certificate material into every workload that opens a connection. Opt-in only — the defaulting webhook never sets this to `true`. |
-| `mode` | `string` | No | `"require"` (materialized by the defaulting webhook when `tls` is non-nil and `mode` is empty) | Verification strength applied to the connection. Enum: `prefer`, `require`, `verify-ca`, `verify-full`. `prefer`/`require` encrypt the connection only (no peer verification); `verify-ca` additionally verifies the server certificate chain against the trusted CA bundle; `verify-full` additionally verifies that the server hostname matches the certificate identity. |
-| `caBundleSecretRef` | [`SecretRefSpec`](#secretrefspec) | Yes (when `enabled=true`) | — | Secret holding the server CA bundle the client trusts when verifying the database endpoint. Required by both the CRD CEL rule and the validating webhook when `enabled` is `true`. |
-| `clientCertSecretRef` | [`SecretRefSpec`](#secretrefspec) | Yes (when `enabled=true`) | — | Secret holding the client keypair presented to the database for mutual TLS. In managed mode (`database.clusterRef` set) the operator provisions a cert-manager `Certificate` into a Secret named `<name>-db-client`; in brownfield mode (`database.host` set) the keypair must be supplied out-of-band. Required by both the CRD CEL rule and the validating webhook when `enabled` is `true`. |
+| `mode` | `string` | No | `"require"` (materialized by the defaulting webhook when `tls` is non-nil and `mode` is empty) | Verification strength applied to the connection. Enum: `disabled`, `prefer`, `require`, `verify-ca`, `verify-full`. `disabled` turns TLS off (certificate references are ignored); `prefer`/`require` encrypt the connection only (no peer verification); `verify-ca` additionally verifies the server certificate chain against the trusted CA bundle; `verify-full` additionally verifies that the server hostname matches the certificate identity. When TLS is enabled the operator provisions the client certificate (`<name>-db-client`), appends the `ssl_*` DSN parameters, and mounts the certificate material into every workload that opens a connection. |
+| `caBundleSecretRef` | [`SecretRefSpec`](#secretrefspec) | Yes (when enabled) | — | Secret holding the server CA bundle the client trusts when verifying the database endpoint. Required by both the CRD CEL rule and the validating webhook when TLS is enabled (`mode` is neither empty nor `"disabled"`). |
+| `clientCertSecretRef` | [`SecretRefSpec`](#secretrefspec) | Yes (when enabled) | — | Secret holding the client keypair presented to the database for mutual TLS. In managed mode (`database.clusterRef` set) the operator provisions a cert-manager `Certificate` into a Secret named `<name>-db-client`; in brownfield mode (`database.host` set) the keypair must be supplied out-of-band. Required by both the CRD CEL rule and the validating webhook when TLS is enabled. |
 
 #### Mode → connect-args mapping
 
@@ -1229,13 +1234,12 @@ Sets spec fields to their documented defaults when they carry zero values. Expli
   fallbacks. For `topologySpreadConstraints` the reconciler distinguishes `nil`
   (inject zone+hostname defaults) from `[]` (opt out), so the webhook must not
   materialise a struct.
-- `spec.database.tls` itself and `spec.database.tls.enabled` — the webhook never
-  materializes the `tls` block and never sets `enabled`. TLS
-  is strictly opt-in, so an upgrade of a previously plaintext CR cannot silently
-  turn encryption on (which would also trigger Certificate provisioning). The
-  webhook only partial-fills `tls.mode` when the parent block is explicitly
-  present, mirroring the `TrustFlush` / `UWSGI` / `Logging` non-mutating
-  discipline.
+- `spec.database.tls` itself — the webhook never materializes the `tls` block.
+  TLS is strictly opt-in, so an upgrade of a previously plaintext CR cannot
+  silently turn encryption on (which would also trigger Certificate
+  provisioning). The webhook only partial-fills `tls.mode` (empty → `require`)
+  when the parent block is explicitly present, mirroring the `TrustFlush` /
+  `UWSGI` / `Logging` non-mutating discipline.
 
 **Design note:** `spec.fernet.rotationSchedule` is NOT defaulted by the webhook — it
 relies solely on the Kubebuilder `+kubebuilder:default="0 0 * * 0"` marker.
@@ -1267,9 +1271,9 @@ single `apierrors.NewInvalid` error. It does **not** short-circuit on the first 
 | Replicas minimum | `spec.replicas` | `field.Invalid` | `replicas < 1`. Defense-in-depth alongside the `+kubebuilder:validation:Minimum=1` marker. |
 | Cache mutual exclusivity | `spec.cache` | `field.Invalid` | Both `clusterRef` and `servers` set, or neither. Defense-in-depth alongside the CEL XValidation rule. |
 | Database mutual exclusivity | `spec.database` | `field.Invalid` | Both `clusterRef` and `host` set, or neither. Defense-in-depth alongside the CEL XValidation rule. |
-| Database TLS mode out-of-enum | `spec.database.tls.mode` | `field.NotSupported` | `tls.mode` is non-empty but not one of `prefer`/`require`/`verify-ca`/`verify-full`. Defense-in-depth alongside the `+kubebuilder:validation:Enum` marker. Empty `mode` is tolerated because `Default()` materializes `"require"` before validation in the normal admission path. |
-| Database TLS caBundleSecretRef required | `spec.database.tls.caBundleSecretRef.name` | `field.Required` | `tls.enabled=true` but `caBundleSecretRef.name` is empty. Defense-in-depth alongside the CEL XValidation rule on `spec.database`. |
-| Database TLS clientCertSecretRef required | `spec.database.tls.clientCertSecretRef.name` | `field.Required` | `tls.enabled=true` but `clientCertSecretRef.name` is empty. Defense-in-depth alongside the CEL XValidation rule on `spec.database`. |
+| Database TLS mode out-of-enum | `spec.database.tls.mode` | `field.NotSupported` | `tls.mode` is non-empty but not one of `disabled`/`prefer`/`require`/`verify-ca`/`verify-full`. Defense-in-depth alongside the `+kubebuilder:validation:Enum` marker. Empty `mode` is tolerated because `Default()` materializes `"require"` before validation in the normal admission path. |
+| Database TLS caBundleSecretRef required | `spec.database.tls.caBundleSecretRef.name` | `field.Required` | TLS is enabled (`mode` is neither empty nor `"disabled"`) but `caBundleSecretRef.name` is empty. Defense-in-depth alongside the CEL XValidation rule on `spec.database`. |
+| Database TLS clientCertSecretRef required | `spec.database.tls.clientCertSecretRef.name` | `field.Required` | TLS is enabled (`mode` is neither empty nor `"disabled"`) but `clientCertSecretRef.name` is empty. Defense-in-depth alongside the CEL XValidation rule on `spec.database`. |
 | Fernet maxActiveKeys minimum | `spec.fernet.maxActiveKeys` | `field.Invalid` | `maxActiveKeys < 3`. Defense-in-depth alongside the `+kubebuilder:validation:Minimum=3` marker. |
 | Fernet schedule required | `spec.fernet.rotationSchedule` | `field.Required` | Empty after admission (bypass paths). |
 | Fernet cron expression | `spec.fernet.rotationSchedule` | `field.Invalid` | `cron.ParseStandard()` fails. Error message includes the parse failure details. |

@@ -317,7 +317,6 @@ func TestReconcileDBConnectionSecret_TLSEnabled_AppendsModeSSLParams(t *testing.
 
 			ks := configTestKeystone()
 			ks.Spec.Database.TLS = &commonv1.DatabaseTLSSpec{
-				Enabled:             true,
 				Mode:                tc.mode,
 				CABundleSecretRef:   commonv1.SecretRefSpec{Name: "db-ca-bundle"},
 				ClientCertSecretRef: commonv1.SecretRefSpec{Name: "test-keystone-db-client"},
@@ -362,19 +361,19 @@ func TestReconcileDBConnectionSecret_TLSEnabled_AppendsModeSSLParams(t *testing.
 	}
 }
 
-// TestReconcileDBConnectionSecret_TLSEnabledButDisabledFlag_NoSSLParams covers
-// the spec.database.tls != nil && !enabled edge case: the block is materialised
-// (e.g. by a user toggling enabled to false to test rollback) but the DSN must
-// stay plaintext. Mirrors the NotRequired path in reconcileDatabaseTLS.
-func TestReconcileDBConnectionSecret_TLSEnabledButDisabledFlag_NoSSLParams(t *testing.T) {
+// TestReconcileDBConnectionSecret_TLSDisabledMode_NoSSLParams covers the
+// spec.database.tls != nil, mode: "disabled" edge case: the block is materialised
+// with certificate references (e.g. a user turning verification off for rollback
+// without deleting the refs) but the DSN must stay plaintext. Mirrors the
+// NotRequired path in reconcileDatabaseTLS.
+func TestReconcileDBConnectionSecret_TLSDisabledMode_NoSSLParams(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := configTestScheme()
 	ctx := context.Background()
 
 	ks := configTestKeystone()
 	ks.Spec.Database.TLS = &commonv1.DatabaseTLSSpec{
-		Enabled:             false,
-		Mode:                "verify-full",
+		Mode:                "disabled",
 		CABundleSecretRef:   commonv1.SecretRefSpec{Name: "db-ca-bundle"},
 		ClientCertSecretRef: commonv1.SecretRefSpec{Name: "test-keystone-db-client"},
 	}
@@ -394,7 +393,7 @@ func TestReconcileDBConnectionSecret_TLSEnabledButDisabledFlag_NoSSLParams(t *te
 	g.Expect(q.Get("charset")).To(Equal("utf8"))
 	for _, key := range []string{"ssl_ca", "ssl_cert", "ssl_key", "ssl_verify_cert", "ssl_verify_identity"} {
 		g.Expect(q.Has(key)).To(BeFalse(),
-			"ssl_* parameter %q must be absent when tls.enabled is false", key)
+			"ssl_* parameter %q must be absent when tls.mode is disabled", key)
 	}
 }
 
@@ -410,7 +409,6 @@ func TestReconcileDBConnectionSecret_TLSEnabled_NoPercentEncodedSlashes(t *testi
 
 	ks := configTestKeystone()
 	ks.Spec.Database.TLS = &commonv1.DatabaseTLSSpec{
-		Enabled:             true,
 		Mode:                "verify-full",
 		CABundleSecretRef:   commonv1.SecretRefSpec{Name: "db-ca-bundle"},
 		ClientCertSecretRef: commonv1.SecretRefSpec{Name: "test-keystone-db-client"},

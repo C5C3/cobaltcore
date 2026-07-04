@@ -2685,7 +2685,6 @@ func TestRecordDBJobTerminalState_DefersOnPatchFailure(t *testing.T) {
 func dbTLSManagedKeystoneForJobs() *keystonev1alpha1.Keystone {
 	ks := managedKeystone()
 	ks.Spec.Database.TLS = &commonv1.DatabaseTLSSpec{
-		Enabled:             true,
 		Mode:                "verify-full",
 		CABundleSecretRef:   commonv1.SecretRefSpec{Name: "db-server-ca"},
 		ClientCertSecretRef: commonv1.SecretRefSpec{Name: "test-keystone-db-client"},
@@ -2774,7 +2773,6 @@ func TestBuildDBJobVariants_DBTLSVolumeAndMount_WhenEnabled(t *testing.T) {
 func TestBuildDBJobVariants_DBTLSVolume_UsesUserSuppliedSecretNames(t *testing.T) {
 	ks := managedKeystone()
 	ks.Spec.Database.TLS = &commonv1.DatabaseTLSSpec{
-		Enabled:             true,
 		Mode:                "verify-full",
 		CABundleSecretRef:   commonv1.SecretRefSpec{Name: "enterprise-root-ca-bundle"},
 		ClientCertSecretRef: commonv1.SecretRefSpec{Name: "site-specific-client-keypair"},
@@ -2846,13 +2844,12 @@ func TestBuildDBJobVariants_DBTLSVolumeAbsent_WhenNil(t *testing.T) {
 }
 
 // TestBuildDBJobVariants_DBTLSVolumeAbsent_WhenDisabled verifies the
-// Enabled-false gate for every Job variant: a TLS block with Enabled=false
+// disabled-mode gate for every Job variant: a TLS block with mode: "disabled"
 // must not project the keypair into the Job pod.
 func TestBuildDBJobVariants_DBTLSVolumeAbsent_WhenDisabled(t *testing.T) {
 	ks := managedKeystone()
 	ks.Spec.Database.TLS = &commonv1.DatabaseTLSSpec{
-		Enabled:             false,
-		Mode:                "require",
+		Mode:                "disabled",
 		CABundleSecretRef:   commonv1.SecretRefSpec{Name: "db-server-ca"},
 		ClientCertSecretRef: commonv1.SecretRefSpec{Name: "test-keystone-db-client"},
 	}
@@ -2874,14 +2871,14 @@ func TestBuildDBJobVariants_DBTLSVolumeAbsent_WhenDisabled(t *testing.T) {
 			g := NewGomegaWithT(t)
 			for _, v := range tc.job.Spec.Template.Spec.Volumes {
 				g.Expect(v.Name).NotTo(Equal("db-tls"),
-					"%s: db-tls Volume must NOT be present when TLS.Enabled is false",
+					"%s: db-tls Volume must NOT be present when TLS mode is disabled",
 					tc.name)
 			}
 			container := findContainerByName(tc.job.Spec.Template.Spec.Containers, tc.containerName)
 			g.Expect(container).NotTo(BeNil())
 			for _, m := range container.VolumeMounts {
 				g.Expect(m.Name).NotTo(Equal("db-tls"),
-					"%s: db-tls VolumeMount must NOT be present when TLS.Enabled is false",
+					"%s: db-tls VolumeMount must NOT be present when TLS mode is disabled",
 					tc.name)
 			}
 		})
