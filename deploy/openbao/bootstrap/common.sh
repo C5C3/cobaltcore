@@ -13,7 +13,13 @@
 # ---------------------------------------------------------------------------
 # Shared configuration defaults
 # ---------------------------------------------------------------------------
-NAMESPACE="${NAMESPACE:-openbao-system}"
+# NAMESPACE is the namespace the OpenBao server (pod openbao-0) runs in. It is
+# derived from the dedicated OPENBAO_NAMESPACE override — NOT from a generic
+# NAMESPACE env var: chainsaw injects NAMESPACE=<ephemeral test namespace> into
+# every e2e script step, so a bootstrap script invoked from a chainsaw test
+# would otherwise `kubectl exec` into a namespace that has no openbao-0 pod
+# (and a stray NAMESPACE in an operator's shell would misfire the same way).
+NAMESPACE="${OPENBAO_NAMESPACE:-openbao-system}"
 BAO_ADDR="${BAO_ADDR:-https://127.0.0.1:8200}"
 export VAULT_CACERT="${VAULT_CACERT:-/openbao/tls/ca.crt}"
 export VAULT_CLIENT_CERT="${VAULT_CLIENT_CERT:-/openbao/client-tls/tls.crt}"

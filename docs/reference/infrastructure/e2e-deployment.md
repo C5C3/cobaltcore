@@ -212,7 +212,7 @@ The deployment script supports configurable timeouts via environment variables:
 | `POD_TIMEOUT` | `300` | Seconds to wait for OpenBao pods Ready |
 | `EXTERNALSECRET_TIMEOUT` | `120` | Seconds to wait for ExternalSecrets synced |
 | `SKIP_KIND_CREATE` | `false` | Skip kind cluster creation (CI mode where cluster is pre-created) |
-| `NAMESPACE` | `openbao-system` | OpenBao namespace (propagated to bootstrap scripts) |
+| `OPENBAO_NAMESPACE` | `openbao-system` | OpenBao namespace (propagated to the bootstrap scripts, which resolve the same variable in `common.sh`). The generic `NAMESPACE` variable is deliberately ignored — chainsaw injects `NAMESPACE=<test namespace>` into e2e script steps |
 | `INSTALL_DIR` | `~/.local/bin` | Directory for `install-test-deps.sh` to install tools |
 | `WITH_CONTROLPLANE` | `false` | When `true`, the c5c3 `ControlPlane` provisions MariaDB/Memcached in managed mode: deploy-infra skips the shared MariaDB/Memcached CRs and seeds the per-CR OpenBao admin-password paths instead |
 | `CONTROLPLANE_OPERATORS` | `flux` | How the ControlPlane operator stack is provided (only when `WITH_CONTROLPLANE=true`). `flux` deploys the published c5c3-operator chart + K-ORC Flux source and un-suspends keystone-operator; `external` suspends the Flux stack and expects the operators to be deployed out of band (as the `e2e-controlplane` CI job does with local dev images + `hack/ci-deploy-korc.sh`) |

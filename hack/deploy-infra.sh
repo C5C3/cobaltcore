@@ -162,13 +162,15 @@ FLUX_OPERATOR_VERSION="v0.52.0"
 # OpenBao init parameters (match deploy/openbao/bootstrap/init-unseal.sh)
 KEY_SHARES=5
 KEY_THRESHOLD=3
-# OPENBAO_NAMESPACE is this script's internal variable for the OpenBao namespace.
-# The bootstrap scripts (deploy/openbao/bootstrap/) read NAMESPACE from common.sh,
-# which defaults to the same value ('openbao-system').  When the NAMESPACE env var
-# is set, both this script and the bootstrap scripts receive it correctly because
-# child processes inherit the environment.  Do NOT set OPENBAO_NAMESPACE directly —
-# set NAMESPACE instead so that both layers stay in sync.
-OPENBAO_NAMESPACE="${NAMESPACE:-openbao-system}"
+# OPENBAO_NAMESPACE is the namespace the OpenBao server runs in. The bootstrap
+# scripts (deploy/openbao/bootstrap/) resolve the same OPENBAO_NAMESPACE env var
+# in common.sh (same 'openbao-system' default), so setting it once configures
+# both layers — the export below propagates it to the child scripts. The generic
+# NAMESPACE env var is deliberately NOT honored: chainsaw injects
+# NAMESPACE=<ephemeral test namespace> into every e2e script step, which must
+# not redirect where the bootstrap scripts exec their bao commands.
+OPENBAO_NAMESPACE="${OPENBAO_NAMESPACE:-openbao-system}"
+export OPENBAO_NAMESPACE
 BAO_ADDR="${BAO_ADDR:-https://127.0.0.1:8200}"
 VAULT_CACERT="${VAULT_CACERT:-/openbao/tls/ca.crt}"
 VAULT_CLIENT_CERT="${VAULT_CLIENT_CERT:-/openbao/client-tls/tls.crt}"

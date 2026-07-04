@@ -46,13 +46,17 @@ STUB
 # run_script <stub_dir> <namespace> <controlplane>
 # Runs the script with the kubectl stub prepended to PATH (so date/base64/bash
 # stay available). Echoes combined stdout/stderr; returns the script exit code.
+# NAMESPACE is exported to a chainsaw-style ephemeral test namespace on purpose:
+# chainsaw injects NAMESPACE=<test namespace> into every e2e script step, and
+# common.sh must resolve the OpenBao namespace from OPENBAO_NAMESPACE (or its
+# openbao-system default) instead of picking that injected value up.
 run_script() {
   local stub_dir="$1" ns="$2" cp="$3"
   (
     PATH="$stub_dir:$PATH"
     export PATH
     BAO_TOKEN="dummy-token"
-    NAMESPACE="openbao-system"
+    NAMESPACE="chainsaw-fresh-piranha"
     export BAO_TOKEN NAMESPACE
     bash "$SCRIPT_UNDER_TEST" "$ns" "$cp"
   ) 2>&1
@@ -82,9 +86,36 @@ test_missing_controlplane_fails_loudly() {
 }
 
 # ---------------------------------------------------------------------------
+# Test: chainsaw-injected NAMESPACE does not redirect the OpenBao namespace
+# ---------------------------------------------------------------------------
+# Regression test for the e2e-controlplane failure where the chainsaw-injected
+# NAMESPACE=<test namespace> leaked into common.sh and bao_exec tried
+# `kubectl exec -n <test namespace> openbao-0` (pod not found). The OpenBao
+# namespace must resolve from OPENBAO_NAMESPACE / its default, never from the
+# generic NAMESPACE env var run_script poisons above.
+test_injected_namespace_is_ignored() {
+  echo "Test: setup-database-tenant.sh ignores a chainsaw-injected NAMESPACE"
+
+  local tmp
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+
+  make_failing_kubectl "$tmp"
+
+  local output
+  output="$(run_script "$tmp" "tenant-a" "cp-a")"
+
+  assert_contains "OpenBao namespace stays on the openbao-system default" \
+    "$output" "Namespace : openbao-system"
+  assert_not_contains "the injected test namespace never becomes the exec target" \
+    "$output" "Namespace : chainsaw-fresh-piranha"
+}
+
+# ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
 test_missing_controlplane_fails_loudly
+test_injected_namespace_is_ignored
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
