@@ -101,7 +101,8 @@ spec:
   networkPolicy:
     ingress:
       - namespaceSelector:
-          kubernetes.io/metadata.name: openstack
+          matchLabels:
+            kubernetes.io/metadata.name: openstack
   topologySpreadConstraints:
     - maxSkew: 1
       topologyKey: topology.kubernetes.io/zone
@@ -678,8 +679,8 @@ the field deletes the NetworkPolicy on the next reconcile.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `namespaceSelector` | `map[string]string` | Yes | Label selector for source namespaces. All pods in matching namespaces may reach Keystone on TCP 5000 unless `podSelector` narrows the set. |
-| `podSelector` | `map[string]string` | No | Optional label selector restricting allowed pods within the selected namespaces (AND logic within a single peer). |
+| `namespaceSelector` | `metav1.LabelSelector` | Yes | Label selector for source namespaces, supporting both `matchLabels` and set-based `matchExpressions`. All pods in matching namespaces may reach Keystone on TCP 5000 unless `podSelector` narrows the set. |
+| `podSelector` | `metav1.LabelSelector` | No | Optional label selector restricting allowed pods within the selected namespaces (AND logic within a single peer). Supports `matchLabels` and `matchExpressions`. |
 
 ### Auto-added Ingress peers
 
@@ -723,11 +724,14 @@ spec:
   networkPolicy:
     ingress:
       - namespaceSelector:
-          kubernetes.io/metadata.name: openstack
+          matchLabels:
+            kubernetes.io/metadata.name: openstack
       - namespaceSelector:
-          kubernetes.io/metadata.name: ingress-gateway
+          matchLabels:
+            kubernetes.io/metadata.name: ingress-gateway
         podSelector:
-          app.kubernetes.io/name: envoy
+          matchLabels:
+            app.kubernetes.io/name: envoy
     additionalEgress:
       - to:
           - ipBlock:
@@ -910,7 +914,8 @@ spec:
   networkPolicy:
     ingress:
       - namespaceSelector:
-          kubernetes.io/metadata.name: openstack
+          matchLabels:
+            kubernetes.io/metadata.name: openstack
 ```
 
 The operator-managed NetworkPolicy allows ingress from:

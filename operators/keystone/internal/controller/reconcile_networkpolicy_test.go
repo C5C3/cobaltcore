@@ -86,7 +86,7 @@ func TestBuildKeystoneNetworkPolicy_NameAndNamespace(t *testing.T) {
 	ks := npTestKeystone()
 	ks.Spec.NetworkPolicy = &keystonev1alpha1.NetworkPolicySpec{
 		Ingress: []keystonev1alpha1.NetworkPolicyIngressSource{
-			{NamespaceSelector: map[string]string{"kubernetes.io/metadata.name": "openstack"}},
+			{NamespaceSelector: metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": "openstack"}}},
 		},
 	}
 
@@ -101,7 +101,7 @@ func TestBuildKeystoneNetworkPolicy_Labels(t *testing.T) {
 	ks := npTestKeystone()
 	ks.Spec.NetworkPolicy = &keystonev1alpha1.NetworkPolicySpec{
 		Ingress: []keystonev1alpha1.NetworkPolicyIngressSource{
-			{NamespaceSelector: map[string]string{"kubernetes.io/metadata.name": "openstack"}},
+			{NamespaceSelector: metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": "openstack"}}},
 		},
 	}
 
@@ -117,7 +117,7 @@ func TestBuildKeystoneNetworkPolicy_PodSelector(t *testing.T) {
 	ks := npTestKeystone()
 	ks.Spec.NetworkPolicy = &keystonev1alpha1.NetworkPolicySpec{
 		Ingress: []keystonev1alpha1.NetworkPolicyIngressSource{
-			{NamespaceSelector: map[string]string{"kubernetes.io/metadata.name": "openstack"}},
+			{NamespaceSelector: metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": "openstack"}}},
 		},
 	}
 
@@ -133,7 +133,7 @@ func TestBuildKeystoneNetworkPolicy_PolicyTypes(t *testing.T) {
 	ks := npTestKeystone()
 	ks.Spec.NetworkPolicy = &keystonev1alpha1.NetworkPolicySpec{
 		Ingress: []keystonev1alpha1.NetworkPolicyIngressSource{
-			{NamespaceSelector: map[string]string{"kubernetes.io/metadata.name": "openstack"}},
+			{NamespaceSelector: metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": "openstack"}}},
 		},
 	}
 
@@ -150,7 +150,7 @@ func TestBuildKeystoneNetworkPolicy_IngressRules_SingleSource(t *testing.T) {
 	ks := npTestKeystone()
 	ks.Spec.NetworkPolicy = &keystonev1alpha1.NetworkPolicySpec{
 		Ingress: []keystonev1alpha1.NetworkPolicyIngressSource{
-			{NamespaceSelector: map[string]string{"kubernetes.io/metadata.name": "openstack"}},
+			{NamespaceSelector: metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": "openstack"}}},
 		},
 	}
 
@@ -175,11 +175,11 @@ func TestBuildKeystoneNetworkPolicy_IngressRules_MultipleSources_WithPodSelector
 	ks.Spec.NetworkPolicy = &keystonev1alpha1.NetworkPolicySpec{
 		Ingress: []keystonev1alpha1.NetworkPolicyIngressSource{
 			{
-				NamespaceSelector: map[string]string{"kubernetes.io/metadata.name": "openstack"},
-				PodSelector:       map[string]string{"app": "horizon"},
+				NamespaceSelector: metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": "openstack"}},
+				PodSelector:       &metav1.LabelSelector{MatchLabels: map[string]string{"app": "horizon"}},
 			},
 			{
-				NamespaceSelector: map[string]string{"kubernetes.io/metadata.name": "monitoring"},
+				NamespaceSelector: metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": "monitoring"}},
 			},
 		},
 	}
@@ -203,6 +203,51 @@ func TestBuildKeystoneNetworkPolicy_IngressRules_MultipleSources_WithPodSelector
 		HaveKeyWithValue("kubernetes.io/metadata.name", "monitoring"),
 	)
 	g.Expect(np.Spec.Ingress[0].From[1].PodSelector).To(BeNil())
+}
+
+// TestBuildKeystoneNetworkPolicy_IngressRules_MatchExpressions verifies that a
+// set-based matchExpressions selector — expressible only because the ingress
+// source selectors are now full metav1.LabelSelectors — is carried through to
+// the rendered NetworkPolicy peer verbatim on both the namespace and pod
+// selectors.
+func TestBuildKeystoneNetworkPolicy_IngressRules_MatchExpressions(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := npTestKeystone()
+	ks.Spec.NetworkPolicy = &keystonev1alpha1.NetworkPolicySpec{
+		Ingress: []keystonev1alpha1.NetworkPolicyIngressSource{
+			{
+				NamespaceSelector: metav1.LabelSelector{
+					MatchExpressions: []metav1.LabelSelectorRequirement{{
+						Key:      "team",
+						Operator: metav1.LabelSelectorOpIn,
+						Values:   []string{"platform", "identity"},
+					}},
+				},
+				PodSelector: &metav1.LabelSelector{
+					MatchExpressions: []metav1.LabelSelectorRequirement{{
+						Key:      "tier",
+						Operator: metav1.LabelSelectorOpExists,
+					}},
+				},
+			},
+		},
+	}
+
+	np := buildKeystoneNetworkPolicy(ks, "")
+
+	g.Expect(np.Spec.Ingress).To(HaveLen(1))
+	g.Expect(np.Spec.Ingress[0].From).To(HaveLen(1))
+	nsSel := np.Spec.Ingress[0].From[0].NamespaceSelector
+	g.Expect(nsSel).NotTo(BeNil())
+	g.Expect(nsSel.MatchExpressions).To(HaveLen(1))
+	g.Expect(nsSel.MatchExpressions[0].Key).To(Equal("team"))
+	g.Expect(nsSel.MatchExpressions[0].Operator).To(Equal(metav1.LabelSelectorOpIn))
+	g.Expect(nsSel.MatchExpressions[0].Values).To(ConsistOf("platform", "identity"))
+	podSel := np.Spec.Ingress[0].From[0].PodSelector
+	g.Expect(podSel).NotTo(BeNil())
+	g.Expect(podSel.MatchExpressions).To(HaveLen(1))
+	g.Expect(podSel.MatchExpressions[0].Key).To(Equal("tier"))
+	g.Expect(podSel.MatchExpressions[0].Operator).To(Equal(metav1.LabelSelectorOpExists))
 }
 
 // hasEgressPort reports whether any egress rule in the NetworkPolicy permits
@@ -230,7 +275,7 @@ func TestBuildKeystoneNetworkPolicy_AutoDerivedEgress_BrownfieldDBAndCache(t *te
 	// Brownfield mode: database.host + cache.servers, no ClusterRef.
 	ks.Spec.NetworkPolicy = &keystonev1alpha1.NetworkPolicySpec{
 		Ingress: []keystonev1alpha1.NetworkPolicyIngressSource{
-			{NamespaceSelector: map[string]string{"kubernetes.io/metadata.name": "openstack"}},
+			{NamespaceSelector: metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": "openstack"}}},
 		},
 	}
 
@@ -254,7 +299,7 @@ func TestBuildKeystoneNetworkPolicy_AutoDerivedEgress_ManagedDB(t *testing.T) {
 	ks.Spec.Database.Host = ""
 	ks.Spec.NetworkPolicy = &keystonev1alpha1.NetworkPolicySpec{
 		Ingress: []keystonev1alpha1.NetworkPolicyIngressSource{
-			{NamespaceSelector: map[string]string{"kubernetes.io/metadata.name": "openstack"}},
+			{NamespaceSelector: metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": "openstack"}}},
 		},
 	}
 
@@ -270,7 +315,7 @@ func TestBuildKeystoneNetworkPolicy_AutoDerivedEgress_ManagedCache(t *testing.T)
 	ks.Spec.Cache.Servers = nil
 	ks.Spec.NetworkPolicy = &keystonev1alpha1.NetworkPolicySpec{
 		Ingress: []keystonev1alpha1.NetworkPolicyIngressSource{
-			{NamespaceSelector: map[string]string{"kubernetes.io/metadata.name": "openstack"}},
+			{NamespaceSelector: metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": "openstack"}}},
 		},
 	}
 
@@ -288,7 +333,7 @@ func TestBuildKeystoneNetworkPolicy_AutoDerivedEgress_BothManaged(t *testing.T) 
 	ks.Spec.Cache.Servers = nil
 	ks.Spec.NetworkPolicy = &keystonev1alpha1.NetworkPolicySpec{
 		Ingress: []keystonev1alpha1.NetworkPolicyIngressSource{
-			{NamespaceSelector: map[string]string{"kubernetes.io/metadata.name": "openstack"}},
+			{NamespaceSelector: metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": "openstack"}}},
 		},
 	}
 
@@ -321,7 +366,7 @@ func TestBuildKeystoneNetworkPolicy_AutoDerivedEgress_APIServerAlways(t *testing
 			}
 			ks.Spec.NetworkPolicy = &keystonev1alpha1.NetworkPolicySpec{
 				Ingress: []keystonev1alpha1.NetworkPolicyIngressSource{
-					{NamespaceSelector: map[string]string{"kubernetes.io/metadata.name": "openstack"}},
+					{NamespaceSelector: metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": "openstack"}}},
 				},
 			}
 
@@ -354,7 +399,7 @@ func TestBuildKeystoneNetworkPolicy_AutoDerivedEgress_CustomDBPort(t *testing.T)
 			}
 			ks.Spec.NetworkPolicy = &keystonev1alpha1.NetworkPolicySpec{
 				Ingress: []keystonev1alpha1.NetworkPolicyIngressSource{
-					{NamespaceSelector: map[string]string{"kubernetes.io/metadata.name": "openstack"}},
+					{NamespaceSelector: metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": "openstack"}}},
 				},
 			}
 
@@ -376,7 +421,7 @@ func TestBuildKeystoneNetworkPolicy_AutoDerivedEgress_BrownfieldCachePort(t *tes
 	ks.Spec.Cache.Servers = []string{"mc:11212"}
 	ks.Spec.NetworkPolicy = &keystonev1alpha1.NetworkPolicySpec{
 		Ingress: []keystonev1alpha1.NetworkPolicyIngressSource{
-			{NamespaceSelector: map[string]string{"kubernetes.io/metadata.name": "openstack"}},
+			{NamespaceSelector: metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": "openstack"}}},
 		},
 	}
 
@@ -396,7 +441,7 @@ func TestBuildKeystoneNetworkPolicy_AutoDerivedEgress_NoCacheConfigured(t *testi
 	ks.Spec.Cache.Servers = nil
 	ks.Spec.NetworkPolicy = &keystonev1alpha1.NetworkPolicySpec{
 		Ingress: []keystonev1alpha1.NetworkPolicyIngressSource{
-			{NamespaceSelector: map[string]string{"kubernetes.io/metadata.name": "openstack"}},
+			{NamespaceSelector: metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": "openstack"}}},
 		},
 	}
 
@@ -454,7 +499,7 @@ func TestBuildKeystoneNetworkPolicy_GatewayNil_NoExtraIngressPeer(t *testing.T) 
 	ks := npTestKeystone()
 	ks.Spec.NetworkPolicy = &keystonev1alpha1.NetworkPolicySpec{
 		Ingress: []keystonev1alpha1.NetworkPolicyIngressSource{
-			{NamespaceSelector: map[string]string{"kubernetes.io/metadata.name": "openstack"}},
+			{NamespaceSelector: metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": "openstack"}}},
 		},
 	}
 	// Gateway is nil — no extra peer should be appended.
@@ -479,7 +524,7 @@ func TestBuildKeystoneNetworkPolicy_GatewaySet_AppendsIngressPeerForGatewayNames
 	ks := npTestKeystone()
 	ks.Spec.NetworkPolicy = &keystonev1alpha1.NetworkPolicySpec{
 		Ingress: []keystonev1alpha1.NetworkPolicyIngressSource{
-			{NamespaceSelector: map[string]string{"kubernetes.io/metadata.name": "openstack"}},
+			{NamespaceSelector: metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": "openstack"}}},
 		},
 	}
 	ks.Spec.Gateway = &keystonev1alpha1.GatewaySpec{
@@ -525,7 +570,7 @@ func TestBuildKeystoneNetworkPolicy_GatewaySet_EmptyParentNamespace_UsesKeystone
 	ks.Namespace = "keystone-ns"
 	ks.Spec.NetworkPolicy = &keystonev1alpha1.NetworkPolicySpec{
 		Ingress: []keystonev1alpha1.NetworkPolicyIngressSource{
-			{NamespaceSelector: map[string]string{"kubernetes.io/metadata.name": "openstack"}},
+			{NamespaceSelector: metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": "openstack"}}},
 		},
 	}
 	ks.Spec.Gateway = &keystonev1alpha1.GatewaySpec{
@@ -570,7 +615,7 @@ func TestBuildKeystoneNetworkPolicy_OperatorNamespaceIngressPeer(t *testing.T) {
 	ks := npTestKeystone()
 	ks.Spec.NetworkPolicy = &keystonev1alpha1.NetworkPolicySpec{
 		Ingress: []keystonev1alpha1.NetworkPolicyIngressSource{
-			{NamespaceSelector: map[string]string{"kubernetes.io/metadata.name": "openstack"}},
+			{NamespaceSelector: metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": "openstack"}}},
 		},
 	}
 
@@ -592,7 +637,7 @@ func TestBuildKeystoneNetworkPolicy_EmptyOperatorNamespace_NoExtraPeer(t *testin
 	ks := npTestKeystone()
 	ks.Spec.NetworkPolicy = &keystonev1alpha1.NetworkPolicySpec{
 		Ingress: []keystonev1alpha1.NetworkPolicyIngressSource{
-			{NamespaceSelector: map[string]string{"kubernetes.io/metadata.name": "openstack"}},
+			{NamespaceSelector: metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": "openstack"}}},
 		},
 	}
 
@@ -611,7 +656,7 @@ func TestBuildKeystoneNetworkPolicy_GatewayAndOperatorNamespacePeers(t *testing.
 	ks := npTestKeystone()
 	ks.Spec.NetworkPolicy = &keystonev1alpha1.NetworkPolicySpec{
 		Ingress: []keystonev1alpha1.NetworkPolicyIngressSource{
-			{NamespaceSelector: map[string]string{"kubernetes.io/metadata.name": "openstack"}},
+			{NamespaceSelector: metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": "openstack"}}},
 		},
 	}
 	ks.Spec.Gateway = &keystonev1alpha1.GatewaySpec{
@@ -638,7 +683,7 @@ func TestReconcileNetworkPolicy_OperatorNamespaceWiredThrough(t *testing.T) {
 	ks := npTestKeystone()
 	ks.Spec.NetworkPolicy = &keystonev1alpha1.NetworkPolicySpec{
 		Ingress: []keystonev1alpha1.NetworkPolicyIngressSource{
-			{NamespaceSelector: map[string]string{"kubernetes.io/metadata.name": "openstack"}},
+			{NamespaceSelector: metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": "openstack"}}},
 		},
 	}
 	r := newNPTestReconciler(s, ks)
@@ -699,7 +744,7 @@ func TestBuildKeystoneNetworkPolicy_AdditionalEgress(t *testing.T) {
 	tcp := corev1.ProtocolTCP
 	ks.Spec.NetworkPolicy = &keystonev1alpha1.NetworkPolicySpec{
 		Ingress: []keystonev1alpha1.NetworkPolicyIngressSource{
-			{NamespaceSelector: map[string]string{"kubernetes.io/metadata.name": "openstack"}},
+			{NamespaceSelector: metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": "openstack"}}},
 		},
 		AdditionalEgress: []networkingv1.NetworkPolicyEgressRule{
 			{
@@ -731,7 +776,7 @@ func TestReconcileNetworkPolicy_NetworkPolicySet_CreatesNetworkPolicy(t *testing
 	ks := npTestKeystone()
 	ks.Spec.NetworkPolicy = &keystonev1alpha1.NetworkPolicySpec{
 		Ingress: []keystonev1alpha1.NetworkPolicyIngressSource{
-			{NamespaceSelector: map[string]string{"kubernetes.io/metadata.name": "openstack"}},
+			{NamespaceSelector: metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": "openstack"}}},
 		},
 	}
 	r := newNPTestReconciler(s, ks)
@@ -764,7 +809,7 @@ func TestReconcileNetworkPolicy_ConditionObservedGeneration(t *testing.T) {
 	ks.Generation = 7
 	ks.Spec.NetworkPolicy = &keystonev1alpha1.NetworkPolicySpec{
 		Ingress: []keystonev1alpha1.NetworkPolicyIngressSource{
-			{NamespaceSelector: map[string]string{"kubernetes.io/metadata.name": "openstack"}},
+			{NamespaceSelector: metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": "openstack"}}},
 		},
 	}
 	r := newNPTestReconciler(s, ks)
@@ -795,7 +840,7 @@ func TestReconcileNetworkPolicy_NetworkPolicyEnabled_NetworkPolicyUpdated(t *tes
 	ks := npTestKeystone()
 	ks.Spec.NetworkPolicy = &keystonev1alpha1.NetworkPolicySpec{
 		Ingress: []keystonev1alpha1.NetworkPolicyIngressSource{
-			{NamespaceSelector: map[string]string{"kubernetes.io/metadata.name": "openstack"}},
+			{NamespaceSelector: metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": "openstack"}}},
 		},
 	}
 	r := newNPTestReconciler(s, ks)
@@ -809,7 +854,7 @@ func TestReconcileNetworkPolicy_NetworkPolicyEnabled_NetworkPolicyUpdated(t *tes
 	ks.Spec.NetworkPolicy.Ingress = append(
 		ks.Spec.NetworkPolicy.Ingress,
 		keystonev1alpha1.NetworkPolicyIngressSource{
-			NamespaceSelector: map[string]string{"kubernetes.io/metadata.name": "monitoring"},
+			NamespaceSelector: metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": "monitoring"}},
 		},
 	)
 	_, err = r.reconcileNetworkPolicy(ctx, ks)
@@ -835,7 +880,7 @@ func TestReconcileNetworkPolicy_NetworkPolicyEnabled_RepeatedReconcileIsIdempote
 	ks := npTestKeystone()
 	ks.Spec.NetworkPolicy = &keystonev1alpha1.NetworkPolicySpec{
 		Ingress: []keystonev1alpha1.NetworkPolicyIngressSource{
-			{NamespaceSelector: map[string]string{"kubernetes.io/metadata.name": "openstack"}},
+			{NamespaceSelector: metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": "openstack"}}},
 		},
 	}
 	r := newNPTestReconciler(s, ks)
@@ -946,7 +991,7 @@ func TestReconcileNetworkPolicy_EnsureError_Propagated(t *testing.T) {
 	ks := npTestKeystone()
 	ks.Spec.NetworkPolicy = &keystonev1alpha1.NetworkPolicySpec{
 		Ingress: []keystonev1alpha1.NetworkPolicyIngressSource{
-			{NamespaceSelector: map[string]string{"kubernetes.io/metadata.name": "openstack"}},
+			{NamespaceSelector: metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": "openstack"}}},
 		},
 	}
 
@@ -1025,7 +1070,7 @@ func TestBuildKeystoneNetworkPolicy_NameMatchesCR(t *testing.T) {
 	ks := npTestKeystone()
 	ks.Spec.NetworkPolicy = &keystonev1alpha1.NetworkPolicySpec{
 		Ingress: []keystonev1alpha1.NetworkPolicyIngressSource{
-			{NamespaceSelector: map[string]string{"kubernetes.io/metadata.name": "openstack"}},
+			{NamespaceSelector: metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": "openstack"}}},
 		},
 	}
 

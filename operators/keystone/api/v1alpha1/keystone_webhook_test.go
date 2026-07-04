@@ -1375,7 +1375,7 @@ func TestValidate_NetworkPolicy_WithIngress_IsValid(t *testing.T) {
 	k := validKeystone()
 	k.Spec.NetworkPolicy = &NetworkPolicySpec{
 		Ingress: []NetworkPolicyIngressSource{
-			{NamespaceSelector: map[string]string{"kubernetes.io/metadata.name": "envoy-gateway-system"}},
+			{NamespaceSelector: metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": "envoy-gateway-system"}}},
 		},
 	}
 

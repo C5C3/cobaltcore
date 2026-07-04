@@ -35,4 +35,5 @@ spec:
   networkPolicy:
     ingress:
     - namespaceSelector:
-        kubernetes.io/metadata.name: envoy-gateway-system
+        matchLabels:
+          kubernetes.io/metadata.name: envoy-gateway-system

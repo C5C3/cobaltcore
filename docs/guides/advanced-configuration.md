@@ -142,15 +142,17 @@ spec:
     ingress:
       # Allow the ingress gateway to reach the Keystone API
       - namespaceSelector:
-          kubernetes.io/metadata.name: envoy-gateway-system
+          matchLabels:
+            kubernetes.io/metadata.name: envoy-gateway-system
       # Allow the monitoring namespace to scrape metrics
       - namespaceSelector:
-          kubernetes.io/metadata.name: monitoring
+          matchLabels:
+            kubernetes.io/metadata.name: monitoring
 ```
 
 Each list entry requires a `namespaceSelector` and may narrow it with an optional
-`podSelector`. Both are plain label maps (`key: value` pairs), **not** full
-Kubernetes label selectors — there is no `matchLabels`/`matchExpressions` nesting.
+`podSelector`. Both are full Kubernetes `metav1.LabelSelector`s, so you can use
+`matchLabels` (as above) or set-based `matchExpressions`.
 Within one entry the two selectors AND together; multiple entries OR. Ingress is
 always restricted to TCP 5000 — there is no per-entry port configuration. When the
 list is non-empty, all other ingress is blocked by default — **including kubelet

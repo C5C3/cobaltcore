@@ -96,14 +96,10 @@ func buildKeystoneNetworkPolicy(keystone *keystonev1alpha1.Keystone, operatorNam
 	var peers []networkingv1.NetworkPolicyPeer
 	for _, src := range npSpec.Ingress {
 		peer := networkingv1.NetworkPolicyPeer{
-			NamespaceSelector: &metav1.LabelSelector{
-				MatchLabels: src.NamespaceSelector,
-			},
+			NamespaceSelector: src.NamespaceSelector.DeepCopy(),
 		}
-		if len(src.PodSelector) > 0 {
-			peer.PodSelector = &metav1.LabelSelector{
-				MatchLabels: src.PodSelector,
-			}
+		if src.PodSelector != nil {
+			peer.PodSelector = src.PodSelector.DeepCopy()
 		}
 		peers = append(peers, peer)
 	}

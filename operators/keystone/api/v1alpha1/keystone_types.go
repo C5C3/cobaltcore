@@ -314,15 +314,18 @@ type NetworkPolicySpec struct {
 type NetworkPolicyIngressSource struct {
 	// NamespaceSelector selects namespaces from which traffic is allowed.
 	// All pods in matching namespaces can reach Keystone on port 5000
-	// unless PodSelector further restricts the set.
-	NamespaceSelector map[string]string `json:"namespaceSelector"`
+	// unless PodSelector further restricts the set. It is a full
+	// metav1.LabelSelector, so set-based matchExpressions are supported in
+	// addition to matchLabels.
+	NamespaceSelector metav1.LabelSelector `json:"namespaceSelector"`
 
 	// PodSelector optionally restricts allowed traffic to pods matching
 	// these labels within the selected namespaces. When set, only pods
 	// matching both NamespaceSelector AND PodSelector can reach Keystone
-	// (AND logic within a single peer).
+	// (AND logic within a single peer). It is a full metav1.LabelSelector,
+	// so set-based matchExpressions are supported in addition to matchLabels.
 	// +optional
-	PodSelector map[string]string `json:"podSelector,omitempty"`
+	PodSelector *metav1.LabelSelector `json:"podSelector,omitempty"`
 }
 
 // UWSGISpec defines the uWSGI application server parameters.
