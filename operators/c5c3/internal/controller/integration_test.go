@@ -1198,9 +1198,10 @@ func TestIntegration_MultiControlPlane_DistinctAdminCredentialPaths(t *testing.T
 // DECISION mirroring the admin-credential multi-CP test, the two
 // ControlPlanes use DIFFERENT names (cp-a, cp-b) in DIFFERENT namespaces (the
 // validating webhook enforces one ControlPlane per namespace), so the CRs MUST live
-// in separate namespaces. The per-tenant creds path is scoped by BOTH Namespace
-// and Name (dbDynamicCredsPathFor), so either axis alone would distinguish them —
-// using both is the realistic deployment shape.
+// in separate namespaces. The per-tenant creds path is keyed on the Namespace
+// ALONE (dbDynamicRoleFor): the one-ControlPlane-per-namespace contract makes the
+// namespace the unique tenant key, so distinct namespaces are what keep the two
+// engine paths distinct.
 func TestIntegration_MultiControlPlane_DistinctDBCredentialPaths(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)
@@ -1248,11 +1249,10 @@ func TestIntegration_MultiControlPlane_DistinctDBCredentialPaths(t *testing.T) {
 		"cp-b dynamic DB credential path must be the per-tenant engine path")
 	g.Expect(pathA).NotTo(Equal(pathB), "the two ControlPlanes' dynamic DB credential paths must be distinct")
 
-	// Each path is scoped by its own ControlPlane's Namespace AND Name.
+	// Each path is keyed on its own ControlPlane's Namespace (the tenant key —
+	// see dbDynamicRoleFor); the CR name is deliberately NOT part of the role.
 	g.Expect(pathA).To(ContainSubstring(cpA.Namespace), "cp-a path must contain cp-a's namespace")
-	g.Expect(pathA).To(ContainSubstring(cpA.Name), "cp-a path must contain cp-a's name")
 	g.Expect(pathB).To(ContainSubstring(cpB.Namespace), "cp-b path must contain cp-b's namespace")
-	g.Expect(pathB).To(ContainSubstring(cpB.Name), "cp-b path must contain cp-b's name")
 
 	// The generator-backed ExternalSecrets exist and carry no static Data refs.
 	esA := &esov1.ExternalSecret{}
