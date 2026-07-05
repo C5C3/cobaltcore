@@ -7,15 +7,11 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
-	"maps"
 	"net/url"
 
-	"github.com/robfig/cron/v3"
 	appsv1 "k8s.io/api/apps/v1"
-	schedulingv1 "k8s.io/api/scheduling/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -25,6 +21,7 @@ import (
 
 	"github.com/c5c3/forge/internal/common/policy"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
+	"github.com/c5c3/forge/internal/common/validation"
 )
 
 // Graceful-termination effective defaults.
@@ -303,36 +300,13 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 		))
 	}
 
-	// Defense-in-depth cache mutual-exclusivity check alongside the
-	// +kubebuilder:validation:XValidation CEL rule on KeystoneSpec.Cache.
-	if (k.Spec.Cache.ClusterRef != nil) == (len(k.Spec.Cache.Servers) > 0) {
-		allErrs = append(allErrs, field.Invalid(
-			specPath.Child("cache"),
-			k.Spec.Cache,
-			"exactly one of clusterRef or servers must be set",
-		))
-	}
-
-	// Defense-in-depth database mutual-exclusivity check alongside the
-	// +kubebuilder:validation:XValidation CEL rule on KeystoneSpec.Database.
-	if (k.Spec.Database.ClusterRef != nil) == (k.Spec.Database.Host != "") {
-		allErrs = append(allErrs, field.Invalid(
-			specPath.Child("database"),
-			k.Spec.Database,
-			"exactly one of clusterRef or host must be set",
-		))
-	}
-
-	// Defense-in-depth: CredentialsMode Dynamic (engine-issued credentials)
-	// requires managed mode (ClusterRef set), mirroring the second
-	// +kubebuilder:validation:XValidation CEL rule on the shared DatabaseSpec.
-	if k.Spec.Database.CredentialsMode == commonv1.CredentialsModeDynamic && k.Spec.Database.ClusterRef == nil {
-		allErrs = append(allErrs, field.Invalid(
-			specPath.Child("database", "credentialsMode"),
-			k.Spec.Database.CredentialsMode,
-			"credentialsMode Dynamic requires clusterRef (managed mode)",
-		))
-	}
+	// Defense-in-depth cache/database mutual-exclusivity and
+	// Dynamic-requires-clusterRef checks alongside the
+	// +kubebuilder:validation:XValidation CEL rules on the shared commonv1
+	// types, via the shared validators.
+	allErrs = append(allErrs, validation.CacheXOR(specPath.Child("cache"), &k.Spec.Cache)...)
+	allErrs = append(allErrs, validation.DatabaseXOR(specPath.Child("database"), &k.Spec.Database)...)
+	allErrs = append(allErrs, validation.DynamicCredentialsRequireClusterRef(specPath.Child("database"), &k.Spec.Database)...)
 
 	// Defense-in-depth database TLS validation alongside the
 	// +kubebuilder:validation:Enum marker on DatabaseTLSSpec.Mode and the
@@ -390,12 +364,10 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 			specPath.Child("fernet", "rotationSchedule"),
 			"rotationSchedule must be set; default is \"0 0 * * 0\"",
 		))
-	} else if _, err := cron.ParseStandard(k.Spec.Fernet.RotationSchedule); err != nil {
-		allErrs = append(allErrs, field.Invalid(
-			specPath.Child("fernet", "rotationSchedule"),
-			k.Spec.Fernet.RotationSchedule,
-			fmt.Sprintf("invalid cron expression: %v", err),
-		))
+	} else {
+		allErrs = append(allErrs, validation.CronSchedule(
+			specPath.Child("fernet", "rotationSchedule"), k.Spec.Fernet.RotationSchedule,
+		)...)
 	}
 
 	// Validate cron expression for credential key rotation schedule.
@@ -404,12 +376,10 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 			specPath.Child("credentialKeys", "rotationSchedule"),
 			"rotationSchedule must be set; default is \"0 0 * * 0\"",
 		))
-	} else if _, err := cron.ParseStandard(k.Spec.CredentialKeys.RotationSchedule); err != nil {
-		allErrs = append(allErrs, field.Invalid(
-			specPath.Child("credentialKeys", "rotationSchedule"),
-			k.Spec.CredentialKeys.RotationSchedule,
-			fmt.Sprintf("invalid cron expression: %v", err),
-		))
+	} else {
+		allErrs = append(allErrs, validation.CronSchedule(
+			specPath.Child("credentialKeys", "rotationSchedule"), k.Spec.CredentialKeys.RotationSchedule,
+		)...)
 	}
 
 	// Validate cron expression for trust flush schedule.
@@ -420,12 +390,10 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 				specPath.Child("trustFlush", "schedule"),
 				fmt.Sprintf("schedule must be set; default is %q", DefaultTrustFlushSchedule),
 			))
-		} else if _, err := cron.ParseStandard(k.Spec.TrustFlush.Schedule); err != nil {
-			allErrs = append(allErrs, field.Invalid(
-				specPath.Child("trustFlush", "schedule"),
-				k.Spec.TrustFlush.Schedule,
-				fmt.Sprintf("invalid cron expression: %v", err),
-			))
+		} else {
+			allErrs = append(allErrs, validation.CronSchedule(
+				specPath.Child("trustFlush", "schedule"), k.Spec.TrustFlush.Schedule,
+			)...)
 		}
 	}
 
@@ -445,12 +413,8 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 				prPath.Child("schedule"),
 				fmt.Sprintf("schedule must be set when passwordRotation is enabled; default is %q", DefaultPasswordRotationSchedule),
 			))
-		} else if _, err := cron.ParseStandard(pr.Schedule); err != nil {
-			allErrs = append(allErrs, field.Invalid(
-				prPath.Child("schedule"),
-				pr.Schedule,
-				fmt.Sprintf("invalid cron expression: %v", err),
-			))
+		} else {
+			allErrs = append(allErrs, validation.CronSchedule(prPath.Child("schedule"), pr.Schedule)...)
 		}
 		if k.Spec.Bootstrap.AdminPasswordSecretRef.Name == "" {
 			allErrs = append(allErrs, field.Required(
@@ -822,57 +786,24 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 	}
 
 	// Validate that spec.priorityClassName references an existing
-	// scheduling.k8s.io/v1 PriorityClass. Catches typos at admission time.
-	if k.Spec.Deployment.PriorityClassName != nil && *k.Spec.Deployment.PriorityClassName != "" && w.Client != nil {
-		pc := &schedulingv1.PriorityClass{}
-		if err := w.Client.Get(ctx, types.NamespacedName{Name: *k.Spec.Deployment.PriorityClassName}, pc); err != nil {
-			if apierrors.IsNotFound(err) {
-				allErrs = append(allErrs, field.NotFound(
-					specPath.Child("deployment", "priorityClassName"),
-					*k.Spec.Deployment.PriorityClassName,
-				))
-			} else {
-				allErrs = append(allErrs, field.InternalError(
-					specPath.Child("deployment", "priorityClassName"),
-					fmt.Errorf("failed to look up PriorityClass: %w", err),
-				))
-			}
-		}
+	// scheduling.k8s.io/v1 PriorityClass (shared validator; catches typos at
+	// admission time, skipped when no lookup client is injected).
+	if k.Spec.Deployment.PriorityClassName != nil {
+		allErrs = append(allErrs, validation.PriorityClassExists(ctx, w.Client,
+			specPath.Child("deployment", "priorityClassName"), *k.Spec.Deployment.PriorityClassName)...)
 	}
 
 	// Validate that custom TopologySpreadConstraints use the correct
 	// LabelSelector matching the Deployment's selector labels.
 	if k.Spec.Deployment.TopologySpreadConstraints != nil {
-		expectedLabels := map[string]string{
-			LabelKeyName:     AppName,
-			LabelKeyInstance: k.Name,
-		}
-		tscPath := specPath.Child("deployment", "topologySpreadConstraints")
-		for i, tsc := range k.Spec.Deployment.TopologySpreadConstraints {
-			if tsc.LabelSelector == nil {
-				allErrs = append(allErrs, field.Required(
-					tscPath.Index(i).Child("labelSelector"),
-					"labelSelector is required on each TopologySpreadConstraint",
-				))
-				continue
-			}
-			if !maps.Equal(tsc.LabelSelector.MatchLabels, expectedLabels) {
-				allErrs = append(allErrs, field.Invalid(
-					tscPath.Index(i).Child("labelSelector"),
-					tsc.LabelSelector.MatchLabels,
-					fmt.Sprintf("labelSelector.matchLabels must equal the Deployment selector labels %v", expectedLabels),
-				))
-			}
-			// Reject MatchExpressions to prevent selectors that widen
-			// or narrow beyond the Deployment's intent. Only exact matchLabels are allowed.
-			if len(tsc.LabelSelector.MatchExpressions) > 0 {
-				allErrs = append(allErrs, field.Invalid(
-					tscPath.Index(i).Child("labelSelector", "matchExpressions"),
-					tsc.LabelSelector.MatchExpressions,
-					"matchExpressions are not allowed; labelSelector must use matchLabels only",
-				))
-			}
-		}
+		allErrs = append(allErrs, validation.TopologySpreadSelector(
+			specPath.Child("deployment", "topologySpreadConstraints"),
+			k.Spec.Deployment.TopologySpreadConstraints,
+			map[string]string{
+				LabelKeyName:     AppName,
+				LabelKeyInstance: k.Name,
+			},
+		)...)
 	}
 
 	if len(allErrs) > 0 {

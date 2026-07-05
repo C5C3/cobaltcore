@@ -22,6 +22,7 @@ import (
 
 	"github.com/c5c3/forge/internal/common/policy"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
+	"github.com/c5c3/forge/internal/common/validation"
 )
 
 // ControlPlane defaulting constants. These are the single source of
@@ -264,27 +265,13 @@ func (w *ControlPlaneWebhook) validate(cp *ControlPlane) field.ErrorList {
 		))
 	}
 
-	// database must use exactly one of clusterRef or host (mirrors the
-	// keystone database XOR check / CEL rule).
+	// database must use exactly one of clusterRef or host, and CredentialsMode
+	// Dynamic (engine-issued credentials) requires managed mode (ClusterRef
+	// set) — the shared validators mirroring the CEL rules on the shared
+	// commonv1.DatabaseSpec.
 	db := cp.Spec.Infrastructure.Database
-	if (db.ClusterRef != nil) == (db.Host != "") {
-		allErrs = append(allErrs, field.Invalid(
-			specPath.Child("infrastructure", "database"),
-			db,
-			"exactly one of clusterRef or host must be set",
-		))
-	}
-
-	// CredentialsMode Dynamic (engine-issued credentials) requires managed mode
-	// (ClusterRef set), mirroring the second +kubebuilder:validation:XValidation
-	// CEL rule on the shared commonv1.DatabaseSpec.
-	if db.CredentialsMode == commonv1.CredentialsModeDynamic && db.ClusterRef == nil {
-		allErrs = append(allErrs, field.Invalid(
-			specPath.Child("infrastructure", "database", "credentialsMode"),
-			db.CredentialsMode,
-			"credentialsMode Dynamic requires clusterRef (managed mode)",
-		))
-	}
+	allErrs = append(allErrs, validation.DatabaseXOR(specPath.Child("infrastructure", "database"), &db)...)
+	allErrs = append(allErrs, validation.DynamicCredentialsRequireClusterRef(specPath.Child("infrastructure", "database"), &db)...)
 
 	// database.replicas must be 1 (standalone) or >=3 (a quorum-safe Galera
 	// cluster). Exactly 2 is rejected because the managed-mode MariaDB projection
@@ -304,16 +291,10 @@ func (w *ControlPlaneWebhook) validate(cp *ControlPlane) field.ErrorList {
 		))
 	}
 
-	// cache must use exactly one of clusterRef or servers (mirrors the
-	// keystone cache XOR check / CEL rule).
+	// cache must use exactly one of clusterRef or servers — the shared
+	// validator mirroring the CEL rule on the shared commonv1.CacheSpec.
 	cache := cp.Spec.Infrastructure.Cache
-	if (cache.ClusterRef != nil) == (len(cache.Servers) > 0) {
-		allErrs = append(allErrs, field.Invalid(
-			specPath.Child("infrastructure", "cache"),
-			cache,
-			"exactly one of clusterRef or servers must be set",
-		))
-	}
+	allErrs = append(allErrs, validation.CacheXOR(specPath.Child("infrastructure", "cache"), &cache)...)
 
 	// the K-ORC admin-credential password Secret reference is required —
 	// without it the reconciler cannot (re-)mint the admin application credential.
