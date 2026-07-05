@@ -1,0 +1,109 @@
+{
+  "uid": "horizon-operator",
+  "title": "Horizon Operator",
+  "tags": ["horizon", "operator", "c5c3"],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "refresh": "30s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Reconcile duration p50/p95/p99 per sub_reconciler",
+      "description": "p50/p95/p99 wall-clock duration of Horizon sub-reconciler invocations, derived from horizon_operator_reconcile_duration_seconds_bucket. p50 tracks the steady-state hot path; p99 surfaces the tail.",
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 5
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.50, sum by (le, sub_reconciler) (rate(horizon_operator_reconcile_duration_seconds_bucket[5m])))",
+          "legendFormat": "p50 {{sub_reconciler}}"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le, sub_reconciler) (rate(horizon_operator_reconcile_duration_seconds_bucket[5m])))",
+          "legendFormat": "p95 {{sub_reconciler}}"
+        },
+        {
+          "refId": "C",
+          "expr": "histogram_quantile(0.99, sum by (le, sub_reconciler) (rate(horizon_operator_reconcile_duration_seconds_bucket[5m])))",
+          "legendFormat": "p99 {{sub_reconciler}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Reconcile error rate per condition_type",
+      "description": "Rate of horizon_operator_reconcile_errors_total grouped by condition_type.",
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 5
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (condition_type) (rate(horizon_operator_reconcile_errors_total[5m]))",
+          "legendFormat": "{{condition_type}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "End-to-end reconcile duration (controller-runtime)",
+      "description": "p50/p95/p99 of controller_runtime_reconcile_time_seconds_bucket for the horizon controller. Unlike horizon_operator_reconcile_duration_seconds (which samples only the sub-reconcilers), this built-in histogram covers the whole Reconcile call — orchestration, status update, and watch handling — so it is the SLO signal for end-to-end reconcile latency.",
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 9 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 5
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(controller_runtime_reconcile_time_seconds_bucket{controller=\"horizon\"}[5m])))",
+          "legendFormat": "p50"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(controller_runtime_reconcile_time_seconds_bucket{controller=\"horizon\"}[5m])))",
+          "legendFormat": "p95"
+        },
+        {
+          "refId": "C",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(controller_runtime_reconcile_time_seconds_bucket{controller=\"horizon\"}[5m])))",
+          "legendFormat": "p99"
+        }
+      ]
+    }
+  ]
+}
