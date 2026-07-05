@@ -972,7 +972,7 @@ Quick Start (Step 4a). The `ResourceSet` renders two sibling resources — an
 | Name | `flux-web` |
 | Namespace | `flux-system` |
 | Chart URL | `oci://ghcr.io/controlplaneio-fluxcd/charts/flux-operator` |
-| Version pin (input) | `0.52.x` — SemVer range locked to the minor track of `FLUX_OPERATOR_VERSION` in `hack/deploy-infra.sh` |
+| Version pin (input) | `0.53.x` — SemVer range locked to the minor track of `FLUX_OPERATOR_VERSION` in `hack/deploy-infra.sh` |
 
 **Helm values on the nested `HelmRelease`:**
 
