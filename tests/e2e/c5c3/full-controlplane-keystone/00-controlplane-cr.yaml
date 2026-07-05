@@ -70,6 +70,16 @@ spec:
   services:
     keystone:
       replicas: 1
+    # Horizon: single dashboard replica; the secretKeyRef override points at
+    # the per-CP ExternalSecret this suite applies
+    # (02-horizon-secret-key-externalsecret.yaml) — the documented
+    # multi-ControlPlane path, since the kind shim Secret is pinned to the
+    # default identity.
+    horizon:
+      replicas: 1
+      secretKeyRef:
+        name: controlplane-keystone-horizon-secret-key
+        key: secret-key
   globalPolicyOverrides:
     rules:
       "identity:list_users": "role:admin"

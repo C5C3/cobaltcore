@@ -116,6 +116,7 @@ spec:
           CP_NS=openstack
           CP_NAME=controlplane-keystone
           KEYSTONE_CR="${CP_NAME}-keystone"
+          HORIZON_CR="${CP_NAME}-horizon"
           AC_NAME="${CP_NAME}-admin-app-credential"
           PUSH_SECRET="${CP_NAME}-admin-app-credential-backup"
           SVC_CR="${CP_NAME}-identity-service"
@@ -154,6 +155,7 @@ spec:
           for crd in \
             controlplanes.c5c3.io \
             keystones.keystone.openstack.c5c3.io \
+            horizons.horizon.openstack.c5c3.io \
             applicationcredentials.openstack.k-orc.cloud \
             services.openstack.k-orc.cloud \
             endpoints.openstack.k-orc.cloud \
@@ -232,6 +234,7 @@ spec:
 
           # Apply the ControlPlane CR now that the CRD presence guard has passed.
           # Chainsaw runs scripts with the test directory as CWD.
+          kubectl apply -f 02-horizon-secret-key-externalsecret.yaml
           kubectl apply -f 00-controlplane-cr.yaml
 
           # ── Link 1: Infrastructure (MariaDB + Memcached, owned) ────────────
@@ -307,6 +310,20 @@ spec:
             "$(kubectl get keystone "${KEYSTONE_CR}" -n "${CP_NS}" -o "jsonpath={.spec.policyOverrides.rules['identity:list_users']}")"
           assert_eq "Keystone CR owned by ControlPlane" "${CP_NAME}" "$(owner_of keystone "${KEYSTONE_CR}")"
 
+          # ── Link 2b: Horizon child (gated on KeystoneReady) ────────────────
+          wait_cp_condition HorizonReady 600
+          assert_eq "Horizon image tag derived from openStackRelease" "2025.2" \
+            "$(kubectl get horizon "${HORIZON_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.image.tag}')"
+          assert_eq "Horizon cache clusterRef wired to infra" "openstack-memcached" \
+            "$(kubectl get horizon "${HORIZON_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.cache.clusterRef.name}')"
+          assert_eq "Horizon keystoneEndpoint derived from the naming convention" \
+            "http://${KEYSTONE_CR}.${CP_NS}.svc.cluster.local:5000/v3" \
+            "$(kubectl get horizon "${HORIZON_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.keystoneEndpoint}')"
+          assert_eq "Horizon secretKeyRef overridden to the per-CP Secret" \
+            "controlplane-keystone-horizon-secret-key" \
+            "$(kubectl get horizon "${HORIZON_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.secretKeyRef.name}')"
+          assert_eq "Horizon CR owned by ControlPlane" "${CP_NAME}" "$(owner_of horizon "${HORIZON_CR}")"
+
           # ── Link 3: K-ORC ApplicationCredential (restricted:true, owned) ───
           wait_cp_condition KORCReady 600
           # restricted:true projects to K-ORC's spec.resource.unrestricted=false.
@@ -356,6 +373,16 @@ spec:
           wait_cp_condition Ready 300
           assert_eq "Aggregate Ready reason" "AllReady" \
             "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o "jsonpath={.status.conditions[?(@.type=='Ready')].reason}")"
+
+          # ── Link 6a: status.services[] reports both services ready ─────────
+          assert_eq "status.services[0] is keystone" "keystone" \
+            "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.status.services[0].name}')"
+          assert_eq "status.services[0] keystone ready" "true" \
+            "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.status.services[0].ready}')"
+          assert_eq "status.services[1] is horizon" "horizon" \
+            "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.status.services[1].name}')"
+          assert_eq "status.services[1] horizon ready" "true" \
+            "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.status.services[1].ready}')"
 
           # ── Link 6b: dynamic DB credential engine (no-static / revoke / iso) ─
           # Per-tenant role is keyed on the namespace alone (dbDynamicRoleFor /
