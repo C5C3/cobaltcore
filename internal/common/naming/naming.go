@@ -34,13 +34,3 @@ func SelectorLabels(appName, instanceName string) map[string]string {
 		LabelKeyInstance: instanceName,
 	}
 }
-
-// SubResourceName returns the canonical name for operator-managed
-// sub-resources (Deployment, HPA, Service, PodDisruptionBudget,
-// NetworkPolicy, HTTPRoute) of the given CR instance. Centralised here so
-// the naming convention is defined in one place. It returns the bare CR name
-// with no suffix — the historical `-api` suffix was dropped to align internal
-// Service DNS with the public hostname posture.
-func SubResourceName(instanceName string) string {
-	return instanceName
-}

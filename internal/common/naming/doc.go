@@ -13,7 +13,7 @@
 // by this package IS the cross-service endpoint contract. Consumers such as
 // the c5c3 ControlPlane operator derive service URLs by convention —
 // http://<name>.<namespace>.svc.cluster.local:<port> over the Service named
-// SubResourceName(<cr name>) — rather than reading the producing CR's
+// after the CR (its bare metadata.name) — rather than reading the producing CR's
 // status.endpoint. Keystone keeps publishing Status.Endpoint for human
 // consumers (kubectl printcolumns), but nothing machine-consumes it; a
 // status-based resolve helper plus cross-CR watch is deliberately NOT built

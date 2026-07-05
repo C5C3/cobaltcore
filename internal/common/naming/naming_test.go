@@ -37,12 +37,3 @@ func TestSelectorLabels_SubsetOfCommonLabels(t *testing.T) {
 	}
 	g.Expect(len(selector)).To(gomega.BeNumerically("<", len(common)))
 }
-
-func TestSubResourceName(t *testing.T) {
-	g := gomega.NewWithT(t)
-
-	g.Expect(SubResourceName("keystone-prod")).To(gomega.Equal("keystone-prod"))
-	// The empty instance name passes through unchanged — callers own CR-name
-	// validity (the apiserver guarantees a non-empty metadata.name).
-	g.Expect(SubResourceName("")).To(gomega.Equal(""))
-}
