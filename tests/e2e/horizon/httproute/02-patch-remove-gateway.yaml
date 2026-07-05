@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Patch: unset spec.gateway so the operator deletes the HTTPRoute.
+apiVersion: horizon.openstack.c5c3.io/v1alpha1
+kind: Horizon
+metadata:
+  name: horizon-httproute
+  namespace: openstack
+spec:
+  gateway: null

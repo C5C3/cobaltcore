@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Namespace with the restricted Pod Security Standards profile enforced.
+# The test opts out of Chainsaw's per-test namespace plumbing
+# (spec.namespace: "") so this labelled namespace is the one every pod is
+# admitted into.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: horizon-pss-restricted-test
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest

@@ -1,0 +1,144 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for happy-path Horizon deployment (2025.2 release).
+# Validates the full reconciliation cycle:
+#   - All 7 sub-conditions progress to True with expected reasons
+#   - Aggregate Ready=True with reason AllReady
+#   - Owned resources exist (Deployment, Service, PDB, ConfigMap)
+#   - The dashboard login page renders (HTTP 200) — this exercises Django
+#     URL routing, templates, and the offline-compression manifest without
+#     a live Keystone
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: horizon-basic-deployment
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply Horizon CR ───────────────────────────────────────────
+  - try:
+    - apply:
+        file: 00-horizon-cr.yaml
+  # ── Step 2: Assert all sub-conditions and Ready ────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: horizon.openstack.c5c3.io/v1alpha1
+          kind: Horizon
+          metadata:
+            name: horizon-basic
+            namespace: openstack
+          status:
+            (conditions[?type == 'SecretsReady']):
+            - status: "True"
+              reason: SecretsAvailable
+            (conditions[?type == 'ConfigReady']):
+            - status: "True"
+              reason: ConfigRendered
+            (conditions[?type == 'DeploymentReady']):
+            - status: "True"
+              reason: DeploymentReady
+            (conditions[?type == 'HorizonAPIReady']):
+            - status: "True"
+              reason: APIHealthy
+            (conditions[?type == 'HPAReady']):
+            - status: "True"
+              reason: HPANotRequired
+            (conditions[?type == 'NetworkPolicyReady']):
+            - status: "True"
+              reason: NetworkPolicyNotRequired
+            (conditions[?type == 'HTTPRouteReady']):
+            - status: "True"
+              reason: HTTPRouteNotRequired
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: |
+          echo "=== Horizon CR status ==="
+          kubectl get horizon horizon-basic -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n horizon-system -l app.kubernetes.io/name=horizon-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n horizon-system -l app.kubernetes.io/name=horizon-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Dashboard pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=horizon-basic -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 3: Assert Deployment, Service, and PDB ────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: horizon-basic
+            namespace: openstack
+          status:
+            (availableReplicas > `0`): true
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: horizon-basic
+            namespace: openstack
+          spec:
+            ports:
+            - port: 8080
+    - assert:
+        resource:
+          apiVersion: policy/v1
+          kind: PodDisruptionBudget
+          metadata:
+            name: horizon-basic
+            namespace: openstack
+            labels:
+              app.kubernetes.io/name: horizon
+              app.kubernetes.io/instance: horizon-basic
+              app.kubernetes.io/managed-by: horizon-operator
+          spec:
+            minAvailable: 1
+            selector:
+              matchLabels:
+                app.kubernetes.io/name: horizon
+                app.kubernetes.io/instance: horizon-basic
+  # ── Step 4: Assert the rendered settings ConfigMap exists ──────────────
+  - try:
+    - script:
+        content: |
+          kubectl get cm -n openstack -o name | grep horizon-basic-config-
+  # ── Step 5: Assert the login page renders over HTTP ────────────────────
+  # HTTP-level dashboard coverage: tempest-horizon is retired upstream, so
+  # the login-page fetch is the Chainsaw-level substitute for a tempest run.
+  - try:
+    - script:
+        timeout: 60s
+        content: |
+          kubectl run curl-test-horizon-basic -n $NAMESPACE --image=ghcr.io/c5c3/horizon:2025.2 --rm -i --restart=Never \
+            --command -- python3 -c "import urllib.request; r = urllib.request.urlopen('http://horizon-basic.openstack.svc:8080/auth/login/'); body = r.read().decode(); assert r.status == 200, r.status; assert 'static' in body, 'login page must reference pre-built static assets'; print('login page OK, %d bytes' % len(body))"
+    catch:
+    - script:
+        content: |
+          echo "=== Horizon CR status ==="
+          kubectl get horizon horizon-basic -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n horizon-system -l app.kubernetes.io/name=horizon-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n horizon-system -l app.kubernetes.io/name=horizon-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Dashboard pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=horizon-basic -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true

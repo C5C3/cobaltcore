@@ -1,0 +1,58 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the HealthCheck sub-reconciler.
+# Verifies the operator's HTTP probe of the dashboard login page drives
+# HorizonAPIReady and status.endpoint:
+#   - HorizonAPIReady=True with reason APIHealthy once the Deployment serves
+#   - status.endpoint carries the cluster-local URL (no gateway configured)
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: horizon-healthcheck
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply Horizon CR ───────────────────────────────────────────
+  - try:
+    - apply:
+        file: 00-horizon-cr.yaml
+  # ── Step 2: Assert HorizonAPIReady and the endpoint ────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: horizon.openstack.c5c3.io/v1alpha1
+          kind: Horizon
+          metadata:
+            name: horizon-health
+            namespace: openstack
+          status:
+            endpoint: http://horizon-health.openstack.svc.cluster.local:8080/
+            (conditions[?type == 'DeploymentReady']):
+            - status: "True"
+            (conditions[?type == 'HorizonAPIReady']):
+            - status: "True"
+              reason: APIHealthy
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: |
+          echo "=== Horizon CR status ==="
+          kubectl get horizon horizon-health -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n horizon-system -l app.kubernetes.io/name=horizon-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n horizon-system -l app.kubernetes.io/name=horizon-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Dashboard pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=horizon-health -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true

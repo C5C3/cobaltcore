@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.keystoneEndpoint with a non-http(s) scheme violates the CRD pattern.
+apiVersion: horizon.openstack.c5c3.io/v1alpha1
+kind: Horizon
+metadata:
+  name: horizon-invalid-endpoint
+  namespace: openstack
+spec:
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/horizon
+    tag: "2025.2"
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: ldap://keystone.openstack.svc:389
+  secretKeyRef:
+    name: horizon-secret-key
+    key: secret-key

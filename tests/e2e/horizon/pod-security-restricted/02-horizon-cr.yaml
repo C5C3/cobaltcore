@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Horizon CR under the restricted PSS namespace. Brownfield cache mode:
+# Cache.ClusterRef is namespace-local and cross-namespace lookup is not
+# supported, so a CR in horizon-pss-restricted-test cannot reach
+# openstack/openstack-memcached through clusterRef. The memcached Service
+# in openstack is addressed directly instead.
+apiVersion: horizon.openstack.c5c3.io/v1alpha1
+kind: Horizon
+metadata:
+  name: horizon-pss
+  namespace: horizon-pss-restricted-test
+spec:
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/horizon
+    tag: "2025.2"
+  cache:
+    servers:
+    - openstack-memcached.openstack.svc.cluster.local:11211
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  secretKeyRef:
+    name: horizon-secret-key
+    key: secret-key

@@ -379,8 +379,10 @@ helm-package:
 verify-invalid-cr-fixtures:
 	@echo "Checking invalid-CR fixture drift..."
 	@python3 tests/e2e/keystone/invalid-cr/_generate.py --check
+	@python3 tests/e2e/horizon/invalid-cr/_generate.py --check
 	@echo "Running invalid-CR fixture unit tests..."
 	@python3 tests/e2e/keystone/invalid-cr/test_generate.py
+	@python3 tests/e2e/horizon/invalid-cr/test_generate.py
 
 .PHONY: check-feature-ids
 # check-feature-ids fails if any internal feature / requirement ID (CC-NNNN or

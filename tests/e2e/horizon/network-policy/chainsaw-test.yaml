@@ -1,0 +1,130 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the NetworkPolicy sub-reconciler.
+#
+# SCOPE CAVEAT: the default CI CNI (kindnet) does NOT enforce NetworkPolicy,
+# so this suite validates the rendered policy object (ingress port 8080,
+# auto-derived DNS/keystone/cache egress) and its lifecycle, not actual
+# traffic enforcement — same scope as the keystone network-policy suite.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: horizon-network-policy
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply Horizon CR with networkPolicy ────────────────────────
+  - try:
+    - apply:
+        file: 00-horizon-cr.yaml
+  # ── Step 2: Assert NetworkPolicy created with the expected rules ───────
+  - try:
+    - assert:
+        resource:
+          apiVersion: horizon.openstack.c5c3.io/v1alpha1
+          kind: Horizon
+          metadata:
+            name: horizon-netpol
+            namespace: openstack
+          status:
+            (conditions[?type == 'NetworkPolicyReady']):
+            - status: "True"
+              reason: NetworkPolicyReady
+    - assert:
+        resource:
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: horizon-netpol
+            namespace: openstack
+          spec:
+            podSelector:
+              matchLabels:
+                app.kubernetes.io/name: horizon
+                app.kubernetes.io/instance: horizon-netpol
+            policyTypes:
+            - Ingress
+            - Egress
+            ingress:
+            - ports:
+              - protocol: TCP
+                port: 8080
+            # Auto-derived egress order is deterministic: DNS, keystone
+            # endpoint port (5000 from the URL), cache (11211 managed).
+            egress:
+            - ports:
+              - protocol: UDP
+                port: 53
+              - protocol: TCP
+                port: 53
+            - ports:
+              - protocol: TCP
+                port: 5000
+            - ports:
+              - protocol: TCP
+                port: 11211
+    catch:
+    - script:
+        content: |
+          echo "=== Horizon CR status ==="
+          kubectl get horizon horizon-netpol -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== HTTPRoute ==="
+          kubectl get httproute -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n horizon-system -l app.kubernetes.io/name=horizon-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n horizon-system -l app.kubernetes.io/name=horizon-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 3: Add a second ingress source and assert it lands ────────────
+  - try:
+    - patch:
+        file: 01-patch-update-ingress.yaml
+    - assert:
+        resource:
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: horizon-netpol
+            namespace: openstack
+          spec:
+            ingress:
+            - (length(from) >= `2`): true
+    catch:
+    - script:
+        content: |
+          echo "=== Horizon CR status ==="
+          kubectl get horizon horizon-netpol -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== HTTPRoute ==="
+          kubectl get httproute -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n horizon-system -l app.kubernetes.io/name=horizon-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n horizon-system -l app.kubernetes.io/name=horizon-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 4: Disable networkPolicy and assert deletion ──────────────────
+  - try:
+    - patch:
+        file: 02-patch-disable-networkpolicy.yaml
+    - assert:
+        resource:
+          apiVersion: horizon.openstack.c5c3.io/v1alpha1
+          kind: Horizon
+          metadata:
+            name: horizon-netpol
+            namespace: openstack
+          status:
+            (conditions[?type == 'NetworkPolicyReady']):
+            - status: "True"
+              reason: NetworkPolicyNotRequired
+    - script:
+        content: |
+          if kubectl get networkpolicy horizon-netpol -n $NAMESPACE 2>/dev/null; then
+            echo "FAIL: NetworkPolicy should have been deleted"
+            exit 1
+          fi
+          echo "PASS: NetworkPolicy correctly deleted"

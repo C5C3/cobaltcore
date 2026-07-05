@@ -1,0 +1,85 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for garbage collection on Horizon CR deletion.
+# Horizon deliberately carries NO finalizer: every owned resource is
+# namespace-scoped and reclaimed via ownerReferences. This suite deploys a
+# CR, waits for Ready=True, asserts no horizon finalizer was installed,
+# deletes the CR, and asserts all owned resources are gone within a bounded
+# deletion window.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: horizon-deletion-cleanup
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply Horizon CR and wait for Ready ────────────────────────
+  - try:
+    - apply:
+        file: 00-horizon-cr.yaml
+    - assert:
+        resource:
+          apiVersion: horizon.openstack.c5c3.io/v1alpha1
+          kind: Horizon
+          metadata:
+            name: horizon-cleanup
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: |
+          echo "=== Horizon CR status ==="
+          kubectl get horizon horizon-cleanup -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== HTTPRoute ==="
+          kubectl get httproute -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n horizon-system -l app.kubernetes.io/name=horizon-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n horizon-system -l app.kubernetes.io/name=horizon-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 2: Assert no horizon finalizer is installed ───────────────────
+  # Nil-safe: finalizers may be nil; the `|| `[]`` fallback keeps JMESPath's
+  # contains() from raising a non-retryable type error.
+  - try:
+    - assert:
+        resource:
+          apiVersion: horizon.openstack.c5c3.io/v1alpha1
+          kind: Horizon
+          metadata:
+            name: horizon-cleanup
+            namespace: openstack
+            (length(finalizers || `[]`) == `0`): true
+  # ── Step 3: Delete the CR and assert owned resources are gone ──────────
+  - try:
+    - delete:
+        ref:
+          apiVersion: horizon.openstack.c5c3.io/v1alpha1
+          kind: Horizon
+          name: horizon-cleanup
+          namespace: openstack
+    - script:
+        timeout: 4m
+        content: |
+          set -e
+          for i in $(seq 1 48); do
+            deploy=$(kubectl get deployment horizon-cleanup -n $NAMESPACE --ignore-not-found -o name)
+            svc=$(kubectl get service horizon-cleanup -n $NAMESPACE --ignore-not-found -o name)
+            pdb=$(kubectl get pdb horizon-cleanup -n $NAMESPACE --ignore-not-found -o name)
+            cms=$(kubectl get cm -n $NAMESPACE -o name | grep horizon-cleanup-config- || true)
+            if [ -z "$deploy" ] && [ -z "$svc" ] && [ -z "$pdb" ] && [ -z "$cms" ]; then
+              echo "PASS: all owned resources garbage-collected"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "FAIL: owned resources still present after deletion window"
+          kubectl get deployment,service,pdb,cm -n $NAMESPACE | grep horizon-cleanup || true
+          exit 1

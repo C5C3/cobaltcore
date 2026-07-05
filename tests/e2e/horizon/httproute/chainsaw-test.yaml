@@ -1,0 +1,159 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the optional HTTPRoute sub-reconciler.
+# Verifies the full lifecycle of spec.gateway driven by the Horizon CR:
+#   - Apply a Horizon CR with spec.gateway and assert the HTTPRoute is
+#     created with the expected ParentRef/Hostname/BackendRef (port 8080)
+#     and that status.endpoint flips to the public gateway URL.
+#   - Before any Gateway controller reports Accepted, HTTPRouteReady is
+#     False with reason HTTPRouteNotAccepted.
+#   - Simulate a Gateway controller accepting the route by patching the
+#     parent status, then assert HTTPRouteReady flips True.
+#   - Unset spec.gateway and assert the HTTPRoute is deleted and
+#     HTTPRouteReady is True with reason HTTPRouteNotRequired.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: horizon-httproute
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Install HTTPRoute CRD ──────────────────────────────────────
+  # The E2E cluster may not install a Gateway controller; apply the minimal
+  # CRD so the operator can create HTTPRoute objects and the test can patch
+  # their status.
+  - try:
+    - apply:
+        file: 00-httproute-crd.yaml
+  # ── Step 2: Apply Horizon CR with spec.gateway ─────────────────────────
+  - try:
+    - apply:
+        file: 01-horizon-cr.yaml
+  # ── Step 3: Assert HTTPRoute created with the expected spec ────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: gateway.networking.k8s.io/v1
+          kind: HTTPRoute
+          metadata:
+            name: horizon-httproute
+            namespace: openstack
+            labels:
+              app.kubernetes.io/name: horizon
+              app.kubernetes.io/instance: horizon-httproute
+              app.kubernetes.io/managed-by: horizon-operator
+          spec:
+            parentRefs:
+            - name: not-a-real-gateway
+            hostnames:
+            - horizon.e2e.example.com
+            rules:
+            - matches:
+              - path:
+                  type: PathPrefix
+                  value: /
+              backendRefs:
+              - name: horizon-httproute
+                port: 8080
+    catch:
+    - script:
+        content: |
+          echo "=== Horizon CR status ==="
+          kubectl get horizon horizon-httproute -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== HTTPRoute ==="
+          kubectl get httproute -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n horizon-system -l app.kubernetes.io/name=horizon-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n horizon-system -l app.kubernetes.io/name=horizon-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 4: Assert gateway-aware status.endpoint ───────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: horizon.openstack.c5c3.io/v1alpha1
+          kind: Horizon
+          metadata:
+            name: horizon-httproute
+            namespace: openstack
+          status:
+            endpoint: https://horizon.e2e.example.com/
+            (conditions[?type == 'HTTPRouteReady']):
+            - status: "False"
+              reason: HTTPRouteNotAccepted
+  # ── Step 5: Simulate Gateway controller accepting the HTTPRoute ────────
+  - try:
+    - script:
+        content: |
+          kubectl patch httproute horizon-httproute -n $NAMESPACE \
+            --subresource=status --type=merge -p '{
+              "status": {
+                "parents": [{
+                  "parentRef": {"name": "not-a-real-gateway"},
+                  "controllerName": "e2e.example.com/fake-gateway-controller",
+                  "conditions": [{
+                    "type": "Accepted",
+                    "status": "True",
+                    "reason": "Accepted",
+                    "message": "Simulated Accepted condition for E2E test",
+                    "lastTransitionTime": "2026-07-05T00:00:00Z",
+                    "observedGeneration": 1
+                  }]
+                }]
+              }
+            }'
+  # ── Step 6: Assert HTTPRouteReady=True/HTTPRouteAccepted ───────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: horizon.openstack.c5c3.io/v1alpha1
+          kind: Horizon
+          metadata:
+            name: horizon-httproute
+            namespace: openstack
+          status:
+            (conditions[?type == 'HTTPRouteReady']):
+            - status: "True"
+              reason: HTTPRouteAccepted
+    catch:
+    - script:
+        content: |
+          echo "=== Horizon CR status ==="
+          kubectl get horizon horizon-httproute -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== HTTPRoute ==="
+          kubectl get httproute -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n horizon-system -l app.kubernetes.io/name=horizon-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n horizon-system -l app.kubernetes.io/name=horizon-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 7: Unset spec.gateway ─────────────────────────────────────────
+  - try:
+    - patch:
+        file: 02-patch-remove-gateway.yaml
+  # ── Step 8: Assert HTTPRoute deleted and NotRequired ───────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: horizon.openstack.c5c3.io/v1alpha1
+          kind: Horizon
+          metadata:
+            name: horizon-httproute
+            namespace: openstack
+          status:
+            (conditions[?type == 'HTTPRouteReady']):
+            - status: "True"
+              reason: HTTPRouteNotRequired
+    - script:
+        content: |
+          # Verify HTTPRoute no longer exists.
+          if kubectl get httproute horizon-httproute -n $NAMESPACE 2>/dev/null; then
+            echo "FAIL: HTTPRoute should have been deleted"
+            exit 1
+          fi
+          echo "PASS: HTTPRoute correctly deleted"

@@ -1,0 +1,76 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for Horizon reconciling under restricted PodSecurity.
+#
+# Opt-out from the per-test namespace (spec.namespace: ""): Chainsaw's
+# plumbing creates a chainsaw-* namespace WITHOUT PSS labels, so this test
+# owns its namespace (00-namespace.yaml, enforce: restricted) — the same
+# mechanism as tests/e2e/keystone/pod-security-restricted/.
+#
+# The zero-PSS-violation event scan is the regression net: the parent
+# controller emits a FailedCreate event with the violation listed verbatim
+# when PSS rejects a Pod, so a future builder change that drops
+# RestrictedSecurityContext() fails here loudly.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: horizon-pod-security-restricted
+spec:
+  namespace: ""
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Create the restricted namespace and the SECRET_KEY sync ────
+  - try:
+    - apply:
+        file: 00-namespace.yaml
+    - apply:
+        file: 01-externalsecret.yaml
+  # ── Step 2: Apply the Horizon CR and wait for Ready under PSS ──────────
+  - try:
+    - apply:
+        file: 02-horizon-cr.yaml
+    - assert:
+        resource:
+          apiVersion: horizon.openstack.c5c3.io/v1alpha1
+          kind: Horizon
+          metadata:
+            name: horizon-pss
+            namespace: horizon-pss-restricted-test
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: |
+          echo "=== Horizon CR status ==="
+          kubectl get horizon horizon-pss -n horizon-pss-restricted-test -o yaml 2>&1 || true
+          echo "=== ExternalSecret / Secret ==="
+          kubectl get externalsecret,secret -n horizon-pss-restricted-test 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n horizon-system -l app.kubernetes.io/name=horizon-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n horizon-system -l app.kubernetes.io/name=horizon-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n horizon-pss-restricted-test --sort-by='.lastTimestamp' 2>&1 | tail -40 || true
+  # ── Step 3: Zero PSS-violation event scan ──────────────────────────────
+  - try:
+    - script:
+        content: |
+          violations=$(kubectl get events -n horizon-pss-restricted-test -o json 2>/dev/null \
+            | grep -c 'violates PodSecurity "restricted:latest"' || true)
+          if [ "$violations" != "0" ]; then
+            echo "FAIL: $violations PodSecurity violation event(s) found"
+            kubectl get events -n horizon-pss-restricted-test | grep -i podsecurity || true
+            exit 1
+          fi
+          echo "PASS: zero PodSecurity violation events"
+    # spec.namespace: "" opts out of Chainsaw cleanup for the namespace, so
+    # delete it explicitly to keep re-runs idempotent.
+    cleanup:
+    - script:
+        content: |
+          kubectl delete namespace horizon-pss-restricted-test --ignore-not-found --wait=false

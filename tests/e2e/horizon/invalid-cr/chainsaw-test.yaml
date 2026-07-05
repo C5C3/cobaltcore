@@ -1,0 +1,84 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E tests for Horizon CRD webhook + CEL validation rejection.
+# Pins the implemented CEL XValidation and webhook.validate() rejection
+# paths in operators/horizon/api/v1alpha1/ to a deterministic admission
+# failure. Each step applies an otherwise-valid Horizon CR with a single
+# aspect violating the rule under test, captures the admission $error, and
+# asserts the field-path plus message substring.
+#
+# All fixtures are generated from the single canonical scaffold in
+# `_generate.py` (mirroring tests/e2e/keystone/invalid-cr/). After editing
+# the scaffold or any per-fixture override, regenerate via:
+#   python3 tests/e2e/horizon/invalid-cr/_generate.py
+# CI runs `make verify-invalid-cr-fixtures`, which invokes
+# `_generate.py --check` (drift mode, both directions incl. orphans) and
+# `test_generate.py` (FIXTURES count + chainsaw-test.yaml cross-reference)
+# so any hand-edit to a generated fixture fails the build before the
+# cluster-bound e2e-operator job runs.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: horizon-invalid-cr
+spec:
+  steps:
+  # spec.image with both tag and digest must be rejected.
+  - try:
+    - apply:
+        file: 00-image-both-tag-digest.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'image')): true
+            (contains($error, 'exactly one of image.tag or image.digest')): true
+  # spec.keystoneEndpoint with a non-http(s) scheme must be rejected.
+  - try:
+    - apply:
+        file: 01-bad-keystone-endpoint.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'keystoneEndpoint')): true
+  # spec.cache with both clusterRef and servers must be rejected.
+  - try:
+    - apply:
+        file: 02-cache-both-modes.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'cache')): true
+            (contains($error, 'exactly one of clusterRef or servers')): true
+  # spec.secretKeyRef.name empty must be rejected.
+  - try:
+    - apply:
+        file: 03-empty-secret-key-name.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'secretKeyRef')): true
+  # spec.autoscaling.minReplicas above maxReplicas must be rejected.
+  - try:
+    - apply:
+        file: 04-autoscaling-min-above-max.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'minReplicas must not exceed maxReplicas')): true
+  # spec.gateway with an empty hostname must be rejected.
+  - try:
+    - apply:
+        file: 05-gateway-empty-hostname.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'hostname')): true
+  # SECRET_KEY in spec.extraConfig must be rejected by the webhook.
+  - try:
+    - apply:
+        file: 06-secret-key-in-extraconfig.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'SECRET_KEY is managed via spec.secretKeyRef')): true

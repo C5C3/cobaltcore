@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Patch: scale the dashboard from 3 to 5 replicas.
+apiVersion: horizon.openstack.c5c3.io/v1alpha1
+kind: Horizon
+metadata:
+  name: horizon-scale
+  namespace: openstack
+spec:
+  deployment:
+    replicas: 5

@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Patch: scale the dashboard down to a single replica (PDB flips to
+# maxUnavailable=1 to avoid drain deadlock).
+apiVersion: horizon.openstack.c5c3.io/v1alpha1
+kind: Horizon
+metadata:
+  name: horizon-scale
+  namespace: openstack
+spec:
+  deployment:
+    replicas: 1

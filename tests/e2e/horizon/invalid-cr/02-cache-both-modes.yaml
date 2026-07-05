@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.cache with both clusterRef and servers violates the CacheSpec XOR CEL rule.
+apiVersion: horizon.openstack.c5c3.io/v1alpha1
+kind: Horizon
+metadata:
+  name: horizon-invalid-cache-both
+  namespace: openstack
+spec:
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/horizon
+    tag: "2025.2"
+  cache:
+    clusterRef:
+      name: openstack-memcached
+    servers:
+    - memcached-0:11211
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  secretKeyRef:
+    name: horizon-secret-key
+    key: secret-key

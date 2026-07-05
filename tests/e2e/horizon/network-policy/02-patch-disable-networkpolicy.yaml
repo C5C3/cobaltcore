@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Patch: unset spec.networkPolicy so the operator deletes the NetworkPolicy.
+apiVersion: horizon.openstack.c5c3.io/v1alpha1
+kind: Horizon
+metadata:
+  name: horizon-netpol
+  namespace: openstack
+spec:
+  networkPolicy: null
