@@ -20,6 +20,7 @@ COPY go.work go.work.sum ./
 COPY internal/common/go.mod internal/common/go.sum ./internal/common/
 COPY operators/keystone/go.mod operators/keystone/go.sum ./operators/keystone/
 COPY operators/c5c3/go.mod operators/c5c3/go.sum ./operators/c5c3/
+COPY operators/horizon/go.mod operators/horizon/go.sum ./operators/horizon/
 
 RUN go mod download
 
@@ -29,6 +30,7 @@ RUN go mod download
 COPY internal/common/ ./internal/common/
 COPY operators/keystone/ ./operators/keystone/
 COPY operators/c5c3/ ./operators/c5c3/
+COPY operators/horizon/ ./operators/horizon/
 
 # Build the selected operator's static binary from its main.go.
 WORKDIR /workspace/operators/${OPERATOR}
