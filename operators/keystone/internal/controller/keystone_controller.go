@@ -15,7 +15,6 @@ import (
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
-	"golang.org/x/time/rate"
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	batchv1 "k8s.io/api/batch/v1"
@@ -29,19 +28,17 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
-	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	crcontroller "sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
+	"github.com/c5c3/forge/internal/common/bootstrap"
 	"github.com/c5c3/forge/internal/common/conditions"
 	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
@@ -157,8 +154,9 @@ type KeystoneReconciler struct {
 	// concurrently. It is threaded from the --max-concurrent-reconciles flag
 	// (see internal/common/bootstrap) and applied to the controller's
 	// controller.Options in SetupWithManager. A value <= 0 falls back to
-	// defaultMaxConcurrentReconciles via effectiveMaxConcurrentReconciles, so
-	// the zero value is safe for programmatically constructed reconcilers.
+	// bootstrap.DefaultMaxConcurrentReconciles inside
+	// bootstrap.ControllerOptions, so the zero value is safe for
+	// programmatically constructed reconcilers.
 	MaxConcurrentReconciles int
 
 	// healthProbeCache memoizes the last successful Keystone API health probe
@@ -711,34 +709,6 @@ func (r *KeystoneReconciler) reconcileParallelGroup(
 		instrumentSubReconciler, subs)
 }
 
-// effectiveMaxConcurrentReconciles returns the worker count to hand to
-// controller.Options.MaxConcurrentReconciles, falling back to
-// defaultMaxConcurrentReconciles when the field is unset (<= 0) so a
-// programmatically constructed reconciler still parallelises independent CRs.
-func (r *KeystoneReconciler) effectiveMaxConcurrentReconciles() int {
-	if r.MaxConcurrentReconciles > 0 {
-		return r.MaxConcurrentReconciles
-	}
-	return defaultMaxConcurrentReconciles
-}
-
-// keystoneRateLimiter builds the controller's workqueue rate limiter. It is the
-// same composition as workqueue.DefaultTypedControllerRateLimiter — a per-item
-// exponential failure limiter maxed against a 10 qps / 100 burst token bucket —
-// but with the per-item cap lowered from the controller-runtime default of
-// 1000s to rateLimiterMaxDelay (30s). The 1000s default is far too conservative
-// for an I/O-bound operator: a transiently failing CR would back off toward a
-// ~16-minute retry. Lowering only the per-item cap keeps the overall
-// 10 qps / 100-burst ceiling intact while bounding failure backoff to 30s.
-// Genuinely slow external waits (DB, bootstrap) use explicit RequeueAfter, which
-// enqueues via AddAfter and never touches this failure limiter.
-func keystoneRateLimiter() workqueue.TypedRateLimiter[reconcile.Request] {
-	return workqueue.NewTypedMaxOfRateLimiter(
-		workqueue.NewTypedItemExponentialFailureRateLimiter[reconcile.Request](rateLimiterBaseDelay, rateLimiterMaxDelay),
-		&workqueue.TypedBucketRateLimiter[reconcile.Request]{Limiter: rate.NewLimiter(rate.Limit(10), 100)},
-	)
-}
-
 // keystoneCRPredicate filters update events on the Keystone CR's own For(...)
 // watch so the controller is not re-woken by its own Status().Update writes.
 // It admits an update only on a spec change (GenerationChangedPredicate) or a
@@ -818,14 +788,12 @@ func (r *KeystoneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 
 	b := ctrl.NewControllerManagedBy(mgr).
-		// MaxConcurrentReconciles lets independent CRs reconcile in parallel
-		// instead of serialising at the controller-runtime default of 1; the
-		// tuned RateLimiter caps per-item failure backoff at 30s rather than the
-		// default 1000s (see keystoneRateLimiter).
-		WithOptions(crcontroller.Options{
-			MaxConcurrentReconciles: r.effectiveMaxConcurrentReconciles(),
-			RateLimiter:             keystoneRateLimiter(),
-		}).
+		// Shared controller options: MaxConcurrentReconciles lets independent
+		// CRs reconcile in parallel instead of serialising at the
+		// controller-runtime default of 1, and the tuned RateLimiter caps
+		// per-item failure backoff at 30s rather than the default 1000s (see
+		// bootstrap.ControllerOptions).
+		WithOptions(bootstrap.ControllerOptions(r.MaxConcurrentReconciles)).
 		// Filter the CR's own status-only updates so Status().Update does not
 		// re-wake the controller (see keystoneCRPredicate).
 		For(&keystonev1alpha1.Keystone{}, builder.WithPredicates(keystoneCRPredicate())).

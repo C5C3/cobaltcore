@@ -66,16 +66,13 @@ func main() {
 	if err := bootstrap.Run(bootstrap.ManagerConfig{
 		Scheme:           scheme,
 		LeaderElectionID: leaderElectionID,
-		// maxConcurrentReconciles is accepted for SetupFunc-signature symmetry
-		// with the keystone operator but not yet consumed: the ControlPlane and
-		// CredentialRotation controllers do not tune concurrency (issue #361 is
-		// scoped to the Keystone operator).
-		SetupFunc: func(mgr ctrl.Manager, webhooks bool, _ int) error {
+		SetupFunc: func(mgr ctrl.Manager, webhooks bool, maxConcurrentReconciles int) error {
 			// +kubebuilder:scaffold:builder — register controllers here
 			if err := (&controller.ControlPlaneReconciler{
-				Client:   mgr.GetClient(),
-				Scheme:   mgr.GetScheme(),
-				Recorder: mgr.GetEventRecorderFor("controlplane-controller"), //nolint:staticcheck // SA1019: reconciler consumes record.EventRecorder (old events API); GetEventRecorder returns the incompatible events/v1 type.
+				Client:                  mgr.GetClient(),
+				Scheme:                  mgr.GetScheme(),
+				Recorder:                mgr.GetEventRecorderFor("controlplane-controller"), //nolint:staticcheck // SA1019: reconciler consumes record.EventRecorder (old events API); GetEventRecorder returns the incompatible events/v1 type.
+				MaxConcurrentReconciles: maxConcurrentReconciles,
 			}).SetupWithManager(mgr); err != nil {
 				return err
 			}

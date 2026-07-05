@@ -49,13 +49,6 @@ type ManagerConfig struct {
 	SetupFunc func(mgr ctrl.Manager, webhooks bool, maxConcurrentReconciles int) error
 }
 
-// defaultMaxConcurrentReconciles is the default for the
-// --max-concurrent-reconciles flag. The controller-runtime default of 1
-// serialises reconciles across CRs; 2 lets a slow or flapping CR no longer
-// block every other CR while keeping the extra worker footprint modest for a
-// control-plane component.
-const defaultMaxConcurrentReconciles = 2
-
 // validate returns an error if required fields are missing.
 func (c *ManagerConfig) validate() error {
 	if c.Scheme == nil {
@@ -136,7 +129,7 @@ func parseRunOptions(cfg ManagerConfig, args []string) (runOptions, error) {
 			"Used for namespace-scoped deployments. "+
 			"Overrides ManagerConfig.Namespace when provided.")
 
-	fs.IntVar(&o.maxConcurrentReconciles, "max-concurrent-reconciles", defaultMaxConcurrentReconciles,
+	fs.IntVar(&o.maxConcurrentReconciles, "max-concurrent-reconciles", DefaultMaxConcurrentReconciles,
 		"Maximum number of reconciles that may run concurrently for a controller "+
 			"(controller-runtime MaxConcurrentReconciles). Applied by controllers "+
 			"that opt in; controllers that do not tune concurrency ignore it. "+

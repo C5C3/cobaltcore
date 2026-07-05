@@ -66,27 +66,6 @@ const (
 	// KeystoneAPIReady outage-detection SLO.
 	HealthCheckCacheTTL = 30 * time.Second
 
-	// defaultMaxConcurrentReconciles is the fallback worker count applied by
-	// effectiveMaxConcurrentReconciles when the reconciler's
-	// MaxConcurrentReconciles field is unset (<= 0). It matches the shared
-	// bootstrap default so a programmatically constructed reconciler (envtest,
-	// tests) still parallelises independent CRs instead of serialising at the
-	// controller-runtime default of 1.
-	defaultMaxConcurrentReconciles = 2
-
-	// rateLimiterBaseDelay is the initial per-item requeue delay of the
-	// controller's exponential failure rate limiter. It matches the
-	// controller-runtime default so a first failure retries after 5ms.
-	rateLimiterBaseDelay = 5 * time.Millisecond
-
-	// rateLimiterMaxDelay caps the per-item exponential backoff. The
-	// controller-runtime default of 1000s is far too conservative for an
-	// I/O-bound operator; capping at 30s keeps a persistently failing CR
-	// retrying on a bounded cadence. Genuinely slow external waits (DB,
-	// bootstrap) do NOT ride this limiter — they use explicit RequeueAfter,
-	// which enqueues via AddAfter and bypasses the failure backoff.
-	rateLimiterMaxDelay = 30 * time.Second
-
 	// OpenBaoAdoptionWaitTimeout bounds how long the OpenBao finalizer's Pass-0
 	// adoption gate blocks Keystone CR deletion while waiting for ESO to stamp
 	// its cleanup finalizer on a backup PushSecret. ESO adoption normally

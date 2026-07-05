@@ -28,6 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	"github.com/c5c3/forge/internal/common/bootstrap"
 	"github.com/c5c3/forge/internal/common/conditions"
 	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
@@ -89,6 +90,15 @@ type ControlPlaneReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
+
+	// MaxConcurrentReconciles bounds how many ControlPlane CRs reconcile
+	// concurrently. It is threaded from the --max-concurrent-reconciles flag
+	// (see internal/common/bootstrap) and applied to the controller's
+	// controller.Options in SetupWithManager. A value <= 0 falls back to
+	// bootstrap.DefaultMaxConcurrentReconciles inside
+	// bootstrap.ControllerOptions, so the zero value is safe for
+	// programmatically constructed reconcilers.
+	MaxConcurrentReconciles int
 }
 
 // +kubebuilder:rbac:groups=c5c3.io,resources=controlplanes,verbs=get;list;watch;create;update;patch;delete
@@ -469,6 +479,12 @@ func (r *ControlPlaneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	certificate.SetGroupVersionKind(certificateGVK)
 
 	return ctrl.NewControllerManagedBy(mgr).
+		// Shared controller options: MaxConcurrentReconciles lets independent
+		// CRs reconcile in parallel instead of serialising at the
+		// controller-runtime default of 1, and the tuned RateLimiter caps
+		// per-item failure backoff at 30s rather than the default 1000s (see
+		// bootstrap.ControllerOptions).
+		WithOptions(bootstrap.ControllerOptions(r.MaxConcurrentReconciles)).
 		For(&c5c3v1alpha1.ControlPlane{}).
 		Owns(&mariadbv1alpha1.MariaDB{}).
 		Owns(&keystonev1alpha1.Keystone{}).

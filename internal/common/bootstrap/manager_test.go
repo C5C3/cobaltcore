@@ -107,9 +107,9 @@ func TestParseRunOptions_defaults(t *testing.T) {
 		t.Fatalf("namespace = %q, want tenant-a (from cfg)", opts.namespace)
 	}
 	// The flag defaults to the shared default of 2.
-	if opts.maxConcurrentReconciles != defaultMaxConcurrentReconciles {
+	if opts.maxConcurrentReconciles != DefaultMaxConcurrentReconciles {
 		t.Fatalf("maxConcurrentReconciles = %d, want %d (shared default)",
-			opts.maxConcurrentReconciles, defaultMaxConcurrentReconciles)
+			opts.maxConcurrentReconciles, DefaultMaxConcurrentReconciles)
 	}
 }
 
