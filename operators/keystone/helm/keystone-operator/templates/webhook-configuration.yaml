@@ -1,64 +1,8 @@
-{{- if .Values.webhook.enabled -}}
-apiVersion: admissionregistration.k8s.io/v1
-kind: MutatingWebhookConfiguration
-metadata:
-  name: {{ include "operator-library.fullname" . }}-mutating
-  labels:
-    {{- include "operator-library.labels" . | nindent 4 }}
-  annotations:
-    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "operator-library.fullname" . }}-webhook
-webhooks:
-  - name: mkeystone.kb.io
-    admissionReviewVersions:
-      - v1
-    clientConfig:
-      service:
-        name: {{ include "operator-library.fullname" . }}
-        namespace: {{ .Release.Namespace }}
-        path: /mutate-keystone-openstack-c5c3-io-v1alpha1-keystone
-    failurePolicy: Fail
-    sideEffects: None
-    rules:
-      - apiGroups:
-          - keystone.openstack.c5c3.io
-        apiVersions:
-          - v1alpha1
-        operations:
-          - CREATE
-          - UPDATE
-        resources:
-          - keystones
----
-apiVersion: admissionregistration.k8s.io/v1
-kind: ValidatingWebhookConfiguration
-metadata:
-  name: {{ include "operator-library.fullname" . }}-validating
-  labels:
-    {{- include "operator-library.labels" . | nindent 4 }}
-  annotations:
-    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "operator-library.fullname" . }}-webhook
-webhooks:
-  - name: vkeystone.kb.io
-    admissionReviewVersions:
-      - v1
-    clientConfig:
-      service:
-        name: {{ include "operator-library.fullname" . }}
-        namespace: {{ .Release.Namespace }}
-        path: /validate-keystone-openstack-c5c3-io-v1alpha1-keystone
-    failurePolicy: Fail
-    sideEffects: None
-    rules:
-      - apiGroups:
-          - keystone.openstack.c5c3.io
-        apiVersions:
-          - v1alpha1
-        # No DELETE: the webhook is served in-process by the operator, so with
-        # failurePolicy=Fail a DELETE rule would let a down operator block CR
-        # and namespace deletion. ValidateDelete is a no-op anyway.
-        operations:
-          - CREATE
-          - UPDATE
-        resources:
-          - keystones
-{{- end }}
+{{- include "operator-library.webhookConfiguration" (dict
+      "root" .
+      "mutatingWebhookName" "mkeystone.kb.io"
+      "validatingWebhookName" "vkeystone.kb.io"
+      "mutatePath" "/mutate-keystone-openstack-c5c3-io-v1alpha1-keystone"
+      "validatePath" "/validate-keystone-openstack-c5c3-io-v1alpha1-keystone"
+      "apiGroup" "keystone.openstack.c5c3.io"
+      "resource" "keystones") }}

@@ -404,22 +404,61 @@ NETWORK_POLICY_RULE = {
 
 # --- Per-chart configuration ------------------------------------------------
 
-CHARTS = [
-    {
-        "path": "operators/keystone/helm/keystone-operator/values.schema.json",
-        "name": "keystone-operator",
-        "image_repository_default": "ghcr.io/c5c3/keystone-operator",
-        "webhook_enabled_description": "Enable admission webhooks for Keystone CR validation and defaulting",
-        "network_policy": True,
-    },
-    {
-        "path": "operators/c5c3/helm/c5c3-operator/values.schema.json",
-        "name": "c5c3-operator",
-        "image_repository_default": "ghcr.io/c5c3/c5c3-operator",
-        "webhook_enabled_description": "Enable admission webhooks for ControlPlane CR validation and defaulting",
-        "network_policy": False,
-    },
-]
+# The webhook.enabled description names the chart's CR kind, which is not
+# discoverable from the chart directory - every operator chart must have an
+# entry here (discover_charts fails loudly on a missing one, so adding a new
+# operator surfaces this file in the touch list).
+WEBHOOK_ENABLED_DESCRIPTIONS = {
+    "keystone-operator": "Enable admission webhooks for Keystone CR validation and defaulting",
+    "c5c3-operator": "Enable admission webhooks for ControlPlane CR validation and defaulting",
+}
+
+
+def discover_charts():
+    """Discover the operator charts from the repository layout.
+
+    Every chart under operators/<op>/helm/<op>-operator/ participates. The
+    image repository default is read from the chart's values.yaml, and the
+    NetworkPolicy schema pieces are included exactly when the chart ships a
+    templates/networkpolicy.yaml. A new operator following the directory
+    convention is picked up without editing a hardcoded chart list.
+    """
+    charts = []
+    for chart_dir in sorted(REPO_ROOT.glob("operators/*/helm/*-operator")):
+        name = chart_dir.name
+        if name not in WEBHOOK_ENABLED_DESCRIPTIONS:
+            sys.exit(
+                f"error: chart {name} has no WEBHOOK_ENABLED_DESCRIPTIONS entry "
+                f"in {Path(__file__).name}; add one for the new operator"
+            )
+        repository = None
+        # values.yaml is flat enough that a targeted scan beats a YAML
+        # dependency: the first `repository:` key under `image:` is the one.
+        in_image = False
+        for line in (chart_dir / "values.yaml").read_text().splitlines():
+            if line.startswith("image:"):
+                in_image = True
+                continue
+            if in_image and not line.startswith((" ", "\t")):
+                in_image = False
+            if in_image and line.strip().startswith("repository:"):
+                repository = line.split(":", 1)[1].strip()
+                break
+        if repository is None:
+            sys.exit(f"error: could not find image.repository in {chart_dir}/values.yaml")
+        charts.append(
+            {
+                "path": str((chart_dir / "values.schema.json").relative_to(REPO_ROOT)),
+                "name": name,
+                "image_repository_default": repository,
+                "webhook_enabled_description": WEBHOOK_ENABLED_DESCRIPTIONS[name],
+                "network_policy": (chart_dir / "templates" / "networkpolicy.yaml").exists(),
+            }
+        )
+    return charts
+
+
+CHARTS = discover_charts()
 
 
 def build_schema(chart):

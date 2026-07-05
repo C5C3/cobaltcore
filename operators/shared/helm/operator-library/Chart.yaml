@@ -1,5 +1,5 @@
 apiVersion: v2
 name: operator-library
-description: Shared library chart for the c5c3 operator charts — naming/label helpers and the operator Deployment skeleton
+description: Shared library chart for the c5c3 operator charts — naming/label helpers and the shared operator manifests (Deployment, certificate, service, serviceaccount, rolebindings, PDB, ServiceMonitor, webhook configurations)
 type: library
-version: 0.2.0
+version: 0.3.0
