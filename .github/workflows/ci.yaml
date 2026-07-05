@@ -902,10 +902,12 @@ jobs:
   # run-chaos PR label trigger added for on-demand chaos
   # validation of operator code changes.
   #
-  # Non-blocking (continue-on-error: true) while chaos test
-  # stability is being proven in CI.  Revisit after 2-4 weeks of successful CI
-  # runs to consider making this job blocking and adding it to publish
-  # dependencies.
+  # Gating is split by matrix leg (see continue-on-error below): the pod-chaos
+  # leg is blocking — an operator-restart/PDB/rotation regression fails the
+  # build — while the network-chaos leg stays non-blocking because its
+  # ip_set/xt_set/sch_netem dependency is resolvable only on the GitHub-hosted
+  # runner and remains prone to environment flakiness. On-demand pre-validation
+  # of either leg is available via the run-chaos PR label.
   e2e-chaos:
     needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images, e2e-operator]
     # always(): allow the job to run when upstream Go jobs are skipped
@@ -957,7 +959,10 @@ jobs:
               tests/e2e-chaos/mariadb-network-partition
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
-    continue-on-error: true
+    # Pod-chaos is blocking; network-chaos stays non-blocking (its kernel-module
+    # dependency is only resolvable on the GitHub-hosted runner and remains
+    # flakiness-prone). See the gating note above the job.
+    continue-on-error: ${{ matrix.suite == 'network' }}
     permissions:
       contents: read
       packages: read
@@ -1209,9 +1214,10 @@ jobs:
   #
   # Runs only after every E2E job has finished without failure: a failed
   # E2E job skips tempest, a path-filter-skipped one does not block it
-  # (always() + the failure/cancelled guards below). e2e-chaos is
-  # continue-on-error, so its result is always 'success' — it merely delays
-  # tempest until it finishes, it cannot block it.
+  # (always() + the failure/cancelled guards below). The e2e-chaos network
+  # leg is continue-on-error, so its result is always 'success' and merely
+  # delays tempest. The e2e-chaos pod leg is blocking, so a pod-chaos failure
+  # surfaces as a job 'failure' and blocks tempest via the guard below.
   tempest:
     needs: [changes, build-e2e-images, e2e-infra, e2e-operator, e2e-chaos, e2e-prometheus]
     if: |

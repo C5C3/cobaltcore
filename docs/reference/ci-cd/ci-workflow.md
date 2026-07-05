@@ -643,9 +643,13 @@ partition, MariaDB network latency). See
 **Permissions:** `contents: read`, `packages: read` (required for GHCR pull).
 
 The `e2e-chaos` job depends on the standard gate jobs plus `e2e-operator`, so chaos
-tests run after the happy-path operator E2E suite has passed. The job uses
-`continue-on-error: true` while chaos test stability is
-being proven in CI — failures are visible but do not block merges or the publish pipeline. This will be revisited after 2–4 weeks of successful CI runs.
+tests run after the happy-path operator E2E suite has passed. Gating is set per
+matrix leg via `continue-on-error: ${{ matrix.suite == 'network' }}`: the `pod`
+leg is **blocking** — an operator-restart, PDB, or rotation regression fails the
+build — while the `network` leg stays **non-blocking**, because its
+`ip_set`/`sch_netem` kernel-module dependency is resolvable only on the
+GitHub-hosted runner and remains prone to environment flakiness. On-demand
+pre-validation of either leg is available via the `run-chaos` PR label.
 
 The job runs as a two-entry matrix split by chaos type: the `pod` suite (PodChaos
 tests) runs on `blacksmith-4vcpu-ubuntu-2404` for speed, while the `network` suite
@@ -674,7 +678,7 @@ lists its per-suite test directories explicitly.
 | Test config | `tests/e2e/chainsaw-config.yaml` | `tests/e2e-chaos/chainsaw-config.yaml` |
 | Test directory | `tests/e2e/<operator>/` | per-suite `test_dirs` under `tests/e2e-chaos/` |
 | Timeout | 45 minutes | 60 minutes |
-| Blocking | Yes | No (`continue-on-error: true`) |
+| Blocking | Yes | `pod` leg blocking; `network` leg non-blocking (`continue-on-error: ${{ matrix.suite == 'network' }}`) |
 | Dependencies | Gate jobs | Gate jobs + `e2e-operator` |
 | Service images | 2025.2 + 2025.2-upgraded + 2026.1 | 2025.2 only |
 

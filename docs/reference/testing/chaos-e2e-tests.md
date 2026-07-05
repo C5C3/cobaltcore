@@ -137,7 +137,8 @@ Individual test suites override the assert timeout to 5 minutes (`5m`) at the sp
 ## CI Trigger Policy
 
 Chaos tests run as a separate `e2e-chaos` GitHub Actions job in the CI workflow.
-The job is path-filtered and non-blocking while stability is being proven. See
+The job is path-filtered; its two matrix legs gate differently — the pod leg is
+blocking, the network leg is not (see below). See
 [CI Workflow — e2e-chaos](../ci-cd/ci-workflow.md#e2e-chaos) for full job documentation.
 
 **Path filter (`e2e_chaos`):** Changes to `tests/e2e-chaos/**`, `hack/**`, `deploy/**`,
@@ -158,10 +159,12 @@ active regardless of which files were touched.
 `test-integration`, `verify-codegen`). It only runs if no dependency failed or was
 cancelled.
 
-**Non-blocking (`continue-on-error: true`):** Chaos test failures are visible in the CI
-status but do not block merges or the publish pipeline. This is
-intentional while chaos test stability is being proven in CI. The setting will be revisited
-after 2–4 weeks of successful CI runs to consider making the job blocking.
+**Per-leg gating (<code v-pre>continue-on-error: ${{ matrix.suite == 'network' }}</code>):** The `pod`
+leg is **blocking** — a failure in any PodChaos suite (operator restart, PDB, rotation)
+fails the build. The `network` leg stays **non-blocking**, because its
+`ip_set`/`sch_netem` kernel-module dependency is resolvable only on the GitHub-hosted
+runner and remains prone to environment flakiness; its failures are visible but do not
+block merges. The `run-chaos` PR label runs both legs on demand for pre-validation.
 
 **Timeout:** 45 minutes to accommodate serial test execution and longer recovery
 assertion windows.
