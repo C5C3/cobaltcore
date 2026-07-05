@@ -1015,3 +1015,68 @@ func TestValidateCreate_AllowsFirstControlPlane_AndUpdate(t *testing.T) {
 	_, err = wWith.ValidateUpdate(context.Background(), first, updated)
 	g.Expect(err).NotTo(HaveOccurred())
 }
+
+// --- services.horizon validation ---
+
+// TestValidateCreate_AcceptsHorizonBlock verifies a minimal (empty) horizon
+// block passes validation — every ServiceHorizonSpec field is optional.
+func TestValidateCreate_AcceptsHorizonBlock(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Spec.Services.Horizon = &ServiceHorizonSpec{}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// TestValidateCreate_RejectsHorizonGatewayWithoutHostname mirrors the keystone
+// gateway hostname rule for the horizon service block.
+func TestValidateCreate_RejectsHorizonGatewayWithoutHostname(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Spec.Services.Horizon = &ServiceHorizonSpec{
+		Gateway: &commonv1.GatewaySpec{
+			ParentRef: commonv1.GatewayParentRefSpec{Name: "openstack-gw"},
+		},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("services.horizon.gateway.hostname"))
+}
+
+// TestValidateCreate_RejectsHorizonImageTagAndDigestBothSet mirrors the
+// ImageSpec tag/digest XOR defense-in-depth check for the horizon override.
+func TestValidateCreate_RejectsHorizonImageTagAndDigestBothSet(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Spec.Services.Horizon = &ServiceHorizonSpec{
+		Image: &commonv1.ImageSpec{
+			Repository: "ghcr.io/c5c3/horizon",
+			Tag:        "2025.2",
+			Digest:     "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("exactly one of image.tag or image.digest"))
+}
+
+// TestValidateCreate_RejectsHorizonEmptySecretKeyRefName covers the error path
+// where secretKeyRef is present but carries no name.
+func TestValidateCreate_RejectsHorizonEmptySecretKeyRefName(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Spec.Services.Horizon = &ServiceHorizonSpec{
+		SecretKeyRef: &commonv1.SecretRefSpec{Name: ""},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("services.horizon.secretKeyRef.name"))
+}

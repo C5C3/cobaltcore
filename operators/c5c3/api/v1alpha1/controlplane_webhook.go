@@ -350,6 +350,41 @@ func (w *ControlPlaneWebhook) validate(cp *ControlPlane) field.ErrorList {
 		}
 	}
 
+	// services.horizon is optional; all per-service checks below only apply
+	// when the block is present. Policy overrides are N/A for horizon (the
+	// dashboard enforces no oslo.policy of its own), so unlike keystone there
+	// is no per-service policy block to validate.
+	if hz := cp.Spec.Services.Horizon; hz != nil {
+		// When a gateway is configured, its hostname must be set. Mirrors the
+		// +kubebuilder:validation:MinLength=1 marker on commonv1.GatewaySpec.Hostname.
+		if g := hz.Gateway; g != nil && g.Hostname == "" {
+			allErrs = append(allErrs, field.Required(
+				specPath.Child("services", "horizon", "gateway", "hostname"),
+				"must be set when a gateway is configured",
+			))
+		}
+
+		// When the Horizon image is overridden, mirror the ImageSpec tag/digest
+		// XOR (the +kubebuilder:validation:XValidation rule on commonv1.ImageSpec)
+		// with a defense-in-depth check: exactly one of tag or digest must be set.
+		if img := hz.Image; img != nil && (img.Tag != "") == (img.Digest != "") {
+			allErrs = append(allErrs, field.Invalid(
+				specPath.Child("services", "horizon", "image"),
+				img,
+				"exactly one of image.tag or image.digest must be set",
+			))
+		}
+
+		// When the SECRET_KEY Secret is overridden, its name must be non-empty.
+		// Mirrors the MinLength marker on commonv1.SecretRefSpec.Name.
+		if ref := hz.SecretKeyRef; ref != nil && ref.Name == "" {
+			allErrs = append(allErrs, field.Required(
+				specPath.Child("services", "horizon", "secretKeyRef", "name"),
+				"must be set when secretKeyRef is configured",
+			))
+		}
+	}
+
 	// Reject empty policy rule names and values on both the global policy and the
 	// per-service Keystone override. The c5c3 webhook previously validated policy
 	// rules not at all; this mirrors the keystone webhook and the CEL rule on

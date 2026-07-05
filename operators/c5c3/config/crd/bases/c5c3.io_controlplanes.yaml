@@ -533,6 +533,138 @@ spec:
                   Services declares the per-service configuration projected into the
                   individual service CRs.
                 properties:
+                  horizon:
+                    description: |-
+                      Horizon configures the Horizon dashboard projected by the reconciler.
+                      Optional: a ControlPlane with services.horizon unset manages no dashboard
+                      and the reconciler reports HorizonReady as not-managed. The projection is
+                      gated on KeystoneReady — the dashboard authenticates against the
+                      ControlPlane's Keystone child, so it is only created once that child is
+                      ready.
+                    properties:
+                      gateway:
+                        description: |-
+                          Gateway optionally exposes the projected dashboard externally via a
+                          Gateway API HTTPRoute. When nil (the default) the reconciler does NOT
+                          project a gateway and the dashboard is reachable in-cluster only.
+                        properties:
+                          annotations:
+                            additionalProperties:
+                              type: string
+                            description: |-
+                              Annotations are passed through to the generated HTTPRoute metadata
+                              verbatim, allowing implementation-specific configuration (rate limits,
+                              timeouts, CORS) without extending the CRD.
+                            type: object
+                          hostname:
+                            description: |-
+                              Hostname is the externally reachable host (SNI / Host header) that the
+                              HTTPRoute matches. Required.
+                            minLength: 1
+                            type: string
+                          parentRef:
+                            description: |-
+                              ParentRef identifies the pre-existing Gateway that the HTTPRoute attaches
+                              to.
+                            properties:
+                              name:
+                                description: Name is the Gateway resource name. Required.
+                                minLength: 1
+                                type: string
+                              namespace:
+                                description: |-
+                                  Namespace is the namespace of the referenced Gateway. When empty, the
+                                  Gateway is assumed to live in the referencing CR's namespace.
+                                type: string
+                              sectionName:
+                                description: |-
+                                  SectionName targets a specific listener on the Gateway (e.g. "https") when
+                                  the Gateway defines multiple listeners. When empty, the HTTPRoute attaches
+                                  to all compatible listeners.
+                                type: string
+                            required:
+                            - name
+                            type: object
+                          path:
+                            description: |-
+                              Path is the URL path prefix matched by the HTTPRoute. Defaults to "/" when
+                              empty.
+                            type: string
+                        required:
+                        - hostname
+                        - parentRef
+                        type: object
+                      image:
+                        description: |-
+                          Image optionally overrides the Horizon container image. When nil the
+                          reconciler derives the image from spec.openStackRelease.
+                        properties:
+                          digest:
+                            description: |-
+                              Digest pins the image by immutable content digest (e.g.
+                              "sha256:<64 hex chars>"). Optional: exactly one of Tag or Digest must be
+                              set. A pinned digest closes the supply-chain gap where a mutable tag can be
+                              re-pushed behind a stable name, at the cost of disabling release tracking.
+                            pattern: ^sha256:[a-f0-9]{64}$
+                            type: string
+                          repository:
+                            description: |-
+                              Repository is the OCI image repository, optionally including the registry
+                              host (e.g. "ghcr.io/c5c3/keystone" or "c5c3/keystone"). The pattern is a
+                              permissive OCI reference — lowercase alphanumeric components separated by
+                              ".", "_", "-", "/", or ":" (registry port) — so mirror and host:port forms
+                              are accepted while an empty string (which "required" alone admits) and
+                              obvious garbage are rejected.
+                            minLength: 1
+                            pattern: ^[a-z0-9]+([._:/-][a-z0-9]+)*$
+                            type: string
+                          tag:
+                            description: |-
+                              Tag is the OCI image tag (e.g. "2025.2"). It follows the OCI tag grammar:
+                              up to 128 characters of word characters, dots, and dashes, and must not
+                              begin with a dot or dash. Optional: exactly one of Tag or Digest must be
+                              set. The pattern is enforced only when a tag is present.
+                            pattern: ^[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}$
+                            type: string
+                        required:
+                        - repository
+                        type: object
+                        x-kubernetes-validations:
+                        - message: exactly one of image.tag or image.digest must be
+                            set
+                          rule: has(self.tag) != has(self.digest)
+                      replicas:
+                        description: |-
+                          Replicas overrides the number of dashboard replicas. When nil the
+                          reconciler applies the Horizon operator's own default (3).
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      secretKeyRef:
+                        description: |-
+                          SecretKeyRef optionally overrides the Secret holding the Django
+                          SECRET_KEY the dashboard replicas share. When nil the reconciler defaults
+                          to the kind-infrastructure shim Secret "horizon-secret-key" (key
+                          "secret-key"), which is pinned to the default ControlPlane identity —
+                          multi-ControlPlane deployments MUST set this field explicitly so each
+                          dashboard reads its own key material.
+                        properties:
+                          key:
+                            type: string
+                          name:
+                            description: |-
+                              Name is the referenced Secret's name. It must be a non-empty DNS-1123
+                              subdomain (the Kubernetes object-name grammar). Tightening the shared type
+                              fixes every consumer at once — keystone adminPasswordSecretRef /
+                              database.secretRef / messaging / TLS cert refs and the c5c3
+                              passwordSecretRef — so an empty name no longer slips through "required".
+                            minLength: 1
+                            pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                            type: string
+                        required:
+                        - name
+                        type: object
+                    type: object
                   keystone:
                     description: |-
                       Keystone configures the Keystone service projected by the reconciler.

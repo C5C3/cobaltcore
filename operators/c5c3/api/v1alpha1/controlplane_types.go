@@ -100,8 +100,8 @@ type InfrastructureSpec struct {
 	Cache commonv1.CacheSpec `json:"cache"`
 }
 
-// ServicesSpec declares the per-service configuration of the control plane
-// Today only Keystone is modeled; additional services are added as
+// ServicesSpec declares the per-service configuration of the control plane.
+// Keystone and Horizon are modeled today; additional services are added as
 // optional pointer fields as the operator grows.
 type ServicesSpec struct {
 	// Keystone configures the Keystone service projected by the reconciler.
@@ -111,6 +111,15 @@ type ServicesSpec struct {
 	// nil deletes the previously-projected Keystone child.
 	// +optional
 	Keystone *ServiceKeystoneSpec `json:"keystone,omitempty"`
+
+	// Horizon configures the Horizon dashboard projected by the reconciler.
+	// Optional: a ControlPlane with services.horizon unset manages no dashboard
+	// and the reconciler reports HorizonReady as not-managed. The projection is
+	// gated on KeystoneReady — the dashboard authenticates against the
+	// ControlPlane's Keystone child, so it is only created once that child is
+	// ready.
+	// +optional
+	Horizon *ServiceHorizonSpec `json:"horizon,omitempty"`
 }
 
 // ServiceKeystoneSpec is a CURATED LOCAL subset of the knobs the ControlPlane
@@ -187,6 +196,41 @@ type ServiceKeystoneSpec struct {
 	// +optional
 	// +kubebuilder:validation:Pattern=`^https?://`
 	PublicEndpoint string `json:"publicEndpoint,omitempty"`
+}
+
+// ServiceHorizonSpec is a CURATED LOCAL subset of the knobs the ControlPlane
+// exposes for the Horizon dashboard, mirroring the ServiceKeystoneSpec
+// DECISION above: the reconciler (L2) PROJECTS this struct into a Horizon CR;
+// the cache and the Keystone endpoint of that Horizon CR are DERIVED from the
+// ControlPlane (infrastructure.cache and the Keystone child's naming
+// convention) rather than set by the user here, and the L1 api package stays
+// free of a dependency on the horizon module.
+type ServiceHorizonSpec struct {
+	// Replicas overrides the number of dashboard replicas. When nil the
+	// reconciler applies the Horizon operator's own default (3).
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	Replicas *int32 `json:"replicas,omitempty"`
+
+	// Image optionally overrides the Horizon container image. When nil the
+	// reconciler derives the image from spec.openStackRelease.
+	// +optional
+	Image *commonv1.ImageSpec `json:"image,omitempty"`
+
+	// Gateway optionally exposes the projected dashboard externally via a
+	// Gateway API HTTPRoute. When nil (the default) the reconciler does NOT
+	// project a gateway and the dashboard is reachable in-cluster only.
+	// +optional
+	Gateway *commonv1.GatewaySpec `json:"gateway,omitempty"`
+
+	// SecretKeyRef optionally overrides the Secret holding the Django
+	// SECRET_KEY the dashboard replicas share. When nil the reconciler defaults
+	// to the kind-infrastructure shim Secret "horizon-secret-key" (key
+	// "secret-key"), which is pinned to the default ControlPlane identity —
+	// multi-ControlPlane deployments MUST set this field explicitly so each
+	// dashboard reads its own key material.
+	// +optional
+	SecretKeyRef *commonv1.SecretRefSpec `json:"secretKeyRef,omitempty"`
 }
 
 // KORCSpec configures the K-ORC (OpenStack Resource Controller) integration of
