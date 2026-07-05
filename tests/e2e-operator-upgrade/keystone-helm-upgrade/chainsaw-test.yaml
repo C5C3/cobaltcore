@@ -143,12 +143,31 @@ spec:
     try:
     - script:
         shell: bash
+        # 2m budget: each failed patch attempt can block for the full 10s
+        # webhook timeout, and the retry loop below needs room for several
+        # attempts on top of the 30s chainsaw default.
+        timeout: 120s
         content: |
           set -euo pipefail
           GEN_BEFORE=$(kubectl get keystone keystone-op-upgrade -n openstack \
             -o jsonpath='{.metadata.generation}')
-          kubectl patch keystone keystone-op-upgrade -n openstack --type=merge \
-            -p '{"spec":{"deployment":{"replicas":2}}}'
+          # Retry the patch: it is the first webhook-gated request after the
+          # operator rollout, and the in-process webhook server just rolled
+          # with the operator pods. The apiserver may still hold a stale
+          # keep-alive connection to a terminated pod IP, which surfaces as a
+          # 10s context-deadline-exceeded InternalError on the first dial.
+          # Retrying forces a fresh connection to the new endpoints; the
+          # webhook being persistently down still fails via the deadline.
+          deadline=$(( $(date +%s) + 90 ))
+          until kubectl patch keystone keystone-op-upgrade -n openstack --type=merge \
+              -p '{"spec":{"deployment":{"replicas":2}}}'; do
+            if [ "$(date +%s)" -ge "${deadline}" ]; then
+              echo "FAIL: webhook-gated spec patch kept failing after the operator upgrade"
+              exit 1
+            fi
+            echo "patch rejected (webhook not reachable yet?); retrying in 3s ..."
+            sleep 3
+          done
           GEN_AFTER=$(kubectl get keystone keystone-op-upgrade -n openstack \
             -o jsonpath='{.metadata.generation}')
           echo "generation before poke=${GEN_BEFORE} after poke=${GEN_AFTER}"
