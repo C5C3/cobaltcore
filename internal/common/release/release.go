@@ -2,7 +2,12 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-package controller
+// Package release parses OpenStack release version strings (YYYY.N with an
+// optional -pN patch suffix) and classifies upgrade transitions — sequential,
+// downgrade, patch-only. The rules are pure and service-agnostic: OpenStack
+// releases two versions per year, so they are shared by every operator that
+// gates on release ordering.
+package release
 
 import (
 	"fmt"

@@ -516,8 +516,11 @@ spec:
                   OpenStackRelease is the OpenStack release the control plane targets,
                   e.g. "2025.2". The reconciler (L2) projects this into each service CR's
                   image tag. The pattern matches the OpenStack date-based release scheme
-                  (YYYY.N, e.g. 2024.1, 2025.2).
-                pattern: ^\d{4}\.\d$
+                  (YYYY.N where N is 1 or 2 — the two-releases-per-year cadence, e.g.
+                  2024.1, 2025.2). The [12] minor class keeps this CRD pattern, the
+                  webhook's controlPlaneReleaseRegexp, and release.ParseRelease in agreement
+                  so a non-cadence minor (e.g. 2025.9) is rejected at every layer.
+                pattern: ^\d{4}\.[12]$
                 type: string
               region:
                 default: RegionOne

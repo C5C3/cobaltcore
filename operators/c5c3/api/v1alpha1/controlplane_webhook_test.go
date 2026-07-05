@@ -907,6 +907,26 @@ func TestValidateUpdate_RejectsOpenStackReleaseDowngrade(t *testing.T) {
 	g.Expect(err.Error()).To(ContainSubstring("downgrade"))
 }
 
+// TestValidateUpdate_RejectsNonCadenceReleaseMinor guards the regression where a
+// regex-valid but non-cadence minor was silently admitted on UPDATE. OpenStack
+// ships only YYYY.1 and YYYY.2; before the release pattern was tightened to
+// ^\d{4}\.[12]$, patching a live 2025.2 to 2025.9 passed validate() (whose regex
+// accepted any single-digit minor) while validateReleaseNotDowngraded returned
+// nil (release.ParseRelease rejects minor 9), admitting an edit that had been
+// rejected before validateReleaseNotDowngraded delegated to ParseRelease.
+func TestValidateUpdate_RejectsNonCadenceReleaseMinor(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	oldCP := managedControlPlane()
+	nonCadence := managedControlPlane()
+	nonCadence.Spec.OpenStackRelease = "2025.9"
+
+	_, err := w.ValidateUpdate(context.Background(), oldCP, nonCadence)
+	g.Expect(err).To(HaveOccurred(),
+		"a non-cadence openStackRelease minor must be rejected on UPDATE")
+	g.Expect(err.Error()).To(ContainSubstring("openStackRelease"))
+}
+
 // TestValidateUpdate_AcceptsOpenStackReleaseUpgrade verifies that raising the
 // openStackRelease is accepted (the monotonic-upgrade happy path) (#466).
 func TestValidateUpdate_AcceptsOpenStackReleaseUpgrade(t *testing.T) {

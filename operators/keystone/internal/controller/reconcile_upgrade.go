@@ -17,6 +17,7 @@ import (
 
 	"github.com/c5c3/forge/internal/common/conditions"
 	"github.com/c5c3/forge/internal/common/job"
+	"github.com/c5c3/forge/internal/common/release"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
 
@@ -37,24 +38,24 @@ func isUpgrade(keystone *keystonev1alpha1.Keystone) bool {
 		return false
 	}
 
-	from, err := ParseRelease(keystone.Status.InstalledRelease)
+	from, err := release.ParseRelease(keystone.Status.InstalledRelease)
 	if err != nil {
 		// Let initiateUpgrade handle the error with proper conditions.
 		return true
 	}
-	to, err := ParseRelease(keystone.Spec.Image.Tag)
+	to, err := release.ParseRelease(keystone.Spec.Image.Tag)
 	if err != nil {
 		return true
 	}
 
-	return !IsPatchOnly(from, to)
+	return !release.IsPatchOnly(from, to)
 }
 
 // initiateUpgrade validates the upgrade path and sets the initial upgrade state.
 func (r *KeystoneReconciler) initiateUpgrade(ctx context.Context, keystone *keystonev1alpha1.Keystone) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
-	from, err := ParseRelease(keystone.Status.InstalledRelease)
+	from, err := release.ParseRelease(keystone.Status.InstalledRelease)
 	if err != nil {
 		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
 			Type:               "DatabaseReady",
@@ -67,7 +68,7 @@ func (r *KeystoneReconciler) initiateUpgrade(ctx context.Context, keystone *keys
 		return ctrl.Result{}, fmt.Errorf("parse installed release %q: %w", keystone.Status.InstalledRelease, err)
 	}
 
-	to, err := ParseRelease(keystone.Spec.Image.Tag)
+	to, err := release.ParseRelease(keystone.Spec.Image.Tag)
 	if err != nil {
 		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
 			Type:               "DatabaseReady",
@@ -80,7 +81,7 @@ func (r *KeystoneReconciler) initiateUpgrade(ctx context.Context, keystone *keys
 		return ctrl.Result{}, fmt.Errorf("parse target release %q: %w", keystone.Spec.Image.Tag, err)
 	}
 
-	if IsDowngrade(from, to) {
+	if release.IsDowngrade(from, to) {
 		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
 			Type:               "DatabaseReady",
 			Status:             metav1.ConditionFalse,
@@ -92,7 +93,7 @@ func (r *KeystoneReconciler) initiateUpgrade(ctx context.Context, keystone *keys
 		return ctrl.Result{}, fmt.Errorf("downgrade from %s to %s is not supported", from.Raw, to.Raw)
 	}
 
-	if !IsSequentialUpgrade(from, to) {
+	if !release.IsSequentialUpgrade(from, to) {
 		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
 			Type:               "DatabaseReady",
 			Status:             metav1.ConditionFalse,

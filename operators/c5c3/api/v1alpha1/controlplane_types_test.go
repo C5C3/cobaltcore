@@ -32,7 +32,7 @@ func TestSchemeBuilderRegistersControlPlane(t *testing.T) {
 // controlPlaneReleasePattern mirrors the +kubebuilder:validation:Pattern marker
 // on ControlPlaneSpec.OpenStackRelease. The CRD schema is the enforcement point
 // at admission time; this test pins the contract so a marker change is caught.
-const controlPlaneReleasePattern = `^\d{4}\.\d$`
+const controlPlaneReleasePattern = `^\d{4}\.[12]$`
 
 func TestOpenStackReleasePattern(t *testing.T) {
 	re := regexp.MustCompile(controlPlaneReleasePattern)
@@ -50,6 +50,12 @@ func TestOpenStackReleasePattern(t *testing.T) {
 		{"2025.22", false},
 		{"v2025.2", false},
 		{"2025.2 ", false},
+		// Non-cadence minors: OpenStack ships only YYYY.1 and YYYY.2, so the
+		// [12] class must reject any other single digit — keeping the CRD
+		// pattern in agreement with release.ParseRelease.
+		{"2025.0", false},
+		{"2025.3", false},
+		{"2025.9", false},
 	}
 	for _, tt := range tests {
 		got := re.MatchString(tt.release)

@@ -8,7 +8,6 @@ import (
 	"context"
 	"fmt"
 	"regexp"
-	"strconv"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -21,6 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	"github.com/c5c3/forge/internal/common/policy"
+	"github.com/c5c3/forge/internal/common/release"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	"github.com/c5c3/forge/internal/common/validation"
 )
@@ -83,9 +83,13 @@ const (
 )
 
 // controlPlaneReleaseRegexp mirrors the +kubebuilder:validation:Pattern marker
-// on ControlPlaneSpec.OpenStackRelease. The validating webhook re-checks it as
-// defense-in-depth for callers that bypass CRD schema admission.
-var controlPlaneReleaseRegexp = regexp.MustCompile(`^\d{4}\.\d$`)
+// on ControlPlaneSpec.OpenStackRelease. The [12] minor class matches the
+// two-releases-per-year OpenStack cadence that release.ParseRelease also
+// enforces, so validate() rejects a non-cadence minor (e.g. 2025.9) instead of
+// letting validateReleaseNotDowngraded silently skip the downgrade check for a
+// value ParseRelease cannot parse. The validating webhook re-checks the pattern
+// as defense-in-depth for callers that bypass CRD schema admission.
+var controlPlaneReleaseRegexp = regexp.MustCompile(`^\d{4}\.[12]$`)
 
 // ControlPlaneWebhook implements defaulting and validation webhooks for the
 // ControlPlane CRD. Client is injected at startup and used by
@@ -261,7 +265,7 @@ func (w *ControlPlaneWebhook) validate(cp *ControlPlane) field.ErrorList {
 		allErrs = append(allErrs, field.Invalid(
 			specPath.Child("openStackRelease"),
 			cp.Spec.OpenStackRelease,
-			"must match the OpenStack release pattern ^\\d{4}\\.\\d$ (e.g. 2025.2)",
+			"must match the OpenStack release pattern ^\\d{4}\\.[12]$ (e.g. 2025.2)",
 		))
 	}
 
@@ -503,36 +507,24 @@ func effectiveStorageSize(size string) string {
 // no down-migration path), so re-pointing a live control plane at an older
 // release would project an older image whose schema is behind the already-migrated
 // database -- an unrecoverable state. Upgrades and same-release updates are
-// allowed. Both releases are guarded against controlPlaneReleaseRegexp first; a
-// release that does not match the YYYY.N pattern is left to validate()'s pattern
+// allowed. The shared release parser compares the (year, minor) integer tuples
+// rather than the raw strings, so ordering stays correct even for hypothetical
+// multi-digit minors where lexicographic comparison would silently invert. A
+// release release.ParseRelease cannot parse (malformed, or a minor outside the
+// two-releases-per-year OpenStack cadence) is left to validate()'s pattern
 // check rather than mis-parsed here, so a malformed value yields the pattern
 // error alone instead of a confusing downgrade message.
 func validateReleaseNotDowngraded(oldObj, newObj *ControlPlane) field.ErrorList {
-	oldRel := oldObj.Spec.OpenStackRelease
-	newRel := newObj.Spec.OpenStackRelease
-	if !controlPlaneReleaseRegexp.MatchString(oldRel) || !controlPlaneReleaseRegexp.MatchString(newRel) {
+	oldRel, errOld := release.ParseRelease(oldObj.Spec.OpenStackRelease)
+	newRel, errNew := release.ParseRelease(newObj.Spec.OpenStackRelease)
+	if errOld != nil || errNew != nil {
 		return nil
 	}
-	// Compare the (year, minor) integer tuples rather than the raw strings. The
-	// regex re-check above guarantees both values are well-formed (a 4-digit year,
-	// the dot, then an all-digit minor), so the byte offsets are safe and Atoi
-	// cannot fail. Integer comparison keeps this correct even if
-	// controlPlaneReleaseRegexp is ever loosened to admit a multi-digit minor
-	// (e.g. 2025.10), where lexicographic string ordering would silently invert
-	// ("2025.10" < "2025.2" as strings) and reject a real upgrade while admitting
-	// a real downgrade.
-	parse := func(r string) (year, minor int) {
-		year, _ = strconv.Atoi(r[:4])
-		minor, _ = strconv.Atoi(r[5:])
-		return year, minor
-	}
-	oldYear, oldMinor := parse(oldRel)
-	newYear, newMinor := parse(newRel)
-	if newYear < oldYear || (newYear == oldYear && newMinor < oldMinor) {
+	if release.IsDowngrade(oldRel, newRel) {
 		return field.ErrorList{field.Invalid(
 			field.NewPath("spec", "openStackRelease"),
-			newRel,
-			fmt.Sprintf("openStackRelease downgrade from %q to %q is not permitted; Keystone DB migrations are not reversible", oldRel, newRel),
+			newRel.Raw,
+			fmt.Sprintf("openStackRelease downgrade from %q to %q is not permitted; Keystone DB migrations are not reversible", oldRel.Raw, newRel.Raw),
 		)}
 	}
 	return nil
