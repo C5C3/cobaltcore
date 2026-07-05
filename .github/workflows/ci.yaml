@@ -91,6 +91,10 @@ jobs:
             c5c3:
               - 'operators/c5c3/**'
               - 'operators/Dockerfile'
+            horizon:
+              - 'operators/horizon/**'
+              - 'operators/Dockerfile'
+              - 'images/horizon/**'
             # glance:                        # uncomment when glance is added
             #   - 'operators/glance/**'
             #   - 'images/glance/**'
@@ -107,6 +111,7 @@ jobs:
             helm:
               - 'operators/keystone/helm/**'
               - 'operators/c5c3/helm/**'
+              - 'operators/horizon/helm/**'
               - 'operators/shared/helm/**'
               - 'hack/gen-helm-values-schema.py'
               - 'Makefile'
@@ -149,6 +154,7 @@ jobs:
             e2e_controlplane:
               - 'operators/c5c3/**'
               - 'operators/keystone/**'
+              - 'operators/horizon/**'
               - 'tests/e2e/c5c3/**'
               - 'deploy/**'
               - 'hack/**'
@@ -166,9 +172,10 @@ jobs:
       - name: Resolve effective changes
         id: result
         env:
-          ALL_OPERATORS: keystone c5c3
+          ALL_OPERATORS: keystone c5c3 horizon
           FILTER_keystone: ${{ steps.filter.outputs.keystone }}
           FILTER_c5c3: ${{ steps.filter.outputs.c5c3 }}
+          FILTER_horizon: ${{ steps.filter.outputs.horizon }}
           # FILTER_glance: ${{ steps.filter.outputs.glance }}
           FILTER_docs: ${{ steps.filter.outputs.docs }}
           FILTER_helm: ${{ steps.filter.outputs.helm }}
@@ -353,7 +360,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [common, keystone, c5c3]
+        target: [common, keystone, c5c3, horizon]
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
@@ -390,7 +397,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [common, keystone, c5c3]
+        target: [common, keystone, c5c3, horizon]
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
@@ -538,13 +545,13 @@ jobs:
         run: make helm-deps
       - name: Helm lint
         run: |
-          for chart in operators/keystone/helm/keystone-operator operators/c5c3/helm/c5c3-operator; do
+          for chart in operators/keystone/helm/keystone-operator operators/c5c3/helm/c5c3-operator operators/horizon/helm/horizon-operator; do
             echo "--- lint $chart ---"
             helm lint "$chart"
           done
       - name: Helm template
         run: |
-          for chart in operators/keystone/helm/keystone-operator operators/c5c3/helm/c5c3-operator; do
+          for chart in operators/keystone/helm/keystone-operator operators/c5c3/helm/c5c3-operator operators/horizon/helm/horizon-operator; do
             echo "=== $chart ==="
             echo "--- Scenario 1: default values ---"
             helm template test "$chart"
@@ -559,7 +566,7 @@ jobs:
           done
       - name: Helm unittest
         run: |
-          for chart in operators/keystone/helm/keystone-operator operators/c5c3/helm/c5c3-operator; do
+          for chart in operators/keystone/helm/keystone-operator operators/c5c3/helm/c5c3-operator operators/horizon/helm/horizon-operator; do
             echo "--- unittest $chart ---"
             helm unittest "$chart"
           done
@@ -664,10 +671,16 @@ jobs:
             ops=$(printf '%s\nkeystone' "$ops")
           fi
           # The e2e-controlplane job runs the full chain from local dev images, so
-          # both keystone-operator:dev and c5c3-operator:dev must be built when it
-          # runs — even if only the full-chain test definition changed.
-          if [ '${{ needs.changes.outputs.e2e-controlplane }}' = 'true' ] && ! printf '%s\n' $ops | grep -qx c5c3; then
-            ops=$(printf '%s\nc5c3' "$ops")
+          # keystone-operator:dev, c5c3-operator:dev, and horizon-operator:dev
+          # must all be built when it runs — even if only the full-chain test
+          # definition changed (the ControlPlane projects a Horizon child once
+          # KeystoneReady).
+          if [ '${{ needs.changes.outputs.e2e-controlplane }}' = 'true' ]; then
+            for extra in c5c3 horizon; do
+              if ! printf '%s\n' $ops | grep -qx "$extra"; then
+                ops=$(printf '%s\n%s' "$ops" "$extra")
+              fi
+            done
           fi
           {
             echo "BUILD_OPERATORS<<EOF"
@@ -1056,6 +1069,8 @@ jobs:
               tests/e2e-chaos/deletion-stuck-finalizer
               tests/e2e-chaos/mariadb-pod-kill
               tests/e2e-chaos/memcached-pod-kill
+              tests/e2e-chaos/horizon-memcached-pod-kill
+              tests/e2e-chaos/horizon-operator-pod-kill
               tests/e2e-chaos/openbao-pod-kill
               tests/e2e-chaos/operator-pod-crash
               tests/e2e-chaos/operator-pod-kill
@@ -1088,10 +1103,14 @@ jobs:
           images: |
             ${{ env.IMAGE_PREFIX }}/keystone-operator:dev
             ${{ env.IMAGE_PREFIX }}/keystone:2025.2
+            ${{ env.IMAGE_PREFIX }}/horizon-operator:dev
+            ${{ env.IMAGE_PREFIX }}/horizon:2025.2
       - name: Load images into kind
         run: |
           kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:2025.2 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/horizon-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/horizon:2025.2 --name ${{ env.KIND_CLUSTER }}
       # Use composite action for shared Flux CLI + test deps + deploy-infra sequence.
       # Opt in to Chaos Mesh - required for the chaos suites; covers both matrix entries.
       - name: Setup E2E infrastructure
@@ -1104,6 +1123,13 @@ jobs:
         env:
           OPERATOR: keystone
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/keystone-operator
+      # The horizon chaos suites (horizon-operator-pod-kill,
+      # horizon-memcached-pod-kill) need the horizon-operator too.
+      - name: Deploy horizon operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: horizon
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/horizon-operator
       - name: Run chaos E2E tests
         run: |
           mkdir -p _output/reports
@@ -1255,13 +1281,17 @@ jobs:
           images: |
             ${{ env.IMAGE_PREFIX }}/keystone-operator:dev
             ${{ env.IMAGE_PREFIX }}/c5c3-operator:dev
+            ${{ env.IMAGE_PREFIX }}/horizon-operator:dev
             ${{ env.IMAGE_PREFIX }}/keystone:2025.2
+            ${{ env.IMAGE_PREFIX }}/horizon:2025.2
             ${{ env.IMAGE_PREFIX }}/tempest:2025.2
       - name: Load images into kind
         run: |
           kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/c5c3-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/horizon-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:2025.2 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/horizon:2025.2 --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/tempest:2025.2 --name ${{ env.KIND_CLUSTER }}
       # Prepare the shared infra (TLS, OpenBao + per-CR seeding, ESO store) and
       # suspend the Flux ControlPlane stack; the operators are deployed below.
@@ -1286,6 +1316,14 @@ jobs:
           OPERATOR: keystone
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/keystone-operator
           NAMESPACE: keystone-system
+      # horizon-operator before c5c3-operator so the Horizon CRD exists
+      # before c5c3-operator projects the Horizon child.
+      - name: Deploy horizon-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: horizon
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/horizon-operator
+          NAMESPACE: horizon-system
       - name: Deploy c5c3-operator
         run: hack/ci-deploy-operator.sh
         env:
@@ -1432,7 +1470,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: [keystone-operator, keystone, c5c3-operator, tempest]
+        package: [keystone-operator, keystone, c5c3-operator, horizon-operator, horizon, tempest]
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       # GH-312: do NOT pass delete-untagged here. This job runs in

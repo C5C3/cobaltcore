@@ -46,6 +46,10 @@ flag_management:
       paths:
         - operators/c5c3/
       carryforward: true
+    - name: unit-horizon
+      paths:
+        - operators/horizon/
+      carryforward: true
     - name: integration-common
       paths:
         - internal/common/
@@ -57,6 +61,10 @@ flag_management:
     - name: integration-c5c3
       paths:
         - operators/c5c3/
+      carryforward: true
+    - name: integration-horizon
+      paths:
+        - operators/horizon/
       carryforward: true
 
 # Component-level thresholds: each component is tracked independently on the
