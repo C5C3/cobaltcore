@@ -11,7 +11,6 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	"github.com/c5c3/forge/internal/common/instrumentation"
-	"github.com/c5c3/forge/operators/keystone/internal/metrics"
 )
 
 // subReconcilerConditionTypes maps a sub_reconciler label value to the
@@ -56,12 +55,22 @@ var subReconcilerConditionTypes = map[string]string{
 	"PasswordRotation":   conditionTypePasswordRotationReady,
 }
 
+// subReconcilerMetrics holds the shared sub-reconciler instrumentation
+// metrics for the keystone operator
+// (keystone_operator_reconcile_duration_seconds and
+// keystone_operator_reconcile_errors_total). The vectors register lazily on
+// the controller-runtime registry the first time a sample is recorded.
+// Declared beside the instrumenter glue — matching the c5c3 operator's
+// placement — rather than in internal/metrics, which keeps the keystone-only
+// collectors.
+var subReconcilerMetrics = instrumentation.NewMetrics("keystone_operator")
+
 // instrumenter wraps every sub-reconciler call with the shared duration/error
-// instrumentation, recording through metrics.SubReconciler. It indirects
+// instrumentation, recording through subReconcilerMetrics. It indirects
 // through a package-level var so unit tests can rebind it to an isolated
 // prometheus registry without polluting the controller-runtime production
 // registry. Production code MUST NOT reassign it.
-var instrumenter = instrumentation.NewInstrumenter(metrics.SubReconciler, subReconcilerConditionTypes)
+var instrumenter = instrumentation.NewInstrumenter(subReconcilerMetrics, subReconcilerConditionTypes)
 
 // instrumentSubReconciler wraps a sub-reconciler call, observing duration on
 // every path (success, error, panic) and recording an error count if fn

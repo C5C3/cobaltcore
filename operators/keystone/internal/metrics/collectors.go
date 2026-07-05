@@ -12,17 +12,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
-
-	"github.com/c5c3/forge/internal/common/instrumentation"
 )
-
-// SubReconciler holds the shared sub-reconciler instrumentation metrics
-// (keystone_operator_reconcile_duration_seconds and
-// keystone_operator_reconcile_errors_total). The vectors register lazily on
-// the controller-runtime registry the first time a sample is recorded. The
-// controller's instrumentation layer drives these via an
-// instrumentation.Instrumenter.
-var SubReconciler = instrumentation.NewMetrics("keystone_operator")
 
 // dbSyncDurationBuckets are the histogram bucket boundaries for
 // keystone_operator_db_sync_duration_seconds. DB sync

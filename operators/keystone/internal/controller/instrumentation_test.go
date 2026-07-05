@@ -128,7 +128,7 @@ func withTestInstrumenter(t *testing.T) *prometheus.Registry {
 // errors to the condition_type resolved from subReconcilerConditionTypes — the
 // behaviour of the shared Instrumenter is exercised in
 // internal/common/instrumentation; this test only verifies the keystone
-// wiring (the map and the metrics.SubReconciler prefix).
+// wiring (the map and the subReconcilerMetrics prefix).
 func TestInstrumentSubReconciler_RecordsThroughInstrumenter(t *testing.T) {
 	g := NewGomegaWithT(t)
 	reg := withTestInstrumenter(t)
