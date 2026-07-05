@@ -321,16 +321,22 @@ and the informer cache to that namespace. Keep the default only when
 ### Execution Model
 
 All seven sub-reconcilers run **strictly sequentially** — there is no parallel
-group. Each sub-reconciler call is wrapped in `instrumentSubReconciler` (see
-[Metrics Instrumentation](#metrics-instrumentation)) and follows the same
-early-return contract:
+group. The chain is a table-driven pipeline over the shared scaffolding in
+`internal/common/reconcile` (the same shape the keystone controller uses):
+each step is a `commonreconcile.Step` wrapped in `instrumentSubReconciler`
+(see [Metrics Instrumentation](#metrics-instrumentation)), and
+`commonreconcile.RunPipeline` enforces the early-return contract at a single
+call site:
 
 ```go
-if result, err := instrumentSubReconciler(ctx, "Infrastructure", func(ctx context.Context) (ctrl.Result, error) {
-    return r.reconcileInfrastructure(ctx, &cp)
-}); !result.IsZero() || err != nil {
-    return r.updateStatus(ctx, &cp, result, err)
+pipeline := []commonreconcile.Step{
+    {Name: "Infrastructure", Fn: func(ctx context.Context) (ctrl.Result, error) {
+        return r.reconcileInfrastructure(ctx, &cp)
+    }},
+    // ... DBCredentials, AdminPassword, Keystone, KORC, AdminCredential, Catalog
 }
+result, err := commonreconcile.RunPipeline(ctx, instrumentSubReconciler, pipeline)
+return r.updateStatus(ctx, &cp, statusBefore, result, err)
 ```
 
 This guarantees:
@@ -342,16 +348,23 @@ This guarantees:
 3. Status conditions from the failing/requeuing sub-reconciler are **always
    persisted** via `updateStatus()` before returning.
 
-Only when all seven sub-reconcilers return a zero result with no error does
-control reach `setReadyCondition(&cp)` and the final `updateStatus(ctx, &cp,
-ctrl.Result{}, nil)`.
-
 ### Status Update Pattern
 
-`updateStatus()` stamps `cp.Status.ObservedGeneration = cp.Generation`, records
-the per-service status (`setServicesStatus()`, see below), persists all condition
-changes via `r.Status().Update()`, and returns the provided `(result, error)`
-pair. When both a reconcile error and the status update fail, both errors are
+`updateStatus()` delegates to the shared `commonreconcile.UpdateStatus`: it
+stamps `cp.Status.ObservedGeneration = cp.Generation`, records the per-service
+status (`setServicesStatus()`, see below), persists all condition changes via
+`r.Status().Update()`, and returns the provided `(result, error)` pair.
+
+`Reconcile` snapshots `cp.Status` immediately after the initial Get and
+threads that snapshot into `updateStatus`, which compares the computed status
+against it with `equality.Semantic.DeepEqual` and **skips** the write when a
+pass left status unchanged — no write means no watch event and no
+`resourceVersion` churn on a converged steady-state pass. Together with the
+`watch.CRUpdatePredicate` on the controller's `For(...)` watch (which filters
+the CR's own status-only updates), this closes the self-wake loop the previous
+always-write `updateStatus` and bare `For()` allowed.
+
+When both a reconcile error and the status update fail, both errors are
 preserved via `errors.Join` so the original reconcile failure remains visible in
 controller-runtime logs:
 

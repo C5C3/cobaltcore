@@ -45,7 +45,7 @@ deploy/flux-system/
 
 ## Dockerfile
 
-**Location:** `operators/keystone/Dockerfile`
+**Location:** `operators/Dockerfile` (shared by all operators; select the binary via `--build-arg OPERATOR=keystone`)
 
 The Dockerfile uses a multi-stage build to produce a minimal, statically-linked operator
 binary in a distroless runtime image. The build context must be the workspace root
@@ -96,7 +96,7 @@ workspace file (`go.work`) contains `replace` directives pointing to relative pa
 
 ```bash
 # Correct: build from workspace root
-docker build -f operators/keystone/Dockerfile .
+docker build -f operators/Dockerfile --build-arg OPERATOR=keystone .
 
 # Incorrect: will fail because go.work references are unresolvable
 docker build operators/keystone/
@@ -136,7 +136,7 @@ In CI, `docker/metadata-action` supplements these with dynamic labels (`created`
 
 ```bash
 # From workspace root
-docker build -f operators/keystone/Dockerfile -t keystone-operator:dev .
+docker build -f operators/Dockerfile --build-arg OPERATOR=keystone -t keystone-operator:dev .
 
 # Verify
 docker run --rm keystone-operator:dev --help

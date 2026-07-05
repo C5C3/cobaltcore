@@ -304,7 +304,7 @@ Fernet and credential sub-reconciler sections for the full contract.
 │  ║  │ Sets: NetworkPolicyReady│                                            ║ │
 │  ║  └─────────────────────────┘                                            ║ │
 │  ║                                                                         ║ │
-│  ║  g.Wait() → mergeParallelConditions → shortestRequeue                   ║ │
+│  ║  g.Wait() → MergeCondition → ShortestRequeue                   ║ │
 │  ╚═══════════════════════════════╤═════════════════════════════════════════╝ │
 │                                  │                                           │
 │           ┌──────────────────────┘                                           │
@@ -348,7 +348,7 @@ Fernet and credential sub-reconciler sections for the full contract.
 │  ║  │ Sets:HPAReady│  │ Sets: BootstrapReady│  │ Sets: TrustFlushReady  │  ║ │
 │  ║  └──────────────┘  └─────────────────────┘  └────────────────────────┘  ║ │
 │  ║                                                                         ║ │
-│  ║  g.Wait() → mergeParallelConditions → shortestRequeue                   ║ │
+│  ║  g.Wait() → MergeCondition → ShortestRequeue                   ║ │
 │  ╚═══════════════════════════════╤═════════════════════════════════════════╝ │
 │           ┌──────────────────────┘                                           │
 │           ▼                                                                  │
@@ -382,26 +382,16 @@ Sub-reconcilers execute in a defined order using two execution modes:
    credential. See [Parallel Group Architecture](#parallel-group-architecture) for
    details.
 
-The chain is a table-driven pipeline. Each step is a `subReconcilerStep`
-(`name` + `fn`); the loop attempts the steps in order and funnels every exit
-path through `updateStatus` by construction:
+The chain is a table-driven pipeline over the shared scaffolding in
+`internal/common/reconcile`. Each step is a `commonreconcile.Step` (`Name` +
+`Fn`); `commonreconcile.RunPipeline` attempts the steps in order (named steps
+wrapped in `instrumentSubReconciler`, empty-`Name` steps run bare because they
+self-instrument or are intentionally uninstrumented) and the single call site
+funnels every exit path through `updateStatus` by construction:
 
 ```go
-for _, s := range pipeline {
-    var result ctrl.Result
-    var err error
-    if s.name == "" {
-        // Parallel group / config pruning: not wrapped, they self-instrument
-        // or are intentionally uninstrumented.
-        result, err = s.fn(ctx)
-    } else {
-        result, err = instrumentSubReconciler(ctx, s.name, s.fn)
-    }
-    if !result.IsZero() || err != nil {
-        return r.updateStatus(ctx, &keystone, result, err)
-    }
-}
-return r.updateStatus(ctx, &keystone, ctrl.Result{}, nil)
+result, err := commonreconcile.RunPipeline(ctx, instrumentSubReconciler, pipeline)
+return r.updateStatus(ctx, &keystone, statusBefore, result, err)
 ```
 
 This guarantees:
@@ -425,8 +415,9 @@ sub-reconcilers are merged even on partial failure.
 
 ### Status Update Pattern
 
-`updateStatus()` persists all condition changes via `r.Status().Update()` and returns
-the provided `(result, error)` pair unchanged.
+`updateStatus()` delegates to the shared `commonreconcile.UpdateStatus`: it
+persists all condition changes via `r.Status().Update()` and returns the
+provided `(result, error)` pair unchanged.
 
 `Reconcile` snapshots `keystone.Status` immediately after the initial Get and
 threads that snapshot into `updateStatus`. After aggregating `Ready` and stamping
@@ -486,7 +477,7 @@ dependencies on each other (see [Dependency Graph](#dependency-graph) below).
 `reconcilePasswordRotation` stays sequential after group 2 because it depends on
 Bootstrap having seeded the initial admin credential. A member that returns a
 non-zero result no longer short-circuits its siblings: all members run every
-pass and `shortestRequeue` aggregates their requeues.
+pass and `commonreconcile.ShortestRequeue` aggregates their requeues.
 
 **File:** `operators/keystone/internal/controller/keystone_controller.go`
 
@@ -496,16 +487,21 @@ pass and `shortestRequeue` aggregates their requeues.
 func (r *KeystoneReconciler) reconcileParallelGroup(
     ctx context.Context,
     keystone *keystonev1alpha1.Keystone,
-    subs []parallelSubReconciler,
+    subs []commonreconcile.ParallelStep[*keystonev1alpha1.Keystone],
 ) (ctrl.Result, error)
 ```
 
-Each parallel sub-reconciler is described by a `parallelSubReconciler` struct:
+The method is a thin binding of the shared
+`commonreconcile.RunParallelGroup` (errgroup, per-member `DeepCopy`,
+condition merge on partial failure, shortest-requeue aggregation) to the
+Keystone CR type. Each parallel sub-reconciler is described by a
+`commonreconcile.ParallelStep`:
 
 ```go
-type parallelSubReconciler struct {
-    conditionType string
-    fn            func(ctx context.Context, keystone *keystonev1alpha1.Keystone) (ctrl.Result, error)
+type ParallelStep[T any] struct {
+    Name          string
+    ConditionType string
+    Fn            func(ctx context.Context, cr T) (ctrl.Result, error)
 }
 ```
 
@@ -606,11 +602,12 @@ including those that succeeded before the error — are merged before returning.
 
 #### Requeue Resolution
 
-When all parallel sub-reconcilers succeed, `shortestRequeue` selects the `ctrl.Result`
-with the shortest non-zero `RequeueAfter` from the group:
+When all parallel sub-reconcilers succeed, the shared
+`commonreconcile.ShortestRequeue` selects the `ctrl.Result` with the shortest
+non-zero `RequeueAfter` from the group:
 
 ```go
-func shortestRequeue(results ...ctrl.Result) ctrl.Result
+func ShortestRequeue(results ...ctrl.Result) ctrl.Result
 ```
 
 | All results zero | Shortest non-zero | Returned result |
@@ -3369,11 +3366,11 @@ place without the other fails CI.
 ### Contract: wrap every new sub-reconciler
 
 Whenever a new sub-reconciler is added to `Reconcile` (as a pipeline
-`subReconcilerStep` or a `reconcileParallelGroup` member), it MUST be:
+`commonreconcile.Step` or a `reconcileParallelGroup` member), it MUST be:
 
-1. Added to the `pipeline` in `Reconcile` as a `subReconcilerStep` with a
-   non-empty `name`. The loop wraps named steps in
-   `instrumentSubReconciler(ctx, s.name, s.fn)`; only the parallel group
+1. Added to the `pipeline` in `Reconcile` as a `commonreconcile.Step` with a
+   non-empty `Name`. `RunPipeline` wraps named steps in
+   `instrumentSubReconciler(ctx, s.Name, s.Fn)`; only the parallel group
    (whose members self-instrument) and config pruning use an empty name and
    bypass the wrapper.
 2. Added to `subConditionTypes` in `keystone_controller.go` (so its

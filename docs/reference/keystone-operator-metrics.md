@@ -20,7 +20,8 @@ The sub-reconciler duration/error pair
 `keystone_operator_reconcile_errors_total`) is shared with the other
 forge operators. It lives in the
 [`internal/common/instrumentation`](https://github.com/c5c3/forge/blob/main/internal/common/instrumentation/instrumentation.go)
-package and is exposed as the `metrics.SubReconciler` instance, which
+package and is exposed as the `subReconcilerMetrics` instance declared beside
+the instrumenter glue in `internal/controller/instrumentation.go`, which
 registers on the controller-runtime registry lazily on first use. The
 per-CR collectors (rotation age and `db_sync`) register via the
 process-wide `sync.Once` initializer `globalCollectors()` in

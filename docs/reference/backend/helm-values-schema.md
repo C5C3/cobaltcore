@@ -17,8 +17,11 @@ operators/keystone/helm/keystone-operator/values.schema.json
 
 ::: warning Generated file
 This schema is generated from the shared source in
-`hack/gen-helm-values-schema.py`, which also emits the c5c3-operator schema from
-the same definitions so the two cannot drift. Edit the generator and run
+`hack/gen-helm-values-schema.py`, which discovers every chart under
+`operators/*/helm/*-operator/` and emits each chart's schema from the same
+definitions so they cannot drift (a new operator only needs a
+`WEBHOOK_ENABLED_DESCRIPTIONS` entry naming its CR kind). Edit the generator
+and run
 `make gen-helm-schema`; do not hand-edit `values.schema.json` —
 `make verify-helm-schema` (run in CI) fails on drift.
 :::

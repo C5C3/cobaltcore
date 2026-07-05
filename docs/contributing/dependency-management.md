@@ -77,8 +77,7 @@ fail CI because `go.work` and the per-module `go.mod` directives must agree.
 | `internal/common/go.mod`           | `go 1.X.Y`                           | Shared library module.                                                       |
 | `operators/keystone/go.mod`        | `go 1.X.Y`                           | Keystone operator module.                                                    |
 | `operators/c5c3/go.mod`            | `go 1.X.Y`                           | C5C3 ControlPlane orchestrator module.                                       |
-| `operators/keystone/Dockerfile`    | `FROM golang:1.X@sha256:…`           | Renovate maintains the floating tag and digest; only minor bumps need touching here. |
-| `operators/c5c3/Dockerfile`        | `FROM golang:1.X@sha256:…`           | Same builder line and digest as the keystone Dockerfile — keep both in lockstep.     |
+| `operators/Dockerfile`             | `FROM golang:1.X@sha256:…`           | Renovate maintains the floating tag and digest; the single parameterized Dockerfile builds every operator. |
 | `.github/workflows/ci.yaml`        | *No change.*                         | All `actions/setup-go` steps use `go-version-file: go.work`.                 |
 
 There is **no `toolchain` directive** anywhere in the workspace. We rely on
@@ -119,8 +118,8 @@ go work sync
 (cd operators/c5c3     && go test -short -timeout 5m ./...)
 ```
 
-Both operator Dockerfiles (`operators/keystone/Dockerfile` and
-`operators/c5c3/Dockerfile`) carry the same `FROM golang:1.26@sha256:…` builder line,
+The shared operator Dockerfile (`operators/Dockerfile`, parameterized via
+`--build-arg OPERATOR=<op>`) carries the `FROM golang:1.26@sha256:…` builder line,
 maintained by Renovate — confirm that the digest update has landed on `main` *before*
 opening the minor-bump PR, otherwise the builder image lags behind the `go.mod`
 directive and CI fails on the image-build job.
