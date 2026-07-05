@@ -30,6 +30,9 @@ resources:
   - keystone-db-externalsecret.yaml
   - keystone-admin-externalsecret.yaml
   - mariadb-root-password-externalsecret.yaml
+  # horizon-secret-key is the Django SECRET_KEY shim for standalone Horizon
+  # flows (per-CR OpenBao path; survives the WITH_CONTROLPLANE shim drop).
+  - horizon-secret-key-externalsecret.yaml
 
 patches:
   # MariaDB: single replica, no Galera, no MaxScale, standard storage.

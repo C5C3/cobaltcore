@@ -1291,8 +1291,10 @@ main() {
     # so the c5c3-operator HelmRelease's dependsOn is satisfied and the projected
     # Keystone CR can reconcile. c5c3-operator, k-orc, and the c5c3-charts /
     # k-orc sources are left un-suspended (the base applied them active).
-    log "WITH_CONTROLPLANE=true: deploying the c5c3 ControlPlane stack (keystone-operator, k-orc, c5c3-operator)."
+    log "WITH_CONTROLPLANE=true: deploying the c5c3 ControlPlane stack (keystone-operator, horizon-operator, k-orc, c5c3-operator)."
     kubectl patch helmrelease keystone-operator -n keystone-system \
+      --type merge -p '{"spec":{"suspend":false}}' 2>/dev/null || true
+    kubectl patch helmrelease horizon-operator -n horizon-system \
       --type merge -p '{"spec":{"suspend":false}}' 2>/dev/null || true
   elif [[ "${WITH_CONTROLPLANE}" == "true" ]]; then
     # CONTROLPLANE_OPERATORS=external: the keystone-operator, K-ORC, and

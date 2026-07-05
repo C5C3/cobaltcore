@@ -64,3 +64,4 @@ deploy/kind/prometheus/keystone-operator.json
 operators/keystone/helm/keystone-operator/charts/
 operators/c5c3/helm/c5c3-operator/charts/
 operators/horizon/helm/horizon-operator/charts/
+__pycache__/

@@ -153,9 +153,11 @@ main() {
     local cp_ns="${identity%%/*}"
     local cp_name="${identity#*/}"
     local keystone_name="${cp_name}-keystone"
+    local horizon_name="${cp_name}-horizon"
     local admin_path="kv-v2/bootstrap/${cp_ns}/${keystone_name}/admin"
+    local horizon_secret_key_path="kv-v2/bootstrap/${cp_ns}/${horizon_name}/secret-key"
 
-    log "--- Seeding ControlPlane '${identity}' (keystone='${keystone_name}') ---"
+    log "--- Seeding ControlPlane '${identity}' (keystone='${keystone_name}', horizon='${horizon_name}') ---"
 
     # Model B admin password. This bootstrap source is now read by (a) the
     # operator-projected per-ControlPlane admin-password ExternalSecret (c5c3 operator reconcileAdminPassword) and (b) the kind-only
@@ -164,6 +166,14 @@ main() {
     # later overwritten by the keystone-operator Model B rotation PushSecret.
     write_secret_if_missing "${admin_path}" \
       "password=${GENERATED_PASSWORD}"
+
+    # Horizon Django SECRET_KEY. Read by (a) the kind-only default-identity
+    # shim (deploy/kind/infrastructure/horizon-secret-key-externalsecret.yaml)
+    # and (b) per-CR ExternalSecrets in test namespaces. Generated in-pod so
+    # the cleartext never appears in host process argument lists. No
+    # PushSecret targets this path, so no mark_eso_managed is needed.
+    write_secret_if_missing "${horizon_secret_key_path}" \
+      "secret-key=${GENERATED_PASSWORD}"
     # let the Model B admin-password rotation PushSecret overwrite this
     # pre-seeded path (ESO's managed-by guard rejects it otherwise). See
     # mark_eso_managed.

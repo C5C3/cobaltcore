@@ -46,5 +46,6 @@ resources:
   - releases/memcached-operator.yaml
   - releases/openbao.yaml
   - releases/keystone-operator.yaml
+  - releases/horizon-operator.yaml
   - releases/k-orc.yaml
   - releases/c5c3-operator.yaml

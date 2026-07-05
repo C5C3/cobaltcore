@@ -1,0 +1,52 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The horizon-operator controller runs in its own dedicated horizon-system
+# Namespace; the Horizon CR and the operator-managed payload (Deployment,
+# HTTPRoute, NetworkPolicy) live in the openstack tenant Namespace.
+# dependsOn: keystone-operator is ordered first so the dashboard's identity
+# backend exists before the dashboard is projected; no mariadb-operator
+# dependency — horizon has no database (signed-cookie sessions).
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: horizon-operator
+  namespace: horizon-system
+spec:
+  interval: 30m
+  dependsOn:
+    - name: cert-manager
+      namespace: cert-manager
+    - name: memcached-operator
+      namespace: memcached-system
+    - name: external-secrets
+      namespace: external-secrets
+    - name: keystone-operator
+      namespace: keystone-system
+  chart:
+    spec:
+      chart: horizon-operator
+      version: ">=0.1.0 <1.0.0"
+      sourceRef:
+        kind: HelmRepository
+        name: c5c3-charts
+        namespace: flux-system
+  values:
+    replicas: 2
+    leaderElection:
+      enabled: true
+    image:
+      # Use latest until a versioned release (v* git tag) publishes a semver image tag.
+      # The chart default (appVersion) only works once 0.1.0 has been released.
+      tag: latest
+  install:
+    crds: CreateReplace
+    createNamespace: true
+    remediation:
+      retries: 3
+  upgrade:
+    crds: CreateReplace
+    remediation:
+      retries: 3
