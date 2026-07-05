@@ -208,24 +208,26 @@ spec:
     - patch:
         file: 01-patch-image.yaml
   # ── Step 5 (keystone-rolling-update-availability): ───────────────────────
-  # Poll Deployment.status.availableReplicas every 2 s for 75 s and record the
-  # minimum. The default strategy (maxUnavailable=0, maxSurge=1) must keep
-  # availableReplicas >= spec.replicas at every sampling point.
+  # Poll Deployment.status.availableReplicas every 2 s over a window DERIVED
+  # from the live Deployment and record the minimum. The default strategy
+  # (maxUnavailable=0, maxSurge=1) must keep availableReplicas >= spec.replicas
+  # at every sampling point.
   #
-  # BUDGET NOTE The 75 s sampling window is sized against the default
-  # terminationGracePeriodSeconds=30 s + default preStopSleepSeconds=5 s (see
-  # keystonev1alpha1.DefaultTerminationGracePeriodSeconds and
-  # DefaultPreStopSleepSeconds). In practice a surge-then-drain cycle for an
-  # idle Keystone pod completes well before the 30 s grace ceiling — empirically
-  # ~20–25 s per cycle — so three cycles (maxSurge=1 over 3 replicas) land in
-  # roughly 60–75 s. If either default is raised in a future change (or this
-  # test's CR overrides them), revisit this budget: a grace of 60 s pushes the
-  # per-cycle worst case to ~65 s, so three cycles would need ~195 s and this
-  # loop would become silently flaky unless the window is widened accordingly.
+  # BUDGET NOTE The sampling window is no longer hard-coded to 75 s (which was
+  # silently coupled to the default terminationGracePeriodSeconds=30 s +
+  # preStopSleepSeconds=5 s). Instead it is derived from the rendered
+  # Deployment: WINDOW = replicas * (terminationGracePeriodSeconds +
+  # preStopSleep), where preStopSleep is parsed from the keystone container's
+  # rendered preStop `sleep N` command. A maxSurge=1 rollout drains one pod at a
+  # time, so the worst case is one grace-plus-preStop cycle per replica. With
+  # today's defaults this is 3 * (30 + 5) = 105 s; a CR that raises either field
+  # scales the window automatically instead of turning the loop silently flaky.
+  # The script `timeout` is 300 s so the derived window (plus a 30 s margin
+  # guard below) fits today's defaults and reasonable future ones.
   - name: keystone-rolling-update-availability
     try:
     - script:
-        timeout: 120s
+        timeout: 300s
         content: |
           set -eu
           # Derive the expected replica count from the Deployment's
@@ -240,7 +242,40 @@ spec:
             echo "FAIL: could not read .spec.replicas from deployment"
             exit 1
           fi
-          DEADLINE=$(( $(date +%s) + 75 ))
+          # Derive the drain budget from the live Deployment instead of a
+          # hardcoded 75 s: terminationGracePeriodSeconds + the keystone
+          # container's rendered preStop `sleep N`. Guard both extracted values
+          # explicitly so a schema change surfaces as a clear FAIL rather than an
+          # arithmetic error.
+          TGPS=$(kubectl -n openstack get deploy keystone-rolling-update \
+            -o jsonpath='{.spec.template.spec.terminationGracePeriodSeconds}')
+          if [ -z "$TGPS" ]; then
+            echo "FAIL: could not read terminationGracePeriodSeconds from deployment"
+            exit 1
+          fi
+          # Select the last command element via the [-1:] slice: jsonpath
+          # renders the whole array as JSON ('["/bin/sh","-c","sleep 5"]'),
+          # while the slice yields the bare "sleep N" string.
+          PRESTOP_CMD=$(kubectl -n openstack get deploy keystone-rolling-update \
+            -o jsonpath='{.spec.template.spec.containers[?(@.name=="keystone")].lifecycle.preStop.exec.command[-1:]}')
+          PRESTOP=$(printf '%s\n' "$PRESTOP_CMD" | awk '{print $NF}')
+          case "$PRESTOP" in
+            ''|*[!0-9]*)
+              echo "FAIL: could not parse preStop sleep seconds (got '$PRESTOP' from '$PRESTOP_CMD')"
+              exit 1
+              ;;
+          esac
+          WINDOW=$(( EXPECTED_REPLICAS * (TGPS + PRESTOP) ))
+          echo "Derived sampling window: replicas=$EXPECTED_REPLICAS TGPS=$TGPS preStop=$PRESTOP window=${WINDOW}s"
+          # Fail loudly if the derived window (plus a scheduling-jitter margin)
+          # would exceed the chainsaw script timeout, rather than letting
+          # chainsaw kill the script mid-sample.
+          if [ "$(( WINDOW + 30 ))" -gt 300 ]; then
+            echo "FAIL: derived window ${WINDOW}s + 30s margin exceeds the 300s script timeout;"
+            echo "      raise the timeout: field on this step to accommodate the CR's grace/preStop values"
+            exit 1
+          fi
+          DEADLINE=$(( $(date +%s) + WINDOW ))
           MIN=999
           SAMPLES=0
           while [ $(date +%s) -lt $DEADLINE ]; do
