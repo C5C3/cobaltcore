@@ -23,6 +23,7 @@ import (
 
 	. "github.com/onsi/gomega"
 
+	"github.com/c5c3/forge/internal/common/instrumentation"
 	"github.com/c5c3/forge/operators/keystone/internal/metrics"
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 )
@@ -130,13 +131,17 @@ func TestDashboardReferencesOnlyRegisteredMetrics(t *testing.T) {
 	// probe samples clearly distinguishable if they ever leak into a
 	// live registry.
 	//
-	// DECISION: use the production metrics surface (the lazily-registered
-	// metrics.SubReconciler instance and the metrics.* per-CR helpers, not
-	// the private newCollectorsForTest) so this test exercises the exact
-	// code path that wires production collectors onto ctrlmetrics.Registry.
+	// DECISION: use the production metrics surface (a lazily-registered
+	// instrumentation.NewMetrics instance with the production prefix and the
+	// metrics.* per-CR helpers, not the private newCollectorsForTest) so this
+	// test exercises the exact code path that wires production collectors
+	// onto ctrlmetrics.Registry. The instance mirrors the controller
+	// package's subReconcilerMetrics glue; this test binary is its only
+	// keystone_operator registrant, so no duplicate registration occurs.
 	const probe = "dashboard_test_probe"
-	metrics.SubReconciler.ObserveReconcileDuration(probe, 0)
-	metrics.SubReconciler.RecordReconcileError(probe, probe)
+	subReconcilerMetrics := instrumentation.NewMetrics("keystone_operator")
+	subReconcilerMetrics.ObserveReconcileDuration(probe, 0)
+	subReconcilerMetrics.RecordReconcileError(probe, probe)
 	g.Expect(metrics.SetKeyRotationAge(probe, probe, probe, time.Now())).To(Succeed())
 	metrics.RecordDBSync(probe, probe, "succeeded", 0)
 
