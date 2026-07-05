@@ -118,6 +118,20 @@ coordination.k8s.io/leases rule required for leader election.
     - update
     - patch
     - delete
+# horizon.openstack.c5c3.io - horizons
+# The ControlPlane reconciler projects and Owns a Horizon child.
+- apiGroups:
+    - horizon.openstack.c5c3.io
+  resources:
+    - horizons
+  verbs:
+    - get
+    - list
+    - watch
+    - create
+    - update
+    - patch
+    - delete
 # openstack.k-orc.cloud - applicationcredentials, services, endpoints, users,
 # domains. Minted/owned by reconcileKORC and reconcileCatalog; users +
 # domains are imported (unmanaged) so the admin ApplicationCredential's UserRef

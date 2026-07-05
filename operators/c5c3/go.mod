@@ -4,6 +4,7 @@ go 1.26.4
 
 require (
 	github.com/c5c3/forge/internal/common v0.0.0
+	github.com/c5c3/forge/operators/horizon v0.0.0-00010101000000-000000000000
 	github.com/c5c3/forge/operators/keystone v0.0.0
 	github.com/external-secrets/external-secrets/apis v0.0.0-20260703090725-44686553759b
 	github.com/k-orc/openstack-resource-controller/v2 v2.6.0
@@ -85,5 +86,7 @@ require (
 )
 
 replace github.com/c5c3/forge/internal/common => ../../internal/common
+
+replace github.com/c5c3/forge/operators/horizon => ../horizon
 
 replace github.com/c5c3/forge/operators/keystone => ../keystone

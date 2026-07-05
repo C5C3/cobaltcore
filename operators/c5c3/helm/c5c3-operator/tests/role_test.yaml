@@ -50,7 +50,7 @@ tests:
     asserts:
       - lengthEqual:
           path: rules
-          count: 18
+          count: 19
 
   - it: should grant full CRUD on controlplanes
     set:
@@ -232,6 +232,29 @@ tests:
               - keystone.openstack.c5c3.io
             resources:
               - keystones
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  - it: should grant full CRUD on horizons
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - horizon.openstack.c5c3.io
+            resources:
+              - horizons
             verbs:
               - get
               - list

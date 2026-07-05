@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 
+	horizonv1alpha1 "github.com/c5c3/forge/operators/horizon/api/v1alpha1"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
@@ -56,6 +57,7 @@ const (
 	conditionTypeInfrastructureReady  = "InfrastructureReady"
 	conditionTypeDBCredentialsReady   = "DBCredentialsReady" //nolint:gosec // G101 false positive: condition type name, not a credential.
 	conditionTypeKeystoneReady        = "KeystoneReady"
+	conditionTypeHorizonReady         = "HorizonReady"
 	conditionTypeKORCReady            = "KORCReady"
 	conditionTypeAdminCredentialReady = "AdminCredentialReady" //nolint:gosec // G101 false positive: condition type name, not a credential.
 	conditionTypeAdminPasswordReady   = "AdminPasswordReady"   //nolint:gosec // G101 false positive: condition type name, not a credential.
@@ -79,6 +81,7 @@ var subConditionTypes = []string{
 	conditionTypeInfrastructureReady,
 	conditionTypeDBCredentialsReady,
 	conditionTypeKeystoneReady,
+	conditionTypeHorizonReady,
 	conditionTypeKORCReady,
 	conditionTypeAdminCredentialReady,
 	conditionTypeAdminPasswordReady,
@@ -110,6 +113,7 @@ type ControlPlaneReconciler struct {
 // +kubebuilder:rbac:groups=k8s.mariadb.com,resources=mariadbs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=memcached.c5c3.io,resources=memcacheds,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=keystone.openstack.c5c3.io,resources=keystones,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=horizon.openstack.c5c3.io,resources=horizons,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=openstack.k-orc.cloud,resources=applicationcredentials;services;endpoints;users;domains,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=external-secrets.io,resources=externalsecrets;pushsecrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=external-secrets.io,resources=clustersecretstores,verbs=get;list;watch
@@ -205,6 +209,12 @@ func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		}},
 		{Name: "Keystone", Fn: func(ctx context.Context) (ctrl.Result, error) {
 			return r.reconcileKeystone(ctx, &cp)
+		}},
+		// Horizon runs after Keystone: the dashboard projection is gated on
+		// KeystoneReady (the dashboard authenticates against the Keystone
+		// child).
+		{Name: "Horizon", Fn: func(ctx context.Context) (ctrl.Result, error) {
+			return r.reconcileHorizon(ctx, &cp)
 		}},
 		{Name: "KORC", Fn: func(ctx context.Context) (ctrl.Result, error) {
 			return r.reconcileKORC(ctx, &cp)
@@ -310,6 +320,10 @@ func (r *ControlPlaneReconciler) parkDuplicateControlPlane(ctx context.Context, 
 // projected Keystone service readiness.
 const keystoneServiceKey = "keystone"
 
+// horizonServiceKey is the key under which status.services reports the
+// Horizon dashboard.
+const horizonServiceKey = "horizon"
+
 // setServicesStatus records status.services and status.updatePhase on every
 // status write (#476). Both fields were declared on ControlPlaneStatus but never
 // written. status.updatePhase is fixed at Idle until the release-update state
@@ -324,17 +338,25 @@ func setServicesStatus(cp *c5c3v1alpha1.ControlPlane) {
 	// ControlPlane (spec.services.keystone set). When unset the ControlPlane
 	// manages no Keystone, so status.services stays empty rather than reporting a
 	// service that does not exist.
-	if cp.Spec.Services.Keystone == nil {
-		cp.Status.Services = nil
-		return
-	}
-	cp.Status.Services = []c5c3v1alpha1.ServiceStatus{
-		{
+	// One entry per configured service (keystone, horizon), in a stable
+	// order; unmanaged services are omitted rather than reported as a
+	// service that does not exist.
+	var services []c5c3v1alpha1.ServiceStatus
+	if cp.Spec.Services.Keystone != nil {
+		services = append(services, c5c3v1alpha1.ServiceStatus{
 			Name:    keystoneServiceKey,
 			Ready:   conditions.AllTrue(cp.Status.Conditions, conditionTypeKeystoneReady),
 			Release: cp.Spec.OpenStackRelease,
-		},
+		})
 	}
+	if cp.Spec.Services.Horizon != nil {
+		services = append(services, c5c3v1alpha1.ServiceStatus{
+			Name:    horizonServiceKey,
+			Ready:   conditions.AllTrue(cp.Status.Conditions, conditionTypeHorizonReady),
+			Release: cp.Spec.OpenStackRelease,
+		})
+	}
+	cp.Status.Services = services
 }
 
 // controlPlaneSecretNameExtractor is the controller-runtime IndexerFunc registered
@@ -450,6 +472,7 @@ func (r *ControlPlaneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&c5c3v1alpha1.ControlPlane{}, builder.WithPredicates(watch.CRUpdatePredicate())).
 		Owns(&mariadbv1alpha1.MariaDB{}).
 		Owns(&keystonev1alpha1.Keystone{}).
+		Owns(&horizonv1alpha1.Horizon{}).
 		Owns(&orcv1alpha1.ApplicationCredential{}).
 		Owns(&orcv1alpha1.Service{}).
 		Owns(&orcv1alpha1.Endpoint{}).

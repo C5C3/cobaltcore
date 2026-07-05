@@ -43,6 +43,7 @@ import (
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 	"github.com/c5c3/forge/operators/c5c3/internal/testutil"
+	horizonv1alpha1 "github.com/c5c3/forge/operators/horizon/api/v1alpha1"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
 
@@ -143,6 +144,10 @@ func integrationManagedControlPlane(name, namespace string) *c5c3v1alpha1.Contro
 				Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{
 					Replicas: ptr.To(int32(3)),
 				},
+				// Horizon is enabled so the full chain covers the second
+				// service: projection gated on KeystoneReady, and
+				// status.services reports two entries.
+				Horizon: &c5c3v1alpha1.ServiceHorizonSpec{},
 			},
 			// One global oslo.policy override so the test can assert the reconciler
 			// merges it into the projected Keystone CR's PolicyOverrides.
@@ -299,6 +304,27 @@ func simulateKeystoneReadyWhenPresent(t testing.TB, ctx context.Context, c clien
 		Message: "simulated ready",
 	})
 	g.Expect(c.Status().Update(ctx, ks)).To(Succeed(), "set Keystone Ready=True")
+}
+
+// simulateHorizonReadyWhenPresent waits for the projected Horizon child, then
+// sets its aggregate Ready condition True so reconcileHorizon's mirror flips
+// HorizonReady (there is no horizon-operator running in envtest).
+func simulateHorizonReadyWhenPresent(t testing.TB, ctx context.Context, c client.Client, key client.ObjectKey) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+
+	hz := &horizonv1alpha1.Horizon{}
+	g.Eventually(func() error {
+		return c.Get(ctx, key, hz)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "Horizon child should be created")
+
+	meta.SetStatusCondition(&hz.Status.Conditions, metav1.Condition{
+		Type:    "Ready",
+		Status:  metav1.ConditionTrue,
+		Reason:  "AllReady",
+		Message: "simulated ready",
+	})
+	g.Expect(c.Status().Update(ctx, hz)).To(Succeed(), "set Horizon Ready=True")
 }
 
 // simulateApplicationCredentialAvailableWhenPresent waits for the owned K-ORC
@@ -549,6 +575,23 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	simulateKeystoneReadyWhenPresent(t, ctx, c, client.ObjectKey{Name: keystoneName(cp), Namespace: ns.Name})
 	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeKeystoneReady, metav1.ConditionTrue, itEventuallyTimeout)
 
+	// --- Phase 2.5: Horizon child. Projection is gated on KeystoneReady, so
+	// the child only appears now; assert its operator-derived spec before
+	// simulating readiness. ---
+	horizonKey := client.ObjectKey{Name: horizonName(cp), Namespace: ns.Name}
+	projectedHorizon := &horizonv1alpha1.Horizon{}
+	g.Eventually(func() error {
+		return c.Get(ctx, horizonKey, projectedHorizon)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "Horizon child should be projected once KeystoneReady")
+	g.Expect(projectedHorizon.Spec.KeystoneEndpoint).To(
+		Equal(fmt.Sprintf("http://%s.%s.svc.cluster.local:5000/v3", keystoneName(cp), ns.Name)),
+		"keystoneEndpoint must be derived top-down from the naming convention",
+	)
+	g.Expect(projectedHorizon.Spec.Cache.ClusterRef).NotTo(BeNil())
+	g.Expect(projectedHorizon.Spec.Cache.ClusterRef.Name).To(Equal("openstack-memcached"))
+	simulateHorizonReadyWhenPresent(t, ctx, c, horizonKey)
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeHorizonReady, metav1.ConditionTrue, itEventuallyTimeout)
+
 	// --- Phase 3: K-ORC admin ApplicationCredential. ---
 	simulateApplicationCredentialAvailableWhenPresent(t, ctx, c,
 		client.ObjectKey{Name: adminAppCredentialName(cp), Namespace: ns.Name})
@@ -606,6 +649,7 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 		conditionTypeInfrastructureReady,
 		conditionTypeDBCredentialsReady,
 		conditionTypeKeystoneReady,
+		conditionTypeHorizonReady,
 		conditionTypeKORCReady,
 		conditionTypeAdminCredentialReady,
 		conditionTypeCatalogReady,
@@ -623,6 +667,13 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	// status.observedGeneration tracks the reconciled generation.
 	g.Expect(final.Status.ObservedGeneration).To(Equal(final.Generation),
 		"status.observedGeneration should match the CR generation")
+
+	// status.services reports one entry per configured service, both ready.
+	g.Expect(final.Status.Services).To(HaveLen(2), "two services are configured (keystone, horizon)")
+	g.Expect(final.Status.Services[0].Name).To(Equal("keystone"))
+	g.Expect(final.Status.Services[0].Ready).To(BeTrue())
+	g.Expect(final.Status.Services[1].Name).To(Equal("horizon"))
+	g.Expect(final.Status.Services[1].Ready).To(BeTrue())
 
 	// Every condition records the generation it was observed against.
 	for _, cond := range final.Status.Conditions {

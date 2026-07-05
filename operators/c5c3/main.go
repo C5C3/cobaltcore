@@ -23,6 +23,7 @@ import (
 	"github.com/c5c3/forge/internal/common/bootstrap"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 	"github.com/c5c3/forge/operators/c5c3/internal/controller"
+	horizonv1alpha1 "github.com/c5c3/forge/operators/horizon/api/v1alpha1"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 
 	"k8s.io/apimachinery/pkg/runtime"
@@ -44,6 +45,7 @@ func init() {
 	utilruntime.Must(c5c3v1alpha1.AddToScheme(scheme))
 	// Keystone CR — the ControlPlane reconciler projects and Owns a Keystone child.
 	utilruntime.Must(keystonev1alpha1.AddToScheme(scheme))
+	utilruntime.Must(horizonv1alpha1.AddToScheme(scheme))
 	// MariaDB CR — projected and Owned by reconcileInfrastructure.
 	utilruntime.Must(mariadbv1alpha1.AddToScheme(scheme))
 	// ESO PushSecret (v1alpha1) and ClusterSecretStore/ExternalSecret (v1) — the
