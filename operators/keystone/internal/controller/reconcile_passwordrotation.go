@@ -22,6 +22,7 @@ import (
 
 	"github.com/c5c3/forge/internal/common/conditions"
 	"github.com/c5c3/forge/internal/common/config"
+	"github.com/c5c3/forge/internal/common/deployment"
 	"github.com/c5c3/forge/internal/common/job"
 	"github.com/c5c3/forge/internal/common/secrets"
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
@@ -372,7 +373,7 @@ func adminPasswordRotationCronJob(keystone *keystonev1alpha1.Keystone, scriptCon
 								Name:            "admin-password-rotate",
 								Image:           image,
 								Command:         []string{"/scripts/admin_password_rotate.sh"},
-								SecurityContext: restrictedSecurityContext(),
+								SecurityContext: deployment.RestrictedSecurityContext(),
 								Env: []corev1.EnvVar{
 									{Name: "SECRET_NAME", Value: adminPasswordStagingSecretName(keystone)},
 									{Name: "SECRET_NAMESPACE", ValueFrom: &corev1.EnvVarSource{

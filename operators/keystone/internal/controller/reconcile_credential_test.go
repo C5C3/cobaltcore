@@ -31,6 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 
+	"github.com/c5c3/forge/internal/common/deployment"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
@@ -735,7 +736,7 @@ func TestReconcileCredentialKeys_CronJobSpec(t *testing.T) {
 // Deployment-side coverage in reconcile_deployment_test.go.
 
 // TestCredentialRotationCronJob_PodSecurityContextSetsFSGroup verifies that
-// the rotation Pod template carries SecurityContext.FSGroup = openstackUID so
+// the rotation Pod template carries SecurityContext.FSGroup = deployment.OpenStackUID so
 // the kubelet group-owns mounted Secret volumes by the openstack GID. Combined
 // with DefaultMode 0o400 this lets keystone-manage read keys while the
 // directory passes upstream Keystone's "key_repository is world readable"
@@ -751,7 +752,7 @@ func TestCredentialRotationCronJob_PodSecurityContextSetsFSGroup(t *testing.T) {
 	psc := cronJob.Spec.JobTemplate.Spec.Template.Spec.SecurityContext
 	g.Expect(psc).NotTo(BeNil(), "PodSecurityContext must be set so FSGroup applies to rotation Pod")
 	g.Expect(psc.FSGroup).NotTo(BeNil(), "FSGroup must be set on rotation PodSecurityContext")
-	g.Expect(*psc.FSGroup).To(Equal(openstackUID), "rotation Pod FSGroup must equal the openstack UID/GID (42424)")
+	g.Expect(*psc.FSGroup).To(Equal(deployment.OpenStackUID), "rotation Pod FSGroup must equal the openstack UID/GID (42424)")
 
 	// do not set any other Pod-level SecurityContext field. Pod-level
 	// RunAs* / Seccomp / SELinux / AppArmor would conflict with or override

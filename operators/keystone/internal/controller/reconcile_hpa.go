@@ -9,7 +9,6 @@ import (
 	"fmt"
 
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 
@@ -74,57 +73,5 @@ func (r *KeystoneReconciler) reconcileHPA(ctx context.Context, keystone *keyston
 // server would reject. Metrics are added for CPU and/or memory utilization based
 // on the autoscaling spec.
 func buildKeystoneHPA(keystone *keystonev1alpha1.Keystone) *autoscalingv2.HorizontalPodAutoscaler {
-	autoscaling := keystone.Spec.Autoscaling
-
-	minReplicas := autoscaling.MinReplicas
-	if minReplicas == nil {
-		defaultMin := effectiveReplicas(keystone)
-		minReplicas = &defaultMin
-	}
-
-	name := subResourceName(keystone)
-	hpa := &autoscalingv2.HorizontalPodAutoscaler{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: keystone.Namespace,
-			Labels:    commonLabels(keystone),
-		},
-		Spec: autoscalingv2.HorizontalPodAutoscalerSpec{
-			ScaleTargetRef: autoscalingv2.CrossVersionObjectReference{
-				APIVersion: "apps/v1",
-				Kind:       "Deployment",
-				Name:       name,
-			},
-			MinReplicas: minReplicas,
-			MaxReplicas: autoscaling.MaxReplicas,
-		},
-	}
-
-	if autoscaling.TargetCPUUtilization != nil {
-		hpa.Spec.Metrics = append(hpa.Spec.Metrics, autoscalingv2.MetricSpec{
-			Type: autoscalingv2.ResourceMetricSourceType,
-			Resource: &autoscalingv2.ResourceMetricSource{
-				Name: corev1.ResourceCPU,
-				Target: autoscalingv2.MetricTarget{
-					Type:               autoscalingv2.UtilizationMetricType,
-					AverageUtilization: autoscaling.TargetCPUUtilization,
-				},
-			},
-		})
-	}
-
-	if autoscaling.TargetMemoryUtilization != nil {
-		hpa.Spec.Metrics = append(hpa.Spec.Metrics, autoscalingv2.MetricSpec{
-			Type: autoscalingv2.ResourceMetricSourceType,
-			Resource: &autoscalingv2.ResourceMetricSource{
-				Name: corev1.ResourceMemory,
-				Target: autoscalingv2.MetricTarget{
-					Type:               autoscalingv2.UtilizationMetricType,
-					AverageUtilization: autoscaling.TargetMemoryUtilization,
-				},
-			},
-		})
-	}
-
-	return hpa
+	return deployment.BuildHPA(keystone.Namespace, subResourceName(keystone), commonLabels(keystone), &keystone.Spec.Deployment, keystone.Spec.Autoscaling)
 }

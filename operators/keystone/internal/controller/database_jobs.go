@@ -12,6 +12,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/c5c3/forge/internal/common/deployment"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
 
@@ -108,7 +109,7 @@ func buildDBJob(keystone *keystonev1alpha1.Keystone, configMapName, image, nameS
 						Name:            nameSuffix,
 						Image:           image,
 						Command:         command,
-						SecurityContext: restrictedSecurityContext(),
+						SecurityContext: deployment.RestrictedSecurityContext(),
 						// Override [database].connection via oslo.config env-var so every
 						// db_sync variant (db-sync, expand, migrate, contract, schema-check)
 						// reads the DB URL from the derived Secret instead of the ConfigMap.

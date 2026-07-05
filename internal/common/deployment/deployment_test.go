@@ -17,6 +17,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
@@ -29,8 +30,6 @@ func newScheme() *runtime.Scheme {
 	_ = autoscalingv2.AddToScheme(s)
 	return s
 }
-
-func ptr[T any](v T) *T { return &v }
 
 func testOwner() *corev1.ConfigMap {
 	return &corev1.ConfigMap{
@@ -49,7 +48,7 @@ func testDeployment() *appsv1.Deployment {
 			Namespace: "default",
 		},
 		Spec: appsv1.DeploymentSpec{
-			Replicas: ptr(int32(3)),
+			Replicas: ptr.To(int32(3)),
 			Selector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{"app": "test"},
 			},
@@ -117,7 +116,7 @@ func TestEnsureDeployment_updatesExisting(t *testing.T) {
 		Build()
 
 	updated := testDeployment()
-	updated.Spec.Replicas = ptr(int32(5))
+	updated.Spec.Replicas = ptr.To(int32(5))
 
 	ready, err := EnsureDeployment(context.Background(), c, s, owner, updated)
 	g.Expect(err).NotTo(HaveOccurred())
@@ -344,7 +343,7 @@ func TestEnsureDeployment_preservesLiveReplicasWhenDesiredNil(t *testing.T) {
 
 	// The live Deployment has been scaled to 5 by the HPA.
 	existing := testDeployment()
-	existing.Spec.Replicas = ptr(int32(5))
+	existing.Spec.Replicas = ptr.To(int32(5))
 	c := fake.NewClientBuilder().
 		WithScheme(s).
 		WithObjects(owner, existing).
@@ -765,7 +764,7 @@ func TestIsDeploymentReady_true(t *testing.T) {
 	g := NewGomegaWithT(t)
 	deploy := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Generation: 2},
-		Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(3))},
+		Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(int32(3))},
 		Status: appsv1.DeploymentStatus{
 			ObservedGeneration: 2,
 			ReadyReplicas:      3,
@@ -781,7 +780,7 @@ func TestIsDeploymentReady_false_observedGenerationLag(t *testing.T) {
 	g := NewGomegaWithT(t)
 	deploy := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Generation: 3},
-		Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(3))},
+		Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(int32(3))},
 		Status: appsv1.DeploymentStatus{
 			ObservedGeneration: 2,
 			ReadyReplicas:      3,
@@ -796,7 +795,7 @@ func TestIsDeploymentReady_false_observedGenerationLag(t *testing.T) {
 func TestIsDeploymentReady_false_notEnoughReplicas(t *testing.T) {
 	g := NewGomegaWithT(t)
 	deploy := &appsv1.Deployment{
-		Spec: appsv1.DeploymentSpec{Replicas: ptr(int32(3))},
+		Spec: appsv1.DeploymentSpec{Replicas: ptr.To(int32(3))},
 		Status: appsv1.DeploymentStatus{
 			ReadyReplicas: 1,
 			Conditions: []appsv1.DeploymentCondition{
@@ -810,7 +809,7 @@ func TestIsDeploymentReady_false_notEnoughReplicas(t *testing.T) {
 func TestIsDeploymentReady_false_noCondition(t *testing.T) {
 	g := NewGomegaWithT(t)
 	deploy := &appsv1.Deployment{
-		Spec:   appsv1.DeploymentSpec{Replicas: ptr(int32(1))},
+		Spec:   appsv1.DeploymentSpec{Replicas: ptr.To(int32(1))},
 		Status: appsv1.DeploymentStatus{ReadyReplicas: 1},
 	}
 	g.Expect(IsDeploymentReady(deploy)).To(BeFalse())
@@ -819,7 +818,7 @@ func TestIsDeploymentReady_false_noCondition(t *testing.T) {
 func TestIsDeploymentReady_false_noStatus(t *testing.T) {
 	g := NewGomegaWithT(t)
 	deploy := &appsv1.Deployment{
-		Spec: appsv1.DeploymentSpec{Replicas: ptr(int32(3))},
+		Spec: appsv1.DeploymentSpec{Replicas: ptr.To(int32(3))},
 	}
 	g.Expect(IsDeploymentReady(deploy)).To(BeFalse())
 }
@@ -1038,7 +1037,7 @@ func testHPA() *autoscalingv2.HorizontalPodAutoscaler {
 				Kind:       "Deployment",
 				Name:       "test-deploy",
 			},
-			MinReplicas: ptr(int32(1)),
+			MinReplicas: ptr.To(int32(1)),
 			MaxReplicas: 5,
 			Metrics: []autoscalingv2.MetricSpec{
 				{
@@ -1047,7 +1046,7 @@ func testHPA() *autoscalingv2.HorizontalPodAutoscaler {
 						Name: corev1.ResourceCPU,
 						Target: autoscalingv2.MetricTarget{
 							Type:               autoscalingv2.UtilizationMetricType,
-							AverageUtilization: ptr(int32(80)),
+							AverageUtilization: ptr.To(int32(80)),
 						},
 					},
 				},

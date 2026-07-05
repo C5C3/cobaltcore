@@ -28,6 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
+	"github.com/c5c3/forge/internal/common/deployment"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
@@ -435,7 +436,7 @@ func TestReconcileDeployment_AutoscalingPreservesLiveReplicas(t *testing.T) {
 // restrict mode on mounted Fernet/credential key Secret volumes.
 
 // TestBuildKeystoneDeployment_PodSecurityContextSetsFSGroup verifies that the
-// Pod template carries SecurityContext.FSGroup = openstackUID so that mounted
+// Pod template carries SecurityContext.FSGroup = deployment.OpenStackUID so that mounted
 // Secret volumes are owned by the openstack group, satisfying the upstream
 // Keystone "key_repository is world readable" check.
 // All other PodSecurityContext fields must remain nil — Pod-level FSGroup is
@@ -448,7 +449,7 @@ func TestBuildKeystoneDeployment_PodSecurityContextSetsFSGroup(t *testing.T) {
 	psc := deploy.Spec.Template.Spec.SecurityContext
 	g.Expect(psc).NotTo(BeNil(), "PodSecurityContext must be set so FSGroup applies")
 	g.Expect(psc.FSGroup).NotTo(BeNil(), "FSGroup must be set on PodSecurityContext")
-	g.Expect(*psc.FSGroup).To(Equal(openstackUID), "FSGroup must equal the openstack UID/GID (42424)")
+	g.Expect(*psc.FSGroup).To(Equal(deployment.OpenStackUID), "FSGroup must equal the openstack UID/GID (42424)")
 
 	// do not set any other Pod-level SecurityContext field. Pod-level
 	// RunAs* / Seccomp / SELinux / AppArmor would conflict with or override

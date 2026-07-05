@@ -5,11 +5,11 @@
 package controller
 
 import (
-	"testing"
-
 	. "github.com/onsi/gomega"
 
 	corev1 "k8s.io/api/core/v1"
+
+	"github.com/c5c3/forge/internal/common/deployment"
 )
 
 // findContainerByName returns the container with the given name from a slice,
@@ -56,21 +56,9 @@ func expectRestrictedSecurityContext(g Gomega, container *corev1.Container) {
 
 	// RunAsUser must be set to the openstack user UID (42424).
 	g.Expect(sc.RunAsUser).NotTo(BeNil())
-	g.Expect(*sc.RunAsUser).To(Equal(openstackUID))
+	g.Expect(*sc.RunAsUser).To(Equal(deployment.OpenStackUID))
 
 	// RunAsGroup must be set to the openstack group GID (42424).
 	g.Expect(sc.RunAsGroup).NotTo(BeNil())
-	g.Expect(*sc.RunAsGroup).To(Equal(openstackUID))
-}
-
-// TestRestrictedSecurityContext verifies that restrictedSecurityContext() returns
-// a *corev1.SecurityContext with all five PSS Restricted profile fields set
-// correctly (: through).
-func TestRestrictedSecurityContext(t *testing.T) {
-	g := NewGomegaWithT(t)
-
-	expectRestrictedSecurityContext(g, &corev1.Container{
-		Name:            "test",
-		SecurityContext: restrictedSecurityContext(),
-	})
+	g.Expect(*sc.RunAsGroup).To(Equal(deployment.OpenStackUID))
 }

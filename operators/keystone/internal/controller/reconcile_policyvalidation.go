@@ -18,6 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/c5c3/forge/internal/common/conditions"
+	"github.com/c5c3/forge/internal/common/deployment"
 	"github.com/c5c3/forge/internal/common/job"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
@@ -172,7 +173,7 @@ func buildPolicyValidationJob(keystone *keystonev1alpha1.Keystone, configMapName
 							"--namespace", "keystone",
 							"--config-dir", "/etc/keystone/keystone.conf.d/",
 						},
-						SecurityContext:          restrictedSecurityContext(),
+						SecurityContext:          deployment.RestrictedSecurityContext(),
 						TerminationMessagePolicy: corev1.TerminationMessageFallbackToLogsOnError,
 						VolumeMounts: []corev1.VolumeMount{{
 							Name:      "config",

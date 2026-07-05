@@ -13,6 +13,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 
+	"github.com/c5c3/forge/internal/common/deployment"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
 
@@ -94,7 +95,7 @@ func keyRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName, scri
 							// could not read them; upstream Keystone logs a "key_repository is
 							// world readable" WARNING via fernet_utils._check_key_repository
 							// for any default-mode (0o644) workaround.
-							SecurityContext: &corev1.PodSecurityContext{FSGroup: ptr.To(openstackUID)},
+							SecurityContext: &corev1.PodSecurityContext{FSGroup: ptr.To(deployment.OpenStackUID)},
 							InitContainers: []corev1.Container{{
 								Name:  "copy-keys",
 								Image: image,
@@ -103,7 +104,7 @@ func keyRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName, scri
 								// emptyDir mode and re-introduce the world-readable directory for the
 								// rotation Pod.
 								Command:         []string{"sh", "-c", fmt.Sprintf("install -m 0400 %s/* %s/", srcMountPath, keyDir)},
-								SecurityContext: restrictedSecurityContext(),
+								SecurityContext: deployment.RestrictedSecurityContext(),
 								VolumeMounts: []corev1.VolumeMount{
 									{Name: srcVolName, MountPath: srcMountPath, ReadOnly: true},
 									{Name: keyVolName, MountPath: keyDir},
@@ -116,7 +117,7 @@ func keyRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName, scri
 								// this container. Currently runs as BestEffort QoS. See reconcile_deployment.go
 								// containerResources() for the pattern used by the keystone container.
 								Command:         []string{"/scripts/" + p.keyKind + "_rotate.sh"},
-								SecurityContext: restrictedSecurityContext(),
+								SecurityContext: deployment.RestrictedSecurityContext(),
 								Env: []corev1.EnvVar{
 									// SECRET_NAME points at the staging Secret — the CronJob SA
 									// is only permitted to patch the staging Secret, never the

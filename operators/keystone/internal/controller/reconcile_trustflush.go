@@ -17,6 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/c5c3/forge/internal/common/conditions"
+	"github.com/c5c3/forge/internal/common/deployment"
 	"github.com/c5c3/forge/internal/common/job"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
@@ -118,7 +119,7 @@ func trustFlushCronJob(keystone *keystonev1alpha1.Keystone, configMapName string
 								Name:            "trust-flush",
 								Image:           image,
 								Command:         cmd,
-								SecurityContext: restrictedSecurityContext(),
+								SecurityContext: deployment.RestrictedSecurityContext(),
 								// Override [database].connection via oslo.config env-var so the
 								// trust-flush CronJob reads the DB URL from the derived Secret
 								// instead of the ConfigMap.
