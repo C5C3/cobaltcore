@@ -2767,10 +2767,10 @@ func BenchmarkReconcile_FullReconcile_WithLatency(b *testing.B) {
 	}
 }
 
-// --- isGatewayAPIAvailable (production-hardening) ---
+// --- Gateway API availability probe (production-hardening) ---
 
 // fakeRESTMapper implements meta.RESTMapper just far enough for the
-// RESTMapping call made by isGatewayAPIAvailable. Availability is driven by
+// RESTMapping call made by gateway.IsGVKAvailable. Availability is driven by
 // the keys in the "available" set.
 type fakeRESTMapper struct {
 	meta.RESTMapper
@@ -2801,7 +2801,7 @@ func TestIsGatewayAPIAvailable_CRDMissing_ReturnsFalse(t *testing.T) {
 	g.Expect(gateway.IsGVKAvailable(m, httpRouteGVK)).To(BeFalse())
 }
 
-// --- isCertManagerAvailable (issue #475, DB-TLS Certificate lifecycle) ---
+// --- cert-manager availability probe (issue #475, DB-TLS Certificate lifecycle) ---
 
 func TestIsCertManagerAvailable_NilMapper_ReturnsFalse(t *testing.T) {
 	g := NewGomegaWithT(t)

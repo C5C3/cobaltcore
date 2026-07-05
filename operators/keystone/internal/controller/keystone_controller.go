@@ -21,7 +21,6 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -37,6 +36,7 @@ import (
 
 	"github.com/c5c3/forge/internal/common/bootstrap"
 	"github.com/c5c3/forge/internal/common/conditions"
+	"github.com/c5c3/forge/internal/common/gateway"
 	"github.com/c5c3/forge/internal/common/healthcheck"
 	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	"github.com/c5c3/forge/internal/common/watch"
@@ -176,51 +176,21 @@ type KeystoneReconciler struct {
 }
 
 // httpRouteGVK identifies the HTTPRoute kind the operator would watch when
-// Gateway API is installed.
+// Gateway API is installed. Availability is probed at setup time via the
+// shared gateway.IsGVKAvailable RESTMapper probe.
 var httpRouteGVK = schema.GroupVersionKind{
 	Group:   gatewayv1.GroupVersion.Group,
 	Version: gatewayv1.GroupVersion.Version,
 	Kind:    "HTTPRoute",
 }
 
-// isGatewayAPIAvailable probes the manager's RESTMapper for the HTTPRoute kind.
-// Returns false when the mapper has no mapping (CRD not installed) and true
-// when the mapping exists. Other mapper errors are treated as "unknown";
-// returning false in that case is conservative — the operator starts without
-// the HTTPRoute watch and a clear status condition replaces the cryptic
-// controller-runtime "no matches for kind" startup error.
-func isGatewayAPIAvailable(mapper meta.RESTMapper) bool {
-	if mapper == nil {
-		return false
-	}
-	if _, err := mapper.RESTMapping(httpRouteGVK.GroupKind(), httpRouteGVK.Version); err != nil {
-		return false
-	}
-	return true
-}
-
 // certificateGVK identifies the cert-manager Certificate kind the operator
-// owns when cert-manager is installed.
+// owns when cert-manager is installed. Availability is probed at setup time
+// via the shared gateway.IsGVKAvailable RESTMapper probe (issue #475).
 var certificateGVK = schema.GroupVersionKind{
 	Group:   certmanagerv1.SchemeGroupVersion.Group,
 	Version: certmanagerv1.SchemeGroupVersion.Version,
 	Kind:    "Certificate",
-}
-
-// isCertManagerAvailable probes the manager's RESTMapper for the Certificate
-// kind, mirroring isGatewayAPIAvailable. Returns false when the mapper has no
-// mapping (CRD not installed); other mapper errors are treated conservatively
-// as "not available" so the operator starts without the Certificate watch and
-// reconcileDatabaseTLS skips the disable-path delete rather than erroring with
-// "no matches for kind Certificate" (issue #475).
-func isCertManagerAvailable(mapper meta.RESTMapper) bool {
-	if mapper == nil {
-		return false
-	}
-	if _, err := mapper.RESTMapping(certificateGVK.GroupKind(), certificateGVK.Version); err != nil {
-		return false
-	}
-	return true
 }
 
 // +kubebuilder:rbac:groups=keystone.openstack.c5c3.io,resources=keystones,verbs=get;list;watch;create;update;patch;delete
@@ -704,7 +674,7 @@ func (r *KeystoneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// controller to fail at Start with "no matches for kind HTTPRoute"
 	// when the CRD is missing, preventing every Keystone CR from being
 	// reconciled — including those that do not use spec.gateway.
-	r.gatewayAPIAvailable = isGatewayAPIAvailable(mgr.GetRESTMapper())
+	r.gatewayAPIAvailable = gateway.IsGVKAvailable(mgr.GetRESTMapper(), httpRouteGVK)
 	setupLog := ctrl.Log.WithName("keystone-setup")
 	if r.gatewayAPIAvailable {
 		setupLog.Info("Gateway API detected; enabling HTTPRoute watch and reconciliation")
@@ -717,7 +687,7 @@ func (r *KeystoneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// so reconcileDatabaseTLS knows whether a managed Certificate can exist on
 	// the TLS-disable path. spec.database.tls is optional, so the operator must
 	// run on clusters without cert-manager (issue #475).
-	r.certManagerAvailable = isCertManagerAvailable(mgr.GetRESTMapper())
+	r.certManagerAvailable = gateway.IsGVKAvailable(mgr.GetRESTMapper(), certificateGVK)
 	if r.certManagerAvailable {
 		setupLog.Info("cert-manager detected; enabling Certificate watch for DatabaseTLSReady")
 	} else {
