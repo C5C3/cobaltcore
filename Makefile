@@ -448,6 +448,34 @@ e2e-controlplane:
 	@kubectl get crd controlplanes.c5c3.io >/dev/null 2>&1 || { echo 'the c5c3 ControlPlane stack is not installed; run `WITH_CONTROLPLANE=true make deploy-infra` (and deploy K-ORC + the operators) first' >&2; exit 1; }
 	chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e/c5c3/full-controlplane-keystone/
 
+.PHONY: e2e-operator-upgrade
+# e2e-operator-upgrade runs the keystone-operator helm-upgrade-in-place suite:
+# it fetches the last released chart+image from GHCR, installs it as the
+# baseline, then `helm upgrade`s to the locally built chart+CRDs and asserts the
+# deployed Keystone survives (Ready persists, installedRelease unchanged, no
+# re-bootstrap). Because the suite manages the operator release itself, it lives
+# OUTSIDE tests/e2e/ and must run against a cluster with the infra stack
+# deployed but NO keystone-operator release yet (this target installs the
+# baseline). The two preflights are kept separate so a kubectl/cluster
+# reachability failure is not conflated with a pre-existing-operator failure —
+# see review pattern
+# .planwerk/review_patterns/distinguish-collapsed-failure-modes-in-preflight-checks.md
+# This target satisfies the CI-to-Makefile parity expected by
+# .planwerk/review_patterns/maintain-ci-to-makefile-parity-for-new-jobs.md so
+# developers can reproduce the e2e-operator-upgrade CI job locally. Requires
+# `helm registry login ghcr.io` for the baseline chart/image pull; KIND_CLUSTER
+# (default forge) selects the kind cluster to load the baseline image into.
+e2e-operator-upgrade:
+	@kubectl version --request-timeout=2s >/dev/null 2>&1 || { echo 'kubectl is not configured or no cluster is reachable' >&2; exit 1; }
+	@if helm status keystone-operator -n keystone-system >/dev/null 2>&1; then \
+		echo 'a keystone-operator release already exists in keystone-system; this suite installs the released operator itself and must run against a cluster without a pre-deployed keystone-operator (teardown the release or use a fresh kind cluster)' >&2; \
+		exit 1; \
+	fi
+	hack/ci-fetch-released-operator.sh
+	OPERATOR=keystone IMAGE_REPO=ghcr.io/c5c3/keystone-operator IMAGE_TAG=latest \
+		CHART_DIR=_output/operator-upgrade/keystone-operator hack/ci-deploy-operator.sh
+	chainsaw test --config tests/e2e-operator-upgrade/chainsaw-config.yaml tests/e2e-operator-upgrade/
+
 .PHONY: tempest-test
 # tempest-test runs Tempest API tests against a deployed OpenStack service.
 # Requires a running kind cluster with the service deployed.

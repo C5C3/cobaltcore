@@ -24,6 +24,16 @@
 #                        template via --set monitoring.serviceMonitor.enabled=true
 #                        (default: false). Used by the e2e-prometheus CI job
 #                       .
+#   CHART_DIR          — Chart directory to install from (default:
+#                        operators/${OPERATOR}/helm/${OPERATOR}-operator). Set
+#                        this to a chart pulled from GHCR (e.g. via
+#                        hack/ci-fetch-released-operator.sh) to install a
+#                        previously-released operator as the upgrade baseline.
+#                        When CHART_DIR/charts/ already exists (a pulled chart
+#                        tarball vendors its operator-library dependency), the
+#                        `helm dependency build` step is skipped — the file://
+#                        dependency path in a pulled chart does not resolve
+#                        outside the repo.
 #
 # Reusable operator deployment script.
 # set -euo pipefail, SPDX Apache-2.0 header, shellcheck-clean.
@@ -49,7 +59,11 @@ WITH_PROMETHEUS="${WITH_PROMETHEUS:-false}"
 # CRs themselves are still reconciled in the `openstack` Namespace.
 NAMESPACE="${NAMESPACE:-keystone-system}"
 
-CHART_PATH="operators/${OPERATOR}/helm/${OPERATOR}-operator"
+# CHART_DIR defaults to the in-repo chart but may point at a chart pulled from
+# GHCR (upgrade-baseline install). Trailing slash is normalised so path joins
+# below are stable regardless of how the caller passes it.
+CHART_PATH="${CHART_DIR:-operators/${OPERATOR}/helm/${OPERATOR}-operator}"
+CHART_PATH="${CHART_PATH%/}"
 
 # ---------------------------------------------------------------------------
 # 1. Install CRDs (idempotent — kubectl apply succeeds if already present)
@@ -64,7 +78,20 @@ kubectl wait crd --all --for condition=Established --timeout=60s
 # file:// path, so `helm install` needs it vendored into charts/ first.
 # --skip-refresh: the dependency is local, so no chart-repository refresh is
 # required (and it avoids failing on a developer's stale repo cache).
-helm dependency build --skip-refresh "${CHART_PATH}/"
+#
+# A chart pulled from GHCR (CHART_DIR set) already vendors operator-library
+# under charts/, and its file:// dependency path does not resolve outside the
+# repo tree — so skip `helm dependency build` only for that pulled-chart case.
+# For the in-repo chart (CHART_DIR unset) the file:// path resolves, so always
+# rebuild: an unconditional `helm dependency build` self-corrects a stale
+# charts/ left by a previous local run after the operator-library dependency
+# version in Chart.yaml/Chart.lock has moved on. Gating the skip on a populated
+# charts/ alone would silently reuse that stale vendored copy.
+if [[ -n "${CHART_DIR:-}" ]] && [[ -d "${CHART_PATH}/charts" ]] && [[ -n "$(ls -A "${CHART_PATH}/charts" 2>/dev/null)" ]]; then
+  echo "Pulled chart with vendored dependencies (${CHART_PATH}/charts) — skipping dependency build"
+else
+  helm dependency build --skip-refresh "${CHART_PATH}/"
+fi
 
 # ---------------------------------------------------------------------------
 # 2. Deploy operator via Helm

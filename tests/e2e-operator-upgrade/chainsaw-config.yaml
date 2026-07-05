@@ -1,0 +1,48 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw configuration for the operator helm-upgrade-in-place E2E suite.
+#
+# This suite lives OUTSIDE tests/e2e/ on purpose: it manages the operator Helm
+# release itself (installs the last released chart, then `helm upgrade`s to the
+# locally built chart+CRDs). It must NOT be swept up by `make e2e` or the
+# per-CR `e2e-operator` job, both of which assume a single pre-deployed
+# operator and reconcile only Keystone CRs.
+#
+# Serial (parallel: 1): the suite mutates the cluster-wide operator Deployment
+# and CRDs, so concurrent tests would race over the operator release.
+#
+# apiVersion: v1alpha2 Configuration is the correct pairing with v1alpha1 Test
+# manifests, matching tests/e2e/chainsaw-config.yaml and
+# tests/e2e-chaos/chainsaw-config.yaml.
+apiVersion: chainsaw.kyverno.io/v1alpha2
+kind: Configuration
+metadata:
+  name: cloud-operator-e2e-operator-upgrade
+spec:
+  # ── Timeouts ────────────────────────────────────────────────────────────
+  # assert 300s / cleanup 120s match the chaos config: a fresh managed-mode
+  # deployment plus a rolling operator upgrade needs several reconcile cycles.
+  timeouts:
+    apply: 30s
+    assert: 300s
+    cleanup: 120s
+    delete: 30s
+    error: 30s
+    exec: 30s
+
+  # ── Cleanup ─────────────────────────────────────────────────────────────
+  cleanup:
+    skipDelete: false
+
+  # ── Execution ───────────────────────────────────────────────────────────
+  execution:
+    failFast: true
+    parallel: 1
+
+  # ── Report ──────────────────────────────────────────────────────────────
+  report:
+    format: JUNIT-TEST
+    name: chainsaw-operator-upgrade-report
+    path: _output/reports

@@ -1,0 +1,237 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test: keystone-operator helm-upgrade-in-place.
+#
+# All existing "upgrade" suites upgrade the Keystone *service* image; none
+# upgrades the operator/CRDs. Given the cross-release bootstrap history, an
+# operator upgrade-in-place is the highest-risk untested path. This suite
+# installs the last released chart+image from GHCR (baseline install performed
+# by the job before chainsaw runs), brings a managed-mode Keystone to Ready,
+# then `helm upgrade`s to the locally built chart + CRDs and asserts the
+# deployed Keystone survives the operator upgrade:
+#   - Ready stays True (AllReady),
+#   - status.installedRelease is unchanged (still 2025.2 — it tracks the
+#     Keystone service image tag, not the operator version),
+#   - the bootstrap Job is NOT re-run (its UID is unchanged and exactly one
+#     bootstrap Job exists), guarding the cross-version re-bootstrap failure
+#     mode (bootstrap is gated on the admin-password digest, not the image).
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-operator-helm-upgrade
+spec:
+  namespace: openstack
+  steps:
+  # ── Step 1: CR to Ready under the RELEASED operator ────────────────────
+  - name: deploy-cr-on-released-operator
+    try:
+    - apply:
+        file: 00-keystone-cr.yaml
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-op-upgrade
+            namespace: openstack
+          status:
+            installedRelease: "2025.2"
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: |
+          kubectl get keystone keystone-op-upgrade -n openstack -o yaml 2>&1 || true
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=100 2>&1 || true
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=100 --previous 2>&1 || true
+          helm history keystone-operator -n keystone-system 2>&1 || true
+          kubectl get events -n openstack --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 2: Capture the pre-upgrade bootstrap Job UID ──────────────────
+  # Stash it in a ConfigMap (durable, cross-step; annotation keys with slashes
+  # complicate jsonpath). Idempotent apply so a local re-run does not fail on
+  # AlreadyExists. The bootstrap Job persists (TTLSecondsAfterFinished is
+  # intentionally unset), so its UID is a stable anchor for "no re-bootstrap".
+  - name: capture-baseline
+    try:
+    - script:
+        shell: bash
+        content: |
+          set -euo pipefail
+          BOOT_UID=$(kubectl get job keystone-op-upgrade-bootstrap -n openstack \
+            -o jsonpath='{.metadata.uid}')
+          if [ -z "$BOOT_UID" ]; then
+            echo "FAIL: could not read bootstrap Job UID before upgrade"
+            exit 1
+          fi
+          echo "Baseline bootstrap Job UID: ${BOOT_UID}"
+          kubectl create configmap keystone-op-upgrade-baseline -n openstack \
+            --from-literal=bootstrap-uid="${BOOT_UID}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+  # ── Step 3: helm upgrade to the locally built chart + CRDs ─────────────
+  # Chainsaw runs scripts with the test directory as CWD, so ../../.. is the
+  # repo root. Helm does not upgrade CRDs (crds/ is install-only), so apply
+  # the new CRDs explicitly first.
+  - name: helm-upgrade-operator
+    try:
+    - script:
+        shell: bash
+        timeout: 180s
+        content: |
+          set -euo pipefail
+          REPO_ROOT="$(cd ../../.. && pwd)"
+          CHART="${REPO_ROOT}/operators/keystone/helm/keystone-operator"
+          IMAGE_REPO="${IMAGE_PREFIX:-ghcr.io/c5c3}/keystone-operator"
+          echo "Applying new CRDs from ${CHART}/crds/ ..."
+          kubectl apply -f "${CHART}/crds/"
+          echo "Vendoring chart dependencies ..."
+          helm dependency build --skip-refresh "${CHART}"
+          echo "helm upgrade keystone-operator -> ${IMAGE_REPO}:dev ..."
+          helm upgrade keystone-operator "${CHART}" \
+            --namespace keystone-system \
+            --set "image.repository=${IMAGE_REPO}" \
+            --set image.tag=dev \
+            --set image.pullPolicy=Never \
+            --wait --timeout 120s
+          kubectl -n keystone-system rollout status deploy/keystone-operator --timeout=120s
+    catch:
+    - script:
+        content: |
+          kubectl get deploy keystone-operator -n keystone-system -o yaml 2>&1 || true
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=100 2>&1 || true
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=100 --previous 2>&1 || true
+          helm history keystone-operator -n keystone-system 2>&1 || true
+          kubectl get events -n keystone-system --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 4: Assert the operator Deployment actually rolled ─────────────
+  # Spec-only assertions are not proof — verify the rollout completed
+  # (updatedReplicas == replicas) and the manager container runs the :dev image.
+  - name: assert-operator-rolled
+    try:
+    - script:
+        shell: bash
+        content: |
+          set -euo pipefail
+          IMG=$(kubectl get deploy keystone-operator -n keystone-system \
+            -o jsonpath='{.spec.template.spec.containers[?(@.name=="manager")].image}')
+          echo "manager image: ${IMG}"
+          case "${IMG}" in
+            *:dev) echo "OK: manager runs the :dev image" ;;
+            *) echo "FAIL: manager image is not :dev (got ${IMG})"; exit 1 ;;
+          esac
+          UPD=$(kubectl get deploy keystone-operator -n keystone-system \
+            -o jsonpath='{.status.updatedReplicas}')
+          REP=$(kubectl get deploy keystone-operator -n keystone-system \
+            -o jsonpath='{.status.replicas}')
+          if [ -z "${UPD}" ] || [ "${UPD}" != "${REP}" ]; then
+            echo "FAIL: rollout incomplete (updatedReplicas=${UPD:-0} replicas=${REP:-0})"
+            exit 1
+          fi
+          echo "OK: rollout complete (updatedReplicas=${UPD} == replicas=${REP})"
+  # ── Step 5: Force one full reconcile by the NEW operator ───────────────
+  # Patch a real spec field (spec.deployment.replicas 1 → 2) so
+  # metadata.generation advances. An annotation poke would NOT bump generation
+  # (with the /status subresource the apiserver increments generation only on
+  # .spec changes), which is exactly what would make the Step-6
+  # observedGeneration check tautological: observedGeneration == generation was
+  # already true from the released operator's last status write and would stay
+  # true whether or not the NEW operator ever reconciled. Bumping generation is
+  # what lets Step 6 prove the NEW operator drove a post-upgrade reconcile to
+  # completion. Same field and pattern as tests/e2e/keystone/semantic-invariants.
+  - name: poke-reconcile
+    try:
+    - script:
+        shell: bash
+        content: |
+          set -euo pipefail
+          GEN_BEFORE=$(kubectl get keystone keystone-op-upgrade -n openstack \
+            -o jsonpath='{.metadata.generation}')
+          kubectl patch keystone keystone-op-upgrade -n openstack --type=merge \
+            -p '{"spec":{"deployment":{"replicas":2}}}'
+          GEN_AFTER=$(kubectl get keystone keystone-op-upgrade -n openstack \
+            -o jsonpath='{.metadata.generation}')
+          echo "generation before poke=${GEN_BEFORE} after poke=${GEN_AFTER}"
+          if [ -z "${GEN_AFTER}" ] || [ "${GEN_AFTER}" -le "${GEN_BEFORE:-0}" ]; then
+            echo "FAIL: spec patch did not advance metadata.generation (${GEN_BEFORE} -> ${GEN_AFTER})"
+            exit 1
+          fi
+  # ── Step 6: Assert Ready persists and no re-bootstrap happened ─────────
+  - name: assert-after-upgrade
+    try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-op-upgrade
+            namespace: openstack
+          status:
+            installedRelease: "2025.2"
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - script:
+        shell: bash
+        # 3m poll for observedGeneration catch-up plus the bootstrap checks; the
+        # 30s default exec timeout is far too short. Stays under the suite's
+        # 300s assert budget.
+        timeout: 3m
+        content: |
+          set -euo pipefail
+          # Poll until status.observedGeneration catches up to the (Step-5
+          # bumped) metadata.generation — this is what proves the NEW operator
+          # drove a post-upgrade reconcile to completion. The declarative
+          # Ready=True assert above cannot prove it on its own: Ready was already
+          # True at the pre-poke generation and stays True across the bump, so it
+          # would pass even before the NEW operator processed the new generation.
+          # Polled via kubectl rather than a declarative assert because a
+          # chainsaw `(expr): value` under `status` cannot resolve
+          # metadata.generation (it is nesting-scoped to status).
+          deadline=$(( $(date +%s) + 150 ))
+          while :; do
+            GEN=$(kubectl get keystone keystone-op-upgrade -n openstack \
+              -o jsonpath='{.metadata.generation}')
+            OBS=$(kubectl get keystone keystone-op-upgrade -n openstack \
+              -o jsonpath='{.status.observedGeneration}')
+            if [ -n "${OBS}" ] && [ "${OBS}" = "${GEN}" ]; then
+              echo "OK: observedGeneration=${OBS} caught up to generation=${GEN}"
+              break
+            fi
+            if [ "$(date +%s)" -ge "${deadline}" ]; then
+              echo "FAIL: observedGeneration (${OBS}) never caught up to generation (${GEN}) — new operator did not fully reconcile"
+              exit 1
+            fi
+            sleep 2
+          done
+          BASE=$(kubectl get configmap keystone-op-upgrade-baseline -n openstack \
+            -o jsonpath='{.data.bootstrap-uid}')
+          CUR=$(kubectl get job keystone-op-upgrade-bootstrap -n openstack \
+            -o jsonpath='{.metadata.uid}')
+          echo "bootstrap Job UID baseline=${BASE} current=${CUR}"
+          if [ -z "${BASE}" ] || [ "${BASE}" != "${CUR}" ]; then
+            echo "FAIL: bootstrap Job UID changed across upgrade — the operator re-bootstrapped"
+            exit 1
+          fi
+          COUNT=$(kubectl get jobs -n openstack -o name 2>/dev/null \
+            | grep -c '/keystone-op-upgrade-bootstrap$' || true)
+          if [ "${COUNT}" != "1" ]; then
+            echo "FAIL: expected exactly one bootstrap Job, found ${COUNT}"
+            exit 1
+          fi
+          echo "OK: bootstrap Job unchanged (no re-bootstrap), exactly one bootstrap Job"
+    catch:
+    - script:
+        content: |
+          kubectl get keystone keystone-op-upgrade -n openstack -o yaml 2>&1 || true
+          kubectl get jobs -n openstack 2>&1 || true
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=100 2>&1 || true
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=100 --previous 2>&1 || true
+          helm history keystone-operator -n keystone-system 2>&1 || true
+          kubectl get events -n openstack --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+    finally:
+    - script:
+        content: |
+          # Baseline stash is script-created, so chainsaw does not track it for
+          # cleanup — remove it so a local re-run starts clean.
+          kubectl delete configmap keystone-op-upgrade-baseline -n openstack --ignore-not-found 2>&1 || true
