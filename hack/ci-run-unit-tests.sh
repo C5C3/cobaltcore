@@ -86,13 +86,45 @@ docker run --rm --network host \
     if [ -f test-requirements.txt ]; then
       TEST_REQ_ARG="-r test-requirements.txt"
     fi
-    uv pip install --prefix /var/lib/openstack \
-      --constraint /workspace/upper-constraints.txt \
-      $TEST_REQ_ARG "${INSTALL_SPEC}" stestr testtools
-    stestr init
-    set +e
-    stestr run $EXCLUDE_LIST_ARG; TEST_EXIT=$?
-    set -e
-    stestr last --subunit > /workspace/results/testresults.subunit || true
+    if [ -f .stestr.conf ]; then
+      uv pip install --prefix /var/lib/openstack \
+        --constraint /workspace/upper-constraints.txt \
+        $TEST_REQ_ARG "${INSTALL_SPEC}" stestr testtools
+      stestr init
+      set +e
+      stestr run $EXCLUDE_LIST_ARG; TEST_EXIT=$?
+      set -e
+      stestr last --subunit > /workspace/results/testresults.subunit || true
+    else
+      # pytest fallback for services without a .stestr.conf (e.g. horizon,
+      # whose Django suite runs under pytest). The exclude-list mechanism
+      # (EXCLUDE_LIST_ARG) is stestr-only and intentionally unused here.
+      # Services shipping tools/unit_tests.sh (horizon) drive their own
+      # pytest invocation with the correct per-project settings modules;
+      # otherwise fall back to a plain pytest run.
+      uv pip install --prefix /var/lib/openstack \
+        --constraint /workspace/upper-constraints.txt \
+        $TEST_REQ_ARG "${INSTALL_SPEC}" pytest
+      set +e
+      if [ -f tools/unit_tests.sh ]; then
+        bash tools/unit_tests.sh "$(pwd)"; TEST_EXIT=$?
+        # Collect JUnit XML. tools/unit_tests.sh is expected to write reports to
+        # test_reports/*.xml; warn loudly when none are found so a green run
+        # with an empty result set is diagnosable instead of silently swallowed
+        # by the previous "cp ... 2>/dev/null || true".
+        copied=0
+        for report in test_reports/*.xml; do
+          [ -e "$report" ] || continue
+          cp "$report" /workspace/results/
+          copied=1
+        done
+        if [ "$copied" -eq 0 ]; then
+          echo "::warning::No JUnit XML found under test_reports/*.xml for ${SERVICE_NAME}; result collection is empty" >&2
+        fi
+      else
+        python -m pytest --junitxml=/workspace/results/testresults.xml; TEST_EXIT=$?
+      fi
+      set -e
+    fi
     exit $TEST_EXIT
   '
