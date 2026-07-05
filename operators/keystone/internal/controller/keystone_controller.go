@@ -7,7 +7,6 @@ package controller
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -16,7 +15,6 @@ import (
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
-	"golang.org/x/sync/errgroup"
 	"golang.org/x/time/rate"
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
@@ -24,7 +22,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	policyv1 "k8s.io/api/policy/v1"
-	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -46,6 +43,7 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	"github.com/c5c3/forge/internal/common/conditions"
+	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 	"github.com/c5c3/forge/operators/keystone/internal/metrics"
 )
@@ -236,17 +234,6 @@ func isCertManagerAvailable(mapper meta.RESTMapper) bool {
 	return true
 }
 
-// subReconcilerStep is one entry in the sequential reconcile pipeline driven by
-// Reconcile. name is the sub_reconciler metric label resolved via
-// subReconcilerConditionTypes. A step with an empty name is NOT wrapped in
-// instrumentSubReconciler because it either self-instruments its members (the
-// parallel group, whose parallelSubReconciler entries instrument individually)
-// or is intentionally uninstrumented (config pruning) (issue #467).
-type subReconcilerStep struct {
-	name string
-	fn   func(ctx context.Context) (ctrl.Result, error)
-}
-
 // +kubebuilder:rbac:groups=keystone.openstack.c5c3.io,resources=keystones,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=keystone.openstack.c5c3.io,resources=keystones/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=keystone.openstack.c5c3.io,resources=keystones/finalizers,verbs=update
@@ -342,8 +329,8 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	// Deployment. DBConnectionSecret runs before Deployment in this pipeline, so
 	// the value is populated by the time the Deployment step reads it.
 	var dbConnectionHash string
-	pipeline := []subReconcilerStep{
-		{name: "Secrets", fn: func(ctx context.Context) (ctrl.Result, error) {
+	pipeline := []commonreconcile.Step{
+		{Name: "Secrets", Fn: func(ctx context.Context) (ctrl.Result, error) {
 			return r.reconcileSecrets(ctx, &keystone)
 		}},
 		// reconcileDatabaseTLS provisions the client certificate Keystone
@@ -351,7 +338,7 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		// CA/client-cert material referenced by spec.database.tls must be synced
 		// first) and before DBConnectionSecret (which appends the ssl_* DSN
 		// parameters pointing at the issued client keypair).
-		{name: "DatabaseTLS", fn: func(ctx context.Context) (ctrl.Result, error) {
+		{Name: "DatabaseTLS", Fn: func(ctx context.Context) (ctrl.Result, error) {
 			return r.reconcileDatabaseTLS(ctx, &keystone)
 		}},
 		// reconcileDBConnectionSecret materialises the DB URL into the derived
@@ -359,7 +346,7 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		// credentials must be synced) and before Config (the derived Secret is
 		// consumed by downstream pods/Jobs). Failures set SecretsReady=False —
 		// the same condition used by reconcileSecrets.
-		{name: "DBConnectionSecret", fn: func(ctx context.Context) (ctrl.Result, error) {
+		{Name: "DBConnectionSecret", Fn: func(ctx context.Context) (ctrl.Result, error) {
 			var (
 				res ctrl.Result
 				err error
@@ -373,7 +360,7 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		// wrapper captures the ConfigMap name via closure and, on failure, flips
 		// SecretsReady=False via markConfigFailed so the aggregate Ready cannot
 		// stay stale-True at the new generation (issue #467).
-		{name: "Config", fn: func(ctx context.Context) (ctrl.Result, error) {
+		{Name: "Config", Fn: func(ctx context.Context) (ctrl.Result, error) {
 			var err error
 			configMapName, err = r.reconcileConfig(ctx, &keystone)
 			if err != nil {
@@ -386,40 +373,40 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		// completed. NetworkPolicy has no data dependency on the Deployment — it
 		// uses selectorLabels derived from the CR. The group's members
 		// self-instrument, so the step carries no sub_reconciler name
-		{fn: func(ctx context.Context) (ctrl.Result, error) {
-			return r.reconcileParallelGroup(ctx, &keystone, []parallelSubReconciler{
+		{Fn: func(ctx context.Context) (ctrl.Result, error) {
+			return r.reconcileParallelGroup(ctx, &keystone, []commonreconcile.ParallelStep[*keystonev1alpha1.Keystone]{
 				{
-					name:          "FernetKeys",
-					conditionType: "FernetKeysReady",
-					fn: func(ctx context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
+					Name:          "FernetKeys",
+					ConditionType: "FernetKeysReady",
+					Fn: func(ctx context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
 						return r.reconcileFernetKeys(ctx, ks, configMapName)
 					},
 				},
 				{
-					name:          "CredentialKeys",
-					conditionType: "CredentialKeysReady",
-					fn: func(ctx context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
+					Name:          "CredentialKeys",
+					ConditionType: "CredentialKeysReady",
+					Fn: func(ctx context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
 						return r.reconcileCredentialKeys(ctx, ks, configMapName)
 					},
 				},
 				{
-					name:          "NetworkPolicy",
-					conditionType: "NetworkPolicyReady",
-					fn: func(ctx context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
+					Name:          "NetworkPolicy",
+					ConditionType: "NetworkPolicyReady",
+					Fn: func(ctx context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
 						return r.reconcileNetworkPolicy(ctx, ks)
 					},
 				},
 			})
 		}},
-		{name: "Database", fn: func(ctx context.Context) (ctrl.Result, error) {
+		{Name: "Database", Fn: func(ctx context.Context) (ctrl.Result, error) {
 			return r.reconcileDatabase(ctx, &keystone, configMapName)
 		}},
 		// Policy validation gates the Deployment: invalid oslo.policy overrides
 		// must be caught before reaching running pods.
-		{name: "PolicyValidation", fn: func(ctx context.Context) (ctrl.Result, error) {
+		{Name: "PolicyValidation", Fn: func(ctx context.Context) (ctrl.Result, error) {
 			return r.reconcilePolicyValidation(ctx, &keystone, configMapName)
 		}},
-		{name: "Deployment", fn: func(ctx context.Context) (ctrl.Result, error) {
+		{Name: "Deployment", Fn: func(ctx context.Context) (ctrl.Result, error) {
 			return r.reconcileDeployment(ctx, &keystone, configMapName, dbConnectionHash)
 		}},
 		// Prune stale immutable ConfigMaps after Deployment is ready so all pods
@@ -427,7 +414,7 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		// (no sub_reconciler name); a prune failure is a config-concern failure,
 		// so it flips SecretsReady=False via markConfigFailed rather than leaving
 		// the aggregate Ready stale-True (issue #467).
-		{fn: func(ctx context.Context) (ctrl.Result, error) {
+		{Fn: func(ctx context.Context) (ctrl.Result, error) {
 			if err := r.pruneStaleConfigMaps(ctx, &keystone, configMapName); err != nil {
 				markConfigFailed(&keystone, err)
 				return ctrl.Result{}, err
@@ -451,40 +438,40 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		// CredentialKeys/NetworkPolicy group above (issue #361). PasswordRotation
 		// stays sequential after the group because it depends on Bootstrap having
 		// seeded the initial admin credential.
-		{fn: func(ctx context.Context) (ctrl.Result, error) {
-			return r.reconcileParallelGroup(ctx, &keystone, []parallelSubReconciler{
+		{Fn: func(ctx context.Context) (ctrl.Result, error) {
+			return r.reconcileParallelGroup(ctx, &keystone, []commonreconcile.ParallelStep[*keystonev1alpha1.Keystone]{
 				{
-					name:          "HTTPRoute",
-					conditionType: conditionTypeHTTPRouteReady,
-					fn: func(ctx context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
+					Name:          "HTTPRoute",
+					ConditionType: conditionTypeHTTPRouteReady,
+					Fn: func(ctx context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
 						return r.reconcileHTTPRoute(ctx, ks)
 					},
 				},
 				{
-					name:          "HealthCheck",
-					conditionType: conditionTypeKeystoneAPIReady,
-					fn: func(ctx context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
+					Name:          "HealthCheck",
+					ConditionType: conditionTypeKeystoneAPIReady,
+					Fn: func(ctx context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
 						return r.reconcileHealthCheck(ctx, ks)
 					},
 				},
 				{
-					name:          "HPA",
-					conditionType: "HPAReady",
-					fn: func(ctx context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
+					Name:          "HPA",
+					ConditionType: "HPAReady",
+					Fn: func(ctx context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
 						return r.reconcileHPA(ctx, ks)
 					},
 				},
 				{
-					name:          "Bootstrap",
-					conditionType: "BootstrapReady",
-					fn: func(ctx context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
+					Name:          "Bootstrap",
+					ConditionType: "BootstrapReady",
+					Fn: func(ctx context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
 						return r.reconcileBootstrap(ctx, ks, configMapName)
 					},
 				},
 				{
-					name:          "TrustFlush",
-					conditionType: "TrustFlushReady",
-					fn: func(ctx context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
+					Name:          "TrustFlush",
+					ConditionType: "TrustFlushReady",
+					Fn: func(ctx context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
 						return r.reconcileTrustFlush(ctx, ks, configMapName)
 					},
 				},
@@ -494,29 +481,16 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		// seeded the initial admin credential so the rotation CronJob and
 		// PushSecret never race the bootstrap seed; configMapName is accepted for
 		// call-site symmetry only — the rotate script needs no keystone config
-		{name: "PasswordRotation", fn: func(ctx context.Context) (ctrl.Result, error) {
+		{Name: "PasswordRotation", Fn: func(ctx context.Context) (ctrl.Result, error) {
 			return r.reconcilePasswordRotation(ctx, &keystone, configMapName)
 		}},
 	}
 
-	for _, s := range pipeline {
-		var (
-			result ctrl.Result
-			err    error
-		)
-		if s.name == "" {
-			result, err = s.fn(ctx)
-		} else {
-			result, err = instrumentSubReconciler(ctx, s.name, s.fn)
-		}
-		if !result.IsZero() || err != nil {
-			return r.updateStatus(ctx, &keystone, statusBefore, result, err)
-		}
-	}
-
-	// The aggregate Ready condition is recomputed inside updateStatus, which
-	// every return path — this final success path included — funnels through.
-	return r.updateStatus(ctx, &keystone, statusBefore, ctrl.Result{}, nil)
+	// commonreconcile.RunPipeline short-circuits on the first non-zero result
+	// or error; both the short-circuit and the fully-successful chain funnel
+	// through updateStatus, which recomputes the aggregate Ready condition.
+	result, err := commonreconcile.RunPipeline(ctx, instrumentSubReconciler, pipeline)
+	return r.updateStatus(ctx, &keystone, statusBefore, result, err)
 }
 
 // reconcileDelete drives the finalizer cleanup when the Keystone CR is being
@@ -674,63 +648,27 @@ func (r *KeystoneReconciler) hasLiveOpenBaoBackupPushSecrets(ctx context.Context
 	return false, nil
 }
 
-// updateStatus persists the current status conditions and returns the given result and error.
-// It also stamps the top-level status.observedGeneration with the CR's generation so a stale
-// status is distinguishable from one reflecting the current spec without scanning conditions.
-// When both reconcileErr and the status update fail, both errors are preserved via errors.Join
-// so that the original reconcile failure is visible in controller-runtime logs.
+// updateStatus persists the current status conditions and returns the given
+// result and error, delegating to commonreconcile.UpdateStatus: the write is
+// skipped when the pass left status semantically unchanged from the
+// statusBefore snapshot (issue #361), and a failed write is joined with
+// reconcileErr so the original reconcile failure stays visible. The mutate
+// hook re-aggregates the Ready condition on every persist — including the
+// early-return paths a sub-reconciler takes when it degrades after the CR was
+// already Ready (SC-CHAOS-006) — and stamps status.observedGeneration so a
+// stale status is distinguishable from one reflecting the current spec.
 func (r *KeystoneReconciler) updateStatus(ctx context.Context, keystone *keystonev1alpha1.Keystone, statusBefore *keystonev1alpha1.KeystoneStatus, result ctrl.Result, reconcileErr error) (ctrl.Result, error) {
-	// Re-aggregate the Ready condition on every status persist, including the
-	// early-return paths a sub-reconciler takes when it degrades after the CR
-	// was already Ready. reconcileDeployment, for example, requeues with
-	// DeploymentReady=False the moment the database-aware readiness probe
-	// depools the keystone Pods under a network partition. Aggregating only at
-	// the end of a fully-successful chain left Ready stale at True whenever such
-	// an early return short-circuited the chain, so a degraded CR kept
-	// reporting Ready=True (SC-CHAOS-006).
-	setReadyCondition(keystone)
-	keystone.Status.ObservedGeneration = keystone.Generation
-
-	// Skip the write when this pass left status byte-for-byte unchanged: no
-	// write means no watch event and no resourceVersion churn. meta.SetStatusCondition
-	// preserves LastTransitionTime on a no-op upsert, so a converged
-	// steady-state pass produces a status identical to the snapshot taken at the
-	// top of Reconcile (issue #361). A nil snapshot (defensive) always writes.
-	if statusBefore != nil && equality.Semantic.DeepEqual(*statusBefore, keystone.Status) {
-		return result, reconcileErr
-	}
-
-	if err := r.Status().Update(ctx, keystone); err != nil {
-		log.FromContext(ctx).Error(err, "unable to update Keystone status")
-		return ctrl.Result{}, errors.Join(reconcileErr, fmt.Errorf("updating status: %w", err))
-	}
-	return result, reconcileErr
+	return commonreconcile.UpdateStatus(ctx, r.Client, keystone, statusBefore, &keystone.Status, func() {
+		setReadyCondition(keystone)
+		keystone.Status.ObservedGeneration = keystone.Generation
+	}, result, reconcileErr)
 }
 
-// setReadyCondition sets the aggregate Ready condition based on all sub-conditions.
+// setReadyCondition sets the aggregate Ready condition based on all
+// sub-conditions, delegating to the shared aggregation helper with keystone's
+// sub-condition vocabulary.
 func setReadyCondition(keystone *keystonev1alpha1.Keystone) {
-	if aggregateReady(keystone.Status.Conditions) {
-		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
-			Type:               "Ready",
-			Status:             metav1.ConditionTrue,
-			ObservedGeneration: keystone.Generation,
-			Reason:             "AllReady",
-			Message:            "All sub-conditions are ready",
-		})
-	} else {
-		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
-			Type:               "Ready",
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: keystone.Generation,
-			Reason:             "NotAllReady",
-			Message:            "One or more sub-conditions are not ready",
-		})
-	}
-}
-
-// aggregateReady returns true if all sub-condition types are True.
-func aggregateReady(conds []metav1.Condition) bool {
-	return conditions.AllTrue(conds, subConditionTypes...)
+	commonreconcile.SetAggregateReady(&keystone.Status.Conditions, keystone.Generation, subConditionTypes)
 }
 
 // conditionReasonConfigError is the SecretsReady=False reason set when
@@ -757,110 +695,20 @@ func markConfigFailed(keystone *keystonev1alpha1.Keystone, err error) {
 	})
 }
 
-// shortestRequeue returns the ctrl.Result with the shortest non-zero
-// RequeueAfter from the given results. If no result requests a requeue,
-// a zero ctrl.Result is returned.
-//
-// Sub-reconcilers signal a requeue exclusively via RequeueAfter — the
-// non-deprecated requeue field — so this function intentionally keys off
-// RequeueAfter only. The fernet/credential reconcilers in particular return
-// RequeueAfter (not the deprecated ctrl.Result.Requeue) precisely so their
-// short-circuit intent survives this aggregation in the parallel group
-// (issue #467).
-func shortestRequeue(results ...ctrl.Result) ctrl.Result {
-	var shortest ctrl.Result
-	for _, r := range results {
-		if r.RequeueAfter <= 0 {
-			continue
-		}
-		if shortest.RequeueAfter <= 0 || r.RequeueAfter < shortest.RequeueAfter {
-			shortest = r
-		}
-	}
-	return shortest
-}
-
-// mergeParallelConditions copies a single condition of the given type from src
-// into dst. If src does not contain a condition of that type, dst is left
-// unchanged. Pre-existing conditions on dst are preserved.
-func mergeParallelConditions(dst, src *keystonev1alpha1.Keystone, conditionType string) {
-	cond := conditions.GetCondition(src.Status.Conditions, conditionType)
-	if cond == nil {
-		return
-	}
-	conditions.SetCondition(&dst.Status.Conditions, *cond)
-}
-
-// parallelSubReconciler describes a sub-reconciler that runs in a parallel
-// group. Each sub-reconciler receives its own DeepCopy of the Keystone CR
-// and sets exactly one condition type.
-//
-// name is the sub_reconciler label value used by the metrics helper so that
-// duration/error series are attributed to the individual group member rather
-// than the group as a whole.
-type parallelSubReconciler struct {
-	name          string
-	conditionType string
-	fn            func(ctx context.Context, keystone *keystonev1alpha1.Keystone) (ctrl.Result, error)
-}
-
-// reconcileParallelGroup runs the given sub-reconcilers concurrently using
-// errgroup.WithContext. Each goroutine operates on a DeepCopy of the Keystone
-// CR to avoid data races. After all goroutines complete,
-// conditions from every sub-reconciler — including those that succeeded before
-// a peer failed — are merged back into the primary keystone so that partial
-// progress is visible in status. On success the shortest non-zero RequeueAfter
-// is returned.
+// reconcileParallelGroup runs the given sub-reconcilers concurrently,
+// delegating to commonreconcile.RunParallelGroup: each member operates on its
+// own DeepCopy of the Keystone CR, conditions from every member — including
+// those that succeeded before a peer failed — are merged back into the
+// primary keystone, and on success the shortest non-zero RequeueAfter is
+// returned. Members instrument individually via instrumentSubReconciler.
 func (r *KeystoneReconciler) reconcileParallelGroup(
 	ctx context.Context,
 	keystone *keystonev1alpha1.Keystone,
-	subs []parallelSubReconciler,
+	subs []commonreconcile.ParallelStep[*keystonev1alpha1.Keystone],
 ) (ctrl.Result, error) {
-	g, gctx := errgroup.WithContext(ctx)
-
-	type outcome struct {
-		result   ctrl.Result
-		copy     *keystonev1alpha1.Keystone
-		condType string
-		err      error
-	}
-	outcomes := make([]outcome, len(subs))
-
-	for i, sub := range subs {
-		ksCopy := keystone.DeepCopy()
-		outcomes[i].condType = sub.conditionType
-		g.Go(func() error {
-			// Route through instrumentSubReconciler so each parallel member
-			// emits its own duration sample and — on failure — its own error
-			// counter tagged with sub.name.
-			res, err := instrumentSubReconciler(gctx, sub.name, func(ctx context.Context) (ctrl.Result, error) {
-				return sub.fn(ctx, ksCopy)
-			})
-			outcomes[i].result = res
-			outcomes[i].copy = ksCopy
-			outcomes[i].err = err
-			return err
-		})
-	}
-
-	groupErr := g.Wait()
-
-	// Merge conditions from all completed sub-reconcilers back into the
-	// primary keystone, even on partial failure, so the caller can persist
-	// partial progress via updateStatus.
-	var results []ctrl.Result
-	for _, o := range outcomes {
-		mergeParallelConditions(keystone, o.copy, o.condType)
-		if o.err == nil {
-			results = append(results, o.result)
-		}
-	}
-
-	if groupErr != nil {
-		return ctrl.Result{}, groupErr
-	}
-
-	return shortestRequeue(results...), nil
+	return commonreconcile.RunParallelGroup(ctx, keystone,
+		func(ks *keystonev1alpha1.Keystone) *[]metav1.Condition { return &ks.Status.Conditions },
+		instrumentSubReconciler, subs)
 }
 
 // effectiveMaxConcurrentReconciles returns the worker count to hand to

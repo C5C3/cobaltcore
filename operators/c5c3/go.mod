@@ -6,7 +6,6 @@ require (
 	github.com/c5c3/forge/internal/common v0.0.0
 	github.com/c5c3/forge/operators/keystone v0.0.0
 	github.com/external-secrets/external-secrets/apis v0.0.0-20260630123415-dfb816dacc15
-	github.com/go-logr/logr v1.4.3
 	github.com/k-orc/openstack-resource-controller/v2 v2.6.0
 	github.com/mariadb-operator/mariadb-operator v0.38.1
 	github.com/onsi/gomega v1.42.1
@@ -31,6 +30,7 @@ require (
 	github.com/evanphx/json-patch/v5 v5.9.11 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.0 // indirect
+	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/zapr v1.3.0 // indirect
 	github.com/go-openapi/jsonpointer v0.22.5 // indirect
 	github.com/go-openapi/jsonreference v0.21.5 // indirect

@@ -43,7 +43,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
+	commonconditions "github.com/c5c3/forge/internal/common/conditions"
 	"github.com/c5c3/forge/internal/common/job"
+	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 	"github.com/c5c3/forge/operators/keystone/internal/metrics"
@@ -592,7 +594,7 @@ func TestAggregateReady_AllTrue(t *testing.T) {
 		{Type: "TrustFlushReady", Status: metav1.ConditionTrue},
 		{Type: conditionTypePasswordRotationReady, Status: metav1.ConditionTrue},
 	}
-	g.Expect(aggregateReady(conditions)).To(BeTrue())
+	g.Expect(commonconditions.AllTrue(conditions, subConditionTypes...)).To(BeTrue())
 }
 
 func TestAggregateReady_OneFalse(t *testing.T) {
@@ -609,7 +611,7 @@ func TestAggregateReady_OneFalse(t *testing.T) {
 		{Type: "BootstrapReady", Status: metav1.ConditionTrue},
 		{Type: "TrustFlushReady", Status: metav1.ConditionTrue},
 	}
-	g.Expect(aggregateReady(conditions)).To(BeFalse())
+	g.Expect(commonconditions.AllTrue(conditions, subConditionTypes...)).To(BeFalse())
 }
 
 func TestAggregateReady_MissingCondition(t *testing.T) {
@@ -621,12 +623,12 @@ func TestAggregateReady_MissingCondition(t *testing.T) {
 		{Type: "FernetKeysReady", Status: metav1.ConditionTrue},
 		{Type: "DeploymentReady", Status: metav1.ConditionTrue},
 	}
-	g.Expect(aggregateReady(conditions)).To(BeFalse())
+	g.Expect(commonconditions.AllTrue(conditions, subConditionTypes...)).To(BeFalse())
 }
 
 func TestAggregateReady_Empty(t *testing.T) {
 	g := NewGomegaWithT(t)
-	g.Expect(aggregateReady(nil)).To(BeFalse())
+	g.Expect(commonconditions.AllTrue(nil, subConditionTypes...)).To(BeFalse())
 }
 
 // TestSubConditionTypes_IncludesPolicyValidReady verifies that the
@@ -1527,7 +1529,7 @@ func TestAggregateReadyIncludesKeystoneAPIReady(t *testing.T) {
 		{Type: "BootstrapReady", Status: metav1.ConditionTrue},
 		{Type: "TrustFlushReady", Status: metav1.ConditionTrue},
 	}
-	g.Expect(aggregateReady(conditions)).To(BeFalse(),
+	g.Expect(commonconditions.AllTrue(conditions, subConditionTypes...)).To(BeFalse(),
 		"aggregateReady should return false when KeystoneAPIReady condition is missing")
 }
 
@@ -1550,7 +1552,7 @@ func TestAggregateReadyAllTrueWithKeystoneAPIReady(t *testing.T) {
 		{Type: "TrustFlushReady", Status: metav1.ConditionTrue},
 		{Type: conditionTypePasswordRotationReady, Status: metav1.ConditionTrue},
 	}
-	g.Expect(aggregateReady(conditions)).To(BeTrue(),
+	g.Expect(commonconditions.AllTrue(conditions, subConditionTypes...)).To(BeTrue(),
 		"aggregateReady should return true when all conditions including KeystoneAPIReady are True")
 }
 
@@ -1581,7 +1583,7 @@ func TestAggregateReady_MissingHTTPRouteReady_ReturnsFalse(t *testing.T) {
 		{Type: "BootstrapReady", Status: metav1.ConditionTrue},
 		{Type: "TrustFlushReady", Status: metav1.ConditionTrue},
 	}
-	g.Expect(aggregateReady(conditions)).To(BeFalse(),
+	g.Expect(commonconditions.AllTrue(conditions, subConditionTypes...)).To(BeFalse(),
 		"aggregateReady should return false when HTTPRouteReady condition is missing")
 }
 
@@ -1611,7 +1613,7 @@ func TestSubReconcilerConditionTypes_MapsPasswordRotation(t *testing.T) {
 func TestShortestRequeue_AllZero(t *testing.T) {
 	g := NewGomegaWithT(t)
 
-	result := shortestRequeue(ctrl.Result{}, ctrl.Result{}, ctrl.Result{})
+	result := commonreconcile.ShortestRequeue(ctrl.Result{}, ctrl.Result{}, ctrl.Result{})
 
 	g.Expect(result).To(Equal(ctrl.Result{}),
 		"all-zero inputs must produce a zero Result")
@@ -1622,7 +1624,7 @@ func TestShortestRequeue_AllZero(t *testing.T) {
 func TestShortestRequeue_SingleNonZero(t *testing.T) {
 	g := NewGomegaWithT(t)
 
-	result := shortestRequeue(
+	result := commonreconcile.ShortestRequeue(
 		ctrl.Result{},
 		ctrl.Result{RequeueAfter: 15 * time.Second},
 		ctrl.Result{},
@@ -1637,7 +1639,7 @@ func TestShortestRequeue_SingleNonZero(t *testing.T) {
 func TestShortestRequeue_PicksMinimum(t *testing.T) {
 	g := NewGomegaWithT(t)
 
-	result := shortestRequeue(
+	result := commonreconcile.ShortestRequeue(
 		ctrl.Result{RequeueAfter: 30 * time.Second},
 		ctrl.Result{RequeueAfter: 15 * time.Second},
 	)
@@ -1651,7 +1653,7 @@ func TestShortestRequeue_PicksMinimum(t *testing.T) {
 func TestShortestRequeue_NoArgs(t *testing.T) {
 	g := NewGomegaWithT(t)
 
-	result := shortestRequeue()
+	result := commonreconcile.ShortestRequeue()
 
 	g.Expect(result).To(Equal(ctrl.Result{}),
 		"zero arguments must produce a zero Result")
@@ -1678,7 +1680,7 @@ func TestMergeParallelConditions_MergesCorrectly(t *testing.T) {
 		Message:            "Fernet keys are ready",
 	})
 
-	mergeParallelConditions(dst, src, "FernetKeysReady")
+	commonreconcile.MergeCondition(&dst.Status.Conditions, src.Status.Conditions, "FernetKeysReady")
 
 	cond := meta.FindStatusCondition(dst.Status.Conditions, "FernetKeysReady")
 	g.Expect(cond).NotTo(BeNil(), "FernetKeysReady must be present on dst after merge")
@@ -1696,7 +1698,7 @@ func TestMergeParallelConditions_SkipsMissingCondition(t *testing.T) {
 	src := dst.DeepCopy()
 	// src has no FernetKeysReady condition.
 
-	mergeParallelConditions(dst, src, "FernetKeysReady")
+	commonreconcile.MergeCondition(&dst.Status.Conditions, src.Status.Conditions, "FernetKeysReady")
 
 	cond := meta.FindStatusCondition(dst.Status.Conditions, "FernetKeysReady")
 	g.Expect(cond).To(BeNil(),
@@ -1729,7 +1731,7 @@ func TestMergeParallelConditions_PreservesExistingConditions(t *testing.T) {
 		Message:            "Fernet keys are ready",
 	})
 
-	mergeParallelConditions(dst, src, "FernetKeysReady")
+	commonreconcile.MergeCondition(&dst.Status.Conditions, src.Status.Conditions, "FernetKeysReady")
 
 	// SecretsReady must still be present and unchanged.
 	secretsCond := meta.FindStatusCondition(dst.Status.Conditions, "SecretsReady")
@@ -1754,10 +1756,10 @@ func TestReconcileParallelGroup_SuccessPath(t *testing.T) {
 	r := newTestReconciler()
 	ks := testKeystone()
 
-	subs := []parallelSubReconciler{
+	subs := []commonreconcile.ParallelStep[*keystonev1alpha1.Keystone]{
 		{
-			conditionType: "FernetKeysReady",
-			fn: func(_ context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
+			ConditionType: "FernetKeysReady",
+			Fn: func(_ context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
 				meta.SetStatusCondition(&ks.Status.Conditions, metav1.Condition{
 					Type:   "FernetKeysReady",
 					Status: metav1.ConditionTrue,
@@ -1767,8 +1769,8 @@ func TestReconcileParallelGroup_SuccessPath(t *testing.T) {
 			},
 		},
 		{
-			conditionType: "CredentialKeysReady",
-			fn: func(_ context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
+			ConditionType: "CredentialKeysReady",
+			Fn: func(_ context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
 				meta.SetStatusCondition(&ks.Status.Conditions, metav1.Condition{
 					Type:   "CredentialKeysReady",
 					Status: metav1.ConditionTrue,
@@ -1778,8 +1780,8 @@ func TestReconcileParallelGroup_SuccessPath(t *testing.T) {
 			},
 		},
 		{
-			conditionType: "NetworkPolicyReady",
-			fn: func(_ context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
+			ConditionType: "NetworkPolicyReady",
+			Fn: func(_ context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
 				meta.SetStatusCondition(&ks.Status.Conditions, metav1.Condition{
 					Type:   "NetworkPolicyReady",
 					Status: metav1.ConditionTrue,
@@ -1812,16 +1814,16 @@ func TestReconcileParallelGroup_ErrorCancellation(t *testing.T) {
 	r := newTestReconciler()
 	ks := testKeystone()
 
-	subs := []parallelSubReconciler{
+	subs := []commonreconcile.ParallelStep[*keystonev1alpha1.Keystone]{
 		{
-			conditionType: "FernetKeysReady",
-			fn: func(_ context.Context, _ *keystonev1alpha1.Keystone) (ctrl.Result, error) {
+			ConditionType: "FernetKeysReady",
+			Fn: func(_ context.Context, _ *keystonev1alpha1.Keystone) (ctrl.Result, error) {
 				return ctrl.Result{}, fmt.Errorf("fernet rotation failed")
 			},
 		},
 		{
-			conditionType: "CredentialKeysReady",
-			fn: func(ctx context.Context, _ *keystonev1alpha1.Keystone) (ctrl.Result, error) {
+			ConditionType: "CredentialKeysReady",
+			Fn: func(ctx context.Context, _ *keystonev1alpha1.Keystone) (ctrl.Result, error) {
 				// Block until the context is cancelled by errgroup. If
 				// cancellation does not propagate, this goroutine hangs and
 				// the test times out — proving the contract.
@@ -1845,10 +1847,10 @@ func TestReconcileParallelGroup_PartialConditionMerge(t *testing.T) {
 	r := newTestReconciler()
 	ks := testKeystone()
 
-	subs := []parallelSubReconciler{
+	subs := []commonreconcile.ParallelStep[*keystonev1alpha1.Keystone]{
 		{
-			conditionType: "FernetKeysReady",
-			fn: func(_ context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
+			ConditionType: "FernetKeysReady",
+			Fn: func(_ context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
 				meta.SetStatusCondition(&ks.Status.Conditions, metav1.Condition{
 					Type:   "FernetKeysReady",
 					Status: metav1.ConditionTrue,
@@ -1858,8 +1860,8 @@ func TestReconcileParallelGroup_PartialConditionMerge(t *testing.T) {
 			},
 		},
 		{
-			conditionType: "DatabaseReady",
-			fn: func(_ context.Context, _ *keystonev1alpha1.Keystone) (ctrl.Result, error) {
+			ConditionType: "DatabaseReady",
+			Fn: func(_ context.Context, _ *keystonev1alpha1.Keystone) (ctrl.Result, error) {
 				// Fail without setting a condition.
 				return ctrl.Result{}, fmt.Errorf("db migration failed")
 			},
@@ -4174,25 +4176,25 @@ func TestReconcileParallelGroupErrorCountsAreAttributed(t *testing.T) {
 	baseFernet := counterValue(t, "keystone_operator_reconcile_errors_total", fernetLabels)
 	baseNet := counterValue(t, "keystone_operator_reconcile_errors_total", netLabels)
 
-	subs := []parallelSubReconciler{
+	subs := []commonreconcile.ParallelStep[*keystonev1alpha1.Keystone]{
 		{
-			name:          "FernetKeys",
-			conditionType: "FernetKeysReady",
-			fn: func(_ context.Context, _ *keystonev1alpha1.Keystone) (ctrl.Result, error) {
+			Name:          "FernetKeys",
+			ConditionType: "FernetKeysReady",
+			Fn: func(_ context.Context, _ *keystonev1alpha1.Keystone) (ctrl.Result, error) {
 				return ctrl.Result{}, nil
 			},
 		},
 		{
-			name:          "CredentialKeys",
-			conditionType: "CredentialKeysReady",
-			fn: func(_ context.Context, _ *keystonev1alpha1.Keystone) (ctrl.Result, error) {
+			Name:          "CredentialKeys",
+			ConditionType: "CredentialKeysReady",
+			Fn: func(_ context.Context, _ *keystonev1alpha1.Keystone) (ctrl.Result, error) {
 				return ctrl.Result{}, errors.New("boom")
 			},
 		},
 		{
-			name:          "NetworkPolicy",
-			conditionType: "NetworkPolicyReady",
-			fn: func(_ context.Context, _ *keystonev1alpha1.Keystone) (ctrl.Result, error) {
+			Name:          "NetworkPolicy",
+			ConditionType: "NetworkPolicyReady",
+			Fn: func(_ context.Context, _ *keystonev1alpha1.Keystone) (ctrl.Result, error) {
 				return ctrl.Result{}, nil
 			},
 		},
