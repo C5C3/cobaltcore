@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Constraint overrides applied to releases/<release>/upper-constraints.txt by
+# scripts/apply-constraint-overrides.sh before service image builds and unit
+# tests consume the file.
+#
+# upper-constraints.txt pins horizon=== itself (unlike keystone, which has no
+# pin there). A source install with --constraint refuses to install the
+# horizon source tree against its own pin, so the pin is stripped; the git ref
+# in source-refs.yaml stays the single source of truth for what is built.
+-horizon

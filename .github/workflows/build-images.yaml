@@ -52,6 +52,7 @@ jobs:
           - images/python-base/Dockerfile
           - images/venv-builder/Dockerfile
           - images/keystone/Dockerfile
+          - images/horizon/Dockerfile
           - images/tempest/Dockerfile
           - operators/Dockerfile
     steps:

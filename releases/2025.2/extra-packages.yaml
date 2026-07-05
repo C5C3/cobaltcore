@@ -21,3 +21,7 @@ keystone:
     - libldap2
     - libsasl2-2
     - libxml2
+horizon:
+  pip_extras: []
+  pip_packages: []
+  apt_packages: []
