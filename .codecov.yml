@@ -6,6 +6,14 @@
 # Components enforce per-area coverage targets so regressions are caught at the
 # module level rather than hidden by project-wide averages.
 ---
+# Drop controller-gen output from every coverage denominator (project, patch,
+# and component targets). zz_generated.deepcopy.go files are mechanically
+# generated DeepCopy plumbing with no hand-written logic to test; counting them
+# understates real coverage — notably for the webhooks component (target 90%),
+# whose api/ paths include the generated deepcopy file.
+ignore:
+  - "**/zz_generated*.go"
+
 coverage:
   status:
     # Project-level check: overall coverage must not decrease.

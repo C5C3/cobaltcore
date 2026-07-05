@@ -1299,6 +1299,18 @@ The file starts with the standard SPDX license header:
 
 `.codecov.yml` defines coverage status checks and component-level thresholds.
 
+### Ignored Paths
+
+The top-level `ignore` block drops generated code from every coverage
+denominator (project, patch, and component targets):
+
+| Pattern | Reason |
+| --- | --- |
+| `**/zz_generated*.go` | controller-gen DeepCopy plumbing — mechanically generated, no hand-written logic to test. Counting it understates real coverage, notably for the `webhooks` component (target 90%), whose `api/` paths include the generated deepcopy file. |
+
+This mirrors the lint exclusion of the same files (see the note above the
+`verify-codegen` job).
+
 ### Status Checks
 
 | Check | Target | Description |
