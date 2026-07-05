@@ -12,6 +12,7 @@ import (
 	. "github.com/onsi/gomega"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
+	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 
 // newCollectorsForTest returns a fresh per-CR collectors set bound to reg.
@@ -210,6 +211,123 @@ func TestDbSyncCounterIncrementsOnTerminalStateOnly(t *testing.T) {
 	g.Expect(durFam).NotTo(BeNil())
 	g.Expect(durFam.GetMetric()).To(HaveLen(1))
 	g.Expect(durFam.GetMetric()[0].GetHistogram().GetSampleCount()).To(Equal(uint64(1)))
+}
+
+// seriesForKeystone returns the metrics within fam whose keystone+namespace
+// labels match. It exists so global-registry tests can isolate the series they
+// produced from any other CR's series recorded on the process-wide
+// ctrlmetrics.Registry by unrelated tests in the same binary.
+func seriesForKeystone(fam *dto.MetricFamily, keystone, namespace string) []*dto.Metric {
+	if fam == nil {
+		return nil
+	}
+	var out []*dto.Metric
+	for _, m := range fam.GetMetric() {
+		labels := map[string]string{}
+		for _, l := range m.GetLabel() {
+			labels[l.GetName()] = l.GetValue()
+		}
+		if labels["keystone"] == keystone && labels["namespace"] == namespace {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// TestGlobalCollectorPathRecordsAndDeletes exercises the package-level wrappers
+// (RecordDBSync, SetKeyRotationAge, DeleteForKeystone) against the real
+// controller-runtime registry — the in-process path production uses, which the
+// instance-method tests above (bound to private registries) never touch. It
+// proves recording publishes series on ctrlmetrics.Registry, that
+// DeleteForKeystone reaps only the target CR's series (stale-series leak guard),
+// and that globalCollectors() is idempotent.
+//
+// The panic branch in globalCollectors (duplicate registration on
+// ctrlmetrics.Registry) is intentionally NOT exercised here: triggering it would
+// poison the process-global sync.Once and corrupt every other test in this
+// binary. The equivalent duplicate-registration error is covered against a fresh
+// registry by TestRegisterDuplicateReturnsError.
+func TestGlobalCollectorPathRecordsAndDeletes(t *testing.T) {
+	g := NewGomegaWithT(t)
+	reg := ctrlmetrics.Registry
+
+	// globalCollectors() must return the same registered instance every time.
+	g.Expect(globalCollectors()).To(BeIdenticalTo(globalCollectors()),
+		"globalCollectors must be idempotent (sync.Once)")
+
+	// Two distinct CRs so DeleteForKeystone can be proven to reap only one.
+	const (
+		targetName   = "global-target"
+		targetNs     = "global-ns"
+		survivorName = "global-survivor"
+		survivorNs   = "global-ns"
+	)
+
+	RecordDBSync(targetName, targetNs, "succeeded", 3*time.Second)
+	g.Expect(SetKeyRotationAge(targetName, targetNs, "fernet", time.Now().Add(-time.Hour))).To(Succeed())
+	RecordDBSync(survivorName, survivorNs, "succeeded", 4*time.Second)
+	g.Expect(SetKeyRotationAge(survivorName, survivorNs, "fernet", time.Now().Add(-time.Hour))).To(Succeed())
+
+	// All three families expose the target CR's series via the global registry.
+	rot := gatherMetric(t, reg, "keystone_operator_key_rotation_age_seconds")
+	g.Expect(seriesForKeystone(rot, targetName, targetNs)).To(HaveLen(1),
+		"SetKeyRotationAge must publish a rotation-age series on ctrlmetrics.Registry")
+	total := gatherMetric(t, reg, "keystone_operator_db_sync_total")
+	g.Expect(seriesForKeystone(total, targetName, targetNs)).To(HaveLen(1),
+		"RecordDBSync must publish a db_sync_total series on ctrlmetrics.Registry")
+	dur := gatherMetric(t, reg, "keystone_operator_db_sync_duration_seconds")
+	g.Expect(seriesForKeystone(dur, targetName, targetNs)).To(HaveLen(1),
+		"RecordDBSync must publish a db_sync_duration series on ctrlmetrics.Registry")
+
+	// DeleteForKeystone reaps only the target CR's series.
+	DeleteForKeystone(targetName, targetNs)
+
+	rot = gatherMetric(t, reg, "keystone_operator_key_rotation_age_seconds")
+	g.Expect(seriesForKeystone(rot, targetName, targetNs)).To(BeEmpty(),
+		"DeleteForKeystone must remove the target rotation-age series (stale-series leak guard)")
+	g.Expect(seriesForKeystone(rot, survivorName, survivorNs)).To(HaveLen(1),
+		"an unrelated CR's rotation-age series must survive the delete")
+
+	total = gatherMetric(t, reg, "keystone_operator_db_sync_total")
+	g.Expect(seriesForKeystone(total, targetName, targetNs)).To(BeEmpty(),
+		"DeleteForKeystone must remove the target db_sync_total series")
+	g.Expect(seriesForKeystone(total, survivorName, survivorNs)).To(HaveLen(1))
+
+	dur = gatherMetric(t, reg, "keystone_operator_db_sync_duration_seconds")
+	g.Expect(seriesForKeystone(dur, targetName, targetNs)).To(BeEmpty(),
+		"DeleteForKeystone must remove the target db_sync_duration series")
+	g.Expect(seriesForKeystone(dur, survivorName, survivorNs)).To(HaveLen(1))
+}
+
+// TestSetKeyRotationAge_GlobalWrapperRejectsZeroTime proves the package-level
+// wrapper propagates the zero-timestamp error from the underlying instance
+// method and does not publish a series for the offending CR.
+func TestSetKeyRotationAge_GlobalWrapperRejectsZeroTime(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	err := SetKeyRotationAge("zero-cr", "zero-ns", "fernet", time.Time{})
+	g.Expect(err).To(HaveOccurred(),
+		"the global SetKeyRotationAge wrapper must propagate the zero-time error")
+
+	fam := gatherMetric(t, ctrlmetrics.Registry, "keystone_operator_key_rotation_age_seconds")
+	g.Expect(seriesForKeystone(fam, "zero-cr", "zero-ns")).To(BeEmpty(),
+		"a zero-time call must not create a series via the global wrapper")
+}
+
+// TestRegisterDuplicateReturnsError exercises register's error branch against a
+// fresh registry: the first registration succeeds, and a second registration of
+// the same collectors surfaces a duplicate-registration error. This is the same
+// error the global path turns into a fail-fast panic, verified here without
+// touching the process-global registry.
+func TestRegisterDuplicateReturnsError(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	reg := prometheus.NewRegistry()
+	c := newCollectors()
+	g.Expect(c.register(reg)).To(Succeed(),
+		"first registration on a fresh registry must succeed")
+	g.Expect(c.register(reg)).To(HaveOccurred(),
+		"a duplicate registration must surface an error (the global path panics on this)")
 }
 
 func TestDbSyncDurationHistogramObservedOnce(t *testing.T) {
