@@ -440,24 +440,6 @@ func TestReconcile_Idempotent(t *testing.T) {
 	g.Expect(readyCond.Status).To(Equal(metav1.ConditionTrue))
 }
 
-func TestSetupWithManager_RegistersWithoutError(t *testing.T) {
-	g := NewGomegaWithT(t)
-	s := testScheme()
-	_ = appsv1.AddToScheme(s)
-	_ = corev1.AddToScheme(s)
-
-	// We cannot fully test SetupWithManager without a real manager, but we
-	// verify the reconciler struct can be constructed with the expected fields.
-	r := &KeystoneReconciler{
-		Client:   fake.NewClientBuilder().WithScheme(s).Build(),
-		Scheme:   s,
-		Recorder: record.NewFakeRecorder(10),
-	}
-	g.Expect(r.Client).NotTo(BeNil())
-	g.Expect(r.Scheme).NotTo(BeNil())
-	g.Expect(r.Recorder).NotTo(BeNil())
-}
-
 // TestEffectiveMaxConcurrentReconciles verifies the field falls back to the
 // shared default when unset (<= 0) and passes an explicit positive value
 // through unchanged.
