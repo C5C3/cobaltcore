@@ -82,6 +82,7 @@ jobs:
             # pulling in lint/unit/format jobs.
             keystone:
               - 'operators/keystone/**'
+              - 'operators/Dockerfile'
               - 'images/keystone/**'
             # c5c3 orchestration operator. K-ORC is deployed from an
             # upstream Helm chart (there is no images/k-orc/ to build), so only
@@ -89,6 +90,7 @@ jobs:
             # and image-build/push jobs.
             c5c3:
               - 'operators/c5c3/**'
+              - 'operators/Dockerfile'
             # glance:                        # uncomment when glance is added
             #   - 'operators/glance/**'
             #   - 'images/glance/**'
@@ -1491,7 +1493,9 @@ jobs:
         id: build
         with:
           context: .
-          file: operators/${{ matrix.operator }}/Dockerfile
+          file: operators/Dockerfile
+          build-args: |
+            OPERATOR=${{ matrix.operator }}
           platforms: ${{ matrix.platform.name }}
           outputs: type=image,push-by-digest=true,name-canonical=true,push=true
           tags: ${{ env.IMAGE_PREFIX }}/${{ matrix.operator }}-operator

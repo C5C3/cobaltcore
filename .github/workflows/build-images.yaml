@@ -11,8 +11,7 @@ name: Build Images
       - stable/**
     paths:
       - images/**
-      - operators/keystone/Dockerfile
-      - operators/c5c3/Dockerfile
+      - operators/Dockerfile
       - releases/**
       - patches/**
       - scripts/**
@@ -24,8 +23,7 @@ name: Build Images
   pull_request:
     paths:
       - images/**
-      - operators/keystone/Dockerfile
-      - operators/c5c3/Dockerfile
+      - operators/Dockerfile
       - releases/**
       - patches/**
       - scripts/**
@@ -55,8 +53,7 @@ jobs:
           - images/venv-builder/Dockerfile
           - images/keystone/Dockerfile
           - images/tempest/Dockerfile
-          - operators/keystone/Dockerfile
-          - operators/c5c3/Dockerfile
+          - operators/Dockerfile
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 

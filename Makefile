@@ -338,7 +338,7 @@ DOCKER_CACHE_FROM ?=
 DOCKER_CACHE_TO ?=
 docker-build:
 	$(if $(OPERATOR),,$(error docker-build requires OPERATOR, e.g. make docker-build OPERATOR=keystone))
-	docker build -t $(IMG) -f operators/$(OPERATOR)/Dockerfile \
+	docker build -t $(IMG) -f operators/Dockerfile --build-arg OPERATOR=$(OPERATOR) \
 		$(if $(DOCKER_CACHE_FROM),--cache-from $(DOCKER_CACHE_FROM)) \
 		$(if $(DOCKER_CACHE_TO),--cache-to $(DOCKER_CACHE_TO)) \
 		.
