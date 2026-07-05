@@ -1,0 +1,128 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test for horizon-operator pod kill.
+# Verifies the deployed Horizon workload keeps serving while the operator is
+# down (operational-independence contract), and that the recovered operator
+# resumes reconciliation: a spec change patched after the kill is rolled out
+# by the replacement pod. The old-pod-gone check is UID-based so the
+# recovery poll cannot pass vacuously against the pre-chaos pod.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: horizon-operator-pod-kill
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply Horizon CR and wait for baseline Ready ───────────────
+  - try:
+    - apply:
+        file: 00-horizon-cr.yaml
+    - assert:
+        resource:
+          apiVersion: horizon.openstack.c5c3.io/v1alpha1
+          kind: Horizon
+          metadata:
+            name: horizon-chaos-op
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: ../diagnostics.sh baseline horizon-chaos-op
+  # ── Step 2: Record the operator pod UID, then inject the kill ──────────
+  - try:
+    - script:
+        content: |
+          kubectl get pods -n horizon-system -l app.kubernetes.io/name=horizon-operator \
+            -o jsonpath='{.items[0].metadata.uid}' > /tmp/horizon-operator-pod-uid
+          echo "operator pod UID before chaos: $(cat /tmp/horizon-operator-pod-uid)"
+    - apply:
+        file: 01-podchaos.yaml
+  # ── Step 3: Verify the old pod is gone and a replacement is Ready ──────
+  # UID-based: the pre-chaos pod UID must disappear before the recovery
+  # assertion counts, so a selector mismatch (kill never took effect)
+  # fails loudly instead of passing vacuously.
+  - try:
+    - script:
+        # Timeout budget: Phase 1 (15×2s=30s) + Phase 2 (45×2s=90s) = 120s
+        # worst case; 150s gives 30s margin.
+        timeout: 150s
+        content: |
+          OLD_UID=$(cat /tmp/horizon-operator-pod-uid)
+
+          # Phase 1: poll until the old pod UID is gone (kill took effect).
+          for i in $(seq 1 15); do
+            uids=$(kubectl get pods -n horizon-system -l app.kubernetes.io/name=horizon-operator \
+              -o jsonpath='{range .items[*]}{.metadata.uid}{"\n"}{end}')
+            if ! printf '%s\n' "$uids" | grep -qx "$OLD_UID"; then
+              break
+            fi
+            sleep 2
+          done
+          if printf '%s\n' "$uids" | grep -qx "$OLD_UID"; then
+            echo "ERROR: operator pod $OLD_UID still present — pod kill did not take effect"
+            exit 1
+          fi
+          echo "Pod kill confirmed: old UID $OLD_UID gone"
+
+          # Phase 2: poll until the operator Deployment is fully Ready again.
+          for i in $(seq 1 45); do
+            READY=$(kubectl get deployment -n horizon-system -l app.kubernetes.io/name=horizon-operator \
+              -o jsonpath='{.items[0].status.readyReplicas}')
+            DESIRED=$(kubectl get deployment -n horizon-system -l app.kubernetes.io/name=horizon-operator \
+              -o jsonpath='{.items[0].spec.replicas}')
+            if [ -n "$READY" ] && [ "$READY" = "$DESIRED" ]; then
+              echo "Operator recovered: readyReplicas=$READY"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "ERROR: operator did not recover — readyReplicas=${READY:-0}, expected ${DESIRED:-?}"
+          exit 1
+    catch:
+    - script:
+        content: ../diagnostics.sh chaos horizon-chaos-op --dep-label=app.kubernetes.io/name=horizon-operator --dep-ns=horizon-system
+  # ── Step 4: Delete PodChaos ────────────────────────────────────────────
+  - try:
+    - delete:
+        ref:
+          apiVersion: chaos-mesh.org/v1alpha1
+          kind: PodChaos
+          name: kill-horizon-operator
+          namespace: horizon-system
+  # ── Step 5: Prove the recovered operator reconciles a spec change ──────
+  - try:
+    - patch:
+        file: 02-patch-scale.yaml
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: horizon-chaos-op
+            namespace: openstack
+          spec:
+            replicas: 2
+          status:
+            availableReplicas: 2
+            updatedReplicas: 2
+    - assert:
+        resource:
+          apiVersion: horizon.openstack.c5c3.io/v1alpha1
+          kind: Horizon
+          metadata:
+            name: horizon-chaos-op
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: ../diagnostics.sh chaos horizon-chaos-op --dep-label=app.kubernetes.io/name=horizon-operator --dep-ns=horizon-system

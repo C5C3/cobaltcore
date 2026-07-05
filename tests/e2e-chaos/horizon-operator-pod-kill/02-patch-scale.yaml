@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Patch applied AFTER the operator pod kill: proves the recovered operator
+# still reconciles spec changes end-to-end.
+apiVersion: horizon.openstack.c5c3.io/v1alpha1
+kind: Horizon
+metadata:
+  name: horizon-chaos-op
+  namespace: openstack
+spec:
+  deployment:
+    replicas: 2

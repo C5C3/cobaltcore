@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# PodChaos CR to kill a horizon-operator pod in horizon-system.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: kill-horizon-operator
+  namespace: horizon-system
+spec:
+  action: pod-kill
+  mode: one
+  selector:
+    namespaces:
+    - horizon-system
+    labelSelectors:
+      app.kubernetes.io/name: horizon-operator
+  gracePeriod: 0

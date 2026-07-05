@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Horizon CR fixture for the chaos test. Unique name (horizon-chaos-mc) to avoid
+# conflicts with other test suites; cache via clusterRef to
+# openstack-memcached; SECRET_KEY from the kind-infrastructure shim.
+apiVersion: horizon.openstack.c5c3.io/v1alpha1
+kind: Horizon
+metadata:
+  name: horizon-chaos-mc
+  namespace: openstack
+spec:
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/horizon
+    tag: "2025.2"
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  secretKeyRef:
+    name: horizon-secret-key
+    key: secret-key
