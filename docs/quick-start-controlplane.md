@@ -196,6 +196,33 @@ spec:
 
 </details>
 
+### Optional — add the Horizon dashboard
+
+Append a `horizon` block under `services` to have the ControlPlane project
+the OpenStack Dashboard once its Keystone child is ready:
+
+```yaml
+  services:
+    keystone:
+      # ... as above ...
+    horizon:
+      replicas: 1
+      gateway:
+        parentRef:
+          name: openstack-gw
+          namespace: envoy-gateway-system
+        hostname: horizon.127-0-0-1.nip.io
+```
+
+The reconciler derives everything else: the image tag from
+`spec.openStackRelease`, the Memcached wiring from
+`spec.infrastructure.cache`, and the Keystone endpoint from the Keystone
+child's naming convention. The Django `SECRET_KEY` defaults to the kind-only
+`horizon-secret-key` Secret (seeded per the default ControlPlane identity);
+additional ControlPlanes must set `services.horizon.secretKeyRef` to their
+own Secret. A `HorizonReady` condition joins the chain (after
+`KeystoneReady`) and `status.services` gains a second entry.
+
 ## Step 4 — Watch the chain reconcile
 
 The aggregate `Ready` flips to `True` once all five sub-conditions are met, in
@@ -247,6 +274,18 @@ openstack --insecure token issue
 
 > With the default `KIND_HOST_PORT=443` use `https://keystone.127-0-0-1.nip.io/v3`
 > and drop the `publicEndpoint` line from the CR in Step 3.
+
+### Optional — open the Horizon dashboard
+
+If you added the `horizon` block in Step 3, the dashboard is exposed through
+the same shared Envoy Gateway:
+
+```bash
+open https://horizon.127-0-0-1.nip.io:8443/
+```
+
+Log in with `admin` / the password from the
+`controlplane-keystone-admin-credentials` Secret above (domain `Default`).
 
 ## Teardown
 

@@ -36,6 +36,8 @@ export default defineConfig({
           { text: 'Enable Keystone Database TLS', link: '/guides/enable-keystone-database-tls' },
           { text: 'Enable Keystone Operator Metrics', link: '/guides/enable-keystone-operator-metrics' },
           { text: 'Enable Keystone Operator NetworkPolicy', link: '/guides/enable-keystone-operator-networkpolicy' },
+          { text: 'Enable Horizon Operator Metrics', link: '/guides/enable-horizon-operator-metrics' },
+          { text: 'Enable Horizon Operator NetworkPolicy', link: '/guides/enable-horizon-operator-networkpolicy' },
           { text: 'Migrate Keystone DB to Dynamic Credentials', link: '/guides/migrate-keystone-db-to-dynamic-credentials' },
         ],
       },
@@ -55,6 +57,16 @@ export default defineConfig({
               { text: 'Schema Drift Detection', link: '/reference/keystone/keystone-schema-drift-detection' },
               { text: 'Operator Metrics', link: '/reference/keystone-operator-metrics' },
               { text: 'Operator NetworkPolicy', link: '/reference/keystone/keystone-operator-networkpolicy' },
+            ],
+          },
+          {
+            text: 'Horizon',
+            link: '/reference/horizon/',
+            collapsed: true,
+            items: [
+              { text: 'Overview', link: '/reference/horizon/' },
+              { text: 'CRD', link: '/reference/horizon/horizon-crd' },
+              { text: 'Reconciler Architecture', link: '/reference/horizon/horizon-reconciler' },
             ],
           },
           {

@@ -95,6 +95,7 @@ new operators build on them rather than reopening them:
 - **Non-INI configuration rendering gets its own package.**
   `internal/common/config` renders oslo INI only and stays that way. A service
   that renders Python settings (e.g. Horizon's Django `local_settings.py`)
-  gets a separate shared renderer package (working name `pysettings`) rather
-  than bolting Python emission onto the INI renderer. Implement it together
-  with the first consumer.
+  gets a separate shared renderer package rather than bolting Python emission
+  onto the INI renderer. `internal/common/pysettings` now exists — implemented
+  with its first consumer, the horizon-operator, which is also the checklist's
+  first full second-operator walk-through.
