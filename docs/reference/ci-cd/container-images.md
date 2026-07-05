@@ -18,8 +18,10 @@ separating concerns between runtime base, build tooling, and service-specific co
 ubuntu:noble
 ├── python-base          Runtime base: Python 3.12, system libs, openstack user
 │   ├── venv-builder     Build stage: compilers, uv, virtualenv with common packages
-│   │   └── keystone     Stage 1 (build): install Keystone into virtualenv
-│   └── keystone          Stage 2 (runtime): copy virtualenv, add runtime apt packages
+│   │   ├── keystone     Stage 1 (build): install Keystone into virtualenv
+│   │   └── horizon      Stage 1 (build): install Horizon, pre-build static assets
+│   ├── keystone         Stage 2 (runtime): copy virtualenv, add runtime apt packages
+│   └── horizon          Stage 2 (runtime): copy virtualenv + static assets
 ```
 
 The `venv-builder` image is used only as a build stage — it never runs in production.
@@ -167,13 +169,62 @@ multi-stage build process — only the runtime stage labels appear on the final 
 CI, `docker/metadata-action` overrides `org.opencontainers.image.version` with the
 upstream OpenStack release version from `source-refs.yaml` via a `type=raw` tag strategy.
 
+### horizon
+
+**Location:** `images/horizon/Dockerfile`
+
+The Horizon dashboard image uses the same two-stage build as Keystone, with two
+horizon-specific twists: static assets are pre-built at image-build time, and the
+`horizon===` pin in `upper-constraints.txt` must be stripped before the build
+(see [Constraint Overrides](#constraint-overrides)).
+
+**Stage 1 (`build`)** — extends `venv-builder`:
+
+- Declares `ARG PIP_EXTRAS` and `ARG PIP_PACKAGES` (both empty for horizon today;
+  the wiring mirrors keystone so `extra-packages.yaml` stays the single edit point)
+- Mounts `upper-constraints.txt` and the Horizon source tree via named build contexts
+  (`--build-context horizon=...` / `--build-context upper-constraints=...`)
+- Installs Horizon into the virtualenv using `uv pip install --constraint`
+- Pre-builds static assets: a throwaway `local_settings.py` is written into the
+  installed `openstack_dashboard/local/` package, `collectstatic --noinput` and
+  `compress --force` (django-compressor offline compression) run against it, and the
+  throwaway file is removed. Assets land in `/var/lib/openstack/horizon-static` with
+  the offline manifest at `dashboard/manifest.json`
+
+**Stage 2 (runtime)** — extends `python-base`:
+
+- Declares `ARG EXTRA_APT_PACKAGES` (empty for horizon today — the dashboard is pure
+  Python; the pymemcache session-cache client comes from the venv-builder base venv)
+- Copies `/var/lib/openstack` (virtualenv plus pre-built static assets) from the build
+  stage using `COPY --from=build --link`
+- Creates `/etc/openstack-dashboard/` and symlinks the packaged
+  `openstack_dashboard/local/local_settings.py` to
+  `/etc/openstack-dashboard/local_settings.py`, where the horizon-operator mounts the
+  rendered Django settings ConfigMap. The symlink dangles at build time by design
+- Sets `USER openstack` for non-root execution
+
+**Final image properties:**
+
+- Runs as `openstack` user (UID 42424, GID 42424)
+- Contains no build tools (`gcc`, `python3-dev`, `build-essential`, `uv` are absent)
+- Serves via uWSGI loading `openstack_dashboard.wsgi` directly (the module ships
+  `application`) — no hand-written wsgi script, and static assets are served through
+  `uwsgi --static-map /static=/var/lib/openstack/horizon-static`
+- i18n message catalogs are not compiled (`compilemessages` needs gettext at build
+  time); the dashboard renders in English. Deferred until a locale requirement lands
+
+**Unit tests:** horizon ships no `.stestr.conf` — its Django suite runs under pytest.
+`hack/ci-run-unit-tests.sh` branches on `.stestr.conf` presence and delegates to
+horizon's upstream `tools/unit_tests.sh` driver in the pytest path.
+
 ## Named Build Contexts
 
 Service Dockerfiles use Docker's named build context feature (`--build-context`) to inject
 release-specific files without embedding them in the Dockerfile or using `COPY` from the
 build directory. This keeps Dockerfiles release-independent.
 
-The Keystone build requires two named build contexts:
+Each service build requires two named build contexts (shown here for Keystone; the
+Horizon build is identical with `horizon` in place of `keystone`):
 
 | Context name | Contents | Mounted as |
 | --- | --- | --- |
@@ -321,6 +372,13 @@ cryptography===44.0.1
 -oslo.messaging
 ```
 
+**Real-world use — the horizon self-pin:** `upper-constraints.txt` pins `horizon===`
+itself (unlike keystone, which never appears there). A source install with
+`--constraint` refuses to install the horizon source tree against its own pin, so
+`overrides/<release>/constraints.txt` ships a `-horizon` removal line for every
+release. The git ref in `source-refs.yaml` stays the single source of truth for what
+is built, independent of the upstream pin.
+
 ### Script Usage
 
 **Location:** `scripts/apply-constraint-overrides.sh`
@@ -409,6 +467,28 @@ docker run --rm c5c3/keystone:28.0.0 which gcc \
   || echo "PASS: gcc not found"
 ```
 
+### Building horizon locally
+
+The horizon build follows the same steps with two differences: the constraint
+override must be applied first (it strips the `horizon===` self-pin in-place), and
+no build args are needed today (all `extra-packages.yaml` lists are empty):
+
+```bash
+# Strip the horizon=== pin from upper-constraints.txt (GNU sed; run on Linux/CI)
+./scripts/apply-constraint-overrides.sh 2025.2
+
+git clone --branch 25.5.1 --depth 1 \
+  https://opendev.org/openstack/horizon.git src/horizon
+
+docker build images/horizon \
+  -t c5c3/horizon:25.5.1 \
+  --build-context horizon=src/horizon \
+  --build-context upper-constraints=releases/2025.2/
+
+# Run the full image contract check
+bash tests/container-images/verify_horizon.sh c5c3/horizon:25.5.1
+```
+
 ## Design Deviations
 
 The implementation deviates from the architecture document
@@ -423,6 +503,6 @@ generic `openstack` user (UID/GID 42424) defined in `python-base` and shared by 
 service images. This reduces complexity and image layers — each service image inherits
 the user via `USER openstack` without needing its own user creation step.
 
-The `# DEVIATION` comment appears in both `images/python-base/Dockerfile` (where the
-user is created) and `images/keystone/Dockerfile` (where it is used instead of a
-per-service user).
+The `# DEVIATION` comment appears in `images/python-base/Dockerfile` (where the
+user is created) and in every service Dockerfile that uses it instead of a
+per-service user (`images/keystone/Dockerfile`, `images/horizon/Dockerfile`).
