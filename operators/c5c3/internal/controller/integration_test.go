@@ -144,10 +144,6 @@ func integrationManagedControlPlane(name, namespace string) *c5c3v1alpha1.Contro
 				Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{
 					Replicas: ptr.To(int32(3)),
 				},
-				// Horizon is enabled so the full chain covers the second
-				// service: projection gated on KeystoneReady, and
-				// status.services reports two entries.
-				Horizon: &c5c3v1alpha1.ServiceHorizonSpec{},
 			},
 			// One global oslo.policy override so the test can assert the reconciler
 			// merges it into the projected Keystone CR's PolicyOverrides.
@@ -512,7 +508,12 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	g.Expect(c.Create(ctx, ns)).To(Succeed(), "create test namespace")
 
 	// Create the ControlPlane CR (the defaulting webhook fills region etc.).
+	// Horizon is enabled HERE (not in the shared fixture) so only this
+	// full-chain test — which simulates the Horizon child in Phase 2.5 —
+	// carries the second service; the gate-focused tests reusing the fixture
+	// would otherwise wedge at the unsimulated Horizon step before KORC.
 	cp := integrationManagedControlPlane("cp", ns.Name)
+	cp.Spec.Services.Horizon = &c5c3v1alpha1.ServiceHorizonSpec{}
 
 	// Admin password Secret the KORC sub-reconciler hashes to drive the mint. In
 	// managed mode readAdminPassword resolves the operator-owned per-CP name
