@@ -7,17 +7,13 @@ package controller
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
-	"github.com/c5c3/forge/internal/common/apply"
 	"github.com/c5c3/forge/internal/common/conditions"
+	"github.com/c5c3/forge/internal/common/gateway"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
 
@@ -29,10 +25,6 @@ const (
 	conditionReasonHTTPRouteNotRequired   = "HTTPRouteNotRequired"
 	conditionReasonGatewayAPINotInstalled = "GatewayAPINotInstalled"
 )
-
-// defaultHTTPRoutePath is the URL path prefix applied when spec.gateway.path
-// is empty.
-const defaultHTTPRoutePath = "/"
 
 // keystoneStatusEndpoint returns the externally reachable Keystone API endpoint
 // URL.
@@ -128,8 +120,8 @@ func (r *KeystoneReconciler) reconcileHTTPRoute(ctx context.Context, keystone *k
 
 	// Path 2: gateway disabled — delete any existing HTTPRoute.
 	if keystone.Spec.Gateway == nil {
-		if err := deleteHTTPRoute(ctx, r.Client, keystone.Namespace, subResourceName(keystone)); err != nil {
-			return ctrl.Result{}, fmt.Errorf("deleting HTTPRoute: %w", err)
+		if err := gateway.DeleteHTTPRoute(ctx, r.Client, keystone.Namespace, subResourceName(keystone)); err != nil {
+			return ctrl.Result{}, err
 		}
 		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
 			Type:               conditionTypeHTTPRouteReady,
@@ -146,11 +138,11 @@ func (r *KeystoneReconciler) reconcileHTTPRoute(ctx context.Context, keystone *k
 	// desired, so its parent status — written by the Gateway controller — is
 	// already populated without a second Get (issue #361).
 	desired := buildKeystoneHTTPRoute(keystone)
-	if err := ensureHTTPRoute(ctx, r.Client, r.Scheme, keystone, desired); err != nil {
+	if err := gateway.EnsureHTTPRoute(ctx, r.Client, r.Scheme, keystone, desired); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring HTTPRoute: %w", err)
 	}
 
-	if isHTTPRouteAccepted(desired) {
+	if gateway.IsHTTPRouteAccepted(desired) {
 		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
 			Type:               conditionTypeHTTPRouteReady,
 			Status:             metav1.ConditionTrue,
@@ -176,113 +168,11 @@ func (r *KeystoneReconciler) reconcileHTTPRoute(ctx context.Context, keystone *k
 // configured hostname with a PathPrefix match on spec.gateway.path (or "/" when
 // empty), and forwards to the {name} Service on port 5000 (dropped the historical -api suffix).
 func buildKeystoneHTTPRoute(keystone *keystonev1alpha1.Keystone) *gatewayv1.HTTPRoute {
-	gw := keystone.Spec.Gateway
-
-	parentRef := gatewayv1.ParentReference{
-		Name: gatewayv1.ObjectName(gw.ParentRef.Name),
-	}
-	if gw.ParentRef.Namespace != "" {
-		parentRef.Namespace = ptr.To(gatewayv1.Namespace(gw.ParentRef.Namespace))
-	}
-	if gw.ParentRef.SectionName != "" {
-		parentRef.SectionName = ptr.To(gatewayv1.SectionName(gw.ParentRef.SectionName))
-	}
-
-	// Normalize spec.gateway.path to a valid HTTPPathMatch.Value: empty falls
-	// back to "/", missing leading slashes are prepended so values like
-	// "identity" behave as intended ("/identity") instead of producing an
-	// HTTPRoute that Gateway controllers reject.
-	path := gw.Path
-	if path == "" {
-		path = defaultHTTPRoutePath
-	} else if !strings.HasPrefix(path, "/") {
-		path = "/" + path
-	}
-
-	route := &gatewayv1.HTTPRoute{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      subResourceName(keystone),
-			Namespace: keystone.Namespace,
-			Labels:    commonLabels(keystone),
-		},
-		Spec: gatewayv1.HTTPRouteSpec{
-			CommonRouteSpec: gatewayv1.CommonRouteSpec{
-				ParentRefs: []gatewayv1.ParentReference{parentRef},
-			},
-			Hostnames: []gatewayv1.Hostname{gatewayv1.Hostname(gw.Hostname)},
-			Rules: []gatewayv1.HTTPRouteRule{
-				{
-					Matches: []gatewayv1.HTTPRouteMatch{
-						{
-							Path: &gatewayv1.HTTPPathMatch{
-								Type:  ptr.To(gatewayv1.PathMatchPathPrefix),
-								Value: &path,
-							},
-						},
-					},
-					BackendRefs: []gatewayv1.HTTPBackendRef{
-						{
-							BackendRef: gatewayv1.BackendRef{
-								BackendObjectReference: gatewayv1.BackendObjectReference{
-									Kind: ptr.To(gatewayv1.Kind("Service")),
-									Name: gatewayv1.ObjectName(subResourceName(keystone)),
-									Port: ptr.To(keystoneAPIPort),
-								},
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-
-	if len(gw.Annotations) > 0 {
-		route.Annotations = make(map[string]string, len(gw.Annotations))
-		for k, v := range gw.Annotations {
-			route.Annotations[k] = v
-		}
-	}
-
-	return route
-}
-
-// isHTTPRouteAccepted returns true when at least one RouteParentStatus reports
-// the Accepted condition with status True. Gateway controllers that have not
-// observed the route yet leave Parents empty, so an empty slice is treated as
-// "not yet accepted".
-func isHTTPRouteAccepted(route *gatewayv1.HTTPRoute) bool {
-	for _, parent := range route.Status.Parents {
-		for _, cond := range parent.Conditions {
-			if cond.Type == string(gatewayv1.RouteConditionAccepted) && cond.Status == metav1.ConditionTrue {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// ensureHTTPRoute creates or updates the HTTPRoute via Server-Side Apply under
-// a fixed field manager and sets the Keystone CR as its controller owner so it
-// is garbage-collected with the CR.
-//
-// Merge strategy: the field manager owns exactly the fields the builder sets
-// (the whole Spec and the annotations/labels derived from spec.gateway).
-// Annotations or labels that disappear from spec.gateway between reconciles are
-// relinquished and removed by the API server — no sentinel bookkeeping is
-// needed — while keys owned by other managers are preserved. A converged
-// HTTPRoute is applied without a write.
-func ensureHTTPRoute(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, route *gatewayv1.HTTPRoute) error {
-	return apply.EnsureObject(ctx, c, scheme, owner, route, apply.FieldManager)
-}
-
-// deleteHTTPRoute deletes the HTTPRoute identified by namespace and name.
-// It is a no-op if the HTTPRoute does not exist.
-func deleteHTTPRoute(ctx context.Context, c client.Client, namespace, name string) error {
-	route := &gatewayv1.HTTPRoute{}
-	route.SetName(name)
-	route.SetNamespace(namespace)
-	if err := client.IgnoreNotFound(c.Delete(ctx, route)); err != nil {
-		return fmt.Errorf("deleting HTTPRoute %s/%s: %w", namespace, name, err)
-	}
-	return nil
+	return gateway.BuildHTTPRoute(keystone.Spec.Gateway, gateway.RouteParams{
+		Name:           subResourceName(keystone),
+		Namespace:      keystone.Namespace,
+		Labels:         commonLabels(keystone),
+		BackendService: subResourceName(keystone),
+		BackendPort:    int32(keystoneAPIPort),
+	})
 }

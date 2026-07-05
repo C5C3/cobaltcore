@@ -44,6 +44,7 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	commonconditions "github.com/c5c3/forge/internal/common/conditions"
+	"github.com/c5c3/forge/internal/common/gateway"
 	"github.com/c5c3/forge/internal/common/job"
 	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
@@ -2785,38 +2786,38 @@ func (f *fakeRESTMapper) RESTMapping(gk schema.GroupKind, versions ...string) (*
 
 func TestIsGatewayAPIAvailable_NilMapper_ReturnsFalse(t *testing.T) {
 	g := NewGomegaWithT(t)
-	g.Expect(isGatewayAPIAvailable(nil)).To(BeFalse())
+	g.Expect(gateway.IsGVKAvailable(nil, httpRouteGVK)).To(BeFalse())
 }
 
 func TestIsGatewayAPIAvailable_CRDPresent_ReturnsTrue(t *testing.T) {
 	g := NewGomegaWithT(t)
 	m := &fakeRESTMapper{available: map[string]bool{"HTTPRoute.gateway.networking.k8s.io": true}}
-	g.Expect(isGatewayAPIAvailable(m)).To(BeTrue())
+	g.Expect(gateway.IsGVKAvailable(m, httpRouteGVK)).To(BeTrue())
 }
 
 func TestIsGatewayAPIAvailable_CRDMissing_ReturnsFalse(t *testing.T) {
 	g := NewGomegaWithT(t)
 	m := &fakeRESTMapper{available: map[string]bool{}}
-	g.Expect(isGatewayAPIAvailable(m)).To(BeFalse())
+	g.Expect(gateway.IsGVKAvailable(m, httpRouteGVK)).To(BeFalse())
 }
 
 // --- isCertManagerAvailable (issue #475, DB-TLS Certificate lifecycle) ---
 
 func TestIsCertManagerAvailable_NilMapper_ReturnsFalse(t *testing.T) {
 	g := NewGomegaWithT(t)
-	g.Expect(isCertManagerAvailable(nil)).To(BeFalse())
+	g.Expect(gateway.IsGVKAvailable(nil, certificateGVK)).To(BeFalse())
 }
 
 func TestIsCertManagerAvailable_CRDPresent_ReturnsTrue(t *testing.T) {
 	g := NewGomegaWithT(t)
 	m := &fakeRESTMapper{available: map[string]bool{"Certificate.cert-manager.io": true}}
-	g.Expect(isCertManagerAvailable(m)).To(BeTrue())
+	g.Expect(gateway.IsGVKAvailable(m, certificateGVK)).To(BeTrue())
 }
 
 func TestIsCertManagerAvailable_CRDMissing_ReturnsFalse(t *testing.T) {
 	g := NewGomegaWithT(t)
 	m := &fakeRESTMapper{available: map[string]bool{}}
-	g.Expect(isCertManagerAvailable(m)).To(BeFalse())
+	g.Expect(gateway.IsGVKAvailable(m, certificateGVK)).To(BeFalse())
 }
 
 // ---------------------------------------------------------------------------
