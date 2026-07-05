@@ -7,8 +7,6 @@ package testutil
 
 import (
 	"context"
-	"fmt"
-	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -17,10 +15,7 @@ import (
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
-	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
-	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
-	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
@@ -136,43 +131,9 @@ func keystonePaths() (crdDir, webhookDir string) {
 }
 
 // buildScheme creates a runtime.Scheme with core types, apiextensions, and the
-// caller-provided types registered. It is created fresh per test to avoid sharing
-// state between tests and to keep SharedScheme() unmodified.
+// caller-provided types registered, via the shared commonenvtest.BuildScheme.
 func buildScheme(addToScheme func(*k8sruntime.Scheme) error) *k8sruntime.Scheme {
-	s := k8sruntime.NewScheme()
-	utilruntime.Must(clientgoscheme.AddToScheme(s))
-	utilruntime.Must(apiextensionsv1.AddToScheme(s))
-	utilruntime.Must(addToScheme(s))
-	return s
-}
-
-// commonFakeCRDsDirs returns absolute paths to the fake CRD directories
-// in the shared test infrastructure. Resolved relative to this source file
-// using runtime.Caller(0).
-func commonFakeCRDsDirs() []string {
-	_, thisFile, _, ok := runtime.Caller(0)
-	if !ok {
-		panic("testutil: runtime.Caller failed to determine source file path")
-	}
-	// Navigate from operators/keystone/internal/testutil/ → repo root → internal/common/testutil/fake_crds/
-	base := filepath.Dir(thisFile)
-	root := filepath.Join(base, "..", "..", "..", "..", "internal", "common", "testutil", "fake_crds")
-
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		panic(fmt.Sprintf("testutil: failed to read fake_crds directory %s: %v", root, err))
-	}
-
-	var dirs []string
-	for _, e := range entries {
-		if e.IsDir() {
-			dirs = append(dirs, filepath.Join(root, e.Name()))
-		}
-	}
-	if len(dirs) == 0 {
-		panic(fmt.Sprintf("testutil: no subdirectories found in fake_crds directory %s", root))
-	}
-	return dirs
+	return commonenvtest.BuildScheme(addToScheme)
 }
 
 // buildControllerScheme creates a runtime.Scheme that includes all types
@@ -180,19 +141,17 @@ func commonFakeCRDsDirs() []string {
 // and all external operator types (MariaDB, ESO, cert-manager).
 // It is created fresh per test.
 func buildControllerScheme(addToScheme func(*k8sruntime.Scheme) error) *k8sruntime.Scheme {
-	s := k8sruntime.NewScheme()
-	utilruntime.Must(clientgoscheme.AddToScheme(s))
-	utilruntime.Must(apiextensionsv1.AddToScheme(s))
-	// External operator types needed by the reconciler.
-	utilruntime.Must(mariadbv1alpha1.AddToScheme(s))
-	utilruntime.Must(esov1.AddToScheme(s))
-	utilruntime.Must(esov1alpha1.AddToScheme(s))
-	utilruntime.Must(certmanagerv1.AddToScheme(s))
-	// Gateway API types for HTTPRoute reconciliation.
-	utilruntime.Must(gatewayv1.Install(s))
-	// Keystone types.
-	utilruntime.Must(addToScheme(s))
-	return s
+	return commonenvtest.BuildScheme(
+		// External operator types needed by the reconciler.
+		mariadbv1alpha1.AddToScheme,
+		esov1.AddToScheme,
+		esov1alpha1.AddToScheme,
+		certmanagerv1.AddToScheme,
+		// Gateway API types for HTTPRoute reconciliation.
+		gatewayv1.Install,
+		// Keystone types.
+		addToScheme,
+	)
 }
 
 // SetupMinimalEnvTest starts a minimal envtest API server with the Keystone
@@ -274,7 +233,7 @@ func SetupKeystoneEnvTestWithController(
 	crdDir, webhookDir := keystonePaths()
 
 	// Combine Keystone CRD dir with common fake CRD dirs.
-	crdDirs := append([]string{crdDir}, commonFakeCRDsDirs()...)
+	crdDirs := append([]string{crdDir}, commonenvtest.CommonFakeCRDDirs()...)
 
 	return commonenvtest.StartManagedEnvTest(t, commonenvtest.ManagedEnvTestConfig{
 		Name:               "Keystone",

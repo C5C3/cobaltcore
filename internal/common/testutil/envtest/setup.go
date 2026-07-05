@@ -108,6 +108,32 @@ func SharedScheme() *k8sruntime.Scheme {
 	return sharedScheme
 }
 
+// CommonFakeCRDDirs returns the absolute paths to all controller-specific
+// subdirectories under the shared fake_crds/ tree. Each subdirectory groups
+// CRDs by the external operator that owns them. Exported so the per-operator
+// testutil packages can feed the shared fake CRDs into their own envtest
+// environments without re-rolling the runtime.Caller path math — this
+// package is the single owner of the fake_crds location.
+func CommonFakeCRDDirs() []string {
+	return fakeCRDsDirs()
+}
+
+// BuildScheme creates a runtime.Scheme with the core client-go and
+// apiextensions types plus every caller-provided AddToScheme function
+// registered, in order. It is created fresh per call so tests never share
+// scheme state and SharedScheme() stays unmodified. The per-operator testutil
+// packages pass their API types and the external operator types their
+// reconciler needs.
+func BuildScheme(addToScheme ...func(*k8sruntime.Scheme) error) *k8sruntime.Scheme {
+	s := k8sruntime.NewScheme()
+	utilruntime.Must(clientgoscheme.AddToScheme(s))
+	utilruntime.Must(apiextensionsv1.AddToScheme(s))
+	for _, add := range addToScheme {
+		utilruntime.Must(add(s))
+	}
+	return s
+}
+
 // fakeCRDsDirs returns the absolute paths to all controller-specific
 // subdirectories under fake_crds/. Each subdirectory groups CRDs by the
 // external operator that owns them.

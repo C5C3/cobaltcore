@@ -8,8 +8,6 @@ package testutil
 
 import (
 	"context"
-	"fmt"
-	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -19,10 +17,7 @@ import (
 	esgenv1alpha1 "github.com/external-secrets/external-secrets/apis/generators/v1alpha1"
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
-	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
-	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
-	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -88,7 +83,7 @@ func crdDirectoryPaths() []string {
 	keystoneCRDDir := filepath.Join(base, "..", "..", "..", "keystone", "config", "crd", "bases")
 
 	dirs := []string{c5c3CRDDir, keystoneCRDDir}
-	return append(dirs, commonFakeCRDsDirs()...)
+	return append(dirs, commonenvtest.CommonFakeCRDDirs()...)
 }
 
 // c5c3WebhookDir returns the absolute path to the c5c3 webhook configuration
@@ -106,33 +101,6 @@ func callerDir() string {
 		panic("testutil: runtime.Caller failed to determine source file path")
 	}
 	return filepath.Dir(thisFile)
-}
-
-// commonFakeCRDsDirs returns absolute paths to every subdirectory of the shared
-// fake CRD tree (internal/common/testutil/fake_crds), resolved relative to this
-// source file. Loading all subdirs mirrors the keystone testutil helper so the
-// c5c3 reconciler's external operator kinds (MariaDB, Memcached, ESO,
-// cert-manager, K-ORC) all resolve without enumerating them here.
-func commonFakeCRDsDirs() []string {
-	// Navigate from operators/c5c3/internal/testutil/ → repo root →
-	// internal/common/testutil/fake_crds/.
-	root := filepath.Join(callerDir(), "..", "..", "..", "..", "internal", "common", "testutil", "fake_crds")
-
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		panic(fmt.Sprintf("testutil: failed to read fake_crds directory %s: %v", root, err))
-	}
-
-	var dirs []string
-	for _, e := range entries {
-		if e.IsDir() {
-			dirs = append(dirs, filepath.Join(root, e.Name()))
-		}
-	}
-	if len(dirs) == 0 {
-		panic(fmt.Sprintf("testutil: no subdirectories found in fake_crds directory %s", root))
-	}
-	return dirs
 }
 
 // buildControllerScheme creates a runtime.Scheme that includes all types needed
@@ -154,17 +122,15 @@ func commonFakeCRDsDirs() []string {
 // indirect dependency for no benefit. Its fake CRD remains loaded for parity with
 // the shared fake_crds tree but needs no scheme entry.
 func buildControllerScheme(addToScheme func(*k8sruntime.Scheme) error) *k8sruntime.Scheme {
-	s := k8sruntime.NewScheme()
-	utilruntime.Must(clientgoscheme.AddToScheme(s))
-	utilruntime.Must(apiextensionsv1.AddToScheme(s))
-	// External operator types the reconciler manipulates as typed objects.
-	utilruntime.Must(mariadbv1alpha1.AddToScheme(s))
-	utilruntime.Must(keystonev1alpha1.AddToScheme(s))
-	utilruntime.Must(esov1.AddToScheme(s))
-	utilruntime.Must(esov1alpha1.AddToScheme(s))
-	utilruntime.Must(esgenv1alpha1.AddToScheme(s))
-	utilruntime.Must(orcv1alpha1.AddToScheme(s))
-	// c5c3 API types (ControlPlane, CredentialRotation, ...).
-	utilruntime.Must(addToScheme(s))
-	return s
+	return commonenvtest.BuildScheme(
+		// External operator types the reconciler manipulates as typed objects.
+		mariadbv1alpha1.AddToScheme,
+		keystonev1alpha1.AddToScheme,
+		esov1.AddToScheme,
+		esov1alpha1.AddToScheme,
+		esgenv1alpha1.AddToScheme,
+		orcv1alpha1.AddToScheme,
+		// c5c3 API types (ControlPlane, CredentialRotation, ...).
+		addToScheme,
+	)
 }
