@@ -7,6 +7,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -16,7 +17,9 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	"github.com/c5c3/forge/internal/common/conditions"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
@@ -130,6 +133,50 @@ func findServiceStatus(services []c5c3v1alpha1.ServiceStatus, name string) *c5c3
 		}
 	}
 	return nil
+}
+
+// TestUpdateStatus_SkipsWriteWhenUnchanged locks in the no-op status-write
+// skip the ControlPlane controller gained by adopting the shared status
+// writer: a converged steady-state pass must not issue Status().Update (no
+// write → no watch event → no resourceVersion churn), while a changed status
+// still writes. The reconciler's Status().Update is wired to always fail, so
+// a skipped write is observable as a nil error return.
+func TestUpdateStatus_SkipsWriteWhenUnchanged(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := controllerTestScheme(t)
+	cp := &c5c3v1alpha1.ControlPlane{
+		ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "default", Generation: 3},
+	}
+	statusErr := fmt.Errorf("status update must not be called on an unchanged status")
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(cp).
+		WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			SubResourceUpdate: func(context.Context, client.Client, string, client.Object, ...client.SubResourceUpdateOption) error {
+				return statusErr
+			},
+		}).
+		Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	// Bring cp.Status into the exact state updateStatus would compute (Ready
+	// aggregated + services projected + ObservedGeneration stamped), then
+	// snapshot it — a converged steady-state pass.
+	setReadyCondition(cp)
+	setServicesStatus(cp)
+	cp.Status.ObservedGeneration = cp.Generation
+	snapshot := cp.Status.DeepCopy()
+
+	_, err := r.updateStatus(context.Background(), cp, snapshot, ctrl.Result{}, nil)
+	g.Expect(err).NotTo(HaveOccurred(),
+		"an unchanged status must skip the write; the failing Status().Update proves it was not called")
+
+	// An empty snapshot differs from the computed status, so the (failing)
+	// write must be attempted.
+	_, err = r.updateStatus(context.Background(), cp, &c5c3v1alpha1.ControlPlaneStatus{}, ctrl.Result{}, nil)
+	g.Expect(err).To(HaveOccurred(), "a changed status must attempt the write")
+	g.Expect(err.Error()).To(ContainSubstring("updating status:"))
 }
 
 func TestReconcile_NotFound_EarlyReturn(t *testing.T) {

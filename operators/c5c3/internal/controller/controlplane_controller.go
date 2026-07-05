@@ -7,7 +7,6 @@ package controller
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
@@ -30,6 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/c5c3/forge/internal/common/conditions"
+	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 )
 
@@ -121,6 +121,12 @@ func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, fmt.Errorf("fetching ControlPlane: %w", err)
 	}
 
+	// Snapshot the persisted status so updateStatus can skip the write when a
+	// pass leaves status unchanged (no write → no watch event → no
+	// resourceVersion churn). Taken before any sub-reconciler or finalizer
+	// mutates conditions.
+	statusBefore := cp.Status.DeepCopy()
+
 	// Handle deletion via the ORC-teardown finalizer: delete the operator-owned
 	// K-ORC CRs first and hold the ControlPlane CR (which defers the owner-ref GC
 	// cascade so Keystone/MariaDB stay reachable) until they disappear, then
@@ -134,7 +140,7 @@ func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// is absent), instead of being parked and wedged.
 	if !cp.DeletionTimestamp.IsZero() {
 		if result, err := r.reconcileDelete(ctx, &cp); !result.IsZero() || err != nil {
-			return r.updateStatus(ctx, &cp, result, err)
+			return r.updateStatus(ctx, &cp, statusBefore, result, err)
 		}
 		return ctrl.Result{}, nil
 	}
@@ -170,100 +176,69 @@ func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{Requeue: true}, nil
 	}
 
-	// Run sub-reconcilers in dependency order. Every sub-reconciler call is
-	// routed through instrumentSubReconciler so that duration samples and error
-	// counters are emitted under a stable sub_reconciler label.
-	if result, err := instrumentSubReconciler(ctx, "Infrastructure", func(ctx context.Context) (ctrl.Result, error) {
-		return r.reconcileInfrastructure(ctx, &cp)
-	}); !result.IsZero() || err != nil {
-		return r.updateStatus(ctx, &cp, result, err)
+	// Run the sub-reconciler pipeline in dependency order via the shared
+	// table-driven chain: the first step to return a non-zero result or an
+	// error short-circuits and funnels through updateStatus, so conditions and
+	// the requeue/error are persisted by construction on every exit path.
+	// Every step is routed through instrumentSubReconciler so that duration
+	// samples and error counters are emitted under a stable sub_reconciler
+	// label. AdminPassword runs BEFORE Keystone: the keystone-operator's
+	// SecretsReady gate needs the admin-password ExternalSecret to exist
+	// before the projected Keystone child references it.
+	pipeline := []commonreconcile.Step{
+		{Name: "Infrastructure", Fn: func(ctx context.Context) (ctrl.Result, error) {
+			return r.reconcileInfrastructure(ctx, &cp)
+		}},
+		{Name: "DBCredentials", Fn: func(ctx context.Context) (ctrl.Result, error) {
+			return r.reconcileDBCredentials(ctx, &cp)
+		}},
+		{Name: "AdminPassword", Fn: func(ctx context.Context) (ctrl.Result, error) {
+			return r.reconcileAdminPassword(ctx, &cp)
+		}},
+		{Name: "Keystone", Fn: func(ctx context.Context) (ctrl.Result, error) {
+			return r.reconcileKeystone(ctx, &cp)
+		}},
+		{Name: "KORC", Fn: func(ctx context.Context) (ctrl.Result, error) {
+			return r.reconcileKORC(ctx, &cp)
+		}},
+		{Name: "AdminCredential", Fn: func(ctx context.Context) (ctrl.Result, error) {
+			return r.reconcileAdminCredential(ctx, &cp)
+		}},
+		{Name: "Catalog", Fn: func(ctx context.Context) (ctrl.Result, error) {
+			return r.reconcileCatalog(ctx, &cp)
+		}},
 	}
 
-	if result, err := instrumentSubReconciler(ctx, "DBCredentials", func(ctx context.Context) (ctrl.Result, error) {
-		return r.reconcileDBCredentials(ctx, &cp)
-	}); !result.IsZero() || err != nil {
-		return r.updateStatus(ctx, &cp, result, err)
-	}
-
-	// AdminPassword runs BEFORE Keystone the keystone-operator's
-	// SecretsReady gate needs the admin-password ExternalSecret to exist before the
-	// projected Keystone child references it.
-	if result, err := instrumentSubReconciler(ctx, "AdminPassword", func(ctx context.Context) (ctrl.Result, error) {
-		return r.reconcileAdminPassword(ctx, &cp)
-	}); !result.IsZero() || err != nil {
-		return r.updateStatus(ctx, &cp, result, err)
-	}
-
-	if result, err := instrumentSubReconciler(ctx, "Keystone", func(ctx context.Context) (ctrl.Result, error) {
-		return r.reconcileKeystone(ctx, &cp)
-	}); !result.IsZero() || err != nil {
-		return r.updateStatus(ctx, &cp, result, err)
-	}
-
-	if result, err := instrumentSubReconciler(ctx, "KORC", func(ctx context.Context) (ctrl.Result, error) {
-		return r.reconcileKORC(ctx, &cp)
-	}); !result.IsZero() || err != nil {
-		return r.updateStatus(ctx, &cp, result, err)
-	}
-
-	if result, err := instrumentSubReconciler(ctx, "AdminCredential", func(ctx context.Context) (ctrl.Result, error) {
-		return r.reconcileAdminCredential(ctx, &cp)
-	}); !result.IsZero() || err != nil {
-		return r.updateStatus(ctx, &cp, result, err)
-	}
-
-	if result, err := instrumentSubReconciler(ctx, "Catalog", func(ctx context.Context) (ctrl.Result, error) {
-		return r.reconcileCatalog(ctx, &cp)
-	}); !result.IsZero() || err != nil {
-		return r.updateStatus(ctx, &cp, result, err)
-	}
-
-	return r.updateStatus(ctx, &cp, ctrl.Result{}, nil)
+	result, err := commonreconcile.RunPipeline(ctx, instrumentSubReconciler, pipeline)
+	return r.updateStatus(ctx, &cp, statusBefore, result, err)
 }
 
 // updateStatus persists the current status conditions and returns the given
-// result and error. cp.Status.ObservedGeneration is set to the current
-// generation so a stale status is distinguishable from a current one. When both
-// reconcileErr and the status update fail, both errors are preserved via
-// errors.Join so that the original reconcile failure is visible in
-// controller-runtime logs.
-func (r *ControlPlaneReconciler) updateStatus(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, result ctrl.Result, reconcileErr error) (ctrl.Result, error) {
-	// Recompute the aggregate Ready condition on EVERY status write — including
-	// the in-progress/early-return paths where a sub-reconciler requeued before
-	// the chain converged — so Status.Ready reflects the current aggregate state
-	// (Ready=False while converging) rather than remaining absent until the full
-	// chain passes. conditions.AllTrue checks only the
-	// subConditionTypes, not the Ready condition itself, so this is not
-	// self-referential.
-	setReadyCondition(cp)
-	setServicesStatus(cp)
-	cp.Status.ObservedGeneration = cp.Generation
-	if err := r.Status().Update(ctx, cp); err != nil {
-		log.FromContext(ctx).Error(err, "unable to update ControlPlane status")
-		return ctrl.Result{}, errors.Join(reconcileErr, fmt.Errorf("updating status: %w", err))
-	}
-	return result, reconcileErr
+// result and error, delegating to commonreconcile.UpdateStatus: the write is
+// skipped when the pass left status semantically unchanged from the
+// statusBefore snapshot (no write → no watch event → no resourceVersion
+// churn), and a failed write is joined with reconcileErr so the original
+// reconcile failure stays visible. The mutate hook recomputes the aggregate
+// Ready condition on EVERY status write — including the in-progress/
+// early-return paths where a sub-reconciler requeued before the chain
+// converged — projects status.services/status.updatePhase via
+// setServicesStatus, and stamps status.observedGeneration so a stale status
+// is distinguishable from a current one.
+func (r *ControlPlaneReconciler) updateStatus(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, statusBefore *c5c3v1alpha1.ControlPlaneStatus, result ctrl.Result, reconcileErr error) (ctrl.Result, error) {
+	return commonreconcile.UpdateStatus(ctx, r.Client, cp, statusBefore, &cp.Status, func() {
+		setReadyCondition(cp)
+		setServicesStatus(cp)
+		cp.Status.ObservedGeneration = cp.Generation
+	}, result, reconcileErr)
 }
 
-// setReadyCondition sets the aggregate Ready condition based on all sub-conditions.
+// setReadyCondition sets the aggregate Ready condition based on all
+// sub-conditions, delegating to the shared aggregation helper with the
+// ControlPlane sub-condition vocabulary. conditions.AllTrue checks only the
+// subConditionTypes, not the Ready condition itself, so this is not
+// self-referential.
 func setReadyCondition(cp *c5c3v1alpha1.ControlPlane) {
-	if conditions.AllTrue(cp.Status.Conditions, subConditionTypes...) {
-		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
-			Type:               conditionTypeReady,
-			Status:             metav1.ConditionTrue,
-			ObservedGeneration: cp.Generation,
-			Reason:             "AllReady",
-			Message:            "All sub-conditions are ready",
-		})
-	} else {
-		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
-			Type:               conditionTypeReady,
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: cp.Generation,
-			Reason:             "NotAllReady",
-			Message:            "One or more sub-conditions are not ready",
-		})
-	}
+	commonreconcile.SetAggregateReady(&cp.Status.Conditions, cp.Generation, subConditionTypes)
 }
 
 // duplicateControlPlaneIncumbent returns the name of the ControlPlane that owns
