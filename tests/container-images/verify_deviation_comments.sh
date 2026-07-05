@@ -37,12 +37,24 @@ test_keystone_deviation_comment() {
   assert_file_contains "DEVIATION comment references generic user vs per-service" "$dockerfile" "openstack"
 }
 
+# --- Test 3: horizon has DEVIATION comment ---
+test_horizon_deviation_comment() {
+  echo "Test: horizon Dockerfile has DEVIATION comment"
+
+  local dockerfile="$PROJECT_ROOT/images/horizon/Dockerfile"
+
+  assert_file_contains "horizon/Dockerfile contains DEVIATION comment" "$dockerfile" "# DEVIATION"
+  assert_file_contains "DEVIATION comment references generic user vs per-service" "$dockerfile" "openstack"
+}
+
 # --- Run all tests ---
 echo "=== DEVIATION comment verification tests ==="
 echo ""
 test_python_base_deviation_comment
 echo ""
 test_keystone_deviation_comment
+echo ""
+test_horizon_deviation_comment
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 

@@ -15,12 +15,16 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 PASS=0
 FAIL=0
 
+# Services that every release must register in source-refs.yaml and
+# extra-packages.yaml, each with a matching images/<service>/Dockerfile.
+SERVICES="keystone horizon"
+
 # shellcheck source=tests/lib/assertions.sh
 source "$SCRIPT_DIR/../lib/assertions.sh"
 
-# --- Test 1: source-refs.yaml is valid YAML with keystone ---
-test_source_refs_valid_yaml_with_keystone() {
-  echo "Test: source-refs.yaml is valid YAML with keystone"
+# --- Test 1: source-refs.yaml is valid YAML with all services ---
+test_source_refs_valid_yaml_with_services() {
+  echo "Test: source-refs.yaml is valid YAML with all services ($SERVICES)"
 
   local found_any=false
   for source_refs in "$PROJECT_ROOT"/releases/*/source-refs.yaml; do
@@ -40,19 +44,22 @@ test_source_refs_valid_yaml_with_keystone() {
       continue
     fi
 
-    # Verify keystone version is a valid semver tag
-    local keystone_version
-    keystone_version=$(yq '.keystone' "$source_refs" | tr -d '"')
-    if [[ "$keystone_version" == "null" || -z "$keystone_version" ]]; then
-      echo "  FAIL: [$release_name] keystone key is missing from $rel_path"
-      FAIL=$((FAIL + 1))
-    elif [[ "$keystone_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-      echo "  PASS: [$release_name] keystone version is valid semver ($keystone_version)"
-      PASS=$((PASS + 1))
-    else
-      echo "  FAIL: [$release_name] keystone version is not valid semver: $keystone_version"
-      FAIL=$((FAIL + 1))
-    fi
+    # Verify each service version is a valid semver tag
+    local service
+    for service in $SERVICES; do
+      local version
+      version=$(yq ".${service}" "$source_refs" | tr -d '"')
+      if [[ "$version" == "null" || -z "$version" ]]; then
+        echo "  FAIL: [$release_name] $service key is missing from $rel_path"
+        FAIL=$((FAIL + 1))
+      elif [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo "  PASS: [$release_name] $service version is valid semver ($version)"
+        PASS=$((PASS + 1))
+      else
+        echo "  FAIL: [$release_name] $service version is not valid semver: $version"
+        FAIL=$((FAIL + 1))
+      fi
+    done
   done
 
   if [ "$found_any" = false ]; then
@@ -83,74 +90,77 @@ test_extra_packages_valid_yaml_structure() {
       continue
     fi
 
-    # Verify keystone.pip_extras exists and is an array (: allow empty lists per review #1)
-    local pip_extras_tag
-    pip_extras_tag=$(yq '.keystone.pip_extras | tag' "$extra_packages")
-    if [[ "$pip_extras_tag" == "!!seq" ]]; then
-      local pip_extras_count
-      pip_extras_count=$(yq '.keystone.pip_extras | length' "$extra_packages")
-      echo "  PASS: [$release_name] keystone.pip_extras is a valid array ($pip_extras_count items)"
-      PASS=$((PASS + 1))
-    else
-      echo "  FAIL: [$release_name] keystone.pip_extras must be an array (got $pip_extras_tag)"
-      FAIL=$((FAIL + 1))
-    fi
-
-    # Verify keystone.apt_packages exists and is an array (: allow empty lists per review #1)
-    local apt_tag
-    apt_tag=$(yq '.keystone.apt_packages | tag' "$extra_packages")
-    if [[ "$apt_tag" == "!!seq" ]]; then
-      local apt_count
-      apt_count=$(yq '.keystone.apt_packages | length' "$extra_packages")
-      echo "  PASS: [$release_name] keystone.apt_packages is a valid array ($apt_count items)"
-      PASS=$((PASS + 1))
-    else
-      echo "  FAIL: [$release_name] keystone.apt_packages must be an array (got $apt_tag)"
-      FAIL=$((FAIL + 1))
-    fi
-
-    # Verify pip_packages entries are valid if present (optional field)
-    local pip_pkg_count
-    pip_pkg_count=$(yq '.keystone.pip_packages | length // 0' "$extra_packages" 2>/dev/null || echo "0")
-    if [ "$pip_pkg_count" -gt 0 ]; then
-      local bad_pip_pkgs
-      bad_pip_pkgs=$(yq '.keystone.pip_packages[]' "$extra_packages" \
-        | tr -d '"' | grep -vE '^[a-zA-Z0-9][a-zA-Z0-9._-]*$' || true)
-      if [ -z "$bad_pip_pkgs" ]; then
-        echo "  PASS: [$release_name] pip_packages entries are valid ($pip_pkg_count)"
+    local service
+    for service in $SERVICES; do
+      # Verify <service>.pip_extras exists and is an array (: allow empty lists per review #1)
+      local pip_extras_tag
+      pip_extras_tag=$(yq ".${service}.pip_extras | tag" "$extra_packages")
+      if [[ "$pip_extras_tag" == "!!seq" ]]; then
+        local pip_extras_count
+        pip_extras_count=$(yq ".${service}.pip_extras | length" "$extra_packages")
+        echo "  PASS: [$release_name] $service.pip_extras is a valid array ($pip_extras_count items)"
         PASS=$((PASS + 1))
       else
-        echo "  FAIL: [$release_name] pip_packages entries contain invalid names: $bad_pip_pkgs"
+        echo "  FAIL: [$release_name] $service.pip_extras must be an array (got $pip_extras_tag)"
         FAIL=$((FAIL + 1))
       fi
-    else
-      echo "  PASS: [$release_name] pip_packages is empty or absent (optional)"
-      PASS=$((PASS + 1))
-    fi
 
-    # Validate pip_extras entries match bare Python extra name pattern
-    local bad_extras
-    bad_extras=$(yq '.keystone.pip_extras[]' "$extra_packages" \
-      | tr -d '"' | grep -vE '^[a-z][a-z0-9_-]*$' || true)
-    if [ -z "$bad_extras" ]; then
-      echo "  PASS: [$release_name] pip_extras entries match naming pattern"
-      PASS=$((PASS + 1))
-    else
-      echo "  FAIL: [$release_name] pip_extras entries violate pattern ^[a-z][a-z0-9_-]*\$: $bad_extras"
-      FAIL=$((FAIL + 1))
-    fi
+      # Verify <service>.apt_packages exists and is an array (: allow empty lists per review #1)
+      local apt_tag
+      apt_tag=$(yq ".${service}.apt_packages | tag" "$extra_packages")
+      if [[ "$apt_tag" == "!!seq" ]]; then
+        local apt_count
+        apt_count=$(yq ".${service}.apt_packages | length" "$extra_packages")
+        echo "  PASS: [$release_name] $service.apt_packages is a valid array ($apt_count items)"
+        PASS=$((PASS + 1))
+      else
+        echo "  FAIL: [$release_name] $service.apt_packages must be an array (got $apt_tag)"
+        FAIL=$((FAIL + 1))
+      fi
 
-    # Validate apt_packages entries match Debian package name pattern
-    local bad_apt
-    bad_apt=$(yq '.keystone.apt_packages[]' "$extra_packages" \
-      | tr -d '"' | grep -vE '^[a-z0-9][a-z0-9.+-]+$' || true)
-    if [ -z "$bad_apt" ]; then
-      echo "  PASS: [$release_name] apt_packages entries match naming pattern"
-      PASS=$((PASS + 1))
-    else
-      echo "  FAIL: [$release_name] apt_packages entries violate pattern ^[a-z0-9][a-z0-9.+-]+\$: $bad_apt"
-      FAIL=$((FAIL + 1))
-    fi
+      # Verify pip_packages entries are valid if present (optional field)
+      local pip_pkg_count
+      pip_pkg_count=$(yq ".${service}.pip_packages | length // 0" "$extra_packages" 2>/dev/null || echo "0")
+      if [ "$pip_pkg_count" -gt 0 ]; then
+        local bad_pip_pkgs
+        bad_pip_pkgs=$(yq ".${service}.pip_packages[]" "$extra_packages" \
+          | tr -d '"' | grep -vE '^[a-zA-Z0-9][a-zA-Z0-9._-]*$' || true)
+        if [ -z "$bad_pip_pkgs" ]; then
+          echo "  PASS: [$release_name] $service pip_packages entries are valid ($pip_pkg_count)"
+          PASS=$((PASS + 1))
+        else
+          echo "  FAIL: [$release_name] $service pip_packages entries contain invalid names: $bad_pip_pkgs"
+          FAIL=$((FAIL + 1))
+        fi
+      else
+        echo "  PASS: [$release_name] $service pip_packages is empty or absent (optional)"
+        PASS=$((PASS + 1))
+      fi
+
+      # Validate pip_extras entries match bare Python extra name pattern
+      local bad_extras
+      bad_extras=$(yq ".${service}.pip_extras[]" "$extra_packages" \
+        | tr -d '"' | grep -vE '^[a-z][a-z0-9_-]*$' || true)
+      if [ -z "$bad_extras" ]; then
+        echo "  PASS: [$release_name] $service.pip_extras entries match naming pattern"
+        PASS=$((PASS + 1))
+      else
+        echo "  FAIL: [$release_name] $service.pip_extras entries violate pattern ^[a-z][a-z0-9_-]*\$: $bad_extras"
+        FAIL=$((FAIL + 1))
+      fi
+
+      # Validate apt_packages entries match Debian package name pattern
+      local bad_apt
+      bad_apt=$(yq ".${service}.apt_packages[]" "$extra_packages" \
+        | tr -d '"' | grep -vE '^[a-z0-9][a-z0-9.+-]+$' || true)
+      if [ -z "$bad_apt" ]; then
+        echo "  PASS: [$release_name] $service.apt_packages entries match naming pattern"
+        PASS=$((PASS + 1))
+      else
+        echo "  FAIL: [$release_name] $service.apt_packages entries violate pattern ^[a-z0-9][a-z0-9.+-]+\$: $bad_apt"
+        FAIL=$((FAIL + 1))
+      fi
+    done
   done
 
   if [ "$found_any" = false ]; then
@@ -161,43 +171,53 @@ test_extra_packages_valid_yaml_structure() {
 
 # --- Test 3: Dockerfile and CI workflow support extra-packages.yaml ---
 test_extra_packages_build_wiring() {
-  echo "Test: Dockerfile and CI workflow support extra-packages.yaml"
+  echo "Test: Dockerfiles and CI workflow support extra-packages.yaml"
 
-  local dockerfile="$PROJECT_ROOT/images/keystone/Dockerfile"
   local workflow="$PROJECT_ROOT/.github/workflows/build-images.yaml"
 
-  if [ ! -f "$dockerfile" ] || [ ! -f "$workflow" ]; then
+  if [ ! -f "$workflow" ]; then
     echo "  FAIL: required files missing"
     FAIL=$((FAIL + 1))
     return
   fi
 
-  # Verify Dockerfile declares ARG PIP_EXTRAS
-  if grep -q '^ARG PIP_EXTRAS=' "$dockerfile"; then
-    echo "  PASS: Dockerfile declares ARG PIP_EXTRAS"
-    PASS=$((PASS + 1))
-  else
-    echo "  FAIL: Dockerfile missing ARG PIP_EXTRAS"
-    FAIL=$((FAIL + 1))
-  fi
+  local service
+  for service in $SERVICES; do
+    local dockerfile="$PROJECT_ROOT/images/${service}/Dockerfile"
 
-  # Verify Dockerfile declares ARG PIP_PACKAGES
-  if grep -q '^ARG PIP_PACKAGES=' "$dockerfile"; then
-    echo "  PASS: Dockerfile declares ARG PIP_PACKAGES"
-    PASS=$((PASS + 1))
-  else
-    echo "  FAIL: Dockerfile missing ARG PIP_PACKAGES"
-    FAIL=$((FAIL + 1))
-  fi
+    if [ ! -f "$dockerfile" ]; then
+      echo "  FAIL: [$service] images/$service/Dockerfile missing"
+      FAIL=$((FAIL + 1))
+      continue
+    fi
 
-  # Verify Dockerfile declares ARG EXTRA_APT_PACKAGES
-  if grep -q '^ARG EXTRA_APT_PACKAGES=' "$dockerfile"; then
-    echo "  PASS: Dockerfile declares ARG EXTRA_APT_PACKAGES"
-    PASS=$((PASS + 1))
-  else
-    echo "  FAIL: Dockerfile missing ARG EXTRA_APT_PACKAGES"
-    FAIL=$((FAIL + 1))
-  fi
+    # Verify Dockerfile declares ARG PIP_EXTRAS
+    if grep -q '^ARG PIP_EXTRAS=' "$dockerfile"; then
+      echo "  PASS: [$service] Dockerfile declares ARG PIP_EXTRAS"
+      PASS=$((PASS + 1))
+    else
+      echo "  FAIL: [$service] Dockerfile missing ARG PIP_EXTRAS"
+      FAIL=$((FAIL + 1))
+    fi
+
+    # Verify Dockerfile declares ARG PIP_PACKAGES
+    if grep -q '^ARG PIP_PACKAGES=' "$dockerfile"; then
+      echo "  PASS: [$service] Dockerfile declares ARG PIP_PACKAGES"
+      PASS=$((PASS + 1))
+    else
+      echo "  FAIL: [$service] Dockerfile missing ARG PIP_PACKAGES"
+      FAIL=$((FAIL + 1))
+    fi
+
+    # Verify Dockerfile declares ARG EXTRA_APT_PACKAGES
+    if grep -q '^ARG EXTRA_APT_PACKAGES=' "$dockerfile"; then
+      echo "  PASS: [$service] Dockerfile declares ARG EXTRA_APT_PACKAGES"
+      PASS=$((PASS + 1))
+    else
+      echo "  FAIL: [$service] Dockerfile missing ARG EXTRA_APT_PACKAGES"
+      FAIL=$((FAIL + 1))
+    fi
+  done
 
   # Verify CI workflow reads from extra-packages.yaml
   if grep -q 'extra-packages.yaml' "$workflow"; then
@@ -211,25 +231,28 @@ test_extra_packages_build_wiring() {
 
 # --- Test 4: Dockerfile does not hardcode apt package names ---
 test_no_hardcoded_apt_packages() {
-  echo "Test: Dockerfile does not hardcode apt package names"
+  echo "Test: Dockerfiles do not hardcode apt package names"
 
-  local dockerfile="$PROJECT_ROOT/images/keystone/Dockerfile"
+  local service
+  for service in $SERVICES; do
+    local dockerfile="$PROJECT_ROOT/images/${service}/Dockerfile"
 
-  if [ ! -f "$dockerfile" ]; then
-    echo "  FAIL: Dockerfile not found"
-    FAIL=$((FAIL + 1))
-    return
-  fi
+    if [ ! -f "$dockerfile" ]; then
+      echo "  FAIL: [$service] Dockerfile not found"
+      FAIL=$((FAIL + 1))
+      continue
+    fi
 
-  # Verify the apt-get install line uses the build arg rather than hardcoded package names
-  # (release-independent — only needs to run once)
-  if grep -q 'apt-get install.*\${EXTRA_APT_PACKAGES}' "$dockerfile"; then
-    echo "  PASS: Dockerfile apt-get install uses \${EXTRA_APT_PACKAGES}"
-    PASS=$((PASS + 1))
-  else
-    echo "  FAIL: Dockerfile apt-get install does not use \${EXTRA_APT_PACKAGES}"
-    FAIL=$((FAIL + 1))
-  fi
+    # Verify the apt-get install line uses the build arg rather than hardcoded package names
+    # (release-independent — only needs to run once)
+    if grep -q 'apt-get install.*\${EXTRA_APT_PACKAGES}' "$dockerfile"; then
+      echo "  PASS: [$service] Dockerfile apt-get install uses \${EXTRA_APT_PACKAGES}"
+      PASS=$((PASS + 1))
+    else
+      echo "  FAIL: [$service] Dockerfile apt-get install does not use \${EXTRA_APT_PACKAGES}"
+      FAIL=$((FAIL + 1))
+    fi
+  done
 
   # Verify extra-packages.yaml exists for each release
   local found_any=false
@@ -389,7 +412,7 @@ test_test_excludes_files_match_services() {
 # --- Run all tests ---
 echo "=== Release config verification tests ==="
 echo ""
-test_source_refs_valid_yaml_with_keystone
+test_source_refs_valid_yaml_with_services
 echo ""
 test_extra_packages_valid_yaml_structure
 echo ""
