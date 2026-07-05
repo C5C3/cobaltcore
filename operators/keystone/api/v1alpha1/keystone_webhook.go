@@ -12,10 +12,8 @@ import (
 
 	"github.com/robfig/cron/v3"
 	appsv1 "k8s.io/api/apps/v1"
-	corev1 "k8s.io/api/core/v1"
 	schedulingv1 "k8s.io/api/scheduling/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation/field"
@@ -30,28 +28,22 @@ import (
 )
 
 // Graceful-termination effective defaults.
-// These constants are the single source of truth used by both the validating
-// webhook (for cross-field arithmetic when pointer fields are nil) and the
-// reconciler (task 3.x, which applies them when rendering the Deployment).
-// Keeping them here ensures the webhook and reconciler cannot drift apart.
+// The canonical definitions moved to internal/common/types beside the shared
+// DeploymentSpec; the re-exports below keep every existing reference in this
+// package (webhook cross-field arithmetic, reconciler fallbacks, tests)
+// compiling unchanged while commonv1 stays the single source of truth.
 const (
-	// DefaultTerminationGracePeriodSeconds is applied when KeystoneSpec.TerminationGracePeriodSeconds is nil.
-	DefaultTerminationGracePeriodSeconds int64 = 30
-	// DefaultPreStopSleepSeconds is applied when KeystoneSpec.PreStopSleepSeconds is nil.
-	DefaultPreStopSleepSeconds int64 = 5
+	// DefaultTerminationGracePeriodSeconds is applied when DeploymentSpec.TerminationGracePeriodSeconds is nil.
+	DefaultTerminationGracePeriodSeconds = commonv1.DefaultTerminationGracePeriodSeconds
+	// DefaultPreStopSleepSeconds is applied when DeploymentSpec.PreStopSleepSeconds is nil.
+	DefaultPreStopSleepSeconds = commonv1.DefaultPreStopSleepSeconds
 
 	// DefaultReplicas is the desired Keystone API pod count materialized by the
 	// defaulting webhook (Default) when spec.deployment.replicas is zero, and the
 	// fallback the reconciler (effectiveReplicas) applies when it renders the
 	// Deployment/PDB/HPA for a CR that reached the controller with a zero-valued
-	// replica count — a spec that bypassed the mutating webhook, or one that
-	// omitted the spec.deployment block so the nested +kubebuilder:default never
-	// materialized (Kubernetes does not descend into an absent object to apply
-	// leaf defaults). Left unnormalized, a zero would scale the Deployment to zero
-	// pods. It is the single source of truth so the webhook and reconciler cannot
-	// drift; the +kubebuilder:default=3 marker on DeploymentSpec.Replicas keeps the
-	// same literal in sync (markers cannot reference Go constants).
-	DefaultReplicas int32 = 3
+	// replica count.
+	DefaultReplicas = commonv1.DefaultReplicas
 
 	// DefaultTrustFlushSchedule is the cron expression materialized by the
 	// defaulting webhook when KeystoneSpec.TrustFlush is nil.
@@ -106,15 +98,15 @@ const (
 )
 
 // Default resource requests and limits for the Keystone API container.
-// These constants are the single source of truth for the defaulting webhook.
-// They ensure Burstable QoS class and enable HPA utilization-based scaling.
-// Exported because the controller package tests (reconcile_deployment_test.go)
-// reference them for assertion. Mutation is safe: all call sites use DeepCopy().
+// The canonical values moved to internal/common/types beside the shared
+// DeploymentSpec (applied by its Default method); the re-exports keep the
+// controller package tests (reconcile_deployment_test.go) compiling
+// unchanged. Mutation is safe: all call sites use DeepCopy().
 var (
-	DefaultMemoryRequest = resource.MustParse("256Mi")
-	DefaultCPURequest    = resource.MustParse("100m")
-	DefaultMemoryLimit   = resource.MustParse("512Mi")
-	DefaultCPULimit      = resource.MustParse("500m")
+	DefaultMemoryRequest = commonv1.DefaultMemoryRequest
+	DefaultCPURequest    = commonv1.DefaultCPURequest
+	DefaultMemoryLimit   = commonv1.DefaultMemoryLimit
+	DefaultCPULimit      = commonv1.DefaultCPULimit
 )
 
 // KeystoneWebhook implements defaulting and validation webhooks for the Keystone CRD.
@@ -148,9 +140,10 @@ func (w *KeystoneWebhook) SetupWebhookWithManager(mgr ctrl.Manager) error {
 // Fernet.RotationSchedule is NOT defaulted here — it relies on the Kubebuilder
 // +kubebuilder:default marker only (plan decision #3).
 func (w *KeystoneWebhook) Default(_ context.Context, obj *Keystone) error {
-	if obj.Spec.Deployment.Replicas == 0 {
-		obj.Spec.Deployment.Replicas = DefaultReplicas
-	}
+	// Shared-type defaults (replicas, container resources) are applied by the
+	// commonv1.DeploymentSpec Default method so they cannot drift across
+	// operators.
+	obj.Spec.Deployment.Default()
 	if obj.Spec.Fernet.MaxActiveKeys == 0 {
 		obj.Spec.Fernet.MaxActiveKeys = 3
 	}
@@ -212,43 +205,14 @@ func (w *KeystoneWebhook) Default(_ context.Context, obj *Keystone) error {
 	// Default zero-valued sub-fields of spec.logging.
 	// When the pointer is nil, materialize the production baseline so downstream
 	// reconciler code dereferences spec.logging unconditionally (mirrors the
-	// Resources-when-nil pattern below). Debug is now a nil-preserving *bool, so
-	// "unset" is distinguishable from an explicit false: the webhook restores the
-	// documented default (false) when the pointer is nil and leaves an explicit
-	// true/false untouched.
+	// Resources-when-nil pattern). The leaf defaults (Format=text, Level=INFO,
+	// Debug=false) are applied by the commonv1.LoggingSpec Default method so
+	// they cannot drift across operators; materializing the parent pointer
+	// stays a keystone decision.
 	if obj.Spec.Logging == nil {
-		obj.Spec.Logging = &LoggingSpec{
-			Format: "text",
-			Level:  "INFO",
-			Debug:  ptr.To(false),
-		}
-	} else {
-		if obj.Spec.Logging.Format == "" {
-			obj.Spec.Logging.Format = "text"
-		}
-		if obj.Spec.Logging.Level == "" {
-			obj.Spec.Logging.Level = "INFO"
-		}
-		if obj.Spec.Logging.Debug == nil {
-			obj.Spec.Logging.Debug = ptr.To(false)
-		}
+		obj.Spec.Logging = &LoggingSpec{}
 	}
-	// Default resource requests and limits for Burstable QoS
-	// and HPA utilization calculations. Also defaults when Resources is non-nil
-	// but empty (e.g. `resources: {}`), which would otherwise produce BestEffort
-	// QoS and break HPA utilization calculations.
-	if obj.Spec.Deployment.Resources == nil || (len(obj.Spec.Deployment.Resources.Requests) == 0 && len(obj.Spec.Deployment.Resources.Limits) == 0) {
-		obj.Spec.Deployment.Resources = &corev1.ResourceRequirements{
-			Requests: corev1.ResourceList{
-				corev1.ResourceMemory: DefaultMemoryRequest.DeepCopy(),
-				corev1.ResourceCPU:    DefaultCPURequest.DeepCopy(),
-			},
-			Limits: corev1.ResourceList{
-				corev1.ResourceMemory: DefaultMemoryLimit.DeepCopy(),
-				corev1.ResourceCPU:    DefaultCPULimit.DeepCopy(),
-			},
-		}
-	}
+	obj.Spec.Logging.Default()
 	// Non-mutating database TLS defaulting. We deliberately
 	// do NOT materialize spec.database.tls when it is nil, and we never set
 	// .enabled — TLS is strictly opt-in, so an upgrade of a previously
