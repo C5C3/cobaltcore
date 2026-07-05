@@ -411,6 +411,7 @@ NETWORK_POLICY_RULE = {
 WEBHOOK_ENABLED_DESCRIPTIONS = {
     "keystone-operator": "Enable admission webhooks for Keystone CR validation and defaulting",
     "c5c3-operator": "Enable admission webhooks for ControlPlane CR validation and defaulting",
+    "horizon-operator": "Enable admission webhooks for Horizon CR validation and defaulting",
 }
 
 

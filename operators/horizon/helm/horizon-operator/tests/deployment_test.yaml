@@ -1,0 +1,264 @@
+# Deployment template unit tests.
+suite: Deployment
+templates:
+  - templates/deployment.yaml
+tests:
+  - it: should set container image from Chart.AppVersion when tag is empty
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: "ghcr.io/c5c3/horizon-operator:0.1.0"
+
+  - it: should set replicas from values
+    asserts:
+      - equal:
+          path: spec.replicas
+          value: 2
+
+  - it: should set resource limits and requests
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].resources.limits.cpu
+          value: 500m
+      - equal:
+          path: spec.template.spec.containers[0].resources.limits.memory
+          value: 128Mi
+      - equal:
+          path: spec.template.spec.containers[0].resources.requests.cpu
+          value: 10m
+      - equal:
+          path: spec.template.spec.containers[0].resources.requests.memory
+          value: 64Mi
+
+  - it: should set pod securityContext
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext.runAsNonRoot
+          value: true
+      - equal:
+          path: spec.template.spec.securityContext.runAsUser
+          value: 65532
+      - equal:
+          path: spec.template.spec.securityContext.runAsGroup
+          value: 65532
+      - equal:
+          path: spec.template.spec.securityContext.fsGroup
+          value: 65532
+      - equal:
+          path: spec.template.spec.securityContext.seccompProfile.type
+          value: RuntimeDefault
+
+  - it: should set container securityContext
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.allowPrivilegeEscalation
+          value: false
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.capabilities.drop
+          value:
+            - ALL
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem
+          value: true
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.seccompProfile.type
+          value: RuntimeDefault
+
+  - it: should set liveness and readiness probes
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.httpGet.path
+          value: /healthz
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.httpGet.port
+          value: 8081
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.httpGet.path
+          value: /readyz
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.httpGet.port
+          value: 8081
+
+  - it: should set container args with leader election enabled
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].args
+          value:
+            - --leader-elect
+            - --max-concurrent-reconciles=2
+            - --metrics-bind-address=:8080
+            - --health-probe-bind-address=:8081
+
+  - it: should include all ports when webhook is enabled
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].ports
+          content:
+            name: metrics
+            containerPort: 8080
+            protocol: TCP
+      - contains:
+          path: spec.template.spec.containers[0].ports
+          content:
+            name: health
+            containerPort: 8081
+            protocol: TCP
+      - contains:
+          path: spec.template.spec.containers[0].ports
+          content:
+            name: webhook
+            containerPort: 9443
+            protocol: TCP
+
+  - it: should mount webhook certs when webhook is enabled
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].volumeMounts[0].name
+          value: webhook-certs
+      - equal:
+          path: spec.template.spec.containers[0].volumeMounts[0].mountPath
+          value: /tmp/k8s-webhook-server/serving-certs
+      - equal:
+          path: spec.template.spec.containers[0].volumeMounts[0].readOnly
+          value: true
+      - equal:
+          path: spec.template.spec.volumes[0].name
+          value: webhook-certs
+
+  - it: should not include webhook resources when webhook is disabled
+    set:
+      webhook:
+        enabled: false
+    asserts:
+      - isNull:
+          path: spec.template.spec.containers[0].volumeMounts
+      - isNull:
+          path: spec.template.spec.volumes
+      - lengthEqual:
+          path: spec.template.spec.containers[0].ports
+          count: 2
+      - notContains:
+          path: spec.template.spec.containers[0].ports
+          content:
+            name: webhook
+            containerPort: 9443
+            protocol: TCP
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --enable-webhooks=false
+
+  # Namespace-scoped deployment tests.
+  - it: should include --namespace arg when rbac.namespaceScoped is true
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --namespace=NAMESPACE
+
+  - it: should not include --namespace arg when rbac.namespaceScoped is false
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --namespace=NAMESPACE
+
+  - it: should include both --leader-elect and --namespace when both enabled
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
+      leaderElection:
+        enabled: true
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --leader-elect
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --namespace=NAMESPACE
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --metrics-bind-address=:8080
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --health-probe-bind-address=:8081
+
+  # Controller concurrency (--max-concurrent-reconciles) tests.
+  - it: should render --max-concurrent-reconciles=2 with default values
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --max-concurrent-reconciles=2
+
+  - it: should render a custom controller.maxConcurrentReconciles value
+    set:
+      controller:
+        maxConcurrentReconciles: 7
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --max-concurrent-reconciles=7
+
+  - it: should omit --max-concurrent-reconciles when the value is null
+    set:
+      controller:
+        maxConcurrentReconciles: null
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --max-concurrent-reconciles=2
+
+  # Operator logging (zap) configuration tests.
+  - it: should not render zap flags with default logging values
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --zap-devel=true
+
+  - it: should render --zap-devel=true when logging.development is true
+    set:
+      logging:
+        development: true
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --zap-devel=true
+
+  - it: should render --zap-log-level and --zap-encoder when set
+    set:
+      logging:
+        level: debug
+        encoder: console
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --zap-log-level=debug
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --zap-encoder=console
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --zap-devel=true
+
+  - it: should spread replicas across nodes best-effort
+    asserts:
+      - equal:
+          path: spec.template.spec.topologySpreadConstraints[0].maxSkew
+          value: 1
+      - equal:
+          path: spec.template.spec.topologySpreadConstraints[0].topologyKey
+          value: kubernetes.io/hostname
+      # ScheduleAnyway (soft) so single-node clusters (kind) stay schedulable.
+      - equal:
+          path: spec.template.spec.topologySpreadConstraints[0].whenUnsatisfiable
+          value: ScheduleAnyway
+      - equal:
+          path: spec.template.spec.topologySpreadConstraints[0].labelSelector.matchLabels["app.kubernetes.io/name"]
+          value: horizon-operator
+      - equal:
+          path: spec.template.spec.topologySpreadConstraints[0].labelSelector.matchLabels["app.kubernetes.io/instance"]
+          value: RELEASE-NAME

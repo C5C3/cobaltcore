@@ -1,0 +1,453 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "horizon-operator Helm Values",
+  "description": "Schema for the horizon-operator Helm chart values",
+  "type": "object",
+  "additionalProperties": false,
+  "definitions": {
+    "resourceQuantity": {
+      "description": "Kubernetes resource quantity (e.g., '500m', '128Mi', '1Gi', '0.5', '1e3')",
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^(\\.[0-9]+|[0-9]+(\\.[0-9]*)?)((e[0-9]+)|(m|k|M|G|T|P|E|Ki|Mi|Gi|Ti|Pi|Ei))?$"
+        },
+        {
+          "type": "number",
+          "minimum": 0
+        }
+      ]
+    },
+    "cidr": {
+      "description": "IPv4 or IPv6 CIDR block (e.g., '10.96.0.1/32', '2001:db8::/32'). IPv4 octets are bounded 0-255 to surface obvious typos (e.g. '999.0.0.1/32') at helm render time rather than as opaque kubectl apply admission errors. The IPv6 half of the pattern is intentionally loose — it matches any hex+colon sequence and does not enforce valid RFC 4291 group counts or '::' rules — because a schema-complete IPv6 regex is disproportionately complex for the stated goal of catching obvious typos; final IPv6 validation is delegated to kubectl/apiserver admission of the rendered NetworkPolicy.",
+      "type": "string",
+      "pattern": "^(((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)/([0-9]|[12][0-9]|3[0-2])|[0-9a-fA-F:]+/([0-9]|[1-9][0-9]|1[01][0-9]|12[0-8]))$"
+    },
+    "stringMap": {
+      "description": "Map of string keys to string values (Kubernetes labels/selectors)",
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    }
+  },
+  "properties": {
+    "image": {
+      "type": "object",
+      "description": "Container image configuration for the operator",
+      "additionalProperties": false,
+      "properties": {
+        "repository": {
+          "type": "string",
+          "description": "Container image repository",
+          "default": "ghcr.io/c5c3/horizon-operator"
+        },
+        "tag": {
+          "type": "string",
+          "description": "Container image tag; defaults to .Chart.AppVersion when left empty",
+          "default": ""
+        },
+        "pullPolicy": {
+          "type": "string",
+          "description": "Image pull policy",
+          "default": "IfNotPresent",
+          "enum": [
+            "Always",
+            "IfNotPresent",
+            "Never"
+          ]
+        }
+      }
+    },
+    "replicas": {
+      "type": "integer",
+      "description": "Number of operator pod replicas",
+      "default": 2,
+      "minimum": 1
+    },
+    "resources": {
+      "type": "object",
+      "description": "Resource requests and limits for the operator container",
+      "additionalProperties": false,
+      "properties": {
+        "limits": {
+          "type": "object",
+          "description": "Resource limits for the operator container",
+          "additionalProperties": false,
+          "properties": {
+            "cpu": {
+              "description": "CPU resource limit",
+              "default": "500m",
+              "allOf": [
+                {
+                  "$ref": "#/definitions/resourceQuantity"
+                }
+              ]
+            },
+            "memory": {
+              "description": "Memory resource limit",
+              "default": "128Mi",
+              "allOf": [
+                {
+                  "$ref": "#/definitions/resourceQuantity"
+                }
+              ]
+            }
+          }
+        },
+        "requests": {
+          "type": "object",
+          "description": "Resource requests for the operator container",
+          "additionalProperties": false,
+          "properties": {
+            "cpu": {
+              "description": "CPU resource request",
+              "default": "10m",
+              "allOf": [
+                {
+                  "$ref": "#/definitions/resourceQuantity"
+                }
+              ]
+            },
+            "memory": {
+              "description": "Memory resource request",
+              "default": "64Mi",
+              "allOf": [
+                {
+                  "$ref": "#/definitions/resourceQuantity"
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    "rbac": {
+      "type": "object",
+      "description": "RBAC configuration for the operator",
+      "additionalProperties": false,
+      "properties": {
+        "namespaceScoped": {
+          "type": "boolean",
+          "description": "Deploy with namespace-scoped Role/RoleBinding instead of ClusterRole/ClusterRoleBinding. Restricts the operator to its release namespace. Requires webhook.enabled=false.",
+          "default": false
+        }
+      }
+    },
+    "leaderElection": {
+      "type": "object",
+      "description": "Leader election configuration for high availability",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable leader election for high availability",
+          "default": true
+        }
+      }
+    },
+    "controller": {
+      "type": "object",
+      "description": "Controller-runtime reconcile-loop tuning for the operator",
+      "additionalProperties": false,
+      "properties": {
+        "maxConcurrentReconciles": {
+          "type": "integer",
+          "description": "Maximum number of CRs that reconcile concurrently (controller-runtime MaxConcurrentReconciles), rendered as --max-concurrent-reconciles. Applied by controllers that opt in; the c5c3 operator accepts the flag but does not yet consume it.",
+          "default": 2,
+          "minimum": 1
+        }
+      }
+    },
+    "webhook": {
+      "type": "object",
+      "description": "Admission webhook configuration",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable admission webhooks for Horizon CR validation and defaulting",
+          "default": true
+        }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "description": "Metrics endpoint configuration",
+      "additionalProperties": false,
+      "properties": {
+        "port": {
+          "type": "integer",
+          "description": "Port for the Prometheus metrics endpoint",
+          "default": 8080,
+          "minimum": 1,
+          "maximum": 65535
+        }
+      }
+    },
+    "logging": {
+      "type": "object",
+      "description": "Operator zap logger configuration. Production defaults (development=false): JSON encoder, info level, error-level stack traces.",
+      "additionalProperties": false,
+      "properties": {
+        "development": {
+          "type": "boolean",
+          "description": "Enable development logging mode (--zap-devel): console encoder, debug verbosity, warn-level stack traces. Leave false for production.",
+          "default": false
+        },
+        "level": {
+          "type": "string",
+          "description": "Zap log level (--zap-log-level): debug, info, error, panic, or a positive integer for custom verbosity. Empty uses the mode default.",
+          "default": "",
+          "pattern": "^(|debug|info|error|panic|[1-9][0-9]*)$"
+        },
+        "encoder": {
+          "type": "string",
+          "description": "Zap log encoder (--zap-encoder): json or console. Empty uses the mode default.",
+          "default": "",
+          "enum": [
+            "",
+            "json",
+            "console"
+          ]
+        }
+      }
+    },
+    "monitoring": {
+      "type": "object",
+      "description": "Observability integration configuration",
+      "additionalProperties": false,
+      "properties": {
+        "serviceMonitor": {
+          "type": "object",
+          "description": "Prometheus Operator ServiceMonitor settings. Requires the monitoring.coreos.com CRDs in-cluster when enabled.",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Render a ServiceMonitor targeting the operator metrics port",
+              "default": false
+            },
+            "interval": {
+              "type": "string",
+              "description": "Scrape interval (Go duration: e.g., 15s, 30s, 1m, or 0 to use the global default)",
+              "default": "30s",
+              "pattern": "^(0|([0-9]+(ns|us|µs|ms|s|m|h))+)$"
+            }
+          }
+        }
+      }
+    },
+    "serviceAccount": {
+      "type": "object",
+      "description": "Service account configuration",
+      "additionalProperties": false,
+      "properties": {
+        "create": {
+          "type": "boolean",
+          "description": "Create a service account for the operator",
+          "default": true
+        },
+        "name": {
+          "type": "string",
+          "description": "Name of the service account; if empty and create is true, a name is generated from the fullname template",
+          "default": ""
+        }
+      }
+    },
+    "networkPolicy": {
+      "type": "object",
+      "description": "NetworkPolicy for operator pod egress/ingress restriction. Opt-in via enabled=true.",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Render a NetworkPolicy that default-denies operator pod traffic except for the explicit rules below",
+          "default": false
+        },
+        "kubeApiServer": {
+          "type": "object",
+          "description": "Kubernetes API server reachability. Required (non-empty) when enabled=true — fail-closed",
+          "additionalProperties": false,
+          "properties": {
+            "cidrs": {
+              "type": "array",
+              "description": "List of kube-apiserver CIDR blocks the operator may reach for egress and receive webhook calls from",
+              "items": {
+                "allOf": [
+                  {
+                    "$ref": "#/definitions/cidr"
+                  }
+                ]
+              },
+              "default": []
+            },
+            "ports": {
+              "type": "array",
+              "description": "List of kube-apiserver TCP ports the operator may reach (e.g., 443, 6443)",
+              "items": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 65535
+              },
+              "default": []
+            }
+          }
+        },
+        "dns": {
+          "type": "object",
+          "description": "DNS egress configuration for kube-dns resolution",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Permit UDP+TCP/53 egress to the DNS peer below",
+              "default": true
+            },
+            "namespaceSelector": {
+              "description": "namespaceSelector matchLabels for the DNS peer (defaults to kube-system). minProperties:1 prevents an empty map from silently broadening the DNS peer to match all namespaces.",
+              "allOf": [
+                {
+                  "$ref": "#/definitions/stringMap"
+                }
+              ],
+              "minProperties": 1,
+              "default": {
+                "kubernetes.io/metadata.name": "kube-system"
+              }
+            },
+            "podSelector": {
+              "description": "podSelector matchLabels for the DNS peer (defaults to k8s-app=kube-dns). minProperties:1 prevents an empty map from silently broadening the DNS peer to match all pods.",
+              "allOf": [
+                {
+                  "$ref": "#/definitions/stringMap"
+                }
+              ],
+              "minProperties": 1,
+              "default": {
+                "k8s-app": "kube-dns"
+              }
+            }
+          }
+        },
+        "allowMetricsFrom": {
+          "type": "array",
+          "description": "List of NetworkPolicyPeer objects permitted to scrape the metrics port. Empty disables metrics ingress",
+          "items": {
+            "type": "object"
+          },
+          "default": []
+        },
+        "webhookClients": {
+          "type": "object",
+          "description": "Webhook admission ingress source override. Only consulted when webhook.enabled=true",
+          "additionalProperties": false,
+          "properties": {
+            "cidrs": {
+              "type": "array",
+              "description": "CIDR blocks permitted to call the webhook on 9443. When empty, falls back to kubeApiServer.cidrs",
+              "items": {
+                "allOf": [
+                  {
+                    "$ref": "#/definitions/cidr"
+                  }
+                ]
+              },
+              "default": []
+            }
+          }
+        }
+      }
+    },
+    "nameOverride": {
+      "type": "string",
+      "description": "Override the chart name used in resource names",
+      "default": ""
+    },
+    "fullnameOverride": {
+      "type": "string",
+      "description": "Override the full resource name prefix, skipping release-name prefixing",
+      "default": ""
+    },
+    "operator-library": {
+      "type": "object",
+      "description": "Reserved values namespace for the operator-library library subchart. The library carries no configurable values; Helm injects this (empty) key during values coalescing, so additionalProperties:false at the root must permit it."
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "rbac": {
+            "properties": {
+              "namespaceScoped": {
+                "const": true
+              }
+            },
+            "required": [
+              "namespaceScoped"
+            ]
+          }
+        },
+        "required": [
+          "rbac"
+        ]
+      },
+      "then": {
+        "properties": {
+          "webhook": {
+            "properties": {
+              "enabled": {
+                "const": false
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "networkPolicy": {
+            "properties": {
+              "enabled": {
+                "const": true
+              }
+            },
+            "required": [
+              "enabled"
+            ]
+          }
+        },
+        "required": [
+          "networkPolicy"
+        ]
+      },
+      "then": {
+        "properties": {
+          "networkPolicy": {
+            "properties": {
+              "kubeApiServer": {
+                "properties": {
+                  "cidrs": {
+                    "minItems": 1
+                  },
+                  "ports": {
+                    "minItems": 1
+                  }
+                },
+                "required": [
+                  "cidrs",
+                  "ports"
+                ]
+              }
+            },
+            "required": [
+              "kubeApiServer"
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

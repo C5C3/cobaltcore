@@ -1,0 +1,272 @@
+# ClusterRole RBAC rules unit tests.
+suite: ClusterRole
+templates:
+  - templates/clusterrole.yaml
+tests:
+  - it: should have the correct number of rules
+    asserts:
+      - lengthEqual:
+          path: rules
+          count: 16
+
+  - it: should grant full CRUD on horizons
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - horizon.openstack.c5c3.io
+            resources:
+              - horizons
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  - it: should grant get/update/patch on horizons/status
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - horizon.openstack.c5c3.io
+            resources:
+              - horizons/status
+            verbs:
+              - get
+              - update
+              - patch
+
+  - it: should grant update on horizons/finalizers
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - horizon.openstack.c5c3.io
+            resources:
+              - horizons/finalizers
+            verbs:
+              - update
+
+  - it: should grant full CRUD on apps/deployments
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - apps
+            resources:
+              - deployments
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  - it: should grant full CRUD on services and configmaps
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - ""
+            resources:
+              - services
+              - configmaps
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  - it: should grant read-only on secrets
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - ""
+            resources:
+              - secrets
+            verbs:
+              - get
+              - list
+              - watch
+
+  - it: should restrict events to create and patch only
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - ""
+            resources:
+              - events
+            verbs:
+              - create
+              - patch
+
+  - it: should grant read-only on externalsecrets
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - external-secrets.io
+            resources:
+              - externalsecrets
+            verbs:
+              - get
+              - list
+              - watch
+
+  - it: should grant read-only on clustersecretstores
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - external-secrets.io
+            resources:
+              - clustersecretstores
+            verbs:
+              - get
+              - list
+              - watch
+
+  - it: should grant full CRUD on poddisruptionbudgets
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - policy
+            resources:
+              - poddisruptionbudgets
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  - it: should grant full CRUD on horizontalpodautoscalers
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - autoscaling
+            resources:
+              - horizontalpodautoscalers
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  - it: should grant full CRUD on networkpolicies
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - networking.k8s.io
+            resources:
+              - networkpolicies
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  - it: should grant full CRUD on httproutes
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - gateway.networking.k8s.io
+            resources:
+              - httproutes
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  - it: should grant read-only get on httproutes/status
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - gateway.networking.k8s.io
+            resources:
+              - httproutes/status
+            verbs:
+              - get
+
+  - it: should grant read-only on priorityclasses
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - scheduling.k8s.io
+            resources:
+              - priorityclasses
+            verbs:
+              - get
+              - list
+              - watch
+
+  - it: should grant full CRUD on coordination leases
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - coordination.k8s.io
+            resources:
+              - leases
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  - it: should not render ClusterRole when rbac.namespaceScoped is true
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0

@@ -1,0 +1,8 @@
+{{- include "operator-library.webhookConfiguration" (dict
+      "root" .
+      "mutatingWebhookName" "mhorizon.kb.io"
+      "validatingWebhookName" "vhorizon.kb.io"
+      "mutatePath" "/mutate-horizon-openstack-c5c3-io-v1alpha1-horizon"
+      "validatePath" "/validate-horizon-openstack-c5c3-io-v1alpha1-horizon"
+      "apiGroup" "horizon.openstack.c5c3.io"
+      "resource" "horizons") }}
