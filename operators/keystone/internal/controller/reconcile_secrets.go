@@ -163,6 +163,8 @@ func (r *KeystoneReconciler) checkCredentialSecret(
 		msg = fmt.Sprintf("%s ExternalSecret %s/%s not found yet", noun, key.Namespace, key.Name)
 	case secrets.GateSecretKeysMissing:
 		msg = fmt.Sprintf("%s Secret exists but is missing expected keys", noun)
+	case secrets.GateExternalSecretNotSynced, secrets.GateReady:
+		// NotSynced keeps the generic waiting message; Ready returned above.
 	}
 	conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
 		Type:               "SecretsReady",

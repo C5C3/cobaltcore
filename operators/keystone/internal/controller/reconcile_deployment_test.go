@@ -383,7 +383,7 @@ func TestBuildKeystoneDeployment_NilReplicasWhenAutoscaling(t *testing.T) {
 // spec that bypassed the mutating webhook, or one that omitted the spec.deployment
 // block so the nested +kubebuilder:default=3 never materialized — the Deployment
 // is rendered at the default replica count instead of being scaled to zero pods.
-// Without the effectiveReplicas fallback, deploymentReplicas would return a
+// Without the deployment.EffectiveReplicas fallback, deploymentReplicas would return a
 // pointer to 0 and patch every non-autoscaled Keystone Deployment to zero.
 func TestBuildKeystoneDeployment_ZeroReplicasFallsBackToDefault(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -892,7 +892,7 @@ func TestBuildPodDisruptionBudget_ZeroReplicas(t *testing.T) {
 	pdb := buildPodDisruptionBudget(ks)
 
 	// A zero-valued replica count normalizes to the default (>1) via
-	// effectiveReplicas, so the PDB uses MinAvailable=1 — consistent with the
+	// deployment.EffectiveReplicas, so the PDB uses MinAvailable=1 — consistent with the
 	// Deployment, which is also rendered at the default count rather than scaled
 	// to zero.
 	g.Expect(pdb.Spec.MinAvailable).NotTo(BeNil())

@@ -87,15 +87,6 @@ func appendDBTLSParams(keystone *keystonev1alpha1.Keystone, query url.Values) er
 	return database.AppendTLSParams(keystone.Spec.Database.TLS, dbTLSPathsForMount(), query)
 }
 
-// dbConnectionDigest returns the SHA-256 of the assembled DSN as a lowercase
-// hex string. reconcileDeployment stamps it into the pod-template
-// keystone.c5c3.io/db-connection-hash annotation in Dynamic credentials mode so
-// a rotated engine-issued credential rolls the Deployment (the DSN is consumed
-// via the OS_DATABASE__CONNECTION env var, which — unlike the hot-reloaded
-// fernet/credential key volumes — only takes effect on a Pod restart).
-func dbConnectionDigest(connStr string) string {
-	return database.Digest(connStr)
-}
 
 // reconcileDBConnectionSecret derives the database connection URL from the
 // upstream credentials Secret and writes it to <keystone.Name>-db-connection

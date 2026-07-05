@@ -191,21 +191,6 @@ func selectorLabels(keystone *keystonev1alpha1.Keystone) map[string]string {
 	return naming.SelectorLabels(keystonev1alpha1.AppName, keystone.Name)
 }
 
-// effectiveReplicas returns the desired Keystone API replica count, normalizing a
-// zero-valued spec.deployment.replicas to keystonev1alpha1.DefaultReplicas. The
-// mutating webhook fills replicas=3 on admission and the CRD carries a
-// +kubebuilder:default=3 on the nested field, but neither fires for a CR that
-// omitted the spec.deployment block (Kubernetes does not descend into an absent
-// object to materialize the nested leaf default) or for any path that bypasses
-// the webhook. Left unnormalized, a zero would make deploymentReplicas scale the
-// Deployment to zero pods. Every replica consumer (deploymentReplicas,
-// buildPodDisruptionBudget, buildKeystoneHPA) routes through this single point so
-// the default is applied consistently, mirroring the
-// terminationGracePeriodSeconds / containerResources webhook-bypass fallbacks in
-// this package.
-func effectiveReplicas(keystone *keystonev1alpha1.Keystone) int32 {
-	return deployment.EffectiveReplicas(&keystone.Spec.Deployment)
-}
 
 // deploymentReplicas returns the desired .spec.replicas for the Keystone API
 // Deployment. When spec.autoscaling is set, it returns nil so the field is left
@@ -365,7 +350,7 @@ func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName,
 }
 
 // buildPodDisruptionBudget constructs the desired PDB for the Keystone API
-// deployment. It branches on effectiveReplicas — so a zero-valued
+// deployment. It branches on deployment.EffectiveReplicas — so a zero-valued
 // spec.deployment.replicas normalizes to the default, matching the Deployment's
 // own replica count — rather than the raw spec value. When the effective count
 // is > 1, minAvailable=1 guarantees at least one pod remains during voluntary

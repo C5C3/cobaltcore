@@ -37,7 +37,7 @@ const (
 
 	// DefaultReplicas is the desired Keystone API pod count materialized by the
 	// defaulting webhook (Default) when spec.deployment.replicas is zero, and the
-	// fallback the reconciler (effectiveReplicas) applies when it renders the
+	// fallback the reconciler (deployment.EffectiveReplicas) applies when it renders the
 	// Deployment/PDB/HPA for a CR that reached the controller with a zero-valued
 	// replica count.
 	DefaultReplicas = commonv1.DefaultReplicas

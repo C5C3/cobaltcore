@@ -70,7 +70,7 @@ func TestBuildHTTPRoute(t *testing.T) {
 	rule := route.Spec.Rules[0]
 	g.Expect(rule.Matches[0].Path.Value).To(gomega.HaveValue(gomega.Equal("/")),
 		"an empty spec.gateway.path must normalize to /")
-	backend := rule.BackendRefs[0].BackendRef.BackendObjectReference
+	backend := rule.BackendRefs[0].BackendObjectReference
 	g.Expect(backend.Name).To(gomega.Equal(gatewayv1.ObjectName("ks")))
 	g.Expect(backend.Port).To(gomega.HaveValue(gomega.Equal(gatewayv1.PortNumber(5000))))
 }
