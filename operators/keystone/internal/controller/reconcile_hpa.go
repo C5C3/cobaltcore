@@ -15,19 +15,17 @@ import (
 
 	"github.com/c5c3/forge/internal/common/conditions"
 	"github.com/c5c3/forge/internal/common/deployment"
+	"github.com/c5c3/forge/internal/common/naming"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
 
 // subResourceName returns the canonical name for Keystone operator-managed
 // sub-resources (Deployment, HPA, Service, PodDisruptionBudget, NetworkPolicy,
-// HTTPRoute). Centralised here so the naming convention is defined in one
-// place. The helper returns the bare CR name with no suffix — the
-// historical `-api` suffix was dropped to align internal Service DNS with
-// the public hostname posture. The name is
-// deliberately neutral (not `apiResourceName`) so future readers do not
-// expect an `-api` suffix or otherwise infer API-specific semantics
+// HTTPRoute). It delegates to the shared naming package
+// (internal/common/naming), the single source of truth for the sub-resource
+// naming convention across operators — the bare CR name with no suffix.
 func subResourceName(keystone *keystonev1alpha1.Keystone) string {
-	return keystone.Name
+	return naming.SubResourceName(keystone.Name)
 }
 
 // reconcileHPA ensures the HorizontalPodAutoscaler for the Keystone API

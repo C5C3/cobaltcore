@@ -7,15 +7,18 @@ package v1alpha1
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/c5c3/forge/internal/common/naming"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 )
 
 // Selector label keys and values used by the Deployment pod selector, webhook
-// TSC validation, and commonLabels(). Exported so that both the webhook and
-// controller reference the same constants — prevents silent drift.
+// TSC validation, and commonLabels(). The keys are re-exports of the shared
+// naming-convention constants (internal/common/naming) so that the webhook,
+// controller, and every other operator reference the same source of truth —
+// prevents silent drift.
 const (
-	LabelKeyName     = "app.kubernetes.io/name"
-	LabelKeyInstance = "app.kubernetes.io/instance"
+	LabelKeyName     = naming.LabelKeyName
+	LabelKeyInstance = naming.LabelKeyInstance
 	AppName          = "keystone"
 )
 

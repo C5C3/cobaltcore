@@ -20,6 +20,7 @@ import (
 
 	"github.com/c5c3/forge/internal/common/conditions"
 	"github.com/c5c3/forge/internal/common/deployment"
+	"github.com/c5c3/forge/internal/common/naming"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
@@ -174,25 +175,20 @@ func (r *KeystoneReconciler) reconcileDeployment(ctx context.Context, keystone *
 }
 
 // commonLabels returns the standard Kubernetes labels applied to all resources
-// owned by this Keystone instance.
+// owned by this Keystone instance. It delegates to the shared naming package
+// (internal/common/naming), the single source of truth for the label
+// convention across operators.
 func commonLabels(keystone *keystonev1alpha1.Keystone) map[string]string {
-	return map[string]string{
-		keystonev1alpha1.LabelKeyName:     keystonev1alpha1.AppName,
-		keystonev1alpha1.LabelKeyInstance: keystone.Name,
-		"app.kubernetes.io/managed-by":    "keystone-operator",
-	}
+	return naming.CommonLabels(keystonev1alpha1.AppName, keystone.Name)
 }
 
 // selectorLabels returns the minimal label set used as the Deployment pod
 // selector. It is a subset of commonLabels and must remain stable for the
-// lifetime of a Deployment (selectors are immutable after creation).
-// The label keys and app name are sourced from exported constants in the API
-// package to stay in sync with webhook TSC validation.
+// lifetime of a Deployment (selectors are immutable after creation). It
+// delegates to the shared naming package to stay in sync with webhook TSC
+// validation across operators.
 func selectorLabels(keystone *keystonev1alpha1.Keystone) map[string]string {
-	return map[string]string{
-		keystonev1alpha1.LabelKeyName:     keystonev1alpha1.AppName,
-		keystonev1alpha1.LabelKeyInstance: keystone.Name,
-	}
+	return naming.SelectorLabels(keystonev1alpha1.AppName, keystone.Name)
 }
 
 // effectiveReplicas returns the desired Keystone API replica count, normalizing a
