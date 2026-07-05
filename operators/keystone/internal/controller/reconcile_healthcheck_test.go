@@ -486,7 +486,7 @@ func TestReconcileHealthCheck_ParentContextCancelled_PropagatesWithoutFlipping(t
 		err: &url.Error{Op: "Get", URL: "http://test/v3", Err: context.Canceled},
 	}
 	clk := time.Unix(1_700_000_000, 0)
-	r.now = func() time.Time { return clk }
+	r.healthProbeCache.Now = func() time.Time { return clk }
 	ks := newTestKeystoneForHealthCheck("http://ignored/v3", 9)
 	ks.UID = "uid-peer-cancel"
 	healthyReadyCondition(ks)
@@ -511,7 +511,7 @@ func TestReconcileHealthCheck_ParentContextCancelled_PropagatesWithoutFlipping(t
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue),
 		"peer cancellation must not flip KeystoneAPIReady to False")
-	g.Expect(r.healthProbeCache).To(HaveKey(key),
+	g.Expect(r.healthProbeCache.Has(key)).To(BeTrue(),
 		"peer cancellation must not evict the probe cache")
 }
 
@@ -562,7 +562,7 @@ func TestReconcileHealthCheck_CacheHit_SkipsProbe(t *testing.T) {
 	r := newHealthcheckTestReconciler()
 	r.HTTPClient = doer
 	base := time.Unix(1_700_000_000, 0)
-	r.now = func() time.Time { return base }
+	r.healthProbeCache.Now = func() time.Time { return base }
 	ks := newTestKeystoneForHealthCheck("http://ignored/v3", 1)
 	ks.UID = "uid-cache-hit"
 
@@ -587,7 +587,7 @@ func TestReconcileHealthCheck_CacheExpiry_ReProbes(t *testing.T) {
 	r := newHealthcheckTestReconciler()
 	r.HTTPClient = doer
 	clk := time.Unix(1_700_000_000, 0)
-	r.now = func() time.Time { return clk }
+	r.healthProbeCache.Now = func() time.Time { return clk }
 	ks := newTestKeystoneForHealthCheck("http://ignored/v3", 1)
 	ks.UID = "uid-expiry"
 
@@ -616,14 +616,14 @@ func TestReconcileHealthCheck_ProbeError_EvictsCache(t *testing.T) {
 	r := newHealthcheckTestReconciler()
 	r.HTTPClient = doer
 	clk := time.Unix(1_700_000_000, 0)
-	r.now = func() time.Time { return clk }
+	r.healthProbeCache.Now = func() time.Time { return clk }
 	ks := newTestKeystoneForHealthCheck("http://ignored/v3", 1)
 	ks.UID = "uid-evict"
 	key := client.ObjectKeyFromObject(ks)
 
 	_, err := r.reconcileHealthCheck(context.Background(), ks)
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(r.healthProbeCache).To(HaveKey(key), "successful probe must be cached")
+	g.Expect(r.healthProbeCache.Has(key)).To(BeTrue(), "successful probe must be cached")
 
 	// Age past the TTL so the next pass re-probes and hits the error branch.
 	clk = clk.Add(HealthCheckCacheTTL + time.Second)
@@ -631,7 +631,7 @@ func TestReconcileHealthCheck_ProbeError_EvictsCache(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(RequeueHealthCheck))
 	g.Expect(doer.calls).To(Equal(2))
-	g.Expect(r.healthProbeCache).NotTo(HaveKey(key), "a probe error must evict the cached entry")
+	g.Expect(r.healthProbeCache.Has(key)).To(BeFalse(), "a probe error must evict the cached entry")
 }
 
 // TestReconcileHealthCheck_ConditionNotTrue_ReProbes verifies that a fresh
@@ -643,7 +643,7 @@ func TestReconcileHealthCheck_ConditionNotTrue_ReProbes(t *testing.T) {
 	r := newHealthcheckTestReconciler()
 	r.HTTPClient = doer
 	base := time.Unix(1_700_000_000, 0)
-	r.now = func() time.Time { return base }
+	r.healthProbeCache.Now = func() time.Time { return base }
 	ks := newTestKeystoneForHealthCheck("http://ignored/v3", 1)
 	ks.UID = "uid-cond-false"
 
@@ -664,7 +664,7 @@ func TestReconcileHealthCheck_EndpointChange_ReProbes(t *testing.T) {
 	r := newHealthcheckTestReconciler()
 	r.HTTPClient = doer
 	base := time.Unix(1_700_000_000, 0)
-	r.now = func() time.Time { return base }
+	r.healthProbeCache.Now = func() time.Time { return base }
 	ks := newTestKeystoneForHealthCheck("http://ignored/v3", 1)
 	ks.UID = "uid-endpoint"
 	healthyReadyCondition(ks)
@@ -686,7 +686,7 @@ func TestReconcileHealthCheck_UIDChange_ReProbes(t *testing.T) {
 	r := newHealthcheckTestReconciler()
 	r.HTTPClient = doer
 	base := time.Unix(1_700_000_000, 0)
-	r.now = func() time.Time { return base }
+	r.healthProbeCache.Now = func() time.Time { return base }
 	ks := newTestKeystoneForHealthCheck("http://ignored/v3", 1)
 	ks.UID = "uid-old"
 	healthyReadyCondition(ks)

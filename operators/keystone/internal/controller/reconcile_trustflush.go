@@ -13,7 +13,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/c5c3/forge/internal/common/conditions"
@@ -59,7 +58,7 @@ func (r *KeystoneReconciler) reconcileTrustFlush(ctx context.Context,
 		// `kubectl describe keystone <name>`.
 		r.Recorder.Event(keystone, corev1.EventTypeWarning, "TrustFlushBypass",
 			"Trust flush legacy bypass: spec.trustFlush is nil (webhook defaulting did not run); existing CronJob deleted")
-		if err := deleteCronJob(ctx, r.Client, keystone.Namespace, cronJobName); err != nil {
+		if err := job.DeleteCronJob(ctx, r.Client, keystone.Namespace, cronJobName); err != nil {
 			return ctrl.Result{}, fmt.Errorf("deleting trust flush CronJob: %w", err)
 		}
 		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
@@ -158,19 +157,4 @@ func trustFlushCronJob(keystone *keystonev1alpha1.Keystone, configMapName string
 			},
 		},
 	}
-}
-
-// deleteCronJob deletes the CronJob identified by namespace and name. It is a
-// no-op if the CronJob does not exist. Because the reconciler's nil-spec
-// branch is a legacy bypass for envtest/webhook-less callers, this helper is
-// invoked solely from that bypass path to clear any
-// stray CronJob left over before the webhook materialized spec.trustFlush.
-func deleteCronJob(ctx context.Context, c client.Client, namespace, name string) error {
-	cj := &batchv1.CronJob{}
-	cj.SetName(name)
-	cj.SetNamespace(namespace)
-	if err := client.IgnoreNotFound(c.Delete(ctx, cj)); err != nil {
-		return fmt.Errorf("deleting CronJob %s/%s: %w", namespace, name, err)
-	}
-	return nil
 }

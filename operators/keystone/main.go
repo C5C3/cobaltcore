@@ -57,7 +57,7 @@ func main() {
 				Client:                  mgr.GetClient(),
 				Scheme:                  mgr.GetScheme(),
 				Recorder:                mgr.GetEventRecorderFor("keystone-controller"), //nolint:staticcheck // SA1019: reconciler consumes record.EventRecorder (old events API); GetEventRecorder returns the incompatible events/v1 type.
-				OperatorNamespace:       controller.DetectOperatorNamespace(),
+				OperatorNamespace:       bootstrap.DetectOperatorNamespace(),
 				MaxConcurrentReconciles: maxConcurrentReconciles,
 			}).SetupWithManager(mgr); err != nil {
 				return err

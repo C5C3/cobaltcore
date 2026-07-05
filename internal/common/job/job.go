@@ -220,3 +220,15 @@ func isJobFailed(job *batchv1.Job) bool {
 	}
 	return false
 }
+
+// DeleteCronJob deletes the CronJob identified by namespace and name. It is a
+// no-op if the CronJob does not exist.
+func DeleteCronJob(ctx context.Context, c client.Client, namespace, name string) error {
+	cj := &batchv1.CronJob{}
+	cj.SetName(name)
+	cj.SetNamespace(namespace)
+	if err := client.IgnoreNotFound(c.Delete(ctx, cj)); err != nil {
+		return fmt.Errorf("deleting CronJob %s/%s: %w", namespace, name, err)
+	}
+	return nil
+}

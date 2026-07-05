@@ -2415,8 +2415,8 @@ func TestReconcile_OpenBaoFinalizerUpdateConflict_ReturnsError(t *testing.T) {
 	_, err := r.Reconcile(ctx, req)
 
 	g.Expect(err).To(HaveOccurred(), "Conflict on openbao AddFinalizer Update must surface as a reconciler error")
-	g.Expect(err.Error()).To(ContainSubstring("adding openbao finalizer"),
-		"error must preserve the 'adding openbao finalizer' wrapper from Reconcile")
+	g.Expect(err.Error()).To(ContainSubstring(`adding finalizer "keystone.openstack.c5c3.io/openbao-finalizer"`),
+		"error must carry the finalizer-attributed wrapper from EnsureFinalizer")
 	g.Expect(apierrors.IsConflict(err)).To(BeTrue(),
 		"wrapped Conflict must remain recognizable via apierrors.IsConflict")
 }

@@ -9,7 +9,6 @@ import (
 	"context"
 	"fmt"
 	"sync"
-	"time"
 
 	certmanagerv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
@@ -38,6 +37,7 @@ import (
 
 	"github.com/c5c3/forge/internal/common/bootstrap"
 	"github.com/c5c3/forge/internal/common/conditions"
+	"github.com/c5c3/forge/internal/common/healthcheck"
 	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	"github.com/c5c3/forge/internal/common/watch"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
@@ -123,7 +123,7 @@ type KeystoneReconciler struct {
 	HTTPClient HTTPDoer
 
 	// OperatorNamespace is the Namespace the operator Pod runs in (resolved at
-	// startup by DetectOperatorNamespace). reconcileNetworkPolicy appends an
+	// startup by bootstrap.DetectOperatorNamespace). reconcileNetworkPolicy appends an
 	// ingress peer for this Namespace so the operator's own health check can
 	// reach the Keystone API on TCP 5000. Empty when the namespace could not be
 	// determined, in which case no operator-namespace peer is added.
@@ -156,18 +156,13 @@ type KeystoneReconciler struct {
 	MaxConcurrentReconciles int
 
 	// healthProbeCache memoizes the last successful Keystone API health probe
-	// per CR so a steady-state reconcile does not fire a synchronous HTTP GET
-	// (bounded by HealthCheckTimeout) on every pass. A cache hit re-upserts
-	// KeystoneAPIReady=True without probing; any probe error or non-2xx evicts
-	// the entry. Lazily initialised under healthProbeCacheMu, which also guards
-	// concurrent access now that MaxConcurrentReconciles may exceed 1.
-	healthProbeCache   map[types.NamespacedName]healthProbeCacheEntry
-	healthProbeCacheMu sync.Mutex
-
-	// now is the clock used for the health-probe cache TTL comparison. When
-	// nil it defaults to time.Now; tests inject a controllable clock so the TTL
-	// boundary is deterministic.
-	now func() time.Time
+	// per CR (shared TTL probe cache) so a steady-state reconcile does not
+	// fire a synchronous HTTP GET (bounded by HealthCheckTimeout) on every
+	// pass. A cache hit re-upserts KeystoneAPIReady=True without probing; any
+	// probe error or non-2xx evicts the entry. The cache's internal mutex
+	// guards concurrent access now that MaxConcurrentReconciles may exceed 1;
+	// tests inject a controllable clock via its Now field.
+	healthProbeCache healthcheck.ProbeCache
 
 	// configRenderCache memoizes the rendered config ConfigMap name per CR,
 	// keyed on the CR UID + generation + the referenced policy ConfigMap's
@@ -289,22 +284,18 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	// through reconcileDelete. Returning
 	// Requeue=true after the Update guarantees the next reconcile observes the
 	// persisted finalizer rather than relying on the in-memory copy.
-	if !controllerutil.ContainsFinalizer(&keystone, keystoneFinalizer) {
-		controllerutil.AddFinalizer(&keystone, keystoneFinalizer)
-		if err := r.Update(ctx, &keystone); err != nil {
-			return ctrl.Result{}, fmt.Errorf("adding finalizer: %w", err)
-		}
+	if added, err := commonreconcile.EnsureFinalizer(ctx, r.Client, &keystone, keystoneFinalizer); err != nil {
+		return ctrl.Result{}, err
+	} else if added {
 		return ctrl.Result{Requeue: true}, nil
 	}
 
 	// Ensure the OpenBao finalizer is installed so that deleting the Keystone
 	// CR blocks on cleanup of the fernet-keys-backup and credential-keys-backup
 	// PushSecrets, which ESO then uses to purge the kv-v2 paths in OpenBao
-	if !controllerutil.ContainsFinalizer(&keystone, keystoneOpenBaoFinalizer) {
-		controllerutil.AddFinalizer(&keystone, keystoneOpenBaoFinalizer)
-		if err := r.Update(ctx, &keystone); err != nil {
-			return ctrl.Result{}, fmt.Errorf("adding openbao finalizer: %w", err)
-		}
+	if added, err := commonreconcile.EnsureFinalizer(ctx, r.Client, &keystone, keystoneOpenBaoFinalizer); err != nil {
+		return ctrl.Result{}, err
+	} else if added {
 		return ctrl.Result{Requeue: true}, nil
 	}
 

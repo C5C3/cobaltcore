@@ -6,13 +6,8 @@ package controller
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"net"
 	"net/http"
-	"os"
-	"strings"
-	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -21,86 +16,49 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/c5c3/forge/internal/common/conditions"
+	"github.com/c5c3/forge/internal/common/healthcheck"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
 
-// healthProbeCacheEntry records the last successful Keystone API probe for one
-// CR. uid guards against a CR recreated under the same name/namespace serving a
-// stale probe; endpoint invalidates the entry when the target Service URL
-// changes; probedAt drives the HealthCheckCacheTTL comparison.
-type healthProbeCacheEntry struct {
-	uid      types.UID
-	endpoint string
-	probedAt time.Time
-}
-
-// nowFn returns the reconciler's injected clock, or time.Now when unset.
-func (r *KeystoneReconciler) nowFn() time.Time {
-	if r.now != nil {
-		return r.now()
-	}
-	return time.Now()
-}
-
 // healthProbeCacheHit reports whether the cached probe for this CR can be
 // reused in place of a fresh HTTP GET: the KeystoneAPIReady condition is
-// already True, and a stored entry matches the CR's UID and endpoint and is
-// still within HealthCheckCacheTTL.
+// already True, and the shared TTL probe cache holds an entry matching the
+// CR's UID and endpoint within HealthCheckCacheTTL.
 func (r *KeystoneReconciler) healthProbeCacheHit(keystone *keystonev1alpha1.Keystone, endpoint string) bool {
 	current := conditions.GetCondition(keystone.Status.Conditions, conditionTypeKeystoneAPIReady)
 	if current == nil || current.Status != metav1.ConditionTrue {
 		return false
 	}
-	r.healthProbeCacheMu.Lock()
-	defer r.healthProbeCacheMu.Unlock()
-	entry, ok := r.healthProbeCache[client.ObjectKeyFromObject(keystone)]
-	if !ok {
-		return false
-	}
-	return entry.uid == keystone.UID &&
-		entry.endpoint == endpoint &&
-		r.nowFn().Sub(entry.probedAt) < HealthCheckCacheTTL
+	return r.healthProbeCache.Hit(client.ObjectKeyFromObject(keystone), keystone.UID, endpoint, HealthCheckCacheTTL)
 }
 
 // storeHealthProbe records a successful probe so reconciles within the TTL can
 // skip the synchronous HTTP GET.
 func (r *KeystoneReconciler) storeHealthProbe(keystone *keystonev1alpha1.Keystone, endpoint string) {
-	r.healthProbeCacheMu.Lock()
-	defer r.healthProbeCacheMu.Unlock()
-	if r.healthProbeCache == nil {
-		r.healthProbeCache = make(map[types.NamespacedName]healthProbeCacheEntry)
-	}
-	r.healthProbeCache[client.ObjectKeyFromObject(keystone)] = healthProbeCacheEntry{
-		uid:      keystone.UID,
-		endpoint: endpoint,
-		probedAt: r.nowFn(),
-	}
+	r.healthProbeCache.Store(client.ObjectKeyFromObject(keystone), keystone.UID, endpoint)
 }
 
 // evictHealthProbe drops the cached probe for a CR so the next reconcile
 // re-probes. Called on any probe failure and on CR deletion.
 func (r *KeystoneReconciler) evictHealthProbe(key types.NamespacedName) {
-	r.healthProbeCacheMu.Lock()
-	defer r.healthProbeCacheMu.Unlock()
-	delete(r.healthProbeCache, key)
+	r.healthProbeCache.Evict(key)
 }
 
 // Condition type and reason constants for KeystoneAPIReady.
 const (
-	conditionTypeKeystoneAPIReady     = "KeystoneAPIReady"
-	conditionReasonEndpointNotReady   = "EndpointNotReady"
-	conditionReasonAPIHealthy         = "APIHealthy"
-	conditionReasonAPIUnhealthy       = "APIUnhealthy"
-	conditionReasonHealthCheckTimeout = "HealthCheckTimeout"
-	conditionReasonConnectionFailed   = "ConnectionFailed"
-	conditionReasonHealthCheckFailed  = "HealthCheckFailed"
+	conditionTypeKeystoneAPIReady   = "KeystoneAPIReady"
+	conditionReasonAPIHealthy       = "APIHealthy"
+	conditionReasonAPIUnhealthy     = "APIUnhealthy"
+	conditionReasonEndpointNotReady = healthcheck.ReasonEndpointNotReady
+
+	conditionReasonHealthCheckTimeout = healthcheck.ReasonHealthCheckTimeout
+	conditionReasonConnectionFailed   = healthcheck.ReasonConnectionFailed
+	conditionReasonHealthCheckFailed  = healthcheck.ReasonHealthCheckFailed
 )
 
-// HTTPDoer abstracts the Do method of *http.Client so that tests can inject a
-// stub transport for the Keystone API health check.
-type HTTPDoer interface {
-	Do(*http.Request) (*http.Response, error)
-}
+// HTTPDoer re-exports the shared health-check client seam so that tests can
+// inject a stub transport for the Keystone API health check.
+type HTTPDoer = healthcheck.HTTPDoer
 
 // httpClient returns the reconciler's HTTPClient if set, otherwise
 // http.DefaultClient.
@@ -224,20 +182,7 @@ func (r *KeystoneReconciler) handleHealthCheckError(ctx context.Context, keyston
 }
 
 // classifyHealthCheckError returns the condition Reason and Message for the
-// given HTTP client error.
+// given HTTP client error, via the shared classifier.
 func classifyHealthCheckError(err error) (reason, message string) {
-	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, os.ErrDeadlineExceeded) {
-		return conditionReasonHealthCheckTimeout, "health check timed out"
-	}
-
-	var dnsErr *net.DNSError
-	if errors.As(err, &dnsErr) {
-		return conditionReasonEndpointNotReady, "endpoint not resolvable"
-	}
-
-	if strings.Contains(err.Error(), "connection refused") {
-		return conditionReasonConnectionFailed, fmt.Sprintf("connection failed: %s", err)
-	}
-
-	return conditionReasonHealthCheckFailed, fmt.Sprintf("health check failed: %s", err)
+	return healthcheck.ClassifyError(err)
 }

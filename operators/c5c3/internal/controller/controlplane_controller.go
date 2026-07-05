@@ -24,7 +24,6 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -179,11 +178,9 @@ func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// CRs — carries the finalizer; parked duplicates return above and never need
 	// it. Returning Requeue=true after the Update guarantees the next reconcile
 	// observes the persisted finalizer.
-	if !controllerutil.ContainsFinalizer(&cp, controlPlaneORCFinalizer) {
-		controllerutil.AddFinalizer(&cp, controlPlaneORCFinalizer)
-		if err := r.Update(ctx, &cp); err != nil {
-			return ctrl.Result{}, fmt.Errorf("adding finalizer: %w", err)
-		}
+	if added, err := commonreconcile.EnsureFinalizer(ctx, r.Client, &cp, controlPlaneORCFinalizer); err != nil {
+		return ctrl.Result{}, err
+	} else if added {
 		return ctrl.Result{Requeue: true}, nil
 	}
 

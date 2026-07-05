@@ -276,7 +276,7 @@ func (r *KeystoneReconciler) reconcilePasswordRotation(ctx context.Context,
 // intact in OpenBao at the per-CR path — disabling rotation must never lock the
 // admin out.
 func (r *KeystoneReconciler) teardownPasswordRotation(ctx context.Context, keystone *keystonev1alpha1.Keystone) error {
-	if err := deleteCronJob(ctx, r.Client, keystone.Namespace, adminPasswordRotateCronJobName(keystone)); err != nil {
+	if err := job.DeleteCronJob(ctx, r.Client, keystone.Namespace, adminPasswordRotateCronJobName(keystone)); err != nil {
 		return fmt.Errorf("deleting admin password rotation CronJob: %w", err)
 	}
 
