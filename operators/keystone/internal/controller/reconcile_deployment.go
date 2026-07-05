@@ -191,7 +191,6 @@ func selectorLabels(keystone *keystonev1alpha1.Keystone) map[string]string {
 	return naming.SelectorLabels(keystonev1alpha1.AppName, keystone.Name)
 }
 
-
 // deploymentReplicas returns the desired .spec.replicas for the Keystone API
 // Deployment. When spec.autoscaling is set, it returns nil so the field is left
 // unmanaged and the HorizontalPodAutoscaler owns the replica count; otherwise

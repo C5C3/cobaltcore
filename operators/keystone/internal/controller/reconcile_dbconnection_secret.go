@@ -87,7 +87,6 @@ func appendDBTLSParams(keystone *keystonev1alpha1.Keystone, query url.Values) er
 	return database.AppendTLSParams(keystone.Spec.Database.TLS, dbTLSPathsForMount(), query)
 }
 
-
 // reconcileDBConnectionSecret derives the database connection URL from the
 // upstream credentials Secret and writes it to <keystone.Name>-db-connection
 // When the upstream Secret or its required keys are
