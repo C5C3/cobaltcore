@@ -305,6 +305,24 @@ infrastructure not available in the CI kind cluster:
 | `keystone_tempest_plugin\.tests\..*federation` | Requires an external IdP (SAML2/OAuth2) |
 | `keystone_tempest_plugin\.tests\..*oauth2` | Requires an external authorization server |
 
+#### Tracking version-coupled RBAC excludes
+
+Unlike the infrastructure excludes above, the RBAC excludes are coupled to a
+specific `keystone-tempest-plugin` version — they exist because the plugin's
+expected status codes disagree with Keystone's default policies for that
+release. They must not silently outlive their cause. Each RBAC exclude group
+therefore carries a `# tracked-by:` / `# re-evaluate-on:` comment pair:
+
+```text
+# tracked-by: <issue URL>
+# re-evaluate-on: keystone-tempest-plugin > <current pinned version>
+```
+
+On every `keystone-tempest-plugin` bump, re-run the excluded RBAC groups against
+the new plugin and drop any pattern upstream has fixed. The `re-evaluate-on`
+version is per-release (`> 0.19.0` for 2025.2, `> 0.20.0` for 2026.1), matching
+the plugin pinned in that release's `test-refs.yaml`.
+
 ### Adding a New Service
 
 To add Tempest tests for a new service (e.g., `glance`):
