@@ -13,18 +13,15 @@
 package controller
 
 import (
-	"fmt"
 	"net/url"
+
+	"github.com/c5c3/forge/internal/common/database"
 )
 
 // dbTLSPaths holds the in-pod mount file paths of the client certificate
 // material referenced by the ssl_ca/ssl_cert/ssl_key DSN parameters. The
 // reconciler never reads these bytes; it only emits the paths.
-type dbTLSPaths struct {
-	CA   string
-	Cert string
-	Key  string
-}
+type dbTLSPaths = database.TLSPaths
 
 // Typed condition/reason constants for the DatabaseTLSReady status condition
 // They are declared here alongside the mode
@@ -68,25 +65,5 @@ const (
 // guarantees deterministic ordering. Reviewer: please verify this matches the
 // task 4.1 DSN-assembly consumption.
 func modeToSSLParams(mode string, basePaths dbTLSPaths) (url.Values, error) {
-	switch mode {
-	case "prefer", "require", "verify-ca", "verify-full":
-		// Valid mode; fall through to build the parameters.
-	default:
-		return nil, fmt.Errorf("unknown database TLS mode %q: want one of prefer, require, verify-ca, verify-full", mode)
-	}
-
-	params := url.Values{}
-	params.Set("ssl_ca", basePaths.CA)
-	params.Set("ssl_cert", basePaths.Cert)
-	params.Set("ssl_key", basePaths.Key)
-
-	switch mode {
-	case "verify-ca":
-		params.Set("ssl_verify_cert", "true")
-	case "verify-full":
-		params.Set("ssl_verify_cert", "true")
-		params.Set("ssl_verify_identity", "true")
-	}
-
-	return params, nil
+	return database.SSLParams(mode, basePaths)
 }

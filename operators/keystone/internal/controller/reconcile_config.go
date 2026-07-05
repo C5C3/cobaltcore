@@ -17,8 +17,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
+	"github.com/c5c3/forge/internal/common/cache"
 	"github.com/c5c3/forge/internal/common/conditions"
 	"github.com/c5c3/forge/internal/common/config"
+	"github.com/c5c3/forge/internal/common/database"
 	"github.com/c5c3/forge/internal/common/plugins"
 	"github.com/c5c3/forge/internal/common/policy"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
@@ -426,40 +428,21 @@ func (r *KeystoneReconciler) pruneStaleConfigMaps(ctx context.Context, keystone 
 	})
 }
 
-// resolveCacheServers returns the memcache server list based on the cache spec.
-// In brownfield mode (Servers set), it joins them with commas.
-// In managed mode (ClusterRef set), it constructs endpoints from the cluster name.
+// resolveCacheServers returns the memcache server list based on the cache
+// spec, delegating to the shared cache resolver.
 func resolveCacheServers(keystone *keystonev1alpha1.Keystone) string {
-	if len(keystone.Spec.Cache.Servers) > 0 {
-		return strings.Join(keystone.Spec.Cache.Servers, ",")
-	}
-	if keystone.Spec.Cache.ClusterRef != nil {
-		// The memcached operator provisions a Deployment + headless Service.
-		// Use the Service DNS name which resolves to all pod IPs.
-		return fmt.Sprintf("%s:11211", keystone.Spec.Cache.ClusterRef.Name)
-	}
-	return ""
+	return cache.ResolveServers(&keystone.Spec.Cache)
 }
 
-// resolveDatabaseHost returns the database host:port based on the database spec.
-// In managed mode (ClusterRef set), it constructs a service DNS name.
-// In brownfield mode (Host set), it uses the explicit host:port.
+// resolveDatabaseHost returns the database host:port based on the database
+// spec, delegating to the shared database resolver.
 func resolveDatabaseHost(keystone *keystonev1alpha1.Keystone) string {
-	if keystone.Spec.Database.ClusterRef != nil {
-		return fmt.Sprintf("%s.%s.svc:%d",
-			keystone.Spec.Database.ClusterRef.Name,
-			keystone.Namespace,
-			dbPort(keystone))
-	}
-	return fmt.Sprintf("%s:%d", keystone.Spec.Database.Host, dbPort(keystone))
+	return database.ResolveHost(&keystone.Spec.Database, keystone.Namespace)
 }
 
 // dbPort returns the database port, defaulting to 3306 if not set.
 func dbPort(keystone *keystonev1alpha1.Keystone) int32 {
-	if keystone.Spec.Database.Port > 0 {
-		return keystone.Spec.Database.Port
-	}
-	return 3306
+	return database.Port(&keystone.Spec.Database)
 }
 
 // buildPolicyYAML builds the policy.yaml content from PolicyOverrides.

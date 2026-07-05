@@ -19,11 +19,8 @@ package controller
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"net/url"
-	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -33,7 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	"github.com/c5c3/forge/internal/common/conditions"
-	commonv1 "github.com/c5c3/forge/internal/common/types"
+	"github.com/c5c3/forge/internal/common/database"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
 
@@ -87,18 +84,7 @@ func dbTLSPathsForMount() dbTLSPaths {
 // mode (which the webhook + CRD enum reject earlier) is surfaced as an error
 // rather than silently producing a partial DSN.
 func appendDBTLSParams(keystone *keystonev1alpha1.Keystone, query url.Values) error {
-	tls := keystone.Spec.Database.TLS
-	if !tls.IsEnabled() {
-		return nil
-	}
-	sslParams, err := modeToSSLParams(tls.Mode, dbTLSPathsForMount())
-	if err != nil {
-		return err
-	}
-	for key, values := range sslParams {
-		query[key] = values
-	}
-	return nil
+	return database.AppendTLSParams(keystone.Spec.Database.TLS, dbTLSPathsForMount(), query)
 }
 
 // dbConnectionDigest returns the SHA-256 of the assembled DSN as a lowercase
@@ -108,8 +94,7 @@ func appendDBTLSParams(keystone *keystonev1alpha1.Keystone, query url.Values) er
 // via the OS_DATABASE__CONNECTION env var, which — unlike the hot-reloaded
 // fernet/credential key volumes — only takes effect on a Pod restart).
 func dbConnectionDigest(connStr string) string {
-	sum := sha256.Sum256([]byte(connStr))
-	return hex.EncodeToString(sum[:])
+	return database.Digest(connStr)
 }
 
 // reconcileDBConnectionSecret derives the database connection URL from the
@@ -163,16 +148,10 @@ func (r *KeystoneReconciler) reconcileDBConnectionSecret(ctx context.Context, ke
 	// Dynamic managed mode both take "username" from the upstream Secret — the
 	// dynamic engine issues an ephemeral username (e.g. v-kube-...) alongside
 	// the password, so the username is not derivable from the CR name.
-	var username string
-	if keystone.Spec.Database.ClusterRef != nil && keystone.Spec.Database.CredentialsMode != commonv1.CredentialsModeDynamic {
-		username = keystone.Name
-	} else {
-		u, ok := secret.Data["username"]
-		if !ok {
-			return waitForCredentials(fmt.Sprintf("Upstream database credentials Secret %s/%s missing key %q",
-				upstreamKey.Namespace, upstreamKey.Name, "username"))
-		}
-		username = string(u)
+	username, ok := database.ResolveUsername(&keystone.Spec.Database, keystone.Name, secret.Data)
+	if !ok {
+		return waitForCredentials(fmt.Sprintf("Upstream database credentials Secret %s/%s missing key %q",
+			upstreamKey.Namespace, upstreamKey.Name, "username"))
 	}
 
 	p, ok := secret.Data["password"]
@@ -194,22 +173,11 @@ func (r *KeystoneReconciler) reconcileDBConnectionSecret(ctx context.Context, ke
 	if err := appendDBTLSParams(keystone, query); err != nil {
 		return ctrl.Result{}, "", fmt.Errorf("assembling database TLS DSN parameters: %w", err)
 	}
-	connURL := &url.URL{
-		Scheme: "mysql+pymysql",
-		User:   url.UserPassword(username, password),
-		Host:   resolveDatabaseHost(keystone),
-		Path:   keystone.Spec.Database.Database,
-		// url.Values.Encode percent-encodes "/" to "%2F" in the ssl_ca/ssl_cert/
-		// ssl_key file paths. keystone-manage db_sync hands the DSN to alembic's
-		// ConfigParser, which interprets "%" as interpolation syntax and aborts
-		// with "invalid interpolation syntax". RFC 3986 allows literal "/" in the
-		// query component, and our values contain neither "&" nor "=", so keeping
-		// "/" literal is safe and round-trips cleanly through urllib.parse_qs in
-		// scripts/bootstrap_db_seed.py.
-		RawQuery: strings.ReplaceAll(query.Encode(), "%2F", "/"),
-	}
-	connStr := connURL.String()
-	digest := dbConnectionDigest(connStr)
+	// database.BuildDSN assembles the pymysql URL (RFC 3986 userinfo encoding,
+	// literal "/" preserved in the ssl_* query values so alembic's ConfigParser
+	// never sees "%" interpolation syntax) and returns its rollout digest.
+	connStr, digest := database.BuildDSN(username, password,
+		resolveDatabaseHost(keystone), keystone.Spec.Database.Database, query)
 
 	derivedKey := client.ObjectKey{
 		Namespace: keystone.Namespace,
