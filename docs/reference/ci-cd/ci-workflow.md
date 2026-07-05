@@ -124,13 +124,14 @@ Image Build (pull requests only, depends on gates):
 E2E Jobs (pull requests only, depend on build-e2e-images):
   e2e-infra ──────> needs: [changes], if: needs.changes.outputs.e2e-infra == 'true'
   e2e-operator ───> needs: [changes, build-e2e-images]
+  e2e-operator-upgrade > needs: [changes, build-e2e-images], if: needs.changes.outputs.has-e2e-operators == 'true'
   e2e-chaos ──────> needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images, e2e-operator]
   e2e-prometheus ─> needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]
                      if: needs.changes.outputs.e2e-prometheus == 'true'
   e2e-controlplane > needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]
                      if: needs.changes.outputs.e2e-controlplane == 'true'
   tempest ────────> needs: [changes, build-e2e-images, e2e-infra, e2e-operator, e2e-chaos, e2e-prometheus]
-  cleanup-e2e-tags > needs: [build-e2e-images, e2e-operator, e2e-chaos, tempest]
+  cleanup-e2e-tags > needs: [build-e2e-images, e2e-operator, e2e-operator-upgrade, e2e-chaos, tempest]
 
 Publish Jobs (push events only — main and v* tags; publish-only-on-merge):
   build-and-push (matrix: operator × platform) ──> needs: [changes], if: push && has-e2e-operators == 'true'
@@ -141,9 +142,9 @@ Release Job (v* tags only, depends on publish):
   github-release ──> needs: [changes, merge-operator-images, helm-push], if: v* tag
 ```
 
-The six E2E jobs (`e2e-infra`, `e2e-operator`, `e2e-chaos`, `e2e-prometheus`,
-`e2e-controlplane`, `tempest`) share infrastructure setup via the
-`setup-e2e-infra` composite action and diagnostic teardown via
+The E2E jobs (`e2e-infra`, `e2e-operator`, `e2e-operator-upgrade`, `e2e-chaos`,
+`e2e-prometheus`, `e2e-controlplane`, `tempest`) share infrastructure setup via
+the `setup-e2e-infra` composite action and diagnostic teardown via
 `hack/ci-dump-diagnostics.sh`. They run on `blacksmith-4vcpu-ubuntu-2404` runners
 (as does `test-integration`), except the `e2e-chaos` network suite, which uses a
 GitHub-hosted `ubuntu-24.04` runner for its kernel-module requirements.
@@ -628,6 +629,30 @@ strategy:
 The operator matrix is dynamically constructed by the `changes` job, including only operators
 whose code (or shared code) changed. The `imagePullPolicy: Never` Helm value ensures the
 kind-loaded image is used instead of attempting a registry pull. Timeout: 45 minutes.
+
+### e2e-operator-upgrade
+
+Operator helm-upgrade-in-place E2E. Installs the last released keystone-operator
+chart+image from GHCR as the baseline, brings a Keystone CR to Ready, then
+`helm upgrade`s the release to the locally built chart+CRDs and asserts the
+deployed Keystone survives the operator upgrade (Ready persists,
+`status.installedRelease` unchanged, no re-bootstrap). See
+[Operator Upgrade E2E Tests](../testing/operator-upgrade-e2e-tests.md) for suite
+details.
+
+**Dependencies:** `needs: [changes, build-e2e-images]`
+**Condition:** Runs on `pull_request` when `has-e2e-operators == 'true'`,
+`build-e2e-images` succeeded, and no dependency failed or was cancelled.
+**Permissions:** `contents: read`, `packages: read` (required for GHCR pull).
+
+Unlike the per-CR `e2e-operator` matrix, this suite manages the operator Helm
+release itself, so it runs in its own single job. The job pulls the run-scoped
+`:dev` operator and `2025.2` service images, `helm registry login`s GHCR,
+fetches the released baseline via `hack/ci-fetch-released-operator.sh`, installs
+it via `hack/ci-deploy-operator.sh` (with `CHART_DIR` pointing at the pulled
+chart and `IMAGE_TAG=latest`), deploys the infra stack, and runs the suite from
+`tests/e2e-operator-upgrade/`. Blocking (no `continue-on-error`). Timeout: 45
+minutes.
 
 ### e2e-chaos
 
