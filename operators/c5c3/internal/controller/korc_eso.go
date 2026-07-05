@@ -14,14 +14,14 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
+	"github.com/c5c3/forge/internal/common/secrets"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 )
 
-// openBaoClusterStoreName mirrors the keystone operator's constant
-// (operators/keystone/internal/controller/reconcile_secrets.go): the cluster-
-// scoped ESO SecretStore that fronts OpenBao. Defined locally so the c5c3
-// PushSecrets target the same backend without importing the keystone package.
-const openBaoClusterStoreName = "openbao-cluster-store"
+// openBaoClusterStoreName re-exports the shared ClusterSecretStore name (see
+// secrets.OpenBaoClusterStoreName) for the mappers and sub-reconcilers in
+// this package.
+const openBaoClusterStoreName = secrets.OpenBaoClusterStoreName
 
 // korcCloudsYamlSecretName is the conventional name of the admin clouds.yaml
 // Secret (and its ExternalSecret) K-ORC reads its admin credentials from. It

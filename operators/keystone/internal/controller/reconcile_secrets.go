@@ -22,12 +22,9 @@ import (
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
 
-// openBaoClusterStoreName is the ClusterSecretStore that fronts the OpenBao
-// backend used by deploy/eso/externalsecrets/*.yaml. The operator checks this
-// store's Ready condition on every reconcile so SecretsReady reflects upstream
-// backend outages within the ESO store-reconcile interval — ExternalSecrets
-// themselves use a 1h refreshInterval and would otherwise mask short outages
-const openBaoClusterStoreName = "openbao-cluster-store"
+// openBaoClusterStoreName re-exports the shared ClusterSecretStore name (see
+// secrets.OpenBaoClusterStoreName) for the watches and tests in this package.
+const openBaoClusterStoreName = secrets.OpenBaoClusterStoreName
 
 // keystoneOpenBaoFinalizer is the finalizer added to every Keystone CR so that
 // the fernet-keys-backup and credential-keys-backup PushSecret CRs are deleted
@@ -84,30 +81,41 @@ func (r *KeystoneReconciler) reconcileSecrets(ctx context.Context,
 		return ctrl.Result{RequeueAfter: RequeueSecretPolling}, nil
 	}
 
-	dbSecretKey := client.ObjectKey{Namespace: keystone.Namespace, Name: keystone.Spec.Database.SecretRef.Name}
-	adminSecretKey := client.ObjectKey{Namespace: keystone.Namespace, Name: keystone.Spec.Bootstrap.AdminPasswordSecretRef.Name}
-
-	// Validate DB then admin credentials. Each check reads the materialized
-	// Secret first (the steady-state fast path) and only consults the
-	// ExternalSecret to build a precise SecretsReady=False message when the
-	// Secret is not yet usable. On a not-ready check the helper sets the
+	// Validate the credential Secrets from a declarative (secretRef,
+	// expectedKeys) list. Each check reads the materialized Secret first (the
+	// steady-state fast path) and only consults the ExternalSecret to build a
+	// precise SecretsReady=False message when the Secret is not yet usable
+	// (secrets.GateSyncedSecret). On a not-ready check the helper sets the
 	// condition and the caller requeues.
-	if ready, err := r.checkCredentialSecret(ctx, keystone, dbSecretKey,
-		"WaitingForDBCredentials", "Database credentials",
-		"Waiting for ESO to sync database credentials from OpenBao",
-		"username", "password"); err != nil {
-		return ctrl.Result{}, err
-	} else if !ready {
-		return ctrl.Result{RequeueAfter: RequeueSecretPolling}, nil
+	credentialGates := []struct {
+		key          client.ObjectKey
+		reason       string
+		noun         string
+		waitingMsg   string
+		expectedKeys []string
+	}{
+		{
+			key:          client.ObjectKey{Namespace: keystone.Namespace, Name: keystone.Spec.Database.SecretRef.Name},
+			reason:       "WaitingForDBCredentials",
+			noun:         "Database credentials",
+			waitingMsg:   "Waiting for ESO to sync database credentials from OpenBao",
+			expectedKeys: []string{"username", "password"},
+		},
+		{
+			key:          client.ObjectKey{Namespace: keystone.Namespace, Name: keystone.Spec.Bootstrap.AdminPasswordSecretRef.Name},
+			reason:       "WaitingForAdminCredentials",
+			noun:         "Admin credentials",
+			waitingMsg:   "Waiting for ESO to sync admin credentials from OpenBao",
+			expectedKeys: []string{"password"},
+		},
 	}
-
-	if ready, err := r.checkCredentialSecret(ctx, keystone, adminSecretKey,
-		"WaitingForAdminCredentials", "Admin credentials",
-		"Waiting for ESO to sync admin credentials from OpenBao",
-		"password"); err != nil {
-		return ctrl.Result{}, err
-	} else if !ready {
-		return ctrl.Result{RequeueAfter: RequeueSecretPolling}, nil
+	for _, gate := range credentialGates {
+		if ready, err := r.checkCredentialSecret(ctx, keystone, gate.key,
+			gate.reason, gate.noun, gate.waitingMsg, gate.expectedKeys...); err != nil {
+			return ctrl.Result{}, err
+		} else if !ready {
+			return ctrl.Result{RequeueAfter: RequeueSecretPolling}, nil
+		}
 	}
 
 	conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
@@ -139,27 +147,21 @@ func (r *KeystoneReconciler) checkCredentialSecret(
 	reason, noun, waitingMsg string,
 	requiredKeys ...string,
 ) (bool, error) {
-	secretReady, err := secrets.IsSecretReady(ctx, r.Client, key, requiredKeys...)
+	state, err := secrets.GateSyncedSecret(ctx, r.Client, key, requiredKeys...)
 	if err != nil {
 		return false, err
 	}
-	if secretReady {
+	if state == secrets.GateReady {
 		return true, nil
 	}
 
-	// The materialized Secret is absent or missing keys. Distinguish the cause
-	// via the ExternalSecret so the operator surfaces an actionable message.
-	exists, esReady, err := secrets.WaitForExternalSecret(ctx, r.Client, key)
-	if err != nil {
-		return false, err
-	}
+	// The materialized Secret is absent or missing keys; the gate state
+	// attributes the cause so the operator surfaces an actionable message.
 	msg := waitingMsg
-	if !exists {
+	switch state {
+	case secrets.GateExternalSecretMissing:
 		msg = fmt.Sprintf("%s ExternalSecret %s/%s not found yet", noun, key.Namespace, key.Name)
-	} else if esReady {
-		// The ExternalSecret reports Ready but the Secret lacks a required key —
-		// a status-vs-object race where ESO flipped Ready before committing the
-		// Secret, or a genuinely malformed Secret.
+	case secrets.GateSecretKeysMissing:
 		msg = fmt.Sprintf("%s Secret exists but is missing expected keys", noun)
 	}
 	conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
