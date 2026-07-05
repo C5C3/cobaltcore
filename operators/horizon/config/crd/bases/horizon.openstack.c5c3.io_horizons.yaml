@@ -500,10 +500,11 @@ spec:
                   local_settings.py after the operator defaults, so user values win.
                   Keys are Django setting names (e.g. SESSION_TIMEOUT); values are
                   arbitrary JSON converted structurally to Python literals.
+                  A CEL rule over the keys is not expressible here — the API server
+                  cannot build CEL type information for preserve-unknown-fields map
+                  values — so the empty-key and SECRET_KEY guards are enforced by the
+                  validating webhook only.
                 type: object
-                x-kubernetes-validations:
-                - message: extraConfig setting name must not be empty
-                  rule: self.all(k, k != '')
               gateway:
                 description: |-
                   Gateway configures external exposure of the dashboard via a Gateway API

@@ -132,8 +132,11 @@ type HorizonSpec struct {
 	// local_settings.py after the operator defaults, so user values win.
 	// Keys are Django setting names (e.g. SESSION_TIMEOUT); values are
 	// arbitrary JSON converted structurally to Python literals.
+	// A CEL rule over the keys is not expressible here — the API server
+	// cannot build CEL type information for preserve-unknown-fields map
+	// values — so the empty-key and SECRET_KEY guards are enforced by the
+	// validating webhook only.
 	// +optional
-	// +kubebuilder:validation:XValidation:rule="self.all(k, k != '')",message="extraConfig setting name must not be empty"
 	ExtraConfig map[string]apiextensionsv1.JSON `json:"extraConfig,omitempty"`
 }
 
