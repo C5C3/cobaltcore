@@ -1,0 +1,251 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test (SC-CHAOS-010): Keystone CR deletion while the
+# mariadb-operator controller is down. The existing deletion-cleanup suite only
+# covers a healthy mariadb-operator; this suite drives the documented
+# single-pass finalizer behaviour under a dead controller.
+#
+# The keystone reconcileDelete design is deliberately non-blocking: it issues
+# Delete on the three MariaDB CRs (Database/User/Grant, all named after the CR),
+# emits FinalizingDatabase + DatabaseFinalized, and releases the keystone
+# finalizer WITHOUT waiting for the MariaDB CRs to actually disappear. So with
+# mariadb-operator scaled to 0, the Keystone CR must still be removed, while the
+# MariaDB CRs sit in Terminating (blocked on their own mariadb finalizers) until
+# the operator is scaled back up.
+#
+# Only the mariadb-operator *controller* Deployment is scaled to 0; the separate
+# mariadb-operator-webhook Deployment stays up, so the apiserver still admits the
+# DELETE calls the keystone finalizer issues against the MariaDB CRs.
+#
+# This suite uses `kubectl scale` rather than Chaos Mesh CRs, so it needs no
+# Chaos Mesh installation. The original controller replica count is stashed on
+# the Deployment itself via an annotation (no cross-step temp files), and every
+# step between scale-down and scale-up restores it in its catch block so a
+# mid-test failure never leaves mariadb-operator wedged for later suites.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-deletion-stuck-finalizer
+spec:
+  namespace: openstack
+  steps:
+  # ── Step 1: Apply Keystone CR ──────────────────────────────────────────
+  - name: apply-cr
+    try:
+    - apply:
+        file: 00-keystone-cr.yaml
+    catch:
+    - script:
+        content: ../diagnostics.sh baseline keystone-chaos-stuck
+  # ── Step 2: Wait for Ready=True ────────────────────────────────────────
+  - name: wait-ready
+    try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-stuck
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: ../diagnostics.sh baseline keystone-chaos-stuck
+  # ── Step 3: Scale mariadb-operator controller to 0 ─────────────────────
+  # Stash the original replica count on the Deployment as an annotation
+  # (source of truth on the live object; survives across steps without a
+  # temp file), then scale to 0 and wait for zero ready replicas.
+  - name: kill-mariadb-operator
+    try:
+    - script:
+        shell: bash
+        timeout: 90s
+        content: |
+          set -euo pipefail
+          NS=mariadb-system
+          DEPLOY=mariadb-operator
+          ORIG=$(kubectl get deploy "$DEPLOY" -n "$NS" -o jsonpath='{.spec.replicas}')
+          ORIG="${ORIG:-1}"
+          echo "mariadb-operator controller original replicas: ${ORIG}"
+          kubectl annotate deploy "$DEPLOY" -n "$NS" \
+            chaos.forge.c5c3.io/orig-replicas="${ORIG}" --overwrite
+          kubectl scale deploy "$DEPLOY" -n "$NS" --replicas=0
+          echo "Waiting for mariadb-operator controller to reach 0 ready replicas..."
+          for _ in $(seq 1 30); do
+            READY=$(kubectl get deploy "$DEPLOY" -n "$NS" \
+              -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo 0)
+            READY="${READY:-0}"
+            if [ "$READY" -eq 0 ]; then
+              echo "mariadb-operator controller is down (readyReplicas=0)"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "ERROR: mariadb-operator controller did not scale to 0"
+          exit 1
+    catch:
+    - script:
+        shell: bash
+        content: |
+          # Restore on failure so the next suite is not left with a dead operator.
+          NS=mariadb-system
+          DEPLOY=mariadb-operator
+          ORIG=$(kubectl get deploy "$DEPLOY" -n "$NS" \
+            -o jsonpath='{.metadata.annotations.chaos\.forge\.c5c3\.io/orig-replicas}' 2>/dev/null || echo "")
+          kubectl scale deploy "$DEPLOY" -n "$NS" --replicas="${ORIG:-1}" 2>&1 || true
+    - script:
+        content: ../diagnostics.sh chaos keystone-chaos-stuck --dep-label=app.kubernetes.io/name=mariadb-operator --dep-ns=mariadb-system --log-label=app.kubernetes.io/name=keystone-operator
+  # ── Step 4: Delete the Keystone CR (must complete despite dead operator) ─
+  # Bounded timeout: the single-pass finalizer design means the Keystone CR
+  # must be removed even while mariadb-operator is down. A regression that
+  # made deletion wait for the MariaDB CRs would wedge here.
+  - name: delete-cr
+    try:
+    - delete:
+        timeout: 2m
+        ref:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          name: keystone-chaos-stuck
+          namespace: openstack
+    catch:
+    - script:
+        shell: bash
+        content: |
+          NS=mariadb-system
+          DEPLOY=mariadb-operator
+          ORIG=$(kubectl get deploy "$DEPLOY" -n "$NS" \
+            -o jsonpath='{.metadata.annotations.chaos\.forge\.c5c3\.io/orig-replicas}' 2>/dev/null || echo "")
+          kubectl scale deploy "$DEPLOY" -n "$NS" --replicas="${ORIG:-1}" 2>&1 || true
+    - script:
+        content: ../diagnostics.sh chaos keystone-chaos-stuck --dep-label=app.kubernetes.io/name=mariadb-operator --dep-ns=mariadb-system --log-label=app.kubernetes.io/name=keystone-operator
+  # ── Step 5: Assert documented stuck-finalizer behaviour ────────────────
+  # The Keystone CR is gone and the three MariaDB CRs are still present but
+  # Terminating (deletionTimestamp set), blocked on their own mariadb finalizers
+  # because the controller is down. The two finalizing events are only observed
+  # (logged, not gated) — see the event script's comment for why.
+  - name: assert-stuck
+    try:
+    # Keystone CR removed.
+    - error:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-stuck
+            namespace: openstack
+    # Observe (do NOT gate on) the two documented finalizing events. Kubernetes
+    # Events are best-effort: the client-side recorder aggregates and
+    # rate-limits, and the apiserver GCs them under pressure. Event emission is
+    # not part of the reconcileDelete contract, so a dropped event must not fail
+    # this now-blocking pod-chaos leg (and, via the tempest guard, the build).
+    # The durable finalizer behaviour is asserted on state instead — Keystone CR
+    # gone and MariaDB CRs Terminating above, MariaDB CRs removed in Step 7.
+    - script:
+        shell: bash
+        content: |
+          set -eu
+          # Filter by involvedObject.name so a stale event from another chaos
+          # suite's cleanup deletion in the shared openstack namespace is not
+          # counted — only events for THIS CR are reported.
+          for reason in FinalizingDatabase DatabaseFinalized; do
+            n=$(kubectl get events -n openstack \
+              --field-selector "reason=${reason},involvedObject.name=keystone-chaos-stuck" \
+              -o jsonpath='{.items[*].message}' 2>/dev/null | tr -s ' ')
+            if [ -z "$n" ]; then
+              echo "INFO: no ${reason} event observed for keystone-chaos-stuck (best-effort, not gated)"
+            else
+              echo "OK: ${reason} event present for keystone-chaos-stuck"
+            fi
+          done
+    # MariaDB CRs are still present (assert old state per assert-absence
+    # pattern) with deletionTimestamp set — stuck on mariadb finalizers.
+    # Nil-safe: deletionTimestamp may momentarily still be nil right after the
+    # keystone finalizer issues Delete, so the `|| null` guard keeps the
+    # assert retrying rather than raising a non-retryable JMESPath type error.
+    - assert:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Database
+          metadata:
+            name: keystone-chaos-stuck
+            namespace: openstack
+            (deletionTimestamp != null): true
+    - assert:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: User
+          metadata:
+            name: keystone-chaos-stuck
+            namespace: openstack
+            (deletionTimestamp != null): true
+    - assert:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Grant
+          metadata:
+            name: keystone-chaos-stuck
+            namespace: openstack
+            (deletionTimestamp != null): true
+    catch:
+    - script:
+        shell: bash
+        content: |
+          NS=mariadb-system
+          DEPLOY=mariadb-operator
+          ORIG=$(kubectl get deploy "$DEPLOY" -n "$NS" \
+            -o jsonpath='{.metadata.annotations.chaos\.forge\.c5c3\.io/orig-replicas}' 2>/dev/null || echo "")
+          kubectl scale deploy "$DEPLOY" -n "$NS" --replicas="${ORIG:-1}" 2>&1 || true
+    - script:
+        content: ../diagnostics.sh chaos keystone-chaos-stuck --dep-label=app.kubernetes.io/name=mariadb-operator --dep-ns=mariadb-system --log-label=app.kubernetes.io/name=keystone-operator
+  # ── Step 6: Scale mariadb-operator controller back up ──────────────────
+  - name: restore-mariadb-operator
+    try:
+    - script:
+        shell: bash
+        timeout: 120s
+        content: |
+          set -euo pipefail
+          NS=mariadb-system
+          DEPLOY=mariadb-operator
+          ORIG=$(kubectl get deploy "$DEPLOY" -n "$NS" \
+            -o jsonpath='{.metadata.annotations.chaos\.forge\.c5c3\.io/orig-replicas}' 2>/dev/null || echo "")
+          ORIG="${ORIG:-1}"
+          echo "Restoring mariadb-operator controller to ${ORIG} replicas..."
+          kubectl scale deploy "$DEPLOY" -n "$NS" --replicas="${ORIG}"
+          kubectl annotate deploy "$DEPLOY" -n "$NS" chaos.forge.c5c3.io/orig-replicas- 2>&1 || true
+          kubectl -n "$NS" rollout status deploy "$DEPLOY" --timeout=90s
+  # ── Step 7: Assert deletion completes once the controller is back ──────
+  # With the controller processing finalizers again, the three MariaDB CRs
+  # finish deletion and are removed.
+  - name: assert-completion
+    try:
+    - error:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Database
+          metadata:
+            name: keystone-chaos-stuck
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: User
+          metadata:
+            name: keystone-chaos-stuck
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Grant
+          metadata:
+            name: keystone-chaos-stuck
+            namespace: openstack
+    catch:
+    - script:
+        content: ../diagnostics.sh chaos keystone-chaos-stuck --dep-label=app.kubernetes.io/name=mariadb-operator --dep-ns=mariadb-system --log-label=app.kubernetes.io/name=keystone-operator

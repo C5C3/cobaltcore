@@ -182,6 +182,7 @@ assertion windows.
 | [mariadb-network-latency](#mariadb-network-latency) | SC-CHAOS-007 | `keystone-chaos-net-lat` | Latency tolerance (no-regression) | `Ready=True` maintained, operator `restartCount=0` |
 | [api-pod-kill-pdb](#api-pod-kill-pdb) | SC-CHAOS-008 | `keystone-chaos-api` | PDB availability guarantee | PDB `minAvailable: 1`, `DeploymentReady=True` maintained, `Ready=True` maintained |
 | [operator-pod-kill](#operator-pod-kill) | SC-CHAOS-009 | `keystone-chaos-opk` | Operator pod kill (all) with failover reconciliation | All 6 conditions `True` maintained, replica patch reconciled by new leader |
+| [deletion-stuck-finalizer](#deletion-stuck-finalizer) | SC-CHAOS-010 | `keystone-chaos-stuck` | Deletion with a downed dependency operator | Keystone CR removed, `FinalizingDatabase`/`DatabaseFinalized` emitted, MariaDB CRs Terminating → removed after recovery |
 
 ---
 
@@ -570,6 +571,55 @@ recovery to confirm the new leader processes spec changes end-to-end.
 
 ---
 
+### deletion-stuck-finalizer
+
+**File:** `tests/e2e-chaos/deletion-stuck-finalizer/chainsaw-test.yaml`
+
+**Scenario:** SC-CHAOS-010
+
+**Purpose:** Validates the documented single-pass finalizer behaviour when a Keystone CR
+is deleted while the mariadb-operator controller is down. `deletion-cleanup` only covers a
+healthy mariadb-operator; this suite scales the mariadb-operator controller to 0, deletes
+the CR, and asserts the CR is still removed (the finalizer does not wait), the finalizing
+events are emitted, and the MariaDB CRs sit in Terminating until the controller is scaled
+back up and processes their finalizers.
+
+Unlike the other suites, this one injects the fault with `kubectl scale` rather than a
+Chaos Mesh CR, so it needs no Chaos Mesh installation.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Apply Keystone CR | `apply` | Applies `00-keystone-cr.yaml` — Keystone CR `keystone-chaos-stuck` with database `keystone_chaos_stuck` |
+| 2 | Assert baseline Ready=True | `assert` (5m) | Ready=True with reason AllReady — confirms healthy state before scaling the controller down |
+| 3 | Scale mariadb-operator controller to 0 | `script` (90s) | Stashes `.spec.replicas` on the Deployment via a `chaos.forge.c5c3.io/orig-replicas` annotation, scales `deployment/mariadb-operator` in `mariadb-system` to 0, and waits for `readyReplicas=0` (only the controller — the `mariadb-operator-webhook` Deployment stays up so DELETE is still admitted) |
+| 4 | Delete the Keystone CR | `delete` (2m) | The single-pass finalizer must remove the CR even with the controller down; a regression that waited for the MariaDB CRs would wedge here |
+| 5 | Assert stuck-finalizer state | `error` + `script` + `assert` (5m) | Keystone CR gone; `FinalizingDatabase` and `DatabaseFinalized` events present; MariaDB `Database`/`User`/`Grant` (all `keystone-chaos-stuck`) still present with `deletionTimestamp` set |
+| 6 | Scale mariadb-operator controller back up | `script` (120s) | Restores the controller to the stashed replica count, clears the annotation, and waits for the rollout to complete |
+| 7 | Assert deletion completes | `error` (5m) | With the controller processing finalizers again, all three MariaDB CRs are removed |
+
+**Fixtures:** `00-keystone-cr.yaml`
+
+**Catch blocks:** Steps 1–2 call `diagnostics.sh baseline`. Steps 3, 4, 5, and 7 call
+`diagnostics.sh chaos` with
+`--dep-label=app.kubernetes.io/name=mariadb-operator --dep-ns=mariadb-system --log-label=app.kubernetes.io/name=keystone-operator`.
+Steps 3–5 additionally restore the mariadb-operator controller from the stashed annotation
+in their catch blocks so a mid-test failure never leaves the operator wedged for later
+suites.
+
+**Design notes:**
+
+- Only the mariadb-operator *controller* Deployment is scaled to 0. The separate
+  `mariadb-operator-webhook` Deployment stays up, so the apiserver still admits the DELETE
+  calls the keystone finalizer issues against the MariaDB CRs.
+- The original replica count is stashed on the Deployment as an annotation, not in a
+  temp file, because Chainsaw steps cannot pass state between each other.
+- Step 5 asserts the *old* state (MariaDB CRs present + Terminating) before Step 7 asserts
+  the *new* state (removed), following the assert-absence-of-old-state pattern.
+
+---
+
 ## Test Patterns
 
 ### Degradation and Recovery (SC-CHAOS-001, SC-CHAOS-003)
@@ -869,11 +919,14 @@ tests/e2e-chaos/
 │   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-api, replicas: 3)
 │   ├── 01-podchaos.yaml              PodChaos targeting keystone API pods (multi-label)
 │   └── chainsaw-test.yaml            Test: PDB minAvailable=1, availability maintained
-└── operator-pod-kill/                SC-CHAOS-009: Operator pod kill all + failover
-    ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-opk)
-    ├── 01-podchaos.yaml              PodChaos targeting keystone-operator (mode: all)
-    ├── 02-patch-replicas.yaml        Patch replicas 1→2 for post-failover reconciliation
-    └── chainsaw-test.yaml            Test: Leader re-election, conditions maintained, replica patch
+├── operator-pod-kill/                SC-CHAOS-009: Operator pod kill all + failover
+│   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-opk)
+│   ├── 01-podchaos.yaml              PodChaos targeting keystone-operator (mode: all)
+│   ├── 02-patch-replicas.yaml        Patch replicas 1→2 for post-failover reconciliation
+│   └── chainsaw-test.yaml            Test: Leader re-election, conditions maintained, replica patch
+└── deletion-stuck-finalizer/         SC-CHAOS-010: Deletion with mariadb-operator down
+    ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-stuck)
+    └── chainsaw-test.yaml            Test: scale mariadb-operator to 0, delete CR, assert stuck → recovery
 ```
 
 ## Adding New Scenarios

@@ -946,6 +946,7 @@ jobs:
               tests/e2e/infrastructure/chaos-mesh-health
               tests/e2e-chaos/api-pod-kill-pdb
               tests/e2e-chaos/cronjob-rotation-failure
+              tests/e2e-chaos/deletion-stuck-finalizer
               tests/e2e-chaos/mariadb-pod-kill
               tests/e2e-chaos/memcached-pod-kill
               tests/e2e-chaos/openbao-pod-kill
