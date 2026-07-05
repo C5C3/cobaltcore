@@ -22,15 +22,16 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/c5c3/forge/internal/common/bootstrap"
 	"github.com/c5c3/forge/internal/common/conditions"
 	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
+	"github.com/c5c3/forge/internal/common/watch"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 )
 
@@ -369,10 +370,7 @@ func controlPlaneSecretNameExtractor(obj client.Object) []string {
 // the index key so the registration site is identifiable in manager-startup
 // failure logs.
 func registerControlPlaneSecretNameIndex(ctx context.Context, indexer client.FieldIndexer) error {
-	if err := indexer.IndexField(ctx, &c5c3v1alpha1.ControlPlane{}, ControlPlaneSecretNameIndexKey, controlPlaneSecretNameExtractor); err != nil {
-		return fmt.Errorf("registering field indexer %q: %w", ControlPlaneSecretNameIndexKey, err)
-	}
-	return nil
+	return watch.RegisterSecretNameIndex(ctx, indexer, &c5c3v1alpha1.ControlPlane{}, ControlPlaneSecretNameIndexKey, controlPlaneSecretNameExtractor)
 }
 
 // secretToControlPlaneMapper returns a MapFunc that maps Secret events to
@@ -381,32 +379,13 @@ func registerControlPlaneSecretNameIndex(ctx context.Context, indexer client.Fie
 // password Secret is typically ESO-managed (owned by the ExternalSecret
 // controller, not the ControlPlane), so an owner-ref watch would never match it;
 // the index-backed namespace-scoped List is what wakes the ControlPlane when its
-// admin password rotates. On a List error the mapper logs via
-// log.FromContext and returns nil per the handler.MapFunc contract, mirroring
-// secretToKeystoneMapper.
+// admin password rotates. It binds the shared watch.SecretToOwnersMapper to the
+// ControlPlane types in the index-only shape (no owner-ref leg).
 func secretToControlPlaneMapper(c client.Reader) handler.MapFunc {
-	return func(ctx context.Context, obj client.Object) []reconcile.Request {
-		var cps c5c3v1alpha1.ControlPlaneList
-		if err := c.List(
-			ctx, &cps,
-			client.InNamespace(obj.GetNamespace()),
-			client.MatchingFields{ControlPlaneSecretNameIndexKey: obj.GetName()},
-		); err != nil {
-			log.FromContext(ctx).Error(err, "listing ControlPlane CRs for secret watch")
-			return nil
-		}
-
-		if len(cps.Items) == 0 {
-			return nil
-		}
-		requests := make([]reconcile.Request, 0, len(cps.Items))
-		for i := range cps.Items {
-			requests = append(requests, reconcile.Request{
-				NamespacedName: client.ObjectKeyFromObject(&cps.Items[i]),
-			})
-		}
-		return requests
-	}
+	return watch.SecretToOwnersMapper(c, watch.SecretMapperConfig{
+		IndexKey: ControlPlaneSecretNameIndexKey,
+		NewList:  func() client.ObjectList { return &c5c3v1alpha1.ControlPlaneList{} },
+	})
 }
 
 // clusterSecretStoreToControlPlaneMapper returns a MapFunc that enqueues every
@@ -415,29 +394,11 @@ func secretToControlPlaneMapper(c client.Reader) handler.MapFunc {
 // status transition (e.g. ESO losing the backend connection) must retrigger
 // reconcile on all ControlPlanes that route credentials through it; otherwise
 // DBCredentialsReady / AdminPasswordReady / AdminCredentialReady would stay
-// stale-True until the next periodic resync. Mirrors the keystone operator's
-// clusterSecretStoreToKeystoneMapper (#476). On a List error the mapper logs and
-// returns nil per the handler.MapFunc contract.
+// stale-True until the next periodic resync (#476). It binds the shared
+// watch.ClusterSecretStoreFanOut to the ControlPlane list type.
 func clusterSecretStoreToControlPlaneMapper(c client.Reader) handler.MapFunc {
-	return func(ctx context.Context, obj client.Object) []reconcile.Request {
-		if obj.GetName() != openBaoClusterStoreName {
-			return nil
-		}
-
-		var cps c5c3v1alpha1.ControlPlaneList
-		if err := c.List(ctx, &cps); err != nil {
-			log.FromContext(ctx).Error(err, "listing ControlPlane CRs for ClusterSecretStore watch")
-			return nil
-		}
-
-		requests := make([]reconcile.Request, 0, len(cps.Items))
-		for i := range cps.Items {
-			requests = append(requests, reconcile.Request{
-				NamespacedName: client.ObjectKeyFromObject(&cps.Items[i]),
-			})
-		}
-		return requests
-	}
+	return watch.ClusterSecretStoreFanOut(c, openBaoClusterStoreName,
+		func() client.ObjectList { return &c5c3v1alpha1.ControlPlaneList{} })
 }
 
 // SetupWithManager registers the ControlPlaneReconciler with the controller
@@ -485,7 +446,11 @@ func (r *ControlPlaneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// per-item failure backoff at 30s rather than the default 1000s (see
 		// bootstrap.ControllerOptions).
 		WithOptions(bootstrap.ControllerOptions(r.MaxConcurrentReconciles)).
-		For(&c5c3v1alpha1.ControlPlane{}).
+		// Filter the CR's own status-only updates so Status().Update does not
+		// re-wake the controller (see watch.CRUpdatePredicate). Together with
+		// the no-op status-write skip in updateStatus this closes the
+		// self-wake loop the bare For() previously allowed.
+		For(&c5c3v1alpha1.ControlPlane{}, builder.WithPredicates(watch.CRUpdatePredicate())).
 		Owns(&mariadbv1alpha1.MariaDB{}).
 		Owns(&keystonev1alpha1.Keystone{}).
 		Owns(&orcv1alpha1.ApplicationCredential{}).

@@ -32,15 +32,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	"github.com/c5c3/forge/internal/common/bootstrap"
 	"github.com/c5c3/forge/internal/common/conditions"
 	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
+	"github.com/c5c3/forge/internal/common/watch"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 	"github.com/c5c3/forge/operators/keystone/internal/metrics"
 )
@@ -94,10 +93,7 @@ func keystoneSecretNameExtractor(obj client.Object) []string {
 // error is wrapped with the index key so the registration site is identifiable
 // in manager-startup failure logs.
 func registerSecretNameIndex(ctx context.Context, indexer client.FieldIndexer) error {
-	if err := indexer.IndexField(ctx, &keystonev1alpha1.Keystone{}, KeystoneSecretNameIndexKey, keystoneSecretNameExtractor); err != nil {
-		return fmt.Errorf("registering field indexer %q: %w", KeystoneSecretNameIndexKey, err)
-	}
-	return nil
+	return watch.RegisterSecretNameIndex(ctx, indexer, &keystonev1alpha1.Keystone{}, KeystoneSecretNameIndexKey, keystoneSecretNameExtractor)
 }
 
 // subConditionTypes lists the condition types set by individual sub-reconcilers.
@@ -709,50 +705,6 @@ func (r *KeystoneReconciler) reconcileParallelGroup(
 		instrumentSubReconciler, subs)
 }
 
-// keystoneCRPredicate filters update events on the Keystone CR's own For(...)
-// watch so the controller is not re-woken by its own Status().Update writes.
-// It admits an update only on a spec change (GenerationChangedPredicate) or a
-// label/annotation change; a status-only update produces no reconcile.
-//
-// Trade-offs, all deliberate:
-//   - Deletion still delivers: `kubectl delete keystone` on a CR carrying the
-//     finalizer sets metadata.deletionTimestamp, which — because the CRD has a
-//     status subresource — does NOT bump generation, and touches neither labels
-//     nor annotations. The three predicates above would therefore filter the
-//     live→Terminating Update, and the actual Delete event does not fire until
-//     the finalizer is removed, so reconcileDelete would stall until the next
-//     resync. The explicit `terminating` predicate admits that transition so
-//     finalizer cleanup runs immediately (mirrors
-//     pushSecretRelevantChangePredicate).
-//   - The operator's own annotation patches (db_job_metrics dedupe annotation)
-//     still pass via AnnotationChangedPredicate — rare and harmless.
-//   - The 10-minute informer resync on the Keystone CR itself is filtered, but
-//     every Owns()/Watches() secondary resource still resyncs and enqueues the
-//     owner, so the drift-repair net is preserved.
-//   - A future feature that must reconcile on CR *status* written by another
-//     actor would be filtered by this predicate; that is an intentional part of
-//     the contract.
-func keystoneCRPredicate() predicate.Predicate {
-	// DeletionTimestamp presence is compared via `== nil`/`!= nil` on the
-	// returned *metav1.Time rather than `.IsZero()` so the check is obviously
-	// nil-safe, matching pushSecretRelevantChangePredicate.
-	terminating := predicate.Funcs{
-		UpdateFunc: func(e event.UpdateEvent) bool {
-			if e.ObjectOld == nil || e.ObjectNew == nil {
-				return false
-			}
-			return e.ObjectOld.GetDeletionTimestamp() == nil &&
-				e.ObjectNew.GetDeletionTimestamp() != nil
-		},
-	}
-	return predicate.Or(
-		predicate.GenerationChangedPredicate{},
-		predicate.LabelChangedPredicate{},
-		predicate.AnnotationChangedPredicate{},
-		terminating,
-	)
-}
-
 // SetupWithManager registers the KeystoneReconciler with the controller manager.
 func (r *KeystoneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Detect whether the Gateway API CRD is installed. spec.gateway is
@@ -795,8 +747,8 @@ func (r *KeystoneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// bootstrap.ControllerOptions).
 		WithOptions(bootstrap.ControllerOptions(r.MaxConcurrentReconciles)).
 		// Filter the CR's own status-only updates so Status().Update does not
-		// re-wake the controller (see keystoneCRPredicate).
-		For(&keystonev1alpha1.Keystone{}, builder.WithPredicates(keystoneCRPredicate())).
+		// re-wake the controller (see watch.CRUpdatePredicate).
+		For(&keystonev1alpha1.Keystone{}, builder.WithPredicates(watch.CRUpdatePredicate())).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
 		Owns(&corev1.ConfigMap{}).

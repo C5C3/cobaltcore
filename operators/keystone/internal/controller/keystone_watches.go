@@ -12,8 +12,6 @@ import (
 	"context"
 	"slices"
 
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -22,6 +20,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	"github.com/c5c3/forge/internal/common/watch"
+
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
 
@@ -29,81 +29,28 @@ import (
 // requests for Keystone CRs that either reference the Secret by name
 // (resolved via the KeystoneSecretNameIndexKey field indexer) or own it via
 // an OwnerReference with Kind=Keystone and APIVersion in the Keystone API
-// group (e.g. rotation staging Secrets).
-//
-// Owner-ref matching is evaluated directly on the event object's metadata and
-// is scoped to ref.Kind=="Keystone" and any version in
-// keystonev1alpha1.GroupVersion.Group, so Secrets persisted with an older
-// APIVersion continue to resolve correctly after a future API version bump.
-// For each matching ref, the mapper performs a cached Get to drop owner-refs
-// whose target Keystone no longer exists in the informer cache; any
-// non-NotFound error falls through to enqueue, so a transient cache blip
-// cannot swallow a legitimate event.
+// group (e.g. rotation staging Secrets). It binds the shared
+// watch.SecretToOwnersMapper to the Keystone types; the group-only owner-ref
+// match and the cached staleness Get live there.
 func secretToKeystoneMapper(c client.Reader) handler.MapFunc {
-	return func(ctx context.Context, obj client.Object) []reconcile.Request {
-		namespace := obj.GetNamespace()
-		secretName := obj.GetName()
-		seen := make(map[types.NamespacedName]struct{})
-
-		var keystones keystonev1alpha1.KeystoneList
-		if err := c.List(
-			ctx, &keystones,
-			client.InNamespace(namespace),
-			client.MatchingFields{KeystoneSecretNameIndexKey: secretName},
-		); err != nil {
-			// Log and swallow: the owner-ref path below is independent of
-			// the index and must still run for rotation staging Secrets.
-			log.FromContext(ctx).Error(err, "listing Keystone CRs for secret watch")
-		} else {
-			for i := range keystones.Items {
-				seen[client.ObjectKeyFromObject(&keystones.Items[i])] = struct{}{}
-			}
-		}
-
-		expectedGroup := keystonev1alpha1.GroupVersion.Group
-		for _, ref := range obj.GetOwnerReferences() {
-			if ref.Kind != "Keystone" {
-				continue
-			}
-			gv, err := schema.ParseGroupVersion(ref.APIVersion)
-			if err != nil || gv.Group != expectedGroup {
-				continue
-			}
-			key := types.NamespacedName{Namespace: namespace, Name: ref.Name}
-			// Drop stale/spurious owner-refs whose target Keystone no longer
-			// exists. A cached Get is an in-memory lookup — no API server
-			// round-trip (review #1).
-			var ks keystonev1alpha1.Keystone
-			if err := c.Get(ctx, key, &ks); err != nil {
-				if apierrors.IsNotFound(err) {
-					continue
-				}
-				// Non-NotFound errors (cache mid-sync, disconnected informer,
-				// unregistered GVK) must not silently drop the event; log at
-				// V(1) and fall through to enqueue so reconcile can resolve
-				// authoritatively (review #3).
-				log.FromContext(ctx).V(1).Info("owner-ref Get returned non-NotFound error; enqueueing anyway",
-					"secret", client.ObjectKeyFromObject(obj),
-					"ownerRef", key,
-					"error", err)
-			}
-			seen[key] = struct{}{}
-		}
-
-		if len(seen) == 0 {
-			return nil
-		}
-		requests := make([]reconcile.Request, 0, len(seen))
-		for key := range seen {
-			requests = append(requests, reconcile.Request{NamespacedName: key})
-		}
-		return requests
-	}
+	return watch.SecretToOwnersMapper(c, watch.SecretMapperConfig{
+		IndexKey:   KeystoneSecretNameIndexKey,
+		NewList:    func() client.ObjectList { return &keystonev1alpha1.KeystoneList{} },
+		OwnerGroup: keystonev1alpha1.GroupVersion.Group,
+		OwnerKind:  "Keystone",
+		NewObject:  func() client.Object { return &keystonev1alpha1.Keystone{} },
+	})
 }
 
 // mariaDBToKeystoneMapper returns a MapFunc that maps MariaDB cluster events
 // to reconcile requests for Keystone CRs whose spec.database.clusterRef
 // targets the MariaDB by name in the same namespace.
+//
+// DECISION: this mapper — like pushSecretToKeystoneMapper and
+// pushSecretRelevantChangePredicate below — stays keystone-local rather than
+// moving to internal/common/watch: each has a single consumer today, so the
+// rule of two is not met. Revisit when a second operator needs the same
+// shape.
 func mariaDBToKeystoneMapper(c client.Reader) handler.MapFunc {
 	return func(ctx context.Context, obj client.Object) []reconcile.Request {
 		var keystones keystonev1alpha1.KeystoneList
@@ -130,27 +77,11 @@ func mariaDBToKeystoneMapper(c client.Reader) handler.MapFunc {
 // Keystone CR in the cluster when the OpenBao-backed ClusterSecretStore
 // changes. The store is cluster-scoped and shared across namespaces, so any
 // status transition (e.g. ESO losing the backend connection) must retrigger
-// reconcile on all Keystones that route secrets through it.
+// reconcile on all Keystones that route secrets through it. It binds the
+// shared watch.ClusterSecretStoreFanOut to the Keystone list type.
 func clusterSecretStoreToKeystoneMapper(c client.Reader) handler.MapFunc {
-	return func(ctx context.Context, obj client.Object) []reconcile.Request {
-		if obj.GetName() != openBaoClusterStoreName {
-			return nil
-		}
-
-		var keystones keystonev1alpha1.KeystoneList
-		if err := c.List(ctx, &keystones); err != nil {
-			log.FromContext(ctx).Error(err, "listing Keystone CRs for ClusterSecretStore watch")
-			return nil
-		}
-
-		requests := make([]reconcile.Request, 0, len(keystones.Items))
-		for i := range keystones.Items {
-			requests = append(requests, reconcile.Request{
-				NamespacedName: client.ObjectKeyFromObject(&keystones.Items[i]),
-			})
-		}
-		return requests
-	}
+	return watch.ClusterSecretStoreFanOut(c, openBaoClusterStoreName,
+		func() client.ObjectList { return &keystonev1alpha1.KeystoneList{} })
 }
 
 // pushSecretToKeystoneMapper returns a MapFunc that maps PushSecret events to
