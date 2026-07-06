@@ -43,6 +43,17 @@
     {
       "customType": "regex",
       "managerFilePatterns": [
+        "/hack/deploy-infra\\.sh$/"
+      ],
+      "matchStrings": [
+        "REGISTRY_CACHE_IMAGE=\"(?<depName>[^:\"]+):(?<currentValue>[^@\"]+)@(?<currentDigest>sha256:[a-f0-9]+)\""
+      ],
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
         "/hack/install-test-deps\\.sh$/"
       ],
       "matchStrings": [
@@ -244,6 +255,22 @@
       "automerge": true,
       "minimumReleaseAge": "3 days",
       "groupName": "flux-operator"
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["hack/deploy-infra.sh"],
+      "matchPackageNames": ["registry"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["hack/deploy-infra.sh"],
+      "matchPackageNames": ["registry"],
+      "matchUpdateTypes": ["minor", "patch", "digest"],
+      "automerge": true,
+      "minimumReleaseAge": "3 days",
+      "groupName": "registry pull-through cache"
     },
     {
       "matchManagers": ["custom.regex"],
