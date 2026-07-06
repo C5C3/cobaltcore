@@ -1,0 +1,220 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E smoke test for the Horizon Gateway quick-start path — the
+# dashboard counterpart to tests/e2e/keystone/gateway-quick-start-smoke.
+# Exercises end-to-end:
+#   `curl -k https://horizon.127-0-0-1.nip.io/auth/login/` returns HTTP 200
+#   with the rendered Django login page (containing `csrfmiddlewaretoken`).
+#
+# The full chain under test:
+#   kind host :443 → kindnode :31443 (NodePort) → Envoy Gateway proxy
+#   → the `https-horizon` HTTPS listener on `openstack/openstack-gw`
+#   (self-signed cert `horizon-nip-io-tls`, SNI `horizon.127-0-0-1.nip.io`)
+#   → HTTPRoute managed by the Horizon Operator → Service → Horizon pod.
+# This is the ONLY suite that exercises the second Gateway listener the kind
+# overlay adds for the dashboard (deploy/kind/base/openstack-gateway.yaml);
+# the keystone smoke only proves the `keystone.127-0-0-1.nip.io` listener.
+#
+# Suite location: lives under `tests/e2e/horizon/` (not
+# `tests/e2e/infrastructure/`) so the operator-installed `e2e-operator` matrix
+# job runs it — that job is the only place where the Horizon CRD is registered
+# and the operator can reconcile the smoke Horizon CR into an HTTPRoute. The
+# `e2e-infra` job suspends the horizon-operator HelmRelease, so a smoke suite
+# under `tests/e2e/infrastructure/` could never apply a Horizon CR.
+#
+# ── DECISION: curl from the chainsaw host (Option B) ─────────────────
+# curl runs directly from the chainsaw script step on the CI host, NOT from an
+# ephemeral in-cluster pod: the nip.io → 127.0.0.1 mapping is an external DNS
+# concern, `hack/kind-config.yaml` already bridges host 127.0.0.1:443 to the
+# proxy NodePort 31443, and the point of a quick-start smoke is to prove "the
+# external URL the docs tell the user to open WORKS". Mirrors the sibling
+# keystone gateway-quick-start-smoke.
+#
+# ── DECISION: probe /auth/login/, accept HTTP 200 only ───────────────
+# `/auth/login/` is the Horizon readiness-probe path: the Django login page
+# renders 200 without a live Keystone (Keystone is only contacted on login
+# submit), so the assertion is deterministic. A bare `/` would 302-redirect to
+# it. Accepting only 200 (not 200-or-404/302) proves the HTTPRoute is attached
+# AND the Horizon backend is serving — a 404 would only prove the data-plane is
+# reachable. The self-contained fixture (01-smoke-horizon-cr.yaml) makes the
+# 200 independent of sibling-suite ordering under `parallel: 4`.
+#
+# ── Scope gating — runtime presence checks ──────────────────────────
+# The script probes for `GatewayClass/envoy`, `Gateway/openstack-gw`, and the
+# `horizons.horizon.openstack.c5c3.io` CRD. If any is absent it exits 0 with a
+# SKIP line, so production overlays (no Envoy Gateway, operator suspended)
+# default-skip the test off any non-kind cluster with no `--selector` needed.
+#
+---
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: horizon-gateway-quick-start-smoke
+spec:
+  # Django's dashboard warm-up is slower than Keystone's uWSGI start, so the
+  # envelope is 8m (vs the keystone smoke's 7m). The inner `kubectl wait`
+  # bounds (5m each) stay under this outer cap so their failure mode surfaces
+  # as a targeted `condition X not reached` diagnostic rather than chainsaw's
+  # generic script-timeout kill. The two waits are sequential phases of one
+  # reconcile chain (the Gateway must be Programmed before the HTTPRoute can
+  # attach and Horizon's aggregate Ready — which includes HTTPRouteReady — can
+  # flip True), so both complete well inside 8m on a warm cluster.
+  timeouts:
+    assert: 8m
+    exec: 8m
+  steps:
+  # ── Step 1: Apply namespace ───────────────────────────────────────
+  # The Horizon CR (01-smoke-horizon-cr.yaml) is NOT applied here — its CRD is
+  # registered by the horizon-operator, which is suspended in some overlays.
+  # Applying it unconditionally would abort chainsaw with `no matches for kind
+  # "Horizon"` on those clusters, so the apply lives in the Step 2 script body
+  # behind a CRD presence guard to keep this test default-safe.
+  - try:
+    - apply:
+        file: 00-namespace.yaml
+  # ── Step 2: Smoke-check dashboard reachability ────────────────────
+  - try:
+    - script:
+        timeout: 8m
+        # Chainsaw defaults to `sh`, which rejects `set -o pipefail`; all other
+        # infra/keystone e2e scripts pin bash for the same reason.
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          # ── Presence guard ──────────────────────────────
+          # The kind overlay alone applies
+          # `deploy/kind/base/openstack-gateway.yaml`, which materialises
+          # GatewayClass/envoy and Gateway/openstack-gw (with the
+          # `https-horizon` listener). Their absence unambiguously signals a
+          # non-kind cluster — exit 0 with a SKIP line.
+          if ! kubectl get gatewayclass envoy >/dev/null 2>&1; then
+            echo "SKIP: GatewayClass/envoy not present (non-kind overlay)."
+            exit 0
+          fi
+          if ! kubectl get gateway openstack-gw -n openstack >/dev/null 2>&1; then
+            echo "SKIP: Gateway/openstack-gw not present in openstack namespace"
+            echo "      (non-kind overlay)."
+            exit 0
+          fi
+          # Horizon CRD gate — the `e2e-operator` matrix job installs the
+          # operator so the CRD is present and this guard passes; on infra-only
+          # or production clusters where the operator is suspended/absent, the
+          # guard exits 0 and the suite skips cleanly.
+          if ! kubectl get crd horizons.horizon.openstack.c5c3.io >/dev/null 2>&1; then
+            echo "SKIP: Horizon CRD not present (operator not deployed)."
+            exit 0
+          fi
+          echo "OK: Gateway + Horizon CRD present — running smoke checks"
+
+          # Apply the minimal Horizon CR now that the CRD presence guard has
+          # passed. Chainsaw runs scripts with the test directory as CWD, so
+          # the relative path resolves.
+          kubectl apply -f 01-smoke-horizon-cr.yaml
+
+          # ── Pre-flight: Gateway Programmed ────────────────────────
+          # Envoy Gateway sets `Programmed=True` once the listeners have usable
+          # TLS Secrets and the xDS data-plane is ready. Without this wait an
+          # early curl races kind startup (cert issuance + Envoy roll-out).
+          kubectl wait --for=condition=Programmed \
+            gateway/openstack-gw -n openstack --timeout=5m
+          echo "OK: Gateway/openstack-gw is Programmed"
+
+          # ── Pre-flight: Horizon Ready=True ────────────────────────
+          # Horizon's aggregate Ready condition includes the HTTPRouteReady
+          # sub-condition (only True after Envoy publishes Accepted=True on the
+          # route's parent) AND the deployment/health sub-conditions (pods
+          # serving the login page). Waiting on Ready gates the curl on BOTH
+          # the route being attached AND the backend being up — a stronger
+          # single gate than the keystone smoke's HTTPRouteReady-only wait.
+          # --timeout=5m stays inside the outer 8m script cap.
+          kubectl wait --for=condition=Ready \
+            horizon/horizon-smoke -n openstack --timeout=5m
+          echo "OK: Horizon/horizon-smoke Ready=True"
+
+          # ── HTTP 200 from the CI host ────────────────────
+          # `-k` accepts the self-signed cert issued by
+          # selfsigned-cluster-issuer (expected for a kind cluster). Retry
+          # loop: Envoy's xDS push and the Horizon pod's warm-up can race the
+          # Ready signal by a few seconds — up to 15 attempts, 2s apart — so a
+          # brief 503 from the proxy doesn't fail the whole run.
+          URL="https://horizon.127-0-0-1.nip.io/auth/login/"
+          HTTP_CODE=""
+          for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+            HTTP_CODE="$(curl -sk -o /tmp/body -w '%{http_code}' "$URL" || true)"
+            if [ "$HTTP_CODE" = "200" ]; then
+              echo "OK: got HTTP 200 on attempt $attempt"
+              break
+            fi
+            echo "attempt $attempt: HTTP $HTTP_CODE (retrying in 2s)"
+            sleep 2
+          done
+
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "ERROR: $URL returned HTTP $HTTP_CODE (expected 200)"
+            echo "--- response body (first 2KB) ---"
+            head -c 2048 /tmp/body 2>/dev/null || true
+            echo
+            exit 1
+          fi
+
+          # Non-empty body assertion: a 200 with an empty body would mean the
+          # HTTPRoute is attached but the Horizon backend returned nothing.
+          if [ ! -s /tmp/body ]; then
+            echo "ERROR: $URL returned HTTP 200 with empty body"
+            exit 1
+          fi
+
+          # Login-page assertion: Horizon's Django login form always embeds a
+          # `csrfmiddlewaretoken` hidden input; the `id_username` field is a
+          # fallback marker. Either proves the Gateway served the rendered
+          # dashboard login page, not a plain-text 200 from the proxy (the
+          # dashboard equivalent of the keystone smoke's JSON `version` check).
+          if grep -qE 'csrfmiddlewaretoken|id_username' /tmp/body; then
+            echo "OK: response body is the Horizon login page (login form marker present)"
+          else
+            echo "ERROR: response body is not the Horizon login page"
+            echo "--- response body (first 2KB) ---"
+            head -c 2048 /tmp/body 2>/dev/null || true
+            echo
+            exit 1
+          fi
+
+          echo "OK: Horizon login page responded 200 on https://horizon.127-0-0-1.nip.io/auth/login/"
+    catch:
+    # On failure, dump post-mortem state to help CI triage. Each resource is
+    # individually scoped so a missing one doesn't short-circuit the dump.
+    - describe:
+        apiVersion: gateway.networking.k8s.io/v1
+        kind: Gateway
+        name: openstack-gw
+        namespace: openstack
+    - describe:
+        apiVersion: horizon.openstack.c5c3.io/v1alpha1
+        kind: Horizon
+        name: horizon-smoke
+        namespace: openstack
+    - script:
+        # HTTPRoute and Certificate may not exist on an early failure (the
+        # Horizon CR hasn't reconciled yet), so `|| true` so the dump always
+        # runs to completion. The operator-managed HTTPRoute is listed
+        # generically rather than by a guessed name.
+        shell: bash
+        content: |
+          echo "=== HTTPRoutes in openstack ==="
+          kubectl get httproute -n openstack -o wide 2>&1 || true
+          echo
+          echo "=== Certificate horizon-nip-io-tls ==="
+          kubectl describe certificate horizon-nip-io-tls -n openstack 2>&1 || true
+          echo
+          echo "=== Horizon pods ==="
+          kubectl get pods -n openstack -l app.kubernetes.io/instance=horizon-smoke -o wide 2>&1 || true
+          echo
+          echo "=== events (last 30) ==="
+          kubectl get events -n openstack --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+    - podLogs:
+        namespace: envoy-gateway-system
+        selector: app.kubernetes.io/name=gateway-helm
+        tail: 200

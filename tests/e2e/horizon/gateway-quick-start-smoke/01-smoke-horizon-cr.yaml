@@ -1,0 +1,53 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Minimal Horizon CR fixture for the Gateway quick-start smoke test — the
+# counterpart to tests/e2e/keystone/gateway-quick-start-smoke for the second
+# Gateway listener the kind overlay adds for the dashboard.
+#
+# This smoke test exercises the end-to-end TLS + Gateway data-plane path the
+# ControlPlane Quick Start documents: `curl -k
+# https://horizon.127-0-0-1.nip.io/auth/login/` must return HTTP 200 with the
+# rendered Django login page. That requires a Horizon CR whose spec.gateway
+# produces an HTTPRoute attaching to the kind overlay's `openstack-gw` Gateway
+# on its `https-horizon` listener (hostname `horizon.127-0-0-1.nip.io`,
+# terminating with `horizon-nip-io-tls`).
+#
+# Name-collision avoidance: chainsaw-config.yaml sets `execution.parallel: 4`,
+# so this fixture uses a unique CR name (`horizon-smoke`) to avoid clashing
+# with the sibling horizon suites on the shared `openstack-memcached` cluster
+# and on HTTPRoute object names inside the `openstack` namespace. No other
+# horizon suite attaches to the nip.io Gateway hostname, so a root-path route
+# does not conflict.
+#
+# The login page renders without a live Keystone (Keystone is only contacted on
+# login submit), so keystoneEndpoint points at the cluster-local convention URL
+# and the smoke needs no running Keystone — exactly like the horizon
+# basic-deployment fixture. The hostname MUST match the Gateway listener
+# hostname AND the dnsName on `Certificate/horizon-nip-io-tls` so the listener's
+# TLS Secret matches the SNI the client presents.
+#
+apiVersion: horizon.openstack.c5c3.io/v1alpha1
+kind: Horizon
+metadata:
+  name: horizon-smoke
+  namespace: openstack
+spec:
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/horizon
+    tag: "2025.2"
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  secretKeyRef:
+    name: horizon-secret-key
+    key: secret-key
+  gateway:
+    parentRef:
+      name: openstack-gw
+    hostname: horizon.127-0-0-1.nip.io
+    path: /
