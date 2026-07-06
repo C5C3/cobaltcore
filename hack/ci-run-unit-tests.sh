@@ -82,6 +82,11 @@ docker run --rm --network host \
     set -e
     source /var/lib/openstack/bin/activate
     printf "Metadata-Version: 2.1\nName: %s\nVersion: %s\n" "$SERVICE_NAME" "$SERVICE_VERSION" > PKG-INFO
+    # Old sdist-only pins (e.g. the 2025.2 XStatic set) have legacy setup.py
+    # scripts importing pkg_resources, which setuptools 81 removed from uv
+    # isolated build envs; pin the build backend to the last bundling release.
+    printf "setuptools<81\n" > /tmp/build-constraints.txt
+    export UV_BUILD_CONSTRAINT=/tmp/build-constraints.txt
     TEST_REQ_ARG=""
     if [ -f test-requirements.txt ]; then
       TEST_REQ_ARG="-r test-requirements.txt"
@@ -102,9 +107,13 @@ docker run --rm --network host \
       # Services shipping tools/unit_tests.sh (horizon) drive their own
       # pytest invocation with the correct per-project settings modules;
       # otherwise fall back to a plain pytest run.
+      # hacking mirrors the upstream tox py3 env: it is absent from
+      # test-requirements.txt, but the local-hacking-rule unit tests
+      # (horizon/test/unit/hacking/) import pycodestyle and fail collection
+      # without it. The pin matches horizon tox.ini.
       uv pip install --prefix /var/lib/openstack \
         --constraint /workspace/upper-constraints.txt \
-        $TEST_REQ_ARG "${INSTALL_SPEC}" pytest
+        $TEST_REQ_ARG "${INSTALL_SPEC}" pytest "hacking>=7.0.0,<7.1.0"
       set +e
       if [ -f tools/unit_tests.sh ]; then
         bash tools/unit_tests.sh "$(pwd)"; TEST_EXIT=$?

@@ -24,4 +24,8 @@ keystone:
 horizon:
   pip_extras: []
   pip_packages: []
-  apt_packages: []
+  apt_packages:
+    # uWSGI is compiled in venv-builder against the shared libpython; the
+    # dashboard is otherwise pure Python. Without this, uwsgi fails to load
+    # (python-base ships no libpython3.12.so.1.0).
+    - libpython3.12t64

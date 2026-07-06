@@ -21,10 +21,16 @@ ARG PIP_PACKAGES=""
 # beforehand by scripts/apply-constraint-overrides.sh reading
 # overrides/<release>/constraints.txt (-horizon), otherwise pip refuses to
 # install the source tree against its own pin.
+# UV_BUILD_CONSTRAINT: several XStatic pins in the 2025.2 upper-constraints
+# ship only sdists whose legacy setup.py imports pkg_resources; setuptools 81
+# removed it from uv's isolated build env, so sdist builds need the last
+# release that still bundles it. Runtime resolution is unaffected.
 RUN --mount=type=bind,from=upper-constraints,source=upper-constraints.txt,target=/tmp/upper-constraints.txt \
     --mount=type=bind,from=horizon,target=/tmp/horizon,readwrite \
     PKG="/tmp/horizon" && \
     if [ -n "$PIP_EXTRAS" ]; then PKG="${PKG}[${PIP_EXTRAS}]"; fi && \
+    printf 'setuptools<81\n' > /tmp/build-constraints.txt && \
+    UV_BUILD_CONSTRAINT=/tmp/build-constraints.txt \
     uv pip install --prefix /var/lib/openstack \
         --constraint /tmp/upper-constraints.txt \
         "$PKG" $PIP_PACKAGES
@@ -59,9 +65,12 @@ ARG EXTRA_APT_PACKAGES=""
 
 COPY --from=build --link /var/lib/openstack /var/lib/openstack
 
-# Runtime system packages required by Horizon (none today — the dashboard is
-# a pure-Python Django app; the guard keeps local builds without
-# --build-arg EXTRA_APT_PACKAGES a clean no-op).
+# Runtime system packages required by Horizon. The dashboard itself is a
+# pure-Python Django app, but the venv-builder-compiled uwsgi binary links
+# libpython3.12.so.1.0, which python-base does not ship — CI passes
+# libpython3.12t64 from releases/<release>/extra-packages.yaml (keystone
+# gets it transitively via libapache2-mod-wsgi-py3). The guard keeps local
+# builds without --build-arg EXTRA_APT_PACKAGES a clean no-op.
 # hadolint ignore=DL3008
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
