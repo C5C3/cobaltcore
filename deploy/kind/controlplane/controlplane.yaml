@@ -10,9 +10,9 @@
 # Managed mode: the c5c3-operator provisions the MariaDB ("openstack-db") and
 # Memcached ("openstack-memcached") itself — which is why deploy-infra does NOT
 # create them when WITH_CONTROLPLANE=true (hack/deploy-infra.sh). The c5c3-operator
-# then projects a {name}-keystone Keystone CR, mints the K-ORC admin Application
-# Credential from the admin password, mirrors it to OpenBao, and registers the
-# identity catalog.
+# then projects a {name}-keystone Keystone CR and a {name}-horizon Horizon CR,
+# mints the K-ORC admin Application Credential from the admin password, mirrors
+# it to OpenBao, and registers the identity catalog.
 #
 # this CR is intentionally minimal. The c5c3-operator defaulting webhook
 # fills the omitted infrastructure/korc references with well-known defaults, so the
@@ -85,3 +85,21 @@ spec:
       # hostname. When KIND_HOST_PORT is overridden (e.g. 8443 on macOS) deploy-infra
       # injects spec.services.keystone.publicEndpoint carrying the host port so
       # Keystone advertises the reachable URL in its catalog.
+    # Horizon: the c5c3-operator projects a Horizon CR once the Keystone child is
+    # Ready (HorizonReady joins the aggregate chain after KeystoneReady). replicas
+    # is pinned to 1 for the single-node kind cluster. The dashboard is exposed
+    # externally through the SAME shared Envoy Gateway as Keystone via a second
+    # HTTPS listener the kind overlay adds for horizon.127-0-0-1.nip.io
+    # (deploy/kind/base/openstack-gateway.yaml); the horizon-operator attaches an
+    # HTTPRoute for that hostname, reachable from the host at
+    # https://horizon.127-0-0-1.nip.io:<KIND_HOST_PORT>/. secretKeyRef is omitted:
+    # this default-identity ControlPlane ("controlplane") inherits the kind shim
+    # Secret "horizon-secret-key" (seeded per the default identity by
+    # deploy/openbao/bootstrap/write-bootstrap-secrets.sh); additional
+    # ControlPlanes MUST set services.horizon.secretKeyRef to their own Secret.
+    horizon:
+      replicas: 1
+      gateway:
+        parentRef:
+          name: openstack-gw
+        hostname: horizon.127-0-0-1.nip.io
