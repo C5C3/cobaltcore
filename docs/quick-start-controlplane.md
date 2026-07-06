@@ -12,8 +12,8 @@ SPDX-License-Identifier: Apache-2.0
 The shortest path from `git clone` to an authenticated Keystone API call driven
 by a single **c5c3 ControlPlane** CR. Where the [Quick Start](./quick-start.md)
 stops at a hand-applied `Keystone` CR, here one `ControlPlane` CR makes the
-c5c3-operator provision the `MariaDB`, `Memcached`, and `Keystone` children, mint
-the admin application credential through
+c5c3-operator provision the `MariaDB`, `Memcached`, `Keystone`, and `Horizon`
+children, mint the admin application credential through
 [K-ORC](https://github.com/k-orc/openstack-resource-controller), mirror it to
 OpenBao, and register the identity catalog — all reconciled to an aggregate
 `Ready`.
@@ -63,9 +63,9 @@ KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
 ```
 
 `WITH_CONTROLPLANE=true` brings up the shared infrastructure and then the
-ControlPlane operator stack (keystone-operator, K-ORC, c5c3-operator) from the
-published charts — but **not** the `ControlPlane` CR itself; you create and apply
-that in Step 3. In this mode the ControlPlane provisions its own MariaDB/Memcached
+ControlPlane operator stack (keystone-operator, horizon-operator, K-ORC,
+c5c3-operator) from the published charts — but **not** the `ControlPlane` CR
+itself; you create and apply that in Step 3. In this mode the ControlPlane provisions its own MariaDB/Memcached
 (managed mode), so deploy-infra does not create the shared ones. `KIND_HOST_PORT=8443`
 maps the Gateway to a non-privileged host port for macOS; on Linux with rootful
 Docker drop the override and use port `443`. Expect **5–10 minutes**.
@@ -120,11 +120,29 @@ spec:
           name: openstack-gw
         hostname: keystone.127-0-0-1.nip.io
         path: /
+    horizon:
+      replicas: 1
+      # Exposed through the same shared Envoy Gateway as Keystone, via the
+      # second HTTPS listener the kind overlay adds for horizon.127-0-0-1.nip.io.
+      gateway:
+        parentRef:
+          name: openstack-gw
+        hostname: horizon.127-0-0-1.nip.io
 ```
 
 ```bash
 kubectl apply -f controlplane.yaml
 ```
+
+The `horizon` block makes the reconciler project the OpenStack Dashboard once
+its Keystone child is Ready. Everything else is derived: the image tag from
+`spec.openStackRelease`, the Memcached wiring from `spec.infrastructure.cache`,
+and the Keystone endpoint from the Keystone child's naming convention. The
+Django `SECRET_KEY` defaults to the kind-only `horizon-secret-key` Secret
+(seeded per the default ControlPlane identity); a second ControlPlane must set
+`services.horizon.secretKeyRef` to its own Secret. A `HorizonReady` condition
+joins the chain (after `KeystoneReady`) and `status.services` gains a second
+entry.
 
 ::: tip Dynamic DB credentials (#439)
 A managed-mode ControlPlane defaults to engine-issued (Dynamic) Keystone DB
@@ -179,6 +197,15 @@ spec:
           name: openstack-gw
         hostname: keystone.127-0-0-1.nip.io
         path: /
+    horizon:
+      replicas: 1
+      gateway:
+        parentRef:
+          name: openstack-gw          # same Gateway as Keystone; second listener
+        hostname: horizon.127-0-0-1.nip.io
+      secretKeyRef:
+        name: horizon-secret-key       # default-identity kind shim Secret
+        key: secret-key
   korc:
     adminCredential:
       cloudCredentialsRef:
@@ -196,40 +223,14 @@ spec:
 
 </details>
 
-### Optional — add the Horizon dashboard
-
-Append a `horizon` block under `services` to have the ControlPlane project
-the OpenStack Dashboard once its Keystone child is ready:
-
-```yaml
-  services:
-    keystone:
-      # ... as above ...
-    horizon:
-      replicas: 1
-      gateway:
-        parentRef:
-          name: openstack-gw
-          namespace: envoy-gateway-system
-        hostname: horizon.127-0-0-1.nip.io
-```
-
-The reconciler derives everything else: the image tag from
-`spec.openStackRelease`, the Memcached wiring from
-`spec.infrastructure.cache`, and the Keystone endpoint from the Keystone
-child's naming convention. The Django `SECRET_KEY` defaults to the kind-only
-`horizon-secret-key` Secret (seeded per the default ControlPlane identity);
-additional ControlPlanes must set `services.horizon.secretKeyRef` to their
-own Secret. A `HorizonReady` condition joins the chain (after
-`KeystoneReady`) and `status.services` gains a second entry.
-
 ## Step 4 — Watch the chain reconcile
 
-The aggregate `Ready` flips to `True` once all five sub-conditions are met, in
-dependency order:
+The aggregate `Ready` flips to `True` once all six sub-conditions are met, in
+dependency order (`HorizonReady` gates on `KeystoneReady`; the K-ORC branch runs
+alongside it):
 
 ```
-InfrastructureReady → KeystoneReady → KORCReady → AdminCredentialReady → CatalogReady
+InfrastructureReady → KeystoneReady → HorizonReady → KORCReady → AdminCredentialReady → CatalogReady
 ```
 
 ```bash
@@ -275,17 +276,22 @@ openstack --insecure token issue
 > With the default `KIND_HOST_PORT=443` use `https://keystone.127-0-0-1.nip.io/v3`
 > and drop the `publicEndpoint` line from the CR in Step 3.
 
-### Optional — open the Horizon dashboard
+### Open the Horizon dashboard
 
-If you added the `horizon` block in Step 3, the dashboard is exposed through
-the same shared Envoy Gateway:
+The dashboard is exposed through the same shared Envoy Gateway as Keystone, on
+its own `horizon.127-0-0-1.nip.io` listener:
 
 ```bash
 open https://horizon.127-0-0-1.nip.io:8443/
 ```
 
-Log in with `admin` / the password from the
-`controlplane-keystone-admin-credentials` Secret above (domain `Default`).
+Your browser will warn that the certificate is not trusted — expected for a kind
+cluster (the listener terminates with a self-signed certificate). Log in with
+`admin` / the password from the `controlplane-keystone-admin-credentials` Secret
+above (domain `Default`).
+
+> With the default `KIND_HOST_PORT=443` drop the `:8443` and open
+> `https://horizon.127-0-0-1.nip.io/`.
 
 ## Teardown
 
