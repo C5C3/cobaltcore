@@ -85,6 +85,77 @@ WITH_CHAOS_MESH="${WITH_CHAOS_MESH:-false}"
 # WITH_PROMETHEUS=true to install the monitoring stack.
 WITH_PROMETHEUS="${WITH_PROMETHEUS:-false}"
 
+# Gates the opt-in transparent registry pull-through cache (#564). When true,
+# deploy-infra brings up one small distribution-registry (registry:2/3) proxy
+# per upstream registry on the `kind` Docker network (start_registry_cache),
+# injects a containerd `config_path` registry-mirror patch into the rendered
+# kind config (render_kind_config), and writes a `certs.d/<host>/hosts.toml`
+# into every node so containerd resolves unmodified image refs
+# (`ghcr.io/c5c3/keystone:…`) through the local cache (wire_node_registry_mirror).
+# Each proxy has its own persistent Docker volume, so the cache survives
+# `kind delete` / recreate cycles. Defaults to false so the default Quick Start
+# and every CI job are byte-for-byte unchanged — the cache is strictly local-dev
+# only. Mirror entries advertise `capabilities = ["pull", "resolve"]`, so
+# containerd falls back to the origin registry if a proxy is down: the cache can
+# never hard-break a pull.
+#
+# The engine is the standard `registry` (CNCF distribution) in pull-through
+# proxy mode, NOT Zot: distribution streams each blob from the upstream to
+# containerd while caching it inline, so even a cold first pull runs at ~origin
+# speed. Zot's `sync` extension copies the whole image into its own store before
+# serving (returning 404s to containerd until the copy finishes), which makes a
+# cold deploy slower, not faster — the wrong shape for transparent mirroring.
+WITH_REGISTRY_CACHE="${WITH_REGISTRY_CACHE:-false}"
+
+# Multi-arch distribution-registry image (linux/amd64 + linux/arm64) used for
+# every pull-through cache container. Pinned by tag AND digest so a `docker pull`
+# is reproducible and Renovate can bump both (see renovate.json → the
+# docker.io/library/registry custom manager). Run in proxy mode purely via the
+# REGISTRY_PROXY_REMOTEURL env var, so no config file has to be rendered or
+# mounted — the image's default config serves the proxy on :5000 with filesystem
+# storage at /var/lib/registry.
+#
+# Deliberately pinned to the 2.8.x line, NOT distribution 3.x: 3.x regressed
+# pull-through proxying of GHCR-backed vanity registries — `oci.external-secrets.io`
+# (an external-secrets vanity front for ghcr.io) 404s under registry:3.1.1 but
+# serves fine under 2.8.3. renovate.json disables MAJOR bumps for this pin so it
+# stays on 2.x until 3.x fixes the regression; minor/patch (2.8.x) still automerge.
+REGISTRY_CACHE_IMAGE="registry:2.8.3@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373"
+
+# Docker network the proxies attach to. kind puts every node on a single
+# user-defined bridge network named `kind` (shared across all clusters, not
+# per-CLUSTER_NAME), whose embedded DNS resolves the proxy container names.
+# Keeping the caches on this network — and NOT scoping their names by
+# CLUSTER_NAME — lets a single warm cache serve every kind cluster on the host.
+# Override only if you run kind with KIND_EXPERIMENTAL_DOCKER_NETWORK set.
+KIND_DOCKER_NETWORK="${KIND_DOCKER_NETWORK:-kind}"
+
+# The upstream registries fronted by the cache, one proxy each. Each entry is
+# `<certs.d host>|<upstream URL>|<name suffix>`:
+#   - certs.d host   — the directory name under /etc/containerd/certs.d/ and the
+#                      registry namespace containerd resolves (e.g. docker.io).
+#   - upstream URL    — the registry proxy's REGISTRY_PROXY_REMOTEURL AND the
+#                      containerd `server` fallback (docker.io resolves to
+#                      registry-1.docker.io).
+#   - name suffix     — appended to `registry-cache-` for the container/volume
+#                      names.
+# A plain indexed array of pipe-delimited tuples (not an associative array) keeps
+# this bash 3.2-compatible. The set is the six registry hosts a live
+# WITH_CONTROLPLANE deploy actually pulls from, taken from a pod-image inventory:
+# the four common hubs (docker.io, ghcr.io, registry.k8s.io, quay.io) plus two
+# per-project vanity fronts — oci.external-secrets.io (external-secrets, backed by
+# ghcr.io) and docker-registry3.mariadb.com (mariadb-operator). gcr.io is not used.
+# A registry NOT listed here simply pulls from its origin (uncached), so extend
+# this list if a future component introduces another host.
+REGISTRY_CACHE_UPSTREAMS=(
+  "docker.io|https://registry-1.docker.io|dockerio"
+  "ghcr.io|https://ghcr.io|ghcr"
+  "registry.k8s.io|https://registry.k8s.io|k8s"
+  "quay.io|https://quay.io|quay"
+  "oci.external-secrets.io|https://oci.external-secrets.io|eso"
+  "docker-registry3.mariadb.com|https://docker-registry3.mariadb.com|mariadb"
+)
+
 # Gates the opt-in c5c3 ControlPlane bring-up. When true, deploy-infra
 # does NOT create the shared MariaDB/Memcached CRs — the c5c3 ControlPlane
 # provisions them in managed mode — and the c5c3-operator, K-ORC, and
@@ -932,21 +1003,35 @@ openbao_onboard_database_tenant() {
 
 # ---------------------------------------------------------------------------
 # render_kind_config — Produce the kind-config YAML that `kind create cluster`
-# should consume, applying the `KIND_HOST_PORT` override when set.
+# should consume, applying the `KIND_HOST_PORT` override and/or the
+# WITH_REGISTRY_CACHE containerd registry-mirror patch when requested.
 #
-# When `KIND_HOST_PORT == 443` (the default), the checked-in
-# hack/kind-config.yaml is copied verbatim — no `yq` dependency at runtime.
-# Otherwise, `yq` rewrites the single `nodes[0].extraPortMappings[]` entry
-# whose `hostPort` is 443, leaving `containerPort` (31443), `protocol` (TCP),
-# and `listenAddress` (127.0.0.1) untouched. The Envoy proxy NodePort and
-# the Gateway listener port are intentionally unaffected — only the host-
-# side binding moves to a non-privileged port.
+# When neither knob is active (`KIND_HOST_PORT == 443` and
+# WITH_REGISTRY_CACHE != true — the default), the checked-in
+# hack/kind-config.yaml is copied verbatim — no `yq` dependency at runtime, so
+# CI (which feeds hack/kind-config.yaml straight to helm/kind-action) stays
+# byte-for-byte unchanged.
+#
+# Otherwise `yq` is required and the applicable transforms are layered onto a
+# copy of the checked-in file:
+#   - KIND_HOST_PORT override: rewrite the single `nodes[0].extraPortMappings[]`
+#     entry whose `hostPort` is 443, leaving `containerPort` (31443), `protocol`
+#     (TCP), and `listenAddress` (127.0.0.1) untouched. The Envoy proxy NodePort
+#     and the Gateway listener port are intentionally unaffected — only the
+#     host-side binding moves to a non-privileged port.
+#   - WITH_REGISTRY_CACHE: append a `containerdConfigPatches` entry that sets the
+#     CRI registry `config_path` to /etc/containerd/certs.d, the ONLY way
+#     containerd resolves an unmodified `ghcr.io/…` ref to a mirror. This must be
+#     set at cluster-creation time (containerd reads config.toml at startup);
+#     wire_node_registry_mirror then drops the per-host hosts.toml files, which
+#     containerd re-reads per pull. Keeping the patch out of the checked-in file
+#     and only in this rendered tempfile is what guarantees CI is unaffected.
 #
 # Arguments:
 #   $1 — destination path for the rendered config
 # Errors:
 #   - exits 1 if KIND_HOST_PORT is not a positive integer in [1, 65535]
-#   - exits 1 if `yq` is required (override path) but not on PATH
+#   - exits 1 if `yq` is required (either transform) but not on PATH
 # ---------------------------------------------------------------------------
 render_kind_config() {
   local out_path="$1"
@@ -958,22 +1043,39 @@ render_kind_config() {
     exit 1
   fi
 
-  if [[ "${KIND_HOST_PORT}" == "443" ]]; then
+  local need_port=false need_cache=false
+  [[ "${KIND_HOST_PORT}" != "443" ]] && need_port=true
+  [[ "${WITH_REGISTRY_CACHE}" == "true" ]] && need_cache=true
+
+  if [[ "${need_port}" == "false" && "${need_cache}" == "false" ]]; then
     cp "${src}" "${out_path}"
     return 0
   fi
 
   if ! command -v yq >/dev/null 2>&1; then
-    log "ERROR: KIND_HOST_PORT=${KIND_HOST_PORT} (override) requires 'yq' on PATH."
+    log "ERROR: rendering the kind config requires 'yq' on PATH (KIND_HOST_PORT override and/or WITH_REGISTRY_CACHE=true)."
     exit 1
   fi
 
-  # Select-and-mutate the single hostPort=443 entry; idempotent if the input
-  # already uses the override port (yq's `select(... == 443)` matches nothing
-  # and the document passes through unchanged).
-  KIND_HOST_PORT="${KIND_HOST_PORT}" yq \
-    '(.nodes[0].extraPortMappings[] | select(.hostPort == 443)).hostPort = (env(KIND_HOST_PORT) | tonumber)' \
-    "${src}" > "${out_path}"
+  cp "${src}" "${out_path}"
+
+  if [[ "${need_port}" == "true" ]]; then
+    # Select-and-mutate the single hostPort=443 entry; idempotent if the input
+    # already uses the override port (yq's `select(... == 443)` matches nothing
+    # and the document passes through unchanged).
+    KIND_HOST_PORT="${KIND_HOST_PORT}" yq -i \
+      '(.nodes[0].extraPortMappings[] | select(.hostPort == 443)).hostPort = (env(KIND_HOST_PORT) | tonumber)' \
+      "${out_path}"
+  fi
+
+  if [[ "${need_cache}" == "true" ]]; then
+    # Append (never replace) so a hypothetical pre-existing patch survives.
+    local containerd_patch
+    containerd_patch=$'[plugins."io.containerd.grpc.v1.cri".registry]\n  config_path = "/etc/containerd/certs.d"'
+    CONTAINERD_PATCH="${containerd_patch}" yq -i \
+      '.containerdConfigPatches = ((.containerdConfigPatches // []) + [strenv(CONTAINERD_PATCH)])' \
+      "${out_path}"
+  fi
 }
 
 # render_controlplane_replicas rewrites the ControlPlane backing-service knobs —
@@ -1126,6 +1228,146 @@ wait_for_node_ready() {
 }
 
 # ---------------------------------------------------------------------------
+# start_registry_cache — Bring up one distribution-registry pull-through proxy
+# per upstream on the kind Docker network, each backed by a persistent named
+# volume.
+#
+# The registry runs in proxy mode via a single env var
+# (REGISTRY_PROXY_REMOTEURL=<upstream>); its default config already serves on
+# :5000 with filesystem storage at /var/lib/registry, so no config file is
+# rendered or mounted. On a cache miss the proxy streams the blob from the
+# upstream to containerd while writing it to the volume, so even a cold pull runs
+# at ~origin speed. containerd sends the proxy the BARE repository path (no
+# registry host); because each proxy fronts exactly one upstream the mapping is
+# unambiguous — `library/nginx` cannot be confused with `c5c3/keystone`.
+#
+# Idempotent and reused across cluster recreates: a proxy that is already running
+# is left untouched (only re-attached to the network if needed); a stale/exited
+# one is removed and recreated. The containers and volumes carry the
+# `forge.registry-cache=true` label so teardown-infra.sh's PURGE_REGISTRY_CACHE
+# path can find and remove them without knowing the upstream set. Names are NOT
+# scoped by CLUSTER_NAME so a single warm cache serves every kind cluster.
+#
+# Best-effort: a failure to start any single proxy logs a warning and continues —
+# the mirror entries advertise capabilities ["pull","resolve"], so containerd
+# falls back to the origin and the deploy still succeeds (just uncached).
+#
+# No-op unless WITH_REGISTRY_CACHE=true (the caller gates it, but guard here too
+# so the function is safe to call directly).
+# ---------------------------------------------------------------------------
+start_registry_cache() {
+  if [[ "${WITH_REGISTRY_CACHE}" != "true" ]]; then
+    return 0
+  fi
+
+  # The `kind` network is created by `kind create cluster`; this runs after
+  # Step 1, so it should exist. If it does not, the proxy containers would be
+  # unreachable from the nodes — warn and skip rather than abort the deploy.
+  if ! docker network inspect "${KIND_DOCKER_NETWORK}" >/dev/null 2>&1; then
+    log "WARNING: Docker network '${KIND_DOCKER_NETWORK}' not found — skipping registry cache (kind nodes could not reach it)."
+    return 0
+  fi
+
+  log "Starting registry pull-through caches (image ${REGISTRY_CACHE_IMAGE}) on network '${KIND_DOCKER_NETWORK}'..."
+
+  local entry host url suffix container volume
+  for entry in "${REGISTRY_CACHE_UPSTREAMS[@]}"; do
+    IFS='|' read -r host url suffix <<<"${entry}"
+    container="registry-cache-${suffix}"
+    volume="registry-cache-${suffix}-data"
+
+    # Persistent storage volume (survives kind delete / recreate).
+    if ! docker volume inspect "${volume}" >/dev/null 2>&1; then
+      docker volume create --label forge.registry-cache=true "${volume}" >/dev/null 2>&1 \
+        || log "  WARNING: failed to create volume ${volume}."
+    fi
+
+    # Already running → ensure it is on the kind network and move on. This is
+    # the common reuse-across-recreate path.
+    if [[ "$(docker inspect -f '{{.State.Running}}' "${container}" 2>/dev/null)" == "true" ]]; then
+      docker network connect "${KIND_DOCKER_NETWORK}" "${container}" >/dev/null 2>&1 || true
+      log "  ${container}: already running (${host} → ${url})."
+      continue
+    fi
+
+    # Exists but stopped/exited → remove so we can recreate cleanly.
+    docker rm -f "${container}" >/dev/null 2>&1 || true
+
+    if docker run -d \
+      --name "${container}" \
+      --restart unless-stopped \
+      --label forge.registry-cache=true \
+      --network "${KIND_DOCKER_NETWORK}" \
+      -e "REGISTRY_PROXY_REMOTEURL=${url}" \
+      -v "${volume}:/var/lib/registry" \
+      "${REGISTRY_CACHE_IMAGE}" >/dev/null 2>&1; then
+      log "  ${container}: started (${host} → ${url})."
+    else
+      log "  WARNING: failed to start ${container} for ${host}; containerd will fall back to the origin."
+    fi
+  done
+}
+
+# ---------------------------------------------------------------------------
+# wire_node_registry_mirror — Point every kind node's containerd at the registry
+# caches by writing a hosts.toml per upstream under /etc/containerd/certs.d/.
+#
+# Same docker-exec mechanism as cap_node_nofile. The kind config already set
+# `config_path = /etc/containerd/certs.d` (render_kind_config), so containerd
+# picks these up per pull with no restart. Each file names the upstream `server`
+# fallback and a single mirror `[host."http://<proxy>:5000"]` with capabilities
+# ["pull","resolve"]; if the mirror is unreachable containerd falls straight
+# through to `server`, so a down cache never hard-breaks a pull.
+#
+# Best-effort per node/host: a docker-exec failure warns but does not abort the
+# deploy. No-op unless WITH_REGISTRY_CACHE=true.
+# ---------------------------------------------------------------------------
+wire_node_registry_mirror() {
+  if [[ "${WITH_REGISTRY_CACHE}" != "true" ]]; then
+    return 0
+  fi
+
+  local nodes
+  nodes=$(kind get nodes --name "${CLUSTER_NAME}" 2>/dev/null) || true
+  if [[ -z "${nodes}" ]]; then
+    log "WARNING: no kind nodes found for cluster '${CLUSTER_NAME}' — skipping registry-mirror wiring."
+    return 0
+  fi
+
+  log "Wiring containerd registry mirrors on kind node(s): ${nodes//$'\n'/ }"
+
+  local node entry host url suffix container
+  for node in ${nodes}; do
+    for entry in "${REGISTRY_CACHE_UPSTREAMS[@]}"; do
+      IFS='|' read -r host url suffix <<<"${entry}"
+      container="registry-cache-${suffix}"
+      # HOSTS_HOST/HOSTS_SERVER/HOSTS_MIRROR are passed through `docker exec env`
+      # so the values are not interpolated by the node shell — only written into
+      # the heredoc verbatim.
+      if docker exec \
+        -e HOSTS_HOST="${host}" \
+        -e HOSTS_SERVER="${url}" \
+        -e HOSTS_MIRROR="http://${container}:5000" \
+        "${node}" sh -c '
+          set -e
+          dir="/etc/containerd/certs.d/${HOSTS_HOST}"
+          mkdir -p "${dir}"
+          cat > "${dir}/hosts.toml" <<EOF
+server = "${HOSTS_SERVER}"
+
+[host."${HOSTS_MIRROR}"]
+  capabilities = ["pull", "resolve"]
+EOF
+        ' >/dev/null 2>&1; then
+        log "  ${node}: ${host} → ${container}."
+      else
+        log "  WARNING: failed to write ${host} mirror on ${node}; that registry will pull from the origin."
+      fi
+    done
+  done
+}
+
+# ---------------------------------------------------------------------------
 # main — Orchestrate the 8-step deployment sequence.
 # ---------------------------------------------------------------------------
 main() {
@@ -1140,6 +1382,7 @@ main() {
   log "Node RLIMIT_NOFILE  : ${NODE_NOFILE_LIMIT:-<unset — skip cap>} (override via NODE_NOFILE_LIMIT)"
   log "Chaos Mesh         : ${WITH_CHAOS_MESH} (set WITH_CHAOS_MESH=true to install)"
   log "Prometheus stack    : ${WITH_PROMETHEUS} (set WITH_PROMETHEUS=true to install)"
+  log "Registry cache      : ${WITH_REGISTRY_CACHE} (set WITH_REGISTRY_CACHE=true for a local pull-through cache; local-dev only)"
   log "ControlPlane stack  : ${WITH_CONTROLPLANE} (set WITH_CONTROLPLANE=true to provision infra via the c5c3 ControlPlane)"
   if [[ "${WITH_CONTROLPLANE}" == "true" ]]; then
     log "ControlPlane operators : ${CONTROLPLANE_OPERATORS} (flux = published chart + K-ORC Flux source; external = operators deployed out of band)"
@@ -1191,6 +1434,20 @@ main() {
   # containerd, not of how the cluster came to exist, and a uWSGI workload
   # (Keystone) scheduled later would otherwise OOM-crashloop. See #546.
   cap_node_nofile
+
+  # Opt-in transparent registry pull-through cache (#564). Bring up the registry
+  # proxies (now that the `kind` network exists) and wire every node's containerd
+  # at them, before any image is pulled. Both are best-effort and no-op unless
+  # WITH_REGISTRY_CACHE=true; the containerd config_path patch they rely on is
+  # injected only into the rendered kind config (render_kind_config), so it takes
+  # effect on a freshly created cluster. Both steps run BEFORE Step 2 so the very
+  # first flux-operator / chart image pull can already hit the cache.
+  if [[ "${WITH_REGISTRY_CACHE}" == "true" ]]; then
+    start_registry_cache
+    wire_node_registry_mirror
+  else
+    log "Skipping registry pull-through cache (WITH_REGISTRY_CACHE=false)."
+  fi
 
   # Step 2: Install flux-operator and apply FluxInstance (/)
   #
