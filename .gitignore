@@ -31,6 +31,10 @@ node_modules/
 docs/.vitepress/cache/
 docs/.vitepress/dist/
 
+# Collected CI evidence (debug-e2e-failure log excerpts, downloaded artifacts)
+# and other generated local output.
+_output/
+
 # Local developer scratch — throwaway CRs kept out of version control. Bare
 # names match by basename in any directory; already-tracked manifests such as
 # deploy/kind/controlplane/controlplane.yaml stay tracked regardless.
