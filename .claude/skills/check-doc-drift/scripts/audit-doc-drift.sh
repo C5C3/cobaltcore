@@ -143,7 +143,7 @@ fi
 
 hdr "Inventory — FluxCD HelmReleases declared under deploy/"
 if [[ -d deploy/flux-system/releases ]]; then
-  ls deploy/flux-system/releases/*.yaml 2>/dev/null | xargs -I{} basename {} .yaml | sort | sed 's/^/[INFO] flux release: /'
+  find deploy/flux-system/releases -name '*.yaml' -exec basename {} .yaml \; 2>/dev/null | sort | sed 's/^/[INFO] flux release: /'
 fi
 
 # ---------------------------------------------------------------------------

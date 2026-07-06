@@ -115,7 +115,7 @@ fi
 # X3 — every <NN>-*.yaml next to a chainsaw-test.yaml is referenced
 # ---------------------------------------------------------------------------
 hdr "X3: every <NN>-*.yaml is referenced from its sibling chainsaw-test.yaml"
-CHAINSAW_DIRS_LIST=$(find tests/e2e tests/e2e-chaos -name 'chainsaw-test.yaml' 2>/dev/null | xargs -n1 dirname 2>/dev/null | sort -u || true)
+CHAINSAW_DIRS_LIST=$(find tests/e2e tests/e2e-chaos -name 'chainsaw-test.yaml' -exec dirname {} \; 2>/dev/null | sort -u || true)
 while IFS= read -r d; do
   [[ -z "${d}" ]] && continue
   ct="${d}/chainsaw-test.yaml"

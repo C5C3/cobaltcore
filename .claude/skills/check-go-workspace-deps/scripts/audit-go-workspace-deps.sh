@@ -61,8 +61,8 @@ fi
 # W2 — every go.mod under operators/ or internal/ is in go.work
 # ---------------------------------------------------------------------------
 hdr "W2: every operators/ + internal/ go.mod is listed in go.work"
-fs_mods=$(find operators internal -name go.mod 2>/dev/null \
-  | xargs -n1 dirname | sort -u)
+fs_mods=$(find operators internal -name go.mod -exec dirname {} \; 2>/dev/null \
+  | sort -u)
 while IFS= read -r d; do
   [[ -z "${d}" ]] && continue
   if echo "${use_dirs}" | grep -qx "${d}"; then
