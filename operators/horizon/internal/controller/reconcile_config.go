@@ -143,16 +143,23 @@ func defaultSettings(horizon *horizonv1alpha1.Horizon) (map[string]apiextensions
 // accept, as a closed allow-list rather than "*". Three Hosts reach the pod:
 // the kubelet HTTP readiness/startup probes send a fixed probeHostHeader (the
 // probes pin the Host header so it is not the dynamic pod IP — see
-// reconcile_deployment.go), the health-check sub-reconciler dials the
-// cluster-local Service DNS name, and — when external exposure is configured
-// — the Gateway forwards spec.gateway.hostname. Operators who front the
-// dashboard with additional hostnames override ALLOWED_HOSTS via
-// spec.extraConfig (user values win); ["*"] stays available there as an
-// explicit, documented opt-out.
+// reconcile_deployment.go), in-cluster clients reach the dashboard Service
+// under any of the standard Kubernetes DNS forms of its name (the
+// health-check sub-reconciler uses the FQDN, the e2e login fetch the .svc
+// short form), and — when external exposure is configured — the Gateway
+// forwards spec.gateway.hostname. All of these names are cluster-controlled,
+// so listing them keeps the Host-header poisoning protection intact.
+// Operators who front the dashboard with additional hostnames override
+// ALLOWED_HOSTS via spec.extraConfig (user values win); ["*"] stays
+// available there as an explicit, documented opt-out.
 func allowedHosts(horizon *horizonv1alpha1.Horizon) []any {
+	name := subResourceName(horizon)
 	hosts := []any{
 		probeHostHeader,
-		fmt.Sprintf("%s.%s.svc.cluster.local", subResourceName(horizon), horizon.Namespace),
+		name,
+		fmt.Sprintf("%s.%s", name, horizon.Namespace),
+		fmt.Sprintf("%s.%s.svc", name, horizon.Namespace),
+		fmt.Sprintf("%s.%s.svc.cluster.local", name, horizon.Namespace),
 	}
 	if horizon.Spec.Gateway != nil && horizon.Spec.Gateway.Hostname != "" {
 		hosts = append(hosts, horizon.Spec.Gateway.Hostname)

@@ -51,9 +51,9 @@ func TestReconcileConfig_RendersLocalSettings(t *testing.T) {
 	g.Expect(rendered).To(ContainSubstring("DEBUG = False"))
 
 	// ALLOWED_HOSTS is a closed allow-list — the fixed probe Host header and
-	// the cluster-local Service DNS name — never the "*" wildcard that would
-	// disable Django's Host-header validation.
-	g.Expect(rendered).To(ContainSubstring(`ALLOWED_HOSTS = ["localhost", "test-horizon.default.svc.cluster.local"]`))
+	// every standard Kubernetes DNS form of the dashboard Service — never
+	// the "*" wildcard that would disable Django's Host-header validation.
+	g.Expect(rendered).To(ContainSubstring(`ALLOWED_HOSTS = ["localhost", "test-horizon", "test-horizon.default", "test-horizon.default.svc", "test-horizon.default.svc.cluster.local"]`))
 	g.Expect(rendered).NotTo(ContainSubstring(`ALLOWED_HOSTS = ["*"]`))
 
 	cond := conditions.GetCondition(h.Status.Conditions, conditionTypeConfigReady)
@@ -130,8 +130,8 @@ func TestReconcileConfig_AllowedHostsIncludesGatewayHostname(t *testing.T) {
 
 	// The Gateway forwards requests with spec.gateway.hostname as the Host
 	// header, so it joins the closed ALLOWED_HOSTS allow-list alongside the
-	// probe Host and the Service DNS name.
-	g.Expect(rendered).To(ContainSubstring(`ALLOWED_HOSTS = ["localhost", "test-horizon.default.svc.cluster.local", "horizon.127-0-0-1.nip.io"]`))
+	// probe Host and the Service DNS names.
+	g.Expect(rendered).To(ContainSubstring(`ALLOWED_HOSTS = ["localhost", "test-horizon", "test-horizon.default", "test-horizon.default.svc", "test-horizon.default.svc.cluster.local", "horizon.127-0-0-1.nip.io"]`))
 }
 
 func TestReconcileConfig_InvalidExtraConfigJSONFails(t *testing.T) {
