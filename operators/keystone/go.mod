@@ -5,7 +5,7 @@ go 1.26.4
 require (
 	github.com/c5c3/forge/internal/common v0.0.0
 	github.com/cert-manager/cert-manager v1.20.2
-	github.com/external-secrets/external-secrets/apis v0.0.0-20260630123415-dfb816dacc15
+	github.com/external-secrets/external-secrets/apis v0.0.0-20260703090725-44686553759b
 	github.com/go-logr/logr v1.4.3
 	github.com/mariadb-operator/mariadb-operator v0.38.1
 	github.com/onsi/gomega v1.42.1
