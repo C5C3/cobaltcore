@@ -17,6 +17,9 @@
 #   R5  every source-refs.yaml entry is covered by a packageRule that disables
 #       major bumps
 #   R6  every customManager has a sibling regression test in tests/unit/renovate/
+#   R7  every <NAME>_VERSION pin that appears in BOTH the Makefile and the
+#       .github/workflows/ci.yaml env block carries the same value (the
+#       Makefile comment "Must be kept in sync" is enforced mechanically)
 #
 # Defers JSON-shape validation to `renovate-config-validator`. Exit code 1 on [FAIL].
 
@@ -99,8 +102,16 @@ for f in hack/*.sh; do
   [[ -f "${f}" ]] || continue
   while IFS= read -r ln; do
     var=$(echo "${ln}" | sed -nE 's/^([A-Z_]+_VERSION)=.*/\1/p')
-    [[ -z "${var}" ]] && var=$(echo "${ln}" | sed -nE 's/^([A-Z_]+_VERSION)=\$\{[A-Z_]+:-.*/\1/p')
     [[ -z "${var}" ]] && continue
+    # Runtime-resolved values are not pins Renovate could bump: command
+    # substitutions (resolved from test-refs.yaml, Chart.yaml, …) and
+    # ${VAR:?} required-env passthroughs. ${VAR:-literal} fallbacks DO
+    # carry a bumpable default and stay in scope.
+    val="${ln#*=}"
+    case "${val}" in
+      '$('* | '"$('*) continue ;;
+      *':?'*) continue ;;
+    esac
     if matches_cm "${f}"; then
       pass "${f}:${var} claimed by a customManager managerFilePatterns entry"
     else
@@ -188,11 +199,52 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# R7 — Makefile ↔ ci.yaml tool-pin lockstep
+# ---------------------------------------------------------------------------
+hdr "R7: duplicated <NAME>_VERSION pins in Makefile and ci.yaml agree"
+CI_YAML=".github/workflows/ci.yaml"
+# Makefile pins: NAME ?= value
+mk_pins=$(sed -nE 's/^([A-Z][A-Z0-9_]*_VERSION)[[:space:]]*\?=[[:space:]]*([^#[:space:]]+).*/\1=\2/p' Makefile | sort -u || true)
+# Workflow pins: NAME: value (env blocks at any indentation; run-block shell
+# assignments deliberately excluded — those are step-local, not shared pins).
+ci_pins=$(sed -nE 's/^[[:space:]]+([A-Z][A-Z0-9_]*_VERSION):[[:space:]]*"?([^"#[:space:]]+)"?.*/\1=\2/p' "${CI_YAML}" | sort -u || true)
+info "Makefile pins: $(echo "${mk_pins}" | tr '\n' ' ')"
+info "ci.yaml pins: $(echo "${ci_pins}" | tr '\n' ' ')"
+while IFS= read -r mk; do
+  [[ -z "${mk}" ]] && continue
+  name="${mk%%=*}"
+  mk_val="${mk#*=}"
+  ci_vals=$(echo "${ci_pins}" | sed -nE "s/^${name}=(.*)$/\1/p" | sort -u)
+  if [[ -z "${ci_vals}" ]]; then
+    info "${name} pinned only in Makefile (${mk_val}) — single-sourced or resolved from PATH in CI; confirm ci.yaml derives it (e.g. the ENVTEST_K8S_VERSION awk read)"
+    continue
+  fi
+  n_vals=$(echo "${ci_vals}" | grep -c '.' || true)
+  if [[ "${n_vals}" -gt 1 ]]; then
+    fail "${name} has ${n_vals} distinct values inside ${CI_YAML}: $(echo "${ci_vals}" | tr '\n' ' ')"
+    continue
+  fi
+  if [[ "${mk_val}" == "${ci_vals}" ]]; then
+    pass "${name} in lockstep: Makefile ${mk_val} == ci.yaml ${ci_vals}"
+  else
+    fail "${name} drifted: Makefile ${mk_val} != ci.yaml ${ci_vals} — local dev and CI run different tool versions"
+  fi
+done <<< "${mk_pins}"
+# Workflow-only pins are pins too — surface them for the coverage review.
+while IFS= read -r ci; do
+  [[ -z "${ci}" ]] && continue
+  name="${ci%%=*}"
+  if ! echo "${mk_pins}" | grep -q "^${name}="; then
+    info "${name} pinned only in ci.yaml (${ci#*=}) — no Makefile counterpart to drift against"
+  fi
+done <<< "${ci_pins}"
+
+# ---------------------------------------------------------------------------
 # Inventory — Makefile and workflow tool pins (R-MEDIUM candidates)
 # ---------------------------------------------------------------------------
 hdr "Inventory — tool pins outside Renovate coverage (review aid)"
-grep -nE '^[A-Z_]+_VERSION \?= ' Makefile 2>/dev/null | sed 's/^/[INFO] Makefile pin: /' || true
-grep -rEn '^[[:space:]]*[A-Z_]+_VERSION:\s*' .github/workflows/ 2>/dev/null | sed 's/^/[INFO] workflow env pin: /' || true
+grep -nE '^[A-Z][A-Z0-9_]*_VERSION \?= ' Makefile 2>/dev/null | sed 's/^/[INFO] Makefile pin: /' || true
+grep -rEn '^[[:space:]]*[A-Z][A-Z0-9_]*_VERSION:\s*' .github/workflows/ 2>/dev/null | sed 's/^/[INFO] workflow env pin: /' || true
 
 # ---------------------------------------------------------------------------
 hdr "Summary"

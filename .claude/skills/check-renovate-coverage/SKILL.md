@@ -7,9 +7,10 @@ description: >-
   under deploy/kind/ and deploy/flux-system/, and tool-version pins in
   Makefile + .github/workflows — is covered by either a native Renovate
   manager or a customManager rule in renovate.json with a paired
-  packageRules entry. Use when asked to check Renovate coverage, after
-  adding a new pinned dependency, or when a previously-bumped pin
-  silently stopped receiving updates.
+  packageRules entry, and that tool pins duplicated between the
+  Makefile and ci.yaml stay in lockstep. Use when asked to check
+  Renovate coverage, after adding a new pinned dependency, or when a
+  previously-bumped pin silently stopped receiving updates.
 ---
 
 # Check Renovate coverage
@@ -40,6 +41,7 @@ which Renovate has to understand:
 | GitHub Actions versions | `.github/workflows/*.yaml` (`uses: org/action@v…`) | native `github-actions` manager |
 | Dockerfile base images | `operators/*/Dockerfile` (`FROM image:tag`) | native `dockerfile` manager |
 | Tool pins in Makefile | `Makefile` (`GOFUMPT_VERSION ?= v0.9.2`, `ENVTEST_K8S_VERSION ?= 1.35`) | **no manager** — must be a customManager, or manually tracked |
+| Duplicated Makefile ↔ ci.yaml pins | `GOFUMPT_VERSION` lives in both `Makefile` and the `ci.yaml` `env:` block ("Must be kept in sync" comment); `ENVTEST_K8S_VERSION` is single-sourced (ci.yaml `awk`-reads the Makefile) | **no manager** — R7 enforces the lockstep mechanically |
 
 The authoritative gate is the `renovate-config-validator` (run via the
 existing shell unit tests under `tests/unit/renovate/`). This skill
@@ -71,7 +73,9 @@ inventory. Exit code `1` means at least one `[FAIL]`. Interpret:
 - **R2** — every `<NAME>_VERSION="…"` constant in `hack/*.sh` is
   matched by at least one customManager pattern. A constant added
   without a paired customManager is a silent pin: humans edit it but
-  Renovate ignores it.
+  Renovate ignores it. Runtime-resolved values — command substitutions
+  and `${VAR:?}` required-env passthroughs — are exempt; they are not
+  pins Renovate could bump.
 - **R3** — every `version: "…"` literal in `deploy/kind/base/*.yaml`
   is matched by a customManager pattern. The two existing managers
   cover `flux-web.yaml` and `envoy-gateway.yaml`; any other file in
@@ -85,6 +89,13 @@ inventory. Exit code `1` means at least one `[FAIL]`. Interpret:
   A new entry that bypasses the rule silently allows major bumps.
 - **R6** — the shell-script tests under `tests/unit/renovate/` still
   exist for every customManager (so the rule has a regression test).
+- **R7** — every `<NAME>_VERSION` pin that appears in **both** the
+  Makefile and the `ci.yaml` `env:` block carries the same value.
+  A drifted pair means local dev and CI run different tool versions
+  (e.g. gofumpt formatting locally that `format-check` then rejects).
+  Pins present on only one side are `[INFO]`: either single-sourced
+  (ci.yaml derives `ENVTEST_K8S_VERSION` from the Makefile via `awk`)
+  or PATH-resolved locally (`controller-gen`, `golangci-lint`).
 - The **inventories** are review aids: every version literal found on
   disk, grouped by file; every Renovate manager (native or custom)
   with its matched paths.
@@ -107,6 +118,10 @@ confirm:
    intentionally pinned and not auto-bumped — but document the
    decision in `renovate.json` (or in a comment in the Makefile)
    either way.
+5. For each `[FAIL]` from R7, align the two values — and prefer
+   eliminating the duplication over patching it: the
+   `ENVTEST_K8S_VERSION` pattern (ci.yaml `awk`-reads the Makefile
+   pin) makes future drift structurally impossible.
 
 ### 3. Run the authoritative gates
 
@@ -132,7 +147,8 @@ Produce a concise summary grouped by severity:
 - **HIGH** — `renovate-config-validator` fails; a version literal on
   disk is not matched by any manager; a customManager has no
   paired packageRules entry; a `releases/*/source-refs.yaml` entry
-  has no major-bump-disable rule.
+  has no major-bump-disable rule; a `<NAME>_VERSION` pin duplicated
+  between the Makefile and ci.yaml carries two different values.
 - **MEDIUM** — a tool pin in `Makefile` or `.github/workflows/*` is
   uncovered; a customManager has no regression test under
   `tests/unit/renovate/`; a customManager regex uses an inconsistent
@@ -167,6 +183,14 @@ These recurring shapes are worth grepping for first:
    is a real pin that gets bumped manually. No native Renovate
    manager catches Makefile constants; a customManager (with regex
    `^([A-Z_]+_VERSION) \?= (v[0-9.]+)`) would close the gap.
+6. **Duplicated pin bumped on one side only.** A tool version lives in
+   both the Makefile (for local dev) and the ci.yaml `env:` block (for
+   the workflow), guarded only by a "Must be kept in sync" comment. A
+   bump lands in one file and the two environments quietly diverge —
+   gofumpt is the canonical example: local `make fmt` then produces
+   formatting that CI's `format-check` rejects (or vice versa). Fix by
+   aligning, or better by single-sourcing one side from the other the
+   way ci.yaml already `awk`-reads `ENVTEST_K8S_VERSION`.
 
 ## Notes
 
