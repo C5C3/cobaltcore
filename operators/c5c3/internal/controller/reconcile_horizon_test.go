@@ -250,6 +250,14 @@ func TestReconcileHorizon_CacheDeepCopiedFromInfrastructure(t *testing.T) {
 	g.Expect(h.Spec.Cache.ClusterRef.Name).To(Equal("openstack-memcached"))
 	// DeepCopy: the child's pointer must not alias the ControlPlane's spec.
 	g.Expect(h.Spec.Cache.ClusterRef).NotTo(BeIdenticalTo(cp.Spec.Infrastructure.Cache.ClusterRef))
+	// The shared CacheSpec.Backend is overloaded: infrastructure.cache.backend
+	// holds the oslo.cache dogpile path Keystone consumes, but the dashboard
+	// renders spec.cache.backend verbatim as the Django CACHES backend. The
+	// projection must translate it to an importable Django class, never carry
+	// the dogpile path through (which makes Django 500 on the login page the
+	// probes hit).
+	g.Expect(h.Spec.Cache.Backend).To(Equal(horizonv1alpha1.DefaultCacheBackend))
+	g.Expect(h.Spec.Cache.Backend).NotTo(Equal(cp.Spec.Infrastructure.Cache.Backend))
 }
 
 func TestReconcileHorizon_KeystoneEndpointDerivation(t *testing.T) {

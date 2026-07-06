@@ -156,6 +156,20 @@ func (r *ControlPlaneReconciler) reconcileHorizon(ctx context.Context, cp *c5c3v
 		// projection).
 		horizon.Spec.Cache = *cp.Spec.Infrastructure.Cache.DeepCopy()
 
+		// The shared CacheSpec.Backend is overloaded: infrastructure.cache.backend
+		// carries the oslo.cache dogpile path Keystone consumes
+		// (dogpile.cache.pymemcache), but the dashboard renders spec.cache.backend
+		// verbatim as the Django CACHES backend, which must resolve to an
+		// importable Django class. Projecting the dogpile path unchanged makes
+		// Django raise InvalidCacheBackendError on the first cache access (the
+		// login page the readiness/startup probes hit), so the pods never go
+		// Ready. Override it to the Horizon Django default — the endpoint-bearing
+		// fields (clusterRef/servers/replicas) DeepCopied above are the only parts
+		// of the shared cache the dashboard actually needs. Assigning the
+		// webhook-defaulted value (rather than clearing it) keeps the projection
+		// idempotent so CreateOrUpdate does not churn each reconcile.
+		horizon.Spec.Cache.Backend = horizonv1alpha1.DefaultCacheBackend
+
 		// The Keystone endpoint is derived top-down from the ControlPlane
 		// rather than read from the Keystone child's status — no machine
 		// consumer reads status endpoints per the settled convention
