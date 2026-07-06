@@ -23,8 +23,8 @@ infrastructure stack (MariaDB, Memcached, K-ORC, OpenBao) the operator targets,
 see [Infrastructure Manifests](../infrastructure/infrastructure-manifests.md).
 
 The c5c3 operator is intentionally a *thin orchestrator*: it provisions and
-owns child CRs (MariaDB, Memcached, Keystone, K-ORC `ApplicationCredential` /
-`Service` / `Endpoint`) and aggregates their readiness. It does **not**
+owns child CRs (MariaDB, Memcached, Keystone, Horizon, K-ORC
+`ApplicationCredential` / `Service` / `Endpoint`) and aggregates their readiness. It does **not**
 re-implement the per-service logic those child operators already own. As a
 consequence the c5c3 API surface is deliberately smaller than the
 [Keystone reconciler](../keystone/keystone-reconciler.md)'s: no parallel
@@ -292,6 +292,12 @@ and the informer cache to that namespace. Keep the default only when
 │           │                                                                  │
 │           ▼                                                                  │
 │  ┌──────────────────────────┐                                                │
+│  │ reconcileHorizon         │  Project the Horizon dashboard child CR        │
+│  │  (gate: KeystoneReady)   │  Sets: HorizonReady (not-managed when unset)   │
+│  └────────┬─────────────────┘  Requeue: 5s gated / 15s child not Ready       │
+│           │                                                                  │
+│           ▼                                                                  │
+│  ┌──────────────────────────┐                                                │
 │  │ reconcileKORC            │  Mint the admin ApplicationCredential          │
 │  │  (gate: none*)           │  Sets: KORCReady                               │
 │  └────────┬─────────────────┘  Requeue: 10s while AC not Available           │
@@ -320,7 +326,7 @@ and the informer cache to that namespace. Keep the default only when
 
 ### Execution Model
 
-All seven sub-reconcilers run **strictly sequentially** — there is no parallel
+All eight sub-reconcilers run **strictly sequentially** — there is no parallel
 group. The chain is a table-driven pipeline over the shared scaffolding in
 `internal/common/reconcile` (the same shape the keystone controller uses):
 each step is a `commonreconcile.Step` wrapped in `instrumentSubReconciler`
@@ -333,7 +339,7 @@ pipeline := []commonreconcile.Step{
     {Name: "Infrastructure", Fn: func(ctx context.Context) (ctrl.Result, error) {
         return r.reconcileInfrastructure(ctx, &cp)
     }},
-    // ... DBCredentials, AdminPassword, Keystone, KORC, AdminCredential, Catalog
+    // ... DBCredentials, AdminPassword, Keystone, Horizon, KORC, AdminCredential, Catalog
 }
 result, err := commonreconcile.RunPipeline(ctx, instrumentSubReconciler, pipeline)
 return r.updateStatus(ctx, &cp, statusBefore, result, err)
@@ -389,11 +395,11 @@ sub-condition type is `True` using `aggregateReady()`, which delegates to
 | Yes | `Status: True` | `AllReady` | `All sub-conditions are ready` |
 | No (any missing or False) | `Status: False` | `NotAllReady` | `One or more sub-conditions are not ready` |
 
-The seven aggregated sub-condition types (the source-of-truth `subConditionTypes`
+The eight aggregated sub-condition types (the source-of-truth `subConditionTypes`
 slice in `controlplane_controller.go`) are:
 
 ```text
-InfrastructureReady, DBCredentialsReady, KeystoneReady, KORCReady, AdminCredentialReady, AdminPasswordReady, CatalogReady
+InfrastructureReady, DBCredentialsReady, KeystoneReady, HorizonReady, KORCReady, AdminCredentialReady, AdminPasswordReady, CatalogReady
 ```
 
 The `Ready` condition carries `ObservedGeneration = cp.Generation` so clients can
@@ -412,7 +418,7 @@ fields that the schema declared but the reconciler previously never wrote:
 | Field | Value |
 | --- | --- |
 | `status.updatePhase` | Fixed at `Idle` — the release-update state machine is not implemented and the other `UpdatePhase` values are reserved, so "no update in progress" is the current state |
-| `status.services` (the `name: keystone` entry) | `ready` mirrors the `KeystoneReady` sub-condition (via `conditions.AllTrue`); `release` is `spec.openStackRelease` |
+| `status.services` | one entry per managed service, in a stable order: `keystone` (present when `spec.services.keystone` is set) then `horizon` (present when `spec.services.horizon` is set). Each entry's `ready` mirrors the matching `KeystoneReady` / `HorizonReady` sub-condition (via `conditions.AllTrue`) and `release` is `spec.openStackRelease`; an unmanaged service is omitted rather than reported |
 
 ---
 
@@ -616,6 +622,60 @@ the ControlPlane provisioned:
 | Keystone create/update fails | False | `KeystoneError` | returns the error |
 | Keystone child not yet Ready | False | `WaitingForKeystone` | requeue 15s |
 | Keystone child Ready | True | `KeystoneReady` | — |
+
+### reconcileHorizon
+
+| Aspect | Value |
+| --- | --- |
+| File | `reconcile_horizon.go` |
+| Condition | `HorizonReady` |
+| Gate | `KeystoneReady == True` |
+| Projects / Owns | one `Horizon` child named `{controlplane.Name}-horizon` (`horizonNameSuffix`) in `childNamespace(cp)` — only when `spec.services.horizon` is set |
+| Requeue | `keystoneInfraGateRequeueAfter` = **5s** while gated; `infraRequeueAfter` = **15s** while the child is not Ready |
+
+`reconcileHorizon` is optional: `spec.services.horizon` unset means this
+ControlPlane manages no dashboard, and the sub-reconciler reports
+`HorizonReady=True` / `HorizonNotManaged` so the aggregate is not blocked (staged
+adoption). A previously-projected child is **preserved** unless the ControlPlane
+opts in with `c5c3.io/allow-horizon-deletion: "true"` (then the orphan is
+deleted) — the same annotation UX as Keystone, though the dashboard is stateless.
+
+When managed, the projection mirrors the Keystone one's *thin* discipline,
+reusing the ControlPlane's own specs so the dashboard points at the same backing
+services:
+
+- **Image:** repository defaults to `ghcr.io/c5c3/horizon` with the tag derived
+  from `spec.openStackRelease`; `spec.services.horizon.image` overrides the whole
+  image reference when set.
+- **Cache:** a DeepCopy of `cp.Spec.Infrastructure.Cache` (same `clusterRef` /
+  servers / replicas), **except** `Backend` is overridden to the Horizon Django
+  default `django.core.cache.backends.memcached.PyMemcacheCache`. The shared
+  `CacheSpec.Backend` carries the oslo.cache dogpile path Keystone consumes
+  (`dogpile.cache.pymemcache`), which Django renders verbatim as a `CACHES`
+  backend and rejects with `InvalidCacheBackendError`, so the dashboard would
+  never go Ready — only the endpoint-bearing fields are reused unchanged.
+- **Keystone endpoint:** derived top-down via `horizonKeystoneEndpoint(cp)` from
+  the Keystone child's naming convention, not read from the Keystone child's
+  status (no machine consumer reads status endpoints, per the settled
+  convention).
+- **SecretKeyRef:** defaults to the kind shim Secret `horizon-secret-key` (key
+  `secret-key`), which is pinned to the **default** ControlPlane identity;
+  `spec.services.horizon.secretKeyRef` overrides it, and a second ControlPlane
+  **must** set its own so each dashboard reads distinct `SECRET_KEY` material.
+- **Gateway:** a DeepCopy of `spec.services.horizon.gateway`; a nil source clears
+  the projected gateway so removing the block tears the HTTPRoute down.
+- **Replicas:** `commonv1.DefaultReplicas`, overridden by
+  `spec.services.horizon.replicas` when set (assigned unconditionally so clearing
+  the field reverts the child to the default instead of pinning a lost update).
+
+| Path | Status | Reason | Notes |
+| --- | --- | --- | --- |
+| `spec.services.horizon` unset | True | `HorizonNotManaged` | staged adoption — does not block the aggregate; a previously-projected child is preserved unless `c5c3.io/allow-horizon-deletion: "true"` is set |
+| `KeystoneReady` not True | False | `WaitingForKeystone` | requeue 5s; no Horizon CR is projected while Keystone is unready |
+| Horizon create/update fails | False | `HorizonError` | returns the error |
+| Projected spec rejected (HTTP 422 Invalid) | False | `HorizonProjectionRejected` | returns the error; the projection violates a Horizon CRD/webhook rule — reconcile the ControlPlane spec to a valid projection to recover |
+| Horizon child not yet Ready | False | `WaitingForHorizon` | requeue 15s |
+| Horizon child Ready | True | `HorizonReady` | — |
 
 ### reconcileKORC
 
