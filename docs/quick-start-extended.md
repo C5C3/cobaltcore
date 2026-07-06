@@ -285,6 +285,56 @@ error rate) — see [Step 4c — Open the Grafana UI](#step-4c-grafana-ui) for t
 port-forward and the bundled `Keystone Operator` dashboard.
 :::
 
+::: tip Enabling the local registry pull-through cache
+Every `make deploy-infra` run creates a fresh kind cluster, and every
+third-party image (from `docker.io`, `ghcr.io`, `registry.k8s.io`, `quay.io`,
+and the per-project vanity registries `oci.external-secrets.io` and
+`docker-registry3.mariadb.com`) is then pulled from its upstream registry inside
+the node's containerd. If you recreate the cluster many times a day, the same
+images are fetched over the wire again and again — slow, and exposed to Docker
+Hub rate limits and transient upstream flakes. `kind load docker-image` only
+helps for the handful of images you build yourself; it does nothing for the
+dozen-plus third-party images the infra stack pulls.
+
+Opt in to a **transparent local pull-through cache** by setting
+`WITH_REGISTRY_CACHE=true` before `make deploy-infra`:
+
+```bash
+WITH_REGISTRY_CACHE=true make deploy-infra
+```
+
+This starts one small [distribution registry](https://distribution.github.io/distribution/)
+(`registry:2`) container per upstream registry, in pull-through **proxy**
+mode, on the `kind` Docker network — each backed by a persistent Docker volume
+so the cache **survives `kind delete` / recreate cycles** — and wires every
+node's containerd at them via a registry mirror
+(`/etc/containerd/certs.d/<host>/hosts.toml`). It is fully transparent: no
+`spec.image` or chart `image:` edits, no `localhost:5000/...` rewrites. A
+workload referencing `ghcr.io/c5c3/keystone:2025.2` is served from the local
+cache on the second pull, and the distribution proxy **streams** each blob from
+the upstream while caching it inline, so even the first (cold) pull runs at
+roughly origin speed. Mirror entries advertise `pull` + `resolve` capabilities,
+so containerd falls back to the origin registry whenever a cache is down — the
+cache can never hard-break a pull.
+
+This is **local-dev only**. The default `make deploy-infra` (flag unset) and
+every CI job are unaffected: the containerd mirror patch is injected only into
+the deploy-time kind config, never into the checked-in `hack/kind-config.yaml`
+that CI feeds to kind directly. CI runners are ephemeral, so a host-local cache
+would not persist across jobs anyway.
+
+A plain `make teardown-infra` **leaves the caches running** for the next deploy.
+To reclaim the disk and start cold, purge them explicitly:
+
+```bash
+PURGE_REGISTRY_CACHE=true make teardown-infra
+```
+
+Because the containerd mirror is configured at cluster-creation time, enabling
+the cache takes effect on a **freshly created** cluster (`make teardown-infra`
+then `WITH_REGISTRY_CACHE=true make deploy-infra`).
+:::
+
 ---
 
 ## Step 4 — Open the Headlamp UI
