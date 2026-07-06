@@ -118,6 +118,7 @@ export default defineConfig({
         text: 'Contributing',
         items: [
           { text: 'Adding a New Operator', link: '/contributing/adding-a-new-operator' },
+          { text: 'Adding a New Release', link: '/contributing/adding-a-new-release' },
           { text: 'Dependency Management', link: '/contributing/dependency-management' },
           { text: 'Claude Code Skills', link: '/contributing/claude-skills' },
         ],
