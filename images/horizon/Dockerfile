@@ -41,8 +41,15 @@ RUN --mount=type=bind,from=upper-constraints,source=upper-constraints.txt,target
 # settings the Django management commands need; it is removed afterwards so
 # the runtime image only ever reads the operator-mounted
 # /etc/openstack-dashboard/local_settings.py (see the Stage 2 symlink).
+#
+# CACHES must be a WORKING in-process backend: horizon wraps the Angular
+# template-cache preloads in {% cache %} (horizon/_scripts.html), and with
+# the default PyMemcacheCache pointing at an unreachable 127.0.0.1:11211
+# the cache lookup raises, django-compressor silently skips that block, and
+# the shipped manifest.json lacks its key — every page render then 500s at
+# runtime with OfflineGenerationError once a real Memcached is reachable.
 RUN SITE_PKG="$(/var/lib/openstack/bin/python -c 'import os, openstack_dashboard; print(os.path.dirname(openstack_dashboard.__file__))')" && \
-    printf 'DEBUG = False\nSECRET_KEY = "build-time-throwaway"\nSTATIC_ROOT = "/var/lib/openstack/horizon-static"\nCOMPRESS_OFFLINE = True\nALLOWED_HOSTS = ["*"]\n' \
+    printf 'DEBUG = False\nSECRET_KEY = "build-time-throwaway"\nSTATIC_ROOT = "/var/lib/openstack/horizon-static"\nCOMPRESS_OFFLINE = True\nALLOWED_HOSTS = ["*"]\nCACHES = {"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}}\n' \
         > "${SITE_PKG}/local/local_settings.py" && \
     DJANGO_SETTINGS_MODULE=openstack_dashboard.settings \
         /var/lib/openstack/bin/python -m django collectstatic --noinput && \
