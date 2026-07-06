@@ -4,10 +4,13 @@
 
 # Chainsaw chaos E2E test for horizon-operator pod kill.
 # Verifies the deployed Horizon workload keeps serving while the operator is
-# down (operational-independence contract), and that the recovered operator
-# resumes reconciliation: a spec change patched after the kill is rolled out
-# by the replacement pod. The old-pod-gone check is UID-based so the
-# recovery poll cannot pass vacuously against the pre-chaos pod.
+# down (operational-independence contract), and that the operator resumes
+# reconciliation after the kill: a spec change patched afterwards is rolled
+# out. Identity-based verification: snapshot ALL pre-chaos pod UIDs, then
+# wait for at least one to disappear. Snapshotting only .items[0] is racy —
+# the operator runs 2 replicas and PodChaos mode: one picks its victim at
+# random, so the recorded pod survives the kill in ~half the runs and the
+# old-pod-gone poll fails spuriously. Mirrors operator-pod-crash.
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -35,60 +38,89 @@ spec:
     catch:
     - script:
         content: ../diagnostics.sh baseline horizon-chaos-op
-  # ── Step 2: Record the operator pod UID, then inject the kill ──────────
+  # ── Step 2: Inject chaos and verify one operator pod was replaced ──────
+  # Snapshot, apply and poll live in one script so the pre-chaos UID
+  # snapshot and the wait share state. mode: one kills exactly one of the
+  # two replicas, so "at least one pre-chaos UID gone" proves the kill took
+  # effect regardless of which pod chaos-mesh picked.
   - try:
     - script:
+        # Timeout budget: Phase 1 (60×2s=120s) + Phase 2 (60×2s=120s) = 240s
+        # worst case. 270s gives 30s margin.
+        timeout: 270s
         content: |
-          kubectl get pods -n horizon-system -l app.kubernetes.io/name=horizon-operator \
-            -o jsonpath='{.items[0].metadata.uid}' > /tmp/horizon-operator-pod-uid
-          echo "operator pod UID before chaos: $(cat /tmp/horizon-operator-pod-uid)"
-    - apply:
-        file: 01-podchaos.yaml
-  # ── Step 3: Verify the old pod is gone and a replacement is Ready ──────
-  # UID-based: the pre-chaos pod UID must disappear before the recovery
-  # assertion counts, so a selector mismatch (kill never took effect)
-  # fails loudly instead of passing vacuously.
-  - try:
-    - script:
-        # Timeout budget: Phase 1 (15×2s=30s) + Phase 2 (45×2s=90s) = 120s
-        # worst case; 150s gives 30s margin.
-        timeout: 150s
-        content: |
-          OLD_UID=$(cat /tmp/horizon-operator-pod-uid)
+          # NOTE: set -euo pipefail is intentionally omitted. The polling
+          # loops use ${VAR:-0} defensive defaults that would fail under
+          # set -e when kubectl returns empty output, and loop exit
+          # conditions are checked explicitly rather than via exit codes.
 
-          # Phase 1: poll until the old pod UID is gone (kill took effect).
-          for i in $(seq 1 15); do
-            uids=$(kubectl get pods -n horizon-system -l app.kubernetes.io/name=horizon-operator \
-              -o jsonpath='{range .items[*]}{.metadata.uid}{"\n"}{end}')
-            if ! printf '%s\n' "$uids" | grep -qx "$OLD_UID"; then
+          # Read desired replica count from the Deployment so the test stays
+          # valid if the operator replica count changes.
+          DESIRED=$(kubectl get deployment horizon-operator -n horizon-system -o jsonpath='{.spec.replicas}')
+          if [ -z "$DESIRED" ] || [ "$DESIRED" -lt 1 ]; then
+            echo "ERROR: could not determine desired replica count from horizon-operator Deployment"
+            exit 1
+          fi
+          echo "Desired replicas: ${DESIRED}"
+
+          # Snapshot pre-chaos pod UIDs. mode: one must replace at least one
+          # of these; checking that at least one disappears is race-free.
+          OLD_UIDS=$(kubectl get pods -n horizon-system -l app.kubernetes.io/name=horizon-operator -o jsonpath='{.items[*].metadata.uid}')
+          if [ -z "$OLD_UIDS" ]; then
+            echo "ERROR: no operator pods found before chaos injection"
+            exit 1
+          fi
+          echo "Pre-chaos operator pod UIDs: ${OLD_UIDS}"
+
+          # Inject chaos (kill one operator pod).
+          kubectl apply -f 01-podchaos.yaml
+
+          # Phase 1: wait until at least one pre-chaos UID is gone, proving
+          # mode: one replaced a pod. 60 iterations × 2s = 120s max.
+          # Empty CURRENT_UIDS (transient kubectl failure) would spuriously
+          # match "no UIDs present" — skip those iterations instead.
+          for i in $(seq 1 60); do
+            CURRENT_UIDS=$(kubectl get pods -n horizon-system -l app.kubernetes.io/name=horizon-operator -o jsonpath='{.items[*].metadata.uid}')
+            if [ -z "$CURRENT_UIDS" ]; then
+              sleep 2
+              continue
+            fi
+            REPLACED=0
+            for uid in $OLD_UIDS; do
+              case " $CURRENT_UIDS " in
+                *" $uid "*) ;;
+                *) REPLACED=1; break ;;
+              esac
+            done
+            if [ "$REPLACED" -eq 1 ]; then
+              echo "At least one pre-chaos operator pod replaced"
               break
             fi
             sleep 2
           done
-          if printf '%s\n' "$uids" | grep -qx "$OLD_UID"; then
-            echo "ERROR: operator pod $OLD_UID still present — pod kill did not take effect"
+          if [ "$REPLACED" -ne 1 ]; then
+            echo "ERROR: no pre-chaos operator pod was replaced by chaos injection"
+            echo "  pre-chaos UIDs: ${OLD_UIDS}"
+            echo "  current UIDs:   ${CURRENT_UIDS}"
             exit 1
           fi
-          echo "Pod kill confirmed: old UID $OLD_UID gone"
 
-          # Phase 2: poll until the operator Deployment is fully Ready again.
-          for i in $(seq 1 45); do
-            READY=$(kubectl get deployment -n horizon-system -l app.kubernetes.io/name=horizon-operator \
-              -o jsonpath='{.items[0].status.readyReplicas}')
-            DESIRED=$(kubectl get deployment -n horizon-system -l app.kubernetes.io/name=horizon-operator \
-              -o jsonpath='{.items[0].spec.replicas}')
-            if [ -n "$READY" ] && [ "$READY" = "$DESIRED" ]; then
-              echo "Operator recovered: readyReplicas=$READY"
+          # Phase 2: wait until readyReplicas returns to DESIRED (operator
+          # recovered and reconciliation resumed). 60×2s = 120s max.
+          for i in $(seq 1 60); do
+            READY=$(kubectl get deployment horizon-operator -n horizon-system -o jsonpath='{.status.readyReplicas}')
+            if [ "${READY:-0}" -eq "${DESIRED}" ]; then
+              echo "Operator recovered: readyReplicas=${DESIRED}"
               exit 0
             fi
             sleep 2
           done
-          echo "ERROR: operator did not recover — readyReplicas=${READY:-0}, expected ${DESIRED:-?}"
+          echo "ERROR: operator did not recover — readyReplicas=${READY:-0}, desired=${DESIRED}"
           exit 1
     catch:
     - script:
         content: ../diagnostics.sh chaos horizon-chaos-op --dep-label=app.kubernetes.io/name=horizon-operator --dep-ns=horizon-system
-  # ── Step 4: Delete PodChaos ────────────────────────────────────────────
+  # ── Step 3: Delete PodChaos ────────────────────────────────────────────
   - try:
     - delete:
         ref:
@@ -96,7 +128,7 @@ spec:
           kind: PodChaos
           name: kill-horizon-operator
           namespace: horizon-system
-  # ── Step 5: Prove the recovered operator reconciles a spec change ──────
+  # ── Step 4: Prove the recovered operator reconciles a spec change ──────
   - try:
     - patch:
         file: 02-patch-scale.yaml
