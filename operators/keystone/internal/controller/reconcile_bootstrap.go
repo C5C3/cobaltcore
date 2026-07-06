@@ -39,10 +39,19 @@ var bootstrapDBSeedScript string
 // Region and bootstrap URLs are passed through the container environment, so the
 // wrapper is parameter-free — built once at package init from constant parts
 // rather than re-concatenated per buildBootstrapJob call (issue #361).
+//
+// --bootstrap-password uses the --flag=value form, not "--flag value": the admin
+// password rotation mints the new password with Python secrets.token_urlsafe
+// (base64url alphabet, which includes '-'), so ~1 in 64 rotated passwords starts
+// with a dash. keystone-manage parses its flags with argparse, which rejects a
+// space-separated value that begins with '-' as "expected one argument" (it reads
+// the value as another option). The =value form binds the whole token as the
+// value regardless of a leading dash. The URL/region flags keep the space form —
+// their values are never dash-leading.
 var bootstrapScript = `python3 - <<'PY'
 ` + bootstrapDBSeedScript + `PY
 exec keystone-manage --config-dir=/etc/keystone/keystone.conf.d/ bootstrap \
-  --bootstrap-password "$BOOTSTRAP_PASSWORD" \
+  --bootstrap-password="$BOOTSTRAP_PASSWORD" \
   --bootstrap-admin-url "$BOOTSTRAP_ADMIN_URL" \
   --bootstrap-internal-url "$BOOTSTRAP_INTERNAL_URL" \
   --bootstrap-public-url "$BOOTSTRAP_PUBLIC_URL" \

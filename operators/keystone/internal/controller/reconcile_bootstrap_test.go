@@ -790,7 +790,9 @@ func TestBuildBootstrapJob_PreInsertScript_ParsesSSLDSNParams(t *testing.T) {
 	// keystone-manage is invoked via env-var-parameterised flags so the
 	// wrapper string carries no caller-substituted literals.
 	for _, flag := range []string{
-		`--bootstrap-password "$BOOTSTRAP_PASSWORD"`,
+		// =value form (not space-separated) so argparse accepts a rotated
+		// password that starts with '-' (secrets.token_urlsafe can emit one).
+		`--bootstrap-password="$BOOTSTRAP_PASSWORD"`,
 		`--bootstrap-admin-url "$BOOTSTRAP_ADMIN_URL"`,
 		`--bootstrap-internal-url "$BOOTSTRAP_INTERNAL_URL"`,
 		`--bootstrap-public-url "$BOOTSTRAP_PUBLIC_URL"`,
