@@ -391,6 +391,16 @@ verify-invalid-cr-fixtures:
 check-feature-ids:
 	@bash scripts/check-no-feature-ids.sh
 
+.PHONY: check-review-markers
+# check-review-markers fails if any file carries more unresolved reviewer
+# markers ("Reviewer: please …" questions committed instead of answered) than
+# its entry in scripts/review-markers-baseline.txt records. Existing markers
+# are tolerated; new ones may not land, and counts may only shrink. After
+# resolving a marker, tighten the baseline:
+#   scripts/check-no-review-markers.sh --update-baseline
+check-review-markers:
+	@bash scripts/check-no-review-markers.sh
+
 .PHONY: e2e
 # chainsaw auto-discovers chainsaw-test.yaml recursively, so new suites
 # under tests/e2e/**/ (e.g. keystone/gateway-quick-start, infrastructure/gateway-quick-start-smoke)

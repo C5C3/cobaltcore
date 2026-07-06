@@ -274,6 +274,20 @@ jobs:
       - name: Check the tree is free of internal feature/requirement IDs
         run: make check-feature-ids
 
+  # Always-on gate: no NEW unresolved reviewer markers ("Reviewer: please …"
+  # questions committed instead of answered) may land anywhere in the tracked
+  # tree. Pre-existing markers are tolerated via the per-file baseline in
+  # scripts/review-markers-baseline.txt and are expected to shrink over time;
+  # the gate fails only when a file exceeds its baselined count.
+  review-markers:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - name: Check no new unresolved reviewer markers were introduced
+        run: make check-review-markers
+
   # Run every shell unit test under tests/unit/ (hack/, deploy/, docs/,
   # renovate/). Repo files only — adds no injection surface. ubuntu-latest
   # preinstalls bash, jq, mikefarah/yq, perl, npx; kustomize is installed

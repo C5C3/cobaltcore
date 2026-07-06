@@ -1,0 +1,32 @@
+# Baseline of tolerated reviewer markers, one 'path:count' per line.
+# Maintained by scripts/check-no-review-markers.sh --update-baseline.
+# Counts may only shrink: resolve a marker, then regenerate this file.
+deploy/eso/clustersecretstore.yaml:1
+deploy/openbao/policies/push-app-credentials.hcl:1
+docs/reference/backend/rotation-scripts.md:1
+hack/deploy-infra.sh:1
+internal/common/job/job.go:1
+operators/c5c3/api/v1alpha1/controlplane_webhook.go:1
+operators/c5c3/internal/controller/integration_test.go:3
+operators/c5c3/internal/controller/korc_eso.go:1
+operators/c5c3/internal/controller/reconcile_korc.go:2
+operators/keystone/internal/controller/dbtls_mode.go:1
+operators/keystone/internal/controller/reconcile_bootstrap.go:1
+operators/keystone/internal/controller/reconcile_credential.go:1
+operators/keystone/internal/controller/reconcile_dbconnection_secret.go:1
+operators/keystone/internal/controller/reconcile_fernet.go:1
+operators/keystone/internal/controller/reconcile_passwordrotation.go:3
+tests/e2e-chaos/mariadb-pod-kill/chainsaw-test.yaml:2
+tests/e2e-chaos/openbao-pod-kill/chainsaw-test.yaml:2
+tests/e2e/c5c3/admin-password-scoping/00-controlplane-cr.yaml:1
+tests/e2e/c5c3/admin-password-scoping/chainsaw-test.yaml:1
+tests/e2e/c5c3/db-credential-scoping/00-controlplane-cr.yaml:1
+tests/e2e/c5c3/db-credential-scoping/chainsaw-test.yaml:1
+tests/e2e/c5c3/full-controlplane-keystone/chainsaw-test.yaml:1
+tests/e2e/c5c3/multi-controlplane/00-tenant-a-controlplane.yaml:1
+tests/e2e/c5c3/multi-controlplane/chainsaw-test.yaml:1
+tests/e2e/chainsaw-config.yaml:1
+tests/e2e/keystone/admin-password-scheduled-rotation/chainsaw-test.yaml:1
+tests/e2e/keystone/image-upgrade/01-patch-image.yaml:1
+tests/unit/hack/deploy_infra_preflight_test.sh:1
+tests/unit/hack/install_test_deps_optional_flux_test.sh:1
