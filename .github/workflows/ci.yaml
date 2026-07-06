@@ -1124,12 +1124,19 @@ jobs:
           OPERATOR: keystone
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/keystone-operator
       # The horizon chaos suites (horizon-operator-pod-kill,
-      # horizon-memcached-pod-kill) need the horizon-operator too.
+      # horizon-memcached-pod-kill) need the horizon-operator too. It must land
+      # in its own dedicated horizon-system namespace (not the script's
+      # keystone-system default) because horizon-operator-pod-kill selects and
+      # kills the operator pod by `-n horizon-system` — the same namespace the
+      # Flux/deploy-infra path installs it into — and its PodChaos targets
+      # horizon-system. Without this the operator installs into keystone-system,
+      # the pod selector finds nothing, and the recovery assertion fails.
       - name: Deploy horizon operator
         run: hack/ci-deploy-operator.sh
         env:
           OPERATOR: horizon
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/horizon-operator
+          NAMESPACE: horizon-system
       - name: Run chaos E2E tests
         run: |
           mkdir -p _output/reports
