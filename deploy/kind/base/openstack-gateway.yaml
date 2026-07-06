@@ -3,9 +3,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Gateway API wiring for the kind Quick Start — `GatewayClass/envoy`
-# plus a single-listener HTTPS Gateway at
-# `keystone.127-0-0-1.nip.io:443` terminating TLS with a self-signed
-# certificate issued by the existing `selfsigned-cluster-issuer`
+# plus a two-listener HTTPS Gateway on port 443 (`keystone.127-0-0-1.nip.io`
+# and `horizon.127-0-0-1.nip.io`, routed by SNI) terminating TLS with
+# self-signed certificates issued by the existing `selfsigned-cluster-issuer`
 # ClusterIssuer (the same issuer OpenBao uses; see
 # `deploy/flux-system/infrastructure/cluster-issuer.yaml`).
 #
@@ -61,6 +61,28 @@ spec:
         certificateRefs:
           - kind: Secret
             name: keystone-nip-io-tls
+      allowedRoutes:
+        namespaces:
+          from: Same
+    # Second HTTPS listener for the Horizon dashboard the ControlPlane Quick
+    # Start projects (docs/quick-start-controlplane.md). It shares port 443
+    # with the Keystone listener above — Envoy Gateway routes the two by SNI
+    # on the distinct `hostname` values, each terminating with its own
+    # certificate. The Horizon HTTPRoute the horizon-operator projects carries
+    # `hostnames: [horizon.127-0-0-1.nip.io]`, so it attaches to THIS listener
+    # (matching hostname) and not the Keystone one. Adding a second listener on
+    # the same port does not disturb the NodePort pin: `envoy-nodeport.yaml`
+    # keys its StrategicMerge patch by `port: 443`, which selects the single
+    # ServicePort Envoy generates for both listeners.
+    - name: https-horizon
+      protocol: HTTPS
+      port: 443
+      hostname: horizon.127-0-0-1.nip.io
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: horizon-nip-io-tls
       allowedRoutes:
         namespaces:
           from: Same

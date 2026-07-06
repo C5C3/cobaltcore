@@ -17,6 +17,9 @@ resources:
   # by the cert-manager / envoy-gateway HelmReleases in Phase 1.
   - envoy-nodeport.yaml
   - keystone-nip-io-tls-certificate.yaml
+  # TLS for the second Gateway listener the ControlPlane Quick Start's Horizon
+  # dashboard is exposed through (deploy/kind/base/openstack-gateway.yaml).
+  - horizon-nip-io-tls-certificate.yaml
   # kind-only: standalone Keystone CRs (Quick Start, keystone e2e/tempest/
   # chaos suites) reference the Secret "keystone-db"; ControlPlane-based
   # deployments use the operator-projected per-ControlPlane ExternalSecret
