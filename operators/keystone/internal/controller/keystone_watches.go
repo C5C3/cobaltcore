@@ -84,6 +84,74 @@ func clusterSecretStoreToKeystoneMapper(c client.Reader) handler.MapFunc {
 		func() client.ObjectList { return &keystonev1alpha1.KeystoneList{} })
 }
 
+// identityBackendToKeystoneMapper returns a MapFunc that maps a
+// KeystoneIdentityBackend event to a reconcile request for the Keystone it
+// attaches to (spec.keystoneRef). Registered WITHOUT a generation predicate:
+// backend status flips (DomainReady turning True) are exactly what wakes the
+// keystone-side identitybackends sub-reconciler to project the domain config,
+// and the DeletionTimestamp flip is what triggers de-projection.
+func identityBackendToKeystoneMapper() handler.MapFunc {
+	return func(_ context.Context, obj client.Object) []reconcile.Request {
+		backend, ok := obj.(*keystonev1alpha1.KeystoneIdentityBackend)
+		if !ok || backend.Spec.KeystoneRef.Name == "" {
+			return nil
+		}
+		return []reconcile.Request{{
+			NamespacedName: types.NamespacedName{
+				Namespace: backend.Namespace,
+				Name:      backend.Spec.KeystoneRef.Name,
+			},
+		}}
+	}
+}
+
+// secretToKeystoneWithBackendsMapper extends secretToKeystoneMapper with the
+// identity-backend leg: a Secret referenced by a KeystoneIdentityBackend
+// (bind credentials or TLS CA bundle, resolved via the
+// IdentityBackendSecretNameIndexKey field indexer) enqueues the backend's
+// Keystone so the content-hashed domains Secret is re-rendered on bind/CA
+// rotation. The base Keystone legs (name index + owner-ref) are unchanged;
+// results are unioned by NamespacedName so a Secret matching both legs yields
+// exactly one request. On a backend List error the mapper logs and returns
+// the base results, matching the sibling mappers' log-and-continue contract.
+func secretToKeystoneWithBackendsMapper(c client.Reader) handler.MapFunc {
+	base := secretToKeystoneMapper(c)
+	return func(ctx context.Context, obj client.Object) []reconcile.Request {
+		requests := base(ctx, obj)
+
+		var backends keystonev1alpha1.KeystoneIdentityBackendList
+		if err := c.List(
+			ctx, &backends,
+			client.InNamespace(obj.GetNamespace()),
+			client.MatchingFields{IdentityBackendSecretNameIndexKey: obj.GetName()},
+		); err != nil {
+			log.FromContext(ctx).Error(err, "listing KeystoneIdentityBackends for Secret watch")
+			return requests
+		}
+		if len(backends.Items) == 0 {
+			return requests
+		}
+
+		seen := make(map[types.NamespacedName]struct{}, len(requests))
+		for _, req := range requests {
+			seen[req.NamespacedName] = struct{}{}
+		}
+		for i := range backends.Items {
+			b := &backends.Items[i]
+			if b.Spec.KeystoneRef.Name == "" {
+				continue
+			}
+			key := types.NamespacedName{Namespace: b.Namespace, Name: b.Spec.KeystoneRef.Name}
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
+			requests = append(requests, reconcile.Request{NamespacedName: key})
+		}
+		return requests
+	}
+}
+
 // keystoneToIdentityBackendsMapper returns a MapFunc that fans a Keystone
 // event out to every KeystoneIdentityBackend attached to it, resolved via the
 // IdentityBackendKeystoneRefIndexKey field indexer. Registered WITHOUT a

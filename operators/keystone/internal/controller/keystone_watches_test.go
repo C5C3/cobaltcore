@@ -20,6 +20,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
@@ -169,4 +170,108 @@ func TestClusterSecretStoreToKeystoneMapper_IgnoresOtherStores(t *testing.T) {
 
 	g.Expect(reqs).To(BeEmpty(),
 		"a change to an unrelated ClusterSecretStore must enqueue nothing")
+}
+
+// --- identity-backend mappers ---
+
+// TestIdentityBackendToKeystoneMapper_EnqueuesKeystoneRef verifies a backend
+// event enqueues exactly its spec.keystoneRef in the backend's namespace.
+func TestIdentityBackendToKeystoneMapper_EnqueuesKeystoneRef(t *testing.T) {
+	g := NewGomegaWithT(t)
+	mapper := identityBackendToKeystoneMapper()
+
+	backend := testIdentityBackend("corp-ldap", "corp")
+	requests := mapper(context.Background(), backend)
+	g.Expect(requests).To(ConsistOf(reconcile.Request{
+		NamespacedName: types.NamespacedName{Namespace: "default", Name: "test-keystone"},
+	}))
+
+	// An empty keystoneRef (bypassed admission) must enqueue nothing rather
+	// than a request with an empty name.
+	empty := testIdentityBackend("broken", "corp")
+	empty.Spec.KeystoneRef.Name = ""
+	g.Expect(mapper(context.Background(), empty)).To(BeEmpty())
+}
+
+// TestKeystoneToIdentityBackendsMapper_FansOutToAttachedBackends verifies a
+// Keystone event enqueues every backend attached via the keystoneRef index —
+// and none attached to other Keystones.
+func TestKeystoneToIdentityBackendsMapper_FansOutToAttachedBackends(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	attached1 := testIdentityBackend("a-ldap", "corp-a")
+	attached2 := testIdentityBackend("b-ldap", "corp-b")
+	foreign := testIdentityBackend("c-ldap", "corp-c")
+	foreign.Spec.KeystoneRef.Name = "another-keystone"
+	c := newMapperFakeClient(attached1, attached2, foreign)
+
+	ks := testKeystone()
+	requests := keystoneToIdentityBackendsMapper(c)(context.Background(), ks)
+	g.Expect(requests).To(ConsistOf(
+		reconcile.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: "a-ldap"}},
+		reconcile.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: "b-ldap"}},
+	))
+
+	// A Keystone with no attached backends fans out to nothing.
+	other := testKeystone()
+	other.Name = "unattached"
+	g.Expect(keystoneToIdentityBackendsMapper(c)(context.Background(), other)).To(BeEmpty())
+}
+
+// TestSecretToKeystoneWithBackendsMapper_BindSecretWakesOwningKeystone
+// verifies the identity-backend leg: a bind-credentials (or TLS CA) Secret
+// event enqueues the Keystone the referencing backend attaches to, unioned
+// with the base Keystone legs without duplicates.
+func TestSecretToKeystoneWithBackendsMapper_BindSecretWakesOwningKeystone(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	ks := testKeystone()
+	backend := testIdentityBackend("corp-ldap", "corp")
+	c := newMapperFakeClient(ks, backend)
+	mapper := secretToKeystoneWithBackendsMapper(c)
+
+	// The bind Secret is not referenced by any Keystone spec field, so only
+	// the backend leg produces the request.
+	bindSecret := testBindSecret("corp-ldap")
+	requests := mapper(context.Background(), bindSecret)
+	g.Expect(requests).To(ConsistOf(reconcile.Request{
+		NamespacedName: types.NamespacedName{Namespace: "default", Name: "test-keystone"},
+	}))
+
+	// A Secret referenced by BOTH the Keystone spec (admin password) and a
+	// backend must yield exactly one request per Keystone (dedup contract).
+	dualBackend := testIdentityBackend("dual-ldap", "corp-dual")
+	dualBackend.Spec.LDAP.BindCredentialsSecretRef.Name = "keystone-admin"
+	c2 := newMapperFakeClient(ks, dualBackend)
+	adminSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "keystone-admin", Namespace: "default"}}
+	requests = secretToKeystoneWithBackendsMapper(c2)(context.Background(), adminSecret)
+	g.Expect(requests).To(ConsistOf(reconcile.Request{
+		NamespacedName: types.NamespacedName{Namespace: "default", Name: "test-keystone"},
+	}))
+
+	// An unreferenced Secret enqueues nothing.
+	unref := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "unrelated", Namespace: "default"}}
+	g.Expect(mapper(context.Background(), unref)).To(BeEmpty())
+}
+
+// TestIdentityBackendSecretNameExtractor_UnionsBindAndCA pins the extractor's
+// dedup contract: bind + CA names, empty names skipped, duplicates collapsed.
+func TestIdentityBackendSecretNameExtractor_UnionsBindAndCA(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	b := testIdentityBackend("corp-ldap", "corp")
+	g.Expect(identityBackendSecretNameExtractor(b)).To(ConsistOf("corp-ldap-bind"))
+
+	b.Spec.LDAP.TLS = &keystonev1alpha1.LDAPTLSSpec{
+		CABundleSecretRef: commonv1.SecretRefSpec{Name: "corp-ca"},
+	}
+	g.Expect(identityBackendSecretNameExtractor(b)).To(ConsistOf("corp-ldap-bind", "corp-ca"))
+
+	// Same Secret for bind and CA: deduplicated.
+	b.Spec.LDAP.TLS.CABundleSecretRef.Name = "corp-ldap-bind"
+	g.Expect(identityBackendSecretNameExtractor(b)).To(ConsistOf("corp-ldap-bind"))
+
+	// No LDAP block (bypassed admission): nothing indexed.
+	b.Spec.LDAP = nil
+	g.Expect(identityBackendSecretNameExtractor(b)).To(BeEmpty())
 }

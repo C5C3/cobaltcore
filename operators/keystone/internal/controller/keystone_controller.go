@@ -837,9 +837,18 @@ func (r *KeystoneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// ESO-managed secrets (spec.database.secretRef, spec.bootstrap.adminPasswordSecretRef)
 		// are owned by the ExternalSecret controller, not by the Keystone CR, so
 		// EnqueueRequestForOwner would never match them. This MapFunc performs a
-		// namespace-scoped lookup instead.
+		// namespace-scoped lookup instead. The identity-backend leg additionally
+		// maps LDAP bind/CA Secrets to the attached Keystone so a rotated bind
+		// credential re-renders the content-hashed domains Secret.
 		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(
-			secretToKeystoneMapper(mgr.GetClient()),
+			secretToKeystoneWithBackendsMapper(mgr.GetClient()),
+		)).
+		// Watch KeystoneIdentityBackends and map to their Keystone: backend
+		// status flips (DomainReady) trigger projection, DeletionTimestamp
+		// flips trigger de-projection. No generation predicate — the status
+		// transitions ARE the signal.
+		Watches(&keystonev1alpha1.KeystoneIdentityBackend{}, handler.EnqueueRequestsFromMapFunc(
+			identityBackendToKeystoneMapper(),
 		)).
 		// Watch the MariaDB cluster CR referenced by spec.database.clusterRef so
 		// that the operator reflects upstream database outages in DatabaseReady

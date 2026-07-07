@@ -910,7 +910,9 @@ func newMapperFakeClientBuilder(objs ...client.Object) *fake.ClientBuilder {
 	return fake.NewClientBuilder().
 		WithScheme(testScheme()).
 		WithObjects(objs...).
-		WithIndex(&keystonev1alpha1.Keystone{}, KeystoneSecretNameIndexKey, keystoneSecretNameExtractor)
+		WithIndex(&keystonev1alpha1.Keystone{}, KeystoneSecretNameIndexKey, keystoneSecretNameExtractor).
+		WithIndex(&keystonev1alpha1.KeystoneIdentityBackend{}, IdentityBackendKeystoneRefIndexKey, identityBackendKeystoneRefExtractor).
+		WithIndex(&keystonev1alpha1.KeystoneIdentityBackend{}, IdentityBackendSecretNameIndexKey, identityBackendSecretNameExtractor)
 }
 
 // newMapperFakeClient is the common-case shortcut for tests that only need a
