@@ -585,8 +585,8 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 		return c.Get(ctx, horizonKey, projectedHorizon)
 	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "Horizon child should be projected once KeystoneReady")
 	g.Expect(projectedHorizon.Spec.KeystoneEndpoint).To(
-		Equal(fmt.Sprintf("http://%s.%s.svc.cluster.local:5000/v3", keystoneName(cp), ns.Name)),
-		"keystoneEndpoint must be derived top-down from the naming convention",
+		Equal(fmt.Sprintf("http://%s.%s.svc:5000/v3", keystoneName(cp), ns.Name)),
+		"keystoneEndpoint must be the cluster-local convention URL (same as the K-ORC auth_url)",
 	)
 	g.Expect(projectedHorizon.Spec.Cache.ClusterRef).NotTo(BeNil())
 	g.Expect(projectedHorizon.Spec.Cache.ClusterRef.Name).To(Equal("openstack-memcached"))
