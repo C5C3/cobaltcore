@@ -21,6 +21,11 @@ set -euo pipefail
 # Optional: operator name for operator-specific diagnostics.
 OPERATOR="${OPERATOR:-}"
 NAMESPACE="${NAMESPACE:-openstack}"
+# The operator Deployment lives in its own namespace (keystone-system,
+# horizon-system, ...), mirroring the ci-deploy-operator.sh default. Without
+# an explicit -n the pod/log lookups below silently hit the default namespace
+# and the dump loses exactly the operator evidence it exists to capture.
+OPERATOR_NAMESPACE="${OPERATOR_NAMESPACE:-${OPERATOR}-system}"
 
 # ---------------------------------------------------------------------------
 # Infrastructure diagnostics (always emitted)
@@ -72,10 +77,10 @@ fi
 # ---------------------------------------------------------------------------
 if [[ -n "${OPERATOR}" ]]; then
   echo "=== Operator pods ==="
-  kubectl get pods -l "app.kubernetes.io/name=${OPERATOR}-operator" || true
+  kubectl get pods -n "${OPERATOR_NAMESPACE}" -l "app.kubernetes.io/name=${OPERATOR}-operator" || true
 
   echo "=== Operator logs ==="
-  kubectl logs -l "app.kubernetes.io/name=${OPERATOR}-operator" --tail=100 || true
+  kubectl logs -n "${OPERATOR_NAMESPACE}" -l "app.kubernetes.io/name=${OPERATOR}-operator" --tail=100 --prefix || true
 
   echo "=== Job descriptions ==="
   for job in $(kubectl get jobs -n "${NAMESPACE}" -o name 2>/dev/null); do
