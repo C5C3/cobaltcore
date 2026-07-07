@@ -88,6 +88,7 @@ spec:
                   description:
                     description: Description is projected onto the Keystone domain
                       in Manage mode.
+                    maxLength: 1024
                     type: string
                   mode:
                     default: Manage
@@ -141,7 +142,17 @@ spec:
                   readOnly is true — the write-enabling user_allow_*/group_allow_* options
                   are rejected by the validating webhook so the escape hatch cannot
                   silently contradict the typed spec.
+
+                  MaxProperties and the per-entry key/value length bound the aggregate
+                  rendered config at admission (defense-in-depth alongside the renderer's
+                  per-domain size budget) so this free-form map cannot be used to bloat the
+                  shared domains Secret past the apiserver limit.
+                maxProperties: 32
                 type: object
+                x-kubernetes-validations:
+                - message: each extraOptions key must be <=256 characters and each
+                    value <=1024 characters
+                  rule: self.all(k, size(k) <= 256 && size(self[k]) <= 1024)
               keystoneRef:
                 description: |-
                   KeystoneRef names the Keystone CR in the same namespace this backend
@@ -192,26 +203,32 @@ spec:
                       filter:
                         description: Filter is an additional LDAP filter applied to
                           group searches.
+                        maxLength: 1024
                         type: string
                       idAttribute:
                         description: 'IDAttribute maps the keystone group ID (keystone
                           default: cn).'
+                        maxLength: 256
                         type: string
                       memberAttribute:
                         description: 'MemberAttribute maps group membership (keystone
                           default: member).'
+                        maxLength: 256
                         type: string
                       nameAttribute:
                         description: 'NameAttribute maps the keystone group name (keystone
                           default: ou).'
+                        maxLength: 256
                         type: string
                       objectClass:
                         description: |-
                           ObjectClass is the LDAP objectClass for groups (keystone default:
                           groupOfNames).
+                        maxLength: 256
                         type: string
                       treeDN:
                         description: TreeDN is the search base for groups.
+                        maxLength: 512
                         minLength: 1
                         type: string
                     required:
@@ -242,6 +259,7 @@ spec:
                     type: boolean
                   suffix:
                     description: Suffix is the LDAP suffix (base DN), e.g. "dc=example,dc=com".
+                    maxLength: 512
                     minLength: 1
                     type: string
                   tls:
@@ -276,6 +294,7 @@ spec:
                     type: object
                   url:
                     description: URL is the LDAP server URL (ldap:// or ldaps://).
+                    maxLength: 512
                     pattern: ^ldaps?://
                     type: string
                   users:
@@ -285,26 +304,32 @@ spec:
                       filter:
                         description: Filter is an additional LDAP filter applied to
                           user searches.
+                        maxLength: 1024
                         type: string
                       idAttribute:
                         description: 'IDAttribute maps the keystone user ID (keystone
                           default: cn).'
+                        maxLength: 256
                         type: string
                       mailAttribute:
                         description: 'MailAttribute maps the keystone user email (keystone
                           default: mail).'
+                        maxLength: 256
                         type: string
                       nameAttribute:
                         description: 'NameAttribute maps the keystone user name (keystone
                           default: sn).'
+                        maxLength: 256
                         type: string
                       objectClass:
                         description: |-
                           ObjectClass is the LDAP objectClass for users (keystone default:
                           inetOrgPerson).
+                        maxLength: 256
                         type: string
                       treeDN:
                         description: TreeDN is the search base for users, e.g. "ou=people,dc=example,dc=com".
+                        maxLength: 512
                         minLength: 1
                         type: string
                     required:

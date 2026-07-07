@@ -75,6 +75,18 @@ const (
 // failing the whole pipeline.
 var errControlCharInValue = errors.New("[ldap] option name or value contains a newline or carriage-return character")
 
+// maxRenderedDomainConfBytes bounds a single backend's contribution (rendered
+// keystone.<domain>.conf plus any CA-bundle PEM) to the aggregate domains
+// Secret. It is the per-backend fault-isolation budget: a backend whose
+// rendered output crosses it is skipped and warned like a missing bind Secret,
+// so one oversized backend — an unbounded filter/extraOptions blob, or a
+// CRD-bypass CR that ignored the schema length limits — can never push the
+// aggregate past the ~1 MB apiserver Secret limit and wedge the entire Keystone
+// reconcile (Config/Database/Deployment/Bootstrap all run after this step).
+// 256 KB is far above any legitimate per-domain config yet well under the
+// apiserver limit.
+const maxRenderedDomainConfBytes = 256 * 1024
+
 // domainConfFileName returns the per-domain config file name inside the
 // domains Secret. Keystone's domain-specific-drivers scanner derives the
 // domain from the keystone.<domain>.conf filename, so this MUST follow that
@@ -215,6 +227,23 @@ func (r *KeystoneReconciler) reconcileIdentityBackends(ctx context.Context, keys
 			}
 			return "", fmt.Errorf("rendering domain config for backend %s: %w", backend.Name, err)
 		}
+
+		// Per-backend size budget: an oversized backend is a per-backend fault,
+		// isolated exactly like a missing bind Secret or a control-char value.
+		// This runs before the config.CreateImmutableSecret aggregation so a
+		// single oversized backend can never bloat the aggregate past the
+		// apiserver limit — which would fail the Secret write permanently and
+		// short-circuit the whole Keystone pipeline (this is otherwise the one
+		// place a single backend CR is not fault-isolated).
+		if size := len(conf) + len(caPEM); size > maxRenderedDomainConfBytes {
+			msg := fmt.Sprintf("Skipping identity backend %s: rendered config is %d bytes, exceeding the %d-byte per-domain budget",
+				backend.Name, size, maxRenderedDomainConfBytes)
+			logger.Info(msg)
+			r.Recorder.Event(keystone, corev1.EventTypeWarning, "IdentityBackendSkipped", msg)
+			pending = append(pending, fmt.Sprintf("%s (rendered config too large: %d bytes)", backend.Name, size))
+			continue
+		}
+
 		data[domainConfFileName(backend.Spec.Domain.Name)] = conf
 		if caPEM != nil {
 			data[domainCAFileName(backend.Spec.Domain.Name)] = caPEM
@@ -273,6 +302,16 @@ func (r *KeystoneReconciler) renderDomainConf(ctx context.Context, namespace str
 	if err != nil {
 		return nil, nil, err
 	}
+	// Right-trim a trailing CR/LF from the Secret-sourced bind credentials. A
+	// trailing newline is a common tooling artifact (`printf 'pw\n'`,
+	// --from-file of an editor-saved file, some base64 pipelines) and is
+	// semantically not part of the credential. Without this, the control-char
+	// backstop below would misclassify it as an INI-injection attempt and skip
+	// the backend on every pass, silently breaking LDAP login. Only trailing
+	// CR/LF is stripped: an interior newline (the actual injection vector) is
+	// left intact so it still trips the guard.
+	bindUser = strings.TrimRight(bindUser, "\r\n")
+	bindPassword = strings.TrimRight(bindPassword, "\r\n")
 
 	ldap := map[string]string{
 		"url":          l.URL,

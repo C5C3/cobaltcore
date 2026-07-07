@@ -85,6 +85,13 @@ type KeystoneIdentityBackendSpec struct {
 	// readOnly is true — the write-enabling user_allow_*/group_allow_* options
 	// are rejected by the validating webhook so the escape hatch cannot
 	// silently contradict the typed spec.
+	//
+	// MaxProperties and the per-entry key/value length bound the aggregate
+	// rendered config at admission (defense-in-depth alongside the renderer's
+	// per-domain size budget) so this free-form map cannot be used to bloat the
+	// shared domains Secret past the apiserver limit.
+	// +kubebuilder:validation:MaxProperties=32
+	// +kubebuilder:validation:XValidation:rule="self.all(k, size(k) <= 256 && size(self[k]) <= 1024)",message="each extraOptions key must be <=256 characters and each value <=1024 characters"
 	// +optional
 	ExtraOptions map[string]string `json:"extraOptions,omitempty"`
 }
@@ -163,6 +170,7 @@ type DomainSpec struct {
 	DeletionPolicy DomainDeletionPolicy `json:"deletionPolicy,omitempty"`
 
 	// Description is projected onto the Keystone domain in Manage mode.
+	// +kubebuilder:validation:MaxLength=1024
 	// +optional
 	Description string `json:"description,omitempty"`
 }
@@ -173,6 +181,7 @@ type DomainSpec struct {
 type LDAPBackendSpec struct {
 	// URL is the LDAP server URL (ldap:// or ldaps://).
 	// +kubebuilder:validation:Pattern=`^ldaps?://`
+	// +kubebuilder:validation:MaxLength=512
 	URL string `json:"url"`
 
 	// BindCredentialsSecretRef references the Secret holding the bind
@@ -183,6 +192,7 @@ type LDAPBackendSpec struct {
 
 	// Suffix is the LDAP suffix (base DN), e.g. "dc=example,dc=com".
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=512
 	Suffix string `json:"suffix"`
 
 	// Users describes the user tree layout and attribute mapping.
@@ -218,26 +228,32 @@ type LDAPBackendSpec struct {
 type LDAPUserSpec struct {
 	// TreeDN is the search base for users, e.g. "ou=people,dc=example,dc=com".
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=512
 	TreeDN string `json:"treeDN"`
 
 	// Filter is an additional LDAP filter applied to user searches.
+	// +kubebuilder:validation:MaxLength=1024
 	// +optional
 	Filter string `json:"filter,omitempty"`
 
 	// ObjectClass is the LDAP objectClass for users (keystone default:
 	// inetOrgPerson).
+	// +kubebuilder:validation:MaxLength=256
 	// +optional
 	ObjectClass string `json:"objectClass,omitempty"`
 
 	// IDAttribute maps the keystone user ID (keystone default: cn).
+	// +kubebuilder:validation:MaxLength=256
 	// +optional
 	IDAttribute string `json:"idAttribute,omitempty"`
 
 	// NameAttribute maps the keystone user name (keystone default: sn).
+	// +kubebuilder:validation:MaxLength=256
 	// +optional
 	NameAttribute string `json:"nameAttribute,omitempty"`
 
 	// MailAttribute maps the keystone user email (keystone default: mail).
+	// +kubebuilder:validation:MaxLength=256
 	// +optional
 	MailAttribute string `json:"mailAttribute,omitempty"`
 }
@@ -246,26 +262,32 @@ type LDAPUserSpec struct {
 type LDAPGroupSpec struct {
 	// TreeDN is the search base for groups.
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=512
 	TreeDN string `json:"treeDN"`
 
 	// Filter is an additional LDAP filter applied to group searches.
+	// +kubebuilder:validation:MaxLength=1024
 	// +optional
 	Filter string `json:"filter,omitempty"`
 
 	// ObjectClass is the LDAP objectClass for groups (keystone default:
 	// groupOfNames).
+	// +kubebuilder:validation:MaxLength=256
 	// +optional
 	ObjectClass string `json:"objectClass,omitempty"`
 
 	// IDAttribute maps the keystone group ID (keystone default: cn).
+	// +kubebuilder:validation:MaxLength=256
 	// +optional
 	IDAttribute string `json:"idAttribute,omitempty"`
 
 	// NameAttribute maps the keystone group name (keystone default: ou).
+	// +kubebuilder:validation:MaxLength=256
 	// +optional
 	NameAttribute string `json:"nameAttribute,omitempty"`
 
 	// MemberAttribute maps group membership (keystone default: member).
+	// +kubebuilder:validation:MaxLength=256
 	// +optional
 	MemberAttribute string `json:"memberAttribute,omitempty"`
 }
