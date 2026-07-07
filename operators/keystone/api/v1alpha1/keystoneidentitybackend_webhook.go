@@ -101,6 +101,8 @@ func (w *KeystoneIdentityBackendWebhook) ValidateDelete(_ context.Context, _ *Ke
 //     group_allow_* options when readOnly is true, because the projection
 //     forces them to false and an extraOptions override would contradict the
 //     read-only contract.
+//
+//nolint:gosec // G101 false positive: [ldap] option names and spec field paths, not credentials.
 var ldapExtraOptionsDenylist = map[string]string{
 	// Rendered from typed fields.
 	"url":                    "spec.ldap.url",

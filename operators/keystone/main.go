@@ -62,6 +62,19 @@ func main() {
 			}).SetupWithManager(mgr); err != nil {
 				return err
 			}
+			// The dedicated identity-backend controller runs in the same
+			// manager (a second reconciler, not a second binary). It MUST be
+			// registered after KeystoneReconciler: that reconciler's
+			// SetupWithManager is the single registration site for the
+			// KeystoneIdentityBackend field indexes both controllers use.
+			if err := (&controller.KeystoneIdentityBackendReconciler{
+				Client:                  mgr.GetClient(),
+				Scheme:                  mgr.GetScheme(),
+				Recorder:                mgr.GetEventRecorderFor("keystoneidentitybackend-controller"), //nolint:staticcheck // SA1019: reconciler consumes record.EventRecorder (old events API); GetEventRecorder returns the incompatible events/v1 type.
+				MaxConcurrentReconciles: maxConcurrentReconciles,
+			}).SetupWithManager(mgr); err != nil {
+				return err
+			}
 			if webhooks {
 				// DECISION: the webhook reads through mgr.GetAPIReader() (direct,
 				// uncached) rather than mgr.GetClient(). The PriorityClass existence

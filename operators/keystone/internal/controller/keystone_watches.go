@@ -84,6 +84,35 @@ func clusterSecretStoreToKeystoneMapper(c client.Reader) handler.MapFunc {
 		func() client.ObjectList { return &keystonev1alpha1.KeystoneList{} })
 }
 
+// keystoneToIdentityBackendsMapper returns a MapFunc that fans a Keystone
+// event out to every KeystoneIdentityBackend attached to it, resolved via the
+// IdentityBackendKeystoneRefIndexKey field indexer. Registered WITHOUT a
+// generation predicate: Keystone status flips (KeystoneAPIReady flipping
+// True, the projection landing) are exactly the transitions the backend
+// controller's DomainReady / ConfigProjected gates wait on. On a List error
+// the mapper logs and returns nil per the handler.MapFunc contract, matching
+// the sibling mappers in this file.
+func keystoneToIdentityBackendsMapper(c client.Reader) handler.MapFunc {
+	return func(ctx context.Context, obj client.Object) []reconcile.Request {
+		var backends keystonev1alpha1.KeystoneIdentityBackendList
+		if err := c.List(
+			ctx, &backends,
+			client.InNamespace(obj.GetNamespace()),
+			client.MatchingFields{IdentityBackendKeystoneRefIndexKey: obj.GetName()},
+		); err != nil {
+			log.FromContext(ctx).Error(err, "listing KeystoneIdentityBackends for Keystone watch")
+			return nil
+		}
+		requests := make([]reconcile.Request, 0, len(backends.Items))
+		for i := range backends.Items {
+			requests = append(requests, reconcile.Request{
+				NamespacedName: client.ObjectKeyFromObject(&backends.Items[i]),
+			})
+		}
+		return requests
+	}
+}
+
 // pushSecretToKeystoneMapper returns a MapFunc that maps PushSecret events to
 // reconcile requests for the Keystone CR that owns the event's backup
 // PushSecret by name. The mapper performs a namespace-scoped Keystone List

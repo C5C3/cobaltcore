@@ -148,7 +148,11 @@ func (c *httpClient) authenticate(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("authenticating against %s: %w", c.endpoint, err)
 	}
-	defer drainAndClose(resp.Body)
+	defer func() {
+		// Drain before closing so the transport can reuse the connection.
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+	}()
 
 	if resp.StatusCode == http.StatusUnauthorized {
 		return "", fmt.Errorf("%w: authenticating user %q", ErrUnauthorized, c.creds.Username)
@@ -164,9 +168,11 @@ func (c *httpClient) authenticate(ctx context.Context) (string, error) {
 	return token, nil
 }
 
-// do issues an authenticated request and maps the error-class status codes to
-// the sentinel errors. Callers own decoding of successful responses.
-func (c *httpClient) do(ctx context.Context, method, path string, body any) (*http.Response, error) {
+// do issues an authenticated request, maps the error-class status codes to
+// the sentinel errors, and returns the fully-read response body. Reading (and
+// closing) the body here keeps the connection reusable and centralizes the
+// lifecycle so no caller can leak it.
+func (c *httpClient) do(ctx context.Context, method, path string, body any) ([]byte, error) {
 	token, err := c.authenticate(ctx)
 	if err != nil {
 		return nil, err
@@ -194,40 +200,39 @@ func (c *httpClient) do(ctx context.Context, method, path string, body any) (*ht
 	if err != nil {
 		return nil, fmt.Errorf("%s %s: %w", method, path, err)
 	}
+	defer func() { _ = resp.Body.Close() }()
+	payload, readErr := io.ReadAll(resp.Body)
 
 	switch resp.StatusCode {
 	case http.StatusNotFound:
-		drainAndClose(resp.Body)
 		return nil, fmt.Errorf("%w: %s %s", ErrNotFound, method, path)
 	case http.StatusConflict:
-		drainAndClose(resp.Body)
 		return nil, fmt.Errorf("%w: %s %s", ErrConflict, method, path)
 	case http.StatusUnauthorized:
-		drainAndClose(resp.Body)
 		return nil, fmt.Errorf("%w: %s %s", ErrUnauthorized, method, path)
 	case http.StatusForbidden:
-		drainAndClose(resp.Body)
 		return nil, fmt.Errorf("%w: %s %s", ErrForbidden, method, path)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		drainAndClose(resp.Body)
 		return nil, fmt.Errorf("%s %s: unexpected HTTP %d", method, path, resp.StatusCode)
 	}
-	return resp, nil
+	if readErr != nil {
+		return nil, fmt.Errorf("reading %s %s response: %w", method, path, readErr)
+	}
+	return payload, nil
 }
 
 // GetDomainByName implements Client via GET /v3/domains?name=<name>.
 func (c *httpClient) GetDomainByName(ctx context.Context, name string) (*Domain, error) {
-	resp, err := c.do(ctx, http.MethodGet, "/domains?name="+url.QueryEscape(name), nil)
+	payload, err := c.do(ctx, http.MethodGet, "/domains?name="+url.QueryEscape(name), nil)
 	if err != nil {
 		return nil, err
 	}
-	defer drainAndClose(resp.Body)
 
 	var out struct {
 		Domains []Domain `json:"domains"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := json.Unmarshal(payload, &out); err != nil {
 		return nil, fmt.Errorf("decoding domain list: %w", err)
 	}
 	if len(out.Domains) == 0 {
@@ -238,16 +243,15 @@ func (c *httpClient) GetDomainByName(ctx context.Context, name string) (*Domain,
 
 // CreateDomain implements Client via POST /v3/domains.
 func (c *httpClient) CreateDomain(ctx context.Context, domain Domain) (*Domain, error) {
-	resp, err := c.do(ctx, http.MethodPost, "/domains", map[string]Domain{"domain": domain})
+	payload, err := c.do(ctx, http.MethodPost, "/domains", map[string]Domain{"domain": domain})
 	if err != nil {
 		return nil, err
 	}
-	defer drainAndClose(resp.Body)
 
 	var out struct {
 		Domain Domain `json:"domain"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := json.Unmarshal(payload, &out); err != nil {
 		return nil, fmt.Errorf("decoding created domain: %w", err)
 	}
 	return &out.Domain, nil
@@ -263,27 +267,12 @@ func (c *httpClient) UpdateDomain(ctx context.Context, id string, enabled *bool,
 	if description != nil {
 		patch["description"] = *description
 	}
-	resp, err := c.do(ctx, http.MethodPatch, "/domains/"+url.PathEscape(id), map[string]any{"domain": patch})
-	if err != nil {
-		return err
-	}
-	drainAndClose(resp.Body)
-	return nil
+	_, err := c.do(ctx, http.MethodPatch, "/domains/"+url.PathEscape(id), map[string]any{"domain": patch})
+	return err
 }
 
 // DeleteDomain implements Client via DELETE /v3/domains/<id>.
 func (c *httpClient) DeleteDomain(ctx context.Context, id string) error {
-	resp, err := c.do(ctx, http.MethodDelete, "/domains/"+url.PathEscape(id), nil)
-	if err != nil {
-		return err
-	}
-	drainAndClose(resp.Body)
-	return nil
-}
-
-// drainAndClose drains the response body before closing so the underlying
-// HTTP connection can be reused by the transport.
-func drainAndClose(body io.ReadCloser) {
-	_, _ = io.Copy(io.Discard, body)
-	_ = body.Close()
+	_, err := c.do(ctx, http.MethodDelete, "/domains/"+url.PathEscape(id), nil)
+	return err
 }

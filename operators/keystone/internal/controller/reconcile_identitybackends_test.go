@@ -99,7 +99,7 @@ func TestReconcileIdentityBackends_ProjectsReadyBackend(t *testing.T) {
 	g.Expect(name).To(HavePrefix("test-keystone-domains-"))
 
 	var secret corev1.Secret
-	g.Expect(r.Client.Get(ctx, client.ObjectKey{Namespace: "default", Name: name}, &secret)).To(Succeed())
+	g.Expect(r.Get(ctx, client.ObjectKey{Namespace: "default", Name: name}, &secret)).To(Succeed())
 	g.Expect(secret.Data).To(HaveKey("keystone.corp.conf"))
 	conf := string(secret.Data["keystone.corp.conf"])
 	g.Expect(conf).To(ContainSubstring("[identity]\ndriver = ldap"))
@@ -152,7 +152,7 @@ func TestReconcileIdentityBackends_RendersOptionalFieldsAndExtraOptions(t *testi
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var secret corev1.Secret
-	g.Expect(r.Client.Get(ctx, client.ObjectKey{Namespace: "default", Name: name}, &secret)).To(Succeed())
+	g.Expect(r.Get(ctx, client.ObjectKey{Namespace: "default", Name: name}, &secret)).To(Succeed())
 	conf := string(secret.Data["keystone.corp.conf"])
 	g.Expect(conf).To(ContainSubstring("user_objectclass = inetOrgPerson"))
 	g.Expect(conf).To(ContainSubstring("user_id_attribute = uid"))
@@ -224,7 +224,7 @@ func TestReconcileIdentityBackends_MissingBindSecretSkipsAndWarns(t *testing.T) 
 	g.Expect(name).NotTo(BeEmpty(), "healthy siblings keep being projected")
 
 	var secret corev1.Secret
-	g.Expect(r.Client.Get(ctx, client.ObjectKey{Namespace: "default", Name: name}, &secret)).To(Succeed())
+	g.Expect(r.Get(ctx, client.ObjectKey{Namespace: "default", Name: name}, &secret)).To(Succeed())
 	g.Expect(secret.Data).To(HaveKey("keystone.corp.conf"))
 	g.Expect(secret.Data).NotTo(HaveKey("keystone.brokendomain.conf"))
 
@@ -354,7 +354,7 @@ func TestPruneStaleDomainsSecrets_FullCleanupWhenNothingProjected(t *testing.T) 
 	g.Expect(r.pruneStaleDomainsSecrets(ctx, ks, "")).To(Succeed())
 
 	var secret corev1.Secret
-	err = r.Client.Get(ctx, client.ObjectKey{Namespace: "default", Name: name}, &secret)
+	err = r.Get(ctx, client.ObjectKey{Namespace: "default", Name: name}, &secret)
 	g.Expect(err).To(HaveOccurred(), "the stale domains Secret must be pruned when nothing is projected")
 }
 
@@ -370,7 +370,7 @@ func TestReconcileConfig_DomainFlagsFollowProjectionState(t *testing.T) {
 	nameOff, err := r.reconcileConfig(ctx, ks, false)
 	g.Expect(err).NotTo(HaveOccurred())
 	var cmOff corev1.ConfigMap
-	g.Expect(r.Client.Get(ctx, client.ObjectKey{Namespace: "default", Name: nameOff}, &cmOff)).To(Succeed())
+	g.Expect(r.Get(ctx, client.ObjectKey{Namespace: "default", Name: nameOff}, &cmOff)).To(Succeed())
 	g.Expect(cmOff.Data["keystone.conf"]).NotTo(ContainSubstring("domain_specific_drivers_enabled"))
 
 	// Projection turned on at the same generation: the cache must miss and
@@ -379,7 +379,7 @@ func TestReconcileConfig_DomainFlagsFollowProjectionState(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(nameOn).NotTo(Equal(nameOff))
 	var cmOn corev1.ConfigMap
-	g.Expect(r.Client.Get(ctx, client.ObjectKey{Namespace: "default", Name: nameOn}, &cmOn)).To(Succeed())
+	g.Expect(r.Get(ctx, client.ObjectKey{Namespace: "default", Name: nameOn}, &cmOn)).To(Succeed())
 	g.Expect(cmOn.Data["keystone.conf"]).To(ContainSubstring("domain_specific_drivers_enabled = true"))
 	g.Expect(cmOn.Data["keystone.conf"]).To(ContainSubstring("domain_config_dir = /etc/keystone/domains"))
 
@@ -423,7 +423,7 @@ func TestReconcile_PendingIdentityBackendDoesNotBlockDeployment(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var updated keystonev1alpha1.Keystone
-	g.Expect(r.Client.Get(context.Background(), client.ObjectKeyFromObject(ks), &updated)).To(Succeed())
+	g.Expect(r.Get(context.Background(), client.ObjectKeyFromObject(ks), &updated)).To(Succeed())
 	ib := commonconditions.GetCondition(updated.Status.Conditions, conditionTypeIdentityBackendsReady)
 	g.Expect(ib).NotTo(BeNil())
 	g.Expect(ib.Status).To(Equal(metav1.ConditionFalse))
