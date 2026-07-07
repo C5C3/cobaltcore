@@ -155,6 +155,7 @@ spec:
   - try:
     - script:
         timeout: 120s
+        shell: bash
         content: |
           set -euo pipefail
           ADMIN_PASSWORD_B64=$(kubectl get secret keystone-admin -n $NAMESPACE -o jsonpath='{.data.password}') || {
@@ -258,6 +259,7 @@ spec:
     # admin password auth still works.
     - script:
         timeout: 120s
+        shell: bash
         content: |
           set -euo pipefail
           CM=$(kubectl get deployment keystone-ldap -n $NAMESPACE \
