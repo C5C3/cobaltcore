@@ -144,21 +144,9 @@ Django `SECRET_KEY` defaults to the kind-only `horizon-secret-key` Secret
 joins the chain (after `KeystoneReady`) and `status.services` gains a second
 entry.
 
-::: tip Dynamic DB credentials (#439)
-A managed-mode ControlPlane defaults to engine-issued (Dynamic) Keystone DB
-credentials from the OpenBao database engine, so its per-tenant engine role must
-be onboarded once its MariaDB is Ready:
-
-```bash
-BAO_TOKEN=... \
-  deploy/openbao/bootstrap/setup-database-tenant.sh openstack controlplane
-```
-
-`make deploy-infra` with `WITH_CONTROLPLANE_CR=true` runs this for the bundled
-ControlPlane automatically; a ControlPlane you apply by hand needs the one-liner
-above (or set `spec.infrastructure.database.credentialsMode: Static` to stay on a
-static credential). See [Migrate Keystone DB to Dynamic Credentials](/guides/migrate-keystone-db-to-dynamic-credentials).
-:::
+Applying the CR is not the end of the manual work: a hand-applied ControlPlane
+needs the one-time OpenBao onboarding in Step 4 before the chain can progress
+past its database credentials.
 
 <details>
 <summary>Equivalent fully-expanded form (what the webhook defaults to)</summary>
@@ -223,14 +211,60 @@ spec:
 
 </details>
 
-## Step 4 — Watch the chain reconcile
+## Step 4 — Onboard the OpenBao database-engine tenant
 
-The aggregate `Ready` flips to `True` once all six sub-conditions are met, in
+In managed mode the ControlPlane defaults to engine-issued (**Dynamic**) Keystone
+DB credentials: ESO draws short-lived MySQL users from the OpenBao
+database engine at `database/mariadb/creds/keystone-<namespace>`. The
+c5c3-operator only **reads** from that path — the engine connection and the
+per-tenant role are provisioned out-of-band, once per ControlPlane, by
+`deploy/openbao/bootstrap/setup-database-tenant.sh`.
+
+Run it after the `kubectl apply` from Step 3, as soon as the projected MariaDB
+is Ready (the script configures the engine's database connection, so it needs a
+reachable database):
+
+```bash
+kubectl wait mariadb/openstack-db -n openstack --for=condition=Ready --timeout=10m
+
+export BAO_TOKEN=$(kubectl get secret openbao-init-keys -n openbao-system \
+  -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token')
+deploy/openbao/bootstrap/setup-database-tenant.sh openstack controlplane
+unset BAO_TOKEN
+```
+
+The two arguments are the ControlPlane **namespace** and **name** (`openstack
+controlplane` here; adjust the second one if you renamed the CR via
+`CONTROLPLANE_NAME` in Step 2). `BAO_TOKEN` is read from the `openbao-init-keys`
+Secret where deploy-infra stores the root token — kind-only plumbing; against a
+production OpenBao use a token with write access to `database/mariadb/*`. The
+script is idempotent: re-running it refreshes the connection and role in place.
+
+Skip this step only when:
+
+- Step 2 ran with `WITH_CONTROLPLANE_CR=true` — deploy-infra then onboards the
+  bundled ControlPlane automatically, or
+- the ControlPlane opts out of Dynamic credentials with
+  `spec.infrastructure.database.credentialsMode: Static` (see
+  [Migrate Keystone DB to Dynamic Credentials](/guides/migrate-keystone-db-to-dynamic-credentials)).
+
+::: warning If you skip it
+The reconcile chain stalls before any Keystone or Horizon child is created: the
+ControlPlane reports `DBCredentialsReady=False` (reason
+`WaitingForDBCredentialSecret`), the `controlplane-keystone-db-credentials`
+ExternalSecret sits in `SecretSyncedError`, and the external-secrets controller
+logs `unknown role: keystone-<namespace>`. Nothing is lost — run the onboarding
+script and ESO syncs the credential on its next retry.
+:::
+
+## Step 5 — Watch the chain reconcile
+
+The aggregate `Ready` flips to `True` once all seven sub-conditions are met, in
 dependency order (`HorizonReady` gates on `KeystoneReady`; the K-ORC branch runs
 alongside it):
 
 ```
-InfrastructureReady → KeystoneReady → HorizonReady → KORCReady → AdminCredentialReady → CatalogReady
+InfrastructureReady → DBCredentialsReady → KeystoneReady → HorizonReady → KORCReady → AdminCredentialReady → CatalogReady
 ```
 
 ```bash
@@ -245,7 +279,7 @@ kubectl wait controlplane/controlplane -n openstack \
   --for=condition=Ready --timeout=15m
 ```
 
-## Step 5 — Verify
+## Step 6 — Verify
 
 The ControlPlane exposes the projected Keystone through the shared Envoy Gateway
 at `https://keystone.127-0-0-1.nip.io:8443/v3` — the same path as the per-service
