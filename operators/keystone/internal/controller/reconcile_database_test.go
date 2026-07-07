@@ -107,7 +107,7 @@ func newDBTestReconciler(s *runtime.Scheme, objs ...client.Object) *KeystoneReco
 // completedDBSyncJob returns a db_sync Job that matches what buildDBSyncJob produces
 // for the given keystone and is marked as complete with the correct pod-spec hash.
 func completedDBSyncJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
-	desired := buildDBSyncJob(ks, "keystone-config-abc123")
+	desired := buildDBSyncJob(ks, "keystone-config-abc123", "")
 	now := metav1.Now()
 	j := desired.DeepCopy()
 	j.Annotations = map[string]string{
@@ -126,7 +126,7 @@ func completedDBSyncJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
 
 // failedDBSyncJob returns a db_sync Job that is marked as permanently failed.
 func failedDBSyncJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
-	desired := buildDBSyncJob(ks, "keystone-config-abc123")
+	desired := buildDBSyncJob(ks, "keystone-config-abc123", "")
 	j := desired.DeepCopy()
 	j.Annotations = map[string]string{
 		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template),
@@ -149,7 +149,7 @@ func failedDBSyncJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
 // recordDBJobTerminalState can dedupe the per-phase metric emission across
 // reconciles.
 func completedSchemaCheckJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
-	desired := buildSchemaCheckJob(ks, "keystone-config-abc123")
+	desired := buildSchemaCheckJob(ks, "keystone-config-abc123", "")
 	now := metav1.Now()
 	j := desired.DeepCopy()
 	j.UID = types.UID(ks.Name + "-schema-check-complete-uid")
@@ -171,7 +171,7 @@ func completedSchemaCheckJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
 // permanently failed. The UID is set so recordDBJobTerminalState
 // can dedupe the per-phase metric emission across reconciles.
 func failedSchemaCheckJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
-	desired := buildSchemaCheckJob(ks, "keystone-config-abc123")
+	desired := buildSchemaCheckJob(ks, "keystone-config-abc123", "")
 	j := desired.DeepCopy()
 	j.UID = types.UID(ks.Name + "-schema-check-failed-uid")
 	j.Annotations = map[string]string{
@@ -190,7 +190,7 @@ func failedSchemaCheckJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
 // runningSchemaCheckJob returns a schema-check Job that exists but has not
 // completed yet.
 func runningSchemaCheckJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
-	desired := buildSchemaCheckJob(ks, "keystone-config-abc123")
+	desired := buildSchemaCheckJob(ks, "keystone-config-abc123", "")
 	j := desired.DeepCopy()
 	j.Annotations = map[string]string{
 		job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template),
@@ -282,7 +282,7 @@ func TestReconcileDatabase_Managed_AllReady_DatabaseSynced(t *testing.T) {
 		completedSchemaCheckJob(ks),
 	)
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(BeZero())
 
@@ -312,7 +312,7 @@ func TestReconcileDatabase_DynamicManaged_CreatesDatabaseButNoUserGrant(t *testi
 		completedSchemaCheckJob(ks),
 	)
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(BeZero())
 
@@ -350,7 +350,7 @@ func TestReconcileDatabase_DynamicManaged_PreexistingUserGrantSurvive(t *testing
 		completedSchemaCheckJob(ks),
 	)
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(BeZero())
 
@@ -369,7 +369,7 @@ func TestReconcileDatabase_Managed_DatabaseNotReady_Requeues(t *testing.T) {
 	db := buildDatabase(ks)
 	r := newDBTestReconciler(s, ks, readyMariaDBCluster(ks), db)
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(RequeueDatabaseWait))
 
@@ -394,7 +394,7 @@ func TestReconcileDatabase_Managed_UserNotReady_Requeues(t *testing.T) {
 		buildUser(ks), // exists but not ready
 	)
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(RequeueDatabaseWait))
 
@@ -415,7 +415,7 @@ func TestReconcileDatabase_Managed_ClusterMissing_Requeues(t *testing.T) {
 	// DatabaseReady=False rather than proceeding to create the Database CR.
 	r := newDBTestReconciler(s, ks)
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(RequeueDatabaseWait))
 
@@ -455,7 +455,7 @@ func TestReconcileDatabase_Managed_ClusterNotReady_FlipsDatabaseReadyFalse(t *te
 		completedDBSyncJob(ks),
 	)
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(RequeueDatabaseWait))
 
@@ -477,7 +477,7 @@ func TestReconcileDatabase_Brownfield_DBSyncComplete_DatabaseSynced(t *testing.T
 
 	r := newDBTestReconciler(s, ks, completedDBSyncJob(ks), completedSchemaCheckJob(ks))
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(BeZero())
 
@@ -502,13 +502,13 @@ func TestReconcileDatabase_DBSyncRunning_Requeues(t *testing.T) {
 	ks := brownfieldKeystone()
 
 	// Job exists but is not completed (still running).
-	syncJob := buildDBSyncJob(ks, "keystone-config-abc123")
+	syncJob := buildDBSyncJob(ks, "keystone-config-abc123", "")
 	syncJob.Annotations = map[string]string{
 		job.PodSpecHashAnnotation: job.PodSpecHash(&syncJob.Spec.Template),
 	}
 	r := newDBTestReconciler(s, ks, syncJob)
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(RequeueDatabaseWait))
 
@@ -527,7 +527,7 @@ func TestReconcileDatabase_DBSyncFailed_ReturnsError(t *testing.T) {
 
 	r := newDBTestReconciler(s, ks, failedDBSyncJob(ks))
 
-	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("db_sync"))
 
@@ -547,7 +547,7 @@ func TestReconcileDatabase_Brownfield_SkipsMariaDBCRs_CreatesDBSyncJob(t *testin
 	// No pre-existing Job — should create one and requeue.
 	r := newDBTestReconciler(s, ks)
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(RequeueDatabaseWait))
 
@@ -599,7 +599,7 @@ func TestBuildDBSyncJob_SecurityContext(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := brownfieldKeystone()
 
-	job := buildDBSyncJob(ks, "keystone-config-abc123")
+	job := buildDBSyncJob(ks, "keystone-config-abc123", "")
 
 	container := findContainerByName(job.Spec.Template.Spec.Containers, "db-sync")
 	expectRestrictedSecurityContext(g, container)
@@ -619,11 +619,11 @@ func TestBuildDBJobVariants_DBConnectionEnv(t *testing.T) {
 		job           *batchv1.Job
 		containerName string
 	}{
-		{"db-sync", buildDBSyncJob(ks, "keystone-config-abc123"), "db-sync"},
-		{"expand", buildExpandJob(ks, "keystone-config-abc123", ks.Spec.Image.Tag), "db-expand"},
-		{"migrate", buildMigrateJob(ks, "keystone-config-abc123", ks.Spec.Image.Tag), "db-migrate"},
-		{"contract", buildContractJob(ks, "keystone-config-abc123", ks.Spec.Image.Tag), "db-contract"},
-		{"schema-check", buildSchemaCheckJob(ks, "keystone-config-abc123"), "schema-check"},
+		{"db-sync", buildDBSyncJob(ks, "keystone-config-abc123", ""), "db-sync"},
+		{"expand", buildExpandJob(ks, "keystone-config-abc123", "", ks.Spec.Image.Tag), "db-expand"},
+		{"migrate", buildMigrateJob(ks, "keystone-config-abc123", "", ks.Spec.Image.Tag), "db-migrate"},
+		{"contract", buildContractJob(ks, "keystone-config-abc123", "", ks.Spec.Image.Tag), "db-contract"},
+		{"schema-check", buildSchemaCheckJob(ks, "keystone-config-abc123", ""), "schema-check"},
 	}
 
 	for _, tc := range cases {
@@ -649,7 +649,7 @@ func TestReconcileDatabase_StaleDBSyncJob_Recreated(t *testing.T) {
 
 	r := newDBTestReconciler(s, ks, staleJob)
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(RequeueDatabaseWait))
 
@@ -660,7 +660,7 @@ func TestReconcileDatabase_StaleDBSyncJob_Recreated(t *testing.T) {
 		Namespace: "default",
 	}, &newJob)).To(Succeed())
 
-	desired := buildDBSyncJob(ks, "keystone-config-abc123")
+	desired := buildDBSyncJob(ks, "keystone-config-abc123", "")
 	expectedHash := job.PodSpecHash(&desired.Spec.Template)
 	g.Expect(newJob.Annotations[job.PodSpecHashAnnotation]).To(Equal(expectedHash))
 }
@@ -671,7 +671,7 @@ func TestReconcileDatabase_StaleDBSyncJob_Recreated(t *testing.T) {
 func TestBuildUpgradeJobs(t *testing.T) {
 	cases := []struct {
 		name          string
-		buildFunc     func(*keystonev1alpha1.Keystone, string, string) *batchv1.Job
+		buildFunc     func(*keystonev1alpha1.Keystone, string, string, string) *batchv1.Job
 		expectedName  string
 		containerName string
 		expectedFlag  string
@@ -685,7 +685,7 @@ func TestBuildUpgradeJobs(t *testing.T) {
 		t.Run(tc.name+"/JobName", func(t *testing.T) {
 			g := NewGomegaWithT(t)
 			ks := brownfieldKeystone()
-			job := tc.buildFunc(ks, "keystone-config-abc123", "2024.1")
+			job := tc.buildFunc(ks, "keystone-config-abc123", "", "2024.1")
 
 			g.Expect(job.Name).To(Equal(tc.expectedName))
 			g.Expect(job.Namespace).To(Equal(ks.Namespace))
@@ -695,7 +695,7 @@ func TestBuildUpgradeJobs(t *testing.T) {
 			g := NewGomegaWithT(t)
 			ks := brownfieldKeystone()
 			imageTag := "2024.1"
-			job := tc.buildFunc(ks, "keystone-config-abc123", imageTag)
+			job := tc.buildFunc(ks, "keystone-config-abc123", "", imageTag)
 
 			container := findContainerByName(job.Spec.Template.Spec.Containers, tc.containerName)
 			g.Expect(container).NotTo(BeNil())
@@ -707,7 +707,7 @@ func TestBuildUpgradeJobs(t *testing.T) {
 		t.Run(tc.name+"/Command", func(t *testing.T) {
 			g := NewGomegaWithT(t)
 			ks := brownfieldKeystone()
-			job := tc.buildFunc(ks, "keystone-config-abc123", "2024.1")
+			job := tc.buildFunc(ks, "keystone-config-abc123", "", "2024.1")
 
 			container := findContainerByName(job.Spec.Template.Spec.Containers, tc.containerName)
 			g.Expect(container).NotTo(BeNil())
@@ -719,7 +719,7 @@ func TestBuildUpgradeJobs(t *testing.T) {
 		t.Run(tc.name+"/SecurityContext", func(t *testing.T) {
 			g := NewGomegaWithT(t)
 			ks := brownfieldKeystone()
-			job := tc.buildFunc(ks, "keystone-config-abc123", "2024.1")
+			job := tc.buildFunc(ks, "keystone-config-abc123", "", "2024.1")
 
 			container := findContainerByName(job.Spec.Template.Spec.Containers, tc.containerName)
 			expectRestrictedSecurityContext(g, container)
@@ -729,7 +729,7 @@ func TestBuildUpgradeJobs(t *testing.T) {
 			g := NewGomegaWithT(t)
 			ks := brownfieldKeystone()
 			configMap := "keystone-config-abc123"
-			job := tc.buildFunc(ks, configMap, "2024.1")
+			job := tc.buildFunc(ks, configMap, "", "2024.1")
 
 			container := findContainerByName(job.Spec.Template.Spec.Containers, tc.containerName)
 			g.Expect(container).NotTo(BeNil())
@@ -746,7 +746,7 @@ func TestBuildUpgradeJobs(t *testing.T) {
 		t.Run(tc.name+"/BackoffLimit", func(t *testing.T) {
 			g := NewGomegaWithT(t)
 			ks := brownfieldKeystone()
-			job := tc.buildFunc(ks, "keystone-config-abc123", "2024.1")
+			job := tc.buildFunc(ks, "keystone-config-abc123", "", "2024.1")
 
 			g.Expect(job.Spec.BackoffLimit).NotTo(BeNil())
 			g.Expect(*job.Spec.BackoffLimit).To(Equal(int32(4)))
@@ -755,7 +755,7 @@ func TestBuildUpgradeJobs(t *testing.T) {
 		t.Run(tc.name+"/RestartPolicy", func(t *testing.T) {
 			g := NewGomegaWithT(t)
 			ks := brownfieldKeystone()
-			job := tc.buildFunc(ks, "keystone-config-abc123", "2024.1")
+			job := tc.buildFunc(ks, "keystone-config-abc123", "", "2024.1")
 
 			g.Expect(job.Spec.Template.Spec.RestartPolicy).To(Equal(corev1.RestartPolicyNever))
 		})
@@ -835,7 +835,7 @@ func TestInitiateUpgrade_SequentialUpgrade(t *testing.T) {
 
 	r := newDBTestReconciler(s, ks)
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result).To(Equal(ctrl.Result{Requeue: true}))
 
@@ -863,7 +863,7 @@ func TestInitiateUpgrade_SkipLevelRejected(t *testing.T) {
 
 	r := newDBTestReconciler(s, ks)
 
-	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("sequential"))
 
@@ -884,7 +884,7 @@ func TestInitiateUpgrade_DowngradeRejected(t *testing.T) {
 
 	r := newDBTestReconciler(s, ks)
 
-	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("downgrade"))
 
@@ -905,7 +905,7 @@ func TestInitiateUpgrade_InvalidVersionFormat(t *testing.T) {
 
 	r := newDBTestReconciler(s, ks)
 
-	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("parse"))
 
@@ -927,7 +927,7 @@ func TestReconcileDatabase_FreshDeploy_SetsInstalledRelease(t *testing.T) {
 
 	r := newDBTestReconciler(s, ks, completedDBSyncJob(ks), completedSchemaCheckJob(ks))
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(BeZero())
 
@@ -950,7 +950,7 @@ func TestReconcileDatabase_PatchOnly_UsesSimpleDBSync(t *testing.T) {
 	ks.Status.InstalledRelease = "2025.2"
 
 	// Build a completed db_sync job matching the patched image tag.
-	desired := buildDBSyncJob(ks, "keystone-config-abc123")
+	desired := buildDBSyncJob(ks, "keystone-config-abc123", "")
 	now := metav1.Now()
 	completedJob := desired.DeepCopy()
 	completedJob.Annotations = map[string]string{
@@ -964,7 +964,7 @@ func TestReconcileDatabase_PatchOnly_UsesSimpleDBSync(t *testing.T) {
 
 	r := newDBTestReconciler(s, ks, completedJob, completedSchemaCheckJob(ks))
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(BeZero())
 
@@ -986,7 +986,7 @@ func TestReconcileDatabase_ActiveUpgrade_DelegatesToReconcileUpgrade(t *testing.
 
 	r := newDBTestReconciler(s, ks)
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(RequeueUpgradeWait))
 
@@ -1008,7 +1008,7 @@ func TestReconcileDatabase_SameVersionWithInstalledRelease_UsesSimpleDBSync(t *t
 
 	r := newDBTestReconciler(s, ks, completedDBSyncJob(ks), completedSchemaCheckJob(ks))
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(BeZero())
 
@@ -1032,7 +1032,7 @@ func TestReconcileDatabase_Managed_ConditionMessages(t *testing.T) {
 		db := buildDatabase(ks)
 		r := newDBTestReconciler(s, ks, readyMariaDBCluster(ks), db)
 
-		_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+		_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
 		g.Expect(err).NotTo(HaveOccurred())
 
 		cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
@@ -1051,7 +1051,7 @@ func TestReconcileDatabase_Managed_ConditionMessages(t *testing.T) {
 			buildUser(ks), // exists but not ready
 		)
 
-		_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+		_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
 		g.Expect(err).NotTo(HaveOccurred())
 
 		cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
@@ -1092,7 +1092,7 @@ func TestReconcileDatabase_Managed_ConditionMessages(t *testing.T) {
 			completedSchemaCheckJob(ks),
 		)
 
-		_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+		_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
 		g.Expect(err).NotTo(HaveOccurred())
 
 		cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
@@ -1114,7 +1114,7 @@ func upgradingKeystone(phase keystonev1alpha1.UpgradePhase) *keystonev1alpha1.Ke
 }
 
 func completedUpgradeJob(ks *keystonev1alpha1.Keystone, configMapName, imageTag, phase, flag string) *batchv1.Job {
-	desired := buildUpgradeJob(ks, configMapName, imageTag, phase, flag)
+	desired := buildUpgradeJob(ks, configMapName, "", imageTag, phase, flag)
 	now := metav1.Now()
 	j := desired.DeepCopy()
 	j.UID = types.UID(ks.Name + "-db-" + phase + "-complete-uid")
@@ -1130,7 +1130,7 @@ func completedUpgradeJob(ks *keystonev1alpha1.Keystone, configMapName, imageTag,
 }
 
 func failedUpgradeJob(ks *keystonev1alpha1.Keystone, configMapName, imageTag, phase, flag string) *batchv1.Job {
-	desired := buildUpgradeJob(ks, configMapName, imageTag, phase, flag)
+	desired := buildUpgradeJob(ks, configMapName, "", imageTag, phase, flag)
 	j := desired.DeepCopy()
 	j.UID = types.UID(ks.Name + "-db-" + phase + "-failed-uid")
 	j.Annotations = map[string]string{
@@ -1152,7 +1152,7 @@ func TestReconcileExpand_NoExistingJob_CreatesJob(t *testing.T) {
 
 	r := newDBTestReconciler(s, ks)
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(RequeueUpgradeWait))
 
@@ -1179,14 +1179,14 @@ func TestReconcileExpand_JobRunning_Requeues(t *testing.T) {
 	ks := upgradingKeystone(keystonev1alpha1.UpgradePhaseExpanding)
 
 	// Create a running expand Job (exists but not complete).
-	expandJob := buildExpandJob(ks, "keystone-config-abc123", ks.Spec.Image.Tag)
+	expandJob := buildExpandJob(ks, "keystone-config-abc123", "", ks.Spec.Image.Tag)
 	expandJob.Annotations = map[string]string{
 		job.PodSpecHashAnnotation: job.PodSpecHash(&expandJob.Spec.Template),
 	}
 
 	r := newDBTestReconciler(s, ks, expandJob)
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(RequeueUpgradeWait))
 
@@ -1209,7 +1209,7 @@ func TestReconcileExpand_JobCompleted_TransitionsToMigrating(t *testing.T) {
 
 	r := newDBTestReconciler(s, ks, completed)
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result).To(Equal(ctrl.Result{Requeue: true}))
 
@@ -1233,7 +1233,7 @@ func TestReconcileExpand_JobFailed_ReturnsError(t *testing.T) {
 
 	r := newDBTestReconciler(s, ks, failed)
 
-	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).To(HaveOccurred())
 
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
@@ -1252,14 +1252,14 @@ func TestReconcileMigrate_JobRunning_Requeues(t *testing.T) {
 	ks := upgradingKeystone(keystonev1alpha1.UpgradePhaseMigrating)
 
 	// Create a running migrate Job (exists but not complete).
-	migrateJob := buildMigrateJob(ks, "keystone-config-abc123", ks.Spec.Image.Tag)
+	migrateJob := buildMigrateJob(ks, "keystone-config-abc123", "", ks.Spec.Image.Tag)
 	migrateJob.Annotations = map[string]string{
 		job.PodSpecHashAnnotation: job.PodSpecHash(&migrateJob.Spec.Template),
 	}
 
 	r := newDBTestReconciler(s, ks, migrateJob)
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(RequeueUpgradeWait))
 
@@ -1282,7 +1282,7 @@ func TestReconcileMigrate_JobCompleted_TransitionsToRollingUpdate(t *testing.T) 
 
 	r := newDBTestReconciler(s, ks, completed)
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result).To(Equal(ctrl.Result{Requeue: true}))
 
@@ -1309,7 +1309,7 @@ func TestReconcileMigrate_JobFailed_ReturnsError(t *testing.T) {
 
 	r := newDBTestReconciler(s, ks, failed)
 
-	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).To(HaveOccurred())
 
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
@@ -1329,7 +1329,7 @@ func TestReconcileRollingUpdate_PassesThrough(t *testing.T) {
 
 	r := newDBTestReconciler(s, ks)
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	// Pass-through: no requeue, empty result allows reconcileDeployment to proceed.
 	g.Expect(result).To(Equal(ctrl.Result{}))
@@ -1354,7 +1354,7 @@ func TestReconcileContract_NoExistingJob_CreatesJobAndRequeues(t *testing.T) {
 
 	r := newDBTestReconciler(s, ks)
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(RequeueUpgradeWait))
 
@@ -1384,14 +1384,14 @@ func TestReconcileContract_JobRunning_Requeues(t *testing.T) {
 	ks := upgradingKeystone(keystonev1alpha1.UpgradePhaseContracting)
 
 	// Create a running contract Job (exists but not complete).
-	contractJob := buildContractJob(ks, "keystone-config-abc123", ks.Spec.Image.Tag)
+	contractJob := buildContractJob(ks, "keystone-config-abc123", "", ks.Spec.Image.Tag)
 	contractJob.Annotations = map[string]string{
 		job.PodSpecHashAnnotation: job.PodSpecHash(&contractJob.Spec.Template),
 	}
 
 	r := newDBTestReconciler(s, ks, contractJob)
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(RequeueUpgradeWait))
 
@@ -1414,7 +1414,7 @@ func TestReconcileContract_JobCompleted_CompletesUpgrade(t *testing.T) {
 
 	r := newDBTestReconciler(s, ks, completed)
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// Upgrade complete: no requeue.
@@ -1446,7 +1446,7 @@ func TestReconcileContract_JobFailed_ReturnsError(t *testing.T) {
 
 	r := newDBTestReconciler(s, ks, failed)
 
-	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).To(HaveOccurred())
 
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
@@ -1467,7 +1467,7 @@ func TestReconcileContract_UsesNewImage(t *testing.T) {
 
 	r := newDBTestReconciler(s, ks)
 
-	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// Fetch the created Job and verify it uses the NEW image tag.
@@ -1498,7 +1498,7 @@ func TestReconcileDatabase_InterruptedExpand_Resumes(t *testing.T) {
 
 	r := newDBTestReconciler(s, ks, completed)
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result).To(Equal(ctrl.Result{Requeue: true}))
 
@@ -1539,7 +1539,7 @@ func TestReconcileDatabase_TagChangedDuringUpgrade_Blocks(t *testing.T) {
 
 	r := newDBTestReconciler(s, ks)
 
-	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("image tag changed during active upgrade"))
 	g.Expect(err.Error()).To(ContainSubstring("2026.1"))
@@ -1580,12 +1580,12 @@ func TestReconcileDatabase_RevertToInstalledRelease_AbortsDuringExpand(t *testin
 
 	// Pre-create the expand and migrate phase Jobs so the abort has something to
 	// clean up (the contract Job is never created during Expanding).
-	expandJob := buildExpandJob(ks, "keystone-config-abc123", "2026.1")
-	migrateJob := buildMigrateJob(ks, "keystone-config-abc123", "2026.1")
+	expandJob := buildExpandJob(ks, "keystone-config-abc123", "", "2026.1")
+	migrateJob := buildMigrateJob(ks, "keystone-config-abc123", "", "2026.1")
 
 	r := newDBTestReconciler(s, ks, expandJob, migrateJob)
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result).To(Equal(ctrl.Result{Requeue: true}))
 
@@ -1630,7 +1630,7 @@ func TestReconcileDatabase_RevertToInstalledRelease_AbortsFromAnyPhase(t *testin
 
 			r := newDBTestReconciler(s, ks)
 
-			result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+			result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(result).To(Equal(ctrl.Result{Requeue: true}))
 
@@ -1672,7 +1672,7 @@ func TestReconcileDatabase_AbortUpgrade_DeleteErrorRetainsState(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("simulated API server error"))
 
@@ -1691,7 +1691,7 @@ func TestBuildSchemaCheckJob_Name(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := brownfieldKeystone()
 
-	j := buildSchemaCheckJob(ks, "keystone-config-abc123")
+	j := buildSchemaCheckJob(ks, "keystone-config-abc123", "")
 
 	g.Expect(j.Name).To(Equal("test-keystone-schema-check"))
 	g.Expect(j.Namespace).To(Equal(ks.Namespace))
@@ -1703,7 +1703,7 @@ func TestBuildSchemaCheckJob_Image(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := brownfieldKeystone()
 
-	j := buildSchemaCheckJob(ks, "keystone-config-abc123")
+	j := buildSchemaCheckJob(ks, "keystone-config-abc123", "")
 
 	container := findContainerByName(j.Spec.Template.Spec.Containers, "schema-check")
 	g.Expect(container).NotTo(BeNil())
@@ -1716,7 +1716,7 @@ func TestBuildSchemaCheckJob_SecurityContext(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := brownfieldKeystone()
 
-	j := buildSchemaCheckJob(ks, "keystone-config-abc123")
+	j := buildSchemaCheckJob(ks, "keystone-config-abc123", "")
 
 	container := findContainerByName(j.Spec.Template.Spec.Containers, "schema-check")
 	expectRestrictedSecurityContext(g, container)
@@ -1729,7 +1729,7 @@ func TestBuildSchemaCheckJob_ConfigVolume(t *testing.T) {
 	ks := brownfieldKeystone()
 	configMap := "keystone-config-abc123"
 
-	j := buildSchemaCheckJob(ks, configMap)
+	j := buildSchemaCheckJob(ks, configMap, "")
 
 	container := findContainerByName(j.Spec.Template.Spec.Containers, "schema-check")
 	g.Expect(container).NotTo(BeNil())
@@ -1749,7 +1749,7 @@ func TestBuildSchemaCheckJob_BackoffLimit(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := brownfieldKeystone()
 
-	j := buildSchemaCheckJob(ks, "keystone-config-abc123")
+	j := buildSchemaCheckJob(ks, "keystone-config-abc123", "")
 
 	g.Expect(j.Spec.BackoffLimit).NotTo(BeNil())
 	g.Expect(*j.Spec.BackoffLimit).To(Equal(int32(2)))
@@ -1763,7 +1763,7 @@ func TestBuildSchemaCheckJob_TTL(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := brownfieldKeystone()
 
-	j := buildSchemaCheckJob(ks, "keystone-config-abc123")
+	j := buildSchemaCheckJob(ks, "keystone-config-abc123", "")
 
 	g.Expect(j.Spec.TTLSecondsAfterFinished).To(BeNil())
 }
@@ -1774,7 +1774,7 @@ func TestBuildSchemaCheckJob_RestartPolicy(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := brownfieldKeystone()
 
-	j := buildSchemaCheckJob(ks, "keystone-config-abc123")
+	j := buildSchemaCheckJob(ks, "keystone-config-abc123", "")
 
 	g.Expect(j.Spec.Template.Spec.RestartPolicy).To(Equal(corev1.RestartPolicyNever))
 }
@@ -1785,7 +1785,7 @@ func TestBuildSchemaCheckJob_Command(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := brownfieldKeystone()
 
-	j := buildSchemaCheckJob(ks, "keystone-config-abc123")
+	j := buildSchemaCheckJob(ks, "keystone-config-abc123", "")
 
 	container := findContainerByName(j.Spec.Template.Spec.Containers, "schema-check")
 	g.Expect(container).NotTo(BeNil())
@@ -1805,7 +1805,7 @@ func TestReconcileDatabase_SchemaCheckRunning_Requeues(t *testing.T) {
 
 	r := newDBTestReconciler(s, ks, completedDBSyncJob(ks), runningSchemaCheckJob(ks))
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(RequeueDatabaseWait))
 
@@ -1827,7 +1827,7 @@ func TestReconcileDatabase_SchemaCheckComplete_DatabaseSynced(t *testing.T) {
 
 	r := newDBTestReconciler(s, ks, completedDBSyncJob(ks), completedSchemaCheckJob(ks))
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(BeZero())
 
@@ -1850,7 +1850,7 @@ func TestReconcileDatabase_SchemaCheckFailed_SchemaDriftDetected(t *testing.T) {
 
 	r := newDBTestReconciler(s, ks, completedDBSyncJob(ks), failedSchemaCheckJob(ks))
 
-	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("schema-check"))
 
@@ -1881,7 +1881,7 @@ func TestReconcileDatabase_Managed_AllReady_WithSchemaCheck(t *testing.T) {
 		completedSchemaCheckJob(ks),
 	)
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(BeZero())
 
@@ -1909,7 +1909,7 @@ func TestReconcileDatabase_SchemaCheckStale_Recreated(t *testing.T) {
 
 	r := newDBTestReconciler(s, ks, completedDBSyncJob(ks), staleSchemaCheck)
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(RequeueDatabaseWait))
 
@@ -1920,7 +1920,7 @@ func TestReconcileDatabase_SchemaCheckStale_Recreated(t *testing.T) {
 		Namespace: ks.Namespace,
 	}, &newJob)).To(Succeed())
 
-	desired := buildSchemaCheckJob(ks, "keystone-config-abc123")
+	desired := buildSchemaCheckJob(ks, "keystone-config-abc123", "")
 	expectedHash := job.PodSpecHash(&desired.Spec.Template)
 	g.Expect(newJob.Annotations[job.PodSpecHashAnnotation]).To(Equal(expectedHash))
 }
@@ -1934,13 +1934,13 @@ func TestReconcileDatabase_SchemaCheckNotCreatedWhenDBSyncRunning(t *testing.T) 
 	ks := brownfieldKeystone()
 
 	// db_sync Job exists but is not completed (still running).
-	syncJob := buildDBSyncJob(ks, "keystone-config-abc123")
+	syncJob := buildDBSyncJob(ks, "keystone-config-abc123", "")
 	syncJob.Annotations = map[string]string{
 		job.PodSpecHashAnnotation: job.PodSpecHash(&syncJob.Spec.Template),
 	}
 	r := newDBTestReconciler(s, ks, syncJob)
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(RequeueDatabaseWait))
 
@@ -1970,7 +1970,7 @@ func TestReconcileDatabase_SchemaCheckNotCreatedWhenDBSyncFails(t *testing.T) {
 
 	r := newDBTestReconciler(s, ks, failedDBSyncJob(ks))
 
-	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("db_sync"))
 
@@ -2001,7 +2001,7 @@ func TestReconcileDatabase_SchemaCheckFailed_InstalledReleaseNotUpdated(t *testi
 
 	r := newDBTestReconciler(s, ks, completedDBSyncJob(ks), failedSchemaCheckJob(ks))
 
-	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).To(HaveOccurred())
 
 	// InstalledRelease must NOT be updated when schema-check fails.
@@ -2025,7 +2025,7 @@ func TestReconcileDatabase_ConditionObservedGeneration(t *testing.T) {
 
 	r := newDBTestReconciler(s, ks)
 
-	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
@@ -2043,7 +2043,7 @@ func TestReconcileDatabase_ConditionObservedGeneration(t *testing.T) {
 		buildUser(ks3), // exists but not ready
 	)
 
-	_, err = r3.reconcileDatabase(context.Background(), ks3, "keystone-config-abc123")
+	_, err = r3.reconcileDatabase(context.Background(), ks3, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cond3 := meta.FindStatusCondition(ks3.Status.Conditions, "DatabaseReady")
@@ -2056,7 +2056,7 @@ func TestReconcileDatabase_ConditionObservedGeneration(t *testing.T) {
 
 	r4 := newDBTestReconciler(s, ks4, failedDBSyncJob(ks4))
 
-	_, err = r4.reconcileDatabase(context.Background(), ks4, "keystone-config-abc123")
+	_, err = r4.reconcileDatabase(context.Background(), ks4, "keystone-config-abc123", "")
 	g.Expect(err).To(HaveOccurred())
 
 	cond4 := meta.FindStatusCondition(ks4.Status.Conditions, "DatabaseReady")
@@ -2069,7 +2069,7 @@ func TestReconcileDatabase_ConditionObservedGeneration(t *testing.T) {
 
 	r5 := newDBTestReconciler(s, ks5, completedDBSyncJob(ks5), failedSchemaCheckJob(ks5))
 
-	_, err = r5.reconcileDatabase(context.Background(), ks5, "keystone-config-abc123")
+	_, err = r5.reconcileDatabase(context.Background(), ks5, "keystone-config-abc123", "")
 	g.Expect(err).To(HaveOccurred())
 
 	cond5 := meta.FindStatusCondition(ks5.Status.Conditions, "DatabaseReady")
@@ -2090,7 +2090,7 @@ func TestReconcileDatabase_ConditionObservedGeneration(t *testing.T) {
 		completedSchemaCheckJob(ks2),
 	)
 
-	_, err = r2.reconcileDatabase(context.Background(), ks2, "keystone-config-abc123")
+	_, err = r2.reconcileDatabase(context.Background(), ks2, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cond2 := meta.FindStatusCondition(ks2.Status.Conditions, "DatabaseReady")
@@ -2106,7 +2106,7 @@ func TestBuildDBSyncJob_PriorityClassNameSet(t *testing.T) {
 	pcn := "system-cluster-critical"
 	ks.Spec.Deployment.PriorityClassName = &pcn
 
-	job := buildDBSyncJob(ks, "keystone-config-abc123")
+	job := buildDBSyncJob(ks, "keystone-config-abc123", "")
 
 	g.Expect(job.Spec.Template.Spec.PriorityClassName).To(Equal("system-cluster-critical"))
 }
@@ -2117,7 +2117,7 @@ func TestBuildDBSyncJob_PriorityClassNameNil(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := brownfieldKeystone()
 
-	job := buildDBSyncJob(ks, "keystone-config-abc123")
+	job := buildDBSyncJob(ks, "keystone-config-abc123", "")
 
 	g.Expect(job.Spec.Template.Spec.PriorityClassName).To(BeEmpty())
 }
@@ -2363,7 +2363,7 @@ func TestDbSyncCompletionRecordsMetric(t *testing.T) {
 	s := dbTestScheme()
 	ks := dbSyncMetricsTestKeystone("dbsync-complete", "ns-dbsync-complete")
 
-	desired := buildDBSyncJob(ks, "keystone-config-abc123")
+	desired := buildDBSyncJob(ks, "keystone-config-abc123", "")
 	created := metav1.NewTime(time.Date(2026, 4, 22, 10, 0, 0, 0, time.UTC))
 	terminated := metav1.NewTime(time.Date(2026, 4, 22, 10, 0, 15, 0, time.UTC))
 	wantDBSyncDuration := 15 * time.Second
@@ -2398,7 +2398,7 @@ func TestDbSyncCompletionRecordsMetric(t *testing.T) {
 	beforeSamples := histogramSampleCount(t, "keystone_operator_db_sync_duration_seconds", durationLabels)
 	beforeSum := histogramSampleSum(t, "keystone_operator_db_sync_duration_seconds", durationLabels)
 
-	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	afterCount := counterValue(t, "keystone_operator_db_sync_total", counterLabels)
@@ -2419,7 +2419,7 @@ func TestDbSyncCompletionRecordsMetric(t *testing.T) {
 	// NOT re-emit. Each phase keeps an independent
 	// dedupe annotation, so neither db_sync nor schema-check should fire
 	// again.
-	_, _ = r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	_, _ = r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
 	finalCount := counterValue(t, "keystone_operator_db_sync_total", counterLabels)
 	g.Expect(finalCount).To(Equal(afterCount),
 		"metric MUST be emitted at-most-once per (phase, Job UID)")
@@ -2455,7 +2455,7 @@ func TestRecordDBJobTerminalState_UsesObservedWithoutGet(t *testing.T) {
 
 	created := metav1.NewTime(time.Date(2026, 4, 22, 14, 0, 0, 0, time.UTC))
 	terminated := metav1.NewTime(time.Date(2026, 4, 22, 14, 0, 9, 0, time.UTC))
-	observed := buildDBSyncJob(ks, "keystone-config-abc123")
+	observed := buildDBSyncJob(ks, "keystone-config-abc123", "")
 	observed.UID = types.UID("observed-noget-job-uid")
 	observed.CreationTimestamp = created
 	observed.Status.Succeeded = 1
@@ -2500,7 +2500,7 @@ func TestDbSyncFailureRecordsMetric(t *testing.T) {
 	s := dbTestScheme()
 	ks := dbSyncMetricsTestKeystone("dbsync-failed", "ns-dbsync-failed")
 
-	desired := buildDBSyncJob(ks, "keystone-config-abc123")
+	desired := buildDBSyncJob(ks, "keystone-config-abc123", "")
 	created := metav1.NewTime(time.Date(2026, 4, 22, 11, 0, 0, 0, time.UTC))
 	terminated := metav1.NewTime(time.Date(2026, 4, 22, 11, 0, 7, 0, time.UTC))
 	wantDuration := 7 * time.Second
@@ -2533,7 +2533,7 @@ func TestDbSyncFailureRecordsMetric(t *testing.T) {
 	beforeCount := counterValue(t, "keystone_operator_db_sync_total", counterLabels)
 	beforeSamples := histogramSampleCount(t, "keystone_operator_db_sync_duration_seconds", durationLabels)
 
-	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).To(HaveOccurred(),
 		"reconcileDatabase must surface the job.ErrJobFailed error to the caller")
 
@@ -2559,7 +2559,7 @@ func TestDbSyncInProgressDoesNotRecord(t *testing.T) {
 	s := dbTestScheme()
 	ks := dbSyncMetricsTestKeystone("dbsync-running", "ns-dbsync-running")
 
-	desired := buildDBSyncJob(ks, "keystone-config-abc123")
+	desired := buildDBSyncJob(ks, "keystone-config-abc123", "")
 	dbJob := desired.DeepCopy()
 	dbJob.UID = types.UID("dbsync-running-job-uid")
 	dbJob.CreationTimestamp = metav1.NewTime(time.Date(2026, 4, 22, 12, 0, 0, 0, time.UTC))
@@ -2590,7 +2590,7 @@ func TestDbSyncInProgressDoesNotRecord(t *testing.T) {
 	beforeFailed := counterValue(t, "keystone_operator_db_sync_total", failedLabels)
 	beforeSamples := histogramSampleCount(t, "keystone_operator_db_sync_duration_seconds", durationLabels)
 
-	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	afterSuccess := counterValue(t, "keystone_operator_db_sync_total", successLabels)
@@ -2649,7 +2649,7 @@ func TestUpgradePhaseFailureRecordsDBSyncMetric(t *testing.T) {
 			beforeFailed := counterValue(t, "keystone_operator_db_sync_total", failedLabels)
 			beforeSamples := histogramSampleCount(t, "keystone_operator_db_sync_duration_seconds", durationLabels)
 
-			_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+			_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
 			g.Expect(err).To(HaveOccurred(),
 				"the failing upgrade-phase Job MUST surface as a reconcile error so callers retry")
 
@@ -2702,34 +2702,38 @@ func TestRecordDBJobTerminalState_DefersOnPatchFailure(t *testing.T) {
 		nameSuffix string
 	}{
 		{
-			jobSuffix:  "db-sync",
-			buildJob:   buildDBSyncJob,
+			jobSuffix: "db-sync",
+			buildJob: func(ks *keystonev1alpha1.Keystone, cm string) *batchv1.Job {
+				return buildDBSyncJob(ks, cm, "")
+			},
 			nameSuffix: "dbsync",
 		},
 		{
 			jobSuffix: "db-expand",
 			buildJob: func(ks *keystonev1alpha1.Keystone, cm string) *batchv1.Job {
-				return buildExpandJob(ks, cm, ks.Spec.Image.Tag)
+				return buildExpandJob(ks, cm, "", ks.Spec.Image.Tag)
 			},
 			nameSuffix: "dbexpand",
 		},
 		{
 			jobSuffix: "db-migrate",
 			buildJob: func(ks *keystonev1alpha1.Keystone, cm string) *batchv1.Job {
-				return buildMigrateJob(ks, cm, ks.Spec.Image.Tag)
+				return buildMigrateJob(ks, cm, "", ks.Spec.Image.Tag)
 			},
 			nameSuffix: "dbmigrate",
 		},
 		{
 			jobSuffix: "db-contract",
 			buildJob: func(ks *keystonev1alpha1.Keystone, cm string) *batchv1.Job {
-				return buildContractJob(ks, cm, ks.Spec.Image.Tag)
+				return buildContractJob(ks, cm, "", ks.Spec.Image.Tag)
 			},
 			nameSuffix: "dbcontract",
 		},
 		{
-			jobSuffix:  "schema-check",
-			buildJob:   buildSchemaCheckJob,
+			jobSuffix: "schema-check",
+			buildJob: func(ks *keystonev1alpha1.Keystone, cm string) *batchv1.Job {
+				return buildSchemaCheckJob(ks, cm, "")
+			},
 			nameSuffix: "schemacheck",
 		},
 	}
@@ -2838,11 +2842,11 @@ func TestBuildDBJobVariants_DBTLSVolumeAndMount_WhenEnabled(t *testing.T) {
 		job           *batchv1.Job
 		containerName string
 	}{
-		{"db-sync", buildDBSyncJob(ks, "keystone-config-abc123"), "db-sync"},
-		{"expand", buildExpandJob(ks, "keystone-config-abc123", ks.Spec.Image.Tag), "db-expand"},
-		{"migrate", buildMigrateJob(ks, "keystone-config-abc123", ks.Spec.Image.Tag), "db-migrate"},
-		{"contract", buildContractJob(ks, "keystone-config-abc123", ks.Spec.Image.Tag), "db-contract"},
-		{"schema-check", buildSchemaCheckJob(ks, "keystone-config-abc123"), "schema-check"},
+		{"db-sync", buildDBSyncJob(ks, "keystone-config-abc123", ""), "db-sync"},
+		{"expand", buildExpandJob(ks, "keystone-config-abc123", "", ks.Spec.Image.Tag), "db-expand"},
+		{"migrate", buildMigrateJob(ks, "keystone-config-abc123", "", ks.Spec.Image.Tag), "db-migrate"},
+		{"contract", buildContractJob(ks, "keystone-config-abc123", "", ks.Spec.Image.Tag), "db-contract"},
+		{"schema-check", buildSchemaCheckJob(ks, "keystone-config-abc123", ""), "schema-check"},
 	}
 
 	for _, tc := range cases {
@@ -2914,11 +2918,11 @@ func TestBuildDBJobVariants_DBTLSVolume_UsesUserSuppliedSecretNames(t *testing.T
 		name string
 		job  *batchv1.Job
 	}{
-		{"db-sync", buildDBSyncJob(ks, "keystone-config-abc123")},
-		{"expand", buildExpandJob(ks, "keystone-config-abc123", ks.Spec.Image.Tag)},
-		{"migrate", buildMigrateJob(ks, "keystone-config-abc123", ks.Spec.Image.Tag)},
-		{"contract", buildContractJob(ks, "keystone-config-abc123", ks.Spec.Image.Tag)},
-		{"schema-check", buildSchemaCheckJob(ks, "keystone-config-abc123")},
+		{"db-sync", buildDBSyncJob(ks, "keystone-config-abc123", "")},
+		{"expand", buildExpandJob(ks, "keystone-config-abc123", "", ks.Spec.Image.Tag)},
+		{"migrate", buildMigrateJob(ks, "keystone-config-abc123", "", ks.Spec.Image.Tag)},
+		{"contract", buildContractJob(ks, "keystone-config-abc123", "", ks.Spec.Image.Tag)},
+		{"schema-check", buildSchemaCheckJob(ks, "keystone-config-abc123", "")},
 	}
 
 	for _, tc := range cases {
@@ -2946,11 +2950,11 @@ func TestBuildDBJobVariants_DBTLSVolumeAbsent_WhenNil(t *testing.T) {
 		job           *batchv1.Job
 		containerName string
 	}{
-		{"db-sync", buildDBSyncJob(ks, "keystone-config-abc123"), "db-sync"},
-		{"expand", buildExpandJob(ks, "keystone-config-abc123", ks.Spec.Image.Tag), "db-expand"},
-		{"migrate", buildMigrateJob(ks, "keystone-config-abc123", ks.Spec.Image.Tag), "db-migrate"},
-		{"contract", buildContractJob(ks, "keystone-config-abc123", ks.Spec.Image.Tag), "db-contract"},
-		{"schema-check", buildSchemaCheckJob(ks, "keystone-config-abc123"), "schema-check"},
+		{"db-sync", buildDBSyncJob(ks, "keystone-config-abc123", ""), "db-sync"},
+		{"expand", buildExpandJob(ks, "keystone-config-abc123", "", ks.Spec.Image.Tag), "db-expand"},
+		{"migrate", buildMigrateJob(ks, "keystone-config-abc123", "", ks.Spec.Image.Tag), "db-migrate"},
+		{"contract", buildContractJob(ks, "keystone-config-abc123", "", ks.Spec.Image.Tag), "db-contract"},
+		{"schema-check", buildSchemaCheckJob(ks, "keystone-config-abc123", ""), "schema-check"},
 	}
 
 	for _, tc := range cases {
@@ -2991,11 +2995,11 @@ func TestBuildDBJobVariants_DBTLSVolumeAbsent_WhenDisabled(t *testing.T) {
 		job           *batchv1.Job
 		containerName string
 	}{
-		{"db-sync", buildDBSyncJob(ks, "keystone-config-abc123"), "db-sync"},
-		{"expand", buildExpandJob(ks, "keystone-config-abc123", ks.Spec.Image.Tag), "db-expand"},
-		{"migrate", buildMigrateJob(ks, "keystone-config-abc123", ks.Spec.Image.Tag), "db-migrate"},
-		{"contract", buildContractJob(ks, "keystone-config-abc123", ks.Spec.Image.Tag), "db-contract"},
-		{"schema-check", buildSchemaCheckJob(ks, "keystone-config-abc123"), "schema-check"},
+		{"db-sync", buildDBSyncJob(ks, "keystone-config-abc123", ""), "db-sync"},
+		{"expand", buildExpandJob(ks, "keystone-config-abc123", "", ks.Spec.Image.Tag), "db-expand"},
+		{"migrate", buildMigrateJob(ks, "keystone-config-abc123", "", ks.Spec.Image.Tag), "db-migrate"},
+		{"contract", buildContractJob(ks, "keystone-config-abc123", "", ks.Spec.Image.Tag), "db-contract"},
+		{"schema-check", buildSchemaCheckJob(ks, "keystone-config-abc123", ""), "schema-check"},
 	}
 
 	for _, tc := range cases {
@@ -3033,7 +3037,7 @@ func TestReconcileDatabase_CompletedSchemaCheck_SameHash_NotRecreated(t *testing
 
 	r := newDBTestReconciler(s, ks, completedDBSyncJob(ks), completed)
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123")
+	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	// Steady state: no churn, no requeue.
 	g.Expect(result.RequeueAfter).To(BeZero())

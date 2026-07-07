@@ -95,7 +95,7 @@ func TestReconcileFernetKeys_NoSecret_CreatesSecretAndRequeues(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	result, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123")
+	result, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123", "")
 
 	g.Expect(err).NotTo(HaveOccurred())
 	// Must requeue to confirm the secret is available before proceeding. Uses
@@ -156,7 +156,7 @@ func TestReconcileFernetKeys_SecretAlreadyExists(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	result, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123")
+	result, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123", "")
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result).To(Equal(ctrl.Result{}))
@@ -255,7 +255,7 @@ func TestReconcileFernetKeys_CronJobScheduleUpdated(t *testing.T) {
 	// Change the schedule in the spec.
 	ks.Spec.Fernet.RotationSchedule = "0 */6 * * *"
 
-	result, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123")
+	result, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123", "")
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result).To(Equal(ctrl.Result{}))
@@ -286,7 +286,7 @@ func TestReconcileFernetKeys_GeneratedKeysAreValid(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123")
+	_, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var secret corev1.Secret
@@ -327,7 +327,7 @@ func TestReconcileFernetKeys_CronJobScheduleMatchesSpec(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123")
+	_, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var cronJob batchv1.CronJob
@@ -365,7 +365,7 @@ func TestReconcileFernetKeys_PushSecretDeletionPolicyDelete(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123")
+	_, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var ps esov1alpha1.PushSecret
@@ -399,7 +399,7 @@ func TestReconcileFernetKeys_PushSecretReferencesCorrectSecret(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123")
+	_, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var ps esov1alpha1.PushSecret
@@ -531,7 +531,7 @@ func TestReconcileFernetKeys_MinActiveKeysFloor(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123")
+	_, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var secret corev1.Secret
@@ -569,7 +569,7 @@ func TestReconcileFernetKeys_ConditionMessages(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123")
+	_, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// The final condition should be FernetKeysAvailable with the correct message.
@@ -587,7 +587,7 @@ func TestFernetRotationCronJob_SecurityContext(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := fernetTestKeystone()
 
-	cronJob := fernetRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-fernet-rotate-script-abc123")
+	cronJob := fernetRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-fernet-rotate-script-abc123", "")
 
 	podSpec := cronJob.Spec.JobTemplate.Spec.Template.Spec
 
@@ -619,7 +619,7 @@ func TestReconcileFernetKeys_CronJobSpec(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123")
+	_, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var cronJob batchv1.CronJob
@@ -740,7 +740,7 @@ func TestFernetRotationCronJob_PodSecurityContextSetsFSGroup(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := fernetTestKeystone()
 
-	cronJob := fernetRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-fernet-rotate-script-abc123")
+	cronJob := fernetRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-fernet-rotate-script-abc123", "")
 
 	psc := cronJob.Spec.JobTemplate.Spec.Template.Spec.SecurityContext
 	g.Expect(psc).NotTo(BeNil(), "PodSecurityContext must be set so FSGroup applies to rotation Pod")
@@ -774,7 +774,7 @@ func TestFernetRotationCronJob_KeySecretVolumesSetDefaultMode0400(t *testing.T) 
 	g := NewGomegaWithT(t)
 	ks := fernetTestKeystone()
 
-	cronJob := fernetRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-fernet-rotate-script-abc123")
+	cronJob := fernetRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-fernet-rotate-script-abc123", "")
 
 	var srcVol, workVol, credVol, cfgVol, scriptsVol corev1.Volume
 	for _, v := range cronJob.Spec.JobTemplate.Spec.Template.Spec.Volumes {
@@ -821,7 +821,7 @@ func TestFernetRotationCronJob_CopyKeysInitContainerPreservesNonWorldReadableMod
 	g := NewGomegaWithT(t)
 	ks := fernetTestKeystone()
 
-	cronJob := fernetRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-fernet-rotate-script-abc123")
+	cronJob := fernetRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-fernet-rotate-script-abc123", "")
 
 	initContainer := findContainerByName(cronJob.Spec.JobTemplate.Spec.Template.Spec.InitContainers, "copy-keys")
 	g.Expect(initContainer).NotTo(BeNil(), "copy-keys init container must exist")
@@ -851,7 +851,7 @@ func TestFernetRotationCronJob_RotateContainerVolumeMountsUnchanged(t *testing.T
 	g := NewGomegaWithT(t)
 	ks := fernetTestKeystone()
 
-	cronJob := fernetRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-fernet-rotate-script-abc123")
+	cronJob := fernetRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-fernet-rotate-script-abc123", "")
 
 	rotate := findContainerByName(cronJob.Spec.JobTemplate.Spec.Template.Spec.Containers, "fernet-rotate")
 	g.Expect(rotate).NotTo(BeNil(), "fernet-rotate container must exist")
@@ -873,7 +873,7 @@ func TestFernetRotationCronJob_RotationContainerSecurityContextUnchanged(t *test
 	g := NewGomegaWithT(t)
 	ks := fernetTestKeystone()
 
-	cronJob := fernetRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-fernet-rotate-script-abc123")
+	cronJob := fernetRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-fernet-rotate-script-abc123", "")
 	podSpec := cronJob.Spec.JobTemplate.Spec.Template.Spec
 
 	expectRestrictedSecurityContext(g, findContainerByName(podSpec.InitContainers, "copy-keys"))
@@ -932,7 +932,7 @@ func TestReconcileFernetKeys_ConditionObservedGeneration(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123")
+	_, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "FernetKeysReady")
@@ -963,7 +963,7 @@ func TestReconcileFernetKeys_ConditionObservedGeneration(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err = r2.reconcileFernetKeys(context.Background(), ks2, "test-keystone-config-abc123")
+	_, err = r2.reconcileFernetKeys(context.Background(), ks2, "test-keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cond2 := meta.FindStatusCondition(ks2.Status.Conditions, "FernetKeysReady")
@@ -979,7 +979,7 @@ func TestFernetRotationCronJob_PriorityClassNameSet(t *testing.T) {
 	pcn := "system-cluster-critical"
 	ks.Spec.Deployment.PriorityClassName = &pcn
 
-	cronJob := fernetRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-fernet-rotate-script-abc123")
+	cronJob := fernetRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-fernet-rotate-script-abc123", "")
 
 	g.Expect(cronJob.Spec.JobTemplate.Spec.Template.Spec.PriorityClassName).To(Equal("system-cluster-critical"))
 }
@@ -990,7 +990,7 @@ func TestFernetRotationCronJob_PriorityClassNameNil(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := fernetTestKeystone()
 
-	cronJob := fernetRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-fernet-rotate-script-abc123")
+	cronJob := fernetRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-fernet-rotate-script-abc123", "")
 
 	g.Expect(cronJob.Spec.JobTemplate.Spec.Template.Spec.PriorityClassName).To(BeEmpty())
 }
@@ -1001,7 +1001,7 @@ func TestFernetRotationCronJob_SuspendDefaultsFalse(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := fernetTestKeystone()
 
-	cronJob := fernetRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-fernet-rotate-script-abc123")
+	cronJob := fernetRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-fernet-rotate-script-abc123", "")
 
 	g.Expect(cronJob.Spec.Suspend).NotTo(BeNil())
 	g.Expect(*cronJob.Spec.Suspend).To(BeFalse())
@@ -1015,7 +1015,7 @@ func TestFernetRotationCronJob_SuspendTrue(t *testing.T) {
 	ks := fernetTestKeystone()
 	ks.Spec.Fernet.Suspend = true
 
-	cronJob := fernetRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-fernet-rotate-script-abc123")
+	cronJob := fernetRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-fernet-rotate-script-abc123", "")
 
 	g.Expect(cronJob.Spec.Suspend).NotTo(BeNil())
 	g.Expect(*cronJob.Spec.Suspend).To(BeTrue())
@@ -1172,7 +1172,7 @@ func TestReconcileFernetKeys_CreatesEmptyStagingSecret(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123")
+	_, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// Staging Secret must exist with empty Data and the correct labels and owner.
@@ -1256,7 +1256,7 @@ func TestReconcileFernetKeys_AppliesStagedKeysWhenAnnotationPresent(t *testing.T
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	result, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123")
+	result, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	// Rotation applied: short-circuit via RequeueAfter so the parallel group's
 	// shortestRequeue propagates it (issue #467).
@@ -1379,7 +1379,7 @@ func TestFernetReconcileUpdatesRotationAgeGauge(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileFernetKeys(context.Background(), ks, "test-cm")
+	_, err := r.reconcileFernetKeys(context.Background(), ks, "test-cm", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	gaugeLabels := map[string]string{
@@ -1426,7 +1426,7 @@ func TestFernetReconcileSkipsRotationAgeGaugeWhenAnnotationAbsent(t *testing.T) 
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileFernetKeys(context.Background(), ks, "test-cm")
+	_, err := r.reconcileFernetKeys(context.Background(), ks, "test-cm", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	gaugeLabels := map[string]string{

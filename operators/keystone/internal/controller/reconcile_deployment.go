@@ -115,8 +115,8 @@ func dbReadinessProbe() *corev1.Probe {
 // re-issues the engine credential (the dbCredentialRefreshInterval cadence, kept
 // well below the lease TTL), so dbConnectionHash is stamped into a pod-template
 // annotation to roll the Deployment when the engine-issued credential changes.
-func (r *KeystoneReconciler) reconcileDeployment(ctx context.Context, keystone *keystonev1alpha1.Keystone, configMapName, dbConnectionHash string) (ctrl.Result, error) {
-	deploy := buildKeystoneDeployment(keystone, configMapName, dbConnectionHash)
+func (r *KeystoneReconciler) reconcileDeployment(ctx context.Context, keystone *keystonev1alpha1.Keystone, configMapName, dbConnectionHash, domainsSecretName string) (ctrl.Result, error) {
+	deploy := buildKeystoneDeployment(keystone, configMapName, dbConnectionHash, domainsSecretName)
 	ready, err := deployment.EnsureDeployment(ctx, r.Client, r.Scheme, keystone, deploy)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring Deployment: %w", err)
@@ -209,7 +209,7 @@ func deploymentReplicas(keystone *keystonev1alpha1.Keystone) *int32 {
 // keystone.c5c3.io/<x>-hash annotation-key style.
 const dbConnectionHashAnnotation = "keystone.c5c3.io/db-connection-hash"
 
-func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName, dbConnectionHash string) *appsv1.Deployment {
+func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName, dbConnectionHash, domainsSecretName string) *appsv1.Deployment {
 	selector := selectorLabels(keystone)
 	labels := commonLabels(keystone)
 	fernetSecretName := fmt.Sprintf("%s-fernet-keys", keystone.Name)
@@ -343,6 +343,16 @@ func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName,
 		deploy.Spec.Template.Spec.Volumes = append(deploy.Spec.Template.Spec.Volumes, tlsVol)
 		deploy.Spec.Template.Spec.Containers[0].VolumeMounts = append(
 			deploy.Spec.Template.Spec.Containers[0].VolumeMounts, tlsMount,
+		)
+	}
+	// Mount the per-domain identity-backend config Secret when at least one
+	// backend is projected. The Secret name is content-hashed, so attaching,
+	// detaching, or re-rendering a backend rolls the Deployment.
+	if domainsSecretName != "" {
+		domVol, domMount := domainsVolumeAndMount(domainsSecretName)
+		deploy.Spec.Template.Spec.Volumes = append(deploy.Spec.Template.Spec.Volumes, domVol)
+		deploy.Spec.Template.Spec.Containers[0].VolumeMounts = append(
+			deploy.Spec.Template.Spec.Containers[0].VolumeMounts, domMount,
 		)
 	}
 	return deploy

@@ -89,7 +89,7 @@ func newPolicyValidationTestReconciler(s *runtime.Scheme, objs ...client.Object)
 // buildPolicyValidationJob produces and is marked as complete with the correct
 // pod-spec hash.
 func completedPolicyValidationJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
-	j := buildPolicyValidationJob(ks, "keystone-config-abc123")
+	j := buildPolicyValidationJob(ks, "keystone-config-abc123", "")
 	now := metav1.Now()
 	j.Annotations = map[string]string{
 		job.PodSpecHashAnnotation: job.PodSpecHash(&j.Spec.Template),
@@ -105,7 +105,7 @@ func completedPolicyValidationJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
 // failedPolicyValidationJob returns a validation Job that is marked as
 // permanently failed.
 func failedPolicyValidationJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
-	j := buildPolicyValidationJob(ks, "keystone-config-abc123")
+	j := buildPolicyValidationJob(ks, "keystone-config-abc123", "")
 	j.Annotations = map[string]string{
 		job.PodSpecHashAnnotation: job.PodSpecHash(&j.Spec.Template),
 	}
@@ -119,7 +119,7 @@ func failedPolicyValidationJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
 // runningPolicyValidationJob returns a validation Job that exists but is still
 // running (no completion or failure conditions).
 func runningPolicyValidationJob(ks *keystonev1alpha1.Keystone) *batchv1.Job {
-	j := buildPolicyValidationJob(ks, "keystone-config-abc123")
+	j := buildPolicyValidationJob(ks, "keystone-config-abc123", "")
 	j.Annotations = map[string]string{
 		job.PodSpecHashAnnotation: job.PodSpecHash(&j.Spec.Template),
 	}
@@ -139,7 +139,7 @@ func TestReconcilePolicyValidation_NoPolicyOverrides_SkipsValidation(t *testing.
 	s := policyValidationTestScheme()
 	r := newPolicyValidationTestReconciler(s, ks)
 
-	result, err := r.reconcilePolicyValidation(context.Background(), ks, "keystone-config-abc123")
+	result, err := r.reconcilePolicyValidation(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result).To(Equal(ctrl.Result{}))
 
@@ -186,7 +186,7 @@ func TestReconcilePolicyValidation_PolicyRemoved_JobCleanedUp(t *testing.T) {
 	}, &j)).To(Succeed())
 
 	// Reconcile with nil policyOverrides should delete the Job.
-	result, err := r.reconcilePolicyValidation(ctx, ks, "keystone-config-abc123")
+	result, err := r.reconcilePolicyValidation(ctx, ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result).To(Equal(ctrl.Result{}))
 
@@ -213,7 +213,7 @@ func TestReconcilePolicyValidation_PolicyRemoved_NoJob_NoError(t *testing.T) {
 
 	r := newPolicyValidationTestReconciler(s, ks)
 
-	result, err := r.reconcilePolicyValidation(context.Background(), ks, "keystone-config-abc123")
+	result, err := r.reconcilePolicyValidation(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result).To(Equal(ctrl.Result{}))
 
@@ -236,7 +236,7 @@ func TestReconcilePolicyValidation_PolicySet_JobCreated(t *testing.T) {
 
 	r := newPolicyValidationTestReconciler(s, ks)
 
-	result, err := r.reconcilePolicyValidation(context.Background(), ks, "keystone-config-abc123")
+	result, err := r.reconcilePolicyValidation(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(RequeueValidationWait))
 
@@ -269,7 +269,7 @@ func TestReconcilePolicyValidation_JobRunning_Requeues(t *testing.T) {
 
 	r := newPolicyValidationTestReconciler(s, ks, runningPolicyValidationJob(ks))
 
-	result, err := r.reconcilePolicyValidation(context.Background(), ks, "keystone-config-abc123")
+	result, err := r.reconcilePolicyValidation(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(RequeueValidationWait))
 
@@ -290,7 +290,7 @@ func TestReconcilePolicyValidation_JobComplete_ConditionTrue(t *testing.T) {
 
 	r := newPolicyValidationTestReconciler(s, ks, completedPolicyValidationJob(ks))
 
-	result, err := r.reconcilePolicyValidation(context.Background(), ks, "keystone-config-abc123")
+	result, err := r.reconcilePolicyValidation(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(BeZero())
 
@@ -312,7 +312,7 @@ func TestReconcilePolicyValidation_JobFailed_ConditionFalse(t *testing.T) {
 
 	r := newPolicyValidationTestReconciler(s, ks, failedPolicyValidationJob(ks))
 
-	_, err := r.reconcilePolicyValidation(context.Background(), ks, "keystone-config-abc123")
+	_, err := r.reconcilePolicyValidation(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(errors.Is(err, job.ErrJobFailed)).To(BeTrue())
 
@@ -341,7 +341,7 @@ func TestReconcilePolicyValidation_JobFailed_PolicyFixed_Recreates(t *testing.T)
 	// reconciler is called with it, so the desired pod template — and its hash —
 	// differ from the failed Job's stored key.
 	const newConfigMap = "keystone-config-def456"
-	result, err := r.reconcilePolicyValidation(context.Background(), ks, newConfigMap)
+	result, err := r.reconcilePolicyValidation(context.Background(), ks, newConfigMap, "")
 	g.Expect(err).NotTo(HaveOccurred(), "fixing the policy must re-run the failed validation Job, not surface ErrJobFailed")
 	g.Expect(result.RequeueAfter).To(Equal(RequeueValidationWait))
 
@@ -356,7 +356,7 @@ func TestReconcilePolicyValidation_JobFailed_PolicyFixed_Recreates(t *testing.T)
 		Name:      "test-keystone-policy-validation",
 		Namespace: "default",
 	}, &recreated)).To(Succeed())
-	wantHash := job.PodSpecHash(&buildPolicyValidationJob(ks, newConfigMap).Spec.Template)
+	wantHash := job.PodSpecHash(&buildPolicyValidationJob(ks, newConfigMap, "").Spec.Template)
 	g.Expect(recreated.Annotations[job.PodSpecHashAnnotation]).To(Equal(wantHash),
 		"recreated validation Job should carry the hash of the fixed template")
 }
@@ -398,7 +398,7 @@ func TestReconcilePolicyValidation_JobFailed_DescriptiveErrorMessage(t *testing.
 
 	r := newPolicyValidationTestReconciler(s, ks, failedJob, pod)
 
-	_, err := r.reconcilePolicyValidation(context.Background(), ks, "keystone-config-abc123")
+	_, err := r.reconcilePolicyValidation(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(errors.Is(err, job.ErrJobFailed)).To(BeTrue())
 
@@ -424,7 +424,7 @@ func TestReconcilePolicyValidation_JobFailed_FallbackMessage(t *testing.T) {
 
 	r := newPolicyValidationTestReconciler(s, ks, failedJob)
 
-	_, err := r.reconcilePolicyValidation(context.Background(), ks, "keystone-config-abc123")
+	_, err := r.reconcilePolicyValidation(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).To(HaveOccurred())
 
 	cond := meta.FindStatusCondition(ks.Status.Conditions, conditionTypePolicyValidReady)
@@ -452,7 +452,7 @@ func TestReconcilePolicyValidation_StaleJob_DeletedAndRecreated(t *testing.T) {
 
 	r := newPolicyValidationTestReconciler(s, ks, staleJob)
 
-	result, err := r.reconcilePolicyValidation(context.Background(), ks, "keystone-config-abc123")
+	result, err := r.reconcilePolicyValidation(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(RequeueValidationWait))
 
@@ -464,7 +464,7 @@ func TestReconcilePolicyValidation_StaleJob_DeletedAndRecreated(t *testing.T) {
 	}, &newJob)).To(Succeed())
 
 	// The new Job should have the correct hash.
-	desired := buildPolicyValidationJob(ks, "keystone-config-abc123")
+	desired := buildPolicyValidationJob(ks, "keystone-config-abc123", "")
 	expectedHash := job.PodSpecHash(&desired.Spec.Template)
 	g.Expect(newJob.Annotations[job.PodSpecHashAnnotation]).To(Equal(expectedHash))
 }
@@ -478,7 +478,7 @@ func TestBuildPolicyValidationJob_ImageMatchesDeployment(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := policyValidationKeystoneWithPolicy()
 
-	j := buildPolicyValidationJob(ks, "keystone-config-abc123")
+	j := buildPolicyValidationJob(ks, "keystone-config-abc123", "")
 
 	container := findContainerByName(j.Spec.Template.Spec.Containers, "validator")
 	g.Expect(container).NotTo(BeNil(), "validator container must exist")
@@ -491,7 +491,7 @@ func TestBuildPolicyValidationJob_SecurityContext(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := policyValidationKeystoneWithPolicy()
 
-	j := buildPolicyValidationJob(ks, "keystone-config-abc123")
+	j := buildPolicyValidationJob(ks, "keystone-config-abc123", "")
 
 	container := findContainerByName(j.Spec.Template.Spec.Containers, "validator")
 	expectRestrictedSecurityContext(g, container)
@@ -504,7 +504,7 @@ func TestBuildPolicyValidationJob_ConfigMapMount(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := policyValidationKeystoneWithPolicy()
 
-	j := buildPolicyValidationJob(ks, "keystone-config-abc123")
+	j := buildPolicyValidationJob(ks, "keystone-config-abc123", "")
 
 	container := findContainerByName(j.Spec.Template.Spec.Containers, "validator")
 	g.Expect(container).NotTo(BeNil())
@@ -526,7 +526,7 @@ func TestBuildPolicyValidationJob_BackoffAndTTL(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := policyValidationKeystoneWithPolicy()
 
-	j := buildPolicyValidationJob(ks, "keystone-config-abc123")
+	j := buildPolicyValidationJob(ks, "keystone-config-abc123", "")
 
 	g.Expect(j.Spec.BackoffLimit).NotTo(BeNil())
 	g.Expect(*j.Spec.BackoffLimit).To(Equal(int32(2)))
@@ -544,7 +544,7 @@ func TestBuildPolicyValidationJob_Command(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := policyValidationKeystoneWithPolicy()
 
-	j := buildPolicyValidationJob(ks, "keystone-config-abc123")
+	j := buildPolicyValidationJob(ks, "keystone-config-abc123", "")
 
 	container := findContainerByName(j.Spec.Template.Spec.Containers, "validator")
 	g.Expect(container).NotTo(BeNil())
@@ -562,7 +562,7 @@ func TestBuildPolicyValidationJob_TerminationMessagePolicy(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := policyValidationKeystoneWithPolicy()
 
-	j := buildPolicyValidationJob(ks, "keystone-config-abc123")
+	j := buildPolicyValidationJob(ks, "keystone-config-abc123", "")
 
 	container := findContainerByName(j.Spec.Template.Spec.Containers, "validator")
 	g.Expect(container).NotTo(BeNil())
@@ -584,7 +584,7 @@ func TestReconcilePolicyValidation_ConditionObservedGeneration(t *testing.T) {
 		ks.Generation = 5
 		r := newPolicyValidationTestReconciler(s, ks)
 
-		_, err := r.reconcilePolicyValidation(context.Background(), ks, "keystone-config-abc123")
+		_, err := r.reconcilePolicyValidation(context.Background(), ks, "keystone-config-abc123", "")
 		g.Expect(err).NotTo(HaveOccurred())
 		cond := meta.FindStatusCondition(ks.Status.Conditions, conditionTypePolicyValidReady)
 		g.Expect(cond).NotTo(BeNil())
@@ -598,7 +598,7 @@ func TestReconcilePolicyValidation_ConditionObservedGeneration(t *testing.T) {
 		ks.Generation = 7
 		r := newPolicyValidationTestReconciler(s, ks)
 
-		_, err := r.reconcilePolicyValidation(context.Background(), ks, "keystone-config-abc123")
+		_, err := r.reconcilePolicyValidation(context.Background(), ks, "keystone-config-abc123", "")
 		g.Expect(err).NotTo(HaveOccurred())
 		cond := meta.FindStatusCondition(ks.Status.Conditions, conditionTypePolicyValidReady)
 		g.Expect(cond).NotTo(BeNil())
@@ -612,7 +612,7 @@ func TestReconcilePolicyValidation_ConditionObservedGeneration(t *testing.T) {
 		ks.Generation = 9
 		r := newPolicyValidationTestReconciler(s, ks, completedPolicyValidationJob(ks))
 
-		_, err := r.reconcilePolicyValidation(context.Background(), ks, "keystone-config-abc123")
+		_, err := r.reconcilePolicyValidation(context.Background(), ks, "keystone-config-abc123", "")
 		g.Expect(err).NotTo(HaveOccurred())
 		cond := meta.FindStatusCondition(ks.Status.Conditions, conditionTypePolicyValidReady)
 		g.Expect(cond).NotTo(BeNil())
@@ -626,7 +626,7 @@ func TestReconcilePolicyValidation_ConditionObservedGeneration(t *testing.T) {
 		ks.Generation = 11
 		r := newPolicyValidationTestReconciler(s, ks, failedPolicyValidationJob(ks))
 
-		_, err := r.reconcilePolicyValidation(context.Background(), ks, "keystone-config-abc123")
+		_, err := r.reconcilePolicyValidation(context.Background(), ks, "keystone-config-abc123", "")
 		g.Expect(err).To(HaveOccurred())
 		cond := meta.FindStatusCondition(ks.Status.Conditions, conditionTypePolicyValidReady)
 		g.Expect(cond).NotTo(BeNil())
@@ -651,7 +651,7 @@ func TestReconcilePolicyValidation_CompletedSameHash_NotRecreated(t *testing.T) 
 
 	r := newPolicyValidationTestReconciler(s, ks, completed)
 
-	result, err := r.reconcilePolicyValidation(context.Background(), ks, "keystone-config-abc123")
+	result, err := r.reconcilePolicyValidation(context.Background(), ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	// Steady state: no churn, no requeue.
 	g.Expect(result.RequeueAfter).To(BeZero())

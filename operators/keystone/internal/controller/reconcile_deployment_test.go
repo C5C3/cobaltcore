@@ -93,7 +93,7 @@ func newDeployTestReconciler(s *runtime.Scheme, objs ...client.Object) *Keystone
 // readyDeployment returns a Deployment that matches what buildKeystoneDeployment
 // would produce, but with status indicating it is available and ready.
 func readyDeployment(ks *keystonev1alpha1.Keystone, configMapName string) *appsv1.Deployment {
-	deploy := buildKeystoneDeployment(ks, configMapName, "")
+	deploy := buildKeystoneDeployment(ks, configMapName, "", "")
 	replicas := int32(ks.Spec.Deployment.Replicas)
 	deploy.Spec.Replicas = &replicas
 	deploy.Generation = 1
@@ -110,7 +110,7 @@ func readyDeployment(ks *keystonev1alpha1.Keystone, configMapName string) *appsv
 
 // notReadyDeployment returns a Deployment that exists but is not yet available.
 func notReadyDeployment(ks *keystonev1alpha1.Keystone, configMapName string) *appsv1.Deployment {
-	deploy := buildKeystoneDeployment(ks, configMapName, "")
+	deploy := buildKeystoneDeployment(ks, configMapName, "", "")
 	deploy.Generation = 1
 	deploy.Status.ObservedGeneration = 1
 	deploy.Status.ReadyReplicas = 0
@@ -123,7 +123,7 @@ func TestReconcileDeployment_DeploymentAndServiceCreated(t *testing.T) {
 	ks := deployTestKeystone()
 	r := newDeployTestReconciler(s, ks)
 
-	result, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "")
+	result, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	// Deployment just created, not ready yet — should requeue.
 	g.Expect(result.RequeueAfter).To(Equal(RequeueDeploymentPolling))
@@ -148,7 +148,7 @@ func TestReconcileDeployment_NotReady_Requeues(t *testing.T) {
 	deploy := notReadyDeployment(ks, "keystone-config-abc123")
 	r := newDeployTestReconciler(s, ks, deploy)
 
-	result, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "")
+	result, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(RequeueDeploymentPolling))
 
@@ -165,7 +165,7 @@ func TestReconcileDeployment_Ready_SetsEndpoint(t *testing.T) {
 	deploy := readyDeployment(ks, "keystone-config-abc123")
 	r := newDeployTestReconciler(s, ks, deploy)
 
-	result, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "")
+	result, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(BeZero())
 
@@ -183,7 +183,7 @@ func TestReconcileDeployment_OwnerReferences(t *testing.T) {
 	ks := deployTestKeystone()
 	r := newDeployTestReconciler(s, ks)
 
-	_, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "")
+	_, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// Verify Deployment has owner reference.
@@ -209,7 +209,7 @@ func TestReconcileDeployment_DeploymentSpec(t *testing.T) {
 	ks := deployTestKeystone()
 	r := newDeployTestReconciler(s, ks)
 
-	_, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "")
+	_, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var deploy appsv1.Deployment
@@ -367,13 +367,13 @@ func TestBuildKeystoneDeployment_NilReplicasWhenAutoscaling(t *testing.T) {
 		MaxReplicas:          6,
 		TargetCPUUtilization: int32Ptr(80),
 	}
-	deployAuto := buildKeystoneDeployment(ksAuto, "keystone-config-abc123", "")
+	deployAuto := buildKeystoneDeployment(ksAuto, "keystone-config-abc123", "", "")
 	g.Expect(deployAuto.Spec.Replicas).To(BeNil(), "replicas must be nil when autoscaling is set so the HPA owns the count")
 
 	// Autoscaling disabled: replicas must equal spec.replicas.
 	ksStatic := deployTestKeystone()
 	ksStatic.Spec.Deployment.Replicas = 3
-	deployStatic := buildKeystoneDeployment(ksStatic, "keystone-config-abc123", "")
+	deployStatic := buildKeystoneDeployment(ksStatic, "keystone-config-abc123", "", "")
 	g.Expect(deployStatic.Spec.Replicas).NotTo(BeNil())
 	g.Expect(*deployStatic.Spec.Replicas).To(Equal(int32(3)))
 }
@@ -391,7 +391,7 @@ func TestBuildKeystoneDeployment_ZeroReplicasFallsBackToDefault(t *testing.T) {
 	ks := deployTestKeystone()
 	ks.Spec.Deployment.Replicas = 0 // webhook-bypassed / deployment-block-omitting spec
 
-	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "")
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "", "")
 
 	g.Expect(deploy.Spec.Replicas).NotTo(BeNil())
 	g.Expect(*deploy.Spec.Replicas).To(Equal(keystonev1alpha1.DefaultReplicas),
@@ -422,7 +422,7 @@ func TestReconcileDeployment_AutoscalingPreservesLiveReplicas(t *testing.T) {
 	live.Status.ReadyReplicas = 5
 	r := newDeployTestReconciler(s, ks, live)
 
-	_, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "")
+	_, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var deploy appsv1.Deployment
@@ -444,7 +444,7 @@ func TestReconcileDeployment_AutoscalingPreservesLiveReplicas(t *testing.T) {
 func TestBuildKeystoneDeployment_PodSecurityContextSetsFSGroup(t *testing.T) {
 	g := NewGomegaWithT(t)
 
-	deploy := buildKeystoneDeployment(deployTestKeystone(), "keystone-config-abc123", "")
+	deploy := buildKeystoneDeployment(deployTestKeystone(), "keystone-config-abc123", "", "")
 
 	psc := deploy.Spec.Template.Spec.SecurityContext
 	g.Expect(psc).NotTo(BeNil(), "PodSecurityContext must be set so FSGroup applies")
@@ -475,7 +475,7 @@ func TestBuildKeystoneDeployment_PodSecurityContextSetsFSGroup(t *testing.T) {
 func TestBuildKeystoneDeployment_FernetAndCredentialVolumesSetDefaultMode0400(t *testing.T) {
 	g := NewGomegaWithT(t)
 
-	deploy := buildKeystoneDeployment(deployTestKeystone(), "keystone-config-abc123", "")
+	deploy := buildKeystoneDeployment(deployTestKeystone(), "keystone-config-abc123", "", "")
 
 	var fernetVol, credentialVol, configVol corev1.Volume
 	for _, v := range deploy.Spec.Template.Spec.Volumes {
@@ -510,7 +510,7 @@ func TestBuildKeystoneDeployment_FernetAndCredentialVolumesSetDefaultMode0400(t 
 func TestBuildKeystoneDeployment_ContainerSecurityContextUnchangedByCC0099(t *testing.T) {
 	g := NewGomegaWithT(t)
 
-	deploy := buildKeystoneDeployment(deployTestKeystone(), "keystone-config-abc123", "")
+	deploy := buildKeystoneDeployment(deployTestKeystone(), "keystone-config-abc123", "", "")
 
 	container := findContainerByName(deploy.Spec.Template.Spec.Containers, "keystone")
 	g.Expect(container).NotTo(BeNil(), "keystone container must exist")
@@ -525,7 +525,7 @@ func TestBuildKeystoneDeployment_ContainerSecurityContextUnchangedByCC0099(t *te
 func TestBuildKeystoneDeployment_NoFSGroupChangePolicyOrUnsupportedFields(t *testing.T) {
 	g := NewGomegaWithT(t)
 
-	deploy := buildKeystoneDeployment(deployTestKeystone(), "keystone-config-abc123", "")
+	deploy := buildKeystoneDeployment(deployTestKeystone(), "keystone-config-abc123", "", "")
 
 	psc := deploy.Spec.Template.Spec.SecurityContext
 	g.Expect(psc).NotTo(BeNil(), "PodSecurityContext must be set")
@@ -539,7 +539,7 @@ func TestReconcileDeployment_NotReady_ConditionMessageAndGeneration(t *testing.T
 	deploy := notReadyDeployment(ks, "keystone-config-abc123")
 	r := newDeployTestReconciler(s, ks, deploy)
 
-	result, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "")
+	result, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(RequeueDeploymentPolling))
 
@@ -558,7 +558,7 @@ func TestReconcileDeployment_Ready_ConditionMessageAndGeneration(t *testing.T) {
 	deploy := readyDeployment(ks, "keystone-config-abc123")
 	r := newDeployTestReconciler(s, ks, deploy)
 
-	result, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "")
+	result, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(BeZero())
 
@@ -577,7 +577,7 @@ func TestReconcileDeployment_ServiceCreatedAlongsideDeployment(t *testing.T) {
 	// Only pre-create the Keystone CR, not the Deployment or Service.
 	r := newDeployTestReconciler(s, ks)
 
-	_, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "")
+	_, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// Verify both Deployment and Service exist after a single reconcile call.
@@ -614,8 +614,8 @@ func TestBuildKeystoneDeployment_StablePodTemplate(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
 
-	deploy1 := buildKeystoneDeployment(ks, "keystone-config-abc123", "")
-	deploy2 := buildKeystoneDeployment(ks, "keystone-config-abc123", "")
+	deploy1 := buildKeystoneDeployment(ks, "keystone-config-abc123", "", "")
+	deploy2 := buildKeystoneDeployment(ks, "keystone-config-abc123", "", "")
 
 	g.Expect(deploy1.Spec.Template).To(Equal(deploy2.Spec.Template),
 		"pod template must be stable across invocations")
@@ -629,7 +629,7 @@ func TestBuildKeystoneDeployment_VolumesMaintained(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
 
-	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "")
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "", "")
 
 	// Verify expected volumes are present.
 	g.Expect(deploy.Spec.Template.Spec.Volumes).NotTo(BeEmpty())
@@ -682,7 +682,7 @@ func TestBuildKeystoneDeployment_DBConnectionEnv(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
 
-	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "")
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "", "")
 
 	container := findContainerByName(deploy.Spec.Template.Spec.Containers, "keystone")
 	g.Expect(container).NotTo(BeNil())
@@ -727,7 +727,7 @@ func TestReconcileDeployment_NoSecretReadRequired(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	result, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "")
+	result, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(RequeueDeploymentPolling))
 	g.Expect(secretGetCalled).To(BeFalse(),
@@ -741,7 +741,7 @@ func TestReconcileDeployment_PDBCreated(t *testing.T) {
 	ks.Spec.Deployment.Replicas = 3 // explicit: PDB expectations depend on this value
 	r := newDeployTestReconciler(s, ks)
 
-	_, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "")
+	_, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var pdb policyv1.PodDisruptionBudget
@@ -759,7 +759,7 @@ func TestReconcileDeployment_PDBLabelsAndSelector(t *testing.T) {
 	ks := deployTestKeystone()
 	r := newDeployTestReconciler(s, ks)
 
-	_, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "")
+	_, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var pdb policyv1.PodDisruptionBudget
@@ -785,7 +785,7 @@ func TestReconcileDeployment_PDBMinAvailableForMultipleReplicas(t *testing.T) {
 	ks.Spec.Deployment.Replicas = 3 // explicit: PDB expectations depend on this value
 	r := newDeployTestReconciler(s, ks)
 
-	_, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "")
+	_, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var pdb policyv1.PodDisruptionBudget
@@ -805,7 +805,7 @@ func TestReconcileDeployment_PDBMaxUnavailableForSingleReplica(t *testing.T) {
 	ks.Spec.Deployment.Replicas = 1
 	r := newDeployTestReconciler(s, ks)
 
-	_, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "")
+	_, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var pdb policyv1.PodDisruptionBudget
@@ -828,7 +828,7 @@ func TestReconcileDeployment_PDBUpdatedOnReplicaChange(t *testing.T) {
 	ctx := context.Background()
 
 	// First reconcile with replicas=3 → minAvailable=1.
-	_, err := r.reconcileDeployment(ctx, ks, "keystone-config-abc123", "")
+	_, err := r.reconcileDeployment(ctx, ks, "keystone-config-abc123", "", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var pdb policyv1.PodDisruptionBudget
@@ -839,7 +839,7 @@ func TestReconcileDeployment_PDBUpdatedOnReplicaChange(t *testing.T) {
 
 	// Change to replicas=1 and re-reconcile → maxUnavailable=1.
 	ks.Spec.Deployment.Replicas = 1
-	_, err = r.reconcileDeployment(ctx, ks, "keystone-config-abc123", "")
+	_, err = r.reconcileDeployment(ctx, ks, "keystone-config-abc123", "", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	g.Expect(r.Client.Get(ctx, types.NamespacedName{
@@ -856,7 +856,7 @@ func TestReconcileDeployment_PDBSelectorMatchesDeployment(t *testing.T) {
 	ks := deployTestKeystone()
 	r := newDeployTestReconciler(s, ks)
 
-	_, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "")
+	_, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var deploy appsv1.Deployment
@@ -904,7 +904,7 @@ func TestReconcileDeployment_ContainerResources(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
 
-	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "")
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "", "")
 
 	g.Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(1))
 	container := deploy.Spec.Template.Spec.Containers[0]
@@ -928,7 +928,7 @@ func TestReconcileDeployment_CustomResources(t *testing.T) {
 		},
 	}
 
-	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "")
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "", "")
 
 	g.Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(1))
 	container := deploy.Spec.Template.Spec.Containers[0]
@@ -947,7 +947,7 @@ func TestReconcileDeployment_NilResources(t *testing.T) {
 	ks := deployTestKeystone()
 	ks.Spec.Deployment.Resources = nil
 
-	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "")
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "", "")
 
 	g.Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(1))
 	container := deploy.Spec.Template.Spec.Containers[0]
@@ -981,7 +981,7 @@ func TestReconcileDeployment_PDBEnsureError(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "")
+	_, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "", "")
 
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("ensuring PodDisruptionBudget"))
@@ -1094,7 +1094,7 @@ func TestBuildKeystoneDeployment_DefaultTopologySpreadConstraints(t *testing.T) 
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
 
-	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "")
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "", "")
 
 	tscs := deploy.Spec.Template.Spec.TopologySpreadConstraints
 	g.Expect(tscs).To(HaveLen(2))
@@ -1122,7 +1122,7 @@ func TestBuildKeystoneDeployment_EmptyTopologySpreadConstraintsDisablesDefaults(
 	ks := deployTestKeystone()
 	ks.Spec.Deployment.TopologySpreadConstraints = []corev1.TopologySpreadConstraint{}
 
-	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "")
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "", "")
 
 	g.Expect(deploy.Spec.Template.Spec.TopologySpreadConstraints).To(BeEmpty())
 }
@@ -1134,7 +1134,7 @@ func TestBuildKeystoneDeployment_DefaultTopologySpreadConstraints_LabelSelectorM
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
 
-	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "")
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "", "")
 	expected := selectorLabels(ks)
 
 	for i, tsc := range deploy.Spec.Template.Spec.TopologySpreadConstraints {
@@ -1165,7 +1165,7 @@ func TestBuildKeystoneDeployment_CustomTopologySpreadConstraints(t *testing.T) {
 		},
 	}
 
-	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "")
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "", "")
 
 	tscs := deploy.Spec.Template.Spec.TopologySpreadConstraints
 	g.Expect(tscs).To(HaveLen(2))
@@ -1186,7 +1186,7 @@ func TestBuildKeystoneDeployment_PriorityClassNameSet(t *testing.T) {
 	pcn := "system-cluster-critical"
 	ks.Spec.Deployment.PriorityClassName = &pcn
 
-	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "")
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "", "")
 
 	g.Expect(deploy.Spec.Template.Spec.PriorityClassName).To(Equal("system-cluster-critical"))
 }
@@ -1198,7 +1198,7 @@ func TestBuildKeystoneDeployment_PriorityClassNameNil(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
 
-	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "")
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "", "")
 
 	g.Expect(deploy.Spec.Template.Spec.PriorityClassName).To(BeEmpty())
 }
@@ -1217,7 +1217,7 @@ func TestReconcileDeployment_RollingUpdate_ReadyDeployment_TransitionsToContract
 	deploy := readyDeployment(ks, "keystone-config-abc123")
 	r := newDeployTestReconciler(s, ks, deploy)
 
-	result, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "")
+	result, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// Must requeue immediately (not RequeueAfter) so the next reconcile enters reconcileContract.
@@ -1252,7 +1252,7 @@ func TestReconcileDeployment_RollingUpdate_NotReady_Requeues(t *testing.T) {
 	deploy := notReadyDeployment(ks, "keystone-config-abc123")
 	r := newDeployTestReconciler(s, ks, deploy)
 
-	result, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "")
+	result, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// Must requeue with the standard polling interval.
@@ -1280,7 +1280,7 @@ func TestReconcileDeployment_NoUpgrade_Ready_SetsEndpoint(t *testing.T) {
 	deploy := readyDeployment(ks, "keystone-config-abc123")
 	r := newDeployTestReconciler(s, ks, deploy)
 
-	result, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "")
+	result, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// Normal path: no requeue.
@@ -1316,7 +1316,7 @@ func TestReconcileDeployment_OtherPhase_Ready_SetsEndpoint(t *testing.T) {
 	deploy := readyDeployment(ks, "keystone-config-abc123")
 	r := newDeployTestReconciler(s, ks, deploy)
 
-	result, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "")
+	result, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// Normal path: no requeue.
@@ -1349,7 +1349,7 @@ func TestReconcileDeployment_ConditionObservedGeneration(t *testing.T) {
 
 	r := newDeployTestReconciler(s, ks)
 
-	_, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "")
+	_, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DeploymentReady")
@@ -1363,7 +1363,7 @@ func TestReconcileDeployment_ConditionObservedGeneration(t *testing.T) {
 	deploy := readyDeployment(ks2, "keystone-config-abc123")
 	r2 := newDeployTestReconciler(s, ks2, deploy)
 
-	_, err = r2.reconcileDeployment(context.Background(), ks2, "keystone-config-abc123", "")
+	_, err = r2.reconcileDeployment(context.Background(), ks2, "keystone-config-abc123", "", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cond2 := meta.FindStatusCondition(ks2.Status.Conditions, "DeploymentReady")
@@ -1392,7 +1392,7 @@ func TestBuildKeystoneDeployment_TerminationGracePeriodDefault(t *testing.T) {
 	ks := deployTestKeystone()
 	ks.Spec.Deployment.TerminationGracePeriodSeconds = nil
 
-	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "")
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "", "")
 
 	g.Expect(deploy.Spec.Template.Spec.TerminationGracePeriodSeconds).NotTo(BeNil())
 	g.Expect(*deploy.Spec.Template.Spec.TerminationGracePeriodSeconds).
@@ -1407,7 +1407,7 @@ func TestBuildKeystoneDeployment_TerminationGracePeriodCustom(t *testing.T) {
 	custom := int64(90)
 	ks.Spec.Deployment.TerminationGracePeriodSeconds = &custom
 
-	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "")
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "", "")
 
 	g.Expect(deploy.Spec.Template.Spec.TerminationGracePeriodSeconds).NotTo(BeNil())
 	g.Expect(*deploy.Spec.Template.Spec.TerminationGracePeriodSeconds).To(Equal(int64(90)))
@@ -1424,7 +1424,7 @@ func TestBuildKeystoneDeployment_PreStopSleepDefault(t *testing.T) {
 	ks := deployTestKeystone()
 	ks.Spec.Deployment.PreStopSleepSeconds = nil
 
-	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "")
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "", "")
 
 	container := findContainerByName(deploy.Spec.Template.Spec.Containers, "keystone")
 	g.Expect(container).NotTo(BeNil())
@@ -1445,7 +1445,7 @@ func TestBuildKeystoneDeployment_PreStopSleepCustom(t *testing.T) {
 	custom := int64(12)
 	ks.Spec.Deployment.PreStopSleepSeconds = &custom
 
-	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "")
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "", "")
 
 	container := findContainerByName(deploy.Spec.Template.Spec.Containers, "keystone")
 	g.Expect(container).NotTo(BeNil())
@@ -1461,7 +1461,7 @@ func TestBuildKeystoneDeployment_PreStopSleepZero(t *testing.T) {
 	zero := int64(0)
 	ks.Spec.Deployment.PreStopSleepSeconds = &zero
 
-	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "")
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "", "")
 
 	container := findContainerByName(deploy.Spec.Template.Spec.Containers, "keystone")
 	g.Expect(container).NotTo(BeNil())
@@ -1480,7 +1480,7 @@ func TestReconcileAndWebhookDefaultsAgree(t *testing.T) {
 	ks.Spec.Deployment.TerminationGracePeriodSeconds = nil
 	ks.Spec.Deployment.PreStopSleepSeconds = nil
 
-	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "")
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "", "")
 
 	g.Expect(deploy.Spec.Template.Spec.TerminationGracePeriodSeconds).NotTo(BeNil())
 	g.Expect(*deploy.Spec.Template.Spec.TerminationGracePeriodSeconds).
@@ -1716,7 +1716,7 @@ func TestBuildKeystoneDeployment_DefaultRollingUpdateStrategy(t *testing.T) {
 	ks := deployTestKeystone()
 	ks.Spec.Deployment.Strategy = nil
 
-	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "")
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "", "")
 
 	g.Expect(deploy.Spec.Strategy.Type).To(Equal(appsv1.RollingUpdateDeploymentStrategyType))
 	g.Expect(deploy.Spec.Strategy.RollingUpdate).NotTo(BeNil())
@@ -1743,8 +1743,8 @@ func TestBuildKeystoneDeployment_StrategyStableAcrossReconciles(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
 
-	first := buildKeystoneDeployment(ks, "keystone-config-abc123", "")
-	second := buildKeystoneDeployment(ks, "keystone-config-abc123", "")
+	first := buildKeystoneDeployment(ks, "keystone-config-abc123", "", "")
+	second := buildKeystoneDeployment(ks, "keystone-config-abc123", "", "")
 
 	g.Expect(first.Spec.Strategy).To(Equal(second.Spec.Strategy))
 }
@@ -1763,7 +1763,7 @@ func TestEnsureDeployment_StrategyConvergesFromServerDefault(t *testing.T) {
 
 	// Seed an existing Deployment that mimics the server-defaulted Strategy
 	// (25%/25%) — as if created by an older operator that omitted the field.
-	existing := buildKeystoneDeployment(ks, "keystone-config-abc123", "")
+	existing := buildKeystoneDeployment(ks, "keystone-config-abc123", "", "")
 	serverDefaultUnavailable := intstr.FromString("25%")
 	serverDefaultSurge := intstr.FromString("25%")
 	existing.Spec.Strategy = appsv1.DeploymentStrategy{
@@ -1778,7 +1778,7 @@ func TestEnsureDeployment_StrategyConvergesFromServerDefault(t *testing.T) {
 	ctx := context.Background()
 
 	// First reconcile: the default 0/1 strategy overwrites the server default.
-	_, err := r.reconcileDeployment(ctx, ks, "keystone-config-abc123", "")
+	_, err := r.reconcileDeployment(ctx, ks, "keystone-config-abc123", "", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var afterFirst appsv1.Deployment
@@ -1792,7 +1792,7 @@ func TestEnsureDeployment_StrategyConvergesFromServerDefault(t *testing.T) {
 	// Second reconcile: the Strategy block must remain identical — no further
 	// drift-triggered rollout (the stability contract from
 	// TestBuildKeystoneDeployment_StrategyStableAcrossReconciles held end-to-end).
-	_, err = r.reconcileDeployment(ctx, ks, "keystone-config-abc123", "")
+	_, err = r.reconcileDeployment(ctx, ks, "keystone-config-abc123", "", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var afterSecond appsv1.Deployment
@@ -1818,7 +1818,7 @@ func TestBuildKeystoneDeployment_StrategyOverrideRollingCustomPercents(t *testin
 		},
 	}
 
-	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "")
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "", "")
 
 	g.Expect(deploy.Spec.Strategy.Type).To(Equal(appsv1.RollingUpdateDeploymentStrategyType))
 	g.Expect(deploy.Spec.Strategy.RollingUpdate).NotTo(BeNil())
@@ -1836,7 +1836,7 @@ func TestBuildKeystoneDeployment_StrategyOverrideRecreate(t *testing.T) {
 		Type: appsv1.RecreateDeploymentStrategyType,
 	}
 
-	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "")
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "", "")
 
 	g.Expect(deploy.Spec.Strategy.Type).To(Equal(appsv1.RecreateDeploymentStrategyType))
 	g.Expect(deploy.Spec.Strategy.RollingUpdate).To(BeNil())
@@ -1851,7 +1851,7 @@ func TestBuildKeystoneDeployment_ContainerNameIsKeystone(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
 
-	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "")
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "", "")
 
 	g.Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(1),
 		"Deployment must define exactly one container")
@@ -1868,7 +1868,7 @@ func TestBuildKeystoneDeployment_NamedPortIsKeystone(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
 
-	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "")
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "", "")
 
 	g.Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(1))
 	ports := deploy.Spec.Template.Spec.Containers[0].Ports
@@ -1888,7 +1888,7 @@ func TestBuildKeystoneDeployment_NameMatchesCR(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
 
-	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "")
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "", "")
 
 	g.Expect(deploy.Name).To(Equal(ks.Name),
 		"Deployment Name must equal the CR name")
@@ -1943,7 +1943,7 @@ func TestBuildKeystoneDeployment_DBTLSVolumeAndMount_WhenEnabled(t *testing.T) {
 		ClientCertSecretRef: commonv1.SecretRefSpec{Name: "test-keystone-db-client"},
 	}
 
-	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "")
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "", "")
 
 	var tlsVol corev1.Volume
 	var tlsVolFound bool
@@ -1998,7 +1998,7 @@ func TestBuildKeystoneDeployment_DBTLSVolume_UsesUserSuppliedSecretNames(t *test
 		ClientCertSecretRef: commonv1.SecretRefSpec{Name: "site-specific-client-keypair"},
 	}
 
-	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "")
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "", "")
 
 	tlsVol := findVolumeByName(deploy.Spec.Template.Spec.Volumes, "db-tls")
 	g.Expect(tlsVol).NotTo(BeNil(),
@@ -2018,7 +2018,7 @@ func TestBuildKeystoneDeployment_DBTLSVolumeAbsent_WhenNil(t *testing.T) {
 	g.Expect(ks.Spec.Database.TLS).To(BeNil(),
 		"precondition: deployTestKeystone must leave Database.TLS nil")
 
-	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "")
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "", "")
 
 	for _, v := range deploy.Spec.Template.Spec.Volumes {
 		g.Expect(v.Name).NotTo(Equal("db-tls"),
@@ -2044,7 +2044,7 @@ func TestBuildKeystoneDeployment_DBTLSVolumeAbsent_WhenDisabled(t *testing.T) {
 		ClientCertSecretRef: commonv1.SecretRefSpec{Name: "test-keystone-db-client"},
 	}
 
-	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "")
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "", "")
 
 	for _, v := range deploy.Spec.Template.Spec.Volumes {
 		g.Expect(v.Name).NotTo(Equal("db-tls"),
@@ -2078,7 +2078,7 @@ func TestBuildKeystoneDeployment_DynamicHashAnnotation(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := dynamicManagedDeployKeystone()
 
-	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "deadbeef")
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "deadbeef", "")
 
 	g.Expect(deploy.Spec.Template.Annotations).To(
 		HaveKeyWithValue("keystone.c5c3.io/db-connection-hash", "deadbeef"),
@@ -2093,7 +2093,7 @@ func TestBuildKeystoneDeployment_DynamicHashAnnotation(t *testing.T) {
 func TestBuildKeystoneDeployment_NoHashAnnotation_Static(t *testing.T) {
 	g := NewGomegaWithT(t)
 	// Brownfield (default deployTestKeystone) — CredentialsMode empty.
-	brownfield := buildKeystoneDeployment(deployTestKeystone(), "keystone-config-abc123", "deadbeef")
+	brownfield := buildKeystoneDeployment(deployTestKeystone(), "keystone-config-abc123", "deadbeef", "")
 	g.Expect(brownfield.Spec.Template.Annotations).NotTo(
 		HaveKey("keystone.c5c3.io/db-connection-hash"),
 	)
@@ -2101,7 +2101,7 @@ func TestBuildKeystoneDeployment_NoHashAnnotation_Static(t *testing.T) {
 	// Managed Static — CredentialsMode explicitly Static.
 	staticKS := dynamicManagedDeployKeystone()
 	staticKS.Spec.Database.CredentialsMode = commonv1.CredentialsModeStatic
-	staticDeploy := buildKeystoneDeployment(staticKS, "keystone-config-abc123", "deadbeef")
+	staticDeploy := buildKeystoneDeployment(staticKS, "keystone-config-abc123", "deadbeef", "")
 	g.Expect(staticDeploy.Spec.Template.Annotations).NotTo(
 		HaveKey("keystone.c5c3.io/db-connection-hash"),
 	)
@@ -2114,8 +2114,8 @@ func TestBuildKeystoneDeployment_HashAnnotationChangesWithCredential(t *testing.
 	g := NewGomegaWithT(t)
 	ks := dynamicManagedDeployKeystone()
 
-	first := buildKeystoneDeployment(ks, "keystone-config-abc123", "hash-1")
-	second := buildKeystoneDeployment(ks, "keystone-config-abc123", "hash-2")
+	first := buildKeystoneDeployment(ks, "keystone-config-abc123", "hash-1", "")
+	second := buildKeystoneDeployment(ks, "keystone-config-abc123", "hash-2", "")
 
 	g.Expect(first.Spec.Template.Annotations["keystone.c5c3.io/db-connection-hash"]).
 		NotTo(Equal(second.Spec.Template.Annotations["keystone.c5c3.io/db-connection-hash"]))

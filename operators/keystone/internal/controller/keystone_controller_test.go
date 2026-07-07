@@ -190,7 +190,7 @@ func testCredentialKeysSecret() runtime.Object {
 // testCompletedDBSyncJob returns a completed db_sync Job for testKeystone (brownfield mode).
 func testCompletedDBSyncJob(configMapName string) runtime.Object {
 	ks := testKeystone()
-	desired := buildDBSyncJob(ks, configMapName)
+	desired := buildDBSyncJob(ks, configMapName, "")
 	now := metav1.Now()
 	j := desired.DeepCopy()
 	j.Annotations = map[string]string{
@@ -210,7 +210,7 @@ func testCompletedDBSyncJob(configMapName string) runtime.Object {
 // testCompletedSchemaCheckJob returns a completed schema-check Job for testKeystone.
 func testCompletedSchemaCheckJob(configMapName string) runtime.Object {
 	ks := testKeystone()
-	desired := buildSchemaCheckJob(ks, configMapName)
+	desired := buildSchemaCheckJob(ks, configMapName, "")
 	now := metav1.Now()
 	j := desired.DeepCopy()
 	j.Annotations = map[string]string{
@@ -270,7 +270,7 @@ func testCompletedBootstrapJob(configMapName string) runtime.Object {
 	// during full reconcile.
 	sum := sha256.Sum256([]byte("admin-password"))
 	adminHash := hex.EncodeToString(sum[:])
-	desired := buildBootstrapJob(ks, configMapName, fmt.Sprintf("%s-fernet-keys", ks.Name), adminHash)
+	desired := buildBootstrapJob(ks, configMapName, "", fmt.Sprintf("%s-fernet-keys", ks.Name), adminHash)
 	now := metav1.Now()
 	j := desired.DeepCopy()
 	j.Annotations = map[string]string{

@@ -146,16 +146,16 @@ func setUpgradeJobFailed(keystone *keystonev1alpha1.Keystone, phase, jobName str
 
 // reconcileUpgrade handles phased database migration during an active upgrade.
 // It dispatches to the handler for the current UpgradePhase.
-func (r *KeystoneReconciler) reconcileUpgrade(ctx context.Context, keystone *keystonev1alpha1.Keystone, configMapName string) (ctrl.Result, error) {
+func (r *KeystoneReconciler) reconcileUpgrade(ctx context.Context, keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName string) (ctrl.Result, error) {
 	switch keystone.Status.UpgradePhase {
 	case keystonev1alpha1.UpgradePhaseExpanding:
-		return r.reconcileExpand(ctx, keystone, configMapName)
+		return r.reconcileExpand(ctx, keystone, configMapName, domainsSecretName)
 	case keystonev1alpha1.UpgradePhaseMigrating:
-		return r.reconcileMigrate(ctx, keystone, configMapName)
+		return r.reconcileMigrate(ctx, keystone, configMapName, domainsSecretName)
 	case keystonev1alpha1.UpgradePhaseRollingUpdate:
 		return r.reconcileRollingUpdate(ctx, keystone)
 	case keystonev1alpha1.UpgradePhaseContracting:
-		return r.reconcileContract(ctx, keystone, configMapName)
+		return r.reconcileContract(ctx, keystone, configMapName, domainsSecretName)
 	default:
 		return ctrl.Result{}, fmt.Errorf("unknown upgrade phase %q", keystone.Status.UpgradePhase)
 	}
@@ -172,7 +172,7 @@ type upgradePhaseStep struct {
 	// jobSuffix is the recordDBJobTerminalState key ("db-expand").
 	jobSuffix string
 	// buildJob builds the phase Job for the given image tag.
-	buildJob func(keystone *keystonev1alpha1.Keystone, configMapName, imageTag string) *batchv1.Job
+	buildJob func(keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName, imageTag string) *batchv1.Job
 	// failReason is the Warning event reason emitted when the Job fails.
 	failReason string
 	// onComplete runs the phase-specific transition once the Job succeeds.
@@ -183,8 +183,8 @@ type upgradePhaseStep struct {
 // one job-running upgrade phase, delegating the phase-specific transition to
 // step.onComplete. The Job runs with the target image (spec.image.tag);
 // see reconcileExpand for why expand and migrate also use the new release.
-func (r *KeystoneReconciler) runUpgradePhase(ctx context.Context, keystone *keystonev1alpha1.Keystone, configMapName string, step upgradePhaseStep) (ctrl.Result, error) {
-	phaseJob := step.buildJob(keystone, configMapName, keystone.Spec.Image.Tag)
+func (r *KeystoneReconciler) runUpgradePhase(ctx context.Context, keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName string, step upgradePhaseStep) (ctrl.Result, error) {
+	phaseJob := step.buildJob(keystone, configMapName, domainsSecretName, keystone.Spec.Image.Tag)
 	done, observed, err := job.RunJob(ctx, r.Client, r.Scheme, keystone, phaseJob)
 	// Emit db_sync metrics for the phase Job so the dashboard panel and
 	// failure-rate alerts continue to observe activity during upgrades. The Job
@@ -210,8 +210,8 @@ func (r *KeystoneReconciler) runUpgradePhase(ctx context.Context, keystone *keys
 // advances the expand head to the old release's HEAD. A subsequent contract
 // run with the new binary then fails keystone's _validate_upgrade_order check
 // with "upgrade contract ahead of expand".
-func (r *KeystoneReconciler) reconcileExpand(ctx context.Context, keystone *keystonev1alpha1.Keystone, configMapName string) (ctrl.Result, error) {
-	return r.runUpgradePhase(ctx, keystone, configMapName, upgradePhaseStep{
+func (r *KeystoneReconciler) reconcileExpand(ctx context.Context, keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName string) (ctrl.Result, error) {
+	return r.runUpgradePhase(ctx, keystone, configMapName, domainsSecretName, upgradePhaseStep{
 		name:       "Expand",
 		jobSuffix:  "db-expand",
 		buildJob:   buildExpandJob,
@@ -241,8 +241,8 @@ func (r *KeystoneReconciler) completeExpand(ctx context.Context, keystone *keyst
 // Like expand, migrate is executed with the N+1 (target) code so that the
 // alembic data-migration steps defined in the new release are applied (see
 // reconcileExpand for the full rationale).
-func (r *KeystoneReconciler) reconcileMigrate(ctx context.Context, keystone *keystonev1alpha1.Keystone, configMapName string) (ctrl.Result, error) {
-	return r.runUpgradePhase(ctx, keystone, configMapName, upgradePhaseStep{
+func (r *KeystoneReconciler) reconcileMigrate(ctx context.Context, keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName string) (ctrl.Result, error) {
+	return r.runUpgradePhase(ctx, keystone, configMapName, domainsSecretName, upgradePhaseStep{
 		name:       "Migrate",
 		jobSuffix:  "db-migrate",
 		buildJob:   buildMigrateJob,
@@ -282,8 +282,8 @@ func (r *KeystoneReconciler) reconcileRollingUpdate(ctx context.Context, keyston
 
 // reconcileContract runs the db_sync --contract Job using the NEW image (spec.image.tag)
 // and finalizes the upgrade on completion.
-func (r *KeystoneReconciler) reconcileContract(ctx context.Context, keystone *keystonev1alpha1.Keystone, configMapName string) (ctrl.Result, error) {
-	return r.runUpgradePhase(ctx, keystone, configMapName, upgradePhaseStep{
+func (r *KeystoneReconciler) reconcileContract(ctx context.Context, keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName string) (ctrl.Result, error) {
+	return r.runUpgradePhase(ctx, keystone, configMapName, domainsSecretName, upgradePhaseStep{
 		name:       "Contract",
 		jobSuffix:  "db-contract",
 		buildJob:   buildContractJob,

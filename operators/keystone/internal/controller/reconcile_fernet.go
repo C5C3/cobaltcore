@@ -42,7 +42,7 @@ var fernetRotateScript string
 // reconcileFernetKeys ensures that a Fernet keys Secret exists, a rotation
 // CronJob is configured, and a PushSecret backs up the keys to OpenBao.
 func (r *KeystoneReconciler) reconcileFernetKeys(ctx context.Context,
-	keystone *keystonev1alpha1.Keystone, configMapName string,
+	keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName string,
 ) (ctrl.Result, error) {
 	// 1. Ensure the Fernet keys Secret exists.
 	secretName := fmt.Sprintf("%s-fernet-keys", keystone.Name)
@@ -138,7 +138,7 @@ func (r *KeystoneReconciler) reconcileFernetKeys(ctx context.Context,
 	}
 
 	// 6. Ensure the rotation CronJob exists.
-	cronJob := fernetRotationCronJob(keystone, configMapName, scriptConfigMapName)
+	cronJob := fernetRotationCronJob(keystone, configMapName, scriptConfigMapName, domainsSecretName)
 	if err := job.EnsureCronJob(ctx, r.Client, r.Scheme, keystone, cronJob); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring fernet rotation cronjob: %w", err)
 	}
@@ -234,8 +234,8 @@ func generateFernetKey() (string, error) {
 // fernetRotationCronJob builds the CronJob that rotates Fernet keys and PATCHes
 // the result onto the staging Secret via the API. Thin wrapper over the shared
 // keyRotationCronJob builder; see rotation_cronjob.go for the Pod spec.
-func fernetRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName string, scriptConfigMapName string) *batchv1.CronJob {
-	cronJob := keyRotationCronJob(keystone, configMapName, scriptConfigMapName, keyRotationParams{
+func fernetRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName, scriptConfigMapName, domainsSecretName string) *batchv1.CronJob {
+	cronJob := keyRotationCronJob(keystone, configMapName, scriptConfigMapName, domainsSecretName, keyRotationParams{
 		keyKind:           "fernet",
 		otherKeyKind:      "credential",
 		stagingSecretName: fernetStagingSecretName(keystone),

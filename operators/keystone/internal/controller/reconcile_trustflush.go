@@ -32,7 +32,7 @@ import (
 //     Event so the bypass posture is visible in `kubectl describe`
 //     .
 func (r *KeystoneReconciler) reconcileTrustFlush(ctx context.Context,
-	keystone *keystonev1alpha1.Keystone, configMapName string,
+	keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName string,
 ) (ctrl.Result, error) {
 	cronJobName := fmt.Sprintf("%s-trust-flush", keystone.Name)
 
@@ -72,7 +72,7 @@ func (r *KeystoneReconciler) reconcileTrustFlush(ctx context.Context,
 	}
 
 	// Production path: trust flush configured — create or update CronJob.
-	cronJob := trustFlushCronJob(keystone, configMapName)
+	cronJob := trustFlushCronJob(keystone, configMapName, domainsSecretName)
 	if err := job.EnsureCronJob(ctx, r.Client, r.Scheme, keystone, cronJob); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring trust flush CronJob: %w", err)
 	}
@@ -89,14 +89,25 @@ func (r *KeystoneReconciler) reconcileTrustFlush(ctx context.Context,
 // trustFlushCronJob builds the CronJob that periodically purges expired trust
 // delegations. The CronJob runs keystone-manage trust_flush against the
 // database via the mounted keystone configuration.
-func trustFlushCronJob(keystone *keystonev1alpha1.Keystone, configMapName string) *batchv1.CronJob {
+func trustFlushCronJob(keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName string) *batchv1.CronJob {
 	image := keystone.Spec.Image.Reference()
 	fernetSecretName := fmt.Sprintf("%s-fernet-keys", keystone.Name)
 	credentialSecretName := fmt.Sprintf("%s-credential-keys", keystone.Name)
 
 	cmd := append([]string{"keystone-manage", "--config-dir=/etc/keystone/keystone.conf.d/", "trust_flush"}, keystone.Spec.TrustFlush.Args...)
 
-	return &batchv1.CronJob{
+	// Project the per-domain identity-backend config so keystone-manage
+	// trust_flush sees the same domain-specific driver files the API pods
+	// load; empty when no backend is projected.
+	var extraVolumes []corev1.Volume
+	var extraMounts []corev1.VolumeMount
+	if domainsSecretName != "" {
+		domVol, domMount := domainsVolumeAndMount(domainsSecretName)
+		extraVolumes = append(extraVolumes, domVol)
+		extraMounts = append(extraMounts, domMount)
+	}
+
+	cronJob := &batchv1.CronJob{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-trust-flush", keystone.Name),
 			Namespace: keystone.Namespace,
@@ -157,4 +168,11 @@ func trustFlushCronJob(keystone *keystonev1alpha1.Keystone, configMapName string
 			},
 		},
 	}
+	cronJob.Spec.JobTemplate.Spec.Template.Spec.Volumes = append(
+		cronJob.Spec.JobTemplate.Spec.Template.Spec.Volumes, extraVolumes...,
+	)
+	cronJob.Spec.JobTemplate.Spec.Template.Spec.Containers[0].VolumeMounts = append(
+		cronJob.Spec.JobTemplate.Spec.Template.Spec.Containers[0].VolumeMounts, extraMounts...,
+	)
+	return cronJob
 }

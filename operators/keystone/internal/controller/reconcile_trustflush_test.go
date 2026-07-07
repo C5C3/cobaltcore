@@ -86,7 +86,7 @@ func TestReconcileTrustFlush_TrustFlushSet_CreatesCronJob(t *testing.T) {
 	}
 	r := newTrustFlushTestReconciler(s, ks)
 
-	result, err := r.reconcileTrustFlush(context.Background(), ks, "test-keystone-config-abc123")
+	result, err := r.reconcileTrustFlush(context.Background(), ks, "test-keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(BeZero())
 
@@ -116,12 +116,12 @@ func TestReconcileTrustFlush_TrustFlushSet_CronJobUpdated(t *testing.T) {
 	ctx := context.Background()
 
 	// First reconcile creates CronJob.
-	_, err := r.reconcileTrustFlush(ctx, ks, "test-keystone-config-abc123")
+	_, err := r.reconcileTrustFlush(ctx, ks, "test-keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// Change schedule and re-reconcile.
 	ks.Spec.TrustFlush.Schedule = "*/30 * * * *"
-	_, err = r.reconcileTrustFlush(ctx, ks, "test-keystone-config-abc123")
+	_, err = r.reconcileTrustFlush(ctx, ks, "test-keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var cronJob batchv1.CronJob
@@ -144,7 +144,7 @@ func TestReconcileTrustFlush_ConditionObservedGeneration(t *testing.T) {
 	}
 	r := newTrustFlushTestReconciler(s, ks)
 
-	_, err := r.reconcileTrustFlush(context.Background(), ks, "test-keystone-config-abc123")
+	_, err := r.reconcileTrustFlush(context.Background(), ks, "test-keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "TrustFlushReady")
@@ -156,7 +156,7 @@ func TestReconcileTrustFlush_ConditionObservedGeneration(t *testing.T) {
 	ks2.Generation = 12
 	r2 := newTrustFlushTestReconciler(s, ks2)
 
-	_, err = r2.reconcileTrustFlush(context.Background(), ks2, "test-keystone-config-abc123")
+	_, err = r2.reconcileTrustFlush(context.Background(), ks2, "test-keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cond2 := meta.FindStatusCondition(ks2.Status.Conditions, "TrustFlushReady")
@@ -177,7 +177,7 @@ func TestReconcileTrustFlush_TrustFlushNilBypass_NoExistingCronJob_SetsTrustFlus
 	// trustFlush is nil by default
 	r := newTrustFlushTestReconciler(s, ks)
 
-	result, err := r.reconcileTrustFlush(context.Background(), ks, "test-keystone-config-abc123")
+	result, err := r.reconcileTrustFlush(context.Background(), ks, "test-keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(BeZero())
 
@@ -221,7 +221,7 @@ func TestReconcileTrustFlush_TrustFlushNilBypass_ExistingCronJob_DeletesCronJob(
 	}, &cronJob)).To(Succeed())
 
 	// reconcileTrustFlush with nil trustFlush should delete the CronJob.
-	result, err := r.reconcileTrustFlush(ctx, ks, "test-keystone-config-abc123")
+	result, err := r.reconcileTrustFlush(ctx, ks, "test-keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(BeZero())
 
@@ -283,7 +283,7 @@ func TestReconcileTrustFlush_EnsureError_Propagated(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileTrustFlush(context.Background(), ks, "test-keystone-config-abc123")
+	_, err := r.reconcileTrustFlush(context.Background(), ks, "test-keystone-config-abc123", "")
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("ensuring trust flush CronJob"))
 	g.Expect(err.Error()).To(ContainSubstring("simulated CronJob apply error"))
@@ -334,7 +334,7 @@ func TestReconcileTrustFlush_DeleteError_Propagated(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileTrustFlush(context.Background(), ks, "test-keystone-config-abc123")
+	_, err := r.reconcileTrustFlush(context.Background(), ks, "test-keystone-config-abc123", "")
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("deleting trust flush CronJob"))
 	g.Expect(err.Error()).To(ContainSubstring("simulated CronJob deletion error"))
@@ -349,7 +349,7 @@ func TestTrustFlushCronJob_Schedule(t *testing.T) {
 		Schedule: "*/15 * * * *",
 	}
 
-	cronJob := trustFlushCronJob(ks, "test-keystone-config-abc123")
+	cronJob := trustFlushCronJob(ks, "test-keystone-config-abc123", "")
 
 	g.Expect(cronJob.Spec.Schedule).To(Equal("*/15 * * * *"))
 }
@@ -362,14 +362,14 @@ func TestTrustFlushCronJob_Suspend(t *testing.T) {
 		Suspend:  true,
 	}
 
-	cronJob := trustFlushCronJob(ks, "test-keystone-config-abc123")
+	cronJob := trustFlushCronJob(ks, "test-keystone-config-abc123", "")
 
 	g.Expect(cronJob.Spec.Suspend).NotTo(BeNil())
 	g.Expect(*cronJob.Spec.Suspend).To(BeTrue())
 
 	// Verify unsuspended case.
 	ks.Spec.TrustFlush.Suspend = false
-	cronJob2 := trustFlushCronJob(ks, "test-keystone-config-abc123")
+	cronJob2 := trustFlushCronJob(ks, "test-keystone-config-abc123", "")
 	g.Expect(cronJob2.Spec.Suspend).NotTo(BeNil())
 	g.Expect(*cronJob2.Spec.Suspend).To(BeFalse())
 }
@@ -382,7 +382,7 @@ func TestTrustFlushCronJob_ArgsIncluded(t *testing.T) {
 		Args:     []string{"--date", "2026-01-01"},
 	}
 
-	cronJob := trustFlushCronJob(ks, "test-keystone-config-abc123")
+	cronJob := trustFlushCronJob(ks, "test-keystone-config-abc123", "")
 
 	container := cronJob.Spec.JobTemplate.Spec.Template.Spec.Containers[0]
 	g.Expect(container.Command).To(Equal([]string{
@@ -398,7 +398,7 @@ func TestTrustFlushCronJob_NoArgs(t *testing.T) {
 		Schedule: keystonev1alpha1.DefaultTrustFlushSchedule,
 	}
 
-	cronJob := trustFlushCronJob(ks, "test-keystone-config-abc123")
+	cronJob := trustFlushCronJob(ks, "test-keystone-config-abc123", "")
 
 	container := cronJob.Spec.JobTemplate.Spec.Template.Spec.Containers[0]
 	g.Expect(container.Command).To(Equal([]string{
@@ -413,7 +413,7 @@ func TestTrustFlushCronJob_Labels(t *testing.T) {
 		Schedule: keystonev1alpha1.DefaultTrustFlushSchedule,
 	}
 
-	cronJob := trustFlushCronJob(ks, "test-keystone-config-abc123")
+	cronJob := trustFlushCronJob(ks, "test-keystone-config-abc123", "")
 
 	g.Expect(cronJob.Labels).To(HaveKeyWithValue("app.kubernetes.io/name", "keystone"))
 	g.Expect(cronJob.Labels).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-keystone"))
@@ -432,7 +432,7 @@ func TestTrustFlushCronJob_Image(t *testing.T) {
 		Schedule: keystonev1alpha1.DefaultTrustFlushSchedule,
 	}
 
-	cronJob := trustFlushCronJob(ks, "test-keystone-config-abc123")
+	cronJob := trustFlushCronJob(ks, "test-keystone-config-abc123", "")
 
 	container := cronJob.Spec.JobTemplate.Spec.Template.Spec.Containers[0]
 	g.Expect(container.Image).To(Equal("ghcr.io/c5c3/keystone:2025.2"))
@@ -445,7 +445,7 @@ func TestTrustFlushCronJob_Volumes(t *testing.T) {
 		Schedule: keystonev1alpha1.DefaultTrustFlushSchedule,
 	}
 
-	cronJob := trustFlushCronJob(ks, "test-keystone-config-abc123")
+	cronJob := trustFlushCronJob(ks, "test-keystone-config-abc123", "")
 
 	volumes := cronJob.Spec.JobTemplate.Spec.Template.Spec.Volumes
 	g.Expect(volumes).To(HaveLen(3))
@@ -470,7 +470,7 @@ func TestTrustFlushCronJob_VolumeMounts(t *testing.T) {
 		Schedule: keystonev1alpha1.DefaultTrustFlushSchedule,
 	}
 
-	cronJob := trustFlushCronJob(ks, "test-keystone-config-abc123")
+	cronJob := trustFlushCronJob(ks, "test-keystone-config-abc123", "")
 
 	mounts := cronJob.Spec.JobTemplate.Spec.Template.Spec.Containers[0].VolumeMounts
 	g.Expect(mounts).To(HaveLen(3))
@@ -495,7 +495,7 @@ func TestTrustFlushCronJob_SecurityContext(t *testing.T) {
 		Schedule: keystonev1alpha1.DefaultTrustFlushSchedule,
 	}
 
-	cronJob := trustFlushCronJob(ks, "test-keystone-config-abc123")
+	cronJob := trustFlushCronJob(ks, "test-keystone-config-abc123", "")
 
 	container := findContainerByName(cronJob.Spec.JobTemplate.Spec.Template.Spec.Containers, "trust-flush")
 	expectRestrictedSecurityContext(g, container)
@@ -512,7 +512,7 @@ func TestTrustFlushCronJob_DBConnectionEnv(t *testing.T) {
 		Schedule: keystonev1alpha1.DefaultTrustFlushSchedule,
 	}
 
-	cronJob := trustFlushCronJob(ks, "test-keystone-config-abc123")
+	cronJob := trustFlushCronJob(ks, "test-keystone-config-abc123", "")
 
 	container := findContainerByName(cronJob.Spec.JobTemplate.Spec.Template.Spec.Containers, "trust-flush")
 	g.Expect(container).NotTo(BeNil())
@@ -531,7 +531,7 @@ func TestTrustFlushCronJob_PriorityClassNameSet(t *testing.T) {
 		Schedule: keystonev1alpha1.DefaultTrustFlushSchedule,
 	}
 
-	cronJob := trustFlushCronJob(ks, "test-keystone-config-abc123")
+	cronJob := trustFlushCronJob(ks, "test-keystone-config-abc123", "")
 
 	g.Expect(cronJob.Spec.JobTemplate.Spec.Template.Spec.PriorityClassName).To(Equal("system-cluster-critical"))
 }
@@ -545,7 +545,7 @@ func TestTrustFlushCronJob_PriorityClassNameNil(t *testing.T) {
 		Schedule: keystonev1alpha1.DefaultTrustFlushSchedule,
 	}
 
-	cronJob := trustFlushCronJob(ks, "test-keystone-config-abc123")
+	cronJob := trustFlushCronJob(ks, "test-keystone-config-abc123", "")
 
 	g.Expect(cronJob.Spec.JobTemplate.Spec.Template.Spec.PriorityClassName).To(BeEmpty())
 }
@@ -557,7 +557,7 @@ func TestTrustFlushCronJob_RestartPolicy(t *testing.T) {
 		Schedule: keystonev1alpha1.DefaultTrustFlushSchedule,
 	}
 
-	cronJob := trustFlushCronJob(ks, "test-keystone-config-abc123")
+	cronJob := trustFlushCronJob(ks, "test-keystone-config-abc123", "")
 
 	g.Expect(cronJob.Spec.JobTemplate.Spec.Template.Spec.RestartPolicy).To(Equal(corev1.RestartPolicyOnFailure))
 }
@@ -569,7 +569,7 @@ func TestTrustFlushCronJob_Name(t *testing.T) {
 		Schedule: keystonev1alpha1.DefaultTrustFlushSchedule,
 	}
 
-	cronJob := trustFlushCronJob(ks, "test-keystone-config-abc123")
+	cronJob := trustFlushCronJob(ks, "test-keystone-config-abc123", "")
 
 	g.Expect(cronJob.Name).To(Equal("test-keystone-trust-flush"))
 	g.Expect(cronJob.Namespace).To(Equal("default"))
@@ -593,7 +593,7 @@ func TestReconcileTrustFlush_BypassNil_EmitsWarningEvent(t *testing.T) {
 	}, funcr.Options{Verbosity: 1})
 	ctx := log.IntoContext(context.Background(), logger)
 
-	_, err := r.reconcileTrustFlush(ctx, ks, "test-keystone-config-abc123")
+	_, err := r.reconcileTrustFlush(ctx, ks, "test-keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	combined := strings.Join(logs, "\n")
@@ -626,7 +626,7 @@ func TestReconcileTrustFlush_WebhookDefaulted_CreatesCronJobAndReportsReady(t *t
 	}
 	r := newTrustFlushTestReconciler(s, ks)
 
-	_, err := r.reconcileTrustFlush(context.Background(), ks, "test-keystone-config-abc123")
+	_, err := r.reconcileTrustFlush(context.Background(), ks, "test-keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var cronJob batchv1.CronJob
@@ -664,7 +664,7 @@ func TestReconcileTrustFlush_SuspendTrue_PreservesCronJobAndReason(t *testing.T)
 	}
 	r := newTrustFlushTestReconciler(s, ks)
 
-	_, err := r.reconcileTrustFlush(context.Background(), ks, "test-keystone-config-abc123")
+	_, err := r.reconcileTrustFlush(context.Background(), ks, "test-keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var cronJob batchv1.CronJob

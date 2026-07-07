@@ -109,7 +109,7 @@ func isMariaDBClusterReady(ctx context.Context, c client.Client, keystone *keyst
 // and Grant CRs and waits for them to become Ready before running the db_sync
 // Job. In brownfield mode (Host set) it skips the MariaDB CRs and runs db_sync
 // directly.
-func (r *KeystoneReconciler) reconcileDatabase(ctx context.Context, keystone *keystonev1alpha1.Keystone, configMapName string) (ctrl.Result, error) {
+func (r *KeystoneReconciler) reconcileDatabase(ctx context.Context, keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName string) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
 	// Managed mode: verify MariaDB cluster health, create MariaDB CRs and
@@ -206,7 +206,7 @@ func (r *KeystoneReconciler) reconcileDatabase(ctx context.Context, keystone *ke
 			return ctrl.Result{}, fmt.Errorf("image tag changed during active upgrade: current upgrade targets %s but spec.image.tag is %s",
 				keystone.Status.TargetRelease, keystone.Spec.Image.Tag)
 		}
-		return r.reconcileUpgrade(ctx, keystone, configMapName)
+		return r.reconcileUpgrade(ctx, keystone, configMapName, domainsSecretName)
 	}
 
 	// Detect upgrade.
@@ -215,7 +215,7 @@ func (r *KeystoneReconciler) reconcileDatabase(ctx context.Context, keystone *ke
 	}
 
 	// Non-upgrade path: simple db_sync.
-	done, observed, err := job.RunJob(ctx, r.Client, r.Scheme, keystone, buildDBSyncJob(keystone, configMapName))
+	done, observed, err := job.RunJob(ctx, r.Client, r.Scheme, keystone, buildDBSyncJob(keystone, configMapName, domainsSecretName))
 	// Emit db_sync metrics on the terminal-transition observation path
 	// regardless of (done, err). In-progress Jobs are no-ops; the per-phase
 	// UID annotation on the Keystone CR guarantees at-most-once emission per
@@ -245,7 +245,7 @@ func (r *KeystoneReconciler) reconcileDatabase(ctx context.Context, keystone *ke
 	}
 
 	// Schema drift detection after db_sync.
-	done, observed, err = job.RunJob(ctx, r.Client, r.Scheme, keystone, buildSchemaCheckJob(keystone, configMapName))
+	done, observed, err = job.RunJob(ctx, r.Client, r.Scheme, keystone, buildSchemaCheckJob(keystone, configMapName, domainsSecretName))
 	// Same terminal-transition emission rule as db_sync above: the metric
 	// must contribute samples for every DB-related Job so dashboards/alerts
 	// observe schema-check failures.

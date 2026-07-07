@@ -47,7 +47,7 @@ func normalizedCredentialMaxActiveKeys(keystone *keystonev1alpha1.Keystone) int 
 // reconcileCredentialKeys ensures that a credential keys Secret exists, a rotation
 // CronJob is configured, and a PushSecret backs up the keys to OpenBao.
 func (r *KeystoneReconciler) reconcileCredentialKeys(ctx context.Context,
-	keystone *keystonev1alpha1.Keystone, configMapName string,
+	keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName string,
 ) (ctrl.Result, error) {
 	// 1. Ensure the credential keys Secret exists.
 	secretName := fmt.Sprintf("%s-credential-keys", keystone.Name)
@@ -144,7 +144,7 @@ func (r *KeystoneReconciler) reconcileCredentialKeys(ctx context.Context,
 	}
 
 	// 6. Ensure the rotation CronJob exists.
-	cronJob := credentialRotationCronJob(keystone, configMapName, scriptConfigMapName)
+	cronJob := credentialRotationCronJob(keystone, configMapName, scriptConfigMapName, domainsSecretName)
 	if err := job.EnsureCronJob(ctx, r.Client, r.Scheme, keystone, cronJob); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring credential rotation cronjob: %w", err)
 	}
@@ -188,8 +188,8 @@ func (r *KeystoneReconciler) ensureCredentialStagingSecret(ctx context.Context, 
 // (running credential_migrate against the DB) and PATCHes the result onto the
 // staging Secret via the API. Thin wrapper over the shared keyRotationCronJob
 // builder; see rotation_cronjob.go for the Pod spec.
-func credentialRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName string, scriptConfigMapName string) *batchv1.CronJob {
-	cronJob := keyRotationCronJob(keystone, configMapName, scriptConfigMapName, keyRotationParams{
+func credentialRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName, scriptConfigMapName, domainsSecretName string) *batchv1.CronJob {
+	cronJob := keyRotationCronJob(keystone, configMapName, scriptConfigMapName, domainsSecretName, keyRotationParams{
 		keyKind:           "credential",
 		otherKeyKind:      "fernet",
 		stagingSecretName: credentialStagingSecretName(keystone),

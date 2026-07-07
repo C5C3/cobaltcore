@@ -92,7 +92,7 @@ func buildGrant(keystone *keystonev1alpha1.Keystone) *mariadbv1alpha1.Grant {
 // TODO: Wire spec.Resources (or a smaller Job-specific default) to the
 // container. Currently runs as BestEffort QoS. See reconcile_deployment.go
 // containerResources() for the pattern used by the keystone container.
-func buildDBJob(keystone *keystonev1alpha1.Keystone, configMapName, image, nameSuffix string, command []string) *batchv1.Job {
+func buildDBJob(keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName, image, nameSuffix string, command []string) *batchv1.Job {
 	backoffLimit := int32(4)
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
@@ -145,11 +145,21 @@ func buildDBJob(keystone *keystonev1alpha1.Keystone, configMapName, image, nameS
 			job.Spec.Template.Spec.Containers[0].VolumeMounts, tlsMount,
 		)
 	}
+	// Project the per-domain identity-backend config so keystone-manage sees
+	// the same domain-specific driver files the API pods load; an empty name
+	// (no backend projected) leaves the Job byte-identical to before.
+	if domainsSecretName != "" {
+		domVol, domMount := domainsVolumeAndMount(domainsSecretName)
+		job.Spec.Template.Spec.Volumes = append(job.Spec.Template.Spec.Volumes, domVol)
+		job.Spec.Template.Spec.Containers[0].VolumeMounts = append(
+			job.Spec.Template.Spec.Containers[0].VolumeMounts, domMount,
+		)
+	}
 	return job
 }
 
-func buildDBSyncJob(keystone *keystonev1alpha1.Keystone, configMapName string) *batchv1.Job {
-	return buildDBJob(keystone, configMapName, keystone.Spec.Image.Reference(), "db-sync",
+func buildDBSyncJob(keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName string) *batchv1.Job {
+	return buildDBJob(keystone, configMapName, domainsSecretName, keystone.Spec.Image.Reference(), "db-sync",
 		[]string{"keystone-manage", "--config-dir=/etc/keystone/keystone.conf.d/", "db_sync"})
 }
 
@@ -158,25 +168,25 @@ func buildDBSyncJob(keystone *keystonev1alpha1.Keystone, configMapName string) *
 // image independently of spec.Image.Tag (expand/migrate use the old release,
 // contract uses the new release). Upgrades only run in tag mode, so the "repo:tag"
 // reference is always well-formed here.
-func buildUpgradeJob(keystone *keystonev1alpha1.Keystone, configMapName, imageTag, phase, flag string) *batchv1.Job {
+func buildUpgradeJob(keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName, imageTag, phase, flag string) *batchv1.Job {
 	image := keystone.Spec.Image.Repository + ":" + imageTag
-	return buildDBJob(keystone, configMapName, image, fmt.Sprintf("db-%s", phase),
+	return buildDBJob(keystone, configMapName, domainsSecretName, image, fmt.Sprintf("db-%s", phase),
 		[]string{"keystone-manage", "--config-dir=/etc/keystone/keystone.conf.d/", "db_sync", flag})
 }
 
 // buildExpandJob creates a db_sync --expand Job using the given imageTag.
-func buildExpandJob(keystone *keystonev1alpha1.Keystone, configMapName, imageTag string) *batchv1.Job {
-	return buildUpgradeJob(keystone, configMapName, imageTag, "expand", "--expand")
+func buildExpandJob(keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName, imageTag string) *batchv1.Job {
+	return buildUpgradeJob(keystone, configMapName, domainsSecretName, imageTag, "expand", "--expand")
 }
 
 // buildMigrateJob creates a db_sync --migrate Job using the given imageTag.
-func buildMigrateJob(keystone *keystonev1alpha1.Keystone, configMapName, imageTag string) *batchv1.Job {
-	return buildUpgradeJob(keystone, configMapName, imageTag, "migrate", "--migrate")
+func buildMigrateJob(keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName, imageTag string) *batchv1.Job {
+	return buildUpgradeJob(keystone, configMapName, domainsSecretName, imageTag, "migrate", "--migrate")
 }
 
 // buildContractJob creates a db_sync --contract Job using the given imageTag.
-func buildContractJob(keystone *keystonev1alpha1.Keystone, configMapName, imageTag string) *batchv1.Job {
-	return buildUpgradeJob(keystone, configMapName, imageTag, "contract", "--contract")
+func buildContractJob(keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName, imageTag string) *batchv1.Job {
+	return buildUpgradeJob(keystone, configMapName, domainsSecretName, imageTag, "contract", "--contract")
 }
 
 // buildSchemaCheckJob constructs a schema-check Job that verifies the database
@@ -189,14 +199,14 @@ func buildContractJob(keystone *keystonev1alpha1.Keystone, configMapName, imageT
 // TTL-driven garbage-collection would re-create it on the next reconcile, causing
 // a re-creation loop (#415). The Job is cleaned up via owner-reference GC
 // with the Keystone CR.
-func buildSchemaCheckJob(keystone *keystonev1alpha1.Keystone, configMapName string) *batchv1.Job {
+func buildSchemaCheckJob(keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName string) *batchv1.Job {
 	// Read-only schema verification via keystone-manage db_sync --check.
 	// Exit codes: 0 = up-to-date, 1..4 = needs expand/migrate/contract.
 	// This avoids parsing db_version output, which mixes Oslo log lines with
 	// revision hashes and only reports the expand head (not the contract head).
 	schemaCheckScript := `keystone-manage --config-dir=/etc/keystone/keystone.conf.d/ db_sync --check`
 
-	j := buildDBJob(keystone, configMapName, keystone.Spec.Image.Reference(), "schema-check",
+	j := buildDBJob(keystone, configMapName, domainsSecretName, keystone.Spec.Image.Reference(), "schema-check",
 		[]string{"/bin/sh", "-eu", "-c", schemaCheckScript})
 
 	// Override defaults: fewer retries for a read-only check. The completed Job

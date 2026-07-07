@@ -426,14 +426,14 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 					Name:          "FernetKeys",
 					ConditionType: "FernetKeysReady",
 					Fn: func(ctx context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
-						return r.reconcileFernetKeys(ctx, ks, configMapName)
+						return r.reconcileFernetKeys(ctx, ks, configMapName, domainsSecretName)
 					},
 				},
 				{
 					Name:          "CredentialKeys",
 					ConditionType: "CredentialKeysReady",
 					Fn: func(ctx context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
-						return r.reconcileCredentialKeys(ctx, ks, configMapName)
+						return r.reconcileCredentialKeys(ctx, ks, configMapName, domainsSecretName)
 					},
 				},
 				{
@@ -446,15 +446,15 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			})
 		}},
 		{Name: "Database", Fn: func(ctx context.Context) (ctrl.Result, error) {
-			return r.reconcileDatabase(ctx, &keystone, configMapName)
+			return r.reconcileDatabase(ctx, &keystone, configMapName, domainsSecretName)
 		}},
 		// Policy validation gates the Deployment: invalid oslo.policy overrides
 		// must be caught before reaching running pods.
 		{Name: "PolicyValidation", Fn: func(ctx context.Context) (ctrl.Result, error) {
-			return r.reconcilePolicyValidation(ctx, &keystone, configMapName)
+			return r.reconcilePolicyValidation(ctx, &keystone, configMapName, domainsSecretName)
 		}},
 		{Name: "Deployment", Fn: func(ctx context.Context) (ctrl.Result, error) {
-			return r.reconcileDeployment(ctx, &keystone, configMapName, dbConnectionHash)
+			return r.reconcileDeployment(ctx, &keystone, configMapName, dbConnectionHash, domainsSecretName)
 		}},
 		// Prune stale immutable ConfigMaps and domains Secrets after
 		// Deployment is ready so all pods run the new config before old
@@ -517,14 +517,14 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 					Name:          "Bootstrap",
 					ConditionType: "BootstrapReady",
 					Fn: func(ctx context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
-						return r.reconcileBootstrap(ctx, ks, configMapName)
+						return r.reconcileBootstrap(ctx, ks, configMapName, domainsSecretName)
 					},
 				},
 				{
 					Name:          "TrustFlush",
 					ConditionType: "TrustFlushReady",
 					Fn: func(ctx context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
-						return r.reconcileTrustFlush(ctx, ks, configMapName)
+						return r.reconcileTrustFlush(ctx, ks, configMapName, domainsSecretName)
 					},
 				},
 			})

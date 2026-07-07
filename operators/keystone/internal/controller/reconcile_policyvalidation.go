@@ -37,7 +37,7 @@ const (
 //     PolicyValidReady=True/PolicyValidationNotRequired
 //   - spec.policyOverrides set: run validation Job via job.RunJob, track
 //     lifecycle through InProgress/Passed/Failed states
-func (r *KeystoneReconciler) reconcilePolicyValidation(ctx context.Context, keystone *keystonev1alpha1.Keystone, configMapName string) (ctrl.Result, error) {
+func (r *KeystoneReconciler) reconcilePolicyValidation(ctx context.Context, keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName string) (ctrl.Result, error) {
 	jobName := fmt.Sprintf("%s-policy-validation", keystone.Name)
 
 	// Path 1: no policy overrides — delete any existing validation Job and
@@ -58,7 +58,7 @@ func (r *KeystoneReconciler) reconcilePolicyValidation(ctx context.Context, keys
 
 	// Path 2: policy overrides set — run validation Job. Policy validation does
 	// not emit db_sync metrics, so the observed Job is discarded.
-	done, _, err := job.RunJob(ctx, r.Client, r.Scheme, keystone, buildPolicyValidationJob(keystone, configMapName))
+	done, _, err := job.RunJob(ctx, r.Client, r.Scheme, keystone, buildPolicyValidationJob(keystone, configMapName, domainsSecretName))
 	if err != nil {
 		msg := fmt.Sprintf("Policy validation failed: %v", err)
 		if errors.Is(err, job.ErrJobFailed) {
@@ -149,10 +149,10 @@ func getValidationErrorMessage(ctx context.Context, c client.Client, jobName, na
 // finishes (#415).
 // oslopolicy-validator reads keystone.conf from the mounted config dir to
 // resolve [oslo_policy] policy_file.
-func buildPolicyValidationJob(keystone *keystonev1alpha1.Keystone, configMapName string) *batchv1.Job {
+func buildPolicyValidationJob(keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName string) *batchv1.Job {
 	backoffLimit := int32(2)
 
-	return &batchv1.Job{
+	j := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-policy-validation", keystone.Name),
 			Namespace: keystone.Namespace,
@@ -195,6 +195,16 @@ func buildPolicyValidationJob(keystone *keystonev1alpha1.Keystone, configMapName
 			},
 		},
 	}
+	// Project the per-domain identity-backend config so the validator loads
+	// the same config surface the API pods do; empty when nothing projected.
+	if domainsSecretName != "" {
+		domVol, domMount := domainsVolumeAndMount(domainsSecretName)
+		j.Spec.Template.Spec.Volumes = append(j.Spec.Template.Spec.Volumes, domVol)
+		j.Spec.Template.Spec.Containers[0].VolumeMounts = append(
+			j.Spec.Template.Spec.Containers[0].VolumeMounts, domMount,
+		)
+	}
+	return j
 }
 
 // deleteValidationJob deletes the validation Job identified by namespace and

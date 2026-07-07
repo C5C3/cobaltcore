@@ -99,7 +99,7 @@ func TestReconcileCredentialKeys_NoSecret_CreatesSecretAndRequeues(t *testing.T)
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	result, err := r.reconcileCredentialKeys(context.Background(), ks, "test-keystone-config-abc123")
+	result, err := r.reconcileCredentialKeys(context.Background(), ks, "test-keystone-config-abc123", "")
 
 	g.Expect(err).NotTo(HaveOccurred())
 	// Must requeue to confirm the secret is available before proceeding. Uses
@@ -160,7 +160,7 @@ func TestReconcileCredentialKeys_SecretAlreadyExists(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	result, err := r.reconcileCredentialKeys(context.Background(), ks, "test-keystone-config-abc123")
+	result, err := r.reconcileCredentialKeys(context.Background(), ks, "test-keystone-config-abc123", "")
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result).To(Equal(ctrl.Result{}))
@@ -259,7 +259,7 @@ func TestReconcileCredentialKeys_CronJobScheduleUpdated(t *testing.T) {
 	// Change the schedule in the spec.
 	ks.Spec.CredentialKeys.RotationSchedule = "0 */6 * * *"
 
-	result, err := r.reconcileCredentialKeys(context.Background(), ks, "test-keystone-config-abc123")
+	result, err := r.reconcileCredentialKeys(context.Background(), ks, "test-keystone-config-abc123", "")
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result).To(Equal(ctrl.Result{}))
@@ -290,7 +290,7 @@ func TestReconcileCredentialKeys_GeneratedKeysAreValid(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileCredentialKeys(context.Background(), ks, "test-keystone-config-abc123")
+	_, err := r.reconcileCredentialKeys(context.Background(), ks, "test-keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var secret corev1.Secret
@@ -331,7 +331,7 @@ func TestReconcileCredentialKeys_CronJobScheduleMatchesSpec(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileCredentialKeys(context.Background(), ks, "test-keystone-config-abc123")
+	_, err := r.reconcileCredentialKeys(context.Background(), ks, "test-keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var cronJob batchv1.CronJob
@@ -369,7 +369,7 @@ func TestReconcileCredentialKeys_PushSecretDeletionPolicyDelete(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileCredentialKeys(context.Background(), ks, "test-keystone-config-abc123")
+	_, err := r.reconcileCredentialKeys(context.Background(), ks, "test-keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var ps esov1alpha1.PushSecret
@@ -403,7 +403,7 @@ func TestReconcileCredentialKeys_PushSecretReferencesCorrectSecret(t *testing.T)
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileCredentialKeys(context.Background(), ks, "test-keystone-config-abc123")
+	_, err := r.reconcileCredentialKeys(context.Background(), ks, "test-keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var ps esov1alpha1.PushSecret
@@ -537,7 +537,7 @@ func TestReconcileCredentialKeys_MinActiveKeysFloor(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileCredentialKeys(context.Background(), ks, "test-keystone-config-abc123")
+	_, err := r.reconcileCredentialKeys(context.Background(), ks, "test-keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var secret corev1.Secret
@@ -575,7 +575,7 @@ func TestReconcileCredentialKeys_ConditionMessages(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileCredentialKeys(context.Background(), ks, "test-keystone-config-abc123")
+	_, err := r.reconcileCredentialKeys(context.Background(), ks, "test-keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// The final condition should be CredentialKeysAvailable with the correct message.
@@ -593,7 +593,7 @@ func TestCredentialRotationCronJob_SecurityContext(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := credentialTestKeystone()
 
-	cronJob := credentialRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-credential-rotate-script-abc123")
+	cronJob := credentialRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-credential-rotate-script-abc123", "")
 
 	podSpec := cronJob.Spec.JobTemplate.Spec.Template.Spec
 
@@ -625,7 +625,7 @@ func TestReconcileCredentialKeys_CronJobSpec(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileCredentialKeys(context.Background(), ks, "test-keystone-config-abc123")
+	_, err := r.reconcileCredentialKeys(context.Background(), ks, "test-keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var cronJob batchv1.CronJob
@@ -747,7 +747,7 @@ func TestCredentialRotationCronJob_PodSecurityContextSetsFSGroup(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := credentialTestKeystone()
 
-	cronJob := credentialRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-credential-rotate-script-abc123")
+	cronJob := credentialRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-credential-rotate-script-abc123", "")
 
 	psc := cronJob.Spec.JobTemplate.Spec.Template.Spec.SecurityContext
 	g.Expect(psc).NotTo(BeNil(), "PodSecurityContext must be set so FSGroup applies to rotation Pod")
@@ -781,7 +781,7 @@ func TestCredentialRotationCronJob_KeySecretVolumesSetDefaultMode0400(t *testing
 	g := NewGomegaWithT(t)
 	ks := credentialTestKeystone()
 
-	cronJob := credentialRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-credential-rotate-script-abc123")
+	cronJob := credentialRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-credential-rotate-script-abc123", "")
 
 	var srcVol, workVol, fernetVol, cfgVol, scriptsVol corev1.Volume
 	for _, v := range cronJob.Spec.JobTemplate.Spec.Template.Spec.Volumes {
@@ -828,7 +828,7 @@ func TestCredentialRotationCronJob_CopyKeysInitContainerPreservesNonWorldReadabl
 	g := NewGomegaWithT(t)
 	ks := credentialTestKeystone()
 
-	cronJob := credentialRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-credential-rotate-script-abc123")
+	cronJob := credentialRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-credential-rotate-script-abc123", "")
 
 	initContainer := findContainerByName(cronJob.Spec.JobTemplate.Spec.Template.Spec.InitContainers, "copy-keys")
 	g.Expect(initContainer).NotTo(BeNil(), "copy-keys init container must exist")
@@ -853,7 +853,7 @@ func TestCredentialRotationCronJob_RotateContainerVolumeMountsUnchanged(t *testi
 	g := NewGomegaWithT(t)
 	ks := credentialTestKeystone()
 
-	cronJob := credentialRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-credential-rotate-script-abc123")
+	cronJob := credentialRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-credential-rotate-script-abc123", "")
 
 	rotate := findContainerByName(cronJob.Spec.JobTemplate.Spec.Template.Spec.Containers, "credential-rotate")
 	g.Expect(rotate).NotTo(BeNil(), "credential-rotate container must exist")
@@ -875,7 +875,7 @@ func TestCredentialRotationCronJob_RotationContainerSecurityContextUnchanged(t *
 	g := NewGomegaWithT(t)
 	ks := credentialTestKeystone()
 
-	cronJob := credentialRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-credential-rotate-script-abc123")
+	cronJob := credentialRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-credential-rotate-script-abc123", "")
 	podSpec := cronJob.Spec.JobTemplate.Spec.Template.Spec
 
 	expectRestrictedSecurityContext(g, findContainerByName(podSpec.InitContainers, "copy-keys"))
@@ -957,7 +957,7 @@ func TestReconcileCredentialKeys_ConditionObservedGeneration(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileCredentialKeys(context.Background(), ks, "test-keystone-config-abc123")
+	_, err := r.reconcileCredentialKeys(context.Background(), ks, "test-keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "CredentialKeysReady")
@@ -988,7 +988,7 @@ func TestReconcileCredentialKeys_ConditionObservedGeneration(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err = r2.reconcileCredentialKeys(context.Background(), ks2, "test-keystone-config-abc123")
+	_, err = r2.reconcileCredentialKeys(context.Background(), ks2, "test-keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cond2 := meta.FindStatusCondition(ks2.Status.Conditions, "CredentialKeysReady")
@@ -1004,7 +1004,7 @@ func TestCredentialRotationCronJob_PriorityClassNameSet(t *testing.T) {
 	pcn := "system-cluster-critical"
 	ks.Spec.Deployment.PriorityClassName = &pcn
 
-	cronJob := credentialRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-credential-rotate-script-abc123")
+	cronJob := credentialRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-credential-rotate-script-abc123", "")
 
 	g.Expect(cronJob.Spec.JobTemplate.Spec.Template.Spec.PriorityClassName).To(Equal("system-cluster-critical"))
 }
@@ -1015,7 +1015,7 @@ func TestCredentialRotationCronJob_PriorityClassNameNil(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := credentialTestKeystone()
 
-	cronJob := credentialRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-credential-rotate-script-abc123")
+	cronJob := credentialRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-credential-rotate-script-abc123", "")
 
 	g.Expect(cronJob.Spec.JobTemplate.Spec.Template.Spec.PriorityClassName).To(BeEmpty())
 }
@@ -1027,7 +1027,7 @@ func TestCredentialRotationCronJob_SuspendDefaultsFalse(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := credentialTestKeystone()
 
-	cronJob := credentialRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-credential-rotate-script-abc123")
+	cronJob := credentialRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-credential-rotate-script-abc123", "")
 
 	g.Expect(cronJob.Spec.Suspend).NotTo(BeNil())
 	g.Expect(*cronJob.Spec.Suspend).To(BeFalse())
@@ -1041,7 +1041,7 @@ func TestCredentialRotationCronJob_SuspendTrue(t *testing.T) {
 	ks := credentialTestKeystone()
 	ks.Spec.CredentialKeys.Suspend = true
 
-	cronJob := credentialRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-credential-rotate-script-abc123")
+	cronJob := credentialRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-credential-rotate-script-abc123", "")
 
 	g.Expect(cronJob.Spec.Suspend).NotTo(BeNil())
 	g.Expect(*cronJob.Spec.Suspend).To(BeTrue())
@@ -1182,7 +1182,7 @@ func TestReconcileCredentialKeys_CreatesEmptyStagingSecret(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileCredentialKeys(context.Background(), ks, "test-keystone-config-abc123")
+	_, err := r.reconcileCredentialKeys(context.Background(), ks, "test-keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// Verify the staging Secret exists with the expected name.
@@ -1311,7 +1311,7 @@ func TestReconcileCredentialKeys_AppliesStagedKeysWhenAnnotationPresent(t *testi
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	result, err := r.reconcileCredentialKeys(context.Background(), ks, "test-keystone-config-abc123")
+	result, err := r.reconcileCredentialKeys(context.Background(), ks, "test-keystone-config-abc123", "")
 
 	g.Expect(err).NotTo(HaveOccurred())
 	// Rotation applied: short-circuit via RequeueAfter so the parallel group's
@@ -1396,7 +1396,7 @@ func TestCredentialReconcileUpdatesRotationAgeGauge(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileCredentialKeys(context.Background(), ks, "test-cm")
+	_, err := r.reconcileCredentialKeys(context.Background(), ks, "test-cm", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	gaugeLabels := map[string]string{
@@ -1441,7 +1441,7 @@ func TestCredentialReconcileSkipsRotationAgeGaugeWhenAnnotationAbsent(t *testing
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileCredentialKeys(context.Background(), ks, "test-cm")
+	_, err := r.reconcileCredentialKeys(context.Background(), ks, "test-cm", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	gaugeLabels := map[string]string{

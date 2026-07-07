@@ -67,7 +67,7 @@ const adminPasswordHashAnnotation = "forge.c5c3.io/admin-password-hash" //nolint
 
 // reconcileBootstrap ensures the Keystone bootstrap Job runs with
 // keystone-manage bootstrap and admin credentials.
-func (r *KeystoneReconciler) reconcileBootstrap(ctx context.Context, keystone *keystonev1alpha1.Keystone, configMapName string) (ctrl.Result, error) {
+func (r *KeystoneReconciler) reconcileBootstrap(ctx context.Context, keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName string) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
 	// Re-run the bootstrap Job whenever the admin password rotates: read the
@@ -117,7 +117,7 @@ func (r *KeystoneReconciler) reconcileBootstrap(ctx context.Context, keystone *k
 	// Ready — False for the whole upgrade. Identity bootstrap is one-time; the
 	// only input that must force a re-run is a rotated admin password
 	// The bootstrap Job emits no db_sync metrics, so the observed Job is discarded.
-	done, _, err := job.RunJobWithRerunKey(ctx, r.Client, r.Scheme, keystone, buildBootstrapJob(keystone, configMapName, fernetSecretName, adminPasswordHash), adminPasswordHash)
+	done, _, err := job.RunJobWithRerunKey(ctx, r.Client, r.Scheme, keystone, buildBootstrapJob(keystone, configMapName, domainsSecretName, fernetSecretName, adminPasswordHash), adminPasswordHash)
 	if err != nil {
 		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
 			Type:               "BootstrapReady",
@@ -162,7 +162,7 @@ func bootstrapServiceURL(keystone *keystonev1alpha1.Keystone) string {
 	return fmt.Sprintf("http://%s.%s.svc.cluster.local:5000/v3", subResourceName(keystone), keystone.Namespace)
 }
 
-func buildBootstrapJob(keystone *keystonev1alpha1.Keystone, configMapName string, fernetSecretName string, adminPasswordHash string) *batchv1.Job {
+func buildBootstrapJob(keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName, fernetSecretName, adminPasswordHash string) *batchv1.Job {
 	backoffLimit := int32(4)
 
 	internalURL := bootstrapServiceURL(keystone)
@@ -218,6 +218,13 @@ func buildBootstrapJob(keystone *keystonev1alpha1.Keystone, configMapName string
 	// bootstrap Job stay in lockstep.
 	if dbTLSEnabled(keystone) {
 		vol, mount := dbTLSVolumeAndMount(keystone)
+		volumes = append(volumes, vol)
+		volumeMounts = append(volumeMounts, mount)
+	}
+	// Project the per-domain identity-backend config so keystone-manage
+	// bootstrap sees the same domain-specific driver files the API pods load.
+	if domainsSecretName != "" {
+		vol, mount := domainsVolumeAndMount(domainsSecretName)
 		volumes = append(volumes, vol)
 		volumeMounts = append(volumeMounts, mount)
 	}

@@ -57,7 +57,7 @@ type keyRotationParams struct {
 // It is parameterised by keyRotationParams so the Fernet and credential
 // CronJobs, which differ only in the secret-name pair, env-var name, and script,
 // share one builder (removing the prior "MUST stay in sync" drift risk).
-func keyRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName, scriptConfigMapName string, p keyRotationParams) *batchv1.CronJob {
+func keyRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName, scriptConfigMapName, domainsSecretName string, p keyRotationParams) *batchv1.CronJob {
 	name := fmt.Sprintf("%s-%s-rotate", keystone.Name, p.keyKind)
 	secretName := fmt.Sprintf("%s-%s-keys", keystone.Name, p.keyKind)
 	otherSecretName := fmt.Sprintf("%s-%s-keys", keystone.Name, p.otherKeyKind)
@@ -70,7 +70,18 @@ func keyRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName, scri
 	keyVolName := p.keyKind + "-keys"
 	otherVolName := p.otherKeyKind + "-keys"
 
-	return &batchv1.CronJob{
+	// Project the per-domain identity-backend config so keystone-manage
+	// rotation commands see the same domain-specific driver files the API
+	// pods load; empty when no backend is projected.
+	var extraVolumes []corev1.Volume
+	var extraMounts []corev1.VolumeMount
+	if domainsSecretName != "" {
+		domVol, domMount := domainsVolumeAndMount(domainsSecretName)
+		extraVolumes = append(extraVolumes, domVol)
+		extraMounts = append(extraMounts, domMount)
+	}
+
+	cronJob := &batchv1.CronJob{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: keystone.Namespace,
@@ -198,4 +209,11 @@ func keyRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName, scri
 			},
 		},
 	}
+	cronJob.Spec.JobTemplate.Spec.Template.Spec.Volumes = append(
+		cronJob.Spec.JobTemplate.Spec.Template.Spec.Volumes, extraVolumes...,
+	)
+	cronJob.Spec.JobTemplate.Spec.Template.Spec.Containers[0].VolumeMounts = append(
+		cronJob.Spec.JobTemplate.Spec.Template.Spec.Containers[0].VolumeMounts, extraMounts...,
+	)
+	return cronJob
 }
