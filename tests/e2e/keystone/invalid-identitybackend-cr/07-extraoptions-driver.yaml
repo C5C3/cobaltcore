@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# KeystoneIdentityBackend whose spec.extraOptions carries "driver" — the
+# identity-driver wiring the operator owns. The validating webhook's
+# denylist rejects it. Admission must reject this CR with an $error
+# referencing 'option "driver" is owned by'.
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: KeystoneIdentityBackend
+metadata:
+  name: invalid-extraoptions-driver
+spec:
+  keystoneRef:
+    name: keystone
+  domain:
+    name: corp
+  type: LDAP
+  ldap:
+    url: ldap://ldap.example.com:389
+    bindCredentialsSecretRef:
+      name: corp-ldap-bind
+    suffix: dc=example,dc=com
+    users:
+      treeDN: ou=people,dc=example,dc=com
+  extraOptions:
+    driver: sql

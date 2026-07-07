@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# KeystoneIdentityBackend whose spec.extraOptions KEY embeds a newline (the
+# double-quoted YAML `\n` escape parses to a real newline). RenderINI writes
+# every option verbatim as `key = value`, so a newline in the key injects an
+# arbitrary [ldap] line — here re-enabling user_allow_create past the readOnly
+# forcing — the same attack as 15 moved from the value to the key. The CRD's
+# additionalProperties schema accepts the key (no propertyNames constraint), so
+# the validating webhook's extraOptions key allowlist (^[A-Za-z0-9_]+$) is the
+# gate. Admission must reject this CR with an $error referencing
+# "option name must match".
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: KeystoneIdentityBackend
+metadata:
+  name: invalid-extraoptions-key-control-char
+spec:
+  keystoneRef:
+    name: keystone
+  domain:
+    name: corp
+  type: LDAP
+  ldap:
+    url: ldap://ldap.example.com:389
+    bindCredentialsSecretRef:
+      name: corp-ldap-bind
+    suffix: dc=example,dc=com
+    users:
+      treeDN: ou=people,dc=example,dc=com
+  extraOptions:
+    "zzz_pwn\nuser_allow_create = true": "x"

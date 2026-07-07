@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# KeystoneIdentityBackend whose spec.ldap.url uses http:// instead of
+# ldap:// or ldaps://. Rejected by the Pattern marker on
+# LDAPBackendSpec.URL (^ldaps?://) and by defense-in-depth in the
+# validating webhook. Admission must reject this CR with an $error
+# referencing the substring "ldap.url".
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: KeystoneIdentityBackend
+metadata:
+  name: invalid-bad-url-scheme
+spec:
+  keystoneRef:
+    name: keystone
+  domain:
+    name: corp
+  type: LDAP
+  ldap:
+    url: http://ldap.example.com:389
+    bindCredentialsSecretRef:
+      name: corp-ldap-bind
+    suffix: dc=example,dc=com
+    users:
+      treeDN: ou=people,dc=example,dc=com

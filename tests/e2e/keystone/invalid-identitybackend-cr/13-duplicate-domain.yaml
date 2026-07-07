@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Second, otherwise valid KeystoneIdentityBackend whose domain name
+# collides case-insensitively ("CORP" vs the base CR's "corp") on the same
+# referenced Keystone. Two backends projecting the same
+# keystone.<domain>.conf would fight over one domain, so the validating
+# webhook's uniqueness rule rejects the newcomer. Applied AFTER
+# 09-immutable-base.yaml; admission must reject it with an $error
+# referencing "domain name collides".
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: KeystoneIdentityBackend
+metadata:
+  name: duplicate-domain-backend
+spec:
+  keystoneRef:
+    name: keystone
+  domain:
+    name: CORP
+  type: LDAP
+  ldap:
+    url: ldap://ldap.example.com:389
+    bindCredentialsSecretRef:
+      name: corp-ldap-bind
+    suffix: dc=example,dc=com
+    users:
+      treeDN: ou=people,dc=example,dc=com

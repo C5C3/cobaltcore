@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Same rule as 02-domain-default.yaml with mixed casing: the CEL rule
+# lower-cases before comparing, so "Default" is equally rejected — keystone
+# domain-name lookups behave case-insensitively on MySQL's default
+# collation, so the bootstrap admin domain would still collide.
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: KeystoneIdentityBackend
+metadata:
+  name: invalid-domain-default-case
+spec:
+  keystoneRef:
+    name: keystone
+  domain:
+    name: Default
+  type: LDAP
+  ldap:
+    url: ldap://ldap.example.com:389
+    bindCredentialsSecretRef:
+      name: corp-ldap-bind
+    suffix: dc=example,dc=com
+    users:
+      treeDN: ou=people,dc=example,dc=com

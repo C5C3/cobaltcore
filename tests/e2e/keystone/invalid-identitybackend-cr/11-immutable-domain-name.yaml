@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Update of the immutable-backend base CR that renames spec.domain.name
+# from "corp" to "renamed". The CEL transition rule on DomainSpec.Name
+# (self == oldSelf) rejects the change on UPDATE. Admission must reject
+# this UPDATE with an $error referencing "domain.name is immutable".
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: KeystoneIdentityBackend
+metadata:
+  name: immutable-backend
+spec:
+  keystoneRef:
+    name: keystone
+  domain:
+    name: renamed
+  type: LDAP
+  ldap:
+    url: ldap://ldap.example.com:389
+    bindCredentialsSecretRef:
+      name: corp-ldap-bind
+    suffix: dc=example,dc=com
+    users:
+      treeDN: ou=people,dc=example,dc=com

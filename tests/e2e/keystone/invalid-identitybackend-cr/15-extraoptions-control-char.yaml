@@ -1,0 +1,30 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# KeystoneIdentityBackend whose spec.extraOptions value embeds a newline. The
+# key ("zzz_pwn") is not on the denylist, but the value smuggles
+# "user_allow_create = true": RenderINI sorts keys, so it would render after
+# the forced user_allow_create = false and win under oslo.config's
+# last-value-wins scalar semantics. The validating webhook's control-character
+# guard on extraOptions values rejects it. Admission must reject this CR with
+# an $error referencing "must not contain newline or carriage-return".
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: KeystoneIdentityBackend
+metadata:
+  name: invalid-extraoptions-control-char
+spec:
+  keystoneRef:
+    name: keystone
+  domain:
+    name: corp
+  type: LDAP
+  ldap:
+    url: ldap://ldap.example.com:389
+    bindCredentialsSecretRef:
+      name: corp-ldap-bind
+    suffix: dc=example,dc=com
+    users:
+      treeDN: ou=people,dc=example,dc=com
+  extraOptions:
+    zzz_pwn: "x\nuser_allow_create = true"

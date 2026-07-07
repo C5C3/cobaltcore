@@ -1,0 +1,198 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E tests for KeystoneIdentityBackend CRD + webhook validation
+# rejection. Pins every implemented CEL XValidation, kubebuilder-marker, and
+# webhook.validate() rejection path in
+# operators/keystone/api/v1alpha1/keystoneidentitybackend_* to a deterministic
+# admission failure. Each step applies an otherwise-valid backend CR with a
+# single aspect violating the rule under test, captures the admission $error,
+# and asserts the message substring.
+#
+# Fixture categories:
+#   - Create-rejection fixtures (00-08, 14-17) are each applied once and
+#     rejected. 14-15 pin the control-character (INI-injection) guard: a
+#     newline smuggled through a typed LDAP field or an extraOptions value
+#     would inject arbitrary [ldap] lines through RenderINI's verbatim writes.
+#     16-17 pin the extraOptions key allowlist: a newline in the key is the
+#     same INI-injection moved to the key side, and a trailing space evades the
+#     exact-match denylist/forced-option checks that only compare whole keys.
+#   - Update-rejection fixtures share the name "immutable-backend":
+#     09-immutable-base is the valid base CR applied first, and 10-12 are
+#     applied as UPDATEs that the CRD CEL transition rules (self == oldSelf,
+#     evaluated only on UPDATE) reject. A type-immutability update fixture is
+#     deliberately absent: LDAP is the only Phase-1 enum value, so a changed
+#     type is already rejected by the Enum marker.
+#   - 13-duplicate-domain is a second, otherwise valid backend whose domain
+#     collides case-insensitively with the base CR on the same Keystone; the
+#     validating webhook's uniqueness rule rejects it.
+#
+# To prevent scaffold drift across fixtures they are generated from a single
+# source of truth in `_generate.py`. After editing the canonical scaffold or
+# any per-fixture override, regenerate via:
+#   python3 tests/e2e/keystone/invalid-identitybackend-cr/_generate.py
+# CI runs `make verify-invalid-cr-fixtures`, which invokes
+# `_generate.py --check` (drift mode incl. the orphan sweep) and
+# `test_generate.py` (FIXTURES count + chainsaw-test.yaml cross-reference)
+# so any hand-edit fails the build before the cluster-bound e2e-operator job.
+#
+# The test runs in an ephemeral namespace: the base CR references a Keystone
+# that does not exist there — admission deliberately tolerates the dangling
+# reference (GitOps ordering) and the identity-backend finalizer fails open
+# when the Keystone is gone, so namespace cleanup never wedges.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-invalid-identitybackend-cr
+spec:
+  steps:
+  # spec.type is required.
+  - try:
+    - apply:
+        file: 00-missing-type.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'type')): true
+  # type LDAP without spec.ldap must be rejected (union rule).
+  - try:
+    - apply:
+        file: 01-union-mismatch.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'exactly one backend block matching spec.type')): true
+  # The Default domain must never be external (lowercase).
+  - try:
+    - apply:
+        file: 02-domain-default.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'must never be backed by an external identity backend')): true
+  # The Default domain must never be external (mixed case) — the CEL rule
+  # lower-cases before comparing.
+  - try:
+    - apply:
+        file: 03-domain-default-mixed-case.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'must never be backed by an external identity backend')): true
+  # spec.ldap.url must use the ldap:// or ldaps:// scheme.
+  - try:
+    - apply:
+        file: 04-bad-url-scheme.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'ldap.url')): true
+  # spec.ldap.bindCredentialsSecretRef.key must stay empty (fixed data keys).
+  - try:
+    - apply:
+        file: 05-bindref-key-set.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'data keys are fixed')): true
+  # extraOptions must not carry options rendered from typed fields.
+  - try:
+    - apply:
+        file: 06-extraoptions-typed-field.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'option "url" is owned by')): true
+  # extraOptions must not carry the operator-owned driver wiring.
+  - try:
+    - apply:
+        file: 07-extraoptions-driver.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'option "driver" is owned by')): true
+  # extraOptions must not re-enable write options under readOnly (default).
+  - try:
+    - apply:
+        file: 08-extraoptions-readonly-conflict.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'conflicts with readOnly')): true
+  # ── Update-rejection block ──────────────────────────────────────────────
+  # The valid base CR is applied first and must SUCCEED.
+  - try:
+    - apply:
+        file: 09-immutable-base.yaml
+  # keystoneRef is immutable (CEL transition rule, UPDATE-only).
+  - try:
+    - apply:
+        file: 10-immutable-keystoneref.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'keystoneRef is immutable')): true
+  # domain.name is immutable.
+  - try:
+    - apply:
+        file: 11-immutable-domain-name.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'domain.name is immutable')): true
+  # domain.mode is immutable.
+  - try:
+    - apply:
+        file: 12-immutable-domain-mode.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'domain.mode is immutable')): true
+  # A second backend with a case-insensitively colliding domain on the same
+  # Keystone must be rejected by the webhook's uniqueness rule.
+  - try:
+    - apply:
+        file: 13-duplicate-domain.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'domain name collides')): true
+  # ── Control-character (INI-injection) block ─────────────────────────────
+  # A newline in a typed LDAP field (suffix) must be rejected — it would
+  # inject arbitrary [ldap] lines through RenderINI's verbatim writes.
+  - try:
+    - apply:
+        file: 14-ldap-control-char.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'must not contain newline or carriage-return')): true
+  # A newline in an extraOptions value must be rejected — the PoC vector that
+  # smuggles user_allow_create = true past the readOnly forcing.
+  - try:
+    - apply:
+        file: 15-extraoptions-control-char.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'must not contain newline or carriage-return')): true
+  # A newline in an extraOptions KEY must be rejected — the same INI-injection
+  # vector as 15 moved to the key side (the value-only guards never see it).
+  - try:
+    - apply:
+        file: 16-extraoptions-key-control-char.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'option name must match')): true
+  # A denylist-evading extraOptions KEY (trailing space) must be rejected — it
+  # would otherwise slip past the exact-match denylist/forced-option checks yet
+  # oslo.config strips it to a duplicate that overrides the forced false.
+  - try:
+    - apply:
+        file: 17-extraoptions-key-trailing-space.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'option name must match')): true

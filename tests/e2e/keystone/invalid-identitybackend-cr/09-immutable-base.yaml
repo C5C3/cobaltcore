@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Valid base KeystoneIdentityBackend for the field-immutability
+# update-rejection fixtures. It is applied FIRST and must SUCCEED. The
+# variants 10-12 reuse this name so each is applied as an UPDATE of this
+# object, exercising the CRD CEL transition rules on spec.keystoneRef,
+# spec.domain.name, and spec.domain.mode. The referenced Keystone CR does
+# not exist in the ephemeral namespace — by design admission does not
+# require it (GitOps ordering), and the dangling reference merely surfaces
+# as DomainReady=False/KeystoneNotFound.
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: KeystoneIdentityBackend
+metadata:
+  name: immutable-backend
+spec:
+  keystoneRef:
+    name: keystone
+  domain:
+    name: corp
+  type: LDAP
+  ldap:
+    url: ldap://ldap.example.com:389
+    bindCredentialsSecretRef:
+      name: corp-ldap-bind
+    suffix: dc=example,dc=com
+    users:
+      treeDN: ou=people,dc=example,dc=com

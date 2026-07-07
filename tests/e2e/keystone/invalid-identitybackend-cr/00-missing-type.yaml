@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# KeystoneIdentityBackend without spec.type. The field is required by the
+# CRD schema (no default — Phase 1 has a single enum value but the field
+# stays explicit so the federation phases extend it compatibly). Admission
+# must reject this CR with an $error referencing the substring "type".
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: KeystoneIdentityBackend
+metadata:
+  name: invalid-missing-type
+spec:
+  keystoneRef:
+    name: keystone
+  domain:
+    name: corp
