@@ -96,6 +96,71 @@ func registerSecretNameIndex(ctx context.Context, indexer client.FieldIndexer) e
 	return watch.RegisterSecretNameIndex(ctx, indexer, &keystonev1alpha1.Keystone{}, KeystoneSecretNameIndexKey, keystoneSecretNameExtractor)
 }
 
+// IdentityBackendKeystoneRefIndexKey is the field-indexer key under which
+// KeystoneIdentityBackend CRs are indexed by spec.keystoneRef.name. Used by
+// reconcileIdentityBackends (list the backends attached to one Keystone) and
+// keystoneToIdentityBackendsMapper (fan a Keystone event out to its
+// backends).
+const IdentityBackendKeystoneRefIndexKey = "spec.keystoneRef.name"
+
+// IdentityBackendSecretNameIndexKey is the field-indexer key under which
+// KeystoneIdentityBackend CRs are indexed by the union of their referenced
+// Secret names (bind credentials + optional TLS CA bundle). Used by the
+// Secret mapper so bind/CA Secret rotation re-renders the content-hashed
+// domains Secret via the owning Keystone.
+// #nosec G101 -- field-indexer key (a JSONPath-like field selector), not a credential.
+const IdentityBackendSecretNameIndexKey = "spec.secretRefs.name"
+
+// identityBackendSecretNameExtractor returns the deduplicated, non-empty
+// union of Secret names a KeystoneIdentityBackend references — the LDAP bind
+// credentials Secret and, when TLS is configured, the CA bundle Secret.
+func identityBackendSecretNameExtractor(obj client.Object) []string {
+	b, ok := obj.(*keystonev1alpha1.KeystoneIdentityBackend)
+	if !ok || b.Spec.LDAP == nil {
+		return nil
+	}
+	bindName := b.Spec.LDAP.BindCredentialsSecretRef.Name
+	names := make([]string, 0, 2)
+	if bindName != "" {
+		names = append(names, bindName)
+	}
+	if b.Spec.LDAP.TLS != nil {
+		if caName := b.Spec.LDAP.TLS.CABundleSecretRef.Name; caName != "" && caName != bindName {
+			names = append(names, caName)
+		}
+	}
+	return names
+}
+
+// identityBackendKeystoneRefExtractor is the controller-runtime IndexerFunc
+// registered under IdentityBackendKeystoneRefIndexKey: it maps a backend to
+// its spec.keystoneRef.name so an attached-backends list is an O(1) indexed
+// lookup. Exported to tests so fake clients can register the identical index.
+func identityBackendKeystoneRefExtractor(obj client.Object) []string {
+	b, ok := obj.(*keystonev1alpha1.KeystoneIdentityBackend)
+	if !ok || b.Spec.KeystoneRef.Name == "" {
+		return nil
+	}
+	return []string{b.Spec.KeystoneRef.Name}
+}
+
+// registerIdentityBackendIndexes registers the two KeystoneIdentityBackend
+// field indexers. It lives beside registerSecretNameIndex so index
+// registration has a single site: KeystoneReconciler.SetupWithManager runs
+// before KeystoneIdentityBackendReconciler.SetupWithManager in main.go (and
+// in the envtest helper), so both controllers can rely on the indexes.
+func registerIdentityBackendIndexes(ctx context.Context, indexer client.FieldIndexer) error {
+	if err := indexer.IndexField(ctx, &keystonev1alpha1.KeystoneIdentityBackend{}, IdentityBackendKeystoneRefIndexKey,
+		identityBackendKeystoneRefExtractor); err != nil {
+		return fmt.Errorf("registering field indexer %q: %w", IdentityBackendKeystoneRefIndexKey, err)
+	}
+	if err := indexer.IndexField(ctx, &keystonev1alpha1.KeystoneIdentityBackend{}, IdentityBackendSecretNameIndexKey,
+		identityBackendSecretNameExtractor); err != nil {
+		return fmt.Errorf("registering field indexer %q: %w", IdentityBackendSecretNameIndexKey, err)
+	}
+	return nil
+}
+
 // subConditionTypes lists the condition types set by individual sub-reconcilers.
 // The Ready condition is True only when all of these are True.
 var subConditionTypes = []string{
@@ -113,6 +178,10 @@ var subConditionTypes = []string{
 	"BootstrapReady",
 	"TrustFlushReady",
 	conditionTypePasswordRotationReady,
+	// IdentityBackendsReady gates the aggregate Ready: while an attached
+	// backend is pending projection the Keystone CR reports Ready=False.
+	// Zero-backend clusters are unaffected (IdentityBackendsNotRequired).
+	conditionTypeIdentityBackendsReady,
 }
 
 // KeystoneReconciler reconciles a Keystone object.
@@ -196,6 +265,9 @@ var certificateGVK = schema.GroupVersionKind{
 // +kubebuilder:rbac:groups=keystone.openstack.c5c3.io,resources=keystones,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=keystone.openstack.c5c3.io,resources=keystones/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=keystone.openstack.c5c3.io,resources=keystones/finalizers,verbs=update
+// +kubebuilder:rbac:groups=keystone.openstack.c5c3.io,resources=keystoneidentitybackends,verbs=get;list;watch;update
+// +kubebuilder:rbac:groups=keystone.openstack.c5c3.io,resources=keystoneidentitybackends/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=keystone.openstack.c5c3.io,resources=keystoneidentitybackends/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=services;configmaps;secrets;serviceaccounts,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
@@ -284,6 +356,13 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	// Deployment. DBConnectionSecret runs before Deployment in this pipeline, so
 	// the value is populated by the time the Deployment step reads it.
 	var dbConnectionHash string
+	// domainsSecretName is the content-hashed per-domain config Secret
+	// materialised by reconcileIdentityBackends ("" when no backend is
+	// projected). It is threaded to reconcileConfig (flips the [identity]
+	// domain-specific-driver options) and to every workload builder (mounts
+	// /etc/keystone/domains). IdentityBackends runs before Config in this
+	// pipeline, so the value is populated by the time those steps read it.
+	var domainsSecretName string
 	pipeline := []commonreconcile.Step{
 		{Name: "Secrets", Fn: func(ctx context.Context) (ctrl.Result, error) {
 			return r.reconcileSecrets(ctx, &keystone)
@@ -309,6 +388,19 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			res, dbConnectionHash, err = r.reconcileDBConnectionSecret(ctx, &keystone)
 			return res, err
 		}},
+		// reconcileIdentityBackends aggregates the attached, DomainReady
+		// KeystoneIdentityBackends into the content-hashed domains Secret. It
+		// runs before Config because the projected-state flag flips the
+		// [identity] domain-specific-driver options in the rendered
+		// keystone.conf. Waiting states (pending domains, missing bind
+		// Secrets) NEVER short-circuit the pipeline — the step returns a zero
+		// result so first-install can bring the API up, and backend status
+		// flips re-enqueue this Keystone via the backend watch.
+		{Name: "IdentityBackends", Fn: func(ctx context.Context) (ctrl.Result, error) {
+			var err error
+			domainsSecretName, err = r.reconcileIdentityBackends(ctx, &keystone)
+			return ctrl.Result{}, err
+		}},
 		// reconcileConfig must run before the Fernet/credential CronJobs and the
 		// db_sync Job, which all require the keystone.conf ConfigMap. It returns
 		// (string, error) rather than the standard (ctrl.Result, error): the
@@ -317,7 +409,7 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		// stay stale-True at the new generation (issue #467).
 		{Name: "Config", Fn: func(ctx context.Context) (ctrl.Result, error) {
 			var err error
-			configMapName, err = r.reconcileConfig(ctx, &keystone)
+			configMapName, err = r.reconcileConfig(ctx, &keystone, domainsSecretName != "")
 			if err != nil {
 				markConfigFailed(&keystone, err)
 			}
@@ -364,13 +456,18 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		{Name: "Deployment", Fn: func(ctx context.Context) (ctrl.Result, error) {
 			return r.reconcileDeployment(ctx, &keystone, configMapName, dbConnectionHash)
 		}},
-		// Prune stale immutable ConfigMaps after Deployment is ready so all pods
-		// run the new config before old ConfigMaps are deleted. Uninstrumented
-		// (no sub_reconciler name); a prune failure is a config-concern failure,
-		// so it flips SecretsReady=False via markConfigFailed rather than leaving
-		// the aggregate Ready stale-True (issue #467).
+		// Prune stale immutable ConfigMaps and domains Secrets after
+		// Deployment is ready so all pods run the new config before old
+		// artefacts are deleted. Uninstrumented (no sub_reconciler name); a
+		// prune failure is a config-concern failure, so it flips
+		// SecretsReady=False via markConfigFailed rather than leaving the
+		// aggregate Ready stale-True (issue #467).
 		{Fn: func(ctx context.Context) (ctrl.Result, error) {
 			if err := r.pruneStaleConfigMaps(ctx, &keystone, configMapName); err != nil {
+				markConfigFailed(&keystone, err)
+				return ctrl.Result{}, err
+			}
+			if err := r.pruneStaleDomainsSecrets(ctx, &keystone, domainsSecretName); err != nil {
 				markConfigFailed(&keystone, err)
 				return ctrl.Result{}, err
 			}
@@ -697,6 +794,14 @@ func (r *KeystoneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Register the Keystone field indexer before Watches so
 	// secretToKeystoneMapper can rely on it for its MatchingFields lookup
 	if err := registerSecretNameIndex(context.Background(), mgr.GetFieldIndexer()); err != nil {
+		return err
+	}
+
+	// Register the KeystoneIdentityBackend indexes here — the single
+	// registration site for both controllers (this reconciler is set up
+	// before KeystoneIdentityBackendReconciler in main.go and in the envtest
+	// helper). reconcileIdentityBackends and the mappers rely on them.
+	if err := registerIdentityBackendIndexes(context.Background(), mgr.GetFieldIndexer()); err != nil {
 		return err
 	}
 

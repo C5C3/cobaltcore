@@ -109,8 +109,14 @@ spec:
                       domain knob, so the bootstrap admin always lives in Default) and must
                       never be re-pointed at an external directory, which could lock out
                       every service account.
+
+                      The Pattern constrains the name to the grammar shared by Secret data
+                      keys and keystone's domain-config file naming (keystone.<name>.conf —
+                      keystone derives the domain from the filename), both of which the
+                      projection embeds the name into verbatim.
                     maxLength: 64
                     minLength: 1
+                    pattern: ^[A-Za-z0-9][A-Za-z0-9_.-]*$
                     type: string
                     x-kubernetes-validations:
                     - message: domain.name is immutable

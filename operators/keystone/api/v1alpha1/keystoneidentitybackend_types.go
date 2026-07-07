@@ -133,8 +133,14 @@ type DomainSpec struct {
 	// domain knob, so the bootstrap admin always lives in Default) and must
 	// never be re-pointed at an external directory, which could lock out
 	// every service account.
+	//
+	// The Pattern constrains the name to the grammar shared by Secret data
+	// keys and keystone's domain-config file naming (keystone.<name>.conf —
+	// keystone derives the domain from the filename), both of which the
+	// projection embeds the name into verbatim.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=64
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9][A-Za-z0-9_.-]*$`
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="domain.name is immutable"
 	// +kubebuilder:validation:XValidation:rule="self.lowerAscii() != 'default'",message="the Default domain hosts the SQL-backed service users and the bootstrap admin and must never be backed by an external identity backend"
 	Name string `json:"name"`

@@ -301,7 +301,7 @@ func testComputeConfigMapName(t testing.TB) string {
 		Scheme:   s,
 		Recorder: record.NewFakeRecorder(10),
 	}
-	name, err := r.reconcileConfig(context.Background(), ks)
+	name, err := r.reconcileConfig(context.Background(), ks, false)
 	if err != nil {
 		t.Fatalf("computing config map name: %v", err)
 	}
@@ -316,7 +316,12 @@ func newTestReconciler(objs ...runtime.Object) *KeystoneReconciler {
 	for _, obj := range objs {
 		cb = cb.WithRuntimeObjects(obj)
 	}
-	cb = cb.WithStatusSubresource(&keystonev1alpha1.Keystone{}, &esov1.ExternalSecret{})
+	cb = cb.WithStatusSubresource(&keystonev1alpha1.Keystone{}, &esov1.ExternalSecret{}, &keystonev1alpha1.KeystoneIdentityBackend{})
+	// Register the KeystoneIdentityBackend indexes with the production
+	// extractors so reconcileIdentityBackends' MatchingFields List works
+	// against the fake client.
+	cb = cb.WithIndex(&keystonev1alpha1.KeystoneIdentityBackend{}, IdentityBackendKeystoneRefIndexKey, identityBackendKeystoneRefExtractor)
+	cb = cb.WithIndex(&keystonev1alpha1.KeystoneIdentityBackend{}, IdentityBackendSecretNameIndexKey, identityBackendSecretNameExtractor)
 	return &KeystoneReconciler{
 		Client:   cb.Build(),
 		Scheme:   s,
@@ -460,6 +465,7 @@ func TestAggregateReady_AllTrue(t *testing.T) {
 		{Type: "BootstrapReady", Status: metav1.ConditionTrue},
 		{Type: "TrustFlushReady", Status: metav1.ConditionTrue},
 		{Type: conditionTypePasswordRotationReady, Status: metav1.ConditionTrue},
+		{Type: conditionTypeIdentityBackendsReady, Status: metav1.ConditionTrue},
 	}
 	g.Expect(commonconditions.AllTrue(conditions, subConditionTypes...)).To(BeTrue())
 }
@@ -1418,6 +1424,7 @@ func TestAggregateReadyAllTrueWithKeystoneAPIReady(t *testing.T) {
 		{Type: "BootstrapReady", Status: metav1.ConditionTrue},
 		{Type: "TrustFlushReady", Status: metav1.ConditionTrue},
 		{Type: conditionTypePasswordRotationReady, Status: metav1.ConditionTrue},
+		{Type: conditionTypeIdentityBackendsReady, Status: metav1.ConditionTrue},
 	}
 	g.Expect(commonconditions.AllTrue(conditions, subConditionTypes...)).To(BeTrue(),
 		"aggregateReady should return true when all conditions including KeystoneAPIReady are True")
@@ -2851,6 +2858,7 @@ func TestReconcile_DBConnectionSecretCreatedBeforeConfigMap(t *testing.T) {
 		cb = cb.WithRuntimeObjects(obj)
 	}
 	cb = cb.WithStatusSubresource(&keystonev1alpha1.Keystone{}, &esov1.ExternalSecret{})
+	cb = cb.WithIndex(&keystonev1alpha1.KeystoneIdentityBackend{}, IdentityBackendKeystoneRefIndexKey, identityBackendKeystoneRefExtractor)
 
 	type createEvent struct {
 		kind string

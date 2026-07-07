@@ -40,6 +40,7 @@ var subReconcilerConditionTypes = map[string]string{
 	"Secrets":            "SecretsReady",
 	"DBConnectionSecret": "SecretsReady",
 	"Config":             "SecretsReady",
+	"IdentityBackends":   conditionTypeIdentityBackendsReady,
 	"FernetKeys":         "FernetKeysReady",
 	"CredentialKeys":     "CredentialKeysReady",
 	"NetworkPolicy":      "NetworkPolicyReady",

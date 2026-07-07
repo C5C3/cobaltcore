@@ -27,17 +27,21 @@ import (
 )
 
 // configRenderCacheEntry memoizes a successful config render. The (uid,
-// generation, policyCMResourceVersion) tuple is the cache key: generation
-// covers every spec input to the render by construction, uid guards a
-// same-name CR recreation, and policyCMResourceVersion tracks the one render
-// input that lives outside the spec — the external oslo.policy ConfigMap
-// referenced by spec.policyOverrides.configMapRef. useStderr is retained so
-// the LoggingHealthy condition/event contract is preserved on the cache-hit
-// path without re-deriving the merged config.
+// generation, policyCMResourceVersion, domainsProjected) tuple is the cache
+// key: generation covers every spec input to the render by construction, uid
+// guards a same-name CR recreation, policyCMResourceVersion tracks the
+// external oslo.policy ConfigMap referenced by
+// spec.policyOverrides.configMapRef, and domainsProjected tracks the
+// identity-backend projection state — attaching or detaching a backend flips
+// the [identity] domain-specific-driver options without bumping the Keystone
+// generation, so it must invalidate the cache. useStderr is retained so the
+// LoggingHealthy condition/event contract is preserved on the cache-hit path
+// without re-deriving the merged config.
 type configRenderCacheEntry struct {
 	uid                     types.UID
 	generation              int64
 	policyCMResourceVersion string
+	domainsProjected        bool
 	configMapName           string
 	useStderr               string
 }
@@ -87,19 +91,22 @@ const loggingConfFilePath = "/etc/keystone/keystone.conf.d/logging.conf"
 // reconcileConfig builds the Keystone configuration and creates an immutable
 // ConfigMap containing keystone.conf, api-paste.ini, and optionally policy.yaml.
 // It returns the name of the created ConfigMap (with content-hash suffix).
-func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, keystone *keystonev1alpha1.Keystone) (string, error) {
+// domainsProjected reports whether reconcileIdentityBackends projected at
+// least one per-domain config file; when true the rendered keystone.conf
+// turns the domain-specific-drivers machinery on.
+func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, keystone *keystonev1alpha1.Keystone, domainsProjected bool) (string, error) {
 	// Cache short-circuit: the rendered ConfigMap is content-addressed and
 	// immutable, and every spec input to the render bumps the CR generation, so
-	// a matching (uid, generation, policy-ConfigMap ResourceVersion) tuple means
-	// the last rendered ConfigMap is still current. Skip the INI/paste/policy
-	// rendering and the immutable-ConfigMap write, but still re-run
-	// recordLoggingHealth so the LoggingHealthy condition/event contract holds
-	// on every pass.
+	// a matching (uid, generation, policy-ConfigMap ResourceVersion,
+	// domains-projected) tuple means the last rendered ConfigMap is still
+	// current. Skip the INI/paste/policy rendering and the
+	// immutable-ConfigMap write, but still re-run recordLoggingHealth so the
+	// LoggingHealthy condition/event contract holds on every pass.
 	policyCMRV, err := r.policyConfigMapResourceVersion(ctx, keystone)
 	if err != nil {
 		return "", err
 	}
-	if name, useStderr, ok := r.configRenderCacheHit(keystone, policyCMRV); ok {
+	if name, useStderr, ok := r.configRenderCacheHit(keystone, policyCMRV, domainsProjected); ok {
 		// Confirm the cached ConfigMap still exists: an out-of-band delete must
 		// fall through to a full render/recreate. Owns(ConfigMap) enqueues us on
 		// the delete, but the cache would otherwise hand back a deleted name.
@@ -167,6 +174,18 @@ func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, keystone *keys
 			// (oslo.config env override)..
 			"connection": dbConnectionPlaceholder,
 		},
+	}
+
+	// Turn the domain-specific-drivers machinery on when at least one
+	// identity backend is projected: keystone then scans domain_config_dir
+	// for keystone.<domain>.conf files (the domains Secret mounted by every
+	// workload builder). Placed in the defaults map so user extraConfig still
+	// wins per MergeDefaults semantics. When nothing is projected the options
+	// are omitted entirely, keeping zero-backend CRs byte-identical to the
+	// pre-identity-backend render.
+	if domainsProjected {
+		defaults["identity"]["domain_specific_drivers_enabled"] = "true"
+		defaults["identity"]["domain_config_dir"] = domainsMountPath
 	}
 
 	// render PerLoggerLevels into oslo.log's default_log_levels
@@ -276,9 +295,10 @@ func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, keystone *keys
 		return "", fmt.Errorf("creating config ConfigMap: %w", err)
 	}
 
-	// Memoize the render so a subsequent pass at the same generation and policy
-	// ConfigMap ResourceVersion returns this name without re-rendering.
-	r.storeConfigRender(keystone, policyCMRV, configMapName, mergedUseStderr(merged))
+	// Memoize the render so a subsequent pass at the same generation, policy
+	// ConfigMap ResourceVersion, and projection state returns this name
+	// without re-rendering.
+	r.storeConfigRender(keystone, policyCMRV, configMapName, mergedUseStderr(merged), domainsProjected)
 
 	return configMapName, nil
 }
@@ -305,22 +325,24 @@ func (r *KeystoneReconciler) policyConfigMapResourceVersion(ctx context.Context,
 }
 
 // configRenderCacheHit reports whether the memoized render for this CR is still
-// valid: matching UID, generation, and policy-ConfigMap ResourceVersion.
-func (r *KeystoneReconciler) configRenderCacheHit(keystone *keystonev1alpha1.Keystone, policyCMRV string) (name, useStderr string, ok bool) {
+// valid: matching UID, generation, policy-ConfigMap ResourceVersion, and
+// identity-backend projection state.
+func (r *KeystoneReconciler) configRenderCacheHit(keystone *keystonev1alpha1.Keystone, policyCMRV string, domainsProjected bool) (name, useStderr string, ok bool) {
 	r.configRenderCacheMu.Lock()
 	defer r.configRenderCacheMu.Unlock()
 	entry, found := r.configRenderCache[client.ObjectKeyFromObject(keystone)]
 	if !found {
 		return "", "", false
 	}
-	if entry.uid != keystone.UID || entry.generation != keystone.Generation || entry.policyCMResourceVersion != policyCMRV {
+	if entry.uid != keystone.UID || entry.generation != keystone.Generation ||
+		entry.policyCMResourceVersion != policyCMRV || entry.domainsProjected != domainsProjected {
 		return "", "", false
 	}
 	return entry.configMapName, entry.useStderr, true
 }
 
 // storeConfigRender memoizes a successful render.
-func (r *KeystoneReconciler) storeConfigRender(keystone *keystonev1alpha1.Keystone, policyCMRV, configMapName, useStderr string) {
+func (r *KeystoneReconciler) storeConfigRender(keystone *keystonev1alpha1.Keystone, policyCMRV, configMapName, useStderr string, domainsProjected bool) {
 	r.configRenderCacheMu.Lock()
 	defer r.configRenderCacheMu.Unlock()
 	if r.configRenderCache == nil {
@@ -330,6 +352,7 @@ func (r *KeystoneReconciler) storeConfigRender(keystone *keystonev1alpha1.Keysto
 		uid:                     keystone.UID,
 		generation:              keystone.Generation,
 		policyCMResourceVersion: policyCMRV,
+		domainsProjected:        domainsProjected,
 		configMapName:           configMapName,
 		useStderr:               useStderr,
 	}
