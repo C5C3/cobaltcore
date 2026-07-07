@@ -1005,3 +1005,185 @@ func TestPruneImmutableConfigMaps_negativeRetainClampedToZero(t *testing.T) {
 	g.Expect(remaining).To(HaveLen(1))
 	g.Expect(remaining).To(ContainElement(currentName))
 }
+
+func TestCreateImmutableSecret_creates(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(owner).Build()
+	ctx := context.Background()
+
+	data := map[string][]byte{"keystone.corp.conf": []byte("[ldap]\nurl = ldap://x\n")}
+	name, err := CreateImmutableSecret(ctx, c, s, owner, "my-domains", "default", data)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(name).To(HavePrefix("my-domains-"))
+	g.Expect(name).NotTo(Equal("my-domains-"))
+
+	var secret corev1.Secret
+	g.Expect(c.Get(ctx, client.ObjectKey{Name: name, Namespace: "default"}, &secret)).To(Succeed())
+	g.Expect(secret.Data).To(Equal(data))
+	g.Expect(*secret.Immutable).To(BeTrue())
+	g.Expect(secret.Labels).To(HaveKeyWithValue(ConfigBaseLabelKey, "my-domains"))
+	g.Expect(secret.OwnerReferences).To(HaveLen(1))
+	g.Expect(secret.OwnerReferences[0].Name).To(Equal("test-owner"))
+}
+
+func TestCreateImmutableSecret_idempotentAndDeterministic(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(owner).Build()
+	ctx := context.Background()
+
+	data := map[string][]byte{"a": []byte("1"), "b": []byte("2")}
+	name1, err := CreateImmutableSecret(ctx, c, s, owner, "domains", "default", data)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	name2, err := CreateImmutableSecret(ctx, c, s, owner, "domains", "default", data)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(name2).To(Equal(name1))
+
+	// Different data must yield a different content-hashed name.
+	name3, err := CreateImmutableSecret(ctx, c, s, owner, "domains", "default",
+		map[string][]byte{"a": []byte("changed")})
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(name3).NotTo(Equal(name1))
+}
+
+func TestCreateImmutableSecret_rejectsUnownedExisting(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+	ctx := context.Background()
+
+	data := map[string][]byte{"key": []byte("value")}
+
+	// Create once to learn the content-hashed name.
+	c1 := fake.NewClientBuilder().WithScheme(s).WithObjects(owner).Build()
+	name, err := CreateImmutableSecret(ctx, c1, s, owner, "my-domains", "default", data)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// Pre-create a Secret with the same name but a different controller owner.
+	isController := true
+	conflicting := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: "default",
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: "v1",
+				Kind:       "ConfigMap",
+				Name:       "other-owner",
+				UID:        "other-uid",
+				Controller: &isController,
+			}},
+		},
+	}
+
+	c2 := fake.NewClientBuilder().WithScheme(s).WithObjects(owner, conflicting).Build()
+	_, err = CreateImmutableSecret(ctx, c2, s, owner, "my-domains", "default", data)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("not owned by"))
+}
+
+func ownedSecret(name, namespace, baseName string, owner *corev1.ConfigMap, creationTime time.Time) *corev1.Secret {
+	isController := true
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              name,
+			Namespace:         namespace,
+			CreationTimestamp: metav1.NewTime(creationTime),
+			Labels: map[string]string{
+				ConfigBaseLabelKey: baseName,
+			},
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: "v1",
+				Kind:       "ConfigMap",
+				Name:       owner.Name,
+				UID:        owner.UID,
+				Controller: &isController,
+			}},
+		},
+	}
+}
+
+func TestPruneImmutableSecrets_deletesStaleSecrets(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+	ctx := context.Background()
+
+	baseTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	currentName := "my-domains-current1"
+
+	sec1 := ownedSecret("my-domains-aaaaaaaa", "default", "my-domains", owner, baseTime)
+	sec2 := ownedSecret("my-domains-bbbbbbbb", "default", "my-domains", owner, baseTime.Add(1*time.Hour))
+	sec3 := ownedSecret("my-domains-cccccccc", "default", "my-domains", owner, baseTime.Add(2*time.Hour))
+	current := ownedSecret(currentName, "default", "my-domains", owner, baseTime.Add(3*time.Hour))
+
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(owner, sec1, sec2, sec3, current).Build()
+
+	err := PruneImmutableSecrets(ctx, c, owner, PruneOptions{BaseName: "my-domains", Namespace: "default", CurrentName: currentName, Retain: 2})
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var secList corev1.SecretList
+	g.Expect(c.List(ctx, &secList, client.InNamespace("default"))).To(Succeed())
+
+	remaining := make([]string, 0, len(secList.Items))
+	for _, sec := range secList.Items {
+		remaining = append(remaining, sec.Name)
+	}
+	// 2 newest historical + current = 3 remaining; oldest pruned.
+	g.Expect(remaining).To(HaveLen(3))
+	g.Expect(remaining).To(ContainElement(currentName))
+	g.Expect(remaining).To(ContainElement("my-domains-cccccccc"))
+	g.Expect(remaining).To(ContainElement("my-domains-bbbbbbbb"))
+	g.Expect(remaining).NotTo(ContainElement("my-domains-aaaaaaaa"))
+}
+
+// Verify the full-cleanup path: Retain 0 with an empty CurrentName removes
+// every historical Secret for the base name — used when the last identity
+// backend detaches and no domains Secret must survive.
+func TestPruneImmutableSecrets_retainZeroEmptyCurrentDeletesAll(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+	ctx := context.Background()
+
+	baseTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	sec1 := ownedSecret("my-domains-aaaaaaaa", "default", "my-domains", owner, baseTime)
+	sec2 := ownedSecret("my-domains-bbbbbbbb", "default", "my-domains", owner, baseTime.Add(1*time.Hour))
+
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(owner, sec1, sec2).Build()
+
+	err := PruneImmutableSecrets(ctx, c, owner, PruneOptions{BaseName: "my-domains", Namespace: "default", CurrentName: "", Retain: 0})
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var secList corev1.SecretList
+	g.Expect(c.List(ctx, &secList, client.InNamespace("default"))).To(Succeed())
+	g.Expect(secList.Items).To(BeEmpty())
+}
+
+// Secrets owned by a different controller must never be pruned — same
+// ownership guard as the ConfigMap flavor.
+func TestPruneImmutableSecrets_skipsSecretsOwnedByDifferentController(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+	ctx := context.Background()
+
+	baseTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	foreign := ownedSecret("my-domains-ffffffff", "default", "my-domains", owner, baseTime)
+	foreign.OwnerReferences[0].UID = "other-uid"
+	foreign.OwnerReferences[0].Name = "other-owner"
+
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(owner, foreign).Build()
+
+	err := PruneImmutableSecrets(ctx, c, owner, PruneOptions{BaseName: "my-domains", Namespace: "default", CurrentName: "", Retain: 0})
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var secList corev1.SecretList
+	g.Expect(c.List(ctx, &secList, client.InNamespace("default"))).To(Succeed())
+	g.Expect(secList.Items).To(HaveLen(1))
+	g.Expect(secList.Items[0].Name).To(Equal("my-domains-ffffffff"))
+}

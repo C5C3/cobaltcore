@@ -162,6 +162,71 @@ func CreateImmutableConfigMap(ctx context.Context, c client.Client, scheme *runt
 	return name, nil
 }
 
+// CreateImmutableSecret creates an immutable Secret with a content-hash
+// suffix appended to the base name, mirroring CreateImmutableConfigMap for
+// data that must not live in a ConfigMap (e.g. rendered per-domain keystone
+// config files carrying LDAP bind passwords). The hash ensures content
+// changes result in new Secret names, triggering pod restarts. It returns the
+// actual name of the created Secret (with hash suffix).
+//
+// Note: Old Secrets with the same baseName but different hash suffixes
+// accumulate during the owner's lifetime since GC only removes them when the
+// owner is deleted. Callers (reconcilers) should prune obsolete Secrets after
+// rolling updates complete via PruneImmutableSecrets to avoid unbounded growth.
+func CreateImmutableSecret(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, baseName, namespace string, data map[string][]byte) (string, error) {
+	// Compute deterministic hash from data using the same length-prefixed
+	// "len:key=len:value\n" encoding as CreateImmutableConfigMap so each entry
+	// is self-delimiting regardless of content.
+	keys := make([]string, 0, len(data))
+	for k := range data {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	h := sha256.New()
+	for _, k := range keys {
+		_, _ = fmt.Fprintf(h, "%d:%s=%d:%s\n", len(k), k, len(data[k]), data[k])
+	}
+	hash := hex.EncodeToString(h.Sum(nil))[:hashTruncateLen]
+	name := fmt.Sprintf("%s-%s", baseName, hash)
+
+	immutable := true
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			Labels: map[string]string{
+				ConfigBaseLabelKey: baseName,
+			},
+		},
+		Data:      data,
+		Immutable: &immutable,
+	}
+
+	if err := controllerutil.SetControllerReference(owner, secret, scheme); err != nil {
+		return "", fmt.Errorf("setting owner reference on Secret %s/%s: %w", namespace, name, err)
+	}
+
+	if err := c.Create(ctx, secret); err != nil {
+		if !errors.IsAlreadyExists(err) {
+			return "", fmt.Errorf("creating Secret %s/%s: %w", namespace, name, err)
+		}
+		// Verify the existing Secret is owned by the expected owner to guard
+		// against stale GC artefacts or accidental name collisions.
+		existing := &corev1.Secret{}
+		if getErr := c.Get(ctx, client.ObjectKey{Name: name, Namespace: namespace}, existing); getErr != nil {
+			return "", fmt.Errorf("fetching existing Secret %s/%s: %w", namespace, name, getErr)
+		}
+		controllerRef := metav1.GetControllerOf(existing)
+		if controllerRef == nil || controllerRef.UID != owner.GetUID() {
+			return "", fmt.Errorf("existing Secret %s/%s is not owned by %s/%s",
+				namespace, name, owner.GetNamespace(), owner.GetName())
+		}
+	}
+
+	return name, nil
+}
+
 // InjectOsloPolicyConfig returns a config map with oslo_policy configuration
 // injected. If policyFilePath is non-empty, it creates a deep copy of the
 // input map (via MergeDefaults), ensures the oslo_policy section exists, sets
@@ -219,6 +284,40 @@ type PruneOptions struct {
 // after the upgrade) and will be garbage-collected by Kubernetes when the
 // owning CR is deleted, since they carry a controller owner reference.
 func PruneImmutableConfigMaps(ctx context.Context, c client.Client, owner client.Object, opts PruneOptions) error {
+	var allConfigMaps corev1.ConfigMapList
+	if err := c.List(ctx, &allConfigMaps, client.InNamespace(opts.Namespace), client.MatchingLabels{ConfigBaseLabelKey: opts.BaseName}); err != nil {
+		return fmt.Errorf("listing ConfigMaps in namespace %s: %w", opts.Namespace, err)
+	}
+	items := make([]client.Object, 0, len(allConfigMaps.Items))
+	for i := range allConfigMaps.Items {
+		items = append(items, &allConfigMaps.Items[i])
+	}
+	return pruneImmutableObjects(ctx, c, owner, opts, items, "ConfigMap")
+}
+
+// PruneImmutableSecrets deletes stale immutable Secrets previously created by
+// CreateImmutableSecret, with the same retain/tie-break/ownership semantics as
+// PruneImmutableConfigMaps. Retain: 0 combined with an empty CurrentName
+// removes every historical Secret for the base name — the full-cleanup path a
+// caller takes when the feature that produced the Secrets is turned off.
+func PruneImmutableSecrets(ctx context.Context, c client.Client, owner client.Object, opts PruneOptions) error {
+	var allSecrets corev1.SecretList
+	if err := c.List(ctx, &allSecrets, client.InNamespace(opts.Namespace), client.MatchingLabels{ConfigBaseLabelKey: opts.BaseName}); err != nil {
+		return fmt.Errorf("listing Secrets in namespace %s: %w", opts.Namespace, err)
+	}
+	items := make([]client.Object, 0, len(allSecrets.Items))
+	for i := range allSecrets.Items {
+		items = append(items, &allSecrets.Items[i])
+	}
+	return pruneImmutableObjects(ctx, c, owner, opts, items, "Secret")
+}
+
+// pruneImmutableObjects implements the shared prune algorithm for the
+// ConfigMap and Secret flavors: filter to the owner's hash-suffixed history
+// (never the CurrentName), sort newest-first with a deterministic name
+// tie-break, and delete everything past the retain count. kind is only used
+// for error/log messages.
+func pruneImmutableObjects(ctx context.Context, c client.Client, owner client.Object, opts PruneOptions, items []client.Object, kind string) error {
 	logger := log.FromContext(ctx)
 
 	// Clamp negative retain to 0 to prevent panics from misconfigured values.
@@ -227,34 +326,29 @@ func PruneImmutableConfigMaps(ctx context.Context, c client.Client, owner client
 		retain = 0
 	}
 
-	var allConfigMaps corev1.ConfigMapList
-	if err := c.List(ctx, &allConfigMaps, client.InNamespace(opts.Namespace), client.MatchingLabels{ConfigBaseLabelKey: opts.BaseName}); err != nil {
-		return fmt.Errorf("listing ConfigMaps in namespace %s: %w", opts.Namespace, err)
-	}
-
 	prefix := opts.BaseName + "-"
-	var candidates []corev1.ConfigMap
-	for _, cm := range allConfigMaps.Items {
-		if !strings.HasPrefix(cm.Name, prefix) {
+	var candidates []client.Object
+	for _, obj := range items {
+		if !strings.HasPrefix(obj.GetName(), prefix) {
 			continue
 		}
-		if cm.Name == opts.CurrentName {
+		if obj.GetName() == opts.CurrentName {
 			continue
 		}
-		controllerRef := metav1.GetControllerOf(&cm)
+		controllerRef := metav1.GetControllerOf(obj)
 		if controllerRef == nil || controllerRef.UID != owner.GetUID() {
 			continue
 		}
-		candidates = append(candidates, cm)
+		candidates = append(candidates, obj)
 	}
 
 	// Sort candidates by CreationTimestamp descending (newest first). Use a
-	// stable sort with a name tie-break so same-second ConfigMaps retain a
+	// stable sort with a name tie-break so same-second objects retain a
 	// deterministic order across runs.
 	sort.SliceStable(candidates, func(i, j int) bool {
-		ti, tj := candidates[i].CreationTimestamp.Time, candidates[j].CreationTimestamp.Time
+		ti, tj := candidates[i].GetCreationTimestamp().Time, candidates[j].GetCreationTimestamp().Time
 		if ti.Equal(tj) {
-			return candidates[i].Name > candidates[j].Name
+			return candidates[i].GetName() > candidates[j].GetName()
 		}
 		return ti.After(tj)
 	})
@@ -264,11 +358,11 @@ func PruneImmutableConfigMaps(ctx context.Context, c client.Client, owner client
 	}
 
 	for i := retain; i < len(candidates); i++ {
-		cm := candidates[i]
-		if err := client.IgnoreNotFound(c.Delete(ctx, &cm)); err != nil {
-			return fmt.Errorf("deleting stale ConfigMap %s/%s: %w", opts.Namespace, cm.Name, err)
+		obj := candidates[i]
+		if err := client.IgnoreNotFound(c.Delete(ctx, obj)); err != nil {
+			return fmt.Errorf("deleting stale %s %s/%s: %w", kind, opts.Namespace, obj.GetName(), err)
 		}
-		logger.Info("pruned stale immutable ConfigMap", "name", cm.Name, "namespace", opts.Namespace, "baseName", opts.BaseName, "ownerName", owner.GetName(), "ownerUID", owner.GetUID())
+		logger.Info("pruned stale immutable "+kind, "name", obj.GetName(), "namespace", opts.Namespace, "baseName", opts.BaseName, "ownerName", owner.GetName(), "ownerUID", owner.GetUID())
 	}
 
 	return nil
