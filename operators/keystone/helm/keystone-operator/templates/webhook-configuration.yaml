@@ -5,4 +5,10 @@
       "mutatePath" "/mutate-keystone-openstack-c5c3-io-v1alpha1-keystone"
       "validatePath" "/validate-keystone-openstack-c5c3-io-v1alpha1-keystone"
       "apiGroup" "keystone.openstack.c5c3.io"
-      "resource" "keystones") }}
+      "resource" "keystones"
+      "additionalWebhooks" (list (dict
+        "mutatingWebhookName" "mkeystoneidentitybackend.kb.io"
+        "validatingWebhookName" "vkeystoneidentitybackend.kb.io"
+        "mutatePath" "/mutate-keystone-openstack-c5c3-io-v1alpha1-keystoneidentitybackend"
+        "validatePath" "/validate-keystone-openstack-c5c3-io-v1alpha1-keystoneidentitybackend"
+        "resource" "keystoneidentitybackends"))) }}

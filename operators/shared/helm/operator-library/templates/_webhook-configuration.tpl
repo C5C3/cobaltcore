@@ -12,6 +12,15 @@ templates/webhook-configuration.yaml passes its four varying facts via a dict:
   validatePath          the validating admission path served by the operator
   apiGroup              the CR's API group
   resource              the CR's plural resource name
+
+Operators serving admission for more than one Kind pass the optional
+additionalWebhooks list; each entry contributes one extra webhook to BOTH
+configurations and carries the same five per-Kind facts (apiGroup defaults
+to the base apiGroup when omitted):
+
+  additionalWebhooks    list of dicts with mutatingWebhookName,
+                        validatingWebhookName, mutatePath, validatePath,
+                        resource, and optional apiGroup
 */}}
 {{- define "operator-library.webhookConfiguration" -}}
 {{- $root := .root -}}
@@ -45,6 +54,29 @@ webhooks:
           - UPDATE
         resources:
           - {{ .resource }}
+{{- $baseGroup := .apiGroup }}
+{{- range .additionalWebhooks }}
+  - name: {{ .mutatingWebhookName }}
+    admissionReviewVersions:
+      - v1
+    clientConfig:
+      service:
+        name: {{ include "operator-library.fullname" $root }}
+        namespace: {{ $root.Release.Namespace }}
+        path: {{ .mutatePath }}
+    failurePolicy: Fail
+    sideEffects: None
+    rules:
+      - apiGroups:
+          - {{ .apiGroup | default $baseGroup }}
+        apiVersions:
+          - v1alpha1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - {{ .resource }}
+{{- end }}
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration
@@ -78,5 +110,28 @@ webhooks:
           - UPDATE
         resources:
           - {{ .resource }}
+{{- range .additionalWebhooks }}
+  - name: {{ .validatingWebhookName }}
+    admissionReviewVersions:
+      - v1
+    clientConfig:
+      service:
+        name: {{ include "operator-library.fullname" $root }}
+        namespace: {{ $root.Release.Namespace }}
+        path: {{ .validatePath }}
+    failurePolicy: Fail
+    sideEffects: None
+    rules:
+      - apiGroups:
+          - {{ .apiGroup | default $baseGroup }}
+        apiVersions:
+          - v1alpha1
+        # No DELETE — same rationale as the base entry above.
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - {{ .resource }}
+{{- end }}
 {{- end }}
 {{- end }}

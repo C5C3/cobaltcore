@@ -17,6 +17,8 @@ annotations:
   artifacthub.io/changes: |
     - kind: added
       description: Optional image.digest value pins the operator image by immutable digest (rendered as repository:tag@digest)
+    - kind: added
+      description: KeystoneIdentityBackend CRD, controller, and admission webhooks for LDAP/AD-backed domains
     - kind: changed
       description: Shared manifests (certificate, service, serviceaccount, rolebindings, PDB, ServiceMonitor, webhook configurations) moved into the operator-library chart
     - kind: added

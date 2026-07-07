@@ -7,7 +7,7 @@ tests:
     asserts:
       - lengthEqual:
           path: rules
-          count: 22
+          count: 25
 
   - it: should grant full CRUD on keystones
     asserts:
@@ -50,6 +50,47 @@ tests:
               - keystone.openstack.c5c3.io
             resources:
               - keystones/finalizers
+            verbs:
+              - update
+
+  - it: should grant read and update (no create/delete) on keystoneidentitybackends
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - keystone.openstack.c5c3.io
+            resources:
+              - keystoneidentitybackends
+            verbs:
+              - get
+              - list
+              - watch
+              - update
+
+  - it: should grant get/update/patch on keystoneidentitybackends/status
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - keystone.openstack.c5c3.io
+            resources:
+              - keystoneidentitybackends/status
+            verbs:
+              - get
+              - update
+              - patch
+
+  - it: should grant update on keystoneidentitybackends/finalizers
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - keystone.openstack.c5c3.io
+            resources:
+              - keystoneidentitybackends/finalizers
             verbs:
               - update
 

@@ -50,7 +50,7 @@ tests:
     asserts:
       - lengthEqual:
           path: rules
-          count: 22
+          count: 25
 
   - it: should grant full CRUD on keystones
     set:

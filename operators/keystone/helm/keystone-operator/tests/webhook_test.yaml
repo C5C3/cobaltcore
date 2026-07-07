@@ -72,6 +72,39 @@ tests:
           path: metadata.annotations["cert-manager.io/inject-ca-from"]
           value: NAMESPACE/RELEASE-NAME-keystone-operator-webhook
 
+  - it: should carry the identity-backend mutating webhook as second entry
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: webhooks[1].name
+          value: mkeystoneidentitybackend.kb.io
+      - equal:
+          path: webhooks[1].clientConfig.service.path
+          value: /mutate-keystone-openstack-c5c3-io-v1alpha1-keystoneidentitybackend
+      - contains:
+          path: webhooks[1].rules[0].resources
+          content: keystoneidentitybackends
+      - equal:
+          path: webhooks[1].failurePolicy
+          value: Fail
+
+  - it: should carry the identity-backend validating webhook as second entry
+    documentIndex: 1
+    asserts:
+      - equal:
+          path: webhooks[1].name
+          value: vkeystoneidentitybackend.kb.io
+      - equal:
+          path: webhooks[1].clientConfig.service.path
+          value: /validate-keystone-openstack-c5c3-io-v1alpha1-keystoneidentitybackend
+      - contains:
+          path: webhooks[1].rules[0].resources
+          content: keystoneidentitybackends
+      # DELETE must NOT be intercepted on the identity-backend entry either.
+      - notContains:
+          path: webhooks[1].rules[0].operations
+          content: DELETE
+
   - it: should not render any documents when webhook is disabled
     set:
       webhook:

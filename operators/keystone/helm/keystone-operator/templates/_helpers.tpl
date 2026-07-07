@@ -40,6 +40,34 @@ are keystone-specific, so they stay in this chart rather than the library.
     - keystones/finalizers
   verbs:
     - update
+# keystone.openstack.c5c3.io - keystoneidentitybackends
+# create/delete are intentionally NOT granted: users create backend CRs; the
+# operator only reads them and updates the object (finalizer add/remove).
+- apiGroups:
+    - keystone.openstack.c5c3.io
+  resources:
+    - keystoneidentitybackends
+  verbs:
+    - get
+    - list
+    - watch
+    - update
+# keystone.openstack.c5c3.io - keystoneidentitybackends/status
+- apiGroups:
+    - keystone.openstack.c5c3.io
+  resources:
+    - keystoneidentitybackends/status
+  verbs:
+    - get
+    - update
+    - patch
+# keystone.openstack.c5c3.io - keystoneidentitybackends/finalizers
+- apiGroups:
+    - keystone.openstack.c5c3.io
+  resources:
+    - keystoneidentitybackends/finalizers
+  verbs:
+    - update
 # apps - deployments
 - apiGroups:
     - apps
