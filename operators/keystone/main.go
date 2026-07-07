@@ -71,6 +71,12 @@ func main() {
 				if err := (&keystonev1alpha1.KeystoneWebhook{Client: mgr.GetAPIReader()}).SetupWebhookWithManager(mgr); err != nil {
 					return err
 				}
+				// The identity-backend webhook shares the direct-reader rationale:
+				// the domain-name uniqueness check must see a just-created sibling
+				// backend, not a stale informer cache.
+				if err := (&keystonev1alpha1.KeystoneIdentityBackendWebhook{Client: mgr.GetAPIReader()}).SetupWebhookWithManager(mgr); err != nil {
+					return err
+				}
 			}
 			return nil
 		},
