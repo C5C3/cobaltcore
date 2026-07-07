@@ -108,6 +108,10 @@ spec:
           kubectl get keystoneidentitybackend planetexpress-ldap -n $NAMESPACE -o yaml 2>&1 || true
           echo "=== Keystone CR ==="
           kubectl get keystone keystone-ldap -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Keystone pods ==="
+          kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=keystone-ldap -o wide 2>&1 || true
+          echo "=== Keystone pod logs ==="
+          kubectl logs -n $NAMESPACE -l app.kubernetes.io/instance=keystone-ldap --tail=80 2>&1 || true
           echo "=== openldap pod logs ==="
           kubectl logs -n $NAMESPACE -l app.kubernetes.io/name=openldap --tail=60 2>&1 || true
           echo "=== operator logs ==="
