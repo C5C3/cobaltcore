@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# KeystoneIdentityBackend fixture attaching the planetexpress LDAP domain to
+# keystone-ldap. deletionPolicy Delete exercises the disable-then-delete
+# teardown path in-cluster (the default is Retain). The attribute mapping
+# matches the docker-test-openldap seed tree: users under ou=people with
+# objectClass inetOrgPerson, uid as both ID and name, mail for email.
+# readOnly: true (the default, spelled out for readers) forces the
+# user_allow_*/group_allow_* write options to false.
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: KeystoneIdentityBackend
+metadata:
+  name: planetexpress-ldap
+  namespace: openstack
+spec:
+  keystoneRef:
+    name: keystone-ldap
+  domain:
+    name: planetexpress
+    mode: Manage
+    deletionPolicy: Delete
+    description: Planet Express corporate directory
+  type: LDAP
+  ldap:
+    url: ldap://openldap.openstack.svc.cluster.local:10389
+    bindCredentialsSecretRef:
+      name: openldap-bind
+    suffix: dc=planetexpress,dc=com
+    readOnly: true
+    users:
+      treeDN: ou=people,dc=planetexpress,dc=com
+      objectClass: inetOrgPerson
+      idAttribute: uid
+      nameAttribute: uid
+      mailAttribute: mail

@@ -1,0 +1,84 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# In-suite OpenLDAP fixture for the ldap-domain-backend E2E test:
+# ghcr.io/rroemhild/docker-test-openldap ships a slapd pre-seeded with the
+# Futurama dc=planetexpress,dc=com tree (users under ou=people with
+# objectClass inetOrgPerson, uid/mail attributes, userPassword == uid) and
+# the admin bind cn=admin,dc=planetexpress,dc=com / GoodNewsEveryone on
+# port 10389. The image pin is tag+digest and Renovate-tracked via the
+# docker-digest customManager in renovate.json.
+#
+# The container deliberately carries no restricted securityContext: the
+# fixture image is s6-overlay based and its init must run as root to fix
+# volume ownership before slapd drops privileges. It is a test-only
+# fixture, never a production workload.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openldap
+  namespace: openstack
+  labels:
+    app.kubernetes.io/name: openldap
+    app.kubernetes.io/instance: openldap
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: openldap
+      app.kubernetes.io/instance: openldap
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: openldap
+        app.kubernetes.io/instance: openldap
+    spec:
+      containers:
+      - name: openldap
+        image: ghcr.io/rroemhild/docker-test-openldap:v2.5.0@sha256:3470e15c60119a1c0392cc162cdce71edfb42b55affdc69da574012f956317cd
+        ports:
+        - name: ldap
+          containerPort: 10389
+        readinessProbe:
+          tcpSocket:
+            port: 10389
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: openldap
+  namespace: openstack
+  labels:
+    app.kubernetes.io/name: openldap
+    app.kubernetes.io/instance: openldap
+spec:
+  selector:
+    app.kubernetes.io/name: openldap
+    app.kubernetes.io/instance: openldap
+  ports:
+  - name: ldap
+    port: 10389
+    targetPort: 10389
+    protocol: TCP
+---
+# Bind credentials for the KeystoneIdentityBackend: the fixed data keys
+# "username" (the bind DN) and "password" are the contract the projection
+# reads.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: openldap-bind
+  namespace: openstack
+type: Opaque
+stringData:
+  username: cn=admin,dc=planetexpress,dc=com
+  password: GoodNewsEveryone

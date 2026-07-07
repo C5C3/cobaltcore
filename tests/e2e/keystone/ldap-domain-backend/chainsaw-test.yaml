@@ -1,0 +1,305 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the KeystoneIdentityBackend LDAP flow.
+# Validates the full attach/project/authenticate/detach cycle against a real
+# in-cluster LDAP server (the docker-test-openldap fixture, seeded with the
+# dc=planetexpress,dc=com tree):
+#   - Keystone reaches Ready first, THEN the backend attaches (late-attach)
+#   - The dedicated controller provisions the planetexpress domain and the
+#     keystone-side projection renders keystone.planetexpress.conf into the
+#     content-hashed domains Secret mounted by the Deployment
+#   - Backend conditions (DomainReady, ConfigProjected, Ready) and the
+#     aggregated IdentityBackendsReady on the Keystone all reach True
+#   - Seeded LDAP users are listable through the Keystone API and an LDAP
+#     user (professor) is issued a real token scoped to the domain
+#   - Deleting the backend (deletionPolicy Delete) de-projects the config,
+#     disables and deletes the domain, and leaves Keystone Ready with admin
+#     auth intact
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-ldap-domain-backend
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Deploy the OpenLDAP fixture and Keystone; both become ready ──
+  - try:
+    - apply:
+        file: 00-openldap.yaml
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: openldap
+            namespace: openstack
+          status:
+            (availableReplicas > `0`): true
+    - apply:
+        file: 01-keystone-cr.yaml
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-ldap
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+            (conditions[?type == 'IdentityBackendsReady']):
+            - status: "True"
+              reason: IdentityBackendsNotRequired
+    catch:
+    - script:
+        content: |
+          echo "=== Keystone CR ==="
+          kubectl get keystone keystone-ldap -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== openldap pod logs ==="
+          kubectl logs -n $NAMESPACE -l app.kubernetes.io/name=openldap --tail=60 2>&1 || true
+          echo "=== operator logs ==="
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 2: Late-attach the backend; every condition converges ──────────
+  - try:
+    - apply:
+        file: 02-backend-cr.yaml
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: KeystoneIdentityBackend
+          metadata:
+            name: planetexpress-ldap
+            namespace: openstack
+          status:
+            (conditions[?type == 'DomainReady']):
+            - status: "True"
+              reason: DomainProvisioned
+            (conditions[?type == 'ConfigProjected']):
+            - status: "True"
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+            (domainID != null && domainID != ''): true
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-ldap
+            namespace: openstack
+          status:
+            (conditions[?type == 'IdentityBackendsReady']):
+            - status: "True"
+              reason: AllBackendsProjected
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    catch:
+    - script:
+        content: |
+          echo "=== Backend CR ==="
+          kubectl get keystoneidentitybackend planetexpress-ldap -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Keystone CR ==="
+          kubectl get keystone keystone-ldap -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== openldap pod logs ==="
+          kubectl logs -n $NAMESPACE -l app.kubernetes.io/name=openldap --tail=60 2>&1 || true
+          echo "=== operator logs ==="
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 3: The Deployment mounts the domains Secret and rolled out ─────
+  - try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-ldap
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                (volumes[?name == 'domains']):
+                - (starts_with(secret.secretName, 'keystone-ldap-domains-')): true
+          status:
+            # updatedReplicas == replicas proves the rollout with the new
+            # volume actually completed — spec alone could pass against a
+            # stalled rollout serving old pods.
+            (updatedReplicas == replicas): true
+            (availableReplicas == replicas): true
+    catch:
+    - script:
+        content: |
+          echo "=== Keystone Deployment ==="
+          kubectl get deployment keystone-ldap -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Keystone CR ==="
+          kubectl get keystone keystone-ldap -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== operator logs ==="
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 4: LDAP users are visible and an LDAP user gets a token ────────
+  - try:
+    - script:
+        timeout: 120s
+        content: |
+          set -euo pipefail
+          ADMIN_PASSWORD_B64=$(kubectl get secret keystone-admin -n $NAMESPACE -o jsonpath='{.data.password}') || {
+            echo "ERROR: could not read Secret keystone-admin"; exit 1; }
+          if [[ -z "${ADMIN_PASSWORD_B64}" ]]; then
+            echo "ERROR: Secret keystone-admin has no password key"; exit 1
+          fi
+          ADMIN_PASSWORD=$(printf '%s' "$ADMIN_PASSWORD_B64" | base64 --decode)
+          POD=$(kubectl get pods -n $NAMESPACE \
+            -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-ldap,pod-template-hash \
+            -o jsonpath='{.items[0].metadata.name}')
+          # The keystone image ships python3 but no curl; the admin password
+          # is passed as argv (openbao generates a shell-safe hex string —
+          # same idiom as the fernet-rotation suite).
+          kubectl exec -n $NAMESPACE "$POD" -- python3 -c '
+          import json, sys, urllib.request
+
+          pw = sys.argv[1]
+
+          def request(url, data=None, headers=None, method=None):
+              req = urllib.request.Request(url, data=data, headers=headers or {}, method=method)
+              return urllib.request.urlopen(req)
+
+          # Admin token (SQL-backed Default domain — untouched by the LDAP attach).
+          body = json.dumps({"auth": {"identity": {"methods": ["password"], "password": {"user": {"name": "admin", "domain": {"id": "default"}, "password": pw}}}}}).encode()
+          resp = request("http://localhost:5000/v3/auth/tokens", data=body, headers={"Content-Type": "application/json"})
+          admin_token = resp.headers["X-Subject-Token"]
+
+          # Resolve the planetexpress domain.
+          resp = request("http://localhost:5000/v3/domains?name=planetexpress", headers={"X-Auth-Token": admin_token})
+          domains = json.load(resp)["domains"]
+          assert len(domains) == 1, f"expected exactly one planetexpress domain, got {domains}"
+          domain_id = domains[0]["id"]
+
+          # The seeded LDAP users are served through the keystone API.
+          resp = request(f"http://localhost:5000/v3/users?domain_id={domain_id}", headers={"X-Auth-Token": admin_token})
+          names = {u["name"] for u in json.load(resp)["users"]}
+          assert {"fry", "professor"} <= names, f"seeded LDAP users missing: {names}"
+          print(f"OK: LDAP users visible via domain {domain_id}: {sorted(names)}")
+
+          # Token issuance for an LDAP user, scoped to the domain
+          # (docker-test-openldap seeds userPassword == uid).
+          body = json.dumps({"auth": {"identity": {"methods": ["password"], "password": {"user": {"name": "professor", "domain": {"name": "planetexpress"}, "password": "professor"}}}, "scope": {"domain": {"name": "planetexpress"}}}}).encode()
+          resp = request("http://localhost:5000/v3/auth/tokens", data=body, headers={"Content-Type": "application/json"})
+          assert resp.status == 201, f"LDAP user token issuance returned HTTP {resp.status}"
+          assert resp.headers["X-Subject-Token"], "no X-Subject-Token issued for the LDAP user"
+          print("OK: token issued for LDAP user professor")
+          ' "$ADMIN_PASSWORD"
+    catch:
+    - script:
+        content: |
+          echo "=== Backend CR ==="
+          kubectl get keystoneidentitybackend planetexpress-ldap -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Keystone pods ==="
+          kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=keystone-ldap -o wide 2>&1 || true
+          echo "=== Keystone pod logs ==="
+          kubectl logs -n $NAMESPACE -l app.kubernetes.io/instance=keystone-ldap --tail=80 2>&1 || true
+          echo "=== openldap pod logs ==="
+          kubectl logs -n $NAMESPACE -l app.kubernetes.io/name=openldap --tail=60 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 5: Detach — clean state restored, domain deleted (D policy) ────
+  - try:
+    - delete:
+        ref:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: KeystoneIdentityBackend
+          name: planetexpress-ldap
+          namespace: openstack
+    # The domains volume is de-projected and the rollout completes.
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-ldap
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                (length(volumes[?name == 'domains']) == `0`): true
+          status:
+            (updatedReplicas == replicas): true
+            (availableReplicas == replicas): true
+    # The Keystone returns to the zero-backend baseline and stays Ready.
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-ldap
+            namespace: openstack
+          status:
+            (conditions[?type == 'IdentityBackendsReady']):
+            - status: "True"
+              reason: IdentityBackendsNotRequired
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    # The rendered keystone.conf no longer enables domain-specific drivers,
+    # the domain is gone from the identity API (deletionPolicy Delete), and
+    # admin password auth still works.
+    - script:
+        timeout: 120s
+        content: |
+          set -euo pipefail
+          CM=$(kubectl get deployment keystone-ldap -n $NAMESPACE \
+            -o jsonpath='{.spec.template.spec.volumes[?(@.name=="config")].configMap.name}')
+          if [[ -z "$CM" ]]; then
+            echo "ERROR: could not resolve the config ConfigMap from the Deployment"; exit 1
+          fi
+          if kubectl get cm "$CM" -n $NAMESPACE -o jsonpath='{.data.keystone\.conf}' | grep -q domain_specific_drivers_enabled; then
+            echo "ERROR: keystone.conf still enables domain-specific drivers after detach"; exit 1
+          fi
+          echo "OK: domain-specific drivers disabled after detach"
+          ADMIN_PASSWORD_B64=$(kubectl get secret keystone-admin -n $NAMESPACE -o jsonpath='{.data.password}') || {
+            echo "ERROR: could not read Secret keystone-admin"; exit 1; }
+          if [[ -z "${ADMIN_PASSWORD_B64}" ]]; then
+            echo "ERROR: Secret keystone-admin has no password key"; exit 1
+          fi
+          ADMIN_PASSWORD=$(printf '%s' "$ADMIN_PASSWORD_B64" | base64 --decode)
+          POD=$(kubectl get pods -n $NAMESPACE \
+            -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-ldap,pod-template-hash \
+            -o jsonpath='{.items[0].metadata.name}')
+          kubectl exec -n $NAMESPACE "$POD" -- python3 -c '
+          import json, sys, urllib.request
+
+          pw = sys.argv[1]
+          body = json.dumps({"auth": {"identity": {"methods": ["password"], "password": {"user": {"name": "admin", "domain": {"id": "default"}, "password": pw}}}}}).encode()
+          req = urllib.request.Request("http://localhost:5000/v3/auth/tokens", data=body, headers={"Content-Type": "application/json"})
+          resp = urllib.request.urlopen(req)
+          admin_token = resp.headers["X-Subject-Token"]
+          print("OK: admin auth still works after detach")
+
+          req = urllib.request.Request("http://localhost:5000/v3/domains?name=planetexpress", headers={"X-Auth-Token": admin_token})
+          domains = json.load(urllib.request.urlopen(req))["domains"]
+          assert domains == [], f"deletionPolicy Delete must remove the domain, got {domains}"
+          print("OK: planetexpress domain deleted")
+          ' "$ADMIN_PASSWORD"
+    catch:
+    - script:
+        content: |
+          echo "=== Backend CR (if still present) ==="
+          kubectl get keystoneidentitybackend planetexpress-ldap -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Keystone CR ==="
+          kubectl get keystone keystone-ldap -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Keystone Deployment ==="
+          kubectl get deployment keystone-ldap -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== operator logs ==="
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true

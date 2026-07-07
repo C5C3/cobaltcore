@@ -209,6 +209,17 @@
       "datasourceTemplate": "github-releases",
       "packageNameTemplate": "mikefarah/yq",
       "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/tests/e2e/keystone/ldap-domain-backend/00-openldap\\.yaml$/"
+      ],
+      "matchStrings": [
+        "image: (?<depName>ghcr\\.io/rroemhild/docker-test-openldap):(?<currentValue>[^@\\s]+)@(?<currentDigest>sha256:[a-f0-9]+)"
+      ],
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "docker"
     }
   ],
   "packageRules": [
@@ -385,6 +396,22 @@
       "automerge": true,
       "minimumReleaseAge": "3 days",
       "groupName": "venv-builder base packages"
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["tests/e2e/keystone/ldap-domain-backend/00-openldap.yaml"],
+      "matchPackageNames": ["ghcr.io/rroemhild/docker-test-openldap"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["tests/e2e/keystone/ldap-domain-backend/00-openldap.yaml"],
+      "matchPackageNames": ["ghcr.io/rroemhild/docker-test-openldap"],
+      "matchUpdateTypes": ["minor", "patch", "digest"],
+      "automerge": true,
+      "minimumReleaseAge": "3 days",
+      "groupName": "openldap e2e fixture"
     },
     {
       "matchDatasources": ["docker", "go"],
