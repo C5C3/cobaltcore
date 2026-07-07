@@ -45,12 +45,18 @@ spec:
             port: 10389
           initialDelaySeconds: 5
           periodSeconds: 5
+        # slapd bootstraps an LMDB (mdb) backend configured with a 1 GiB
+        # olcDbMaxSize map. A tight memory limit (the previous 256Mi)
+        # OOM-kills slapd in a restart loop during bootstrap — before it ever
+        # listens on 10389 — so the pod never becomes Ready and the suite
+        # times out waiting on availableReplicas. Give the map real headroom;
+        # this is a throwaway test fixture, never a production workload.
         resources:
           requests:
             cpu: 50m
-            memory: 64Mi
-          limits:
             memory: 256Mi
+          limits:
+            memory: 1Gi
 ---
 apiVersion: v1
 kind: Service
