@@ -164,9 +164,14 @@ spec:
             echo "ERROR: Secret keystone-admin has no password key"; exit 1
           fi
           ADMIN_PASSWORD=$(printf '%s' "$ADMIN_PASSWORD_B64" | base64 --decode)
+          # Newest pod, NOT .items[0]: right after the step-3 rollout the old
+          # pod (no domains volume, no LDAP driver) may still be Terminating,
+          # and .items[0] picks it whenever its name sorts first — its
+          # keystone routes the domain to the SQL driver and returns an empty
+          # user list. The newest pod is by construction the rolled-out one.
           POD=$(kubectl get pods -n $NAMESPACE \
             -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-ldap,pod-template-hash \
-            -o jsonpath='{.items[0].metadata.name}')
+            --sort-by=.metadata.creationTimestamp -o name | tail -1 | cut -d/ -f2)
           # The keystone image ships python3 but no curl; the admin password
           # is passed as argv (openbao generates a shell-safe hex string —
           # same idiom as the fernet-rotation suite).
@@ -179,8 +184,13 @@ spec:
               req = urllib.request.Request(url, data=data, headers=headers or {}, method=method)
               return urllib.request.urlopen(req)
 
-          # Admin token (SQL-backed Default domain — untouched by the LDAP attach).
-          body = json.dumps({"auth": {"identity": {"methods": ["password"], "password": {"user": {"name": "admin", "domain": {"id": "default"}, "password": pw}}}}}).encode()
+          # Admin token (SQL-backed Default domain — untouched by the LDAP
+          # attach), scoped to the admin project: the operator renders
+          # [oslo_policy] enforce_scope=true + enforce_new_defaults=true, and
+          # an unscoped token carries no roles — list_domains/list_users
+          # answer 403 for it. Mirrors the identity-client scope. NOTE: this
+          # block lives in a single-quoted python3 -c string — no apostrophes.
+          body = json.dumps({"auth": {"identity": {"methods": ["password"], "password": {"user": {"name": "admin", "domain": {"id": "default"}, "password": pw}}}, "scope": {"project": {"name": "admin", "domain": {"id": "default"}}}}}).encode()
           resp = request("http://localhost:5000/v3/auth/tokens", data=body, headers={"Content-Type": "application/json"})
           admin_token = resp.headers["X-Subject-Token"]
 
@@ -192,9 +202,21 @@ spec:
 
           # The seeded LDAP users are served through the keystone API.
           resp = request(f"http://localhost:5000/v3/users?domain_id={domain_id}", headers={"X-Auth-Token": admin_token})
-          names = {u["name"] for u in json.load(resp)["users"]}
+          users = json.load(resp)["users"]
+          names = {u["name"] for u in users}
           assert {"fry", "professor"} <= names, f"seeded LDAP users missing: {names}"
           print(f"OK: LDAP users visible via domain {domain_id}: {sorted(names)}")
+
+          # A fresh domain carries zero role assignments, and keystone answers
+          # 401 for a scope the user holds no role on — authenticating against
+          # LDAP alone is not enough. Grant professor the member role on the
+          # domain (assignments live in SQL; the directory stays untouched)
+          # before asking for a domain-scoped token.
+          resp = request("http://localhost:5000/v3/roles?name=member", headers={"X-Auth-Token": admin_token})
+          role_id = json.load(resp)["roles"][0]["id"]
+          professor_id = next(u["id"] for u in users if u["name"] == "professor")
+          request(f"http://localhost:5000/v3/domains/{domain_id}/users/{professor_id}/roles/{role_id}", headers={"X-Auth-Token": admin_token}, method="PUT")
+          print("OK: member role granted to professor on the domain")
 
           # Token issuance for an LDAP user, scoped to the domain
           # (docker-test-openldap seeds userPassword == uid).
@@ -277,14 +299,19 @@ spec:
             echo "ERROR: Secret keystone-admin has no password key"; exit 1
           fi
           ADMIN_PASSWORD=$(printf '%s' "$ADMIN_PASSWORD_B64" | base64 --decode)
+          # Newest pod, NOT .items[0] — the detach rolls the Deployment again
+          # and the old pod (still carrying the domain config) may linger in
+          # Terminating; see the step-4 selection comment.
           POD=$(kubectl get pods -n $NAMESPACE \
             -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-ldap,pod-template-hash \
-            -o jsonpath='{.items[0].metadata.name}')
+            --sort-by=.metadata.creationTimestamp -o name | tail -1 | cut -d/ -f2)
           kubectl exec -n $NAMESPACE "$POD" -- python3 -c '
           import json, sys, urllib.request
 
           pw = sys.argv[1]
-          body = json.dumps({"auth": {"identity": {"methods": ["password"], "password": {"user": {"name": "admin", "domain": {"id": "default"}, "password": pw}}}}}).encode()
+          # Project-scoped like step 4: enforce_scope=true means an unscoped
+          # token gets 403 from the domain listing below.
+          body = json.dumps({"auth": {"identity": {"methods": ["password"], "password": {"user": {"name": "admin", "domain": {"id": "default"}, "password": pw}}}, "scope": {"project": {"name": "admin", "domain": {"id": "default"}}}}}).encode()
           req = urllib.request.Request("http://localhost:5000/v3/auth/tokens", data=body, headers={"Content-Type": "application/json"})
           resp = urllib.request.urlopen(req)
           admin_token = resp.headers["X-Subject-Token"]
