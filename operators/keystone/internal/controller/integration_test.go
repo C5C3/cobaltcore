@@ -39,6 +39,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -48,9 +49,17 @@ import (
 
 	"github.com/c5c3/forge/internal/common/testutil/simulators"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
+	"github.com/c5c3/forge/internal/common/watch"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
+	"github.com/c5c3/forge/operators/keystone/internal/identity"
+	identityfake "github.com/c5c3/forge/operators/keystone/internal/identity/fake"
 	"github.com/c5c3/forge/operators/keystone/internal/testutil"
 )
+
+// integrationAdminPassword mirrors the password createPrerequisites seeds
+// into the keystone-admin Secret so the fake identity server accepts the
+// backend controller's password-method authentication.
+const integrationAdminPassword = "admin-password" //nolint:gosec // G101 false positive: test fixture value.
 
 // Test timeout constants for CI tuning.
 const (
@@ -70,11 +79,32 @@ const (
 // the v1alpha1 scheme, webhook, and controller registration callbacks.
 func setupEnvTestWithController(t testing.TB) (client.Client, context.Context, context.CancelFunc) {
 	t.Helper()
-	return testutil.SetupKeystoneEnvTestWithController(
+	c, ctx, cancel, _ := setupEnvTestWithControllerAndIdentity(t)
+	return c, ctx, cancel
+}
+
+// setupEnvTestWithControllerAndIdentity is setupEnvTestWithController plus
+// the identity-backend wiring: both webhooks, both reconcilers, the backend
+// field indexes, and the cross-wake watches. It additionally returns the fake
+// identity server the KeystoneIdentityBackendReconciler is bound to so tests
+// can seed/inspect domains.
+func setupEnvTestWithControllerAndIdentity(t testing.TB) (client.Client, context.Context, context.CancelFunc, *identityfake.Server) {
+	t.Helper()
+
+	identityServer := identityfake.NewServer(integrationAdminPassword)
+	t.Cleanup(identityServer.Close)
+
+	c, ctx, cancel := testutil.SetupKeystoneEnvTestWithController(
 		t,
 		keystonev1alpha1.AddToScheme,
 		func(mgr ctrl.Manager) error {
-			return (&keystonev1alpha1.KeystoneWebhook{Client: mgr.GetClient()}).SetupWebhookWithManager(mgr)
+			if err := (&keystonev1alpha1.KeystoneWebhook{Client: mgr.GetClient()}).SetupWebhookWithManager(mgr); err != nil {
+				return err
+			}
+			// The webhook manifests installed by envtest carry the
+			// identity-backend entries (failurePolicy=Fail), so the handler
+			// must be served here too.
+			return (&keystonev1alpha1.KeystoneIdentityBackendWebhook{Client: mgr.GetClient()}).SetupWebhookWithManager(mgr)
 		},
 		func(mgr ctrl.Manager) error {
 			r := &KeystoneReconciler{
@@ -95,7 +125,10 @@ func setupEnvTestWithController(t testing.TB) (client.Client, context.Context, c
 			if err := registerSecretNameIndex(context.Background(), mgr.GetFieldIndexer()); err != nil {
 				return err
 			}
-			return ctrl.NewControllerManagedBy(mgr).
+			if err := registerIdentityBackendIndexes(context.Background(), mgr.GetFieldIndexer()); err != nil {
+				return err
+			}
+			if err := ctrl.NewControllerManagedBy(mgr).
 				For(&keystonev1alpha1.Keystone{}).
 				Owns(&appsv1.Deployment{}).
 				Owns(&corev1.Service{}).
@@ -106,12 +139,35 @@ func setupEnvTestWithController(t testing.TB) (client.Client, context.Context, c
 				Owns(&gatewayv1.HTTPRoute{}).
 				Owns(&batchv1.CronJob{}).
 				Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(
-					secretToKeystoneMapper(mgr.GetClient()),
+					secretToKeystoneWithBackendsMapper(mgr.GetClient()),
+				)).
+				Watches(&keystonev1alpha1.KeystoneIdentityBackend{}, handler.EnqueueRequestsFromMapFunc(
+					identityBackendToKeystoneMapper(),
 				)).
 				WithOptions(controller.Options{SkipNameValidation: ptr.To(true)}).
-				Complete(r)
+				Complete(r); err != nil {
+				return err
+			}
+			// The dedicated identity-backend controller, bound to the fake
+			// identity server through the injectable factory.
+			br := &KeystoneIdentityBackendReconciler{
+				Client:   mgr.GetClient(),
+				Scheme:   mgr.GetScheme(),
+				Recorder: mgr.GetEventRecorderFor("keystoneidentitybackend-controller"),
+				IdentityClientFactory: func(_ string, creds identity.Credentials) identity.Client {
+					return identity.NewHTTPClient(identityServer.Endpoint(), creds, nil)
+				},
+			}
+			return ctrl.NewControllerManagedBy(mgr).
+				For(&keystonev1alpha1.KeystoneIdentityBackend{}, builder.WithPredicates(watch.CRUpdatePredicate())).
+				Watches(&keystonev1alpha1.Keystone{}, handler.EnqueueRequestsFromMapFunc(
+					keystoneToIdentityBackendsMapper(mgr.GetClient()),
+				)).
+				WithOptions(controller.Options{SkipNameValidation: ptr.To(true)}).
+				Complete(br)
 		},
 	)
+	return c, ctx, cancel, identityServer
 }
 
 // integrationBrownfieldKeystone returns a valid Keystone CR for brownfield mode integration
@@ -4966,4 +5022,255 @@ func TestIntegration_PasswordRotation_DisableTearsDownAllResources(t *testing.T)
 	// PasswordRotationReady=True with reason RotationDisabled.
 	cond := waitForCondition(t, ctx, c, key, "PasswordRotationReady", metav1.ConditionTrue, eventuallyTimeout)
 	g.Expect(cond.Reason).To(Equal("RotationDisabled"))
+}
+
+// --- KeystoneIdentityBackend end-to-end flows ---
+
+// waitForBackendCondition polls until the named condition on the backend CR
+// reaches the expected status, returning the condition.
+func waitForBackendCondition(t testing.TB, ctx context.Context, c client.Client, key types.NamespacedName, condType string, expectedStatus metav1.ConditionStatus, timeout time.Duration) *metav1.Condition {
+	t.Helper()
+	g := NewGomegaWithT(t)
+	var match *metav1.Condition
+	g.Eventually(func() bool {
+		var b keystonev1alpha1.KeystoneIdentityBackend
+		if err := c.Get(ctx, key, &b); err != nil {
+			return false
+		}
+		cond := meta.FindStatusCondition(b.Status.Conditions, condType)
+		if cond == nil || cond.Status != expectedStatus {
+			return false
+		}
+		match = cond
+		return true
+	}, timeout, pollInterval).Should(BeTrue(), "backend condition %s should become %s", condType, expectedStatus)
+	return match
+}
+
+// integrationIdentityBackend returns a valid LDAP backend CR attached to the
+// given Keystone, with the bind Secret named <name>-bind.
+func integrationIdentityBackend(name, namespace, keystoneName, domain string, policy keystonev1alpha1.DomainDeletionPolicy) *keystonev1alpha1.KeystoneIdentityBackend {
+	return &keystonev1alpha1.KeystoneIdentityBackend{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Spec: keystonev1alpha1.KeystoneIdentityBackendSpec{
+			KeystoneRef: keystonev1alpha1.KeystoneRefSpec{Name: keystoneName},
+			Domain: keystonev1alpha1.DomainSpec{
+				Name:           domain,
+				Mode:           keystonev1alpha1.DomainModeManage,
+				DeletionPolicy: policy,
+			},
+			Type: keystonev1alpha1.IdentityBackendTypeLDAP,
+			LDAP: &keystonev1alpha1.LDAPBackendSpec{
+				URL:                      "ldap://openldap.example.com:389",
+				BindCredentialsSecretRef: commonv1.SecretRefSpec{Name: name + "-bind"},
+				Suffix:                   "dc=example,dc=com",
+				Users:                    keystonev1alpha1.LDAPUserSpec{TreeDN: "ou=people,dc=example,dc=com"},
+			},
+		},
+	}
+}
+
+// integrationBindSecret returns the bind-credentials Secret for a backend
+// created by integrationIdentityBackend.
+func integrationBindSecret(backendName, namespace string) *corev1.Secret {
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: backendName + "-bind", Namespace: namespace},
+		Data: map[string][]byte{
+			"username": []byte("cn=admin,dc=example,dc=com"),
+			"password": []byte("bind-pw"),
+		},
+	}
+}
+
+// driveReRenderUntil keeps the envtest cluster converging through config
+// re-renders while waiting for done() to become true: a re-render (e.g. the
+// domains projection flipping) changes the pod-spec hash, so the reconciler
+// re-creates the db-sync/schema-check Jobs and rolls the Deployment — and
+// envtest has no kubelet to complete either. The loop re-simulates Job
+// completion and Deployment readiness whenever the reconciler resets them.
+func driveReRenderUntil(t testing.TB, ctx context.Context, c client.Client, ksName, ns string, message string, done func() bool, timeout time.Duration) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+	dbSyncKey := client.ObjectKey{Namespace: ns, Name: fmt.Sprintf("%s-db-sync", ksName)}
+	schemaKey := client.ObjectKey{Namespace: ns, Name: fmt.Sprintf("%s-schema-check", ksName)}
+	deployKey := client.ObjectKey{Namespace: ns, Name: ksName}
+	g.Eventually(func() bool {
+		for _, key := range []client.ObjectKey{dbSyncKey, schemaKey} {
+			var job batchv1.Job
+			if err := c.Get(ctx, key, &job); err == nil && job.Status.Succeeded == 0 {
+				_ = simulators.SimulateJobComplete(ctx, c, key)
+			}
+		}
+		var deploy appsv1.Deployment
+		if err := c.Get(ctx, deployKey, &deploy); err == nil &&
+			deploy.Status.ObservedGeneration != deploy.Generation {
+			_ = simulators.SimulateDeploymentReady(ctx, c, deployKey, ptr.Deref(deploy.Spec.Replicas, 1))
+		}
+		return done()
+	}, timeout, pollInterval).Should(BeTrue(), message)
+}
+
+// backendConditionIs reports whether the named condition on the backend has
+// the given status — the done() predicate for driveReRenderUntil.
+func backendConditionIs(ctx context.Context, c client.Client, key types.NamespacedName, condType string, status metav1.ConditionStatus) func() bool {
+	return func() bool {
+		var b keystonev1alpha1.KeystoneIdentityBackend
+		if err := c.Get(ctx, key, &b); err != nil {
+			return false
+		}
+		cond := meta.FindStatusCondition(b.Status.Conditions, condType)
+		return cond != nil && cond.Status == status
+	}
+}
+
+// TestIntegrationIdentityBackend_FullAttachAndDeleteFlow drives the whole
+// backend lifecycle against a live API server and the fake identity API:
+// attach after the Keystone is Ready (the late-attach path), watch the domain
+// get provisioned, the per-domain config land in the content-hashed domains
+// Secret, the Deployment mount it, both CRs turn Ready — then delete the
+// backend (deletionPolicy Delete) and watch de-projection precede the
+// disable+delete of the domain while the Keystone stays Ready.
+func TestIntegrationIdentityBackend_FullAttachAndDeleteFlow(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _, identityServer := setupEnvTestWithControllerAndIdentity(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-idbackend-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+	createPrerequisites(t, ctx, c, ns.Name)
+
+	ks := integrationBrownfieldKeystone("test-keystone", ns.Name)
+	g.Expect(c.Create(ctx, ks)).To(Succeed())
+	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
+
+	// Zero-backend baseline: IdentityBackendsReady is True/NotRequired.
+	ksKey := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
+	cond := waitForCondition(t, ctx, c, ksKey, conditionTypeIdentityBackendsReady, metav1.ConditionTrue, eventuallyTimeout)
+	g.Expect(cond.Reason).To(Equal(conditionReasonIdentityBackendsNotRequired))
+
+	// Late-attach: bind Secret + backend CR.
+	g.Expect(c.Create(ctx, integrationBindSecret("corp-ldap", ns.Name))).To(Succeed())
+	backend := integrationIdentityBackend("corp-ldap", ns.Name, ks.Name, "corp", keystonev1alpha1.DomainDeletionPolicyDelete)
+	g.Expect(c.Create(ctx, backend)).To(Succeed())
+
+	backendKey := types.NamespacedName{Name: "corp-ldap", Namespace: ns.Name}
+	domainReady := waitForBackendCondition(t, ctx, c, backendKey, conditionTypeDomainReady, metav1.ConditionTrue, eventuallyLongTimeout)
+	g.Expect(domainReady.Reason).To(Equal(conditionReasonDomainProvisioned))
+	g.Expect(identityServer.GetDomainByName("corp")).NotTo(BeNil(), "the domain must exist on the identity API")
+
+	// The projection lands: domains Secret rendered, Deployment mounts it.
+	// The re-render recreates the db Jobs and rolls the Deployment, so the
+	// wait keeps re-simulating their completion.
+	driveReRenderUntil(t, ctx, c, ks.Name, ns.Name,
+		"backend must become Ready after the projection lands",
+		backendConditionIs(ctx, c, backendKey, "Ready", metav1.ConditionTrue),
+		eventuallyLongTimeout)
+
+	var deploy appsv1.Deployment
+	g.Expect(c.Get(ctx, types.NamespacedName{Name: ks.Name, Namespace: ns.Name}, &deploy)).To(Succeed())
+	var domainsSecretName string
+	for _, v := range deploy.Spec.Template.Spec.Volumes {
+		if v.Name == domainsVolumeName {
+			domainsSecretName = v.Secret.SecretName
+		}
+	}
+	g.Expect(domainsSecretName).To(HavePrefix(ks.Name+"-domains-"), "Deployment must mount the content-hashed domains Secret")
+
+	var domainsSecret corev1.Secret
+	g.Expect(c.Get(ctx, types.NamespacedName{Name: domainsSecretName, Namespace: ns.Name}, &domainsSecret)).To(Succeed())
+	g.Expect(domainsSecret.Data).To(HaveKey("keystone.corp.conf"))
+	g.Expect(string(domainsSecret.Data["keystone.corp.conf"])).To(ContainSubstring("driver = ldap"))
+
+	// The rendered keystone.conf turned the domain machinery on.
+	var configMaps corev1.ConfigMapList
+	g.Expect(c.List(ctx, &configMaps, client.InNamespace(ns.Name))).To(Succeed())
+	var confWithDomains string
+	for _, v := range deploy.Spec.Template.Spec.Volumes {
+		if v.Name == "config" && v.ConfigMap != nil {
+			var cm corev1.ConfigMap
+			g.Expect(c.Get(ctx, types.NamespacedName{Name: v.ConfigMap.Name, Namespace: ns.Name}, &cm)).To(Succeed())
+			confWithDomains = cm.Data["keystone.conf"]
+		}
+	}
+	g.Expect(confWithDomains).To(ContainSubstring("domain_specific_drivers_enabled = true"))
+	g.Expect(confWithDomains).To(ContainSubstring("domain_config_dir = /etc/keystone/domains"))
+
+	// The aggregated condition flips and the Keystone stays Ready.
+	cond = waitForCondition(t, ctx, c, ksKey, conditionTypeIdentityBackendsReady, metav1.ConditionTrue, eventuallyTimeout)
+	g.Expect(cond.Reason).To(Equal(conditionReasonAllBackendsProjected))
+	waitForCondition(t, ctx, c, ksKey, "Ready", metav1.ConditionTrue, eventuallyTimeout)
+
+	// Teardown: deletionPolicy Delete must de-project first, then disable and
+	// delete the domain, then release the finalizer.
+	g.Expect(c.Delete(ctx, backend)).To(Succeed())
+	// The de-projection is another re-render: keep completing the recreated
+	// db Jobs so the Deployment update lands and the finalizer can release.
+	driveReRenderUntil(t, ctx, c, ks.Name, ns.Name,
+		"backend must be released after de-projection",
+		func() bool {
+			var b keystonev1alpha1.KeystoneIdentityBackend
+			return apierrors.IsNotFound(c.Get(ctx, backendKey, &b))
+		},
+		eventuallyLongTimeout)
+
+	g.Expect(identityServer.GetDomainByName("corp")).To(BeNil(), "deletionPolicy Delete must remove the domain")
+
+	// The Deployment dropped the domains volume and the Keystone stays Ready.
+	g.Eventually(func() bool {
+		var d appsv1.Deployment
+		if err := c.Get(ctx, types.NamespacedName{Name: ks.Name, Namespace: ns.Name}, &d); err != nil {
+			return false
+		}
+		for _, v := range d.Spec.Template.Spec.Volumes {
+			if v.Name == domainsVolumeName {
+				return false
+			}
+		}
+		return true
+	}, eventuallyLongTimeout, pollInterval).Should(BeTrue(), "domains volume must be de-projected")
+	cond = waitForCondition(t, ctx, c, ksKey, conditionTypeIdentityBackendsReady, metav1.ConditionTrue, eventuallyTimeout)
+	g.Expect(cond.Reason).To(Equal(conditionReasonIdentityBackendsNotRequired))
+	waitForCondition(t, ctx, c, ksKey, "Ready", metav1.ConditionTrue, eventuallyTimeout)
+}
+
+// TestIntegrationIdentityBackend_RetainPolicyKeepsDomain verifies the default
+// Retain policy: deleting the backend de-projects the config but leaves the
+// provisioned domain untouched on the identity API.
+func TestIntegrationIdentityBackend_RetainPolicyKeepsDomain(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _, identityServer := setupEnvTestWithControllerAndIdentity(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-idretain-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+	createPrerequisites(t, ctx, c, ns.Name)
+
+	ks := integrationBrownfieldKeystone("test-keystone", ns.Name)
+	g.Expect(c.Create(ctx, ks)).To(Succeed())
+	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
+
+	g.Expect(c.Create(ctx, integrationBindSecret("retain-ldap", ns.Name))).To(Succeed())
+	backend := integrationIdentityBackend("retain-ldap", ns.Name, ks.Name, "retained", keystonev1alpha1.DomainDeletionPolicyRetain)
+	g.Expect(c.Create(ctx, backend)).To(Succeed())
+
+	backendKey := types.NamespacedName{Name: "retain-ldap", Namespace: ns.Name}
+	waitForBackendCondition(t, ctx, c, backendKey, conditionTypeDomainReady, metav1.ConditionTrue, eventuallyLongTimeout)
+	driveReRenderUntil(t, ctx, c, ks.Name, ns.Name,
+		"backend must become Ready after the projection lands",
+		backendConditionIs(ctx, c, backendKey, "Ready", metav1.ConditionTrue),
+		eventuallyLongTimeout)
+
+	g.Expect(c.Delete(ctx, backend)).To(Succeed())
+	driveReRenderUntil(t, ctx, c, ks.Name, ns.Name,
+		"backend must be released after de-projection",
+		func() bool {
+			var b keystonev1alpha1.KeystoneIdentityBackend
+			return apierrors.IsNotFound(c.Get(ctx, backendKey, &b))
+		},
+		eventuallyLongTimeout)
+
+	g.Expect(identityServer.GetDomainByName("retained")).NotTo(BeNil(),
+		"Retain (the default) must leave the domain in place")
 }

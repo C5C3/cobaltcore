@@ -41,7 +41,12 @@ func setupEnvTest(t testing.TB) (client.Client, context.Context, context.CancelF
 	return testutil.SetupKeystoneEnvTest(t, AddToScheme, func(mgr ctrl.Manager) error {
 		// mgr.GetAPIReader() mirrors the production wiring in main.go: webhook
 		// admission lookups read the API server directly, never a stale cache.
-		return (&KeystoneWebhook{Client: mgr.GetAPIReader()}).SetupWebhookWithManager(mgr)
+		if err := (&KeystoneWebhook{Client: mgr.GetAPIReader()}).SetupWebhookWithManager(mgr); err != nil {
+			return err
+		}
+		// The webhook manifests installed by envtest carry the identity-backend
+		// entries (failurePolicy=Fail), so the handler must be served here too.
+		return (&KeystoneIdentityBackendWebhook{Client: mgr.GetAPIReader()}).SetupWebhookWithManager(mgr)
 	})
 }
 
@@ -1088,4 +1093,144 @@ func TestIntegration_AcceptsValidNonDefaultMarkers(t *testing.T) {
 
 	g.Expect(c.Create(ctx, k)).To(Succeed(),
 		"valid non-default validation-marker values should be accepted")
+}
+
+// --- KeystoneIdentityBackend CRD schema (CEL + defaults) ---
+
+// validIntegrationIdentityBackend returns a minimal valid backend CR for
+// envtest submission.
+func validIntegrationIdentityBackend(name, namespace string) *KeystoneIdentityBackend {
+	b := validIdentityBackend()
+	b.Name = name
+	b.Namespace = namespace
+	return b
+}
+
+// TestIntegration_IdentityBackendCRDInstalledAndValidCRAccepted verifies the
+// new CRD is served and a valid non-default CR round-trips with the schema
+// defaults materialized (Mode, DeletionPolicy, ReadOnly).
+func TestIntegration_IdentityBackendCRDInstalledAndValidCRAccepted(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+	c, ctx, _ := setupEnvTestNoWebhook(t)
+
+	b := validIntegrationIdentityBackend("corp-ldap", "default")
+	b.Spec.Domain.Mode = ""
+	b.Spec.Domain.DeletionPolicy = ""
+	b.Spec.LDAP.ReadOnly = nil
+	g.Expect(c.Create(ctx, b)).To(Succeed())
+
+	var got KeystoneIdentityBackend
+	g.Expect(c.Get(ctx, types.NamespacedName{Name: "corp-ldap", Namespace: "default"}, &got)).To(Succeed())
+	g.Expect(got.Spec.Domain.Mode).To(Equal(DomainModeManage), "schema default must materialize Mode")
+	g.Expect(got.Spec.Domain.DeletionPolicy).To(Equal(DomainDeletionPolicyRetain), "schema default must materialize DeletionPolicy")
+	g.Expect(got.Spec.LDAP.ReadOnly).To(HaveValue(BeTrue()), "schema default must materialize ReadOnly")
+}
+
+// TestIntegration_IdentityBackendCELRejectsUnionMismatch verifies the
+// schema-layer union rule fires with no webhook in scope: type LDAP without
+// spec.ldap is rejected by the API server itself.
+func TestIntegration_IdentityBackendCELRejectsUnionMismatch(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+	c, ctx, _ := setupEnvTestNoWebhook(t)
+
+	b := validIntegrationIdentityBackend("union-mismatch", "default")
+	b.Spec.LDAP = nil
+	err := c.Create(ctx, b)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(apierrors.IsInvalid(err)).To(BeTrue())
+	g.Expect(err.Error()).To(ContainSubstring("exactly one backend block matching spec.type"))
+}
+
+// TestIntegration_IdentityBackendCELRejectsDefaultDomain verifies the
+// Default-domain rule fires at the schema layer for any casing.
+func TestIntegration_IdentityBackendCELRejectsDefaultDomain(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+	c, ctx, _ := setupEnvTestNoWebhook(t)
+
+	for _, name := range []string{"default", "Default"} {
+		b := validIntegrationIdentityBackend("default-domain", "default")
+		b.Spec.Domain.Name = name
+		err := c.Create(ctx, b)
+		g.Expect(err).To(HaveOccurred(), "domain name %q must be rejected", name)
+		g.Expect(err.Error()).To(ContainSubstring("must never be backed by an external identity backend"))
+	}
+}
+
+// TestIntegration_IdentityBackendCELRejectsBadURLScheme verifies the URL
+// Pattern marker at the schema layer.
+func TestIntegration_IdentityBackendCELRejectsBadURLScheme(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+	c, ctx, _ := setupEnvTestNoWebhook(t)
+
+	b := validIntegrationIdentityBackend("bad-url", "default")
+	b.Spec.LDAP.URL = "http://not-ldap.example.com"
+	err := c.Create(ctx, b)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("spec.ldap.url"))
+}
+
+// TestIntegration_IdentityBackendCELImmutableFields verifies the transition
+// rules (evaluated only on UPDATE, enforced by the API server even with the
+// webhook down): keystoneRef, type, domain.name, and domain.mode are frozen.
+func TestIntegration_IdentityBackendCELImmutableFields(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+	c, ctx, _ := setupEnvTestNoWebhook(t)
+
+	base := validIntegrationIdentityBackend("immutable-backend", "default")
+	g.Expect(c.Create(ctx, base)).To(Succeed())
+
+	cases := []struct {
+		name    string
+		mutate  func(b *KeystoneIdentityBackend)
+		message string
+	}{
+		{"keystoneRef", func(b *KeystoneIdentityBackend) { b.Spec.KeystoneRef.Name = "other" }, "keystoneRef is immutable"},
+		{"domain.name", func(b *KeystoneIdentityBackend) { b.Spec.Domain.Name = "renamed" }, "domain.name is immutable"},
+		{"domain.mode", func(b *KeystoneIdentityBackend) { b.Spec.Domain.Mode = DomainModeAdopt }, "domain.mode is immutable"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			var current KeystoneIdentityBackend
+			g.Expect(c.Get(ctx, types.NamespacedName{Name: "immutable-backend", Namespace: "default"}, &current)).To(Succeed())
+			tc.mutate(&current)
+			err := c.Update(ctx, &current)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring(tc.message))
+		})
+	}
+
+	// deletionPolicy stays MUTABLE — operators decide at teardown time.
+	var current KeystoneIdentityBackend
+	g.Expect(c.Get(ctx, types.NamespacedName{Name: "immutable-backend", Namespace: "default"}, &current)).To(Succeed())
+	current.Spec.Domain.DeletionPolicy = DomainDeletionPolicyDelete
+	g.Expect(c.Update(ctx, &current)).To(Succeed())
+}
+
+// TestIntegration_IdentityBackendWebhookUniquenessEnforced verifies the
+// full admission path (defaulting + validating webhook) rejects a
+// case-insensitive domain collision on the same Keystone.
+func TestIntegration_IdentityBackendWebhookUniquenessEnforced(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+	c, ctx, _ := setupEnvTest(t)
+
+	first := validIntegrationIdentityBackend("first-ldap", "default")
+	g.Expect(c.Create(ctx, first)).To(Succeed())
+
+	second := validIntegrationIdentityBackend("second-ldap", "default")
+	second.Spec.Domain.Name = strings.ToUpper(first.Spec.Domain.Name)
+	err := c.Create(ctx, second)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("domain name collides"))
+
+	// A backend for the same domain on a DIFFERENT Keystone is accepted.
+	third := validIntegrationIdentityBackend("third-ldap", "default")
+	third.Spec.KeystoneRef.Name = "keystone-other"
+	g.Expect(c.Create(ctx, third)).To(Succeed())
 }
