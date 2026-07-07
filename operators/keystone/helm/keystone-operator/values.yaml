@@ -5,6 +5,11 @@ image:
   repository: ghcr.io/c5c3/keystone-operator
   # tag defaults to .Chart.AppVersion when left empty; set explicitly to override (e.g. tag: "latest" for local dev)
   tag: ""
+  # Optional immutable digest (sha256:<64 hex>). When set, the pod image is
+  # pinned as repository:tag@digest. On the Flux deployment path this is
+  # injected at deploy time by hack/refresh-operator-image-digests.sh via a
+  # valuesFrom ConfigMap; leave empty for tag-only resolution.
+  digest: ""
   pullPolicy: IfNotPresent
 
 replicas: 2

@@ -404,7 +404,7 @@ operator interface, and the runnable mTLS-enforcement probe.
 | --- | --- |
 | Target namespace | `keystone-system` (controller); operator-managed Keystone workload remains in `openstack` |
 | Chart | `keystone-operator` |
-| Version constraint | `>=0.1.0 <1.0.0` |
+| Version constraint | `>=0.8.0 <1.0.0` (floor = first chart whose values schema accepts `image.digest`) |
 | Source | `c5c3-charts` HelmRepository (shared OCI registry) |
 | Dependencies | `cert-manager`, `mariadb-operator`, `memcached-operator`, `external-secrets` |
 
@@ -419,6 +419,17 @@ provisioning, memcached-operator for caching, and external-secrets for secret ma
 | `replicas` | `2` | Run 2 controller replicas for HA |
 | `leaderElection.enabled` | `true` | Enable leader election for HA |
 | `image.tag` | `latest` | Use latest image until a versioned release publishes a semver tag |
+| `image.digest` | _(injected)_ | Optional immutable digest merged in via the `valuesFrom` ConfigMap; absent by default |
+
+The release carries an optional `valuesFrom` reference to a
+`keystone-operator-image-digest` ConfigMap (key `values.yaml`) in
+`keystone-system`. `hack/refresh-operator-image-digests.sh` (re)applies that
+ConfigMap at deploy time on the `WITH_CONTROLPLANE=true` flux path, pinning
+the mutable `latest` tag to the digest current at deploy so a freshly merged
+operator image actually rolls out. When the ConfigMap is absent — the default
+Quick Start and CI paths — the release renders tag-only, exactly as before.
+Flux merges `valuesFrom` first and `spec.values` on top per-key, so
+`image.tag` and `image.digest` coexist.
 
 ### K-ORC (OpenStack Resource Controller)
 
@@ -465,7 +476,7 @@ itself remains because the K-ORC installer's own resources land there. See
 | --- | --- |
 | Target namespace | `c5c3-system` |
 | Chart | `c5c3-operator` |
-| Version constraint | `>=0.1.0 <1.0.0` |
+| Version constraint | `>=0.7.0 <1.0.0` (floor = first chart whose values schema accepts `image.digest`) |
 | Source | `c5c3-charts` HelmRepository (shared OCI registry) |
 | Dependencies | `keystone-operator`, `external-secrets`, `mariadb-operator`, `memcached-operator` |
 
@@ -489,6 +500,11 @@ contract see the upstream design chapter
 | `replicas` | `2` | Run 2 controller replicas for HA |
 | `leaderElection.enabled` | `true` | Enable leader election for HA |
 | `image.tag` | `latest` | Use latest image until a versioned release publishes a semver tag |
+| `image.digest` | _(injected)_ | Optional immutable digest merged in via the `valuesFrom` ConfigMap; absent by default |
+
+The release consumes the same image-digest `valuesFrom` mechanism as the
+keystone-operator release above (a `c5c3-operator-image-digest` ConfigMap in
+`c5c3-system`); the horizon-operator release is wired identically.
 
 ## HelmRelease–HelmRepository Cross-Reference
 

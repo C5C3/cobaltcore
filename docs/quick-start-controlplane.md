@@ -70,6 +70,16 @@ itself; you create and apply that in Step 3. In this mode the ControlPlane provi
 maps the Gateway to a non-privileged host port for macOS; on Linux with rootful
 Docker drop the override and use port `443`. Expect **5–10 minutes**.
 
+::: tip Fresh operator images after a merge
+The operator images are published under the mutable `:latest` tag, so
+deploy-infra pins them to the digest current at deploy time (per-operator
+image-digest ConfigMaps consumed by the HelmReleases via `valuesFrom`). After
+a feature merges to `main`, run `make refresh-operator-digests` against the
+running cluster: it re-resolves the digests, updates the ConfigMaps, and
+requests a Flux reconcile so the operators roll to the freshly built images —
+no redeploy needed.
+:::
+
 ## Step 3 — Create the ControlPlane CR
 
 Apply a `ControlPlane` CR — the c5c3-operator reconciles it into the whole stack.

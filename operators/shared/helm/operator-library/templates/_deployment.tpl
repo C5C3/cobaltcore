@@ -46,7 +46,7 @@ spec:
               {{- include "operator-library.selectorLabels" . | nindent 14 }}
       containers:
         - name: manager
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}{{ with .Values.image.digest }}@{{ . }}{{ end }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
             {{- if .Values.leaderElection.enabled }}

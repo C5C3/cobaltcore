@@ -35,6 +35,12 @@
           "description": "Container image tag; defaults to .Chart.AppVersion when left empty",
           "default": ""
         },
+        "digest": {
+          "type": "string",
+          "description": "Optional immutable image digest; when set, the container image is rendered as repository:tag@digest so the digest (not the mutable tag) selects the image",
+          "default": "",
+          "pattern": "^(sha256:[a-f0-9]{64})?$"
+        },
         "pullPolicy": {
           "type": "string",
           "description": "Image pull policy",

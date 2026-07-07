@@ -9,6 +9,25 @@ tests:
           path: spec.template.spec.containers[0].image
           value: "ghcr.io/c5c3/horizon-operator:0.1.0"
 
+  - it: should append image digest when image.digest is set
+    set:
+      image:
+        digest: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: "ghcr.io/c5c3/horizon-operator:0.1.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+  - it: should combine explicit tag with digest
+    set:
+      image:
+        tag: latest
+        digest: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: "ghcr.io/c5c3/horizon-operator:latest@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
   - it: should set replicas from values
     asserts:
       - equal:

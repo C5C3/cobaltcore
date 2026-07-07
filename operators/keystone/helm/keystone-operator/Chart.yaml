@@ -2,19 +2,21 @@ apiVersion: v2
 name: keystone-operator
 description: A Helm chart for deploying the Keystone OpenStack operator
 type: application
-version: 0.7.0
+version: 0.8.0
 appVersion: "0.1.0"
 # The shared naming/label helpers and the Deployment skeleton live in the
 # operator-library library chart so they are defined once for both operator
 # charts. It is vendored into charts/ at package time (helm dependency build).
 dependencies:
   - name: operator-library
-    version: 0.3.0
+    version: 0.4.0
     repository: "file://../../../shared/helm/operator-library"
 # Helm validates values against values.schema.json automatically.
 annotations:
   artifacthub.io/prerelease: "true"
   artifacthub.io/changes: |
+    - kind: added
+      description: Optional image.digest value pins the operator image by immutable digest (rendered as repository:tag@digest)
     - kind: changed
       description: Shared manifests (certificate, service, serviceaccount, rolebindings, PDB, ServiceMonitor, webhook configurations) moved into the operator-library chart
     - kind: added

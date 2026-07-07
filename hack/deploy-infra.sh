@@ -1553,6 +1553,14 @@ main() {
       --type merge -p '{"spec":{"suspend":false}}' 2>/dev/null || true
     kubectl patch helmrelease horizon-operator -n horizon-system \
       --type merge -p '{"spec":{"suspend":false}}' 2>/dev/null || true
+    # Pin the GHCR :latest operator images to their current digest so a
+    # feature merged since the last deploy actually rolls out (the tag is
+    # mutable; the digest is resolved now and injected via the per-operator
+    # image-digest ConfigMaps that the HelmReleases consume via valuesFrom).
+    # Best-effort: on failure the releases fall back to tag-only resolution,
+    # exactly the pre-digest behaviour.
+    "${SCRIPT_DIR}/refresh-operator-image-digests.sh" \
+      || log "WARNING: operator image digest refresh failed (best-effort); HelmReleases will resolve :latest by tag."
   elif [[ "${WITH_CONTROLPLANE}" == "true" ]]; then
     # CONTROLPLANE_OPERATORS=external: the keystone-operator, K-ORC, and
     # c5c3-operator are deployed out of band (e.g. the e2e-controlplane CI job

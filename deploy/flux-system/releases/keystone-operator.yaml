@@ -28,7 +28,11 @@ spec:
   chart:
     spec:
       chart: keystone-operator
-      version: ">=0.1.0 <1.0.0"
+      # Floor 0.8.0: the first chart whose values schema accepts image.digest.
+      # Older published charts reject the digest injected via valuesFrom
+      # (additionalProperties: false), so resolving them would fail Helm's
+      # values validation once the image-digest ConfigMap exists.
+      version: ">=0.8.0 <1.0.0"
       sourceRef:
         kind: HelmRepository
         name: c5c3-charts
@@ -41,6 +45,18 @@ spec:
       # Use latest until a versioned release (v* git tag) publishes a semver image tag.
       # The chart default (appVersion) only works once 0.1.0 has been released.
       tag: latest
+  # image.digest is injected from a ConfigMap that
+  # hack/refresh-operator-image-digests.sh (re)applies at deploy time on the
+  # WITH_CONTROLPLANE flux path, pinning the mutable :latest tag to the digest
+  # current at deploy. optional: true — when the ConfigMap is absent (default
+  # Quick Start and CI paths) the release renders exactly as before. Flux
+  # merges valuesFrom first, then spec.values on top per-key (deep merge), so
+  # image.tag stays from spec.values and image.digest comes only from here.
+  valuesFrom:
+    - kind: ConfigMap
+      name: keystone-operator-image-digest
+      valuesKey: values.yaml
+      optional: true
   install:
     crds: CreateReplace
     createNamespace: true

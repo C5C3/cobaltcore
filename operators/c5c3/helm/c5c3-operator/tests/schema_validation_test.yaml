@@ -134,10 +134,26 @@ tests:
   - it: should reject unknown property in image
     set:
       image:
-        digest: "sha256:abc"
+        registry: ghcr.io
     asserts:
       - failedTemplate:
           errorPattern: "/image.*additional properties.*not allowed"
+
+  - it: should reject malformed image.digest
+    set:
+      image:
+        digest: "sha256:abc"
+    asserts:
+      - failedTemplate:
+          errorPattern: "/image/digest.*does not match pattern"
+
+  - it: should accept a well-formed image.digest
+    set:
+      image:
+        digest: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    asserts:
+      - isKind:
+          of: Deployment
 
   - it: should reject unknown property in resources
     set:

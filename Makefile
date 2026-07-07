@@ -517,6 +517,18 @@ stage-prometheus-dashboard:
 deploy-infra:
 	hack/deploy-infra.sh
 
+.PHONY: refresh-operator-digests
+# refresh-operator-digests re-resolves the digest behind the self-built
+# operators' :latest images (keystone/c5c3/horizon), refreshes the
+# per-operator image-digest ConfigMaps on the current cluster, and requests a
+# Flux reconcile so a freshly merged operator image rolls out without a
+# redeploy. Only effective on stacks deployed with WITH_CONTROLPLANE=true
+# CONTROLPLANE_OPERATORS=flux (elsewhere the operator HelmReleases are
+# suspended and the reconcile annotation is inert). Requires docker buildx and
+# a kubectl context pointing at the cluster.
+refresh-operator-digests:
+	hack/refresh-operator-image-digests.sh
+
 .PHONY: perf-benchmark
 # perf-benchmark measures reconcile-loop latency against a running kind stack.
 # It applies 1/5/25 Keystone CRs (CR_COUNTS overrides), waits for readiness, and
