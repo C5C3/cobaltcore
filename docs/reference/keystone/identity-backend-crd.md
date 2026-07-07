@@ -113,7 +113,18 @@ status:
 ### LDAPBackendSpec
 
 Only user-set optional fields are rendered into the per-domain config, so
-upstream keystone defaults apply for everything left unset.
+upstream keystone defaults apply for everything left unset — with one
+deliberate exception: unless `extraOptions` carries any `user_enabled_*` key,
+the projection renders `user_enabled_invert = true` and
+`user_enabled_default = false`, which makes every user read as enabled.
+Directories without an "enabled" concept (plain `inetOrgPerson` /
+`posixAccount` trees — no standard LDAP attribute exists for it) otherwise
+yield user models without the `enabled` key, and keystone's response-schema
+validation rejects its own reply with HTTP 400 (`'enabled' is a required
+property`) on every user listing. Deployments whose directory does model
+enabled semantics (e.g. Active Directory's `userAccountControl` mask) set the
+matching `user_enabled_*` options via `extraOptions`, which suppresses both
+defaults.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |

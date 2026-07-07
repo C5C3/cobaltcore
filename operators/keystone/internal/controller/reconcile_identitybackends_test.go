@@ -113,6 +113,11 @@ func TestReconcileIdentityBackends_ProjectsReadyBackend(t *testing.T) {
 	// Unset optional attributes are omitted so keystone defaults apply.
 	g.Expect(conf).NotTo(ContainSubstring("user_id_attribute"))
 	g.Expect(conf).NotTo(ContainSubstring("group_tree_dn"))
+	// Default enabled semantics: directories without an enabled attribute
+	// must still yield 'enabled' in the user model, or keystone's response
+	// validation 400s every user listing.
+	g.Expect(conf).To(ContainSubstring("user_enabled_invert = true"))
+	g.Expect(conf).To(ContainSubstring("user_enabled_default = false"))
 
 	cond := commonconditions.GetCondition(ks.Status.Conditions, conditionTypeIdentityBackendsReady)
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
@@ -166,6 +171,32 @@ func TestReconcileIdentityBackends_RendersOptionalFieldsAndExtraOptions(t *testi
 	g.Expect(secret.Data).To(HaveKeyWithValue("corp-ca.pem", []byte("PEMDATA")))
 	// readOnly: false leaves the write-enabling options unset.
 	g.Expect(conf).NotTo(ContainSubstring("user_allow_create"))
+}
+
+// Any user_enabled_* key in extraOptions means the deployer models the
+// directory's enabled semantics themselves — the operator must not render its
+// invert+default fallback alongside, which would fight their configuration.
+func TestReconcileIdentityBackends_ExtraEnabledOptionSuppressesDefaults(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+	backend := testIdentityBackend("corp-ldap", "corp")
+	backend.Spec.ExtraOptions = map[string]string{
+		"user_enabled_attribute": "userAccountControl",
+		"user_enabled_mask":      "2",
+	}
+	r := newTestReconciler(ks, backend, testBindSecret("corp-ldap"))
+	ctx := context.Background()
+
+	name, err := r.reconcileIdentityBackends(ctx, ks)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var secret corev1.Secret
+	g.Expect(r.Get(ctx, client.ObjectKey{Namespace: "default", Name: name}, &secret)).To(Succeed())
+	conf := string(secret.Data["keystone.corp.conf"])
+	g.Expect(conf).To(ContainSubstring("user_enabled_attribute = userAccountControl"))
+	g.Expect(conf).To(ContainSubstring("user_enabled_mask = 2"))
+	g.Expect(conf).NotTo(ContainSubstring("user_enabled_invert"))
+	g.Expect(conf).NotTo(ContainSubstring("user_enabled_default"))
 }
 
 func TestReconcileIdentityBackends_SkipsNotDomainReadyBackend(t *testing.T) {

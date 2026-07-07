@@ -357,6 +357,30 @@ func (r *KeystoneReconciler) renderDomainConf(ctx context.Context, namespace str
 		}
 	}
 
+	// Directories without an "enabled" concept (plain inetOrgPerson /
+	// posixAccount trees — there is no standard LDAP attribute for it) return
+	// entries lacking the attribute. Keystone's LDAP driver then omits
+	// 'enabled' from the user model entirely, and the identity API's
+	// response-schema validation rejects keystone's own reply with HTTP 400
+	// ("'enabled' is a required property") on every user listing. The
+	// invert+default combination below is the one driver path that always
+	// materializes the key (enabled = not user_enabled_default) without
+	// needing a real attribute, so every user reads as enabled. Deployments
+	// whose directory does carry enabled semantics (e.g. AD's
+	// userAccountControl mask) override via extraOptions, which suppresses
+	// both defaults.
+	hasEnabledOption := false
+	for k := range backend.Spec.ExtraOptions {
+		if strings.HasPrefix(k, "user_enabled_") {
+			hasEnabledOption = true
+			break
+		}
+	}
+	if !hasEnabledOption {
+		ldap["user_enabled_invert"] = "true"
+		ldap["user_enabled_default"] = "false"
+	}
+
 	// ReadOnly (nil = true, the documented default) forces the write-enabling
 	// options to false so keystone can never write into the directory. The list
 	// is shared with the webhook, which rejects these keys in extraOptions.
