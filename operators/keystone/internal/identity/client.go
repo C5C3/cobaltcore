@@ -41,6 +41,27 @@ var (
 // transport, mirroring the health-check reconciler's injection point.
 type HTTPDoer = healthcheck.HTTPDoer
 
+// snippetLimit bounds how much of an unexpected response body is embedded in
+// an error message: enough for a full keystone JSON error document, small
+// enough for a status-condition message.
+const snippetLimit = 256
+
+// bodySnippet renders at most snippetLimit bytes of a response body for
+// embedding in an "unexpected HTTP" error. The snippet identifies the
+// responder when the status line alone cannot: keystone errors carry a JSON
+// body ({"error": {...}}), while a foreign HTTP server that answered in its
+// place typically returns HTML or nothing. %q escapes control characters so
+// arbitrary bytes stay log- and condition-safe.
+func bodySnippet(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	if len(body) > snippetLimit {
+		body = body[:snippetLimit]
+	}
+	return fmt.Sprintf(" (body: %q)", body)
+}
+
 // Credentials carries the password-method authentication inputs. Username is
 // the bootstrap admin user; ProjectName / UserDomainName default to the
 // bootstrap conventions ("admin" project, "Default" user domain) when empty.
@@ -158,7 +179,8 @@ func (c *httpClient) authenticate(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("%w: authenticating user %q", ErrUnauthorized, c.creds.Username)
 	}
 	if resp.StatusCode != http.StatusCreated {
-		return "", fmt.Errorf("authenticating against %s: unexpected HTTP %d", c.endpoint, resp.StatusCode)
+		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, snippetLimit))
+		return "", fmt.Errorf("authenticating against %s: unexpected HTTP %d%s", c.endpoint, resp.StatusCode, bodySnippet(snippet))
 	}
 
 	token := resp.Header.Get("X-Subject-Token")
@@ -214,7 +236,7 @@ func (c *httpClient) do(ctx context.Context, method, path string, body any) ([]b
 		return nil, fmt.Errorf("%w: %s %s", ErrForbidden, method, path)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("%s %s: unexpected HTTP %d", method, path, resp.StatusCode)
+		return nil, fmt.Errorf("%s %s: unexpected HTTP %d%s", method, path, resp.StatusCode, bodySnippet(payload))
 	}
 	if readErr != nil {
 		return nil, fmt.Errorf("reading %s %s response: %w", method, path, readErr)

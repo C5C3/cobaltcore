@@ -7,6 +7,9 @@ package identity_test
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	. "github.com/onsi/gomega"
@@ -80,6 +83,30 @@ func TestAuthenticate_BadPasswordIsUnauthorized(t *testing.T) {
 	_, err := c.GetDomainByName(context.Background(), "corp")
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(errors.Is(err, identity.ErrUnauthorized)).To(BeTrue())
+}
+
+// A non-keystone responder (LB default backend, SPA fallback, misrouted
+// Service) answers with a status keystone never uses for auth; the error must
+// carry a bounded body snippet so the responder is identifiable from the
+// DomainReady condition alone.
+func TestAuthenticate_UnexpectedStatusIncludesBoundedBodySnippet(t *testing.T) {
+	g := NewGomegaWithT(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte("no route: auth-tokens " + strings.Repeat("x", 4096)))
+	}))
+	t.Cleanup(srv.Close)
+	c := identity.NewHTTPClient(srv.URL+"/v3", identity.Credentials{
+		Username: "admin",
+		Password: adminPassword,
+	}, nil)
+
+	_, err := c.GetDomainByName(context.Background(), "corp")
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("unexpected HTTP 404"))
+	g.Expect(err.Error()).To(ContainSubstring("no route: auth-tokens"))
+	// The 4KB body must be truncated to the snippet limit, not embedded whole.
+	g.Expect(len(err.Error())).To(BeNumerically("<", 512))
 }
 
 func TestUpdateDomain_PatchesEnabledAndDescription(t *testing.T) {
