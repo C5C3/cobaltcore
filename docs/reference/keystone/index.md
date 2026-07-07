@@ -17,10 +17,10 @@ in-depth reference doc for that area.
 ## Lifecycle and Reconciliation
 
 - **Sub-reconciler chain.** A focused pipeline of sub-reconcilers — Secrets →
-  DatabaseTLS → DBConnectionSecret → Config → FernetKeys / CredentialKeys /
-  NetworkPolicy → Database → PolicyValidation → Deployment → HTTPRoute →
-  HealthCheck → HPA → Bootstrap → TrustFlush → PasswordRotation — each
-  emitting a typed sub-condition that aggregates into `Ready`. See
+  DatabaseTLS → DBConnectionSecret → IdentityBackends → Config → FernetKeys /
+  CredentialKeys / NetworkPolicy → Database → PolicyValidation → Deployment →
+  HTTPRoute → HealthCheck → HPA → Bootstrap → TrustFlush → PasswordRotation —
+  each emitting a typed sub-condition that aggregates into `Ready`. See
   [Reconciler Architecture](./keystone-reconciler.md).
 - **Parallel execution group.** FernetKeys, CredentialKeys and NetworkPolicy
   run concurrently via `errgroup` to cut tail latency on cold reconciles.
@@ -40,7 +40,7 @@ in-depth reference doc for that area.
   free-form `extraConfig`, and a `deployment` block grouping the pod-level knobs
   (replicas, resources, rollout `strategy`, graceful-termination timings,
   topologySpreadConstraints, priorityClassName).
-- **Status with sub-conditions.** Fourteen typed sub-conditions plus
+- **Status with sub-conditions.** Fifteen typed sub-conditions plus
   `installedRelease`, `targetRelease`, `upgradePhase`, and `endpoint` —
   surfaced via `kubectl get keystones` printer columns.
 - **Validating + Defaulting webhooks.** CEL validation rules enforced by the
@@ -53,6 +53,25 @@ in-depth reference doc for that area.
 
 See [CRD API Reference](./keystone-crd.md) and
 [Controller Events](./keystone-events.md).
+
+## Identity Backends (LDAP/AD Domains)
+
+- **Attachable domain CRD.** One `KeystoneIdentityBackend` CR per LDAP/AD
+  domain — connection, bind credentials, tree/attribute mapping, read-only
+  mode, TLS, `extraOptions` — attached via `spec.keystoneRef`.
+- **Dedicated controller + keystone-side projection.** The backend
+  controller owns finalizer, domain provisioning (Manage/Adopt), and the
+  per-backend `DomainReady`/`ConfigProjected`/`Ready` conditions; the
+  keystone-side sub-reconciler aggregates all `DomainReady` backends into a
+  content-hashed domains Secret mounted at `/etc/keystone/domains/` in the
+  Deployment and every keystone-manage Job/CronJob.
+- **Safety rails.** The `Default` domain is never external, domain names
+  are unique per Keystone, read-only mode forces the write options off, and
+  `deletionPolicy: Retain|Delete` (Retain default; adopted domains always
+  retained) governs teardown.
+
+See [KeystoneIdentityBackend CRD](./identity-backend-crd.md) and the
+[LDAP Domain Backend guide](../../guides/ldap-domain-backend.md).
 
 ## Encryption Key Management
 

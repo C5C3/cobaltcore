@@ -23,7 +23,7 @@ scaling, key rotation, image upgrades, cross-release upgrades, and deletion clea
 suite is independent and creates its own Keystone CR with a unique name in the `openstack`
 namespace, enabling parallel execution (Chainsaw runs up to 4 suites concurrently).
 
-`tests/e2e/keystone/` currently holds **45 suites** and is the canonical
+`tests/e2e/keystone/` currently holds **47 suites** and is the canonical
 inventory — the [Test Suite Inventory](#test-suite-inventory) below lists all of
 them, and the [Test Suite Details](#test-suite-details) sections walk through a
 representative subset step by step.
@@ -87,6 +87,8 @@ Deployment rollout, bootstrap Job).
 | --- | --- | --- |
 | [basic-deployment](#basic-deployment) | `keystone-basic` | Full happy-path reconciliation, all conditions, owned resources, API accessibility |
 | [missing-secret](#missing-secret) | `keystone-missing-secret` | SecretsReady requeue on missing ESO Secrets, recovery on creation |
+| [invalid-identitybackend-cr](../keystone/identity-backend-crd.md#chainsaw-e2e-tests) | (rejected at admission) | KeystoneIdentityBackend CEL/webhook rejection corpus: union rule, Default-domain protection, extraOptions denylist, immutability transitions, domain uniqueness |
+| [ldap-domain-backend](../keystone/identity-backend-crd.md#chainsaw-e2e-tests) | `keystone-ldap` | Full LDAP attach cycle against an in-suite OpenLDAP fixture: domain provisioning, config projection + rollout, LDAP user listing and token issuance, detach with deletionPolicy Delete |
 | [fernet-rotation](#fernet-rotation) | `keystone-fernet` | CronJob schedule, manual rotation trigger, Secret data change, pod UID stability (no rollout), token validation |
 | [scale](#scale) | `keystone-scale` | Replica scaling up (3→5) and down (5→2) |
 | [deletion-cleanup](#deletion-cleanup) | `keystone-cleanup` | Owner reference cascading deletion of all owned resources |

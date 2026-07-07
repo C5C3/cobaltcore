@@ -983,8 +983,14 @@ to stay co-scheduled with the API pods.
 Configures Keystone federation support. This is a pointer field (`*FederationSpec`)
 on `KeystoneSpec`: federation is activated by the presence of the block itself —
 a set (non-`nil`) `spec.federation` signals enabled, and `nil` (the default)
-disables it. The struct is currently empty and grows federation knobs as they
-are modeled.
+disables it.
+
+LDAP/AD-backed domains are **not** part of this block: they ship as the
+attachable [`KeystoneIdentityBackend`](./identity-backend-crd.md) CRD, where
+one CR per domain describes the connection, tree layout, and attribute
+mapping and aggregates into the Keystone CR's `IdentityBackendsReady`
+condition. `spec.federation` remains reserved for the federation sidecar
+knobs (OIDC/SAML) of the follow-up phases.
 
 ---
 

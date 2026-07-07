@@ -76,6 +76,7 @@ The controller watches the primary Keystone CR and all owned resources:
 | `Secret` | `Watches()` | Maps Secret events to referencing Keystone CRs via the `KeystoneSecretNameIndexKey` field indexer, with an owner-ref fallback for rotation staging Secrets |
 | `MariaDB` | `Watches()` | Propagates upstream DB cluster health into `DatabaseReady` |
 | `ClusterSecretStore` | `Watches()` | Propagates OpenBao-backend health into `SecretsReady` |
+| `KeystoneIdentityBackend` | `Watches()` | Maps backend events to the attached Keystone (`identityBackendToKeystoneMapper`), with no generation predicate: `DomainReady` status flips trigger projection and `DeletionTimestamp` flips trigger de-projection |
 | `PushSecret` | `Watches()` | Maps backup PushSecret events to the owning Keystone CR via `pushSecretToKeystoneMapper` (name-match against `openBaoBackupPushSecretNames`). A predicate admits only the transitions that affect the [OpenBao Finalizer](#openbao-finalizer) state machine — `esoPushSecretFinalizer` set churn, `DeletionTimestamp` flip, or `Generation` bump — and suppresses ESO's status-only re-emits. Replaces the prior `Owns(PushSecret)` wiring. |
 
 Secrets use `Watches()` with a `MapFunc` instead of `Owns()` because some Secrets
@@ -281,6 +282,12 @@ Fernet and credential sub-reconciler sections for the full contract.
 │  │ reconcileSecrets │  Check ESO synced      │  ───── Sequential           │ │
 │  │                  │  Sets: SecretsReady    │  ═════ Parallel             │ │
 │  └────────┬─────────┘  Requeue: 15s          └─────────────────────────────┘ │
+│           │                                                                  │
+│           ▼                                                                  │
+│  ┌────────────────────────────┐                                              │
+│  │ reconcileIdentityBackends  │  Project DomainReady backends                │
+│  │                            │  Sets: IdentityBackendsReady                 │
+│  └────────┬───────────────────┘  Returns: domainsSecretName (never requeues) │
 │           │                                                                  │
 │           ▼                                                                  │
 │  ┌──────────────────┐                                                        │
@@ -519,6 +526,7 @@ output (other than conditions merged after the group completes).
 | `reconcileFernetKeys` | configMapName | `FernetKeysReady` | Config | **yes (group 1)** |
 | `reconcileCredentialKeys` | configMapName | `CredentialKeysReady` | Config | **yes (group 1)** |
 | `reconcileNetworkPolicy` | CR spec | `NetworkPolicyReady` | none | **yes (group 1)** |
+| `reconcileIdentityBackends` | backend CRs + bind Secrets | `IdentityBackendsReady` | DBConnectionSecret (position only — it must run before Config, whose `[identity]` options it drives) | no (never requeues: waiting states are watch-driven) |
 | `reconcileDatabase` | configMapName | `DatabaseReady` | Config | no (complex state machine) |
 | `reconcilePolicyValidation` | configMapName | `PolicyValidReady` | Config | no (gates Deployment) |
 | `reconcileDeployment` | configMapName | `DeploymentReady` | Database (implicit) | no |
@@ -1420,6 +1428,7 @@ after a full reconcile loop, every condition in the status carries the correct
 | `BootstrapReady` | `reconcileBootstrap` | Bootstrap Job completed successfully |
 | `TrustFlushReady` | `reconcileTrustFlush` | Trust flush CronJob configured or not required |
 | `PasswordRotationReady` | `reconcilePasswordRotation` | Model B admin-password rotation CronJob configured, or disabled/torn down |
+| `IdentityBackendsReady` | `reconcileIdentityBackends` | Every attached, `DomainReady` KeystoneIdentityBackend is projected into the domains Secret (True/`IdentityBackendsNotRequired` when none attach) |
 
 ---
 
@@ -1894,7 +1903,7 @@ exact verb split.
 
 ```go
 func (r *KeystoneReconciler) reconcileConfig(ctx context.Context,
-    keystone *keystonev1alpha1.Keystone) (string, error)
+    keystone *keystonev1alpha1.Keystone, domainsProjected bool) (string, error)
 ```
 
 **Purpose:** Build the Keystone configuration files and store them in an immutable
@@ -2999,6 +3008,114 @@ apply it. See the [Labels and Annotations](#labels-and-annotations) entries for
 
 ---
 
+### reconcileIdentityBackends
+
+**File:** `operators/keystone/internal/controller/reconcile_identitybackends.go`
+
+**Signature:**
+
+```go
+func (r *KeystoneReconciler) reconcileIdentityBackends(ctx context.Context, keystone *keystonev1alpha1.Keystone) (string, error)
+```
+
+Aggregates every attached, `DomainReady`
+[`KeystoneIdentityBackend`](./identity-backend-crd.md) into one immutable,
+content-hashed `<name>-domains` Secret (one `keystone.<domain>.conf` per
+backend, plus a `<domain>-ca.pem` sibling when TLS is configured) and sets the
+aggregated `IdentityBackendsReady` condition. The returned Secret name (`""`
+when nothing is projected) is threaded to `reconcileConfig` — which then turns
+`[identity] domain_specific_drivers_enabled` on and points
+`domain_config_dir` at `/etc/keystone/domains` — and to every workload builder
+(the Deployment and each keystone-manage Job/CronJob mount the Secret
+read-only at that path, mode 0400).
+
+**Contract — waiting states never short-circuit the pipeline.** Pending
+domains, missing bind Secrets (skipped per-backend with an
+`IdentityBackendSkipped` Warning event while healthy siblings keep
+projecting), and the defensive duplicate-domain skip all return a zero result:
+`RunPipeline` short-circuits on non-zero results, and blocking here would
+deadlock first-install — a backend cannot become `DomainReady` until the
+Keystone API is up, which needs the Deployment this pipeline has not created
+yet. Wake-ups are watch-driven (backend status flips re-enqueue the Keystone).
+Only genuine infrastructure failures (List/render/create errors) surface as
+errors.
+
+Deleting backends (`DeletionTimestamp` set) are de-projected immediately —
+the dedicated controller's finalizer waits for exactly this de-projection
+before it applies the domain deletion policy, so keystone never runs with
+config pointing at a domain mid-teardown. Stale domains Secrets are pruned
+alongside the config ConfigMaps (retain 3; full cleanup when the last backend
+detaches so no bind password lingers). The config render cache keys on the
+projection flag because attach/detach changes no Keystone generation.
+
+---
+
+## KeystoneIdentityBackendReconciler
+
+**File:** `operators/keystone/internal/controller/keystoneidentitybackend_controller.go`
+
+The dedicated backend controller runs as a second reconciler in the same
+manager (registered after `KeystoneReconciler` in `main.go` — that
+reconciler's `SetupWithManager` is the single registration site for the
+KeystoneIdentityBackend field indexes both controllers use). It is the
+**single writer** of KeystoneIdentityBackend status; the keystone-side
+`reconcileIdentityBackends` only reads `DomainReady` and writes the
+aggregated condition onto the Keystone CR instead.
+
+**Registration:**
+
+```go
+if err := (&controller.KeystoneIdentityBackendReconciler{
+    Client:                  mgr.GetClient(),
+    Scheme:                  mgr.GetScheme(),
+    Recorder:                mgr.GetEventRecorderFor("keystoneidentitybackend-controller"),
+    MaxConcurrentReconciles: maxConcurrentReconciles,
+}).SetupWithManager(mgr); err != nil {
+    return err
+}
+```
+
+**Watch topology:**
+
+| Resource | Watch Type | Effect |
+| --- | --- | --- |
+| `KeystoneIdentityBackend` | `For()` | Filtered by `watch.CRUpdatePredicate()` so the controller's own status writes do not re-wake it |
+| `Keystone` | `Watches()` | Fans a Keystone event out to its attached backends via the `spec.keystoneRef.name` field index (`keystoneToIdentityBackendsMapper`), with **no generation predicate** — Keystone status flips (`KeystoneAPIReady`, the projection landing) are exactly the wake signals the `DomainReady`/`ConfigProjected` gates wait on |
+
+There is no dedicated Secret watch: bind/CA Secret changes re-render via the
+Keystone side (the Keystone controller's Secret watch carries an
+identity-backend leg over the `spec.secretRefs.name` index), and the
+resulting projection flip reaches this controller through the Keystone watch.
+
+**Reconcile flow (normal path):** resolve the Keystone (`KeystoneNotFound`
+when absent — admission tolerates dangling references for GitOps ordering),
+gate on `KeystoneAPIReady=True` (`WaitingForKeystoneAPI`), read the bootstrap
+admin password, and drive the domain through the minimal identity client
+(`operators/keystone/internal/identity` — stdlib-only domain CRUD,
+authenticated per call with the bootstrap admin against `internalAPIURL`):
+`Manage` creates the domain and reconciles description/enabled drift on its
+own domain (recorded `status.domainID`), never seizing a same-named foreign
+domain (`DomainAlreadyExists`); `Adopt` resolves by name and never mutates.
+`ConfigProjected` is derived from the single authoritative pointer — the
+Keystone Deployment's `domains` volume and the conf file inside the Secret it
+references — with a `RequeueSecretPolling` safety net because a converged
+Keystone status emits no watch event. `Ready` aggregates the two
+sub-conditions via the shared helper.
+
+**Finalizer (`keystone.openstack.c5c3.io/identitybackend`):** deletion waits
+for de-projection first, then applies `spec.domain.deletionPolicy`
+(Manage+Delete disables the domain before deleting it; Retain and Adopt leave
+it untouched), then releases. Keystone-gone and admin-credential-gone
+teardowns fail open with a `DomainDeleteFailed` Warning instead of holding
+the CR hostage.
+
+The controller is deliberately **not** wrapped by `instrumentSubReconciler` —
+those metrics and the `subReconcilerConditionTypes` map are
+keystone-pipeline-scoped (the guard tests require map values to be members of
+`subConditionTypes`); controller-runtime's per-controller metrics cover it.
+
+---
+
 ## Error Handling Summary
 
 | Sub-Reconciler | Transient State | RequeueAfter | Permanent Failure |
@@ -3047,6 +3164,7 @@ Keystone CR via `controllerutil.SetControllerReference()`. This enables:
 | CronJob | `{name}-credential-rotate` | Keystone CR |
 | PushSecret | `{name}-credential-keys-backup` | Keystone CR |
 | ConfigMap | `{name}-config-{hash}` | Keystone CR |
+| Secret | `{name}-domains-{hash}` | Keystone CR (only while at least one KeystoneIdentityBackend is projected) |
 | Job | `keystone-db-sync` | Keystone CR | <!-- TODO: align to {name}-* pattern -->
 | Job | `keystone-bootstrap` | Keystone CR | <!-- TODO: align to {name}-* pattern -->
 | Deployment | `{name}` | Keystone CR (bare CR name) |

@@ -33,6 +33,7 @@ export default defineConfig({
           { text: 'Rotate Keystone Admin Password', link: '/guides/keystone-admin-password-rotation' },
           { text: 'Schedule Keystone Admin Password Rotation', link: '/guides/keystone-admin-password-scheduled-rotation' },
           { text: 'Multi-Tenant Deployment', link: '/guides/multi-tenant-deployment' },
+          { text: 'Attach an LDAP Domain Backend', link: '/guides/ldap-domain-backend' },
           { text: 'Enable Keystone Database TLS', link: '/guides/enable-keystone-database-tls' },
           { text: 'Enable Keystone Operator Metrics', link: '/guides/enable-keystone-operator-metrics' },
           { text: 'Enable Keystone Operator NetworkPolicy', link: '/guides/enable-keystone-operator-networkpolicy' },
@@ -51,6 +52,7 @@ export default defineConfig({
             items: [
               { text: 'Overview', link: '/reference/keystone/' },
               { text: 'CRD', link: '/reference/keystone/keystone-crd' },
+              { text: 'Identity Backend CRD', link: '/reference/keystone/identity-backend-crd' },
               { text: 'Controller Events', link: '/reference/keystone/keystone-events' },
               { text: 'Reconciler Architecture', link: '/reference/keystone/keystone-reconciler' },
               { text: 'Upgrade Flow', link: '/reference/keystone/keystone-upgrade-flow' },

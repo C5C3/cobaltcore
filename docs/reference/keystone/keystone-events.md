@@ -129,6 +129,25 @@ payload onto the production Secret and reports the outcome as events:
 
 **Source:** `reconcileTrustFlush` in `reconcile_trustflush.go`
 
+### Identity Backends
+
+Domain-lifecycle events are emitted on the **KeystoneIdentityBackend** CR by
+its dedicated controller; the projection warning is emitted on the
+**Keystone** CR by the keystone-side sub-reconciler:
+
+| Reason | Type | Trigger Condition | Example Message |
+| --- | --- | --- | --- |
+| `DomainCreated` | Normal | Manage mode provisions the domain through the identity API | `Created domain "corp" (id <id>)` |
+| `DomainAdopted` | Normal | Adopt mode resolves the pre-existing domain by name (first observation only) | `Adopted pre-existing domain "corp" (id <id>)` |
+| `DomainDisabled` | Normal | deletionPolicy Delete disables the domain before deleting it (keystone forbids deleting an enabled domain) | `Disabled domain "corp" before deletion` |
+| `DomainDeleted` | Normal | deletionPolicy Delete removed the domain | `Deleted domain "corp" (id <id>)` |
+| `DomainDeleteFailed` | Warning | Disabling/deleting the domain failed (retried on a bounded poll), or the admin credential vanished mid-teardown (fail-open: the domain is retained and the finalizer released) | `Deleting domain "corp" failed: <error>` |
+| `IdentityBackendSkipped` | Warning | A backend's bind Secret is missing or lacks the `username`/`password` keys; the backend is skipped while healthy siblings keep projecting (emitted on the Keystone CR) | `Skipping identity backend corp-ldap: <error>` |
+
+**Source:** `keystoneidentitybackend_controller.go` (domain lifecycle);
+`reconcileIdentityBackends` in `reconcile_identitybackends.go`
+(`IdentityBackendSkipped`)
+
 ### Finalization
 
 Emitted while the two finalizers tear a deleted Keystone CR down. The
