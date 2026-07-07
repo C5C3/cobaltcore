@@ -1,0 +1,289 @@
+// SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+//
+// SPDX-License-Identifier: Apache-2.0
+
+// Package identity implements the operator's own minimal Keystone identity
+// client: domain CRUD only, authenticated per call with the bootstrap admin
+// credentials against the cluster-local Keystone endpoint. It is stdlib-only
+// (net/http + encoding/json) by design — no gophercloud, no K-ORC, no
+// clouds.yaml — so a standalone Keystone (no ControlPlane) works with zero
+// extra configuration. The federation phases extend this client with
+// identity-provider/mapping/protocol CRUD.
+package identity
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+
+	"github.com/c5c3/forge/internal/common/healthcheck"
+)
+
+// Sentinel errors mapped from the identity API's HTTP status codes. Callers
+// use errors.Is to branch on the recoverable classes without parsing bodies.
+var (
+	// ErrNotFound maps HTTP 404 (and an empty list on lookup-by-name).
+	ErrNotFound = errors.New("not found")
+	// ErrConflict maps HTTP 409 (e.g. creating a domain whose name exists).
+	ErrConflict = errors.New("conflict")
+	// ErrUnauthorized maps HTTP 401 (bad admin credentials).
+	ErrUnauthorized = errors.New("unauthorized")
+	// ErrForbidden maps HTTP 403 (e.g. deleting an enabled domain).
+	ErrForbidden = errors.New("forbidden")
+)
+
+// HTTPDoer re-exports the shared client seam so tests can inject a stub
+// transport, mirroring the health-check reconciler's injection point.
+type HTTPDoer = healthcheck.HTTPDoer
+
+// Credentials carries the password-method authentication inputs. Username is
+// the bootstrap admin user; ProjectName / UserDomainName default to the
+// bootstrap conventions ("admin" project, "Default" user domain) when empty.
+type Credentials struct {
+	Username string
+	Password string
+	// ProjectName scopes the token; defaults to "admin".
+	ProjectName string
+	// UserDomainName is the domain the admin user lives in; defaults to
+	// "Default" (BootstrapSpec has no domain knob, so the bootstrap admin
+	// always lives in the Default domain).
+	UserDomainName string
+}
+
+// Domain is the minimal domain representation the operator needs.
+type Domain struct {
+	ID          string `json:"id,omitempty"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Enabled     *bool  `json:"enabled,omitempty"`
+}
+
+// Client is the domain-CRUD surface the KeystoneIdentityBackend controller
+// consumes. The interface is defined here (producer side) because the fake
+// test double in identity/fake and the controller both bind to it; it stays
+// deliberately minimal (4 methods).
+type Client interface {
+	// GetDomainByName resolves a domain by exact name, returning ErrNotFound
+	// (wrapped) when no domain with that name exists.
+	GetDomainByName(ctx context.Context, name string) (*Domain, error)
+	// CreateDomain creates the given domain and returns the server-side
+	// representation (with the assigned ID).
+	CreateDomain(ctx context.Context, domain Domain) (*Domain, error)
+	// UpdateDomain patches the enabled flag and/or description of the domain
+	// with the given ID; nil fields are left untouched.
+	UpdateDomain(ctx context.Context, id string, enabled *bool, description *string) error
+	// DeleteDomain deletes the domain with the given ID. Keystone requires
+	// the domain to be disabled first (ErrForbidden otherwise).
+	DeleteDomain(ctx context.Context, id string) error
+}
+
+// httpClient is the production Client implementation. It authenticates per
+// call via POST /v3/auth/tokens (password method, project-scoped) — no token
+// caching, because domain operations are rare (provisioning and deletion
+// only) and a cached token would add expiry/invalidation state for no
+// measurable gain.
+type httpClient struct {
+	// endpoint is the cluster-local Keystone API URL including the /v3
+	// suffix, e.g. http://keystone.openstack.svc.cluster.local:5000/v3.
+	endpoint string
+	creds    Credentials
+	doer     HTTPDoer
+}
+
+// NewHTTPClient builds a Client against the given /v3 endpoint. A nil doer
+// falls back to http.DefaultClient.
+func NewHTTPClient(endpoint string, creds Credentials, doer HTTPDoer) Client {
+	if doer == nil {
+		doer = http.DefaultClient
+	}
+	if creds.ProjectName == "" {
+		creds.ProjectName = "admin"
+	}
+	if creds.UserDomainName == "" {
+		creds.UserDomainName = "Default"
+	}
+	return &httpClient{endpoint: endpoint, creds: creds, doer: doer}
+}
+
+// authenticate obtains a project-scoped token via the password method and
+// returns the X-Subject-Token value.
+func (c *httpClient) authenticate(ctx context.Context) (string, error) {
+	body := map[string]any{
+		"auth": map[string]any{
+			"identity": map[string]any{
+				"methods": []string{"password"},
+				"password": map[string]any{
+					"user": map[string]any{
+						"name":     c.creds.Username,
+						"domain":   map[string]string{"name": c.creds.UserDomainName},
+						"password": c.creds.Password,
+					},
+				},
+			},
+			"scope": map[string]any{
+				"project": map[string]any{
+					"name":   c.creds.ProjectName,
+					"domain": map[string]string{"name": c.creds.UserDomainName},
+				},
+			},
+		},
+	}
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return "", fmt.Errorf("marshaling auth request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint+"/auth/tokens", bytes.NewReader(payload))
+	if err != nil {
+		return "", fmt.Errorf("building auth request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.doer.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("authenticating against %s: %w", c.endpoint, err)
+	}
+	defer drainAndClose(resp.Body)
+
+	if resp.StatusCode == http.StatusUnauthorized {
+		return "", fmt.Errorf("%w: authenticating user %q", ErrUnauthorized, c.creds.Username)
+	}
+	if resp.StatusCode != http.StatusCreated {
+		return "", fmt.Errorf("authenticating against %s: unexpected HTTP %d", c.endpoint, resp.StatusCode)
+	}
+
+	token := resp.Header.Get("X-Subject-Token")
+	if token == "" {
+		return "", fmt.Errorf("authenticating against %s: response carries no X-Subject-Token", c.endpoint)
+	}
+	return token, nil
+}
+
+// do issues an authenticated request and maps the error-class status codes to
+// the sentinel errors. Callers own decoding of successful responses.
+func (c *httpClient) do(ctx context.Context, method, path string, body any) (*http.Response, error) {
+	token, err := c.authenticate(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	var reader io.Reader
+	if body != nil {
+		payload, err := json.Marshal(body)
+		if err != nil {
+			return nil, fmt.Errorf("marshaling %s %s request: %w", method, path, err)
+		}
+		reader = bytes.NewReader(payload)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, c.endpoint+path, reader)
+	if err != nil {
+		return nil, fmt.Errorf("building %s %s request: %w", method, path, err)
+	}
+	req.Header.Set("X-Auth-Token", token)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	resp, err := c.doer.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("%s %s: %w", method, path, err)
+	}
+
+	switch resp.StatusCode {
+	case http.StatusNotFound:
+		drainAndClose(resp.Body)
+		return nil, fmt.Errorf("%w: %s %s", ErrNotFound, method, path)
+	case http.StatusConflict:
+		drainAndClose(resp.Body)
+		return nil, fmt.Errorf("%w: %s %s", ErrConflict, method, path)
+	case http.StatusUnauthorized:
+		drainAndClose(resp.Body)
+		return nil, fmt.Errorf("%w: %s %s", ErrUnauthorized, method, path)
+	case http.StatusForbidden:
+		drainAndClose(resp.Body)
+		return nil, fmt.Errorf("%w: %s %s", ErrForbidden, method, path)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		drainAndClose(resp.Body)
+		return nil, fmt.Errorf("%s %s: unexpected HTTP %d", method, path, resp.StatusCode)
+	}
+	return resp, nil
+}
+
+// GetDomainByName implements Client via GET /v3/domains?name=<name>.
+func (c *httpClient) GetDomainByName(ctx context.Context, name string) (*Domain, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/domains?name="+url.QueryEscape(name), nil)
+	if err != nil {
+		return nil, err
+	}
+	defer drainAndClose(resp.Body)
+
+	var out struct {
+		Domains []Domain `json:"domains"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("decoding domain list: %w", err)
+	}
+	if len(out.Domains) == 0 {
+		return nil, fmt.Errorf("%w: domain %q", ErrNotFound, name)
+	}
+	return &out.Domains[0], nil
+}
+
+// CreateDomain implements Client via POST /v3/domains.
+func (c *httpClient) CreateDomain(ctx context.Context, domain Domain) (*Domain, error) {
+	resp, err := c.do(ctx, http.MethodPost, "/domains", map[string]Domain{"domain": domain})
+	if err != nil {
+		return nil, err
+	}
+	defer drainAndClose(resp.Body)
+
+	var out struct {
+		Domain Domain `json:"domain"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("decoding created domain: %w", err)
+	}
+	return &out.Domain, nil
+}
+
+// UpdateDomain implements Client via PATCH /v3/domains/<id>. Nil fields are
+// omitted from the patch body so the server leaves them untouched.
+func (c *httpClient) UpdateDomain(ctx context.Context, id string, enabled *bool, description *string) error {
+	patch := map[string]any{}
+	if enabled != nil {
+		patch["enabled"] = *enabled
+	}
+	if description != nil {
+		patch["description"] = *description
+	}
+	resp, err := c.do(ctx, http.MethodPatch, "/domains/"+url.PathEscape(id), map[string]any{"domain": patch})
+	if err != nil {
+		return err
+	}
+	drainAndClose(resp.Body)
+	return nil
+}
+
+// DeleteDomain implements Client via DELETE /v3/domains/<id>.
+func (c *httpClient) DeleteDomain(ctx context.Context, id string) error {
+	resp, err := c.do(ctx, http.MethodDelete, "/domains/"+url.PathEscape(id), nil)
+	if err != nil {
+		return err
+	}
+	drainAndClose(resp.Body)
+	return nil
+}
+
+// drainAndClose drains the response body before closing so the underlying
+// HTTP connection can be reused by the transport.
+func drainAndClose(body io.ReadCloser) {
+	_, _ = io.Copy(io.Discard, body)
+	_ = body.Close()
+}
