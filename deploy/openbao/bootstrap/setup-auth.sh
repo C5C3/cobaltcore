@@ -125,14 +125,25 @@ main() {
   # authenticate; the SA name is fixed and the cross-tenant boundary is enforced by
   # the keystone-db-dynamic policy, which templates the readable creds path to the
   # caller's OWN service_account_namespace (an exact match, so a token minted in
-  # namespace A cannot read namespace B's path). TTLs mirror the eso-<cluster> roles.
+  # namespace A cannot read namespace B's path).
+  #
+  # Token TTLs must cover the DB credential lease, NOT mirror the eso-<cluster>
+  # roles: OpenBao revokes a dynamic-secret lease together with the auth token
+  # that minted it, so the effective credential lifetime is
+  # min(lease TTL, minting token TTL). With the short eso-style 1h token this
+  # role once wore, every issued DB credential silently died after ~1h — 23h
+  # before the ExternalSecret's 24h refresh re-minted — dropping the ephemeral
+  # MySQL user under a running Keystone. Pin both values to DB_CREDS_MAX_TTL
+  # (72h, setup-database-tenant.sh) so the lease TTLs there stay the binding
+  # constraint; the token is read-only-scoped by keystone-db-dynamic, which
+  # bounds the exposure of its longer lifetime.
   log "Writing keystone-db role on kubernetes/management..."
   bao_exec bao write "auth/kubernetes/management/role/keystone-db" \
     bound_service_account_names=keystone-db-creds \
     bound_service_account_namespaces="*" \
     token_policies=keystone-db-dynamic \
-    token_ttl=1h \
-    token_max_ttl=4h
+    token_ttl=72h \
+    token_max_ttl=72h
   log "keystone-db role written."
 
   # AppRole auth

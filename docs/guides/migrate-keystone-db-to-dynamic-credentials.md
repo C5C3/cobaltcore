@@ -167,6 +167,13 @@ to remove the generator objects.
   Raise `DB_CREDS_DEFAULT_TTL` / `DB_CREDS_MAX_TTL` (and the operator's refresh
   interval) further to trade churn against lease headroom; the PodDisruptionBudget
   and the surge-before-remove rollout strategy keep each roll zero-downtime.
+- **Auth-token TTL bounds the lease:** OpenBao revokes a dynamic-secret lease
+  together with the auth token that minted it, so the effective credential
+  lifetime is `min(lease TTL, minting token TTL)`. The `keystone-db` auth role
+  therefore pins its token TTLs to `DB_CREDS_MAX_TTL` (72h). When raising
+  `DB_CREDS_*` beyond that, raise the role's `token_ttl`/`token_max_ttl` in
+  lockstep — a shorter token silently drops the ephemeral MySQL user under a
+  running Keystone long before the advertised lease end.
 - **Revocation semantics:** revoking a lease runs `DROP USER`, which rejects
   *new* connections. Already-open sessions of a dropped user may persist until
   they disconnect.

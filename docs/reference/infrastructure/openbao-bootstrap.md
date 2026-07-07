@@ -372,9 +372,18 @@ policy, which templates the readable path to the caller's own
 `service_account_namespace` (an exact match — a token minted in one namespace
 cannot read another namespace's path).
 
+Unlike the `eso-<cluster>` roles, the `keystone-db` token TTLs are pinned to the
+database engine's `max_ttl` (72h): OpenBao revokes a dynamic-secret lease
+together with the auth token that minted it, so a token shorter than the lease
+silently caps the effective credential lifetime at the token's — with an
+eso-style 1h token, every issued DB credential died after ~1h while the
+ExternalSecret refresh only re-mints every 24h, dropping the ephemeral MySQL
+user under a running Keystone. The longer-lived token is bounded by the
+read-only `keystone-db-dynamic` policy.
+
 | Mount Path | Role | Bound SA | Bound NS | Policy | TTL | Max TTL |
 | --- | --- | --- | --- | --- | --- | --- |
-| `kubernetes/management` | `keystone-db` | `keystone-db-creds` | `*` | `keystone-db-dynamic` | 1h | 4h |
+| `kubernetes/management` | `keystone-db` | `keystone-db-creds` | `*` | `keystone-db-dynamic` | 72h | 72h |
 
 **Note:** The management cluster mount is fully configured — the script explicitly writes
 `auth/kubernetes/management/config` with the in-cluster Kubernetes API endpoint and CA

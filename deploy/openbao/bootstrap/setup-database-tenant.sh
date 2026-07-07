@@ -60,6 +60,14 @@ BAO_TOKEN="${BAO_TOKEN:?BAO_TOKEN must be set}"
 # loses DB access, instead of silently arming an outage within a couple of hours.
 # max_ttl caps the absolute lifetime of any issued credential. Override via the
 # environment to tune the rotation cadence.
+#
+# INVARIANT: these TTLs only bind while the minting auth token outlives them.
+# OpenBao revokes a dynamic-secret lease together with the token that created
+# it, so the keystone-db auth role (setup-auth.sh) pins its token_ttl/
+# token_max_ttl to DB_CREDS_MAX_TTL. Raising DB_CREDS_* beyond 72h without
+# raising the role's token TTLs silently caps the effective credential
+# lifetime at the token's — the failure mode that once killed running
+# Keystones hourly under a 1h token.
 DB_CREDS_DEFAULT_TTL="${DB_CREDS_DEFAULT_TTL:-48h}"
 DB_CREDS_MAX_TTL="${DB_CREDS_MAX_TTL:-72h}"
 
