@@ -83,8 +83,12 @@ type HorizonSpec struct {
 	// not an oslo.cache dogpile path.
 	Cache commonv1.CacheSpec `json:"cache"`
 
-	// KeystoneEndpoint is the Keystone public endpoint URL the dashboard
-	// authenticates against (OPENSTACK_KEYSTONE_URL). A plain URL field keeps
+	// KeystoneEndpoint is the Keystone endpoint URL the dashboard
+	// authenticates against (OPENSTACK_KEYSTONE_URL). The dashboard's Django
+	// backend connects to this URL server-side, so it must be reachable from
+	// the dashboard pods — for a colocated control plane that is the
+	// cluster-local Service URL, never an externally routable address that
+	// only resolves outside the cluster. A plain URL field keeps
 	// the operator decoupled from the keystone-operator; the c5c3 ControlPlane
 	// operator projects it from its Keystone child by naming convention.
 	// +kubebuilder:validation:MinLength=1

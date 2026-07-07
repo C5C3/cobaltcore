@@ -261,6 +261,12 @@ func TestReconcileHorizon_CacheDeepCopiedFromInfrastructure(t *testing.T) {
 }
 
 func TestReconcileHorizon_KeystoneEndpointDerivation(t *testing.T) {
+	// The dashboard's Django backend connects to spec.keystoneEndpoint
+	// server-side, so the projection must always use the cluster-local
+	// convention URL. External exposure (gateway hostname, explicit
+	// publicEndpoint) must NOT leak into it: those URLs may only resolve
+	// outside the cluster (a kind port-mapping, an external LB) and would
+	// break every dashboard login.
 	tests := []struct {
 		name   string
 		mutate func(cp *c5c3v1alpha1.ControlPlane)
@@ -269,20 +275,20 @@ func TestReconcileHorizon_KeystoneEndpointDerivation(t *testing.T) {
 		{
 			name:   "convention URL by default",
 			mutate: func(*c5c3v1alpha1.ControlPlane) {},
-			want:   "http://cp-keystone.default.svc.cluster.local:5000/v3",
+			want:   "http://cp-keystone.default.svc:5000/v3",
 		},
 		{
-			name: "gateway hostname wins",
+			name: "gateway hostname does not leak in",
 			mutate: func(cp *c5c3v1alpha1.ControlPlane) {
 				cp.Spec.Services.Keystone.Gateway = &commonv1.GatewaySpec{
 					ParentRef: commonv1.GatewayParentRefSpec{Name: "openstack-gw"},
 					Hostname:  "keystone.example.com",
 				}
 			},
-			want: "https://keystone.example.com/v3",
+			want: "http://cp-keystone.default.svc:5000/v3",
 		},
 		{
-			name: "explicit publicEndpoint wins over gateway",
+			name: "explicit publicEndpoint does not leak in",
 			mutate: func(cp *c5c3v1alpha1.ControlPlane) {
 				cp.Spec.Services.Keystone.Gateway = &commonv1.GatewaySpec{
 					ParentRef: commonv1.GatewayParentRefSpec{Name: "openstack-gw"},
@@ -290,7 +296,7 @@ func TestReconcileHorizon_KeystoneEndpointDerivation(t *testing.T) {
 				}
 				cp.Spec.Services.Keystone.PublicEndpoint = "https://keystone.example.com:8443/v3"
 			},
-			want: "https://keystone.example.com:8443/v3",
+			want: "http://cp-keystone.default.svc:5000/v3",
 		},
 	}
 	for _, tc := range tests {

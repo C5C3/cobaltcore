@@ -316,13 +316,73 @@ spec:
             "$(kubectl get horizon "${HORIZON_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.image.tag}')"
           assert_eq "Horizon cache clusterRef wired to infra" "openstack-memcached" \
             "$(kubectl get horizon "${HORIZON_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.cache.clusterRef.name}')"
+          # The cluster-local convention URL (same as K-ORC's auth_url) — the
+          # external gateway hostname must never leak in: OPENSTACK_KEYSTONE_URL
+          # is consumed server-side by the dashboard pods.
           assert_eq "Horizon keystoneEndpoint derived from the naming convention" \
-            "http://${KEYSTONE_CR}.${CP_NS}.svc.cluster.local:5000/v3" \
+            "http://${KEYSTONE_CR}.${CP_NS}.svc:5000/v3" \
             "$(kubectl get horizon "${HORIZON_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.keystoneEndpoint}')"
           assert_eq "Horizon secretKeyRef overridden to the per-CP Secret" \
             "controlplane-keystone-horizon-secret-key" \
             "$(kubectl get horizon "${HORIZON_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.secretKeyRef.name}')"
           assert_eq "Horizon CR owned by ControlPlane" "${CP_NAME}" "$(owner_of horizon "${HORIZON_CR}")"
+
+          # ── Link 2c: Horizon dashboard login round-trip ────────────────────
+          # A real login POST is the only check that exercises the dashboard's
+          # server-side Keystone path end-to-end: Django authenticates against
+          # OPENSTACK_KEYSTONE_URL and then lists the user's projects via the
+          # catalog interface selected by OPENSTACK_ENDPOINT_TYPE. A login-page
+          # GET renders without a live Keystone and misses both (which is how
+          # an unreachable keystoneEndpoint once passed CI). Success is the 302
+          # redirect plus a sessionid cookie; a failed login re-renders the
+          # form with HTTP 200.
+          echo "== Horizon login POST (expect 302 + sessionid) =="
+          ADMIN_PW="$(kubectl get secret "${KEYSTONE_CR}-admin-credentials" -n "${CP_NS}" \
+            -o 'jsonpath={.data.password}' | base64 -d)"
+          kubectl run cp-horizon-login --image=ghcr.io/c5c3/keystone:2025.2 --rm -i --restart=Never \
+            -n "${CP_NS}" \
+            --env "HORIZON_BASE=http://${HORIZON_CR}.${CP_NS}.svc:8080" \
+            --env "OS_PASSWORD=${ADMIN_PW}" \
+            --command -- python3 - <<'PYEOF'
+          import http.cookiejar
+          import os
+          import re
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  return None
+
+          base = os.environ['HORIZON_BASE']
+          login_url = base + '/auth/login/'
+          jar = http.cookiejar.CookieJar()
+          opener = urllib.request.build_opener(
+              urllib.request.HTTPCookieProcessor(jar), NoRedirect())
+          body = opener.open(login_url).read().decode()
+          token = re.search('name="csrfmiddlewaretoken" value="([^"]+)"', body).group(1)
+          form = urllib.parse.urlencode({
+              'csrfmiddlewaretoken': token,
+              'region': 'default',
+              'domain': 'Default',
+              'username': 'admin',
+              'password': os.environ['OS_PASSWORD'],
+          }).encode()
+          req = urllib.request.Request(login_url, data=form,
+                                       headers={'Referer': login_url})
+          try:
+              status = opener.open(req).status
+          except urllib.error.HTTPError as err:
+              status = err.code
+          assert status == 302, (
+              'login POST returned HTTP %s (expected 302); the dashboard could '
+              'not authenticate against Keystone' % status)
+          assert any(c.name == 'sessionid' for c in jar), \
+              'no sessionid cookie after the login redirect'
+          print('OK: dashboard login round-trip succeeded (302 + sessionid)')
+          PYEOF
+          echo "OK: Horizon authenticated against Keystone through the cluster-local endpoint"
 
           # ── Link 3: K-ORC ApplicationCredential (restricted:true, owned) ───
           wait_cp_condition KORCReady 600

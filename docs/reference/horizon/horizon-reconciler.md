@@ -25,7 +25,7 @@ Secrets ──► Config ──► Deployment ──► (prune) ──► ┬─
 | Step | What it does | Condition |
 | --- | --- | --- |
 | Secrets | Gates on the OpenBao ClusterSecretStore and the ESO-synced `SECRET_KEY` Secret; digests the key material for the rollout annotation | `SecretsReady` |
-| Config | Renders `local_settings.py` (signed-cookie sessions, `CACHES`, `OPENSTACK_KEYSTONE_URL`, `LOGGING`, offline-compression settings, merged `extraConfig`) into an immutable content-addressed ConfigMap | `ConfigReady` |
+| Config | Renders `local_settings.py` (signed-cookie sessions, `CACHES`, `OPENSTACK_KEYSTONE_URL`, `OPENSTACK_ENDPOINT_TYPE = "internalURL"`, `LOGGING`, offline-compression settings, merged `extraConfig`) into an immutable content-addressed ConfigMap | `ConfigReady` |
 | Deployment | Ensures the uWSGI Deployment (login-page readiness/startup probes, `HORIZON_SECRET_KEY` env var, secret-key-hash pod annotation), the Service (port 8080), and the PDB; sets `status.endpoint` | `DeploymentReady` |
 | (prune) | Uninstrumented retention sweep of historical config ConfigMaps (retain 3 + current); failures flip `ConfigReady` |  |
 | HTTPRoute | Full `spec.gateway` lifecycle; reflects the Gateway's Accepted condition | `HTTPRouteReady` |

@@ -242,17 +242,17 @@ func (r *ControlPlaneReconciler) reconcileHorizon(ctx context.Context, cp *c5c3v
 }
 
 // horizonKeystoneEndpoint returns the Keystone endpoint URL projected into
-// the Horizon child's spec.keystoneEndpoint. When the ControlPlane advertises
-// an externally routable Keystone URL (explicit publicEndpoint or a gateway
-// hostname), that URL wins so browser-visible links resolve; otherwise the
-// cluster-local convention URL of the projected Keystone child is used —
-// derived top-down from the naming convention, never read from the child's
-// status.
+// the Horizon child's spec.keystoneEndpoint. It is ALWAYS the cluster-local
+// convention URL of the projected Keystone child (keystoneEndpointURL, the
+// same URL K-ORC authenticates against) — never the external publicEndpoint
+// or gateway hostname. OPENSTACK_KEYSTONE_URL is consumed server-side by the
+// dashboard's Django backend, not by the browser: an externally routable URL
+// that resolves to a host-only address (a kind port-mapping, an external LB)
+// is unreachable from the dashboard pods and breaks every login with
+// "Unable to establish connection to keystone endpoint". Derived top-down
+// from the naming convention, never read from the child's status.
 func horizonKeystoneEndpoint(cp *c5c3v1alpha1.ControlPlane) string {
-	if public := keystonePublicEndpoint(cp.Spec.Services.Keystone); public != "" {
-		return public
-	}
-	return fmt.Sprintf("http://%s.%s.svc.cluster.local:5000/v3", keystoneName(cp), childNamespace(cp))
+	return keystoneEndpointURL(cp)
 }
 
 // deleteOrphanedHorizon removes a previously-projected Horizon child when

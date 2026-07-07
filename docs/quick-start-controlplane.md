@@ -324,6 +324,14 @@ cluster (the listener terminates with a self-signed certificate). Log in with
 `admin` / the password from the `controlplane-keystone-admin-credentials` Secret
 above (domain `Default`).
 
+After login the dashboard redirects to `/project/`, which reports
+"Unauthorized" — the default landing page needs Compute/Network services this
+control plane does not serve yet. Open the Identity panel instead:
+
+```bash
+open https://horizon.127-0-0-1.nip.io:8443/identity/
+```
+
 > With the default `KIND_HOST_PORT=443` drop the `:8443` and open
 > `https://horizon.127-0-0-1.nip.io/`.
 

@@ -112,6 +112,19 @@ func defaultSettings(horizon *horizonv1alpha1.Horizon) (map[string]apiextensions
 			},
 		},
 		"OPENSTACK_KEYSTONE_URL": horizon.Spec.KeystoneEndpoint,
+		// The dashboard's server-side clients resolve service URLs from the
+		// Keystone catalog, not from OPENSTACK_KEYSTONE_URL. The upstream
+		// default ("publicURL") selects browser-facing catalog entries, which
+		// a colocated in-cluster dashboard cannot reach when they point at a
+		// host-only address (a kind port-mapping, an external LB). The
+		// dashboard runs next to the services it fronts, so it uses the
+		// internal interface — the same posture kolla-ansible and
+		// openstack-helm ship. Deployments fronting a remote cloud override
+		// this via spec.extraConfig. The legacy "...URL" spelling is
+		// load-bearing: openstack_dashboard's ENDPOINT_TYPE_TO_INTERFACE map
+		// only knows publicURL/internalURL/adminURL, and a bare "internal"
+		// fails every catalog lookup.
+		"OPENSTACK_ENDPOINT_TYPE": "internalURL",
 		// ALLOWED_HOSTS is a closed allow-list of the Hosts the dashboard is
 		// actually reached under (see allowedHosts). Keeping Django's
 		// Host-header validation in force — rather than disabling it with "*"

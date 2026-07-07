@@ -46,6 +46,11 @@ func TestReconcileConfig_RendersLocalSettings(t *testing.T) {
 	g.Expect(rendered).To(ContainSubstring(`"LOCATION": ["memcached:11211"]`))
 
 	g.Expect(rendered).To(ContainSubstring(`OPENSTACK_KEYSTONE_URL = "http://keystone.default.svc.cluster.local:5000/v3"`))
+	// The server-side clients must use the internal catalog interface — the
+	// public entries may only resolve outside the cluster. The legacy "...URL"
+	// spelling is required by openstack_dashboard's ENDPOINT_TYPE_TO_INTERFACE
+	// map; a bare "internal" fails every catalog lookup.
+	g.Expect(rendered).To(ContainSubstring(`OPENSTACK_ENDPOINT_TYPE = "internalURL"`))
 	g.Expect(rendered).To(ContainSubstring("COMPRESS_OFFLINE = True"))
 	g.Expect(rendered).To(ContainSubstring(`STATIC_ROOT = "/var/lib/openstack/horizon-static"`))
 	g.Expect(rendered).To(ContainSubstring("DEBUG = False"))

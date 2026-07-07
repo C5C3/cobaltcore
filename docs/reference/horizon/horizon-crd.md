@@ -16,7 +16,7 @@ chart ships a synced copy (`make sync-crds` / `make verify-crd-sync`).
 | `deployment` | `DeploymentSpec` | no | Shared pod-level knobs: `replicas` (default 3), `resources` (Burstable defaults), `terminationGracePeriodSeconds`, `preStopSleepSeconds`, `strategy`, `topologySpreadConstraints`, `priorityClassName` |
 | `image` | `ImageSpec` | yes | Container image; exactly one of `tag` or `digest` (shared CEL rule) |
 | `cache` | `CacheSpec` | yes | Memcached backing the Django cache. Exactly one of `clusterRef` (managed) or `servers` (brownfield); `backend` is a Django cache backend path, defaulted to `django.core.cache.backends.memcached.PyMemcacheCache` |
-| `keystoneEndpoint` | `string` | yes | The Keystone public endpoint URL (`OPENSTACK_KEYSTONE_URL`); must match `^https?://` and parse with a host |
+| `keystoneEndpoint` | `string` | yes | The Keystone endpoint URL (`OPENSTACK_KEYSTONE_URL`); must match `^https?://` and parse with a host. Consumed server-side by the dashboard pods, so it must be reachable from inside the cluster — for a colocated control plane use the cluster-local Service URL, not an externally routable address |
 | `secretKeyRef` | `SecretRefSpec` | yes | Secret holding the Django `SECRET_KEY`; `key` defaults to `secret-key`. Injected as the `HORIZON_SECRET_KEY` env var, never into the ConfigMap |
 | `gateway` | `*GatewaySpec` | no | External exposure via a Gateway API HTTPRoute on port 8080; requires `hostname` and `parentRef.name` |
 | `networkPolicy` | `*NetworkPolicySpec` | no | Ingress restricted to TCP 8080 from the listed sources; egress auto-derived (DNS, the Keystone endpoint port, cache ports). At least one ingress source is required (fail-closed) |

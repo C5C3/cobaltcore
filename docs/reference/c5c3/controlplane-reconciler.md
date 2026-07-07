@@ -657,7 +657,10 @@ services:
 - **Keystone endpoint:** derived top-down via `horizonKeystoneEndpoint(cp)` from
   the Keystone child's naming convention, not read from the Keystone child's
   status (no machine consumer reads status endpoints, per the settled
-  convention).
+  convention). Always the cluster-local Service URL (the same URL K-ORC
+  authenticates against) — never the external `publicEndpoint` or gateway
+  hostname, which the dashboard pods may not be able to reach: the dashboard's
+  Django backend connects to this URL server-side, the browser never does.
 - **SecretKeyRef:** defaults to the kind shim Secret `horizon-secret-key` (key
   `secret-key`), which is pinned to the **default** ControlPlane identity;
   `spec.services.horizon.secretKeyRef` overrides it, and a second ControlPlane
