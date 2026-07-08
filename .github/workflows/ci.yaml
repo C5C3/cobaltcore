@@ -1092,6 +1092,7 @@ jobs:
               tests/e2e-chaos/horizon-memcached-pod-kill
               tests/e2e-chaos/horizon-operator-pod-kill
               tests/e2e-chaos/openbao-pod-kill
+              tests/e2e-chaos/keystone-federation
               tests/e2e-chaos/operator-pod-crash
               tests/e2e-chaos/operator-pod-kill
           - suite: network
@@ -1123,12 +1124,14 @@ jobs:
           images: |
             ${{ env.IMAGE_PREFIX }}/keystone-operator:dev
             ${{ env.IMAGE_PREFIX }}/keystone:2025.2
+            ${{ env.IMAGE_PREFIX }}/keystone-federation-proxy:dev
             ${{ env.IMAGE_PREFIX }}/horizon-operator:dev
             ${{ env.IMAGE_PREFIX }}/horizon:2025.2
       - name: Load images into kind
         run: |
           kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:2025.2 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-federation-proxy:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/horizon-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/horizon:2025.2 --name ${{ env.KIND_CLUSTER }}
       # Use composite action for shared Flux CLI + test deps + deploy-infra sequence.

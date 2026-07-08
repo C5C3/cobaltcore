@@ -1,0 +1,400 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test for the OIDC federation sidecar.
+# Two scenarios against a federated Keystone (2 replicas, Keycloak IdP):
+#   1. Sidecar container-kill: Chaos Mesh kills the federation-proxy
+#      container in one pod; kubelet restarts it in place (restart-count
+#      gated), the Keystone recovers Ready, and federated bearer auth works
+#      again.
+#   2. IdP outage: a bounded pod-failure takes Keycloak away; federated
+#      login fails CLOSED (non-2xx — the introspection path cannot validate
+#      bearers) while password auth through the very same proxy keeps
+#      answering 201. After the outage the federated flow recovers.
+#
+# This is the repository's first container-kill suite: recovery is gated on
+# the named container's restartCount (the UID/restart-count convention from
+# the pod-kill suites, adapted to an in-place container restart).
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-federation-chaos
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Fixture + federated Keystone reach steady state ─────────────
+  - try:
+    - apply:
+        file: 00-keycloak.yaml
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keycloak-chaos
+            namespace: openstack
+          status:
+            (availableReplicas > `0`): true
+    - apply:
+        file: 01-keystone-cr.yaml
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-fed
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - apply:
+        file: 02-backend-cr.yaml
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: KeystoneIdentityBackend
+          metadata:
+            name: keycloak-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-chaos-fed
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                (length(containers[?name == 'federation-proxy']) == `1`): true
+          status:
+            (updatedReplicas == replicas): true
+            (availableReplicas == replicas): true
+    catch:
+    - script:
+        content: ../diagnostics.sh baseline keystone-chaos-fed --dep-label=app.kubernetes.io/name=keycloak-chaos
+  # ── Step 2: Baseline — federated bearer auth succeeds through the proxy ─
+  - try:
+    - script:
+        timeout: 120s
+        shell: bash
+        content: |
+          set -euo pipefail
+          POD=$(kubectl get pods -n $NAMESPACE \
+            -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-chaos-fed,pod-template-hash \
+            --sort-by=.metadata.creationTimestamp -o name | tail -1 | cut -d/ -f2)
+          kubectl exec -n $NAMESPACE "$POD" -c keystone -- python3 -c '
+          import http.client, json, urllib.parse
+
+          body = urllib.parse.urlencode({
+              "grant_type": "password", "client_id": "keystone",
+              "client_secret": "keystone-forge-secret",
+              "username": "fry", "password": "fry-password",
+              "scope": "openid",
+          })
+          conn = http.client.HTTPConnection("keycloak-chaos.openstack.svc.cluster.local", 8080, timeout=30)
+          conn.request("POST", "/realms/forge/protocol/openid-connect/token", body=body,
+                       headers={"Content-Type": "application/x-www-form-urlencoded"})
+          resp = conn.getresponse()
+          data = resp.read()
+          assert resp.status == 200, f"Keycloak token endpoint returned {resp.status}: {data[:300]}"
+          access_token = json.loads(data)["access_token"]
+
+          # Through the sidecar (shared network namespace, Host pinned to
+          # the Service name — no hairpin dependency).
+          conn = http.client.HTTPConnection("127.0.0.1", 5050, timeout=30)
+          conn.request("GET", "/v3/OS-FEDERATION/identity_providers/keycloak-chaos/protocols/openid/auth",
+                       headers={"Host": "keystone-chaos-fed.openstack.svc.cluster.local:5000",
+                                "Authorization": "Bearer " + access_token})
+          resp = conn.getresponse()
+          data = resp.read()
+          assert resp.status == 201, f"federated auth returned {resp.status}: {data[:300]}"
+          print("OK: baseline federated bearer auth succeeds")
+          '
+    catch:
+    - script:
+        content: ../diagnostics.sh baseline keystone-chaos-fed --dep-label=app.kubernetes.io/name=keycloak-chaos
+  # ── Step 3: Kill the sidecar container in one pod ────────────────────────
+  - try:
+    - apply:
+        file: 03-container-kill.yaml
+  # ── Step 4: Restart observed, Keystone recovers, federated auth back ────
+  - try:
+    - script:
+        # Timeout budget: Phase 1 (30×2s=60s) + Phase 2 (60×2s=120s) = 180s
+        # worst case; 210s gives 30s margin.
+        timeout: 210s
+        content: |
+          # NOTE: set -euo pipefail is intentionally omitted — the polling
+          # loops use ${VAR:-0} defensive defaults on empty kubectl output.
+
+          DESIRED=$(kubectl get deployment keystone-chaos-fed -n $NAMESPACE -o jsonpath='{.spec.replicas}')
+          if [ -z "$DESIRED" ] || [ "$DESIRED" -lt 1 ]; then
+            echo "ERROR: could not determine desired replica count"
+            exit 1
+          fi
+
+          # Phase 1: the kill must be OBSERVED — the federation-proxy
+          # restartCount of some pod goes >= 1 (restart-count gate; a
+          # vacuous pass on a never-applied chaos is impossible).
+          RESTARTS=0
+          for i in $(seq 1 30); do
+            RESTARTS=$(kubectl get pods -n $NAMESPACE \
+              -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-chaos-fed \
+              -o jsonpath='{range .items[*]}{.status.containerStatuses[?(@.name=="federation-proxy")].restartCount}{"\n"}{end}' \
+              | sort -rn | head -1)
+            if [ "${RESTARTS:-0}" -ge 1 ]; then
+              break
+            fi
+            sleep 2
+          done
+          if [ "${RESTARTS:-0}" -lt 1 ]; then
+            echo "ERROR: federation-proxy restartCount never incremented — container kill did not take effect"
+            exit 1
+          fi
+          echo "Container kill confirmed: max federation-proxy restartCount=${RESTARTS}"
+
+          # Phase 2: all pods return to Ready (the restarted Apache answers
+          # its probes again).
+          for i in $(seq 1 60); do
+            READY=$(kubectl get deployment keystone-chaos-fed -n $NAMESPACE -o jsonpath='{.status.readyReplicas}')
+            if [ "${READY:-0}" -eq "$DESIRED" ]; then
+              echo "Recovered: readyReplicas=${DESIRED}"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "ERROR: deployment did not recover — readyReplicas=${READY:-0}, expected ${DESIRED}"
+          exit 1
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-fed
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    # Federated bearer auth works again after the in-place restart.
+    - script:
+        timeout: 120s
+        shell: bash
+        content: |
+          set -euo pipefail
+          POD=$(kubectl get pods -n $NAMESPACE \
+            -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-chaos-fed,pod-template-hash \
+            --sort-by=.metadata.creationTimestamp -o name | tail -1 | cut -d/ -f2)
+          kubectl exec -n $NAMESPACE "$POD" -c keystone -- python3 -c '
+          import http.client, json, urllib.parse
+
+          body = urllib.parse.urlencode({
+              "grant_type": "password", "client_id": "keystone",
+              "client_secret": "keystone-forge-secret",
+              "username": "fry", "password": "fry-password",
+              "scope": "openid",
+          })
+          conn = http.client.HTTPConnection("keycloak-chaos.openstack.svc.cluster.local", 8080, timeout=30)
+          conn.request("POST", "/realms/forge/protocol/openid-connect/token", body=body,
+                       headers={"Content-Type": "application/x-www-form-urlencoded"})
+          resp = conn.getresponse()
+          data = resp.read()
+          assert resp.status == 200, f"Keycloak token endpoint returned {resp.status}: {data[:300]}"
+          access_token = json.loads(data)["access_token"]
+
+          conn = http.client.HTTPConnection("127.0.0.1", 5050, timeout=30)
+          conn.request("GET", "/v3/OS-FEDERATION/identity_providers/keycloak-chaos/protocols/openid/auth",
+                       headers={"Host": "keystone-chaos-fed.openstack.svc.cluster.local:5000",
+                                "Authorization": "Bearer " + access_token})
+          resp = conn.getresponse()
+          data = resp.read()
+          assert resp.status == 201, f"federated auth returned {resp.status}: {data[:300]}"
+          print("OK: federated bearer auth recovered after the sidecar restart")
+          '
+    catch:
+    - script:
+        content: ../diagnostics.sh chaos keystone-chaos-fed --dep-label=app.kubernetes.io/name=keycloak-chaos --log-label=app.kubernetes.io/instance=keystone-chaos-fed
+  # ── Step 5: Remove the container-kill chaos ──────────────────────────────
+  - try:
+    - delete:
+        ref:
+          apiVersion: chaos-mesh.org/v1alpha1
+          kind: PodChaos
+          name: kill-federation-proxy
+  # ── Step 6: IdP outage — federated fails closed, password auth survives ─
+  - try:
+    - script:
+        # Budget: token fetch (~5s) + chaos apply + fail-closed probe with
+        # retries (~60s) — the 60s outage duration bounds the window.
+        timeout: 150s
+        shell: bash
+        content: |
+          set -euo pipefail
+          POD=$(kubectl get pods -n $NAMESPACE \
+            -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-chaos-fed,pod-template-hash \
+            --sort-by=.metadata.creationTimestamp -o name | tail -1 | cut -d/ -f2)
+          ADMIN_PASSWORD_B64=$(kubectl get secret keystone-admin -n $NAMESPACE -o jsonpath='{.data.password}') || {
+            echo "ERROR: could not read Secret keystone-admin"; exit 1; }
+          if [[ -z "${ADMIN_PASSWORD_B64}" ]]; then
+            echo "ERROR: Secret keystone-admin has no password key"; exit 1
+          fi
+          ADMIN_PASSWORD=$(printf '%s' "$ADMIN_PASSWORD_B64" | base64 --decode)
+
+          # Fetch a bearer token BEFORE the outage (Keycloak access tokens
+          # outlive the 60s pod-failure window).
+          TOKEN=$(kubectl exec -n $NAMESPACE "$POD" -c keystone -- python3 -c '
+          import http.client, json, urllib.parse
+          body = urllib.parse.urlencode({
+              "grant_type": "password", "client_id": "keystone",
+              "client_secret": "keystone-forge-secret",
+              "username": "fry", "password": "fry-password",
+              "scope": "openid",
+          })
+          conn = http.client.HTTPConnection("keycloak-chaos.openstack.svc.cluster.local", 8080, timeout=30)
+          conn.request("POST", "/realms/forge/protocol/openid-connect/token", body=body,
+                       headers={"Content-Type": "application/x-www-form-urlencoded"})
+          resp = conn.getresponse()
+          data = resp.read()
+          assert resp.status == 200, f"Keycloak token endpoint returned {resp.status}"
+          print(json.loads(data)["access_token"])
+          ')
+
+          # Take the IdP away.
+          kubectl apply -f - <<'EOF'
+          apiVersion: chaos-mesh.org/v1alpha1
+          kind: PodChaos
+          metadata:
+            name: keycloak-outage
+            namespace: openstack
+          spec:
+            action: pod-failure
+            mode: all
+            duration: 60s
+            selector:
+              namespaces:
+              - openstack
+              labelSelectors:
+                app.kubernetes.io/name: keycloak-chaos
+          EOF
+
+          # Federated auth must FAIL CLOSED (non-2xx) while the IdP is gone:
+          # the sidecar cannot introspect the bearer, so no token is minted.
+          # Retry until the outage is observable (the pause swap takes a
+          # few seconds).
+          kubectl exec -n $NAMESPACE "$POD" -c keystone -- python3 -c '
+          import http.client, sys, time
+
+          token = sys.argv[1]
+          for attempt in range(20):
+              conn = http.client.HTTPConnection("127.0.0.1", 5050, timeout=15)
+              try:
+                  conn.request("GET", "/v3/OS-FEDERATION/identity_providers/keycloak-chaos/protocols/openid/auth",
+                               headers={"Host": "keystone-chaos-fed.openstack.svc.cluster.local:5000",
+                                        "Authorization": "Bearer " + token})
+                  resp = conn.getresponse()
+                  resp.read()
+                  status = resp.status
+              except OSError:
+                  status = 599
+              if status < 200 or status >= 300:
+                  print(f"OK: federated auth fails closed during the IdP outage (HTTP {status})")
+                  break
+              time.sleep(2)
+          else:
+              raise AssertionError("federated auth kept succeeding — the outage never became observable")
+          ' "$TOKEN"
+
+          # Password auth through the SAME proxy keeps working: the IdP is
+          # not in the path of non-federated requests.
+          kubectl exec -n $NAMESPACE "$POD" -c keystone -- python3 -c '
+          import http.client, json, sys
+
+          pw = sys.argv[1]
+          body = json.dumps({"auth": {"identity": {"methods": ["password"], "password": {"user": {"name": "admin", "domain": {"id": "default"}, "password": pw}}}, "scope": {"project": {"name": "admin", "domain": {"id": "default"}}}}})
+          conn = http.client.HTTPConnection("127.0.0.1", 5050, timeout=30)
+          conn.request("POST", "/v3/auth/tokens", body=body,
+                       headers={"Host": "keystone-chaos-fed.openstack.svc.cluster.local:5000",
+                                "Content-Type": "application/json"})
+          resp = conn.getresponse()
+          data = resp.read()
+          assert resp.status == 201, f"password auth through the proxy returned {resp.status}: {data[:300]}"
+          print("OK: password auth keeps working through the proxy during the IdP outage")
+          ' "$ADMIN_PASSWORD"
+    catch:
+    - script:
+        content: ../diagnostics.sh chaos keystone-chaos-fed --dep-label=app.kubernetes.io/name=keycloak-chaos --log-label=app.kubernetes.io/instance=keystone-chaos-fed
+  # ── Step 7: Outage ends — the federated flow recovers ────────────────────
+  - try:
+    - delete:
+        ref:
+          apiVersion: chaos-mesh.org/v1alpha1
+          kind: PodChaos
+          name: keycloak-outage
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keycloak-chaos
+            namespace: openstack
+          status:
+            (availableReplicas > `0`): true
+    - script:
+        # Keycloak reboots and re-imports the realm after the pause swap;
+        # retry the full flow until it answers.
+        timeout: 240s
+        shell: bash
+        content: |
+          set -euo pipefail
+          POD=$(kubectl get pods -n $NAMESPACE \
+            -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-chaos-fed,pod-template-hash \
+            --sort-by=.metadata.creationTimestamp -o name | tail -1 | cut -d/ -f2)
+          kubectl exec -n $NAMESPACE "$POD" -c keystone -- python3 -c '
+          import http.client, json, time, urllib.parse
+
+          def attempt():
+              body = urllib.parse.urlencode({
+                  "grant_type": "password", "client_id": "keystone",
+                  "client_secret": "keystone-forge-secret",
+                  "username": "fry", "password": "fry-password",
+                  "scope": "openid",
+              })
+              conn = http.client.HTTPConnection("keycloak-chaos.openstack.svc.cluster.local", 8080, timeout=15)
+              conn.request("POST", "/realms/forge/protocol/openid-connect/token", body=body,
+                           headers={"Content-Type": "application/x-www-form-urlencoded"})
+              resp = conn.getresponse()
+              data = resp.read()
+              if resp.status != 200:
+                  return False
+              token = json.loads(data)["access_token"]
+              conn = http.client.HTTPConnection("127.0.0.1", 5050, timeout=15)
+              conn.request("GET", "/v3/OS-FEDERATION/identity_providers/keycloak-chaos/protocols/openid/auth",
+                           headers={"Host": "keystone-chaos-fed.openstack.svc.cluster.local:5000",
+                                    "Authorization": "Bearer " + token})
+              resp = conn.getresponse()
+              resp.read()
+              return resp.status == 201
+
+          for i in range(60):
+              try:
+                  if attempt():
+                      print("OK: federated bearer auth recovered after the IdP outage")
+                      break
+              except OSError:
+                  pass
+              time.sleep(3)
+          else:
+              raise AssertionError("federated auth never recovered after the IdP outage")
+          '
+    catch:
+    - script:
+        content: ../diagnostics.sh chaos keystone-chaos-fed --dep-label=app.kubernetes.io/name=keycloak-chaos --log-label=app.kubernetes.io/instance=keystone-chaos-fed

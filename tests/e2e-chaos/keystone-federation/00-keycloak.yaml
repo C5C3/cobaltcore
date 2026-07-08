@@ -1,0 +1,128 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# In-suite Keycloak fixture for the keystone-federation chaos test: a single
+# start-dev pod importing one realm (the multi-realm proof lives in the
+# oidc-federation e2e suite; chaos only needs a working IdP to take away).
+# The image pin is tag+digest and Renovate-tracked via the docker-digest
+# customManager in renovate.json (shared with the e2e fixture).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keycloak-chaos-realms
+  namespace: openstack
+data:
+  forge-realm.json: |
+    {
+      "realm": "forge",
+      "enabled": true,
+      "sslRequired": "none",
+      "groups": [{"name": "engineers", "path": "/engineers"}],
+      "users": [
+        {
+          "username": "fry",
+          "enabled": true,
+          "email": "fry@planetexpress.example",
+          "emailVerified": true,
+          "firstName": "Philip",
+          "lastName": "Fry",
+          "credentials": [{"type": "password", "value": "fry-password", "temporary": false}],
+          "groups": ["/engineers"]
+        }
+      ],
+      "clients": [
+        {
+          "clientId": "keystone",
+          "enabled": true,
+          "protocol": "openid-connect",
+          "publicClient": false,
+          "secret": "keystone-forge-secret",
+          "redirectUris": ["http://keystone-chaos-fed.openstack.svc.cluster.local:5000/*"],
+          "webOrigins": ["*"],
+          "standardFlowEnabled": true,
+          "directAccessGrantsEnabled": true
+        }
+      ]
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak-chaos
+  namespace: openstack
+  labels:
+    app.kubernetes.io/name: keycloak-chaos
+    app.kubernetes.io/instance: keycloak-chaos
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: keycloak-chaos
+      app.kubernetes.io/instance: keycloak-chaos
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: keycloak-chaos
+        app.kubernetes.io/instance: keycloak-chaos
+    spec:
+      containers:
+      - name: keycloak
+        image: quay.io/keycloak/keycloak:26.6.4@sha256:0aae0de7fca85525f727d3354df17896092de8bb26ae4c12d89c77e5df8cbce4
+        args: ["start-dev", "--import-realm"]
+        env:
+        - name: KC_BOOTSTRAP_ADMIN_USERNAME
+          value: admin
+        - name: KC_BOOTSTRAP_ADMIN_PASSWORD
+          value: admin-password
+        ports:
+        - name: http
+          containerPort: 8080
+        volumeMounts:
+        - name: realms
+          mountPath: /opt/keycloak/data/import
+          readOnly: true
+        readinessProbe:
+          httpGet:
+            path: /realms/master
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          failureThreshold: 30
+        resources:
+          requests:
+            cpu: 100m
+            memory: 512Mi
+          limits:
+            memory: 1Gi
+      volumes:
+      - name: realms
+        configMap:
+          name: keycloak-chaos-realms
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak-chaos
+  namespace: openstack
+  labels:
+    app.kubernetes.io/name: keycloak-chaos
+    app.kubernetes.io/instance: keycloak-chaos
+spec:
+  selector:
+    app.kubernetes.io/name: keycloak-chaos
+    app.kubernetes.io/instance: keycloak-chaos
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+    protocol: TCP
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: keycloak-chaos-client
+  namespace: openstack
+type: Opaque
+stringData:
+  clientSecret: keystone-forge-secret

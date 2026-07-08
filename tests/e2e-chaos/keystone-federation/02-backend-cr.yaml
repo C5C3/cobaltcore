@@ -1,0 +1,47 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# OIDC KeystoneIdentityBackend for the federation chaos test: introspection
+# enabled so the bearer-token CLI flow works (the shape both chaos scenarios
+# probe federated auth with).
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: KeystoneIdentityBackend
+metadata:
+  name: keycloak-chaos
+  namespace: openstack
+spec:
+  keystoneRef:
+    name: keystone-chaos-fed
+  domain:
+    name: forge-chaos
+    mode: Manage
+    deletionPolicy: Delete
+    description: Keycloak chaos realm
+  type: OIDC
+  oidc:
+    issuer: http://keycloak-chaos.openstack.svc.cluster.local:8080/realms/forge
+    clientID: keystone
+    clientSecretRef:
+      name: keycloak-chaos-client
+    oauth2Introspection:
+      enabled: true
+  mappings:
+  - remote:
+    - type: HTTP_OIDC_ISS
+      anyOneOf:
+      - http://keycloak-chaos.openstack.svc.cluster.local:8080/realms/forge
+    - type: HTTP_OIDC_PREFERRED_USERNAME
+    local:
+    - user:
+        name: "{1}"
+      group:
+        name: federated-users
+        domain:
+          name: forge-chaos
+  groups:
+  - name: federated-users
+    description: Federated Keycloak chaos users
+    roleAssignments:
+    - role: member
+      domain: true

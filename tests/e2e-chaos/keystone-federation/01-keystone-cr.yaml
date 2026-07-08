@@ -1,0 +1,45 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Keystone CR fixture for the federation chaos test.
+# replicas: 2 so a single sidecar container-kill degrades one pod while the
+# other keeps serving. Unique name (keystone-chaos-fed) and database
+# (keystone_chaos_fed) so parallel suites never conflict.
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone-chaos-fed
+  namespace: openstack
+spec:
+  deployment:
+    replicas: 2
+  image:
+    repository: ghcr.io/c5c3/keystone
+    tag: "2025.2"
+  federation:
+    proxyImage:
+      repository: ghcr.io/c5c3/keystone-federation-proxy
+      tag: dev
+  database:
+    clusterRef:
+      name: openstack-db
+    database: keystone_chaos_fed
+    secretRef:
+      name: keystone-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+    backend: dogpile.cache.pymemcache
+  fernet:
+    rotationSchedule: "0 0 * * 0"
+    maxActiveKeys: 3
+  bootstrap:
+    adminUser: admin
+    adminPasswordSecretRef:
+      name: keystone-admin
+    region: RegionOne
+  extraConfig:
+    # Cache hermeticity — see the ldap-domain-backend fixture rationale.
+    cache:
+      enabled: "false"

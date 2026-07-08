@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# PodChaos CR to kill the mod_auth_openidc sidecar container in ONE keystone
+# pod. container-kill (not pod-kill): kubelet restarts the named container
+# in place — the pod survives, restartCount increments, and the readiness
+# probe depools the pod until Apache answers again.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: kill-federation-proxy
+  namespace: openstack
+spec:
+  action: container-kill
+  mode: one
+  containerNames:
+  - federation-proxy
+  selector:
+    namespaces:
+    - openstack
+    labelSelectors:
+      app.kubernetes.io/name: keystone
+      app.kubernetes.io/instance: keystone-chaos-fed
+  gracePeriod: 0
