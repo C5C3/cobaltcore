@@ -27,21 +27,25 @@ import (
 )
 
 // configRenderCacheEntry memoizes a successful config render. The (uid,
-// generation, policyCMResourceVersion, domainsProjected) tuple is the cache
-// key: generation covers every spec input to the render by construction, uid
-// guards a same-name CR recreation, policyCMResourceVersion tracks the
-// external oslo.policy ConfigMap referenced by
-// spec.policyOverrides.configMapRef, and domainsProjected tracks the
-// identity-backend projection state — attaching or detaching a backend flips
-// the [identity] domain-specific-driver options without bumping the Keystone
-// generation, so it must invalidate the cache. useStderr is retained so the
-// LoggingHealthy condition/event contract is preserved on the cache-hit path
-// without re-deriving the merged config.
+// generation, policyCMResourceVersion, domainsProjected,
+// federationProjected, remoteIDAttribute) tuple is the cache key: generation
+// covers every spec input to the render by construction, uid guards a
+// same-name CR recreation, policyCMResourceVersion tracks the external
+// oslo.policy ConfigMap referenced by spec.policyOverrides.configMapRef, and
+// the projection fields track the identity-backend projection state —
+// attaching or detaching a backend flips the [identity]
+// domain-specific-driver options (LDAP) or the [auth]/[openid]/[federation]
+// sections (OIDC) without bumping the Keystone generation, so both must
+// invalidate the cache. useStderr is retained so the LoggingHealthy
+// condition/event contract is preserved on the cache-hit path without
+// re-deriving the merged config.
 type configRenderCacheEntry struct {
 	uid                     types.UID
 	generation              int64
 	policyCMResourceVersion string
 	domainsProjected        bool
+	federationProjected     bool
+	remoteIDAttribute       string
 	configMapName           string
 	useStderr               string
 }
@@ -88,17 +92,66 @@ const dbConnectionPlaceholder = "mysql+pymysql://placeholder"
 // the keystone.conf builder must agree on a single source of truth.
 const loggingConfFilePath = "/etc/keystone/keystone.conf.d/logging.conf"
 
+// federationAuthMethods is the [auth] methods list rendered when federation
+// is active: keystone's compiled-in default (verified identical against the
+// pinned 2025.2/28.0.0 and 2026.1/29.0.0 keystone/conf/constants.py
+// _DEFAULT_AUTH_METHODS) plus openid. Rendering the full explicit list —
+// rather than only the addition — is how oslo.config works: setting the
+// option replaces the default entirely, so dropping any entry here would
+// silently break password/application-credential auth.
+const federationAuthMethods = "external,password,token,oauth1,mapped,application_credential,openid"
+
+// ssoCallbackTemplateFilePath is the on-pod path of the WebSSO callback
+// template shipped in the config ConfigMap when federation is active. pip
+// installs do not ship /etc/keystone/sso_callback_template.html, so the
+// operator provides keystone's canonical template itself.
+const ssoCallbackTemplateFilePath = "/etc/keystone/keystone.conf.d/sso_callback_template.html"
+
+// ssoCallbackTemplateHTML is keystone's canonical etc/sso_callback_template.html
+// (the 29.0.0 HTML5 revision; 28.0.0 differs only in XHTML syntax): an
+// auto-submitting form POSTing the $token to the $host origin — the WebSSO
+// hand-off back to the dashboard. Keystone substitutes $host/$token via
+// Python string.Template at response time.
+const ssoCallbackTemplateHTML = `<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Keystone WebSSO redirect</title>
+  </head>
+  <body>
+     <form id="sso" name="sso" action="$host" method="post">
+       Please wait...
+       <br>
+       <input type="hidden" name="token" id="token" value="$token">
+       <noscript>
+         <input type="submit" name="submit_no_javascript" id="submit_no_javascript"
+            value="If your JavaScript is disabled, please click to continue">
+       </noscript>
+     </form>
+     <script>
+       window.onload = function() {
+         document.forms['sso'].submit();
+       }
+     </script>
+  </body>
+</html>
+`
+
 // reconcileConfig builds the Keystone configuration and creates an immutable
 // ConfigMap containing keystone.conf, api-paste.ini, and optionally policy.yaml.
 // It returns the name of the created ConfigMap (with content-hash suffix).
 // domainsProjected reports whether reconcileIdentityBackends projected at
 // least one per-domain config file; when true the rendered keystone.conf
-// turns the domain-specific-drivers machinery on.
-func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, keystone *keystonev1alpha1.Keystone, domainsProjected bool) (string, error) {
+// turns the domain-specific-drivers machinery on. fed is the federation
+// projection (nil when no OIDC backend is projected); when set the rendered
+// keystone.conf gains the openid auth method, the [openid]
+// remote_id_attribute, and the [federation] section, and the ConfigMap ships
+// the WebSSO callback template.
+func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, keystone *keystonev1alpha1.Keystone, domainsProjected bool, fed *federationProjection) (string, error) {
 	// Cache short-circuit: the rendered ConfigMap is content-addressed and
 	// immutable, and every spec input to the render bumps the CR generation, so
 	// a matching (uid, generation, policy-ConfigMap ResourceVersion,
-	// domains-projected) tuple means the last rendered ConfigMap is still
+	// projection-state) tuple means the last rendered ConfigMap is still
 	// current. Skip the INI/paste/policy rendering and the
 	// immutable-ConfigMap write, but still re-run recordLoggingHealth so the
 	// LoggingHealthy condition/event contract holds on every pass.
@@ -106,7 +159,7 @@ func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, keystone *keys
 	if err != nil {
 		return "", err
 	}
-	if name, useStderr, ok := r.configRenderCacheHit(keystone, policyCMRV, domainsProjected); ok {
+	if name, useStderr, ok := r.configRenderCacheHit(keystone, policyCMRV, domainsProjected, fed); ok {
 		// Confirm the cached ConfigMap still exists: an out-of-band delete must
 		// fall through to a full render/recreate. Owns(ConfigMap) enqueues us on
 		// the delete, but the cache would otherwise hand back a deleted name.
@@ -186,6 +239,20 @@ func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, keystone *keys
 	if domainsProjected {
 		defaults["identity"]["domain_specific_drivers_enabled"] = "true"
 		defaults["identity"]["domain_config_dir"] = domainsMountPath
+	}
+
+	// Federation: enable the openid/mapped auth methods, point keystone at
+	// the WSGI environ key the proxy asserts the issuer in (the per-protocol
+	// [openid] section beats [federation].remote_id_attribute — the
+	// spike-validated wiring), and configure the WebSSO callback template the
+	// ConfigMap ships below. Placed in the defaults map so user extraConfig
+	// (e.g. [federation] trusted_dashboard until the typed field lands) still
+	// wins per MergeDefaults. When federation is inactive the sections are
+	// omitted entirely, keeping non-federated CRs byte-identical.
+	if fed != nil {
+		defaults["auth"] = map[string]string{"methods": federationAuthMethods}
+		defaults["openid"] = map[string]string{"remote_id_attribute": fed.RemoteIDAttribute}
+		defaults["federation"] = map[string]string{"sso_callback_template": ssoCallbackTemplateFilePath}
 	}
 
 	// render PerLoggerLevels into oslo.log's default_log_levels
@@ -288,6 +355,16 @@ func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, keystone *keys
 	if logging.Format == "json" {
 		data["logging.conf"] = renderLoggingConf(logging.Level)
 	}
+	// Federation ships keystone's canonical WebSSO callback template beside
+	// keystone.conf (pip installs do not provide it). oslo.config's
+	// --config-dir only parses *.conf files, so the extra key is inert for
+	// the config loader — the logging.conf precedent. Detaching the last OIDC
+	// backend drops the key and the [auth]/[openid]/[federation] sections, so
+	// the content hash changes and the Deployment rolls back to the
+	// non-federated config.
+	if fed != nil {
+		data["sso_callback_template.html"] = ssoCallbackTemplateHTML
+	}
 
 	configMapName, err := config.CreateImmutableConfigMap(ctx, r.Client, r.Scheme, keystone,
 		fmt.Sprintf("%s-config", keystone.Name), keystone.Namespace, data)
@@ -298,7 +375,7 @@ func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, keystone *keys
 	// Memoize the render so a subsequent pass at the same generation, policy
 	// ConfigMap ResourceVersion, and projection state returns this name
 	// without re-rendering.
-	r.storeConfigRender(keystone, policyCMRV, configMapName, mergedUseStderr(merged), domainsProjected)
+	r.storeConfigRender(keystone, policyCMRV, configMapName, mergedUseStderr(merged), domainsProjected, fed)
 
 	return configMapName, nil
 }
@@ -324,10 +401,20 @@ func (r *KeystoneReconciler) policyConfigMapResourceVersion(ctx context.Context,
 	return cm.ResourceVersion, nil
 }
 
+// federationCacheKeyOf extracts the two config-render inputs a federation
+// projection contributes to the cache key.
+func federationCacheKeyOf(fed *federationProjection) (projected bool, remoteIDAttribute string) {
+	if fed == nil {
+		return false, ""
+	}
+	return true, fed.RemoteIDAttribute
+}
+
 // configRenderCacheHit reports whether the memoized render for this CR is still
 // valid: matching UID, generation, policy-ConfigMap ResourceVersion, and
-// identity-backend projection state.
-func (r *KeystoneReconciler) configRenderCacheHit(keystone *keystonev1alpha1.Keystone, policyCMRV string, domainsProjected bool) (name, useStderr string, ok bool) {
+// identity-backend projection state (domains and federation).
+func (r *KeystoneReconciler) configRenderCacheHit(keystone *keystonev1alpha1.Keystone, policyCMRV string, domainsProjected bool, fed *federationProjection) (name, useStderr string, ok bool) {
+	federationProjected, remoteIDAttribute := federationCacheKeyOf(fed)
 	r.configRenderCacheMu.Lock()
 	defer r.configRenderCacheMu.Unlock()
 	entry, found := r.configRenderCache[client.ObjectKeyFromObject(keystone)]
@@ -335,14 +422,16 @@ func (r *KeystoneReconciler) configRenderCacheHit(keystone *keystonev1alpha1.Key
 		return "", "", false
 	}
 	if entry.uid != keystone.UID || entry.generation != keystone.Generation ||
-		entry.policyCMResourceVersion != policyCMRV || entry.domainsProjected != domainsProjected {
+		entry.policyCMResourceVersion != policyCMRV || entry.domainsProjected != domainsProjected ||
+		entry.federationProjected != federationProjected || entry.remoteIDAttribute != remoteIDAttribute {
 		return "", "", false
 	}
 	return entry.configMapName, entry.useStderr, true
 }
 
 // storeConfigRender memoizes a successful render.
-func (r *KeystoneReconciler) storeConfigRender(keystone *keystonev1alpha1.Keystone, policyCMRV, configMapName, useStderr string, domainsProjected bool) {
+func (r *KeystoneReconciler) storeConfigRender(keystone *keystonev1alpha1.Keystone, policyCMRV, configMapName, useStderr string, domainsProjected bool, fed *federationProjection) {
+	federationProjected, remoteIDAttribute := federationCacheKeyOf(fed)
 	r.configRenderCacheMu.Lock()
 	defer r.configRenderCacheMu.Unlock()
 	if r.configRenderCache == nil {
@@ -353,6 +442,8 @@ func (r *KeystoneReconciler) storeConfigRender(keystone *keystonev1alpha1.Keysto
 		generation:              keystone.Generation,
 		policyCMResourceVersion: policyCMRV,
 		domainsProjected:        domainsProjected,
+		federationProjected:     federationProjected,
+		remoteIDAttribute:       remoteIDAttribute,
 		configMapName:           configMapName,
 		useStderr:               useStderr,
 	}

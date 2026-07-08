@@ -301,7 +301,7 @@ func testComputeConfigMapName(t testing.TB) string {
 		Scheme:   s,
 		Recorder: record.NewFakeRecorder(10),
 	}
-	name, err := r.reconcileConfig(context.Background(), ks, false)
+	name, err := r.reconcileConfig(context.Background(), ks, false, nil)
 	if err != nil {
 		t.Fatalf("computing config map name: %v", err)
 	}

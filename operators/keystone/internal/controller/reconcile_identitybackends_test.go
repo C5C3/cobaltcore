@@ -406,7 +406,7 @@ func TestReconcileConfig_DomainFlagsFollowProjectionState(t *testing.T) {
 	r := newTestReconciler(ks, testDBCredentialsSecret())
 	ctx := context.Background()
 
-	nameOff, err := r.reconcileConfig(ctx, ks, false)
+	nameOff, err := r.reconcileConfig(ctx, ks, false, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 	var cmOff corev1.ConfigMap
 	g.Expect(r.Get(ctx, client.ObjectKey{Namespace: "default", Name: nameOff}, &cmOff)).To(Succeed())
@@ -414,7 +414,7 @@ func TestReconcileConfig_DomainFlagsFollowProjectionState(t *testing.T) {
 
 	// Projection turned on at the same generation: the cache must miss and
 	// the re-render must carry the domain options.
-	nameOn, err := r.reconcileConfig(ctx, ks, true)
+	nameOn, err := r.reconcileConfig(ctx, ks, true, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(nameOn).NotTo(Equal(nameOff))
 	var cmOn corev1.ConfigMap
@@ -430,7 +430,7 @@ func TestReconcileConfig_DomainFlagsFollowProjectionState(t *testing.T) {
 		"identity": {"domain_specific_drivers_enabled": "false"},
 	}
 	r2 := newTestReconciler(ks2, testDBCredentialsSecret())
-	nameExtra, err := r2.reconcileConfig(ctx, ks2, true)
+	nameExtra, err := r2.reconcileConfig(ctx, ks2, true, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 	var cmExtra corev1.ConfigMap
 	g.Expect(r2.Client.Get(ctx, client.ObjectKey{Namespace: "default", Name: nameExtra}, &cmExtra)).To(Succeed())

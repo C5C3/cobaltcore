@@ -437,7 +437,7 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		// stay stale-True at the new generation (issue #467).
 		{Name: "Config", Fn: func(ctx context.Context) (ctrl.Result, error) {
 			var err error
-			configMapName, err = r.reconcileConfig(ctx, &keystone, domainsSecretName != "")
+			configMapName, err = r.reconcileConfig(ctx, &keystone, domainsSecretName != "", federation)
 			if err != nil {
 				markConfigFailed(&keystone, err)
 			}
