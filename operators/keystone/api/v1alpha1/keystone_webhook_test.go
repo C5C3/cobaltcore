@@ -1524,6 +1524,16 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 		Schedule:       "bad-cron",
 		PasswordLength: 8,
 	}
+	// Break federation.proxyImage — empty repository AND the tag/digest XOR
+	// (both set). Every new federation validation hook must participate in the
+	// aggregated error, matching the regression-guard pattern above.
+	k.Spec.Federation = &FederationSpec{
+		ProxyImage: &commonv1.ImageSpec{
+			Repository: "",
+			Tag:        "latest",
+			Digest:     "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+		},
+	}
 
 	_, err := w.ValidateCreate(context.Background(), k)
 	g.Expect(err).To(HaveOccurred())
@@ -1578,6 +1588,59 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 	g.Expect(errMsg).To(ContainSubstring("passwordRotation"))
 	g.Expect(errMsg).To(ContainSubstring("passwordLength"))
 	g.Expect(errMsg).To(ContainSubstring("adminPasswordSecretRef"))
+	// every federation validation path (proxyImage repository +
+	// tag/digest XOR) must participate in the aggregated error.
+	g.Expect(errMsg).To(ContainSubstring("federation.proxyImage"))
+	g.Expect(errMsg).To(ContainSubstring("proxyImage.repository must be set"))
+	g.Expect(errMsg).To(ContainSubstring("exactly one of proxyImage.tag or proxyImage.digest"))
+}
+
+// TestValidate_FederationProxyImage covers the federation.proxyImage
+// defense-in-depth checks in isolation: a nil federation block and a nil
+// proxyImage are both valid (activation is backend-driven), a set proxyImage
+// needs a repository and exactly one of tag/digest.
+func TestValidate_FederationProxyImage(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{Client: newFakeClient().Build()}
+
+	// nil federation: valid.
+	k := validKeystone()
+	k.Spec.Federation = nil
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// federation with nil proxyImage: valid (backends stay pending with a
+	// FederationProxyImageMissing warning at reconcile time instead).
+	k = validKeystone()
+	k.Spec.Federation = &FederationSpec{}
+	_, err = w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// valid proxyImage: accepted.
+	k = validKeystone()
+	k.Spec.Federation = &FederationSpec{
+		ProxyImage: &commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone-federation-proxy", Tag: "latest"},
+	}
+	_, err = w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// missing repository: rejected.
+	k = validKeystone()
+	k.Spec.Federation = &FederationSpec{
+		ProxyImage: &commonv1.ImageSpec{Tag: "latest"},
+	}
+	_, err = w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("proxyImage.repository must be set"))
+
+	// neither tag nor digest: rejected by the XOR.
+	k = validKeystone()
+	k.Spec.Federation = &FederationSpec{
+		ProxyImage: &commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone-federation-proxy"},
+	}
+	_, err = w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("exactly one of proxyImage.tag or proxyImage.digest"))
 }
 
 // managedKeystone returns a valid managed-mode Keystone (ClusterRef set, Host

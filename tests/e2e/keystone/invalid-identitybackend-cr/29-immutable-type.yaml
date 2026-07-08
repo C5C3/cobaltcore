@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Update of the immutable-backend base CR that flips spec.type from LDAP to
+# OIDC (with a matching oidc block so only the transition rule fires). The
+# spec-level CEL transition rule (self.type == oldSelf.type) rejects the
+# change on UPDATE. Admission must reject this UPDATE with an $error
+# referencing "type is immutable".
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: KeystoneIdentityBackend
+metadata:
+  name: immutable-backend
+spec:
+  keystoneRef:
+    name: keystone
+  domain:
+    name: corp
+  type: OIDC
+  oidc:
+    issuer: https://idp.example.com/realms/forge
+    clientID: keystone
+    clientSecretRef:
+      name: corp-oidc-client

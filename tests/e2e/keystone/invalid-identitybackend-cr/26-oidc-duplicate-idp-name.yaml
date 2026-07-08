@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Second OIDC backend whose identityProviderName collides with the
+# 18-oidc-base CR's default (its CR name) on the same Keystone. The name is
+# a path segment of the federation API objects and the protected websso
+# Locations, so the validating webhook enforces uniqueness. Admission must
+# reject this CR with an $error referencing
+# "identity provider name collides".
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: KeystoneIdentityBackend
+metadata:
+  name: invalid-oidc-duplicate-idp
+spec:
+  keystoneRef:
+    name: keystone
+  domain:
+    name: sso-two
+  type: OIDC
+  oidc:
+    issuer: https://idp.example.com/realms/forge
+    clientID: keystone
+    clientSecretRef:
+      name: corp-oidc-client
+    identityProviderName: oidc-base-backend

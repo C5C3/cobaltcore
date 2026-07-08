@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# KeystoneIdentityBackend whose mapping rule has no remote matchers. Every
+# rule needs at least one local and one remote entry (schema `required` +
+# MinItems markers plus webhook defense-in-depth). Admission must reject
+# this CR with an $error referencing the substring "remote".
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: KeystoneIdentityBackend
+metadata:
+  name: invalid-oidc-mapping-no-remote
+spec:
+  keystoneRef:
+    name: keystone
+  domain:
+    name: sso-mapping
+  type: OIDC
+  oidc:
+    issuer: https://idp.example.com/realms/forge
+    clientID: keystone
+    clientSecretRef:
+      name: corp-oidc-client
+  mappings:
+  - local:
+    - groups: "{0}"

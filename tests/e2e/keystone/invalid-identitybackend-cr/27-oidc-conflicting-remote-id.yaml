@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Second OIDC backend whose remoteIDAttribute (HTTP_OIDC_ISSUER) differs
+# from the 18-oidc-base CR's default (HTTP_OIDC_ISS) on the same Keystone.
+# The attribute renders into the single [openid] section of keystone.conf,
+# so it must be uniform across every OIDC backend of one Keystone
+# (webhook-enforced). Admission must reject this CR with an $error
+# referencing "remoteIDAttribute must be uniform".
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: KeystoneIdentityBackend
+metadata:
+  name: invalid-oidc-remote-id
+spec:
+  keystoneRef:
+    name: keystone
+  domain:
+    name: sso-three
+  type: OIDC
+  oidc:
+    issuer: https://idp.example.com/realms/forge
+    clientID: keystone
+    clientSecretRef:
+      name: corp-oidc-client
+    remoteIDAttribute: HTTP_OIDC_ISSUER

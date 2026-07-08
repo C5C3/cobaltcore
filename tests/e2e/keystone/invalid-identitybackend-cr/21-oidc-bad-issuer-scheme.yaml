@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# KeystoneIdentityBackend whose spec.oidc.issuer uses ldap:// instead of
+# http:// or https://. Rejected by the Pattern marker on
+# OIDCBackendSpec.Issuer (^https?://) and by defense-in-depth in the
+# validating webhook. Admission must reject this CR with an $error
+# referencing the substring "oidc.issuer".
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: KeystoneIdentityBackend
+metadata:
+  name: invalid-oidc-bad-issuer
+spec:
+  keystoneRef:
+    name: keystone
+  domain:
+    name: sso-bad-issuer
+  type: OIDC
+  oidc:
+    issuer: ldap://not-an-idp.example.com
+    clientID: keystone
+    clientSecretRef:
+      name: corp-oidc-client

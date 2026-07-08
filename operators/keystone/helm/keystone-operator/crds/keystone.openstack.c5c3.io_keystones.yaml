@@ -803,6 +803,50 @@ spec:
                 type: object
               federation:
                 description: Federation configures Keystone federation (optional).
+                properties:
+                  proxyImage:
+                    description: |-
+                      ProxyImage is the Apache/mod_auth_openidc sidecar image projected when
+                      a federation backend is attached. Standalone Keystone installations must
+                      set it (mirroring the required spec.image); the managed ControlPlane
+                      path projects the ghcr.io/c5c3/keystone-federation-proxy default. When a
+                      federation backend is attached and no proxy image is configured, the
+                      backends stay pending with a FederationProxyImageMissing warning — no
+                      hidden default is assumed.
+                    properties:
+                      digest:
+                        description: |-
+                          Digest pins the image by immutable content digest (e.g.
+                          "sha256:<64 hex chars>"). Optional: exactly one of Tag or Digest must be
+                          set. A pinned digest closes the supply-chain gap where a mutable tag can be
+                          re-pushed behind a stable name, at the cost of disabling release tracking.
+                        pattern: ^sha256:[a-f0-9]{64}$
+                        type: string
+                      repository:
+                        description: |-
+                          Repository is the OCI image repository, optionally including the registry
+                          host (e.g. "ghcr.io/c5c3/keystone" or "c5c3/keystone"). The pattern is a
+                          permissive OCI reference — lowercase alphanumeric components separated by
+                          ".", "_", "-", "/", or ":" (registry port) — so mirror and host:port forms
+                          are accepted while an empty string (which "required" alone admits) and
+                          obvious garbage are rejected.
+                        minLength: 1
+                        pattern: ^[a-z0-9]+([._:/-][a-z0-9]+)*$
+                        type: string
+                      tag:
+                        description: |-
+                          Tag is the OCI image tag (e.g. "2025.2"). It follows the OCI tag grammar:
+                          up to 128 characters of word characters, dots, and dashes, and must not
+                          begin with a dot or dash. Optional: exactly one of Tag or Digest must be
+                          set. The pattern is enforced only when a tag is present.
+                        pattern: ^[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}$
+                        type: string
+                    required:
+                    - repository
+                    type: object
+                    x-kubernetes-validations:
+                    - message: exactly one of image.tag or image.digest must be set
+                      rule: has(self.tag) != has(self.digest)
                 type: object
               fernet:
                 description: Fernet configures Fernet key rotation.

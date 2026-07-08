@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# KeystoneIdentityBackend of type LDAP that carries spec.mappings — federation
+# vocabulary gated to OIDC backends by the spec-level CEL rule
+# (!has(self.mappings) || self.type == 'OIDC') and webhook defense-in-depth.
+# Admission must reject this CR with an $error referencing
+# "mappings are only supported on federation backends".
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: KeystoneIdentityBackend
+metadata:
+  name: invalid-mappings-on-ldap
+spec:
+  keystoneRef:
+    name: keystone
+  domain:
+    name: corp
+  type: LDAP
+  ldap:
+    url: ldap://ldap.example.com:389
+    bindCredentialsSecretRef:
+      name: corp-ldap-bind
+    suffix: dc=example,dc=com
+    users:
+      treeDN: ou=people,dc=example,dc=com
+  mappings:
+  - local:
+    - groups: "{0}"
+    remote:
+    - type: HTTP_OIDC_ISS

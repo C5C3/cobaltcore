@@ -332,12 +332,23 @@ type TrustFlushSpec struct {
 	Args []string `json:"args,omitempty"`
 }
 
-// FederationSpec defines Keystone federation configuration. Federation is
-// activated by the presence of the spec.federation pointer itself — a set
-// (non-nil) Federation block signals enabled, so no separate boolean is
-// required. The struct is currently empty and grows federation knobs as they
-// are modeled.
-type FederationSpec struct{}
+// FederationSpec carries the Keystone-side federation knobs. Federation
+// itself is activated by attaching a federation-typed KeystoneIdentityBackend
+// (e.g. type OIDC) — not by this block: when at least one OIDC backend is
+// projected, the operator injects the mod_auth_openidc reverse-proxy sidecar,
+// binds uWSGI to localhost, and switches the Service to the proxy port. This
+// spec only configures how that sidecar runs.
+type FederationSpec struct {
+	// ProxyImage is the Apache/mod_auth_openidc sidecar image projected when
+	// a federation backend is attached. Standalone Keystone installations must
+	// set it (mirroring the required spec.image); the managed ControlPlane
+	// path projects the ghcr.io/c5c3/keystone-federation-proxy default. When a
+	// federation backend is attached and no proxy image is configured, the
+	// backends stay pending with a FederationProxyImageMissing warning — no
+	// hidden default is assumed.
+	// +optional
+	ProxyImage *commonv1.ImageSpec `json:"proxyImage,omitempty"`
+}
 
 // PasswordRotationSpec configures scheduled rotation of the Keystone admin
 // password (Model B / Part 2 of #381). When enabled, the operator runs

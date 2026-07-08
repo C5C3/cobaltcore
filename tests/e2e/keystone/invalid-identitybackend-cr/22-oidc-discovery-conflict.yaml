@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# KeystoneIdentityBackend whose spec.oidc sets BOTH providerMetadataURL and
+# endpoints. The two discovery shapes are mutually exclusive (CEL rule on
+# OIDCBackendSpec plus webhook defense-in-depth). Admission must reject this
+# CR with an $error referencing "mutually exclusive".
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: KeystoneIdentityBackend
+metadata:
+  name: invalid-oidc-discovery-conflict
+spec:
+  keystoneRef:
+    name: keystone
+  domain:
+    name: sso-discovery
+  type: OIDC
+  oidc:
+    issuer: https://idp.example.com/realms/forge
+    providerMetadataURL: https://idp.example.com/realms/forge/.well-known/openid-configuration
+    endpoints:
+      authorizationEndpoint: https://idp.example.com/auth
+      tokenEndpoint: https://idp.example.com/token
+      jwksURI: https://idp.example.com/certs
+    clientID: keystone
+    clientSecretRef:
+      name: corp-oidc-client

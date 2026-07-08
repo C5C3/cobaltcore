@@ -1234,3 +1234,98 @@ func TestIntegration_IdentityBackendWebhookUniquenessEnforced(t *testing.T) {
 	third.Spec.KeystoneRef.Name = "keystone-other"
 	g.Expect(c.Create(ctx, third)).To(Succeed())
 }
+
+// validIntegrationOIDCBackend returns a minimal valid OIDC backend CR for
+// envtest submission.
+func validIntegrationOIDCBackend(name, namespace string) *KeystoneIdentityBackend {
+	b := validOIDCBackend()
+	b.Name = name
+	b.Namespace = namespace
+	return b
+}
+
+// TestIntegration_IdentityBackendOIDCValidCRAccepted verifies an OIDC backend
+// round-trips with the schema defaults materialized even with no webhook in
+// scope (protocolID, remoteIDAttribute, scopes, responseType, sessionType,
+// stateInputHeaders carry +kubebuilder:default markers as defense-in-depth).
+func TestIntegration_IdentityBackendOIDCValidCRAccepted(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+	c, ctx, _ := setupEnvTestNoWebhook(t)
+
+	b := validIntegrationOIDCBackend("corp-oidc", "default")
+	g.Expect(c.Create(ctx, b)).To(Succeed())
+
+	var got KeystoneIdentityBackend
+	g.Expect(c.Get(ctx, types.NamespacedName{Name: "corp-oidc", Namespace: "default"}, &got)).To(Succeed())
+	g.Expect(got.Spec.OIDC.ProtocolID).To(Equal("openid"), "schema default must materialize ProtocolID")
+	g.Expect(got.Spec.OIDC.RemoteIDAttribute).To(Equal("HTTP_OIDC_ISS"), "schema default must materialize RemoteIDAttribute")
+	g.Expect(got.Spec.OIDC.Scopes).To(Equal([]string{"openid", "email", "profile"}), "schema default must materialize Scopes")
+	g.Expect(got.Spec.OIDC.SessionType).To(Equal(OIDCSessionTypeClientCookie), "schema default must materialize SessionType")
+	g.Expect(got.Spec.OIDC.StateInputHeaders).To(Equal(OIDCStateInputHeadersNone), "schema default must materialize StateInputHeaders")
+}
+
+// TestIntegration_IdentityBackendCELRejectsOIDCUnionMismatch verifies the
+// schema-layer OIDC union rule with no webhook in scope: type OIDC without
+// spec.oidc, and spec.oidc alongside type LDAP, are both rejected by the API
+// server itself.
+func TestIntegration_IdentityBackendCELRejectsOIDCUnionMismatch(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+	c, ctx, _ := setupEnvTestNoWebhook(t)
+
+	b := validIntegrationOIDCBackend("oidc-union-mismatch", "default")
+	b.Spec.OIDC = nil
+	err := c.Create(ctx, b)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(apierrors.IsInvalid(err)).To(BeTrue())
+	g.Expect(err.Error()).To(ContainSubstring("type OIDC requires spec.oidc"))
+
+	b2 := validIntegrationIdentityBackend("ldap-with-oidc", "default")
+	b2.Spec.OIDC = validOIDCBackend().Spec.OIDC
+	err = c.Create(ctx, b2)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("type OIDC requires spec.oidc"))
+}
+
+// TestIntegration_IdentityBackendCELRejectsDiscoveryShapeConflict verifies
+// the providerMetadataURL/endpoints exclusivity rule at the schema layer.
+func TestIntegration_IdentityBackendCELRejectsDiscoveryShapeConflict(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+	c, ctx, _ := setupEnvTestNoWebhook(t)
+
+	b := validIntegrationOIDCBackend("oidc-discovery-conflict", "default")
+	b.Spec.OIDC.ProviderMetadataURL = "https://idp.example.com/.well-known/openid-configuration"
+	b.Spec.OIDC.Endpoints = &OIDCEndpointsSpec{
+		AuthorizationEndpoint: "https://idp.example.com/auth",
+		TokenEndpoint:         "https://idp.example.com/token",
+		JWKSURI:               "https://idp.example.com/certs",
+	}
+	err := c.Create(ctx, b)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("mutually exclusive"))
+}
+
+// TestIntegration_IdentityBackendCELRejectsMappingsOnLDAP verifies the
+// type-gating rules on mappings/extraOptions at the schema layer.
+func TestIntegration_IdentityBackendCELRejectsMappingsOnLDAP(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+	c, ctx, _ := setupEnvTestNoWebhook(t)
+
+	b := validIntegrationIdentityBackend("ldap-with-mappings", "default")
+	b.Spec.Mappings = []MappingRuleSpec{{
+		Local:  []MappingLocalRuleSpec{{Groups: "{0}"}},
+		Remote: []MappingRemoteRuleSpec{{Type: "HTTP_OIDC_ISS"}},
+	}}
+	err := c.Create(ctx, b)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("mappings are only supported on federation backends"))
+
+	b2 := validIntegrationOIDCBackend("oidc-with-extraoptions", "default")
+	b2.Spec.ExtraOptions = map[string]string{"page_size": "100"}
+	err = c.Create(ctx, b2)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("only supported on type LDAP"))
+}

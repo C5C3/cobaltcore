@@ -68,8 +68,11 @@ spec:
               attachment immutable: re-pointing a backend at a different Keystone would
               leave the old deployment with a provisioned domain nothing manages anymore
               and race the config projection on the new one. Delete and recreate instead.
-              The type/ldap union rule enforces "exactly one backend block per type" at
-              the schema layer so it holds even when the validating webhook is down.
+              The type/ldap and type/oidc union rules enforce "exactly one backend block
+              per type" at the schema layer so it holds even when the validating webhook
+              is down. mappings/groups are federation vocabulary (OIDC-only for now) and
+              extraOptions is documented [ldap] vocabulary, so both are type-gated at the
+              schema layer too.
             properties:
               domain:
                 description: Domain describes the Keystone domain this backend provides.
@@ -153,6 +156,76 @@ spec:
                 - message: each extraOptions key must be <=256 characters and each
                     value <=1024 characters
                   rule: self.all(k, size(k) <= 256 && size(self[k]) <= 1024)
+              groups:
+                description: |-
+                  Groups declares the local keystone groups (in this backend's domain)
+                  that the mapping rules target, together with the role assignments that
+                  give federated members access. The controller creates missing groups and
+                  applies the role assignments idempotently.
+                items:
+                  description: |-
+                    FederationGroupSpec declares one local keystone group (in the backend's
+                    domain) the mapping rules target, plus the role assignments granting its
+                    members access.
+                  properties:
+                    description:
+                      description: Description is projected onto the group at creation.
+                      maxLength: 1024
+                      type: string
+                    name:
+                      description: Name is the group name inside the backend's domain.
+                      maxLength: 128
+                      minLength: 1
+                      type: string
+                    roleAssignments:
+                      description: |-
+                        RoleAssignments grant the group roles on projects or on the backend's
+                        domain.
+                      items:
+                        description: |-
+                          FederationRoleAssignmentSpec grants one role to the group, scoped to
+                          exactly one of a project or the backend's domain (CEL rule below plus
+                          webhook defense-in-depth).
+                        properties:
+                          domain:
+                            description: Domain scopes the assignment to the backend's
+                              domain.
+                            type: boolean
+                          project:
+                            description: Project scopes the assignment to a project.
+                            properties:
+                              domainName:
+                                description: |-
+                                  DomainName is the domain the project lives in; defaults to the
+                                  backend's own domain when empty.
+                                maxLength: 64
+                                type: string
+                              name:
+                                description: Name is the project name.
+                                maxLength: 64
+                                minLength: 1
+                                type: string
+                            required:
+                            - name
+                            type: object
+                          role:
+                            description: Role is the role name to grant (e.g. "member").
+                            maxLength: 64
+                            minLength: 1
+                            type: string
+                        required:
+                        - role
+                        type: object
+                        x-kubernetes-validations:
+                        - message: exactly one of project or domain must be set
+                          rule: has(self.project) != (has(self.domain) && self.domain)
+                      maxItems: 32
+                      type: array
+                  required:
+                  - name
+                  type: object
+                maxItems: 32
+                type: array
               keystoneRef:
                 description: |-
                   KeystoneRef names the Keystone CR in the same namespace this backend
@@ -341,11 +414,420 @@ spec:
                 - url
                 - users
                 type: object
+              mappings:
+                description: |-
+                  Mappings are the keystone federation mapping rules applied to the
+                  backend's protocol. Each rule maps remote assertion attributes (the
+                  HTTP_OIDC_* claim headers mod_auth_openidc passes into the WSGI environ)
+                  to local users, groups, and projects. The typed shape mirrors keystone's
+                  mapping-rule JSON one-to-one (see the reference documentation for the
+                  field correspondence); no free-form escape hatch is provided because the
+                  rule grammar is closed.
+
+                  MaxItems bounds the aggregate rendered mapping so a single backend
+                  cannot bloat the federation objects past reasonable size.
+                items:
+                  description: |-
+                    MappingRuleSpec is one keystone federation mapping rule: remote assertion
+                    matchers plus the local objects they map to. The typed shape mirrors
+                    keystone's mapping-rule JSON one-to-one (camelCase field names map to the
+                    snake_case JSON keys; see the reference documentation table); the grammar
+                    is closed, so no free-form escape hatch is needed.
+                  properties:
+                    local:
+                      description: |-
+                        Local lists the local Identity API objects the matched remote user maps
+                        to (user, groups, projects).
+                      items:
+                        description: MappingLocalRuleSpec is one keystone mapping-rule
+                          "local" object.
+                        properties:
+                          domain:
+                            description: Domain scopes the local objects to a domain.
+                            properties:
+                              id:
+                                description: ID is the domain ID.
+                                maxLength: 64
+                                type: string
+                              name:
+                                description: Name is the domain name.
+                                maxLength: 64
+                                type: string
+                            type: object
+                          group:
+                            description: Group maps the remote user into one group.
+                            properties:
+                              domain:
+                                description: Domain the named group lives in.
+                                properties:
+                                  id:
+                                    description: ID is the domain ID.
+                                    maxLength: 64
+                                    type: string
+                                  name:
+                                    description: Name is the domain name.
+                                    maxLength: 64
+                                    type: string
+                                type: object
+                              id:
+                                description: ID is the group ID.
+                                maxLength: 64
+                                type: string
+                              name:
+                                description: Name is the group name.
+                                maxLength: 128
+                                type: string
+                            type: object
+                          groupIds:
+                            description: |-
+                              GroupIDs maps the remote user into the groups named by an assertion
+                              value (keystone "group_ids", usually "{0}").
+                            maxLength: 256
+                            type: string
+                          groups:
+                            description: |-
+                              Groups maps the remote user into the semicolon-separated group list an
+                              assertion value carries (keystone "groups", usually "{0}").
+                            maxLength: 256
+                            type: string
+                          projects:
+                            description: Projects grants the mapped user roles on
+                              projects.
+                            items:
+                              description: |-
+                                MappingProjectSpec grants roles on one project (keystone mapping-rule
+                                "projects" entry).
+                              properties:
+                                name:
+                                  description: Name is the project name.
+                                  maxLength: 64
+                                  minLength: 1
+                                  type: string
+                                roles:
+                                  description: Roles are the roles granted on the
+                                    project.
+                                  items:
+                                    description: MappingProjectRoleSpec names one
+                                      role.
+                                    properties:
+                                      name:
+                                        description: Name is the role name.
+                                        maxLength: 64
+                                        minLength: 1
+                                        type: string
+                                    required:
+                                    - name
+                                    type: object
+                                  maxItems: 16
+                                  type: array
+                              required:
+                              - name
+                              type: object
+                            maxItems: 16
+                            type: array
+                          user:
+                            description: User maps the remote identity to a local
+                              user representation.
+                            properties:
+                              domain:
+                                description: Domain the user belongs to.
+                                properties:
+                                  id:
+                                    description: ID is the domain ID.
+                                    maxLength: 64
+                                    type: string
+                                  name:
+                                    description: Name is the domain name.
+                                    maxLength: 64
+                                    type: string
+                                type: object
+                              email:
+                                description: Email is the user email, usually an assertion
+                                  placeholder.
+                                maxLength: 256
+                                type: string
+                              id:
+                                description: ID is the local user ID (type local only).
+                                maxLength: 64
+                                type: string
+                              name:
+                                description: Name is the user name, usually an assertion
+                                  placeholder like "{0}".
+                                maxLength: 256
+                                type: string
+                              type:
+                                description: |-
+                                  Type is the keystone user type: ephemeral (shadow user, the federation
+                                  default) or local (pre-existing local user).
+                                enum:
+                                - ephemeral
+                                - local
+                                type: string
+                            type: object
+                        type: object
+                      maxItems: 16
+                      minItems: 1
+                      type: array
+                    remote:
+                      description: |-
+                        Remote lists the assertion matchers. Types are full WSGI environ names
+                        (e.g. HTTP_OIDC_ISS) — keystone's assertion_prefix stays empty so the
+                        claim headers arrive unmodified.
+                      items:
+                        description: |-
+                          MappingRemoteRuleSpec matches one remote assertion attribute (keystone
+                          mapping-rule "remote" object).
+                        properties:
+                          anyOneOf:
+                            description: |-
+                              AnyOneOf matches when any listed string appears in the attribute.
+                              Mutually exclusive with NotAnyOf.
+                            items:
+                              type: string
+                            maxItems: 32
+                            type: array
+                          blacklist:
+                            description: |-
+                              Blacklist filters the listed strings out of the attribute values.
+                              Mutually exclusive with Whitelist.
+                            items:
+                              type: string
+                            maxItems: 32
+                            type: array
+                          notAnyOf:
+                            description: |-
+                              NotAnyOf rejects the rule when any listed string appears in the
+                              attribute. Mutually exclusive with AnyOneOf.
+                            items:
+                              type: string
+                            maxItems: 32
+                            type: array
+                          regex:
+                            description: Regex evaluates the matcher strings as regular
+                              expressions when true.
+                            type: boolean
+                          type:
+                            description: |-
+                              Type is the assertion attribute name — the full WSGI environ key, e.g.
+                              HTTP_OIDC_ISS or HTTP_OIDC_PREFERRED_USERNAME.
+                            maxLength: 256
+                            minLength: 1
+                            type: string
+                          whitelist:
+                            description: |-
+                              Whitelist passes only the listed strings through. Mutually exclusive
+                              with Blacklist.
+                            items:
+                              type: string
+                            maxItems: 32
+                            type: array
+                        required:
+                        - type
+                        type: object
+                      maxItems: 16
+                      minItems: 1
+                      type: array
+                  required:
+                  - local
+                  - remote
+                  type: object
+                maxItems: 32
+                type: array
+              oidc:
+                description: |-
+                  OIDC configures an OpenID Connect federation backend. Required exactly
+                  when type is OIDC (union rule above).
+                properties:
+                  clientID:
+                    description: ClientID is the relying-party client ID registered
+                      at the IdP.
+                    maxLength: 256
+                    minLength: 1
+                    type: string
+                  clientSecretRef:
+                    description: |-
+                      ClientSecretRef references the Secret holding the relying-party client
+                      secret under the fixed data key "clientSecret". The key field must stay
+                      empty — the data key is fixed by contract (webhook-enforced), mirroring
+                      the LDAP bind Secret contract.
+                    properties:
+                      key:
+                        type: string
+                      name:
+                        description: |-
+                          Name is the referenced Secret's name. It must be a non-empty DNS-1123
+                          subdomain (the Kubernetes object-name grammar). Tightening the shared type
+                          fixes every consumer at once — keystone adminPasswordSecretRef /
+                          database.secretRef / messaging / TLS cert refs and the c5c3
+                          passwordSecretRef — so an empty name no longer slips through "required".
+                        minLength: 1
+                        pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  endpoints:
+                    description: |-
+                      Endpoints spells the provider endpoints out explicitly instead of
+                      fetching the discovery document — for air-gapped operators or IdPs whose
+                      metadata URL is unreachable from the operator pod.
+                    properties:
+                      authorizationEndpoint:
+                        description: AuthorizationEndpoint is the OAuth2 authorization
+                          endpoint.
+                        maxLength: 512
+                        pattern: ^https?://
+                        type: string
+                      endSessionEndpoint:
+                        description: EndSessionEndpoint is the optional RP-initiated
+                          logout endpoint.
+                        maxLength: 512
+                        pattern: ^https?://
+                        type: string
+                      introspectionEndpoint:
+                        description: |-
+                          IntrospectionEndpoint is the optional OAuth2 token introspection
+                          endpoint (required when oauth2Introspection is enabled with explicit
+                          endpoints).
+                        maxLength: 512
+                        pattern: ^https?://
+                        type: string
+                      jwksURI:
+                        description: JWKSURI is the provider's JSON Web Key Set document.
+                        maxLength: 512
+                        pattern: ^https?://
+                        type: string
+                      tokenEndpoint:
+                        description: TokenEndpoint is the OAuth2 token endpoint.
+                        maxLength: 512
+                        pattern: ^https?://
+                        type: string
+                      userinfoEndpoint:
+                        description: UserinfoEndpoint is the optional OIDC userinfo
+                          endpoint.
+                        maxLength: 512
+                        pattern: ^https?://
+                        type: string
+                    required:
+                    - authorizationEndpoint
+                    - jwksURI
+                    - tokenEndpoint
+                    type: object
+                  identityProviderName:
+                    description: |-
+                      IdentityProviderName is the keystone identity provider ID this backend
+                      provisions. Defaults to the CR name. Unique per referenced Keystone
+                      (webhook-enforced) because it is a path segment of the federation API
+                      objects and the protected websso/auth Locations.
+                    maxLength: 64
+                    pattern: ^[A-Za-z0-9_-]+$
+                    type: string
+                  issuer:
+                    description: |-
+                      Issuer is the OIDC issuer URL exactly as the IdP asserts it (the `iss`
+                      claim), e.g. "https://keycloak.example.com/realms/forge". It names the
+                      identity provider in the metadata directory (the scheme-stripped,
+                      URL-encoded issuer is the metadata file basename) and is registered as
+                      the keystone identity provider's remote ID.
+                    maxLength: 512
+                    pattern: ^https?://
+                    type: string
+                  oauth2Introspection:
+                    description: |-
+                      OAuth2Introspection turns the proxy into an OAuth2 resource server for
+                      this backend so CLI clients can present IdP-issued bearer tokens
+                      directly. mod_auth_openidc's OIDCOAuth* directives are server-scoped, so
+                      at most one OIDC backend per Keystone may enable this
+                      (webhook-enforced).
+                    properties:
+                      enabled:
+                        description: Enabled turns bearer-token introspection on.
+                        type: boolean
+                    required:
+                    - enabled
+                    type: object
+                  protocolID:
+                    default: openid
+                    description: |-
+                      ProtocolID is the keystone federation protocol ID the websso/auth URLs
+                      embed (…/protocols/<protocolID>/websso). Defaults to "openid".
+                    maxLength: 64
+                    pattern: ^[A-Za-z0-9_-]+$
+                    type: string
+                  providerMetadataURL:
+                    description: |-
+                      ProviderMetadataURL points at the IdP's OIDC discovery document. When
+                      neither it nor endpoints is set, the defaulting webhook derives
+                      "<issuer>/.well-known/openid-configuration". The operator fetches the
+                      document at reconcile time and pre-provisions it into the read-only
+                      metadata directory (mod_auth_openidc cannot self-cache there).
+                    maxLength: 512
+                    pattern: ^https?://
+                    type: string
+                  remoteIDAttribute:
+                    default: HTTP_OIDC_ISS
+                    description: |-
+                      RemoteIDAttribute is the WSGI environ key keystone reads the asserted
+                      issuer from ([openid] remote_id_attribute). The spike validated
+                      HTTP_OIDC_ISS (mod_auth_openidc's OIDCClaimPrefix "OIDC-" spelling of
+                      the iss claim); it must be uniform across every OIDC backend attached to
+                      one Keystone because it renders into the single [openid] section.
+                    maxLength: 128
+                    type: string
+                  responseType:
+                    default: code
+                    description: |-
+                      ResponseType is the OIDC response type. Defaults to "code" (the
+                      authorization-code flow — the only flow the spike validated).
+                    maxLength: 64
+                    type: string
+                  scopes:
+                    default:
+                    - openid
+                    - email
+                    - profile
+                    description: |-
+                      Scopes are the OIDC scopes requested from the IdP. Defaults to
+                      ["openid", "email", "profile"].
+                    items:
+                      type: string
+                    maxItems: 16
+                    type: array
+                  sessionType:
+                    default: client-cookie
+                    description: |-
+                      SessionType selects the mod_auth_openidc session storage. Defaults to
+                      client-cookie (HA-safe: no server-side session cache shared across
+                      replicas).
+                    enum:
+                    - client-cookie
+                    - client-cookie-persistent
+                    type: string
+                  stateInputHeaders:
+                    default: none
+                    description: |-
+                      StateInputHeaders selects the request headers folded into the state
+                      cookie hash. Defaults to none (HA-safe).
+                    enum:
+                    - none
+                    - user-agent
+                    - x-forwarded-for
+                    - both
+                    type: string
+                required:
+                - clientID
+                - clientSecretRef
+                - issuer
+                type: object
+                x-kubernetes-validations:
+                - message: providerMetadataURL and endpoints are mutually exclusive
+                  rule: '!(has(self.providerMetadataURL) && has(self.endpoints))'
               type:
                 description: Type selects the backend driver. Phase 1 supports LDAP
                   only.
                 enum:
                 - LDAP
+                - OIDC
                 type: string
             required:
             - domain
@@ -360,6 +842,16 @@ spec:
             - message: exactly one backend block matching spec.type must be set (type
                 LDAP requires spec.ldap)
               rule: (self.type == 'LDAP') == has(self.ldap)
+            - message: exactly one backend block matching spec.type must be set (type
+                OIDC requires spec.oidc)
+              rule: (self.type == 'OIDC') == has(self.oidc)
+            - message: mappings are only supported on federation backends (type OIDC)
+              rule: '!has(self.mappings) || self.type == ''OIDC'''
+            - message: groups are only supported on federation backends (type OIDC)
+              rule: '!has(self.groups) || self.type == ''OIDC'''
+            - message: extraOptions carries [ldap] section options and is only supported
+                on type LDAP
+              rule: '!has(self.extraOptions) || self.type == ''LDAP'''
           status:
             description: |-
               KeystoneIdentityBackendStatus defines the observed state of
@@ -373,7 +865,9 @@ spec:
                   Conditions represent the latest available observations of the backend
                   state: DomainReady (the referenced domain exists / was provisioned),
                   ConfigProjected (the rendered per-domain config is wired into the
-                  running Keystone Deployment), and the aggregate Ready.
+                  running Keystone Deployment), for OIDC backends FederationObjectsReady
+                  (identity provider + protocol upserted) and MappingsReady (mapping
+                  rules, groups, and role assignments applied), and the aggregate Ready.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.

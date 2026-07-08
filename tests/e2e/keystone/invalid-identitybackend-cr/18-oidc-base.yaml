@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Valid base OIDC KeystoneIdentityBackend for the sibling-rejection fixtures.
+# It is applied FIRST and must SUCCEED. Its identityProviderName defaults to
+# the CR name ("oidc-base-backend"), its remoteIDAttribute defaults to
+# HTTP_OIDC_ISS, and it claims the single oauth2Introspection slot — the
+# 26-28 fixtures collide with each of those in turn.
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: KeystoneIdentityBackend
+metadata:
+  name: oidc-base-backend
+spec:
+  keystoneRef:
+    name: keystone
+  domain:
+    name: sso-base
+  type: OIDC
+  oidc:
+    issuer: https://idp.example.com/realms/forge
+    clientID: keystone
+    clientSecretRef:
+      name: corp-oidc-client
+    oauth2Introspection:
+      enabled: true

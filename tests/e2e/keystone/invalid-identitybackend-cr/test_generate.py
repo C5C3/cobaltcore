@@ -38,13 +38,15 @@ _GENERATOR = _HERE / "_generate.py"
 _CHAINSAW_TEST = _HERE / "chainsaw-test.yaml"
 
 # Number of fixtures emitted by _generate.py: nine create-rejection fixtures
-# (00-08), the update-rejection set (09-immutable-base and 10-12), the
-# duplicate-domain fixture (13), the two control-character INI-injection
-# create-rejection fixtures (14-15), and the two extraOptions key-shape
-# fixtures (16 key control-char, 17 denylist-evading trailing space). Bumping
-# this value requires adding the matching Fixture entry AND the matching
-# `file: <name>` line in chainsaw-test.yaml.
-_EXPECTED_FIXTURE_COUNT = 18
+# (00-08), the update-rejection set (09-immutable-base, 10-12, and the
+# 29-immutable-type OIDC flip), the duplicate-domain fixture (13), the two
+# control-character INI-injection create-rejection fixtures (14-15), the two
+# extraOptions key-shape fixtures (16 key control-char, 17 denylist-evading
+# trailing space), the OIDC base + create-rejection fixtures (18-25), and the
+# OIDC sibling-rejection fixtures (26-28). Bumping this value requires adding
+# the matching Fixture entry AND the matching `file: <name>` line in
+# chainsaw-test.yaml.
+_EXPECTED_FIXTURE_COUNT = 30
 
 
 def _load_generator() -> types.ModuleType:

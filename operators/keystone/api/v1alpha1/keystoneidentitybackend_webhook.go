@@ -66,6 +66,36 @@ func (w *KeystoneIdentityBackendWebhook) Default(_ context.Context, obj *Keyston
 	if obj.Spec.LDAP != nil && obj.Spec.LDAP.ReadOnly == nil {
 		obj.Spec.LDAP.ReadOnly = ptr.To(true)
 	}
+	if o := obj.Spec.OIDC; o != nil {
+		if o.ProtocolID == "" {
+			o.ProtocolID = DefaultOIDCProtocolID
+		}
+		if o.IdentityProviderName == "" {
+			o.IdentityProviderName = obj.Name
+		}
+		if o.RemoteIDAttribute == "" {
+			o.RemoteIDAttribute = DefaultOIDCRemoteIDAttribute
+		}
+		if len(o.Scopes) == 0 {
+			o.Scopes = append([]string(nil), DefaultOIDCScopes...)
+		}
+		if o.ResponseType == "" {
+			o.ResponseType = DefaultOIDCResponseType
+		}
+		if o.SessionType == "" {
+			o.SessionType = OIDCSessionTypeClientCookie
+		}
+		if o.StateInputHeaders == "" {
+			o.StateInputHeaders = OIDCStateInputHeadersNone
+		}
+		// When neither discovery shape is set, derive the metadata URL from
+		// the issuer (the OIDC discovery convention). The trailing slash is
+		// trimmed so "https://idp/realms/x/" and "https://idp/realms/x"
+		// derive the same document URL.
+		if o.ProviderMetadataURL == "" && o.Endpoints == nil && o.Issuer != "" {
+			o.ProviderMetadataURL = strings.TrimRight(o.Issuer, "/") + "/.well-known/openid-configuration"
+		}
+	}
 	return nil
 }
 
@@ -158,13 +188,42 @@ func (w *KeystoneIdentityBackendWebhook) validate(ctx context.Context, b *Keysto
 		))
 	}
 
-	// Defense-in-depth union check alongside the spec-level CEL rule:
+	// Defense-in-depth union checks alongside the spec-level CEL rules:
 	// exactly one backend block, matching spec.type.
 	if (b.Spec.Type == IdentityBackendTypeLDAP) != (b.Spec.LDAP != nil) {
 		allErrs = append(allErrs, field.Invalid(
 			specPath.Child("ldap"),
 			b.Spec.Type,
 			"exactly one backend block matching spec.type must be set (type LDAP requires spec.ldap)",
+		))
+	}
+	if (b.Spec.Type == IdentityBackendTypeOIDC) != (b.Spec.OIDC != nil) {
+		allErrs = append(allErrs, field.Invalid(
+			specPath.Child("oidc"),
+			b.Spec.Type,
+			"exactly one backend block matching spec.type must be set (type OIDC requires spec.oidc)",
+		))
+	}
+
+	// mappings/groups are federation vocabulary; extraOptions is documented
+	// [ldap] vocabulary. Both are type-gated (defense-in-depth beside the
+	// spec-level CEL rules).
+	if len(b.Spec.Mappings) > 0 && b.Spec.Type != IdentityBackendTypeOIDC {
+		allErrs = append(allErrs, field.Invalid(
+			specPath.Child("mappings"), b.Spec.Type,
+			"mappings are only supported on federation backends (type OIDC)",
+		))
+	}
+	if len(b.Spec.Groups) > 0 && b.Spec.Type != IdentityBackendTypeOIDC {
+		allErrs = append(allErrs, field.Invalid(
+			specPath.Child("groups"), b.Spec.Type,
+			"groups are only supported on federation backends (type OIDC)",
+		))
+	}
+	if len(b.Spec.ExtraOptions) > 0 && b.Spec.Type != IdentityBackendTypeLDAP {
+		allErrs = append(allErrs, field.Invalid(
+			specPath.Child("extraOptions"), b.Spec.Type,
+			"extraOptions carries [ldap] section options and is only supported on type LDAP",
 		))
 	}
 
@@ -188,9 +247,14 @@ func (w *KeystoneIdentityBackendWebhook) validate(ctx context.Context, b *Keysto
 	if b.Spec.LDAP != nil {
 		allErrs = append(allErrs, w.validateLDAP(specPath.Child("ldap"), b.Spec.LDAP)...)
 	}
+	if b.Spec.OIDC != nil {
+		allErrs = append(allErrs, w.validateOIDC(specPath.Child("oidc"), b.Spec.OIDC)...)
+	}
 
+	allErrs = append(allErrs, w.validateMappings(specPath.Child("mappings"), b.Spec.Mappings)...)
+	allErrs = append(allErrs, w.validateGroups(specPath.Child("groups"), b.Spec.Groups)...)
 	allErrs = append(allErrs, w.validateExtraOptions(specPath.Child("extraOptions"), b)...)
-	allErrs = append(allErrs, w.validateDomainUniqueness(ctx, specPath.Child("domain", "name"), b)...)
+	allErrs = append(allErrs, w.validateSiblingBackends(ctx, specPath, b)...)
 
 	if len(allErrs) > 0 {
 		return apierrors.NewInvalid(
@@ -364,24 +428,196 @@ func (w *KeystoneIdentityBackendWebhook) validateExtraOptions(optsPath *field.Pa
 	return errs
 }
 
-// validateDomainUniqueness rejects a backend whose domain name collides
-// (case-insensitively) with another live backend attached to the same
-// Keystone CR. Two backends projecting the same keystone.<domain>.conf file
-// would fight over one domain; the webhook is the primary guard and the
-// sub-reconciler keeps a defensive skip for CRs that bypassed it.
-func (w *KeystoneIdentityBackendWebhook) validateDomainUniqueness(ctx context.Context, namePath *field.Path, b *KeystoneIdentityBackend) field.ErrorList {
+// validateOIDC checks the OIDC block: URL schemes (defense-in-depth alongside
+// the Pattern markers), discovery-shape exclusivity, control characters in
+// every value rendered into the Apache proxy config or the metadata JSON
+// (config-injection guard, mirroring the LDAP INI guard), and the fixed
+// data-key contract on the client Secret reference.
+func (w *KeystoneIdentityBackendWebhook) validateOIDC(oidcPath *field.Path, o *OIDCBackendSpec) field.ErrorList {
+	var errs field.ErrorList
+
+	checkScheme := func(path *field.Path, value string) {
+		if value != "" && !strings.HasPrefix(value, "http://") && !strings.HasPrefix(value, "https://") {
+			errs = append(errs, field.Invalid(path, value,
+				"url must use the http:// or https:// scheme"))
+		}
+	}
+	checkScheme(oidcPath.Child("issuer"), o.Issuer)
+	if o.Issuer == "" {
+		errs = append(errs, field.Required(oidcPath.Child("issuer"), "issuer must be set"))
+	}
+	checkScheme(oidcPath.Child("providerMetadataURL"), o.ProviderMetadataURL)
+
+	// Defense-in-depth discovery-shape exclusivity beside the CEL rule.
+	if o.ProviderMetadataURL != "" && o.Endpoints != nil {
+		errs = append(errs, field.Invalid(
+			oidcPath.Child("endpoints"), "",
+			"providerMetadataURL and endpoints are mutually exclusive",
+		))
+	}
+
+	// Config-injection guard: every value rendered into the Apache proxy conf
+	// or the metadata JSON must not carry newline/carriage-return characters.
+	// The Pattern markers are start-anchored only, so the webhook is the
+	// primary gate; the renderer revalidates as the last line of defense.
+	checkNoCtrl := func(path *field.Path, value string) {
+		if hasControlChars(value) || strings.ContainsAny(value, `"`) {
+			errs = append(errs, field.Invalid(path, value,
+				"value must not contain newline, carriage-return, or double-quote characters"))
+		}
+	}
+	checkNoCtrl(oidcPath.Child("issuer"), o.Issuer)
+	checkNoCtrl(oidcPath.Child("providerMetadataURL"), o.ProviderMetadataURL)
+	checkNoCtrl(oidcPath.Child("clientID"), o.ClientID)
+	checkNoCtrl(oidcPath.Child("protocolID"), o.ProtocolID)
+	checkNoCtrl(oidcPath.Child("identityProviderName"), o.IdentityProviderName)
+	checkNoCtrl(oidcPath.Child("remoteIDAttribute"), o.RemoteIDAttribute)
+	checkNoCtrl(oidcPath.Child("responseType"), o.ResponseType)
+	for i, scope := range o.Scopes {
+		checkNoCtrl(oidcPath.Child("scopes").Index(i), scope)
+	}
+	if e := o.Endpoints; e != nil {
+		endpointsPath := oidcPath.Child("endpoints")
+		for _, ep := range []struct {
+			name  string
+			value string
+		}{
+			{"authorizationEndpoint", e.AuthorizationEndpoint},
+			{"tokenEndpoint", e.TokenEndpoint},
+			{"jwksURI", e.JWKSURI},
+			{"userinfoEndpoint", e.UserinfoEndpoint},
+			{"endSessionEndpoint", e.EndSessionEndpoint},
+			{"introspectionEndpoint", e.IntrospectionEndpoint},
+		} {
+			checkScheme(endpointsPath.Child(ep.name), ep.value)
+			checkNoCtrl(endpointsPath.Child(ep.name), ep.value)
+		}
+		// Bearer introspection needs the endpoint when discovery is explicit;
+		// with metadata-driven discovery it comes from the document.
+		if o.OAuth2Introspection != nil && o.OAuth2Introspection.Enabled && e.IntrospectionEndpoint == "" {
+			errs = append(errs, field.Required(
+				endpointsPath.Child("introspectionEndpoint"),
+				"introspectionEndpoint must be set when oauth2Introspection is enabled with explicit endpoints",
+			))
+		}
+	}
+
+	// The client Secret's data key is fixed by contract ("clientSecret"),
+	// mirroring the LDAP bind Secret contract.
+	if o.ClientSecretRef.Key != "" {
+		errs = append(errs, field.Invalid(
+			oidcPath.Child("clientSecretRef", "key"),
+			o.ClientSecretRef.Key,
+			`key must be empty: the client Secret's data key is fixed ("clientSecret")`,
+		))
+	}
+
+	return errs
+}
+
+// validateMappings checks the mapping rules: every rule needs at least one
+// local and one remote entry, every remote matcher needs a non-empty type,
+// and remote types must be header-safe — they render into the proxy's
+// RequestHeader-unset directives, so the control-char guard closes the same
+// injection vector the LDAP INI guard closes.
+func (w *KeystoneIdentityBackendWebhook) validateMappings(mappingsPath *field.Path, rules []MappingRuleSpec) field.ErrorList {
+	var errs field.ErrorList
+	for i := range rules {
+		rulePath := mappingsPath.Index(i)
+		if len(rules[i].Local) == 0 {
+			errs = append(errs, field.Required(rulePath.Child("local"),
+				"every mapping rule needs at least one local entry"))
+		}
+		if len(rules[i].Remote) == 0 {
+			errs = append(errs, field.Required(rulePath.Child("remote"),
+				"every mapping rule needs at least one remote entry"))
+		}
+		for j := range rules[i].Remote {
+			remote := &rules[i].Remote[j]
+			typePath := rulePath.Child("remote").Index(j).Child("type")
+			if remote.Type == "" {
+				errs = append(errs, field.Required(typePath, "remote.type must be set"))
+				continue
+			}
+			if !remoteTypePattern.MatchString(remote.Type) {
+				errs = append(errs, field.Invalid(typePath, remote.Type,
+					"remote.type must match ^[A-Za-z0-9_-]+$ (it renders into Apache header directives)"))
+			}
+		}
+	}
+	return errs
+}
+
+// remoteTypePattern is the allowlist for mapping remote types: WSGI environ
+// keys (HTTP_OIDC_*) are upper snake_case; the pattern additionally admits
+// dashes for robustness. Anything else could inject Apache directives via the
+// generated RequestHeader-unset lines.
+var remoteTypePattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
+// validateGroups checks the declarative group targets: names must be set
+// (schema-guarded, re-checked for bypass) and every role assignment must
+// scope to exactly one of a project or the domain (defense-in-depth beside
+// the CEL rule on FederationRoleAssignmentSpec).
+func (w *KeystoneIdentityBackendWebhook) validateGroups(groupsPath *field.Path, groups []FederationGroupSpec) field.ErrorList {
+	var errs field.ErrorList
+	seen := map[string]struct{}{}
+	for i := range groups {
+		groupPath := groupsPath.Index(i)
+		if groups[i].Name == "" {
+			errs = append(errs, field.Required(groupPath.Child("name"), "group name must be set"))
+		} else if _, dup := seen[groups[i].Name]; dup {
+			errs = append(errs, field.Duplicate(groupPath.Child("name"), groups[i].Name))
+		} else {
+			seen[groups[i].Name] = struct{}{}
+		}
+		for j := range groups[i].RoleAssignments {
+			ra := &groups[i].RoleAssignments[j]
+			raPath := groupPath.Child("roleAssignments").Index(j)
+			if ra.Role == "" {
+				errs = append(errs, field.Required(raPath.Child("role"), "role must be set"))
+			}
+			if (ra.Project != nil) == ra.Domain {
+				errs = append(errs, field.Invalid(raPath, ra.Role,
+					"exactly one of project or domain must be set"))
+			}
+		}
+	}
+	return errs
+}
+
+// validateSiblingBackends runs every cross-CR rule over one namespace-scoped
+// List of sibling backends:
+//
+//   - domain-name uniqueness (case-insensitive) per referenced Keystone — two
+//     backends projecting the same keystone.<domain>.conf would fight over
+//     one domain;
+//   - identityProviderName uniqueness per referenced Keystone — the name is a
+//     path segment of the federation API objects and the protected
+//     websso/auth Locations;
+//   - remoteIDAttribute uniformity across the OIDC siblings of one Keystone —
+//     it renders into the single [openid] section of keystone.conf;
+//   - at most one OIDC sibling with oauth2Introspection enabled —
+//     mod_auth_openidc's OIDCOAuth* resource-server directives are
+//     server-scoped, so a second introspection backend would silently shadow
+//     the first.
+//
+// The webhook is the primary guard; the sub-reconciler keeps defensive skips
+// for CRs that bypassed it.
+func (w *KeystoneIdentityBackendWebhook) validateSiblingBackends(ctx context.Context, specPath *field.Path, b *KeystoneIdentityBackend) field.ErrorList {
 	// Skip when no lookup client is injected (e.g. direct unit invocation
 	// without a reader) — mirrors the PriorityClass validator's behavior.
 	if w.Client == nil {
 		return nil
 	}
 
+	namePath := specPath.Child("domain", "name")
 	var siblings KeystoneIdentityBackendList
 	if err := w.Client.List(ctx, &siblings, client.InNamespace(b.Namespace)); err != nil {
 		return field.ErrorList{field.InternalError(namePath,
-			fmt.Errorf("listing KeystoneIdentityBackends for the domain-name uniqueness check: %w", err))}
+			fmt.Errorf("listing KeystoneIdentityBackends for the cross-backend checks: %w", err))}
 	}
 
+	var errs field.ErrorList
 	for i := range siblings.Items {
 		other := &siblings.Items[i]
 		if other.Name == b.Name {
@@ -397,13 +633,41 @@ func (w *KeystoneIdentityBackendWebhook) validateDomainUniqueness(ctx context.Co
 			continue
 		}
 		if strings.EqualFold(other.Spec.Domain.Name, b.Spec.Domain.Name) {
-			return field.ErrorList{field.Invalid(
+			errs = append(errs, field.Invalid(
 				namePath,
 				b.Spec.Domain.Name,
 				fmt.Sprintf("domain name collides with KeystoneIdentityBackend %q attached to the same Keystone %q (comparison is case-insensitive)",
 					other.Name, b.Spec.KeystoneRef.Name),
-			)}
+			))
+		}
+		if b.Spec.OIDC == nil || other.Spec.OIDC == nil {
+			continue
+		}
+		if b.EffectiveIdentityProviderName() == other.EffectiveIdentityProviderName() {
+			errs = append(errs, field.Invalid(
+				specPath.Child("oidc", "identityProviderName"),
+				b.EffectiveIdentityProviderName(),
+				fmt.Sprintf("identity provider name collides with KeystoneIdentityBackend %q attached to the same Keystone %q",
+					other.Name, b.Spec.KeystoneRef.Name),
+			))
+		}
+		if b.EffectiveRemoteIDAttribute() != other.EffectiveRemoteIDAttribute() {
+			errs = append(errs, field.Invalid(
+				specPath.Child("oidc", "remoteIDAttribute"),
+				b.EffectiveRemoteIDAttribute(),
+				fmt.Sprintf("remoteIDAttribute must be uniform across all OIDC backends of Keystone %q (it renders into the single [openid] section); KeystoneIdentityBackend %q uses %q",
+					b.Spec.KeystoneRef.Name, other.Name, other.EffectiveRemoteIDAttribute()),
+			))
+		}
+		if b.Spec.OIDC.OAuth2Introspection != nil && b.Spec.OIDC.OAuth2Introspection.Enabled &&
+			other.Spec.OIDC.OAuth2Introspection != nil && other.Spec.OIDC.OAuth2Introspection.Enabled {
+			errs = append(errs, field.Invalid(
+				specPath.Child("oidc", "oauth2Introspection", "enabled"),
+				true,
+				fmt.Sprintf("at most one OIDC backend per Keystone may enable oauth2Introspection (mod_auth_openidc's OIDCOAuth* directives are server-scoped); KeystoneIdentityBackend %q already enables it",
+					other.Name),
+			))
 		}
 	}
-	return nil
+	return errs
 }

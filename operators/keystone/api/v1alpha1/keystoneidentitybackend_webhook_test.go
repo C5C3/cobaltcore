@@ -404,3 +404,366 @@ func TestIdentityBackendValidateCreate_RunsAllValidations(t *testing.T) {
 	g.Expect(msg).To(ContainSubstring(`conflicts with readOnly: true`))
 	g.Expect(msg).To(ContainSubstring("domain name collides"))
 }
+
+// validOIDCBackend returns a minimal valid OIDC-typed KeystoneIdentityBackend
+// the per-rule tests mutate one field of.
+func validOIDCBackend() *KeystoneIdentityBackend {
+	return &KeystoneIdentityBackend{
+		ObjectMeta: metav1.ObjectMeta{Name: "corp-oidc", Namespace: "openstack"},
+		Spec: KeystoneIdentityBackendSpec{
+			KeystoneRef: KeystoneRefSpec{Name: "keystone"},
+			Domain: DomainSpec{
+				Name:           "sso",
+				Mode:           DomainModeManage,
+				DeletionPolicy: DomainDeletionPolicyRetain,
+			},
+			Type: IdentityBackendTypeOIDC,
+			OIDC: &OIDCBackendSpec{
+				Issuer:          "https://idp.example.com/realms/forge",
+				ClientID:        "keystone",
+				ClientSecretRef: commonv1.SecretRefSpec{Name: "corp-oidc-client"},
+			},
+		},
+	}
+}
+
+func TestIdentityBackendDefault_MaterializesOIDCDefaults(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneIdentityBackendWebhook{}
+
+	b := validOIDCBackend()
+	g.Expect(w.Default(context.Background(), b)).To(Succeed())
+
+	g.Expect(b.Spec.OIDC.ProtocolID).To(Equal("openid"))
+	g.Expect(b.Spec.OIDC.IdentityProviderName).To(Equal("corp-oidc"))
+	g.Expect(b.Spec.OIDC.RemoteIDAttribute).To(Equal("HTTP_OIDC_ISS"))
+	g.Expect(b.Spec.OIDC.Scopes).To(Equal([]string{"openid", "email", "profile"}))
+	g.Expect(b.Spec.OIDC.ResponseType).To(Equal("code"))
+	g.Expect(b.Spec.OIDC.SessionType).To(Equal(OIDCSessionTypeClientCookie))
+	g.Expect(b.Spec.OIDC.StateInputHeaders).To(Equal(OIDCStateInputHeadersNone))
+	g.Expect(b.Spec.OIDC.ProviderMetadataURL).To(
+		Equal("https://idp.example.com/realms/forge/.well-known/openid-configuration"),
+	)
+}
+
+// A trailing slash on the issuer must not double up in the derived discovery
+// URL, and explicit endpoints must suppress the metadata-URL derivation
+// entirely (the two discovery shapes are mutually exclusive).
+func TestIdentityBackendDefault_MetadataURLDerivationEdgeCases(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneIdentityBackendWebhook{}
+
+	trailing := validOIDCBackend()
+	trailing.Spec.OIDC.Issuer = "https://idp.example.com/realms/forge/"
+	g.Expect(w.Default(context.Background(), trailing)).To(Succeed())
+	g.Expect(trailing.Spec.OIDC.ProviderMetadataURL).To(
+		Equal("https://idp.example.com/realms/forge/.well-known/openid-configuration"),
+	)
+
+	explicit := validOIDCBackend()
+	explicit.Spec.OIDC.Endpoints = &OIDCEndpointsSpec{
+		AuthorizationEndpoint: "https://idp.example.com/auth",
+		TokenEndpoint:         "https://idp.example.com/token",
+		JWKSURI:               "https://idp.example.com/certs",
+	}
+	g.Expect(w.Default(context.Background(), explicit)).To(Succeed())
+	g.Expect(explicit.Spec.OIDC.ProviderMetadataURL).To(BeEmpty())
+}
+
+func TestIdentityBackendValidate_AcceptsValidOIDCBackend(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneIdentityBackendWebhook{}
+
+	b := validOIDCBackend()
+	g.Expect(w.Default(context.Background(), b)).To(Succeed())
+	_, err := w.ValidateCreate(context.Background(), b)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+func TestIdentityBackendValidate_RejectsOIDCUnionMismatch(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneIdentityBackendWebhook{}
+
+	// type OIDC without spec.oidc.
+	b := validOIDCBackend()
+	b.Spec.OIDC = nil
+	_, err := w.ValidateCreate(context.Background(), b)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("type OIDC requires spec.oidc"))
+
+	// spec.oidc alongside type LDAP.
+	b2 := validIdentityBackend()
+	b2.Spec.OIDC = validOIDCBackend().Spec.OIDC
+	_, err = w.ValidateCreate(context.Background(), b2)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("type OIDC requires spec.oidc"))
+}
+
+func TestIdentityBackendValidate_RejectsBadOIDCIssuerScheme(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneIdentityBackendWebhook{}
+
+	b := validOIDCBackend()
+	b.Spec.OIDC.Issuer = "ldap://not-an-idp"
+
+	_, err := w.ValidateCreate(context.Background(), b)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("http:// or https://"))
+}
+
+func TestIdentityBackendValidate_RejectsDiscoveryShapeConflict(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneIdentityBackendWebhook{}
+
+	b := validOIDCBackend()
+	b.Spec.OIDC.ProviderMetadataURL = "https://idp.example.com/.well-known/openid-configuration"
+	b.Spec.OIDC.Endpoints = &OIDCEndpointsSpec{
+		AuthorizationEndpoint: "https://idp.example.com/auth",
+		TokenEndpoint:         "https://idp.example.com/token",
+		JWKSURI:               "https://idp.example.com/certs",
+	}
+
+	_, err := w.ValidateCreate(context.Background(), b)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("mutually exclusive"))
+}
+
+func TestIdentityBackendValidate_RejectsClientSecretRefKey(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneIdentityBackendWebhook{}
+
+	b := validOIDCBackend()
+	b.Spec.OIDC.ClientSecretRef.Key = "secret"
+
+	_, err := w.ValidateCreate(context.Background(), b)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring(`data key is fixed ("clientSecret")`))
+}
+
+func TestIdentityBackendValidate_RejectsMappingsOnLDAPBackend(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneIdentityBackendWebhook{}
+
+	b := validIdentityBackend()
+	b.Spec.Mappings = []MappingRuleSpec{{
+		Local:  []MappingLocalRuleSpec{{Groups: "{0}"}},
+		Remote: []MappingRemoteRuleSpec{{Type: "HTTP_OIDC_ISS"}},
+	}}
+
+	_, err := w.ValidateCreate(context.Background(), b)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("mappings are only supported on federation backends"))
+}
+
+func TestIdentityBackendValidate_RejectsExtraOptionsOnOIDCBackend(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneIdentityBackendWebhook{}
+
+	b := validOIDCBackend()
+	b.Spec.ExtraOptions = map[string]string{"page_size": "100"}
+
+	_, err := w.ValidateCreate(context.Background(), b)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("only supported on type LDAP"))
+}
+
+func TestIdentityBackendValidate_RejectsIncompleteMappingRules(t *testing.T) {
+	tests := []struct {
+		name    string
+		rule    MappingRuleSpec
+		errText string
+	}{
+		{
+			"missing remote",
+			MappingRuleSpec{Local: []MappingLocalRuleSpec{{Groups: "{0}"}}},
+			"at least one remote entry",
+		},
+		{
+			"missing local",
+			MappingRuleSpec{Remote: []MappingRemoteRuleSpec{{Type: "HTTP_OIDC_ISS"}}},
+			"at least one local entry",
+		},
+		{
+			"empty remote type",
+			MappingRuleSpec{
+				Local:  []MappingLocalRuleSpec{{Groups: "{0}"}},
+				Remote: []MappingRemoteRuleSpec{{Type: ""}},
+			},
+			"remote.type must be set",
+		},
+		{
+			// A newline in remote.type would inject Apache directives via the
+			// generated RequestHeader-unset lines.
+			"header-unsafe remote type",
+			MappingRuleSpec{
+				Local:  []MappingLocalRuleSpec{{Groups: "{0}"}},
+				Remote: []MappingRemoteRuleSpec{{Type: "HTTP_OIDC_ISS\nProxyPass / http://evil/"}},
+			},
+			"remote.type must match",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			w := &KeystoneIdentityBackendWebhook{}
+
+			b := validOIDCBackend()
+			b.Spec.Mappings = []MappingRuleSpec{tc.rule}
+
+			_, err := w.ValidateCreate(context.Background(), b)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring(tc.errText))
+		})
+	}
+}
+
+func TestIdentityBackendValidate_RejectsRoleAssignmentScopeConflict(t *testing.T) {
+	tests := []struct {
+		name string
+		ra   FederationRoleAssignmentSpec
+	}{
+		{"both project and domain", FederationRoleAssignmentSpec{
+			Role:    "member",
+			Project: &FederationProjectScopeSpec{Name: "demo"},
+			Domain:  true,
+		}},
+		{"neither project nor domain", FederationRoleAssignmentSpec{Role: "member"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			w := &KeystoneIdentityBackendWebhook{}
+
+			b := validOIDCBackend()
+			b.Spec.Groups = []FederationGroupSpec{{
+				Name:            "federated-users",
+				RoleAssignments: []FederationRoleAssignmentSpec{tc.ra},
+			}}
+
+			_, err := w.ValidateCreate(context.Background(), b)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring("exactly one of project or domain"))
+		})
+	}
+}
+
+// A newline or quote in any value rendered into the Apache proxy config or
+// the metadata JSON is a config-injection vector, exactly like the LDAP INI
+// guard.
+func TestIdentityBackendValidate_RejectsControlCharsInOIDCFields(t *testing.T) {
+	tests := []struct {
+		name  string
+		mutin func(*KeystoneIdentityBackend)
+	}{
+		{"issuer newline", func(b *KeystoneIdentityBackend) {
+			b.Spec.OIDC.Issuer = "https://idp.example.com\nProxyPass / http://evil/"
+		}},
+		{"clientID quote", func(b *KeystoneIdentityBackend) { b.Spec.OIDC.ClientID = `keystone"evil` }},
+		{"scope newline", func(b *KeystoneIdentityBackend) { b.Spec.OIDC.Scopes = []string{"openid\nemail"} }},
+		{"responseType quote", func(b *KeystoneIdentityBackend) { b.Spec.OIDC.ResponseType = `code"` }},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			w := &KeystoneIdentityBackendWebhook{}
+
+			b := validOIDCBackend()
+			tc.mutin(b)
+
+			_, err := w.ValidateCreate(context.Background(), b)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring("must not contain newline, carriage-return, or double-quote"))
+		})
+	}
+}
+
+func TestIdentityBackendValidate_RejectsIntrospectionWithoutEndpointWhenExplicit(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneIdentityBackendWebhook{}
+
+	b := validOIDCBackend()
+	b.Spec.OIDC.OAuth2Introspection = &OIDCIntrospectionSpec{Enabled: true}
+	b.Spec.OIDC.Endpoints = &OIDCEndpointsSpec{
+		AuthorizationEndpoint: "https://idp.example.com/auth",
+		TokenEndpoint:         "https://idp.example.com/token",
+		JWKSURI:               "https://idp.example.com/certs",
+	}
+
+	_, err := w.ValidateCreate(context.Background(), b)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("introspectionEndpoint must be set"))
+}
+
+// Cross-CR checks: identityProviderName uniqueness, remoteIDAttribute
+// uniformity, and the single-introspection-backend limit are all evaluated
+// against the OIDC siblings attached to the same Keystone.
+func TestIdentityBackendValidate_OIDCSiblingChecks(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := identityBackendScheme(t)
+
+	sibling := validOIDCBackend()
+	sibling.Name = "existing-oidc"
+	sibling.Spec.Domain.Name = "sso-existing"
+	sibling.Spec.OIDC.IdentityProviderName = "corp-idp"
+	sibling.Spec.OIDC.RemoteIDAttribute = "HTTP_OIDC_ISS"
+	sibling.Spec.OIDC.OAuth2Introspection = &OIDCIntrospectionSpec{Enabled: true}
+
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(sibling).Build()
+	w := &KeystoneIdentityBackendWebhook{Client: c}
+
+	b := validOIDCBackend()
+	b.Spec.OIDC.IdentityProviderName = "corp-idp"                           // collides
+	b.Spec.OIDC.RemoteIDAttribute = "HTTP_OIDC_ISSUER"                      // conflicts
+	b.Spec.OIDC.OAuth2Introspection = &OIDCIntrospectionSpec{Enabled: true} // second introspection
+
+	_, err := w.ValidateCreate(context.Background(), b)
+	g.Expect(err).To(HaveOccurred())
+	msg := err.Error()
+	g.Expect(msg).To(ContainSubstring("identity provider name collides"))
+	g.Expect(msg).To(ContainSubstring("remoteIDAttribute must be uniform"))
+	g.Expect(msg).To(ContainSubstring("at most one OIDC backend per Keystone may enable oauth2Introspection"))
+
+	// A sibling attached to a different Keystone triggers none of the checks.
+	b2 := validOIDCBackend()
+	b2.Spec.KeystoneRef.Name = "keystone-other"
+	b2.Spec.OIDC.IdentityProviderName = "corp-idp"
+	_, err = w.ValidateCreate(context.Background(), b2)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// Aggregate OIDC test proving error accumulation across the OIDC rules (the
+// LDAP aggregate above cannot exercise them — a CR is either LDAP or OIDC).
+func TestIdentityBackendValidateCreate_RunsAllOIDCValidations(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := identityBackendScheme(t)
+
+	sibling := validOIDCBackend()
+	sibling.Name = "existing-oidc"
+	sibling.Spec.Domain.Name = "sso-existing"
+	sibling.Spec.OIDC.IdentityProviderName = "corp-idp"
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(sibling).Build()
+	w := &KeystoneIdentityBackendWebhook{Client: c}
+
+	b := validOIDCBackend()
+	b.Spec.OIDC.Issuer = "ftp://bad-scheme"
+	b.Spec.OIDC.ClientSecretRef.Key = "oops"
+	b.Spec.OIDC.IdentityProviderName = "corp-idp"
+	b.Spec.OIDC.ClientID = `keystone"evil`
+	b.Spec.Mappings = []MappingRuleSpec{{Local: []MappingLocalRuleSpec{{Groups: "{0}"}}}}
+	b.Spec.Groups = []FederationGroupSpec{{
+		Name:            "g",
+		RoleAssignments: []FederationRoleAssignmentSpec{{Role: "member"}},
+	}}
+	b.Spec.ExtraOptions = map[string]string{"page_size": "100"}
+
+	_, err := w.ValidateCreate(context.Background(), b)
+	g.Expect(err).To(HaveOccurred())
+	msg := err.Error()
+	g.Expect(msg).To(ContainSubstring("http:// or https://"))
+	g.Expect(msg).To(ContainSubstring(`data key is fixed ("clientSecret")`))
+	g.Expect(msg).To(ContainSubstring("identity provider name collides"))
+	g.Expect(msg).To(ContainSubstring("must not contain newline, carriage-return, or double-quote"))
+	g.Expect(msg).To(ContainSubstring("at least one remote entry"))
+	g.Expect(msg).To(ContainSubstring("exactly one of project or domain"))
+	g.Expect(msg).To(ContainSubstring("only supported on type LDAP"))
+}

@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# KeystoneIdentityBackend with type OIDC but no spec.oidc block. The union
+# rule is enforced by the spec-level CEL XValidation
+# ((self.type == 'OIDC') == has(self.oidc)) and by defense-in-depth in the
+# validating webhook. Admission must reject this CR with an $error
+# referencing "type OIDC requires spec.oidc".
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: KeystoneIdentityBackend
+metadata:
+  name: invalid-oidc-union-mismatch
+spec:
+  keystoneRef:
+    name: keystone
+  domain:
+    name: corp
+  type: OIDC

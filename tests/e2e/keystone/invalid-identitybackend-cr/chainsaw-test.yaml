@@ -196,3 +196,98 @@ spec:
         - check:
             ($error != null): true
             (contains($error, 'option name must match')): true
+  # ── OIDC federation block ────────────────────────────────────────────────
+  # type OIDC without spec.oidc must be rejected (union rule).
+  - try:
+    - apply:
+        file: 19-oidc-union-mismatch.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'type OIDC requires spec.oidc')): true
+  # A stray spec.oidc block on a type LDAP backend must be rejected.
+  - try:
+    - apply:
+        file: 20-oidc-block-on-ldap.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'type OIDC requires spec.oidc')): true
+  # spec.oidc.issuer must use the http:// or https:// scheme.
+  - try:
+    - apply:
+        file: 21-oidc-bad-issuer-scheme.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'oidc.issuer')): true
+  # providerMetadataURL and endpoints are mutually exclusive.
+  - try:
+    - apply:
+        file: 22-oidc-discovery-conflict.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'mutually exclusive')): true
+  # The client Secret's data key is fixed ("clientSecret").
+  - try:
+    - apply:
+        file: 23-oidc-clientsecretref-key.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'data key is fixed')): true
+  # mappings are federation vocabulary, gated to OIDC backends.
+  - try:
+    - apply:
+        file: 24-mappings-on-ldap.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'mappings are only supported on federation backends')): true
+  # Every mapping rule needs at least one remote matcher.
+  - try:
+    - apply:
+        file: 25-oidc-mapping-without-remote.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'remote')): true
+  # ── OIDC sibling-rejection block ─────────────────────────────────────────
+  # The valid OIDC base CR is applied first and must SUCCEED.
+  - try:
+    - apply:
+        file: 18-oidc-base.yaml
+  # A second OIDC backend colliding on identityProviderName must be rejected.
+  - try:
+    - apply:
+        file: 26-oidc-duplicate-idp-name.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'identity provider name collides')): true
+  # remoteIDAttribute must be uniform across the OIDC backends of one Keystone.
+  - try:
+    - apply:
+        file: 27-oidc-conflicting-remote-id.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'remoteIDAttribute must be uniform')): true
+  # At most one OIDC backend per Keystone may enable oauth2Introspection.
+  - try:
+    - apply:
+        file: 28-oidc-second-introspection.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'at most one OIDC backend')): true
+  # spec.type is immutable (CEL transition rule, UPDATE-only): the LDAP
+  # immutable-backend base from 09 cannot flip to OIDC.
+  - try:
+    - apply:
+        file: 29-immutable-type.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'type is immutable')): true

@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Second OIDC backend that enables oauth2Introspection while the
+# 18-oidc-base CR already claims the slot. mod_auth_openidc's OIDCOAuth*
+# resource-server directives are server-scoped, so at most one OIDC backend
+# per Keystone may enable introspection (webhook-enforced). Admission must
+# reject this CR with an $error referencing "at most one OIDC backend".
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: KeystoneIdentityBackend
+metadata:
+  name: invalid-oidc-second-introspection
+spec:
+  keystoneRef:
+    name: keystone
+  domain:
+    name: sso-four
+  type: OIDC
+  oidc:
+    issuer: https://idp.example.com/realms/forge
+    clientID: keystone
+    clientSecretRef:
+      name: corp-oidc-client
+    oauth2Introspection:
+      enabled: true

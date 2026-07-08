@@ -16,15 +16,19 @@ Three fixture categories share this scaffold:
   a CEL XValidation rule, a kubebuilder marker, or webhook.validate().
 * Update-rejection fixtures share the name ``immutable-backend``:
   ``09-immutable-base`` is the valid base CR applied first, and the ``10``-
-  ``12`` variants are applied as UPDATEs of that base so the CRD CEL
-  transition rules (``self == oldSelf``, evaluated only on UPDATE) reject the
-  field change. A type-immutability update fixture is deliberately absent:
-  LDAP is the only enum value in Phase 1, so any changed type is already
-  rejected by the Enum marker before the transition rule could fire.
+  ``12`` variants (plus ``29-immutable-type``) are applied as UPDATEs of that
+  base so the CRD CEL transition rules (``self == oldSelf``, evaluated only
+  on UPDATE) reject the field change.
 * The duplicate-domain pair: ``13-duplicate-domain`` is a second, otherwise
   valid backend whose domain name collides case-insensitively with the
   ``09-immutable-base`` CR on the same Keystone; the validating webhook
   rejects it.
+* OIDC rejection fixtures (``19``-``25``) exercise the federation surface:
+  union mismatches, discovery-shape conflicts, scheme/secret-key contracts,
+  and mapping-rule completeness.
+* The OIDC sibling set: ``18-oidc-base`` is a valid OIDC backend applied
+  first, and ``26``-``28`` collide with it on identityProviderName,
+  remoteIDAttribute uniformity, and the single-introspection-backend limit.
 
 Usage:
 
@@ -108,6 +112,52 @@ LDAP_CTRL_SUFFIX = """\
       treeDN: ou=people,dc=example,dc=com
 """
 
+# Canonical valid OIDC block. Any future required field on OIDCBackendSpec
+# must be added below AND verified against every fixture.
+OIDC_DEFAULT = """\
+  oidc:
+    issuer: https://idp.example.com/realms/forge
+    clientID: keystone
+    clientSecretRef:
+      name: corp-oidc-client
+"""
+
+# OIDC block with an ldap:// issuer — rejected by the OIDCBackendSpec.Issuer
+# Pattern marker (^https?://) and defense-in-depth in the webhook.
+OIDC_BAD_ISSUER = """\
+  oidc:
+    issuer: ldap://not-an-idp.example.com
+    clientID: keystone
+    clientSecretRef:
+      name: corp-oidc-client
+"""
+
+# OIDC block that sets BOTH discovery shapes — rejected by the CEL rule on
+# OIDCBackendSpec (providerMetadataURL and endpoints are mutually exclusive).
+OIDC_DISCOVERY_CONFLICT = """\
+  oidc:
+    issuer: https://idp.example.com/realms/forge
+    providerMetadataURL: https://idp.example.com/realms/forge/.well-known/openid-configuration
+    endpoints:
+      authorizationEndpoint: https://idp.example.com/auth
+      tokenEndpoint: https://idp.example.com/token
+      jwksURI: https://idp.example.com/certs
+    clientID: keystone
+    clientSecretRef:
+      name: corp-oidc-client
+"""
+
+# OIDC block that sets clientSecretRef.key — rejected by the validating
+# webhook (the client Secret's data key is fixed by contract).
+OIDC_CLIENTREF_KEY = """\
+  oidc:
+    issuer: https://idp.example.com/realms/forge
+    clientID: keystone
+    clientSecretRef:
+      name: corp-oidc-client
+      key: secret
+"""
+
 
 @dataclass(frozen=True)
 class Fixture:
@@ -119,6 +169,7 @@ class Fixture:
     domain_name: str = "corp"
     domain_extra: str | None = None
     include_type: bool = True
+    backend_type: str = "LDAP"
     ldap: str | None = LDAP_DEFAULT
     trailing: str | None = None
 
@@ -141,7 +192,7 @@ def render(fixture: Fixture) -> str:
     if fixture.domain_extra is not None:
         parts.append(fixture.domain_extra)
     if fixture.include_type:
-        parts.append("  type: LDAP\n")
+        parts.append(f"  type: {fixture.backend_type}\n")
     if fixture.ldap is not None:
         parts.append(fixture.ldap)
     if fixture.trailing is not None:
@@ -384,6 +435,186 @@ FIXTURES: list[Fixture] = [
 # The validating webhook's extraOptions key allowlist (^[A-Za-z0-9_]+$) rejects
 # the malformed key. Admission must reject this CR with an $error referencing
 # "option name must match".""",
+    ),
+    # ── OIDC federation fixtures ─────────────────────────────────────────────
+    Fixture(
+        filename="18-oidc-base.yaml",
+        name="oidc-base-backend",
+        domain_name="sso-base",
+        backend_type="OIDC",
+        ldap=None,
+        trailing=OIDC_DEFAULT + """\
+    oauth2Introspection:
+      enabled: true
+""",
+        comment="""\
+# Valid base OIDC KeystoneIdentityBackend for the sibling-rejection fixtures.
+# It is applied FIRST and must SUCCEED. Its identityProviderName defaults to
+# the CR name ("oidc-base-backend"), its remoteIDAttribute defaults to
+# HTTP_OIDC_ISS, and it claims the single oauth2Introspection slot — the
+# 26-28 fixtures collide with each of those in turn.""",
+    ),
+    Fixture(
+        filename="19-oidc-union-mismatch.yaml",
+        name="invalid-oidc-union-mismatch",
+        backend_type="OIDC",
+        ldap=None,
+        comment="""\
+# KeystoneIdentityBackend with type OIDC but no spec.oidc block. The union
+# rule is enforced by the spec-level CEL XValidation
+# ((self.type == 'OIDC') == has(self.oidc)) and by defense-in-depth in the
+# validating webhook. Admission must reject this CR with an $error
+# referencing "type OIDC requires spec.oidc".""",
+    ),
+    Fixture(
+        filename="20-oidc-block-on-ldap.yaml",
+        name="invalid-oidc-block-on-ldap",
+        trailing=OIDC_DEFAULT,
+        comment="""\
+# KeystoneIdentityBackend with type LDAP that also carries a spec.oidc
+# block. The OIDC union rule ((self.type == 'OIDC') == has(self.oidc))
+# rejects the stray block. Admission must reject this CR with an $error
+# referencing "type OIDC requires spec.oidc".""",
+    ),
+    Fixture(
+        filename="21-oidc-bad-issuer-scheme.yaml",
+        name="invalid-oidc-bad-issuer",
+        domain_name="sso-bad-issuer",
+        backend_type="OIDC",
+        ldap=None,
+        trailing=OIDC_BAD_ISSUER,
+        comment="""\
+# KeystoneIdentityBackend whose spec.oidc.issuer uses ldap:// instead of
+# http:// or https://. Rejected by the Pattern marker on
+# OIDCBackendSpec.Issuer (^https?://) and by defense-in-depth in the
+# validating webhook. Admission must reject this CR with an $error
+# referencing the substring "oidc.issuer".""",
+    ),
+    Fixture(
+        filename="22-oidc-discovery-conflict.yaml",
+        name="invalid-oidc-discovery-conflict",
+        domain_name="sso-discovery",
+        backend_type="OIDC",
+        ldap=None,
+        trailing=OIDC_DISCOVERY_CONFLICT,
+        comment="""\
+# KeystoneIdentityBackend whose spec.oidc sets BOTH providerMetadataURL and
+# endpoints. The two discovery shapes are mutually exclusive (CEL rule on
+# OIDCBackendSpec plus webhook defense-in-depth). Admission must reject this
+# CR with an $error referencing "mutually exclusive".""",
+    ),
+    Fixture(
+        filename="23-oidc-clientsecretref-key.yaml",
+        name="invalid-oidc-clientref-key",
+        domain_name="sso-clientref",
+        backend_type="OIDC",
+        ldap=None,
+        trailing=OIDC_CLIENTREF_KEY,
+        comment="""\
+# KeystoneIdentityBackend that sets spec.oidc.clientSecretRef.key. The
+# client Secret's data key is fixed by contract ("clientSecret"), so a key
+# override is rejected by the validating webhook — mirroring the LDAP bind
+# Secret contract. Admission must reject this CR with an $error referencing
+# "data key is fixed".""",
+    ),
+    Fixture(
+        filename="24-mappings-on-ldap.yaml",
+        name="invalid-mappings-on-ldap",
+        trailing="""\
+  mappings:
+  - local:
+    - groups: "{0}"
+    remote:
+    - type: HTTP_OIDC_ISS
+""",
+        comment="""\
+# KeystoneIdentityBackend of type LDAP that carries spec.mappings — federation
+# vocabulary gated to OIDC backends by the spec-level CEL rule
+# (!has(self.mappings) || self.type == 'OIDC') and webhook defense-in-depth.
+# Admission must reject this CR with an $error referencing
+# "mappings are only supported on federation backends".""",
+    ),
+    Fixture(
+        filename="25-oidc-mapping-without-remote.yaml",
+        name="invalid-oidc-mapping-no-remote",
+        domain_name="sso-mapping",
+        backend_type="OIDC",
+        ldap=None,
+        trailing=OIDC_DEFAULT + """\
+  mappings:
+  - local:
+    - groups: "{0}"
+""",
+        comment="""\
+# KeystoneIdentityBackend whose mapping rule has no remote matchers. Every
+# rule needs at least one local and one remote entry (schema `required` +
+# MinItems markers plus webhook defense-in-depth). Admission must reject
+# this CR with an $error referencing the substring "remote".""",
+    ),
+    # ── OIDC sibling-rejection fixtures (applied after 18-oidc-base) ─────────
+    Fixture(
+        filename="26-oidc-duplicate-idp-name.yaml",
+        name="invalid-oidc-duplicate-idp",
+        domain_name="sso-two",
+        backend_type="OIDC",
+        ldap=None,
+        trailing=OIDC_DEFAULT + """\
+    identityProviderName: oidc-base-backend
+""",
+        comment="""\
+# Second OIDC backend whose identityProviderName collides with the
+# 18-oidc-base CR's default (its CR name) on the same Keystone. The name is
+# a path segment of the federation API objects and the protected websso
+# Locations, so the validating webhook enforces uniqueness. Admission must
+# reject this CR with an $error referencing
+# "identity provider name collides".""",
+    ),
+    Fixture(
+        filename="27-oidc-conflicting-remote-id.yaml",
+        name="invalid-oidc-remote-id",
+        domain_name="sso-three",
+        backend_type="OIDC",
+        ldap=None,
+        trailing=OIDC_DEFAULT + """\
+    remoteIDAttribute: HTTP_OIDC_ISSUER
+""",
+        comment="""\
+# Second OIDC backend whose remoteIDAttribute (HTTP_OIDC_ISSUER) differs
+# from the 18-oidc-base CR's default (HTTP_OIDC_ISS) on the same Keystone.
+# The attribute renders into the single [openid] section of keystone.conf,
+# so it must be uniform across every OIDC backend of one Keystone
+# (webhook-enforced). Admission must reject this CR with an $error
+# referencing "remoteIDAttribute must be uniform".""",
+    ),
+    Fixture(
+        filename="28-oidc-second-introspection.yaml",
+        name="invalid-oidc-second-introspection",
+        domain_name="sso-four",
+        backend_type="OIDC",
+        ldap=None,
+        trailing=OIDC_DEFAULT + """\
+    oauth2Introspection:
+      enabled: true
+""",
+        comment="""\
+# Second OIDC backend that enables oauth2Introspection while the
+# 18-oidc-base CR already claims the slot. mod_auth_openidc's OIDCOAuth*
+# resource-server directives are server-scoped, so at most one OIDC backend
+# per Keystone may enable introspection (webhook-enforced). Admission must
+# reject this CR with an $error referencing "at most one OIDC backend".""",
+    ),
+    Fixture(
+        filename="29-immutable-type.yaml",
+        name="immutable-backend",
+        backend_type="OIDC",
+        ldap=None,
+        trailing=OIDC_DEFAULT,
+        comment="""\
+# Update of the immutable-backend base CR that flips spec.type from LDAP to
+# OIDC (with a matching oidc block so only the transition rule fires). The
+# spec-level CEL transition rule (self.type == oldSelf.type) rejects the
+# change on UPDATE. Admission must reject this UPDATE with an $error
+# referencing "type is immutable".""",
     ),
 ]
 

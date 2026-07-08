@@ -280,6 +280,27 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 		))
 	}
 
+	// Defense-in-depth federation proxy-image checks alongside the
+	// commonv1.ImageSpec markers (MinLength on repository, the tag/digest XOR
+	// CEL rule): the sidecar reference must be resolvable when set.
+	if k.Spec.Federation != nil && k.Spec.Federation.ProxyImage != nil {
+		proxyImage := k.Spec.Federation.ProxyImage
+		proxyImagePath := specPath.Child("federation", "proxyImage")
+		if proxyImage.Repository == "" {
+			allErrs = append(allErrs, field.Required(
+				proxyImagePath.Child("repository"),
+				"federation.proxyImage.repository must be set",
+			))
+		}
+		if (proxyImage.Tag != "") == (proxyImage.Digest != "") {
+			allErrs = append(allErrs, field.Invalid(
+				proxyImagePath,
+				proxyImage,
+				"exactly one of proxyImage.tag or proxyImage.digest must be set",
+			))
+		}
+	}
+
 	// Defense-in-depth maxActiveKeys check alongside the
 	// +kubebuilder:validation:Minimum=3 marker.
 	if k.Spec.Fernet.MaxActiveKeys < 3 && k.Spec.Fernet.MaxActiveKeys != 0 {
