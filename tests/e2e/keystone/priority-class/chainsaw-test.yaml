@@ -121,24 +121,23 @@ spec:
         file: 03-patch-empty-priority-class.yaml
   # ── Step 7: Assert Deployment has no priority class again ────────────────
   - try:
-    - script:
-        shell: bash
-        content: |
-          set -euo pipefail
-          # Wait for controller to reconcile the empty priorityClassName patch (poll every 5s, timeout 120s).
-          TIMEOUT=120
-          ELAPSED=0
-          while [ $ELAPSED -lt $TIMEOUT ]; do
-            PCN=$(kubectl get deployment keystone-pc -n openstack -o jsonpath='{.spec.template.spec.priorityClassName}')
-            if [ "$PCN" = "" ] || [ "$PCN" = "null" ]; then
-              echo "PASS: priorityClassName removed from Deployment"
-              exit 0
-            fi
-            sleep 5
-            ELAPSED=$((ELAPSED + 5))
-          done
-          echo "FAIL: Expected empty priorityClassName within ${TIMEOUT}s, got: $PCN"
-          exit 1
+    # A chainsaw assert (polls to the suite's 5m assert timeout), NOT a
+    # script-based poll: the previous script slept up to 120s waiting for the
+    # controller to re-render, but chainsaw's global exec timeout (30s in
+    # tests/e2e/chainsaw-config.yaml) SIGKILLed it whenever the reconcile of
+    # the empty-priorityClassName patch took longer — which it does under
+    # parallel suite load (several Keystone CRs share one worker queue).
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-pc
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                (priorityClassName == null || priorityClassName == ''): true
     catch:
     - command:
         entrypoint: kubectl
