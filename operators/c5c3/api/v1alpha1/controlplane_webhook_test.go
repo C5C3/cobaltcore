@@ -1211,3 +1211,313 @@ func TestValidateCreate_RejectsHorizonEmptySecretKeyRefName(t *testing.T) {
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("services.horizon.secretKeyRef.name"))
 }
+
+// --- External-mode validation matrix ---
+
+// TestValidateCreate_AcceptsMinimalExternalControlPlane is the acceptance proof
+// for the issue's sketch CR: mode: External + external.authURL +
+// korc.adminCredential.passwordSecretRef, no infrastructure block.
+func TestValidateCreate_AcceptsMinimalExternalControlPlane(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+
+	_, err := w.ValidateCreate(context.Background(), externalControlPlane())
+	g.Expect(err).NotTo(HaveOccurred(),
+		"the minimal External-mode sketch CR must be admitted")
+}
+
+// TestValidateCreate_RejectsExternalModeWithoutExternalBlock verifies the
+// external block is required in External mode.
+func TestValidateCreate_RejectsExternalModeWithoutExternalBlock(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := externalControlPlane()
+	cp.Spec.Services.Keystone.External = nil
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("external is required when services.keystone.mode is External"))
+}
+
+// TestValidateCreate_RejectsExternalBlockInManagedMode verifies the external
+// block may only be set in External mode.
+func TestValidateCreate_RejectsExternalBlockInManagedMode(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane() // keystone mode unset (=> Managed)
+	cp.Spec.Services.Keystone.External = &ExternalKeystoneSpec{AuthURL: "https://keystone.example.com/v3"}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("services.keystone.external"))
+	g.Expect(err.Error()).To(ContainSubstring("may only be set when services.keystone.mode is External"))
+}
+
+// TestValidateCreate_RejectsManagedOnlyFieldsInExternalMode verifies each
+// managed-only Keystone field is forbidden in External mode, each with a message
+// naming the offending field.
+func TestValidateCreate_RejectsManagedOnlyFieldsInExternalMode(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	replicas := int32(3)
+
+	tests := []struct {
+		name       string
+		mutate     func(ks *ServiceKeystoneSpec)
+		wantSubstr string
+	}{
+		{"replicas", func(ks *ServiceKeystoneSpec) { ks.Replicas = &replicas }, "services.keystone.replicas"},
+		{"image", func(ks *ServiceKeystoneSpec) {
+			ks.Image = &commonv1.ImageSpec{Repository: "r", Tag: "t"}
+		}, "services.keystone.image"},
+		{"policyOverrides", func(ks *ServiceKeystoneSpec) {
+			ks.PolicyOverrides = &commonv1.PolicySpec{Rules: map[string]string{"a": "b"}}
+		}, "services.keystone.policyOverrides"},
+		{"rotationInterval", func(ks *ServiceKeystoneSpec) {
+			ks.RotationInterval = &metav1.Duration{Duration: 24 * time.Hour}
+		}, "services.keystone.rotationInterval"},
+		{"gateway", func(ks *ServiceKeystoneSpec) {
+			ks.Gateway = &commonv1.GatewaySpec{Hostname: "k.example.com"}
+		}, "services.keystone.gateway"},
+		{"publicEndpoint", func(ks *ServiceKeystoneSpec) {
+			ks.PublicEndpoint = "https://k.example.com/v3"
+		}, "services.keystone.publicEndpoint"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cp := externalControlPlane()
+			tc.mutate(cp.Spec.Services.Keystone)
+
+			_, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring(tc.wantSubstr))
+			g.Expect(err.Error()).To(ContainSubstring("External"))
+		})
+	}
+}
+
+// TestValidateCreate_RejectsInfrastructureInExternalMode verifies
+// spec.infrastructure is forbidden in External mode.
+func TestValidateCreate_RejectsInfrastructureInExternalMode(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := externalControlPlane()
+	cp.Spec.Infrastructure = &InfrastructureSpec{
+		Database: commonv1.DatabaseSpec{Host: "db", Database: "d", SecretRef: commonv1.SecretRefSpec{Name: "s"}},
+		Cache:    commonv1.CacheSpec{Backend: "b", Servers: []string{"mc:11211"}},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("spec.infrastructure"))
+	g.Expect(err.Error()).To(ContainSubstring("forbidden when services.keystone.mode is External"))
+}
+
+// TestValidateCreate_RejectsHorizonInExternalMode verifies services.horizon is
+// forbidden in External mode (P2).
+func TestValidateCreate_RejectsHorizonInExternalMode(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := externalControlPlane()
+	cp.Spec.Services.Horizon = &ServiceHorizonSpec{}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("services.horizon"))
+	g.Expect(err.Error()).To(ContainSubstring("External"))
+}
+
+// TestValidateCreate_RejectsMissingInfrastructureInManagedMode verifies
+// spec.infrastructure is required for a non-External ControlPlane (preserving
+// today's contract now that the Go field is optional). This is the webhook-only
+// path — only reachable when Default() (which materializes the block) is
+// bypassed, exactly what a direct validate() call exercises.
+func TestValidateCreate_RejectsMissingInfrastructureInManagedMode(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Spec.Infrastructure = nil
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("spec.infrastructure"))
+	g.Expect(err.Error()).To(ContainSubstring("is required unless services.keystone.mode is External"))
+}
+
+// TestValidateCreate_RejectsMissingInfrastructureWithUnsetKeystone verifies the
+// same requirement when services.keystone is unset (staged adoption is still a
+// Managed control plane at the infrastructure layer).
+func TestValidateCreate_RejectsMissingInfrastructureWithUnsetKeystone(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Spec.Services.Keystone = nil
+	cp.Spec.Infrastructure = nil
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("spec.infrastructure"))
+}
+
+// TestValidateCreate_RejectsBadExternalAuthURL verifies a missing or malformed
+// external.authURL is rejected. The hostless cases (https://, http:///v3) guard
+// the SSRF-hardening: the coarse ^https?:// prefix accepted them, but the
+// net/url-based gate requires a real host before the reconciler dials it.
+func TestValidateCreate_RejectsBadExternalAuthURL(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+
+	// missing.
+	cpMissing := externalControlPlane()
+	cpMissing.Spec.Services.Keystone.External.AuthURL = ""
+	_, err := w.ValidateCreate(context.Background(), cpMissing)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("authURL is required"))
+
+	for _, bad := range []string{
+		"keystone.example.com",          // no scheme
+		"ftp://keystone.example.com/v3", // wrong scheme
+		"https://",                      // scheme only, no host
+		"http:///v3",                    // path but empty host
+	} {
+		cpBad := externalControlPlane()
+		cpBad.Spec.Services.Keystone.External.AuthURL = bad
+		_, err = w.ValidateCreate(context.Background(), cpBad)
+		g.Expect(err).To(HaveOccurred(), "expected %q to be rejected", bad)
+		g.Expect(err.Error()).To(ContainSubstring("authURL"), "for input %q", bad)
+	}
+}
+
+// TestValidateCreate_RejectsEmptyCABundleSecretRefName verifies a present-but-
+// nameless caBundleSecretRef is rejected in External mode.
+func TestValidateCreate_RejectsEmptyCABundleSecretRefName(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := externalControlPlane()
+	cp.Spec.Services.Keystone.External.CABundleSecretRef = &commonv1.SecretRefSpec{Name: ""}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("services.keystone.external.caBundleSecretRef.name"))
+}
+
+// TestValidateCreate_AccumulatesAllExternalModeErrors puts every External-mode
+// rule into a broken state at once (external missing, infrastructure present,
+// horizon present, all six managed-only fields set) and asserts the returned
+// error names every field, pinning the no-short-circuit contract for the matrix.
+func TestValidateCreate_AccumulatesAllExternalModeErrors(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	replicas := int32(3)
+
+	cp := externalControlPlane()
+	cp.Spec.Services.Keystone.External = nil // external missing
+	cp.Spec.Services.Keystone.Replicas = &replicas
+	cp.Spec.Services.Keystone.Image = &commonv1.ImageSpec{Repository: "r", Tag: "t"}
+	cp.Spec.Services.Keystone.PolicyOverrides = &commonv1.PolicySpec{Rules: map[string]string{"a": "b"}}
+	cp.Spec.Services.Keystone.RotationInterval = &metav1.Duration{Duration: 24 * time.Hour}
+	cp.Spec.Services.Keystone.Gateway = &commonv1.GatewaySpec{Hostname: "k.example.com"}
+	cp.Spec.Services.Keystone.PublicEndpoint = "https://k.example.com/v3"
+	cp.Spec.Infrastructure = &InfrastructureSpec{
+		Database: commonv1.DatabaseSpec{Host: "db", Database: "d", SecretRef: commonv1.SecretRefSpec{Name: "s"}},
+		Cache:    commonv1.CacheSpec{Backend: "b", Servers: []string{"mc:11211"}},
+	}
+	cp.Spec.Services.Horizon = &ServiceHorizonSpec{}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	msg := err.Error()
+	g.Expect(msg).To(ContainSubstring("external is required"), "external-required error must be present")
+	g.Expect(msg).To(ContainSubstring("services.keystone.replicas"), "replicas-forbidden error must be present")
+	g.Expect(msg).To(ContainSubstring("services.keystone.image"), "image-forbidden error must be present")
+	g.Expect(msg).To(ContainSubstring("services.keystone.policyOverrides"), "policyOverrides-forbidden error must be present")
+	g.Expect(msg).To(ContainSubstring("services.keystone.rotationInterval"), "rotationInterval-forbidden error must be present")
+	g.Expect(msg).To(ContainSubstring("services.keystone.gateway"), "gateway-forbidden error must be present")
+	g.Expect(msg).To(ContainSubstring("services.keystone.publicEndpoint"), "publicEndpoint-forbidden error must be present")
+	g.Expect(msg).To(ContainSubstring("spec.infrastructure"), "infrastructure-forbidden error must be present")
+	g.Expect(msg).To(ContainSubstring("services.horizon"), "horizon-forbidden error must be present")
+}
+
+// --- Mode transition gating ---
+
+// TestValidateUpdate_RejectsManagedToExternal verifies flipping a live managed
+// ControlPlane to External mode is rejected outright.
+func TestValidateUpdate_RejectsManagedToExternal(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	oldCP := managedControlPlane()
+	newCP := externalControlPlane()
+
+	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("cannot be changed to External"))
+}
+
+// TestValidateUpdate_RejectsExternalToManaged verifies switching a live External
+// ControlPlane back to Managed is rejected with the phase-3 takeover message.
+func TestValidateUpdate_RejectsExternalToManaged(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	oldCP := externalControlPlane()
+	newCP := managedControlPlane()
+
+	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("phase-3"))
+}
+
+// TestValidateUpdate_RejectsExternalToNilKeystone verifies removing the keystone
+// service from a live External ControlPlane (also a move away from External) is
+// rejected.
+func TestValidateUpdate_RejectsExternalToNilKeystone(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	oldCP := externalControlPlane()
+	newCP := externalControlPlane()
+	newCP.Spec.Services.Keystone = nil
+
+	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+	g.Expect(err).To(HaveOccurred())
+}
+
+// TestValidateUpdate_AllowsNilKeystoneToManaged verifies staged adoption is
+// preserved: adding a Managed keystone service to a control plane that had none
+// is accepted (neither revision is External).
+func TestValidateUpdate_AllowsNilKeystoneToManaged(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	oldCP := managedControlPlane()
+	oldCP.Spec.Services.Keystone = nil
+	newCP := managedControlPlane() // keystone present, mode unset (=> Managed)
+
+	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// TestValidateUpdate_AllowsExternalUnchanged verifies a no-op update of an
+// External ControlPlane (both revisions External, same spec) is accepted, so the
+// gating does not over-fire on a same-mode update.
+func TestValidateUpdate_AllowsExternalUnchanged(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	oldCP := externalControlPlane()
+	newCP := externalControlPlane()
+
+	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// TestValidateUpdate_RejectsInfrastructurePresenceFlip verifies removing the
+// infrastructure block on a mode-unchanged managed ControlPlane is rejected by
+// the presence-flip guard (defense-in-depth for webhook-bypassed states).
+func TestValidateUpdate_RejectsInfrastructurePresenceFlip(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	oldCP := managedControlPlane()
+	newCP := managedControlPlane()
+	newCP.Spec.Infrastructure = nil
+
+	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("infrastructure presence is immutable"))
+}

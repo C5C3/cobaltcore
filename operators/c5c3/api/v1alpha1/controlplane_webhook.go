@@ -7,6 +7,7 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"regexp"
 	"time"
 
@@ -112,6 +113,29 @@ const (
 // value ParseRelease cannot parse. The validating webhook re-checks the pattern
 // as defense-in-depth for callers that bypass CRD schema admission.
 var controlPlaneReleaseRegexp = regexp.MustCompile(`^\d{4}\.[12]$`)
+
+// validateExternalAuthURL enforces that an External-mode authURL is a well-formed
+// absolute HTTP(S) URL with a host, going beyond the coarse ^https?://[^\s/]+ CRD
+// Pattern marker on ExternalKeystoneSpec.AuthURL: the reconciler's identity
+// consumer will dial this endpoint, so admission rejects the unusable shapes
+// (missing host, non-http(s) scheme, opaque or relative references, control
+// characters) here rather than letting them wedge the dialer. This is a shape
+// gate, not an SSRF control — admission cannot resolve where the host points, so
+// the dialing reconciler must still enforce network egress restrictions. Mirrors
+// (and strengthens) the CRD Pattern marker as defense-in-depth for callers that
+// bypass CRD schema admission.
+func validateExternalAuthURL(path *field.Path, raw string) *field.Error {
+	u, err := url.Parse(raw)
+	switch {
+	case err != nil:
+		return field.Invalid(path, raw, "must be a valid http(s) URL")
+	case u.Scheme != "http" && u.Scheme != "https":
+		return field.Invalid(path, raw, "must be an http(s) URL (scheme http or https)")
+	case u.Host == "":
+		return field.Invalid(path, raw, "must include a host")
+	}
+	return nil
+}
 
 // ControlPlaneWebhook implements defaulting and validation webhooks for the
 // ControlPlane CRD. Client is injected at startup and used by
@@ -474,6 +498,106 @@ func (w *ControlPlaneWebhook) validate(cp *ControlPlane) field.ErrorList {
 		)...)
 	}
 
+	allErrs = append(allErrs, validateKeystoneMode(cp)...)
+
+	return allErrs
+}
+
+// validateKeystoneMode enforces the External-mode validation matrix. It mirrors
+// the type-level CEL rules on ServiceKeystoneSpec as defense-in-depth for callers
+// that bypass CRD schema admission (the same discipline as the release/database
+// mirrors above) AND adds the cross-field rules CEL cannot express — the ones
+// spanning spec.infrastructure and spec.services.{keystone,horizon}, which live
+// in the webhook per the established CEL-vs-webhook split.
+//
+//   - External mode: services.keystone.external is required (with an http(s)
+//     authURL and a non-empty caBundleSecretRef.name when the ref is set); the
+//     managed-only Keystone fields (replicas, image, policyOverrides,
+//     rotationInterval, gateway, publicEndpoint) are forbidden; spec.infrastructure
+//     is forbidden (phase 2 will relax this to optional) and so is services.horizon
+//     (P2 — Horizon needs its own External-mode design).
+//   - Not External (Managed, unset mode, or unset keystone): services.keystone.external
+//     is forbidden and spec.infrastructure is required — preserving today's
+//     contract now that the Go field is an optional pointer.
+func validateKeystoneMode(cp *ControlPlane) field.ErrorList {
+	var allErrs field.ErrorList
+	specPath := field.NewPath("spec")
+
+	if cp.IsExternalKeystone() {
+		ks := cp.Spec.Services.Keystone
+		ksPath := specPath.Child("services", "keystone")
+
+		if ks.External == nil {
+			allErrs = append(allErrs, field.Required(ksPath.Child("external"),
+				"external is required when services.keystone.mode is External"))
+		} else {
+			switch {
+			case ks.External.AuthURL == "":
+				allErrs = append(allErrs, field.Required(ksPath.Child("external", "authURL"),
+					"authURL is required when services.keystone.mode is External"))
+			default:
+				if err := validateExternalAuthURL(ksPath.Child("external", "authURL"), ks.External.AuthURL); err != nil {
+					allErrs = append(allErrs, err)
+				}
+			}
+			if ref := ks.External.CABundleSecretRef; ref != nil && ref.Name == "" {
+				allErrs = append(allErrs, field.Required(ksPath.Child("external", "caBundleSecretRef", "name"),
+					"must be set when caBundleSecretRef is configured"))
+			}
+		}
+
+		// Managed-only Keystone fields are forbidden in External mode: no Keystone
+		// workload is deployed, and per P2 catalog advertisement (publicEndpoint) is
+		// owned by the W5 catalog imports.
+		if ks.Replicas != nil {
+			allErrs = append(allErrs, field.Forbidden(ksPath.Child("replicas"),
+				"forbidden when services.keystone.mode is External (no Keystone workload is deployed)"))
+		}
+		if ks.Image != nil {
+			allErrs = append(allErrs, field.Forbidden(ksPath.Child("image"),
+				"forbidden when services.keystone.mode is External (no Keystone workload is deployed)"))
+		}
+		if ks.PolicyOverrides != nil {
+			allErrs = append(allErrs, field.Forbidden(ksPath.Child("policyOverrides"),
+				"forbidden when services.keystone.mode is External (no Keystone workload is deployed)"))
+		}
+		if ks.RotationInterval != nil {
+			allErrs = append(allErrs, field.Forbidden(ksPath.Child("rotationInterval"),
+				"forbidden when services.keystone.mode is External (no Keystone workload is deployed)"))
+		}
+		if ks.Gateway != nil {
+			allErrs = append(allErrs, field.Forbidden(ksPath.Child("gateway"),
+				"forbidden when services.keystone.mode is External (no Keystone workload is deployed)"))
+		}
+		if ks.PublicEndpoint != "" {
+			allErrs = append(allErrs, field.Forbidden(ksPath.Child("publicEndpoint"),
+				"forbidden when services.keystone.mode is External (catalog advertisement is owned by the External Keystone)"))
+		}
+
+		// Cross-field rules CEL cannot express.
+		if cp.Spec.Infrastructure != nil {
+			allErrs = append(allErrs, field.Forbidden(specPath.Child("infrastructure"),
+				"forbidden when services.keystone.mode is External (phase 2 will relax this to optional)"))
+		}
+		if cp.Spec.Services.Horizon != nil {
+			allErrs = append(allErrs, field.Forbidden(specPath.Child("services", "horizon"),
+				"forbidden when services.keystone.mode is External (Horizon needs its own External-mode design)"))
+		}
+
+		return allErrs
+	}
+
+	// Not External (Managed, unset mode, or unset keystone service).
+	if ks := cp.Spec.Services.Keystone; ks != nil && ks.External != nil {
+		allErrs = append(allErrs, field.Forbidden(
+			specPath.Child("services", "keystone", "external"),
+			"may only be set when services.keystone.mode is External"))
+	}
+	if cp.Spec.Infrastructure == nil {
+		allErrs = append(allErrs, field.Required(specPath.Child("infrastructure"),
+			"is required unless services.keystone.mode is External"))
+	}
+
 	return allErrs
 }
 
@@ -514,11 +638,59 @@ func newInvalidIfErrs(cp *ControlPlane, allErrs field.ErrorList) error {
 //     rejects, wedging the loop; rejecting the change at the ControlPlane layer
 //     surfaces a clean error instead.
 //
+// keystoneModeString returns cp's keystone service mode as a string for use in a
+// transition-gating error message, or "unset" when the service block is absent.
+func keystoneModeString(cp *ControlPlane) string {
+	if ks := cp.Spec.Services.Keystone; ks != nil {
+		return string(ks.Mode)
+	}
+	return "unset"
+}
+
 // validate() already enforces the database/cache XOR (exactly one of clusterRef
 // or host/servers), so clusterRef nil-ness is an unambiguous mode discriminator
 // here.
+//
+// It also gates the keystone MODE transition. This is webhook-only for the same
+// reason as the leaves above but one level up: the rule is cross-field over the
+// OLD and NEW objects (a comparison CEL x-kubernetes-validations cannot express),
+// and — unlike the immutable leaves — External->Managed must become a *gated*
+// takeover in phase 3, so both directions are rejected with distinct messages
+// rather than marked immutable (an immutable marker could never be relaxed to a
+// gated transition later).
 func validateImmutable(oldObj, newObj *ControlPlane) field.ErrorList {
 	var allErrs field.ErrorList
+
+	// Keystone mode transition gating. Managed->External is rejected outright
+	// (adoption of an existing installation must be a fresh External-mode
+	// ControlPlane, not an in-place flip of a live one). External->Managed (or
+	// away from External by removing the service) is rejected with a distinct
+	// message naming the reserved phase-3 takeover, so the direction stays a
+	// deliberate future transition rather than a hard immutable field.
+	oldExternal := oldObj.IsExternalKeystone()
+	newExternal := newObj.IsExternalKeystone()
+	modePath := field.NewPath("spec", "services", "keystone", "mode")
+	switch {
+	case !oldExternal && newExternal:
+		allErrs = append(allErrs, field.Invalid(modePath, string(KeystoneModeExternal),
+			"keystone mode cannot be changed to External on an existing ControlPlane; "+
+				"create a new External-mode ControlPlane to adopt an existing installation"))
+	case oldExternal && !newExternal:
+		allErrs = append(allErrs, field.Invalid(modePath, keystoneModeString(newObj),
+			"switching an External-mode ControlPlane to Managed is not yet supported; "+
+				"the managed takeover is reserved as the gated phase-3 transition"))
+	}
+
+	// Infrastructure presence flip (defense-in-depth for webhook-bypassed states,
+	// e.g. a direct etcd write). Adding or removing the block on UPDATE is an
+	// infrastructure-vs-mode transition that the mode gating above already covers
+	// for a mode change; freezing presence independently rejects a bare
+	// add/remove that leaves the mode unchanged.
+	if (oldObj.Spec.Infrastructure == nil) != (newObj.Spec.Infrastructure == nil) {
+		allErrs = append(allErrs, field.Invalid(
+			field.NewPath("spec", "infrastructure"), newObj.Spec.Infrastructure,
+			"infrastructure presence is immutable (adding or removing the block after creation is not permitted)"))
+	}
 
 	// spec.infrastructure is an optional pointer now (External keystone mode omits
 	// it). The database/cache immutability comparisons only apply when the block is

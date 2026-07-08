@@ -1545,3 +1545,200 @@ func TestIntegration_ControlPlane_ValidationMarkers(t *testing.T) {
 		})
 	}
 }
+
+// integrationExternalControlPlane returns the issue's minimal External-mode
+// sketch CR (mode: External + external.authURL + korc.adminCredential.
+// passwordSecretRef, no infrastructure block) for the envtest matrix.
+func integrationExternalControlPlane(name, namespace string) *c5c3v1alpha1.ControlPlane {
+	return &c5c3v1alpha1.ControlPlane{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Spec: c5c3v1alpha1.ControlPlaneSpec{
+			OpenStackRelease: "2025.2",
+			Services: c5c3v1alpha1.ServicesSpec{
+				Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{
+					Mode: c5c3v1alpha1.KeystoneModeExternal,
+					External: &c5c3v1alpha1.ExternalKeystoneSpec{
+						AuthURL: "https://keystone.example.com/v3",
+					},
+				},
+			},
+			KORC: c5c3v1alpha1.KORCSpec{
+				AdminCredential: c5c3v1alpha1.AdminCredentialSpec{
+					CloudCredentialsRef: c5c3v1alpha1.CloudCredentialsRef{CloudName: "admin"},
+					PasswordSecretRef:   commonv1.SecretRefSpec{Name: "external-admin", Key: "password"},
+				},
+			},
+		},
+	}
+}
+
+// TestIntegration_ExternalMode_AcceptedAndDefaulted drives the External-mode API
+// surface against the real envtest API server (CRD schema + CEL + defaulting and
+// validating webhooks). It proves the sketch CR is admitted and stored with the
+// External-mode defaults materialized and NO infrastructure block invented.
+func TestIntegration_ExternalMode_AcceptedAndDefaulted(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+
+	c, ctx, _ := setupControlPlaneEnvTest(t)
+	g := NewGomegaWithT(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-cp-external-ok-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	cp := integrationExternalControlPlane("cp-external", ns.Name)
+	g.Expect(c.Create(ctx, cp)).To(Succeed(), "the minimal External-mode sketch CR must be admitted")
+
+	fetched := &c5c3v1alpha1.ControlPlane{}
+	g.Expect(c.Get(ctx, client.ObjectKeyFromObject(cp), fetched)).To(Succeed())
+
+	g.Expect(fetched.Spec.Infrastructure).To(BeNil(),
+		"External mode must persist with no infrastructure block")
+	g.Expect(fetched.Spec.Services.Keystone.Mode).To(Equal(c5c3v1alpha1.KeystoneModeExternal))
+	g.Expect(fetched.Spec.Services.Keystone.External).NotTo(BeNil())
+	g.Expect(fetched.Spec.Services.Keystone.External.EndpointType).
+		To(Equal(c5c3v1alpha1.ExternalEndpointTypePublic), "endpointType must default to public")
+	// admin identity defaults materialize in External mode too.
+	g.Expect(fetched.Spec.KORC.AdminCredential.UserName).To(Equal("admin"))
+	g.Expect(fetched.Spec.KORC.AdminCredential.ProjectName).To(Equal("admin"))
+	g.Expect(fetched.Spec.KORC.AdminCredential.DomainName).To(Equal("Default"))
+}
+
+// TestIntegration_ExternalMode_Rejections exercises the External-mode rejection
+// matrix at the real admission chain. The CEL cases prove the schema layer holds
+// even if the validating webhook were bypassed; the cross-field cases exercise
+// the webhook-only rules.
+func TestIntegration_ExternalMode_Rejections(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+
+	c, ctx, _ := setupControlPlaneEnvTest(t)
+
+	cases := []struct {
+		name   string
+		mutate func(*c5c3v1alpha1.ControlPlane)
+	}{
+		{
+			name: "CEL: managed-only replicas set in External mode",
+			mutate: func(cp *c5c3v1alpha1.ControlPlane) {
+				cp.Spec.Services.Keystone.Replicas = ptr.To(int32(3))
+			},
+		},
+		{
+			name: "CEL: external block set in Managed mode",
+			mutate: func(cp *c5c3v1alpha1.ControlPlane) {
+				cp.Spec.Services.Keystone.Mode = c5c3v1alpha1.KeystoneModeManaged
+				// Managed mode requires infrastructure; supply it so the ONLY
+				// violation under test is external-in-Managed.
+				cp.Spec.Infrastructure = &c5c3v1alpha1.InfrastructureSpec{
+					Database: commonv1.DatabaseSpec{Host: "db", Database: "d", SecretRef: commonv1.SecretRefSpec{Name: "s"}},
+					Cache:    commonv1.CacheSpec{Backend: "b", Servers: []string{"mc:11211"}},
+				}
+			},
+		},
+		{
+			name: "schema: endpointType outside the enum",
+			mutate: func(cp *c5c3v1alpha1.ControlPlane) {
+				cp.Spec.Services.Keystone.External.EndpointType = "gopher"
+			},
+		},
+		{
+			name: "schema: authURL not an http(s) URL",
+			mutate: func(cp *c5c3v1alpha1.ControlPlane) {
+				cp.Spec.Services.Keystone.External.AuthURL = "keystone.example.com"
+			},
+		},
+		{
+			// The coarse ^https?:// prefix accepted a scheme-only, hostless URL;
+			// the tightened ^https?://[^\s/]+ pattern (and net/url webhook) reject
+			// it so the identity consumer never dials a hostless endpoint.
+			name: "schema: authURL has no host",
+			mutate: func(cp *c5c3v1alpha1.ControlPlane) {
+				cp.Spec.Services.Keystone.External.AuthURL = "https://"
+			},
+		},
+		{
+			name: "webhook: infrastructure set in External mode",
+			mutate: func(cp *c5c3v1alpha1.ControlPlane) {
+				cp.Spec.Infrastructure = &c5c3v1alpha1.InfrastructureSpec{
+					Database: commonv1.DatabaseSpec{Host: "db", Database: "d", SecretRef: commonv1.SecretRefSpec{Name: "s"}},
+					Cache:    commonv1.CacheSpec{Backend: "b", Servers: []string{"mc:11211"}},
+				}
+			},
+		},
+		{
+			name: "webhook: external block missing in External mode",
+			mutate: func(cp *c5c3v1alpha1.ControlPlane) {
+				cp.Spec.Services.Keystone.External = nil
+			},
+		},
+	}
+
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-cp-external-"}}
+			g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+			cp := integrationExternalControlPlane(fmt.Sprintf("cp-external-%d", i), ns.Name)
+			tc.mutate(cp)
+
+			err := c.Create(ctx, cp)
+			g.Expect(err).To(HaveOccurred(), "admission must reject: %s", tc.name)
+			g.Expect(apierrors.IsInvalid(err)).To(BeTrue(),
+				fmt.Sprintf("expected Invalid status error for %q, got: %v", tc.name, err))
+		})
+	}
+}
+
+// TestIntegration_ExternalMode_TransitionsRejected verifies the keystone-mode
+// transition gating on real UPDATEs against the envtest API server: a live
+// managed ControlPlane cannot flip to External, and a live External ControlPlane
+// cannot flip to Managed.
+func TestIntegration_ExternalMode_TransitionsRejected(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+
+	c, ctx, _ := setupControlPlaneEnvTest(t)
+
+	t.Run("managed -> External rejected", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-cp-m2e-"}}
+		g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+		cp := integrationManagedControlPlane("cp-m2e", ns.Name)
+		g.Expect(c.Create(ctx, cp)).To(Succeed())
+
+		fetched := &c5c3v1alpha1.ControlPlane{}
+		g.Expect(c.Get(ctx, client.ObjectKeyFromObject(cp), fetched)).To(Succeed())
+		fetched.Spec.Services.Keystone.Mode = c5c3v1alpha1.KeystoneModeExternal
+		fetched.Spec.Services.Keystone.Replicas = nil
+		fetched.Spec.Services.Keystone.External = &c5c3v1alpha1.ExternalKeystoneSpec{
+			AuthURL: "https://keystone.example.com/v3",
+		}
+		fetched.Spec.Infrastructure = nil
+
+		err := c.Update(ctx, fetched)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("cannot be changed to External"))
+	})
+
+	t.Run("External -> Managed rejected", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-cp-e2m-"}}
+		g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+		cp := integrationExternalControlPlane("cp-e2m", ns.Name)
+		g.Expect(c.Create(ctx, cp)).To(Succeed())
+
+		fetched := &c5c3v1alpha1.ControlPlane{}
+		g.Expect(c.Get(ctx, client.ObjectKeyFromObject(cp), fetched)).To(Succeed())
+		fetched.Spec.Services.Keystone.Mode = c5c3v1alpha1.KeystoneModeManaged
+		fetched.Spec.Services.Keystone.External = nil
+		fetched.Spec.Infrastructure = &c5c3v1alpha1.InfrastructureSpec{
+			Database: commonv1.DatabaseSpec{Host: "db", Database: "d", SecretRef: commonv1.SecretRefSpec{Name: "s"}},
+			Cache:    commonv1.CacheSpec{Backend: "b", Servers: []string{"mc:11211"}},
+		}
+
+		err := c.Update(ctx, fetched)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("phase-3"))
+	})
+}
