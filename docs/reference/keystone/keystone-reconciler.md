@@ -526,7 +526,7 @@ output (other than conditions merged after the group completes).
 | `reconcileFernetKeys` | configMapName | `FernetKeysReady` | Config | **yes (group 1)** |
 | `reconcileCredentialKeys` | configMapName | `CredentialKeysReady` | Config | **yes (group 1)** |
 | `reconcileNetworkPolicy` | CR spec | `NetworkPolicyReady` | none | **yes (group 1)** |
-| `reconcileIdentityBackends` | backend CRs + bind Secrets | `IdentityBackendsReady` | DBConnectionSecret (position only — it must run before Config, whose `[identity]` options it drives) | no (never requeues: waiting states are watch-driven) |
+| `reconcileIdentityBackends` | backend CRs + bind/client Secrets + provider metadata | `IdentityBackendsReady` | DBConnectionSecret (position only — it must run before Config, whose `[identity]` options it drives) | no (never requeues: waiting states are watch-driven) |
 | `reconcileDatabase` | configMapName | `DatabaseReady` | Config | no (complex state machine) |
 | `reconcilePolicyValidation` | configMapName | `PolicyValidReady` | Config | no (gates Deployment) |
 | `reconcileDeployment` | configMapName | `DeploymentReady` | Database (implicit) | no |

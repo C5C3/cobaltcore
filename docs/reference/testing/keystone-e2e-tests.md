@@ -89,6 +89,7 @@ Deployment rollout, bootstrap Job).
 | [missing-secret](#missing-secret) | `keystone-missing-secret` | SecretsReady requeue on missing ESO Secrets, recovery on creation |
 | [invalid-identitybackend-cr](../keystone/identity-backend-crd.md#chainsaw-e2e-tests) | (rejected at admission) | KeystoneIdentityBackend CEL/webhook rejection corpus: union rule, Default-domain protection, extraOptions denylist, immutability transitions, domain uniqueness |
 | [ldap-domain-backend](../keystone/identity-backend-crd.md#chainsaw-e2e-tests) | `keystone-ldap` | Full LDAP attach cycle against an in-suite OpenLDAP fixture: domain provisioning, config projection + rollout, LDAP user listing and token issuance, detach with deletionPolicy Delete |
+| [oidc-federation](../keystone/identity-backend-crd.md#chainsaw-e2e-tests) | `keystone-oidc` | Full OIDC federation cycle against an in-suite two-realm Keycloak fixture: federation-object provisioning, mod_auth_openidc sidecar rollout + Service targetPort switch, bearer/CLI flow via introspection, browser websso round trip, mapping-driven group membership, multi-realm issuer pinning, clean detach |
 | [fernet-rotation](#fernet-rotation) | `keystone-fernet` | CronJob schedule, manual rotation trigger, Secret data change, pod UID stability (no rollout), token validation |
 | [scale](#scale) | `keystone-scale` | Replica scaling up (3→5) and down (5→2) |
 | [deletion-cleanup](#deletion-cleanup) | `keystone-cleanup` | Owner reference cascading deletion of all owned resources |

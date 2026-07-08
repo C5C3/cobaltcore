@@ -183,6 +183,7 @@ assertion windows.
 | [api-pod-kill-pdb](#api-pod-kill-pdb) | SC-CHAOS-008 | `keystone-chaos-api` | PDB availability guarantee | PDB `minAvailable: 1`, `DeploymentReady=True` maintained, `Ready=True` maintained |
 | [operator-pod-kill](#operator-pod-kill) | SC-CHAOS-009 | `keystone-chaos-opk` | Operator pod kill (all) with failover reconciliation | All 6 conditions `True` maintained, replica patch reconciled by new leader |
 | [deletion-stuck-finalizer](#deletion-stuck-finalizer) | SC-CHAOS-010 | `keystone-chaos-stuck` | Deletion with a downed dependency operator | Keystone CR removed, `FinalizingDatabase`/`DatabaseFinalized` emitted, MariaDB CRs Terminating → removed after recovery |
+| [keystone-federation](#keystone-federation) | — | `keystone-chaos-fed` | Federation sidecar container-kill + IdP outage (fail-closed) | Sidecar `restartCount` gated recovery, `Ready=True` restored, federated auth recovers; during IdP outage federated auth non-2xx while password auth stays 201 |
 
 ---
 
@@ -617,6 +618,52 @@ suites.
   temp file, because Chainsaw steps cannot pass state between each other.
 - Step 5 asserts the *old* state (MariaDB CRs present + Terminating) before Step 7 asserts
   the *new* state (removed), following the assert-absence-of-old-state pattern.
+
+---
+
+### keystone-federation
+
+**File:** `tests/e2e-chaos/keystone-federation/chainsaw-test.yaml`
+
+**Scenario:** — (the architecture chaos catalog entry ships with the
+identity-backends implementation chapter)
+
+**Purpose:** Two scenarios against a federated Keystone (2 replicas,
+in-suite Keycloak IdP with an `mod_auth_openidc` sidecar in every pod).
+First, the repository's first **container-kill**: Chaos Mesh kills the
+`federation-proxy` container in one pod (`containerNames` on PodChaos);
+kubelet restarts it in place, so recovery is gated on the named container's
+`restartCount` before asserting `readyReplicas`, `Ready=True`, and a working
+federated bearer flow. Second, a bounded **IdP outage** (pod-failure on
+Keycloak): federated login must fail **closed** (non-2xx — the introspection
+path cannot validate bearers) while password auth through the very same
+proxy keeps answering 201; after the outage the federated flow recovers.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Fixture + federated Keystone | `apply` + `assert` (5m) | Keycloak fixture ready, Keystone `Ready=True`, backend `Ready=True`, sidecar rollout complete (`updatedReplicas == replicas`) |
+| 2 | Baseline federated auth | `script` (120s) | ROPC bearer from Keycloak, federated auth through the sidecar answers 201 |
+| 3 | Kill the sidecar container | `apply` | PodChaos `container-kill`, `containerNames: [federation-proxy]`, `mode: one` |
+| 4 | Restart observed + recovery | `script` (210s) + `assert` + `script` (120s) | `federation-proxy` `restartCount >= 1` (the kill is provably observed), `readyReplicas` back to desired, `Ready=True/AllReady`, federated bearer auth answers 201 again |
+| 5 | Delete container-kill chaos | `delete` | Removes PodChaos `kill-federation-proxy` |
+| 6 | IdP outage fails closed | `script` (150s) | Fetches a bearer BEFORE applying a bounded (60s) pod-failure on Keycloak inline, then asserts federated auth turns non-2xx while password auth via the proxy stays 201 |
+| 7 | Outage ends, federation recovers | `delete` + `assert` + `script` (240s) | Keycloak available again; the full ROPC + federated-auth flow retried until 201 |
+
+**Fixtures:** `00-keycloak.yaml` (single-realm Keycloak with a self-signed
+https listener for the introspection endpoint), `01-keystone-cr.yaml`
+(replicas 2, federation proxy image), `02-backend-cr.yaml` (explicit
+endpoints, introspection with `tlsVerify: false`), `03-container-kill.yaml`
+
+**Catch blocks:** every step calls `../diagnostics.sh` with the Keycloak
+dependency label and the keystone instance log label.
+
+**Design note:** the IdP-outage chaos is applied inline from the step-6
+script (not a fixture apply) so the probe bearer token is provably fetched
+before the IdP disappears; the chaos carries a bounded `duration` so the
+fixture heals itself even if the test is interrupted before the explicit
+delete.
 
 ---
 

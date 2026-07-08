@@ -43,9 +43,10 @@ const (
 )
 
 // Shared federation projection vocabulary. Like the domains constants in
-// reconcile_identitybackends.go, these live on the keystone side of the
-// contract and are read by the dedicated backend controller
-// (isConfigProjected) so both controllers agree on the volume/key naming by
+// reconcile_identitybackends.go, these are defined once and used by both
+// controllers — the keystone-side projection (reconcile_federation.go,
+// buildFederationVolumes) and the dedicated backend controller
+// (isConfigProjected) — so the volume/key naming contract holds by
 // construction.
 const (
 	// federationProxyConfigVolumeName projects the rendered proxy.conf into
