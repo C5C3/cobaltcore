@@ -89,7 +89,7 @@ to individual `go.mod` files.
 ### Worked example: 1.25.10 → 1.26.3
 
 An illustrative past minor upgrade (the workspace has since moved on — at the time of
-writing all four files are on `go 1.26.4`). Substitute the current and target versions
+writing all four files are on `go 1.26.5`). Substitute the current and target versions
 for your own bump; the mechanics below are unchanged.
 
 ```bash
