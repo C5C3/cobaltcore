@@ -63,7 +63,7 @@ func TestDomainsVolumeThreading(t *testing.T) {
 			name:          "Deployment",
 			containerName: "keystone",
 			podSpec: func(n string) corev1.PodSpec {
-				return buildKeystoneDeployment(deployTestKeystone(), "keystone-config-abc123", "", n).Spec.Template.Spec
+				return buildKeystoneDeployment(deployTestKeystone(), "keystone-config-abc123", "", n, nil).Spec.Template.Spec
 			},
 		},
 		{

@@ -5274,3 +5274,150 @@ func TestIntegrationIdentityBackend_RetainPolicyKeepsDomain(t *testing.T) {
 	g.Expect(identityServer.GetDomainByName("retained")).NotTo(BeNil(),
 		"Retain (the default) must leave the domain in place")
 }
+
+// integrationOIDCBackend returns a valid OIDC backend CR attached to the
+// given Keystone: explicit discovery endpoints (no metadata fetch), one
+// issuer-gated mapping rule, and one declarative group with a domain-scoped
+// role assignment. The client Secret is named <name>-client.
+func integrationOIDCBackend(name, namespace, keystoneName, domain string) *keystonev1alpha1.KeystoneIdentityBackend {
+	return &keystonev1alpha1.KeystoneIdentityBackend{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Spec: keystonev1alpha1.KeystoneIdentityBackendSpec{
+			KeystoneRef: keystonev1alpha1.KeystoneRefSpec{Name: keystoneName},
+			Domain: keystonev1alpha1.DomainSpec{
+				Name: domain,
+				Mode: keystonev1alpha1.DomainModeManage,
+			},
+			Type: keystonev1alpha1.IdentityBackendTypeOIDC,
+			OIDC: &keystonev1alpha1.OIDCBackendSpec{
+				Issuer:          "https://idp.example.com/realms/forge",
+				ClientID:        "keystone",
+				ClientSecretRef: commonv1.SecretRefSpec{Name: name + "-client"},
+				Endpoints: &keystonev1alpha1.OIDCEndpointsSpec{
+					AuthorizationEndpoint: "https://idp.example.com/realms/forge/protocol/openid-connect/auth",
+					TokenEndpoint:         "https://idp.example.com/realms/forge/protocol/openid-connect/token",
+					JWKSURI:               "https://idp.example.com/realms/forge/protocol/openid-connect/certs",
+				},
+			},
+			Mappings: []keystonev1alpha1.MappingRuleSpec{{
+				Local: []keystonev1alpha1.MappingLocalRuleSpec{{
+					User:   &keystonev1alpha1.MappingUserSpec{Name: "{0}"},
+					Groups: "{1}",
+				}},
+				Remote: []keystonev1alpha1.MappingRemoteRuleSpec{
+					{Type: "HTTP_OIDC_PREFERRED_USERNAME"},
+					{Type: "HTTP_OIDC_ISS", AnyOneOf: []string{"https://idp.example.com/realms/forge"}},
+				},
+			}},
+			Groups: []keystonev1alpha1.FederationGroupSpec{{
+				Name: "federated-users",
+				RoleAssignments: []keystonev1alpha1.FederationRoleAssignmentSpec{
+					{Role: "member", Domain: true},
+				},
+			}},
+		},
+	}
+}
+
+// TestIntegrationOIDCBackend_FullAttachAndDeleteFlow drives an OIDC backend
+// against a live API server (webhook + CEL active) and the fake identity API:
+// attach after the Keystone is Ready, watch the federation objects get
+// provisioned and the federation Secret land in the Deployment as the
+// mod_auth_openidc sidecar, then delete the backend and watch de-projection,
+// federation-object teardown, and finalizer release.
+func TestIntegrationOIDCBackend_FullAttachAndDeleteFlow(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _, identityServer := setupEnvTestWithControllerAndIdentity(t)
+	identityServer.SeedRole("member")
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-oidcbackend-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+	createPrerequisites(t, ctx, c, ns.Name)
+
+	ks := integrationBrownfieldKeystone("test-keystone", ns.Name)
+	ks.Spec.Federation = &keystonev1alpha1.FederationSpec{
+		ProxyImage: &commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone-federation-proxy", Tag: "latest"},
+	}
+	g.Expect(c.Create(ctx, ks)).To(Succeed())
+	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
+
+	g.Expect(c.Create(ctx, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "corp-oidc-client", Namespace: ns.Name},
+		Data:       map[string][]byte{"clientSecret": []byte("rp-secret")},
+	})).To(Succeed())
+	backend := integrationOIDCBackend("corp-oidc", ns.Name, ks.Name, "corp")
+	g.Expect(c.Create(ctx, backend)).To(Succeed())
+
+	backendKey := types.NamespacedName{Name: "corp-oidc", Namespace: ns.Name}
+	waitForBackendCondition(t, ctx, c, backendKey, conditionTypeDomainReady, metav1.ConditionTrue, eventuallyLongTimeout)
+	waitForBackendCondition(t, ctx, c, backendKey, conditionTypeFederationObjectsReady, metav1.ConditionTrue, eventuallyLongTimeout)
+	waitForBackendCondition(t, ctx, c, backendKey, conditionTypeMappingsReady, metav1.ConditionTrue, eventuallyLongTimeout)
+
+	// The federation objects exist on the identity API with the spec shape.
+	idp := identityServer.IdentityProvider("corp-oidc")
+	g.Expect(idp).NotTo(BeNil())
+	g.Expect(idp.RemoteIDs).To(ConsistOf("https://idp.example.com/realms/forge"))
+	g.Expect(identityServer.Mapping("corp-oidc-mapping")).NotTo(BeNil())
+	g.Expect(identityServer.Protocol("corp-oidc", "openid")).NotTo(BeNil())
+
+	// The projection lands: sidecar + federation Secret in the Deployment,
+	// backend fully Ready. The re-render rolls the Deployment, so keep
+	// re-simulating readiness.
+	driveReRenderUntil(t, ctx, c, ks.Name, ns.Name,
+		"OIDC backend must become Ready after the projection lands",
+		backendConditionIs(ctx, c, backendKey, "Ready", metav1.ConditionTrue),
+		eventuallyLongTimeout)
+
+	var deploy appsv1.Deployment
+	g.Expect(c.Get(ctx, types.NamespacedName{Name: ks.Name, Namespace: ns.Name}, &deploy)).To(Succeed())
+	containerNames := make([]string, 0, len(deploy.Spec.Template.Spec.Containers))
+	for _, ct := range deploy.Spec.Template.Spec.Containers {
+		containerNames = append(containerNames, ct.Name)
+	}
+	g.Expect(containerNames).To(ConsistOf("keystone", "federation-proxy"))
+	var federationSecretName string
+	for _, v := range deploy.Spec.Template.Spec.Volumes {
+		if v.Name == federationMetadataVolumeName {
+			federationSecretName = v.Secret.SecretName
+		}
+	}
+	g.Expect(federationSecretName).To(HavePrefix(ks.Name + "-federation-"))
+
+	var fedSecret corev1.Secret
+	g.Expect(c.Get(ctx, types.NamespacedName{Name: federationSecretName, Namespace: ns.Name}, &fedSecret)).To(Succeed())
+	g.Expect(fedSecret.Data).To(HaveKey("proxy.conf"))
+	g.Expect(fedSecret.Data).To(HaveKey("corp-oidc.client"))
+
+	// The Service switched its targetPort to the sidecar.
+	var svc corev1.Service
+	g.Expect(c.Get(ctx, types.NamespacedName{Name: ks.Name, Namespace: ns.Name}, &svc)).To(Succeed())
+	g.Expect(svc.Spec.Ports[0].TargetPort.IntValue()).To(Equal(int(federationProxyPort)))
+
+	ksKey := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
+	waitForCondition(t, ctx, c, ksKey, "Ready", metav1.ConditionTrue, eventuallyTimeout)
+
+	// Teardown: delete de-projects, removes the federation objects, and
+	// releases the finalizer; the sidecar disappears with the projection.
+	g.Expect(c.Delete(ctx, backend)).To(Succeed())
+	driveReRenderUntil(t, ctx, c, ks.Name, ns.Name,
+		"OIDC backend must be released after de-projection",
+		func() bool {
+			var b keystonev1alpha1.KeystoneIdentityBackend
+			return apierrors.IsNotFound(c.Get(ctx, backendKey, &b))
+		},
+		eventuallyLongTimeout)
+
+	g.Expect(identityServer.IdentityProvider("corp-oidc")).To(BeNil(), "the identity provider must be torn down")
+	g.Expect(identityServer.Mapping("corp-oidc-mapping")).To(BeNil(), "the mapping must be torn down")
+
+	g.Eventually(func() bool {
+		var d appsv1.Deployment
+		if err := c.Get(ctx, types.NamespacedName{Name: ks.Name, Namespace: ns.Name}, &d); err != nil {
+			return false
+		}
+		return len(d.Spec.Template.Spec.Containers) == 1
+	}, eventuallyLongTimeout, pollInterval).Should(BeTrue(), "the sidecar must be de-projected")
+	waitForCondition(t, ctx, c, ksKey, "Ready", metav1.ConditionTrue, eventuallyTimeout)
+}

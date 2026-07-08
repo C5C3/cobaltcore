@@ -12,6 +12,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
@@ -115,14 +116,14 @@ func dbReadinessProbe() *corev1.Probe {
 // re-issues the engine credential (the dbCredentialRefreshInterval cadence, kept
 // well below the lease TTL), so dbConnectionHash is stamped into a pod-template
 // annotation to roll the Deployment when the engine-issued credential changes.
-func (r *KeystoneReconciler) reconcileDeployment(ctx context.Context, keystone *keystonev1alpha1.Keystone, configMapName, dbConnectionHash, domainsSecretName string) (ctrl.Result, error) {
-	deploy := buildKeystoneDeployment(keystone, configMapName, dbConnectionHash, domainsSecretName)
+func (r *KeystoneReconciler) reconcileDeployment(ctx context.Context, keystone *keystonev1alpha1.Keystone, configMapName, dbConnectionHash, domainsSecretName string, fed *federationProjection) (ctrl.Result, error) {
+	deploy := buildKeystoneDeployment(keystone, configMapName, dbConnectionHash, domainsSecretName, fed)
 	ready, err := deployment.EnsureDeployment(ctx, r.Client, r.Scheme, keystone, deploy)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring Deployment: %w", err)
 	}
 
-	svc := buildKeystoneService(keystone)
+	svc := buildKeystoneService(keystone, fed != nil)
 	if err := deployment.EnsureService(ctx, r.Client, r.Scheme, keystone, svc); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring Service: %w", err)
 	}
@@ -209,9 +210,10 @@ func deploymentReplicas(keystone *keystonev1alpha1.Keystone) *int32 {
 // keystone.c5c3.io/<x>-hash annotation-key style.
 const dbConnectionHashAnnotation = "keystone.c5c3.io/db-connection-hash"
 
-func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName, dbConnectionHash, domainsSecretName string) *appsv1.Deployment {
+func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName, dbConnectionHash, domainsSecretName string, fed *federationProjection) *appsv1.Deployment {
 	selector := selectorLabels(keystone)
 	labels := commonLabels(keystone)
+	federationActive := fed != nil
 	fernetSecretName := fmt.Sprintf("%s-fernet-keys", keystone.Name)
 	credentialSecretName := fmt.Sprintf("%s-credential-keys", keystone.Name)
 	// Roll the Deployment when a Dynamic (engine-issued) credential rotates: the
@@ -250,32 +252,15 @@ func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName,
 						Image:           keystone.Spec.Image.Reference(),
 						Resources:       containerResources(keystone),
 						SecurityContext: deployment.RestrictedSecurityContext(),
-						Command:         uwsgiCommand(keystone.Spec.UWSGI),
+						Command:         uwsgiCommand(keystone.Spec.UWSGI, federationActive),
 						Env:             []corev1.EnvVar{buildDBConnectionEnvVar(keystone)},
 						Ports: []corev1.ContainerPort{{
 							Name:          "keystone",
 							ContainerPort: 5000,
 						}},
-						LivenessProbe: &corev1.Probe{
-							ProbeHandler: corev1.ProbeHandler{
-								TCPSocket: &corev1.TCPSocketAction{
-									Port: intstr.FromInt32(5000),
-								},
-							},
-							InitialDelaySeconds: 15,
-							PeriodSeconds:       20,
-						},
+						LivenessProbe:  keystoneLivenessProbe(federationActive),
 						ReadinessProbe: dbReadinessProbe(),
-						StartupProbe: &corev1.Probe{
-							ProbeHandler: corev1.ProbeHandler{
-								HTTPGet: &corev1.HTTPGetAction{
-									Path: "/v3",
-									Port: intstr.FromInt32(5000),
-								},
-							},
-							FailureThreshold: 30,
-							PeriodSeconds:    10,
-						},
+						StartupProbe:   keystoneStartupProbe(federationActive),
 						Lifecycle: &corev1.Lifecycle{
 							PreStop: &corev1.LifecycleHandler{
 								Exec: &corev1.ExecAction{
@@ -355,7 +340,170 @@ func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName,
 			deploy.Spec.Template.Spec.Containers[0].VolumeMounts, domMount,
 		)
 	}
+	// Project the mod_auth_openidc sidecar when at least one OIDC backend is
+	// attached. The federation Secret name is content-hashed, so a config,
+	// client-secret, metadata, or passphrase change rolls the Deployment.
+	if federationActive {
+		deploy.Spec.Template.Spec.Containers = append(deploy.Spec.Template.Spec.Containers,
+			buildFederationProxyContainer(fed))
+		deploy.Spec.Template.Spec.Volumes = append(deploy.Spec.Template.Spec.Volumes,
+			buildFederationVolumes(fed)...)
+	}
 	return deploy
+}
+
+// federationProxyTmpVolumeName is the emptyDir scratch space the sidecar's
+// Apache writes its pid file, mutexes, and runtime state into (the image's
+// httpd-base.conf pins every runtime path to /tmp so the root filesystem can
+// stay read-only).
+const federationProxyTmpVolumeName = "federation-proxy-tmp"
+
+// keystoneLivenessProbe returns the keystone container liveness probe: a
+// plain check that uWSGI still answers on its API port. With federation
+// active uWSGI binds 127.0.0.1 only, which kubelet TCP probes (they target
+// the pod IP) can no longer reach — the probe becomes an exec-form localhost
+// connect instead, keeping identical timing and semantics.
+func keystoneLivenessProbe(federationActive bool) *corev1.Probe {
+	probe := &corev1.Probe{
+		InitialDelaySeconds: 15,
+		PeriodSeconds:       20,
+	}
+	if federationActive {
+		probe.ProbeHandler = corev1.ProbeHandler{
+			Exec: &corev1.ExecAction{Command: []string{
+				"/bin/sh", "-c",
+				`python3 -c "import socket; socket.create_connection(('127.0.0.1', 5000), 5).close()"`,
+			}},
+		}
+		return probe
+	}
+	probe.ProbeHandler = corev1.ProbeHandler{
+		TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt32(5000)},
+	}
+	return probe
+}
+
+// keystoneStartupProbe returns the keystone container startup probe (GET /v3
+// until the WSGI app answers). Same localhost-bind reasoning as
+// keystoneLivenessProbe: kubelet HTTP probes target the pod IP, so the
+// federation-active variant fetches /v3 from inside the container.
+func keystoneStartupProbe(federationActive bool) *corev1.Probe {
+	probe := &corev1.Probe{
+		FailureThreshold: 30,
+		PeriodSeconds:    10,
+	}
+	if federationActive {
+		probe.ProbeHandler = corev1.ProbeHandler{
+			Exec: &corev1.ExecAction{Command: []string{
+				"/bin/sh", "-c",
+				`python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/v3', timeout=5)"`,
+			}},
+		}
+		return probe
+	}
+	probe.ProbeHandler = corev1.ProbeHandler{
+		HTTPGet: &corev1.HTTPGetAction{Path: "/v3", Port: intstr.FromInt32(5000)},
+	}
+	return probe
+}
+
+// buildFederationProxyContainer builds the mod_auth_openidc sidecar. The
+// resources are fixed modest constants (a reverse proxy for an identity API);
+// a spec knob is deferred until a deployment demonstrates the need. The
+// readiness probe fetches /v3 THROUGH the proxy so a pod only enters the
+// Service when the whole proxy→uWSGI chain answers; startup/liveness stay
+// plain TCP so Apache is only restarted when it is genuinely dead.
+func buildFederationProxyContainer(fed *federationProjection) corev1.Container {
+	return corev1.Container{
+		Name:            "federation-proxy",
+		Image:           fed.ProxyImage.Reference(),
+		SecurityContext: deployment.RestrictedSecurityContext(),
+		Resources: corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("25m"),
+				corev1.ResourceMemory: resource.MustParse("64Mi"),
+			},
+			Limits: corev1.ResourceList{
+				corev1.ResourceMemory: resource.MustParse("256Mi"),
+			},
+		},
+		Command: []string{"apache2", "-DFOREGROUND", "-f", "/etc/keystone-federation-proxy/httpd-base.conf"},
+		Ports: []corev1.ContainerPort{{
+			Name:          "proxy",
+			ContainerPort: federationProxyPort,
+		}},
+		StartupProbe: &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{
+				TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt32(federationProxyPort)},
+			},
+			FailureThreshold: 30,
+			PeriodSeconds:    2,
+		},
+		LivenessProbe: &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{
+				TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt32(federationProxyPort)},
+			},
+			InitialDelaySeconds: 15,
+			PeriodSeconds:       20,
+		},
+		ReadinessProbe: &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{
+				HTTPGet: &corev1.HTTPGetAction{Path: "/v3", Port: intstr.FromInt32(federationProxyPort)},
+			},
+			InitialDelaySeconds: 5,
+			PeriodSeconds:       10,
+		},
+		VolumeMounts: []corev1.VolumeMount{
+			{
+				Name:      federationProxyConfigVolumeName,
+				MountPath: federationProxyConfMountPath,
+				ReadOnly:  true,
+			},
+			{
+				Name:      federationMetadataVolumeName,
+				MountPath: federationMetadataMountPath,
+				ReadOnly:  true,
+			},
+			{
+				Name:      federationProxyTmpVolumeName,
+				MountPath: "/tmp",
+			},
+		},
+	}
+}
+
+// buildFederationVolumes builds the pod volumes backing the sidecar: both
+// config volumes source the one content-hashed federation Secret (0o400 —
+// it carries client secrets and the crypto passphrase) with different
+// KeyToPath item sets, plus the emptyDir scratch space for Apache's runtime
+// files.
+func buildFederationVolumes(fed *federationProjection) []corev1.Volume {
+	return []corev1.Volume{
+		{
+			Name: federationProxyConfigVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName:  fed.SecretName,
+					DefaultMode: ptr.To(int32(0o400)),
+					Items:       []corev1.KeyToPath{{Key: "proxy.conf", Path: "proxy.conf"}},
+				},
+			},
+		},
+		{
+			Name: federationMetadataVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName:  fed.SecretName,
+					DefaultMode: ptr.To(int32(0o400)),
+					Items:       fed.MetadataItems,
+				},
+			},
+		},
+		{
+			Name:         federationProxyTmpVolumeName,
+			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+		},
+	}
 }
 
 // buildPodDisruptionBudget constructs the desired PDB for the Keystone API
@@ -372,9 +520,14 @@ func buildPodDisruptionBudget(keystone *keystonev1alpha1.Keystone) *policyv1.Pod
 
 // uwsgiCommand constructs the uWSGI container command from the given spec.
 // When uwsgi is nil, hardcoded defaults (processes=2, threads=1,
-// httpKeepAlive=true) are used. Fixed flags (--http :5000, --wsgi-file,
+// httpKeepAlive=true) are used. Fixed flags (--http, --wsgi-file,
 // --master, --lazy-apps, --need-app, --pyargv) are always included regardless
 // of configuration.
+//
+// federationActive rebinds uWSGI to 127.0.0.1:5000 — only the sidecar may
+// reach it, so no in-cluster client can bypass the header-stripping proxy —
+// and appends --buffer-size 65535: the spike measured claim headers plus the
+// ~4 KiB client-cookie session blowing the 4096-byte default (502s).
 //
 // Optional graceful-termination tuning when UWSGISpec.Harakiri is
 // non-nil, "--harakiri <n>" is appended so a single stuck request cannot hold
@@ -389,7 +542,7 @@ func buildPodDisruptionBudget(keystone *keystonev1alpha1.Keystone) *policyv1.Pod
 // "--log-format <literal>" are appended unconditionally between the
 // --http-keepalive[-timeout] block and --wsgi-file so request lines reach
 // stderr in every configuration, including when keep-alive is disabled.
-func uwsgiCommand(uwsgi *keystonev1alpha1.UWSGISpec) []string {
+func uwsgiCommand(uwsgi *keystonev1alpha1.UWSGISpec, federationActive bool) []string {
 	processes := keystonev1alpha1.DefaultUWSGIProcesses
 	threads := keystonev1alpha1.DefaultUWSGIThreads
 	httpKeepAlive := keystonev1alpha1.DefaultUWSGIHTTPKeepAlive
@@ -404,9 +557,16 @@ func uwsgiCommand(uwsgi *keystonev1alpha1.UWSGISpec) []string {
 		}
 	}
 
+	bind := ":5000"
+	if federationActive {
+		bind = "127.0.0.1:5000"
+	}
 	cmd := []string{
 		"uwsgi",
-		"--http", ":5000",
+		"--http", bind,
+	}
+	if federationActive {
+		cmd = append(cmd, "--buffer-size", strconv.Itoa(uwsgiFederationBufferSize))
 	}
 	if httpKeepAlive {
 		cmd = append(cmd, "--http-keepalive")
@@ -490,7 +650,16 @@ func deploymentStrategy(keystone *keystonev1alpha1.Keystone) appsv1.DeploymentSt
 	return deployment.Strategy(&keystone.Spec.Deployment)
 }
 
-func buildKeystoneService(keystone *keystonev1alpha1.Keystone) *corev1.Service {
+// buildKeystoneService builds the Keystone API Service. The Service port
+// stays 5000 in every configuration — internalAPIURL, the status endpoint,
+// the HTTPRoute backend, and the health check all key on it — but with
+// federation active the targetPort switches to the sidecar so every request
+// traverses the header-stripping proxy.
+func buildKeystoneService(keystone *keystonev1alpha1.Keystone, federationActive bool) *corev1.Service {
+	targetPort := int32(5000)
+	if federationActive {
+		targetPort = federationProxyPort
+	}
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      subResourceName(keystone),
@@ -501,7 +670,7 @@ func buildKeystoneService(keystone *keystonev1alpha1.Keystone) *corev1.Service {
 			Selector: selectorLabels(keystone),
 			Ports: []corev1.ServicePort{{
 				Port:       5000,
-				TargetPort: intstr.FromInt32(5000),
+				TargetPort: intstr.FromInt32(targetPort),
 				Protocol:   corev1.ProtocolTCP,
 			}},
 		},

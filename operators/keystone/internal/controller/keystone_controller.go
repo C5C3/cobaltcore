@@ -446,8 +446,10 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		// FernetKeys, CredentialKeys, and NetworkPolicy are independent of each
 		// other and run concurrently. All three depend on Config having
 		// completed. NetworkPolicy has no data dependency on the Deployment — it
-		// uses selectorLabels derived from the CR. The group's members
-		// self-instrument, so the step carries no sub_reconciler name
+		// uses selectorLabels derived from the CR plus the federation
+		// projection (ingress target port + IdP egress ports), which
+		// IdentityBackends populated earlier in the pipeline. The group's
+		// members self-instrument, so the step carries no sub_reconciler name
 		{Fn: func(ctx context.Context) (ctrl.Result, error) {
 			return r.reconcileParallelGroup(ctx, &keystone, []commonreconcile.ParallelStep[*keystonev1alpha1.Keystone]{
 				{
@@ -468,7 +470,7 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 					Name:          "NetworkPolicy",
 					ConditionType: "NetworkPolicyReady",
 					Fn: func(ctx context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
-						return r.reconcileNetworkPolicy(ctx, ks)
+						return r.reconcileNetworkPolicy(ctx, ks, federation)
 					},
 				},
 			})
@@ -482,7 +484,7 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			return r.reconcilePolicyValidation(ctx, &keystone, configMapName, domainsSecretName)
 		}},
 		{Name: "Deployment", Fn: func(ctx context.Context) (ctrl.Result, error) {
-			return r.reconcileDeployment(ctx, &keystone, configMapName, dbConnectionHash, domainsSecretName)
+			return r.reconcileDeployment(ctx, &keystone, configMapName, dbConnectionHash, domainsSecretName, federation)
 		}},
 		// Prune stale immutable ConfigMaps and domains Secrets after
 		// Deployment is ready so all pods run the new config before old

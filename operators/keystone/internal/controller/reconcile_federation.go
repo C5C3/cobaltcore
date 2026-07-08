@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -76,6 +77,10 @@ type federationProjection struct {
 	MetadataItems     []corev1.KeyToPath
 	RemoteIDAttribute string
 	ProxyImage        commonv1.ImageSpec
+	// EgressPorts are the deduplicated identity-provider ports (derived from
+	// the issuer, metadata, and explicit endpoint URLs, scheme-defaulted
+	// 443/80) the NetworkPolicy must allow the sidecar to reach.
+	EgressPorts []int32
 }
 
 // identityBackendsProjection is reconcileIdentityBackends' aggregate result:
@@ -104,6 +109,7 @@ type oidcRender struct {
 	sessionType       string
 	stateInputHeaders string
 	stripHeaders      []string
+	egressPorts       []int32
 }
 
 // federationSecretBaseName returns the content-hashed federation Secret's
@@ -224,6 +230,73 @@ func effectiveOIDCStateInputHeaders(o *keystonev1alpha1.OIDCBackendSpec) string 
 		return string(o.StateInputHeaders)
 	}
 	return string(keystonev1alpha1.OIDCStateInputHeadersNone)
+}
+
+// urlEgressPort derives the TCP port of one identity-provider URL for the
+// NetworkPolicy egress rule, defaulting by scheme (443 https, 80 http) when
+// the URL carries no explicit port.
+func urlEgressPort(rawURL string) int32 {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return 443
+	}
+	if p := u.Port(); p != "" {
+		const maxPort = 65535
+		if n, err := strconv.ParseInt(p, 10, 32); err == nil && n > 0 && n <= maxPort {
+			return int32(n)
+		}
+	}
+	if u.Scheme == "http" {
+		return 80
+	}
+	return 443
+}
+
+// oidcBackendEgressPorts collects the deduplicated identity-provider ports
+// one backend needs egress to: the issuer, the metadata URL, and — when
+// discovery is explicit — every endpoint URL (the sidecar connects to the
+// token/jwks/userinfo/introspection endpoints server-side).
+func oidcBackendEgressPorts(o *keystonev1alpha1.OIDCBackendSpec) []int32 {
+	urls := []string{o.Issuer}
+	if o.ProviderMetadataURL != "" {
+		urls = append(urls, o.ProviderMetadataURL)
+	}
+	if e := o.Endpoints; e != nil {
+		urls = append(urls, e.TokenEndpoint, e.JWKSURI)
+		for _, u := range []string{e.UserinfoEndpoint, e.EndSessionEndpoint, e.IntrospectionEndpoint} {
+			if u != "" {
+				urls = append(urls, u)
+			}
+		}
+	}
+	seen := make(map[int32]struct{}, len(urls))
+	var ports []int32
+	for _, u := range urls {
+		port := urlEgressPort(u)
+		if _, ok := seen[port]; ok {
+			continue
+		}
+		seen[port] = struct{}{}
+		ports = append(ports, port)
+	}
+	return ports
+}
+
+// appendUniquePorts appends ports to base, skipping any already present, so the
+// merged egress-port list stays deduplicated.
+func appendUniquePorts(base []int32, ports ...int32) []int32 {
+	seen := make(map[int32]struct{}, len(base))
+	for _, p := range base {
+		seen[p] = struct{}{}
+	}
+	for _, p := range ports {
+		if _, ok := seen[p]; ok {
+			continue
+		}
+		seen[p] = struct{}{}
+		base = append(base, p)
+	}
+	return base
 }
 
 // validateOIDCRenderInputs re-validates every spec value the render embeds
@@ -525,6 +598,36 @@ func introspectionEndpointFromMetadata(document []byte) string {
 	return doc.IntrospectionEndpoint
 }
 
+// providerMetadataEgressPorts derives the TCP ports the sidecar's
+// mod_auth_openidc connects to from a fetched discovery document's endpoints.
+// In discovery mode the .provider document is pre-provisioned and the module
+// dials these endpoints directly (never re-resolving the issuer host), so their
+// ports — not the issuer's — are what the NetworkPolicy egress rule must allow.
+// Returns nil when the document is absent or not valid JSON.
+func providerMetadataEgressPorts(document []byte) []int32 {
+	var doc struct {
+		AuthorizationEndpoint string `json:"authorization_endpoint"`
+		TokenEndpoint         string `json:"token_endpoint"`
+		JWKSURI               string `json:"jwks_uri"`
+		UserinfoEndpoint      string `json:"userinfo_endpoint"`
+		EndSessionEndpoint    string `json:"end_session_endpoint"`
+		IntrospectionEndpoint string `json:"introspection_endpoint"`
+	}
+	if err := json.Unmarshal(document, &doc); err != nil {
+		return nil
+	}
+	var ports []int32
+	for _, u := range []string{
+		doc.AuthorizationEndpoint, doc.TokenEndpoint, doc.JWKSURI,
+		doc.UserinfoEndpoint, doc.EndSessionEndpoint, doc.IntrospectionEndpoint,
+	} {
+		if u != "" {
+			ports = append(ports, urlEgressPort(u))
+		}
+	}
+	return ports
+}
+
 // renderOIDCBackend renders one OIDC backend's federation artifacts: the
 // pre-provisioned .provider discovery document (the read-only projection
 // prevents the module's self-caching), the .client credentials document, and
@@ -604,6 +707,17 @@ func (r *KeystoneReconciler) renderOIDCBackend(ctx context.Context, keystone *ke
 		return oidcRender{}, fmt.Errorf("marshaling provider conf document: %w", err)
 	}
 
+	egressPorts := oidcBackendEgressPorts(o)
+	if o.Endpoints == nil {
+		// Discovery mode: the .provider document is pre-provisioned, so
+		// mod_auth_openidc never re-resolves the issuer host — it connects to
+		// the token/jwks/userinfo/introspection endpoints named in the fetched
+		// document, whose ports can differ from the issuer's. Merge those so
+		// the NetworkPolicy egress rule allows the sidecar's outbound
+		// connections (the spec covers explicit-endpoints mode already).
+		egressPorts = appendUniquePorts(egressPorts, providerMetadataEgressPorts(provider)...)
+	}
+
 	return oidcRender{
 		backendName:       backend.Name,
 		idpName:           backend.EffectiveIdentityProviderName(),
@@ -620,6 +734,7 @@ func (r *KeystoneReconciler) renderOIDCBackend(ctx context.Context, keystone *ke
 		sessionType:       effectiveOIDCSessionType(o),
 		stateInputHeaders: effectiveOIDCStateInputHeaders(o),
 		stripHeaders:      claimStripHeaders(backend.EffectiveRemoteIDAttribute(), backend.Spec.Mappings),
+		egressPorts:       egressPorts,
 	}, nil
 }
 
@@ -813,8 +928,17 @@ func (r *KeystoneReconciler) buildFederationProjection(ctx context.Context, keys
 		"proxy.conf": renderProxyConf(keystone, renders, passphrase),
 	}
 	items := make([]corev1.KeyToPath, 0, 3*len(renders))
+	seenPorts := map[int32]struct{}{}
+	var egressPorts []int32
 	for i := range renders {
 		rd := &renders[i]
+		for _, port := range rd.egressPorts {
+			if _, ok := seenPorts[port]; ok {
+				continue
+			}
+			seenPorts[port] = struct{}{}
+			egressPorts = append(egressPorts, port)
+		}
 		// Safe Secret keys ('%' is invalid there) mapped onto the real
 		// mod_auth_openidc filenames via KeyToPath at mount time.
 		providerKey := rd.backendName + ".provider"
@@ -841,6 +965,7 @@ func (r *KeystoneReconciler) buildFederationProjection(ctx context.Context, keys
 		MetadataItems:     items,
 		RemoteIDAttribute: remoteIDAttribute,
 		ProxyImage:        proxyImage,
+		EgressPorts:       egressPorts,
 	}, nil
 }
 

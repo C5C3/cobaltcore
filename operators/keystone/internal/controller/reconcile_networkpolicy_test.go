@@ -90,7 +90,7 @@ func TestBuildKeystoneNetworkPolicy_NameAndNamespace(t *testing.T) {
 		},
 	}
 
-	np := buildKeystoneNetworkPolicy(ks, "")
+	np := buildKeystoneNetworkPolicy(ks, "", nil)
 
 	g.Expect(np.Name).To(Equal("test-keystone"))
 	g.Expect(np.Namespace).To(Equal("default"))
@@ -105,7 +105,7 @@ func TestBuildKeystoneNetworkPolicy_Labels(t *testing.T) {
 		},
 	}
 
-	np := buildKeystoneNetworkPolicy(ks, "")
+	np := buildKeystoneNetworkPolicy(ks, "", nil)
 
 	g.Expect(np.Labels).To(HaveKeyWithValue("app.kubernetes.io/name", "keystone"))
 	g.Expect(np.Labels).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-keystone"))
@@ -121,7 +121,7 @@ func TestBuildKeystoneNetworkPolicy_PodSelector(t *testing.T) {
 		},
 	}
 
-	np := buildKeystoneNetworkPolicy(ks, "")
+	np := buildKeystoneNetworkPolicy(ks, "", nil)
 
 	g.Expect(np.Spec.PodSelector.MatchLabels).To(HaveKeyWithValue("app.kubernetes.io/name", "keystone"))
 	g.Expect(np.Spec.PodSelector.MatchLabels).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-keystone"))
@@ -137,7 +137,7 @@ func TestBuildKeystoneNetworkPolicy_PolicyTypes(t *testing.T) {
 		},
 	}
 
-	np := buildKeystoneNetworkPolicy(ks, "")
+	np := buildKeystoneNetworkPolicy(ks, "", nil)
 
 	g.Expect(np.Spec.PolicyTypes).To(ConsistOf(
 		networkingv1.PolicyTypeIngress,
@@ -154,7 +154,7 @@ func TestBuildKeystoneNetworkPolicy_IngressRules_SingleSource(t *testing.T) {
 		},
 	}
 
-	np := buildKeystoneNetworkPolicy(ks, "")
+	np := buildKeystoneNetworkPolicy(ks, "", nil)
 
 	g.Expect(np.Spec.Ingress).To(HaveLen(1))
 	g.Expect(np.Spec.Ingress[0].Ports).To(HaveLen(1))
@@ -184,7 +184,7 @@ func TestBuildKeystoneNetworkPolicy_IngressRules_MultipleSources_WithPodSelector
 		},
 	}
 
-	np := buildKeystoneNetworkPolicy(ks, "")
+	np := buildKeystoneNetworkPolicy(ks, "", nil)
 
 	g.Expect(np.Spec.Ingress).To(HaveLen(1))
 	g.Expect(np.Spec.Ingress[0].From).To(HaveLen(2))
@@ -233,7 +233,7 @@ func TestBuildKeystoneNetworkPolicy_IngressRules_MatchExpressions(t *testing.T) 
 		},
 	}
 
-	np := buildKeystoneNetworkPolicy(ks, "")
+	np := buildKeystoneNetworkPolicy(ks, "", nil)
 
 	g.Expect(np.Spec.Ingress).To(HaveLen(1))
 	g.Expect(np.Spec.Ingress[0].From).To(HaveLen(1))
@@ -279,7 +279,7 @@ func TestBuildKeystoneNetworkPolicy_AutoDerivedEgress_BrownfieldDBAndCache(t *te
 		},
 	}
 
-	np := buildKeystoneNetworkPolicy(ks, "")
+	np := buildKeystoneNetworkPolicy(ks, "", nil)
 
 	// Brownfield must still get DNS, apiserver, DB, and cache egress — the
 	// readiness probe TCP-connects to the brownfield DB and the rotation pods
@@ -303,7 +303,7 @@ func TestBuildKeystoneNetworkPolicy_AutoDerivedEgress_ManagedDB(t *testing.T) {
 		},
 	}
 
-	np := buildKeystoneNetworkPolicy(ks, "")
+	np := buildKeystoneNetworkPolicy(ks, "", nil)
 
 	g.Expect(hasEgressTCPPort(np, 3306)).To(BeTrue(), "managed DB TCP 3306")
 }
@@ -319,7 +319,7 @@ func TestBuildKeystoneNetworkPolicy_AutoDerivedEgress_ManagedCache(t *testing.T)
 		},
 	}
 
-	np := buildKeystoneNetworkPolicy(ks, "")
+	np := buildKeystoneNetworkPolicy(ks, "", nil)
 
 	g.Expect(hasEgressTCPPort(np, 11211)).To(BeTrue(), "managed cache TCP 11211")
 }
@@ -337,7 +337,7 @@ func TestBuildKeystoneNetworkPolicy_AutoDerivedEgress_BothManaged(t *testing.T) 
 		},
 	}
 
-	np := buildKeystoneNetworkPolicy(ks, "")
+	np := buildKeystoneNetworkPolicy(ks, "", nil)
 
 	g.Expect(hasEgressTCPPort(np, 3306)).To(BeTrue(), "managed DB TCP 3306")
 	g.Expect(hasEgressTCPPort(np, 11211)).To(BeTrue(), "managed cache TCP 11211")
@@ -370,7 +370,7 @@ func TestBuildKeystoneNetworkPolicy_AutoDerivedEgress_APIServerAlways(t *testing
 				},
 			}
 
-			np := buildKeystoneNetworkPolicy(ks, "")
+			np := buildKeystoneNetworkPolicy(ks, "", nil)
 
 			g.Expect(hasEgressTCPPort(np, 443)).To(BeTrue(), "apiserver TCP 443")
 			g.Expect(hasEgressTCPPort(np, 6443)).To(BeTrue(), "apiserver TCP 6443")
@@ -403,7 +403,7 @@ func TestBuildKeystoneNetworkPolicy_AutoDerivedEgress_CustomDBPort(t *testing.T)
 				},
 			}
 
-			np := buildKeystoneNetworkPolicy(ks, "")
+			np := buildKeystoneNetworkPolicy(ks, "", nil)
 
 			g.Expect(hasEgressTCPPort(np, 33060)).To(BeTrue(), "custom DB TCP 33060")
 			g.Expect(hasEgressTCPPort(np, 3306)).To(BeFalse(), "default 3306 must not be emitted")
@@ -425,7 +425,7 @@ func TestBuildKeystoneNetworkPolicy_AutoDerivedEgress_BrownfieldCachePort(t *tes
 		},
 	}
 
-	np := buildKeystoneNetworkPolicy(ks, "")
+	np := buildKeystoneNetworkPolicy(ks, "", nil)
 
 	g.Expect(hasEgressTCPPort(np, 11212)).To(BeTrue(), "brownfield cache TCP 11212")
 	g.Expect(hasEgressTCPPort(np, 11211)).To(BeFalse(), "default 11211 must not be emitted")
@@ -445,7 +445,7 @@ func TestBuildKeystoneNetworkPolicy_AutoDerivedEgress_NoCacheConfigured(t *testi
 		},
 	}
 
-	np := buildKeystoneNetworkPolicy(ks, "")
+	np := buildKeystoneNetworkPolicy(ks, "", nil)
 
 	// DNS, apiserver, DB only — no cache rule.
 	g.Expect(np.Spec.Egress).To(HaveLen(3))
@@ -504,7 +504,7 @@ func TestBuildKeystoneNetworkPolicy_GatewayNil_NoExtraIngressPeer(t *testing.T) 
 	}
 	// Gateway is nil — no extra peer should be appended.
 
-	np := buildKeystoneNetworkPolicy(ks, "")
+	np := buildKeystoneNetworkPolicy(ks, "", nil)
 
 	g.Expect(np.Spec.Ingress).To(HaveLen(1),
 		"spec.gateway nil must not add a separate ingress rule")
@@ -535,7 +535,7 @@ func TestBuildKeystoneNetworkPolicy_GatewaySet_AppendsIngressPeerForGatewayNames
 		Hostname: "keystone.example.com",
 	}
 
-	np := buildKeystoneNetworkPolicy(ks, "")
+	np := buildKeystoneNetworkPolicy(ks, "", nil)
 
 	// All peers coexist in a single ingress rule targeting TCP 5000.
 	g.Expect(np.Spec.Ingress).To(HaveLen(1),
@@ -581,7 +581,7 @@ func TestBuildKeystoneNetworkPolicy_GatewaySet_EmptyParentNamespace_UsesKeystone
 		Hostname: "keystone.example.com",
 	}
 
-	np := buildKeystoneNetworkPolicy(ks, "")
+	np := buildKeystoneNetworkPolicy(ks, "", nil)
 
 	g.Expect(np.Spec.Ingress[0].From).To(HaveLen(2))
 	gatewayPeer := np.Spec.Ingress[0].From[1]
@@ -619,7 +619,7 @@ func TestBuildKeystoneNetworkPolicy_OperatorNamespaceIngressPeer(t *testing.T) {
 		},
 	}
 
-	np := buildKeystoneNetworkPolicy(ks, "keystone-system")
+	np := buildKeystoneNetworkPolicy(ks, "keystone-system", nil)
 
 	g.Expect(np.Spec.Ingress).To(HaveLen(1),
 		"operator-namespace peer must be appended to the existing TCP 5000 rule")
@@ -641,7 +641,7 @@ func TestBuildKeystoneNetworkPolicy_EmptyOperatorNamespace_NoExtraPeer(t *testin
 		},
 	}
 
-	np := buildKeystoneNetworkPolicy(ks, "")
+	np := buildKeystoneNetworkPolicy(ks, "", nil)
 
 	g.Expect(np.Spec.Ingress[0].From).To(HaveLen(1),
 		"empty operatorNamespace must not add an ingress peer")
@@ -667,7 +667,7 @@ func TestBuildKeystoneNetworkPolicy_GatewayAndOperatorNamespacePeers(t *testing.
 		Hostname: "keystone.example.com",
 	}
 
-	np := buildKeystoneNetworkPolicy(ks, "keystone-system")
+	np := buildKeystoneNetworkPolicy(ks, "keystone-system", nil)
 
 	g.Expect(np.Spec.Ingress[0].From).To(HaveLen(3))
 	g.Expect(hasIngressNamespacePeer(np, "openstack")).To(BeTrue(), "user peer")
@@ -689,7 +689,7 @@ func TestReconcileNetworkPolicy_OperatorNamespaceWiredThrough(t *testing.T) {
 	r := newNPTestReconciler(s, ks)
 	r.OperatorNamespace = "keystone-system"
 
-	_, err := r.reconcileNetworkPolicy(context.Background(), ks)
+	_, err := r.reconcileNetworkPolicy(context.Background(), ks, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var np networkingv1.NetworkPolicy
@@ -718,7 +718,7 @@ func TestReconcileNetworkPolicy_GatewaySet_NetworkPolicyNil_NoNetworkPolicyCreat
 	}
 	r := newNPTestReconciler(s, ks)
 
-	result, err := r.reconcileNetworkPolicy(context.Background(), ks)
+	result, err := r.reconcileNetworkPolicy(context.Background(), ks, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(BeZero())
 
@@ -755,7 +755,7 @@ func TestBuildKeystoneNetworkPolicy_AdditionalEgress(t *testing.T) {
 		},
 	}
 
-	np := buildKeystoneNetworkPolicy(ks, "")
+	np := buildKeystoneNetworkPolicy(ks, "", nil)
 
 	// AdditionalEgress is appended after the auto-derived rules (DNS, apiserver,
 	// DB, cache for the brownfield fixture), so it is the last egress rule.
@@ -781,7 +781,7 @@ func TestReconcileNetworkPolicy_NetworkPolicySet_CreatesNetworkPolicy(t *testing
 	}
 	r := newNPTestReconciler(s, ks)
 
-	result, err := r.reconcileNetworkPolicy(context.Background(), ks)
+	result, err := r.reconcileNetworkPolicy(context.Background(), ks, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(BeZero())
 
@@ -814,7 +814,7 @@ func TestReconcileNetworkPolicy_ConditionObservedGeneration(t *testing.T) {
 	}
 	r := newNPTestReconciler(s, ks)
 
-	_, err := r.reconcileNetworkPolicy(context.Background(), ks)
+	_, err := r.reconcileNetworkPolicy(context.Background(), ks, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "NetworkPolicyReady")
@@ -826,7 +826,7 @@ func TestReconcileNetworkPolicy_ConditionObservedGeneration(t *testing.T) {
 	ks2.Generation = 12
 	r2 := newNPTestReconciler(s, ks2)
 
-	_, err = r2.reconcileNetworkPolicy(context.Background(), ks2)
+	_, err = r2.reconcileNetworkPolicy(context.Background(), ks2, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cond2 := meta.FindStatusCondition(ks2.Status.Conditions, "NetworkPolicyReady")
@@ -847,7 +847,7 @@ func TestReconcileNetworkPolicy_NetworkPolicyEnabled_NetworkPolicyUpdated(t *tes
 	ctx := context.Background()
 
 	// First reconcile creates NetworkPolicy.
-	_, err := r.reconcileNetworkPolicy(ctx, ks)
+	_, err := r.reconcileNetworkPolicy(ctx, ks, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// Add a second ingress source and re-reconcile.
@@ -857,7 +857,7 @@ func TestReconcileNetworkPolicy_NetworkPolicyEnabled_NetworkPolicyUpdated(t *tes
 			NamespaceSelector: metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": "monitoring"}},
 		},
 	)
-	_, err = r.reconcileNetworkPolicy(ctx, ks)
+	_, err = r.reconcileNetworkPolicy(ctx, ks, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var np networkingv1.NetworkPolicy
@@ -886,9 +886,9 @@ func TestReconcileNetworkPolicy_NetworkPolicyEnabled_RepeatedReconcileIsIdempote
 	r := newNPTestReconciler(s, ks)
 	ctx := context.Background()
 
-	_, err := r.reconcileNetworkPolicy(ctx, ks)
+	_, err := r.reconcileNetworkPolicy(ctx, ks, nil)
 	g.Expect(err).NotTo(HaveOccurred())
-	_, err = r.reconcileNetworkPolicy(ctx, ks)
+	_, err = r.reconcileNetworkPolicy(ctx, ks, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	list := &networkingv1.NetworkPolicyList{}
@@ -906,7 +906,7 @@ func TestReconcileNetworkPolicy_NetworkPolicyNil_NoExistingNP_SetsNotRequired(t 
 	// networkPolicy is nil by default.
 	r := newNPTestReconciler(s, ks)
 
-	result, err := r.reconcileNetworkPolicy(context.Background(), ks)
+	result, err := r.reconcileNetworkPolicy(context.Background(), ks, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(BeZero())
 
@@ -941,7 +941,7 @@ func TestReconcileNetworkPolicy_NetworkPolicyNil_ExistingNP_DeletesNetworkPolicy
 	}, &np)).To(Succeed())
 
 	// reconcileNetworkPolicy with nil networkPolicy should delete the NP.
-	result, err := r.reconcileNetworkPolicy(ctx, ks)
+	result, err := r.reconcileNetworkPolicy(ctx, ks, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(BeZero())
 
@@ -970,7 +970,7 @@ func TestReconcileNetworkPolicy_EmptyIngress_ReturnsError(t *testing.T) {
 	}
 	r := newNPTestReconciler(s, ks)
 
-	_, err := r.reconcileNetworkPolicy(context.Background(), ks)
+	_, err := r.reconcileNetworkPolicy(context.Background(), ks, nil)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("spec.networkPolicy.ingress must not be empty"))
 
@@ -1013,7 +1013,7 @@ func TestReconcileNetworkPolicy_EnsureError_Propagated(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileNetworkPolicy(context.Background(), ks)
+	_, err := r.reconcileNetworkPolicy(context.Background(), ks, nil)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("ensuring NetworkPolicy"))
 	g.Expect(err.Error()).To(ContainSubstring("simulated NetworkPolicy apply error"))
@@ -1055,7 +1055,7 @@ func TestReconcileNetworkPolicy_DeleteError_Propagated(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileNetworkPolicy(context.Background(), ks)
+	_, err := r.reconcileNetworkPolicy(context.Background(), ks, nil)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("deleting NetworkPolicy"))
 	g.Expect(err.Error()).To(ContainSubstring("simulated NetworkPolicy deletion error"))
@@ -1074,10 +1074,75 @@ func TestBuildKeystoneNetworkPolicy_NameMatchesCR(t *testing.T) {
 		},
 	}
 
-	np := buildKeystoneNetworkPolicy(ks, "")
+	np := buildKeystoneNetworkPolicy(ks, "", nil)
 
 	g.Expect(np.Name).To(Equal(ks.Name),
 		"NetworkPolicy Name must equal the CR name")
 	g.Expect(np.Name).NotTo(HaveSuffix("-api"),
 		"NetworkPolicy Name must not carry the legacy `-api` suffix")
+}
+
+// TestBuildKeystoneNetworkPolicy_FederationPortsAndEgress verifies the
+// federation shape: the ingress target port switches to the sidecar
+// (NetworkPolicy ports are evaluated against the pod port, post-DNAT) and a
+// port-only egress rule for the identity provider is appended.
+func TestBuildKeystoneNetworkPolicy_FederationPortsAndEgress(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := npTestKeystone()
+	ks.Spec.NetworkPolicy = &keystonev1alpha1.NetworkPolicySpec{
+		Ingress: []keystonev1alpha1.NetworkPolicyIngressSource{
+			{NamespaceSelector: metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": "openstack"}}},
+		},
+	}
+	fed := &federationProjection{EgressPorts: []int32{8443}}
+
+	np := buildKeystoneNetworkPolicy(ks, "", fed)
+	g.Expect(np.Spec.Ingress).To(HaveLen(1))
+	g.Expect(np.Spec.Ingress[0].Ports[0].Port.IntValue()).To(Equal(int(federationProxyPort)))
+
+	var fedRuleFound bool
+	for _, rule := range np.Spec.Egress {
+		for _, p := range rule.Ports {
+			if p.Port.IntValue() == 8443 {
+				fedRuleFound = true
+			}
+		}
+	}
+	g.Expect(fedRuleFound).To(BeTrue(), "the sidecar needs egress to the identity provider port")
+
+	// Without federation the ingress port stays 5000 and no IdP egress rule
+	// is emitted.
+	plain := buildKeystoneNetworkPolicy(ks, "", nil)
+	g.Expect(plain.Spec.Ingress[0].Ports[0].Port.IntValue()).To(Equal(5000))
+	for _, rule := range plain.Spec.Egress {
+		for _, p := range rule.Ports {
+			g.Expect(p.Port.IntValue()).NotTo(Equal(8443))
+		}
+	}
+}
+
+// TestOIDCBackendEgressPorts verifies scheme-defaulted port derivation across
+// issuer, metadata, and explicit endpoint URLs, including deduplication.
+func TestOIDCBackendEgressPorts(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	o := &keystonev1alpha1.OIDCBackendSpec{
+		Issuer: "http://keycloak.openstack.svc.cluster.local:8080/realms/forge",
+	}
+	g.Expect(oidcBackendEgressPorts(o)).To(Equal([]int32{8080}))
+
+	o = &keystonev1alpha1.OIDCBackendSpec{
+		Issuer:              "https://idp.example.com/realms/forge",
+		ProviderMetadataURL: "https://idp.example.com/realms/forge/.well-known/openid-configuration",
+	}
+	g.Expect(oidcBackendEgressPorts(o)).To(Equal([]int32{443}), "shared default ports are deduplicated")
+
+	o = &keystonev1alpha1.OIDCBackendSpec{
+		Issuer: "https://idp.example.com/realms/forge",
+		Endpoints: &keystonev1alpha1.OIDCEndpointsSpec{
+			TokenEndpoint: "https://tokens.example.com:8443/token",
+			JWKSURI:       "http://keys.example.com/certs",
+		},
+	}
+	g.Expect(oidcBackendEgressPorts(o)).To(Equal([]int32{443, 8443, 80}))
 }

@@ -411,6 +411,46 @@ func TestNewHardenedMetadataClient_DoesNotFollowRedirects(t *testing.T) {
 	g.Expect(c.CheckRedirect(nil, nil)).To(Equal(http.ErrUseLastResponse))
 }
 
+// TestRenderOIDCBackend_DiscoveryModeEgressPortsFromDocument pins the
+// discovery-mode egress fix: the sidecar dials the endpoints named in the
+// fetched .provider document (never re-resolving the issuer host), whose ports
+// can differ from the issuer's, so the derived egress ports must include them —
+// the NetworkPolicy egress rule is port-only.
+func TestRenderOIDCBackend_DiscoveryModeEgressPortsFromDocument(t *testing.T) {
+	g := NewGomegaWithT(t)
+	backend := testProjectableOIDCBackend("corp-oidc")
+	backend.Spec.OIDC.Endpoints = nil // discovery mode
+	backend.Spec.OIDC.Issuer = "https://idp.example.com/realms/forge"
+
+	r := newTestReconciler(testOIDCClientSecret("corp-oidc"))
+	r.HTTPClient = &metadataDoer{body: `{` +
+		`"issuer":"https://idp.example.com/realms/forge",` +
+		`"authorization_endpoint":"https://idp.example.com/realms/forge/auth",` +
+		`"token_endpoint":"https://tokens.example.com:9443/token",` +
+		`"jwks_uri":"https://keys.example.com:7443/certs"}`}
+
+	render, err := r.renderOIDCBackend(context.Background(), testFederationKeystone(), backend)
+	g.Expect(err).NotTo(HaveOccurred())
+	// 443 from the issuer + authorization_endpoint, plus the endpoint-specific
+	// ports the sidecar would otherwise be blocked from reaching.
+	g.Expect(render.egressPorts).To(ConsistOf(int32(443), int32(9443), int32(7443)))
+}
+
+// TestProviderMetadataEgressPorts covers the discovery-document port extraction:
+// scheme defaulting, empty-endpoint skipping, and the nil-on-invalid-JSON path.
+func TestProviderMetadataEgressPorts(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	doc := []byte(`{"authorization_endpoint":"https://idp.example.com/auth",` +
+		`"token_endpoint":"http://idp.example.com/token",` +
+		`"introspection_endpoint":"https://idp.example.com:8443/introspect"}`)
+	// https→443, http→80, explicit 8443; jwks_uri/userinfo/end_session absent.
+	g.Expect(providerMetadataEgressPorts(doc)).To(Equal([]int32{443, 80, 8443}))
+
+	g.Expect(providerMetadataEgressPorts([]byte("not json"))).To(BeNil())
+	g.Expect(providerMetadataEgressPorts([]byte(`{}`))).To(BeNil())
+}
+
 func TestReconcileIdentityBackends_OIDCRendersFederationSecret(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ctx := context.Background()

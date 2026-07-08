@@ -35,7 +35,7 @@ const (
 //   - spec.networkPolicy set: create or update NetworkPolicy
 //   - spec.networkPolicy nil: delete any existing NetworkPolicy
 //   - error: propagate errors from ensure/delete operations
-func (r *KeystoneReconciler) reconcileNetworkPolicy(ctx context.Context, keystone *keystonev1alpha1.Keystone) (ctrl.Result, error) {
+func (r *KeystoneReconciler) reconcileNetworkPolicy(ctx context.Context, keystone *keystonev1alpha1.Keystone, fed *federationProjection) (ctrl.Result, error) {
 	// Path 2: networkPolicy disabled — delete any existing NetworkPolicy.
 	if keystone.Spec.NetworkPolicy == nil {
 		if err := deleteNetworkPolicy(ctx, r.Client, keystone.Namespace, subResourceName(keystone)); err != nil {
@@ -61,7 +61,7 @@ func (r *KeystoneReconciler) reconcileNetworkPolicy(ctx context.Context, keyston
 	}
 
 	// Path 1: networkPolicy enabled — create or update NetworkPolicy.
-	np := buildKeystoneNetworkPolicy(keystone, r.OperatorNamespace)
+	np := buildKeystoneNetworkPolicy(keystone, r.OperatorNamespace, fed)
 	if err := ensureNetworkPolicy(ctx, r.Client, r.Scheme, keystone, np); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring NetworkPolicy: %w", err)
 	}
@@ -89,7 +89,11 @@ func (r *KeystoneReconciler) reconcileNetworkPolicy(ctx context.Context, keyston
 // health check (reconcileHealthCheck GETs the Keystone Service on TCP 5000) is
 // not blocked by the policy (issue #461). When empty (namespace unknown) no
 // such peer is added.
-func buildKeystoneNetworkPolicy(keystone *keystonev1alpha1.Keystone, operatorNamespace string) *networkingv1.NetworkPolicy {
+//
+// fed is the federation projection: when set, the ingress target port is the
+// sidecar's (the Service targetPort switched there) and per-issuer egress
+// ports are appended so the sidecar can reach the identity provider.
+func buildKeystoneNetworkPolicy(keystone *keystonev1alpha1.Keystone, operatorNamespace string, fed *federationProjection) *networkingv1.NetworkPolicy {
 	npSpec := keystone.Spec.NetworkPolicy
 
 	// Build ingress peers from spec.networkPolicy.ingress sources.
@@ -150,12 +154,18 @@ func buildKeystoneNetworkPolicy(keystone *keystonev1alpha1.Keystone, operatorNam
 		})
 	}
 
-	port5000 := intstr.FromInt32(5000)
+	// The ingress target is the port the Service targetPort points at: the
+	// sidecar's when federation is active, uWSGI's 5000 otherwise
+	// (NetworkPolicy ports are evaluated against the pod port, post-DNAT).
+	ingressPort := intstr.FromInt32(5000)
+	if fed != nil {
+		ingressPort = intstr.FromInt32(federationProxyPort)
+	}
 	tcp := corev1.ProtocolTCP
 	ingressRules := []networkingv1.NetworkPolicyIngressRule{
 		{
 			Ports: []networkingv1.NetworkPolicyPort{
-				{Protocol: &tcp, Port: &port5000},
+				{Protocol: &tcp, Port: &ingressPort},
 			},
 			From: peers,
 		},
@@ -163,6 +173,19 @@ func buildKeystoneNetworkPolicy(keystone *keystonev1alpha1.Keystone, operatorNam
 
 	// Auto-derive egress rules.
 	egressRules := buildAutoEgressRules(keystone)
+
+	// Federation egress: the sidecar's mod_auth_openidc talks to the identity
+	// provider (token/jwks/userinfo/introspection endpoints) from inside the
+	// pod. Port-only like the database/cache rules — see the DNS DECISION in
+	// buildAutoEgressRules for why destination scoping is deferred.
+	if fed != nil && len(fed.EgressPorts) > 0 {
+		ports := make([]networkingv1.NetworkPolicyPort, 0, len(fed.EgressPorts))
+		for _, p := range fed.EgressPorts {
+			fedPort := intstr.FromInt32(p)
+			ports = append(ports, networkingv1.NetworkPolicyPort{Protocol: &tcp, Port: &fedPort})
+		}
+		egressRules = append(egressRules, networkingv1.NetworkPolicyEgressRule{Ports: ports})
+	}
 
 	// Append user-specified additional egress rules.
 	egressRules = append(egressRules, npSpec.AdditionalEgress...)
