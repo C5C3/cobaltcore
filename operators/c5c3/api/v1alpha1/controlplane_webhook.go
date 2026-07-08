@@ -80,6 +80,28 @@ const (
 	// DefaultCloudName is materialized when
 	// spec.korc.adminCredential.cloudCredentialsRef.cloudName is empty.
 	DefaultCloudName = "admin"
+	// DefaultExternalEndpointType is materialized when
+	// spec.services.keystone.external.endpointType is empty. It mirrors the
+	// +kubebuilder:default=public marker on ExternalKeystoneSpec.EndpointType.
+	DefaultExternalEndpointType = ExternalEndpointTypePublic
+	// DefaultCABundleSecretKey is materialized when
+	// spec.services.keystone.external.caBundleSecretRef.key is empty. It is
+	// webhook-only because the shared SecretRefSpec carries no c5c3-specific
+	// marker (the same discipline as passwordSecretRef.Key). "ca.crt" matches the
+	// PEM key K-ORC reads inline from the credentials Secret.
+	DefaultCABundleSecretKey = "ca.crt"
+	// DefaultAdminUserName is materialized when
+	// spec.korc.adminCredential.userName is empty. Webhook-only: the field carries
+	// a +kubebuilder:default=admin marker for the normal admission path.
+	DefaultAdminUserName = "admin"
+	// DefaultAdminProjectName is materialized when
+	// spec.korc.adminCredential.projectName is empty (mirrors the CRD default).
+	DefaultAdminProjectName = "admin"
+	// DefaultAdminDomainName is materialized when
+	// spec.korc.adminCredential.domainName is empty (mirrors the CRD default). The
+	// single domain feeds both user_domain_name and project_domain_name in the
+	// generated clouds.yaml.
+	DefaultAdminDomainName = "Default"
 )
 
 // controlPlaneReleaseRegexp mirrors the +kubebuilder:validation:Pattern marker
@@ -129,46 +151,67 @@ func (w *ControlPlaneWebhook) Default(_ context.Context, obj *ControlPlane) erro
 		obj.Spec.Region = DefaultRegion
 	}
 
-	// well-known infrastructure defaults so a minimal managed-mode CR can
-	// omit spec.infrastructure entirely. The mode-neutral leaves (database name,
-	// secretRef.name, cache backend) are defaulted in BOTH managed and brownfield
-	// mode; the managed clusterRef is only invented when the brownfield
-	// discriminator (database.host / cache.servers) is unset, so the validating
-	// webhook's database/cache XOR check still passes for a brownfield CR — the
-	// webhook never coerces an explicit brownfield endpoint into managed mode.
-	//
-	// spec.infrastructure is now an optional pointer (External keystone mode omits
-	// it). Materialize an empty block when it is nil so the leaf defaulting below
-	// preserves today's omit-infrastructure contract for a managed-mode CR. The
-	// External-mode carve-out that skips this invention lands with the mode-aware
-	// defaulting; here every CR still gets the managed infrastructure defaults.
-	if obj.Spec.Infrastructure == nil {
-		obj.Spec.Infrastructure = &InfrastructureSpec{}
-	}
-	db := &obj.Spec.Infrastructure.Database
-	if db.Database == "" {
-		db.Database = DefaultDatabaseName
-	}
-	if db.SecretRef.Name == "" {
-		db.SecretRef.Name = DefaultDatabaseSecretName
-	}
-	if db.Host == "" {
-		if db.ClusterRef == nil {
-			db.ClusterRef = &corev1.LocalObjectReference{Name: DefaultDatabaseClusterRefName}
-		} else if db.ClusterRef.Name == "" {
-			db.ClusterRef.Name = DefaultDatabaseClusterRefName
-		}
+	// Default the keystone mode to Managed when the service block is present with
+	// an empty mode, so IsExternalKeystone() reads a definite discriminator below.
+	// Mirrors the +kubebuilder:default=Managed marker on ServiceKeystoneSpec.Mode.
+	if ks := obj.Spec.Services.Keystone; ks != nil && ks.Mode == "" {
+		ks.Mode = KeystoneModeManaged
 	}
 
-	cache := &obj.Spec.Infrastructure.Cache
-	if cache.Backend == "" {
-		cache.Backend = DefaultCacheBackend
-	}
-	if len(cache.Servers) == 0 {
-		if cache.ClusterRef == nil {
-			cache.ClusterRef = &corev1.LocalObjectReference{Name: DefaultCacheClusterRefName}
-		} else if cache.ClusterRef.Name == "" {
-			cache.ClusterRef.Name = DefaultCacheClusterRefName
+	if obj.IsExternalKeystone() {
+		// External mode: the ControlPlane manages identity against a pre-existing
+		// Keystone and provisions NO backing services, so the infrastructure
+		// defaulting below is deliberately skipped — the webhook never invents a
+		// managed database/cache clusterRef (spec.infrastructure stays nil and the
+		// validating webhook forbids it in External mode). Only the external block's
+		// own defaults are materialized here.
+		if ext := obj.Spec.Services.Keystone.External; ext != nil {
+			if ext.EndpointType == "" {
+				ext.EndpointType = DefaultExternalEndpointType
+			}
+			if ext.CABundleSecretRef != nil && ext.CABundleSecretRef.Key == "" {
+				ext.CABundleSecretRef.Key = DefaultCABundleSecretKey
+			}
+		}
+	} else {
+		// Managed mode (or unset keystone): well-known infrastructure defaults so a
+		// minimal managed-mode CR can omit spec.infrastructure entirely. The
+		// mode-neutral leaves (database name, secretRef.name, cache backend) are
+		// defaulted in BOTH managed and brownfield mode; the managed clusterRef is
+		// only invented when the brownfield discriminator (database.host /
+		// cache.servers) is unset, so the validating webhook's database/cache XOR
+		// check still passes for a brownfield CR — the webhook never coerces an
+		// explicit brownfield endpoint into managed mode. Materialize an empty block
+		// when nil so the leaf defaulting preserves today's omit-infrastructure
+		// contract.
+		if obj.Spec.Infrastructure == nil {
+			obj.Spec.Infrastructure = &InfrastructureSpec{}
+		}
+		db := &obj.Spec.Infrastructure.Database
+		if db.Database == "" {
+			db.Database = DefaultDatabaseName
+		}
+		if db.SecretRef.Name == "" {
+			db.SecretRef.Name = DefaultDatabaseSecretName
+		}
+		if db.Host == "" {
+			if db.ClusterRef == nil {
+				db.ClusterRef = &corev1.LocalObjectReference{Name: DefaultDatabaseClusterRefName}
+			} else if db.ClusterRef.Name == "" {
+				db.ClusterRef.Name = DefaultDatabaseClusterRefName
+			}
+		}
+
+		cache := &obj.Spec.Infrastructure.Cache
+		if cache.Backend == "" {
+			cache.Backend = DefaultCacheBackend
+		}
+		if len(cache.Servers) == 0 {
+			if cache.ClusterRef == nil {
+				cache.ClusterRef = &corev1.LocalObjectReference{Name: DefaultCacheClusterRefName}
+			} else if cache.ClusterRef.Name == "" {
+				cache.ClusterRef.Name = DefaultCacheClusterRefName
+			}
 		}
 	}
 
@@ -191,6 +234,20 @@ func (w *ControlPlaneWebhook) Default(_ context.Context, obj *ControlPlane) erro
 	}
 	if korc.PasswordSecretRef.Key == "" {
 		korc.PasswordSecretRef.Key = DefaultAdminPasswordSecretKey
+	}
+	// admin identity (P1): userName/projectName default to "admin", domainName to
+	// "Default" — the three identities buildPasswordCloudsYAML hardcodes today and
+	// the K-ORC admin imports assume. Valid in both keystone modes; consumed by
+	// the K-ORC clouds.yaml builders and import filters (that consumption lands
+	// with the K-ORC clouds.yaml work). Webhook-only mirror of the CRD markers.
+	if korc.UserName == "" {
+		korc.UserName = DefaultAdminUserName
+	}
+	if korc.ProjectName == "" {
+		korc.ProjectName = DefaultAdminProjectName
+	}
+	if korc.DomainName == "" {
+		korc.DomainName = DefaultAdminDomainName
 	}
 
 	// applicationCredential.restricted defaults to true (least-privilege). The

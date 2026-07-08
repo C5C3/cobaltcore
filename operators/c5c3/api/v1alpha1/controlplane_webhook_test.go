@@ -81,6 +81,10 @@ func TestDefault_SetsZeroValueDefaults(t *testing.T) {
 	g.Expect(cred.PasswordSecretRef.Name).To(Equal(DefaultAdminPasswordSecretName))
 	g.Expect(cred.PasswordSecretRef.Key).To(Equal(DefaultAdminPasswordSecretKey))
 	g.Expect(cred.CloudCredentialsRef.CloudName).To(Equal(DefaultCloudName))
+	// admin identity (P1) defaults.
+	g.Expect(cred.UserName).To(Equal(DefaultAdminUserName))
+	g.Expect(cred.ProjectName).To(Equal(DefaultAdminProjectName))
+	g.Expect(cred.DomainName).To(Equal(DefaultAdminDomainName))
 }
 
 // TestDefault_IsIdempotent verifies applying Default twice produces the same
@@ -151,6 +155,9 @@ func TestDefault_PreservesExplicitValues(t *testing.T) {
 						SecretName: "custom-clouds-yaml",
 					},
 					PasswordSecretRef: commonv1.SecretRefSpec{Name: "my-admin", Key: "adminpw"},
+					UserName:          "brownfield-admin",
+					ProjectName:       "platform-admin",
+					DomainName:        "heimdall",
 					ApplicationCredential: ApplicationCredentialSpec{
 						Restricted: &restricted,
 						Rotation:   RotationSpec{Mode: RotationModeManual},
@@ -179,6 +186,10 @@ func TestDefault_PreservesExplicitValues(t *testing.T) {
 	g.Expect(cp.Spec.KORC.AdminCredential.PasswordSecretRef.Name).To(Equal("my-admin"))
 	g.Expect(cp.Spec.KORC.AdminCredential.PasswordSecretRef.Key).To(Equal("adminpw"))
 	g.Expect(cp.Spec.KORC.AdminCredential.CloudCredentialsRef.CloudName).To(Equal("operator"))
+	// explicit non-default admin identity (P1) is preserved, not overwritten.
+	g.Expect(cp.Spec.KORC.AdminCredential.UserName).To(Equal("brownfield-admin"))
+	g.Expect(cp.Spec.KORC.AdminCredential.ProjectName).To(Equal("platform-admin"))
+	g.Expect(cp.Spec.KORC.AdminCredential.DomainName).To(Equal("heimdall"))
 }
 
 // TestDefault_DoesNotInventModeForBrownfield verifies the defaulting webhook
@@ -265,6 +276,126 @@ func TestDefault_FillsEmptyNameOnPresentClusterRef(t *testing.T) {
 	_, err := w.ValidateCreate(context.Background(), cp)
 	g.Expect(err).NotTo(HaveOccurred(),
 		"a filled managed clusterRef must satisfy the database/cache XOR after defaulting")
+}
+
+// externalControlPlane returns a minimal, valid External-mode ControlPlane: the
+// sketch CR from the issue (mode + external.authURL + the required
+// korc.adminCredential.passwordSecretRef), with no infrastructure block. Tests
+// modify this baseline to exercise the External-mode defaulting and validation.
+func externalControlPlane() *ControlPlane {
+	return &ControlPlane{
+		Spec: ControlPlaneSpec{
+			OpenStackRelease: "2025.2",
+			Region:           "RegionOne",
+			Services: ServicesSpec{
+				Keystone: &ServiceKeystoneSpec{
+					Mode: KeystoneModeExternal,
+					External: &ExternalKeystoneSpec{
+						AuthURL: "https://keystone.example.com/v3",
+					},
+				},
+			},
+			KORC: KORCSpec{
+				AdminCredential: AdminCredentialSpec{
+					CloudCredentialsRef: CloudCredentialsRef{CloudName: "admin"},
+					PasswordSecretRef:   commonv1.SecretRefSpec{Name: "admin-pw"},
+				},
+			},
+		},
+	}
+}
+
+// TestDefault_ExternalModeDoesNotInventInfrastructure verifies the defaulting
+// webhook never invents a managed database/cache block in External mode
+// (spec.infrastructure stays nil) while it still materializes the external
+// block's own defaults (endpointType -> public, caBundleSecretRef.key -> ca.crt).
+func TestDefault_ExternalModeDoesNotInventInfrastructure(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := externalControlPlane()
+	cp.Spec.Services.Keystone.External.CABundleSecretRef = &commonv1.SecretRefSpec{Name: "brownfield-keystone-ca"}
+
+	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+
+	g.Expect(cp.Spec.Infrastructure).To(BeNil(),
+		"External mode must not invent a managed infrastructure block")
+	ext := cp.Spec.Services.Keystone.External
+	g.Expect(ext.EndpointType).To(Equal(DefaultExternalEndpointType),
+		"external.endpointType must default to public")
+	g.Expect(ext.CABundleSecretRef).NotTo(BeNil())
+	g.Expect(ext.CABundleSecretRef.Key).To(Equal(DefaultCABundleSecretKey),
+		"external.caBundleSecretRef.key must default to ca.crt")
+	// The admin identity defaults still apply in External mode.
+	g.Expect(cp.Spec.KORC.AdminCredential.UserName).To(Equal(DefaultAdminUserName))
+	g.Expect(cp.Spec.KORC.AdminCredential.ProjectName).To(Equal(DefaultAdminProjectName))
+	g.Expect(cp.Spec.KORC.AdminCredential.DomainName).To(Equal(DefaultAdminDomainName))
+}
+
+// TestDefault_ExternalModePreservesExplicitEndpointType verifies an explicit
+// endpointType / caBundle key is preserved rather than overwritten in External
+// mode (the error-path counterpart to the zero-value defaulting above).
+func TestDefault_ExternalModePreservesExplicitEndpointType(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := externalControlPlane()
+	cp.Spec.Services.Keystone.External.EndpointType = ExternalEndpointTypeInternal
+	cp.Spec.Services.Keystone.External.CABundleSecretRef = &commonv1.SecretRefSpec{
+		Name: "brownfield-keystone-ca", Key: "tls-ca.pem",
+	}
+
+	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+
+	ext := cp.Spec.Services.Keystone.External
+	g.Expect(ext.EndpointType).To(Equal(ExternalEndpointTypeInternal))
+	g.Expect(ext.CABundleSecretRef.Key).To(Equal("tls-ca.pem"))
+}
+
+// TestDefault_ManagedModeAllocatesInfrastructureWhenNil locks today's
+// omit-infrastructure contract through the pointer flip: an explicit Managed-mode
+// (or unset-keystone) CR that omits spec.infrastructure still gets the block
+// materialized and the managed clusterRefs invented, exactly as before.
+func TestDefault_ManagedModeAllocatesInfrastructureWhenNil(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+
+	for _, tc := range []struct {
+		name string
+		ks   *ServiceKeystoneSpec
+	}{
+		{"explicit managed mode", &ServiceKeystoneSpec{Mode: KeystoneModeManaged}},
+		{"unset mode (defaults managed)", &ServiceKeystoneSpec{}},
+		{"unset keystone service", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cp := &ControlPlane{Spec: ControlPlaneSpec{Services: ServicesSpec{Keystone: tc.ks}}}
+			g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+
+			g.Expect(cp.Spec.Infrastructure).NotTo(BeNil(),
+				"a non-External CR must get its infrastructure block materialized")
+			g.Expect(cp.Spec.Infrastructure.Database.ClusterRef).NotTo(BeNil())
+			g.Expect(cp.Spec.Infrastructure.Database.ClusterRef.Name).To(Equal(DefaultDatabaseClusterRefName))
+			g.Expect(cp.Spec.Infrastructure.Cache.ClusterRef).NotTo(BeNil())
+			g.Expect(cp.Spec.Infrastructure.Cache.ClusterRef.Name).To(Equal(DefaultCacheClusterRefName))
+		})
+	}
+}
+
+// TestDefault_ExternalModeIsIdempotent verifies applying Default twice to an
+// External-mode CR produces the same result — in particular that the second pass
+// does not invent an infrastructure block.
+func TestDefault_ExternalModeIsIdempotent(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := externalControlPlane()
+
+	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+	first := cp.DeepCopy()
+	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+
+	g.Expect(cp.Spec.Infrastructure).To(BeNil())
+	g.Expect(cp.Spec.Services.Keystone.External.EndpointType).
+		To(Equal(first.Spec.Services.Keystone.External.EndpointType))
+	g.Expect(cp.Spec.Services.Keystone.Mode).To(Equal(first.Spec.Services.Keystone.Mode))
 }
 
 // --- Validation webhook tests ---
