@@ -8,6 +8,14 @@
 # No oauth2Introspection here: the OIDCOAuth* directives are server-scoped,
 # so only one backend per Keystone may enable them (webhook-enforced) — the
 # multi-realm assertions ride the websso flow instead.
+#
+# Explicit endpoints, not discovery: the operator's metadata-fetch SSRF guard
+# refuses to dial private / in-cluster addresses, so an in-cluster Keycloak
+# (a ClusterIP in the private Service CIDR) cannot be reached via .well-known
+# discovery — the documented path for in-cluster/air-gapped IdPs is to spell
+# out the endpoints (the discovery fetch is covered by unit tests, and works
+# in production against a public IdP). Supporting discovery against a trusted
+# in-cluster IdP is tracked as a follow-up operator feature.
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
 kind: KeystoneIdentityBackend
 metadata:
@@ -27,6 +35,11 @@ spec:
     clientID: keystone
     clientSecretRef:
       name: keycloak-forge2-client
+    endpoints:
+      authorizationEndpoint: http://keycloak.openstack.svc.cluster.local:8080/realms/forge2/protocol/openid-connect/auth
+      tokenEndpoint: http://keycloak.openstack.svc.cluster.local:8080/realms/forge2/protocol/openid-connect/token
+      jwksURI: http://keycloak.openstack.svc.cluster.local:8080/realms/forge2/protocol/openid-connect/certs
+      userinfoEndpoint: http://keycloak.openstack.svc.cluster.local:8080/realms/forge2/protocol/openid-connect/userinfo
   mappings:
   - remote:
     - type: HTTP_OIDC_ISS
@@ -34,8 +47,11 @@ spec:
       - http://keycloak.openstack.svc.cluster.local:8080/realms/forge2
     - type: HTTP_OIDC_PREFERRED_USERNAME
     local:
+    # {0}, not {1}: the HTTP_OIDC_ISS anyOneOf rule is a condition and is not
+    # added to the positional direct-map tuple, so HTTP_OIDC_PREFERRED_USERNAME
+    # is index 0 (see the keycloak-forge backend for the full rationale).
     - user:
-        name: "{1}"
+        name: "{0}"
       group:
         name: federated-captains
         domain:

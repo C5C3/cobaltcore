@@ -29,6 +29,13 @@ spec:
   namespace: openstack
   timeouts:
     assert: 5m
+    # Detaching a federation backend (step 7) rewrites the content-hashed
+    # federation Secret, which rolls the replicas:1 Keystone pod. The backend's
+    # finalizer deprovisions its domain THROUGH that same Keystone, so its first
+    # attempt races the rollout and fails (EOF), then a requeue retries and
+    # succeeds ~30s later — past the 30s global delete bound. 2m covers one
+    # failed attempt plus the retry with margin for a slow rollout.
+    delete: 2m
   steps:
   # ── Step 1: Deploy the Keycloak fixture and Keystone; both become ready ──
   - try:
@@ -301,7 +308,11 @@ spec:
                   conn = http.client.HTTPConnection("127.0.0.1", 5050, timeout=30)
               else:
                   conn = http.client.HTTPConnection(u.netloc, timeout=30)
-              h = {"Host": u.netloc}
+              # A real browser sends Accept: text/html; without it
+              # mod_auth_openidc classifies the request as a non-interactive
+              # API call and returns a bare 401 instead of the 302 that starts
+              # the interactive OIDC login flow.
+              h = {"Host": u.netloc, "Accept": "text/html"}
               if cookies:
                   h["Cookie"] = "; ".join(f"{k}={v}" for k, v in cookies.items())
               h.update(headers or {})
@@ -410,7 +421,10 @@ spec:
                   conn = http.client.HTTPConnection("127.0.0.1", 5050, timeout=30)
               else:
                   conn = http.client.HTTPConnection(u.netloc, timeout=30)
-              h = {"Host": u.netloc}
+              # Accept: text/html marks this as a browser request so
+              # mod_auth_openidc issues the 302 login redirect rather than a
+              # bare 401 (see the websso step for the full rationale).
+              h = {"Host": u.netloc, "Accept": "text/html"}
               h.update(headers or {})
               path = u.path + ("?" + u.query if u.query else "")
               conn.request("GET", path, headers=h)

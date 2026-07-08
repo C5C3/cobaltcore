@@ -43,8 +43,11 @@ spec:
       - http://keycloak-chaos.openstack.svc.cluster.local:8080/realms/forge
     - type: HTTP_OIDC_PREFERRED_USERNAME
     local:
+    # {0}, not {1}: the HTTP_OIDC_ISS anyOneOf rule is a condition and is not
+    # added to the positional direct-map tuple, so HTTP_OIDC_PREFERRED_USERNAME
+    # is index 0 (a "{1}" raises DirectMappingError/IndexError in keystone).
     - user:
-        name: "{1}"
+        name: "{0}"
       group:
         name: federated-users
         domain:

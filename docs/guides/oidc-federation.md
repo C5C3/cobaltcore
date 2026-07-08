@@ -106,7 +106,7 @@ spec:
     - type: HTTP_OIDC_PREFERRED_USERNAME
     local:
     - user:
-        name: "{1}"        # {N} indexes the remote list above
+        name: "{0}"        # {N} indexes only the value-producing remote rules
       group:
         name: federated-users
         domain:
@@ -140,6 +140,13 @@ proxy passes claims as `OIDC-<claim>` headers, which uWSGI surfaces as
 `HTTP_OIDC_<CLAIM>`. The operator strips exactly these headers from inbound
 requests (in both dash and underscore spelling) so in-cluster clients cannot
 spoof claims past the module.
+
+The `{N}` placeholders in `local` index only the **value-producing** remote
+rules, in order — a rule carrying `anyOneOf`/`notAnyOf` is a pure condition
+and is skipped. In the example above `HTTP_OIDC_ISS` only gates the rule, so
+`HTTP_OIDC_PREFERRED_USERNAME` is `{0}`. Referencing an index past the last
+value (e.g. `{1}` here) makes keystone reject the assertion with a
+`DirectMappingError`.
 
 ## Step 5 — Watch the conditions converge
 
@@ -237,5 +244,7 @@ Declarative groups live inside the domain and follow it.
 | Federated login returns 401 with valid IdP credentials | The mapping did not match: compare the asserted claims (the sidecar logs them at debug) against your `remote[].type` matchers, and remember the issuer gate must equal the `iss` claim byte for byte. |
 | WebSSO ends in `401`/`403` at the final hop | The `origin` parameter is not listed in `[federation] trusted_dashboard`. |
 | Bearer-token auth returns non-2xx while browser login works | `oauth2Introspection` is not enabled on this backend, or another backend already holds the single introspection slot. |
+| Bearer-token auth returns 401 and introspection yields `active:false` for a fresh token | The IdP does not list the resource-server client in the token's `aud`. Recent Keycloak (>= 25) rejects introspection when the introspecting client is absent from the audience — add an audience mapper (or client scope) so the access token's `aud` includes the `clientID`. |
+| Bearer-token auth returns 401 with `Access token JWT check failed` in the IdP log | The token's `iss` differs from what the IdP computes at the introspection endpoint (e.g. tokens minted over one hostname/scheme, introspected over another). Pin a fixed frontend URL / hostname on the IdP so the issuer is stable across listeners. |
 | The backend is skipped with `is not https` in the Warning | The IdP publishes an http introspection endpoint, which mod_auth_openidc refuses. Point `endpoints.introspectionEndpoint` at an https listener (and set `oauth2Introspection.tlsVerify: false` if its certificate is not in the system trust store). |
 | Admission rejects the CR | The message names the exact rule: discovery-shape exclusivity, the fixed `clientSecret` data-key contract, mapping-rule completeness, identity-provider-name uniqueness, remote-id uniformity, or the single-introspection limit. |

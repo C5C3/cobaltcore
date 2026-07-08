@@ -32,12 +32,13 @@ spec:
     clientID: keystone
     clientSecretRef:
       name: keycloak-forge-client
-    # Explicit discovery (also exercising the endpoints path end-to-end; the
-    # forge2 sibling exercises the metadata fetch): everything speaks the
-    # fixture's plain-http listener EXCEPT the introspection endpoint, which
-    # mod_auth_openidc requires to be https — the fixture serves it on the
-    # self-signed 8443 listener, and tlsVerify opts out of verifying that
-    # throwaway certificate.
+    # Explicit endpoints (both backends use them: the operator's metadata-fetch
+    # SSRF guard blocks discovery against the in-cluster Keycloak's private
+    # ClusterIP — the .well-known fetch is unit-tested instead). Everything
+    # speaks the fixture's plain-http listener EXCEPT the introspection
+    # endpoint, which mod_auth_openidc requires to be https — the fixture serves
+    # it on the self-signed 8443 listener, and tlsVerify opts out of verifying
+    # that throwaway certificate.
     endpoints:
       authorizationEndpoint: http://keycloak.openstack.svc.cluster.local:8080/realms/forge/protocol/openid-connect/auth
       tokenEndpoint: http://keycloak.openstack.svc.cluster.local:8080/realms/forge/protocol/openid-connect/token
@@ -54,8 +55,12 @@ spec:
       - http://keycloak.openstack.svc.cluster.local:8080/realms/forge
     - type: HTTP_OIDC_PREFERRED_USERNAME
     local:
+    # {0} is the first value-producing remote: the HTTP_OIDC_ISS rule carries
+    # anyOneOf, so Keystone treats it as a pure condition and never adds it to
+    # the positional direct-map tuple — HTTP_OIDC_PREFERRED_USERNAME is the only
+    # value, at index 0 (a "{1}" here raises DirectMappingError/IndexError).
     - user:
-        name: "{1}"
+        name: "{0}"
       group:
         name: federated-users
         domain:

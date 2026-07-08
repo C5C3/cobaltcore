@@ -41,7 +41,21 @@ data:
           "redirectUris": ["http://keystone-chaos-fed.openstack.svc.cluster.local:5000/*"],
           "webOrigins": ["*"],
           "standardFlowEnabled": true,
-          "directAccessGrantsEnabled": true
+          "directAccessGrantsEnabled": true,
+          "protocolMappers": [
+            {
+              "name": "keystone-audience",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-audience-mapper",
+              "consentRequired": false,
+              "config": {
+                "included.client.audience": "keystone",
+                "id.token.claim": "false",
+                "access.token.claim": "true",
+                "introspection.token.claim": "true"
+              }
+            }
+          ]
         }
       ]
     }
@@ -120,6 +134,15 @@ spec:
           value: admin
         - name: KC_BOOTSTRAP_ADMIN_PASSWORD
           value: admin-password
+        # Pin a fixed frontend URL so the realm issuer is identical on both
+        # listeners: tokens are minted over http :8080 (iss carries :8080) but
+        # mod_auth_openidc introspects over https :8443, and without this
+        # Keycloak derives the expected issuer per request scheme+port and
+        # rejects the token ("Access token JWT check failed" -> active:false).
+        - name: KC_HOSTNAME
+          value: http://keycloak-chaos.openstack.svc.cluster.local:8080
+        - name: KC_HOSTNAME_STRICT
+          value: "false"
         ports:
         - name: http
           containerPort: 8080

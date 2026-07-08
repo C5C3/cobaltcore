@@ -10,6 +10,13 @@
 # tag+digest and Renovate-tracked via the docker-digest customManager in
 # renovate.json.
 #
+# The forge client additionally carries an oidc-audience-mapper adding
+# "keystone" to the access token's aud: Keycloak (>= 25) rejects RFC 7662
+# introspection when the introspecting client is absent from the token
+# audience ("Client 'keystone' is not in the token audience" -> active:false),
+# and a keystone-client ROPC token otherwise carries no aud. Only the forge
+# realm needs it — forge2 exercises websso only, never the introspection path.
+#
 # The container deliberately carries no restricted securityContext and a
 # ~1Gi memory limit: start-dev bootstraps an embedded H2 plus the JVM — this
 # is a throwaway test fixture, never a production workload.
@@ -60,6 +67,18 @@ data:
                 "access.token.claim": "true",
                 "claim.name": "groups",
                 "userinfo.token.claim": "true"
+              }
+            },
+            {
+              "name": "keystone-audience",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-audience-mapper",
+              "consentRequired": false,
+              "config": {
+                "included.client.audience": "keystone",
+                "id.token.claim": "false",
+                "access.token.claim": "true",
+                "introspection.token.claim": "true"
               }
             }
           ]
@@ -173,6 +192,18 @@ spec:
           value: admin
         - name: KC_BOOTSTRAP_ADMIN_PASSWORD
           value: admin-password
+        # Pin a fixed frontend URL so the realm issuer is identical on both
+        # listeners. Tokens are minted over http :8080 (iss carries :8080) but
+        # mod_auth_openidc introspects over https :8443; without a fixed
+        # hostname Keycloak derives the expected issuer from each request's own
+        # scheme+port, so the :8443 introspection computes https://…:8443/realms/…
+        # ≠ the token's http://…:8080/realms/… and rejects it ("Access token JWT
+        # check failed" → active:false → 401). Strict is off so the http URL is
+        # accepted in dev mode while :8443 keeps serving introspection.
+        - name: KC_HOSTNAME
+          value: http://keycloak.openstack.svc.cluster.local:8080
+        - name: KC_HOSTNAME_STRICT
+          value: "false"
         ports:
         - name: http
           containerPort: 8080
