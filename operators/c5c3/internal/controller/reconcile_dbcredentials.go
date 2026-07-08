@@ -259,7 +259,10 @@ func dbCredentialStaticExternalSecret(cp *c5c3v1alpha1.ControlPlane) *esov1.Exte
 // setting spec.infrastructure.database.credentialsMode: Static (migration
 // staging / brownfield).
 func dbCredentialsDynamicEnabled(cp *c5c3v1alpha1.ControlPlane) bool {
-	return cp.Spec.Infrastructure.Database.CredentialsMode != commonv1.CredentialsModeStatic
+	// spec.infrastructure is optional (External keystone mode omits it). A nil
+	// block has no managed database, so credential issuance is not dynamic.
+	infra := cp.Spec.Infrastructure
+	return infra != nil && infra.Database.CredentialsMode != commonv1.CredentialsModeStatic
 }
 
 // reconcileDBCredentials projects (in managed mode) the per-ControlPlane service
@@ -281,8 +284,10 @@ func (r *ControlPlaneReconciler) reconcileDBCredentials(ctx context.Context, cp 
 	logger := log.FromContext(ctx)
 
 	// Brownfield early-exit: the user supplies their own DB credential Secret, so
-	// there is nothing for the operator to project or reference in OpenBao.
-	if cp.Spec.Infrastructure.Database.ClusterRef == nil {
+	// there is nothing for the operator to project or reference in OpenBao. A nil
+	// spec.infrastructure (External keystone mode) is treated the same way — no
+	// managed database means no operator-owned DB-credential projection.
+	if infra := cp.Spec.Infrastructure; infra == nil || infra.Database.ClusterRef == nil {
 		logger.Info("brownfield database (user-supplied credential), skipping DB credential ExternalSecret projection")
 		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
 			Type:               conditionTypeDBCredentialsReady,

@@ -85,7 +85,10 @@ func adminPasswordExternalSecret(cp *c5c3v1alpha1.ControlPlane) *esov1.ExternalS
 //
 //nolint:unused // declared by task 1.2; consumed by the Keystone projection, readAdminPassword, and the Secret-name extractor wired in Level 2 (tasks 2.1-2.3).
 func effectiveAdminPasswordSecretRef(cp *c5c3v1alpha1.ControlPlane) commonv1.SecretRefSpec {
-	if cp.Spec.Infrastructure.Database.ClusterRef != nil {
+	// spec.infrastructure is optional (External keystone mode omits it). A nil
+	// block reads as "no managed database", so the effective ref is the
+	// user-supplied passwordSecretRef — the same branch brownfield mode takes.
+	if infra := cp.Spec.Infrastructure; infra != nil && infra.Database.ClusterRef != nil {
 		return commonv1.SecretRefSpec{Name: adminPasswordSecretName(cp), Key: "password"}
 	}
 	return cp.Spec.KORC.AdminCredential.PasswordSecretRef
@@ -112,8 +115,10 @@ func (r *ControlPlaneReconciler) reconcileAdminPassword(ctx context.Context, cp 
 	logger := log.FromContext(ctx)
 
 	// Brownfield early-exit: the user supplies their own admin-password Secret, so
-	// there is nothing for the operator to project or reference in OpenBao.
-	if cp.Spec.Infrastructure.Database.ClusterRef == nil {
+	// there is nothing for the operator to project or reference in OpenBao. A nil
+	// spec.infrastructure (External keystone mode) is treated the same way — no
+	// managed database means no operator-owned admin-password projection.
+	if infra := cp.Spec.Infrastructure; infra == nil || infra.Database.ClusterRef == nil {
 		logger.Info("brownfield database (user-supplied credential), skipping admin password ExternalSecret projection")
 		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
 			Type:               conditionTypeAdminPasswordReady,

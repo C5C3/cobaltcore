@@ -128,7 +128,7 @@ func integrationManagedControlPlane(name, namespace string) *c5c3v1alpha1.Contro
 		},
 		Spec: c5c3v1alpha1.ControlPlaneSpec{
 			OpenStackRelease: "2025.2",
-			Infrastructure: c5c3v1alpha1.InfrastructureSpec{
+			Infrastructure: &c5c3v1alpha1.InfrastructureSpec{
 				Database: commonv1.DatabaseSpec{
 					ClusterRef: &corev1.LocalObjectReference{Name: "openstack-db"},
 					Database:   "keystone",

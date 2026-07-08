@@ -58,7 +58,7 @@ func managedInfraControlPlane() *c5c3v1alpha1.ControlPlane {
 		Spec: c5c3v1alpha1.ControlPlaneSpec{
 			OpenStackRelease: "2025.2",
 			Region:           "RegionOne",
-			Infrastructure: c5c3v1alpha1.InfrastructureSpec{
+			Infrastructure: &c5c3v1alpha1.InfrastructureSpec{
 				Database: commonv1.DatabaseSpec{
 					ClusterRef: &corev1.LocalObjectReference{Name: "openstack-db"},
 					Database:   "keystone",
@@ -451,7 +451,7 @@ func TestReconcileInfrastructure_BrownfieldSkipsChildren(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "default", Generation: 1},
 		Spec: c5c3v1alpha1.ControlPlaneSpec{
 			OpenStackRelease: "2025.2",
-			Infrastructure: c5c3v1alpha1.InfrastructureSpec{
+			Infrastructure: &c5c3v1alpha1.InfrastructureSpec{
 				Database: commonv1.DatabaseSpec{
 					Host:      "db.example.com",
 					Database:  "keystone",

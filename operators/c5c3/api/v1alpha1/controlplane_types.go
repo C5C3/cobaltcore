@@ -66,7 +66,19 @@ type ControlPlaneSpec struct {
 
 	// Infrastructure declares the shared backing services (database, cache)
 	// that the control plane's services connect to.
-	Infrastructure InfrastructureSpec `json:"infrastructure"`
+	//
+	// Required in Managed keystone mode (or when services.keystone is unset) and
+	// forbidden in External keystone mode. Preserving today's contract, the
+	// validating webhook rejects a non-External ControlPlane without it and the
+	// defaulting webhook materializes the omitted block; an External-mode
+	// ControlPlane manages identity against a pre-existing Keystone and provisions
+	// no backing services, so infrastructure is forbidden (phase 2 will relax this
+	// to optional). The Go field is a pointer (hence +optional at the CRD schema
+	// layer) so External mode can omit it; the mode-conditional required/forbidden
+	// rules live in the validating webhook because CEL cannot express a
+	// cross-field rule spanning spec.infrastructure and spec.services.keystone.
+	// +optional
+	Infrastructure *InfrastructureSpec `json:"infrastructure,omitempty"`
 
 	// Services declares the per-service configuration projected into the
 	// individual service CRs.

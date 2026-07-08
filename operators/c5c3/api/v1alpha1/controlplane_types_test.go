@@ -70,7 +70,7 @@ func TestOpenStackReleasePattern(t *testing.T) {
 // aggregate and the per-service CRs validate the same way. Assigning the
 // commonv1 zero values to the spec fields is a compile-time type assertion.
 func TestControlPlaneSpecReusesCommonTypes(t *testing.T) {
-	spec := ControlPlaneSpec{}
+	spec := ControlPlaneSpec{Infrastructure: &InfrastructureSpec{}}
 
 	// These assignments only compile if the field types are exactly the
 	// commonv1 types — guarding against an accidental local copy.

@@ -54,7 +54,7 @@ func horizonControlPlane() *c5c3v1alpha1.ControlPlane {
 		Spec: c5c3v1alpha1.ControlPlaneSpec{
 			OpenStackRelease: "2025.2",
 			Region:           "RegionOne",
-			Infrastructure: c5c3v1alpha1.InfrastructureSpec{
+			Infrastructure: &c5c3v1alpha1.InfrastructureSpec{
 				Database: commonv1.DatabaseSpec{
 					ClusterRef: &corev1.LocalObjectReference{Name: "openstack-db"},
 					Database:   "keystone",
@@ -164,6 +164,28 @@ func TestReconcileHorizon_NotManagedWhenUnset(t *testing.T) {
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 	g.Expect(cond.Reason).To(Equal("HorizonNotManaged"))
 	// No child was created.
+	var list horizonv1alpha1.HorizonList
+	g.Expect(r.Client.List(context.Background(), &list)).To(Succeed())
+	g.Expect(list.Items).To(BeEmpty())
+}
+
+// TestReconcileHorizon_NilInfrastructureDoesNotPanic exercises the defensive
+// nil-Infrastructure guard. An External-mode ControlPlane omits
+// spec.infrastructure, so the dashboard cache projection has nothing to
+// DeepCopy. The fixture carries KeystoneReady=True, so without a local guard the
+// projection's cp.Spec.Infrastructure.Cache deref would panic once the
+// KeystoneReady gate is passed. The guard must instead requeue.
+func TestReconcileHorizon_NilInfrastructureDoesNotPanic(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := horizonControlPlane()
+	cp.Spec.Infrastructure = nil
+	r := newHorizonTestReconciler(t, cp)
+
+	res, err := r.reconcileHorizon(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(infraRequeueAfter))
+
+	// No Horizon child is projected against the absent infrastructure.
 	var list horizonv1alpha1.HorizonList
 	g.Expect(r.Client.List(context.Background(), &list)).To(Succeed())
 	g.Expect(list.Items).To(BeEmpty())

@@ -58,7 +58,7 @@ func keystoneControlPlane() *c5c3v1alpha1.ControlPlane {
 		Spec: c5c3v1alpha1.ControlPlaneSpec{
 			OpenStackRelease: "2025.2",
 			Region:           "RegionOne",
-			Infrastructure: c5c3v1alpha1.InfrastructureSpec{
+			Infrastructure: &c5c3v1alpha1.InfrastructureSpec{
 				Database: commonv1.DatabaseSpec{
 					ClusterRef: &corev1.LocalObjectReference{Name: "openstack-db"},
 					Database:   "keystone",
@@ -160,6 +160,36 @@ func TestReconcileKeystone_NotManagedWhenServiceUnset(t *testing.T) {
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 	g.Expect(cond.Reason).To(Equal("KeystoneNotManaged"))
+}
+
+// TestReconcileKeystone_NilInfrastructureDoesNotPanic exercises the defensive
+// nil-Infrastructure guard. An External-mode ControlPlane omits
+// spec.infrastructure; the pipeline short-circuits at the Infrastructure
+// sub-reconciler before Keystone runs today, but the fixture carries
+// InfrastructureReady=True, so without a local guard the projection's
+// cp.Spec.Infrastructure derefs would panic once the gate is passed. The guard
+// must instead requeue and leave the Infrastructure sub-reconciler to own the
+// External-mode requeue.
+func TestReconcileKeystone_NilInfrastructureDoesNotPanic(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := keystoneTestScheme(t)
+	cp := keystoneControlPlane()
+	// External keystone mode omits the backing-services block. The fixture keeps
+	// InfrastructureReady=True, so the InfrastructureReady gate would pass and —
+	// without the guard — reach the nil dereference.
+	cp.Spec.Infrastructure = nil
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	res, err := r.reconcileKeystone(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(infraRequeueAfter))
+
+	// No Keystone child is projected against the absent infrastructure.
+	k := &keystonev1alpha1.Keystone{}
+	key := types.NamespacedName{Name: keystoneName(cp), Namespace: childNamespace(cp)}
+	g.Expect(apierrors.IsNotFound(c.Get(context.Background(), key, k))).To(BeTrue(),
+		"no Keystone child must be projected when spec.infrastructure is nil")
 }
 
 // TestReconcileKeystone_PreservesChildOnFlipToNil verifies that flipping

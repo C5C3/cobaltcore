@@ -463,6 +463,7 @@ func TestReadAdminPassword_ManagedReadsOperatorOwnedSecret(t *testing.T) {
 
 	s := korcTestScheme(t)
 	cp := korcControlPlane()
+	cp.Spec.Infrastructure = &c5c3v1alpha1.InfrastructureSpec{}
 	cp.Spec.Infrastructure.Database.ClusterRef = &corev1.LocalObjectReference{Name: "openstack-db"}
 
 	// The operator-owned admin-password Secret the managed effective ref points at.

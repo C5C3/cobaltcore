@@ -105,6 +105,28 @@ var memcachedGVK = schema.GroupVersionKind{
 func (r *ControlPlaneReconciler) reconcileInfrastructure(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
+	// spec.infrastructure is optional now: an External-mode Keystone ControlPlane
+	// omits it (the validating webhook forbids it in External mode and requires it
+	// otherwise). External-mode reconciliation — managing identity against a
+	// pre-existing Keystone with no backing services to provision — lands with the
+	// External-mode reconciliation work; until then the CR is accepted at
+	// admission but this sub-reconciler halts the pipeline with a gentle requeue
+	// rather than dereferencing the nil block. Every non-External CR reaches this
+	// point with infrastructure materialized (webhook default), so the guard only
+	// fires for an External-mode CR.
+	if cp.Spec.Infrastructure == nil {
+		logger.Info("spec.infrastructure is unset (External keystone mode); infrastructure reconciliation not yet implemented")
+		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+			Type:               conditionTypeInfrastructureReady,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: cp.Generation,
+			Reason:             "ExternalModeNotImplemented",
+			Message: "spec.infrastructure is unset (External keystone mode); the ControlPlane is accepted " +
+				"but External-mode reconciliation is not yet implemented",
+		})
+		return ctrl.Result{RequeueAfter: infraRequeueAfter}, nil
+	}
+
 	dbManaged := cp.Spec.Infrastructure.Database.ClusterRef != nil
 	cacheManaged := cp.Spec.Infrastructure.Cache.ClusterRef != nil
 

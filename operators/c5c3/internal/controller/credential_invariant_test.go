@@ -78,7 +78,7 @@ func invariantScheme(t *testing.T) *runtime.Scheme {
 func invariantControlPlane() *c5c3v1alpha1.ControlPlane {
 	cp := korcControlPlane()
 	cp.Spec.KORC.AdminCredential.ApplicationCredential.Restricted = ptr.To(true)
-	cp.Spec.Infrastructure = c5c3v1alpha1.InfrastructureSpec{
+	cp.Spec.Infrastructure = &c5c3v1alpha1.InfrastructureSpec{
 		Database: commonv1.DatabaseSpec{
 			ClusterRef: &corev1.LocalObjectReference{Name: "openstack-db"},
 			Database:   "keystone",

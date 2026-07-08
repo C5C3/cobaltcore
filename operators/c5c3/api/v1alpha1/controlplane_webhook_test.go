@@ -25,7 +25,7 @@ func validControlPlane() *ControlPlane {
 		Spec: ControlPlaneSpec{
 			OpenStackRelease: "2025.2",
 			Region:           "RegionOne",
-			Infrastructure: InfrastructureSpec{
+			Infrastructure: &InfrastructureSpec{
 				Database: commonv1.DatabaseSpec{
 					Host:      "db.example.com",
 					Port:      3306,
@@ -133,7 +133,7 @@ func TestDefault_PreservesExplicitValues(t *testing.T) {
 	cp := &ControlPlane{
 		Spec: ControlPlaneSpec{
 			Region: "EU-West",
-			Infrastructure: InfrastructureSpec{
+			Infrastructure: &InfrastructureSpec{
 				Database: commonv1.DatabaseSpec{
 					ClusterRef: &corev1.LocalObjectReference{Name: "my-db"},
 					Database:   "mydb",
@@ -193,7 +193,7 @@ func TestDefault_DoesNotInventModeForBrownfield(t *testing.T) {
 	// Case A: brownfield database (host set) — database.clusterRef stays nil.
 	cpDB := &ControlPlane{
 		Spec: ControlPlaneSpec{
-			Infrastructure: InfrastructureSpec{
+			Infrastructure: &InfrastructureSpec{
 				Database: commonv1.DatabaseSpec{Host: "db.example.com"},
 			},
 		},
@@ -210,7 +210,7 @@ func TestDefault_DoesNotInventModeForBrownfield(t *testing.T) {
 	// Case B: brownfield cache (servers set) — cache.clusterRef stays nil.
 	cpCache := &ControlPlane{
 		Spec: ControlPlaneSpec{
-			Infrastructure: InfrastructureSpec{
+			Infrastructure: &InfrastructureSpec{
 				Cache: commonv1.CacheSpec{Servers: []string{"mc:11211"}},
 			},
 		},
@@ -240,7 +240,7 @@ func TestDefault_FillsEmptyNameOnPresentClusterRef(t *testing.T) {
 	cp := &ControlPlane{
 		Spec: ControlPlaneSpec{
 			OpenStackRelease: "2025.2",
-			Infrastructure: InfrastructureSpec{
+			Infrastructure: &InfrastructureSpec{
 				Database: commonv1.DatabaseSpec{ClusterRef: &corev1.LocalObjectReference{}},
 				Cache:    commonv1.CacheSpec{ClusterRef: &corev1.LocalObjectReference{}},
 			},

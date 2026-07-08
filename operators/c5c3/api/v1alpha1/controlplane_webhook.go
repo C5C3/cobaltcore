@@ -136,6 +136,15 @@ func (w *ControlPlaneWebhook) Default(_ context.Context, obj *ControlPlane) erro
 	// discriminator (database.host / cache.servers) is unset, so the validating
 	// webhook's database/cache XOR check still passes for a brownfield CR — the
 	// webhook never coerces an explicit brownfield endpoint into managed mode.
+	//
+	// spec.infrastructure is now an optional pointer (External keystone mode omits
+	// it). Materialize an empty block when it is nil so the leaf defaulting below
+	// preserves today's omit-infrastructure contract for a managed-mode CR. The
+	// External-mode carve-out that skips this invention lands with the mode-aware
+	// defaulting; here every CR still gets the managed infrastructure defaults.
+	if obj.Spec.Infrastructure == nil {
+		obj.Spec.Infrastructure = &InfrastructureSpec{}
+	}
 	db := &obj.Spec.Infrastructure.Database
 	if db.Database == "" {
 		db.Database = DefaultDatabaseName
@@ -269,36 +278,43 @@ func (w *ControlPlaneWebhook) validate(cp *ControlPlane) field.ErrorList {
 		))
 	}
 
-	// database must use exactly one of clusterRef or host, and CredentialsMode
-	// Dynamic (engine-issued credentials) requires managed mode (ClusterRef
-	// set) — the shared validators mirroring the CEL rules on the shared
-	// commonv1.DatabaseSpec.
-	db := cp.Spec.Infrastructure.Database
-	allErrs = append(allErrs, validation.DatabaseXOR(specPath.Child("infrastructure", "database"), &db)...)
-	allErrs = append(allErrs, validation.DynamicCredentialsRequireClusterRef(specPath.Child("infrastructure", "database"), &db)...)
+	// spec.infrastructure is optional at the Go/CRD layer now (External keystone
+	// mode omits it), so the database/cache checks only run when the block is
+	// present. The mode-conditional required/forbidden rules for the block itself
+	// are added with the External-mode validation matrix; here a nil block simply
+	// has no database/cache to validate.
+	if infra := cp.Spec.Infrastructure; infra != nil {
+		// database must use exactly one of clusterRef or host, and CredentialsMode
+		// Dynamic (engine-issued credentials) requires managed mode (ClusterRef
+		// set) — the shared validators mirroring the CEL rules on the shared
+		// commonv1.DatabaseSpec.
+		db := infra.Database
+		allErrs = append(allErrs, validation.DatabaseXOR(specPath.Child("infrastructure", "database"), &db)...)
+		allErrs = append(allErrs, validation.DynamicCredentialsRequireClusterRef(specPath.Child("infrastructure", "database"), &db)...)
 
-	// database.replicas must be 1 (standalone) or >=3 (a quorum-safe Galera
-	// cluster). Exactly 2 is rejected because the managed-mode MariaDB projection
-	// (ensureMariaDB) turns any replicas>1 into a Galera cluster, and a two-node
-	// Galera cluster cannot hold a majority — a single pod disruption (restart,
-	// OOM-kill, rolling update, network partition) then loses quorum and takes the
-	// whole database offline. The CRD marker only enforces Minimum=1, so this
-	// webhook is the enforcement point; the shared commonv1.DatabaseSpec must not
-	// carry a c5c3-specific CEL rule the keystone operator (which ignores replicas)
-	// would also inherit. A zero value (CRD/webhook default bypassed) is left to
-	// the reconciler's floor, so only an explicit 2 is rejected here.
-	if db.Replicas == 2 {
-		allErrs = append(allErrs, field.Invalid(
-			specPath.Child("infrastructure", "database", "replicas"),
-			db.Replicas,
-			"database replicas must be 1 (standalone) or >=3 (Galera needs quorum); 2 cannot hold a majority",
-		))
+		// database.replicas must be 1 (standalone) or >=3 (a quorum-safe Galera
+		// cluster). Exactly 2 is rejected because the managed-mode MariaDB projection
+		// (ensureMariaDB) turns any replicas>1 into a Galera cluster, and a two-node
+		// Galera cluster cannot hold a majority — a single pod disruption (restart,
+		// OOM-kill, rolling update, network partition) then loses quorum and takes the
+		// whole database offline. The CRD marker only enforces Minimum=1, so this
+		// webhook is the enforcement point; the shared commonv1.DatabaseSpec must not
+		// carry a c5c3-specific CEL rule the keystone operator (which ignores replicas)
+		// would also inherit. A zero value (CRD/webhook default bypassed) is left to
+		// the reconciler's floor, so only an explicit 2 is rejected here.
+		if db.Replicas == 2 {
+			allErrs = append(allErrs, field.Invalid(
+				specPath.Child("infrastructure", "database", "replicas"),
+				db.Replicas,
+				"database replicas must be 1 (standalone) or >=3 (Galera needs quorum); 2 cannot hold a majority",
+			))
+		}
+
+		// cache must use exactly one of clusterRef or servers — the shared
+		// validator mirroring the CEL rule on the shared commonv1.CacheSpec.
+		cache := infra.Cache
+		allErrs = append(allErrs, validation.CacheXOR(specPath.Child("infrastructure", "cache"), &cache)...)
 	}
-
-	// cache must use exactly one of clusterRef or servers — the shared
-	// validator mirroring the CEL rule on the shared commonv1.CacheSpec.
-	cache := cp.Spec.Infrastructure.Cache
-	allErrs = append(allErrs, validation.CacheXOR(specPath.Child("infrastructure", "cache"), &cache)...)
 
 	// the K-ORC admin-credential password Secret reference is required —
 	// without it the reconciler cannot (re-)mint the admin application credential.
@@ -447,63 +463,73 @@ func newInvalidIfErrs(cp *ControlPlane, allErrs field.ErrorList) error {
 func validateImmutable(oldObj, newObj *ControlPlane) field.ErrorList {
 	var allErrs field.ErrorList
 
-	dbPath := field.NewPath("spec", "infrastructure", "database")
-	oldDB := oldObj.Spec.Infrastructure.Database
-	newDB := newObj.Spec.Infrastructure.Database
-	switch {
-	case (oldDB.ClusterRef != nil) != (newDB.ClusterRef != nil):
-		allErrs = append(allErrs, field.Invalid(dbPath, newDB,
-			"database mode (managed clusterRef vs brownfield host) is immutable"))
-	case oldDB.ClusterRef != nil && newDB.ClusterRef != nil && oldDB.ClusterRef.Name != newDB.ClusterRef.Name:
-		allErrs = append(allErrs, field.Invalid(dbPath.Child("clusterRef", "name"),
-			newDB.ClusterRef.Name, "managed database clusterRef.name is immutable"))
-	}
-	if oldDB.Database != newDB.Database {
-		allErrs = append(allErrs, field.Invalid(dbPath.Child("database"),
-			newDB.Database, "database name is immutable"))
-	}
-	// database.replicas is create-only. It is projected into the managed MariaDB
-	// child's replica count and the derived Galera topology (ensureMariaDB), so
-	// editing it on a live ControlPlane would drive a destructive Update on the
-	// owned cluster — toggling Galera off (3->1) or scaling a running Galera
-	// cluster down. Freezing it here keeps the CR the single source of truth for a
-	// topology that can only be changed safely by recreating the control plane,
-	// mirroring the database name / region / clusterRef.name immutability above.
-	if oldDB.Replicas != newDB.Replicas {
-		allErrs = append(allErrs, field.Invalid(dbPath.Child("replicas"),
-			newDB.Replicas, "database replicas is immutable after creation "+
-				"(toggling Galera or scaling down a live cluster is destructive)"))
-	}
-	// database.storageSize is create-only for the same reason: it is projected
-	// into the owned MariaDB's spec.storage.size, which the mariadb-operator
-	// rejects changing on a live CR (its webhook forbids resizing/shrinking the
-	// PVC). Freezing it at the ControlPlane layer surfaces the constraint at
-	// admission with a clear message instead of letting the edit reach — and be
-	// rejected by — the child MariaDB. Mirrors the replicas immutability above.
-	//
-	// The comparison is against the DEFAULTED value on both sides: a ControlPlane
-	// created before storageSize existed has "" persisted (and any read/apply
-	// path that bypasses CRD defaulting, e.g. a fake-client test, can surface ""),
-	// yet its live MariaDB was provisioned at the default size. Normalizing ""
-	// to DefaultDatabaseStorageSize lets such a CR migrate once — an update that
-	// pins the field to the default it already runs at is admitted — while any
-	// OTHER value is still rejected as a resize the mariadb-operator would refuse.
-	if effectiveStorageSize(oldDB.StorageSize) != effectiveStorageSize(newDB.StorageSize) {
-		allErrs = append(allErrs, field.Invalid(dbPath.Child("storageSize"),
-			newDB.StorageSize, "database storageSize is immutable after creation "+
-				"(the mariadb-operator rejects resizing a live volume)"))
-	}
+	// spec.infrastructure is an optional pointer now (External keystone mode omits
+	// it). The database/cache immutability comparisons only apply when the block is
+	// present on BOTH revisions — a presence flip (block added or removed) is an
+	// infrastructure-vs-mode transition governed by the External-mode gating, not a
+	// database/cache field mutation. When either side is nil there are no managed
+	// clusterRef/name/replicas/storageSize leaves to freeze. The
+	// cloudCredentialsRef.secretName and region immutability checks below are
+	// mode-independent and always run.
+	if oldInfra, newInfra := oldObj.Spec.Infrastructure, newObj.Spec.Infrastructure; oldInfra != nil && newInfra != nil {
+		dbPath := field.NewPath("spec", "infrastructure", "database")
+		oldDB := oldInfra.Database
+		newDB := newInfra.Database
+		switch {
+		case (oldDB.ClusterRef != nil) != (newDB.ClusterRef != nil):
+			allErrs = append(allErrs, field.Invalid(dbPath, newDB,
+				"database mode (managed clusterRef vs brownfield host) is immutable"))
+		case oldDB.ClusterRef != nil && newDB.ClusterRef != nil && oldDB.ClusterRef.Name != newDB.ClusterRef.Name:
+			allErrs = append(allErrs, field.Invalid(dbPath.Child("clusterRef", "name"),
+				newDB.ClusterRef.Name, "managed database clusterRef.name is immutable"))
+		}
+		if oldDB.Database != newDB.Database {
+			allErrs = append(allErrs, field.Invalid(dbPath.Child("database"),
+				newDB.Database, "database name is immutable"))
+		}
+		// database.replicas is create-only. It is projected into the managed MariaDB
+		// child's replica count and the derived Galera topology (ensureMariaDB), so
+		// editing it on a live ControlPlane would drive a destructive Update on the
+		// owned cluster — toggling Galera off (3->1) or scaling a running Galera
+		// cluster down. Freezing it here keeps the CR the single source of truth for a
+		// topology that can only be changed safely by recreating the control plane,
+		// mirroring the database name / region / clusterRef.name immutability above.
+		if oldDB.Replicas != newDB.Replicas {
+			allErrs = append(allErrs, field.Invalid(dbPath.Child("replicas"),
+				newDB.Replicas, "database replicas is immutable after creation "+
+					"(toggling Galera or scaling down a live cluster is destructive)"))
+		}
+		// database.storageSize is create-only for the same reason: it is projected
+		// into the owned MariaDB's spec.storage.size, which the mariadb-operator
+		// rejects changing on a live CR (its webhook forbids resizing/shrinking the
+		// PVC). Freezing it at the ControlPlane layer surfaces the constraint at
+		// admission with a clear message instead of letting the edit reach — and be
+		// rejected by — the child MariaDB. Mirrors the replicas immutability above.
+		//
+		// The comparison is against the DEFAULTED value on both sides: a ControlPlane
+		// created before storageSize existed has "" persisted (and any read/apply
+		// path that bypasses CRD defaulting, e.g. a fake-client test, can surface ""),
+		// yet its live MariaDB was provisioned at the default size. Normalizing ""
+		// to DefaultDatabaseStorageSize lets such a CR migrate once — an update that
+		// pins the field to the default it already runs at is admitted — while any
+		// OTHER value is still rejected as a resize the mariadb-operator would refuse.
+		if effectiveStorageSize(oldDB.StorageSize) != effectiveStorageSize(newDB.StorageSize) {
+			allErrs = append(allErrs, field.Invalid(dbPath.Child("storageSize"),
+				newDB.StorageSize, "database storageSize is immutable after creation "+
+					"(the mariadb-operator rejects resizing a live volume)"))
+		}
 
-	cachePath := field.NewPath("spec", "infrastructure", "cache")
-	oldCache := oldObj.Spec.Infrastructure.Cache
-	newCache := newObj.Spec.Infrastructure.Cache
-	switch {
-	case (oldCache.ClusterRef != nil) != (newCache.ClusterRef != nil):
-		allErrs = append(allErrs, field.Invalid(cachePath, newCache,
-			"cache mode (managed clusterRef vs brownfield servers) is immutable"))
-	case oldCache.ClusterRef != nil && newCache.ClusterRef != nil && oldCache.ClusterRef.Name != newCache.ClusterRef.Name:
-		allErrs = append(allErrs, field.Invalid(cachePath.Child("clusterRef", "name"),
-			newCache.ClusterRef.Name, "managed cache clusterRef.name is immutable"))
+		cachePath := field.NewPath("spec", "infrastructure", "cache")
+		oldCache := oldInfra.Cache
+		newCache := newInfra.Cache
+		switch {
+		case (oldCache.ClusterRef != nil) != (newCache.ClusterRef != nil):
+			allErrs = append(allErrs, field.Invalid(cachePath, newCache,
+				"cache mode (managed clusterRef vs brownfield servers) is immutable"))
+		case oldCache.ClusterRef != nil && newCache.ClusterRef != nil && oldCache.ClusterRef.Name != newCache.ClusterRef.Name:
+			allErrs = append(allErrs, field.Invalid(cachePath.Child("clusterRef", "name"),
+				newCache.ClusterRef.Name, "managed cache clusterRef.name is immutable"))
+		}
 	}
 
 	oldSecretName := oldObj.Spec.KORC.AdminCredential.CloudCredentialsRef.SecretName

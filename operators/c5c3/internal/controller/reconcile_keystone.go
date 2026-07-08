@@ -115,6 +115,19 @@ func (r *ControlPlaneReconciler) reconcileKeystone(ctx context.Context, cp *c5c3
 		return ctrl.Result{}, nil
 	}
 
+	// spec.infrastructure is optional (External keystone mode omits it). This
+	// managed projection points the Keystone child at the backing services the
+	// ControlPlane provisioned, so a nil block has nothing to project and the
+	// derefs below would panic. Guard locally rather than trusting the pipeline
+	// short-circuit: reconcileInfrastructure runs first and halts a nil-block CR
+	// with an ExternalModeNotImplemented requeue, so this is unreachable today,
+	// but a later pipeline reorder — or an Infrastructure sub-reconciler that
+	// reports Ready for External mode — must not reach the nil dereference. The
+	// Infrastructure sub-reconciler owns the External-mode requeue.
+	if cp.Spec.Infrastructure == nil {
+		return ctrl.Result{RequeueAfter: infraRequeueAfter}, nil
+	}
+
 	// Gate on InfrastructureReady.
 	if !conditions.AllTrue(cp.Status.Conditions, conditionTypeInfrastructureReady) {
 		logger.Info("Infrastructure not ready, deferring Keystone projection")
