@@ -291,3 +291,12 @@ spec:
         - check:
             ($error != null): true
             (contains($error, 'type is immutable')): true
+  # An http introspection endpoint would crash-loop the sidecar
+  # (mod_auth_openidc parses OIDCOAuthIntrospectionEndpoint as https-only).
+  - try:
+    - apply:
+        file: 30-oidc-http-introspection.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'introspectionEndpoint must use https://')): true

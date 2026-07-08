@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# OIDC backend enabling oauth2Introspection with an http (not https)
+# explicit introspectionEndpoint. mod_auth_openidc's
+# OIDCOAuthIntrospectionEndpoint is https-only at Apache config-parse time —
+# an http endpoint would crash-loop the sidecar — so the webhook rejects it
+# at admission. Admission must reject this CR with an $error referencing
+# "introspectionEndpoint must use https://".
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: KeystoneIdentityBackend
+metadata:
+  name: invalid-oidc-http-introspection
+spec:
+  keystoneRef:
+    name: keystone
+  domain:
+    name: sso-five
+  type: OIDC
+  oidc:
+    issuer: https://idp.example.com/realms/forge-five
+    clientID: keystone
+    clientSecretRef:
+      name: corp-oidc-client
+    endpoints:
+      authorizationEndpoint: https://idp.example.com/auth
+      tokenEndpoint: https://idp.example.com/token
+      jwksURI: https://idp.example.com/certs
+      introspectionEndpoint: http://idp.example.com/introspect
+    oauth2Introspection:
+      enabled: true

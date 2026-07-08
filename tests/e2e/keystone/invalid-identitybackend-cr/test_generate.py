@@ -46,7 +46,7 @@ _CHAINSAW_TEST = _HERE / "chainsaw-test.yaml"
 # OIDC sibling-rejection fixtures (26-28). Bumping this value requires adding
 # the matching Fixture entry AND the matching `file: <name>` line in
 # chainsaw-test.yaml.
-_EXPECTED_FIXTURE_COUNT = 30
+_EXPECTED_FIXTURE_COUNT = 31
 
 
 def _load_generator() -> types.ModuleType:

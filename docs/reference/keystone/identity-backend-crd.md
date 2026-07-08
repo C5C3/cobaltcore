@@ -282,13 +282,14 @@ All URL fields share the `^https?://` scheme guard.
 | `jwksURI` | `string` | Yes | JSON Web Key Set document. |
 | `userinfoEndpoint` | `string` | No | OIDC userinfo endpoint. |
 | `endSessionEndpoint` | `string` | No | RP-initiated logout endpoint. |
-| `introspectionEndpoint` | `string` | No | OAuth2 token introspection endpoint. **Required when `oauth2Introspection` is enabled with explicit endpoints** (webhook-enforced). |
+| `introspectionEndpoint` | `string` | No | OAuth2 token introspection endpoint. **Required — and required to be `https://` — when `oauth2Introspection` is enabled with explicit endpoints** (webhook-enforced; see [`OIDCIntrospectionSpec`](#oidcintrospectionspec)). |
 
 ### OIDCIntrospectionSpec
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `enabled` | `bool` | Yes | Turns bearer-token introspection on for this backend. |
+| `enabled` | `bool` | Yes | Turns bearer-token introspection on for this backend. The resolved introspection endpoint **must be https** — mod_auth_openidc rejects http introspection endpoints at Apache config-parse time, so the webhook fails explicit http endpoints at admission and the render skips a backend whose metadata-derived endpoint is http (both fail-visible, never a crash-looping sidecar). |
+| `tlsVerify` | `*bool` | No (default `true`) | Certificate verification on the introspection call. `false` renders `OIDCOAuthSSLValidateServer Off` so self-signed / private-CA endpoints work — an explicit opt-out for test and lab environments until a CA-bundle field ships. |
 
 ### MappingRuleSpec
 
@@ -454,7 +455,8 @@ OIDC-specific webhook rules: the fixed `clientSecret` data-key contract on
 `clientSecretRef`, per-rule mapping completeness (at least one local and one
 remote matcher with a non-empty type), `identityProviderName` uniqueness per
 referenced Keystone, `remoteIDAttribute` uniformity across the OIDC siblings
-of one Keystone, at most one introspection-enabled sibling, and a
+of one Keystone, at most one introspection-enabled sibling, the https-only
+introspection endpoint, and a
 config-injection guard over every value the proxy configuration or metadata
 documents embed. The federation render re-validates those values (plus the
 Secret-sourced client secret path) as the last line of defense, mirroring

@@ -694,6 +694,26 @@ func TestIdentityBackendValidate_RejectsIntrospectionWithoutEndpointWhenExplicit
 	g.Expect(err.Error()).To(ContainSubstring("introspectionEndpoint must be set"))
 }
 
+func TestIdentityBackendValidate_RejectsHTTPIntrospectionEndpoint(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneIdentityBackendWebhook{}
+
+	b := validOIDCBackend()
+	b.Spec.OIDC.OAuth2Introspection = &OIDCIntrospectionSpec{Enabled: true}
+	b.Spec.OIDC.Endpoints = &OIDCEndpointsSpec{
+		AuthorizationEndpoint: "https://idp.example.com/auth",
+		TokenEndpoint:         "https://idp.example.com/token",
+		JWKSURI:               "https://idp.example.com/certs",
+		// mod_auth_openidc rejects http introspection endpoints at Apache
+		// config-parse time — the webhook fails this at admission.
+		IntrospectionEndpoint: "http://idp.example.com/introspect",
+	}
+
+	_, err := w.ValidateCreate(context.Background(), b)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("introspectionEndpoint must use https://"))
+}
+
 // Cross-CR checks: identityProviderName uniqueness, remoteIDAttribute
 // uniformity, and the single-introspection-backend limit are all evaluated
 // against the OIDC siblings attached to the same Keystone.

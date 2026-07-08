@@ -32,8 +32,21 @@ spec:
     clientID: keystone
     clientSecretRef:
       name: keycloak-forge-client
+    # Explicit discovery (also exercising the endpoints path end-to-end; the
+    # forge2 sibling exercises the metadata fetch): everything speaks the
+    # fixture's plain-http listener EXCEPT the introspection endpoint, which
+    # mod_auth_openidc requires to be https — the fixture serves it on the
+    # self-signed 8443 listener, and tlsVerify opts out of verifying that
+    # throwaway certificate.
+    endpoints:
+      authorizationEndpoint: http://keycloak.openstack.svc.cluster.local:8080/realms/forge/protocol/openid-connect/auth
+      tokenEndpoint: http://keycloak.openstack.svc.cluster.local:8080/realms/forge/protocol/openid-connect/token
+      jwksURI: http://keycloak.openstack.svc.cluster.local:8080/realms/forge/protocol/openid-connect/certs
+      userinfoEndpoint: http://keycloak.openstack.svc.cluster.local:8080/realms/forge/protocol/openid-connect/userinfo
+      introspectionEndpoint: https://keycloak.openstack.svc.cluster.local:8443/realms/forge/protocol/openid-connect/token/introspect
     oauth2Introspection:
       enabled: true
+      tlsVerify: false
   mappings:
   - remote:
     - type: HTTP_OIDC_ISS

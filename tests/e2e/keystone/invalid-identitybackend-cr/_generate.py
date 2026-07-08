@@ -29,6 +29,8 @@ Three fixture categories share this scaffold:
 * The OIDC sibling set: ``18-oidc-base`` is a valid OIDC backend applied
   first, and ``26``-``28`` collide with it on identityProviderName,
   remoteIDAttribute uniformity, and the single-introspection-backend limit.
+  ``30`` enables introspection with an http endpoint, which the webhook
+  rejects (mod_auth_openidc requires https there).
 
 Usage:
 
@@ -615,6 +617,34 @@ FIXTURES: list[Fixture] = [
 # spec-level CEL transition rule (self.type == oldSelf.type) rejects the
 # change on UPDATE. Admission must reject this UPDATE with an $error
 # referencing "type is immutable".""",
+    ),
+    Fixture(
+        filename="30-oidc-http-introspection.yaml",
+        name="invalid-oidc-http-introspection",
+        domain_name="sso-five",
+        backend_type="OIDC",
+        ldap=None,
+        trailing="""\
+  oidc:
+    issuer: https://idp.example.com/realms/forge-five
+    clientID: keystone
+    clientSecretRef:
+      name: corp-oidc-client
+    endpoints:
+      authorizationEndpoint: https://idp.example.com/auth
+      tokenEndpoint: https://idp.example.com/token
+      jwksURI: https://idp.example.com/certs
+      introspectionEndpoint: http://idp.example.com/introspect
+    oauth2Introspection:
+      enabled: true
+""",
+        comment="""\
+# OIDC backend enabling oauth2Introspection with an http (not https)
+# explicit introspectionEndpoint. mod_auth_openidc's
+# OIDCOAuthIntrospectionEndpoint is https-only at Apache config-parse time —
+# an http endpoint would crash-loop the sidecar — so the webhook rejects it
+# at admission. Admission must reject this CR with an $error referencing
+# "introspectionEndpoint must use https://".""",
     ),
 ]
 

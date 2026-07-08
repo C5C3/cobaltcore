@@ -494,11 +494,24 @@ func (w *KeystoneIdentityBackendWebhook) validateOIDC(oidcPath *field.Path, o *O
 		}
 		// Bearer introspection needs the endpoint when discovery is explicit;
 		// with metadata-driven discovery it comes from the document.
-		if o.OAuth2Introspection != nil && o.OAuth2Introspection.Enabled && e.IntrospectionEndpoint == "" {
-			errs = append(errs, field.Required(
-				endpointsPath.Child("introspectionEndpoint"),
-				"introspectionEndpoint must be set when oauth2Introspection is enabled with explicit endpoints",
-			))
+		if o.OAuth2Introspection != nil && o.OAuth2Introspection.Enabled {
+			switch {
+			case e.IntrospectionEndpoint == "":
+				errs = append(errs, field.Required(
+					endpointsPath.Child("introspectionEndpoint"),
+					"introspectionEndpoint must be set when oauth2Introspection is enabled with explicit endpoints",
+				))
+			case !strings.HasPrefix(e.IntrospectionEndpoint, "https://"):
+				// mod_auth_openidc's OIDCOAuthIntrospectionEndpoint is
+				// https-only at Apache config-parse time — an http endpoint
+				// would crash-loop the sidecar, so reject it at admission
+				// when knowable (the render re-checks for metadata-derived
+				// endpoints).
+				errs = append(errs, field.Invalid(
+					endpointsPath.Child("introspectionEndpoint"), e.IntrospectionEndpoint,
+					"introspectionEndpoint must use https:// (mod_auth_openidc rejects http introspection endpoints)",
+				))
+			}
 		}
 	}
 

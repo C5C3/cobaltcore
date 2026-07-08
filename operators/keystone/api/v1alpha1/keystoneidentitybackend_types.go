@@ -549,6 +549,15 @@ type OIDCEndpointsSpec struct {
 type OIDCIntrospectionSpec struct {
 	// Enabled turns bearer-token introspection on.
 	Enabled bool `json:"enabled"`
+
+	// TLSVerify controls certificate verification on the introspection
+	// call. The endpoint itself must be https (mod_auth_openidc rejects http
+	// introspection endpoints at config-parse time); setting this to false
+	// renders OIDCOAuthSSLValidateServer Off so self-signed or private-CA
+	// endpoints work — an explicit opt-out for test and lab environments
+	// until a CA-bundle field ships. Defaults to true (verify).
+	// +optional
+	TLSVerify *bool `json:"tlsVerify,omitempty"`
 }
 
 // MappingRuleSpec is one keystone federation mapping rule: remote assertion

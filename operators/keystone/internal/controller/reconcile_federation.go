@@ -104,6 +104,7 @@ type oidcRender struct {
 	conf              []byte
 	introspection     bool
 	introspectionEP   string
+	introspectionTLS  bool
 	clientID          string
 	clientSecret      string
 	sessionType       string
@@ -172,8 +173,9 @@ func issuerToMetadataBasename(issuer string) string {
 func claimStripHeaders(remoteIDAttribute string, mappings []keystonev1alpha1.MappingRuleSpec) []string {
 	envNames := []string{remoteIDAttribute}
 	for i := range mappings {
-		for j := range mappings[i].Remote {
-			envNames = append(envNames, mappings[i].Remote[j].Type)
+		remote := mappings[i].Remote
+		for j := range remote {
+			envNames = append(envNames, remote[j].Type)
 		}
 	}
 	seen := map[string]struct{}{}
@@ -474,11 +476,11 @@ func (r *KeystoneReconciler) fetchProviderMetadata(ctx context.Context, backend 
 	defer cancel()
 	req, err := http.NewRequestWithContext(fetchCtx, http.MethodGet, metadataURL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("%w: building request for %s: %v", errProviderMetadataUnavailable, metadataURL, err)
+		return nil, fmt.Errorf("%w: building request for %s: %w", errProviderMetadataUnavailable, metadataURL, err)
 	}
 	resp, err := r.federationMetadataClient().Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("%w: fetching %s: %v", errProviderMetadataUnavailable, metadataURL, err)
+		return nil, fmt.Errorf("%w: fetching %s: %w", errProviderMetadataUnavailable, metadataURL, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -486,7 +488,7 @@ func (r *KeystoneReconciler) fetchProviderMetadata(ctx context.Context, backend 
 	}
 	document, err := io.ReadAll(io.LimitReader(resp.Body, maxProviderMetadataBytes+1))
 	if err != nil {
-		return nil, fmt.Errorf("%w: reading %s: %v", errProviderMetadataUnavailable, metadataURL, err)
+		return nil, fmt.Errorf("%w: reading %s: %w", errProviderMetadataUnavailable, metadataURL, err)
 	}
 	if len(document) > maxProviderMetadataBytes {
 		return nil, fmt.Errorf("%w: %s exceeds the %d-byte budget", errProviderMetadataUnavailable, metadataURL, maxProviderMetadataBytes)
@@ -496,7 +498,7 @@ func (r *KeystoneReconciler) fetchProviderMetadata(ctx context.Context, backend 
 		Issuer string `json:"issuer"`
 	}
 	if err := json.Unmarshal(document, &doc); err != nil {
-		return nil, fmt.Errorf("%w: decoding %s: %v", errProviderMetadataUnavailable, metadataURL, err)
+		return nil, fmt.Errorf("%w: decoding %s: %w", errProviderMetadataUnavailable, metadataURL, err)
 	}
 	if doc.Issuer != backend.Spec.OIDC.Issuer {
 		// Deliberately does not echo doc.Issuer: this error surfaces in a
@@ -690,6 +692,13 @@ func (r *KeystoneReconciler) renderOIDCBackend(ctx context.Context, keystone *ke
 		if introspectionEP == "" {
 			return oidcRender{}, fmt.Errorf("%w: oauth2Introspection is enabled but the provider metadata carries no introspection_endpoint", errProviderMetadataUnavailable)
 		}
+		// mod_auth_openidc's OIDCOAuthIntrospectionEndpoint is https-only at
+		// Apache config-parse time; rendering an http endpoint would
+		// crash-loop the sidecar. The webhook rejects explicit http
+		// endpoints at admission; this covers the metadata-derived path.
+		if !strings.HasPrefix(introspectionEP, "https://") {
+			return oidcRender{}, fmt.Errorf("%w: introspection endpoint %q is not https (mod_auth_openidc rejects http introspection endpoints)", errProviderMetadataUnavailable, introspectionEP)
+		}
 	}
 
 	clientDoc, err := json.Marshal(map[string]string{
@@ -729,6 +738,7 @@ func (r *KeystoneReconciler) renderOIDCBackend(ctx context.Context, keystone *ke
 		conf:              confDoc,
 		introspection:     introspection,
 		introspectionEP:   introspectionEP,
+		introspectionTLS:  !introspection || o.OAuth2Introspection.TLSVerify == nil || *o.OAuth2Introspection.TLSVerify,
 		clientID:          o.ClientID,
 		clientSecret:      clientSecret,
 		sessionType:       effectiveOIDCSessionType(o),
@@ -823,6 +833,11 @@ func renderProxyConf(keystone *keystonev1alpha1.Keystone, renders []oidcRender, 
 		w("OIDCOAuthIntrospectionEndpoint %q", renders[i].introspectionEP)
 		w("OIDCOAuthClientID %q", renders[i].clientID)
 		w("OIDCOAuthClientSecret %q", renders[i].clientSecret)
+		if !renders[i].introspectionTLS {
+			// Explicit spec opt-out (oauth2Introspection.tlsVerify: false)
+			// for self-signed / private-CA introspection endpoints.
+			w("OIDCOAuthSSLValidateServer Off")
+		}
 	}
 
 	for i := range renders {

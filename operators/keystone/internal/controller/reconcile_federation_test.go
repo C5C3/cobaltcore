@@ -110,6 +110,7 @@ func TestRenderProxyConf_DirectivesAndLocations(t *testing.T) {
 			metadataBasename:  issuerToMetadataBasename("https://idp.example.com/realms/forge"),
 			introspection:     true,
 			introspectionEP:   "https://idp.example.com/realms/forge/introspect",
+			introspectionTLS:  true,
 			clientID:          "keystone",
 			clientSecret:      "rp-secret",
 			sessionType:       "client-cookie",
@@ -150,6 +151,16 @@ func TestRenderProxyConf_DirectivesAndLocations(t *testing.T) {
 	g.Expect(conf).To(ContainSubstring(`OIDCOAuthIntrospectionEndpoint "https://idp.example.com/realms/forge/introspect"`))
 	g.Expect(conf).To(ContainSubstring(`OIDCOAuthClientID "keystone"`))
 	g.Expect(strings.Count(conf, "OIDCOAuthIntrospectionEndpoint")).To(Equal(1))
+	g.Expect(conf).NotTo(ContainSubstring("OIDCOAuthSSLValidateServer"),
+		"TLS verification stays on unless explicitly opted out")
+
+	// The explicit tlsVerify opt-out renders the validate-off directive.
+	optOut := renders[:1]
+	optOut[0].introspectionTLS = false
+	g.Expect(string(renderProxyConf(ks, optOut, "pass-phrase"))).To(
+		ContainSubstring("OIDCOAuthSSLValidateServer Off"),
+	)
+	optOut[0].introspectionTLS = true
 
 	// Per-IdP protected Locations with OICDiscoverURL ?iss= pinning.
 	g.Expect(conf).To(ContainSubstring(`<Location "/v3/auth/OS-FEDERATION/identity_providers/corp-oidc/protocols/openid/websso">`))
@@ -649,4 +660,24 @@ func TestIdentityBackendSecretNameExtractor_OIDCClientSecret(t *testing.T) {
 
 	// Nil-safe on an empty spec.
 	g.Expect(identityBackendSecretNameExtractor(&keystonev1alpha1.KeystoneIdentityBackend{})).To(BeEmpty())
+}
+
+// TestRenderOIDCBackend_HTTPIntrospectionEndpointSkips pins the sidecar
+// crash-loop guard: mod_auth_openidc rejects http introspection endpoints at
+// Apache config-parse time, so a metadata-derived http endpoint (the shape
+// the webhook cannot see) must degrade to a per-backend skip.
+func TestRenderOIDCBackend_HTTPIntrospectionEndpointSkips(t *testing.T) {
+	g := NewGomegaWithT(t)
+	backend := testProjectableOIDCBackend("corp-oidc")
+	backend.Spec.OIDC.Endpoints = nil
+	backend.Spec.OIDC.Issuer = "http://idp.example.com/realms/forge"
+	backend.Spec.OIDC.OAuth2Introspection = &keystonev1alpha1.OIDCIntrospectionSpec{Enabled: true}
+
+	r := newTestReconciler(testOIDCClientSecret("corp-oidc"))
+	r.HTTPClient = &metadataDoer{body: `{"issuer":"http://idp.example.com/realms/forge","introspection_endpoint":"http://idp.example.com/realms/forge/introspect"}`}
+
+	ks := testFederationKeystone()
+	_, err := r.renderOIDCBackend(context.Background(), ks, backend)
+	g.Expect(err).To(MatchError(errProviderMetadataUnavailable))
+	g.Expect(err.Error()).To(ContainSubstring("is not https"))
 }

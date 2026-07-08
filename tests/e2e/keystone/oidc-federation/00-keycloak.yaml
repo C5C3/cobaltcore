@@ -119,10 +119,55 @@ spec:
         app.kubernetes.io/name: keycloak
         app.kubernetes.io/instance: keycloak
     spec:
+      # The introspection endpoint must be https (mod_auth_openidc parses
+      # OIDCOAuthIntrospectionEndpoint as https-only), so an initContainer
+      # generates a throwaway self-signed keypair for Keycloak's https
+      # listener. The keystone image is already loaded in kind and ships
+      # python3 + cryptography; the key is deliberately world-readable —
+      # Keycloak runs under a different UID and this is a test-only cert the
+      # backend CR opts out of verifying (tlsVerify: false).
+      initContainers:
+      - name: gen-cert
+        image: ghcr.io/c5c3/keystone:2025.2
+        command:
+        - python3
+        - -c
+        - |
+          import datetime, os
+          from cryptography import x509
+          from cryptography.hazmat.primitives import hashes, serialization
+          from cryptography.hazmat.primitives.asymmetric import rsa
+          from cryptography.x509.oid import NameOID
+          key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+          name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "keycloak.openstack.svc.cluster.local")])
+          san = x509.SubjectAlternativeName([
+              x509.DNSName("keycloak.openstack.svc.cluster.local"),
+              x509.DNSName("keycloak"),
+          ])
+          now = datetime.datetime.now(datetime.timezone.utc)
+          cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name)
+                  .public_key(key.public_key()).serial_number(x509.random_serial_number())
+                  .not_valid_before(now - datetime.timedelta(minutes=5))
+                  .not_valid_after(now + datetime.timedelta(days=1))
+                  .add_extension(san, critical=False).sign(key, hashes.SHA256()))
+          with open("/certs/tls.crt", "wb") as f:
+              f.write(cert.public_bytes(serialization.Encoding.PEM))
+          with open("/certs/tls.key", "wb") as f:
+              f.write(key.private_bytes(serialization.Encoding.PEM,
+                                        serialization.PrivateFormat.PKCS8,
+                                        serialization.NoEncryption()))
+          os.chmod("/certs/tls.key", 0o644)
+        volumeMounts:
+        - name: tls
+          mountPath: /certs
       containers:
       - name: keycloak
         image: quay.io/keycloak/keycloak:26.6.4@sha256:0aae0de7fca85525f727d3354df17896092de8bb26ae4c12d89c77e5df8cbce4
-        args: ["start-dev", "--import-realm"]
+        args:
+        - start-dev
+        - --import-realm
+        - --https-certificate-file=/certs/tls.crt
+        - --https-certificate-key-file=/certs/tls.key
         env:
         - name: KC_BOOTSTRAP_ADMIN_USERNAME
           value: admin
@@ -131,9 +176,14 @@ spec:
         ports:
         - name: http
           containerPort: 8080
+        - name: https
+          containerPort: 8443
         volumeMounts:
         - name: realms
           mountPath: /opt/keycloak/data/import
+          readOnly: true
+        - name: tls
+          mountPath: /certs
           readOnly: true
         readinessProbe:
           httpGet:
@@ -149,6 +199,8 @@ spec:
           limits:
             memory: 1Gi
       volumes:
+      - name: tls
+        emptyDir: {}
       - name: realms
         configMap:
           name: keycloak-realms
@@ -169,6 +221,10 @@ spec:
   - name: http
     port: 8080
     targetPort: 8080
+    protocol: TCP
+  - name: https
+    port: 8443
+    targetPort: 8443
     protocol: TCP
 ---
 # Relying-party client secrets for the two KeystoneIdentityBackends: the
