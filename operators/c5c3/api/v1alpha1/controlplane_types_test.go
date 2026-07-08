@@ -113,6 +113,63 @@ func TestServiceKeystoneSpecDeepCopy(t *testing.T) {
 	}
 }
 
+// TestServiceKeystoneSpecExternalDeepCopy verifies the External-mode block
+// (mode + the typed external pointer, incl. its optional caBundleSecretRef)
+// round-trips through DeepCopy with independent pointer storage.
+func TestServiceKeystoneSpecExternalDeepCopy(t *testing.T) {
+	spec := ServiceKeystoneSpec{
+		Mode: KeystoneModeExternal,
+		External: &ExternalKeystoneSpec{
+			AuthURL:           "https://keystone.example.com/v3",
+			EndpointType:      ExternalEndpointTypePublic,
+			CABundleSecretRef: &commonv1.SecretRefSpec{Name: "brownfield-keystone-ca", Key: "ca.crt"},
+		},
+	}
+
+	clone := spec.DeepCopy()
+	if clone.External == spec.External {
+		t.Errorf("DeepCopy did not allocate a new *ExternalKeystoneSpec for External")
+	}
+	if clone.External.CABundleSecretRef == spec.External.CABundleSecretRef {
+		t.Errorf("DeepCopy did not allocate a new *SecretRefSpec for CABundleSecretRef")
+	}
+	if clone.Mode != KeystoneModeExternal {
+		t.Errorf("DeepCopy altered Mode: got %q", clone.Mode)
+	}
+	if clone.External.AuthURL != "https://keystone.example.com/v3" {
+		t.Errorf("DeepCopy altered AuthURL: got %q", clone.External.AuthURL)
+	}
+
+	// Mutating the clone's external block must not touch the source.
+	clone.External.AuthURL = "https://other.example.com/v3"
+	if spec.External.AuthURL != "https://keystone.example.com/v3" {
+		t.Errorf("DeepCopy aliased External: source AuthURL changed to %q", spec.External.AuthURL)
+	}
+}
+
+// TestIsExternalKeystone exercises the nil-safe discriminator across the three
+// Keystone service states (nil, Managed, External).
+func TestIsExternalKeystone(t *testing.T) {
+	tests := []struct {
+		name string
+		ks   *ServiceKeystoneSpec
+		want bool
+	}{
+		{"nil keystone", nil, false},
+		{"managed (explicit)", &ServiceKeystoneSpec{Mode: KeystoneModeManaged}, false},
+		{"managed (unset mode)", &ServiceKeystoneSpec{}, false},
+		{"external", &ServiceKeystoneSpec{Mode: KeystoneModeExternal}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cp := &ControlPlane{Spec: ControlPlaneSpec{Services: ServicesSpec{Keystone: tt.ks}}}
+			if got := cp.IsExternalKeystone(); got != tt.want {
+				t.Errorf("IsExternalKeystone() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 // TestKORCSpecShape exercises the KORC/AdminCredential nested shape
 // and the application-credential defaults' field types.
 func TestKORCSpecShape(t *testing.T) {

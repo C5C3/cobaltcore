@@ -483,6 +483,17 @@ spec:
                               mirroring the region defaulting discipline.
                             type: string
                         type: object
+                      domainName:
+                        default: Default
+                        description: |-
+                          DomainName is the OpenStack admin domain name. Defaults to "Default" via
+                          both the CRD schema default and the defaulting webhook. Valid in both
+                          modes. Phase-1 nuance: the single DomainName sets BOTH user_domain_name
+                          and project_domain_name in the generated clouds.yaml (exactly what the
+                          K-ORC clouds.yaml builder does today), so the admin user and project must
+                          live in the same domain; a later userDomainName/projectDomainName split is
+                          a compatible extension.
+                        type: string
                       passwordSecretRef:
                         description: |-
                           PasswordSecretRef references the Secret holding the admin password used to
@@ -503,6 +514,22 @@ spec:
                         required:
                         - name
                         type: object
+                      projectName:
+                        default: admin
+                        description: |-
+                          ProjectName is the OpenStack admin project name. Defaults to "admin" via
+                          both the CRD schema default and the defaulting webhook. Valid in both
+                          modes.
+                        type: string
+                      userName:
+                        default: admin
+                        description: |-
+                          UserName is the OpenStack admin user name the control plane authenticates
+                          as. Defaults to "admin" via both the CRD schema default and the defaulting
+                          webhook. Valid in both Managed and External modes; consumed by the K-ORC
+                          clouds.yaml builders and the admin import filters (that consumption lands
+                          with the K-ORC clouds.yaml work).
+                        type: string
                     required:
                     - applicationCredential
                     - cloudCredentialsRef
@@ -520,6 +547,11 @@ spec:
                   2024.1, 2025.2). The [12] minor class keeps this CRD pattern, the
                   webhook's controlPlaneReleaseRegexp, and release.ParseRelease in agreement
                   so a non-cadence minor (e.g. 2025.9) is rejected at every layer.
+
+                  The field stays required in both keystone modes. In External mode it is
+                  ADVISORY: no images are deployed, so the value only needs to match the
+                  external installation's release at the phase-3 managed takeover — until
+                  then it is recorded but unused by the External-mode reconciler.
                 pattern: ^\d{4}\.[12]$
                 type: string
               region:
@@ -676,6 +708,64 @@ spec:
                       reconciler reports KeystoneReady as not-managed. Flipping this from set to
                       nil deletes the previously-projected Keystone child.
                     properties:
+                      external:
+                        description: |-
+                          External carries the connection parameters for an externally-operated
+                          Keystone. Required when mode is External and forbidden otherwise (CEL +
+                          webhook enforced).
+                        properties:
+                          authURL:
+                            description: |-
+                              AuthURL is the identity endpoint of the external Keystone (e.g.
+                              "https://keystone.example.com/v3"). Required in External mode. The pattern
+                              enforces an HTTP(S) URL shape with a non-empty host so a malformed or
+                              hostless endpoint is rejected at admission; the validating webhook mirrors
+                              it with a full net/url parse as defense-in-depth. Neither gate is an SSRF
+                              control — admission cannot resolve where the host points, so the reconciler
+                              that dials this endpoint must still enforce network egress restrictions.
+                            pattern: ^https?://[^\s/]+
+                            type: string
+                          caBundleSecretRef:
+                            description: |-
+                              CABundleSecretRef optionally references a Secret carrying a private CA
+                              bundle the client trusts when verifying the external Keystone endpoint.
+                              The referenced bundle is projected verbatim into the generated K-ORC
+                              credentials Secret (K-ORC natively reads an inline `cacert` PEM key from
+                              the same Secret that carries clouds.yaml — no mount, no upstream change).
+                              Key defaults to "ca.crt"; the default is webhook-only because the shared
+                              SecretRefSpec carries no c5c3-specific marker (the same discipline as
+                              passwordSecretRef.Key).
+                            properties:
+                              key:
+                                type: string
+                              name:
+                                description: |-
+                                  Name is the referenced Secret's name. It must be a non-empty DNS-1123
+                                  subdomain (the Kubernetes object-name grammar). Tightening the shared type
+                                  fixes every consumer at once — keystone adminPasswordSecretRef /
+                                  database.secretRef / messaging / TLS cert refs and the c5c3
+                                  passwordSecretRef — so an empty name no longer slips through "required".
+                                minLength: 1
+                                pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                                type: string
+                            required:
+                            - name
+                            type: object
+                          endpointType:
+                            default: public
+                            description: |-
+                              EndpointType selects which Keystone catalog interface to authenticate
+                              against. Defaults to public via both the CRD schema default and the
+                              defaulting webhook. It maps to the clouds.yaml `endpoint_type` key
+                              consumed by the K-ORC clouds.yaml builders (see ExternalEndpointType).
+                            enum:
+                            - public
+                            - internal
+                            - admin
+                            type: string
+                        required:
+                        - authURL
+                        type: object
                       gateway:
                         description: |-
                           Gateway optionally exposes the projected Keystone API externally via a
@@ -774,6 +864,20 @@ spec:
                         - message: exactly one of image.tag or image.digest must be
                             set
                           rule: has(self.tag) != has(self.digest)
+                      mode:
+                        default: Managed
+                        description: |-
+                          Mode selects whether the Keystone service is Managed (the reconciler
+                          deploys and owns a full Keystone workload, today's behavior) or External
+                          (identity is managed against a pre-existing, externally-operated Keystone
+                          reachable at external.authURL and no Keystone workload is deployed).
+                          Defaults to Managed via both the CRD schema default and the defaulting
+                          webhook. In External mode the typed external block is required and every
+                          managed-only field below is forbidden (CEL + webhook enforced).
+                        enum:
+                        - Managed
+                        - External
+                        type: string
                       policyOverrides:
                         description: |-
                           PolicyOverrides defines per-service oslo.policy overrides for Keystone.
@@ -840,6 +944,31 @@ spec:
                           derives a default schedule.
                         type: string
                     type: object
+                    x-kubernetes-validations:
+                    - message: services.keystone.external is required when services.keystone.mode
+                        is External
+                      rule: '!(has(self.mode) && self.mode == ''External'') || has(self.external)'
+                    - message: services.keystone.external may only be set when services.keystone.mode
+                        is External
+                      rule: (has(self.mode) && self.mode == 'External') || !has(self.external)
+                    - message: services.keystone.replicas is forbidden when services.keystone.mode
+                        is External
+                      rule: '!(has(self.mode) && self.mode == ''External'') || !has(self.replicas)'
+                    - message: services.keystone.image is forbidden when services.keystone.mode
+                        is External
+                      rule: '!(has(self.mode) && self.mode == ''External'') || !has(self.image)'
+                    - message: services.keystone.policyOverrides is forbidden when
+                        services.keystone.mode is External
+                      rule: '!(has(self.mode) && self.mode == ''External'') || !has(self.policyOverrides)'
+                    - message: services.keystone.rotationInterval is forbidden when
+                        services.keystone.mode is External
+                      rule: '!(has(self.mode) && self.mode == ''External'') || !has(self.rotationInterval)'
+                    - message: services.keystone.gateway is forbidden when services.keystone.mode
+                        is External
+                      rule: '!(has(self.mode) && self.mode == ''External'') || !has(self.gateway)'
+                    - message: services.keystone.publicEndpoint is forbidden when
+                        services.keystone.mode is External
+                      rule: '!(has(self.mode) && self.mode == ''External'') || !has(self.publicEndpoint)'
                 type: object
             required:
             - infrastructure

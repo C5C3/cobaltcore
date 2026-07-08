@@ -47,6 +47,11 @@ type ControlPlaneSpec struct {
 	// 2024.1, 2025.2). The [12] minor class keeps this CRD pattern, the
 	// webhook's controlPlaneReleaseRegexp, and release.ParseRelease in agreement
 	// so a non-cadence minor (e.g. 2025.9) is rejected at every layer.
+	//
+	// The field stays required in both keystone modes. In External mode it is
+	// ADVISORY: no images are deployed, so the value only needs to match the
+	// external installation's release at the phase-3 managed takeover — until
+	// then it is recorded but unused by the External-mode reconciler.
 	// +kubebuilder:validation:Pattern=`^\d{4}\.[12]$`
 	OpenStackRelease string `json:"openStackRelease"`
 
@@ -146,7 +151,44 @@ type ServicesSpec struct {
 //     (match the pin in operators/keystone/go.mod)
 //   - K-ORC               => github.com/k-orc/openstack-resource-controller/v2 v2.5.0
 //   - memcached.c5c3.io   => NO public Go module; L2 uses unstructured.Unstructured
+//
+// Mode is the Managed|External discriminator (default Managed). In Managed mode
+// (or unset) the reconciler projects a full Keystone service exactly as before.
+// In External mode the ControlPlane manages identity against a pre-existing,
+// externally-operated Keystone (external.authURL) and deploys no Keystone
+// workload; the managed-only knobs below are forbidden and the typed external
+// block is required. The intra-struct invariants are expressed as type-level CEL
+// rules so they hold at the CRD schema layer even when the validating webhook is
+// bypassed; the validating webhook mirrors them (and enforces the cross-field
+// rules CEL cannot express: External forbids spec.infrastructure and
+// services.horizon, and Managed requires spec.infrastructure).
+//
+// +kubebuilder:validation:XValidation:rule="!(has(self.mode) && self.mode == 'External') || has(self.external)",message="services.keystone.external is required when services.keystone.mode is External"
+// +kubebuilder:validation:XValidation:rule="(has(self.mode) && self.mode == 'External') || !has(self.external)",message="services.keystone.external may only be set when services.keystone.mode is External"
+// +kubebuilder:validation:XValidation:rule="!(has(self.mode) && self.mode == 'External') || !has(self.replicas)",message="services.keystone.replicas is forbidden when services.keystone.mode is External"
+// +kubebuilder:validation:XValidation:rule="!(has(self.mode) && self.mode == 'External') || !has(self.image)",message="services.keystone.image is forbidden when services.keystone.mode is External"
+// +kubebuilder:validation:XValidation:rule="!(has(self.mode) && self.mode == 'External') || !has(self.policyOverrides)",message="services.keystone.policyOverrides is forbidden when services.keystone.mode is External"
+// +kubebuilder:validation:XValidation:rule="!(has(self.mode) && self.mode == 'External') || !has(self.rotationInterval)",message="services.keystone.rotationInterval is forbidden when services.keystone.mode is External"
+// +kubebuilder:validation:XValidation:rule="!(has(self.mode) && self.mode == 'External') || !has(self.gateway)",message="services.keystone.gateway is forbidden when services.keystone.mode is External"
+// +kubebuilder:validation:XValidation:rule="!(has(self.mode) && self.mode == 'External') || !has(self.publicEndpoint)",message="services.keystone.publicEndpoint is forbidden when services.keystone.mode is External"
 type ServiceKeystoneSpec struct {
+	// Mode selects whether the Keystone service is Managed (the reconciler
+	// deploys and owns a full Keystone workload, today's behavior) or External
+	// (identity is managed against a pre-existing, externally-operated Keystone
+	// reachable at external.authURL and no Keystone workload is deployed).
+	// Defaults to Managed via both the CRD schema default and the defaulting
+	// webhook. In External mode the typed external block is required and every
+	// managed-only field below is forbidden (CEL + webhook enforced).
+	// +kubebuilder:default=Managed
+	// +optional
+	Mode KeystoneMode `json:"mode,omitempty"`
+
+	// External carries the connection parameters for an externally-operated
+	// Keystone. Required when mode is External and forbidden otherwise (CEL +
+	// webhook enforced).
+	// +optional
+	External *ExternalKeystoneSpec `json:"external,omitempty"`
+
 	// Replicas overrides the number of Keystone API replicas. When nil the
 	// reconciler applies the Keystone operator's own default (3).
 	// +optional
@@ -196,6 +238,75 @@ type ServiceKeystoneSpec struct {
 	// +optional
 	// +kubebuilder:validation:Pattern=`^https?://`
 	PublicEndpoint string `json:"publicEndpoint,omitempty"`
+}
+
+// KeystoneMode selects whether the ControlPlane's Keystone service is deployed
+// and owned by the operator (Managed) or backed by a pre-existing, externally-
+// operated Keystone (External). It mirrors the managed-vs-brownfield split of
+// the infrastructure specs at the service level.
+// +kubebuilder:validation:Enum=Managed;External
+type KeystoneMode string
+
+const (
+	// KeystoneModeManaged (the default) deploys and owns a full Keystone
+	// workload — today's behavior, byte-identical.
+	KeystoneModeManaged KeystoneMode = "Managed"
+	// KeystoneModeExternal manages identity against a pre-existing, externally-
+	// operated Keystone (external.authURL) and deploys no Keystone workload.
+	KeystoneModeExternal KeystoneMode = "External"
+)
+
+// ExternalEndpointType selects which Keystone catalog interface the control
+// plane authenticates against. It maps to the clouds.yaml `endpoint_type` key —
+// deliberately named endpointType rather than interface because K-ORC drops
+// gophercloud's Interface field and only honours endpoint_type; the authoritative
+// note lives on buildAppCredCloudsYAML in the reconciler's korc_cloudsyaml.go.
+// +kubebuilder:validation:Enum=public;internal;admin
+type ExternalEndpointType string
+
+const (
+	// ExternalEndpointTypePublic is the default: the public catalog interface.
+	ExternalEndpointTypePublic ExternalEndpointType = "public"
+	// ExternalEndpointTypeInternal selects the internal catalog interface.
+	ExternalEndpointTypeInternal ExternalEndpointType = "internal"
+	// ExternalEndpointTypeAdmin selects the admin catalog interface.
+	ExternalEndpointTypeAdmin ExternalEndpointType = "admin"
+)
+
+// ExternalKeystoneSpec declares how the control plane reaches a pre-existing,
+// externally-operated Keystone in External mode. It mirrors the brownfield
+// infrastructure shape at the identity level: the endpoint and, optionally, a
+// private-CA bundle are supplied here, and the reconciler manages identity
+// against that endpoint rather than deploying a Keystone workload.
+type ExternalKeystoneSpec struct {
+	// AuthURL is the identity endpoint of the external Keystone (e.g.
+	// "https://keystone.example.com/v3"). Required in External mode. The pattern
+	// enforces an HTTP(S) URL shape with a non-empty host so a malformed or
+	// hostless endpoint is rejected at admission; the validating webhook mirrors
+	// it with a full net/url parse as defense-in-depth. Neither gate is an SSRF
+	// control — admission cannot resolve where the host points, so the reconciler
+	// that dials this endpoint must still enforce network egress restrictions.
+	// +kubebuilder:validation:Pattern=`^https?://[^\s/]+`
+	AuthURL string `json:"authURL"`
+
+	// EndpointType selects which Keystone catalog interface to authenticate
+	// against. Defaults to public via both the CRD schema default and the
+	// defaulting webhook. It maps to the clouds.yaml `endpoint_type` key
+	// consumed by the K-ORC clouds.yaml builders (see ExternalEndpointType).
+	// +kubebuilder:default=public
+	// +optional
+	EndpointType ExternalEndpointType `json:"endpointType,omitempty"`
+
+	// CABundleSecretRef optionally references a Secret carrying a private CA
+	// bundle the client trusts when verifying the external Keystone endpoint.
+	// The referenced bundle is projected verbatim into the generated K-ORC
+	// credentials Secret (K-ORC natively reads an inline `cacert` PEM key from
+	// the same Secret that carries clouds.yaml — no mount, no upstream change).
+	// Key defaults to "ca.crt"; the default is webhook-only because the shared
+	// SecretRefSpec carries no c5c3-specific marker (the same discipline as
+	// passwordSecretRef.Key).
+	// +optional
+	CABundleSecretRef *commonv1.SecretRefSpec `json:"caBundleSecretRef,omitempty"`
 }
 
 // ServiceHorizonSpec is a CURATED LOCAL subset of the knobs the ControlPlane
@@ -252,6 +363,33 @@ type AdminCredentialSpec struct {
 	// PasswordSecretRef references the Secret holding the admin password used to
 	// (re-)mint the application credential. Reuses the canonical commonv1 shape.
 	PasswordSecretRef commonv1.SecretRefSpec `json:"passwordSecretRef"`
+
+	// UserName is the OpenStack admin user name the control plane authenticates
+	// as. Defaults to "admin" via both the CRD schema default and the defaulting
+	// webhook. Valid in both Managed and External modes; consumed by the K-ORC
+	// clouds.yaml builders and the admin import filters (that consumption lands
+	// with the K-ORC clouds.yaml work).
+	// +kubebuilder:default=admin
+	// +optional
+	UserName string `json:"userName,omitempty"`
+
+	// ProjectName is the OpenStack admin project name. Defaults to "admin" via
+	// both the CRD schema default and the defaulting webhook. Valid in both
+	// modes.
+	// +kubebuilder:default=admin
+	// +optional
+	ProjectName string `json:"projectName,omitempty"`
+
+	// DomainName is the OpenStack admin domain name. Defaults to "Default" via
+	// both the CRD schema default and the defaulting webhook. Valid in both
+	// modes. Phase-1 nuance: the single DomainName sets BOTH user_domain_name
+	// and project_domain_name in the generated clouds.yaml (exactly what the
+	// K-ORC clouds.yaml builder does today), so the admin user and project must
+	// live in the same domain; a later userDomainName/projectDomainName split is
+	// a compatible extension.
+	// +kubebuilder:default=Default
+	// +optional
+	DomainName string `json:"domainName,omitempty"`
 
 	// ApplicationCredential declares the policy for the K-ORC admin application
 	// credential (restriction, access rules, rotation mode).
@@ -466,6 +604,16 @@ type AdminApplicationCredentialStatus struct {
 	// LastRotation is the timestamp of the last successful rotation.
 	// +optional
 	LastRotation *metav1.Time `json:"lastRotation,omitempty"`
+}
+
+// IsExternalKeystone reports whether the ControlPlane's Keystone service is in
+// External mode: services.keystone is set and its mode is External. It is the
+// single, nil-safe discriminator read shared by the webhook (transition gating)
+// and the reconciler, so no call site re-implements the mode check. A nil
+// services.keystone (no Keystone at all) is not External.
+func (cp *ControlPlane) IsExternalKeystone() bool {
+	ks := cp.Spec.Services.Keystone
+	return ks != nil && ks.Mode == KeystoneModeExternal
 }
 
 func init() {
