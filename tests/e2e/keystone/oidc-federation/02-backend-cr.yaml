@@ -1,0 +1,55 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# KeystoneIdentityBackend fixture attaching the Keycloak "forge" realm to
+# keystone-oidc. deletionPolicy Delete exercises the disable-then-delete
+# domain teardown in-cluster. oauth2Introspection turns the proxy into an
+# OAuth2 resource server for this realm so the CLI bearer flow works (at
+# most one backend per Keystone may enable it — OIDCOAuth* directives are
+# server-scoped).
+#
+# The mapping gates on the asserted issuer (HTTP_OIDC_ISS — the remote-id
+# attribute the proxy passes) and maps the preferred username into an
+# ephemeral user plus the declarative federated-users group, whose member
+# role on the domain is what authorizes domain-scoped tokens.
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: KeystoneIdentityBackend
+metadata:
+  name: keycloak-forge
+  namespace: openstack
+spec:
+  keystoneRef:
+    name: keystone-oidc
+  domain:
+    name: forge
+    mode: Manage
+    deletionPolicy: Delete
+    description: Keycloak forge realm
+  type: OIDC
+  oidc:
+    issuer: http://keycloak.openstack.svc.cluster.local:8080/realms/forge
+    clientID: keystone
+    clientSecretRef:
+      name: keycloak-forge-client
+    oauth2Introspection:
+      enabled: true
+  mappings:
+  - remote:
+    - type: HTTP_OIDC_ISS
+      anyOneOf:
+      - http://keycloak.openstack.svc.cluster.local:8080/realms/forge
+    - type: HTTP_OIDC_PREFERRED_USERNAME
+    local:
+    - user:
+        name: "{1}"
+      group:
+        name: federated-users
+        domain:
+          name: forge
+  groups:
+  - name: federated-users
+    description: Federated Keycloak forge users
+    roleAssignments:
+    - role: member
+      domain: true

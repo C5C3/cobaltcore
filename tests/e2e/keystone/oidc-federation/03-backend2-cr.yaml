@@ -1,0 +1,48 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Second KeystoneIdentityBackend attaching the Keycloak "forge2" realm — the
+# multi-realm proof: the shared sidecar serves both realms' metadata from
+# one OIDCMetadataDir and each per-IdP websso Location pins its own issuer.
+# No oauth2Introspection here: the OIDCOAuth* directives are server-scoped,
+# so only one backend per Keystone may enable them (webhook-enforced) — the
+# multi-realm assertions ride the websso flow instead.
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: KeystoneIdentityBackend
+metadata:
+  name: keycloak-forge2
+  namespace: openstack
+spec:
+  keystoneRef:
+    name: keystone-oidc
+  domain:
+    name: forge2
+    mode: Manage
+    deletionPolicy: Delete
+    description: Keycloak forge2 realm
+  type: OIDC
+  oidc:
+    issuer: http://keycloak.openstack.svc.cluster.local:8080/realms/forge2
+    clientID: keystone
+    clientSecretRef:
+      name: keycloak-forge2-client
+  mappings:
+  - remote:
+    - type: HTTP_OIDC_ISS
+      anyOneOf:
+      - http://keycloak.openstack.svc.cluster.local:8080/realms/forge2
+    - type: HTTP_OIDC_PREFERRED_USERNAME
+    local:
+    - user:
+        name: "{1}"
+      group:
+        name: federated-captains
+        domain:
+          name: forge2
+  groups:
+  - name: federated-captains
+    description: Federated Keycloak forge2 users
+    roleAssignments:
+    - role: member
+      domain: true

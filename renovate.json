@@ -220,6 +220,18 @@
       ],
       "datasourceTemplate": "docker",
       "versioningTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/tests/e2e/keystone/oidc-federation/00-keycloak\\.yaml$/",
+        "/tests/e2e-chaos/keystone-federation/00-keycloak\\.yaml$/"
+      ],
+      "matchStrings": [
+        "image: (?<depName>quay\\.io/keycloak/keycloak):(?<currentValue>[^@\\s]+)@(?<currentDigest>sha256:[a-f0-9]+)"
+      ],
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "docker"
     }
   ],
   "packageRules": [
@@ -412,6 +424,28 @@
       "automerge": true,
       "minimumReleaseAge": "3 days",
       "groupName": "openldap e2e fixture"
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": [
+        "tests/e2e/keystone/oidc-federation/00-keycloak.yaml",
+        "tests/e2e-chaos/keystone-federation/00-keycloak.yaml"
+      ],
+      "matchPackageNames": ["quay.io/keycloak/keycloak"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": [
+        "tests/e2e/keystone/oidc-federation/00-keycloak.yaml",
+        "tests/e2e-chaos/keystone-federation/00-keycloak.yaml"
+      ],
+      "matchPackageNames": ["quay.io/keycloak/keycloak"],
+      "matchUpdateTypes": ["minor", "patch", "digest"],
+      "automerge": true,
+      "minimumReleaseAge": "3 days",
+      "groupName": "keycloak e2e fixture"
     },
     {
       "matchDatasources": ["docker", "go"],

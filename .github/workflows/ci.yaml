@@ -703,6 +703,17 @@ jobs:
             --cache-to type=gha,mode=max,scope=e2e-venv-builder \
             images/venv-builder/
 
+      # The keystone oidc-federation e2e projects the mod_auth_openidc
+      # sidecar. The image is release-independent and keystone is always in
+      # BUILD_OPERATORS (tempest unions it in), so build it unconditionally.
+      - name: Build federation proxy image
+        run: |
+          docker build -t "${IMAGE_PREFIX}/keystone-federation-proxy:dev" \
+            --cache-from type=gha,scope=e2e-keystone-federation-proxy \
+            --cache-to type=gha,mode=max,scope=e2e-keystone-federation-proxy \
+            --build-arg APT_MIRROR=http://azure.archive.ubuntu.com \
+            images/keystone-federation-proxy/
+
       # Build operator images for all resolved operators (changed + keystone).
       - name: Build operator images
         run: |
@@ -788,6 +799,7 @@ jobs:
             push_with_retry "${run_ref}"
             echo "::endgroup::"
           }
+          push_image "${IMAGE_PREFIX}/keystone-federation-proxy:dev"
           for op in $BUILD_OPERATORS; do
             push_image "${IMAGE_PREFIX}/${op}-operator:dev"
             # Only push service images that were actually built — operators
@@ -851,6 +863,11 @@ jobs:
           for release in ${releases}; do
             refs="${refs}"$'\n'"${IMAGE_PREFIX}/${OPERATOR}:${release}"
           done
+          # The oidc-federation suite projects the mod_auth_openidc sidecar,
+          # so the keystone leg also pulls the federation proxy image.
+          if [ "${OPERATOR}" = "keystone" ]; then
+            refs="${refs}"$'\n'"${IMAGE_PREFIX}/keystone-federation-proxy:dev"
+          fi
           {
             echo "releases<<EOF"; echo "${releases}"; echo "EOF"
             echo "refs<<EOF"; echo "${refs}"; echo "EOF"
@@ -871,6 +888,9 @@ jobs:
           for release in ${SERVICE_RELEASES}; do
             kind load docker-image "${IMAGE_PREFIX}/${OPERATOR}:${release}" --name "${KIND_CLUSTER}"
           done
+          if [ "${OPERATOR}" = "keystone" ]; then
+            kind load docker-image "${IMAGE_PREFIX}/keystone-federation-proxy:dev" --name "${KIND_CLUSTER}"
+          fi
           # The image-upgrade E2E test re-tags the 2025.2 service image; only
           # operators that ship a 2025.2 service image need it loaded.
           if printf '%s\n' ${SERVICE_RELEASES} | grep -qx 2025.2; then

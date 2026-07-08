@@ -1,0 +1,58 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Keystone CR fixture for the oidc-federation E2E test.
+# Managed mode: database via clusterRef to openstack-db (unique database
+# keystone_oidc so parallel suites never share a schema), cache via
+# clusterRef to openstack-memcached — but with keystone-side caching
+# disabled for hermeticity (the ldap-domain-backend precedent: dogpile keys
+# carry no per-deployment discriminator, so parallel suites cross-talk).
+#
+# spec.federation.proxyImage is the mod_auth_openidc sidecar the CI pipeline
+# builds and loads into kind under the :dev tag — the sidecar only appears
+# once the first OIDC backend attaches.
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone-oidc
+  namespace: openstack
+spec:
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/keystone
+    tag: "2025.2"
+  federation:
+    proxyImage:
+      repository: ghcr.io/c5c3/keystone-federation-proxy
+      tag: dev
+  database:
+    clusterRef:
+      name: openstack-db
+    database: keystone_oidc
+    secretRef:
+      name: keystone-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+    backend: dogpile.cache.pymemcache
+  fernet:
+    rotationSchedule: "0 0 * * 0"
+    maxActiveKeys: 3
+  bootstrap:
+    adminUser: admin
+    adminPasswordSecretRef:
+      name: keystone-admin
+    region: RegionOne
+  extraConfig:
+    # Cache hermeticity — see the ldap-domain-backend fixture for the full
+    # rationale; caching is not under test here.
+    cache:
+      enabled: "false"
+    # The websso round trip requires the origin to be a trusted dashboard.
+    # The typed trusted-dashboard field ships with the Horizon WebSSO phase;
+    # until then the free-form escape hatch carries it (the operator-set
+    # [federation] sso_callback_template merges per-key alongside).
+    federation:
+      trusted_dashboard: http://localhost/dummy

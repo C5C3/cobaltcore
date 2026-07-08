@@ -1,0 +1,570 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the KeystoneIdentityBackend OIDC federation flow.
+# Validates the full attach/provision/authenticate/detach cycle against a
+# real in-cluster Keycloak (single start-dev pod importing two realms):
+#   - Keystone reaches Ready first, THEN the backend attaches (late-attach)
+#   - The dedicated controller provisions the domain plus the federation API
+#     objects (identity provider, mapping, protocol) and the keystone-side
+#     projection renders the federation Secret the mod_auth_openidc sidecar
+#     mounts; the Service targetPort switches to the proxy
+#   - The CLI flow: an IdP-issued bearer token traverses the proxy's
+#     introspection path and keystone maps it into an unscoped token; the
+#     mapped group's role assignment authorizes the domain-scoped exchange
+#     (mapping-driven group membership)
+#   - The browser websso flow: cookie-jar authorization-code round trip
+#     through the Keycloak login form ends in keystone's 200 token form
+#   - A second realm proves multi-realm: each per-IdP websso path pins its
+#     own issuer
+#   - Deleting the backends de-projects the sidecar, tears the federation
+#     objects down, deletes the domains (deletionPolicy Delete), and leaves
+#     Keystone Ready with admin auth intact
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-oidc-federation
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Deploy the Keycloak fixture and Keystone; both become ready ──
+  - try:
+    - apply:
+        file: 00-keycloak.yaml
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keycloak
+            namespace: openstack
+          status:
+            (availableReplicas > `0`): true
+    - apply:
+        file: 01-keystone-cr.yaml
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-oidc
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+            (conditions[?type == 'IdentityBackendsReady']):
+            - status: "True"
+              reason: IdentityBackendsNotRequired
+    catch:
+    - script:
+        content: |
+          echo "=== Keystone CR ==="
+          kubectl get keystone keystone-oidc -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== keycloak pod logs ==="
+          kubectl logs -n $NAMESPACE -l app.kubernetes.io/name=keycloak --tail=80 2>&1 || true
+          echo "=== operator logs ==="
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 2: Late-attach the forge backend; every condition converges ────
+  - try:
+    - apply:
+        file: 02-backend-cr.yaml
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: KeystoneIdentityBackend
+          metadata:
+            name: keycloak-forge
+            namespace: openstack
+          status:
+            (conditions[?type == 'DomainReady']):
+            - status: "True"
+              reason: DomainProvisioned
+            (conditions[?type == 'FederationObjectsReady']):
+            - status: "True"
+              reason: FederationObjectsProvisioned
+            (conditions[?type == 'MappingsReady']):
+            - status: "True"
+              reason: MappingsApplied
+            (conditions[?type == 'ConfigProjected']):
+            - status: "True"
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+            (domainID != null && domainID != ''): true
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-oidc
+            namespace: openstack
+          status:
+            (conditions[?type == 'IdentityBackendsReady']):
+            - status: "True"
+              reason: AllBackendsProjected
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    catch:
+    - script:
+        content: |
+          echo "=== Backend CR ==="
+          kubectl get keystoneidentitybackend keycloak-forge -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Keystone CR ==="
+          kubectl get keystone keystone-oidc -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Keystone pods ==="
+          kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=keystone-oidc -o wide 2>&1 || true
+          echo "=== Keystone pod logs ==="
+          kubectl logs -n $NAMESPACE -l app.kubernetes.io/instance=keystone-oidc --all-containers --tail=80 2>&1 || true
+          echo "=== keycloak pod logs ==="
+          kubectl logs -n $NAMESPACE -l app.kubernetes.io/name=keycloak --tail=60 2>&1 || true
+          echo "=== operator logs ==="
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 3: The pod carries the sidecar; the Service targets the proxy ──
+  - try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-oidc
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                (length(containers[?name == 'keystone']) == `1`): true
+                (length(containers[?name == 'federation-proxy']) == `1`): true
+                (volumes[?name == 'federation-metadata']):
+                - (starts_with(secret.secretName, 'keystone-oidc-federation-')): true
+          status:
+            # updatedReplicas == replicas proves the rollout with the sidecar
+            # actually completed — spec alone could pass against a stalled
+            # rollout serving old single-container pods.
+            (updatedReplicas == replicas): true
+            (availableReplicas == replicas): true
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: keystone-oidc
+            namespace: openstack
+          spec:
+            ports:
+            - port: 5000
+              targetPort: 5050
+    catch:
+    - script:
+        content: |
+          echo "=== Keystone Deployment ==="
+          kubectl get deployment keystone-oidc -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Keystone Service ==="
+          kubectl get service keystone-oidc -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Keystone CR ==="
+          kubectl get keystone keystone-oidc -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== sidecar logs ==="
+          kubectl logs -n $NAMESPACE -l app.kubernetes.io/instance=keystone-oidc -c federation-proxy --tail=60 2>&1 || true
+          echo "=== operator logs ==="
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 4: CLI flow — IdP bearer token through the introspection path ──
+  - try:
+    - script:
+        timeout: 180s
+        shell: bash
+        content: |
+          set -euo pipefail
+          # Newest pod, NOT .items[0]: right after the step-3 rollout the old
+          # single-container pod may still be Terminating (see the
+          # ldap-domain-backend pod-selection comment). Exec targets the
+          # keystone container explicitly — the pod now has two.
+          POD=$(kubectl get pods -n $NAMESPACE \
+            -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-oidc,pod-template-hash \
+            --sort-by=.metadata.creationTimestamp -o name | tail -1 | cut -d/ -f2)
+          # All keystone requests connect to the sidecar on 127.0.0.1:5050
+          # with the Host header pinned to the Service name: this traverses
+          # the header-stripping proxy exactly like Service traffic without
+          # depending on same-pod Service hairpin semantics.
+          kubectl exec -n $NAMESPACE "$POD" -c keystone -- python3 -c '
+          import http.client, json, sys, urllib.parse
+
+          SERVICE_HOST = "keystone-oidc.openstack.svc.cluster.local:5000"
+          KEYCLOAK_HOST = "keycloak.openstack.svc.cluster.local:8080"
+
+          def fetch(url, method="GET", body=None, headers=None):
+              u = urllib.parse.urlsplit(url)
+              if u.netloc == SERVICE_HOST:
+                  conn = http.client.HTTPConnection("127.0.0.1", 5050, timeout=30)
+              else:
+                  conn = http.client.HTTPConnection(u.netloc, timeout=30)
+              h = {"Host": u.netloc}
+              h.update(headers or {})
+              path = u.path + ("?" + u.query if u.query else "")
+              conn.request(method, path, body=body, headers=h)
+              resp = conn.getresponse()
+              data = resp.read()
+              return resp, data
+
+          # 1. ROPC bearer token straight from Keycloak (the CLI shape:
+          #    the client already holds an IdP-issued access token).
+          body = urllib.parse.urlencode({
+              "grant_type": "password", "client_id": "keystone",
+              "client_secret": "keystone-forge-secret",
+              "username": "fry", "password": "fry-password",
+              "scope": "openid",
+          })
+          resp, data = fetch(f"http://{KEYCLOAK_HOST}/realms/forge/protocol/openid-connect/token",
+                             method="POST", body=body,
+                             headers={"Content-Type": "application/x-www-form-urlencoded"})
+          assert resp.status == 200, f"Keycloak token endpoint returned {resp.status}: {data[:400]}"
+          access_token = json.loads(data)["access_token"]
+          print("OK: IdP-issued bearer token obtained via ROPC")
+
+          # 2. Federated auth THROUGH the proxy: the introspection path
+          #    validates the bearer, the claim headers reach keystone, and
+          #    the mapping mints an unscoped token.
+          resp, data = fetch(f"http://{SERVICE_HOST}/v3/OS-FEDERATION/identity_providers/keycloak-forge/protocols/openid/auth",
+                             headers={"Authorization": "Bearer " + access_token})
+          assert resp.status == 201, f"federated auth returned {resp.status}: {data[:400]}"
+          unscoped = resp.getheader("X-Subject-Token")
+          assert unscoped, "no X-Subject-Token on the federated auth response"
+          token_doc = json.loads(data)["token"]
+          assert token_doc["user"]["name"] == "fry", f"mapped user is {token_doc['user']}"
+          print("OK: unscoped federated token minted for fry")
+
+          # 3. Mapping-driven group membership: the domain-scoped exchange
+          #    succeeds ONLY because the mapped federated-users group holds
+          #    the member role on the forge domain.
+          body = json.dumps({"auth": {
+              "identity": {"methods": ["token"], "token": {"id": unscoped}},
+              "scope": {"domain": {"name": "forge"}}}})
+          resp, data = fetch(f"http://{SERVICE_HOST}/v3/auth/tokens",
+                             method="POST", body=body,
+                             headers={"Content-Type": "application/json"})
+          assert resp.status == 201, f"domain-scoped exchange returned {resp.status}: {data[:400]}"
+          scoped_doc = json.loads(data)["token"]
+          roles = {r["name"] for r in scoped_doc.get("roles", [])}
+          assert "member" in roles, f"expected the member role from the mapped group, got {roles}"
+          print("OK: domain-scoped token via mapping-driven group membership")
+          '
+    catch:
+    - script:
+        content: |
+          echo "=== Backend CR ==="
+          kubectl get keystoneidentitybackend keycloak-forge -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Keystone pods ==="
+          kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=keystone-oidc -o wide 2>&1 || true
+          echo "=== keystone container logs ==="
+          kubectl logs -n $NAMESPACE -l app.kubernetes.io/instance=keystone-oidc -c keystone --tail=80 2>&1 || true
+          echo "=== sidecar logs ==="
+          kubectl logs -n $NAMESPACE -l app.kubernetes.io/instance=keystone-oidc -c federation-proxy --tail=80 2>&1 || true
+          echo "=== keycloak pod logs ==="
+          kubectl logs -n $NAMESPACE -l app.kubernetes.io/name=keycloak --tail=60 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 5: Browser websso flow — full authorization-code round trip ────
+  - try:
+    - script:
+        timeout: 180s
+        shell: bash
+        content: |
+          set -euo pipefail
+          POD=$(kubectl get pods -n $NAMESPACE \
+            -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-oidc,pod-template-hash \
+            --sort-by=.metadata.creationTimestamp -o name | tail -1 | cut -d/ -f2)
+          # Cookie-jar browser emulation: redirects targeting the Service
+          # host connect to the sidecar on 127.0.0.1:5050 with the Host
+          # header preserved (mod_auth_openidc derives the registered
+          # redirect_uri from it); Keycloak is a different pod and is
+          # reached directly. NOTE: single-quoted python3 -c string — no
+          # apostrophes inside.
+          kubectl exec -n $NAMESPACE "$POD" -c keystone -- python3 -c '
+          import http.client, re, sys, urllib.parse
+
+          SERVICE_HOST = "keystone-oidc.openstack.svc.cluster.local:5000"
+          cookies = {}
+
+          def fetch(url, method="GET", body=None, headers=None):
+              u = urllib.parse.urlsplit(url)
+              if u.netloc == SERVICE_HOST:
+                  conn = http.client.HTTPConnection("127.0.0.1", 5050, timeout=30)
+              else:
+                  conn = http.client.HTTPConnection(u.netloc, timeout=30)
+              h = {"Host": u.netloc}
+              if cookies:
+                  h["Cookie"] = "; ".join(f"{k}={v}" for k, v in cookies.items())
+              h.update(headers or {})
+              path = u.path + ("?" + u.query if u.query else "")
+              conn.request(method, path, body=body, headers=h)
+              resp = conn.getresponse()
+              data = resp.read()
+              for name, value in resp.getheaders():
+                  if name.lower() == "set-cookie":
+                      pair = value.split(";", 1)[0]
+                      cname, _, cval = pair.partition("=")
+                      if cval:
+                          cookies[cname.strip()] = cval
+                      else:
+                          cookies.pop(cname.strip(), None)
+              return resp, data
+
+          def follow(url, method="GET", body=None, headers=None, hops=15):
+              resp, data = fetch(url, method, body, headers)
+              while resp.status in (301, 302, 303) and hops > 0:
+                  url = urllib.parse.urljoin(url, resp.getheader("Location"))
+                  resp, data = fetch(url)
+                  hops -= 1
+              return url, resp, data
+
+          origin = urllib.parse.quote("http://localhost/dummy", safe="")
+          websso = (f"http://{SERVICE_HOST}/v3/auth/OS-FEDERATION/identity_providers/"
+                    f"keycloak-forge/protocols/openid/websso?origin={origin}")
+
+          # The protected Location redirects through the module discovery
+          # hand-off into the pinned realm login page.
+          url, resp, data = follow(websso)
+          assert resp.status == 200, f"expected the Keycloak login page, got {resp.status} at {url}: {data[:400]}"
+          assert "/realms/forge/" in url, f"login flow must pin the forge realm, landed at {url}"
+          html = data.decode(errors="replace")
+          m = re.search(r"action=\"([^\"]+)\"", html)
+          assert m, f"no login form action on the Keycloak page: {html[:400]}"
+          form_url = m.group(1).replace("&amp;", "&")
+          print("OK: websso pinned the forge realm and served the login form")
+
+          # Submit credentials; Keycloak redirects back to the module
+          # redirect_uri, the code is exchanged server-side, and the final
+          # 200 is keystone websso token form.
+          body = urllib.parse.urlencode({"username": "fry", "password": "fry-password", "credentialId": ""})
+          url, resp, data = follow(form_url, method="POST", body=body,
+                                   headers={"Content-Type": "application/x-www-form-urlencoded"})
+          final = data.decode(errors="replace")
+          assert resp.status == 200, f"websso round trip ended {resp.status} at {url}: {final[:400]}"
+          assert "name=\"token\"" in final, f"expected the token form, got: {final[:400]}"
+          print("OK: browser websso flow completed with the token form")
+          '
+    catch:
+    - script:
+        content: |
+          echo "=== sidecar logs ==="
+          kubectl logs -n $NAMESPACE -l app.kubernetes.io/instance=keystone-oidc -c federation-proxy --tail=100 2>&1 || true
+          echo "=== keystone container logs ==="
+          kubectl logs -n $NAMESPACE -l app.kubernetes.io/instance=keystone-oidc -c keystone --tail=80 2>&1 || true
+          echo "=== keycloak pod logs ==="
+          kubectl logs -n $NAMESPACE -l app.kubernetes.io/name=keycloak --tail=60 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 6: Second realm — the multi-realm proof ─────────────────────────
+  - try:
+    - apply:
+        file: 03-backend2-cr.yaml
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: KeystoneIdentityBackend
+          metadata:
+            name: keycloak-forge2
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-oidc
+            namespace: openstack
+          status:
+            (conditions[?type == 'IdentityBackendsReady']):
+            - status: "True"
+              reason: AllBackendsProjected
+    # Both realms' websso paths pin DISTINCT issuers off the shared sidecar.
+    - script:
+        timeout: 180s
+        shell: bash
+        content: |
+          set -euo pipefail
+          POD=$(kubectl get pods -n $NAMESPACE \
+            -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-oidc,pod-template-hash \
+            --sort-by=.metadata.creationTimestamp -o name | tail -1 | cut -d/ -f2)
+          kubectl exec -n $NAMESPACE "$POD" -c keystone -- python3 -c '
+          import http.client, urllib.parse
+
+          SERVICE_HOST = "keystone-oidc.openstack.svc.cluster.local:5000"
+
+          def fetch(url, headers=None):
+              u = urllib.parse.urlsplit(url)
+              if u.netloc == SERVICE_HOST:
+                  conn = http.client.HTTPConnection("127.0.0.1", 5050, timeout=30)
+              else:
+                  conn = http.client.HTTPConnection(u.netloc, timeout=30)
+              h = {"Host": u.netloc}
+              h.update(headers or {})
+              path = u.path + ("?" + u.query if u.query else "")
+              conn.request("GET", path, headers=h)
+              resp = conn.getresponse()
+              resp.read()
+              return resp
+
+          def authorize_realm(idp):
+              url = (f"http://{SERVICE_HOST}/v3/auth/OS-FEDERATION/identity_providers/"
+                     f"{idp}/protocols/openid/websso")
+              for _ in range(10):
+                  resp = fetch(url)
+                  if resp.status not in (301, 302, 303):
+                      raise AssertionError(f"{idp}: expected a redirect chain, got {resp.status}")
+                  url = urllib.parse.urljoin(url, resp.getheader("Location"))
+                  if "/protocol/openid-connect/auth" in url:
+                      return url
+              raise AssertionError(f"{idp}: never reached an authorize endpoint")
+
+          forge = authorize_realm("keycloak-forge")
+          forge2 = authorize_realm("keycloak-forge2")
+          assert "/realms/forge/" in forge, f"keycloak-forge pinned the wrong issuer: {forge}"
+          assert "/realms/forge2/" in forge2, f"keycloak-forge2 pinned the wrong issuer: {forge2}"
+          print("OK: both realms pin distinct issuers off the shared sidecar")
+          '
+    catch:
+    - script:
+        content: |
+          echo "=== Backend CRs ==="
+          kubectl get keystoneidentitybackend -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Keystone CR ==="
+          kubectl get keystone keystone-oidc -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== sidecar logs ==="
+          kubectl logs -n $NAMESPACE -l app.kubernetes.io/instance=keystone-oidc -c federation-proxy --tail=80 2>&1 || true
+          echo "=== operator logs ==="
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 7: Detach — sidecar removed, objects torn down, domains gone ───
+  - try:
+    - delete:
+        ref:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: KeystoneIdentityBackend
+          name: keycloak-forge
+          namespace: openstack
+    - delete:
+        ref:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: KeystoneIdentityBackend
+          name: keycloak-forge2
+          namespace: openstack
+    # The sidecar is de-projected and the rollout completes.
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-oidc
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                (length(containers) == `1`): true
+                (length(volumes[?name == 'federation-metadata']) == `0`): true
+          status:
+            (updatedReplicas == replicas): true
+            (availableReplicas == replicas): true
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: keystone-oidc
+            namespace: openstack
+          spec:
+            ports:
+            - port: 5000
+              targetPort: 5000
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-oidc
+            namespace: openstack
+          status:
+            (conditions[?type == 'IdentityBackendsReady']):
+            - status: "True"
+              reason: IdentityBackendsNotRequired
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    # The federation API objects and both domains are gone (deletionPolicy
+    # Delete), and admin password auth still works — through plain uWSGI.
+    - script:
+        timeout: 120s
+        shell: bash
+        content: |
+          set -euo pipefail
+          ADMIN_PASSWORD_B64=$(kubectl get secret keystone-admin -n $NAMESPACE -o jsonpath='{.data.password}') || {
+            echo "ERROR: could not read Secret keystone-admin"; exit 1; }
+          if [[ -z "${ADMIN_PASSWORD_B64}" ]]; then
+            echo "ERROR: Secret keystone-admin has no password key"; exit 1
+          fi
+          ADMIN_PASSWORD=$(printf '%s' "$ADMIN_PASSWORD_B64" | base64 --decode)
+          # Newest pod — the detach rolls the Deployment back to the
+          # single-container shape and the old pod may linger Terminating.
+          POD=$(kubectl get pods -n $NAMESPACE \
+            -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-oidc,pod-template-hash \
+            --sort-by=.metadata.creationTimestamp -o name | tail -1 | cut -d/ -f2)
+          kubectl exec -n $NAMESPACE "$POD" -c keystone -- python3 -c '
+          import json, sys, urllib.error, urllib.request
+
+          pw = sys.argv[1]
+
+          def request(url, data=None, headers=None, method=None):
+              req = urllib.request.Request(url, data=data, headers=headers or {}, method=method)
+              try:
+                  return urllib.request.urlopen(req)
+              except urllib.error.HTTPError as e:
+                  return e
+
+          # Project-scoped admin token via localhost:5000 — uWSGI is back on
+          # the pod-reachable bind after the detach.
+          body = json.dumps({"auth": {"identity": {"methods": ["password"], "password": {"user": {"name": "admin", "domain": {"id": "default"}, "password": pw}}}, "scope": {"project": {"name": "admin", "domain": {"id": "default"}}}}}).encode()
+          resp = request("http://localhost:5000/v3/auth/tokens", data=body, headers={"Content-Type": "application/json"})
+          assert getattr(resp, "status", resp.code) == 201, "admin auth failed after detach"
+          admin_token = resp.headers["X-Subject-Token"]
+          print("OK: admin auth still works after detach")
+
+          # The identity provider is gone from the federation API.
+          resp = request("http://localhost:5000/v3/OS-FEDERATION/identity_providers/keycloak-forge", headers={"X-Auth-Token": admin_token})
+          assert getattr(resp, "code", resp.status) == 404, "identity provider must be deleted on detach"
+          print("OK: identity provider keycloak-forge deleted")
+
+          # Both domains are gone (deletionPolicy Delete).
+          for domain in ("forge", "forge2"):
+              resp = request(f"http://localhost:5000/v3/domains?name={domain}", headers={"X-Auth-Token": admin_token})
+              domains = json.load(resp)["domains"]
+              assert domains == [], f"deletionPolicy Delete must remove domain {domain}, got {domains}"
+          print("OK: both federated domains deleted")
+          ' "$ADMIN_PASSWORD"
+    catch:
+    - script:
+        content: |
+          echo "=== Backend CRs (if still present) ==="
+          kubectl get keystoneidentitybackend -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Keystone CR ==="
+          kubectl get keystone keystone-oidc -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Keystone Deployment ==="
+          kubectl get deployment keystone-oidc -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== operator logs ==="
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
