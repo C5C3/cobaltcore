@@ -156,7 +156,7 @@ status:
 | `credentialKeys` | [`CredentialKeysSpec`](#credentialkeysspec) | No | See below | Credential-key rotation configuration. Drives the per-CR CronJob that rotates and `credential_migrate`s the credential keys used for encrypting application credentials. |
 | `passwordRotation` | [`*PasswordRotationSpec`](#passwordrotationspec) | No | `nil` (feature off) | Optionally enables scheduled rotation of the admin password. Day-2 rotation lives at the spec root beside the fernet/credential key rotation config. Nil leaves the feature off and the PasswordRotation sub-reconciler is a clean no-op. |
 | `trustFlush` | [`*TrustFlushSpec`](#trustflushspec) | No | `{schedule: "0 * * * *", suspend: false}` (materialized by the defaulting webhook) | Trust flush CronJob configuration. Default-on: when the field is omitted, the defaulting webhook populates an hourly schedule so `keystone-manage trust_flush` runs by default; there is no nil-back path on a webhook-enabled cluster (a `kubectl patch ... 'spec/trustFlush'='null'` round-trips through admission and is re-materialized). To pause without deleting the CronJob, set `suspend: true` — the resource and `TrustFlushReady=True` condition are preserved. |
-| `federation` | [`*FederationSpec`](#federationspec) | No | `nil` | Federation configuration (optional). |
+| `federation` | [`*FederationSpec`](#federationspec) | No | `nil` | Federation sidecar knobs (the proxy image). Federation activates by attaching an OIDC [`KeystoneIdentityBackend`](./identity-backend-crd.md), not by this block. |
 | `bootstrap` | [`BootstrapSpec`](#bootstrapspec) | Yes | — | Initial Keystone bootstrap parameters. |
 | `middleware` | `[]MiddlewareSpec` | No | `nil` | WSGI middleware filters for api-paste.ini. |
 | `plugins` | `[]PluginSpec` | No | `nil` | Service plugins/drivers to configure. |
@@ -980,17 +980,23 @@ to stay co-scheduled with the API pods.
 
 ## FederationSpec
 
-Configures Keystone federation support. This is a pointer field (`*FederationSpec`)
-on `KeystoneSpec`: federation is activated by the presence of the block itself —
-a set (non-`nil`) `spec.federation` signals enabled, and `nil` (the default)
-disables it.
+Carries the Keystone-side federation knobs. Federation itself is activated by
+attaching a federation-typed
+[`KeystoneIdentityBackend`](./identity-backend-crd.md) (`type: OIDC`) — **not**
+by this block: when at least one OIDC backend is projected, the operator
+injects the `mod_auth_openidc` reverse-proxy sidecar, binds uWSGI to
+localhost (with the federation-sized `--buffer-size`), and switches the
+Service targetPort to the proxy. This spec only configures how that sidecar
+runs.
 
-LDAP/AD-backed domains are **not** part of this block: they ship as the
-attachable [`KeystoneIdentityBackend`](./identity-backend-crd.md) CRD, where
-one CR per domain describes the connection, tree layout, and attribute
-mapping and aggregates into the Keystone CR's `IdentityBackendsReady`
-condition. `spec.federation` remains reserved for the federation sidecar
-knobs (OIDC/SAML) of the follow-up phases.
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `proxyImage` | `*ImageSpec` | No | `nil` | The Apache/`mod_auth_openidc` sidecar image. Standalone Keystone installations must set it (mirroring the required `spec.image`); the managed ControlPlane path projects the `ghcr.io/c5c3/keystone-federation-proxy` default. When a federation backend is attached and no proxy image is configured, the backends stay pending with a `FederationProxyImageMissing` Warning — no hidden default is assumed. The webhook rejects a set `proxyImage` without a repository. |
+
+LDAP/AD-backed domains are **not** part of this block: they ship as
+`KeystoneIdentityBackend` CRs too (`type: LDAP`), where one CR per domain
+describes the connection, tree layout, and attribute mapping. Both types
+aggregate into the Keystone CR's `IdentityBackendsReady` condition.
 
 ---
 

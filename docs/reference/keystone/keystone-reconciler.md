@@ -1428,7 +1428,7 @@ after a full reconcile loop, every condition in the status carries the correct
 | `BootstrapReady` | `reconcileBootstrap` | Bootstrap Job completed successfully |
 | `TrustFlushReady` | `reconcileTrustFlush` | Trust flush CronJob configured or not required |
 | `PasswordRotationReady` | `reconcilePasswordRotation` | Model B admin-password rotation CronJob configured, or disabled/torn down |
-| `IdentityBackendsReady` | `reconcileIdentityBackends` | Every attached, `DomainReady` KeystoneIdentityBackend is projected into the domains Secret (True/`IdentityBackendsNotRequired` when none attach) |
+| `IdentityBackendsReady` | `reconcileIdentityBackends` | Every attached, `DomainReady` KeystoneIdentityBackend is projected into its type's Secret — the domains Secret (LDAP) or the federation Secret (OIDC) (True/`IdentityBackendsNotRequired` when none attach) |
 
 ---
 
@@ -3015,24 +3015,48 @@ apply it. See the [Labels and Annotations](#labels-and-annotations) entries for
 **Signature:**
 
 ```go
-func (r *KeystoneReconciler) reconcileIdentityBackends(ctx context.Context, keystone *keystonev1alpha1.Keystone) (string, error)
+func (r *KeystoneReconciler) reconcileIdentityBackends(ctx context.Context, keystone *keystonev1alpha1.Keystone) (identityBackendsProjection, error)
 ```
 
 Aggregates every attached, `DomainReady`
-[`KeystoneIdentityBackend`](./identity-backend-crd.md) into one immutable,
-content-hashed `<name>-domains` Secret (one `keystone.<domain>.conf` per
-backend, plus a `<domain>-ca.pem` sibling when TLS is configured) and sets the
-aggregated `IdentityBackendsReady` condition. The returned Secret name (`""`
-when nothing is projected) is threaded to `reconcileConfig` — which then turns
-`[identity] domain_specific_drivers_enabled` on and points
-`domain_config_dir` at `/etc/keystone/domains` — and to every workload builder
-(the Deployment and each keystone-manage Job/CronJob mount the Secret
-read-only at that path, mode 0400).
+[`KeystoneIdentityBackend`](./identity-backend-crd.md) into per-type
+projection artifacts and sets the aggregated `IdentityBackendsReady`
+condition:
+
+- **LDAP** backends render into one immutable, content-hashed
+  `<name>-domains` Secret (one `keystone.<domain>.conf` per backend, plus a
+  `<domain>-ca.pem` sibling when TLS is configured). The Secret name is
+  threaded to `reconcileConfig` — which then turns
+  `[identity] domain_specific_drivers_enabled` on and points
+  `domain_config_dir` at `/etc/keystone/domains` — and to every workload
+  builder (the Deployment and each keystone-manage Job/CronJob mount it
+  read-only at that path, mode 0400).
+- **OIDC** backends render into one immutable, content-hashed
+  `<name>-federation` Secret: the assembled `mod_auth_openidc` `proxy.conf`
+  plus per-backend `.provider`/`.client`/`.conf` documents under
+  backend-named data keys (`%` is invalid in Secret keys, so `KeyToPath`
+  items restore the real scheme-stripped, URL-escaped issuer filenames at
+  mount time). The `.provider` discovery document is pre-provisioned —
+  assembled from explicit `endpoints` or fetched from
+  `providerMetadataURL` through the operator's HTTP seam with a per-backend
+  `(uid, generation)` cache and an issuer-equality check. The
+  `OIDCCryptoPassphrase` lives in the stable-named
+  `<name>-oidc-crypto-passphrase` Secret (operator-generated, no OpenBao
+  backup — regenerable by design) and is embedded into `proxy.conf`, so a
+  regeneration re-hashes the federation Secret and rolls every pod
+  together. The resulting `federationProjection` drives the
+  `[auth]`/`[openid]`/`[federation]` sections in `reconcileConfig`, the
+  sidecar container / localhost uWSGI bind / Service targetPort switch in
+  `reconcileDeployment`, and the ingress-port/IdP-egress rules in
+  `reconcileNetworkPolicy`. A missing `spec.federation.proxyImage` parks
+  every OIDC backend pending with a `FederationProxyImageMissing` Warning
+  (no hidden image default).
 
 **Contract — waiting states never short-circuit the pipeline.** Pending
-domains, missing bind Secrets (skipped per-backend with an
-`IdentityBackendSkipped` Warning event while healthy siblings keep
-projecting), and the defensive duplicate-domain skip all return a zero result:
+domains, missing bind/client Secrets and unreachable or issuer-mismatched
+provider metadata (skipped per-backend with an `IdentityBackendSkipped`
+Warning event while healthy siblings keep projecting), and the defensive
+duplicate-domain skip all return a zero result:
 `RunPipeline` short-circuits on non-zero results, and blocking here would
 deadlock first-install — a backend cannot become `DomainReady` until the
 Keystone API is up, which needs the Deployment this pipeline has not created
@@ -3043,10 +3067,15 @@ errors.
 Deleting backends (`DeletionTimestamp` set) are de-projected immediately —
 the dedicated controller's finalizer waits for exactly this de-projection
 before it applies the domain deletion policy, so keystone never runs with
-config pointing at a domain mid-teardown. Stale domains Secrets are pruned
-alongside the config ConfigMaps (retain 3; full cleanup when the last backend
-detaches so no bind password lingers). The config render cache keys on the
-projection flag because attach/detach changes no Keystone generation.
+config pointing at a domain mid-teardown. Stale domains and federation
+Secrets are pruned alongside the config ConfigMaps (retain 3; full cleanup
+when the last backend of a type detaches so no bind password, client secret,
+or passphrase copy lingers). The config render cache keys on the projection
+state — domains flag, federation flag, and remote-id attribute — because
+attach/detach changes no Keystone generation. No new Keystone-CR condition
+type exists for federation by design: everything stays under the
+`IdentityBackends` step and its `IdentityBackendsReady` condition, so the
+`subConditionTypes` vocabulary and the metrics label mapping are unchanged.
 
 ---
 
@@ -3096,18 +3125,41 @@ authenticated per call with the bootstrap admin against `internalAPIURL`):
 `Manage` creates the domain and reconciles description/enabled drift on its
 own domain (recorded `status.domainID`), never seizing a same-named foreign
 domain (`DomainAlreadyExists`); `Adopt` resolves by name and never mutates.
+
+For **OIDC** backends the flow continues (gated on `DomainReady=True`): the
+controller upserts the three keystone federation API objects with real drift
+detection — the identity provider (`remote_ids` pinned to the issuer,
+domain-scoped, patched only on description/remoteIDs/enabled divergence),
+the mapping (`<identityProviderName>-mapping`, created from the typed
+`spec.mappings` rules through gophercloud, updated only on deep-compare
+divergence), and the protocol (bound to the mapping, re-pointed on drift) —
+plus the declarative groups (create-if-missing in the backend's domain) and
+their role assignments (resolved by role/project name; an existence probe
+keeps steady-state passes free of mutating identity-API calls). Mappings ride
+gophercloud v2 (the one federation resource its SDK covers); identity
+providers, protocols, groups, roles, and assignments use the local REST
+client. `FederationObjectsReady` covers the identity provider + protocol,
+`MappingsReady` the mapping/groups/assignments.
+
 `ConfigProjected` is derived from the single authoritative pointer — the
 Keystone Deployment's `domains` volume and the conf file inside the Secret it
-references — with a `RequeueSecretPolling` safety net because a converged
-Keystone status emits no watch event. `Ready` aggregates the two
-sub-conditions via the shared helper.
+references (LDAP), or the `federation-metadata` volume and the backend's
+client document (OIDC) — with a `RequeueSecretPolling` safety net because a
+converged Keystone status emits no watch event. `Ready` aggregates the
+backend type's own sub-condition set via the shared helper (LDAP:
+`DomainReady` + `ConfigProjected`; OIDC: plus `FederationObjectsReady` and
+`MappingsReady`).
 
 **Finalizer (`keystone.openstack.c5c3.io/identitybackend`):** deletion waits
-for de-projection first, then applies `spec.domain.deletionPolicy`
-(Manage+Delete disables the domain before deleting it; Retain and Adopt leave
-it untouched), then releases. Keystone-gone and admin-credential-gone
-teardowns fail open with a `DomainDeleteFailed` Warning instead of holding
-the CR hostage.
+for de-projection first; OIDC backends then tear their federation objects
+down unconditionally in reverse dependency order (protocol → mapping →
+identity provider, tolerating objects already gone, warning with
+`FederationTeardownFailed` on API errors); then `spec.domain.deletionPolicy`
+applies (Manage+Delete disables the domain before deleting it; Retain and
+Adopt leave it untouched — declarative groups follow the domain), then the
+finalizer releases. Keystone-gone and admin-credential-gone teardowns fail
+open with a `DomainDeleteFailed` / `FederationTeardownFailed` Warning instead
+of holding the CR hostage.
 
 The controller is deliberately **not** wrapped by `instrumentSubReconciler` —
 those metrics and the `subReconcilerConditionTypes` map are

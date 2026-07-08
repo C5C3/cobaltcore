@@ -256,11 +256,12 @@ debugging failed tests.
 
 ## Jobs
 
-The workflow defines eleven jobs with a dependency graph:
+The workflow defines thirteen jobs with a dependency graph:
 
 ```text
-lint-dockerfiles ─┐
-prepare ──────────┤
+lint-dockerfiles ─┬──> build-keystone-federation-proxy (matrix: amd64 + arm64)
+prepare ──────────┤      └──> merge-keystone-federation-proxy-image (push only)
+                  │
                   └──> build-base-images (matrix: amd64 + arm64)
                          └──> merge-base-images ──> verify-base-images ──┬──> generate-matrix
                                                                          │
@@ -295,6 +296,20 @@ the image available only on the same runner (ARM64 is excluded on PRs).
 All jobs use the `setup-docker-registry` composite action for Docker Buildx
 setup, registry authentication, and optional cosign installation, replacing the
 previously duplicated three-step setup sequence.
+
+### build-keystone-federation-proxy / merge-keystone-federation-proxy-image
+
+The Apache/`mod_auth_openidc` reverse-proxy sidecar for Keystone OIDC
+federation (`images/keystone-federation-proxy/`, single-stage
+`ubuntu:noble` + distro `apache2` + `libapache2-mod-auth-openidc`). The
+image is release-independent — no OpenStack code — so the job pair follows
+the base-image shape rather than the release matrix: a two-platform build
+job that depends only on `lint-dockerfiles` and `prepare` (PR mode loads
+the amd64 image locally for the inline Grype scan and the
+`tests/container-images/verify_keystone_federation_proxy.sh` verify
+script), and a PR-skipped merge job assembling the multi-arch manifest with
+the `:latest` + `:<sha>` tag scheme the base images use, followed by the
+supply-chain pipeline (SBOM, attestation, cosign).
 
 ### build-base-images
 

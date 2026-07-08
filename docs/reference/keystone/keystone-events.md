@@ -142,11 +142,22 @@ its dedicated controller; the projection warning is emitted on the
 | `DomainDisabled` | Normal | deletionPolicy Delete disables the domain before deleting it (keystone forbids deleting an enabled domain) | `Disabled domain "corp" before deletion` |
 | `DomainDeleted` | Normal | deletionPolicy Delete removed the domain | `Deleted domain "corp" (id <id>)` |
 | `DomainDeleteFailed` | Warning | Disabling/deleting the domain failed (retried on a bounded poll), or the admin credential vanished mid-teardown (fail-open: the domain is retained and the finalizer released) | `Deleting domain "corp" failed: <error>` |
-| `IdentityBackendSkipped` | Warning | A backend's bind Secret is missing or lacks the `username`/`password` keys; the backend is skipped while healthy siblings keep projecting (emitted on the Keystone CR) | `Skipping identity backend corp-ldap: <error>` |
+| `IdentityProviderCreated` | Normal | An OIDC backend's keystone identity provider is registered | `Created identity provider "keycloak-forge" (remote ID <issuer>)` |
+| `MappingCreated` | Normal | The federation mapping is created from the typed rules | `Created federation mapping "keycloak-forge-mapping" (2 rules)` |
+| `MappingUpdated` | Normal | Rules drift converged back with a single update | `Updated federation mapping "keycloak-forge-mapping" (2 rules)` |
+| `ProtocolCreated` | Normal | The federation protocol is bound to the mapping | `Created protocol "openid" on identity provider "keycloak-forge" (mapping keycloak-forge-mapping)` |
+| `FederationGroupCreated` | Normal | A declarative target group is created in the backend's domain | `Created group "federated-users" in domain <id>` |
+| `FederationObjectsDeleted` | Normal | Finalizer teardown removed protocol, mapping, and identity provider (reverse dependency order) | `Deleted protocol "openid", mapping "keycloak-forge-mapping", and identity provider "keycloak-forge"` |
+| `FederationTeardownFailed` | Warning | A federation-object delete failed (retried on a bounded poll), or the admin credential vanished mid-teardown (fail-open) | `Deleting mapping "keycloak-forge-mapping" failed: <error>` |
+| `IdentityBackendSkipped` | Warning | A backend's bind/client Secret is missing or lacks its fixed data key, the provider metadata is unreachable or issuer-mismatched, or a rendered value carries a control character; the backend is skipped while healthy siblings keep projecting (emitted on the Keystone CR) | `Skipping identity backend corp-ldap: <error>` |
+| `FederationProxyImageMissing` | Warning | At least one OIDC backend is attached but `spec.federation.proxyImage` is unset; every OIDC backend stays pending (emitted on the Keystone CR, once per transition) | `Identity backend keycloak-forge is pending: spec.federation.proxyImage is not set — configure the mod_auth_openidc sidecar image before attaching OIDC backends` |
+| `FederationMetadataStale` | Warning | A discovery-based backend's provider metadata endpoint was unreachable on a cache miss (e.g. an operator restart); the operator reused the last-known-good discovery document so federation stays up until the IdP recovers (emitted on the Keystone CR) | `Identity backend keycloak-forge: provider metadata unavailable (<error>); reusing the last-known-good discovery document so federation stays up` |
 
 **Source:** `keystoneidentitybackend_controller.go` (domain lifecycle);
+`reconcile_federation_objects.go` (federation objects);
 `reconcileIdentityBackends` in `reconcile_identitybackends.go`
-(`IdentityBackendSkipped`)
+(`IdentityBackendSkipped`, `FederationProxyImageMissing`);
+`renderOIDCBackend` in `reconcile_federation.go` (`FederationMetadataStale`)
 
 ### Finalization
 

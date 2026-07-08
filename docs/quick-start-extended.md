@@ -974,6 +974,7 @@ follow-up guides below cover everything you will actually do with the CR:
 | [Observability & Diagnostics](./guides/observability.md) | First stop when something is not `Ready` — how to read conditions, events, and status fields |
 | [Day 2 Operations](./guides/day-2-operations.md) | Scale, upgrade the OpenStack release, rotate Fernet keys manually |
 | [Advanced Configuration](./guides/advanced-configuration.md) | Brownfield database, autoscaling, network policy, free-form INI, and pointers to every other `spec.*` option |
+| [Attach an OIDC Federation Backend](./guides/oidc-federation.md) | Federate Keystone with an OpenID Connect identity provider (Keycloak walkthrough) |
 
 For the full field reference of the Keystone CR, see
 [Keystone CRD API Reference](./reference/keystone/keystone-crd.md).
