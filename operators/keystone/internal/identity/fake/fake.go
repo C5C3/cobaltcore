@@ -156,7 +156,7 @@ func (s *Server) Requests() []string {
 func (s *Server) MutatingRequests() []string {
 	var out []string
 	for _, r := range s.Requests() {
-		if strings.HasPrefix(r, "GET ") || strings.HasPrefix(r, "POST /v3/auth/tokens") {
+		if strings.HasPrefix(r, "GET ") || strings.HasPrefix(r, "HEAD ") || strings.HasPrefix(r, "POST /v3/auth/tokens") {
 			continue
 		}
 		out = append(out, r)
@@ -682,24 +682,35 @@ func (s *Server) handleProjectSubpath(w http.ResponseWriter, r *http.Request) {
 	s.handleRoleAssignment(w, r, "project", rest)
 }
 
-// handleRoleAssignment records a PUT {scope}/{scopeID}/groups/{g}/roles/{r}
-// role assignment. Re-asserting an existing assignment succeeds (PUT is
-// idempotent), matching real keystone.
+// handleRoleAssignment serves PUT (grant, idempotent like real keystone) and
+// HEAD (existence probe: 204 when the assignment exists, 404 otherwise) on
+// {scope}/{scopeID}/groups/{g}/roles/{r}.
 func (s *Server) handleRoleAssignment(w http.ResponseWriter, r *http.Request, scope, rest string) {
-	if r.Method != http.MethodPut {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
 	parts := strings.Split(rest, "/")
 	// Expect {scopeID}/groups/{g}/roles/{r}.
 	if len(parts) != 5 || parts[1] != "groups" || parts[3] != "roles" {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
-	s.mu.Lock()
-	s.roleAssignments[fmt.Sprintf("%s/%s/group/%s/role/%s", scope, parts[0], parts[2], parts[4])] = struct{}{}
-	s.mu.Unlock()
-	w.WriteHeader(http.StatusNoContent)
+	key := fmt.Sprintf("%s/%s/group/%s/role/%s", scope, parts[0], parts[2], parts[4])
+	switch r.Method {
+	case http.MethodPut:
+		s.mu.Lock()
+		s.roleAssignments[key] = struct{}{}
+		s.mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	case http.MethodHead:
+		s.mu.Lock()
+		_, ok := s.roleAssignments[key]
+		s.mu.Unlock()
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
 }
 
 // SeedRole pre-creates a role and returns its assigned ID.

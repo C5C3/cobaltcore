@@ -7,6 +7,7 @@ package identity
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -322,18 +323,51 @@ func (c *httpClient) GetProjectByName(ctx context.Context, name, domainID string
 	return &out.Projects[0], nil
 }
 
+// domainRoleAssignmentPath assembles the domain-scoped assignment path.
+func domainRoleAssignmentPath(domainID, groupID, roleID string) string {
+	return "/domains/" + url.PathEscape(domainID) + "/groups/" + url.PathEscape(groupID) + "/roles/" + url.PathEscape(roleID)
+}
+
+// projectRoleAssignmentPath assembles the project-scoped assignment path.
+func projectRoleAssignmentPath(projectID, groupID, roleID string) string {
+	return "/projects/" + url.PathEscape(projectID) + "/groups/" + url.PathEscape(groupID) + "/roles/" + url.PathEscape(roleID)
+}
+
+// hasAssignment probes an assignment path via HEAD (keystone answers 204 when
+// the assignment exists, 404 otherwise) so the reconciler only PUTs on drift.
+func (c *httpClient) hasAssignment(ctx context.Context, path string) (bool, error) {
+	_, err := c.do(ctx, http.MethodHead, path, nil)
+	if errors.Is(err, ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// HasRoleForGroupOnDomain reports whether the group already holds the role on
+// the domain.
+func (c *httpClient) HasRoleForGroupOnDomain(ctx context.Context, domainID, groupID, roleID string) (bool, error) {
+	return c.hasAssignment(ctx, domainRoleAssignmentPath(domainID, groupID, roleID))
+}
+
+// HasRoleForGroupOnProject reports whether the group already holds the role
+// on the project.
+func (c *httpClient) HasRoleForGroupOnProject(ctx context.Context, projectID, groupID, roleID string) (bool, error) {
+	return c.hasAssignment(ctx, projectRoleAssignmentPath(projectID, groupID, roleID))
+}
+
 // AssignRoleToGroupOnDomain grants the role to the group on the domain
 // (PUT is idempotent — re-asserting an existing assignment succeeds).
 func (c *httpClient) AssignRoleToGroupOnDomain(ctx context.Context, domainID, groupID, roleID string) error {
-	path := "/domains/" + url.PathEscape(domainID) + "/groups/" + url.PathEscape(groupID) + "/roles/" + url.PathEscape(roleID)
-	_, err := c.do(ctx, http.MethodPut, path, nil)
+	_, err := c.do(ctx, http.MethodPut, domainRoleAssignmentPath(domainID, groupID, roleID), nil)
 	return err
 }
 
 // AssignRoleToGroupOnProject grants the role to the group on the project
 // (PUT is idempotent — re-asserting an existing assignment succeeds).
 func (c *httpClient) AssignRoleToGroupOnProject(ctx context.Context, projectID, groupID, roleID string) error {
-	path := "/projects/" + url.PathEscape(projectID) + "/groups/" + url.PathEscape(groupID) + "/roles/" + url.PathEscape(roleID)
-	_, err := c.do(ctx, http.MethodPut, path, nil)
+	_, err := c.do(ctx, http.MethodPut, projectRoleAssignmentPath(projectID, groupID, roleID), nil)
 	return err
 }

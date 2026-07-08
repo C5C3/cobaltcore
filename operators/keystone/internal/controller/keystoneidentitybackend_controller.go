@@ -50,11 +50,24 @@ const (
 	conditionReasonWaitingForProjection = "WaitingForProjection"
 )
 
-// identityBackendSubConditionTypes are the per-backend sub-conditions the
-// aggregate Ready is derived from.
-var identityBackendSubConditionTypes = []string{
-	conditionTypeDomainReady,
-	conditionTypeConfigProjected,
+// identityBackendSubConditionTypesFor returns the per-backend sub-conditions
+// the aggregate Ready is derived from. The set is per backend type:
+// SetAggregateReady requires every listed type present-and-True, so listing
+// the federation conditions for an LDAP backend would strand it Ready=False
+// forever.
+func identityBackendSubConditionTypesFor(backend *keystonev1alpha1.KeystoneIdentityBackend) []string {
+	if backend.Spec.Type == keystonev1alpha1.IdentityBackendTypeOIDC {
+		return []string{
+			conditionTypeDomainReady,
+			conditionTypeFederationObjectsReady,
+			conditionTypeMappingsReady,
+			conditionTypeConfigProjected,
+		}
+	}
+	return []string{
+		conditionTypeDomainReady,
+		conditionTypeConfigProjected,
+	}
 }
 
 // KeystoneIdentityBackendReconciler owns the KeystoneIdentityBackend CR
@@ -141,6 +154,19 @@ func (r *KeystoneIdentityBackendReconciler) reconcileNormal(ctx context.Context,
 	idc := r.identityClient(internalAPIURL(keystone), creds)
 	if result, err := r.ensureDomain(ctx, backend, idc); !result.IsZero() || err != nil {
 		return result, err
+	}
+
+	// Federation objects require the domain: identity providers are
+	// domain-scoped and the declarative groups live inside it. A zero-result
+	// ensureDomain pass can still leave DomainReady=False (e.g. a foreign
+	// same-named domain), so gate on the condition, not just on control flow.
+	if backend.Spec.Type == keystonev1alpha1.IdentityBackendTypeOIDC {
+		domainReady := conditions.GetCondition(backend.Status.Conditions, conditionTypeDomainReady)
+		if domainReady != nil && domainReady.Status == metav1.ConditionTrue && backend.Status.DomainID != "" {
+			if result, err := r.ensureFederation(ctx, backend, idc); !result.IsZero() || err != nil {
+				return result, err
+			}
+		}
 	}
 
 	return r.observeConfigProjected(ctx, keystone, backend)
@@ -304,8 +330,10 @@ func (r *KeystoneIdentityBackendReconciler) observeConfigProjected(ctx context.C
 	return ctrl.Result{}, nil
 }
 
-// isConfigProjected reports whether the Keystone Deployment's domains volume
-// references a Secret that carries this backend's keystone.<domain>.conf.
+// isConfigProjected reports whether the Keystone Deployment mounts this
+// backend's rendered config: an LDAP backend's keystone.<domain>.conf inside
+// the domains-volume Secret, an OIDC backend's <name>.client document inside
+// the federation-metadata-volume Secret.
 func (r *KeystoneIdentityBackendReconciler) isConfigProjected(ctx context.Context, keystone *keystonev1alpha1.Keystone, backend *keystonev1alpha1.KeystoneIdentityBackend) (bool, error) {
 	var deploy appsv1.Deployment
 	deployKey := client.ObjectKey{Namespace: keystone.Namespace, Name: subResourceName(keystone)}
@@ -316,27 +344,34 @@ func (r *KeystoneIdentityBackendReconciler) isConfigProjected(ctx context.Contex
 		return false, fmt.Errorf("fetching Deployment %s: %w", deployKey, err)
 	}
 
-	var domainsSecretName string
+	volumeName := domainsVolumeName
+	dataKey := domainConfFileName(backend.Spec.Domain.Name)
+	if backend.Spec.Type == keystonev1alpha1.IdentityBackendTypeOIDC {
+		volumeName = federationMetadataVolumeName
+		dataKey = federationClientKeyName(backend.Name)
+	}
+
+	var secretName string
 	for i := range deploy.Spec.Template.Spec.Volumes {
 		v := &deploy.Spec.Template.Spec.Volumes[i]
-		if v.Name == domainsVolumeName && v.Secret != nil {
-			domainsSecretName = v.Secret.SecretName
+		if v.Name == volumeName && v.Secret != nil {
+			secretName = v.Secret.SecretName
 			break
 		}
 	}
-	if domainsSecretName == "" {
+	if secretName == "" {
 		return false, nil
 	}
 
 	var secret corev1.Secret
-	secretKey := client.ObjectKey{Namespace: keystone.Namespace, Name: domainsSecretName}
+	secretKey := client.ObjectKey{Namespace: keystone.Namespace, Name: secretName}
 	if err := r.Get(ctx, secretKey, &secret); err != nil {
 		if apierrors.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("fetching domains Secret %s: %w", secretKey, err)
+		return false, fmt.Errorf("fetching projection Secret %s: %w", secretKey, err)
 	}
-	_, ok := secret.Data[domainConfFileName(backend.Spec.Domain.Name)]
+	_, ok := secret.Data[dataKey]
 	return ok, nil
 }
 
@@ -375,6 +410,16 @@ func (r *KeystoneIdentityBackendReconciler) reconcileDelete(ctx context.Context,
 	if projected {
 		logger.V(1).Info("waiting for identity-backend config de-projection before domain teardown")
 		return ctrl.Result{RequeueAfter: RequeueSecretPolling}, nil
+	}
+
+	// OIDC backends tear their federation API objects down unconditionally
+	// (protocol → mapping → identity provider) BEFORE the domain deletion
+	// policy runs: the identity provider is domain-scoped, so a Delete-policy
+	// domain teardown would otherwise race its own contents.
+	if backend.Spec.Type == keystonev1alpha1.IdentityBackendTypeOIDC {
+		if result, err := r.teardownFederationObjects(ctx, &keystone, backend); !result.IsZero() || err != nil {
+			return result, err
+		}
 	}
 
 	if result, err := r.applyDomainDeletionPolicy(ctx, &keystone, backend); !result.IsZero() || err != nil {
@@ -456,11 +501,11 @@ func (r *KeystoneIdentityBackendReconciler) setDomainReady(backend *keystonev1al
 
 // updateStatus persists the backend status via the shared helper: the write
 // is skipped when the pass left status unchanged, the aggregate Ready is
-// re-derived from DomainReady + ConfigProjected on every persist, and
+// re-derived from the backend type's sub-condition set on every persist, and
 // ObservedGeneration is stamped.
 func (r *KeystoneIdentityBackendReconciler) updateStatus(ctx context.Context, backend *keystonev1alpha1.KeystoneIdentityBackend, statusBefore *keystonev1alpha1.KeystoneIdentityBackendStatus, result ctrl.Result, reconcileErr error) (ctrl.Result, error) {
 	return commonreconcile.UpdateStatus(ctx, r.Client, backend, statusBefore, &backend.Status, func() {
-		commonreconcile.SetAggregateReady(&backend.Status.Conditions, backend.Generation, identityBackendSubConditionTypes)
+		commonreconcile.SetAggregateReady(&backend.Status.Conditions, backend.Generation, identityBackendSubConditionTypesFor(backend))
 		backend.Status.ObservedGeneration = backend.Generation
 	}, result, reconcileErr)
 }

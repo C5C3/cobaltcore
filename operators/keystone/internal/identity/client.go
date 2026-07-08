@@ -146,6 +146,10 @@ type Client interface {
 	GetRoleByName(ctx context.Context, name string) (*Role, error)
 	// GetProjectByName resolves a project by exact name inside a domain.
 	GetProjectByName(ctx context.Context, name, domainID string) (*Project, error)
+	// HasRoleForGroupOnDomain reports whether the assignment already exists.
+	HasRoleForGroupOnDomain(ctx context.Context, domainID, groupID, roleID string) (bool, error)
+	// HasRoleForGroupOnProject reports whether the assignment already exists.
+	HasRoleForGroupOnProject(ctx context.Context, projectID, groupID, roleID string) (bool, error)
 	// AssignRoleToGroupOnDomain grants the role to the group on the domain.
 	AssignRoleToGroupOnDomain(ctx context.Context, domainID, groupID, roleID string) error
 	// AssignRoleToGroupOnProject grants the role to the group on the project.

@@ -199,10 +199,23 @@ func TestRolesProjectsAndAssignments(t *testing.T) {
 	_, err = c.GetProjectByName(ctx, "demo", "other-domain")
 	g.Expect(errors.Is(err, identity.ErrNotFound)).To(BeTrue())
 
+	// Probes report absence before the grant …
+	has, err := c.HasRoleForGroupOnDomain(ctx, "domain-0001", groupID, roleID)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(has).To(BeFalse())
+
 	g.Expect(c.AssignRoleToGroupOnDomain(ctx, "domain-0001", groupID, roleID)).To(Succeed())
 	g.Expect(c.AssignRoleToGroupOnProject(ctx, projectID, groupID, roleID)).To(Succeed())
 	// Re-asserting is idempotent (PUT).
 	g.Expect(c.AssignRoleToGroupOnDomain(ctx, "domain-0001", groupID, roleID)).To(Succeed())
+
+	// … and presence afterwards.
+	has, err = c.HasRoleForGroupOnDomain(ctx, "domain-0001", groupID, roleID)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(has).To(BeTrue())
+	has, err = c.HasRoleForGroupOnProject(ctx, projectID, groupID, roleID)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(has).To(BeTrue())
 
 	g.Expect(srv.RoleAssignments()).To(ConsistOf(
 		"domain/domain-0001/group/"+groupID+"/role/"+roleID,
