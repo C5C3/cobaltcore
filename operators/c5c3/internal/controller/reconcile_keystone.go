@@ -40,6 +40,16 @@ const keystoneNameSuffix = "-keystone"
 // image reference.
 const defaultKeystoneRepository = "ghcr.io/c5c3/keystone"
 
+// defaultFederationProxyRepository is the mod_auth_openidc sidecar image the
+// managed ControlPlane path projects onto the child Keystone's
+// spec.federation.proxyImage. The image is release-independent (distro
+// Apache + module, no OpenStack code), so unlike the keystone image no
+// release-derived tag exists — the build publishes :latest and :<sha>, and
+// :latest is projected. Operators wanting an immutable pin override via
+// spec.services.keystone (or directly on a standalone Keystone CR) with a
+// digest-carrying ImageSpec.
+const defaultFederationProxyRepository = "ghcr.io/c5c3/keystone-federation-proxy"
+
 // keystoneDeletionAllowedAnnotation, when set to a truthy value on a
 // ControlPlane, opts that ControlPlane in to DESTRUCTIVE teardown of a
 // previously-projected Keystone child when spec.services.keystone is unset.
@@ -174,6 +184,14 @@ func (r *ControlPlaneReconciler) reconcileKeystone(ctx context.Context, cp *c5c3
 
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, keystone, func() error {
 		keystone.Spec.Image = image
+
+		// Project the federation proxy (mod_auth_openidc sidecar) image
+		// default so attaching an OIDC KeystoneIdentityBackend works out of
+		// the box on the managed path. Inert until a federation backend
+		// attaches — the keystone operator projects the sidecar only then.
+		keystone.Spec.Federation = &keystonev1alpha1.FederationSpec{
+			ProxyImage: &commonv1.ImageSpec{Repository: defaultFederationProxyRepository, Tag: "latest"},
+		}
 
 		// Point Keystone at the SAME backing services the ControlPlane
 		// provisioned by reusing the infrastructure specs. DeepCopy (over a plain

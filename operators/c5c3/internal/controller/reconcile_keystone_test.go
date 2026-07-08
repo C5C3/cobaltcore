@@ -128,6 +128,13 @@ func TestReconcileKeystone_ImageTagFromRelease(t *testing.T) {
 			g.Expect(k.Spec.Image.Tag).To(Equal(tt.wantTag),
 				"image tag must derive from openStackRelease (%s)", tt.release)
 
+			// The federation proxy default is projected alongside the
+			// service image (release-independent, so no derived tag).
+			g.Expect(k.Spec.Federation).NotTo(BeNil())
+			g.Expect(k.Spec.Federation.ProxyImage).NotTo(BeNil())
+			g.Expect(k.Spec.Federation.ProxyImage.Repository).To(Equal(defaultFederationProxyRepository))
+			g.Expect(k.Spec.Federation.ProxyImage.Tag).To(Equal("latest"))
+
 			// Owner reference set to the ControlPlane.
 			g.Expect(k.OwnerReferences).To(HaveLen(1))
 			g.Expect(k.OwnerReferences[0].Name).To(Equal("cp"))
