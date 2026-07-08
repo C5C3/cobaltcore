@@ -142,6 +142,8 @@ test_five_jobs_defined() {
   assert_file_contains "merge-service-images job defined" "$WORKFLOW" "merge-service-images:"
   assert_file_contains "test-service-images job defined" "$WORKFLOW" "test-service-images:"
   assert_file_contains "verify-service-images job defined" "$WORKFLOW" "verify-service-images:"
+  assert_file_contains "build-keystone-federation-proxy job defined" "$WORKFLOW" "build-keystone-federation-proxy:"
+  assert_file_contains "merge-keystone-federation-proxy-image job defined" "$WORKFLOW" "merge-keystone-federation-proxy-image:"
 }
 
 # --- verify-base-images job depends on build-base-images ---
@@ -199,6 +201,48 @@ test_base_image_digest_outputs() {
   assert_contains "venv-builder-image output references digest" "$venv_output" "outputs.digest"
   assert_contains "python-base-name output is non-empty" "$python_name_output" "python-base"
   assert_contains "python-base-digest output references merge-python-base digest" "$python_digest_output" "merge-python-base.outputs.digest"
+}
+
+# --- keystone-federation-proxy build/merge job structure ---
+test_keystone_federation_proxy_jobs() {
+  echo "Test: keystone-federation-proxy job structure"
+
+  local needs
+  needs=$(yq_raw '.jobs["build-keystone-federation-proxy"]["needs"][]' "$WORKFLOW" || true)
+  assert_contains "build-keystone-federation-proxy needs lint-dockerfiles" "$needs" "lint-dockerfiles"
+  assert_contains "build-keystone-federation-proxy needs prepare" "$needs" "prepare"
+
+  # Release-independent: no release axis, a static multi-arch include matrix.
+  local matrix_platforms
+  matrix_platforms=$(yq_raw '.jobs["build-keystone-federation-proxy"]["strategy"]["matrix"]["include"][]["platform"]' "$WORKFLOW" || true)
+  assert_contains "build-keystone-federation-proxy matrix includes linux/amd64" "$matrix_platforms" "linux/amd64"
+  assert_contains "build-keystone-federation-proxy matrix includes linux/arm64" "$matrix_platforms" "linux/arm64"
+
+  # PR-inline verification wiring (the tempest pattern).
+  local verify_script
+  verify_script=$(yq_raw '.jobs["build-keystone-federation-proxy"]["steps"][] | select(.id == "build-keystone-federation-proxy") | .with["verify-script"]' "$WORKFLOW" || echo "null")
+  assert_eq "build step wires the verify script" \
+    "tests/container-images/verify_keystone_federation_proxy.sh" "$verify_script"
+
+  # The lint matrix covers the new Dockerfile.
+  local lint_matrix
+  lint_matrix=$(yq_raw '.jobs["lint-dockerfiles"]["strategy"]["matrix"]["dockerfile"][]' "$WORKFLOW" || true)
+  assert_contains "lint-dockerfiles covers the federation-proxy Dockerfile" \
+    "$lint_matrix" "images/keystone-federation-proxy/Dockerfile"
+
+  # Merge job: PR-skipped, needs the build, tags :latest + :<sha>.
+  local merge_if
+  merge_if=$(yq_raw '.jobs["merge-keystone-federation-proxy-image"]["if"]' "$WORKFLOW" || echo "null")
+  assert_contains "merge job skipped on PRs" "$merge_if" "github.event_name != 'pull_request'"
+
+  local merge_needs
+  merge_needs=$(yq_raw '.jobs["merge-keystone-federation-proxy-image"]["needs"][]' "$WORKFLOW" || true)
+  assert_contains "merge job needs the build job" "$merge_needs" "build-keystone-federation-proxy"
+
+  local merge_tags
+  merge_tags=$(yq_raw '.jobs["merge-keystone-federation-proxy-image"]["steps"][] | select(.id == "merge-keystone-federation-proxy") | .with["tags"]' "$WORKFLOW" || echo "null")
+  assert_contains "merge tags include :latest" "$merge_tags" "keystone-federation-proxy:latest"
+  assert_contains "merge tags include the commit SHA" "$merge_tags" 'keystone-federation-proxy:${{ github.sha }}'
 }
 
 # --- build-service-images depends on build-base-images and verify-base-images ---
@@ -496,6 +540,26 @@ test_timeout_minutes_on_all_jobs() {
     echo "  FAIL: verify-service-images missing timeout-minutes"
     FAIL=$((FAIL + 1))
   fi
+
+  local fedproxy_timeout fedproxy_merge_timeout
+  fedproxy_timeout=$(yq_raw '.jobs["build-keystone-federation-proxy"]["timeout-minutes"]' "$WORKFLOW" || echo "null")
+  fedproxy_merge_timeout=$(yq_raw '.jobs["merge-keystone-federation-proxy-image"]["timeout-minutes"]' "$WORKFLOW" || echo "null")
+
+  if [ "$fedproxy_timeout" != "null" ] && [ -n "$fedproxy_timeout" ]; then
+    echo "  PASS: build-keystone-federation-proxy has timeout-minutes: $fedproxy_timeout"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: build-keystone-federation-proxy missing timeout-minutes"
+    FAIL=$((FAIL + 1))
+  fi
+
+  if [ "$fedproxy_merge_timeout" != "null" ] && [ -n "$fedproxy_merge_timeout" ]; then
+    echo "  PASS: merge-keystone-federation-proxy-image has timeout-minutes: $fedproxy_merge_timeout"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: merge-keystone-federation-proxy-image missing timeout-minutes"
+    FAIL=$((FAIL + 1))
+  fi
 }
 
 # --- All jobs use runs-on: ubuntu-latest ---
@@ -521,6 +585,13 @@ test_runs_on_ubuntu_latest() {
 
   assert_contains "build-base-images uses matrix runner expression" "$base_runner" "matrix.runner"
   assert_contains "build-service-images uses matrix runner expression" "$service_runner" "matrix.runner"
+
+  local fedproxy_runner fedproxy_merge_runner
+  fedproxy_runner=$(yq_raw '.jobs["build-keystone-federation-proxy"]["runs-on"]' "$WORKFLOW" || echo "null")
+  fedproxy_merge_runner=$(yq_raw '.jobs["merge-keystone-federation-proxy-image"]["runs-on"]' "$WORKFLOW" || echo "null")
+
+  assert_contains "build-keystone-federation-proxy uses matrix runner expression" "$fedproxy_runner" "matrix.runner"
+  assert_eq "merge-keystone-federation-proxy-image uses ubuntu-latest" "ubuntu-latest" "$fedproxy_merge_runner"
 }
 
 # --- Base images always push unconditionally ---
@@ -1679,6 +1750,8 @@ echo ""
 test_base_images_multi_arch
 echo ""
 test_base_image_digest_outputs
+echo ""
+test_keystone_federation_proxy_jobs
 echo ""
 test_service_images_depend_on_base
 echo ""
