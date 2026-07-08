@@ -591,7 +591,8 @@ func validateKeystoneMode(cp *ControlPlane) field.ErrorList {
 	if ks := cp.Spec.Services.Keystone; ks != nil && ks.External != nil {
 		allErrs = append(allErrs, field.Forbidden(
 			specPath.Child("services", "keystone", "external"),
-			"may only be set when services.keystone.mode is External"))
+			"may only be set when services.keystone.mode is External",
+		))
 	}
 	if cp.Spec.Infrastructure == nil {
 		allErrs = append(allErrs, field.Required(specPath.Child("infrastructure"),
@@ -689,7 +690,8 @@ func validateImmutable(oldObj, newObj *ControlPlane) field.ErrorList {
 	if (oldObj.Spec.Infrastructure == nil) != (newObj.Spec.Infrastructure == nil) {
 		allErrs = append(allErrs, field.Invalid(
 			field.NewPath("spec", "infrastructure"), newObj.Spec.Infrastructure,
-			"infrastructure presence is immutable (adding or removing the block after creation is not permitted)"))
+			"infrastructure presence is immutable (adding or removing the block after creation is not permitted)",
+		))
 	}
 
 	// spec.infrastructure is an optional pointer now (External keystone mode omits
