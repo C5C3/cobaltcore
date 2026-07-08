@@ -3,12 +3,15 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package identity implements the operator's own minimal Keystone identity
-// client: domain CRUD only, authenticated per call with the bootstrap admin
-// credentials against the cluster-local Keystone endpoint. It is stdlib-only
-// (net/http + encoding/json) by design — no gophercloud, no K-ORC, no
-// clouds.yaml — so a standalone Keystone (no ControlPlane) works with zero
-// extra configuration. The federation phases extend this client with
-// identity-provider/mapping/protocol CRUD.
+// client: domain and federation-object CRUD, authenticated per call with the
+// bootstrap admin credentials against the cluster-local Keystone endpoint —
+// no K-ORC, no clouds.yaml — so a standalone Keystone (no ControlPlane) works
+// with zero extra configuration. Everything is stdlib (net/http +
+// encoding/json) except federation mappings, which ride gophercloud v2 — the
+// one federation resource its SDK covers (the Phase-0 client decision);
+// identity providers, protocols, groups, roles, and role assignments stay on
+// the local REST implementation in federation.go until the parallel upstream
+// gophercloud contributions land (they gate nothing here).
 package identity
 
 import (
@@ -20,6 +23,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+
+	"github.com/gophercloud/gophercloud/v2/openstack/identity/v3/federation"
 
 	"github.com/c5c3/forge/internal/common/healthcheck"
 )
@@ -84,10 +89,11 @@ type Domain struct {
 	Enabled     *bool  `json:"enabled,omitempty"`
 }
 
-// Client is the domain-CRUD surface the KeystoneIdentityBackend controller
-// consumes. The interface is defined here (producer side) because the fake
-// test double in identity/fake and the controller both bind to it; it stays
-// deliberately minimal (4 methods).
+// Client is the identity-API surface the KeystoneIdentityBackend controller
+// consumes: domain CRUD (Phase 1) plus the federation-object CRUD the OIDC
+// backends need (identity providers, protocols, mappings, groups, roles, role
+// assignments). The interface is defined here (producer side) because the
+// fake test double in identity/fake and the controller both bind to it.
 type Client interface {
 	// GetDomainByName resolves a domain by exact name, returning ErrNotFound
 	// (wrapped) when no domain with that name exists.
@@ -101,6 +107,49 @@ type Client interface {
 	// DeleteDomain deletes the domain with the given ID. Keystone requires
 	// the domain to be disabled first (ErrForbidden otherwise).
 	DeleteDomain(ctx context.Context, id string) error
+
+	// GetIdentityProvider fetches one identity provider by ID.
+	GetIdentityProvider(ctx context.Context, id string) (*IdentityProvider, error)
+	// CreateIdentityProvider registers the identity provider under idp.ID.
+	CreateIdentityProvider(ctx context.Context, idp IdentityProvider) error
+	// UpdateIdentityProvider patches enabled/description/remoteIDs; nil
+	// fields (and a nil remoteIDs slice) are left untouched.
+	UpdateIdentityProvider(ctx context.Context, id string, enabled *bool, description *string, remoteIDs []string) error
+	// DeleteIdentityProvider deletes the identity provider with the given ID.
+	DeleteIdentityProvider(ctx context.Context, id string) error
+
+	// GetProtocol fetches one protocol of an identity provider.
+	GetProtocol(ctx context.Context, idpID, id string) (*Protocol, error)
+	// CreateProtocol binds protocol id of idpID to mappingID.
+	CreateProtocol(ctx context.Context, idpID, id, mappingID string) error
+	// UpdateProtocol re-points the protocol at a different mapping.
+	UpdateProtocol(ctx context.Context, idpID, id, mappingID string) error
+	// DeleteProtocol deletes the protocol from the identity provider.
+	DeleteProtocol(ctx context.Context, idpID, id string) error
+
+	// GetMapping fetches one federation mapping by ID.
+	GetMapping(ctx context.Context, id string) (*federation.Mapping, error)
+	// CreateMapping creates the mapping with the given ID and rules.
+	CreateMapping(ctx context.Context, id string, rules []federation.MappingRule) error
+	// UpdateMapping replaces the rules of the mapping with the given ID.
+	UpdateMapping(ctx context.Context, id string, rules []federation.MappingRule) error
+	// DeleteMapping deletes the mapping with the given ID.
+	DeleteMapping(ctx context.Context, id string) error
+
+	// GetGroupByName resolves a group by exact name inside a domain,
+	// returning ErrNotFound (wrapped) when no such group exists.
+	GetGroupByName(ctx context.Context, name, domainID string) (*Group, error)
+	// CreateGroup creates the given group and returns the server-side
+	// representation (with the assigned ID).
+	CreateGroup(ctx context.Context, group Group) (*Group, error)
+	// GetRoleByName resolves a role by exact name.
+	GetRoleByName(ctx context.Context, name string) (*Role, error)
+	// GetProjectByName resolves a project by exact name inside a domain.
+	GetProjectByName(ctx context.Context, name, domainID string) (*Project, error)
+	// AssignRoleToGroupOnDomain grants the role to the group on the domain.
+	AssignRoleToGroupOnDomain(ctx context.Context, domainID, groupID, roleID string) error
+	// AssignRoleToGroupOnProject grants the role to the group on the project.
+	AssignRoleToGroupOnProject(ctx context.Context, projectID, groupID, roleID string) error
 }
 
 // httpClient is the production Client implementation. It authenticates per
