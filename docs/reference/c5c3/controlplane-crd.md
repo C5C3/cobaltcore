@@ -193,9 +193,9 @@ status:
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `openStackRelease` | `string` | Yes | — | OpenStack release the control plane targets (e.g. `"2025.2"`). The reconciler (L2) projects this into each service CR's image tag. Must match the date-based release pattern `^\d{4}\.\d$`, enforced by both the CRD `+kubebuilder:validation:Pattern` marker and the validating webhook. Upgrades are allowed on update, but **downgrades are rejected** (Keystone DB migrations are forward-only). |
+| `openStackRelease` | `string` | Yes | — | OpenStack release the control plane targets (e.g. `"2025.2"`). The reconciler (L2) projects this into each service CR's image tag. Must match the date-based release pattern `^\d{4}\.\d$`, enforced by both the CRD `+kubebuilder:validation:Pattern` marker and the validating webhook. Upgrades are allowed on update, but **downgrades are rejected** (Keystone DB migrations are forward-only). Stays required in **both** keystone modes; in **External** mode it is **advisory** — no images are deployed, so the value only needs to match the external installation's release at the phase-3 managed takeover. |
 | `region` | `string` | No | `"RegionOne"` | OpenStack region name applied across the control plane. Projected into the Keystone CR's `bootstrap.region`. Defaulted to `RegionOne` by **both** the `+kubebuilder:default` marker (normal admission) and the defaulting webhook (callers that bypass the CRD default). Immutable after create (the projected `bootstrap.region` is itself immutable). |
-| `infrastructure` | [`InfrastructureSpec`](#infrastructurespec) | No | managed-mode defaulted | Shared backing services (database, cache) the control plane's services connect to. Optional — the defaulting webhook materializes a managed-mode `database`/`cache` when omitted; see [InfrastructureSpec](#infrastructurespec). |
+| `infrastructure` | [`*InfrastructureSpec`](#infrastructurespec) | Conditional | managed-mode defaulted | Shared backing services (database, cache) the control plane's services connect to. **Required** when `services.keystone.mode` is `Managed` (or unset, or `services.keystone` unset) — the defaulting webhook materializes a managed-mode `database`/`cache` when omitted, and the validating webhook rejects a non-External ControlPlane without it. **Forbidden** in **External** mode (an External ControlPlane provisions no backing services; phase 2 relaxes this to optional). The mode-conditional required/forbidden rule is webhook-enforced because CEL cannot span `spec.infrastructure` and `spec.services.keystone`; see [InfrastructureSpec](#infrastructurespec) and [Validation Rules](#validation-rules). |
 | `services` | [`ServicesSpec`](#servicesspec) | Yes | — | Per-service configuration projected into the individual service CRs. |
 | `globalPolicyOverrides` | [`*commonv1.PolicySpec`](../keystone/keystone-crd.md#policyspec) | No | `nil` | oslo.policy overrides applied across every service in the control plane. Per-service overrides (e.g. `services.keystone.policyOverrides`) take precedence over these global rules when both are set. |
 | `korc` | [`KORCSpec`](#korcspec) | No | defaulted | K-ORC integration used to bootstrap and rotate the admin application credential and any declared bootstrap resources. Optional — the defaulting webhook fills `adminCredential` (cloudCredentialsRef, passwordSecretRef, applicationCredential restriction/rotation) from well-known defaults when omitted. |
@@ -310,14 +310,57 @@ Keystone service.
 > fernet key count, etc.) are governed by the Keystone operator's own defaults on
 > the projected CR, not by the ControlPlane.
 
+The `mode` discriminator gives the Keystone service three states, mirroring the
+managed-vs-brownfield split of the infrastructure specs at the service level:
+
+| `services.keystone` | Meaning |
+| --- | --- |
+| unset (`nil`) | No Keystone at all — `KeystoneReady` is reported not-managed (see [ServicesSpec](#servicesspec)). |
+| `mode: Managed` (or unset) | The reconciler deploys and owns a full Keystone workload — today's behavior, byte-identical. |
+| `mode: External` | Service-less: identity is managed against a pre-existing, externally-operated Keystone at [`external.authURL`](#externalkeystonespec) and no Keystone workload is deployed. |
+
+In **External** mode every managed-only field below (`replicas`, `image`,
+`policyOverrides`, `rotationInterval`, `gateway`, `publicEndpoint`) is
+**forbidden** and the typed [`external`](#externalkeystonespec) block is
+**required**. These intra-struct rules are enforced by type-level CEL
+`XValidation` rules (so they hold at the CRD schema layer even when the
+validating webhook is bypassed) and mirrored by the validating webhook; see
+[Validation Rules](#validation-rules).
+
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `replicas` | `*int32` | No | `nil` (Keystone operator default, 3) | Overrides the number of Keystone API replicas. When `nil`, the reconciler leaves `replicas` unset on the projected Keystone CR, so the Keystone operator applies its own default. Minimum: 1. |
+| `mode` | `string` (`Managed` \| `External`) | No | `Managed` | Selects whether the Keystone service is **Managed** (the reconciler deploys and owns a full Keystone workload) or **External** (identity is managed against a pre-existing Keystone at `external.authURL` and no workload is deployed). Defaulted to `Managed` by both the `+kubebuilder:default` marker and the defaulting webhook. In External mode the [`external`](#externalkeystonespec) block is required and every managed-only field below is forbidden. |
+| `external` | [`*ExternalKeystoneSpec`](#externalkeystonespec) | Conditional | `nil` | Connection parameters for an externally-operated Keystone. **Required** when `mode` is `External`, **forbidden** otherwise (CEL + webhook enforced). |
+| `replicas` | `*int32` | No | `nil` (Keystone operator default, 3) | Overrides the number of Keystone API replicas. When `nil`, the reconciler leaves `replicas` unset on the projected Keystone CR, so the Keystone operator applies its own default. Minimum: 1. **Forbidden in External mode.** |
 | `image` | [`*commonv1.ImageSpec`](../keystone/keystone-crd.md#imagespec) | No | `nil` | Overrides the Keystone container image. When `nil`, the reconciler derives the image as `ghcr.io/c5c3/keystone:{spec.openStackRelease}`. When set, the whole image reference is used verbatim. |
 | `policyOverrides` | [`*commonv1.PolicySpec`](../keystone/keystone-crd.md#policyspec) | No | `nil` | Per-service oslo.policy overrides for Keystone. When set, these take precedence over `spec.globalPolicyOverrides` for the Keystone service. |
 | `rotationInterval` | `*metav1.Duration` | No | `nil` | Overrides the Fernet / credential-key rotation interval the reconciler derives for the projected Keystone CR. When `nil`, the reconciler derives a default schedule. When set, the duration is converted to a cron expression and applied to both `fernet.rotationSchedule` and `credentialKeys.rotationSchedule` on the projected Keystone CR. An unconvertible interval (not a positive whole number of days) is **rejected at admission** by the validating webhook; if the webhook is bypassed, the reconciler surfaces `KeystoneReady=False` with reason `InvalidRotationInterval` and returns the error so the reconcile chain stops and requeues with backoff. |
 | `gateway` | [`*commonv1.GatewaySpec`](#gatewayspec) | No | `nil` | Exposes the projected Keystone API externally via a Gateway API HTTPRoute. When `nil`, no HTTPRoute is projected and the Keystone API is reachable in-cluster only (its ClusterIP Service). When set, the reconciler projects it onto the Keystone CR's `spec.gateway`, so the Keystone operator attaches an HTTPRoute to the referenced Gateway. When a `gateway` is set its `hostname` must be non-empty — enforced at admission by the validating webhook (see [Validation Rules](#validation-rules)). |
 | `publicEndpoint` | `string` | No | `""` | Externally routable Keystone identity endpoint URL (e.g. `https://keystone.example.com/v3`). Projected into the Keystone bootstrap (`--bootstrap-public-url`) and used for the K-ORC identity catalog Endpoint, so external clients resolve the same URL Keystone advertises. When set, it must be an HTTP(S) URL (`+kubebuilder:validation:Pattern=^https?://`), so a malformed endpoint fails at admission rather than wedging the projected Keystone CR. When empty and `gateway` is set, the reconciler derives `https://{gateway.hostname}/v3` (the default-443 form); set it explicitly when the externally reachable port differs (e.g. a kind host-port mapping like `:8443`). |
+
+---
+
+## ExternalKeystoneSpec
+
+Declares how the control plane reaches a pre-existing, externally-operated
+Keystone in **External** mode. Present only under `services.keystone.external`
+and required when `services.keystone.mode` is `External`. It mirrors the
+brownfield infrastructure shape at the identity level: the endpoint and,
+optionally, a private-CA bundle are supplied here, and the reconciler manages
+identity against that endpoint rather than deploying a Keystone workload.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `authURL` | `string` | Yes | — | Identity endpoint of the external Keystone (e.g. `https://keystone.example.com/v3`). Must match the HTTP(S) URL pattern `^https?://`, enforced by both the CRD `+kubebuilder:validation:Pattern` marker and the validating webhook. |
+| `endpointType` | `string` (`public` \| `internal` \| `admin`) | No | `public` | Which Keystone catalog interface to authenticate against. Defaulted to `public` by both the `+kubebuilder:default` marker and the defaulting webhook. Named `endpointType` (not `interface`) because it maps to the clouds.yaml `endpoint_type` key — K-ORC drops gophercloud's `Interface` field and only honours `endpoint_type` (the authoritative note lives on `buildAppCredCloudsYAML` in the reconciler's `korc_cloudsyaml.go`). |
+| `caBundleSecretRef` | [`*commonv1.SecretRefSpec`](../keystone/keystone-crd.md#secretrefspec) | No | `nil` | References a Secret carrying a private CA bundle the client trusts when verifying the external endpoint. The referenced bundle is projected verbatim into the generated K-ORC credentials Secret (K-ORC reads an inline `cacert` PEM key from the same Secret that carries `clouds.yaml` — no mount, no upstream change). `key` defaults to `ca.crt`; this default is **webhook-only** because the shared `SecretRefSpec` carries no c5c3-specific marker (the same discipline as `passwordSecretRef.key`). When the ref is set its `name` must be non-empty (CRD `MinLength` marker + webhook). |
+
+> **Consumption is deferred.** This block is pure API surface here. The
+> clouds.yaml builders and admin import filters that consume `authURL`,
+> `endpointType`, and `caBundleSecretRef` land with the External-mode
+> reconciler work; until then an External-mode ControlPlane is accepted at
+> admission but halts at `InfrastructureReady=False`, reason
+> `ExternalModeNotImplemented` (see [Status Conditions](#status-conditions)).
 
 ---
 
@@ -378,6 +421,9 @@ policy for the control plane.
 | --- | --- | --- | --- | --- |
 | `cloudCredentialsRef` | [`CloudCredentialsRef`](#cloudcredentialsref) | Yes | — | References the `clouds.yaml` Secret and cloud entry K-ORC authenticates as. |
 | `passwordSecretRef` | [`commonv1.SecretRefSpec`](../keystone/keystone-crd.md#secretrefspec) | No | name `"keystone-admin"`, key `"password"` | References the Secret holding the admin password used to (re-)mint the application credential. The defaulting webhook materializes a missing `name` to `keystone-admin` and a missing `key` to `password`, so the block may be omitted on a minimal CR. The validating webhook still enforces `passwordSecretRef.name` non-empty as defense-in-depth (see [Validation Rules](#validation-rules)), but the defaulting webhook always satisfies it before validation runs, so a user may leave it unset. The reconciler's existing `"password"` key fallback also remains. **Mode-dependent use:** the `keystone-admin` default is the **brownfield / spec-level default**. In **brownfield mode** (`database.clusterRef == nil`) this field is used verbatim — the user supplies the admin-password Secret out-of-band and the operator projects no ExternalSecret, so this reference is projected onto the Keystone CR's `bootstrap.adminPasswordSecretRef` so Keystone and K-ORC agree on the admin password source. In **managed mode** (`database.clusterRef` set) the operator instead projects a per-ControlPlane admin ExternalSecret named `{controlplane.Name}-keystone-admin-credentials` (materialising the admin password from OpenBao) and **overrides** the projected Keystone CR's `bootstrap.adminPasswordSecretRef` to point at that operator-owned per-CP Secret's `password` key — the cp-level `passwordSecretRef` is **not** used as the child's ref in managed mode. See the [managed-mode admin-password provisioning](#admincredentialspec) note below. |
+| `userName` | `string` | No | `"admin"` | OpenStack admin user name the control plane authenticates as. Defaulted to `admin` by both the `+kubebuilder:default` marker and the defaulting webhook. Valid in **both** keystone modes; consumed by the K-ORC clouds.yaml builders and the admin import filters (that consumption lands with the K-ORC clouds.yaml work). |
+| `projectName` | `string` | No | `"admin"` | OpenStack admin project name. Defaulted to `admin` by both the marker and the defaulting webhook. Valid in both modes. |
+| `domainName` | `string` | No | `"Default"` | OpenStack admin domain name. Defaulted to `Default` by both the marker and the defaulting webhook. Valid in both modes. **Phase-1 nuance:** the single `domainName` feeds **both** `user_domain_name` and `project_domain_name` in the generated `clouds.yaml` (exactly what the K-ORC clouds.yaml builder does today), so the admin user and project must live in the **same** domain; a later `userDomainName`/`projectDomainName` split is a compatible extension. |
 | `applicationCredential` | [`ApplicationCredentialSpec`](#applicationcredentialspec) | Yes | — | Policy for the K-ORC admin application credential (restriction, access rules, rotation mode). |
 | `bootstrapResources` | [`[]BootstrapResourceSpec`](#bootstrapresourcespec) | No | `nil` | OpenStack resources K-ORC bootstraps alongside the admin credential (e.g. the projects/roles a fresh control plane needs). The element shape is intentionally minimal at L1; the reconciler interprets it. |
 
@@ -688,6 +734,10 @@ Keystone discipline:
 | --- | --- |
 | `spec.openStackRelease` | Pattern `^\d{4}\.\d$` |
 | `spec.services.keystone.publicEndpoint` | Pattern `^https?://` |
+| `spec.services.keystone.mode` | Enum: `Managed`, `External`; schema default `Managed` |
+| `spec.services.keystone.external.authURL` | Pattern `^https?://` |
+| `spec.services.keystone.external.endpointType` | Enum: `public`, `internal`, `admin`; schema default `public` |
+| `spec.services.keystone.external.caBundleSecretRef.name` | MinLength 1 (shared `SecretRefSpec` marker) |
 | `spec.korc.adminCredential.applicationCredential.accessRules[].method` | Enum: `CONNECT`, `DELETE`, `GET`, `HEAD`, `OPTIONS`, `PATCH`, `POST`, `PUT`, `TRACE` |
 | `spec.korc.adminCredential.applicationCredential.accessRules[].path` | Pattern `^/` |
 | `spec.korc.adminCredential.bootstrapResources[].kind` | Enum: `Project`, `Role` |
@@ -704,6 +754,9 @@ Keystone discipline:
 | `spec.infrastructure.cache` (CEL) | `has(self.clusterRef) != (has(self.servers) && size(self.servers) > 0)` → "exactly one of clusterRef or servers must be set" |
 | `spec.globalPolicyOverrides`, `spec.services.keystone.policyOverrides` (CEL) | `!has(self.rules) \|\| self.rules.all(k, size(k) > 0)` → "policy rule name must not be empty" |
 | `spec.globalPolicyOverrides`, `spec.services.keystone.policyOverrides` (CEL) | `!has(self.rules) \|\| self.rules.all(k, size(self.rules[k]) > 0)` → "policy rule value must not be empty" |
+| `spec.services.keystone` (CEL) | `mode == 'External'` ⇒ `has(self.external)` → "external is required when services.keystone.mode is External" |
+| `spec.services.keystone` (CEL) | `has(self.external)` ⇒ `mode == 'External'` → "external may only be set when services.keystone.mode is External" |
+| `spec.services.keystone` (CEL) | `mode == 'External'` ⇒ each managed-only field (`replicas`, `image`, `policyOverrides`, `rotationInterval`, `gateway`, `publicEndpoint`) absent → "services.keystone.\<field\> is forbidden when services.keystone.mode is External" (one rule per field) |
 
 ### Validating-webhook rules
 
@@ -722,6 +775,14 @@ short-circuit on the first error.
 | Gateway hostname required | `spec.services.keystone.gateway.hostname` | `field.Required` | A `gateway` is configured but its `hostname` is empty. Mirrors the `+kubebuilder:validation:MinLength=1` marker on `commonv1.GatewaySpec.Hostname`; without it the reconciler derives an empty `https:///v3` public endpoint. |
 | Empty policy rule name | `spec.globalPolicyOverrides.rules[<key>]`, `spec.services.keystone.policyOverrides.rules[<key>]` | `field.Required` | A rule name (map key) is the empty string. Enforced via the shared `policy.ValidatePolicyRules`, mirrored by the CEL rule on `commonv1.PolicySpec`. |
 | Empty policy rule value | `spec.globalPolicyOverrides.rules[<key>]`, `spec.services.keystone.policyOverrides.rules[<key>]` | `field.Required` | A rule value is the empty string. Enforced via the shared `policy.ValidatePolicyRules`, mirrored by the CEL rule on `commonv1.PolicySpec`. |
+| External block required | `spec.services.keystone.external` | `field.Required` | `mode: External` but `external` unset. Defense-in-depth mirror of the CEL rule. |
+| External authURL required/URL | `spec.services.keystone.external.authURL` | `field.Required` / `field.Invalid` | In External mode, `authURL` empty (Required) or not matching `^https?://` (Invalid). Mirrors the CRD required/pattern markers. |
+| External caBundle name required | `spec.services.keystone.external.caBundleSecretRef.name` | `field.Required` | `caBundleSecretRef` set with an empty `name`. Mirrors the shared `SecretRefSpec` MinLength marker. |
+| Managed-only field forbidden in External mode | `spec.services.keystone.{replicas,image,policyOverrides,rotationInterval,gateway,publicEndpoint}` | `field.Forbidden` | The field is set while `mode: External`. Defense-in-depth mirror of the per-field CEL rules. |
+| External block forbidden in non-External mode | `spec.services.keystone.external` | `field.Forbidden` | `external` set while `mode` is not `External`. Defense-in-depth mirror of the CEL rule. |
+| Infrastructure forbidden in External mode | `spec.infrastructure` | `field.Forbidden` | `spec.infrastructure` set while `mode: External`. **Cross-field, webhook-only** — CEL cannot span `spec.infrastructure` and `spec.services.keystone` (phase 2 relaxes this to optional). |
+| Horizon forbidden in External mode | `spec.services.horizon` | `field.Forbidden` | `services.horizon` set while `mode: External` (P2 — Horizon needs its own External-mode design). **Cross-field, webhook-only.** |
+| Infrastructure required in non-External mode | `spec.infrastructure` | `field.Required` | `spec.infrastructure` unset while the keystone mode is not `External` (Managed, unset mode, or `services.keystone` unset). Preserves today's contract now the Go field is an optional pointer. **Webhook-only.** |
 
 ### Update-only immutability rules
 
@@ -746,8 +807,26 @@ lower tuple while allowing upgrades and same-release no-ops. Keystone DB
 migrations are forward-only, so a downgrade would project an older image against
 an already-migrated schema — an unrecoverable state.
 
+The webhook also **gates the keystone-mode transition**. Both directions are
+rejected with **distinct messages** — and deliberately as *rejections*, not
+immutable markers, because `External → Managed` must become a *gated* takeover
+in phase 3 (an immutable marker could never be relaxed to a gated transition):
+
+- `Managed → External` is rejected outright — adopting an existing installation
+  must be a fresh External-mode ControlPlane, not an in-place flip of a live
+  one.
+- `External → Managed` (or away from External by removing the keystone service)
+  is rejected with a message naming the **reserved phase-3 takeover**.
+
+An **infrastructure presence flip** (adding or removing the whole
+`spec.infrastructure` block on update while the mode is unchanged) is rejected
+independently as defense-in-depth for webhook-bypassed states.
+
 | Rule | Field Path | Condition |
 | --- | --- | --- |
+| Managed → External rejected | `spec.services.keystone.mode` | Old not External, new External — "cannot be changed to External" |
+| External → Managed rejected | `spec.services.keystone.mode` | Old External, new not External — names the reserved phase-3 takeover |
+| Infrastructure presence immutable | `spec.infrastructure` | The block was added or removed (presence flip) while the mode is unchanged |
 | Database mode immutable | `spec.infrastructure.database` | `clusterRef` nil-ness changed (managed ↔ brownfield) |
 | Database clusterRef.name immutable | `spec.infrastructure.database.clusterRef.name` | Both managed, but the name changed |
 | Database name immutable | `spec.infrastructure.database.database` | The database name changed |
@@ -806,8 +885,24 @@ overlap:
   the corresponding spec field, so the marker covers the normal admission path
   and the webhook covers callers that bypass the CRD default. These are `region`,
   `cloudCredentialsRef.secretName`, `applicationCredential.restricted`,
-  `applicationCredential.rotation.mode`, and
-  `cloudCredentialsRef.cloudName`.
+  `applicationCredential.rotation.mode`, `cloudCredentialsRef.cloudName`,
+  `services.keystone.mode` (→ `Managed`), `services.keystone.external.endpointType`
+  (→ `public`, when the external block is present), and the admin identity fields
+  `adminCredential.userName` / `.projectName` (→ `admin`) / `.domainName`
+  (→ `Default`).
+
+**Mode-aware infrastructure defaulting.** The webhook defaults
+`services.keystone.mode` to `Managed` first (when a keystone block is present
+with an empty mode), then branches on the mode:
+
+- In **External** mode it **does not invent** any managed database/cache
+  `clusterRef` — `spec.infrastructure` is left unset (the validating webhook
+  forbids it in External mode) — and only defaults the external block's own
+  `endpointType` (→ `public`) and `caBundleSecretRef.key` (→ `ca.crt`, when the
+  ref is set).
+- In **Managed** mode (or when the keystone service is unset) it materializes
+  and defaults the shared backing services exactly as before, so a minimal
+  managed CR still round-trips unchanged.
 - **Webhook-only defaults** — materialized by the webhook with **no**
   `+kubebuilder:default` marker. These are the shared-`commonv1`-leaf defaults
   (`database.database`, `database.secretRef.name`, `cache.backend`,
@@ -839,6 +934,12 @@ markers' documented values where a marker also exists.
 | `spec.infrastructure.cache.clusterRef.name` | `len(servers) == 0` (managed mode) | `"openstack-memcached"` | Webhook-only, brownfield-guarded |
 | `spec.korc.adminCredential.passwordSecretRef.name` | `== ""` | `"keystone-admin"` | Webhook-only |
 | `spec.korc.adminCredential.passwordSecretRef.key` | `== ""` | `"password"` | Webhook-only |
+| `spec.services.keystone.mode` | `== ""` (keystone block present) | `Managed` | Marker + webhook |
+| `spec.services.keystone.external.endpointType` | `== ""` (External mode, external present) | `public` | Marker + webhook |
+| `spec.services.keystone.external.caBundleSecretRef.key` | `== ""` (ref present) | `"ca.crt"` | Webhook-only |
+| `spec.korc.adminCredential.userName` | `== ""` | `"admin"` | Marker + webhook |
+| `spec.korc.adminCredential.projectName` | `== ""` | `"admin"` | Marker + webhook |
+| `spec.korc.adminCredential.domainName` | `== ""` | `"Default"` | Marker + webhook |
 
 <a id="secretref-default-note"></a>
 > **† `database.secretRef.name` default — managed-mode convenience name only.**
@@ -948,6 +1049,7 @@ Set by `reconcileInfrastructure`.
 | `False` | `WaitingForCache` | Managed Memcached is ensured but not yet Ready. |
 | `False` | `MariaDBError` | Error create-or-updating the MariaDB child. |
 | `False` | `MemcachedError` | Error create-or-updating the Memcached child. |
+| `False` | `ExternalModeNotImplemented` | `spec.infrastructure` is unset (External keystone mode). The ControlPlane is accepted at admission but halts here with a gentle requeue — External-mode reconciliation (managing identity against `services.keystone.external.authURL` with no backing services) is not yet implemented. This interim reason is replaced wholesale when the External-mode reconciliation lands. |
 
 ### DBCredentialsReady
 

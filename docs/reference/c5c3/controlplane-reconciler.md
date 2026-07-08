@@ -451,12 +451,19 @@ instead. Both managed children are ensured in a single pass *before* readiness i
 gated, so a half-provisioned control plane (DB created but cache missing) never
 occurs; readiness is evaluated collectively afterwards.
 
+`spec.infrastructure` is optional now: an **External**-mode Keystone ControlPlane
+omits it (the validating webhook forbids it in External mode and requires it
+otherwise). When the block is unset the sub-reconciler halts the pipeline with
+`InfrastructureReady=False`, reason `ExternalModeNotImplemented`, and a gentle
+requeue — an interim state until the External-mode reconciliation lands.
+
 | Path | Status | Reason | Notes |
 | --- | --- | --- | --- |
 | MariaDB create/update fails | False | `MariaDBError` | returns the error (controller-runtime backoff) |
 | Memcached create/update fails | False | `MemcachedError` | returns the error |
 | MariaDB not yet Ready | False | `WaitingForDatabase` | requeue 15s |
 | Memcached not yet Ready | False | `WaitingForCache` | requeue 15s |
+| `spec.infrastructure` unset (External keystone mode) | False | `ExternalModeNotImplemented` | requeue 15s — interim halt; the CR is accepted but External-mode reconciliation is not yet implemented. Replaced when that work lands. |
 | All managed children Ready (or pure brownfield) | True | `InfrastructureReady` | — |
 
 > The managed MariaDB child is provisioned with a minimal-but-valid spec —
