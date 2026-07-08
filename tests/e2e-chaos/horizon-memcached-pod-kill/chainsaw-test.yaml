@@ -39,7 +39,7 @@ spec:
               reason: AllReady
     catch:
     - script:
-        content: ../diagnostics.sh baseline horizon-chaos-mc
+        content: ../diagnostics.sh baseline horizon-chaos-mc --cr-kind=horizon
   # ── Step 3: Inject PodChaos to kill a Memcached pod ────────────────────
   - try:
     - apply:
@@ -104,7 +104,7 @@ spec:
               reason: AllReady
     catch:
     - script:
-        content: ../diagnostics.sh chaos horizon-chaos-mc --dep-label=app.kubernetes.io/name=memcached
+        content: ../diagnostics.sh chaos horizon-chaos-mc --cr-kind=horizon --dep-label=app.kubernetes.io/name=memcached
   # ── Step 5: Delete PodChaos ────────────────────────────────────────────
   - try:
     - delete:
@@ -139,4 +139,4 @@ spec:
           echo "PASS: zero dashboard pod restarts during Memcached loss"
     catch:
     - script:
-        content: ../diagnostics.sh chaos horizon-chaos-mc --dep-label=app.kubernetes.io/name=memcached
+        content: ../diagnostics.sh chaos horizon-chaos-mc --cr-kind=horizon --dep-label=app.kubernetes.io/name=memcached

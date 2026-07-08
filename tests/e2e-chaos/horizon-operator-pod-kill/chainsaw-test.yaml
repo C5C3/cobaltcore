@@ -37,7 +37,7 @@ spec:
               reason: AllReady
     catch:
     - script:
-        content: ../diagnostics.sh baseline horizon-chaos-op
+        content: ../diagnostics.sh baseline horizon-chaos-op --cr-kind=horizon
   # ── Step 2: Inject chaos and verify one operator pod was replaced ──────
   # Snapshot, apply and poll live in one script so the pre-chaos UID
   # snapshot and the wait share state. mode: one kills exactly one of the
@@ -119,7 +119,7 @@ spec:
           exit 1
     catch:
     - script:
-        content: ../diagnostics.sh chaos horizon-chaos-op --dep-label=app.kubernetes.io/name=horizon-operator --dep-ns=horizon-system
+        content: ../diagnostics.sh chaos horizon-chaos-op --cr-kind=horizon --dep-label=app.kubernetes.io/name=horizon-operator --dep-ns=horizon-system
   # ── Step 3: Delete PodChaos ────────────────────────────────────────────
   - try:
     - delete:
@@ -157,4 +157,4 @@ spec:
               reason: AllReady
     catch:
     - script:
-        content: ../diagnostics.sh chaos horizon-chaos-op --dep-label=app.kubernetes.io/name=horizon-operator --dep-ns=horizon-system
+        content: ../diagnostics.sh chaos horizon-chaos-op --cr-kind=horizon --dep-label=app.kubernetes.io/name=horizon-operator --dep-ns=horizon-system

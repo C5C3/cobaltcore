@@ -17,6 +17,9 @@
 #             pod status, Chaos Mesh status, pod logs, events.
 #
 # Options:
+#   --cr-kind=KIND        Kind of the CR under test (default: keystone). Set to
+#                         the service kind (e.g. horizon) so the CR status dump
+#                         targets the right resource instead of always keystone.
 #   --dep-label=LABEL     Label selector for dependency pods (chaos mode).
 #   --dep-ns=NAMESPACE    Namespace for dependency pods (default: $NAMESPACE).
 #   --log-label=LABEL     Label selector for log collection. Defaults to
@@ -30,6 +33,7 @@ CR_NAME="${2:?Usage: diagnostics.sh <baseline|chaos> <cr-name> [options]}"
 shift 2
 
 # Parse options.
+CR_KIND="keystone"
 DEP_LABEL=""
 DEP_NS="${NAMESPACE:-openstack}"
 LOG_LABEL=""
@@ -37,6 +41,7 @@ INCLUDE_ESO=false
 
 for arg in "$@"; do
   case "$arg" in
+    --cr-kind=*)   CR_KIND="${arg#--cr-kind=}" ;;
     --dep-label=*) DEP_LABEL="${arg#--dep-label=}" ;;
     --dep-ns=*)    DEP_NS="${arg#--dep-ns=}" ;;
     --log-label=*) LOG_LABEL="${arg#--log-label=}" ;;
@@ -48,9 +53,9 @@ done
 # Default log label to dependency label.
 LOG_LABEL="${LOG_LABEL:-$DEP_LABEL}"
 
-# ── Common: Keystone CR status ──────────────────────────────────────────────
-echo "=== Keystone CR status ==="
-kubectl get keystone "$CR_NAME" -n "$NAMESPACE" -o yaml 2>&1 || true
+# ── Common: CR status ───────────────────────────────────────────────────────
+echo "=== CR status ($CR_KIND/$CR_NAME) ==="
+kubectl get "$CR_KIND" "$CR_NAME" -n "$NAMESPACE" -o yaml 2>&1 || true
 
 case "$MODE" in
   baseline)
