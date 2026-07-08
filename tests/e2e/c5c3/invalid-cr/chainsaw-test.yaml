@@ -1,0 +1,199 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E tests for the ControlPlane External-mode validation matrix.
+# Pins the type-level CEL XValidation rules and the validating webhook's
+# cross-field / transition-gating rules in operators/c5c3/api/v1alpha1/ to
+# deterministic admission failures against a real API server.
+#
+# Enforcement precedence at admission: the mutating (defaulting) webhook runs
+# first, then the CRD schema validation (structural + enum + pattern + CEL),
+# then the validating webhook. So an intra-struct violation (a managed-only
+# field in External mode, external in Managed mode) is caught by CEL and the
+# validating webhook never runs; a cross-field violation (infrastructure or
+# horizon in External mode, a mode transition) that CEL cannot express is
+# caught by the validating webhook. Each assertion below targets whichever
+# layer owns the rule.
+#
+# Fixtures carry NO metadata.namespace: Chainsaw runs each Test in its own
+# ephemeral namespace, isolating the one-ControlPlane-per-namespace webhook
+# from the parallel c5c3 suites pinned to `openstack`, and letting the two
+# accepted transition bases persist without colliding.
+#
+# All fixtures are generated from the single canonical scaffold in
+# `_generate.py`. After editing the scaffold or any per-fixture override,
+# regenerate via:
+#   python3 tests/e2e/c5c3/invalid-cr/_generate.py
+# CI runs `make verify-invalid-cr-fixtures`, which invokes `_generate.py
+# --check` (drift mode, both directions incl. orphans) and `test_generate.py`
+# (FIXTURES count + chainsaw-test.yaml cross-reference) so any hand-edit to a
+# generated fixture fails the build before the cluster-bound e2e-operator job
+# runs.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: c5c3-invalid-cr
+spec:
+  steps:
+  # external set with explicit mode: Managed must be rejected (CEL).
+  - try:
+    - apply:
+        file: 00-external-in-managed-explicit.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'may only be set when services.keystone.mode is External')): true
+  # external set with mode unset (defaults Managed) must be rejected (CEL).
+  - try:
+    - apply:
+        file: 01-external-in-managed-unset.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'may only be set when services.keystone.mode is External')): true
+  # mode: External without the external block must be rejected (CEL).
+  - try:
+    - apply:
+        file: 02-external-mode-without-external.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'external is required when services.keystone.mode is External')): true
+  # spec.infrastructure in External mode must be rejected (webhook, cross-field).
+  - try:
+    - apply:
+        file: 03-external-with-infrastructure.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'infrastructure')): true
+            (contains($error, 'forbidden when services.keystone.mode is External')): true
+  # services.horizon in External mode must be rejected (webhook, cross-field).
+  - try:
+    - apply:
+        file: 04-external-with-horizon.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'horizon')): true
+            (contains($error, 'forbidden when services.keystone.mode is External')): true
+  # managed-only replicas in External mode must be rejected (CEL).
+  - try:
+    - apply:
+        file: 05-external-replicas.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'services.keystone.replicas is forbidden when services.keystone.mode is External')): true
+  # managed-only image in External mode must be rejected (CEL).
+  - try:
+    - apply:
+        file: 06-external-image.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'services.keystone.image is forbidden when services.keystone.mode is External')): true
+  # managed-only policyOverrides in External mode must be rejected (CEL).
+  - try:
+    - apply:
+        file: 07-external-policy-overrides.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'services.keystone.policyOverrides is forbidden when services.keystone.mode is External')): true
+  # managed-only rotationInterval in External mode must be rejected (CEL).
+  - try:
+    - apply:
+        file: 08-external-rotation-interval.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'services.keystone.rotationInterval is forbidden when services.keystone.mode is External')): true
+  # managed-only gateway in External mode must be rejected (CEL).
+  - try:
+    - apply:
+        file: 09-external-gateway.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'services.keystone.gateway is forbidden when services.keystone.mode is External')): true
+  # managed-only publicEndpoint in External mode must be rejected (CEL, P2).
+  - try:
+    - apply:
+        file: 10-external-public-endpoint.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'services.keystone.publicEndpoint is forbidden when services.keystone.mode is External')): true
+  # external without authURL must be rejected (CRD required field).
+  - try:
+    - apply:
+        file: 11-external-authurl-missing.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'authURL')): true
+  # external.authURL without an http(s) scheme must be rejected (CRD pattern).
+  - try:
+    - apply:
+        file: 12-external-authurl-not-url.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'authURL')): true
+  # external.endpointType outside the enum must be rejected (CRD enum).
+  - try:
+    - apply:
+        file: 13-external-endpoint-type-invalid.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'endpointType')): true
+  # external.caBundleSecretRef.name empty must be rejected (CRD MinLength).
+  - try:
+    - apply:
+        file: 14-external-cabundle-empty-name.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'caBundleSecretRef')): true
+---
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  # Own ephemeral namespace so the accepted base persists without tripping the
+  # one-ControlPlane-per-namespace webhook against the other Tests.
+  name: c5c3-invalid-cr-managed-to-external
+spec:
+  steps:
+  - try:
+    # Base CR (brownfield, staged-adoption, not External) must be admitted.
+    - apply:
+        file: 15-transition-base-managed.yaml
+    # Flipping the live ControlPlane to External mode is rejected outright.
+    - apply:
+        file: 16-transition-to-external.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'cannot be changed to External')): true
+---
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: c5c3-invalid-cr-external-to-managed
+spec:
+  steps:
+  - try:
+    # The minimal External sketch CR must be admitted (acceptance proof).
+    - apply:
+        file: 17-transition-base-external.yaml
+    # Switching the live External ControlPlane to Managed is rejected with the
+    # reserved phase-3 takeover message.
+    - apply:
+        file: 18-transition-to-managed.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'phase-3')): true
