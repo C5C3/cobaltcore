@@ -1162,6 +1162,19 @@ condition using these typed reasons:
 | `backend` | `string` | Yes | Cache backend (e.g., `dogpile.cache.pymemcache`). |
 | `servers` | `[]string` | No | Cache server endpoints (brownfield mode). |
 
+> **Warning — one memcached per Keystone.** Keystone instances backed by
+> *different* databases must not share a memcached: oslo.cache/dogpile keys
+> carry no per-deployment discriminator (they are built from function name
+> plus arguments only), so two Keystones sharing one memcached read and
+> write the same keys for name-based lookups such as
+> `get_project_by_name("admin", "default")`. A cache entry written by one
+> instance then resolves to an object UUID that does not exist in the other
+> instance's database, surfacing as spurious `404 Not Found` (or `401`)
+> responses during token issuance. Point each Keystone's `clusterRef` /
+> `servers` at a dedicated memcached, or disable keystone-side caching via
+> `spec.extraConfig`: `cache: {enabled: "false"}`. Sharing one memcached is
+> only safe for multiple replicas/servers of the *same* Keystone deployment.
+
 ### SecretRefSpec
 
 | Field | Type | Required | Description |

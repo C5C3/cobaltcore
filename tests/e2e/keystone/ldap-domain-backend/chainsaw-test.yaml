@@ -176,13 +176,20 @@ spec:
           # is passed as argv (openbao generates a shell-safe hex string —
           # same idiom as the fernet-rotation suite).
           kubectl exec -n $NAMESPACE "$POD" -- python3 -c '
-          import json, sys, urllib.request
+          import json, sys, urllib.error, urllib.request
 
           pw = sys.argv[1]
 
+          # Surface keystone error documents: a bare HTTPError traceback hides
+          # the response body, which names the failing resource (same lesson
+          # as the identity-client bodySnippet).
           def request(url, data=None, headers=None, method=None):
               req = urllib.request.Request(url, data=data, headers=headers or {}, method=method)
-              return urllib.request.urlopen(req)
+              try:
+                  return urllib.request.urlopen(req)
+              except urllib.error.HTTPError as e:
+                  print(f"HTTP {e.code} from {url}: {e.read().decode()}", file=sys.stderr)
+                  raise
 
           # Admin token (SQL-backed Default domain — untouched by the LDAP
           # attach), scoped to the admin project: the operator renders
@@ -306,19 +313,28 @@ spec:
             -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-ldap,pod-template-hash \
             --sort-by=.metadata.creationTimestamp -o name | tail -1 | cut -d/ -f2)
           kubectl exec -n $NAMESPACE "$POD" -- python3 -c '
-          import json, sys, urllib.request
+          import json, sys, urllib.error, urllib.request
 
           pw = sys.argv[1]
+
+          # Same body-surfacing helper as step 4: the keystone error document
+          # names the failing resource, a bare HTTPError traceback does not.
+          def request(url, data=None, headers=None, method=None):
+              req = urllib.request.Request(url, data=data, headers=headers or {}, method=method)
+              try:
+                  return urllib.request.urlopen(req)
+              except urllib.error.HTTPError as e:
+                  print(f"HTTP {e.code} from {url}: {e.read().decode()}", file=sys.stderr)
+                  raise
+
           # Project-scoped like step 4: enforce_scope=true means an unscoped
           # token gets 403 from the domain listing below.
           body = json.dumps({"auth": {"identity": {"methods": ["password"], "password": {"user": {"name": "admin", "domain": {"id": "default"}, "password": pw}}}, "scope": {"project": {"name": "admin", "domain": {"id": "default"}}}}}).encode()
-          req = urllib.request.Request("http://localhost:5000/v3/auth/tokens", data=body, headers={"Content-Type": "application/json"})
-          resp = urllib.request.urlopen(req)
+          resp = request("http://localhost:5000/v3/auth/tokens", data=body, headers={"Content-Type": "application/json"})
           admin_token = resp.headers["X-Subject-Token"]
           print("OK: admin auth still works after detach")
 
-          req = urllib.request.Request("http://localhost:5000/v3/domains?name=planetexpress", headers={"X-Auth-Token": admin_token})
-          domains = json.load(urllib.request.urlopen(req))["domains"]
+          domains = json.load(request("http://localhost:5000/v3/domains?name=planetexpress", headers={"X-Auth-Token": admin_token}))["domains"]
           assert domains == [], f"deletionPolicy Delete must remove the domain, got {domains}"
           print("OK: planetexpress domain deleted")
           ' "$ADMIN_PASSWORD"

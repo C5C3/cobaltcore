@@ -5,7 +5,8 @@
 # Keystone CR fixture for the ldap-domain-backend E2E test.
 # Managed mode: database via clusterRef to openstack-db (unique database
 # keystone_ldap so parallel suites never share a schema), cache via
-# clusterRef to openstack-memcached.
+# clusterRef to openstack-memcached — but with keystone-side caching
+# disabled, see extraConfig below.
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
 kind: Keystone
 metadata:
@@ -35,3 +36,18 @@ spec:
     adminPasswordSecretRef:
       name: keystone-admin
     region: RegionOne
+  # Opt this keystone out of the shared memcached keyspace. dogpile cache
+  # keys carry no per-deployment discriminator (keystone 2025.2 MEMOIZE keys
+  # are function+args only), so every parallel suite's keystone reads and
+  # writes the SAME key for e.g. get_project_by_name("admin", "default").
+  # This suite is the only one doing project-scoped auth by name (SRBAC);
+  # when a neighboring suite's bootstrap writes that key mid-test, keystone
+  # resolves the admin project to a foreign UUID absent from keystone_ldap
+  # and ProjectNotFound escapes token issuance as HTTP 404 on
+  # POST /v3/auth/tokens (CI run 28898821445: step-5 auth 404 in the same
+  # second as keystone-cleanup's BootstrapComplete). Caching is not under
+  # test here; disabling it makes the suite hermetic, mirroring the
+  # unique-database isolation above.
+  extraConfig:
+    cache:
+      enabled: "false"
