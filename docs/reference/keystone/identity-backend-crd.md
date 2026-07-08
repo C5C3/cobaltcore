@@ -401,6 +401,18 @@ this status. The keystone-side `identitybackends` sub-reconciler only reads
 | `Ready` | True | `AllReady` | Both sub-conditions are True. |
 | `Ready` | False | `NotAllReady` | At least one sub-condition is not True. |
 
+Once `DomainReady`, `FederationObjectsReady`, or `MappingsReady` has reached
+True, the transient-observation reasons (`WaitingForKeystoneAPI`,
+`AdminSecretUnavailable`, `IdentityAPIError`) never demote it back to False:
+they report a failed observation — the API or a credential was temporarily
+unreachable — not a de-provisioning. This matters on every OIDC attach, where
+projecting the sidecar rolls the Keystone Deployment and briefly takes the
+API offline: demoting `DomainReady` in that window would de-project the
+backend and re-trigger the same rollout in a loop. Transient failures surface
+as Events and reconcile retries; only authoritative findings (domain gone,
+foreign same-named domain, missing mapping rules, unresolvable role/project)
+flip a provisioned condition back to False.
+
 ## Deletion Semantics
 
 Deleting a backend CR runs the `keystone.openstack.c5c3.io/identitybackend`

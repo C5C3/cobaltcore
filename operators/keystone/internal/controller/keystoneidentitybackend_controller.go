@@ -488,15 +488,51 @@ func (r *KeystoneIdentityBackendReconciler) removeFinalizer(ctx context.Context,
 	return ctrl.Result{}, nil
 }
 
-// setDomainReady upserts the DomainReady condition.
-func (r *KeystoneIdentityBackendReconciler) setDomainReady(backend *keystonev1alpha1.KeystoneIdentityBackend, status metav1.ConditionStatus, reason, message string) {
+// transientObservationReasons classifies the demotion reasons that describe a
+// failed OBSERVATION — the Keystone API, the identity API, or the admin
+// credential was temporarily unavailable — as opposed to an authoritative
+// de-provisioning finding (domain gone, foreign same-named domain, missing
+// mapping rules, unresolvable role/project).
+var transientObservationReasons = map[string]struct{}{
+	conditionReasonWaitingForKeystoneAPI:  {},
+	conditionReasonAdminSecretUnavailable: {},
+	conditionReasonIdentityAPIError:       {},
+}
+
+// upsertBackendCondition upserts one per-backend condition, PRESERVING a
+// provisioned (True) condition against transient-observation demotions.
+//
+// This asymmetry is load-bearing: projecting an OIDC backend rolls the
+// Keystone Deployment and switches the Service targetPort to the sidecar, so
+// the Keystone API is briefly unreachable on every attach. If that window
+// demoted DomainReady, the keystone-side D-gate (reconcileIdentityBackends)
+// would de-project the sidecar, roll the Deployment back, re-observe the
+// domain once the API returns, re-project — a self-sustaining oscillation
+// that re-rolls the Deployment forever (caught by the oidc-federation e2e).
+// A True condition therefore only drops on an authoritative observation;
+// transient failures surface through the reconcile error/requeue path and
+// events instead.
+func upsertBackendCondition(backend *keystonev1alpha1.KeystoneIdentityBackend, condType string, status metav1.ConditionStatus, reason, message string) {
+	if status != metav1.ConditionTrue {
+		if _, transient := transientObservationReasons[reason]; transient {
+			current := conditions.GetCondition(backend.Status.Conditions, condType)
+			if current != nil && current.Status == metav1.ConditionTrue {
+				return
+			}
+		}
+	}
 	conditions.SetCondition(&backend.Status.Conditions, metav1.Condition{
-		Type:               conditionTypeDomainReady,
+		Type:               condType,
 		Status:             status,
 		ObservedGeneration: backend.Generation,
 		Reason:             reason,
 		Message:            message,
 	})
+}
+
+// setDomainReady upserts the DomainReady condition.
+func (r *KeystoneIdentityBackendReconciler) setDomainReady(backend *keystonev1alpha1.KeystoneIdentityBackend, status metav1.ConditionStatus, reason, message string) {
+	upsertBackendCondition(backend, conditionTypeDomainReady, status, reason, message)
 }
 
 // updateStatus persists the backend status via the shared helper: the write

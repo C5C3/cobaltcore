@@ -15,7 +15,6 @@ import (
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 
-	"github.com/c5c3/forge/internal/common/conditions"
 	"github.com/c5c3/forge/internal/common/secrets"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 	"github.com/c5c3/forge/operators/keystone/internal/identity"
@@ -405,24 +404,16 @@ func (r *KeystoneIdentityBackendReconciler) teardownFederationObjects(ctx contex
 	return ctrl.Result{}, nil
 }
 
-// setFederationObjectsReady upserts the FederationObjectsReady condition.
+// setFederationObjectsReady upserts the FederationObjectsReady condition
+// (transient-observation demotions preserve a provisioned True — see
+// upsertBackendCondition).
 func (r *KeystoneIdentityBackendReconciler) setFederationObjectsReady(backend *keystonev1alpha1.KeystoneIdentityBackend, status metav1.ConditionStatus, reason, message string) {
-	conditions.SetCondition(&backend.Status.Conditions, metav1.Condition{
-		Type:               conditionTypeFederationObjectsReady,
-		Status:             status,
-		ObservedGeneration: backend.Generation,
-		Reason:             reason,
-		Message:            message,
-	})
+	upsertBackendCondition(backend, conditionTypeFederationObjectsReady, status, reason, message)
 }
 
-// setMappingsReady upserts the MappingsReady condition.
+// setMappingsReady upserts the MappingsReady condition
+// (transient-observation demotions preserve a provisioned True — see
+// upsertBackendCondition).
 func (r *KeystoneIdentityBackendReconciler) setMappingsReady(backend *keystonev1alpha1.KeystoneIdentityBackend, status metav1.ConditionStatus, reason, message string) {
-	conditions.SetCondition(&backend.Status.Conditions, metav1.Condition{
-		Type:               conditionTypeMappingsReady,
-		Status:             status,
-		ObservedGeneration: backend.Generation,
-		Reason:             reason,
-		Message:            message,
-	})
+	upsertBackendCondition(backend, conditionTypeMappingsReady, status, reason, message)
 }

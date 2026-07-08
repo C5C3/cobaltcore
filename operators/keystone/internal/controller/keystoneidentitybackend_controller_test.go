@@ -535,3 +535,148 @@ func TestBackendReconcile_ManageReconcilesDescriptionDrift(t *testing.T) {
 	g.Expect(repaired.Description).To(Equal("managed by forge"))
 	g.Expect(repaired.Enabled).To(BeTrue(), "Manage mode re-enables its own domain")
 }
+
+// A provisioned DomainReady must ride out an identity-API outage: demoting it
+// would trip the keystone-side D-gate, de-project the backend, and re-trigger
+// the very Deployment rollout that made the API unreachable (the
+// oidc-federation e2e oscillation). The transient failure surfaces as a
+// reconcile error (workqueue backoff), not as a condition flip.
+func TestBackendReconcile_ProvisionedDomainSurvivesIdentityAPIOutage(t *testing.T) {
+	g := NewGomegaWithT(t)
+	srv := identityfake.NewServer(testAdminPassword)
+
+	ks := testKeystoneWithReadyAPI()
+	backend := testIdentityBackend("corp-ldap", "corp")
+	backend.Status = keystonev1alpha1.KeystoneIdentityBackendStatus{}
+	r := newBackendTestReconciler(srv, ks, backend, testAdminSecret())
+
+	_, err := reconcileBackendTwice(t, r, backend)
+	g.Expect(err).NotTo(HaveOccurred())
+	provisioned := getBackend(t, r.Client, "corp-ldap")
+	g.Expect(commonconditions.GetCondition(provisioned.Status.Conditions, conditionTypeDomainReady).Status).
+		To(Equal(metav1.ConditionTrue))
+
+	// The identity API goes away (e.g. the projection rollout switched the
+	// Service targetPort to a not-yet-ready sidecar).
+	srv.Close()
+
+	_, err = r.Reconcile(context.Background(), backendRequest(backend))
+	g.Expect(err).To(HaveOccurred(), "the outage must surface through the error path")
+
+	updated := getBackend(t, r.Client, "corp-ldap")
+	cond := commonconditions.GetCondition(updated.Status.Conditions, conditionTypeDomainReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue), "an unreachable API says nothing about the provisioned domain")
+	g.Expect(cond.Reason).To(Equal(conditionReasonDomainProvisioned))
+	g.Expect(updated.Status.DomainID).NotTo(BeEmpty())
+}
+
+// A provisioned DomainReady must equally ride out a KeystoneAPIReady=False
+// window: every OIDC attach rolls the Keystone Deployment, so the API-ready
+// gate goes False transiently on the happy path.
+func TestBackendReconcile_ProvisionedDomainSurvivesKeystoneAPIFlap(t *testing.T) {
+	g := NewGomegaWithT(t)
+	srv := identityfake.NewServer(testAdminPassword)
+	t.Cleanup(srv.Close)
+
+	ks := testKeystoneWithReadyAPI()
+	backend := testIdentityBackend("corp-ldap", "corp")
+	backend.Status = keystonev1alpha1.KeystoneIdentityBackendStatus{}
+	r := newBackendTestReconciler(srv, ks, backend, testAdminSecret())
+
+	_, err := reconcileBackendTwice(t, r, backend)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// The projection rollout flips KeystoneAPIReady to False.
+	var liveKS keystonev1alpha1.Keystone
+	g.Expect(r.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "test-keystone"}, &liveKS)).To(Succeed())
+	commonconditions.SetCondition(&liveKS.Status.Conditions, metav1.Condition{
+		Type:   conditionTypeKeystoneAPIReady,
+		Status: metav1.ConditionFalse,
+		Reason: "DeploymentNotReady",
+	})
+	g.Expect(r.Status().Update(context.Background(), &liveKS)).To(Succeed())
+
+	requestsBefore := len(srv.Requests())
+	result, err := r.Reconcile(context.Background(), backendRequest(backend))
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.IsZero()).To(BeTrue(), "the Keystone watch wakes us when the API returns")
+
+	updated := getBackend(t, r.Client, "corp-ldap")
+	cond := commonconditions.GetCondition(updated.Status.Conditions, conditionTypeDomainReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue), "a not-yet-ready Keystone must not demote the provisioned domain")
+	g.Expect(cond.Reason).To(Equal(conditionReasonDomainProvisioned))
+	g.Expect(srv.Requests()).To(HaveLen(requestsBefore), "no identity call while the API gate is closed")
+}
+
+// The transient/authoritative demotion split at the setter level: transient
+// observation failures preserve a provisioned True, authoritative findings
+// and initial provisioning still demote, and True always upserts.
+func TestUpsertBackendCondition_TransientDemotionPreservesProvisioned(t *testing.T) {
+	cases := []struct {
+		name       string
+		current    *metav1.Condition
+		status     metav1.ConditionStatus
+		reason     string
+		wantStatus metav1.ConditionStatus
+		wantReason string
+	}{
+		{
+			name:       "transient demotion of provisioned True is dropped",
+			current:    &metav1.Condition{Type: conditionTypeDomainReady, Status: metav1.ConditionTrue, Reason: conditionReasonDomainProvisioned},
+			status:     metav1.ConditionFalse,
+			reason:     conditionReasonIdentityAPIError,
+			wantStatus: metav1.ConditionTrue,
+			wantReason: conditionReasonDomainProvisioned,
+		},
+		{
+			name:       "authoritative demotion of provisioned True lands",
+			current:    &metav1.Condition{Type: conditionTypeDomainReady, Status: metav1.ConditionTrue, Reason: conditionReasonDomainProvisioned},
+			status:     metav1.ConditionFalse,
+			reason:     conditionReasonDomainAlreadyExists,
+			wantStatus: metav1.ConditionFalse,
+			wantReason: conditionReasonDomainAlreadyExists,
+		},
+		{
+			name:       "transient demotion before first provisioning lands",
+			current:    nil,
+			status:     metav1.ConditionFalse,
+			reason:     conditionReasonWaitingForKeystoneAPI,
+			wantStatus: metav1.ConditionFalse,
+			wantReason: conditionReasonWaitingForKeystoneAPI,
+		},
+		{
+			name:       "transient demotion of an already-False condition lands",
+			current:    &metav1.Condition{Type: conditionTypeDomainReady, Status: metav1.ConditionFalse, Reason: conditionReasonDomainNotFound},
+			status:     metav1.ConditionFalse,
+			reason:     conditionReasonAdminSecretUnavailable,
+			wantStatus: metav1.ConditionFalse,
+			wantReason: conditionReasonAdminSecretUnavailable,
+		},
+		{
+			name:       "promotion to True always lands",
+			current:    &metav1.Condition{Type: conditionTypeDomainReady, Status: metav1.ConditionFalse, Reason: conditionReasonWaitingForKeystoneAPI},
+			status:     metav1.ConditionTrue,
+			reason:     conditionReasonDomainProvisioned,
+			wantStatus: metav1.ConditionTrue,
+			wantReason: conditionReasonDomainProvisioned,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			backend := testIdentityBackend("corp-ldap", "corp")
+			backend.Status = keystonev1alpha1.KeystoneIdentityBackendStatus{}
+			if tc.current != nil {
+				tc.current.LastTransitionTime = metav1.Now()
+				backend.Status.Conditions = []metav1.Condition{*tc.current}
+			}
+
+			upsertBackendCondition(backend, conditionTypeDomainReady, tc.status, tc.reason, "test message")
+
+			cond := commonconditions.GetCondition(backend.Status.Conditions, conditionTypeDomainReady)
+			g.Expect(cond).NotTo(BeNil())
+			g.Expect(cond.Status).To(Equal(tc.wantStatus))
+			g.Expect(cond.Reason).To(Equal(tc.wantReason))
+		})
+	}
+}
