@@ -113,21 +113,35 @@ const IdentityBackendSecretNameIndexKey = "spec.secretRefs.name"
 
 // identityBackendSecretNameExtractor returns the deduplicated, non-empty
 // union of Secret names a KeystoneIdentityBackend references — the LDAP bind
-// credentials Secret and, when TLS is configured, the CA bundle Secret.
+// credentials Secret (plus, when TLS is configured, the CA bundle Secret)
+// and the OIDC client secret. Including the client secret means a rotated
+// relying-party credential re-renders the content-hashed federation Secret
+// via the owning Keystone.
 func identityBackendSecretNameExtractor(obj client.Object) []string {
 	b, ok := obj.(*keystonev1alpha1.KeystoneIdentityBackend)
-	if !ok || b.Spec.LDAP == nil {
+	if !ok {
 		return nil
 	}
-	bindName := b.Spec.LDAP.BindCredentialsSecretRef.Name
-	names := make([]string, 0, 2)
-	if bindName != "" {
-		names = append(names, bindName)
-	}
-	if b.Spec.LDAP.TLS != nil {
-		if caName := b.Spec.LDAP.TLS.CABundleSecretRef.Name; caName != "" && caName != bindName {
-			names = append(names, caName)
+	seen := make(map[string]struct{}, 2)
+	var names []string
+	add := func(name string) {
+		if name == "" {
+			return
 		}
+		if _, ok := seen[name]; ok {
+			return
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+	if b.Spec.LDAP != nil {
+		add(b.Spec.LDAP.BindCredentialsSecretRef.Name)
+		if b.Spec.LDAP.TLS != nil {
+			add(b.Spec.LDAP.TLS.CABundleSecretRef.Name)
+		}
+	}
+	if b.Spec.OIDC != nil {
+		add(b.Spec.OIDC.ClientSecretRef.Name)
 	}
 	return names
 }
@@ -242,6 +256,13 @@ type KeystoneReconciler struct {
 	// which also guards concurrent access under MaxConcurrentReconciles > 1.
 	configRenderCache   map[types.NamespacedName]configRenderCacheEntry
 	configRenderCacheMu sync.Mutex
+
+	// federationMetadataCache memoizes fetched OIDC discovery documents per
+	// KeystoneIdentityBackend, keyed on the backend's (uid, generation), so
+	// the steady-state reconcile cadence never hammers the identity provider.
+	// Lazily initialised under federationMetadataCacheMu.
+	federationMetadataCache   map[types.NamespacedName]federationMetadataCacheEntry
+	federationMetadataCacheMu sync.Mutex
 }
 
 // httpRouteGVK identifies the HTTPRoute kind the operator would watch when
@@ -363,6 +384,12 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	// /etc/keystone/domains). IdentityBackends runs before Config in this
 	// pipeline, so the value is populated by the time those steps read it.
 	var domainsSecretName string
+	// federation is the mod_auth_openidc projection materialised by
+	// reconcileIdentityBackends (nil when no OIDC backend is projected). It
+	// drives the federation sections in the rendered keystone.conf, the
+	// sidecar container/Service/NetworkPolicy shape, and the federation
+	// Secret pruning.
+	var federation *federationProjection
 	pipeline := []commonreconcile.Step{
 		{Name: "Secrets", Fn: func(ctx context.Context) (ctrl.Result, error) {
 			return r.reconcileSecrets(ctx, &keystone)
@@ -397,8 +424,9 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		// result so first-install can bring the API up, and backend status
 		// flips re-enqueue this Keystone via the backend watch.
 		{Name: "IdentityBackends", Fn: func(ctx context.Context) (ctrl.Result, error) {
-			var err error
-			domainsSecretName, err = r.reconcileIdentityBackends(ctx, &keystone)
+			projection, err := r.reconcileIdentityBackends(ctx, &keystone)
+			domainsSecretName = projection.DomainsSecretName
+			federation = projection.Federation
 			return ctrl.Result{}, err
 		}},
 		// reconcileConfig must run before the Fernet/credential CronJobs and the
@@ -468,6 +496,14 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 				return ctrl.Result{}, err
 			}
 			if err := r.pruneStaleDomainsSecrets(ctx, &keystone, domainsSecretName); err != nil {
+				markConfigFailed(&keystone, err)
+				return ctrl.Result{}, err
+			}
+			var federationSecretName string
+			if federation != nil {
+				federationSecretName = federation.SecretName
+			}
+			if err := r.pruneStaleFederationSecrets(ctx, &keystone, federationSecretName); err != nil {
 				markConfigFailed(&keystone, err)
 				return ctrl.Result{}, err
 			}

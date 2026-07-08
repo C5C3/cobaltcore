@@ -132,20 +132,23 @@ func domainsVolumeAndMount(domainsSecretName string) (corev1.Volume, corev1.Volu
 }
 
 // reconcileIdentityBackends aggregates every attached, DomainReady
-// KeystoneIdentityBackend into one immutable content-hashed domains Secret
-// and sets the aggregated IdentityBackendsReady condition on the Keystone CR.
-// It returns the Secret's name ("" when nothing is projected) for the
-// downstream config/deployment/job builders.
+// KeystoneIdentityBackend into the per-type projection artifacts — LDAP
+// backends into one immutable content-hashed domains Secret, OIDC backends
+// into one immutable content-hashed federation Secret (proxy.conf plus the
+// per-backend metadata documents) — and sets the aggregated
+// IdentityBackendsReady condition on the Keystone CR. It returns the
+// projection (zero-valued fields when nothing of that type is projected) for
+// the downstream config/deployment/job builders.
 //
 // CONTRACT: this step never returns a requeue and never returns an error for
-// waiting states (pending domains, missing bind Secrets) — RunPipeline
-// short-circuits on non-zero results, and blocking here would deadlock
-// first-install: a backend cannot become DomainReady until the Keystone API
-// is up, which requires the Deployment this pipeline has not created yet.
-// Wake-ups are watch-driven (backend status flips re-enqueue the Keystone).
-// Only genuine infrastructure failures (List/render/create errors) surface as
-// errors.
-func (r *KeystoneReconciler) reconcileIdentityBackends(ctx context.Context, keystone *keystonev1alpha1.Keystone) (string, error) {
+// waiting states (pending domains, missing bind/client Secrets, unreachable
+// provider metadata) — RunPipeline short-circuits on non-zero results, and
+// blocking here would deadlock first-install: a backend cannot become
+// DomainReady until the Keystone API is up, which requires the Deployment
+// this pipeline has not created yet. Wake-ups are watch-driven (backend
+// status flips re-enqueue the Keystone). Only genuine infrastructure
+// failures (List/render/create errors) surface as errors.
+func (r *KeystoneReconciler) reconcileIdentityBackends(ctx context.Context, keystone *keystonev1alpha1.Keystone) (identityBackendsProjection, error) {
 	logger := log.FromContext(ctx)
 
 	var backends keystonev1alpha1.KeystoneIdentityBackendList
@@ -154,7 +157,7 @@ func (r *KeystoneReconciler) reconcileIdentityBackends(ctx context.Context, keys
 		client.InNamespace(keystone.Namespace),
 		client.MatchingFields{IdentityBackendKeystoneRefIndexKey: keystone.Name},
 	); err != nil {
-		return "", fmt.Errorf("listing KeystoneIdentityBackends for %s: %w", keystone.Name, err)
+		return identityBackendsProjection{}, fmt.Errorf("listing KeystoneIdentityBackends for %s: %w", keystone.Name, err)
 	}
 
 	if len(backends.Items) == 0 {
@@ -165,7 +168,7 @@ func (r *KeystoneReconciler) reconcileIdentityBackends(ctx context.Context, keys
 			Reason:             conditionReasonIdentityBackendsNotRequired,
 			Message:            "No KeystoneIdentityBackend references this Keystone",
 		})
-		return "", nil
+		return identityBackendsProjection{}, nil
 	}
 
 	// Sort by name so the rendered Secret content — and therefore its
@@ -185,7 +188,29 @@ func (r *KeystoneReconciler) reconcileIdentityBackends(ctx context.Context, keys
 		domainOwners[key] = append(domainOwners[key], b.Name)
 	}
 
+	// Defensive same-issuer detection for OIDC backends (the webhook enforces
+	// identityProviderName uniqueness but not issuer uniqueness). Two OIDC
+	// backends whose issuers map to the same mod_auth_openidc metadata basename
+	// would render colliding KeyToPath mount paths in the federation Secret
+	// volume — a duplicate-path volume the kubelet rejects, wedging the whole
+	// Deployment. mod_auth_openidc keys its metadata files on the issuer, so two
+	// IdPs sharing one genuinely cannot coexist. As with the duplicate-domain
+	// case above, on collision NONE of the colliding set is projected.
+	oidcIssuerOwners := make(map[string][]string, len(backends.Items))
+	for i := range backends.Items {
+		b := &backends.Items[i]
+		if b.Spec.Type != keystonev1alpha1.IdentityBackendTypeOIDC || b.Spec.OIDC == nil {
+			continue
+		}
+		key := issuerToMetadataBasename(b.Spec.OIDC.Issuer)
+		oidcIssuerOwners[key] = append(oidcIssuerOwners[key], b.Name)
+	}
+
 	data := map[string][]byte{}
+	var fedRenders []oidcRender
+	var fedRemoteIDAttribute string
+	proxyImage := federationProxyImage(keystone)
+	proxyImageWarned := false
 	var pending []string
 	for i := range backends.Items {
 		backend := &backends.Items[i]
@@ -205,10 +230,65 @@ func (r *KeystoneReconciler) reconcileIdentityBackends(ctx context.Context, keys
 		}
 
 		// The D-gate: never project config for a domain that does not exist
-		// yet — keystone would 500 on domain-scoped requests.
+		// yet — keystone would 500 on domain-scoped requests, and the
+		// federation objects an OIDC render advertises are domain-scoped.
 		domainReady := conditions.GetCondition(backend.Status.Conditions, conditionTypeDomainReady)
 		if domainReady == nil || domainReady.Status != metav1.ConditionTrue {
 			pending = append(pending, fmt.Sprintf("%s (domain %q not ready)", backend.Name, backend.Spec.Domain.Name))
+			continue
+		}
+
+		if backend.Spec.Type == keystonev1alpha1.IdentityBackendTypeOIDC {
+			if backend.Spec.OIDC != nil {
+				if owners := oidcIssuerOwners[issuerToMetadataBasename(backend.Spec.OIDC.Issuer)]; len(owners) > 1 {
+					pending = append(pending, fmt.Sprintf("%s (issuer %q collides with %s at the mod_auth_openidc metadata filename)",
+						backend.Name, backend.Spec.OIDC.Issuer, strings.Join(owners, ", ")))
+					continue
+				}
+			}
+			// Fail loudly instead of assuming a hidden default image: the
+			// managed ControlPlane path projects one, standalone users set it.
+			if proxyImage == nil {
+				msg := fmt.Sprintf("Identity backend %s is pending: spec.federation.proxyImage is not set — "+
+					"configure the mod_auth_openidc sidecar image before attaching OIDC backends", backend.Name)
+				if !proxyImageWarned {
+					logger.Info(msg)
+					r.Recorder.Event(keystone, corev1.EventTypeWarning, "FederationProxyImageMissing", msg)
+					proxyImageWarned = true
+				}
+				pending = append(pending, fmt.Sprintf("%s (spec.federation.proxyImage not set)", backend.Name))
+				continue
+			}
+
+			render, err := r.renderOIDCBackend(ctx, keystone, backend)
+			if err != nil {
+				// A missing client Secret, an unreachable/mismatched provider
+				// metadata document, or a control character in a rendered
+				// value is a per-backend fault: skip, warn, keep the healthy
+				// siblings — exactly the LDAP fault-isolation contract.
+				if secrets.IsMissingSecretOrKey(err) || errors.Is(err, errControlCharInValue) ||
+					errors.Is(err, errProviderMetadataUnavailable) {
+					msg := fmt.Sprintf("Skipping identity backend %s: %v", backend.Name, err)
+					logger.Info(msg)
+					r.Recorder.Event(keystone, corev1.EventTypeWarning, "IdentityBackendSkipped", msg)
+					pending = append(pending, fmt.Sprintf("%s (%v)", backend.Name, err))
+					continue
+				}
+				return identityBackendsProjection{}, fmt.Errorf("rendering federation config for backend %s: %w", backend.Name, err)
+			}
+			if size := len(render.provider) + len(render.client) + len(render.conf); size > maxRenderedDomainConfBytes {
+				msg := fmt.Sprintf("Skipping identity backend %s: rendered federation config is %d bytes, exceeding the %d-byte per-backend budget",
+					backend.Name, size, maxRenderedDomainConfBytes)
+				logger.Info(msg)
+				r.Recorder.Event(keystone, corev1.EventTypeWarning, "IdentityBackendSkipped", msg)
+				pending = append(pending, fmt.Sprintf("%s (rendered federation config too large: %d bytes)", backend.Name, size))
+				continue
+			}
+			fedRenders = append(fedRenders, render)
+			// Uniform across OIDC siblings (webhook-enforced): first one wins.
+			if fedRemoteIDAttribute == "" {
+				fedRemoteIDAttribute = backend.EffectiveRemoteIDAttribute()
+			}
 			continue
 		}
 
@@ -225,7 +305,7 @@ func (r *KeystoneReconciler) reconcileIdentityBackends(ctx context.Context, keys
 				pending = append(pending, fmt.Sprintf("%s (%v)", backend.Name, err))
 				continue
 			}
-			return "", fmt.Errorf("rendering domain config for backend %s: %w", backend.Name, err)
+			return identityBackendsProjection{}, fmt.Errorf("rendering domain config for backend %s: %w", backend.Name, err)
 		}
 
 		// Per-backend size budget: an oversized backend is a per-backend fault,
@@ -250,14 +330,21 @@ func (r *KeystoneReconciler) reconcileIdentityBackends(ctx context.Context, keys
 		}
 	}
 
-	var domainsSecretName string
+	var projection identityBackendsProjection
 	if len(data) > 0 {
 		name, err := config.CreateImmutableSecret(ctx, r.Client, r.Scheme, keystone,
 			domainsSecretBaseName(keystone), keystone.Namespace, data)
 		if err != nil {
-			return "", fmt.Errorf("creating domains Secret: %w", err)
+			return identityBackendsProjection{}, fmt.Errorf("creating domains Secret: %w", err)
 		}
-		domainsSecretName = name
+		projection.DomainsSecretName = name
+	}
+	if len(fedRenders) > 0 {
+		fed, err := r.buildFederationProjection(ctx, keystone, fedRenders, fedRemoteIDAttribute, *proxyImage)
+		if err != nil {
+			return identityBackendsProjection{}, err
+		}
+		projection.Federation = fed
 	}
 
 	if len(pending) > 0 {
@@ -268,7 +355,7 @@ func (r *KeystoneReconciler) reconcileIdentityBackends(ctx context.Context, keys
 			Reason:             conditionReasonWaitingForBackends,
 			Message:            "Waiting for identity backends: " + strings.Join(pending, "; "),
 		})
-		return domainsSecretName, nil
+		return projection, nil
 	}
 
 	conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
@@ -278,7 +365,7 @@ func (r *KeystoneReconciler) reconcileIdentityBackends(ctx context.Context, keys
 		Reason:             conditionReasonAllBackendsProjected,
 		Message:            "All attached identity backends are projected",
 	})
-	return domainsSecretName, nil
+	return projection, nil
 }
 
 // renderDomainConf renders the keystone.<domain>.conf content for one

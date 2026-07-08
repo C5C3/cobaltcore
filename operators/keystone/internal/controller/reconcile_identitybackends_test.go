@@ -22,6 +22,14 @@ import (
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
 
+// reconcileIdentityBackendsDomains is a shim for the LDAP-focused tests:
+// it runs reconcileIdentityBackends and unwraps the domains Secret name from
+// the projection struct.
+func reconcileIdentityBackendsDomains(ctx context.Context, r *KeystoneReconciler, ks *keystonev1alpha1.Keystone) (string, error) {
+	projection, err := r.reconcileIdentityBackends(ctx, ks)
+	return projection.DomainsSecretName, err
+}
+
 // testIdentityBackend returns a DomainReady LDAP backend attached to
 // testKeystone(), with its bind Secret name pre-wired to
 // testBindSecret's name.
@@ -77,7 +85,7 @@ func TestReconcileIdentityBackends_NotRequiredWhenNoBackends(t *testing.T) {
 	ks := testKeystone()
 	r := newTestReconciler(ks)
 
-	name, err := r.reconcileIdentityBackends(context.Background(), ks)
+	name, err := reconcileIdentityBackendsDomains(context.Background(), r, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(name).To(BeEmpty())
 
@@ -94,7 +102,7 @@ func TestReconcileIdentityBackends_ProjectsReadyBackend(t *testing.T) {
 	r := newTestReconciler(ks, backend, testBindSecret("corp-ldap"))
 	ctx := context.Background()
 
-	name, err := r.reconcileIdentityBackends(ctx, ks)
+	name, err := reconcileIdentityBackendsDomains(ctx, r, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(name).To(HavePrefix("test-keystone-domains-"))
 
@@ -124,7 +132,7 @@ func TestReconcileIdentityBackends_ProjectsReadyBackend(t *testing.T) {
 	g.Expect(cond.Reason).To(Equal(conditionReasonAllBackendsProjected))
 
 	// Deterministic naming: a second pass produces the same content hash.
-	name2, err := r.reconcileIdentityBackends(ctx, ks)
+	name2, err := reconcileIdentityBackendsDomains(ctx, r, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(name2).To(Equal(name))
 }
@@ -153,7 +161,7 @@ func TestReconcileIdentityBackends_RendersOptionalFieldsAndExtraOptions(t *testi
 	r := newTestReconciler(ks, backend, testBindSecret("corp-ldap"), caSecret)
 	ctx := context.Background()
 
-	name, err := r.reconcileIdentityBackends(ctx, ks)
+	name, err := reconcileIdentityBackendsDomains(ctx, r, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var secret corev1.Secret
@@ -187,7 +195,7 @@ func TestReconcileIdentityBackends_ExtraEnabledOptionSuppressesDefaults(t *testi
 	r := newTestReconciler(ks, backend, testBindSecret("corp-ldap"))
 	ctx := context.Background()
 
-	name, err := r.reconcileIdentityBackends(ctx, ks)
+	name, err := reconcileIdentityBackendsDomains(ctx, r, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var secret corev1.Secret
@@ -211,7 +219,7 @@ func TestReconcileIdentityBackends_SkipsNotDomainReadyBackend(t *testing.T) {
 	}}
 	r := newTestReconciler(ks, backend, testBindSecret("corp-ldap"))
 
-	name, err := r.reconcileIdentityBackends(context.Background(), ks)
+	name, err := reconcileIdentityBackendsDomains(context.Background(), r, ks)
 	g.Expect(err).NotTo(HaveOccurred(), "a pending domain must never fail or requeue the pipeline")
 	g.Expect(name).To(BeEmpty())
 
@@ -230,7 +238,7 @@ func TestReconcileIdentityBackends_SkipsDeletingBackend(t *testing.T) {
 	backend.Finalizers = []string{identityBackendFinalizerName}
 	r := newTestReconciler(ks, backend, testBindSecret("corp-ldap"))
 
-	name, err := r.reconcileIdentityBackends(context.Background(), ks)
+	name, err := reconcileIdentityBackendsDomains(context.Background(), r, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(name).To(BeEmpty(), "a deleting backend must be de-projected immediately")
 
@@ -250,7 +258,7 @@ func TestReconcileIdentityBackends_MissingBindSecretSkipsAndWarns(t *testing.T) 
 	r := newTestReconciler(ks, healthy, broken, testBindSecret("corp-ldap"))
 	ctx := context.Background()
 
-	name, err := r.reconcileIdentityBackends(ctx, ks)
+	name, err := reconcileIdentityBackendsDomains(ctx, r, ks)
 	g.Expect(err).NotTo(HaveOccurred(), "a missing bind Secret must never fail the pipeline")
 	g.Expect(name).NotTo(BeEmpty(), "healthy siblings keep being projected")
 
@@ -281,7 +289,7 @@ func TestReconcileIdentityBackends_ControlCharInBindSecretSkipsAndWarns(t *testi
 	r := newTestReconciler(ks, healthy, poisoned, testBindSecret("corp-ldap"), poisonedSecret)
 	ctx := context.Background()
 
-	name, err := r.reconcileIdentityBackends(ctx, ks)
+	name, err := reconcileIdentityBackendsDomains(ctx, r, ks)
 	g.Expect(err).NotTo(HaveOccurred(), "a control-char value must never fail the pipeline")
 	g.Expect(name).NotTo(BeEmpty(), "healthy siblings keep being projected")
 
@@ -314,7 +322,7 @@ func TestReconcileIdentityBackends_ControlCharInExtraOptionKeySkipsAndWarns(t *t
 	r := newTestReconciler(ks, healthy, poisoned, testBindSecret("corp-ldap"), testBindSecret("evil-ldap"))
 	ctx := context.Background()
 
-	name, err := r.reconcileIdentityBackends(ctx, ks)
+	name, err := reconcileIdentityBackendsDomains(ctx, r, ks)
 	g.Expect(err).NotTo(HaveOccurred(), "a control-char key must never fail the pipeline")
 	g.Expect(name).NotTo(BeEmpty(), "healthy siblings keep being projected")
 
@@ -339,7 +347,7 @@ func TestReconcileIdentityBackends_DuplicateDomainSkipsCollidingSet(t *testing.T
 	b := testIdentityBackend("b-ldap", "Corp")
 	r := newTestReconciler(ks, a, b, testBindSecret("a-ldap"), testBindSecret("b-ldap"))
 
-	name, err := r.reconcileIdentityBackends(context.Background(), ks)
+	name, err := reconcileIdentityBackendsDomains(context.Background(), r, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(name).To(BeEmpty(), "NONE of a colliding set may be projected")
 
@@ -358,7 +366,7 @@ func TestReconcileIdentityBackends_IgnoresBackendsOfOtherKeystones(t *testing.T)
 	other.Spec.KeystoneRef.Name = "another-keystone"
 	r := newTestReconciler(ks, other, testBindSecret("other-ldap"))
 
-	name, err := r.reconcileIdentityBackends(context.Background(), ks)
+	name, err := reconcileIdentityBackendsDomains(context.Background(), r, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(name).To(BeEmpty())
 
@@ -376,7 +384,7 @@ func TestPruneStaleDomainsSecrets_FullCleanupWhenNothingProjected(t *testing.T) 
 	r := newTestReconciler(ks, backend, testBindSecret("corp-ldap"))
 	ctx := context.Background()
 
-	name, err := r.reconcileIdentityBackends(ctx, ks)
+	name, err := reconcileIdentityBackendsDomains(ctx, r, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(name).NotTo(BeEmpty())
 
