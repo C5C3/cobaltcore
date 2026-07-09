@@ -2141,6 +2141,87 @@ func TestEnsureKORCAdminImports_CreatesUnmanagedUserAndDomain(t *testing.T) {
 	g.Expect(user.OwnerReferences).To(HaveLen(1))
 }
 
+// TestEnsureKORCAdminImports_UsesConfiguredIdentities proves the import filters
+// resolve the CONFIGURED admin identities rather than the hardcoded
+// admin/Default pair, so a brownfield Keystone whose admin user and domain are
+// named differently is imported instead of an absent "admin"/"Default" — which
+// K-ORC would silently report as an empty import that never becomes Available.
+// The Kubernetes CR names stay cp.Name-scoped handles, unaffected by the identity.
+func TestEnsureKORCAdminImports_UsesConfiguredIdentities(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := korcTestScheme(t)
+	cp := korcExternalControlPlane()
+	cp.Spec.KORC.AdminCredential.UserName = "brownfield-admin"
+	cp.Spec.KORC.AdminCredential.DomainName = "heimdall"
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	credRef := orcv1alpha1.CloudCredentialsReference{SecretName: "k-orc-clouds-yaml", CloudName: "admin"}
+	_, err := r.ensureKORCAdminImports(context.Background(), cp, credRef)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var domain orcv1alpha1.Domain
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Name: adminDomainRef(cp), Namespace: childNamespace(cp),
+	}, &domain)).To(Succeed())
+	g.Expect(string(*domain.Spec.Import.Filter.Name)).To(Equal("heimdall"),
+		"the Domain import filter must carry spec.korc.adminCredential.domainName")
+
+	var user orcv1alpha1.User
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Name: adminUserRef(cp), Namespace: childNamespace(cp),
+	}, &user)).To(Succeed())
+	g.Expect(string(*user.Spec.Import.Filter.Name)).To(Equal("brownfield-admin"),
+		"the User import filter must carry spec.korc.adminCredential.userName")
+
+	// The CR names are deterministic handles, NOT derived from the identity.
+	g.Expect(user.Name).To(Equal(cp.Name + "-user-admin"))
+	g.Expect(domain.Name).To(Equal(cp.Name + "-domain-default"))
+}
+
+// TestPasswordCloudsYAMLIdentityMatchesUserImportFilter locks the HARD Keystone
+// constraint from the phase-1 inventory: the default policy allows creating an
+// application credential only for the token's OWN user (an admin token is refused
+// with 403 identity:create_application_credential for another user). The AC's
+// UserRef resolves to the admin User import, and the AC authenticates with the
+// password clouds.yaml — so the two identities must be the same user, for a
+// non-default userName just as much as for "admin".
+func TestPasswordCloudsYAMLIdentityMatchesUserImportFilter(t *testing.T) {
+	for _, userName := range []string{"", "admin", "brownfield-admin"} {
+		t.Run("userName="+userName, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			s := korcTestScheme(t)
+			cp := korcExternalControlPlane()
+			cp.Spec.KORC.AdminCredential.UserName = userName
+			c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+			r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+			imports, err := r.ensureKORCAdminImports(context.Background(), cp,
+				orcv1alpha1.CloudCredentialsReference{SecretName: "k-orc-clouds-yaml", CloudName: "admin"})
+			g.Expect(err).NotTo(HaveOccurred())
+
+			var doc struct {
+				Clouds map[string]struct {
+					Auth struct {
+						Username string `json:"username"`
+					} `json:"auth"`
+				} `json:"clouds"`
+			}
+			g.Expect(yaml.Unmarshal([]byte(buildPasswordCloudsYAML(cp, testAdminPassword)), &doc)).To(Succeed())
+			g.Expect(doc.Clouds).To(HaveLen(1))
+
+			var username string
+			for _, cloud := range doc.Clouds {
+				username = cloud.Auth.Username
+			}
+			g.Expect(username).NotTo(BeEmpty())
+			g.Expect(username).To(Equal(string(*imports.user.Spec.Import.Filter.Name)),
+				"Keystone only mints an application credential for the token's own user: "+
+					"the clouds.yaml username and the admin User import filter must name the same user")
+		})
+	}
+}
+
 // TestAdminUserRef_IsControlPlaneScoped locks in that the K-ORC User CR name the
 // admin ApplicationCredential references is scoped by cp.Name,
 // mirroring adminDomainRef, so two ControlPlanes never collide on a shared "admin"

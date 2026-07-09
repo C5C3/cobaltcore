@@ -70,10 +70,37 @@ func korcRegion(cp *c5c3v1alpha1.ControlPlane) string {
 	return cmp.Or(cp.Spec.Region, defaultRegion)
 }
 
+// korcCloudName resolves the clouds.yaml mapping key BOTH builders render,
+// defaulting to DefaultCloudName for a webhook-bypassed CR that reached the
+// reconciler with the field unset.
+//
+// It must be the single source of that key: the password document mints the
+// credential, the app-credential document replaces it, and everything downstream
+// resolves the SAME name — the ApplicationCredential's importCredRef/acCredRef
+// (reconcile_korc.go) and the catalog Service/Endpoint CRs (reconcile_catalog.go)
+// all pass CloudCredentialsRef.CloudName. A builder that renders a different key
+// yields a document whose only cloud no consumer looks up, so K-ORC authenticates
+// against nothing — and because K-ORC swallows the resulting list failures, the
+// Domain/User imports hang on "Waiting for OpenStack resource to be created
+// externally" rather than failing loud.
+//
+// QUOTED CLOUD KEY: cloudName is the only free-form spec string rendered into a
+// YAML STRUCTURE position (a mapping key), and its schema carries no pattern, no
+// maxLength and no enum. Rendered raw, "- x" turns the mapping into a sequence
+// item, "*a" is parsed as an alias, and a multi-line value injects arbitrary
+// sibling keys — including a replacement auth_url — so the credentials document
+// either fails to parse or points somewhere else entirely. Both builders emit it
+// with %q, a quoted scalar that cannot escape its position. endpoint_type stays
+// unquoted because the apiserver enforces its enum.
+func korcCloudName(cp *c5c3v1alpha1.ControlPlane) string {
+	return cmp.Or(cp.Spec.KORC.AdminCredential.CloudCredentialsRef.CloudName, c5c3v1alpha1.DefaultCloudName)
+}
+
 // buildAppCredCloudsYAML assembles the application-credential clouds.yaml the
 // control plane authenticates K-ORC with after minting: the credential id comes
-// from the minted AC, the secret from the generated "value", and the auth_url and
-// endpoint_type from the mode-aware resolvers (korcAuthURL, korcEndpointType).
+// from the minted AC, the secret from the generated "value", and the cloud key,
+// auth_url and endpoint_type from the mode-aware resolvers (korcCloudName,
+// korcAuthURL, korcEndpointType).
 //
 // CRITICAL (endpoint_type, managed mode): gophercloud only uses the auth_url to
 // obtain a token; for every subsequent API call it resolves the endpoint from the
@@ -102,7 +129,7 @@ func korcRegion(cp *c5c3v1alpha1.ControlPlane) string {
 // ignored and the endpoint defaults to "public".
 func buildAppCredCloudsYAML(cp *c5c3v1alpha1.ControlPlane, acID, secret string) string {
 	return fmt.Sprintf(`clouds:
-  admin:
+  %q:
     auth:
       auth_url: %q
       application_credential_id: %q
@@ -111,25 +138,32 @@ func buildAppCredCloudsYAML(cp *c5c3v1alpha1.ControlPlane, acID, secret string) 
     region_name: %q
     endpoint_type: %s
     identity_api_version: 3
-`, korcAuthURL(cp), acID, secret, korcRegion(cp), korcEndpointType(cp))
+`, korcCloudName(cp), korcAuthURL(cp), acID, secret, korcRegion(cp), korcEndpointType(cp))
 }
 
 // buildPasswordCloudsYAML assembles the password-based clouds.yaml the admin
 // ApplicationCredential authenticates with to mint (and, on re-mint, revoke) the
-// Keystone credential. The cloud key matches the CloudCredentialsRef.CloudName;
-// auth_url, endpoint_type and region_name come from the mode-aware resolvers.
+// Keystone credential. The cloud key, auth_url, endpoint_type and region_name come
+// from the mode-aware resolvers (korcCloudName, korcAuthURL, korcEndpointType,
+// korcRegion), and the three admin identities from spec.korc.adminCredential
+// (adminUserName, adminProjectName, adminDomainName — the single domain feeds BOTH
+// domain keys).
 //
 // In MANAGED mode it mirrors the bootstrap seed
 // (deploy/openbao/bootstrap/write-bootstrap-secrets.sh) so the in-cluster and
 // operator-owned credentials are byte-compatible. External mode has no shell seed
 // at all — the operator-owned document is the only one.
+//
+// SAME-USER CONSTRAINT: Keystone's default policy allows creating an application
+// credential only for the token's OWN user, so the `username` rendered here and
+// the admin User import the AC's UserRef resolves to MUST be the same OpenStack
+// user. Both derive from adminUserName; see its doc comment.
+//
+// The cloud key is quoted for the reason korcCloudName documents.
 func buildPasswordCloudsYAML(cp *c5c3v1alpha1.ControlPlane, password string) string {
-	cloudName := cp.Spec.KORC.AdminCredential.CloudCredentialsRef.CloudName
-	if cloudName == "" {
-		cloudName = c5c3v1alpha1.DefaultCloudName
-	}
+	domain := adminDomainName(cp)
 	return fmt.Sprintf(`clouds:
-  %s:
+  %q:
     auth:
       auth_url: %q
       username: %q
@@ -140,7 +174,7 @@ func buildPasswordCloudsYAML(cp *c5c3v1alpha1.ControlPlane, password string) str
     region_name: %q
     endpoint_type: %s
     identity_api_version: 3
-`, cloudName, korcAuthURL(cp), korcAdminUsername, password,
-		korcAdminUsername, korcAdminDomainName, korcAdminDomainName,
+`, korcCloudName(cp), korcAuthURL(cp), adminUserName(cp), password,
+		adminProjectName(cp), domain, domain,
 		korcRegion(cp), korcEndpointType(cp))
 }

@@ -5,6 +5,7 @@
 package controller
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"time"
@@ -17,24 +18,54 @@ import (
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 )
 
-// korcAdminUsername / korcAdminDomainName identify the OpenStack admin user and
-// its domain that the Keystone bootstrap creates; the c5c3-operator imports them
-// into K-ORC (unmanaged) rather than creating them.
-const (
-	korcAdminUsername   = "admin"
-	korcAdminDomainName = "Default"
-)
+// adminUserName / adminProjectName / adminDomainName resolve the three OpenStack
+// admin identities the control plane authenticates as, from
+// spec.korc.adminCredential. Each falls back to the constant the defaulting
+// webhook would have materialized, so a webhook-bypassed CR still resolves to the
+// identities a stock Keystone bootstrap creates ("admin"/"admin"/"Default")
+// rather than to an empty filter that would import the wrong resource.
+//
+// They are consumed in exactly two places, and that pairing is a HARD Keystone
+// constraint rather than a convenience: buildPasswordCloudsYAML renders
+// adminUserName as the clouds.yaml `username`, and ensureKORCAdminImports uses the
+// same value as the admin User import filter the ApplicationCredential's UserRef
+// resolves to. Keystone's default policy allows creating an application credential
+// only for the TOKEN'S OWN user — even an admin token is refused (403,
+// identity:create_application_credential) for another user — so the authenticating
+// identity and the AC's owner must be one and the same user.
+// TestPasswordCloudsYAMLIdentityMatchesUserImportFilter locks that in.
+func adminUserName(cp *c5c3v1alpha1.ControlPlane) string {
+	return cmp.Or(cp.Spec.KORC.AdminCredential.UserName, c5c3v1alpha1.DefaultAdminUserName)
+}
+
+// adminProjectName resolves the OpenStack admin project name (clouds.yaml
+// `project_name`).
+func adminProjectName(cp *c5c3v1alpha1.ControlPlane) string {
+	return cmp.Or(cp.Spec.KORC.AdminCredential.ProjectName, c5c3v1alpha1.DefaultAdminProjectName)
+}
+
+// adminDomainName resolves the OpenStack admin domain name. Phase-1 nuance: the
+// single value feeds BOTH user_domain_name and project_domain_name in the
+// generated clouds.yaml as well as the admin Domain import filter, so the admin
+// user and project must live in the same domain.
+func adminDomainName(cp *c5c3v1alpha1.ControlPlane) string {
+	return cmp.Or(cp.Spec.KORC.AdminCredential.DomainName, c5c3v1alpha1.DefaultAdminDomainName)
+}
 
 // adminUserRef returns the Kubernetes metadata.name of the imported K-ORC User
 // CR the admin application credential is associated with. AdminCredentialSpec has
 // no UserRef field, but K-ORC's ApplicationCredentialResourceSpec.UserRef is
 // REQUIRED, so we derive a deterministic name scoped by cp.Name (mirroring
 // adminDomainRef) — this way two ControlPlanes in one namespace produce DISTINCT
-// User objects rather than colliding on a shared name. The
-// inner OpenStack username the import resolves to is still "admin": it is set
-// independently via Spec.Import.Filter.Name = OpenStackName(korcAdminUsername) in
-// ensureKORCAdminImports. The matching User CR is provisioned there as an
-// unmanaged import, so the reference always resolves.
+// User objects rather than colliding on a shared name.
+//
+// The Kubernetes CR name is a stable handle and is deliberately NOT derived from
+// the configurable identity: the inner OpenStack username the import resolves to
+// is set independently via Spec.Import.Filter.Name = OpenStackName(adminUserName)
+// in ensureKORCAdminImports. Editing spec.korc.adminCredential.userName therefore
+// updates the filter in place; K-ORC imports resolve once, so the already-resolved
+// id is not re-resolved and the mismatch surfaces as KORCReady=False/
+// CredentialDrift rather than silently repointing the credential.
 func adminUserRef(cp *c5c3v1alpha1.ControlPlane) string {
 	return fmt.Sprintf("%s-user-admin", cp.Name)
 }
@@ -118,7 +149,7 @@ func (r *ControlPlaneReconciler) ensureKORCAdminImports(ctx context.Context, cp 
 		domain.Spec.ManagementPolicy = orcv1alpha1.ManagementPolicyUnmanaged
 		domain.Spec.CloudCredentialsRef = credRef
 		domain.Spec.Import = &orcv1alpha1.DomainImport{
-			Filter: &orcv1alpha1.DomainFilter{Name: ptr.To(orcv1alpha1.KeystoneName(korcAdminDomainName))},
+			Filter: &orcv1alpha1.DomainFilter{Name: ptr.To(orcv1alpha1.KeystoneName(adminDomainName(cp)))},
 		}
 		return controllerutil.SetControllerReference(cp, domain, r.Scheme)
 	}); err != nil {
@@ -131,9 +162,12 @@ func (r *ControlPlaneReconciler) ensureKORCAdminImports(ctx context.Context, cp 
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, user, func() error {
 		user.Spec.ManagementPolicy = orcv1alpha1.ManagementPolicyUnmanaged
 		user.Spec.CloudCredentialsRef = credRef
+		// The filter name MUST be the same identity buildPasswordCloudsYAML renders
+		// as `username`: Keystone's default policy only lets a token mint an
+		// application credential for its own user, and this User is the AC's UserRef.
 		user.Spec.Import = &orcv1alpha1.UserImport{
 			Filter: &orcv1alpha1.UserFilter{
-				Name:      ptr.To(orcv1alpha1.OpenStackName(korcAdminUsername)),
+				Name:      ptr.To(orcv1alpha1.OpenStackName(adminUserName(cp))),
 				DomainRef: ptr.To(orcv1alpha1.KubernetesNameRef(adminDomainRef(cp))),
 			},
 		}
