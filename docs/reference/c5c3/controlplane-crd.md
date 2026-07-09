@@ -337,6 +337,38 @@ validating webhook is bypassed) and mirrored by the validating webhook; see
 | `rotationInterval` | `*metav1.Duration` | No | `nil` | Overrides the Fernet / credential-key rotation interval the reconciler derives for the projected Keystone CR. When `nil`, the reconciler derives a default schedule. When set, the duration is converted to a cron expression and applied to both `fernet.rotationSchedule` and `credentialKeys.rotationSchedule` on the projected Keystone CR. An unconvertible interval (not a positive whole number of days) is **rejected at admission** by the validating webhook; if the webhook is bypassed, the reconciler surfaces `KeystoneReady=False` with reason `InvalidRotationInterval` and returns the error so the reconcile chain stops and requeues with backoff. |
 | `gateway` | [`*commonv1.GatewaySpec`](#gatewayspec) | No | `nil` | Exposes the projected Keystone API externally via a Gateway API HTTPRoute. When `nil`, no HTTPRoute is projected and the Keystone API is reachable in-cluster only (its ClusterIP Service). When set, the reconciler projects it onto the Keystone CR's `spec.gateway`, so the Keystone operator attaches an HTTPRoute to the referenced Gateway. When a `gateway` is set its `hostname` must be non-empty — enforced at admission by the validating webhook (see [Validation Rules](#validation-rules)). |
 | `publicEndpoint` | `string` | No | `""` | Externally routable Keystone identity endpoint URL (e.g. `https://keystone.example.com/v3`). Projected into the Keystone bootstrap (`--bootstrap-public-url`) and used for the K-ORC identity catalog Endpoint, so external clients resolve the same URL Keystone advertises. When set, it must be an HTTP(S) URL (`+kubebuilder:validation:Pattern=^https?://`), so a malformed endpoint fails at admission rather than wedging the projected Keystone CR. When empty and `gateway` is set, the reconciler derives `https://{gateway.hostname}/v3` (the default-443 form); set it explicitly when the externally reachable port differs (e.g. a kind host-port mapping like `:8443`). |
+| `federationProxyImage` | [`*commonv1.ImageSpec`](../keystone/keystone-crd.md#imagespec) | No | `nil` | Overrides the `mod_auth_openidc` sidecar image projected onto the Keystone child's `spec.federation.proxyImage`. When `nil` the reconciler projects `ghcr.io/c5c3/keystone-federation-proxy:latest`. That default is a **mutable tag**: every node re-pulls it on each pod start, and a locally built sidecar cannot be exercised. Override it with a digest-carrying `ImageSpec` for the immutable pin published images are expected to carry. Inert until a federation-typed `KeystoneIdentityBackend` attaches. Forbidden in External mode (CEL + webhook). |
+
+---
+
+## ServiceHorizonSpec
+
+A curated local subset of the knobs the ControlPlane exposes for the Horizon
+dashboard, mirroring `ServiceKeystoneSpec`. The reconciler projects it into a
+Horizon CR; the cache and the Keystone endpoint of that child are derived from
+the ControlPlane rather than set here.
+
+Forbidden entirely when `services.keystone.mode` is `External` (the dashboard
+needs its own External-mode design), so — unlike `ServiceKeystoneSpec` — none of
+its fields carry per-field External-mode forbid-rules.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `replicas` | `*int32` | No | `nil` | Overrides the number of dashboard replicas. When `nil` the reconciler applies the Horizon operator's own default (3). Minimum 1. |
+| `image` | [`*commonv1.ImageSpec`](../keystone/keystone-crd.md#imagespec) | No | `nil` | Overrides the Horizon container image. When `nil` the reconciler derives `ghcr.io/c5c3/horizon:{spec.openStackRelease}`. |
+| `gateway` | [`*commonv1.GatewaySpec`](#gatewayspec) | No | `nil` | Exposes the projected dashboard externally via a Gateway API HTTPRoute. When `nil` the dashboard is reachable in-cluster only. |
+| `secretKeyRef` | [`*commonv1.SecretRefSpec`](../keystone/keystone-crd.md#secretrefspec) | No | `nil` | Overrides the Secret holding the Django `SECRET_KEY` the dashboard replicas share. When `nil` the reconciler defaults to the kind-infrastructure shim Secret `horizon-secret-key`, which is pinned to the **default** ControlPlane identity — multi-ControlPlane deployments MUST set this explicitly. |
+| `publicEndpoint` | `string` | No | `""` | The **browser-observed** dashboard base URL, without a trailing slash and **including a non-default port** (e.g. `https://horizon.example.com:8443`). The reconciler derives the WebSSO origin from it (`publicEndpoint + "/auth/websso/"`) and projects that onto the Keystone child's `spec.federation.trustedDashboards`. Keystone matches the origin the dashboard sends verbatim, so the value must reproduce exactly what the browser's address bar shows. When empty and `gateway` is set, the reconciler derives `https://{gateway.hostname}` (the default-443 form). Must match `^https?://`, parse with a host, and be at most 499 characters — the Keystone child's 512-character bound on `trustedDashboards[]` minus the 13 characters `/auth/websso/` appends. |
+
+> **`publicEndpoint` and `gateway.hostname` must name the same host.** Django
+> derives the origin it sends from the request's `Host` header — i.e. from
+> `gateway.hostname`, not from this field. A `publicEndpoint` whose host differs
+> produces an origin Keystone will reject, so whenever a `gateway` is configured
+> the validating webhook rejects the ControlPlane instead. The **port** may still
+> differ, since Gateway API hostnames carry none. Behind a gateway the scheme
+> must be `https`: the listener terminates TLS, and Keystone POSTs the unscoped
+> WebSSO token to this origin. See the
+> [End-to-End SSO guide](../../guides/end-to-end-sso.md).
 
 ---
 
@@ -767,7 +799,8 @@ Keystone discipline:
 | Field | Rule |
 | --- | --- |
 | `spec.openStackRelease` | Pattern `^\d{4}\.\d$` |
-| `spec.services.keystone.publicEndpoint` | Pattern `^https?://` |
+| `spec.services.keystone.publicEndpoint` | Pattern `^https?://`; MaxLength 512 (the Horizon child's bound on `websso.keystoneURL`, which this value is projected onto) |
+| `spec.services.horizon.publicEndpoint` | Pattern `^https?://`; MaxLength 499 (the Keystone child's 512-character bound on `trustedDashboards[]` minus `/auth/websso/`) |
 | `spec.services.keystone.mode` | Enum: `Managed`, `External`; schema default `Managed` |
 | `spec.services.keystone.external.authURL` | Pattern `^https?://` |
 | `spec.services.keystone.external.endpointType` | Enum: `public`, `internal`, `admin`; schema default `public` |
@@ -790,7 +823,7 @@ Keystone discipline:
 | `spec.globalPolicyOverrides`, `spec.services.keystone.policyOverrides` (CEL) | `!has(self.rules) \|\| self.rules.all(k, size(self.rules[k]) > 0)` → "policy rule value must not be empty" |
 | `spec.services.keystone` (CEL) | `mode == 'External'` ⇒ `has(self.external)` → "external is required when services.keystone.mode is External" |
 | `spec.services.keystone` (CEL) | `has(self.external)` ⇒ `mode == 'External'` → "external may only be set when services.keystone.mode is External" |
-| `spec.services.keystone` (CEL) | `mode == 'External'` ⇒ each managed-only field (`replicas`, `image`, `policyOverrides`, `rotationInterval`, `gateway`, `publicEndpoint`) absent → "services.keystone.\<field\> is forbidden when services.keystone.mode is External" (one rule per field) |
+| `spec.services.keystone` (CEL) | `mode == 'External'` ⇒ each managed-only field (`replicas`, `image`, `policyOverrides`, `rotationInterval`, `gateway`, `publicEndpoint`, `federationProxyImage`) absent → "services.keystone.\<field\> is forbidden when services.keystone.mode is External" (one rule per field) |
 
 ### Validating-webhook rules
 
@@ -812,7 +845,12 @@ short-circuit on the first error.
 | External block required | `spec.services.keystone.external` | `field.Required` | `mode: External` but `external` unset. Defense-in-depth mirror of the CEL rule. |
 | External authURL required/URL | `spec.services.keystone.external.authURL` | `field.Required` / `field.Invalid` | In External mode, `authURL` empty (Required) or not matching `^https?://` (Invalid). Mirrors the CRD required/pattern markers. |
 | External caBundle name required | `spec.services.keystone.external.caBundleSecretRef.name` | `field.Required` | `caBundleSecretRef` set with an empty `name`. Mirrors the shared `SecretRefSpec` MinLength marker. |
-| Managed-only field forbidden in External mode | `spec.services.keystone.{replicas,image,policyOverrides,rotationInterval,gateway,publicEndpoint}` | `field.Forbidden` | The field is set while `mode: External`. Defense-in-depth mirror of the per-field CEL rules. |
+| Managed-only field forbidden in External mode | `spec.services.keystone.{replicas,image,policyOverrides,rotationInterval,gateway,publicEndpoint,federationProxyImage}` | `field.Forbidden` | The field is set while `mode: External`. Defense-in-depth mirror of the per-field CEL rules. |
+| Federation proxy image resolvable | `spec.services.keystone.federationProxyImage` | `field.Required` / `field.Invalid` | Empty `repository`, or neither/both of `tag` and `digest`. Surfaces on the ControlPlane the operator edits rather than as an opaque `KeystoneProjectionRejected` condition on the child. |
+| Dashboard public endpoint is a URL | `spec.services.horizon.publicEndpoint` | `field.Invalid` | Not an absolute HTTP(S) URL with a host. Keystone matches the derived WebSSO origin verbatim, so an unusable endpoint could never match any dashboard. |
+| Dashboard public endpoint is a bare origin | `spec.services.horizon.publicEndpoint` | `field.Invalid` | Carries a path, query, or fragment (a single trailing `/` is trimmed and allowed). The `^https?://` pattern anchors only the prefix, so `https://horizon.example.com?utm=1` is schema-legal and would render the trusted origin `https://horizon.example.com?utm=1/auth/websso/` — accepted by Keystone, matched by nothing. **Webhook-only.** |
+| Dashboard public endpoint agrees with the gateway | `spec.services.horizon.publicEndpoint` | `field.Invalid` | With `services.horizon.gateway` set: the scheme is not `https` (the listener terminates TLS, and Keystone POSTs the unscoped WebSSO token to this origin), or its host differs from `gateway.hostname` (Django derives the origin it sends from the request `Host` header). The port may differ. **Cross-field, webhook-only.** |
+| Gateway hostname is a usable DNS name | `spec.services.{keystone,horizon}.gateway.hostname` | `field.Invalid` | A wildcard, an embedded port, a path, a scheme, a control character, or over 253 characters. Each shape either breaks the browser-facing origins derived from the hostname or overruns the children's own `MaxLength` markers on those origins. |
 | External block forbidden in non-External mode | `spec.services.keystone.external` | `field.Forbidden` | `external` set while `mode` is not `External`. Defense-in-depth mirror of the CEL rule. |
 | Infrastructure forbidden in External mode | `spec.infrastructure` | `field.Forbidden` | `spec.infrastructure` set while `mode: External`. **Cross-field, webhook-only** — CEL cannot span `spec.infrastructure` and `spec.services.keystone` (phase 2 relaxes this to optional). |
 | Horizon forbidden in External mode | `spec.services.horizon` | `field.Forbidden` | `services.horizon` set while `mode: External` (P2 — Horizon needs its own External-mode design). **Cross-field, webhook-only.** |

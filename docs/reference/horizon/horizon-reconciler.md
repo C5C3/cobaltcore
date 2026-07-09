@@ -25,7 +25,7 @@ Secrets ──► Config ──► Deployment ──► (prune) ──► ┬─
 | Step | What it does | Condition |
 | --- | --- | --- |
 | Secrets | Gates on the OpenBao ClusterSecretStore and the ESO-synced `SECRET_KEY` Secret; digests the key material for the rollout annotation | `SecretsReady` |
-| Config | Renders `local_settings.py` (signed-cookie sessions, `CACHES`, `OPENSTACK_KEYSTONE_URL`, `OPENSTACK_ENDPOINT_TYPE = "internalURL"`, `LOGGING`, offline-compression settings, merged `extraConfig`) into an immutable content-addressed ConfigMap | `ConfigReady` |
+| Config | Renders `local_settings.py` (signed-cookie sessions, `CACHES`, `OPENSTACK_KEYSTONE_URL`, `OPENSTACK_ENDPOINT_TYPE = "internalURL"`, `LOGGING`, offline-compression settings, the `WEBSSO_*` / `OPENSTACK_KEYSTONE_MULTIDOMAIN_*` blocks, merged `extraConfig`) into an immutable content-addressed ConfigMap | `ConfigReady` |
 | Deployment | Ensures the uWSGI Deployment (login-page readiness/startup probes, `HORIZON_SECRET_KEY` env var, secret-key-hash pod annotation), the Service (port 8080), and the PDB; sets `status.endpoint` | `DeploymentReady` |
 | (prune) | Uninstrumented retention sweep of historical config ConfigMaps (retain 3 + current); failures flip `ConfigReady` |  |
 | HTTPRoute | Full `spec.gateway` lifecycle; reflects the Gateway's Accepted condition | `HTTPRouteReady` |
@@ -76,3 +76,37 @@ a periodic requeue. The HTTPRoute watch is registered only when the Gateway
 API CRD is installed; without it, `spec.gateway` surfaces
 `HTTPRouteReady=False` with reason `GatewayAPINotInstalled` instead of
 crashing the controller.
+
+## WebSSO and multi-domain rendering
+
+`reconcileConfig` renders `spec.websso` and `spec.multiDomain` into the
+`WEBSSO_*` and `OPENSTACK_KEYSTONE_MULTIDOMAIN_*` Django settings
+(`webSSOSettings` / `multiDomainSettings` in `reconcile_config.go`).
+
+A **nil or disabled** block emits nothing at all, so a CR that never opts into
+federated login renders byte-identically to the pre-websso operator — the same
+convention the Keystone reconciler uses for a nil federation projection. Empty
+optional settings are omitted rather than rendered as empty values: an empty
+`WEBSSO_IDP_MAPPING` dict or `WEBSSO_KEYSTONE_URL` string would each override an
+upstream default with something meaningless.
+
+Two settings are operator-pinned and are not part of the typed surface:
+
+- `WEBSSO_USE_HTTP_REFERER = False`, because `spec.keystoneEndpoint` is by
+  contract the cluster-local Service URL. With the upstream default (`True`)
+  `openstack_auth` would validate the returned token against the external
+  gateway URL derived from the browser's `Referer`, resolved server-side from
+  inside the pod.
+- `SECURE_PROXY_SSL_HEADER = ["HTTP_X_FORWARDED_PROTO", "https"]`, rendered by
+  `defaultSettings` when `spec.gateway` is set. A Gateway terminates TLS and
+  forwards plain HTTP, so Django's `request.is_secure()` would otherwise be
+  false and the origin it sends Keystone (`build_absolute_uri("/auth/websso/")`)
+  would carry an `http://` scheme that no `https://` `trusted_dashboard` entry
+  matches. Gating on the Gateway is what makes trusting the header safe: Envoy
+  overwrites `X-Forwarded-Proto` on ingress, so a client cannot spoof it through
+  the proxy.
+
+`spec.extraConfig` still wins the render-time merge for every setting, so a CR
+that bypassed the validating webhook keeps the escape hatch. The webhook rejects
+declaring a setting in **both** the typed block and `extraConfig`, since the
+override would silently drop the typed block.

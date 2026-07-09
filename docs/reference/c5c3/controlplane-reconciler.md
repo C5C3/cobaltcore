@@ -661,6 +661,32 @@ user's Secret wakes the ControlPlane immediately.
 | ExternalSecret not yet synced | False | `WaitingForAdminPasswordSecret` | requeue 10s |
 | ExternalSecret Ready | True | `AdminPasswordReady` | — |
 
+### Identity-backend watch
+
+`KeystoneIdentityBackend` CRs are authored by the operator, not projected by the
+ControlPlane, so they carry no ControlPlane owner reference an `Owns()` could
+match. `SetupWithManager` therefore registers a
+`Watches(&KeystoneIdentityBackend{}, ...)` bound to
+`identityBackendToControlPlaneMapper`, which enqueues the ControlPlane whose
+`keystoneName(cp)` equals the backend's `keystoneRef.name`. A backend attached
+to a hand-rolled Keystone beside a ControlPlane therefore never wakes it.
+
+`listIdentityBackends` resolves a ControlPlane's backends with a cache-backed
+`List` in `childNamespace(cp)` and the same `keystoneRef.name` filter applied in
+memory — the set holds one backend per identity provider plus one per LDAP
+domain. Backends carrying a `deletionTimestamp` are dropped: a backend's own
+`reconcileDelete` never demotes `Ready` while it waits for de-projection, so a
+Terminating backend would otherwise keep offering an SSO choice whose
+Keystone-side federation objects are being torn down — and would collide with the
+same-named replacement its webhook admits during teardown.
+
+RBAC is **read-only** (`get;list;watch`) in both the kubebuilder marker and the
+shared Helm rules helper: the reconciler never writes a backend.
+
+Attaching, detaching, or a backend reaching `Ready` re-projects the Horizon
+websso choices and the Keystone `trusted_dashboard` immediately, without waiting
+for a periodic resync.
+
 ### reconcileKeystone
 
 | Aspect | Value |
@@ -690,6 +716,17 @@ the ControlPlane provisioned:
   Keystone and K-ORC agree on the admin-password source) — and the region is
   `cp.Spec.Region`.
 - **Replicas:** copied from `spec.services.keystone.replicas` when set.
+- **Federation:** `spec.federation.proxyImage` is the
+  `spec.services.keystone.federationProxyImage` override when set, else
+  `ghcr.io/c5c3/keystone-federation-proxy:latest`;
+  `spec.federation.trustedDashboards` is the ControlPlane's own dashboard origin
+  (`horizonPublicEndpoint(cp) + "/auth/websso/"`), or `nil` when no dashboard is
+  externally reachable. Both are assigned unconditionally, so clearing the
+  override or the horizon block reverts the child. The origin is derived
+  **top-down from `cp.Spec`**, never from the Horizon child's status, so this
+  projection carries no ordering dependency on `reconcileHorizon` (which is
+  gated on `KeystoneReady` and therefore runs strictly after it). Both fields
+  are inert until a federation backend attaches.
 - **Policy:** `policy.MergePolicies(cp.Spec.GlobalPolicyOverrides, cp.Spec.Services.Keystone.PolicyOverrides)`
   (the shared `internal/common/policy` helper) merges the global base with
   per-service overrides (per-service wins on conflict).
@@ -763,6 +800,45 @@ services:
 - **Replicas:** `commonv1.DefaultReplicas`, overridden by
   `spec.services.horizon.replicas` when set (assigned unconditionally so clearing
   the field reverts the child to the default instead of pinning a lost update).
+- **WebSSO:** projected from the **Ready** OIDC `KeystoneIdentityBackend` CRs
+  attached to the Keystone child (see
+  [Identity-backend watch](#identity-backend-watch)). One choice per Ready
+  backend, keyed `{identityProvider}_{protocol}` (truncated to a digest-suffixed
+  64 characters when the two names together exceed the Horizon CRD's bound on
+  `choices[].id`), with the local-credentials fallback leading the list and
+  preselected; `keystoneURL` is `keystonePublicEndpoint(cp)` — the
+  **browser-facing** endpoint, because the browser follows the SSO redirect.
+  At most 16 federated choices are projected (`maxProjectedFederationChoices`);
+  the excess is dropped and logged rather than rejected by the API server as a
+  `choices`/`idpMapping` overflow that would wedge every later Horizon change.
+  `nil` when no OIDC backend is **attached**, so a choice never appears for a
+  backend whose federation objects are not provisioned yet — and `nil` too when
+  the hand-off could not complete anyway: no trusted dashboard origin
+  (`trustedDashboards(cp)`) means Keystone bounces the browser *after* the user
+  has entered their corporate credentials, and no `keystonePublicEndpoint(cp)`
+  means the redirect targets a cluster-local DNS name the browser cannot
+  resolve. Both are logged.
+- **MultiDomain:** `enabled` with `defaultDomain: Default` once any LDAP backend
+  is Ready, so the login form gains a domain field. `domainChoices` /
+  `domainDropdown` are deliberately **not** projected: upstream `openstack_auth`
+  turns the domain field into a select bounded by
+  `OPENSTACK_KEYSTONE_DOMAIN_CHOICES`, and the operator only ever sees the
+  LDAP-backed domains — a dropdown built from them would lock out every user of
+  a domain it cannot enumerate (a SQL-backed domain populated out-of-band, or
+  the domain an OIDC backend targets). `nil` when no LDAP backend is attached.
+- **Detached vs. unhealthy.** Detaching the last backend of a type clears its
+  block, so the login page reverts to local credentials. A backend that is
+  attached but **not Ready** retains the previously-projected block instead
+  (`projectWebSSO` / `projectMultiDomain`): a backend's aggregate `Ready` can
+  drop on a failed observation while the Keystone-side federation objects it
+  provisioned are untouched, so the SSO button keeps working. Rebuilding the
+  block from that view would re-render `local_settings.py`, roll the dashboard
+  Deployment, and roll it back on recovery — twice, for a login page that was
+  never broken. The retention is logged.
+
+A failure to list the backends surfaces as `HorizonReady=False` with reason
+`IdentityBackendsUnavailable` and returns the error so the chain stops — never
+an empty websso block, which would silently remove a working SSO button.
 
 | Path | Status | Reason | Notes |
 | --- | --- | --- | --- |

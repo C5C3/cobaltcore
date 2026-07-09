@@ -23,6 +23,8 @@ chart ships a synced copy (`make sync-crds` / `make verify-crd-sync`).
 | `autoscaling` | `*AutoscalingSpec` | no | HPA bounds and CPU/memory utilization targets |
 | `logging` | `*LoggingSpec` | no | Django `LOGGING` dictConfig derivation: root `level`, `debug`, `perLoggerLevels`. Defaulted to `text`/`INFO`/`debug: false` |
 | `extraConfig` | `map[string]JSON` | no | Free-form Django settings rendered after the operator defaults (user values win). `SECRET_KEY` is rejected by the webhook |
+| `websso` | `*WebSSOSpec` | no | Federated single-sign-on choices on the login page. When nil the operator renders no `WEBSSO_*` settings and the dashboard offers local credentials only. The c5c3 ControlPlane projects this from the federation backends attached to its Keystone child |
+| `multiDomain` | `*MultiDomainSpec` | no | Multi-domain login: the domain field (or dropdown) on the login form, needed when users live in domains other than the default one — typically LDAP-backed. When nil the operator renders no `OPENSTACK_KEYSTONE_MULTIDOMAIN_*` settings |
 
 ### Defaulting and validation
 
@@ -38,6 +40,69 @@ arithmetic, topology-spread selectors, and PriorityClass existence.
 A CEL rule over `extraConfig` keys is not expressible (the API server cannot
 build CEL type information for preserve-unknown-fields map values), so the
 empty-key and `SECRET_KEY` guards are webhook-only.
+
+## WebSSOSpec
+
+Maps onto Horizon's `WEBSSO_*` Django settings. Rendered by the settings
+renderer, so operators never hand-write Python literals into `extraConfig`.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `enabled` | `bool` | no | `false` | Turns the SSO selector on the login page on (`WEBSSO_ENABLED`). When false the remaining fields are inert |
+| `choices` | `[]WebSSOChoice` | no | — | Ordered entries of the "Authenticate using" dropdown (`WEBSSO_CHOICES`); order is preserved verbatim. Required (non-empty) when `enabled` is true. The defaulting webhook **prepends** the local-credentials fallback when no choice carries the id `credentials`, which is what stops enabling SSO from locking out non-federated accounts. Max 17 counts the list *after* that prepend — the 16 federated entries `idpMapping` bounds, plus the fallback — so a list that already declares `credentials` may hold 17 entries and one that does not is bounded at 16. Submitting a 17th without the fallback is rejected by the **defaulting** webhook, because mutating admission runs before schema validation and a prepend would otherwise be rejected on a count you never wrote |
+| `idpMapping` | `map[string]WebSSOIDPTarget` | no | — | Maps a choice id onto the Keystone identity provider and federation protocol (`WEBSSO_IDP_MAPPING`). A choice with no mapping entry is a local login. Every key must name a declared choice. Max 16 |
+| `initialChoice` | `string` | no | `credentials` | Preselects one of `choices` by id (`WEBSSO_INITIAL_CHOICE`). Must name a declared choice |
+| `keystoneURL` | `string` | no | `""` | The **browser-facing** Keystone base URL the SSO redirect is built from (`WEBSSO_KEYSTONE_URL`); matches `^https?://`. It exists because `spec.keystoneEndpoint` is by contract the cluster-local Service URL, consumed server-side — redirecting a browser there would fail to resolve. When empty the setting is omitted and Horizon falls back to `spec.keystoneEndpoint` |
+
+### WebSSOChoice
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | `string` | yes | Submitted as the form's `auth_type` value and referenced by `idpMapping` / `initialChoice`. Matches `^[A-Za-z0-9_.-]+$` (it round-trips through a URL query string) |
+| `label` | `string` | yes | Human-readable text rendered for this choice |
+
+### WebSSOIDPTarget
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `identityProvider` | `string` | yes | The Keystone identity-provider id (the backend's effective `identityProviderName`) |
+| `protocol` | `string` | yes | The Keystone federation protocol id (e.g. `openid`) |
+
+### Operator-pinned WebSSO settings
+
+Two settings are rendered by the operator and are **not** configurable through
+`spec.websso`:
+
+- `WEBSSO_USE_HTTP_REFERER = False`. It defaults to `True` upstream, which makes
+  `openstack_auth` validate the returned token against the Keystone URL derived
+  from the browser's `Referer` — i.e. the external gateway URL, resolved
+  server-side from inside the pod, where it does not reach Keystone. With
+  `False` it validates against `OPENSTACK_KEYSTONE_URL` instead.
+- `SECURE_PROXY_SSL_HEADER = ["HTTP_X_FORWARDED_PROTO", "https"]`, rendered when
+  `spec.gateway` is set. A Gateway terminates TLS and forwards plain HTTP, so
+  without it Django reports `http://` and the origin it sends Keystone never
+  matches an `https://` `trusted_dashboard`. Gating on the Gateway is what makes
+  trusting the header safe: Envoy overwrites `X-Forwarded-Proto` on ingress.
+
+## MultiDomainSpec
+
+Configures the login form's domain handling. Horizon only renders the domain
+dropdown when `domainDropdown` is true **and** `domainChoices` is non-empty;
+with `enabled` alone the form shows a free-text domain field.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `enabled` | `bool` | no | `false` | Turns on multi-domain login (`OPENSTACK_KEYSTONE_MULTIDOMAIN_SUPPORT`) |
+| `defaultDomain` | `string` | no | `Default` | The domain assumed for users who supply none (`OPENSTACK_KEYSTONE_DEFAULT_DOMAIN`). Materialized by the defaulting webhook |
+| `domainDropdown` | `bool` | no | `false` | Replaces the free-text domain field with a select populated from `domainChoices` (`OPENSTACK_KEYSTONE_DOMAIN_DROPDOWN`). Requires `enabled` and a non-empty `domainChoices` |
+| `domainChoices` | `[]DomainChoice` | no | — | Ordered entries of the domain dropdown (`OPENSTACK_KEYSTONE_DOMAIN_CHOICES`). Rendered only when `domainDropdown` is true. Max 32 |
+
+### DomainChoice
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | `string` | yes | The Keystone domain name submitted with the login form |
+| `label` | `string` | yes | Human-readable text rendered for this domain |
 
 ## Status
 

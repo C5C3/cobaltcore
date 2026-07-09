@@ -358,7 +358,7 @@ spec:
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -40 || true
 
-  # ── Steps 5-7: the browser flows, through the gateway ──────────────────
+  # ── Step 5: the browser flows, through the gateway ─────────────────────
   # One script, one in-cluster browser: the login page, the websso round trip,
   # and the LDAP-domain login share a cookie jar the way a real session does.
   - name: browser-sso-round-trip
@@ -464,7 +464,7 @@ spec:
                   hops -= 1
               return url, resp, data
 
-          # ── Step 5: the login page offers the SSO choice AND a domain field.
+          # ── 5a: the login page offers the SSO choice AND a domain field.
           #    Assert BOTH the projected auth_type option and the domain input,
           #    so a page that renders only the local form fails. The field is
           #    free text on purpose: a select bounded by the LDAP-backed domains
@@ -484,7 +484,7 @@ spec:
           assert "sessionid" not in cookies, "no session may exist before logging in"
           print("OK: login page offers the SSO choice and a free-text domain field")
 
-          # ── Step 6: the websso round trip, through the gateway.
+          # ── 5b: the websso round trip, through the gateway.
           #    Horizon derives the origin from the request it serves, and
           #    Keystone matches that origin against trusted_dashboard VERBATIM —
           #    which is why the whole flow has to traverse Envoy.
@@ -526,7 +526,7 @@ spec:
           assert "sessionid" in cookies, "no dashboard session established by the websso hand-off"
           print("OK: federated login established a dashboard session")
 
-          # ── Step 7: LDAP-domain login through the dropdown.
+          # ── 5c: LDAP-domain login through the dropdown.
           #    A fresh domain carries no role assignments and keystone answers
           #    401 for a scope the user holds no role on, so grant professor the
           #    member role first (assignments live in SQL; the directory stays
@@ -606,7 +606,7 @@ spec:
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -40 || true
 
-  # ── Step 8: Detach — both login surfaces disappear ─────────────────────
+  # ── Step 6: Detach — both login surfaces disappear ─────────────────────
   # trustedDashboards SURVIVES: it is derived from services.horizon, not from
   # the backends, so the trust relationship outlives the identity providers.
   - name: detach

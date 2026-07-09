@@ -35,6 +35,7 @@ export default defineConfig({
           { text: 'Multi-Tenant Deployment', link: '/guides/multi-tenant-deployment' },
           { text: 'Attach an LDAP Domain Backend', link: '/guides/ldap-domain-backend' },
           { text: 'Attach an OIDC Federation Backend', link: '/guides/oidc-federation' },
+          { text: 'End-to-End SSO', link: '/guides/end-to-end-sso' },
           { text: 'Enable Keystone Database TLS', link: '/guides/enable-keystone-database-tls' },
           { text: 'Enable Keystone Operator Metrics', link: '/guides/enable-keystone-operator-metrics' },
           { text: 'Enable Keystone Operator NetworkPolicy', link: '/guides/enable-keystone-operator-networkpolicy' },

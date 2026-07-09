@@ -130,6 +130,8 @@ E2E Jobs (pull requests only, depend on build-e2e-images):
                      if: needs.changes.outputs.e2e-prometheus == 'true'
   e2e-controlplane > needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]
                      if: needs.changes.outputs.e2e-controlplane == 'true'
+  e2e-controlplane-sso > needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]
+                     if: needs.changes.outputs.e2e-controlplane == 'true'
   tempest ────────> needs: [changes, build-e2e-images, e2e-infra, e2e-operator, e2e-chaos, e2e-prometheus]
   cleanup-e2e-tags > needs: [build-e2e-images, e2e-operator, e2e-operator-upgrade, e2e-chaos, tempest]
 
@@ -796,6 +798,34 @@ deployment fails the build instead of going green. Like `e2e-prometheus`, the
 job runs with `continue-on-error: false`, and it uses a 60-minute timeout on the
 larger runner because a real MariaDB + Memcached + Keystone + three operators +
 OpenBao + ESO + K-ORC on one node is resource-heavy.
+
+### e2e-controlplane-sso
+
+Runs the `tests/e2e-controlplane-sso/` Chainsaw suite: the end-user SSO
+experience — the Horizon websso projection, the login page's SSO choice and
+domain dropdown, the websso round trip through the gateway, and LDAP-domain
+login. The suite lives outside `tests/e2e/` so the per-CR `e2e-operator` matrix
+leg, which runs `tests/e2e/<operator>/` wholesale, does not sweep it up.
+
+**A sibling job rather than a second suite directory on `e2e-controlplane`.**
+The ControlPlane webhook permits one ControlPlane per namespace, and
+`openstack-gw` sets `allowedRoutes.namespaces.from: Same` (the operators
+deliberately do not manage `ReferenceGrant`), so the two suites can share
+neither the `openstack` namespace nor the Gateway. Each therefore needs its own
+kind cluster.
+
+**Dependencies:** `needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]`
+**Condition:** Runs only when `e2e-controlplane == 'true'`, the upstream
+`build-e2e-images` job succeeded, and no dependency failed or was cancelled.
+
+It mirrors `e2e-controlplane`'s setup with `CONTROLPLANE_NAME: controlplane-sso`
+(so the OpenBao bootstrap seeds the per-CR admin-password and Horizon
+`SECRET_KEY` paths the chain reads) and additionally loads
+`keystone-federation-proxy:dev` into kind, because the suite's ControlPlane CR
+pins `services.keystone.federationProxyImage.tag: dev`. Without that override
+the suite would validate the sidecar already published on `main` rather than the
+one under review — which is why the `e2e_controlplane` path filter also watches
+`images/keystone-federation-proxy/**`.
 
 | Step | Action | Details |
 | --- | --- | --- |
