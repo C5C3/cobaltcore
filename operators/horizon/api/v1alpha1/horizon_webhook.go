@@ -119,7 +119,7 @@ func defaultWebSSO(fldPath *field.Path, websso *WebSSOSpec) *field.Error {
 	}
 	hasCredentials := false
 	for _, c := range websso.Choices {
-		if c.ID == DefaultWebSSOCredentialsChoiceID {
+		if c.ID == DefaultWebSSOLocalChoiceID {
 			hasCredentials = true
 			break
 		}
@@ -129,15 +129,15 @@ func defaultWebSSO(fldPath *field.Path, websso *WebSSOSpec) *field.Error {
 			return field.Invalid(fldPath.Child("choices"), len(websso.Choices),
 				fmt.Sprintf("must have at most %d entries when no choice carries id %q: the local-credentials "+
 					"fallback is prepended, which would grow the list past the %d-item bound",
-					maxWebSSOChoices-1, DefaultWebSSOCredentialsChoiceID, maxWebSSOChoices))
+					maxWebSSOChoices-1, DefaultWebSSOLocalChoiceID, maxWebSSOChoices))
 		}
 		websso.Choices = append([]WebSSOChoice{{
-			ID:    DefaultWebSSOCredentialsChoiceID,
-			Label: DefaultWebSSOCredentialsChoiceLabel,
+			ID:    DefaultWebSSOLocalChoiceID,
+			Label: DefaultWebSSOLocalChoiceLabel,
 		}}, websso.Choices...)
 	}
 	if websso.InitialChoice == "" {
-		websso.InitialChoice = DefaultWebSSOCredentialsChoiceID
+		websso.InitialChoice = DefaultWebSSOLocalChoiceID
 	}
 	return nil
 }

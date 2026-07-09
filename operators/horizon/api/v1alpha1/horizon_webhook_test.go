@@ -392,10 +392,10 @@ func TestDefault_WebSSOPrependsCredentialsChoice(t *testing.T) {
 
 	g.Expect(w.Default(context.Background(), h)).To(gomega.Succeed())
 	g.Expect(h.Spec.WebSSO.Choices).To(gomega.Equal([]WebSSOChoice{
-		{ID: DefaultWebSSOCredentialsChoiceID, Label: DefaultWebSSOCredentialsChoiceLabel},
+		{ID: DefaultWebSSOLocalChoiceID, Label: DefaultWebSSOLocalChoiceLabel},
 		{ID: "keycloak_openid", Label: "Keycloak"},
 	}))
-	g.Expect(h.Spec.WebSSO.InitialChoice).To(gomega.Equal(DefaultWebSSOCredentialsChoiceID))
+	g.Expect(h.Spec.WebSSO.InitialChoice).To(gomega.Equal(DefaultWebSSOLocalChoiceID))
 }
 
 // TestDefault_WebSSOKeepsExplicitCredentialsChoiceAndInitialChoice guards
@@ -409,7 +409,7 @@ func TestDefault_WebSSOKeepsExplicitCredentialsChoiceAndInitialChoice(t *testing
 		Enabled: true,
 		Choices: []WebSSOChoice{
 			{ID: "keycloak_openid", Label: "Keycloak"},
-			{ID: DefaultWebSSOCredentialsChoiceID, Label: "Local"},
+			{ID: DefaultWebSSOLocalChoiceID, Label: "Local"},
 		},
 		InitialChoice: "keycloak_openid",
 	}
@@ -516,7 +516,7 @@ func TestDefault_WebSSORejectsChoicesOverflowingThePrepend(t *testing.T) {
 	h = validHorizon()
 	h.Spec.WebSSO = &WebSSOSpec{
 		Enabled: true,
-		Choices: append([]WebSSOChoice{{ID: DefaultWebSSOCredentialsChoiceID, Label: DefaultWebSSOCredentialsChoiceLabel}},
+		Choices: append([]WebSSOChoice{{ID: DefaultWebSSOLocalChoiceID, Label: DefaultWebSSOLocalChoiceLabel}},
 			choices[1:]...),
 	}
 	g.Expect(w.Default(context.Background(), h)).To(gomega.Succeed())
@@ -527,7 +527,7 @@ func TestDefault_WebSSORejectsChoicesOverflowingThePrepend(t *testing.T) {
 	h.Spec.WebSSO = &WebSSOSpec{Enabled: true, Choices: choices[1:]}
 	g.Expect(w.Default(context.Background(), h)).To(gomega.Succeed())
 	g.Expect(h.Spec.WebSSO.Choices).To(gomega.HaveLen(maxWebSSOChoices))
-	g.Expect(h.Spec.WebSSO.Choices[0].ID).To(gomega.Equal(DefaultWebSSOCredentialsChoiceID))
+	g.Expect(h.Spec.WebSSO.Choices[0].ID).To(gomega.Equal(DefaultWebSSOLocalChoiceID))
 }
 
 // TestValidate_MultiDomainDropdownRequiresChoices covers the dropdown that
@@ -553,11 +553,11 @@ func TestValidate_WebSSOAcceptsFullyMappedBlock(t *testing.T) {
 	h.Spec.WebSSO = &WebSSOSpec{
 		Enabled: true,
 		Choices: []WebSSOChoice{
-			{ID: DefaultWebSSOCredentialsChoiceID, Label: DefaultWebSSOCredentialsChoiceLabel},
+			{ID: DefaultWebSSOLocalChoiceID, Label: DefaultWebSSOLocalChoiceLabel},
 			{ID: "keycloak_openid", Label: "keycloak"},
 		},
 		IDPMapping:    map[string]WebSSOIDPTarget{"keycloak_openid": {IdentityProvider: "keycloak", Protocol: "openid"}},
-		InitialChoice: DefaultWebSSOCredentialsChoiceID,
+		InitialChoice: DefaultWebSSOLocalChoiceID,
 		KeystoneURL:   "https://keystone.127-0-0-1.nip.io/v3",
 	}
 	h.Spec.MultiDomain = &MultiDomainSpec{

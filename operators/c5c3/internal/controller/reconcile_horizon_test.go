@@ -535,13 +535,13 @@ func TestReconcileHorizon_WebSSOProjectedFromReadyFederationBackends(t *testing.
 	g.Expect(h.Spec.WebSSO).NotTo(BeNil())
 	g.Expect(h.Spec.WebSSO.Enabled).To(BeTrue())
 	g.Expect(h.Spec.WebSSO.Choices).To(Equal([]horizonv1alpha1.WebSSOChoice{
-		{ID: horizonv1alpha1.DefaultWebSSOCredentialsChoiceID, Label: horizonv1alpha1.DefaultWebSSOCredentialsChoiceLabel},
+		{ID: horizonv1alpha1.DefaultWebSSOLocalChoiceID, Label: horizonv1alpha1.DefaultWebSSOLocalChoiceLabel},
 		{ID: "keycloak_openid", Label: "keycloak"},
 	}))
 	g.Expect(h.Spec.WebSSO.IDPMapping).To(Equal(map[string]horizonv1alpha1.WebSSOIDPTarget{
 		"keycloak_openid": {IdentityProvider: "keycloak", Protocol: "openid"},
 	}))
-	g.Expect(h.Spec.WebSSO.InitialChoice).To(Equal(horizonv1alpha1.DefaultWebSSOCredentialsChoiceID))
+	g.Expect(h.Spec.WebSSO.InitialChoice).To(Equal(horizonv1alpha1.DefaultWebSSOLocalChoiceID))
 	// The browser follows this redirect, so it must be the external endpoint —
 	// never the cluster-local Service URL projected into keystoneEndpoint.
 	g.Expect(h.Spec.WebSSO.KeystoneURL).To(Equal("https://keystone.127-0-0-1.nip.io/v3"))
@@ -802,7 +802,7 @@ func TestReconcileHorizon_WebSSOCapsFederatedChoices(t *testing.T) {
 	g.Expect(h.Spec.WebSSO.Choices).To(HaveLen(maxProjectedFederationChoices+1),
 		"the local-credentials fallback plus the capped federated choices")
 	g.Expect(h.Spec.WebSSO.IDPMapping).To(HaveLen(maxProjectedFederationChoices))
-	g.Expect(h.Spec.WebSSO.Choices[0].ID).To(Equal(horizonv1alpha1.DefaultWebSSOCredentialsChoiceID))
+	g.Expect(h.Spec.WebSSO.Choices[0].ID).To(Equal(horizonv1alpha1.DefaultWebSSOLocalChoiceID))
 	g.Expect(h.Spec.WebSSO.IDPMapping).To(HaveKey("idp-00_openid"))
 	g.Expect(h.Spec.WebSSO.IDPMapping).NotTo(HaveKey("idp-19_openid"))
 }

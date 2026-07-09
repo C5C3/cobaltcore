@@ -386,8 +386,8 @@ func horizonWebSSO(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, backends 
 	}
 
 	choices := []horizonv1alpha1.WebSSOChoice{{
-		ID:    horizonv1alpha1.DefaultWebSSOCredentialsChoiceID,
-		Label: horizonv1alpha1.DefaultWebSSOCredentialsChoiceLabel,
+		ID:    horizonv1alpha1.DefaultWebSSOLocalChoiceID,
+		Label: horizonv1alpha1.DefaultWebSSOLocalChoiceLabel,
 	}}
 	mapping := make(map[string]horizonv1alpha1.WebSSOIDPTarget, len(federated))
 	for i := range federated {
@@ -407,7 +407,7 @@ func horizonWebSSO(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, backends 
 		Enabled:       true,
 		Choices:       choices,
 		IDPMapping:    mapping,
-		InitialChoice: horizonv1alpha1.DefaultWebSSOCredentialsChoiceID,
+		InitialChoice: horizonv1alpha1.DefaultWebSSOLocalChoiceID,
 		KeystoneURL:   keystoneURL,
 	}
 }

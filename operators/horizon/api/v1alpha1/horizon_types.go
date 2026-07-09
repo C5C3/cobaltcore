@@ -39,15 +39,15 @@ const DefaultSecretKeyKey = "secret-key"
 // alongside the federated ones; without it, enabling SSO would lock out every
 // non-federated account (including the bootstrap admin).
 const (
-	// DefaultWebSSOCredentialsChoiceID is the choice id of the local-credentials
+	// DefaultWebSSOLocalChoiceID is the choice id of the local-credentials
 	// fallback. It is Horizon's own reserved id: openstack_auth treats an
 	// auth_type absent from WEBSSO_IDP_MAPPING as a local login, and
 	// "credentials" is the id upstream documents for it.
-	DefaultWebSSOCredentialsChoiceID = "credentials"
-	// DefaultWebSSOCredentialsChoiceLabel is the label rendered beside the
+	DefaultWebSSOLocalChoiceID = "credentials"
+	// DefaultWebSSOLocalChoiceLabel is the label rendered beside the
 	// local-credentials fallback in the login form's "Authenticate using"
 	// dropdown.
-	DefaultWebSSOCredentialsChoiceLabel = "Keystone Credentials"
+	DefaultWebSSOLocalChoiceLabel = "Keystone Credentials"
 )
 
 // maxWebSSOChoices mirrors the +kubebuilder:validation:MaxItems marker on

@@ -226,13 +226,13 @@ func webssoTestHorizon() *horizonv1alpha1.Horizon {
 	h.Spec.WebSSO = &horizonv1alpha1.WebSSOSpec{
 		Enabled: true,
 		Choices: []horizonv1alpha1.WebSSOChoice{
-			{ID: horizonv1alpha1.DefaultWebSSOCredentialsChoiceID, Label: horizonv1alpha1.DefaultWebSSOCredentialsChoiceLabel},
+			{ID: horizonv1alpha1.DefaultWebSSOLocalChoiceID, Label: horizonv1alpha1.DefaultWebSSOLocalChoiceLabel},
 			{ID: "keycloak_openid", Label: "keycloak"},
 		},
 		IDPMapping: map[string]horizonv1alpha1.WebSSOIDPTarget{
 			"keycloak_openid": {IdentityProvider: "keycloak", Protocol: "openid"},
 		},
-		InitialChoice: horizonv1alpha1.DefaultWebSSOCredentialsChoiceID,
+		InitialChoice: horizonv1alpha1.DefaultWebSSOLocalChoiceID,
 		KeystoneURL:   "https://keystone.127-0-0-1.nip.io/v3",
 	}
 	return h
@@ -314,7 +314,7 @@ func TestRenderLocalSettings_WebSSOOmitsEmptyOptionalSettings(t *testing.T) {
 	h.Spec.WebSSO = &horizonv1alpha1.WebSSOSpec{
 		Enabled: true,
 		Choices: []horizonv1alpha1.WebSSOChoice{
-			{ID: horizonv1alpha1.DefaultWebSSOCredentialsChoiceID, Label: horizonv1alpha1.DefaultWebSSOCredentialsChoiceLabel},
+			{ID: horizonv1alpha1.DefaultWebSSOLocalChoiceID, Label: horizonv1alpha1.DefaultWebSSOLocalChoiceLabel},
 		},
 	}
 

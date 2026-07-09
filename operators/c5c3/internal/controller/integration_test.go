@@ -2282,7 +2282,7 @@ func TestIntegration_FederationBackendWakesReconcileAndProjectsWebSSO(t *testing
 	g.Expect(c.Get(ctx, horizonKey, h)).To(Succeed())
 	g.Expect(h.Spec.WebSSO.Enabled).To(BeTrue())
 	g.Expect(h.Spec.WebSSO.Choices).To(Equal([]horizonv1alpha1.WebSSOChoice{
-		{ID: horizonv1alpha1.DefaultWebSSOCredentialsChoiceID, Label: horizonv1alpha1.DefaultWebSSOCredentialsChoiceLabel},
+		{ID: horizonv1alpha1.DefaultWebSSOLocalChoiceID, Label: horizonv1alpha1.DefaultWebSSOLocalChoiceLabel},
 		{ID: "keycloak_openid", Label: "keycloak"},
 	}))
 	g.Expect(h.Spec.WebSSO.IDPMapping).To(HaveKeyWithValue("keycloak_openid",
