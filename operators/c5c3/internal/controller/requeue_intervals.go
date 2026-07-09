@@ -66,6 +66,20 @@ const (
 	// window is generous so a healthy force-sync is never flagged as stuck.
 	cloudsYamlSyncStuckTimeout = 15 * time.Minute
 
+	// externalImportStallGrace bounds how long an External-mode K-ORC admin
+	// import (Domain/User) may report Available=False on "Waiting for OpenStack
+	// resource to be created externally" before reconcileKORC escalates KORCReady
+	// from the transient "WaitingForApplicationCredential" reason to the alertable
+	// "ImportStalled". In External mode every import target pre-exists by
+	// definition, so a persistent wait is a misconfiguration (a wrong
+	// external.endpointType or spec.region resolving to a different Keystone), not
+	// a resource that is about to appear. Two minutes is deliberately shorter than
+	// remintStallTimeout / orcTeardownStallTimeout (both 5m) — those wait on work
+	// that is genuinely in flight, whereas a resolvable import has nothing to wait
+	// for — while staying generous enough that a slow K-ORC resync is never
+	// flagged.
+	externalImportStallGrace = 2 * time.Minute
+
 	// duplicateControlPlaneRequeueAfter is the backoff a parked duplicate
 	// ControlPlane uses while an older ControlPlane owns its namespace
 	// (defense-in-depth). Deleting the incumbent enqueues no
