@@ -387,3 +387,30 @@ func TestRenderLocalSettings_ExtraConfigOverridesWebSSOChoices(t *testing.T) {
 	g.Expect(rendered).To(ContainSubstring(`WEBSSO_CHOICES = [["custom", "Custom"]]`))
 	g.Expect(rendered).NotTo(ContainSubstring(`["keycloak_openid", "keycloak"]`))
 }
+
+// TestRenderLocalSettings_GatewaySetsSecureProxySSLHeader guards the setting
+// WebSSO depends on: behind a TLS-terminating Gateway the pod sees plain HTTP,
+// so without this Django would announce an "http://" origin that Keystone's
+// verbatim trusted_dashboard match rejects.
+func TestRenderLocalSettings_GatewaySetsSecureProxySSLHeader(t *testing.T) {
+	g := NewGomegaWithT(t)
+	h := testHorizon()
+	h.Spec.Gateway = &horizonv1alpha1.GatewaySpec{
+		Hostname:  "horizon.127-0-0-1.nip.io",
+		ParentRef: horizonv1alpha1.GatewayParentRefSpec{Name: "openstack-gw"},
+	}
+
+	rendered, err := renderLocalSettings(h)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(rendered).To(ContainSubstring(`SECURE_PROXY_SSL_HEADER = ["HTTP_X_FORWARDED_PROTO", "https"]`))
+}
+
+// TestRenderLocalSettings_NoGatewayOmitsSecureProxySSLHeader is the security
+// half: with no Gateway nothing is guaranteed to overwrite X-Forwarded-Proto,
+// so a direct client could forge an https:// scheme.
+func TestRenderLocalSettings_NoGatewayOmitsSecureProxySSLHeader(t *testing.T) {
+	g := NewGomegaWithT(t)
+	rendered, err := renderLocalSettings(testHorizon())
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(rendered).NotTo(ContainSubstring(horizonv1alpha1.SettingSecureProxySSLHeader))
+}

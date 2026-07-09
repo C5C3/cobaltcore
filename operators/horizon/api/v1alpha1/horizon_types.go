@@ -80,6 +80,12 @@ const (
 	SettingMultiDomainDomainChoices  = "OPENSTACK_KEYSTONE_DOMAIN_CHOICES"
 )
 
+// SettingSecureProxySSLHeader is the Django setting that tells the dashboard to
+// derive the request scheme from the X-Forwarded-Proto header a TLS-terminating
+// proxy sets. It is rendered when spec.gateway is configured — see
+// defaultSettings in the reconciler for why WebSSO depends on it.
+const SettingSecureProxySSLHeader = "SECURE_PROXY_SSL_HEADER"
+
 // WebSSOSettingNames and MultiDomainSettingNames enumerate the settings each
 // typed block renders. The validating webhook walks them to reject an
 // extraConfig entry that would silently win the merge and contradict the block.

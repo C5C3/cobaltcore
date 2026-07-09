@@ -142,6 +142,30 @@ func defaultSettings(horizon *horizonv1alpha1.Horizon) (map[string]apiextensions
 		"LOGGING":          djangoLogging(logging),
 	}
 
+	// SECURE_PROXY_SSL_HEADER is rendered when the dashboard is fronted by a
+	// Gateway. The Gateway terminates TLS and forwards plain HTTP to the pod, so
+	// Django's request.is_secure() is False by default and every URL it builds
+	// for itself carries an "http://" scheme.
+	//
+	// WebSSO makes that visible: Horizon sends Keystone the origin it derives
+	// from the request (build_absolute_uri("/auth/websso/")), and Keystone
+	// matches that origin against [federation] trusted_dashboard VERBATIM. An
+	// operator who declares "https://horizon.example.com/auth/websso/" — the URL
+	// the browser actually shows — would have every hand-off rejected, because
+	// the dashboard announced the http:// form.
+	//
+	// Trusting the header is safe precisely because spec.gateway gates it: Envoy
+	// (like every conformant Gateway implementation) overwrites X-Forwarded-Proto
+	// on ingress, so a client cannot spoof it through the proxy. Without a Gateway
+	// the setting is omitted, since nothing is guaranteed to set the header and a
+	// direct client could then forge an https:// scheme.
+	//
+	// It is not part of the websso block: the scheme is a property of the ingress
+	// path, not of federated login, and it stays overridable via spec.extraConfig.
+	if horizon.Spec.Gateway != nil {
+		values[horizonv1alpha1.SettingSecureProxySSLHeader] = []any{"HTTP_X_FORWARDED_PROTO", "https"}
+	}
+
 	maps.Copy(values, webSSOSettings(horizon))
 	maps.Copy(values, multiDomainSettings(horizon))
 
