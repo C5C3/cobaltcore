@@ -277,3 +277,82 @@ func TestAdminPasswordRemoteKeyFor_And_SecretName_DistinctPerControlPlane(t *tes
 		g.Expect(adminPasswordRemoteKeyFor(cp)).NotTo(Equal("keystone-admin"))
 	}
 }
+
+// adminPwExternalControlPlane builds an External-mode ControlPlane: no
+// spec.infrastructure block, and the admin password lives in a user-supplied
+// Secret the operator only ever reads.
+func adminPwExternalControlPlane() *c5c3v1alpha1.ControlPlane {
+	cp := adminPwManagedControlPlane()
+	cp.Spec.Infrastructure = nil
+	cp.Spec.Services.Keystone = &c5c3v1alpha1.ServiceKeystoneSpec{
+		Mode:     c5c3v1alpha1.KeystoneModeExternal,
+		External: &c5c3v1alpha1.ExternalKeystoneSpec{AuthURL: "https://keystone.example.com/v3"},
+	}
+	cp.Spec.KORC.AdminCredential.PasswordSecretRef = commonv1.SecretRefSpec{
+		Name: "external-admin",
+		Key:  "password",
+	}
+	return cp
+}
+
+// TestReconcileAdminPassword_ExternalMode_NoExternalSecret_ReadyTrue asserts the
+// External-mode short-circuit: AdminPasswordReady=True/ExternallyManaged, a
+// message naming both the user Secret and the external endpoint, and no
+// projection. No ClusterSecretStore is seeded, so a still-consulted store gate
+// would flip the condition to SecretStoreNotReady and fail this test.
+func TestReconcileAdminPassword_ExternalMode_NoExternalSecret_ReadyTrue(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := adminPwExternalControlPlane()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	result, err := r.reconcileAdminPassword(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).To(Equal(ctrl.Result{}), "the External short-circuit must not requeue")
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeAdminPasswordReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal(conditionReasonExternallyManaged))
+	g.Expect(cond.Message).To(ContainSubstring(`"external-admin"`),
+		"the message must name the user-supplied admin-password Secret")
+	g.Expect(cond.Message).To(ContainSubstring("https://keystone.example.com/v3"))
+
+	_, getErr := getAdminPwES(t, r, cp)
+	g.Expect(apierrors.IsNotFound(getErr)).To(BeTrue(),
+		"External mode must NOT project an admin-password ExternalSecret")
+}
+
+// TestEffectiveAdminPasswordSecretRef_ExternalModeReturnsUserSuppliedRef pins that
+// the External branch is keyed on the MODE discriminator, not on the database
+// shape. The second case is webhook-impossible on purpose: an External-mode CR
+// carrying a managed Database.ClusterRef. A Database.ClusterRef-keyed
+// implementation would return the operator-owned Secret name there and lose the
+// user's admin password — and with it the hash-driven re-mint input.
+func TestEffectiveAdminPasswordSecretRef_ExternalModeReturnsUserSuppliedRef(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := adminPwExternalControlPlane()
+	g.Expect(effectiveAdminPasswordSecretRef(cp)).
+		To(Equal(commonv1.SecretRefSpec{Name: "external-admin", Key: "password"}))
+
+	withManagedDB := adminPwExternalControlPlane()
+	withManagedDB.Spec.Infrastructure = &c5c3v1alpha1.InfrastructureSpec{
+		Database: commonv1.DatabaseSpec{ClusterRef: &corev1.LocalObjectReference{Name: "openstack-db"}},
+	}
+	g.Expect(effectiveAdminPasswordSecretRef(withManagedDB)).
+		To(Equal(commonv1.SecretRefSpec{Name: "external-admin", Key: "password"}),
+			"the identity mode, not the database shape, must select the External branch")
+}
+
+// TestEffectiveAdminPasswordSecretRef_ManagedUnchanged guards the AC-2 regression
+// contract: a managed CR still resolves to the operator-owned per-CP Secret.
+func TestEffectiveAdminPasswordSecretRef_ManagedUnchanged(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := adminPwManagedControlPlane()
+	g.Expect(effectiveAdminPasswordSecretRef(cp)).
+		To(Equal(commonv1.SecretRefSpec{Name: adminPasswordSecretName(cp), Key: "password"}))
+}

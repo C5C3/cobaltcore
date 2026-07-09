@@ -170,20 +170,15 @@ func TestReconcileKeystone_NotManagedWhenServiceUnset(t *testing.T) {
 }
 
 // TestReconcileKeystone_NilInfrastructureDoesNotPanic exercises the defensive
-// nil-Infrastructure guard. An External-mode ControlPlane omits
-// spec.infrastructure; the pipeline short-circuits at the Infrastructure
-// sub-reconciler before Keystone runs today, but the fixture carries
-// InfrastructureReady=True, so without a local guard the projection's
-// cp.Spec.Infrastructure derefs would panic once the gate is passed. The guard
-// must instead requeue and leave the Infrastructure sub-reconciler to own the
-// External-mode requeue.
+// nil-Infrastructure guard on a NON-External ControlPlane — the webhook-bypass
+// shape, since the validating webhook requires spec.infrastructure outside
+// External mode. The fixture keeps InfrastructureReady=True, so without a local
+// guard the projection's cp.Spec.Infrastructure derefs would panic once the gate
+// is passed. The guard must instead requeue and project no child.
 func TestReconcileKeystone_NilInfrastructureDoesNotPanic(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := keystoneTestScheme(t)
 	cp := keystoneControlPlane()
-	// External keystone mode omits the backing-services block. The fixture keeps
-	// InfrastructureReady=True, so the InfrastructureReady gate would pass and —
-	// without the guard — reach the nil dereference.
 	cp.Spec.Infrastructure = nil
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
@@ -688,4 +683,95 @@ func TestReconcileKeystone_BrownfieldLeavesSuppliedAdminPasswordRef(t *testing.T
 	g.Expect(k.Spec.Bootstrap.AdminPasswordSecretRef.Name).To(Equal("user-supplied-admin"),
 		"brownfield mode must leave the user-supplied admin-password ref untouched")
 	g.Expect(k.Spec.Bootstrap.AdminPasswordSecretRef.Key).To(Equal("pw"))
+}
+
+// keystoneExternalControlPlane builds an External-mode ControlPlane: no
+// spec.infrastructure block, identity managed against a pre-existing Keystone.
+func keystoneExternalControlPlane() *c5c3v1alpha1.ControlPlane {
+	cp := keystoneControlPlane()
+	cp.Spec.Infrastructure = nil
+	cp.Spec.Services.Keystone = &c5c3v1alpha1.ServiceKeystoneSpec{
+		Mode:     c5c3v1alpha1.KeystoneModeExternal,
+		External: &c5c3v1alpha1.ExternalKeystoneSpec{AuthURL: "https://keystone.example.com/v3"},
+	}
+	return cp
+}
+
+// TestReconcileKeystone_ExternalModeNoChildProjected asserts the External-mode
+// short-circuit: KeystoneReady=True/ExternallyManaged, a message naming the
+// external endpoint, no requeue, and provably no Keystone child.
+func TestReconcileKeystone_ExternalModeNoChildProjected(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := keystoneTestScheme(t)
+	cp := keystoneExternalControlPlane()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	res, err := r.reconcileKeystone(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.IsZero()).To(BeTrue(), "the External short-circuit must not requeue")
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeKeystoneReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal(conditionReasonExternallyManaged))
+	g.Expect(cond.Message).To(ContainSubstring("https://keystone.example.com/v3"))
+
+	k := &keystonev1alpha1.Keystone{}
+	key := types.NamespacedName{Name: keystoneName(cp), Namespace: childNamespace(cp)}
+	g.Expect(apierrors.IsNotFound(c.Get(context.Background(), key, k))).To(BeTrue(),
+		"External mode must not project a Keystone child")
+}
+
+// TestReconcileKeystone_ExternalModeReasonDistinctFromNotManaged pins the
+// vocabulary split behaviorally: "identity lives elsewhere" (External) and "there
+// is no identity plane at all" (services.keystone unset) both report
+// KeystoneReady=True, but an operator must be able to tell them apart from the
+// reason alone.
+func TestReconcileKeystone_ExternalModeReasonDistinctFromNotManaged(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := keystoneTestScheme(t)
+
+	external := keystoneExternalControlPlane()
+	unmanaged := keystoneControlPlane()
+	unmanaged.Name = "cp-unmanaged"
+	unmanaged.Spec.Services.Keystone = nil
+
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(external, unmanaged).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileKeystone(context.Background(), external)
+	g.Expect(err).NotTo(HaveOccurred())
+	_, err = r.reconcileKeystone(context.Background(), unmanaged)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	externalCond := conditions.GetCondition(external.Status.Conditions, conditionTypeKeystoneReady)
+	unmanagedCond := conditions.GetCondition(unmanaged.Status.Conditions, conditionTypeKeystoneReady)
+	g.Expect(externalCond.Reason).To(Equal(conditionReasonExternallyManaged))
+	g.Expect(unmanagedCond.Reason).To(Equal("KeystoneNotManaged"))
+	g.Expect(externalCond.Reason).NotTo(Equal(unmanagedCond.Reason))
+}
+
+// TestReconcileKeystone_ExternalModePreservesAnUnexpectedChild covers the
+// destructive edge path. A Managed -> External flip is rejected at admission, so
+// no child can exist here; if one does anyway (a webhook-bypassed CR), the
+// External branch must NOT cascade-delete it — the child's credential/fernet keys
+// are irreplaceable.
+func TestReconcileKeystone_ExternalModePreservesAnUnexpectedChild(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := keystoneTestScheme(t)
+	cp := keystoneExternalControlPlane()
+	child := &keystonev1alpha1.Keystone{
+		ObjectMeta: metav1.ObjectMeta{Name: keystoneName(cp), Namespace: childNamespace(cp)},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, child).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileKeystone(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	k := &keystonev1alpha1.Keystone{}
+	key := types.NamespacedName{Name: keystoneName(cp), Namespace: childNamespace(cp)}
+	g.Expect(c.Get(context.Background(), key, k)).To(Succeed(),
+		"an unexpected pre-existing Keystone child must be preserved, never deleted")
 }

@@ -72,22 +72,35 @@ func adminPasswordExternalSecret(cp *c5c3v1alpha1.ControlPlane) *esov1.ExternalS
 }
 
 // effectiveAdminPasswordSecretRef returns the SecretRef every cp-side admin-password
-// consumer will read. In managed mode (Database.ClusterRef != nil)
-// the operator projects the admin password from OpenBao into the per-ControlPlane
-// Secret named adminPasswordSecretName(cp), so the effective ref points at that
-// Secret's "password" key. In brownfield mode the user supplies their own admin
-// password Secret out-of-band, so the ref is the user-declared
-// cp.Spec.KORC.AdminCredential.PasswordSecretRef verbatim. This NEVER mutates
-// cp.Spec — it returns the ref by value so callers cannot alias the user's spec.
+// consumer will read (readAdminPassword, the Keystone projection, and the Secret-name
+// field indexer).
 //
-// NOTE: callers of effectiveAdminPasswordSecretRef are added in Level 2 — defining
-// it now is intentional; it is not wired into any consumer yet.
+// External mode: the external Keystone's admin password is owned out-of-band, so
+// the ref is the user-declared cp.Spec.KORC.AdminCredential.PasswordSecretRef.
+// Updating THAT Secret is what feeds adminPasswordHashAnnotation and drives the
+// hash-driven application-credential re-mint — the only supported rotation path,
+// since the operator never writes to the external installation. The External
+// branch is keyed on the MODE discriminator, not on the database shape: External
+// mode has no infrastructure block, so inferring the identity mode from
+// Database.ClusterRef would couple two independent decisions.
 //
-//nolint:unused // declared by task 1.2; consumed by the Keystone projection, readAdminPassword, and the Secret-name extractor wired in Level 2 (tasks 2.1-2.3).
+// Managed mode (Database.ClusterRef != nil): the operator projects the admin
+// password from OpenBao into the per-ControlPlane Secret named
+// adminPasswordSecretName(cp), so the effective ref points at that Secret's
+// "password" key.
+//
+// Brownfield mode: the user supplies their own admin password Secret out-of-band,
+// so the ref is the user-declared PasswordSecretRef verbatim.
+//
+// This NEVER mutates cp.Spec — it returns the ref by value so callers cannot alias
+// the user's spec.
 func effectiveAdminPasswordSecretRef(cp *c5c3v1alpha1.ControlPlane) commonv1.SecretRefSpec {
-	// spec.infrastructure is optional (External keystone mode omits it). A nil
-	// block reads as "no managed database", so the effective ref is the
-	// user-supplied passwordSecretRef — the same branch brownfield mode takes.
+	if cp.IsExternalKeystone() {
+		return cp.Spec.KORC.AdminCredential.PasswordSecretRef
+	}
+	// A nil spec.infrastructure on a non-External CR is a webhook-bypass shape; it
+	// reads as "no managed database", so the effective ref is the user-supplied
+	// passwordSecretRef — the same branch brownfield mode takes.
 	if infra := cp.Spec.Infrastructure; infra != nil && infra.Database.ClusterRef != nil {
 		return commonv1.SecretRefSpec{Name: adminPasswordSecretName(cp), Key: "password"}
 	}
@@ -100,6 +113,10 @@ func effectiveAdminPasswordSecretRef(cp *c5c3v1alpha1.ControlPlane) commonv1.Sec
 // It runs BEFORE the Keystone sub-reconciler in the chain: the keystone-operator's
 // SecretsReady gate needs the admin-password ExternalSecret to exist before the
 // projected Keystone child references it.
+//
+// External CONTROL: the user-supplied passwordSecretRef Secret IS the admin
+// password source — there is no OpenBao bootstrap path to project from, because
+// the external Keystone's admin password was never minted by this operator.
 //
 // Brownfield CONTROL: when the ControlPlane supplies its own database connection
 // (Database.ClusterRef == nil, i.e. Host-based brownfield mode), the user owns the
@@ -114,10 +131,30 @@ func effectiveAdminPasswordSecretRef(cp *c5c3v1alpha1.ControlPlane) commonv1.Sec
 func (r *ControlPlaneReconciler) reconcileAdminPassword(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
+	// External-mode short-circuit, keyed on the MODE discriminator: the admin
+	// password of a pre-existing Keystone is owned out-of-band, so the operator
+	// projects no ExternalSecret and seeds no OpenBao bootstrap path. The Secret
+	// effectiveAdminPasswordSecretRef resolves to is the user's own.
+	if cp.IsExternalKeystone() {
+		logger.Info("External keystone mode; the user-supplied Secret is the admin password source",
+			"secret", cp.Spec.KORC.AdminCredential.PasswordSecretRef.Name)
+		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+			Type:               conditionTypeAdminPasswordReady,
+			Status:             metav1.ConditionTrue,
+			ObservedGeneration: cp.Generation,
+			Reason:             conditionReasonExternallyManaged,
+			Message: fmt.Sprintf("External keystone mode: the admin password is read from user-supplied "+
+				"Secret %q; no ExternalSecret is projected and no OpenBao bootstrap path is seeded "+
+				"(external Keystone at %s)",
+				cp.Spec.KORC.AdminCredential.PasswordSecretRef.Name, externalKeystoneAuthURL(cp)),
+		})
+		return ctrl.Result{}, nil
+	}
+
 	// Brownfield early-exit: the user supplies their own admin-password Secret, so
 	// there is nothing for the operator to project or reference in OpenBao. A nil
-	// spec.infrastructure (External keystone mode) is treated the same way — no
-	// managed database means no operator-owned admin-password projection.
+	// spec.infrastructure on a non-External CR is a webhook-bypass shape; treat it
+	// as brownfield rather than dereferencing it.
 	if infra := cp.Spec.Infrastructure; infra == nil || infra.Database.ClusterRef == nil {
 		logger.Info("brownfield database (user-supplied credential), skipping admin password ExternalSecret projection")
 		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{

@@ -487,3 +487,83 @@ func TestReconcileInfrastructure_BrownfieldSkipsChildren(t *testing.T) {
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 }
+
+// externalInfraControlPlane builds an External-mode ControlPlane: the identity
+// plane is a pre-existing Keystone and there is NO spec.infrastructure block
+// (the validating webhook forbids it in External mode).
+func externalInfraControlPlane() *c5c3v1alpha1.ControlPlane {
+	return &c5c3v1alpha1.ControlPlane{
+		ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "default", Generation: 1},
+		Spec: c5c3v1alpha1.ControlPlaneSpec{
+			OpenStackRelease: "2025.2",
+			Services: c5c3v1alpha1.ServicesSpec{
+				Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{
+					Mode:     c5c3v1alpha1.KeystoneModeExternal,
+					External: &c5c3v1alpha1.ExternalKeystoneSpec{AuthURL: "https://keystone.example.com/v3"},
+				},
+			},
+		},
+	}
+}
+
+// TestReconcileInfrastructure_ExternalModeReportsExternallyManaged asserts the
+// External-mode short-circuit: InfrastructureReady=True with the dedicated
+// ExternallyManaged reason, a message naming the external endpoint, no requeue,
+// and provably zero backing-service children.
+func TestReconcileInfrastructure_ExternalModeReportsExternallyManaged(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := infraTestScheme(t)
+	cp := externalInfraControlPlane()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	res, err := r.reconcileInfrastructure(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{}), "the External short-circuit must not requeue")
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeInfrastructureReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal(conditionReasonExternallyManaged))
+	g.Expect(cond.Message).To(ContainSubstring("https://keystone.example.com/v3"),
+		"the ExternallyManaged message must name the external endpoint")
+
+	// Absence of the managed children is the acceptance criterion, so assert it
+	// explicitly rather than relying on the condition alone.
+	var mariadbList mariadbv1alpha1.MariaDBList
+	g.Expect(c.List(context.Background(), &mariadbList)).To(Succeed())
+	g.Expect(mariadbList.Items).To(BeEmpty(), "External mode must not create a MariaDB CR")
+
+	memcachedList := &unstructured.UnstructuredList{}
+	memcachedList.SetGroupVersionKind(memcachedGVK)
+	g.Expect(c.List(context.Background(), memcachedList)).To(Succeed())
+	g.Expect(memcachedList.Items).To(BeEmpty(), "External mode must not create a Memcached CR")
+}
+
+// TestReconcileInfrastructure_NilInfrastructureNonExternalFailsClosed covers the
+// webhook-bypass edge path: a Managed CR whose spec.infrastructure was dropped
+// must fail closed with a named reason rather than dereference the nil block or
+// silently report Ready.
+func TestReconcileInfrastructure_NilInfrastructureNonExternalFailsClosed(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := infraTestScheme(t)
+	cp := managedInfraControlPlane()
+	cp.Spec.Infrastructure = nil
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	res, err := r.reconcileInfrastructure(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(infraRequeueAfter))
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeInfrastructureReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(conditionReasonInfrastructureNotConfigured))
+
+	var mariadbList mariadbv1alpha1.MariaDBList
+	g.Expect(c.List(context.Background(), &mariadbList)).To(Succeed())
+	g.Expect(mariadbList.Items).To(BeEmpty())
+}

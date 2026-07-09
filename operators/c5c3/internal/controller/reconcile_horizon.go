@@ -106,14 +106,13 @@ func (r *ControlPlaneReconciler) reconcileHorizon(ctx context.Context, cp *c5c3v
 		return ctrl.Result{}, nil
 	}
 
-	// spec.infrastructure is optional (External keystone mode omits it). The
-	// dashboard projection DeepCopies the shared cache from that block, so a nil
-	// block has nothing to project and the deref below would panic. Guard locally
-	// rather than trusting the pipeline short-circuit: reconcileInfrastructure
-	// runs first and halts a nil-block CR with an ExternalModeNotImplemented
-	// requeue, so this is unreachable today, but a later pipeline reorder must not
-	// reach the nil dereference. The Infrastructure sub-reconciler owns the
-	// External-mode requeue.
+	// Nil-safety fail-safe. The dashboard projection DeepCopies the shared cache
+	// from spec.infrastructure, so a nil block has nothing to project and the deref
+	// below would panic. The validating webhook forbids services.horizon in
+	// External mode (the dashboard needs its own External-mode design) and requires
+	// spec.infrastructure otherwise, so an External-mode CR always returns at the
+	// HorizonNotManaged early-exit above and this guard only fires for a
+	// webhook-bypassed CR.
 	if cp.Spec.Infrastructure == nil {
 		return ctrl.Result{RequeueAfter: infraRequeueAfter}, nil
 	}

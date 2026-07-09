@@ -268,6 +268,11 @@ func dbCredentialsDynamicEnabled(cp *c5c3v1alpha1.ControlPlane) bool {
 // reconcileDBCredentials projects (in managed mode) the per-ControlPlane service
 // DB-credential ExternalSecret and drives the DBCredentialsReady condition.
 //
+// External CONTROL: the ControlPlane has no database at all — no managed one to
+// issue credentials for, and no brownfield connection to reference. Neither
+// OpenBao nor the ClusterSecretStore is consulted; DBCredentialsReady is True
+// with the dedicated ExternallyManaged reason.
+//
 // Brownfield CONTROL: when the ControlPlane supplies its own database connection
 // (Database.ClusterRef == nil), the user owns the DB credential Secret
 // out-of-band, so the operator projects nothing and reports DBCredentialsReady
@@ -283,10 +288,29 @@ func dbCredentialsDynamicEnabled(cp *c5c3v1alpha1.ControlPlane) bool {
 func (r *ControlPlaneReconciler) reconcileDBCredentials(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
+	// External-mode short-circuit, keyed on the MODE discriminator rather than on
+	// the database shape: an External-mode ControlPlane has no infrastructure
+	// block, so "no managed database" and "no database at all" are different
+	// states that must not collapse onto the brownfield reason below.
+	if cp.IsExternalKeystone() {
+		logger.Info("External keystone mode; no database is managed, skipping DB credential projection",
+			"authURL", externalKeystoneAuthURL(cp))
+		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+			Type:               conditionTypeDBCredentialsReady,
+			Status:             metav1.ConditionTrue,
+			ObservedGeneration: cp.Generation,
+			Reason:             conditionReasonExternallyManaged,
+			Message: fmt.Sprintf("External keystone mode: the ControlPlane manages no database "+
+				"(external Keystone at %s); no DB-credential ExternalSecret is projected",
+				externalKeystoneAuthURL(cp)),
+		})
+		return ctrl.Result{}, nil
+	}
+
 	// Brownfield early-exit: the user supplies their own DB credential Secret, so
 	// there is nothing for the operator to project or reference in OpenBao. A nil
-	// spec.infrastructure (External keystone mode) is treated the same way — no
-	// managed database means no operator-owned DB-credential projection.
+	// spec.infrastructure on a non-External CR is a webhook-bypass shape; treat it
+	// as brownfield rather than dereferencing it.
 	if infra := cp.Spec.Infrastructure; infra == nil || infra.Database.ClusterRef == nil {
 		logger.Info("brownfield database (user-supplied credential), skipping DB credential ExternalSecret projection")
 		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{

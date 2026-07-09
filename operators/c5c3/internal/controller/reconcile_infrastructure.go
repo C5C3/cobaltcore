@@ -102,27 +102,47 @@ var memcachedGVK = schema.GroupVersionKind{
 // is still converging the sub-reconciler requeues with InfrastructureReady
 // False. When the control plane uses only brownfield infra there is nothing to
 // provision, so InfrastructureReady is True immediately.
+//
+// External keystone mode has NO infrastructure block at all, so the skip is
+// keyed on the mode discriminator (cp.IsExternalKeystone) rather than on the
+// database shape the brownfield short-circuits read.
 func (r *ControlPlaneReconciler) reconcileInfrastructure(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
-	// spec.infrastructure is optional now: an External-mode Keystone ControlPlane
-	// omits it (the validating webhook forbids it in External mode and requires it
-	// otherwise). External-mode reconciliation — managing identity against a
-	// pre-existing Keystone with no backing services to provision — lands with the
-	// External-mode reconciliation work; until then the CR is accepted at
-	// admission but this sub-reconciler halts the pipeline with a gentle requeue
-	// rather than dereferencing the nil block. Every non-External CR reaches this
-	// point with infrastructure materialized (webhook default), so the guard only
-	// fires for an External-mode CR.
+	// External-mode short-circuit: identity is managed against a pre-existing
+	// Keystone, so there are no backing services to provision. Report the
+	// condition True with the dedicated ExternallyManaged reason — the condition
+	// SCHEMA is identical across modes, so subConditionTypes, setReadyCondition
+	// and the condition_type drift guard need no mode awareness.
+	if cp.IsExternalKeystone() {
+		logger.Info("External keystone mode; no backing services are provisioned",
+			"authURL", externalKeystoneAuthURL(cp))
+		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+			Type:               conditionTypeInfrastructureReady,
+			Status:             metav1.ConditionTrue,
+			ObservedGeneration: cp.Generation,
+			Reason:             conditionReasonExternallyManaged,
+			Message: fmt.Sprintf("External keystone mode: identity is managed against %s; "+
+				"no MariaDB/Memcached is provisioned", externalKeystoneAuthURL(cp)),
+		})
+		return ctrl.Result{}, nil
+	}
+
+	// Nil-safety fail-safe. spec.infrastructure is optional at the Go/CRD layer
+	// because External mode omits it, but the validating webhook REQUIRES it
+	// outside External mode — so this branch is unreachable on the admission path
+	// and only fires for a webhook-bypassed CR (direct etcd write, admission
+	// misconfigured). Fail closed with a named reason rather than dereferencing
+	// the nil block below.
 	if cp.Spec.Infrastructure == nil {
-		logger.Info("spec.infrastructure is unset (External keystone mode); infrastructure reconciliation not yet implemented")
+		logger.Info("spec.infrastructure is unset on a non-External ControlPlane; refusing to provision")
 		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
 			Type:               conditionTypeInfrastructureReady,
 			Status:             metav1.ConditionFalse,
 			ObservedGeneration: cp.Generation,
-			Reason:             "ExternalModeNotImplemented",
-			Message: "spec.infrastructure is unset (External keystone mode); the ControlPlane is accepted " +
-				"but External-mode reconciliation is not yet implemented",
+			Reason:             conditionReasonInfrastructureNotConfigured,
+			Message: "spec.infrastructure is unset but services.keystone.mode is not External; " +
+				"the backing services cannot be provisioned",
 		})
 		return ctrl.Result{RequeueAfter: infraRequeueAfter}, nil
 	}

@@ -125,15 +125,36 @@ func (r *ControlPlaneReconciler) reconcileKeystone(ctx context.Context, cp *c5c3
 		return ctrl.Result{}, nil
 	}
 
-	// spec.infrastructure is optional (External keystone mode omits it). This
-	// managed projection points the Keystone child at the backing services the
-	// ControlPlane provisioned, so a nil block has nothing to project and the
-	// derefs below would panic. Guard locally rather than trusting the pipeline
-	// short-circuit: reconcileInfrastructure runs first and halts a nil-block CR
-	// with an ExternalModeNotImplemented requeue, so this is unreachable today,
-	// but a later pipeline reorder — or an Infrastructure sub-reconciler that
-	// reports Ready for External mode — must not reach the nil dereference. The
-	// Infrastructure sub-reconciler owns the External-mode requeue.
+	// External-mode short-circuit: identity is managed against a pre-existing
+	// Keystone, so no child is projected.
+	//
+	// It also does NOT delete a previously-projected child. A Managed -> External
+	// flip is rejected outright by the validating webhook (adopting an existing
+	// installation must be a fresh External-mode ControlPlane), so no child can
+	// exist here. Were one to appear anyway, the deliberate fail-safe above —
+	// preserve the child unless keystoneDeletionAllowedAnnotation opts in — is the
+	// only sanctioned teardown path, because the child's credential/fernet keys are
+	// irreplaceable.
+	if cp.IsExternalKeystone() {
+		logger.Info("External keystone mode; no Keystone child is projected",
+			"authURL", externalKeystoneAuthURL(cp))
+		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+			Type:               conditionTypeKeystoneReady,
+			Status:             metav1.ConditionTrue,
+			ObservedGeneration: cp.Generation,
+			Reason:             conditionReasonExternallyManaged,
+			Message: fmt.Sprintf("External keystone mode: identity is managed against %s; "+
+				"no Keystone child is projected", externalKeystoneAuthURL(cp)),
+		})
+		return ctrl.Result{}, nil
+	}
+
+	// Nil-safety fail-safe. This managed projection points the Keystone child at
+	// the backing services the ControlPlane provisioned, so a nil block has nothing
+	// to project and the derefs below would panic. The validating webhook requires
+	// spec.infrastructure outside External mode, and the External branch above has
+	// already returned, so this only fires for a webhook-bypassed CR —
+	// reconcileInfrastructure halts the same CR with InfrastructureNotConfigured.
 	if cp.Spec.Infrastructure == nil {
 		return ctrl.Result{RequeueAfter: infraRequeueAfter}, nil
 	}

@@ -391,3 +391,70 @@ func TestDBDynamicRoleFor_DistinctPerControlPlane(t *testing.T) {
 	g.Expect(dbDynamicRoleFor(collideX)).NotTo(Equal(dbDynamicRoleFor(collideY)))
 	g.Expect(dbDynamicCredsPathFor(collideX)).NotTo(Equal(dbDynamicCredsPathFor(collideY)))
 }
+
+// dbCredExternalControlPlane builds an External-mode ControlPlane: no
+// spec.infrastructure block at all, so there is no database — managed OR
+// brownfield — to issue credentials for.
+func dbCredExternalControlPlane() *c5c3v1alpha1.ControlPlane {
+	cp := dbCredManagedControlPlane()
+	cp.Spec.Infrastructure = nil
+	cp.Spec.Services.Keystone = &c5c3v1alpha1.ServiceKeystoneSpec{
+		Mode:     c5c3v1alpha1.KeystoneModeExternal,
+		External: &c5c3v1alpha1.ExternalKeystoneSpec{AuthURL: "https://keystone.example.com/v3"},
+	}
+	return cp
+}
+
+// TestReconcileDBCredentials_ExternalMode_NoProjection_ReadyTrue asserts the
+// External-mode short-circuit reports ExternallyManaged and projects nothing.
+// No ClusterSecretStore is seeded into the fake client: were the store gate still
+// consulted, reconcileDBCredentials would flip the condition to
+// SecretStoreNotReady and requeue, so the assertions below double as proof that
+// External mode never touches OpenBao/ESO.
+func TestReconcileDBCredentials_ExternalMode_NoProjection_ReadyTrue(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := dbCredExternalControlPlane()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	result, err := r.reconcileDBCredentials(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).To(Equal(ctrl.Result{}), "the External short-circuit must not requeue")
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeDBCredentialsReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal(conditionReasonExternallyManaged))
+	g.Expect(cond.Message).To(ContainSubstring("https://keystone.example.com/v3"))
+
+	_, getErr := getDBCredES(t, r, cp)
+	g.Expect(apierrors.IsNotFound(getErr)).To(BeTrue(),
+		"External mode must NOT project a DB-credential ExternalSecret")
+	_, vdsErr := getVDS(t, r, cp)
+	g.Expect(apierrors.IsNotFound(vdsErr)).To(BeTrue(),
+		"External mode must NOT project a VaultDynamicSecret generator")
+}
+
+// TestReconcileDBCredentials_BrownfieldStillReportsBrownfieldReason pins that the
+// External short-circuit did not swallow the brownfield one: a brownfield
+// *database* under a managed Keystone keeps its own documented reason, which is a
+// different operator situation from "no database at all".
+func TestReconcileDBCredentials_BrownfieldStillReportsBrownfieldReason(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := dbCredBrownfieldControlPlane()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileDBCredentials(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeDBCredentialsReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Reason).To(Equal("BrownfieldUserSuppliedCredential"))
+	g.Expect(cond.Reason).NotTo(Equal(conditionReasonExternallyManaged),
+		"a brownfield database is not an externally-managed identity plane")
+}

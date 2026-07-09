@@ -207,3 +207,27 @@ func TestClusterSecretStoreToControlPlaneMapper_IgnoresOtherStores(t *testing.T)
 	g.Expect(reqs).To(BeEmpty(),
 		"a change to an unrelated ClusterSecretStore must enqueue nothing")
 }
+
+// TestControlPlaneSecretNameExtractor_ExternalModeIndexesUserSecret asserts the
+// field indexer follows effectiveAdminPasswordSecretRef into External mode: the
+// indexed name is the USER-supplied Secret, so an edit to it wakes the
+// ControlPlane and feeds the hash-driven application-credential re-mint. Indexing
+// the operator-owned name instead would leave an out-of-band password rotation
+// invisible until the next periodic resync.
+func TestControlPlaneSecretNameExtractor_ExternalModeIndexesUserSecret(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := mapperControlPlane("cp", "default", "external-admin")
+	cp.Spec.Services.Keystone = &c5c3v1alpha1.ServiceKeystoneSpec{
+		Mode:     c5c3v1alpha1.KeystoneModeExternal,
+		External: &c5c3v1alpha1.ExternalKeystoneSpec{AuthURL: "https://keystone.example.com/v3"},
+	}
+
+	g.Expect(controlPlaneSecretNameExtractor(cp)).To(ConsistOf("external-admin"))
+
+	// Even with a (webhook-impossible) managed database block, the mode
+	// discriminator keeps the user-supplied Secret indexed.
+	cp.Spec.Infrastructure = &c5c3v1alpha1.InfrastructureSpec{}
+	cp.Spec.Infrastructure.Database.ClusterRef = &corev1.LocalObjectReference{Name: "openstack-db"}
+	g.Expect(controlPlaneSecretNameExtractor(cp)).To(ConsistOf("external-admin"))
+}
