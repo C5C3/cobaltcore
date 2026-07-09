@@ -114,6 +114,7 @@ type ControlPlaneReconciler struct {
 // +kubebuilder:rbac:groups=k8s.mariadb.com,resources=mariadbs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=memcached.c5c3.io,resources=memcacheds,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=keystone.openstack.c5c3.io,resources=keystones,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=keystone.openstack.c5c3.io,resources=keystoneidentitybackends,verbs=get;list;watch
 // +kubebuilder:rbac:groups=horizon.openstack.c5c3.io,resources=horizons,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=openstack.k-orc.cloud,resources=applicationcredentials;services;endpoints;users;domains,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=external-secrets.io,resources=externalsecrets;pushsecrets,verbs=get;list;watch;create;update;patch;delete
@@ -455,8 +456,8 @@ func clusterSecretStoreToControlPlaneMapper(c client.Reader) handler.MapFunc {
 // conditions promptly; a relevance predicate could be added later if the
 // reconcile volume becomes a concern.
 func (r *ControlPlaneReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	// Register the field indexer before Watches so secretToControlPlaneMapper can
-	// rely on it for its MatchingFields lookup.
+	// Register the field indexer before Watches so secretToControlPlaneMapper
+	// can rely on it for its MatchingFields lookup.
 	if err := registerControlPlaneSecretNameIndex(context.Background(), mgr.GetFieldIndexer()); err != nil {
 		return err
 	}
@@ -495,6 +496,14 @@ func (r *ControlPlaneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&esov1.ExternalSecret{}).
 		Owns(&esov1alpha1.PushSecret{}).
 		Owns(&esgenv1alpha1.VaultDynamicSecret{}).
+		// KeystoneIdentityBackend CRs are authored by the operator, not projected
+		// by the ControlPlane, so they carry no owner reference an Owns() could
+		// match. Watch them by keystoneRef so attaching (or detaching, or the
+		// backend reaching Ready) re-projects the Horizon websso choices and the
+		// Keystone trusted_dashboard without waiting for a periodic resync.
+		Watches(&keystonev1alpha1.KeystoneIdentityBackend{}, handler.EnqueueRequestsFromMapFunc(
+			r.identityBackendToControlPlaneMapper,
+		)).
 		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(
 			secretToControlPlaneMapper(mgr.GetClient()),
 		)).

@@ -118,6 +118,19 @@ coordination.k8s.io/leases rule required for leader election.
     - update
     - patch
     - delete
+# keystone.openstack.c5c3.io - keystoneidentitybackends
+# READ-ONLY: the ControlPlane reconciler watches the federation/domain backends
+# attached to its Keystone child to project the Horizon websso choices and the
+# Keystone trusted_dashboard. The backends themselves are authored by the
+# operator and reconciled by the keystone-operator, never written here.
+- apiGroups:
+    - keystone.openstack.c5c3.io
+  resources:
+    - keystoneidentitybackends
+  verbs:
+    - get
+    - list
+    - watch
 # horizon.openstack.c5c3.io - horizons
 # The ControlPlane reconciler projects and Owns a Horizon child.
 - apiGroups:

@@ -1,7 +1,7 @@
 # ClusterRole RBAC rules unit tests.
 # Rules mirror the +kubebuilder:rbac markers on the ControlPlane and
 # CredentialRotation reconcilers (deduplicated), plus the leases rule for
-# leader election — 18 rules total.
+# leader election — 20 rules total.
 suite: ClusterRole
 templates:
   - templates/clusterrole.yaml
@@ -10,7 +10,7 @@ tests:
     asserts:
       - lengthEqual:
           path: rules
-          count: 19
+          count: 20
 
   - it: should grant full CRUD on controlplanes
     asserts:
@@ -147,6 +147,37 @@ tests:
               - keystone.openstack.c5c3.io
             resources:
               - keystones
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  - it: should grant read-only access on keystoneidentitybackends
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - keystone.openstack.c5c3.io
+            resources:
+              - keystoneidentitybackends
+            verbs:
+              - get
+              - list
+              - watch
+      # The reconciler only WATCHES the backends; the write verbs would be an
+      # unnecessary privilege grant on a resource it never authors.
+      - notContains:
+          path: rules
+          content:
+            apiGroups:
+              - keystone.openstack.c5c3.io
+            resources:
+              - keystoneidentitybackends
             verbs:
               - get
               - list

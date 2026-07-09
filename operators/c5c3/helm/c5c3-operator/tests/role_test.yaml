@@ -41,7 +41,7 @@ tests:
       - hasDocuments:
           count: 0
 
-  - it: should have 18 rules matching ClusterRole
+  - it: should have 20 rules matching ClusterRole
     set:
       rbac:
         namespaceScoped: true
@@ -50,7 +50,7 @@ tests:
     asserts:
       - lengthEqual:
           path: rules
-          count: 19
+          count: 20
 
   - it: should grant full CRUD on controlplanes
     set:
@@ -232,6 +232,42 @@ tests:
               - keystone.openstack.c5c3.io
             resources:
               - keystones
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  - it: should grant read-only access on keystoneidentitybackends
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - keystone.openstack.c5c3.io
+            resources:
+              - keystoneidentitybackends
+            verbs:
+              - get
+              - list
+              - watch
+      # The reconciler only WATCHES the backends; the write verbs would be an
+      # unnecessary privilege grant on a resource it never authors.
+      - notContains:
+          path: rules
+          content:
+            apiGroups:
+              - keystone.openstack.c5c3.io
+            resources:
+              - keystoneidentitybackends
             verbs:
               - get
               - list
