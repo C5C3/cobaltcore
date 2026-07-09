@@ -464,6 +464,33 @@ e2e-controlplane:
 	@kubectl get crd controlplanes.c5c3.io >/dev/null 2>&1 || { echo 'the c5c3 ControlPlane stack is not installed; run `WITH_CONTROLPLANE=true make deploy-infra` (and deploy K-ORC + the operators) first' >&2; exit 1; }
 	chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e/c5c3/full-controlplane-keystone/
 
+.PHONY: e2e-controlplane-sso
+# e2e-controlplane-sso runs the federated ControlPlane chain: attaching a
+# KeystoneIdentityBackend is the only action taken, and the operator projects the
+# websso choices onto Horizon and the trusted dashboard origin onto Keystone.
+# The suite lives OUTSIDE tests/e2e/ so the per-CR e2e-operator matrix and
+# `make e2e` do not sweep it up (see tests/e2e-controlplane-sso/chainsaw-test.yaml).
+#
+# It needs the Horizon CRD on top of what e2e-controlplane requires, so the
+# preflights are kept separate: a missing horizon-operator must not read as a
+# missing ControlPlane stack — see review pattern
+# .planwerk/review_patterns/distinguish-collapsed-failure-modes-in-preflight-checks.md
+# This target satisfies the CI-to-Makefile parity expected by
+# .planwerk/review_patterns/maintain-ci-to-makefile-parity-for-new-jobs.md so
+# developers can reproduce the e2e-controlplane-sso CI job locally.
+#
+# The suite creates a ControlPlane named controlplane-sso, so the OpenBao
+# bootstrap must have seeded that CR's admin-password and Horizon SECRET_KEY
+# paths: deploy the stack with CONTROLPLANE_NAME=controlplane-sso. Run it against
+# a FRESH cluster — chainsaw's cleanup deletes the ControlPlane but neither the
+# MariaDB PVC nor anything Keystone persisted, so a second run boots against the
+# first run's database.
+e2e-controlplane-sso:
+	@kubectl version --request-timeout=2s >/dev/null 2>&1 || { echo 'kubectl is not configured or no cluster is reachable' >&2; exit 1; }
+	@kubectl get crd controlplanes.c5c3.io >/dev/null 2>&1 || { echo 'the c5c3 ControlPlane stack is not installed; run `WITH_CONTROLPLANE=true CONTROLPLANE_OPERATORS=external CONTROLPLANE_NAME=controlplane-sso make deploy-infra` (and deploy K-ORC + the operators) first' >&2; exit 1; }
+	@kubectl get crd horizons.horizon.openstack.c5c3.io >/dev/null 2>&1 || { echo 'the horizon-operator is not installed; run `OPERATOR=horizon IMAGE_REPO=ghcr.io/c5c3/horizon-operator NAMESPACE=horizon-system hack/ci-deploy-operator.sh` first' >&2; exit 1; }
+	E2E_REQUIRE_CONTROLPLANE_STACK=true chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e-controlplane-sso/
+
 .PHONY: e2e-operator-upgrade
 # e2e-operator-upgrade runs the keystone-operator helm-upgrade-in-place suite:
 # it fetches the last released chart+image from GHCR, installs it as the
