@@ -1570,10 +1570,95 @@ func TestReconcileConfig_FederationInactiveOmitsSections(t *testing.T) {
 	g.Expect(cm.Data).NotTo(HaveKey("sso_callback_template.html"))
 }
 
+// TestReconcileConfig_TrustedDashboardsRenderRepeatedLines verifies the oslo
+// MultiStrOpt wire form: two origins render as two separate
+// trusted_dashboard lines under one [federation] header, in spec order,
+// alongside the operator-set sso_callback_template.
+func TestReconcileConfig_TrustedDashboardsRenderRepeatedLines(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := configTestScheme()
+	ks := configTestKeystone()
+	ks.Spec.Federation = &keystonev1alpha1.FederationSpec{
+		TrustedDashboards: []string{
+			"https://horizon.example.com/auth/websso/",
+			"https://horizon.example.com:8443/auth/websso/",
+		},
+	}
+	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
+	r := newConfigTestReconciler(s, ks, secret)
+
+	fed := &federationProjection{RemoteIDAttribute: "HTTP_OIDC_ISS"}
+	configMapName, err := r.reconcileConfig(context.Background(), ks, false, fed)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	cm, err := getCreatedConfigMap(context.Background(), r.Client, "default", configMapName)
+	g.Expect(err).NotTo(HaveOccurred())
+	keystoneConf := cm.Data["keystone.conf"]
+
+	g.Expect(keystoneConf).To(ContainSubstring(
+		"sso_callback_template = " + ssoCallbackTemplateFilePath + "\n" +
+			"trusted_dashboard = https://horizon.example.com/auth/websso/\n" +
+			"trusted_dashboard = https://horizon.example.com:8443/auth/websso/\n"))
+	// Exactly one [federation] header — the repeated key must not split the
+	// section.
+	g.Expect(strings.Count(keystoneConf, "[federation]")).To(Equal(1))
+}
+
+// TestReconcileConfig_TrustedDashboardsWithoutFederationBackend covers the
+// standalone-Keystone path: an operator declares the trusted origin BEFORE
+// any OIDC backend attaches, so [federation] renders with trusted_dashboard
+// only — no sso_callback_template, no [auth]/[openid], and no callback
+// template shipped in the ConfigMap.
+func TestReconcileConfig_TrustedDashboardsWithoutFederationBackend(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := configTestScheme()
+	ks := configTestKeystone()
+	ks.Spec.Federation = &keystonev1alpha1.FederationSpec{
+		TrustedDashboards: []string{"https://horizon.example.com/auth/websso/"},
+	}
+	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
+	r := newConfigTestReconciler(s, ks, secret)
+
+	configMapName, err := r.reconcileConfig(context.Background(), ks, false, nil)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	cm, err := getCreatedConfigMap(context.Background(), r.Client, "default", configMapName)
+	g.Expect(err).NotTo(HaveOccurred())
+	keystoneConf := cm.Data["keystone.conf"]
+
+	g.Expect(keystoneConf).To(ContainSubstring("[federation]\ntrusted_dashboard = https://horizon.example.com/auth/websso/\n"))
+	g.Expect(keystoneConf).NotTo(ContainSubstring("sso_callback_template"))
+	g.Expect(keystoneConf).NotTo(ContainSubstring("[auth]"))
+	g.Expect(keystoneConf).NotTo(ContainSubstring("[openid]"))
+	g.Expect(cm.Data).NotTo(HaveKey("sso_callback_template.html"))
+}
+
+// TestReconcileConfig_NoTrustedDashboardsOmitsKey guards the byte-identical
+// render for the overwhelmingly common CR that never sets the field: an empty
+// list must not emit a bare "trusted_dashboard = " line, which would override
+// oslo's compiled-in default with an empty value.
+func TestReconcileConfig_NoTrustedDashboardsOmitsKey(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := configTestScheme()
+	ks := configTestKeystone()
+	ks.Spec.Federation = &keystonev1alpha1.FederationSpec{TrustedDashboards: nil}
+	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
+	r := newConfigTestReconciler(s, ks, secret)
+
+	configMapName, err := r.reconcileConfig(context.Background(), ks, false, nil)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	cm, err := getCreatedConfigMap(context.Background(), r.Client, "default", configMapName)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(cm.Data["keystone.conf"]).NotTo(ContainSubstring("trusted_dashboard"))
+	g.Expect(cm.Data["keystone.conf"]).NotTo(ContainSubstring("[federation]"))
+}
+
 // TestReconcileConfig_FederationExtraConfigTrustedDashboardCoexists verifies
-// the free-form escape hatch: spec.extraConfig may add [federation]
-// trusted_dashboard (the typed field is a later phase) without clobbering the
-// operator-set sso_callback_template — MergeDefaults merges per key.
+// the free-form escape hatch still works for a CR that declares the option
+// only in spec.extraConfig (the webhook rejects declaring it in both places):
+// [federation] trusted_dashboard lands without clobbering the operator-set
+// sso_callback_template — MergeDefaults merges per key.
 func TestReconcileConfig_FederationExtraConfigTrustedDashboardCoexists(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := configTestScheme()

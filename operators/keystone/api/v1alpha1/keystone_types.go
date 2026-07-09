@@ -348,6 +348,40 @@ type FederationSpec struct {
 	// hidden default is assumed.
 	// +optional
 	ProxyImage *commonv1.ImageSpec `json:"proxyImage,omitempty"`
+
+	// TrustedDashboards lists the dashboard origins Keystone will POST a
+	// WebSSO token back to after a successful federated login. Keystone
+	// matches the origin the dashboard sends VERBATIM against this list, so
+	// each entry must reproduce it exactly — scheme, host, non-default port,
+	// and the trailing slash (e.g. "https://horizon.example.com/auth/websso/",
+	// or "https://horizon.example.com:8443/auth/websso/" when the dashboard is
+	// published off port 443). A mismatched entry rejects the hand-off with
+	// "Origin ... is not a trusted dashboard host".
+	//
+	// The option is an oslo MultiStrOpt: entries render as repeated
+	// [federation] trusted_dashboard lines, one per origin. The managed
+	// ControlPlane path projects its Horizon child's origin here; standalone
+	// Keystone installations set the field directly.
+	//
+	// Unlike ProxyImage this field is independent of an attached federation
+	// backend: the [federation] section renders as soon as an origin is
+	// declared, so an operator can prepare the trust relationship before the
+	// first KeystoneIdentityBackend attaches.
+	//
+	// Entries render into keystone.conf verbatim, with no escaping — an INI
+	// file has none to give. The Pattern below is therefore anchored at BOTH
+	// ends and forbids whitespace: RE2 anchors ^ at start-of-text and, without
+	// a $, "https://h.example.com/auth/websso/\ninsecure_debug = true" would
+	// satisfy a prefix-only pattern and inject a second option into the
+	// rendered [federation] section. The always-on schema gate must fail closed
+	// here, the way renderLocalSettings does on the Horizon side, rather than
+	// leaving the validating webhook's url.Parse as the only thing between this
+	// list and raw keystone.conf.
+	// +optional
+	// +kubebuilder:validation:MaxItems=8
+	// +kubebuilder:validation:items:MaxLength=512
+	// +kubebuilder:validation:items:Pattern=`^https?://[^\s]*$`
+	TrustedDashboards []string `json:"trustedDashboards,omitempty"`
 }
 
 // PasswordRotationSpec configures scheduled rotation of the Keystone admin

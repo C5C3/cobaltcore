@@ -339,8 +339,24 @@ func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, keystone *keys
 	}
 
 	// Step 7: Create immutable ConfigMap.
+	//
+	// [federation] trusted_dashboard is an oslo MultiStrOpt: a dashboard origin
+	// per line. Lift the merged single-valued map into the multi-valued shape
+	// and set the repeated key there, after the extraConfig merge — the webhook
+	// rejects declaring the option in both places, so nothing is being
+	// overwritten here. A CR with no origins renders byte-identically to
+	// before, since the lifted map is otherwise a one-element-slice image of
+	// merged.
+	multi := config.LiftSections(merged)
+	if origins := trustedDashboards(keystone); len(origins) > 0 {
+		if multi["federation"] == nil {
+			multi["federation"] = map[string][]string{}
+		}
+		multi["federation"]["trusted_dashboard"] = origins
+	}
+
 	data := map[string]string{
-		"keystone.conf": config.RenderINI(merged),
+		"keystone.conf": config.RenderINIMulti(multi),
 		"api-paste.ini": apiPasteINI,
 	}
 	if policyYAML != "" {
@@ -399,6 +415,20 @@ func (r *KeystoneReconciler) policyConfigMapResourceVersion(ctx context.Context,
 		return "", fmt.Errorf("getting policy ConfigMap %s: %w", po.ConfigMapRef.Name, err)
 	}
 	return cm.ResourceVersion, nil
+}
+
+// trustedDashboards returns the dashboard origins rendered as repeated
+// [federation] trusted_dashboard lines. It is deliberately independent of the
+// federationProjection: an operator may declare the trusted origin before the
+// first OIDC backend attaches, so the [federation] section (and only this key
+// in it) renders even when federation is otherwise inactive. It is a pure
+// function of the spec, so it contributes nothing to the config-render cache
+// key beyond the CR generation that already covers it.
+func trustedDashboards(keystone *keystonev1alpha1.Keystone) []string {
+	if keystone.Spec.Federation == nil {
+		return nil
+	}
+	return keystone.Spec.Federation.TrustedDashboards
 }
 
 // federationCacheKeyOf extracts the two config-render inputs a federation

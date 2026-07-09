@@ -1533,6 +1533,18 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 			Tag:        "latest",
 			Digest:     "sha256:2222222222222222222222222222222222222222222222222222222222222222",
 		},
+		// Break federation.trustedDashboards on BOTH hooks — a duplicate origin
+		// and a non-http(s) entry — plus the extraConfig conflict below, so
+		// every trustedDashboards path participates in the aggregated error
+		// rather than short-circuiting on the first violation.
+		TrustedDashboards: []string{
+			"https://horizon.example.com/auth/websso/",
+			"https://horizon.example.com/auth/websso/",
+			"ftp://horizon.example.com/auth/websso/",
+		},
+	}
+	k.Spec.ExtraConfig = map[string]map[string]string{
+		"federation": {"trusted_dashboard": "https://other.example.com/auth/websso/"},
 	}
 
 	_, err := w.ValidateCreate(context.Background(), k)
@@ -1588,6 +1600,12 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 	g.Expect(errMsg).To(ContainSubstring("passwordRotation"))
 	g.Expect(errMsg).To(ContainSubstring("passwordLength"))
 	g.Expect(errMsg).To(ContainSubstring("adminPasswordSecretRef"))
+	// Every trustedDashboards validation path (duplicate, non-URL scheme, and
+	// the extraConfig conflict) must participate in the aggregated error.
+	g.Expect(errMsg).To(ContainSubstring("trustedDashboards"))
+	g.Expect(errMsg).To(ContainSubstring("Duplicate value"))
+	g.Expect(errMsg).To(ContainSubstring("scheme must be http or https"))
+	g.Expect(errMsg).To(ContainSubstring("trusted_dashboard is managed via spec.federation.trustedDashboards"))
 	// every federation validation path (proxyImage repository +
 	// tag/digest XOR) must participate in the aggregated error.
 	g.Expect(errMsg).To(ContainSubstring("federation.proxyImage"))
@@ -1678,6 +1696,140 @@ func TestDefault_CredentialsModeDefaultsToStatic(t *testing.T) {
 // a dedicated test rather than a case in TestValidateCreate_RunsAllValidations
 // because triggering it requires ClusterRef nil, which is mutually exclusive
 // with that test's "both clusterRef and host set" database break.
+// TestValidate_TrustedDashboardsAcceptsMultipleOrigins pins the happy path:
+// several distinct origins — including one on a non-default port, the case
+// the ControlPlane publicEndpoint override exists for — are accepted.
+func TestValidate_TrustedDashboardsAcceptsMultipleOrigins(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{Client: newFakeClient().Build()}
+	k := validKeystone()
+	k.Spec.Federation = &FederationSpec{
+		TrustedDashboards: []string{
+			"https://horizon.example.com/auth/websso/",
+			"https://horizon.example.com:8443/auth/websso/",
+		},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// TestValidate_TrustedDashboardsRejectsDuplicates guards the duplicate check:
+// the same origin twice would render trusted_dashboard twice and signals a
+// copy-paste error rather than intent.
+func TestValidate_TrustedDashboardsRejectsDuplicates(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{Client: newFakeClient().Build()}
+	k := validKeystone()
+	k.Spec.Federation = &FederationSpec{
+		TrustedDashboards: []string{
+			"https://horizon.example.com/auth/websso/",
+			"https://horizon.example.com/auth/websso/",
+		},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("trustedDashboards[1]"))
+	g.Expect(err.Error()).To(ContainSubstring("Duplicate value"))
+}
+
+// TestValidate_TrustedDashboardsRejectsNonURL covers the defense-in-depth URL
+// parse alongside the items:Pattern marker: a scheme-only value would parse
+// but carry no host, so it could never match any dashboard origin.
+func TestValidate_TrustedDashboardsRejectsNonURL(t *testing.T) {
+	w := &KeystoneWebhook{Client: newFakeClient().Build()}
+
+	for name, origin := range map[string]string{
+		"missing host": "https:///auth/websso/",
+		"wrong scheme": "ftp://horizon.example.com/auth/websso/",
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			k := validKeystone()
+			k.Spec.Federation = &FederationSpec{TrustedDashboards: []string{origin}}
+
+			_, err := w.ValidateCreate(context.Background(), k)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring("trustedDashboards[0]"))
+		})
+	}
+}
+
+// TestValidate_TrustedDashboardsWarnsOnCleartextOrigin covers the scheme
+// downgrade the items:Pattern marker deliberately allows. trusted_dashboard is
+// where Keystone POSTs the unscoped WebSSO token after a federated login, so an
+// http origin hands a full-privilege bearer token to any on-path observer. It is
+// not rejected — a plain-http lab dashboard is a legal setup — but it must not
+// be silent either.
+func TestValidate_TrustedDashboardsWarnsOnCleartextOrigin(t *testing.T) {
+	w := &KeystoneWebhook{Client: newFakeClient().Build()}
+
+	t.Run("http warns", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		k := validKeystone()
+		k.Spec.Federation = &FederationSpec{
+			TrustedDashboards: []string{
+				"https://horizon.example.com/auth/websso/",
+				"http://legacy.example.com/auth/websso/",
+			},
+		}
+
+		warnings, err := w.ValidateCreate(context.Background(), k)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(warnings).To(HaveLen(1), "only the http origin warns")
+		g.Expect(warnings[0]).To(ContainSubstring("http://legacy.example.com/auth/websso/"))
+		g.Expect(warnings[0]).To(ContainSubstring("cleartext"))
+	})
+
+	t.Run("https is silent", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		k := validKeystone()
+		k.Spec.Federation = &FederationSpec{
+			TrustedDashboards: []string{"https://horizon.example.com/auth/websso/"},
+		}
+
+		warnings, err := w.ValidateCreate(context.Background(), k)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(warnings).To(BeEmpty())
+	})
+}
+
+// TestValidate_TrustedDashboardsRejectsExtraConfigConflict guards the silent
+// contradiction: extraConfig wins MergeDefaults, so declaring the option in
+// both places would drop the typed list from the rendered config unnoticed.
+func TestValidate_TrustedDashboardsRejectsExtraConfigConflict(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{Client: newFakeClient().Build()}
+	k := validKeystone()
+	k.Spec.Federation = &FederationSpec{
+		TrustedDashboards: []string{"https://horizon.example.com/auth/websso/"},
+	}
+	k.Spec.ExtraConfig = map[string]map[string]string{
+		"federation": {"trusted_dashboard": "https://other.example.com/auth/websso/"},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("trusted_dashboard is managed via spec.federation.trustedDashboards"))
+}
+
+// TestValidate_ExtraConfigTrustedDashboardAloneIsAllowed pins the escape hatch:
+// the conflict rule must only fire when the typed field is ALSO set, so a
+// pre-typed-field CR that declares the option only in extraConfig keeps
+// validating.
+func TestValidate_ExtraConfigTrustedDashboardAloneIsAllowed(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{Client: newFakeClient().Build()}
+	k := validKeystone()
+	k.Spec.ExtraConfig = map[string]map[string]string{
+		"federation": {"trusted_dashboard": "https://horizon.example.com/auth/websso/"},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
 func TestValidateCreate_RejectsDynamicCredentialsWithoutClusterRef(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{Client: newFakeClient().Build()}

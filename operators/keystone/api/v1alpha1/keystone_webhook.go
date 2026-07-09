@@ -236,12 +236,12 @@ func (w *KeystoneWebhook) Default(_ context.Context, obj *Keystone) error {
 
 // ValidateCreate implements admission.Validator[*Keystone].
 func (w *KeystoneWebhook) ValidateCreate(ctx context.Context, obj *Keystone) (admission.Warnings, error) {
-	return nil, w.validate(ctx, obj)
+	return warnCleartextTrustedDashboards(obj), w.validate(ctx, obj)
 }
 
 // ValidateUpdate implements admission.Validator[*Keystone].
 func (w *KeystoneWebhook) ValidateUpdate(ctx context.Context, _, newObj *Keystone) (admission.Warnings, error) {
-	return nil, w.validate(ctx, newObj)
+	return warnCleartextTrustedDashboards(newObj), w.validate(ctx, newObj)
 }
 
 // ValidateDelete implements admission.Validator[*Keystone]. The method is
@@ -300,6 +300,8 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 			))
 		}
 	}
+
+	allErrs = append(allErrs, validateTrustedDashboards(specPath, k)...)
 
 	// Defense-in-depth maxActiveKeys check alongside the
 	// +kubebuilder:validation:Minimum=3 marker.
@@ -835,4 +837,87 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 		)
 	}
 	return nil
+}
+
+// validateTrustedDashboards enforces the spec.federation.trustedDashboards
+// rules the CRD schema markers cannot express.
+//
+// Duplicates are rejected because the rendered [federation] section would
+// carry the same origin twice, which oslo accepts but which signals a
+// copy-paste error rather than intent. Each entry is re-parsed as a URL as
+// defense-in-depth alongside the items:Pattern=^https?:// marker: Keystone
+// compares the origin verbatim, so a value that parses to an empty host would
+// silently never match any dashboard.
+//
+// Setting the typed field together with a raw [federation] trusted_dashboard
+// escape-hatch entry in spec.extraConfig is rejected: extraConfig wins the
+// merge, so the two sources would silently contradict each other and the
+// typed list would be dropped from the rendered config without any signal.
+func validateTrustedDashboards(specPath *field.Path, k *Keystone) field.ErrorList {
+	var errs field.ErrorList
+	if k.Spec.Federation == nil || len(k.Spec.Federation.TrustedDashboards) == 0 {
+		return errs
+	}
+	fldPath := specPath.Child("federation", "trustedDashboards")
+
+	seen := make(map[string]struct{}, len(k.Spec.Federation.TrustedDashboards))
+	for i, origin := range k.Spec.Federation.TrustedDashboards {
+		itemPath := fldPath.Index(i)
+		if _, dup := seen[origin]; dup {
+			errs = append(errs, field.Duplicate(itemPath, origin))
+			continue
+		}
+		seen[origin] = struct{}{}
+
+		u, err := url.Parse(origin)
+		switch {
+		case err != nil:
+			errs = append(errs, field.Invalid(itemPath, origin, fmt.Sprintf("must be a valid URL: %v", err)))
+		case u.Scheme != "http" && u.Scheme != "https":
+			errs = append(errs, field.Invalid(itemPath, origin, "scheme must be http or https"))
+		case u.Host == "":
+			errs = append(errs, field.Invalid(itemPath, origin, "URL must include a host"))
+		}
+	}
+
+	if _, ok := k.Spec.ExtraConfig["federation"]["trusted_dashboard"]; ok {
+		errs = append(errs, field.Forbidden(
+			specPath.Child("extraConfig").Key("federation").Key("trusted_dashboard"),
+			"trusted_dashboard is managed via spec.federation.trustedDashboards and must not also be set in extraConfig "+
+				"(extraConfig wins the merge, which would silently drop the typed list)",
+		))
+	}
+	return errs
+}
+
+// warnCleartextTrustedDashboards flags an http:// trusted dashboard origin.
+//
+// trusted_dashboard is not an ordinary allow-list entry. After the identity
+// provider authenticates the user, Keystone renders an auto-submitting HTML
+// form that POSTs the unscoped Keystone token to that origin — a bearer token
+// good for the user's full API privileges, not just dashboard access, until it
+// expires. Over http:// that token is readable by any on-path observer: a
+// TLS-terminating corporate proxy, hostile Wi-Fi, an in-cluster sniffer.
+//
+// A plain-http origin is a legal, if unwise, development setup, and the
+// items:Pattern=^https?:// marker deliberately allows it, so this is a warning
+// rather than a rejection. It must never be silent, though: nothing else in the
+// CR status or the operator logs records the downgrade.
+func warnCleartextTrustedDashboards(k *Keystone) admission.Warnings {
+	if k.Spec.Federation == nil {
+		return nil
+	}
+	var warnings admission.Warnings
+	for _, origin := range k.Spec.Federation.TrustedDashboards {
+		u, err := url.Parse(origin)
+		if err != nil || u.Scheme != "http" {
+			continue
+		}
+		warnings = append(warnings, fmt.Sprintf(
+			"spec.federation.trustedDashboards entry %q uses http://: Keystone POSTs the unscoped WebSSO token to "+
+				"this origin after every federated login, so the token would travel in cleartext. Use https://.",
+			origin,
+		))
+	}
+	return warnings
 }
