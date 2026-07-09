@@ -27,7 +27,32 @@ import (
 // Section names must be non-empty; an empty section name produces "[]",
 // which is invalid INI. Callers are responsible for ensuring non-empty
 // section names before calling this function.
+//
+// It is the single-valued adapter over RenderINIMulti: every key renders as
+// exactly one "key = value" line. Callers needing an oslo MultiStrOpt (a key
+// repeated once per value, e.g. [federation] trusted_dashboard) lift their
+// merged map with LiftSections and render with RenderINIMulti.
 func RenderINI(sections map[string]map[string]string) string {
+	return RenderINIMulti(LiftSections(sections))
+}
+
+// RenderINIMulti renders a map of INI sections whose values are ordered slices
+// into an INI format string, emitting one "key = value" line per slice element
+// in slice order. This is the wire form oslo.config's MultiStrOpt consumes: a
+// repeated key accumulates into a list, so [federation] trusted_dashboard with
+// two origins must appear as two separate lines rather than one joined value.
+//
+// Sections and keys are sorted alphabetically for deterministic output — the
+// rendered config feeds a content-addressed ConfigMap name, so an unstable
+// order would churn the name on every reconcile. Values within a key keep
+// their slice order, since oslo preserves it and callers may depend on the
+// first entry (e.g. a preferred dashboard origin).
+//
+// A key whose slice is empty is omitted entirely, so an absent option falls
+// back to oslo's compiled-in default rather than being overridden with an
+// empty value. A section with no rendered keys still emits its header, which
+// matches RenderINI's behavior for an empty section map.
+func RenderINIMulti(sections map[string]map[string][]string) string {
 	if len(sections) == 0 {
 		return ""
 	}
@@ -52,10 +77,32 @@ func RenderINI(sections map[string]map[string]string) string {
 		sort.Strings(keys)
 
 		for _, k := range keys {
-			fmt.Fprintf(&b, "%s = %s\n", k, sections[name][k])
+			for _, v := range sections[name][k] {
+				fmt.Fprintf(&b, "%s = %s\n", k, v)
+			}
 		}
 	}
 	return b.String()
+}
+
+// LiftSections converts a single-valued section map into the multi-valued
+// shape RenderINIMulti consumes, lifting each value to a one-element slice.
+// It returns a new map without mutating the input, so callers may set
+// multi-valued keys on the result after merging their single-valued defaults
+// and user overrides through MergeDefaults.
+func LiftSections(sections map[string]map[string]string) map[string]map[string][]string {
+	if sections == nil {
+		return nil
+	}
+	out := make(map[string]map[string][]string, len(sections))
+	for section, kvs := range sections {
+		lifted := make(map[string][]string, len(kvs))
+		for k, v := range kvs {
+			lifted[k] = []string{v}
+		}
+		out[section] = lifted
+	}
+	return out
 }
 
 // MergeDefaults merges user-provided config with operator defaults.

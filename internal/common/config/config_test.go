@@ -98,6 +98,119 @@ func TestRenderINI(t *testing.T) {
 	}
 }
 
+func TestRenderINIMulti(t *testing.T) {
+	tests := []struct {
+		name     string
+		sections map[string]map[string][]string
+		want     string
+	}{
+		{
+			name:     "nil sections",
+			sections: nil,
+			want:     "",
+		},
+		{
+			name:     "empty sections map",
+			sections: map[string]map[string][]string{},
+			want:     "",
+		},
+		{
+			name: "repeated key emits one line per value in slice order",
+			sections: map[string]map[string][]string{
+				"federation": {"trusted_dashboard": {
+					"https://b.example.com/auth/websso/",
+					"https://a.example.com/auth/websso/",
+				}},
+			},
+			want: "[federation]\n" +
+				"trusted_dashboard = https://b.example.com/auth/websso/\n" +
+				"trusted_dashboard = https://a.example.com/auth/websso/\n",
+		},
+		{
+			name: "empty slice omits the key entirely",
+			sections: map[string]map[string][]string{
+				"federation": {
+					"trusted_dashboard":     {},
+					"sso_callback_template": {"/etc/keystone/sso_callback_template.html"},
+				},
+			},
+			want: "[federation]\nsso_callback_template = /etc/keystone/sso_callback_template.html\n",
+		},
+		{
+			name: "nil slice omits the key entirely",
+			sections: map[string]map[string][]string{
+				"federation": {"trusted_dashboard": nil},
+			},
+			want: "[federation]\n",
+		},
+		{
+			name: "sections and keys sort alphabetically, values keep slice order",
+			sections: map[string]map[string][]string{
+				"federation": {
+					"trusted_dashboard":     {"https://z.example.com/", "https://a.example.com/"},
+					"sso_callback_template": {"/tpl.html"},
+				},
+				"DEFAULT": {"debug": {"true"}},
+			},
+			want: "[DEFAULT]\ndebug = true\n\n" +
+				"[federation]\nsso_callback_template = /tpl.html\n" +
+				"trusted_dashboard = https://z.example.com/\n" +
+				"trusted_dashboard = https://a.example.com/\n",
+		},
+		{
+			name: "empty string value renders an empty assignment",
+			sections: map[string]map[string][]string{
+				"DEFAULT": {"keystone_user": {""}},
+			},
+			want: "[DEFAULT]\nkeystone_user = \n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			g.Expect(RenderINIMulti(tt.sections)).To(Equal(tt.want))
+		})
+	}
+}
+
+// TestRenderINIMulti_Deterministic guards the content-addressed ConfigMap name
+// the rendered config feeds: repeated renders of the same input must be
+// byte-identical despite Go's randomized map iteration order.
+func TestRenderINIMulti_Deterministic(t *testing.T) {
+	g := NewGomegaWithT(t)
+	sections := map[string]map[string][]string{
+		"federation": {"trusted_dashboard": {"https://a/", "https://b/", "https://c/"}},
+		"DEFAULT":    {"debug": {"true"}, "use_stderr": {"true"}},
+		"token":      {"provider": {"fernet"}},
+	}
+	first := RenderINIMulti(sections)
+	for range 20 {
+		g.Expect(RenderINIMulti(sections)).To(Equal(first))
+	}
+}
+
+func TestLiftSections(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	g.Expect(LiftSections(nil)).To(BeNil())
+
+	in := map[string]map[string]string{
+		"DEFAULT":    {"debug": "true"},
+		"federation": {},
+	}
+	got := LiftSections(in)
+	g.Expect(got).To(Equal(map[string]map[string][]string{
+		"DEFAULT":    {"debug": {"true"}},
+		"federation": {},
+	}))
+
+	// The lift must not alias the input: mutating the result leaves the
+	// caller's merged single-valued map untouched.
+	got["DEFAULT"]["debug"] = []string{"false"}
+	g.Expect(in["DEFAULT"]["debug"]).To(Equal("true"))
+}
+
 func TestMergeDefaults(t *testing.T) {
 	tests := []struct {
 		name       string
