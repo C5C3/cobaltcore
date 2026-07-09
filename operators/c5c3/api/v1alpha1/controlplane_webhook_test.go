@@ -6,6 +6,7 @@ package v1alpha1
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -1386,6 +1387,30 @@ func TestValidateCreate_RejectsBadExternalAuthURL(t *testing.T) {
 		g.Expect(err).To(HaveOccurred(), "expected %q to be rejected", bad)
 		g.Expect(err.Error()).To(ContainSubstring("authURL"), "for input %q", bad)
 	}
+}
+
+// TestValidateCreate_RejectsOverLongExternalAuthURL mirrors the MaxLength=2048
+// marker. The CRD Pattern is end-unanchored, so a multi-kilobyte path is otherwise
+// admissible — and the reconciler interpolates authURL into
+// status.conditions[].message, whose 32768-byte cap is a WHOLE-OBJECT constraint:
+// one over-long message makes every condition unpersistable and the reconciler
+// spins in a backoff loop with no condition to diagnose it by.
+func TestValidateCreate_RejectsOverLongExternalAuthURL(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	prefix := "https://keystone.example.com/"
+
+	atCap := externalControlPlane()
+	atCap.Spec.Services.Keystone.External.AuthURL = prefix + strings.Repeat("a", maxExternalAuthURLBytes-len(prefix))
+	_, err := w.ValidateCreate(context.Background(), atCap)
+	g.Expect(err).NotTo(HaveOccurred(), "an authURL exactly at the cap is admissible")
+
+	overCap := externalControlPlane()
+	overCap.Spec.Services.Keystone.External.AuthURL = prefix + strings.Repeat("a", maxExternalAuthURLBytes-len(prefix)+1)
+	_, err = w.ValidateCreate(context.Background(), overCap)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("services.keystone.external.authURL"))
+	g.Expect(err.Error()).To(ContainSubstring("at most 2048 bytes"))
 }
 
 // TestValidateCreate_RejectsEmptyCABundleSecretRefName verifies a present-but-

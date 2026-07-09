@@ -135,6 +135,9 @@ func (r *ControlPlaneReconciler) reconcileKeystone(ctx context.Context, cp *c5c3
 	// preserve the child unless keystoneDeletionAllowedAnnotation opts in — is the
 	// only sanctioned teardown path, because the child's credential/fernet keys are
 	// irreplaceable.
+	//
+	// The message embeds authURL, so it is bounded by truncateConditionMessage —
+	// see the sibling short-circuit in reconcileInfrastructure for why.
 	if cp.IsExternalKeystone() {
 		logger.Info("External keystone mode; no Keystone child is projected",
 			"authURL", externalKeystoneAuthURL(cp))
@@ -143,8 +146,8 @@ func (r *ControlPlaneReconciler) reconcileKeystone(ctx context.Context, cp *c5c3
 			Status:             metav1.ConditionTrue,
 			ObservedGeneration: cp.Generation,
 			Reason:             conditionReasonExternallyManaged,
-			Message: fmt.Sprintf("External keystone mode: identity is managed against %s; "+
-				"no Keystone child is projected", externalKeystoneAuthURL(cp)),
+			Message: truncateConditionMessage(fmt.Sprintf("External keystone mode: identity is managed against %s; "+
+				"no Keystone child is projected", externalKeystoneAuthURL(cp))),
 		})
 		return ctrl.Result{}, nil
 	}

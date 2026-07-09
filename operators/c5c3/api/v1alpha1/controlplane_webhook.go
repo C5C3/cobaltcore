@@ -114,6 +114,12 @@ const (
 // as defense-in-depth for callers that bypass CRD schema admission.
 var controlPlaneReleaseRegexp = regexp.MustCompile(`^\d{4}\.[12]$`)
 
+// maxExternalAuthURLBytes mirrors the +kubebuilder:validation:MaxLength=2048 marker
+// on ExternalKeystoneSpec.AuthURL. The cap exists because the reconciler
+// interpolates authURL into status.conditions[].message, whose 32768-byte apiserver
+// limit is a whole-object constraint — see the marker's doc comment.
+const maxExternalAuthURLBytes = 2048
+
 // validateExternalAuthURL enforces that an External-mode authURL is a well-formed
 // absolute HTTP(S) URL with a host, going beyond the coarse ^https?://[^\s/]+ CRD
 // Pattern marker on ExternalKeystoneSpec.AuthURL: the reconciler's identity
@@ -122,8 +128,8 @@ var controlPlaneReleaseRegexp = regexp.MustCompile(`^\d{4}\.[12]$`)
 // characters) here rather than letting them wedge the dialer. This is a shape
 // gate, not an SSRF control — admission cannot resolve where the host points, so
 // the dialing reconciler must still enforce network egress restrictions. Mirrors
-// (and strengthens) the CRD Pattern marker as defense-in-depth for callers that
-// bypass CRD schema admission.
+// (and strengthens) the CRD Pattern and MaxLength markers as defense-in-depth for
+// callers that bypass CRD schema admission.
 func validateExternalAuthURL(path *field.Path, raw string) *field.Error {
 	u, err := url.Parse(raw)
 	switch {
@@ -133,6 +139,8 @@ func validateExternalAuthURL(path *field.Path, raw string) *field.Error {
 		return field.Invalid(path, raw, "must be an http(s) URL (scheme http or https)")
 	case u.Host == "":
 		return field.Invalid(path, raw, "must include a host")
+	case len(raw) > maxExternalAuthURLBytes:
+		return field.Invalid(path, raw, fmt.Sprintf("must be at most %d bytes", maxExternalAuthURLBytes))
 	}
 	return nil
 }

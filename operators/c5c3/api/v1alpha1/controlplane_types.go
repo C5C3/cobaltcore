@@ -298,7 +298,17 @@ type ExternalKeystoneSpec struct {
 	// it with a full net/url parse as defense-in-depth. Neither gate is an SSRF
 	// control — admission cannot resolve where the host points, so the reconciler
 	// that dials this endpoint must still enforce network egress restrictions.
+	//
+	// maxLength bounds the ONE unbounded input the reconciler interpolates into
+	// status.conditions[].message. The pattern is end-unanchored, so without a cap
+	// a multi-kilobyte path is admissible and the assembled message can exceed the
+	// apiserver's 32768-byte message cap — which fails the WHOLE status.conditions
+	// write, so no condition persists and the reconciler spins in a backoff loop.
+	// 2048 is the conventional practical URL ceiling and far above any real
+	// identity endpoint. Callers that bypass both gates are caught by
+	// truncateConditionMessage at every interpolation site.
 	// +kubebuilder:validation:Pattern=`^https?://[^\s/]+`
+	// +kubebuilder:validation:MaxLength=2048
 	AuthURL string `json:"authURL"`
 
 	// EndpointType selects which Keystone catalog interface to authenticate

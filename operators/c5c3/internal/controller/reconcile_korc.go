@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"reflect"
 	"time"
+	"unicode/utf8"
 
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -41,6 +42,35 @@ func adminAppCredentialName(cp *c5c3v1alpha1.ControlPlane) string {
 	return cp.Name + adminAppCredentialNameSuffix
 }
 
+// maxConditionMessageBytes is the apiserver's cap on metav1.Condition.Message
+// (maxLength: 32768 in the generated CRD schema). It is a whole-object constraint:
+// ONE over-long message makes the entire status.conditions write fail, so every
+// condition — not just the offending one — stops persisting and the ControlPlane's
+// status freezes at its last good value while the reconciler retries forever.
+const maxConditionMessageBytes = 32768
+
+// truncateConditionMessage bounds msg to maxConditionMessageBytes, cutting back to
+// a rune boundary so the result stays valid UTF-8.
+//
+// The messages the failure paths assemble have no length budget of their own: they
+// relay K-ORC's condition message VERBATIM (itself allowed up to 32768 bytes) and
+// prepend/append spec strings — spec.region carries no maxLength at all, and while
+// spec.services.keystone.external.authURL is capped at 2048 on the admission path,
+// a CRD- and webhook-bypassed CR is bounded by nothing. The one condition an
+// operator most needs to see, an external-Keystone failure, is exactly the one that
+// would otherwise be unwritable.
+func truncateConditionMessage(msg string) string {
+	if len(msg) <= maxConditionMessageBytes {
+		return msg
+	}
+	const suffix = " […truncated]"
+	cut := maxConditionMessageBytes - len(suffix)
+	for cut > 0 && !utf8.RuneStart(msg[cut]) {
+		cut--
+	}
+	return msg[:cut] + suffix
+}
+
 // conditionFailer returns a closure bound to cp and condType that stamps a
 // metav1.ConditionFalse status (with cp.Generation as the observed generation)
 // onto cp.Status.Conditions. It collapses the ~30 identical
@@ -48,6 +78,13 @@ func adminAppCredentialName(cp *c5c3v1alpha1.ControlPlane) string {
 // and catalog sub-reconcilers into a single fail(reason, message) call; the
 // caller keeps its own (Result, error) return so the requeue-vs-hard-error
 // decision stays explicit at each site.
+//
+// It is also the choke point where every dynamically assembled FAILURE message is
+// bounded to what the apiserver accepts (truncateConditionMessage). It is not the
+// only one: the two External-mode ConditionTrue messages set directly by
+// reconcileKeystone and reconcileInfrastructure embed authURL, so they call
+// truncateConditionMessage themselves. Any other direct SetCondition that
+// interpolates a spec string must do the same.
 func conditionFailer(cp *c5c3v1alpha1.ControlPlane, condType string) func(reason, message string) {
 	return func(reason, message string) {
 		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
@@ -55,7 +92,7 @@ func conditionFailer(cp *c5c3v1alpha1.ControlPlane, condType string) func(reason
 			Status:             metav1.ConditionFalse,
 			ObservedGeneration: cp.Generation,
 			Reason:             reason,
-			Message:            message,
+			Message:            truncateConditionMessage(message),
 		})
 	}
 }
@@ -419,7 +456,19 @@ func (r *ControlPlaneReconciler) classifyExternalKORCState(
 				))
 			}
 		}
-		fail(reason, fmt.Sprintf("external Keystone at %s: %s", authURL, rawMessage))
+		message := fmt.Sprintf("external Keystone at %s: %s", authURL, rawMessage)
+		// A catalog mismatch is the one class the message alone does not act on:
+		// gophercloud reports that no endpoint matched, never WHICH region or
+		// interface it looked for. Name the two spec fields that decide the lookup —
+		// the operator cannot repair an external catalog, so the only useful signal
+		// is what to compare it against (mirrors the ImportStalled message below).
+		if reason == conditionReasonCatalogEndpointMismatch {
+			message += fmt.Sprintf(
+				"; the external catalog must publish the %q interface in region %q "+
+					"(spec.services.keystone.external.endpointType and spec.region)",
+				korcEndpointType(cp), korcRegion(cp))
+		}
+		fail(reason, message)
 		return ctrl.Result{RequeueAfter: korcRequeueAfter}, true
 	}
 

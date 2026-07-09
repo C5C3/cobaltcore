@@ -114,6 +114,12 @@ func (r *ControlPlaneReconciler) reconcileInfrastructure(ctx context.Context, cp
 	// condition True with the dedicated ExternallyManaged reason — the condition
 	// SCHEMA is identical across modes, so subConditionTypes, setReadyCondition
 	// and the condition_type drift guard need no mode awareness.
+	//
+	// The message embeds authURL, so it is bounded by truncateConditionMessage like
+	// every assembled failure message: authURL's MaxLength keeps it far under the
+	// apiserver's cap on the admission path, but a webhook- and CRD-bypassed CR
+	// would otherwise make the WHOLE status.conditions write unpersistable — every
+	// condition, not just this one — and wedge the reconciler in a backoff loop.
 	if cp.IsExternalKeystone() {
 		logger.Info("External keystone mode; no backing services are provisioned",
 			"authURL", externalKeystoneAuthURL(cp))
@@ -122,8 +128,8 @@ func (r *ControlPlaneReconciler) reconcileInfrastructure(ctx context.Context, cp
 			Status:             metav1.ConditionTrue,
 			ObservedGeneration: cp.Generation,
 			Reason:             conditionReasonExternallyManaged,
-			Message: fmt.Sprintf("External keystone mode: identity is managed against %s; "+
-				"no MariaDB/Memcached is provisioned", externalKeystoneAuthURL(cp)),
+			Message: truncateConditionMessage(fmt.Sprintf("External keystone mode: identity is managed against %s; "+
+				"no MariaDB/Memcached is provisioned", externalKeystoneAuthURL(cp))),
 		})
 		return ctrl.Result{}, nil
 	}

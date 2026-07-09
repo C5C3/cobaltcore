@@ -12,8 +12,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
@@ -3253,4 +3255,166 @@ func TestReadExternalCABundle_KeyDefaultsToCACrt(t *testing.T) {
 	bundle, err := readExternalCABundle(context.Background(), c, cp)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(bundle).To(Equal(testCABundle))
+}
+
+// TestReconcileKORC_CatalogEndpointMismatchNamesRegionAndEndpointType covers the
+// spike-D3 loud failure: a region (or interface) the external catalog does not
+// publish yields "No suitable endpoint could be found in the service catalog".
+// gophercloud never says WHICH region or interface it looked for, so the relayed
+// message must name the two spec fields that decide the lookup — while still
+// carrying K-ORC's text verbatim.
+func TestReconcileKORC_CatalogEndpointMismatchNamesRegionAndEndpointType(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := korcExternalControlPlaneWithCA()
+	cp.Spec.Region = "eu-de-1"
+	cp.Spec.Services.Keystone.External.EndpointType = c5c3v1alpha1.ExternalEndpointTypeAdmin
+
+	const raw = "No suitable endpoint could be found in the service catalog"
+	cond, res, _ := reconcileKORCWithAC(t, cp, externalCASecret(), korcProgressingAC(cp, raw))
+
+	g.Expect(cond.Reason).To(Equal(conditionReasonCatalogEndpointMismatch))
+	g.Expect(cond.Message).To(ContainSubstring(raw), "K-ORC's message must be relayed verbatim")
+	g.Expect(cond.Message).To(ContainSubstring(`"admin" interface`))
+	g.Expect(cond.Message).To(ContainSubstring(`region "eu-de-1"`))
+	g.Expect(cond.Message).To(ContainSubstring("spec.region"))
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+}
+
+// TestConditionFailer_BoundsTheMessageToWhatTheApiserverAccepts covers the
+// whole-object hazard: metav1.Condition.Message is capped at 32768 bytes by the
+// CRD schema, and ONE over-long message rejects the entire status.conditions write
+// — so every condition, observedGeneration included, stops persisting. The failure
+// paths relay K-ORC's own (equally uncapped) message and fold in unbounded spec
+// strings, so the choke point must truncate rather than let the write fail.
+func TestConditionFailer_BoundsTheMessageToWhatTheApiserverAccepts(t *testing.T) {
+	cases := []struct {
+		name string
+		msg  string
+	}{
+		{name: "just under the cap", msg: strings.Repeat("a", maxConditionMessageBytes)},
+		{name: "one byte over the cap", msg: strings.Repeat("a", maxConditionMessageBytes+1)},
+		{name: "far over the cap", msg: strings.Repeat("a", 4*maxConditionMessageBytes)},
+		// Multi-byte runes make the naive cut land mid-rune, which would persist
+		// invalid UTF-8 into the condition.
+		{name: "multi-byte runes straddling the cut", msg: strings.Repeat("é", maxConditionMessageBytes)},
+		{name: "four-byte runes straddling the cut", msg: strings.Repeat("😀", maxConditionMessageBytes)},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewWithT(t)
+			cp := korcExternalControlPlane()
+
+			conditionFailer(cp, conditionTypeKORCReady)("CatalogEndpointMismatch", tc.msg)
+
+			cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeKORCReady)
+			g.Expect(cond).NotTo(BeNil())
+			g.Expect(len(cond.Message)).To(BeNumerically("<=", maxConditionMessageBytes),
+				"an over-long message must be truncated, not rejected by the apiserver")
+			g.Expect(utf8.ValidString(cond.Message)).To(BeTrue(),
+				"truncation must cut back to a rune boundary")
+
+			if len(tc.msg) <= maxConditionMessageBytes {
+				g.Expect(cond.Message).To(Equal(tc.msg), "a message within budget must be relayed verbatim")
+				return
+			}
+			g.Expect(cond.Message).To(HaveSuffix("truncated]"), "truncation must be visible to the operator")
+		})
+	}
+}
+
+// TestReconcileKORC_CatalogEndpointMismatchMessageStaysWritable is the end-to-end
+// guard: K-ORC's relayed message is itself allowed up to 32768 bytes, and this path
+// prepends the authURL and appends the region/endpointType hint on top of it. The
+// assembled message must still fit, or the status write that carries KORCReady —
+// the very condition the operator needs — is rejected wholesale.
+func TestReconcileKORC_CatalogEndpointMismatchMessageStaysWritable(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := korcExternalControlPlaneWithCA()
+	cp.Spec.Region = "eu-de-1"
+
+	raw := "No suitable endpoint could be found in the service catalog: " +
+		strings.Repeat("x", maxConditionMessageBytes)
+	cond, res, _ := reconcileKORCWithAC(t, cp, externalCASecret(), korcProgressingAC(cp, raw))
+
+	g.Expect(cond.Reason).To(Equal(conditionReasonCatalogEndpointMismatch))
+	g.Expect(len(cond.Message)).To(BeNumerically("<=", maxConditionMessageBytes))
+	g.Expect(cond.Message).To(HavePrefix("external Keystone at https://keystone.example.com/v3: "),
+		"truncation must preserve the head of the message, where the failure is named")
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+}
+
+// TestExternalModeReadyMessages_StayWritable closes the last gap in the condition-
+// message budget. conditionFailer bounds every assembled FAILURE message, but the
+// two External-mode short-circuits report ConditionTrue via a direct SetCondition
+// and embed authURL, so they must truncate themselves.
+//
+// authURL's MaxLength=2048 keeps the assembled message far under the cap on the
+// admission path; a CRD- AND webhook-bypassed CR is bounded by nothing. Because the
+// apiserver's 32768-byte message cap is a WHOLE-OBJECT constraint, one over-long
+// message rejects the entire status.conditions write — so no condition persists,
+// including the KORCReady=False an operator would need to diagnose it, and the
+// reconciler hard-errors into a workqueue backoff loop forever.
+func TestExternalModeReadyMessages_StayWritable(t *testing.T) {
+	cases := []struct {
+		name      string
+		condType  string
+		reconcile func(*ControlPlaneReconciler, context.Context, *c5c3v1alpha1.ControlPlane) (ctrl.Result, error)
+	}{
+		{
+			name:      "reconcileInfrastructure",
+			condType:  conditionTypeInfrastructureReady,
+			reconcile: (*ControlPlaneReconciler).reconcileInfrastructure,
+		},
+		{
+			name:      "reconcileKeystone",
+			condType:  conditionTypeKeystoneReady,
+			reconcile: (*ControlPlaneReconciler).reconcileKeystone,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewWithT(t)
+			cp := korcExternalControlPlane()
+			cp.Spec.Services.Keystone.External.AuthURL = "https://keystone.example.com/" +
+				strings.Repeat("a", 4*maxConditionMessageBytes)
+
+			// The External short-circuit returns before touching the client.
+			res, err := tc.reconcile(&ControlPlaneReconciler{}, context.Background(), cp)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(res).To(Equal(ctrl.Result{}), "the External short-circuit must not requeue")
+
+			cond := conditions.GetCondition(cp.Status.Conditions, tc.condType)
+			g.Expect(cond).NotTo(BeNil())
+			g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+			g.Expect(cond.Reason).To(Equal(conditionReasonExternallyManaged))
+			g.Expect(len(cond.Message)).To(BeNumerically("<=", maxConditionMessageBytes),
+				"an External-mode ConditionTrue message must be truncated, not rejected by the apiserver")
+			g.Expect(utf8.ValidString(cond.Message)).To(BeTrue(),
+				"truncation must cut back to a rune boundary")
+			g.Expect(cond.Message).To(HavePrefix("External keystone mode: identity is managed against https://"),
+				"truncation must preserve the head of the message")
+		})
+	}
+}
+
+// TestReconcileKORC_NonCatalogFailuresCarryNoRegionHint keeps the hint scoped: an
+// unreachable endpoint or a rejected password is not a catalog problem, so
+// pointing the operator at spec.region would send them down the wrong path.
+func TestReconcileKORC_NonCatalogFailuresCarryNoRegionHint(t *testing.T) {
+	for _, raw := range []string{
+		"Authentication failed: 401 Unauthorized",
+		"dial tcp: lookup keystone.example.com: no such host",
+	} {
+		t.Run(raw, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := korcExternalControlPlane()
+
+			cond, _, _ := reconcileKORCWithAC(t, cp, korcProgressingAC(cp, raw))
+
+			g.Expect(cond.Message).To(ContainSubstring(raw))
+			g.Expect(cond.Message).NotTo(ContainSubstring("spec.region"))
+		})
+	}
 }
