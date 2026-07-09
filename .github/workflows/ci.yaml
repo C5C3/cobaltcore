@@ -156,10 +156,19 @@ jobs:
               - 'operators/keystone/**'
               - 'operators/horizon/**'
               - 'tests/e2e/c5c3/**'
+              # The federated suite lives outside tests/e2e/ so the per-CR
+              # e2e-operator matrix leg does not sweep it up. It therefore needs
+              # its own entry here — tests_e2e_operator's 'tests/e2e/**' filter
+              # cannot reach it.
+              - 'tests/e2e-controlplane-sso/**'
               - 'deploy/**'
               - 'hack/**'
               - '.github/actions/**'
               - '.github/workflows/ci.yaml'
+              # The federated-controlplane suite pins the mod_auth_openidc
+              # sidecar to the locally built :dev tag, so a sidecar change must
+              # trigger the ControlPlane e2e jobs that exercise it.
+              - 'images/keystone-federation-proxy/**'
             # follow-up: Any E2E test-definition change forces all E2E
             # jobs to run. Kept separate from go_common so pure test edits do
             # not also trigger lint/unit/format/vuln jobs.
@@ -1379,6 +1388,120 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: e2e-controlplane-junit-report
+          path: _output/reports/
+          retention-days: 14
+
+  # Federated ControlPlane E2E: the end-user SSO experience (Horizon websso
+  # choices, the multi-domain login dropdown, and the websso round trip through
+  # the gateway).
+  #
+  # A SEPARATE job rather than a second suite directory on e2e-controlplane: the
+  # ControlPlane webhook permits one ControlPlane per namespace, and the shared
+  # `openstack-gw` Gateway sets `allowedRoutes.namespaces.from: Same` (the
+  # operators deliberately do not manage ReferenceGrant), so the two suites can
+  # share neither the `openstack` namespace nor the Gateway. Each therefore
+  # needs its own kind cluster.
+  #
+  # The suite therefore also lives outside tests/e2e/ (mirroring
+  # tests/e2e-operator-upgrade/): the per-CR e2e-operator matrix leg runs
+  # `chainsaw test tests/e2e/<operator>/` over the whole directory and would
+  # otherwise run this chain on a cluster that has neither keystone-operator,
+  # horizon-operator nor K-ORC.
+  #
+  # It loads the keystone-federation-proxy sidecar image so the suite's
+  # ControlPlane CR can pin `federationProxyImage.tag: dev` — without it the
+  # suite would validate the sidecar already published on main.
+  e2e-controlplane-sso:
+    needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]
+    # always(): allow the job to run when upstream Go jobs are skipped
+    # (e.g. pure E2E test-definition PRs where go=false). The explicit
+    # failure/cancelled guard still blocks if any upstream actually failed.
+    if: |
+      always() &&
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.fork != true &&
+      needs.changes.outputs.e2e-controlplane == 'true' &&
+      needs.build-e2e-images.result == 'success' &&
+      !contains(needs.*.result, 'failure') &&
+      !contains(needs.*.result, 'cancelled')
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 60
+    continue-on-error: false
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - name: Create kind cluster
+        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
+        with:
+          config: hack/kind-config.yaml
+          cluster_name: ${{ env.KIND_CLUSTER }}
+      - name: Load E2E images
+        uses: ./.github/actions/load-e2e-images
+        with:
+          images: |
+            ${{ env.IMAGE_PREFIX }}/keystone-operator:dev
+            ${{ env.IMAGE_PREFIX }}/c5c3-operator:dev
+            ${{ env.IMAGE_PREFIX }}/horizon-operator:dev
+            ${{ env.IMAGE_PREFIX }}/keystone-federation-proxy:dev
+            ${{ env.IMAGE_PREFIX }}/keystone:2025.2
+            ${{ env.IMAGE_PREFIX }}/horizon:2025.2
+      - name: Load images into kind
+        run: |
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/c5c3-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/horizon-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-federation-proxy:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:2025.2 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/horizon:2025.2 --name ${{ env.KIND_CLUSTER }}
+      # CONTROLPLANE_NAME must match the fixture CR (controlplane-sso) so the
+      # OpenBao bootstrap seeds the per-CR admin-password and Horizon
+      # SECRET_KEY paths the chain reads.
+      - name: Setup E2E infrastructure
+        uses: ./.github/actions/setup-e2e-infra
+        env:
+          WITH_CONTROLPLANE: "true"
+          CONTROLPLANE_OPERATORS: external
+          CONTROLPLANE_NAME: controlplane-sso
+          WITH_CONTROLPLANE_CR: "false"
+      - name: Deploy K-ORC
+        run: hack/ci-deploy-korc.sh
+      - name: Deploy keystone-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: keystone
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/keystone-operator
+          NAMESPACE: keystone-system
+      - name: Deploy horizon-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: horizon
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/horizon-operator
+          NAMESPACE: horizon-system
+      - name: Deploy c5c3-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: c5c3
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/c5c3-operator
+          NAMESPACE: c5c3-system
+      - name: Run federated ControlPlane E2E test
+        run: |
+          mkdir -p _output/reports
+          chainsaw test --config tests/e2e/chainsaw-config.yaml \
+            tests/e2e-controlplane-sso/
+        env:
+          E2E_REQUIRE_CONTROLPLANE_STACK: "true"
+      - name: Dump diagnostic info
+        if: always()
+        run: hack/ci-dump-diagnostics.sh
+        env:
+          OPERATOR: c5c3
+      - name: Upload JUnit report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: e2e-controlplane-sso-junit-report
           path: _output/reports/
           retention-days: 14
 
