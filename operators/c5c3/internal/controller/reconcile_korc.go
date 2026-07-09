@@ -148,11 +148,12 @@ func (r *ControlPlaneReconciler) reconcileKORC(ctx context.Context, cp *c5c3v1al
 	// Default domain, so import it (and its domain) as UNMANAGED K-ORC resources
 	// before minting — otherwise the AC blocks forever on "Waiting for User/admin
 	// to be created".
-	importMsg, err := r.ensureKORCAdminImports(ctx, cp, importCredRef)
+	imports, err := r.ensureKORCAdminImports(ctx, cp, importCredRef)
 	if err != nil {
 		fail("AdminImportError", fmt.Sprintf("ensuring K-ORC admin User/Domain imports: %v", err))
 		return ctrl.Result{}, err
 	}
+	importMsg := imports.statusFragment()
 
 	// K-ORC's managed ApplicationCredential reads the DESIRED secret from
 	// Secret.Data["value"] and passes it to Keystone when creating the credential
@@ -278,6 +279,25 @@ func (r *ControlPlaneReconciler) reconcileKORC(ctx context.Context, cp *c5c3v1al
 	// value while status is empty). LastRotation is stamped on a fresh mint/re-mint.
 	r.updateAdminApplicationCredentialStatus(cp, ac, restricted)
 
+	// EXTERNAL-MODE FAILURE CLASSIFICATION. K-ORC collapses every hard failure
+	// against a pre-existing Keystone — a wrong admin password (401), an
+	// unresolvable authURL, a private CA it does not trust, a region/endpointType
+	// absent from the catalog — into a NON-terminal Progressing condition with
+	// reason=TransientError. Nothing in the observed inventory is terminal, so
+	// neither GetTerminalError nor the reason discriminates: the failure class only
+	// survives in the free-text message. Classify on message substrings and relay
+	// K-ORC's message VERBATIM, so an operator can tell "fix the Secret" from "fix
+	// DNS" from "add the CA bundle" straight off `kubectl describe`.
+	//
+	// Gated on External mode so a managed CR's KORCReady reasons stay byte-identical:
+	// in managed mode the same transient message during bootstrap is a legitimate
+	// wait, not a misconfiguration.
+	if cp.IsExternalKeystone() {
+		if result, handled := r.classifyExternalKORCState(cp, imports, ac); handled {
+			return result, nil
+		}
+	}
+
 	// Surface a TERMINAL K-ORC failure distinctly: GetTerminalError is non-nil only
 	// when the AC's Progressing condition reports an unrecoverable/invalid-config
 	// reason (e.g. K-ORC cannot authenticate with the clouds.yaml). Without this the
@@ -318,6 +338,52 @@ func (r *ControlPlaneReconciler) reconcileKORC(ctx context.Context, cp *c5c3v1al
 		Message:            "K-ORC admin application credential is minted and available",
 	})
 	return ctrl.Result{}, nil
+}
+
+// classifyExternalKORCState maps an External-mode K-ORC failure onto a specific
+// KORCReady reason, returning handled=false when the generic (mode-agnostic)
+// branches in reconcileKORC should decide instead.
+//
+// It only ever fires while the ApplicationCredential is NOT usable — not Available,
+// or carrying a terminal error. A healthy, Available credential is never
+// re-classified: K-ORC leaves the message of the last transient attempt on the
+// Progressing condition, and classifying that would flip a converged ControlPlane
+// to AuthenticationFailed on a message it has already recovered from.
+//
+// Precedence:
+//
+//  1. A classifiable message on the admin Domain, the admin User, or the AC (in
+//     that dependency order) wins, and K-ORC's message is relayed verbatim.
+//  2. Otherwise, an import stuck past externalImportStallGrace on "waiting to be
+//     created externally" is the silent-empty hazard — every External-mode import
+//     target pre-exists, so the wait never ends on its own.
+//  3. Otherwise the caller's generic branches apply.
+func (r *ControlPlaneReconciler) classifyExternalKORCState(
+	cp *c5c3v1alpha1.ControlPlane, imports korcAdminImports, ac *orcv1alpha1.ApplicationCredential,
+) (ctrl.Result, bool) {
+	if orcv1alpha1.IsAvailable(ac) && orcv1alpha1.GetTerminalError(ac) == nil {
+		return ctrl.Result{}, false
+	}
+	fail := conditionFailer(cp, conditionTypeKORCReady)
+	authURL := externalKeystoneAuthURL(cp)
+
+	objs := append(imports.objects(), ac)
+	if reason, rawMessage := classifyExternalKORCFailure(objs...); reason != "" {
+		fail(reason, fmt.Sprintf("external Keystone at %s: %s", authURL, rawMessage))
+		return ctrl.Result{RequeueAfter: korcRequeueAfter}, true
+	}
+
+	if stuck, ok := imports.stalledImport(externalImportStallGrace); ok {
+		fail(conditionReasonImportStalled, fmt.Sprintf(
+			"admin import %s has been waiting to be created externally in %s for longer than %s; "+
+				"in External mode the import target already exists, so this is a misconfiguration — "+
+				"check spec.services.keystone.external.endpointType and spec.region",
+			stuck, authURL, externalImportStallGrace,
+		))
+		return ctrl.Result{RequeueAfter: korcRequeueAfter}, true
+	}
+
+	return ctrl.Result{}, false
 }
 
 // remintAdminApplicationCredential drives the actual re-mint when the stamped

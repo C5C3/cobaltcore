@@ -29,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/utils/ptr"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -2101,10 +2102,15 @@ func TestEnsureKORCAdminImports_CreatesUnmanagedUserAndDomain(t *testing.T) {
 	credRef := orcv1alpha1.CloudCredentialsReference{SecretName: "k-orc-clouds-yaml", CloudName: "admin"}
 	// Freshly-created imports are not yet Available, so the status fragment names the
 	// first import (Domain) as the stuck dependency.
-	importMsg, err := r.ensureKORCAdminImports(context.Background(), cp, credRef)
+	imports, err := r.ensureKORCAdminImports(context.Background(), cp, credRef)
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(importMsg).To(ContainSubstring("Domain"))
-	g.Expect(importMsg).To(ContainSubstring("not yet Available"))
+	g.Expect(imports.statusFragment()).To(ContainSubstring("Domain"))
+	g.Expect(imports.statusFragment()).To(ContainSubstring("not yet Available"))
+	// Both imports are returned with live status, in Domain-before-User dependency
+	// order, so the External-mode classifier can read their condition messages.
+	g.Expect(imports.objects()).To(HaveLen(2))
+	g.Expect(imports.domain.Name).To(Equal(adminDomainRef(cp)))
+	g.Expect(imports.user.Name).To(Equal(adminUserRef(cp)))
 
 	var domain orcv1alpha1.Domain
 	g.Expect(c.Get(context.Background(), types.NamespacedName{
@@ -2524,4 +2530,228 @@ func TestReconcileKORC_SteadyStateDoesNotOverwriteMintedCloudsYaml(t *testing.T)
 	g.Expect(string(after.Data[appCredCloudsYAMLKey])).To(ContainSubstring("application_credential_id"))
 	g.Expect(after.ResourceVersion).To(Equal(before.ResourceVersion),
 		"a steady-state pass must not churn the app-credential Secret via the seed")
+}
+
+// --- External keystone mode: K-ORC failure classification (KORCReady) ---
+
+// korcExternalControlPlane builds an External-mode ControlPlane whose admin
+// password lives in the user-supplied Secret adminPasswordSecret() provisions.
+// effectiveAdminPasswordSecretRef resolves to that Secret in External mode, so
+// readAdminPassword and the re-mint hash work unchanged.
+func korcExternalControlPlane() *c5c3v1alpha1.ControlPlane {
+	cp := korcControlPlane()
+	cp.Spec.Services.Keystone = &c5c3v1alpha1.ServiceKeystoneSpec{
+		Mode:     c5c3v1alpha1.KeystoneModeExternal,
+		External: &c5c3v1alpha1.ExternalKeystoneSpec{AuthURL: "https://keystone.example.com/v3"},
+	}
+	return cp
+}
+
+// korcProgressingAC returns an AC stamped with the current password hash (so no
+// re-mint fires) whose Progressing condition carries msg with K-ORC's
+// non-terminal TransientError reason — the shape every hard failure against the
+// external Keystone takes.
+func korcProgressingAC(cp *c5c3v1alpha1.ControlPlane, msg string) *orcv1alpha1.ApplicationCredential {
+	return &orcv1alpha1.ApplicationCredential{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        adminAppCredentialName(cp),
+			Namespace:   childNamespace(cp),
+			Annotations: map[string]string{adminPasswordHashAnnotation: testPasswordHash()},
+		},
+		Status: orcv1alpha1.ApplicationCredentialStatus{
+			Conditions: []metav1.Condition{{
+				Type:               orcv1alpha1.ConditionProgressing,
+				Status:             metav1.ConditionTrue,
+				Reason:             orcv1alpha1.ConditionReasonTransientError,
+				Message:            msg,
+				ObservedGeneration: 0,
+				LastTransitionTime: metav1.Now(),
+			}},
+		},
+	}
+}
+
+// reconcileKORCWithAC runs reconcileKORC against cp with the given seeded objects
+// and returns the resulting KORCReady condition.
+func reconcileKORCWithAC(
+	t *testing.T, cp *c5c3v1alpha1.ControlPlane, objs ...client.Object,
+) (*metav1.Condition, ctrl.Result) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	seeded := append([]client.Object{cp, adminPasswordSecret()}, objs...)
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(seeded...).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	res, err := r.reconcileKORC(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	return conditions.GetCondition(cp.Status.Conditions, conditionTypeKORCReady), res
+}
+
+// TestReconcileKORC_ExternalModeClassifiesFailures walks the D3 vocabulary: each
+// hard failure against the external Keystone reaches the ControlPlane as the same
+// non-terminal TransientError, so the message substring is the only discriminator.
+// Every case must produce its own documented reason AND relay K-ORC's message
+// verbatim.
+func TestReconcileKORC_ExternalModeClassifiesFailures(t *testing.T) {
+	tests := []struct {
+		name       string
+		message    string
+		wantReason string
+	}{
+		{
+			name:       "wrong password",
+			message:    `Authentication failed: got 401 instead: {"error":{"message":"The request you have made requires authentication."}}`,
+			wantReason: conditionReasonAuthenticationFailed,
+		},
+		{
+			name:       "unreachable authURL",
+			message:    `Get "https://keystone.example.com/v3": dial tcp: lookup keystone.example.com: no such host`,
+			wantReason: conditionReasonEndpointUnreachable,
+		},
+		{
+			name:       "untrusted private CA",
+			message:    `Get "https://keystone.example.com/v3": x509: certificate signed by unknown authority`,
+			wantReason: conditionReasonTLSVerificationFailed,
+		},
+		{
+			name:       "wrong region or endpointType",
+			message:    "No suitable endpoint could be found in the service catalog.",
+			wantReason: conditionReasonCatalogEndpointMismatch,
+		},
+		{
+			name:       "stale import id yields a 403 on application-credential create",
+			message:    `got 403 instead: {"error":{"message":"You are not authorized to perform the requested action: identity:create_application_credential."}}`,
+			wantReason: conditionReasonCredentialDrift,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := korcExternalControlPlane()
+
+			cond, res := reconcileKORCWithAC(t, cp, korcProgressingAC(cp, tt.message))
+
+			g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+			g.Expect(cond).NotTo(BeNil())
+			g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			g.Expect(cond.Reason).To(Equal(tt.wantReason))
+			g.Expect(cond.Message).To(ContainSubstring(tt.message),
+				"K-ORC's message must be relayed verbatim")
+			g.Expect(cond.Message).To(ContainSubstring("https://keystone.example.com/v3"),
+				"the message must name the external endpoint")
+		})
+	}
+}
+
+// TestReconcileKORC_ManagedModeReasonsUnchanged is the AC-2 regression guard: the
+// very fixtures that classify in External mode must leave a MANAGED CR's KORCReady
+// reasons byte-identical. In managed mode the operator's own bootstrap has only
+// just created the admin user, so the same transient message is a legitimate wait.
+func TestReconcileKORC_ManagedModeReasonsUnchanged(t *testing.T) {
+	for _, msg := range []string{
+		`Authentication failed: got 401 instead`,
+		`dial tcp: lookup keystone: no such host`,
+		`x509: certificate signed by unknown authority`,
+		"No suitable endpoint could be found in the service catalog.",
+	} {
+		t.Run(msg, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := korcControlPlane()
+
+			cond, res := reconcileKORCWithAC(t, cp, korcProgressingAC(cp, msg))
+
+			g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+			g.Expect(cond.Reason).To(Equal("WaitingForApplicationCredential"),
+				"a managed CR must not pick up the External-mode failure vocabulary")
+		})
+	}
+}
+
+// stalledDomainImport returns an admin Domain import that has been reporting
+// "waiting to be created externally" since transitioned.
+func stalledDomainImport(cp *c5c3v1alpha1.ControlPlane, transitioned metav1.Time) *orcv1alpha1.Domain {
+	return &orcv1alpha1.Domain{
+		ObjectMeta: metav1.ObjectMeta{Name: adminDomainRef(cp), Namespace: childNamespace(cp)},
+		Status: orcv1alpha1.DomainStatus{
+			Conditions: []metav1.Condition{{
+				Type:               orcv1alpha1.ConditionAvailable,
+				Status:             metav1.ConditionFalse,
+				Reason:             orcv1alpha1.ConditionReasonProgressing,
+				Message:            korcImportPendingExternalMarker,
+				LastTransitionTime: transitioned,
+			}},
+		},
+	}
+}
+
+// TestReconcileKORC_ExternalModeStalledImportSetsImportStalled asserts the
+// silent-empty detector: an admin import that has waited past the grace window for
+// a resource that already exists in the external Keystone is a misconfiguration,
+// and the message must point at the two spec fields that cause it.
+func TestReconcileKORC_ExternalModeStalledImportSetsImportStalled(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := korcExternalControlPlane()
+	stale := metav1.NewTime(time.Now().Add(-externalImportStallGrace - time.Minute))
+
+	// The AC is not Available and carries no classifiable message, so the stall
+	// detector is what must speak.
+	cond, res := reconcileKORCWithAC(
+		t, cp,
+		stalledDomainImport(cp, stale),
+		korcProgressingAC(cp, "Waiting for dependencies"),
+	)
+
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(conditionReasonImportStalled))
+	g.Expect(cond.Message).To(ContainSubstring(adminDomainRef(cp)), "the stuck import must be named")
+	g.Expect(cond.Message).To(ContainSubstring("endpointType"))
+	g.Expect(cond.Message).To(ContainSubstring("spec.region"))
+}
+
+// TestReconcileKORC_ExternalModeFreshImportDoesNotStall guards the grace window:
+// an import that only just started waiting is still converging and must report the
+// ordinary wait, not the alertable ImportStalled.
+func TestReconcileKORC_ExternalModeFreshImportDoesNotStall(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := korcExternalControlPlane()
+
+	cond, res := reconcileKORCWithAC(
+		t, cp,
+		stalledDomainImport(cp, metav1.Now()),
+		korcProgressingAC(cp, "Waiting for dependencies"),
+	)
+
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+	g.Expect(cond.Reason).To(Equal("WaitingForApplicationCredential"))
+	g.Expect(cond.Reason).NotTo(Equal(conditionReasonImportStalled))
+}
+
+// TestReconcileKORC_ExternalModeAvailableCredentialIsNotReclassified covers the
+// steady-state edge path. K-ORC leaves the message of the last transient attempt
+// on the Progressing condition, so a converged ControlPlane whose AC once saw a
+// 401 must NOT be flipped back to AuthenticationFailed.
+func TestReconcileKORC_ExternalModeAvailableCredentialIsNotReclassified(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := korcExternalControlPlane()
+
+	ac := korcProgressingAC(cp, `Authentication failed: got 401 instead`)
+	ac.Status.ID = ptr.To("ac-id")
+	ac.Status.Conditions = append(ac.Status.Conditions, metav1.Condition{
+		Type:               orcv1alpha1.ConditionAvailable,
+		Status:             metav1.ConditionTrue,
+		Reason:             orcv1alpha1.ConditionReasonSuccess,
+		Message:            "credential minted",
+		LastTransitionTime: metav1.Now(),
+	})
+
+	cond, res := reconcileKORCWithAC(t, cp, ac)
+
+	g.Expect(res.IsZero()).To(BeTrue())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal("ApplicationCredentialMinted"))
 }

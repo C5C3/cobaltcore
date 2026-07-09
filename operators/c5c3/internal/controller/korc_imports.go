@@ -7,6 +7,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"time"
 
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -44,6 +45,58 @@ func adminDomainRef(cp *c5c3v1alpha1.ControlPlane) string {
 	return cp.Name + "-domain-default"
 }
 
+// korcAdminImports carries the two admin-identity imports ensureKORCAdminImports
+// reconciled, with their live status. reconcileKORC needs the OBJECTS, not just a
+// rendered message: in External mode it classifies K-ORC's condition messages to
+// distinguish the failure classes K-ORC itself collapses into TransientError.
+type korcAdminImports struct {
+	domain *orcv1alpha1.Domain
+	user   *orcv1alpha1.User
+}
+
+// objects returns the imports in dependency order — Domain before User — so a
+// classifier reports the ROOT stuck dependency rather than the resource that
+// merely blocked on it.
+func (i korcAdminImports) objects() []orcv1alpha1.ObjectWithConditions {
+	var objs []orcv1alpha1.ObjectWithConditions
+	if i.domain != nil {
+		objs = append(objs, i.domain)
+	}
+	if i.user != nil {
+		objs = append(objs, i.user)
+	}
+	return objs
+}
+
+// statusFragment reports the first admin import (Domain before User) that is not
+// yet usable — either a terminal K-ORC error or a not-yet-Available state — or an
+// empty string when both imports are Available with no terminal error.
+func (i korcAdminImports) statusFragment() string {
+	if i.domain != nil {
+		if frag := korcImportStatusFragment("Domain", i.domain.Name, i.domain); frag != "" {
+			return frag
+		}
+	}
+	if i.user != nil {
+		return korcImportStatusFragment("User", i.user.Name, i.user)
+	}
+	return ""
+}
+
+// stalledImport reports the first admin import that has been waiting to be
+// "created externally" for longer than grace, as a human-readable "Kind name"
+// pair. See korcImportStalled for why that is a misconfiguration signal in
+// External mode rather than a legitimate wait.
+func (i korcAdminImports) stalledImport(grace time.Duration) (string, bool) {
+	if korcImportStalled(i.domain, grace) {
+		return fmt.Sprintf("Domain %q", i.domain.Name), true
+	}
+	if korcImportStalled(i.user, grace) {
+		return fmt.Sprintf("User %q", i.user.Name), true
+	}
+	return "", false
+}
+
 // ensureKORCAdminImports ensures the K-ORC Domain and User that the admin
 // ApplicationCredential's UserRef depends on exist as UNMANAGED imports. The
 // Keystone bootstrap creates the real admin user (in the Default domain); K-ORC
@@ -51,13 +104,13 @@ func adminDomainRef(cp *c5c3v1alpha1.ControlPlane) string {
 // "Waiting for User/admin to be created". Both CRs are owned by the ControlPlane
 // for GC and reuse the admin clouds.yaml credentials.
 //
-// It returns a human-readable import-status fragment (empty when both imports are
-// Available with no terminal error) so reconcileKORC can fold the stuck dependency
-// into the KORCReady message — the documented failure class (wrong clouds.yaml
-// endpoint, K-ORC swallowing list errors, an import hanging on "created
-// externally") otherwise surfaces only as an eternal "WaitingForApplicationCredential"
-// with no pointer to the real cause.
-func (r *ControlPlaneReconciler) ensureKORCAdminImports(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, credRef orcv1alpha1.CloudCredentialsReference) (string, error) {
+// It returns both reconciled imports carrying live status (controllerutil.
+// CreateOrUpdate Gets first) so reconcileKORC can fold the stuck dependency into
+// the KORCReady message and, in External mode, classify its condition messages —
+// the documented failure class (wrong clouds.yaml endpoint, K-ORC swallowing list
+// errors, an import hanging on "created externally") otherwise surfaces only as an
+// eternal "WaitingForApplicationCredential" with no pointer to the real cause.
+func (r *ControlPlaneReconciler) ensureKORCAdminImports(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, credRef orcv1alpha1.CloudCredentialsReference) (korcAdminImports, error) {
 	domain := &orcv1alpha1.Domain{
 		ObjectMeta: metav1.ObjectMeta{Name: adminDomainRef(cp), Namespace: childNamespace(cp)},
 	}
@@ -69,7 +122,7 @@ func (r *ControlPlaneReconciler) ensureKORCAdminImports(ctx context.Context, cp 
 		}
 		return controllerutil.SetControllerReference(cp, domain, r.Scheme)
 	}); err != nil {
-		return "", fmt.Errorf("admin Domain import %q: %w", domain.Name, err)
+		return korcAdminImports{}, fmt.Errorf("admin Domain import %q: %w", domain.Name, err)
 	}
 
 	user := &orcv1alpha1.User{
@@ -86,15 +139,10 @@ func (r *ControlPlaneReconciler) ensureKORCAdminImports(ctx context.Context, cp 
 		}
 		return controllerutil.SetControllerReference(cp, user, r.Scheme)
 	}); err != nil {
-		return "", fmt.Errorf("admin User import %q: %w", user.Name, err)
+		return korcAdminImports{}, fmt.Errorf("admin User import %q: %w", user.Name, err)
 	}
-	// Report the first admin import (Domain before User) that is not yet usable —
-	// either a terminal K-ORC error or a not-yet-Available state — or an empty
-	// string when both imports are Available with no terminal error.
-	if frag := korcImportStatusFragment("Domain", domain.Name, domain); frag != "" {
-		return frag, nil
-	}
-	return korcImportStatusFragment("User", user.Name, user), nil
+
+	return korcAdminImports{domain: domain, user: user}, nil
 }
 
 // korcImportStatusFragment reports the import-status fragment for a single K-ORC
