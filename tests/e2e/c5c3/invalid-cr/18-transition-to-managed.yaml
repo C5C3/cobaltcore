@@ -3,7 +3,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # UPDATE of the accepted External base to a Managed shape is rejected with the
-# reserved phase-3 takeover message.
+# reserved phase-3 takeover message. external is explicitly nulled, not merely
+# omitted: Chainsaw applies an UPDATE as an RFC 7386 JSON merge patch, so an
+# omitted external would be RETAINED from the External base and trip the
+# intra-struct CEL rule (external forbidden in Managed mode) at CRD validation,
+# before the validating webhook's transition gate ever runs. Nulling external
+# removes the block, yielding the clean Managed shape whose only remaining
+# violation is the External->Managed transition the webhook rejects with phase-3.
 apiVersion: c5c3.io/v1alpha1
 kind: ControlPlane
 metadata:
@@ -23,6 +29,7 @@ spec:
   services:
     keystone:
       mode: Managed
+      external: null
   korc:
     adminCredential:
       cloudCredentialsRef:

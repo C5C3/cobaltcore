@@ -292,10 +292,19 @@ FIXTURES: tuple[Fixture, ...] = (
         filename="18-transition-to-managed.yaml",
         comment=(
             "UPDATE of the accepted External base to a Managed shape is rejected with the\n"
-            "reserved phase-3 takeover message."
+            "reserved phase-3 takeover message. external is explicitly nulled, not merely\n"
+            "omitted: Chainsaw applies an UPDATE as an RFC 7386 JSON merge patch, so an\n"
+            "omitted external would be RETAINED from the External base and trip the\n"
+            "intra-struct CEL rule (external forbidden in Managed mode) at CRD validation,\n"
+            "before the validating webhook's transition gate ever runs. Nulling external\n"
+            "removes the block, yielding the clean Managed shape whose only remaining\n"
+            "violation is the External->Managed transition the webhook rejects with phase-3."
         ),
         name="cp-transition-b",
-        keystone="      mode: Managed\n",
+        keystone=(
+            "      mode: Managed\n"
+            "      external: null\n"
+        ),
         infrastructure=MANAGED_INFRA,
     ),
 )
