@@ -7,7 +7,7 @@
 #
 # Attaching them is the ONLY action this suite takes to enable federated login:
 # the c5c3-operator watches them, and once each reaches Ready it projects a
-# websso choice (OIDC) or a domain-dropdown entry (LDAP) onto the Horizon child
+# websso choice (OIDC) or multi-domain support (LDAP) onto the Horizon child
 # and the trusted dashboard origin onto the Keystone child.
 #
 # The OIDC backend provisions its own "forge" domain: the CRD forbids backing

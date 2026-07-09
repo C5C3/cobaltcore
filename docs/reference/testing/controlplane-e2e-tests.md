@@ -64,7 +64,7 @@ Without the stack the suites skip cleanly, so `make e2e` (which runs the whole
 | Suite | CR Name(s) | Behaviour Validated |
 | --- | --- | --- |
 | [full-controlplane-keystone](#full-controlplane-keystone) | `controlplane-keystone` | The entire orchestration chain, link by link, through aggregate `Ready` and a live API check |
-| [federated-controlplane](#federated-controlplane) | `controlplane-sso` | The end-user SSO experience: websso projection, the login page's SSO choice and domain dropdown, the websso round trip through the gateway |
+| [federated-controlplane](#federated-controlplane) | `controlplane-sso` | The end-user SSO experience: websso projection, the login page's SSO choice and domain field, the websso round trip through the gateway |
 | [deletion-orchestration](#deletion-orchestration) | `deletion-orch` | ORC-teardown finalizer sequencing; deletion completes even when Keystone is already gone |
 | [admin-password-scoping](#admin-password-scoping) | `controlplane` | Per-CR OpenBao-backed admin password projection |
 | [db-credential-scoping](#db-credential-scoping) | `controlplane` | Per-CR OpenBao-backed service DB credential projection |
@@ -205,9 +205,9 @@ keeps the per-CR `e2e-operator` job and `make e2e` from sweeping it up.
 | --- | --- |
 | 1. `controlplane-ready` | Keycloak, OpenLDAP, and the per-CP Horizon `SECRET_KEY` ExternalSecret come up; the ControlPlane reaches aggregate `Ready` |
 | 2. `backends-ready` | Both `KeystoneIdentityBackend` CRs reach `Ready` and the Keystone child reports `IdentityBackendsReady=AllBackendsProjected` |
-| 3. `projections` | Attaching the backends is the ONLY action taken, yet the Horizon child now carries the websso choices and the domain dropdown, and the Keystone child the trusted origin and the `dev`-tagged sidecar image |
-| 4. `rendered-settings` | The rendered `local_settings.py` carries `WEBSSO_ENABLED`, `WEBSSO_USE_HTTP_REFERER = False`, `SECURE_PROXY_SSL_HEADER`, and the domain dropdown |
-| 5. `browser-sso-round-trip` | One in-cluster browser, one cookie jar, three flows: (a) the login page offers the SSO choice and the domain dropdown; (b) the websso round trip completes through the gateway against the origin Keystone matches verbatim; (c) an LDAP-domain user logs in via the dropdown |
+| 3. `projections` | Attaching the backends is the ONLY action taken, yet the Horizon child now carries the websso choices and multi-domain support, and the Keystone child the trusted origin and the `dev`-tagged sidecar image |
+| 4. `rendered-settings` | The rendered `local_settings.py` carries `WEBSSO_ENABLED`, `WEBSSO_USE_HTTP_REFERER = False`, `SECURE_PROXY_SSL_HEADER`, and multi-domain support — but neither `OPENSTACK_KEYSTONE_DOMAIN_DROPDOWN` nor `OPENSTACK_KEYSTONE_DOMAIN_CHOICES`, which would bound the domain field to the domains the operator can enumerate |
+| 5. `browser-sso-round-trip` | One in-cluster browser, one cookie jar, three flows: (a) the login page offers the SSO choice and a free-text domain field; (b) the websso round trip completes through the gateway against the origin Keystone matches verbatim; (c) an LDAP-domain user logs in through that field |
 | 6. `detach` | Deleting both backends clears `spec.websso` and `spec.multiDomain`; `trustedDashboards` survives, since it is derived from `services.horizon`, not from the backends |
 
 **The browser runs in-cluster.** Unlike the gateway quick-start smokes (which

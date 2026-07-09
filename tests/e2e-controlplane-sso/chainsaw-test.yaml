@@ -30,10 +30,10 @@
 #   - Attaching a federation backend is the ONLY action needed: the
 #     c5c3-operator watches KeystoneIdentityBackend children and projects the
 #     websso choices onto the Horizon child and trusted_dashboard onto Keystone
-#   - The Horizon login page offers the SSO choice AND the domain dropdown
+#   - The Horizon login page offers the SSO choice AND a free-text domain field
 #   - The websso round trip completes THROUGH the gateway, so the origin
 #     Keystone matches verbatim is the one the browser really sends
-#   - An LDAP-domain user logs in through the dropdown
+#   - An LDAP-domain user logs in through that field
 #   - Detaching the backends removes both surfaces again
 #
 # ── DECISION: the browser runs IN-CLUSTER, not on the chainsaw host ──────────
@@ -224,8 +224,8 @@ spec:
 
   # ── Step 3: The ControlPlane PROJECTED both surfaces ───────────────────
   # The heart of the feature: nothing but the two backend applies happened,
-  # yet the Horizon child now carries the websso choices and the domain
-  # dropdown, and the Keystone child carries the trusted origin and the
+  # yet the Horizon child now carries the websso choices and multi-domain
+  # support, and the Keystone child carries the trusted origin and the
   # overridden sidecar image.
   - name: projections
     try:
@@ -254,11 +254,15 @@ spec:
             # the projection never pins domainChoices: the operator only sees
             # the LDAP-backed domains, and a fixed dropdown would reject every
             # other domain — including the SQL-backed ones it cannot enumerate.
+            #
+            # JMESPath parses a bare `false`/`null` as an identifier, not as a
+            # literal, so the backticks are what make these comparisons compare
+            # against the values rather than against two absent fields.
             multiDomain:
               enabled: true
               defaultDomain: Default
-              (domainDropdown == false): true
-              (domainChoices == null): true
+              (domainDropdown == `false`): true
+              (domainChoices == `null`): true
     - assert:
         resource:
           apiVersion: keystone.openstack.c5c3.io/v1alpha1
@@ -363,6 +367,45 @@ spec:
   # and the LDAP-domain login share a cookie jar the way a real session does.
   - name: browser-sso-round-trip
     try:
+    # Every backend that reaches Ready is its own reconcile, so the projection
+    # rewrites the Horizon spec more than once — websso for the OIDC backend,
+    # multiDomain for the LDAP one — and each rewrite re-renders
+    # local_settings.py under a new content-hashed ConfigMap name, rolling the
+    # Deployment. The steps above assert the spec and the rendered ConfigMap;
+    # both flip the moment the operator writes them, while the pod serving the
+    # login page lags a rollout behind.
+    #
+    # Two waits, in this order, and neither is redundant:
+    #
+    #  1. The Horizon child has observed its final spec and converged. Without
+    #     this the next assert can pass against a Deployment still carrying the
+    #     PREVIOUS template, whose rollout happens to have just finished — the
+    #     browser then races the roll to the final one.
+    #  2. That final rollout has landed: no old replica left, the surviving one
+    #     updated and ready. Ready alone would not prove it — with replicas: 1
+    #     a RollingUpdate keeps the Deployment Available from end to end.
+    - assert:
+        resource:
+          apiVersion: horizon.openstack.c5c3.io/v1alpha1
+          kind: Horizon
+          metadata:
+            name: controlplane-sso-horizon
+            namespace: openstack
+          (metadata.generation == status.observedGeneration): true
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: controlplane-sso-horizon
+            namespace: openstack
+          (metadata.generation == status.observedGeneration): true
+          (spec.replicas == status.replicas): true
+          (spec.replicas == status.updatedReplicas): true
+          (spec.replicas == status.readyReplicas): true
     - script:
         timeout: 5m
         shell: bash
@@ -382,11 +425,22 @@ spec:
           fi
           echo "OK: Envoy data-plane ClusterIP is ${ENVOY_IP}"
 
-          ADMIN_PASSWORD_B64=$(kubectl get secret controlplane-sso-keystone-keystone-admin-credentials \
-            -n "$NAMESPACE" -o jsonpath='{.data.password}') || {
-            echo "ERROR: could not read the projected admin-credentials Secret"; exit 1; }
+          # Read the admin-credentials Secret off the Keystone child rather than
+          # reconstructing its name here: the c5c3-operator derives it as
+          # keystoneName(cp) + "-admin-credentials", and a test that spells that
+          # convention out a second time silently rots when the operator changes it.
+          ADMIN_SECRET=$(kubectl get keystone controlplane-sso-keystone -n "$NAMESPACE" \
+            -o jsonpath='{.spec.bootstrap.adminPasswordSecretRef.name}')
+          ADMIN_SECRET_KEY=$(kubectl get keystone controlplane-sso-keystone -n "$NAMESPACE" \
+            -o jsonpath='{.spec.bootstrap.adminPasswordSecretRef.key}')
+          if [[ -z "${ADMIN_SECRET}" || -z "${ADMIN_SECRET_KEY}" ]]; then
+            echo "ERROR: Keystone child carries no bootstrap.adminPasswordSecretRef"; exit 1
+          fi
+          ADMIN_PASSWORD_B64=$(kubectl get secret "${ADMIN_SECRET}" \
+            -n "$NAMESPACE" -o jsonpath="{.data.${ADMIN_SECRET_KEY}}") || {
+            echo "ERROR: could not read the projected admin-credentials Secret ${ADMIN_SECRET}"; exit 1; }
           if [[ -z "${ADMIN_PASSWORD_B64}" ]]; then
-            echo "ERROR: admin-credentials Secret has no password key"; exit 1
+            echo "ERROR: Secret ${ADMIN_SECRET} has no ${ADMIN_SECRET_KEY} key"; exit 1
           fi
           ADMIN_PASSWORD=$(printf '%s' "$ADMIN_PASSWORD_B64" | base64 --decode)
 
@@ -403,7 +457,7 @@ spec:
           # NOTE: single-quoted `python3 -c` string — no apostrophes inside.
           kubectl exec -n "$NAMESPACE" "$POD" -c keystone -- \
             python3 -c '
-          import http.client, json, re, socket, ssl, sys, urllib.parse
+          import http.client, json, re, socket, ssl, sys, time, urllib.parse
 
           envoy_ip, admin_password = sys.argv[1], sys.argv[2]
           HORIZON = "horizon.127-0-0-1.nip.io"
@@ -417,7 +471,16 @@ spec:
           ctx.check_hostname = False
           ctx.verify_mode = ssl.CERT_NONE
 
-          cookies = {}
+          # One jar per host, because that is what a browser does — and here it
+          # is load-bearing, not pedantry. Keycloak sets KEYCLOAK_IDENTITY and
+          # KEYCLOAK_SESSION (plus _LEGACY twins), several KB of JWT between
+          # them. Replayed onto the dashboard they push the websso callback past
+          # uWSGI buffer-size (4096), which drops the request without a response
+          # and surfaces as a bare 503 from Envoy.
+          jars = {}
+
+          def jar(netloc):
+              return jars.setdefault(netloc, {})
 
           def connect(netloc):
               host = netloc.split(":")[0]
@@ -438,8 +501,9 @@ spec:
               # mod_auth_openidc classifies the request as a non-interactive API
               # call and answers 401 instead of the 302 that starts the login.
               h = {"Host": u.netloc, "Accept": "text/html"}
-              if cookies:
-                  h["Cookie"] = "; ".join(f"{k}={v}" for k, v in cookies.items())
+              held = jar(u.netloc)
+              if held:
+                  h["Cookie"] = "; ".join(f"{k}={v}" for k, v in held.items())
               h.update(headers or {})
               path = u.path + ("?" + u.query if u.query else "")
               conn.request(method, path, body=body, headers=h)
@@ -450,9 +514,9 @@ spec:
                       pair = value.split(";", 1)[0]
                       cname, _, cval = pair.partition("=")
                       if cval:
-                          cookies[cname.strip()] = cval
+                          held[cname.strip()] = cval
                       else:
-                          cookies.pop(cname.strip(), None)
+                          held.pop(cname.strip(), None)
               conn.close()
               return resp, data
 
@@ -470,18 +534,33 @@ spec:
           #    free text on purpose: a select bounded by the LDAP-backed domains
           #    would make Django reject every other domain, so users of a
           #    SQL-backed domain the operator cannot enumerate could not log in.
-          _, resp, data = follow(f"https://{HORIZON}/auth/login/")
-          assert resp.status == 200, f"login page returned {resp.status}"
-          html = data.decode(errors="replace")
+          #
+          #    The Deployment has finished rolling (asserted above), but Envoy
+          #    learns the surviving endpoint over xDS, so the first request can
+          #    still be dispatched to the pod that just went away. Retry until
+          #    the projected choice is served, bounded inside the step timeout.
+          deadline = time.monotonic() + 90
+          while True:
+              jars.clear()
+              try:
+                  _, resp, data = follow(f"https://{HORIZON}/auth/login/")
+                  html = data.decode(errors="replace")
+                  if resp.status == 200 and "keycloak-forge_openid" in html:
+                      break
+                  last = f"status {resp.status}, SSO choice absent"
+              except OSError as exc:
+                  last = f"connection error: {exc}"
+              if time.monotonic() > deadline:
+                  raise AssertionError(
+                      f"login page offers no SSO choice for the Ready federation backend ({last})")
+              time.sleep(3)
           assert "csrfmiddlewaretoken" in html, "login page is not the Django login form"
-          assert "keycloak-forge_openid" in html, (
-              "login page offers no SSO choice for the Ready federation backend")
           assert re.search(r"name=\"domain\"", html), (
               "login page offers no domain field for the LDAP-backed domain")
           assert not re.search(r"<select[^>]*name=\"domain\"", html), (
               "the domain field must stay free text, not a select bounded by "
               "the LDAP-backed domains")
-          assert "sessionid" not in cookies, "no session may exist before logging in"
+          assert "sessionid" not in jar(HORIZON), "no session may exist before logging in"
           print("OK: login page offers the SSO choice and a free-text domain field")
 
           # ── 5b: the websso round trip, through the gateway.
@@ -523,10 +602,10 @@ spec:
               body=urllib.parse.urlencode({"token": token}),
               headers={"Content-Type": "application/x-www-form-urlencoded"})
           assert resp.status in (200, 302, 403), f"websso callback returned {resp.status}"
-          assert "sessionid" in cookies, "no dashboard session established by the websso hand-off"
+          assert "sessionid" in jar(HORIZON), "no dashboard session established by the websso hand-off"
           print("OK: federated login established a dashboard session")
 
-          # ── 5c: LDAP-domain login through the dropdown.
+          # ── 5c: LDAP-domain login through the domain field.
           #    A fresh domain carries no role assignments and keystone answers
           #    401 for a scope the user holds no role on, so grant professor the
           #    member role first (assignments live in SQL; the directory stays
@@ -558,8 +637,8 @@ spec:
                      method="PUT", headers={"X-Auth-Token": admin_token})
           print("OK: member role granted to the LDAP user on the planetexpress domain")
 
-          # Fresh cookie jar: this is a new browser session on the login page.
-          cookies.clear()
+          # Fresh cookie jars: this is a new browser session on the login page.
+          jars.clear()
           _, resp, data = follow(f"https://{HORIZON}/auth/login/")
           html = data.decode(errors="replace")
           m = re.search(r"name=\"csrfmiddlewaretoken\"[^>]*value=\"([^\"]+)\"", html)
@@ -578,8 +657,8 @@ spec:
           assert "Invalid credentials" not in final, "LDAP-domain login rejected the credentials"
           # A /project/ 403 after login is expected in a Keystone-only stack
           # (no compute/network services in the catalog) and must not fail here.
-          assert "sessionid" in cookies, "LDAP-domain login established no dashboard session"
-          print("OK: LDAP-domain login through the dropdown established a session")
+          assert "sessionid" in jar(HORIZON), "LDAP-domain login established no dashboard session"
+          print("OK: LDAP-domain login through the domain field established a session")
           ' "$ENVOY_IP" "$ADMIN_PASSWORD"
     catch:
     - script:
@@ -631,8 +710,8 @@ spec:
             name: controlplane-sso-horizon
             namespace: openstack
           spec:
-            (websso == null): true
-            (multiDomain == null): true
+            (websso == `null`): true
+            (multiDomain == `null`): true
     - assert:
         resource:
           apiVersion: keystone.openstack.c5c3.io/v1alpha1

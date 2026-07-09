@@ -5,7 +5,7 @@
 # In-suite OpenLDAP fixture for the federated-controlplane E2E test, copied
 # verbatim (bar this header) from
 # tests/e2e/keystone/ldap-domain-backend/00-openldap.yaml. It backs the
-# "planetexpress" domain the login page's domain dropdown selects.
+# "planetexpress" domain a user types into the login page's domain field.
 #
 # The image pin is tag+digest and Renovate-tracked via the docker-digest
 # customManager in renovate.json — the managerFilePatterns list this path.
