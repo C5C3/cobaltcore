@@ -183,6 +183,7 @@ type ServicesSpec struct {
 // +kubebuilder:validation:XValidation:rule="!(has(self.mode) && self.mode == 'External') || !has(self.rotationInterval)",message="services.keystone.rotationInterval is forbidden when services.keystone.mode is External"
 // +kubebuilder:validation:XValidation:rule="!(has(self.mode) && self.mode == 'External') || !has(self.gateway)",message="services.keystone.gateway is forbidden when services.keystone.mode is External"
 // +kubebuilder:validation:XValidation:rule="!(has(self.mode) && self.mode == 'External') || !has(self.publicEndpoint)",message="services.keystone.publicEndpoint is forbidden when services.keystone.mode is External"
+// +kubebuilder:validation:XValidation:rule="!(has(self.mode) && self.mode == 'External') || !has(self.federationProxyImage)",message="services.keystone.federationProxyImage is forbidden when services.keystone.mode is External"
 type ServiceKeystoneSpec struct {
 	// Mode selects whether the Keystone service is Managed (the reconciler
 	// deploys and owns a full Keystone workload, today's behavior) or External
@@ -247,9 +248,31 @@ type ServiceKeystoneSpec struct {
 	// The pattern enforces an HTTP(S) URL shape so a malformed endpoint is
 	// rejected at admission rather than wedging the projected Keystone CR (the
 	// keystone webhook later rejects a non-URL publicEndpoint post-admission).
+	// The 512-character bound mirrors the Horizon child's bound on
+	// websso.keystoneURL, which the reconciler projects this value onto: a
+	// longer value would be schema-legal here and rejected on the child.
 	// +optional
+	// +kubebuilder:validation:MaxLength=512
 	// +kubebuilder:validation:Pattern=`^https?://`
 	PublicEndpoint string `json:"publicEndpoint,omitempty"`
+
+	// FederationProxyImage optionally overrides the mod_auth_openidc sidecar
+	// image the reconciler projects onto the Keystone child's
+	// spec.federation.proxyImage. When nil the reconciler projects
+	// "ghcr.io/c5c3/keystone-federation-proxy:latest".
+	//
+	// That default is a MUTABLE tag: every node re-pulls it on each pod start,
+	// and there is no way to exercise a locally built sidecar. Override it with
+	// a digest-carrying ImageSpec for the immutable pin published images are
+	// expected to carry, or with a locally loaded tag to test a sidecar under
+	// review. The image is inert until a federation-typed
+	// KeystoneIdentityBackend attaches — only then does the keystone-operator
+	// project the sidecar.
+	//
+	// Forbidden in External mode (CEL + webhook enforced): no Keystone workload
+	// is deployed, so there is no sidecar to image.
+	// +optional
+	FederationProxyImage *commonv1.ImageSpec `json:"federationProxyImage,omitempty"`
 }
 
 // KeystoneMode selects whether the ControlPlane's Keystone service is deployed
@@ -372,6 +395,41 @@ type ServiceHorizonSpec struct {
 	// dashboard reads its own key material.
 	// +optional
 	SecretKeyRef *commonv1.SecretRefSpec `json:"secretKeyRef,omitempty"`
+
+	// PublicEndpoint is the BROWSER-observed dashboard base URL, without a
+	// trailing slash and INCLUDING a non-default port
+	// (e.g. "https://horizon.127-0-0-1.nip.io" or
+	// "https://horizon.example.com:8443"). The reconciler derives the WebSSO
+	// origin from it — publicEndpoint + "/auth/websso/" — and projects that
+	// onto the Keystone child's spec.federation.trustedDashboards.
+	//
+	// Keystone matches the origin the dashboard sends VERBATIM, so the value
+	// must reproduce exactly what the browser's address bar shows. When empty
+	// and Gateway is set, the reconciler derives "https://{gateway.hostname}",
+	// the default-443 form; any deployment publishing the dashboard on another
+	// port MUST set this field explicitly, since the port cannot be derived
+	// from the hostname alone and the WebSSO hand-off would be rejected.
+	//
+	// NOTE: Django derives the origin it sends from the request's Host header,
+	// i.e. from gateway.hostname — not from this field. Setting a publicEndpoint
+	// whose host differs from gateway.hostname therefore produces an origin
+	// Keystone will reject, so whenever a gateway is configured the validating
+	// webhook enforces that the two hostnames agree (and that the scheme is
+	// https, since the Gateway listener terminates TLS).
+	//
+	// The 499-character bound is the Keystone child's 512-character bound on
+	// spec.federation.trustedDashboards[] minus the 13 characters the derived
+	// origin appends ("/auth/websso/"). Without it a schema-legal value here
+	// would be rejected on the projected child, wedging the whole ControlPlane
+	// behind an error naming a field the operator never wrote.
+	//
+	// This mirrors ServiceKeystoneSpec.PublicEndpoint. It needs no External-mode
+	// forbid-rule: the validating webhook already forbids services.horizon
+	// entirely when services.keystone.mode is External.
+	// +optional
+	// +kubebuilder:validation:MaxLength=499
+	// +kubebuilder:validation:Pattern=`^https?://`
+	PublicEndpoint string `json:"publicEndpoint,omitempty"`
 }
 
 // KORCSpec configures the K-ORC (OpenStack Resource Controller) integration of

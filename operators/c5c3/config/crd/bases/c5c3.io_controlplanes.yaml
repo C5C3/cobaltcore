@@ -682,6 +682,41 @@ spec:
                         - message: exactly one of image.tag or image.digest must be
                             set
                           rule: has(self.tag) != has(self.digest)
+                      publicEndpoint:
+                        description: |-
+                          PublicEndpoint is the BROWSER-observed dashboard base URL, without a
+                          trailing slash and INCLUDING a non-default port
+                          (e.g. "https://horizon.127-0-0-1.nip.io" or
+                          "https://horizon.example.com:8443"). The reconciler derives the WebSSO
+                          origin from it — publicEndpoint + "/auth/websso/" — and projects that
+                          onto the Keystone child's spec.federation.trustedDashboards.
+
+                          Keystone matches the origin the dashboard sends VERBATIM, so the value
+                          must reproduce exactly what the browser's address bar shows. When empty
+                          and Gateway is set, the reconciler derives "https://{gateway.hostname}",
+                          the default-443 form; any deployment publishing the dashboard on another
+                          port MUST set this field explicitly, since the port cannot be derived
+                          from the hostname alone and the WebSSO hand-off would be rejected.
+
+                          NOTE: Django derives the origin it sends from the request's Host header,
+                          i.e. from gateway.hostname — not from this field. Setting a publicEndpoint
+                          whose host differs from gateway.hostname therefore produces an origin
+                          Keystone will reject, so whenever a gateway is configured the validating
+                          webhook enforces that the two hostnames agree (and that the scheme is
+                          https, since the Gateway listener terminates TLS).
+
+                          The 499-character bound is the Keystone child's 512-character bound on
+                          spec.federation.trustedDashboards[] minus the 13 characters the derived
+                          origin appends ("/auth/websso/"). Without it a schema-legal value here
+                          would be rejected on the projected child, wedging the whole ControlPlane
+                          behind an error naming a field the operator never wrote.
+
+                          This mirrors ServiceKeystoneSpec.PublicEndpoint. It needs no External-mode
+                          forbid-rule: the validating webhook already forbids services.horizon
+                          entirely when services.keystone.mode is External.
+                        maxLength: 499
+                        pattern: ^https?://
+                        type: string
                       replicas:
                         description: |-
                           Replicas overrides the number of dashboard replicas. When nil the
@@ -798,6 +833,58 @@ spec:
                         required:
                         - authURL
                         type: object
+                      federationProxyImage:
+                        description: |-
+                          FederationProxyImage optionally overrides the mod_auth_openidc sidecar
+                          image the reconciler projects onto the Keystone child's
+                          spec.federation.proxyImage. When nil the reconciler projects
+                          "ghcr.io/c5c3/keystone-federation-proxy:latest".
+
+                          That default is a MUTABLE tag: every node re-pulls it on each pod start,
+                          and there is no way to exercise a locally built sidecar. Override it with
+                          a digest-carrying ImageSpec for the immutable pin published images are
+                          expected to carry, or with a locally loaded tag to test a sidecar under
+                          review. The image is inert until a federation-typed
+                          KeystoneIdentityBackend attaches — only then does the keystone-operator
+                          project the sidecar.
+
+                          Forbidden in External mode (CEL + webhook enforced): no Keystone workload
+                          is deployed, so there is no sidecar to image.
+                        properties:
+                          digest:
+                            description: |-
+                              Digest pins the image by immutable content digest (e.g.
+                              "sha256:<64 hex chars>"). Optional: exactly one of Tag or Digest must be
+                              set. A pinned digest closes the supply-chain gap where a mutable tag can be
+                              re-pushed behind a stable name, at the cost of disabling release tracking.
+                            pattern: ^sha256:[a-f0-9]{64}$
+                            type: string
+                          repository:
+                            description: |-
+                              Repository is the OCI image repository, optionally including the registry
+                              host (e.g. "ghcr.io/c5c3/keystone" or "c5c3/keystone"). The pattern is a
+                              permissive OCI reference — lowercase alphanumeric components separated by
+                              ".", "_", "-", "/", or ":" (registry port) — so mirror and host:port forms
+                              are accepted while an empty string (which "required" alone admits) and
+                              obvious garbage are rejected.
+                            minLength: 1
+                            pattern: ^[a-z0-9]+([._:/-][a-z0-9]+)*$
+                            type: string
+                          tag:
+                            description: |-
+                              Tag is the OCI image tag (e.g. "2025.2"). It follows the OCI tag grammar:
+                              up to 128 characters of word characters, dots, and dashes, and must not
+                              begin with a dot or dash. Optional: exactly one of Tag or Digest must be
+                              set. The pattern is enforced only when a tag is present.
+                            pattern: ^[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}$
+                            type: string
+                        required:
+                        - repository
+                        type: object
+                        x-kubernetes-validations:
+                        - message: exactly one of image.tag or image.digest must be
+                            set
+                          rule: has(self.tag) != has(self.digest)
                       gateway:
                         description: |-
                           Gateway optionally exposes the projected Keystone API externally via a
@@ -960,6 +1047,10 @@ spec:
                           The pattern enforces an HTTP(S) URL shape so a malformed endpoint is
                           rejected at admission rather than wedging the projected Keystone CR (the
                           keystone webhook later rejects a non-URL publicEndpoint post-admission).
+                          The 512-character bound mirrors the Horizon child's bound on
+                          websso.keystoneURL, which the reconciler projects this value onto: a
+                          longer value would be schema-legal here and rejected on the child.
+                        maxLength: 512
                         pattern: ^https?://
                         type: string
                       replicas:
@@ -1001,6 +1092,9 @@ spec:
                     - message: services.keystone.publicEndpoint is forbidden when
                         services.keystone.mode is External
                       rule: '!(has(self.mode) && self.mode == ''External'') || !has(self.publicEndpoint)'
+                    - message: services.keystone.federationProxyImage is forbidden
+                        when services.keystone.mode is External
+                      rule: '!(has(self.mode) && self.mode == ''External'') || !has(self.federationProxyImage)'
                 type: object
             required:
             - korc

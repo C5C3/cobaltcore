@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -117,37 +118,178 @@ var controlPlaneReleaseRegexp = regexp.MustCompile(`^\d{4}\.[12]$`)
 // maxExternalAuthURLBytes mirrors the +kubebuilder:validation:MaxLength=2048 marker
 // on ExternalKeystoneSpec.AuthURL. The cap exists because the reconciler
 // interpolates authURL into status.conditions[].message, whose 32768-byte apiserver
-// limit is a whole-object constraint — see the marker's doc comment.
+// limit is a whole-object constraint — see the marker's doc comment. It is applied
+// at the authURL call site rather than inside validateHTTPURL: the cap belongs to
+// this one field, and the helper's other callers carry MaxLength markers of their
+// own (512 on services.horizon.publicEndpoint).
 const maxExternalAuthURLBytes = 2048
 
-// validateExternalAuthURL enforces that an External-mode authURL is a well-formed
-// absolute HTTP(S) URL with a host, going beyond the coarse ^https?://[^\s/]+ CRD
-// Pattern marker on ExternalKeystoneSpec.AuthURL: the reconciler's identity
-// consumer will dial this endpoint, so admission rejects the unusable shapes
-// (missing host, non-http(s) scheme, opaque or relative references, control
-// characters) here rather than letting them wedge the dialer. This is a shape
-// gate, not an SSRF control — admission cannot resolve where the host points, so
-// the dialing reconciler must still enforce network egress restrictions. Mirrors
-// (and strengthens) the CRD Pattern and MaxLength markers as defense-in-depth for
-// callers that bypass CRD schema admission.
-func validateExternalAuthURL(path *field.Path, raw string) *field.Error {
+// validateHTTPURL enforces that raw is a well-formed absolute HTTP(S) URL with a
+// host, going beyond the coarse ^https?:// CRD Pattern markers: the unusable
+// shapes (missing host, non-http(s) scheme, opaque or relative references,
+// control characters) are rejected at admission rather than wedging the
+// reconciler that consumes them. This is a shape gate, not an SSRF control —
+// admission cannot resolve where the host points, so a dialing reconciler must
+// still enforce network egress restrictions. It returns the parsed URL so
+// callers can apply further per-field rules without re-parsing.
+func validateHTTPURL(path *field.Path, raw string) (*url.URL, *field.Error) {
 	u, err := url.Parse(raw)
 	switch {
 	case err != nil:
-		return field.Invalid(path, raw, "must be a valid http(s) URL")
+		return nil, field.Invalid(path, raw, "must be a valid http(s) URL")
 	case u.Scheme != "http" && u.Scheme != "https":
-		return field.Invalid(path, raw, "must be an http(s) URL (scheme http or https)")
+		return nil, field.Invalid(path, raw, "must be an http(s) URL (scheme http or https)")
 	case u.Host == "":
-		return field.Invalid(path, raw, "must include a host")
-	case len(raw) > maxExternalAuthURLBytes:
-		return field.Invalid(path, raw, fmt.Sprintf("must be at most %d bytes", maxExternalAuthURLBytes))
+		return nil, field.Invalid(path, raw, "must include a host")
+	}
+	return u, nil
+}
+
+// validateHorizonPublicEndpoint enforces the rules on
+// services.horizon.publicEndpoint that the CRD markers cannot express. The
+// reconciler derives the dashboard's WebSSO origin from the value
+// (publicEndpoint + "/auth/websso/") and projects it onto the Keystone child's
+// [federation] trusted_dashboard.
+//
+//   - Shape, as defense-in-depth alongside the ^https?:// Pattern marker:
+//     Keystone compares the origin verbatim, so a value that parses to no host
+//     could never match any dashboard.
+//   - A bare origin, with no path, query or fragment. The Pattern marker anchors
+//     only the prefix, so "https://horizon.example.com?utm=1" is schema-legal,
+//     survives the URL parse, agrees with gateway.hostname, and yields the
+//     nonsense trusted origin "https://horizon.example.com?utm=1/auth/websso/" —
+//     which Keystone's own validation accepts and then never matches, failing
+//     every federated login AFTER the user authenticated at the IdP, with no
+//     status, log, or admission error naming the cause. A path fails the same
+//     way: Django derives the origin it sends from the request Host header and
+//     mounts the dashboard at the root unless FORCE_SCRIPT_NAME is configured,
+//     which this operator does not manage.
+//   - With a gateway configured the listener terminates TLS, so the
+//     browser-observed scheme is https — the same rule the Keystone CR applies
+//     to its bootstrap.publicEndpoint. An http origin is also a token leak:
+//     after the IdP authenticates the user, Keystone POSTs the unscoped WebSSO
+//     token to this origin, and that bearer token grants the user's full API
+//     privileges until it expires.
+//   - With a gateway configured the host must equal gateway.hostname. Django
+//     derives the origin it sends to Keystone from the request's Host header —
+//     i.e. from gateway.hostname, never from this field — so a divergent host
+//     produces an origin Keystone rejects, and it rejects it only AFTER the
+//     user has already entered their corporate credentials at the IdP. The port
+//     may still differ: Gateway API hostnames carry none, so a dashboard
+//     published off 443 has to spell the port out here.
+func validateHorizonPublicEndpoint(specPath *field.Path, hz *ServiceHorizonSpec) field.ErrorList {
+	if hz == nil || hz.PublicEndpoint == "" {
+		return nil
+	}
+	pePath := specPath.Child("services", "horizon", "publicEndpoint")
+	u, err := validateHTTPURL(pePath, hz.PublicEndpoint)
+	if err != nil {
+		return field.ErrorList{err}
+	}
+
+	var errs field.ErrorList
+	// A single trailing slash is the one path the reconciler tolerates:
+	// horizonPublicEndpoint trims it before appending "/auth/websso/".
+	if (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+		errs = append(errs, field.Invalid(pePath, hz.PublicEndpoint,
+			"must be a bare origin (scheme://host[:port]) with no path, query, or fragment: the WebSSO origin is "+
+				`derived as publicEndpoint+"/auth/websso/" and Keystone compares it verbatim`))
+	}
+
+	g := hz.Gateway
+	if g == nil || g.Hostname == "" {
+		return errs
+	}
+
+	if u.Scheme != "https" {
+		errs = append(errs, field.Invalid(pePath, hz.PublicEndpoint,
+			"scheme must be https when services.horizon.gateway is configured (the Gateway listener terminates TLS): "+
+				"Keystone POSTs the unscoped WebSSO token to this origin, so http would deliver a bearer token in cleartext"))
+	}
+	if u.Hostname() != g.Hostname {
+		errs = append(errs, field.Invalid(pePath, hz.PublicEndpoint,
+			fmt.Sprintf("host %q must equal services.horizon.gateway.hostname %q: the dashboard derives the WebSSO "+
+				"origin it sends from the request Host header, and Keystone compares it verbatim",
+				u.Hostname(), g.Hostname)))
+	}
+	return errs
+}
+
+// warnInsecureHorizonPublicEndpoint surfaces a cleartext WebSSO hand-off that
+// validateHorizonPublicEndpoint cannot reject: without a gateway the dashboard
+// is published by some other means, and a plain-http origin is a legal, if
+// unwise, development setup that the ^https?:// CRD Pattern deliberately allows.
+// The downgrade must never be silent, though — the token Keystone POSTs to this
+// origin is readable by any on-path observer and grants the user's full API
+// privileges, not just dashboard access.
+func warnInsecureHorizonPublicEndpoint(cp *ControlPlane) admission.Warnings {
+	hz := cp.Spec.Services.Horizon
+	if hz == nil || hz.PublicEndpoint == "" {
+		return nil
+	}
+	if u, err := url.Parse(hz.PublicEndpoint); err != nil || u.Scheme != "http" {
+		return nil
+	}
+	return admission.Warnings{fmt.Sprintf(
+		"spec.services.horizon.publicEndpoint %q uses http://: the WebSSO origin derived from it is projected onto "+
+			"the Keystone child's trusted_dashboard, and Keystone POSTs the unscoped WebSSO token to that origin, so "+
+			"every federated login would deliver a bearer token in cleartext. Use https://.",
+		hz.PublicEndpoint,
+	)}
+}
+
+// maxGatewayHostnameLen is the maximum length of a DNS name (RFC 1035). The
+// commonv1.GatewaySpec.Hostname marker is MinLength=1 only, so admission would
+// otherwise accept a hostname long enough to overrun the children's own
+// MaxLength markers on the origins derived from it — see validateGatewayHostname.
+const maxGatewayHostnameLen = 253
+
+// validateGatewayHostname enforces that a services.<svc>.gateway.hostname is a
+// concrete, port-free DNS name of usable length. The CRD marker on
+// commonv1.GatewaySpec.Hostname is MinLength=1 only, but the reconciler derives
+// BROWSER-facing origins from the value ("https://"+hostname) and projects them
+// onto the children: the Keystone child's [federation] trusted_dashboard, which
+// Keystone compares against the dashboard's origin byte-for-byte, and the
+// Horizon child's websso.keystoneURL. Four shapes the reconciler cannot use
+// pass every other gate:
+//
+//   - A control character (a pasted newline) survives the children's
+//     ^https?:// Pattern markers — RE2 anchors ^ at start-of-text, not
+//     start-of-line — and is caught only by the child's own webhook, so a typo
+//     in a horizon field would take the healthy Keystone projection down with
+//     an error naming neither the field nor the ControlPlane.
+//   - A Gateway API wildcard ("*.example.com") is a legal HTTPRoute hostname
+//     but yields a trusted origin that matches no dashboard, silently breaking
+//     WebSSO forever.
+//   - An embedded port is forbidden by Gateway API for the same field, and
+//     would be carried into the origin verbatim.
+//   - An over-long hostname overruns the children's MaxLength markers on the
+//     derived origins (512 on both trustedDashboards[] and websso.keystoneURL),
+//     so the API server rejects a child the operator never wrote.
+//
+// Rejecting them here surfaces the error on the ControlPlane the operator
+// actually edits.
+func validateGatewayHostname(path *field.Path, hostname string) *field.Error {
+	u, err := url.Parse("https://" + hostname)
+	switch {
+	case err != nil || u.Host != hostname:
+		return field.Invalid(path, hostname, "must be a bare DNS hostname")
+	case strings.Contains(hostname, "*"):
+		return field.Invalid(path, hostname,
+			"must not be a wildcard hostname: the derived WebSSO origin is compared verbatim and would match no dashboard")
+	case u.Port() != "":
+		return field.Invalid(path, hostname,
+			"must not include a port: set services.horizon.publicEndpoint to publish the dashboard on a non-default port")
+	case len(hostname) > maxGatewayHostnameLen:
+		return field.Invalid(path, hostname,
+			fmt.Sprintf("must be at most %d characters (the maximum DNS name length)", maxGatewayHostnameLen))
 	}
 	return nil
 }
 
 // externalAuthURLIsPlaintext reports whether raw is an http:// (non-TLS) endpoint.
-// A parse failure reads as false: validateExternalAuthURL already rejects those, and
-// a second error on the same field would only add noise.
+// A parse failure reads as false: validateHTTPURL already rejects those on the same
+// field, and a second error on it would only add noise.
 func externalAuthURLIsPlaintext(raw string) bool {
 	u, err := url.Parse(raw)
 	return err == nil && u.Scheme == "http"
@@ -317,10 +459,11 @@ func (w *ControlPlaneWebhook) Default(_ context.Context, obj *ControlPlane) erro
 // The check runs only on CREATE (not UPDATE) so an existing CR stays mutable.
 // Reviewer: please verify boundary 6 = option (a).
 func (w *ControlPlaneWebhook) ValidateCreate(ctx context.Context, obj *ControlPlane) (admission.Warnings, error) {
+	warnings := warnInsecureHorizonPublicEndpoint(obj)
 	if err := newInvalidIfErrs(obj, w.validate(obj)); err != nil {
-		return nil, err
+		return warnings, err
 	}
-	return nil, w.validateUniqueInNamespace(ctx, obj)
+	return warnings, w.validateUniqueInNamespace(ctx, obj)
 }
 
 // ValidateUpdate implements admission.Validator[*ControlPlane].
@@ -340,7 +483,7 @@ func (w *ControlPlaneWebhook) ValidateUpdate(_ context.Context, oldObj, newObj *
 	allErrs := w.validate(newObj)
 	allErrs = append(allErrs, validateImmutable(oldObj, newObj)...)
 	allErrs = append(allErrs, validateReleaseNotDowngraded(oldObj, newObj)...)
-	return nil, newInvalidIfErrs(newObj, allErrs)
+	return warnInsecureHorizonPublicEndpoint(newObj), newInvalidIfErrs(newObj, allErrs)
 }
 
 // ValidateDelete implements admission.Validator[*ControlPlane]. The method is
@@ -440,14 +583,18 @@ func (w *ControlPlaneWebhook) validate(cp *ControlPlane) field.ErrorList {
 			}
 		}
 
-		// When a gateway is configured, its hostname must be set. Mirrors the
+		// When a gateway is configured, its hostname must be set and usable as
+		// the host of the derived public endpoint. Mirrors the
 		// +kubebuilder:validation:MinLength=1 marker on commonv1.GatewaySpec.Hostname;
 		// without it the reconciler derives an empty "https:///v3" public endpoint.
-		if g := ks.Gateway; g != nil && g.Hostname == "" {
-			allErrs = append(allErrs, field.Required(
-				specPath.Child("services", "keystone", "gateway", "hostname"),
-				"must be set when a gateway is configured",
-			))
+		if g := ks.Gateway; g != nil {
+			hostnamePath := specPath.Child("services", "keystone", "gateway", "hostname")
+			if g.Hostname == "" {
+				allErrs = append(allErrs, field.Required(hostnamePath,
+					"must be set when a gateway is configured"))
+			} else if err := validateGatewayHostname(hostnamePath, g.Hostname); err != nil {
+				allErrs = append(allErrs, err)
+			}
 		}
 
 		// When the Keystone image is overridden, mirror the ImageSpec tag/digest
@@ -467,14 +614,20 @@ func (w *ControlPlaneWebhook) validate(cp *ControlPlane) field.ErrorList {
 	// dashboard enforces no oslo.policy of its own), so unlike keystone there
 	// is no per-service policy block to validate.
 	if hz := cp.Spec.Services.Horizon; hz != nil {
-		// When a gateway is configured, its hostname must be set. Mirrors the
+		// When a gateway is configured, its hostname must be set and usable as
+		// the host of the WebSSO origin derived from it. Mirrors the
 		// +kubebuilder:validation:MinLength=1 marker on commonv1.GatewaySpec.Hostname.
-		if g := hz.Gateway; g != nil && g.Hostname == "" {
-			allErrs = append(allErrs, field.Required(
-				specPath.Child("services", "horizon", "gateway", "hostname"),
-				"must be set when a gateway is configured",
-			))
+		if g := hz.Gateway; g != nil {
+			hostnamePath := specPath.Child("services", "horizon", "gateway", "hostname")
+			if g.Hostname == "" {
+				allErrs = append(allErrs, field.Required(hostnamePath,
+					"must be set when a gateway is configured"))
+			} else if err := validateGatewayHostname(hostnamePath, g.Hostname); err != nil {
+				allErrs = append(allErrs, err)
+			}
 		}
+
+		allErrs = append(allErrs, validateHorizonPublicEndpoint(specPath, hz)...)
 
 		// When the Horizon image is overridden, mirror the ImageSpec tag/digest
 		// XOR (the +kubebuilder:validation:XValidation rule on commonv1.ImageSpec)
@@ -551,8 +704,12 @@ func validateKeystoneMode(cp *ControlPlane) field.ErrorList {
 				allErrs = append(allErrs, field.Required(ksPath.Child("external", "authURL"),
 					"authURL is required when services.keystone.mode is External"))
 			default:
-				if err := validateExternalAuthURL(ksPath.Child("external", "authURL"), ks.External.AuthURL); err != nil {
+				authURLPath := ksPath.Child("external", "authURL")
+				if _, err := validateHTTPURL(authURLPath, ks.External.AuthURL); err != nil {
 					allErrs = append(allErrs, err)
+				} else if len(ks.External.AuthURL) > maxExternalAuthURLBytes {
+					allErrs = append(allErrs, field.Invalid(authURLPath, ks.External.AuthURL,
+						fmt.Sprintf("must be at most %d bytes", maxExternalAuthURLBytes)))
 				}
 			}
 			if ref := ks.External.CABundleSecretRef; ref != nil {
@@ -605,6 +762,10 @@ func validateKeystoneMode(cp *ControlPlane) field.ErrorList {
 			allErrs = append(allErrs, field.Forbidden(ksPath.Child("publicEndpoint"),
 				"forbidden when services.keystone.mode is External (catalog advertisement is owned by the External Keystone)"))
 		}
+		if ks.FederationProxyImage != nil {
+			allErrs = append(allErrs, field.Forbidden(ksPath.Child("federationProxyImage"),
+				"forbidden when services.keystone.mode is External (no Keystone workload is deployed, so there is no sidecar to image)"))
+		}
 
 		// Cross-field rules CEL cannot express.
 		if cp.Spec.Infrastructure != nil {
@@ -629,6 +790,24 @@ func validateKeystoneMode(cp *ControlPlane) field.ErrorList {
 	if cp.Spec.Infrastructure == nil {
 		allErrs = append(allErrs, field.Required(specPath.Child("infrastructure"),
 			"is required unless services.keystone.mode is External"))
+	}
+
+	// Defense-in-depth federationProxyImage checks alongside the
+	// commonv1.ImageSpec markers. The value is projected verbatim onto the
+	// Keystone child's spec.federation.proxyImage, whose own webhook enforces
+	// the same rules — rejecting here surfaces the error on the ControlPlane
+	// the operator actually edits, rather than as an opaque
+	// KeystoneProjectionRejected condition.
+	if ks := cp.Spec.Services.Keystone; ks != nil && ks.FederationProxyImage != nil {
+		imgPath := specPath.Child("services", "keystone", "federationProxyImage")
+		if ks.FederationProxyImage.Repository == "" {
+			allErrs = append(allErrs, field.Required(imgPath.Child("repository"),
+				"federationProxyImage.repository must be set"))
+		}
+		if (ks.FederationProxyImage.Tag != "") == (ks.FederationProxyImage.Digest != "") {
+			allErrs = append(allErrs, field.Invalid(imgPath, ks.FederationProxyImage,
+				"exactly one of federationProxyImage.tag or federationProxyImage.digest must be set"))
+		}
 	}
 
 	return allErrs

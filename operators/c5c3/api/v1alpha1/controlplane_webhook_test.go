@@ -1283,6 +1283,9 @@ func TestValidateCreate_RejectsManagedOnlyFieldsInExternalMode(t *testing.T) {
 		{"publicEndpoint", func(ks *ServiceKeystoneSpec) {
 			ks.PublicEndpoint = "https://k.example.com/v3"
 		}, "services.keystone.publicEndpoint"},
+		{"federationProxyImage", func(ks *ServiceKeystoneSpec) {
+			ks.FederationProxyImage = &commonv1.ImageSpec{Repository: "r", Tag: "t"}
+		}, "services.keystone.federationProxyImage"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1497,6 +1500,7 @@ func TestValidateCreate_AccumulatesAllExternalModeErrors(t *testing.T) {
 	cp.Spec.Services.Keystone.RotationInterval = &metav1.Duration{Duration: 24 * time.Hour}
 	cp.Spec.Services.Keystone.Gateway = &commonv1.GatewaySpec{Hostname: "k.example.com"}
 	cp.Spec.Services.Keystone.PublicEndpoint = "https://k.example.com/v3"
+	cp.Spec.Services.Keystone.FederationProxyImage = &commonv1.ImageSpec{Repository: "r", Tag: "t"}
 	cp.Spec.Infrastructure = &InfrastructureSpec{
 		Database: commonv1.DatabaseSpec{Host: "db", Database: "d", SecretRef: commonv1.SecretRefSpec{Name: "s"}},
 		Cache:    commonv1.CacheSpec{Backend: "b", Servers: []string{"mc:11211"}},
@@ -1513,8 +1517,318 @@ func TestValidateCreate_AccumulatesAllExternalModeErrors(t *testing.T) {
 	g.Expect(msg).To(ContainSubstring("services.keystone.rotationInterval"), "rotationInterval-forbidden error must be present")
 	g.Expect(msg).To(ContainSubstring("services.keystone.gateway"), "gateway-forbidden error must be present")
 	g.Expect(msg).To(ContainSubstring("services.keystone.publicEndpoint"), "publicEndpoint-forbidden error must be present")
+	g.Expect(msg).To(ContainSubstring("services.keystone.federationProxyImage"), "federationProxyImage-forbidden error must be present")
 	g.Expect(msg).To(ContainSubstring("spec.infrastructure"), "infrastructure-forbidden error must be present")
 	g.Expect(msg).To(ContainSubstring("services.horizon"), "horizon-forbidden error must be present")
+}
+
+// TestValidateCreate_FederationProxyImageDefenseInDepth covers the Managed-mode
+// image checks that mirror the commonv1.ImageSpec markers: they surface on the
+// ControlPlane the operator edits rather than as an opaque projection rejection
+// on the Keystone child.
+func TestValidateCreate_FederationProxyImageDefenseInDepth(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	tests := []struct {
+		name       string
+		image      *commonv1.ImageSpec
+		wantSubstr string
+	}{
+		{"empty repository", &commonv1.ImageSpec{Tag: "dev"}, "federationProxyImage.repository must be set"},
+		{"neither tag nor digest", &commonv1.ImageSpec{Repository: "r"}, "exactly one of federationProxyImage.tag or federationProxyImage.digest"},
+		{
+			"both tag and digest",
+			&commonv1.ImageSpec{Repository: "r", Tag: "dev", Digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111"},
+			"exactly one of federationProxyImage.tag or federationProxyImage.digest",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := validControlPlane()
+			cp.Spec.Services.Keystone.FederationProxyImage = tc.image
+
+			_, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring(tc.wantSubstr))
+		})
+	}
+}
+
+// TestValidateCreate_AcceptsDigestPinnedFederationProxyImage pins the happy
+// path the override exists for: an immutable digest pin, and a locally built
+// tag for the e2e suite.
+func TestValidateCreate_AcceptsDigestPinnedFederationProxyImage(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	for name, image := range map[string]*commonv1.ImageSpec{
+		"digest pin": {
+			Repository: "ghcr.io/c5c3/keystone-federation-proxy",
+			Digest:     "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+		},
+		"local tag": {Repository: "ghcr.io/c5c3/keystone-federation-proxy", Tag: "dev"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := validControlPlane()
+			cp.Spec.Services.Keystone.FederationProxyImage = image
+
+			_, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).NotTo(HaveOccurred())
+		})
+	}
+}
+
+// TestValidateCreate_HorizonPublicEndpointMustBeURL covers the defense-in-depth
+// URL parse: Keystone matches the derived WebSSO origin verbatim, so a value
+// with no host could never match any dashboard.
+func TestValidateCreate_HorizonPublicEndpointMustBeURL(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	for name, endpoint := range map[string]string{
+		"missing host": "https://",
+		"wrong scheme": "ftp://horizon.example.com",
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := validControlPlane()
+			cp.Spec.Services.Horizon = &ServiceHorizonSpec{PublicEndpoint: endpoint}
+
+			_, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring("services.horizon.publicEndpoint"))
+		})
+	}
+}
+
+// TestValidateCreate_HorizonPublicEndpointMustBeABareOrigin covers the shapes the
+// ^https?:// Pattern marker lets through and validateHTTPURL happily parses: the
+// derived origin (publicEndpoint + "/auth/websso/") is projected onto the
+// Keystone child's trusted_dashboard, which Keystone compares byte-for-byte
+// against what the dashboard sends — so a path, query or fragment produces an
+// origin that matches nothing, and every federated login fails only AFTER the
+// user has authenticated at the identity provider.
+//
+// The gateway is deliberately left unset in each case: the rule holds on the
+// gateway-less path too, which is where the scheme/host rules stop applying.
+func TestValidateCreate_HorizonPublicEndpointMustBeABareOrigin(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	for name, endpoint := range map[string]string{
+		"query":    "https://horizon.example.com?utm=1",
+		"fragment": "https://horizon.example.com#top",
+		"path":     "https://horizon.example.com/dashboard",
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := validControlPlane()
+			cp.Spec.Services.Horizon = &ServiceHorizonSpec{PublicEndpoint: endpoint}
+
+			_, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring("services.horizon.publicEndpoint"))
+			g.Expect(err.Error()).To(ContainSubstring("must be a bare origin"))
+		})
+	}
+}
+
+// TestValidateCreate_AcceptsHorizonPublicEndpointWithPort pins the case the
+// override exists for: a dashboard published off the default HTTPS port. The
+// trailing-slash form is accepted too — horizonPublicEndpoint trims it before
+// appending the WebSSO path.
+func TestValidateCreate_AcceptsHorizonPublicEndpointWithPort(t *testing.T) {
+	for _, endpoint := range []string{
+		"https://horizon.example.com:8443",
+		"https://horizon.example.com:8443/",
+	} {
+		t.Run(endpoint, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			w := &ControlPlaneWebhook{}
+			cp := validControlPlane()
+			cp.Spec.Services.Horizon = &ServiceHorizonSpec{PublicEndpoint: endpoint}
+
+			_, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).NotTo(HaveOccurred())
+		})
+	}
+}
+
+// TestValidateCreate_RejectsUnusableGatewayHostname guards the shapes the
+// reconciler cannot derive a browser-facing origin from. The check lives on
+// BOTH service blocks because both hostnames feed a projection: horizon's the
+// Keystone child's trusted_dashboard, keystone's the Horizon child's
+// websso.keystoneURL. Without it a control character in a horizon field is
+// caught only by the KEYSTONE child's webhook, taking a healthy Keystone
+// projection down with an error naming neither the field nor the ControlPlane.
+func TestValidateCreate_RejectsUnusableGatewayHostname(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	hostnames := map[string]string{
+		"control character": "horizon.example.com\nx",
+		"wildcard":          "*.example.com",
+		"embedded port":     "horizon.example.com:8443",
+		"carries a path":    "horizon.example.com/dashboard",
+		"carries a scheme":  "https://horizon.example.com",
+	}
+	for name, hostname := range hostnames {
+		t.Run("horizon/"+name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := validControlPlane()
+			cp.Spec.Services.Horizon = &ServiceHorizonSpec{
+				Gateway: &commonv1.GatewaySpec{
+					Hostname:  hostname,
+					ParentRef: commonv1.GatewayParentRefSpec{Name: "openstack-gw"},
+				},
+			}
+
+			_, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring("services.horizon.gateway.hostname"))
+		})
+
+		t.Run("keystone/"+name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := validControlPlane()
+			cp.Spec.Services.Keystone.Gateway = &commonv1.GatewaySpec{
+				Hostname:  hostname,
+				ParentRef: commonv1.GatewayParentRefSpec{Name: "openstack-gw"},
+			}
+
+			_, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring("services.keystone.gateway.hostname"))
+		})
+	}
+}
+
+// TestValidateCreate_AcceptsBareGatewayHostname pins the happy path: a concrete
+// DNS name, the only shape the derived origins can be built from.
+func TestValidateCreate_AcceptsBareGatewayHostname(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Spec.Services.Keystone.Gateway = &commonv1.GatewaySpec{
+		Hostname:  "keystone.127-0-0-1.nip.io",
+		ParentRef: commonv1.GatewayParentRefSpec{Name: "openstack-gw"},
+	}
+	cp.Spec.Services.Horizon = &ServiceHorizonSpec{
+		Gateway: &commonv1.GatewaySpec{
+			Hostname:  "horizon.127-0-0-1.nip.io",
+			ParentRef: commonv1.GatewayParentRefSpec{Name: "openstack-gw"},
+		},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// TestValidateCreate_RejectsOverlongGatewayHostname guards the derived origins
+// against a hostname long enough to overrun the children's own MaxLength
+// markers: the API server would reject a projected child the operator never
+// wrote, wedging the ControlPlane behind a field name that appears nowhere in
+// its spec.
+func TestValidateCreate_RejectsOverlongGatewayHostname(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	hostname := strings.Repeat("a", maxGatewayHostnameLen-len(".example.com")+1) + ".example.com"
+	g.Expect(hostname).To(HaveLen(maxGatewayHostnameLen + 1))
+
+	cp := validControlPlane()
+	cp.Spec.Services.Horizon = &ServiceHorizonSpec{
+		Gateway: &commonv1.GatewaySpec{
+			Hostname:  hostname,
+			ParentRef: commonv1.GatewayParentRefSpec{Name: "openstack-gw"},
+		},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("services.horizon.gateway.hostname"))
+	g.Expect(err.Error()).To(ContainSubstring("maximum DNS name length"))
+}
+
+// TestValidateCreate_HorizonPublicEndpointMustAgreeWithGateway pins the rule the
+// field's own godoc documents: Django derives the WebSSO origin it sends from
+// the request Host header — i.e. from gateway.hostname — and Keystone compares
+// it verbatim. A divergent host is rejected only after the user has already
+// typed their corporate password into the IdP, with nothing on the ControlPlane
+// recording why.
+func TestValidateCreate_HorizonPublicEndpointMustAgreeWithGateway(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+	gateway := func() *commonv1.GatewaySpec {
+		return &commonv1.GatewaySpec{
+			Hostname:  "horizon.example.com",
+			ParentRef: commonv1.GatewayParentRefSpec{Name: "openstack-gw"},
+		}
+	}
+
+	t.Run("divergent host", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := validControlPlane()
+		cp.Spec.Services.Horizon = &ServiceHorizonSpec{
+			Gateway:        gateway(),
+			PublicEndpoint: "https://dashboard.example.com",
+		}
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("services.horizon.publicEndpoint"))
+		g.Expect(err.Error()).To(ContainSubstring(`must equal services.horizon.gateway.hostname "horizon.example.com"`))
+	})
+
+	t.Run("http scheme behind a TLS-terminating gateway", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := validControlPlane()
+		cp.Spec.Services.Horizon = &ServiceHorizonSpec{
+			Gateway:        gateway(),
+			PublicEndpoint: "http://horizon.example.com",
+		}
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("scheme must be https"))
+	})
+
+	t.Run("matching host with a non-default port", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := validControlPlane()
+		cp.Spec.Services.Horizon = &ServiceHorizonSpec{
+			Gateway:        gateway(),
+			PublicEndpoint: "https://horizon.example.com:8443",
+		}
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred(), "Gateway API hostnames carry no port, so the port may only differ")
+	})
+}
+
+// TestValidateCreate_WarnsOnCleartextHorizonPublicEndpoint covers the gateway-less
+// dashboard, where an http origin is a legal (if unwise) development setup that
+// the CRD Pattern deliberately allows. Keystone POSTs the unscoped WebSSO token
+// to that origin, so the downgrade must at least be surfaced.
+func TestValidateCreate_WarnsOnCleartextHorizonPublicEndpoint(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	t.Run("http warns", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := validControlPlane()
+		cp.Spec.Services.Horizon = &ServiceHorizonSpec{PublicEndpoint: "http://horizon.example.com"}
+
+		warnings, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(warnings).To(HaveLen(1))
+		g.Expect(warnings[0]).To(ContainSubstring("bearer token in cleartext"))
+	})
+
+	t.Run("https is silent", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := validControlPlane()
+		cp.Spec.Services.Horizon = &ServiceHorizonSpec{PublicEndpoint: "https://horizon.example.com"}
+
+		warnings, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(warnings).To(BeEmpty())
+	})
 }
 
 // --- Mode transition gating ---
