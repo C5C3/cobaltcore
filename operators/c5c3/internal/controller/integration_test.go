@@ -1927,3 +1927,224 @@ func TestIntegration_ExternalMode_DeletionLeavesUnmanagedImportsAlone(t *testing
 	g.Expect(c.Get(ctx, client.ObjectKey{Name: "foreign-user", Namespace: ns.Name}, &orcv1alpha1.User{})).
 		To(Succeed(), "a K-ORC CR the ControlPlane does not own must survive its deletion")
 }
+
+// --- External keystone mode: the generated credentials and their lifecycle ---
+
+// itExternalCABundle is the private-CA bundle the External-mode envtest scenarios
+// reference. It is projected verbatim, so the assertions compare bytes.
+const itExternalCABundle = "-----BEGIN CERTIFICATE-----\nZW52dGVzdC1jYQ==\n-----END CERTIFICATE-----\n"
+
+// createExternalCABundleSecret provisions the user-supplied CA bundle Secret and
+// points the ControlPlane's external block at it. It must run BEFORE the
+// ControlPlane is created: reconcileKORC defers with WaitingForCABundle while the
+// Secret is absent.
+func createExternalCABundleSecret(t testing.TB, ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+
+	g.Expect(c.Create(ctx, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "external-keystone-ca", Namespace: cp.Namespace},
+		Data:       map[string][]byte{"ca.crt": []byte(itExternalCABundle)},
+	})).To(Succeed(), "create the user-supplied CA bundle Secret")
+
+	cp.Spec.Services.Keystone.External.CABundleSecretRef = &commonv1.SecretRefSpec{
+		Name: "external-keystone-ca", Key: "ca.crt",
+	}
+}
+
+// TestIntegration_ExternalMode_GeneratedCloudsYAMLTargetsExternalKeystone is the
+// headline acceptance criterion of the clouds.yaml work: once an External-mode
+// ControlPlane converges, BOTH generated Secrets — the bootstrap password cloud and
+// the minted admin app-cred cloud — carry the external authURL, the configured
+// endpoint_type, and the CA bundle.
+func TestIntegration_ExternalMode_GeneratedCloudsYAMLTargetsExternalKeystone(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupControlPlaneEnvTest(t)
+	ensureReadyClusterSecretStore(t, ctx, c)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-cp-external-clouds-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed(), "create test namespace")
+
+	cp := integrationExternalControlPlane("cp-external", ns.Name)
+	cp.Spec.Region = "eu-de-1"
+	cp.Spec.Services.Keystone.External.EndpointType = c5c3v1alpha1.ExternalEndpointTypeInternal
+	createExternalCABundleSecret(t, ctx, c, cp)
+
+	driveExternalControlPlaneToReady(t, ctx, c, cp)
+	waitForControlPlaneCondition(t, ctx, c,
+		types.NamespacedName{Name: cp.Name, Namespace: ns.Name}, conditionTypeReady, metav1.ConditionTrue, itEventuallyTimeout)
+
+	// The minted app-credential cloud: the document K-ORC authenticates with once
+	// the credential exists, and the PushSecret's source for the OpenBao round-trip.
+	appCred := &corev1.Secret{}
+	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: adminAppCredentialSecretName(cp)}, appCred)).To(Succeed())
+	appCredDoc := string(appCred.Data[appCredCloudsYAMLKey])
+	g.Expect(appCredDoc).To(ContainSubstring(`auth_url: "https://keystone.example.com/v3"`))
+	g.Expect(appCredDoc).To(ContainSubstring("endpoint_type: internal"))
+	g.Expect(appCredDoc).To(ContainSubstring(`region_name: "eu-de-1"`))
+	g.Expect(appCredDoc).To(ContainSubstring("application_credential_id"))
+	g.Expect(appCredDoc).NotTo(ContainSubstring(".svc:5000"), "External mode must never dial the Service DNS")
+	g.Expect(string(appCred.Data[korcCACertKey])).To(Equal(itExternalCABundle))
+
+	// The bootstrap password cloud: the document the ApplicationCredential mints and
+	// revokes with.
+	pwCloud := &corev1.Secret{}
+	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: adminPasswordCloudSecretName(cp)}, pwCloud)).To(Succeed())
+	pwDoc := string(pwCloud.Data[appCredCloudsYAMLKey])
+	g.Expect(pwDoc).To(ContainSubstring(`auth_url: "https://keystone.example.com/v3"`))
+	g.Expect(pwDoc).To(ContainSubstring("endpoint_type: internal"))
+	g.Expect(pwDoc).To(ContainSubstring(`region_name: "eu-de-1"`))
+	g.Expect(pwDoc).NotTo(ContainSubstring(".svc:5000"))
+	g.Expect(string(pwCloud.Data[korcCACertKey])).To(Equal(itExternalCABundle))
+
+	// The clouds.yaml ExternalSecret reads the CA back from the same OpenBao path,
+	// so the materialized credentials Secret K-ORC actually reads carries the trust
+	// anchor next to clouds.yaml.
+	es := &esov1.ExternalSecret{}
+	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: korcCloudsYamlSecretName}, es)).To(Succeed())
+	g.Expect(es.Spec.Data).To(HaveLen(2))
+	g.Expect(es.Spec.Data[1].SecretKey).To(Equal(korcCACertKey))
+	g.Expect(es.Spec.Data[1].RemoteRef.Property).To(Equal(korcCACertKey))
+}
+
+// TestIntegration_ExternalMode_PasswordRotationReMintsAgainstExternalKeystone is
+// the credential-lifecycle acceptance criterion: updating the USER-supplied
+// admin-password Secret out-of-band re-mints the application credential (delete +
+// recreate, because K-ORC's actuator has no in-place re-mint), and the re-assembled
+// clouds.yaml — still carrying the external auth_url — lands in the PushSecret
+// source and the materialized Secret.
+func TestIntegration_ExternalMode_PasswordRotationReMintsAgainstExternalKeystone(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupControlPlaneEnvTest(t)
+	ensureReadyClusterSecretStore(t, ctx, c)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-cp-external-remint-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed(), "create test namespace")
+
+	cp := integrationExternalControlPlane("cp-external", ns.Name)
+	driveExternalControlPlaneToReady(t, ctx, c, cp)
+
+	cpKey := types.NamespacedName{Name: cp.Name, Namespace: ns.Name}
+	acKey := client.ObjectKey{Name: adminAppCredentialName(cp), Namespace: ns.Name}
+	appCredKey := client.ObjectKey{Name: adminAppCredentialSecretName(cp), Namespace: ns.Name}
+
+	before := &orcv1alpha1.ApplicationCredential{}
+	g.Expect(c.Get(ctx, acKey, before)).To(Succeed())
+	beforeSecret := &corev1.Secret{}
+	g.Expect(c.Get(ctx, appCredKey, beforeSecret)).To(Succeed())
+	beforeValue := string(beforeSecret.Data[appCredSecretValueKey])
+	g.Expect(beforeValue).NotTo(BeEmpty())
+
+	// Rotate the admin password OUT-OF-BAND — the only supported rotation path for
+	// an external Keystone, since the operator never writes to the installation.
+	userSecret := &corev1.Secret{}
+	g.Expect(c.Get(ctx, client.ObjectKey{
+		Name: cp.Spec.KORC.AdminCredential.PasswordSecretRef.Name, Namespace: ns.Name,
+	}, userSecret)).To(Succeed())
+	userSecret.Data["password"] = []byte("rotated-admin-password")
+	g.Expect(c.Update(ctx, userSecret)).To(Succeed(), "rotate the user-supplied admin password")
+
+	// The hash mismatch drives a delete + recreate, so the AC comes back with a new
+	// UID; the secret "value" is regenerated so the recreated AC mints afresh.
+	g.Eventually(func() bool {
+		after := &orcv1alpha1.ApplicationCredential{}
+		if err := c.Get(ctx, acKey, after); err != nil {
+			return false
+		}
+		return after.UID != before.UID
+	}, itEventuallyTimeout, itPollInterval).Should(BeTrue(),
+		"rotating the admin password must delete and recreate the ApplicationCredential")
+
+	g.Eventually(func() string {
+		after := &corev1.Secret{}
+		if err := c.Get(ctx, appCredKey, after); err != nil {
+			return beforeValue
+		}
+		return string(after.Data[appCredSecretValueKey])
+	}, itEventuallyTimeout, itPollInterval).ShouldNot(Equal(beforeValue),
+		"the re-mint must regenerate the application-credential secret value")
+
+	// The password-cloud the re-mint re-authenticates with tracks the rotated
+	// password immediately — otherwise K-ORC could not revoke the old credential.
+	g.Eventually(func() string {
+		pwCloud := &corev1.Secret{}
+		if err := c.Get(ctx, client.ObjectKey{Name: adminPasswordCloudSecretName(cp), Namespace: ns.Name}, pwCloud); err != nil {
+			return ""
+		}
+		return string(pwCloud.Data[appCredCloudsYAMLKey])
+	}, itEventuallyTimeout, itPollInterval).Should(ContainSubstring("rotated-admin-password"))
+
+	// Simulate K-ORC minting the replacement credential, then pump the ESO
+	// simulators until the chain re-converges: the re-assembled clouds.yaml has to
+	// reach the PushSecret source AND the materialized Secret before
+	// AdminCredentialReady may report True again (the stale-credential gate).
+	reminted := &orcv1alpha1.ApplicationCredential{}
+	g.Eventually(func() error { return c.Get(ctx, acKey, reminted) }, itEventuallyTimeout, itPollInterval).Should(Succeed())
+	reminted.Status.ID = ptr.To("ac-id-integration-remint")
+	meta.SetStatusCondition(&reminted.Status.Conditions, metav1.Condition{
+		Type:    orcv1alpha1.ConditionAvailable,
+		Status:  metav1.ConditionTrue,
+		Reason:  orcv1alpha1.ConditionReasonSuccess,
+		Message: "simulated available after re-mint",
+	})
+	g.Expect(c.Status().Update(ctx, reminted)).To(Succeed())
+
+	g.Eventually(func() error {
+		return pumpMaterializedCloudsYAML(ctx, c, cp)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+		"the re-assembled app-credential clouds.yaml must reach the materialized Secret")
+
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeAdminCredentialReady, metav1.ConditionTrue, itEventuallyTimeout)
+
+	// The re-assembled document carries the FRESH credential and still targets the
+	// external Keystone. The materialized Secret — what K-ORC reads — agrees.
+	afterSecret := &corev1.Secret{}
+	g.Expect(c.Get(ctx, appCredKey, afterSecret)).To(Succeed())
+	afterDoc := string(afterSecret.Data[appCredCloudsYAMLKey])
+	g.Expect(afterDoc).To(ContainSubstring("ac-id-integration-remint"))
+	g.Expect(afterDoc).To(ContainSubstring(`auth_url: "https://keystone.example.com/v3"`))
+	g.Expect(afterDoc).To(ContainSubstring("endpoint_type: public"))
+
+	materialized := &corev1.Secret{}
+	g.Expect(c.Get(ctx, client.ObjectKey{Name: korcCloudsYamlSecretName, Namespace: ns.Name}, materialized)).To(Succeed())
+	g.Expect(string(materialized.Data[appCredCloudsYAMLKey])).To(Equal(afterDoc),
+		"the credential K-ORC reads must be the freshly minted one, not the revoked predecessor")
+
+	// The PushSecret carries a new content hash, so ESO re-pushes the rotated
+	// credential to OpenBao instead of waiting for the hourly refresh.
+	ps := &esov1alpha1.PushSecret{}
+	g.Expect(c.Get(ctx, client.ObjectKey{Name: adminAppCredentialPushSecretName(cp), Namespace: ns.Name}, ps)).To(Succeed())
+	g.Expect(ps.Annotations[adminAppCredentialPushContentHashAnnotation]).NotTo(BeEmpty())
+}
+
+// pumpMaterializedCloudsYAML copies the operator-assembled app-credential
+// clouds.yaml into the ESO-materialized Secret, but ONLY once the source actually
+// holds a minted credential document. There is no ESO controller in envtest, so a
+// re-mint would otherwise leave the materialized Secret pinned at the previous
+// credential and the stale-credential gate would (correctly) never open. It returns
+// an error while the source is not yet re-assembled, so callers can poll it.
+func pumpMaterializedCloudsYAML(ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane) error {
+	src := &corev1.Secret{}
+	if err := c.Get(ctx, client.ObjectKey{Namespace: childNamespace(cp), Name: adminAppCredentialSecretName(cp)}, src); err != nil {
+		return err
+	}
+	assembled := src.Data[appCredCloudsYAMLKey]
+	if !strings.Contains(string(assembled), "application_credential_id") {
+		return fmt.Errorf("app-credential clouds.yaml not re-assembled yet")
+	}
+
+	materialized := &corev1.Secret{}
+	key := client.ObjectKey{Namespace: childNamespace(cp), Name: korcCloudsYamlSecretName}
+	if err := c.Get(ctx, key, materialized); err != nil {
+		return err
+	}
+	if string(materialized.Data[appCredCloudsYAMLKey]) == string(assembled) {
+		return nil
+	}
+	materialized.Data[appCredCloudsYAMLKey] = assembled
+	return c.Update(ctx, materialized)
+}

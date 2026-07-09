@@ -12,6 +12,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -3417,4 +3418,112 @@ func TestReconcileKORC_NonCatalogFailuresCarryNoRegionHint(t *testing.T) {
 			g.Expect(cond.Message).NotTo(ContainSubstring("spec.region"))
 		})
 	}
+}
+
+// --- External keystone mode: credential lifecycle ---
+
+// TestSeedBootstrapCloudsYAML_ExternalSeedsFromUserSecret proves the External-mode
+// seed is built from the USER-SUPPLIED admin-password Secret and carries the
+// external endpoint. effectiveAdminPasswordSecretRef resolves to that Secret, so
+// the seed needs no External branch of its own — this test is what pins the
+// contract.
+func TestSeedBootstrapCloudsYAML_ExternalSeedsFromUserSecret(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := korcExternalControlPlane()
+
+	c, _, _ := runReconcileKORC(t, cp)
+
+	seeded := string(getOwnedSecret(t, c, cp, adminAppCredentialSecretName(cp)).Data[appCredCloudsYAMLKey])
+	g.Expect(seeded).To(ContainSubstring("password: "+strconv.Quote(testAdminPassword)),
+		"the External seed must render the user-supplied password verbatim")
+	g.Expect(seeded).To(ContainSubstring(`auth_url: "https://keystone.example.com/v3"`))
+	g.Expect(seeded).To(ContainSubstring("endpoint_type: public"))
+	g.Expect(seeded).NotTo(ContainSubstring("application_credential_id"),
+		"the seed is the password document, not a minted credential")
+}
+
+// TestReconcileKORC_ExternalNeverInventsAnAdminPassword is the External-mode
+// contract on the seed path: with no user-supplied Secret the reconciler defers
+// instead of generating a password. A generated password could never authenticate
+// against a pre-existing Keystone, so seeding one would produce a clouds.yaml that
+// fails every mint while looking healthy on disk.
+func TestReconcileKORC_ExternalNeverInventsAnAdminPassword(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := korcExternalControlPlane()
+
+	s := korcTestScheme(t)
+	// Deliberately seed NO admin-password Secret.
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
+
+	res, err := r.reconcileKORC(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeKORCReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("WaitingForAdminPassword"))
+
+	// Neither owned credentials Secret exists: nothing was seeded from thin air.
+	for _, name := range []string{adminPasswordCloudSecretName(cp), adminAppCredentialSecretName(cp)} {
+		err := c.Get(context.Background(),
+			types.NamespacedName{Name: name, Namespace: childNamespace(cp)}, &corev1.Secret{})
+		g.Expect(apierrors.IsNotFound(err)).To(BeTrue(),
+			"no credentials Secret may be written before the user's admin password is readable: "+name)
+	}
+}
+
+// TestReconcileKORC_ExternalHashMismatchDeletesACForRemint mirrors the managed-mode
+// re-mint test against an External ControlPlane: rotating the USER's admin-password
+// Secret out-of-band is the only supported rotation path, and it must delete the AC
+// (K-ORC's finalizer revokes the credential against the EXTERNAL Keystone) and
+// regenerate the secret value so the next pass mints afresh.
+func TestReconcileKORC_ExternalHashMismatchDeletesACForRemint(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := korcExternalControlPlaneWithCA()
+	existing := &orcv1alpha1.ApplicationCredential{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        adminAppCredentialName(cp),
+			Namespace:   childNamespace(cp),
+			Annotations: map[string]string{adminPasswordHashAnnotation: "stale-hash"},
+		},
+		Status: orcv1alpha1.ApplicationCredentialStatus{
+			ID: ptr.To("old-id"),
+			Conditions: []metav1.Condition{{
+				Type:               orcv1alpha1.ConditionAvailable,
+				Status:             metav1.ConditionTrue,
+				Reason:             orcv1alpha1.ConditionReasonSuccess,
+				LastTransitionTime: metav1.Now(),
+			}},
+		},
+	}
+	cp.Status.AdminApplicationCredential = &c5c3v1alpha1.AdminApplicationCredentialStatus{ID: "old-id"}
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(cp, adminPasswordSecret(), externalCASecret(), existing, mintedAppCredSecret(cp)).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
+
+	res, err := r.reconcileKORC(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+
+	getErr := c.Get(context.Background(), types.NamespacedName{
+		Name: adminAppCredentialName(cp), Namespace: childNamespace(cp),
+	}, &orcv1alpha1.ApplicationCredential{})
+	g.Expect(apierrors.IsNotFound(getErr)).To(BeTrue(),
+		"rotating the user-supplied password must delete the AC for a re-mint against the external Keystone")
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeKORCReady)
+	g.Expect(cond.Reason).To(Equal("ReMinting"))
+
+	sec := getOwnedSecret(t, c, cp, adminAppCredentialSecretName(cp))
+	g.Expect(sec.Data[appCredSecretValueKey]).NotTo(Equal([]byte("generated-app-cred-secret")),
+		"the app-credential secret value must be regenerated on re-mint")
+
+	// The password-cloud the re-mint re-authenticates with tracks the rotated
+	// password AND still carries the CA bundle for the external endpoint.
+	pwCloud := getOwnedSecret(t, c, cp, adminPasswordCloudSecretName(cp))
+	g.Expect(string(pwCloud.Data[appCredCloudsYAMLKey])).To(ContainSubstring(strconv.Quote(testAdminPassword)))
+	g.Expect(string(pwCloud.Data[korcCACertKey])).To(Equal(testCABundle))
 }

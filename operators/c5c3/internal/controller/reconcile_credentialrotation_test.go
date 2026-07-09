@@ -269,6 +269,54 @@ func TestRotation_PasswordHashChangeTriggersNudge(t *testing.T) {
 		"a password-hash change must clear the annotation to nudge a re-mint")
 }
 
+// TestRotation_ExternalPasswordHashChangeTriggersNudge proves the nudge path works
+// unchanged against an external Keystone: effectiveAdminPasswordSecretRef resolves
+// to the USER-supplied Secret, so rotating it out-of-band clears the stamped hash
+// and the next reconcileKORC pass re-mints against the external endpoint. This is
+// the only supported rotation path — the operator never writes to the external
+// installation.
+func TestRotation_ExternalPasswordHashChangeTriggersNudge(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := korcExternalControlPlane()
+	cr := credentialRotation()
+	ac := existingAC(cp, "stale-hash-value")
+
+	got, c := runRotationReconcile(t, cp, cr, ac, adminPasswordSecret())
+
+	cond := rotationReadyCondition(got)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal("RotationTriggered"))
+
+	reloaded := getAC(t, c, cp)
+	g.Expect(reloaded.Annotations[adminPasswordHashAnnotation]).To(BeEmpty(),
+		"rotating the user-supplied admin password must nudge a re-mint in External mode too")
+}
+
+// TestRotation_ExternalMissingAdminPasswordSecretIsNotARotation covers the error
+// path: with the user's Secret absent the rotator cannot derive a hash, so it must
+// not clear the annotation — a cleared annotation would nudge a re-mint that
+// revokes the working credential and cannot mint a replacement.
+func TestRotation_ExternalMissingAdminPasswordSecretIsNotARotation(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := korcExternalControlPlane()
+	cr := credentialRotation()
+	ac := existingAC(cp, testPasswordHash())
+
+	// No adminPasswordSecret() is seeded.
+	got, c := runRotationReconcile(t, cp, cr, ac)
+
+	cond := rotationReadyCondition(got)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+
+	reloaded := getAC(t, c, cp)
+	g.Expect(reloaded.Annotations[adminPasswordHashAnnotation]).To(Equal(testPasswordHash()),
+		"an unreadable admin password must never clear the stamped hash")
+}
+
 func TestRotation_HashMatchIsNoOp(t *testing.T) {
 	g := NewGomegaWithT(t)
 
