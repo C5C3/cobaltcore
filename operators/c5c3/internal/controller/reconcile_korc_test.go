@@ -1003,7 +1003,8 @@ func TestForceRepushAdminAppCredential_StampsHashRetriesAndIdempotent(t *testing
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
 	// First stamp: the annotation is set and the 409 is retried, not surfaced.
-	g.Expect(r.forceRepushAdminAppCredential(context.Background(), cp, psName, "hash-1")).To(Succeed(),
+	g.Expect(r.forceRepushAdminAppCredential(context.Background(), cp, psName,
+		adminAppCredentialPushContentHashAnnotation, "hash-1")).To(Succeed(),
 		"an expected 409 conflict must be retried, not surfaced as a hard error")
 	g.Expect(conflicts).To(Equal(1), "the first Update must have conflicted and been retried")
 	g.Expect(updates).To(Equal(1), "exactly one successful Update stamps the hash")
@@ -1015,14 +1016,26 @@ func TestForceRepushAdminAppCredential_StampsHashRetriesAndIdempotent(t *testing
 
 	// Idempotent: a second call with the SAME hash must not Update the PushSecret,
 	// so a converged credential does not churn the push (and thus OpenBao) each pass.
-	g.Expect(r.forceRepushAdminAppCredential(context.Background(), cp, psName, "hash-1")).To(Succeed())
+	g.Expect(r.forceRepushAdminAppCredential(context.Background(), cp, psName,
+		adminAppCredentialPushContentHashAnnotation, "hash-1")).To(Succeed())
 	g.Expect(updates).To(Equal(1), "an unchanged hash must be a no-op (no second Update)")
 
 	// A changed hash re-stamps so a rotated credential reaches OpenBao promptly.
-	g.Expect(r.forceRepushAdminAppCredential(context.Background(), cp, psName, "hash-2")).To(Succeed())
+	g.Expect(r.forceRepushAdminAppCredential(context.Background(), cp, psName,
+		adminAppCredentialPushContentHashAnnotation, "hash-2")).To(Succeed())
 	g.Expect(updates).To(Equal(2), "a changed hash must stamp a fresh re-push trigger")
 	g.Expect(c.Get(context.Background(), types.NamespacedName{Name: psName, Namespace: childNamespace(cp)}, got)).To(Succeed())
 	g.Expect(got.Annotations[adminAppCredentialPushContentHashAnnotation]).To(Equal("hash-2"))
+
+	// A different annotation carries an independent trigger: the two sub-reconcilers
+	// that nudge this PushSecret must never overwrite each other's value, or every
+	// reconcile would re-push the credential to OpenBao.
+	g.Expect(r.forceRepushAdminAppCredential(context.Background(), cp, psName,
+		adminAppCredentialCACertHashAnnotation, "cacert-1")).To(Succeed())
+	g.Expect(c.Get(context.Background(), types.NamespacedName{Name: psName, Namespace: childNamespace(cp)}, got)).To(Succeed())
+	g.Expect(got.Annotations[adminAppCredentialCACertHashAnnotation]).To(Equal("cacert-1"))
+	g.Expect(got.Annotations[adminAppCredentialPushContentHashAnnotation]).To(Equal("hash-2"),
+		"stamping one trigger must leave the other sub-reconciler's trigger intact")
 }
 
 // TestAdminAppCredentialRemoteKeyFor_EmbedsNamespaceAndName locks in the per-CR
@@ -2467,7 +2480,7 @@ func TestEnsureKORCCloudsYAMLExternalSecret_ShapeAndOwnerRef(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-	g.Expect(r.ensureKORCCloudsYAMLExternalSecret(context.Background(), cp)).To(Succeed())
+	g.Expect(r.ensureKORCCloudsYAMLExternalSecret(context.Background(), cp, "")).To(Succeed())
 
 	es := &esov1.ExternalSecret{}
 	g.Expect(c.Get(context.Background(), types.NamespacedName{
@@ -2503,7 +2516,7 @@ func TestEnsureKORCCloudsYAMLExternalSecret_PerCRRemoteKeyForNonDefaultName(t *t
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-	g.Expect(r.ensureKORCCloudsYAMLExternalSecret(context.Background(), cp)).To(Succeed())
+	g.Expect(r.ensureKORCCloudsYAMLExternalSecret(context.Background(), cp, "")).To(Succeed())
 
 	es := &esov1.ExternalSecret{}
 	g.Expect(c.Get(context.Background(), types.NamespacedName{
@@ -2524,11 +2537,11 @@ func TestEnsureKORCCloudsYAMLExternalSecret_IdempotentNoChurn(t *testing.T) {
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 	esKey := types.NamespacedName{Name: korcCloudsYamlSecretName, Namespace: childNamespace(cp)}
 
-	g.Expect(r.ensureKORCCloudsYAMLExternalSecret(context.Background(), cp)).To(Succeed())
+	g.Expect(r.ensureKORCCloudsYAMLExternalSecret(context.Background(), cp, "")).To(Succeed())
 	first := &esov1.ExternalSecret{}
 	g.Expect(c.Get(context.Background(), esKey, first)).To(Succeed())
 
-	g.Expect(r.ensureKORCCloudsYAMLExternalSecret(context.Background(), cp)).To(Succeed())
+	g.Expect(r.ensureKORCCloudsYAMLExternalSecret(context.Background(), cp, "")).To(Succeed())
 	second := &esov1.ExternalSecret{}
 	g.Expect(c.Get(context.Background(), esKey, second)).To(Succeed())
 
@@ -2887,4 +2900,357 @@ func TestReconcileKORC_ExternalModeNonDriftFailureEmitsNoDriftEvent(t *testing.T
 
 	g.Expect(cond.Reason).To(Equal(conditionReasonEndpointUnreachable))
 	g.Expect(rec.Events).NotTo(Receive(), "an unreachable endpoint is not credential drift")
+}
+
+// --- External keystone mode: private-CA bundle projection (cacert) ---
+
+// testCABundle stands in for the PEM bundle a private-CA endpoint is verified
+// against. It is projected VERBATIM, so the test asserts byte equality.
+const testCABundle = "-----BEGIN CERTIFICATE-----\nZmFrZS1jYQ==\n-----END CERTIFICATE-----\n"
+
+// korcExternalControlPlaneWithCA is an External-mode ControlPlane whose Keystone
+// is fronted by a private CA the user supplies out-of-band.
+func korcExternalControlPlaneWithCA() *c5c3v1alpha1.ControlPlane {
+	cp := korcExternalControlPlane()
+	cp.Spec.Services.Keystone.External.CABundleSecretRef = &commonv1.SecretRefSpec{
+		Name: "keystone-ca", Key: "ca.crt",
+	}
+	return cp
+}
+
+func externalCASecret() *corev1.Secret {
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "keystone-ca", Namespace: "default"},
+		Data:       map[string][]byte{"ca.crt": []byte(testCABundle)},
+	}
+}
+
+// runReconcileKORC drives reconcileKORC once against a fake client seeded with cp,
+// the admin-password Secret and objs, returning the client so callers can inspect
+// the operator-owned Secrets it wrote.
+func runReconcileKORC(
+	t *testing.T, cp *c5c3v1alpha1.ControlPlane, objs ...client.Object,
+) (client.Client, *metav1.Condition, ctrl.Result) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	seeded := append([]client.Object{cp, adminPasswordSecret()}, objs...)
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(seeded...).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
+
+	res, err := r.reconcileKORC(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	return c, conditions.GetCondition(cp.Status.Conditions, conditionTypeKORCReady), res
+}
+
+func getOwnedSecret(t *testing.T, c client.Client, cp *c5c3v1alpha1.ControlPlane, name string) *corev1.Secret {
+	t.Helper()
+	g := NewGomegaWithT(t)
+	secret := &corev1.Secret{}
+	g.Expect(c.Get(context.Background(),
+		types.NamespacedName{Name: name, Namespace: childNamespace(cp)}, secret)).To(Succeed())
+	return secret
+}
+
+// TestReconcileKORC_ExternalCABundleProjectedIntoBothSecrets proves the settled
+// D1 shape: the referenced bundle is projected VERBATIM as the inline "cacert"
+// key into BOTH operator-owned credentials Secrets. The password-cloud is what the
+// ApplicationCredential authenticates with directly; the app-credential Secret is
+// the PushSecret's whole-Secret source, so the bundle also reaches OpenBao.
+func TestReconcileKORC_ExternalCABundleProjectedIntoBothSecrets(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := korcExternalControlPlaneWithCA()
+
+	c, _, _ := runReconcileKORC(t, cp, externalCASecret())
+
+	pwCloud := getOwnedSecret(t, c, cp, adminPasswordCloudSecretName(cp))
+	g.Expect(string(pwCloud.Data[korcCACertKey])).To(Equal(testCABundle),
+		"the password-cloud Secret must carry the CA bundle verbatim")
+	g.Expect(string(pwCloud.Data[appCredCloudsYAMLKey])).To(ContainSubstring("https://keystone.example.com/v3"))
+
+	appCred := getOwnedSecret(t, c, cp, adminAppCredentialSecretName(cp))
+	g.Expect(string(appCred.Data[korcCACertKey])).To(Equal(testCABundle),
+		"the app-credential Secret (the PushSecret source) must carry the CA bundle verbatim")
+	g.Expect(appCred.Data[appCredSecretValueKey]).NotTo(BeEmpty(),
+		"projecting the CA must not disturb the generated application-credential value")
+}
+
+// TestReconcileKORC_ManagedModeCarriesNoCacert is the byte-identical guard: a
+// managed ControlPlane dials the in-cluster Service over plain HTTP, so neither
+// owned Secret may grow a "cacert" key — not even when a stale external block
+// lingers after a mode flip.
+func TestReconcileKORC_ManagedModeCarriesNoCacert(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := korcControlPlane()
+	cp.Spec.Services.Keystone.External = &c5c3v1alpha1.ExternalKeystoneSpec{
+		AuthURL:           "https://keystone.example.com/v3",
+		CABundleSecretRef: &commonv1.SecretRefSpec{Name: "keystone-ca", Key: "ca.crt"},
+	}
+
+	c, _, _ := runReconcileKORC(t, cp, externalCASecret())
+
+	g.Expect(getOwnedSecret(t, c, cp, adminPasswordCloudSecretName(cp)).Data).NotTo(HaveKey(korcCACertKey))
+	g.Expect(getOwnedSecret(t, c, cp, adminAppCredentialSecretName(cp)).Data).NotTo(HaveKey(korcCACertKey))
+}
+
+// TestReconcileKORC_CABundleRemovalDropsCacertKey proves the projection converges
+// on REMOVAL too: clearing caBundleSecretRef deletes the key rather than leaving a
+// stale trust anchor behind. K-ORC's provider-client cache still serves the old
+// bundle until it expires (see setCACertKey) — the Secret is what converges here.
+func TestReconcileKORC_CABundleRemovalDropsCacertKey(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := korcExternalControlPlaneWithCA()
+
+	s := korcTestScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(cp, adminPasswordSecret(), externalCASecret()).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
+
+	_, err := r.reconcileKORC(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(getOwnedSecret(t, c, cp, adminAppCredentialSecretName(cp)).Data).To(HaveKey(korcCACertKey))
+
+	cp.Spec.Services.Keystone.External.CABundleSecretRef = nil
+	_, err = r.reconcileKORC(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(getOwnedSecret(t, c, cp, adminPasswordCloudSecretName(cp)).Data).NotTo(HaveKey(korcCACertKey))
+	g.Expect(getOwnedSecret(t, c, cp, adminAppCredentialSecretName(cp)).Data).NotTo(HaveKey(korcCACertKey))
+
+	es := &esov1.ExternalSecret{}
+	g.Expect(c.Get(context.Background(),
+		types.NamespacedName{Name: korcCloudsYamlSecretName, Namespace: childNamespace(cp)}, es)).To(Succeed())
+	g.Expect(es.Spec.Data).To(HaveLen(1),
+		"dropping the CA ref must drop the cacert read-back entry")
+
+	// The re-push trigger tracks the EMPTY bundle too, so the whole-Secret push that
+	// drops the key from OpenBao is nudged now — and re-adding the same bundle later
+	// still changes the trigger, keeping the read-back honest across the cycle.
+	ps := &esov1alpha1.PushSecret{}
+	psKey := types.NamespacedName{Name: adminAppCredentialPushSecretName(cp), Namespace: childNamespace(cp)}
+	g.Expect(c.Get(context.Background(), psKey, ps)).To(Succeed())
+	g.Expect(ps.Annotations[adminAppCredentialCACertHashAnnotation]).To(Equal(caCertPushTrigger("")))
+
+	cp.Spec.Services.Keystone.External.CABundleSecretRef = &commonv1.SecretRefSpec{Name: "keystone-ca", Key: "ca.crt"}
+	_, err = r.reconcileKORC(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(c.Get(context.Background(), psKey, ps)).To(Succeed())
+	g.Expect(ps.Annotations[adminAppCredentialCACertHashAnnotation]).To(Equal(caCertPushTrigger(testCABundle)),
+		"re-adding the bundle must re-push it before the read-back is declared again")
+}
+
+// TestReconcileKORC_MissingCABundleDefers covers every unreadable-bundle shape: an
+// absent CA Secret, a present Secret without the referenced key, and the present-
+// but-empty key a two-step "create the Secret, then populate it" flow (cert-manager,
+// CI templating, a failed openssl) leaves behind. Each defers the mint with
+// KORCReady=False/WaitingForCABundle and a requeue rather than minting against an
+// endpoint whose certificate the operator cannot verify.
+//
+// The empty-value case also guards the source-vs-read-back predicate: an empty bundle
+// carries no "cacert" into the pushed Secret, so proceeding past this defer would let
+// the ExternalSecret declare a read-back for a property that was never pushed and
+// stall the admin-credential pipeline behind a WaitingForCloudsYaml.
+func TestReconcileKORC_MissingCABundleDefers(t *testing.T) {
+	cases := []struct {
+		name string
+		objs []client.Object
+	}{
+		{name: "CA Secret absent"},
+		{
+			name: "CA Secret present without the referenced key",
+			objs: []client.Object{&corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "keystone-ca", Namespace: "default"},
+				Data:       map[string][]byte{"tls.crt": []byte("wrong-key")},
+			}},
+		},
+		{
+			name: "CA Secret present with an empty referenced key",
+			objs: []client.Object{&corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "keystone-ca", Namespace: "default"},
+				Data:       map[string][]byte{"ca.crt": {}},
+			}},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := korcExternalControlPlaneWithCA()
+
+			c, cond, res := runReconcileKORC(t, cp, tc.objs...)
+
+			g.Expect(cond).NotTo(BeNil())
+			g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			g.Expect(cond.Reason).To(Equal("WaitingForCABundle"))
+			g.Expect(cond.Message).To(ContainSubstring("caBundleSecretRef"))
+			g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+
+			// The mint is deferred: no AC and no credentials Secret were written.
+			ac := &orcv1alpha1.ApplicationCredential{}
+			err := c.Get(context.Background(),
+				types.NamespacedName{Name: adminAppCredentialName(cp), Namespace: childNamespace(cp)}, ac)
+			g.Expect(apierrors.IsNotFound(err)).To(BeTrue(),
+				"no ApplicationCredential may be minted before the CA bundle is readable")
+		})
+	}
+}
+
+// TestEnsureKORCCloudsYAMLExternalSecret_CacertReadBackEntry proves the
+// materialized k-orc-clouds-yaml Secret — the credentials source of the admin
+// imports and the catalog CRs — reads the cacert property back from the same
+// OpenBao path only when the RESOLVED bundle is non-empty. The last case is the
+// interesting one: the read-back must follow the bundle CONTENT, not the presence
+// of caBundleSecretRef, because setCACertKey writes the source key under exactly
+// that predicate — declaring a read-back for a property the PushSecret never pushed
+// would flip the ExternalSecret to Ready=False and stall the credential pipeline.
+func TestEnsureKORCCloudsYAMLExternalSecret_CacertReadBackEntry(t *testing.T) {
+	cases := []struct {
+		name      string
+		cp        *c5c3v1alpha1.ControlPlane
+		caBundle  string
+		wantCACRT bool
+	}{
+		{name: "with a CA bundle", cp: korcExternalControlPlaneWithCA(), caBundle: testCABundle, wantCACRT: true},
+		{name: "without a CA bundle", cp: korcExternalControlPlane()},
+		{name: "with a CA ref but an empty bundle", cp: korcExternalControlPlaneWithCA()},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			s := korcTestScheme(t)
+			c := fake.NewClientBuilder().WithScheme(s).WithObjects(tc.cp).Build()
+			r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+			g.Expect(r.ensureKORCCloudsYAMLExternalSecret(context.Background(), tc.cp, tc.caBundle)).To(Succeed())
+
+			es := &esov1.ExternalSecret{}
+			g.Expect(c.Get(context.Background(),
+				types.NamespacedName{Name: korcCloudsYamlSecretName, Namespace: childNamespace(tc.cp)}, es)).To(Succeed())
+			g.Expect(es.Spec.Data[0].SecretKey).To(Equal(appCredCloudsYAMLKey))
+
+			if !tc.wantCACRT {
+				g.Expect(es.Spec.Data).To(HaveLen(1),
+					"an empty bundle must not declare a cacert read-back the source Secret never pushed")
+				return
+			}
+			g.Expect(es.Spec.Data).To(HaveLen(2))
+			g.Expect(es.Spec.Data[1].SecretKey).To(Equal(korcCACertKey))
+			g.Expect(es.Spec.Data[1].RemoteRef.Property).To(Equal(korcCACertKey))
+			g.Expect(es.Spec.Data[1].RemoteRef.Key).To(Equal(adminAppCredentialRemoteKeyFor(tc.cp)),
+				"the cacert property lives at the same per-CR OpenBao path as clouds.yaml")
+		})
+	}
+}
+
+// recordPushAndESWrites returns an interceptor that appends "push-nudge" for every
+// PushSecret Update and "external-secret" for every ExternalSecret Create/Update,
+// so a test can assert the ORDER in which reconcileKORC writes the two objects.
+// EnsurePushSecret goes through Server-Side Apply, so the only PushSecret Update
+// on this path is the re-push nudge.
+func recordPushAndESWrites(writes *[]string) interceptor.Funcs {
+	return interceptor.Funcs{
+		Create: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+			if _, ok := obj.(*esov1.ExternalSecret); ok {
+				*writes = append(*writes, "external-secret")
+			}
+			return cl.Create(ctx, obj, opts...)
+		},
+		Update: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+			switch obj.(type) {
+			case *esov1alpha1.PushSecret:
+				*writes = append(*writes, "push-nudge")
+			case *esov1.ExternalSecret:
+				*writes = append(*writes, "external-secret")
+			}
+			return cl.Update(ctx, obj, opts...)
+		},
+	}
+}
+
+// TestReconcileKORC_CacertReadBackIsPrecededByThePushNudge is the ordering guard
+// the ExternalSecret's cacert read-back depends on. Adding caBundleSecretRef to a
+// LIVE External-mode ControlPlane (the webhook freezes the mode, not this ref)
+// writes "cacert" into the app-credential source Secret — but ESO's PushSecret
+// controller does not watch that Secret, so nothing carries the key to OpenBao.
+// Declaring the read-back first would flip the ExternalSecret to Ready=False and
+// wedge reconcileAdminCredential on WaitingForCloudsYaml for a full ESO refresh
+// interval, never reaching its own re-push (which sits behind that same gate).
+// reconcileKORC must therefore stamp the CA-bundle re-push trigger BEFORE it
+// declares the read-back — and must not churn the push once converged.
+func TestReconcileKORC_CacertReadBackIsPrecededByThePushNudge(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := korcExternalControlPlaneWithCA()
+	psName := adminAppCredentialPushSecretName(cp)
+	psKey := types.NamespacedName{Name: psName, Namespace: childNamespace(cp)}
+
+	// The converged, no-bundle predecessor: the PushSecret and the read-back-less
+	// ExternalSecret both already exist, exactly as a Ready ControlPlane leaves them.
+	var writes []string
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(cp, adminPasswordSecret(), externalCASecret(),
+			&esov1alpha1.PushSecret{ObjectMeta: metav1.ObjectMeta{Name: psName, Namespace: childNamespace(cp)}},
+			readyCloudsYamlES(cp)).
+		WithInterceptorFuncs(recordPushAndESWrites(&writes)).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
+
+	_, err := r.reconcileKORC(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(writes).To(Equal([]string{"push-nudge", "external-secret"}),
+		"the CA bundle must be pushed before the ExternalSecret declares a read-back for it")
+
+	ps := &esov1alpha1.PushSecret{}
+	g.Expect(c.Get(context.Background(), psKey, ps)).To(Succeed())
+	g.Expect(ps.Annotations[adminAppCredentialCACertHashAnnotation]).To(Equal(caCertPushTrigger(testCABundle)))
+	g.Expect(ps.Annotations[adminAppCredentialCACertHashAnnotation]).NotTo(Equal(caCertPushTrigger("")),
+		"the trigger must actually track the bundle, not a constant")
+
+	es := &esov1.ExternalSecret{}
+	g.Expect(c.Get(context.Background(),
+		types.NamespacedName{Name: korcCloudsYamlSecretName, Namespace: childNamespace(cp)}, es)).To(Succeed())
+	g.Expect(es.Spec.Data).To(HaveLen(2), "the cacert read-back must be declared once the push is nudged")
+
+	// Converged: a steady-state pass must not re-stamp the trigger, or every reconcile
+	// would re-push the admin credential to OpenBao.
+	writes = nil
+	_, err = r.reconcileKORC(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(writes).NotTo(ContainElement("push-nudge"),
+		"an unchanged CA bundle must not churn the push")
+}
+
+// TestReadExternalCABundle_NoRefReadsNothing proves a managed (or publicly-trusted
+// External) ControlPlane never touches the API for a bundle it does not reference:
+// the empty client would fail any Get.
+func TestReadExternalCABundle_NoRefReadsNothing(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := korcTestScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).Build()
+
+	bundle, err := readExternalCABundle(context.Background(), c, korcControlPlane())
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(bundle).To(BeEmpty())
+
+	bundle, err = readExternalCABundle(context.Background(), c, korcExternalControlPlane())
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(bundle).To(BeEmpty())
+}
+
+// TestReadExternalCABundle_KeyDefaultsToCACrt covers the webhook-bypass shape: a CR
+// written straight to etcd carries no defaulted key, so the read falls back to
+// "ca.crt" rather than looking up the empty key and deferring forever.
+func TestReadExternalCABundle_KeyDefaultsToCACrt(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := korcTestScheme(t)
+	cp := korcExternalControlPlaneWithCA()
+	cp.Spec.Services.Keystone.External.CABundleSecretRef.Key = ""
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(externalCASecret()).Build()
+
+	bundle, err := readExternalCABundle(context.Background(), c, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(bundle).To(Equal(testCABundle))
 }

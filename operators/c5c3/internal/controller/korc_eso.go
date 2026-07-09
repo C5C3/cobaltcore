@@ -108,7 +108,27 @@ func adminAppCredentialPushSecret(cp *c5c3v1alpha1.ControlPlane) *esov1alpha1.Pu
 // edge case). CreationPolicy Owner makes ESO own the materialised Secret, and the
 // ExternalSecret itself is owner-referenced to the ControlPlane for GC. The
 // ExternalSecret type is esov1 (NOT esov1alpha1 as the PushSecret above is).
-func (r *ControlPlaneReconciler) ensureKORCCloudsYAMLExternalSecret(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) error {
+//
+// A second "cacert" data entry is added when the RESOLVED CA bundle is non-empty,
+// so the materialised Secret — the credentials source for the admin imports and the
+// catalog CRs — carries the trust anchor next to clouds.yaml. The PushSecret above
+// pushes the source Secret WHOLE (no Match.SecretKey), so a COMPLETED push carries
+// the key to the OpenBao path and only the read-back must be declared here.
+//
+// INVARIANT: the gate is the resolved bundle CONTENT, never the presence of
+// caBundleSecretRef, and the caller must have nudged the push for that content
+// FIRST. setCACertKey writes the source key under the same content predicate, but
+// writing it does not push it — a read-back declared for a property no push has
+// created yet flips the ExternalSecret to Ready=False and stalls the whole
+// admin-credential pipeline behind a WaitingForCloudsYaml that blames the wrong
+// Secret. reconcileKORC therefore stamps adminAppCredentialCACertHashAnnotation on
+// the PushSecret immediately before calling this; ESO re-pushes on that metadata
+// change and retries the ExternalSecret until the property resolves.
+//
+// Dropping the bundle drops the entry on the next CreateOrUpdate (the Data slice is
+// rewritten, not merged), and the same stamp re-pushes a source Secret that no
+// longer carries the key.
+func (r *ControlPlaneReconciler) ensureKORCCloudsYAMLExternalSecret(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, caBundle string) error {
 	name := cp.Spec.KORC.AdminCredential.CloudCredentialsRef.SecretName
 	if name == "" {
 		name = korcCloudsYamlSecretName
@@ -129,13 +149,23 @@ func (r *ControlPlaneReconciler) ensureKORCCloudsYAMLExternalSecret(ctx context.
 			Name:           name,
 			CreationPolicy: esov1.CreatePolicyOwner,
 		}
-		es.Spec.Data = []esov1.ExternalSecretData{{
+		data := []esov1.ExternalSecretData{{
 			SecretKey: appCredCloudsYAMLKey,
 			RemoteRef: esov1.ExternalSecretDataRemoteRef{
 				Key:      adminAppCredentialRemoteKeyFor(cp),
 				Property: appCredCloudsYAMLKey,
 			},
 		}}
+		if caBundle != "" {
+			data = append(data, esov1.ExternalSecretData{
+				SecretKey: korcCACertKey,
+				RemoteRef: esov1.ExternalSecretDataRemoteRef{
+					Key:      adminAppCredentialRemoteKeyFor(cp),
+					Property: korcCACertKey,
+				},
+			})
+		}
+		es.Spec.Data = data
 		return controllerutil.SetControllerReference(cp, es, r.Scheme)
 	}); err != nil {
 		return fmt.Errorf("ensuring k-orc clouds.yaml ExternalSecret %q: %w", es.Name, err)

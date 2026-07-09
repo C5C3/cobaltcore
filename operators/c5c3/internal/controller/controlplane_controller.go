@@ -8,6 +8,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	horizonv1alpha1 "github.com/c5c3/forge/operators/horizon/api/v1alpha1"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
@@ -361,12 +362,20 @@ func setServicesStatus(cp *c5c3v1alpha1.ControlPlane) {
 
 // controlPlaneSecretNameExtractor is the controller-runtime IndexerFunc registered
 // under ControlPlaneSecretNameIndexKey. It returns the deduplicated, non-empty
-// set of Secret names a ControlPlane CR references — currently only the EFFECTIVE
-// admin-password Secret name the operator-owned per-ControlPlane
-// Secret name in managed mode, the user-supplied spec.korc.adminCredential
-// .passwordSecretRef.name in brownfield mode — so the field indexer can resolve a
-// Secret event to the referencing CR(s) without listing every ControlPlane in the
-// namespace.
+// set of Secret names a ControlPlane CR references, so the field indexer can
+// resolve a Secret event to the referencing CR(s) without listing every
+// ControlPlane in the namespace:
+//
+//   - the EFFECTIVE admin-password Secret — the operator-owned per-ControlPlane
+//     Secret in managed mode, the user-supplied
+//     spec.korc.adminCredential.passwordSecretRef.name in brownfield and External
+//     mode;
+//   - in External mode, the private-CA bundle Secret
+//     spec.services.keystone.external.caBundleSecretRef.name, so rotating the CA
+//     wakes the ControlPlane immediately instead of waiting for the cache resync.
+//
+// The two may name the same Secret, so the result is deduplicated: a duplicate
+// index entry would enqueue the same ControlPlane twice per Secret event.
 func controlPlaneSecretNameExtractor(obj client.Object) []string {
 	cp, ok := obj.(*c5c3v1alpha1.ControlPlane)
 	if !ok {
@@ -374,11 +383,14 @@ func controlPlaneSecretNameExtractor(obj client.Object) []string {
 		// return is safer than a panic if it ever does.
 		return nil
 	}
-	name := effectiveAdminPasswordSecretRef(cp).Name
-	if name == "" {
-		return []string{}
+	names := []string{}
+	if name := effectiveAdminPasswordSecretRef(cp).Name; name != "" {
+		names = append(names, name)
 	}
-	return []string{name}
+	if ref := externalCABundleRef(cp); ref != nil && ref.Name != "" && !slices.Contains(names, ref.Name) {
+		names = append(names, ref.Name)
+	}
+	return names
 }
 
 // registerControlPlaneSecretNameIndex registers the ControlPlane field indexer

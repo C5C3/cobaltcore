@@ -16,6 +16,12 @@ import (
 // k-orc-clouds-yaml ExternalSecret reads it back as the "clouds.yaml" property.
 const appCredCloudsYAMLKey = "clouds.yaml"
 
+// korcCACertKey is the Secret data key K-ORC reads an inline PEM CA bundle from,
+// in the SAME credentials Secret that carries clouds.yaml — it mirrors upstream's
+// orcv1alpha1.CloudCredencialsCASecretKey (note the upstream spelling). Setting
+// the key is all a private-CA endpoint needs: no volume mount, no upstream change.
+const korcCACertKey = "cacert"
+
 // managedEndpointType is the clouds.yaml endpoint_type a MANAGED Keystone is
 // always addressed with. See buildAppCredCloudsYAML for why it can never be
 // "public".

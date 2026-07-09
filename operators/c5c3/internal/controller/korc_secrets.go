@@ -85,13 +85,86 @@ func (r *ControlPlaneReconciler) ensureOwnedSecret(
 	return err
 }
 
+// setCACertKey projects the external private-CA bundle into an operator-owned
+// K-ORC credentials Secret under the inline "cacert" key K-ORC reads natively —
+// or deletes the key when no bundle is configured, so REMOVING
+// spec.services.keystone.external.caBundleSecretRef converges the Secret instead
+// of leaving a stale trust anchor behind.
+//
+// DOCUMENTED CONSTRAINT (K-ORC provider-client cache aliasing): K-ORC keys its
+// provider-client cache on the PARSED CLOUD STRUCT only — "cacert" is NOT part of
+// the key (internal/scope/provider.go). The cache TTL is the token lifetime / 2
+// (~30 min at Keystone defaults), so a rotated or removed CA bundle only takes
+// effect once the cached client expires: the Secret converges immediately, the
+// trust store does not. Nothing in this operator can shorten that window.
+func setCACertKey(secret *corev1.Secret, caBundle string) {
+	if caBundle == "" {
+		delete(secret.Data, korcCACertKey)
+		return
+	}
+	secret.Data[korcCACertKey] = []byte(caBundle)
+}
+
+// caCertPushTrigger derives the PushSecret annotation value that tracks the
+// "cacert" state setCACertKey just wrote into the app-credential source Secret.
+//
+// It hashes the RESOLVED bundle — the EMPTY string included — so every transition
+// changes it exactly once: adding a bundle, rotating it, removing it, and adding
+// the same bundle back later. Hashing only non-empty bundles would leave the
+// annotation pinned at the old value across a remove/re-add cycle, so the re-added
+// key would never be pushed and the read-back would be declared against a property
+// the intervening whole-Secret push had already dropped.
+func caCertPushTrigger(caBundle string) string {
+	sum := sha256.Sum256([]byte(caBundle))
+	return hex.EncodeToString(sum[:])
+}
+
+// readExternalCABundle reads the private-CA bundle an External-mode ControlPlane
+// references, from the ControlPlane's own namespace (mirroring readAdminPassword).
+// It returns "" — with no error and no API read — when no bundle is configured,
+// which is both the managed-mode and the publicly-trusted-endpoint case. The data
+// key defaults to DefaultCABundleSecretKey ("ca.crt") for a webhook-bypassed CR.
+//
+// A missing Secret/key surfaces as a secrets.IsMissingSecretOrKey error so the
+// caller can defer (KORCReady=False/WaitingForCABundle) rather than mint against
+// an endpoint it cannot verify. A present-but-EMPTY key is the same non-verifiable
+// state — the normal transient of a two-step "create the Secret, then populate it"
+// flow (cert-manager, CI templating) — but GetSecretValue reports it as a successful
+// ("", nil) read, indistinguishable from "no bundle configured". Mapping it onto
+// ErrKeyNotFound keeps the returned bundle non-empty whenever a ref is set, so
+// setCACertKey and ensureKORCCloudsYAMLExternalSecret can share one predicate.
+func readExternalCABundle(ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane) (string, error) {
+	ref := externalCABundleRef(cp)
+	if ref == nil {
+		return "", nil
+	}
+	key := ref.Key
+	if key == "" {
+		key = c5c3v1alpha1.DefaultCABundleSecretKey
+	}
+	name := types.NamespacedName{Namespace: cp.Namespace, Name: ref.Name}
+	bundle, err := secrets.GetSecretValue(ctx, c, name, key)
+	if err != nil {
+		return "", err
+	}
+	if bundle == "" {
+		return "", fmt.Errorf("%w: key %q in Secret %s/%s is present but empty",
+			secrets.ErrKeyNotFound, key, name.Namespace, name.Name)
+	}
+	return bundle, nil
+}
+
 // ensureAppCredentialSecret ensures the operator-owned Secret that K-ORC reads the
 // application-credential secret from exists with a generated "value". K-ORC's
 // managed ApplicationCredential reads Secret.Data["value"] and creates the AC in
 // Keystone with it, so this MUST exist before the AC is reconciled. The value is
 // generated once and preserved across reconciles — regenerating it would force a
 // re-mint and invalidate the stored clouds.yaml.
-func (r *ControlPlaneReconciler) ensureAppCredentialSecret(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) error {
+//
+// The external CA bundle (empty in managed mode) is projected alongside as
+// "cacert". This Secret is the PushSecret's source and ESO pushes it WHOLE, so the
+// bundle reaches OpenBao next to the assembled clouds.yaml with no extra plumbing.
+func (r *ControlPlaneReconciler) ensureAppCredentialSecret(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, caBundle string) error {
 	if err := r.ensureOwnedSecret(ctx, cp, adminAppCredentialSecretName(cp), func(secret *corev1.Secret) error {
 		if len(secret.Data[appCredSecretValueKey]) == 0 {
 			v, gerr := generateAppCredSecretValue()
@@ -100,6 +173,7 @@ func (r *ControlPlaneReconciler) ensureAppCredentialSecret(ctx context.Context, 
 			}
 			secret.Data[appCredSecretValueKey] = []byte(v)
 		}
+		setCACertKey(secret, caBundle)
 		return nil
 	}); err != nil {
 		return fmt.Errorf("ensuring app-credential secret %q: %w", adminAppCredentialSecretName(cp), err)
@@ -128,9 +202,15 @@ func generateAppCredSecretValue() (string, error) {
 //
 // The Secret lives in childNamespace(cp) — the same namespace as the K-ORC CRs —
 // because K-ORC resolves CloudCredentialsRef in the resource's own namespace (C1).
-func (r *ControlPlaneReconciler) ensureAdminPasswordCloud(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, password string) error {
+//
+// The external CA bundle (empty in managed mode) is projected alongside as
+// "cacert": this is the credential the ApplicationCredential authenticates with
+// DIRECTLY, so without the bundle a private-CA endpoint fails TLS verification on
+// every mint and re-mint.
+func (r *ControlPlaneReconciler) ensureAdminPasswordCloud(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, password, caBundle string) error {
 	if err := r.ensureOwnedSecret(ctx, cp, adminPasswordCloudSecretName(cp), func(secret *corev1.Secret) error {
 		secret.Data[appCredCloudsYAMLKey] = []byte(buildPasswordCloudsYAML(cp, password))
+		setCACertKey(secret, caBundle)
 		return nil
 	}); err != nil {
 		return fmt.Errorf("ensuring admin password-cloud secret %q: %w", adminPasswordCloudSecretName(cp), err)
@@ -145,7 +225,17 @@ func (r *ControlPlaneReconciler) ensureAdminPasswordCloud(ctx context.Context, c
 // k-orc-clouds-yaml ExternalSecret reads is empty until something pushes to it, so
 // the operator seeds a password-based document here that lets K-ORC's admin
 // imports authenticate before the application credential is ever minted —
-// previously this was seeded by deploy/openbao/bootstrap/write-bootstrap-secrets.sh.
+// in MANAGED mode this was previously seeded by
+// deploy/openbao/bootstrap/write-bootstrap-secrets.sh.
+//
+// The seed NEVER invents a password. It renders the cleartext reconcileKORC read
+// from the EFFECTIVE admin-password Secret (readAdminPassword ->
+// effectiveAdminPasswordSecretRef): the operator-owned, OpenBao-projected Secret
+// in managed mode, and the USER-SUPPLIED Secret in External and brownfield mode.
+// An absent user Secret is not a seeding opportunity — reconcileKORC defers with
+// KORCReady=False/WaitingForAdminPassword before this is ever called, so the key
+// simply stays unseeded. A generated password would never authenticate against a
+// pre-existing Keystone anyway.
 //
 // Write-if-empty is the idempotency guard: once
 // reconcileAdminCredential fills the key with the minted credential-based

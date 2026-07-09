@@ -137,6 +137,14 @@ func validateExternalAuthURL(path *field.Path, raw string) *field.Error {
 	return nil
 }
 
+// externalAuthURLIsPlaintext reports whether raw is an http:// (non-TLS) endpoint.
+// A parse failure reads as false: validateExternalAuthURL already rejects those, and
+// a second error on the same field would only add noise.
+func externalAuthURLIsPlaintext(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && u.Scheme == "http"
+}
+
 // ControlPlaneWebhook implements defaulting and validation webhooks for the
 // ControlPlane CRD. Client is injected at startup and used by
 // ValidateCreate to enforce one ControlPlane per namespace.
@@ -540,9 +548,26 @@ func validateKeystoneMode(cp *ControlPlane) field.ErrorList {
 					allErrs = append(allErrs, err)
 				}
 			}
-			if ref := ks.External.CABundleSecretRef; ref != nil && ref.Name == "" {
-				allErrs = append(allErrs, field.Required(ksPath.Child("external", "caBundleSecretRef", "name"),
-					"must be set when caBundleSecretRef is configured"))
+			if ref := ks.External.CABundleSecretRef; ref != nil {
+				if ref.Name == "" {
+					allErrs = append(allErrs, field.Required(ksPath.Child("external", "caBundleSecretRef", "name"),
+						"must be set when caBundleSecretRef is configured"))
+				}
+				// A CA bundle is only ever consulted during a TLS handshake, and a
+				// plaintext endpoint never performs one. Accepting the pair would hand
+				// the operator full positive confirmation that trust is enforced —
+				// readExternalCABundle blocks the mint on WaitingForCABundle until the
+				// Secret exists, setCACertKey projects `cacert` into both credentials
+				// Secrets — while buildPasswordCloudsYAML renders the admin password
+				// next to an http:// auth_url and K-ORC POSTs it in the clear on every
+				// mint and re-mint. Reject the combination rather than silently voiding
+				// the bundle. Plain http:// WITHOUT a caBundleSecretRef stays admissible:
+				// it claims no transport security, so it misleads nobody.
+				if externalAuthURLIsPlaintext(ks.External.AuthURL) {
+					allErrs = append(allErrs, field.Invalid(ksPath.Child("external", "authURL"), ks.External.AuthURL,
+						"must use scheme https when caBundleSecretRef is set: a plaintext endpoint never "+
+							"performs the TLS handshake the CA bundle would verify"))
+				}
 			}
 		}
 

@@ -1401,6 +1401,60 @@ func TestValidateCreate_RejectsEmptyCABundleSecretRefName(t *testing.T) {
 	g.Expect(err.Error()).To(ContainSubstring("services.keystone.external.caBundleSecretRef.name"))
 }
 
+// TestValidateCreate_RejectsPlaintextAuthURLWithCABundleSecretRef pins the coupling
+// of the scheme to the CA bundle. An http:// endpoint never performs a TLS
+// handshake, so the bundle is never consulted — yet every operator-visible signal
+// says trust is enforced: the mint blocks on WaitingForCABundle until the Secret
+// exists and `cacert` is projected into both credentials Secrets. Meanwhile K-ORC
+// POSTs the admin password over the unencrypted connection on every mint and
+// re-mint. Admission must reject the pair rather than silently void the bundle.
+//
+// Plain http:// WITHOUT a caBundleSecretRef stays admissible: it claims no
+// transport security, so it misleads nobody.
+func TestValidateCreate_RejectsPlaintextAuthURLWithCABundleSecretRef(t *testing.T) {
+	cases := []struct {
+		name      string
+		authURL   string
+		caBundle  *commonv1.SecretRefSpec
+		wantError bool
+	}{
+		{
+			name:      "http with a CA bundle is rejected",
+			authURL:   "http://keystone.example.com/v3",
+			caBundle:  &commonv1.SecretRefSpec{Name: "keystone-ca"},
+			wantError: true,
+		},
+		{
+			name:     "https with a CA bundle is accepted",
+			authURL:  "https://keystone.example.com/v3",
+			caBundle: &commonv1.SecretRefSpec{Name: "keystone-ca"},
+		},
+		{
+			name:    "http without a CA bundle is accepted",
+			authURL: "http://keystone.example.com/v3",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			w := &ControlPlaneWebhook{}
+			cp := externalControlPlane()
+			cp.Spec.Services.Keystone.External.AuthURL = tc.authURL
+			cp.Spec.Services.Keystone.External.CABundleSecretRef = tc.caBundle
+
+			_, err := w.ValidateCreate(context.Background(), cp)
+			if !tc.wantError {
+				g.Expect(err).NotTo(HaveOccurred())
+				return
+			}
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring("services.keystone.external.authURL"))
+			g.Expect(err.Error()).To(ContainSubstring("must use scheme https when caBundleSecretRef is set"))
+		})
+	}
+}
+
 // TestValidateCreate_AccumulatesAllExternalModeErrors puts every External-mode
 // rule into a broken state at once (external missing, infrastructure present,
 // horizon present, all six managed-only fields set) and asserts the returned

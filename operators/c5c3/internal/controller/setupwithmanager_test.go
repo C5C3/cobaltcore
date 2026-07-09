@@ -93,6 +93,70 @@ func TestControlPlaneSecretNameExtractor_EmptyWhenUnset(t *testing.T) {
 		"extractor must return an empty slice when passwordSecretRef.name is unset")
 }
 
+// externalMapperControlPlane is the External-mode shape: the user-supplied admin
+// password Secret plus an optional private-CA bundle Secret. Both must be indexed
+// so a rotation of either wakes the owning ControlPlane.
+func externalMapperControlPlane(name, namespace, secretName, caSecretName string) *c5c3v1alpha1.ControlPlane {
+	cp := mapperControlPlane(name, namespace, secretName)
+	cp.Spec.Services.Keystone = &c5c3v1alpha1.ServiceKeystoneSpec{
+		Mode:     c5c3v1alpha1.KeystoneModeExternal,
+		External: &c5c3v1alpha1.ExternalKeystoneSpec{AuthURL: "https://keystone.example.com/v3"},
+	}
+	if caSecretName != "" {
+		cp.Spec.Services.Keystone.External.CABundleSecretRef = &commonv1.SecretRefSpec{
+			Name: caSecretName, Key: "ca.crt",
+		}
+	}
+	return cp
+}
+
+func TestControlPlaneSecretNameExtractor_ExternalIncludesCABundleSecret(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := externalMapperControlPlane("cp", "default", "external-admin", "keystone-ca")
+	got := controlPlaneSecretNameExtractor(cp)
+
+	g.Expect(got).To(ConsistOf("external-admin", "keystone-ca"),
+		"External mode must index both the admin-password and the CA-bundle Secret")
+}
+
+// TestControlPlaneSecretNameExtractor_DeduplicatesSharedSecret covers the shape
+// where one Secret carries both the admin password and the CA bundle: a duplicate
+// index entry would enqueue the same ControlPlane twice per Secret event.
+func TestControlPlaneSecretNameExtractor_DeduplicatesSharedSecret(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := externalMapperControlPlane("cp", "default", "shared", "shared")
+	got := controlPlaneSecretNameExtractor(cp)
+
+	g.Expect(got).To(ConsistOf("shared"))
+}
+
+// TestControlPlaneSecretNameExtractor_ManagedIgnoresCABundleRef proves the mode
+// discriminator gates the CA entry: a managed ControlPlane never dials a
+// TLS-fronted endpoint, so a leftover external block indexes nothing extra.
+func TestControlPlaneSecretNameExtractor_ManagedIgnoresCABundleRef(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := externalMapperControlPlane("cp", "default", "keystone-admin", "keystone-ca")
+	cp.Spec.Services.Keystone.Mode = c5c3v1alpha1.KeystoneModeManaged
+	got := controlPlaneSecretNameExtractor(cp)
+
+	g.Expect(got).To(ConsistOf("keystone-admin"))
+}
+
+// TestControlPlaneSecretNameExtractor_ExternalWithoutPasswordStillIndexesCA covers
+// the empty-name edge: an unset passwordSecretRef must not leak an empty string
+// into the index, but must not suppress the CA entry either.
+func TestControlPlaneSecretNameExtractor_ExternalWithoutPasswordStillIndexesCA(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := externalMapperControlPlane("cp", "default", "", "keystone-ca")
+	got := controlPlaneSecretNameExtractor(cp)
+
+	g.Expect(got).To(ConsistOf("keystone-ca"))
+}
+
 func TestControlPlaneSecretNameExtractor_WrongTypeReturnsNil(t *testing.T) {
 	g := NewGomegaWithT(t)
 

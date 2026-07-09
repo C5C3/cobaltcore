@@ -176,12 +176,19 @@ func (r *ControlPlaneReconciler) reconcileAdminCredential(ctx context.Context, c
 		}
 	}
 
-	// Content hash of the assembled clouds.yaml. It keys BOTH the PushSecret
-	// re-push trigger just below and the ExternalSecret force-sync further down, so
-	// each fires exactly once per credential change and a steady-state pass leaves
-	// both untouched.
-	contentSum := sha256.Sum256(cloudsYAML)
-	contentHash := hex.EncodeToString(contentSum[:])
+	// Content hash of the assembled clouds.yaml AND the projected CA bundle. It keys
+	// BOTH the PushSecret re-push trigger just below and the ExternalSecret
+	// force-sync further down, so each fires exactly once per credential change and
+	// a steady-state pass leaves both untouched. Folding in "cacert" makes a rotated
+	// CA propagate to OpenBao (and back into the materialized Secret) immediately
+	// rather than at ESO's hourly refresh — the clouds.yaml alone does not change
+	// when only the trust anchor does. With no "cacert" key the write is a no-op, so
+	// a managed ControlPlane's hash stays byte-identical to sha256(clouds.yaml) and
+	// never triggers a spurious re-push.
+	hasher := sha256.New()
+	hasher.Write(cloudsYAML)
+	hasher.Write(secret.Data[korcCACertKey])
+	contentHash := hex.EncodeToString(hasher.Sum(nil))
 
 	// CLOBBER-SAFE PushSecret: EnsurePushSecret applies via Server-Side Apply
 	// under a fixed field manager that owns only the fields the operator sets, so
@@ -205,7 +212,7 @@ func (r *ControlPlaneReconciler) reconcileAdminCredential(ctx context.Context, c
 	// content-hash annotation changes the PushSecret's metadata hash and forces the
 	// re-push now; it is idempotent (skipped when the hash already matches), so a
 	// converged credential never churns the push.
-	if err := r.forceRepushAdminAppCredential(ctx, cp, ps.Name, contentHash); err != nil {
+	if err := r.forceRepushAdminAppCredential(ctx, cp, ps.Name, adminAppCredentialPushContentHashAnnotation, contentHash); err != nil {
 		fail("PushSecretError", fmt.Sprintf("forcing admin app-credential PushSecret re-push: %v", err))
 		return ctrl.Result{}, err
 	}
@@ -422,19 +429,30 @@ func (r *ControlPlaneReconciler) forceSyncKORCCloudsYAMLExternalSecret(ctx conte
 // content hash onto the admin app-credential PushSecret. Changing it alters the
 // PushSecret's metadata hash, which is the only input ESO's PushSecret
 // shouldRefresh gate reacts to (it does not watch the source Secret), forcing an
-// immediate re-push of the updated credential.
+// immediate re-push of the updated credential. It is owned by
+// reconcileAdminCredential.
 const adminAppCredentialPushContentHashAnnotation = "c5c3.io/push-content-hash" //nolint:gosec // G101 false positive: annotation key, not a credential.
 
+// adminAppCredentialCACertHashAnnotation stamps the resolved external CA bundle's
+// hash onto the same PushSecret, and is owned by reconcileKORC — which writes the
+// "cacert" source key and declares its read-back long before reconcileAdminCredential
+// is allowed to run. It must be a SEPARATE key: sharing
+// adminAppCredentialPushContentHashAnnotation would make the two sub-reconcilers
+// overwrite each other's value on every pass, re-pushing the credential to OpenBao
+// on every reconcile instead of only when it changes.
+const adminAppCredentialCACertHashAnnotation = "c5c3.io/push-cacert-hash" //nolint:gosec // G101 false positive: annotation key, not a credential.
+
 // forceRepushAdminAppCredential nudges ESO to re-push the admin app-credential
-// source Secret to OpenBao by stamping a content-hash annotation on the backing
+// source Secret to OpenBao by stamping the given annotation on the backing
 // PushSecret. ESO's PushSecret controller re-pushes only when the PushSecret
 // object's own metadata hash changes (it does not watch the referenced Secret),
 // so without this stamp a source-Secret update — e.g. the fresh-create handoff
-// from the bootstrap clouds.yaml to the minted credential — would not reach
-// OpenBao until the PushSecret's hourly refreshInterval. The annotation is keyed
-// by the assembled clouds.yaml content hash, so it changes only when the
-// credential changes and a steady-state pass is a no-op.
-func (r *ControlPlaneReconciler) forceRepushAdminAppCredential(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, name, hash string) error {
+// from the bootstrap clouds.yaml to the minted credential, or a newly projected
+// CA bundle — would not reach OpenBao until the PushSecret's hourly
+// refreshInterval. Each caller keys its own annotation by the content it owns, so
+// the stamp changes only when that content changes and a steady-state pass is a
+// no-op.
+func (r *ControlPlaneReconciler) forceRepushAdminAppCredential(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, name, annotation, hash string) error {
 	key := types.NamespacedName{Namespace: childNamespace(cp), Name: name}
 	// Read-modify-write under RetryOnConflict: ESO mutates the PushSecret's status
 	// (and re-pushes on the metadata change this triggers), so a 409 Conflict
@@ -448,13 +466,13 @@ func (r *ControlPlaneReconciler) forceRepushAdminAppCredential(ctx context.Conte
 			}
 			return err
 		}
-		if ps.Annotations[adminAppCredentialPushContentHashAnnotation] == hash {
+		if ps.Annotations[annotation] == hash {
 			return nil
 		}
 		if ps.Annotations == nil {
 			ps.Annotations = map[string]string{}
 		}
-		ps.Annotations[adminAppCredentialPushContentHashAnnotation] = hash
+		ps.Annotations[annotation] = hash
 		return r.Update(ctx, ps)
 	}); err != nil {
 		return fmt.Errorf("forcing admin app-credential PushSecret %q re-push: %w", name, err)

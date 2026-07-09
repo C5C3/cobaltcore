@@ -11,6 +11,7 @@ import (
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	commonv1 "github.com/c5c3/forge/internal/common/types"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 )
 
@@ -114,6 +115,26 @@ func externalKeystoneAuthURL(cp *c5c3v1alpha1.ControlPlane) string {
 		return ""
 	}
 	return ks.External.AuthURL
+}
+
+// externalCABundleRef returns the private-CA bundle Secret reference of an
+// External-mode ControlPlane, or nil when the ControlPlane is managed, the
+// external block is absent, or no bundle is configured (a publicly trusted
+// endpoint). It is nil-safe on every level so callers can branch on the result
+// alone.
+//
+// A managed ControlPlane never carries a CA bundle: it dials the in-cluster
+// Keystone Service over plain HTTP, so the ref is ignored even if a mode flip
+// left the external block behind.
+func externalCABundleRef(cp *c5c3v1alpha1.ControlPlane) *commonv1.SecretRefSpec {
+	if !cp.IsExternalKeystone() {
+		return nil
+	}
+	ks := cp.Spec.Services.Keystone
+	if ks == nil || ks.External == nil {
+		return nil
+	}
+	return ks.External.CABundleSecretRef
 }
 
 // classifyKORCMessage maps a K-ORC condition message onto an External-mode

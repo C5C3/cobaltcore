@@ -111,12 +111,32 @@ func (r *ControlPlaneReconciler) reconcileKORC(ctx context.Context, cp *c5c3v1al
 	}
 	pwHash := secrets.AdminPasswordDigest(password)
 
+	// Read the private-CA bundle an External-mode ControlPlane may reference. It is
+	// projected verbatim into BOTH operator-owned credentials Secrets as the inline
+	// "cacert" key K-ORC reads natively. Managed mode has no bundle (empty string),
+	// so the Secrets stay byte-identical to today. A not-yet-created — or created but
+	// not-yet-populated — CA Secret defers exactly like a not-yet-created admin
+	// password: minting against an endpoint whose certificate we cannot verify would
+	// only fail at K-ORC.
+	caBundle, err := readExternalCABundle(ctx, r.Client, cp)
+	if err != nil {
+		if secrets.IsMissingSecretOrKey(err) {
+			logger.Info("external CA bundle not yet available, deferring K-ORC mint")
+			fail("WaitingForCABundle",
+				"the CA bundle Secret referenced by spec.services.keystone.external.caBundleSecretRef "+
+					"is not yet available; deferring application-credential mint")
+			return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
+		}
+		fail("CABundleError", fmt.Sprintf("reading external CA bundle: %v", err))
+		return ctrl.Result{}, err
+	}
+
 	// Ensure the operator-owned password-based clouds.yaml the AC mints with always
 	// tracks the current admin password. This is what breaks the self-referential
 	// bootstrap deadlock and lets the delete+recreate re-mint below re-authenticate
 	// as admin even while k-orc-clouds-yaml still holds the (about-to-be-revoked)
 	// app credential.
-	if err := r.ensureAdminPasswordCloud(ctx, cp, password); err != nil {
+	if err := r.ensureAdminPasswordCloud(ctx, cp, password, caBundle); err != nil {
 		fail("PasswordCloudError", fmt.Sprintf("ensuring admin password-cloud secret: %v", err))
 		return ctrl.Result{}, err
 	}
@@ -160,7 +180,7 @@ func (r *ControlPlaneReconciler) reconcileKORC(ctx context.Context, cp *c5c3v1al
 	// (it does NOT generate or write the secret itself). So the operator-owned
 	// Secret MUST exist with a generated "value" BEFORE the AC is reconciled —
 	// otherwise the AC blocks on "Waiting for Secret … to be created".
-	if err := r.ensureAppCredentialSecret(ctx, cp); err != nil {
+	if err := r.ensureAppCredentialSecret(ctx, cp, caBundle); err != nil {
 		fail("SecretError", fmt.Sprintf("ensuring application-credential secret: %v", err))
 		return ctrl.Result{}, err
 	}
@@ -190,7 +210,24 @@ func (r *ControlPlaneReconciler) reconcileKORC(ctx context.Context, cp *c5c3v1al
 		fail("PushSecretError", fmt.Sprintf("ensuring admin app-credential PushSecret: %v", err))
 		return ctrl.Result{}, err
 	}
-	if err := r.ensureKORCCloudsYAMLExternalSecret(ctx, cp); err != nil {
+	// Nudge the push BEFORE the ExternalSecret below declares a read-back for the
+	// "cacert" property, because only a completed push creates that property.
+	// ensureAppCredentialSecret just wrote the key into the source Secret, but ESO's
+	// PushSecret controller does NOT watch its source Secret — it re-pushes only on a
+	// change to the PushSecret's own metadata hash. Without this stamp the key sits
+	// unpushed until the PushSecret's refreshInterval (ESO default 1h) while the
+	// ExternalSecret, resolving a property the remote key does not carry, reports
+	// Ready=False and wedges reconcileAdminCredential on WaitingForCloudsYaml —
+	// blaming the clouds.yaml Secret for an un-pushed CA bundle. That sub-reconciler's
+	// own re-push cannot break the wedge: it sits BEHIND the very ExternalSecret gate
+	// this read-back is about to close. The trigger covers the empty bundle too, so
+	// removing the ref re-pushes a Secret without the key (see caCertPushTrigger).
+	if err := r.forceRepushAdminAppCredential(ctx, cp, adminAppCredentialPushSecretName(cp),
+		adminAppCredentialCACertHashAnnotation, caCertPushTrigger(caBundle)); err != nil {
+		fail("PushSecretError", fmt.Sprintf("forcing CA bundle re-push: %v", err))
+		return ctrl.Result{}, err
+	}
+	if err := r.ensureKORCCloudsYAMLExternalSecret(ctx, cp, caBundle); err != nil {
 		fail("ExternalSecretError", fmt.Sprintf("ensuring k-orc clouds.yaml ExternalSecret: %v", err))
 		return ctrl.Result{}, err
 	}
