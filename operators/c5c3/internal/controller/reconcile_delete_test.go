@@ -232,3 +232,141 @@ func TestReconcileDelete_ForceRemovesORCFinalizersAfterStall(t *testing.T) {
 		ContainSubstring("ORCTeardownStalled"),
 	)), "the stall escape must emit a Warning ORCTeardownStalled event")
 }
+
+// deletingExternalControlPlane returns an External-mode ControlPlane being
+// deleted, carrying the ORC-teardown finalizer.
+func deletingExternalControlPlane() *c5c3v1alpha1.ControlPlane {
+	cp := korcExternalControlPlane()
+	ts := metav1.NewTime(metav1.Now().Add(-time.Second))
+	cp.DeletionTimestamp = &ts
+	cp.Finalizers = []string{controlPlaneORCFinalizer}
+	return cp
+}
+
+// externalModeORCChildren returns the five owned K-ORC CRs an External-mode
+// ControlPlane projects, with the ManagementPolicy each really carries: the
+// ApplicationCredential is Managed (its finalizer revokes at the Keystone level),
+// while the admin User/Domain are Unmanaged imports whose CR deletion cannot touch
+// the external Keystone.
+func externalModeORCChildren(cp *c5c3v1alpha1.ControlPlane) []client.Object {
+	ns := childNamespace(cp)
+	return []client.Object{
+		&orcv1alpha1.ApplicationCredential{
+			ObjectMeta: metav1.ObjectMeta{Name: adminAppCredentialName(cp), Namespace: ns},
+			Spec:       orcv1alpha1.ApplicationCredentialSpec{ManagementPolicy: orcv1alpha1.ManagementPolicyManaged},
+		},
+		&orcv1alpha1.Service{ObjectMeta: metav1.ObjectMeta{Name: keystoneServiceName(cp), Namespace: ns}},
+		&orcv1alpha1.Endpoint{ObjectMeta: metav1.ObjectMeta{Name: keystoneEndpointName(cp), Namespace: ns}},
+		&orcv1alpha1.User{
+			ObjectMeta: metav1.ObjectMeta{Name: adminUserRef(cp), Namespace: ns},
+			Spec: orcv1alpha1.UserSpec{
+				ManagementPolicy: orcv1alpha1.ManagementPolicyUnmanaged,
+				Import:           &orcv1alpha1.UserImport{Filter: &orcv1alpha1.UserFilter{}},
+			},
+		},
+		&orcv1alpha1.Domain{
+			ObjectMeta: metav1.ObjectMeta{Name: adminDomainRef(cp), Namespace: ns},
+			Spec: orcv1alpha1.DomainSpec{
+				ManagementPolicy: orcv1alpha1.ManagementPolicyUnmanaged,
+				Import:           &orcv1alpha1.DomainImport{Filter: &orcv1alpha1.DomainFilter{}},
+			},
+		},
+	}
+}
+
+// TestReconcileDelete_ExternalMode_TearsDownOnlyOwnedORCCRs is the AC-4 guard:
+// deleting an External-mode ControlPlane removes exactly the K-ORC CRs the
+// operator owns — and provably nothing else. A same-namespace K-ORC User that the
+// ControlPlane never created (another tenant's import) must survive.
+func TestReconcileDelete_ExternalMode_TearsDownOnlyOwnedORCCRs(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	s := korcTestScheme(t)
+	cp := deletingExternalControlPlane()
+	foreign := &orcv1alpha1.User{
+		ObjectMeta: metav1.ObjectMeta{Name: "someone-elses-user", Namespace: childNamespace(cp)},
+		Spec:       orcv1alpha1.UserSpec{ManagementPolicy: orcv1alpha1.ManagementPolicyUnmanaged},
+	}
+	objs := append([]client.Object{cp, foreign}, externalModeORCChildren(cp)...)
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(objs...).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
+
+	// No K-ORC finalizers are seeded, so the CRs vanish on Delete and the sweep
+	// releases the ControlPlane finalizer in one pass.
+	res, err := r.reconcileDelete(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{}))
+	g.Expect(controllerutil.ContainsFinalizer(cp, controlPlaneORCFinalizer)).To(BeFalse(),
+		"the ControlPlane finalizer must be released once every owned K-ORC CR is gone")
+
+	// Every owned K-ORC CR is gone.
+	for _, child := range orcChildResources {
+		obj := child.newObj()
+		key := types.NamespacedName{Name: child.name(cp), Namespace: childNamespace(cp)}
+		g.Expect(apierrors.IsNotFound(c.Get(ctx, key, obj))).To(BeTrue(),
+			"owned K-ORC CR %s must be deleted", key.Name)
+	}
+
+	// ... and provably nothing else. The unrelated import survives untouched.
+	survivor := &orcv1alpha1.User{}
+	g.Expect(c.Get(ctx, types.NamespacedName{Name: "someone-elses-user", Namespace: childNamespace(cp)}, survivor)).
+		To(Succeed(), "a K-ORC CR the ControlPlane does not own must never be swept")
+}
+
+// TestDeleteORCResources_ExternalMode_LeavesUnmanagedImportsUntouched pins WHY the
+// sweep has zero blast radius on the external installation: the admin User/Domain
+// the sweep deletes are Unmanaged imports, so removing their CRs cannot delete the
+// OpenStack resources behind them. Only the ApplicationCredential is Managed — its
+// K-ORC finalizer revokes at the Keystone level before the CR delete returns, so
+// authenticating with the revoked credential afterwards yields 404 "Could not find
+// Application Credential" (not 401).
+func TestDeleteORCResources_ExternalMode_LeavesUnmanagedImportsUntouched(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	s := korcTestScheme(t)
+	cp := deletingExternalControlPlane()
+	objs := append([]client.Object{cp}, externalModeORCChildren(cp)...)
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(objs...).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
+
+	// Read the management policies the sweep is about to act on, BEFORE the sweep.
+	user := &orcv1alpha1.User{}
+	g.Expect(c.Get(ctx, types.NamespacedName{Name: adminUserRef(cp), Namespace: childNamespace(cp)}, user)).To(Succeed())
+	g.Expect(user.Spec.ManagementPolicy).To(Equal(orcv1alpha1.ManagementPolicyUnmanaged))
+	g.Expect(user.Spec.Import).NotTo(BeNil(), "the admin User is an import, not an owned resource")
+
+	domain := &orcv1alpha1.Domain{}
+	g.Expect(c.Get(ctx, types.NamespacedName{Name: adminDomainRef(cp), Namespace: childNamespace(cp)}, domain)).To(Succeed())
+	g.Expect(domain.Spec.ManagementPolicy).To(Equal(orcv1alpha1.ManagementPolicyUnmanaged))
+	g.Expect(domain.Spec.Import).NotTo(BeNil())
+
+	ac := &orcv1alpha1.ApplicationCredential{}
+	g.Expect(c.Get(ctx, types.NamespacedName{Name: adminAppCredentialName(cp), Namespace: childNamespace(cp)}, ac)).To(Succeed())
+	g.Expect(ac.Spec.ManagementPolicy).To(Equal(orcv1alpha1.ManagementPolicyManaged),
+		"the app credential is the only identity object the operator minted, so the only one it revokes")
+
+	remaining, hasLiveWork, err := r.deleteORCResources(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(hasLiveWork).To(BeTrue(), "live (not-yet-Terminating) CRs must announce the teardown once")
+	g.Expect(remaining).To(BeEmpty())
+}
+
+// TestReconcileDelete_ExternalMode_NoORCResources_ReleasesFinalizer covers the
+// edge path where the K-ORC chain never converged: an External-mode ControlPlane
+// deleted before any K-ORC CR was projected must still release its finalizer
+// rather than wedge on Terminating.
+func TestReconcileDelete_ExternalMode_NoORCResources_ReleasesFinalizer(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := deletingExternalControlPlane()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
+
+	res, err := r.reconcileDelete(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{}))
+	g.Expect(controllerutil.ContainsFinalizer(cp, controlPlaneORCFinalizer)).To(BeFalse())
+}

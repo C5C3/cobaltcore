@@ -36,6 +36,30 @@ const korcFinalizerPrefix = orcv1alpha1.GroupName + "/"
 // objects it returns) iterate this list, so adding a kind only requires one
 // entry here. Each newObj returns a zeroed object for Get/Delete; name derives
 // the deterministic per-ControlPlane CR name (all live in childNamespace(cp)).
+//
+// DELETION BLAST RADIUS. The sweep is correct for BOTH keystone modes, because
+// what a Delete does to the external OpenStack installation is decided by each
+// CR's ManagementPolicy, not by the ControlPlane's mode:
+//
+//   - ApplicationCredential — ManagementPolicyManaged. Its K-ORC finalizer revokes
+//     the credential at the Keystone level BEFORE the CR delete returns, so
+//     authenticating with it immediately afterwards yields 404 "Could not find
+//     Application Credential" (not 401). This is the one identity object the
+//     operator minted, so it is the one it destroys.
+//   - User, Domain — ManagementPolicyUnmanaged imports (see ensureKORCAdminImports).
+//     Deleting their CRs removes the Kubernetes objects and leaves the OpenStack
+//     resources they imported untouched. K-ORC's deletion-guard finalizers also
+//     enforce the teardown order: a User cannot go while an ApplicationCredential
+//     still references it.
+//   - Service, Endpoint — managed catalog entries today, so the sweep deletes them
+//     from Keystone's catalog. In External mode the catalog is owned by the
+//     external installation; the import-first catalog work turns these into
+//     unmanaged imports too, at which point this entry becomes a CR-only delete.
+//
+// The OpenBao-backed Secrets are torn down by owner-reference GC, EXCEPT the path
+// behind the {name}-admin-app-credential-backup PushSecret: its DeletionPolicy is
+// deliberately None (see adminAppCredentialPushSecret), so the last-pushed
+// credential survives at its OpenBao path. Nothing else is touched.
 var orcChildResources = []struct {
 	newObj func() client.Object
 	name   func(*c5c3v1alpha1.ControlPlane) string
