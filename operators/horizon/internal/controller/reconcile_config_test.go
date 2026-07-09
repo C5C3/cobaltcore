@@ -216,3 +216,174 @@ func TestPruneStaleConfigMaps_RetainsNewestAndCurrent(t *testing.T) {
 		g.Expect(remaining).NotTo(ContainElement(pruned), "ConfigMap %s must be pruned", pruned)
 	}
 }
+
+// webssoTestHorizon returns a Horizon with a fully-populated websso block in
+// the shape the ControlPlane operator projects: the credentials fallback
+// first, one federated choice, and a browser-facing keystoneURL distinct from
+// the cluster-local spec.keystoneEndpoint.
+func webssoTestHorizon() *horizonv1alpha1.Horizon {
+	h := testHorizon()
+	h.Spec.WebSSO = &horizonv1alpha1.WebSSOSpec{
+		Enabled: true,
+		Choices: []horizonv1alpha1.WebSSOChoice{
+			{ID: horizonv1alpha1.DefaultWebSSOCredentialsChoiceID, Label: horizonv1alpha1.DefaultWebSSOCredentialsChoiceLabel},
+			{ID: "keycloak_openid", Label: "keycloak"},
+		},
+		IDPMapping: map[string]horizonv1alpha1.WebSSOIDPTarget{
+			"keycloak_openid": {IdentityProvider: "keycloak", Protocol: "openid"},
+		},
+		InitialChoice: horizonv1alpha1.DefaultWebSSOCredentialsChoiceID,
+		KeystoneURL:   "https://keystone.127-0-0-1.nip.io/v3",
+	}
+	return h
+}
+
+// TestRenderLocalSettings_NoWebSSOOmitsAllWebSSOSettings pins the
+// byte-identical render for the CR that never opts in. It asserts the specific
+// setting names are absent rather than that the rendered module is empty, so
+// the test survives unrelated settings being added.
+func TestRenderLocalSettings_NoWebSSOOmitsAllWebSSOSettings(t *testing.T) {
+	g := NewGomegaWithT(t)
+	rendered, err := renderLocalSettings(testHorizon())
+	g.Expect(err).NotTo(HaveOccurred())
+
+	for _, name := range horizonv1alpha1.WebSSOSettingNames {
+		g.Expect(rendered).NotTo(ContainSubstring(name), "%s must not be rendered without spec.websso", name)
+	}
+	for _, name := range horizonv1alpha1.MultiDomainSettingNames {
+		g.Expect(rendered).NotTo(ContainSubstring(name), "%s must not be rendered without spec.multiDomain", name)
+	}
+}
+
+// TestRenderLocalSettings_DisabledWebSSOOmitsAllWebSSOSettings covers the
+// prepared-but-off block: enabled=false must render nothing even though
+// choices are populated.
+func TestRenderLocalSettings_DisabledWebSSOOmitsAllWebSSOSettings(t *testing.T) {
+	g := NewGomegaWithT(t)
+	h := webssoTestHorizon()
+	h.Spec.WebSSO.Enabled = false
+	h.Spec.MultiDomain = &horizonv1alpha1.MultiDomainSpec{Enabled: false, DomainDropdown: true}
+
+	rendered, err := renderLocalSettings(h)
+	g.Expect(err).NotTo(HaveOccurred())
+	for _, name := range horizonv1alpha1.WebSSOSettingNames {
+		g.Expect(rendered).NotTo(ContainSubstring(name))
+	}
+	for _, name := range horizonv1alpha1.MultiDomainSettingNames {
+		g.Expect(rendered).NotTo(ContainSubstring(name))
+	}
+}
+
+// TestRenderLocalSettings_WebSSORendersChoicesMappingAndInitialChoice asserts
+// the exact Python literals openstack_auth consumes, including the preserved
+// choice order (credentials first).
+func TestRenderLocalSettings_WebSSORendersChoicesMappingAndInitialChoice(t *testing.T) {
+	g := NewGomegaWithT(t)
+	rendered, err := renderLocalSettings(webssoTestHorizon())
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(rendered).To(ContainSubstring(`WEBSSO_ENABLED = True`))
+	g.Expect(rendered).To(ContainSubstring(
+		`WEBSSO_CHOICES = [["credentials", "Keystone Credentials"], ["keycloak_openid", "keycloak"]]`,
+	))
+	g.Expect(rendered).To(ContainSubstring(
+		`WEBSSO_IDP_MAPPING = {"keycloak_openid": ["keycloak", "openid"]}`,
+	))
+	g.Expect(rendered).To(ContainSubstring(`WEBSSO_INITIAL_CHOICE = "credentials"`))
+	g.Expect(rendered).To(ContainSubstring(`WEBSSO_KEYSTONE_URL = "https://keystone.127-0-0-1.nip.io/v3"`))
+}
+
+// TestRenderLocalSettings_WebSSOForcesUseHTTPRefererFalse guards the setting
+// that makes the round trip work at all: upstream defaults it to True, which
+// would have openstack_auth validate the returned token against the external
+// gateway URL from inside the pod.
+func TestRenderLocalSettings_WebSSOForcesUseHTTPRefererFalse(t *testing.T) {
+	g := NewGomegaWithT(t)
+	rendered, err := renderLocalSettings(webssoTestHorizon())
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(rendered).To(ContainSubstring(`WEBSSO_USE_HTTP_REFERER = False`))
+}
+
+// TestRenderLocalSettings_WebSSOOmitsEmptyOptionalSettings covers the
+// minimal enabled block: no mapping, no initialChoice, no keystoneURL. An
+// empty WEBSSO_IDP_MAPPING dict or an empty WEBSSO_KEYSTONE_URL string would
+// each override an upstream default with a meaningless value.
+func TestRenderLocalSettings_WebSSOOmitsEmptyOptionalSettings(t *testing.T) {
+	g := NewGomegaWithT(t)
+	h := testHorizon()
+	h.Spec.WebSSO = &horizonv1alpha1.WebSSOSpec{
+		Enabled: true,
+		Choices: []horizonv1alpha1.WebSSOChoice{
+			{ID: horizonv1alpha1.DefaultWebSSOCredentialsChoiceID, Label: horizonv1alpha1.DefaultWebSSOCredentialsChoiceLabel},
+		},
+	}
+
+	rendered, err := renderLocalSettings(h)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(rendered).To(ContainSubstring(`WEBSSO_ENABLED = True`))
+	g.Expect(rendered).NotTo(ContainSubstring(horizonv1alpha1.SettingWebSSOIDPMapping))
+	g.Expect(rendered).NotTo(ContainSubstring(horizonv1alpha1.SettingWebSSOInitialChoice))
+	g.Expect(rendered).NotTo(ContainSubstring(horizonv1alpha1.SettingWebSSOKeystoneURL))
+}
+
+// TestRenderLocalSettings_MultiDomainRendersDropdownAndChoices covers the
+// LDAP-domain login path the domain dropdown exists for.
+func TestRenderLocalSettings_MultiDomainRendersDropdownAndChoices(t *testing.T) {
+	g := NewGomegaWithT(t)
+	h := testHorizon()
+	h.Spec.MultiDomain = &horizonv1alpha1.MultiDomainSpec{
+		Enabled:        true,
+		DefaultDomain:  horizonv1alpha1.DefaultMultiDomainDefaultDomain,
+		DomainDropdown: true,
+		DomainChoices: []horizonv1alpha1.DomainChoice{
+			{Name: "Default", Label: "Default"},
+			{Name: "planetexpress", Label: "planetexpress"},
+		},
+	}
+
+	rendered, err := renderLocalSettings(h)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(rendered).To(ContainSubstring(`OPENSTACK_KEYSTONE_MULTIDOMAIN_SUPPORT = True`))
+	g.Expect(rendered).To(ContainSubstring(`OPENSTACK_KEYSTONE_DEFAULT_DOMAIN = "Default"`))
+	g.Expect(rendered).To(ContainSubstring(`OPENSTACK_KEYSTONE_DOMAIN_DROPDOWN = True`))
+	g.Expect(rendered).To(ContainSubstring(
+		`OPENSTACK_KEYSTONE_DOMAIN_CHOICES = [["Default", "Default"], ["planetexpress", "planetexpress"]]`,
+	))
+}
+
+// TestRenderLocalSettings_MultiDomainDropdownOffOmitsChoices asserts the
+// double gate: Horizon only consults DOMAIN_CHOICES when DOMAIN_DROPDOWN is
+// True, so both are omitted together.
+func TestRenderLocalSettings_MultiDomainDropdownOffOmitsChoices(t *testing.T) {
+	g := NewGomegaWithT(t)
+	h := testHorizon()
+	h.Spec.MultiDomain = &horizonv1alpha1.MultiDomainSpec{
+		Enabled:       true,
+		DomainChoices: []horizonv1alpha1.DomainChoice{{Name: "planetexpress", Label: "planetexpress"}},
+	}
+
+	rendered, err := renderLocalSettings(h)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(rendered).To(ContainSubstring(`OPENSTACK_KEYSTONE_MULTIDOMAIN_SUPPORT = True`))
+	// defaultDomain falls back to "Default" for a CR that bypassed the webhook.
+	g.Expect(rendered).To(ContainSubstring(`OPENSTACK_KEYSTONE_DEFAULT_DOMAIN = "Default"`))
+	g.Expect(rendered).NotTo(ContainSubstring(horizonv1alpha1.SettingMultiDomainDomainDropdown))
+	g.Expect(rendered).NotTo(ContainSubstring(horizonv1alpha1.SettingMultiDomainDomainChoices))
+}
+
+// TestRenderLocalSettings_ExtraConfigOverridesWebSSOChoices pins the
+// render-time escape hatch. The validating webhook rejects this combination at
+// admission, but the renderer must keep extraConfig winning for a CR that
+// bypassed it — the same "user values win" contract every other setting has.
+func TestRenderLocalSettings_ExtraConfigOverridesWebSSOChoices(t *testing.T) {
+	g := NewGomegaWithT(t)
+	h := webssoTestHorizon()
+	h.Spec.ExtraConfig = map[string]apiextensionsv1.JSON{
+		horizonv1alpha1.SettingWebSSOChoices: {Raw: []byte(`[["custom", "Custom"]]`)},
+	}
+
+	rendered, err := renderLocalSettings(h)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(rendered).To(ContainSubstring(`WEBSSO_CHOICES = [["custom", "Custom"]]`))
+	g.Expect(rendered).NotTo(ContainSubstring(`["keycloak_openid", "keycloak"]`))
+}

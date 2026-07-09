@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"strings"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -141,6 +142,9 @@ func defaultSettings(horizon *horizonv1alpha1.Horizon) (map[string]apiextensions
 		"LOGGING":          djangoLogging(logging),
 	}
 
+	maps.Copy(values, webSSOSettings(horizon))
+	maps.Copy(values, multiDomainSettings(horizon))
+
 	settings := make(map[string]apiextensionsv1.JSON, len(values))
 	for name, v := range values {
 		raw, err := json.Marshal(v)
@@ -150,6 +154,99 @@ func defaultSettings(horizon *horizonv1alpha1.Horizon) (map[string]apiextensions
 		settings[name] = apiextensionsv1.JSON{Raw: raw}
 	}
 	return settings, nil
+}
+
+// webSSOSettings renders the WEBSSO_* Django settings from spec.websso.
+// A nil or disabled block emits nothing at all, so a CR that never opts into
+// federated login renders byte-identically to the pre-websso operator (the
+// same convention keystone's reconcileConfig uses for a nil federation
+// projection).
+//
+// WEBSSO_USE_HTTP_REFERER is pinned to False. It defaults to True upstream,
+// which makes openstack_auth derive the Keystone URL it validates the returned
+// token against from the browser's Referer header — i.e. from the EXTERNAL
+// gateway hostname. That URL is resolved server-side from inside the pod,
+// where the external name either does not resolve or (on kind, where
+// *.127-0-0-1.nip.io resolves to 127.0.0.1) resolves to the dashboard pod
+// itself. With False, openstack_auth validates against OPENSTACK_KEYSTONE_URL
+// — spec.keystoneEndpoint, the cluster-local Service URL — which is exactly
+// the address the dashboard can reach.
+//
+// WEBSSO_KEYSTONE_URL is the counterpart for the browser-facing leg: the SSO
+// redirect the user's browser follows must point at the externally routable
+// Keystone, never at the cluster-local Service URL. It is omitted when unset
+// so Horizon falls back to OPENSTACK_KEYSTONE_URL.
+func webSSOSettings(horizon *horizonv1alpha1.Horizon) map[string]any {
+	websso := horizon.Spec.WebSSO
+	if websso == nil || !websso.Enabled {
+		return nil
+	}
+
+	// WEBSSO_CHOICES is a sequence of (id, label) pairs feeding a Django
+	// ChoiceField; order is preserved so the operator's ordering (credentials
+	// first) is what the login form shows.
+	choices := make([]any, 0, len(websso.Choices))
+	for _, c := range websso.Choices {
+		choices = append(choices, []any{c.ID, c.Label})
+	}
+
+	values := map[string]any{
+		horizonv1alpha1.SettingWebSSOEnabled:        true,
+		horizonv1alpha1.SettingWebSSOChoices:        choices,
+		horizonv1alpha1.SettingWebSSOUseHTTPReferer: false,
+	}
+
+	// WEBSSO_IDP_MAPPING maps a choice id onto an (identity provider, protocol)
+	// pair. A choice absent from the mapping is a local login, which is how the
+	// credentials fallback stays a username/password form — so an empty mapping
+	// is omitted rather than rendered as an empty dict.
+	if len(websso.IDPMapping) > 0 {
+		mapping := make(map[string]any, len(websso.IDPMapping))
+		for id, target := range websso.IDPMapping {
+			mapping[id] = []any{target.IdentityProvider, target.Protocol}
+		}
+		values[horizonv1alpha1.SettingWebSSOIDPMapping] = mapping
+	}
+	if websso.InitialChoice != "" {
+		values[horizonv1alpha1.SettingWebSSOInitialChoice] = websso.InitialChoice
+	}
+	if websso.KeystoneURL != "" {
+		values[horizonv1alpha1.SettingWebSSOKeystoneURL] = websso.KeystoneURL
+	}
+	return values
+}
+
+// multiDomainSettings renders the OPENSTACK_KEYSTONE_MULTIDOMAIN_* Django
+// settings from spec.multiDomain. A nil or disabled block emits nothing.
+//
+// The domain dropdown is gated twice, matching upstream: Horizon only consults
+// OPENSTACK_KEYSTONE_DOMAIN_CHOICES when OPENSTACK_KEYSTONE_DOMAIN_DROPDOWN is
+// True, so the choices are omitted with the dropdown to keep the rendered
+// module free of settings that do nothing.
+func multiDomainSettings(horizon *horizonv1alpha1.Horizon) map[string]any {
+	md := horizon.Spec.MultiDomain
+	if md == nil || !md.Enabled {
+		return nil
+	}
+
+	defaultDomain := md.DefaultDomain
+	if defaultDomain == "" {
+		defaultDomain = horizonv1alpha1.DefaultMultiDomainDefaultDomain
+	}
+	values := map[string]any{
+		horizonv1alpha1.SettingMultiDomainSupport:       true,
+		horizonv1alpha1.SettingMultiDomainDefaultDomain: defaultDomain,
+	}
+
+	if md.DomainDropdown {
+		choices := make([]any, 0, len(md.DomainChoices))
+		for _, c := range md.DomainChoices {
+			choices = append(choices, []any{c.Name, c.Label})
+		}
+		values[horizonv1alpha1.SettingMultiDomainDomainDropdown] = true
+		values[horizonv1alpha1.SettingMultiDomainDomainChoices] = choices
+	}
+	return values
 }
 
 // allowedHosts returns the Django ALLOWED_HOSTS entries the dashboard must
