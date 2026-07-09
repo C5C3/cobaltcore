@@ -74,7 +74,7 @@ const (
 	// user was recreated behind a resolve-once import id, or the admin password
 	// changed without the referenced Secret following. Drift is SURFACED, never
 	// fought: the operator does not write to the external installation.
-	conditionReasonCredentialDrift = "CredentialDrift"
+	conditionReasonCredentialDrift = "CredentialDrift" //nolint:gosec // G101 false positive: condition reason name, not a credential.
 
 	// conditionReasonInfrastructureNotConfigured reports a non-External
 	// ControlPlane that reached reconcileInfrastructure with no

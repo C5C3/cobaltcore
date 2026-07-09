@@ -434,6 +434,36 @@ and is caught by the no-inline-literals drift guard.
 Every condition is stamped with `ObservedGeneration = cp.Generation` on every
 path.
 
+### External keystone mode and the chain
+
+When `spec.services.keystone.mode` is `External`, the ControlPlane manages
+identity against a pre-existing, externally-operated Keystone. The chain keeps
+its order; External mode changes what each link does. Four sub-reconcilers
+short-circuit — `reconcileInfrastructure`, `reconcileDBCredentials`,
+`reconcileAdminPassword` and `reconcileKeystone` — each reporting its own
+condition with `Status=True` and reason `ExternallyManaged`, and a message naming
+`spec.services.keystone.external.authURL`.
+
+Skipped sub-reconcilers **keep their condition types**. The condition schema is
+therefore identical across modes, so `subConditionTypes`, `setReadyCondition` and
+the `condition_type` drift guard need no mode awareness.
+
+Every skip is keyed on the mode discriminator `cp.IsExternalKeystone()`, never on
+the database shape: an External-mode ControlPlane has no `spec.infrastructure`
+block at all, so "no *managed* database" and "no database" are different states.
+The vocabulary keeps three "nothing was projected" reasons deliberately apart:
+
+| Reason | Meaning |
+| --- | --- |
+| `ExternallyManaged` | identity is managed against a pre-existing Keystone; this sub-reconciler has nothing to project |
+| `KeystoneNotManaged` | `spec.services.keystone` is unset: there is no identity plane at all (staged adoption) |
+| `BrownfieldUserSuppliedCredential` | the ControlPlane owns a Keystone, but the *database* is brownfield, so the user supplies its credential Secret |
+
+`services.horizon` is forbidden in External mode, so `reconcileHorizon` always
+takes its `HorizonNotManaged` early-exit. The duplicate-ControlPlane parking
+guard is mode-agnostic and applies unchanged — External-mode ControlPlanes count
+towards the one-per-namespace contract.
+
 ### reconcileInfrastructure
 
 | Aspect | Value |
@@ -451,19 +481,23 @@ instead. Both managed children are ensured in a single pass *before* readiness i
 gated, so a half-provisioned control plane (DB created but cache missing) never
 occurs; readiness is evaluated collectively afterwards.
 
-`spec.infrastructure` is optional now: an **External**-mode Keystone ControlPlane
+`spec.infrastructure` is optional: an **External**-mode Keystone ControlPlane
 omits it (the validating webhook forbids it in External mode and requires it
-otherwise). When the block is unset the sub-reconciler halts the pipeline with
-`InfrastructureReady=False`, reason `ExternalModeNotImplemented`, and a gentle
-requeue — an interim state until the External-mode reconciliation lands.
+otherwise). In External mode the sub-reconciler provisions nothing and reports
+`InfrastructureReady=True` / `ExternallyManaged` immediately. A **non**-External
+ControlPlane that nevertheless reaches this point with the block unset is a
+webhook-bypass shape (direct etcd write, admission misconfigured); it fails
+closed with `InfrastructureNotConfigured` rather than dereferencing the nil
+pointer.
 
 | Path | Status | Reason | Notes |
 | --- | --- | --- | --- |
+| External keystone mode | True | `ExternallyManaged` | no MariaDB/Memcached is provisioned; the message names `external.authURL` |
 | MariaDB create/update fails | False | `MariaDBError` | returns the error (controller-runtime backoff) |
 | Memcached create/update fails | False | `MemcachedError` | returns the error |
 | MariaDB not yet Ready | False | `WaitingForDatabase` | requeue 15s |
 | Memcached not yet Ready | False | `WaitingForCache` | requeue 15s |
-| `spec.infrastructure` unset (External keystone mode) | False | `ExternalModeNotImplemented` | requeue 15s — interim halt; the CR is accepted but External-mode reconciliation is not yet implemented. Replaced when that work lands. |
+| `spec.infrastructure` unset, not External | False | `InfrastructureNotConfigured` | requeue 15s; unreachable on the admission path — fails closed for a webhook-bypassed CR |
 | All managed children Ready (or pure brownfield) | True | `InfrastructureReady` | — |
 
 > The managed MariaDB child is provisioned with a minimal-but-valid spec —
@@ -521,8 +555,13 @@ is set and **brownfield** when the user supplies a `host`-based connection:
 `spec.database.credentialsMode`, so the Keystone operator consumes the matching
 credential shape.
 
+In **External** keystone mode the ControlPlane manages no database at all —
+neither a managed one to issue credentials for, nor a brownfield connection to
+reference — so neither OpenBao nor the `ClusterSecretStore` is consulted.
+
 | Path | Status | Reason | Notes |
 | --- | --- | --- | --- |
+| External keystone mode | True | `ExternallyManaged` | no database is managed; nothing is projected and the ClusterSecretStore is never read |
 | Brownfield (`clusterRef == nil`) | True | `BrownfieldUserSuppliedCredential` | no ExternalSecret projected; user supplies the DB credential Secret out-of-band |
 | ClusterSecretStore not Ready | False | `SecretStoreNotReady` | requeue 10s; managed mode only, checked before projection so an OpenBao/ESO outage surfaces promptly |
 | Dynamic generator/SA/Certificate/ExternalSecret create/update fails | False | `GeneratorError` | returns the error |
@@ -576,8 +615,20 @@ this materialised Secret's `password` key
 the user-declared `spec.korc.adminCredential.passwordSecretRef` verbatim. The
 cp-level spec default for `passwordSecretRef` remains `keystone-admin`.
 
+`effectiveAdminPasswordSecretRef` keys its External branch on
+`spec.services.keystone.mode`, not on the database shape, and returns
+`spec.korc.adminCredential.passwordSecretRef` verbatim. That Secret is the admin
+password source: the operator only ever **reads** it, because the external
+Keystone's admin password is owned out-of-band. Its SHA-256 feeds
+`adminPasswordHashAnnotation`, so **updating that Secret is what drives a
+hash-driven re-mint** of the admin application credential — the only supported
+rotation path in External mode. The field indexer
+(`controlPlaneSecretNameExtractor`) follows the same ref, so an edit to the
+user's Secret wakes the ControlPlane immediately.
+
 | Path | Status | Reason | Notes |
 | --- | --- | --- | --- |
+| External keystone mode | True | `ExternallyManaged` | the admin password is read from the user-supplied `passwordSecretRef` Secret; no ExternalSecret is projected and no OpenBao bootstrap path is seeded |
 | Brownfield (`clusterRef == nil`) | True | `BrownfieldUserSuppliedCredential` | no ExternalSecret projected; user supplies the admin-password Secret out-of-band |
 | ClusterSecretStore not Ready | False | `SecretStoreNotReady` | requeue 10s; managed mode only, checked before the ExternalSecret is projected |
 | ExternalSecret create/update or read fails | False | `ExternalSecretError` | returns the error |
@@ -622,8 +673,17 @@ the ControlPlane provisioned:
   (weekly, `0 0 * * 0`) and positive whole-day multiples (daily, `0 0 * * *`)
   are supported.
 
+In **External** keystone mode no child is projected — and none is deleted. A
+`Managed -> External` flip is rejected at admission (adopting an existing
+installation must be a fresh External-mode ControlPlane), so no child can exist;
+were one to appear anyway, the fail-safe that preserves a child unless
+`c5c3.io/allow-keystone-deletion: "true"` opts in is the only sanctioned teardown
+path, because the child's credential/fernet keys are irreplaceable.
+
 | Path | Status | Reason | Notes |
 | --- | --- | --- | --- |
+| `spec.services.keystone` unset | True | `KeystoneNotManaged` | no identity plane at all; a previously-projected child is preserved by default |
+| External keystone mode | True | `ExternallyManaged` | identity is managed against `external.authURL`; no child is projected and none is deleted |
 | `InfrastructureReady` not True | False | `WaitingForInfrastructure` | requeue 5s; no Keystone CR is created while infra is unready |
 | Invalid `rotationInterval` | False | `InvalidRotationInterval` | **returns the error** so the reconcile chain stops at Keystone and the manager requeues with backoff (the validating webhook already rejects unrepresentable intervals at admission, so this is defense-in-depth) |
 | Keystone create/update fails | False | `KeystoneError` | returns the error |
@@ -774,10 +834,67 @@ that instructs K-ORC to mint the admin application credential, and drives re-min
 
 Both the `ApplicationCredentialFailed` and `WaitingForApplicationCredential`
 messages fold in the admin Domain/User import status (`ensureKORCAdminImports`
-returns the first import that is terminally failed or not yet Available), so the
+returns the admin Domain/User imports, and `korcAdminImports.statusFragment()`
+names the first that is terminally failed or not yet Available), so the
 documented endpoint/clouds.yaml failure class — where K-ORC swallows a list error
 and an import hangs on "created externally" — names the stuck dependency instead of
 surfacing as an opaque wait.
+
+#### External-mode failure classification
+
+K-ORC collapses **every** hard failure against a pre-existing Keystone — a wrong
+admin password (401), an unresolvable `authURL`, an untrusted private CA, a
+region/`endpointType` absent from the catalog — into the same **non-terminal**
+`Progressing` condition with `reason=TransientError`. Nothing in the observed
+inventory is terminal, so neither `GetTerminalError` nor the reason
+discriminates: the failure class survives only in the free-text message.
+
+In External mode the ControlPlane therefore classifies on message substrings and
+relays K-ORC's message **verbatim** alongside the reason. Classification walks
+the admin Domain, then the admin User, then the ApplicationCredential, so the
+*root* stuck dependency is reported rather than the resource that merely blocked
+on it. Precedence, most specific first: catalog mismatch, credential drift, TLS,
+authentication, reachability.
+
+It is gated on External mode — a managed ControlPlane's `KORCReady` reasons are
+byte-identical to before — and never runs against an `Available` credential: K-ORC
+leaves the message of the last transient attempt on the `Progressing` condition,
+and re-classifying it would flip a converged ControlPlane back to
+`AuthenticationFailed` on a failure it has already recovered from.
+
+| Path (External mode only) | Status | Reason | Notes |
+| --- | --- | --- | --- |
+| message contains `401` / `Unauthorized` | False | `AuthenticationFailed` | the external Keystone rejected the admin credential — typically the password was rotated out-of-band and `passwordSecretRef` is stale |
+| message contains `no such host` / `connection refused` / `dial tcp` / `i/o timeout` | False | `EndpointUnreachable` | `external.authURL` could not be dialled |
+| message contains `x509` | False | `TLSVerificationFailed` | supply the private CA via `external.caBundleSecretRef` |
+| message contains `No suitable endpoint could be found in the service catalog` | False | `CatalogEndpointMismatch` | a wrong `external.endpointType` or `spec.region`; fails loud rather than silently importing nothing |
+| message names `identity:create_application_credential` (403) | False | `CredentialDrift` | an application-credential create against a **stale** resolve-once import id; see [drift](#drift-is-surfaced-never-fought) |
+| admin import stuck on "Waiting for OpenStack resource to be created externally" beyond `externalImportStallGrace` | False | `ImportStalled` | the silent-empty detector |
+
+`externalImportStallGrace` is **2 minutes**. In External mode every import target
+pre-exists by definition, so an import that keeps waiting to be "created
+externally" never resolves on its own — K-ORC is looking in the wrong place. The
+message names the stuck import and points at `external.endpointType` and
+`spec.region`. The window is deliberately shorter than `remintStallTimeout` /
+`orcTeardownStallTimeout` (both 5m): those wait on work that is genuinely in
+flight, whereas a resolvable import has nothing to wait for.
+
+#### Drift is surfaced, never fought
+
+The external installation can change under the CR: the admin password is rotated
+without updating the referenced Secret, or the admin user is deleted and
+recreated. K-ORC imports are **resolve-once** — a resolved `status.id` is never
+re-resolved — so after a recreate the import stays `Available=True` with a stale
+id while an application-credential create against that id yields a Keystone
+**403** (`identity:create_application_credential`; Keystone's default policy
+allows creating an application credential only for the token's own user).
+
+The operator **never remediates the external installation**. It signals drift on
+the existing sub-conditions with the documented `CredentialDrift` reason, and
+`reconcileKORC` emits a `Warning` `CredentialDrift` event on the **transition**
+into the drifted state (not on every 10s requeue). The remedy is to update the
+Secret `spec.korc.adminCredential.passwordSecretRef` names, which changes its
+digest and drives a hash-driven re-mint.
 
 > **Hard CRD dependency.** K-ORC (like Memcached, ESO, MariaDB, and Keystone) is
 > a hard dependency: `SetupWithManager` `Owns`/`Watches` its kinds, so the
@@ -872,10 +989,21 @@ OpenBao:
   reason escalates from the transient `WaitingForCloudsYamlSync` to the alertable
   `CloudsYamlSyncStuck`, so a permanently broken sync is distinguishable from a
   2-second transient miss.
+- **Drift escalation (External mode).** When the `KORCReady` gate is closed
+  *because* the external Keystone reports drift, the gate reports
+  `CredentialDrift` rather than the opaque `WaitingForKORC`. Note that the **live**
+  drift signal is `KORCReady` itself: `reconcileKORC` requeues on the drift and
+  `RunPipeline` short-circuits on that non-zero result, so this sub-reconciler is
+  not re-entered in the same pass. The escalation is the defense-in-depth path
+  that keeps `AdminCredentialReady` honest for any caller that does observe a
+  drifted `KORCReady`. An unreachable endpoint, a TLS failure, a catalog mismatch
+  or a stalled import are **not** drift and keep `WaitingForKORC` — drift is a
+  statement about the credential.
 
 | Path | Status | Reason | Notes |
 | --- | --- | --- | --- |
 | `KORCReady` not True | False | `WaitingForKORC` | requeue 10s |
+| `KORCReady` reports drift (`AuthenticationFailed` / `CredentialDrift`), External mode | False | `CredentialDrift` | requeue 10s; names the Secret the operator reads and states that the external installation is never remediated |
 | ClusterSecretStore not Ready | False | `SecretStoreNotReady` | requeue 10s; checked after the `KORCReady` gate so an OpenBao/ESO outage surfaces before the clouds.yaml wait |
 | clouds.yaml ES check errors | False | `CloudsYamlError` | returns the error (also covers a force-sync/materialised-Secret read error) |
 | clouds.yaml ES not Ready | False | `WaitingForCloudsYaml` | requeue 10s |
@@ -1156,12 +1284,40 @@ The `{name}-admin-app-credential-backup` PushSecret is the one child kept on
 | `Memcached` (unstructured) | `{spec.infrastructure.cache.clusterRef.name}` | ControlPlane CR | managed mode only |
 | `ExternalSecret` (DB credential) | `{name}-keystone-db-credentials` | ControlPlane CR | managed mode only; ESO owns the materialised Secret of the same name |
 | `ExternalSecret` (admin password) | `{name}-keystone-admin-credentials` | ControlPlane CR | managed mode only; ESO owns the materialised Secret of the same name |
-| `Keystone` | `{name}-keystone` | ControlPlane CR | — |
-| `ApplicationCredential` | `{name}-admin-app-credential` | ControlPlane CR | carries `forge.c5c3.io/admin-password-hash` |
-| `Secret` | `{name}-admin-app-credential` | ControlPlane CR | data written by K-ORC, not the operator |
-| `PushSecret` | `{name}-admin-app-credential-backup` | ControlPlane CR | `DeletionPolicy: None` |
+| `Keystone` | `{name}-keystone` | ControlPlane CR | managed mode only |
+| `ApplicationCredential` | `{name}-admin-app-credential` | ControlPlane CR | both modes; carries `forge.c5c3.io/admin-password-hash` |
+| `Secret` | `{name}-admin-app-credential` | ControlPlane CR | both modes; data written by K-ORC, not the operator |
+| `PushSecret` | `{name}-admin-app-credential-backup` | ControlPlane CR | both modes; `DeletionPolicy: None` |
+| `User` (K-ORC) | `{name}-user-admin` | ControlPlane CR | both modes; unmanaged import |
+| `Domain` (K-ORC) | `{name}-domain-default` | ControlPlane CR | both modes; unmanaged import |
 | `Service` (K-ORC) | `{name}-identity-service` | ControlPlane CR | identity catalog entry |
 | `Endpoint` (K-ORC) | `{name}-identity-endpoint` | ControlPlane CR | public interface |
+
+#### External-mode deletion resource set
+
+The sweep is correct for **both** keystone modes without a mode branch, because
+what a `Delete` does to the external OpenStack installation is decided by each
+K-ORC CR's `ManagementPolicy`, not by the ControlPlane's mode:
+
+- **`ApplicationCredential`** — `Managed`. Its K-ORC finalizer revokes the
+  credential at the Keystone level *before* the CR delete returns, so
+  authenticating with it immediately afterwards yields **404** `Could not find
+  Application Credential` (not 401). This is the one identity object the operator
+  minted, so it is the one it destroys.
+- **`User`, `Domain`** — `Unmanaged` imports. Deleting their CRs removes the
+  Kubernetes objects and leaves the OpenStack resources they imported untouched.
+  K-ORC's deletion-guard finalizers also enforce the teardown order: a `User`
+  cannot go while an `ApplicationCredential` still references it.
+- **`Service`, `Endpoint`** — managed catalog entries today, so the sweep deletes
+  them from Keystone's catalog. In External mode the catalog is owned by the
+  external installation; the import-first catalog work turns these into unmanaged
+  imports too, at which point this becomes a CR-only delete.
+
+The OpenBao-backed Secrets are torn down by owner-reference GC, **except** the
+path behind the `{name}-admin-app-credential-backup` PushSecret: its
+`DeletionPolicy` is deliberately `None`, so the last-pushed credential survives
+at its OpenBao path. Nothing else is touched — a K-ORC CR the ControlPlane does
+not own is never swept.
 
 ### Security invariant
 

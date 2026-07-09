@@ -355,12 +355,17 @@ identity against that endpoint rather than deploying a Keystone workload.
 | `endpointType` | `string` (`public` \| `internal` \| `admin`) | No | `public` | Which Keystone catalog interface to authenticate against. Defaulted to `public` by both the `+kubebuilder:default` marker and the defaulting webhook. Named `endpointType` (not `interface`) because it maps to the clouds.yaml `endpoint_type` key — K-ORC drops gophercloud's `Interface` field and only honours `endpoint_type` (the authoritative note lives on `buildAppCredCloudsYAML` in the reconciler's `korc_cloudsyaml.go`). |
 | `caBundleSecretRef` | [`*commonv1.SecretRefSpec`](../keystone/keystone-crd.md#secretrefspec) | No | `nil` | References a Secret carrying a private CA bundle the client trusts when verifying the external endpoint. The referenced bundle is projected verbatim into the generated K-ORC credentials Secret (K-ORC reads an inline `cacert` PEM key from the same Secret that carries `clouds.yaml` — no mount, no upstream change). `key` defaults to `ca.crt`; this default is **webhook-only** because the shared `SecretRefSpec` carries no c5c3-specific marker (the same discipline as `passwordSecretRef.key`). When the ref is set its `name` must be non-empty (CRD `MinLength` marker + webhook). |
 
-> **Consumption is deferred.** This block is pure API surface here. The
-> clouds.yaml builders and admin import filters that consume `authURL`,
-> `endpointType`, and `caBundleSecretRef` land with the External-mode
-> reconciler work; until then an External-mode ControlPlane is accepted at
-> admission but halts at `InfrastructureReady=False`, reason
-> `ExternalModeNotImplemented` (see [Status Conditions](#status-conditions)).
+> **Partial consumption.** The reconciler chain understands External mode: the
+> Infrastructure, DBCredentials, AdminPassword and Keystone sub-reconcilers skip
+> their projection with reason `ExternallyManaged`, and `reconcileKORC`
+> classifies failures against the external endpoint onto `KORCReady` (see
+> [Status Conditions](#status-conditions) and the
+> [reconciler reference](./controlplane-reconciler.md#external-keystone-mode-and-the-chain)).
+> `authURL` currently names the endpoint in conditions, events, and the
+> `ImportStalled` detector's guidance. The clouds.yaml builders and admin import
+> filters that consume `authURL`, `endpointType`, and `caBundleSecretRef` to
+> actually *dial* the external Keystone land with the K-ORC clouds.yaml work; the
+> identity catalog stays managed until the import-first catalog work lands.
 
 ---
 
@@ -1049,7 +1054,8 @@ Set by `reconcileInfrastructure`.
 | `False` | `WaitingForCache` | Managed Memcached is ensured but not yet Ready. |
 | `False` | `MariaDBError` | Error create-or-updating the MariaDB child. |
 | `False` | `MemcachedError` | Error create-or-updating the Memcached child. |
-| `False` | `ExternalModeNotImplemented` | `spec.infrastructure` is unset (External keystone mode). The ControlPlane is accepted at admission but halts here with a gentle requeue — External-mode reconciliation (managing identity against `services.keystone.external.authURL` with no backing services) is not yet implemented. This interim reason is replaced wholesale when the External-mode reconciliation lands. |
+| `True` | `ExternallyManaged` | `services.keystone.mode` is `External`: identity is managed against `services.keystone.external.authURL`, so no MariaDB/Memcached is provisioned. |
+| `False` | `InfrastructureNotConfigured` | `spec.infrastructure` is unset on a **non**-External ControlPlane. The validating webhook requires the block outside External mode, so this only fires for a webhook-bypassed CR; it fails closed rather than dereferencing the nil block. |
 
 ### DBCredentialsReady
 
@@ -1065,6 +1071,7 @@ ExternalSecret's stale per-object Ready cache.
 | --- | --- | --- |
 | `True` | `DBCredentialsReady` | The DB-credential ExternalSecret is Ready; the materialised Secret exists. |
 | `True` | `BrownfieldUserSuppliedCredential` | Brownfield database (`clusterRef` unset): the user supplies the DB-credential Secret out-of-band, so no ExternalSecret is projected and the chain proceeds immediately. |
+| `True` | `ExternallyManaged` | `services.keystone.mode` is `External`: the ControlPlane manages no database at all, so nothing is projected and neither OpenBao nor the `ClusterSecretStore` is consulted. |
 | `False` | `SecretStoreNotReady` | The OpenBao-backed `ClusterSecretStore` is not Ready; the secret backend is unreachable. |
 | `False` | `ExternalSecretError` | Error ensuring or checking the DB-credential ExternalSecret. |
 | `False` | `WaitingForDBCredentialSecret` | The ExternalSecret is ensured but ESO has not yet synced it to Ready. |
@@ -1084,6 +1091,7 @@ its Ready status.
 | --- | --- | --- |
 | `True` | `AdminPasswordReady` | The admin-password ExternalSecret is Ready; the materialised Secret exists. |
 | `True` | `BrownfieldUserSuppliedCredential` | Brownfield database (`clusterRef` unset): the user supplies the admin-password Secret out-of-band, so no ExternalSecret is projected and the chain proceeds immediately. |
+| `True` | `ExternallyManaged` | `services.keystone.mode` is `External`: the admin password is read from the user-supplied `korc.adminCredential.passwordSecretRef` Secret; no ExternalSecret is projected and no OpenBao bootstrap path is seeded. Updating that Secret is what drives a hash-driven re-mint of the admin application credential. |
 | `False` | `SecretStoreNotReady` | The OpenBao-backed `ClusterSecretStore` is not Ready; the secret backend is unreachable. |
 | `False` | `ExternalSecretError` | Error ensuring or checking the admin-password ExternalSecret. |
 | `False` | `WaitingForAdminPasswordSecret` | The ExternalSecret is ensured but ESO has not yet synced it to Ready. |
@@ -1095,6 +1103,8 @@ Set by `reconcileKeystone` (gated on `InfrastructureReady`).
 | Status | Reason | When |
 | --- | --- | --- |
 | `True` | `KeystoneReady` | The projected Keystone CR reports Ready. |
+| `True` | `KeystoneNotManaged` | `services.keystone` is unset: this ControlPlane manages no identity plane. |
+| `True` | `ExternallyManaged` | `services.keystone.mode` is `External`: identity is managed against `services.keystone.external.authURL`; no Keystone child is projected and none is deleted. |
 | `False` | `WaitingForInfrastructure` | `InfrastructureReady` is not `True`; Keystone projection deferred. |
 | `False` | `WaitingForKeystone` | The Keystone CR is ensured but not yet Ready. |
 | `False` | `InvalidRotationInterval` | `services.keystone.rotationInterval` could not be converted to a cron schedule. |
@@ -1112,6 +1122,12 @@ Set by `reconcileKORC`.
 | `False` | `WaitingForApplicationCredential` | The `ApplicationCredential` CR is ensured but not yet `Available`; the message folds in any stuck admin Domain/User import. |
 | `False` | `AdminPasswordError` | Non-missing error reading the admin password. |
 | `False` | `ApplicationCredentialError` | Error create-or-updating the `ApplicationCredential` CR. |
+| `False` | `AuthenticationFailed` | **External mode only.** The external Keystone rejected the admin credential (HTTP 401) — typically the password was rotated out-of-band and `passwordSecretRef` is stale. K-ORC's message is relayed verbatim. |
+| `False` | `EndpointUnreachable` | **External mode only.** `services.keystone.external.authURL` could not be dialled (DNS failure, connection refused, timeout). |
+| `False` | `TLSVerificationFailed` | **External mode only.** The external endpoint's certificate did not verify; supply the private CA via `external.caBundleSecretRef`. |
+| `False` | `CatalogEndpointMismatch` | **External mode only.** Authentication succeeded but the requested interface/region is absent from the external service catalog — a wrong `external.endpointType` or `spec.region`. |
+| `False` | `CredentialDrift` | **External mode only.** An application-credential create against a stale resolve-once import id yielded a Keystone 403 (`identity:create_application_credential`). Drift is surfaced, never remediated. |
+| `False` | `ImportStalled` | **External mode only.** An admin Domain/User import has been waiting to be "created externally" for longer than `externalImportStallGrace` (2m). In External mode the import target already exists, so this is a misconfiguration. |
 
 ### AdminCredentialReady
 
@@ -1125,6 +1141,7 @@ application-credential id+secret) the freshly assembled credential).
 | --- | --- | --- |
 | `True` | `AdminCredentialReady` | The admin application credential is committed to the owned Secret, mirrored to OpenBao, and the materialised `clouds.yaml` Secret matches the assembled credential. |
 | `False` | `WaitingForKORC` | `KORCReady` is not `True`; credential push deferred. |
+| `False` | `CredentialDrift` | **External mode only.** `KORCReady` reports drift in the external installation (`AuthenticationFailed` or `CredentialDrift`). The operator never remediates the external Keystone; update the `passwordSecretRef` Secret to drive a re-mint. |
 | `False` | `SecretStoreNotReady` | The OpenBao-backed `ClusterSecretStore` is not Ready; the secret backend is unreachable. |
 | `False` | `WaitingForCloudsYaml` | The operator-created per-ControlPlane `k-orc-clouds-yaml` ExternalSecret in the control-plane namespace (co-located with the K-ORC CRs per C1; created and owned by `reconcileKORC`) is not yet Ready. |
 | `False` | `WaitingForPushSecret` | The admin app-credential `PushSecret` has not synced the assembled `clouds.yaml` to OpenBao yet. `AdminCredentialReady` is gated on the PushSecret's `Ready` condition — not merely on the CR existing — so a backend permission failure (e.g. the ESO role missing the push policy) cannot yield a false-positive Ready while OpenBao still serves the password-based bootstrap `clouds.yaml`. |
