@@ -1742,3 +1742,188 @@ func TestIntegration_ExternalMode_TransitionsRejected(t *testing.T) {
 		g.Expect(err.Error()).To(ContainSubstring("phase-3"))
 	})
 }
+
+// driveExternalControlPlaneToReady creates the user-supplied admin-password
+// Secret an External-mode ControlPlane reads, then simulates every external
+// dependency the K-ORC chain waits on. The four skipped sub-reconcilers need no
+// simulation at all — that is the point of External mode.
+func driveExternalControlPlaneToReady(
+	t testing.TB, ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane,
+) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+	ns := cp.Namespace
+	cpKey := types.NamespacedName{Name: cp.Name, Namespace: ns}
+
+	// In External mode effectiveAdminPasswordSecretRef resolves to the USER's
+	// Secret, so the cleartext readAdminPassword reads lives under that name.
+	adminSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      cp.Spec.KORC.AdminCredential.PasswordSecretRef.Name,
+			Namespace: ns,
+		},
+		Data: map[string][]byte{"password": []byte("super-secret-admin-password")},
+	}
+	g.Expect(c.Create(ctx, adminSecret)).To(Succeed(), "create the user-supplied admin password Secret")
+
+	g.Expect(c.Create(ctx, cp)).To(Succeed(), "create the External-mode ControlPlane CR")
+
+	// The four skipped sub-reconcilers converge with no simulation whatsoever.
+	for _, condType := range []string{
+		conditionTypeInfrastructureReady,
+		conditionTypeDBCredentialsReady,
+		conditionTypeAdminPasswordReady,
+		conditionTypeKeystoneReady,
+	} {
+		waitForControlPlaneCondition(t, ctx, c, cpKey, condType, metav1.ConditionTrue, itEventuallyTimeout)
+	}
+	// services.horizon is forbidden in External mode, so Horizon reports not-managed.
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeHorizonReady, metav1.ConditionTrue, itEventuallyTimeout)
+
+	// K-ORC chain: identical to managed mode, driven against the external Keystone.
+	simulateApplicationCredentialAvailableWhenPresent(t, ctx, c,
+		client.ObjectKey{Name: adminAppCredentialName(cp), Namespace: ns})
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeKORCReady, metav1.ConditionTrue, itEventuallyTimeout)
+
+	g.Eventually(func() error {
+		return c.Get(ctx, client.ObjectKey{Namespace: ns, Name: korcCloudsYamlSecretName}, &esov1.ExternalSecret{})
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "operator must create the k-orc clouds.yaml ExternalSecret")
+	g.Expect(simulators.SimulateExternalSecretSync(ctx, c,
+		client.ObjectKey{Namespace: ns, Name: korcCloudsYamlSecretName})).To(Succeed())
+
+	simulatePushSecretSyncedWhenPresent(t, ctx, c,
+		client.ObjectKey{Name: adminAppCredentialPushSecretName(cp), Namespace: ns})
+	simulateCloudsYamlMaterializedWhenPresent(t, ctx, c, cp)
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeAdminCredentialReady, metav1.ConditionTrue, itEventuallyTimeout)
+
+	simulateCatalogServiceEndpointAvailableWhenPresent(t, ctx, c, cp)
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeCatalogReady, metav1.ConditionTrue, itEventuallyTimeout)
+}
+
+// TestIntegration_ExternalMode_ConvergesToReadyWithNoWorkloads is the headline
+// acceptance criterion: an External-mode ControlPlane whose external dependencies
+// are reachable converges Ready=True while creating ZERO MariaDB, Memcached,
+// Keystone or Horizon resources — and no operator-owned credential ExternalSecrets.
+func TestIntegration_ExternalMode_ConvergesToReadyWithNoWorkloads(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupControlPlaneEnvTest(t)
+	ensureReadyClusterSecretStore(t, ctx, c)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-cp-external-ready-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed(), "create test namespace")
+
+	cp := integrationExternalControlPlane("cp-external", ns.Name)
+	driveExternalControlPlaneToReady(t, ctx, c, cp)
+
+	cpKey := types.NamespacedName{Name: cp.Name, Namespace: ns.Name}
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeReady, metav1.ConditionTrue, itEventuallyTimeout)
+
+	final := &c5c3v1alpha1.ControlPlane{}
+	g.Expect(c.Get(ctx, cpKey, final)).To(Succeed())
+
+	readyCond := meta.FindStatusCondition(final.Status.Conditions, conditionTypeReady)
+	g.Expect(readyCond.Reason).To(Equal("AllReady"))
+	g.Expect(final.Status.ObservedGeneration).To(Equal(final.Generation))
+
+	// Each skipped sub-reconciler reports the dedicated ExternallyManaged reason.
+	for _, condType := range []string{
+		conditionTypeInfrastructureReady,
+		conditionTypeDBCredentialsReady,
+		conditionTypeAdminPasswordReady,
+		conditionTypeKeystoneReady,
+	} {
+		cond := meta.FindStatusCondition(final.Status.Conditions, condType)
+		g.Expect(cond).NotTo(BeNil(), "condition %s should exist", condType)
+		g.Expect(cond.Reason).To(Equal(conditionReasonExternallyManaged),
+			"condition %s must report the External-mode skip reason", condType)
+		g.Expect(cond.Message).To(ContainSubstring("https://keystone.example.com/v3"),
+			"condition %s must name the external endpoint", condType)
+	}
+	horizonCond := meta.FindStatusCondition(final.Status.Conditions, conditionTypeHorizonReady)
+	g.Expect(horizonCond.Reason).To(Equal("HorizonNotManaged"))
+
+	// ZERO workloads. This is the acceptance criterion, so assert absence directly.
+	var mariadbList mariadbv1alpha1.MariaDBList
+	g.Expect(c.List(ctx, &mariadbList, client.InNamespace(ns.Name))).To(Succeed())
+	g.Expect(mariadbList.Items).To(BeEmpty(), "External mode must create no MariaDB")
+
+	memcachedList := &unstructured.UnstructuredList{}
+	memcachedList.SetGroupVersionKind(memcachedGVK)
+	g.Expect(c.List(ctx, memcachedList, client.InNamespace(ns.Name))).To(Succeed())
+	g.Expect(memcachedList.Items).To(BeEmpty(), "External mode must create no Memcached")
+
+	var keystoneList keystonev1alpha1.KeystoneList
+	g.Expect(c.List(ctx, &keystoneList, client.InNamespace(ns.Name))).To(Succeed())
+	g.Expect(keystoneList.Items).To(BeEmpty(), "External mode must create no Keystone child")
+
+	var horizonList horizonv1alpha1.HorizonList
+	g.Expect(c.List(ctx, &horizonList, client.InNamespace(ns.Name))).To(Succeed())
+	g.Expect(horizonList.Items).To(BeEmpty(), "External mode must create no Horizon child")
+
+	// No operator-owned credential projections either.
+	g.Expect(apierrors.IsNotFound(c.Get(ctx,
+		client.ObjectKey{Namespace: ns.Name, Name: dbCredentialSecretName(cp)}, &esov1.ExternalSecret{}))).
+		To(BeTrue(), "External mode must project no DB-credential ExternalSecret")
+	g.Expect(apierrors.IsNotFound(c.Get(ctx,
+		client.ObjectKey{Namespace: ns.Name, Name: adminPasswordSecretName(cp)}, &esov1.ExternalSecret{}))).
+		To(BeTrue(), "External mode must project no admin-password ExternalSecret")
+
+	// status.services reports the single configured service.
+	g.Expect(final.Status.Services).To(HaveLen(1))
+	g.Expect(final.Status.Services[0].Name).To(Equal(keystoneServiceKey))
+	g.Expect(final.Status.Services[0].Ready).To(BeTrue())
+}
+
+// TestIntegration_ExternalMode_DeletionLeavesUnmanagedImportsAlone is the AC-4
+// end-to-end guard: deleting a converged External-mode ControlPlane tears down the
+// operator-owned K-ORC CRs and provably nothing else — a foreign K-ORC User in the
+// same namespace survives.
+func TestIntegration_ExternalMode_DeletionLeavesUnmanagedImportsAlone(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupControlPlaneEnvTest(t)
+	ensureReadyClusterSecretStore(t, ctx, c)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-cp-external-delete-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed(), "create test namespace")
+
+	// A K-ORC User this ControlPlane never created. It shares the namespace and the
+	// kind of the operator's own admin import, so only NAME scoping keeps it safe.
+	foreign := &orcv1alpha1.User{
+		ObjectMeta: metav1.ObjectMeta{Name: "foreign-user", Namespace: ns.Name},
+		Spec: orcv1alpha1.UserSpec{
+			ManagementPolicy: orcv1alpha1.ManagementPolicyUnmanaged,
+			Import:           &orcv1alpha1.UserImport{Filter: &orcv1alpha1.UserFilter{}},
+		},
+	}
+	g.Expect(c.Create(ctx, foreign)).To(Succeed(), "create an unrelated K-ORC User import")
+
+	cp := integrationExternalControlPlane("cp-external", ns.Name)
+	driveExternalControlPlaneToReady(t, ctx, c, cp)
+
+	cpKey := types.NamespacedName{Name: cp.Name, Namespace: ns.Name}
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeReady, metav1.ConditionTrue, itEventuallyTimeout)
+
+	g.Expect(c.Delete(ctx, cp)).To(Succeed(), "delete the External-mode ControlPlane")
+
+	// Every owned K-ORC CR disappears and the finalizer releases the ControlPlane.
+	// envtest runs no garbage collector, so this is the reconcileDelete sweep, not GC.
+	g.Eventually(func() bool {
+		for _, child := range orcChildResources {
+			obj := child.newObj()
+			key := client.ObjectKey{Name: child.name(cp), Namespace: ns.Name}
+			if err := c.Get(ctx, key, obj); !apierrors.IsNotFound(err) {
+				return false
+			}
+		}
+		return apierrors.IsNotFound(c.Get(ctx, cpKey, &c5c3v1alpha1.ControlPlane{}))
+	}, itEventuallyTimeout, itPollInterval).Should(BeTrue(),
+		"the owned K-ORC CRs and the ControlPlane must be gone")
+
+	// ... and the foreign import is untouched.
+	g.Expect(c.Get(ctx, client.ObjectKey{Name: "foreign-user", Namespace: ns.Name}, &orcv1alpha1.User{})).
+		To(Succeed(), "a K-ORC CR the ControlPlane does not own must survive its deletion")
+}
