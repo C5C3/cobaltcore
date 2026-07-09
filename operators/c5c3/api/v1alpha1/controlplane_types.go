@@ -313,20 +313,28 @@ type ExternalKeystoneSpec struct {
 
 	// EndpointType selects which Keystone catalog interface to authenticate
 	// against. Defaults to public via both the CRD schema default and the
-	// defaulting webhook. It maps to the clouds.yaml `endpoint_type` key
-	// consumed by the K-ORC clouds.yaml builders (see ExternalEndpointType).
+	// defaulting webhook. It is rendered as the clouds.yaml `endpoint_type` key
+	// in both generated credentials Secrets (see ExternalEndpointType). The
+	// selected interface must exist in the external Keystone's service catalog
+	// for spec.region, otherwise the control plane fails loud with
+	// KORCReady=False/CatalogEndpointMismatch.
 	// +kubebuilder:default=public
 	// +optional
 	EndpointType ExternalEndpointType `json:"endpointType,omitempty"`
 
 	// CABundleSecretRef optionally references a Secret carrying a private CA
 	// bundle the client trusts when verifying the external Keystone endpoint.
-	// The referenced bundle is projected verbatim into the generated K-ORC
-	// credentials Secret (K-ORC natively reads an inline `cacert` PEM key from
-	// the same Secret that carries clouds.yaml — no mount, no upstream change).
-	// Key defaults to "ca.crt"; the default is webhook-only because the shared
-	// SecretRefSpec carries no c5c3-specific marker (the same discipline as
-	// passwordSecretRef.Key).
+	// The referenced bundle is projected verbatim as the inline `cacert` key
+	// into BOTH generated K-ORC credentials Secrets — K-ORC reads that key
+	// natively from the same Secret that carries clouds.yaml, so no mount and no
+	// upstream change are needed. Key defaults to "ca.crt"; the default is
+	// webhook-only because the shared SecretRefSpec carries no c5c3-specific
+	// marker (the same discipline as passwordSecretRef.Key).
+	//
+	// Rotating or removing the bundle converges the Secrets immediately, but
+	// K-ORC's provider-client cache keys on the parsed cloud struct only —
+	// `cacert` is not part of the key — so the new trust store only takes effect
+	// once the cached client expires (~token lifetime / 2).
 	// +optional
 	CABundleSecretRef *commonv1.SecretRefSpec `json:"caBundleSecretRef,omitempty"`
 }
@@ -388,16 +396,22 @@ type AdminCredentialSpec struct {
 
 	// UserName is the OpenStack admin user name the control plane authenticates
 	// as. Defaults to "admin" via both the CRD schema default and the defaulting
-	// webhook. Valid in both Managed and External modes; consumed by the K-ORC
-	// clouds.yaml builders and the admin import filters (that consumption lands
-	// with the K-ORC clouds.yaml work).
+	// webhook. Valid in both Managed and External modes.
+	//
+	// It is rendered as the clouds.yaml `username` AND used as the K-ORC admin
+	// User import filter the application credential's UserRef resolves to. Those
+	// two MUST name the same user: Keystone's default policy only lets a token
+	// mint an application credential for its OWN user. Editing this field on a
+	// live ControlPlane updates the import filter in place, but K-ORC imports
+	// resolve once — the stale resolved id surfaces as
+	// KORCReady=False/CredentialDrift rather than silently repointing.
 	// +kubebuilder:default=admin
 	// +optional
 	UserName string `json:"userName,omitempty"`
 
-	// ProjectName is the OpenStack admin project name. Defaults to "admin" via
-	// both the CRD schema default and the defaulting webhook. Valid in both
-	// modes.
+	// ProjectName is the OpenStack admin project name, rendered as the clouds.yaml
+	// `project_name`. Defaults to "admin" via both the CRD schema default and the
+	// defaulting webhook. Valid in both modes.
 	// +kubebuilder:default=admin
 	// +optional
 	ProjectName string `json:"projectName,omitempty"`
@@ -405,10 +419,10 @@ type AdminCredentialSpec struct {
 	// DomainName is the OpenStack admin domain name. Defaults to "Default" via
 	// both the CRD schema default and the defaulting webhook. Valid in both
 	// modes. Phase-1 nuance: the single DomainName sets BOTH user_domain_name
-	// and project_domain_name in the generated clouds.yaml (exactly what the
-	// K-ORC clouds.yaml builder does today), so the admin user and project must
-	// live in the same domain; a later userDomainName/projectDomainName split is
-	// a compatible extension.
+	// and project_domain_name in the generated clouds.yaml, and is the K-ORC
+	// admin Domain import filter, so the admin user and project must live in the
+	// same domain; a later userDomainName/projectDomainName split is a
+	// compatible extension.
 	// +kubebuilder:default=Default
 	// +optional
 	DomainName string `json:"domainName,omitempty"`

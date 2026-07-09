@@ -726,6 +726,19 @@ Because both the ExternalSecret name and the OpenBao key are derived per-CR, an
 arbitrarily named ControlPlane resolves to the correct key with **no manifest
 edit** — the operator now resolves what was previously deferred for this ExternalSecret.
 
+**Optional `cacert` entry (External keystone mode)** — when the ControlPlane sets
+`spec.services.keystone.external.caBundleSecretRef`, the ExternalSecret carries a
+**second** data entry that reads the `cacert` property back from the same
+per-CR OpenBao key. K-ORC reads that inline PEM key natively from the credentials
+Secret, so the materialised `k-orc-clouds-yaml` ends up carrying the private-CA
+trust anchor next to `clouds.yaml`. No extra push plumbing is needed: the
+PushSecret mirrors the source Secret **whole** (it declares no `match.secretKey`),
+so the `cacert` key the operator projects into the app-credential Secret already
+reaches OpenBao alongside `clouds.yaml`. Clearing the ref drops the read-back
+entry on the next reconcile; the now-orphaned `cacert` property lingers at the
+OpenBao key because the PushSecret's `deletionPolicy` is `None`, but nothing reads
+it.
+
 **No `orc-system` copy** — the static `deploy/eso/externalsecrets/k-orc-clouds-yaml.yaml`
 manifest that previously declared K-ORC's global default `clouds.yaml` mount has been
 removed. K-ORC authenticates **per resource** via each CR's `CloudCredentialsRef`,

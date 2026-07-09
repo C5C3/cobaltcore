@@ -464,6 +464,32 @@ takes its `HorizonNotManaged` early-exit. The duplicate-ControlPlane parking
 guard is mode-agnostic and applies unchanged — External-mode ControlPlanes count
 towards the one-per-namespace contract.
 
+#### Egress and TLS posture
+
+K-ORC — not the c5c3-operator — is what dials the external Keystone. It is
+installed by the Flux Kustomization `deploy/flux-system/releases/k-orc.yaml` into
+the `orc-system` namespace, and the operator never opens an OpenStack connection
+itself: everything stays K-ORC-mediated.
+
+- **Egress.** No `NetworkPolicy` exists anywhere under `deploy/`, and none scopes
+  `orc-system`, so nothing restricts K-ORC's egress on the shipped stack —
+  out-of-cluster Keystone worked first-pass in the phase-1 spike. A cluster that
+  applies a **default-deny egress** policy to `orc-system` must add an explicit
+  allow rule to the external endpoint's host and port, or every mint, import and
+  catalog call fails as `EndpointUnreachable`.
+- **TLS.** An IP-based `authURL` requires an **IP SAN** in the external Keystone's
+  server certificate — a CN or DNS SAN alone will not verify. Hostnames resolve
+  through cluster DNS via the upstream forwarder, so no extra DNS wiring is
+  needed. A privately-signed certificate needs
+  `spec.services.keystone.external.caBundleSecretRef`; without it K-ORC reports
+  an `x509` failure, classified onto `KORCReady=False/TLSVerificationFailed`.
+- **CA-cache aliasing.** K-ORC's provider-client cache keys on the parsed cloud
+  struct only — `cacert` is **not** part of the key (`internal/scope/provider.go`)
+  — and the entry lives for the token lifetime / 2 (≈30 min at Keystone defaults).
+  A rotated or removed CA bundle therefore converges the Secrets immediately but
+  the trust store only after cache expiry. Nothing in this operator can shorten
+  that window; an upstream fix would have to fold `cacert` into the cache key.
+
 ### reconcileInfrastructure
 
 | Aspect | Value |
@@ -777,9 +803,44 @@ that instructs K-ORC to mint the admin application credential, and drives re-min
   the catalog Service/Endpoint keep using the spec's `CloudCredentialsRef`
   (`k-orc-clouds-yaml`) and tolerate the brief auth gap during a re-mint by
   requeueing.
-- **UserRef.** The required K-ORC `UserRef` is derived conventionally from the
-  admin `cloudName` (defaulting to `"admin"`), assuming a sibling K-ORC `User` CR
-  of that name (imported as unmanaged by `ensureKORCAdminImports`).
+- **Mode-aware `clouds.yaml` (`korc_cloudsyaml.go`).** Both builders render
+  `auth_url`, `endpoint_type` and `region_name` through three resolvers.
+  `korcAuthURL` returns the in-cluster Keystone Service DNS in managed mode and
+  `spec.services.keystone.external.authURL` in External mode; `korcEndpointType`
+  returns `internal` in managed mode (K-ORC runs in-cluster, so `public` would
+  resolve to an unreachable Gateway host) and the configured `endpointType`
+  (default `public`) in External mode; `korcRegion` returns `spec.region`
+  (default `RegionOne`). Managed-mode output is byte-identical to before, pinned
+  by golden tests, so no upgraded ControlPlane churns its Secrets. The key must
+  be `endpoint_type`, never `interface` — K-ORC drops gophercloud's `Interface`
+  field (the authoritative note lives on `buildAppCredCloudsYAML`).
+- **Admin identities.** `buildPasswordCloudsYAML` renders `username`,
+  `project_name` and both domain keys from
+  `spec.korc.adminCredential.userName`/`.projectName`/`.domainName`, and
+  `ensureKORCAdminImports` uses the same `userName`/`domainName` as the `User`
+  and `Domain` import filters. **Same-user constraint:** Keystone's default policy
+  mints an application credential only for the token's own user, so the
+  `clouds.yaml` `username` and the imported `User` (the AC's `UserRef`) must be the
+  same user — both derive from `adminUserName`.
+- **UserRef.** The required K-ORC `UserRef` points at the deterministic,
+  `cp.Name`-scoped `User` CR `{controlplane.Name}-user-admin`, imported as
+  unmanaged by `ensureKORCAdminImports`. The CR name is a stable handle; the
+  OpenStack user it resolves to comes from the import filter above.
+- **CA bundle (`cacert`).** When `spec.services.keystone.external.caBundleSecretRef`
+  is set, the referenced bundle is read from the ControlPlane namespace and
+  projected **verbatim** as the inline `cacert` key into **both** operator-owned
+  credentials Secrets (`setCACertKey`). K-ORC reads that key natively from the
+  same Secret as `clouds.yaml`, so there is no mount and no upstream change. The
+  password-cloud is what the AC authenticates with directly; the app-credential
+  Secret is the PushSecret's whole-Secret source, so the bundle also reaches
+  OpenBao and is read back by the `cacert` entry
+  `ensureKORCCloudsYAMLExternalSecret` adds — gated on the **resolved bundle**, the
+  same predicate `setCACertKey` writes the source key under, so the read-back can
+  never point at a property the PushSecret did not push. Clearing the ref deletes
+  the key and drops the read-back entry. A missing Secret/key — or a present-but-
+  empty key, the transient of a two-step "create then populate" flow — defers the
+  mint (`WaitingForCABundle`); see the [CA-cache aliasing
+  caveat](#egress-and-tls-posture).
 - **Access rules.** `projectAccessRules` maps our `{service, method, path}` list
   onto K-ORC's rule shape: `service` becomes a `serviceRef` (Kubernetes name ref
   to an ORC `Service` CR, e.g. `identity`), `method` becomes the typed
@@ -822,6 +883,8 @@ that instructs K-ORC to mint the admin application credential, and drives re-min
 | --- | --- | --- | --- |
 | Admin password Secret/key missing | False | `WaitingForAdminPassword` | requeue 10s (via `secrets.IsMissingSecretOrKey`) |
 | Admin password read fails otherwise | False | `AdminPasswordError` | returns the error |
+| External CA bundle Secret/key missing or empty | False | `WaitingForCABundle` | requeue 10s; no credentials Secret is written before the endpoint can be verified |
+| External CA bundle read fails otherwise | False | `CABundleError` | returns the error |
 | Password-cloud ensure fails | False | `PasswordCloudError` | returns the error |
 | Hash mismatch → AC deleted for re-mint | False | `ReMinting` | requeue 10s; AC deleted + `value` regenerated, recreated next pass |
 | `spec.resource` drift (`restricted`/`accessRules`) → AC deleted for re-mint | False | `ReMinting` | requeue 10s; the block is CEL-immutable, so the change forces a delete+recreate |
@@ -867,7 +930,7 @@ and re-classifying it would flip a converged ControlPlane back to
 | message contains `401` / `Unauthorized` | False | `AuthenticationFailed` | the external Keystone rejected the admin credential — typically the password was rotated out-of-band and `passwordSecretRef` is stale |
 | message contains `no such host` / `connection refused` / `dial tcp` / `i/o timeout` | False | `EndpointUnreachable` | `external.authURL` could not be dialled |
 | message contains `x509` | False | `TLSVerificationFailed` | supply the private CA via `external.caBundleSecretRef` |
-| message contains `No suitable endpoint could be found in the service catalog` | False | `CatalogEndpointMismatch` | a wrong `external.endpointType` or `spec.region`; fails loud rather than silently importing nothing |
+| message contains `No suitable endpoint could be found in the service catalog` | False | `CatalogEndpointMismatch` | a wrong `external.endpointType` or `spec.region`; fails loud rather than silently importing nothing. gophercloud never names the interface or region it looked for, so the message appends the **effective** `endpointType` and `spec.region` as the values the external catalog must publish |
 | message names `identity:create_application_credential` (403) | False | `CredentialDrift` | an application-credential create against a **stale** resolve-once import id; see [drift](#drift-is-surfaced-never-fought) |
 | admin import stuck on "Waiting for OpenStack resource to be created externally" beyond `externalImportStallGrace` | False | `ImportStalled` | the silent-empty detector |
 

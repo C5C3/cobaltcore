@@ -466,7 +466,8 @@ func (r *ControlPlaneReconciler) classifyExternalKORCState(
 			message += fmt.Sprintf(
 				"; the external catalog must publish the %q interface in region %q "+
 					"(spec.services.keystone.external.endpointType and spec.region)",
-				korcEndpointType(cp), korcRegion(cp))
+				korcEndpointType(cp), korcRegion(cp),
+			)
 		}
 		fail(reason, message)
 		return ctrl.Result{RequeueAfter: korcRequeueAfter}, true

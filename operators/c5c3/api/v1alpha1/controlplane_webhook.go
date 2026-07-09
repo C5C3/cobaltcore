@@ -275,11 +275,10 @@ func (w *ControlPlaneWebhook) Default(_ context.Context, obj *ControlPlane) erro
 	if korc.PasswordSecretRef.Key == "" {
 		korc.PasswordSecretRef.Key = DefaultAdminPasswordSecretKey
 	}
-	// admin identity (P1): userName/projectName default to "admin", domainName to
-	// "Default" — the three identities buildPasswordCloudsYAML hardcodes today and
-	// the K-ORC admin imports assume. Valid in both keystone modes; consumed by
-	// the K-ORC clouds.yaml builders and import filters (that consumption lands
-	// with the K-ORC clouds.yaml work). Webhook-only mirror of the CRD markers.
+	// admin identity: userName/projectName default to "admin", domainName to
+	// "Default" — the three identities a stock Keystone bootstrap creates. Valid
+	// in both keystone modes; consumed by the K-ORC clouds.yaml builders and the
+	// admin import filters. Webhook-only mirror of the CRD markers.
 	if korc.UserName == "" {
 		korc.UserName = DefaultAdminUserName
 	}
