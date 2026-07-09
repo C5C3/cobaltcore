@@ -104,6 +104,11 @@ func setupControlPlaneEnvTest(t testing.TB) (client.Client, context.Context, con
 				Owns(&orcv1alpha1.Service{}).
 				Owns(&orcv1alpha1.Endpoint{}).
 				Owns(memcached).
+				// Mirror the identity-backend watch SetupWithManager registers, so
+				// a backend event wakes the ControlPlane exactly as in production.
+				Watches(&keystonev1alpha1.KeystoneIdentityBackend{}, handler.EnqueueRequestsFromMapFunc(
+					r.identityBackendToControlPlaneMapper,
+				)).
 				Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(
 					secretToControlPlaneMapper(mgr.GetClient()),
 				)).
@@ -2147,4 +2152,154 @@ func pumpMaterializedCloudsYAML(ctx context.Context, c client.Client, cp *c5c3v1
 	}
 	materialized.Data[appCredCloudsYAMLKey] = assembled
 	return c.Update(ctx, materialized)
+}
+
+// TestIntegration_FederationBackendWakesReconcileAndProjectsWebSSO drives a
+// managed ControlPlane to a projected Horizon child, then attaches an OIDC
+// KeystoneIdentityBackend and marks it Ready.
+//
+// It is the load-bearing proof for the identity-backend watch and its field
+// index: nothing else touches the ControlPlane after the Horizon child exists,
+// so the websso block can only appear if the backend event woke the reconciler
+// and listIdentityBackends resolved through the index. It also asserts the
+// Ready gate (a not-Ready backend contributes no choice) and the Keystone-side
+// trusted_dashboard projection.
+func TestIntegration_FederationBackendWakesReconcileAndProjectsWebSSO(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupControlPlaneEnvTest(t)
+	ensureReadyClusterSecretStore(t, ctx, c)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-controlplane-sso-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed(), "create test namespace")
+
+	cp := integrationManagedControlPlane("cp", ns.Name)
+	cp.Spec.Services.Keystone.PublicEndpoint = "https://keystone.example.com/v3"
+	cp.Spec.Services.Horizon = &c5c3v1alpha1.ServiceHorizonSpec{
+		PublicEndpoint: "https://horizon.example.com:8443",
+	}
+
+	adminSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: adminPasswordSecretName(cp), Namespace: ns.Name},
+		Data:       map[string][]byte{"password": []byte("super-secret-admin-password")},
+	}
+	g.Expect(c.Create(ctx, adminSecret)).To(Succeed(), "create admin password Secret")
+	g.Expect(c.Create(ctx, cp)).To(Succeed(), "create ControlPlane CR")
+	cpKey := types.NamespacedName{Name: cp.Name, Namespace: ns.Name}
+
+	// Drive the chain far enough for the Horizon child to be projected.
+	simulateMariaDBReadyWhenPresent(t, ctx, c, client.ObjectKey{Name: "openstack-db", Namespace: ns.Name})
+	simulateMemcachedReadyWhenPresent(t, ctx, c, client.ObjectKey{Name: "openstack-memcached", Namespace: ns.Name})
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeInfrastructureReady, metav1.ConditionTrue, itEventuallyTimeout)
+
+	g.Eventually(func() error {
+		return simulators.SimulateExternalSecretSync(ctx, c,
+			client.ObjectKey{Namespace: ns.Name, Name: dbCredentialSecretName(cp)})
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "simulate per-CP DB credential ExternalSecret sync")
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeDBCredentialsReady, metav1.ConditionTrue, itEventuallyTimeout)
+
+	simulateAdminPasswordExternalSecretSyncWhenPresent(t, ctx, c, cp)
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeAdminPasswordReady, metav1.ConditionTrue, itEventuallyTimeout)
+
+	keystoneKey := client.ObjectKey{Name: keystoneName(cp), Namespace: ns.Name}
+	simulateKeystoneReadyWhenPresent(t, ctx, c, keystoneKey)
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeKeystoneReady, metav1.ConditionTrue, itEventuallyTimeout)
+
+	// The Keystone child carries the dashboard's WebSSO origin — derived
+	// top-down from cp.Spec, so it is present before any backend attaches.
+	projectedKeystone := &keystonev1alpha1.Keystone{}
+	g.Eventually(func() []string {
+		if err := c.Get(ctx, keystoneKey, projectedKeystone); err != nil || projectedKeystone.Spec.Federation == nil {
+			return nil
+		}
+		return projectedKeystone.Spec.Federation.TrustedDashboards
+	}, itEventuallyTimeout, itPollInterval).Should(Equal([]string{"https://horizon.example.com:8443/auth/websso/"}),
+		"trusted_dashboard must carry the dashboard's non-default port verbatim")
+
+	horizonKey := client.ObjectKey{Name: horizonName(cp), Namespace: ns.Name}
+	projectedHorizon := &horizonv1alpha1.Horizon{}
+	g.Eventually(func() error {
+		return c.Get(ctx, horizonKey, projectedHorizon)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "Horizon child should be projected once KeystoneReady")
+	g.Expect(projectedHorizon.Spec.WebSSO).To(BeNil(), "no backend attached yet, so no SSO choice")
+
+	// Attach an OIDC backend. It starts NOT Ready, so the login page must not
+	// gain an SSO button that dead-ends.
+	oidcBackend := &keystonev1alpha1.KeystoneIdentityBackend{
+		ObjectMeta: metav1.ObjectMeta{Name: "keycloak", Namespace: ns.Name},
+		Spec: keystonev1alpha1.KeystoneIdentityBackendSpec{
+			KeystoneRef: keystonev1alpha1.KeystoneRefSpec{Name: keystoneName(cp)},
+			// The Default domain hosts the SQL-backed service users and the
+			// bootstrap admin, so the CRD forbids backing it with an external
+			// identity backend — every federated backend gets its own domain.
+			Domain: keystonev1alpha1.DomainSpec{Name: "federated"},
+			Type:   keystonev1alpha1.IdentityBackendTypeOIDC,
+			OIDC: &keystonev1alpha1.OIDCBackendSpec{
+				Issuer:          "https://keycloak.example.com/realms/forge",
+				ClientID:        "keystone",
+				ClientSecretRef: commonv1.SecretRefSpec{Name: "keycloak-client", Key: "client-secret"},
+			},
+		},
+	}
+	g.Expect(c.Create(ctx, oidcBackend)).To(Succeed(), "create OIDC identity backend")
+
+	g.Consistently(func() *horizonv1alpha1.WebSSOSpec {
+		h := &horizonv1alpha1.Horizon{}
+		if err := c.Get(ctx, horizonKey, h); err != nil {
+			return nil
+		}
+		return h.Spec.WebSSO
+	}, 3*time.Second, itPollInterval).Should(BeNil(), "a not-Ready backend must contribute no websso choice")
+
+	// Mark the backend Ready. Nothing else touches the ControlPlane, so the
+	// projection below can only happen via the identity-backend watch.
+	g.Eventually(func() error {
+		fresh := &keystonev1alpha1.KeystoneIdentityBackend{}
+		if err := c.Get(ctx, client.ObjectKeyFromObject(oidcBackend), fresh); err != nil {
+			return err
+		}
+		meta.SetStatusCondition(&fresh.Status.Conditions, metav1.Condition{
+			Type:               "Ready",
+			Status:             metav1.ConditionTrue,
+			Reason:             "AllBackendsProjected",
+			Message:            "simulated",
+			ObservedGeneration: fresh.Generation,
+		})
+		return c.Status().Update(ctx, fresh)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "mark the OIDC backend Ready")
+
+	g.Eventually(func() *horizonv1alpha1.WebSSOSpec {
+		h := &horizonv1alpha1.Horizon{}
+		if err := c.Get(ctx, horizonKey, h); err != nil {
+			return nil
+		}
+		return h.Spec.WebSSO
+	}, itEventuallyTimeout, itPollInterval).ShouldNot(BeNil(),
+		"the identity-backend watch must wake the ControlPlane and project the websso block")
+
+	h := &horizonv1alpha1.Horizon{}
+	g.Expect(c.Get(ctx, horizonKey, h)).To(Succeed())
+	g.Expect(h.Spec.WebSSO.Enabled).To(BeTrue())
+	g.Expect(h.Spec.WebSSO.Choices).To(Equal([]horizonv1alpha1.WebSSOChoice{
+		{ID: horizonv1alpha1.DefaultWebSSOCredentialsChoiceID, Label: horizonv1alpha1.DefaultWebSSOCredentialsChoiceLabel},
+		{ID: "keycloak_openid", Label: "keycloak"},
+	}))
+	g.Expect(h.Spec.WebSSO.IDPMapping).To(HaveKeyWithValue("keycloak_openid",
+		horizonv1alpha1.WebSSOIDPTarget{IdentityProvider: "keycloak", Protocol: "openid"}))
+	// The browser follows the SSO redirect, so it must target the external
+	// Keystone endpoint — never the cluster-local Service URL.
+	g.Expect(h.Spec.WebSSO.KeystoneURL).To(Equal("https://keystone.example.com/v3"))
+	g.Expect(h.Spec.KeystoneEndpoint).To(HavePrefix("http://" + keystoneName(cp)))
+
+	// Detaching the backend clears the block, so the SSO button disappears.
+	g.Expect(c.Delete(ctx, oidcBackend)).To(Succeed())
+	g.Eventually(func() *horizonv1alpha1.WebSSOSpec {
+		fresh := &horizonv1alpha1.Horizon{}
+		if err := c.Get(ctx, horizonKey, fresh); err != nil {
+			return &horizonv1alpha1.WebSSOSpec{}
+		}
+		return fresh.Spec.WebSSO
+	}, itEventuallyTimeout, itPollInterval).Should(BeNil(),
+		"detaching the last backend must clear the websso block")
 }

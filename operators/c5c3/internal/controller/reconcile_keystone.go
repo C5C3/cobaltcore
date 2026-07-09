@@ -222,12 +222,17 @@ func (r *ControlPlaneReconciler) reconcileKeystone(ctx context.Context, cp *c5c3
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, keystone, func() error {
 		keystone.Spec.Image = image
 
-		// Project the federation proxy (mod_auth_openidc sidecar) image
-		// default so attaching an OIDC KeystoneIdentityBackend works out of
-		// the box on the managed path. Inert until a federation backend
-		// attaches — the keystone operator projects the sidecar only then.
+		// Project the federation proxy (mod_auth_openidc sidecar) image so
+		// attaching an OIDC KeystoneIdentityBackend works out of the box on the
+		// managed path, and the WebSSO origin of the ControlPlane's own
+		// dashboard so Keystone will accept the hand-off. Both fields are
+		// assigned unconditionally: clearing the override or the horizon block
+		// must revert the child rather than leave the previously-projected
+		// value pinned (the same lost-update reasoning as replicas). Both are
+		// inert until a federation backend attaches.
 		keystone.Spec.Federation = &keystonev1alpha1.FederationSpec{
-			ProxyImage: &commonv1.ImageSpec{Repository: defaultFederationProxyRepository, Tag: "latest"},
+			ProxyImage:        federationProxyImage(cp),
+			TrustedDashboards: trustedDashboards(cp),
 		}
 
 		// Point Keystone at the SAME backing services the ControlPlane
@@ -353,6 +358,34 @@ func (r *ControlPlaneReconciler) reconcileKeystone(ctx context.Context, cp *c5c3
 		Message:            "Projected Keystone CR is ready",
 	})
 	return ctrl.Result{}, nil
+}
+
+// federationProxyImage resolves the mod_auth_openidc sidecar image projected
+// onto the Keystone child: the explicit services.keystone.federationProxyImage
+// override when set, else the release-independent
+// ghcr.io/c5c3/keystone-federation-proxy:latest default (see
+// defaultFederationProxyRepository).
+func federationProxyImage(cp *c5c3v1alpha1.ControlPlane) *commonv1.ImageSpec {
+	if ks := cp.Spec.Services.Keystone; ks != nil && ks.FederationProxyImage != nil {
+		return ks.FederationProxyImage.DeepCopy()
+	}
+	return &commonv1.ImageSpec{Repository: defaultFederationProxyRepository, Tag: "latest"}
+}
+
+// trustedDashboards returns the WebSSO origins the Keystone child must trust,
+// i.e. the origin of this ControlPlane's own dashboard. It returns nil when no
+// Horizon block is declared or the dashboard is not externally reachable, so a
+// Keystone-only ControlPlane renders no [federation] trusted_dashboard.
+//
+// Derived top-down from cp.Spec (never from the Horizon child's status), so it
+// carries no ordering dependency on reconcileHorizon — which is gated on
+// KeystoneReady and therefore runs strictly after this projection.
+func trustedDashboards(cp *c5c3v1alpha1.ControlPlane) []string {
+	base := horizonPublicEndpoint(cp.Spec.Services.Horizon)
+	if base == "" {
+		return nil
+	}
+	return []string{base + webSSOAuthWebssoPath}
 }
 
 // keystonePublicEndpoint returns the externally routable Keystone identity URL

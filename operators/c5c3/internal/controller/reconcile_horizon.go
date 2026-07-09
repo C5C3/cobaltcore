@@ -20,6 +20,7 @@ import (
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 	horizonv1alpha1 "github.com/c5c3/forge/operators/horizon/api/v1alpha1"
+	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
 
 // The projected Horizon CR is named "{controlplane.Name}-horizon" — the same
@@ -150,6 +151,22 @@ func (r *ControlPlaneReconciler) reconcileHorizon(ctx context.Context, cp *c5c3v
 		secretKeyRef = *override
 	}
 
+	// Resolve the identity backends attached to the Keystone child. Their Ready
+	// subset drives the login page's SSO choices and domain dropdown. A List
+	// failure must stop the chain rather than silently project an empty
+	// websso block, which would remove a working SSO button from the login page.
+	backends, err := r.listIdentityBackends(ctx, cp)
+	if err != nil {
+		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+			Type:               conditionTypeHorizonReady,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: cp.Generation,
+			Reason:             "IdentityBackendsUnavailable",
+			Message:            fmt.Sprintf("listing identity backends for the Horizon projection: %v", err),
+		})
+		return ctrl.Result{}, err
+	}
+
 	horizon := &horizonv1alpha1.Horizon{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      horizonName(cp),
@@ -206,6 +223,14 @@ func (r *ControlPlaneReconciler) reconcileHorizon(ctx context.Context, cp *c5c3v
 			horizon.Spec.Deployment.Replicas = *cp.Spec.Services.Horizon.Replicas
 		}
 
+		// Project the federated-login surface from the Ready backends.
+		// Detaching the last backend clears the block so the login page reverts
+		// to local credentials rather than keeping a dead SSO button pinned on
+		// the child; a backend that is merely unhealthy retains it (see
+		// projectWebSSO / projectMultiDomain).
+		horizon.Spec.WebSSO = projectWebSSO(ctx, cp, backends, horizon.Spec.WebSSO)
+		horizon.Spec.MultiDomain = projectMultiDomain(ctx, backends, horizon.Spec.MultiDomain)
+
 		return controllerutil.SetControllerReference(cp, horizon, r.Scheme)
 	}); err != nil {
 		reason := "HorizonError"
@@ -250,6 +275,164 @@ func (r *ControlPlaneReconciler) reconcileHorizon(ctx context.Context, cp *c5c3v
 		Message:            "Projected Horizon CR is ready",
 	})
 	return ctrl.Result{}, nil
+}
+
+// projectWebSSO decides what to write onto the Horizon child's spec.websso.
+// current is the block already carried by the fetched child.
+//
+// Ready OIDC backends produce the block. When none is Ready the block is
+// cleared — UNLESS backends are still attached, in which case current is
+// retained: an unhealthy backend has not un-provisioned Keystone's federation
+// objects, so the SSO button still completes, and clearing the block would roll
+// the dashboard twice (once on the demotion, once on recovery) for nothing.
+// Only a genuine detach, or a ControlPlane spec that no longer carries the
+// browser-facing endpoints the hand-off needs, clears it.
+func projectWebSSO(
+	ctx context.Context,
+	cp *c5c3v1alpha1.ControlPlane,
+	backends []keystonev1alpha1.KeystoneIdentityBackend,
+	current *horizonv1alpha1.WebSSOSpec,
+) *horizonv1alpha1.WebSSOSpec {
+	if websso := horizonWebSSO(ctx, cp, backends); websso != nil {
+		return websso
+	}
+	if backendsAwaitingReady(backends, keystonev1alpha1.IdentityBackendTypeOIDC) {
+		log.FromContext(ctx).Info("OIDC identity backends are attached but none is Ready; "+
+			"retaining the dashboard's websso block rather than rolling the Horizon Deployment",
+			"retained", current != nil)
+		return current
+	}
+	return nil
+}
+
+// projectMultiDomain decides what to write onto the Horizon child's
+// spec.multiDomain, retaining the previously-projected block while LDAP
+// backends are attached but unhealthy — same reasoning as projectWebSSO.
+func projectMultiDomain(
+	ctx context.Context,
+	backends []keystonev1alpha1.KeystoneIdentityBackend,
+	current *horizonv1alpha1.MultiDomainSpec,
+) *horizonv1alpha1.MultiDomainSpec {
+	if md := horizonMultiDomain(backends); md != nil {
+		return md
+	}
+	if backendsAwaitingReady(backends, keystonev1alpha1.IdentityBackendTypeLDAP) {
+		log.FromContext(ctx).Info("LDAP identity backends are attached but none is Ready; "+
+			"retaining the dashboard's multiDomain block rather than rolling the Horizon Deployment",
+			"retained", current != nil)
+		return current
+	}
+	return nil
+}
+
+// maxProjectedFederationChoices bounds the federated entries the projection
+// emits. The Horizon CRD caps websso.choices at 17 items — 16 federated plus
+// the leading local-credentials fallback — and websso.idpMapping at 16
+// properties. Nothing bounds how many KeystoneIdentityBackend CRs attach to
+// one Keystone, so without this cap the 17th Ready OIDC backend would make the
+// API server reject the projected child and wedge every later Horizon change
+// (image bump, replica count, secret rotation) behind a failing CreateOrUpdate.
+// Dropping the excess keeps the projection converging; the dropped backends are
+// logged rather than silently discarded.
+const maxProjectedFederationChoices = 16
+
+// horizonWebSSO builds the Horizon child's spec.websso from the Ready OIDC
+// backends attached to the Keystone child. It returns nil when none are Ready,
+// so the dashboard renders no WEBSSO_* settings at all and the login page shows
+// the plain credentials form.
+//
+// It ALSO returns nil when the ControlPlane cannot complete a WebSSO hand-off,
+// even though backends are Ready. The hand-off needs two endpoints the backends
+// know nothing about: a trusted dashboard origin (trustedDashboards), without
+// which Keystone bounces the browser with "… is not a trusted dashboard host"
+// only AFTER the user has entered their corporate credentials; and a
+// browser-facing Keystone URL (keystonePublicEndpoint), without which the SSO
+// redirect targets a cluster-local DNS name the browser cannot resolve. A
+// button that can never complete is worse than no button, so both are
+// prerequisites for offering one.
+//
+// The credentials fallback leads the choice list — the same entry the Horizon
+// defaulting webhook would prepend — so enabling SSO never locks out local or
+// LDAP-domain accounts, and so the login page opens on the local form.
+//
+// KeystoneURL is the BROWSER-facing endpoint (keystonePublicEndpoint), not the
+// cluster-local one the dashboard's own Django backend talks to: the SSO
+// redirect is followed by the user's browser.
+func horizonWebSSO(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, backends []keystonev1alpha1.KeystoneIdentityBackend) *horizonv1alpha1.WebSSOSpec {
+	federated := readyFederationBackends(backends)
+	if len(federated) == 0 {
+		return nil
+	}
+	logger := log.FromContext(ctx)
+
+	keystoneURL := keystonePublicEndpoint(cp.Spec.Services.Keystone)
+	if len(trustedDashboards(cp)) == 0 || keystoneURL == "" {
+		logger.Info("Ready OIDC identity backends found, but the WebSSO hand-off has no browser-facing endpoints; "+
+			"omitting the login page's SSO choices",
+			"readyBackends", len(federated),
+			"trustedDashboardOrigin", horizonPublicEndpoint(cp.Spec.Services.Horizon),
+			"keystoneURL", keystoneURL)
+		return nil
+	}
+
+	if len(federated) > maxProjectedFederationChoices {
+		dropped := make([]string, 0, len(federated)-maxProjectedFederationChoices)
+		for i := maxProjectedFederationChoices; i < len(federated); i++ {
+			dropped = append(dropped, federated[i].Name)
+		}
+		logger.Info("More Ready OIDC identity backends than the Horizon websso block can carry; dropping the excess",
+			"max", maxProjectedFederationChoices, "dropped", dropped)
+		federated = federated[:maxProjectedFederationChoices]
+	}
+
+	choices := []horizonv1alpha1.WebSSOChoice{{
+		ID:    horizonv1alpha1.DefaultWebSSOCredentialsChoiceID,
+		Label: horizonv1alpha1.DefaultWebSSOCredentialsChoiceLabel,
+	}}
+	mapping := make(map[string]horizonv1alpha1.WebSSOIDPTarget, len(federated))
+	for i := range federated {
+		b := &federated[i]
+		id := webSSOChoiceID(b)
+		choices = append(choices, horizonv1alpha1.WebSSOChoice{
+			ID:    id,
+			Label: b.EffectiveIdentityProviderName(),
+		})
+		mapping[id] = horizonv1alpha1.WebSSOIDPTarget{
+			IdentityProvider: b.EffectiveIdentityProviderName(),
+			Protocol:         b.EffectiveOIDCProtocolID(),
+		}
+	}
+
+	return &horizonv1alpha1.WebSSOSpec{
+		Enabled:       true,
+		Choices:       choices,
+		IDPMapping:    mapping,
+		InitialChoice: horizonv1alpha1.DefaultWebSSOCredentialsChoiceID,
+		KeystoneURL:   keystoneURL,
+	}
+}
+
+// horizonMultiDomain builds the Horizon child's spec.multiDomain once any LDAP
+// backend is Ready. It returns nil while none are: without a domain-backed
+// identity source there is no second domain to name, and the login form
+// authenticates against the default domain.
+//
+// It deliberately does NOT populate domainChoices / domainDropdown. Upstream
+// openstack_auth swaps the login form's free-text domain field for a select
+// bounded by OPENSTACK_KEYSTONE_DOMAIN_CHOICES, and Django then rejects every
+// domain outside that list. The operator only ever sees the LDAP-backed
+// domains, so a dropdown built from them would lock out every user of a domain
+// it cannot enumerate — a SQL-backed domain populated out-of-band, or the
+// domain an OIDC backend targets. Attaching one LDAP backend must not take
+// those users' logins away, so the form keeps its free-text domain field.
+func horizonMultiDomain(backends []keystonev1alpha1.KeystoneIdentityBackend) *horizonv1alpha1.MultiDomainSpec {
+	if !hasReadyDomainBackend(backends) {
+		return nil
+	}
+	return &horizonv1alpha1.MultiDomainSpec{
+		Enabled:       true,
+		DefaultDomain: horizonv1alpha1.DefaultMultiDomainDefaultDomain,
+	}
 }
 
 // horizonKeystoneEndpoint returns the Keystone endpoint URL projected into

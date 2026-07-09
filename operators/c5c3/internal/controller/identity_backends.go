@@ -82,6 +82,33 @@ func readyFederationBackends(backends []keystonev1alpha1.KeystoneIdentityBackend
 	return out
 }
 
+// backendsAwaitingReady reports whether at least one backend of the given type
+// is attached to the Keystone child but none of them has reached Ready.
+//
+// The Horizon projection uses it to tell "the operator detached the backend"
+// apart from "the backend is not healthy right now". A backend's aggregate
+// Ready is derived from sub-conditions the backend reconciler can demote on a
+// failed observation — the Keystone Deployment briefly not mounting the
+// rendered config, for instance. Rebuilding the dashboard's federated-login
+// surface from that view would strip the SSO button, re-render
+// local_settings.py, roll the Horizon Deployment, and roll it back on recovery
+// — all while the Keystone-side federation objects the backend provisioned
+// never went away, so the button worked the whole time.
+func backendsAwaitingReady(backends []keystonev1alpha1.KeystoneIdentityBackend, backendType keystonev1alpha1.IdentityBackendType) bool {
+	attached := false
+	for i := range backends {
+		b := &backends[i]
+		if b.Spec.Type != backendType {
+			continue
+		}
+		if conditions.IsReady(b.Status.Conditions) {
+			return false
+		}
+		attached = true
+	}
+	return attached
+}
+
 // hasReadyDomainBackend reports whether any LDAP backend has reached Ready.
 // One is enough: the login form's domain handling is a single on/off switch,
 // and the operator cannot enumerate the domains it does not back (SQL domains

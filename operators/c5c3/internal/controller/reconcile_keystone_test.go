@@ -775,3 +775,100 @@ func TestReconcileKeystone_ExternalModePreservesAnUnexpectedChild(t *testing.T) 
 	g.Expect(c.Get(context.Background(), key, k)).To(Succeed(),
 		"an unexpected pre-existing Keystone child must be preserved, never deleted")
 }
+
+// TestReconcileKeystone_FederationProxyImageOverrideWins proves the override
+// reaches the child: without it the suite would validate the sidecar published
+// on main rather than the one under review.
+func TestReconcileKeystone_FederationProxyImageOverrideWins(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := keystoneTestScheme(t)
+	cp := keystoneControlPlane()
+	cp.Spec.Services.Keystone.FederationProxyImage = &commonv1.ImageSpec{
+		Repository: "ghcr.io/c5c3/keystone-federation-proxy",
+		Digest:     "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileKeystone(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	k := getProjectedKeystone(t, c, cp)
+	g.Expect(k.Spec.Federation.ProxyImage.Digest).To(Equal(
+		"sha256:1111111111111111111111111111111111111111111111111111111111111111",
+	))
+	g.Expect(k.Spec.Federation.ProxyImage.Tag).To(BeEmpty(),
+		"an immutable digest pin must not also carry the mutable default tag")
+}
+
+// TestReconcileKeystone_ClearsFederationProxyImageOverride proves the field is
+// assigned unconditionally: clearing the override must revert the child to the
+// default rather than leave the previously-projected pin.
+func TestReconcileKeystone_ClearsFederationProxyImageOverride(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := keystoneTestScheme(t)
+	cp := keystoneControlPlane()
+	cp.Spec.Services.Keystone.FederationProxyImage = &commonv1.ImageSpec{
+		Repository: "ghcr.io/c5c3/keystone-federation-proxy", Tag: "dev",
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileKeystone(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(getProjectedKeystone(t, c, cp).Spec.Federation.ProxyImage.Tag).To(Equal("dev"))
+
+	cp.Spec.Services.Keystone.FederationProxyImage = nil
+	_, err = r.reconcileKeystone(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(getProjectedKeystone(t, c, cp).Spec.Federation.ProxyImage.Tag).To(Equal("latest"))
+}
+
+// TestReconcileKeystone_TrustedDashboardsProjectedFromHorizonPublicEndpoint
+// covers the non-default-port case the override exists for: Keystone matches
+// the origin verbatim, so the port must survive into trusted_dashboard.
+func TestReconcileKeystone_TrustedDashboardsProjectedFromHorizonPublicEndpoint(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := keystoneTestScheme(t)
+	cp := keystoneControlPlane()
+	cp.Spec.Services.Horizon = &c5c3v1alpha1.ServiceHorizonSpec{
+		PublicEndpoint: "https://horizon.127-0-0-1.nip.io:8443",
+		Gateway:        &commonv1.GatewaySpec{Hostname: "horizon.127-0-0-1.nip.io"},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileKeystone(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	k := getProjectedKeystone(t, c, cp)
+	g.Expect(k.Spec.Federation.TrustedDashboards).To(Equal(
+		[]string{"https://horizon.127-0-0-1.nip.io:8443/auth/websso/"},
+	))
+}
+
+// TestReconcileKeystone_TrustedDashboardsNilWithoutHorizonBlock keeps a
+// Keystone-only ControlPlane rendering no [federation] trusted_dashboard, and
+// proves the field is cleared when the dashboard is removed.
+func TestReconcileKeystone_TrustedDashboardsNilWithoutHorizonBlock(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := keystoneTestScheme(t)
+	cp := keystoneControlPlane()
+	cp.Spec.Services.Horizon = &c5c3v1alpha1.ServiceHorizonSpec{
+		Gateway: &commonv1.GatewaySpec{Hostname: "horizon.example.com"},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileKeystone(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(getProjectedKeystone(t, c, cp).Spec.Federation.TrustedDashboards).To(
+		Equal([]string{"https://horizon.example.com/auth/websso/"}),
+	)
+
+	cp.Spec.Services.Horizon = nil
+	_, err = r.reconcileKeystone(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(getProjectedKeystone(t, c, cp).Spec.Federation.TrustedDashboards).To(BeNil(),
+		"removing the dashboard must clear the trusted origin")
+}

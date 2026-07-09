@@ -7,6 +7,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	. "github.com/onsi/gomega"
@@ -23,9 +24,10 @@ import (
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 	horizonv1alpha1 "github.com/c5c3/forge/operators/horizon/api/v1alpha1"
+	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
 
-// horizonTestScheme registers c5c3, client-go, and horizon types.
+// horizonTestScheme registers c5c3, client-go, horizon, and keystone types.
 func horizonTestScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	s := runtime.NewScheme()
@@ -37,6 +39,11 @@ func horizonTestScheme(t *testing.T) *runtime.Scheme {
 	}
 	if err := horizonv1alpha1.AddToScheme(s); err != nil {
 		t.Fatalf("adding horizon scheme: %v", err)
+	}
+	// reconcileHorizon lists the KeystoneIdentityBackend CRs attached to the
+	// Keystone child to project the websso choices and domain dropdown.
+	if err := keystonev1alpha1.AddToScheme(s); err != nil {
+		t.Fatalf("adding keystone scheme: %v", err)
 	}
 	return s
 }
@@ -93,6 +100,26 @@ func newHorizonTestReconciler(t *testing.T, objs ...client.Object) *ControlPlane
 	cb := fake.NewClientBuilder().WithScheme(s).WithObjects(objs...)
 	cb = cb.WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}, &horizonv1alpha1.Horizon{})
 	return &ControlPlaneReconciler{Client: cb.Build(), Scheme: s}
+}
+
+// horizonBackend builds a KeystoneIdentityBackend attached to the Keystone
+// child of the horizonControlPlane fixture ("cp-keystone").
+func horizonBackend(name string, typ keystonev1alpha1.IdentityBackendType, domain string, ready bool) *keystonev1alpha1.KeystoneIdentityBackend {
+	status := metav1.ConditionFalse
+	if ready {
+		status = metav1.ConditionTrue
+	}
+	return &keystonev1alpha1.KeystoneIdentityBackend{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+		Spec: keystonev1alpha1.KeystoneIdentityBackendSpec{
+			KeystoneRef: keystonev1alpha1.KeystoneRefSpec{Name: "cp-keystone"},
+			Domain:      keystonev1alpha1.DomainSpec{Name: domain},
+			Type:        typ,
+		},
+		Status: keystonev1alpha1.KeystoneIdentityBackendStatus{
+			Conditions: []metav1.Condition{{Type: "Ready", Status: status, Reason: "Test"}},
+		},
+	}
 }
 
 func getProjectedHorizon(t *testing.T, c client.Client, cp *c5c3v1alpha1.ControlPlane) *horizonv1alpha1.Horizon {
@@ -477,4 +504,331 @@ func TestSetServicesStatus_HorizonOnlyWhenConfigured(t *testing.T) {
 
 	g.Expect(cp.Status.Services).To(HaveLen(1))
 	g.Expect(cp.Status.Services[0].Name).To(Equal("keystone"))
+}
+
+// publishSSOEndpoints gives cp the two browser-facing endpoints a WebSSO
+// hand-off needs: an externally reachable dashboard (whose origin Keystone will
+// trust) and an externally reachable Keystone (which the browser is redirected
+// to). Without both, horizonWebSSO projects nothing.
+func publishSSOEndpoints(cp *c5c3v1alpha1.ControlPlane) {
+	cp.Spec.Services.Keystone = &c5c3v1alpha1.ServiceKeystoneSpec{
+		PublicEndpoint: "https://keystone.127-0-0-1.nip.io/v3",
+	}
+	cp.Spec.Services.Horizon.PublicEndpoint = "https://horizon.127-0-0-1.nip.io"
+}
+
+// TestReconcileHorizon_WebSSOProjectedFromReadyFederationBackends is the core
+// of the federation-entry projection: one choice per Ready OIDC backend, the
+// credentials fallback leading, a matching idpMapping, and the BROWSER-facing
+// Keystone URL (not the cluster-local endpoint).
+func TestReconcileHorizon_WebSSOProjectedFromReadyFederationBackends(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := horizonControlPlane()
+	publishSSOEndpoints(cp)
+	kc := horizonBackend("keycloak", keystonev1alpha1.IdentityBackendTypeOIDC, "federated", true)
+	r := newHorizonTestReconciler(t, cp, kc)
+
+	_, err := r.reconcileHorizon(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	h := getProjectedHorizon(t, r.Client, cp)
+	g.Expect(h.Spec.WebSSO).NotTo(BeNil())
+	g.Expect(h.Spec.WebSSO.Enabled).To(BeTrue())
+	g.Expect(h.Spec.WebSSO.Choices).To(Equal([]horizonv1alpha1.WebSSOChoice{
+		{ID: horizonv1alpha1.DefaultWebSSOCredentialsChoiceID, Label: horizonv1alpha1.DefaultWebSSOCredentialsChoiceLabel},
+		{ID: "keycloak_openid", Label: "keycloak"},
+	}))
+	g.Expect(h.Spec.WebSSO.IDPMapping).To(Equal(map[string]horizonv1alpha1.WebSSOIDPTarget{
+		"keycloak_openid": {IdentityProvider: "keycloak", Protocol: "openid"},
+	}))
+	g.Expect(h.Spec.WebSSO.InitialChoice).To(Equal(horizonv1alpha1.DefaultWebSSOCredentialsChoiceID))
+	// The browser follows this redirect, so it must be the external endpoint —
+	// never the cluster-local Service URL projected into keystoneEndpoint.
+	g.Expect(h.Spec.WebSSO.KeystoneURL).To(Equal("https://keystone.127-0-0-1.nip.io/v3"))
+	g.Expect(h.Spec.KeystoneEndpoint).NotTo(Equal(h.Spec.WebSSO.KeystoneURL))
+}
+
+// TestReconcileHorizon_WebSSOOmitsNotReadyBackend is the issue's contract:
+// websso entries appear only for Ready backends, so the login page never
+// offers an SSO button that dead-ends.
+func TestReconcileHorizon_WebSSOOmitsNotReadyBackend(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := horizonControlPlane()
+	publishSSOEndpoints(cp)
+	ready := horizonBackend("keycloak", keystonev1alpha1.IdentityBackendTypeOIDC, "federated", true)
+	pending := horizonBackend("pending-idp", keystonev1alpha1.IdentityBackendTypeOIDC, "federated", false)
+	r := newHorizonTestReconciler(t, cp, ready, pending)
+
+	_, err := r.reconcileHorizon(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	h := getProjectedHorizon(t, r.Client, cp)
+	g.Expect(h.Spec.WebSSO).NotTo(BeNil())
+	ids := make([]string, 0, len(h.Spec.WebSSO.Choices))
+	for _, c := range h.Spec.WebSSO.Choices {
+		ids = append(ids, c.ID)
+	}
+	g.Expect(ids).To(ContainElement("keycloak_openid"))
+	g.Expect(ids).NotTo(ContainElement("pending-idp_openid"))
+	g.Expect(h.Spec.WebSSO.IDPMapping).NotTo(HaveKey("pending-idp_openid"))
+}
+
+// TestReconcileHorizon_NoBackendsLeavesWebSSONil covers the overwhelmingly
+// common ControlPlane: no federation, no multi-domain, no rendered settings.
+func TestReconcileHorizon_NoBackendsLeavesWebSSONil(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := horizonControlPlane()
+	r := newHorizonTestReconciler(t, cp)
+
+	_, err := r.reconcileHorizon(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	h := getProjectedHorizon(t, r.Client, cp)
+	g.Expect(h.Spec.WebSSO).To(BeNil())
+	g.Expect(h.Spec.MultiDomain).To(BeNil())
+}
+
+// TestReconcileHorizon_RetainsWebSSOWhileBackendUnhealthy separates "backend
+// detached" from "backend not healthy right now". A backend's aggregate Ready
+// can drop on a failed observation while the Keystone-side federation objects
+// it provisioned are untouched — the SSO button keeps working. Rebuilding the
+// block from that view would re-render local_settings.py, roll the dashboard,
+// and roll it back on recovery, twice over, for a login page that was never
+// broken.
+func TestReconcileHorizon_RetainsWebSSOWhileBackendUnhealthy(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := horizonControlPlane()
+	publishSSOEndpoints(cp)
+	kc := horizonBackend("keycloak", keystonev1alpha1.IdentityBackendTypeOIDC, "federated", true)
+	ldap := horizonBackend("openldap", keystonev1alpha1.IdentityBackendTypeLDAP, "planetexpress", true)
+	r := newHorizonTestReconciler(t, cp, kc, ldap)
+	ctx := context.Background()
+
+	_, err := r.reconcileHorizon(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	projected := getProjectedHorizon(t, r.Client, cp)
+	g.Expect(projected.Spec.WebSSO).NotTo(BeNil())
+	g.Expect(projected.Spec.MultiDomain).NotTo(BeNil())
+
+	// Both backends go unhealthy — a Keystone restart, an identity-API blip.
+	for _, name := range []string{"keycloak", "openldap"} {
+		b := &keystonev1alpha1.KeystoneIdentityBackend{}
+		g.Expect(r.Get(ctx, types.NamespacedName{Name: name, Namespace: "default"}, b)).To(Succeed())
+		b.Status.Conditions[0].Status = metav1.ConditionFalse
+		// The backend type carries no fake status subresource, so a plain Update
+		// persists the demoted condition.
+		g.Expect(r.Update(ctx, b)).To(Succeed())
+	}
+
+	_, err = r.reconcileHorizon(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	retained := getProjectedHorizon(t, r.Client, cp)
+	g.Expect(retained.Spec.WebSSO).To(Equal(projected.Spec.WebSSO),
+		"an unhealthy backend must not strip the login page's SSO choices")
+	g.Expect(retained.Spec.MultiDomain).To(Equal(projected.Spec.MultiDomain),
+		"an unhealthy backend must not strip the login page's domain field")
+}
+
+// TestReconcileHorizon_ClearsWebSSOOnBackendDetach is the other half of the
+// distinction above: removing the last backend is an authoritative statement
+// that the dashboard must stop offering the choice, so the block is cleared and
+// the login page reverts to local credentials.
+func TestReconcileHorizon_ClearsWebSSOOnBackendDetach(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := horizonControlPlane()
+	publishSSOEndpoints(cp)
+	kc := horizonBackend("keycloak", keystonev1alpha1.IdentityBackendTypeOIDC, "federated", true)
+	ldap := horizonBackend("openldap", keystonev1alpha1.IdentityBackendTypeLDAP, "planetexpress", true)
+	r := newHorizonTestReconciler(t, cp, kc, ldap)
+	ctx := context.Background()
+
+	_, err := r.reconcileHorizon(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(getProjectedHorizon(t, r.Client, cp).Spec.WebSSO).NotTo(BeNil())
+
+	g.Expect(r.Delete(ctx, kc)).To(Succeed())
+	g.Expect(r.Delete(ctx, ldap)).To(Succeed())
+
+	_, err = r.reconcileHorizon(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	cleared := getProjectedHorizon(t, r.Client, cp)
+	g.Expect(cleared.Spec.WebSSO).To(BeNil())
+	g.Expect(cleared.Spec.MultiDomain).To(BeNil())
+}
+
+// TestReconcileHorizon_ClearsWebSSOWhenEndpointsAreRemoved guards against the
+// retention above swallowing a real spec change: dropping the dashboard's
+// publicEndpoint removes the origin Keystone trusts, so the SSO button would
+// dead-end after the user has authenticated. It must disappear even though the
+// backend is still attached.
+func TestReconcileHorizon_ClearsWebSSOWhenEndpointsAreRemoved(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := horizonControlPlane()
+	publishSSOEndpoints(cp)
+	kc := horizonBackend("keycloak", keystonev1alpha1.IdentityBackendTypeOIDC, "federated", true)
+	r := newHorizonTestReconciler(t, cp, kc)
+	ctx := context.Background()
+
+	_, err := r.reconcileHorizon(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(getProjectedHorizon(t, r.Client, cp).Spec.WebSSO).NotTo(BeNil())
+
+	cp.Spec.Services.Horizon.PublicEndpoint = ""
+
+	_, err = r.reconcileHorizon(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(getProjectedHorizon(t, r.Client, cp).Spec.WebSSO).To(BeNil())
+}
+
+// TestReconcileHorizon_MultiDomainProjectedFromDomainBackends covers the
+// LDAP-domain login path: the form gains a domain field, and the default domain
+// stays the one assumed for users who supply none.
+func TestReconcileHorizon_MultiDomainProjectedFromDomainBackends(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := horizonControlPlane()
+	ldap := horizonBackend("openldap", keystonev1alpha1.IdentityBackendTypeLDAP, "planetexpress", true)
+	r := newHorizonTestReconciler(t, cp, ldap)
+
+	_, err := r.reconcileHorizon(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	h := getProjectedHorizon(t, r.Client, cp)
+	g.Expect(h.Spec.MultiDomain).NotTo(BeNil())
+	g.Expect(h.Spec.MultiDomain.Enabled).To(BeTrue())
+	g.Expect(h.Spec.MultiDomain.DefaultDomain).To(Equal(horizonv1alpha1.DefaultMultiDomainDefaultDomain))
+	// An LDAP-only ControlPlane gets a domain field but no SSO button.
+	g.Expect(h.Spec.WebSSO).To(BeNil())
+}
+
+// TestReconcileHorizon_MultiDomainKeepsTheDomainFieldFreeText is the regression
+// guard for the lockout an operator never asked for: pinning domainChoices to
+// the LDAP-backed domains makes Django reject every other domain, so a single
+// LDAP attach would take away the login of every user in a SQL-backed domain
+// the operator cannot enumerate.
+func TestReconcileHorizon_MultiDomainKeepsTheDomainFieldFreeText(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := horizonControlPlane()
+	ldap := horizonBackend("openldap", keystonev1alpha1.IdentityBackendTypeLDAP, "planetexpress", true)
+	pending := horizonBackend("ldap-pending", keystonev1alpha1.IdentityBackendTypeLDAP, "futurama", false)
+	r := newHorizonTestReconciler(t, cp, ldap, pending)
+
+	_, err := r.reconcileHorizon(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	h := getProjectedHorizon(t, r.Client, cp)
+	g.Expect(h.Spec.MultiDomain.DomainDropdown).To(BeFalse(),
+		"a fixed dropdown would reject every domain the operator does not back with LDAP")
+	g.Expect(h.Spec.MultiDomain.DomainChoices).To(BeEmpty())
+}
+
+// TestReconcileHorizon_WebSSOOmittedWithoutBrowserFacingEndpoints is the
+// regression guard for the dead SSO button: a Ready backend alone is not enough
+// to complete a hand-off. Without a trusted dashboard origin, Keystone bounces
+// the browser only AFTER the user has entered their corporate credentials;
+// without a browser-facing Keystone URL the redirect targets cluster-local DNS.
+func TestReconcileHorizon_WebSSOOmittedWithoutBrowserFacingEndpoints(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(cp *c5c3v1alpha1.ControlPlane)
+		wantSSO bool
+	}{
+		{
+			"neither endpoint published",
+			func(*c5c3v1alpha1.ControlPlane) {},
+			false,
+		},
+		{
+			"dashboard unreachable, so Keystone would trust no origin",
+			func(cp *c5c3v1alpha1.ControlPlane) {
+				cp.Spec.Services.Keystone = &c5c3v1alpha1.ServiceKeystoneSpec{
+					PublicEndpoint: "https://keystone.127-0-0-1.nip.io/v3",
+				}
+			},
+			false,
+		},
+		{
+			"Keystone unreachable, so the redirect would target cluster-local DNS",
+			func(cp *c5c3v1alpha1.ControlPlane) {
+				cp.Spec.Services.Horizon.PublicEndpoint = "https://horizon.127-0-0-1.nip.io"
+			},
+			false,
+		},
+		{"both published", publishSSOEndpoints, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := horizonControlPlane()
+			tc.mutate(cp)
+			kc := horizonBackend("keycloak", keystonev1alpha1.IdentityBackendTypeOIDC, "federated", true)
+			r := newHorizonTestReconciler(t, cp, kc)
+
+			_, err := r.reconcileHorizon(context.Background(), cp)
+			g.Expect(err).NotTo(HaveOccurred())
+
+			h := getProjectedHorizon(t, r.Client, cp)
+			if tc.wantSSO {
+				g.Expect(h.Spec.WebSSO).NotTo(BeNil())
+				return
+			}
+			g.Expect(h.Spec.WebSSO).To(BeNil(),
+				"an SSO button that can never complete is worse than no button")
+		})
+	}
+}
+
+// TestReconcileHorizon_WebSSOCapsFederatedChoices guards the projection against
+// the wedge one backend too many would cause: websso.choices is bounded at 17
+// items by the Horizon CRD, so an uncapped list would be rejected by the API
+// server and block every later change to the dashboard.
+func TestReconcileHorizon_WebSSOCapsFederatedChoices(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := horizonControlPlane()
+	publishSSOEndpoints(cp)
+
+	objs := []client.Object{cp}
+	for i := 0; i < maxProjectedFederationChoices+4; i++ {
+		// Zero-padded so the sort order matches the creation order and the
+		// dropped backends are the last four.
+		objs = append(objs, horizonBackend(fmt.Sprintf("idp-%02d", i),
+			keystonev1alpha1.IdentityBackendTypeOIDC, "federated", true))
+	}
+	r := newHorizonTestReconciler(t, objs...)
+
+	_, err := r.reconcileHorizon(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	h := getProjectedHorizon(t, r.Client, cp)
+	g.Expect(h.Spec.WebSSO.Choices).To(HaveLen(maxProjectedFederationChoices+1),
+		"the local-credentials fallback plus the capped federated choices")
+	g.Expect(h.Spec.WebSSO.IDPMapping).To(HaveLen(maxProjectedFederationChoices))
+	g.Expect(h.Spec.WebSSO.Choices[0].ID).To(Equal(horizonv1alpha1.DefaultWebSSOCredentialsChoiceID))
+	g.Expect(h.Spec.WebSSO.IDPMapping).To(HaveKey("idp-00_openid"))
+	g.Expect(h.Spec.WebSSO.IDPMapping).NotTo(HaveKey("idp-19_openid"))
+}
+
+// TestReconcileHorizon_ClearsWebSSOWhenBackendsDetached proves the projection
+// is assigned unconditionally: detaching the last backend must remove the SSO
+// button rather than leave the previously-projected block pinned on the child.
+func TestReconcileHorizon_ClearsWebSSOWhenBackendsDetached(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := horizonControlPlane()
+	publishSSOEndpoints(cp)
+	kc := horizonBackend("keycloak", keystonev1alpha1.IdentityBackendTypeOIDC, "federated", true)
+	ldap := horizonBackend("openldap", keystonev1alpha1.IdentityBackendTypeLDAP, "planetexpress", true)
+	r := newHorizonTestReconciler(t, cp, kc, ldap)
+
+	_, err := r.reconcileHorizon(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(getProjectedHorizon(t, r.Client, cp).Spec.WebSSO).NotTo(BeNil())
+	g.Expect(getProjectedHorizon(t, r.Client, cp).Spec.MultiDomain).NotTo(BeNil())
+
+	g.Expect(r.Delete(context.Background(), kc)).To(Succeed())
+	g.Expect(r.Delete(context.Background(), ldap)).To(Succeed())
+
+	_, err = r.reconcileHorizon(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	h := getProjectedHorizon(t, r.Client, cp)
+	g.Expect(h.Spec.WebSSO).To(BeNil(), "detaching the last OIDC backend must clear the websso block")
+	g.Expect(h.Spec.MultiDomain).To(BeNil(), "detaching the last LDAP backend must clear the multiDomain block")
 }
