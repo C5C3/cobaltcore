@@ -169,6 +169,66 @@ FIXTURES: tuple[Fixture, ...] = (
             '    SECRET_KEY: "leaked"\n'
         ),
     ),
+    Fixture(
+        filename="07-websso-initial-choice-unknown.yaml",
+        comment=(
+            "spec.websso.initialChoice naming no declared choice violates the\n"
+            "WebSSOSpec CEL rule (and the webhook mirrors it)."
+        ),
+        name="horizon-invalid-websso-initial",
+        extra=(
+            "  websso:\n"
+            "    enabled: true\n"
+            "    choices:\n"
+            "    - id: credentials\n"
+            "      label: Keystone Credentials\n"
+            "    initialChoice: not-a-choice\n"
+        ),
+    ),
+    Fixture(
+        filename="08-websso-idp-mapping-unknown-key.yaml",
+        comment=(
+            "spec.websso.idpMapping keyed on an undeclared choice violates the\n"
+            "WebSSOSpec CEL rule: the login form would offer no way to reach it."
+        ),
+        name="horizon-invalid-websso-mapping",
+        extra=(
+            "  websso:\n"
+            "    enabled: true\n"
+            "    choices:\n"
+            "    - id: credentials\n"
+            "      label: Keystone Credentials\n"
+            "    idpMapping:\n"
+            "      keycloak_openid:\n"
+            "        identityProvider: keycloak\n"
+            "        protocol: openid\n"
+        ),
+    ),
+    Fixture(
+        filename="09-websso-enabled-without-choices.yaml",
+        comment=(
+            "spec.websso.enabled with no choices violates the WebSSOSpec CEL rule:\n"
+            "the login form would render an empty authentication-method dropdown."
+        ),
+        name="horizon-invalid-websso-empty",
+        extra=(
+            "  websso:\n"
+            "    enabled: true\n"
+        ),
+    ),
+    Fixture(
+        filename="10-multidomain-dropdown-without-choices.yaml",
+        comment=(
+            "spec.multiDomain.domainDropdown without domainChoices violates the\n"
+            "MultiDomainSpec CEL rule: the login form would render an empty select."
+        ),
+        name="horizon-invalid-multidomain",
+        extra=(
+            "  multiDomain:\n"
+            "    enabled: true\n"
+            "    domainDropdown: true\n"
+        ),
+    ),
 )
 
 

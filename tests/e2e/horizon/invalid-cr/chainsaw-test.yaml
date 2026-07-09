@@ -82,3 +82,35 @@ spec:
         - check:
             ($error != null): true
             (contains($error, 'SECRET_KEY is managed via spec.secretKeyRef')): true
+  # spec.websso.initialChoice naming no declared choice must be rejected.
+  - try:
+    - apply:
+        file: 07-websso-initial-choice-unknown.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'initialChoice')): true
+  # spec.websso.idpMapping keyed on an undeclared choice must be rejected.
+  - try:
+    - apply:
+        file: 08-websso-idp-mapping-unknown-key.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'idpMapping')): true
+  # spec.websso.enabled with no choices must be rejected.
+  - try:
+    - apply:
+        file: 09-websso-enabled-without-choices.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'choices')): true
+  # spec.multiDomain.domainDropdown without domainChoices must be rejected.
+  - try:
+    - apply:
+        file: 10-multidomain-dropdown-without-choices.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'domainChoices')): true

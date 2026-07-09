@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Keystone CR whose spec.federation.trustedDashboards carries a non-http(s)
+# entry. Keystone matches the dashboard origin VERBATIM, so an unparseable
+# entry could never match any dashboard. The items:Pattern CRD marker rejects
+# it (and the validating webhook mirrors the check). Admission must reject this
+# CR with an $error referencing the substring "trustedDashboards".
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: invalid-trusted-dashboard-url
+spec:
+  deployment:
+    replicas: 3
+  image:
+    repository: ghcr.io/c5c3/keystone
+    tag: "2025.2"
+  database:
+    host: db.example.com
+    port: 3306
+    database: keystone
+    secretRef:
+      name: keystone-db
+  cache:
+    backend: dogpile.cache.pymemcache
+    servers:
+    - "mc:11211"
+  fernet:
+    rotationSchedule: "0 0 * * 0"
+    maxActiveKeys: 3
+  bootstrap:
+    adminUser: admin
+    adminPasswordSecretRef:
+      name: keystone-admin
+    region: RegionOne
+  federation:
+    trustedDashboards:
+    - not-a-url

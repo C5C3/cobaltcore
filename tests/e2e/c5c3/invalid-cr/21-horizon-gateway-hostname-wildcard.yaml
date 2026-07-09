@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# services.horizon.gateway.hostname must be a concrete DNS name. Gateway API
+# permits a wildcard here, but the reconciler derives the WebSSO origin from it
+# and Keystone compares that origin verbatim, so a wildcard would match no
+# dashboard and silently break every federated login.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-horizon-wildcard-gateway
+spec:
+  openStackRelease: "2025.2"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+  services:
+    keystone:
+      mode: Managed
+    horizon:
+      gateway:
+        hostname: '*.example.com'
+        parentRef:
+          name: openstack-gw
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password

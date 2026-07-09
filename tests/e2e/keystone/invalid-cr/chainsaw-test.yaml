@@ -325,3 +325,21 @@ spec:
         - check:
             ($error != null): true
             (contains($error, 'digest')): true
+  # spec.federation.trustedDashboards entries must be http(s) URLs: Keystone
+  # matches the dashboard origin verbatim.
+  - try:
+    - apply:
+        file: 22-trusted-dashboard-not-a-url.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'trustedDashboards')): true
+  # Declaring trusted_dashboard in BOTH the typed field and extraConfig is
+  # rejected: extraConfig wins the merge and would silently drop the typed list.
+  - try:
+    - apply:
+        file: 23-trusted-dashboard-and-extraconfig.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'trusted_dashboard is managed via spec.federation.trustedDashboards')): true

@@ -123,6 +123,95 @@ class Fixture:
 FIXTURES: tuple[Fixture, ...] = (
     # --- create-rejection matrix (Test: c5c3-invalid-cr) ---
     Fixture(
+        filename="19-federation-proxy-image-in-external.yaml",
+        comment=(
+            "services.keystone.federationProxyImage in External mode violates the CEL rule:\n"
+            "no Keystone workload is deployed, so there is no sidecar to image."
+        ),
+        name="cp-external-proxy-image",
+        keystone=(
+            "      mode: External\n"
+            "      external:\n"
+            "        authURL: https://keystone.example.com/v3\n"
+            "      federationProxyImage:\n"
+            "        repository: ghcr.io/c5c3/keystone-federation-proxy\n"
+            "        tag: dev\n"
+        ),
+    ),
+    Fixture(
+        filename="20-horizon-public-endpoint-not-a-url.yaml",
+        comment=(
+            "services.horizon.publicEndpoint with a non-http(s) scheme violates the CRD\n"
+            "pattern. Keystone matches the derived WebSSO origin verbatim, so an\n"
+            "unusable endpoint could never match any dashboard."
+        ),
+        name="cp-horizon-bad-endpoint",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        horizon=(
+            "    horizon:\n"
+            "      publicEndpoint: ftp://horizon.example.com\n"
+        ),
+    ),
+    Fixture(
+        filename="21-horizon-gateway-hostname-wildcard.yaml",
+        comment=(
+            "services.horizon.gateway.hostname must be a concrete DNS name. Gateway API\n"
+            "permits a wildcard here, but the reconciler derives the WebSSO origin from it\n"
+            "and Keystone compares that origin verbatim, so a wildcard would match no\n"
+            "dashboard and silently break every federated login."
+        ),
+        name="cp-horizon-wildcard-gateway",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        horizon=(
+            "    horizon:\n"
+            "      gateway:\n"
+            "        hostname: '*.example.com'\n"
+            "        parentRef:\n"
+            "          name: openstack-gw\n"
+        ),
+    ),
+    Fixture(
+        filename="22-horizon-public-endpoint-host-mismatch.yaml",
+        comment=(
+            "services.horizon.publicEndpoint must name the same host as\n"
+            "services.horizon.gateway.hostname. Django derives the WebSSO origin it sends\n"
+            "from the request Host header — i.e. from the gateway hostname — and Keystone\n"
+            "compares it verbatim, so a divergent host is rejected only AFTER the user has\n"
+            "already entered their corporate credentials at the identity provider."
+        ),
+        name="cp-horizon-endpoint-host-mismatch",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        horizon=(
+            "    horizon:\n"
+            "      gateway:\n"
+            "        hostname: horizon.example.com\n"
+            "        parentRef:\n"
+            "          name: openstack-gw\n"
+            "      publicEndpoint: https://dashboard.example.com\n"
+        ),
+    ),
+    Fixture(
+        filename="23-horizon-public-endpoint-with-query.yaml",
+        comment=(
+            "services.horizon.publicEndpoint must be a bare origin. The ^https?:// CRD\n"
+            "pattern anchors only the prefix, so a query string is schema-legal — and the\n"
+            "derived origin https://horizon.example.com?utm=1/auth/websso/ is accepted by\n"
+            "Keystone's own trusted_dashboard validation and then matches nothing, failing\n"
+            "every federated login after the user has authenticated at the identity\n"
+            "provider. Only the webhook rejects it."
+        ),
+        name="cp-horizon-endpoint-with-query",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        horizon=(
+            "    horizon:\n"
+            "      publicEndpoint: https://horizon.example.com?utm=1\n"
+        ),
+    ),
+    Fixture(
         filename="00-external-in-managed-explicit.yaml",
         comment="services.keystone.external set with explicit mode: Managed violates the CEL rule.",
         name="cp-external-in-managed",

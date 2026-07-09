@@ -1,0 +1,94 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The two identity backends attached to the ControlPlane's Keystone child
+# ("controlplane-sso-keystone", the deterministic {name}-keystone convention).
+#
+# Attaching them is the ONLY action this suite takes to enable federated login:
+# the c5c3-operator watches them, and once each reaches Ready it projects a
+# websso choice (OIDC) or a domain-dropdown entry (LDAP) onto the Horizon child
+# and the trusted dashboard origin onto the Keystone child.
+#
+# The OIDC backend provisions its own "forge" domain: the CRD forbids backing
+# the Default domain — which hosts the SQL-backed service users and the
+# bootstrap admin — with an external identity backend.
+---
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: KeystoneIdentityBackend
+metadata:
+  name: keycloak-forge
+  namespace: openstack
+spec:
+  keystoneRef:
+    name: controlplane-sso-keystone
+  domain:
+    name: forge
+    mode: Manage
+    deletionPolicy: Delete
+    description: Keycloak forge realm
+  type: OIDC
+  oidc:
+    issuer: http://keycloak.openstack.svc.cluster.local:8080/realms/forge
+    clientID: keystone
+    clientSecretRef:
+      name: keycloak-forge-client
+    # Explicit endpoints: the operator's metadata-fetch SSRF guard blocks
+    # discovery against the in-cluster Keycloak's private ClusterIP. This suite
+    # exercises the browser websso flow only, so — unlike the keystone
+    # oidc-federation suite — no oauth2Introspection block is needed.
+    endpoints:
+      authorizationEndpoint: http://keycloak.openstack.svc.cluster.local:8080/realms/forge/protocol/openid-connect/auth
+      tokenEndpoint: http://keycloak.openstack.svc.cluster.local:8080/realms/forge/protocol/openid-connect/token
+      jwksURI: http://keycloak.openstack.svc.cluster.local:8080/realms/forge/protocol/openid-connect/certs
+      userinfoEndpoint: http://keycloak.openstack.svc.cluster.local:8080/realms/forge/protocol/openid-connect/userinfo
+  mappings:
+  - remote:
+    - type: HTTP_OIDC_ISS
+      anyOneOf:
+      - http://keycloak.openstack.svc.cluster.local:8080/realms/forge
+    - type: HTTP_OIDC_PREFERRED_USERNAME
+    local:
+    # {0} is the first value-producing remote: the HTTP_OIDC_ISS rule carries
+    # anyOneOf, so Keystone treats it as a pure condition and never adds it to
+    # the positional direct-map tuple — HTTP_OIDC_PREFERRED_USERNAME is the only
+    # value, at index 0.
+    - user:
+        name: "{0}"
+      group:
+        name: federated-users
+        domain:
+          name: forge
+  groups:
+  - name: federated-users
+    description: Federated Keycloak forge users
+    roleAssignments:
+    - role: member
+      domain: true
+---
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: KeystoneIdentityBackend
+metadata:
+  name: planetexpress-ldap
+  namespace: openstack
+spec:
+  keystoneRef:
+    name: controlplane-sso-keystone
+  domain:
+    name: planetexpress
+    mode: Manage
+    deletionPolicy: Delete
+    description: Planet Express corporate directory
+  type: LDAP
+  ldap:
+    url: ldap://openldap.openstack.svc.cluster.local:10389
+    bindCredentialsSecretRef:
+      name: openldap-bind
+    suffix: dc=planetexpress,dc=com
+    readOnly: true
+    users:
+      treeDN: ou=people,dc=planetexpress,dc=com
+      objectClass: inetOrgPerson
+      idAttribute: uid
+      nameAttribute: uid
+      mailAttribute: mail

@@ -139,10 +139,45 @@ test_package_rules() {
     "3 days" "$(jq -r '.minimumReleaseAge' <<<"$minor_rule")"
 }
 
+# --- Test 3: every openldap fixture is Renovate-covered ---
+# The openldap pin is duplicated across e2e suites. A new suite that copies the
+# fixture but is not added to the customManager + packageRules silently stops
+# receiving digest refreshes, so enumerate every fixture path here.
+test_all_openldap_fixtures_covered() {
+  echo "Test: every openldap fixture path is covered by the customManager and packageRules"
+
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "  SKIP: jq not installed"
+    SKIP=$((SKIP + 1))
+    return
+  fi
+
+  local fixtures
+  fixtures="$(cd "$PROJECT_ROOT" && grep -rl 'image: ghcr\.io/rroemhild/docker-test-openldap' tests/ | sort)"
+  assert_not_empty "at least one openldap fixture exists" "$fixtures"
+
+  local entry patterns f
+  entry="$(jq -c '.customManagers[]
+    | select((.managerFilePatterns // []) | join(",") | contains("openldap"))' "$RENOVATE_FILE" | head -1)"
+  # managerFilePatterns are Renovate regexes ("/path/to/file\\.yaml$/"), so
+  # drop the backslash escapes before matching the plain fixture paths.
+  patterns="$(jq -r '.managerFilePatterns | join(",")' <<<"$entry" | tr -d '\\\\')"
+
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    assert_contains "customManager covers $f" "$patterns" "$f"
+    local rules
+    rules="$(jq -r --arg p "$OPENLDAP_PACKAGE" --arg f "$f" '[.packageRules[]
+      | select(((.matchPackageNames // []) | index($p)) != null
+               and ((.matchFileNames // []) | index($f)) != null)] | length' "$RENOVATE_FILE")"
+    assert_eq "packageRules cover $f (major + minor/patch)" "2" "$rules"
+  done <<<"$fixtures"
+}
+
 # --- Run ---
 test_custom_manager_captures_image
 test_package_rules
-
+test_all_openldap_fixtures_covered
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
 if [ "$FAIL" -gt 0 ]; then

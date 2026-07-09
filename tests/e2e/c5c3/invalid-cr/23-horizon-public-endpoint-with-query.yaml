@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# services.horizon.publicEndpoint must be a bare origin. The ^https?:// CRD
+# pattern anchors only the prefix, so a query string is schema-legal — and the
+# derived origin https://horizon.example.com?utm=1/auth/websso/ is accepted by
+# Keystone's own trusted_dashboard validation and then matches nothing, failing
+# every federated login after the user has authenticated at the identity
+# provider. Only the webhook rejects it.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-horizon-endpoint-with-query
+spec:
+  openStackRelease: "2025.2"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+  services:
+    keystone:
+      mode: Managed
+    horizon:
+      publicEndpoint: https://horizon.example.com?utm=1
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password

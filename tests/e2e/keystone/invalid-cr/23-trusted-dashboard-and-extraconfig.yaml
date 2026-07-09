@@ -1,0 +1,45 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Keystone CR declaring [federation] trusted_dashboard BOTH in the typed
+# spec.federation.trustedDashboards field and in the spec.extraConfig escape
+# hatch. extraConfig wins the render-time merge, so the two would silently
+# contradict each other and the typed list would be dropped from the rendered
+# config without any signal. The validating webhook rejects the combination.
+# Admission must reject this CR with an $error referencing the substring
+# "trusted_dashboard is managed via spec.federation.trustedDashboards".
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: invalid-trusted-dashboard-conflict
+spec:
+  deployment:
+    replicas: 3
+  image:
+    repository: ghcr.io/c5c3/keystone
+    tag: "2025.2"
+  database:
+    host: db.example.com
+    port: 3306
+    database: keystone
+    secretRef:
+      name: keystone-db
+  cache:
+    backend: dogpile.cache.pymemcache
+    servers:
+    - "mc:11211"
+  fernet:
+    rotationSchedule: "0 0 * * 0"
+    maxActiveKeys: 3
+  bootstrap:
+    adminUser: admin
+    adminPasswordSecretRef:
+      name: keystone-admin
+    region: RegionOne
+  federation:
+    trustedDashboards:
+    - https://horizon.example.com/auth/websso/
+  extraConfig:
+    federation:
+      trusted_dashboard: https://other.example.com/auth/websso/

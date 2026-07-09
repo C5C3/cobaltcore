@@ -1,0 +1,666 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the end-user SSO experience driven by the ControlPlane.
+#
+# This is a SECOND full-ControlPlane chain beside
+# tests/e2e/c5c3/full-controlplane-keystone, not an extension of it: the
+# identity-provider and directory fixtures would otherwise lengthen that chain
+# and couple its credential assertions to federation. It needs its OWN CI job
+# (`e2e-controlplane-sso`) because the ControlPlane webhook permits one
+# ControlPlane per namespace and `openstack-gw` sets
+# `allowedRoutes.namespaces.from: Same`, so the two suites can share neither the
+# `openstack` namespace nor the Gateway.
+#
+# ── DECISION: the suite lives OUTSIDE tests/e2e/ ─────────────────────────────
+# Mirrors tests/e2e-operator-upgrade/: a suite that needs a stack the per-CR
+# `e2e-operator` matrix leg does not deploy must not be swept up by it. That job
+# runs `chainsaw test tests/e2e/<operator>/` over the whole directory, and
+# `make e2e` runs all of tests/e2e/ — both would reach this suite on a cluster
+# with no keystone-operator, no horizon-operator and no K-ORC.
+#
+# The sibling full-controlplane-keystone stays under tests/e2e/c5c3/ and defends
+# itself with a runtime presence guard instead. That guard only works because it
+# is ONE script step: chainsaw has no step-level skip, so a guard that exits 0
+# cannot stop the declarative `assert` ops in sibling steps from running and
+# timing out. This suite keeps its declarative asserts, so it moves instead.
+#
+# What it proves, end to end:
+#   - Attaching a federation backend is the ONLY action needed: the
+#     c5c3-operator watches KeystoneIdentityBackend children and projects the
+#     websso choices onto the Horizon child and trusted_dashboard onto Keystone
+#   - The Horizon login page offers the SSO choice AND the domain dropdown
+#   - The websso round trip completes THROUGH the gateway, so the origin
+#     Keystone matches verbatim is the one the browser really sends
+#   - An LDAP-domain user logs in through the dropdown
+#   - Detaching the backends removes both surfaces again
+#
+# ── DECISION: the browser runs IN-CLUSTER, not on the chainsaw host ──────────
+# Unlike the gateway-quick-start smokes (which curl from the CI host through
+# the kind :443 → NodePort bridge), this suite cannot run the browser on the
+# host: mid-flow the browser is redirected to Keycloak's issuer, which is the
+# in-cluster `keycloak.openstack.svc.cluster.local` name the host cannot
+# resolve. Exposing Keycloak through the gateway instead would need a
+# split-horizon DNS rewrite, since mod_auth_openidc must reach the same issuer
+# from inside the cluster.
+#
+# So the browser is the Keystone pod (it ships python3; the keystone image has
+# no curl), connecting straight to the Envoy data-plane ClusterIP with the
+# gateway hostname as SNI and Host. Traffic therefore traverses Envoy exactly
+# as a real browser's would — real TLS, real Host header, real
+# X-Forwarded-Proto — while Keycloak stays reachable by cluster DNS.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: c5c3-federated-controlplane
+spec:
+  namespace: openstack
+  timeouts:
+    # The full fresh-create chain (MariaDB + Memcached + Keystone bootstrap +
+    # K-ORC catalog + Horizon) plus Keycloak's JVM start-dev boot.
+    assert: 12m
+    exec: 5m
+    # Detaching a federation backend rewrites the content-hashed federation
+    # Secret, rolling the replicas:1 Keystone pod; the backend finalizer
+    # deprovisions its domain THROUGH that same Keystone, so the first attempt
+    # races the rollout and a requeue retries ~30s later.
+    delete: 3m
+  steps:
+  # ── Step 1: Fixtures + ControlPlane reach Ready ────────────────────────
+  - name: controlplane-ready
+    try:
+    - apply:
+        file: 00-keycloak.yaml
+    - apply:
+        file: 01-openldap.yaml
+    - apply:
+        file: 03-horizon-secret-key-externalsecret.yaml
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keycloak
+            namespace: openstack
+          status:
+            (availableReplicas > `0`): true
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: openldap
+            namespace: openstack
+          status:
+            (availableReplicas > `0`): true
+    - apply:
+        file: 02-controlplane-cr.yaml
+    # ── Onboard the OpenBao database-engine tenant (stage b) ───────────────
+    # Managed-mode Keystone draws engine-issued (Dynamic) DB credentials from
+    # database/mariadb/creds/keystone-<ns>. That per-tenant role exists only
+    # after setup-database-tenant.sh configures it against the now-Ready
+    # MariaDB, and hack/deploy-infra.sh onboards it only under
+    # WITH_CONTROLPLANE_CR=true. The e2e-controlplane-sso CI job runs
+    # deploy-infra with WITH_CONTROLPLANE_CR=false, so this suite must onboard
+    # it — exactly as full-controlplane-keystone does. Without it the projected
+    # VaultDynamicSecret generator fails against a missing role, the
+    # <cp>-keystone-db-credentials ExternalSecret never goes Ready, and the
+    # ControlPlane blocks on DBCredentialsReady forever.
+    # The script is idempotent, so a second onboard (e.g. a local
+    # WITH_CONTROLPLANE_CR=true run) is safe. Chainsaw runs scripts with the
+    # test directory as CWD.
+    - script:
+        # Above the suite's 5m exec default: MariaDB must be projected and Ready
+        # before the tenant can be configured against it.
+        timeout: 12m
+        # Chainsaw defaults to `sh`, which rejects `set -o pipefail`.
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          CP_NS=openstack
+          CP_NAME=controlplane-sso
+
+          # The ControlPlane projects the MariaDB as it reconciles; wait for the
+          # CR to exist before waiting on its condition (kubectl wait errors on a
+          # not-yet-existent resource). 30x10s + 300s stays inside the 12m op
+          # timeout above, and mirrors openbao_onboard_database_tenant in
+          # hack/deploy-infra.sh.
+          for _ in $(seq 1 30); do
+            if kubectl get mariadb/openstack-db -n "${CP_NS}" >/dev/null 2>&1; then
+              break
+            fi
+            sleep 10
+          done
+          kubectl wait mariadb/openstack-db -n "${CP_NS}" \
+            --for=condition=Ready --timeout=300s
+
+          export BAO_TOKEN
+          BAO_TOKEN="$(kubectl get secret openbao-init-keys -n openbao-system \
+            -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token')"
+          if [ -z "${BAO_TOKEN}" ] || [ "${BAO_TOKEN}" = "null" ]; then
+            echo "ERROR: could not extract OpenBao root token for tenant onboarding"
+            exit 1
+          fi
+
+          ../../deploy/openbao/bootstrap/setup-database-tenant.sh "${CP_NS}" "${CP_NAME}"
+          echo "OK: OpenBao database-engine tenant onboarded."
+    - assert:
+        resource:
+          apiVersion: c5c3.io/v1alpha1
+          kind: ControlPlane
+          metadata:
+            name: controlplane-sso
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    catch:
+    - script:
+        content: |
+          echo "=== ControlPlane CR ==="
+          kubectl get controlplane controlplane-sso -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== c5c3 operator logs ==="
+          kubectl logs -n c5c3-system -l app.kubernetes.io/name=c5c3-operator --all-containers --tail=80 2>&1 || true
+          kubectl logs -n c5c3-system -l app.kubernetes.io/name=c5c3-operator --all-containers --tail=80 --previous 2>&1 || true
+          echo "=== keycloak / openldap pods ==="
+          kubectl get pods -n $NAMESPACE -o wide 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -40 || true
+
+  # ── Step 2: Attach both backends; every condition converges ────────────
+  - name: backends-ready
+    try:
+    - apply:
+        file: 04-backends.yaml
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: KeystoneIdentityBackend
+          metadata:
+            name: keycloak-forge
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: KeystoneIdentityBackend
+          metadata:
+            name: planetexpress-ldap
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: controlplane-sso-keystone
+            namespace: openstack
+          status:
+            (conditions[?type == 'IdentityBackendsReady']):
+            - status: "True"
+              reason: AllBackendsProjected
+    catch:
+    - script:
+        content: |
+          echo "=== ControlPlane CR ==="
+          kubectl get controlplane controlplane-sso -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Backend CRs ==="
+          kubectl get keystoneidentitybackend -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== keystone-operator logs ==="
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=80 2>&1 || true
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=80 --previous 2>&1 || true
+          echo "=== keycloak logs ==="
+          kubectl logs -n $NAMESPACE -l app.kubernetes.io/name=keycloak --tail=60 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -40 || true
+
+  # ── Step 3: The ControlPlane PROJECTED both surfaces ───────────────────
+  # The heart of the feature: nothing but the two backend applies happened,
+  # yet the Horizon child now carries the websso choices and the domain
+  # dropdown, and the Keystone child carries the trusted origin and the
+  # overridden sidecar image.
+  - name: projections
+    try:
+    - assert:
+        resource:
+          apiVersion: horizon.openstack.c5c3.io/v1alpha1
+          kind: Horizon
+          metadata:
+            name: controlplane-sso-horizon
+            namespace: openstack
+          spec:
+            websso:
+              enabled: true
+              initialChoice: credentials
+              keystoneURL: https://keystone.127-0-0-1.nip.io/v3
+              choices:
+              - id: credentials
+                label: Keystone Credentials
+              - id: keycloak-forge_openid
+                label: keycloak-forge
+              idpMapping:
+                keycloak-forge_openid:
+                  identityProvider: keycloak-forge
+                  protocol: openid
+            # A Ready LDAP backend turns the login form's domain field on, but
+            # the projection never pins domainChoices: the operator only sees
+            # the LDAP-backed domains, and a fixed dropdown would reject every
+            # other domain — including the SQL-backed ones it cannot enumerate.
+            multiDomain:
+              enabled: true
+              defaultDomain: Default
+              (domainDropdown == false): true
+              (domainChoices == null): true
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: controlplane-sso-keystone
+            namespace: openstack
+          spec:
+            federation:
+              trustedDashboards:
+              - https://horizon.127-0-0-1.nip.io/auth/websso/
+              proxyImage:
+                repository: ghcr.io/c5c3/keystone-federation-proxy
+                tag: dev
+    catch:
+    - script:
+        content: |
+          echo "=== ControlPlane CR ==="
+          kubectl get controlplane controlplane-sso -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Horizon child ==="
+          kubectl get horizon controlplane-sso-horizon -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Keystone child ==="
+          kubectl get keystone controlplane-sso-keystone -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== c5c3 operator logs ==="
+          kubectl logs -n c5c3-system -l app.kubernetes.io/name=c5c3-operator --all-containers --tail=80 2>&1 || true
+          kubectl logs -n c5c3-system -l app.kubernetes.io/name=c5c3-operator --all-containers --tail=80 --previous 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -40 || true
+
+  # ── Step 4: The projection reaches the RENDERED settings module ────────
+  # Assert the rendered artifact, not just that the spec was accepted: the
+  # settings renderer is what turns the typed block into the Python literals
+  # openstack_auth consumes. WEBSSO_USE_HTTP_REFERER and
+  # SECURE_PROXY_SSL_HEADER are the two settings the gateway round trip in
+  # step 6 depends on.
+  - name: rendered-settings
+    try:
+    - script:
+        shell: bash
+        content: |
+          set -euo pipefail
+          CM=$(kubectl get deployment controlplane-sso-horizon -n "$NAMESPACE" \
+            -o jsonpath='{.spec.template.spec.volumes[?(@.name=="config")].configMap.name}')
+          if [[ -z "${CM}" ]]; then
+            echo "ERROR: could not resolve the rendered local_settings.py ConfigMap"; exit 1
+          fi
+          SETTINGS=$(kubectl get configmap "$CM" -n "$NAMESPACE" -o jsonpath='{.data.local_settings\.py}')
+          if [[ -z "${SETTINGS}" ]]; then
+            echo "ERROR: ConfigMap ${CM} carries no local_settings.py"; exit 1
+          fi
+          fail=0
+          expect() {
+            if printf '%s' "$SETTINGS" | grep -qF "$1"; then
+              echo "OK: $1"
+            else
+              echo "ERROR: missing from local_settings.py: $1"; fail=1
+            fi
+          }
+          reject() {
+            if printf '%s' "$SETTINGS" | grep -F "$1"; then
+              echo "ERROR: must not appear in local_settings.py: $1"; fail=1
+            else
+              echo "OK: absent: $1"
+            fi
+          }
+          expect 'WEBSSO_ENABLED = True'
+          expect 'WEBSSO_INITIAL_CHOICE = "credentials"'
+          expect 'WEBSSO_KEYSTONE_URL = "https://keystone.127-0-0-1.nip.io/v3"'
+          # Upstream defaults this to True, which would make openstack_auth
+          # validate the returned token against the EXTERNAL gateway URL from
+          # inside the pod.
+          expect 'WEBSSO_USE_HTTP_REFERER = False'
+          # Without this, Django reports http:// and the origin it sends never
+          # matches the https:// trusted_dashboard.
+          expect 'SECURE_PROXY_SSL_HEADER = ["HTTP_X_FORWARDED_PROTO", "https"]'
+          expect 'OPENSTACK_KEYSTONE_MULTIDOMAIN_SUPPORT = True'
+          expect 'OPENSTACK_KEYSTONE_DEFAULT_DOMAIN = "Default"'
+          # The domain field stays free text. A dropdown is bounded by
+          # OPENSTACK_KEYSTONE_DOMAIN_CHOICES and Django rejects every domain
+          # outside it, so pinning it to the LDAP-backed domains would lock out
+          # every user of a domain the operator cannot enumerate.
+          reject 'OPENSTACK_KEYSTONE_DOMAIN_DROPDOWN'
+          reject 'OPENSTACK_KEYSTONE_DOMAIN_CHOICES'
+          exit "$fail"
+    catch:
+    - script:
+        content: |
+          echo "=== Horizon child ==="
+          kubectl get horizon controlplane-sso-horizon -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Horizon deployment ==="
+          kubectl get deployment controlplane-sso-horizon -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== rendered ConfigMaps ==="
+          kubectl get configmap -n $NAMESPACE -l forge.c5c3.io/config-base=controlplane-sso-horizon-config -o yaml 2>&1 || true
+          echo "=== horizon-operator logs ==="
+          kubectl logs -n horizon-system -l app.kubernetes.io/name=horizon-operator --all-containers --tail=80 2>&1 || true
+          kubectl logs -n horizon-system -l app.kubernetes.io/name=horizon-operator --all-containers --tail=80 --previous 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -40 || true
+
+  # ── Steps 5-7: the browser flows, through the gateway ──────────────────
+  # One script, one in-cluster browser: the login page, the websso round trip,
+  # and the LDAP-domain login share a cookie jar the way a real session does.
+  - name: browser-sso-round-trip
+    try:
+    - script:
+        timeout: 5m
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          # Envoy's data-plane Service for the shared Gateway. The browser
+          # dials this ClusterIP directly and presents the gateway hostname as
+          # SNI + Host, so the request traverses Envoy exactly as an external
+          # browser's would.
+          ENVOY_IP=$(kubectl get svc -n envoy-gateway-system \
+            -l gateway.envoyproxy.io/owning-gateway-name=openstack-gw \
+            -o jsonpath='{.items[0].spec.clusterIP}') || {
+            echo "ERROR: could not resolve the Envoy data-plane Service"; exit 1; }
+          if [[ -z "${ENVOY_IP}" ]]; then
+            echo "ERROR: Envoy data-plane Service has no clusterIP"; exit 1
+          fi
+          echo "OK: Envoy data-plane ClusterIP is ${ENVOY_IP}"
+
+          ADMIN_PASSWORD_B64=$(kubectl get secret controlplane-sso-keystone-keystone-admin-credentials \
+            -n "$NAMESPACE" -o jsonpath='{.data.password}') || {
+            echo "ERROR: could not read the projected admin-credentials Secret"; exit 1; }
+          if [[ -z "${ADMIN_PASSWORD_B64}" ]]; then
+            echo "ERROR: admin-credentials Secret has no password key"; exit 1
+          fi
+          ADMIN_PASSWORD=$(printf '%s' "$ADMIN_PASSWORD_B64" | base64 --decode)
+
+          # Newest pod: the sidecar projection rolled the Deployment and the
+          # old single-container pod may still be Terminating. The pod now has
+          # two containers, so exec targets `keystone` explicitly.
+          POD=$(kubectl get pods -n "$NAMESPACE" \
+            -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=controlplane-sso-keystone,pod-template-hash \
+            --sort-by=.metadata.creationTimestamp -o name | tail -1 | cut -d/ -f2)
+          if [[ -z "${POD}" ]]; then
+            echo "ERROR: no Keystone pod to run the browser from"; exit 1
+          fi
+
+          # NOTE: single-quoted `python3 -c` string — no apostrophes inside.
+          kubectl exec -n "$NAMESPACE" "$POD" -c keystone -- \
+            python3 -c '
+          import http.client, json, re, socket, ssl, sys, urllib.parse
+
+          envoy_ip, admin_password = sys.argv[1], sys.argv[2]
+          HORIZON = "horizon.127-0-0-1.nip.io"
+          KEYSTONE = "keystone.127-0-0-1.nip.io"
+          GATEWAY_HOSTS = {HORIZON, KEYSTONE}
+
+          # The gateway serves a self-signed certificate issued by
+          # selfsigned-cluster-issuer, so verification is off — this asserts the
+          # WebSSO flow, not the kind PKI.
+          ctx = ssl.create_default_context()
+          ctx.check_hostname = False
+          ctx.verify_mode = ssl.CERT_NONE
+
+          cookies = {}
+
+          def connect(netloc):
+              host = netloc.split(":")[0]
+              if host in GATEWAY_HOSTS:
+                  # Dial Envoy directly; present the gateway hostname as SNI so
+                  # the listener matches, and let Host default to it.
+                  sock = socket.create_connection((envoy_ip, 443), timeout=30)
+                  conn = http.client.HTTPSConnection(host, 443, context=ctx, timeout=30)
+                  conn.sock = ctx.wrap_socket(sock, server_hostname=host)
+                  return conn
+              # Keycloak (and anything else in-cluster) over plain cluster DNS.
+              return http.client.HTTPConnection(netloc, timeout=30)
+
+          def fetch(url, method="GET", body=None, headers=None):
+              u = urllib.parse.urlsplit(url)
+              conn = connect(u.netloc)
+              # A real browser sends Accept: text/html; without it
+              # mod_auth_openidc classifies the request as a non-interactive API
+              # call and answers 401 instead of the 302 that starts the login.
+              h = {"Host": u.netloc, "Accept": "text/html"}
+              if cookies:
+                  h["Cookie"] = "; ".join(f"{k}={v}" for k, v in cookies.items())
+              h.update(headers or {})
+              path = u.path + ("?" + u.query if u.query else "")
+              conn.request(method, path, body=body, headers=h)
+              resp = conn.getresponse()
+              data = resp.read()
+              for name, value in resp.getheaders():
+                  if name.lower() == "set-cookie":
+                      pair = value.split(";", 1)[0]
+                      cname, _, cval = pair.partition("=")
+                      if cval:
+                          cookies[cname.strip()] = cval
+                      else:
+                          cookies.pop(cname.strip(), None)
+              conn.close()
+              return resp, data
+
+          def follow(url, method="GET", body=None, headers=None, hops=20):
+              resp, data = fetch(url, method, body, headers)
+              while resp.status in (301, 302, 303) and hops > 0:
+                  url = urllib.parse.urljoin(url, resp.getheader("Location"))
+                  resp, data = fetch(url)
+                  hops -= 1
+              return url, resp, data
+
+          # ── Step 5: the login page offers the SSO choice AND a domain field.
+          #    Assert BOTH the projected auth_type option and the domain input,
+          #    so a page that renders only the local form fails. The field is
+          #    free text on purpose: a select bounded by the LDAP-backed domains
+          #    would make Django reject every other domain, so users of a
+          #    SQL-backed domain the operator cannot enumerate could not log in.
+          _, resp, data = follow(f"https://{HORIZON}/auth/login/")
+          assert resp.status == 200, f"login page returned {resp.status}"
+          html = data.decode(errors="replace")
+          assert "csrfmiddlewaretoken" in html, "login page is not the Django login form"
+          assert "keycloak-forge_openid" in html, (
+              "login page offers no SSO choice for the Ready federation backend")
+          assert re.search(r"name=\"domain\"", html), (
+              "login page offers no domain field for the LDAP-backed domain")
+          assert not re.search(r"<select[^>]*name=\"domain\"", html), (
+              "the domain field must stay free text, not a select bounded by "
+              "the LDAP-backed domains")
+          assert "sessionid" not in cookies, "no session may exist before logging in"
+          print("OK: login page offers the SSO choice and a free-text domain field")
+
+          # ── Step 6: the websso round trip, through the gateway.
+          #    Horizon derives the origin from the request it serves, and
+          #    Keystone matches that origin against trusted_dashboard VERBATIM —
+          #    which is why the whole flow has to traverse Envoy.
+          origin = urllib.parse.quote(f"https://{HORIZON}/auth/websso/", safe="")
+          websso = (f"https://{KEYSTONE}/v3/auth/OS-FEDERATION/identity_providers/"
+                    f"keycloak-forge/protocols/openid/websso?origin={origin}")
+          url, resp, data = follow(websso)
+          assert resp.status == 200, f"expected the Keycloak login page, got {resp.status} at {url}"
+          assert "/realms/forge/" in url, f"websso must pin the forge realm, landed at {url}"
+          m = re.search(r"action=\"([^\"]+)\"", data.decode(errors="replace"))
+          assert m, "no login form action on the Keycloak page"
+          form_url = m.group(1).replace("&amp;", "&")
+
+          body = urllib.parse.urlencode(
+              {"username": "fry", "password": "fry-password", "credentialId": ""})
+          url, resp, data = follow(
+              form_url, method="POST", body=body,
+              headers={"Content-Type": "application/x-www-form-urlencoded"})
+          final = data.decode(errors="replace")
+          assert resp.status == 200, f"websso round trip ended {resp.status} at {url}"
+          # Keystone renders its sso_callback_template: an auto-submitting form
+          # POSTing the token back to the trusted dashboard origin. A rejected
+          # origin would instead yield "is not a trusted dashboard host".
+          assert "not a trusted dashboard host" not in final, (
+              "Keystone rejected the dashboard origin: trusted_dashboard mismatch")
+          assert "name=\"token\"" in final, f"expected the websso token form, got: {final[:400]}"
+          m = re.search(r"name=\"token\"[^>]*value=\"([^\"]+)\"", final)
+          assert m, "no token value in the websso callback form"
+          token = m.group(1)
+          print("OK: websso round trip reached the token form for the trusted origin")
+
+          # Post the token back to the dashboard, exactly as the auto-submitting
+          # form does. A session cookie proves the hand-off completed.
+          _, resp, _ = follow(
+              f"https://{HORIZON}/auth/websso/", method="POST",
+              body=urllib.parse.urlencode({"token": token}),
+              headers={"Content-Type": "application/x-www-form-urlencoded"})
+          assert resp.status in (200, 302, 403), f"websso callback returned {resp.status}"
+          assert "sessionid" in cookies, "no dashboard session established by the websso hand-off"
+          print("OK: federated login established a dashboard session")
+
+          # ── Step 7: LDAP-domain login through the dropdown.
+          #    A fresh domain carries no role assignments and keystone answers
+          #    401 for a scope the user holds no role on, so grant professor the
+          #    member role first (assignments live in SQL; the directory stays
+          #    untouched). Admin traffic goes over localhost, not the gateway.
+          def admin_call(path, data=None, method=None, headers=None):
+              conn = http.client.HTTPConnection("localhost", 5000, timeout=30)
+              h = {"Content-Type": "application/json"}
+              h.update(headers or {})
+              conn.request(method or ("POST" if data else "GET"), path, body=data, headers=h)
+              resp = conn.getresponse()
+              payload = resp.read()
+              conn.close()
+              return resp, payload
+
+          auth = json.dumps({"auth": {"identity": {"methods": ["password"], "password": {"user": {
+              "name": "admin", "domain": {"id": "default"}, "password": admin_password}}},
+              "scope": {"project": {"name": "admin", "domain": {"id": "default"}}}}}).encode()
+          resp, _ = admin_call("/v3/auth/tokens", data=auth)
+          assert resp.status == 201, f"admin auth failed: {resp.status}"
+          admin_token = resp.getheader("X-Subject-Token")
+
+          resp, payload = admin_call("/v3/domains?name=planetexpress", headers={"X-Auth-Token": admin_token})
+          domain_id = json.loads(payload)["domains"][0]["id"]
+          resp, payload = admin_call("/v3/roles?name=member", headers={"X-Auth-Token": admin_token})
+          role_id = json.loads(payload)["roles"][0]["id"]
+          resp, payload = admin_call(f"/v3/users?domain_id={domain_id}", headers={"X-Auth-Token": admin_token})
+          professor_id = next(u["id"] for u in json.loads(payload)["users"] if u["name"] == "professor")
+          admin_call(f"/v3/domains/{domain_id}/users/{professor_id}/roles/{role_id}",
+                     method="PUT", headers={"X-Auth-Token": admin_token})
+          print("OK: member role granted to the LDAP user on the planetexpress domain")
+
+          # Fresh cookie jar: this is a new browser session on the login page.
+          cookies.clear()
+          _, resp, data = follow(f"https://{HORIZON}/auth/login/")
+          html = data.decode(errors="replace")
+          m = re.search(r"name=\"csrfmiddlewaretoken\"[^>]*value=\"([^\"]+)\"", html)
+          assert m, "no CSRF token on the login page"
+          # docker-test-openldap seeds userPassword == uid.
+          body = urllib.parse.urlencode({
+              "csrfmiddlewaretoken": m.group(1),
+              "region": "default", "domain": "planetexpress",
+              "username": "professor", "password": "professor",
+          })
+          _, resp, data = follow(
+              f"https://{HORIZON}/auth/login/", method="POST", body=body,
+              headers={"Content-Type": "application/x-www-form-urlencoded",
+                       "Referer": f"https://{HORIZON}/auth/login/"})
+          final = data.decode(errors="replace")
+          assert "Invalid credentials" not in final, "LDAP-domain login rejected the credentials"
+          # A /project/ 403 after login is expected in a Keystone-only stack
+          # (no compute/network services in the catalog) and must not fail here.
+          assert "sessionid" in cookies, "LDAP-domain login established no dashboard session"
+          print("OK: LDAP-domain login through the dropdown established a session")
+          ' "$ENVOY_IP" "$ADMIN_PASSWORD"
+    catch:
+    - script:
+        content: |
+          echo "=== ControlPlane CR ==="
+          kubectl get controlplane controlplane-sso -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Horizon child ==="
+          kubectl get horizon controlplane-sso-horizon -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Keystone child ==="
+          kubectl get keystone controlplane-sso-keystone -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== HTTPRoutes + Gateway ==="
+          kubectl get httproute -n $NAMESPACE -o wide 2>&1 || true
+          kubectl describe gateway openstack-gw -n $NAMESPACE 2>&1 || true
+          echo "=== horizon pod logs ==="
+          kubectl logs -n $NAMESPACE -l app.kubernetes.io/instance=controlplane-sso-horizon --all-containers --tail=100 2>&1 || true
+          echo "=== keystone container logs ==="
+          kubectl logs -n $NAMESPACE -l app.kubernetes.io/instance=controlplane-sso-keystone -c keystone --tail=100 2>&1 || true
+          echo "=== federation-proxy sidecar logs ==="
+          kubectl logs -n $NAMESPACE -l app.kubernetes.io/instance=controlplane-sso-keystone -c federation-proxy --tail=100 2>&1 || true
+          echo "=== keycloak logs ==="
+          kubectl logs -n $NAMESPACE -l app.kubernetes.io/name=keycloak --tail=80 2>&1 || true
+          echo "=== envoy proxy logs ==="
+          kubectl logs -n envoy-gateway-system -l gateway.envoyproxy.io/owning-gateway-name=openstack-gw --tail=100 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -40 || true
+
+  # ── Step 8: Detach — both login surfaces disappear ─────────────────────
+  # trustedDashboards SURVIVES: it is derived from services.horizon, not from
+  # the backends, so the trust relationship outlives the identity providers.
+  - name: detach
+    try:
+    - delete:
+        ref:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: KeystoneIdentityBackend
+          name: keycloak-forge
+          namespace: openstack
+    - delete:
+        ref:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: KeystoneIdentityBackend
+          name: planetexpress-ldap
+          namespace: openstack
+    - assert:
+        resource:
+          apiVersion: horizon.openstack.c5c3.io/v1alpha1
+          kind: Horizon
+          metadata:
+            name: controlplane-sso-horizon
+            namespace: openstack
+          spec:
+            (websso == null): true
+            (multiDomain == null): true
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: controlplane-sso-keystone
+            namespace: openstack
+          spec:
+            federation:
+              trustedDashboards:
+              - https://horizon.127-0-0-1.nip.io/auth/websso/
+          status:
+            (conditions[?type == 'IdentityBackendsReady']):
+            - status: "True"
+              reason: IdentityBackendsNotRequired
+    catch:
+    - script:
+        content: |
+          echo "=== ControlPlane CR ==="
+          kubectl get controlplane controlplane-sso -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Backend CRs (if still present) ==="
+          kubectl get keystoneidentitybackend -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Horizon child ==="
+          kubectl get horizon controlplane-sso-horizon -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Keystone child ==="
+          kubectl get keystone controlplane-sso-keystone -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== c5c3 operator logs ==="
+          kubectl logs -n c5c3-system -l app.kubernetes.io/name=c5c3-operator --all-containers --tail=80 2>&1 || true
+          kubectl logs -n c5c3-system -l app.kubernetes.io/name=c5c3-operator --all-containers --tail=80 --previous 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -40 || true

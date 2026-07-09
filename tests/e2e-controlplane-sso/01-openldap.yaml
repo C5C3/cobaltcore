@@ -1,0 +1,85 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# In-suite OpenLDAP fixture for the federated-controlplane E2E test, copied
+# verbatim (bar this header) from
+# tests/e2e/keystone/ldap-domain-backend/00-openldap.yaml. It backs the
+# "planetexpress" domain the login page's domain dropdown selects.
+#
+# The image pin is tag+digest and Renovate-tracked via the docker-digest
+# customManager in renovate.json — the managerFilePatterns list this path.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openldap
+  namespace: openstack
+  labels:
+    app.kubernetes.io/name: openldap
+    app.kubernetes.io/instance: openldap
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: openldap
+      app.kubernetes.io/instance: openldap
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: openldap
+        app.kubernetes.io/instance: openldap
+    spec:
+      containers:
+      - name: openldap
+        image: ghcr.io/rroemhild/docker-test-openldap:v2.5.0@sha256:3470e15c60119a1c0392cc162cdce71edfb42b55affdc69da574012f956317cd
+        ports:
+        - name: ldap
+          containerPort: 10389
+        readinessProbe:
+          tcpSocket:
+            port: 10389
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        # slapd bootstraps an LMDB (mdb) backend configured with a 1 GiB
+        # olcDbMaxSize map. A tight memory limit (the previous 256Mi)
+        # OOM-kills slapd in a restart loop during bootstrap — before it ever
+        # listens on 10389 — so the pod never becomes Ready and the suite
+        # times out waiting on availableReplicas. Give the map real headroom;
+        # this is a throwaway test fixture, never a production workload.
+        resources:
+          requests:
+            cpu: 50m
+            memory: 256Mi
+          limits:
+            memory: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: openldap
+  namespace: openstack
+  labels:
+    app.kubernetes.io/name: openldap
+    app.kubernetes.io/instance: openldap
+spec:
+  selector:
+    app.kubernetes.io/name: openldap
+    app.kubernetes.io/instance: openldap
+  ports:
+  - name: ldap
+    port: 10389
+    targetPort: 10389
+    protocol: TCP
+---
+# Bind credentials for the KeystoneIdentityBackend: the fixed data keys
+# "username" (the bind DN) and "password" are the contract the projection
+# reads.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: openldap-bind
+  namespace: openstack
+type: Opaque
+stringData:
+  username: cn=admin,dc=planetexpress,dc=com
+  password: GoodNewsEveryone

@@ -1,0 +1,41 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# services.horizon.publicEndpoint must name the same host as
+# services.horizon.gateway.hostname. Django derives the WebSSO origin it sends
+# from the request Host header — i.e. from the gateway hostname — and Keystone
+# compares it verbatim, so a divergent host is rejected only AFTER the user has
+# already entered their corporate credentials at the identity provider.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-horizon-endpoint-host-mismatch
+spec:
+  openStackRelease: "2025.2"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+  services:
+    keystone:
+      mode: Managed
+    horizon:
+      gateway:
+        hostname: horizon.example.com
+        parentRef:
+          name: openstack-gw
+      publicEndpoint: https://dashboard.example.com
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password

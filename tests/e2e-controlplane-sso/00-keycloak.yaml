@@ -1,0 +1,278 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# In-suite Keycloak fixture for the federated-controlplane E2E test.
+#
+# Copied from tests/e2e/keystone/oidc-federation/00-keycloak.yaml, with one
+# change: the "keystone" clients register the GATEWAY redirect URIs alongside
+# the cluster-local Service URI. This suite drives the WebSSO hand-off through
+# Envoy, so mod_auth_openidc derives its redirect_uri from the gateway Host
+# header (keystone.127-0-0-1.nip.io). Both schemes are registered because
+# whether Apache reconstructs the URL as https depends on it honouring the
+# proxy's X-Forwarded-Proto; registering both makes the fixture independent of
+# that detail.
+#
+# The image pin is tag+digest and Renovate-tracked via the docker-digest
+# customManager in renovate.json — the managerFilePatterns list this path.
+#
+# The container deliberately carries no restricted securityContext and a
+# ~1Gi memory limit: start-dev bootstraps an embedded H2 plus the JVM — this
+# is a throwaway test fixture, never a production workload.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keycloak-realms
+  namespace: openstack
+data:
+  forge-realm.json: |
+    {
+      "realm": "forge",
+      "enabled": true,
+      "sslRequired": "none",
+      "groups": [{"name": "engineers", "path": "/engineers"}],
+      "users": [
+        {
+          "username": "fry",
+          "enabled": true,
+          "email": "fry@planetexpress.example",
+          "emailVerified": true,
+          "firstName": "Philip",
+          "lastName": "Fry",
+          "credentials": [{"type": "password", "value": "fry-password", "temporary": false}],
+          "groups": ["/engineers"]
+        }
+      ],
+      "clients": [
+        {
+          "clientId": "keystone",
+          "enabled": true,
+          "protocol": "openid-connect",
+          "publicClient": false,
+          "secret": "keystone-forge-secret",
+          "redirectUris": ["http://controlplane-sso-keystone.openstack.svc.cluster.local:5000/*", "https://keystone.127-0-0-1.nip.io/*", "http://keystone.127-0-0-1.nip.io/*"],
+          "webOrigins": ["*"],
+          "standardFlowEnabled": true,
+          "directAccessGrantsEnabled": true,
+          "protocolMappers": [
+            {
+              "name": "groups",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-group-membership-mapper",
+              "consentRequired": false,
+              "config": {
+                "full.path": "false",
+                "id.token.claim": "true",
+                "access.token.claim": "true",
+                "claim.name": "groups",
+                "userinfo.token.claim": "true"
+              }
+            },
+            {
+              "name": "keystone-audience",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-audience-mapper",
+              "consentRequired": false,
+              "config": {
+                "included.client.audience": "keystone",
+                "id.token.claim": "false",
+                "access.token.claim": "true",
+                "introspection.token.claim": "true"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  forge2-realm.json: |
+    {
+      "realm": "forge2",
+      "enabled": true,
+      "sslRequired": "none",
+      "groups": [{"name": "captains", "path": "/captains"}],
+      "users": [
+        {
+          "username": "leela",
+          "enabled": true,
+          "email": "leela@planetexpress.example",
+          "emailVerified": true,
+          "firstName": "Turanga",
+          "lastName": "Leela",
+          "credentials": [{"type": "password", "value": "leela-password", "temporary": false}],
+          "groups": ["/captains"]
+        }
+      ],
+      "clients": [
+        {
+          "clientId": "keystone",
+          "enabled": true,
+          "protocol": "openid-connect",
+          "publicClient": false,
+          "secret": "keystone-forge2-secret",
+          "redirectUris": ["http://controlplane-sso-keystone.openstack.svc.cluster.local:5000/*", "https://keystone.127-0-0-1.nip.io/*", "http://keystone.127-0-0-1.nip.io/*"],
+          "webOrigins": ["*"],
+          "standardFlowEnabled": true,
+          "directAccessGrantsEnabled": true
+        }
+      ]
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak
+  namespace: openstack
+  labels:
+    app.kubernetes.io/name: keycloak
+    app.kubernetes.io/instance: keycloak
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: keycloak
+      app.kubernetes.io/instance: keycloak
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: keycloak
+        app.kubernetes.io/instance: keycloak
+    spec:
+      # The introspection endpoint must be https (mod_auth_openidc parses
+      # OIDCOAuthIntrospectionEndpoint as https-only), so an initContainer
+      # generates a throwaway self-signed keypair for Keycloak's https
+      # listener. The keystone image is already loaded in kind and ships
+      # python3 + cryptography; the key is deliberately world-readable —
+      # Keycloak runs under a different UID and this is a test-only cert the
+      # backend CR opts out of verifying (tlsVerify: false).
+      initContainers:
+      - name: gen-cert
+        image: ghcr.io/c5c3/keystone:2025.2
+        command:
+        - python3
+        - -c
+        - |
+          import datetime, os
+          from cryptography import x509
+          from cryptography.hazmat.primitives import hashes, serialization
+          from cryptography.hazmat.primitives.asymmetric import rsa
+          from cryptography.x509.oid import NameOID
+          key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+          name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "keycloak.openstack.svc.cluster.local")])
+          san = x509.SubjectAlternativeName([
+              x509.DNSName("keycloak.openstack.svc.cluster.local"),
+              x509.DNSName("keycloak"),
+          ])
+          now = datetime.datetime.now(datetime.timezone.utc)
+          cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name)
+                  .public_key(key.public_key()).serial_number(x509.random_serial_number())
+                  .not_valid_before(now - datetime.timedelta(minutes=5))
+                  .not_valid_after(now + datetime.timedelta(days=1))
+                  .add_extension(san, critical=False).sign(key, hashes.SHA256()))
+          with open("/certs/tls.crt", "wb") as f:
+              f.write(cert.public_bytes(serialization.Encoding.PEM))
+          with open("/certs/tls.key", "wb") as f:
+              f.write(key.private_bytes(serialization.Encoding.PEM,
+                                        serialization.PrivateFormat.PKCS8,
+                                        serialization.NoEncryption()))
+          os.chmod("/certs/tls.key", 0o644)
+        volumeMounts:
+        - name: tls
+          mountPath: /certs
+      containers:
+      - name: keycloak
+        image: quay.io/keycloak/keycloak:26.6.4@sha256:0aae0de7fca85525f727d3354df17896092de8bb26ae4c12d89c77e5df8cbce4
+        args:
+        - start-dev
+        - --import-realm
+        - --https-certificate-file=/certs/tls.crt
+        - --https-certificate-key-file=/certs/tls.key
+        env:
+        - name: KC_BOOTSTRAP_ADMIN_USERNAME
+          value: admin
+        - name: KC_BOOTSTRAP_ADMIN_PASSWORD
+          value: admin-password
+        # Pin a fixed frontend URL so the realm issuer is identical on both
+        # listeners. Tokens are minted over http :8080 (iss carries :8080) but
+        # mod_auth_openidc introspects over https :8443; without a fixed
+        # hostname Keycloak derives the expected issuer from each request's own
+        # scheme+port, so the :8443 introspection computes https://…:8443/realms/…
+        # ≠ the token's http://…:8080/realms/… and rejects it ("Access token JWT
+        # check failed" → active:false → 401). Strict is off so the http URL is
+        # accepted in dev mode while :8443 keeps serving introspection.
+        - name: KC_HOSTNAME
+          value: http://keycloak.openstack.svc.cluster.local:8080
+        - name: KC_HOSTNAME_STRICT
+          value: "false"
+        ports:
+        - name: http
+          containerPort: 8080
+        - name: https
+          containerPort: 8443
+        volumeMounts:
+        - name: realms
+          mountPath: /opt/keycloak/data/import
+          readOnly: true
+        - name: tls
+          mountPath: /certs
+          readOnly: true
+        readinessProbe:
+          httpGet:
+            path: /realms/master
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          failureThreshold: 30
+        resources:
+          requests:
+            cpu: 100m
+            memory: 512Mi
+          limits:
+            memory: 1Gi
+      volumes:
+      - name: tls
+        emptyDir: {}
+      - name: realms
+        configMap:
+          name: keycloak-realms
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak
+  namespace: openstack
+  labels:
+    app.kubernetes.io/name: keycloak
+    app.kubernetes.io/instance: keycloak
+spec:
+  selector:
+    app.kubernetes.io/name: keycloak
+    app.kubernetes.io/instance: keycloak
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+    protocol: TCP
+  - name: https
+    port: 8443
+    targetPort: 8443
+    protocol: TCP
+---
+# Relying-party client secrets for the two KeystoneIdentityBackends: the
+# fixed data key "clientSecret" is the contract the projection reads.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: keycloak-forge-client
+  namespace: openstack
+type: Opaque
+stringData:
+  clientSecret: keystone-forge-secret
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: keycloak-forge2-client
+  namespace: openstack
+type: Opaque
+stringData:
+  clientSecret: keystone-forge2-secret

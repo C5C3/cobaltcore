@@ -1,0 +1,97 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# ControlPlane CR fixture for the federated-controlplane E2E test.
+#
+# This is a SECOND full-ControlPlane chain, deliberately not an extension of
+# tests/e2e/c5c3/full-controlplane-keystone: the identity-provider and
+# directory fixtures would otherwise lengthen that chain and couple its
+# credential assertions to federation. The ControlPlane webhook permits only
+# one ControlPlane per namespace and the shared `openstack-gw` Gateway sets
+# `allowedRoutes.namespaces.from: Same`, so the two suites cannot coexist in
+# `openstack` and this one runs in its own CI job against its own cluster.
+#
+# Both service blocks are exposed through the shared kind Gateway, because the
+# WebSSO hand-off is a BROWSER flow: Keystone matches the origin the dashboard
+# sends against [federation] trusted_dashboard verbatim, so the dashboard must
+# be reached under the same name the trusted origin names.
+#
+#   - services.horizon.publicEndpoint declares the browser-observed dashboard
+#     base URL. The reconciler derives the trusted origin from it
+#     (publicEndpoint + "/auth/websso/") and projects it onto the Keystone
+#     child. It matches gateway.hostname on the default HTTPS port here; a
+#     deployment publishing the dashboard on another port would set the port
+#     explicitly, which is exactly what the override exists for.
+#   - services.keystone.publicEndpoint is the browser-facing Keystone the SSO
+#     redirect targets (projected onto the Horizon child's
+#     spec.websso.keystoneURL). It must NOT be the cluster-local Service URL:
+#     the browser follows this redirect.
+#   - services.keystone.federationProxyImage pins the mod_auth_openidc sidecar
+#     to the `dev` tag the CI pipeline builds and loads into kind. Without the
+#     override the reconciler would project the mutable `:latest` tag and this
+#     suite would validate the sidecar already published on main rather than
+#     the one under review.
+#
+# Single-replica topology across database, cache, Keystone and Horizon so the
+# fresh-create chain schedules on a single-node kind cluster; storageSize is
+# pinned to 512Mi rather than the 100Gi CRD production default.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: controlplane-sso
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  region: RegionOne
+  infrastructure:
+    database:
+      clusterRef:
+        name: openstack-db
+      database: keystone
+      secretRef:
+        name: keystone-db
+      replicas: 1
+      storageSize: 512Mi
+    cache:
+      clusterRef:
+        name: openstack-memcached
+      backend: dogpile.cache.pymemcache
+      replicas: 1
+  services:
+    keystone:
+      replicas: 1
+      gateway:
+        hostname: keystone.127-0-0-1.nip.io
+        parentRef:
+          name: openstack-gw
+      publicEndpoint: https://keystone.127-0-0-1.nip.io/v3
+      federationProxyImage:
+        repository: ghcr.io/c5c3/keystone-federation-proxy
+        tag: dev
+    horizon:
+      replicas: 1
+      gateway:
+        hostname: horizon.127-0-0-1.nip.io
+        parentRef:
+          name: openstack-gw
+      publicEndpoint: https://horizon.127-0-0-1.nip.io
+      # The kind shim Secret is pinned to the DEFAULT ControlPlane identity, so
+      # a named ControlPlane must point at its own key material (the documented
+      # multi-ControlPlane path). 03-horizon-secret-key-externalsecret.yaml
+      # provisions it.
+      secretKeyRef:
+        name: controlplane-sso-horizon-secret-key
+        key: secret-key
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+        secretName: k-orc-clouds-yaml
+      passwordSecretRef:
+        name: keystone-admin
+        key: password
+      applicationCredential:
+        restricted: true
+        rotation:
+          mode: PasswordDriven

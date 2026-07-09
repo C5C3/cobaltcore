@@ -158,6 +158,55 @@ spec:
         - check:
             ($error != null): true
             (contains($error, 'caBundleSecretRef')): true
+  # services.keystone.federationProxyImage is a managed-only knob and must be
+  # rejected in External mode, like every other managed-only field.
+  - try:
+    - apply:
+        file: 19-federation-proxy-image-in-external.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'federationProxyImage')): true
+  # services.horizon.publicEndpoint must be an http(s) URL: the WebSSO origin
+  # derived from it is what Keystone matches verbatim.
+  - try:
+    - apply:
+        file: 20-horizon-public-endpoint-not-a-url.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'publicEndpoint')): true
+  # services.horizon.gateway.hostname must be a concrete DNS name. Gateway API
+  # permits a wildcard here, but the WebSSO origin derived from it is compared
+  # verbatim by Keystone and would match no dashboard.
+  - try:
+    - apply:
+        file: 21-horizon-gateway-hostname-wildcard.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'gateway.hostname')): true
+  # services.horizon.publicEndpoint must name the same host as the gateway
+  # hostname: Django derives the origin it sends from the request Host header,
+  # so a divergent host produces an origin Keystone rejects only after the user
+  # has already authenticated at the identity provider.
+  - try:
+    - apply:
+        file: 22-horizon-public-endpoint-host-mismatch.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'must equal services.horizon.gateway.hostname')): true
+  # services.horizon.publicEndpoint must be a bare origin: the ^https?:// pattern
+  # anchors only the prefix, so a query string passes the CRD gate and yields a
+  # trusted origin Keystone accepts and never matches.
+  - try:
+    - apply:
+        file: 23-horizon-public-endpoint-with-query.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'must be a bare origin')): true
 ---
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test

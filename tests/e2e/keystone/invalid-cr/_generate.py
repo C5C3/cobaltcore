@@ -642,6 +642,41 @@ FIXTURES: list[Fixture] = [
 # validating webhook). Admission must reject this CR with an $error referencing
 # the substring "digest".""",
     ),
+    Fixture(
+        filename="22-trusted-dashboard-not-a-url.yaml",
+        name="invalid-trusted-dashboard-url",
+        trailing=(
+            "  federation:\n"
+            "    trustedDashboards:\n"
+            "    - not-a-url\n"
+        ),
+        comment="""\
+# Keystone CR whose spec.federation.trustedDashboards carries a non-http(s)
+# entry. Keystone matches the dashboard origin VERBATIM, so an unparseable
+# entry could never match any dashboard. The items:Pattern CRD marker rejects
+# it (and the validating webhook mirrors the check). Admission must reject this
+# CR with an $error referencing the substring "trustedDashboards".""",
+    ),
+    Fixture(
+        filename="23-trusted-dashboard-and-extraconfig.yaml",
+        name="invalid-trusted-dashboard-conflict",
+        trailing=(
+            "  federation:\n"
+            "    trustedDashboards:\n"
+            "    - https://horizon.example.com/auth/websso/\n"
+            "  extraConfig:\n"
+            "    federation:\n"
+            "      trusted_dashboard: https://other.example.com/auth/websso/\n"
+        ),
+        comment="""\
+# Keystone CR declaring [federation] trusted_dashboard BOTH in the typed
+# spec.federation.trustedDashboards field and in the spec.extraConfig escape
+# hatch. extraConfig wins the render-time merge, so the two would silently
+# contradict each other and the typed list would be dropped from the rendered
+# config without any signal. The validating webhook rejects the combination.
+# Admission must reject this CR with an $error referencing the substring
+# "trusted_dashboard is managed via spec.federation.trustedDashboards".""",
+    ),
 ]
 
 
