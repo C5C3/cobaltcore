@@ -45,6 +45,26 @@ func (r *ControlPlaneReconciler) reconcileAdminCredential(ctx context.Context, c
 	// Gate on KORCReady.
 	if !conditions.AllTrue(cp.Status.Conditions, conditionTypeKORCReady) {
 		logger.Info("KORC not ready, deferring admin credential push")
+		// In External mode, name the cause when KORCReady reports drift in the
+		// external installation rather than an ordinary wait: an eternal
+		// "WaitingForKORC" hides that the admin password Secret — not the operator —
+		// is what has to change.
+		//
+		// The LIVE drift signal is KORCReady itself: reconcileKORC requeues on the
+		// drift, and RunPipeline short-circuits on that non-zero result, so this
+		// sub-reconciler is not re-entered in the same pass. This escalation is the
+		// defense-in-depth path — it keeps AdminCredentialReady honest for any caller
+		// that does observe a drifted KORCReady.
+		if cp.IsExternalKeystone() {
+			if korc := conditions.GetCondition(cp.Status.Conditions, conditionTypeKORCReady); korc != nil && isCredentialDriftReason(korc.Reason) {
+				fail(conditionReasonCredentialDrift, fmt.Sprintf(
+					"the external Keystone at %s no longer matches the admin credential derived from Secret %q: %s; "+
+						"the operator never remediates the external installation — update the Secret to drive a re-mint",
+					externalKeystoneAuthURL(cp), cp.Spec.KORC.AdminCredential.PasswordSecretRef.Name, korc.Message,
+				))
+				return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
+			}
+		}
 		fail("WaitingForKORC", "KORCReady is not True; admin credential push deferred")
 		return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
 	}

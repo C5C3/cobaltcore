@@ -369,6 +369,19 @@ func (r *ControlPlaneReconciler) classifyExternalKORCState(
 
 	objs := append(imports.objects(), ac)
 	if reason, rawMessage := classifyExternalKORCFailure(objs...); reason != "" {
+		// Announce credential drift loudly — and exactly once per transition into
+		// the drifted state, not on every 10s requeue. Read the reason BEFORE fail()
+		// overwrites it: on this path no earlier fail() has fired, so the condition
+		// still carries the previous pass's reason.
+		if isCredentialDriftReason(reason) {
+			if prev := conditions.GetCondition(cp.Status.Conditions, conditionTypeKORCReady); prev == nil || !isCredentialDriftReason(prev.Reason) {
+				r.Recorder.Event(cp, "Warning", conditionReasonCredentialDrift, fmt.Sprintf(
+					"the external Keystone at %s no longer accepts the admin credential derived from Secret %q; "+
+						"the operator does not remediate the external installation: %s",
+					authURL, cp.Spec.KORC.AdminCredential.PasswordSecretRef.Name, rawMessage,
+				))
+			}
+		}
 		fail(reason, fmt.Sprintf("external Keystone at %s: %s", authURL, rawMessage))
 		return ctrl.Result{RequeueAfter: korcRequeueAfter}, true
 	}

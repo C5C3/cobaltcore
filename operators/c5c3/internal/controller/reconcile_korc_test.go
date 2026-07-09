@@ -28,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -2572,21 +2573,23 @@ func korcProgressingAC(cp *c5c3v1alpha1.ControlPlane, msg string) *orcv1alpha1.A
 }
 
 // reconcileKORCWithAC runs reconcileKORC against cp with the given seeded objects
-// and returns the resulting KORCReady condition.
+// and returns the resulting KORCReady condition alongside the fake recorder, so
+// drift tests can assert on the emitted events.
 func reconcileKORCWithAC(
 	t *testing.T, cp *c5c3v1alpha1.ControlPlane, objs ...client.Object,
-) (*metav1.Condition, ctrl.Result) {
+) (*metav1.Condition, ctrl.Result, *record.FakeRecorder) {
 	t.Helper()
 	g := NewGomegaWithT(t)
 
 	s := korcTestScheme(t)
 	seeded := append([]client.Object{cp, adminPasswordSecret()}, objs...)
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(seeded...).Build()
-	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+	rec := record.NewFakeRecorder(10)
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: rec}
 
 	res, err := r.reconcileKORC(context.Background(), cp)
 	g.Expect(err).NotTo(HaveOccurred())
-	return conditions.GetCondition(cp.Status.Conditions, conditionTypeKORCReady), res
+	return conditions.GetCondition(cp.Status.Conditions, conditionTypeKORCReady), res, rec
 }
 
 // TestReconcileKORC_ExternalModeClassifiesFailures walks the D3 vocabulary: each
@@ -2632,7 +2635,7 @@ func TestReconcileKORC_ExternalModeClassifiesFailures(t *testing.T) {
 			g := NewGomegaWithT(t)
 			cp := korcExternalControlPlane()
 
-			cond, res := reconcileKORCWithAC(t, cp, korcProgressingAC(cp, tt.message))
+			cond, res, _ := reconcileKORCWithAC(t, cp, korcProgressingAC(cp, tt.message))
 
 			g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
 			g.Expect(cond).NotTo(BeNil())
@@ -2661,7 +2664,7 @@ func TestReconcileKORC_ManagedModeReasonsUnchanged(t *testing.T) {
 			g := NewGomegaWithT(t)
 			cp := korcControlPlane()
 
-			cond, res := reconcileKORCWithAC(t, cp, korcProgressingAC(cp, msg))
+			cond, res, _ := reconcileKORCWithAC(t, cp, korcProgressingAC(cp, msg))
 
 			g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
 			g.Expect(cond.Reason).To(Equal("WaitingForApplicationCredential"),
@@ -2698,7 +2701,7 @@ func TestReconcileKORC_ExternalModeStalledImportSetsImportStalled(t *testing.T) 
 
 	// The AC is not Available and carries no classifiable message, so the stall
 	// detector is what must speak.
-	cond, res := reconcileKORCWithAC(
+	cond, res, _ := reconcileKORCWithAC(
 		t, cp,
 		stalledDomainImport(cp, stale),
 		korcProgressingAC(cp, "Waiting for dependencies"),
@@ -2720,7 +2723,7 @@ func TestReconcileKORC_ExternalModeFreshImportDoesNotStall(t *testing.T) {
 	g := NewGomegaWithT(t)
 	cp := korcExternalControlPlane()
 
-	cond, res := reconcileKORCWithAC(
+	cond, res, _ := reconcileKORCWithAC(
 		t, cp,
 		stalledDomainImport(cp, metav1.Now()),
 		korcProgressingAC(cp, "Waiting for dependencies"),
@@ -2749,9 +2752,58 @@ func TestReconcileKORC_ExternalModeAvailableCredentialIsNotReclassified(t *testi
 		LastTransitionTime: metav1.Now(),
 	})
 
-	cond, res := reconcileKORCWithAC(t, cp, ac)
+	cond, res, _ := reconcileKORCWithAC(t, cp, ac)
 
 	g.Expect(res.IsZero()).To(BeTrue())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 	g.Expect(cond.Reason).To(Equal("ApplicationCredentialMinted"))
+}
+
+// TestReconcileKORC_ExternalModeDriftEmitsWarningEventOncePerTransition asserts
+// the drift announcement is transition-gated. reconcileKORC requeues every 10s
+// while the external Keystone stays drifted, so an ungated Recorder.Event would
+// bury the event stream; the Warning must fire on the way INTO the drifted state
+// and then stay quiet.
+func TestReconcileKORC_ExternalModeDriftEmitsWarningEventOncePerTransition(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := korcExternalControlPlane()
+	msg := `Authentication failed: got 401 instead`
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(cp, adminPasswordSecret(), korcProgressingAC(cp, msg)).Build()
+	rec := record.NewFakeRecorder(10)
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: rec}
+
+	// First pass: the transition into drift announces itself.
+	_, err := r.reconcileKORC(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(rec.Events).To(Receive(And(
+		ContainSubstring("Warning"),
+		ContainSubstring(conditionReasonCredentialDrift),
+		ContainSubstring("keystone-admin"),
+		ContainSubstring(msg),
+	)))
+
+	// Second pass with KORCReady already reporting drift: no further event.
+	_, err = r.reconcileKORC(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(rec.Events).NotTo(Receive(), "the drift event must not repeat on every requeue")
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeKORCReady)
+	g.Expect(cond.Reason).To(Equal(conditionReasonAuthenticationFailed))
+}
+
+// TestReconcileKORC_ExternalModeNonDriftFailureEmitsNoDriftEvent covers the
+// negative path: an unreachable endpoint is a connectivity fault, not a stale
+// credential, so it must not raise a CredentialDrift alarm.
+func TestReconcileKORC_ExternalModeNonDriftFailureEmitsNoDriftEvent(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := korcExternalControlPlane()
+	cond, _, rec := reconcileKORCWithAC(t, cp,
+		korcProgressingAC(cp, `dial tcp: lookup keystone.example.com: no such host`))
+
+	g.Expect(cond.Reason).To(Equal(conditionReasonEndpointUnreachable))
+	g.Expect(rec.Events).NotTo(Receive(), "an unreachable endpoint is not credential drift")
 }

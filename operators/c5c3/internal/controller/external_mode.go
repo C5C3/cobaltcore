@@ -84,6 +84,16 @@ const (
 	conditionReasonInfrastructureNotConfigured = "InfrastructureNotConfigured"
 )
 
+// isCredentialDriftReason reports whether a KORCReady reason means the operator's
+// view of the external Keystone's admin identity no longer matches reality: either
+// the referenced admin password no longer authenticates (AuthenticationFailed), or
+// a resolve-once import id now points at a user Keystone has since replaced
+// (CredentialDrift). Both are drift in the external installation, which the
+// operator SURFACES and never fights.
+func isCredentialDriftReason(reason string) bool {
+	return reason == conditionReasonAuthenticationFailed || reason == conditionReasonCredentialDrift
+}
+
 // korcImportPendingExternalMarker is the message K-ORC stamps on an unmanaged
 // import's Available=False condition while the OpenStack resource it filters for
 // does not (yet) exist. It is the substring korcImportStalled keys the
