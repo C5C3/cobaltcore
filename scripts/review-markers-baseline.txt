@@ -8,7 +8,6 @@ hack/deploy-infra.sh:1
 internal/common/job/job.go:1
 operators/c5c3/api/v1alpha1/controlplane_webhook.go:1
 operators/c5c3/internal/controller/integration_test.go:3
-operators/c5c3/internal/controller/korc_eso.go:1
 operators/c5c3/internal/controller/reconcile_korc.go:2
 operators/keystone/internal/controller/dbtls_mode.go:1
 operators/keystone/internal/controller/reconcile_bootstrap.go:1

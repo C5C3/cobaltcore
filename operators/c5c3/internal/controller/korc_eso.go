@@ -62,10 +62,15 @@ func adminAppCredentialPushSecretName(cp *c5c3v1alpha1.ControlPlane) string {
 // scoping the credential so two ControlPlanes never clobber
 // each other's admin credential on the cluster-global OpenBao backend.
 //
-// DECISION (DeletionPolicy): None — the admin application credential is a shared
-// bootstrap secret other consumers may depend on; deleting the PushSecret (e.g.
-// on ControlPlane teardown) leaves the last-pushed credential intact in OpenBao
-// so a fresh control plane is not locked out mid-rotation. Reviewer: please verify.
+// DECISION (DeletionPolicy): Delete — the credential dies with the ControlPlane
+// that minted it. Keeping it (DeletionPolicy: None) does not protect a fresh
+// control plane, it locks one out: the K-ORC teardown revokes the credential in
+// Keystone, so the value left behind at the per-CR OpenBao path is already dead,
+// yet the {name}-k-orc-clouds-yaml ExternalSecret keeps projecting it. The next
+// ControlPlane of the same name then authenticates K-ORC with a credential
+// Keystone no longer knows (404), its admin Domain import never completes, and
+// CatalogReady never flips. Rotation is unaffected: a rotation replaces the
+// value at the same path while the PushSecret lives on.
 func adminAppCredentialPushSecret(cp *c5c3v1alpha1.ControlPlane) *esov1alpha1.PushSecret {
 	return &esov1alpha1.PushSecret{
 		ObjectMeta: metav1.ObjectMeta{
@@ -73,7 +78,7 @@ func adminAppCredentialPushSecret(cp *c5c3v1alpha1.ControlPlane) *esov1alpha1.Pu
 			Namespace: childNamespace(cp),
 		},
 		Spec: esov1alpha1.PushSecretSpec{
-			DeletionPolicy: esov1alpha1.PushSecretDeletionPolicyNone,
+			DeletionPolicy: esov1alpha1.PushSecretDeletionPolicyDelete,
 			SecretStoreRefs: []esov1alpha1.PushSecretStoreRef{{
 				Kind: "ClusterSecretStore",
 				Name: openBaoClusterStoreName,

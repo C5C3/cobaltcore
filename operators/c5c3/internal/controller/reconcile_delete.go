@@ -56,10 +56,11 @@ const korcFinalizerPrefix = orcv1alpha1.GroupName + "/"
 //     external installation; the import-first catalog work turns these into
 //     unmanaged imports too, at which point this entry becomes a CR-only delete.
 //
-// The OpenBao-backed Secrets are torn down by owner-reference GC, EXCEPT the path
-// behind the {name}-admin-app-credential-backup PushSecret: its DeletionPolicy is
-// deliberately None (see adminAppCredentialPushSecret), so the last-pushed
-// credential survives at its OpenBao path. Nothing else is touched.
+// The OpenBao-backed Secrets are torn down by owner-reference GC, including the
+// path behind the {name}-admin-app-credential-backup PushSecret: its
+// DeletionPolicy is Delete (see adminAppCredentialPushSecret), so the credential
+// this teardown revokes in Keystone does not outlive it in OpenBao. Nothing else
+// is touched.
 var orcChildResources = []struct {
 	newObj func() client.Object
 	name   func(*c5c3v1alpha1.ControlPlane) string

@@ -3527,3 +3527,22 @@ func TestReconcileKORC_ExternalHashMismatchDeletesACForRemint(t *testing.T) {
 	g.Expect(string(pwCloud.Data[appCredCloudsYAMLKey])).To(ContainSubstring(strconv.Quote(testAdminPassword)))
 	g.Expect(string(pwCloud.Data[korcCACertKey])).To(Equal(testCABundle))
 }
+
+// TestAdminAppCredentialPushSecret_DeletionPolicyIsDelete pins the PushSecret's
+// DeletionPolicy, which nothing asserted while it was wrong.
+//
+// With DeletionPolicy: None the minted credential outlives the ControlPlane that
+// minted it. The K-ORC teardown revokes it in Keystone, so what survives at the
+// per-CR OpenBao path is already dead — but the k-orc-clouds-yaml ExternalSecret
+// keeps projecting it. A subsequent ControlPlane of the same name then hands
+// K-ORC a credential Keystone answers 404 for, its admin Domain import never
+// completes, and CatalogReady never flips. Observed on a kind cluster while
+// re-running the federated e2e suite.
+func TestAdminAppCredentialPushSecret_DeletionPolicyIsDelete(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	ps := adminAppCredentialPushSecret(korcControlPlane())
+
+	g.Expect(ps.Spec.DeletionPolicy).To(Equal(esov1alpha1.PushSecretDeletionPolicyDelete),
+		"the credential must not outlive the ControlPlane that minted it")
+}

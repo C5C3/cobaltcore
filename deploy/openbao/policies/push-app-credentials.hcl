@@ -38,8 +38,15 @@ path "kv-v2/data/openstack/*/app-credential" {
 # rationale documented in push-keystone-admin.hcl. The grant stays scoped to the
 # per-CR admin AC leaf, adding no blast radius beyond admin app-credentials.
 # Reviewer: please verify.
+#
+# DECISION (delete): the admin AC PushSecret runs DeletionPolicy=Delete, so the
+# credential dies with the ControlPlane that minted it (see
+# adminAppCredentialPushSecret). Without `delete` here ESO 403s on
+# `DELETE kv-v2/data/...`, the PushSecret never clears its finalizer, and the dead
+# credential keeps being projected into the next ControlPlane's clouds.yaml. The
+# grant is a KV-v2 soft delete of the same per-CR leaf this policy already writes.
 path "kv-v2/data/openstack/keystone/+/+/admin/app-credential" {
-  capabilities = ["create", "update", "read"]
+  capabilities = ["create", "update", "read", "delete"]
 }
 
 path "kv-v2/metadata/openstack/keystone/+/+/admin/app-credential" {
