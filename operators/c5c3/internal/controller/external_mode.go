@@ -105,10 +105,9 @@ const korcImportPendingExternalMarker = "Waiting for OpenStack resource to be cr
 // admission forbids). It is nil-safe on every level so the ExternallyManaged and
 // drift messages can name the endpoint without a guard at each call site.
 //
-// This helper is MESSAGE-ONLY. The mode-switching auth-URL resolver the
-// clouds.yaml builders consume — the one that decides whether K-ORC dials the
-// in-cluster Service DNS or this external endpoint — is a separate concern and
-// lands with the External-mode K-ORC/AdminCredential work.
+// The mode-switching resolver the clouds.yaml builders consume — the one that
+// decides whether K-ORC dials the in-cluster Service DNS or this external
+// endpoint — is korcAuthURL, which delegates here in External mode.
 func externalKeystoneAuthURL(cp *c5c3v1alpha1.ControlPlane) string {
 	ks := cp.Spec.Services.Keystone
 	if ks == nil || ks.External == nil {
