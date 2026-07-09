@@ -1598,7 +1598,8 @@ func TestReconcileConfig_TrustedDashboardsRenderRepeatedLines(t *testing.T) {
 	g.Expect(keystoneConf).To(ContainSubstring(
 		"sso_callback_template = " + ssoCallbackTemplateFilePath + "\n" +
 			"trusted_dashboard = https://horizon.example.com/auth/websso/\n" +
-			"trusted_dashboard = https://horizon.example.com:8443/auth/websso/\n"))
+			"trusted_dashboard = https://horizon.example.com:8443/auth/websso/\n",
+	))
 	// Exactly one [federation] header — the repeated key must not split the
 	// section.
 	g.Expect(strings.Count(keystoneConf, "[federation]")).To(Equal(1))

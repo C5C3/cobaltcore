@@ -80,7 +80,78 @@ func (w *HorizonWebhook) Default(_ context.Context, obj *Horizon) error {
 		obj.Spec.Logging = &LoggingSpec{}
 	}
 	obj.Spec.Logging.Default()
+	if err := defaultWebSSO(field.NewPath("spec", "websso"), obj.Spec.WebSSO); err != nil {
+		return apierrors.NewInvalid(
+			schema.GroupKind{Group: GroupVersion.Group, Kind: "Horizon"},
+			obj.Name,
+			field.ErrorList{err},
+		)
+	}
+	defaultMultiDomain(obj.Spec.MultiDomain)
 	return nil
+}
+
+// defaultWebSSO materializes the local-credentials fallback on an enabled
+// websso block. Horizon's login form replaces the plain username/password
+// prompt with the WEBSSO_CHOICES dropdown, so a choices list carrying only
+// federated entries would lock out every local account — including the
+// bootstrap admin, and including every account in an LDAP-backed domain.
+// Prepending the fallback (rather than appending) also makes it the entry the
+// form opens on, matching the InitialChoice default below.
+//
+// Both early exits below exist because mutating admission runs BEFORE schema
+// validation and before the validating webhook, so anything this function
+// writes is what those two gates get to see:
+//
+//   - An empty choices list is left untouched. Prepending would synthesize a
+//     valid list out of an invalid CR, making the "choices is required when
+//     enabled" rule unreachable: an operator who forgot choices would silently
+//     get an SSO-enabled login page whose only entry is the local form.
+//   - A full list that carries no credentials choice is REJECTED rather than
+//     grown past the MaxItems bound, which would surface as a rejection naming
+//     one more choice than the operator submitted.
+//
+// A nil or disabled block is left untouched so the renderer keeps emitting
+// nothing at all.
+func defaultWebSSO(fldPath *field.Path, websso *WebSSOSpec) *field.Error {
+	if websso == nil || !websso.Enabled || len(websso.Choices) == 0 {
+		return nil
+	}
+	hasCredentials := false
+	for _, c := range websso.Choices {
+		if c.ID == DefaultWebSSOCredentialsChoiceID {
+			hasCredentials = true
+			break
+		}
+	}
+	if !hasCredentials {
+		if len(websso.Choices) >= maxWebSSOChoices {
+			return field.Invalid(fldPath.Child("choices"), len(websso.Choices),
+				fmt.Sprintf("must have at most %d entries when no choice carries id %q: the local-credentials "+
+					"fallback is prepended, which would grow the list past the %d-item bound",
+					maxWebSSOChoices-1, DefaultWebSSOCredentialsChoiceID, maxWebSSOChoices))
+		}
+		websso.Choices = append([]WebSSOChoice{{
+			ID:    DefaultWebSSOCredentialsChoiceID,
+			Label: DefaultWebSSOCredentialsChoiceLabel,
+		}}, websso.Choices...)
+	}
+	if websso.InitialChoice == "" {
+		websso.InitialChoice = DefaultWebSSOCredentialsChoiceID
+	}
+	return nil
+}
+
+// defaultMultiDomain materializes the default Keystone domain on an enabled
+// multi-domain block so the login form has a domain to fall back to when the
+// user supplies none.
+func defaultMultiDomain(md *MultiDomainSpec) {
+	if md == nil || !md.Enabled {
+		return
+	}
+	if md.DefaultDomain == "" {
+		md.DefaultDomain = DefaultMultiDomainDefaultDomain
+	}
 }
 
 // ValidateCreate implements admission.Validator[*Horizon].
@@ -183,6 +254,9 @@ func (w *HorizonWebhook) validate(ctx context.Context, h *Horizon) error {
 			))
 		}
 	}
+
+	allErrs = append(allErrs, validateWebSSO(specPath, h)...)
+	allErrs = append(allErrs, validateMultiDomain(specPath, h)...)
 
 	// Defense-in-depth logging validation alongside the CRD enum markers on
 	// LoggingSpec.Format / .Level. Map values cannot be expressed as a CRD
@@ -417,6 +491,133 @@ func (w *HorizonWebhook) validate(ctx context.Context, h *Horizon) error {
 		)
 	}
 	return nil
+}
+
+// validateWebSSO mirrors the WebSSOSpec CEL rules as defense-in-depth and adds
+// the two constraints CEL cannot express: duplicate choice ids (CEL has no
+// pairwise uniqueness over a list of objects here), and the extraConfig
+// collision.
+//
+// The extraConfig guard fires ONLY when spec.websso is set. extraConfig wins
+// the render-time merge, so declaring WEBSSO_* in both places would silently
+// drop the typed block; but a CR that uses extraConfig alone keeps working —
+// that escape hatch predates the typed field and must stay open.
+func validateWebSSO(specPath *field.Path, h *Horizon) field.ErrorList {
+	var errs field.ErrorList
+	websso := h.Spec.WebSSO
+	if websso == nil {
+		return errs
+	}
+	fldPath := specPath.Child("websso")
+
+	if websso.Enabled && len(websso.Choices) == 0 {
+		errs = append(errs, field.Required(
+			fldPath.Child("choices"),
+			"at least one choice must be declared when websso.enabled is true",
+		))
+	}
+
+	ids := make(map[string]struct{}, len(websso.Choices))
+	for i, c := range websso.Choices {
+		if _, dup := ids[c.ID]; dup {
+			errs = append(errs, field.Duplicate(fldPath.Child("choices").Index(i).Child("id"), c.ID))
+			continue
+		}
+		ids[c.ID] = struct{}{}
+	}
+
+	if websso.InitialChoice != "" {
+		if _, ok := ids[websso.InitialChoice]; !ok {
+			errs = append(errs, field.Invalid(
+				fldPath.Child("initialChoice"),
+				websso.InitialChoice,
+				"must match the id of one of websso.choices",
+			))
+		}
+	}
+
+	for key := range websso.IDPMapping {
+		if _, ok := ids[key]; !ok {
+			errs = append(errs, field.Invalid(
+				fldPath.Child("idpMapping").Key(key),
+				key,
+				"must match the id of one of websso.choices",
+			))
+		}
+	}
+
+	// Defense-in-depth URL check alongside the Pattern=^https?:// marker: the
+	// value is handed to the browser as a redirect base, so a value that
+	// parses to no host would only fail once a user clicks the SSO button.
+	if websso.KeystoneURL != "" {
+		u, err := url.Parse(websso.KeystoneURL)
+		switch {
+		case err != nil:
+			errs = append(errs, field.Invalid(fldPath.Child("keystoneURL"), websso.KeystoneURL, fmt.Sprintf("must be a valid URL: %v", err)))
+		case u.Scheme != "http" && u.Scheme != "https":
+			errs = append(errs, field.Invalid(fldPath.Child("keystoneURL"), websso.KeystoneURL, "scheme must be http or https"))
+		case u.Host == "":
+			errs = append(errs, field.Invalid(fldPath.Child("keystoneURL"), websso.KeystoneURL, "URL must include a host"))
+		}
+	}
+
+	errs = append(errs, validateExtraConfigCollision(specPath, h, WebSSOSettingNames, "spec.websso")...)
+	return errs
+}
+
+// validateMultiDomain mirrors the MultiDomainSpec CEL rules as
+// defense-in-depth, rejects duplicate domain names, and guards the same
+// extraConfig collision validateWebSSO does.
+func validateMultiDomain(specPath *field.Path, h *Horizon) field.ErrorList {
+	var errs field.ErrorList
+	md := h.Spec.MultiDomain
+	if md == nil {
+		return errs
+	}
+	fldPath := specPath.Child("multiDomain")
+
+	if md.DomainDropdown && !md.Enabled {
+		errs = append(errs, field.Forbidden(
+			fldPath.Child("domainDropdown"),
+			"domainDropdown requires multiDomain.enabled",
+		))
+	}
+	if md.DomainDropdown && len(md.DomainChoices) == 0 {
+		errs = append(errs, field.Required(
+			fldPath.Child("domainChoices"),
+			"at least one domain choice must be declared when multiDomain.domainDropdown is true",
+		))
+	}
+
+	names := make(map[string]struct{}, len(md.DomainChoices))
+	for i, c := range md.DomainChoices {
+		if _, dup := names[c.Name]; dup {
+			errs = append(errs, field.Duplicate(fldPath.Child("domainChoices").Index(i).Child("name"), c.Name))
+			continue
+		}
+		names[c.Name] = struct{}{}
+	}
+
+	errs = append(errs, validateExtraConfigCollision(specPath, h, MultiDomainSettingNames, "spec.multiDomain")...)
+	return errs
+}
+
+// validateExtraConfigCollision rejects an extraConfig entry that names a Django
+// setting the given typed block already owns. extraConfig wins the render-time
+// merge, so the override would silently take effect and the typed block would
+// be dropped from the rendered local_settings.py without any signal.
+func validateExtraConfigCollision(specPath *field.Path, h *Horizon, owned []string, blockPath string) field.ErrorList {
+	var errs field.ErrorList
+	for _, name := range owned {
+		if _, ok := h.Spec.ExtraConfig[name]; ok {
+			errs = append(errs, field.Forbidden(
+				specPath.Child("extraConfig").Key(name),
+				fmt.Sprintf("%s is managed via %s and must not also be set in extraConfig "+
+					"(extraConfig wins the merge, which would silently drop the typed block)", name, blockPath),
+			))
+		}
+	}
+	return errs
 }
 
 // validateKeystoneEndpoint checks that the keystoneEndpoint URL is non-empty,

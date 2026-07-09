@@ -669,6 +669,70 @@ spec:
                         ERROR, CRITICAL
                       rule: self.all(k, self[k] in ['DEBUG','INFO','WARNING','ERROR','CRITICAL'])
                 type: object
+              multiDomain:
+                description: |-
+                  MultiDomain configures multi-domain login: the domain field (or dropdown)
+                  on the login form, needed when users live in domains other than the
+                  default one — typically LDAP-backed domains. When nil (the default) the
+                  operator renders no OPENSTACK_KEYSTONE_MULTIDOMAIN_* settings and the
+                  login form authenticates against the default domain only.
+                properties:
+                  defaultDomain:
+                    description: |-
+                      DefaultDomain is the domain assumed for users who do not supply one
+                      (OPENSTACK_KEYSTONE_DEFAULT_DOMAIN). The defaulting webhook materializes
+                      "Default" when empty.
+                    maxLength: 64
+                    type: string
+                  domainChoices:
+                    description: |-
+                      DomainChoices are the ordered entries of the domain dropdown
+                      (OPENSTACK_KEYSTONE_DOMAIN_CHOICES). Rendered only when DomainDropdown
+                      is true.
+                    items:
+                      description: DomainChoice is one entry of the login page's domain
+                        dropdown.
+                      properties:
+                        label:
+                          description: Label is the human-readable text rendered for
+                            this domain.
+                          maxLength: 128
+                          minLength: 1
+                          type: string
+                        name:
+                          description: Name is the Keystone domain name submitted
+                            with the login form.
+                          maxLength: 64
+                          minLength: 1
+                          type: string
+                      required:
+                      - label
+                      - name
+                      type: object
+                    maxItems: 32
+                    type: array
+                  domainDropdown:
+                    default: false
+                    description: |-
+                      DomainDropdown replaces the free-text domain field with a select
+                      populated from DomainChoices (OPENSTACK_KEYSTONE_DOMAIN_DROPDOWN), so
+                      users need not know how to spell their domain.
+                    type: boolean
+                  enabled:
+                    default: false
+                    description: |-
+                      Enabled turns on multi-domain login
+                      (OPENSTACK_KEYSTONE_MULTIDOMAIN_SUPPORT), adding a domain input to the
+                      login form.
+                    type: boolean
+                type: object
+                x-kubernetes-validations:
+                - message: multiDomain.domainDropdown requires multiDomain.enabled
+                  rule: '!self.domainDropdown || self.enabled'
+                - message: multiDomain.domainChoices must contain at least one choice
+                    when multiDomain.domainDropdown is true
+                  rule: '!self.domainDropdown || (has(self.domainChoices) && size(self.domainChoices)
+                    > 0)'
               networkPolicy:
                 description: |-
                   NetworkPolicy configures network isolation for Horizon dashboard pods.
@@ -1017,6 +1081,125 @@ spec:
                 required:
                 - name
                 type: object
+              websso:
+                description: |-
+                  WebSSO configures the federated single-sign-on choices offered on the
+                  login page. When nil (the default) the operator renders no WEBSSO_*
+                  settings at all and the dashboard offers local credentials only. The
+                  c5c3 ControlPlane operator projects this block from the federation
+                  backends attached to its Keystone child; standalone installations set it
+                  directly.
+                properties:
+                  choices:
+                    description: |-
+                      Choices are the ordered entries of the login page's "Authenticate using"
+                      dropdown (WEBSSO_CHOICES). Order is preserved verbatim: the first entry
+                      is what the form shows before the user picks. The defaulting webhook
+                      prepends the local-credentials fallback when it is absent, so enabling
+                      SSO can never lock out non-federated accounts.
+
+                      The bound of 17 counts the list AFTER that prepend: the 16 federated
+                      choices the IDPMapping bound allows, plus the fallback. A list that
+                      already carries a choice with id "credentials" may therefore hold 17
+                      entries; one that does not is effectively bounded at 16, and the
+                      defaulting webhook rejects a 17th rather than growing it into an API
+                      server rejection naming a count the operator never wrote.
+                    items:
+                      description: WebSSOChoice is one entry of the login page's authentication-method
+                        dropdown.
+                      properties:
+                        id:
+                          description: |-
+                            ID identifies the choice. It is submitted as the form's auth_type value
+                            and is the key IDPMapping and InitialChoice reference. The character set
+                            is restricted because the value round-trips through a URL query string.
+                          maxLength: 64
+                          minLength: 1
+                          pattern: ^[A-Za-z0-9_.-]+$
+                          type: string
+                        label:
+                          description: Label is the human-readable text rendered for
+                            this choice.
+                          maxLength: 128
+                          minLength: 1
+                          type: string
+                      required:
+                      - id
+                      - label
+                      type: object
+                    maxItems: 17
+                    type: array
+                  enabled:
+                    default: false
+                    description: |-
+                      Enabled turns the SSO selector on the login page on (WEBSSO_ENABLED).
+                      When false the remaining fields are inert, so a block can be prepared
+                      and switched on later.
+                    type: boolean
+                  idpMapping:
+                    additionalProperties:
+                      description: |-
+                        WebSSOIDPTarget names the Keystone federation endpoint a websso choice
+                        hands the browser off to.
+                      properties:
+                        identityProvider:
+                          description: |-
+                            IdentityProvider is the Keystone identity-provider id (the
+                            KeystoneIdentityBackend's effective identityProviderName).
+                          maxLength: 64
+                          minLength: 1
+                          type: string
+                        protocol:
+                          description: Protocol is the Keystone federation protocol
+                            id (e.g. "openid").
+                          maxLength: 64
+                          minLength: 1
+                          type: string
+                      required:
+                      - identityProvider
+                      - protocol
+                      type: object
+                    description: |-
+                      IDPMapping maps a choice id onto the Keystone identity provider and
+                      federation protocol the dashboard hands off to (WEBSSO_IDP_MAPPING).
+                      A choice with no mapping entry is a local login — that is how the
+                      credentials fallback stays a plain username/password form. Every key
+                      must name a declared choice (CEL + webhook enforced).
+                    maxProperties: 16
+                    type: object
+                  initialChoice:
+                    description: |-
+                      InitialChoice preselects one of Choices by id (WEBSSO_INITIAL_CHOICE).
+                      When empty the defaulting webhook sets it to the credentials fallback,
+                      so an SSO-enabled login page still opens on the local form.
+                    maxLength: 64
+                    type: string
+                  keystoneURL:
+                    description: |-
+                      KeystoneURL is the BROWSER-facing Keystone base URL the SSO redirect is
+                      built from (WEBSSO_KEYSTONE_URL). It exists because
+                      spec.keystoneEndpoint is by contract the cluster-local Service URL,
+                      consumed server-side by the Django backend — redirecting a browser there
+                      would fail to resolve. Set it to the externally routable Keystone
+                      endpoint (e.g. "https://keystone.example.com/v3"); when empty the
+                      setting is omitted and Horizon falls back to spec.keystoneEndpoint,
+                      which only works when the two happen to coincide.
+                    maxLength: 512
+                    pattern: ^https?://
+                    type: string
+                type: object
+                x-kubernetes-validations:
+                - message: websso.choices must contain at least one choice when websso.enabled
+                    is true
+                  rule: '!self.enabled || (has(self.choices) && size(self.choices)
+                    > 0)'
+                - message: websso.initialChoice must match the id of one of websso.choices
+                  rule: '!has(self.initialChoice) || size(self.initialChoice) == 0
+                    || (has(self.choices) && self.choices.exists(c, c.id == self.initialChoice))'
+                - message: every websso.idpMapping key must match the id of one of
+                    websso.choices
+                  rule: '!has(self.idpMapping) || self.idpMapping.all(k, has(self.choices)
+                    && self.choices.exists(c, c.id == k))'
             required:
             - cache
             - image

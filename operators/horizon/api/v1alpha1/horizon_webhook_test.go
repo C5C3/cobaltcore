@@ -6,6 +6,7 @@ package v1alpha1
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -312,11 +313,39 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 	h.Spec.ExtraConfig = map[string]apiextensionsv1.JSON{
 		"SECRET_KEY": {Raw: []byte(`"x"`)},
 		"bad name":   {Raw: []byte(`"y"`)},
+		// Collides with the typed spec.websso / spec.multiDomain blocks set
+		// below, so both extraConfig-collision guards participate.
+		SettingWebSSOChoices:             {Raw: []byte(`[]`)},
+		SettingMultiDomainDomainDropdown: {Raw: []byte(`true`)},
 	}
 	h.Spec.Gateway = &GatewaySpec{}
 	h.Spec.NetworkPolicy = &NetworkPolicySpec{}
 	h.Spec.Autoscaling = &AutoscalingSpec{MaxReplicas: 0}
 	h.Spec.Logging = &LoggingSpec{Format: "xml", PerLoggerLevels: map[string]string{"django": "TRACE"}}
+	// Break websso on every hook: a duplicate choice id, an initialChoice and
+	// an idpMapping key that name no declared choice, and a non-URL
+	// keystoneURL. Every new websso validation hook must participate in the
+	// aggregated error so a future short-circuit is caught here.
+	h.Spec.WebSSO = &WebSSOSpec{
+		Enabled: true,
+		Choices: []WebSSOChoice{
+			{ID: "keycloak_openid", Label: "Keycloak"},
+			{ID: "keycloak_openid", Label: "Keycloak again"},
+		},
+		IDPMapping:    map[string]WebSSOIDPTarget{"unknown_choice": {IdentityProvider: "kc", Protocol: "openid"}},
+		InitialChoice: "not-a-choice",
+		KeystoneURL:   "ftp://keystone.example.com/v3",
+	}
+	// Break multiDomain: dropdown enabled without multi-domain support, and a
+	// duplicate domain name.
+	h.Spec.MultiDomain = &MultiDomainSpec{
+		Enabled:        false,
+		DomainDropdown: true,
+		DomainChoices: []DomainChoice{
+			{Name: "planetexpress", Label: "Planet Express"},
+			{Name: "planetexpress", Label: "Planet Express again"},
+		},
+	}
 
 	_, err := w.ValidateCreate(context.Background(), h)
 	g.Expect(err).To(gomega.HaveOccurred())
@@ -334,10 +363,231 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 		"maxReplicas must be at least 1",
 		"logging.format",
 		"level must be one of",
+		// Every websso and multiDomain validation path must participate.
+		"websso.choices[1].id",
+		"websso.initialChoice",
+		"websso.idpMapping[unknown_choice]",
+		"websso.keystoneURL",
+		"multiDomain.domainDropdown",
+		"multiDomain.domainChoices[1].name",
+		"WEBSSO_CHOICES is managed via spec.websso",
+		"OPENSTACK_KEYSTONE_DOMAIN_DROPDOWN is managed via spec.multiDomain",
 	} {
 		g.Expect(err.Error()).To(gomega.ContainSubstring(sub),
 			"aggregated error must contain %q", sub)
 	}
+}
+
+// TestDefault_WebSSOPrependsCredentialsChoice pins the credentials fallback:
+// enabling SSO must never lock out local accounts, so the defaulter prepends
+// the credentials choice and preselects it.
+func TestDefault_WebSSOPrependsCredentialsChoice(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &HorizonWebhook{}
+	h := validHorizon()
+	h.Spec.WebSSO = &WebSSOSpec{
+		Enabled: true,
+		Choices: []WebSSOChoice{{ID: "keycloak_openid", Label: "Keycloak"}},
+	}
+
+	g.Expect(w.Default(context.Background(), h)).To(gomega.Succeed())
+	g.Expect(h.Spec.WebSSO.Choices).To(gomega.Equal([]WebSSOChoice{
+		{ID: DefaultWebSSOCredentialsChoiceID, Label: DefaultWebSSOCredentialsChoiceLabel},
+		{ID: "keycloak_openid", Label: "Keycloak"},
+	}))
+	g.Expect(h.Spec.WebSSO.InitialChoice).To(gomega.Equal(DefaultWebSSOCredentialsChoiceID))
+}
+
+// TestDefault_WebSSOKeepsExplicitCredentialsChoiceAndInitialChoice guards
+// idempotency: a second admission pass must not duplicate the fallback or
+// overwrite an operator's explicit initialChoice.
+func TestDefault_WebSSOKeepsExplicitCredentialsChoiceAndInitialChoice(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &HorizonWebhook{}
+	h := validHorizon()
+	h.Spec.WebSSO = &WebSSOSpec{
+		Enabled: true,
+		Choices: []WebSSOChoice{
+			{ID: "keycloak_openid", Label: "Keycloak"},
+			{ID: DefaultWebSSOCredentialsChoiceID, Label: "Local"},
+		},
+		InitialChoice: "keycloak_openid",
+	}
+
+	g.Expect(w.Default(context.Background(), h)).To(gomega.Succeed())
+	g.Expect(h.Spec.WebSSO.Choices).To(gomega.HaveLen(2))
+	g.Expect(h.Spec.WebSSO.InitialChoice).To(gomega.Equal("keycloak_openid"))
+}
+
+// TestDefault_WebSSODisabledIsUntouched ensures a disabled (or absent) block
+// stays inert, so the renderer keeps emitting nothing at all.
+func TestDefault_WebSSODisabledIsUntouched(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &HorizonWebhook{}
+
+	h := validHorizon()
+	h.Spec.WebSSO = &WebSSOSpec{Enabled: false}
+	g.Expect(w.Default(context.Background(), h)).To(gomega.Succeed())
+	g.Expect(h.Spec.WebSSO.Choices).To(gomega.BeEmpty())
+	g.Expect(h.Spec.WebSSO.InitialChoice).To(gomega.BeEmpty())
+
+	h = validHorizon()
+	g.Expect(w.Default(context.Background(), h)).To(gomega.Succeed())
+	g.Expect(h.Spec.WebSSO).To(gomega.BeNil())
+	g.Expect(h.Spec.MultiDomain).To(gomega.BeNil())
+}
+
+// TestDefault_MultiDomainDefaultsDefaultDomain covers the enabled path; a
+// disabled block must keep an empty defaultDomain.
+func TestDefault_MultiDomainDefaultsDefaultDomain(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &HorizonWebhook{}
+
+	h := validHorizon()
+	h.Spec.MultiDomain = &MultiDomainSpec{Enabled: true}
+	g.Expect(w.Default(context.Background(), h)).To(gomega.Succeed())
+	g.Expect(h.Spec.MultiDomain.DefaultDomain).To(gomega.Equal(DefaultMultiDomainDefaultDomain))
+
+	h = validHorizon()
+	h.Spec.MultiDomain = &MultiDomainSpec{Enabled: false}
+	g.Expect(w.Default(context.Background(), h)).To(gomega.Succeed())
+	g.Expect(h.Spec.MultiDomain.DefaultDomain).To(gomega.BeEmpty())
+}
+
+// TestValidate_WebSSOEnabledRequiresChoices covers the webhook-bypassed CR
+// (envtest, direct etcd write) where the defaulter never ran.
+func TestValidate_WebSSOEnabledRequiresChoices(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &HorizonWebhook{}
+	h := validHorizon()
+	h.Spec.WebSSO = &WebSSOSpec{Enabled: true}
+
+	_, err := w.ValidateCreate(context.Background(), h)
+	g.Expect(err).To(gomega.HaveOccurred())
+	g.Expect(err.Error()).To(gomega.ContainSubstring("at least one choice must be declared"))
+}
+
+// TestDefault_ThenValidate_WebSSOEnabledRequiresChoices reproduces the real
+// admission order: mutating admission runs first, then the CEL rules and the
+// validating webhook see whatever it wrote. A defaulter that prepended the
+// credentials fallback onto an empty list would hand both gates a one-element
+// list and the requirement would never fire.
+func TestDefault_ThenValidate_WebSSOEnabledRequiresChoices(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &HorizonWebhook{}
+	h := validHorizon()
+	h.Spec.WebSSO = &WebSSOSpec{Enabled: true}
+
+	g.Expect(w.Default(context.Background(), h)).To(gomega.Succeed())
+	g.Expect(h.Spec.WebSSO.Choices).To(gomega.BeEmpty(),
+		"an invalid CR must not be defaulted into a valid one")
+
+	_, err := w.ValidateCreate(context.Background(), h)
+	g.Expect(err).To(gomega.HaveOccurred())
+	g.Expect(err.Error()).To(gomega.ContainSubstring("at least one choice must be declared"))
+}
+
+// TestDefault_WebSSORejectsChoicesOverflowingThePrepend pins the MaxItems
+// arithmetic: mutating admission runs before schema validation, so a list the
+// prepend would grow past the bound must be rejected here — naming the count
+// the operator submitted — rather than by the API server naming count+1.
+func TestDefault_WebSSORejectsChoicesOverflowingThePrepend(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &HorizonWebhook{}
+
+	choices := make([]WebSSOChoice, 0, maxWebSSOChoices)
+	for i := 0; i < maxWebSSOChoices; i++ {
+		choices = append(choices, WebSSOChoice{
+			ID:    fmt.Sprintf("idp-%d", i),
+			Label: fmt.Sprintf("IdP %d", i),
+		})
+	}
+
+	h := validHorizon()
+	h.Spec.WebSSO = &WebSSOSpec{Enabled: true, Choices: choices}
+	err := w.Default(context.Background(), h)
+	g.Expect(err).To(gomega.HaveOccurred())
+	g.Expect(err.Error()).To(gomega.ContainSubstring("spec.websso.choices"))
+	g.Expect(err.Error()).To(gomega.ContainSubstring(fmt.Sprintf("must have at most %d entries", maxWebSSOChoices-1)))
+	g.Expect(h.Spec.WebSSO.Choices).To(gomega.HaveLen(maxWebSSOChoices), "the rejected list must not be mutated")
+
+	// The same count WITH the credentials fallback already declared needs no
+	// prepend, so it stays within the bound and is accepted.
+	h = validHorizon()
+	h.Spec.WebSSO = &WebSSOSpec{
+		Enabled: true,
+		Choices: append([]WebSSOChoice{{ID: DefaultWebSSOCredentialsChoiceID, Label: DefaultWebSSOCredentialsChoiceLabel}},
+			choices[1:]...),
+	}
+	g.Expect(w.Default(context.Background(), h)).To(gomega.Succeed())
+	g.Expect(h.Spec.WebSSO.Choices).To(gomega.HaveLen(maxWebSSOChoices))
+
+	// One below the bound still leaves room for the prepend.
+	h = validHorizon()
+	h.Spec.WebSSO = &WebSSOSpec{Enabled: true, Choices: choices[1:]}
+	g.Expect(w.Default(context.Background(), h)).To(gomega.Succeed())
+	g.Expect(h.Spec.WebSSO.Choices).To(gomega.HaveLen(maxWebSSOChoices))
+	g.Expect(h.Spec.WebSSO.Choices[0].ID).To(gomega.Equal(DefaultWebSSOCredentialsChoiceID))
+}
+
+// TestValidate_MultiDomainDropdownRequiresChoices covers the dropdown that
+// would render an empty select.
+func TestValidate_MultiDomainDropdownRequiresChoices(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &HorizonWebhook{}
+	h := validHorizon()
+	h.Spec.MultiDomain = &MultiDomainSpec{Enabled: true, DomainDropdown: true}
+
+	_, err := w.ValidateCreate(context.Background(), h)
+	g.Expect(err).To(gomega.HaveOccurred())
+	g.Expect(err.Error()).To(gomega.ContainSubstring("at least one domain choice must be declared"))
+}
+
+// TestValidate_WebSSOAcceptsFullyMappedBlock pins the happy path so the
+// defense-in-depth checks cannot drift into rejecting a valid projection —
+// this is exactly the shape the ControlPlane operator projects.
+func TestValidate_WebSSOAcceptsFullyMappedBlock(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &HorizonWebhook{}
+	h := validHorizon()
+	h.Spec.WebSSO = &WebSSOSpec{
+		Enabled: true,
+		Choices: []WebSSOChoice{
+			{ID: DefaultWebSSOCredentialsChoiceID, Label: DefaultWebSSOCredentialsChoiceLabel},
+			{ID: "keycloak_openid", Label: "keycloak"},
+		},
+		IDPMapping:    map[string]WebSSOIDPTarget{"keycloak_openid": {IdentityProvider: "keycloak", Protocol: "openid"}},
+		InitialChoice: DefaultWebSSOCredentialsChoiceID,
+		KeystoneURL:   "https://keystone.127-0-0-1.nip.io/v3",
+	}
+	h.Spec.MultiDomain = &MultiDomainSpec{
+		Enabled:        true,
+		DefaultDomain:  DefaultMultiDomainDefaultDomain,
+		DomainDropdown: true,
+		DomainChoices: []DomainChoice{
+			{Name: "Default", Label: "Default"},
+			{Name: "planetexpress", Label: "planetexpress"},
+		},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), h)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+}
+
+// TestValidate_ExtraConfigWebSSOAloneIsAllowed pins the escape hatch: the
+// collision guard must only fire when the typed block is ALSO set, so a CR
+// that predates the typed field keeps validating.
+func TestValidate_ExtraConfigWebSSOAloneIsAllowed(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &HorizonWebhook{}
+	h := validHorizon()
+	h.Spec.ExtraConfig = map[string]apiextensionsv1.JSON{
+		SettingWebSSOEnabled:      {Raw: []byte(`true`)},
+		SettingMultiDomainSupport: {Raw: []byte(`true`)},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), h)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
 }
 
 func TestValidateUpdate_ValidatesNewObject(t *testing.T) {
