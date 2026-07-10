@@ -560,6 +560,145 @@ type KORCSpec struct {
 	// AdminCredential declares the admin OpenStack credential K-ORC uses to
 	// reconcile resources, plus the application-credential rotation policy.
 	AdminCredential AdminCredentialSpec `json:"adminCredential"`
+
+	// ServiceAccounts declares the composite OpenStack service accounts the
+	// control plane manages for other OpenStack services (nova, glance, …). Each
+	// entry projects one K-ORC User and one Project (role assignments follow as a
+	// deferred fast-follow — see ServiceAccountSpec.Roles), with an
+	// operator-generated password delivered to Keystone via K-ORC's passwordRef,
+	// mirrored to a per-CR OpenBao path, and materialized as a stable consumer
+	// Secret. The field is mode-independent: the same declaration works on a
+	// Managed and an External ControlPlane.
+	//
+	// maxItems bounds the child-CR and external-API amplification of one
+	// admission, mirroring the managedEntries cap: every entry projects a K-ORC
+	// User and Project (each a write against Keystone) plus the OpenBao
+	// round-trip.
+	// +optional
+	// +listType=map
+	// +listMapKey=name
+	// +kubebuilder:validation:MaxItems=32
+	ServiceAccounts []ServiceAccountSpec `json:"serviceAccounts,omitempty"`
+}
+
+// ServiceAccountSpec declares one composite OpenStack service account: a K-ORC
+// User with an operator-generated, OpenBao-backed, rotatable password, its
+// project (referenced or created), and the roles bound to it (deferred).
+type ServiceAccountSpec struct {
+	// Name keys the listType=map ServiceAccounts list (the apiserver rejects
+	// duplicates) and is embedded verbatim in the names of every child CR and
+	// Secret the entry projects, hence the DNS-1123 label shape. It is NOT the
+	// OpenStack user name — that is userName, which defaults to this value.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	Name string `json:"name"`
+
+	// UserName is the OpenStack user name managed in Keystone. Defaults to Name
+	// via the defaulting webhook. The pattern and caps mirror K-ORC's own
+	// OpenStackName (a comma would only move the rejection to the K-ORC CRD, which
+	// wedges the reconcile in an exponential backoff no ControlPlane field error
+	// explains).
+	// +optional
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=255
+	// +kubebuilder:validation:Pattern=`^[^,]+$`
+	UserName string `json:"userName,omitempty"`
+
+	// DomainName is the OpenStack domain the user and project live in. When empty
+	// the reconciler resolves it to the effective admin domain
+	// (spec.korc.adminCredential.domainName). The pattern and caps mirror K-ORC's
+	// KeystoneName/OpenStackName filters.
+	// +optional
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=255
+	// +kubebuilder:validation:Pattern=`^[^,]+$`
+	DomainName string `json:"domainName,omitempty"`
+
+	// Adopt is the explicit consent that a pre-existing Keystone user of this
+	// name may be taken over. The collision posture is conservative and
+	// fail-loudly by default: a declared account whose user already exists in
+	// Keystone surfaces ServiceAccountsReady=False/ServiceAccountCollision and is
+	// never touched. Setting adopt=true opts into a PASSWORD TAKEOVER of that
+	// account — the operator overwrites its password with a generated one — AND
+	// into operator ownership of its lifecycle: an adopted user is a managed
+	// K-ORC User, so it is DELETED from Keystone when the ControlPlane is torn
+	// down, exactly like one the operator created. Adopt only what the control
+	// plane should own.
+	// +optional
+	Adopt bool `json:"adopt,omitempty"`
+
+	// Project is the OpenStack project the service user is associated with,
+	// either referenced (the default) or created and owned by the control plane.
+	Project ServiceAccountProjectSpec `json:"project"`
+
+	// Roles are the OpenStack role names bound to the user on the project. They
+	// are ACCEPTED but not yet projected: K-ORC v2.6.0 — the pinned and newest
+	// release — ships no RoleAssignment kind, so role-assignment projection is a
+	// sanctioned fast-follow once upstream releases it. The deferral is NOT
+	// silent: when roles is non-empty the reconciler emits a
+	// RoleAssignmentsDeferred event so an operator knows the bindings are not yet
+	// applied. The field is carried now so the CRD schema is stable across levels.
+	// +optional
+	// +kubebuilder:validation:MaxItems=32
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=255
+	// +kubebuilder:validation:items:Pattern=`^[^,]+$`
+	Roles []string `json:"roles,omitempty"`
+
+	// Rotation tunes how the account's password is rotated. When nil the mode
+	// defaults to Manual (on-demand rotation via a CredentialRotation CR).
+	// +optional
+	Rotation *ServiceAccountRotationSpec `json:"rotation,omitempty"`
+}
+
+// ServiceAccountProjectSpec declares the OpenStack project a service account is
+// associated with.
+type ServiceAccountProjectSpec struct {
+	// Name is the OpenStack project name. The pattern and caps mirror K-ORC's
+	// KeystoneName filter.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=255
+	// +kubebuilder:validation:Pattern=`^[^,]+$`
+	Name string `json:"name"`
+
+	// Create selects whether the project is referenced or managed. false (the
+	// default) REFERENCES a pre-existing project via an unmanaged K-ORC import —
+	// the control plane never creates or deletes it. true CREATES and OWNS a
+	// managed K-ORC Project, gated by the same fail-loudly collision probe as the
+	// user: a project of that name already existing in Keystone surfaces
+	// ServiceAccountCollision rather than silently adopting it.
+	// +optional
+	Create bool `json:"create,omitempty"`
+}
+
+// ServiceAccountRotationMode selects how a service account's password is rotated.
+// It is deliberately NOT the admin RotationMode: there is no external password
+// source, so PasswordDriven does not apply.
+// +kubebuilder:validation:Enum=Manual;Scheduled
+type ServiceAccountRotationMode string
+
+const (
+	// ServiceAccountRotationModeManual (the default) rotates the password only
+	// when a CredentialRotation CR requests it.
+	ServiceAccountRotationModeManual ServiceAccountRotationMode = "Manual"
+	// ServiceAccountRotationModeScheduled rotates on a schedule. DECISION:
+	// surfaced in the enum now so the CRD schema is stable, but the scheduled
+	// rotation logic is deferred to a later level; the deferral is NOT silent
+	// (the reconciler emits a ScheduledRotationDeferred event), mirroring
+	// RotationModeScheduled on the admin credential.
+	ServiceAccountRotationModeScheduled ServiceAccountRotationMode = "Scheduled"
+)
+
+// ServiceAccountRotationSpec declares the rotation policy for a service account's
+// password.
+type ServiceAccountRotationSpec struct {
+	// Mode selects the rotation strategy. Defaults to Manual via both the CRD
+	// schema default and the defaulting webhook.
+	// +kubebuilder:validation:Enum=Manual;Scheduled
+	// +kubebuilder:default=Manual
+	// +optional
+	Mode ServiceAccountRotationMode `json:"mode,omitempty"`
 }
 
 // AdminCredentialSpec declares the admin OpenStack credential and the
@@ -614,6 +753,12 @@ type AdminCredentialSpec struct {
 	// alongside the admin credential (e.g. the projects/roles a fresh control
 	// plane needs). The element shape is intentionally minimal at L1; the
 	// reconciler (L2) interprets it.
+	//
+	// RESERVED, unreconciled: no controller reads this field today. For service
+	// users of other OpenStack services, declare a composite service account via
+	// spec.korc.serviceAccounts instead — it owns the full user + project +
+	// password lifecycle. This field stays reserved for a later bootstrap use
+	// case.
 	// +optional
 	BootstrapResources []BootstrapResourceSpec `json:"bootstrapResources,omitempty"`
 }
@@ -794,6 +939,55 @@ type ControlPlaneStatus struct {
 	// rather than importing them.
 	// +optional
 	Catalog *CatalogStatus `json:"catalog,omitempty"`
+
+	// ServiceAccounts reports the observed state of the declared service
+	// accounts, keyed by name. It is the discoverability half of the consumption
+	// contract: SecretName names the materialized Secret each account's password
+	// is read from.
+	// +optional
+	// +listType=map
+	// +listMapKey=name
+	ServiceAccounts []ServiceAccountStatus `json:"serviceAccounts,omitempty"`
+}
+
+// ServiceAccountStatus reports the observed state of one declared service
+// account.
+type ServiceAccountStatus struct {
+	// Name is the service account name; it keys the listType=map ServiceAccounts
+	// list.
+	Name string `json:"name"`
+
+	// Ready reports whether the user, project, and materialized password Secret
+	// are all converged for the current password generation.
+	Ready bool `json:"ready"`
+
+	// UserID is the OpenStack user id K-ORC resolved (or created). Empty until the
+	// User is Available.
+	// +optional
+	// +kubebuilder:validation:MaxLength=1024
+	UserID string `json:"userID,omitempty"`
+
+	// ProjectID is the OpenStack project id K-ORC resolved (or created). Empty
+	// until the Project is Available.
+	// +optional
+	// +kubebuilder:validation:MaxLength=1024
+	ProjectID string `json:"projectID,omitempty"`
+
+	// PasswordGeneration is the monotonically increasing generation of the
+	// password currently applied to the user. It increments on every rotation.
+	// +optional
+	PasswordGeneration int64 `json:"passwordGeneration,omitempty"`
+
+	// LastPasswordRotation is the timestamp of the last successful password
+	// rotation.
+	// +optional
+	LastPasswordRotation *metav1.Time `json:"lastPasswordRotation,omitempty"`
+
+	// SecretName is the name of the materialized Secret carrying the account's
+	// credentials (key "password" and a ready-to-use "clouds.yaml"). It is the
+	// documented, stable handle consumers read the credentials from.
+	// +optional
+	SecretName string `json:"secretName,omitempty"`
 }
 
 // CatalogStatus reports how the External-mode identity catalog imports resolved.
