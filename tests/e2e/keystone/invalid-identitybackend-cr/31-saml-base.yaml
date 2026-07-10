@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Valid base SAML KeystoneIdentityBackend for the sibling-rejection fixtures.
+# It is applied FIRST and must SUCCEED. Its identityProviderName defaults to
+# the CR name ("saml-base-backend"), its protocolID to "mapped", and its
+# remoteIDAttribute to HTTP_MELLON_IDP; the 42/43 fixtures collide with it on
+# the at-most-one-SAML-backend rule and the cross-type idp-name rule.
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: KeystoneIdentityBackend
+metadata:
+  name: saml-base-backend
+spec:
+  keystoneRef:
+    name: keystone
+  domain:
+    name: saml-base
+  type: SAML
+  saml:
+    idpEntityID: https://idp.example.com/realms/forge
+    idpMetadata:
+      secretRef:
+        name: corp-saml-idp-metadata

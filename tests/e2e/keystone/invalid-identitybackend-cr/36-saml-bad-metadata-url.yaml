@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# SAML backend whose idpMetadata.url uses ldap:// instead of https://. The IdP
+# metadata carries the assertion-signing certificate, so a plaintext fetch would
+# let an on-path attacker substitute the trust anchor; https:// is mandatory.
+# Rejected by the Pattern marker on SAMLIdPMetadataSpec.URL (^https://) and by
+# defense-in-depth in the validating webhook. Admission must reject this CR with
+# an $error referencing the "idpMetadata.url" field path.
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: KeystoneIdentityBackend
+metadata:
+  name: invalid-saml-bad-metadata-url
+spec:
+  keystoneRef:
+    name: keystone
+  domain:
+    name: saml-badurl
+  type: SAML
+  saml:
+    idpEntityID: https://idp.example.com/realms/forge
+    idpMetadata:
+      url: ldap://not-a-metadata-url

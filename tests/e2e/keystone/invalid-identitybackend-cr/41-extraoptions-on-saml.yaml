@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# SAML backend that carries spec.extraOptions — documented [ldap] vocabulary
+# gated to type LDAP by the spec-level CEL rule
+# (!has(self.extraOptions) || self.type == 'LDAP') and webhook
+# defense-in-depth. Admission must reject this CR with an $error referencing
+# "only supported on type LDAP".
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: KeystoneIdentityBackend
+metadata:
+  name: invalid-extraoptions-on-saml
+spec:
+  keystoneRef:
+    name: keystone
+  domain:
+    name: saml-extraopts
+  type: SAML
+  saml:
+    idpEntityID: https://idp.example.com/realms/forge
+    idpMetadata:
+      secretRef:
+        name: corp-saml-idp-metadata
+  extraOptions:
+    page_size: "100"

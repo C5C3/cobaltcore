@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# SAML backend whose idpMetadata sets BOTH secretRef and url. The three
+# metadata sources are mutually exclusive (CEL exactly-one rule plus webhook
+# defense-in-depth). Admission must reject this CR with an $error referencing
+# "exactly one of inline, secretRef, or url".
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: KeystoneIdentityBackend
+metadata:
+  name: invalid-saml-two-metadata
+spec:
+  keystoneRef:
+    name: keystone
+  domain:
+    name: saml-twometa
+  type: SAML
+  saml:
+    idpEntityID: https://idp.example.com/realms/forge
+    idpMetadata:
+      secretRef:
+        name: corp-saml-idp-metadata
+      url: https://idp.example.com/realms/forge/descriptor

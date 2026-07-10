@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# SAML backend whose identityProviderName collides with the 18-oidc-base CR's
+# default (its CR name) on the same Keystone. The identity provider name is a
+# keystone-global path segment shared by OIDC and SAML federation objects, so
+# the webhook enforces uniqueness across every federation sibling — not just
+# same-type pairs. Admission must reject this CR with an $error referencing
+# "identity provider name collides".
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: KeystoneIdentityBackend
+metadata:
+  name: invalid-saml-cross-idp
+spec:
+  keystoneRef:
+    name: keystone
+  domain:
+    name: saml-crosstype
+  type: SAML
+  saml:
+    idpEntityID: https://idp.example.com/realms/forge
+    idpMetadata:
+      secretRef:
+        name: corp-saml-idp-metadata
+    identityProviderName: oidc-base-backend

@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# SAML backend whose forwardAttributes entry ("user-name") contains a dash,
+# which is not allowed: the entries render into Apache RequestHeader
+# directives, so the items Pattern marker (^[A-Za-z0-9_]+$) and webhook
+# defense-in-depth reject it. Admission must reject this CR with an $error
+# referencing "^[A-Za-z0-9_]+$".
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: KeystoneIdentityBackend
+metadata:
+  name: invalid-saml-forward-attr
+spec:
+  keystoneRef:
+    name: keystone
+  domain:
+    name: saml-fwdattr
+  type: SAML
+  saml:
+    idpEntityID: https://idp.example.com/realms/forge
+    idpMetadata:
+      secretRef:
+        name: corp-saml-idp-metadata
+    forwardAttributes:
+    - user-name

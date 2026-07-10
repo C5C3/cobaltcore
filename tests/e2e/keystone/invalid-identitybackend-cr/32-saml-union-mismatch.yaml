@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# KeystoneIdentityBackend with type SAML but no spec.saml block. The union
+# rule is enforced by the spec-level CEL XValidation
+# ((self.type == 'SAML') == has(self.saml)) and by defense-in-depth in the
+# validating webhook. Admission must reject this CR with an $error
+# referencing "type SAML requires spec.saml".
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: KeystoneIdentityBackend
+metadata:
+  name: invalid-saml-union-mismatch
+spec:
+  keystoneRef:
+    name: keystone
+  domain:
+    name: saml-union
+  type: SAML

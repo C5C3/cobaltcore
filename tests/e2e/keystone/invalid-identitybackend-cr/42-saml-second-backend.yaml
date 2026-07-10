@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Second SAML backend on the same Keystone as 31-saml-base. mod_auth_mellon's
+# SP configuration projects onto a shared /v3 parent Location, so at most one
+# SAML backend per Keystone is supported (webhook-enforced). Admission must
+# reject this CR with an $error referencing "at most one SAML backend".
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: KeystoneIdentityBackend
+metadata:
+  name: invalid-saml-second
+spec:
+  keystoneRef:
+    name: keystone
+  domain:
+    name: saml-two
+  type: SAML
+  saml:
+    idpEntityID: https://idp.example.com/realms/forge
+    idpMetadata:
+      secretRef:
+        name: corp-saml-idp-metadata

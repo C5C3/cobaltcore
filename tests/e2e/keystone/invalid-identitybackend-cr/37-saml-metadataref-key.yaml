@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# SAML backend that sets spec.saml.idpMetadata.secretRef.key. The metadata
+# Secret's data key is fixed by contract ("idp-metadata.xml"), so a key
+# override is rejected by the validating webhook. Admission must reject this
+# CR with an $error referencing "data key is fixed".
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: KeystoneIdentityBackend
+metadata:
+  name: invalid-saml-metadataref-key
+spec:
+  keystoneRef:
+    name: keystone
+  domain:
+    name: saml-metaref
+  type: SAML
+  saml:
+    idpEntityID: https://idp.example.com/realms/forge
+    idpMetadata:
+      secretRef:
+        name: corp-saml-idp-metadata
+        key: custom

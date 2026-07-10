@@ -42,11 +42,13 @@ _CHAINSAW_TEST = _HERE / "chainsaw-test.yaml"
 # 29-immutable-type OIDC flip), the duplicate-domain fixture (13), the two
 # control-character INI-injection create-rejection fixtures (14-15), the two
 # extraOptions key-shape fixtures (16 key control-char, 17 denylist-evading
-# trailing space), the OIDC base + create-rejection fixtures (18-25), and the
-# OIDC sibling-rejection fixtures (26-28). Bumping this value requires adding
-# the matching Fixture entry AND the matching `file: <name>` line in
-# chainsaw-test.yaml.
-_EXPECTED_FIXTURE_COUNT = 31
+# trailing space), the OIDC base + create-rejection fixtures (18-25), the
+# OIDC sibling-rejection fixtures (26-28), the immutable-type flip (29), the
+# http-introspection fixture (30), the SAML base + create-rejection fixtures
+# (31-41), and the SAML sibling-rejection fixtures (42-43). Bumping this value
+# requires adding the matching Fixture entry AND the matching `file: <name>`
+# line in chainsaw-test.yaml.
+_EXPECTED_FIXTURE_COUNT = 44
 
 
 def _load_generator() -> types.ModuleType:

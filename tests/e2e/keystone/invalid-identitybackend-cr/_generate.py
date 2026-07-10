@@ -31,6 +31,13 @@ Three fixture categories share this scaffold:
   remoteIDAttribute uniformity, and the single-introspection-backend limit.
   ``30`` enables introspection with an http endpoint, which the webhook
   rejects (mod_auth_openidc requires https there).
+* SAML rejection fixtures (``31``-``43``) exercise the SAML federation
+  surface: ``31-saml-base`` is a valid SAML backend applied first, ``32``-
+  ``41`` are create-rejection fixtures (union mismatch, metadata-source
+  count, URL scheme, fixed-key contracts, remoteIDAttribute prefix,
+  forwardAttributes charset, extraOptions type gate), and ``42``-``43``
+  collide with the SAML/OIDC bases on the at-most-one-SAML-backend rule and
+  the cross-type identity-provider-name rule.
 
 Usage:
 
@@ -158,6 +165,93 @@ OIDC_CLIENTREF_KEY = """\
     clientSecretRef:
       name: corp-oidc-client
       key: secret
+"""
+
+# Canonical valid SAML block (secretRef metadata source). Any future required
+# field on SAMLBackendSpec must be added below AND verified against every SAML
+# fixture.
+SAML_DEFAULT = """\
+  saml:
+    idpEntityID: https://idp.example.com/realms/forge
+    idpMetadata:
+      secretRef:
+        name: corp-saml-idp-metadata
+"""
+
+# SAML block with an empty idpMetadata (zero sources) — rejected by the CEL
+# exactly-one rule on SAMLIdPMetadataSpec.
+SAML_ZERO_METADATA = """\
+  saml:
+    idpEntityID: https://idp.example.com/realms/forge
+    idpMetadata: {}
+"""
+
+# SAML block that sets BOTH secretRef and url metadata sources — rejected by
+# the CEL exactly-one rule.
+SAML_TWO_METADATA = """\
+  saml:
+    idpEntityID: https://idp.example.com/realms/forge
+    idpMetadata:
+      secretRef:
+        name: corp-saml-idp-metadata
+      url: https://idp.example.com/realms/forge/descriptor
+"""
+
+# SAML block whose idpMetadata.url uses a non-http(s) scheme — rejected by the
+# Pattern marker (^https?://) and webhook defense-in-depth.
+SAML_BAD_METADATA_URL = """\
+  saml:
+    idpEntityID: https://idp.example.com/realms/forge
+    idpMetadata:
+      url: ldap://not-a-metadata-url
+"""
+
+# SAML block that sets idpMetadata.secretRef.key — rejected by the validating
+# webhook (the metadata Secret's data key is fixed by contract).
+SAML_METADATAREF_KEY = """\
+  saml:
+    idpEntityID: https://idp.example.com/realms/forge
+    idpMetadata:
+      secretRef:
+        name: corp-saml-idp-metadata
+        key: custom
+"""
+
+# SAML block that sets sp.certificateSecretRef.key — rejected by the validating
+# webhook (the SP certificate Secret's data keys are fixed by contract).
+SAML_CERTREF_KEY = """\
+  saml:
+    idpEntityID: https://idp.example.com/realms/forge
+    idpMetadata:
+      secretRef:
+        name: corp-saml-idp-metadata
+    sp:
+      certificateSecretRef:
+        name: corp-saml-sp-cert
+        key: custom
+"""
+
+# SAML block whose remoteIDAttribute lacks the HTTP_ prefix — rejected by the
+# validating webhook (it must be header-conveyable across the sidecar hop).
+SAML_REMOTE_ID_NO_HTTP = """\
+  saml:
+    idpEntityID: https://idp.example.com/realms/forge
+    idpMetadata:
+      secretRef:
+        name: corp-saml-idp-metadata
+    remoteIDAttribute: MELLON_IDP
+"""
+
+# SAML block whose forwardAttributes entry contains an invalid character —
+# rejected by the items Pattern marker and webhook defense-in-depth.
+SAML_FORWARD_ATTR_INVALID = """\
+  saml:
+    idpEntityID: https://idp.example.com/realms/forge
+    idpMetadata:
+      secretRef:
+        name: corp-saml-idp-metadata
+    forwardAttributes:
+    - user-name
 """
 
 
@@ -645,6 +739,188 @@ FIXTURES: list[Fixture] = [
 # an http endpoint would crash-loop the sidecar — so the webhook rejects it
 # at admission. Admission must reject this CR with an $error referencing
 # "introspectionEndpoint must use https://".""",
+    ),
+    # ── SAML fixtures (federation surface, applied after the OIDC block) ─────
+    Fixture(
+        filename="31-saml-base.yaml",
+        name="saml-base-backend",
+        domain_name="saml-base",
+        backend_type="SAML",
+        ldap=None,
+        trailing=SAML_DEFAULT,
+        comment="""\
+# Valid base SAML KeystoneIdentityBackend for the sibling-rejection fixtures.
+# It is applied FIRST and must SUCCEED. Its identityProviderName defaults to
+# the CR name ("saml-base-backend"), its protocolID to "mapped", and its
+# remoteIDAttribute to HTTP_MELLON_IDP; the 42/43 fixtures collide with it on
+# the at-most-one-SAML-backend rule and the cross-type idp-name rule.""",
+    ),
+    Fixture(
+        filename="32-saml-union-mismatch.yaml",
+        name="invalid-saml-union-mismatch",
+        domain_name="saml-union",
+        backend_type="SAML",
+        ldap=None,
+        comment="""\
+# KeystoneIdentityBackend with type SAML but no spec.saml block. The union
+# rule is enforced by the spec-level CEL XValidation
+# ((self.type == 'SAML') == has(self.saml)) and by defense-in-depth in the
+# validating webhook. Admission must reject this CR with an $error
+# referencing "type SAML requires spec.saml".""",
+    ),
+    Fixture(
+        filename="33-saml-block-on-ldap.yaml",
+        name="invalid-saml-block-on-ldap",
+        domain_name="saml-ldap",
+        trailing=SAML_DEFAULT,
+        comment="""\
+# KeystoneIdentityBackend with type LDAP that also carries a spec.saml block.
+# The SAML union rule ((self.type == 'SAML') == has(self.saml)) rejects the
+# stray block. Admission must reject this CR with an $error referencing
+# "type SAML requires spec.saml".""",
+    ),
+    Fixture(
+        filename="34-saml-zero-metadata.yaml",
+        name="invalid-saml-zero-metadata",
+        domain_name="saml-zero",
+        backend_type="SAML",
+        ldap=None,
+        trailing=SAML_ZERO_METADATA,
+        comment="""\
+# SAML backend whose idpMetadata sets no source. Exactly one of inline,
+# secretRef, or url must be set (CEL rule on SAMLIdPMetadataSpec plus webhook
+# defense-in-depth). Admission must reject this CR with an $error referencing
+# "exactly one of inline, secretRef, or url".""",
+    ),
+    Fixture(
+        filename="35-saml-two-metadata.yaml",
+        name="invalid-saml-two-metadata",
+        domain_name="saml-twometa",
+        backend_type="SAML",
+        ldap=None,
+        trailing=SAML_TWO_METADATA,
+        comment="""\
+# SAML backend whose idpMetadata sets BOTH secretRef and url. The three
+# metadata sources are mutually exclusive (CEL exactly-one rule plus webhook
+# defense-in-depth). Admission must reject this CR with an $error referencing
+# "exactly one of inline, secretRef, or url".""",
+    ),
+    Fixture(
+        filename="36-saml-bad-metadata-url.yaml",
+        name="invalid-saml-bad-metadata-url",
+        domain_name="saml-badurl",
+        backend_type="SAML",
+        ldap=None,
+        trailing=SAML_BAD_METADATA_URL,
+        comment="""\
+# SAML backend whose idpMetadata.url uses ldap:// instead of https://. The IdP
+# metadata carries the assertion-signing certificate, so a plaintext fetch would
+# let an on-path attacker substitute the trust anchor; https:// is mandatory.
+# Rejected by the Pattern marker on SAMLIdPMetadataSpec.URL (^https://) and by
+# defense-in-depth in the validating webhook. Admission must reject this CR with
+# an $error referencing the "idpMetadata.url" field path.""",
+    ),
+    Fixture(
+        filename="37-saml-metadataref-key.yaml",
+        name="invalid-saml-metadataref-key",
+        domain_name="saml-metaref",
+        backend_type="SAML",
+        ldap=None,
+        trailing=SAML_METADATAREF_KEY,
+        comment="""\
+# SAML backend that sets spec.saml.idpMetadata.secretRef.key. The metadata
+# Secret's data key is fixed by contract ("idp-metadata.xml"), so a key
+# override is rejected by the validating webhook. Admission must reject this
+# CR with an $error referencing "data key is fixed".""",
+    ),
+    Fixture(
+        filename="38-saml-certref-key.yaml",
+        name="invalid-saml-certref-key",
+        domain_name="saml-certref",
+        backend_type="SAML",
+        ldap=None,
+        trailing=SAML_CERTREF_KEY,
+        comment="""\
+# SAML backend that sets spec.saml.sp.certificateSecretRef.key. The SP
+# certificate Secret's data keys are fixed by contract ("tls.crt"/"tls.key"),
+# so a key override is rejected by the validating webhook. Admission must
+# reject this CR with an $error referencing "data keys are fixed".""",
+    ),
+    Fixture(
+        filename="39-saml-remote-id-no-http.yaml",
+        name="invalid-saml-remote-id",
+        domain_name="saml-remoteid",
+        backend_type="SAML",
+        ldap=None,
+        trailing=SAML_REMOTE_ID_NO_HTTP,
+        comment="""\
+# SAML backend whose remoteIDAttribute (MELLON_IDP) lacks the HTTP_ prefix.
+# The mellon env var crosses the sidecar hop as a request header, so the WSGI
+# environ key keystone reads must be header-conveyable (webhook-enforced).
+# Admission must reject this CR with an $error referencing
+# "^HTTP_[A-Za-z0-9_]+$".""",
+    ),
+    Fixture(
+        filename="40-saml-forward-attr-invalid.yaml",
+        name="invalid-saml-forward-attr",
+        domain_name="saml-fwdattr",
+        backend_type="SAML",
+        ldap=None,
+        trailing=SAML_FORWARD_ATTR_INVALID,
+        comment="""\
+# SAML backend whose forwardAttributes entry ("user-name") contains a dash,
+# which is not allowed: the entries render into Apache RequestHeader
+# directives, so the items Pattern marker (^[A-Za-z0-9_]+$) and webhook
+# defense-in-depth reject it. Admission must reject this CR with an $error
+# referencing "^[A-Za-z0-9_]+$".""",
+    ),
+    Fixture(
+        filename="41-extraoptions-on-saml.yaml",
+        name="invalid-extraoptions-on-saml",
+        domain_name="saml-extraopts",
+        backend_type="SAML",
+        ldap=None,
+        trailing=SAML_DEFAULT + """\
+  extraOptions:
+    page_size: "100"
+""",
+        comment="""\
+# SAML backend that carries spec.extraOptions — documented [ldap] vocabulary
+# gated to type LDAP by the spec-level CEL rule
+# (!has(self.extraOptions) || self.type == 'LDAP') and webhook
+# defense-in-depth. Admission must reject this CR with an $error referencing
+# "only supported on type LDAP".""",
+    ),
+    # ── SAML sibling-rejection fixtures (applied after 31-saml-base) ─────────
+    Fixture(
+        filename="42-saml-second-backend.yaml",
+        name="invalid-saml-second",
+        domain_name="saml-two",
+        backend_type="SAML",
+        ldap=None,
+        trailing=SAML_DEFAULT,
+        comment="""\
+# Second SAML backend on the same Keystone as 31-saml-base. mod_auth_mellon's
+# SP configuration projects onto a shared /v3 parent Location, so at most one
+# SAML backend per Keystone is supported (webhook-enforced). Admission must
+# reject this CR with an $error referencing "at most one SAML backend".""",
+    ),
+    Fixture(
+        filename="43-saml-cross-type-idp-name.yaml",
+        name="invalid-saml-cross-idp",
+        domain_name="saml-crosstype",
+        backend_type="SAML",
+        ldap=None,
+        trailing=SAML_DEFAULT + """\
+    identityProviderName: oidc-base-backend
+""",
+        comment="""\
+# SAML backend whose identityProviderName collides with the 18-oidc-base CR's
+# default (its CR name) on the same Keystone. The identity provider name is a
+# keystone-global path segment shared by OIDC and SAML federation objects, so
+# the webhook enforces uniqueness across every federation sibling — not just
+# same-type pairs. Admission must reject this CR with an $error referencing
+# "identity provider name collides".""",
     ),
 ]
 

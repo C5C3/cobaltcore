@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# SAML backend whose remoteIDAttribute (MELLON_IDP) lacks the HTTP_ prefix.
+# The mellon env var crosses the sidecar hop as a request header, so the WSGI
+# environ key keystone reads must be header-conveyable (webhook-enforced).
+# Admission must reject this CR with an $error referencing
+# "^HTTP_[A-Za-z0-9_]+$".
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: KeystoneIdentityBackend
+metadata:
+  name: invalid-saml-remote-id
+spec:
+  keystoneRef:
+    name: keystone
+  domain:
+    name: saml-remoteid
+  type: SAML
+  saml:
+    idpEntityID: https://idp.example.com/realms/forge
+    idpMetadata:
+      secretRef:
+        name: corp-saml-idp-metadata
+    remoteIDAttribute: MELLON_IDP

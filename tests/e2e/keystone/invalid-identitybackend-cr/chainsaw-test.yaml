@@ -300,3 +300,107 @@ spec:
         - check:
             ($error != null): true
             (contains($error, 'introspectionEndpoint must use https://')): true
+  # ── SAML rejection block ─────────────────────────────────────────────────
+  # The valid SAML base CR is applied first and must SUCCEED.
+  - try:
+    - apply:
+        file: 31-saml-base.yaml
+  # type SAML without spec.saml must be rejected (union rule).
+  - try:
+    - apply:
+        file: 32-saml-union-mismatch.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'type SAML requires spec.saml')): true
+  # type LDAP with a stray spec.saml block must be rejected (union rule).
+  - try:
+    - apply:
+        file: 33-saml-block-on-ldap.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'type SAML requires spec.saml')): true
+  # idpMetadata with no source must be rejected (exactly-one CEL rule).
+  - try:
+    - apply:
+        file: 34-saml-zero-metadata.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'exactly one of inline, secretRef, or url')): true
+  # idpMetadata with two sources must be rejected (exactly-one CEL rule).
+  - try:
+    - apply:
+        file: 35-saml-two-metadata.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'exactly one of inline, secretRef, or url')): true
+  # idpMetadata.url must use https:// (the metadata is the assertion-signing
+  # trust anchor); a non-https scheme is rejected by the ^https:// Pattern
+  # marker (schema-first, so the field path surfaces) and by the webhook.
+  - try:
+    - apply:
+        file: 36-saml-bad-metadata-url.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'idpMetadata.url')): true
+  # idpMetadata.secretRef.key must be empty (fixed-key contract).
+  - try:
+    - apply:
+        file: 37-saml-metadataref-key.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'data key is fixed')): true
+  # sp.certificateSecretRef.key must be empty (fixed-key contract).
+  - try:
+    - apply:
+        file: 38-saml-certref-key.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'data keys are fixed')): true
+  # remoteIDAttribute must keep the HTTP_ prefix (header-conveyable).
+  - try:
+    - apply:
+        file: 39-saml-remote-id-no-http.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'HTTP_')): true
+  # forwardAttributes entries must match ^[A-Za-z0-9_]+$.
+  - try:
+    - apply:
+        file: 40-saml-forward-attr-invalid.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'A-Za-z0-9_')): true
+  # extraOptions is [ldap] vocabulary and is rejected on a SAML backend.
+  - try:
+    - apply:
+        file: 41-extraoptions-on-saml.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'only supported on type LDAP')): true
+  # A second SAML backend on the same Keystone must be rejected.
+  - try:
+    - apply:
+        file: 42-saml-second-backend.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'at most one SAML backend')): true
+  # A SAML backend whose identityProviderName collides with 18-oidc-base
+  # (cross-type) must be rejected.
+  - try:
+    - apply:
+        file: 43-saml-cross-type-idp-name.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'identity provider name collides')): true
