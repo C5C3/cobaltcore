@@ -3,6 +3,14 @@
   "extends": [
     "config:recommended"
   ],
+  "nix": {
+    "enabled": true,
+    "lockFileMaintenance": {
+      "enabled": true,
+      "automerge": false,
+      "schedule": ["before 6am on monday"]
+    }
+  },
   "customManagers": [
     {
       "customType": "regex",
@@ -466,6 +474,12 @@
         "github.com/external-secrets/external-secrets/apis"
       ],
       "schedule": ["before 6am on monday"]
+    },
+    {
+      "matchManagers": ["nix"],
+      "groupName": "nix flake inputs",
+      "automerge": false,
+      "minimumReleaseAge": "3 days"
     }
   ]
 }
