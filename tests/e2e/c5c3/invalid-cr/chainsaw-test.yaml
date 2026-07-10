@@ -216,6 +216,7 @@ spec:
         expect:
         - check:
             ($error != null): true
+            (contains($error, 'managedEntries[0].type')): true
             (contains($error, 'owned by the External-mode imports')): true
   # A managed catalog entry type outside the DNS-1123 label shape must be rejected
   # (CRD pattern): the type names the child K-ORC CRs.
@@ -225,7 +226,8 @@ spec:
         expect:
         - check:
             ($error != null): true
-            (contains($error, 'type')): true
+            (contains($error, 'managedEntries[0].type')): true
+            (contains($error, 'should match')): true
   # A managed catalog endpoint URL without an http(s) scheme must be rejected
   # (CRD pattern).
   - try:
@@ -234,16 +236,20 @@ spec:
         expect:
         - check:
             ($error != null): true
-            (contains($error, 'url')): true
+            (contains($error, 'managedEntries[0].endpoints[0].url')): true
+            (contains($error, 'should match')): true
   # Two endpoints of one entry sharing an interface must be rejected: endpoints is
-  # a listType=map keyed on interface, so the apiserver enforces uniqueness.
+  # a listType=map keyed on interface, so the apiserver — not the webhook —
+  # enforces uniqueness. Assert the duplicate-value error, not merely the word
+  # "interface", which Go's own `map[string]interface {}` rendering would satisfy.
   - try:
     - apply:
         file: 27-external-catalog-duplicate-interface.yaml
         expect:
         - check:
             ($error != null): true
-            (contains($error, 'interface')): true
+            (contains($error, 'managedEntries[0].endpoints[1]')): true
+            (contains($error, 'Duplicate value')): true
   # A managed catalog entry name carrying a comma must be rejected (CRD pattern):
   # the name is cast to K-ORC's OpenStackName, whose own pattern is ^[^,]+$, so
   # admitting it here would only move the rejection to the child K-ORC CR — where
