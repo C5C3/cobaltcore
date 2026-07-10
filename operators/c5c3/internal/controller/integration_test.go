@@ -462,6 +462,50 @@ func simulateCatalogServiceEndpointAvailableWhenPresent(t testing.TB, ctx contex
 	g.Expect(c.Status().Update(ctx, ep)).To(Succeed(), "set identity Endpoint Available=True")
 }
 
+// simulateExternalCatalogImportsAvailableWhenPresent waits for the four UNMANAGED
+// catalog import CRs an External-mode ControlPlane projects — the identity Service
+// plus one Endpoint per interface — and resolves each one inline: Available=True
+// with a matching ObservedGeneration (korcAvailableUpToDate refuses a stale
+// condition) and a resolved OpenStack id. That is what K-ORC stamps once an import
+// matches a live catalog entry, and there is no K-ORC controller in envtest.
+func simulateExternalCatalogImportsAvailableWhenPresent(
+	t testing.TB, ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane,
+) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+	ns := childNamespace(cp)
+
+	svc := &orcv1alpha1.Service{}
+	g.Eventually(func() error {
+		return c.Get(ctx, client.ObjectKey{Namespace: ns, Name: keystoneServiceName(cp)}, svc)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "the identity Service import should be projected")
+	meta.SetStatusCondition(&svc.Status.Conditions, metav1.Condition{
+		Type:               orcv1alpha1.ConditionAvailable,
+		Status:             metav1.ConditionTrue,
+		Reason:             orcv1alpha1.ConditionReasonSuccess,
+		ObservedGeneration: svc.Generation,
+		Message:            "simulated import resolved",
+	})
+	svc.Status.ID = ptr.To("simulated-identity-service-id")
+	g.Expect(c.Status().Update(ctx, svc)).To(Succeed(), "resolve the identity Service import")
+
+	for _, iface := range externalCatalogInterfaces {
+		ep := &orcv1alpha1.Endpoint{}
+		g.Eventually(func() error {
+			return c.Get(ctx, client.ObjectKey{Namespace: ns, Name: keystoneEndpointImportName(cp, iface)}, ep)
+		}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "the %q Endpoint import should be projected", iface)
+		meta.SetStatusCondition(&ep.Status.Conditions, metav1.Condition{
+			Type:               orcv1alpha1.ConditionAvailable,
+			Status:             metav1.ConditionTrue,
+			Reason:             orcv1alpha1.ConditionReasonSuccess,
+			ObservedGeneration: ep.Generation,
+			Message:            "simulated import resolved",
+		})
+		ep.Status.ID = ptr.To("simulated-endpoint-id-" + string(iface))
+		g.Expect(c.Status().Update(ctx, ep)).To(Succeed(), "resolve the %q Endpoint import", iface)
+	}
+}
+
 // simulateAdminPasswordExternalSecretSyncWhenPresent waits for the operator-created
 // per-ControlPlane admin-password ExternalSecret (named adminPasswordSecretName(cp)
 // in childNamespace(cp)), asserts it reads this CR's keystone-NAME-scoped OpenBao
@@ -1801,7 +1845,8 @@ func driveExternalControlPlaneToReady(
 	simulateCloudsYamlMaterializedWhenPresent(t, ctx, c, cp)
 	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeAdminCredentialReady, metav1.ConditionTrue, itEventuallyTimeout)
 
-	simulateCatalogServiceEndpointAvailableWhenPresent(t, ctx, c, cp)
+	// The catalog is IMPORTED, not registered: resolve the unmanaged imports.
+	simulateExternalCatalogImportsAvailableWhenPresent(t, ctx, c, cp)
 	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeCatalogReady, metav1.ConditionTrue, itEventuallyTimeout)
 }
 
@@ -1879,6 +1924,142 @@ func TestIntegration_ExternalMode_ConvergesToReadyWithNoWorkloads(t *testing.T) 
 	g.Expect(final.Status.Services).To(HaveLen(1))
 	g.Expect(final.Status.Services[0].Name).To(Equal(keystoneServiceKey))
 	g.Expect(final.Status.Services[0].Ready).To(BeTrue())
+
+	// ZERO catalog entries. Pointed at a populated catalog, the ControlPlane must
+	// have created nothing: every K-ORC Service/Endpoint in the namespace is an
+	// unmanaged import. This is the import-first acceptance criterion.
+	catalogCond := meta.FindStatusCondition(final.Status.Conditions, conditionTypeCatalogReady)
+	g.Expect(catalogCond.Reason).To(Equal(conditionReasonCatalogImported))
+
+	var korcServices orcv1alpha1.ServiceList
+	g.Expect(c.List(ctx, &korcServices, client.InNamespace(ns.Name))).To(Succeed())
+	g.Expect(korcServices.Items).To(HaveLen(1))
+	g.Expect(korcServices.Items[0].Spec.ManagementPolicy).To(Equal(orcv1alpha1.ManagementPolicyUnmanaged),
+		"External mode must create no managed catalog Service")
+
+	var korcEndpoints orcv1alpha1.EndpointList
+	g.Expect(c.List(ctx, &korcEndpoints, client.InNamespace(ns.Name))).To(Succeed())
+	g.Expect(korcEndpoints.Items).To(HaveLen(len(externalCatalogInterfaces)))
+	for _, ep := range korcEndpoints.Items {
+		g.Expect(ep.Spec.ManagementPolicy).To(Equal(orcv1alpha1.ManagementPolicyUnmanaged),
+			"External mode must create no managed catalog Endpoint")
+	}
+
+	// ... and the existing identity service/endpoints appear as resolved imports.
+	// CatalogReady gates only on the REQUIRED imports — the identity Service and the
+	// single endpointType interface (public here) — so the two non-gating interface
+	// imports resolve on a later reconcile driven by their K-ORC status watch, which
+	// can land after Ready flips. Poll for that convergence rather than asserting on
+	// the single snapshot taken the instant Ready went True.
+	g.Eventually(func() error {
+		live := &c5c3v1alpha1.ControlPlane{}
+		if err := c.Get(ctx, cpKey, live); err != nil {
+			return err
+		}
+		if live.Status.Catalog == nil {
+			return fmt.Errorf("status.catalog not projected yet")
+		}
+		if got, want := len(live.Status.Catalog.Imports), 1+len(externalCatalogInterfaces); got != want {
+			return fmt.Errorf("status.catalog.imports has %d entries, want %d", got, want)
+		}
+		for _, imp := range live.Status.Catalog.Imports {
+			if !imp.Resolved {
+				return fmt.Errorf("import %s not reported resolved yet", imp.Name)
+			}
+			if imp.ID == "" {
+				return fmt.Errorf("import %s reports no resolved OpenStack id", imp.Name)
+			}
+		}
+		return nil
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+		"every catalog import — the identity Service and all %d interfaces — must resolve with an id",
+		len(externalCatalogInterfaces))
+}
+
+// TestIntegration_ExternalMode_OptInCatalogEntryLifecycle is the opt-in acceptance
+// criterion, end to end against a real API server: declaring an entry creates
+// exactly it, and removing the declaration deletes exactly it — the unmanaged
+// identity imports are never touched.
+func TestIntegration_ExternalMode_OptInCatalogEntryLifecycle(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupControlPlaneEnvTest(t)
+	ensureReadyClusterSecretStore(t, ctx, c)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-cp-external-optin-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed(), "create test namespace")
+
+	cp := integrationExternalControlPlane("cp-external", ns.Name)
+	driveExternalControlPlaneToReady(t, ctx, c, cp)
+	cpKey := types.NamespacedName{Name: cp.Name, Namespace: ns.Name}
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeReady, metav1.ConditionTrue, itEventuallyTimeout)
+
+	entryServiceKey := client.ObjectKey{Namespace: ns.Name, Name: catalogEntryServiceName(cp, "image")}
+	entryEndpointKey := client.ObjectKey{
+		Namespace: ns.Name,
+		Name:      catalogEntryEndpointName(cp, "image", c5c3v1alpha1.ExternalEndpointTypePublic),
+	}
+
+	// Declare one entry.
+	g.Eventually(func() error {
+		live := &c5c3v1alpha1.ControlPlane{}
+		if err := c.Get(ctx, cpKey, live); err != nil {
+			return err
+		}
+		live.Spec.Services.Keystone.External.Catalog = &c5c3v1alpha1.ExternalCatalogSpec{
+			ManagedEntries: []c5c3v1alpha1.ExternalCatalogEntrySpec{{
+				Type: "image",
+				Endpoints: []c5c3v1alpha1.ExternalCatalogEndpointSpec{
+					{Interface: c5c3v1alpha1.ExternalEndpointTypePublic, URL: "https://glance.example.com"},
+				},
+			}},
+		}
+		return c.Update(ctx, live)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "declare a managed catalog entry")
+
+	entryService := &orcv1alpha1.Service{}
+	g.Eventually(func() error {
+		return c.Get(ctx, entryServiceKey, entryService)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "the declared entry's Service must be created")
+	g.Expect(entryService.Spec.ManagementPolicy).To(Equal(orcv1alpha1.ManagementPolicyManaged))
+	g.Expect(entryService.Spec.Resource.Type).To(Equal("image"))
+
+	entryEndpoint := &orcv1alpha1.Endpoint{}
+	g.Eventually(func() error {
+		return c.Get(ctx, entryEndpointKey, entryEndpoint)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "the declared entry's Endpoint must be created")
+	g.Expect(entryEndpoint.Spec.Resource.URL).To(Equal("https://glance.example.com"))
+
+	// Nothing else was created: still exactly one unmanaged identity Service import.
+	var services orcv1alpha1.ServiceList
+	g.Expect(c.List(ctx, &services, client.InNamespace(ns.Name))).To(Succeed())
+	g.Expect(services.Items).To(HaveLen(2), "exactly the identity import plus the one declared entry")
+
+	// Remove the declaration: exactly those two CRs go, the imports stay.
+	g.Eventually(func() error {
+		live := &c5c3v1alpha1.ControlPlane{}
+		if err := c.Get(ctx, cpKey, live); err != nil {
+			return err
+		}
+		live.Spec.Services.Keystone.External.Catalog = nil
+		return c.Update(ctx, live)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "remove the managed catalog entry")
+
+	g.Eventually(func() bool {
+		svcGone := apierrors.IsNotFound(c.Get(ctx, entryServiceKey, &orcv1alpha1.Service{}))
+		epGone := apierrors.IsNotFound(c.Get(ctx, entryEndpointKey, &orcv1alpha1.Endpoint{}))
+		return svcGone && epGone
+	}, itEventuallyTimeout, itPollInterval).Should(BeTrue(),
+		"removing the opt-in must delete exactly the declared entry's CRs")
+
+	// The unmanaged identity imports are untouched by the removal sweep.
+	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: keystoneServiceName(cp)},
+		&orcv1alpha1.Service{})).To(Succeed(), "the identity Service import must survive")
+	for _, iface := range externalCatalogInterfaces {
+		g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: keystoneEndpointImportName(cp, iface)},
+			&orcv1alpha1.Endpoint{})).To(Succeed(), "the %q Endpoint import must survive", iface)
+	}
 }
 
 // TestIntegration_ExternalMode_DeletionLeavesUnmanagedImportsAlone is the AC-4
