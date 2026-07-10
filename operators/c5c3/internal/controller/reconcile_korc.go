@@ -259,7 +259,7 @@ func (r *ControlPlaneReconciler) reconcileKORC(ctx context.Context, cp *c5c3v1al
 	// own re-push cannot break the wedge: it sits BEHIND the very ExternalSecret gate
 	// this read-back is about to close. The trigger covers the empty bundle too, so
 	// removing the ref re-pushes a Secret without the key (see caCertPushTrigger).
-	if err := r.forceRepushAdminAppCredential(ctx, cp, adminAppCredentialPushSecretName(cp),
+	if err := r.forceRepushPushSecret(ctx, cp, adminAppCredentialPushSecretName(cp),
 		adminAppCredentialCACertHashAnnotation, caCertPushTrigger(caBundle)); err != nil {
 		fail("PushSecretError", fmt.Sprintf("forcing CA bundle re-push: %v", err))
 		return ctrl.Result{}, err
