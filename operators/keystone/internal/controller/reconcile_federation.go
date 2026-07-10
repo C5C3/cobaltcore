@@ -73,13 +73,28 @@ var errProviderMetadataUnavailable = errors.New("provider metadata unavailable")
 // mod_auth_openidc metadata filenames, the (webhook-uniform) remote-id
 // attribute for keystone.conf, and the sidecar image.
 type federationProjection struct {
-	SecretName        string
-	MetadataItems     []corev1.KeyToPath
+	SecretName string
+	// MetadataItems maps the OIDC metadata data keys onto the real
+	// mod_auth_openidc filenames; empty when no OIDC backend is projected.
+	MetadataItems []corev1.KeyToPath
+	// RemoteIDAttribute is the OIDC [openid] remote_id_attribute; empty when no
+	// OIDC backend is projected.
 	RemoteIDAttribute string
-	ProxyImage        commonv1.ImageSpec
+	// MellonItems maps the SAML SP key/metadata + IdP metadata data keys onto
+	// the fixed mod_auth_mellon filenames; empty when no SAML backend is
+	// projected.
+	MellonItems []corev1.KeyToPath
+	// SAMLProtocolID and SAMLRemoteIDAttribute drive the per-protocol
+	// [<protocolID>] remote_id_attribute section keystone reads the asserted
+	// SAML IdP entityID from; both empty when no SAML backend is projected.
+	SAMLProtocolID        string
+	SAMLRemoteIDAttribute string
+	ProxyImage            commonv1.ImageSpec
 	// EgressPorts are the deduplicated identity-provider ports (derived from
 	// the issuer, metadata, and explicit endpoint URLs, scheme-defaulted
-	// 443/80) the NetworkPolicy must allow the sidecar to reach.
+	// 443/80) the NetworkPolicy must allow the sidecar to reach. SAML Web-SSO is
+	// browser-mediated (the sidecar never dials the IdP), so SAML contributes no
+	// egress ports.
 	EgressPorts []int32
 }
 
@@ -178,6 +193,16 @@ func claimStripHeaders(remoteIDAttribute string, mappings []keystonev1alpha1.Map
 			envNames = append(envNames, remote[j].Type)
 		}
 	}
+	return stripHeadersFromEnvNames(envNames)
+}
+
+// stripHeadersFromEnvNames derives the deduplicated, sorted set of request
+// header names to unset from a list of WSGI environ keys: for each HTTP_-prefixed
+// env name it strips the prefix and adds both the underscore and dash spellings
+// (Apache/uWSGI normalize both to the same HTTP_* key). Env names without the
+// HTTP_ prefix cannot be injected via headers and are skipped. Shared by the
+// OIDC claim-strip list and the SAML MELLON-attribute strip list.
+func stripHeadersFromEnvNames(envNames []string) []string {
 	seen := map[string]struct{}{}
 	var headers []string
 	add := func(h string) {
@@ -553,6 +578,22 @@ func providerMetadataIssuer(document []byte) string {
 // document is stable, so the last-known-good copy is a safe stand-in until the
 // IdP recovers.
 func (r *KeystoneReconciler) lastKnownGoodProviderMetadata(ctx context.Context, keystone *keystonev1alpha1.Keystone, backend *keystonev1alpha1.KeystoneIdentityBackend) []byte {
+	newest := r.newestFederationSecret(ctx, keystone)
+	if newest == nil {
+		return nil
+	}
+	if doc := newest.Data[backend.Name+".provider"]; len(doc) > 0 {
+		return doc
+	}
+	return nil
+}
+
+// newestFederationSecret returns the newest content-hashed federation Secret
+// owned by keystone (name tie-break for same-second creations), or nil when
+// none exists. Shared by the OIDC and SAML last-known-good metadata fallbacks so
+// a transient IdP metadata-endpoint outage on a cache miss does not tear
+// federation down.
+func (r *KeystoneReconciler) newestFederationSecret(ctx context.Context, keystone *keystonev1alpha1.Keystone) *corev1.Secret {
 	baseName := federationSecretBaseName(keystone)
 	var list corev1.SecretList
 	if err := r.List(ctx, &list, client.InNamespace(keystone.Namespace),
@@ -579,13 +620,7 @@ func (r *KeystoneReconciler) lastKnownGoodProviderMetadata(ctx context.Context, 
 			newest = s
 		}
 	}
-	if newest == nil {
-		return nil
-	}
-	if doc := newest.Data[backend.Name+".provider"]; len(doc) > 0 {
-		return doc
-	}
-	return nil
+	return newest
 }
 
 // introspectionEndpointFromMetadata extracts introspection_endpoint from a
@@ -755,28 +790,34 @@ func federationRedirectURI(keystone *keystonev1alpha1.Keystone) string {
 	return strings.TrimSuffix(keystoneStatusEndpoint(keystone), "/v3") + federationRedirectURIPath
 }
 
-// renderProxyConf assembles the operator-rendered mod_auth_openidc virtual
-// host body (included by the image's static httpd-base.conf). Server-level
-// module directives come first, then one RequestHeader unset per spoofable
-// claim-header spelling, the reverse proxy to the localhost-bound uWSGI, the
-// optional OAuth2 resource-server block, and the per-IdP protected
-// Locations. The session/state knobs are taken from the first (name-sorted)
-// backend — the webhook keeps remoteIDAttribute uniform, and mixed session
-// knobs across backends would be server-scoped anyway. renders must be
-// non-empty and name-sorted (the caller iterates the sorted backend list).
-func renderProxyConf(keystone *keystonev1alpha1.Keystone, renders []oidcRender, passphrase string) []byte {
+// renderProxyConf assembles the operator-rendered federation virtual host body
+// (included by the image's static httpd-base.conf). It supports both
+// mod_auth_openidc (OIDC) and mod_auth_mellon (SAML) in one config: a merged
+// RequestHeader-unset block strips every spoofable claim/attribute header, the
+// mellon ProxyPass exclusions precede the reverse-proxy catch-all, the OIDC
+// server-level directives + protected Locations render only when an OIDC backend
+// is present, and the mellon <Location> blocks render for the SAML backend. Both
+// render lists must be name-sorted; at least one must be non-empty. passphrase
+// is the OIDCCryptoPassphrase (empty for a SAML-only projection).
+func renderProxyConf(keystone *keystonev1alpha1.Keystone, oidcRenders []oidcRender, samlRenders []samlRender, passphrase string) []byte {
 	redirectURI := federationRedirectURI(keystone)
 
-	// Merge the per-backend strip lists into one deterministic set.
+	// Merge the per-backend strip lists (OIDC + SAML) into one deterministic set.
 	seen := map[string]struct{}{}
 	var stripHeaders []string
-	for i := range renders {
-		for _, h := range renders[i].stripHeaders {
+	addStrip := func(hs []string) {
+		for _, h := range hs {
 			if _, ok := seen[h]; !ok {
 				seen[h] = struct{}{}
 				stripHeaders = append(stripHeaders, h)
 			}
 		}
+	}
+	for i := range oidcRenders {
+		addStrip(oidcRenders[i].stripHeaders)
+	}
+	for i := range samlRenders {
+		addStrip(samlRenders[i].stripHeaders)
 	}
 	sort.Strings(stripHeaders)
 
@@ -786,62 +827,73 @@ func renderProxyConf(keystone *keystonev1alpha1.Keystone, renders []oidcRender, 
 	}
 
 	w("# Rendered by the keystone operator — do not edit; changes are overwritten.")
-	w("OIDCCryptoPassphrase %q", passphrase)
-	w("OIDCMetadataDir %s", federationMetadataMountPath)
-	w("OIDCRedirectURI %s", federationRedirectURIPath)
-	w("OIDCClaimPrefix \"OIDC-\"")
-	w("OIDCSessionType %s", renders[0].sessionType)
-	w("OIDCStateInputHeaders %s", renders[0].stateInputHeaders)
-	// Honor inbound X-Forwarded-Host/X-Forwarded-Proto for the redirect_uri /
-	// current-URL computation only when a trusted Gateway is declared
-	// (spec.gateway): behind it these headers are how the sidecar reconstructs
-	// the public URL, and the Gateway is the trust boundary that must overwrite
-	// them. With no declared gateway, in-cluster clients reach the sidecar
-	// directly, so a spoofed X-Forwarded-Host would poison the redirect_uri —
-	// the directive is omitted and mod_auth_openidc falls back to the request
-	// host. See the OIDC federation guide's security note (register an exact
-	// redirect_uri at the IdP).
-	if keystone.Spec.Gateway != nil {
-		w("OIDCXForwardedHeaders X-Forwarded-Host X-Forwarded-Proto")
+
+	if len(oidcRenders) > 0 {
+		w("OIDCCryptoPassphrase %q", passphrase)
+		w("OIDCMetadataDir %s", federationMetadataMountPath)
+		w("OIDCRedirectURI %s", federationRedirectURIPath)
+		w("OIDCClaimPrefix \"OIDC-\"")
+		w("OIDCSessionType %s", oidcRenders[0].sessionType)
+		w("OIDCStateInputHeaders %s", oidcRenders[0].stateInputHeaders)
+		// Honor inbound X-Forwarded-Host/X-Forwarded-Proto for the redirect_uri /
+		// current-URL computation only when a trusted Gateway is declared
+		// (spec.gateway): behind it these headers are how the sidecar reconstructs
+		// the public URL, and the Gateway is the trust boundary that must overwrite
+		// them. With no declared gateway, in-cluster clients reach the sidecar
+		// directly, so a spoofed X-Forwarded-Host would poison the redirect_uri —
+		// the directive is omitted and mod_auth_openidc falls back to the request
+		// host. See the OIDC federation guide's security note (register an exact
+		// redirect_uri at the IdP).
+		if keystone.Spec.Gateway != nil {
+			w("OIDCXForwardedHeaders X-Forwarded-Host X-Forwarded-Proto")
+		}
+		w("")
 	}
-	w("")
-	w("# Strip spoofable claim headers before authentication: the module only")
-	w("# scrubs them on module-protected paths, and underscore spellings")
-	w("# normalize to the same WSGI keys (validated by the federation spike).")
+
+	w("# Strip spoofable claim/attribute headers before authentication: the")
+	w("# modules only scrub them on module-protected paths, and underscore")
+	w("# spellings normalize to the same WSGI keys (validated by the federation")
+	w("# spike). mellon attribute headers are stripped in both spellings too.")
 	for _, h := range stripHeaders {
 		w("RequestHeader unset %q early", h)
 	}
 	w("")
 	w("ProxyPreserveHost On")
+	// mellon owns its endpoint path — exclude it from the reverse-proxy catch-all
+	// so mod_auth_mellon (not uWSGI) serves the SP metadata/ACS/logout endpoints.
+	// The exclusion MUST precede the catch-all (first ProxyPass match wins).
+	for i := range samlRenders {
+		w("ProxyPass %q !", samlRenders[i].endpointPath)
+	}
 	w("ProxyPass \"/\" \"http://127.0.0.1:5000/\"")
 	w("ProxyPassReverse \"/\" \"http://127.0.0.1:5000/\"")
 
-	for i := range renders {
-		if !renders[i].introspection {
+	for i := range oidcRenders {
+		if !oidcRenders[i].introspection {
 			continue
 		}
 		// mod_auth_openidc's OIDCOAuth* resource-server directives are
 		// server-scoped, so at most one backend enables this
 		// (webhook-enforced).
 		w("")
-		w("# OAuth2 resource server: bearer-token introspection for %s", renders[i].idpName)
+		w("# OAuth2 resource server: bearer-token introspection for %s", oidcRenders[i].idpName)
 		// %q so a value carrying a space (clientID has no Pattern marker, and the
 		// webhook's control-char check allows spaces) renders as one Apache
 		// directive argument — an unquoted "OIDCOAuthClientID my client" is two
 		// arguments, an Apache config-parse error that crash-loops the sidecar and
 		// (its targetPort owns the Service) takes the Keystone API down cluster-wide.
-		w("OIDCOAuthIntrospectionEndpoint %q", renders[i].introspectionEP)
-		w("OIDCOAuthClientID %q", renders[i].clientID)
-		w("OIDCOAuthClientSecret %q", renders[i].clientSecret)
-		if !renders[i].introspectionTLS {
+		w("OIDCOAuthIntrospectionEndpoint %q", oidcRenders[i].introspectionEP)
+		w("OIDCOAuthClientID %q", oidcRenders[i].clientID)
+		w("OIDCOAuthClientSecret %q", oidcRenders[i].clientSecret)
+		if !oidcRenders[i].introspectionTLS {
 			// Explicit spec opt-out (oauth2Introspection.tlsVerify: false)
 			// for self-signed / private-CA introspection endpoints.
 			w("OIDCOAuthSSLValidateServer Off")
 		}
 	}
 
-	for i := range renders {
-		rd := &renders[i]
+	for i := range oidcRenders {
+		rd := &oidcRenders[i]
 		discoverURL := redirectURI + "?iss=" + url.QueryEscape(rd.issuer)
 		authType := "openid-connect"
 		if rd.introspection {
@@ -864,24 +916,51 @@ func renderProxyConf(keystone *keystonev1alpha1.Keystone, renders []oidcRender, 
 		w("</Location>")
 	}
 
-	// The module-owned redirect endpoint must be protected so the module
-	// handles the authorization-code response.
-	w("")
-	w("<Location %q>", federationRedirectURIPath)
-	w("    AuthType openid-connect")
-	w("    Require valid-user")
-	w("</Location>")
-
-	// The global websso path can pin a provider only when it is unambiguous;
-	// with several backends the per-IdP paths (what Horizon uses) are the
-	// supported entry points.
-	if len(renders) == 1 {
+	if len(oidcRenders) > 0 {
+		// The module-owned OIDC redirect endpoint must be protected so the
+		// module handles the authorization-code response.
 		w("")
-		w("<Location \"/v3/auth/OS-FEDERATION/websso/%s\">", renders[0].protocolID)
+		w("<Location %q>", federationRedirectURIPath)
 		w("    AuthType openid-connect")
 		w("    Require valid-user")
-		w("    OIDCDiscoverURL %s", redirectURI+"?iss="+url.QueryEscape(renders[0].issuer))
 		w("</Location>")
+	}
+
+	for i := range samlRenders {
+		writeMellonConf(w, &samlRenders[i])
+	}
+
+	// The global websso path can pin a provider only when its protocolID is
+	// unambiguous across every attached backend (both types); with several
+	// backends sharing a protocol the per-IdP paths (what Horizon uses) are the
+	// supported entry points. One OIDC (openid) + one SAML (mapped) each keep
+	// their global path.
+	protoCount := map[string]int{}
+	for i := range oidcRenders {
+		protoCount[oidcRenders[i].protocolID]++
+	}
+	for i := range samlRenders {
+		protoCount[samlRenders[i].protocolID]++
+	}
+	for i := range oidcRenders {
+		rd := &oidcRenders[i]
+		if protoCount[rd.protocolID] != 1 {
+			continue
+		}
+		w("")
+		w("<Location \"/v3/auth/OS-FEDERATION/websso/%s\">", rd.protocolID)
+		w("    AuthType openid-connect")
+		w("    Require valid-user")
+		w("    OIDCDiscoverURL %s", redirectURI+"?iss="+url.QueryEscape(rd.issuer))
+		w("</Location>")
+	}
+	for i := range samlRenders {
+		rd := &samlRenders[i]
+		if protoCount[rd.protocolID] != 1 {
+			continue
+		}
+		w("")
+		writeMellonProtectedLocation(w, fmt.Sprintf("/v3/auth/OS-FEDERATION/websso/%s", rd.protocolID), rd)
 	}
 
 	return []byte(b.String())
@@ -931,22 +1010,30 @@ func (r *KeystoneReconciler) ensureOIDCCryptoPassphrase(ctx context.Context, key
 }
 
 // buildFederationProjection creates the content-hashed federation Secret from
-// the rendered OIDC backends and assembles the projection the deployment
-// builders consume. renders must be non-empty and name-sorted.
-func (r *KeystoneReconciler) buildFederationProjection(ctx context.Context, keystone *keystonev1alpha1.Keystone, renders []oidcRender, remoteIDAttribute string, proxyImage commonv1.ImageSpec) (*federationProjection, error) {
-	passphrase, err := r.ensureOIDCCryptoPassphrase(ctx, keystone)
-	if err != nil {
-		return nil, err
+// the rendered OIDC and SAML backends and assembles the projection the
+// deployment builders consume. At least one of oidcRenders / samlRenders must be
+// non-empty; both must be name-sorted. remoteIDAttribute is the OIDC [openid]
+// remote_id_attribute (empty when SAML-only).
+func (r *KeystoneReconciler) buildFederationProjection(ctx context.Context, keystone *keystonev1alpha1.Keystone, oidcRenders []oidcRender, samlRenders []samlRender, remoteIDAttribute string, proxyImage commonv1.ImageSpec) (*federationProjection, error) {
+	// Only OIDC needs the crypto passphrase (client-cookie session/state); a
+	// SAML-only Keystone must not create the passphrase Secret.
+	var passphrase string
+	if len(oidcRenders) > 0 {
+		p, err := r.ensureOIDCCryptoPassphrase(ctx, keystone)
+		if err != nil {
+			return nil, err
+		}
+		passphrase = p
 	}
 
 	data := map[string][]byte{
-		"proxy.conf": renderProxyConf(keystone, renders, passphrase),
+		"proxy.conf": renderProxyConf(keystone, oidcRenders, samlRenders, passphrase),
 	}
-	items := make([]corev1.KeyToPath, 0, 3*len(renders))
+	items := make([]corev1.KeyToPath, 0, 3*len(oidcRenders))
 	seenPorts := map[int32]struct{}{}
 	var egressPorts []int32
-	for i := range renders {
-		rd := &renders[i]
+	for i := range oidcRenders {
+		rd := &oidcRenders[i]
 		for _, port := range rd.egressPorts {
 			if _, ok := seenPorts[port]; ok {
 				continue
@@ -970,17 +1057,54 @@ func (r *KeystoneReconciler) buildFederationProjection(ctx context.Context, keys
 		)
 	}
 
+	// SAML backend: project the SP key/cert/metadata and IdP metadata onto the
+	// fixed mod_auth_mellon filenames.
+	var mellonItems []corev1.KeyToPath
+	var samlProtocolID, samlRemoteIDAttribute string
+	for i := range samlRenders {
+		rd := &samlRenders[i]
+		// The SP file names and the per-backend IdP metadata key contain no '%',
+		// so they are valid Secret keys and map onto themselves at mount time.
+		idpMetaKey := samlIdPMetadataKeyName(rd.backendName)
+		data[samlSPKeyFileName] = rd.spKey
+		data[samlSPCertFileName] = rd.spCert
+		data[samlSPMetadataFileName] = rd.spMetadata
+		data[idpMetaKey] = rd.idpMetadata
+		mellonItems = append(
+			mellonItems,
+			corev1.KeyToPath{Key: samlSPKeyFileName, Path: samlSPKeyFileName},
+			corev1.KeyToPath{Key: samlSPCertFileName, Path: samlSPCertFileName},
+			corev1.KeyToPath{Key: samlSPMetadataFileName, Path: samlSPMetadataFileName},
+			corev1.KeyToPath{Key: idpMetaKey, Path: idpMetaKey},
+		)
+		samlProtocolID = rd.protocolID
+		samlRemoteIDAttribute = rd.remoteIDAttr
+	}
+
 	name, err := config.CreateImmutableSecret(ctx, r.Client, r.Scheme, keystone,
 		federationSecretBaseName(keystone), keystone.Namespace, data)
 	if err != nil {
 		return nil, fmt.Errorf("creating federation Secret: %w", err)
 	}
+
+	// Export the SP metadata as a stable-named Secret so an operator can
+	// register the service provider with the IdP out of band. Independent of
+	// IdP-metadata availability (resolving the register-first chicken-and-egg).
+	for i := range samlRenders {
+		if err := r.ensureSAMLSPMetadataSecret(ctx, keystone, &samlRenders[i]); err != nil {
+			return nil, err
+		}
+	}
+
 	return &federationProjection{
-		SecretName:        name,
-		MetadataItems:     items,
-		RemoteIDAttribute: remoteIDAttribute,
-		ProxyImage:        proxyImage,
-		EgressPorts:       egressPorts,
+		SecretName:            name,
+		MetadataItems:         items,
+		RemoteIDAttribute:     remoteIDAttribute,
+		MellonItems:           mellonItems,
+		SAMLProtocolID:        samlProtocolID,
+		SAMLRemoteIDAttribute: samlRemoteIDAttribute,
+		ProxyImage:            proxyImage,
+		EgressPorts:           egressPorts,
 	}, nil
 }
 

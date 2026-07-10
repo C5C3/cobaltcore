@@ -1000,16 +1000,18 @@ func (b *KeystoneIdentityBackend) EffectiveIdentityProviderName() string {
 
 // EffectiveProtocolID returns the keystone federation protocol ID for the
 // backend's type, falling back to the documented default ("openid" for OIDC,
-// "mapped" for SAML).
+// "mapped" for SAML). It dispatches on spec.type so a federation backend
+// resolves its default protocol even when the (union-required) block is not yet
+// populated — the pre-rename EffectiveOIDCProtocolID behavior.
 func (b *KeystoneIdentityBackend) EffectiveProtocolID() string {
-	switch {
-	case b.Spec.OIDC != nil:
-		if b.Spec.OIDC.ProtocolID != "" {
+	switch b.Spec.Type {
+	case IdentityBackendTypeOIDC:
+		if b.Spec.OIDC != nil && b.Spec.OIDC.ProtocolID != "" {
 			return b.Spec.OIDC.ProtocolID
 		}
 		return DefaultOIDCProtocolID
-	case b.Spec.SAML != nil:
-		if b.Spec.SAML.ProtocolID != "" {
+	case IdentityBackendTypeSAML:
+		if b.Spec.SAML != nil && b.Spec.SAML.ProtocolID != "" {
 			return b.Spec.SAML.ProtocolID
 		}
 		return DefaultSAMLProtocolID

@@ -133,9 +133,9 @@ func domainsVolumeAndMount(domainsSecretName string) (corev1.Volume, corev1.Volu
 
 // reconcileIdentityBackends aggregates every attached, DomainReady
 // KeystoneIdentityBackend into the per-type projection artifacts — LDAP
-// backends into one immutable content-hashed domains Secret, OIDC backends
-// into one immutable content-hashed federation Secret (proxy.conf plus the
-// per-backend metadata documents) — and sets the aggregated
+// backends into one immutable content-hashed domains Secret, OIDC and SAML
+// backends into one immutable content-hashed federation Secret (proxy.conf plus
+// the per-backend metadata / SP-key documents) — and sets the aggregated
 // IdentityBackendsReady condition on the Keystone CR. It returns the
 // projection (zero-valued fields when nothing of that type is projected) for
 // the downstream config/deployment/job builders.
@@ -206,8 +206,22 @@ func (r *KeystoneReconciler) reconcileIdentityBackends(ctx context.Context, keys
 		oidcIssuerOwners[key] = append(oidcIssuerOwners[key], b.Name)
 	}
 
+	// Defensive multi-SAML detection (the webhook enforces at most one SAML
+	// backend per Keystone; direct etcd writes can not). mod_auth_mellon's SP
+	// config projects onto a shared /v3 parent Location, so two SAML backends
+	// cannot coexist — as with the duplicate-domain / duplicate-issuer cases, on
+	// collision NONE of the colliding set is projected.
+	var samlBackendNames []string
+	for i := range backends.Items {
+		b := &backends.Items[i]
+		if b.DeletionTimestamp == nil && b.Spec.Type == keystonev1alpha1.IdentityBackendTypeSAML {
+			samlBackendNames = append(samlBackendNames, b.Name)
+		}
+	}
+
 	data := map[string][]byte{}
-	var fedRenders []oidcRender
+	var oidcRenders []oidcRender
+	var samlRenders []samlRender
 	var fedRemoteIDAttribute string
 	proxyImage := federationProxyImage(keystone)
 	proxyImageWarned := false
@@ -231,26 +245,20 @@ func (r *KeystoneReconciler) reconcileIdentityBackends(ctx context.Context, keys
 
 		// The D-gate: never project config for a domain that does not exist
 		// yet — keystone would 500 on domain-scoped requests, and the
-		// federation objects an OIDC render advertises are domain-scoped.
+		// federation objects a federation render advertises are domain-scoped.
 		domainReady := conditions.GetCondition(backend.Status.Conditions, conditionTypeDomainReady)
 		if domainReady == nil || domainReady.Status != metav1.ConditionTrue {
 			pending = append(pending, fmt.Sprintf("%s (domain %q not ready)", backend.Name, backend.Spec.Domain.Name))
 			continue
 		}
 
-		if backend.Spec.Type == keystonev1alpha1.IdentityBackendTypeOIDC {
-			if backend.Spec.OIDC != nil {
-				if owners := oidcIssuerOwners[issuerToMetadataBasename(backend.Spec.OIDC.Issuer)]; len(owners) > 1 {
-					pending = append(pending, fmt.Sprintf("%s (issuer %q collides with %s at the mod_auth_openidc metadata filename)",
-						backend.Name, backend.Spec.OIDC.Issuer, strings.Join(owners, ", ")))
-					continue
-				}
-			}
+		if backend.IsFederationType() {
 			// Fail loudly instead of assuming a hidden default image: the
 			// managed ControlPlane path projects one, standalone users set it.
+			// Shared by OIDC and SAML — both need the federation sidecar.
 			if proxyImage == nil {
 				msg := fmt.Sprintf("Identity backend %s is pending: spec.federation.proxyImage is not set — "+
-					"configure the mod_auth_openidc sidecar image before attaching OIDC backends", backend.Name)
+					"configure the federation sidecar image before attaching federation backends", backend.Name)
 				if !proxyImageWarned {
 					logger.Info(msg)
 					r.Recorder.Event(keystone, corev1.EventTypeWarning, "FederationProxyImageMissing", msg)
@@ -258,6 +266,50 @@ func (r *KeystoneReconciler) reconcileIdentityBackends(ctx context.Context, keys
 				}
 				pending = append(pending, fmt.Sprintf("%s (spec.federation.proxyImage not set)", backend.Name))
 				continue
+			}
+
+			if backend.Spec.Type == keystonev1alpha1.IdentityBackendTypeSAML {
+				if len(samlBackendNames) > 1 {
+					pending = append(pending, fmt.Sprintf("%s (more than one SAML backend attached: %s)",
+						backend.Name, strings.Join(samlBackendNames, ", ")))
+					continue
+				}
+				render, err := r.renderSAMLBackend(ctx, keystone, backend)
+				if err != nil {
+					// A missing metadata/certificate Secret, an unreachable or
+					// mismatched IdP metadata document, or a control character in
+					// a rendered value is a per-backend fault: skip, warn, keep
+					// the healthy siblings — the LDAP/OIDC fault-isolation
+					// contract.
+					if secrets.IsMissingSecretOrKey(err) || errors.Is(err, errControlCharInValue) ||
+						errors.Is(err, errProviderMetadataUnavailable) {
+						msg := fmt.Sprintf("Skipping identity backend %s: %v", backend.Name, err)
+						logger.Info(msg)
+						r.Recorder.Event(keystone, corev1.EventTypeWarning, "IdentityBackendSkipped", msg)
+						pending = append(pending, fmt.Sprintf("%s (%v)", backend.Name, err))
+						continue
+					}
+					return identityBackendsProjection{}, fmt.Errorf("rendering SAML config for backend %s: %w", backend.Name, err)
+				}
+				if size := len(render.idpMetadata) + len(render.spMetadata) + len(render.spKey) + len(render.spCert); size > maxRenderedDomainConfBytes {
+					msg := fmt.Sprintf("Skipping identity backend %s: rendered SAML config is %d bytes, exceeding the %d-byte per-backend budget",
+						backend.Name, size, maxRenderedDomainConfBytes)
+					logger.Info(msg)
+					r.Recorder.Event(keystone, corev1.EventTypeWarning, "IdentityBackendSkipped", msg)
+					pending = append(pending, fmt.Sprintf("%s (rendered SAML config too large: %d bytes)", backend.Name, size))
+					continue
+				}
+				samlRenders = append(samlRenders, render)
+				continue
+			}
+
+			// OIDC.
+			if backend.Spec.OIDC != nil {
+				if owners := oidcIssuerOwners[issuerToMetadataBasename(backend.Spec.OIDC.Issuer)]; len(owners) > 1 {
+					pending = append(pending, fmt.Sprintf("%s (issuer %q collides with %s at the mod_auth_openidc metadata filename)",
+						backend.Name, backend.Spec.OIDC.Issuer, strings.Join(owners, ", ")))
+					continue
+				}
 			}
 
 			render, err := r.renderOIDCBackend(ctx, keystone, backend)
@@ -284,7 +336,7 @@ func (r *KeystoneReconciler) reconcileIdentityBackends(ctx context.Context, keys
 				pending = append(pending, fmt.Sprintf("%s (rendered federation config too large: %d bytes)", backend.Name, size))
 				continue
 			}
-			fedRenders = append(fedRenders, render)
+			oidcRenders = append(oidcRenders, render)
 			// Uniform across OIDC siblings (webhook-enforced): first one wins.
 			if fedRemoteIDAttribute == "" {
 				fedRemoteIDAttribute = backend.EffectiveRemoteIDAttribute()
@@ -339,12 +391,20 @@ func (r *KeystoneReconciler) reconcileIdentityBackends(ctx context.Context, keys
 		}
 		projection.DomainsSecretName = name
 	}
-	if len(fedRenders) > 0 {
-		fed, err := r.buildFederationProjection(ctx, keystone, fedRenders, fedRemoteIDAttribute, *proxyImage)
+	if len(oidcRenders) > 0 || len(samlRenders) > 0 {
+		fed, err := r.buildFederationProjection(ctx, keystone, oidcRenders, samlRenders, fedRemoteIDAttribute, *proxyImage)
 		if err != nil {
 			return identityBackendsProjection{}, err
 		}
 		projection.Federation = fed
+	}
+
+	// When no SAML backend is attached anymore, remove the stable-named SP
+	// metadata export Secret (a no-op when it never existed).
+	if len(samlBackendNames) == 0 {
+		if err := r.deleteSAMLSPMetadataSecret(ctx, keystone); err != nil {
+			return identityBackendsProjection{}, err
+		}
 	}
 
 	if len(pending) > 0 {

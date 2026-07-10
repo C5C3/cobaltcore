@@ -2203,6 +2203,50 @@ func TestBuildKeystoneDeployment_FederationSidecar(t *testing.T) {
 	g.Expect(cmd[bufIdx+1]).To(Equal("65535"))
 }
 
+// TestBuildKeystoneDeployment_SAMLOnlyMountsMellonNotMetadata verifies a
+// SAML-only projection mounts the federation-mellon volume and NOT the
+// federation-metadata volume: mounting an item-less metadata Secret volume would
+// project ALL keys, leaking the SP key material into OIDCMetadataDir.
+func TestBuildKeystoneDeployment_SAMLOnlyMountsMellonNotMetadata(t *testing.T) {
+	g := NewGomegaWithT(t)
+	fed := &federationProjection{
+		SecretName: "test-keystone-federation-abcd1234",
+		MellonItems: []corev1.KeyToPath{
+			{Key: samlSPKeyFileName, Path: samlSPKeyFileName},
+			{Key: samlSPCertFileName, Path: samlSPCertFileName},
+			{Key: samlSPMetadataFileName, Path: samlSPMetadataFileName},
+			{Key: "corp-saml.idp-metadata.xml", Path: "corp-saml.idp-metadata.xml"},
+		},
+		SAMLProtocolID:        "mapped",
+		SAMLRemoteIDAttribute: "HTTP_MELLON_IDP",
+		ProxyImage:            commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone-federation-proxy", Tag: "latest"},
+	}
+	deploy := buildKeystoneDeployment(deployTestKeystone(), "keystone-config-abc123", "", "", fed)
+
+	containers := map[string]corev1.Container{}
+	for _, c := range deploy.Spec.Template.Spec.Containers {
+		containers[c.Name] = c
+	}
+	g.Expect(containers).To(HaveKey("federation-proxy"))
+
+	mounts := map[string]corev1.VolumeMount{}
+	for _, m := range containers["federation-proxy"].VolumeMounts {
+		mounts[m.Name] = m
+	}
+	g.Expect(mounts).To(HaveKey(federationMellonVolumeName))
+	g.Expect(mounts[federationMellonVolumeName].MountPath).To(Equal(federationMellonMountPath))
+	g.Expect(mounts).NotTo(HaveKey(federationMetadataVolumeName), "no OIDC metadata volume for a SAML-only projection")
+
+	volumes := map[string]corev1.Volume{}
+	for _, v := range deploy.Spec.Template.Spec.Volumes {
+		volumes[v.Name] = v
+	}
+	g.Expect(volumes).To(HaveKey(federationMellonVolumeName))
+	g.Expect(volumes[federationMellonVolumeName].Secret.SecretName).To(Equal(fed.SecretName))
+	g.Expect(volumes[federationMellonVolumeName].Secret.Items).To(Equal(fed.MellonItems))
+	g.Expect(volumes).NotTo(HaveKey(federationMetadataVolumeName))
+}
+
 // TestBuildKeystoneDeployment_NoFederationKeepsSingleContainer pins the
 // zero-federation contract: one container, pod-IP-reachable uWSGI, kubelet
 // TCP/HTTP probes, no buffer-size flag, no federation volumes.

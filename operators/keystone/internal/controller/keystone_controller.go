@@ -113,10 +113,10 @@ const IdentityBackendSecretNameIndexKey = "spec.secretRefs.name"
 
 // identityBackendSecretNameExtractor returns the deduplicated, non-empty
 // union of Secret names a KeystoneIdentityBackend references — the LDAP bind
-// credentials Secret (plus, when TLS is configured, the CA bundle Secret)
-// and the OIDC client secret. Including the client secret means a rotated
-// relying-party credential re-renders the content-hashed federation Secret
-// via the owning Keystone.
+// credentials Secret (plus, when TLS is configured, the CA bundle Secret),
+// the OIDC client secret, and the SAML IdP-metadata / SP-certificate Secrets.
+// Including these means a rotated credential or refreshed metadata re-renders
+// the content-hashed federation Secret via the owning Keystone.
 func identityBackendSecretNameExtractor(obj client.Object) []string {
 	b, ok := obj.(*keystonev1alpha1.KeystoneIdentityBackend)
 	if !ok {
@@ -142,6 +142,14 @@ func identityBackendSecretNameExtractor(obj client.Object) []string {
 	}
 	if b.Spec.OIDC != nil {
 		add(b.Spec.OIDC.ClientSecretRef.Name)
+	}
+	if b.Spec.SAML != nil {
+		if b.Spec.SAML.IdPMetadata.SecretRef != nil {
+			add(b.Spec.SAML.IdPMetadata.SecretRef.Name)
+		}
+		if b.Spec.SAML.SP != nil && b.Spec.SAML.SP.CertificateSecretRef != nil {
+			add(b.Spec.SAML.SP.CertificateSecretRef.Name)
+		}
 	}
 	return names
 }

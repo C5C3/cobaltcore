@@ -127,7 +127,7 @@ func TestRenderProxyConf_DirectivesAndLocations(t *testing.T) {
 		},
 	}
 
-	conf := string(renderProxyConf(ks, renders, "pass-phrase"))
+	conf := string(renderProxyConf(ks, renders, nil, "pass-phrase"))
 
 	// Server-level directives from the spike-validated parameter set.
 	g.Expect(conf).To(ContainSubstring(`OIDCCryptoPassphrase "pass-phrase"`))
@@ -157,7 +157,7 @@ func TestRenderProxyConf_DirectivesAndLocations(t *testing.T) {
 	// The explicit tlsVerify opt-out renders the validate-off directive.
 	optOut := renders[:1]
 	optOut[0].introspectionTLS = false
-	g.Expect(string(renderProxyConf(ks, optOut, "pass-phrase"))).To(
+	g.Expect(string(renderProxyConf(ks, optOut, nil, "pass-phrase"))).To(
 		ContainSubstring("OIDCOAuthSSLValidateServer Off"),
 	)
 	optOut[0].introspectionTLS = true
@@ -177,7 +177,7 @@ func TestRenderProxyConf_DirectivesAndLocations(t *testing.T) {
 	g.Expect(conf).NotTo(ContainSubstring(`<Location "/v3/auth/OS-FEDERATION/websso/`))
 
 	// A single backend pins the global websso path.
-	single := string(renderProxyConf(ks, renders[:1], "pass-phrase"))
+	single := string(renderProxyConf(ks, renders[:1], nil, "pass-phrase"))
 	g.Expect(single).To(ContainSubstring(`<Location "/v3/auth/OS-FEDERATION/websso/openid">`))
 }
 
@@ -200,7 +200,7 @@ func TestRenderProxyConf_QuotesIntrospectionClientIDWithSpace(t *testing.T) {
 		stateInputHeaders: "none",
 	}}
 
-	conf := string(renderProxyConf(ks, renders, "pass-phrase"))
+	conf := string(renderProxyConf(ks, renders, nil, "pass-phrase"))
 
 	// The space-bearing clientID must render as a single quoted Apache
 	// argument; unquoted it is two arguments — a config-parse error that
@@ -227,7 +227,7 @@ func TestRenderProxyConf_XForwardedHeadersGatedOnGateway(t *testing.T) {
 	}}
 
 	// No gateway: the sidecar must not trust inbound X-Forwarded-* headers.
-	noGateway := string(renderProxyConf(testFederationKeystone(), renders, "pass-phrase"))
+	noGateway := string(renderProxyConf(testFederationKeystone(), renders, nil, "pass-phrase"))
 	g.Expect(noGateway).NotTo(ContainSubstring("OIDCXForwardedHeaders"))
 
 	// A declared Gateway is the trust boundary: honor the forwarded host/scheme.
@@ -236,7 +236,7 @@ func TestRenderProxyConf_XForwardedHeadersGatedOnGateway(t *testing.T) {
 		ParentRef: keystonev1alpha1.GatewayParentRefSpec{Name: "public-gateway"},
 		Hostname:  "keystone.example.com",
 	}
-	withGateway := string(renderProxyConf(ks, renders, "pass-phrase"))
+	withGateway := string(renderProxyConf(ks, renders, nil, "pass-phrase"))
 	g.Expect(withGateway).To(ContainSubstring("OIDCXForwardedHeaders X-Forwarded-Host X-Forwarded-Proto"))
 }
 

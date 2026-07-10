@@ -46,6 +46,8 @@ type configRenderCacheEntry struct {
 	domainsProjected        bool
 	federationProjected     bool
 	remoteIDAttribute       string
+	samlProtocolID          string
+	samlRemoteIDAttribute   string
 	configMapName           string
 	useStderr               string
 }
@@ -251,8 +253,21 @@ func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, keystone *keys
 	// omitted entirely, keeping non-federated CRs byte-identical.
 	if fed != nil {
 		defaults["auth"] = map[string]string{"methods": federationAuthMethods}
-		defaults["openid"] = map[string]string{"remote_id_attribute": fed.RemoteIDAttribute}
 		defaults["federation"] = map[string]string{"sso_callback_template": ssoCallbackTemplateFilePath}
+		// OIDC reads the asserted issuer from [openid] remote_id_attribute;
+		// rendered only when an OIDC backend is projected.
+		if fed.RemoteIDAttribute != "" {
+			defaults["openid"] = map[string]string{"remote_id_attribute": fed.RemoteIDAttribute}
+		}
+		// SAML reads the asserted IdP entityID from a per-protocol
+		// [<protocolID>] remote_id_attribute section (keystone registers the
+		// group dynamically — the same per-protocol-beats-[federation] mechanism
+		// as [openid]); rendered only when a SAML backend is projected. The
+		// webhook rejects a protocolID that collides with an operator-owned
+		// section, so this can never clobber one.
+		if fed.SAMLProtocolID != "" {
+			defaults[fed.SAMLProtocolID] = map[string]string{"remote_id_attribute": fed.SAMLRemoteIDAttribute}
+		}
 	}
 
 	// render PerLoggerLevels into oslo.log's default_log_levels
@@ -431,20 +446,23 @@ func trustedDashboards(keystone *keystonev1alpha1.Keystone) []string {
 	return keystone.Spec.Federation.TrustedDashboards
 }
 
-// federationCacheKeyOf extracts the two config-render inputs a federation
-// projection contributes to the cache key.
-func federationCacheKeyOf(fed *federationProjection) (projected bool, remoteIDAttribute string) {
+// federationCacheKeyOf extracts the config-render inputs a federation
+// projection contributes to the cache key: whether federation is projected, the
+// OIDC remote-id attribute, and the SAML protocol/remote-id — a SAML attach or
+// detach flips the [<protocolID>] section without bumping the Keystone
+// generation, so both must invalidate the cache.
+func federationCacheKeyOf(fed *federationProjection) (projected bool, remoteIDAttribute, samlProtocolID, samlRemoteIDAttribute string) {
 	if fed == nil {
-		return false, ""
+		return false, "", "", ""
 	}
-	return true, fed.RemoteIDAttribute
+	return true, fed.RemoteIDAttribute, fed.SAMLProtocolID, fed.SAMLRemoteIDAttribute
 }
 
 // configRenderCacheHit reports whether the memoized render for this CR is still
 // valid: matching UID, generation, policy-ConfigMap ResourceVersion, and
 // identity-backend projection state (domains and federation).
 func (r *KeystoneReconciler) configRenderCacheHit(keystone *keystonev1alpha1.Keystone, policyCMRV string, domainsProjected bool, fed *federationProjection) (name, useStderr string, ok bool) {
-	federationProjected, remoteIDAttribute := federationCacheKeyOf(fed)
+	federationProjected, remoteIDAttribute, samlProtocolID, samlRemoteIDAttribute := federationCacheKeyOf(fed)
 	r.configRenderCacheMu.Lock()
 	defer r.configRenderCacheMu.Unlock()
 	entry, found := r.configRenderCache[client.ObjectKeyFromObject(keystone)]
@@ -453,7 +471,8 @@ func (r *KeystoneReconciler) configRenderCacheHit(keystone *keystonev1alpha1.Key
 	}
 	if entry.uid != keystone.UID || entry.generation != keystone.Generation ||
 		entry.policyCMResourceVersion != policyCMRV || entry.domainsProjected != domainsProjected ||
-		entry.federationProjected != federationProjected || entry.remoteIDAttribute != remoteIDAttribute {
+		entry.federationProjected != federationProjected || entry.remoteIDAttribute != remoteIDAttribute ||
+		entry.samlProtocolID != samlProtocolID || entry.samlRemoteIDAttribute != samlRemoteIDAttribute {
 		return "", "", false
 	}
 	return entry.configMapName, entry.useStderr, true
@@ -461,7 +480,7 @@ func (r *KeystoneReconciler) configRenderCacheHit(keystone *keystonev1alpha1.Key
 
 // storeConfigRender memoizes a successful render.
 func (r *KeystoneReconciler) storeConfigRender(keystone *keystonev1alpha1.Keystone, policyCMRV, configMapName, useStderr string, domainsProjected bool, fed *federationProjection) {
-	federationProjected, remoteIDAttribute := federationCacheKeyOf(fed)
+	federationProjected, remoteIDAttribute, samlProtocolID, samlRemoteIDAttribute := federationCacheKeyOf(fed)
 	r.configRenderCacheMu.Lock()
 	defer r.configRenderCacheMu.Unlock()
 	if r.configRenderCache == nil {
@@ -474,6 +493,8 @@ func (r *KeystoneReconciler) storeConfigRender(keystone *keystonev1alpha1.Keysto
 		domainsProjected:        domainsProjected,
 		federationProjected:     federationProjected,
 		remoteIDAttribute:       remoteIDAttribute,
+		samlProtocolID:          samlProtocolID,
+		samlRemoteIDAttribute:   samlRemoteIDAttribute,
 		configMapName:           configMapName,
 		useStderr:               useStderr,
 	}

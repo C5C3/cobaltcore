@@ -303,6 +303,43 @@ func TestBackendReconcile_ConfigProjectedFlipsOnDeploymentObservation(t *testing
 	g.Expect(ready.Reason).To(Equal("AllReady"))
 }
 
+// TestSAMLBackendReconcile_ConfigProjectedPublishesSPMetadataSecretName pins
+// the SAML ConfigProjected observation (federation-mellon volume + IdP-metadata
+// key) and that the backend controller publishes the SP metadata export Secret
+// name once the config is projected.
+func TestSAMLBackendReconcile_ConfigProjectedPublishesSPMetadataSecretName(t *testing.T) {
+	g := NewGomegaWithT(t)
+	srv := identityfake.NewServer(testAdminPassword)
+	t.Cleanup(srv.Close)
+	srv.SeedRole("member")
+
+	ks := testKeystoneWithReadyAPI()
+	backend := testSAMLBackend("corp-saml", "corp")
+	fedSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-keystone-federation-abcd1234", Namespace: "default"},
+		Data:       map[string][]byte{samlIdPMetadataKeyName("corp-saml"): []byte("<EntityDescriptor/>")},
+	}
+	deploy := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: subResourceName(ks), Namespace: ks.Namespace},
+		Spec: appsv1.DeploymentSpec{Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
+			Volumes: []corev1.Volume{{
+				Name:         federationMellonVolumeName,
+				VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: fedSecret.Name}},
+			}},
+		}}},
+	}
+	r := newBackendTestReconciler(srv, ks, backend, testAdminSecret(), deploy, fedSecret)
+
+	_, err := reconcileBackendTwice(t, r, backend)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	updated := getBackend(t, r.Client, "corp-saml")
+	projected := commonconditions.GetCondition(updated.Status.Conditions, conditionTypeConfigProjected)
+	g.Expect(projected).NotTo(BeNil())
+	g.Expect(projected.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(updated.Status.SAMLSPMetadataSecretName).To(Equal("test-keystone-saml-sp-metadata"))
+}
+
 func TestBackendReconcile_ConfigNotProjectedRequeuesAsSafetyNet(t *testing.T) {
 	g := NewGomegaWithT(t)
 	srv := identityfake.NewServer(testAdminPassword)

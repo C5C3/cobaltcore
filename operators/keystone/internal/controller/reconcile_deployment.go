@@ -453,43 +453,63 @@ func buildFederationProxyContainer(fed *federationProjection) corev1.Container {
 			InitialDelaySeconds: 5,
 			PeriodSeconds:       10,
 		},
-		VolumeMounts: []corev1.VolumeMount{
-			{
-				Name:      federationProxyConfigVolumeName,
-				MountPath: federationProxyConfMountPath,
-				ReadOnly:  true,
-			},
-			{
-				Name:      federationMetadataVolumeName,
-				MountPath: federationMetadataMountPath,
-				ReadOnly:  true,
-			},
-			{
-				Name:      federationProxyTmpVolumeName,
-				MountPath: "/tmp",
-			},
-		},
+		VolumeMounts: buildFederationProxyVolumeMounts(fed),
 	}
 }
 
-// buildFederationVolumes builds the pod volumes backing the sidecar: both
-// config volumes source the one content-hashed federation Secret (0o400 —
-// it carries client secrets and the crypto passphrase) with different
+// buildFederationProxyVolumeMounts assembles the sidecar's volume mounts. The
+// OIDC metadata mount is present only when an OIDC backend is projected and the
+// mellon mount only when a SAML backend is projected — a SAML-only projection
+// must not mount an item-less metadata Secret volume (an empty Items list
+// projects ALL keys, leaking the SP key material into OIDCMetadataDir).
+func buildFederationProxyVolumeMounts(fed *federationProjection) []corev1.VolumeMount {
+	mounts := []corev1.VolumeMount{{
+		Name:      federationProxyConfigVolumeName,
+		MountPath: federationProxyConfMountPath,
+		ReadOnly:  true,
+	}}
+	if len(fed.MetadataItems) > 0 {
+		mounts = append(mounts, corev1.VolumeMount{
+			Name:      federationMetadataVolumeName,
+			MountPath: federationMetadataMountPath,
+			ReadOnly:  true,
+		})
+	}
+	if len(fed.MellonItems) > 0 {
+		mounts = append(mounts, corev1.VolumeMount{
+			Name:      federationMellonVolumeName,
+			MountPath: federationMellonMountPath,
+			ReadOnly:  true,
+		})
+	}
+	mounts = append(mounts, corev1.VolumeMount{
+		Name:      federationProxyTmpVolumeName,
+		MountPath: "/tmp",
+	})
+	return mounts
+}
+
+// buildFederationVolumes builds the pod volumes backing the sidecar: the config
+// volumes source the one content-hashed federation Secret (0o400 — it carries
+// client secrets, the crypto passphrase, and the SAML SP key) with different
 // KeyToPath item sets, plus the emptyDir scratch space for Apache's runtime
-// files.
+// files. The metadata volume renders only when an OIDC backend is projected and
+// the mellon volume only when a SAML backend is projected: mounting an
+// item-less Secret volume would project ALL keys, leaking one federation type's
+// material into the other's mount path.
 func buildFederationVolumes(fed *federationProjection) []corev1.Volume {
-	return []corev1.Volume{
-		{
-			Name: federationProxyConfigVolumeName,
-			VolumeSource: corev1.VolumeSource{
-				Secret: &corev1.SecretVolumeSource{
-					SecretName:  fed.SecretName,
-					DefaultMode: ptr.To(int32(0o400)),
-					Items:       []corev1.KeyToPath{{Key: "proxy.conf", Path: "proxy.conf"}},
-				},
+	volumes := []corev1.Volume{{
+		Name: federationProxyConfigVolumeName,
+		VolumeSource: corev1.VolumeSource{
+			Secret: &corev1.SecretVolumeSource{
+				SecretName:  fed.SecretName,
+				DefaultMode: ptr.To(int32(0o400)),
+				Items:       []corev1.KeyToPath{{Key: "proxy.conf", Path: "proxy.conf"}},
 			},
 		},
-		{
+	}}
+	if len(fed.MetadataItems) > 0 {
+		volumes = append(volumes, corev1.Volume{
 			Name: federationMetadataVolumeName,
 			VolumeSource: corev1.VolumeSource{
 				Secret: &corev1.SecretVolumeSource{
@@ -498,12 +518,25 @@ func buildFederationVolumes(fed *federationProjection) []corev1.Volume {
 					Items:       fed.MetadataItems,
 				},
 			},
-		},
-		{
-			Name:         federationProxyTmpVolumeName,
-			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
-		},
+		})
 	}
+	if len(fed.MellonItems) > 0 {
+		volumes = append(volumes, corev1.Volume{
+			Name: federationMellonVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName:  fed.SecretName,
+					DefaultMode: ptr.To(int32(0o400)),
+					Items:       fed.MellonItems,
+				},
+			},
+		})
+	}
+	volumes = append(volumes, corev1.Volume{
+		Name:         federationProxyTmpVolumeName,
+		VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+	})
+	return volumes
 }
 
 // buildPodDisruptionBudget constructs the desired PDB for the Keystone API

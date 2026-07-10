@@ -1548,6 +1548,54 @@ func TestReconcileConfig_FederationRendersAuthAndTemplate(t *testing.T) {
 	g.Expect(cm.Data["sso_callback_template.html"]).To(ContainSubstring(`name="token"`))
 }
 
+// TestReconcileConfig_SAMLRendersPerProtocolRemoteID verifies the SAML-only
+// render: the per-protocol [<protocolID>] remote_id_attribute section points
+// keystone at the mellon-asserted IdP environ key, [auth]/[federation] render,
+// and [openid] is omitted entirely (no OIDC backend is projected).
+func TestReconcileConfig_SAMLRendersPerProtocolRemoteID(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := configTestScheme()
+	ks := configTestKeystone()
+	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
+	r := newConfigTestReconciler(s, ks, secret)
+
+	fed := &federationProjection{SAMLProtocolID: "mapped", SAMLRemoteIDAttribute: "HTTP_MELLON_IDP"}
+	configMapName, err := r.reconcileConfig(context.Background(), ks, false, fed)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	cm, err := getCreatedConfigMap(context.Background(), r.Client, "default", configMapName)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	keystoneConf := cm.Data["keystone.conf"]
+	g.Expect(keystoneConf).To(ContainSubstring("[auth]"))
+	g.Expect(keystoneConf).To(ContainSubstring("[mapped]"))
+	g.Expect(keystoneConf).To(ContainSubstring("remote_id_attribute = HTTP_MELLON_IDP"))
+	g.Expect(keystoneConf).To(ContainSubstring("[federation]"))
+	g.Expect(keystoneConf).To(ContainSubstring("sso_callback_template = " + ssoCallbackTemplateFilePath))
+	// No OIDC backend projected → no [openid] section.
+	g.Expect(keystoneConf).NotTo(ContainSubstring("[openid]"))
+	g.Expect(cm.Data).To(HaveKey("sso_callback_template.html"))
+}
+
+// TestReconcileConfig_CacheInvalidatesOnSAMLState pins that a SAML
+// attach/detach (which flips the [<protocolID>] section without bumping the
+// Keystone generation) invalidates the config-render cache.
+func TestReconcileConfig_CacheInvalidatesOnSAMLState(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := configTestScheme()
+	ks := configTestKeystone()
+	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
+	r := newConfigTestReconciler(s, ks, secret)
+
+	without, err := r.reconcileConfig(context.Background(), ks, false, nil)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	fed := &federationProjection{SAMLProtocolID: "mapped", SAMLRemoteIDAttribute: "HTTP_MELLON_IDP"}
+	with, err := r.reconcileConfig(context.Background(), ks, false, fed)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(with).NotTo(Equal(without), "attaching a SAML backend must re-render the config")
+}
+
 // TestReconcileConfig_FederationInactiveOmitsSections pins the
 // zero-federation contract: no [auth]/[openid]/[federation] section and no
 // template data key, keeping non-federated CRs byte-identical to the

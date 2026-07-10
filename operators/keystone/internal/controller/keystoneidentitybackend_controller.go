@@ -327,13 +327,20 @@ func (r *KeystoneIdentityBackendReconciler) observeConfigProjected(ctx context.C
 		Reason:             conditionReasonConfigProjected,
 		Message:            "domain config is mounted in the Keystone Deployment",
 	})
+	// For a projected SAML backend, publish the stable-named SP metadata export
+	// Secret the keystone side created (this controller is the single status
+	// writer). Operators register the SP with the IdP from this Secret.
+	if backend.Spec.Type == keystonev1alpha1.IdentityBackendTypeSAML {
+		backend.Status.SAMLSPMetadataSecretName = samlSPMetadataSecretName(keystone)
+	}
 	return ctrl.Result{}, nil
 }
 
 // isConfigProjected reports whether the Keystone Deployment mounts this
 // backend's rendered config: an LDAP backend's keystone.<domain>.conf inside
 // the domains-volume Secret, an OIDC backend's <name>.client document inside
-// the federation-metadata-volume Secret.
+// the federation-metadata-volume Secret, a SAML backend's IdP-metadata document
+// inside the federation-mellon-volume Secret.
 func (r *KeystoneIdentityBackendReconciler) isConfigProjected(ctx context.Context, keystone *keystonev1alpha1.Keystone, backend *keystonev1alpha1.KeystoneIdentityBackend) (bool, error) {
 	var deploy appsv1.Deployment
 	deployKey := client.ObjectKey{Namespace: keystone.Namespace, Name: subResourceName(keystone)}
@@ -346,9 +353,15 @@ func (r *KeystoneIdentityBackendReconciler) isConfigProjected(ctx context.Contex
 
 	volumeName := domainsVolumeName
 	dataKey := domainConfFileName(backend.Spec.Domain.Name)
-	if backend.Spec.Type == keystonev1alpha1.IdentityBackendTypeOIDC {
+	switch backend.Spec.Type {
+	case keystonev1alpha1.IdentityBackendTypeLDAP:
+		// The domains-volume defaults set above.
+	case keystonev1alpha1.IdentityBackendTypeOIDC:
 		volumeName = federationMetadataVolumeName
 		dataKey = federationClientKeyName(backend.Name)
+	case keystonev1alpha1.IdentityBackendTypeSAML:
+		volumeName = federationMellonVolumeName
+		dataKey = samlIdPMetadataKeyName(backend.Name)
 	}
 
 	var secretName string
