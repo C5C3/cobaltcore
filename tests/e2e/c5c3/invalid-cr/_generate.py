@@ -347,6 +347,103 @@ FIXTURES: tuple[Fixture, ...] = (
             '          name: ""\n'
         ),
     ),
+    # Catalog stewardship (still the create-rejection matrix). The numbering picks
+    # up at 19 because 15-18 were already taken by the transition waves below.
+    Fixture(
+        filename="24-external-catalog-identity-entry.yaml",
+        comment=(
+            "external.catalog.managedEntries declaring the identity type is rejected:\n"
+            "the identity catalog entry is owned by the External-mode imports (CEL)."
+        ),
+        name="cp-external-catalog-identity",
+        keystone=(
+            VALID_EXTERNAL_KEYSTONE
+            + "        catalog:\n"
+            + "          managedEntries:\n"
+            + "          - type: identity\n"
+        ),
+    ),
+    Fixture(
+        filename="25-external-catalog-entry-type-invalid.yaml",
+        comment=(
+            "external.catalog.managedEntries[].type outside the DNS-1123 label shape is\n"
+            "rejected (CRD pattern): the type names the child K-ORC CRs."
+        ),
+        name="cp-external-catalog-bad-type",
+        keystone=(
+            VALID_EXTERNAL_KEYSTONE
+            + "        catalog:\n"
+            + "          managedEntries:\n"
+            + "          - type: Image_Service\n"
+        ),
+    ),
+    Fixture(
+        filename="26-external-catalog-endpoint-url-invalid.yaml",
+        comment=(
+            "external.catalog.managedEntries[].endpoints[].url without an http(s) scheme\n"
+            "is rejected (CRD pattern)."
+        ),
+        name="cp-external-catalog-bad-url",
+        keystone=(
+            VALID_EXTERNAL_KEYSTONE
+            + "        catalog:\n"
+            + "          managedEntries:\n"
+            + "          - type: image\n"
+            + "            endpoints:\n"
+            + "            - interface: public\n"
+            + "              url: glance.example.com\n"
+        ),
+    ),
+    Fixture(
+        filename="27-external-catalog-duplicate-interface.yaml",
+        comment=(
+            "Two endpoints of one managed entry sharing an interface are rejected by the\n"
+            "apiserver: endpoints is a listType=map keyed on interface."
+        ),
+        name="cp-external-catalog-dup-iface",
+        keystone=(
+            VALID_EXTERNAL_KEYSTONE
+            + "        catalog:\n"
+            + "          managedEntries:\n"
+            + "          - type: image\n"
+            + "            endpoints:\n"
+            + "            - interface: public\n"
+            + "              url: https://a.example.com\n"
+            + "            - interface: public\n"
+            + "              url: https://b.example.com\n"
+        ),
+    ),
+    Fixture(
+        filename="28-external-catalog-entry-name-invalid.yaml",
+        comment=(
+            "external.catalog.managedEntries[].name carrying a comma is rejected (CRD\n"
+            "pattern): the name is cast to K-ORC's OpenStackName, whose own pattern is\n"
+            "^[^,]+$, so admitting it here would wedge the reconcile on a K-ORC CRD\n"
+            "rejection no ControlPlane field error explains."
+        ),
+        name="cp-external-catalog-bad-name",
+        keystone=(
+            VALID_EXTERNAL_KEYSTONE
+            + "        catalog:\n"
+            + "          managedEntries:\n"
+            + "          - type: image\n"
+            + "            name: glance,v2\n"
+        ),
+    ),
+    Fixture(
+        filename="29-external-catalog-identity-service-name-invalid.yaml",
+        comment=(
+            "external.catalog.identityServiceName carrying a comma is rejected (CRD\n"
+            "pattern), exactly like managedEntries[].name: it is cast to K-ORC's\n"
+            "OpenStackName on the Service import filter, whose own pattern is ^[^,]+$."
+        ),
+        name="cp-external-catalog-bad-identity-name",
+        keystone=(
+            VALID_EXTERNAL_KEYSTONE
+            + "        catalog:\n"
+            + "          identityServiceName: keystone,v3\n"
+        ),
+    ),
     # --- transition wave A: Managed -> External (Test: c5c3-invalid-cr-managed-to-external) ---
     Fixture(
         filename="15-transition-base-managed.yaml",

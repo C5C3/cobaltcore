@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Two endpoints of one managed entry sharing an interface are rejected by the
+# apiserver: endpoints is a listType=map keyed on interface.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-external-catalog-dup-iface
+spec:
+  openStackRelease: "2025.2"
+  services:
+    keystone:
+      mode: External
+      external:
+        authURL: https://keystone.example.com/v3
+        catalog:
+          managedEntries:
+          - type: image
+            endpoints:
+            - interface: public
+              url: https://a.example.com
+            - interface: public
+              url: https://b.example.com
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password

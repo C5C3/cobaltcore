@@ -1,0 +1,30 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# external.catalog.managedEntries[].name carrying a comma is rejected (CRD
+# pattern): the name is cast to K-ORC's OpenStackName, whose own pattern is
+# ^[^,]+$, so admitting it here would wedge the reconcile on a K-ORC CRD
+# rejection no ControlPlane field error explains.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-external-catalog-bad-name
+spec:
+  openStackRelease: "2025.2"
+  services:
+    keystone:
+      mode: External
+      external:
+        authURL: https://keystone.example.com/v3
+        catalog:
+          managedEntries:
+          - type: image
+            name: glance,v2
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password

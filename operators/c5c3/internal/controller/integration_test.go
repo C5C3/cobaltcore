@@ -1719,6 +1719,56 @@ func TestIntegration_ExternalMode_Rejections(t *testing.T) {
 				cp.Spec.Services.Keystone.External = nil
 			},
 		},
+		{
+			// The identity entry is owned by the imports; declaring it as a managed
+			// entry is the one way the creation opt-in could clobber the external
+			// catalog's own identity row.
+			name: "CEL: identity declared as a managed catalog entry",
+			mutate: func(cp *c5c3v1alpha1.ControlPlane) {
+				cp.Spec.Services.Keystone.External.Catalog = &c5c3v1alpha1.ExternalCatalogSpec{
+					ManagedEntries: []c5c3v1alpha1.ExternalCatalogEntrySpec{
+						{Type: c5c3v1alpha1.IdentityCatalogServiceType},
+					},
+				}
+			},
+		},
+		{
+			name: "schema: managed catalog entry type is not a DNS-1123 label",
+			mutate: func(cp *c5c3v1alpha1.ControlPlane) {
+				cp.Spec.Services.Keystone.External.Catalog = &c5c3v1alpha1.ExternalCatalogSpec{
+					ManagedEntries: []c5c3v1alpha1.ExternalCatalogEntrySpec{{Type: "Image_Service"}},
+				}
+			},
+		},
+		{
+			name: "schema: managed catalog endpoint URL is not an http(s) URL",
+			mutate: func(cp *c5c3v1alpha1.ControlPlane) {
+				cp.Spec.Services.Keystone.External.Catalog = &c5c3v1alpha1.ExternalCatalogSpec{
+					ManagedEntries: []c5c3v1alpha1.ExternalCatalogEntrySpec{{
+						Type: "image",
+						Endpoints: []c5c3v1alpha1.ExternalCatalogEndpointSpec{
+							{Interface: c5c3v1alpha1.ExternalEndpointTypePublic, URL: "glance.example.com"},
+						},
+					}},
+				}
+			},
+		},
+		{
+			// endpoints is a listType=map keyed on interface, so the apiserver — not
+			// the webhook — refuses the duplicate.
+			name: "schema: two managed catalog endpoints share an interface",
+			mutate: func(cp *c5c3v1alpha1.ControlPlane) {
+				cp.Spec.Services.Keystone.External.Catalog = &c5c3v1alpha1.ExternalCatalogSpec{
+					ManagedEntries: []c5c3v1alpha1.ExternalCatalogEntrySpec{{
+						Type: "image",
+						Endpoints: []c5c3v1alpha1.ExternalCatalogEndpointSpec{
+							{Interface: c5c3v1alpha1.ExternalEndpointTypePublic, URL: "https://a.example.com"},
+							{Interface: c5c3v1alpha1.ExternalEndpointTypePublic, URL: "https://b.example.com"},
+						},
+					}},
+				}
+			},
+		},
 	}
 
 	for i, tc := range cases {

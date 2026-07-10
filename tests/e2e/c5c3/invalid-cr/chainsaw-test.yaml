@@ -207,6 +207,67 @@ spec:
         - check:
             ($error != null): true
             (contains($error, 'must be a bare origin')): true
+  # An identity managed catalog entry must be rejected (CEL): that entry is owned
+  # by the External-mode imports, so declaring it is the one way the creation
+  # opt-in could clobber the external catalog's own identity row.
+  - try:
+    - apply:
+        file: 24-external-catalog-identity-entry.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'owned by the External-mode imports')): true
+  # A managed catalog entry type outside the DNS-1123 label shape must be rejected
+  # (CRD pattern): the type names the child K-ORC CRs.
+  - try:
+    - apply:
+        file: 25-external-catalog-entry-type-invalid.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'type')): true
+  # A managed catalog endpoint URL without an http(s) scheme must be rejected
+  # (CRD pattern).
+  - try:
+    - apply:
+        file: 26-external-catalog-endpoint-url-invalid.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'url')): true
+  # Two endpoints of one entry sharing an interface must be rejected: endpoints is
+  # a listType=map keyed on interface, so the apiserver enforces uniqueness.
+  - try:
+    - apply:
+        file: 27-external-catalog-duplicate-interface.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'interface')): true
+  # A managed catalog entry name carrying a comma must be rejected (CRD pattern):
+  # the name is cast to K-ORC's OpenStackName, whose own pattern is ^[^,]+$, so
+  # admitting it here would only move the rejection to the child K-ORC CR — where
+  # it wedges the reconcile instead of failing at admission.
+  - try:
+    - apply:
+        file: 28-external-catalog-entry-name-invalid.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'managedEntries[0].name')): true
+            (contains($error, 'should match')): true
+  # identityServiceName carrying a comma must be rejected (CRD pattern) for the
+  # same reason as the entry name above: it is cast to K-ORC's OpenStackName on
+  # the Service import filter, and OpenStack list filters are comma-separated,
+  # which is exactly why that pattern forbids one.
+  - try:
+    - apply:
+        file: 29-external-catalog-identity-service-name-invalid.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'identityServiceName')): true
+            (contains($error, 'should match')): true
 ---
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
