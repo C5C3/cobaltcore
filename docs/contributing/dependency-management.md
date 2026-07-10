@@ -50,6 +50,14 @@ Major updates are **disabled** for all custom-regex managers — these touch dep
 CRDs, the OpenStack release matrix, and build tooling where a major bump always needs
 human-driven coordination.
 
+Separately, the native `nix` manager keeps the development flake fresh: it maintains
+`flake.lock` (the pinned `nixpkgs` revision) via lock-file maintenance, opening a grouped
+weekly re-lock PR. That PR is **not** automerged: `nixos-unstable` is a rolling ref, so the
+re-lock is not a version bump and the 3-day cooldown cannot gate it — a reviewer confirms
+the base-runtime bump instead. The Nix devshell re-reads the canonical tool pins
+(`ci.yaml`, the `Makefile`, `hack/install-test-deps.sh`) on entry, so a tool-version
+bump needs **no** flake edit — see [Nix Development Environment](./nix-dev-environment.md).
+
 ---
 
 ## Go version upgrades
@@ -371,3 +379,5 @@ filters are an optimization, not an exemption.
   changelog and deprecation announcements.
 - [CI Workflow](../reference/ci-cd/ci-workflow.md) — what each required
   check actually runs.
+- [Nix Development Environment](./nix-dev-environment.md) — the flake that
+  provisions the CI toolchain and how it stays in sync with these pins.

@@ -69,6 +69,14 @@ By default, binaries are installed to `~/.local/bin`. Make sure that directory i
 export PATH="${HOME}/.local/bin:${PATH}"
 ```
 
+::: tip Nix users
+Instead of `make install-test-deps`, you can run `nix develop` to get every
+tool in the table above — plus `controller-gen`, `gofumpt`, `golangci-lint`,
+`kustomize`, `chainsaw`, and the envtest assets — at the versions CI pins. See
+[Nix Development Environment](./contributing/nix-dev-environment.md). Docker
+still has to be installed separately (kind needs a running daemon).
+:::
+
 ---
 
 ## Step 1 — Clone the repository

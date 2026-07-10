@@ -136,6 +136,7 @@ export default defineConfig({
           { text: 'Adding a New Operator', link: '/contributing/adding-a-new-operator' },
           { text: 'Adding a New Release', link: '/contributing/adding-a-new-release' },
           { text: 'Dependency Management', link: '/contributing/dependency-management' },
+          { text: 'Nix Development Environment', link: '/contributing/nix-dev-environment' },
           { text: 'Claude Code Skills', link: '/contributing/claude-skills' },
         ],
       },
