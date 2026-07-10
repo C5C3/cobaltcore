@@ -19,16 +19,36 @@ import (
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 )
 
-// reconcileCatalog registers the OpenStack service catalog entries for Keystone
-// (an identity Service plus its public Endpoint) as OWNED K-ORC CRs and drives
-// the CatalogReady condition.
+// CatalogReady reasons shared by BOTH branches of reconcileCatalog. The
+// managed-only reasons stay inline at their single call site; these two are
+// stamped from reconcile_catalog_external.go as well, so a literal in each file
+// would be a drift hazard.
+const (
+	// conditionReasonCatalogFailed reports a TERMINAL K-ORC failure on a catalog
+	// child CR: an unrecoverable/invalid-configuration error K-ORC will not retry.
+	conditionReasonCatalogFailed = "CatalogFailed"
+
+	// conditionReasonWaitingForCatalog reports that the catalog children are
+	// reconciled but not yet Available for their current generation.
+	conditionReasonWaitingForCatalog = "WaitingForCatalog"
+)
+
+// reconcileCatalog drives the CatalogReady condition. What it does depends on
+// the Keystone mode, and the two postures are opposites:
 //
-// It is GATED on AdminCredentialReady: the admin credential must be available
-// before K-ORC can register catalog entries. Both child CRs are create-or-updated
-// idempotently; the CatalogReady condition flips True once both are registered.
-// K-ORC is a hard CRD dependency (see reconcileKORC), so a missing
-// Service/Endpoint CRD never reaches here — no-match errors fall through to the
-// generic error returns below (#476).
+//   - Managed — the ControlPlane OWNS the catalog. It registers the OpenStack
+//     service catalog entries for Keystone (an identity Service plus its public
+//     Endpoint) as managed K-ORC CRs, which K-ORC creates in Keystone.
+//   - External — the catalog belongs to the pre-existing installation, so the
+//     ControlPlane IMPORTS it instead (reconcileCatalogExternal). Creating
+//     entries against a populated catalog would duplicate rows Keystone does not
+//     deduplicate, so it never happens by default.
+//
+// Both branches are GATED on AdminCredentialReady: the admin credential must be
+// available before K-ORC can talk to Keystone at all. Child CRs are
+// create-or-updated idempotently. K-ORC is a hard CRD dependency (see
+// reconcileKORC), so a missing Service/Endpoint CRD never reaches here — no-match
+// errors fall through to the generic error returns below (#476).
 func (r *ControlPlaneReconciler) reconcileCatalog(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 	fail := conditionFailer(cp, conditionTypeCatalogReady)
@@ -51,6 +71,13 @@ func (r *ControlPlaneReconciler) reconcileCatalog(ctx context.Context, cp *c5c3v
 	}
 	cloudName := cp.Spec.KORC.AdminCredential.CloudCredentialsRef.CloudName
 	credRef := orcv1alpha1.CloudCredentialsReference{SecretName: secretName, CloudName: cloudName}
+
+	// Fork on the mode discriminator. Everything above is mode-agnostic (the gate
+	// and the admin credential K-ORC authenticates with); everything below owns
+	// the catalog and therefore only runs in Managed mode.
+	if cp.IsExternalKeystone() {
+		return r.reconcileCatalogExternal(ctx, cp, credRef)
+	}
 
 	// 1. Identity (Keystone) Service.
 	service := &orcv1alpha1.Service{
@@ -118,7 +145,7 @@ func (r *ControlPlaneReconciler) reconcileCatalog(ctx context.Context, cp *c5c3v
 	}
 	if !korcAvailableUpToDate(service) || !korcAvailableUpToDate(endpoint) {
 		logger.Info("catalog Service/Endpoint not yet Available, requeuing")
-		fail("WaitingForCatalog", "Keystone identity Service and Endpoint are registered but not yet Available")
+		fail(conditionReasonWaitingForCatalog, "Keystone identity Service and Endpoint are registered but not yet Available")
 		return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
 	}
 
@@ -137,13 +164,8 @@ func (r *ControlPlaneReconciler) reconcileCatalog(ctx context.Context, cp *c5c3v
 // fixed configuration (e.g. a corrected clouds.yaml) is re-evaluated rather than
 // leaving the catalog wedged.
 func (r *ControlPlaneReconciler) catalogTerminalError(cp *c5c3v1alpha1.ControlPlane, kind, name string, termErr error) ctrl.Result {
-	conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
-		Type:               conditionTypeCatalogReady,
-		Status:             metav1.ConditionFalse,
-		ObservedGeneration: cp.Generation,
-		Reason:             "CatalogFailed",
-		Message:            fmt.Sprintf("K-ORC reported a terminal error registering the %s %q: %v", kind, name, termErr),
-	})
+	conditionFailer(cp, conditionTypeCatalogReady)(conditionReasonCatalogFailed,
+		fmt.Sprintf("K-ORC reported a terminal error registering the %s %q: %v", kind, name, termErr))
 	return ctrl.Result{RequeueAfter: korcRequeueAfter}
 }
 

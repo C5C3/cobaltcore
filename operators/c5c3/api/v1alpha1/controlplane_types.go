@@ -369,6 +369,13 @@ type ExternalKeystoneSpec struct {
 	Catalog *ExternalCatalogSpec `json:"catalog,omitempty"`
 }
 
+// IdentityCatalogServiceType is the OpenStack service type of the Keystone
+// catalog entry. It is the `type` filter of the External-mode identity Service
+// import, and therefore the one entry type the managed-entry opt-in forbids —
+// the single source of truth both the validating webhook and the reconciler
+// reference so the rule and the import can never drift apart.
+const IdentityCatalogServiceType = "identity"
+
 // ExternalCatalogSpec tunes External-mode catalog stewardship. Both of its
 // fields are optional, and the zero value is the conservative default: import
 // the existing identity service (and its public/internal/admin endpoints),

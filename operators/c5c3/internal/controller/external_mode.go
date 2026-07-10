@@ -5,6 +5,7 @@
 package controller
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -100,6 +101,39 @@ func isCredentialDriftReason(reason string) bool {
 // does not (yet) exist. It is the substring korcImportStalled keys the
 // silent-empty detector on.
 const korcImportPendingExternalMarker = "Waiting for OpenStack resource to be created externally"
+
+// korcImportMultipleMatchesMarker is the message K-ORC stamps on an import whose
+// filter matched more than one OpenStack resource. Unlike the pending marker
+// above this failure is TERMINAL (K-ORC reports it with the InvalidConfiguration
+// reason and stops retrying), which is exactly the fail-loudly behaviour the
+// import-first catalog relies on for the >1-match half of its ambiguity contract.
+//
+// It selects the disambiguation HINT and nothing else. Which imports gate
+// CatalogReady is decided by orcv1alpha1.ConditionReasonInvalidConfiguration — a
+// machine-readable reason K-ORC will not reword — precisely so that a K-ORC bump
+// cannot turn this string into a permanent CatalogReady=False (see step 2 of
+// reconcileCatalogExternal).
+//
+// Both markers are coupled to K-ORC's literal wording and must be revisited on a
+// K-ORC bump. A reworded message degrades gracefully — the terminal error is
+// still surfaced, only the disambiguation hint is dropped — never to silence, and
+// never to a wedge.
+const korcImportMultipleMatchesMarker = "found more than one matching OpenStack resource during import"
+
+// catalogEndpointMismatchHint renders the remediation sentence appended to a
+// CatalogEndpointMismatch condition message. gophercloud reports that no endpoint
+// matched, never WHICH region or interface it looked for, so the message alone is
+// not actionable. Name the two spec fields that decide the lookup — the operator
+// cannot repair an external catalog, so the only useful signal is what to compare
+// it against. Shared by the K-ORC and catalog sub-reconcilers so both relay the
+// identical remediation.
+func catalogEndpointMismatchHint(cp *c5c3v1alpha1.ControlPlane) string {
+	return fmt.Sprintf(
+		"the external catalog must publish the %q interface in region %q "+
+			"(spec.services.keystone.external.endpointType and spec.region)",
+		korcEndpointType(cp), korcRegion(cp),
+	)
+}
 
 // externalKeystoneAuthURL returns the external Keystone's identity endpoint, or
 // "" when the ControlPlane is not in External mode (or the block is absent, which

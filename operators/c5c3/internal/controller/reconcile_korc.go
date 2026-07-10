@@ -457,17 +457,11 @@ func (r *ControlPlaneReconciler) classifyExternalKORCState(
 			}
 		}
 		message := fmt.Sprintf("external Keystone at %s: %s", authURL, rawMessage)
-		// A catalog mismatch is the one class the message alone does not act on:
-		// gophercloud reports that no endpoint matched, never WHICH region or
-		// interface it looked for. Name the two spec fields that decide the lookup —
-		// the operator cannot repair an external catalog, so the only useful signal
-		// is what to compare it against (mirrors the ImportStalled message below).
+		// A catalog mismatch is the one class the message alone does not act on
+		// (mirrors the ImportStalled message below); reconcileCatalogExternal relays
+		// the identical remediation from the same helper.
 		if reason == conditionReasonCatalogEndpointMismatch {
-			message += fmt.Sprintf(
-				"; the external catalog must publish the %q interface in region %q "+
-					"(spec.services.keystone.external.endpointType and spec.region)",
-				korcEndpointType(cp), korcRegion(cp),
-			)
+			message += "; " + catalogEndpointMismatchHint(cp)
 		}
 		fail(reason, message)
 		return ctrl.Result{RequeueAfter: korcRequeueAfter}, true

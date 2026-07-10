@@ -299,11 +299,6 @@ func validateGatewayHostname(path *field.Path, hostname string) *field.Error {
 // the child K-ORC CRs, so it must be a DNS-1123 label.
 var catalogEntryTypePattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 
-// identityCatalogServiceType is the OpenStack service type of the Keystone
-// catalog entry. In External mode that entry is owned by the unmanaged imports,
-// so it may never be declared as a managed entry.
-const identityCatalogServiceType = "identity"
-
 const (
 	// maxManagedCatalogEntries mirrors the MaxItems marker on
 	// ExternalCatalogSpec.ManagedEntries. It bounds how many K-ORC CRs — and
@@ -369,7 +364,7 @@ func validateExternalCatalog(path *field.Path, cpName string, catalog *ExternalC
 		switch {
 		case entry.Type == "":
 			allErrs = append(allErrs, field.Required(typePath, "must be set"))
-		case entry.Type == identityCatalogServiceType:
+		case entry.Type == IdentityCatalogServiceType:
 			allErrs = append(allErrs, field.Forbidden(typePath,
 				"the identity catalog entry is owned by the External-mode imports and must not be declared as a managed entry"))
 		case !catalogEntryTypePattern.MatchString(entry.Type):
