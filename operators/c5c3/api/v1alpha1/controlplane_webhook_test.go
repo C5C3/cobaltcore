@@ -2296,3 +2296,168 @@ func TestValidateUpdate_RejectsInfrastructurePresenceFlip(t *testing.T) {
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("infrastructure presence is immutable"))
 }
+
+// --- Service-account webhook tests (spec.korc.serviceAccounts) ---
+
+// saControlPlane returns a managed ControlPlane carrying one minimal valid
+// service account so tests can mutate a single aspect to exercise one rule.
+func saControlPlane() *ControlPlane {
+	cp := validControlPlane()
+	cp.Spec.KORC.ServiceAccounts = []ServiceAccountSpec{{
+		Name:    "nova",
+		Project: ServiceAccountProjectSpec{Name: "service"},
+	}}
+	return cp
+}
+
+func TestValidateCreate_AcceptsValidServiceAccount(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+
+	_, err := w.ValidateCreate(context.Background(), saControlPlane())
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+func TestDefault_MaterializesServiceAccountUserName(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := saControlPlane()
+	cp.Spec.KORC.ServiceAccounts[0].UserName = ""
+
+	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+	g.Expect(cp.Spec.KORC.ServiceAccounts[0].UserName).To(Equal("nova"),
+		"an empty userName must default to the account name")
+}
+
+func TestDefault_PreservesExplicitServiceAccountUserName(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := saControlPlane()
+	cp.Spec.KORC.ServiceAccounts[0].UserName = "nova-svc"
+
+	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+	g.Expect(cp.Spec.KORC.ServiceAccounts[0].UserName).To(Equal("nova-svc"))
+}
+
+func TestValidateCreate_RejectsServiceAccountBadName(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := saControlPlane()
+	cp.Spec.KORC.ServiceAccounts[0].Name = "Nova_Service"
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("serviceAccounts[0].name"))
+}
+
+func TestValidateCreate_RejectsServiceAccountMissingProjectName(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := saControlPlane()
+	cp.Spec.KORC.ServiceAccounts[0].Project.Name = ""
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("serviceAccounts[0].project.name"))
+}
+
+func TestValidateCreate_RejectsServiceAccountAdminIdentityCollision(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := saControlPlane()
+	// The admin identity defaults to user "admin" in domain "Default"; an entry
+	// resolving to the same identity would take over the admin user.
+	cp.Spec.KORC.ServiceAccounts[0].UserName = "admin"
+	cp.Spec.KORC.ServiceAccounts[0].DomainName = "Default"
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("equals the admin identity"))
+}
+
+func TestValidateCreate_RejectsServiceAccountDuplicateIdentity(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := saControlPlane()
+	// Two entries with distinct account names but the same effective user in the
+	// same domain: they would project two managed Users onto one Keystone user.
+	cp.Spec.KORC.ServiceAccounts = append(cp.Spec.KORC.ServiceAccounts, ServiceAccountSpec{
+		Name:     "nova-secondary",
+		UserName: "nova",
+		Project:  ServiceAccountProjectSpec{Name: "service"},
+	})
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("serviceAccounts[1].userName"))
+}
+
+func TestValidateCreate_RejectsServiceAccountDuplicateManagedProject(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := saControlPlane()
+	cp.Spec.KORC.ServiceAccounts[0].Project = ServiceAccountProjectSpec{Name: "service", Create: true}
+	cp.Spec.KORC.ServiceAccounts = append(cp.Spec.KORC.ServiceAccounts, ServiceAccountSpec{
+		Name:    "glance",
+		Project: ServiceAccountProjectSpec{Name: "service", Create: true},
+	})
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("serviceAccounts[1].project.name"))
+}
+
+func TestValidateCreate_AcceptsTwoReferencedAccountsSharingAProject(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := saControlPlane()
+	// Both reference (create: false) the same project — that is legal; only two
+	// create:true entries naming one project collide.
+	cp.Spec.KORC.ServiceAccounts = append(cp.Spec.KORC.ServiceAccounts, ServiceAccountSpec{
+		Name:    "glance",
+		Project: ServiceAccountProjectSpec{Name: "service"},
+	})
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+func TestValidateUpdate_RejectsServiceAccountUserNameChange(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	oldCP := saControlPlane()
+	oldCP.Spec.KORC.ServiceAccounts[0].UserName = "nova"
+	newCP := saControlPlane()
+	newCP.Spec.KORC.ServiceAccounts[0].UserName = "nova-renamed"
+
+	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("userName is immutable"))
+}
+
+func TestValidateUpdate_RejectsServiceAccountProjectCreateFlip(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	oldCP := saControlPlane()
+	newCP := saControlPlane()
+	newCP.Spec.KORC.ServiceAccounts[0].Project.Create = true
+
+	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("project.create is immutable"))
+}
+
+func TestValidateUpdate_AcceptsServiceAccountAdoptFlip(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	oldCP := saControlPlane()
+	oldCP.Spec.KORC.ServiceAccounts[0].UserName = "nova"
+	newCP := saControlPlane()
+	newCP.Spec.KORC.ServiceAccounts[0].UserName = "nova"
+	// Flipping adopt to true is the documented collision remediation — it must
+	// stay mutable.
+	newCP.Spec.KORC.ServiceAccounts[0].Adopt = true
+
+	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+	g.Expect(err).NotTo(HaveOccurred())
+}

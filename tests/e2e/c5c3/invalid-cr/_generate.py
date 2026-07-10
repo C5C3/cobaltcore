@@ -72,7 +72,7 @@ spec:
       passwordSecretRef:
         name: external-admin
         key: password
-"""
+{service_accounts}"""
 
 # A valid External keystone service body (indent 6): the issue's sketch shape.
 VALID_EXTERNAL_KEYSTONE = (
@@ -108,6 +108,8 @@ class Fixture:
     keystone: str = VALID_EXTERNAL_KEYSTONE
     infrastructure: str = ""
     horizon: str = ""
+    # The spec.korc.serviceAccounts block (indent 4, trailing newline) or "".
+    service_accounts: str = ""
 
     def render(self) -> str:
         body = SCAFFOLD.format(
@@ -115,6 +117,7 @@ class Fixture:
             infrastructure=self.infrastructure,
             keystone=self.keystone,
             horizon=self.horizon,
+            service_accounts=self.service_accounts,
         )
         comment_lines = "".join(f"# {line}\n" for line in self.comment.splitlines())
         return LICENSE_HEADER + comment_lines + body
@@ -442,6 +445,91 @@ FIXTURES: tuple[Fixture, ...] = (
             VALID_EXTERNAL_KEYSTONE
             + "        catalog:\n"
             + "          identityServiceName: keystone,v3\n"
+        ),
+    ),
+    # Service accounts (still the create-rejection matrix). Mode-independent, so
+    # they hang off the default External keystone base (no infrastructure needed).
+    Fixture(
+        filename="30-service-account-name-invalid.yaml",
+        comment=(
+            "spec.korc.serviceAccounts[].name outside the DNS-1123 label shape is\n"
+            "rejected (CRD pattern): the name keys the list and names the child K-ORC\n"
+            "CRs and Secrets."
+        ),
+        name="cp-sa-bad-name",
+        service_accounts=(
+            "    serviceAccounts:\n"
+            "    - name: Nova_Service\n"
+            "      project:\n"
+            "        name: service\n"
+        ),
+    ),
+    Fixture(
+        filename="31-service-account-missing-project-name.yaml",
+        comment=(
+            "spec.korc.serviceAccounts[].project.name is required (CRD required-field\n"
+            "check and webhook): every account is associated with a project."
+        ),
+        name="cp-sa-no-project-name",
+        service_accounts=(
+            "    serviceAccounts:\n"
+            "    - name: nova\n"
+            "      project: {}\n"
+        ),
+    ),
+    Fixture(
+        filename="32-service-account-admin-identity-collision.yaml",
+        comment=(
+            "A service account whose effective (userName, domainName) equals the admin\n"
+            "identity is rejected by the webhook: a managed User would take over the\n"
+            "admin user and rotate its password."
+        ),
+        name="cp-sa-admin-collision",
+        service_accounts=(
+            "    serviceAccounts:\n"
+            "    - name: nova\n"
+            "      userName: admin\n"
+            "      domainName: Default\n"
+            "      project:\n"
+            "        name: service\n"
+        ),
+    ),
+    Fixture(
+        filename="33-service-account-duplicate-identity.yaml",
+        comment=(
+            "Two service accounts resolving to the same (userName, domainName) are\n"
+            "rejected by the webhook: they would project two managed Users onto one\n"
+            "Keystone user and race its password."
+        ),
+        name="cp-sa-dup-identity",
+        service_accounts=(
+            "    serviceAccounts:\n"
+            "    - name: nova\n"
+            "      project:\n"
+            "        name: service\n"
+            "    - name: nova-secondary\n"
+            "      userName: nova\n"
+            "      project:\n"
+            "        name: service\n"
+        ),
+    ),
+    Fixture(
+        filename="34-service-account-duplicate-managed-project.yaml",
+        comment=(
+            "Two create:true service accounts naming the same project in one domain are\n"
+            "rejected by the webhook: each managed Project would adopt the other's row."
+        ),
+        name="cp-sa-dup-managed-project",
+        service_accounts=(
+            "    serviceAccounts:\n"
+            "    - name: nova\n"
+            "      project:\n"
+            "        name: service\n"
+            "        create: true\n"
+            "    - name: glance\n"
+            "      project:\n"
+            "        name: service\n"
+            "        create: true\n"
         ),
     ),
     # --- transition wave A: Managed -> External (Test: c5c3-invalid-cr-managed-to-external) ---

@@ -5,6 +5,7 @@
 package v1alpha1
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"net/url"
@@ -424,6 +425,159 @@ func validateExternalCatalog(path *field.Path, cpName string, catalog *ExternalC
 	return allErrs
 }
 
+// serviceAccountNamePattern mirrors the Pattern marker on ServiceAccountSpec.Name.
+// The account name keys the list and is embedded verbatim in the names of the
+// child K-ORC CRs and Secrets, so it must be a DNS-1123 label.
+var serviceAccountNamePattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+
+const (
+	// maxServiceAccounts mirrors the MaxItems marker on KORCSpec.ServiceAccounts.
+	maxServiceAccounts = 32
+
+	// serviceAccountChildNameOverhead is the longest fixed part of a child name
+	// the account name is embedded in — everything except the ControlPlane name
+	// and the account name. The password Secret
+	// "{cp}-service-account-{name}-password-vN" carries the longest fixed affix;
+	// the "vN" generation suffix is bounded generously at 10 digits so a name that
+	// admission accepts can never overflow a child CR / Secret the reconciler then
+	// wedges on.
+	serviceAccountChildNameOverhead = len("-service-account-") + len("-password-v") + 10
+)
+
+// effectiveServiceAccountUserName resolves the OpenStack user name for an entry:
+// the explicit userName, or the account name (the defaulting webhook materializes
+// this, but the resolver falls back for webhook-bypassed callers). It mirrors the
+// reconciler's serviceAccountUserName so admission and reconcile agree on identity.
+func effectiveServiceAccountUserName(sa ServiceAccountSpec) string {
+	return cmp.Or(sa.UserName, sa.Name)
+}
+
+// effectiveServiceAccountDomain resolves the OpenStack domain for an entry: the
+// explicit domainName, else the effective admin domain. It mirrors the
+// reconciler's serviceAccountDomainName.
+func effectiveServiceAccountDomain(cp *ControlPlane, sa ServiceAccountSpec) string {
+	return cmp.Or(sa.DomainName, effectiveAdminDomain(cp))
+}
+
+// effectiveAdminUserName / effectiveAdminDomain resolve the admin identity with
+// the same fallbacks the reconciler's adminUserName / adminDomainName apply, so
+// the collision check compares against the identity the AC actually mints as.
+func effectiveAdminUserName(cp *ControlPlane) string {
+	return cmp.Or(cp.Spec.KORC.AdminCredential.UserName, DefaultAdminUserName)
+}
+
+func effectiveAdminDomain(cp *ControlPlane) string {
+	return cmp.Or(cp.Spec.KORC.AdminCredential.DomainName, DefaultAdminDomainName)
+}
+
+// validateServiceAccounts mirrors the declarative constraints on
+// KORCSpec.ServiceAccounts as defense-in-depth for callers that bypass CRD schema
+// admission (the account-name / userName / domainName / project.name shapes, the
+// MaxItems cap, the child-CR name-length bound the CRD cannot express) AND adds
+// the cross-item rules CEL cannot carry:
+//
+//   - two entries must not resolve to the same (userName, domainName): they would
+//     project two managed Users onto one Keystone user and race its password;
+//   - no entry's effective identity may equal the effective admin identity: a
+//     managed User would take over the admin user and rotate ITS password;
+//   - two create:true entries must not name the same project in the same domain:
+//     each managed Project would adopt the other's Keystone row.
+func validateServiceAccounts(cp *ControlPlane) field.ErrorList {
+	sas := cp.Spec.KORC.ServiceAccounts
+	if len(sas) == 0 {
+		return nil
+	}
+	var allErrs field.ErrorList
+	basePath := field.NewPath("spec", "korc", "serviceAccounts")
+
+	if len(sas) > maxServiceAccounts {
+		allErrs = append(allErrs, field.TooMany(basePath, len(sas), maxServiceAccounts))
+	}
+
+	adminUser := effectiveAdminUserName(cp)
+	adminDomain := effectiveAdminDomain(cp)
+
+	seenNames := make(map[string]struct{}, len(sas))
+	seenIdentities := make(map[string]struct{}, len(sas))
+	seenManagedProjects := make(map[string]struct{}, len(sas))
+	for i := range sas {
+		sa := sas[i]
+		entryPath := basePath.Index(i)
+
+		switch {
+		case sa.Name == "":
+			allErrs = append(allErrs, field.Required(entryPath.Child("name"), "must be set"))
+		case !serviceAccountNamePattern.MatchString(sa.Name):
+			allErrs = append(allErrs, field.Invalid(entryPath.Child("name"), sa.Name,
+				"must be a lowercase alphanumeric DNS-1123 label (it names the child K-ORC CRs and Secrets)"))
+		}
+		if _, dup := seenNames[sa.Name]; dup {
+			allErrs = append(allErrs, field.Duplicate(entryPath.Child("name"), sa.Name))
+		}
+		seenNames[sa.Name] = struct{}{}
+
+		if sa.Name != "" {
+			if n := len(cp.Name) + serviceAccountChildNameOverhead + len(sa.Name); n > maxObjectNameBytes {
+				allErrs = append(allErrs, field.Invalid(entryPath.Child("name"), sa.Name, fmt.Sprintf(
+					"the child K-ORC CR name would be %d bytes; shorten the ControlPlane name or the account "+
+						"name so the total stays within the %d-byte Kubernetes object-name limit", n, maxObjectNameBytes,
+				)))
+			}
+		}
+
+		// K-ORC casts userName/domainName to OpenStackName, whose Pattern rejects a comma.
+		if strings.Contains(sa.UserName, ",") {
+			allErrs = append(allErrs, field.Invalid(entryPath.Child("userName"), sa.UserName,
+				"must not contain a comma (mirrors K-ORC's OpenStackName pattern ^[^,]+$)"))
+		}
+		if strings.Contains(sa.DomainName, ",") {
+			allErrs = append(allErrs, field.Invalid(entryPath.Child("domainName"), sa.DomainName,
+				"must not contain a comma (mirrors K-ORC's OpenStackName pattern ^[^,]+$)"))
+		}
+
+		projPath := entryPath.Child("project")
+		switch {
+		case sa.Project.Name == "":
+			allErrs = append(allErrs, field.Required(projPath.Child("name"), "must be set"))
+		case strings.Contains(sa.Project.Name, ","):
+			allErrs = append(allErrs, field.Invalid(projPath.Child("name"), sa.Project.Name,
+				"must not contain a comma (mirrors K-ORC's KeystoneName pattern ^[^,]+$)"))
+		}
+
+		for j, role := range sa.Roles {
+			if strings.Contains(role, ",") {
+				allErrs = append(allErrs, field.Invalid(entryPath.Child("roles").Index(j), role,
+					"must not contain a comma (mirrors K-ORC's OpenStackName pattern ^[^,]+$)"))
+			}
+		}
+
+		user := effectiveServiceAccountUserName(sa)
+		domain := effectiveServiceAccountDomain(cp, sa)
+		identity := user + "\x00" + domain
+		if _, dup := seenIdentities[identity]; dup {
+			allErrs = append(allErrs, field.Duplicate(entryPath.Child("userName"), user))
+		}
+		seenIdentities[identity] = struct{}{}
+
+		if user == adminUser && domain == adminDomain {
+			allErrs = append(allErrs, field.Invalid(entryPath.Child("userName"), user, fmt.Sprintf(
+				"the effective service-account identity (user %q in domain %q) equals the admin identity "+
+					"(spec.korc.adminCredential.userName / domainName); a managed User would take over the admin "+
+					"user and rotate its password", user, domain,
+			)))
+		}
+
+		if sa.Project.Create && sa.Project.Name != "" {
+			key := sa.Project.Name + "\x00" + domain
+			if _, dup := seenManagedProjects[key]; dup {
+				allErrs = append(allErrs, field.Duplicate(projPath.Child("name"), sa.Project.Name))
+			}
+			seenManagedProjects[key] = struct{}{}
+		}
+	}
+	return allErrs
+}
+
 // externalAuthURLIsPlaintext reports whether raw is an http:// (non-TLS) endpoint.
 // A parse failure reads as false: validateHTTPURL already rejects those on the same
 // field, and a second error on it would only add noise.
@@ -580,6 +734,18 @@ func (w *ControlPlaneWebhook) Default(_ context.Context, obj *ControlPlane) erro
 	// applicationCredential.rotation.mode defaults to PasswordDriven.
 	if appCred.Rotation.Mode == "" {
 		appCred.Rotation.Mode = RotationModePasswordDriven
+	}
+
+	// serviceAccounts[i].userName defaults to serviceAccounts[i].name: the K-ORC
+	// User CR is named after the account, but the OpenStack user name it manages
+	// defaults to the same value unless the operator overrides it. Mirrors the
+	// cloudName/secretName defaulting discipline. (The domain default is resolved
+	// in the reconciler, not here, so it can follow spec.korc.adminCredential.
+	// domainName.)
+	for i := range obj.Spec.KORC.ServiceAccounts {
+		if obj.Spec.KORC.ServiceAccounts[i].UserName == "" {
+			obj.Spec.KORC.ServiceAccounts[i].UserName = obj.Spec.KORC.ServiceAccounts[i].Name
+		}
 	}
 
 	return nil
@@ -804,6 +970,7 @@ func (w *ControlPlaneWebhook) validate(cp *ControlPlane) field.ErrorList {
 	}
 
 	allErrs = append(allErrs, validateKeystoneMode(cp)...)
+	allErrs = append(allErrs, validateServiceAccounts(cp)...)
 
 	return allErrs
 }
@@ -1146,6 +1313,46 @@ func validateImmutable(oldObj, newObj *ControlPlane) field.ErrorList {
 		))
 	}
 
+	allErrs = append(allErrs, validateServiceAccountsImmutable(oldObj, newObj)...)
+
+	return allErrs
+}
+
+// validateServiceAccountsImmutable freezes the per-entry identity and project
+// fields whose in-place edit would rename or re-own live Keystone resources. The
+// entry key is name (the listMapKey), so entries are matched across old/new by it;
+// an added or removed entry is a create/delete the reconciler handles, not a
+// mutation. adopt stays mutable: flipping it to true is the documented collision
+// remediation.
+func validateServiceAccountsImmutable(oldObj, newObj *ControlPlane) field.ErrorList {
+	var allErrs field.ErrorList
+	oldSAs := make(map[string]ServiceAccountSpec, len(oldObj.Spec.KORC.ServiceAccounts))
+	for _, sa := range oldObj.Spec.KORC.ServiceAccounts {
+		oldSAs[sa.Name] = sa
+	}
+	for i, sa := range newObj.Spec.KORC.ServiceAccounts {
+		old, ok := oldSAs[sa.Name]
+		if !ok {
+			continue
+		}
+		saPath := field.NewPath("spec", "korc", "serviceAccounts").Index(i)
+		if old.UserName != sa.UserName {
+			allErrs = append(allErrs, field.Invalid(saPath.Child("userName"), sa.UserName,
+				"userName is immutable; remove and re-add the service account under a new name to rename its user"))
+		}
+		if old.DomainName != sa.DomainName {
+			allErrs = append(allErrs, field.Invalid(saPath.Child("domainName"), sa.DomainName,
+				"domainName is immutable; remove and re-add the service account to move it to another domain"))
+		}
+		if old.Project.Name != sa.Project.Name {
+			allErrs = append(allErrs, field.Invalid(saPath.Child("project", "name"), sa.Project.Name,
+				"project.name is immutable; remove and re-add the service account to re-point its project"))
+		}
+		if old.Project.Create != sa.Project.Create {
+			allErrs = append(allErrs, field.Invalid(saPath.Child("project", "create"), sa.Project.Create,
+				"project.create is immutable; a managed<->referenced flip would orphan or adopt the live project"))
+		}
+	}
 	return allErrs
 }
 

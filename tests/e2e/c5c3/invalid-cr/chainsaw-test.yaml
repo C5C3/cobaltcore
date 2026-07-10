@@ -274,6 +274,53 @@ spec:
             ($error != null): true
             (contains($error, 'identityServiceName')): true
             (contains($error, 'should match')): true
+  # serviceAccounts[].name outside the DNS-1123 label shape must be rejected
+  # (CRD pattern): the name keys the list and names the child K-ORC CRs.
+  - try:
+    - apply:
+        file: 30-service-account-name-invalid.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'serviceAccounts[0].name')): true
+            (contains($error, 'should match')): true
+  # serviceAccounts[].project.name is required (CRD required-field check).
+  - try:
+    - apply:
+        file: 31-service-account-missing-project-name.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'project.name')): true
+  # An entry whose effective identity equals the admin identity must be rejected
+  # by the webhook: a managed User would take over the admin user.
+  - try:
+    - apply:
+        file: 32-service-account-admin-identity-collision.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'equals the admin identity')): true
+  # Two entries resolving to the same (userName, domainName) must be rejected by
+  # the webhook: they would project two managed Users onto one Keystone user.
+  - try:
+    - apply:
+        file: 33-service-account-duplicate-identity.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'serviceAccounts[1].userName')): true
+            (contains($error, 'Duplicate')): true
+  # Two create:true entries naming one project in one domain must be rejected by
+  # the webhook: each managed Project would adopt the other's row.
+  - try:
+    - apply:
+        file: 34-service-account-duplicate-managed-project.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'serviceAccounts[1].project.name')): true
+            (contains($error, 'Duplicate')): true
 ---
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
