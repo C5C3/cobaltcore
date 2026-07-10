@@ -69,12 +69,13 @@ test_runs_as_openstack_user() {
   assert_contains "id reports uid 42424 (openstack)" "$id_output" "uid=42424(openstack)"
 }
 
-# --- Test 6: mod_auth_mellon is NOT installed (reserved for the SAML phase) ---
-test_no_mellon_in_image() {
-  echo "Test: mod_auth_mellon not installed"
-  local mellon_exit=0
-  docker run --rm "$IMAGE" test -f /usr/lib/apache2/modules/mod_auth_mellon.so || mellon_exit=$?
-  assert_nonzero_exit "mod_auth_mellon.so not found" "$mellon_exit"
+# --- Test 6: mod_auth_mellon shared object is present (SAML phase) ---
+test_mellon_module_present() {
+  echo "Test: mod_auth_mellon.so is present"
+  local exit_code=0
+  docker run --rm "$IMAGE" test -f /usr/lib/apache2/modules/mod_auth_mellon.so || exit_code=$?
+
+  assert_eq "mod_auth_mellon.so exists" "0" "$exit_code"
 }
 
 # --- Run all tests ---
@@ -91,7 +92,7 @@ test_mount_points_exist
 echo ""
 test_runs_as_openstack_user
 echo ""
-test_no_mellon_in_image
+test_mellon_module_present
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 

@@ -299,9 +299,10 @@ previously duplicated three-step setup sequence.
 
 ### build-keystone-federation-proxy / merge-keystone-federation-proxy-image
 
-The Apache/`mod_auth_openidc` reverse-proxy sidecar for Keystone OIDC
-federation (`images/keystone-federation-proxy/`, single-stage
-`ubuntu:noble` + distro `apache2` + `libapache2-mod-auth-openidc`). The
+The Apache federation reverse-proxy sidecar for Keystone — `mod_auth_openidc`
+(OIDC) and `mod_auth_mellon` (SAML) in one image
+(`images/keystone-federation-proxy/`, single-stage `ubuntu:noble` + distro
+`apache2` + `libapache2-mod-auth-openidc` + `libapache2-mod-auth-mellon`). The
 image is release-independent — no OpenStack code — so the job pair follows
 the base-image shape rather than the release matrix: a two-platform build
 job that depends only on `lint-dockerfiles` and `prepare` (PR mode loads
