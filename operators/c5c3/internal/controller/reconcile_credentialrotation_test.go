@@ -415,3 +415,161 @@ func TestRotation_ScheduledFieldsAcceptedNoError(t *testing.T) {
 		"scheduled fields must be accepted without error; one-shot semantics still apply")
 	g.Expect(cond.Reason).To(Equal("NoRotationNeeded"))
 }
+
+// --- Service-account password rotation target ---
+
+// cpWithServiceAccount returns the admin-mode ControlPlane with one declared
+// service account "nova".
+func cpWithServiceAccount() *c5c3v1alpha1.ControlPlane {
+	cp := korcControlPlane()
+	cp.Spec.KORC.ServiceAccounts = []c5c3v1alpha1.ServiceAccountSpec{{
+		Name:    "nova",
+		Project: c5c3v1alpha1.ServiceAccountProjectSpec{Name: "service"},
+	}}
+	return cp
+}
+
+// saRotationCR builds a CredentialRotation targeting the "nova" service account's
+// password.
+func saRotationCR() *c5c3v1alpha1.CredentialRotation {
+	cr := credentialRotation()
+	cr.Spec.Target = c5c3v1alpha1.RotationTargetServiceAccountPassword
+	cr.Spec.ServiceAccount = "nova"
+	return cr
+}
+
+// managedSAUser builds the managed User CR reconcileServiceAccounts owns, with the
+// given generation annotation.
+func managedSAUser(cp *c5c3v1alpha1.ControlPlane, gen string) *orcv1alpha1.User {
+	sa := cp.Spec.KORC.ServiceAccounts[0]
+	return &orcv1alpha1.User{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        serviceAccountUserRef(cp, sa),
+			Namespace:   childNamespace(cp),
+			Annotations: map[string]string{serviceAccountPasswordGenerationAnnotation: gen},
+		},
+	}
+}
+
+func TestRotation_ServiceAccountUnknown(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := cpWithServiceAccount()
+	cr := saRotationCR()
+	cr.Spec.ServiceAccount = "glance" // not declared
+
+	got, _ := runRotationReconcile(t, cp, cr)
+	cond := rotationReadyCondition(got)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("UnknownServiceAccount"))
+}
+
+func TestRotation_ServiceAccountBootstrapNoOpWhenUserExists(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := cpWithServiceAccount()
+	cr := saRotationCR()
+	cr.Spec.Bootstrap = true
+
+	got, _ := runRotationReconcile(t, cp, cr, managedSAUser(cp, "1"))
+	cond := rotationReadyCondition(got)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal("BootstrapComplete"))
+}
+
+func TestRotation_ServiceAccountBootstrapWaitsWhenUserAbsent(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := cpWithServiceAccount()
+	cr := saRotationCR()
+	cr.Spec.Bootstrap = true
+
+	got, _ := runRotationReconcile(t, cp, cr)
+	cond := rotationReadyCondition(got)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("WaitingForBootstrap"))
+}
+
+func TestRotation_ServiceAccountReMintClearsGenerationAnnotation(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := cpWithServiceAccount()
+	cr := saRotationCR()
+	cr.Spec.ReMint = true
+	user := managedSAUser(cp, "1")
+
+	got, c := runRotationReconcile(t, cp, cr, user)
+	cond := rotationReadyCondition(got)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal("RotationTriggered"))
+	g.Expect(got.Status.LastTriggeredGeneration).To(Equal(got.Generation))
+
+	reloaded := &orcv1alpha1.User{}
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Name: serviceAccountUserRef(cp, cp.Spec.KORC.ServiceAccounts[0]), Namespace: childNamespace(cp),
+	}, reloaded)).To(Succeed())
+	g.Expect(reloaded.Annotations[serviceAccountPasswordGenerationAnnotation]).To(BeEmpty(),
+		"reMint must clear the generation annotation to nudge a rotation")
+}
+
+// TestRotation_ServiceAccountReMintLatchedToGeneration proves the service-account
+// reMint one-shot latch (the sibling of TestRotation_ReMintLatchedToGeneration for
+// the admin path): a `reMint: true` left in the spec must nudge once per spec
+// generation, not on every resync. With lastTriggeredGeneration already equal to
+// the current generation, a subsequent pass must report NoRotationNeeded and leave
+// the re-stamped generation annotation untouched — a regression that dropped the
+// `LastTriggeredGeneration == cr.Generation` term would re-clear it every requeue.
+func TestRotation_ServiceAccountReMintLatchedToGeneration(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := cpWithServiceAccount()
+	cr := saRotationCR()
+	cr.Spec.ReMint = true
+	// The reMint already fired for this spec generation (latched).
+	cr.Status.LastTriggeredGeneration = cr.Generation
+	// The generation annotation was re-stamped after the earlier rotation nudge.
+	user := managedSAUser(cp, "2")
+
+	got, c := runRotationReconcile(t, cp, cr, user)
+	cond := rotationReadyCondition(got)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal("NoRotationNeeded"),
+		"a latched reMint must not re-fire on a subsequent pass of the same generation")
+
+	reloaded := &orcv1alpha1.User{}
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Name: serviceAccountUserRef(cp, cp.Spec.KORC.ServiceAccounts[0]), Namespace: childNamespace(cp),
+	}, reloaded)).To(Succeed())
+	g.Expect(reloaded.Annotations[serviceAccountPasswordGenerationAnnotation]).To(Equal("2"),
+		"a latched reMint must leave the re-stamped generation annotation untouched (no second nudge)")
+}
+
+// TestRotation_ServiceAccountWaitsWhenUserAbsent covers the non-bootstrap
+// WaitingForServiceAccount branch: a rotation requested before the ControlPlane
+// reconciler has provisioned the managed User must defer (Ready=False) rather than
+// clear an annotation on a User that does not exist yet.
+func TestRotation_ServiceAccountWaitsWhenUserAbsent(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := cpWithServiceAccount()
+	cr := saRotationCR()
+	cr.Spec.ReMint = true // non-bootstrap rotation, but the User is not yet provisioned
+
+	got, _ := runRotationReconcile(t, cp, cr) // no managed User seeded
+	cond := rotationReadyCondition(got)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("WaitingForServiceAccount"))
+}
+
+func TestRotation_ServiceAccountNoRotationWithoutReMint(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := cpWithServiceAccount()
+	cr := saRotationCR() // no reMint
+	user := managedSAUser(cp, "1")
+
+	got, c := runRotationReconcile(t, cp, cr, user)
+	cond := rotationReadyCondition(got)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal("NoRotationNeeded"))
+
+	reloaded := &orcv1alpha1.User{}
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Name: serviceAccountUserRef(cp, cp.Spec.KORC.ServiceAccounts[0]), Namespace: childNamespace(cp),
+	}, reloaded)).To(Succeed())
+	g.Expect(reloaded.Annotations[serviceAccountPasswordGenerationAnnotation]).To(Equal("1"),
+		"without reMint the generation annotation must be untouched")
+}

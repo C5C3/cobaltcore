@@ -36,20 +36,40 @@ type CredentialRotationList struct {
 }
 
 // RotationTarget selects which credential a CredentialRotation rotates
-// +kubebuilder:validation:Enum=adminApplicationCredential
+// +kubebuilder:validation:Enum=adminApplicationCredential;serviceAccountPassword
 type RotationTarget string
 
 const (
 	// RotationTargetAdminApplicationCredential rotates the K-ORC admin
-	// application credential. This is the only target supported at L1.
+	// application credential.
 	RotationTargetAdminApplicationCredential RotationTarget = "adminApplicationCredential"
+	// RotationTargetServiceAccountPassword rotates the password of one declared
+	// service account (spec.korc.serviceAccounts). The account is named by
+	// spec.serviceAccount.
+	RotationTargetServiceAccountPassword RotationTarget = "serviceAccountPassword"
 )
 
 // CredentialRotationSpec defines the desired state of a CredentialRotation
+//
+// serviceAccount is required exactly when target is serviceAccountPassword, and
+// forbidden otherwise. There is no CredentialRotation webhook, so the CEL rules
+// are the only admission gate (mirroring the rest of this CR's declarative
+// validation).
+// +kubebuilder:validation:XValidation:rule="self.target != 'serviceAccountPassword' || has(self.serviceAccount)",message="serviceAccount is required when target is serviceAccountPassword"
+// +kubebuilder:validation:XValidation:rule="self.target == 'serviceAccountPassword' || !has(self.serviceAccount)",message="serviceAccount may only be set when target is serviceAccountPassword"
 type CredentialRotationSpec struct {
-	// Target selects which credential to rotate. Today only
-	// "adminApplicationCredential" is supported.
+	// Target selects which credential to rotate.
 	Target RotationTarget `json:"target"`
+
+	// ServiceAccount names the declared service account
+	// (spec.korc.serviceAccounts[].name) whose password is rotated. Required when
+	// target is serviceAccountPassword, forbidden otherwise. The DNS-1123 label
+	// shape mirrors ServiceAccountSpec.Name.
+	// +optional
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	ServiceAccount string `json:"serviceAccount,omitempty"`
 
 	// Bootstrap, when true, requests an initial mint of the credential rather
 	// than a rotation of an existing one. The reconciler treats a bootstrap as

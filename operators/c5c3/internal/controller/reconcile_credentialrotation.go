@@ -44,7 +44,7 @@ type CredentialRotationReconciler struct {
 // +kubebuilder:rbac:groups=c5c3.io,resources=credentialrotations,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=c5c3.io,resources=credentialrotations/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=c5c3.io,resources=controlplanes,verbs=get;list;watch
-// +kubebuilder:rbac:groups=openstack.k-orc.cloud,resources=applicationcredentials,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=openstack.k-orc.cloud,resources=applicationcredentials;users,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
 
@@ -97,12 +97,17 @@ func (r *CredentialRotationReconciler) Reconcile(ctx context.Context, req ctrl.R
 		return ctrl.Result{}, fmt.Errorf("fetching CredentialRotation: %w", err)
 	}
 
-	// Only the admin application credential target is supported at L1.
-	if cr.Spec.Target != c5c3v1alpha1.RotationTargetAdminApplicationCredential {
+	// Dispatch on the rotation target. Both supported targets share the
+	// scheduled-deferral handling and the ControlPlane resolution below; the
+	// per-target nudge differs (a different owned CR, a different annotation).
+	switch cr.Spec.Target {
+	case c5c3v1alpha1.RotationTargetAdminApplicationCredential, c5c3v1alpha1.RotationTargetServiceAccountPassword:
+	default:
 		return r.finish(ctx, &cr, ctrl.Result{}, metav1.ConditionFalse,
 			"UnsupportedTarget",
-			fmt.Sprintf("rotation target %q is not supported; only %q is supported",
-				cr.Spec.Target, c5c3v1alpha1.RotationTargetAdminApplicationCredential))
+			fmt.Sprintf("rotation target %q is not supported; supported targets are %q and %q",
+				cr.Spec.Target, c5c3v1alpha1.RotationTargetAdminApplicationCredential,
+				c5c3v1alpha1.RotationTargetServiceAccountPassword))
 	}
 
 	// DECISION (scheduled rotation loop deferred to a later level; matches the L1
@@ -125,6 +130,10 @@ func (r *CredentialRotationReconciler) Reconcile(ctx context.Context, req ctrl.R
 	cp, result, condition := r.resolveControlPlane(ctx, &cr)
 	if cp == nil {
 		return r.finish(ctx, &cr, result, condition.status, condition.reason, condition.message)
+	}
+
+	if cr.Spec.Target == c5c3v1alpha1.RotationTargetServiceAccountPassword {
+		return r.rotateServiceAccountPassword(ctx, &cr, cp)
 	}
 
 	// Locate the owned admin ApplicationCredential CR via the reconcile_korc.go
@@ -211,6 +220,98 @@ func (r *CredentialRotationReconciler) Reconcile(ctx context.Context, req ctrl.R
 	return r.finish(ctx, &cr, ctrl.Result{}, metav1.ConditionTrue,
 		"RotationTriggered",
 		"cleared the password-hash annotation; the ControlPlane reconciler will re-mint the admin application credential")
+}
+
+// rotateServiceAccountPassword nudges reconcileServiceAccounts to rotate one
+// declared service account's password, mirroring the admin re-mint nudge: it
+// never touches the User itself beyond CLEARING the generation annotation, so the
+// account's resource lifecycle stays owned solely by the ControlPlane reconciler.
+//
+// There is no auto-detect path (unlike the admin credential there is no external
+// password source to observe), so a rotation fires only on an explicit reMint,
+// latched to the spec generation exactly like the admin flow so a `reMint: true`
+// left in the spec does not re-fire on every resync.
+func (r *CredentialRotationReconciler) rotateServiceAccountPassword(
+	ctx context.Context, cr *c5c3v1alpha1.CredentialRotation, cp *c5c3v1alpha1.ControlPlane,
+) (ctrl.Result, error) {
+	// Require the named account to be declared on the ControlPlane.
+	var sa *c5c3v1alpha1.ServiceAccountSpec
+	for i := range cp.Spec.KORC.ServiceAccounts {
+		if cp.Spec.KORC.ServiceAccounts[i].Name == cr.Spec.ServiceAccount {
+			sa = &cp.Spec.KORC.ServiceAccounts[i]
+			break
+		}
+	}
+	if sa == nil {
+		return r.finish(ctx, cr, ctrl.Result{RequeueAfter: credentialRotationRequeueAfter},
+			metav1.ConditionFalse, "UnknownServiceAccount",
+			fmt.Sprintf("no service account %q is declared on ControlPlane %q", cr.Spec.ServiceAccount, cp.Name))
+	}
+
+	// Locate the owned managed User via the reconcile_serviceaccounts.go naming
+	// helper so both reconcilers agree on the object identity.
+	user := &orcv1alpha1.User{}
+	userKey := client.ObjectKey{Namespace: childNamespace(cp), Name: serviceAccountUserRef(cp, *sa)}
+	userErr := r.Get(ctx, userKey, user)
+	userExists := userErr == nil
+	if userErr != nil && !apierrors.IsNotFound(userErr) {
+		return ctrl.Result{}, fmt.Errorf("fetching service-account User %s: %w", userKey, userErr)
+	}
+
+	// Bootstrap: idempotent initial provision. If the User exists this is a no-op
+	// success; otherwise the ControlPlane reconciler is responsible for creating
+	// it, so wait and requeue. We never create it here.
+	if cr.Spec.Bootstrap {
+		if userExists {
+			return r.finish(ctx, cr, ctrl.Result{}, metav1.ConditionTrue,
+				"BootstrapComplete",
+				fmt.Sprintf("service account %q already exists; bootstrap is a no-op", cr.Spec.ServiceAccount))
+		}
+		return r.finish(ctx, cr, ctrl.Result{RequeueAfter: credentialRotationRequeueAfter},
+			metav1.ConditionFalse, "WaitingForBootstrap",
+			fmt.Sprintf("service account %q not yet provisioned by the ControlPlane reconciler; waiting", cr.Spec.ServiceAccount))
+	}
+
+	if !userExists {
+		return r.finish(ctx, cr, ctrl.Result{RequeueAfter: credentialRotationRequeueAfter},
+			metav1.ConditionFalse, "WaitingForServiceAccount",
+			fmt.Sprintf("service account %q does not exist yet; cannot rotate", cr.Spec.ServiceAccount))
+	}
+
+	// A service-account rotation fires only on an explicit reMint (latched).
+	if !cr.Spec.ReMint || cr.Status.LastTriggeredGeneration == cr.Generation {
+		return r.finish(ctx, cr, ctrl.Result{}, metav1.ConditionTrue,
+			"NoRotationNeeded",
+			"no pending reMint; no rotation performed")
+	}
+
+	if err := r.clearServiceAccountGenerationAnnotation(ctx, user); err != nil {
+		return ctrl.Result{}, fmt.Errorf("clearing generation annotation to nudge service-account rotation: %w", err)
+	}
+	if r.Recorder != nil {
+		r.Recorder.Event(cr, "Normal", "RotationNudged",
+			fmt.Sprintf("cleared service account %q generation annotation to trigger a password rotation by the ControlPlane reconciler",
+				cr.Spec.ServiceAccount))
+	}
+	cr.Status.LastTriggeredGeneration = cr.Generation
+	return r.finish(ctx, cr, ctrl.Result{}, metav1.ConditionTrue,
+		"RotationTriggered",
+		fmt.Sprintf("cleared the generation annotation; the ControlPlane reconciler will rotate service account %q's password",
+			cr.Spec.ServiceAccount))
+}
+
+// clearServiceAccountGenerationAnnotation zeroes the password-generation
+// annotation on the managed User so reconcileServiceAccounts rotates on its next
+// pass. It is a no-op (no Update) when the annotation is already empty/absent so a
+// repeated reconcile does not churn the object.
+func (r *CredentialRotationReconciler) clearServiceAccountGenerationAnnotation(
+	ctx context.Context, user *orcv1alpha1.User,
+) error {
+	if user.Annotations == nil || user.Annotations[serviceAccountPasswordGenerationAnnotation] == "" {
+		return nil
+	}
+	user.Annotations[serviceAccountPasswordGenerationAnnotation] = ""
+	return r.Update(ctx, user)
 }
 
 // controlPlaneCondition bundles the Ready condition fields the resolveControlPlane
