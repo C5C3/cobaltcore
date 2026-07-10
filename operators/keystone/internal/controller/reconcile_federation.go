@@ -68,10 +68,10 @@ const federationMetadataFetchTimeout = 10 * time.Second
 var errProviderMetadataUnavailable = errors.New("provider metadata unavailable")
 
 // federationProjection carries what the downstream builders need when at
-// least one OIDC backend is projected: the content-hashed federation Secret,
-// the KeyToPath items mapping its safe data keys onto the real
-// mod_auth_openidc metadata filenames, the (webhook-uniform) remote-id
-// attribute for keystone.conf, and the sidecar image.
+// least one federation backend (OIDC or SAML) is projected: the content-hashed
+// federation Secret, the KeyToPath items mapping its safe data keys onto the
+// real mod_auth_openidc / mod_auth_mellon file names, the remote-id attributes
+// for keystone.conf, and the sidecar image.
 type federationProjection struct {
 	SecretName string
 	// MetadataItems maps the OIDC metadata data keys onto the real
@@ -100,7 +100,7 @@ type federationProjection struct {
 
 // identityBackendsProjection is reconcileIdentityBackends' aggregate result:
 // the domains Secret name ("" when no LDAP backend is projected) and the
-// federation projection (nil when no OIDC backend is projected).
+// federation projection (nil when no OIDC or SAML backend is projected).
 type identityBackendsProjection struct {
 	DomainsSecretName string
 	Federation        *federationProjection
@@ -1110,8 +1110,8 @@ func (r *KeystoneReconciler) buildFederationProjection(ctx context.Context, keys
 
 // pruneStaleFederationSecrets removes historical immutable federation
 // Secrets past the retain count. When federation is inactive (empty
-// currentName) every historical Secret is removed — the last OIDC backend
-// detached, so no client secret or passphrase copy may linger.
+// currentName) every historical Secret is removed — the last federation
+// backend detached, so no client secret, passphrase, or SP key copy may linger.
 func (r *KeystoneReconciler) pruneStaleFederationSecrets(ctx context.Context, keystone *keystonev1alpha1.Keystone, federationSecretName string) error {
 	retain := defaultConfigMapRetainCount
 	if federationSecretName == "" {
