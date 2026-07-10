@@ -544,6 +544,8 @@ func (r *ControlPlaneReconciler) ensureServiceAccountProject(
 				sa.Project.Name, sa.Name)
 			st.pendingObjs = pendingServiceAccountObjs(probe)
 			return probe, false, nil
+		case probeAbsent:
+			// No pre-existing project; fall through to create the managed Project.
 		}
 		// probeAbsent — remove the probe and fall through to create the managed Project.
 		if err := r.deleteServiceAccountChild(ctx, &orcv1alpha1.Project{}, serviceAccountProjectProbeRef(cp, sa), ns); err != nil {
@@ -614,8 +616,9 @@ func (r *ControlPlaneReconciler) serviceAccountUserCollisionGate(
 			userName, sa.Name)
 		st.pendingObjs = pendingServiceAccountObjs(probe)
 		return false, nil
+	case probeAbsent:
+		// The user does not exist; drop the probe and create the managed User below.
 	}
-	// probeAbsent — the user does not exist; drop the probe and create the managed User.
 	return true, r.deleteServiceAccountChild(ctx, &orcv1alpha1.User{}, serviceAccountUserProbeRef(cp, sa), ns)
 }
 
