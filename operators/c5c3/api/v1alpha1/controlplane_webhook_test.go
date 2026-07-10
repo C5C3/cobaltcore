@@ -6,6 +6,7 @@ package v1alpha1
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -1487,12 +1488,350 @@ func TestValidateCreate_RejectsPlaintextAuthURLWithCABundleSecretRef(t *testing.
 // rule into a broken state at once (external missing, infrastructure present,
 // horizon present, all six managed-only fields set) and asserts the returned
 // error names every field, pinning the no-short-circuit contract for the matrix.
+// --- External-mode catalog stewardship (spec.services.keystone.external.catalog) ---
+
+// TestValidateCreate_AcceptsExternalCatalogSpec proves the whole catalog surface
+// admits with non-default values: a disambiguation filter plus a managed entry
+// carrying two distinct interfaces.
+func TestValidateCreate_AcceptsExternalCatalogSpec(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+
+	cp := externalControlPlane()
+	cp.Spec.Services.Keystone.External.Catalog = &ExternalCatalogSpec{
+		IdentityServiceName: "keystone-legacy",
+		ManagedEntries: []ExternalCatalogEntrySpec{{
+			Type: "image",
+			Name: "glance",
+			Endpoints: []ExternalCatalogEndpointSpec{
+				{Interface: ExternalEndpointTypePublic, URL: "https://glance.example.com"},
+				{Interface: ExternalEndpointTypeInternal, URL: "http://glance.svc:9292"},
+			},
+		}},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// TestValidateCreate_RejectsIdentityManagedCatalogEntry pins the conservative
+// invariant: the identity entry is import-owned, so declaring it as a managed
+// entry — the one way the opt-in could clobber the external catalog's own
+// identity row — is refused.
+func TestValidateCreate_RejectsIdentityManagedCatalogEntry(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+
+	cp := externalControlPlane()
+	cp.Spec.Services.Keystone.External.Catalog = &ExternalCatalogSpec{
+		ManagedEntries: []ExternalCatalogEntrySpec{{Type: "identity"}},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("owned by the External-mode imports"))
+}
+
+func TestValidateCreate_RejectsDuplicateCatalogEntryTypes(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+
+	cp := externalControlPlane()
+	cp.Spec.Services.Keystone.External.Catalog = &ExternalCatalogSpec{
+		ManagedEntries: []ExternalCatalogEntrySpec{{Type: "image"}, {Type: "image"}},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("managedEntries[1].type"))
+	g.Expect(err.Error()).To(ContainSubstring("Duplicate value"))
+}
+
+func TestValidateCreate_RejectsInvalidCatalogEntryType(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+
+	cp := externalControlPlane()
+	cp.Spec.Services.Keystone.External.Catalog = &ExternalCatalogSpec{
+		ManagedEntries: []ExternalCatalogEntrySpec{{Type: "Image_Service"}},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("DNS-1123 label"))
+}
+
+// TestValidateCreate_RejectsEmptyCatalogEntryType covers the zero-value edge the
+// CRD MinLength marker guards, for a caller that bypassed schema admission.
+func TestValidateCreate_RejectsEmptyCatalogEntryType(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+
+	cp := externalControlPlane()
+	cp.Spec.Services.Keystone.External.Catalog = &ExternalCatalogSpec{
+		ManagedEntries: []ExternalCatalogEntrySpec{{Type: ""}},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("managedEntries[0].type"))
+}
+
+func TestValidateCreate_RejectsBadCatalogEndpointURL(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	for _, tc := range []struct {
+		name    string
+		url     string
+		wantMsg string
+	}{
+		{"no scheme", "glance.example.com", "http(s) URL"},
+		{"no host", "https://", "must include a host"},
+		{"empty", "", "http(s) URL"},
+		{"over the K-ORC cap", "https://glance.example.com/" + strings.Repeat("a", 1024), "at most 1024 bytes"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := externalControlPlane()
+			cp.Spec.Services.Keystone.External.Catalog = &ExternalCatalogSpec{
+				ManagedEntries: []ExternalCatalogEntrySpec{{
+					Type:      "image",
+					Endpoints: []ExternalCatalogEndpointSpec{{Interface: ExternalEndpointTypePublic, URL: tc.url}},
+				}},
+			}
+
+			_, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring("managedEntries[0].endpoints[0].url"))
+			g.Expect(err.Error()).To(ContainSubstring(tc.wantMsg))
+		})
+	}
+}
+
+func TestValidateCreate_RejectsDuplicateCatalogEndpointInterface(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+
+	cp := externalControlPlane()
+	cp.Spec.Services.Keystone.External.Catalog = &ExternalCatalogSpec{
+		ManagedEntries: []ExternalCatalogEntrySpec{{
+			Type: "image",
+			Endpoints: []ExternalCatalogEndpointSpec{
+				{Interface: ExternalEndpointTypePublic, URL: "https://a.example.com"},
+				{Interface: ExternalEndpointTypePublic, URL: "https://b.example.com"},
+			},
+		}},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("managedEntries[0].endpoints[1].interface"))
+	g.Expect(err.Error()).To(ContainSubstring("Duplicate value"))
+}
+
+// TestValidateCreate_RejectsEmptyCatalogEndpointInterface covers the zero-value
+// edge: an endpoint with no interface would otherwise be projected onto K-ORC's
+// required Interface field.
+func TestValidateCreate_RejectsEmptyCatalogEndpointInterface(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+
+	cp := externalControlPlane()
+	cp.Spec.Services.Keystone.External.Catalog = &ExternalCatalogSpec{
+		ManagedEntries: []ExternalCatalogEntrySpec{{
+			Type:      "image",
+			Endpoints: []ExternalCatalogEndpointSpec{{URL: "https://glance.example.com"}},
+		}},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("managedEntries[0].endpoints[0].interface"))
+}
+
+// TestValidateCreate_RejectsOffEnumCatalogEndpointInterface closes the gap the
+// CRD enum alone leaves for a caller that bypasses schema admission: the
+// interface is embedded verbatim in a child CR name, so an off-enum value like
+// "Public" yields a name that is not a DNS-1123 subdomain and wedges the
+// reconcile in backoff instead of failing at admission.
+func TestValidateCreate_RejectsOffEnumCatalogEndpointInterface(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+
+	cp := externalControlPlane()
+	cp.Spec.Services.Keystone.External.Catalog = &ExternalCatalogSpec{
+		ManagedEntries: []ExternalCatalogEntrySpec{{
+			Type:      "image",
+			Endpoints: []ExternalCatalogEndpointSpec{{Interface: "Public", URL: "https://glance.example.com"}},
+		}},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("managedEntries[0].endpoints[0].interface"))
+	g.Expect(err.Error()).To(ContainSubstring("Unsupported value"))
+}
+
+// TestValidateCreate_RejectsCatalogEntryNameWithComma pins the K-ORC parity the
+// entry name previously lacked: it is cast to K-ORC's OpenStackName, whose own
+// CRD Pattern is `^[^,]+$`. A comma admitted here would be rejected by the K-ORC
+// CRD when the child Service CR is submitted, wedging the reconcile.
+func TestValidateCreate_RejectsCatalogEntryNameWithComma(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+
+	cp := externalControlPlane()
+	cp.Spec.Services.Keystone.External.Catalog = &ExternalCatalogSpec{
+		ManagedEntries: []ExternalCatalogEntrySpec{{Type: "image", Name: "glance,v2"}},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("managedEntries[0].name"))
+	g.Expect(err.Error()).To(ContainSubstring("must not contain a comma"))
+}
+
+// TestValidateCreate_RejectsTooManyManagedCatalogEntries mirrors the MaxItems
+// marker for a schema-bypassing caller: each entry amplifies into managed K-ORC
+// CRs and therefore into writes against a third-party production Keystone.
+func TestValidateCreate_RejectsTooManyManagedCatalogEntries(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+
+	entries := make([]ExternalCatalogEntrySpec, maxManagedCatalogEntries+1)
+	for i := range entries {
+		entries[i] = ExternalCatalogEntrySpec{Type: fmt.Sprintf("svc-%d", i)}
+	}
+	cp := externalControlPlane()
+	cp.Spec.Services.Keystone.External.Catalog = &ExternalCatalogSpec{ManagedEntries: entries}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("managedEntries"))
+	g.Expect(err.Error()).To(ContainSubstring("must have at most 32 items"))
+}
+
+// TestValidateCreate_RejectsOverlongCatalogEntryChildName covers the rule no CRD
+// marker can express: metadata.name on the ControlPlane is bounded only by the
+// apiserver's 253 bytes, and the child K-ORC CR name composes it with the entry
+// type. Admitting the pair and discovering the overflow at CreateOrUpdate leaves
+// the ControlPlane wedged in CatalogEntryError backoff.
+func TestValidateCreate_RejectsOverlongCatalogEntryChildName(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+
+	cp := externalControlPlane()
+	cp.Name = strings.Repeat("a", 240)
+	cp.Spec.Services.Keystone.External.Catalog = &ExternalCatalogSpec{
+		ManagedEntries: []ExternalCatalogEntrySpec{{Type: "image"}},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("managedEntries[0].type"))
+	g.Expect(err.Error()).To(ContainSubstring("253-byte Kubernetes object-name limit"))
+}
+
+// TestValidateCreate_AcceptsCatalogEntryChildNameAtTheLimit is the other side of
+// the bound: a child name of exactly 253 bytes is admissible, so the checks reject
+// only what the apiserver would. BOTH composed names sit exactly on the limit
+// here — the identity Endpoint import, which External mode creates whatever the
+// catalog block says, is the binding constraint on metadata.name, and it leaves
+// the entry type exactly the room the entry-child check permits.
+func TestValidateCreate_AcceptsCatalogEntryChildNameAtTheLimit(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+
+	cp := externalControlPlane()
+	cp.Name = strings.Repeat("a", maxObjectNameBytes-identityImportChildNameOverhead)
+	entryType := strings.Repeat("b", maxObjectNameBytes-catalogEntryChildNameOverhead-len(cp.Name))
+	cp.Spec.Services.Keystone.External.Catalog = &ExternalCatalogSpec{
+		ManagedEntries: []ExternalCatalogEntrySpec{{Type: entryType}},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// TestValidateCreate_RejectsOverlongIdentityImportChildName pins the guard the
+// entry-child check alone left open: External mode composes
+// "{cp}-identity-endpoint-internal" unconditionally, so a ControlPlane name that
+// fits every declared entry — or one with no managedEntries at all, where the
+// entry check never runs — can still overflow the apiserver's 253-byte
+// metadata.name cap and wedge ensureExternalCatalogImports in ImportError backoff.
+func TestValidateCreate_RejectsOverlongIdentityImportChildName(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+
+	// One byte past the bound, and no catalog block at all: the entry-child check
+	// cannot fire, so only the mode-level guard stands between this CR and the wedge.
+	cp := externalControlPlane()
+	cp.Name = strings.Repeat("a", maxObjectNameBytes-identityImportChildNameOverhead+1)
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("metadata.name"))
+	g.Expect(err.Error()).To(ContainSubstring("identity Endpoint import CR name would be 254 bytes"))
+}
+
+// TestValidateCreate_ManagedModeAcceptsLongName proves the identity-import guard
+// is scoped to the mode that creates those imports: Managed mode composes only
+// "{cp}-identity-endpoint", so a name the External guard rejects stays admissible.
+func TestValidateCreate_ManagedModeAcceptsLongName(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+
+	cp := managedControlPlane()
+	cp.Name = strings.Repeat("a", maxObjectNameBytes-identityImportChildNameOverhead+1)
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// TestValidateCreate_RejectsIdentityServiceNameWithComma closes the parity gap
+// managedEntries[].name had already closed: identityServiceName is cast to K-ORC's
+// OpenStackName on the Service import filter, whose own CRD Pattern is `^[^,]+$`.
+// A comma admitted here is rejected by the K-ORC CRD when the import CR is
+// submitted, wedging the reconcile in ImportError backoff instead of failing at
+// admission with a field the operator can act on.
+func TestValidateCreate_RejectsIdentityServiceNameWithComma(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+
+	cp := externalControlPlane()
+	cp.Spec.Services.Keystone.External.Catalog = &ExternalCatalogSpec{IdentityServiceName: "keystone,v3"}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("catalog.identityServiceName"))
+	g.Expect(err.Error()).To(ContainSubstring("must not contain a comma"))
+}
+
+// TestValidateCreate_ExternalCatalogIgnoredOutsideExternalMode proves the catalog
+// block needs no dedicated Managed-mode rule: it lives under `external`, which is
+// already forbidden outside External mode, so the existing rule catches it.
+func TestValidateCreate_ExternalCatalogIgnoredOutsideExternalMode(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+
+	cp := managedControlPlane()
+	cp.Spec.Services.Keystone.External = &ExternalKeystoneSpec{
+		AuthURL: "https://keystone.example.com/v3",
+		Catalog: &ExternalCatalogSpec{ManagedEntries: []ExternalCatalogEntrySpec{{Type: "identity"}}},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("may only be set when services.keystone.mode is External"))
+}
+
 func TestValidateCreate_AccumulatesAllExternalModeErrors(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &ControlPlaneWebhook{}
 	replicas := int32(3)
 
 	cp := externalControlPlane()
+	cp.Name = strings.Repeat("a", 240)       // the identity Endpoint import name overflows 253 bytes
 	cp.Spec.Services.Keystone.External = nil // external missing
 	cp.Spec.Services.Keystone.Replicas = &replicas
 	cp.Spec.Services.Keystone.Image = &commonv1.ImageSpec{Repository: "r", Tag: "t"}
@@ -1510,6 +1849,7 @@ func TestValidateCreate_AccumulatesAllExternalModeErrors(t *testing.T) {
 	_, err := w.ValidateCreate(context.Background(), cp)
 	g.Expect(err).To(HaveOccurred())
 	msg := err.Error()
+	g.Expect(msg).To(ContainSubstring("identity Endpoint import CR name"), "import-child-name error must be present")
 	g.Expect(msg).To(ContainSubstring("external is required"), "external-required error must be present")
 	g.Expect(msg).To(ContainSubstring("services.keystone.replicas"), "replicas-forbidden error must be present")
 	g.Expect(msg).To(ContainSubstring("services.keystone.image"), "image-forbidden error must be present")
@@ -1829,6 +2169,48 @@ func TestValidateCreate_WarnsOnCleartextHorizonPublicEndpoint(t *testing.T) {
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(warnings).To(BeEmpty())
 	})
+}
+
+// TestValidateCreate_AccumulatesAllExternalCatalogErrors is the catalog analogue
+// of the accumulator above, and must stay separate from it: the catalog block
+// hangs off `external`, which that test deliberately nils out to exercise the
+// external-required rule, so no catalog path is reachable there. Every catalog
+// rule is broken at once here, proving validateExternalCatalog accumulates rather
+// than short-circuits on the first offending entry.
+func TestValidateCreate_AccumulatesAllExternalCatalogErrors(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+
+	cp := externalControlPlane()
+	cp.Name = strings.Repeat("a", 240) // every composed child CR name overflows 253 bytes
+	cp.Spec.Services.Keystone.External.Catalog = &ExternalCatalogSpec{
+		IdentityServiceName: "keystone,v3", // comma: not a K-ORC OpenStackName
+		ManagedEntries: []ExternalCatalogEntrySpec{
+			{Type: "identity"},                         // import-owned
+			{Type: "Image_Service", Name: "glance,v2"}, // not a DNS-1123 label; comma in the name
+			{ // duplicate interface, off-enum interface, unusable URL, and a duplicate of entry [0]
+				Type: "identity",
+				Endpoints: []ExternalCatalogEndpointSpec{
+					{Interface: ExternalEndpointTypePublic, URL: "https://ok.example.com"},
+					{Interface: ExternalEndpointTypePublic, URL: "not-a-url"},
+					{Interface: "Public", URL: "https://off-enum.example.com"},
+				},
+			},
+		},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	msg := err.Error()
+	g.Expect(msg).To(ContainSubstring("catalog.identityServiceName"), "identityServiceName-comma error must be present")
+	g.Expect(msg).To(ContainSubstring("owned by the External-mode imports"), "identity-entry error must be present")
+	g.Expect(msg).To(ContainSubstring("managedEntries[1].type"), "entry-type-pattern error must be present")
+	g.Expect(msg).To(ContainSubstring("managedEntries[1].name"), "entry-name-comma error must be present")
+	g.Expect(msg).To(ContainSubstring("managedEntries[2].type"), "duplicate-entry-type error must be present")
+	g.Expect(msg).To(ContainSubstring("managedEntries[2].endpoints[1].interface"), "duplicate-interface error must be present")
+	g.Expect(msg).To(ContainSubstring("managedEntries[2].endpoints[1].url"), "endpoint-URL error must be present")
+	g.Expect(msg).To(ContainSubstring("managedEntries[2].endpoints[2].interface"), "off-enum-interface error must be present")
+	g.Expect(msg).To(ContainSubstring("253-byte Kubernetes object-name limit"), "child-CR-name error must be present")
 }
 
 // --- Mode transition gating ---

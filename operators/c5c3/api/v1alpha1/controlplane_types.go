@@ -360,6 +360,120 @@ type ExternalKeystoneSpec struct {
 	// once the cached client expires (~token lifetime / 2).
 	// +optional
 	CABundleSecretRef *commonv1.SecretRefSpec `json:"caBundleSecretRef,omitempty"`
+
+	// Catalog tunes how the control plane stewards the external Keystone's
+	// service catalog. It is optional and defaults to the conservative posture:
+	// the identity service and all three of its endpoint interfaces are IMPORTED
+	// as unmanaged K-ORC CRs and ZERO catalog entries are created.
+	// +optional
+	Catalog *ExternalCatalogSpec `json:"catalog,omitempty"`
+}
+
+// ExternalCatalogSpec tunes External-mode catalog stewardship. Both of its
+// fields are optional, and the zero value is the conservative default: import
+// the existing identity service (and its public/internal/admin endpoints),
+// create nothing.
+type ExternalCatalogSpec struct {
+	// IdentityServiceName disambiguates the identity Service import when the
+	// external catalog carries more than one `identity`-type service. When empty
+	// the import filters on type alone; a filter matching zero entries surfaces
+	// CatalogReady=False/ImportStalled, and a filter matching several surfaces
+	// CatalogReady=False/CatalogFailed naming this field — the reconciler never
+	// guesses and never imports all matches.
+	//
+	// Disambiguation is by NAME only, deliberately: K-ORC's ServiceImport.ID
+	// carries a `Format:=uuid` marker (the RFC-4122 dashed form) while Keystone
+	// mints service IDs as dashless `uuid4().hex`, so an ID-based import is
+	// rejected by K-ORC's own CRD schema and cannot be offered here. A catalog
+	// holding two identically NAMED identity services therefore cannot be
+	// disambiguated from the spec; the condition says so and the external catalog
+	// must be repaired.
+	//
+	// The pattern and the caps mirror K-ORC's own OpenStackName, which the name is
+	// cast to on the Service import filter — exactly as managedEntries[].name is on
+	// the child Service CR. A comma is not exotic input here (OpenStack list filters
+	// are comma-separated, which is why OpenStackName forbids it), and admitting one
+	// would only move the rejection to the K-ORC CRD, where it wedges the reconcile
+	// in an exponential backoff no ControlPlane field error explains. The validating
+	// webhook mirrors the pattern.
+	// +optional
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=255
+	// +kubebuilder:validation:Pattern=`^[^,]+$`
+	IdentityServiceName string `json:"identityServiceName,omitempty"`
+
+	// ManagedEntries is the EXPLICIT opt-in for creating genuinely new catalog
+	// entries against the external Keystone. Absent (the default), External mode
+	// creates zero catalog entries — creation is impossible to trigger by
+	// accident. Each declared entry is projected as one managed K-ORC Service and
+	// one managed Endpoint per declared interface; removing an entry deletes
+	// exactly those resources and nothing else.
+	//
+	// The `identity` type is forbidden here: it is owned by the imports above.
+	//
+	// maxItems bounds the child-CR and external-API amplification of one admission:
+	// every entry projects one managed K-ORC Service plus up to one managed Endpoint
+	// per interface, and K-ORC turns each of those into a write against a
+	// third-party production Keystone. Without a cap the only bound is the ~1.5 MiB
+	// etcd object limit.
+	// +optional
+	// +listType=map
+	// +listMapKey=type
+	// +kubebuilder:validation:MaxItems=32
+	ManagedEntries []ExternalCatalogEntrySpec `json:"managedEntries,omitempty"`
+}
+
+// ExternalCatalogEntrySpec declares one genuinely new catalog entry the control
+// plane creates (and owns) in the external Keystone.
+type ExternalCatalogEntrySpec struct {
+	// Type is the OpenStack service type (e.g. "image", "compute"). It keys the
+	// listType=map ManagedEntries list, so the apiserver rejects duplicates. It is
+	// embedded verbatim in the names of the child K-ORC CRs, hence the DNS-1123
+	// label shape. "identity" is rejected: the identity entry is import-owned in
+	// External mode.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	// +kubebuilder:validation:XValidation:rule="self != 'identity'",message="the identity catalog entry is owned by the External-mode imports and must not be declared as a managed entry"
+	Type string `json:"type"`
+
+	// Name optionally overrides the catalog service name. When empty K-ORC names
+	// the service after the child CR.
+	//
+	// The pattern and the caps mirror K-ORC's own OpenStackName, which the name is
+	// cast to on the child Service CR: a name admitted here can therefore never be
+	// rejected downstream by the K-ORC CRD, which would wedge the reconcile in an
+	// exponential backoff loop that no ControlPlane field error explains. The
+	// validating webhook mirrors the pattern.
+	// +optional
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=255
+	// +kubebuilder:validation:Pattern=`^[^,]+$`
+	Name string `json:"name,omitempty"`
+
+	// Endpoints declares the endpoint rows registered for this entry, at most one
+	// per interface (apiserver-enforced via listType=map). An entry with no
+	// endpoints registers the service row alone.
+	// +optional
+	// +listType=map
+	// +listMapKey=interface
+	Endpoints []ExternalCatalogEndpointSpec `json:"endpoints,omitempty"`
+}
+
+// ExternalCatalogEndpointSpec declares one endpoint row of a managed catalog
+// entry.
+type ExternalCatalogEndpointSpec struct {
+	// Interface is the catalog interface this endpoint is published under. It
+	// keys the listType=map Endpoints list.
+	Interface ExternalEndpointType `json:"interface"`
+
+	// URL is the endpoint URL registered in the catalog. maxLength mirrors
+	// K-ORC's own EndpointResourceSpec.URL cap, so a URL admitted here can never
+	// be rejected downstream by the K-ORC CRD; the validating webhook mirrors both
+	// the shape and the cap with a full net/url parse.
+	// +kubebuilder:validation:Pattern=`^https?://[^\s/]+`
+	// +kubebuilder:validation:MaxLength=1024
+	URL string `json:"url"`
 }
 
 // ServiceHorizonSpec is a CURATED LOCAL subset of the knobs the ControlPlane
@@ -667,6 +781,52 @@ type ControlPlaneStatus struct {
 	// application credential.
 	// +optional
 	AdminApplicationCredential *AdminApplicationCredentialStatus `json:"adminApplicationCredential,omitempty"`
+
+	// Catalog reports the observed state of the External-mode catalog imports. It
+	// is nil in Managed mode, where the control plane creates the catalog entries
+	// rather than importing them.
+	// +optional
+	Catalog *CatalogStatus `json:"catalog,omitempty"`
+}
+
+// CatalogStatus reports how the External-mode identity catalog imports resolved.
+// It is the operator-visible answer to "did the ControlPlane find the catalog it
+// was pointed at?" — the aggregate CatalogReady condition says whether they all
+// resolved, this list says which ones did.
+type CatalogStatus struct {
+	// Imports lists the unmanaged K-ORC CRs importing the external identity
+	// service and its endpoint interfaces, keyed by CR name.
+	// +optional
+	// +listType=map
+	// +listMapKey=name
+	Imports []CatalogImportStatus `json:"imports,omitempty"`
+}
+
+// CatalogImportStatus reports the observed state of a single unmanaged catalog
+// import.
+type CatalogImportStatus struct {
+	// Name is the K-ORC CR name; it keys the listType=map Imports list.
+	Name string `json:"name"`
+
+	// Kind is the imported K-ORC kind, "Service" or "Endpoint".
+	// +kubebuilder:validation:Enum=Service;Endpoint
+	Kind string `json:"kind"`
+
+	// Interface is the catalog interface of an imported Endpoint; empty for the
+	// Service import.
+	// +optional
+	Interface ExternalEndpointType `json:"interface,omitempty"`
+
+	// Resolved reports whether K-ORC has matched this import against a live
+	// catalog entry (its Available condition is True for the CR's current
+	// generation).
+	Resolved bool `json:"resolved"`
+
+	// ID is the OpenStack id K-ORC resolved the import to. Empty while the import
+	// is unresolved.
+	// +optional
+	// +kubebuilder:validation:MaxLength=1024
+	ID string `json:"id,omitempty"`
 }
 
 // ServiceStatus reports the observed readiness of a single projected service

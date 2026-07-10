@@ -815,6 +815,137 @@ spec:
                             required:
                             - name
                             type: object
+                          catalog:
+                            description: |-
+                              Catalog tunes how the control plane stewards the external Keystone's
+                              service catalog. It is optional and defaults to the conservative posture:
+                              the identity service and all three of its endpoint interfaces are IMPORTED
+                              as unmanaged K-ORC CRs and ZERO catalog entries are created.
+                            properties:
+                              identityServiceName:
+                                description: |-
+                                  IdentityServiceName disambiguates the identity Service import when the
+                                  external catalog carries more than one `identity`-type service. When empty
+                                  the import filters on type alone; a filter matching zero entries surfaces
+                                  CatalogReady=False/ImportStalled, and a filter matching several surfaces
+                                  CatalogReady=False/CatalogFailed naming this field — the reconciler never
+                                  guesses and never imports all matches.
+
+                                  Disambiguation is by NAME only, deliberately: K-ORC's ServiceImport.ID
+                                  carries a `Format:=uuid` marker (the RFC-4122 dashed form) while Keystone
+                                  mints service IDs as dashless `uuid4().hex`, so an ID-based import is
+                                  rejected by K-ORC's own CRD schema and cannot be offered here. A catalog
+                                  holding two identically NAMED identity services therefore cannot be
+                                  disambiguated from the spec; the condition says so and the external catalog
+                                  must be repaired.
+
+                                  The pattern and the caps mirror K-ORC's own OpenStackName, which the name is
+                                  cast to on the Service import filter — exactly as managedEntries[].name is on
+                                  the child Service CR. A comma is not exotic input here (OpenStack list filters
+                                  are comma-separated, which is why OpenStackName forbids it), and admitting one
+                                  would only move the rejection to the K-ORC CRD, where it wedges the reconcile
+                                  in an exponential backoff no ControlPlane field error explains. The validating
+                                  webhook mirrors the pattern.
+                                maxLength: 255
+                                minLength: 1
+                                pattern: ^[^,]+$
+                                type: string
+                              managedEntries:
+                                description: |-
+                                  ManagedEntries is the EXPLICIT opt-in for creating genuinely new catalog
+                                  entries against the external Keystone. Absent (the default), External mode
+                                  creates zero catalog entries — creation is impossible to trigger by
+                                  accident. Each declared entry is projected as one managed K-ORC Service and
+                                  one managed Endpoint per declared interface; removing an entry deletes
+                                  exactly those resources and nothing else.
+
+                                  The `identity` type is forbidden here: it is owned by the imports above.
+
+                                  maxItems bounds the child-CR and external-API amplification of one admission:
+                                  every entry projects one managed K-ORC Service plus up to one managed Endpoint
+                                  per interface, and K-ORC turns each of those into a write against a
+                                  third-party production Keystone. Without a cap the only bound is the ~1.5 MiB
+                                  etcd object limit.
+                                items:
+                                  description: |-
+                                    ExternalCatalogEntrySpec declares one genuinely new catalog entry the control
+                                    plane creates (and owns) in the external Keystone.
+                                  properties:
+                                    endpoints:
+                                      description: |-
+                                        Endpoints declares the endpoint rows registered for this entry, at most one
+                                        per interface (apiserver-enforced via listType=map). An entry with no
+                                        endpoints registers the service row alone.
+                                      items:
+                                        description: |-
+                                          ExternalCatalogEndpointSpec declares one endpoint row of a managed catalog
+                                          entry.
+                                        properties:
+                                          interface:
+                                            description: |-
+                                              Interface is the catalog interface this endpoint is published under. It
+                                              keys the listType=map Endpoints list.
+                                            enum:
+                                            - public
+                                            - internal
+                                            - admin
+                                            type: string
+                                          url:
+                                            description: |-
+                                              URL is the endpoint URL registered in the catalog. maxLength mirrors
+                                              K-ORC's own EndpointResourceSpec.URL cap, so a URL admitted here can never
+                                              be rejected downstream by the K-ORC CRD; the validating webhook mirrors both
+                                              the shape and the cap with a full net/url parse.
+                                            maxLength: 1024
+                                            pattern: ^https?://[^\s/]+
+                                            type: string
+                                        required:
+                                        - interface
+                                        - url
+                                        type: object
+                                      type: array
+                                      x-kubernetes-list-map-keys:
+                                      - interface
+                                      x-kubernetes-list-type: map
+                                    name:
+                                      description: |-
+                                        Name optionally overrides the catalog service name. When empty K-ORC names
+                                        the service after the child CR.
+
+                                        The pattern and the caps mirror K-ORC's own OpenStackName, which the name is
+                                        cast to on the child Service CR: a name admitted here can therefore never be
+                                        rejected downstream by the K-ORC CRD, which would wedge the reconcile in an
+                                        exponential backoff loop that no ControlPlane field error explains. The
+                                        validating webhook mirrors the pattern.
+                                      maxLength: 255
+                                      minLength: 1
+                                      pattern: ^[^,]+$
+                                      type: string
+                                    type:
+                                      description: |-
+                                        Type is the OpenStack service type (e.g. "image", "compute"). It keys the
+                                        listType=map ManagedEntries list, so the apiserver rejects duplicates. It is
+                                        embedded verbatim in the names of the child K-ORC CRs, hence the DNS-1123
+                                        label shape. "identity" is rejected: the identity entry is import-owned in
+                                        External mode.
+                                      maxLength: 63
+                                      minLength: 1
+                                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                                      type: string
+                                      x-kubernetes-validations:
+                                      - message: the identity catalog entry is owned
+                                          by the External-mode imports and must not
+                                          be declared as a managed entry
+                                        rule: self != 'identity'
+                                  required:
+                                  - type
+                                  type: object
+                                maxItems: 32
+                                type: array
+                                x-kubernetes-list-map-keys:
+                                - type
+                                x-kubernetes-list-type: map
+                            type: object
                           endpointType:
                             default: public
                             description: |-
@@ -1122,6 +1253,63 @@ spec:
                     description: Restricted reports whether the active credential
                       is restricted.
                     type: boolean
+                type: object
+              catalog:
+                description: |-
+                  Catalog reports the observed state of the External-mode catalog imports. It
+                  is nil in Managed mode, where the control plane creates the catalog entries
+                  rather than importing them.
+                properties:
+                  imports:
+                    description: |-
+                      Imports lists the unmanaged K-ORC CRs importing the external identity
+                      service and its endpoint interfaces, keyed by CR name.
+                    items:
+                      description: |-
+                        CatalogImportStatus reports the observed state of a single unmanaged catalog
+                        import.
+                      properties:
+                        id:
+                          description: |-
+                            ID is the OpenStack id K-ORC resolved the import to. Empty while the import
+                            is unresolved.
+                          maxLength: 1024
+                          type: string
+                        interface:
+                          description: |-
+                            Interface is the catalog interface of an imported Endpoint; empty for the
+                            Service import.
+                          enum:
+                          - public
+                          - internal
+                          - admin
+                          type: string
+                        kind:
+                          description: Kind is the imported K-ORC kind, "Service"
+                            or "Endpoint".
+                          enum:
+                          - Service
+                          - Endpoint
+                          type: string
+                        name:
+                          description: Name is the K-ORC CR name; it keys the listType=map
+                            Imports list.
+                          type: string
+                        resolved:
+                          description: |-
+                            Resolved reports whether K-ORC has matched this import against a live
+                            catalog entry (its Available condition is True for the CR's current
+                            generation).
+                          type: boolean
+                      required:
+                      - kind
+                      - name
+                      - resolved
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
                 type: object
               conditions:
                 description: |-

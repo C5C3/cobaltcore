@@ -124,6 +124,12 @@ var controlPlaneReleaseRegexp = regexp.MustCompile(`^\d{4}\.[12]$`)
 // own (512 on services.horizon.publicEndpoint).
 const maxExternalAuthURLBytes = 2048
 
+// maxCatalogEndpointURLBytes mirrors the MaxLength marker on
+// ExternalCatalogEndpointSpec.URL, which in turn mirrors K-ORC's own
+// EndpointResourceSpec.URL cap. A URL admitted here can therefore never be
+// rejected downstream by the K-ORC CRD.
+const maxCatalogEndpointURLBytes = 1024
+
 // validateHTTPURL enforces that raw is a well-formed absolute HTTP(S) URL with a
 // host, going beyond the coarse ^https?:// CRD Pattern markers: the unusable
 // shapes (missing host, non-http(s) scheme, opaque or relative references,
@@ -131,7 +137,8 @@ const maxExternalAuthURLBytes = 2048
 // reconciler that consumes them. This is a shape gate, not an SSRF control —
 // admission cannot resolve where the host points, so a dialing reconciler must
 // still enforce network egress restrictions. It returns the parsed URL so
-// callers can apply further per-field rules without re-parsing.
+// callers can apply further per-field rules (byte caps, path/query checks)
+// without re-parsing.
 func validateHTTPURL(path *field.Path, raw string) (*url.URL, *field.Error) {
 	u, err := url.Parse(raw)
 	switch {
@@ -285,6 +292,141 @@ func validateGatewayHostname(path *field.Path, hostname string) *field.Error {
 			fmt.Sprintf("must be at most %d characters (the maximum DNS name length)", maxGatewayHostnameLen))
 	}
 	return nil
+}
+
+// catalogEntryTypePattern mirrors the Pattern marker on
+// ExternalCatalogEntrySpec.Type. The type is embedded verbatim in the names of
+// the child K-ORC CRs, so it must be a DNS-1123 label.
+var catalogEntryTypePattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+
+// identityCatalogServiceType is the OpenStack service type of the Keystone
+// catalog entry. In External mode that entry is owned by the unmanaged imports,
+// so it may never be declared as a managed entry.
+const identityCatalogServiceType = "identity"
+
+const (
+	// maxManagedCatalogEntries mirrors the MaxItems marker on
+	// ExternalCatalogSpec.ManagedEntries. It bounds how many K-ORC CRs — and
+	// therefore how many writes against a third-party production Keystone — one
+	// ControlPlane admission can amplify into.
+	maxManagedCatalogEntries = 32
+
+	// maxObjectNameBytes is the apiserver's cap on metadata.name. The entry type is
+	// embedded in the names of the child K-ORC CRs, and nothing bounds the
+	// ControlPlane's own name below 253, so the composed child name can overflow a
+	// CR that admission already accepted.
+	maxObjectNameBytes = 253
+
+	// catalogEntryChildNameOverhead is the longest fixed part of a child catalog
+	// Endpoint name, "{cp}-catalog-{type}-{interface}", i.e. everything except the
+	// ControlPlane name and the entry type. "internal" is the longest interface.
+	catalogEntryChildNameOverhead = len("-catalog-") + len("-internal")
+
+	// identityImportChildNameOverhead is the longest fixed part of an identity
+	// Endpoint import name, "{cp}-identity-endpoint-{interface}". It exceeds
+	// catalogEntryChildNameOverhead, and External mode creates those imports
+	// unconditionally — with or without a catalog block — so the guard hangs off the
+	// mode rather than off the managedEntries opt-in.
+	identityImportChildNameOverhead = len("-identity-endpoint") + len("-internal")
+)
+
+// validateExternalCatalog mirrors the declarative constraints on
+// ExternalCatalogSpec as defense-in-depth for callers that bypass CRD schema
+// admission: the CEL rule forbidding an `identity` managed entry, the Pattern /
+// MinLength markers on identityServiceName and on the entry type and name, the
+// MaxItems cap on the entry list, the listType=map uniqueness of entry types and
+// endpoint interfaces, and the enum and URL shape of every endpoint.
+//
+// It also enforces the one rule the CRD schema cannot express: that the child
+// K-ORC CR name composed from cpName and the entry type stays inside the
+// apiserver's 253-byte metadata.name cap. Without it a CR admission accepts wedges
+// the reconcile in an exponential backoff on an Invalid the operator never asked
+// for.
+//
+// Creating catalog entries against a pre-existing installation is the one
+// destructive thing External mode can do, so every rule guarding the opt-in is
+// enforced twice.
+func validateExternalCatalog(path *field.Path, cpName string, catalog *ExternalCatalogSpec) field.ErrorList {
+	var allErrs field.ErrorList
+
+	// K-ORC casts identityServiceName to its OpenStackName on the Service import
+	// filter, whose Pattern rejects a comma — exactly as it does the entry name below.
+	if strings.Contains(catalog.IdentityServiceName, ",") {
+		allErrs = append(allErrs, field.Invalid(path.Child("identityServiceName"), catalog.IdentityServiceName,
+			"must not contain a comma (mirrors K-ORC's OpenStackName pattern ^[^,]+$)"))
+	}
+
+	entriesPath := path.Child("managedEntries")
+	if len(catalog.ManagedEntries) > maxManagedCatalogEntries {
+		allErrs = append(allErrs, field.TooMany(entriesPath, len(catalog.ManagedEntries), maxManagedCatalogEntries))
+	}
+
+	seenTypes := make(map[string]struct{}, len(catalog.ManagedEntries))
+	for i, entry := range catalog.ManagedEntries {
+		entryPath := entriesPath.Index(i)
+		typePath := entryPath.Child("type")
+
+		switch {
+		case entry.Type == "":
+			allErrs = append(allErrs, field.Required(typePath, "must be set"))
+		case entry.Type == identityCatalogServiceType:
+			allErrs = append(allErrs, field.Forbidden(typePath,
+				"the identity catalog entry is owned by the External-mode imports and must not be declared as a managed entry"))
+		case !catalogEntryTypePattern.MatchString(entry.Type):
+			allErrs = append(allErrs, field.Invalid(typePath, entry.Type,
+				"must be a lowercase alphanumeric DNS-1123 label (it names the child K-ORC CRs)"))
+		}
+		if _, dup := seenTypes[entry.Type]; dup {
+			allErrs = append(allErrs, field.Duplicate(typePath, entry.Type))
+		}
+		seenTypes[entry.Type] = struct{}{}
+
+		if entry.Type != "" {
+			if n := len(cpName) + catalogEntryChildNameOverhead + len(entry.Type); n > maxObjectNameBytes {
+				allErrs = append(allErrs, field.Invalid(typePath, entry.Type, fmt.Sprintf(
+					"the child K-ORC CR name would be %d bytes; shorten the ControlPlane name or the entry type "+
+						"so the total stays within the %d-byte Kubernetes object-name limit", n, maxObjectNameBytes,
+				)))
+			}
+		}
+
+		// K-ORC casts the name to its OpenStackName, whose Pattern rejects a comma.
+		if strings.Contains(entry.Name, ",") {
+			allErrs = append(allErrs, field.Invalid(entryPath.Child("name"), entry.Name,
+				"must not contain a comma (mirrors K-ORC's OpenStackName pattern ^[^,]+$)"))
+		}
+
+		seenInterfaces := make(map[ExternalEndpointType]struct{}, len(entry.Endpoints))
+		for j, ep := range entry.Endpoints {
+			epPath := entryPath.Child("endpoints").Index(j)
+			switch ep.Interface {
+			case ExternalEndpointTypePublic, ExternalEndpointTypeInternal, ExternalEndpointTypeAdmin:
+			case "":
+				allErrs = append(allErrs, field.Required(epPath.Child("interface"), "must be set"))
+			default:
+				// The interface reaches a child CR name, which must stay a DNS-1123
+				// subdomain: an off-enum value the CRD would have rejected wedges the
+				// reconcile rather than failing at admission.
+				allErrs = append(allErrs, field.NotSupported(epPath.Child("interface"), ep.Interface,
+					[]ExternalEndpointType{
+						ExternalEndpointTypePublic, ExternalEndpointTypeInternal, ExternalEndpointTypeAdmin,
+					}))
+			}
+			if _, dup := seenInterfaces[ep.Interface]; dup {
+				allErrs = append(allErrs, field.Duplicate(epPath.Child("interface"), ep.Interface))
+			}
+			seenInterfaces[ep.Interface] = struct{}{}
+
+			if _, err := validateHTTPURL(epPath.Child("url"), ep.URL); err != nil {
+				allErrs = append(allErrs, err)
+			} else if len(ep.URL) > maxCatalogEndpointURLBytes {
+				allErrs = append(allErrs, field.Invalid(epPath.Child("url"), ep.URL,
+					fmt.Sprintf("must be at most %d bytes", maxCatalogEndpointURLBytes)))
+			}
+		}
+	}
+
+	return allErrs
 }
 
 // externalAuthURLIsPlaintext reports whether raw is an http:// (non-TLS) endpoint.
@@ -678,12 +820,13 @@ func (w *ControlPlaneWebhook) validate(cp *ControlPlane) field.ErrorList {
 // spanning spec.infrastructure and spec.services.{keystone,horizon}, which live
 // in the webhook per the established CEL-vs-webhook split.
 //
-//   - External mode: services.keystone.external is required (with an http(s)
-//     authURL and a non-empty caBundleSecretRef.name when the ref is set); the
-//     managed-only Keystone fields (replicas, image, policyOverrides,
-//     rotationInterval, gateway, publicEndpoint) are forbidden; spec.infrastructure
-//     is forbidden (phase 2 will relax this to optional) and so is services.horizon
-//     (P2 — Horizon needs its own External-mode design).
+//   - External mode: metadata.name must leave room for the identity Endpoint
+//     import CR names the mode composes from it; services.keystone.external is
+//     required (with an http(s) authURL and a non-empty caBundleSecretRef.name when
+//     the ref is set); the managed-only Keystone fields (replicas, image,
+//     policyOverrides, rotationInterval, gateway, publicEndpoint) are forbidden;
+//     spec.infrastructure is forbidden (phase 2 will relax this to optional) and so
+//     is services.horizon (P2 — Horizon needs its own External-mode design).
 //   - Not External (Managed, unset mode, or unset keystone): services.keystone.external
 //     is forbidden and spec.infrastructure is required — preserving today's
 //     contract now that the Go field is an optional pointer.
@@ -694,6 +837,20 @@ func validateKeystoneMode(cp *ControlPlane) field.ErrorList {
 	if cp.IsExternalKeystone() {
 		ks := cp.Spec.Services.Keystone
 		ksPath := specPath.Child("services", "keystone")
+
+		// External mode imports one identity Endpoint per interface, unconditionally.
+		// Nothing bounds the ControlPlane's own name below 253, so the composed child
+		// name can overflow a CR admission already accepted, and ensureExternalCatalogImports
+		// then wedges in CatalogReady=False/ImportError backoff on an apiserver Invalid
+		// the operator never asked for. Same rule as the managedEntries child names
+		// (validateExternalCatalog), one level up — and it binds first, because the
+		// import name is the longer of the two.
+		if n := len(cp.Name) + identityImportChildNameOverhead; n > maxObjectNameBytes {
+			allErrs = append(allErrs, field.Invalid(field.NewPath("metadata", "name"), cp.Name, fmt.Sprintf(
+				"the identity Endpoint import CR name would be %d bytes; shorten the ControlPlane name "+
+					"so it stays within the %d-byte Kubernetes object-name limit", n, maxObjectNameBytes,
+			)))
+		}
 
 		if ks.External == nil {
 			allErrs = append(allErrs, field.Required(ksPath.Child("external"),
@@ -732,6 +889,10 @@ func validateKeystoneMode(cp *ControlPlane) field.ErrorList {
 						"must use scheme https when caBundleSecretRef is set: a plaintext endpoint never "+
 							"performs the TLS handshake the CA bundle would verify"))
 				}
+			}
+			if ks.External.Catalog != nil {
+				allErrs = append(allErrs,
+					validateExternalCatalog(ksPath.Child("external", "catalog"), cp.Name, ks.External.Catalog)...)
 			}
 		}
 
