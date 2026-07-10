@@ -1005,6 +1005,9 @@ func (b *KeystoneIdentityBackend) EffectiveIdentityProviderName() string {
 // populated — the pre-rename EffectiveOIDCProtocolID behavior.
 func (b *KeystoneIdentityBackend) EffectiveProtocolID() string {
 	switch b.Spec.Type {
+	case IdentityBackendTypeLDAP:
+		// LDAP backends have no federation protocol.
+		return ""
 	case IdentityBackendTypeOIDC:
 		if b.Spec.OIDC != nil && b.Spec.OIDC.ProtocolID != "" {
 			return b.Spec.OIDC.ProtocolID
