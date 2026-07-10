@@ -10,6 +10,7 @@ package controller
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	. "github.com/onsi/gomega"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -243,20 +245,42 @@ func deletingExternalControlPlane() *c5c3v1alpha1.ControlPlane {
 	return cp
 }
 
-// externalModeORCChildren returns the five owned K-ORC CRs an External-mode
+// deletingExternalOptInControlPlane returns an External-mode ControlPlane being
+// deleted that declared one opt-in catalog entry — the one thing this operator
+// created in the external catalog, and therefore the one thing it removes from it.
+func deletingExternalOptInControlPlane() *c5c3v1alpha1.ControlPlane {
+	cp := deletingExternalControlPlane()
+	cp.Spec.Services.Keystone.External.Catalog = &c5c3v1alpha1.ExternalCatalogSpec{
+		ManagedEntries: []c5c3v1alpha1.ExternalCatalogEntrySpec{{
+			Type: "image",
+			Endpoints: []c5c3v1alpha1.ExternalCatalogEndpointSpec{
+				{Interface: c5c3v1alpha1.ExternalEndpointTypePublic, URL: "https://glance.example.com"},
+			},
+		}},
+	}
+	return cp
+}
+
+// externalModeORCChildren returns the owned K-ORC CRs an External-mode
 // ControlPlane projects, with the ManagementPolicy each really carries: the
-// ApplicationCredential is Managed (its finalizer revokes at the Keystone level),
-// while the admin User/Domain are Unmanaged imports whose CR deletion cannot touch
-// the external Keystone.
+// ApplicationCredential and any opt-in catalog entry are Managed (their finalizers
+// revoke/delete at the Keystone level), while the admin User/Domain and the whole
+// identity catalog — the Service plus one Endpoint per interface — are Unmanaged
+// imports whose CR deletion cannot touch the external Keystone.
 func externalModeORCChildren(cp *c5c3v1alpha1.ControlPlane) []client.Object {
 	ns := childNamespace(cp)
-	return []client.Object{
+	objs := []client.Object{
 		&orcv1alpha1.ApplicationCredential{
 			ObjectMeta: metav1.ObjectMeta{Name: adminAppCredentialName(cp), Namespace: ns},
 			Spec:       orcv1alpha1.ApplicationCredentialSpec{ManagementPolicy: orcv1alpha1.ManagementPolicyManaged},
 		},
-		&orcv1alpha1.Service{ObjectMeta: metav1.ObjectMeta{Name: keystoneServiceName(cp), Namespace: ns}},
-		&orcv1alpha1.Endpoint{ObjectMeta: metav1.ObjectMeta{Name: keystoneEndpointName(cp), Namespace: ns}},
+		&orcv1alpha1.Service{
+			ObjectMeta: metav1.ObjectMeta{Name: keystoneServiceName(cp), Namespace: ns},
+			Spec: orcv1alpha1.ServiceSpec{
+				ManagementPolicy: orcv1alpha1.ManagementPolicyUnmanaged,
+				Import:           &orcv1alpha1.ServiceImport{Filter: &orcv1alpha1.ServiceFilter{}},
+			},
+		},
 		&orcv1alpha1.User{
 			ObjectMeta: metav1.ObjectMeta{Name: adminUserRef(cp), Namespace: ns},
 			Spec: orcv1alpha1.UserSpec{
@@ -272,6 +296,31 @@ func externalModeORCChildren(cp *c5c3v1alpha1.ControlPlane) []client.Object {
 			},
 		},
 	}
+	for _, iface := range externalCatalogInterfaces {
+		objs = append(objs, &orcv1alpha1.Endpoint{
+			ObjectMeta: metav1.ObjectMeta{Name: keystoneEndpointImportName(cp, iface), Namespace: ns},
+			Spec: orcv1alpha1.EndpointSpec{
+				ManagementPolicy: orcv1alpha1.ManagementPolicyUnmanaged,
+				Import:           &orcv1alpha1.EndpointImport{Filter: &orcv1alpha1.EndpointFilter{}},
+			},
+		})
+	}
+	for _, entry := range externalManagedCatalogEntries(cp) {
+		objs = append(objs, &orcv1alpha1.Service{
+			ObjectMeta: metav1.ObjectMeta{Name: catalogEntryServiceName(cp, entry.Type), Namespace: ns},
+			Spec:       orcv1alpha1.ServiceSpec{ManagementPolicy: orcv1alpha1.ManagementPolicyManaged},
+		})
+		for _, ep := range entry.Endpoints {
+			objs = append(objs, &orcv1alpha1.Endpoint{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      catalogEntryEndpointName(cp, entry.Type, ep.Interface),
+					Namespace: ns,
+				},
+				Spec: orcv1alpha1.EndpointSpec{ManagementPolicy: orcv1alpha1.ManagementPolicyManaged},
+			})
+		}
+	}
+	return objs
 }
 
 // TestReconcileDelete_ExternalMode_TearsDownOnlyOwnedORCCRs is the AC-4 guard:
@@ -283,12 +332,19 @@ func TestReconcileDelete_ExternalMode_TearsDownOnlyOwnedORCCRs(t *testing.T) {
 	ctx := context.Background()
 
 	s := korcTestScheme(t)
-	cp := deletingExternalControlPlane()
+	// The opt-in variant, so the sweep is proven to cover the catalog imports AND
+	// the entry CRs this ControlPlane created.
+	cp := deletingExternalOptInControlPlane()
 	foreign := &orcv1alpha1.User{
 		ObjectMeta: metav1.ObjectMeta{Name: "someone-elses-user", Namespace: childNamespace(cp)},
 		Spec:       orcv1alpha1.UserSpec{ManagementPolicy: orcv1alpha1.ManagementPolicyUnmanaged},
 	}
-	objs := append([]client.Object{cp, foreign}, externalModeORCChildren(cp)...)
+	// A same-namespace Endpoint import that looks like a catalog import of a
+	// DIFFERENT ControlPlane: only the cp.Name-scoped names keep it safe.
+	foreignEndpoint := &orcv1alpha1.Endpoint{
+		ObjectMeta: metav1.ObjectMeta{Name: "other-cp-identity-endpoint-public", Namespace: childNamespace(cp)},
+	}
+	objs := append([]client.Object{cp, foreign, foreignEndpoint}, externalModeORCChildren(cp)...)
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(objs...).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
 
@@ -300,27 +356,33 @@ func TestReconcileDelete_ExternalMode_TearsDownOnlyOwnedORCCRs(t *testing.T) {
 	g.Expect(controllerutil.ContainsFinalizer(cp, controlPlaneORCFinalizer)).To(BeFalse(),
 		"the ControlPlane finalizer must be released once every owned K-ORC CR is gone")
 
-	// Every owned K-ORC CR is gone.
-	for _, child := range orcChildResources {
+	// Every owned K-ORC CR is gone — including the three per-interface identity
+	// Endpoint imports and the opt-in entry's Service/Endpoint.
+	children := orcChildObjects(cp)
+	g.Expect(children).To(HaveLen(5+len(externalCatalogInterfaces)+2),
+		"the sweep must enumerate the catalog imports and the declared entry")
+	for _, child := range children {
 		obj := child.newObj()
-		key := types.NamespacedName{Name: child.name(cp), Namespace: childNamespace(cp)}
+		key := types.NamespacedName{Name: child.name, Namespace: childNamespace(cp)}
 		g.Expect(apierrors.IsNotFound(c.Get(ctx, key, obj))).To(BeTrue(),
 			"owned K-ORC CR %s must be deleted", key.Name)
 	}
 
-	// ... and provably nothing else. The unrelated import survives untouched.
-	survivor := &orcv1alpha1.User{}
-	g.Expect(c.Get(ctx, types.NamespacedName{Name: "someone-elses-user", Namespace: childNamespace(cp)}, survivor)).
-		To(Succeed(), "a K-ORC CR the ControlPlane does not own must never be swept")
+	// ... and provably nothing else. The unrelated imports survive untouched.
+	g.Expect(c.Get(ctx, types.NamespacedName{Name: "someone-elses-user", Namespace: childNamespace(cp)},
+		&orcv1alpha1.User{})).To(Succeed(), "a K-ORC CR the ControlPlane does not own must never be swept")
+	g.Expect(c.Get(ctx, client.ObjectKeyFromObject(foreignEndpoint), &orcv1alpha1.Endpoint{})).
+		To(Succeed(), "another ControlPlane's catalog import must never be swept")
 }
 
 // TestDeleteORCResources_ExternalMode_LeavesUnmanagedImportsUntouched pins WHY the
 // sweep has zero blast radius on the external installation: the admin User/Domain
-// the sweep deletes are Unmanaged imports, so removing their CRs cannot delete the
-// OpenStack resources behind them. Only the ApplicationCredential is Managed — its
-// K-ORC finalizer revokes at the Keystone level before the CR delete returns, so
-// authenticating with the revoked credential afterwards yields 404 "Could not find
-// Application Credential" (not 401).
+// AND the whole identity catalog the sweep deletes are Unmanaged imports, so
+// removing their CRs cannot delete the OpenStack resources behind them — the
+// external catalog is left bit-for-bit intact. Only the ApplicationCredential is
+// Managed — its K-ORC finalizer revokes at the Keystone level before the CR delete
+// returns, so authenticating with the revoked credential afterwards yields 404
+// "Could not find Application Credential" (not 401).
 func TestDeleteORCResources_ExternalMode_LeavesUnmanagedImportsUntouched(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ctx := context.Background()
@@ -342,6 +404,23 @@ func TestDeleteORCResources_ExternalMode_LeavesUnmanagedImportsUntouched(t *test
 	g.Expect(domain.Spec.ManagementPolicy).To(Equal(orcv1alpha1.ManagementPolicyUnmanaged))
 	g.Expect(domain.Spec.Import).NotTo(BeNil())
 
+	// The catalog itself: the identity Service and every endpoint interface are
+	// imports, so teardown never removes a row from the external catalog.
+	svc := &orcv1alpha1.Service{}
+	g.Expect(c.Get(ctx, types.NamespacedName{Name: keystoneServiceName(cp), Namespace: childNamespace(cp)}, svc)).To(Succeed())
+	g.Expect(svc.Spec.ManagementPolicy).To(Equal(orcv1alpha1.ManagementPolicyUnmanaged),
+		"the identity Service is an import, so its CR delete cannot touch the external catalog")
+	g.Expect(svc.Spec.Import).NotTo(BeNil())
+	for _, iface := range externalCatalogInterfaces {
+		ep := &orcv1alpha1.Endpoint{}
+		g.Expect(c.Get(ctx, types.NamespacedName{
+			Name: keystoneEndpointImportName(cp, iface), Namespace: childNamespace(cp),
+		}, ep)).To(Succeed())
+		g.Expect(ep.Spec.ManagementPolicy).To(Equal(orcv1alpha1.ManagementPolicyUnmanaged),
+			"the %q endpoint is an import, so its CR delete cannot touch the external catalog", iface)
+		g.Expect(ep.Spec.Import).NotTo(BeNil())
+	}
+
 	ac := &orcv1alpha1.ApplicationCredential{}
 	g.Expect(c.Get(ctx, types.NamespacedName{Name: adminAppCredentialName(cp), Namespace: childNamespace(cp)}, ac)).To(Succeed())
 	g.Expect(ac.Spec.ManagementPolicy).To(Equal(orcv1alpha1.ManagementPolicyManaged),
@@ -351,6 +430,251 @@ func TestDeleteORCResources_ExternalMode_LeavesUnmanagedImportsUntouched(t *test
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(hasLiveWork).To(BeTrue(), "live (not-yet-Terminating) CRs must announce the teardown once")
 	g.Expect(remaining).To(BeEmpty())
+}
+
+// TestOrcChildObjects_ManagedModeUnchanged is the golden-behavior guard on the
+// sweep: a Managed ControlPlane still enumerates exactly the five CRs it always
+// did, so the External-mode additions cannot widen the managed blast radius.
+func TestOrcChildObjects_ManagedModeUnchanged(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := korcControlPlane()
+	children := orcChildObjects(cp)
+
+	g.Expect(children).To(HaveLen(5))
+	names := make([]string, 0, len(children))
+	for _, child := range children {
+		names = append(names, child.name)
+	}
+	g.Expect(names).To(ConsistOf(
+		adminAppCredentialName(cp),
+		keystoneServiceName(cp),
+		keystoneEndpointName(cp),
+		adminUserRef(cp),
+		adminDomainRef(cp),
+	))
+}
+
+// TestOrcChildObjects_ExternalOptInEnumeratesDeclaredEntry proves the sweep tracks
+// the spec: an entry declared today is torn down, and an entry the spec never
+// declared is never named (so a stale CR is not swept by the finalizer — the
+// reconcile-time prune owns that).
+func TestOrcChildObjects_ExternalOptInEnumeratesDeclaredEntry(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := deletingExternalOptInControlPlane()
+	names := make([]string, 0)
+	for _, child := range orcChildObjects(cp) {
+		names = append(names, child.name)
+	}
+
+	g.Expect(names).To(ContainElement(catalogEntryServiceName(cp, "image")))
+	g.Expect(names).To(ContainElement(catalogEntryEndpointName(cp, "image", c5c3v1alpha1.ExternalEndpointTypePublic)))
+	g.Expect(names).NotTo(ContainElement(catalogEntryServiceName(cp, "compute")),
+		"an entry the spec never declared must not be named by the sweep")
+	for _, iface := range externalCatalogInterfaces {
+		g.Expect(names).To(ContainElement(keystoneEndpointImportName(cp, iface)))
+	}
+}
+
+// ownedCatalogEntryCRs returns an entry Service/Endpoint pair carrying cp's
+// controller reference and the catalog-entry name prefix — the CRs a declared
+// `entryType` entry projects — so a test can seed them independently of what the
+// spec declares today.
+func ownedCatalogEntryCRs(
+	t *testing.T, s *runtime.Scheme, cp *c5c3v1alpha1.ControlPlane, entryType string,
+) (*orcv1alpha1.Service, *orcv1alpha1.Endpoint) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+
+	svc := &orcv1alpha1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: catalogEntryServiceName(cp, entryType), Namespace: childNamespace(cp)},
+		Spec:       orcv1alpha1.ServiceSpec{ManagementPolicy: orcv1alpha1.ManagementPolicyManaged},
+	}
+	ep := &orcv1alpha1.Endpoint{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      catalogEntryEndpointName(cp, entryType, c5c3v1alpha1.ExternalEndpointTypePublic),
+			Namespace: childNamespace(cp),
+		},
+		Spec: orcv1alpha1.EndpointSpec{ManagementPolicy: orcv1alpha1.ManagementPolicyManaged},
+	}
+	g.Expect(controllerutil.SetControllerReference(cp, svc, s)).To(Succeed())
+	g.Expect(controllerutil.SetControllerReference(cp, ep, s)).To(Succeed())
+	return svc, ep
+}
+
+// TestReconcileDelete_ExternalMode_SweepsUndeclaredOwnedEntryCRs closes the gap
+// between the two enumerations: the reconcile-time prune finds entry CRs by
+// OWNERSHIP, the teardown sweep used to find them by SPEC. They diverge whenever
+// a declaration is dropped from a spec the prune never re-observed — it runs
+// inside reconcileCatalogExternal, which reconcileCatalog gates on
+// AdminCredentialReady and which never runs once DeletionTimestamp is set. The
+// unswept CRs would then be garbage-collected into a permanent Terminating state
+// behind their K-ORC finalizers, with the credentials Secret already gone and the
+// stall escape blind to them — the exact `kubectl delete namespace` wedge
+// reconcileDelete exists to prevent.
+func TestReconcileDelete_ExternalMode_SweepsUndeclaredOwnedEntryCRs(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	s := korcTestScheme(t)
+	cp := deletingExternalControlPlane() // the spec declares NO managed entries
+	staleSvc, staleEp := ownedCatalogEntryCRs(t, s, cp, "image")
+	// A CR carrying the entry prefix but owned by nobody: the prefix alone must not
+	// sweep it, exactly as the reconcile-time prune requires.
+	foreign := &orcv1alpha1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: catalogEntryServiceName(cp, "compute"), Namespace: childNamespace(cp)},
+	}
+
+	objs := append([]client.Object{cp, staleSvc, staleEp, foreign}, externalModeORCChildren(cp)...)
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(objs...).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
+
+	res, err := r.reconcileDelete(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{}))
+	g.Expect(controllerutil.ContainsFinalizer(cp, controlPlaneORCFinalizer)).To(BeFalse())
+
+	g.Expect(apierrors.IsNotFound(c.Get(ctx, client.ObjectKeyFromObject(staleSvc), &orcv1alpha1.Service{}))).
+		To(BeTrue(), "an owned entry Service the spec no longer declares must still be swept")
+	g.Expect(apierrors.IsNotFound(c.Get(ctx, client.ObjectKeyFromObject(staleEp), &orcv1alpha1.Endpoint{}))).
+		To(BeTrue(), "an owned entry Endpoint the spec no longer declares must still be swept")
+	g.Expect(c.Get(ctx, client.ObjectKeyFromObject(foreign), &orcv1alpha1.Service{})).
+		To(Succeed(), "a prefixed CR this ControlPlane does not own must never be swept")
+}
+
+// stalledExternalORCChildren returns every owned K-ORC CR of an External-mode
+// ControlPlane, each stuck Terminating behind a K-ORC finalizer — the state the stall
+// escape releases. The management policies are the ones the reconcilers really set,
+// so a test can tell apart the CRs whose release leaks an OpenStack resource from the
+// ones whose release costs nothing.
+func stalledExternalORCChildren(cp *c5c3v1alpha1.ControlPlane) []client.Object {
+	deletion := metav1.NewTime(metav1.Now().Add(-2 * orcTeardownStallTimeout))
+	objs := externalModeORCChildren(cp)
+	for _, obj := range objs {
+		obj.SetFinalizers([]string{korcFinalizerPrefix + "stuck"})
+		obj.SetDeletionTimestamp(&deletion)
+	}
+	return objs
+}
+
+// TestReconcileDelete_StallEscapeNamesOrphanedManagedResources is the guard on the
+// blast radius the catalog-entry sweep added to the stall escape. The escape strips
+// openstack.k-orc.cloud/* finalizers with no ManagementPolicy check, so it releases a
+// Managed catalog-entry CR by removing the very finalizer that would have taken its
+// row out of the customer's catalog. The row survives with no Kubernetes object naming
+// it. That is unavoidable — the alternative is a permanently wedged namespace — but a
+// flat list of CR names under "unable to reach Keystone to revoke" never says a
+// catalog row leaked, and `kubectl delete namespace` makes the leak deterministic (the
+// namespace controller reaps the entries' credentials Secret alongside their CRs).
+//
+// The escape must therefore name exactly the Managed CRs it orphaned, and never the
+// Unmanaged imports, whose CR deletion could not have touched OpenStack anyway.
+func TestReconcileDelete_StallEscapeNamesOrphanedManagedResources(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := deletingExternalOptInControlPlane()
+	stalled := metav1.NewTime(metav1.Now().Add(-2 * orcTeardownStallTimeout))
+	cp.DeletionTimestamp = &stalled
+
+	objs := append([]client.Object{cp}, stalledExternalORCChildren(cp)...)
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(objs...).Build()
+	rec := record.NewFakeRecorder(20)
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: rec}
+
+	key := types.NamespacedName{Name: cp.Name, Namespace: cp.Namespace}
+	g.Expect(c.Get(context.Background(), key, cp)).To(Succeed())
+
+	res, err := r.reconcileDelete(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{}), "the stall escape must release without requeue")
+
+	var orphanEvent string
+	for _, event := range drainEvents(rec) {
+		if strings.Contains(event, "ORCResourcesOrphaned") {
+			orphanEvent = event
+		}
+	}
+	g.Expect(orphanEvent).NotTo(BeEmpty(),
+		"releasing a Managed K-ORC CR abandons its OpenStack resource and must be reported as such")
+	g.Expect(orphanEvent).To(HavePrefix("Warning"))
+
+	// The Managed CRs: the opt-in catalog rows this ControlPlane wrote into a catalog
+	// it does not own, and the application credential it minted.
+	g.Expect(orphanEvent).To(ContainSubstring(catalogEntryEndpointName(cp, "image", c5c3v1alpha1.ExternalEndpointTypePublic)))
+	g.Expect(orphanEvent).To(ContainSubstring(catalogEntryServiceName(cp, "image")))
+	g.Expect(orphanEvent).To(ContainSubstring(adminAppCredentialName(cp)))
+
+	// The Unmanaged imports: their CR delete never called OpenStack, so nothing leaked.
+	g.Expect(orphanEvent).NotTo(ContainSubstring(keystoneServiceName(cp)))
+	g.Expect(orphanEvent).NotTo(ContainSubstring(adminUserRef(cp)))
+	g.Expect(orphanEvent).NotTo(ContainSubstring(adminDomainRef(cp)))
+	for _, iface := range externalCatalogInterfaces {
+		g.Expect(orphanEvent).NotTo(ContainSubstring(keystoneEndpointImportName(cp, iface)))
+	}
+}
+
+// TestIsManagedORCChild_UnsetPolicyCountsAsManaged pins the fail-loud default: K-ORC
+// defaults managementPolicy to `managed`, so a CR whose policy the reconciler never
+// stamped must be reported as orphaned rather than silently omitted from the warning.
+func TestIsManagedORCChild_UnsetPolicyCountsAsManaged(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	g.Expect(isManagedORCChild(&orcv1alpha1.Service{})).To(BeTrue())
+	g.Expect(isManagedORCChild(&orcv1alpha1.Service{
+		Spec: orcv1alpha1.ServiceSpec{ManagementPolicy: orcv1alpha1.ManagementPolicyUnmanaged},
+	})).To(BeFalse())
+}
+
+// TestOrcTeardownChildren_DeclaredEntryNamedExactlyOnce guards the merge of the
+// two enumerations. A declared entry appears in both, and naming it twice would
+// make forceRemoveKORCFinalizers Update the same object off two stale reads — the
+// second Update losing to a Conflict.
+func TestOrcTeardownChildren_DeclaredEntryNamedExactlyOnce(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	s := korcTestScheme(t)
+	cp := deletingExternalOptInControlPlane()
+	svc, ep := ownedCatalogEntryCRs(t, s, cp, "image")
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, svc, ep).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
+
+	children, err := r.orcTeardownChildren(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	seen := map[string]int{}
+	for _, child := range children {
+		seen[child.key()]++
+	}
+	for key, n := range seen {
+		g.Expect(n).To(Equal(1), "child %s must be named exactly once", key)
+	}
+	g.Expect(children).To(HaveLen(len(orcChildObjects(cp))),
+		"the declared entry is already spec-derived, so ownership adds nothing")
+}
+
+// TestOrcTeardownChildren_ManagedModeSkipsTheOwnershipSweep keeps the managed
+// blast radius byte-identical: Managed mode projects no catalog-entry CRs, so it
+// never pays for the List and can never name one.
+func TestOrcTeardownChildren_ManagedModeSkipsTheOwnershipSweep(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	s := korcTestScheme(t)
+	cp := korcControlPlane()
+	// A prefixed, owned CR that External mode would sweep. Managed mode must not.
+	svc, _ := ownedCatalogEntryCRs(t, s, cp, "image")
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, svc).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
+
+	children, err := r.orcTeardownChildren(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(children).To(HaveLen(len(orcChildObjects(cp))))
+	for _, child := range children {
+		g.Expect(child.name).NotTo(Equal(svc.Name))
+	}
 }
 
 // TestReconcileDelete_ExternalMode_NoORCResources_ReleasesFinalizer covers the

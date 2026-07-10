@@ -1917,16 +1917,16 @@ func TestIntegration_ExternalMode_DeletionLeavesUnmanagedImportsAlone(t *testing
 	// Every owned K-ORC CR disappears and the finalizer releases the ControlPlane.
 	// envtest runs no garbage collector, so this is the reconcileDelete sweep, not GC.
 	g.Eventually(func() bool {
-		for _, child := range orcChildResources {
+		for _, child := range orcChildObjects(cp) {
 			obj := child.newObj()
-			key := client.ObjectKey{Name: child.name(cp), Namespace: ns.Name}
+			key := client.ObjectKey{Name: child.name, Namespace: ns.Name}
 			if err := c.Get(ctx, key, obj); !apierrors.IsNotFound(err) {
 				return false
 			}
 		}
 		return apierrors.IsNotFound(c.Get(ctx, cpKey, &c5c3v1alpha1.ControlPlane{}))
 	}, itEventuallyTimeout, itPollInterval).Should(BeTrue(),
-		"the owned K-ORC CRs and the ControlPlane must be gone")
+		"the owned K-ORC CRs — including the per-interface identity catalog imports — and the ControlPlane must be gone")
 
 	// ... and the foreign import is untouched.
 	g.Expect(c.Get(ctx, client.ObjectKey{Name: "foreign-user", Namespace: ns.Name}, &orcv1alpha1.User{})).
