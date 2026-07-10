@@ -1559,7 +1559,47 @@ func TestIntegration_ControlPlane_ValidationMarkers(t *testing.T) {
 			},
 		},
 		{
-			name:    "valid access rules, bootstrap resources, and public endpoint",
+			name:    "service account invalid name",
+			wantErr: true,
+			mutate: func(cp *c5c3v1alpha1.ControlPlane) {
+				cp.Spec.KORC.ServiceAccounts = []c5c3v1alpha1.ServiceAccountSpec{
+					{Name: "Nova_Service", Project: c5c3v1alpha1.ServiceAccountProjectSpec{Name: "service"}},
+				}
+			},
+		},
+		{
+			name:    "service account missing project name",
+			wantErr: true,
+			mutate: func(cp *c5c3v1alpha1.ControlPlane) {
+				cp.Spec.KORC.ServiceAccounts = []c5c3v1alpha1.ServiceAccountSpec{
+					{Name: "nova"},
+				}
+			},
+		},
+		{
+			name:    "service account collides with admin identity",
+			wantErr: true,
+			mutate: func(cp *c5c3v1alpha1.ControlPlane) {
+				cp.Spec.KORC.ServiceAccounts = []c5c3v1alpha1.ServiceAccountSpec{
+					{
+						Name: "nova", UserName: "admin", DomainName: "Default",
+						Project: c5c3v1alpha1.ServiceAccountProjectSpec{Name: "service"},
+					},
+				}
+			},
+		},
+		{
+			name:    "two service accounts with the same identity",
+			wantErr: true,
+			mutate: func(cp *c5c3v1alpha1.ControlPlane) {
+				cp.Spec.KORC.ServiceAccounts = []c5c3v1alpha1.ServiceAccountSpec{
+					{Name: "nova", UserName: "svc", Project: c5c3v1alpha1.ServiceAccountProjectSpec{Name: "service"}},
+					{Name: "nova2", UserName: "svc", Project: c5c3v1alpha1.ServiceAccountProjectSpec{Name: "service"}},
+				}
+			},
+		},
+		{
+			name:    "valid access rules, bootstrap resources, public endpoint, and service account",
 			wantErr: false,
 			mutate: func(cp *c5c3v1alpha1.ControlPlane) {
 				cp.Spec.Services.Keystone.PublicEndpoint = "https://keystone.example.com/v3"
@@ -1569,6 +1609,12 @@ func TestIntegration_ControlPlane_ValidationMarkers(t *testing.T) {
 				cp.Spec.KORC.AdminCredential.BootstrapResources = []c5c3v1alpha1.BootstrapResourceSpec{
 					{Kind: "Project", Name: "service"},
 					{Kind: "Role", Name: "admin"},
+				}
+				cp.Spec.KORC.ServiceAccounts = []c5c3v1alpha1.ServiceAccountSpec{
+					{
+						Name: "nova", Project: c5c3v1alpha1.ServiceAccountProjectSpec{Name: "service", Create: true},
+						Roles: []string{"admin"},
+					},
 				}
 			},
 		},
@@ -1588,6 +1634,68 @@ func TestIntegration_ControlPlane_ValidationMarkers(t *testing.T) {
 				g.Expect(err).To(HaveOccurred(), "admission must reject: %s", tc.name)
 				g.Expect(apierrors.IsInvalid(err) || apierrors.IsForbidden(err)).To(BeTrue(),
 					fmt.Sprintf("expected Invalid or Forbidden status error for %q, got: %v", tc.name, err))
+			} else {
+				g.Expect(err).NotTo(HaveOccurred(), "admission must accept: %s", tc.name)
+			}
+		})
+	}
+}
+
+// TestIntegration_CredentialRotation_ServiceAccountValidation pins the two CEL
+// rules on the CredentialRotation CRD (serviceAccount required exactly when the
+// target is serviceAccountPassword) against the real envtest API server. There is
+// no CredentialRotation webhook, so the CEL rules are the only admission gate.
+func TestIntegration_CredentialRotation_ServiceAccountValidation(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+
+	c, ctx, _ := setupControlPlaneEnvTest(t)
+
+	cases := []struct {
+		name    string
+		spec    c5c3v1alpha1.CredentialRotationSpec
+		wantErr bool
+	}{
+		{
+			name:    "admin target without serviceAccount is accepted",
+			spec:    c5c3v1alpha1.CredentialRotationSpec{Target: c5c3v1alpha1.RotationTargetAdminApplicationCredential},
+			wantErr: false,
+		},
+		{
+			name: "admin target with serviceAccount is rejected",
+			spec: c5c3v1alpha1.CredentialRotationSpec{
+				Target: c5c3v1alpha1.RotationTargetAdminApplicationCredential, ServiceAccount: "nova",
+			},
+			wantErr: true,
+		},
+		{
+			name:    "service-account target without serviceAccount is rejected",
+			spec:    c5c3v1alpha1.CredentialRotationSpec{Target: c5c3v1alpha1.RotationTargetServiceAccountPassword},
+			wantErr: true,
+		},
+		{
+			name: "service-account target with serviceAccount is accepted",
+			spec: c5c3v1alpha1.CredentialRotationSpec{
+				Target: c5c3v1alpha1.RotationTargetServiceAccountPassword, ServiceAccount: "nova",
+			},
+			wantErr: false,
+		},
+	}
+
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-cr-cel-"}}
+			g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+			cr := &c5c3v1alpha1.CredentialRotation{
+				ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("rot-%d", i), Namespace: ns.Name},
+				Spec:       tc.spec,
+			}
+			err := c.Create(ctx, cr)
+			if tc.wantErr {
+				g.Expect(err).To(HaveOccurred(), "admission must reject: %s", tc.name)
+				g.Expect(apierrors.IsInvalid(err)).To(BeTrue(),
+					fmt.Sprintf("expected Invalid for %q, got: %v", tc.name, err))
 			} else {
 				g.Expect(err).NotTo(HaveOccurred(), "admission must accept: %s", tc.name)
 			}
