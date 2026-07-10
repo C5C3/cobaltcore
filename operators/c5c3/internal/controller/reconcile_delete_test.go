@@ -694,3 +694,84 @@ func TestReconcileDelete_ExternalMode_NoORCResources_ReleasesFinalizer(t *testin
 	g.Expect(res).To(Equal(ctrl.Result{}))
 	g.Expect(controllerutil.ContainsFinalizer(cp, controlPlaneORCFinalizer)).To(BeFalse())
 }
+
+// --- Service-account teardown ---
+
+// deletingControlPlaneWithServiceAccount returns a deleting ControlPlane with one
+// declared service account, so reconcileDelete sweeps its managed User/Project.
+func deletingControlPlaneWithServiceAccount(deletionAge time.Duration) *c5c3v1alpha1.ControlPlane {
+	cp := deletingControlPlane(deletionAge)
+	cp.Spec.KORC.ServiceAccounts = []c5c3v1alpha1.ServiceAccountSpec{{
+		Name:    "nova",
+		Project: c5c3v1alpha1.ServiceAccountProjectSpec{Name: "service"},
+	}}
+	return cp
+}
+
+func TestOrcChildObjects_IncludesServiceAccountChildren(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := korcControlPlane()
+	cp.Spec.KORC.ServiceAccounts = []c5c3v1alpha1.ServiceAccountSpec{{
+		Name:    "nova",
+		Project: c5c3v1alpha1.ServiceAccountProjectSpec{Name: "service"},
+	}}
+	sa := cp.Spec.KORC.ServiceAccounts[0]
+
+	names := map[string]bool{}
+	for _, child := range orcChildObjects(cp) {
+		names[child.name] = true
+	}
+	g.Expect(names).To(HaveKey(serviceAccountUserRef(cp, sa)))
+	g.Expect(names).To(HaveKey(serviceAccountUserProbeRef(cp, sa)))
+	g.Expect(names).To(HaveKey(serviceAccountProjectRef(cp, sa)))
+	g.Expect(names).To(HaveKey(serviceAccountProjectProbeRef(cp, sa)))
+}
+
+func TestIsManagedORCChild_ClassifiesProject(t *testing.T) {
+	g := NewGomegaWithT(t)
+	managed := &orcv1alpha1.Project{Spec: orcv1alpha1.ProjectSpec{ManagementPolicy: orcv1alpha1.ManagementPolicyManaged}}
+	unmanaged := &orcv1alpha1.Project{Spec: orcv1alpha1.ProjectSpec{ManagementPolicy: orcv1alpha1.ManagementPolicyUnmanaged}}
+	g.Expect(isManagedORCChild(managed)).To(BeTrue(), "a managed Project leaks on force-remove")
+	g.Expect(isManagedORCChild(unmanaged)).To(BeFalse(), "an unmanaged reference Project is a CR-only delete")
+}
+
+func TestReconcileDelete_ServiceAccount_TearsDownManagedUserAndProject(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := deletingControlPlaneWithServiceAccount(0)
+	sa := cp.Spec.KORC.ServiceAccounts[0]
+	ns := childNamespace(cp)
+	user := &orcv1alpha1.User{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: serviceAccountUserRef(cp, sa), Namespace: ns,
+			Finalizers: []string{"openstack.k-orc.cloud/user"},
+		},
+		Spec: orcv1alpha1.UserSpec{ManagementPolicy: orcv1alpha1.ManagementPolicyManaged},
+	}
+	project := &orcv1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: serviceAccountProjectRef(cp, sa), Namespace: ns,
+			Finalizers: []string{"openstack.k-orc.cloud/project"},
+		},
+		Spec: orcv1alpha1.ProjectSpec{ManagementPolicy: orcv1alpha1.ManagementPolicyManaged},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, user, project).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
+
+	res, err := r.reconcileDelete(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(BeNumerically(">", 0),
+		"reconcileDelete must hold the finalizer while the managed User/Project are Terminating")
+
+	// Both managed CRs were Deleted (Terminating behind their K-ORC finalizers).
+	gotUser := &orcv1alpha1.User{}
+	g.Expect(c.Get(context.Background(), types.NamespacedName{Name: user.Name, Namespace: ns}, gotUser)).To(Succeed())
+	g.Expect(gotUser.DeletionTimestamp).NotTo(BeNil(), "the managed User must be Terminating")
+	gotProject := &orcv1alpha1.Project{}
+	g.Expect(c.Get(context.Background(), types.NamespacedName{Name: project.Name, Namespace: ns}, gotProject)).To(Succeed())
+	g.Expect(gotProject.DeletionTimestamp).NotTo(BeNil(), "the managed Project must be Terminating")
+
+	// The ControlPlane still carries its finalizer until they are gone.
+	g.Expect(controllerutil.ContainsFinalizer(cp, controlPlaneORCFinalizer)).To(BeTrue())
+}

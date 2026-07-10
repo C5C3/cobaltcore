@@ -160,6 +160,15 @@ func serviceAccountRemoteKeyFor(cp *c5c3v1alpha1.ControlPlane, name string) stri
 	return "openstack/keystone/" + cp.Namespace + "/" + cp.Name + "/service-accounts/" + name
 }
 
+// ownsServiceAccountChild reports whether obj is a CR this ControlPlane created
+// for a declared service account. BOTH the controller reference and the
+// "-service-account-" name prefix must match, so the admin imports (and any
+// foreign CR sharing the namespace) can never be caught by the prune or teardown
+// sweep. Shared by pruneServiceAccounts and the deletion sweep.
+func (r *ControlPlaneReconciler) ownsServiceAccountChild(cp *c5c3v1alpha1.ControlPlane, obj client.Object) bool {
+	return metav1.IsControlledBy(obj, cp) && strings.HasPrefix(obj.GetName(), serviceAccountChildPrefix(cp))
+}
+
 // parseServiceAccountGeneration extracts the generation N from a password Secret
 // name of the form "…-password-vN". ok is false when the name carries no such
 // suffix or N is not a positive integer.
@@ -767,9 +776,24 @@ func (r *ControlPlaneReconciler) ensureServiceAccountUser(
 	}
 	applied := user.Status.Resource != nil && user.Status.Resource.AppliedPasswordRef == passwordRefName
 	if applied {
-		for g := int64(1); g < desiredGen; g++ {
-			if err := r.deleteServiceAccountChild(ctx, &corev1.Secret{}, serviceAccountPasswordSecretName(cp, sa, g), ns); err != nil {
-				return nil, 0, false, nil, err
+		// List the account's password Secrets that ACTUALLY exist and delete only
+		// the superseded generations, rather than blind-Deleting v1..v(desiredGen-1)
+		// every steady-state pass. This runs on every reconcile once applied stays
+		// true, so a blind loop would issue a growing, unbounded stream of NotFound
+		// DELETE round-trips for long-gone generations that never converges.
+		var pwSecrets corev1.SecretList
+		if err := r.List(ctx, &pwSecrets, client.InNamespace(ns)); err != nil {
+			return nil, 0, false, nil, fmt.Errorf("listing superseded password Secrets: %w", err)
+		}
+		prefix := serviceAccountChildPrefix(cp) + sa.Name + "-password-v"
+		for i := range pwSecrets.Items {
+			name := pwSecrets.Items[i].Name
+			if g, ok := parseServiceAccountGeneration(name); ok &&
+				strings.HasPrefix(name, prefix) && g < desiredGen &&
+				r.ownsServiceAccountChild(cp, &pwSecrets.Items[i]) {
+				if err := r.deleteServiceAccountChild(ctx, &corev1.Secret{}, name, ns); err != nil {
+					return nil, 0, false, nil, err
+				}
 			}
 		}
 	}
@@ -1003,7 +1027,7 @@ func (r *ControlPlaneReconciler) pruneServiceAccounts(
 	// whether a still-present removal should block readiness.
 	sweep := func(obj client.Object, gate bool) error {
 		name := obj.GetName()
-		if !metav1.IsControlledBy(obj, cp) || !strings.HasPrefix(name, prefix) {
+		if !r.ownsServiceAccountChild(cp, obj) {
 			return nil
 		}
 		if strings.Contains(name, "-password-v") {

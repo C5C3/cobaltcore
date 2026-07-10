@@ -20,6 +20,7 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	"github.com/c5c3/forge/internal/common/conditions"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
@@ -243,6 +244,144 @@ func TestReconcileServiceAccounts_RotationFlipsPasswordRef(t *testing.T) {
 	g.Expect(cp.Status.ServiceAccounts).To(HaveLen(1))
 	g.Expect(cp.Status.ServiceAccounts[0].PasswordGeneration).To(Equal(int64(2)))
 	g.Expect(cp.Status.ServiceAccounts[0].LastPasswordRotation).NotTo(BeNil())
+}
+
+// TestReconcileServiceAccounts_RotationPrunesSupersededPasswordOnceApplied covers
+// the applied==true branch of ensureServiceAccountUser: once K-ORC confirms the
+// current generation is applied, the superseded generation's password Secret is
+// garbage-collected while the current one survives (the sibling
+// TestReconcileServiceAccounts_RotationFlipsPasswordRef only proves the old Secret
+// is NOT deleted while the new one is still pending).
+func TestReconcileServiceAccounts_RotationPrunesSupersededPasswordOnceApplied(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := saControlPlane()
+	sa := cp.Spec.KORC.ServiceAccounts[0]
+	ns := childNamespace(cp)
+
+	// The rotation has completed: the managed User is at generation 2, K-ORC has
+	// APPLIED v2, and both the superseded v1 and the current v2 Secret still exist.
+	user := &orcv1alpha1.User{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        serviceAccountUserRef(cp, sa),
+			Namespace:   ns,
+			Annotations: map[string]string{serviceAccountPasswordGenerationAnnotation: "2"},
+		},
+		Spec: orcv1alpha1.UserSpec{
+			ManagementPolicy: orcv1alpha1.ManagementPolicyManaged,
+			Resource: &orcv1alpha1.UserResourceSpec{
+				PasswordRef: ptr.To(orcv1alpha1.KubernetesNameRef(serviceAccountPasswordSecretName(cp, sa, 2))),
+			},
+		},
+		Status: orcv1alpha1.UserStatus{
+			Conditions: availableImportConditions(),
+			Resource:   &orcv1alpha1.UserResourceStatus{AppliedPasswordRef: serviceAccountPasswordSecretName(cp, sa, 2)},
+		},
+	}
+	pwV1 := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: serviceAccountPasswordSecretName(cp, sa, 1), Namespace: ns, OwnerReferences: ownedByCP(cp)},
+		Data:       map[string][]byte{serviceAccountPasswordKey: []byte("old-pw")},
+	}
+	pwV2 := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: serviceAccountPasswordSecretName(cp, sa, 2), Namespace: ns, OwnerReferences: ownedByCP(cp)},
+		Data:       map[string][]byte{serviceAccountPasswordKey: []byte("new-pw")},
+	}
+
+	_, c := runServiceAccounts(t, cp, user, pwV1, pwV2)
+
+	// The superseded v1 Secret is deleted once K-ORC applied v2.
+	v1 := &corev1.Secret{}
+	err := c.Get(context.Background(), types.NamespacedName{Name: serviceAccountPasswordSecretName(cp, sa, 1), Namespace: ns}, v1)
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "the superseded v1 password Secret must be pruned once v2 is applied")
+
+	// The current v2 Secret survives — it is the one the managed User references.
+	v2 := &corev1.Secret{}
+	g.Expect(c.Get(context.Background(), types.NamespacedName{Name: serviceAccountPasswordSecretName(cp, sa, 2), Namespace: ns}, v2)).To(Succeed())
+}
+
+// TestReconcileServiceAccounts_SupersededPruneBoundedToExistingSecrets is the
+// regression guard for the bounded superseded-password sweep: on a steady-state
+// pass over a long-lived account whose superseded generations were pruned long ago,
+// the reconciler must NOT issue a DELETE per already-gone generation. The blind
+// v1..v(gen-1) loop this replaced fired one NotFound DELETE per past generation on
+// every reconcile, growing unbounded with the account's rotation history.
+func TestReconcileServiceAccounts_SupersededPruneBoundedToExistingSecrets(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := saControlPlane()
+	sa := cp.Spec.KORC.ServiceAccounts[0]
+	ns := childNamespace(cp)
+
+	// An account rotated to generation 5 whose superseded v1..v4 Secrets were pruned
+	// generations ago: only the current v5 Secret remains.
+	user := &orcv1alpha1.User{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        serviceAccountUserRef(cp, sa),
+			Namespace:   ns,
+			Annotations: map[string]string{serviceAccountPasswordGenerationAnnotation: "5"},
+		},
+		Spec: orcv1alpha1.UserSpec{
+			ManagementPolicy: orcv1alpha1.ManagementPolicyManaged,
+			Resource: &orcv1alpha1.UserResourceSpec{
+				PasswordRef: ptr.To(orcv1alpha1.KubernetesNameRef(serviceAccountPasswordSecretName(cp, sa, 5))),
+			},
+		},
+		Status: orcv1alpha1.UserStatus{
+			Conditions: availableImportConditions(),
+			Resource:   &orcv1alpha1.UserResourceStatus{AppliedPasswordRef: serviceAccountPasswordSecretName(cp, sa, 5)},
+		},
+	}
+	pwV5 := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: serviceAccountPasswordSecretName(cp, sa, 5), Namespace: ns, OwnerReferences: ownedByCP(cp)},
+		Data:       map[string][]byte{serviceAccountPasswordKey: []byte("current-pw")},
+	}
+
+	var secretDeletes int
+	s := korcTestScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(cp, readyClusterSecretStore(), user, pwV5).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Delete: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+				if _, ok := obj.(*corev1.Secret); ok {
+					secretDeletes++
+				}
+				return cl.Delete(ctx, obj, opts...)
+			},
+		}).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(20)}
+	_, err := r.reconcileServiceAccounts(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(secretDeletes).To(Equal(0),
+		"a steady-state reconcile must not issue DELETE calls for already-pruned password generations")
+}
+
+// TestReconcileServiceAccounts_CustomDomainCreatesUnmanagedImport covers the
+// non-admin branch of ensureServiceAccountDomain: when an account's effective
+// domain differs from the admin domain, a per-account unmanaged Domain import is
+// created (a CR-only handle; the external domain is referenced, never created or
+// deleted) and the teardown sweep names it so it is cleaned up on delete.
+func TestReconcileServiceAccounts_CustomDomainCreatesUnmanagedImport(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := saControlPlane()
+	cp.Spec.KORC.ServiceAccounts[0].DomainName = "custom-service-domain"
+	sa := cp.Spec.KORC.ServiceAccounts[0]
+	ns := childNamespace(cp)
+
+	g.Expect(serviceAccountDomainRef(cp, sa)).NotTo(Equal(adminDomainRef(cp)),
+		"a non-admin domain must resolve to a distinct per-account Domain import")
+
+	_, c := runServiceAccounts(t, cp)
+
+	domain := &orcv1alpha1.Domain{}
+	g.Expect(c.Get(context.Background(), types.NamespacedName{Name: serviceAccountDomainRef(cp, sa), Namespace: ns}, domain)).To(Succeed())
+	g.Expect(domain.Spec.ManagementPolicy).To(Equal(orcv1alpha1.ManagementPolicyUnmanaged))
+	g.Expect(domain.Spec.Import).NotTo(BeNil())
+
+	// The teardown sweep names the distinct per-account domain so it is torn down.
+	names := make([]string, 0)
+	for _, child := range orcChildObjects(cp) {
+		names = append(names, child.name)
+	}
+	g.Expect(names).To(ContainElement(serviceAccountDomainRef(cp, sa)))
 }
 
 func TestReconcileServiceAccounts_ManagedProjectProbeAbsentCreatesManagedProject(t *testing.T) {

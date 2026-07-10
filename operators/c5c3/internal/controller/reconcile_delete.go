@@ -78,6 +78,14 @@ func (c orcChildObject) key() string {
 //   - The opt-in managed catalog entries (External mode only) are the ONE thing this
 //     ControlPlane created in an external catalog, so they are the one thing it
 //     removes from it — exactly mirroring the ApplicationCredential.
+//   - The declarative service accounts (both modes): a managed User/Project (one the
+//     operator CREATED, or one it ADOPTED — adoption makes it operator-owned) is
+//     ManagementPolicyManaged, so its K-ORC finalizer DELETES it from Keystone at
+//     teardown. This is the declared-ownership mirror of the opt-in catalog entries:
+//     the operator destroys exactly what it owns. The collision-probe imports, the
+//     per-account domain imports, and a create:false REFERENCED project are all
+//     ManagementPolicyUnmanaged, so deleting their CRs is a CR-only delete that
+//     leaves the external resource untouched.
 //
 // That holds for a teardown K-ORC can complete. The stall escape in reconcileDelete
 // is the deliberate exception: it strips the very finalizer that would have revoked
@@ -93,14 +101,38 @@ func (c orcChildObject) key() string {
 func orcChildObjects(cp *c5c3v1alpha1.ControlPlane) []orcChildObject {
 	newService := func() client.Object { return &orcv1alpha1.Service{} }
 	newEndpoint := func() client.Object { return &orcv1alpha1.Endpoint{} }
+	newUser := func() client.Object { return &orcv1alpha1.User{} }
+	newProject := func() client.Object { return &orcv1alpha1.Project{} }
+	newDomain := func() client.Object { return &orcv1alpha1.Domain{} }
 
 	objs := []orcChildObject{
 		{func() client.Object { return &orcv1alpha1.ApplicationCredential{} }, adminAppCredentialName(cp)},
 		{newService, keystoneServiceName(cp)},
 		{newEndpoint, keystoneEndpointName(cp)},
-		{func() client.Object { return &orcv1alpha1.User{} }, adminUserRef(cp)},
-		{func() client.Object { return &orcv1alpha1.Domain{} }, adminDomainRef(cp)},
+		{newUser, adminUserRef(cp)},
+		{newDomain, adminDomainRef(cp)},
 	}
+
+	// Declarative service accounts are mode-independent, so their children are torn
+	// down in BOTH keystone modes (before the External-only catalog additions). Each
+	// declared entry projects a managed User and Project (whose K-ORC finalizers
+	// delete them from Keystone) plus the collision-probe and per-account domain
+	// imports (CR-only deletes). The password Secrets / PushSecret / ExternalSecret
+	// are owner-reference-GC'd, not K-ORC CRs, so they are not part of this sweep.
+	for i := range cp.Spec.KORC.ServiceAccounts {
+		sa := cp.Spec.KORC.ServiceAccounts[i]
+		objs = append(
+			objs,
+			orcChildObject{newUser, serviceAccountUserRef(cp, sa)},
+			orcChildObject{newUser, serviceAccountUserProbeRef(cp, sa)},
+			orcChildObject{newProject, serviceAccountProjectRef(cp, sa)},
+			orcChildObject{newProject, serviceAccountProjectProbeRef(cp, sa)},
+		)
+		if domainRef := serviceAccountDomainRef(cp, sa); domainRef != adminDomainRef(cp) {
+			objs = append(objs, orcChildObject{newDomain, domainRef})
+		}
+	}
+
 	if !cp.IsExternalKeystone() {
 		return objs
 	}
@@ -134,26 +166,80 @@ func (r *ControlPlaneReconciler) orcTeardownChildren(
 	ctx context.Context, cp *c5c3v1alpha1.ControlPlane,
 ) ([]orcChildObject, error) {
 	children := orcChildObjects(cp)
-	if !cp.IsExternalKeystone() {
-		return children, nil
-	}
-
-	owned, err := r.ownedCatalogEntryChildren(ctx, cp)
-	if err != nil {
-		return nil, err
-	}
 	seen := make(map[string]struct{}, len(children))
 	for _, child := range children {
 		seen[child.key()] = struct{}{}
 	}
-	for _, child := range owned {
-		if _, dup := seen[child.key()]; dup {
-			continue
+	merge := func(extra []orcChildObject) {
+		for _, child := range extra {
+			if _, dup := seen[child.key()]; dup {
+				continue
+			}
+			seen[child.key()] = struct{}{}
+			children = append(children, child)
 		}
-		seen[child.key()] = struct{}{}
-		children = append(children, child)
+	}
+
+	// Service accounts are mode-independent, so their owned-but-undeclared children
+	// are folded in for both modes (a spec edit made moments before the delete can
+	// leave a User/Project the reconcile-time prune never removed).
+	saOwned, err := r.ownedServiceAccountChildren(ctx, cp)
+	if err != nil {
+		return nil, err
+	}
+	merge(saOwned)
+
+	if cp.IsExternalKeystone() {
+		catOwned, err := r.ownedCatalogEntryChildren(ctx, cp)
+		if err != nil {
+			return nil, err
+		}
+		merge(catOwned)
 	}
 	return children, nil
+}
+
+// ownedServiceAccountChildren lists the service-account User/Project CRs this
+// ControlPlane owns, whether or not the spec still declares them, so a spec edit
+// made while the reconcile-time prune could not run (admin credential drifted, or
+// the edit landed moments before the delete) cannot leave a K-ORC CR nobody names
+// to wedge the namespace. Ownership is decided by ownsServiceAccountChild (the
+// controller reference AND the "-service-account-" name prefix). An absent K-ORC
+// CRD (meta.IsNoMatchError) reads as "nothing to sweep", matching
+// deleteORCResources.
+func (r *ControlPlaneReconciler) ownedServiceAccountChildren(
+	ctx context.Context, cp *c5c3v1alpha1.ControlPlane,
+) ([]orcChildObject, error) {
+	ns := childNamespace(cp)
+	var out []orcChildObject
+
+	var users orcv1alpha1.UserList
+	switch err := r.List(ctx, &users, client.InNamespace(ns)); {
+	case err == nil:
+		for i := range users.Items {
+			if r.ownsServiceAccountChild(cp, &users.Items[i]) {
+				out = append(out, orcChildObject{func() client.Object { return &orcv1alpha1.User{} }, users.Items[i].Name})
+			}
+		}
+	case meta.IsNoMatchError(err):
+	default:
+		return nil, fmt.Errorf("listing service-account Users for teardown: %w", err)
+	}
+
+	var projects orcv1alpha1.ProjectList
+	switch err := r.List(ctx, &projects, client.InNamespace(ns)); {
+	case err == nil:
+		for i := range projects.Items {
+			if r.ownsServiceAccountChild(cp, &projects.Items[i]) {
+				out = append(out, orcChildObject{func() client.Object { return &orcv1alpha1.Project{} }, projects.Items[i].Name})
+			}
+		}
+	case meta.IsNoMatchError(err):
+	default:
+		return nil, fmt.Errorf("listing service-account Projects for teardown: %w", err)
+	}
+
+	return out, nil
 }
 
 // ownedCatalogEntryChildren lists the opt-in catalog-entry CRs this ControlPlane
@@ -400,6 +486,8 @@ func isManagedORCChild(obj client.Object) bool {
 	case *orcv1alpha1.User:
 		return o.Spec.ManagementPolicy != orcv1alpha1.ManagementPolicyUnmanaged
 	case *orcv1alpha1.Domain:
+		return o.Spec.ManagementPolicy != orcv1alpha1.ManagementPolicyUnmanaged
+	case *orcv1alpha1.Project:
 		return o.Spec.ManagementPolicy != orcv1alpha1.ManagementPolicyUnmanaged
 	default:
 		return true
