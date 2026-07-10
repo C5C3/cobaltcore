@@ -289,6 +289,160 @@ func TestOIDCBackendDelete_ToleratesObjectsAlreadyGone(t *testing.T) {
 	g.Expect(err).To(HaveOccurred(), "the finalizer must be released and the CR removed")
 }
 
+// testSAMLBackend returns a SAML backend attached to testKeystone() with one
+// IdP-gated mapping rule and one declarative group carrying a domain-scoped
+// role assignment. Status is empty — tests drive the full provisioning flow.
+func testSAMLBackend(name, domain string) *keystonev1alpha1.KeystoneIdentityBackend {
+	b := testIdentityBackend(name, domain)
+	b.Spec.Type = keystonev1alpha1.IdentityBackendTypeSAML
+	b.Spec.LDAP = nil
+	b.Spec.SAML = &keystonev1alpha1.SAMLBackendSpec{
+		IdPEntityID:          "https://idp.example.com/realms/forge",
+		IdPMetadata:          keystonev1alpha1.SAMLIdPMetadataSpec{SecretRef: &commonv1.SecretRefSpec{Name: name + "-idp-metadata"}},
+		ProtocolID:           keystonev1alpha1.DefaultSAMLProtocolID,
+		IdentityProviderName: name,
+		RemoteIDAttribute:    keystonev1alpha1.DefaultSAMLRemoteIDAttribute,
+		ForwardAttributes:    []string{"username"},
+	}
+	b.Spec.Mappings = []keystonev1alpha1.MappingRuleSpec{{
+		Local: []keystonev1alpha1.MappingLocalRuleSpec{{
+			User:   &keystonev1alpha1.MappingUserSpec{Name: "{0}"},
+			Groups: "{1}",
+		}},
+		Remote: []keystonev1alpha1.MappingRemoteRuleSpec{
+			{Type: "HTTP_MELLON_USERNAME"},
+			{Type: "HTTP_MELLON_IDP", AnyOneOf: []string{"https://idp.example.com/realms/forge"}},
+		},
+	}}
+	b.Spec.Groups = []keystonev1alpha1.FederationGroupSpec{{
+		Name: "federated-users",
+		RoleAssignments: []keystonev1alpha1.FederationRoleAssignmentSpec{
+			{Role: "member", Domain: true},
+		},
+	}}
+	b.Status = keystonev1alpha1.KeystoneIdentityBackendStatus{}
+	return b
+}
+
+func TestSAMLBackend_ProvisionsFederationObjects(t *testing.T) {
+	g := NewGomegaWithT(t)
+	srv := identityfake.NewServer(testAdminPassword)
+	t.Cleanup(srv.Close)
+	srv.SeedRole("member")
+
+	ks := testKeystoneWithReadyAPI()
+	backend := testSAMLBackend("corp-saml", "corp")
+	r := newBackendTestReconciler(srv, ks, backend, testAdminSecret())
+
+	_, err := reconcileBackendTwice(t, r, backend)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	updated := getBackend(t, r.Client, "corp-saml")
+	g.Expect(updated.Status.DomainID).NotTo(BeEmpty())
+
+	idp := srv.IdentityProvider("corp-saml")
+	g.Expect(idp).NotTo(BeNil())
+	g.Expect(idp.DomainID).To(Equal(updated.Status.DomainID))
+	// The identity provider's remote ID is the SAML IdP entityID (not an OIDC
+	// issuer), proving FederationRemoteID resolves the right source.
+	g.Expect(idp.RemoteIDs).To(ConsistOf("https://idp.example.com/realms/forge"))
+	g.Expect(idp.Enabled).To(BeTrue())
+
+	g.Expect(srv.Mapping("corp-saml-mapping")).NotTo(BeNil())
+	// The protocol binds under the SAML default protocolID "mapped".
+	proto := srv.Protocol("corp-saml", "mapped")
+	g.Expect(proto).NotTo(BeNil())
+	g.Expect(proto.MappingID).To(Equal("corp-saml-mapping"))
+
+	fedObjects := commonconditions.GetCondition(updated.Status.Conditions, conditionTypeFederationObjectsReady)
+	g.Expect(fedObjects).NotTo(BeNil())
+	g.Expect(fedObjects.Status).To(Equal(metav1.ConditionTrue))
+	mappings := commonconditions.GetCondition(updated.Status.Conditions, conditionTypeMappingsReady)
+	g.Expect(mappings).NotTo(BeNil())
+	g.Expect(mappings.Status).To(Equal(metav1.ConditionTrue))
+
+	expectBackendEventContaining(g, r, "Normal IdentityProviderCreated")
+}
+
+// TestSAMLBackend_NoMappingRulesStaysPending pins that the shared
+// ensureFederation gate reports the pending state for a SAML backend too.
+func TestSAMLBackend_NoMappingRulesStaysPending(t *testing.T) {
+	g := NewGomegaWithT(t)
+	srv := identityfake.NewServer(testAdminPassword)
+	t.Cleanup(srv.Close)
+
+	ks := testKeystoneWithReadyAPI()
+	backend := testSAMLBackend("corp-saml", "corp")
+	backend.Spec.Mappings = nil
+	r := newBackendTestReconciler(srv, ks, backend, testAdminSecret())
+
+	_, err := reconcileBackendTwice(t, r, backend)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	updated := getBackend(t, r.Client, "corp-saml")
+	fedObjects := commonconditions.GetCondition(updated.Status.Conditions, conditionTypeFederationObjectsReady)
+	g.Expect(fedObjects).NotTo(BeNil())
+	g.Expect(fedObjects.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(fedObjects.Reason).To(Equal(conditionReasonNoMappingRules))
+	// No protocol was provisioned while the mapping is empty.
+	g.Expect(srv.Protocol("corp-saml", "mapped")).To(BeNil())
+}
+
+func TestSAMLBackendDelete_TearsDownInReverseDependencyOrder(t *testing.T) {
+	g := NewGomegaWithT(t)
+	srv := identityfake.NewServer(testAdminPassword)
+	t.Cleanup(srv.Close)
+	srv.SeedRole("member")
+
+	ks := testKeystoneWithReadyAPI()
+	backend := testSAMLBackend("corp-saml", "corp")
+	r := newBackendTestReconciler(srv, ks, backend, testAdminSecret())
+
+	_, err := reconcileBackendTwice(t, r, backend)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	updated := getBackend(t, r.Client, "corp-saml")
+	g.Expect(r.Delete(context.Background(), updated)).To(Succeed())
+
+	result, err := r.Reconcile(context.Background(), backendRequest(backend))
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.IsZero()).To(BeTrue())
+
+	g.Expect(srv.IdentityProvider("corp-saml")).To(BeNil())
+	g.Expect(srv.Mapping("corp-saml-mapping")).To(BeNil())
+
+	var protoIdx, mappingIdx, idpIdx int
+	for i, req := range srv.Requests() {
+		switch {
+		case strings.HasPrefix(req, "DELETE /v3/OS-FEDERATION/identity_providers/") && strings.Contains(req, "/protocols/"):
+			protoIdx = i
+		case strings.HasPrefix(req, "DELETE /v3/OS-FEDERATION/mappings/"):
+			mappingIdx = i
+		case strings.HasPrefix(req, "DELETE /v3/OS-FEDERATION/identity_providers/"):
+			idpIdx = i
+		}
+	}
+	g.Expect(protoIdx).To(BeNumerically(">", 0))
+	g.Expect(mappingIdx).To(BeNumerically(">", protoIdx), "the mapping must outlive the protocol referencing it")
+	g.Expect(idpIdx).To(BeNumerically(">", mappingIdx), "the identity provider must be removed last")
+
+	expectBackendEventContaining(g, r, "Normal FederationObjectsDeleted")
+}
+
+// TestSAMLBackend_SubConditionSet pins that a SAML backend's aggregate Ready
+// derives from the full federation condition set (not the LDAP two-condition
+// set), so the metrics condition_type labels resolve and Ready is not stranded.
+func TestSAMLBackend_SubConditionSet(t *testing.T) {
+	g := NewGomegaWithT(t)
+	backend := testSAMLBackend("corp-saml", "corp")
+	g.Expect(identityBackendSubConditionTypesFor(backend)).To(ConsistOf(
+		conditionTypeDomainReady,
+		conditionTypeFederationObjectsReady,
+		conditionTypeMappingsReady,
+		conditionTypeConfigProjected,
+	))
+}
+
 // TestLDAPBackend_ReadyUnaffectedByFederationConditions pins the per-type
 // aggregate: an LDAP backend's Ready derives from DomainReady +
 // ConfigProjected only — the OIDC-only condition types must not strand it.

@@ -56,7 +56,7 @@ const (
 // the federation conditions for an LDAP backend would strand it Ready=False
 // forever.
 func identityBackendSubConditionTypesFor(backend *keystonev1alpha1.KeystoneIdentityBackend) []string {
-	if backend.Spec.Type == keystonev1alpha1.IdentityBackendTypeOIDC {
+	if backend.IsFederationType() {
 		return []string{
 			conditionTypeDomainReady,
 			conditionTypeFederationObjectsReady,
@@ -160,7 +160,7 @@ func (r *KeystoneIdentityBackendReconciler) reconcileNormal(ctx context.Context,
 	// domain-scoped and the declarative groups live inside it. A zero-result
 	// ensureDomain pass can still leave DomainReady=False (e.g. a foreign
 	// same-named domain), so gate on the condition, not just on control flow.
-	if backend.Spec.Type == keystonev1alpha1.IdentityBackendTypeOIDC {
+	if backend.IsFederationType() {
 		domainReady := conditions.GetCondition(backend.Status.Conditions, conditionTypeDomainReady)
 		if domainReady != nil && domainReady.Status == metav1.ConditionTrue && backend.Status.DomainID != "" {
 			if result, err := r.ensureFederation(ctx, backend, idc); !result.IsZero() || err != nil {
@@ -412,11 +412,11 @@ func (r *KeystoneIdentityBackendReconciler) reconcileDelete(ctx context.Context,
 		return ctrl.Result{RequeueAfter: RequeueSecretPolling}, nil
 	}
 
-	// OIDC backends tear their federation API objects down unconditionally
-	// (protocol → mapping → identity provider) BEFORE the domain deletion
-	// policy runs: the identity provider is domain-scoped, so a Delete-policy
-	// domain teardown would otherwise race its own contents.
-	if backend.Spec.Type == keystonev1alpha1.IdentityBackendTypeOIDC {
+	// Federation backends (OIDC and SAML) tear their federation API objects
+	// down unconditionally (protocol → mapping → identity provider) BEFORE the
+	// domain deletion policy runs: the identity provider is domain-scoped, so a
+	// Delete-policy domain teardown would otherwise race its own contents.
+	if backend.IsFederationType() {
 		if result, err := r.teardownFederationObjects(ctx, &keystone, backend); !result.IsZero() || err != nil {
 			return result, err
 		}

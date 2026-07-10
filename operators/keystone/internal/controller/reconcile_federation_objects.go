@@ -78,13 +78,13 @@ func federationMappingID(backend *keystonev1alpha1.KeystoneIdentityBackend) stri
 }
 
 // ensureFederation upserts the three keystone federation API objects for one
-// OIDC backend — identity provider, mapping, protocol — plus the declarative
-// groups and role assignments, with real drift detection (writes happen only
-// on divergence). Ordering is load-bearing: the mapping must exist before the
-// protocol that references it, so the sequence is identity provider →
-// mapping/groups → protocol. FederationObjectsReady covers the identity
-// provider + protocol; MappingsReady covers the mapping, groups, and role
-// assignments.
+// federation backend (OIDC or SAML) — identity provider, mapping, protocol —
+// plus the declarative groups and role assignments, with real drift detection
+// (writes happen only on divergence). Ordering is load-bearing: the mapping
+// must exist before the protocol that references it, so the sequence is
+// identity provider → mapping/groups → protocol. FederationObjectsReady covers
+// the identity provider + protocol; MappingsReady covers the mapping, groups,
+// and role assignments.
 func (r *KeystoneIdentityBackendReconciler) ensureFederation(ctx context.Context, backend *keystonev1alpha1.KeystoneIdentityBackend, idc identity.Client) (ctrl.Result, error) {
 	// A mapping with zero rules is unrepresentable in keystone (the mapping
 	// schema requires at least one rule) and a protocol cannot exist without
@@ -108,11 +108,12 @@ func (r *KeystoneIdentityBackendReconciler) ensureFederation(ctx context.Context
 }
 
 // ensureIdentityProvider upserts the keystone identity provider named
-// spec.oidc.identityProviderName with remote_ids=[issuer] and the backend's
-// domain, drift-patching description/remoteIDs/enabled only on change.
+// EffectiveIdentityProviderName with remote_ids=[FederationRemoteID] (the OIDC
+// issuer or the SAML IdP entityID) and the backend's domain, drift-patching
+// description/remoteIDs/enabled only on change.
 func (r *KeystoneIdentityBackendReconciler) ensureIdentityProvider(ctx context.Context, backend *keystonev1alpha1.KeystoneIdentityBackend, idc identity.Client) (ctrl.Result, error) {
 	idpName := backend.EffectiveIdentityProviderName()
-	issuer := backend.Spec.OIDC.Issuer
+	remoteID := backend.FederationRemoteID()
 	description := backend.Spec.Domain.Description
 
 	existing, err := idc.GetIdentityProvider(ctx, idpName)
@@ -128,14 +129,14 @@ func (r *KeystoneIdentityBackendReconciler) ensureIdentityProvider(ctx context.C
 			DomainID:    backend.Status.DomainID,
 			Description: description,
 			Enabled:     ptr.To(true),
-			RemoteIDs:   []string{issuer},
+			RemoteIDs:   []string{remoteID},
 		}); err != nil {
 			r.setFederationObjectsReady(backend, metav1.ConditionFalse, conditionReasonIdentityAPIError,
 				fmt.Sprintf("creating identity provider %q: %v", idpName, err))
 			return ctrl.Result{}, fmt.Errorf("creating identity provider %q: %w", idpName, err)
 		}
 		r.Recorder.Eventf(backend, corev1.EventTypeNormal, "IdentityProviderCreated",
-			"Created identity provider %q (remote ID %s)", idpName, issuer)
+			"Created identity provider %q (remote ID %s)", idpName, remoteID)
 		return ctrl.Result{}, nil
 	}
 
@@ -150,8 +151,8 @@ func (r *KeystoneIdentityBackendReconciler) ensureIdentityProvider(ctx context.C
 		desc = &description
 	}
 	var remoteIDs []string
-	if !reflect.DeepEqual(existing.RemoteIDs, []string{issuer}) {
-		remoteIDs = []string{issuer}
+	if !reflect.DeepEqual(existing.RemoteIDs, []string{remoteID}) {
+		remoteIDs = []string{remoteID}
 	}
 	if enabled != nil || desc != nil || remoteIDs != nil {
 		if err := idc.UpdateIdentityProvider(ctx, idpName, enabled, desc, remoteIDs); err != nil {
