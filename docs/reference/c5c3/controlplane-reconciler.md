@@ -464,6 +464,13 @@ takes its `HorizonNotManaged` early-exit. The duplicate-ControlPlane parking
 guard is mode-agnostic and applies unchanged — External-mode ControlPlanes count
 towards the one-per-namespace contract.
 
+`reconcileCatalog` neither skips nor behaves as it does in Managed mode: it
+forks. The catalog belongs to the external installation, so External mode is
+**import-first** — the existing identity service and its endpoints are imported
+read-only, zero catalog entries are created by default, and an import that
+resolves to nothing fails loud rather than waiting forever. See
+[reconcileCatalog](#reconcilecatalog).
+
 #### Egress and TLS posture
 
 K-ORC — not the c5c3-operator — is what dials the external Keystone. It is
@@ -1157,20 +1164,27 @@ OpenBao:
 
 | Aspect | Value |
 | --- | --- |
-| File | `reconcile_catalog.go` |
+| File | `reconcile_catalog.go` (Managed), `reconcile_catalog_external.go` (External) |
 | Condition | `CatalogReady` |
-| Gate | `AdminCredentialReady == True`, **and** both the identity `Service` and `Endpoint` report `Available` |
-| Owns | a K-ORC identity `Service` (`{controlplane.Name}-identity-service`) and its public `Endpoint` (`{controlplane.Name}-identity-endpoint`) in `childNamespace(cp)` |
-| Requeue | `korcRequeueAfter` = **10s** while gated, while the children are not yet Available, or on a terminal K-ORC failure |
+| Gate | `AdminCredentialReady == True`, **and** every catalog child reports `Available` |
+| Owns | Managed mode: a K-ORC identity `Service` (`{controlplane.Name}-identity-service`) and its public `Endpoint` (`{controlplane.Name}-identity-endpoint`). External mode: the same `Service` plus one `Endpoint` per interface (`{controlplane.Name}-identity-endpoint-{interface}`), all unmanaged imports, plus one managed `Service`/`Endpoint` set per declared entry (`{controlplane.Name}-catalog-{type}[-{interface}]`). All in `childNamespace(cp)` |
+| Requeue | `korcRequeueAfter` = **10s** while gated, while a child is not yet Available, or on a terminal K-ORC failure |
+
+`reconcileCatalog` drives `CatalogReady`. Everything up to and including the
+`AdminCredentialReady` gate and the admin `CloudCredentialsReference` is
+mode-agnostic; below it the two postures are opposites, so the reconciler forks
+on `cp.IsExternalKeystone()`. K-ORC is a hard CRD dependency (see the note
+above), so a missing Service/Endpoint CRD never reaches this path and there is no
+CRD-not-installed condition.
+
+#### Managed mode — the control plane owns the catalog
 
 `reconcileCatalog` registers the OpenStack service-catalog entries for Keystone
 as owned K-ORC CRs: an `identity`-type `Service` named
 `keystone`, plus a `public` `Endpoint` whose URL defaults to the conventional
 in-cluster identity URL `http://keystone.<namespace>.svc:5000/v3` and whose
 `serviceRef` points at the identity Service. Both children are idempotent
-create-or-updates. K-ORC is a hard CRD dependency (see the note above), so a
-missing Service/Endpoint CRD never reaches this path and there is no
-CRD-not-installed condition.
+create-or-updates.
 
 Registering the child CRs only instructs K-ORC to create the catalog entries — it
 does not mean they exist in Keystone — so `CatalogReady` is gated on both children
@@ -1190,6 +1204,88 @@ surfaced as the distinct `CatalogFailed` reason instead of a false-positive Read
 | Service/Endpoint reports a terminal K-ORC error | False | `CatalogFailed` | requeue 10s |
 | Service/Endpoint registered but not yet Available | False | `WaitingForCatalog` | requeue 10s |
 | both registered and Available | True | `CatalogRegistered` | identity Service and Endpoint registered and Available |
+
+#### External mode — import-first
+
+The catalog belongs to the pre-existing installation. Keystone enforces no
+uniqueness on service names, so registering an identity `Service` against a
+populated catalog would silently duplicate rows. `reconcileCatalogExternal`
+therefore **imports** instead: the identity `Service` and each of its three
+endpoint interfaces become K-ORC CRs with `managementPolicy: unmanaged`, an
+import filter, and no desired resource. K-ORC resolves them read-only and writes
+nothing; deleting their CRs later removes only the Kubernetes objects.
+
+The default posture creates **zero** catalog entries. Creation survives only as
+the `spec.services.keystone.external.catalog.managedEntries` opt-in, projected as
+managed `Service`/`Endpoint` CRs authenticating through the operator-owned
+`{name}-admin-password-cloud` Secret (see [the deletion resource
+set](#external-mode-deletion-resource-set) for why they cannot use the spec's
+`cloudCredentialsRef`). On every pass the reconciler also sweeps the
+entry CRs it owns that the spec no longer declares, so removing a declaration
+deletes exactly that entry. The sweep matches on **both** the controller
+reference and the `{controlplane.Name}-catalog-` name prefix, so it can never
+catch the unmanaged imports or a CR belonging to somebody else.
+
+**Removal gates readiness exactly as registration does.** A pruned CR stays
+`Terminating` behind its `openstack.k-orc.cloud/*` finalizer until K-ORC has taken
+the row out of the external catalog, so until then the ControlPlane still owns that
+row. `CatalogReady` therefore reports `WaitingForCatalog` naming the CR being
+removed, and `CatalogFailed` when K-ORC gives up on the `DELETE`. A fire-and-forget
+prune would report `CatalogReady=True` over a live row — and hand the stuck CR to
+the [teardown stall escape](#external-mode-deletion-resource-set), which orphans it.
+The same reasoning gates a **re-declared** entry whose earlier removal is still in
+flight: `controllerutil.CreateOrUpdate` finds the `Terminating` CR, projects a
+byte-identical spec and updates nothing, so no generation bump invalidates the
+`Available=True` K-ORC left on it. `korcAvailableUpToDate` is generation-aware, not
+deletion-aware, so `deletionTimestamp` is checked separately.
+
+`status.catalog.imports` is rebuilt before any failure return, so an unresolved
+import is visible as `resolved: false` rather than omitted.
+
+**Import-first inverts the failure modes, and detecting them is the point.** A
+K-ORC import that matches **nothing** does not error: it waits indefinitely on
+`Available=False`, `reason=Progressing`, *"Waiting for OpenStack resource to be
+created externally"* — by conditions indistinguishable from a resource that is
+about to appear. For a **gating** import the target pre-exists **by definition**,
+so past `externalImportStallGrace` (2m) that wait is a misconfiguration signal,
+not a wait. An import that matches **several** entries is terminal in K-ORC
+itself, which refuses to guess and stops retrying.
+
+Only two of the four imports gate `CatalogReady`: the identity `Service`, and the
+`Endpoint` of the interface `external.endpointType` selects. The control plane
+already authenticates through that interface, so a catalog that does not publish
+it is not the catalog K-ORC was pointed at. The other two interfaces are imported
+for visibility, projected into `status.catalog.imports`, and may stall forever —
+or resolve ambiguously — without failing the condition. An external installation
+is free not to publish an interface, and free to publish it once per region (which
+K-ORC's region-less `EndpointFilter` cannot select among, so no spec edit repairs
+it); both are precisely the brownfield posture External mode adopts.
+
+The precedence below reports the most specific cause first, and the `Service`
+before the `Endpoint`s so the **root** stuck dependency is named rather than an
+endpoint merely blocked on the service it references:
+
+| # | Path | Status | Reason | Notes |
+| --- | --- | --- | --- | --- |
+| — | `AdminCredentialReady` not True | False | `WaitingForAdminCredential` | requeue 10s; no import CR is reconciled |
+| — | import create/update fails | False | `ImportError` | returns the error |
+| — | managed entry create/update or sweep fails | False | `CatalogEntryError` | returns the error |
+| 1 | an **unresolved** import, entry or removal carries a classifiable K-ORC message | False | `AuthenticationFailed` \| `EndpointUnreachable` \| `TLSVerificationFailed` \| `CatalogEndpointMismatch` \| `CredentialDrift` | requeue 10s; K-ORC's message is relayed verbatim. The write path is classified alongside the imports: nothing K-ORC reports on a managed entry is terminal, so without this every realistic entry failure would fall through to the unbounded wait of row 5. A resolved import is never re-classified — K-ORC leaves the last transient attempt's message on `Progressing`, and classifying it would flip a converged catalog to a failure it has recovered from |
+| 2 | an import reports a terminal K-ORC error | False | `CatalogFailed` | requeue 10s; gating or not — K-ORC has given up on it. On the **>1-match** message the hint names `external.catalog.identityServiceName` for the `Service` import, or the region limitation for an `Endpoint` import (K-ORC's `EndpointFilter` carries no region, so no spec field can select among per-region rows). **One exception:** an `InvalidConfiguration` on a **non-gating** import does not fail the condition. A non-gating import has no user-supplied configuration to fix — its filter is entirely operator-derived — so it has no remediation and nothing depends on it; it is tolerated exactly like the 0-match of row 3 and reported as `resolved: false`. The exception is keyed on K-ORC's machine-readable reason, never on the >1-match message text: keying it on the text would turn a K-ORC rewording into a permanent `CatalogReady=False`. An `UnrecoverableError` gates on every import, and so does any terminal error on a gating one |
+| 3 | a **gating** import stalled past `externalImportStallGrace` | False | `ImportStalled` | requeue 10s; the **0-match** case. The message names the stuck import, the `authURL`, and `external.endpointType` / `spec.region` — plus, for an `Endpoint` import, that the external catalog may publish no such interface |
+| 4 | a declared managed entry, or one being removed, reports a terminal K-ORC error | False | `CatalogFailed` | requeue 10s |
+| 5 | a **gating** import is unresolved, a declared entry is not yet Available or is still `Terminating` from an earlier removal, or a removal has not completed | False | `WaitingForCatalog` | requeue 10s; the bounded, legitimate wait. For an entry the message appends K-ORC's own — a policy denial (HTTP 403 on `POST /v3/services`, what a domain-admin adoption hits) is non-terminal and unclassifiable, so this is the only place it surfaces |
+| 6 | every gating import resolved, every declared entry Available, every removal complete | True | `CatalogImported` | the message reports how many of the three endpoint interfaces resolved |
+
+`publicEndpoint` is forbidden in External mode, so `keystoneCatalogURL` — the URL
+the Managed branch registers — is never consulted here: advertisement visibility
+is owned by the imports.
+
+> **Promote-to-managed is reserved, not implemented.** Turning an import into a
+> managed entry (to edit its endpoint URL declaratively) is a later phase.
+> K-ORC's `managementPolicy` is CEL-immutable, so it will have to be a
+> delete-and-recreate of the import CR. Nothing in the deterministic CR names or
+> the spec-derived filters chosen here precludes that.
 
 ### CredentialRotation reconciler
 
@@ -1401,6 +1497,26 @@ projected. On deletion it:
    `openstack.k-orc.cloud/*` finalizers (preserving any non-K-ORC finalizers),
    emits a **Warning** `ORCTeardownStalled` event, and releases the ControlPlane
    finalizer so deletion completes rather than wedging forever.
+4. **Names what the escape orphaned.** The escape strips the very finalizer that
+   would have revoked the credential or removed the catalog row, so every
+   `Managed` CR it releases leaves its OpenStack resource behind with no
+   Kubernetes object naming it. A second **Warning**, `ORCResourcesOrphaned`,
+   lists exactly those CRs — the admin `ApplicationCredential` and any
+   `managedEntries` rows — and tells the operator to remove them from Keystone by
+   hand. `Unmanaged` imports are never listed: their CR delete could not have
+   touched OpenStack. The classification is by `ManagementPolicy` and fails loud
+   (anything not explicitly `Unmanaged` is reported), because under-reporting a
+   leak is worse than over-reporting one.
+
+::: warning `kubectl delete namespace` makes the leak deterministic
+Children live in the ControlPlane's own namespace, so the namespace controller
+reaps `{name}-admin-password-cloud` — the Secret the managed catalog entries
+authenticate with, chosen precisely so they *can* still authenticate during
+teardown — concurrently with the entry CRs themselves. K-ORC then has no
+credential to delete the rows with, the CRs stall, and after 5 minutes the escape
+releases them. Delete the **ControlPlane CR** and let it converge before deleting
+its namespace.
+:::
 
 This mirrors the Keystone reconciler's sequenced-finalizer discipline (MariaDB
 then OpenBao cleanup); see
@@ -1429,13 +1545,34 @@ The `{name}-admin-app-credential-backup` PushSecret is the one child kept on
 | `PushSecret` | `{name}-admin-app-credential-backup` | ControlPlane CR | both modes; `DeletionPolicy: None` |
 | `User` (K-ORC) | `{name}-user-admin` | ControlPlane CR | both modes; unmanaged import |
 | `Domain` (K-ORC) | `{name}-domain-default` | ControlPlane CR | both modes; unmanaged import |
-| `Service` (K-ORC) | `{name}-identity-service` | ControlPlane CR | identity catalog entry |
-| `Endpoint` (K-ORC) | `{name}-identity-endpoint` | ControlPlane CR | public interface |
+| `Service` (K-ORC) | `{name}-identity-service` | ControlPlane CR | both modes; managed catalog entry in Managed mode, unmanaged import in External mode |
+| `Endpoint` (K-ORC) | `{name}-identity-endpoint` | ControlPlane CR | managed mode only; public interface |
+| `Endpoint` (K-ORC) | `{name}-identity-endpoint-{interface}` | ControlPlane CR | External mode only; one unmanaged import per interface (`public`, `internal`, `admin`) |
+| `Service` (K-ORC) | `{name}-catalog-{type}` | ControlPlane CR | External mode only; one managed CR per declared `managedEntries` entry |
+| `Endpoint` (K-ORC) | `{name}-catalog-{type}-{interface}` | ControlPlane CR | External mode only; one managed CR per declared entry endpoint |
 
 #### External-mode deletion resource set
 
-The sweep is correct for **both** keystone modes without a mode branch, because
-what a `Delete` does to the external OpenStack installation is decided by each
+`orcChildObjects(cp)` derives the swept CR names from the ControlPlane spec, so
+Managed mode enumerates exactly the five CRs it always did and External mode adds
+the per-interface identity `Endpoint` imports plus the CRs of every declared
+managed entry. A name that never existed in the current mode is simply `NotFound`
+and is tolerated as already-gone.
+
+In External mode `orcTeardownChildren(cp)` folds in one more source: every
+catalog-entry CR the ControlPlane still **owns**, found by `List` + the same
+controller-reference-**and**-name-prefix scope the reconcile-time prune uses. The
+two enumerations diverge whenever a `managedEntries` declaration is dropped from a
+spec the prune never re-observed — the prune lives in `reconcileCatalogExternal`,
+which `reconcileCatalog` gates on `AdminCredentialReady` and which never runs once
+`deletionTimestamp` is set. Enumerating by spec alone would release the finalizer
+while those CRs still existed; garbage collection would then take them (and the
+credentials `Secret` they authenticate with) at once, stranding them `Terminating`
+behind their `openstack.k-orc.cloud/*` finalizers with the stall escape blind to
+them, and `kubectl delete namespace` would hang. A declared entry appears in both
+enumerations and is named exactly once.
+
+What a `Delete` does to the external OpenStack installation is decided by each
 K-ORC CR's `ManagementPolicy`, not by the ControlPlane's mode:
 
 - **`ApplicationCredential`** — `Managed`. Its K-ORC finalizer revokes the
@@ -1447,10 +1584,26 @@ K-ORC CR's `ManagementPolicy`, not by the ControlPlane's mode:
   Kubernetes objects and leaves the OpenStack resources they imported untouched.
   K-ORC's deletion-guard finalizers also enforce the teardown order: a `User`
   cannot go while an `ApplicationCredential` still references it.
-- **`Service`, `Endpoint`** — managed catalog entries today, so the sweep deletes
-  them from Keystone's catalog. In External mode the catalog is owned by the
-  external installation; the import-first catalog work turns these into unmanaged
-  imports too, at which point this becomes a CR-only delete.
+- **`Service`, `Endpoint`** — in Managed mode these are the managed catalog
+  entries, so the sweep deletes them from Keystone's catalog. In **External** mode
+  the identity `Service` and its per-interface `Endpoint`s are `Unmanaged`
+  imports, so deleting them is a CR-only delete and the external catalog is left
+  bit-for-bit intact.
+- **The opt-in managed catalog entries** (External mode only) — `Managed`. They
+  are the one thing this ControlPlane created in an external catalog, so they are
+  the one thing it removes from it, exactly mirroring the `ApplicationCredential`.
+  Because they must *reach* the external Keystone to be deleted, they authenticate
+  through the operator-owned `{name}-admin-password-cloud` Secret rather than the
+  spec's `cloudCredentialsRef` — the sweep issues every `Delete` in one
+  unsequenced pass, and the `ApplicationCredential` the spec's `clouds.yaml`
+  carries is being revoked at the same moment. The admin password outlives the
+  revocation; the app credential does not.
+
+That holds for a teardown K-ORC can complete. The **stall escape is the deliberate
+exception**: past `orcTeardownStallTimeout` it releases every stuck CR by stripping
+the finalizer that would have done the revoke or the `DELETE`, so each `Managed` CR
+it releases orphans its OpenStack resource. Those are the CRs the
+`ORCResourcesOrphaned` Warning names.
 
 The OpenBao-backed Secrets are torn down by owner-reference GC, **except** the
 path behind the `{name}-admin-app-credential-backup` PushSecret: its
@@ -1634,8 +1787,10 @@ operators/c5c3/
     │   ├── reconcile_korc.go                    reconcileKORC (AC mint/re-mint, drift detection)
     │   ├── reconcile_admincredential.go         reconcileAdminCredential (assemble + push + re-push
     │   │                                        nudges, semantic clouds.yaml gate)
-    │   ├── reconcile_catalog.go                 reconcileCatalog (identity Service/Endpoint),
-    │   │                                        korcAvailableUpToDate
+    │   ├── reconcile_catalog.go                 reconcileCatalog (mode fork; managed identity
+    │   │                                        Service/Endpoint), korcAvailableUpToDate
+    │   ├── reconcile_catalog_external.go        reconcileCatalogExternal (import-first: unmanaged
+    │   │                                        identity imports, opt-in entries, stall detection)
     │   ├── reconcile_delete.go                  reconcileDelete (ORC-teardown finalizer sequencing)
     │   ├── korc_cloudsyaml.go                   clouds.yaml document builders (app-credential + password bootstrap)
     │   ├── korc_eso.go                          PushSecret + clouds.yaml ExternalSecret builders/ensure

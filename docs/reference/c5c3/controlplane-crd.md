@@ -386,6 +386,7 @@ identity against that endpoint rather than deploying a Keystone workload.
 | `authURL` | `string` | Yes | — | Identity endpoint of the external Keystone (e.g. `https://keystone.example.com/v3`). Must match the HTTP(S) URL pattern `^https?://`, enforced by both the CRD `+kubebuilder:validation:Pattern` marker and the validating webhook. |
 | `endpointType` | `string` (`public` \| `internal` \| `admin`) | No | `public` | Which Keystone catalog interface to authenticate against. Defaulted to `public` by both the `+kubebuilder:default` marker and the defaulting webhook. Rendered as the clouds.yaml `endpoint_type` key of **both** generated credentials Secrets. Named `endpointType` (not `interface`) because K-ORC drops gophercloud's `Interface` field and only honours `endpoint_type` (the authoritative note lives on `buildAppCredCloudsYAML` in the reconciler's `korc_cloudsyaml.go`). The selected interface must exist in the external catalog for `spec.region` — otherwise the control plane fails loud with `KORCReady=False/CatalogEndpointMismatch`. |
 | `caBundleSecretRef` | [`*commonv1.SecretRefSpec`](../keystone/keystone-crd.md#secretrefspec) | No | `nil` | References a Secret carrying a private CA bundle the client trusts when verifying the external endpoint. The bundle is projected verbatim as the inline `cacert` key into **both** generated K-ORC credentials Secrets — K-ORC reads that key natively from the same Secret that carries `clouds.yaml`, so no mount and no upstream change are needed. `key` defaults to `ca.crt`; this default is **webhook-only** because the shared `SecretRefSpec` carries no c5c3-specific marker (the same discipline as `passwordSecretRef.key`). When the ref is set its `name` must be non-empty (CRD `MinLength` marker + webhook). A missing Secret, a missing key, or a present-but-empty key defers the mint with `KORCReady=False/WaitingForCABundle` — the last shape is the normal transient of a two-step "create the Secret, then populate it" flow. |
+| `catalog` | [`*ExternalCatalogSpec`](#externalcatalogspec) | No | `nil` | Tunes how the control plane stewards the external Keystone's service catalog. Omitting it selects the conservative default: the existing identity service and all three of its endpoint interfaces are **imported** as unmanaged K-ORC CRs, and **zero** catalog entries are created. |
 
 > **`spec.region` must match the external catalog.** `region_name` in both
 > generated `clouds.yaml` documents comes from `spec.region` (defaulted
@@ -410,6 +411,88 @@ identity against that endpoint rather than deploying a Keystone workload.
 > cluster with restrictive egress NetworkPolicies must explicitly allow K-ORC to
 > reach the external endpoint and port — see the
 > [reconciler reference](./controlplane-reconciler.md#external-keystone-mode-and-the-chain).
+
+---
+
+## ExternalCatalogSpec
+
+Tunes External-mode catalog stewardship. Present only under
+`services.keystone.external.catalog`, and entirely optional: its zero value is
+the conservative default.
+
+In **External** mode the service catalog belongs to the pre-existing
+installation, so the control plane is **import-first**. It never registers the
+identity service, because Keystone enforces no uniqueness on service names and a
+managed registration against a populated catalog would silently duplicate rows.
+Instead it imports the existing identity service and each of its endpoint
+interfaces as unmanaged K-ORC CRs, which resolve read-only and write nothing.
+Creating catalog entries survives only as the explicit `managedEntries` opt-in
+below.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `identityServiceName` | `string` | No | `""` | Disambiguates the identity `Service` import when the external catalog carries more than one `identity`-type service. When empty the import filters on type alone. Minimum length 1, maximum 255, and — like [`managedEntries[].name`](#externalcatalogentryspec) — no comma, mirroring K-ORC's `OpenStackName` pattern `^[^,]+$` which the value is cast to on the import filter. |
+| `managedEntries` | [`[]ExternalCatalogEntrySpec`](#externalcatalogentryspec) | No | `nil` | The explicit opt-in for creating genuinely new catalog entries. Absent by default, so External mode creates **zero** catalog entries. A `listType=map` list keyed on `type`, so the API server rejects duplicate entry types. At most 32 entries (`maxItems`), because every entry amplifies into managed K-ORC CRs and therefore into writes against the external Keystone. |
+
+> **All three interfaces are imported; only one is required.** The `public`,
+> `internal` **and** `admin` endpoints of the identity service are imported, not
+> only the one `endpointType` selects. Catalog rows are listable through the
+> identity API whether or not the endpoint they advertise is reachable from this
+> cluster, so full visibility costs nothing. Entries for unreachable interfaces
+> are informational.
+>
+> Only the interface `endpointType` selects **gates** `CatalogReady`. The control
+> plane already authenticates through that interface, so a catalog that does not
+> publish it is not the catalog K-ORC was pointed at, and its import stalling is
+> the silent-empty hazard the detector exists to surface. An external
+> installation is free not to publish the other two — kolla-ansible stopped
+> registering the identity `admin` endpoint after Zed, and a devstack
+> bootstrapped with only a public URL publishes neither of the others. Those
+> imports simply stay `resolved: false` in
+> [`status.catalog.imports`](#catalogimportstatus). Gating readiness on an
+> interface the installation never published would hold the aggregate `Ready` at
+> `False` forever for the two most common brownfield deployment tools.
+
+> **Disambiguation is by name only.** There is no import-by-id. K-ORC's
+> `ServiceImport.id` carries a `Format:=uuid` marker (the RFC 4122 dashed form)
+> while Keystone mints service ids as dashless `uuid4().hex`, so an id-based
+> import is rejected by K-ORC's own CRD schema and cannot be offered. A catalog
+> holding two identically **named** identity services therefore cannot be
+> disambiguated from the spec at all: the control plane fails loud with
+> `CatalogReady=False/CatalogFailed` and the external catalog must be repaired.
+
+> **Multi-region catalogs.** K-ORC's `EndpointFilter` carries no region field, so
+> an identity service publishing one `public` endpoint per region makes the
+> endpoint import match several rows. K-ORC reports that as a terminal error and
+> the control plane relays it — loud, never silent — but no spec field can select
+> among them today.
+
+---
+
+## ExternalCatalogEntrySpec
+
+One genuinely new catalog entry the control plane creates and owns in the
+external Keystone. Projected as one managed K-ORC `Service` named
+`{controlplane.Name}-catalog-{type}` plus one managed `Endpoint` per declared
+interface. Removing an entry from `managedEntries` deletes exactly those
+resources and nothing else.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `type` | `string` | Yes | — | The OpenStack service type (e.g. `image`, `compute`). Keys the `listType=map` list. Must be a lowercase DNS-1123 label (`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`, maximum 63) because it is embedded verbatim in the child CR names. `identity` is **forbidden** (CEL rule + webhook): that entry is owned by the imports. The webhook additionally rejects a type whose composed child CR name — `{controlplane.Name}-catalog-{type}-{interface}` — would exceed the apiserver's 253-byte `metadata.name` limit, which no CRD marker can express. |
+| `name` | `string` | No | `""` | Overrides the catalog service name. When empty K-ORC names the service after the child CR. Minimum length 1, maximum 255, and no comma — the pattern mirrors K-ORC's own `OpenStackName` (`^[^,]+$`), which the name is cast to on the child `Service` CR, so a name admitted here can never be rejected downstream. The validating webhook mirrors the pattern. |
+| `endpoints` | [`[]ExternalCatalogEndpointSpec`](#externalcatalogendpointspec) | No | `nil` | The endpoint rows registered for this entry, at most one per interface (`listType=map` keyed on `interface`). An entry with no endpoints registers the service row alone. |
+
+---
+
+## ExternalCatalogEndpointSpec
+
+One endpoint row of a managed catalog entry.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `interface` | `string` (`public` \| `internal` \| `admin`) | Yes | — | The catalog interface this endpoint is published under. Keys the `listType=map` list. |
+| `url` | `string` | Yes | — | The endpoint URL registered in the catalog. Must match `^https?://[^\s/]+` and be at most 1024 bytes — the cap mirrors K-ORC's own `EndpointResourceSpec.url`, so a URL admitted here can never be rejected downstream. The validating webhook mirrors both the shape and the cap with a full `net/url` parse. |
 
 ---
 
@@ -611,6 +694,7 @@ the kind/name and applies it.
 | `observedGeneration` | `int64` | The `.metadata.generation` the controller last reconciled, so a stale status is distinguishable from a current one. |
 | `updatePhase` | [`UpdatePhase`](#updatephase) | Current phase of a control-plane release update. Written on every status update; fixed at `Idle` in the current implementation because the release-update state machine is reserved (the other `UpdatePhase` values are not yet set). |
 | `services` | `[]ServiceStatus` | Per-service readiness of the projected service CRs. A `listType=map` list keyed by `name`, so per-service entries merge under server-side apply and can grow per-service conditions cleanly. Written on every status update with a `keystone` entry whose `ready` mirrors the `KeystoneReady` condition and whose `release` is `spec.openStackRelease` — omitted entirely when `spec.services.keystone` is unset (no Keystone is managed). See [ServiceStatus](#servicestatus). |
+| `catalog` | [`*CatalogStatus`](#catalogstatus) | Observed state of the External-mode catalog imports. Nil in Managed mode, where the control plane creates the catalog entries rather than importing them. See [CatalogStatus](#catalogstatus). |
 
 > **`updatePhase` vs the Keystone CRD's `upgradePhase`.** These field names are
 > intentionally distinct: `ControlPlane.status.updatePhase` is the control-plane
@@ -651,6 +735,30 @@ Reports the observed state of the K-ORC admin application credential.
 | `id` | `string` | No | The OpenStack application-credential ID currently in use, populated by K-ORC once the credential is minted. |
 | `restricted` | `bool` | No | Whether the active credential is restricted. Computed as the inverse of the K-ORC-reported `unrestricted` (falling back to the desired value while K-ORC status is empty). |
 | `lastRotation` | `*metav1.Time` | No | Timestamp of the last successful rotation. (Re-)stamped to "now" whenever the recorded credential `id` changes (initial mint or re-mint); preserved once the `id` is stable. |
+
+### CatalogStatus
+
+Reports how the External-mode identity catalog imports resolved. Nil in Managed
+mode. It is the operator-visible answer to *"did the ControlPlane find the
+catalog it was pointed at?"* — the aggregate [`CatalogReady`](#catalogready)
+condition says whether they all resolved, this list says which ones did.
+
+The list is rebuilt on every pass **before** any failure return, so an unresolved
+import is reported as `resolved: false` rather than omitted.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `imports` | [`[]CatalogImportStatus`](#catalogimportstatus) | No | The unmanaged K-ORC CRs importing the external identity service and its endpoint interfaces. A `listType=map` list keyed by `name`. |
+
+### CatalogImportStatus
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | `string` | Yes | The K-ORC CR name; keys the `listType=map` `imports` list. |
+| `kind` | `string` (`Service` \| `Endpoint`) | Yes | The imported K-ORC kind. |
+| `interface` | `string` (`public` \| `internal` \| `admin`) | No | The catalog interface of an imported `Endpoint`; empty for the `Service` import. |
+| `resolved` | `bool` | Yes | Whether K-ORC matched this import against a live catalog entry (its `Available` condition is `True` for the CR's current generation). |
+| `id` | `string` | No | The OpenStack id K-ORC resolved the import to. Empty while the import is unresolved. |
 
 ### UpdatePhase
 
@@ -1220,20 +1328,34 @@ application-credential id+secret) the freshly assembled credential).
 
 ### CatalogReady
 
-Set by `reconcileCatalog` (gated on `AdminCredentialReady`, **and** both the
-identity `Service` and `Endpoint` reporting `Available` for their current
-generation — `korcAvailableUpToDate`, which refuses a stale `Available` condition
-whose `ObservedGeneration` lags the object, so an endpoint/region edit cannot flip
+Set by `reconcileCatalog` (gated on `AdminCredentialReady`, **and** on every
+catalog child reporting `Available` for its current generation —
+`korcAvailableUpToDate`, which refuses a stale `Available` condition whose
+`ObservedGeneration` lags the object, so an endpoint/region edit cannot flip
 `CatalogReady` True before K-ORC re-reconciles).
+
+What "every catalog child" means depends on the Keystone mode. In **Managed**
+mode the control plane owns the catalog and registers the identity `Service` and
+its public `Endpoint`. In **External** mode it is import-first: the identity
+`Service` and the `Endpoint` of the interface `endpointType` selects are the
+gating unmanaged imports (the other two interfaces are imported for visibility
+only — see [ExternalCatalogSpec](#externalcatalogspec)), plus one managed
+`Service`/`Endpoint` set per declared [`managedEntries`](#externalcatalogspec)
+entry.
 
 | Status | Reason | When |
 | --- | --- | --- |
-| `True` | `CatalogRegistered` | The Keystone identity `Service` and public `Endpoint` are registered as K-ORC CRs **and** both report `Available`. |
-| `False` | `WaitingForAdminCredential` | `AdminCredentialReady` is not `True`; catalog registration deferred. |
-| `False` | `WaitingForCatalog` | The identity `Service`/`Endpoint` are registered but not yet `Available` for the current generation (the catalog entries have not landed in Keystone, or a stale `Available` condition whose `ObservedGeneration` lags the object does not yet count). |
-| `False` | `CatalogFailed` | The identity `Service` or `Endpoint` reports a terminal K-ORC error (`GetTerminalError` — e.g. a wrong clouds.yaml endpoint or an import stuck on "created externally"). |
-| `False` | `ServiceError` | Error create-or-updating the identity `Service` CR. |
-| `False` | `EndpointError` | Error create-or-updating the identity `Endpoint` CR. |
+| `True` | `CatalogRegistered` | **Managed mode only.** The Keystone identity `Service` and public `Endpoint` are registered as K-ORC CRs **and** both report `Available`. |
+| `True` | `CatalogImported` | **External mode only.** The external identity `Service` and the endpoint interface `endpointType` selects resolved as unmanaged imports, and every declared managed entry is `Available`. The message reports how many of the three endpoint interfaces resolved. Deliberately distinct from `CatalogRegistered`: nothing was registered, and conflating the two would make "did this ControlPlane write to my catalog?" unanswerable from status. |
+| `False` | `WaitingForAdminCredential` | `AdminCredentialReady` is not `True`; catalog reconciliation deferred. |
+| `False` | `WaitingForCatalog` | A catalog child is reconciled but not yet `Available` for the current generation (a stale `Available` condition whose `ObservedGeneration` lags the object does not count). In External mode this names the gating import or declared entry that has not resolved. |
+| `False` | `CatalogFailed` | A catalog child reports a terminal K-ORC error (`GetTerminalError`). In External mode this is where the **>1-match** half of the ambiguity contract lands: K-ORC refuses to guess and stops retrying, and the message relays it verbatim plus a hint at `external.catalog.identityServiceName` (or, for an endpoint import, at the region limitation no spec field can fix). Terminal errors are surfaced for **every** import, gating or not — with one exception: a >1-match on a **non-gating** interface has no remediation and nothing depends on it, so it is tolerated exactly like a non-gating `ImportStalled` and reported as `resolved: false`. |
+| `False` | `ImportStalled` | **External mode only.** A **gating** catalog import has been waiting to be "created externally" for longer than `externalImportStallGrace` (2m). This is the **0-match** half of the ambiguity contract: a gating import's target pre-exists by definition, so the wait never ends on its own. The message names `external.endpointType` and `spec.region` as the likely causes, and for an endpoint import the third possibility — the external catalog publishes no such interface. A non-gating interface import stalls on the same marker without failing the condition. |
+| `False` | `AuthenticationFailed` \| `EndpointUnreachable` \| `TLSVerificationFailed` \| `CatalogEndpointMismatch` \| `CredentialDrift` | **External mode only.** An unresolved import carries a K-ORC message identifying one of these failure classes; it is relayed verbatim (see [`KORCReady`](#korcready) for each class). `CatalogEndpointMismatch` additionally names the effective `endpointType` and `spec.region`. |
+| `False` | `ServiceError` | **Managed mode only.** Error create-or-updating the identity `Service` CR. |
+| `False` | `EndpointError` | **Managed mode only.** Error create-or-updating the identity `Endpoint` CR. |
+| `False` | `ImportError` | **External mode only.** Kubernetes-level error create-or-updating one of the unmanaged import CRs. |
+| `False` | `CatalogEntryError` | **External mode only.** Kubernetes-level error create-or-updating (or garbage-collecting) an opt-in managed catalog entry. |
 
 ### Ready (aggregate)
 
