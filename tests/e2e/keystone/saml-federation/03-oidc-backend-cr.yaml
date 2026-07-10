@@ -1,0 +1,57 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# OIDC KeystoneIdentityBackend attaching the forge-saml-oidc realm's OIDC client
+# to keystone-saml, alongside the SAML backend. This proves the headline claim
+# of #573: mod_auth_mellon (SAML) and mod_auth_openidc (OIDC) coexist in one
+# rendered proxy.conf on one sidecar. It uses a SEPARATE realm from the SAML
+# backend on purpose: the OIDC issuer is the identity provider's remote_id, and
+# a single realm's OIDC issuer equals its SAML entityID, so sharing one realm
+# would collide with the SAML backend's remote_id and Keystone would reject the
+# second identity provider. Explicit endpoints (the operator's metadata-fetch
+# SSRF guard blocks discovery against the in-cluster Keycloak's private
+# ClusterIP — the .well-known fetch is unit-tested instead).
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: KeystoneIdentityBackend
+metadata:
+  name: keycloak-saml-oidc
+  namespace: openstack
+spec:
+  keystoneRef:
+    name: keystone-saml
+  domain:
+    name: forge-oidc
+    mode: Manage
+    deletionPolicy: Delete
+    description: Keycloak forge-saml-oidc realm
+  type: OIDC
+  oidc:
+    issuer: http://keycloak-saml.openstack.svc.cluster.local:8080/realms/forge-saml-oidc
+    clientID: keystone
+    clientSecretRef:
+      name: keycloak-saml-oidc-client
+    endpoints:
+      authorizationEndpoint: http://keycloak-saml.openstack.svc.cluster.local:8080/realms/forge-saml-oidc/protocol/openid-connect/auth
+      tokenEndpoint: http://keycloak-saml.openstack.svc.cluster.local:8080/realms/forge-saml-oidc/protocol/openid-connect/token
+      jwksURI: http://keycloak-saml.openstack.svc.cluster.local:8080/realms/forge-saml-oidc/protocol/openid-connect/certs
+      userinfoEndpoint: http://keycloak-saml.openstack.svc.cluster.local:8080/realms/forge-saml-oidc/protocol/openid-connect/userinfo
+  mappings:
+  - remote:
+    - type: HTTP_OIDC_ISS
+      anyOneOf:
+      - http://keycloak-saml.openstack.svc.cluster.local:8080/realms/forge-saml-oidc
+    - type: HTTP_OIDC_PREFERRED_USERNAME
+    local:
+    - user:
+        name: "{0}"
+      group:
+        name: federated-users-oidc
+        domain:
+          name: forge-oidc
+  groups:
+  - name: federated-users-oidc
+    description: Federated Keycloak forge-saml-oidc users
+    roleAssignments:
+    - role: member
+      domain: true

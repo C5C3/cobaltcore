@@ -1,0 +1,216 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# In-suite Keycloak fixture for the saml-federation E2E test: a single
+# start-dev pod importing two realms from this ConfigMap. forge-saml ships the
+# SAML client (the service provider), one test user, and one group. A second
+# realm forge-saml-oidc ships the OIDC confidential client for the coexistence
+# step. The two protocols must live in separate realms because Keystone rejects
+# two identity providers that share a remote_id, and within one Keycloak realm
+# the SAML entityID and the OIDC issuer are the same URL (the realm URL) — so a
+# SAML and an OIDC backend built from one realm would collide on that remote_id.
+# The image pin is tag+digest and Renovate-tracked via the docker-digest
+# customManager in renovate.json.
+#
+# The SAML client's clientId is the SP entityID the operator derives for the
+# keystone-saml CR + keycloak-saml identity provider — it embeds the Service
+# name/port and the idp/protocol path segments, so it changes if the CR or
+# Service is renamed:
+#   http://keystone-saml.openstack.svc.cluster.local:5000/v3/OS-FEDERATION/identity_providers/keycloak-saml/protocols/mapped/auth/mellon/metadata
+#
+# The container deliberately carries no restricted securityContext and a ~1Gi
+# memory limit: start-dev bootstraps an embedded H2 plus the JVM — a throwaway
+# test fixture, never a production workload.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keycloak-saml-realms
+  namespace: openstack
+data:
+  forge-saml-realm.json: |
+    {
+      "realm": "forge-saml",
+      "enabled": true,
+      "sslRequired": "none",
+      "groups": [{"name": "engineers", "path": "/engineers"}],
+      "users": [
+        {
+          "username": "fry",
+          "enabled": true,
+          "email": "fry@planetexpress.example",
+          "emailVerified": true,
+          "firstName": "Philip",
+          "lastName": "Fry",
+          "credentials": [{"type": "password", "value": "fry-password", "temporary": false}],
+          "groups": ["/engineers"]
+        }
+      ],
+      "clients": [
+        {
+          "clientId": "http://keystone-saml.openstack.svc.cluster.local:5000/v3/OS-FEDERATION/identity_providers/keycloak-saml/protocols/mapped/auth/mellon/metadata",
+          "enabled": true,
+          "protocol": "saml",
+          "redirectUris": ["http://keystone-saml.openstack.svc.cluster.local:5000/v3/OS-FEDERATION/identity_providers/keycloak-saml/protocols/mapped/auth/mellon/postResponse"],
+          "attributes": {
+            "saml.assertion.signature": "true",
+            "saml.client.signature": "false",
+            "saml.authnstatement": "true",
+            "saml_name_id_format": "username",
+            "saml_force_name_id_format": "true"
+          },
+          "protocolMappers": [
+            {
+              "name": "username",
+              "protocol": "saml",
+              "protocolMapper": "saml-user-property-mapper",
+              "consentRequired": false,
+              "config": {
+                "attribute.nameformat": "Basic",
+                "user.attribute": "username",
+                "attribute.name": "username"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  forge-saml-oidc-realm.json: |
+    {
+      "realm": "forge-saml-oidc",
+      "enabled": true,
+      "sslRequired": "none",
+      "groups": [{"name": "engineers", "path": "/engineers"}],
+      "users": [
+        {
+          "username": "fry",
+          "enabled": true,
+          "email": "fry@planetexpress.example",
+          "emailVerified": true,
+          "firstName": "Philip",
+          "lastName": "Fry",
+          "credentials": [{"type": "password", "value": "fry-password", "temporary": false}],
+          "groups": ["/engineers"]
+        }
+      ],
+      "clients": [
+        {
+          "clientId": "keystone",
+          "enabled": true,
+          "protocol": "openid-connect",
+          "publicClient": false,
+          "secret": "keystone-saml-oidc-secret",
+          "redirectUris": ["http://keystone-saml.openstack.svc.cluster.local:5000/*"],
+          "webOrigins": ["*"],
+          "standardFlowEnabled": true,
+          "directAccessGrantsEnabled": true,
+          "protocolMappers": [
+            {
+              "name": "groups",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-group-membership-mapper",
+              "consentRequired": false,
+              "config": {
+                "full.path": "false",
+                "id.token.claim": "true",
+                "access.token.claim": "true",
+                "claim.name": "groups",
+                "userinfo.token.claim": "true"
+              }
+            }
+          ]
+        }
+      ]
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak-saml
+  namespace: openstack
+  labels:
+    app.kubernetes.io/name: keycloak-saml
+    app.kubernetes.io/instance: keycloak-saml
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: keycloak-saml
+      app.kubernetes.io/instance: keycloak-saml
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: keycloak-saml
+        app.kubernetes.io/instance: keycloak-saml
+    spec:
+      containers:
+      - name: keycloak
+        image: quay.io/keycloak/keycloak:26.6.4@sha256:0aae0de7fca85525f727d3354df17896092de8bb26ae4c12d89c77e5df8cbce4
+        args:
+        - start-dev
+        - --import-realm
+        env:
+        - name: KC_BOOTSTRAP_ADMIN_USERNAME
+          value: admin
+        - name: KC_BOOTSTRAP_ADMIN_PASSWORD
+          value: admin-password
+        # Pin a fixed frontend URL so the realm/SAML issuer is stable across
+        # requests (the SAML descriptor's entityID and the assertion issuer
+        # must match the backend CR's idpEntityID).
+        - name: KC_HOSTNAME
+          value: http://keycloak-saml.openstack.svc.cluster.local:8080
+        - name: KC_HOSTNAME_STRICT
+          value: "false"
+        ports:
+        - name: http
+          containerPort: 8080
+        volumeMounts:
+        - name: realms
+          mountPath: /opt/keycloak/data/import
+          readOnly: true
+        readinessProbe:
+          httpGet:
+            path: /realms/master
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          failureThreshold: 30
+        resources:
+          requests:
+            cpu: 100m
+            memory: 512Mi
+          limits:
+            memory: 1Gi
+      volumes:
+      - name: realms
+        configMap:
+          name: keycloak-saml-realms
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak-saml
+  namespace: openstack
+  labels:
+    app.kubernetes.io/name: keycloak-saml
+    app.kubernetes.io/instance: keycloak-saml
+spec:
+  selector:
+    app.kubernetes.io/name: keycloak-saml
+    app.kubernetes.io/instance: keycloak-saml
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+    protocol: TCP
+---
+# Relying-party client secret for the OIDC coexistence backend: the fixed data
+# key "clientSecret" is the contract the projection reads.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: keycloak-saml-oidc-client
+  namespace: openstack
+type: Opaque
+stringData:
+  clientSecret: keystone-saml-oidc-secret

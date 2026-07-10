@@ -1,0 +1,404 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for SAML federation (issue #573). It exercises the
+# type: SAML KeystoneIdentityBackend end-to-end against a SAML-enabled realm on
+# the same Keycloak fixture Phase 2 introduces (#570 D8):
+#
+#   - Step 1 deploys Keycloak (forge-saml realm) and the keystone-saml CR; both
+#     become Ready with no backend attached.
+#   - Step 2 creates the IdP-metadata Secret from the live Keycloak SAML
+#     descriptor, attaches the SAML backend, and asserts every backend
+#     condition and the Keystone IdentityBackendsReady=AllBackendsProjected.
+#   - Step 3 asserts the sidecar, the federation-mellon volume, the Service
+#     targetPort switch, the SP-metadata export Secret, and the published
+#     status.samlSPMetadataSecretName.
+#   - Step 4 verifies mod_auth_mellon is loaded and serving: the SP metadata
+#     endpoint on the sidecar returns the operator-generated EntityDescriptor.
+#     NOTE: the full browser SAML POST round trip is the live validation gate
+#     for the mellon hook wiring (env→header forwarding, the ACS binding);
+#     mellon behind a reverse proxy is an established Canonical/TripleO pattern
+#     but was not spike-validated against ubuntu-noble's mellon build, so the
+#     credential loop is intentionally left to hands-on validation (see the
+#     SAML federation guide's troubleshooting section).
+#   - Step 5 attaches an OIDC backend alongside the SAML one and proves both
+#     reach Ready on one sidecar carrying both the metadata and mellon volumes
+#     (the headline coexistence claim of #573).
+#   - Step 6 detaches both backends and asserts the pod returns to a single
+#     container, the mellon volume and SP-metadata Secret are gone, the Service
+#     targetPort returns to 5000, and admin password auth still works.
+#
+# The suite shares the openstack namespace with the other keystone e2e suites
+# under parallel: 4, so every resource name is unique to this suite.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-saml-federation
+spec:
+  # Pin the test to the shared openstack namespace so $NAMESPACE in the scripts
+  # below resolves to it (matching oidc-federation and every other keystone
+  # suite). Without this, chainsaw binds $NAMESPACE to a generated ephemeral
+  # namespace while the resources apply to openstack, so the script steps look
+  # for the keystone pod in the wrong namespace and fail.
+  namespace: openstack
+  timeouts:
+    apply: 2m
+    assert: 6m
+    exec: 3m
+  steps:
+  # ── Step 1: Deploy the Keycloak fixture and Keystone; both become ready ──
+  - try:
+    - apply:
+        file: 00-keycloak-saml.yaml
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keycloak-saml
+            namespace: openstack
+          status:
+            (availableReplicas > `0`): true
+    - apply:
+        file: 01-keystone-cr.yaml
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-saml
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+            (conditions[?type == 'IdentityBackendsReady']):
+            - status: "True"
+              reason: IdentityBackendsNotRequired
+    catch:
+    - script:
+        content: |
+          echo "=== Keystone CR ==="
+          kubectl get keystone keystone-saml -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== keycloak-saml pod logs ==="
+          kubectl logs -n $NAMESPACE -l app.kubernetes.io/name=keycloak-saml --tail=80 2>&1 || true
+          echo "=== operator logs ==="
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 2: Create the IdP-metadata Secret, attach the SAML backend ─────
+  - try:
+    - script:
+        # Fetch the live Keycloak SAML IdP descriptor from inside the cluster
+        # (the operator's SSRF guard blocks the operator pod from dialing the
+        # private ClusterIP directly; the keystone pod can). Create the
+        # fixed-key Secret the backend's idpMetadata.secretRef reads.
+        # Chainsaw defaults to `sh`, which rejects `set -o pipefail` with
+        # "Illegal option -o pipefail" (exit 2). Pin bash to match the rest
+        # of the keystone e2e scripts.
+        shell: bash
+        content: |
+          set -euo pipefail
+          POD=$(kubectl get pod -n $NAMESPACE -l app.kubernetes.io/instance=keystone-saml -o jsonpath='{.items[0].metadata.name}')
+          kubectl exec -n $NAMESPACE "$POD" -c keystone -- python3 -c '
+          import urllib.request
+          url = "http://keycloak-saml.openstack.svc.cluster.local:8080/realms/forge-saml/protocol/saml/descriptor"
+          print(urllib.request.urlopen(url, timeout=30).read().decode())
+          ' > /tmp/keycloak-saml-idp-metadata.xml
+          grep -q "EntityDescriptor" /tmp/keycloak-saml-idp-metadata.xml
+          kubectl create secret generic keycloak-saml-idp-metadata -n $NAMESPACE \
+            --from-file=idp-metadata.xml=/tmp/keycloak-saml-idp-metadata.xml \
+            --dry-run=client -o yaml | kubectl apply -f -
+    - apply:
+        file: 02-backend-cr.yaml
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: KeystoneIdentityBackend
+          metadata:
+            name: keycloak-saml
+            namespace: openstack
+          status:
+            (conditions[?type == 'DomainReady']):
+            - status: "True"
+              reason: DomainProvisioned
+            (conditions[?type == 'FederationObjectsReady']):
+            - status: "True"
+              reason: FederationObjectsProvisioned
+            (conditions[?type == 'MappingsReady']):
+            - status: "True"
+              reason: MappingsApplied
+            (conditions[?type == 'ConfigProjected']):
+            - status: "True"
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+            (domainID != null && domainID != ''): true
+            (samlSPMetadataSecretName != null && samlSPMetadataSecretName != ''): true
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-saml
+            namespace: openstack
+          status:
+            (conditions[?type == 'IdentityBackendsReady']):
+            - status: "True"
+              reason: AllBackendsProjected
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    catch:
+    - script:
+        content: |
+          echo "=== Backend CR ==="
+          kubectl get keystoneidentitybackend keycloak-saml -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Keystone CR ==="
+          kubectl get keystone keystone-saml -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Keystone pod logs ==="
+          kubectl logs -n $NAMESPACE -l app.kubernetes.io/instance=keystone-saml --all-containers --tail=80 2>&1 || true
+          echo "=== keycloak-saml pod logs ==="
+          kubectl logs -n $NAMESPACE -l app.kubernetes.io/name=keycloak-saml --tail=60 2>&1 || true
+          echo "=== operator logs ==="
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 3: The pod carries the sidecar with the mellon volume; the ──────
+  #    Service targets the proxy; the SP-metadata export Secret exists.
+  - try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-saml
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                (length(containers[?name == 'keystone']) == `1`): true
+                (length(containers[?name == 'federation-proxy']) == `1`): true
+                (volumes[?name == 'federation-mellon']):
+                - (starts_with(secret.secretName, 'keystone-saml-federation-')): true
+          status:
+            (updatedReplicas == replicas): true
+            (availableReplicas == replicas): true
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: keystone-saml
+            namespace: openstack
+          spec:
+            ports:
+            - port: 5000
+              targetPort: 5050
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: keystone-saml-saml-sp-metadata
+            namespace: openstack
+          (contains(keys(data), 'entityID')): true
+          (contains(keys(data), 'sp-metadata.xml')): true
+    catch:
+    - script:
+        content: |
+          echo "=== Keystone Deployment ==="
+          kubectl get deployment keystone-saml -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Keystone Service ==="
+          kubectl get service keystone-saml -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== SP metadata export Secret ==="
+          kubectl get secret keystone-saml-saml-sp-metadata -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== sidecar logs ==="
+          kubectl logs -n $NAMESPACE -l app.kubernetes.io/instance=keystone-saml -c federation-proxy --tail=60 2>&1 || true
+          echo "=== operator logs ==="
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=60 2>&1 || true
+  # ── Step 4: mod_auth_mellon is loaded and serving the SP metadata ───────
+  - try:
+    - script:
+        # Hit the mellon SP metadata endpoint THROUGH the sidecar (Service port
+        # 5000 → targetPort 5050). mellon serves its own SP metadata at
+        # <endpointPath>/metadata, so a 200 carrying the SP EntityDescriptor
+        # proves the module is loaded, configured with the mounted key/cert, and
+        # active on the derived endpoint path.
+        # Chainsaw defaults to `sh`, which rejects `set -o pipefail` with
+        # "Illegal option -o pipefail" (exit 2). Pin bash to match the rest
+        # of the keystone e2e scripts.
+        shell: bash
+        content: |
+          set -euo pipefail
+          # Newest pod, NOT .items[0]: right after the step-3 rollout the old
+          # single-container pod may still be Terminating and .items[0] can
+          # resolve to it (matching the oidc-federation suite's selector). Exec
+          # targets the keystone container explicitly — the pod now has two.
+          POD=$(kubectl get pods -n $NAMESPACE \
+            -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-saml,pod-template-hash \
+            --sort-by=.metadata.creationTimestamp -o name | tail -1 | cut -d/ -f2)
+          kubectl exec -n $NAMESPACE "$POD" -c keystone -- python3 -c '
+          import urllib.request
+          url = ("http://127.0.0.1:5050/v3/OS-FEDERATION/identity_providers/"
+                 "keycloak-saml/protocols/mapped/auth/mellon/metadata")
+          body = urllib.request.urlopen(url, timeout=20).read().decode()
+          assert "EntityDescriptor" in body, f"mellon metadata endpoint served no EntityDescriptor: {body[:300]}"
+          assert "AssertionConsumerService" in body, f"SP metadata carries no ACS: {body[:300]}"
+          print("OK: mod_auth_mellon serves the SP metadata on the derived endpoint path")
+          '
+    catch:
+    - script:
+        content: |
+          echo "=== sidecar logs ==="
+          kubectl logs -n $NAMESPACE -l app.kubernetes.io/instance=keystone-saml -c federation-proxy --tail=100 2>&1 || true
+          echo "=== rendered proxy.conf ==="
+          kubectl get secret -n $NAMESPACE -l forge.c5c3.io/config-base=keystone-saml-federation -o jsonpath='{.items[0].data.proxy\.conf}' 2>&1 | base64 -d 2>&1 || true
+  # ── Step 5: Coexistence — attach an OIDC backend alongside the SAML one ──
+  - try:
+    - apply:
+        file: 03-oidc-backend-cr.yaml
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: KeystoneIdentityBackend
+          metadata:
+            name: keycloak-saml-oidc
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        # One sidecar carries BOTH federation volumes: mod_auth_mellon and
+        # mod_auth_openidc coexist in one rendered proxy.conf.
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-saml
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                (length(containers[?name == 'federation-proxy']) == `1`): true
+                (length(volumes[?name == 'federation-mellon']) == `1`): true
+                (length(volumes[?name == 'federation-metadata']) == `1`): true
+    catch:
+    - script:
+        content: |
+          echo "=== OIDC backend CR ==="
+          kubectl get keystoneidentitybackend keycloak-saml-oidc -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Keystone Deployment ==="
+          kubectl get deployment keystone-saml -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== sidecar logs ==="
+          kubectl logs -n $NAMESPACE -l app.kubernetes.io/instance=keystone-saml -c federation-proxy --tail=80 2>&1 || true
+          echo "=== operator logs ==="
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=60 2>&1 || true
+  # ── Step 6: Detach both backends; the sidecar and SP Secret disappear ───
+  - try:
+    - delete:
+        ref:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: KeystoneIdentityBackend
+          name: keycloak-saml-oidc
+          namespace: openstack
+    - delete:
+        ref:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: KeystoneIdentityBackend
+          name: keycloak-saml
+          namespace: openstack
+    - error:
+        # The SAML backend CR is gone (finalizer released after teardown).
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: KeystoneIdentityBackend
+          metadata:
+            name: keycloak-saml
+            namespace: openstack
+    - error:
+        # The OIDC coexistence backend CR is gone too.
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: KeystoneIdentityBackend
+          metadata:
+            name: keycloak-saml-oidc
+            namespace: openstack
+    - assert:
+        # The sidecar is gone, the Service targets uWSGI again.
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-saml
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                (length(containers[?name == 'federation-proxy']) == `0`): true
+                (length(volumes[?name == 'federation-mellon']) == `0`): true
+          status:
+            (updatedReplicas == replicas): true
+            (availableReplicas == replicas): true
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: keystone-saml
+            namespace: openstack
+          spec:
+            ports:
+            - port: 5000
+              targetPort: 5000
+    - error:
+        # The SP-metadata export Secret is deleted when no SAML backend remains.
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: keystone-saml-saml-sp-metadata
+            namespace: openstack
+    - script:
+        # Admin password auth still works after the federation teardown.
+        # Chainsaw defaults to `sh`, which rejects `set -o pipefail` with
+        # "Illegal option -o pipefail" (exit 2). Pin bash to match the rest
+        # of the keystone e2e scripts.
+        shell: bash
+        content: |
+          set -euo pipefail
+          # Newest pod — the detach rolls the Deployment back to the
+          # single-container shape and the old two-container pod may linger
+          # Terminating; .items[0] can resolve to it (see oidc-federation).
+          POD=$(kubectl get pods -n $NAMESPACE \
+            -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-saml,pod-template-hash \
+            --sort-by=.metadata.creationTimestamp -o name | tail -1 | cut -d/ -f2)
+          kubectl exec -n $NAMESPACE "$POD" -c keystone -- python3 -c '
+          import json, urllib.request
+          body = json.dumps({"auth": {"identity": {"methods": ["password"],
+            "password": {"user": {"name": "admin", "domain": {"id": "default"},
+            "password": "'"$(kubectl get secret keystone-admin -n "$NAMESPACE" -o jsonpath="{.data.password}" | base64 -d)"'"}}}}}).encode()
+          req = urllib.request.Request("http://127.0.0.1:5000/v3/auth/tokens", data=body,
+            headers={"Content-Type": "application/json"})
+          resp = urllib.request.urlopen(req, timeout=20)
+          assert resp.status == 201, f"admin password auth returned {resp.status}"
+          assert resp.headers.get("X-Subject-Token"), "no token issued for admin password auth"
+          print("OK: admin password auth works after federation teardown")
+          '
+    catch:
+    - script:
+        content: |
+          echo "=== Backend CRs ==="
+          kubectl get keystoneidentitybackend -n $NAMESPACE 2>&1 || true
+          echo "=== Keystone Deployment ==="
+          kubectl get deployment keystone-saml -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Keystone Service ==="
+          kubectl get service keystone-saml -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== operator logs ==="
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=80 2>&1 || true
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=80 --previous 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true

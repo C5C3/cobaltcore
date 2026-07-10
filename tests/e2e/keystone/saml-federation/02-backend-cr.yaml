@@ -1,0 +1,62 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# KeystoneIdentityBackend fixture attaching the Keycloak "forge-saml" realm to
+# keystone-saml via SAML. deletionPolicy Delete exercises the
+# disable-then-delete domain teardown in-cluster. The IdP metadata is supplied
+# by SecretRef (keycloak-saml-idp-metadata), created by the chainsaw step from
+# the live Keycloak SAML descriptor. identityProviderName is pinned to
+# "keycloak-saml" so the derived SP entityID matches the SAML client's clientId
+# in the Keycloak realm.
+#
+# The mapping gates on the asserted IdP entityID (HTTP_MELLON_IDP — the
+# remote-id attribute the proxy passes) and maps the forwarded username
+# (HTTP_MELLON_USERNAME) into an ephemeral user plus the declarative
+# federated-users group, whose member role on the domain authorizes
+# domain-scoped tokens.
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: KeystoneIdentityBackend
+metadata:
+  name: keycloak-saml
+  namespace: openstack
+spec:
+  keystoneRef:
+    name: keystone-saml
+  domain:
+    name: forge-saml
+    mode: Manage
+    deletionPolicy: Delete
+    description: Keycloak forge-saml realm
+  type: SAML
+  saml:
+    idpEntityID: http://keycloak-saml.openstack.svc.cluster.local:8080/realms/forge-saml
+    identityProviderName: keycloak-saml
+    idpMetadata:
+      secretRef:
+        name: keycloak-saml-idp-metadata
+    forwardAttributes:
+    - username
+  mappings:
+  - remote:
+    - type: HTTP_MELLON_IDP
+      anyOneOf:
+      - http://keycloak-saml.openstack.svc.cluster.local:8080/realms/forge-saml
+    - type: HTTP_MELLON_USERNAME
+    local:
+    # {0} is the first value-producing remote: the HTTP_MELLON_IDP rule carries
+    # anyOneOf, so Keystone treats it as a pure condition and never adds it to
+    # the positional direct-map tuple — HTTP_MELLON_USERNAME is the only value,
+    # at index 0.
+    - user:
+        name: "{0}"
+      group:
+        name: federated-users
+        domain:
+          name: forge-saml
+  groups:
+  - name: federated-users
+    description: Federated Keycloak forge-saml users
+    roleAssignments:
+    - role: member
+      domain: true

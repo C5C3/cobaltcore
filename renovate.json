@@ -226,6 +226,7 @@
       "customType": "regex",
       "managerFilePatterns": [
         "/tests/e2e/keystone/oidc-federation/00-keycloak\\.yaml$/",
+        "/tests/e2e/keystone/saml-federation/00-keycloak-saml\\.yaml$/",
         "/tests/e2e-chaos/keystone-federation/00-keycloak\\.yaml$/",
         "/tests/e2e-controlplane-sso/00-keycloak\\.yaml$/"
       ],
@@ -437,6 +438,7 @@
       "matchManagers": ["custom.regex"],
       "matchFileNames": [
         "tests/e2e/keystone/oidc-federation/00-keycloak.yaml",
+        "tests/e2e/keystone/saml-federation/00-keycloak-saml.yaml",
         "tests/e2e-chaos/keystone-federation/00-keycloak.yaml",
         "tests/e2e-controlplane-sso/00-keycloak.yaml"
       ],
@@ -448,6 +450,7 @@
       "matchManagers": ["custom.regex"],
       "matchFileNames": [
         "tests/e2e/keystone/oidc-federation/00-keycloak.yaml",
+        "tests/e2e/keystone/saml-federation/00-keycloak-saml.yaml",
         "tests/e2e-chaos/keystone-federation/00-keycloak.yaml",
         "tests/e2e-controlplane-sso/00-keycloak.yaml"
       ],
