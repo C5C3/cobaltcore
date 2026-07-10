@@ -18,10 +18,18 @@ Definition. One CR attaches to a [Keystone](./keystone-crd.md) CR via
   provisions the keystone federation API objects (identity provider,
   mapping, protocol) and the keystone-side projection renders the
   `mod_auth_openidc` reverse-proxy sidecar configuration.
+- **`type: SAML`** — a SAML 2.0 federation backend: the IdP entityID and
+  metadata (inline, by SecretRef, or by URL), an operator-generated or
+  operator-consumed service-provider keypair, and the same typed mapping
+  rules and declarative groups as OIDC. It reuses the same federation
+  objects and sidecar; the keystone-side projection renders
+  `mod_auth_mellon` configuration alongside `mod_auth_openidc`. At most one
+  SAML backend per Keystone (webhook-enforced).
 
 For the task-oriented walkthroughs, see the
-[LDAP Domain Backend guide](../../guides/ldap-domain-backend.md) and the
-[OIDC Federation guide](../../guides/oidc-federation.md). For the
+[LDAP Domain Backend guide](../../guides/ldap-domain-backend.md), the
+[OIDC Federation guide](../../guides/oidc-federation.md), and the
+[SAML Federation guide](../../guides/saml-federation.md). For the
 controller topology (dedicated backend controller + keystone-side projection),
 see [Keystone Reconciler Architecture](./keystone-reconciler.md).
 
@@ -161,11 +169,12 @@ status:
 | --- | --- | --- | --- | --- |
 | `keystoneRef` | `KeystoneRefSpec` | Yes | — | Names the Keystone CR in the same namespace this backend attaches to. **Immutable** (CEL transition rule): re-pointing a backend at a different Keystone would strand the provisioned domain; delete and recreate instead. The referenced CR does **not** have to exist at admission time (GitOps ordering) — a dangling reference surfaces as `DomainReady=False/KeystoneNotFound`. |
 | `domain` | [`DomainSpec`](#domainspec) | Yes | — | The Keystone domain this backend provides. |
-| `type` | `IdentityBackendType` | Yes | — | Backend driver: `LDAP` or `OIDC`. **Immutable** (CEL transition rule). |
+| `type` | `IdentityBackendType` | Yes | — | Backend driver: `LDAP`, `OIDC`, or `SAML`. **Immutable** (CEL transition rule). |
 | `ldap` | [`LDAPBackendSpec`](#ldapbackendspec) | When `type: LDAP` | — | LDAP/AD connection, tree layout, and attribute mapping. The union rule (`(self.type == 'LDAP') == has(self.ldap)`) enforces exactly one backend block matching `spec.type` at the schema layer. |
 | `oidc` | [`OIDCBackendSpec`](#oidcbackendspec) | When `type: OIDC` | — | OpenID Connect federation configuration. The mirror union rule (`(self.type == 'OIDC') == has(self.oidc)`) applies. |
-| `mappings` | [`[]MappingRuleSpec`](#mappingrulespec) | No (OIDC only) | — | Keystone federation mapping rules applied to the backend's protocol; type-gated to `OIDC` at the schema layer. Federation cannot provision its protocol without at least one rule (keystone rejects rule-less mappings) — an empty list parks the backend at `MappingsReady=False/NoMappingRules`. Max 32 rules. |
-| `groups` | [`[]FederationGroupSpec`](#federationgroupspec) | No (OIDC only) | — | Declarative local groups (in this backend's domain) the mapping rules target, plus their role assignments; type-gated to `OIDC`. Max 32. |
+| `saml` | [`SAMLBackendSpec`](#samlbackendspec) | When `type: SAML` | — | SAML 2.0 federation configuration. The mirror union rule (`(self.type == 'SAML') == has(self.saml)`) applies. |
+| `mappings` | [`[]MappingRuleSpec`](#mappingrulespec) | No (federation only) | — | Keystone federation mapping rules applied to the backend's protocol; type-gated to federation backends (`OIDC` or `SAML`) at the schema layer. Federation cannot provision its protocol without at least one rule (keystone rejects rule-less mappings) — an empty list parks the backend at `MappingsReady=False/NoMappingRules`. Max 32 rules. |
+| `groups` | [`[]FederationGroupSpec`](#federationgroupspec) | No (federation only) | — | Declarative local groups (in this backend's domain) the mapping rules target, plus their role assignments; type-gated to federation backends. Max 32. |
 | `extraOptions` | `map[string]string` | No (LDAP only) | — | Free-form `[ldap]` section options not covered by typed fields, keyed by bare option name (e.g. `page_size`); type-gated to `LDAP`. See the [denylist](#extraoptions-denylist). |
 
 ### KeystoneRefSpec
@@ -291,6 +300,35 @@ All URL fields share the `^https?://` scheme guard.
 | `enabled` | `bool` | Yes | Turns bearer-token introspection on for this backend. The resolved introspection endpoint **must be https** — mod_auth_openidc rejects http introspection endpoints at Apache config-parse time, so the webhook fails explicit http endpoints at admission and the render skips a backend whose metadata-derived endpoint is http (both fail-visible, never a crash-looping sidecar). |
 | `tlsVerify` | `*bool` | No (default `true`) | Certificate verification on the introspection call. `false` renders `OIDCOAuthSSLValidateServer Off` so self-signed / private-CA endpoints work — an explicit opt-out for test and lab environments until a CA-bundle field ships. |
 
+### SAMLBackendSpec
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `idpEntityID` | `string` | Yes | — | The SAML IdP's entityID exactly as the IdP asserts it (1–512 chars; entityIDs may be URNs, so no scheme pattern). Registered as the keystone identity provider's remote ID and cross-checked against the entityID inside the IdP metadata. |
+| `idpMetadata` | [`SAMLIdPMetadataSpec`](#samlidpmetadataspec) | Yes | — | The IdP's EntityDescriptor metadata; exactly one of `inline` / `secretRef` / `url` (CEL rule plus webhook defense-in-depth). |
+| `sp` | [`SAMLSPSpec`](#samlspspec) | No | — | The service-provider signing key/certificate. When omitted, the operator generates a self-signed keypair once and never rotates it. |
+| `protocolID` | `string` | No | `mapped` | Keystone federation protocol ID the websso/auth URLs embed (pattern `^[A-Za-z0-9_-]+$`, ≤64). Must not collide with an operator-owned keystone.conf section (webhook-enforced). |
+| `identityProviderName` | `string` | No | CR name | Keystone identity provider ID this backend provisions (pattern `^[A-Za-z0-9_-]+$`, ≤64). Unique across every federation backend (OIDC and SAML) of one Keystone (webhook-enforced). |
+| `remoteIDAttribute` | `string` | No | `HTTP_MELLON_IDP` | The WSGI environ key keystone reads the asserted IdP entityID from (the per-protocol `[<protocolID>]` `remote_id_attribute`). Must keep the `HTTP_` prefix — it is conveyed to keystone as a request header across the sidecar hop (webhook-enforced, ≤128). |
+| `forwardAttributes` | `[]string` | No | — | SAML assertion attribute names the proxy forwards to keystone as `MELLON-<attr>` request headers (items pattern `^[A-Za-z0-9_]+$`, max 32, unique). Case-sensitive; the header hop uppercases them, so mapping rules reference `HTTP_MELLON_<ATTR>`. |
+
+### SAMLIdPMetadataSpec
+
+Exactly one of the three sources must be set (CEL rule plus webhook
+defense-in-depth).
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `inline` | `string` | No | Raw IdP EntityDescriptor XML (≤65536). The operator validates its entityID against `idpEntityID` at admission. |
+| `secretRef` | `SecretRefSpec` | No | Secret holding the IdP metadata under the fixed data key `idp-metadata.xml`. The `key` field must stay empty (webhook-enforced). |
+| `url` | `string` | No | IdP metadata URL (pattern `^https://`, ≤512); operator-fetched through the hardened SSRF-guarded client. `https://` is mandatory — the metadata carries the assertion-signing certificate, so a plaintext fetch would let an on-path attacker substitute the trust anchor. |
+
+### SAMLSPSpec
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `certificateSecretRef` | `SecretRefSpec` | No | A `kubernetes.io/tls`-shaped Secret holding the SP certificate/key under the fixed data keys `tls.crt` / `tls.key` (exactly what a cert-manager Certificate emits). The `key` field must stay empty (webhook-enforced). When omitted, the operator generates a self-signed keypair once (in the stable-named `<keystone>-saml-sp` Secret) and never rotates it. |
+
 ### MappingRuleSpec
 
 One keystone federation mapping rule: remote assertion matchers plus the
@@ -373,9 +411,10 @@ this status. The keystone-side `identitybackends` sub-reconciler only reads
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `conditions` | `[]metav1.Condition` | `DomainReady`, `ConfigProjected`, for OIDC backends additionally `FederationObjectsReady` and `MappingsReady`, and the aggregate `Ready` (see below). The aggregate derives from the backend type's own sub-condition set, so LDAP backends are unaffected by the federation-only types. |
+| `conditions` | `[]metav1.Condition` | `DomainReady`, `ConfigProjected`, for federation backends (OIDC **and** SAML) additionally `FederationObjectsReady` and `MappingsReady`, and the aggregate `Ready` (see below). The aggregate derives from the backend type's own sub-condition set, so LDAP backends are unaffected by the federation-only types. |
 | `observedGeneration` | `int64` | The `.metadata.generation` the controller last reconciled. |
 | `domainID` | `string` | The Keystone domain ID this backend provisioned (Manage) or resolved (Adopt). The deletion path uses it to disable+delete exactly the domain this CR created, never a same-named foreign one. |
+| `samlSPMetadataSecretName` | `string` | For a SAML backend, the Secret carrying the generated SP metadata (data keys `sp-metadata.xml` and `entityID`) for out-of-band IdP registration. Empty for non-SAML backends and until the SP material first resolves. |
 
 ### Conditions
 
@@ -389,14 +428,14 @@ this status. The keystone-side `identitybackends` sub-reconciler only reads
 | `DomainReady` | False | `DomainNotFound` | Adopt mode: no domain with the requested name exists (Adopt never creates). |
 | `DomainReady` | False | `DomainAlreadyExists` | Manage mode: a same-named domain exists that this CR did not create — never silently seized; switch to `mode: Adopt` to attach to it. |
 | `DomainReady` | False | `IdentityAPIError` | A domain lookup/create/update call failed. |
-| `FederationObjectsReady` | True | `FederationObjectsProvisioned` | OIDC: the identity provider and protocol are upserted and drift-free. |
-| `FederationObjectsReady` | False | `NoMappingRules` | OIDC: `spec.mappings` is empty — keystone cannot represent a rule-less mapping and the protocol needs one. |
-| `FederationObjectsReady` | False | `IdentityAPIError` | OIDC: an identity-provider/protocol call failed. |
-| `MappingsReady` | True | `MappingsApplied` | OIDC: the mapping rules, declarative groups, and role assignments are applied. |
-| `MappingsReady` | False | `NoMappingRules` | OIDC: `spec.mappings` is empty. |
-| `MappingsReady` | False | `RoleOrProjectNotFound` | OIDC: a role assignment references a role, project, or project domain that does not exist (yet); retried on a bounded poll. |
-| `MappingsReady` | False | `IdentityAPIError` | OIDC: a mapping/group/assignment call failed. |
-| `ConfigProjected` | True | `ConfigProjected` | LDAP: the Keystone Deployment's `domains` volume Secret carries this backend's `keystone.<domain>.conf`. OIDC: the federation Secret mounted by the sidecar carries this backend's client document. |
+| `FederationObjectsReady` | True | `FederationObjectsProvisioned` | Federation (OIDC/SAML): the identity provider and protocol are upserted and drift-free. |
+| `FederationObjectsReady` | False | `NoMappingRules` | Federation: `spec.mappings` is empty — keystone cannot represent a rule-less mapping and the protocol needs one. |
+| `FederationObjectsReady` | False | `IdentityAPIError` | Federation: an identity-provider/protocol call failed. |
+| `MappingsReady` | True | `MappingsApplied` | Federation: the mapping rules, declarative groups, and role assignments are applied. |
+| `MappingsReady` | False | `NoMappingRules` | Federation: `spec.mappings` is empty. |
+| `MappingsReady` | False | `RoleOrProjectNotFound` | Federation: a role assignment references a role, project, or project domain that does not exist (yet); retried on a bounded poll. |
+| `MappingsReady` | False | `IdentityAPIError` | Federation: a mapping/group/assignment call failed. |
+| `ConfigProjected` | True | `ConfigProjected` | LDAP: the Keystone Deployment's `domains` volume Secret carries this backend's `keystone.<domain>.conf`. OIDC: the federation Secret mounted by the sidecar carries this backend's client document. SAML: the federation Secret carries this backend's IdP-metadata document. |
 | `ConfigProjected` | False | `WaitingForProjection` | The projection has not landed in the Deployment yet. |
 | `Ready` | True | `AllReady` | Both sub-conditions are True. |
 | `Ready` | False | `NotAllReady` | At least one sub-condition is not True. |
@@ -441,12 +480,13 @@ finalizer:
 
 Schema-layer rules (CEL / kubebuilder markers, enforced by the API server
 even when the webhook is down): keystoneRef / type / domain.name /
-domain.mode transition rules, the type-vs-ldap and type-vs-oidc unions, the
-type-gating of `mappings`/`groups` (OIDC) and `extraOptions` (LDAP), the
-Default-domain rejection, the URL scheme patterns, the
-providerMetadataURL-vs-endpoints exclusivity, the
-project-vs-domain exclusivity on role assignments, and the domain-name /
-identity-provider-name grammars.
+domain.mode transition rules, the type-vs-ldap, type-vs-oidc, and
+type-vs-saml unions, the type-gating of `mappings`/`groups` (federation) and
+`extraOptions` (LDAP), the Default-domain rejection, the URL scheme patterns,
+the providerMetadataURL-vs-endpoints exclusivity, the SAML metadata
+exactly-one-source rule, the project-vs-domain exclusivity on role
+assignments, and the domain-name / identity-provider-name / forwardAttributes
+grammars.
 
 Webhook rules (defense-in-depth plus the rules CEL cannot express):
 domain-name uniqueness per referenced Keystone (case-insensitive, via a
@@ -474,6 +514,18 @@ documents embed. The federation render re-validates those values (plus the
 Secret-sourced client secret path) as the last line of defense, mirroring
 the LDAP contract.
 
+SAML-specific webhook rules: the fixed data-key contracts on the
+`idpMetadata.secretRef` (`idp-metadata.xml`) and `sp.certificateSecretRef`
+(`tls.crt` / `tls.key`) references, the exactly-one metadata source, the
+metadata URL scheme, the `HTTP_`-prefixed `remoteIDAttribute` (it must be
+header-conveyable across the sidecar hop), the `protocolID` section-collision
+guard (it becomes a `[<protocolID>]` keystone.conf section), the
+`forwardAttributes` charset/uniqueness, inline-metadata entityID matching,
+the identity-provider-name uniqueness **across every federation sibling**
+(OIDC and SAML), and the at-most-one-SAML-backend-per-Keystone rule. The SAML
+render re-validates the config-embedded values and re-checks the resolved
+IdP-metadata entityID as the last line of defense.
+
 ## Chainsaw E2E Tests
 
 The rejection corpus lives in `tests/e2e/keystone/invalid-identitybackend-cr/`
@@ -485,7 +537,10 @@ in-suite two-realm Keycloak fixture, federation-object provisioning, the
 sidecar rollout, the bearer/CLI and browser websso flows, the multi-realm
 proof, and clean detach — lives in `tests/e2e/keystone/oidc-federation/`;
 chaos coverage (sidecar container-kill, IdP outage) lives in
-`tests/e2e-chaos/keystone-federation/`. See
+`tests/e2e-chaos/keystone-federation/`. The SAML federation flow — in-suite
+Keycloak SAML realm, federation-object provisioning, the mellon sidecar
+rollout, the SP-metadata export, OIDC/SAML coexistence, and clean detach —
+lives in `tests/e2e/keystone/saml-federation/`. See
 [Keystone E2E Test Suites](../testing/keystone-e2e-tests.md).
 
 ## Retained Artefacts
