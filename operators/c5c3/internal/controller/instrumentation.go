@@ -31,6 +31,7 @@ var subReconcilerConditionTypes = map[string]string{
 	"AdminCredential": conditionTypeAdminCredentialReady,
 	"AdminPassword":   conditionTypeAdminPasswordReady,
 	"Catalog":         conditionTypeCatalogReady,
+	"ServiceAccounts": conditionTypeServiceAccountsReady,
 }
 
 // subReconcilerMetrics holds the shared sub-reconciler instrumentation metrics

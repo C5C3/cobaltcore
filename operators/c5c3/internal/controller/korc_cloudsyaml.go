@@ -167,7 +167,19 @@ func buildAppCredCloudsYAML(cp *c5c3v1alpha1.ControlPlane, acID, secret string) 
 //
 // The cloud key is quoted for the reason korcCloudName documents.
 func buildPasswordCloudsYAML(cp *c5c3v1alpha1.ControlPlane, password string) string {
-	domain := adminDomainName(cp)
+	return buildServiceAccountCloudsYAML(cp, adminUserName(cp), adminProjectName(cp), adminDomainName(cp), password)
+}
+
+// buildServiceAccountCloudsYAML assembles a ready-to-use password-based
+// clouds.yaml for one declared service account, so an external consumer reading
+// the materialized Secret gets a document it can authenticate with directly. It
+// mirrors buildPasswordCloudsYAML but takes the per-account identity (userName,
+// projectName, the single domain feeding both domain keys) rather than the admin
+// identity; cloud key, auth_url, endpoint_type and region_name come from the same
+// mode-aware resolvers so the account authenticates against the same Keystone the
+// control plane does. The cloud key is quoted for the reason korcCloudName
+// documents.
+func buildServiceAccountCloudsYAML(cp *c5c3v1alpha1.ControlPlane, userName, projectName, domainName, password string) string {
 	return fmt.Sprintf(`clouds:
   %q:
     auth:
@@ -180,7 +192,7 @@ func buildPasswordCloudsYAML(cp *c5c3v1alpha1.ControlPlane, password string) str
     region_name: %q
     endpoint_type: %s
     identity_api_version: 3
-`, korcCloudName(cp), korcAuthURL(cp), adminUserName(cp), password,
-		adminProjectName(cp), domain, domain,
+`, korcCloudName(cp), korcAuthURL(cp), userName, password,
+		projectName, domainName, domainName,
 		korcRegion(cp), korcEndpointType(cp))
 }

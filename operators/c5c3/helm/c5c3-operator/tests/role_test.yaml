@@ -300,7 +300,7 @@ tests:
               - patch
               - delete
 
-  - it: should grant full CRUD on k-orc applicationcredentials, services, endpoints, users, domains
+  - it: should grant full CRUD on k-orc applicationcredentials, services, endpoints, users, domains, projects
     set:
       rbac:
         namespaceScoped: true
@@ -318,6 +318,7 @@ tests:
               - endpoints
               - users
               - domains
+              - projects
             verbs:
               - get
               - list

@@ -63,6 +63,7 @@ const (
 	conditionTypeAdminCredentialReady = "AdminCredentialReady" //nolint:gosec // G101 false positive: condition type name, not a credential.
 	conditionTypeAdminPasswordReady   = "AdminPasswordReady"   //nolint:gosec // G101 false positive: condition type name, not a credential.
 	conditionTypeCatalogReady         = "CatalogReady"
+	conditionTypeServiceAccountsReady = "ServiceAccountsReady" //nolint:gosec // G101 false positive: condition type name, not a credential.
 	conditionTypeReady                = "Ready"
 )
 
@@ -87,6 +88,7 @@ var subConditionTypes = []string{
 	conditionTypeAdminCredentialReady,
 	conditionTypeAdminPasswordReady,
 	conditionTypeCatalogReady,
+	conditionTypeServiceAccountsReady,
 }
 
 // ControlPlaneReconciler reconciles a ControlPlane object.
@@ -116,7 +118,7 @@ type ControlPlaneReconciler struct {
 // +kubebuilder:rbac:groups=keystone.openstack.c5c3.io,resources=keystones,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=keystone.openstack.c5c3.io,resources=keystoneidentitybackends,verbs=get;list;watch
 // +kubebuilder:rbac:groups=horizon.openstack.c5c3.io,resources=horizons,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=openstack.k-orc.cloud,resources=applicationcredentials;services;endpoints;users;domains,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=openstack.k-orc.cloud,resources=applicationcredentials;services;endpoints;users;domains;projects,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=external-secrets.io,resources=externalsecrets;pushsecrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=external-secrets.io,resources=clustersecretstores,verbs=get;list;watch
 // +kubebuilder:rbac:groups=generators.external-secrets.io,resources=vaultdynamicsecrets,verbs=get;list;watch;create;update;patch;delete
@@ -226,6 +228,12 @@ func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		}},
 		{Name: "Catalog", Fn: func(ctx context.Context) (ctrl.Result, error) {
 			return r.reconcileCatalog(ctx, &cp)
+		}},
+		// ServiceAccounts runs after Catalog: it projects managed K-ORC
+		// User/Project CRs and is gated on AdminCredentialReady, exactly like
+		// Catalog, so K-ORC can already authenticate against Keystone.
+		{Name: "ServiceAccounts", Fn: func(ctx context.Context) (ctrl.Result, error) {
+			return r.reconcileServiceAccounts(ctx, &cp)
 		}},
 	}
 
@@ -491,6 +499,7 @@ func (r *ControlPlaneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&orcv1alpha1.Endpoint{}).
 		Owns(&orcv1alpha1.User{}).
 		Owns(&orcv1alpha1.Domain{}).
+		Owns(&orcv1alpha1.Project{}).
 		Owns(memcached).
 		Owns(certificate).
 		Owns(&esov1.ExternalSecret{}).

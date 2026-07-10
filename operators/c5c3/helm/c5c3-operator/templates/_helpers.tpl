@@ -146,9 +146,10 @@ coordination.k8s.io/leases rule required for leader election.
     - patch
     - delete
 # openstack.k-orc.cloud - applicationcredentials, services, endpoints, users,
-# domains. Minted/owned by reconcileKORC and reconcileCatalog; users +
+# domains, projects. Minted/owned by reconcileKORC and reconcileCatalog; users +
 # domains are imported (unmanaged) so the admin ApplicationCredential's UserRef
-# resolves (ensureKORCAdminImports).
+# resolves (ensureKORCAdminImports); users + projects are also managed/owned by
+# reconcileServiceAccounts (spec.korc.serviceAccounts).
 - apiGroups:
     - openstack.k-orc.cloud
   resources:
@@ -157,6 +158,7 @@ coordination.k8s.io/leases rule required for leader election.
     - endpoints
     - users
     - domains
+    - projects
   verbs:
     - get
     - list

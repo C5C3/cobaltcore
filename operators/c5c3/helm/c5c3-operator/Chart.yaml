@@ -2,7 +2,7 @@ apiVersion: v2
 name: c5c3-operator
 description: A Helm chart for deploying the c5c3 ControlPlane operator
 type: application
-version: 0.7.0
+version: 0.8.0
 appVersion: "0.1.0"
 # The shared naming/label helpers and the Deployment skeleton live in the
 # operator-library library chart so they are defined once for both operator
@@ -15,6 +15,8 @@ dependencies:
 annotations:
   artifacthub.io/prerelease: "true"
   artifacthub.io/changes: |
+    - kind: added
+      description: RBAC for K-ORC projects (openstack.k-orc.cloud/projects) for the declarative service accounts (spec.korc.serviceAccounts) reconciler
     - kind: added
       description: Optional image.digest value pins the operator image by immutable digest (rendered as repository:tag@digest)
     - kind: added

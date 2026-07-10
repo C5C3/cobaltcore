@@ -270,3 +270,23 @@ func korcImportStalled(obj orcv1alpha1.ObjectWithConditions, grace time.Duration
 	}
 	return false
 }
+
+// korcImportPendingExternal reports whether an unmanaged import is currently
+// Available=False on korcImportPendingExternalMarker — i.e. K-ORC looked and did
+// NOT find the OpenStack resource the filter names. Unlike korcImportStalled it
+// applies NO grace window: for the service-account collision probe the marker is
+// the immediate "the user/project does not exist yet" signal, which is the SAFE
+// verdict (no pre-existing resource to collide with), not a misconfiguration.
+func korcImportPendingExternal(obj orcv1alpha1.ObjectWithConditions) bool {
+	if obj == nil {
+		return false
+	}
+	for _, cond := range obj.GetConditions() {
+		if cond.Type != orcv1alpha1.ConditionAvailable {
+			continue
+		}
+		return cond.Status == metav1.ConditionFalse &&
+			strings.Contains(cond.Message, korcImportPendingExternalMarker)
+	}
+	return false
+}

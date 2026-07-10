@@ -52,3 +52,21 @@ path "kv-v2/data/openstack/keystone/+/+/admin/app-credential" {
 path "kv-v2/metadata/openstack/keystone/+/+/admin/app-credential" {
   capabilities = ["create", "update", "read"]
 }
+
+# per-ControlPlane grant for the c5c3-operator's declarative service-account
+# password PushSecrets. The operator mirrors ONE password document PER declared
+# service account (spec.korc.serviceAccounts) to that account's CR-scoped KV-v2
+# path, shaped `openstack/keystone/{namespace}/{name}/service-accounts/{account}`.
+# The three `+` segments are the ControlPlane's namespace, its name, and the
+# account name (each a DNS-1123 label, so a single `+` leaf suffices). READ is
+# already granted cluster-wide for this subtree by the eso-management policy's
+# trailing glob (kv-v2/data/openstack/keystone/* — see eso-management.hcl); the
+# metadata PUT and the DeletionPolicy=Delete (the password dies with the account)
+# need the explicit grants below, exactly like the admin AC leaf above.
+path "kv-v2/data/openstack/keystone/+/+/service-accounts/+" {
+  capabilities = ["create", "update", "read", "delete"]
+}
+
+path "kv-v2/metadata/openstack/keystone/+/+/service-accounts/+" {
+  capabilities = ["create", "update", "read"]
+}

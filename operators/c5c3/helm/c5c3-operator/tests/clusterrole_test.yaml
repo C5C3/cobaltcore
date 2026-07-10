@@ -205,7 +205,7 @@ tests:
               - patch
               - delete
 
-  - it: should grant full CRUD on k-orc applicationcredentials, services, endpoints, users, domains
+  - it: should grant full CRUD on k-orc applicationcredentials, services, endpoints, users, domains, projects
     asserts:
       - contains:
           path: rules
@@ -218,6 +218,7 @@ tests:
               - endpoints
               - users
               - domains
+              - projects
             verbs:
               - get
               - list

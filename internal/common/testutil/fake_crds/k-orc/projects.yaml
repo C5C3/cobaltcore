@@ -1,0 +1,63 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Minimal fake CRD for the K-ORC (OpenStack Resource Controller) Project
+# resource (group openstack.k-orc.cloud). Used by envtest only — NOT a
+# production-grade schema. See applicationcredentials.yaml for the rationale.
+# The c5c3 reconciler projects one Project per declared service account
+# (spec.korc.serviceAccounts) — a managed create or an unmanaged reference —
+# so envtest must serve this kind or the ServiceAccounts sub-reconciler aborts
+# with a no-match error.
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: projects.openstack.k-orc.cloud
+spec:
+  group: openstack.k-orc.cloud
+  names:
+    plural: projects
+    singular: project
+    kind: Project
+    listKind: ProjectList
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true
+            status:
+              type: object
+              properties:
+                id:
+                  type: string
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                      reason:
+                        type: string
+                      message:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      observedGeneration:
+                        type: integer
+                        format: int64
+                resource:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
