@@ -329,7 +329,7 @@ func (r *KeystoneIdentityBackendReconciler) applyRoleAssignment(ctx context.Cont
 // FederationObjectsReady.
 func (r *KeystoneIdentityBackendReconciler) ensureProtocol(ctx context.Context, backend *keystonev1alpha1.KeystoneIdentityBackend, idc identity.Client) (ctrl.Result, error) {
 	idpName := backend.EffectiveIdentityProviderName()
-	protocolID := backend.EffectiveOIDCProtocolID()
+	protocolID := backend.EffectiveProtocolID()
 	mappingID := federationMappingID(backend)
 
 	existing, err := idc.GetProtocol(ctx, idpName, protocolID)
@@ -381,7 +381,7 @@ func (r *KeystoneIdentityBackendReconciler) teardownFederationObjects(ctx contex
 	idc := r.identityClient(internalAPIURL(keystone), creds)
 
 	idpName := backend.EffectiveIdentityProviderName()
-	protocolID := backend.EffectiveOIDCProtocolID()
+	protocolID := backend.EffectiveProtocolID()
 	mappingID := federationMappingID(backend)
 
 	if err := idc.DeleteProtocol(ctx, idpName, protocolID); err != nil && !errors.Is(err, identity.ErrNotFound) {

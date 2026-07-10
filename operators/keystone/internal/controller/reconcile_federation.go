@@ -310,7 +310,7 @@ func validateOIDCRenderInputs(backend *keystonev1alpha1.KeystoneIdentityBackend)
 	o := backend.Spec.OIDC
 	values := []string{
 		o.Issuer, o.ProviderMetadataURL, o.ClientID,
-		backend.EffectiveIdentityProviderName(), backend.EffectiveOIDCProtocolID(),
+		backend.EffectiveIdentityProviderName(), backend.EffectiveProtocolID(),
 		backend.EffectiveRemoteIDAttribute(),
 		effectiveOIDCResponseType(o),
 		effectiveOIDCSessionType(o), effectiveOIDCStateInputHeaders(o),
@@ -730,7 +730,7 @@ func (r *KeystoneReconciler) renderOIDCBackend(ctx context.Context, keystone *ke
 	return oidcRender{
 		backendName:       backend.Name,
 		idpName:           backend.EffectiveIdentityProviderName(),
-		protocolID:        backend.EffectiveOIDCProtocolID(),
+		protocolID:        backend.EffectiveProtocolID(),
 		issuer:            o.Issuer,
 		metadataBasename:  issuerToMetadataBasename(o.Issuer),
 		provider:          provider,

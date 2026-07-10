@@ -5,6 +5,9 @@
 package v1alpha1
 
 import (
+	"encoding/xml"
+	"fmt"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	commonv1 "github.com/c5c3/forge/internal/common/types"
@@ -42,8 +45,8 @@ type KeystoneIdentityBackendList struct {
 }
 
 // IdentityBackendType enumerates the supported backend drivers. Phase 1
-// shipped LDAP; Phase 2 adds OIDC federation. SAML follows in a later phase.
-// +kubebuilder:validation:Enum=LDAP;OIDC
+// shipped LDAP; Phase 2 adds OIDC federation; Phase 3 adds SAML federation.
+// +kubebuilder:validation:Enum=LDAP;OIDC;SAML
 type IdentityBackendType string
 
 const (
@@ -54,6 +57,11 @@ const (
 	// provider, mapping, protocol) and the keystone-side sub-reconciler
 	// projects the mod_auth_openidc proxy configuration.
 	IdentityBackendTypeOIDC IdentityBackendType = "OIDC"
+	// IdentityBackendTypeSAML selects a SAML federation backend: the same
+	// federation objects and sidecar as OIDC, but the keystone-side
+	// sub-reconciler projects a mod_auth_mellon configuration and the operator
+	// generates the SP key and metadata for out-of-band IdP registration.
+	IdentityBackendTypeSAML IdentityBackendType = "SAML"
 )
 
 // KeystoneIdentityBackendSpec defines the desired state of
@@ -63,17 +71,18 @@ const (
 // attachment immutable: re-pointing a backend at a different Keystone would
 // leave the old deployment with a provisioned domain nothing manages anymore
 // and race the config projection on the new one. Delete and recreate instead.
-// The type/ldap and type/oidc union rules enforce "exactly one backend block
-// per type" at the schema layer so it holds even when the validating webhook
-// is down. mappings/groups are federation vocabulary (OIDC-only for now) and
-// extraOptions is documented [ldap] vocabulary, so both are type-gated at the
-// schema layer too.
+// The type/ldap, type/oidc, and type/saml union rules enforce "exactly one
+// backend block per type" at the schema layer so it holds even when the
+// validating webhook is down. mappings/groups are federation vocabulary (OIDC
+// or SAML) and extraOptions is documented [ldap] vocabulary, so both are
+// type-gated at the schema layer too.
 // +kubebuilder:validation:XValidation:rule="self.keystoneRef.name == oldSelf.keystoneRef.name",message="keystoneRef is immutable"
 // +kubebuilder:validation:XValidation:rule="self.type == oldSelf.type",message="type is immutable"
 // +kubebuilder:validation:XValidation:rule="(self.type == 'LDAP') == has(self.ldap)",message="exactly one backend block matching spec.type must be set (type LDAP requires spec.ldap)"
 // +kubebuilder:validation:XValidation:rule="(self.type == 'OIDC') == has(self.oidc)",message="exactly one backend block matching spec.type must be set (type OIDC requires spec.oidc)"
-// +kubebuilder:validation:XValidation:rule="!has(self.mappings) || self.type == 'OIDC'",message="mappings are only supported on federation backends (type OIDC)"
-// +kubebuilder:validation:XValidation:rule="!has(self.groups) || self.type == 'OIDC'",message="groups are only supported on federation backends (type OIDC)"
+// +kubebuilder:validation:XValidation:rule="(self.type == 'SAML') == has(self.saml)",message="exactly one backend block matching spec.type must be set (type SAML requires spec.saml)"
+// +kubebuilder:validation:XValidation:rule="!has(self.mappings) || self.type != 'LDAP'",message="mappings are only supported on federation backends (type OIDC or SAML)"
+// +kubebuilder:validation:XValidation:rule="!has(self.groups) || self.type != 'LDAP'",message="groups are only supported on federation backends (type OIDC or SAML)"
 // +kubebuilder:validation:XValidation:rule="!has(self.extraOptions) || self.type == 'LDAP'",message="extraOptions carries [ldap] section options and is only supported on type LDAP"
 type KeystoneIdentityBackendSpec struct {
 	// KeystoneRef names the Keystone CR in the same namespace this backend
@@ -98,9 +107,15 @@ type KeystoneIdentityBackendSpec struct {
 	// +optional
 	OIDC *OIDCBackendSpec `json:"oidc,omitempty"`
 
+	// SAML configures a SAML 2.0 federation backend. Required exactly when
+	// type is SAML (union rule above).
+	// +optional
+	SAML *SAMLBackendSpec `json:"saml,omitempty"`
+
 	// Mappings are the keystone federation mapping rules applied to the
 	// backend's protocol. Each rule maps remote assertion attributes (the
-	// HTTP_OIDC_* claim headers mod_auth_openidc passes into the WSGI environ)
+	// HTTP_OIDC_* claim headers mod_auth_openidc passes into the WSGI environ,
+	// or the HTTP_MELLON_* attribute headers mod_auth_mellon passes for SAML)
 	// to local users, groups, and projects. The typed shape mirrors keystone's
 	// mapping-rule JSON one-to-one (see the reference documentation for the
 	// field correspondence); no free-form escape hatch is provided because the
@@ -371,6 +386,21 @@ const (
 // DefaultOIDCScopes are the scopes requested when spec.oidc.scopes is empty.
 var DefaultOIDCScopes = []string{"openid", "email", "profile"}
 
+// SAML defaulting constants. The defaulting webhook materializes them; the
+// +kubebuilder:default markers on the fields keep the same literals as
+// defense-in-depth for callers that bypass the webhook (e.g. envtest).
+const (
+	// DefaultSAMLProtocolID is the keystone federation protocol ID for SAML
+	// backends. keystone's SAML federation convention is "mapped".
+	DefaultSAMLProtocolID = "mapped"
+	// DefaultSAMLRemoteIDAttribute is the WSGI environ key carrying the asserted
+	// IdP entityID. mod_auth_mellon exports MELLON_IDP; because the assertion
+	// crosses the sidecar → uWSGI HTTP hop (mellon env var → request header →
+	// WSGI environ), the environ key gains the HTTP_ prefix — HTTP_MELLON_IDP —
+	// consistent with the HTTP_OIDC_* spelling on the OIDC path.
+	DefaultSAMLRemoteIDAttribute = "HTTP_MELLON_IDP"
+)
+
 // OIDCSessionType selects the mod_auth_openidc session storage.
 // client-cookie keeps the whole session in the browser cookie (HA-safe: no
 // shared server-side cache across replicas); client-cookie-persistent is the
@@ -558,6 +588,112 @@ type OIDCIntrospectionSpec struct {
 	// until a CA-bundle field ships. Defaults to true (verify).
 	// +optional
 	TLSVerify *bool `json:"tlsVerify,omitempty"`
+}
+
+// SAMLBackendSpec configures a SAML 2.0 federation backend for one domain: the
+// IdP entityID and metadata, the operator-managed (or operator-generated)
+// service-provider key/metadata, and the keystone federation protocol knobs.
+// The same sidecar and federation-object machinery as the OIDC backend is
+// reused; mod_auth_mellon replaces mod_auth_openidc for the SAML flows.
+//
+// Kept deliberately thin: at most one SAML backend per Keystone
+// (webhook-enforced) because the mellon SP configuration projects onto a
+// shared /v3 parent Location.
+type SAMLBackendSpec struct {
+	// IdPEntityID is the SAML identity provider's entityID exactly as the IdP
+	// asserts it. It is registered as the keystone identity provider's remote
+	// ID (matched against the assertion's issuer) and cross-checked against the
+	// entityID inside the IdP metadata. entityIDs are frequently URLs but may
+	// also be URNs, so no scheme pattern is enforced.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=512
+	IdPEntityID string `json:"idpEntityID"`
+
+	// IdPMetadata supplies the IdP's SAML metadata (EntityDescriptor XML)
+	// inline, by Secret reference, or by URL (operator-fetched through the
+	// hardened SSRF-guarded client). Exactly one source must be set.
+	IdPMetadata SAMLIdPMetadataSpec `json:"idpMetadata"`
+
+	// SP optionally supplies the service-provider signing key and certificate.
+	// When nil, the operator generates a self-signed keypair once and never
+	// rotates it (regeneration would invalidate the out-of-band IdP
+	// registration).
+	// +optional
+	SP *SAMLSPSpec `json:"sp,omitempty"`
+
+	// ProtocolID is the keystone federation protocol ID the websso/auth URLs
+	// embed (…/protocols/<protocolID>/websso). Defaults to "mapped".
+	// +kubebuilder:default=mapped
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9_-]+$`
+	// +kubebuilder:validation:MaxLength=64
+	// +optional
+	ProtocolID string `json:"protocolID,omitempty"`
+
+	// IdentityProviderName is the keystone identity provider ID this backend
+	// provisions. Defaults to the CR name. Unique per referenced Keystone
+	// (webhook-enforced) because it is a path segment of the federation API
+	// objects and the protected websso/auth Locations.
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9_-]+$`
+	// +kubebuilder:validation:MaxLength=64
+	// +optional
+	IdentityProviderName string `json:"identityProviderName,omitempty"`
+
+	// RemoteIDAttribute is the WSGI environ key keystone reads the asserted IdP
+	// entityID from (the per-protocol [<protocolID>] remote_id_attribute).
+	// Defaults to HTTP_MELLON_IDP (mod_auth_mellon's MELLON_IDP env var seen
+	// across the sidecar → uWSGI hop). Because it is conveyed as a request
+	// header it must keep the HTTP_ prefix (webhook-enforced).
+	// +kubebuilder:default=HTTP_MELLON_IDP
+	// +kubebuilder:validation:MaxLength=128
+	// +optional
+	RemoteIDAttribute string `json:"remoteIDAttribute,omitempty"`
+
+	// ForwardAttributes lists SAML assertion attribute names the proxy forwards
+	// to keystone as MELLON-<attr> request headers so the mapping rules can
+	// match them (as HTTP_MELLON_<ATTR>). Attribute names are case-sensitive
+	// and forwarded verbatim; the header spelling uppercases them.
+	// +kubebuilder:validation:MaxItems=32
+	// +kubebuilder:validation:items:Pattern=`^[A-Za-z0-9_]+$`
+	// +optional
+	ForwardAttributes []string `json:"forwardAttributes,omitempty"`
+}
+
+// SAMLIdPMetadataSpec supplies the IdP's SAML metadata by exactly one of three
+// sources (CEL rule below plus webhook defense-in-depth).
+// +kubebuilder:validation:XValidation:rule="[has(self.inline), has(self.secretRef), has(self.url)].filter(x, x).size() == 1",message="exactly one of inline, secretRef, or url must be set"
+type SAMLIdPMetadataSpec struct {
+	// Inline is the raw IdP EntityDescriptor XML. The operator validates that
+	// its entityID matches idpEntityID at admission.
+	// +kubebuilder:validation:MaxLength=65536
+	// +optional
+	Inline string `json:"inline,omitempty"`
+
+	// SecretRef references the Secret holding the IdP metadata under the fixed
+	// data key "idp-metadata.xml". The key field must stay empty — the data key
+	// is fixed by contract (webhook-enforced).
+	// +optional
+	SecretRef *commonv1.SecretRefSpec `json:"secretRef,omitempty"`
+
+	// URL points at the IdP metadata document; the operator fetches it at
+	// reconcile time through the hardened SSRF-guarded client. https:// is
+	// mandatory: the metadata carries the assertion-signing certificate
+	// mod_auth_mellon trusts, so a plaintext fetch would let an on-path attacker
+	// substitute the trust anchor and forge assertions.
+	// +kubebuilder:validation:Pattern=`^https://`
+	// +kubebuilder:validation:MaxLength=512
+	// +optional
+	URL string `json:"url,omitempty"`
+}
+
+// SAMLSPSpec supplies the service-provider signing key and certificate.
+type SAMLSPSpec struct {
+	// CertificateSecretRef references a kubernetes.io/tls-shaped Secret holding
+	// the SP certificate and private key under the fixed data keys "tls.crt"
+	// and "tls.key" — exactly what a cert-manager Certificate emits. The key
+	// field must stay empty — the data keys are fixed by contract
+	// (webhook-enforced). When nil, the operator generates a self-signed
+	// keypair once.
+	CertificateSecretRef *commonv1.SecretRefSpec `json:"certificateSecretRef,omitempty"`
 }
 
 // MappingRuleSpec is one keystone federation mapping rule: remote assertion
@@ -794,9 +930,10 @@ type KeystoneIdentityBackendStatus struct {
 	// Conditions represent the latest available observations of the backend
 	// state: DomainReady (the referenced domain exists / was provisioned),
 	// ConfigProjected (the rendered per-domain config is wired into the
-	// running Keystone Deployment), for OIDC backends FederationObjectsReady
-	// (identity provider + protocol upserted) and MappingsReady (mapping
-	// rules, groups, and role assignments applied), and the aggregate Ready.
+	// running Keystone Deployment), for federation backends (OIDC and SAML)
+	// FederationObjectsReady (identity provider + protocol upserted) and
+	// MappingsReady (mapping rules, groups, and role assignments applied), and
+	// the aggregate Ready.
 	// +optional
 	// +patchMergeKey=type
 	// +patchStrategy=merge
@@ -815,36 +952,113 @@ type KeystoneIdentityBackendStatus struct {
 	// created, never a same-named foreign one.
 	// +optional
 	DomainID string `json:"domainID,omitempty"`
+
+	// SAMLSPMetadataSecretName names the Secret carrying the generated SP
+	// metadata (data keys "sp-metadata.xml" and "entityID") for a SAML backend,
+	// so an operator can register the service provider with the IdP out of
+	// band. Empty for non-SAML backends and until the SP material first
+	// resolves.
+	// +optional
+	SAMLSPMetadataSecretName string `json:"samlSPMetadataSecretName,omitempty"`
 }
 
-// EffectiveIdentityProviderName returns spec.oidc.identityProviderName,
-// falling back to the CR name (the documented default). The defaulting
-// webhook materializes the value at admission; this helper keeps the
+// IsFederationType reports whether the backend is a federation backend (OIDC
+// or SAML) — the two types that provision keystone federation API objects and
+// project a proxy configuration into the sidecar.
+func (b *KeystoneIdentityBackend) IsFederationType() bool {
+	return b.Spec.Type == IdentityBackendTypeOIDC || b.Spec.Type == IdentityBackendTypeSAML
+}
+
+// FederationRemoteID returns the remote ID registered on the keystone identity
+// provider: the OIDC issuer for an OIDC backend, the IdP entityID for a SAML
+// backend. Empty for a non-federation backend.
+func (b *KeystoneIdentityBackend) FederationRemoteID() string {
+	switch {
+	case b.Spec.OIDC != nil:
+		return b.Spec.OIDC.Issuer
+	case b.Spec.SAML != nil:
+		return b.Spec.SAML.IdPEntityID
+	default:
+		return ""
+	}
+}
+
+// EffectiveIdentityProviderName returns the identity provider name from the
+// federation block, falling back to the CR name (the documented default). The
+// defaulting webhook materializes the value at admission; this helper keeps the
 // controller and the sibling-uniqueness check correct for CRs that bypassed
 // it (envtest, direct unit invocation).
 func (b *KeystoneIdentityBackend) EffectiveIdentityProviderName() string {
 	if b.Spec.OIDC != nil && b.Spec.OIDC.IdentityProviderName != "" {
 		return b.Spec.OIDC.IdentityProviderName
 	}
+	if b.Spec.SAML != nil && b.Spec.SAML.IdentityProviderName != "" {
+		return b.Spec.SAML.IdentityProviderName
+	}
 	return b.Name
 }
 
-// EffectiveOIDCProtocolID returns spec.oidc.protocolID, falling back to the
-// documented default ("openid").
-func (b *KeystoneIdentityBackend) EffectiveOIDCProtocolID() string {
-	if b.Spec.OIDC != nil && b.Spec.OIDC.ProtocolID != "" {
-		return b.Spec.OIDC.ProtocolID
+// EffectiveProtocolID returns the keystone federation protocol ID for the
+// backend's type, falling back to the documented default ("openid" for OIDC,
+// "mapped" for SAML).
+func (b *KeystoneIdentityBackend) EffectiveProtocolID() string {
+	switch {
+	case b.Spec.OIDC != nil:
+		if b.Spec.OIDC.ProtocolID != "" {
+			return b.Spec.OIDC.ProtocolID
+		}
+		return DefaultOIDCProtocolID
+	case b.Spec.SAML != nil:
+		if b.Spec.SAML.ProtocolID != "" {
+			return b.Spec.SAML.ProtocolID
+		}
+		return DefaultSAMLProtocolID
+	default:
+		return ""
 	}
-	return DefaultOIDCProtocolID
 }
 
-// EffectiveRemoteIDAttribute returns spec.oidc.remoteIDAttribute, falling
-// back to the documented default (HTTP_OIDC_ISS).
+// EffectiveRemoteIDAttribute returns the WSGI environ key keystone reads the
+// asserted remote ID from, falling back to the documented default per type
+// (HTTP_OIDC_ISS for OIDC, HTTP_MELLON_IDP for SAML).
 func (b *KeystoneIdentityBackend) EffectiveRemoteIDAttribute() string {
-	if b.Spec.OIDC != nil && b.Spec.OIDC.RemoteIDAttribute != "" {
-		return b.Spec.OIDC.RemoteIDAttribute
+	switch {
+	case b.Spec.OIDC != nil:
+		if b.Spec.OIDC.RemoteIDAttribute != "" {
+			return b.Spec.OIDC.RemoteIDAttribute
+		}
+		return DefaultOIDCRemoteIDAttribute
+	case b.Spec.SAML != nil:
+		if b.Spec.SAML.RemoteIDAttribute != "" {
+			return b.Spec.SAML.RemoteIDAttribute
+		}
+		return DefaultSAMLRemoteIDAttribute
+	default:
+		return DefaultOIDCRemoteIDAttribute
 	}
-	return DefaultOIDCRemoteIDAttribute
+}
+
+// SAMLEntityIDFromMetadata extracts the entityID from a single SAML
+// EntityDescriptor document. It rejects an EntitiesDescriptor aggregate (which
+// carries several entityIDs) so a multi- or mismatched-provider document can
+// never silently bind the login flow to a foreign provider. Shared by the
+// validating webhook (inline-metadata entityID check) and the keystone-side
+// SAML renderer (resolved-metadata entityID check).
+func SAMLEntityIDFromMetadata(document []byte) (string, error) {
+	var root struct {
+		XMLName  xml.Name
+		EntityID string `xml:"entityID,attr"`
+	}
+	if err := xml.Unmarshal(document, &root); err != nil {
+		return "", fmt.Errorf("parsing SAML metadata XML: %w", err)
+	}
+	if root.XMLName.Local != "EntityDescriptor" {
+		return "", fmt.Errorf("expected a single EntityDescriptor, got %q", root.XMLName.Local)
+	}
+	if root.EntityID == "" {
+		return "", fmt.Errorf("EntityDescriptor carries no entityID attribute")
+	}
+	return root.EntityID, nil
 }
 
 func init() {

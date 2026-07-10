@@ -96,6 +96,17 @@ func (w *KeystoneIdentityBackendWebhook) Default(_ context.Context, obj *Keyston
 			o.ProviderMetadataURL = strings.TrimRight(o.Issuer, "/") + "/.well-known/openid-configuration"
 		}
 	}
+	if s := obj.Spec.SAML; s != nil {
+		if s.ProtocolID == "" {
+			s.ProtocolID = DefaultSAMLProtocolID
+		}
+		if s.IdentityProviderName == "" {
+			s.IdentityProviderName = obj.Name
+		}
+		if s.RemoteIDAttribute == "" {
+			s.RemoteIDAttribute = DefaultSAMLRemoteIDAttribute
+		}
+	}
 	return nil
 }
 
@@ -204,20 +215,27 @@ func (w *KeystoneIdentityBackendWebhook) validate(ctx context.Context, b *Keysto
 			"exactly one backend block matching spec.type must be set (type OIDC requires spec.oidc)",
 		))
 	}
-
-	// mappings/groups are federation vocabulary; extraOptions is documented
-	// [ldap] vocabulary. Both are type-gated (defense-in-depth beside the
-	// spec-level CEL rules).
-	if len(b.Spec.Mappings) > 0 && b.Spec.Type != IdentityBackendTypeOIDC {
+	if (b.Spec.Type == IdentityBackendTypeSAML) != (b.Spec.SAML != nil) {
 		allErrs = append(allErrs, field.Invalid(
-			specPath.Child("mappings"), b.Spec.Type,
-			"mappings are only supported on federation backends (type OIDC)",
+			specPath.Child("saml"),
+			b.Spec.Type,
+			"exactly one backend block matching spec.type must be set (type SAML requires spec.saml)",
 		))
 	}
-	if len(b.Spec.Groups) > 0 && b.Spec.Type != IdentityBackendTypeOIDC {
+
+	// mappings/groups are federation vocabulary (OIDC or SAML); extraOptions is
+	// documented [ldap] vocabulary. Both are type-gated (defense-in-depth
+	// beside the spec-level CEL rules).
+	if len(b.Spec.Mappings) > 0 && b.Spec.Type == IdentityBackendTypeLDAP {
+		allErrs = append(allErrs, field.Invalid(
+			specPath.Child("mappings"), b.Spec.Type,
+			"mappings are only supported on federation backends (type OIDC or SAML)",
+		))
+	}
+	if len(b.Spec.Groups) > 0 && b.Spec.Type == IdentityBackendTypeLDAP {
 		allErrs = append(allErrs, field.Invalid(
 			specPath.Child("groups"), b.Spec.Type,
-			"groups are only supported on federation backends (type OIDC)",
+			"groups are only supported on federation backends (type OIDC or SAML)",
 		))
 	}
 	if len(b.Spec.ExtraOptions) > 0 && b.Spec.Type != IdentityBackendTypeLDAP {
@@ -249,6 +267,9 @@ func (w *KeystoneIdentityBackendWebhook) validate(ctx context.Context, b *Keysto
 	}
 	if b.Spec.OIDC != nil {
 		allErrs = append(allErrs, w.validateOIDC(specPath.Child("oidc"), b.Spec.OIDC)...)
+	}
+	if b.Spec.SAML != nil {
+		allErrs = append(allErrs, w.validateSAML(specPath.Child("saml"), b.Spec.SAML)...)
 	}
 
 	allErrs = append(allErrs, w.validateMappings(specPath.Child("mappings"), b.Spec.Mappings)...)
@@ -528,6 +549,126 @@ func (w *KeystoneIdentityBackendWebhook) validateOIDC(oidcPath *field.Path, o *O
 	return errs
 }
 
+// samlReservedSections enumerates the keystone.conf section names the config
+// renderer (reconcile_config.go) owns. A SAML backend's protocolID becomes a
+// [<protocolID>] section (carrying the per-protocol remote_id_attribute), so it
+// must not collide with any of these or the render would clobber an
+// operator-owned section. Keep this in sync with reconcileConfig's defaults map.
+var samlReservedSections = map[string]struct{}{
+	"DEFAULT": {}, "database": {}, "cache": {}, "memcache": {}, "identity": {},
+	"token": {}, "fernet_tokens": {}, "credential": {}, "auth": {},
+	"federation": {}, "openid": {}, "paste_deploy": {},
+	"oslo_middleware": {}, "oslo_policy": {},
+}
+
+// samlRemoteIDAttributePattern requires the HTTP_ prefix: the mellon env var
+// crosses the sidecar → uWSGI HTTP hop as a request header, so the WSGI environ
+// key keystone reads must be header-conveyable.
+var samlRemoteIDAttributePattern = regexp.MustCompile(`^HTTP_[A-Za-z0-9_]+$`)
+
+// samlForwardAttributePattern is the allowlist for forwarded assertion
+// attribute names: they render into Apache RequestHeader directives, so the
+// charset guard closes the same injection vector the mapping remote-type guard
+// closes.
+var samlForwardAttributePattern = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
+
+// validateSAML checks the SAML block: idpEntityID presence, control characters
+// in every value rendered into the Apache proxy config or keystone.conf, the
+// header-conveyable remoteIDAttribute contract, the protocolID section-collision
+// guard, forwardAttributes charset/uniqueness, the exactly-one metadata source
+// (defense-in-depth beside the CEL rule), URL scheme, the fixed data-key
+// contracts on the metadata and SP-certificate Secret references, and — when
+// the metadata is inline — that its entityID matches spec.saml.idpEntityID.
+func (w *KeystoneIdentityBackendWebhook) validateSAML(samlPath *field.Path, s *SAMLBackendSpec) field.ErrorList {
+	var errs field.ErrorList
+
+	if s.IdPEntityID == "" {
+		errs = append(errs, field.Required(samlPath.Child("idpEntityID"), "idpEntityID must be set"))
+	}
+
+	// Config-injection guard: every value rendered into the Apache proxy conf
+	// or keystone.conf must not carry newline/carriage-return/double-quote. The
+	// renderer revalidates as the last line of defense.
+	checkNoCtrl := func(path *field.Path, value string) {
+		if hasControlChars(value) || strings.ContainsAny(value, `"`) {
+			errs = append(errs, field.Invalid(path, value,
+				"value must not contain newline, carriage-return, or double-quote characters"))
+		}
+	}
+	checkNoCtrl(samlPath.Child("idpEntityID"), s.IdPEntityID)
+	checkNoCtrl(samlPath.Child("protocolID"), s.ProtocolID)
+	checkNoCtrl(samlPath.Child("identityProviderName"), s.IdentityProviderName)
+	checkNoCtrl(samlPath.Child("remoteIDAttribute"), s.RemoteIDAttribute)
+
+	if s.RemoteIDAttribute != "" && !samlRemoteIDAttributePattern.MatchString(s.RemoteIDAttribute) {
+		errs = append(errs, field.Invalid(samlPath.Child("remoteIDAttribute"), s.RemoteIDAttribute,
+			"remoteIDAttribute must match ^HTTP_[A-Za-z0-9_]+$ (it is conveyed to keystone as a request header across the sidecar hop)"))
+	}
+
+	if _, reserved := samlReservedSections[s.ProtocolID]; reserved {
+		errs = append(errs, field.Invalid(samlPath.Child("protocolID"), s.ProtocolID,
+			fmt.Sprintf("protocolID %q collides with the operator-owned keystone.conf section of the same name", s.ProtocolID)))
+	}
+
+	seenAttr := map[string]struct{}{}
+	for i, attr := range s.ForwardAttributes {
+		attrPath := samlPath.Child("forwardAttributes").Index(i)
+		if !samlForwardAttributePattern.MatchString(attr) {
+			errs = append(errs, field.Invalid(attrPath, attr,
+				"forwardAttributes entry must match ^[A-Za-z0-9_]+$ (it renders into Apache header directives)"))
+			continue
+		}
+		if _, dup := seenAttr[attr]; dup {
+			errs = append(errs, field.Duplicate(attrPath, attr))
+			continue
+		}
+		seenAttr[attr] = struct{}{}
+	}
+
+	// Exactly-one metadata source (defense-in-depth beside the CEL rule).
+	m := s.IdPMetadata
+	sources := 0
+	if m.Inline != "" {
+		sources++
+	}
+	if m.SecretRef != nil {
+		sources++
+	}
+	if m.URL != "" {
+		sources++
+	}
+	if sources != 1 {
+		errs = append(errs, field.Invalid(samlPath.Child("idpMetadata"), sources,
+			"exactly one of inline, secretRef, or url must be set"))
+	}
+	if m.URL != "" && !strings.HasPrefix(m.URL, "https://") {
+		errs = append(errs, field.Invalid(samlPath.Child("idpMetadata", "url"), m.URL,
+			"url must use https:// (the IdP metadata carries the assertion-signing certificate; a plaintext fetch lets an on-path attacker substitute the trust anchor)"))
+	}
+	if m.SecretRef != nil && m.SecretRef.Key != "" {
+		errs = append(errs, field.Invalid(samlPath.Child("idpMetadata", "secretRef", "key"), m.SecretRef.Key,
+			`key must be empty: the metadata Secret's data key is fixed ("idp-metadata.xml")`))
+	}
+	if m.Inline != "" {
+		if entityID, err := SAMLEntityIDFromMetadata([]byte(m.Inline)); err != nil {
+			errs = append(errs, field.Invalid(samlPath.Child("idpMetadata", "inline"), "<xml>",
+				fmt.Sprintf("inline IdP metadata is not a single SAML EntityDescriptor: %v", err)))
+		} else if s.IdPEntityID != "" && entityID != s.IdPEntityID {
+			errs = append(errs, field.Invalid(samlPath.Child("idpMetadata", "inline"), entityID,
+				fmt.Sprintf("inline IdP metadata entityID %q does not match spec.saml.idpEntityID %q", entityID, s.IdPEntityID)))
+		}
+	}
+
+	// The SP certificate Secret's data keys are fixed by contract
+	// ("tls.crt"/"tls.key"), mirroring the LDAP/OIDC Secret contracts.
+	if s.SP != nil && s.SP.CertificateSecretRef != nil && s.SP.CertificateSecretRef.Key != "" {
+		errs = append(errs, field.Invalid(samlPath.Child("sp", "certificateSecretRef", "key"), s.SP.CertificateSecretRef.Key,
+			`key must be empty: the SP certificate Secret's data keys are fixed ("tls.crt" and "tls.key")`))
+	}
+
+	return errs
+}
+
 // validateMappings checks the mapping rules: every rule needs at least one
 // local and one remote entry, every remote matcher needs a non-empty type,
 // and remote types must be header-safe — they render into the proxy's
@@ -604,9 +745,12 @@ func (w *KeystoneIdentityBackendWebhook) validateGroups(groupsPath *field.Path, 
 //   - domain-name uniqueness (case-insensitive) per referenced Keystone — two
 //     backends projecting the same keystone.<domain>.conf would fight over
 //     one domain;
-//   - identityProviderName uniqueness per referenced Keystone — the name is a
-//     path segment of the federation API objects and the protected
-//     websso/auth Locations;
+//   - identityProviderName uniqueness across every federation sibling (OIDC and
+//     SAML) of one Keystone — the name is a path segment of the federation API
+//     objects and the protected websso/auth Locations;
+//   - at most one SAML sibling per referenced Keystone — mod_auth_mellon's SP
+//     configuration projects onto a shared /v3 parent Location, so a second
+//     SAML backend cannot coexist;
 //   - remoteIDAttribute uniformity across the OIDC siblings of one Keystone —
 //     it renders into the single [openid] section of keystone.conf;
 //   - at most one OIDC sibling with oauth2Introspection enabled —
@@ -653,16 +797,38 @@ func (w *KeystoneIdentityBackendWebhook) validateSiblingBackends(ctx context.Con
 					other.Name, b.Spec.KeystoneRef.Name),
 			))
 		}
-		if b.Spec.OIDC == nil || other.Spec.OIDC == nil {
-			continue
-		}
-		if b.EffectiveIdentityProviderName() == other.EffectiveIdentityProviderName() {
+		// The identity provider name is a keystone-global path segment shared by
+		// OIDC and SAML federation objects, so a collision between ANY two
+		// federation siblings of one Keystone is rejected (not just OIDC pairs).
+		if b.IsFederationType() && other.IsFederationType() &&
+			b.EffectiveIdentityProviderName() == other.EffectiveIdentityProviderName() {
+			idpNamePath := specPath.Child("oidc", "identityProviderName")
+			if b.Spec.SAML != nil {
+				idpNamePath = specPath.Child("saml", "identityProviderName")
+			}
 			errs = append(errs, field.Invalid(
-				specPath.Child("oidc", "identityProviderName"),
+				idpNamePath,
 				b.EffectiveIdentityProviderName(),
 				fmt.Sprintf("identity provider name collides with KeystoneIdentityBackend %q attached to the same Keystone %q",
 					other.Name, b.Spec.KeystoneRef.Name),
 			))
+		}
+
+		// At most one SAML backend per referenced Keystone: mod_auth_mellon's SP
+		// configuration projects onto the shared /v3 parent Location, so a second
+		// SAML backend cannot coexist (server-scoped like OIDCOAuth*).
+		if b.Spec.SAML != nil && other.Spec.SAML != nil {
+			errs = append(errs, field.Invalid(
+				specPath.Child("saml"),
+				b.Spec.Type,
+				fmt.Sprintf("at most one SAML backend per Keystone %q is supported (the mod_auth_mellon SP configuration projects onto a shared /v3 parent Location); KeystoneIdentityBackend %q already provides one",
+					b.Spec.KeystoneRef.Name, other.Name),
+			))
+		}
+
+		// The remaining rules are OIDC-pair-specific.
+		if b.Spec.OIDC == nil || other.Spec.OIDC == nil {
+			continue
 		}
 		if b.EffectiveRemoteIDAttribute() != other.EffectiveRemoteIDAttribute() {
 			errs = append(errs, field.Invalid(

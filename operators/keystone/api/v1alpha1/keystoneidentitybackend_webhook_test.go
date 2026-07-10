@@ -787,3 +787,322 @@ func TestIdentityBackendValidateCreate_RunsAllOIDCValidations(t *testing.T) {
 	g.Expect(msg).To(ContainSubstring("exactly one of project or domain"))
 	g.Expect(msg).To(ContainSubstring("only supported on type LDAP"))
 }
+
+// samlInlineMetadata is a minimal valid single EntityDescriptor whose entityID
+// matches validSAMLBackend()'s idpEntityID.
+const samlInlineMetadata = `<EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata" entityID="https://idp.example.com/realms/forge">` +
+	`<IDPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol"/></EntityDescriptor>`
+
+func validSAMLBackend() *KeystoneIdentityBackend {
+	return &KeystoneIdentityBackend{
+		ObjectMeta: metav1.ObjectMeta{Name: "corp-saml", Namespace: "openstack"},
+		Spec: KeystoneIdentityBackendSpec{
+			KeystoneRef: KeystoneRefSpec{Name: "keystone"},
+			Domain: DomainSpec{
+				Name:           "saml",
+				Mode:           DomainModeManage,
+				DeletionPolicy: DomainDeletionPolicyRetain,
+			},
+			Type: IdentityBackendTypeSAML,
+			SAML: &SAMLBackendSpec{
+				IdPEntityID: "https://idp.example.com/realms/forge",
+				IdPMetadata: SAMLIdPMetadataSpec{
+					SecretRef: &commonv1.SecretRefSpec{Name: "corp-saml-idp-metadata"},
+				},
+			},
+		},
+	}
+}
+
+func TestIdentityBackendDefault_MaterializesSAMLDefaults(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneIdentityBackendWebhook{}
+
+	b := validSAMLBackend()
+	g.Expect(w.Default(context.Background(), b)).To(Succeed())
+	g.Expect(b.Spec.SAML.ProtocolID).To(Equal("mapped"))
+	g.Expect(b.Spec.SAML.IdentityProviderName).To(Equal("corp-saml"))
+	g.Expect(b.Spec.SAML.RemoteIDAttribute).To(Equal("HTTP_MELLON_IDP"))
+}
+
+// Default() then validate() on a bare SAML object surfaces the genuinely
+// missing required fields, not a nil-pointer panic.
+func TestIdentityBackendDefaultThenValidate_ZeroValueSAMLObject(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneIdentityBackendWebhook{}
+
+	b := &KeystoneIdentityBackend{
+		ObjectMeta: metav1.ObjectMeta{Name: "zero-saml", Namespace: "openstack"},
+		Spec: KeystoneIdentityBackendSpec{
+			KeystoneRef: KeystoneRefSpec{Name: "keystone"},
+			Domain:      DomainSpec{Name: "saml"},
+			Type:        IdentityBackendTypeSAML,
+			SAML:        &SAMLBackendSpec{},
+		},
+	}
+	g.Expect(w.Default(context.Background(), b)).To(Succeed())
+
+	_, err := w.ValidateCreate(context.Background(), b)
+	g.Expect(err).To(HaveOccurred())
+	msg := err.Error()
+	g.Expect(msg).To(ContainSubstring("idpEntityID must be set"))
+	// A bare idpMetadata block has zero sources set.
+	g.Expect(msg).To(ContainSubstring("exactly one of inline, secretRef, or url"))
+}
+
+func TestIdentityBackendValidate_AcceptsValidSAMLBackend(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneIdentityBackendWebhook{}
+
+	b := validSAMLBackend()
+	g.Expect(w.Default(context.Background(), b)).To(Succeed())
+	_, err := w.ValidateCreate(context.Background(), b)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// Inline metadata whose entityID matches is also accepted.
+	inline := validSAMLBackend()
+	inline.Spec.SAML.IdPMetadata = SAMLIdPMetadataSpec{Inline: samlInlineMetadata}
+	g.Expect(w.Default(context.Background(), inline)).To(Succeed())
+	_, err = w.ValidateCreate(context.Background(), inline)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+func TestIdentityBackendValidate_RejectsSAMLUnionMismatch(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneIdentityBackendWebhook{}
+
+	// type SAML without spec.saml.
+	b := validSAMLBackend()
+	b.Spec.SAML = nil
+	_, err := w.ValidateCreate(context.Background(), b)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("type SAML requires spec.saml"))
+
+	// spec.saml alongside type LDAP.
+	b2 := validIdentityBackend()
+	b2.Spec.SAML = validSAMLBackend().Spec.SAML
+	_, err = w.ValidateCreate(context.Background(), b2)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("type SAML requires spec.saml"))
+}
+
+func TestIdentityBackendValidate_RejectsSAMLMetadataSourceCount(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneIdentityBackendWebhook{}
+
+	// Zero sources.
+	zero := validSAMLBackend()
+	zero.Spec.SAML.IdPMetadata = SAMLIdPMetadataSpec{}
+	_, err := w.ValidateCreate(context.Background(), zero)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("exactly one of inline, secretRef, or url"))
+
+	// Two sources.
+	two := validSAMLBackend()
+	two.Spec.SAML.IdPMetadata = SAMLIdPMetadataSpec{
+		SecretRef: &commonv1.SecretRefSpec{Name: "corp-saml-idp-metadata"},
+		URL:       "https://idp.example.com/metadata",
+	}
+	_, err = w.ValidateCreate(context.Background(), two)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("exactly one of inline, secretRef, or url"))
+}
+
+func TestIdentityBackendValidate_RejectsSAMLMetadataURLScheme(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneIdentityBackendWebhook{}
+
+	b := validSAMLBackend()
+	b.Spec.SAML.IdPMetadata = SAMLIdPMetadataSpec{URL: "ldap://not-a-metadata-url"}
+	_, err := w.ValidateCreate(context.Background(), b)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("url must use https://"))
+}
+
+// The IdP metadata document is the assertion-signing trust anchor, so a
+// plaintext http:// fetch must be rejected (unlike the OIDC endpoints, which
+// tolerate http). A valid https:// URL is accepted.
+func TestIdentityBackendValidate_RejectsSAMLMetadataURLPlaintext(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneIdentityBackendWebhook{}
+
+	plaintext := validSAMLBackend()
+	plaintext.Spec.SAML.IdPMetadata = SAMLIdPMetadataSpec{URL: "http://idp.corp.internal/metadata"}
+	g.Expect(w.Default(context.Background(), plaintext)).To(Succeed())
+	_, err := w.ValidateCreate(context.Background(), plaintext)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("url must use https://"))
+
+	secure := validSAMLBackend()
+	secure.Spec.SAML.IdPMetadata = SAMLIdPMetadataSpec{URL: "https://idp.corp.internal/metadata"}
+	g.Expect(w.Default(context.Background(), secure)).To(Succeed())
+	_, err = w.ValidateCreate(context.Background(), secure)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+func TestIdentityBackendValidate_RejectsSAMLFixedKeyContracts(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneIdentityBackendWebhook{}
+
+	metaKey := validSAMLBackend()
+	metaKey.Spec.SAML.IdPMetadata.SecretRef.Key = "custom"
+	_, err := w.ValidateCreate(context.Background(), metaKey)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring(`data key is fixed ("idp-metadata.xml")`))
+
+	certKey := validSAMLBackend()
+	certKey.Spec.SAML.SP = &SAMLSPSpec{CertificateSecretRef: &commonv1.SecretRefSpec{Name: "sp-cert", Key: "custom"}}
+	_, err = w.ValidateCreate(context.Background(), certKey)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring(`data keys are fixed ("tls.crt" and "tls.key")`))
+}
+
+func TestIdentityBackendValidate_RejectsSAMLRemoteIDAttributeWithoutHTTPPrefix(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneIdentityBackendWebhook{}
+
+	b := validSAMLBackend()
+	b.Spec.SAML.RemoteIDAttribute = "MELLON_IDP" // missing HTTP_ prefix
+	_, err := w.ValidateCreate(context.Background(), b)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("^HTTP_[A-Za-z0-9_]+$"))
+}
+
+func TestIdentityBackendValidate_RejectsSAMLProtocolIDSectionCollision(t *testing.T) {
+	w := &KeystoneIdentityBackendWebhook{}
+
+	// memcache is the section reconcileConfig writes unconditionally (the
+	// server list); a SAML protocolID of "memcache" would have its
+	// remote_id_attribute clobbered, so it must collide like every other
+	// operator-owned section.
+	for _, protocolID := range []string{"openid", "cache", "memcache"} {
+		t.Run(protocolID, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			b := validSAMLBackend()
+			b.Spec.SAML.ProtocolID = protocolID
+			_, err := w.ValidateCreate(context.Background(), b)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring("collides with the operator-owned keystone.conf section"))
+		})
+	}
+}
+
+func TestIdentityBackendValidate_RejectsSAMLForwardAttributes(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneIdentityBackendWebhook{}
+
+	bad := validSAMLBackend()
+	bad.Spec.SAML.ForwardAttributes = []string{"user-name"} // dash not allowed
+	_, err := w.ValidateCreate(context.Background(), bad)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("^[A-Za-z0-9_]+$"))
+
+	dup := validSAMLBackend()
+	dup.Spec.SAML.ForwardAttributes = []string{"username", "username"}
+	_, err = w.ValidateCreate(context.Background(), dup)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("Duplicate value"))
+}
+
+func TestIdentityBackendValidate_RejectsSAMLInlineEntityIDMismatch(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneIdentityBackendWebhook{}
+
+	mismatch := validSAMLBackend()
+	mismatch.Spec.SAML.IdPEntityID = "https://other.example.com/idp"
+	mismatch.Spec.SAML.IdPMetadata = SAMLIdPMetadataSpec{Inline: samlInlineMetadata}
+	_, err := w.ValidateCreate(context.Background(), mismatch)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("does not match spec.saml.idpEntityID"))
+
+	// An EntitiesDescriptor aggregate is rejected as not-a-single-EntityDescriptor.
+	agg := validSAMLBackend()
+	agg.Spec.SAML.IdPMetadata = SAMLIdPMetadataSpec{
+		Inline: `<EntitiesDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata"/>`,
+	}
+	_, err = w.ValidateCreate(context.Background(), agg)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("not a single SAML EntityDescriptor"))
+}
+
+// Cross-CR SAML checks: at most one SAML backend per Keystone, and the
+// identityProviderName collision rule spans OIDC and SAML siblings.
+func TestIdentityBackendValidate_SAMLSiblingChecks(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := identityBackendScheme(t)
+
+	// A second SAML backend on the same Keystone is rejected.
+	samlSibling := validSAMLBackend()
+	samlSibling.Name = "existing-saml"
+	samlSibling.Spec.Domain.Name = "saml-existing"
+	samlSibling.Spec.SAML.IdentityProviderName = "existing-saml"
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(samlSibling).Build()
+	w := &KeystoneIdentityBackendWebhook{Client: c}
+
+	b := validSAMLBackend()
+	_, err := w.ValidateCreate(context.Background(), b)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("at most one SAML backend per Keystone"))
+
+	// An OIDC sibling whose identityProviderName collides with a new SAML
+	// backend is rejected (cross-type collision).
+	oidcSibling := validOIDCBackend()
+	oidcSibling.Name = "existing-oidc"
+	oidcSibling.Spec.Domain.Name = "sso-existing"
+	oidcSibling.Spec.OIDC.IdentityProviderName = "shared-idp"
+	c2 := fake.NewClientBuilder().WithScheme(s).WithObjects(oidcSibling).Build()
+	w2 := &KeystoneIdentityBackendWebhook{Client: c2}
+
+	b2 := validSAMLBackend()
+	b2.Spec.SAML.IdentityProviderName = "shared-idp"
+	_, err = w2.ValidateCreate(context.Background(), b2)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("identity provider name collides"))
+
+	// A Terminating SAML sibling does not block a replacement.
+	terminating := validSAMLBackend()
+	terminating.Name = "terminating-saml"
+	now := metav1.Now()
+	terminating.DeletionTimestamp = &now
+	terminating.Finalizers = []string{"keystone.openstack.c5c3.io/identitybackend"}
+	c3 := fake.NewClientBuilder().WithScheme(s).WithObjects(terminating).Build()
+	w3 := &KeystoneIdentityBackendWebhook{Client: c3}
+	_, err = w3.ValidateCreate(context.Background(), validSAMLBackend())
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// Aggregate SAML test proving error accumulation across the SAML rules.
+func TestIdentityBackendValidateCreate_RunsAllSAMLValidations(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := identityBackendScheme(t)
+
+	sibling := validSAMLBackend()
+	sibling.Name = "existing-saml"
+	sibling.Spec.Domain.Name = "saml-existing"
+	sibling.Spec.SAML.IdentityProviderName = "shared-idp"
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(sibling).Build()
+	w := &KeystoneIdentityBackendWebhook{Client: c}
+
+	b := validSAMLBackend()
+	b.Spec.SAML.IdentityProviderName = "shared-idp"      // collides + second SAML
+	b.Spec.SAML.RemoteIDAttribute = "MELLON_IDP"         // missing HTTP_ prefix
+	b.Spec.SAML.ProtocolID = "federation"                // reserved section
+	b.Spec.SAML.ForwardAttributes = []string{"bad-attr"} // charset
+	b.Spec.SAML.IdPMetadata = SAMLIdPMetadataSpec{}      // zero sources
+	b.Spec.SAML.SP = &SAMLSPSpec{CertificateSecretRef: &commonv1.SecretRefSpec{Name: "sp", Key: "x"}}
+	b.Spec.Mappings = []MappingRuleSpec{{Local: []MappingLocalRuleSpec{{Groups: "{0}"}}}}
+	b.Spec.ExtraOptions = map[string]string{"page_size": "100"} // only supported on LDAP
+
+	_, err := w.ValidateCreate(context.Background(), b)
+	g.Expect(err).To(HaveOccurred())
+	msg := err.Error()
+	g.Expect(msg).To(ContainSubstring("identity provider name collides"))
+	g.Expect(msg).To(ContainSubstring("at most one SAML backend per Keystone"))
+	g.Expect(msg).To(ContainSubstring("^HTTP_[A-Za-z0-9_]+$"))
+	g.Expect(msg).To(ContainSubstring("collides with the operator-owned keystone.conf section"))
+	g.Expect(msg).To(ContainSubstring("^[A-Za-z0-9_]+$"))
+	g.Expect(msg).To(ContainSubstring("exactly one of inline, secretRef, or url"))
+	g.Expect(msg).To(ContainSubstring(`data keys are fixed ("tls.crt" and "tls.key")`))
+	g.Expect(msg).To(ContainSubstring("at least one remote entry"))
+	g.Expect(msg).To(ContainSubstring("only supported on type LDAP"))
+}

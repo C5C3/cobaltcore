@@ -1329,3 +1329,92 @@ func TestIntegration_IdentityBackendCELRejectsMappingsOnLDAP(t *testing.T) {
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("only supported on type LDAP"))
 }
+
+func validIntegrationSAMLBackend(name, namespace string) *KeystoneIdentityBackend {
+	b := validSAMLBackend()
+	b.Name = name
+	b.Namespace = namespace
+	return b
+}
+
+// TestIntegration_IdentityBackendSAMLValidCRAccepted verifies a SAML backend
+// round-trips with the schema defaults materialized even with no webhook in
+// scope (protocolID, remoteIDAttribute carry +kubebuilder:default markers).
+func TestIntegration_IdentityBackendSAMLValidCRAccepted(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+	c, ctx, _ := setupEnvTestNoWebhook(t)
+
+	b := validIntegrationSAMLBackend("corp-saml", "default")
+	g.Expect(c.Create(ctx, b)).To(Succeed())
+
+	var got KeystoneIdentityBackend
+	g.Expect(c.Get(ctx, types.NamespacedName{Name: "corp-saml", Namespace: "default"}, &got)).To(Succeed())
+	g.Expect(got.Spec.SAML.ProtocolID).To(Equal("mapped"), "schema default must materialize ProtocolID")
+	g.Expect(got.Spec.SAML.RemoteIDAttribute).To(Equal("HTTP_MELLON_IDP"), "schema default must materialize RemoteIDAttribute")
+}
+
+// TestIntegration_IdentityBackendCELRejectsSAMLUnionMismatch verifies the
+// schema-layer SAML union rule with no webhook in scope: type SAML without
+// spec.saml, and spec.saml alongside type LDAP, are both rejected by the API
+// server itself.
+func TestIntegration_IdentityBackendCELRejectsSAMLUnionMismatch(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+	c, ctx, _ := setupEnvTestNoWebhook(t)
+
+	b := validIntegrationSAMLBackend("saml-union-mismatch", "default")
+	b.Spec.SAML = nil
+	err := c.Create(ctx, b)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(apierrors.IsInvalid(err)).To(BeTrue())
+	g.Expect(err.Error()).To(ContainSubstring("type SAML requires spec.saml"))
+
+	b2 := validIntegrationIdentityBackend("ldap-with-saml", "default")
+	b2.Spec.SAML = validSAMLBackend().Spec.SAML
+	err = c.Create(ctx, b2)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("type SAML requires spec.saml"))
+}
+
+// TestIntegration_IdentityBackendCELRejectsSAMLMetadataSourceCount verifies the
+// exactly-one metadata source rule at the schema layer (the CEL is the sole
+// gate when the webhook is bypassed).
+func TestIntegration_IdentityBackendCELRejectsSAMLMetadataSourceCount(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+	c, ctx, _ := setupEnvTestNoWebhook(t)
+
+	zero := validIntegrationSAMLBackend("saml-zero-metadata", "default")
+	zero.Spec.SAML.IdPMetadata = SAMLIdPMetadataSpec{}
+	err := c.Create(ctx, zero)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("exactly one of inline, secretRef, or url"))
+
+	two := validIntegrationSAMLBackend("saml-two-metadata", "default")
+	two.Spec.SAML.IdPMetadata = SAMLIdPMetadataSpec{
+		SecretRef: &commonv1.SecretRefSpec{Name: "corp-saml-idp-metadata"},
+		URL:       "https://idp.example.com/metadata",
+	}
+	err = c.Create(ctx, two)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("exactly one of inline, secretRef, or url"))
+}
+
+// TestIntegration_IdentityBackendCELImmutableTypeSAML verifies the type
+// immutability transition rule covers SAML at the schema layer.
+func TestIntegration_IdentityBackendCELImmutableTypeSAML(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+	c, ctx, _ := setupEnvTestNoWebhook(t)
+
+	b := validIntegrationSAMLBackend("saml-immutable-type", "default")
+	g.Expect(c.Create(ctx, b)).To(Succeed())
+
+	var got KeystoneIdentityBackend
+	g.Expect(c.Get(ctx, types.NamespacedName{Name: "saml-immutable-type", Namespace: "default"}, &got)).To(Succeed())
+	got.Spec.Type = IdentityBackendTypeOIDC
+	err := c.Update(ctx, &got)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("type is immutable"))
+}

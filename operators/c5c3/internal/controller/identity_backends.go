@@ -140,7 +140,7 @@ const maxWebSSOChoiceIDLen = 64
 // a digest of the full id so distinct backends keep distinct choice ids; the
 // id is opaque to the browser, which only ever echoes it back as auth_type.
 func webSSOChoiceID(b *keystonev1alpha1.KeystoneIdentityBackend) string {
-	id := b.EffectiveIdentityProviderName() + "_" + b.EffectiveOIDCProtocolID()
+	id := b.EffectiveIdentityProviderName() + "_" + b.EffectiveProtocolID()
 	if len(id) <= maxWebSSOChoiceIDLen {
 		return id
 	}

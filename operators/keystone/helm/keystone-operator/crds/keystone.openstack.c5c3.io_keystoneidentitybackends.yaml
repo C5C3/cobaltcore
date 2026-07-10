@@ -68,11 +68,11 @@ spec:
               attachment immutable: re-pointing a backend at a different Keystone would
               leave the old deployment with a provisioned domain nothing manages anymore
               and race the config projection on the new one. Delete and recreate instead.
-              The type/ldap and type/oidc union rules enforce "exactly one backend block
-              per type" at the schema layer so it holds even when the validating webhook
-              is down. mappings/groups are federation vocabulary (OIDC-only for now) and
-              extraOptions is documented [ldap] vocabulary, so both are type-gated at the
-              schema layer too.
+              The type/ldap, type/oidc, and type/saml union rules enforce "exactly one
+              backend block per type" at the schema layer so it holds even when the
+              validating webhook is down. mappings/groups are federation vocabulary (OIDC
+              or SAML) and extraOptions is documented [ldap] vocabulary, so both are
+              type-gated at the schema layer too.
             properties:
               domain:
                 description: Domain describes the Keystone domain this backend provides.
@@ -418,7 +418,8 @@ spec:
                 description: |-
                   Mappings are the keystone federation mapping rules applied to the
                   backend's protocol. Each rule maps remote assertion attributes (the
-                  HTTP_OIDC_* claim headers mod_auth_openidc passes into the WSGI environ)
+                  HTTP_OIDC_* claim headers mod_auth_openidc passes into the WSGI environ,
+                  or the HTTP_MELLON_* attribute headers mod_auth_mellon passes for SAML)
                   to local users, groups, and projects. The typed shape mirrors keystone's
                   mapping-rule JSON one-to-one (see the reference documentation for the
                   field correspondence); no free-form escape hatch is provided because the
@@ -831,12 +832,150 @@ spec:
                 x-kubernetes-validations:
                 - message: providerMetadataURL and endpoints are mutually exclusive
                   rule: '!(has(self.providerMetadataURL) && has(self.endpoints))'
+              saml:
+                description: |-
+                  SAML configures a SAML 2.0 federation backend. Required exactly when
+                  type is SAML (union rule above).
+                properties:
+                  forwardAttributes:
+                    description: |-
+                      ForwardAttributes lists SAML assertion attribute names the proxy forwards
+                      to keystone as MELLON-<attr> request headers so the mapping rules can
+                      match them (as HTTP_MELLON_<ATTR>). Attribute names are case-sensitive
+                      and forwarded verbatim; the header spelling uppercases them.
+                    items:
+                      pattern: ^[A-Za-z0-9_]+$
+                      type: string
+                    maxItems: 32
+                    type: array
+                  identityProviderName:
+                    description: |-
+                      IdentityProviderName is the keystone identity provider ID this backend
+                      provisions. Defaults to the CR name. Unique per referenced Keystone
+                      (webhook-enforced) because it is a path segment of the federation API
+                      objects and the protected websso/auth Locations.
+                    maxLength: 64
+                    pattern: ^[A-Za-z0-9_-]+$
+                    type: string
+                  idpEntityID:
+                    description: |-
+                      IdPEntityID is the SAML identity provider's entityID exactly as the IdP
+                      asserts it. It is registered as the keystone identity provider's remote
+                      ID (matched against the assertion's issuer) and cross-checked against the
+                      entityID inside the IdP metadata. entityIDs are frequently URLs but may
+                      also be URNs, so no scheme pattern is enforced.
+                    maxLength: 512
+                    minLength: 1
+                    type: string
+                  idpMetadata:
+                    description: |-
+                      IdPMetadata supplies the IdP's SAML metadata (EntityDescriptor XML)
+                      inline, by Secret reference, or by URL (operator-fetched through the
+                      hardened SSRF-guarded client). Exactly one source must be set.
+                    properties:
+                      inline:
+                        description: |-
+                          Inline is the raw IdP EntityDescriptor XML. The operator validates that
+                          its entityID matches idpEntityID at admission.
+                        maxLength: 65536
+                        type: string
+                      secretRef:
+                        description: |-
+                          SecretRef references the Secret holding the IdP metadata under the fixed
+                          data key "idp-metadata.xml". The key field must stay empty — the data key
+                          is fixed by contract (webhook-enforced).
+                        properties:
+                          key:
+                            type: string
+                          name:
+                            description: |-
+                              Name is the referenced Secret's name. It must be a non-empty DNS-1123
+                              subdomain (the Kubernetes object-name grammar). Tightening the shared type
+                              fixes every consumer at once — keystone adminPasswordSecretRef /
+                              database.secretRef / messaging / TLS cert refs and the c5c3
+                              passwordSecretRef — so an empty name no longer slips through "required".
+                            minLength: 1
+                            pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      url:
+                        description: |-
+                          URL points at the IdP metadata document; the operator fetches it at
+                          reconcile time through the hardened SSRF-guarded client. https:// is
+                          mandatory: the metadata carries the assertion-signing certificate
+                          mod_auth_mellon trusts, so a plaintext fetch would let an on-path attacker
+                          substitute the trust anchor and forge assertions.
+                        maxLength: 512
+                        pattern: ^https://
+                        type: string
+                    type: object
+                    x-kubernetes-validations:
+                    - message: exactly one of inline, secretRef, or url must be set
+                      rule: '[has(self.inline), has(self.secretRef), has(self.url)].filter(x,
+                        x).size() == 1'
+                  protocolID:
+                    default: mapped
+                    description: |-
+                      ProtocolID is the keystone federation protocol ID the websso/auth URLs
+                      embed (…/protocols/<protocolID>/websso). Defaults to "mapped".
+                    maxLength: 64
+                    pattern: ^[A-Za-z0-9_-]+$
+                    type: string
+                  remoteIDAttribute:
+                    default: HTTP_MELLON_IDP
+                    description: |-
+                      RemoteIDAttribute is the WSGI environ key keystone reads the asserted IdP
+                      entityID from (the per-protocol [<protocolID>] remote_id_attribute).
+                      Defaults to HTTP_MELLON_IDP (mod_auth_mellon's MELLON_IDP env var seen
+                      across the sidecar → uWSGI hop). Because it is conveyed as a request
+                      header it must keep the HTTP_ prefix (webhook-enforced).
+                    maxLength: 128
+                    type: string
+                  sp:
+                    description: |-
+                      SP optionally supplies the service-provider signing key and certificate.
+                      When nil, the operator generates a self-signed keypair once and never
+                      rotates it (regeneration would invalidate the out-of-band IdP
+                      registration).
+                    properties:
+                      certificateSecretRef:
+                        description: |-
+                          CertificateSecretRef references a kubernetes.io/tls-shaped Secret holding
+                          the SP certificate and private key under the fixed data keys "tls.crt"
+                          and "tls.key" — exactly what a cert-manager Certificate emits. The key
+                          field must stay empty — the data keys are fixed by contract
+                          (webhook-enforced). When nil, the operator generates a self-signed
+                          keypair once.
+                        properties:
+                          key:
+                            type: string
+                          name:
+                            description: |-
+                              Name is the referenced Secret's name. It must be a non-empty DNS-1123
+                              subdomain (the Kubernetes object-name grammar). Tightening the shared type
+                              fixes every consumer at once — keystone adminPasswordSecretRef /
+                              database.secretRef / messaging / TLS cert refs and the c5c3
+                              passwordSecretRef — so an empty name no longer slips through "required".
+                            minLength: 1
+                            pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                            type: string
+                        required:
+                        - name
+                        type: object
+                    type: object
+                required:
+                - idpEntityID
+                - idpMetadata
+                type: object
               type:
                 description: Type selects the backend driver. Phase 1 supports LDAP
                   only.
                 enum:
                 - LDAP
                 - OIDC
+                - SAML
                 type: string
             required:
             - domain
@@ -854,10 +993,15 @@ spec:
             - message: exactly one backend block matching spec.type must be set (type
                 OIDC requires spec.oidc)
               rule: (self.type == 'OIDC') == has(self.oidc)
-            - message: mappings are only supported on federation backends (type OIDC)
-              rule: '!has(self.mappings) || self.type == ''OIDC'''
-            - message: groups are only supported on federation backends (type OIDC)
-              rule: '!has(self.groups) || self.type == ''OIDC'''
+            - message: exactly one backend block matching spec.type must be set (type
+                SAML requires spec.saml)
+              rule: (self.type == 'SAML') == has(self.saml)
+            - message: mappings are only supported on federation backends (type OIDC
+                or SAML)
+              rule: '!has(self.mappings) || self.type != ''LDAP'''
+            - message: groups are only supported on federation backends (type OIDC
+                or SAML)
+              rule: '!has(self.groups) || self.type != ''LDAP'''
             - message: extraOptions carries [ldap] section options and is only supported
                 on type LDAP
               rule: '!has(self.extraOptions) || self.type == ''LDAP'''
@@ -874,9 +1018,10 @@ spec:
                   Conditions represent the latest available observations of the backend
                   state: DomainReady (the referenced domain exists / was provisioned),
                   ConfigProjected (the rendered per-domain config is wired into the
-                  running Keystone Deployment), for OIDC backends FederationObjectsReady
-                  (identity provider + protocol upserted) and MappingsReady (mapping
-                  rules, groups, and role assignments applied), and the aggregate Ready.
+                  running Keystone Deployment), for federation backends (OIDC and SAML)
+                  FederationObjectsReady (identity provider + protocol upserted) and
+                  MappingsReady (mapping rules, groups, and role assignments applied), and
+                  the aggregate Ready.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -948,6 +1093,14 @@ spec:
                   reconciled, so a stale status is distinguishable from a current one.
                 format: int64
                 type: integer
+              samlSPMetadataSecretName:
+                description: |-
+                  SAMLSPMetadataSecretName names the Secret carrying the generated SP
+                  metadata (data keys "sp-metadata.xml" and "entityID") for a SAML backend,
+                  so an operator can register the service provider with the IdP out of
+                  band. Empty for non-SAML backends and until the SP material first
+                  resolves.
+                type: string
             type: object
         type: object
     served: true

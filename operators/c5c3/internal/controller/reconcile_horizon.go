@@ -399,7 +399,7 @@ func horizonWebSSO(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, backends 
 		})
 		mapping[id] = horizonv1alpha1.WebSSOIDPTarget{
 			IdentityProvider: b.EffectiveIdentityProviderName(),
-			Protocol:         b.EffectiveOIDCProtocolID(),
+			Protocol:         b.EffectiveProtocolID(),
 		}
 	}
 
