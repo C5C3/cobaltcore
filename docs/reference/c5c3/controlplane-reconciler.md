@@ -1287,6 +1287,64 @@ is owned by the imports.
 > delete-and-recreate of the import CR. Nothing in the deterministic CR names or
 > the spec-derived filters chosen here precludes that.
 
+### reconcileServiceAccounts
+
+| Aspect | Value |
+| --- | --- |
+| File | `reconcile_serviceaccounts.go` |
+| Condition | `ServiceAccountsReady` |
+| Gate | `AdminCredentialReady == True` **and** the OpenBao-backed `ClusterSecretStore` is Ready |
+| Requeue | `korcRequeueAfter` = **10s** while a gate is closed or an account is converging |
+
+`reconcileServiceAccounts` projects each `spec.korc.serviceAccounts` entry onto a
+managed K-ORC `User` and `Project` with an operator-generated, OpenBao-backed,
+rotatable password. It is **mode-independent**: the same rules apply against a
+managed in-cluster Keystone and an external one.
+
+Per declared entry it, in order:
+
+1. **Domain handle** — reuses the admin `Domain` import when the effective domain
+   matches the admin domain, else creates a per-account unmanaged `Domain` import.
+2. **Project** — `project.create: false` is an unmanaged import (referenced, never
+   created or deleted); `project.create: true` is a **probe-gated** managed
+   `Project`.
+3. **User collision gate** — K-ORC's managed create **silently adopts** a same-name
+   resource, so a short-lived unmanaged `User` **probe import** decides
+   exists/absent before any managed `User` is created. A resolved probe fails loud
+   (`ServiceAccountCollision`) unless `adopt: true`; a probe reporting the resource
+   does not exist is deleted and the managed `User` created.
+4. **Managed `User` + generation-scoped password** — the `User`'s `passwordRef`
+   points at a `{cp}-service-account-{name}-password-v{N}` Secret. K-ORC's user
+   actuator re-applies the password **only when the passwordRef name changes**, so
+   a rotation is a Secret-name flip, driven by the CredentialRotation reconciler
+   clearing the `forge.c5c3.io/password-generation` annotation. The superseded
+   generation Secret is deleted once K-ORC confirms the new one is applied
+   (`status.resource.appliedPasswordRef`).
+5. **OpenBao round-trip** (once the current password is applied) — assemble a
+   source Secret, `PushSecret` (`DeletionPolicy: Delete`) it to
+   `openstack/keystone/{cp.Namespace}/{cp.Name}/service-accounts/{name}`, and
+   materialize the consumer Secret via an `ExternalSecret`, mirroring the admin
+   app-credential's re-push / force-sync discipline. Per-account readiness gates on
+   the **materialized password matching the current generation**, so a rotated-away
+   password never reads Ready.
+
+**Consumption contract.** Consumers read from the materialized Secret
+`{controlplane.Name}-service-account-{name}-credentials` (keys `password` and a
+ready-to-use `clouds.yaml`), named in `status.serviceAccounts[].secretName`. The
+credentials are always read from that Secret (or the OpenBao path directly); after
+a rotation, one reload picks up the new password.
+
+**Deletion.** A managed `User`/`Project` (created **or adopted** — adoption makes
+it operator-owned) is deleted from Keystone at teardown, sequenced through the
+ORC-teardown finalizer exactly like the admin credential; a probe / domain import
+/ referenced project is a CR-only delete. The password/source Secrets, PushSecret,
+and ExternalSecret are owner-reference-GC'd, and the OpenBao entry dies with the
+PushSecret (`DeletionPolicy: Delete`).
+
+**Deferred.** `roles` and `rotation.mode: Scheduled` are accepted but not yet
+implemented; each emits a one-shot `RoleAssignmentsDeferred` /
+`ScheduledRotationDeferred` event so the deferral is not silent.
+
 ### CredentialRotation reconciler
 
 | Aspect | Value |
@@ -1299,14 +1357,22 @@ is owned by the imports.
 
 The `CredentialRotationReconciler` drives one-shot rotations of a control-plane
 credential by **nudging** the ControlPlane reconciler rather than duplicating any
-mint logic. Its model:
+mint logic. It **dispatches on `spec.target`**: `adminApplicationCredential`
+nudges the admin AC (clearing the AC's password-hash annotation), and
+`serviceAccountPassword` nudges the named service account (clearing the managed
+`User`'s `forge.c5c3.io/password-generation` annotation so
+`reconcileServiceAccounts` flips its `passwordRef` on the next pass). Its model:
 
-- **Nudge, never mint or delete.** To force a re-mint it simply **clears** (zeroes)
+- **Nudge, never mint or delete.** For the admin target it **clears** (zeroes)
   the `forge.c5c3.io/admin-password-hash` annotation on the owned AC CR via
   `clearPasswordHashAnnotation` (a no-op `Update` when already empty). On its next
   pass `reconcileKORC` observes the mismatch and performs the delete+recreate
-  re-mint, re-stamping the fresh hash. Keeping the AC's resource lifecycle
-  (including the delete) owned solely by the ControlPlane reconciler avoids two
+  re-mint, re-stamping the fresh hash. The `serviceAccountPassword` target is the
+  same discipline against the managed `User`: it requires the named account on the
+  ControlPlane (`UnknownServiceAccount` otherwise), and — because there is **no
+  external password source to observe** — has no auto-detect path, so a rotation
+  fires only on an explicit `reMint` (latched to the spec generation). Keeping the
+  resource lifecycle owned solely by the ControlPlane reconciler avoids two
   controllers racing on the same object.
 - **`reMint` is one-shot per spec generation.** An explicit `spec.reMint` is
   **latched** on `status.lastTriggeredGeneration`: the reconciler nudges only while
@@ -1846,6 +1912,7 @@ admin password; `FernetKeysReady` / `CredentialKeysReady` for the signing keys).
 | Admin application credential (K-ORC) | `openstack/keystone/admin/app-credential` | `openstack/keystone/{namespace}/{name}/admin/app-credential` |
 | Admin bootstrap password (Model B) | `bootstrap/keystone-admin` | `bootstrap/{namespace}/{name}/admin` |
 | Fernet / credential keys (boundary-4) | `openstack/keystone/{name}/{fernet,credential}-keys` | `openstack/keystone/{namespace}/{name}/{fernet,credential}-keys` |
+| Service-account passwords | — (new) | `openstack/keystone/{namespace}/{name}/service-accounts/{account}` |
 
 For the admin AC the `{namespace}/{name}` is the **ControlPlane** CR's
 (`adminAppCredentialRemoteKeyFor`); for the admin password and the Fernet /

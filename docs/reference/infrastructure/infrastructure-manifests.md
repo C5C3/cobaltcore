@@ -768,8 +768,10 @@ widening that glob, the policy adds two per-ControlPlane `+/+` grants:
 
 | Path | Capabilities | Purpose |
 | --- | --- | --- |
-| `kv-v2/data/openstack/keystone/+/+/admin/app-credential` | `create`, `update`, `read` | Write each ControlPlane's admin Application Credential `clouds.yaml` data leaf (the two `+` segments are its namespace and name) |
+| `kv-v2/data/openstack/keystone/+/+/admin/app-credential` | `create`, `update`, `read`, `delete` | Write (and soft-delete on teardown) each ControlPlane's admin Application Credential `clouds.yaml` data leaf (the two `+` segments are its namespace and name) |
 | `kv-v2/metadata/openstack/keystone/+/+/admin/app-credential` | `create`, `update`, `read` | Allow ESO's Vault provider to write `custom_metadata` on the KV-v2 PushSecret (a data-only grant 403s on the metadata PUT and the PushSecret never reaches Ready) |
+| `kv-v2/data/openstack/keystone/+/+/service-accounts/+` | `create`, `update`, `read`, `delete` | Write (and soft-delete on teardown) each declared service account's password `clouds.yaml` data leaf; the three `+` segments are the ControlPlane's namespace, its name, and the account name (each a DNS-1123 label, so a single `+` leaf suffices) |
+| `kv-v2/metadata/openstack/keystone/+/+/service-accounts/+` | `create`, `update`, `read` | Allow ESO's Vault provider to write `custom_metadata` on the service-account KV-v2 PushSecret |
 
 A `+` matches exactly one path segment, so even though the namespace and name vary
 per ControlPlane the grant still terminates at the literal `/admin/app-credential`

@@ -510,6 +510,14 @@ accidental secret removal during automated deployments.
 so that ESO's PushSecret controller can check the current remote value during
 reconciliation and only write when the secret has actually changed.
 
+**Note:** `push-app-credentials` also carries the per-ControlPlane grants for the
+c5c3 operator's admin Application Credential
+(`kv-v2/{data,metadata}/openstack/keystone/+/+/admin/app-credential`) and its
+declarative service-account passwords
+(`kv-v2/{data,metadata}/openstack/keystone/+/+/service-accounts/+`), both with
+`delete` so the `DeletionPolicy: Delete` PushSecrets can purge the KV leaf on
+teardown. See the [infrastructure manifests reference](./infrastructure-manifests.md).
+
 ## Secret Paths
 
 All secrets are stored under the `kv-v2/` mount point (KV version 2 engine).

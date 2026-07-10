@@ -541,6 +541,7 @@ bootstrapped and rotated and which bootstrap resources are reconciled.
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `adminCredential` | [`AdminCredentialSpec`](#admincredentialspec) | Yes | — | The admin OpenStack credential K-ORC uses to reconcile resources, plus the application-credential rotation policy. |
+| `serviceAccounts` | [`[]ServiceAccountSpec`](#serviceaccountspec) | No | `nil` | Composite OpenStack service accounts (nova, glance, …) the control plane manages: one entry = one K-ORC `User` + `Project` with an operator-generated, OpenBao-backed, rotatable password. Mode-independent (managed and external Keystone). `listType=map` keyed by `name`; max 32 entries. |
 
 ---
 
@@ -684,6 +685,50 @@ the kind/name and applies it.
 | `kind` | `string` | Yes | — | The K-ORC resource kind to bootstrap. Constrained to the kinds the control plane bootstraps today by `+kubebuilder:validation:Enum=Project;Role`; widen the enum when the reconciler learns to interpret additional kinds. |
 | `name` | `string` | Yes | — | Name of the bootstrapped resource. |
 
+> **RESERVED.** No controller reads `bootstrapResources` today. For service
+> users of other OpenStack services, declare a composite
+> [`serviceAccounts`](#serviceaccountspec) entry instead — it owns the full
+> user + project + password lifecycle.
+
+---
+
+## ServiceAccountSpec
+
+Declares one composite OpenStack service account: a managed K-ORC `User` with an
+operator-generated, OpenBao-backed, rotatable password, its project (referenced
+or created), and the roles bound to it. Projected by
+[`reconcileServiceAccounts`](./controlplane-reconciler.md#reconcileserviceaccounts).
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `name` | `string` | Yes | — | Keys the `listType=map` list and is embedded in every child CR and Secret name (DNS-1123 label, `[a-z0-9]([-a-z0-9]*[a-z0-9])?`, ≤ 63). Not the OpenStack user name — that is `userName`. |
+| `userName` | `string` | No | `name` | The OpenStack user name managed in Keystone. Defaults to `name` via the defaulting webhook. Pattern `^[^,]+$`, ≤ 255 (mirrors K-ORC's `OpenStackName`). |
+| `domainName` | `string` | No | admin domain | The OpenStack domain the user and project live in. Empty resolves to `spec.korc.adminCredential.domainName`. |
+| `adopt` | `bool` | No | `false` | Explicit consent that a pre-existing Keystone user of this name may be taken over. Fail-loudly by default: a declared user that already exists surfaces `ServiceAccountsReady=False/ServiceAccountCollision` and is never touched. `adopt: true` opts into a **password takeover** AND into operator ownership — an adopted user is a managed `User`, so it is **deleted from Keystone at teardown**, exactly like one the operator created. |
+| `project` | [`ServiceAccountProjectSpec`](#serviceaccountprojectspec) | Yes | — | The project the service user is associated with, referenced (default) or created. |
+| `roles` | `[]string` | No | `nil` | OpenStack role names bound to the user. **Accepted but not yet projected** (K-ORC ships no `RoleAssignment` kind); the reconciler emits a `RoleAssignmentsDeferred` event so the deferral is not silent. Item pattern `^[^,]+$`, ≤ 255, max 32. |
+| `rotation` | [`*ServiceAccountRotationSpec`](#serviceaccountrotationspec) | No | mode `Manual` | Per-account password-rotation policy. |
+
+### ServiceAccountProjectSpec
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `name` | `string` | Yes | — | The OpenStack project name. Pattern `^[^,]+$`, ≤ 255 (mirrors K-ORC's `KeystoneName`). |
+| `create` | `bool` | No | `false` | `false` **references** a pre-existing project via an unmanaged import (the operator never creates or deletes it); `true` **creates and owns** a managed `Project`, gated by the same fail-loudly collision probe as the user. |
+
+### ServiceAccountRotationSpec
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `mode` | `ServiceAccountRotationMode` | No | `Manual` | `Manual` rotates only on a [`CredentialRotation`](#credentialrotationspec) request. `Scheduled` is **reserved** (surfaced in the enum now, deferred non-silently via a `ScheduledRotationDeferred` event). Deliberately not the admin `RotationMode`: there is no external password source, so `PasswordDriven` does not apply. |
+
+**Consumption contract.** Each account's credentials are materialized into a
+Secret named `{controlplane.Name}-service-account-{name}-credentials` (keys
+`password` and a ready-to-use `clouds.yaml`), mirrored from the per-CR OpenBao
+path `openstack/keystone/{namespace}/{controlplane.Name}/service-accounts/{name}`.
+`status.serviceAccounts[].secretName` names it. See the
+[reconciler reference](./controlplane-reconciler.md#reconcileserviceaccounts).
+
 ---
 
 ## ControlPlaneStatus
@@ -695,6 +740,7 @@ the kind/name and applies it.
 | `updatePhase` | [`UpdatePhase`](#updatephase) | Current phase of a control-plane release update. Written on every status update; fixed at `Idle` in the current implementation because the release-update state machine is reserved (the other `UpdatePhase` values are not yet set). |
 | `services` | `[]ServiceStatus` | Per-service readiness of the projected service CRs. A `listType=map` list keyed by `name`, so per-service entries merge under server-side apply and can grow per-service conditions cleanly. Written on every status update with a `keystone` entry whose `ready` mirrors the `KeystoneReady` condition and whose `release` is `spec.openStackRelease` — omitted entirely when `spec.services.keystone` is unset (no Keystone is managed). See [ServiceStatus](#servicestatus). |
 | `catalog` | [`*CatalogStatus`](#catalogstatus) | Observed state of the External-mode catalog imports. Nil in Managed mode, where the control plane creates the catalog entries rather than importing them. See [CatalogStatus](#catalogstatus). |
+| `serviceAccounts` | `[]ServiceAccountStatus` | Observed state of the declared service accounts, keyed by `name` (`listType=map`). The discoverability half of the consumption contract: `secretName` names the materialized Secret each account's password is read from. See [ServiceAccountStatus](#serviceaccountstatus). |
 
 > **`updatePhase` vs the Keystone CRD's `upgradePhase`.** These field names are
 > intentionally distinct: `ControlPlane.status.updatePhase` is the control-plane
@@ -760,6 +806,20 @@ import is reported as `resolved: false` rather than omitted.
 | `resolved` | `bool` | Yes | Whether K-ORC matched this import against a live catalog entry (its `Available` condition is `True` for the CR's current generation). |
 | `id` | `string` | No | The OpenStack id K-ORC resolved the import to. Empty while the import is unresolved. |
 
+### ServiceAccountStatus
+
+Reports the observed state of one declared service account.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | `string` | Yes | The service account name; keys the `listType=map` list. |
+| `ready` | `bool` | Yes | Whether the user, project, and materialized password Secret are all converged for the current generation. |
+| `userID` | `string` | No | The OpenStack user id K-ORC resolved (or created). |
+| `projectID` | `string` | No | The OpenStack project id K-ORC resolved (or created). |
+| `passwordGeneration` | `int64` | No | The monotonically increasing generation of the password currently applied. Increments on every rotation. |
+| `lastPasswordRotation` | `*metav1.Time` | No | Timestamp of the last successful password rotation. |
+| `secretName` | `string` | No | The materialized Secret carrying the account's credentials (`password` + `clouds.yaml`) — the documented, stable handle consumers read from. |
+
 ### UpdatePhase
 
 `UpdatePhase` is a string enum
@@ -790,6 +850,7 @@ credential and reports progress via status conditions.
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `target` | [`RotationTarget`](#rotationtarget) | Yes | — | Which credential to rotate. |
+| `serviceAccount` | `string` | Conditional | — | Names the declared service account (`spec.korc.serviceAccounts[].name`) whose password is rotated. **Required** exactly when `target` is `serviceAccountPassword`, **forbidden** otherwise (two CEL rules; there is no CredentialRotation webhook, so CEL is the only gate). DNS-1123 label, ≤ 63. |
 | `bootstrap` | `bool` | No | `false` | When `true`, requests an initial **mint** of the credential rather than a rotation of an existing one. Idempotent: if the credential already exists it is a no-op. |
 | `reMint` | `bool` | No | `false` | When `true`, forces the reconciler to discard the current credential and mint a fresh one even if the existing credential is still valid. The nudge is **one-shot per spec generation** (latched on `status.lastTriggeredGeneration`), so a `reMint: true` left in the spec does not re-rotate on every resync. |
 | `intervalDays` | `*int32` | No | `nil` | **Deferred** — accepted by the schema but ignored by the L1 reconciler. Rotation cadence in days for scheduled rotation. Minimum: 1. |
@@ -807,11 +868,12 @@ credential and reports progress via status conditions.
 ### RotationTarget
 
 `RotationTarget` is a string enum
-(`+kubebuilder:validation:Enum=adminApplicationCredential`).
+(`+kubebuilder:validation:Enum=adminApplicationCredential;serviceAccountPassword`).
 
 | Value | Meaning |
 | --- | --- |
-| `adminApplicationCredential` | Rotates the K-ORC admin application credential. The only target supported at this level. |
+| `adminApplicationCredential` | Rotates the K-ORC admin application credential. |
+| `serviceAccountPassword` | Rotates the password of the declared service account named by `spec.serviceAccount`. On demand only (no auto-detect: there is no external password source); fires on an explicit `reMint`, latched to the spec generation. |
 
 ## CredentialRotationStatus
 
@@ -917,10 +979,18 @@ Keystone discipline:
 | `spec.korc.adminCredential.applicationCredential.accessRules[].path` | Pattern `^/` |
 | `spec.korc.adminCredential.bootstrapResources[].kind` | Enum: `Project`, `Role` |
 | `spec.korc.adminCredential.applicationCredential.rotation.mode` | Enum: `PasswordDriven`, `Scheduled`, `Manual` |
+| `spec.korc.serviceAccounts[].name` | Pattern `^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`; MinLength 1; MaxLength 63 |
+| `spec.korc.serviceAccounts[].userName`, `.domainName`, `.project.name` | Pattern `^[^,]+$`; MinLength 1; MaxLength 255 |
+| `spec.korc.serviceAccounts[].roles[]` | Pattern `^[^,]+$`; item MinLength 1; item MaxLength 255; MaxItems 32 |
+| `spec.korc.serviceAccounts[].rotation.mode` | Enum: `Manual`, `Scheduled`; schema default `Manual` |
+| `spec.korc.serviceAccounts` | listType=map keyed by `name`; MaxItems 32 |
 | `spec.services.keystone.replicas` | Minimum: 1 |
 | `spec.infrastructure.database.replicas` | Minimum: 1, schema default `3`. The webhook additionally rejects exactly `2` (Galera quorum — see below). |
 | `spec.infrastructure.cache.replicas` | Minimum: 1, schema default `3` |
-| `CredentialRotation spec.target` | Enum: `adminApplicationCredential` |
+| `CredentialRotation spec.target` | Enum: `adminApplicationCredential`, `serviceAccountPassword` |
+| `CredentialRotation spec.serviceAccount` | Pattern `^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`; MaxLength 63 |
+| `CredentialRotation` (CEL) | `target == 'serviceAccountPassword'` ⇒ `has(self.serviceAccount)` → "serviceAccount is required when target is serviceAccountPassword" |
+| `CredentialRotation` (CEL) | `has(self.serviceAccount)` ⇒ `target == 'serviceAccountPassword'` → "serviceAccount may only be set when target is serviceAccountPassword" |
 | `CredentialRotation spec.intervalDays` | Minimum: 1 |
 | `CredentialRotation spec.preRotationDays` | Minimum: 0 |
 | `CredentialRotation spec.gracePeriodDays` | Minimum: 0 |
@@ -963,6 +1033,10 @@ short-circuit on the first error.
 | Infrastructure forbidden in External mode | `spec.infrastructure` | `field.Forbidden` | `spec.infrastructure` set while `mode: External`. **Cross-field, webhook-only** — CEL cannot span `spec.infrastructure` and `spec.services.keystone` (phase 2 relaxes this to optional). |
 | Horizon forbidden in External mode | `spec.services.horizon` | `field.Forbidden` | `services.horizon` set while `mode: External` (P2 — Horizon needs its own External-mode design). **Cross-field, webhook-only.** |
 | Infrastructure required in non-External mode | `spec.infrastructure` | `field.Required` | `spec.infrastructure` unset while the keystone mode is not `External` (Managed, unset mode, or `services.keystone` unset). Preserves today's contract now the Go field is an optional pointer. **Webhook-only.** |
+| Service-account shape | `spec.korc.serviceAccounts[]` | `field.Invalid` / `field.Required` / `field.Duplicate` / `field.TooMany` | Per-entry defense-in-depth mirrors of the CRD markers (name shape, `project.name` required, comma guards, child-CR name-length bound). |
+| Service-account identity uniqueness | `spec.korc.serviceAccounts[].userName` | `field.Duplicate` | Two entries resolve to the same effective `(userName, domainName)` — they would project two managed `User`s onto one Keystone user. **Cross-item, webhook-only.** |
+| Service-account admin collision | `spec.korc.serviceAccounts[].userName` | `field.Invalid` | An entry's effective identity equals the admin identity (`adminCredential.userName`/`domainName`) — a managed `User` would take over the admin user and rotate its password. **Cross-field, webhook-only.** |
+| Service-account managed-project uniqueness | `spec.korc.serviceAccounts[].project.name` | `field.Duplicate` | Two `project.create: true` entries name the same project in one domain — each managed `Project` would adopt the other's row. **Cross-item, webhook-only.** |
 
 ### Update-only immutability rules
 
@@ -1015,6 +1089,7 @@ independently as defense-in-depth for webhook-bypassed states.
 | Cache clusterRef.name immutable | `spec.infrastructure.cache.clusterRef.name` | Both managed, but the name changed |
 | Cloud secretName immutable | `spec.korc.adminCredential.cloudCredentialsRef.secretName` | The value changed |
 | Region immutable | `spec.region` | The region changed |
+| Service-account identity/project immutable | `spec.korc.serviceAccounts[].{userName,domainName,project.name,project.create}` | For an entry matched by `name` across old/new, one of these changed — an in-place repoint would rename or re-own live Keystone resources; remove and re-add the entry instead. `adopt` stays mutable (flipping it to `true` is the documented collision remediation). |
 | Release downgrade rejected | `spec.openStackRelease` | New release `(year, minor)` is lower than the old (upgrades and same-release updates allowed) |
 
 ---
@@ -1192,7 +1267,7 @@ func (w *ControlPlaneWebhook) ValidateDelete(_ context.Context, _ *ControlPlane)
 
 ## Status Conditions
 
-The ControlPlane status is driven by seven sub-reconcilers, each owning one
+The ControlPlane status is driven by eight sub-reconcilers, each owning one
 condition type, plus an aggregate `Ready` condition. The condition-type
 constants in `controlplane_controller.go` are the single source of truth; call
 sites reference the constants rather than inline literals.
@@ -1206,8 +1281,12 @@ earlier condition being `True` (`reconcileKeystone` on `InfrastructureReady`,
 
 ```
 InfrastructureReady → DBCredentialsReady → AdminPasswordReady → KeystoneReady
-  → KORCReady → AdminCredentialReady → CatalogReady
+  → KORCReady → AdminCredentialReady → CatalogReady → ServiceAccountsReady
 ```
+
+`ServiceAccountsReady` gates explicitly on `AdminCredentialReady` (like
+`CatalogReady`): the admin credential must be minted before K-ORC can project
+the service-account User/Project.
 
 `Ready` is `True` (reason `AllReady`) **only** when all sub-conditions are
 `True` (via `conditions.AllTrue`); otherwise it is `False` (reason
@@ -1357,13 +1436,36 @@ entry.
 | `False` | `ImportError` | **External mode only.** Kubernetes-level error create-or-updating one of the unmanaged import CRs. |
 | `False` | `CatalogEntryError` | **External mode only.** Kubernetes-level error create-or-updating (or garbage-collecting) an opt-in managed catalog entry. |
 
+### ServiceAccountsReady
+
+Set by `reconcileServiceAccounts` (gated on `AdminCredentialReady` and on the
+OpenBao-backed `ClusterSecretStore`). It projects each
+[`serviceAccounts`](#serviceaccountspec) entry onto a managed K-ORC `User` and
+`Project`, generates the password, round-trips it through OpenBao, and gates each
+account's readiness on the materialized Secret carrying the current-generation
+password. Mode-independent: the same rules apply against a managed and an
+external Keystone.
+
+| Status | Reason | When |
+| --- | --- | --- |
+| `True` | `NoServiceAccountsDeclared` | `spec.korc.serviceAccounts` is empty. Still `True` so the condition schema is identical whether or not accounts are declared. |
+| `True` | `ServiceAccountsProvisioned` | Every declared account's `User`, `Project`, and materialized password Secret are converged for the current generation. |
+| `False` | `WaitingForAdminCredential` | `AdminCredentialReady` is not `True`; projection deferred. |
+| `False` | `SecretStoreNotReady` | The OpenBao-backed `ClusterSecretStore` is not Ready. |
+| `False` | `ProbingForCollision` | A fail-loudly collision probe (see [adopt semantics](#serviceaccountspec)) has not yet resolved either way. |
+| `False` | `ServiceAccountCollision` | A declared user (or a `project.create: true` project) already exists in Keystone and `adopt`/`project.create: false` was not set — the operator fails loud rather than take over an account it did not create. The message names the account and both remediations. |
+| `False` | `WaitingForServiceAccounts` | The `User`/`Project`/password round-trip is converging, or an undeclared child is still being removed. |
+| `False` | `ServiceAccountsFailed` | A service-account child reports a terminal K-ORC error. |
+| `False` | `ServiceAccountError` | Kubernetes-level error reconciling (or pruning) a service-account child. |
+| `False` | `AuthenticationFailed` \| `EndpointUnreachable` \| `TLSVerificationFailed` \| `CatalogEndpointMismatch` \| `CredentialDrift` | **External mode only.** A pending child carries a K-ORC message identifying one of these failure classes (see [`KORCReady`](#korcready)). |
+
 ### Ready (aggregate)
 
 Set by `setReadyCondition`.
 
 | Status | Reason | When |
 | --- | --- | --- |
-| `True` | `AllReady` | All seven sub-conditions above are `True`. |
+| `True` | `AllReady` | All eight sub-conditions above are `True`. |
 | `False` | `NotAllReady` | One or more sub-conditions are not `True`. |
 
 ---
