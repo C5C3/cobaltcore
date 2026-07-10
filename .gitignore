@@ -31,6 +31,10 @@ node_modules/
 docs/.vitepress/cache/
 docs/.vitepress/dist/
 
+# Nix devshell — per-user direnv state (`echo 'use flake' > .envrc`). The
+# flake itself (flake.nix, flake.lock) is tracked; bin/ is ignored above.
+.direnv/
+
 # Collected CI evidence (debug-e2e-failure log excerpts, downloaded artifacts)
 # and other generated local output.
 _output/
