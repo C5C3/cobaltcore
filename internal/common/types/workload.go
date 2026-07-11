@@ -68,23 +68,24 @@ func DefaultMemoryLimit() resource.Quantity { return defaultMemoryLimit.DeepCopy
 // container.
 func DefaultCPULimit() resource.Quantity { return defaultCPULimit.DeepCopy() }
 
-// DeploymentSpec groups the pod-level knobs for the Keystone API Deployment.
-// Grouping them under spec.deployment keeps the KeystoneSpec root legible as
+// DeploymentSpec groups the pod-level knobs for the service API Deployment.
+// Grouping them under spec.deployment keeps the CR spec root legible as
 // further scheduling knobs (affinity/tolerations/nodeSelector) are added.
 //
 // The drain-window CEL rule mirrors the validating webhook: when one or both of
 // the nil-preserving pointers is unset, the rule substitutes the same effective
 // defaults the reconciler applies. The literals 5 and 30 must stay in sync with
-// DefaultPreStopSleepSeconds and DefaultTerminationGracePeriodSeconds in
-// keystone_webhook.go — kubebuilder/CEL rules cannot reference Go constants.
+// DefaultPreStopSleepSeconds and DefaultTerminationGracePeriodSeconds — the
+// operator webhook applies the same effective defaults; kubebuilder/CEL rules
+// cannot reference Go constants.
 // +kubebuilder:validation:XValidation:rule="(has(self.preStopSleepSeconds) ? self.preStopSleepSeconds : 5) < (has(self.terminationGracePeriodSeconds) ? self.terminationGracePeriodSeconds : 30)",message="preStopSleepSeconds must be strictly less than terminationGracePeriodSeconds"
 type DeploymentSpec struct {
-	// Replicas is the desired number of Keystone API pods.
+	// Replicas is the desired number of service API pods.
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:default=3
 	Replicas int32 `json:"replicas,omitempty"`
 
-	// Resources defines the CPU and memory requests and limits for the Keystone API
+	// Resources defines the CPU and memory requests and limits for the service API
 	// container. When unset, the defaulting webhook injects sensible defaults
 	// (256Mi/512Mi memory, 100m/500m CPU) to ensure Burstable QoS class and
 	// enable HPA utilization calculations.
@@ -101,9 +102,9 @@ type DeploymentSpec struct {
 	// controller-gen excludes it from `kubectl explain` output.
 
 	// TerminationGracePeriodSeconds is the grace period (seconds) granted to
-	// Keystone API pods between SIGTERM and SIGKILL during rolling updates
+	// service API pods between SIGTERM and SIGKILL during rolling updates
 	// Extend this to cover slow upstream token validation (LDAP/DB)
-	// so in-flight requests finish before the kubelet forcibly kills uWSGI.
+	// so in-flight requests finish before the kubelet forcibly kills the API process.
 	// When nil, the reconciler omits the field from the pod template and the
 	// Kubernetes default of 30s applies. Must be at least 10s when set.
 	// +optional
@@ -114,7 +115,7 @@ type DeploymentSpec struct {
 	// lifecycle hook, configured independently of the overall grace period
 	// This covers the window between EndpointSlice removal and
 	// kube-proxy/ingress-controller propagation so new requests stop arriving
-	// before SIGTERM reaches uWSGI. When nil, the reconciler applies a default
+	// before SIGTERM reaches the API process. When nil, the reconciler applies a default
 	// of 5s. Zero is permitted to disable the sleep. The cross-field rule
 	// preStopSleepSeconds < terminationGracePeriodSeconds is enforced by the
 	// validating webhook to guarantee a non-zero drain window.
@@ -122,7 +123,7 @@ type DeploymentSpec struct {
 	// +kubebuilder:validation:Minimum=0
 	PreStopSleepSeconds *int64 `json:"preStopSleepSeconds,omitempty"`
 
-	// Strategy overrides the Deployment rollout strategy for the Keystone API
+	// Strategy overrides the Deployment rollout strategy for the service API
 	// Deployment. When nil, the reconciler applies RollingUpdate
 	// with MaxUnavailable=0 and MaxSurge=1 to guarantee surge-before-remove
 	// behavior — available capacity never dips below spec.deployment.replicas
@@ -141,7 +142,7 @@ type DeploymentSpec struct {
 	// +optional
 	TopologySpreadConstraints []corev1.TopologySpreadConstraint `json:"topologySpreadConstraints,omitempty"`
 
-	// PriorityClassName sets the priority class for Keystone API pods.
+	// PriorityClassName sets the priority class for service API pods.
 	// When set, the operator passes the value through to the PodSpec, allowing
 	// cluster administrators to control scheduling priority and preemption.
 	// When unset, no priority class is configured and the cluster default applies.
@@ -204,13 +205,13 @@ type AutoscalingSpec struct {
 	TargetMemoryUtilization *int32 `json:"targetMemoryUtilization,omitempty"`
 }
 
-// NetworkPolicySpec defines network isolation for Keystone API pods.
+// NetworkPolicySpec defines network isolation for the service API pods.
 // When applied, the operator creates a NetworkPolicy that restricts ingress
-// to TCP 5000 from the specified sources and auto-derives egress rules for
+// to the service API port from the specified sources and auto-derives egress rules for
 // DNS, MariaDB (from database.ClusterRef), and Memcached (from cache.ClusterRef).
 // +kubebuilder:validation:XValidation:rule="size(self.ingress) > 0",message="at least one ingress source must be specified"
 type NetworkPolicySpec struct {
-	// Ingress defines the sources allowed to reach Keystone API on TCP 5000.
+	// Ingress defines the sources allowed to reach the service API on its API port.
 	// Each source specifies a namespace selector and an optional pod selector.
 	// Multiple sources produce multiple From peers in a single ingress rule
 	// (OR across peers, AND within a peer's selectors).
@@ -224,10 +225,10 @@ type NetworkPolicySpec struct {
 }
 
 // NetworkPolicyIngressSource defines a source from which traffic is allowed
-// to reach the Keystone API pods on TCP 5000.
+// to reach the service API pods on the API port.
 type NetworkPolicyIngressSource struct {
 	// NamespaceSelector selects namespaces from which traffic is allowed.
-	// All pods in matching namespaces can reach Keystone on port 5000
+	// All pods in matching namespaces can reach the service on its API port
 	// unless PodSelector further restricts the set. It is a full
 	// metav1.LabelSelector, so set-based matchExpressions are supported in
 	// addition to matchLabels.
@@ -235,15 +236,15 @@ type NetworkPolicyIngressSource struct {
 
 	// PodSelector optionally restricts allowed traffic to pods matching
 	// these labels within the selected namespaces. When set, only pods
-	// matching both NamespaceSelector AND PodSelector can reach Keystone
+	// matching both NamespaceSelector AND PodSelector can reach the service
 	// (AND logic within a single peer). It is a full metav1.LabelSelector,
 	// so set-based matchExpressions are supported in addition to matchLabels.
 	// +optional
 	PodSelector *metav1.LabelSelector `json:"podSelector,omitempty"`
 }
 
-// LoggingSpec configures oslo.log output for the Keystone API container.
-// Exposed as an optional pointer field on KeystoneSpec; the defaulting webhook
+// LoggingSpec configures oslo.log output for the service API container.
+// Exposed as an optional pointer field on the CR spec; the defaulting webhook
 // materializes a baseline LoggingSpec when the pointer is nil so downstream
 // reconciler code never sees a nil pointer (mirrors UWSGISpec / Resources precedent).
 type LoggingSpec struct {
@@ -270,7 +271,7 @@ type LoggingSpec struct {
 
 	// PerLoggerLevels overrides the level of named loggers, mirroring
 	// oslo.log's `default_log_levels`. Example:
-	// {"sqlalchemy.engine": "WARNING", "keystone.middleware": "DEBUG"}.
+	// {"sqlalchemy.engine": "WARNING", "myservice.middleware": "DEBUG"}.
 	// Each value must be one of DEBUG/INFO/WARNING/ERROR/CRITICAL and every
 	// logger name must be non-empty. These are now enforced by the CRD CEL
 	// XValidation rules below as well as by the validating webhook (a plain

@@ -49,14 +49,14 @@ const (
 // supply-chain-sensitive deployment can pin the image by immutable digest while
 // the common case keeps a human-readable tag.
 //
-// Digest-mode (Tag empty, Digest set) disables Keystone release
+// Digest-mode (Tag empty, Digest set) disables release
 // tracking/upgrades, which key on the tag; the managed ControlPlane path always
 // projects a tag, so it is unaffected.
 //
 // +kubebuilder:validation:XValidation:rule="has(self.tag) != has(self.digest)",message="exactly one of image.tag or image.digest must be set"
 type ImageSpec struct {
 	// Repository is the OCI image repository, optionally including the registry
-	// host (e.g. "ghcr.io/c5c3/keystone" or "c5c3/keystone"). The pattern is a
+	// host (e.g. "ghcr.io/c5c3/<service>" or "c5c3/<service>"). The pattern is a
 	// permissive OCI reference — lowercase alphanumeric components separated by
 	// ".", "_", "-", "/", or ":" (registry port) — so mirror and host:port forms
 	// are accepted while an empty string (which "required" alone admits) and
@@ -146,8 +146,8 @@ type DatabaseSpec struct {
 	// managed-mode projection honours it (a single replica yields a
 	// single-instance non-Galera MariaDB, three or more yield a Galera cluster),
 	// so a constrained cluster such as a single-node kind can schedule the
-	// fresh-create path. Operators that adopt an existing MariaDB (keystone, and
-	// the c5c3 adopted-infra path) ignore it. Only meaningful when ClusterRef is
+	// fresh-create path. Operators that adopt an existing MariaDB (the c5c3 adopted-infra path,
+	// and every service operator) ignore it. Only meaningful when ClusterRef is
 	// set.
 	// +optional
 	// +kubebuilder:default=3
@@ -157,7 +157,7 @@ type DatabaseSpec struct {
 	// MariaDB replica in fresh-create mode. Like Replicas, only the c5c3
 	// operator's managed-mode projection honours it (it is written to the owned
 	// MariaDB's spec.storage.size); operators that adopt an existing MariaDB
-	// (keystone, and the c5c3 adopted-infra path) ignore it. The default 100Gi
+	// (the c5c3 adopted-infra path, and every service operator) ignore it. The default 100Gi
 	// mirrors the production baseline (deploy/flux-system/infrastructure/
 	// mariadb.yaml); a constrained cluster such as a single-node kind can pin a
 	// far smaller value (e.g. 512Mi) so CI does not request a 100Gi volume it
@@ -238,7 +238,7 @@ type CacheSpec struct {
 type SecretRefSpec struct {
 	// Name is the referenced Secret's name. It must be a non-empty DNS-1123
 	// subdomain (the Kubernetes object-name grammar). Tightening the shared type
-	// fixes every consumer at once — keystone adminPasswordSecretRef /
+	// fixes every consumer at once — a service operator adminPasswordSecretRef /
 	// database.secretRef / messaging / TLS cert refs and the c5c3
 	// passwordSecretRef — so an empty name no longer slips through "required".
 	// +kubebuilder:validation:MinLength=1
@@ -271,7 +271,7 @@ type PolicySpec struct {
 
 // PluginSpec defines a service plugin/driver configuration.
 type PluginSpec struct {
-	// Name of the plugin (e.g., "keystone-keycloak-backend")
+	// Name of the plugin (e.g., "myservice-keycloak-backend")
 	Name string `json:"name"`
 	// ConfigSection is the INI section name (e.g., "keycloak")
 	ConfigSection string `json:"configSection"`
@@ -305,7 +305,7 @@ type MiddlewareSpec struct {
 
 // GatewaySpec configures the Gateway API HTTPRoute used to expose an OpenStack
 // service externally. It is the single source of truth for the shared Gateway
-// shape: both the keystone and c5c3 operators reuse this commonv1 type instead
+// shape: the service operators and the c5c3 operator reuse this commonv1 type instead
 // of maintaining their own field-for-field copies.
 //
 // The operator plays the application-developer role in the Gateway API model:
@@ -334,8 +334,8 @@ type GatewaySpec struct {
 }
 
 // GatewayParentRefSpec references a pre-existing Gateway that the operator
-// attaches the HTTPRoute to. It is shared by both the keystone and c5c3
-// operators as the single source of truth for the Gateway parent reference.
+// attaches the HTTPRoute to. It is shared across the service operators and the
+// c5c3 operator as the single source of truth for the Gateway parent reference.
 type GatewayParentRefSpec struct {
 	// Name is the Gateway resource name. Required.
 	// +kubebuilder:validation:MinLength=1

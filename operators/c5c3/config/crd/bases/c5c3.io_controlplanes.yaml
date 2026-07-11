@@ -227,8 +227,8 @@ spec:
                           managed-mode projection honours it (a single replica yields a
                           single-instance non-Galera MariaDB, three or more yield a Galera cluster),
                           so a constrained cluster such as a single-node kind can schedule the
-                          fresh-create path. Operators that adopt an existing MariaDB (keystone, and
-                          the c5c3 adopted-infra path) ignore it. Only meaningful when ClusterRef is
+                          fresh-create path. Operators that adopt an existing MariaDB (the c5c3 adopted-infra path,
+                          and every service operator) ignore it. Only meaningful when ClusterRef is
                           set.
                         format: int32
                         minimum: 1
@@ -242,7 +242,7 @@ spec:
                             description: |-
                               Name is the referenced Secret's name. It must be a non-empty DNS-1123
                               subdomain (the Kubernetes object-name grammar). Tightening the shared type
-                              fixes every consumer at once — keystone adminPasswordSecretRef /
+                              fixes every consumer at once — a service operator adminPasswordSecretRef /
                               database.secretRef / messaging / TLS cert refs and the c5c3
                               passwordSecretRef — so an empty name no longer slips through "required".
                             minLength: 1
@@ -258,7 +258,7 @@ spec:
                           MariaDB replica in fresh-create mode. Like Replicas, only the c5c3
                           operator's managed-mode projection honours it (it is written to the owned
                           MariaDB's spec.storage.size); operators that adopt an existing MariaDB
-                          (keystone, and the c5c3 adopted-infra path) ignore it. The default 100Gi
+                          (the c5c3 adopted-infra path, and every service operator) ignore it. The default 100Gi
                           mirrors the production baseline (deploy/flux-system/infrastructure/
                           mariadb.yaml); a constrained cluster such as a single-node kind can pin a
                           far smaller value (e.g. 512Mi) so CI does not request a 100Gi volume it
@@ -286,7 +286,7 @@ spec:
                                 description: |-
                                   Name is the referenced Secret's name. It must be a non-empty DNS-1123
                                   subdomain (the Kubernetes object-name grammar). Tightening the shared type
-                                  fixes every consumer at once — keystone adminPasswordSecretRef /
+                                  fixes every consumer at once — a service operator adminPasswordSecretRef /
                                   database.secretRef / messaging / TLS cert refs and the c5c3
                                   passwordSecretRef — so an empty name no longer slips through "required".
                                 minLength: 1
@@ -306,7 +306,7 @@ spec:
                                 description: |-
                                   Name is the referenced Secret's name. It must be a non-empty DNS-1123
                                   subdomain (the Kubernetes object-name grammar). Tightening the shared type
-                                  fixes every consumer at once — keystone adminPasswordSecretRef /
+                                  fixes every consumer at once — a service operator adminPasswordSecretRef /
                                   database.secretRef / messaging / TLS cert refs and the c5c3
                                   passwordSecretRef — so an empty name no longer slips through "required".
                                 minLength: 1
@@ -519,7 +519,7 @@ spec:
                             description: |-
                               Name is the referenced Secret's name. It must be a non-empty DNS-1123
                               subdomain (the Kubernetes object-name grammar). Tightening the shared type
-                              fixes every consumer at once — keystone adminPasswordSecretRef /
+                              fixes every consumer at once — a service operator adminPasswordSecretRef /
                               database.secretRef / messaging / TLS cert refs and the c5c3
                               passwordSecretRef — so an empty name no longer slips through "required".
                             minLength: 1
@@ -795,7 +795,7 @@ spec:
                           repository:
                             description: |-
                               Repository is the OCI image repository, optionally including the registry
-                              host (e.g. "ghcr.io/c5c3/keystone" or "c5c3/keystone"). The pattern is a
+                              host (e.g. "ghcr.io/c5c3/<service>" or "c5c3/<service>"). The pattern is a
                               permissive OCI reference — lowercase alphanumeric components separated by
                               ".", "_", "-", "/", or ":" (registry port) — so mirror and host:port forms
                               are accepted while an empty string (which "required" alone admits) and
@@ -875,7 +875,7 @@ spec:
                             description: |-
                               Name is the referenced Secret's name. It must be a non-empty DNS-1123
                               subdomain (the Kubernetes object-name grammar). Tightening the shared type
-                              fixes every consumer at once — keystone adminPasswordSecretRef /
+                              fixes every consumer at once — a service operator adminPasswordSecretRef /
                               database.secretRef / messaging / TLS cert refs and the c5c3
                               passwordSecretRef — so an empty name no longer slips through "required".
                             minLength: 1
@@ -942,7 +942,7 @@ spec:
                                 description: |-
                                   Name is the referenced Secret's name. It must be a non-empty DNS-1123
                                   subdomain (the Kubernetes object-name grammar). Tightening the shared type
-                                  fixes every consumer at once — keystone adminPasswordSecretRef /
+                                  fixes every consumer at once — a service operator adminPasswordSecretRef /
                                   database.secretRef / messaging / TLS cert refs and the c5c3
                                   passwordSecretRef — so an empty name no longer slips through "required".
                                 minLength: 1
@@ -1129,7 +1129,7 @@ spec:
                           repository:
                             description: |-
                               Repository is the OCI image repository, optionally including the registry
-                              host (e.g. "ghcr.io/c5c3/keystone" or "c5c3/keystone"). The pattern is a
+                              host (e.g. "ghcr.io/c5c3/<service>" or "c5c3/<service>"). The pattern is a
                               permissive OCI reference — lowercase alphanumeric components separated by
                               ".", "_", "-", "/", or ":" (registry port) — so mirror and host:port forms
                               are accepted while an empty string (which "required" alone admits) and
@@ -1227,7 +1227,7 @@ spec:
                           repository:
                             description: |-
                               Repository is the OCI image repository, optionally including the registry
-                              host (e.g. "ghcr.io/c5c3/keystone" or "c5c3/keystone"). The pattern is a
+                              host (e.g. "ghcr.io/c5c3/<service>" or "c5c3/<service>"). The pattern is a
                               permissive OCI reference — lowercase alphanumeric components separated by
                               ".", "_", "-", "/", or ":" (registry port) — so mirror and host:port forms
                               are accepted while an empty string (which "required" alone admits) and

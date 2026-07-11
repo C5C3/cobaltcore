@@ -255,7 +255,7 @@ spec:
                         description: |-
                           Name is the referenced Secret's name. It must be a non-empty DNS-1123
                           subdomain (the Kubernetes object-name grammar). Tightening the shared type
-                          fixes every consumer at once — keystone adminPasswordSecretRef /
+                          fixes every consumer at once — a service operator adminPasswordSecretRef /
                           database.secretRef / messaging / TLS cert refs and the c5c3
                           passwordSecretRef — so an empty name no longer slips through "required".
                         minLength: 1
@@ -350,7 +350,7 @@ spec:
                             description: |-
                               Name is the referenced Secret's name. It must be a non-empty DNS-1123
                               subdomain (the Kubernetes object-name grammar). Tightening the shared type
-                              fixes every consumer at once — keystone adminPasswordSecretRef /
+                              fixes every consumer at once — a service operator adminPasswordSecretRef /
                               database.secretRef / messaging / TLS cert refs and the c5c3
                               passwordSecretRef — so an empty name no longer slips through "required".
                             minLength: 1
@@ -655,7 +655,7 @@ spec:
                         description: |-
                           Name is the referenced Secret's name. It must be a non-empty DNS-1123
                           subdomain (the Kubernetes object-name grammar). Tightening the shared type
-                          fixes every consumer at once — keystone adminPasswordSecretRef /
+                          fixes every consumer at once — a service operator adminPasswordSecretRef /
                           database.secretRef / messaging / TLS cert refs and the c5c3
                           passwordSecretRef — so an empty name no longer slips through "required".
                         minLength: 1
@@ -888,7 +888,7 @@ spec:
                             description: |-
                               Name is the referenced Secret's name. It must be a non-empty DNS-1123
                               subdomain (the Kubernetes object-name grammar). Tightening the shared type
-                              fixes every consumer at once — keystone adminPasswordSecretRef /
+                              fixes every consumer at once — a service operator adminPasswordSecretRef /
                               database.secretRef / messaging / TLS cert refs and the c5c3
                               passwordSecretRef — so an empty name no longer slips through "required".
                             minLength: 1
@@ -952,7 +952,7 @@ spec:
                             description: |-
                               Name is the referenced Secret's name. It must be a non-empty DNS-1123
                               subdomain (the Kubernetes object-name grammar). Tightening the shared type
-                              fixes every consumer at once — keystone adminPasswordSecretRef /
+                              fixes every consumer at once — a service operator adminPasswordSecretRef /
                               database.secretRef / messaging / TLS cert refs and the c5c3
                               passwordSecretRef — so an empty name no longer slips through "required".
                             minLength: 1
