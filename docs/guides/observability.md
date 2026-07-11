@@ -108,7 +108,7 @@ The first `status=False` condition from the top is usually the bottleneck:
 
 ## Upgrade status fields
 
-During an image-tag change, three additional status fields track progress (see [Day 2 Operations — Image upgrade](./day-2-operations.md#image-upgrade-with-upgradephase)):
+During a release upgrade, three additional status fields track progress (see [Day 2 Operations — Upgrade the OpenStack release](./day-2-operations.md#upgrade-the-openstack-release)):
 
 | Field | Outside upgrade | During upgrade |
 |-------|-----------------|----------------|
