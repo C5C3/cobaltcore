@@ -20,24 +20,39 @@ event reasons, the failure path), see
 [reconcileBootstrap](../reference/keystone/keystone-reconciler.md#reconcilebootstrap)
 in [Keystone Reconciler Architecture](../reference/keystone/keystone-reconciler.md).
 
-> **Terminology.** In this document `<ks>` is the Keystone CR's `.metadata.name`
-> (e.g. `keystone-default`) and `<ns>` is its namespace (typically `openstack`).
-> The admin password lives in the Secret referenced by
-> `spec.bootstrap.adminPasswordSecretRef` under the key `password`; this guide
-> calls it the *admin Secret* and refers to it as `<admin-secret>`.
+> **Names.** The examples target the ControlPlane devstack's projected Keystone:
+> the CR is `controlplane-keystone` in the `openstack` namespace, and its admin
+> password lives in the Secret referenced by
+> `spec.bootstrap.adminPasswordSecretRef` — `controlplane-keystone-admin-credentials`,
+> under the key `password`; this guide calls it the *admin Secret*. If your
+> Keystone CR has a different name, substitute it (and the Secret and Job names
+> derived from it) throughout. For a standalone Keystone with no ControlPlane,
+> read the final section.
 
 ---
 
 ## Prerequisites
 
+::: info Devstack
+This guide is written against the **[Quick Start (ControlPlane)](../quick-start-controlplane.md)** devstack. Stand it up first:
+
+```bash
+KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
+```
+
+Follow that tutorial through to its final **Verify** step, so the ControlPlane's
+projected `controlplane-keystone` Keystone is `Ready`. Every resource name in the
+examples below is one that devstack produces.
+:::
+
 - A bootstrapped Keystone CR (`BootstrapReady=True`) — see [Observability & Diagnostics](./observability.md).
-- The admin password projected via ESO: the `keystone-admin` ExternalSecret is present
-  and `Ready`. Plain (non-ESO) admin Secrets never go `Ready` — rotate at the OpenBao
-  source, not by editing the Secret.
+- The admin password projected via ESO: the `controlplane-keystone-admin-credentials`
+  ExternalSecret is present and `Ready`. Plain (non-ESO) admin Secrets never go `Ready`
+  — rotate at the OpenBao source, not by editing the Secret.
 - `bao` CLI access to the OpenBao KV mount (in kind, OpenBao enforces mTLS, so the CLI
   needs a client certificate signed by the OpenBao CA — a connection reset without one
   is expected, not a pod defect).
-- `kubectl` access to the CR's namespace (`<ns>`).
+- `kubectl` access to the CR's namespace (`openstack`).
 
 ---
 
@@ -47,9 +62,9 @@ The admin password is not stored on the Keystone CR. It flows through three hops
 
 | Actor | Writes to | Reads from |
 | --- | --- | --- |
-| Operator/secrets-tooling | OpenBao path `kv-v2/bootstrap/<ns>/<ks>/admin` (key `password`) | — |
-| External Secrets Operator (ESO) | The admin Secret `<admin-secret>` (key `password`, `creationPolicy: Owner`) | OpenBao path `bootstrap/<ns>/<ks>/admin`, property `password` |
-| Keystone operator | The `<ks>-bootstrap` Job's pod template | The admin Secret `<admin-secret>` (key `password`) |
+| Operator/secrets-tooling | OpenBao path `kv-v2/bootstrap/openstack/controlplane-keystone/admin` (key `password`) | — |
+| External Secrets Operator (ESO) | The admin Secret `controlplane-keystone-admin-credentials` (key `password`, `creationPolicy: Owner`) | OpenBao path `bootstrap/openstack/controlplane-keystone/admin`, property `password` |
+| Keystone operator | The `controlplane-keystone-bootstrap` Job's pod template | The admin Secret `controlplane-keystone-admin-credentials` (key `password`) |
 
 On every reconcile the operator reads the `password` key of the admin Secret,
 computes `hex(SHA-256(password))`, and stamps it onto the bootstrap Job's pod
@@ -60,7 +75,7 @@ gate is keyed on the password digest *alone*, deliberately **not** on the full
 pod template: an image-tag change must not re-run bootstrap, because re-running
 `keystone-manage bootstrap` after a cross-version DB migration fails on the
 already-migrated admin user. When the password digest changes, the operator
-deletes the stale `<ks>-bootstrap` Job and recreates it, re-running
+deletes the stale `controlplane-keystone-bootstrap` Job and recreates it, re-running
 `keystone-manage bootstrap`, which updates the admin credential to the new password.
 
 The operator also watches the admin Secret directly (`secretToKeystoneMapper`),
@@ -76,23 +91,24 @@ so an ESO write triggers a reconcile with **no CR edit**. During the re-run
 
 ## 1. Write the new password to OpenBao
 
-The admin password is sourced from OpenBao at `kv-v2/bootstrap/<ns>/<ks>/admin`
+The admin password is sourced from OpenBao at `kv-v2/bootstrap/openstack/controlplane-keystone/admin`
 (key `password`). Write the new value there:
 
 ```bash
-bao kv put kv-v2/bootstrap/<ns>/<ks>/admin password=<new-password>
+bao kv put kv-v2/bootstrap/openstack/controlplane-keystone/admin password=<new-password>
 ```
 
-> **Path convention (per-CR).** The admin-password path is
-> scoped per Keystone CR as `bootstrap/<ns>/<ks>/admin`, so two
-> Model-B-enabled Keystone CRs never collide on a shared OpenBao object. This is
-> the path the ESO `keystone-admin` ExternalSecret reads
-> (`remoteRef.key: bootstrap/<ns>/<ks>/admin`, `property: password`) and the path
-> `deploy/openbao/bootstrap/write-bootstrap-secrets.sh` seeds — for the default
-> Quick Start CR `controlplane-keystone` in `openstack`, that is
-> `bootstrap/openstack/controlplane-keystone/admin`. If your deployment uses a
-> different KV mount or path, substitute it here and in step 2's ExternalSecret
-> name accordingly.
+> **Path convention (per-CR).** The admin-password path is scoped per Keystone
+> CR as `bootstrap/{namespace}/{name}/admin` — for the `controlplane-keystone`
+> CR in `openstack`, that is `bootstrap/openstack/controlplane-keystone/admin`.
+> Per-CR scoping keeps two Model-B-enabled Keystone CRs from colliding on a
+> shared OpenBao object. This is the path the ESO
+> `controlplane-keystone-admin-credentials` ExternalSecret reads
+> (`remoteRef.key: bootstrap/openstack/controlplane-keystone/admin`,
+> `property: password`) and the path
+> `deploy/openbao/bootstrap/write-bootstrap-secrets.sh` seeds. If your deployment
+> uses a different KV mount or path, substitute it here and in step 2's
+> ExternalSecret name accordingly.
 
 Nothing happens in the cluster yet — OpenBao now holds the new value, but the
 admin Secret still carries the old one until ESO syncs.
@@ -106,7 +122,7 @@ ESO refreshes on its `spec.refreshInterval` (the shipped ExternalSecret uses
 refresh, annotate the ExternalSecret to force a sync:
 
 ```bash
-kubectl -n <ns> annotate externalsecret keystone-admin \
+kubectl -n openstack annotate externalsecret controlplane-keystone-admin-credentials \
   force-sync=$(date +%s) --overwrite
 ```
 
@@ -114,7 +130,7 @@ ESO re-reads OpenBao and PATCHes the admin Secret's `password` key. Confirm the
 Secret now carries the new value (compare the fingerprint before and after):
 
 ```bash
-kubectl -n <ns> get secret <admin-secret> \
+kubectl -n openstack get secret controlplane-keystone-admin-credentials \
   -o jsonpath='{.data.password}' | base64 -d | sha256sum
 ```
 
@@ -125,19 +141,19 @@ in step 3 — keep it handy to confirm the match.
 
 ## 3. Observe the recreated bootstrap Job
 
-The operator detects that the live `{ks}-bootstrap` Job's
+The operator detects that the live `controlplane-keystone-bootstrap` Job's
 `forge.c5c3.io/admin-password-hash` no longer matches the Secret, deletes the
 stale Job, and recreates one carrying the new hash:
 
 ```bash
-kubectl -n <ns> get jobs
+kubectl -n openstack get jobs
 ```
 
 Inspect the recreated Job's admin-password-hash annotation and confirm it equals
 the digest from step 2:
 
 ```bash
-kubectl -n <ns> get job <ks>-bootstrap \
+kubectl -n openstack get job controlplane-keystone-bootstrap \
   -o jsonpath="{.spec.template.metadata.annotations['forge\.c5c3\.io/admin-password-hash']}{\"\n\"}"
 ```
 
@@ -152,7 +168,7 @@ You can prove the Job was delete+recreated (not patched) by capturing its
 UID:
 
 ```bash
-kubectl -n <ns> get job <ks>-bootstrap -o jsonpath='{.metadata.uid}{"\n"}'
+kubectl -n openstack get job controlplane-keystone-bootstrap -o jsonpath='{.metadata.uid}{"\n"}'
 ```
 
 > **Job retention.** The bootstrap Job carries no `TTLSecondsAfterFinished` — it
@@ -160,7 +176,7 @@ kubectl -n <ns> get job <ks>-bootstrap -o jsonpath='{.metadata.uid}{"\n"}'
 > applied password digest (its re-run key), so it is retained, not
 > garbage-collected, and is removed only when the Keystone CR is deleted via
 > owner-reference GC. The steady state is therefore a single completed
-> `<ks>-bootstrap` Job present at all times; a rotation deletes and recreates it
+> `controlplane-keystone-bootstrap` Job present at all times; a rotation deletes and recreates it
 > in place rather than leaving a gap.
 
 ---
@@ -171,13 +187,13 @@ While the recreated Job runs, `BootstrapReady` drops to `False` with reason
 `BootstrapInProgress`, then returns to `True` with reason `BootstrapComplete`:
 
 ```bash
-kubectl -n <ns> describe keystone <ks> | grep -A4 'Conditions:'
+kubectl -n openstack describe keystone controlplane-keystone | grep -A4 'Conditions:'
 ```
 
 Or watch just the condition's status and reason:
 
 ```bash
-kubectl -n <ns> get keystone <ks> \
+kubectl -n openstack get keystone controlplane-keystone \
   -o jsonpath="{range .status.conditions[?(@.type=='BootstrapReady')]}{.status}/{.reason}{\"\n\"}{end}" -w
 ```
 
@@ -198,8 +214,8 @@ API never goes down during an admin-password rotation.
 On a successful re-bootstrap the operator emits a Normal event on the Keystone CR:
 
 ```bash
-kubectl -n <ns> get events \
-  --field-selector reason=BootstrapComplete,involvedObject.name=<ks> \
+kubectl -n openstack get events \
+  --field-selector reason=BootstrapComplete,involvedObject.name=controlplane-keystone \
   --sort-by='.lastTimestamp'
 ```
 
@@ -207,7 +223,7 @@ Expected output:
 
 ```
 LAST SEEN   TYPE     REASON             OBJECT            MESSAGE
-5s          Normal   BootstrapComplete  keystone/<ks>     Keystone bootstrap completed successfully
+5s          Normal   BootstrapComplete  keystone/controlplane-keystone     Keystone bootstrap completed successfully
 ```
 
 If instead you see a **Warning** with reason `AdminSecretInvalid`, the admin
@@ -215,7 +231,7 @@ Secret is missing, unreadable, or its `password` key is empty — see
 [Recover from `AdminSecretInvalid`](#6-recover-from-adminsecretinvalid).
 
 ```bash
-kubectl -n <ns> describe keystone <ks> | grep -A1 -E 'AdminSecretInvalid|BootstrapComplete'
+kubectl -n openstack describe keystone controlplane-keystone | grep -A1 -E 'AdminSecretInvalid|BootstrapComplete'
 ```
 
 ---
@@ -230,8 +246,8 @@ reason `AdminSecretInvalid`, emits a Warning event, and requeues with backoff.
 ### Symptoms
 
 ```bash
-kubectl -n <ns> get events \
-  --field-selector reason=AdminSecretInvalid,involvedObject.name=<ks> \
+kubectl -n openstack get events \
+  --field-selector reason=AdminSecretInvalid,involvedObject.name=controlplane-keystone \
   --sort-by='.lastTimestamp'
 ```
 
@@ -239,7 +255,7 @@ Example output:
 
 ```
 LAST SEEN   TYPE      REASON              OBJECT            MESSAGE
-12s         Warning   AdminSecretInvalid  keystone/<ks>     Admin password Secret <ns>/<admin-secret> is missing, unreadable, or has an empty "password" value
+12s         Warning   AdminSecretInvalid  keystone/controlplane-keystone     Admin password Secret openstack/controlplane-keystone-admin-credentials is missing, unreadable, or has an empty "password" value
 ```
 
 ### Inspect
@@ -248,7 +264,7 @@ Confirm the admin Secret exists and that its `password` key decodes to a
 non-empty value:
 
 ```bash
-kubectl -n <ns> get secret <admin-secret> \
+kubectl -n openstack get secret controlplane-keystone-admin-credentials \
   -o jsonpath='{.data.password}' | base64 -d | wc -c
 ```
 
@@ -256,14 +272,14 @@ A result of `0` (or a `NotFound` error on the `get`) is the cause. The usual
 culprit is ESO: check that the ExternalSecret synced cleanly.
 
 ```bash
-kubectl -n <ns> get externalsecret keystone-admin \
+kubectl -n openstack get externalsecret controlplane-keystone-admin-credentials \
   -o jsonpath="{range .status.conditions[*]}{.type}={.status}/{.reason}{\"\n\"}{end}"
 ```
 
 ### Remediate
 
 1. Fix the source. Ensure the OpenBao path holds a non-empty `password`
-   (`bao kv get kv-v2/bootstrap/<ns>/<ks>/admin`), then re-sync ESO as in step 2.
+   (`bao kv get kv-v2/bootstrap/openstack/controlplane-keystone/admin`), then re-sync ESO as in step 2.
 2. Once ESO repopulates the admin Secret, the operator's pending requeue (or a
    fresh `secretToKeystoneMapper` event from the Secret write) re-runs bootstrap
    automatically; `BootstrapReady` returns to `True`/`BootstrapComplete`. No CR
@@ -298,6 +314,41 @@ OS_PASSWORD=<old-password> openstack token issue
 
 A token minted before the rotation remains valid until its native TTL expires;
 only new authentications with the old password are rejected.
+
+---
+
+## Standalone Keystone, without a ControlPlane
+
+The [Quick Start](../quick-start.md) and
+[Quick Start (Extended)](../quick-start-extended.md) devstacks run a standalone
+Keystone CR — no ControlPlane projects it. There the names are:
+
+| ControlPlane devstack | Standalone devstack |
+| --- | --- |
+| CR `controlplane-keystone` | CR `keystone` |
+| admin Secret `controlplane-keystone-admin-credentials` | admin Secret `keystone-admin` |
+| ExternalSecret `controlplane-keystone-admin-credentials` | ExternalSecret `keystone-admin` |
+| bootstrap Job `controlplane-keystone-bootstrap` | bootstrap Job `keystone-bootstrap` |
+
+Substitute those names in every command above. The re-bootstrap contract,
+condition transitions, and smoke check are identical.
+
+::: warning The kind shim reads the default-identity path
+On the kind Quick Start, the `keystone-admin` ExternalSecret is a standalone
+shim (`deploy/kind/infrastructure/keystone-admin-externalsecret.yaml`). It reads
+the **default ControlPlane identity's** per-CR path
+`bootstrap/openstack/controlplane-keystone/admin` — *not*
+`bootstrap/openstack/keystone/admin` — regardless of the standalone CR's name.
+So on the standalone kind devstack, write the new password to that same
+default-identity path in step 1:
+
+```bash
+bao kv put kv-v2/bootstrap/openstack/controlplane-keystone/admin password=<new-password>
+```
+
+On a non-kind standalone deployment you own the ExternalSecret's `remoteRef.key`,
+so write to whatever path it reads.
+:::
 
 ---
 

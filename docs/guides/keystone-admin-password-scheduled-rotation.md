@@ -24,26 +24,40 @@ Both flows converge on the same final hop — `reconcileBootstrap` re-runs
 `keystone-manage bootstrap` against the new credential. This guide therefore
 *cross-links* the manual guide's verification steps rather than repeating them.
 
-> **Terminology.** In this document `<ks>` is the Keystone CR's `.metadata.name`
-> (e.g. `keystone-default`) and `<ns>` is its namespace (typically `openstack`).
-> The admin password lives in the Secret referenced by
-> `spec.bootstrap.adminPasswordSecretRef` under the key `password`; this guide
-> calls it the *admin Secret* and refers to it as `<admin-secret>`. The
-> Model B resources are named after `<ks>` (e.g. the CronJob is
-> `<ks>-admin-password-rotate`).
+> **Names.** The examples target the ControlPlane devstack's projected Keystone:
+> the CR is `controlplane-keystone` in the `openstack` namespace, and its admin
+> password lives in the Secret referenced by
+> `spec.bootstrap.adminPasswordSecretRef` — `controlplane-keystone-admin-credentials`,
+> under the key `password`; this guide calls it the *admin Secret*. The Model B
+> resources are named after the CR (e.g. the CronJob is
+> `controlplane-keystone-admin-password-rotate`). If your Keystone CR has a
+> different name, substitute it throughout; for a standalone Keystone, read the
+> per-CR path isolation section.
 
 ---
 
 ## Prerequisites
 
+::: info Devstack
+This guide is written against the **[Quick Start (ControlPlane)](../quick-start-controlplane.md)** devstack. Stand it up first:
+
+```bash
+KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
+```
+
+Follow that tutorial through to its final **Verify** step, so the ControlPlane's
+projected `controlplane-keystone` Keystone is `Ready`. Every resource name in the
+examples below is one that devstack produces.
+:::
+
 - A bootstrapped Keystone CR (`BootstrapReady=True`) with the **manual** admin-password
   flow already working — scheduled rotation reuses the same ESO/OpenBao path and final
   re-bootstrap hop. See [Rotate the Keystone Admin Password](keystone-admin-password-rotation.md).
-- The per-CR OpenBao path `bootstrap/<ns>/<ks>/admin` already seeded **and** stamped with
+- The per-CR OpenBao path `bootstrap/openstack/controlplane-keystone/admin` already seeded **and** stamped with
   `custom_metadata managed-by=external-secrets`; without that marker ESO refuses the very
   first PushSecret. `deploy/openbao/bootstrap/write-bootstrap-secrets.sh` stamps it for the
   default CR (see [Topology](#2-topology-what-the-operator-stands-up) below).
-- `kubectl` access to the CR's namespace (`<ns>`).
+- `kubectl` access to the CR's namespace (`openstack`).
 
 ---
 
@@ -56,13 +70,13 @@ Keystone CR:
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
 kind: Keystone
 metadata:
-  name: <ks>
-  namespace: <ns>
+  name: controlplane-keystone
+  namespace: openstack
 spec:
   bootstrap:
     adminUser: admin
     adminPasswordSecretRef:
-      name: <admin-secret>
+      name: controlplane-keystone-admin-credentials
   passwordRotation:
     enabled: true
     schedule: "0 0 1 * *"   # monthly, midnight on the 1st (default)
@@ -93,20 +107,20 @@ When `enabled: true`, the `reconcilePasswordRotation` sub-reconciler ensures a
 chain of resources. A rotation flows left to right:
 
 ```
-CronJob <ks>-admin-password-rotate
+CronJob controlplane-keystone-admin-password-rotate
   │  (mounts only /scripts/admin_password_rotate.sh; never runs keystone-manage)
   │  PATCH password + forge.c5c3.io/rotation-completed-at
   ▼
-staging Secret <ks>-admin-password-rotation
+staging Secret controlplane-keystone-admin-password-rotation
   │  operator validates (non-empty, >= min length) and COMMITS
   ▼
-push-source Secret <ks>-admin-password-next   (operator-owned)
-  │  PushSecret <ks>-admin-password-backup mirrors it
+push-source Secret controlplane-keystone-admin-password-next   (operator-owned)
+  │  PushSecret controlplane-keystone-admin-password-backup mirrors it
   ▼
-OpenBao  bootstrap/<ns>/<ks>/admin   (per-CR path)
-  │  ESO keystone-admin ExternalSecret syncs it
+OpenBao  bootstrap/openstack/controlplane-keystone/admin   (per-CR path)
+  │  ESO controlplane-keystone-admin-credentials ExternalSecret syncs it
   ▼
-admin Secret <admin-secret>
+admin Secret controlplane-keystone-admin-credentials
   │  secretToKeystoneMapper triggers a reconcile
   ▼
 reconcileBootstrap re-runs `keystone-manage bootstrap`  →  credential cut over
@@ -116,17 +130,17 @@ The resources, by name:
 
 | Resource | Name | Role |
 | --- | --- | --- |
-| CronJob | `<ks>-admin-password-rotate` | Mints a fresh password on `schedule` and PATCHes it onto the staging Secret. Mounts only the rotation script; never runs `keystone-manage`. |
-| Staging Secret | `<ks>-admin-password-rotation` | Drop box the CronJob writes; the only Secret the CronJob SA may patch. |
-| Push-source Secret | `<ks>-admin-password-next` | Operator-owned. The operator commits the validated password here; the PushSecret selects it. |
-| PushSecret | `<ks>-admin-password-backup` | Mirrors the push-source Secret to OpenBao `bootstrap/<ns>/<ks>/admin` (per-CR path). |
-| RBAC trio | `<ks>-admin-password-rotate` (ServiceAccount, Role, RoleBinding) | The CronJob's split-RBAC identity. |
-| Script ConfigMap | `<ks>-admin-password-rotate-script` (content-hash suffixed) | Immutable mount of `admin_password_rotate.sh`. |
+| CronJob | `controlplane-keystone-admin-password-rotate` | Mints a fresh password on `schedule` and PATCHes it onto the staging Secret. Mounts only the rotation script; never runs `keystone-manage`. |
+| Staging Secret | `controlplane-keystone-admin-password-rotation` | Drop box the CronJob writes; the only Secret the CronJob SA may patch. |
+| Push-source Secret | `controlplane-keystone-admin-password-next` | Operator-owned. The operator commits the validated password here; the PushSecret selects it. |
+| PushSecret | `controlplane-keystone-admin-password-backup` | Mirrors the push-source Secret to OpenBao `bootstrap/openstack/controlplane-keystone/admin` (per-CR path). |
+| RBAC trio | `controlplane-keystone-admin-password-rotate` (ServiceAccount, Role, RoleBinding) | The CronJob's split-RBAC identity. |
+| Script ConfigMap | `controlplane-keystone-admin-password-rotate-script` (content-hash suffixed) | Immutable mount of `admin_password_rotate.sh`. |
 
 Two safety properties are worth calling out:
 
 > **Split RBAC.** The CronJob's Role grants `get` + `patch` on **only** the
-> staging Secret `<ks>-admin-password-rotation`, and `get` (read-only) on the
+> staging Secret `controlplane-keystone-admin-password-rotation`, and `get` (read-only) on the
 > push-source Secret. The CronJob can never write the push-source Secret — *the
 > operator* validates the staged value and writes the push-source. Write access to
 > the Secret a PushSecret backs is a token-forgery primitive, and it is kept off
@@ -136,18 +150,18 @@ Two safety properties are worth calling out:
 > Secret actually holds a valid password (non-empty, at least the minimum length).
 > Before the first rotation completes the push-source Secret is empty, so the
 > operator does not push — it would otherwise overwrite the seeded
-> `bootstrap/<ns>/<ks>/admin` value with nothing.
+> `bootstrap/openstack/controlplane-keystone/admin` value with nothing.
 
 > **ESO-managed source path.** The PushSecret can only write
-> `bootstrap/<ns>/<ks>/admin` if that OpenBao path carries the custom-metadata
+> `bootstrap/openstack/controlplane-keystone/admin` if that OpenBao path carries the custom-metadata
 > marker `managed-by=external-secrets`. The ESO Vault/OpenBao provider refuses to
 > overwrite a path it does not own and fails the PushSecret with `secret not
 > managed by external-secrets`. The standard bootstrap
 > (`deploy/openbao/bootstrap/write-bootstrap-secrets.sh`) stamps the marker when it
 > seeds the path, and re-running it adopts a path written by an older bootstrap
-> that predates this marker. If you seed `bootstrap/<ns>/<ks>/admin` by hand, set
+> that predates this marker. If you seed `bootstrap/openstack/controlplane-keystone/admin` by hand, set
 > the marker too:
-> `bao kv metadata put -custom-metadata=managed-by=external-secrets kv-v2/bootstrap/<ns>/<ks>/admin`.
+> `bao kv metadata put -custom-metadata=managed-by=external-secrets kv-v2/bootstrap/openstack/controlplane-keystone/admin`.
 
 For the full sub-reconciler contract (validation rules, event reasons, the
 clobber-safe gate, RBAC shape) see
@@ -164,7 +178,7 @@ can run and confirm.
 ### 3.1 Confirm the CronJob exists with your schedule
 
 ```bash
-kubectl -n <ns> get cronjob <ks>-admin-password-rotate
+kubectl -n openstack get cronjob controlplane-keystone-admin-password-rotate
 ```
 
 The `SCHEDULE` column should show your `spec.passwordRotation.schedule`
@@ -175,17 +189,17 @@ The `SCHEDULE` column should show your `spec.passwordRotation.schedule`
 Instantiate a one-shot Job from the CronJob template and wait for it to finish:
 
 ```bash
-JOB=<ks>-admin-password-rotate-manual-$(date +%s)
-kubectl -n <ns> create job --from=cronjob/<ks>-admin-password-rotate "$JOB"
+JOB=controlplane-keystone-admin-password-rotate-manual-$(date +%s)
+kubectl -n openstack create job --from=cronjob/controlplane-keystone-admin-password-rotate "$JOB"
 
-kubectl -n <ns> wait --for=condition=complete job/"$JOB" --timeout=120s
+kubectl -n openstack wait --for=condition=complete job/"$JOB" --timeout=120s
 ```
 
 The timestamp suffix keeps the Job name unique, so re-running this step never
 collides with a prior manual Job (`AlreadyExists`) before it is cleaned up.
 
 The Job's pod mints a fresh password and PATCHes it onto the staging Secret
-`<ks>-admin-password-rotation`.
+`controlplane-keystone-admin-password-rotation`.
 
 ### 3.3 Observe the operator commit
 
@@ -195,15 +209,15 @@ three:
 
 ```bash
 # Push-source Secret now carries a non-empty password and the completion stamp.
-kubectl -n <ns> get secret <ks>-admin-password-next \
+kubectl -n openstack get secret controlplane-keystone-admin-password-next \
   -o jsonpath="{.metadata.annotations['forge\.c5c3\.io/rotation-completed-at']}{\"\n\"}"
 
 # Staging Secret has been deleted (NotFound is the success signal here).
-kubectl -n <ns> get secret <ks>-admin-password-rotation
+kubectl -n openstack get secret controlplane-keystone-admin-password-rotation
 
 # The success event.
-kubectl -n <ns> get events \
-  --field-selector reason=AdminPasswordRotated,involvedObject.name=<ks> \
+kubectl -n openstack get events \
+  --field-selector reason=AdminPasswordRotated,involvedObject.name=controlplane-keystone \
   --sort-by='.lastTimestamp'
 ```
 
@@ -211,7 +225,7 @@ Expected event:
 
 ```
 LAST SEEN   TYPE     REASON               OBJECT          MESSAGE
-5s          Normal   AdminPasswordRotated keystone/<ks>   admin password rotation applied from staging secret <ks>-admin-password-rotation
+5s          Normal   AdminPasswordRotated keystone/controlplane-keystone   admin password rotation applied from staging secret controlplane-keystone-admin-password-rotation
 ```
 
 > **Note.** The password value itself is never logged or echoed in an event. If
@@ -223,8 +237,8 @@ LAST SEEN   TYPE     REASON               OBJECT          MESSAGE
 ### 3.4 Confirm the OpenBao value changed and ESO synced it
 
 The PushSecret mirrors the push-source Secret into OpenBao at
-`bootstrap/<ns>/<ks>/admin`, and the `keystone-admin` ExternalSecret projects it
-back into the admin Secret `<admin-secret>`. Use the manual guide's
+`bootstrap/openstack/controlplane-keystone/admin`, and the `controlplane-keystone-admin-credentials` ExternalSecret projects it
+back into the admin Secret `controlplane-keystone-admin-credentials`. Use the manual guide's
 force-sync + fingerprint technique to confirm the admin Secret carries the new
 value: see
 [step 2 of the manual guide](keystone-admin-password-rotation.md#2-optional-force-eso-to-sync-the-new-value).
@@ -232,7 +246,7 @@ value: see
 The short version:
 
 ```bash
-kubectl -n <ns> get secret <admin-secret> \
+kubectl -n openstack get secret controlplane-keystone-admin-credentials \
   -o jsonpath='{.data.password}' | base64 -d | sha256sum
 ```
 
@@ -247,7 +261,7 @@ idempotent bootstrap Job. Follow the manual guide's steps, which are the
 authoritative walkthrough:
 
 - [Step 3 — Observe the recreated bootstrap Job](keystone-admin-password-rotation.md#3-observe-the-recreated-bootstrap-job)
-  (the `<ks>-bootstrap` Job is delete+recreated with a fresh UID and the new
+  (the `controlplane-keystone-bootstrap` Job is delete+recreated with a fresh UID and the new
   `forge.c5c3.io/admin-password-hash`).
 - [Step 4 — Watch the `BootstrapReady` transitions](keystone-admin-password-rotation.md#4-watch-the-bootstrapready-transitions)
   (`False`/`BootstrapInProgress` → `True`/`BootstrapComplete`).
@@ -259,10 +273,10 @@ authoritative walkthrough:
 
 ### 3.6 Note the separation from the live credential
 
-The push-source Secret `<ks>-admin-password-next` is a **distinct object** from
-the live admin Secret `<admin-secret>`. The operator commits the new password onto
+The push-source Secret `controlplane-keystone-admin-password-next` is a **distinct object** from
+the live admin Secret `controlplane-keystone-admin-credentials`. The operator commits the new password onto
 the push-source Secret; the running Keystone keeps using the value in
-`<admin-secret>` until ESO has synced the new value back. A scheduled rotation
+`controlplane-keystone-admin-credentials` until ESO has synced the new value back. A scheduled rotation
 never clobbers the credential the running Keystone is using mid-flight.
 
 ---
@@ -270,20 +284,33 @@ never clobbers the credential the running Keystone is using mid-flight.
 ## 4. Per-CR path isolation
 
 Model B scopes the OpenBao RemoteKey **per Keystone CR** to
-`bootstrap/<ns>/<ks>/admin`, where `<ns>`/`<ks>` are the
-Keystone CR's namespace and name. Each Model-B-enabled Keystone CR therefore
-writes its admin password to its **own** OpenBao object, and the matching
-`keystone-admin` ExternalSecret reads that same per-CR path. Two Model-B-enabled
-Keystone CRs in the same cluster no longer share one OpenBao object — they cannot
-clobber each other's rotations, so scheduled rotation can be enabled on multiple
-Keystone CRs concurrently.
+`bootstrap/{namespace}/{name}/admin` — for `controlplane-keystone` in
+`openstack`, that is `bootstrap/openstack/controlplane-keystone/admin`. Each
+Model-B-enabled Keystone CR therefore writes its admin password to its **own**
+OpenBao object, and the matching admin-credentials ExternalSecret reads that same
+per-CR path. Two Model-B-enabled Keystone CRs in the same cluster no longer share
+one OpenBao object — they cannot clobber each other's rotations, so scheduled
+rotation can be enabled on multiple Keystone CRs concurrently.
 
-> **Path in lockstep.** The `keystone-admin` ExternalSecret's `remoteRef.key` must
-> match the per-CR path of the Keystone CR whose rotation feeds it. The bootstrap
-> seed (`deploy/openbao/bootstrap/write-bootstrap-secrets.sh`) seeds
-> `bootstrap/<ns>/<ks>/admin` for each ControlPlane identity in
+> **Path in lockstep.** The admin-credentials ExternalSecret's `remoteRef.key`
+> must match the per-CR path of the Keystone CR whose rotation feeds it. On the
+> ControlPlane devstack that ExternalSecret is the operator-projected
+> `controlplane-keystone-admin-credentials`, reading
+> `bootstrap/openstack/controlplane-keystone/admin`. The bootstrap seed
+> (`deploy/openbao/bootstrap/write-bootstrap-secrets.sh`) seeds
+> `bootstrap/{namespace}/{name}/admin` for each ControlPlane identity in
 > `KORC_CONTROLPLANES` (default `openstack/controlplane`, whose projected Keystone
 > CR is `controlplane-keystone`, i.e. `bootstrap/openstack/controlplane-keystone/admin`).
+
+> **Standalone Keystone.** For a standalone Keystone (no ControlPlane), the
+> ExternalSecret feeding the admin Secret is one you supply, and its
+> `remoteRef.key` must match the per-CR path this rotation writes —
+> `bootstrap/{namespace}/{name}/admin` for a CR named `{name}` in `{namespace}`.
+> The kind `keystone-admin` shim
+> (`deploy/kind/infrastructure/keystone-admin-externalsecret.yaml`) instead reads
+> the fixed default-identity path `bootstrap/openstack/controlplane-keystone/admin`,
+> so scheduled rotation on the kind Quick Start is exercised against the
+> ControlPlane's `controlplane-keystone`, not a separately named standalone CR.
 
 ---
 
@@ -294,7 +321,7 @@ There are two ways to stop rotating, with different blast radius.
 **Suspend** — keep every resource but stop new runs:
 
 ```bash
-kubectl -n <ns> patch keystone <ks> --type merge \
+kubectl -n openstack patch keystone controlplane-keystone --type merge \
   -p '{"spec":{"passwordRotation":{"suspend":true}}}'
 ```
 
@@ -304,7 +331,7 @@ resources remain. No new password is minted until you set `suspend: false` again
 **Disable** — tear everything down:
 
 ```bash
-kubectl -n <ns> patch keystone <ks> --type merge \
+kubectl -n openstack patch keystone controlplane-keystone --type merge \
   -p '{"spec":{"passwordRotation":{"enabled":false}}}'
 ```
 
@@ -315,7 +342,7 @@ Secrets, the RBAC trio, the PushSecret, and the script ConfigMap — and reports
 
 > **Safety note.** Disabling does **not** remove the last-pushed password from
 > OpenBao. The PushSecret uses `DeletionPolicy: None`, so the value already in
-> `bootstrap/<ns>/<ks>/admin` stays put when the PushSecret is deleted. Disabling
+> `bootstrap/openstack/controlplane-keystone/admin` stays put when the PushSecret is deleted. Disabling
 > rotation can never lock the admin out of Keystone.
 
 ---

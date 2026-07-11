@@ -16,31 +16,46 @@ validation rules, event reasons), see
 under the Fernet and credential sub-reconciler sections in
 [Keystone Reconciler Architecture](../reference/keystone/keystone-reconciler.md).
 
-> **Terminology.** In this document `<ks>` is the Keystone CR's `.metadata.name`
-> (e.g. `keystone-default`) and `<ns>` is its namespace (typically `openstack`).
-> Commands target Fernet rotation; swap `fernet` → `credential` everywhere for
-> credential-key rotation.
+> **Names.** The examples target the ControlPlane devstack's projected Keystone:
+> the CR is `controlplane-keystone` in the `openstack` namespace, so the rotation
+> CronJobs and Secrets are named after it
+> (`controlplane-keystone-fernet-rotate`, `controlplane-keystone-fernet-keys`, ...).
+> If your Keystone CR has a different name, substitute it throughout; for a
+> standalone Keystone, read the final section. Commands target Fernet rotation;
+> swap `fernet` → `credential` everywhere for credential-key rotation.
 
 ---
 
 ## Prerequisites
 
+::: info Devstack
+This guide is written against the **[Quick Start (ControlPlane)](../quick-start-controlplane.md)** devstack. Stand it up first:
+
+```bash
+KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
+```
+
+Follow that tutorial through to its final **Verify** step, so the ControlPlane's
+projected `controlplane-keystone` Keystone is `Ready`. Every resource name in the
+examples below is one that devstack produces.
+:::
+
 - A healthy Keystone CR (`Ready=True`) — see [Observability & Diagnostics](./observability.md).
-- `kubectl` access to the CR's namespace (`<ns>`).
+- `kubectl` access to the CR's namespace (`openstack`).
 - The rotation CronJobs already reconciled —
-  `kubectl -n <ns> get cronjob <ks>-fernet-rotate <ks>-credential-rotate` returns both.
+  `kubectl -n openstack get cronjob controlplane-keystone-fernet-rotate controlplane-keystone-credential-rotate` returns both.
 
 ---
 
 ## Background: Who Writes What
 
 Earlier the rotation CronJob wrote directly to the production
-`<ks>-fernet-keys` Secret with `patch` RBAC. The current design splits that path:
+`controlplane-keystone-fernet-keys` Secret with `patch` RBAC. The current design splits that path:
 
 | Actor | Writes to | Reads from |
 | --- | --- | --- |
-| Rotation CronJob (ServiceAccount `<ks>-fernet-rotate`) | Staging Secret `<ks>-fernet-keys-rotation` (via `patch`) | Production Secret `<ks>-fernet-keys` (via `get`, mounted as volume) |
-| Operator (controller-manager ServiceAccount) | Production Secret `<ks>-fernet-keys` (via `patch`) | Staging Secret `<ks>-fernet-keys-rotation` (validates, then deletes) |
+| Rotation CronJob (ServiceAccount `controlplane-keystone-fernet-rotate`) | Staging Secret `controlplane-keystone-fernet-keys-rotation` (via `patch`) | Production Secret `controlplane-keystone-fernet-keys` (via `get`, mounted as volume) |
+| Operator (controller-manager ServiceAccount) | Production Secret `controlplane-keystone-fernet-keys` (via `patch`) | Staging Secret `controlplane-keystone-fernet-keys-rotation` (validates, then deletes) |
 
 The staging Secret carries one controller-observable marker — the
 `forge.c5c3.io/rotation-completed-at` annotation — that tells the operator
@@ -60,15 +75,15 @@ any sibling resource, set `spec.fernet.suspend: true` (or
 To trigger one on demand, create a one-shot Job from the CronJob template:
 
 ```bash
-kubectl -n <ns> create job --from=cronjob/<ks>-fernet-rotate \
-  <ks>-fernet-rotate-manual-$(date +%s)
+kubectl -n openstack create job --from=cronjob/controlplane-keystone-fernet-rotate \
+  controlplane-keystone-fernet-rotate-manual-$(date +%s)
 ```
 
 Watch the Job run to completion:
 
 ```bash
-kubectl -n <ns> get jobs -l job-name -w
-kubectl -n <ns> logs job/<ks>-fernet-rotate-manual-<ts>
+kubectl -n openstack get jobs -l job-name -w
+kubectl -n openstack logs job/controlplane-keystone-fernet-rotate-manual-<ts>
 ```
 
 Expected log tail:
@@ -90,7 +105,7 @@ operator's next reconcile, which typically closes the window in seconds.
 To catch it, watch the staging Secret during a rotation:
 
 ```bash
-kubectl -n <ns> get secret <ks>-fernet-keys-rotation \
+kubectl -n openstack get secret controlplane-keystone-fernet-keys-rotation \
   -o jsonpath='{.metadata.annotations.forge\.c5c3\.io/rotation-completed-at}{"\n"}'
 ```
 
@@ -105,8 +120,8 @@ After the operator applies the rotation, the staging Secret is deleted
 entirely:
 
 ```bash
-$ kubectl -n <ns> get secret <ks>-fernet-keys-rotation
-Error from server (NotFound): secrets "<ks>-fernet-keys-rotation" not found
+$ kubectl -n openstack get secret controlplane-keystone-fernet-keys-rotation
+Error from server (NotFound): secrets "controlplane-keystone-fernet-keys-rotation" not found
 ```
 
 The operator recreates the empty staging Secret on the next reconcile —
@@ -120,20 +135,20 @@ empty `Data`, that is the steady state between rotations.
 On a successful apply the operator emits a Normal event on the Keystone CR:
 
 ```bash
-kubectl -n <ns> describe keystone <ks> | grep -A1 -E 'FernetKeysRotated|CredentialKeysRotated'
+kubectl -n openstack describe keystone controlplane-keystone | grep -A1 -E 'FernetKeysRotated|CredentialKeysRotated'
 ```
 
 Expected output:
 
 ```
-Normal  FernetKeysRotated  5s  keystone-controller  rotation applied from staging secret <ks>-fernet-keys-rotation (3 active keys)
+Normal  FernetKeysRotated  5s  keystone-controller  rotation applied from staging secret controlplane-keystone-fernet-keys-rotation (3 active keys)
 ```
 
 Alternatively, filter the namespace's event stream:
 
 ```bash
-kubectl -n <ns> get events \
-  --field-selector reason=FernetKeysRotated,involvedObject.name=<ks> \
+kubectl -n openstack get events \
+  --field-selector reason=FernetKeysRotated,involvedObject.name=controlplane-keystone \
   --sort-by='.lastTimestamp'
 ```
 
@@ -146,15 +161,15 @@ before and after to prove the apply went through:
 
 ```bash
 # Before triggering rotation
-kubectl -n <ns> get secret <ks>-fernet-keys \
+kubectl -n openstack get secret controlplane-keystone-fernet-keys \
   -o jsonpath='{.metadata.resourceVersion}{"\n"}'
-kubectl -n <ns> get secret <ks>-fernet-keys \
+kubectl -n openstack get secret controlplane-keystone-fernet-keys \
   -o jsonpath='{range .data.*}{@}{"\n"}{end}' | sha256sum
 
 # After: resourceVersion has advanced and the hash differs
-kubectl -n <ns> get secret <ks>-fernet-keys \
+kubectl -n openstack get secret controlplane-keystone-fernet-keys \
   -o jsonpath='{.metadata.resourceVersion}{"\n"}'
-kubectl -n <ns> get secret <ks>-fernet-keys \
+kubectl -n openstack get secret controlplane-keystone-fernet-keys \
   -o jsonpath='{range .data.*}{@}{"\n"}{end}' | sha256sum
 ```
 
@@ -180,8 +195,8 @@ contents, is the record of what was rejected.
 ### Symptoms
 
 ```bash
-kubectl -n <ns> get events \
-  --field-selector reason=RotationRejected,involvedObject.name=<ks> \
+kubectl -n openstack get events \
+  --field-selector reason=RotationRejected,involvedObject.name=controlplane-keystone \
   --sort-by='.lastTimestamp'
 ```
 
@@ -189,7 +204,7 @@ Example output:
 
 ```
 LAST SEEN   TYPE      REASON              OBJECT                       MESSAGE
-12s         Warning   RotationRejected    keystone/<ks>                staging secret <ks>-fernet-keys-rotation rejected: invalid key format: key "0" length=32, want 44
+12s         Warning   RotationRejected    keystone/controlplane-keystone                staging secret controlplane-keystone-fernet-keys-rotation rejected: invalid key format: key "0" length=32, want 44
 ```
 
 The companion Warning reason `RotationAnnotationInvalid` indicates the
@@ -222,9 +237,9 @@ The recovery sequence is always:
    belt-and-suspenders:
 
    ```bash
-   kubectl -n <ns> delete secret <ks>-fernet-keys-rotation   # optional
-   kubectl -n <ns> create job --from=cronjob/<ks>-fernet-rotate \
-     <ks>-fernet-rotate-recover-$(date +%s)
+   kubectl -n openstack delete secret controlplane-keystone-fernet-keys-rotation   # optional
+   kubectl -n openstack create job --from=cronjob/controlplane-keystone-fernet-rotate \
+     controlplane-keystone-fernet-rotate-recover-$(date +%s)
    ```
 
    The new Job PATCHes the (already-empty) staging Secret; the operator
@@ -245,9 +260,9 @@ Everything above applies to credential rotation unchanged — substitute:
 
 | Fernet | Credential |
 | --- | --- |
-| `<ks>-fernet-keys` | `<ks>-credential-keys` |
-| `<ks>-fernet-keys-rotation` | `<ks>-credential-keys-rotation` |
-| `<ks>-fernet-rotate` | `<ks>-credential-rotate` |
+| `controlplane-keystone-fernet-keys` | `controlplane-keystone-credential-keys` |
+| `controlplane-keystone-fernet-keys-rotation` | `controlplane-keystone-credential-keys-rotation` |
+| `controlplane-keystone-fernet-rotate` | `controlplane-keystone-credential-rotate` |
 | `FernetKeysRotated` event | `CredentialKeysRotated` event |
 | `spec.fernet.*` | `spec.credentialKeys.*` |
 
@@ -264,6 +279,26 @@ aging-out.
 > running Keystone pods still have the old keyset mounted and cannot decrypt
 > rows already re-encrypted under the new primary. This is an inherent
 > property of the rotation flow, not a regression.
+
+---
+
+## Standalone Keystone, without a ControlPlane
+
+The [Quick Start](../quick-start.md) and
+[Quick Start (Extended)](../quick-start-extended.md) devstacks run a standalone
+Keystone CR named `keystone`. The rotation resources are named after that CR, so
+substitute the `controlplane-keystone-` prefix with `keystone-` throughout:
+
+| ControlPlane devstack | Standalone devstack |
+| --- | --- |
+| CronJob `controlplane-keystone-fernet-rotate` | CronJob `keystone-fernet-rotate` |
+| Secret `controlplane-keystone-fernet-keys` | Secret `keystone-fernet-keys` |
+| Secret `controlplane-keystone-fernet-keys-rotation` | Secret `keystone-fernet-keys-rotation` |
+| (credential variants of each) | (credential variants of each) |
+
+Everything else — the staging/production split, the completion annotation, the
+validation rules, and the credential-key `credential_migrate` step — is
+identical.
 
 ---
 
