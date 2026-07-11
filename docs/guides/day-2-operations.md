@@ -31,12 +31,12 @@ examples below is one that devstack produces.
 ::: warning The Keystone child is operator-owned
 On a ControlPlane deployment the `controlplane-keystone` Keystone CR is
 **projected** by the c5c3-operator. It re-asserts the projected fields
-(image, database, cache, replicas, federation, policy overrides, gateway,
-rotation schedule) on every reconcile, so a knob you set directly on the child
-is reverted. Set operational knobs on the `ControlPlane` CR and let the operator
-project them down. Where the `ControlPlane` CRD does not expose a knob, this
-guide points to the [Standalone Keystone](#standalone-keystone-without-a-controlplane)
-section, which drives a Keystone CR you own. See the
+(image, database, cache, replicas, federation, policy overrides, gateway) on
+every reconcile, so a knob you set directly on the child is reverted. Set
+operational knobs on the `ControlPlane` CR and let the operator project them
+down. Where the `ControlPlane` CRD does not expose a knob, this guide points to
+the [Standalone Keystone](#standalone-keystone-without-a-controlplane) section,
+which drives a Keystone CR you own. See the
 [ControlPlane Reconciler](../reference/c5c3/controlplane-reconciler.md) for the
 full projection contract.
 :::
