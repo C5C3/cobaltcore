@@ -180,3 +180,50 @@ func stopEnv(t testing.TB, env *envtest.Environment) {
 		t.Logf("additionally failed to stop envtest environment: %v", err)
 	}
 }
+
+// UnstartedManagerConfig configures SetupUnstartedManager: the scheme the
+// manager knows and the CRD directories the envtest API server installs.
+type UnstartedManagerConfig struct {
+	Scheme            *k8sruntime.Scheme
+	CRDDirectoryPaths []string
+}
+
+// SetupUnstartedManager starts an envtest API server with the given CRDs and
+// returns a controller-runtime Manager whose scheme is cfg.Scheme, WITHOUT
+// starting it — callers can invoke mgr.GetFieldIndexer() or other pre-Start APIs
+// without incurring a background goroutine. The metrics and health-probe servers
+// are disabled and no webhooks are installed. This is the shared body of the
+// per-operator minimal-manager setups. Tear-down is wired via t.Cleanup().
+func SetupUnstartedManager(t testing.TB, cfg UnstartedManagerConfig) (ctrl.Manager, context.Context, context.CancelFunc) {
+	t.Helper()
+
+	env := &envtest.Environment{
+		CRDDirectoryPaths:     cfg.CRDDirectoryPaths,
+		ErrorIfCRDPathMissing: true,
+	}
+
+	restCfg, err := env.Start()
+	if err != nil {
+		t.Fatalf("failed to start envtest environment for unstarted manager: %v", err)
+	}
+
+	mgr, err := ctrl.NewManager(restCfg, ctrl.Options{
+		Scheme:                 cfg.Scheme,
+		Metrics:                metricsserver.Options{BindAddress: "0"},
+		HealthProbeBindAddress: "0",
+	})
+	if err != nil {
+		stopEnv(t, env)
+		t.Fatalf("failed to create unstarted controller-runtime manager: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(func() {
+		cancel()
+		if err := env.Stop(); err != nil {
+			t.Errorf("failed to stop envtest environment for unstarted manager: %v", err)
+		}
+	})
+
+	return mgr, ctx, cancel
+}

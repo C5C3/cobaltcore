@@ -76,3 +76,18 @@ func TestSharedScheme_registersExternalOperatorTypes(t *testing.T) {
 		})
 	}
 }
+
+func TestCommonExternalSchemes_registersFiveExternalGroups(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := BuildScheme(CommonExternalSchemes()...)
+
+	for _, gvk := range []schema.GroupVersionKind{
+		{Group: "k8s.mariadb.com", Version: "v1alpha1", Kind: "Database"},
+		{Group: "external-secrets.io", Version: "v1", Kind: "ExternalSecret"},
+		{Group: "external-secrets.io", Version: "v1alpha1", Kind: "PushSecret"},
+		{Group: "cert-manager.io", Version: "v1", Kind: "Certificate"},
+		{Group: "gateway.networking.k8s.io", Version: "v1", Kind: "HTTPRoute"},
+	} {
+		g.Expect(s.Recognizes(gvk)).To(BeTrue(), "CommonExternalSchemes should register %s", gvk)
+	}
+}

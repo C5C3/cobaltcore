@@ -23,6 +23,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
 // SetupEnvTest starts an envtest API server with etcd, installs fake CRDs, and
@@ -30,9 +31,20 @@ import (
 // function. The environment is torn down automatically via t.Cleanup().
 func SetupEnvTest(t testing.TB) (client.Client, context.Context, context.CancelFunc) {
 	t.Helper()
+	return SetupEnvTestWithCRDs(t, SharedScheme(), fakeCRDsDirs())
+}
+
+// SetupEnvTestWithCRDs starts a webhook-less envtest API server with the given
+// scheme and CRD directories and returns a direct (non-caching) client, so tests
+// can submit CRs and observe exactly the schema-layer validation the API server
+// enforces (kubebuilder markers + x-kubernetes-validations CEL rules) without a
+// validating webhook short-circuiting the rejection. This is the shared body of
+// the per-operator no-webhook setups. Tear-down is wired via t.Cleanup().
+func SetupEnvTestWithCRDs(t testing.TB, scheme *k8sruntime.Scheme, crdDirs []string) (client.Client, context.Context, context.CancelFunc) {
+	t.Helper()
 
 	env := &envtest.Environment{
-		CRDDirectoryPaths:     fakeCRDsDirs(),
+		CRDDirectoryPaths:     crdDirs,
 		ErrorIfCRDPathMissing: true,
 	}
 
@@ -41,7 +53,7 @@ func SetupEnvTest(t testing.TB) (client.Client, context.Context, context.CancelF
 		t.Fatalf("failed to start envtest environment: %v", err)
 	}
 
-	c, err := client.New(cfg, client.Options{Scheme: SharedScheme()})
+	c, err := client.New(cfg, client.Options{Scheme: scheme})
 	if err != nil {
 		// Stop the environment before registering cleanup since client
 		// creation failed before we could register t.Cleanup for env.Stop().
@@ -51,17 +63,13 @@ func SetupEnvTest(t testing.TB) (client.Client, context.Context, context.CancelF
 		t.Fatalf("failed to create controller-runtime client: %v", err)
 	}
 
-	// Register cleanup only after client.New succeeds so env.Stop() is
-	// called exactly once — either here on success, or explicitly above
-	// on failure.
+	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(func() {
+		cancel()
 		if err := env.Stop(); err != nil {
 			t.Errorf("failed to stop envtest environment: %v", err)
 		}
 	})
-
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
 
 	return c, ctx, cancel
 }
@@ -116,6 +124,22 @@ func SharedScheme() *k8sruntime.Scheme {
 // package is the single owner of the fake_crds location.
 func CommonFakeCRDDirs() []string {
 	return fakeCRDsDirs()
+}
+
+// CommonExternalSchemes returns the AddToScheme functions for the external API
+// groups a database-backed service operator's reconciler typically registers:
+// MariaDB, ESO v1 and v1alpha1, cert-manager, and Gateway API. Operators compose
+// these with their own CR types via BuildScheme; an operator that needs only a
+// subset (or additional single-consumer groups like K-ORC) composes the ones it
+// needs instead.
+func CommonExternalSchemes() []func(*k8sruntime.Scheme) error {
+	return []func(*k8sruntime.Scheme) error{
+		mariadbv1alpha1.AddToScheme,
+		esov1.AddToScheme,
+		esov1alpha1.AddToScheme,
+		certmanagerv1.AddToScheme,
+		gatewayv1.Install,
+	}
 }
 
 // BuildScheme creates a runtime.Scheme with the core client-go and

@@ -11,16 +11,9 @@ import (
 	"runtime"
 	"testing"
 
-	certmanagerv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
-	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
-	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
-	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/envtest"
-	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
-	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	commonenvtest "github.com/c5c3/forge/internal/common/testutil/envtest"
 )
@@ -83,37 +76,7 @@ func SetupKeystoneEnvTestNoWebhook(
 	t.Helper()
 
 	crdDir, _ := keystonePaths()
-
-	env := &envtest.Environment{
-		CRDDirectoryPaths:     []string{crdDir},
-		ErrorIfCRDPathMissing: true,
-	}
-
-	cfg, err := env.Start()
-	if err != nil {
-		t.Fatalf("failed to start no-webhook Keystone envtest environment: %v", err)
-	}
-
-	s := buildScheme(addToScheme)
-
-	c, err := client.New(cfg, client.Options{Scheme: s})
-	if err != nil {
-		if stopErr := env.Stop(); stopErr != nil {
-			t.Logf("additionally failed to stop envtest environment: %v", stopErr)
-		}
-		t.Fatalf("failed to create direct client: %v", err)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-
-	t.Cleanup(func() {
-		cancel()
-		if err := env.Stop(); err != nil {
-			t.Errorf("failed to stop no-webhook Keystone envtest environment: %v", err)
-		}
-	})
-
-	return c, ctx, cancel
+	return commonenvtest.SetupEnvTestWithCRDs(t, buildScheme(addToScheme), []string{crdDir})
 }
 
 // keystonePaths returns absolute paths to the Keystone CRD and webhook
@@ -141,17 +104,9 @@ func buildScheme(addToScheme func(*k8sruntime.Scheme) error) *k8sruntime.Scheme 
 // and all external operator types (MariaDB, ESO, cert-manager).
 // It is created fresh per test.
 func buildControllerScheme(addToScheme func(*k8sruntime.Scheme) error) *k8sruntime.Scheme {
-	return commonenvtest.BuildScheme(
-		// External operator types needed by the reconciler.
-		mariadbv1alpha1.AddToScheme,
-		esov1.AddToScheme,
-		esov1alpha1.AddToScheme,
-		certmanagerv1.AddToScheme,
-		// Gateway API types for HTTPRoute reconciliation.
-		gatewayv1.Install,
-		// Keystone types.
-		addToScheme,
-	)
+	// The reconciler's external API groups (MariaDB, ESO v1/v1alpha1,
+	// cert-manager, Gateway API) are exactly the shared common set.
+	return commonenvtest.BuildScheme(append(commonenvtest.CommonExternalSchemes(), addToScheme)...)
 }
 
 // SetupMinimalEnvTest starts a minimal envtest API server with the Keystone
@@ -174,41 +129,10 @@ func SetupMinimalEnvTest(
 	// setup does not install. Fail-fast on a missing CRD directory is already
 	// covered by envtest's ErrorIfCRDPathMissing=true below.
 	crdDir, _ := keystonePaths()
-
-	env := &envtest.Environment{
-		CRDDirectoryPaths:     []string{crdDir},
-		ErrorIfCRDPathMissing: true,
-	}
-
-	cfg, err := env.Start()
-	if err != nil {
-		t.Fatalf("failed to start minimal Keystone envtest environment: %v", err)
-	}
-
-	s := buildScheme(addToScheme)
-
-	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
-		Scheme:                 s,
-		Metrics:                metricsserver.Options{BindAddress: "0"},
-		HealthProbeBindAddress: "0",
+	return commonenvtest.SetupUnstartedManager(t, commonenvtest.UnstartedManagerConfig{
+		Scheme:            buildScheme(addToScheme),
+		CRDDirectoryPaths: []string{crdDir},
 	})
-	if err != nil {
-		if stopErr := env.Stop(); stopErr != nil {
-			t.Logf("additionally failed to stop envtest environment: %v", stopErr)
-		}
-		t.Fatalf("failed to create minimal controller-runtime manager: %v", err)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-
-	t.Cleanup(func() {
-		cancel()
-		if err := env.Stop(); err != nil {
-			t.Errorf("failed to stop minimal Keystone envtest environment: %v", err)
-		}
-	})
-
-	return mgr, ctx, cancel
 }
 
 // SetupKeystoneEnvTestWithController starts an envtest API server with the
