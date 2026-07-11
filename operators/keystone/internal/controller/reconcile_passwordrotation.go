@@ -24,6 +24,7 @@ import (
 	"github.com/c5c3/forge/internal/common/config"
 	"github.com/c5c3/forge/internal/common/deployment"
 	"github.com/c5c3/forge/internal/common/job"
+	"github.com/c5c3/forge/internal/common/rotation"
 	"github.com/c5c3/forge/internal/common/secrets"
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 
@@ -439,13 +440,13 @@ func (r *KeystoneReconciler) applyAdminPasswordRotation(
 	staging, pushSource *corev1.Secret,
 	minLength int,
 ) (applied bool, err error) {
-	return r.commitStagedRotation(ctx, keystone, staging, pushSource, rotationCommitSpec{
-		targetNoun:              "push-source secret",
-		validate:                func(data map[string][]byte) error { return validateAdminPasswordRotationOutput(data, minLength) },
-		annotationInvalidReason: "AdminPasswordRotationAnnotationInvalid",
-		rejectedReason:          "AdminPasswordRotationRejected",
-		appliedReason:           "AdminPasswordRotated",
-		appliedMessage: func(stagingSecretName string, _ map[string][]byte) string {
+	return r.commitStagedRotation(ctx, keystone, staging, pushSource, rotation.CommitSpec{
+		TargetNoun:              "push-source secret",
+		Validate:                func(data map[string][]byte) error { return validateAdminPasswordRotationOutput(data, minLength) },
+		AnnotationInvalidReason: "AdminPasswordRotationAnnotationInvalid",
+		RejectedReason:          "AdminPasswordRotationRejected",
+		AppliedReason:           "AdminPasswordRotated",
+		AppliedMessage: func(stagingSecretName string, _ map[string][]byte) string {
 			return fmt.Sprintf("admin password rotation applied from staging secret %s", stagingSecretName)
 		},
 	})

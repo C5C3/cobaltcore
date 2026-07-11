@@ -10,10 +10,10 @@ import (
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 
 	"github.com/c5c3/forge/internal/common/deployment"
+	"github.com/c5c3/forge/internal/common/rotation"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
 
@@ -81,139 +81,126 @@ func keyRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName, scri
 		extraMounts = append(extraMounts, domMount)
 	}
 
-	cronJob := &batchv1.CronJob{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: keystone.Namespace,
-			Labels:    commonLabels(keystone),
-		},
-		Spec: batchv1.CronJobSpec{
-			Schedule: p.schedule,
-			JobTemplate: batchv1.JobTemplateSpec{
-				Spec: batchv1.JobSpec{
-					Template: corev1.PodTemplateSpec{
-						ObjectMeta: metav1.ObjectMeta{
-							Labels: commonLabels(keystone),
-						},
-						Spec: corev1.PodSpec{
-							ServiceAccountName: name,
-							RestartPolicy:      corev1.RestartPolicyOnFailure,
-							PriorityClassName:  priorityClassName(keystone),
-							// FSGroup makes the kubelet group-own mounted Secret volumes by
-							// the openstack GID so DefaultMode 0o400 still lets the openstack
-							// UID read the keys via the group bit. Without it, kubelet would
-							// project files as root:root mode 0o400 and the openstack process
-							// could not read them; upstream Keystone logs a "key_repository is
-							// world readable" WARNING via fernet_utils._check_key_repository
-							// for any default-mode (0o644) workaround.
-							SecurityContext: &corev1.PodSecurityContext{FSGroup: ptr.To(deployment.OpenStackUID)},
-							InitContainers: []corev1.Container{{
-								Name:  "copy-keys",
-								Image: image,
-								// `install -m 0400` materialises each key in the writable emptyDir
-								// at owner-read-only mode. A plain `cp` would inherit the kubelet
-								// emptyDir mode and re-introduce the world-readable directory for the
-								// rotation Pod.
-								Command:         []string{"sh", "-c", fmt.Sprintf("install -m 0400 %s/* %s/", srcMountPath, keyDir)},
-								SecurityContext: deployment.RestrictedSecurityContext(),
-								VolumeMounts: []corev1.VolumeMount{
-									{Name: srcVolName, MountPath: srcMountPath, ReadOnly: true},
-									{Name: keyVolName, MountPath: keyDir},
-								},
-							}},
-							Containers: []corev1.Container{{
-								Name:  p.keyKind + "-rotate",
-								Image: image,
-								// TODO: Wire spec.Resources (or a smaller Job-specific default) to
-								// this container. Currently runs as BestEffort QoS. See reconcile_deployment.go
-								// containerResources() for the pattern used by the keystone container.
-								Command:         []string{"/scripts/" + p.keyKind + "_rotate.sh"},
-								SecurityContext: deployment.RestrictedSecurityContext(),
-								Env: []corev1.EnvVar{
-									// SECRET_NAME points at the staging Secret — the CronJob SA
-									// is only permitted to patch the staging Secret, never the
-									// production Secret.
-									{Name: "SECRET_NAME", Value: p.stagingSecretName},
-									{Name: "SECRET_NAMESPACE", ValueFrom: &corev1.EnvVarSource{
-										FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.namespace"},
-									}},
-									// oslo.config honours OS_<GROUP>__<KEY> env var overrides, so this
-									// takes precedence over the compiled-in default (3) without needing
-									// to mount the ConfigMap. Uses the normalized value to stay
-									// consistent with the Secret's minimum floor of 3.
-									{
-										Name:  p.maxActiveKeysEnv,
-										Value: strconv.Itoa(p.maxActiveKeys),
-									},
-									// Override [database].connection via oslo.config env-var so the
-									// rotate CronJob reads the DB URL from the derived Secret instead
-									// of the ConfigMap.
-									buildDBConnectionEnvVar(keystone),
-								},
-								VolumeMounts: []corev1.VolumeMount{
-									{Name: keyVolName, MountPath: keyDir},
-									{Name: otherVolName, MountPath: otherKeyDir, ReadOnly: true},
-									{Name: "config", MountPath: "/etc/keystone/keystone.conf.d/", ReadOnly: true},
-									{Name: "scripts", MountPath: "/scripts", ReadOnly: true},
-								},
-							}},
-							Volumes: []corev1.Volume{
-								{
-									Name: srcVolName,
-									VolumeSource: corev1.VolumeSource{
-										Secret: &corev1.SecretVolumeSource{
-											SecretName:  secretName,
-											DefaultMode: ptr.To(int32(0o400)),
-										},
-									},
-								},
-								{
-									Name: keyVolName,
-									VolumeSource: corev1.VolumeSource{
-										EmptyDir: &corev1.EmptyDirVolumeSource{},
-									},
-								},
-								{
-									// keystone-manage reads the full config which references both
-									// key repositories; mount the sibling keys read-only so the
-									// directory exists even though this job only rotates one kind.
-									Name: otherVolName,
-									VolumeSource: corev1.VolumeSource{
-										Secret: &corev1.SecretVolumeSource{
-											SecretName:  otherSecretName,
-											DefaultMode: ptr.To(int32(0o400)),
-										},
-									},
-								},
-								{
-									Name: "config",
-									VolumeSource: corev1.VolumeSource{
-										ConfigMap: &corev1.ConfigMapVolumeSource{
-											LocalObjectReference: corev1.LocalObjectReference{Name: configMapName},
-										},
-									},
-								},
-								{
-									Name: "scripts",
-									VolumeSource: corev1.VolumeSource{
-										ConfigMap: &corev1.ConfigMapVolumeSource{
-											LocalObjectReference: corev1.LocalObjectReference{Name: scriptConfigMapName},
-											DefaultMode:          ptr.To(int32(0o555)),
-										},
-									},
-								},
-							},
-						},
+	podSpec := corev1.PodSpec{
+		ServiceAccountName: name,
+		RestartPolicy:      corev1.RestartPolicyOnFailure,
+		PriorityClassName:  priorityClassName(keystone),
+		// FSGroup makes the kubelet group-own mounted Secret volumes by
+		// the openstack GID so DefaultMode 0o400 still lets the openstack
+		// UID read the keys via the group bit. Without it, kubelet would
+		// project files as root:root mode 0o400 and the openstack process
+		// could not read them; upstream Keystone logs a "key_repository is
+		// world readable" WARNING via fernet_utils._check_key_repository
+		// for any default-mode (0o644) workaround.
+		SecurityContext: &corev1.PodSecurityContext{FSGroup: ptr.To(deployment.OpenStackUID)},
+		InitContainers: []corev1.Container{{
+			Name:  "copy-keys",
+			Image: image,
+			// `install -m 0400` materialises each key in the writable emptyDir
+			// at owner-read-only mode. A plain `cp` would inherit the kubelet
+			// emptyDir mode and re-introduce the world-readable directory for the
+			// rotation Pod.
+			Command:         []string{"sh", "-c", fmt.Sprintf("install -m 0400 %s/* %s/", srcMountPath, keyDir)},
+			SecurityContext: deployment.RestrictedSecurityContext(),
+			VolumeMounts: []corev1.VolumeMount{
+				{Name: srcVolName, MountPath: srcMountPath, ReadOnly: true},
+				{Name: keyVolName, MountPath: keyDir},
+			},
+		}},
+		Containers: []corev1.Container{{
+			Name:  p.keyKind + "-rotate",
+			Image: image,
+			// TODO: Wire spec.Resources (or a smaller Job-specific default) to
+			// this container. Currently runs as BestEffort QoS. See reconcile_deployment.go
+			// containerResources() for the pattern used by the keystone container.
+			Command:         []string{"/scripts/" + p.keyKind + "_rotate.sh"},
+			SecurityContext: deployment.RestrictedSecurityContext(),
+			Env: []corev1.EnvVar{
+				// SECRET_NAME points at the staging Secret — the CronJob SA
+				// is only permitted to patch the staging Secret, never the
+				// production Secret.
+				{Name: "SECRET_NAME", Value: p.stagingSecretName},
+				{Name: "SECRET_NAMESPACE", ValueFrom: &corev1.EnvVarSource{
+					FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.namespace"},
+				}},
+				// oslo.config honours OS_<GROUP>__<KEY> env var overrides, so this
+				// takes precedence over the compiled-in default (3) without needing
+				// to mount the ConfigMap. Uses the normalized value to stay
+				// consistent with the Secret's minimum floor of 3.
+				{
+					Name:  p.maxActiveKeysEnv,
+					Value: strconv.Itoa(p.maxActiveKeys),
+				},
+				// Override [database].connection via oslo.config env-var so the
+				// rotate CronJob reads the DB URL from the derived Secret instead
+				// of the ConfigMap.
+				buildDBConnectionEnvVar(keystone),
+			},
+			VolumeMounts: []corev1.VolumeMount{
+				{Name: keyVolName, MountPath: keyDir},
+				{Name: otherVolName, MountPath: otherKeyDir, ReadOnly: true},
+				{Name: "config", MountPath: "/etc/keystone/keystone.conf.d/", ReadOnly: true},
+				{Name: "scripts", MountPath: "/scripts", ReadOnly: true},
+			},
+		}},
+		Volumes: []corev1.Volume{
+			{
+				Name: srcVolName,
+				VolumeSource: corev1.VolumeSource{
+					Secret: &corev1.SecretVolumeSource{
+						SecretName:  secretName,
+						DefaultMode: ptr.To(int32(0o400)),
+					},
+				},
+			},
+			{
+				Name: keyVolName,
+				VolumeSource: corev1.VolumeSource{
+					EmptyDir: &corev1.EmptyDirVolumeSource{},
+				},
+			},
+			{
+				// keystone-manage reads the full config which references both
+				// key repositories; mount the sibling keys read-only so the
+				// directory exists even though this job only rotates one kind.
+				Name: otherVolName,
+				VolumeSource: corev1.VolumeSource{
+					Secret: &corev1.SecretVolumeSource{
+						SecretName:  otherSecretName,
+						DefaultMode: ptr.To(int32(0o400)),
+					},
+				},
+			},
+			{
+				Name: "config",
+				VolumeSource: corev1.VolumeSource{
+					ConfigMap: &corev1.ConfigMapVolumeSource{
+						LocalObjectReference: corev1.LocalObjectReference{Name: configMapName},
+					},
+				},
+			},
+			{
+				Name: "scripts",
+				VolumeSource: corev1.VolumeSource{
+					ConfigMap: &corev1.ConfigMapVolumeSource{
+						LocalObjectReference: corev1.LocalObjectReference{Name: scriptConfigMapName},
+						DefaultMode:          ptr.To(int32(0o555)),
 					},
 				},
 			},
 		},
 	}
-	cronJob.Spec.JobTemplate.Spec.Template.Spec.Volumes = append(
-		cronJob.Spec.JobTemplate.Spec.Template.Spec.Volumes, extraVolumes...,
-	)
-	cronJob.Spec.JobTemplate.Spec.Template.Spec.Containers[0].VolumeMounts = append(
-		cronJob.Spec.JobTemplate.Spec.Template.Spec.Containers[0].VolumeMounts, extraMounts...,
-	)
-	return cronJob
+	// Append the per-domain identity-backend volume/mount when a backend is
+	// projected, then wrap the pod spec in the shared CronJob boilerplate.
+	podSpec.Volumes = append(podSpec.Volumes, extraVolumes...)
+	podSpec.Containers[0].VolumeMounts = append(podSpec.Containers[0].VolumeMounts, extraMounts...)
+
+	return rotation.BuildCronJob(rotation.CronJobParams{
+		Name:      name,
+		Namespace: keystone.Namespace,
+		Labels:    commonLabels(keystone),
+		Schedule:  p.schedule,
+		PodLabels: commonLabels(keystone),
+		PodSpec:   podSpec,
+	})
 }
