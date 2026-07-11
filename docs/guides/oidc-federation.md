@@ -24,27 +24,40 @@ For the full field reference, see the
 ## Prerequisites
 
 ::: info Devstack
-This guide is written against the **[Quick Start](../quick-start.md)** devstack. Stand it up first:
+This guide is written against the **[Quick Start (ControlPlane)](../quick-start-controlplane.md)** devstack. Stand it up first:
 
 ```bash
-KIND_HOST_PORT=8443 make deploy-infra
+KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
 ```
 
-Follow that tutorial through to its final **Verify** step, so a Keystone CR named
-`keystone` is `Ready` in the `openstack` namespace. Every resource name in the
+Follow that tutorial through to its final **Verify** step, so a `ControlPlane`
+CR named `controlplane` is `Ready` in the `openstack` namespace and its projected
+`controlplane-keystone` Keystone child is running. Every resource name in the
 examples below is one that devstack produces.
+:::
+
+::: warning The Keystone child is operator-owned
+On a ControlPlane deployment the `controlplane-keystone` Keystone CR is
+**projected** by the c5c3-operator, which re-asserts the entire
+`spec.federation` block (proxy image and trusted dashboards) on every reconcile.
+Set the federation proxy image on the `ControlPlane` CR (Step 3), and the trusted
+dashboards flow from `spec.services.horizon` — see
+[End-to-End SSO](./end-to-end-sso.md). The `KeystoneIdentityBackend` CR you apply
+in Step 4 is yours to own; only the projected Keystone child's `spec.federation`
+is operator-managed.
 :::
 
 - An OIDC identity provider reachable from the cluster (this guide uses a
   Keycloak realm) with a **confidential client** registered for keystone.
   The client's redirect URIs must cover
   `<keystone endpoint base>/v3/OS-FEDERATION/redirect_uri`.
-- **A federation proxy image.** The managed ControlPlane path projects
-  `ghcr.io/c5c3/keystone-federation-proxy` automatically; standalone
-  Keystone installations set `spec.federation.proxyImage` themselves
-  (mirroring the required `spec.image`). Without it, OIDC backends stay
-  pending with a `FederationProxyImageMissing` Warning — no hidden default
-  is assumed.
+- **A federation proxy image.** On the ControlPlane path the c5c3-operator
+  projects `ghcr.io/c5c3/keystone-federation-proxy:latest` onto the child
+  automatically, overridable via `spec.services.keystone.federationProxyImage`
+  (Step 3); standalone Keystone installations set `spec.federation.proxyImage`
+  themselves (see the [Standalone Keystone](#standalone-keystone-without-a-controlplane)
+  section). Without a proxy image, OIDC backends stay pending with a
+  `FederationProxyImageMissing` Warning — no hidden default is assumed.
 - **Service users stay SQL-backed.** Federated users are ephemeral shadow
   users; OpenStack service accounts and the bootstrap admin remain in the
   SQL-backed `Default` domain, which the CRD hard-rejects federating.
@@ -68,22 +81,37 @@ kubectl create secret generic keycloak-forge-client -n openstack \
 Rotating this Secret later re-renders the federation configuration
 automatically — the operator watches it.
 
-## Step 3 — Configure the proxy image (standalone installations)
+## Step 3 — Pin the federation proxy image (optional)
+
+On the ControlPlane path the c5c3-operator already projects
+`ghcr.io/c5c3/keystone-federation-proxy:latest` onto the `controlplane-keystone`
+child, so OIDC federation works out of the box — this step is only needed to pin
+an immutable digest for production or to test a locally built sidecar. Override
+the default on the `ControlPlane` CR:
 
 ```yaml
-apiVersion: keystone.openstack.c5c3.io/v1alpha1
-kind: Keystone
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
 metadata:
-  name: keystone
+  name: controlplane
+  namespace: openstack
 spec:
-  # ...
-  federation:
-    proxyImage:
-      repository: ghcr.io/c5c3/keystone-federation-proxy
-      tag: latest   # pin a digest for production
+  services:
+    keystone:
+      federationProxyImage:
+        repository: ghcr.io/c5c3/keystone-federation-proxy
+        digest: sha256:<digest>   # pin a digest for production
 ```
 
-This block is inert until an OIDC backend attaches.
+::: warning Do not set `spec.federation.proxyImage` on the projected child
+Editing `spec.federation.proxyImage` (or any `spec.federation` field) on the
+`controlplane-keystone` child directly is reverted on the next reconcile: the
+c5c3-operator re-asserts the whole `spec.federation` block from the ControlPlane.
+Set the override via `spec.services.keystone.federationProxyImage` on the
+`ControlPlane` CR instead.
+:::
+
+The projected image is inert until an OIDC backend attaches.
 
 ## Step 4 — Apply the backend CR
 
@@ -95,7 +123,7 @@ metadata:
   namespace: openstack
 spec:
   keystoneRef:
-    name: keystone
+    name: controlplane-keystone
   domain:
     name: forge
     mode: Manage           # the operator creates the domain
@@ -162,8 +190,8 @@ value (e.g. `{1}` here) makes keystone reject the assertion with a
 
 ```bash
 kubectl get keystoneidentitybackends -n openstack
-NAME             READY   DOMAIN   KEYSTONE   AGE
-keycloak-forge   True    forge    keystone   1m
+NAME             READY   DOMAIN   KEYSTONE               AGE
+keycloak-forge   True    forge    controlplane-keystone  1m
 ```
 
 `kubectl describe` shows the progression: `DomainReady=True`, then
@@ -188,8 +216,12 @@ Browser (WebSSO): navigate to
 You are redirected to the Keycloak login form; after authenticating,
 keystone answers with the auto-submitting token form that hands the token to
 the dashboard. The `origin` must be listed in keystone's
-`[federation] trusted_dashboard` (set it via `spec.extraConfig` until the
-Horizon phase ships the typed field).
+`[federation] trusted_dashboard`. On a ControlPlane deployment the operator
+projects this onto the child's typed `spec.federation.trustedDashboards` from
+the dashboard's `spec.services.horizon` (`publicEndpoint` / `gateway`) — you do
+not set it by hand; see [End-to-End SSO](./end-to-end-sso.md). On a standalone
+Keystone, set `spec.federation.trustedDashboards` directly (see the
+[Standalone Keystone](#standalone-keystone-without-a-controlplane) section).
 
 CLI (bearer token, needs `oauth2Introspection` enabled on exactly one
 backend): obtain an access token from the IdP, then exchange it:
@@ -247,7 +279,7 @@ Declarative groups live inside the domain and follow it.
 
 | Symptom | Likely cause |
 | --- | --- |
-| `IdentityBackendsReady=False` with a `FederationProxyImageMissing` Warning | `spec.federation.proxyImage` is not set on the Keystone CR — configure the sidecar image (Step 3). |
+| `IdentityBackendsReady=False` with a `FederationProxyImageMissing` Warning | The child Keystone CR has no `spec.federation.proxyImage`. On a ControlPlane deployment the operator always projects it, so this points to a **standalone** Keystone with no proxy image — set `spec.federation.proxyImage` on it (see the [Standalone Keystone](#standalone-keystone-without-a-controlplane) section). |
 | `IdentityBackendsSkipped` Warning naming `provider metadata unavailable` | The discovery document could not be fetched from the operator pod, or its `issuer` does not equal `spec.oidc.issuer`. Check egress/DNS, or spell out `spec.oidc.endpoints`. |
 | `FederationObjectsReady=False/NoMappingRules` | `spec.mappings` is empty — keystone cannot represent a rule-less mapping; add at least one rule. |
 | `MappingsReady=False/RoleOrProjectNotFound` | A role assignment references a role or project that does not exist (yet); the backend retries on a bounded poll. |
@@ -258,3 +290,38 @@ Declarative groups live inside the domain and follow it.
 | Bearer-token auth returns 401 with `Access token JWT check failed` in the IdP log | The token's `iss` differs from what the IdP computes at the introspection endpoint (e.g. tokens minted over one hostname/scheme, introspected over another). Pin a fixed frontend URL / hostname on the IdP so the issuer is stable across listeners. |
 | The backend is skipped with `is not https` in the Warning | The IdP publishes an http introspection endpoint, which mod_auth_openidc refuses. Point `endpoints.introspectionEndpoint` at an https listener (and set `oauth2Introspection.tlsVerify: false` if its certificate is not in the system trust store). |
 | Admission rejects the CR | The message names the exact rule: discovery-shape exclusivity, the fixed `clientSecret` data-key contract, mapping-rule completeness, identity-provider-name uniqueness, remote-id uniformity, or the single-introspection limit. |
+
+## Standalone Keystone, without a ControlPlane
+
+On the [Quick Start](../quick-start.md) / [Quick Start (Extended)](../quick-start-extended.md)
+devstacks a standalone Keystone CR named `keystone` runs with no ControlPlane
+projecting it, so there is no operator projecting the federation block onto it —
+you set it directly on the Keystone CR.
+
+**Proxy image.** A standalone Keystone assumes no hidden default, so set
+`spec.federation.proxyImage` yourself (mirroring the required `spec.image`).
+Without it, OIDC backends stay pending with a `FederationProxyImageMissing`
+Warning:
+
+```yaml
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone
+spec:
+  # ...
+  federation:
+    proxyImage:
+      repository: ghcr.io/c5c3/keystone-federation-proxy
+      tag: latest   # pin a digest for production
+```
+
+**Backend `keystoneRef`.** Point the `KeystoneIdentityBackend` from Step 4 at the
+standalone CR by name — `keystoneRef.name: keystone` instead of
+`controlplane-keystone`.
+
+**Trusted dashboards.** Without the ControlPlane there is nothing to project the
+WebSSO origin, so set `spec.federation.trustedDashboards` directly on the Keystone
+CR. It is a list, rendered as one `[federation] trusted_dashboard` line per entry.
+See the standalone section of [End-to-End SSO](./end-to-end-sso.md#standalone-keystone-without-a-controlplane)
+for the full shape and the `spec.extraConfig` conflict rule.
