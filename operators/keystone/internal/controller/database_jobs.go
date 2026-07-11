@@ -10,10 +10,10 @@ import (
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/c5c3/forge/internal/common/database"
 	"github.com/c5c3/forge/internal/common/deployment"
+	"github.com/c5c3/forge/internal/common/job"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
 
@@ -57,69 +57,42 @@ func buildGrant(keystone *keystonev1alpha1.Keystone) *mariadbv1alpha1.Grant {
 // container. Currently runs as BestEffort QoS. See reconcile_deployment.go
 // containerResources() for the pattern used by the keystone container.
 func buildDBJob(keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName, image, nameSuffix string, command []string) *batchv1.Job {
-	backoffLimit := int32(4)
-	job := &batchv1.Job{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      fmt.Sprintf("%s-%s", keystone.Name, nameSuffix),
-			Namespace: keystone.Namespace,
-		},
-		Spec: batchv1.JobSpec{
-			BackoffLimit: &backoffLimit,
-			Template: corev1.PodTemplateSpec{
-				Spec: corev1.PodSpec{
-					RestartPolicy:     corev1.RestartPolicyNever,
-					PriorityClassName: priorityClassName(keystone),
-					Containers: []corev1.Container{{
-						Name:            nameSuffix,
-						Image:           image,
-						Command:         command,
-						SecurityContext: deployment.RestrictedSecurityContext(),
-						// Override [database].connection via oslo.config env-var so every
-						// db_sync variant (db-sync, expand, migrate, contract, schema-check)
-						// reads the DB URL from the derived Secret instead of the ConfigMap.
-						Env: []corev1.EnvVar{buildDBConnectionEnvVar(keystone)},
-						VolumeMounts: []corev1.VolumeMount{{
-							Name:      "config",
-							MountPath: "/etc/keystone/keystone.conf.d/",
-							ReadOnly:  true,
-						}},
-					}},
-					Volumes: []corev1.Volume{{
-						Name: "config",
-						VolumeSource: corev1.VolumeSource{
-							ConfigMap: &corev1.ConfigMapVolumeSource{
-								LocalObjectReference: corev1.LocalObjectReference{
-									Name: configMapName,
-								},
-							},
-						},
-					}},
-				},
-			},
-		},
-	}
-	// Project the db-tls client keypair into every db_sync variant
-	// (db-sync, expand, migrate, contract, schema-check) when DB TLS is
-	// enabled; the gate is centralised in dbTLSEnabled so deployment and job
-	// builders decide identically.
+	// Project the db-tls client keypair into every db_sync variant (db-sync,
+	// expand, migrate, contract, schema-check) when DB TLS is enabled; the gate
+	// is centralised in dbTLSEnabled so deployment and job builders decide
+	// identically. Then project the per-domain identity-backend config so
+	// keystone-manage sees the same domain-specific driver files the API pods
+	// load; an empty name (no backend projected) appends nothing.
+	var extraVolumes []corev1.Volume
+	var extraMounts []corev1.VolumeMount
 	if dbTLSEnabled(keystone) {
 		tlsVol, tlsMount := dbTLSVolumeAndMount(keystone)
-		job.Spec.Template.Spec.Volumes = append(job.Spec.Template.Spec.Volumes, tlsVol)
-		job.Spec.Template.Spec.Containers[0].VolumeMounts = append(
-			job.Spec.Template.Spec.Containers[0].VolumeMounts, tlsMount,
-		)
+		extraVolumes = append(extraVolumes, tlsVol)
+		extraMounts = append(extraMounts, tlsMount)
 	}
-	// Project the per-domain identity-backend config so keystone-manage sees
-	// the same domain-specific driver files the API pods load; an empty name
-	// (no backend projected) leaves the Job byte-identical to before.
 	if domainsSecretName != "" {
 		domVol, domMount := domainsVolumeAndMount(domainsSecretName)
-		job.Spec.Template.Spec.Volumes = append(job.Spec.Template.Spec.Volumes, domVol)
-		job.Spec.Template.Spec.Containers[0].VolumeMounts = append(
-			job.Spec.Template.Spec.Containers[0].VolumeMounts, domMount,
-		)
+		extraVolumes = append(extraVolumes, domVol)
+		extraMounts = append(extraMounts, domMount)
 	}
-	return job
+	return job.BuildMigrationJob(job.MigrationJobParams{
+		Name:            fmt.Sprintf("%s-%s", keystone.Name, nameSuffix),
+		Namespace:       keystone.Namespace,
+		Image:           image,
+		ContainerName:   nameSuffix,
+		Command:         command,
+		ConfigMapName:   configMapName,
+		ConfigMountPath: "/etc/keystone/keystone.conf.d/",
+		// Override [database].connection via oslo.config env-var so every db_sync
+		// variant reads the DB URL from the derived Secret instead of the
+		// ConfigMap.
+		Env:               []corev1.EnvVar{buildDBConnectionEnvVar(keystone)},
+		ExtraVolumes:      extraVolumes,
+		ExtraVolumeMounts: extraMounts,
+		PriorityClassName: priorityClassName(keystone),
+		BackoffLimit:      4,
+		SecurityContext:   deployment.RestrictedSecurityContext(),
+	})
 }
 
 func buildDBSyncJob(keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName string) *batchv1.Job {
