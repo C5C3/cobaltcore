@@ -12,72 +12,36 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/c5c3/forge/internal/common/database"
 	"github.com/c5c3/forge/internal/common/deployment"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
 
-func buildDatabase(keystone *keystonev1alpha1.Keystone) *mariadbv1alpha1.Database {
+// keystoneProvisionParams derives the shared MariaDB provisioning inputs from
+// the Keystone CR: the resource name and SQL username are the CR name, the
+// database and cluster reference come from spec.database, and the password is
+// read from the database credentials Secret.
+func keystoneProvisionParams(keystone *keystonev1alpha1.Keystone) database.ProvisionParams {
 	key := mariaDBResourceKey(keystone)
-	return &mariadbv1alpha1.Database{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      key.Name,
-			Namespace: key.Namespace,
-		},
-		Spec: mariadbv1alpha1.DatabaseSpec{
-			MariaDBRef: mariadbv1alpha1.MariaDBRef{
-				ObjectReference: mariadbv1alpha1.ObjectReference{
-					Name: keystone.Spec.Database.ClusterRef.Name,
-				},
-			},
-			CharacterSet: "utf8",
-			Collate:      "utf8_general_ci",
-			Name:         keystone.Spec.Database.Database,
-		},
+	return database.ProvisionParams{
+		Name:               key.Name,
+		Namespace:          key.Namespace,
+		ClusterRef:         keystone.Spec.Database.ClusterRef.Name,
+		DatabaseName:       keystone.Spec.Database.Database,
+		PasswordSecretName: keystone.Spec.Database.SecretRef.Name,
 	}
+}
+
+func buildDatabase(keystone *keystonev1alpha1.Keystone) *mariadbv1alpha1.Database {
+	return database.BuildDatabase(keystoneProvisionParams(keystone))
 }
 
 func buildUser(keystone *keystonev1alpha1.Keystone) *mariadbv1alpha1.User {
-	key := mariaDBResourceKey(keystone)
-	return &mariadbv1alpha1.User{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      key.Name,
-			Namespace: key.Namespace,
-		},
-		Spec: mariadbv1alpha1.UserSpec{
-			MariaDBRef: mariadbv1alpha1.MariaDBRef{
-				ObjectReference: mariadbv1alpha1.ObjectReference{
-					Name: keystone.Spec.Database.ClusterRef.Name,
-				},
-			},
-			PasswordSecretKeyRef: &mariadbv1alpha1.SecretKeySelector{
-				LocalObjectReference: mariadbv1alpha1.LocalObjectReference{
-					Name: keystone.Spec.Database.SecretRef.Name,
-				},
-				Key: "password",
-			},
-		},
-	}
+	return database.BuildUser(keystoneProvisionParams(keystone))
 }
 
 func buildGrant(keystone *keystonev1alpha1.Keystone) *mariadbv1alpha1.Grant {
-	key := mariaDBResourceKey(keystone)
-	return &mariadbv1alpha1.Grant{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      key.Name,
-			Namespace: key.Namespace,
-		},
-		Spec: mariadbv1alpha1.GrantSpec{
-			MariaDBRef: mariadbv1alpha1.MariaDBRef{
-				ObjectReference: mariadbv1alpha1.ObjectReference{
-					Name: keystone.Spec.Database.ClusterRef.Name,
-				},
-			},
-			Privileges: []string{"ALL PRIVILEGES"},
-			Database:   keystone.Spec.Database.Database,
-			Table:      "*",
-			Username:   key.Name,
-		},
-	}
+	return database.BuildGrant(keystoneProvisionParams(keystone))
 }
 
 // buildDBJob constructs a keystone-manage db_sync Job with the shared container spec,
