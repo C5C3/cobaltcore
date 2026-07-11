@@ -226,21 +226,34 @@ spec:
 - At least one of `targetCPUUtilization` or `targetMemoryUtilization` is required.
 - `minReplicas` defaults to `spec.deployment.replicas` if unset — omitting it will floor the HPA at your current hand-set replica count, not at 1.
 - The generated HPA references `deploy/keystone` and uses the Kubernetes standard
-  `metrics-server`. The Quick Start kind cluster does **not** ship one — the HPA will
-  sit at `unknown/80%` until you install it:
+  `metrics-server`. The Quick Start kind cluster does **not** ship one by default —
+  the HPA will sit at `unknown/80%` until a resource-metrics API is available.
+
+  On the kind devstack, opt in with the `WITH_METRICS_SERVER` flag. Bring the
+  devstack up with it set (the recipe here also needs the ControlPlane, so the
+  flags compose):
 
   ```bash
-  kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+  KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true WITH_METRICS_SERVER=true make deploy-infra
   ```
 
-  On kind (and most development clusters that use self-signed kubelet certs) patch
-  the Deployment to skip TLS verification, otherwise `metrics-server` will fail to
-  scrape the kubelet:
+  Or, if the devstack is already running, apply the kind overlay additively and
+  wait for it to reconcile:
 
   ```bash
-  kubectl patch -n kube-system deploy/metrics-server --type=json \
-    -p='[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"}]'
+  kubectl apply -k deploy/kind/metrics-server
+  kubectl wait helmrelease/metrics-server -n kube-system --for=condition=Ready --timeout=5m
+  kubectl top pods -n openstack   # sanity check: real utilisation, not an error
   ```
+
+  The overlay pins the chart to a single major range and bakes in
+  `--kubelet-insecure-tls`, which kind requires because its kubelets serve the
+  metrics endpoint with self-signed certificates — no runtime patch needed.
+
+  On non-kind clusters, `metrics-server` is usually already present: most managed
+  Kubernetes distributions ship it. If yours does not, install it per the
+  [upstream project](https://github.com/kubernetes-sigs/metrics-server) rather
+  than copy-pasting an unpinned manifest.
 
 Inspect the HPA:
 

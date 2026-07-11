@@ -1215,3 +1215,60 @@ under `deploy/kind/prometheus/` so the production kustomization root is
 untouched. The
 [`document-intentional-environment-divergence-in-overlays`](https://github.com/c5c3/forge/blob/main/.planwerk/review_patterns/document-intentional-environment-divergence-in-overlays.md)
 review pattern catalogues the full surface area.
+
+### metrics-server (kind-only opt-in)
+
+**File:** `deploy/kind/metrics-server/kustomization.yaml`
+
+[`metrics-server`](https://github.com/kubernetes-sigs/metrics-server) ships as
+a separate **opt-in** kind overlay. The default `make deploy-infra` flow does
+**not** install it — the `kube-system` metrics-server stays absent so the
+default Quick Start does not spend the kind node's budget on a component most
+tutorials do not need. The production `deploy/flux-system/` overlay also does
+not install it: managed distributions ship their own metrics-server, and
+production clusters bring their own.
+
+The overlay's sole consumer is the
+[Autoscaling (HPA) recipe](../../guides/advanced-configuration.md#autoscaling-hpa):
+the operator-generated `HorizontalPodAutoscaler` reads CPU/memory utilisation
+from the resource-metrics API, and without a metrics-server it reports
+`unknown/80%` and never scales.
+
+The overlay is self-contained: the `HelmRepository` and `HelmRelease` live in
+`deploy/kind/metrics-server/source.yaml` and
+`deploy/kind/metrics-server/release.yaml`. Unlike the chaos-mesh and
+kube-prometheus-stack overlays it ships **no** `Namespace` — the chart defaults
+to `priorityClassName: system-cluster-critical`, which only resolves in the
+pre-existing `kube-system` Namespace, so the HelmRelease targets `kube-system`
+directly.
+
+| Property | Value |
+| --- | --- |
+| Target namespace | `kube-system` (pre-existing; no inline Namespace) |
+| Chart | `metrics-server` |
+| Version constraint | `>=3.12.0 <4.0.0` |
+| Source | `metrics-server` HelmRepository (`https://kubernetes-sigs.github.io/metrics-server/`) |
+| Dependencies | none |
+
+**Kind-tuned values:**
+
+| Helm value | Override | Purpose |
+| --- | --- | --- |
+| `args` | `["--kubelet-insecure-tls"]` | kind's kubelets serve `/metrics/resource` with a self-signed certificate metrics-server cannot verify against the cluster CA; skipping verification lets scrapes succeed. This replaces the runtime `kubectl patch` the autoscaling recipe previously documented — never set it on a production cluster with properly issued kubelet certificates |
+
+When `WITH_METRICS_SERVER=true`, `hack/deploy-infra.sh` runs
+`kubectl apply -k deploy/kind/metrics-server` in Step 3 and appends
+`metrics-server` to the Phase 3 HelmRelease wait list. Both actions are gated
+strictly on the flag; the chart values are never modified, which keeps the
+production posture unchanged.
+
+**Opt-in usage:**
+
+```bash
+WITH_METRICS_SERVER=true make deploy-infra
+```
+
+**Posture summary.** Same shape as the two entries above: the production
+omission is explicit, the opt-in flag has a single documented name
+(`WITH_METRICS_SERVER`), and the kind overlay is self-contained under
+`deploy/kind/metrics-server/` so the production kustomization root is untouched.

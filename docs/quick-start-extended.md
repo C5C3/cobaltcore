@@ -233,6 +233,7 @@ headlamp-system       headlamp-*             Starting (kind-only demo UI, not wa
 monitoring            kube-prometheus-stack-prometheus-*   Ready (kind-only; WITH_PROMETHEUS=true; see Step 4c)
 monitoring            kube-prometheus-stack-grafana-*      Ready (kind-only; WITH_PROMETHEUS=true; see Step 4c)
 monitoring            kube-prometheus-stack-operator-*     Ready (kind-only; WITH_PROMETHEUS=true; see Step 4c)
+kube-system           metrics-server-*                     Ready (kind-only; WITH_METRICS_SERVER=true)
 ```
 
 Headlamp is deployed asynchronously and is **not** part of the `deploy-infra` wait list — a
@@ -291,6 +292,25 @@ keystone-operator HelmRelease to enable its `ServiceMonitor`. Use it when you
 want to visualise the keystone-operator metrics live (reconcile p95,
 error rate) — see [Step 4c — Open the Grafana UI](#step-4c-grafana-ui) for the
 port-forward and the bundled `Keystone Operator` dashboard.
+:::
+
+::: tip Enabling metrics-server
+`metrics-server` is **not installed by default** in the kind Quick Start. The
+default `make deploy-infra` flow leaves the `kube-system` metrics-server absent
+so first-run deployments stay lean. Production overlays (`deploy/flux-system/`)
+also omit it — managed distributions ship their own.
+
+Opt in by setting `WITH_METRICS_SERVER=true` before `make deploy-infra`:
+
+```bash
+WITH_METRICS_SERVER=true make deploy-infra
+```
+
+This applies the kind-only overlay at `deploy/kind/metrics-server/` and waits
+for the `metrics-server` HelmRelease to become Ready. It is the prerequisite
+for the [Autoscaling (HPA) recipe](./guides/advanced-configuration.md#autoscaling-hpa):
+without it the generated HorizontalPodAutoscaler reports `unknown/80%` and never
+scales.
 :::
 
 ::: tip Enabling the local registry pull-through cache
