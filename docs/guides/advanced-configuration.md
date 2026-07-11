@@ -10,36 +10,162 @@ SPDX-License-Identifier: Apache-2.0
 
 # Advanced Configuration
 
-Beyond the minimal `Keystone` CR from the [Quick Start (Extended)](../quick-start-extended.md), the operator
-supports a number of configuration options for real cluster deployments. This guide
-walks through the four that cover the most common real-world needs and points to the
-reference for the rest.
+Beyond the minimal control plane from the
+[Quick Start (ControlPlane)](../quick-start-controlplane.md), the operators
+support a number of configuration options for real cluster deployments. This
+guide covers the ones the `ControlPlane` CR exposes and points to the reference
+for the rest — and to the [Standalone Keystone](#standalone-keystone-without-a-controlplane)
+section for the knobs that live only on a Keystone CR you own.
 
 ## Prerequisites
 
 ::: info Devstack
-This guide is written against the **[Quick Start (Extended)](../quick-start-extended.md)** devstack. Stand it up first:
+This guide is written against the **[Quick Start (ControlPlane)](../quick-start-controlplane.md)** devstack. Stand it up first:
 
 ```bash
-kind create cluster --name forge --config hack/kind-config.yaml
-make deploy-infra
+KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
 ```
 
-Follow that tutorial through to its final **Verify the deployment** step, so a
-Keystone CR named `keystone` is `Ready` in the `openstack` namespace. Every
-resource name in the examples below is one that devstack produces.
+Follow that tutorial through to its final **Verify** step, so a `ControlPlane`
+CR named `controlplane` is `Ready` in the `openstack` namespace and its projected
+`controlplane-keystone` Keystone child is running. Every resource name in the
+examples below is one that devstack produces.
+:::
+
+::: warning The Keystone child is operator-owned
+On a ControlPlane deployment the `controlplane-keystone` Keystone CR is
+**projected** by the c5c3-operator; the projected fields are re-asserted on every
+reconcile, so editing them on the child is reverted. Configure the knobs the
+`ControlPlane` CRD exposes on the `ControlPlane` CR. A knob the CRD does not
+expose is **standalone-only** — apply it to a Keystone CR you own, in the
+[Standalone Keystone](#standalone-keystone-without-a-controlplane) section. See
+the [ControlPlane Reconciler](../reference/c5c3/controlplane-reconciler.md) for
+the projection contract.
 :::
 
 Each pattern below is an independent recipe — apply only what you need.
 
 ---
 
-## Brownfield database
+## Brownfield database and cache
 
-The Quick Start uses the "managed mode" where the operator creates the `MariaDB`
-Database, User, and Grant CRs for you (`spec.database.clusterRef`). If you already run
-MariaDB/Galera outside the operator's reach — managed by another team, hosted
-externally, or on a different operator — use **brownfield mode** with an explicit host.
+The Quick Start uses "managed mode", where the operator provisions the MariaDB
+and Memcached the control plane connects to (`spec.infrastructure.database.clusterRef`
+/ `cache.clusterRef`). If you already run MariaDB/Galera and Memcached outside the
+operator's reach — managed by another team, hosted externally, or on a different
+operator — use **brownfield mode** with explicit connection parameters on the
+`ControlPlane` CR.
+
+Brownfield is a **creation-time** decision. The validating webhook freezes
+infrastructure presence and the database/cache mode (managed `clusterRef` vs
+brownfield `host`/`servers`), the database name, replicas, and storageSize after
+the ControlPlane is created, so you cannot flip a managed control plane to
+brownfield in place — set `spec.infrastructure` when you first apply the CR:
+
+```yaml
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: controlplane
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  # services.keystone and korc as in the Quick Start (ControlPlane)
+  infrastructure:
+    database:
+      # brownfield: explicit host/port, no clusterRef
+      host: mariadb.db.example.com
+      port: 3306
+      database: keystone
+      secretRef:
+        name: keystone-db
+    cache:
+      backend: dogpile.cache.pymemcache
+      # brownfield cache: explicit server list, no clusterRef
+      servers:
+        - "memcached.cache.example.com:11211"
+```
+
+The reconciler deep-copies the whole `infrastructure.database` and
+`infrastructure.cache` blocks onto the `controlplane-keystone` child, so the
+child connects to exactly the servers you declared here.
+
+::: warning In brownfield mode you own schema setup
+In brownfield mode (no `clusterRef`) the operator leaves the `secretRef` you
+supplied in place — you own that Secret out-of-band — and does **not** create the
+database, user, or grants. Provision them before the control plane reconciles:
+
+```sql
+CREATE DATABASE keystone DEFAULT CHARACTER SET utf8 COLLATE utf8_general_ci;
+CREATE USER 'keystone'@'%' IDENTIFIED BY '<password-from-secretRef>';
+GRANT ALL PRIVILEGES ON keystone.* TO 'keystone'@'%';
+FLUSH PRIVILEGES;
+```
+
+The Secret referenced by `secretRef` must contain both a `username` and a
+`password` key matching the SQL user — the keystone-operator gates `SecretsReady`
+on the child on both, so a Secret with only `password` leaves
+`controlplane-keystone` stuck at `SecretsReady=False`. Once those exist,
+`db_sync` creates the Keystone schema on first reconcile. The OpenBao
+database-tenant onboarding from the [Quick Start (ControlPlane)](../quick-start-controlplane.md)
+(Step 4) applies to **managed** mode's engine-issued (Dynamic) credentials only —
+a brownfield control plane draws no credentials from the OpenBao database engine.
+:::
+
+The webhook enforces that exactly one of `clusterRef` or `host` (`servers` for
+cache) is set — never both — for both `database` and `cache`.
+
+---
+
+## Feature pointer table
+
+Everything else the control plane supports. One-line hints, the ControlPlane knob
+that projects it (or "not exposed" where it is standalone-only), and a link to the
+full Keystone CR reference.
+
+| Feature | Keystone CR field | ControlPlane path | Reference |
+|---------|-------------------|-------------------|-----------|
+| Replica count | `spec.deployment.replicas` | `spec.services.keystone.replicas` | [Day 2 — Scale](./day-2-operations.md#scale-replicas) |
+| Release / image | `spec.image` | `spec.openStackRelease` (tag) + `spec.services.keystone.image` (override) | [Day 2 — Upgrade](./day-2-operations.md#upgrade-the-openstack-release) |
+| Policy overrides | `spec.policyOverrides` | `spec.services.keystone.policyOverrides` (+ `spec.globalPolicyOverrides`) | [PolicySpec](../reference/keystone/keystone-crd.md#policyspec) |
+| Federation proxy image | `spec.federation.proxyImage` | `spec.services.keystone.federationProxyImage` | [Attach an OIDC Federation Backend](./oidc-federation.md) |
+| Public endpoint / gateway | `spec.bootstrap.publicEndpoint`, `spec.gateway` | `spec.services.keystone.publicEndpoint`, `spec.services.keystone.gateway` | [BootstrapSpec](../reference/keystone/keystone-crd.md#bootstrapspec) |
+| Fernet / credential-key schedule | `spec.fernet`, `spec.credentialKeys` | `spec.services.keystone.rotationInterval` (schedule only) | [Day 2 — Rotate Fernet keys](./day-2-operations.md#rotate-fernet-keys-manually) |
+| Database TLS/mTLS | `spec.database.tls` | `spec.infrastructure.database.tls` | [Enable Keystone Database TLS/mTLS](./enable-keystone-database-tls.md) |
+| Autoscaling (HPA) | `spec.autoscaling` | not exposed — standalone-only | [Autoscaling (HPA)](#autoscaling-hpa) |
+| Network policy | `spec.networkPolicy` | not exposed — standalone-only | [Network policy](#network-policy) |
+| Free-form INI (`extraConfig`) | `spec.extraConfig` | not exposed — standalone-only | [ExtraConfig](#extraconfig-free-form-ini-sections) |
+| Scheduled admin-password rotation | `spec.passwordRotation` | not exposed — standalone-only | [Schedule Admin Password Rotation](./keystone-admin-password-scheduled-rotation.md) |
+| uWSGI tuning | `spec.uwsgi` | not exposed — standalone-only | [UWSGISpec](../reference/keystone/keystone-crd.md#uwsgispec) |
+| Logging | `spec.logging` | not exposed — standalone-only | [LoggingSpec](../reference/keystone/keystone-crd.md#loggingspec) |
+| Trust flush | `spec.trustFlush` | not exposed — standalone-only | [TrustFlushSpec](../reference/keystone/keystone-crd.md#trustflushspec) |
+| Middleware | `spec.middleware` | not exposed — standalone-only | [MiddlewareSpec](../reference/keystone/keystone-crd.md#middlewarespec) |
+| Plugins | `spec.plugins` | not exposed — standalone-only | [PluginSpec](../reference/keystone/keystone-crd.md#pluginspec) |
+| Rollout strategy | `spec.deployment.strategy` | not exposed — standalone-only | [Graceful-termination fields](../reference/keystone/keystone-crd.md#graceful-termination-fields) |
+| Graceful termination | `spec.deployment.terminationGracePeriodSeconds`, `spec.deployment.preStopSleepSeconds` | not exposed — standalone-only | [Graceful-termination fields](../reference/keystone/keystone-crd.md#graceful-termination-fields) |
+| Topology spread | `spec.deployment.topologySpreadConstraints` | not exposed — standalone-only | [TopologySpreadConstraints](../reference/keystone/keystone-crd.md#topologyspreadconstraints) |
+| Priority class | `spec.deployment.priorityClassName` | not exposed — standalone-only | [PriorityClassName](../reference/keystone/keystone-crd.md#priorityclassname) |
+| Resource requests/limits | `spec.deployment.resources` | not exposed — standalone-only | [KeystoneSpec](../reference/keystone/keystone-crd.md#keystonespec) |
+
+The "not exposed — standalone-only" knobs are not projectable through the
+`ControlPlane` CRD today; set them on a Keystone CR you own, as shown in the
+[Standalone Keystone](#standalone-keystone-without-a-controlplane) section.
+
+---
+
+## Standalone Keystone, without a ControlPlane
+
+On the [Quick Start](../quick-start.md) / [Quick Start (Extended)](../quick-start-extended.md)
+devstacks a standalone Keystone CR named `keystone` runs with no ControlPlane
+projecting it. The recipes below apply to that CR. Several of them —
+`spec.autoscaling`, `spec.networkPolicy`, `spec.extraConfig` — are **not exposed
+on the `ControlPlane` CRD today**, so a standalone Keystone is the only place they
+can be set.
+
+### Brownfield database
+
+The standalone equivalent of the ControlPlane brownfield recipe above — explicit
+`host`/`port` and `servers` set directly on the Keystone CR:
 
 ```yaml
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
@@ -75,33 +201,16 @@ spec:
     region: RegionOne
 ```
 
-::: warning In brownfield mode you own schema setup
-The operator does **not** create the database, user, or grants. You must provision
-them before the CR reconciles:
+The same SQL provisioning and `username`+`password` Secret contract from the
+ControlPlane recipe apply. The webhook enforces that exactly one of `clusterRef`
+or `host` is set — never both — for both `database` and `cache`.
 
-```sql
-CREATE DATABASE keystone DEFAULT CHARACTER SET utf8 COLLATE utf8_general_ci;
-CREATE USER 'keystone'@'%' IDENTIFIED BY '<password-from-secretRef>';
-GRANT ALL PRIVILEGES ON keystone.* TO 'keystone'@'%';
-FLUSH PRIVILEGES;
-```
+### Autoscaling (HPA)
 
-The secret referenced by `secretRef` must contain both a `username` and a `password`
-key matching the SQL user — the operator gates `SecretsReady` on both, so a Secret with
-only `password` leaves the CR stuck at `SecretsReady=False`. Once those exist, `db_sync`
-will create the Keystone schema on first reconcile.
-:::
-
-The webhook enforces that exactly one of `clusterRef` or `host` is set — never both —
-for both `database` and `cache`.
-
----
-
-## Autoscaling (HPA)
-
-Replace hand-patching `spec.deployment.replicas` with a `HorizontalPodAutoscaler` managed by the
-operator. When `spec.autoscaling` is present, the HPA owns the Deployment's replica
-count.
+`spec.autoscaling` is not exposed on the `ControlPlane` CRD today, so autoscaling
+is standalone-only. Replace hand-patching `spec.deployment.replicas` with a
+`HorizontalPodAutoscaler` managed by the operator. When `spec.autoscaling` is
+present, the HPA owns the Deployment's replica count.
 
 ```yaml
 spec:
@@ -144,11 +253,10 @@ Removing `spec.autoscaling` deletes the HPA and returns replica control to
 `spec.deployment.replicas`. See [HPA Resource Mapping in the CRD reference](../reference/keystone/keystone-crd.md#hpa-resource-mapping)
 for the exact field-to-resource mapping.
 
----
+### Network policy
 
-## Network policy
-
-When set, `spec.networkPolicy` creates a Kubernetes `NetworkPolicy` that restricts
+`spec.networkPolicy` is not exposed on the `ControlPlane` CRD today, so it is
+standalone-only. When set, it creates a Kubernetes `NetworkPolicy` that restricts
 ingress to the Keystone API pods. Egress rules for database, cache, and DNS are
 derived automatically from the rest of the CR — you only declare the ingress sources.
 
@@ -183,14 +291,13 @@ Removing `spec.networkPolicy` deletes the NetworkPolicy and restores unrestricte
 traffic. See the [NetworkPolicy reference](../reference/keystone/keystone-crd.md#networkpolicyspec)
 for the auto-derived egress rules (Keystone API → MariaDB, Memcached, DNS).
 
----
+### ExtraConfig — free-form INI sections
 
-## ExtraConfig — free-form INI sections
-
-The typed fields on the CR cover the supported configuration surface. For everything
-else — logging levels, oslo.messaging tuning, experimental Keystone flags —
-`spec.extraConfig` takes a `map[section][key] = value` that is rendered into the
-generated `keystone.conf`.
+`spec.extraConfig` is not exposed on the `ControlPlane` CRD today, so it is
+standalone-only. The typed fields on the CR cover the supported configuration
+surface. For everything else — logging levels, oslo.messaging tuning, experimental
+Keystone flags — `spec.extraConfig` takes a `map[section][key] = value` that is
+rendered into the generated `keystone.conf`.
 
 ```yaml
 spec:
@@ -211,32 +318,9 @@ A change to `extraConfig` triggers a ConfigMap rehash and a rolling Deployment u
 
 ---
 
-## Feature pointer table
-
-Everything else the CR supports — the flags you did not see above. One-line hints plus
-a link to the full reference.
-
-| Feature | Field | What it does | Reference |
-|---------|-------|--------------|-----------|
-| Credential-key tuning | `spec.credentialKeys` | Credential-key rotation is always on; this field only tunes the rotation schedule and max active keys | [CredentialKeysSpec](../reference/keystone/keystone-crd.md#credentialkeysspec) |
-| Trust flush | `spec.trustFlush` | CronJob running `keystone-manage trust_flush` on a schedule. Default-on (hourly) — to pause without deleting the CronJob, set `spec.trustFlush.suspend: true` rather than removing the field | [TrustFlushSpec](../reference/keystone/keystone-crd.md#trustflushspec) |
-| uWSGI tuning | `spec.uwsgi` | Worker processes, threads, HTTP keep-alive, plus `harakiri` (per-request kill timer) and `httpKeepAliveTimeout` (idle-socket bound) | [UWSGISpec](../reference/keystone/keystone-crd.md#uwsgispec) |
-| Logging | `spec.logging` | oslo.log output: `format` (text/json), `level`, `debug`, per-logger level overrides | [LoggingSpec](../reference/keystone/keystone-crd.md#loggingspec) |
-| Rollout strategy | `spec.deployment.strategy` | Overrides the Deployment rollout strategy; default is `RollingUpdate` with `maxSurge=1`/`maxUnavailable=0` (surge-before-remove) | [Graceful-termination fields](../reference/keystone/keystone-crd.md#graceful-termination-fields) |
-| Graceful termination | `spec.deployment.terminationGracePeriodSeconds`, `spec.deployment.preStopSleepSeconds` | SIGTERM→SIGKILL envelope and preStop drain sleep for zero-downtime rolling updates | [Graceful-termination fields](../reference/keystone/keystone-crd.md#graceful-termination-fields) |
-| Topology spread | `spec.deployment.topologySpreadConstraints` | Pod spread across zones/hostnames | [TopologySpreadConstraints](../reference/keystone/keystone-crd.md#topologyspreadconstraints) |
-| Priority class | `spec.deployment.priorityClassName` | Scheduling priority and preemption class | [PriorityClassName](../reference/keystone/keystone-crd.md#priorityclassname) |
-| Policy overrides | `spec.policyOverrides` | Custom `oslo.policy` rules (inline or ConfigMap) | [PolicySpec](../reference/keystone/keystone-crd.md#policyspec) |
-| Middleware | `spec.middleware` | Custom WSGI filters in the `api-paste.ini` pipeline | [MiddlewareSpec](../reference/keystone/keystone-crd.md#middlewarespec) |
-| Plugins | `spec.plugins` | Service-side Keystone plugins/drivers | [PluginSpec](../reference/keystone/keystone-crd.md#pluginspec) |
-| Federation | `spec.federation` | Federation sidecar knobs (proxy image, trusted dashboards); federation itself activates by attaching a [`KeystoneIdentityBackend`](../reference/keystone/identity-backend-crd.md), not by this block | [FederationSpec](../reference/keystone/keystone-crd.md#federationspec) |
-| Resource requests/limits | `spec.deployment.resources` | CPU/memory requests and limits on API pods | [KeystoneSpec](../reference/keystone/keystone-crd.md#keystonespec) |
-| Public endpoint | `spec.bootstrap.publicEndpoint` | External URL written to the Keystone service catalogue | [BootstrapSpec](../reference/keystone/keystone-crd.md#bootstrapspec) |
-
----
-
 ## Further reading
 
 - [Keystone CRD API Reference](../reference/keystone/keystone-crd.md) — complete field-by-field reference with validation rules and examples
+- [ControlPlane CRD API Reference](../reference/c5c3/controlplane-crd.md) — the `spec.*` fields the ControlPlane exposes, including `spec.infrastructure`
 - [Observability & Diagnostics](./observability.md) — how to verify a new configuration took effect
 - [Day 2 Operations](./day-2-operations.md) — scale, upgrade, rotate using the configured CR
