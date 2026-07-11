@@ -126,8 +126,12 @@ func TestDashboardReferencesOnlyRegisteredMetrics(t *testing.T) {
 	// received a sample, so each helper is probed once with a disposable
 	// label set. This test binary is the only horizon_operator registrant,
 	// so no duplicate registration occurs.
+	// Registration is now explicit (lazy registration was removed in favour of
+	// RegisterMetrics at operator startup), so register the vectors here before
+	// probing.
 	const probe = "dashboard_test_probe"
 	subReconcilerMetrics := instrumentation.NewMetrics("horizon_operator")
+	g.Expect(subReconcilerMetrics.Register(ctrlmetrics.Registry)).To(Succeed())
 	subReconcilerMetrics.ObserveReconcileDuration(probe, 0)
 	subReconcilerMetrics.RecordReconcileError(probe, probe)
 
