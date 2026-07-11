@@ -39,10 +39,27 @@ is running (namespace `horizon-system`) alongside the projected
 
 ## Step 1 — Enable the policy
 
+The chart guards `networkPolicy.enabled=true` with a fail-closed check:
+`networkPolicy.kubeApiServer.cidrs` and `ports` must both be non-empty, or the
+template refuses to render. Gather the API server CIDR and port from the
+in-cluster `kubernetes` Service (on kind this is `10.96.0.1/32` port `6443`):
+
 ```bash
-helm upgrade horizon-operator oci://ghcr.io/c5c3/charts/horizon-operator \
-  --namespace horizon-system --reuse-values \
-  --set networkPolicy.enabled=true
+kubectl get endpoints kubernetes -n default -o json \
+  | jq -r '.subsets[] | (.addresses[].ip) as $ip | (.ports[].port) as $p | "\($ip)/32 port=\($p)"'
+```
+
+On the tutorial devstacks the `horizon-operator` release is owned by Flux (a
+`HelmRelease`), so set the values by patching its `spec.values` — not with a
+raw `helm upgrade`, which the Flux helm-controller reverts on its next
+reconcile. Substitute the CIDRs and ports from above:
+
+```bash
+kubectl patch helmrelease horizon-operator -n horizon-system --type=merge \
+  -p '{"spec":{"values":{"networkPolicy":{"enabled":true,"kubeApiServer":{"cidrs":["10.96.0.1/32"],"ports":[6443]}}}}}'
+
+kubectl wait helmrelease/horizon-operator -n horizon-system \
+  --for=condition=Ready --timeout=5m
 ```
 
 The chart-level policy allows exactly what the operator needs: egress to the
@@ -52,6 +69,24 @@ the workload namespace; when the workload namespace itself runs a per-CR
 NetworkPolicy, the operator's namespace is admitted automatically by the
 sub-reconciler (an operator-namespace ingress peer is appended to every
 rendered policy).
+
+::: details Helm-managed installations (non-Flux)
+If you installed the operator directly with Helm (not through Flux), set the
+values with a rolling `helm upgrade` — remember the fail-closed guard requires
+`kubeApiServer.cidrs` and `ports`:
+
+```bash
+helm upgrade horizon-operator oci://ghcr.io/c5c3/charts/horizon-operator \
+  --namespace horizon-system --reuse-values \
+  --set networkPolicy.enabled=true \
+  --set 'networkPolicy.kubeApiServer.cidrs[0]=10.96.0.1/32' \
+  --set 'networkPolicy.kubeApiServer.ports[0]=6443'
+```
+
+Do **not** run this on the tutorial devstacks: there the release is
+Flux-owned, and the helm-controller reverts out-of-band revisions on its next
+reconcile. Use the HelmRelease patch above instead.
+:::
 
 ## Step 2 — Verify
 

@@ -32,8 +32,11 @@ CRDs, Prometheus, and Grafana are already wrapped behind opt-in flags:
 KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true WITH_PROMETHEUS=true make deploy-infra
 ```
 
-The rest of this guide is the canonical path for non-kind clusters that run
-their own Prometheus.
+`WITH_PROMETHEUS=true` also flips the horizon-operator `ServiceMonitor` for
+you at bring-up (`deploy-infra` patches the horizon-operator HelmRelease), so
+on a fresh kind devstack none of the manual steps below are required. Step 1
+is the path for a devstack that is **already running** without
+`WITH_PROMETHEUS`, or for non-kind clusters that run their own Prometheus.
 :::
 
 ## Prerequisites
@@ -56,14 +59,43 @@ Follow that tutorial through to its final **Verify** step, so the horizon-operat
 
 ## Step 1 — Enable the ServiceMonitor
 
+On the tutorial devstacks the `horizon-operator` release is owned by Flux (a
+`HelmRelease`), so set the chart value by patching that HelmRelease rather than
+running a raw `helm upgrade` — Flux's helm-controller reverts any out-of-band
+Helm revision on its next reconcile:
+
+```bash
+kubectl patch helmrelease horizon-operator -n horizon-system --type=merge \
+  -p '{"spec":{"values":{"monitoring":{"serviceMonitor":{"enabled":true}}}}}'
+
+kubectl wait helmrelease/horizon-operator -n horizon-system \
+  --for=condition=Ready --timeout=5m
+```
+
+Confirm the `ServiceMonitor` was rendered:
+
+```bash
+kubectl -n horizon-system get servicemonitor \
+  -l app.kubernetes.io/name=horizon-operator
+```
+
+The chart renders a `ServiceMonitor` scraping the operator's metrics Service
+on the `https`-less metrics port with the shared operator-library labels.
+
+::: details Helm-managed installations (non-Flux)
+If you installed the operator directly with Helm (not through Flux), set the
+value with a rolling `helm upgrade` instead:
+
 ```bash
 helm upgrade horizon-operator oci://ghcr.io/c5c3/charts/horizon-operator \
   --namespace horizon-system --reuse-values \
   --set monitoring.serviceMonitor.enabled=true
 ```
 
-The chart renders a `ServiceMonitor` scraping the operator's metrics Service
-on the `https`-less metrics port with the shared operator-library labels.
+Do **not** run this on the tutorial devstacks: there the release is
+Flux-owned, and the helm-controller reverts out-of-band revisions on its next
+reconcile. Use the HelmRelease patch above instead.
+:::
 
 ## Step 2 — Import the Grafana dashboard
 

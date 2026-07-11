@@ -52,9 +52,12 @@ NetworkPolicy — see item 1 below to make the policy effective on kind.)
    kubectl auth can-i get endpoints/kubernetes -n default
    ```
 
-3. **Existing operator deployment managed by Helm.** If you installed the
-   operator via `hack/ci-deploy-operator.sh` or a raw manifest, first
-   migrate to Helm — this feature is gated by chart values.
+3. **Operator deployment whose chart values you can set.** This feature is
+   gated by chart values. On the tutorial devstacks the operator is a Flux
+   `HelmRelease`, so you set the values on its `spec.values` (section 3); a
+   directly Helm-managed install uses `helm upgrade`. If you installed the
+   operator via `hack/ci-deploy-operator.sh` or a raw manifest, first migrate
+   to one of those chart-value paths.
 
 ---
 
@@ -154,7 +157,31 @@ Optional overrides:
 
 ## 3. Roll out
 
-Apply the values change with a rolling `helm upgrade`:
+On the tutorial devstacks the `keystone-operator` release is owned by Flux (a
+`HelmRelease`), so apply the values change by patching that HelmRelease's
+`spec.values` — not with a raw `helm upgrade`, which the Flux helm-controller
+reverts on its next reconcile. Substitute the CIDRs and ports you gathered in
+step 1:
+
+```bash
+kubectl patch helmrelease keystone-operator -n keystone-system --type=merge \
+  -p '{"spec":{"values":{"networkPolicy":{"enabled":true,"kubeApiServer":{"cidrs":["10.96.0.1/32"],"ports":[6443]}}}}}'
+
+kubectl wait helmrelease/keystone-operator -n keystone-system \
+  --for=condition=Ready --timeout=5m
+```
+
+The optional overrides from section 2 (`dns`, `allowMetricsFrom`,
+`webhookClients`) go into the same `spec.values.networkPolicy` patch — merge
+them into the JSON above.
+
+Flux reconciles the HelmRelease, which creates the `NetworkPolicy` object and
+rolls the operator Deployment. Existing reconciliations queue during the
+rollout and resume once the new pod reaches `Ready`.
+
+::: details Helm-managed installations (non-Flux)
+If you installed the operator directly with Helm (not through Flux), apply the
+`values.yaml` from section 2 with a rolling `helm upgrade` instead:
 
 ```bash
 helm upgrade keystone-operator oci://ghcr.io/c5c3/charts/keystone-operator \
@@ -163,9 +190,10 @@ helm upgrade keystone-operator oci://ghcr.io/c5c3/charts/keystone-operator \
   -f values.yaml
 ```
 
-The upgrade creates the `NetworkPolicy` object and rolls the operator
-Deployment. Existing reconciliations queue during the rollout and resume
-once the new pod reaches `Ready`.
+Do **not** run this on the tutorial devstacks: there the release is
+Flux-owned, and the helm-controller reverts out-of-band revisions on its next
+reconcile. Use the HelmRelease patch above instead.
+:::
 
 ---
 
@@ -318,9 +346,17 @@ opt-in via `networkPolicy.allowMetricsFrom`.
 ## Rolling back
 
 If enablement causes production regressions that cannot be resolved
-immediately, roll back by setting `networkPolicy.enabled=false` and
-re-running `helm upgrade`. The NetworkPolicy object is removed on the
-next reconcile and the operator reverts to unrestricted pod networking
+immediately, roll back by setting `networkPolicy.enabled=false`. On the Flux
+devstacks patch the HelmRelease:
+
+```bash
+kubectl patch helmrelease keystone-operator -n keystone-system --type=merge \
+  -p '{"spec":{"values":{"networkPolicy":{"enabled":false}}}}'
+```
+
+(On a directly Helm-managed install, re-run `helm upgrade` with
+`networkPolicy.enabled=false` instead.) The NetworkPolicy object is removed on
+the next reconcile and the operator reverts to unrestricted pod networking
 without a pod restart.
 
 ---
