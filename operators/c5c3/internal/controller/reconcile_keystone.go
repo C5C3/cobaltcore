@@ -9,15 +9,13 @@ import (
 	"fmt"
 	"strconv"
 
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/c5c3/forge/internal/common/conditions"
 	"github.com/c5c3/forge/internal/common/policy"
+	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
@@ -219,145 +217,99 @@ func (r *ControlPlaneReconciler) reconcileKeystone(ctx context.Context, cp *c5c3
 
 	merged := policy.MergePolicies(cp.Spec.GlobalPolicyOverrides, cp.Spec.Services.Keystone.PolicyOverrides)
 
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, keystone, func() error {
-		keystone.Spec.Image = image
+	// Build the fully-projected desired Keystone. The projection is a pure
+	// function of cp.Spec (it reads no live child state), so it is applied via
+	// the shared child projector under Server-Side Apply.
+	keystone.Spec.Image = image
 
-		// Project the federation proxy (mod_auth_openidc sidecar) image so
-		// attaching an OIDC KeystoneIdentityBackend works out of the box on the
-		// managed path, and the WebSSO origin of the ControlPlane's own
-		// dashboard so Keystone will accept the hand-off. Both fields are
-		// assigned unconditionally: clearing the override or the horizon block
-		// must revert the child rather than leave the previously-projected
-		// value pinned (the same lost-update reasoning as replicas). Both are
-		// inert until a federation backend attaches.
-		keystone.Spec.Federation = &keystonev1alpha1.FederationSpec{
-			ProxyImage:        federationProxyImage(cp),
-			TrustedDashboards: trustedDashboards(cp),
+	// Project the federation proxy (mod_auth_openidc sidecar) image so
+	// attaching an OIDC KeystoneIdentityBackend works out of the box on the
+	// managed path, and the WebSSO origin of the ControlPlane's own dashboard so
+	// Keystone will accept the hand-off. Both fields are assigned unconditionally:
+	// clearing the override or the horizon block must revert the child rather than
+	// leave the previously-projected value pinned. Both are inert until a
+	// federation backend attaches.
+	keystone.Spec.Federation = &keystonev1alpha1.FederationSpec{
+		ProxyImage:        federationProxyImage(cp),
+		TrustedDashboards: trustedDashboards(cp),
+	}
+
+	// Point Keystone at the SAME backing services the ControlPlane provisioned by
+	// reusing the infrastructure specs. DeepCopy (over a plain struct copy) is
+	// required because DatabaseSpec carries pointer fields (ClusterRef, TLS): a
+	// shallow copy would share those pointers with cp.Spec (#476).
+	keystone.Spec.Database = *cp.Spec.Infrastructure.Database.DeepCopy()
+
+	// in managed mode the operator OWNS the service DB credential —
+	// reconcileDBCredentials materialises it into a per-ControlPlane Secret named
+	// dbCredentialSecretName(cp). Override the projected Keystone CR's
+	// database.secretRef to that operator-owned Secret (key "password"). Brownfield
+	// (Database.ClusterRef == nil) leaves the user-supplied secretRef in place.
+	if cp.Spec.Infrastructure.Database.ClusterRef != nil {
+		keystone.Spec.Database.SecretRef = commonv1.SecretRefSpec{Name: dbCredentialSecretName(cp), Key: "password"}
+		// Project the EFFECTIVE credentials mode (Dynamic unless the CP opted into
+		// Static), matching reconcileDBCredentials' effective-mode decision.
+		if dbCredentialsDynamicEnabled(cp) {
+			keystone.Spec.Database.CredentialsMode = commonv1.CredentialsModeDynamic
+		} else {
+			keystone.Spec.Database.CredentialsMode = commonv1.CredentialsModeStatic
 		}
+	}
 
-		// Point Keystone at the SAME backing services the ControlPlane
-		// provisioned by reusing the infrastructure specs. DeepCopy (over a plain
-		// struct copy) is required because DatabaseSpec carries pointer fields
-		// (ClusterRef, TLS): a shallow copy would share those pointers with
-		// cp.Spec, so the SecretRef override below — or any later mutation of
-		// either spec — could alias the ControlPlane's own spec, exactly as the
-		// Gateway projection already guards against with DeepCopy (#476).
-		keystone.Spec.Database = *cp.Spec.Infrastructure.Database.DeepCopy()
+	// DeepCopy for the same reason as Database above (#476).
+	keystone.Spec.Cache = *cp.Spec.Infrastructure.Cache.DeepCopy()
 
-		// in managed mode the operator OWNS the service DB
-		// credential — reconcileDBCredentials materialises it into a per-ControlPlane
-		// Secret named dbCredentialSecretName(cp). Override the projected Keystone CR's
-		// database.secretRef to that operator-owned Secret (key "password") so Keystone
-		// consumes the scoped credential rather than the cp-level default name. This
-		// reassigns only the projected child's SecretRef value; cp.Spec is left
-		// untouched. Brownfield (Database.ClusterRef == nil) leaves the user-supplied
-		// secretRef in place — the user owns that Secret out-of-band.
-		if cp.Spec.Infrastructure.Database.ClusterRef != nil {
-			keystone.Spec.Database.SecretRef = commonv1.SecretRefSpec{Name: dbCredentialSecretName(cp), Key: "password"}
-			// Project the EFFECTIVE credentials mode (Dynamic unless the CP opted
-			// into Static) so the Keystone operator consumes the engine-issued
-			// credential, overriding its webhook's Static-when-empty default. This
-			// must match reconcileDBCredentials' effective-mode decision
-			// (dbCredentialsDynamicEnabled) or the projected Keystone would read a
-			// Secret shaped for the other mode.
-			if dbCredentialsDynamicEnabled(cp) {
-				keystone.Spec.Database.CredentialsMode = commonv1.CredentialsModeDynamic
-			} else {
-				keystone.Spec.Database.CredentialsMode = commonv1.CredentialsModeStatic
-			}
-		}
+	// in managed mode the operator OWNS the admin password —
+	// reconcileAdminPassword projects it from OpenBao into a per-ControlPlane
+	// Secret named adminPasswordSecretName(cp). Brownfield leaves the
+	// user-supplied ref in place.
+	keystone.Spec.Bootstrap.AdminPasswordSecretRef = effectiveAdminPasswordSecretRef(cp)
+	keystone.Spec.Bootstrap.Region = cp.Spec.Region
 
-		// DeepCopy for the same reason as Database above: CacheSpec carries a
-		// pointer ClusterRef and a Servers slice, so a shallow copy would alias
-		// cp.Spec (#476).
-		keystone.Spec.Cache = *cp.Spec.Infrastructure.Cache.DeepCopy()
+	// Project external exposure onto the Keystone CR's spec.gateway, then advertise
+	// the externally routable URL via the bootstrap public endpoint. DeepCopy keeps
+	// the projected gateway an independent object; a nil source yields nil,
+	// clearing any previously-projected gateway.
+	keystone.Spec.Gateway = cp.Spec.Services.Keystone.Gateway.DeepCopy()
+	keystone.Spec.Bootstrap.PublicEndpoint = keystonePublicEndpoint(cp.Spec.Services.Keystone)
 
-		// in managed mode the operator OWNS the admin password —
-		// reconcileAdminPassword projects it from OpenBao into a per-ControlPlane
-		// Secret named adminPasswordSecretName(cp). Point the projected Keystone CR's
-		// bootstrap admin-password ref (via effectiveAdminPasswordSecretRef) at that
-		// operator-owned Secret (key "password") so Keystone consumes the scoped
-		// credential rather than the cp-level default name. This reassigns only the
-		// projected child's ref value; cp.Spec is left untouched. Brownfield
-		// (Database.ClusterRef == nil) leaves the user-supplied ref in place — the
-		// user owns that Secret out-of-band.
-		keystone.Spec.Bootstrap.AdminPasswordSecretRef = effectiveAdminPasswordSecretRef(cp)
-		keystone.Spec.Bootstrap.Region = cp.Spec.Region
+	if cp.Spec.Services.Keystone.Replicas != nil {
+		keystone.Spec.Deployment.Replicas = *cp.Spec.Services.Keystone.Replicas
+	}
 
-		// Project external exposure onto the Keystone CR's spec.gateway, then
-		// advertise the externally routable URL via the bootstrap public endpoint.
-		//
-		// DECISION both sides are now commonv1.GatewaySpec, so the L2
-		// mapping is a single DeepCopy instead of a field-by-field copy. DeepCopy
-		// (over a direct pointer share) keeps the projected Keystone CR's gateway an
-		// independent object, so a later mutation of either spec can never alias the
-		// other. A nil source yields nil (DeepCopy handles a nil receiver), clearing
-		// any previously-projected gateway so removal tears the HTTPRoute down and
-		// Keystone falls back to its in-cluster DNS.
-		keystone.Spec.Gateway = cp.Spec.Services.Keystone.Gateway.DeepCopy()
-		keystone.Spec.Bootstrap.PublicEndpoint = keystonePublicEndpoint(cp.Spec.Services.Keystone)
+	keystone.Spec.PolicyOverrides = merged
 
-		if cp.Spec.Services.Keystone.Replicas != nil {
-			keystone.Spec.Deployment.Replicas = *cp.Spec.Services.Keystone.Replicas
-		}
+	if rotationSchedule != "" {
+		keystone.Spec.Fernet.RotationSchedule = rotationSchedule
+		keystone.Spec.CredentialKeys.RotationSchedule = rotationSchedule
+	}
 
-		keystone.Spec.PolicyOverrides = merged
-
-		if rotationSchedule != "" {
-			keystone.Spec.Fernet.RotationSchedule = rotationSchedule
-			keystone.Spec.CredentialKeys.RotationSchedule = rotationSchedule
-		}
-
-		return controllerutil.SetControllerReference(cp, keystone, r.Scheme)
-	}); err != nil {
-		reason := "KeystoneError"
-		message := fmt.Sprintf("create-or-update Keystone: %v", err)
-		// An Invalid (HTTP 422) rejection from the Keystone API server is almost
-		// always a now-immutable db/bootstrap field whose CEL transition rule
-		// (self == oldSelf) refuses the projected change — e.g. a spec.region or
-		// spec.database.database edit that landed on the ControlPlane before its
-		// own immutability webhook existed, leaving it diverged from the already-
-		// frozen Keystone child (#466). validateImmutable cannot catch that
-		// pre-webhook edit, so this projection loops forever with no self-heal.
-		// Surface a distinct, actionable reason so the wedge is diagnosable from
-		// the condition instead of being buried under a generic KeystoneError.
-		if apierrors.IsInvalid(err) {
-			reason = "KeystoneProjectionRejected"
-			message = fmt.Sprintf("Keystone API server rejected the projected spec (likely an immutable db/bootstrap field "+
+	return commonreconcile.ProjectChild(ctx, r.Client, r.Scheme, cp, commonreconcile.ChildProjectionParams[*keystonev1alpha1.Keystone]{
+		Child:         keystone,
+		ConditionType: conditionTypeKeystoneReady,
+		ReadyReason:   "KeystoneReady",
+		ReadyMessage:  "Projected Keystone CR is ready",
+		WaitingReason: "WaitingForKeystone",
+		// keystone.Name is set from keystoneName(cp) above.
+		WaitingMessage: fmt.Sprintf("Keystone %q is not ready", keystone.Name),
+		// An Invalid (HTTP 422) rejection is almost always a now-immutable
+		// db/bootstrap field whose CEL transition rule refuses the projected change
+		// — e.g. a spec.region edit that landed on the ControlPlane before its own
+		// immutability webhook existed, leaving it diverged from the frozen child
+		// (#466). Surface a distinct, actionable reason so the wedge is diagnosable.
+		RejectedReason: "KeystoneProjectionRejected",
+		RejectedMessage: func(err error) string {
+			return fmt.Sprintf("Keystone API server rejected the projected spec (likely an immutable db/bootstrap field "+
 				"diverged from the frozen Keystone child); reconcile the ControlPlane spec back to the child's values or "+
 				"recreate the Keystone child to recover: %v", err)
-		}
-		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
-			Type:               conditionTypeKeystoneReady,
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: cp.Generation,
-			Reason:             reason,
-			Message:            message,
-		})
-		return ctrl.Result{}, err
-	}
-
-	// Mirror the child's Ready condition into KeystoneReady.
-	if !conditions.IsReady(keystone.Status.Conditions) {
-		logger.Info("Keystone CR not ready, requeuing", "keystone", keystone.Name)
-		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
-			Type:               conditionTypeKeystoneReady,
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: cp.Generation,
-			Reason:             "WaitingForKeystone",
-			Message:            fmt.Sprintf("Keystone %q is not ready", keystone.Name),
-		})
-		return ctrl.Result{RequeueAfter: infraRequeueAfter}, nil
-	}
-
-	conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
-		Type:               conditionTypeKeystoneReady,
-		Status:             metav1.ConditionTrue,
-		ObservedGeneration: cp.Generation,
-		Reason:             "KeystoneReady",
-		Message:            "Projected Keystone CR is ready",
+		},
+		ErrorReason:     "KeystoneError",
+		ErrorMessage:    func(err error) string { return fmt.Sprintf("create-or-update Keystone: %v", err) },
+		WaitRequeue:     infraRequeueAfter,
+		Conditions:      &cp.Status.Conditions,
+		Generation:      cp.Generation,
+		ChildConditions: func(k *keystonev1alpha1.Keystone) []metav1.Condition { return k.Status.Conditions },
 	})
-	return ctrl.Result{}, nil
 }
 
 // federationProxyImage resolves the mod_auth_openidc sidecar image projected
@@ -423,21 +375,8 @@ func keystonePublicEndpoint(ks *c5c3v1alpha1.ServiceKeystoneSpec) string {
 // children (Deployment, Jobs, Secrets) behind it. Not-found and an
 // externally-owned collision are both treated as nothing to do.
 func (r *ControlPlaneReconciler) deleteOrphanedKeystone(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) error {
-	key := client.ObjectKey{Name: keystoneName(cp), Namespace: childNamespace(cp)}
-	keystone := &keystonev1alpha1.Keystone{}
-	if err := r.Get(ctx, key, keystone); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil
-		}
-		return fmt.Errorf("getting Keystone %s for orphan cleanup: %w", key, err)
+	child := &keystonev1alpha1.Keystone{
+		ObjectMeta: metav1.ObjectMeta{Name: keystoneName(cp), Namespace: childNamespace(cp)},
 	}
-	if !metav1.IsControlledBy(keystone, cp) {
-		// Not our child (externally managed with a colliding name) — leave it.
-		return nil
-	}
-	if err := r.Delete(ctx, keystone, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil && !apierrors.IsNotFound(err) {
-		return fmt.Errorf("deleting orphaned Keystone %s: %w", key, err)
-	}
-	log.FromContext(ctx).Info("Deleted orphaned Keystone child after services.keystone was unset", "keystone", key)
-	return nil
+	return commonreconcile.DeleteOrphanedChild(ctx, r.Client, cp, child)
 }

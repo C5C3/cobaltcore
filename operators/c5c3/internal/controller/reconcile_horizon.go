@@ -12,11 +12,11 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/c5c3/forge/internal/common/conditions"
+	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 	horizonv1alpha1 "github.com/c5c3/forge/operators/horizon/api/v1alpha1"
@@ -174,6 +174,13 @@ func (r *ControlPlaneReconciler) reconcileHorizon(ctx context.Context, cp *c5c3v
 		},
 	}
 
+	// This projection is deliberately read-modify-write (controllerutil.
+	// CreateOrUpdate) rather than the shared Server-Side Apply ProjectChild: the
+	// mutate closure READS the fetched child's spec.websso/spec.multiDomain and
+	// passes them to projectWebSSO/projectMultiDomain, which retain the current
+	// block while identity backends are attached but unhealthy. That retention
+	// cannot be expressed as a pure projection of cp.Spec, so this site keeps the
+	// read-modify-write client path.
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, horizon, func() error {
 		horizon.Spec.Image = image
 
@@ -458,21 +465,8 @@ func horizonKeystoneEndpoint(cp *c5c3v1alpha1.ControlPlane) string {
 // Service, ConfigMaps) behind it. Not-found and an externally-owned collision
 // are both treated as nothing to do.
 func (r *ControlPlaneReconciler) deleteOrphanedHorizon(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) error {
-	key := client.ObjectKey{Name: horizonName(cp), Namespace: childNamespace(cp)}
-	horizon := &horizonv1alpha1.Horizon{}
-	if err := r.Get(ctx, key, horizon); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil
-		}
-		return fmt.Errorf("getting Horizon %s for orphan cleanup: %w", key, err)
+	child := &horizonv1alpha1.Horizon{
+		ObjectMeta: metav1.ObjectMeta{Name: horizonName(cp), Namespace: childNamespace(cp)},
 	}
-	if !metav1.IsControlledBy(horizon, cp) {
-		// Not our child (externally managed with a colliding name) — leave it.
-		return nil
-	}
-	if err := r.Delete(ctx, horizon, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil && !apierrors.IsNotFound(err) {
-		return fmt.Errorf("deleting orphaned Horizon %s: %w", key, err)
-	}
-	log.FromContext(ctx).Info("Deleted orphaned Horizon child after services.horizon was unset", "horizon", key)
-	return nil
+	return commonreconcile.DeleteOrphanedChild(ctx, r.Client, cp, child)
 }

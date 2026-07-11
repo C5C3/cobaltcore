@@ -540,8 +540,8 @@ func TestReconcileKeystone_InvalidRejectionSurfacesDistinctReason(t *testing.T) 
 	cp := keystoneControlPlane()
 
 	// A pre-existing Keystone child whose region differs from the ControlPlane's,
-	// so CreateOrUpdate finds it and takes the UPDATE path (which the interceptor
-	// rejects, standing in for the CEL immutability transition rule).
+	// so the SSA apply is rejected by the interceptor, standing in for the CEL
+	// immutability transition rule.
 	existing := &keystonev1alpha1.Keystone{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      keystoneName(cp),
@@ -561,7 +561,7 @@ func TestReconcileKeystone_InvalidRejectionSurfacesDistinctReason(t *testing.T) 
 	)
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, existing).
 		WithInterceptorFuncs(interceptor.Funcs{
-			Update: func(context.Context, client.WithWatch, client.Object, ...client.UpdateOption) error {
+			Apply: func(context.Context, client.WithWatch, runtime.ApplyConfiguration, ...client.ApplyOption) error {
 				return invalidErr
 			},
 		}).Build()
