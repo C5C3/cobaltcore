@@ -126,6 +126,46 @@ spec:
   - try:
     - apply:
         file: 03-container-kill.yaml
+    - script:
+        # Budget: 3 attempts × (20s injection poll + delete/re-apply) ≈ 70s
+        # worst case; 120s leaves margin for a slow chaos-daemon RPC.
+        timeout: 120s
+        content: |
+          # Chaos Mesh resolves a one-shot container-kill's targets exactly
+          # once, at apply time. When that selection races the tail of the
+          # sidecar rollout (the old ReplicaSet's pods are still
+          # terminating), it reports "no target has been selected" and never
+          # retries — the kill silently never happens and the restart-count
+          # gate in the next step starves. Gate on AllInjected=True and
+          # re-apply the experiment a bounded number of times. The chainsaw
+          # apply above stays authoritative for cleanup tracking; the first
+          # kubectl apply below is a no-op on the same object.
+          # NOTE: set -euo pipefail is intentionally omitted — a transient
+          # kubectl failure must count as "not yet injected", not abort.
+          for attempt in 1 2 3; do
+            kubectl apply -f 03-container-kill.yaml
+            for i in $(seq 1 10); do
+              INJECTED=$(kubectl get podchaos kill-federation-proxy -n $NAMESPACE \
+                -o jsonpath='{.status.conditions[?(@.type=="AllInjected")].status}')
+              if [ "$INJECTED" = "True" ]; then
+                echo "Container kill injected (attempt ${attempt})"
+                exit 0
+              fi
+              SELECTED=$(kubectl get podchaos kill-federation-proxy -n $NAMESPACE \
+                -o jsonpath='{.status.conditions[?(@.type=="Selected")].status}')
+              if [ "$SELECTED" = "False" ]; then
+                break
+              fi
+              sleep 2
+            done
+            echo "Chaos not injected (attempt ${attempt}); deleting and re-applying the experiment"
+            kubectl delete podchaos kill-federation-proxy -n $NAMESPACE --ignore-not-found --wait=true
+          done
+          echo "ERROR: container-kill chaos never injected after 3 attempts"
+          exit 1
+    catch:
+    - script:
+        content: ../diagnostics.sh chaos keystone-chaos-fed --dep-label=app.kubernetes.io/name=keycloak-chaos --log-label=app.kubernetes.io/instance=keystone-chaos-fed
   # ── Step 4: Restart observed, Keystone recovers, federated auth back ────
   - try:
     - script:
