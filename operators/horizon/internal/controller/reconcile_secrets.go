@@ -42,19 +42,12 @@ func (r *HorizonReconciler) reconcileSecrets(ctx context.Context,
 	// Check the ClusterSecretStore first so upstream backend outages surface
 	// as SecretsReady=False even while the per-ExternalSecret cache still
 	// reports Ready=True from its last successful sync.
-	storeReady, err := secrets.IsClusterSecretStoreReady(ctx, r.Client, openBaoClusterStoreName)
+	storeReady, err := secrets.GateClusterStoreReady(ctx, r.Client, openBaoClusterStoreName,
+		&horizon.Status.Conditions, horizon.Generation, "SecretsReady")
 	if err != nil {
 		return ctrl.Result{}, "", err
 	}
 	if !storeReady {
-		conditions.SetCondition(&horizon.Status.Conditions, metav1.Condition{
-			Type:               "SecretsReady",
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: horizon.Generation,
-			Reason:             "SecretStoreNotReady",
-			Message: fmt.Sprintf("ClusterSecretStore %q is not ready; upstream secret backend unreachable",
-				openBaoClusterStoreName),
-		})
 		return ctrl.Result{RequeueAfter: RequeueSecretPolling}, "", nil
 	}
 

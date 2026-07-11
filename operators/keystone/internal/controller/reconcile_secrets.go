@@ -65,57 +65,43 @@ func (r *KeystoneReconciler) reconcileSecrets(ctx context.Context,
 	// Check the ClusterSecretStore first so upstream backend outages surface
 	// as SecretsReady=False even while per-ExternalSecret caches still report
 	// Ready=True from their last successful sync.
-	storeReady, err := secrets.IsClusterSecretStoreReady(ctx, r.Client, openBaoClusterStoreName)
+	storeReady, err := secrets.GateClusterStoreReady(ctx, r.Client, openBaoClusterStoreName,
+		&keystone.Status.Conditions, keystone.Generation, "SecretsReady")
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 	if !storeReady {
-		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
-			Type:               "SecretsReady",
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: keystone.Generation,
-			Reason:             "SecretStoreNotReady",
-			Message: fmt.Sprintf("ClusterSecretStore %q is not ready; upstream secret backend unreachable",
-				openBaoClusterStoreName),
-		})
 		return ctrl.Result{RequeueAfter: RequeueSecretPolling}, nil
 	}
 
 	// Validate the credential Secrets from a declarative (secretRef,
 	// expectedKeys) list. Each check reads the materialized Secret first (the
 	// steady-state fast path) and only consults the ExternalSecret to build a
-	// precise SecretsReady=False message when the Secret is not yet usable
-	// (secrets.GateSyncedSecret). On a not-ready check the helper sets the
-	// condition and the caller requeues.
-	credentialGates := []struct {
-		key          client.ObjectKey
-		reason       string
-		noun         string
-		waitingMsg   string
-		expectedKeys []string
-	}{
+	// precise SecretsReady=False message when the Secret is not yet usable. On a
+	// not-ready check the shared gate sets the condition and the caller requeues.
+	credentialGates := []secrets.CredentialGateSpec{
 		{
-			key:          client.ObjectKey{Namespace: keystone.Namespace, Name: keystone.Spec.Database.SecretRef.Name},
-			reason:       "WaitingForDBCredentials",
-			noun:         "Database credentials",
-			waitingMsg:   "Waiting for ESO to sync database credentials from OpenBao",
-			expectedKeys: []string{"username", "password"},
+			Key:          client.ObjectKey{Namespace: keystone.Namespace, Name: keystone.Spec.Database.SecretRef.Name},
+			Reason:       "WaitingForDBCredentials",
+			Noun:         "Database credentials",
+			WaitingMsg:   "Waiting for ESO to sync database credentials from OpenBao",
+			ExpectedKeys: []string{"username", "password"},
 		},
 		{
-			key:          client.ObjectKey{Namespace: keystone.Namespace, Name: keystone.Spec.Bootstrap.AdminPasswordSecretRef.Name},
-			reason:       "WaitingForAdminCredentials",
-			noun:         "Admin credentials",
-			waitingMsg:   "Waiting for ESO to sync admin credentials from OpenBao",
-			expectedKeys: []string{"password"},
+			Key:          client.ObjectKey{Namespace: keystone.Namespace, Name: keystone.Spec.Bootstrap.AdminPasswordSecretRef.Name},
+			Reason:       "WaitingForAdminCredentials",
+			Noun:         "Admin credentials",
+			WaitingMsg:   "Waiting for ESO to sync admin credentials from OpenBao",
+			ExpectedKeys: []string{"password"},
 		},
 	}
-	for _, gate := range credentialGates {
-		if ready, err := r.checkCredentialSecret(ctx, keystone, gate.key,
-			gate.reason, gate.noun, gate.waitingMsg, gate.expectedKeys...); err != nil {
-			return ctrl.Result{}, err
-		} else if !ready {
-			return ctrl.Result{RequeueAfter: RequeueSecretPolling}, nil
-		}
+	ready, err := secrets.GateCredentials(ctx, r.Client, credentialGates,
+		&keystone.Status.Conditions, keystone.Generation, "SecretsReady")
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if !ready {
+		return ctrl.Result{RequeueAfter: RequeueSecretPolling}, nil
 	}
 
 	conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
@@ -125,55 +111,6 @@ func (r *KeystoneReconciler) reconcileSecrets(ctx context.Context,
 		Reason:             "SecretsAvailable",
 	})
 	return ctrl.Result{}, nil
-}
-
-// checkCredentialSecret verifies that a credential Secret is usable, checking
-// the materialized Secret before the ExternalSecret to save a read in steady
-// state. It returns (true, nil) when the Secret exists with all requiredKeys.
-// On a miss it consults the ExternalSecret only to produce a precise
-// SecretsReady=False message — "ExternalSecret not found yet" vs "waiting for
-// ESO to sync" vs "missing expected keys" — sets the condition itself with the
-// given reason, and returns (false, nil).
-//
-// Semantic note: because the materialized Secret is checked first, an
-// ExternalSecret whose Ready condition is momentarily False while the Secret
-// still holds valid keys no longer flips SecretsReady=False. That matches how
-// pods consume the Secret directly; the ClusterSecretStore check in
-// reconcileSecrets remains the authoritative backend-outage detector.
-func (r *KeystoneReconciler) checkCredentialSecret(
-	ctx context.Context,
-	keystone *keystonev1alpha1.Keystone,
-	key client.ObjectKey,
-	reason, noun, waitingMsg string,
-	requiredKeys ...string,
-) (bool, error) {
-	state, err := secrets.GateSyncedSecret(ctx, r.Client, key, requiredKeys...)
-	if err != nil {
-		return false, err
-	}
-	if state == secrets.GateReady {
-		return true, nil
-	}
-
-	// The materialized Secret is absent or missing keys; the gate state
-	// attributes the cause so the operator surfaces an actionable message.
-	msg := waitingMsg
-	switch state {
-	case secrets.GateExternalSecretMissing:
-		msg = fmt.Sprintf("%s ExternalSecret %s/%s not found yet", noun, key.Namespace, key.Name)
-	case secrets.GateSecretKeysMissing:
-		msg = fmt.Sprintf("%s Secret exists but is missing expected keys", noun)
-	case secrets.GateExternalSecretNotSynced, secrets.GateReady:
-		// NotSynced keeps the generic waiting message; Ready returned above.
-	}
-	conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
-		Type:               "SecretsReady",
-		Status:             metav1.ConditionFalse,
-		ObservedGeneration: keystone.Generation,
-		Reason:             reason,
-		Message:            msg,
-	})
-	return false, nil
 }
 
 // openBaoBackupPushSecretNames returns the names of the backup PushSecrets
