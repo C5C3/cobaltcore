@@ -66,10 +66,10 @@ func TestDefault_SetsZeroValueDefaults(t *testing.T) {
 	g.Expect(k.Spec.Bootstrap.Region).To(Equal("RegionOne"))
 	// Verify Resources defaults are applied.
 	g.Expect(k.Spec.Deployment.Resources).NotTo(BeNil())
-	g.Expect(k.Spec.Deployment.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceMemory, DefaultMemoryRequest))
-	g.Expect(k.Spec.Deployment.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceCPU, DefaultCPURequest))
-	g.Expect(k.Spec.Deployment.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceMemory, DefaultMemoryLimit))
-	g.Expect(k.Spec.Deployment.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceCPU, DefaultCPULimit))
+	g.Expect(k.Spec.Deployment.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceMemory, commonv1.DefaultMemoryRequest()))
+	g.Expect(k.Spec.Deployment.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceCPU, commonv1.DefaultCPURequest()))
+	g.Expect(k.Spec.Deployment.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceMemory, commonv1.DefaultMemoryLimit()))
+	g.Expect(k.Spec.Deployment.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceCPU, commonv1.DefaultCPULimit()))
 }
 
 func TestDefault_DoesNotSetFernetRotationSchedule(t *testing.T) {
@@ -1908,10 +1908,10 @@ func TestDefault_ResourcesSetWhenNil(t *testing.T) {
 	g.Expect(w.Default(context.Background(), k)).To(Succeed())
 
 	g.Expect(k.Spec.Deployment.Resources).NotTo(BeNil())
-	g.Expect(k.Spec.Deployment.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceMemory, DefaultMemoryRequest))
-	g.Expect(k.Spec.Deployment.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceCPU, DefaultCPURequest))
-	g.Expect(k.Spec.Deployment.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceMemory, DefaultMemoryLimit))
-	g.Expect(k.Spec.Deployment.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceCPU, DefaultCPULimit))
+	g.Expect(k.Spec.Deployment.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceMemory, commonv1.DefaultMemoryRequest()))
+	g.Expect(k.Spec.Deployment.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceCPU, commonv1.DefaultCPURequest()))
+	g.Expect(k.Spec.Deployment.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceMemory, commonv1.DefaultMemoryLimit()))
+	g.Expect(k.Spec.Deployment.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceCPU, commonv1.DefaultCPULimit()))
 }
 
 // TestDefault_ResourcesSetWhenEmpty verifies that `resources: {}` (non-nil but
@@ -1929,10 +1929,10 @@ func TestDefault_ResourcesSetWhenEmpty(t *testing.T) {
 	g.Expect(w.Default(context.Background(), k)).To(Succeed())
 
 	g.Expect(k.Spec.Deployment.Resources).NotTo(BeNil())
-	g.Expect(k.Spec.Deployment.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceMemory, DefaultMemoryRequest))
-	g.Expect(k.Spec.Deployment.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceCPU, DefaultCPURequest))
-	g.Expect(k.Spec.Deployment.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceMemory, DefaultMemoryLimit))
-	g.Expect(k.Spec.Deployment.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceCPU, DefaultCPULimit))
+	g.Expect(k.Spec.Deployment.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceMemory, commonv1.DefaultMemoryRequest()))
+	g.Expect(k.Spec.Deployment.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceCPU, commonv1.DefaultCPURequest()))
+	g.Expect(k.Spec.Deployment.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceMemory, commonv1.DefaultMemoryLimit()))
+	g.Expect(k.Spec.Deployment.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceCPU, commonv1.DefaultCPULimit()))
 }
 
 func TestDefault_ResourcesPreservedWhenExplicit(t *testing.T) {

@@ -21,10 +21,10 @@ func TestDeploymentSpecDefault_FillsZeroValues(t *testing.T) {
 
 	g.Expect(d.Replicas).To(gomega.Equal(DefaultReplicas))
 	g.Expect(d.Resources).NotTo(gomega.BeNil())
-	g.Expect(d.Resources.Requests[corev1.ResourceMemory]).To(gomega.Equal(DefaultMemoryRequest))
-	g.Expect(d.Resources.Requests[corev1.ResourceCPU]).To(gomega.Equal(DefaultCPURequest))
-	g.Expect(d.Resources.Limits[corev1.ResourceMemory]).To(gomega.Equal(DefaultMemoryLimit))
-	g.Expect(d.Resources.Limits[corev1.ResourceCPU]).To(gomega.Equal(DefaultCPULimit))
+	g.Expect(d.Resources.Requests[corev1.ResourceMemory]).To(gomega.Equal(DefaultMemoryRequest()))
+	g.Expect(d.Resources.Requests[corev1.ResourceCPU]).To(gomega.Equal(DefaultCPURequest()))
+	g.Expect(d.Resources.Limits[corev1.ResourceMemory]).To(gomega.Equal(DefaultMemoryLimit()))
+	g.Expect(d.Resources.Limits[corev1.ResourceCPU]).To(gomega.Equal(DefaultCPULimit()))
 }
 
 // An empty-but-non-nil Resources block (`resources: {}`) would produce

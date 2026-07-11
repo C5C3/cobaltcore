@@ -94,18 +94,6 @@ const (
 	DefaultAdminPasswordMinLength int32 = 24
 )
 
-// Default resource requests and limits for the Keystone API container.
-// The canonical values moved to internal/common/types beside the shared
-// DeploymentSpec (applied by its Default method); the re-exports keep the
-// controller package tests (reconcile_deployment_test.go) compiling
-// unchanged. Mutation is safe: all call sites use DeepCopy().
-var (
-	DefaultMemoryRequest = commonv1.DefaultMemoryRequest
-	DefaultCPURequest    = commonv1.DefaultCPURequest
-	DefaultMemoryLimit   = commonv1.DefaultMemoryLimit
-	DefaultCPULimit      = commonv1.DefaultCPULimit
-)
-
 // KeystoneWebhook implements defaulting and validation webhooks for the Keystone CRD.
 // Client is injected at startup for cluster-scoped resource lookups (e.g. PriorityClass validation). Production wiring injects mgr.GetAPIReader() — a direct,
 // uncached reader — so admission never rejects a just-created object from a stale

@@ -40,17 +40,33 @@ const (
 	DefaultReplicas int32 = 3
 )
 
-// Default resource requests and limits for the service API container.
-// These vars are the single source of truth for the defaulting webhooks.
-// They ensure Burstable QoS class and enable HPA utilization-based scaling.
-// Exported because operator controller tests reference them for assertion.
-// Mutation is safe: all call sites use DeepCopy().
+// Default resource requests and limits for the service API container. These
+// unexported vars are the single source of truth for the defaulting webhooks;
+// they ensure Burstable QoS class and enable HPA utilization-based scaling. They
+// are exposed only through the accessor functions below, which return a copy so
+// no caller can mutate the shared default.
 var (
-	DefaultMemoryRequest = resource.MustParse("256Mi")
-	DefaultCPURequest    = resource.MustParse("100m")
-	DefaultMemoryLimit   = resource.MustParse("512Mi")
-	DefaultCPULimit      = resource.MustParse("500m")
+	defaultMemoryRequest = resource.MustParse("256Mi")
+	defaultCPURequest    = resource.MustParse("100m")
+	defaultMemoryLimit   = resource.MustParse("512Mi")
+	defaultCPULimit      = resource.MustParse("500m")
 )
+
+// DefaultMemoryRequest returns a copy of the default memory request for the
+// service API container.
+func DefaultMemoryRequest() resource.Quantity { return defaultMemoryRequest.DeepCopy() }
+
+// DefaultCPURequest returns a copy of the default CPU request for the service
+// API container.
+func DefaultCPURequest() resource.Quantity { return defaultCPURequest.DeepCopy() }
+
+// DefaultMemoryLimit returns a copy of the default memory limit for the service
+// API container.
+func DefaultMemoryLimit() resource.Quantity { return defaultMemoryLimit.DeepCopy() }
+
+// DefaultCPULimit returns a copy of the default CPU limit for the service API
+// container.
+func DefaultCPULimit() resource.Quantity { return defaultCPULimit.DeepCopy() }
 
 // DeploymentSpec groups the pod-level knobs for the Keystone API Deployment.
 // Grouping them under spec.deployment keeps the KeystoneSpec root legible as
@@ -150,12 +166,12 @@ func (d *DeploymentSpec) Default() {
 	if d.Resources == nil || (len(d.Resources.Requests) == 0 && len(d.Resources.Limits) == 0) {
 		d.Resources = &corev1.ResourceRequirements{
 			Requests: corev1.ResourceList{
-				corev1.ResourceMemory: DefaultMemoryRequest.DeepCopy(),
-				corev1.ResourceCPU:    DefaultCPURequest.DeepCopy(),
+				corev1.ResourceMemory: DefaultMemoryRequest(),
+				corev1.ResourceCPU:    DefaultCPURequest(),
 			},
 			Limits: corev1.ResourceList{
-				corev1.ResourceMemory: DefaultMemoryLimit.DeepCopy(),
-				corev1.ResourceCPU:    DefaultCPULimit.DeepCopy(),
+				corev1.ResourceMemory: DefaultMemoryLimit(),
+				corev1.ResourceCPU:    DefaultCPULimit(),
 			},
 		}
 	}

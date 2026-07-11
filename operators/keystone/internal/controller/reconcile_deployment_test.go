@@ -55,12 +55,12 @@ func deployTestKeystone() *keystonev1alpha1.Keystone {
 				Replicas: 3,
 				Resources: &corev1.ResourceRequirements{
 					Requests: corev1.ResourceList{
-						corev1.ResourceMemory: keystonev1alpha1.DefaultMemoryRequest.DeepCopy(),
-						corev1.ResourceCPU:    keystonev1alpha1.DefaultCPURequest.DeepCopy(),
+						corev1.ResourceMemory: commonv1.DefaultMemoryRequest(),
+						corev1.ResourceCPU:    commonv1.DefaultCPURequest(),
 					},
 					Limits: corev1.ResourceList{
-						corev1.ResourceMemory: keystonev1alpha1.DefaultMemoryLimit.DeepCopy(),
-						corev1.ResourceCPU:    keystonev1alpha1.DefaultCPULimit.DeepCopy(),
+						corev1.ResourceMemory: commonv1.DefaultMemoryLimit(),
+						corev1.ResourceCPU:    commonv1.DefaultCPULimit(),
 					},
 				},
 			},
@@ -909,10 +909,10 @@ func TestReconcileDeployment_ContainerResources(t *testing.T) {
 
 	g.Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(1))
 	container := deploy.Spec.Template.Spec.Containers[0]
-	g.Expect(container.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceMemory, keystonev1alpha1.DefaultMemoryRequest))
-	g.Expect(container.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceCPU, keystonev1alpha1.DefaultCPURequest))
-	g.Expect(container.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceMemory, keystonev1alpha1.DefaultMemoryLimit))
-	g.Expect(container.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceCPU, keystonev1alpha1.DefaultCPULimit))
+	g.Expect(container.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceMemory, commonv1.DefaultMemoryRequest()))
+	g.Expect(container.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceCPU, commonv1.DefaultCPURequest()))
+	g.Expect(container.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceMemory, commonv1.DefaultMemoryLimit()))
+	g.Expect(container.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceCPU, commonv1.DefaultCPULimit()))
 }
 
 func TestReconcileDeployment_CustomResources(t *testing.T) {

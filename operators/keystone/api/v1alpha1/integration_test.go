@@ -609,10 +609,10 @@ func TestIntegration_ResourcesDefaultedWhenNil(t *testing.T) {
 	g.Expect(c.Get(ctx, types.NamespacedName{Name: "res-default", Namespace: ns.Name}, got)).To(Succeed())
 
 	g.Expect(got.Spec.Deployment.Resources).NotTo(BeNil(), "resources should be defaulted")
-	g.Expect(got.Spec.Deployment.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceMemory, DefaultMemoryRequest))
-	g.Expect(got.Spec.Deployment.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceCPU, DefaultCPURequest))
-	g.Expect(got.Spec.Deployment.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceMemory, DefaultMemoryLimit))
-	g.Expect(got.Spec.Deployment.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceCPU, DefaultCPULimit))
+	g.Expect(got.Spec.Deployment.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceMemory, commonv1.DefaultMemoryRequest()))
+	g.Expect(got.Spec.Deployment.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceCPU, commonv1.DefaultCPURequest()))
+	g.Expect(got.Spec.Deployment.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceMemory, commonv1.DefaultMemoryLimit()))
+	g.Expect(got.Spec.Deployment.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceCPU, commonv1.DefaultCPULimit()))
 }
 
 func TestIntegration_ResourcesPreservedWhenExplicit(t *testing.T) {
