@@ -13,8 +13,20 @@ SPDX-License-Identifier: Apache-2.0
 Three operational patterns you will use most often on a running Keystone CR: scaling,
 upgrading the OpenStack release, and rotating Fernet keys.
 
-**Prerequisites:** A running Keystone CR from the [Quick Start (Extended)](../quick-start-extended.md) (Steps 1–9).
-The examples assume the CR is named `keystone` in the `openstack` namespace.
+## Prerequisites
+
+::: info Devstack
+This guide is written against the **[Quick Start (Extended)](../quick-start-extended.md)** devstack. Stand it up first:
+
+```bash
+kind create cluster --name forge --config hack/kind-config.yaml
+make deploy-infra
+```
+
+Follow that tutorial through to its final **Verify the deployment** step, so a
+Keystone CR named `keystone` is `Ready` in the `openstack` namespace. Every
+resource name in the examples below is one that devstack produces.
+:::
 
 ---
 

@@ -23,6 +23,19 @@ and
 
 ## Prerequisites
 
+::: info Devstack
+This guide is written against the **[Quick Start](../quick-start.md)** devstack. Stand it up first:
+
+```bash
+KIND_HOST_PORT=8443 make deploy-infra
+```
+
+Follow that tutorial through to its final **Verify** step. That devstack already
+satisfies items 1–3 below (cert-manager, the `openstack-db-ca-issuer`
+ClusterIssuer, and a TLS-required `openstack-db` MariaDB); the numbered list is
+the checklist to confirm on a non-kind cluster.
+:::
+
 1. **cert-manager installed.** The chart from `deploy/flux-system/releases/cert-manager.yaml`
    provides the `cert-manager.io/v1` CRDs (`Certificate`, `Issuer`, `ClusterIssuer`).
    Confirm the controller is healthy:

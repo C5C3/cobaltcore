@@ -15,7 +15,21 @@ supports a number of configuration options for real cluster deployments. This gu
 walks through the four that cover the most common real-world needs and points to the
 reference for the rest.
 
-**Prerequisites:** A running Keystone CR from the [Quick Start (Extended)](../quick-start-extended.md).
+## Prerequisites
+
+::: info Devstack
+This guide is written against the **[Quick Start (Extended)](../quick-start-extended.md)** devstack. Stand it up first:
+
+```bash
+kind create cluster --name forge --config hack/kind-config.yaml
+make deploy-infra
+```
+
+Follow that tutorial through to its final **Verify the deployment** step, so a
+Keystone CR named `keystone` is `Ready` in the `openstack` namespace. Every
+resource name in the examples below is one that devstack produces.
+:::
+
 Each pattern below is an independent recipe — apply only what you need.
 
 ---

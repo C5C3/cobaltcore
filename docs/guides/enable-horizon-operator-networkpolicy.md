@@ -20,6 +20,18 @@ to the minimum required for correct reconciliation.
 
 ## Prerequisites
 
+::: info Devstack
+This guide is written against the **[Quick Start (ControlPlane)](../quick-start-controlplane.md)** devstack. Stand it up first:
+
+```bash
+KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
+```
+
+Follow that tutorial through to its final **Verify** step, so the horizon-operator
+is running (namespace `horizon-system`) alongside the projected
+`controlplane-horizon` dashboard.
+:::
+
 1. **A CNI that enforces `networking.k8s.io/v1` NetworkPolicy.** Confirm with
    your platform team — kindnet (the kind default) does NOT enforce policies,
    so on a kind cluster the object is created but has no effect.

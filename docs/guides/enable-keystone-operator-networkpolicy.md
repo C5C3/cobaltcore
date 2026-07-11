@@ -22,6 +22,18 @@ authoritative rule table, failure modes, and schema contract, see
 
 ## Prerequisites
 
+::: info Devstack
+This guide is written against the **[Quick Start](../quick-start.md)** devstack. Stand it up first:
+
+```bash
+KIND_HOST_PORT=8443 make deploy-infra
+```
+
+Follow that tutorial through to its final **Verify** step, so the keystone-operator
+is running and a `keystone` CR is `Ready` in `openstack`. (kindnet does not enforce
+NetworkPolicy — see item 1 below to make the policy effective on kind.)
+:::
+
 1. **A CNI that enforces `networking.k8s.io/v1` NetworkPolicy.** Confirm with
    your platform team. Common CNIs that enforce:
 
@@ -188,7 +200,7 @@ Create (or update) a `Keystone` CR and watch its `Ready` condition progress
 to `True`:
 
 ```bash
-kubectl -n openstack get keystone <name> \
+kubectl -n openstack get keystone keystone \
   -o jsonpath='{.status.conditions[?(@.type=="Ready")]}{"\n"}'
 ```
 

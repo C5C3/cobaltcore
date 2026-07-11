@@ -23,8 +23,18 @@ For the full field reference, see the
 
 ## Prerequisites
 
-- A Keystone CR that reaches `Ready=True` (see the
-  [Quick Start](../quick-start.md)).
+::: info Devstack
+This guide is written against the **[Quick Start](../quick-start.md)** devstack. Stand it up first:
+
+```bash
+KIND_HOST_PORT=8443 make deploy-infra
+```
+
+Follow that tutorial through to its final **Verify** step, so a Keystone CR named
+`keystone` is `Ready` in the `openstack` namespace. Every resource name in the
+examples below is one that devstack produces.
+:::
+
 - An OIDC identity provider reachable from the cluster (this guide uses a
   Keycloak realm) with a **confidential client** registered for keystone.
   The client's redirect URIs must cover

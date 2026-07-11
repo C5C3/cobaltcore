@@ -18,8 +18,19 @@ For the full field reference, see the
 
 ## Prerequisites
 
-- A Keystone CR that reaches `Ready=True` (see the
-  [Quick Start](../quick-start.md)); backends can be applied before the
+::: info Devstack
+This guide is written against the **[Quick Start](../quick-start.md)** devstack. Stand it up first:
+
+```bash
+KIND_HOST_PORT=8443 make deploy-infra
+```
+
+Follow that tutorial through to its final **Verify** step, so a Keystone CR named
+`keystone` is `Ready` in the `openstack` namespace. Every resource name in the
+examples below is one that devstack produces.
+:::
+
+- A Keystone CR that reaches `Ready=True`; backends can be applied before the
   Keystone exists, but nothing is provisioned until its API is up.
 - An LDAP server reachable from the cluster, plus a bind DN allowed to
   search the user/group trees.

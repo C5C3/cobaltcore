@@ -38,6 +38,19 @@ Adopt namespace-scoped mode when your deployment fits in one namespace.
 
 ## Prerequisites
 
+::: info Devstack
+This guide builds on the **[Quick Start (ControlPlane)](../quick-start-controlplane.md)** devstack for the cluster, CRDs, and shared infrastructure (MariaDB, Memcached, External Secrets Operator). Stand it up first:
+
+```bash
+KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
+```
+
+Follow that tutorial through to its final **Verify** step. This guide then
+re-deploys the keystone-operator **namespace-scoped** (the steps below), so treat
+the tutorial as the cluster-and-infrastructure baseline rather than its
+cluster-wide operator install.
+:::
+
 Before deploying the operator in namespace-scoped mode, ensure:
 
 1. **CRDs are installed cluster-wide.** Keystone CRDs (`keystones.keystone.openstack.c5c3.io`)

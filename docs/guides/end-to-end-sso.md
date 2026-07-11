@@ -19,6 +19,25 @@ read [Attach an OIDC Federation Backend](./oidc-federation.md) and
 [Attach an LDAP Domain Backend](./ldap-domain-backend.md) first — this guide
 picks up where they leave off and shows what the ControlPlane does with them.
 
+## Prerequisites
+
+::: info Devstack
+This guide is written against the **[Quick Start (ControlPlane)](../quick-start-controlplane.md)** devstack. Stand it up first:
+
+```bash
+KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
+```
+
+Follow that tutorial through to its final **Verify** step, so the ControlPlane's
+projected `controlplane-keystone` and `controlplane-horizon` children are
+running. Every resource name in the examples below is one that devstack produces.
+:::
+
+- [Attach an OIDC Federation Backend](./oidc-federation.md) — how to stand up the
+  federation backend this guide projects onto the login page.
+- [Attach an LDAP Domain Backend](./ldap-domain-backend.md) — how to stand up the
+  LDAP domain backend used in the multi-domain step.
+
 ## What the ControlPlane does for you
 
 Attaching a `KeystoneIdentityBackend` to a ControlPlane's Keystone child is the

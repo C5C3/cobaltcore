@@ -44,6 +44,18 @@ sections below cover that wiring end-to-end.
 
 ## Prerequisites
 
+::: info Devstack
+This guide is written against the **[Quick Start](../quick-start.md)** devstack. Stand it up first:
+
+```bash
+KIND_HOST_PORT=8443 WITH_PROMETHEUS=true make deploy-infra
+```
+
+Follow that tutorial through to its final **Verify** step, so the keystone-operator
+is running with kube-prometheus-stack scraping it. (On kind the `WITH_PROMETHEUS`
+opt-in above wires the manual steps below automatically — see the tip above.)
+:::
+
 - A cluster with the `keystone-operator` Helm release installed and the
   operator Pod healthy (`Ready` condition `True`).
 - **prometheus-operator CRDs installed.** The chart does *not* install

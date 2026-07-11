@@ -69,10 +69,9 @@ the ControlPlane devstack's real names: the projected Keystone child is
 [End-to-End SSO](../guides/end-to-end-sso.md). Do not interleave the two naming
 worlds in the primary walkthrough.
 
-Placeholder example names that no tutorial produces (for instance a bare
-`keystone-default`) are banned. If a value genuinely varies per reader, express
-it as a substitution rule anchored on a concrete devstack name, not as an
-invented literal.
+Placeholder example names that no tutorial produces are banned. If a value
+genuinely varies per reader, express it as a substitution rule anchored on a
+concrete devstack name, not as an invented literal.
 
 ## Never edit operator-projected children
 

@@ -32,7 +32,20 @@ engine wired for the Keystone service DB user (issue #439).
 The engine issues an ephemeral MySQL user per lease (for example `v-kube-...`)
 with `ALL PRIVILEGES` on the Keystone database and drops it at lease end.
 
-## Preconditions
+## Prerequisites
+
+::: info Devstack
+This guide is written against the **[Quick Start (ControlPlane)](../quick-start-controlplane.md)** devstack. Stand it up first:
+
+```bash
+KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
+```
+
+Follow that tutorial through to its final **Verify** step. On this devstack the
+ControlPlane is `controlplane` in `openstack`, so its projected Keystone is
+`controlplane-keystone` and its DB-credential Secret is
+`controlplane-keystone-db-credentials` — the names the migration below manages.
+:::
 
 - The OpenBao `database` secrets engine is mounted at `database/mariadb` (the
   `setup-secret-engines.sh` bootstrap step). On a greenfield cluster this is

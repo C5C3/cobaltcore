@@ -25,11 +25,11 @@ condition), see
 [Horizon Reconciler Architecture](../reference/horizon/horizon-reconciler.md).
 
 ::: tip On kind
-If you are running the kind Quick Start, the prometheus-operator CRDs,
-Prometheus, and Grafana are already wrapped behind a single opt-in flag:
+If you are running the kind ControlPlane Quick Start, the prometheus-operator
+CRDs, Prometheus, and Grafana are already wrapped behind opt-in flags:
 
 ```bash
-WITH_PROMETHEUS=true make deploy-infra
+KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true WITH_PROMETHEUS=true make deploy-infra
 ```
 
 The rest of this guide is the canonical path for non-kind clusters that run
@@ -37,6 +37,17 @@ their own Prometheus.
 :::
 
 ## Prerequisites
+
+::: info Devstack
+This guide is written against the **[Quick Start (ControlPlane)](../quick-start-controlplane.md)** devstack. Stand it up first:
+
+```bash
+KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true WITH_PROMETHEUS=true make deploy-infra
+```
+
+Follow that tutorial through to its final **Verify** step, so the horizon-operator
+(namespace `horizon-system`) is running with kube-prometheus-stack scraping it.
+:::
 
 1. A running `horizon-operator` Helm release (namespace `horizon-system`).
 2. The prometheus-operator CRDs (`servicemonitors.monitoring.coreos.com`)
