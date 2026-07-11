@@ -24,20 +24,22 @@ The keystone operator is the reference consumer for every package listed.
 | --- | --- |
 | `internal/common/types` | Shared CRD spec types (`DatabaseSpec`, `CacheSpec`, `GatewaySpec`, `ImageSpec`, `DeploymentSpec`, `AutoscalingSpec`, `NetworkPolicySpec`, `LoggingSpec`, ...) with their CEL rules and `Default()` methods |
 | `internal/common/naming` | Label keys, `CommonLabels`/`SelectorLabels`, `SubResourceName` — the workload naming convention (and the cross-service endpoint contract, see below) |
-| `internal/common/reconcile` | Table-driven pipeline (`Step`/`RunPipeline`), parallel groups (`ParallelStep`/`RunParallelGroup`), `ShortestRequeue`, `SetAggregateReady`, the no-op-skipping `UpdateStatus`, `EnsureFinalizer` |
-| `internal/common/watch` | `CRUpdatePredicate` for the `For(...)` watch, `SecretToOwnersMapper` + `RegisterSecretNameIndex`, `ClusterSecretStoreFanOut` |
+| `internal/common/reconcile` | Table-driven pipeline (`Step`/`RunPipeline`), parallel groups (`ParallelStep`/`RunParallelGroup`), `ShortestRequeue`, `SetAggregateReady`, the no-op-skipping `UpdateStatus`, `EnsureFinalizer`, the shared requeue constants (`RequeueDeploymentPolling`/`RequeueSecretPolling`), the `Skeleton[T,S]` controller-skeleton glue (Ready aggregation, status write, `MarkFailed`, parallel-group), and `ProjectChild`/`DeleteOrphanedChild` for orchestrating operators that project child CRs |
+| `internal/common/watch` | `CRUpdatePredicate` for the `For(...)` watch, `SecretToOwnersMapper` + `RegisterSecretNameIndex`, `ClusterSecretStoreFanOut`, `ClusterRefMapper` (database-cluster reference to owning CRs) |
 | `internal/common/bootstrap` | `Run`/`ManagerConfig` manager bootstrap, `ControllerOptions` (concurrency + tuned rate limiter), `DetectOperatorNamespace` |
-| `internal/common/instrumentation` | Sub-reconciler duration/error metrics; declare a `NewMetrics("<op>_operator")` instance beside the instrumenter glue |
-| `internal/common/deployment` | SSA ensure primitives, `RestrictedSecurityContext`, PDB/HPA builders, replica normalization, pod-knob default helpers |
-| `internal/common/gateway` | `IsGVKAvailable` CRD probe, HTTPRoute builder/acceptance/ensure/delete over the shared `GatewaySpec` |
-| `internal/common/secrets` | ESO primitives, `OpenBaoClusterStoreName`, the `GateSyncedSecret` ladder |
+| `internal/common/instrumentation` | Sub-reconciler duration/error metrics; declare a `NewSubReconcilerInstrumenter("<op>_operator", conditionTypes)` beside the instrumenter glue and register it from a `RegisterMetrics()` wired into `main.go` (registration returns an error instead of panicking) |
+| `internal/common/deployment` | SSA ensure primitives, `RestrictedSecurityContext`, PDB/HPA builders, `ReconcileHPA` flow, replica normalization, pod-knob default helpers |
+| `internal/common/networkpolicy` | `Ensure`/`Delete`, the auto-derived egress rules (`DNSEgressRule`/`DatabaseEgressRule`/`CacheEgressRule`/`CacheEgressPorts`), `IngressPeers`, and the three-path `Reconcile` flow with the fail-closed empty-ingress guard |
+| `internal/common/gateway` | `IsGVKAvailable` CRD probe, HTTPRoute builder/acceptance/ensure/delete over the shared `GatewaySpec`, and the three-path `ReconcileHTTPRoute` flow |
+| `internal/common/secrets` | ESO primitives, `OpenBaoClusterStoreName`, the `GateSyncedSecret` ladder, the `GateClusterStoreReady` gate and `GateCredential`/`GateCredentials` condition-reporting loop |
 | `internal/common/validation` | Shared webhook validators (DB/cache XOR, dynamic-credentials rule, cron parse, TSC selector, PriorityClass lookup) |
-| `internal/common/database`, `internal/common/cache` | MariaDB CR apply, host/port/username resolution, pymysql DSN + TLS params + rollout digest, memcache server resolution |
+| `internal/common/database`, `internal/common/cache` | MariaDB CR apply, `BuildDatabase`/`BuildUser`/`BuildGrant` provisioning builders, host/port/username resolution, pymysql DSN + TLS params + rollout digest, memcache server resolution |
+| `internal/common/rotation` | Split-compute-write credential rotation: `EnsureStagingSecret`, `CommitStaged`/`CommitSpec`, `EnsureRBAC`, `CompletedAt`/`ObserveAge`, `BuildCronJob`/`CronJobParams` |
 | `internal/common/release` | OpenStack release parsing and upgrade/downgrade classification |
-| `internal/common/healthcheck` | `HTTPDoer` seam, probe-error classifier, TTL probe cache |
-| `internal/common/job` | `RunJob`/`RunJobWithRerunKey`/`EnsureCronJob`/`DeleteCronJob` |
+| `internal/common/healthcheck` | `HTTPDoer` seam, probe-error classifier, TTL probe cache, the shared timing constants, and the `ReconcileProbe` flow |
+| `internal/common/job` | `RunJob`/`RunJobWithRerunKey`/`EnsureCronJob`/`DeleteCronJob`, the `BuildMigrationJob` skeleton, and the at-most-once `RecordJobTerminalState` recorder |
 | `internal/common/config` | oslo INI rendering + immutable-ConfigMap lifecycle (see the design decisions below for non-INI services) |
-| `internal/common/testutil/envtest` | envtest bootstrap, `BuildScheme`, `CommonFakeCRDDirs`, `StartManagedEnvTest` |
+| `internal/common/testutil/envtest` | envtest bootstrap, `BuildScheme`, `CommonExternalSchemes`, `CommonFakeCRDDirs`, `StartManagedEnvTest`, `SetupEnvTestWithCRDs` (webhook-less), `SetupUnstartedManager` |
 
 ## Residual touch list
 

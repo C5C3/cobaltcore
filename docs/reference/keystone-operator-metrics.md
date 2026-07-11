@@ -20,12 +20,15 @@ The sub-reconciler duration/error pair
 `keystone_operator_reconcile_errors_total`) is shared with the other
 forge operators. It lives in the
 [`internal/common/instrumentation`](https://github.com/c5c3/forge/blob/main/internal/common/instrumentation/instrumentation.go)
-package and is exposed as the `subReconcilerMetrics` instance declared beside
-the instrumenter glue in `internal/controller/instrumentation.go`, which
-registers on the controller-runtime registry lazily on first use. The
-per-CR collectors (rotation age and `db_sync`) register via the
-process-wide `sync.Once` initializer `globalCollectors()` in
-[`operators/keystone/internal/metrics/collectors.go`](https://github.com/c5c3/forge/blob/main/operators/keystone/internal/metrics/collectors.go).
+package and is exposed as the instrumenter declared beside the glue in
+`internal/controller/instrumentation.go`. Both the sub-reconciler vectors and
+the per-CR collectors (rotation age and `db_sync`) register on the
+controller-runtime registry once at operator startup through `RegisterMetrics()`,
+which `main.go` calls before wiring the controllers. Registration returns an
+error rather than panicking mid-reconcile, so a duplicate-registration fails
+startup cleanly. The per-CR collectors live in
+[`operators/keystone/internal/metrics/collectors.go`](https://github.com/c5c3/forge/blob/main/operators/keystone/internal/metrics/collectors.go)
+and are registered by `RegisterMetrics()` via their `Register()` function.
 All collectors attach to the controller-runtime registry
 (`sigs.k8s.io/controller-runtime/pkg/metrics`) and are served on the
 operator's metrics listener at `:8080/metrics` by default; see
