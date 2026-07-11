@@ -8,22 +8,21 @@ import (
 	"context"
 	"fmt"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
-	"github.com/c5c3/forge/internal/common/conditions"
 	"github.com/c5c3/forge/internal/common/gateway"
 	horizonv1alpha1 "github.com/c5c3/forge/operators/horizon/api/v1alpha1"
 )
 
-// Condition type and reason constants for HTTPRoute readiness.
+// Condition type and reason constants for HTTPRoute readiness. The reason
+// vocabulary is shared across operators via the gateway package.
 const (
 	conditionTypeHTTPRouteReady           = "HTTPRouteReady"
-	conditionReasonHTTPRouteAccepted      = "HTTPRouteAccepted"
-	conditionReasonHTTPRouteNotAccepted   = "HTTPRouteNotAccepted"
-	conditionReasonHTTPRouteNotRequired   = "HTTPRouteNotRequired"
-	conditionReasonGatewayAPINotInstalled = "GatewayAPINotInstalled"
+	conditionReasonHTTPRouteAccepted      = gateway.ReasonHTTPRouteAccepted
+	conditionReasonHTTPRouteNotAccepted   = gateway.ReasonHTTPRouteNotAccepted
+	conditionReasonHTTPRouteNotRequired   = gateway.ReasonHTTPRouteNotRequired
+	conditionReasonGatewayAPINotInstalled = gateway.ReasonGatewayAPINotInstalled
 )
 
 // requeueHTTPRouteAccepted is the interval for requeuing while waiting for a
@@ -51,82 +50,30 @@ func internalDashboardURL(horizon *horizonv1alpha1.Horizon) string {
 	return fmt.Sprintf("http://%s.%s.svc.cluster.local:%d/", subResourceName(horizon), horizon.Namespace, horizonAPIPort)
 }
 
-// reconcileHTTPRoute ensures the HTTPRoute that exposes the dashboard
-// through a Gateway matches the desired state. Three lifecycle paths:
-//
-//   - spec.gateway set: create or update the HTTPRoute and reflect the
-//     parent Accepted condition as HTTPRouteReady.
-//   - spec.gateway nil: delete any existing HTTPRoute and set
-//     HTTPRouteReady=True/HTTPRouteNotRequired.
-//   - error: propagate errors from ensure/delete operations.
+// reconcileHTTPRoute ensures the HTTPRoute that exposes the dashboard through a
+// Gateway matches the desired state, via the shared route flow. It keeps only
+// the service-specific parts: the desired route builder, the backend identity,
+// and the exposure noun for the messages.
 func (r *HorizonReconciler) reconcileHTTPRoute(ctx context.Context, horizon *horizonv1alpha1.Horizon) (ctrl.Result, error) {
-	// Path 0: Gateway API CRD is not installed. The watch was skipped in
-	// SetupWithManager; skip the delete attempt too and surface a clear
-	// condition instead of erroring.
-	if !r.gatewayAPIAvailable {
-		if horizon.Spec.Gateway == nil {
-			conditions.SetCondition(&horizon.Status.Conditions, metav1.Condition{
-				Type:               conditionTypeHTTPRouteReady,
-				Status:             metav1.ConditionTrue,
-				ObservedGeneration: horizon.Generation,
-				Reason:             conditionReasonHTTPRouteNotRequired,
-				Message:            "External dashboard exposure via Gateway API is not configured",
-			})
-			return ctrl.Result{}, nil
-		}
-		conditions.SetCondition(&horizon.Status.Conditions, metav1.Condition{
-			Type:               conditionTypeHTTPRouteReady,
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: horizon.Generation,
-			Reason:             conditionReasonGatewayAPINotInstalled,
-			Message:            "spec.gateway is set but the gateway.networking.k8s.io/v1 HTTPRoute CRD is not installed in this cluster; install Gateway API and restart the operator to enable external dashboard exposure",
-		})
-		return ctrl.Result{}, nil
+	// buildHorizonHTTPRoute dereferences spec.gateway, so build the desired
+	// route only when external exposure is requested; the flow uses Desired only
+	// on the gateway-enabled path.
+	var desired *gatewayv1.HTTPRoute
+	if horizon.Spec.Gateway != nil {
+		desired = buildHorizonHTTPRoute(horizon)
 	}
-
-	// Path 2: gateway disabled — delete any existing HTTPRoute.
-	if horizon.Spec.Gateway == nil {
-		if err := gateway.DeleteHTTPRoute(ctx, r.Client, horizon.Namespace, subResourceName(horizon)); err != nil {
-			return ctrl.Result{}, err
-		}
-		conditions.SetCondition(&horizon.Status.Conditions, metav1.Condition{
-			Type:               conditionTypeHTTPRouteReady,
-			Status:             metav1.ConditionTrue,
-			ObservedGeneration: horizon.Generation,
-			Reason:             conditionReasonHTTPRouteNotRequired,
-			Message:            "External dashboard exposure via Gateway API is not configured",
-		})
-		return ctrl.Result{}, nil
-	}
-
-	// Path 1: gateway enabled — create or update the HTTPRoute.
-	// EnsureHTTPRoute applies via Server-Side Apply and decodes the server
-	// response back into desired, so its parent status — written by the
-	// Gateway controller — is already populated without a second Get.
-	desired := buildHorizonHTTPRoute(horizon)
-	if err := gateway.EnsureHTTPRoute(ctx, r.Client, r.Scheme, horizon, desired); err != nil {
-		return ctrl.Result{}, fmt.Errorf("ensuring HTTPRoute: %w", err)
-	}
-
-	if gateway.IsHTTPRouteAccepted(desired) {
-		conditions.SetCondition(&horizon.Status.Conditions, metav1.Condition{
-			Type:               conditionTypeHTTPRouteReady,
-			Status:             metav1.ConditionTrue,
-			ObservedGeneration: horizon.Generation,
-			Reason:             conditionReasonHTTPRouteAccepted,
-			Message:            "HTTPRoute accepted by Gateway",
-		})
-		return ctrl.Result{}, nil
-	}
-
-	conditions.SetCondition(&horizon.Status.Conditions, metav1.Condition{
-		Type:               conditionTypeHTTPRouteReady,
-		Status:             metav1.ConditionFalse,
-		ObservedGeneration: horizon.Generation,
-		Reason:             conditionReasonHTTPRouteNotAccepted,
-		Message:            "HTTPRoute not yet accepted by Gateway",
+	return gateway.ReconcileHTTPRoute(ctx, r.Client, r.Scheme, horizon, gateway.RouteFlowParams{
+		GatewayAPIAvailable: r.gatewayAPIAvailable,
+		GatewayConfigured:   horizon.Spec.Gateway != nil,
+		Desired:             desired,
+		RouteName:           subResourceName(horizon),
+		RouteNamespace:      horizon.Namespace,
+		ExposureNoun:        "dashboard",
+		Conditions:          &horizon.Status.Conditions,
+		Generation:          horizon.Generation,
+		ConditionType:       conditionTypeHTTPRouteReady,
+		RequeueAccepted:     requeueHTTPRouteAccepted,
 	})
-	return ctrl.Result{RequeueAfter: requeueHTTPRouteAccepted}, nil
 }
 
 // buildHorizonHTTPRoute constructs the desired HTTPRoute for the dashboard.

@@ -8,22 +8,21 @@ import (
 	"context"
 	"fmt"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
-	"github.com/c5c3/forge/internal/common/conditions"
 	"github.com/c5c3/forge/internal/common/gateway"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
 
-// Condition type and reason constants for HTTPRoute readiness.
+// Condition type and reason constants for HTTPRoute readiness. The reason
+// vocabulary is shared across operators via the gateway package.
 const (
 	conditionTypeHTTPRouteReady           = "HTTPRouteReady"
-	conditionReasonHTTPRouteAccepted      = "HTTPRouteAccepted"
-	conditionReasonHTTPRouteNotAccepted   = "HTTPRouteNotAccepted"
-	conditionReasonHTTPRouteNotRequired   = "HTTPRouteNotRequired"
-	conditionReasonGatewayAPINotInstalled = "GatewayAPINotInstalled"
+	conditionReasonHTTPRouteAccepted      = gateway.ReasonHTTPRouteAccepted
+	conditionReasonHTTPRouteNotAccepted   = gateway.ReasonHTTPRouteNotAccepted
+	conditionReasonHTTPRouteNotRequired   = gateway.ReasonHTTPRouteNotRequired
+	conditionReasonGatewayAPINotInstalled = gateway.ReasonGatewayAPINotInstalled
 )
 
 // keystoneStatusEndpoint returns the externally reachable Keystone API endpoint
@@ -85,82 +84,29 @@ const keystoneAPIPort = gatewayv1.PortNumber(5000)
 const requeueHTTPRouteAccepted = RequeueDeploymentPolling
 
 // reconcileHTTPRoute ensures the HTTPRoute that exposes the Keystone API
-// through a Gateway matches the desired state. Three lifecycle paths
-//
-//   - spec.gateway set: create or update the HTTPRoute and reflect the
-//     parent Accepted condition as HTTPRouteReady.
-//   - spec.gateway nil: delete any existing HTTPRoute and set
-//     HTTPRouteReady=True/HTTPRouteNotRequired.
-//   - error: propagate errors from ensure/delete operations.
+// through a Gateway matches the desired state, via the shared route flow. It
+// keeps only the service-specific parts: the desired route builder, the backend
+// identity, and the exposure noun for the messages.
 func (r *KeystoneReconciler) reconcileHTTPRoute(ctx context.Context, keystone *keystonev1alpha1.Keystone) (ctrl.Result, error) {
-	// Path 0: Gateway API CRD is not installed. The watch was
-	// skipped in SetupWithManager; skip the delete attempt too — c.Delete
-	// would fail with "no matches for kind HTTPRoute" — and surface a clear
-	// condition instead of erroring.
-	if !r.gatewayAPIAvailable {
-		if keystone.Spec.Gateway == nil {
-			conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
-				Type:               conditionTypeHTTPRouteReady,
-				Status:             metav1.ConditionTrue,
-				ObservedGeneration: keystone.Generation,
-				Reason:             conditionReasonHTTPRouteNotRequired,
-				Message:            "External API exposure via Gateway API is not configured",
-			})
-			return ctrl.Result{}, nil
-		}
-		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
-			Type:               conditionTypeHTTPRouteReady,
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: keystone.Generation,
-			Reason:             conditionReasonGatewayAPINotInstalled,
-			Message:            "spec.gateway is set but the gateway.networking.k8s.io/v1 HTTPRoute CRD is not installed in this cluster; install Gateway API and restart the operator to enable external API exposure",
-		})
-		return ctrl.Result{}, nil
+	// buildKeystoneHTTPRoute dereferences spec.gateway, so build the desired
+	// route only when external exposure is requested; the flow uses Desired
+	// only on the gateway-enabled path.
+	var desired *gatewayv1.HTTPRoute
+	if keystone.Spec.Gateway != nil {
+		desired = buildKeystoneHTTPRoute(keystone)
 	}
-
-	// Path 2: gateway disabled — delete any existing HTTPRoute.
-	if keystone.Spec.Gateway == nil {
-		if err := gateway.DeleteHTTPRoute(ctx, r.Client, keystone.Namespace, subResourceName(keystone)); err != nil {
-			return ctrl.Result{}, err
-		}
-		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
-			Type:               conditionTypeHTTPRouteReady,
-			Status:             metav1.ConditionTrue,
-			ObservedGeneration: keystone.Generation,
-			Reason:             conditionReasonHTTPRouteNotRequired,
-			Message:            "External API exposure via Gateway API is not configured",
-		})
-		return ctrl.Result{}, nil
-	}
-
-	// Path 1: gateway enabled — create or update the HTTPRoute. ensureHTTPRoute
-	// applies via Server-Side Apply and decodes the server response back into
-	// desired, so its parent status — written by the Gateway controller — is
-	// already populated without a second Get (issue #361).
-	desired := buildKeystoneHTTPRoute(keystone)
-	if err := gateway.EnsureHTTPRoute(ctx, r.Client, r.Scheme, keystone, desired); err != nil {
-		return ctrl.Result{}, fmt.Errorf("ensuring HTTPRoute: %w", err)
-	}
-
-	if gateway.IsHTTPRouteAccepted(desired) {
-		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
-			Type:               conditionTypeHTTPRouteReady,
-			Status:             metav1.ConditionTrue,
-			ObservedGeneration: keystone.Generation,
-			Reason:             conditionReasonHTTPRouteAccepted,
-			Message:            "HTTPRoute accepted by Gateway",
-		})
-		return ctrl.Result{}, nil
-	}
-
-	conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
-		Type:               conditionTypeHTTPRouteReady,
-		Status:             metav1.ConditionFalse,
-		ObservedGeneration: keystone.Generation,
-		Reason:             conditionReasonHTTPRouteNotAccepted,
-		Message:            "HTTPRoute not yet accepted by Gateway",
+	return gateway.ReconcileHTTPRoute(ctx, r.Client, r.Scheme, keystone, gateway.RouteFlowParams{
+		GatewayAPIAvailable: r.gatewayAPIAvailable,
+		GatewayConfigured:   keystone.Spec.Gateway != nil,
+		Desired:             desired,
+		RouteName:           subResourceName(keystone),
+		RouteNamespace:      keystone.Namespace,
+		ExposureNoun:        "API",
+		Conditions:          &keystone.Status.Conditions,
+		Generation:          keystone.Generation,
+		ConditionType:       conditionTypeHTTPRouteReady,
+		RequeueAccepted:     requeueHTTPRouteAccepted,
 	})
-	return ctrl.Result{RequeueAfter: requeueHTTPRouteAccepted}, nil
 }
 
 // buildKeystoneHTTPRoute constructs the desired HTTPRoute for the Keystone API.
