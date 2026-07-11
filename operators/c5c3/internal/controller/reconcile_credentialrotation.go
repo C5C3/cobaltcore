@@ -18,6 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/c5c3/forge/internal/common/conditions"
+	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	"github.com/c5c3/forge/internal/common/secrets"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 )
@@ -403,19 +404,17 @@ func (r *CredentialRotationReconciler) finish(
 	ctx context.Context, cr *c5c3v1alpha1.CredentialRotation, result ctrl.Result,
 	status metav1.ConditionStatus, reason, message string,
 ) (ctrl.Result, error) {
-	conditions.SetCondition(&cr.Status.Conditions, metav1.Condition{
-		Type:               conditionTypeRotationReady,
-		Status:             status,
-		ObservedGeneration: cr.Generation,
-		Reason:             reason,
-		Message:            message,
-	})
-	cr.Status.ObservedGeneration = cr.Generation
-	if err := r.Status().Update(ctx, cr); err != nil {
-		log.FromContext(ctx).Error(err, "unable to update CredentialRotation status")
-		return ctrl.Result{}, fmt.Errorf("updating status: %w", err)
-	}
-	return result, nil
+	statusBefore := cr.Status.DeepCopy()
+	return commonreconcile.UpdateStatus(ctx, r.Client, cr, statusBefore, &cr.Status, func() {
+		conditions.SetCondition(&cr.Status.Conditions, metav1.Condition{
+			Type:               conditionTypeRotationReady,
+			Status:             status,
+			ObservedGeneration: cr.Generation,
+			Reason:             reason,
+			Message:            message,
+		})
+		cr.Status.ObservedGeneration = cr.Generation
+	}, result, nil)
 }
 
 // SetupWithManager registers the CredentialRotationReconciler with the manager.

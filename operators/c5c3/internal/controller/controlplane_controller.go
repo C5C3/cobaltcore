@@ -253,20 +253,27 @@ func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request
 // setServicesStatus, and stamps status.observedGeneration so a stale status
 // is distinguishable from a current one.
 func (r *ControlPlaneReconciler) updateStatus(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, statusBefore *c5c3v1alpha1.ControlPlaneStatus, result ctrl.Result, reconcileErr error) (ctrl.Result, error) {
-	return commonreconcile.UpdateStatus(ctx, r.Client, cp, statusBefore, &cp.Status, func() {
-		setReadyCondition(cp)
+	return controlPlaneSkeleton.UpdateStatus(ctx, r.Client, cp, statusBefore, &cp.Status, func() {
 		setServicesStatus(cp)
 		cp.Status.ObservedGeneration = cp.Generation
 	}, result, reconcileErr)
 }
 
+// controlPlaneSkeleton bundles the shared controller-skeleton glue (Ready
+// aggregation and the no-op-skipping status write) with the ControlPlane's
+// sub-condition vocabulary and status accessor.
+var controlPlaneSkeleton = commonreconcile.Skeleton[*c5c3v1alpha1.ControlPlane, c5c3v1alpha1.ControlPlaneStatus]{
+	SubConditionTypes: subConditionTypes,
+	Conditions:        func(cp *c5c3v1alpha1.ControlPlane) *[]metav1.Condition { return &cp.Status.Conditions },
+}
+
 // setReadyCondition sets the aggregate Ready condition based on all
-// sub-conditions, delegating to the shared aggregation helper with the
-// ControlPlane sub-condition vocabulary. conditions.AllTrue checks only the
+// sub-conditions, delegating to the shared skeleton with the ControlPlane
+// sub-condition vocabulary. conditions.AllTrue checks only the
 // subConditionTypes, not the Ready condition itself, so this is not
 // self-referential.
 func setReadyCondition(cp *c5c3v1alpha1.ControlPlane) {
-	commonreconcile.SetAggregateReady(&cp.Status.Conditions, cp.Generation, subConditionTypes)
+	controlPlaneSkeleton.SetReady(cp)
 }
 
 // duplicateControlPlaneIncumbent returns the name of the ControlPlane that owns
@@ -308,22 +315,24 @@ func (r *ControlPlaneReconciler) duplicateControlPlaneIncumbent(ctx context.Cont
 // fully deleted — no watch event fires on the duplicate's behalf when that
 // happens.
 func (r *ControlPlaneReconciler) parkDuplicateControlPlane(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, incumbent string) (ctrl.Result, error) {
-	conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
-		Type:               conditionTypeReady,
-		Status:             metav1.ConditionFalse,
-		ObservedGeneration: cp.Generation,
-		Reason:             "DuplicateControlPlane",
-		Message: fmt.Sprintf(
-			"parked: ControlPlane %q is older and owns namespace %q; only one ControlPlane is permitted per namespace",
-			incumbent, cp.Namespace,
-		),
-	})
-	cp.Status.ObservedGeneration = cp.Generation
-	if err := r.Status().Update(ctx, cp); err != nil {
-		log.FromContext(ctx).Error(err, "unable to update ControlPlane status")
-		return ctrl.Result{}, fmt.Errorf("updating status: %w", err)
-	}
-	return ctrl.Result{RequeueAfter: duplicateControlPlaneRequeueAfter}, nil
+	// Route through the shared status writer so a steady parked state skips the
+	// no-op write, but keep the deliberate no-re-aggregation semantics: the
+	// mutate hook sets ONLY the DuplicateControlPlane Ready condition (updateStatus
+	// would recompute Ready from the sub-conditions and overwrite this reason).
+	statusBefore := cp.Status.DeepCopy()
+	return commonreconcile.UpdateStatus(ctx, r.Client, cp, statusBefore, &cp.Status, func() {
+		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+			Type:               conditionTypeReady,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: cp.Generation,
+			Reason:             "DuplicateControlPlane",
+			Message: fmt.Sprintf(
+				"parked: ControlPlane %q is older and owns namespace %q; only one ControlPlane is permitted per namespace",
+				incumbent, cp.Namespace,
+			),
+		})
+		cp.Status.ObservedGeneration = cp.Generation
+	}, ctrl.Result{RequeueAfter: duplicateControlPlaneRequeueAfter}, nil)
 }
 
 // keystoneServiceKey is the key under which status.services reports the
