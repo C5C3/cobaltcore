@@ -4,21 +4,39 @@
 
 package controller
 
-import "time"
+import (
+	"time"
 
-// Requeue interval constants centralise the polling durations used by each
-// sub-reconciler. Keeping them in a single file makes tuning straightforward
-// and ensures test assertions stay in sync with production code.
+	"github.com/c5c3/forge/internal/common/healthcheck"
+	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
+)
+
+// The polling and health-check timing durations shared by every service
+// operator now live in the shared library so a tuning change lands once. These
+// aliases keep the package-local names the sub-reconcilers reference.
 const (
 	// RequeueDeploymentPolling is the interval for polling Deployment readiness.
-	// Deployments converge quickly, so a short interval is appropriate.
-	RequeueDeploymentPolling = 10 * time.Second
+	RequeueDeploymentPolling = commonreconcile.RequeueDeploymentPolling
 
 	// RequeueSecretPolling is the interval for polling ESO-managed Secret
-	// readiness. ESO sync is fast but depends on an external vault, so a
-	// moderate interval balances responsiveness with API load.
-	RequeueSecretPolling = 15 * time.Second
+	// readiness.
+	RequeueSecretPolling = commonreconcile.RequeueSecretPolling
 
+	// RequeueHealthCheck is the interval for requeuing when the Keystone API
+	// health check fails.
+	RequeueHealthCheck = healthcheck.RequeueHealthCheck
+
+	// HealthCheckTimeout is the bounded timeout for the HTTP health check
+	// request.
+	HealthCheckTimeout = healthcheck.HealthCheckTimeout
+
+	// HealthCheckCacheTTL bounds how long a successful Keystone API probe is
+	// reused before the operator re-probes.
+	HealthCheckCacheTTL = healthcheck.HealthCheckCacheTTL
+)
+
+// Keystone-specific requeue intervals that no other operator shares.
+const (
 	// RequeueDatabaseWait is the interval for waiting on MariaDB CR readiness
 	// and db_sync Job completion. These operations are moderately slow, so a
 	// longer interval avoids unnecessary API churn.
@@ -38,33 +56,6 @@ const (
 	// completion. The oslopolicy-validator runs quickly, so a short interval
 	// balances responsiveness with API load.
 	RequeueValidationWait = 15 * time.Second
-
-	// RequeueHealthCheck is the interval for requeuing when the Keystone API
-	// health check fails. The API may take a few seconds to start responding
-	// after the Deployment reports ready, so a moderate interval is appropriate.
-	RequeueHealthCheck = 10 * time.Second
-
-	// HealthCheckTimeout is the bounded timeout for the HTTP health check
-	// request. Prevents a hanging Keystone API from blocking the reconcile
-	// loop indefinitely.
-	HealthCheckTimeout = 10 * time.Second
-
-	// HealthCheckCacheTTL bounds how long a successful Keystone API probe is
-	// reused before the operator re-probes. Every reconcile pass otherwise
-	// fires a synchronous HTTP GET (bounded by HealthCheckTimeout, up to 10s on
-	// a flapping API), which dominates hot-path latency once a CR is Ready.
-	// Caching for 30s suppresses re-probes during event/resync bursts.
-	//
-	// Trade-off: a wedged-but-Ready Keystone API — one whose pods still pass
-	// their readiness probe (so DeploymentReady stays True) while requests hang
-	// — is masked for up to HealthCheckCacheTTL after the last good probe.
-	// Within that window reconciles serve KeystoneAPIReady=True from cache
-	// without probing, so failure-detection latency for this case is increased
-	// by up to HealthCheckCacheTTL. The probe-error/non-2xx eviction does NOT
-	// bound this: eviction fires only once a probe runs, and inside the TTL the
-	// cache is exactly what suppresses that probe. Keep this TTL at or below the
-	// KeystoneAPIReady outage-detection SLO.
-	HealthCheckCacheTTL = 30 * time.Second
 
 	// OpenBaoAdoptionWaitTimeout bounds how long the OpenBao finalizer's Pass-0
 	// adoption gate blocks Keystone CR deletion while waiting for ESO to stamp

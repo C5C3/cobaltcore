@@ -37,6 +37,37 @@ const (
 	ReasonHealthCheckFailed  = "HealthCheckFailed"
 )
 
+// Timing constants shared by every operator's HTTP health-check flow.
+const (
+	// RequeueHealthCheck is the interval for requeuing when the service API
+	// health check fails. The API may take a few seconds to start responding
+	// after the Deployment reports ready, so a moderate interval is
+	// appropriate.
+	RequeueHealthCheck = 10 * time.Second
+
+	// HealthCheckTimeout is the bounded timeout for the HTTP health check
+	// request. Prevents a hanging API from blocking the reconcile loop
+	// indefinitely.
+	HealthCheckTimeout = 10 * time.Second
+
+	// HealthCheckCacheTTL bounds how long a successful API probe is reused
+	// before the operator re-probes. Every reconcile pass otherwise fires a
+	// synchronous HTTP GET (bounded by HealthCheckTimeout, up to 10s on a
+	// flapping API), which dominates hot-path latency once a CR is Ready.
+	// Caching for 30s suppresses re-probes during event/resync bursts.
+	//
+	// Trade-off: a wedged-but-Ready API — one whose pods still pass their
+	// readiness probe (so DeploymentReady stays True) while requests hang — is
+	// masked for up to HealthCheckCacheTTL after the last good probe. Within
+	// that window reconciles serve the API-ready condition True from cache
+	// without probing, so failure-detection latency for this case is increased
+	// by up to HealthCheckCacheTTL. The probe-error/non-2xx eviction does NOT
+	// bound this: eviction fires only once a probe runs, and inside the TTL the
+	// cache is exactly what suppresses that probe. Keep this TTL at or below the
+	// API-ready outage-detection SLO.
+	HealthCheckCacheTTL = 30 * time.Second
+)
+
 // ClassifyError returns the condition Reason and Message for the given HTTP
 // client error.
 func ClassifyError(err error) (reason, message string) {
