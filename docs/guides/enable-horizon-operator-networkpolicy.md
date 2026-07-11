@@ -60,8 +60,22 @@ kubectl -n horizon-system get networkpolicy
 kubectl -n horizon-system describe networkpolicy horizon-operator
 ```
 
-Then confirm reconciliation still works end-to-end: patch any Horizon CR
-(e.g. bump `spec.deployment.replicas`) and watch the change roll out. If the
-operator loses apiserver connectivity after enabling the policy, your CNI
-maps the apiserver behind a different port — compare the policy's egress
+Then confirm reconciliation still works end-to-end by driving a change
+through the `ControlPlane` CR and watching the projected dashboard roll out:
+
+```bash
+kubectl patch controlplane controlplane -n openstack --type merge \
+  -p '{"spec":{"services":{"horizon":{"replicas":2}}}}'
+kubectl rollout status deploy/controlplane-horizon -n openstack
+
+# revert
+kubectl patch controlplane controlplane -n openstack --type merge \
+  -p '{"spec":{"services":{"horizon":{"replicas":1}}}}'
+```
+
+Set the replica count on the `ControlPlane` CR, not on the projected
+`controlplane-horizon` child: the c5c3-operator re-asserts the child's
+`spec.deployment.replicas` on every reconcile, so a direct edit of the child is
+reverted. If the operator loses apiserver connectivity after enabling the policy,
+your CNI maps the apiserver behind a different port — compare the policy's egress
 ports with `kubectl get endpoints kubernetes -n default`.
