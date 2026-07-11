@@ -6,13 +6,10 @@ package controller
 
 import (
 	"context"
-	"fmt"
 
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 
-	"github.com/c5c3/forge/internal/common/conditions"
 	"github.com/c5c3/forge/internal/common/deployment"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
@@ -26,41 +23,22 @@ func subResourceName(keystone *keystonev1alpha1.Keystone) string {
 }
 
 // reconcileHPA ensures the HorizontalPodAutoscaler for the Keystone API
-// deployment matches the desired state. Three lifecycle paths:
-//   - spec.autoscaling set: create or update HPA targeting the deployment
-//   - spec.autoscaling nil: delete any existing HPA
-//   - error: propagate errors from ensure/delete operations
+// deployment matches the desired state, via the shared HPA flow. It keeps only
+// the service-specific desired HPA builder.
 func (r *KeystoneReconciler) reconcileHPA(ctx context.Context, keystone *keystonev1alpha1.Keystone) (ctrl.Result, error) {
-	hpaName := subResourceName(keystone)
-
-	// Path 2: autoscaling disabled — delete any existing HPA.
-	if keystone.Spec.Autoscaling == nil {
-		if err := deployment.DeleteHPA(ctx, r.Client, keystone.Namespace, hpaName); err != nil {
-			return ctrl.Result{}, fmt.Errorf("deleting HorizontalPodAutoscaler: %w", err)
-		}
-		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
-			Type:               "HPAReady",
-			Status:             metav1.ConditionTrue,
-			ObservedGeneration: keystone.Generation,
-			Reason:             "HPANotRequired",
-			Message:            "Autoscaling is not configured",
-		})
-		return ctrl.Result{}, nil
+	var desired *autoscalingv2.HorizontalPodAutoscaler
+	if keystone.Spec.Autoscaling != nil {
+		desired = buildKeystoneHPA(keystone)
 	}
-
-	// Path 1: autoscaling enabled — create or update HPA.
-	hpa := buildKeystoneHPA(keystone)
-	if err := deployment.EnsureHPA(ctx, r.Client, r.Scheme, keystone, hpa); err != nil {
-		return ctrl.Result{}, fmt.Errorf("ensuring HorizontalPodAutoscaler: %w", err)
-	}
-	conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
-		Type:               "HPAReady",
-		Status:             metav1.ConditionTrue,
-		ObservedGeneration: keystone.Generation,
-		Reason:             "HPAReady",
-		Message:            "HorizontalPodAutoscaler is configured",
+	return deployment.ReconcileHPA(ctx, r.Client, r.Scheme, keystone, deployment.HPAFlowParams{
+		Enabled:       keystone.Spec.Autoscaling != nil,
+		Desired:       desired,
+		Name:          subResourceName(keystone),
+		Namespace:     keystone.Namespace,
+		Conditions:    &keystone.Status.Conditions,
+		Generation:    keystone.Generation,
+		ConditionType: "HPAReady",
 	})
-	return ctrl.Result{}, nil
 }
 
 // buildKeystoneHPA constructs the desired HorizontalPodAutoscaler for the

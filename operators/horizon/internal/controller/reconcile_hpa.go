@@ -6,53 +6,31 @@ package controller
 
 import (
 	"context"
-	"fmt"
 
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 
-	"github.com/c5c3/forge/internal/common/conditions"
 	"github.com/c5c3/forge/internal/common/deployment"
 	horizonv1alpha1 "github.com/c5c3/forge/operators/horizon/api/v1alpha1"
 )
 
-// reconcileHPA ensures the HorizontalPodAutoscaler for the dashboard
-// deployment matches the desired state. Three lifecycle paths:
-//   - spec.autoscaling set: create or update HPA targeting the deployment
-//   - spec.autoscaling nil: delete any existing HPA
-//   - error: propagate errors from ensure/delete operations
+// reconcileHPA ensures the HorizontalPodAutoscaler for the dashboard deployment
+// matches the desired state, via the shared HPA flow. It keeps only the
+// service-specific desired HPA builder.
 func (r *HorizonReconciler) reconcileHPA(ctx context.Context, horizon *horizonv1alpha1.Horizon) (ctrl.Result, error) {
-	hpaName := subResourceName(horizon)
-
-	// Path 2: autoscaling disabled — delete any existing HPA.
-	if horizon.Spec.Autoscaling == nil {
-		if err := deployment.DeleteHPA(ctx, r.Client, horizon.Namespace, hpaName); err != nil {
-			return ctrl.Result{}, fmt.Errorf("deleting HorizontalPodAutoscaler: %w", err)
-		}
-		conditions.SetCondition(&horizon.Status.Conditions, metav1.Condition{
-			Type:               "HPAReady",
-			Status:             metav1.ConditionTrue,
-			ObservedGeneration: horizon.Generation,
-			Reason:             "HPANotRequired",
-			Message:            "Autoscaling is not configured",
-		})
-		return ctrl.Result{}, nil
+	var desired *autoscalingv2.HorizontalPodAutoscaler
+	if horizon.Spec.Autoscaling != nil {
+		desired = buildHorizonHPA(horizon)
 	}
-
-	// Path 1: autoscaling enabled — create or update HPA.
-	hpa := buildHorizonHPA(horizon)
-	if err := deployment.EnsureHPA(ctx, r.Client, r.Scheme, horizon, hpa); err != nil {
-		return ctrl.Result{}, fmt.Errorf("ensuring HorizontalPodAutoscaler: %w", err)
-	}
-	conditions.SetCondition(&horizon.Status.Conditions, metav1.Condition{
-		Type:               "HPAReady",
-		Status:             metav1.ConditionTrue,
-		ObservedGeneration: horizon.Generation,
-		Reason:             "HPAReady",
-		Message:            "HorizontalPodAutoscaler is configured",
+	return deployment.ReconcileHPA(ctx, r.Client, r.Scheme, horizon, deployment.HPAFlowParams{
+		Enabled:       horizon.Spec.Autoscaling != nil,
+		Desired:       desired,
+		Name:          subResourceName(horizon),
+		Namespace:     horizon.Namespace,
+		Conditions:    &horizon.Status.Conditions,
+		Generation:    horizon.Generation,
+		ConditionType: "HPAReady",
 	})
-	return ctrl.Result{}, nil
 }
 
 // buildHorizonHPA constructs the desired HorizontalPodAutoscaler for the
