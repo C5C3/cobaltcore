@@ -32,9 +32,21 @@ is running (namespace `horizon-system`) alongside the projected
 `controlplane-horizon` dashboard.
 :::
 
-1. **A CNI that enforces `networking.k8s.io/v1` NetworkPolicy.** Confirm with
-   your platform team — kindnet (the kind default) does NOT enforce policies,
-   so on a kind cluster the object is created but has no effect.
+1. **A CNI that enforces `networking.k8s.io/v1` NetworkPolicy — for real
+   enforcement.** Confirm with your platform team (Calico, Cilium, and Antrea
+   enforce).
+
+   ::: warning Enforcement cannot be verified on the default devstack CNI
+   The ControlPlane Quick Start kind devstack uses the default `kindnet` CNI,
+   which **silently ignores** NetworkPolicy objects, and kind fixes the CNI at
+   cluster creation so it cannot be swapped in afterwards. The policy object
+   is still created and the operator keeps reconciling, so Step 2 below
+   confirms only the policy's **shape** and that enabling it does **not
+   break** reconciliation — it does **not** prove that packets outside the
+   allow-list are dropped. Real enforcement requires a cluster whose CNI
+   enforces NetworkPolicy — typically your production platform, not the kind
+   devstack.
+   :::
 2. A running `horizon-operator` Helm release (namespace `horizon-system`).
 
 ## Step 1 — Enable the policy
@@ -89,6 +101,10 @@ reconcile. Use the HelmRelease patch above instead.
 :::
 
 ## Step 2 — Verify
+
+On the kind devstack this verifies the policy's **shape** and that enabling it
+does **not break** reconciliation — not traffic enforcement, which the default
+`kindnet` CNI does not apply (see the prerequisite above).
 
 ```bash
 kubectl -n horizon-system get networkpolicy

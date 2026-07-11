@@ -30,20 +30,30 @@ KIND_HOST_PORT=8443 make deploy-infra
 ```
 
 Follow that tutorial through to its final **Verify** step, so the keystone-operator
-is running and a `keystone` CR is `Ready` in `openstack`. (kindnet does not enforce
-NetworkPolicy — see item 1 below to make the policy effective on kind.)
+is running and a `keystone` CR is `Ready` in `openstack`. (The devstack's default
+`kindnet` CNI does not enforce NetworkPolicy — item 1 below explains what you can
+and cannot verify on kind.)
 :::
 
-1. **A CNI that enforces `networking.k8s.io/v1` NetworkPolicy.** Confirm with
-   your platform team. Common CNIs that enforce:
+1. **A CNI that enforces `networking.k8s.io/v1` NetworkPolicy — for real
+   enforcement.** Confirm with your platform team. Common CNIs that enforce:
 
    - [Calico](https://docs.tigera.io/calico/latest/network-policy/policy-rules/kubernetes)
    - [Cilium](https://docs.cilium.io/en/stable/network/kubernetes/policy/)
    - [Antrea](https://antrea.io/docs/main/docs/network-policy/)
 
-   On kind, the default `kindnet` CNI does **not** enforce NetworkPolicy.
-   Install a supported CNI (Calico or Cilium) before proceeding — otherwise
-   the policy is rendered but has no effect.
+   ::: warning Enforcement cannot be verified on the default devstack CNI
+   The Quick Start kind devstack uses the default `kindnet` CNI, which
+   **silently ignores** NetworkPolicy objects. kind fixes the CNI at cluster
+   creation, so it cannot be swapped in afterwards on a running devstack. The
+   policy object is still rendered and the operator keeps reconciling
+   normally, so this guide's verification steps (§4.1–4.3) confirm only that
+   the policy has the right **shape** and that enabling it does **not break**
+   the operator — they do **not** prove that packets outside the allow-list
+   are dropped. Real enforcement requires a cluster whose CNI enforces
+   NetworkPolicy (Calico, Cilium, Antrea) — typically your production
+   platform, not the kind devstack.
+   :::
 
 2. **Permission to read the `kubernetes` default Service's endpoints** in
    order to discover the API server CIDR:
@@ -256,8 +266,11 @@ reaches `Ready=True`:
 chainsaw test tests/e2e/keystone-operator/network-policy-egress
 ```
 
-This should be green on any CI environment that provisions a kind cluster
-with a NetworkPolicy-enforcing CNI.
+Like the verification steps above, this suite runs on the default `kindnet`
+CI cluster, so it validates that the chart **renders** the policy and that
+the operator **reconciles to Ready** while the (unenforced) policy is present
+— it does **not** assert that blocked egress is actually dropped. Enforcement
+coverage would require a CI job with a NetworkPolicy-enforcing CNI.
 
 ---
 
