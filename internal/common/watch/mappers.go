@@ -171,3 +171,39 @@ func ClusterSecretStoreFanOut(c client.Reader, storeName string, newList func() 
 		return requests
 	}
 }
+
+// ClusterRefMapper returns a MapFunc that maps a database-cluster event (a
+// MariaDB cluster, a Memcached cluster, …) to reconcile requests for the CRs in
+// the same namespace whose clusterRef targets that cluster by name. newList
+// supplies the CR list type and clusterRefName extracts a CR's cluster
+// reference name (empty when it has none). On a List or extract error the mapper
+// logs via log.FromContext and returns nil per the handler.MapFunc contract.
+func ClusterRefMapper(c client.Reader, newList func() client.ObjectList, clusterRefName func(client.Object) string) handler.MapFunc {
+	return func(ctx context.Context, obj client.Object) []reconcile.Request {
+		list := newList()
+		if err := c.List(ctx, list, client.InNamespace(obj.GetNamespace())); err != nil {
+			log.FromContext(ctx).Error(err, "listing CRs for cluster-ref watch")
+			return nil
+		}
+		items, err := apimeta.ExtractList(list)
+		if err != nil {
+			log.FromContext(ctx).Error(err, "extracting CR list for cluster-ref watch")
+			return nil
+		}
+
+		clusterName := obj.GetName()
+		var requests []reconcile.Request
+		for _, item := range items {
+			o, ok := item.(client.Object)
+			if !ok {
+				continue
+			}
+			if clusterRefName(o) == clusterName {
+				requests = append(requests, reconcile.Request{
+					NamespacedName: client.ObjectKeyFromObject(o),
+				})
+			}
+		}
+		return requests
+	}
+}

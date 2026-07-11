@@ -44,33 +44,18 @@ func secretToKeystoneMapper(c client.Reader) handler.MapFunc {
 
 // mariaDBToKeystoneMapper returns a MapFunc that maps MariaDB cluster events
 // to reconcile requests for Keystone CRs whose spec.database.clusterRef
-// targets the MariaDB by name in the same namespace.
-//
-// DECISION: this mapper — like pushSecretToKeystoneMapper and
-// pushSecretRelevantChangePredicate below — stays keystone-local rather than
-// moving to internal/common/watch: each has a single consumer today, so the
-// rule of two is not met. Revisit when a second operator needs the same
-// shape.
+// targets the MariaDB by name in the same namespace. It binds the shared
+// watch.ClusterRefMapper to the Keystone list type and its database clusterRef.
 func mariaDBToKeystoneMapper(c client.Reader) handler.MapFunc {
-	return func(ctx context.Context, obj client.Object) []reconcile.Request {
-		var keystones keystonev1alpha1.KeystoneList
-		if err := c.List(ctx, &keystones, client.InNamespace(obj.GetNamespace())); err != nil {
-			log.FromContext(ctx).Error(err, "listing Keystone CRs for MariaDB watch")
-			return nil
-		}
-
-		mariadbName := obj.GetName()
-		var requests []reconcile.Request
-		for i := range keystones.Items {
-			ks := &keystones.Items[i]
-			if ks.Spec.Database.ClusterRef != nil && ks.Spec.Database.ClusterRef.Name == mariadbName {
-				requests = append(requests, reconcile.Request{
-					NamespacedName: client.ObjectKeyFromObject(ks),
-				})
+	return watch.ClusterRefMapper(c,
+		func() client.ObjectList { return &keystonev1alpha1.KeystoneList{} },
+		func(o client.Object) string {
+			ks, ok := o.(*keystonev1alpha1.Keystone)
+			if !ok || ks.Spec.Database.ClusterRef == nil {
+				return ""
 			}
-		}
-		return requests
-	}
+			return ks.Spec.Database.ClusterRef.Name
+		})
 }
 
 // clusterSecretStoreToKeystoneMapper returns a MapFunc that enqueues every

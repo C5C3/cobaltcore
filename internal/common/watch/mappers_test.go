@@ -178,3 +178,45 @@ func TestClusterSecretStoreFanOut_EnqueuesAllCRs(t *testing.T) {
 		reconcile.Request{NamespacedName: types.NamespacedName{Namespace: "ns2", Name: "cr-b"}},
 	), "the store transition must fan out to every CR cluster-wide")
 }
+
+func cmWithRef(name, namespace, ref string) *corev1.ConfigMap {
+	return &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
+		Name: name, Namespace: namespace,
+		Annotations: map[string]string{"clusterRef": ref},
+	}}
+}
+
+func TestClusterRefMapper_MatchesRefInSameNamespace(t *testing.T) {
+	g := gomega.NewWithT(t)
+	// ConfigMaps stand in for CRs; the clusterRef name lives in an annotation.
+	c := fake.NewClientBuilder().WithScheme(clientgoscheme.Scheme).
+		WithObjects(
+			cmWithRef("cr-a", "ns1", "mariadb"), // matches
+			cmWithRef("cr-b", "ns1", "other"),   // wrong ref
+			cmWithRef("cr-c", "ns1", ""),        // no ref
+			cmWithRef("cr-d", "ns2", "mariadb"), // wrong namespace
+		).Build()
+
+	mapper := ClusterRefMapper(c,
+		func() client.ObjectList { return &corev1.ConfigMapList{} },
+		func(o client.Object) string { return o.GetAnnotations()["clusterRef"] })
+
+	changed := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "mariadb", Namespace: "ns1"}}
+	reqs := mapper(context.Background(), changed)
+	g.Expect(reqs).To(gomega.ConsistOf(
+		reconcile.Request{NamespacedName: types.NamespacedName{Namespace: "ns1", Name: "cr-a"}},
+	))
+}
+
+func TestClusterRefMapper_NoMatchReturnsNil(t *testing.T) {
+	g := gomega.NewWithT(t)
+	c := fake.NewClientBuilder().WithScheme(clientgoscheme.Scheme).
+		WithObjects(cmWithRef("cr-a", "ns1", "mariadb")).Build()
+
+	mapper := ClusterRefMapper(c,
+		func() client.ObjectList { return &corev1.ConfigMapList{} },
+		func(o client.Object) string { return o.GetAnnotations()["clusterRef"] })
+
+	changed := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "absent", Namespace: "ns1"}}
+	g.Expect(mapper(context.Background(), changed)).To(gomega.BeEmpty())
+}
