@@ -8,9 +8,9 @@ quadrant: operator
 This guide walks through federating a running Keystone with an OpenID
 Connect identity provider using the `KeystoneIdentityBackend` CRD: create
 the client-secret Secret, apply one CR, watch the conditions converge, and
-verify a federated user can log in. The worked example uses Keycloak — the
-same fixture the e2e suite deploys — so every value is adaptable to a kind
-cluster.
+verify a federated user can log in. The worked example uses the same Keycloak
+fixture the e2e suite deploys, and every value below is one that fixture
+produces — so the whole flow is reproducible on the kind devstack.
 
 When at least one OIDC backend attaches, the operator injects an
 Apache/`mod_auth_openidc` reverse-proxy sidecar into the Keystone pod, binds
@@ -62,12 +62,39 @@ is operator-managed.
   users; OpenStack service accounts and the bootstrap admin remain in the
   SQL-backed `Default` domain, which the CRD hard-rejects federating.
 
-## Step 1 — Register the client at the identity provider
+## Step 1 — Deploy the fixture IdP (kind devstack)
 
-In Keycloak: create (or pick) a realm — say `forge` — and add a confidential
-client `keystone` with *Standard flow* enabled and a client secret. Note the
-realm's issuer URL (`https://keycloak.example.com/realms/forge`); it must
-match the `iss` claim the IdP asserts, byte for byte.
+On the kind devstack, stand up the same Keycloak the e2e suite uses. It is a
+plain namespace-pinned manifest, so `kubectl apply` runs it verbatim:
+
+```bash
+kubectl apply -f tests/e2e/keystone/oidc-federation/00-keycloak.yaml
+kubectl -n openstack rollout status deploy/keycloak
+```
+
+This provides, all in the `openstack` namespace:
+
+| What | Value |
+| --- | --- |
+| Realm | `forge` |
+| Issuer | `http://keycloak.openstack.svc.cluster.local:8080/realms/forge` |
+| Confidential client | `keystone` (direct access grants + standard flow enabled) |
+| Client secret | `keystone-forge-secret` (also shipped as Secret `keycloak-forge-client`) |
+| Test user | `fry` / `fry-password` (group `/engineers`) |
+| Keycloak admin | `admin` / `admin-password` |
+
+The fixture pins `KC_HOSTNAME` to the cluster-internal issuer above, so tokens
+carry a stable `iss` regardless of how you reach the pod. It also serves an
+https listener on `8443` with a throwaway self-signed cert for the
+introspection endpoint (mod_auth_openidc requires https there).
+
+::: details Registering a client at your own IdP (non-kind)
+On a non-kind cluster, skip the fixture and use your own Keycloak (or any OIDC
+IdP): create (or pick) a realm, add a **confidential** client `keystone` with
+*Standard flow* enabled and a client secret, and note the realm's issuer URL —
+it must match the `iss` claim the IdP asserts, byte for byte. Substitute your
+issuer, endpoints, and client secret for the fixture values below.
+:::
 
 ## Step 2 — Create the client-secret Secret
 
@@ -80,6 +107,12 @@ kubectl create secret generic keycloak-forge-client -n openstack \
 
 Rotating this Secret later re-renders the federation configuration
 automatically — the operator watches it.
+
+::: tip On the kind devstack
+Step 1's fixture already ships the `keycloak-forge-client` Secret with the
+fixed `clientSecret: keystone-forge-secret` key, so you can skip this
+`kubectl create` — the backend CR in Step 4 references it as-is.
+:::
 
 ## Step 3 — Pin the federation proxy image (optional)
 
@@ -130,17 +163,32 @@ spec:
     deletionPolicy: Retain # keep the domain when this CR is deleted
   type: OIDC
   oidc:
-    issuer: https://keycloak.example.com/realms/forge
+    issuer: http://keycloak.openstack.svc.cluster.local:8080/realms/forge
     clientID: keystone
     clientSecretRef:
       name: keycloak-forge-client
+    # Explicit endpoints are required against the fixture: the operator's
+    # metadata-fetch SSRF guard blocks discovery against the in-cluster
+    # Keycloak's private ClusterIP, so the .well-known auto-discovery
+    # (bare `issuer:` alone) does not run here. Everything speaks the fixture's
+    # plain-http :8080 listener EXCEPT introspection, which mod_auth_openidc
+    # requires to be https — the fixture serves it on the self-signed :8443
+    # listener, and tlsVerify opts out of verifying that throwaway cert.
+    # A publicly resolvable IdP can drop this block and rely on discovery.
+    endpoints:
+      authorizationEndpoint: http://keycloak.openstack.svc.cluster.local:8080/realms/forge/protocol/openid-connect/auth
+      tokenEndpoint: http://keycloak.openstack.svc.cluster.local:8080/realms/forge/protocol/openid-connect/token
+      jwksURI: http://keycloak.openstack.svc.cluster.local:8080/realms/forge/protocol/openid-connect/certs
+      userinfoEndpoint: http://keycloak.openstack.svc.cluster.local:8080/realms/forge/protocol/openid-connect/userinfo
+      introspectionEndpoint: https://keycloak.openstack.svc.cluster.local:8443/realms/forge/protocol/openid-connect/token/introspect
     oauth2Introspection:
       enabled: true        # CLI clients may present IdP-issued bearer tokens
+      tlsVerify: false     # the fixture's :8443 cert is a throwaway self-signed cert
   mappings:
   - remote:
     - type: HTTP_OIDC_ISS
       anyOneOf:
-      - https://keycloak.example.com/realms/forge
+      - http://keycloak.openstack.svc.cluster.local:8080/realms/forge
     - type: HTTP_OIDC_PREFERRED_USERNAME
     local:
     - user:
@@ -207,7 +255,45 @@ unchanged.
 
 ## Step 6 — Log in as a federated user
 
-Browser (WebSSO): navigate to
+### CLI (bearer token) — reproducible on the kind devstack
+
+This flow needs `oauth2Introspection` enabled on exactly one backend (Step 4
+sets it). The fixture's `keystone` client has direct-access-grants enabled, so
+you can mint a token with a username/password and exchange it — no browser
+required. Port-forward Keycloak and obtain an access token:
+
+```bash
+kubectl -n openstack port-forward svc/keycloak 8080:8080 &
+
+TOKEN=$(curl -s http://localhost:8080/realms/forge/protocol/openid-connect/token \
+  -d grant_type=password -d client_id=keystone \
+  -d client_secret=keystone-forge-secret \
+  -d username=fry -d password=fry-password \
+  -d scope=openid | jq -r .access_token)
+```
+
+`KC_HOSTNAME` pins the realm issuer to
+`http://keycloak.openstack.svc.cluster.local:8080/realms/forge`, so a token
+minted through the port-forward still carries the cluster-internal `iss` the
+in-cluster proxy expects. Exchange the bearer for an unscoped Keystone token
+against the devstack's published Keystone endpoint (`-k` for the devstack's
+self-signed gateway cert, matching the Quick Start):
+
+```bash
+# The proxy introspects the bearer (in-cluster, over :8443) and keystone maps
+# it to an unscoped token:
+curl -sik -H "Authorization: Bearer $TOKEN" \
+  "https://keystone.127-0-0-1.nip.io:8443/v3/OS-FEDERATION/identity_providers/keycloak-forge/protocols/openid/auth" \
+  | grep -i x-subject-token
+```
+
+The unscoped token exchanges for a domain- or project-scoped one through the
+regular `POST /v3/auth/tokens` — authorized by the roles the mapped group
+carries.
+
+### Browser (WebSSO)
+
+Navigate to
 
 ```
 <keystone endpoint base>/v3/auth/OS-FEDERATION/identity_providers/keycloak-forge/protocols/openid/websso?origin=<dashboard origin>
@@ -223,24 +309,16 @@ not set it by hand; see [End-to-End SSO](./end-to-end-sso.md). On a standalone
 Keystone, set `spec.federation.trustedDashboards` directly (see the
 [Standalone Keystone](#standalone-keystone-without-a-controlplane) section).
 
-CLI (bearer token, needs `oauth2Introspection` enabled on exactly one
-backend): obtain an access token from the IdP, then exchange it:
-
-```bash
-TOKEN=$(curl -s https://keycloak.example.com/realms/forge/protocol/openid-connect/token \
-  -d grant_type=password -d client_id=keystone \
-  -d client_secret=<secret> -d username=<user> -d password=<pw> \
-  -d scope=openid | jq -r .access_token)
-
-# The proxy introspects the bearer and keystone maps it to an unscoped token:
-curl -si -H "Authorization: Bearer $TOKEN" \
-  "<keystone endpoint base>/v3/OS-FEDERATION/identity_providers/keycloak-forge/protocols/openid/auth" \
-  | grep -i x-subject-token
-```
-
-The unscoped token exchanges for a domain- or project-scoped one through the
-regular `POST /v3/auth/tokens` — authorized by the roles the mapped group
-carries.
+::: warning The fixture IdP is not reachable from a host browser
+The fixture Keycloak issuer is a cluster-internal Service name, so a browser on
+your workstation cannot complete the login form against it — the browser
+WebSSO flow needs an **externally reachable** IdP (your production Keycloak, or
+a fixture published through the gateway with matching redirect URIs). The
+headless authorization-code round trip against the in-cluster fixture is
+exercised end-to-end by the mirroring e2e suite
+(`tests/e2e/keystone/oidc-federation/`); the CLI bearer flow above is the
+copy-pasteable devstack path.
+:::
 
 ## Multiple identity providers
 

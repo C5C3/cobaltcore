@@ -33,6 +33,27 @@ projected `controlplane-keystone` and `controlplane-horizon` children are
 running. Every resource name in the examples below is one that devstack produces.
 :::
 
+On the kind devstack, stand up the fixture IdP and LDAP directory this guide
+federates against. These are the same fixtures the two backend guides use, with
+the WebSSO gateway redirect URIs added for the token hand-off:
+
+```bash
+kubectl apply -f tests/e2e-controlplane-sso/00-keycloak.yaml \
+              -f tests/e2e-controlplane-sso/01-openldap.yaml
+kubectl -n openstack rollout status deploy/keycloak
+kubectl -n openstack rollout status deploy/openldap
+```
+
+::: tip Already applied the oidc-federation fixture?
+Keycloak imports its realms at pod start, so if you previously applied the
+`oidc-federation` guide's copy of the Keycloak fixture, re-apply the manifest
+above and restart the pod so the gateway redirect URIs are picked up:
+
+```bash
+kubectl -n openstack rollout restart deploy/keycloak
+```
+:::
+
 - [Attach an OIDC Federation Backend](./oidc-federation.md) — how to stand up the
   federation backend this guide projects onto the login page.
 - [Attach an LDAP Domain Backend](./ldap-domain-backend.md) — how to stand up the
@@ -134,10 +155,24 @@ spec:
     name: federated
   type: OIDC
   oidc:
-    issuer: https://keycloak.example.com/realms/corp
+    # Fixture-true values from the two-fixture apply in Prerequisites. Explicit
+    # endpoints are required because the operator's metadata-fetch SSRF guard
+    # blocks .well-known discovery against the in-cluster Keycloak — see
+    # [Attach an OIDC Federation Backend](./oidc-federation.md) Step 4 for the
+    # full worked example (mappings, groups, and why introspection is https).
+    issuer: http://keycloak.openstack.svc.cluster.local:8080/realms/forge
     clientID: keystone
     clientSecretRef:
-      name: keycloak-client
+      name: keycloak-forge-client
+    endpoints:
+      authorizationEndpoint: http://keycloak.openstack.svc.cluster.local:8080/realms/forge/protocol/openid-connect/auth
+      tokenEndpoint: http://keycloak.openstack.svc.cluster.local:8080/realms/forge/protocol/openid-connect/token
+      jwksURI: http://keycloak.openstack.svc.cluster.local:8080/realms/forge/protocol/openid-connect/certs
+      userinfoEndpoint: http://keycloak.openstack.svc.cluster.local:8080/realms/forge/protocol/openid-connect/userinfo
+      introspectionEndpoint: https://keycloak.openstack.svc.cluster.local:8443/realms/forge/protocol/openid-connect/token/introspect
+    oauth2Introspection:
+      enabled: true
+      tlsVerify: false
 ```
 
 ::: tip The Default domain is off limits
@@ -184,6 +219,25 @@ Under the hood the dashboard redirects the browser to
 passing its own origin. Keystone authenticates you through the provider and
 POSTs a token back to that origin — but only if the origin appears in its
 trusted list, which is what Step 1 configured.
+
+::: warning The fixture IdP is not reachable from a host browser
+On the kind devstack the fixture Keycloak issuer is a cluster-internal Service
+name, so a browser on your workstation cannot complete the login form: it is
+redirected to `http://keycloak.openstack.svc.cluster.local:8080/...`, which the
+host cannot resolve. Clicking the SSO button through to a session needs an
+**externally reachable** IdP (your production Keycloak, or a fixture published
+through the gateway with matching redirect URIs and a host-resolvable issuer).
+The full WebSSO hand-off against the in-cluster fixture — including the
+Envoy-routed gateway redirect URIs this guide's fixtures register — is
+exercised headlessly by the mirroring e2e suite:
+
+```bash
+chainsaw test --test-dir tests/e2e-controlplane-sso
+```
+
+For a copy-pasteable devstack login that does not need a browser, use the CLI
+bearer flow in [Attach an OIDC Federation Backend](./oidc-federation.md#step-6-log-in-as-a-federated-user).
+:::
 
 ## Step 4 — Multi-domain login for LDAP users
 
