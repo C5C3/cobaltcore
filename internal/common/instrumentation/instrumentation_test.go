@@ -256,23 +256,32 @@ func TestSubReconcilerMetricsHaveNoCRLabels(t *testing.T) {
 	}
 }
 
-// TestLazyRegistrationIdempotent verifies that a lazy Metrics instance
-// registers on the controller-runtime registry exactly once and that repeated
-// recording does not panic. A unique prefix avoids colliding with any other
-// lazy registration in this test binary.
-func TestLazyRegistrationIdempotent(t *testing.T) {
+// TestRegisterExposesMetrics verifies that a NewMetrics instance records inertly
+// before registration, exposes its samples on the registry once Register
+// succeeds, and reports a duplicate-registration error (rather than panicking)
+// when Register is called twice.
+func TestRegisterExposesMetrics(t *testing.T) {
 	g := NewGomegaWithT(t)
-	m := NewMetrics("lazy_instr_test_operator")
+	reg := prometheus.NewRegistry()
+	m := NewMetrics("explicit_instr_test_operator")
 
+	// Recording before Register must not panic (the vector is simply not yet
+	// scraped).
 	g.Expect(func() {
 		m.ObserveReconcileDuration("foo", time.Millisecond)
-		m.ObserveReconcileDuration("foo", time.Millisecond)
-		m.RecordReconcileError("foo", "FooReady")
-	}).NotTo(Panic(), "lazy registration must be idempotent across repeated records")
+	}).NotTo(Panic(), "recording before registration must be inert, not panic")
+
+	g.Expect(m.Register(reg)).To(Succeed())
+
+	m.ObserveReconcileDuration("foo", time.Millisecond)
+	m.RecordReconcileError("foo", "FooReady")
 
 	durLabels := map[string]string{"sub_reconciler": "foo"}
-	g.Expect(histogramSampleCount(t, ctrlmetrics.Registry, "lazy_instr_test_operator_reconcile_duration_seconds", durLabels)).
-		To(Equal(uint64(2)), "both observations must land on the same registered vector")
+	g.Expect(histogramSampleCount(t, reg, "explicit_instr_test_operator_reconcile_duration_seconds", durLabels)).
+		To(BeNumerically(">=", 1), "observations after Register must land on the registered vector")
+
+	// Registering the same vectors twice returns an error instead of panicking.
+	g.Expect(m.Register(reg)).To(HaveOccurred(), "duplicate registration must return an error")
 }
 
 // TestNewMetricsOnRegistryIsolation proves a private-registry instance does

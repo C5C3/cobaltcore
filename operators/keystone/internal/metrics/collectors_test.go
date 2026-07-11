@@ -238,22 +238,23 @@ func seriesForKeystone(fam *dto.MetricFamily, keystone, namespace string) []*dto
 // (RecordDBSync, SetKeyRotationAge, DeleteForKeystone) against the real
 // controller-runtime registry — the in-process path production uses, which the
 // instance-method tests above (bound to private registries) never touch. It
-// proves recording publishes series on ctrlmetrics.Registry, that
-// DeleteForKeystone reaps only the target CR's series (stale-series leak guard),
-// and that globalCollectors() is idempotent.
+// proves Register publishes the package-global collectors on
+// ctrlmetrics.Registry and that DeleteForKeystone reaps only the target CR's
+// series (stale-series leak guard).
 //
-// The panic branch in globalCollectors (duplicate registration on
-// ctrlmetrics.Registry) is intentionally NOT exercised here: triggering it would
-// poison the process-global sync.Once and corrupt every other test in this
-// binary. The equivalent duplicate-registration error is covered against a fresh
-// registry by TestRegisterDuplicateReturnsError.
+// Register's error branch (duplicate registration on ctrlmetrics.Registry) is
+// intentionally NOT exercised here: triggering it would poison the
+// process-global sync.Once and corrupt every other test in this binary. The
+// equivalent duplicate-registration error is covered against a fresh registry
+// by TestRegisterDuplicateReturnsError.
 func TestGlobalCollectorPathRecordsAndDeletes(t *testing.T) {
 	g := NewGomegaWithT(t)
 	reg := ctrlmetrics.Registry
 
-	// globalCollectors() must return the same registered instance every time.
-	g.Expect(globalCollectors()).To(BeIdenticalTo(globalCollectors()),
-		"globalCollectors must be idempotent (sync.Once)")
+	// Register exposes the package-global collectors on ctrlmetrics.Registry so
+	// the global-path helpers below publish there. Register is memoized, so
+	// repeated calls across tests are safe.
+	g.Expect(Register()).To(Succeed())
 
 	// Two distinct CRs so DeleteForKeystone can be proven to reap only one.
 	const (

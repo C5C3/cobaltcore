@@ -9,6 +9,7 @@ import (
 	"context"
 
 	ctrl "sigs.k8s.io/controller-runtime"
+	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 
 	"github.com/c5c3/forge/internal/common/instrumentation"
 )
@@ -34,18 +35,22 @@ var subReconcilerConditionTypes = map[string]string{
 	"ServiceAccounts": conditionTypeServiceAccountsReady,
 }
 
-// subReconcilerMetrics holds the shared sub-reconciler instrumentation metrics
-// for the c5c3 operator (c5c3_operator_reconcile_duration_seconds and
-// c5c3_operator_reconcile_errors_total). The vectors register lazily on the
-// controller-runtime registry the first time a sample is recorded.
-var subReconcilerMetrics = instrumentation.NewMetrics("c5c3_operator")
-
 // instrumenter wraps every sub-reconciler call with the shared duration/error
-// instrumentation, recording through subReconcilerMetrics. It indirects
-// through a package-level var so unit tests can rebind it to an isolated
-// prometheus registry without polluting the controller-runtime production
-// registry. Production code MUST NOT reassign it.
-var instrumenter = instrumentation.NewInstrumenter(subReconcilerMetrics, subReconcilerConditionTypes)
+// instrumentation (c5c3_operator_reconcile_duration_seconds and
+// c5c3_operator_reconcile_errors_total). It owns its metric vectors, which
+// RegisterMetrics exposes on the controller-runtime registry at startup. The
+// var indirection lets unit tests rebind it to an isolated prometheus registry
+// without polluting the production registry; production code MUST NOT reassign
+// it.
+var instrumenter = instrumentation.NewSubReconcilerInstrumenter("c5c3_operator", subReconcilerConditionTypes)
+
+// RegisterMetrics exposes the operator's sub-reconciler duration/error vectors
+// on the controller-runtime registry, returning an error on a
+// duplicate-registration rather than panicking mid-reconcile so main.go can
+// fail startup cleanly. Call it exactly once during operator setup.
+func RegisterMetrics() error {
+	return instrumenter.Register(ctrlmetrics.Registry)
+}
 
 // instrumentSubReconciler wraps a sub-reconciler call, observing duration on
 // every path (success, error, panic) and recording an error count if fn

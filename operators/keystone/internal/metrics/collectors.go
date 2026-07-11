@@ -72,26 +72,25 @@ func (c *collectors) register(reg prometheus.Registerer) error {
 	return nil
 }
 
-// globalColls is the single production instance, registered on the
-// controller-runtime metrics registry exactly once via initOnce.
+// globalColls is the single production instance. It is constructed at package
+// init but not registered; Register exposes it on the controller-runtime
+// registry exactly once at operator startup. Recording before Register is inert
+// (the vectors hold samples locally until registered).
 var (
-	globalColls *collectors
-	initOnce    sync.Once
+	globalColls  = newCollectors()
+	registerOnce sync.Once
+	registerErr  error
 )
 
-// globalCollectors returns the lazily-initialized package-wide collectors,
-// registering them on ctrlmetrics.Registry on first access. Using
-// sync.Once ensures registration is idempotent across repeated test runs
-func globalCollectors() *collectors {
-	initOnce.Do(func() {
-		globalColls = newCollectors()
-		if err := globalColls.register(ctrlmetrics.Registry); err != nil {
-			// Duplicate-registration on the controller-runtime registry
-			// is a startup bug; fail fast rather than silently hide it.
-			panic(fmt.Sprintf("metrics: failed to register collectors on controller-runtime registry: %v", err))
-		}
+// Register exposes the per-CR collectors on the controller-runtime metrics
+// registry exactly once and returns any registration error, so a
+// duplicate-registration surfaces as a clean operator-startup failure rather
+// than a mid-reconcile panic. Repeated calls return the memoized first result.
+func Register() error {
+	registerOnce.Do(func() {
+		registerErr = globalColls.register(ctrlmetrics.Registry)
 	})
-	return globalColls
+	return registerErr
 }
 
 // SetKeyRotationAge publishes the age in seconds of the most recent key
@@ -99,7 +98,7 @@ func globalCollectors() *collectors {
 // NOT update the gauge if completedAt is the zero Time (e.g. when the CR
 // annotation is missing or malformed).
 func SetKeyRotationAge(keystone, namespace, keyType string, completedAt time.Time) error {
-	return globalCollectors().setKeyRotationAge(keystone, namespace, keyType, completedAt)
+	return globalColls.setKeyRotationAge(keystone, namespace, keyType, completedAt)
 }
 
 // RecordDBSync increments the db_sync terminal-state counter and records
@@ -111,7 +110,7 @@ func SetKeyRotationAge(keystone, namespace, keyType string, completedAt time.Tim
 // job does not inflate it. Level 2 wires the call-site at the job's
 // terminal-state branch in reconcile_database.go.
 func RecordDBSync(keystone, namespace, result string, duration time.Duration) {
-	globalCollectors().recordDBSync(keystone, namespace, result, duration)
+	globalColls.recordDBSync(keystone, namespace, result, duration)
 }
 
 // DeleteForKeystone drops every series tagged with the given keystone name
@@ -119,14 +118,14 @@ func RecordDBSync(keystone, namespace, result string, duration time.Duration) {
 // sub-reconciler metrics intentionally carry no CR labels, so there is
 // nothing to delete there.
 func DeleteForKeystone(name, namespace string) {
-	globalCollectors().deleteForKeystone(name, namespace)
+	globalColls.deleteForKeystone(name, namespace)
 }
 
 // --- internal methods (bound to an instance) -------------------------------
 //
 // Each public package-level helper above (SetKeyRotationAge, RecordDBSync,
-// DeleteForKeystone) is a thin wrapper that resolves globalCollectors() and
-// forwards to the matching method below. The methods are also exercised
+// DeleteForKeystone) is a thin wrapper that forwards to the matching method
+// below on globalColls. The methods are also exercised
 // directly by collectors_test.go against an isolated registry so they are
 // not test-only.
 

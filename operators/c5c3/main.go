@@ -69,6 +69,13 @@ func main() {
 		Scheme:           scheme,
 		LeaderElectionID: leaderElectionID,
 		SetupFunc: func(mgr ctrl.Manager, webhooks bool, maxConcurrentReconciles int) error {
+			// Register the operator's Prometheus collectors on the
+			// controller-runtime registry before wiring controllers, so a
+			// duplicate-registration fails startup cleanly instead of panicking
+			// mid-reconcile.
+			if err := controller.RegisterMetrics(); err != nil {
+				return err
+			}
 			// +kubebuilder:scaffold:builder — register controllers here
 			if err := (&controller.ControlPlaneReconciler{
 				Client:                  mgr.GetClient(),

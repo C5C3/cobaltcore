@@ -7,12 +7,10 @@ package instrumentation
 import (
 	"context"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	ctrl "sigs.k8s.io/controller-runtime"
-	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 
 // ConditionTypeUnknown is the condition_type label emitted when an
@@ -34,16 +32,12 @@ var reconcileDurationBuckets = []float64{
 // Metrics bundles the two sub-reconciler metric vectors a single operator
 // exposes: a duration histogram labelled by sub_reconciler, and an error
 // counter labelled by sub_reconciler and condition_type. Construct one per
-// operator with NewMetrics (production, lazily registered on the
-// controller-runtime registry) or NewMetricsOnRegistry (tests, eagerly
-// registered on a caller-supplied registry).
+// operator with NewMetrics (unregistered — call Register at startup) or
+// NewMetricsOnRegistry (tests, eagerly registered on a caller-supplied
+// registry).
 type Metrics struct {
 	reconcileDuration *prometheus.HistogramVec
 	reconcileErrors   *prometheus.CounterVec
-
-	// lazy registration on ctrlmetrics.Registry for the production instance.
-	lazy         bool
-	registerOnce sync.Once
 }
 
 // newMetrics builds the metric vectors for prefix without registering them.
@@ -61,15 +55,13 @@ func newMetrics(prefix string) *Metrics {
 	}
 }
 
-// NewMetrics returns a Metrics instance for prefix that registers its vectors
-// on the controller-runtime metrics registry lazily, the first time a sample
-// is recorded. Registration uses a per-instance sync.Once and panics on a
-// duplicate-registration error, matching the fail-fast semantics of the
-// operator metrics packages this replaces.
+// NewMetrics returns an unregistered Metrics instance for prefix. Call Register
+// (directly, or via NewSubReconcilerInstrumenter and Instrumenter.Register)
+// during operator startup to expose its vectors on the controller-runtime
+// registry. Recording a sample before registration is inert: the vector holds
+// the sample locally but it is never scraped until the vector is registered.
 func NewMetrics(prefix string) *Metrics {
-	m := newMetrics(prefix)
-	m.lazy = true
-	return m
+	return newMetrics(prefix)
 }
 
 // NewMetricsOnRegistry returns a Metrics instance for prefix whose vectors are
@@ -80,14 +72,18 @@ func NewMetrics(prefix string) *Metrics {
 // test setup.
 func NewMetricsOnRegistry(prefix string, reg prometheus.Registerer) *Metrics {
 	m := newMetrics(prefix)
-	if err := m.register(reg); err != nil {
+	if err := m.Register(reg); err != nil {
 		panic(fmt.Sprintf("instrumentation: registry rejected %s collectors: %v", prefix, err))
 	}
 	return m
 }
 
-// register adds both vectors to reg, returning the first error it emits.
-func (m *Metrics) register(reg prometheus.Registerer) error {
+// Register adds both vectors to reg, returning the first error it emits.
+// Registration is not idempotent — registering the same vectors twice on one
+// registry returns a duplicate-registration error — so operators call it
+// exactly once at startup and surface any error as a clean startup failure
+// instead of a mid-reconcile panic.
+func (m *Metrics) Register(reg prometheus.Registerer) error {
 	for _, coll := range []prometheus.Collector{m.reconcileDuration, m.reconcileErrors} {
 		if err := reg.Register(coll); err != nil {
 			return err
@@ -96,31 +92,16 @@ func (m *Metrics) register(reg prometheus.Registerer) error {
 	return nil
 }
 
-// ensureRegistered registers the lazy production instance on the
-// controller-runtime registry exactly once. It is a no-op for instances
-// created via NewMetricsOnRegistry, which register eagerly.
-func (m *Metrics) ensureRegistered() {
-	if !m.lazy {
-		return
-	}
-	m.registerOnce.Do(func() {
-		if err := m.register(ctrlmetrics.Registry); err != nil {
-			panic(fmt.Sprintf("instrumentation: failed to register collectors on controller-runtime registry: %v", err))
-		}
-	})
-}
-
 // ObserveReconcileDuration records a single duration sample for the named
-// sub-reconciler.
+// sub-reconciler. It is a no-op-visible operation until the vector is
+// registered.
 func (m *Metrics) ObserveReconcileDuration(subReconciler string, d time.Duration) {
-	m.ensureRegistered()
 	m.reconcileDuration.WithLabelValues(subReconciler).Observe(d.Seconds())
 }
 
 // RecordReconcileError increments the error counter for a sub-reconciler and
 // the condition type it failed to drive to True.
 func (m *Metrics) RecordReconcileError(subReconciler, conditionType string) {
-	m.ensureRegistered()
 	m.reconcileErrors.WithLabelValues(subReconciler, conditionType).Inc()
 }
 
@@ -137,6 +118,23 @@ type Instrumenter struct {
 // map falls back to ConditionTypeUnknown.
 func NewInstrumenter(m *Metrics, conditionTypes map[string]string) *Instrumenter {
 	return &Instrumenter{metrics: m, conditionTypes: conditionTypes}
+}
+
+// NewSubReconcilerInstrumenter builds an unregistered Metrics for prefix and
+// wraps it in an Instrumenter that resolves the condition_type error label via
+// conditionTypes. Operators declare one at package scope and call
+// Instrumenter.Register once at startup to expose the metrics. This is the
+// single constructor an operator's instrumentation glue needs; the metrics are
+// owned by the returned Instrumenter.
+func NewSubReconcilerInstrumenter(prefix string, conditionTypes map[string]string) *Instrumenter {
+	return NewInstrumenter(NewMetrics(prefix), conditionTypes)
+}
+
+// Register exposes the Instrumenter's metric vectors on reg, returning any
+// registration error rather than panicking so a duplicate-registration surfaces
+// as a clean operator-startup failure.
+func (i *Instrumenter) Register(reg prometheus.Registerer) error {
+	return i.metrics.Register(reg)
 }
 
 // Instrument runs fn, observing its duration on every path (success, error,
