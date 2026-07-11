@@ -638,8 +638,8 @@ mirrors `reconcileDBCredentials`'s wait/condition handling. The database is
   `{namespace}/{keystone-name}` scoping still keeps two ControlPlanes from
   colliding on the cluster-global OpenBao backend. The builder
   `adminPasswordExternalSecret(cp)` sets **no** owner reference; the reconciler
-  sets the ControlPlane controller reference inside the `CreateOrUpdate` mutate
-  closure for GC.
+  applies the ExternalSecret via Server-Side Apply under the shared field manager
+  (`forge-operator`), which stamps the ControlPlane controller reference for GC.
 
 The managed-mode effective admin-password ref (`effectiveAdminPasswordSecretRef`)
 points the projected Keystone child's `spec.bootstrap.adminPasswordSecretRef` at
@@ -1183,8 +1183,9 @@ CRD-not-installed condition.
 as owned K-ORC CRs: an `identity`-type `Service` named
 `keystone`, plus a `public` `Endpoint` whose URL defaults to the conventional
 in-cluster identity URL `http://keystone.<namespace>.svc:5000/v3` and whose
-`serviceRef` points at the identity Service. Both children are idempotent
-create-or-updates.
+`serviceRef` points at the identity Service. Both children are projected
+idempotently via Server-Side Apply under the shared field manager
+(`forge-operator`).
 
 Registering the child CRs only instructs K-ORC to create the catalog entries — it
 does not mean they exist in Keystone — so `CatalogReady` is gated on both children

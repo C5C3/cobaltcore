@@ -20,6 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
+	"github.com/c5c3/forge/internal/common/apply"
 	"github.com/c5c3/forge/internal/common/conditions"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 )
@@ -473,20 +474,21 @@ func (r *ControlPlaneReconciler) ensureExternalCatalogImports(
 ) ([]catalogImport, error) {
 	ns := childNamespace(cp)
 
+	// The desired import spec is a pure projection of cp.Spec, so it is applied
+	// via Server-Side Apply under the shared field manager.
+	serviceFilter := &orcv1alpha1.ServiceFilter{Type: ptr.To(c5c3v1alpha1.IdentityCatalogServiceType)}
+	if name := externalIdentityServiceName(cp); name != "" {
+		serviceFilter.Name = ptr.To(orcv1alpha1.OpenStackName(name))
+	}
 	service := &orcv1alpha1.Service{
 		ObjectMeta: metav1.ObjectMeta{Name: keystoneServiceName(cp), Namespace: ns},
+		Spec: orcv1alpha1.ServiceSpec{
+			ManagementPolicy:    orcv1alpha1.ManagementPolicyUnmanaged,
+			CloudCredentialsRef: credRef,
+			Import:              &orcv1alpha1.ServiceImport{Filter: serviceFilter},
+		},
 	}
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, service, func() error {
-		service.Spec.ManagementPolicy = orcv1alpha1.ManagementPolicyUnmanaged
-		service.Spec.CloudCredentialsRef = credRef
-		service.Spec.Resource = nil
-		filter := &orcv1alpha1.ServiceFilter{Type: ptr.To(c5c3v1alpha1.IdentityCatalogServiceType)}
-		if name := externalIdentityServiceName(cp); name != "" {
-			filter.Name = ptr.To(orcv1alpha1.OpenStackName(name))
-		}
-		service.Spec.Import = &orcv1alpha1.ServiceImport{Filter: filter}
-		return controllerutil.SetControllerReference(cp, service, r.Scheme)
-	}); err != nil {
+	if err := apply.EnsureObject(ctx, r.Client, r.Scheme, cp, service, apply.FieldManager); err != nil {
 		return nil, fmt.Errorf("identity Service import %q: %w", service.Name, err)
 	}
 
@@ -502,19 +504,18 @@ func (r *ControlPlaneReconciler) ensureExternalCatalogImports(
 	for _, iface := range externalCatalogInterfaces {
 		endpoint := &orcv1alpha1.Endpoint{
 			ObjectMeta: metav1.ObjectMeta{Name: keystoneEndpointImportName(cp, iface), Namespace: ns},
-		}
-		if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, endpoint, func() error {
-			endpoint.Spec.ManagementPolicy = orcv1alpha1.ManagementPolicyUnmanaged
-			endpoint.Spec.CloudCredentialsRef = credRef
-			endpoint.Spec.Resource = nil
-			endpoint.Spec.Import = &orcv1alpha1.EndpointImport{
-				Filter: &orcv1alpha1.EndpointFilter{
-					Interface:  string(iface),
-					ServiceRef: ptr.To(orcv1alpha1.KubernetesNameRef(service.Name)),
+			Spec: orcv1alpha1.EndpointSpec{
+				ManagementPolicy:    orcv1alpha1.ManagementPolicyUnmanaged,
+				CloudCredentialsRef: credRef,
+				Import: &orcv1alpha1.EndpointImport{
+					Filter: &orcv1alpha1.EndpointFilter{
+						Interface:  string(iface),
+						ServiceRef: ptr.To(orcv1alpha1.KubernetesNameRef(service.Name)),
+					},
 				},
-			}
-			return controllerutil.SetControllerReference(cp, endpoint, r.Scheme)
-		}); err != nil {
+			},
+		}
+		if err := apply.EnsureObject(ctx, r.Client, r.Scheme, cp, endpoint, apply.FieldManager); err != nil {
 			return nil, fmt.Errorf("identity Endpoint import %q: %w", endpoint.Name, err)
 		}
 		imports = append(imports, catalogImport{
@@ -588,6 +589,12 @@ func (r *ControlPlaneReconciler) ensureManagedCatalogEntries(
 	ns := childNamespace(cp)
 
 	for _, entry := range externalManagedCatalogEntries(cp) {
+		// The managed catalog entries stay read-modify-write (not Server-Side Apply):
+		// they participate in a remove/re-add lifecycle where reconcileCatalogExternal
+		// gates CatalogReady on the LIVE Terminating CR returned by the write.
+		// CreateOrUpdate's no-op-on-identical-spec returns the still-Terminating object
+		// without a generation bump, which the deletion guard reads; re-applying a spec
+		// to a K-ORC-finalized Terminating entry is not a pure projection.
 		service := &orcv1alpha1.Service{
 			ObjectMeta: metav1.ObjectMeta{Name: catalogEntryServiceName(cp, entry.Type), Namespace: ns},
 		}
@@ -611,6 +618,8 @@ func (r *ControlPlaneReconciler) ensureManagedCatalogEntries(
 		reconciled = append(reconciled, managedCatalogEntry{kind: "Service", name: service.Name, obj: service})
 
 		for _, ep := range entry.Endpoints {
+			// Read-modify-write for the same remove/re-add deletion-race reason as the
+			// managed catalog entry Service above.
 			endpoint := &orcv1alpha1.Endpoint{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      catalogEntryEndpointName(cp, entry.Type, ep.Interface),

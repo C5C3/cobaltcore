@@ -1886,7 +1886,10 @@ func TestReconcileCatalog_Idempotent(t *testing.T) {
 		Name: keystoneEndpointName(cp), Namespace: childNamespace(cp),
 	}, ep1)).To(Succeed())
 
-	// Second reconcile must not churn either CR.
+	// Second reconcile must project a byte-identical spec (idempotent projection).
+	// The fake client bumps ResourceVersion on a no-op Server-Side Apply — a
+	// limitation a real apiserver does not share, where an unchanged apply is a true
+	// no-op — so spec stability is asserted rather than ResourceVersion equality.
 	_, err = r.reconcileCatalog(context.Background(), cp)
 	g.Expect(err).NotTo(HaveOccurred())
 
@@ -1899,8 +1902,8 @@ func TestReconcileCatalog_Idempotent(t *testing.T) {
 		Name: keystoneEndpointName(cp), Namespace: childNamespace(cp),
 	}, ep2)).To(Succeed())
 
-	g.Expect(svc2.ResourceVersion).To(Equal(svc1.ResourceVersion), "Service must not churn on re-reconcile")
-	g.Expect(ep2.ResourceVersion).To(Equal(ep1.ResourceVersion), "Endpoint must not churn on re-reconcile")
+	g.Expect(svc2.Spec).To(Equal(svc1.Spec), "Service projection must be idempotent")
+	g.Expect(ep2.Spec).To(Equal(ep1.Spec), "Endpoint projection must be idempotent")
 }
 
 // HARD CRD DEPENDENCY: as for reconcileKORC, the catalog sub-reconciler's
@@ -1915,11 +1918,12 @@ func TestReconcileCatalog_MissingCRDReturnsError(t *testing.T) {
 	setAdminCredentialReady(cp)
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).
 		WithInterceptorFuncs(interceptor.Funcs{
-			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
-				if _, ok := obj.(*orcv1alpha1.Service); ok {
-					return &meta.NoKindMatchError{GroupKind: schema.GroupKind{Group: "openstack.k-orc.cloud", Kind: "Service"}}
-				}
-				return c.Get(ctx, key, obj, opts...)
+			// Under Server-Side Apply reconcileCatalog writes the Service via Apply (no
+			// Get first), so a missing CRD surfaces on the Apply. The Service is applied
+			// before the Endpoint, so failing every Apply reproduces the no-match error
+			// on the Service and its ServiceError condition.
+			Apply: func(_ context.Context, _ client.WithWatch, _ runtime.ApplyConfiguration, _ ...client.ApplyOption) error {
+				return &meta.NoKindMatchError{GroupKind: schema.GroupKind{Group: "openstack.k-orc.cloud", Kind: "Service"}}
 			},
 		}).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
@@ -2530,7 +2534,9 @@ func TestEnsureKORCCloudsYAMLExternalSecret_PerCRRemoteKeyForNonDefaultName(t *t
 }
 
 // TestEnsureKORCCloudsYAMLExternalSecret_IdempotentNoChurn asserts a second pass over
-// an unchanged spec does not bump the ExternalSecret's ResourceVersion.
+// an unchanged spec projects a byte-identical ExternalSecret spec. The fake client
+// bumps ResourceVersion on a no-op Server-Side Apply — unlike a real apiserver — so
+// spec stability is asserted rather than ResourceVersion equality.
 func TestEnsureKORCCloudsYAMLExternalSecret_IdempotentNoChurn(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -2548,8 +2554,8 @@ func TestEnsureKORCCloudsYAMLExternalSecret_IdempotentNoChurn(t *testing.T) {
 	second := &esov1.ExternalSecret{}
 	g.Expect(c.Get(context.Background(), esKey, second)).To(Succeed())
 
-	g.Expect(second.ResourceVersion).To(Equal(first.ResourceVersion),
-		"an unchanged ExternalSecret spec must not churn on re-reconcile")
+	g.Expect(second.Spec).To(Equal(first.Spec),
+		"an unchanged ExternalSecret spec must project identically on re-reconcile")
 }
 
 // --- reconcileKORC edge cases around the seed steps ---
@@ -3168,6 +3174,15 @@ func recordPushAndESWrites(writes *[]string) interceptor.Funcs {
 				*writes = append(*writes, "external-secret")
 			}
 			return cl.Update(ctx, obj, opts...)
+		},
+		// The clouds.yaml ExternalSecret is now written via Server-Side Apply, so the
+		// read-back write lands here rather than on Create/Update.
+		Apply: func(ctx context.Context, cl client.WithWatch, obj runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
+			if o, ok := obj.(interface{ GetObjectKind() schema.ObjectKind }); ok &&
+				o.GetObjectKind().GroupVersionKind().Kind == "ExternalSecret" {
+				*writes = append(*writes, "external-secret")
+			}
+			return cl.Apply(ctx, obj, opts...)
 		},
 	}
 }

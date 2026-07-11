@@ -59,7 +59,10 @@ func adminAppCredentialSecretName(cp *c5c3v1alpha1.ControlPlane) string {
 // `name` in childNamespace(cp), with cp set as the controller owner reference.
 // The Secret's Data map is guaranteed non-nil before `mutate` runs, so callers
 // only set the keys they own; `mutate` may return an error to abort the write
-// (e.g. when generating a random value fails). It centralises the four
+// (e.g. when generating a random value fails). It stays read-modify-write (not
+// Server-Side Apply) precisely because `mutate` reads the LIVE Secret's Data to
+// preserve generated-once random values across reconciles, which cannot be a
+// pure projection. It centralises the four
 // near-identical owned-Secret CreateOrUpdate wrappers (ensureAppCredentialSecret,
 // ensureAdminPasswordCloud, seedBootstrapCloudsYAML and
 // regenerateAppCredentialSecretValue); each keeps its own error wrapping so the

@@ -22,6 +22,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
+	"github.com/c5c3/forge/internal/common/apply"
 	"github.com/c5c3/forge/internal/common/conditions"
 	"github.com/c5c3/forge/internal/common/secrets"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
@@ -359,12 +360,7 @@ func (r *ControlPlaneReconciler) reconcileDBCredentials(ctx context.Context, cp 
 		// Static opt-out: tear down any dynamic-mode objects left from a prior
 		// Dynamic deployment, then project the stage-(a) KV-backed ExternalSecret.
 		r.deleteDynamicDBCredentialObjects(ctx, cp)
-		desired := dbCredentialStaticExternalSecret(cp)
-		es := &esov1.ExternalSecret{ObjectMeta: metav1.ObjectMeta{Name: desired.Name, Namespace: desired.Namespace}}
-		if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, es, func() error {
-			es.Spec = desired.Spec
-			return controllerutil.SetControllerReference(cp, es, r.Scheme)
-		}); err != nil {
+		if err := apply.EnsureObject(ctx, r.Client, r.Scheme, cp, dbCredentialStaticExternalSecret(cp), apply.FieldManager); err != nil {
 			conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
 				Type:               conditionTypeDBCredentialsReady,
 				Status:             metav1.ConditionFalse,
@@ -388,13 +384,14 @@ func (r *ControlPlaneReconciler) reconcileDBCredentials(ctx context.Context, cp 
 func (r *ControlPlaneReconciler) ensureDynamicDBCredentialObjects(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) error {
 	server, mountPath := r.openBaoConnection(ctx)
 
-	sa := dbCredentialServiceAccount(cp)
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, sa, func() error {
-		return controllerutil.SetControllerReference(cp, sa, r.Scheme)
-	}); err != nil {
+	if err := apply.EnsureObject(ctx, r.Client, r.Scheme, cp, dbCredentialServiceAccount(cp), apply.FieldManager); err != nil {
 		return fmt.Errorf("ensuring DB credential ServiceAccount: %w", err)
 	}
 
+	// The cert-manager Certificate is handled as an unstructured object (no Go
+	// module ships its type), and apply.EnsureObject converts typed structs, not
+	// unstructured inputs — so this projection stays read-modify-write while the
+	// typed sibling objects around it use Server-Side Apply.
 	live := &unstructured.Unstructured{}
 	live.SetGroupVersionKind(certificateGVK)
 	live.SetName(dbCredentialClientCertName(cp))
@@ -406,21 +403,11 @@ func (r *ControlPlaneReconciler) ensureDynamicDBCredentialObjects(ctx context.Co
 		return fmt.Errorf("ensuring DB credential Certificate: %w", err)
 	}
 
-	vds := dbCredentialVaultDynamicSecret(cp, server, mountPath)
-	liveVDS := &esgenv1alpha1.VaultDynamicSecret{ObjectMeta: metav1.ObjectMeta{Name: vds.Name, Namespace: vds.Namespace}}
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, liveVDS, func() error {
-		liveVDS.Spec = vds.Spec
-		return controllerutil.SetControllerReference(cp, liveVDS, r.Scheme)
-	}); err != nil {
+	if err := apply.EnsureObject(ctx, r.Client, r.Scheme, cp, dbCredentialVaultDynamicSecret(cp, server, mountPath), apply.FieldManager); err != nil {
 		return fmt.Errorf("ensuring VaultDynamicSecret generator: %w", err)
 	}
 
-	desired := dbCredentialGeneratorExternalSecret(cp)
-	es := &esov1.ExternalSecret{ObjectMeta: metav1.ObjectMeta{Name: desired.Name, Namespace: desired.Namespace}}
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, es, func() error {
-		es.Spec = desired.Spec
-		return controllerutil.SetControllerReference(cp, es, r.Scheme)
-	}); err != nil {
+	if err := apply.EnsureObject(ctx, r.Client, r.Scheme, cp, dbCredentialGeneratorExternalSecret(cp), apply.FieldManager); err != nil {
 		return fmt.Errorf("ensuring DB credential ExternalSecret: %w", err)
 	}
 	return nil

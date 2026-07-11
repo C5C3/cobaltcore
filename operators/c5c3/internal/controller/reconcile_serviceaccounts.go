@@ -28,6 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
+	"github.com/c5c3/forge/internal/common/apply"
 	"github.com/c5c3/forge/internal/common/conditions"
 	"github.com/c5c3/forge/internal/common/secrets"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
@@ -474,15 +475,17 @@ func (r *ControlPlaneReconciler) ensureServiceAccountDomain(
 	if name == adminDomainRef(cp) {
 		return name, nil
 	}
-	domain := &orcv1alpha1.Domain{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: childNamespace(cp)}}
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, domain, func() error {
-		domain.Spec.ManagementPolicy = orcv1alpha1.ManagementPolicyUnmanaged
-		domain.Spec.CloudCredentialsRef = credRef
-		domain.Spec.Import = &orcv1alpha1.DomainImport{
-			Filter: &orcv1alpha1.DomainFilter{Name: ptr.To(orcv1alpha1.KeystoneName(serviceAccountDomainName(cp, sa)))},
-		}
-		return controllerutil.SetControllerReference(cp, domain, r.Scheme)
-	}); err != nil {
+	domain := &orcv1alpha1.Domain{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: childNamespace(cp)},
+		Spec: orcv1alpha1.DomainSpec{
+			ManagementPolicy:    orcv1alpha1.ManagementPolicyUnmanaged,
+			CloudCredentialsRef: credRef,
+			Import: &orcv1alpha1.DomainImport{
+				Filter: &orcv1alpha1.DomainFilter{Name: ptr.To(orcv1alpha1.KeystoneName(serviceAccountDomainName(cp, sa)))},
+			},
+		},
+	}
+	if err := apply.EnsureObject(ctx, r.Client, r.Scheme, cp, domain, apply.FieldManager); err != nil {
 		return "", fmt.Errorf("service-account Domain import %q: %w", name, err)
 	}
 	return name, nil
@@ -500,19 +503,20 @@ func (r *ControlPlaneReconciler) ensureServiceAccountProject(
 	name := serviceAccountProjectRef(cp, sa)
 
 	if !sa.Project.Create {
-		project := &orcv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns}}
-		if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, project, func() error {
-			project.Spec.ManagementPolicy = orcv1alpha1.ManagementPolicyUnmanaged
-			project.Spec.Resource = nil
-			project.Spec.CloudCredentialsRef = credRef
-			project.Spec.Import = &orcv1alpha1.ProjectImport{
-				Filter: &orcv1alpha1.ProjectFilter{
-					Name:      ptr.To(orcv1alpha1.KeystoneName(sa.Project.Name)),
-					DomainRef: ptr.To(orcv1alpha1.KubernetesNameRef(domainRef)),
+		project := &orcv1alpha1.Project{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+			Spec: orcv1alpha1.ProjectSpec{
+				ManagementPolicy:    orcv1alpha1.ManagementPolicyUnmanaged,
+				CloudCredentialsRef: credRef,
+				Import: &orcv1alpha1.ProjectImport{
+					Filter: &orcv1alpha1.ProjectFilter{
+						Name:      ptr.To(orcv1alpha1.KeystoneName(sa.Project.Name)),
+						DomainRef: ptr.To(orcv1alpha1.KubernetesNameRef(domainRef)),
+					},
 				},
-			}
-			return controllerutil.SetControllerReference(cp, project, r.Scheme)
-		}); err != nil {
+			},
+		}
+		if err := apply.EnsureObject(ctx, r.Client, r.Scheme, cp, project, apply.FieldManager); err != nil {
 			return nil, false, fmt.Errorf("service-account referenced Project import %q: %w", name, err)
 		}
 		return project, korcAvailableUpToDate(project), nil
@@ -555,18 +559,18 @@ func (r *ControlPlaneReconciler) ensureServiceAccountProject(
 		return nil, false, fmt.Errorf("reading managed Project %q: %w", name, err)
 	}
 
-	project := &orcv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns}}
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, project, func() error {
-		project.Spec.ManagementPolicy = orcv1alpha1.ManagementPolicyManaged
-		project.Spec.Import = nil
-		project.Spec.CloudCredentialsRef = managedCredRef
-		if project.Spec.Resource == nil {
-			project.Spec.Resource = &orcv1alpha1.ProjectResourceSpec{}
-		}
-		project.Spec.Resource.Name = ptr.To(orcv1alpha1.KeystoneName(sa.Project.Name))
-		project.Spec.Resource.DomainRef = ptr.To(orcv1alpha1.KubernetesNameRef(domainRef))
-		return controllerutil.SetControllerReference(cp, project, r.Scheme)
-	}); err != nil {
+	project := &orcv1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+		Spec: orcv1alpha1.ProjectSpec{
+			ManagementPolicy:    orcv1alpha1.ManagementPolicyManaged,
+			CloudCredentialsRef: managedCredRef,
+			Resource: &orcv1alpha1.ProjectResourceSpec{
+				Name:      ptr.To(orcv1alpha1.KeystoneName(sa.Project.Name)),
+				DomainRef: ptr.To(orcv1alpha1.KubernetesNameRef(domainRef)),
+			},
+		},
+	}
+	if err := apply.EnsureObject(ctx, r.Client, r.Scheme, cp, project, apply.FieldManager); err != nil {
 		return nil, false, fmt.Errorf("service-account managed Project %q: %w", name, err)
 	}
 	return project, korcAvailableUpToDate(project), nil
@@ -651,19 +655,20 @@ func (r *ControlPlaneReconciler) serviceAccountUserProbe(
 	ctx context.Context, cp *c5c3v1alpha1.ControlPlane, sa c5c3v1alpha1.ServiceAccountSpec,
 	credRef orcv1alpha1.CloudCredentialsReference, userName, domainRef string,
 ) (probeVerdict, *orcv1alpha1.User, error) {
-	probe := &orcv1alpha1.User{ObjectMeta: metav1.ObjectMeta{Name: serviceAccountUserProbeRef(cp, sa), Namespace: childNamespace(cp)}}
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, probe, func() error {
-		probe.Spec.ManagementPolicy = orcv1alpha1.ManagementPolicyUnmanaged
-		probe.Spec.Resource = nil
-		probe.Spec.CloudCredentialsRef = credRef
-		probe.Spec.Import = &orcv1alpha1.UserImport{
-			Filter: &orcv1alpha1.UserFilter{
-				Name:      ptr.To(orcv1alpha1.OpenStackName(userName)),
-				DomainRef: ptr.To(orcv1alpha1.KubernetesNameRef(domainRef)),
+	probe := &orcv1alpha1.User{
+		ObjectMeta: metav1.ObjectMeta{Name: serviceAccountUserProbeRef(cp, sa), Namespace: childNamespace(cp)},
+		Spec: orcv1alpha1.UserSpec{
+			ManagementPolicy:    orcv1alpha1.ManagementPolicyUnmanaged,
+			CloudCredentialsRef: credRef,
+			Import: &orcv1alpha1.UserImport{
+				Filter: &orcv1alpha1.UserFilter{
+					Name:      ptr.To(orcv1alpha1.OpenStackName(userName)),
+					DomainRef: ptr.To(orcv1alpha1.KubernetesNameRef(domainRef)),
+				},
 			},
-		}
-		return controllerutil.SetControllerReference(cp, probe, r.Scheme)
-	}); err != nil {
+		},
+	}
+	if err := apply.EnsureObject(ctx, r.Client, r.Scheme, cp, probe, apply.FieldManager); err != nil {
 		return probePending, nil, fmt.Errorf("service-account User probe %q: %w", probe.Name, err)
 	}
 	return interpretProbe(probe), probe, nil
@@ -675,19 +680,20 @@ func (r *ControlPlaneReconciler) serviceAccountProjectProbe(
 	ctx context.Context, cp *c5c3v1alpha1.ControlPlane, sa c5c3v1alpha1.ServiceAccountSpec,
 	credRef orcv1alpha1.CloudCredentialsReference, domainRef string,
 ) (probeVerdict, *orcv1alpha1.Project, error) {
-	probe := &orcv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: serviceAccountProjectProbeRef(cp, sa), Namespace: childNamespace(cp)}}
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, probe, func() error {
-		probe.Spec.ManagementPolicy = orcv1alpha1.ManagementPolicyUnmanaged
-		probe.Spec.Resource = nil
-		probe.Spec.CloudCredentialsRef = credRef
-		probe.Spec.Import = &orcv1alpha1.ProjectImport{
-			Filter: &orcv1alpha1.ProjectFilter{
-				Name:      ptr.To(orcv1alpha1.KeystoneName(sa.Project.Name)),
-				DomainRef: ptr.To(orcv1alpha1.KubernetesNameRef(domainRef)),
+	probe := &orcv1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: serviceAccountProjectProbeRef(cp, sa), Namespace: childNamespace(cp)},
+		Spec: orcv1alpha1.ProjectSpec{
+			ManagementPolicy:    orcv1alpha1.ManagementPolicyUnmanaged,
+			CloudCredentialsRef: credRef,
+			Import: &orcv1alpha1.ProjectImport{
+				Filter: &orcv1alpha1.ProjectFilter{
+					Name:      ptr.To(orcv1alpha1.KeystoneName(sa.Project.Name)),
+					DomainRef: ptr.To(orcv1alpha1.KubernetesNameRef(domainRef)),
+				},
 			},
-		}
-		return controllerutil.SetControllerReference(cp, probe, r.Scheme)
-	}); err != nil {
+		},
+	}
+	if err := apply.EnsureObject(ctx, r.Client, r.Scheme, cp, probe, apply.FieldManager); err != nil {
 		return probePending, nil, fmt.Errorf("service-account Project probe %q: %w", probe.Name, err)
 	}
 	return interpretProbe(probe), probe, nil
@@ -742,6 +748,10 @@ func (r *ControlPlaneReconciler) ensureServiceAccountUser(
 	}
 	passwordRefName := serviceAccountPasswordSecretName(cp, sa, desiredGen)
 
+	// This projection stays read-modify-write (not Server-Side Apply): the mutate
+	// closure reads the LIVE User's CreationTimestamp and existing
+	// serviceAccountPasswordGenerationAnnotation to decide whether to (re-)stamp the
+	// generation, which cannot be expressed as a pure projection of cp.Spec.
 	user := &orcv1alpha1.User{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns}}
 	op, err := controllerutil.CreateOrUpdate(ctx, r.Client, user, func() error {
 		user.Spec.ManagementPolicy = orcv1alpha1.ManagementPolicyManaged
@@ -933,23 +943,25 @@ func (r *ControlPlaneReconciler) ensureServiceAccountExternalSecret(
 ) error {
 	name := serviceAccountCredentialsSecretName(cp, sa)
 	remoteKey := serviceAccountRemoteKeyFor(cp, sa.Name)
-	es := &esov1.ExternalSecret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: childNamespace(cp)}}
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, es, func() error {
-		es.Spec.RefreshInterval = &metav1.Duration{Duration: time.Hour}
-		es.Spec.SecretStoreRef = esov1.SecretStoreRef{Kind: "ClusterSecretStore", Name: openBaoClusterStoreName}
-		es.Spec.Target = esov1.ExternalSecretTarget{Name: name, CreationPolicy: esov1.CreatePolicyOwner}
-		es.Spec.Data = []esov1.ExternalSecretData{
-			{
-				SecretKey: serviceAccountPasswordKey,
-				RemoteRef: esov1.ExternalSecretDataRemoteRef{Key: remoteKey, Property: serviceAccountPasswordKey},
+	es := &esov1.ExternalSecret{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: childNamespace(cp)},
+		Spec: esov1.ExternalSecretSpec{
+			RefreshInterval: &metav1.Duration{Duration: time.Hour},
+			SecretStoreRef:  esov1.SecretStoreRef{Kind: "ClusterSecretStore", Name: openBaoClusterStoreName},
+			Target:          esov1.ExternalSecretTarget{Name: name, CreationPolicy: esov1.CreatePolicyOwner},
+			Data: []esov1.ExternalSecretData{
+				{
+					SecretKey: serviceAccountPasswordKey,
+					RemoteRef: esov1.ExternalSecretDataRemoteRef{Key: remoteKey, Property: serviceAccountPasswordKey},
+				},
+				{
+					SecretKey: appCredCloudsYAMLKey,
+					RemoteRef: esov1.ExternalSecretDataRemoteRef{Key: remoteKey, Property: appCredCloudsYAMLKey},
+				},
 			},
-			{
-				SecretKey: appCredCloudsYAMLKey,
-				RemoteRef: esov1.ExternalSecretDataRemoteRef{Key: remoteKey, Property: appCredCloudsYAMLKey},
-			},
-		}
-		return controllerutil.SetControllerReference(cp, es, r.Scheme)
-	}); err != nil {
+		},
+	}
+	if err := apply.EnsureObject(ctx, r.Client, r.Scheme, cp, es, apply.FieldManager); err != nil {
 		return fmt.Errorf("ensuring service-account ExternalSecret %q: %w", name, err)
 	}
 	return nil

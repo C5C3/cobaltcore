@@ -232,6 +232,12 @@ func (r *ControlPlaneReconciler) reconcileInfrastructure(ctx context.Context, cp
 
 // ensureMariaDB create-or-updates the owned MariaDB CR named after
 // spec.infrastructure.database.clusterRef and reports whether it is Ready.
+//
+// It stays read-modify-write (not Server-Side Apply): the write is gated on the
+// LIVE object's owner references — an owned CR has its topology re-projected,
+// while an externally-provisioned CR sharing the name is adopted read-only and
+// never has ownership claimed. That adoption-vs-projection decision reads live
+// state, so it cannot be expressed as a pure projection of cp.Spec.
 func (r *ControlPlaneReconciler) ensureMariaDB(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) (bool, error) {
 	key := types.NamespacedName{
 		Name:      cp.Spec.Infrastructure.Database.ClusterRef.Name,
@@ -319,6 +325,11 @@ func (r *ControlPlaneReconciler) ensureMariaDB(ctx context.Context, cp *c5c3v1al
 // spec.infrastructure.cache.clusterRef and reports whether it is Ready. The
 // Memcached CR is handled as an unstructured.Unstructured because
 // memcached.c5c3.io ships no Go module (see memcachedGVK).
+//
+// Like ensureMariaDB it stays read-modify-write: it reads the live object's
+// owner references to project only onto an owned CR and adopt an externally
+// provisioned one read-only (never claiming GC ownership), and it is
+// unstructured, which apply.EnsureObject's typed-struct path does not cover.
 func (r *ControlPlaneReconciler) ensureMemcached(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) (bool, error) {
 	key := types.NamespacedName{
 		Name:      cp.Spec.Infrastructure.Cache.ClusterRef.Name,

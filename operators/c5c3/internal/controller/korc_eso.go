@@ -12,8 +12,8 @@ import (
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
+	"github.com/c5c3/forge/internal/common/apply"
 	"github.com/c5c3/forge/internal/common/secrets"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 )
@@ -130,49 +130,44 @@ func adminAppCredentialPushSecret(cp *c5c3v1alpha1.ControlPlane) *esov1alpha1.Pu
 // the PushSecret immediately before calling this; ESO re-pushes on that metadata
 // change and retries the ExternalSecret until the property resolves.
 //
-// Dropping the bundle drops the entry on the next CreateOrUpdate (the Data slice is
-// rewritten, not merged), and the same stamp re-pushes a source Secret that no
-// longer carries the key.
+// Dropping the bundle drops the entry on the next apply (Server-Side Apply owns
+// spec.data, so re-applying the shorter list removes the cacert entry it no longer
+// declares), and the same stamp re-pushes a source Secret that no longer carries
+// the key.
 func (r *ControlPlaneReconciler) ensureKORCCloudsYAMLExternalSecret(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, caBundle string) error {
 	name := cp.Spec.KORC.AdminCredential.CloudCredentialsRef.SecretName
 	if name == "" {
 		name = korcCloudsYamlSecretName
+	}
+	data := []esov1.ExternalSecretData{{
+		SecretKey: appCredCloudsYAMLKey,
+		RemoteRef: esov1.ExternalSecretDataRemoteRef{
+			Key:      adminAppCredentialRemoteKeyFor(cp),
+			Property: appCredCloudsYAMLKey,
+		},
+	}}
+	if caBundle != "" {
+		data = append(data, esov1.ExternalSecretData{
+			SecretKey: korcCACertKey,
+			RemoteRef: esov1.ExternalSecretDataRemoteRef{
+				Key:      adminAppCredentialRemoteKeyFor(cp),
+				Property: korcCACertKey,
+			},
+		})
 	}
 	es := &esov1.ExternalSecret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: childNamespace(cp),
 		},
+		Spec: esov1.ExternalSecretSpec{
+			RefreshInterval: &metav1.Duration{Duration: time.Hour},
+			SecretStoreRef:  esov1.SecretStoreRef{Kind: "ClusterSecretStore", Name: openBaoClusterStoreName},
+			Target:          esov1.ExternalSecretTarget{Name: name, CreationPolicy: esov1.CreatePolicyOwner},
+			Data:            data,
+		},
 	}
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, es, func() error {
-		es.Spec.RefreshInterval = &metav1.Duration{Duration: time.Hour}
-		es.Spec.SecretStoreRef = esov1.SecretStoreRef{
-			Kind: "ClusterSecretStore",
-			Name: openBaoClusterStoreName,
-		}
-		es.Spec.Target = esov1.ExternalSecretTarget{
-			Name:           name,
-			CreationPolicy: esov1.CreatePolicyOwner,
-		}
-		data := []esov1.ExternalSecretData{{
-			SecretKey: appCredCloudsYAMLKey,
-			RemoteRef: esov1.ExternalSecretDataRemoteRef{
-				Key:      adminAppCredentialRemoteKeyFor(cp),
-				Property: appCredCloudsYAMLKey,
-			},
-		}}
-		if caBundle != "" {
-			data = append(data, esov1.ExternalSecretData{
-				SecretKey: korcCACertKey,
-				RemoteRef: esov1.ExternalSecretDataRemoteRef{
-					Key:      adminAppCredentialRemoteKeyFor(cp),
-					Property: korcCACertKey,
-				},
-			})
-		}
-		es.Spec.Data = data
-		return controllerutil.SetControllerReference(cp, es, r.Scheme)
-	}); err != nil {
+	if err := apply.EnsureObject(ctx, r.Client, r.Scheme, cp, es, apply.FieldManager); err != nil {
 		return fmt.Errorf("ensuring k-orc clouds.yaml ExternalSecret %q: %w", es.Name, err)
 	}
 	return nil

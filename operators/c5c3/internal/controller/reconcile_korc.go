@@ -308,6 +308,10 @@ func (r *ControlPlaneReconciler) reconcileKORC(ctx context.Context, cp *c5c3v1al
 		},
 	}
 
+	// This projection stays read-modify-write (not Server-Side Apply): the mutate
+	// closure reads the LIVE AC's annotations via shouldStampPasswordHash to
+	// preserve the CredentialRotation reconciler's re-mint nudge marker, which
+	// cannot be expressed as a pure projection of cp.Spec.
 	op, err := controllerutil.CreateOrUpdate(ctx, r.Client, ac, func() error {
 		ac.Spec.ManagementPolicy = orcv1alpha1.ManagementPolicyManaged
 		ac.Spec.CloudCredentialsRef = acCredRef

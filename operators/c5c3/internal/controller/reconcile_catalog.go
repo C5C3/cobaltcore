@@ -12,9 +12,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
+	"github.com/c5c3/forge/internal/common/apply"
 	"github.com/c5c3/forge/internal/common/conditions"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 )
@@ -79,55 +79,56 @@ func (r *ControlPlaneReconciler) reconcileCatalog(ctx context.Context, cp *c5c3v
 		return r.reconcileCatalogExternal(ctx, cp, credRef)
 	}
 
-	// 1. Identity (Keystone) Service.
+	// 1. Identity (Keystone) Service. The desired spec is a pure projection of
+	// cp.Spec, so it is applied via Server-Side Apply under the shared field
+	// manager rather than read-modify-write.
 	service := &orcv1alpha1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      keystoneServiceName(cp),
 			Namespace: childNamespace(cp),
 		},
+		Spec: orcv1alpha1.ServiceSpec{
+			ManagementPolicy:    orcv1alpha1.ManagementPolicyManaged,
+			CloudCredentialsRef: credRef,
+			Resource: &orcv1alpha1.ServiceResourceSpec{
+				Type:    "identity",
+				Name:    ptr.To(orcv1alpha1.OpenStackName("keystone")),
+				Enabled: ptr.To(true),
+			},
+		},
 	}
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, service, func() error {
-		service.Spec.ManagementPolicy = orcv1alpha1.ManagementPolicyManaged
-		service.Spec.CloudCredentialsRef = credRef
-		if service.Spec.Resource == nil {
-			service.Spec.Resource = &orcv1alpha1.ServiceResourceSpec{}
-		}
-		service.Spec.Resource.Type = "identity"
-		service.Spec.Resource.Name = ptr.To(orcv1alpha1.OpenStackName("keystone"))
-		service.Spec.Resource.Enabled = ptr.To(true)
-		return controllerutil.SetControllerReference(cp, service, r.Scheme)
-	}); err != nil {
-		fail("ServiceError", fmt.Sprintf("create-or-update identity Service: %v", err))
+	if err := apply.EnsureObject(ctx, r.Client, r.Scheme, cp, service, apply.FieldManager); err != nil {
+		fail("ServiceError", fmt.Sprintf("applying identity Service: %v", err))
 		return ctrl.Result{}, err
 	}
 
 	// 2. Public Endpoint for the Keystone API.
+	//
+	// DECISION (Endpoint URL): K-ORC's EndpointResourceSpec.URL is REQUIRED.
+	// When the ControlPlane exposes Keystone externally (a gateway or explicit
+	// publicEndpoint is set) we register that public URL so the catalog matches
+	// what Keystone's own bootstrap advertises; otherwise we fall back to the
+	// in-cluster Keystone Service URL derived from the PROJECTED Keystone
+	// Service — keystoneName(cp) = "{cp.Name}-keystone" in the ControlPlane
+	// namespace — which is the Service the keystone-operator actually exposes.
 	endpoint := &orcv1alpha1.Endpoint{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      keystoneEndpointName(cp),
 			Namespace: childNamespace(cp),
 		},
+		Spec: orcv1alpha1.EndpointSpec{
+			ManagementPolicy:    orcv1alpha1.ManagementPolicyManaged,
+			CloudCredentialsRef: credRef,
+			Resource: &orcv1alpha1.EndpointResourceSpec{
+				Interface:  "public",
+				URL:        keystoneCatalogURL(cp),
+				ServiceRef: orcv1alpha1.KubernetesNameRef(keystoneServiceName(cp)),
+				Enabled:    ptr.To(true),
+			},
+		},
 	}
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, endpoint, func() error {
-		endpoint.Spec.ManagementPolicy = orcv1alpha1.ManagementPolicyManaged
-		endpoint.Spec.CloudCredentialsRef = credRef
-		if endpoint.Spec.Resource == nil {
-			endpoint.Spec.Resource = &orcv1alpha1.EndpointResourceSpec{}
-		}
-		endpoint.Spec.Resource.Interface = "public"
-		// DECISION (Endpoint URL): K-ORC's EndpointResourceSpec.URL is REQUIRED.
-		// When the ControlPlane exposes Keystone externally (a gateway or explicit
-		// publicEndpoint is set) we register that public URL so the catalog matches
-		// what Keystone's own bootstrap advertises; otherwise we fall back to the
-		// in-cluster Keystone Service URL derived from the PROJECTED Keystone
-		// Service — keystoneName(cp) = "{cp.Name}-keystone" in the ControlPlane
-		// namespace — which is the Service the keystone-operator actually exposes.
-		endpoint.Spec.Resource.URL = keystoneCatalogURL(cp)
-		endpoint.Spec.Resource.ServiceRef = orcv1alpha1.KubernetesNameRef(keystoneServiceName(cp))
-		endpoint.Spec.Resource.Enabled = ptr.To(true)
-		return controllerutil.SetControllerReference(cp, endpoint, r.Scheme)
-	}); err != nil {
-		fail("EndpointError", fmt.Sprintf("create-or-update identity Endpoint: %v", err))
+	if err := apply.EnsureObject(ctx, r.Client, r.Scheme, cp, endpoint, apply.FieldManager); err != nil {
+		fail("EndpointError", fmt.Sprintf("applying identity Endpoint: %v", err))
 		return ctrl.Result{}, err
 	}
 

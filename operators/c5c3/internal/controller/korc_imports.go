@@ -13,8 +13,8 @@ import (
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
+	"github.com/c5c3/forge/internal/common/apply"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 )
 
@@ -135,8 +135,8 @@ func (i korcAdminImports) stalledImport(grace time.Duration) (string, bool) {
 // "Waiting for User/admin to be created". Both CRs are owned by the ControlPlane
 // for GC and reuse the admin clouds.yaml credentials.
 //
-// It returns both reconciled imports carrying live status (controllerutil.
-// CreateOrUpdate Gets first) so reconcileKORC can fold the stuck dependency into
+// It returns both reconciled imports carrying live status (Server-Side Apply
+// writes the server response back) so reconcileKORC can fold the stuck dependency into
 // the KORCReady message and, in External mode, classify its condition messages —
 // the documented failure class (wrong clouds.yaml endpoint, K-ORC swallowing list
 // errors, an import hanging on "created externally") otherwise surfaces only as an
@@ -144,35 +144,35 @@ func (i korcAdminImports) stalledImport(grace time.Duration) (string, bool) {
 func (r *ControlPlaneReconciler) ensureKORCAdminImports(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, credRef orcv1alpha1.CloudCredentialsReference) (korcAdminImports, error) {
 	domain := &orcv1alpha1.Domain{
 		ObjectMeta: metav1.ObjectMeta{Name: adminDomainRef(cp), Namespace: childNamespace(cp)},
+		Spec: orcv1alpha1.DomainSpec{
+			ManagementPolicy:    orcv1alpha1.ManagementPolicyUnmanaged,
+			CloudCredentialsRef: credRef,
+			Import: &orcv1alpha1.DomainImport{
+				Filter: &orcv1alpha1.DomainFilter{Name: ptr.To(orcv1alpha1.KeystoneName(adminDomainName(cp)))},
+			},
+		},
 	}
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, domain, func() error {
-		domain.Spec.ManagementPolicy = orcv1alpha1.ManagementPolicyUnmanaged
-		domain.Spec.CloudCredentialsRef = credRef
-		domain.Spec.Import = &orcv1alpha1.DomainImport{
-			Filter: &orcv1alpha1.DomainFilter{Name: ptr.To(orcv1alpha1.KeystoneName(adminDomainName(cp)))},
-		}
-		return controllerutil.SetControllerReference(cp, domain, r.Scheme)
-	}); err != nil {
+	if err := apply.EnsureObject(ctx, r.Client, r.Scheme, cp, domain, apply.FieldManager); err != nil {
 		return korcAdminImports{}, fmt.Errorf("admin Domain import %q: %w", domain.Name, err)
 	}
 
 	user := &orcv1alpha1.User{
 		ObjectMeta: metav1.ObjectMeta{Name: adminUserRef(cp), Namespace: childNamespace(cp)},
-	}
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, user, func() error {
-		user.Spec.ManagementPolicy = orcv1alpha1.ManagementPolicyUnmanaged
-		user.Spec.CloudCredentialsRef = credRef
-		// The filter name MUST be the same identity buildPasswordCloudsYAML renders
-		// as `username`: Keystone's default policy only lets a token mint an
-		// application credential for its own user, and this User is the AC's UserRef.
-		user.Spec.Import = &orcv1alpha1.UserImport{
-			Filter: &orcv1alpha1.UserFilter{
-				Name:      ptr.To(orcv1alpha1.OpenStackName(adminUserName(cp))),
-				DomainRef: ptr.To(orcv1alpha1.KubernetesNameRef(adminDomainRef(cp))),
+		Spec: orcv1alpha1.UserSpec{
+			ManagementPolicy:    orcv1alpha1.ManagementPolicyUnmanaged,
+			CloudCredentialsRef: credRef,
+			// The filter name MUST be the same identity buildPasswordCloudsYAML renders
+			// as `username`: Keystone's default policy only lets a token mint an
+			// application credential for its own user, and this User is the AC's UserRef.
+			Import: &orcv1alpha1.UserImport{
+				Filter: &orcv1alpha1.UserFilter{
+					Name:      ptr.To(orcv1alpha1.OpenStackName(adminUserName(cp))),
+					DomainRef: ptr.To(orcv1alpha1.KubernetesNameRef(adminDomainRef(cp))),
+				},
 			},
-		}
-		return controllerutil.SetControllerReference(cp, user, r.Scheme)
-	}); err != nil {
+		},
+	}
+	if err := apply.EnsureObject(ctx, r.Client, r.Scheme, cp, user, apply.FieldManager); err != nil {
 		return korcAdminImports{}, fmt.Errorf("admin User import %q: %w", user.Name, err)
 	}
 

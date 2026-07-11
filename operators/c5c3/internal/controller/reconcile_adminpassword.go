@@ -13,9 +13,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
+	"github.com/c5c3/forge/internal/common/apply"
 	"github.com/c5c3/forge/internal/common/conditions"
 	"github.com/c5c3/forge/internal/common/secrets"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
@@ -188,14 +188,11 @@ func (r *ControlPlaneReconciler) reconcileAdminPassword(ctx context.Context, cp 
 		return ctrl.Result{RequeueAfter: adminPasswordRequeueAfter}, nil
 	}
 
-	// Managed mode: create-or-update the per-CP admin-password ExternalSecret,
-	// owner-referencing it to the ControlPlane so it is garbage-collected with the CR.
-	desired := adminPasswordExternalSecret(cp)
-	es := &esov1.ExternalSecret{ObjectMeta: metav1.ObjectMeta{Name: desired.Name, Namespace: desired.Namespace}}
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, es, func() error {
-		es.Spec = desired.Spec
-		return controllerutil.SetControllerReference(cp, es, r.Scheme)
-	}); err != nil {
+	// Managed mode: project the per-CP admin-password ExternalSecret via
+	// Server-Side Apply under the shared field manager, owner-referencing it to the
+	// ControlPlane so it is garbage-collected with the CR. The desired spec is a
+	// pure projection of cp.Spec.
+	if err := apply.EnsureObject(ctx, r.Client, r.Scheme, cp, adminPasswordExternalSecret(cp), apply.FieldManager); err != nil {
 		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
 			Type:               conditionTypeAdminPasswordReady,
 			Status:             metav1.ConditionFalse,
