@@ -215,7 +215,7 @@ a link to the full reference.
 | Policy overrides | `spec.policyOverrides` | Custom `oslo.policy` rules (inline or ConfigMap) | [PolicySpec](../reference/keystone/keystone-crd.md#policyspec) |
 | Middleware | `spec.middleware` | Custom WSGI filters in the `api-paste.ini` pipeline | [MiddlewareSpec](../reference/keystone/keystone-crd.md#middlewarespec) |
 | Plugins | `spec.plugins` | Service-side Keystone plugins/drivers | [PluginSpec](../reference/keystone/keystone-crd.md#pluginspec) |
-| Federation | `spec.federation` | Enables Keystone federation (SAML/OIDC, Shibboleth) | [FederationSpec](../reference/keystone/keystone-crd.md#federationspec) |
+| Federation | `spec.federation` | Federation sidecar knobs (proxy image, trusted dashboards); federation itself activates by attaching a [`KeystoneIdentityBackend`](../reference/keystone/identity-backend-crd.md), not by this block | [FederationSpec](../reference/keystone/keystone-crd.md#federationspec) |
 | Resource requests/limits | `spec.deployment.resources` | CPU/memory requests and limits on API pods | [KeystoneSpec](../reference/keystone/keystone-crd.md#keystonespec) |
 | Public endpoint | `spec.bootstrap.publicEndpoint` | External URL written to the Keystone service catalogue | [BootstrapSpec](../reference/keystone/keystone-crd.md#bootstrapspec) |
 
