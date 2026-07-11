@@ -33,14 +33,38 @@ examples below is one that devstack produces.
 - A Keystone CR that reaches `Ready=True`; backends can be applied before the
   Keystone exists, but nothing is provisioned until its API is up.
 - An LDAP server reachable from the cluster, plus a bind DN allowed to
-  search the user/group trees.
+  search the user/group trees. On the kind devstack, Step 1 stands up the
+  seeded fixture directory; on other clusters, substitute your own directory.
 - **Service users stay SQL-backed.** The backend is read-only by default,
   so OpenStack service accounts (and the bootstrap admin) must remain in the
   SQL-backed `Default` domain — the CRD hard-rejects attaching a backend to
   `Default` for exactly this reason. Plan for humans in the LDAP domain and
   services in `Default`.
 
-## Step 1 — Create the bind credentials Secret
+## Step 1 — Deploy the seeded OpenLDAP fixture (kind devstack)
+
+On the kind devstack, stand up the same OpenLDAP directory the e2e suite uses.
+It is a plain namespace-pinned manifest, so `kubectl apply` runs it verbatim:
+
+```bash
+kubectl apply -f tests/e2e/keystone/ldap-domain-backend/00-openldap.yaml
+kubectl -n openstack rollout status deploy/openldap
+```
+
+This ships, all in the `openstack` namespace:
+
+- a seeded `dc=planetexpress,dc=com` tree (users under `ou=people` with
+  `objectClass: inetOrgPerson`, `uid`/`mail` attributes, and `userPassword`
+  equal to the `uid`);
+- a Service `openldap` on port `10389`
+  (`ldap://openldap.openstack.svc.cluster.local:10389`);
+- a bind-credentials Secret `openldap-bind` holding
+  `cn=admin,dc=planetexpress,dc=com` / `GoodNewsEveryone`.
+
+On a non-kind cluster, skip this step and point the CR (Step 3) at your own
+directory instead — every value below is one this fixture produces.
+
+## Step 2 — Create the bind credentials Secret
 
 The projection reads two fixed data keys: `username` (the bind DN) and
 `password`:
@@ -54,7 +78,14 @@ kubectl create secret generic corp-ldap-bind -n openstack \
 Rotating this Secret later re-renders the per-domain config automatically —
 the operator watches it.
 
-## Step 2 — Apply the backend CR
+::: tip On the kind devstack
+Step 1's fixture already ships an `openldap-bind` Secret with these exact
+credentials (it is the one the e2e suite's own backend CR binds through), so
+you can skip this `kubectl create` and set
+`bindCredentialsSecretRef.name: openldap-bind` in Step 3 instead.
+:::
+
+## Step 3 — Apply the backend CR
 
 ```yaml
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
@@ -96,7 +127,7 @@ For `ldaps://` endpoints, add certificate verification:
         name: corp-ldap-ca   # data key must be "ca.crt"
 ```
 
-## Step 3 — Watch the conditions converge
+## Step 4 — Watch the conditions converge
 
 ```bash
 kubectl get keystoneidentitybackends -n openstack
@@ -116,7 +147,7 @@ The domains Secret is content-hashed, so the attach rolls the Keystone
 Deployment once; subsequent reconciles are no-ops until the spec or the bind
 credentials change.
 
-## Step 4 — Verify an LDAP user can authenticate
+## Step 5 — Verify an LDAP user can authenticate
 
 ```bash
 # List the LDAP-backed users through the Keystone API (admin credentials):
