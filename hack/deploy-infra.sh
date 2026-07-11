@@ -85,6 +85,13 @@ WITH_CHAOS_MESH="${WITH_CHAOS_MESH:-false}"
 # WITH_PROMETHEUS=true to install the monitoring stack.
 WITH_PROMETHEUS="${WITH_PROMETHEUS:-false}"
 
+# Gates the opt-in metrics-server kind overlay (deploy/kind/metrics-server)
+# required by the HPA/autoscaling recipe: without a resource-metrics API the
+# generated HorizontalPodAutoscaler reports `unknown/80%` and never scales.
+# Defaults to false so the kind Quick Start stays minimal; set
+# WITH_METRICS_SERVER=true to install it.
+WITH_METRICS_SERVER="${WITH_METRICS_SERVER:-false}"
+
 # Gates the opt-in transparent registry pull-through cache (#564). When true,
 # deploy-infra brings up one small distribution-registry (registry:2/3) proxy
 # per upstream registry on the `kind` Docker network (start_registry_cache),
@@ -1382,6 +1389,7 @@ main() {
   log "Node RLIMIT_NOFILE  : ${NODE_NOFILE_LIMIT:-<unset — skip cap>} (override via NODE_NOFILE_LIMIT)"
   log "Chaos Mesh         : ${WITH_CHAOS_MESH} (set WITH_CHAOS_MESH=true to install)"
   log "Prometheus stack    : ${WITH_PROMETHEUS} (set WITH_PROMETHEUS=true to install)"
+  log "metrics-server      : ${WITH_METRICS_SERVER} (set WITH_METRICS_SERVER=true to install)"
   log "Registry cache      : ${WITH_REGISTRY_CACHE} (set WITH_REGISTRY_CACHE=true for a local pull-through cache; local-dev only)"
   log "ControlPlane stack  : ${WITH_CONTROLPLANE} (set WITH_CONTROLPLANE=true to provision infra via the c5c3 ControlPlane)"
   if [[ "${WITH_CONTROLPLANE}" == "true" ]]; then
@@ -1536,6 +1544,18 @@ main() {
     log "Prometheus kind overlay applied (WITH_PROMETHEUS=true)."
   fi
 
+  # Opt-in metrics-server overlay. Layered on top of the base so the default
+  # Quick Start stays minimal; enable with WITH_METRICS_SERVER=true. The
+  # overlay is self-contained (no `../../` parent-dir references), so kubectl's
+  # embedded kustomize renders it under the default LoadRestrictionsRootOnly
+  # security check — same contract as the chaos-mesh and prometheus overlays
+  # (no `--load-restrictor` flag required, kubernetes/kubectl#948). It installs
+  # the resource-metrics API the autoscaling recipe's HPA depends on.
+  if [[ "${WITH_METRICS_SERVER}" == "true" ]]; then
+    kubectl apply -k "${REPO_ROOT}/deploy/kind/metrics-server"
+    log "metrics-server kind overlay applied (WITH_METRICS_SERVER=true)."
+  fi
+
   # the c5c3 ControlPlane stack (c5c3-operator + image and the K-ORC
   # GitRepository/Kustomization) is published and valid, so it would reconcile —
   # but running the full chain is opt-in. WITH_CONTROLPLANE=true deploys it; the
@@ -1653,6 +1673,11 @@ main() {
     if [[ "${release_wait_timeout}" -lt 1200 ]]; then
       release_wait_timeout=1200
     fi
+  fi
+  # metrics-server is appended last (after chaos-mesh and kube-prometheus-stack)
+  # so the relative ordering of the seven base releases is preserved exactly.
+  if [[ "${WITH_METRICS_SERVER}" == "true" ]]; then
+    helm_releases+=(metrics-server)
   fi
   wait_for_helmreleases "${release_wait_timeout}" "${helm_releases[@]}"
 

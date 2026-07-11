@@ -1,0 +1,49 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# metrics-server HelmRelease — opt-in Kubernetes resource-metrics API for the
+# kind Quick Start. Provides the CPU/memory utilisation samples the
+# HorizontalPodAutoscaler in the autoscaling recipe consumes; without it the
+# generated HPA sits at `unknown/80%` and never scales.
+#
+# Deployed to kube-system (the chart defaults to
+# priorityClassName: system-cluster-critical, which only resolves there) and
+# tuned for kind with `--kubelet-insecure-tls`: kind's kubelets serve their
+# metrics endpoint with self-signed certificates the metrics-server cannot
+# verify against the cluster CA, so scrapes fail with an x509 error until TLS
+# verification is skipped. This replaces the runtime `kubectl patch` the
+# autoscaling guide previously documented — the flag is baked into the
+# release values so a single `kubectl apply -k` yields a working server.
+#
+# Production overlays never install this release: managed distributions ship
+# their own metrics-server, and production clusters bring their own.
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: metrics-server
+  namespace: kube-system
+spec:
+  interval: 30m
+  chart:
+    spec:
+      chart: metrics-server
+      version: ">=3.12.0 <4.0.0"
+      sourceRef:
+        kind: HelmRepository
+        name: metrics-server
+        namespace: flux-system
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3
+  values:
+    args:
+      # kind kubelets serve /metrics/resource with a self-signed cert that
+      # metrics-server cannot verify against the cluster CA; skip verification
+      # so scrapes succeed on the devstack. Never set this on a production
+      # cluster with properly issued kubelet certificates.
+      - --kubelet-insecure-tls

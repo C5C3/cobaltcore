@@ -1,0 +1,112 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test pinning the default-state non-regression invariant for the
+# metrics-server kind opt-in: when WITH_METRICS_SERVER is unset (or set to
+# anything other than the literal string "true"), `make deploy-infra` MUST NOT
+# install the metrics-server HelmRepository, HelmRelease, or Deployment.
+#
+# Why this test exists
+#   The shell unit tests
+#   (tests/unit/hack/deploy_infra_metrics_server_flag_test.sh,
+#   tests/unit/deploy/metrics_server_overlay_test.sh) exercise the gating logic
+#   and overlay render at the source level. Neither positively asserts "default
+#   cluster has no metrics-server footprint", so a regression that accidentally
+#   installs it (a stray `kubectl apply -k deploy/kind/metrics-server` outside
+#   the WITH_METRICS_SERVER gate, or a future kustomize merge that pulls the
+#   overlay into the base) would slip through. This suite closes that gap by
+#   asserting absence end-to-end against the running cluster, mirroring the
+#   sibling no-prometheus-when-disabled suite.
+#
+# Lane wiring:
+#   This test runs in the default e2e-infra lane (which exercises
+#   `make deploy-infra` without WITH_METRICS_SERVER), so the absence
+#   assertions hold. There is no CI lane that opts the flag on today, so this
+#   negative gate is the primary end-to-end coverage of the default posture.
+#
+# Scope gating — none. This absence invariant is also true on production
+# overlays (deploy/flux-system/ does not install metrics-server), so the test
+# is environment-agnostic like no-prometheus-when-disabled.
+#
+# Why a single script and not declarative `error` blocks: asserting "no
+# HelmRelease named metrics-server in any namespace" requires a
+# list-and-filter, which is more naturally expressed in shell. Consolidating
+# into one script also keeps the catch-block dump aligned with the assertion
+# sequence.
+#
+---
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: no-metrics-server-when-disabled
+spec:
+  # Three kubectl gets (helmrepository, helmrelease list, deployment) plus a
+  # diagnostic dump on failure. Realistic worst case is sub-second; budget 2m
+  # for cluster slowness margin.
+  timeouts:
+    assert: 2m
+    exec: 2m
+  steps:
+  - try:
+    - script:
+        timeout: 2m
+        # Chainsaw defaults to `sh`, which rejects `set -o pipefail`. Pin bash
+        # to match the rest of the infra/keystone e2e scripts.
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          # ── Assertion 1: no metrics-server HelmRepository in flux-system ──
+          # The only producer is deploy/kind/metrics-server/source.yaml, applied
+          # solely inside the WITH_METRICS_SERVER=true gate.
+          if kubectl get helmrepository.source.toolkit.fluxcd.io metrics-server \
+                -n flux-system >/dev/null 2>&1; then
+            echo "FAIL: HelmRepository 'metrics-server' exists in 'flux-system' on a default cluster."
+            echo "      Source of regression: hack/deploy-infra.sh ran the metrics-server"
+            echo "      overlay apply outside the WITH_METRICS_SERVER gate, or the overlay was"
+            echo "      pulled into deploy/kind/base."
+            exit 1
+          fi
+          echo "OK: no HelmRepository 'metrics-server' in 'flux-system'"
+
+          # ── Assertion 2: no metrics-server HelmRelease anywhere ──
+          # `kubectl get -A -o name` returns 0 even when the list is empty; we
+          # count lines rather than relying on exit codes.
+          hr_count=$(kubectl get helmrelease.helm.toolkit.fluxcd.io --all-namespaces \
+            --field-selector=metadata.name=metrics-server \
+            -o name 2>/dev/null | wc -l | tr -d '[:space:]')
+          if [ "${hr_count}" != "0" ]; then
+            echo "FAIL: HelmRelease 'metrics-server' exists (count=${hr_count}) on a default cluster."
+            kubectl get helmrelease.helm.toolkit.fluxcd.io --all-namespaces \
+              --field-selector=metadata.name=metrics-server -o wide 2>&1 || true
+            exit 1
+          fi
+          echo "OK: no HelmRelease 'metrics-server' exists"
+
+          # ── Assertion 3: no metrics-server Deployment in kube-system ──
+          # The chart installs its Deployment into kube-system; its absence is
+          # the default steady state.
+          if kubectl get deployment metrics-server -n kube-system >/dev/null 2>&1; then
+            echo "FAIL: Deployment 'metrics-server' exists in 'kube-system' on a default cluster."
+            echo "      Source of regression: the metrics-server overlay was applied"
+            echo "      without WITH_METRICS_SERVER=true."
+            exit 1
+          fi
+          echo "OK: no Deployment 'metrics-server' in 'kube-system'"
+
+          echo "PASS: default kind deploy footprint matches the WITH_METRICS_SERVER=false contract."
+    catch:
+    # On failure, dump the cluster's metrics-server footprint for triage. Each
+    # block is independently scoped so a missing resource does not
+    # short-circuit the rest of the dump.
+    - script:
+        content: |
+          echo "=== HelmRepositories named metrics-server (flux-system) ==="
+          kubectl get helmrepository.source.toolkit.fluxcd.io -n flux-system \
+            --field-selector=metadata.name=metrics-server -o wide 2>&1 || true
+          echo "=== HelmReleases named metrics-server (any namespace) ==="
+          kubectl get helmrelease.helm.toolkit.fluxcd.io --all-namespaces \
+            --field-selector=metadata.name=metrics-server -o wide 2>&1 || true
+          echo "=== Deployments named metrics-server (kube-system) ==="
+          kubectl get deployment metrics-server -n kube-system -o wide 2>&1 || true

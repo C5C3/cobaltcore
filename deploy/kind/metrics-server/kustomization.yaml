@@ -1,0 +1,43 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Opt-in kind overlay for metrics-server — applied only when the operator
+# explicitly requests it (WITH_METRICS_SERVER=true make deploy-infra).
+#
+# Bundles everything needed to render a working metrics-server on a kind
+# cluster:
+#   1. The metrics-server HelmRepository source (upstream chart index).
+#   2. The metrics-server HelmRelease with kind-tuned values baked directly
+#      into release.yaml (`--kubelet-insecure-tls`, so the server can scrape
+#      kind's self-signed kubelet certificates).
+#
+# There is NO inline namespace.yaml: the chart installs into the pre-existing
+# `kube-system` Namespace (it defaults to `priorityClassName:
+# system-cluster-critical`, which only resolves in kube-system), so the
+# overlay does not create a Namespace of its own.
+#
+# All resource references are local to this overlay (no parent-directory
+# `../../` paths). The overlay therefore renders cleanly under kustomize's
+# default `LoadRestrictionsRootOnly` security check, which means
+# `kubectl apply -k deploy/kind/metrics-server` works without
+# `--load-restrictor`. kubectl's embedded kustomize does NOT expose
+# `--load-restrictor` (kubernetes/kubectl#948), so keeping the overlay
+# self-contained is the only way to ship `kubectl apply -k` as the production
+# caller in hack/deploy-infra.sh — same constraint that drove the chaos-mesh
+# and kube-prometheus-stack overlays in.
+#
+# Production overlays (deploy/flux-system/kustomization.yaml) do not list any
+# of the resources in this directory — metrics-server is a kind-only
+# convenience for the HPA / autoscaling recipe. Managed distributions ship
+# their own metrics-server; production clusters bring their own.
+#
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  # HelmRepository (flux-system) + HelmRelease (kube-system) are local to
+  # this overlay — production overlays do not include them.
+  - source.yaml
+  - release.yaml
