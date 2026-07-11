@@ -6,7 +6,9 @@
 # kind opt-in: when WITH_PROMETHEUS is unset (or set to anything
 # other than the literal string "true"), `make deploy-infra` MUST NOT install
 # the kube-prometheus-stack HelmRelease or render a
-# `ServiceMonitor/keystone-operator` in `keystone-system` (the operator's dedicated Namespace).
+# `ServiceMonitor/keystone-operator` in `keystone-system` or a
+# `ServiceMonitor/horizon-operator` in `horizon-system` (the operators'
+# dedicated Namespaces).
 #
 # Why this test exists
 #   The shell unit test (tests/unit/hack/deploy_infra_prometheus_flag_test.sh)
@@ -107,10 +109,10 @@ spec:
           echo "OK: no HelmRelease 'kube-prometheus-stack' exists"
 
           # ── Assertion 3: no ServiceMonitor/keystone-operator in keystone-system ──
-          # The deploy script's enable_keystone_operator_servicemonitor
-          # helper patches monitoring.serviceMonitor.enabled=true only inside
-          # the WITH_PROMETHEUS=true gate. On a default cluster the
-          # rendered chart's monitoring.serviceMonitor.enabled stays false
+          # The deploy script's enable_operator_servicemonitor helper patches
+          # monitoring.serviceMonitor.enabled=true only inside the
+          # WITH_PROMETHEUS=true gate. On a default cluster the rendered chart's
+          # monitoring.serviceMonitor.enabled stays false
           # (chart default at operators/keystone/helm/keystone-operator/values.yaml),
           # so the ServiceMonitor must not exist.
           # Post-, the keystone-operator HelmRelease lives in
@@ -121,12 +123,29 @@ spec:
                 -n keystone-system >/dev/null 2>&1; then
             echo "FAIL: ServiceMonitor/keystone-operator exists in 'keystone-system' on a default cluster."
             echo "      Source of regression: hack/deploy-infra.sh ran"
-            echo "      enable_keystone_operator_servicemonitor outside the WITH_PROMETHEUS gate,"
+            echo "      enable_operator_servicemonitor outside the WITH_PROMETHEUS gate,"
             echo "      or the keystone-operator chart default monitoring.serviceMonitor.enabled"
             echo "      flipped to true."
             exit 1
           fi
           echo "OK: no ServiceMonitor/keystone-operator in 'keystone-system'"
+
+          # ── Assertion 4: no ServiceMonitor/horizon-operator in horizon-system ──
+          # enable_operator_servicemonitor also flips the horizon-operator
+          # ServiceMonitor under the WITH_PROMETHEUS gate, so on a default
+          # cluster the horizon-operator ServiceMonitor must be absent too. On
+          # the default kind base the horizon-operator HelmRelease is suspended,
+          # so this also guards against a stray patch or a chart-default flip.
+          if kubectl get servicemonitor.monitoring.coreos.com horizon-operator \
+                -n horizon-system >/dev/null 2>&1; then
+            echo "FAIL: ServiceMonitor/horizon-operator exists in 'horizon-system' on a default cluster."
+            echo "      Source of regression: hack/deploy-infra.sh ran"
+            echo "      enable_operator_servicemonitor outside the WITH_PROMETHEUS gate,"
+            echo "      or the horizon-operator chart default monitoring.serviceMonitor.enabled"
+            echo "      flipped to true."
+            exit 1
+          fi
+          echo "OK: no ServiceMonitor/horizon-operator in 'horizon-system'"
 
           echo "PASS: default kind deploy footprint matches the WITH_PROMETHEUS=false contract."
     catch:
@@ -142,6 +161,11 @@ spec:
             --field-selector=metadata.name=kube-prometheus-stack -o wide 2>&1 || true
           echo "=== ServiceMonitors in keystone-system ==="
           kubectl get servicemonitor.monitoring.coreos.com -n keystone-system -o wide 2>&1 || true
+          echo "=== ServiceMonitors in horizon-system ==="
+          kubectl get servicemonitor.monitoring.coreos.com -n horizon-system -o wide 2>&1 || true
           echo "=== keystone-operator HelmRelease values (effective) ==="
           kubectl get helmrelease.helm.toolkit.fluxcd.io keystone-operator -n keystone-system \
+            -o jsonpath='{.spec.values}' 2>&1 || true
+          echo "=== horizon-operator HelmRelease values (effective) ==="
+          kubectl get helmrelease.helm.toolkit.fluxcd.io horizon-operator -n horizon-system \
             -o jsonpath='{.spec.values}' 2>&1 || true

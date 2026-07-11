@@ -765,20 +765,21 @@ load_chaos_mesh_kernel_modules() {
 }
 
 # ---------------------------------------------------------------------------
-# enable_keystone_operator_servicemonitor — Toggle the operator chart's
-# `monitoring.serviceMonitor.enabled` value to true so the kube-prometheus-stack
-# Prometheus instance can scrape the operator metrics endpoint via the
-# rendered ServiceMonitor (/).
+# enable_operator_servicemonitor RELEASE NAMESPACE [TIMEOUT] — Toggle the given
+# operator chart's `monitoring.serviceMonitor.enabled` value to true so the
+# kube-prometheus-stack Prometheus instance can scrape the operator metrics
+# endpoint via the rendered ServiceMonitor. Used for both keystone-operator
+# (keystone-system) and horizon-operator (horizon-system).
 #
 # Callable only when WITH_PROMETHEUS=true. Patches spec.values via
 # strategic-merge so any other values set on the HelmRelease (including the
 # kind-base suspend patch) are preserved.
 #
 # DECISION: handle suspended HelmRelease in kind
-# Ambiguity: deploy/kind/base/kustomization.yaml suspends the keystone-operator
-#   HelmRelease (lines 87-106) so CI can `helm install` it manually with a
-#   locally built image. A suspended HelmRelease never reconciles, so a
-#   wait-for-Ready against it would always time out.
+# Ambiguity: deploy/kind/base/kustomization.yaml suspends the operator
+#   HelmReleases so CI can `helm install` them manually with a locally built
+#   image (and the ControlPlane path un-suspends them). A suspended HelmRelease
+#   never reconciles, so a wait-for-Ready against it would always time out.
 # Chose: patch spec.values regardless of suspend state, then read the current
 #   spec.suspend; skip the wait when suspended (logging the rationale) and
 #   wait for Ready otherwise. The patch remains durable: when ci-deploy-
@@ -789,25 +790,27 @@ load_chaos_mesh_kernel_modules() {
 #   keeping the kind path green; the suspend semantics are owned by Flux, not
 #   by this script.
 # ---------------------------------------------------------------------------
-enable_keystone_operator_servicemonitor() {
-  local timeout="${1:-${HELMRELEASE_TIMEOUT}}"
+enable_operator_servicemonitor() {
+  local release="$1"
+  local namespace="$2"
+  local timeout="${3:-${HELMRELEASE_TIMEOUT}}"
 
-  log "Enabling keystone-operator ServiceMonitor..."
-  kubectl patch helmrelease keystone-operator -n keystone-system --type=merge \
+  log "Enabling ${release} ServiceMonitor..."
+  kubectl patch helmrelease "${release}" -n "${namespace}" --type=merge \
     -p '{"spec":{"values":{"monitoring":{"serviceMonitor":{"enabled":true}}}}}'
 
   local suspended
-  suspended=$(kubectl get helmrelease keystone-operator -n keystone-system \
+  suspended=$(kubectl get helmrelease "${release}" -n "${namespace}" \
     -o jsonpath='{.spec.suspend}' 2>/dev/null || true)
   if [[ "${suspended}" == "true" ]]; then
-    log "keystone-operator HelmRelease is suspended (kind base patch); skipping reconcile wait."
+    log "${release} HelmRelease is suspended (kind base patch); skipping reconcile wait."
     log "  spec.values patch is durable — re-enable Flux management or run ci-deploy-operator.sh"
     log "  with monitoring.serviceMonitor.enabled=true to render the ServiceMonitor."
     return 0
   fi
 
-  wait_for_helmreleases "${timeout}" keystone-operator
-  log "keystone-operator HelmRelease reconciled with monitoring.serviceMonitor.enabled=true."
+  wait_for_helmreleases "${timeout}" "${release}"
+  log "${release} HelmRelease reconciled with monitoring.serviceMonitor.enabled=true."
 }
 
 # ---------------------------------------------------------------------------
@@ -1681,12 +1684,17 @@ main() {
   fi
   wait_for_helmreleases "${release_wait_timeout}" "${helm_releases[@]}"
 
-  # with kube-prometheus-stack Ready, flip the operator
-  # chart's monitoring.serviceMonitor.enabled to true so Prometheus picks up
-  # the metrics target. Runs only when WITH_PROMETHEUS=true to keep the
-  # default Quick Start free of monitoring-coreos-com CRD lookups.
+  # with kube-prometheus-stack Ready, flip both operator charts'
+  # monitoring.serviceMonitor.enabled to true so Prometheus picks up the
+  # metrics targets. Runs only when WITH_PROMETHEUS=true to keep the default
+  # Quick Start free of monitoring-coreos-com CRD lookups. The horizon-operator
+  # HelmRelease exists on every path: suspended on the default kind base
+  # (durable-but-inert patch + skipped wait) and un-suspended under
+  # WITH_CONTROLPLANE (patch + Ready wait), which is what makes the horizon
+  # metrics guide's kind tip true.
   if [[ "${WITH_PROMETHEUS}" == "true" ]]; then
-    enable_keystone_operator_servicemonitor "${HELMRELEASE_TIMEOUT}"
+    enable_operator_servicemonitor keystone-operator keystone-system "${HELMRELEASE_TIMEOUT}"
+    enable_operator_servicemonitor horizon-operator horizon-system "${HELMRELEASE_TIMEOUT}"
   fi
 
   # Step 5: Apply infrastructure kustomize overlay (CRD-dependent resources)

@@ -736,7 +736,8 @@ of the operator metrics endpoint.
 The `setup-e2e-infra` composite action is invoked with `WITH_PROMETHEUS: "true"`
 in its step `env`, which threads through to `hack/deploy-infra.sh` and gates the
 `kube-prometheus-stack` overlay (`deploy/kind/prometheus/`) plus the
-post-deploy `enable_keystone_operator_servicemonitor` patch. The Deploy
+post-deploy `enable_operator_servicemonitor` patch (applied to both the
+keystone-operator and horizon-operator HelmReleases). The Deploy
 operator step runs `hack/ci-deploy-operator.sh` with `WITH_PROMETHEUS: "true"`
 in its step `env`, which adds `--set monitoring.serviceMonitor.enabled=true`
 to the Helm install command — without this flag the chart's gated

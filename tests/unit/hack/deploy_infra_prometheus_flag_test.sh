@@ -19,7 +19,7 @@
 #   1. kustomize apply (deploy/kind/prometheus)
 #   2. dashboard JSON copy (operators/keystone/dashboards → overlay root)
 #   3. Phase 3 helm-release wait list append (kube-prometheus-stack)
-#   4. enable_keystone_operator_servicemonitor call site
+#   4. enable_operator_servicemonitor call sites (keystone + horizon)
 # The configuration-banner line is asserted via grep so the user-visible
 # summary stays in lockstep with the runtime value.
 #
@@ -109,7 +109,7 @@ test_non_true_value_does_not_trigger_install() {
   # skip branch at every gate. There are four runtime gates:
   #   - dashboard copy + kustomize apply (Step 3)
   #   - helm_releases append (Phase 3)
-  #   - enable_keystone_operator_servicemonitor call (post Phase 3)
+  #   - enable_operator_servicemonitor calls, keystone + horizon (post Phase 3)
   local gate_count
   gate_count="$(grep -cE '"\$\{WITH_PROMETHEUS\}" == "true"' "$DEPLOY_INFRA_SH" || true)"
   assert_eq "deploy-infra.sh has exactly 3 strict WITH_PROMETHEUS==true gates" "3" "$gate_count"
@@ -219,32 +219,45 @@ test_kube_prometheus_stack_appended_dynamically() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 9: enable_keystone_operator_servicemonitor exists and is gated
+# Test 9: enable_operator_servicemonitor exists and is gated for both operators
 #
-# The helper must (a) be defined as a function in the script and (b) be
-# called from main() only when WITH_PROMETHEUS=true so the default Quick
-# Start does not poke the operator HelmRelease.
+# The helper must (a) be defined as a parameterized function in the script and
+# (b) be called from main() for BOTH keystone-operator and horizon-operator,
+# each only when WITH_PROMETHEUS=true so the default Quick Start does not poke
+# the operator HelmReleases. The horizon call is what makes the horizon
+# metrics guide's kind tip true.
 # ---------------------------------------------------------------------------
 test_servicemonitor_helper_is_defined_and_gated() {
-  echo "Test: enable_keystone_operator_servicemonitor is defined and gated"
+  echo "Test: enable_operator_servicemonitor is defined and gated for keystone + horizon"
 
   assert_file_contains \
-    "enable_keystone_operator_servicemonitor function is defined" \
+    "enable_operator_servicemonitor function is defined" \
     "$DEPLOY_INFRA_SH" \
-    '^enable_keystone_operator_servicemonitor()'
+    '^enable_operator_servicemonitor()'
 
+  # The patch is parameterized (release/namespace), so assert the parameterized
+  # patch line inside the function rather than a hard-coded release name — the
+  # literal 'kubectl patch helmrelease keystone-operator -n keystone-system'
+  # also matches the un-suspend patch elsewhere in the script and would be
+  # ambiguous.
   assert_file_contains \
-    "helper patches the keystone-operator HelmRelease values" \
+    "helper patches the operator HelmRelease values via parameterized release/namespace" \
     "$DEPLOY_INFRA_SH" \
-    'kubectl patch helmrelease keystone-operator -n keystone-system'
+    'kubectl patch helmrelease "${release}" -n "${namespace}" --type=merge'
 
-  # The call site must be inside a WITH_PROMETHEUS gate.
-  local call_line gate_line
-  call_line="$(grep -nE '^[[:space:]]+enable_keystone_operator_servicemonitor[[:space:]]' "$DEPLOY_INFRA_SH" | head -1 | cut -d: -f1)"
-  gate_line="$(grep -n '"${WITH_PROMETHEUS}" == "true"' "$DEPLOY_INFRA_SH" | awk -F: -v target="${call_line:-0}" '$1 < target { last = $1 } END { print last }')"
+  # Both call sites must exist and each must be inside a WITH_PROMETHEUS gate.
+  local ks_line hz_line gate_line
+  ks_line="$(grep -nE '^[[:space:]]+enable_operator_servicemonitor keystone-operator keystone-system' "$DEPLOY_INFRA_SH" | head -1 | cut -d: -f1)"
+  hz_line="$(grep -nE '^[[:space:]]+enable_operator_servicemonitor horizon-operator horizon-system' "$DEPLOY_INFRA_SH" | head -1 | cut -d: -f1)"
 
-  assert_not_empty "enable_keystone_operator_servicemonitor call site is found" "$call_line"
-  assert_not_empty "WITH_PROMETHEUS gate precedes the helper call" "$gate_line"
+  assert_not_empty "keystone-operator ServiceMonitor call site is found" "$ks_line"
+  assert_not_empty "horizon-operator ServiceMonitor call site is found" "$hz_line"
+
+  gate_line="$(grep -n '"${WITH_PROMETHEUS}" == "true"' "$DEPLOY_INFRA_SH" | awk -F: -v target="${ks_line:-0}" '$1 < target { last = $1 } END { print last }')"
+  assert_not_empty "WITH_PROMETHEUS gate precedes the keystone-operator helper call" "$gate_line"
+
+  gate_line="$(grep -n '"${WITH_PROMETHEUS}" == "true"' "$DEPLOY_INFRA_SH" | awk -F: -v target="${hz_line:-0}" '$1 < target { last = $1 } END { print last }')"
+  assert_not_empty "WITH_PROMETHEUS gate precedes the horizon-operator helper call" "$gate_line"
 }
 
 # ---------------------------------------------------------------------------
