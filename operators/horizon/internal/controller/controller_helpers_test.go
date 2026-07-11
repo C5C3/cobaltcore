@@ -6,6 +6,9 @@
 package controller
 
 import (
+	"context"
+	"testing"
+
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
@@ -15,6 +18,7 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	commonv1 "github.com/c5c3/forge/internal/common/types"
@@ -63,6 +67,34 @@ func newTestReconciler(s *runtime.Scheme, objs ...client.Object) *HorizonReconci
 		Client: cb.Build(),
 		Scheme: s,
 	}
+}
+
+// newUpdateStatusReconciler builds a HorizonReconciler backed by a fake client
+// seeded with the given Horizon. When statusUpdateErr is non-nil the status
+// subresource update is intercepted to always fail, so a skipped write is
+// observable as a nil error return.
+func newUpdateStatusReconciler(t *testing.T, h *horizonv1alpha1.Horizon, statusUpdateErr error) (*HorizonReconciler, *horizonv1alpha1.Horizon) {
+	t.Helper()
+	s := testScheme()
+	cb := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(h.DeepCopy()).
+		WithStatusSubresource(&horizonv1alpha1.Horizon{})
+	if statusUpdateErr != nil {
+		cb = cb.WithInterceptorFuncs(interceptor.Funcs{
+			SubResourceUpdate: func(_ context.Context, _ client.Client, _ string, _ client.Object, _ ...client.SubResourceUpdateOption) error {
+				return statusUpdateErr
+			},
+		})
+	}
+	c := cb.Build()
+
+	// Re-fetch so the object carries the ResourceVersion assigned by the fake client.
+	fetched := &horizonv1alpha1.Horizon{}
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(h), fetched); err != nil {
+		t.Fatalf("fetching Horizon from fake client: %v", err)
+	}
+	return &HorizonReconciler{Client: c, Scheme: s}, fetched
 }
 
 // readyClusterSecretStore returns a ClusterSecretStore with a Ready=True

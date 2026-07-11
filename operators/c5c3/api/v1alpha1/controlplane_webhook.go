@@ -1018,8 +1018,8 @@ func validateKeystoneMode(cp *ControlPlane) field.ErrorList {
 			allErrs = append(allErrs, field.Required(ksPath.Child("external"),
 				"external is required when services.keystone.mode is External"))
 		} else {
-			switch {
-			case ks.External.AuthURL == "":
+			switch ks.External.AuthURL {
+			case "":
 				allErrs = append(allErrs, field.Required(ksPath.Child("external", "authURL"),
 					"authURL is required when services.keystone.mode is External"))
 			default:

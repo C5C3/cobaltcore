@@ -6,6 +6,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -82,6 +83,28 @@ func TestReconcile_SecretsGateShortCircuitsAndPersistsStatus(t *testing.T) {
 
 	// The chain short-circuited: no downstream condition was set.
 	g.Expect(conditions.GetCondition(got.Status.Conditions, "DeploymentReady")).To(BeNil())
+}
+
+// TestUpdateStatus_SkipsWriteWhenUnchanged verifies the C3 gate: when the
+// snapshot equals the status updateStatus computes, no Status().Update is
+// issued. The reconciler's Status().Update is wired to always fail, so a
+// skipped write is observable as a nil error return.
+func TestUpdateStatus_SkipsWriteWhenUnchanged(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	statusErr := fmt.Errorf("status update must not be called on an unchanged status")
+	r, h := newUpdateStatusReconciler(t, testHorizon(), statusErr)
+
+	// Bring h.Status into the exact state updateStatus would compute (Ready
+	// aggregated + ObservedGeneration stamped), then snapshot it — a converged
+	// steady-state pass.
+	setReadyCondition(h)
+	h.Status.ObservedGeneration = h.Generation
+	snapshot := h.Status.DeepCopy()
+
+	_, err := r.updateStatus(context.Background(), h, snapshot, ctrl.Result{}, nil)
+	g.Expect(err).NotTo(HaveOccurred(),
+		"an unchanged status must skip the write; the failing Status().Update proves it was not called")
 }
 
 func TestHorizonSecretNameExtractor(t *testing.T) {

@@ -35,7 +35,6 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	"github.com/c5c3/forge/internal/common/bootstrap"
-	"github.com/c5c3/forge/internal/common/conditions"
 	"github.com/c5c3/forge/internal/common/gateway"
 	"github.com/c5c3/forge/internal/common/healthcheck"
 	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
@@ -756,17 +755,25 @@ func (r *KeystoneReconciler) hasLiveOpenBaoBackupPushSecrets(ctx context.Context
 // already Ready (SC-CHAOS-006) — and stamps status.observedGeneration so a
 // stale status is distinguishable from one reflecting the current spec.
 func (r *KeystoneReconciler) updateStatus(ctx context.Context, keystone *keystonev1alpha1.Keystone, statusBefore *keystonev1alpha1.KeystoneStatus, result ctrl.Result, reconcileErr error) (ctrl.Result, error) {
-	return commonreconcile.UpdateStatus(ctx, r.Client, keystone, statusBefore, &keystone.Status, func() {
-		setReadyCondition(keystone)
+	return keystoneSkeleton.UpdateStatus(ctx, r.Client, keystone, statusBefore, &keystone.Status, func() {
 		keystone.Status.ObservedGeneration = keystone.Generation
 	}, result, reconcileErr)
 }
 
+// keystoneSkeleton bundles the shared controller-skeleton glue (Ready
+// aggregation, no-op-skipping status writes, config-failure marking, and
+// parallel-group execution) with keystone's sub-condition vocabulary and status
+// accessor. The wrapper methods below delegate to it.
+var keystoneSkeleton = commonreconcile.Skeleton[*keystonev1alpha1.Keystone, keystonev1alpha1.KeystoneStatus]{
+	SubConditionTypes: subConditionTypes,
+	Conditions:        func(ks *keystonev1alpha1.Keystone) *[]metav1.Condition { return &ks.Status.Conditions },
+}
+
 // setReadyCondition sets the aggregate Ready condition based on all
-// sub-conditions, delegating to the shared aggregation helper with keystone's
+// sub-conditions, delegating to the shared skeleton with keystone's
 // sub-condition vocabulary.
 func setReadyCondition(keystone *keystonev1alpha1.Keystone) {
-	commonreconcile.SetAggregateReady(&keystone.Status.Conditions, keystone.Generation, subConditionTypes)
+	keystoneSkeleton.SetReady(keystone)
 }
 
 // conditionReasonConfigError is the SecretsReady=False reason set when
@@ -784,13 +791,7 @@ const conditionReasonConfigError = "ConfigError"
 // Ready=True at the new generation; the failure was visible only in logs and
 // the reconcile_errors counter (issue #467).
 func markConfigFailed(keystone *keystonev1alpha1.Keystone, err error) {
-	conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
-		Type:               "SecretsReady",
-		Status:             metav1.ConditionFalse,
-		ObservedGeneration: keystone.Generation,
-		Reason:             conditionReasonConfigError,
-		Message:            err.Error(),
-	})
+	keystoneSkeleton.MarkFailed(keystone, "SecretsReady", conditionReasonConfigError, err)
 }
 
 // reconcileParallelGroup runs the given sub-reconcilers concurrently,
@@ -804,9 +805,7 @@ func (r *KeystoneReconciler) reconcileParallelGroup(
 	keystone *keystonev1alpha1.Keystone,
 	subs []commonreconcile.ParallelStep[*keystonev1alpha1.Keystone],
 ) (ctrl.Result, error) {
-	return commonreconcile.RunParallelGroup(ctx, keystone,
-		func(ks *keystonev1alpha1.Keystone) *[]metav1.Condition { return &ks.Status.Conditions },
-		instrumentSubReconciler, subs)
+	return keystoneSkeleton.RunParallelGroup(ctx, keystone, instrumentSubReconciler, subs)
 }
 
 // SetupWithManager registers the KeystoneReconciler with the controller manager.

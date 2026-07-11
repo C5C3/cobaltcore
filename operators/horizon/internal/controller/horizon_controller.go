@@ -32,7 +32,6 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	"github.com/c5c3/forge/internal/common/bootstrap"
-	"github.com/c5c3/forge/internal/common/conditions"
 	"github.com/c5c3/forge/internal/common/gateway"
 	"github.com/c5c3/forge/internal/common/healthcheck"
 	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
@@ -276,30 +275,32 @@ func (r *HorizonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 // the original reconcile failure stays visible. The mutate hook re-aggregates
 // the Ready condition on every persist and stamps status.observedGeneration.
 func (r *HorizonReconciler) updateStatus(ctx context.Context, horizon *horizonv1alpha1.Horizon, statusBefore *horizonv1alpha1.HorizonStatus, result ctrl.Result, reconcileErr error) (ctrl.Result, error) {
-	return commonreconcile.UpdateStatus(ctx, r.Client, horizon, statusBefore, &horizon.Status, func() {
-		setReadyCondition(horizon)
+	return horizonSkeleton.UpdateStatus(ctx, r.Client, horizon, statusBefore, &horizon.Status, func() {
 		horizon.Status.ObservedGeneration = horizon.Generation
 	}, result, reconcileErr)
 }
 
+// horizonSkeleton bundles the shared controller-skeleton glue (Ready
+// aggregation, no-op-skipping status writes, config-failure marking, and
+// parallel-group execution) with horizon's sub-condition vocabulary and status
+// accessor. The wrapper methods below delegate to it.
+var horizonSkeleton = commonreconcile.Skeleton[*horizonv1alpha1.Horizon, horizonv1alpha1.HorizonStatus]{
+	SubConditionTypes: subConditionTypes,
+	Conditions:        func(h *horizonv1alpha1.Horizon) *[]metav1.Condition { return &h.Status.Conditions },
+}
+
 // setReadyCondition sets the aggregate Ready condition based on all
-// sub-conditions, delegating to the shared aggregation helper with horizon's
+// sub-conditions, delegating to the shared skeleton with horizon's
 // sub-condition vocabulary.
 func setReadyCondition(horizon *horizonv1alpha1.Horizon) {
-	commonreconcile.SetAggregateReady(&horizon.Status.Conditions, horizon.Generation, subConditionTypes)
+	horizonSkeleton.SetReady(horizon)
 }
 
 // markConfigFailed flips ConfigReady to False so a reconcileConfig or config
 // prune failure cannot leave the aggregate Ready condition stale-True at the
 // new ObservedGeneration.
 func markConfigFailed(horizon *horizonv1alpha1.Horizon, err error) {
-	conditions.SetCondition(&horizon.Status.Conditions, metav1.Condition{
-		Type:               conditionTypeConfigReady,
-		Status:             metav1.ConditionFalse,
-		ObservedGeneration: horizon.Generation,
-		Reason:             conditionReasonConfigError,
-		Message:            err.Error(),
-	})
+	horizonSkeleton.MarkFailed(horizon, conditionTypeConfigReady, conditionReasonConfigError, err)
 }
 
 // reconcileParallelGroup runs the given sub-reconcilers concurrently,
@@ -313,9 +314,7 @@ func (r *HorizonReconciler) reconcileParallelGroup(
 	horizon *horizonv1alpha1.Horizon,
 	subs []commonreconcile.ParallelStep[*horizonv1alpha1.Horizon],
 ) (ctrl.Result, error) {
-	return commonreconcile.RunParallelGroup(ctx, horizon,
-		func(h *horizonv1alpha1.Horizon) *[]metav1.Condition { return &h.Status.Conditions },
-		instrumentSubReconciler, subs)
+	return horizonSkeleton.RunParallelGroup(ctx, horizon, instrumentSubReconciler, subs)
 }
 
 // SetupWithManager registers the HorizonReconciler with the controller manager.
