@@ -1,0 +1,210 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for per-ControlPlane OpenBao identity / secret-store scoping
+# (#605). It exercises the half of the feature that unit and integration tests
+# CANNOT reach: the real OpenBao identity a ControlPlane gets through a namespaced
+# SecretStore, and OpenBao's own enforcement of cross-tenant isolation via the
+# eso-tenant Kubernetes auth role and the eso-tenant templated policy.
+#
+# The ControlPlane→Keystone/Horizon projection and the SecretsReady gating are
+# already covered by the c5c3 operator integration test
+# (TestIntegration_SecretStoreRefProjectedAndGated) and the keystone/horizon
+# integration tests, so this suite deliberately focuses on what only a live
+# OpenBao can prove:
+#
+#   1. setup-eso-tenant.sh provisions the tenant ServiceAccount, mTLS Certificate,
+#      and namespaced SecretStore "openbao-tenant-store" in the test namespace;
+#   2. that SecretStore reaches Ready=True — proving the eso-tenant role + policy
+#      + mTLS actually authenticate the per-tenant identity against OpenBao;
+#   3. a token minted from the tenant's eso-tenant-auth SA can read ITS OWN
+#      namespace's Keystone key path but is DENIED on another namespace's path,
+#      because the eso-tenant policy templates every path to the caller's own
+#      service_account_namespace. This is the OpenBao-enforced isolation that
+#      replaces the naming-convention "isolation" the issue set out to fix.
+#
+# ── Presence + capability guard ──────────────────────────────────────────────
+# Like the sibling db-credential-scoping / multi-controlplane suites, the
+# c5c3-operator + OpenBao stack this test spans is not installed by every kind
+# E2E wiring, and the suite runs under execution.failFast: true, so a pure
+# declarative test would hard-fail every cluster missing that stack. A runtime
+# guard probes for the required CRDs, the OpenBao ClusterSecretStore, the
+# openbao-ca-issuer ClusterIssuer, and — crucially — the eso-tenant auth role
+# (which only exists once setup-auth.sh has run WITH this feature). It exits 0
+# with a SKIP line when any prerequisite is absent, so a cluster bootstrapped
+# before this feature (no eso-tenant role) skips cleanly instead of failing.
+---
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: secret-store-scoping
+spec:
+  # No fixed spec.namespace: chainsaw runs this Test in its own ephemeral
+  # namespace and injects it as $NAMESPACE. The ephemeral namespace becomes the
+  # tenant namespace, so the eso-tenant policy templates the tenant token to it.
+  timeouts:
+    assert: 5m
+    exec: 10m
+  steps:
+  - try:
+    - script:
+        timeout: 10m
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          TENANT_NS="${NAMESPACE}"
+          STORE_NAME=openbao-tenant-store
+
+          BAO_NS="openbao-system"
+          BAO_POD="openbao-0"
+          BAO_ADDR="https://127.0.0.1:8200"
+          VAULT_CACERT="/openbao/tls/ca.crt"
+
+          # ── Presence + capability guard ─────────────────────────────────────
+          missing=""
+          for crd in \
+            controlplanes.c5c3.io \
+            secretstores.external-secrets.io \
+            certificates.cert-manager.io \
+            clusterissuers.cert-manager.io; do
+            if ! kubectl get crd "$crd" >/dev/null 2>&1; then
+              missing="${missing} ${crd}"
+            fi
+          done
+          if [ -n "${missing}" ]; then
+            echo "SKIP: required CRDs not present:${missing}"
+            echo "      The c5c3-operator + OpenBao + cert-manager stack is not"
+            echo "      deployed here, so per-tenant secret-store scoping cannot be"
+            echo "      exercised."
+            exit 0
+          fi
+          if ! kubectl get clustersecretstore openbao-cluster-store >/dev/null 2>&1; then
+            echo "SKIP: openbao-cluster-store ClusterSecretStore not present."
+            exit 0
+          fi
+          if ! kubectl get clusterissuer openbao-ca-issuer >/dev/null 2>&1; then
+            echo "SKIP: openbao-ca-issuer ClusterIssuer not present; the tenant"
+            echo "      mTLS Certificate cannot be issued."
+            exit 0
+          fi
+          if ! kubectl get pod "${BAO_POD}" -n "${BAO_NS}" >/dev/null 2>&1; then
+            echo "SKIP: ${BAO_NS}/${BAO_POD} not present."
+            exit 0
+          fi
+
+          # Root token for the setup + isolation probes.
+          BAO_TOKEN="$(kubectl get secret openbao-init-keys -n "${BAO_NS}" \
+            -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token')"
+          if [ -z "${BAO_TOKEN}" ] || [ "${BAO_TOKEN}" = "null" ]; then
+            echo "SKIP: could not extract the OpenBao root token."
+            exit 0
+          fi
+
+          # bao_exec runs a bao command inside openbao-0 with the mTLS client
+          # material (the OpenBao listener requires a client cert).
+          bao_exec() {
+            kubectl exec -n "${BAO_NS}" "${BAO_POD}" -- \
+              env BAO_ADDR="${BAO_ADDR}" BAO_TOKEN="${BAO_TOKEN}" \
+              VAULT_CACERT="${VAULT_CACERT}" \
+              VAULT_CLIENT_CERT=/openbao/client-tls/tls.crt \
+              VAULT_CLIENT_KEY=/openbao/client-tls/tls.key "$@"
+          }
+
+          # The eso-tenant auth role only exists once setup-auth.sh has run WITH
+          # this feature. On a cluster bootstrapped before #605 it is absent — SKIP
+          # rather than fail, so this suite lands green on such clusters.
+          if ! bao_exec bao read auth/kubernetes/management/role/eso-tenant >/dev/null 2>&1; then
+            echo "SKIP: the eso-tenant auth role is not configured on this OpenBao"
+            echo "      (bootstrap predates #605). Re-run setup-auth.sh /"
+            echo "      setup-policies.sh to enable per-tenant identities."
+            exit 0
+          fi
+          echo "OK: prerequisites present — running per-tenant secret-store scoping."
+
+          # ── 1. Provision the per-tenant identity ────────────────────────────
+          # Chainsaw runs scripts with the test directory as CWD.
+          ../../../../deploy/openbao/bootstrap/setup-eso-tenant.sh "${TENANT_NS}"
+
+          # ── 2. The namespaced SecretStore must reach Ready ──────────────────
+          # A Ready store proves the eso-tenant role + policy + mTLS authenticate
+          # the per-tenant identity end-to-end.
+          deadline=$(( $(date +%s) + 240 ))
+          while true; do
+            status="$(kubectl get secretstore "${STORE_NAME}" -n "${TENANT_NS}" \
+              -o "jsonpath={.status.conditions[?(@.type=='Ready')].status}" 2>/dev/null || true)"
+            if [ "${status}" = "True" ]; then
+              echo "OK: SecretStore ${STORE_NAME} Ready=True — the per-tenant identity authenticates"
+              break
+            fi
+            if [ "$(date +%s)" -ge "${deadline}" ]; then
+              echo "ERROR: SecretStore ${STORE_NAME} Ready not True within 240s (last: '${status:-<none>}')"
+              exit 1
+            fi
+            sleep 5
+          done
+
+          # ── 3. OpenBao-enforced cross-tenant isolation ──────────────────────
+          # The eso-tenant policy templates every path to the caller's OWN
+          # service_account_namespace. Seed a secret in the tenant's own subtree
+          # and one in a foreign namespace's subtree (as root), then prove the
+          # tenant token reads its own but is DENIED on the foreign one.
+          FOREIGN_NS="secret-store-scoping-foreign"
+          # Logical KV-v2 paths (no data/ segment) for the root seed writes via
+          # `bao kv put`; the raw data-API paths (with data/) are what the tenant
+          # token probes, so those hit exactly the leaf the eso-tenant policy
+          # templates — no `bao kv` mount preflight in the capability checks.
+          OWN_KV="openstack/keystone/${TENANT_NS}/probe/fernet-keys"
+          FOREIGN_KV="openstack/keystone/${FOREIGN_NS}/probe/fernet-keys"
+          OWN_PATH="kv-v2/data/${OWN_KV}"
+          FOREIGN_PATH="kv-v2/data/${FOREIGN_KV}"
+
+          # Seed as root with `bao kv put`, which wraps the fields under the
+          # data: object the KV-v2 data endpoint requires; a raw
+          # `bao write kv-v2/data/... k=v` sends {"k":"v"} and OpenBao rejects it
+          # with 400 "no data provided".
+          bao_exec bao kv put -mount=kv-v2 "${OWN_KV}" data-0=own-probe >/dev/null
+          bao_exec bao kv put -mount=kv-v2 "${FOREIGN_KV}" data-0=foreign-probe >/dev/null
+
+          # Mint a JWT for the tenant's eso-tenant-auth SA and log in as eso-tenant.
+          TENANT_JWT="$(kubectl create token eso-tenant-auth -n "${TENANT_NS}" --duration=10m)"
+          TENANT_TOKEN="$(bao_exec bao write -field=token \
+            auth/kubernetes/management/login role=eso-tenant jwt="${TENANT_JWT}")"
+          if [ -z "${TENANT_TOKEN}" ]; then
+            echo "ERROR: eso-tenant login returned no token"; exit 1
+          fi
+
+          # Own path MUST read — proves the login + policy grant work, so the deny
+          # check below cannot pass vacuously on a broken login.
+          if ! bao_exec env BAO_TOKEN="${TENANT_TOKEN}" bao read "${OWN_PATH}" >/dev/null 2>&1; then
+            echo "ERROR: tenant token could not read its OWN path ${OWN_PATH}"; exit 1
+          fi
+          echo "OK: tenant token reads its own namespace path"
+
+          # Foreign path MUST be denied by the templated policy.
+          if bao_exec env BAO_TOKEN="${TENANT_TOKEN}" bao read "${FOREIGN_PATH}" >/dev/null 2>&1; then
+            echo "ERROR: tenant token READ a foreign namespace path ${FOREIGN_PATH}; cross-tenant isolation is broken"
+            exit 1
+          fi
+          echo "OK: tenant token denied on a foreign namespace path — OpenBao-enforced isolation holds"
+
+          # Best-effort cleanup of the probe secrets (KV-v2 hard delete).
+          bao_exec bao kv metadata delete -mount=kv-v2 "${OWN_KV}" >/dev/null 2>&1 || true
+          bao_exec bao kv metadata delete -mount=kv-v2 "${FOREIGN_KV}" >/dev/null 2>&1 || true
+
+          echo "OK: per-ControlPlane OpenBao identity and secret-store scoping verified."
+    catch:
+    - script:
+        shell: bash
+        content: |
+          echo "=== SecretStore openbao-tenant-store ==="
+          kubectl describe secretstore openbao-tenant-store -n "$NAMESPACE" 2>&1 || true
+          echo "=== Certificate eso-tenant-client-tls ==="
+          kubectl describe certificate eso-tenant-client-tls -n "$NAMESPACE" 2>&1 || true
+          echo "=== external-secrets controller logs (last 100 lines) ==="
+          kubectl logs -n external-secrets -l app.kubernetes.io/name=external-secrets --tail=100 --all-containers 2>&1 || true
+          echo "=== OpenBao logs (last 100 lines) ==="
+          kubectl logs -n openbao-system openbao-0 --tail=100 2>&1 || true
+          echo "=== Events ($NAMESPACE, last 30) ==="
+          kubectl get events -n "$NAMESPACE" --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
