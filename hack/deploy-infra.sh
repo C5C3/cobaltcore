@@ -1816,6 +1816,21 @@ main() {
   if [[ "${WITH_CONTROLPLANE}" == "true" ]]; then
     log "=== Step 8/8: Skipping standalone ExternalSecret wait (WITH_CONTROLPLANE=true) ==="
   else
+    # The standalone keystone-db ExternalSecret authenticates through the
+    # per-tenant store (openbao-tenant-store), the enforced default since #606 —
+    # the shared cluster store no longer grants any read on openstack/keystone/*.
+    # There is no c5c3 operator on the standalone path to provision that store, so
+    # create its in-cluster half (the eso-tenant-auth ServiceAccount, the mTLS
+    # client Certificate, and the namespaced SecretStore) here, then force its ESO
+    # re-validation so keystone-db can sync below. keystone-admin and
+    # mariadb-root-password stay on the shared store (bootstrap/infrastructure reads).
+    log "Provisioning the per-tenant OpenBao store for the standalone openstack namespace..."
+    bash "${REPO_ROOT}/deploy/openbao/bootstrap/setup-eso-tenant.sh" openstack
+    kubectl annotate secretstore/openbao-tenant-store -n openstack \
+      "deploy.c5c3.io/reconcile-trigger=${now}" --overwrite || true
+    kubectl wait secretstore/openbao-tenant-store -n openstack \
+      --for=condition=Ready --timeout="${POD_TIMEOUT}s" || true
+
     log "Forcing standalone ExternalSecret re-sync..."
     for es in keystone-admin keystone-db mariadb-root-password; do
       kubectl annotate "externalsecret/${es}" -n openstack \

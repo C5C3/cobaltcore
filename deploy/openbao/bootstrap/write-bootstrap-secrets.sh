@@ -193,7 +193,13 @@ main() {
   # (deploy/kind/infrastructure/keystone-db-externalsecret.yaml) and is
   # deliberately DEMOTED to brownfield-only: no PushSecret targets it, so no
   # mark_eso_managed is needed.
-  write_secret_if_missing "kv-v2/openstack/keystone/standalone/db" \
+  #
+  # The path carries the standalone namespace as its first segment
+  # (openstack/keystone/{namespace}/standalone/db) so the eso-tenant templated
+  # policy — which scopes reads to openstack/keystone/{caller-namespace}/* — matches
+  # it (#606). The keystone-db ExternalSecret now reaches this path through the
+  # per-tenant openbao-tenant-store instead of the shared cluster store.
+  write_secret_if_missing "kv-v2/openstack/keystone/openstack/standalone/db" \
     "username=keystone" \
     "password=${GENERATED_PASSWORD}"
 
