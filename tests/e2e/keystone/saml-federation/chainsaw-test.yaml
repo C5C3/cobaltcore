@@ -45,6 +45,14 @@ spec:
   timeouts:
     apply: 2m
     assert: 6m
+    # Step 6 detaches both federation backends, which rewrites the
+    # content-hashed federation Secret and rolls the replicas:1 Keystone pod
+    # (the mellon sidecar is removed). Each backend's finalizer deprovisions its
+    # domain THROUGH that same Keystone, so its first attempt races the rollout
+    # and fails (EOF), then a requeue retries and succeeds ~30s later — past the
+    # 30s global delete bound. 2m covers one failed attempt plus the retry with
+    # margin for a slow rollout (mirrors the oidc-federation suite).
+    delete: 2m
     exec: 3m
   steps:
   # ── Step 1: Deploy the Keycloak fixture and Keystone; both become ready ──
