@@ -85,6 +85,20 @@ operator projects the new image tag (`ghcr.io/c5c3/keystone:<release>`) onto the
 expand-migrate-contract pipeline. The API stays available throughout — old and
 new schemas coexist while data is migrated.
 
+Before you patch, make the target-release images node-local. The devstack
+pre-loads only the `2025.2` Keystone image, and the projected Horizon child
+follows `spec.openStackRelease` too — so pull and `kind load` both the Keystone
+and Horizon images for the target release, or the rollout stalls on an image
+pull:
+
+```bash
+docker pull ghcr.io/c5c3/keystone:2026.1
+kind load docker-image ghcr.io/c5c3/keystone:2026.1 --name forge
+
+docker pull ghcr.io/c5c3/horizon:2026.1
+kind load docker-image ghcr.io/c5c3/horizon:2026.1 --name forge
+```
+
 ```bash
 kubectl patch controlplane controlplane -n openstack \
   --type merge \
@@ -243,9 +257,18 @@ kubectl patch keystone keystone -n openstack \
 ```
 
 The same sequential-only constraint, the four-phase pipeline, and the
-forward-only recovery path apply. The target tag must be pullable by the cluster
-(`ghcr.io/c5c3/keystone:<tag>`), or the `RollingUpdate` phase stalls on an image
-pull error.
+forward-only recovery path apply. Make the target image node-local first, or the
+upgrade stalls at its first phase that needs it — `Expanding`, which runs
+`db_sync --expand` with the new image:
+
+```bash
+docker pull ghcr.io/c5c3/keystone:2026.1
+kind load docker-image ghcr.io/c5c3/keystone:2026.1 --name forge
+```
+
+On the [Quick Start (Extended)](../quick-start-extended.md) local-build path,
+rebuild the service image with `RELEASE=2026.1` per that tutorial's Step 6
+instead of pulling it.
 
 **Rotate Fernet keys** against the `keystone-fernet-rotate` /
 `keystone-credential-rotate` CronJobs, and tune or pause scheduled rotation with
