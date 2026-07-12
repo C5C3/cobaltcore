@@ -235,7 +235,7 @@ GATEWAY_API_CRDS_URL="${GATEWAY_API_CRDS_URL:-https://github.com/kubernetes-sigs
 # flux-operator release applied in Step 2 before the FluxInstance CR is created
 # Kept as a script-local constant so Renovate can bump it
 # via renovate.json custom managers.
-FLUX_OPERATOR_VERSION="v0.53.0"
+FLUX_OPERATOR_VERSION="v0.54.1"
 
 # OpenBao init parameters (match deploy/openbao/bootstrap/init-unseal.sh)
 KEY_SHARES=5
