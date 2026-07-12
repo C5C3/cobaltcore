@@ -146,6 +146,26 @@ main() {
     token_max_ttl=72h
   log "keystone-db role written."
 
+  # eso-tenant role on the management cluster's Kubernetes auth mount. This is
+  # the per-ControlPlane ESO identity a namespaced SecretStore authenticates
+  # with (created per tenant by setup-eso-tenant.sh with the "eso-tenant-auth"
+  # ServiceAccount). bound_service_account_namespaces="*" lets any tenant
+  # namespace authenticate; the SA name is fixed and the cross-tenant boundary is
+  # enforced by the eso-tenant policy, which templates every readable/writable
+  # path to the caller's OWN service_account_namespace (an exact match, so a token
+  # minted in namespace A cannot touch namespace B's Keystone key material). The
+  # client cert only gates transport, exactly like the keystone-db role above.
+  # token_max_ttl=4h caps renewal (matching the eso-<cluster> roles) so a leaked
+  # tenant token cannot be renewed indefinitely.
+  log "Writing eso-tenant role on kubernetes/management..."
+  bao_exec bao write "auth/kubernetes/management/role/eso-tenant" \
+    bound_service_account_names=eso-tenant-auth \
+    bound_service_account_namespaces="*" \
+    token_policies=eso-tenant \
+    token_ttl=1h \
+    token_max_ttl=4h
+  log "eso-tenant role written."
+
   # AppRole auth
   enable_auth_if_missing "approle" "approle"
 
