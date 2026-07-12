@@ -14,17 +14,23 @@
 # `reconcileSecrets` gates SecretsReady on its `WaitForExternalSecret` calls
 # (operators/keystone/internal/controller/reconcile_secrets.go), so plain
 # Secrets — even with all required keys — leave the CR stuck at
-# SecretsReady=False/WaitingForDBCredentials and never reach Ready=True. The
-# ExternalSecrets pull from the same OpenBao paths the in-cluster
-# `openstack` namespace uses: the per-CR admin password at
-# `bootstrap/openstack/controlplane-keystone/admin` (the per-CR path the deploy-infra seed writes; the legacy flat `bootstrap/keystone-admin` is no longer seeded) and the `keystone` MariaDB user at the standalone static path
-# `openstack/keystone/standalone/db` (the only static DB credential the seed
-# still writes — the stage-(a) per-ControlPlane path
-# `openstack/keystone/{ns}/{cp}/db` is retired since #439: managed-mode
-# ControlPlanes draw engine-issued credentials instead); the `eso-management` policy
-# (deploy/openbao/policies/eso-management.hcl) grants read access to both paths
-# via its `kv-v2/data/bootstrap/*` and `kv-v2/data/openstack/keystone/*`
-# wildcards, so no new OpenBao policy work is required.
+# SecretsReady=False/WaitingForDBCredentials and never reach Ready=True.
+#
+# Since #606 the shared cluster store no longer grants any read on the
+# openstack/keystone/* subtree and is namespace-restricted to `openstack`, so a
+# foreign namespace like this one cannot reach the shared standalone paths
+# through it. Both ExternalSecrets therefore authenticate through this
+# namespace's OWN per-tenant `openbao-tenant-store` (provisioned by the chainsaw
+# Step-1 script via setup-eso-tenant.sh) and read namespace-scoped paths that the
+# eso-tenant policy templates to this namespace:
+#   - the admin password at `bootstrap/keystone-pss-restricted-test/pss/admin`
+#   - the `keystone` MariaDB user at
+#     `openstack/keystone/keystone-pss-restricted-test/pss/db`
+# The Step-1 script seeds those two paths by COPYING the values from the shared
+# `bootstrap/openstack/controlplane-keystone/admin` and
+# `openstack/keystone/openstack/standalone/db` paths, so the `keystone` user's
+# password still matches the value the brownfield-database test reconciles onto
+# the same shared MariaDB user — no SET PASSWORD race.
 ---
 apiVersion: v1
 kind: Namespace
@@ -42,15 +48,15 @@ metadata:
 spec:
   refreshInterval: 1h
   secretStoreRef:
-    name: openbao-cluster-store
-    kind: ClusterSecretStore
+    name: openbao-tenant-store
+    kind: SecretStore
   target:
     name: keystone-admin
     creationPolicy: Owner
   data:
   - secretKey: password
     remoteRef:
-      key: bootstrap/openstack/controlplane-keystone/admin
+      key: bootstrap/keystone-pss-restricted-test/pss/admin
       property: password
 ---
 apiVersion: external-secrets.io/v1
@@ -61,17 +67,17 @@ metadata:
 spec:
   refreshInterval: 1h
   secretStoreRef:
-    name: openbao-cluster-store
-    kind: ClusterSecretStore
+    name: openbao-tenant-store
+    kind: SecretStore
   target:
     name: keystone-db
     creationPolicy: Owner
   data:
   - secretKey: username
     remoteRef:
-      key: openstack/keystone/standalone/db
+      key: openstack/keystone/keystone-pss-restricted-test/pss/db
       property: username
   - secretKey: password
     remoteRef:
-      key: openstack/keystone/standalone/db
+      key: openstack/keystone/keystone-pss-restricted-test/pss/db
       property: password

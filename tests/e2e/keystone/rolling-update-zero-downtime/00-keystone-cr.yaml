@@ -20,6 +20,9 @@ metadata:
   name: keystone-rolling-update
   namespace: openstack
 spec:
+  secretStoreRef:
+    kind: SecretStore
+    name: openbao-tenant-store
   deployment:
     replicas: 3
   image:

@@ -30,6 +30,9 @@ metadata:
   name: keystone-pss-restricted
   namespace: keystone-pss-restricted-test
 spec:
+  secretStoreRef:
+    kind: SecretStore
+    name: openbao-tenant-store
   deployment:
     replicas: 1
   image:

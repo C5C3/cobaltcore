@@ -13,6 +13,9 @@ metadata:
   name: keystone-missing-secret
   namespace: openstack
 spec:
+  secretStoreRef:
+    kind: SecretStore
+    name: openbao-tenant-store
   deployment:
     replicas: 1
   image:

@@ -11,6 +11,9 @@ metadata:
   name: keystone-tsc
   namespace: openstack
 spec:
+  secretStoreRef:
+    kind: SecretStore
+    name: openbao-tenant-store
   deployment:
     replicas: 3
   image:

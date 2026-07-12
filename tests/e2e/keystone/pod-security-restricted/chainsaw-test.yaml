@@ -94,6 +94,40 @@ spec:
         file: 00-namespace.yaml
     - apply:
         file: 00-policy-cm.yaml
+    # Provision this namespace's per-tenant OpenBao store and seed its
+    # namespace-scoped admin + db paths by COPYING the shared values, so the two
+    # ExternalSecrets (which authenticate as the eso-tenant identity, #606) can
+    # sync and the `keystone` MariaDB user's password still matches the value
+    # brownfield-database reconciles onto the same shared user — no SET PASSWORD
+    # race. Chainsaw runs scripts with the test directory as CWD.
+    - script:
+        timeout: 5m
+        shell: bash
+        content: |
+          set -euo pipefail
+          BAO_NS="openbao-system"
+          BAO_POD="openbao-0"
+          TENANT_NS="keystone-pss-restricted-test"
+          BAO_TOKEN="$(kubectl get secret openbao-init-keys -n "${BAO_NS}" \
+            -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token')"
+          bao_exec() {
+            kubectl exec -n "${BAO_NS}" "${BAO_POD}" -- \
+              env BAO_ADDR="https://127.0.0.1:8200" BAO_TOKEN="${BAO_TOKEN}" \
+              VAULT_CACERT="/openbao/tls/ca.crt" \
+              VAULT_CLIENT_CERT=/openbao/client-tls/tls.crt \
+              VAULT_CLIENT_KEY=/openbao/client-tls/tls.key "$@"
+          }
+          DB_USER="$(bao_exec bao kv get -mount=kv-v2 -field=username \
+            openstack/keystone/openstack/standalone/db)"
+          DB_PASS="$(bao_exec bao kv get -mount=kv-v2 -field=password \
+            openstack/keystone/openstack/standalone/db)"
+          ADMIN_PASS="$(bao_exec bao kv get -mount=kv-v2 -field=password \
+            bootstrap/openstack/controlplane-keystone/admin)"
+          bao_exec bao kv put -mount=kv-v2 "openstack/keystone/${TENANT_NS}/pss/db" \
+            username="${DB_USER}" password="${DB_PASS}" >/dev/null
+          bao_exec bao kv put -mount=kv-v2 "bootstrap/${TENANT_NS}/pss/admin" \
+            password="${ADMIN_PASS}" >/dev/null
+          ../../../../deploy/openbao/bootstrap/setup-eso-tenant.sh "${TENANT_NS}"
     - assert:
         resource:
           apiVersion: v1

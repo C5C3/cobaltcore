@@ -23,12 +23,64 @@ spec:
   timeouts:
     assert: 5m
   steps:
-  # ── Step 1: Create the restricted namespace and the SECRET_KEY sync ────
+  # ── Step 1: Create the restricted namespace, provision the per-tenant store,
+  #            and sync the SECRET_KEY ───────────────────────────────────────
   - try:
     - apply:
         file: 00-namespace.yaml
+    # Provision this namespace's per-tenant OpenBao store and seed its
+    # namespace-scoped secret-key path by COPYING the shared value, so the
+    # ExternalSecret (which authenticates as the eso-tenant identity, #606) can
+    # sync — mirroring tests/e2e/keystone/pod-security-restricted/. Since #606 the
+    # shared cluster store is namespace-restricted to `openstack`, so this foreign
+    # namespace cannot reach the shared paths through it. Chainsaw runs scripts
+    # with the test directory as CWD.
+    - script:
+        timeout: 5m
+        shell: bash
+        content: |
+          set -euo pipefail
+          BAO_NS="openbao-system"
+          BAO_POD="openbao-0"
+          TENANT_NS="horizon-pss-restricted-test"
+          BAO_TOKEN="$(kubectl get secret openbao-init-keys -n "${BAO_NS}" \
+            -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token')"
+          bao_exec() {
+            kubectl exec -n "${BAO_NS}" "${BAO_POD}" -- \
+              env BAO_ADDR="https://127.0.0.1:8200" BAO_TOKEN="${BAO_TOKEN}" \
+              VAULT_CACERT="/openbao/tls/ca.crt" \
+              VAULT_CLIENT_CERT=/openbao/client-tls/tls.crt \
+              VAULT_CLIENT_KEY=/openbao/client-tls/tls.key "$@"
+          }
+          SECRET_KEY="$(bao_exec bao kv get -mount=kv-v2 -field=secret-key \
+            bootstrap/openstack/controlplane-horizon/secret-key)"
+          bao_exec bao kv put -mount=kv-v2 "bootstrap/${TENANT_NS}/pss/secret-key" \
+            secret-key="${SECRET_KEY}" >/dev/null
+          ../../../../deploy/openbao/bootstrap/setup-eso-tenant.sh "${TENANT_NS}"
     - apply:
         file: 01-externalsecret.yaml
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: horizon-pss-restricted-test
+            labels:
+              pod-security.kubernetes.io/enforce: restricted
+              pod-security.kubernetes.io/enforce-version: latest
+    # Assert the ExternalSecret reaches Ready here so a regression that broke ESO
+    # sync fails at this step, not deeper in step 2 where the Horizon operator's
+    # SecretsReady condition would be the only signal.
+    - assert:
+        resource:
+          apiVersion: external-secrets.io/v1
+          kind: ExternalSecret
+          metadata:
+            name: horizon-secret-key
+            namespace: horizon-pss-restricted-test
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
   # ── Step 2: Apply the Horizon CR and wait for Ready under PSS ──────────
   - try:
     - apply:

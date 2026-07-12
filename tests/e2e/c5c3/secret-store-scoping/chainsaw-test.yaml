@@ -22,7 +22,14 @@
 #      namespace's Keystone key path but is DENIED on another namespace's path,
 #      because the eso-tenant policy templates every path to the caller's own
 #      service_account_namespace. This is the OpenBao-enforced isolation that
-#      replaces the naming-convention "isolation" the issue set out to fix.
+#      replaces the naming-convention "isolation" the issue set out to fix;
+#   4. the shared eso-management identity is DENIED both READ and WRITE on a
+#      Keystone key path (#606 retired the push-* write policies and dropped
+#      eso-management's openstack/keystone/* read) while still reading the retained
+#      shared bootstrap subtree — the confused-deputy grants are gone;
+#   5. an ExternalSecret referencing the shared openbao-cluster-store from this
+#      non-allow-listed namespace never goes Ready, because #606 restricted the
+#      cluster store with spec.conditions to the static-manifest namespace(s).
 #
 # ── Presence + capability guard ──────────────────────────────────────────────
 # Like the sibling db-credential-scoping / multi-controlplane suites, the
@@ -189,9 +196,83 @@ spec:
           fi
           echo "OK: tenant token denied on a foreign namespace path — OpenBao-enforced isolation holds"
 
+          # ── 4. The shared eso-management identity must NOT reach Keystone key
+          #       material (#606) ────────────────────────────────────────────────
+          # #606 retired the three wildcard write policies (push-keystone-keys /
+          # push-keystone-admin / push-app-credentials) and dropped eso-management's
+          # openstack/keystone/* read. Prove the shared identity can neither READ nor
+          # WRITE a Keystone key path any longer — the confused-deputy grants are gone.
+          ESOMGMT_JWT="$(kubectl create token external-secrets -n external-secrets --duration=10m)"
+          ESOMGMT_TOKEN="$(bao_exec bao write -field=token \
+            auth/kubernetes/management/login role=eso-management jwt="${ESOMGMT_JWT}")"
+          if [ -z "${ESOMGMT_TOKEN}" ]; then
+            echo "ERROR: eso-management login returned no token"; exit 1
+          fi
+          # READ of a Keystone key path MUST be denied (the openstack/keystone/* read is gone).
+          if bao_exec env BAO_TOKEN="${ESOMGMT_TOKEN}" bao read "${OWN_PATH}" >/dev/null 2>&1; then
+            echo "ERROR: eso-management READ a Keystone key path ${OWN_PATH}; the retired openstack/keystone/* read survived"
+            exit 1
+          fi
+          echo "OK: eso-management denied READ on a Keystone key path — the shared read grant is retired"
+          # WRITE of a Keystone key path MUST be denied (the push-keystone-keys write is gone).
+          if bao_exec env BAO_TOKEN="${ESOMGMT_TOKEN}" \
+            bao kv put -mount=kv-v2 "${OWN_KV}" data-0=shared-should-fail >/dev/null 2>&1; then
+            echo "ERROR: eso-management WROTE a Keystone key path ${OWN_KV}; a retired push-* write grant survived"
+            exit 1
+          fi
+          echo "OK: eso-management denied WRITE on a Keystone key path — the shared write grants are retired"
+          # Sanity: eso-management CAN still read the genuinely shared bootstrap
+          # subtree, proving the login works so the two deny checks above cannot pass
+          # vacuously on a broken login.
+          bao_exec bao kv put -mount=kv-v2 "bootstrap/${TENANT_NS}/probe/admin" data-0=b >/dev/null
+          if ! bao_exec env BAO_TOKEN="${ESOMGMT_TOKEN}" \
+            bao read "kv-v2/data/bootstrap/${TENANT_NS}/probe/admin" >/dev/null 2>&1; then
+            echo "ERROR: eso-management could not read the retained bootstrap/* subtree; login or policy is broken"
+            exit 1
+          fi
+          echo "OK: eso-management still reads the retained shared bootstrap subtree"
+
+          # ── 5. The shared cluster store must REJECT a reference from a
+          #       non-allow-listed namespace (#606) ───────────────────────────────
+          # #606 added spec.conditions to openbao-cluster-store restricting it to the
+          # static-manifest namespace(s). This ephemeral tenant namespace is not on
+          # that allow-list, so an ExternalSecret here referencing the cluster store
+          # must never go Ready.
+          kubectl apply -f - <<EOF
+          apiVersion: external-secrets.io/v1
+          kind: ExternalSecret
+          metadata:
+            name: shared-store-denied
+            namespace: ${TENANT_NS}
+          spec:
+            refreshInterval: 10s
+            secretStoreRef:
+              name: openbao-cluster-store
+              kind: ClusterSecretStore
+            target:
+              name: shared-store-denied
+            data:
+              - secretKey: v
+                remoteRef:
+                  key: bootstrap/${TENANT_NS}/probe/admin
+                  property: data-0
+          EOF
+          # It must stay NotReady: the store conditions reject the reference. 30s is a
+          # generous window for ESO to reconcile it (refreshInterval is 10s).
+          sleep 30
+          es_ready="$(kubectl get externalsecret shared-store-denied -n "${TENANT_NS}" \
+            -o "jsonpath={.status.conditions[?(@.type=='Ready')].status}" 2>/dev/null || true)"
+          kubectl delete externalsecret shared-store-denied -n "${TENANT_NS}" --ignore-not-found >/dev/null 2>&1 || true
+          if [ "${es_ready}" = "True" ]; then
+            echo "ERROR: an ExternalSecret in ${TENANT_NS} synced through openbao-cluster-store; the namespace conditions did not restrict it"
+            exit 1
+          fi
+          echo "OK: openbao-cluster-store rejected the reference from the non-allow-listed namespace"
+
           # Best-effort cleanup of the probe secrets (KV-v2 hard delete).
           bao_exec bao kv metadata delete -mount=kv-v2 "${OWN_KV}" >/dev/null 2>&1 || true
           bao_exec bao kv metadata delete -mount=kv-v2 "${FOREIGN_KV}" >/dev/null 2>&1 || true
+          bao_exec bao kv metadata delete -mount=kv-v2 "bootstrap/${TENANT_NS}/probe/admin" >/dev/null 2>&1 || true
 
           echo "OK: per-ControlPlane OpenBao identity and secret-store scoping verified."
     catch:

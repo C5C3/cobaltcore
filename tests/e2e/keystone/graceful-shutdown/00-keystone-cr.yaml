@@ -11,6 +11,9 @@ metadata:
   name: keystone-graceful-shutdown
   namespace: openstack
 spec:
+  secretStoreRef:
+    kind: SecretStore
+    name: openbao-tenant-store
   deployment:
     replicas: 3
   image:

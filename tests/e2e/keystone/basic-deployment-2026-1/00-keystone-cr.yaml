@@ -11,6 +11,9 @@ metadata:
   name: keystone-basic-2026-1
   namespace: openstack
 spec:
+  secretStoreRef:
+    kind: SecretStore
+    name: openbao-tenant-store
   deployment:
     replicas: 3
   image:
