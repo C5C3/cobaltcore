@@ -62,7 +62,7 @@ func adminPasswordExternalSecret(cp *c5c3v1alpha1.ControlPlane) *esov1.ExternalS
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: childNamespace(cp)},
 		Spec: esov1.ExternalSecretSpec{
 			RefreshInterval: &metav1.Duration{Duration: time.Hour},
-			SecretStoreRef:  secrets.ESOSecretStoreRef(secrets.EffectiveStoreRef(cp.Spec.SecretStoreRef)),
+			SecretStoreRef:  secrets.ESOSecretStoreRef(effectiveControlPlaneStoreRef(cp)),
 			Target:          esov1.ExternalSecretTarget{Name: name, CreationPolicy: esov1.CreatePolicyOwner},
 			Data: []esov1.ExternalSecretData{
 				{SecretKey: "password", RemoteRef: esov1.ExternalSecretDataRemoteRef{Key: remoteKey, Property: "password"}},
@@ -170,11 +170,11 @@ func (r *ControlPlaneReconciler) reconcileAdminPassword(ctx context.Context, cp 
 	// Check the selected secret store first so an ESO/OpenBao outage surfaces as
 	// AdminPasswordReady=False even while the per-ExternalSecret cache still
 	// reports Ready=True from its last successful sync (#476). The store is the
-	// one the ControlPlane selected via spec.secretStoreRef (default: the shared
-	// cluster store); a namespaced store is resolved in the child namespace where
-	// the admin-password ExternalSecret is materialised. Mirrors
-	// reconcileDBCredentials and the keystone operator's reconcile_secrets.go.
-	storeRef := secrets.EffectiveStoreRef(cp.Spec.SecretStoreRef)
+	// one the ControlPlane selected via spec.secretStoreRef (default: the
+	// operator-provisioned per-tenant store); a namespaced store is resolved in
+	// the child namespace where the admin-password ExternalSecret is materialised.
+	// Mirrors reconcileDBCredentials and the keystone operator's reconcile_secrets.go.
+	storeRef := effectiveControlPlaneStoreRef(cp)
 	storeReady, err := secrets.IsStoreRefReady(ctx, r.Client, storeRef, childNamespace(cp))
 	if err != nil {
 		return ctrl.Result{}, err

@@ -41,7 +41,7 @@ tests:
       - hasDocuments:
           count: 0
 
-  - it: should have 20 rules matching ClusterRole
+  - it: should have 21 rules matching ClusterRole
     set:
       rbac:
         namespaceScoped: true
@@ -50,7 +50,7 @@ tests:
     asserts:
       - lengthEqual:
           path: rules
-          count: 20
+          count: 21
 
   - it: should grant full CRUD on controlplanes
     set:
@@ -380,7 +380,7 @@ tests:
               - patch
               - delete
 
-  - it: should grant read-only on clustersecretstores and secretstores
+  - it: should grant read-only on clustersecretstores
     set:
       rbac:
         namespaceScoped: true
@@ -394,11 +394,35 @@ tests:
               - external-secrets.io
             resources:
               - clustersecretstores
+            verbs:
+              - get
+              - list
+              - watch
+
+  # reconcileESOTenantStore provisions the per-tenant namespaced SecretStore
+  # every ControlPlane defaults onto, so secretstores need the write verbs.
+  - it: should grant full CRUD on secretstores
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - external-secrets.io
+            resources:
               - secretstores
             verbs:
               - get
               - list
               - watch
+              - create
+              - update
+              - patch
+              - delete
 
   - it: should grant full CRUD on core secrets
     set:

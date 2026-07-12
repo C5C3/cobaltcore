@@ -245,7 +245,7 @@ func dbCredentialStaticExternalSecret(cp *c5c3v1alpha1.ControlPlane) *esov1.Exte
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: childNamespace(cp)},
 		Spec: esov1.ExternalSecretSpec{
 			RefreshInterval: &metav1.Duration{Duration: time.Hour},
-			SecretStoreRef:  secrets.ESOSecretStoreRef(secrets.EffectiveStoreRef(cp.Spec.SecretStoreRef)),
+			SecretStoreRef:  secrets.ESOSecretStoreRef(effectiveControlPlaneStoreRef(cp)),
 			Target:          esov1.ExternalSecretTarget{Name: name, CreationPolicy: esov1.CreatePolicyOwner},
 			Data: []esov1.ExternalSecretData{
 				{SecretKey: "username", RemoteRef: esov1.ExternalSecretDataRemoteRef{Key: remoteKey, Property: "username"}},
@@ -328,9 +328,10 @@ func (r *ControlPlaneReconciler) reconcileDBCredentials(ctx context.Context, cp 
 	// DBCredentialsReady=False even while a per-ExternalSecret cache still reports
 	// Ready=True from its last successful sync (mirrors reconcile_secrets.go in
 	// the keystone operator). The store is the one the ControlPlane selected via
-	// spec.secretStoreRef (default: the shared cluster store); a namespaced store
-	// is resolved in the child namespace where the credential Secret is materialised.
-	storeRef := secrets.EffectiveStoreRef(cp.Spec.SecretStoreRef)
+	// spec.secretStoreRef (default: the operator-provisioned per-tenant store); a
+	// namespaced store is resolved in the child namespace where the credential
+	// Secret is materialised.
+	storeRef := effectiveControlPlaneStoreRef(cp)
 	storeReady, err := secrets.IsStoreRefReady(ctx, r.Client, storeRef, childNamespace(cp))
 	if err != nil {
 		return ctrl.Result{}, err
@@ -385,7 +386,7 @@ func (r *ControlPlaneReconciler) reconcileDBCredentials(ctx context.Context, cp 
 // the auth identity and TLS material exist before the generator that references
 // them.
 func (r *ControlPlaneReconciler) ensureDynamicDBCredentialObjects(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) error {
-	server, mountPath := r.openBaoConnection(ctx, cp)
+	server, mountPath := r.openBaoConnection(ctx, cp, effectiveControlPlaneStoreRef(cp))
 
 	if err := apply.EnsureObject(ctx, r.Client, r.Scheme, cp, dbCredentialServiceAccount(cp), apply.FieldManager); err != nil {
 		return fmt.Errorf("ensuring DB credential ServiceAccount: %w", err)
@@ -446,16 +447,18 @@ func (r *ControlPlaneReconciler) deleteDynamicDBCredentialObjects(ctx context.Co
 }
 
 // openBaoConnection returns the OpenBao server URL and Kubernetes-auth mount
-// path, copied from the Vault provider of the store the ControlPlane selected
-// (a cluster-scoped ClusterSecretStore by name, or a namespaced SecretStore in
-// the child namespace) so the generator cannot drift from the store the rest of
-// the stack uses. Falls back to the documented defaults when the store or the
-// fields are unreadable.
-func (r *ControlPlaneReconciler) openBaoConnection(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) (server, mountPath string) {
+// path, copied from the Vault provider of the given store ref (a cluster-scoped
+// ClusterSecretStore by name, or a namespaced SecretStore in the child
+// namespace) so the caller cannot drift from the store the rest of the stack
+// uses. Callers pass the store to resolve against explicitly: the DB-credential
+// generator resolves against the control plane's effective store, whereas the
+// per-tenant-store sub-reconciler resolves against the SHARED cluster store (the
+// tenant store cannot describe its own bootstrap). Falls back to the documented
+// defaults when the store or the fields are unreadable.
+func (r *ControlPlaneReconciler) openBaoConnection(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, ref commonv1.SecretStoreRefSpec) (server, mountPath string) {
 	server = openBaoDefaultServer
 	mountPath = openBaoDefaultKubernetesMount
 
-	ref := secrets.EffectiveStoreRef(cp.Spec.SecretStoreRef)
 	var provider *esov1.SecretStoreProvider
 	if ref.Kind == commonv1.SecretStoreKindNamespaced {
 		store := &esov1.SecretStore{}
@@ -464,8 +467,9 @@ func (r *ControlPlaneReconciler) openBaoConnection(ctx context.Context, cp *c5c3
 		}
 		provider = store.Spec.Provider
 	} else {
-		// EffectiveStoreRef normalises nil/empty-kind refs to the cluster kind,
-		// so anything not namespaced resolves through the cluster-scoped store.
+		// Callers pass an already-resolved ref (effectiveControlPlaneStoreRef /
+		// secrets.EffectiveStoreRef(nil)), so a non-namespaced kind resolves
+		// through the cluster-scoped store by name.
 		store := &esov1.ClusterSecretStore{}
 		if err := r.Get(ctx, client.ObjectKey{Name: ref.Name}, store); err != nil {
 			return server, mountPath

@@ -82,15 +82,19 @@ type ControlPlaneSpec struct {
 
 	// SecretStoreRef selects the External Secrets store the ControlPlane and its
 	// service children route ExternalSecrets and PushSecrets through. When
-	// omitted the control plane uses the shared cluster-scoped
-	// openbao-cluster-store, so existing deployments keep working unchanged. Set
-	// kind to SecretStore with the name of a namespaced store in the
-	// ControlPlane's namespace to reach OpenBao as a per-tenant identity — the
-	// prerequisite for OpenBao-enforced isolation between control planes. The
-	// reference is projected onto the Keystone and Horizon children, so setting
-	// it here is the single place operators configure it. It is deliberately
-	// MUTABLE: switching stores re-points the identity while the operator moves
-	// the fernet/credential key material in place, never re-creating it.
+	// omitted the operator PROVISIONS a per-tenant namespaced store
+	// (openbao-tenant-store) in the control plane's namespace and defaults the
+	// control plane and its Keystone/Horizon children onto it, so every control
+	// plane reaches OpenBao as its own tenant identity — the enforced default that
+	// makes OpenBao itself, not a naming convention, isolate one control plane's
+	// secret material from another. Set this field to override that default with an
+	// explicit store (e.g. a namespaced store you manage, or the shared
+	// cluster-scoped openbao-cluster-store); the operator then provisions nothing
+	// and uses the store you name. The reference is projected onto the Keystone and
+	// Horizon children, so setting it here is the single place operators configure
+	// it. It is deliberately MUTABLE: switching stores re-points the identity while
+	// the operator moves the fernet/credential key material in place, never
+	// re-creating it.
 	// +optional
 	SecretStoreRef *commonv1.SecretStoreRefSpec `json:"secretStoreRef,omitempty"`
 

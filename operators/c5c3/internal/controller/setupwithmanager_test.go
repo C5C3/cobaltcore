@@ -226,16 +226,27 @@ func TestSecretToControlPlaneMapper_ScopedToNamespace(t *testing.T) {
 
 // --- storeToControlPlaneMapper (#476, #605) ---
 
-// TestStoreToControlPlaneMapper_ClusterKindEnqueuesDefaultControlPlanes verifies
+// TestStoreToControlPlaneMapper_ClusterKindEnqueuesExplicitControlPlanes verifies
 // that a status change on the OpenBao-backed ClusterSecretStore enqueues every
-// ControlPlane in the cluster that defaults to it (across namespaces), since the
-// cluster-scoped store is shared and an ESO/OpenBao outage affects all of them.
-func TestStoreToControlPlaneMapper_ClusterKindEnqueuesDefaultControlPlanes(t *testing.T) {
+// ControlPlane that EXPLICITLY selects it (across namespaces), but NOT a
+// ControlPlane that omits spec.secretStoreRef — the default now resolves to the
+// operator-provisioned per-tenant namespaced store, so a cluster-store change no
+// longer concerns it.
+func TestStoreToControlPlaneMapper_ClusterKindEnqueuesExplicitControlPlanes(t *testing.T) {
 	g := NewGomegaWithT(t)
 
 	cpA := mapperControlPlane("cp-a", "ns-a", "secret-a")
+	cpA.Spec.SecretStoreRef = &commonv1.SecretStoreRefSpec{
+		Kind: commonv1.SecretStoreKindCluster, Name: openBaoClusterStoreName,
+	}
 	cpB := mapperControlPlane("cp-b", "ns-b", "secret-b")
-	c := newControlPlaneMapperClient(t, cpA, cpB)
+	cpB.Spec.SecretStoreRef = &commonv1.SecretStoreRefSpec{
+		Kind: commonv1.SecretStoreKindCluster, Name: openBaoClusterStoreName,
+	}
+	// A nil-ref ControlPlane defaults to the per-tenant store, so a cluster-store
+	// change must NOT enqueue it.
+	cpDefault := mapperControlPlane("cp-default", "ns-c", "secret-c")
+	c := newControlPlaneMapperClient(t, cpA, cpB, cpDefault)
 	mapper := storeToControlPlaneMapper(c, commonv1.SecretStoreKindCluster)
 
 	store := &esov1.ClusterSecretStore{
@@ -250,7 +261,7 @@ func TestStoreToControlPlaneMapper_ClusterKindEnqueuesDefaultControlPlanes(t *te
 	g.Expect(names).To(ConsistOf(
 		types.NamespacedName{Namespace: "ns-a", Name: "cp-a"},
 		types.NamespacedName{Namespace: "ns-b", Name: "cp-b"},
-	), "a ClusterSecretStore change must enqueue every ControlPlane defaulting to it")
+	), "a ClusterSecretStore change must enqueue only ControlPlanes that explicitly select it, not the nil-ref default")
 }
 
 // TestStoreToControlPlaneMapper_ClusterKindIgnoresOtherStores verifies the
@@ -273,9 +284,10 @@ func TestStoreToControlPlaneMapper_ClusterKindIgnoresOtherStores(t *testing.T) {
 }
 
 // TestStoreToControlPlaneMapper_NamespacedKindScopesToStoreNamespace verifies a
-// namespaced SecretStore only enqueues the ControlPlane in its own namespace
-// that pins it via spec.secretStoreRef; a default (cluster-store) ControlPlane
-// and a same-name ControlPlane in a foreign namespace are not enqueued.
+// namespaced SecretStore named openbao-tenant-store enqueues every ControlPlane
+// in its OWN namespace that resolves to it — both a ControlPlane that pins it
+// explicitly and a nil-ref ControlPlane that defaults to it — but NOT a same-name
+// store in a foreign namespace.
 func TestStoreToControlPlaneMapper_NamespacedKindScopesToStoreNamespace(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -283,6 +295,8 @@ func TestStoreToControlPlaneMapper_NamespacedKindScopesToStoreNamespace(t *testi
 	pinned.Spec.SecretStoreRef = &commonv1.SecretStoreRefSpec{
 		Kind: commonv1.SecretStoreKindNamespaced, Name: "openbao-tenant-store",
 	}
+	// A nil-ref ControlPlane in the same namespace defaults to the per-tenant
+	// store named openbao-tenant-store, so it too must be enqueued.
 	defaulted := mapperControlPlane("cp-default", "tenant-a", "secret-b")
 	foreign := mapperControlPlane("cp-foreign", "tenant-b", "secret-c")
 	foreign.Spec.SecretStoreRef = &commonv1.SecretStoreRefSpec{
@@ -302,7 +316,8 @@ func TestStoreToControlPlaneMapper_NamespacedKindScopesToStoreNamespace(t *testi
 	}
 	g.Expect(names).To(ConsistOf(
 		types.NamespacedName{Namespace: "tenant-a", Name: "cp-pinned"},
-	), "a namespaced SecretStore change must enqueue only the pinned ControlPlane in its own namespace")
+		types.NamespacedName{Namespace: "tenant-a", Name: "cp-default"},
+	), "a namespaced SecretStore change must enqueue every ControlPlane in its own namespace that resolves to it")
 }
 
 // TestControlPlaneSecretNameExtractor_ExternalModeIndexesUserSecret asserts the

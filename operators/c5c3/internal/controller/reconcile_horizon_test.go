@@ -195,9 +195,10 @@ func TestReconcileHorizon_ProjectsSecretStoreRef(t *testing.T) {
 	g.Expect(h.Spec.SecretStoreRef.Name).To(Equal("openbao-tenant-store"))
 }
 
-// TestReconcileHorizon_ClearsSecretStoreRefWhenUnset verifies clearing the
-// ControlPlane store ref reverts the Horizon child to the default (nil).
-func TestReconcileHorizon_ClearsSecretStoreRefWhenUnset(t *testing.T) {
+// TestReconcileHorizon_DefaultsSecretStoreRefToTenantStore verifies a
+// ControlPlane without an explicit store ref projects the operator-provisioned
+// per-tenant namespaced store onto the Horizon child.
+func TestReconcileHorizon_DefaultsSecretStoreRefToTenantStore(t *testing.T) {
 	g := NewGomegaWithT(t)
 	cp := horizonControlPlane()
 	r := newHorizonTestReconciler(t, cp)
@@ -206,8 +207,10 @@ func TestReconcileHorizon_ClearsSecretStoreRefWhenUnset(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 
 	h := getProjectedHorizon(t, r.Client, cp)
-	g.Expect(h.Spec.SecretStoreRef).To(BeNil(),
-		"a ControlPlane without a store ref must leave the Horizon child on the default (nil)")
+	g.Expect(h.Spec.SecretStoreRef).NotTo(BeNil(),
+		"a nil ControlPlane store ref must project the per-tenant store, not nil")
+	g.Expect(h.Spec.SecretStoreRef.Kind).To(Equal(commonv1.SecretStoreKindNamespaced))
+	g.Expect(h.Spec.SecretStoreRef.Name).To(Equal("openbao-tenant-store"))
 }
 
 func TestReconcileHorizon_NotManagedWhenUnset(t *testing.T) {

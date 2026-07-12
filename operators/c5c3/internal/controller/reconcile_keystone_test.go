@@ -476,10 +476,11 @@ func TestReconcileKeystone_ProjectsSecretStoreRef(t *testing.T) {
 	g.Expect(k.Spec.SecretStoreRef.Name).To(Equal("openbao-tenant-store"))
 }
 
-// TestReconcileKeystone_ClearsSecretStoreRefWhenUnset verifies that clearing the
-// ControlPlane store ref reverts the Keystone child to the default (nil), so the
-// keystone operator resolves back to the shared cluster store.
-func TestReconcileKeystone_ClearsSecretStoreRefWhenUnset(t *testing.T) {
+// TestReconcileKeystone_DefaultsSecretStoreRefToTenantStore verifies that a
+// ControlPlane without an explicit store ref projects the operator-provisioned
+// per-tenant namespaced store onto the Keystone child, so the child reaches
+// OpenBao as the tenant identity rather than the shared cluster store.
+func TestReconcileKeystone_DefaultsSecretStoreRefToTenantStore(t *testing.T) {
 	g := NewGomegaWithT(t)
 
 	s := keystoneTestScheme(t)
@@ -491,8 +492,10 @@ func TestReconcileKeystone_ClearsSecretStoreRefWhenUnset(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 
 	k := getProjectedKeystone(t, c, cp)
-	g.Expect(k.Spec.SecretStoreRef).To(BeNil(),
-		"a ControlPlane without a store ref must leave the Keystone child on the default (nil)")
+	g.Expect(k.Spec.SecretStoreRef).NotTo(BeNil(),
+		"a nil ControlPlane store ref must project the per-tenant store, not nil")
+	g.Expect(k.Spec.SecretStoreRef.Kind).To(Equal(commonv1.SecretStoreKindNamespaced))
+	g.Expect(k.Spec.SecretStoreRef.Name).To(Equal("openbao-tenant-store"))
 }
 
 func TestReconcileKeystone_GatewayNilStaysInCluster(t *testing.T) {

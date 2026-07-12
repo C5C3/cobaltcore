@@ -46,7 +46,7 @@ func runServiceAccounts(t *testing.T, cp *c5c3v1alpha1.ControlPlane, objs ...cli
 	t.Helper()
 	g := NewGomegaWithT(t)
 	s := korcTestScheme(t)
-	all := append([]client.Object{cp, readyClusterSecretStore()}, objs...)
+	all := append([]client.Object{cp, readyClusterSecretStore(), readyTenantStoreFor(cp)}, objs...)
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(all...).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(20)}
 	_, err := r.reconcileServiceAccounts(context.Background(), cp)
@@ -337,7 +337,7 @@ func TestReconcileServiceAccounts_SupersededPruneBoundedToExistingSecrets(t *tes
 	var secretDeletes int
 	s := korcTestScheme(t)
 	c := fake.NewClientBuilder().WithScheme(s).
-		WithObjects(cp, readyClusterSecretStore(), user, pwV5).
+		WithObjects(cp, readyClusterSecretStore(), readyTenantStoreFor(cp), user, pwV5).
 		WithInterceptorFuncs(interceptor.Funcs{
 			Delete: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
 				if _, ok := obj.(*corev1.Secret); ok {

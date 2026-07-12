@@ -127,7 +127,7 @@ func TestReconcileDBCredentials_Managed_ProjectsDynamicObjects(t *testing.T) {
 
 	s := korcTestScheme(t)
 	cp := dbCredManagedControlPlane()
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, readyClusterSecretStore()).Build()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, readyClusterSecretStore(), readyTenantStoreFor(cp)).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
 	// No Ready status on the freshly-created ES, so the call requeues with
@@ -227,7 +227,7 @@ func TestOpenBaoConnection_ReadsFromNamespacedStore(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, store).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-	server, mount := r.openBaoConnection(context.Background(), cp)
+	server, mount := r.openBaoConnection(context.Background(), cp, effectiveControlPlaneStoreRef(cp))
 	g.Expect(server).To(Equal("https://openbao.tenant.svc:8200"))
 	g.Expect(mount).To(Equal("kubernetes/tenant"))
 }
@@ -245,7 +245,7 @@ func TestOpenBaoConnection_FallsBackToDefaultsWhenStoreMissing(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-	server, mount := r.openBaoConnection(context.Background(), cp)
+	server, mount := r.openBaoConnection(context.Background(), cp, effectiveControlPlaneStoreRef(cp))
 	g.Expect(server).To(Equal(openBaoDefaultServer))
 	g.Expect(mount).To(Equal(openBaoDefaultKubernetesMount))
 }
@@ -256,7 +256,7 @@ func TestReconcileDBCredentials_Static_ProjectsKVExternalSecret(t *testing.T) {
 	s := korcTestScheme(t)
 	cp := dbCredManagedControlPlane()
 	cp.Spec.Infrastructure.Database.CredentialsMode = commonv1.CredentialsModeStatic
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, readyClusterSecretStore()).Build()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, readyClusterSecretStore(), readyTenantStoreFor(cp)).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
 	if _, err := r.reconcileDBCredentials(context.Background(), cp); err != nil {
@@ -265,7 +265,10 @@ func TestReconcileDBCredentials_Static_ProjectsKVExternalSecret(t *testing.T) {
 
 	es, err := getDBCredES(t, r, cp)
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(es.Spec.SecretStoreRef.Name).To(Equal(openBaoClusterStoreName))
+	// A nil secretStoreRef now defaults to the operator-provisioned per-tenant
+	// namespaced store, not the shared cluster store.
+	g.Expect(es.Spec.SecretStoreRef.Kind).To(Equal("SecretStore"))
+	g.Expect(es.Spec.SecretStoreRef.Name).To(Equal("openbao-tenant-store"))
 	g.Expect(es.Spec.DataFrom).To(BeEmpty(), "Static ExternalSecret must not use a generator")
 	g.Expect(es.Spec.Data).To(HaveLen(2))
 	g.Expect(es.Spec.Data[0].RemoteRef.Key).To(Equal(dbCredentialRemoteKeyFor(cp)))
@@ -286,7 +289,7 @@ func TestReconcileDBCredentials_StaticAfterDynamic_TearsDownGenerator(t *testing
 	cp.Spec.Infrastructure.Database.CredentialsMode = commonv1.CredentialsModeStatic
 	// Pre-seed a leftover VaultDynamicSecret from a prior Dynamic deployment.
 	leftover := dbCredentialVaultDynamicSecret(cp, openBaoDefaultServer, openBaoDefaultKubernetesMount)
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, readyClusterSecretStore(), leftover).Build()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, readyClusterSecretStore(), readyTenantStoreFor(cp), leftover).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
 	if _, err := r.reconcileDBCredentials(context.Background(), cp); err != nil {
@@ -304,7 +307,7 @@ func TestReconcileDBCredentials_NotReady_SetsConditionFalseAndRequeues(t *testin
 
 	s := korcTestScheme(t)
 	cp := dbCredManagedControlPlane()
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, readyClusterSecretStore()).Build()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, readyClusterSecretStore(), readyTenantStoreFor(cp)).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
 	result, err := r.reconcileDBCredentials(context.Background(), cp)
@@ -325,7 +328,7 @@ func TestReconcileDBCredentials_Ready_SetsConditionTrue(t *testing.T) {
 
 	s := korcTestScheme(t)
 	cp := dbCredManagedControlPlane()
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, readyClusterSecretStore(), readyDBCredES(cp)).Build()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, readyClusterSecretStore(), readyTenantStoreFor(cp), readyDBCredES(cp)).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
 	result, err := r.reconcileDBCredentials(context.Background(), cp)

@@ -25,6 +25,7 @@ import (
 // an empty label so the drift surfaces in alerts.
 var subReconcilerConditionTypes = map[string]string{
 	"Infrastructure":  conditionTypeInfrastructureReady,
+	"ESOTenantStore":  conditionTypeESOTenantStoreReady,
 	"DBCredentials":   conditionTypeDBCredentialsReady,
 	"Keystone":        conditionTypeKeystoneReady,
 	"Horizon":         conditionTypeHorizonReady,

@@ -98,7 +98,7 @@ func TestReconcileAdminPassword_Managed_CreatesExternalSecret(t *testing.T) {
 
 	s := korcTestScheme(t)
 	cp := adminPwManagedControlPlane()
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, readyClusterSecretStore()).Build()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, readyClusterSecretStore(), readyTenantStoreFor(cp)).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
 	// No Ready status on the freshly-created ES, so the call requeues with
@@ -110,8 +110,10 @@ func TestReconcileAdminPassword_Managed_CreatesExternalSecret(t *testing.T) {
 	es, err := getAdminPwES(t, r, cp)
 	g.Expect(err).NotTo(HaveOccurred(), "operator must create the admin-password ExternalSecret")
 
-	g.Expect(es.Spec.SecretStoreRef.Kind).To(Equal("ClusterSecretStore"))
-	g.Expect(es.Spec.SecretStoreRef.Name).To(Equal(openBaoClusterStoreName))
+	// A nil secretStoreRef now defaults to the operator-provisioned per-tenant
+	// namespaced store, not the shared cluster store.
+	g.Expect(es.Spec.SecretStoreRef.Kind).To(Equal("SecretStore"))
+	g.Expect(es.Spec.SecretStoreRef.Name).To(Equal("openbao-tenant-store"))
 	g.Expect(es.Spec.Target.Name).To(Equal(adminPasswordSecretName(cp)))
 	g.Expect(es.Spec.Target.CreationPolicy).To(Equal(esov1.CreatePolicyOwner))
 
@@ -136,7 +138,7 @@ func TestReconcileAdminPassword_NotReady_SetsConditionFalseAndRequeues(t *testin
 
 	s := korcTestScheme(t)
 	cp := adminPwManagedControlPlane()
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, readyClusterSecretStore()).Build()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, readyClusterSecretStore(), readyTenantStoreFor(cp)).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
 	result, err := r.reconcileAdminPassword(context.Background(), cp)
@@ -158,7 +160,7 @@ func TestReconcileAdminPassword_Ready_SetsConditionTrue(t *testing.T) {
 
 	s := korcTestScheme(t)
 	cp := adminPwManagedControlPlane()
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, readyClusterSecretStore(), readyAdminPwES(cp)).Build()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, readyClusterSecretStore(), readyTenantStoreFor(cp), readyAdminPwES(cp)).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
 	result, err := r.reconcileAdminPassword(context.Background(), cp)

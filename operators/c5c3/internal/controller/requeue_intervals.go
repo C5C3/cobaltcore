@@ -14,6 +14,13 @@ const (
 	// child is still converging to Ready.
 	infraRequeueAfter = 15 * time.Second
 
+	// esoTenantStoreRequeueAfter is the backoff the ESO-tenant-store sub-reconciler
+	// uses while waiting for the per-ControlPlane SecretStore to reach Ready (the
+	// mTLS client cert to be issued and ESO to validate the OpenBao backend). It
+	// short-circuits the pipeline so the store-consuming sub-reconcilers do not
+	// run before the store they default onto exists.
+	esoTenantStoreRequeueAfter = 10 * time.Second
+
 	// dbCredentialsRequeueAfter is the backoff the DB-credentials sub-reconciler
 	// uses while waiting for the per-ControlPlane DB-credential ExternalSecret to
 	// sync to Ready. DECISION: a dedicated named

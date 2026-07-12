@@ -70,14 +70,15 @@ func (r *ControlPlaneReconciler) reconcileAdminCredential(ctx context.Context, c
 	}
 
 	// Gate on the store the ControlPlane selected via spec.secretStoreRef
-	// (default: the shared cluster store) so an ESO/OpenBao outage surfaces as
-	// AdminCredentialReady=False promptly. The clouds.yaml ExternalSecret read
-	// below would eventually requeue on its own, but ESO only re-syncs at the
-	// refreshInterval (default 1h); the store watch wakes the ControlPlane the
-	// moment ESO flips the store condition, so the credential condition does not
-	// stay stale-True through a short outage (#476). A namespaced store is
-	// resolved in the child namespace where the ExternalSecret is materialised.
-	storeRef := secrets.EffectiveStoreRef(cp.Spec.SecretStoreRef)
+	// (default: the operator-provisioned per-tenant store) so an ESO/OpenBao
+	// outage surfaces as AdminCredentialReady=False promptly. The clouds.yaml
+	// ExternalSecret read below would eventually requeue on its own, but ESO only
+	// re-syncs at the refreshInterval (default 1h); the store watch wakes the
+	// ControlPlane the moment ESO flips the store condition, so the credential
+	// condition does not stay stale-True through a short outage (#476). A
+	// namespaced store is resolved in the child namespace where the ExternalSecret
+	// is materialised.
+	storeRef := effectiveControlPlaneStoreRef(cp)
 	storeReady, err := secrets.IsStoreRefReady(ctx, r.Client, storeRef, childNamespace(cp))
 	if err != nil {
 		return ctrl.Result{}, err
@@ -222,8 +223,9 @@ func (r *ControlPlaneReconciler) reconcileAdminCredential(ctx context.Context, c
 
 	// Gate AdminCredentialReady on the PushSecret actually syncing to OpenBao — not
 	// merely on the CR existing. Otherwise a backend permission failure (e.g. the
-	// ESO role missing the push-app-credentials policy) yields a false-positive
-	// Ready while OpenBao still serves the password-based bootstrap clouds.yaml.
+	// per-tenant eso-tenant policy not covering the admin app-credential path)
+	// yields a false-positive Ready while OpenBao still serves the password-based
+	// bootstrap clouds.yaml.
 	pushed := &esov1alpha1.PushSecret{}
 	if err := r.Get(ctx, types.NamespacedName{Name: ps.Name, Namespace: ps.Namespace}, pushed); err != nil {
 		fail("PushSecretError", fmt.Sprintf("reading admin app-credential PushSecret: %v", err))

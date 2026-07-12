@@ -264,10 +264,16 @@ const (
 
 // SecretStoreRefSpec selects the External Secrets store the operators route a
 // CR's ExternalSecrets and PushSecrets through. It is the per-CR replacement
-// for the compile-time openbao-cluster-store constant: when omitted the
-// operators default to the shared cluster-scoped store, so existing
-// deployments keep working unchanged; when set to a namespaced SecretStore the
-// CR reaches OpenBao as its own tenant identity.
+// for the compile-time openbao-cluster-store constant. When omitted, a
+// standalone Keystone or Horizon CR falls back to the shared cluster-scoped
+// store — which, since the confused-deputy fix, grants only the genuinely
+// shared bootstrap and infrastructure reads, no Keystone key material; a
+// standalone deployment therefore onboards the per-tenant identity through the
+// documented manual procedure and sets this field to the namespaced store
+// explicitly. (A ControlPlane omitting the field is different: the c5c3 operator
+// provisions and projects a per-tenant store for it — see
+// ControlPlaneSpec.SecretStoreRef.) When set to a namespaced SecretStore the CR
+// reaches OpenBao as its own tenant identity.
 //
 // A namespaced store (Kind SecretStore) is always resolved in the consuming
 // CR's own namespace — there is deliberately no namespace field, matching ESO

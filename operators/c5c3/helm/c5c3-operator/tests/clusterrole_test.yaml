@@ -1,7 +1,9 @@
 # ClusterRole RBAC rules unit tests.
 # Rules mirror the +kubebuilder:rbac markers on the ControlPlane and
 # CredentialRotation reconcilers (deduplicated), plus the leases rule for
-# leader election — 20 rules total.
+# leader election — 21 rules total (clustersecretstores read-only and
+# secretstores read-write are separate rules since the operator provisions the
+# per-tenant SecretStore).
 suite: ClusterRole
 templates:
   - templates/clusterrole.yaml
@@ -10,7 +12,7 @@ tests:
     asserts:
       - lengthEqual:
           path: rules
-          count: 20
+          count: 21
 
   - it: should grant full CRUD on controlplanes
     asserts:
@@ -270,7 +272,7 @@ tests:
               - patch
               - delete
 
-  - it: should grant read-only on clustersecretstores and secretstores
+  - it: should grant read-only on clustersecretstores
     asserts:
       - contains:
           path: rules
@@ -279,11 +281,30 @@ tests:
               - external-secrets.io
             resources:
               - clustersecretstores
+            verbs:
+              - get
+              - list
+              - watch
+
+  # reconcileESOTenantStore provisions the per-tenant namespaced SecretStore
+  # every ControlPlane defaults onto, so secretstores need the write verbs.
+  - it: should grant full CRUD on secretstores
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - external-secrets.io
+            resources:
               - secretstores
             verbs:
               - get
               - list
               - watch
+              - create
+              - update
+              - patch
+              - delete
 
   # reconcileDBCredentials projects a per-ControlPlane VaultDynamicSecret
   # generator in Dynamic credentials mode to issue short-lived DB credentials.

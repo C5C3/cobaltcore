@@ -74,7 +74,7 @@ func adminAppCredentialPushSecret(cp *c5c3v1alpha1.ControlPlane) *esov1alpha1.Pu
 		},
 		Spec: esov1alpha1.PushSecretSpec{
 			DeletionPolicy:  esov1alpha1.PushSecretDeletionPolicyDelete,
-			SecretStoreRefs: secrets.PushSecretStoreRefs(secrets.EffectiveStoreRef(cp.Spec.SecretStoreRef)),
+			SecretStoreRefs: secrets.PushSecretStoreRefs(effectiveControlPlaneStoreRef(cp)),
 			Selector: esov1alpha1.PushSecretSelector{
 				Secret: &esov1alpha1.PushSecretSecret{
 					Name: adminAppCredentialSecretName(cp),
@@ -154,7 +154,7 @@ func (r *ControlPlaneReconciler) ensureKORCCloudsYAMLExternalSecret(ctx context.
 		},
 		Spec: esov1.ExternalSecretSpec{
 			RefreshInterval: &metav1.Duration{Duration: time.Hour},
-			SecretStoreRef:  secrets.ESOSecretStoreRef(secrets.EffectiveStoreRef(cp.Spec.SecretStoreRef)),
+			SecretStoreRef:  secrets.ESOSecretStoreRef(effectiveControlPlaneStoreRef(cp)),
 			Target:          esov1.ExternalSecretTarget{Name: name, CreationPolicy: esov1.CreatePolicyOwner},
 			Data:            data,
 		},

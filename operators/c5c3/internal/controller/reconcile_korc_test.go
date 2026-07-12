@@ -593,7 +593,9 @@ func TestReconcileKORC_PushSecretRemoteKeyMatchesPerCRPath(t *testing.T) {
 		Name: adminAppCredentialPushSecretName(cp), Namespace: childNamespace(cp),
 	}, ps)).To(Succeed())
 	g.Expect(ps.Spec.SecretStoreRefs).To(HaveLen(1))
-	g.Expect(ps.Spec.SecretStoreRefs[0].Name).To(Equal(openBaoClusterStoreName))
+	// A nil secretStoreRef now defaults to the operator-provisioned per-tenant store.
+	g.Expect(ps.Spec.SecretStoreRefs[0].Kind).To(Equal("SecretStore"))
+	g.Expect(ps.Spec.SecretStoreRefs[0].Name).To(Equal("openbao-tenant-store"))
 	g.Expect(ps.Spec.Data).To(HaveLen(1))
 	g.Expect(ps.Spec.Data[0].Match.RemoteRef.RemoteKey).To(Equal(adminAppCredentialRemoteKeyFor(cp)))
 }
@@ -636,7 +638,7 @@ func TestReconcileAdminCredential_MissingAppCredSecretDefers(t *testing.T) {
 	setKORCReady(cp)
 	cp.Status.AdminApplicationCredential = &c5c3v1alpha1.AdminApplicationCredentialStatus{ID: "test-ac-id"}
 	// clouds.yaml ExternalSecret is Ready, but the app-credential Secret is absent.
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, readyClusterSecretStore(), readyCloudsYamlES(cp)).Build()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, readyClusterSecretStore(), readyTenantStoreFor(cp), readyCloudsYamlES(cp)).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
 	res, err := r.reconcileAdminCredential(context.Background(), cp)
@@ -677,7 +679,7 @@ func TestReconcileAdminCredential_PushSecretBuiltAndReady(t *testing.T) {
 	// byte-compare gate checks against (id "test-ac-id", value "generated-app-cred-secret"
 	// from mintedAppCredSecret), so AdminCredentialReady can flip True.
 	c := fake.NewClientBuilder().WithScheme(s).
-		WithObjects(cp, readyClusterSecretStore(), readyCloudsYamlES(cp), mintedAppCredSecret(cp), readyAppCredPushSecret(cp),
+		WithObjects(cp, readyClusterSecretStore(), readyTenantStoreFor(cp), readyCloudsYamlES(cp), mintedAppCredSecret(cp), readyAppCredPushSecret(cp),
 			materializedCloudsYamlSecret(cp, "test-ac-id", "generated-app-cred-secret")).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
@@ -706,7 +708,9 @@ func TestReconcileAdminCredential_PushSecretBuiltAndReady(t *testing.T) {
 		Name: adminAppCredentialPushSecretName(cp), Namespace: childNamespace(cp),
 	}, ps)).To(Succeed())
 	g.Expect(ps.Spec.SecretStoreRefs).To(HaveLen(1))
-	g.Expect(ps.Spec.SecretStoreRefs[0].Name).To(Equal(openBaoClusterStoreName))
+	// A nil secretStoreRef now defaults to the operator-provisioned per-tenant store.
+	g.Expect(ps.Spec.SecretStoreRefs[0].Kind).To(Equal("SecretStore"))
+	g.Expect(ps.Spec.SecretStoreRefs[0].Name).To(Equal("openbao-tenant-store"))
 	g.Expect(ps.Spec.Selector.Secret.Name).To(Equal(adminAppCredentialSecretName(cp)))
 	g.Expect(ps.Spec.Data).To(HaveLen(1))
 	g.Expect(ps.Spec.Data[0].Match.RemoteRef.RemoteKey).To(Equal(adminAppCredentialRemoteKeyFor(cp)))
@@ -738,7 +742,7 @@ func TestReconcileAdminCredential_DefersUntilCloudsYamlMaterialized(t *testing.T
 	setKORCReady(cp)
 	cp.Status.AdminApplicationCredential = &c5c3v1alpha1.AdminApplicationCredentialStatus{ID: "test-ac-id"}
 	c := fake.NewClientBuilder().WithScheme(s).
-		WithObjects(cp, readyClusterSecretStore(), readyCloudsYamlES(cp), mintedAppCredSecret(cp), readyAppCredPushSecret(cp)).Build()
+		WithObjects(cp, readyClusterSecretStore(), readyTenantStoreFor(cp), readyCloudsYamlES(cp), mintedAppCredSecret(cp), readyAppCredPushSecret(cp)).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
 	res, err := r.reconcileAdminCredential(context.Background(), cp)
@@ -788,7 +792,7 @@ func TestReconcileAdminCredential_SemanticMatchToleratesNormalizedCloudsYaml(t *
 		Data:       map[string][]byte{appCredCloudsYAMLKey: reserialized},
 	}
 	c := fake.NewClientBuilder().WithScheme(s).
-		WithObjects(cp, readyClusterSecretStore(), readyCloudsYamlES(cp), mintedAppCredSecret(cp), readyAppCredPushSecret(cp), matSecret).Build()
+		WithObjects(cp, readyClusterSecretStore(), readyTenantStoreFor(cp), readyCloudsYamlES(cp), mintedAppCredSecret(cp), readyAppCredPushSecret(cp), matSecret).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
 	_, err = r.reconcileAdminCredential(context.Background(), cp)
@@ -820,7 +824,7 @@ func TestReconcileAdminCredential_StuckCloudsYamlSyncEscalates(t *testing.T) {
 	// not) re-sync.
 	staleMat := materializedCloudsYamlSecret(cp, "old-revoked-id", "generated-app-cred-secret")
 	c := fake.NewClientBuilder().WithScheme(s).
-		WithObjects(cp, readyClusterSecretStore(), readyCloudsYamlES(cp), mintedAppCredSecret(cp), readyAppCredPushSecret(cp), staleMat).Build()
+		WithObjects(cp, readyClusterSecretStore(), readyTenantStoreFor(cp), readyCloudsYamlES(cp), mintedAppCredSecret(cp), readyAppCredPushSecret(cp), staleMat).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
 	res, err := r.reconcileAdminCredential(context.Background(), cp)
@@ -850,7 +854,7 @@ func TestReconcileAdminCredential_RecentStaleStaysTransient(t *testing.T) {
 	}
 	staleMat := materializedCloudsYamlSecret(cp, "old-revoked-id", "generated-app-cred-secret")
 	c := fake.NewClientBuilder().WithScheme(s).
-		WithObjects(cp, readyClusterSecretStore(), readyCloudsYamlES(cp), mintedAppCredSecret(cp), readyAppCredPushSecret(cp), staleMat).Build()
+		WithObjects(cp, readyClusterSecretStore(), readyTenantStoreFor(cp), readyCloudsYamlES(cp), mintedAppCredSecret(cp), readyAppCredPushSecret(cp), staleMat).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
 	res, err := r.reconcileAdminCredential(context.Background(), cp)
@@ -890,7 +894,7 @@ func TestReconcileAdminCredential_ForceSyncRekeyedAfterRepush(t *testing.T) {
 	}
 	ps := readyAppCredPushSecret(cp)
 	c := fake.NewClientBuilder().WithScheme(s).
-		WithObjects(cp, readyClusterSecretStore(), readyCloudsYamlES(cp), mintedAppCredSecret(cp), ps, staleMat).Build()
+		WithObjects(cp, readyClusterSecretStore(), readyTenantStoreFor(cp), readyCloudsYamlES(cp), mintedAppCredSecret(cp), ps, staleMat).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
 	// Pass 1: the re-push has not completed yet (syncedResourceVersion is the
@@ -1108,7 +1112,7 @@ func TestReconcileAdminCredential_PushSecretClobberSafeNoChurn(t *testing.T) {
 	setKORCReady(cp)
 	cp.Status.AdminApplicationCredential = &c5c3v1alpha1.AdminApplicationCredentialStatus{ID: "test-ac-id"}
 	c := fake.NewClientBuilder().WithScheme(s).
-		WithObjects(cp, readyClusterSecretStore(), readyCloudsYamlES(cp), mintedAppCredSecret(cp), readyAppCredPushSecret(cp),
+		WithObjects(cp, readyClusterSecretStore(), readyTenantStoreFor(cp), readyCloudsYamlES(cp), mintedAppCredSecret(cp), readyAppCredPushSecret(cp),
 			materializedCloudsYamlSecret(cp, "test-ac-id", "generated-app-cred-secret")).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
@@ -2293,7 +2297,7 @@ func TestReconcileAdminCredential_WaitsForPushSecretSync(t *testing.T) {
 	// No pre-existing Ready PushSecret — EnsurePushSecret creates it, but it has not
 	// synced to the backend yet.
 	c := fake.NewClientBuilder().WithScheme(s).
-		WithObjects(cp, readyClusterSecretStore(), readyCloudsYamlES(cp), mintedAppCredSecret(cp)).Build()
+		WithObjects(cp, readyClusterSecretStore(), readyTenantStoreFor(cp), readyCloudsYamlES(cp), mintedAppCredSecret(cp)).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
 	_, err := r.reconcileAdminCredential(context.Background(), cp)
@@ -2494,8 +2498,10 @@ func TestEnsureKORCCloudsYAMLExternalSecret_ShapeAndOwnerRef(t *testing.T) {
 		Name: korcCloudsYamlSecretName, Namespace: childNamespace(cp),
 	}, es)).To(Succeed())
 
-	g.Expect(es.Spec.SecretStoreRef.Kind).To(Equal("ClusterSecretStore"))
-	g.Expect(es.Spec.SecretStoreRef.Name).To(Equal(openBaoClusterStoreName))
+	// A nil secretStoreRef now defaults to the operator-provisioned per-tenant
+	// namespaced store, not the shared cluster store.
+	g.Expect(es.Spec.SecretStoreRef.Kind).To(Equal("SecretStore"))
+	g.Expect(es.Spec.SecretStoreRef.Name).To(Equal("openbao-tenant-store"))
 	g.Expect(es.Spec.Target.Name).To(Equal(korcCloudsYamlSecretName))
 	g.Expect(es.Spec.Target.CreationPolicy).To(Equal(esov1.CreatePolicyOwner))
 	g.Expect(es.Spec.Data).To(HaveLen(1))

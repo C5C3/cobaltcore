@@ -32,7 +32,6 @@ import (
 	"github.com/c5c3/forge/internal/common/bootstrap"
 	"github.com/c5c3/forge/internal/common/conditions"
 	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
-	"github.com/c5c3/forge/internal/common/secrets"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	"github.com/c5c3/forge/internal/common/watch"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
@@ -58,7 +57,8 @@ const ControlPlaneSecretNameIndexKey = "spec.korc.adminCredential.passwordSecret
 // the no-inline-literals drift guard.
 const (
 	conditionTypeInfrastructureReady  = "InfrastructureReady"
-	conditionTypeDBCredentialsReady   = "DBCredentialsReady" //nolint:gosec // G101 false positive: condition type name, not a credential.
+	conditionTypeESOTenantStoreReady  = "ESOTenantStoreReady" //nolint:gosec // G101 false positive: condition type name, not a credential.
+	conditionTypeDBCredentialsReady   = "DBCredentialsReady"  //nolint:gosec // G101 false positive: condition type name, not a credential.
 	conditionTypeKeystoneReady        = "KeystoneReady"
 	conditionTypeHorizonReady         = "HorizonReady"
 	conditionTypeKORCReady            = "KORCReady"
@@ -83,6 +83,7 @@ const controlPlaneORCFinalizer = "c5c3.io/orc-teardown"
 // The Ready condition is True only when all of these are True.
 var subConditionTypes = []string{
 	conditionTypeInfrastructureReady,
+	conditionTypeESOTenantStoreReady,
 	conditionTypeDBCredentialsReady,
 	conditionTypeKeystoneReady,
 	conditionTypeHorizonReady,
@@ -122,7 +123,8 @@ type ControlPlaneReconciler struct {
 // +kubebuilder:rbac:groups=horizon.openstack.c5c3.io,resources=horizons,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=openstack.k-orc.cloud,resources=applicationcredentials;services;endpoints;users;domains;projects,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=external-secrets.io,resources=externalsecrets;pushsecrets,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=external-secrets.io,resources=clustersecretstores;secretstores,verbs=get;list;watch
+// +kubebuilder:rbac:groups=external-secrets.io,resources=clustersecretstores,verbs=get;list;watch
+// +kubebuilder:rbac:groups=external-secrets.io,resources=secretstores,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=generators.external-secrets.io,resources=vaultdynamicsecrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch;create;update;patch;delete
@@ -206,6 +208,15 @@ func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	pipeline := []commonreconcile.Step{
 		{Name: "Infrastructure", Fn: func(ctx context.Context) (ctrl.Result, error) {
 			return r.reconcileInfrastructure(ctx, &cp)
+		}},
+		// ESOTenantStore runs before every store-consuming sub-reconciler
+		// (DBCredentials, AdminPassword, Keystone, ...): it provisions the
+		// per-tenant SecretStore they default onto, so the store exists — and is
+		// gated Ready — before they route ExternalSecrets/PushSecrets through it.
+		// Placed after Infrastructure so MariaDB/Memcached provisioning is not
+		// blocked behind tenant-store cert issuance.
+		{Name: "ESOTenantStore", Fn: func(ctx context.Context) (ctrl.Result, error) {
+			return r.reconcileESOTenantStore(ctx, &cp)
 		}},
 		{Name: "DBCredentials", Fn: func(ctx context.Context) (ctrl.Result, error) {
 			return r.reconcileDBCredentials(ctx, &cp)
@@ -448,8 +459,10 @@ func secretToControlPlaneMapper(c client.Reader) handler.MapFunc {
 // credentials through the changed store; otherwise DBCredentialsReady /
 // AdminPasswordReady / AdminCredentialReady would stay stale-True until the next
 // periodic resync (#476). A ControlPlane that omits spec.secretStoreRef resolves
-// to the shared cluster store via secrets.EffectiveStoreRef. It binds the shared
-// watch.StoreRefFanOut to the ControlPlane list type.
+// to the operator-provisioned per-tenant namespaced store via
+// effectiveControlPlaneStoreRef, so a status transition on that store also
+// retriggers reconcile. It binds the shared watch.StoreRefFanOut to the
+// ControlPlane list type.
 func storeToControlPlaneMapper(c client.Reader, watchedKind commonv1.SecretStoreRefKind) handler.MapFunc {
 	return watch.StoreRefFanOut(c, watchedKind,
 		func() client.ObjectList { return &c5c3v1alpha1.ControlPlaneList{} },
@@ -458,7 +471,7 @@ func storeToControlPlaneMapper(c client.Reader, watchedKind commonv1.SecretStore
 			if !ok {
 				return commonv1.SecretStoreRefSpec{}
 			}
-			return secrets.EffectiveStoreRef(cp.Spec.SecretStoreRef)
+			return effectiveControlPlaneStoreRef(cp)
 		})
 }
 

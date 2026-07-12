@@ -555,6 +555,10 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	// Isolated test namespace per run (namespace-per-test with GenerateName).
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-controlplane-"}}
 	g.Expect(c.Create(ctx, ns)).To(Succeed(), "create test namespace")
+	// Pre-seed the per-tenant SecretStore Ready so the ESOTenantStore gate opens
+	// (envtest has no ESO controller); the operator's SSA re-asserts its spec
+	// without clobbering the status subresource.
+	ensureReadySecretStore(t, ctx, c, esoTenantStoreName, ns.Name)
 
 	// Create the ControlPlane CR (the defaulting webhook fills region etc.).
 	// Horizon is enabled HERE (not in the shared fixture) so only this
@@ -940,6 +944,9 @@ func TestIntegration_DBCredentialsGate_BlocksKeystoneUntilSecretExists(t *testin
 	// Isolated test namespace per run (namespace-per-test with GenerateName).
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-dbgate-"}}
 	g.Expect(c.Create(ctx, ns)).To(Succeed(), "create test namespace")
+	// Pre-seed the per-tenant SecretStore Ready so the pipeline reaches the
+	// DB-credential gate this test exercises (see driveControlPlaneToAdminCredentialReady).
+	ensureReadySecretStore(t, ctx, c, esoTenantStoreName, ns.Name)
 
 	// Create the ControlPlane CR (the defaulting webhook fills region etc.).
 	cp := integrationManagedControlPlane("cp", ns.Name)
@@ -1030,6 +1037,9 @@ func TestIntegration_AdminPasswordGate_BlocksKeystoneUntilExternalSecretReady(t 
 	// Isolated test namespace per run (namespace-per-test with GenerateName).
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-adminpwgate-"}}
 	g.Expect(c.Create(ctx, ns)).To(Succeed(), "create test namespace")
+	// Pre-seed the per-tenant SecretStore Ready so the pipeline reaches the
+	// admin-password gate this test exercises (see driveControlPlaneToAdminCredentialReady).
+	ensureReadySecretStore(t, ctx, c, esoTenantStoreName, ns.Name)
 
 	// Create the ControlPlane CR (the defaulting webhook fills region etc.).
 	cp := integrationManagedControlPlane("cp", ns.Name)
@@ -1126,6 +1136,14 @@ func driveControlPlaneToAdminCredentialReady(
 	t.Helper()
 	g := NewGomegaWithT(t)
 	ns := cp.Namespace
+
+	// The operator provisions the per-tenant SecretStore (openbao-tenant-store)
+	// every nil-ref ControlPlane defaults onto (reconcileESOTenantStore) and gates
+	// the store-consuming sub-reconcilers on its Ready condition. envtest has no
+	// ESO controller to flip that condition, so pre-seed it Ready here; the
+	// operator's Server-Side Apply re-asserts the store spec without clobbering the
+	// status subresource (apply.EnsureObject strips status from the apply body).
+	ensureReadySecretStore(t, ctx, c, esoTenantStoreName, ns)
 
 	// Admin password Secret the KORC sub-reconciler hashes to drive the mint, at the
 	// operator-owned per-CP name effectiveAdminPasswordSecretRef resolves in managed
@@ -1962,6 +1980,12 @@ func driveExternalControlPlaneToReady(
 	ns := cp.Namespace
 	cpKey := types.NamespacedName{Name: cp.Name, Namespace: ns}
 
+	// External mode still routes its admin app-credential / service-account pushes
+	// through the per-tenant SecretStore the operator provisions, so pre-seed that
+	// store Ready (envtest has no ESO controller to flip its Ready condition). See
+	// the note in driveControlPlaneToAdminCredentialReady.
+	ensureReadySecretStore(t, ctx, c, esoTenantStoreName, ns)
+
 	// In External mode effectiveAdminPasswordSecretRef resolves to the USER's
 	// Secret, so the cleartext readAdminPassword reads lives under that name.
 	adminSecret := &corev1.Secret{
@@ -2512,6 +2536,10 @@ func TestIntegration_FederationBackendWakesReconcileAndProjectsWebSSO(t *testing
 
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-controlplane-sso-"}}
 	g.Expect(c.Create(ctx, ns)).To(Succeed(), "create test namespace")
+	// Pre-seed the per-tenant SecretStore Ready so the pipeline reaches the
+	// credential and Keystone/Horizon projection stages (envtest has no ESO
+	// controller to flip the store's Ready condition).
+	ensureReadySecretStore(t, ctx, c, esoTenantStoreName, ns.Name)
 
 	cp := integrationManagedControlPlane("cp", ns.Name)
 	cp.Spec.Services.Keystone.PublicEndpoint = "https://keystone.example.com/v3"
