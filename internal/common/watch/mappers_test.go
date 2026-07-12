@@ -16,6 +16,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+
+	commonv1 "github.com/c5c3/forge/internal/common/types"
 )
 
 // The mapper tests use corev1.ConfigMap as the stand-in CR type: the mapper
@@ -218,5 +220,94 @@ func TestClusterRefMapper_NoMatchReturnsNil(t *testing.T) {
 		func(o client.Object) string { return o.GetAnnotations()["clusterRef"] })
 
 	changed := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "absent", Namespace: "ns1"}}
+	g.Expect(mapper(context.Background(), changed)).To(gomega.BeEmpty())
+}
+
+// storeRefEffective extracts a store reference from a ConfigMap standing in for
+// a CR: annotation "store-kind"/"store-name" model the CR's effective ref.
+func storeRefEffective(o client.Object) commonv1.SecretStoreRefSpec {
+	a := o.GetAnnotations()
+	return commonv1.SecretStoreRefSpec{
+		Kind: commonv1.SecretStoreRefKind(a["store-kind"]),
+		Name: a["store-name"],
+	}
+}
+
+func cmWithStore(name, namespace, kind, storeName string) *corev1.ConfigMap {
+	return &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
+		Name: name, Namespace: namespace,
+		Annotations: map[string]string{"store-kind": kind, "store-name": storeName},
+	}}
+}
+
+func TestStoreRefFanOut_ClusterKindEnqueuesMatchingRefs(t *testing.T) {
+	g := gomega.NewWithT(t)
+	// A cluster-scoped store fans out to every CR pinned to it by name, across
+	// namespaces. cr-c pins a different store and must be skipped.
+	c := fake.NewClientBuilder().WithScheme(clientgoscheme.Scheme).WithObjects(
+		cmWithStore("cr-a", "ns1", "ClusterSecretStore", "openbao-cluster-store"),
+		cmWithStore("cr-b", "ns2", "ClusterSecretStore", "openbao-cluster-store"),
+		cmWithStore("cr-c", "ns2", "ClusterSecretStore", "other-store"),
+	).Build()
+
+	mapper := StoreRefFanOut(c, commonv1.SecretStoreKindCluster,
+		func() client.ObjectList { return &corev1.ConfigMapList{} },
+		storeRefEffective)
+
+	changed := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "openbao-cluster-store"}}
+	reqs := mapper(context.Background(), changed)
+	g.Expect(reqs).To(gomega.ConsistOf(
+		reconcile.Request{NamespacedName: types.NamespacedName{Namespace: "ns1", Name: "cr-a"}},
+		reconcile.Request{NamespacedName: types.NamespacedName{Namespace: "ns2", Name: "cr-b"}},
+	))
+}
+
+func TestStoreRefFanOut_ClusterKindIgnoresOtherStoreName(t *testing.T) {
+	g := gomega.NewWithT(t)
+	c := fake.NewClientBuilder().WithScheme(clientgoscheme.Scheme).WithObjects(
+		cmWithStore("cr-a", "ns1", "ClusterSecretStore", "openbao-cluster-store"),
+	).Build()
+
+	mapper := StoreRefFanOut(c, commonv1.SecretStoreKindCluster,
+		func() client.ObjectList { return &corev1.ConfigMapList{} },
+		storeRefEffective)
+
+	changed := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "unrelated-store"}}
+	g.Expect(mapper(context.Background(), changed)).To(gomega.BeEmpty())
+}
+
+func TestStoreRefFanOut_NamespacedKindScopesToStoreNamespace(t *testing.T) {
+	g := gomega.NewWithT(t)
+	// A namespaced store only enqueues the CR in its own namespace that pins it
+	// as a namespaced ref. cr-b (ns2) and cr-c (cluster ref) must be skipped.
+	c := fake.NewClientBuilder().WithScheme(clientgoscheme.Scheme).WithObjects(
+		cmWithStore("cr-a", "ns1", "SecretStore", "openbao-tenant-store"),
+		cmWithStore("cr-b", "ns2", "SecretStore", "openbao-tenant-store"),
+		cmWithStore("cr-c", "ns1", "ClusterSecretStore", "openbao-tenant-store"),
+	).Build()
+
+	mapper := StoreRefFanOut(c, commonv1.SecretStoreKindNamespaced,
+		func() client.ObjectList { return &corev1.ConfigMapList{} },
+		storeRefEffective)
+
+	changed := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "openbao-tenant-store", Namespace: "ns1"}}
+	reqs := mapper(context.Background(), changed)
+	g.Expect(reqs).To(gomega.ConsistOf(
+		reconcile.Request{NamespacedName: types.NamespacedName{Namespace: "ns1", Name: "cr-a"}},
+	))
+}
+
+func TestStoreRefFanOut_NamespacedKindIgnoresForeignNamespace(t *testing.T) {
+	g := gomega.NewWithT(t)
+	c := fake.NewClientBuilder().WithScheme(clientgoscheme.Scheme).WithObjects(
+		cmWithStore("cr-a", "ns1", "SecretStore", "openbao-tenant-store"),
+	).Build()
+
+	mapper := StoreRefFanOut(c, commonv1.SecretStoreKindNamespaced,
+		func() client.ObjectList { return &corev1.ConfigMapList{} },
+		storeRefEffective)
+
+	// The store event is in ns2, where no CR pins it — the ns1 CR must not fire.
+	changed := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "openbao-tenant-store", Namespace: "ns2"}}
 	g.Expect(mapper(context.Background(), changed)).To(gomega.BeEmpty())
 }

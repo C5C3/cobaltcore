@@ -247,6 +247,44 @@ type SecretRefSpec struct {
 	Key  string `json:"key,omitempty"`
 }
 
+// SecretStoreRefKind names the External Secrets store scope a
+// SecretStoreRefSpec selects: the cluster-scoped ClusterSecretStore or the
+// namespaced SecretStore.
+// +kubebuilder:validation:Enum=ClusterSecretStore;SecretStore
+type SecretStoreRefKind string
+
+const (
+	// SecretStoreKindCluster selects a cluster-scoped ClusterSecretStore,
+	// resolved by name alone. This is today's shared default.
+	SecretStoreKindCluster SecretStoreRefKind = "ClusterSecretStore"
+	// SecretStoreKindNamespaced selects a namespaced SecretStore, resolved in
+	// the consuming CR's own namespace — the per-tenant identity path.
+	SecretStoreKindNamespaced SecretStoreRefKind = "SecretStore"
+)
+
+// SecretStoreRefSpec selects the External Secrets store the operators route a
+// CR's ExternalSecrets and PushSecrets through. It is the per-CR replacement
+// for the compile-time openbao-cluster-store constant: when omitted the
+// operators default to the shared cluster-scoped store, so existing
+// deployments keep working unchanged; when set to a namespaced SecretStore the
+// CR reaches OpenBao as its own tenant identity.
+//
+// A namespaced store (Kind SecretStore) is always resolved in the consuming
+// CR's own namespace — there is deliberately no namespace field, matching ESO
+// SecretStoreRef semantics where a SecretStore is looked up locally.
+type SecretStoreRefSpec struct {
+	// Kind is the store scope: ClusterSecretStore (cluster-scoped, the default)
+	// or SecretStore (resolved in the CR's namespace).
+	// +optional
+	// +kubebuilder:default=ClusterSecretStore
+	Kind SecretStoreRefKind `json:"kind,omitempty"`
+	// Name is the referenced store's name. It must be a non-empty DNS-1123
+	// subdomain (the Kubernetes object-name grammar), matching SecretRefSpec.Name.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
+	Name string `json:"name"`
+}
+
 // PolicySpec defines oslo.policy override configuration for an OpenStack service.
 // The two XValidation rules below reject empty rule names and empty rule values
 // at the schema layer, mirroring policy.ValidatePolicyRules in the admission

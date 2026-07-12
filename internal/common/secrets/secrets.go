@@ -104,6 +104,29 @@ func IsClusterSecretStoreReady(ctx context.Context, c client.Client, name string
 	return false, nil
 }
 
+// IsSecretStoreReady checks whether the namespaced SecretStore identified by
+// name and namespace currently reports a Ready condition with status True. It
+// is the namespaced twin of IsClusterSecretStoreReady: (false, nil) when the
+// store does not exist or is not ready, (false, error) on unexpected client
+// failures. A per-tenant SecretStore is resolved in the consuming CR's own
+// namespace, so callers pass that namespace here.
+func IsSecretStoreReady(ctx context.Context, c client.Client, name, namespace string) (bool, error) {
+	store := &esov1.SecretStore{}
+	if err := c.Get(ctx, client.ObjectKey{Name: name, Namespace: namespace}, store); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("getting SecretStore %s/%s: %w", namespace, name, err)
+	}
+
+	for _, cond := range store.Status.Conditions {
+		if cond.Type == esov1.SecretStoreReady && cond.Status == corev1.ConditionTrue {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // IsSecretReady checks whether a Kubernetes Secret exists at the given key and
 // contains all expectedKeys in its Data field. When no expectedKeys are
 // provided, it only checks for Secret existence. It returns (true, nil) when

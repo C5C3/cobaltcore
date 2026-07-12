@@ -55,6 +55,7 @@ func allExpectedCRDs() []expectedCRD {
 		{name: "memcacheds.memcached.c5c3.io", group: "memcached.c5c3.io", version: "v1beta1", kind: "Memcached", namespaced: true},
 		{name: "pushsecrets.external-secrets.io", group: "external-secrets.io", version: "v1alpha1", kind: "PushSecret", namespaced: true},
 		{name: "rabbitmqclusters.rabbitmq.com", group: "rabbitmq.com", version: "v1beta1", kind: "RabbitmqCluster", namespaced: true},
+		{name: "secretstores.external-secrets.io", group: "external-secrets.io", version: "v1", kind: "SecretStore", namespaced: true},
 		{name: "users.k8s.mariadb.com", group: "k8s.mariadb.com", version: "v1alpha1", kind: "User", namespaced: true},
 	}
 }

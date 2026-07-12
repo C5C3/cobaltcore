@@ -10,7 +10,7 @@
 // CRDs are grouped by controller in subdirectories:
 //
 //	cert-manager/        — cert-manager.io CRDs (Certificate, ClusterIssuer)
-//	external-secrets/    — external-secrets.io CRDs (ExternalSecret, PushSecret, ClusterSecretStore)
+//	external-secrets/    — external-secrets.io CRDs (ExternalSecret, PushSecret, ClusterSecretStore, SecretStore)
 //	k-orc/               — openstack.k-orc.cloud CRDs (ApplicationCredential, Service, Endpoint)
 //	mariadb-operator/    — k8s.mariadb.com CRDs (MariaDB, Database, Grant, User)
 //	memcached-operator/  — memcached.c5c3.io CRDs (Memcached)

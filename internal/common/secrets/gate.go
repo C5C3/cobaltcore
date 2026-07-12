@@ -12,6 +12,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/c5c3/forge/internal/common/conditions"
+	commonv1 "github.com/c5c3/forge/internal/common/types"
 )
 
 // OpenBaoClusterStoreName is the ClusterSecretStore that fronts the OpenBao
@@ -100,6 +101,36 @@ func GateClusterStoreReady(ctx context.Context, c client.Client, storeName strin
 		Reason:             "SecretStoreNotReady",
 		Message: fmt.Sprintf("ClusterSecretStore %q is not ready; upstream secret backend unreachable",
 			storeName),
+	})
+	return false, nil
+}
+
+// GateStoreReady checks the readiness of the store selected by ref — a
+// cluster-scoped ClusterSecretStore or a namespaced SecretStore resolved in
+// namespace — before the per-Secret gate, so an upstream backend outage
+// surfaces as the readiness condition False even while per-ExternalSecret
+// caches still report Ready from their last successful sync. It is the
+// store-ref-aware generalisation of GateClusterStoreReady: on a not-ready
+// store it sets a SecretStoreNotReady condition (naming the kind and name) on
+// conds and returns (false, nil); the caller requeues. A backend error — or an
+// unknown store kind — is propagated as (false, err).
+func GateStoreReady(ctx context.Context, c client.Client, ref commonv1.SecretStoreRefSpec,
+	namespace string, conds *[]metav1.Condition, generation int64, conditionType string,
+) (bool, error) {
+	ready, err := IsStoreRefReady(ctx, c, ref, namespace)
+	if err != nil {
+		return false, err
+	}
+	if ready {
+		return true, nil
+	}
+	conditions.SetCondition(conds, metav1.Condition{
+		Type:               conditionType,
+		Status:             metav1.ConditionFalse,
+		ObservedGeneration: generation,
+		Reason:             "SecretStoreNotReady",
+		Message: fmt.Sprintf("%s %q is not ready; upstream secret backend unreachable",
+			ref.Kind, ref.Name),
 	})
 	return false, nil
 }

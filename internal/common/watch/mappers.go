@@ -16,6 +16,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+
+	commonv1 "github.com/c5c3/forge/internal/common/types"
 )
 
 // RegisterSecretNameIndex registers a field indexer for the given CR type
@@ -163,6 +165,63 @@ func ClusterSecretStoreFanOut(c client.Reader, storeName string, newList func() 
 		requests := make([]reconcile.Request, 0, len(items))
 		for _, item := range items {
 			if o, ok := item.(client.Object); ok {
+				requests = append(requests, reconcile.Request{
+					NamespacedName: client.ObjectKeyFromObject(o),
+				})
+			}
+		}
+		return requests
+	}
+}
+
+// StoreRefFanOut returns a MapFunc that enqueues the CRs whose effective secret
+// store reference resolves to the changed store object. watchedKind is the
+// scope of the store object the returned mapper is registered against — either
+// SecretStoreKindCluster (a cluster-scoped ClusterSecretStore, shared across
+// namespaces) or SecretStoreKindNamespaced (a per-tenant SecretStore). newList
+// supplies the CR list type and effectiveRef extracts a CR's already-resolved
+// store reference (secrets.EffectiveStoreRef(...) so nil/empty-kind CRs still
+// carry the concrete default).
+//
+// For a cluster-scoped store every CR in the cluster is a candidate, so the
+// List is unscoped; for a namespaced store only CRs in the store's own
+// namespace can reference it, so the List carries client.InNamespace. A CR is
+// enqueued only when its effective ref's kind AND name match the event object,
+// so a store status flip (e.g. ESO losing the backend connection) retriggers
+// reconcile precisely on the CRs that route secrets through it — CRs pinned to
+// a different store stay untouched. On a List or extract error the mapper logs
+// via log.FromContext and returns nil per the handler.MapFunc contract.
+func StoreRefFanOut(
+	c client.Reader,
+	watchedKind commonv1.SecretStoreRefKind,
+	newList func() client.ObjectList,
+	effectiveRef func(client.Object) commonv1.SecretStoreRefSpec,
+) handler.MapFunc {
+	return func(ctx context.Context, obj client.Object) []reconcile.Request {
+		list := newList()
+		var opts []client.ListOption
+		if watchedKind == commonv1.SecretStoreKindNamespaced {
+			opts = append(opts, client.InNamespace(obj.GetNamespace()))
+		}
+		if err := c.List(ctx, list, opts...); err != nil {
+			log.FromContext(ctx).Error(err, "listing CRs for secret-store watch", "storeKind", watchedKind)
+			return nil
+		}
+		items, err := apimeta.ExtractList(list)
+		if err != nil {
+			log.FromContext(ctx).Error(err, "extracting CR list for secret-store watch", "storeKind", watchedKind)
+			return nil
+		}
+
+		storeName := obj.GetName()
+		var requests []reconcile.Request
+		for _, item := range items {
+			o, ok := item.(client.Object)
+			if !ok {
+				continue
+			}
+			ref := effectiveRef(o)
+			if ref.Kind == watchedKind && ref.Name == storeName {
 				requests = append(requests, reconcile.Request{
 					NamespacedName: client.ObjectKeyFromObject(o),
 				})

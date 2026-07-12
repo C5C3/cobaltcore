@@ -122,6 +122,34 @@ func TopologySpreadSelector(fldPath *field.Path, tscs []corev1.TopologySpreadCon
 	return allErrs
 }
 
+// SecretStoreRef is the defense-in-depth twin of the CRD markers on
+// commonv1.SecretStoreRefSpec: a nil ref is valid (the operators default to the
+// shared cluster store), an empty name is field.Required, and a kind outside
+// the {ClusterSecretStore, SecretStore} enum is field.NotSupported. It lets the
+// webhook reject an invalid store reference that reached etcd through a bypass
+// of schema validation.
+func SecretStoreRef(fldPath *field.Path, ref *commonv1.SecretStoreRefSpec) field.ErrorList {
+	if ref == nil {
+		return nil
+	}
+	var allErrs field.ErrorList
+	if ref.Name == "" {
+		allErrs = append(allErrs, field.Required(fldPath.Child("name"), "store name must be set"))
+	}
+	switch ref.Kind {
+	case "", commonv1.SecretStoreKindCluster, commonv1.SecretStoreKindNamespaced:
+		// Empty kind is accepted here and defaulted to ClusterSecretStore by
+		// the CRD marker / EffectiveStoreRef.
+	default:
+		allErrs = append(allErrs, field.NotSupported(
+			fldPath.Child("kind"),
+			ref.Kind,
+			[]string{string(commonv1.SecretStoreKindCluster), string(commonv1.SecretStoreKindNamespaced)},
+		))
+	}
+	return allErrs
+}
+
 // PriorityClassExists verifies that name references an existing
 // scheduling.k8s.io/v1 PriorityClass, catching typos at admission time. A nil
 // Reader or an empty name skips the check — programmatically constructed

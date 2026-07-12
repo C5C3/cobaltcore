@@ -16,6 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/c5c3/forge/internal/common/conditions"
+	commonv1 "github.com/c5c3/forge/internal/common/types"
 )
 
 func TestGateClusterStoreReady_ready(t *testing.T) {
@@ -50,6 +51,77 @@ func TestGateClusterStoreReady_notReadySetsCondition(t *testing.T) {
 	g.Expect(cond.Status).To(gomega.Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(gomega.Equal("SecretStoreNotReady"))
 	g.Expect(cond.Message).To(gomega.ContainSubstring("upstream secret backend unreachable"))
+}
+
+func TestGateStoreReady_readyCluster(t *testing.T) {
+	g := gomega.NewWithT(t)
+	s := gateTestScheme(t)
+	store := &esov1.ClusterSecretStore{
+		ObjectMeta: metav1.ObjectMeta{Name: "openbao-cluster-store"},
+		Status: esov1.SecretStoreStatus{Conditions: []esov1.SecretStoreStatusCondition{
+			{Type: esov1.SecretStoreReady, Status: corev1.ConditionTrue},
+		}},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(store).WithStatusSubresource(store).Build()
+
+	ref := commonv1.SecretStoreRefSpec{Kind: commonv1.SecretStoreKindCluster, Name: "openbao-cluster-store"}
+	var conds []metav1.Condition
+	ready, err := GateStoreReady(context.Background(), c, ref, "ns", &conds, 2, "SecretsReady")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(ready).To(gomega.BeTrue())
+	g.Expect(conds).To(gomega.BeEmpty(), "a ready store writes no condition")
+}
+
+func TestGateStoreReady_readyNamespaced(t *testing.T) {
+	g := gomega.NewWithT(t)
+	s := gateTestScheme(t)
+	store := &esov1.SecretStore{
+		ObjectMeta: metav1.ObjectMeta{Name: "openbao-tenant-store", Namespace: "tenant-a"},
+		Status: esov1.SecretStoreStatus{Conditions: []esov1.SecretStoreStatusCondition{
+			{Type: esov1.SecretStoreReady, Status: corev1.ConditionTrue},
+		}},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(store).WithStatusSubresource(store).Build()
+
+	ref := commonv1.SecretStoreRefSpec{Kind: commonv1.SecretStoreKindNamespaced, Name: "openbao-tenant-store"}
+	var conds []metav1.Condition
+	ready, err := GateStoreReady(context.Background(), c, ref, "tenant-a", &conds, 2, "SecretsReady")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(ready).To(gomega.BeTrue())
+	g.Expect(conds).To(gomega.BeEmpty())
+}
+
+func TestGateStoreReady_notReadyNamespacedSetsCondition(t *testing.T) {
+	g := gomega.NewWithT(t)
+	s := gateTestScheme(t)
+	// The namespaced store does not exist, so it is treated as not-ready and the
+	// condition message names the namespaced kind and the store name.
+	c := fake.NewClientBuilder().WithScheme(s).Build()
+
+	ref := commonv1.SecretStoreRefSpec{Kind: commonv1.SecretStoreKindNamespaced, Name: "openbao-tenant-store"}
+	var conds []metav1.Condition
+	ready, err := GateStoreReady(context.Background(), c, ref, "tenant-a", &conds, 2, "SecretsReady")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(ready).To(gomega.BeFalse())
+	cond := conditions.GetCondition(conds, "SecretsReady")
+	g.Expect(cond.Status).To(gomega.Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(gomega.Equal("SecretStoreNotReady"))
+	g.Expect(cond.Message).To(gomega.ContainSubstring("SecretStore"))
+	g.Expect(cond.Message).To(gomega.ContainSubstring("openbao-tenant-store"))
+	g.Expect(cond.Message).To(gomega.ContainSubstring("upstream secret backend unreachable"))
+}
+
+func TestGateStoreReady_unknownKindErrors(t *testing.T) {
+	g := gomega.NewWithT(t)
+	s := gateTestScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).Build()
+
+	ref := commonv1.SecretStoreRefSpec{Kind: commonv1.SecretStoreRefKind("Bogus"), Name: "x"}
+	var conds []metav1.Condition
+	ready, err := GateStoreReady(context.Background(), c, ref, "ns", &conds, 2, "SecretsReady")
+	g.Expect(err).To(gomega.HaveOccurred())
+	g.Expect(ready).To(gomega.BeFalse())
+	g.Expect(conds).To(gomega.BeEmpty(), "an errored gate writes no condition")
 }
 
 func TestGateCredential_states(t *testing.T) {

@@ -154,3 +154,30 @@ func TestPriorityClassExists(t *testing.T) {
 	g.Expect(PriorityClassExists(context.Background(), nil, testPath, "critical")).To(gomega.BeEmpty())
 	g.Expect(PriorityClassExists(context.Background(), c, testPath, "")).To(gomega.BeEmpty())
 }
+
+func TestSecretStoreRef(t *testing.T) {
+	path := field.NewPath("spec", "secretStoreRef")
+	cases := []struct {
+		name     string
+		ref      *commonv1.SecretStoreRefSpec
+		wantErrs int
+		wantSub  string
+	}{
+		{"nil is allowed", nil, 0, ""},
+		{"valid cluster ref", &commonv1.SecretStoreRefSpec{Kind: commonv1.SecretStoreKindCluster, Name: "openbao-cluster-store"}, 0, ""},
+		{"valid namespaced ref", &commonv1.SecretStoreRefSpec{Kind: commonv1.SecretStoreKindNamespaced, Name: "openbao-tenant-store"}, 0, ""},
+		{"empty kind defaults, still valid", &commonv1.SecretStoreRefSpec{Name: "some-store"}, 0, ""},
+		{"empty name is required", &commonv1.SecretStoreRefSpec{Kind: commonv1.SecretStoreKindNamespaced}, 1, "name"},
+		{"unknown kind not supported", &commonv1.SecretStoreRefSpec{Kind: commonv1.SecretStoreRefKind("Bogus"), Name: "x"}, 1, "kind"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			errs := SecretStoreRef(path, tc.ref)
+			g.Expect(errs).To(gomega.HaveLen(tc.wantErrs))
+			if tc.wantSub != "" {
+				g.Expect(errs.ToAggregate().Error()).To(gomega.ContainSubstring(tc.wantSub))
+			}
+		})
+	}
+}
