@@ -2,53 +2,33 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# ESO Management policy — grants read-only access to bootstrap and
-# infrastructure secrets needed by the Management cluster.
-# Bound to the ESO ServiceAccount in the Management cluster via
-# kubernetes/management auth mount.
-
-# the per-CR bootstrap admin password now lives at
+# ESO Management policy — grants read-only access to the genuinely SHARED
+# bootstrap and infrastructure secrets needed by the Management cluster.
+# Bound to the ESO ServiceAccount in the Management cluster via the
+# kubernetes/management auth mount (see setup-auth.sh, the eso-management role).
+#
+# This policy carries NO Keystone key material grant. The per-ControlPlane
+# Keystone paths — DB credentials, fernet-keys, credential-keys, admin app
+# credentials and service-account passwords under
+# `kv-v2/data/openstack/keystone/{namespace}/{name}/...` — are read and written
+# through the per-tenant eso-tenant identity (deploy/openbao/policies/eso-tenant.hcl),
+# which OpenBao scopes to the caller's OWN namespace. The former
+# `kv-v2/data/openstack/keystone/*` read here matched EVERY ControlPlane's
+# Keystone subtree and so let one tenant's shared ESO token read another
+# tenant's key material; it has been removed. The three wildcard write policies
+# that were bound alongside this one (push-keystone-keys / push-keystone-admin /
+# push-app-credentials) have been retired for the same reason (#606).
+#
+# the per-CR bootstrap admin password lives at
 # `bootstrap/{namespace}/{name}/admin`. The trailing `*` already matches that
-# extra depth, so this read grant covers the new shape with no widening needed.
-# verification: the operator-projected admin-password ExternalSecret
-# (c5c3 reconcileAdminPassword) reads `bootstrap/{namespace}/{keystone}/admin`,
-# which is already covered by this `kv-v2/data/bootstrap/*` read grant —
-# read-only, no widening required.
+# depth, so this read grant covers it with no widening needed. This is a shared
+# subtree by design (multiple tenants' bootstrap material); the cluster store
+# that binds this policy is namespace-restricted (deploy/eso/clustersecretstore.yaml)
+# so only the static-manifest namespaces may reference it.
 path "kv-v2/data/bootstrap/*" {
   capabilities = ["read"]
 }
 
 path "kv-v2/data/infrastructure/*" {
-  capabilities = ["read"]
-}
-
-# DEVIATION from architecture/docs/09-implementation/09-openbao-deployment.md:
-# The architecture doc specifies only bootstrap/* and infrastructure/* paths
-# for the eso-management policy. The openstack/keystone/* path is added because
-# the per-ControlPlane DB credentials now live at the namespace+name-scoped path
-# 'kv-v2/data/openstack/keystone/{namespace}/{name}/db', materialised by the
-# c5c3 operator's reconcileDBCredentials per-ControlPlane DB-credential
-# ExternalSecret, which reads from that path and requires this read capability
-# on the management cluster's ESO role.
-# Scoped to keystone/* rather than openstack/* to maintain least-privilege —
-# other OpenStack service credentials (nova, neutron, etc.) are excluded.
-#
-# This policy stays READ-ONLY by design. Write access for the fernet-keys
-# and credential-keys backup PushSecrets is granted by a separate, narrowly-
-# scoped policy — see deploy/openbao/policies/push-keystone-keys.hcl — which
-# is bound alongside eso-management on the management cluster's auth role.
-# The separation preserves the audit invariant that a leaked management-cluster
-# ESO token on eso-management alone cannot write to OpenBao.
-#
-# verification: the per-CR paths are now namespace+name-scoped —
-# `openstack/keystone/{namespace}/{name}/{admin/app-credential,fernet-keys,
-# credential-keys}`. The trailing `*` wildcard already matches any remaining
-# depth, so it covers these new shapes with no widening required; this policy
-# stays read-only.
-# verification: the per-ControlPlane DB credential path
-# `openstack/keystone/{namespace}/{name}/db` is likewise matched by
-# the same trailing `*` wildcard, so no widening is required and this policy
-# remains READ-ONLY.
-path "kv-v2/data/openstack/keystone/*" {
   capabilities = ["read"]
 }
