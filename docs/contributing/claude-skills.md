@@ -17,10 +17,11 @@ codebase against its source of truth — the operator CRDs, the
 sub-reconciler chains, the validation rules, the release wiring, the
 FluxCD infrastructure stack, the Renovate configuration, the e2e
 fixture corpus, the SPDX/REUSE coverage, the Go workspace — and report
-drift before it reaches a release. The suite also carries two
-**planners** (`prepare-new-service`, `prepare-new-release`) that turn
-an onboarding task into a phased checklist, and a **runbook**
-(`debug-e2e-failure`) for diagnosing failing chainsaw e2e jobs.
+drift before it reaches a release. The suite also carries three
+**planners** (`prepare-new-service`, `prepare-new-release`,
+`prepare-new-guide`) that turn an onboarding or authoring task into a
+phased checklist, and a **runbook** (`debug-e2e-failure`) for diagnosing
+failing chainsaw e2e jobs.
 
 The skills complement the CI gates configured in
 [`.github/workflows/`](https://github.com/c5c3/forge/tree/main/.github/workflows)
@@ -60,11 +61,13 @@ repository's `.claude/` directory. There are two ways to run one:
 
 Every audit skill ships a `scripts/audit-<name>.sh` companion that runs
 the deterministic part of the audit and exits non-zero on a `[FAIL]`;
-the planners ship `inventory-*` scripts and the e2e runbook ships a log
-collector (`collect-e2e-failure.sh`). Audit and inventory scripts are
-safe to run by hand from a shell — they read files and print
-inventories; they never write to the tree. The collector downloads CI
-evidence into the untracked `_output/` directory.
+the planners ship `inventory-*` scripts (the guide planner a
+`scaffold-guide.sh` / `validate-guide.sh` pair) and the e2e runbook
+ships a log collector (`collect-e2e-failure.sh`). Audit, inventory,
+scaffold, and validation scripts are safe to run by hand from a shell —
+they read files and print to stdout; they never write to the tree (the
+scaffold prints a skeleton the caller redirects into a file). The
+collector downloads CI evidence into the untracked `_output/` directory.
 
 ```bash
 bash .claude/skills/check-doc-drift/scripts/audit-doc-drift.sh
@@ -80,7 +83,7 @@ the gate commands to run alongside the audit, and the report format.
 
 ## Catalogue
 
-The thirteen skills are grouped by the surface they cover. Each entry
+The skills are grouped by the surface they cover. Each entry
 links to the skill's `SKILL.md` (the procedure); every skill also ships
 a companion Bash script (the deterministic part).
 
@@ -120,6 +123,7 @@ a companion Bash script (the deterministic part).
 |---|---|---|
 | [`prepare-new-service`](https://github.com/c5c3/forge/blob/main/.claude/skills/prepare-new-service/SKILL.md) | Plans the onboarding of a new OpenStack service across the five layers against the keystone reference — inventories what already exists, checks what keystone scaffolding must be generalized into `internal/common` first, and drafts the phased meta issue. | When asked to onboard a new OpenStack service (Glance, Nova, Neutron, Placement, …); when assessing readiness for the next service operator. |
 | [`prepare-new-release`](https://github.com/c5c3/forge/blob/main/.claude/skills/prepare-new-release/SKILL.md) | Plans the addition of a new OpenStack release — inventories the touch points auto-discovery does not cover (release config files, the Tempest config directory, per-release e2e variants, constraint overrides) and walks the decision points: moving the default release, extending the upgrade-path tests, retiring an old release. | When asked to add a new OpenStack release, bump the release matrix, or remove an old release. |
+| [`prepare-new-guide`](https://github.com/c5c3/forge/blob/main/.claude/skills/prepare-new-guide/SKILL.md) | Scaffolds a new how-to guide skeleton under `docs/guides/` for a chosen devstack anchor and validates draft guides against the guide conventions — placeholder names no tutorial produces, devstack↔flag consistency, raw-helm instructions against Flux-owned releases, projected-child edits without a revert warning. Defers to `tests/unit/docs/guide_devstack_and_tested_by_test.sh` as the authoritative gate. | When writing a new guide under `docs/guides/`; when checking a draft guide for convention violations. |
 | [`debug-e2e-failure`](https://github.com/c5c3/forge/blob/main/.claude/skills/debug-e2e-failure/SKILL.md) | Diagnoses a failing chainsaw e2e job — resolves the failed run, pulls the failed-step logs and JUnit/diagnostic evidence, maps the failure back to the suite directory under `tests/`, classifies it against the known flake patterns, and reproduces it locally against a kind cluster. | When any CI e2e job fails (`e2e-operator`, `e2e-chaos`, `e2e-controlplane`, …); when reproducing an e2e failure locally. |
 
 ## What a skill is, structurally
@@ -134,7 +138,8 @@ Every skill in this suite follows the same layout:
 ```
 
 Audit skills name the script `audit-<name>.sh`; the planners ship
-`inventory-*` scripts, and the e2e runbook ships
+`inventory-*` scripts (the guide planner a `scaffold-guide.sh` /
+`validate-guide.sh` pair), and the e2e runbook ships
 `collect-e2e-failure.sh`.
 
 `SKILL.md` opens with a YAML frontmatter block carrying `name` and

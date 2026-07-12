@@ -19,6 +19,13 @@ names that name a resource the reader's cluster never created.
 This page is the contract. New guides follow it from the start; existing guides
 are being brought into conformance.
 
+The `prepare-new-guide` Claude Code skill applies this contract: its
+`scaffold-guide.sh` prints a conforming skeleton for a chosen devstack anchor,
+and its `validate-guide.sh` checks a draft against the conventions the docs
+gate does not cover (see
+[Claude Code skills](./claude-skills.md) for how to invoke it, and
+`.claude/skills/prepare-new-guide/` for the scripts).
+
 ## One devstack per guide
 
 A reader arriving at a guide has to know exactly which cluster to build before
