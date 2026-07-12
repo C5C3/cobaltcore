@@ -36,6 +36,7 @@
 # Single-replica topology across database, cache, Keystone and Horizon so the
 # fresh-create chain schedules on a single-node kind cluster; storageSize is
 # pinned to 512Mi rather than the 100Gi CRD production default.
+# region controlplane-cr
 apiVersion: c5c3.io/v1alpha1
 kind: ControlPlane
 metadata:
@@ -95,3 +96,4 @@ spec:
         restricted: true
         rotation:
           mode: PasswordDriven
+# endregion controlplane-cr

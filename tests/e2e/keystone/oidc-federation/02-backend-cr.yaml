@@ -13,6 +13,7 @@
 # attribute the proxy passes) and maps the preferred username into an
 # ephemeral user plus the declarative federated-users group, whose member
 # role on the domain is what authorizes domain-scoped tokens.
+# region backend-cr
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
 kind: KeystoneIdentityBackend
 metadata:
@@ -71,3 +72,4 @@ spec:
     roleAssignments:
     - role: member
       domain: true
+# endregion backend-cr

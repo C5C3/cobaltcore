@@ -9,6 +9,7 @@
 # objectClass inetOrgPerson, uid as both ID and name, mail for email.
 # readOnly: true (the default, spelled out for readers) forces the
 # user_allow_*/group_allow_* write options to false.
+# region backend-cr
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
 kind: KeystoneIdentityBackend
 metadata:
@@ -35,3 +36,4 @@ spec:
       idAttribute: uid
       nameAttribute: uid
       mailAttribute: mail
+# endregion backend-cr

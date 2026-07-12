@@ -67,6 +67,7 @@ spec:
         key: bootstrap/openstack/keystone-adminpw-sched/admin
         property: password
 ---
+# region keystone-cr
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
 kind: Keystone
 metadata:
@@ -117,3 +118,4 @@ spec:
   extraConfig:
     cache:
       enabled: "false"
+# endregion keystone-cr

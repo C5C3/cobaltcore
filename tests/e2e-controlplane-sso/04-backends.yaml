@@ -13,6 +13,7 @@
 # The OIDC backend provisions its own "forge" domain: the CRD forbids backing
 # the Default domain — which hosts the SQL-backed service users and the
 # bootstrap admin — with an external identity backend.
+# region backends
 ---
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
 kind: KeystoneIdentityBackend
@@ -92,3 +93,4 @@ spec:
       idAttribute: uid
       nameAttribute: uid
       mailAttribute: mail
+# endregion backends
