@@ -302,6 +302,15 @@ mariadb-operator so CRDs are available for the operator and for infrastructure C
 | `webhook.port` | `9443` | Webhook server listen port |
 | `certController.enabled` | `true` | Manage webhook TLS certificates |
 
+The production ESO kustomization renders the shared cluster-scoped
+`ClusterSecretStore/openbao-cluster-store` (`deploy/eso/`), which remains the
+**default** store every ControlPlane and its children use. Per-tenant namespaced
+`SecretStore`s are **not** created here — they are provisioned per ControlPlane
+by `deploy/openbao/bootstrap/setup-eso-tenant.sh` when a tenant opts in via
+`spec.secretStoreRef` (see the
+[OpenBao bootstrap reference](./openbao-bootstrap.md#setup-eso-tenantsh) and the
+[multi-tenant deployment guide](../../guides/multi-tenant-deployment.md#per-controlplane-secret-stores-and-openbao-identities)).
+
 ### Memcached Operator
 
 **File:** `deploy/flux-system/releases/memcached-operator.yaml`

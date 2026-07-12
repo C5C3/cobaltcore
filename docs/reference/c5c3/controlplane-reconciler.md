@@ -96,7 +96,7 @@ can interact with the typed child CRDs:
 | `github.com/c5c3/forge/operators/keystone/api/v1alpha1` | `keystonev1alpha1.AddToScheme` | `Keystone` (projected and owned child) |
 | `github.com/mariadb-operator/mariadb-operator` | `mariadbv1alpha1.AddToScheme` | `MariaDB` (projected and owned child) |
 | `github.com/external-secrets/external-secrets` | `esov1alpha1.SchemeBuilder` | `PushSecret` (admin-credential mirror) |
-| `github.com/external-secrets/external-secrets` | `esov1.SchemeBuilder` | `ExternalSecret`, `ClusterSecretStore` (K-ORC clouds.yaml gate) |
+| `github.com/external-secrets/external-secrets` | `esov1.SchemeBuilder` | `ExternalSecret`, `ClusterSecretStore`, `SecretStore` (K-ORC clouds.yaml gate + per-ControlPlane store selection) |
 | `github.com/k-orc/openstack-resource-controller/v2` | `orcv1alpha1.AddToScheme` | `ApplicationCredential`, `Service`, `Endpoint` |
 
 > **Note (Memcached is unstructured):** `memcached.c5c3.io` ships **no Go
@@ -111,8 +111,8 @@ can interact with the typed child CRDs:
 
 The controller watches the primary `ControlPlane` CR, every child CR the
 sub-reconcilers project (including the owned ESO `ExternalSecret` and
-`PushSecret`), the admin-password `Secret`, and the OpenBao-backed
-`ClusterSecretStore`:
+`PushSecret`), the admin-password `Secret`, and both OpenBao-backed store
+kinds (`ClusterSecretStore` and `SecretStore`):
 
 | Resource | Watch Type | Effect |
 | --- | --- | --- |
@@ -126,7 +126,8 @@ sub-reconcilers project (including the owned ESO `ExternalSecret` and
 | `ExternalSecret` | `Owns()` | Re-reconciles when an owned ESO ExternalSecret (DB credential, admin password, K-ORC clouds.yaml) syncs or fails, so the credential conditions track ESO promptly |
 | `PushSecret` | `Owns()` | Re-reconciles when the owned admin-credential PushSecret status changes |
 | `Secret` | `Watches()` | Maps Secret events to referencing ControlPlane CRs via the `ControlPlaneSecretNameIndexKey` field indexer (`secretToControlPlaneMapper`) |
-| `ClusterSecretStore` | `Watches()` | Maps a status change on the OpenBao-backed store (`openbao-cluster-store`) to **every** ControlPlane in the cluster (`clusterSecretStoreToControlPlaneMapper`) |
+| `ClusterSecretStore` | `Watches()` | Per-ref fan-out via `storeToControlPlaneMapper` (bound to the shared `watch.StoreRefFanOut` for the cluster kind): a status change on a cluster-scoped store enqueues only the ControlPlanes whose effective `spec.secretStoreRef` resolves to it |
+| `SecretStore` | `Watches()` | The namespaced twin, scoped to the store's own namespace, so a ControlPlane pinned to a per-tenant `SecretStore` reacts to its backend health (`storeToControlPlaneMapper` for the namespaced kind) |
 
 The `Secret` watch uses `Watches()` with a `MapFunc` rather than `Owns()`
 because the admin-password Secret
@@ -137,14 +138,16 @@ exactly what wakes the ControlPlane when its admin password rotates, so the
 re-mint chain (see [K-ORC admin credential chain](#k-orc-admin-credential-chain))
 converges on watch delivery instead of waiting for the next periodic requeue.
 
-The `ClusterSecretStore` watch is cluster-scoped: the OpenBao-backed store is
-shared across namespaces, so any status transition (for example ESO losing the
-backend connection) enqueues every ControlPlane. This is why the DB-credential,
-admin-password, and admin-credential sub-reconcilers can flip their conditions to
-`SecretStoreNotReady` the moment the backend becomes unreachable instead of
-waiting up to a full ESO refresh interval (default 1h) for the next per-secret
-re-sync. The `ExternalSecret`/`PushSecret` children are owned (controller
-reference), so `Owns()` wires them directly.
+Both store watches are per-ref fan-outs rather than blanket enqueues: a status
+transition (for example ESO losing the backend connection) wakes only the
+ControlPlanes whose effective `spec.secretStoreRef` resolves to the changed
+store — the cluster watch lists every namespace, the namespaced watch only the
+store's own. A ControlPlane pinned to a different store stays untouched. This is
+why the DB-credential, admin-password, and admin-credential sub-reconcilers can
+flip their conditions to `SecretStoreNotReady` the moment the ControlPlane's own
+backend becomes unreachable instead of waiting up to a full ESO refresh interval
+(default 1h) for the next per-secret re-sync. The `ExternalSecret`/`PushSecret`
+children are owned (controller reference), so `Owns()` wires them directly.
 
 #### Secret Field Indexer
 
@@ -209,7 +212,7 @@ RBAC markers on the two reconcilers generate the required ClusterRole. The
 | `keystone.openstack.c5c3.io` | `keystones` | get, list, watch, create, update, patch, delete |
 | `openstack.k-orc.cloud` | `applicationcredentials`, `services`, `endpoints` | get, list, watch, create, update, patch, delete |
 | `external-secrets.io` | `externalsecrets`, `pushsecrets` | get, list, watch, create, update, patch, delete |
-| `external-secrets.io` | `clustersecretstores` | get, list, watch |
+| `external-secrets.io` | `clustersecretstores`, `secretstores` | get, list, watch |
 | `core` | `secrets` | get, list, watch, create, update, patch, delete |
 | `core` | `events` | create, patch |
 
@@ -563,24 +566,31 @@ is set and **brownfield** when the user supplies a `host`-based connection:
 
 - **Brownfield is a pure no-op.** When `clusterRef == nil` the user owns the DB
   credential Secret out-of-band, so the operator projects **no** ExternalSecret
-  and never references OpenBao or the `ClusterSecretStore`; `DBCredentialsReady`
+  and never references OpenBao or the selected secret store; `DBCredentialsReady`
   is reported `True` immediately so the chain proceeds to Keystone.
-- **Managed defaults to Dynamic (engine-issued).** After gating on the
-  `openbao-cluster-store` ClusterSecretStore, the operator projects (all
-  owner-referenced): a `keystone-db-creds` `ServiceAccount`, an mTLS client
+- **Managed defaults to Dynamic (engine-issued).** After gating (via
+  `secrets.IsStoreRefReady`) on the store the ControlPlane selected through
+  `spec.secretStoreRef` — a `ClusterSecretStore` (default `openbao-cluster-store`)
+  or a namespaced `SecretStore` resolved in `childNamespace(cp)` — the operator
+  projects (all owner-referenced): a `keystone-db-creds` `ServiceAccount`, an mTLS client
   `Certificate` from the cluster-scoped `openbao-ca-issuer`, a
   `generators.external-secrets.io/v1alpha1` `VaultDynamicSecret` reading
   `database/mariadb/creds/keystone-{cp.Namespace}`
   (`dbDynamicCredsPathFor`, keyed on the namespace alone), and an `ExternalSecret`
   (`RefreshInterval` 24h, `Target.CreationPolicy: Owner`) drawing from that generator via
   `dataFrom.sourceRef.generatorRef` — **no** static `Data` refs and **no**
-  `SecretStoreRef`. All Secret references are same-namespace (the generator is
-  Namespaced), satisfying the OpenBao listener's require-and-verify-client-cert
-  gate. The materialised Secret carries an engine-issued username and password
-  with a finite lease, so no long-lived static DB password remains at rest.
+  `SecretStoreRef`. The generator's OpenBao server URL and Kubernetes-auth mount
+  are copied from the selected store's Vault provider by `openBaoConnection`
+  (falling back to the documented defaults when unreadable), so the generator
+  cannot drift from the store the rest of the stack uses. All Secret references
+  are same-namespace (the generator is Namespaced), satisfying the OpenBao
+  listener's require-and-verify-client-cert gate. The materialised Secret carries
+  an engine-issued username and password with a finite lease, so no long-lived
+  static DB password remains at rest.
 - **Managed Static is the opt-out.** With `spec.infrastructure.database.credentialsMode: Static`
   the operator projects the stage-(a) KV-backed `ExternalSecret`
-  (`SecretStoreRef` `openbao-cluster-store`, `username`/`password` `Data` reading
+  (`SecretStoreRef` the selected store — default `openbao-cluster-store`, built via
+  `secrets.ESOSecretStoreRef` — with `username`/`password` `Data` reading
   `openstack/keystone/{cp.Namespace}/{cp.Name}/db`) and tears down any leftover
   dynamic-mode objects. Used for migration staging / brownfield.
 
@@ -590,13 +600,13 @@ credential shape.
 
 In **External** keystone mode the ControlPlane manages no database at all —
 neither a managed one to issue credentials for, nor a brownfield connection to
-reference — so neither OpenBao nor the `ClusterSecretStore` is consulted.
+reference — so neither OpenBao nor any secret store is consulted.
 
 | Path | Status | Reason | Notes |
 | --- | --- | --- | --- |
-| External keystone mode | True | `ExternallyManaged` | no database is managed; nothing is projected and the ClusterSecretStore is never read |
+| External keystone mode | True | `ExternallyManaged` | no database is managed; nothing is projected and no secret store is read |
 | Brownfield (`clusterRef == nil`) | True | `BrownfieldUserSuppliedCredential` | no ExternalSecret projected; user supplies the DB credential Secret out-of-band |
-| ClusterSecretStore not Ready | False | `SecretStoreNotReady` | requeue 10s; managed mode only, checked before projection so an OpenBao/ESO outage surfaces promptly |
+| Selected secret store not Ready | False | `SecretStoreNotReady` | requeue 10s; managed mode only, checked before projection so an OpenBao/ESO outage surfaces promptly. The message names the store's kind and name |
 | Dynamic generator/SA/Certificate/ExternalSecret create/update fails | False | `GeneratorError` | returns the error |
 | Static ExternalSecret create/update fails | False | `ExternalSecretError` | returns the error |
 | ExternalSecret create/update or read fails | False | `ExternalSecretError` | returns the error |
@@ -622,11 +632,14 @@ mirrors `reconcileDBCredentials`'s wait/condition handling. The database is
 
 - **Brownfield is a pure no-op.** When `clusterRef == nil` the user owns the
   admin-password Secret out-of-band, so the operator projects **no**
-  ExternalSecret and never references OpenBao or the `ClusterSecretStore`;
+  ExternalSecret and never references OpenBao or the selected secret store;
   `AdminPasswordReady` is reported `True` immediately so the chain proceeds to
   Keystone.
 - **Managed projects the ExternalSecret.** The owned ExternalSecret has
-  `RefreshInterval` 1h, `SecretStoreRef` `Kind: ClusterSecretStore, Name: openbao-cluster-store`,
+  `RefreshInterval` 1h, its `SecretStoreRef` built from the ControlPlane's
+  `spec.secretStoreRef` via `secrets.ESOSecretStoreRef` (default
+  `Kind: ClusterSecretStore, Name: openbao-cluster-store`; a namespaced
+  `SecretStore` when selected),
   and `Target.CreationPolicy: Owner` (so ESO owns the materialised Secret of the
   same name). Its single `password` `Data` key reads from the per-CP remote key
   `bootstrap/{cp.Namespace}/{cp.Name}-keystone/admin`
@@ -663,7 +676,7 @@ user's Secret wakes the ControlPlane immediately.
 | --- | --- | --- | --- |
 | External keystone mode | True | `ExternallyManaged` | the admin password is read from the user-supplied `passwordSecretRef` Secret; no ExternalSecret is projected and no OpenBao bootstrap path is seeded |
 | Brownfield (`clusterRef == nil`) | True | `BrownfieldUserSuppliedCredential` | no ExternalSecret projected; user supplies the admin-password Secret out-of-band |
-| ClusterSecretStore not Ready | False | `SecretStoreNotReady` | requeue 10s; managed mode only, checked before the ExternalSecret is projected |
+| Selected secret store not Ready | False | `SecretStoreNotReady` | requeue 10s; managed mode only, checked before the ExternalSecret is projected. The message names the store's kind and name |
 | ExternalSecret create/update or read fails | False | `ExternalSecretError` | returns the error |
 | ExternalSecret not yet synced | False | `WaitingForAdminPasswordSecret` | requeue 10s |
 | ExternalSecret Ready | True | `AdminPasswordReady` | — |
@@ -1056,7 +1069,7 @@ digest and drives a hash-driven re-mint.
 | --- | --- |
 | File | `reconcile_admincredential.go` |
 | Condition | `AdminCredentialReady` |
-| Gate | `KORCReady == True`, the OpenBao-backed `ClusterSecretStore` is Ready, the K-ORC clouds.yaml `ExternalSecret` (`{childNamespace(cp)}/{CloudCredentialsRef.SecretName}`, co-located with the K-ORC CRs per C1) is Ready, the admin app-credential `PushSecret` has actually synced to OpenBao (its `Ready` condition is True), **and** the materialised clouds.yaml Secret semantically matches (parsed application-credential id+secret) the freshly assembled credential |
+| Gate | `KORCReady == True`, the store selected via `spec.secretStoreRef` (default the OpenBao-backed cluster store `openbao-cluster-store`) is Ready, the K-ORC clouds.yaml `ExternalSecret` (`{childNamespace(cp)}/{CloudCredentialsRef.SecretName}`, co-located with the K-ORC CRs per C1) is Ready, the admin app-credential `PushSecret` has actually synced to OpenBao (its `Ready` condition is True), **and** the materialised clouds.yaml Secret semantically matches (parsed application-credential id+secret) the freshly assembled credential |
 | Owns | the operator-owned `Secret` `{controlplane.Name}-admin-app-credential` and the `PushSecret` `{controlplane.Name}-admin-app-credential-backup`, both in `childNamespace(cp)` |
 | Requeue | `korcRequeueAfter` = **10s** while any gate is unmet (including a stale/absent materialised clouds.yaml) |
 
@@ -1081,7 +1094,10 @@ OpenBao:
 - **PushSecret to OpenBao.** `secrets.EnsurePushSecret` (applied via server-side
   apply under a fixed field manager that owns only the fields the operator sets,
   so repeated applies of an unchanged desired spec are no-ops at the API server)
-  builds the PushSecret to `openbao-cluster-store` at the per-ControlPlane remote
+  builds the PushSecret to the selected store (default `openbao-cluster-store`;
+  its store ref comes from `spec.secretStoreRef` via `secrets.PushSecretStoreRefs`,
+  and switching the ref moves the push in place — unchanged name and remote key) at
+  the per-ControlPlane remote
   key `openstack/keystone/{cp.Namespace}/{cp.Name}/admin/app-credential`
   (`adminAppCredentialRemoteKeyFor`) with **`DeletionPolicy: None`** — the
   admin credential is a per-ControlPlane persistent bootstrap secret, so deleting
@@ -1150,7 +1166,7 @@ OpenBao:
 | --- | --- | --- | --- |
 | `KORCReady` not True | False | `WaitingForKORC` | requeue 10s |
 | `KORCReady` reports drift (`AuthenticationFailed` / `CredentialDrift`), External mode | False | `CredentialDrift` | requeue 10s; names the Secret the operator reads and states that the external installation is never remediated |
-| ClusterSecretStore not Ready | False | `SecretStoreNotReady` | requeue 10s; checked after the `KORCReady` gate so an OpenBao/ESO outage surfaces before the clouds.yaml wait |
+| Selected secret store not Ready | False | `SecretStoreNotReady` | requeue 10s; checked after the `KORCReady` gate so an OpenBao/ESO outage surfaces before the clouds.yaml wait. The message names the store's kind and name |
 | clouds.yaml ES check errors | False | `CloudsYamlError` | returns the error (also covers a force-sync/materialised-Secret read error) |
 | clouds.yaml ES not Ready | False | `WaitingForCloudsYaml` | requeue 10s |
 | operator Secret ensure fails | False | `SecretError` | returns the error |
@@ -1294,7 +1310,7 @@ is owned by the imports.
 | --- | --- |
 | File | `reconcile_serviceaccounts.go` |
 | Condition | `ServiceAccountsReady` |
-| Gate | `AdminCredentialReady == True` **and** the OpenBao-backed `ClusterSecretStore` is Ready |
+| Gate | `AdminCredentialReady == True` **and** the store selected via `spec.secretStoreRef` (default the OpenBao-backed cluster store `openbao-cluster-store`) is Ready (`secrets.IsStoreRefReady`) |
 | Requeue | `korcRequeueAfter` = **10s** while a gate is closed or an account is converging |
 
 `reconcileServiceAccounts` projects each `spec.korc.serviceAccounts` entry onto a
@@ -1325,7 +1341,10 @@ Per declared entry it, in order:
    source Secret, `PushSecret` (`DeletionPolicy: Delete`) it to
    `openstack/keystone/{cp.Namespace}/{cp.Name}/service-accounts/{name}`, and
    materialize the consumer Secret via an `ExternalSecret`, mirroring the admin
-   app-credential's re-push / force-sync discipline. Per-account readiness gates on
+   app-credential's re-push / force-sync discipline. Both the PushSecret and the
+   ExternalSecret take their store ref from `spec.secretStoreRef` (default
+   `openbao-cluster-store`) via `secrets.PushSecretStoreRefs` /
+   `secrets.ESOSecretStoreRef`. Per-account readiness gates on
    the **materialized password matching the current generation**, so a rotated-away
    password never reads Ready.
 
@@ -1898,6 +1917,13 @@ control planes (one per
 namespace; see [Multi-instance](#multi-instance)) never collide in OpenBao. This is
 a one-time operator runbook to migrate an **existing** cluster; new clusters need
 no migration.
+
+> **Switching a ControlPlane's secret store** (from the default shared cluster
+> store to a namespaced per-tenant `SecretStore`, or between stores) is a separate
+> operation from this path migration and is documented in the
+> [Multi-Tenant Deployment guide → Per-ControlPlane secret stores and OpenBao identities](../../guides/multi-tenant-deployment.md#per-controlplane-secret-stores-and-openbao-identities).
+> Switching the ref moves each PushSecret in place — unchanged name and remote key —
+> so the irreplaceable key material is relocated, never re-created.
 
 The new `RemoteKey` lands the moment the operator is upgraded — the next reconcile
 of each CR emits the per-CR path — so re-apply the OpenBao ACLs **first or

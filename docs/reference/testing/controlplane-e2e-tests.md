@@ -69,6 +69,7 @@ Without the stack the suites skip cleanly, so `make e2e` (which runs the whole
 | [admin-password-scoping](#admin-password-scoping) | `controlplane` | Per-CR OpenBao-backed admin password projection |
 | [db-credential-scoping](#db-credential-scoping) | `controlplane` | Per-CR OpenBao-backed service DB credential projection |
 | [multi-controlplane](#multi-controlplane) | `controlplane-a`, `controlplane-b` | Per-CR admin-credential isolation across two tenants; rotation non-interference |
+| [secret-store-scoping](#secret-store-scoping) | — (namespace-only) | Per-ControlPlane OpenBao identity via a namespaced `SecretStore`; OpenBao-enforced cross-tenant isolation |
 
 ## Test Suite Details
 
@@ -150,6 +151,30 @@ isolation: the two tenants draw from distinct per-tenant roles, and revoking
 tenant-a's DB leases by prefix leaves tenant-b's credential authenticating and
 tenant-b Ready (AC 4).
 
+### secret-store-scoping
+
+Exercises the half of the per-ControlPlane secret-store feature (#605) that unit
+and integration tests cannot reach: the **live OpenBao identity** a ControlPlane
+gets through a namespaced `SecretStore`, and OpenBao's own enforcement of
+cross-tenant isolation. Running in the ephemeral test namespace, the suite:
+
+1. runs `setup-eso-tenant.sh <namespace>`, which provisions the tenant
+   `ServiceAccount` (`eso-tenant-auth`), the cert-manager mTLS `Certificate`, and
+   the namespaced `SecretStore` (`openbao-tenant-store`);
+2. asserts that `SecretStore` reaches `Ready=True` — proving the `eso-tenant`
+   auth role, the `eso-tenant` templated policy, and mTLS actually authenticate
+   the per-tenant identity against OpenBao;
+3. mints a token from the tenant's `eso-tenant-auth` ServiceAccount, logs in as
+   the `eso-tenant` role, and proves the token can read **its own** namespace's
+   Keystone key path but is **denied** on a foreign namespace's path — the
+   templated-policy isolation that replaces the naming convention.
+
+The ControlPlane→Keystone/Horizon projection and the `SecretsReady` gating are
+covered by the c5c3 operator integration test
+(`TestIntegration_SecretStoreRefProjectedAndGated`), so this suite focuses on the
+behaviour only a live OpenBao can prove. It SKIPs cleanly when the stack — or the
+`eso-tenant` role (bootstrap predating #605) — is absent.
+
 ## File Layout
 
 ```text
@@ -167,11 +192,13 @@ tests/e2e/c5c3/
 │   ├── chainsaw-test.yaml              Full chain, link by link
 │   ├── 00-controlplane-cr.yaml         ControlPlane CR (controlplane-keystone)
 │   └── 01-openstack-verify-job.yaml    openstack CLI verify Job
-└── multi-controlplane/
-    ├── chainsaw-test.yaml              Two-tenant isolation contract
-    ├── 00-tenant-a-controlplane.yaml   ControlPlane CR controlplane-a
-    ├── 01-tenant-b-controlplane.yaml   ControlPlane CR controlplane-b
-    └── 02-tenant-a-rotation.yaml       Rotation trigger for tenant-a only
+├── multi-controlplane/
+│   ├── chainsaw-test.yaml              Two-tenant isolation contract
+│   ├── 00-tenant-a-controlplane.yaml   ControlPlane CR controlplane-a
+│   ├── 01-tenant-b-controlplane.yaml   ControlPlane CR controlplane-b
+│   └── 02-tenant-a-rotation.yaml       Rotation trigger for tenant-a only
+└── secret-store-scoping/
+    └── chainsaw-test.yaml              Per-tenant OpenBao identity + isolation
 ```
 
 ## Related Resources

@@ -297,6 +297,99 @@ For deployments off a checkout, use the published OCI chart instead —
 
 ---
 
+## Per-ControlPlane secret stores and OpenBao identities
+
+By default every `ControlPlane` — and the `Keystone` / `Horizon` children it
+owns — reaches OpenBao through **one shared, cluster-scoped store**,
+`openbao-cluster-store`, using a single External Secrets Operator (ESO)
+identity. The OpenBao paths are already scoped by namespace and ControlPlane
+name, but the token that reads and writes them belongs to no ControlPlane in
+particular. That makes the isolation between tenants a naming convention rather
+than something OpenBao enforces.
+
+`spec.secretStoreRef` turns the store into a per-ControlPlane choice so OpenBao
+itself enforces the boundary:
+
+```yaml
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: controlplane
+  namespace: team-alpha
+spec:
+  # …
+  secretStoreRef:
+    kind: SecretStore              # namespaced, per-tenant identity
+    name: openbao-tenant-store
+```
+
+- **Omitted (the default).** The ControlPlane uses the shared
+  `openbao-cluster-store` (`kind: ClusterSecretStore`). Upgrading the operators
+  changes nothing until you opt a ControlPlane in — existing deployments keep
+  working unchanged.
+- **`kind: SecretStore`.** The ControlPlane reaches OpenBao as its own tenant
+  identity through a namespaced `SecretStore` in **its own namespace**. The
+  reference is projected onto the `Keystone` and `Horizon` children, so this is
+  the single place you configure it.
+
+The namespaced store authenticates against OpenBao as the `eso-tenant`
+Kubernetes auth role, and the `eso-tenant` templated policy scopes every
+readable and writable path to the caller's own namespace. A tenant token in
+namespace `team-alpha` can therefore only reach `team-alpha`'s Keystone key and
+bootstrap material and is **denied** on any other tenant's paths — the
+prerequisite for narrowing the write policies that today match every tenant's
+paths.
+
+### Onboarding a per-tenant store
+
+The OpenBao side — the `eso-tenant` auth role and the `eso-tenant` policy — is
+created once at bootstrap by `setup-auth.sh` / `setup-policies.sh`. The
+in-cluster side is created per ControlPlane by `setup-eso-tenant.sh`, which
+provisions the tenant `ServiceAccount` (`eso-tenant-auth`), the cert-manager
+mTLS `Certificate`, and the namespaced `SecretStore` (`openbao-tenant-store`):
+
+```bash
+# Run once per tenant namespace, then wait for the SecretStore to be Ready.
+deploy/openbao/bootstrap/setup-eso-tenant.sh team-alpha
+kubectl wait --for=condition=Ready secretstore/openbao-tenant-store \
+  -n team-alpha --timeout=120s
+```
+
+Once the store is Ready, set `spec.secretStoreRef` on the ControlPlane to
+`{kind: SecretStore, name: openbao-tenant-store}`.
+
+### Switching an existing ControlPlane (brownfield)
+
+A ControlPlane's fernet and credential keys are **irreplaceable**: the
+credential keys decrypt every application credential, EC2 credential, and TOTP
+secret, and their OpenBao backup is bound to a PushSecret that deletes the
+remote copy when the binding goes away. Switching stores **moves** this material
+— it never re-creates it: the operator updates the backup PushSecrets **in
+place** (unchanged name and OpenBao path) so a store switch only re-points the
+identity.
+
+::: warning Order matters on an existing ControlPlane
+On an **existing** ControlPlane, run the onboarding **before** flipping the
+ref:
+
+1. Run `setup-eso-tenant.sh <namespace>` and wait for the `SecretStore` to be
+   `Ready`.
+2. On a cluster whose OpenBao was bootstrapped **before** this feature, also
+   re-run `setup-auth.sh` and `setup-policies.sh` so the `eso-tenant` role and
+   policy exist.
+3. Only then set `spec.secretStoreRef` on the ControlPlane.
+
+If you flip the ref before the role/policy exist, ESO's pushes to OpenBao
+return `403` and `FernetKeysReady` / `CredentialKeysReady` degrade. The flip
+itself never deletes or re-creates key material, locally or in OpenBao.
+:::
+
+The per-ControlPlane database and cache need no additional work: the
+infrastructure a ControlPlane owns is already created in the ControlPlane's own
+namespace, so two ControlPlanes already get two instances.
+
+---
+
 ## Further reading
 
 - [ControlPlane Quick Start](../quick-start-controlplane.md) — standing up a tenant as a `ControlPlane` CR (the one-per-namespace tenancy aggregate).

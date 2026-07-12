@@ -161,6 +161,7 @@ status:
 | `middleware` | `[]MiddlewareSpec` | No | `nil` | WSGI middleware filters for api-paste.ini. |
 | `plugins` | `[]PluginSpec` | No | `nil` | Service plugins/drivers to configure. |
 | `policyOverrides` | [`*PolicySpec`](#policyspec) | No | `nil` | Custom oslo.policy rules. |
+| `secretStoreRef` | [`*SecretStoreRefSpec`](#secretstorerefspec) | No | `nil` | Selects the External Secrets store this Keystone routes its ExternalSecrets and backup PushSecrets through. When omitted, the shared cluster-scoped `ClusterSecretStore` named `openbao-cluster-store` is used, so existing deployments are unchanged. Set to a namespaced `SecretStore` in this Keystone's own namespace to reach OpenBao as a per-tenant identity. Normally projected from the owning ControlPlane rather than set here. |
 | `autoscaling` | [`*AutoscalingSpec`](#autoscalingspec) | No | `nil` | Horizontal pod autoscaling configuration. When set, an HPA is created targeting the `{name}` Deployment. When removed, the HPA is deleted. |
 | `networkPolicy` | [`*NetworkPolicySpec`](#networkpolicyspec) | No | `nil` | Network isolation for Keystone API pods. When set, a NetworkPolicy restricting ingress to TCP 5000 and auto-deriving egress rules for DNS, MariaDB, and Memcached is created. When `nil`, no NetworkPolicy is managed and traffic is unrestricted. |
 | `gateway` | [`*GatewaySpec`](#gatewayspec) | No | `nil` | Gateway API HTTPRoute configuration. When set, an HTTPRoute is created targeting the `{name}` Service on port 5000 and attached to the referenced pre-existing Gateway; `status.endpoint` is updated to `https://{hostname}/v3`. When removed, the HTTPRoute is deleted and `status.endpoint` reverts to the cluster-local Service URL. |
@@ -1189,6 +1190,19 @@ condition using these typed reasons:
 | `name` | `string` | Yes | Name of the Kubernetes Secret. Must be a non-empty DNS-1123 subdomain (`MinLength=1` plus `Pattern=^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`). Tightening the shared type rejects an empty Secret name on every consumer (database/admin/messaging/TLS refs). |
 | `key` | `string` | No | Key within the Secret's data. |
 
+### SecretStoreRefSpec
+
+Selects the External Secrets store a consumer routes its ExternalSecrets (and
+backup PushSecrets) through. When the ref is `nil`, the operator defaults to the
+shared cluster-scoped `ClusterSecretStore` named `openbao-cluster-store`, so
+existing deployments are unchanged. A namespaced `SecretStore` is always resolved
+in the consuming CR's own namespace — there is no namespace field.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `SecretStoreRefKind` (`ClusterSecretStore` \| `SecretStore`) | No | Which External Secrets store kind `name` refers to. Enum `ClusterSecretStore;SecretStore`; defaulted to `ClusterSecretStore` by the `+kubebuilder:default` marker. |
+| `name` | `string` | Yes | Name of the store. Must be a non-empty DNS-1123 subdomain (`MinLength=1` plus `Pattern=^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`). |
+
 ### PolicySpec
 
 | Field | Type | Required | Description |
@@ -1324,6 +1338,7 @@ single `apierrors.NewInvalid` error. It does **not** short-circuit on the first 
 | Policy source required | `spec.policyOverrides` | `field.Required` | `policyOverrides` is set but both `rules` and `configMapRef` are nil/empty. |
 | Empty policy rule name | `spec.policyOverrides.rules[<key>]` | `field.Required` | A key in the `rules` map is the empty string. Enforced via the shared `policy.ValidatePolicyRules`. |
 | Empty policy rule value | `spec.policyOverrides.rules[<key>]` | `field.Required` | A value in the `rules` map is the empty string. Enforced via the shared `policy.ValidatePolicyRules`. |
+| SecretStoreRef name required / kind enum | `spec.secretStoreRef.name`, `spec.secretStoreRef.kind` | `field.Required` / `field.NotSupported` | `name` is empty (Required), or `kind` is set to a value outside `ClusterSecretStore`/`SecretStore` (NotSupported). A `nil` ref is valid. Defense-in-depth alongside the shared `SecretStoreRefSpec` `MinLength`/`Enum` markers. |
 | Autoscaling maxReplicas minimum | `spec.autoscaling.maxReplicas` | `field.Invalid` | `maxReplicas < 1`. Defense-in-depth alongside the `+kubebuilder:validation:Minimum=1` marker. |
 | Autoscaling minReplicas minimum | `spec.autoscaling.minReplicas` | `field.Invalid` | `minReplicas < 1` when set. Defense-in-depth alongside the `+kubebuilder:validation:Minimum=1` marker. |
 | Autoscaling min exceeds max | `spec.autoscaling.minReplicas` | `field.Invalid` | `minReplicas > maxReplicas` when set. |

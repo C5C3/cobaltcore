@@ -606,6 +606,21 @@ Creates or updates a PushSecret CR with a controller owner reference.
   not woken to re-push an unchanged credential.
 - Uses the ESO `v1alpha1` PushSecret API (unstable — see [External CRD Dependencies](#external-crd-dependencies)).
 
+### Per-CR secret store selection
+
+These helpers back the optional per-CR `spec.secretStoreRef`: each CR routes its
+ExternalSecrets and PushSecrets through the store it selects (a cluster-scoped
+`ClusterSecretStore`, default `openbao-cluster-store`, or a namespaced
+`SecretStore`), while the `IsClusterSecretStoreReady` /
+`OpenBaoClusterStoreName` primitives above remain.
+
+- `EffectiveStoreRef(ref *commonv1.SecretStoreRefSpec) commonv1.SecretStoreRefSpec` — resolves a nil or empty-kind ref to the shared cluster store `{ClusterSecretStore, openbao-cluster-store}`, so a CR that omits the field behaves as before.
+- `IsStoreRefReady(ctx, c, ref commonv1.SecretStoreRefSpec, namespace string) (bool, error)` — reports store readiness, dispatching on kind: a cluster store is looked up by name, a namespaced store in `namespace`; an unknown kind returns an error.
+- `IsSecretStoreReady(ctx, c, name, namespace string) (bool, error)` — the namespaced twin of `IsClusterSecretStoreReady`, checking a `SecretStore`'s `Ready` condition.
+- `GateStoreReady(ctx, c, ref, namespace, conds *[]metav1.Condition, generation int64, conditionType string) (bool, error)` — store-ref-aware readiness gate; on a not-ready store it sets a `SecretStoreNotReady` condition whose message names the store kind and name (`"%s %q is not ready; upstream secret backend unreachable"`) and returns `(false, nil)`.
+- `ESOSecretStoreRef(ref commonv1.SecretStoreRefSpec) esov1.SecretStoreRef` — builds the ESO ExternalSecret store ref from a resolved store reference.
+- `PushSecretStoreRefs(ref commonv1.SecretStoreRefSpec) []esov1alpha1.PushSecretStoreRef` — builds the single-element ESO PushSecret store-ref slice from a resolved store reference.
+
 ---
 
 ## Package: `tls`

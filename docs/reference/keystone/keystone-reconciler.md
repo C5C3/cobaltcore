@@ -75,7 +75,8 @@ The controller watches the primary Keystone CR and all owned resources:
 | `Certificate` | `Owns()` (optional) | Registered only when the `cert-manager.io/v1` CRD is installed; detected at startup via the manager's `RESTMapper`. Triggers reconciliation when the managed `<name>-db-client` Certificate changes, so later issuance failures surface in `DatabaseTLSReady` (only created when managed DB TLS is enabled). |
 | `Secret` | `Watches()` | Maps Secret events to referencing Keystone CRs via the `KeystoneSecretNameIndexKey` field indexer, with an owner-ref fallback for rotation staging Secrets |
 | `MariaDB` | `Watches()` | Propagates upstream DB cluster health into `DatabaseReady` |
-| `ClusterSecretStore` | `Watches()` | Propagates OpenBao-backend health into `SecretsReady` |
+| `ClusterSecretStore` | `Watches()` | Propagates OpenBao-backend health into `SecretsReady`; per-ref fan-out via `storeToKeystoneMapper` (bound to the shared `watch.StoreRefFanOut` for the cluster kind) enqueues only the Keystone CRs whose effective `spec.secretStoreRef` resolves to the changed cluster store |
+| `SecretStore` | `Watches()` | The namespaced twin of the store watch, scoped to the store's own namespace, so a Keystone CR pinned to a per-tenant `SecretStore` still reacts immediately to its backend health (`storeToKeystoneMapper` for the namespaced kind) |
 | `KeystoneIdentityBackend` | `Watches()` | Maps backend events to the attached Keystone (`identityBackendToKeystoneMapper`), with no generation predicate: `DomainReady` status flips trigger projection and `DeletionTimestamp` flips trigger de-projection |
 | `PushSecret` | `Watches()` | Maps backup PushSecret events to the owning Keystone CR via `pushSecretToKeystoneMapper` (name-match against `openBaoBackupPushSecretNames`). A predicate admits only the transitions that affect the [OpenBao Finalizer](#openbao-finalizer) state machine — `esoPushSecretFinalizer` set churn, `DeletionTimestamp` flip, or `Generation` bump — and suppresses ESO's status-only re-emits. Replaces the prior `Owns(PushSecret)` wiring. |
 
@@ -85,7 +86,7 @@ Secrets use `Watches()` with a `MapFunc` instead of `Owns()` because some Secret
 not by the Keystone CR, so an owner-reference filter would never match them. The
 mapper therefore combines an indexed reverse lookup with an owner-ref fallback for
 rotation staging Secrets — see [Secret Field Indexer](#secret-field-indexer)
-below. The `MariaDB` and `ClusterSecretStore` watches exist so the operator reacts
+below. The `MariaDB`, `ClusterSecretStore`, and `SecretStore` watches exist so the operator reacts
 immediately to upstream dependency outages without waiting for the next periodic
 requeue. The `PushSecret` watch plays the same role for the
 OpenBao-backup finalizer loop: without it the finalizer would requeue at the
@@ -224,7 +225,7 @@ RBAC markers on the reconciler generate the required ClusterRole:
 | `k8s.mariadb.com` | `databases`, `users`, `grants` | get, list, watch, create, update, patch, delete |
 | `k8s.mariadb.com` | `mariadbs` | get, list, watch |
 | `external-secrets.io` | `externalsecrets`, `pushsecrets` | get, list, watch, create, update, patch, delete |
-| `external-secrets.io` | `clustersecretstores` | get, list, watch |
+| `external-secrets.io` | `clustersecretstores`, `secretstores` | get, list, watch |
 | `policy` | `poddisruptionbudgets` | get, list, watch, create, update, patch, delete |
 | `autoscaling` | `horizontalpodautoscalers` | get, list, watch, create, update, patch, delete |
 | `gateway.networking.k8s.io` | `httproutes` | get, list, watch, create, update, patch, delete |
@@ -1006,10 +1007,10 @@ so each Keystone CR writes to its own KV-v2 prefix:
 ```go
 Spec: esov1alpha1.PushSecretSpec{
     DeletionPolicy: esov1alpha1.PushSecretDeletionPolicyDelete,
-    SecretStoreRefs: []esov1alpha1.PushSecretStoreRef{{
-        Kind: "ClusterSecretStore",
-        Name: "openbao-cluster-store",
-    }},
+    // Store ref is derived from the CR's spec.secretStoreRef (default: the
+    // shared cluster store openbao-cluster-store) via secrets.PushSecretStoreRefs.
+    SecretStoreRefs: secrets.PushSecretStoreRefs(
+        secrets.EffectiveStoreRef(keystone.Spec.SecretStoreRef)),
     // ...
     Data: []esov1alpha1.PushSecretData{{
         Match: esov1alpha1.PushSecretMatch{
@@ -1029,7 +1030,7 @@ finalizer so the API server garbage-collects the PushSecret.
 
 This means the Keystone finalizer does not need OpenBao credentials — the
 single component that talks to OpenBao is still ESO, and the abstraction
-boundary (ClusterSecretStore, policy, auth) stays in one place. The
+boundary (the selected secret store, policy, auth) stays in one place. The
 Keystone finalizer's responsibility is purely ordering: ensure the Delete
 happens **before** the Keystone CR leaves etcd.
 
@@ -1451,30 +1452,35 @@ ExternalSecrets managed by the External Secrets Operator.
 
 | Step | Resource | Source |
 | --- | --- | --- |
-| 0 | `ClusterSecretStore openbao-cluster-store` | Ready condition |
+| 0 | selected secret store | Ready condition of the store chosen by `spec.secretStoreRef` — a `ClusterSecretStore` (default `openbao-cluster-store`) or a namespaced `SecretStore` resolved in the Keystone's own namespace |
 | 1 | DB credentials `ExternalSecret` | `spec.database.secretRef.name` |
 | 2 | Admin credentials `ExternalSecret` | `spec.bootstrap.adminPasswordSecretRef.name` |
 
-The `ClusterSecretStore` check runs first so upstream OpenBao outages surface
+The store check runs first so upstream OpenBao outages surface
 as `SecretsReady=False` immediately. Per-ExternalSecret `Ready` conditions
 alone would mask outages up to the ESO `refreshInterval` (1h) because the
-cached Secret remains valid.
+cached Secret remains valid. The store is resolved from the CR's
+`spec.secretStoreRef` via `secrets.EffectiveStoreRef` (a nil ref defaults to the
+shared cluster store `openbao-cluster-store`), and gated with the store-ref-aware
+`secrets.GateStoreReady`, which dispatches on the store kind.
 
 **Condition Contract:**
 
 | Status | Reason | Message | RequeueAfter |
 | --- | --- | --- | --- |
-| `False` | `SecretStoreNotReady` | `"ClusterSecretStore \"openbao-cluster-store\" is not ready; upstream secret backend unreachable"` | 15s |
+| `False` | `SecretStoreNotReady` | `"<kind> \"<name>\" is not ready; upstream secret backend unreachable"` — the message names the selected store's kind and name, e.g. `ClusterSecretStore "openbao-cluster-store"` or `SecretStore "openbao-tenant-store"` | 15s |
 | `False` | `WaitingForDBCredentials` | "Waiting for ESO to sync database credentials from OpenBao" | 15s |
 | `False` | `WaitingForAdminCredentials` | "Waiting for ESO to sync admin credentials from OpenBao" | 15s |
 | `True` | `SecretsAvailable` | — | — |
 
-**Error handling:** API errors from `secrets.IsClusterSecretStoreReady()` and
+**Error handling:** API errors from `secrets.GateStoreReady()` /
+`secrets.IsStoreRefReady()` (including an unknown store kind) and
 `secrets.WaitForExternalSecret()` are returned directly (no condition set),
 causing controller-runtime exponential backoff.
 
-**Shared library calls:** `secrets.IsClusterSecretStoreReady()`,
-`secrets.WaitForExternalSecret()`
+**Shared library calls:** `secrets.GateStoreReady()` (which calls
+`secrets.IsStoreRefReady()` — cluster stores via `IsClusterSecretStoreReady`,
+namespaced stores via `IsSecretStoreReady`), `secrets.WaitForExternalSecret()`
 
 ---
 
@@ -1579,8 +1585,11 @@ and disaster recovery backup to OpenBao.
 4. **Ensure rotation CronJob** — Create or update `{name}-fernet-rotate` CronJob
    with the schedule from `spec.fernet.rotationSchedule`.
 5. **Ensure PushSecret** — Create or update `{name}-fernet-keys-backup` PushSecret
-   targeting `kv-v2/data/openstack/keystone/{namespace}/{name}/fernet-keys` in the `openbao`
-   ClusterSecretStore.
+   targeting `kv-v2/data/openstack/keystone/{namespace}/{name}/fernet-keys` in the store the
+   Keystone selected via `spec.secretStoreRef` (default cluster store `openbao-cluster-store`;
+   its store ref is built by `secrets.PushSecretStoreRefs`). Switching the ref updates the
+   PushSecret in place — the name and OpenBao RemoteKey are unchanged — so the irreplaceable
+   fernet key material is moved to the new store, never re-created.
 
 **Key Generation:**
 
@@ -1615,7 +1624,7 @@ and disaster recovery backup to OpenBao.
 | Field | Value |
 | --- | --- |
 | Name | `{name}-fernet-keys-backup` |
-| Store | `ClusterSecretStore/openbao` |
+| Store | selected via `spec.secretStoreRef` (default `ClusterSecretStore/openbao-cluster-store`) |
 | Source Secret | `{name}-fernet-keys` |
 | Remote Key | `kv-v2/data/openstack/keystone/{namespace}/{name}/fernet-keys` |
 
@@ -1751,8 +1760,11 @@ with credential migration, and disaster recovery backup to OpenBao.
 4. **Ensure rotation CronJob** — Create or update `{name}-credential-rotate` CronJob
    with the schedule from `spec.credentialKeys.rotationSchedule`.
 5. **Ensure PushSecret** — Create or update `{name}-credential-keys-backup` PushSecret
-   targeting `kv-v2/data/openstack/keystone/{namespace}/{name}/credential-keys` in the `openbao`
-   ClusterSecretStore.
+   targeting `kv-v2/data/openstack/keystone/{namespace}/{name}/credential-keys` in the store the
+   Keystone selected via `spec.secretStoreRef` (default cluster store `openbao-cluster-store`;
+   its store ref is built by `secrets.PushSecretStoreRefs`). Switching the ref updates the
+   PushSecret in place — the name and OpenBao RemoteKey are unchanged — so the irreplaceable
+   credential key material is moved to the new store, never re-created.
 
 **Key Generation:**
 
@@ -1792,7 +1804,7 @@ with credential migration, and disaster recovery backup to OpenBao.
 | Field | Value |
 | --- | --- |
 | Name | `{name}-credential-keys-backup` |
-| Store | `ClusterSecretStore/openbao` |
+| Store | selected via `spec.secretStoreRef` (default `ClusterSecretStore/openbao-cluster-store`) |
 | Source Secret | `{name}-credential-keys` |
 | Remote Key | `kv-v2/data/openstack/keystone/{namespace}/{name}/credential-keys` |
 
@@ -2898,7 +2910,7 @@ push-source Secret (see the RBAC split below).
 | Field | Value |
 | --- | --- |
 | Name | `{name}-admin-password-backup` |
-| Store | `ClusterSecretStore/openbao-cluster-store` |
+| Store | selected via `spec.secretStoreRef` (default `ClusterSecretStore/openbao-cluster-store`); switching the ref moves the push in place (same name and RemoteKey) |
 | Source Secret | `{name}-admin-password-next` (push-source) |
 | Remote Key | `bootstrap/{keystone.Namespace}/{keystone.Name}/admin` (per-CR path) |
 | Property | `password` |
@@ -3423,7 +3435,7 @@ operators/keystone/
 └── internal/
     ├── controller/
     │   ├── keystone_controller.go              Reconciler struct, Reconcile() pipeline, SetupWithManager
-    │   ├── keystone_watches.go                 Secret/MariaDB/ClusterSecretStore/PushSecret event mappers + predicate
+    │   ├── keystone_watches.go                 Secret/MariaDB/ClusterSecretStore/SecretStore/PushSecret event mappers (store watches via storeToKeystoneMapper → StoreRefFanOut) + predicate
     │   ├── reconcile_secrets.go                reconcileSecrets sub-reconciler
     │   ├── reconcile_database.go               reconcileDatabase sub-reconciler
     │   ├── reconcile_fernet.go                 reconcileFernetKeys sub-reconciler

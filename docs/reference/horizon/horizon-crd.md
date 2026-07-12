@@ -25,6 +25,7 @@ chart ships a synced copy (`make sync-crds` / `make verify-crd-sync`).
 | `extraConfig` | `map[string]JSON` | no | Free-form Django settings rendered after the operator defaults (user values win). `SECRET_KEY` is rejected by the webhook |
 | `websso` | `*WebSSOSpec` | no | Federated single-sign-on choices on the login page. When nil the operator renders no `WEBSSO_*` settings and the dashboard offers local credentials only. The c5c3 ControlPlane projects this from the federation backends attached to its Keystone child |
 | `multiDomain` | `*MultiDomainSpec` | no | Multi-domain login: the domain field (or dropdown) on the login form, needed when users live in domains other than the default one — typically LDAP-backed. When nil the operator renders no `OPENSTACK_KEYSTONE_MULTIDOMAIN_*` settings |
+| `secretStoreRef` | `*SecretStoreRefSpec` | no | Selects the External Secrets store the dashboard resolves its `SecretsReady` gate against — `kind` (`ClusterSecretStore` \| `SecretStore`, default `ClusterSecretStore`) and a required non-empty `name`. When omitted the shared cluster-scoped `ClusterSecretStore` `openbao-cluster-store` is used, so existing deployments are unchanged; set to a namespaced `SecretStore` in this Horizon's own namespace to reach OpenBao as a per-tenant identity. It only gates `SecretsReady` on the selected store — Horizon creates no PushSecrets. Normally projected from the owning ControlPlane |
 
 ### Defaulting and validation
 

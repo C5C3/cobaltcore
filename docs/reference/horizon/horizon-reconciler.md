@@ -24,7 +24,7 @@ Secrets ──► Config ──► Deployment ──► (prune) ──► ┬─
 
 | Step | What it does | Condition |
 | --- | --- | --- |
-| Secrets | Gates on the OpenBao ClusterSecretStore and the ESO-synced `SECRET_KEY` Secret; digests the key material for the rollout annotation | `SecretsReady` |
+| Secrets | Gates on the secret store the Horizon selected via `spec.secretStoreRef` (a `ClusterSecretStore`, default `openbao-cluster-store`, or a namespaced `SecretStore` resolved in the Horizon's own namespace — via `secrets.GateStoreReady`) and the ESO-synced `SECRET_KEY` Secret; digests the key material for the rollout annotation | `SecretsReady` |
 | Config | Renders `local_settings.py` (signed-cookie sessions, `CACHES`, `OPENSTACK_KEYSTONE_URL`, `OPENSTACK_ENDPOINT_TYPE = "internalURL"`, `LOGGING`, offline-compression settings, the `WEBSSO_*` / `OPENSTACK_KEYSTONE_MULTIDOMAIN_*` blocks, merged `extraConfig`) into an immutable content-addressed ConfigMap | `ConfigReady` |
 | Deployment | Ensures the uWSGI Deployment (login-page readiness/startup probes, `HORIZON_SECRET_KEY` env var, secret-key-hash pod annotation), the Service (port 8080), and the PDB; sets `status.endpoint` | `DeploymentReady` |
 | (prune) | Uninstrumented retention sweep of historical config ConfigMaps (retain 3 + current); failures flip `ConfigReady` |  |
@@ -70,7 +70,10 @@ all seven sub-conditions are `True`:
 
 Beyond the owned resources, the controller watches Secrets (indexed reverse
 lookup on `spec.secretKeyRef.name`, plus group-scoped owner references) and
-the OpenBao `ClusterSecretStore` (fan-out to every Horizon CR), so upstream
+both OpenBao-backed store kinds — a cluster-scoped `ClusterSecretStore` and a
+namespaced `SecretStore` — each bound to `storeToHorizonMapper` (the shared
+`watch.StoreRefFanOut`), which enqueues only the Horizon CRs whose effective
+`spec.secretStoreRef` resolves to the changed store, so upstream
 credential and backend changes retrigger reconciliation without waiting for
 a periodic requeue. The HTTPRoute watch is registered only when the Gateway
 API CRD is installed; without it, `spec.gateway` surfaces

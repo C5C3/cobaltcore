@@ -98,6 +98,7 @@ deploy/
 │   │   ├── init-unseal.sh              Initialize and unseal the cluster
 │   │   ├── setup-secret-engines.sh     Enable KV v2, PKI, and MariaDB database engines
 │   │   ├── setup-database-tenant.sh     Provision a per-ControlPlane DB engine connection + role
+│   │   ├── setup-eso-tenant.sh          Provision a per-ControlPlane ESO identity (SA + mTLS cert + namespaced SecretStore)
 │   │   ├── setup-auth.sh              Configure Kubernetes and AppRole auth
 │   │   ├── setup-policies.sh           Apply all HCL access control policies
 │   │   └── write-bootstrap-secrets.sh  Generate and seed initial credentials
@@ -106,6 +107,7 @@ deploy/
 │       ├── eso-control-plane.hcl       ESO policy for control-plane cluster
 │       ├── eso-hypervisor.hcl          ESO policy for hypervisor cluster
 │       ├── eso-storage.hcl             ESO policy for storage cluster
+│       ├── eso-tenant.hcl              Per-tenant ESO identity (namespace-templated Keystone key/bootstrap access)
 │       ├── push-app-credentials.hcl    PushSecret policy for app credentials
 │       ├── push-ceph-keys.hcl          PushSecret policy for Ceph keys
 │       ├── ci-cd-provisioner.hcl       CI/CD pipeline provisioning policy
@@ -339,6 +341,43 @@ namespace alone and stays in sync with `dbDynamicRoleFor` in the c5c3 operator's
 `reconcile_dbcredentials.go`. Config and role writes are upserts, so re-running is
 idempotent.
 
+### setup-eso-tenant.sh
+
+**Purpose:** Provision the in-cluster half of one ControlPlane's per-tenant
+OpenBao identity — the objects that let that tenant's ExternalSecrets and
+PushSecrets reach OpenBao as the `eso-tenant` role instead of the shared
+cluster identity. It is the ESO counterpart to `setup-database-tenant.sh`.
+
+**File:** `deploy/openbao/bootstrap/setup-eso-tenant.sh`
+
+**Requires:** `kubectl` access to the tenant's cluster; cert-manager and the
+`openbao-ca-issuer` ClusterIssuer. It does **not** talk to OpenBao directly —
+the OpenBao side (the `eso-tenant` role and policy) is created once at bootstrap
+by `setup-auth.sh` / `setup-policies.sh`.
+
+**Usage:** `setup-eso-tenant.sh <namespace>`
+
+It fails loudly when the namespace is absent, then idempotently applies into the
+tenant namespace:
+
+| Object | Name | Purpose |
+| --- | --- | --- |
+| ServiceAccount | `eso-tenant-auth` | the identity the SecretStore presents to OpenBao |
+| Certificate (cert-manager) | `eso-tenant-client-tls` | the mTLS client certificate (issued by ClusterIssuer `openbao-ca-issuer`); its Secret carries `tls.crt`/`tls.key` and `ca.crt` |
+| SecretStore | `openbao-tenant-store` | the namespaced store selected via `spec.secretStoreRef` |
+
+The SecretStore authenticates as the `eso-tenant` role with the
+`eso-tenant-auth` ServiceAccount and sources its client cert, key, and CA from
+the `eso-tenant-client-tls` Secret (same namespace). After the SecretStore
+reports `Ready`, set the ControlPlane's `spec.secretStoreRef` to
+`{kind: SecretStore, name: openbao-tenant-store}` to switch it onto the
+per-tenant identity. On an **existing** ControlPlane, run this (and, on a
+cluster bootstrapped before this feature, re-run `setup-auth.sh` /
+`setup-policies.sh`) **before** flipping the ref — otherwise ESO's pushes 403
+and `FernetKeysReady` / `CredentialKeysReady` degrade. See the
+[multi-tenant deployment guide](../../guides/multi-tenant-deployment.md#per-controlplane-secret-stores-and-openbao-identities)
+for the full procedure.
+
 ### setup-auth.sh
 
 **Purpose:** Configure Kubernetes authentication for 4 cluster contexts and AppRole
@@ -384,6 +423,17 @@ read-only `keystone-db-dynamic` policy.
 | Mount Path | Role | Bound SA | Bound NS | Policy | TTL | Max TTL |
 | --- | --- | --- | --- | --- | --- | --- |
 | `kubernetes/management` | `keystone-db` | `keystone-db-creds` | `*` | `keystone-db-dynamic` | 72h | 72h |
+| `kubernetes/management` | `eso-tenant` | `eso-tenant-auth` | `*` | `eso-tenant` | 1h | 4h |
+
+The management mount also carries an `eso-tenant` role — the per-ControlPlane
+ESO identity a namespaced `SecretStore` (created per tenant by
+`setup-eso-tenant.sh`) authenticates with. Like `keystone-db` it binds
+`namespaces="*"` with a fixed SA name (`eso-tenant-auth`); the cross-tenant
+boundary is enforced by the `eso-tenant` policy, which templates every readable
+and writable path to the caller's own `service_account_namespace`, so a tenant
+token confined by it can only reach its own namespace's Keystone key and
+bootstrap material. `token_max_ttl=4h` caps renewal so a leaked tenant token
+cannot be renewed indefinitely.
 
 **Note:** The management cluster mount is fully configured — the script explicitly writes
 `auth/kubernetes/management/config` with the in-cluster Kubernetes API endpoint and CA
@@ -413,7 +463,25 @@ updates).
 
 The script iterates over all `.hcl` files in `deploy/openbao/policies/` and applies
 each one via `bao policy write <name> -` (reading from stdin). The policy name is
-derived from the filename without the `.hcl` extension.
+derived from the filename without the `.hcl` extension. Because the loop globs
+`*.hcl`, adding a new policy file (such as `eso-tenant.hcl`) needs no script
+change. The `KUBERNETES_MANAGEMENT_ACCESSOR` placeholder in the templated
+policies is substituted with the live `kubernetes/management` auth-mount accessor
+at apply time.
+
+Two policies are **namespace-templated** rather than statically scoped, so a
+single policy backs every tenant while confining each token to its own namespace:
+
+- `keystone-db-dynamic` — read on the caller's own dynamic DB-credential path.
+- `eso-tenant` — the per-ControlPlane ESO identity: read on the caller's own
+  `openstack/keystone/{ns}/*` and `bootstrap/{ns}/*` subtrees, and
+  create/update/read/delete on that namespace's fernet-keys, credential-keys,
+  admin bootstrap, admin application-credential, and service-account backup
+  paths. It mirrors `push-keystone-keys`, `push-keystone-admin`, and
+  `push-app-credentials`, but every path is scoped to the caller's own
+  `service_account_namespace`, so a tenant token cannot touch another tenant's
+  Keystone key material. It deliberately grants **no** `infrastructure/*` access
+  — the static infrastructure ExternalSecrets stay on the shared cluster store.
 
 **Idempotency:** `bao policy write` is an upsert operation — it creates a new policy
 or overwrites an existing one with the same name. Re-running with the same policy
@@ -746,11 +814,22 @@ chmod +x deploy/openbao/bootstrap/*.sh
 
 ### ExternalSecrets stuck in "SecretSyncedError"
 
-Verify the ClusterSecretStore is healthy:
+Verify the store is healthy. For a ControlPlane on the default shared store,
+check the ClusterSecretStore; for one switched to a per-tenant identity via
+`spec.secretStoreRef: {kind: SecretStore, name: openbao-tenant-store}`, check
+the namespaced SecretStore in the tenant's namespace instead:
 
 ```bash
+# Default (shared) store:
 kubectl get clustersecretstore openbao-cluster-store -o jsonpath='{.status.conditions}'
+
+# Per-tenant store (in the ControlPlane's namespace):
+kubectl get secretstore openbao-tenant-store -n <namespace> -o jsonpath='{.status.conditions}'
 ```
+
+For a per-tenant store, a `403`/permission-denied on push usually means the
+`eso-tenant` role or the `eso-tenant` policy is missing — re-run `setup-auth.sh`
+and `setup-policies.sh` (bootstrap predating this feature does not create them).
 
 Common causes:
 

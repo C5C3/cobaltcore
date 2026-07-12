@@ -198,7 +198,27 @@ status:
 | `infrastructure` | [`*InfrastructureSpec`](#infrastructurespec) | Conditional | managed-mode defaulted | Shared backing services (database, cache) the control plane's services connect to. **Required** when `services.keystone.mode` is `Managed` (or unset, or `services.keystone` unset) — the defaulting webhook materializes a managed-mode `database`/`cache` when omitted, and the validating webhook rejects a non-External ControlPlane without it. **Forbidden** in **External** mode (an External ControlPlane provisions no backing services; phase 2 relaxes this to optional). The mode-conditional required/forbidden rule is webhook-enforced because CEL cannot span `spec.infrastructure` and `spec.services.keystone`; see [InfrastructureSpec](#infrastructurespec) and [Validation Rules](#validation-rules). |
 | `services` | [`ServicesSpec`](#servicesspec) | Yes | — | Per-service configuration projected into the individual service CRs. |
 | `globalPolicyOverrides` | [`*commonv1.PolicySpec`](../keystone/keystone-crd.md#policyspec) | No | `nil` | oslo.policy overrides applied across every service in the control plane. Per-service overrides (e.g. `services.keystone.policyOverrides`) take precedence over these global rules when both are set. |
+| `secretStoreRef` | [`*commonv1.SecretStoreRefSpec`](#secretstorerefspec) | No | `nil` (defaults to the shared cluster store `openbao-cluster-store`) | Selects the External Secrets store the control plane routes its ExternalSecrets and backup PushSecrets through, and is **projected onto the Keystone and Horizon children** — so operators normally set the store here rather than on the individual service CRs. **Mutable:** switching stores is supported — the operator moves the fernet/credential key material in place, never re-creating it. When omitted, defaults to the shared cluster-scoped `ClusterSecretStore` named `openbao-cluster-store`, so existing deployments are unchanged; set `{kind: SecretStore, name: <store>}` to reach OpenBao as a per-tenant identity resolved in the ControlPlane's own namespace. See [SecretStoreRefSpec](#secretstorerefspec). |
 | `korc` | [`KORCSpec`](#korcspec) | No | defaulted | K-ORC integration used to bootstrap and rotate the admin application credential and any declared bootstrap resources. Optional — the defaulting webhook fills `adminCredential` (cloudCredentialsRef, passwordSecretRef, applicationCredential restriction/rotation) from well-known defaults when omitted. |
+
+### SecretStoreRefSpec
+
+`spec.secretStoreRef` selects the External Secrets store the control plane and
+its projected children route their ExternalSecrets and backup PushSecrets
+through. It reuses the shared `commonv1.SecretStoreRefSpec` — a `kind`
+(`ClusterSecretStore` \| `SecretStore`, defaulted to `ClusterSecretStore`) plus a
+required non-empty `name`; see the canonical two-field table in the
+[Keystone CRD → SecretStoreRefSpec](../keystone/keystone-crd.md#secretstorerefspec).
+
+When omitted the field defaults to the shared cluster-scoped `ClusterSecretStore`
+named `openbao-cluster-store`, so existing deployments are unchanged. Set
+`{kind: SecretStore, name: <store>}` to reach OpenBao as a per-tenant identity,
+always resolved in the ControlPlane's own namespace (there is no namespace
+field). The field is **mutable** — switching stores is supported, and the
+operator moves the fernet/credential key material in place rather than
+re-creating it. Its value is **projected onto the Keystone and Horizon
+children**, so operators normally set it on the ControlPlane rather than on the
+individual service CRs.
 
 ---
 
@@ -928,6 +948,7 @@ truth.
 | `DatabaseSpec` | `infrastructure.database` | [Keystone CRD → DatabaseSpec](../keystone/keystone-crd.md#databasespec) |
 | `CacheSpec` | `infrastructure.cache` | [Keystone CRD → CacheSpec](../keystone/keystone-crd.md#cachespec) |
 | `SecretRefSpec` | `korc.adminCredential.passwordSecretRef` | [Keystone CRD → SecretRefSpec](../keystone/keystone-crd.md#secretrefspec) |
+| `SecretStoreRefSpec` | `secretStoreRef` (projected onto the Keystone and Horizon children) | [Keystone CRD → SecretStoreRefSpec](../keystone/keystone-crd.md#secretstorerefspec) |
 | `PolicySpec` | `globalPolicyOverrides`, `services.keystone.policyOverrides` | [Keystone CRD → PolicySpec](../keystone/keystone-crd.md#policyspec) |
 
 > **Note on `DatabaseSpec.tls` / `CacheSpec`:** the `commonv1` shapes carry the
@@ -1326,7 +1347,7 @@ ExternalSecret's stale per-object Ready cache.
 | `True` | `DBCredentialsReady` | The DB-credential ExternalSecret is Ready; the materialised Secret exists. |
 | `True` | `BrownfieldUserSuppliedCredential` | Brownfield database (`clusterRef` unset): the user supplies the DB-credential Secret out-of-band, so no ExternalSecret is projected and the chain proceeds immediately. |
 | `True` | `ExternallyManaged` | `services.keystone.mode` is `External`: the ControlPlane manages no database at all, so nothing is projected and neither OpenBao nor the `ClusterSecretStore` is consulted. |
-| `False` | `SecretStoreNotReady` | The OpenBao-backed `ClusterSecretStore` is not Ready; the secret backend is unreachable. |
+| `False` | `SecretStoreNotReady` | The store selected by `spec.secretStoreRef` (a ClusterSecretStore or a namespaced SecretStore) is not Ready; the secret backend is unreachable. |
 | `False` | `ExternalSecretError` | Error ensuring or checking the DB-credential ExternalSecret. |
 | `False` | `WaitingForDBCredentialSecret` | The ExternalSecret is ensured but ESO has not yet synced it to Ready. |
 
@@ -1346,7 +1367,7 @@ its Ready status.
 | `True` | `AdminPasswordReady` | The admin-password ExternalSecret is Ready; the materialised Secret exists. |
 | `True` | `BrownfieldUserSuppliedCredential` | Brownfield database (`clusterRef` unset): the user supplies the admin-password Secret out-of-band, so no ExternalSecret is projected and the chain proceeds immediately. |
 | `True` | `ExternallyManaged` | `services.keystone.mode` is `External`: the admin password is read from the user-supplied `korc.adminCredential.passwordSecretRef` Secret; no ExternalSecret is projected and no OpenBao bootstrap path is seeded. Updating that Secret is what drives a hash-driven re-mint of the admin application credential. |
-| `False` | `SecretStoreNotReady` | The OpenBao-backed `ClusterSecretStore` is not Ready; the secret backend is unreachable. |
+| `False` | `SecretStoreNotReady` | The store selected by `spec.secretStoreRef` (a ClusterSecretStore or a namespaced SecretStore) is not Ready; the secret backend is unreachable. |
 | `False` | `ExternalSecretError` | Error ensuring or checking the admin-password ExternalSecret. |
 | `False` | `WaitingForAdminPasswordSecret` | The ExternalSecret is ensured but ESO has not yet synced it to Ready. |
 
@@ -1396,7 +1417,7 @@ application-credential id+secret) the freshly assembled credential).
 | `True` | `AdminCredentialReady` | The admin application credential is committed to the owned Secret, mirrored to OpenBao, and the materialised `clouds.yaml` Secret matches the assembled credential. |
 | `False` | `WaitingForKORC` | `KORCReady` is not `True`; credential push deferred. |
 | `False` | `CredentialDrift` | **External mode only.** `KORCReady` reports drift in the external installation (`AuthenticationFailed` or `CredentialDrift`). The operator never remediates the external Keystone; update the `passwordSecretRef` Secret to drive a re-mint. |
-| `False` | `SecretStoreNotReady` | The OpenBao-backed `ClusterSecretStore` is not Ready; the secret backend is unreachable. |
+| `False` | `SecretStoreNotReady` | The store selected by `spec.secretStoreRef` (a ClusterSecretStore or a namespaced SecretStore) is not Ready; the secret backend is unreachable. |
 | `False` | `WaitingForCloudsYaml` | The operator-created per-ControlPlane `k-orc-clouds-yaml` ExternalSecret in the control-plane namespace (co-located with the K-ORC CRs per C1; created and owned by `reconcileKORC`) is not yet Ready. |
 | `False` | `WaitingForPushSecret` | The admin app-credential `PushSecret` has not synced the assembled `clouds.yaml` to OpenBao yet. `AdminCredentialReady` is gated on the PushSecret's `Ready` condition — not merely on the CR existing — so a backend permission failure (e.g. the ESO role missing the push policy) cannot yield a false-positive Ready while OpenBao still serves the password-based bootstrap `clouds.yaml`. |
 | `False` | `WaitingForCloudsYamlSync` | The materialised `k-orc-clouds-yaml` Secret is absent or still holds a stale credential (a re-mint revoked the old one but ESO has not re-synced yet). `reconcileAdminCredential` stamps the `external-secrets.io/force-sync` annotation to force an immediate re-sync and compares the materialised Secret semantically (parsed application-credential id+secret) against the assembled credential before reporting Ready, so the condition never reads `True` against a revoked credential. |
@@ -1451,7 +1472,7 @@ external Keystone.
 | `True` | `NoServiceAccountsDeclared` | `spec.korc.serviceAccounts` is empty. Still `True` so the condition schema is identical whether or not accounts are declared. |
 | `True` | `ServiceAccountsProvisioned` | Every declared account's `User`, `Project`, and materialized password Secret are converged for the current generation. |
 | `False` | `WaitingForAdminCredential` | `AdminCredentialReady` is not `True`; projection deferred. |
-| `False` | `SecretStoreNotReady` | The OpenBao-backed `ClusterSecretStore` is not Ready. |
+| `False` | `SecretStoreNotReady` | The store selected by `spec.secretStoreRef` (a ClusterSecretStore or a namespaced SecretStore) is not Ready. |
 | `False` | `ProbingForCollision` | A fail-loudly collision probe (see [adopt semantics](#serviceaccountspec)) has not yet resolved either way. |
 | `False` | `ServiceAccountCollision` | A declared user (or a `project.create: true` project) already exists in Keystone and `adopt`/`project.create: false` was not set — the operator fails loud rather than take over an account it did not create. The message names the account and both remediations. |
 | `False` | `WaitingForServiceAccounts` | The `User`/`Project`/password round-trip is converging, or an undeclared child is still being removed. |
