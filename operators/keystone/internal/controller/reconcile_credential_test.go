@@ -493,6 +493,33 @@ func TestCredentialKeysPushSecret_PreservesDeletionPolicyAndStoreRef(t *testing.
 	g.Expect(ps.Spec.SecretStoreRefs[0].Name).To(Equal("openbao-cluster-store"))
 }
 
+// TestCredentialKeysPushSecret_HonorsNamespacedSecretStoreRef verifies a
+// namespaced SecretStore selection projects onto the credential-keys-backup
+// PushSecret without disturbing the irreplaceable-key wiring (name, RemoteKey,
+// DeletionPolicy).
+func TestCredentialKeysPushSecret_HonorsNamespacedSecretStoreRef(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	ks := &keystonev1alpha1.Keystone{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-keystone", Namespace: "tenant-a"},
+		Spec: keystonev1alpha1.KeystoneSpec{
+			SecretStoreRef: &commonv1.SecretStoreRefSpec{
+				Kind: commonv1.SecretStoreKindNamespaced,
+				Name: "openbao-tenant-store",
+			},
+		},
+	}
+
+	ps := credentialKeysPushSecret(ks)
+
+	g.Expect(ps.Spec.SecretStoreRefs).To(HaveLen(1))
+	g.Expect(ps.Spec.SecretStoreRefs[0].Kind).To(Equal("SecretStore"))
+	g.Expect(ps.Spec.SecretStoreRefs[0].Name).To(Equal("openbao-tenant-store"))
+	g.Expect(ps.Spec.DeletionPolicy).To(Equal(esov1alpha1.PushSecretDeletionPolicyDelete))
+	g.Expect(ps.Name).To(Equal("test-keystone-credential-keys-backup"))
+	g.Expect(ps.Spec.Data[0].Match.RemoteRef.RemoteKey).To(Equal("openstack/keystone/tenant-a/test-keystone/credential-keys"))
+}
+
 func TestCredentialKeyGeneration_Valid(t *testing.T) {
 	g := NewGomegaWithT(t)
 

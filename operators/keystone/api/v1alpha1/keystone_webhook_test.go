@@ -1546,6 +1546,13 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 	k.Spec.ExtraConfig = map[string]map[string]string{
 		"federation": {"trusted_dashboard": "https://other.example.com/auth/websso/"},
 	}
+	// Break secretStoreRef — unknown kind so validation.SecretStoreRef fires.
+	// Every new secretStoreRef validation hook must participate in the
+	// aggregated error rather than short-circuiting the chain.
+	k.Spec.SecretStoreRef = &commonv1.SecretStoreRefSpec{
+		Kind: commonv1.SecretStoreRefKind("Bogus"),
+		Name: "some-store",
+	}
 
 	_, err := w.ValidateCreate(context.Background(), k)
 	g.Expect(err).To(HaveOccurred())
@@ -1572,6 +1579,7 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 	g.Expect(errMsg).To(ContainSubstring("gateway"))
 	g.Expect(errMsg).To(ContainSubstring("hostname"))
 	g.Expect(errMsg).To(ContainSubstring("parentRef"))
+	g.Expect(errMsg).To(ContainSubstring("secretStoreRef"))
 	/////////
 	// Every new graceful-termination validation hook must participate in the
 	// aggregated error, matching the-style regression guard for
@@ -1611,6 +1619,54 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 	g.Expect(errMsg).To(ContainSubstring("federation.proxyImage"))
 	g.Expect(errMsg).To(ContainSubstring("proxyImage.repository must be set"))
 	g.Expect(errMsg).To(ContainSubstring("exactly one of proxyImage.tag or proxyImage.digest"))
+}
+
+// TestValidate_SecretStoreRef covers the secretStoreRef defense-in-depth checks
+// in isolation: a nil ref (default cluster store) and valid cluster/namespaced
+// refs pass, while an empty name or an unknown kind is rejected.
+func TestValidate_SecretStoreRef(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{Client: newFakeClient().Build()}
+
+	// nil ref: valid (operator defaults to the shared cluster store).
+	k := validKeystone()
+	k.Spec.SecretStoreRef = nil
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// valid cluster ref.
+	k = validKeystone()
+	k.Spec.SecretStoreRef = &commonv1.SecretStoreRefSpec{
+		Kind: commonv1.SecretStoreKindCluster, Name: "openbao-cluster-store",
+	}
+	_, err = w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// valid namespaced ref.
+	k = validKeystone()
+	k.Spec.SecretStoreRef = &commonv1.SecretStoreRefSpec{
+		Kind: commonv1.SecretStoreKindNamespaced, Name: "openbao-tenant-store",
+	}
+	_, err = w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// empty name: rejected.
+	k = validKeystone()
+	k.Spec.SecretStoreRef = &commonv1.SecretStoreRefSpec{Kind: commonv1.SecretStoreKindNamespaced}
+	_, err = w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("secretStoreRef"))
+	g.Expect(err.Error()).To(ContainSubstring("name"))
+
+	// unknown kind: rejected.
+	k = validKeystone()
+	k.Spec.SecretStoreRef = &commonv1.SecretStoreRefSpec{
+		Kind: commonv1.SecretStoreRefKind("Bogus"), Name: "some-store",
+	}
+	_, err = w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("secretStoreRef"))
+	g.Expect(err.Error()).To(ContainSubstring("kind"))
 }
 
 // TestValidate_FederationProxyImage covers the federation.proxyImage

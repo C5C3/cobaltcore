@@ -22,9 +22,15 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	"github.com/c5c3/forge/internal/common/secrets"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
+
+// openBaoClusterStoreName aliases the shared ClusterSecretStore name
+// (secrets.OpenBaoClusterStoreName) for the watch-mapper fixtures in this
+// package's tests.
+const openBaoClusterStoreName = secrets.OpenBaoClusterStoreName
 
 // mapperManagedKeystone builds a minimal managed-mode Keystone whose
 // spec.database.clusterRef targets the named MariaDB cluster.
@@ -124,19 +130,19 @@ func TestMariaDBToKeystoneMapper_ScopedToNamespace(t *testing.T) {
 	g.Expect(reqs[0].NamespacedName).To(Equal(types.NamespacedName{Namespace: "ns-a", Name: "ks-in"}))
 }
 
-// --- clusterSecretStoreToKeystoneMapper ---
+// --- storeToKeystoneMapper ---
 
-// TestClusterSecretStoreToKeystoneMapper_EnqueuesAllKeystones verifies a status
+// TestStoreToKeystoneMapper_ClusterKindEnqueuesDefaultKeystones verifies a status
 // change on the OpenBao-backed ClusterSecretStore enqueues every Keystone in
-// the cluster (across namespaces), since the cluster-scoped store is shared and
-// an ESO/OpenBao outage affects all of them.
-func TestClusterSecretStoreToKeystoneMapper_EnqueuesAllKeystones(t *testing.T) {
+// the cluster that defaults to it (across namespaces), since the cluster-scoped
+// store is shared and an ESO/OpenBao outage affects all of them.
+func TestStoreToKeystoneMapper_ClusterKindEnqueuesDefaultKeystones(t *testing.T) {
 	g := NewGomegaWithT(t)
 
 	ksA := mapperManagedKeystone("ks-a", "ns-a", "db-a")
 	ksB := mapperManagedKeystone("ks-b", "ns-b", "db-b")
 	c := newMapperFakeClient(ksA, ksB)
-	mapper := clusterSecretStoreToKeystoneMapper(c)
+	mapper := storeToKeystoneMapper(c, commonv1.SecretStoreKindCluster)
 
 	store := &esov1.ClusterSecretStore{
 		ObjectMeta: metav1.ObjectMeta{Name: openBaoClusterStoreName},
@@ -150,18 +156,18 @@ func TestClusterSecretStoreToKeystoneMapper_EnqueuesAllKeystones(t *testing.T) {
 	g.Expect(names).To(ConsistOf(
 		types.NamespacedName{Namespace: "ns-a", Name: "ks-a"},
 		types.NamespacedName{Namespace: "ns-b", Name: "ks-b"},
-	), "a ClusterSecretStore change must enqueue every Keystone in the cluster")
+	), "a ClusterSecretStore change must enqueue every Keystone defaulting to it")
 }
 
-// TestClusterSecretStoreToKeystoneMapper_IgnoresOtherStores verifies the mapper
-// only reacts to the OpenBao-backed store the operator routes secrets through,
-// not to unrelated ClusterSecretStores.
-func TestClusterSecretStoreToKeystoneMapper_IgnoresOtherStores(t *testing.T) {
+// TestStoreToKeystoneMapper_ClusterKindIgnoresOtherStores verifies the mapper
+// only reacts to the store a Keystone's effective ref resolves to, not to
+// unrelated ClusterSecretStores.
+func TestStoreToKeystoneMapper_ClusterKindIgnoresOtherStores(t *testing.T) {
 	g := NewGomegaWithT(t)
 
 	ks := mapperManagedKeystone("ks", "openstack", "openstack-db")
 	c := newMapperFakeClient(ks)
-	mapper := clusterSecretStoreToKeystoneMapper(c)
+	mapper := storeToKeystoneMapper(c, commonv1.SecretStoreKindCluster)
 
 	other := &esov1.ClusterSecretStore{
 		ObjectMeta: metav1.ObjectMeta{Name: "some-other-store"},
@@ -170,6 +176,35 @@ func TestClusterSecretStoreToKeystoneMapper_IgnoresOtherStores(t *testing.T) {
 
 	g.Expect(reqs).To(BeEmpty(),
 		"a change to an unrelated ClusterSecretStore must enqueue nothing")
+}
+
+// TestStoreToKeystoneMapper_NamespacedKindScopesToStoreNamespace verifies a
+// namespaced SecretStore only enqueues the Keystone in its own namespace that
+// pins it via spec.secretStoreRef; a default (cluster-store) Keystone and a
+// same-name Keystone in a foreign namespace are not enqueued.
+func TestStoreToKeystoneMapper_NamespacedKindScopesToStoreNamespace(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	pinned := mapperManagedKeystone("ks-pinned", "tenant-a", "db-a")
+	pinned.Spec.SecretStoreRef = &commonv1.SecretStoreRefSpec{
+		Kind: commonv1.SecretStoreKindNamespaced, Name: "openbao-tenant-store",
+	}
+	defaulted := mapperManagedKeystone("ks-default", "tenant-a", "db-b")
+	foreign := mapperManagedKeystone("ks-foreign", "tenant-b", "db-c")
+	foreign.Spec.SecretStoreRef = &commonv1.SecretStoreRefSpec{
+		Kind: commonv1.SecretStoreKindNamespaced, Name: "openbao-tenant-store",
+	}
+	c := newMapperFakeClient(pinned, defaulted, foreign)
+	mapper := storeToKeystoneMapper(c, commonv1.SecretStoreKindNamespaced)
+
+	store := &esov1.SecretStore{
+		ObjectMeta: metav1.ObjectMeta{Name: "openbao-tenant-store", Namespace: "tenant-a"},
+	}
+	reqs := mapper(context.Background(), store)
+
+	g.Expect(reqs).To(ConsistOf(
+		reconcile.Request{NamespacedName: types.NamespacedName{Namespace: "tenant-a", Name: "ks-pinned"}},
+	), "a namespaced SecretStore change must enqueue only the pinned Keystone in its own namespace")
 }
 
 // --- identity-backend mappers ---

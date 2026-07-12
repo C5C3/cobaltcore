@@ -488,11 +488,8 @@ func adminPasswordPushSecret(keystone *keystonev1alpha1.Keystone) *esov1alpha1.P
 			Namespace: keystone.Namespace,
 		},
 		Spec: esov1alpha1.PushSecretSpec{
-			DeletionPolicy: esov1alpha1.PushSecretDeletionPolicyNone,
-			SecretStoreRefs: []esov1alpha1.PushSecretStoreRef{{
-				Kind: "ClusterSecretStore",
-				Name: openBaoClusterStoreName,
-			}},
+			DeletionPolicy:  esov1alpha1.PushSecretDeletionPolicyNone,
+			SecretStoreRefs: secrets.PushSecretStoreRefs(secrets.EffectiveStoreRef(keystone.Spec.SecretStoreRef)),
 			Selector: esov1alpha1.PushSecretSelector{
 				Secret: &esov1alpha1.PushSecretSecret{
 					Name: adminPasswordNextSecretName(keystone),

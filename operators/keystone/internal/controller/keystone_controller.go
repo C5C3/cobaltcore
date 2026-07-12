@@ -38,6 +38,7 @@ import (
 	"github.com/c5c3/forge/internal/common/gateway"
 	"github.com/c5c3/forge/internal/common/healthcheck"
 	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
+	commonv1 "github.com/c5c3/forge/internal/common/types"
 	"github.com/c5c3/forge/internal/common/watch"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 	"github.com/c5c3/forge/operators/keystone/internal/metrics"
@@ -306,7 +307,7 @@ var certificateGVK = schema.GroupVersionKind{
 // +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=external-secrets.io,resources=externalsecrets,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups=external-secrets.io,resources=pushsecrets,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=external-secrets.io,resources=clustersecretstores,verbs=get;list;watch
+// +kubebuilder:rbac:groups=external-secrets.io,resources=clustersecretstores;secretstores,verbs=get;list;watch
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
@@ -901,12 +902,17 @@ func (r *KeystoneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&mariadbv1alpha1.MariaDB{}, handler.EnqueueRequestsFromMapFunc(
 			mariaDBToKeystoneMapper(mgr.GetClient()),
 		)).
-		// Watch the OpenBao-backed ClusterSecretStore so the operator reflects
-		// upstream secret-backend outages in SecretsReady as soon as ESO flips
-		// the store's Ready condition, rather than waiting for the next periodic
-		// requeue.
+		// Watch both the cluster-scoped ClusterSecretStore and the namespaced
+		// SecretStore a Keystone can select via spec.secretStoreRef, so the
+		// operator reflects upstream secret-backend outages in SecretsReady as
+		// soon as ESO flips the selected store's Ready condition, rather than
+		// waiting for the next periodic requeue. Each mapper enqueues only the
+		// Keystones whose effective store ref matches the changed store.
 		Watches(&esov1.ClusterSecretStore{}, handler.EnqueueRequestsFromMapFunc(
-			clusterSecretStoreToKeystoneMapper(mgr.GetClient()),
+			storeToKeystoneMapper(mgr.GetClient(), commonv1.SecretStoreKindCluster),
+		)).
+		Watches(&esov1.SecretStore{}, handler.EnqueueRequestsFromMapFunc(
+			storeToKeystoneMapper(mgr.GetClient(), commonv1.SecretStoreKindNamespaced),
 		)).
 		// Watch backup PushSecrets via a name-based mapper + predicate instead
 		// of Owns(). Owns() wakes Keystone on every status-only PushSecret tick

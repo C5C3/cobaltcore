@@ -601,6 +601,92 @@ func TestReconcileSecrets_StoreNotReady(t *testing.T) {
 	g.Expect(cond.ObservedGeneration).To(Equal(ks.Generation))
 }
 
+// readySecretStore returns a namespaced SecretStore with a Ready=True condition.
+func readySecretStore(name, namespace string) *esov1.SecretStore {
+	return &esov1.SecretStore{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Status: esov1.SecretStoreStatus{
+			Conditions: []esov1.SecretStoreStatusCondition{
+				{Type: esov1.SecretStoreReady, Status: corev1.ConditionTrue},
+			},
+		},
+	}
+}
+
+// TestReconcileSecrets_NamespacedStoreReady_GatesThroughTenantStore verifies a
+// Keystone that selects a namespaced SecretStore gates SecretsReady on that
+// store (resolved in the Keystone's own namespace), not the cluster store.
+func TestReconcileSecrets_NamespacedStoreReady_GatesThroughTenantStore(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := secretsTestScheme()
+	ks := secretsTestKeystone()
+	ks.Spec.SecretStoreRef = &commonv1.SecretStoreRefSpec{
+		Kind: commonv1.SecretStoreKindNamespaced, Name: "openbao-tenant-store",
+	}
+
+	dbES := readyExternalSecret("keystone-db", "default")
+	adminES := readyExternalSecret("keystone-admin", "default")
+	dbSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "keystone-db", Namespace: "default"},
+		Data:       map[string][]byte{"username": []byte("keystone"), "password": []byte("secret")},
+	}
+	adminSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "keystone-admin", Namespace: "default"},
+		Data:       map[string][]byte{"password": []byte("admin-password")},
+	}
+	// Only the namespaced store is Ready; no cluster store exists.
+	store := readySecretStore("openbao-tenant-store", "default")
+
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(store, dbES, adminES, dbSecret, adminSecret).
+		WithStatusSubresource(dbES, adminES, store).
+		Build()
+
+	r := &KeystoneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
+	result, err := r.reconcileSecrets(context.Background(), ks)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).To(Equal(ctrl.Result{}))
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "SecretsReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal("SecretsAvailable"))
+}
+
+// TestReconcileSecrets_NamespacedStoreMissing_SetsCondition verifies a Keystone
+// pinned to a namespaced SecretStore that is absent flips SecretsReady False
+// with a message naming the namespaced kind and store name.
+func TestReconcileSecrets_NamespacedStoreMissing_SetsCondition(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := secretsTestScheme()
+	ks := secretsTestKeystone()
+	ks.Spec.SecretStoreRef = &commonv1.SecretStoreRefSpec{
+		Kind: commonv1.SecretStoreKindNamespaced, Name: "openbao-tenant-store",
+	}
+
+	dbES := readyExternalSecret("keystone-db", "default")
+	adminES := readyExternalSecret("keystone-admin", "default")
+
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(dbES, adminES).
+		WithStatusSubresource(dbES, adminES).
+		Build()
+
+	r := &KeystoneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
+	result, err := r.reconcileSecrets(context.Background(), ks)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(Equal(RequeueSecretPolling))
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "SecretsReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("SecretStoreNotReady"))
+	g.Expect(cond.Message).To(ContainSubstring("SecretStore"))
+	g.Expect(cond.Message).To(ContainSubstring("openbao-tenant-store"))
+}
+
 func TestReconcileSecrets_StoreMissing(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := secretsTestScheme()

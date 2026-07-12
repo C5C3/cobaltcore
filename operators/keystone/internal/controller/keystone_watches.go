@@ -4,7 +4,7 @@
 
 // Watch event mappers and predicates for the Keystone reconciler. Extracted
 // from keystone_controller.go so the controller file stays focused on the
-// reconcile chain while the Secret/MariaDB/ClusterSecretStore/PushSecret
+// reconcile chain while the Secret/MariaDB/secret-store/PushSecret
 // event-to-request plumbing lives in one place (issue #467).
 package controller
 
@@ -20,6 +20,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	"github.com/c5c3/forge/internal/common/secrets"
+	commonv1 "github.com/c5c3/forge/internal/common/types"
 	"github.com/c5c3/forge/internal/common/watch"
 
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
@@ -58,15 +60,25 @@ func mariaDBToKeystoneMapper(c client.Reader) handler.MapFunc {
 		})
 }
 
-// clusterSecretStoreToKeystoneMapper returns a MapFunc that enqueues every
-// Keystone CR in the cluster when the OpenBao-backed ClusterSecretStore
-// changes. The store is cluster-scoped and shared across namespaces, so any
-// status transition (e.g. ESO losing the backend connection) must retrigger
-// reconcile on all Keystones that route secrets through it. It binds the
-// shared watch.ClusterSecretStoreFanOut to the Keystone list type.
-func clusterSecretStoreToKeystoneMapper(c client.Reader) handler.MapFunc {
-	return watch.ClusterSecretStoreFanOut(c, openBaoClusterStoreName,
-		func() client.ObjectList { return &keystonev1alpha1.KeystoneList{} })
+// storeToKeystoneMapper returns a MapFunc that enqueues the Keystone CRs whose
+// effective secret store reference resolves to the changed store object.
+// watchedKind selects which store scope this mapper is registered against — a
+// cluster-scoped ClusterSecretStore (shared across namespaces) or a namespaced
+// SecretStore (per tenant). A Keystone that omits spec.secretStoreRef resolves
+// to the shared cluster store via secrets.EffectiveStoreRef, so the default
+// backend-outage fan-out is preserved while a Keystone pinned to a namespaced
+// store is only woken by its own store. It binds the shared
+// watch.StoreRefFanOut to the Keystone list type.
+func storeToKeystoneMapper(c client.Reader, watchedKind commonv1.SecretStoreRefKind) handler.MapFunc {
+	return watch.StoreRefFanOut(c, watchedKind,
+		func() client.ObjectList { return &keystonev1alpha1.KeystoneList{} },
+		func(o client.Object) commonv1.SecretStoreRefSpec {
+			ks, ok := o.(*keystonev1alpha1.Keystone)
+			if !ok {
+				return commonv1.SecretStoreRefSpec{}
+			}
+			return secrets.EffectiveStoreRef(ks.Spec.SecretStoreRef)
+		})
 }
 
 // identityBackendToKeystoneMapper returns a MapFunc that maps a

@@ -161,6 +161,16 @@ type KeystoneSpec struct {
 	// PolicySpec field across operators without per-field duplication.
 	PolicyOverrides *commonv1.PolicySpec `json:"policyOverrides,omitempty"`
 
+	// SecretStoreRef selects the External Secrets store the operator routes this
+	// Keystone's ExternalSecrets and backup PushSecrets through. When omitted the
+	// operator uses the shared cluster-scoped openbao-cluster-store, so existing
+	// deployments keep working unchanged. Set kind to SecretStore with the name
+	// of a namespaced store in THIS Keystone's namespace to reach OpenBao as a
+	// per-tenant identity. The ControlPlane operator projects this field onto the
+	// Keystone it owns, so operators normally configure it there rather than here.
+	// +optional
+	SecretStoreRef *commonv1.SecretStoreRefSpec `json:"secretStoreRef,omitempty"`
+
 	// Autoscaling configures horizontal pod autoscaling for the Keystone API deployment.
 	// When set, a HorizontalPodAutoscaler is created targeting the deployment.
 	// When removed, the HPA is deleted.

@@ -489,6 +489,34 @@ func TestFernetKeysPushSecret_PreservesDeletionPolicyAndStoreRef(t *testing.T) {
 	g.Expect(ps.Spec.SecretStoreRefs[0].Name).To(Equal("openbao-cluster-store"))
 }
 
+// TestFernetKeysPushSecret_HonorsNamespacedSecretStoreRef verifies that a
+// Keystone selecting a namespaced SecretStore projects that store onto the
+// fernet-keys-backup PushSecret, while the DeletionPolicy, name, and RemoteKey
+// (the irreplaceable-key wiring) are untouched.
+func TestFernetKeysPushSecret_HonorsNamespacedSecretStoreRef(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	ks := &keystonev1alpha1.Keystone{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-keystone", Namespace: "tenant-a"},
+		Spec: keystonev1alpha1.KeystoneSpec{
+			SecretStoreRef: &commonv1.SecretStoreRefSpec{
+				Kind: commonv1.SecretStoreKindNamespaced,
+				Name: "openbao-tenant-store",
+			},
+		},
+	}
+
+	ps := fernetKeysPushSecret(ks)
+
+	g.Expect(ps.Spec.SecretStoreRefs).To(HaveLen(1))
+	g.Expect(ps.Spec.SecretStoreRefs[0].Kind).To(Equal("SecretStore"))
+	g.Expect(ps.Spec.SecretStoreRefs[0].Name).To(Equal("openbao-tenant-store"))
+	// The identity changes; the backing OpenBao object does not.
+	g.Expect(ps.Spec.DeletionPolicy).To(Equal(esov1alpha1.PushSecretDeletionPolicyDelete))
+	g.Expect(ps.Name).To(Equal("test-keystone-fernet-keys-backup"))
+	g.Expect(ps.Spec.Data[0].Match.RemoteRef.RemoteKey).To(Equal("openstack/keystone/tenant-a/test-keystone/fernet-keys"))
+}
+
 func TestGenerateFernetKey_Valid(t *testing.T) {
 	g := NewGomegaWithT(t)
 

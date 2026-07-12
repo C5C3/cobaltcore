@@ -318,6 +318,7 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 	allErrs = append(allErrs, validation.CacheXOR(specPath.Child("cache"), &k.Spec.Cache)...)
 	allErrs = append(allErrs, validation.DatabaseXOR(specPath.Child("database"), &k.Spec.Database)...)
 	allErrs = append(allErrs, validation.DynamicCredentialsRequireClusterRef(specPath.Child("database"), &k.Spec.Database)...)
+	allErrs = append(allErrs, validation.SecretStoreRef(specPath.Child("secretStoreRef"), k.Spec.SecretStoreRef)...)
 
 	// Defense-in-depth database TLS validation alongside the
 	// +kubebuilder:validation:Enum marker on DatabaseTLSSpec.Mode and the

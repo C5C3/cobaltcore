@@ -545,6 +545,26 @@ func TestAdminPasswordPushSecret_Shape(t *testing.T) {
 	g.Expect(ps.Spec.Data[0].Match.SecretKey).To(Equal("password"))
 }
 
+// TestAdminPasswordPushSecret_HonorsNamespacedSecretStoreRef verifies a
+// namespaced SecretStore selection projects onto the admin-password backup
+// PushSecret without changing the DeletionPolicy=None persistent-bootstrap
+// wiring or the per-CR RemoteKey.
+func TestAdminPasswordPushSecret_HonorsNamespacedSecretStoreRef(t *testing.T) {
+	g := NewWithT(t)
+	ks := pwRotationTestKeystone()
+	ks.Spec.SecretStoreRef = &commonv1.SecretStoreRefSpec{
+		Kind: commonv1.SecretStoreKindNamespaced,
+		Name: "openbao-tenant-store",
+	}
+
+	ps := adminPasswordPushSecret(ks)
+	g.Expect(ps.Spec.SecretStoreRefs).To(HaveLen(1))
+	g.Expect(ps.Spec.SecretStoreRefs[0].Kind).To(Equal("SecretStore"))
+	g.Expect(ps.Spec.SecretStoreRefs[0].Name).To(Equal("openbao-tenant-store"))
+	g.Expect(ps.Spec.DeletionPolicy).To(Equal(esov1alpha1.PushSecretDeletionPolicyNone))
+	g.Expect(ps.Spec.Data[0].Match.RemoteRef.RemoteKey).To(Equal(fmt.Sprintf("bootstrap/%s/%s/admin", ks.Namespace, ks.Name)))
+}
+
 // TestAdminPasswordPushSecret_RemoteKeyIsPerCR pins the
 // admin-password RemoteKey embeds both the CR namespace and name as path
 // segments, so two Keystone CRs sharing a Name in different namespaces resolve

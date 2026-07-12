@@ -5421,3 +5421,135 @@ func TestIntegrationOIDCBackend_FullAttachAndDeleteFlow(t *testing.T) {
 	}, eventuallyLongTimeout, pollInterval).Should(BeTrue(), "the sidecar must be de-projected")
 	waitForCondition(t, ctx, c, ksKey, "Ready", metav1.ConditionTrue, eventuallyTimeout)
 }
+
+// ensureReadySecretStore creates or refreshes a namespaced SecretStore with a
+// Ready=True condition in namespace. The namespaced-store readiness path is one
+// the production stack uses nowhere today, so the store-ref integration tests
+// materialise it here (issue #605).
+func ensureReadySecretStore(t testing.TB, ctx context.Context, c client.Client, name, namespace string) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+
+	store := &esov1.SecretStore{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}}
+	err := c.Get(ctx, client.ObjectKeyFromObject(store), store)
+	if apierrors.IsNotFound(err) {
+		g.Expect(c.Create(ctx, store)).To(Succeed(), "create SecretStore")
+	} else {
+		g.Expect(err).NotTo(HaveOccurred(), "get SecretStore")
+	}
+
+	store.Status = esov1.SecretStoreStatus{
+		Conditions: []esov1.SecretStoreStatusCondition{
+			{Type: esov1.SecretStoreReady, Status: corev1.ConditionTrue},
+		},
+	}
+	g.Expect(c.Status().Update(ctx, store)).To(Succeed(), "update SecretStore status")
+}
+
+// TestIntegration_NamespacedSecretStoreGatesSecretsReady verifies that a
+// Keystone selecting a namespaced SecretStore gates SecretsReady on THAT store,
+// not the shared cluster store: while the cluster store is Ready but the
+// namespaced store is absent, SecretsReady stays False; once the namespaced
+// store reports Ready, SecretsReady flips True (issue #605).
+func TestIntegration_NamespacedSecretStoreGatesSecretsReady(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-nsstore-gate-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	// createPrerequisites makes the cluster store Ready plus the DB/admin
+	// ExternalSecrets and materialized Secrets — everything the Keystone needs
+	// EXCEPT the namespaced store it selects.
+	createPrerequisites(t, ctx, c, ns.Name)
+
+	ks := integrationBrownfieldKeystone("test-keystone", ns.Name)
+	ks.Spec.SecretStoreRef = &commonv1.SecretStoreRefSpec{
+		Kind: commonv1.SecretStoreKindNamespaced,
+		Name: "openbao-tenant-store",
+	}
+	g.Expect(c.Create(ctx, ks)).To(Succeed())
+	key := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
+
+	// The namespaced store does not exist yet, so SecretsReady must be False even
+	// though the cluster store is Ready — proving the gate follows the ref.
+	cond := waitForCondition(t, ctx, c, key, "SecretsReady", metav1.ConditionFalse, eventuallyTimeout)
+	g.Expect(cond.Reason).To(Equal("SecretStoreNotReady"))
+	g.Expect(cond.Message).To(ContainSubstring("openbao-tenant-store"))
+
+	// Bring the namespaced store up → SecretsReady flips True.
+	ensureReadySecretStore(t, ctx, c, "openbao-tenant-store", ns.Name)
+	waitForCondition(t, ctx, c, key, "SecretsReady", metav1.ConditionTrue, eventuallyTimeout)
+}
+
+// TestIntegration_SecretStoreSwitch_KeepsBackupPushSecretsInPlace is the
+// move-never-recreate lock for the irreplaceable fernet/credential keys: when a
+// Keystone's spec.secretStoreRef is switched from the shared cluster store to a
+// namespaced store, the backup PushSecrets are updated IN PLACE (same UID, same
+// name, same RemoteKey) — never deleted and re-created — while their store ref
+// re-points to the tenant store (issue #605).
+func TestIntegration_SecretStoreSwitch_KeepsBackupPushSecretsInPlace(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-store-switch-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	createPrerequisites(t, ctx, c, ns.Name)
+	// Bring the tenant store up front so the reconcile chain proceeds past the
+	// secrets gate immediately after the ref flip.
+	ensureReadySecretStore(t, ctx, c, "openbao-tenant-store", ns.Name)
+
+	ks := integrationBrownfieldKeystone("test-keystone", ns.Name)
+	g.Expect(c.Create(ctx, ks)).To(Succeed())
+	key := types.NamespacedName{Name: ks.Name, Namespace: ns.Name}
+
+	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
+
+	backups := []string{"test-keystone-fernet-keys-backup", "test-keystone-credential-keys-backup"}
+	origUID := map[string]types.UID{}
+	origRemoteKey := map[string]string{}
+	for _, name := range backups {
+		ps := &esov1alpha1.PushSecret{}
+		g.Eventually(func() error {
+			return c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: name}, ps)
+		}, eventuallyTimeout, pollInterval).Should(Succeed(), name+" should exist")
+		g.Expect(ps.Spec.SecretStoreRefs).To(HaveLen(1))
+		g.Expect(ps.Spec.SecretStoreRefs[0].Kind).To(Equal("ClusterSecretStore"),
+			name+" starts on the shared cluster store")
+		origUID[name] = ps.UID
+		origRemoteKey[name] = ps.Spec.Data[0].Match.RemoteRef.RemoteKey
+	}
+
+	// Flip the store reference to the namespaced tenant store.
+	g.Eventually(func() error {
+		cur := &keystonev1alpha1.Keystone{}
+		if err := c.Get(ctx, key, cur); err != nil {
+			return err
+		}
+		cur.Spec.SecretStoreRef = &commonv1.SecretStoreRefSpec{
+			Kind: commonv1.SecretStoreKindNamespaced,
+			Name: "openbao-tenant-store",
+		}
+		return c.Update(ctx, cur)
+	}, eventuallyTimeout, pollInterval).Should(Succeed())
+
+	// The backup PushSecrets must re-point to the tenant store while their
+	// identity (UID) and backing OpenBao object (name + RemoteKey) are untouched.
+	for _, name := range backups {
+		g.Eventually(func(ig Gomega) {
+			ps := &esov1alpha1.PushSecret{}
+			ig.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: name}, ps)).To(Succeed())
+			ig.Expect(ps.Spec.SecretStoreRefs).To(HaveLen(1))
+			ig.Expect(ps.Spec.SecretStoreRefs[0].Kind).To(Equal("SecretStore"), name+" re-points to the tenant store")
+			ig.Expect(ps.Spec.SecretStoreRefs[0].Name).To(Equal("openbao-tenant-store"))
+			ig.Expect(ps.UID).To(Equal(origUID[name]), name+" must be updated in place, not re-created")
+			ig.Expect(ps.Spec.Data[0].Match.RemoteRef.RemoteKey).To(Equal(origRemoteKey[name]),
+				name+" backing OpenBao path must not move")
+		}, eventuallyTimeout, pollInterval).Should(Succeed())
+	}
+}

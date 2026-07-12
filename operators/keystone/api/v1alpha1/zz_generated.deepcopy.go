@@ -409,6 +409,11 @@ func (in *KeystoneSpec) DeepCopyInto(out *KeystoneSpec) {
 		*out = new(types.PolicySpec)
 		(*in).DeepCopyInto(*out)
 	}
+	if in.SecretStoreRef != nil {
+		in, out := &in.SecretStoreRef, &out.SecretStoreRef
+		*out = new(types.SecretStoreRefSpec)
+		**out = **in
+	}
 	if in.Autoscaling != nil {
 		in, out := &in.Autoscaling, &out.Autoscaling
 		*out = new(AutoscalingSpec)

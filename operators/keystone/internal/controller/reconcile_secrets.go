@@ -22,10 +22,6 @@ import (
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
 
-// openBaoClusterStoreName re-exports the shared ClusterSecretStore name (see
-// secrets.OpenBaoClusterStoreName) for the watches and tests in this package.
-const openBaoClusterStoreName = secrets.OpenBaoClusterStoreName
-
 // keystoneOpenBaoFinalizer is the finalizer added to every Keystone CR so that
 // the fernet-keys-backup and credential-keys-backup PushSecret CRs are deleted
 // before the Keystone CR disappears from etcd. Deletion of those PushSecrets
@@ -62,10 +58,14 @@ const esoCleanupFinalizer = "external-secrets.io/cleanup"
 func (r *KeystoneReconciler) reconcileSecrets(ctx context.Context,
 	keystone *keystonev1alpha1.Keystone,
 ) (ctrl.Result, error) {
-	// Check the ClusterSecretStore first so upstream backend outages surface
+	// Check the selected secret store first so upstream backend outages surface
 	// as SecretsReady=False even while per-ExternalSecret caches still report
-	// Ready=True from their last successful sync.
-	storeReady, err := secrets.GateClusterStoreReady(ctx, r.Client, openBaoClusterStoreName,
+	// Ready=True from their last successful sync. The store is the one this
+	// Keystone selected via spec.secretStoreRef (default: the shared
+	// cluster-scoped openbao-cluster-store); a namespaced store is resolved in
+	// the Keystone's own namespace.
+	storeReady, err := secrets.GateStoreReady(ctx, r.Client,
+		secrets.EffectiveStoreRef(keystone.Spec.SecretStoreRef), keystone.Namespace,
 		&keystone.Status.Conditions, keystone.Generation, "SecretsReady")
 	if err != nil {
 		return ctrl.Result{}, err
