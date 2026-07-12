@@ -201,3 +201,15 @@ to remove the generator objects.
   engines, auth roles, policies, and secret paths.
 - [ControlPlane reconciler reference](/reference/c5c3/controlplane-reconciler) —
   `reconcileDBCredentials` projection flow.
+
+## Tested by
+
+The dynamic, engine-issued per-ControlPlane database credential this guide
+migrates to — the `VaultDynamicSecret`, the owned
+`controlplane-keystone-db-credentials` ExternalSecret, and the transient
+engine-issued login — is asserted on the CI e2e kind cluster by this chainsaw
+suite:
+
+```bash
+chainsaw test --test-dir tests/e2e/c5c3/db-credential-scoping
+```

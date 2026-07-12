@@ -130,3 +130,15 @@ Set the replica count on the `ControlPlane` CR, not on the projected
 reverted. If the operator loses apiserver connectivity after enabling the policy,
 your CNI maps the apiserver behind a different port — compare the policy's egress
 ports with `kubectl get endpoints kubernetes -n default`.
+
+## Tested by
+
+Both operator charts carry an equivalent chart-level NetworkPolicy template
+(each chart ships its own copy — it is not a shared operator-library helper).
+The keystone chart's copy is exercised end-to-end on the CI e2e kind cluster by
+the chainsaw suite below; the horizon chart's copy is pinned by its helm-unittest
+(`operators/horizon/helm/horizon-operator/tests/networkpolicy_test.yaml`).
+
+```bash
+chainsaw test --test-dir tests/e2e/keystone-operator/network-policy-egress
+```

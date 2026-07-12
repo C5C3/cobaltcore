@@ -10,8 +10,8 @@ identity provider using the `KeystoneIdentityBackend` CRD: supply the IdP
 metadata, apply one CR, watch the conditions converge, export the generated
 service-provider (SP) metadata, register it at the IdP out of band, and
 verify a federated user can log in. The worked example uses Keycloak — the
-same fixture the e2e suite deploys — so every value is adaptable to a kind
-cluster.
+same IdP the mirroring e2e suite ([Tested by](#tested-by)) deploys — so every
+value is adaptable to a kind cluster.
 
 SAML reuses almost all of the OIDC federation machinery: the same
 federation sidecar (which now also ships `mod_auth_mellon`), the same
@@ -246,3 +246,22 @@ the last federation backend restores the plain uWSGI-only pod.
 | Backend stays pending, `FederationProxyImageMissing` | `spec.federation.proxyImage` is not set on the Keystone CR. |
 | Second SAML backend rejected at admission | At most one SAML backend per Keystone is supported. |
 | IdP rejects the AuthnRequest | The SP was not registered, or its `clientId`/`entityID` at the IdP does not match the exported SP `entityID`. |
+
+## Tested by
+
+Attaching the SAML backend, watching the conditions converge, exporting the SP
+metadata, and a WebSSO login are asserted end-to-end on the CI e2e kind cluster
+by this chainsaw suite:
+
+```bash
+chainsaw test --test-dir tests/e2e/keystone/saml-federation
+```
+
+::: details The backend CR the suite applies
+The suite isolates its Keystone instance from the parallel suite pool, so its
+backend CR name (`keycloak-saml`) and `keystoneRef` (`keystone-saml`)
+deliberately differ from the `corp-saml` / `keystone` names used in the
+walkthrough above.
+
+<<< @/../tests/e2e/keystone/saml-federation/02-backend-cr.yaml#backend-cr
+:::

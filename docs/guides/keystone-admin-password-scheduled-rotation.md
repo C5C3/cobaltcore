@@ -423,4 +423,23 @@ Secrets, the RBAC trio, the PushSecret, and the script ConfigMap — and reports
 - [`reconcileBootstrap`](../reference/keystone/keystone-reconciler.md#reconcilebootstrap) — the bootstrap sub-reconciler and the `admin-password-hash` re-run gate that applies the rotated credential.
 - [Rotate the Keystone Admin Password](keystone-admin-password-rotation.md) — the manual rotation guide whose verification steps (3–7) this guide cross-links, and the supported admin-password rotation path on a ControlPlane deployment.
 - [Rotate Keystone Fernet and Credential Keys](keystone-key-rotation.md) — the key-rotation counterpart, which uses an analogous staging→production split.
-- Chainsaw test: `tests/e2e/keystone/admin-password-scheduled-rotation/chainsaw-test.yaml` asserts this guide's evidence chain end-to-end — CronJob run → push-source commit → OpenBao change → ESO sync → re-bootstrap `BootstrapReady=True` → new-password `201` / old-password `401`, and the disable→teardown `RotationDisabled` posture.
+
+## Tested by
+
+This guide's evidence chain is asserted end-to-end on the CI e2e kind cluster —
+CronJob run → push-source commit → OpenBao change → ESO sync → re-bootstrap
+`BootstrapReady=True` → new-password `201` / old-password `401`, and the
+disable→teardown `RotationDisabled` posture — by this chainsaw suite:
+
+```bash
+chainsaw test --test-dir tests/e2e/keystone/admin-password-scheduled-rotation
+```
+
+::: details The Keystone CR the suite applies
+The suite isolates its Keystone instance from the parallel suite pool, so its
+CR name (`keystone-adminpw-sched`) and logical database
+(`keystone_adminpw_sched`) deliberately differ from the devstack names used in
+the walkthrough above.
+
+<<< @/../tests/e2e/keystone/admin-password-scheduled-rotation/00-keystone-cr.yaml#keystone-cr
+:::

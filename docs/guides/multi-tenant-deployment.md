@@ -302,3 +302,14 @@ For deployments off a checkout, use the published OCI chart instead —
 - [ControlPlane Quick Start](../quick-start-controlplane.md) — standing up a tenant as a `ControlPlane` CR (the one-per-namespace tenancy aggregate).
 - [Enable the Keystone Operator NetworkPolicy](./enable-keystone-operator-networkpolicy.md) — confine the namespace-scoped operator's egress.
 - [Helm Values Schema](../reference/backend/helm-values-schema.md) — the full `rbac.*` / `webhook.*` value reference.
+
+## Tested by
+
+The namespace-scoped install and the two-ControlPlanes-in-two-namespaces tenancy
+this guide describes are asserted on the CI e2e kind cluster by these chainsaw
+suites:
+
+```bash
+chainsaw test --test-dir tests/e2e/keystone/namespace-scoped-rbac
+chainsaw test --test-dir tests/e2e/c5c3/multi-controlplane
+```

@@ -273,3 +273,15 @@ scheduled rotation during an incident without deleting the CronJob, and
 - [Keystone Upgrade Flow](../reference/keystone/keystone-upgrade-flow.md) — state machine, job names, retry behavior
 - [Keystone Controller Events](../reference/keystone/keystone-events.md) — full event catalogue for upgrade, rotation, and scale events
 - [Advanced Configuration](./advanced-configuration.md) — brownfield DB, autoscaling, network policy, and more
+
+## Tested by
+
+Scale, release upgrade, image upgrade, zero-downtime rollout, and manual Fernet
+rotation are each asserted on the CI e2e kind cluster by these chainsaw suites:
+
+```bash
+chainsaw test --test-dir tests/e2e/keystone/release-upgrade
+chainsaw test --test-dir tests/e2e/keystone/image-upgrade
+chainsaw test --test-dir tests/e2e/keystone/rolling-update-zero-downtime
+chainsaw test --test-dir tests/e2e/keystone/fernet-rotation
+```

@@ -122,3 +122,18 @@ curl -s 'http://localhost:9090/api/v1/query?query=horizon_operator_reconcile_dur
 
 A non-zero result count means the operator has reconciled at least one
 Horizon CR since the scrape began.
+
+## Tested by
+
+The chart's ServiceMonitor render-and-remove lifecycle is asserted on the CI
+e2e kind cluster by the chainsaw suite below (install with
+`monitoring.serviceMonitor.enabled=true`, assert the `ServiceMonitor` shape,
+uninstall, assert removal). The end-to-end scrape path — a live Prometheus
+that discovers the ServiceMonitor and marks the target Up — is the
+`WITH_PROMETHEUS=true` kind bring-up shown in the tip above, not this suite:
+the e2e cluster ships only the prometheus-operator CRDs, not a Prometheus
+instance.
+
+```bash
+chainsaw test --test-dir tests/e2e/horizon-operator/metrics
+```

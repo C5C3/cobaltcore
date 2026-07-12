@@ -313,4 +313,13 @@ identical.
 - [Key Rotation RBAC Split](../reference/keystone/keystone-reconciler.md#key-rotation-rbac-split) — the authoritative contract for the Fernet sub-reconciler.
 - [Labels and Annotations](../reference/keystone/keystone-reconciler.md#labels-and-annotations) — stable metadata keys observable by consumers.
 - [Rotation Scripts](../reference/backend/rotation-scripts.md) — the embedded `fernet_rotate.sh` / `credential_rotate.sh` contract.
-- Chainsaw tests: `tests/e2e/keystone/fernet-rotation/chainsaw-test.yaml` and `tests/e2e/keystone/credential-rotation/chainsaw-test.yaml` assert this guide's happy path and the RBAC verb split end-to-end.
+
+## Tested by
+
+This guide's happy path and the RBAC verb split are asserted end-to-end on the
+CI e2e kind cluster by these chainsaw suites:
+
+```bash
+chainsaw test --test-dir tests/e2e/keystone/fernet-rotation
+chainsaw test --test-dir tests/e2e/keystone/credential-rotation
+```

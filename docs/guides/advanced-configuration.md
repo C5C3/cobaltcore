@@ -337,3 +337,14 @@ A change to `extraConfig` triggers a ConfigMap rehash and a rolling Deployment u
 - [ControlPlane CRD API Reference](../reference/c5c3/controlplane-crd.md) — the `spec.*` fields the ControlPlane exposes, including `spec.infrastructure`
 - [Observability & Diagnostics](./observability.md) — how to verify a new configuration took effect
 - [Day 2 Operations](./day-2-operations.md) — scale, upgrade, rotate using the configured CR
+
+## Tested by
+
+The recipes above are exercised on the CI e2e kind cluster — the operator
+installed with a dev image — by these chainsaw suites:
+
+```bash
+chainsaw test --test-dir tests/e2e/keystone/brownfield-database
+chainsaw test --test-dir tests/e2e/keystone/autoscaling
+chainsaw test --test-dir tests/e2e/keystone/network-policy
+```

@@ -229,11 +229,7 @@ host cannot resolve. Clicking the SSO button through to a session needs an
 through the gateway with matching redirect URIs and a host-resolvable issuer).
 The full WebSSO hand-off against the in-cluster fixture — including the
 Envoy-routed gateway redirect URIs this guide's fixtures register — is
-exercised headlessly by the mirroring e2e suite:
-
-```bash
-chainsaw test --test-dir tests/e2e-controlplane-sso
-```
+exercised headlessly by the mirroring e2e suite (see [Tested by](#tested-by)).
 
 For a copy-pasteable devstack login that does not need a browser, use the CLI
 bearer flow in [Attach an OIDC Federation Backend](./oidc-federation.md#step-6-log-in-as-a-federated-user).
@@ -369,3 +365,30 @@ Then check the two rules from Step 1: the port must be present when it is not
 is projected from `services.keystone.publicEndpoint`. If that is unset, Horizon
 falls back to `spec.keystoneEndpoint` — the cluster-local Service URL, which the
 browser cannot resolve. Set `publicEndpoint`.
+
+## Tested by
+
+The full ControlPlane-driven SSO chain — both services published through the
+shared gateway, the OIDC and LDAP backends attached, and a headless WebSSO
+hand-off — is asserted end-to-end on its own CI e2e kind cluster by this
+chainsaw suite:
+
+```bash
+chainsaw test --test-dir tests/e2e-controlplane-sso
+```
+
+::: details The ControlPlane CR the suite applies
+The suite runs a second full ControlPlane in its own CI job (the webhook permits
+only one ControlPlane per namespace), so its CR name (`controlplane-sso`)
+deliberately differs from the `controlplane` devstack name used in the
+walkthrough above.
+
+<<< @/../tests/e2e-controlplane-sso/02-controlplane-cr.yaml#controlplane-cr
+:::
+
+::: details The identity backends the suite applies
+Both backends reference the suite's projected Keystone child
+(`controlplane-sso-keystone`) rather than the walkthrough's `controlplane-keystone`.
+
+<<< @/../tests/e2e-controlplane-sso/04-backends.yaml#backends
+:::

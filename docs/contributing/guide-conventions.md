@@ -85,24 +85,43 @@ section, applied to a Keystone CR the reader owns.
 ## Every guide is testable
 
 A guide describes behaviour the project also asserts in an end-to-end suite.
-Where a mirroring suite exists under `tests/e2e/`, the guide closes with a
-pointer to it and its invocation, so a reader can run the same flow the guide
-walks through:
+Every guide closes with a terminal section titled exactly `## Tested by` that
+names its mirroring suite(s) and the local invocation, so a reader can run the
+same flow the guide walks through. The invocation uses the `--test-dir` form,
+one line per suite:
 
 ```bash
 chainsaw test --test-dir tests/e2e/keystone/<suite>
 ```
 
+`tests/unit/docs/guide_devstack_and_tested_by_test.sh` enforces this per guide:
+the `## Tested by` section must exist, and every path it names with
+`chainsaw test --test-dir` must resolve to a real `chainsaw-test.yaml`.
+
 ## Single source of truth for manifests
 
-Where a guide mirrors an e2e suite, embed the CR manifests from the suite's
-fixture files rather than hand-maintaining a second copy that drifts. VitePress
-snippet imports keep the rendered YAML in lockstep with the fixture the suite
-actually applies:
+Where a guide mirrors an e2e suite, embed the fixture the suite applies rather
+than hand-maintaining a second copy that drifts. A VitePress snippet import
+keeps the rendered YAML in lockstep with the tested fixture; mark the region to
+import with column-0 `# region <name>` / `# endregion <name>` YAML comments
+around the CR document in the fixture:
 
 ```md
-<<< @/../tests/e2e/keystone/<suite>/00-keystone-cr.yaml
+<<< @/../tests/e2e/keystone/<suite>/00-keystone-cr.yaml#<region>
 ```
+
+The fixture and the walkthrough serve different masters, so they carry different
+names. A suite fixture is **isolation-named** — a distinct CR name, its own
+logical database, `deletionPolicy: Delete`, dev-tag image pins — so the suite
+runs safely in the parallel suite pool. The walkthrough is **devstack-named** —
+it uses the resource names the guide's declared devstack actually produces (see
+[ControlPlane-first naming](#controlplane-first-naming)), so a reader can copy a
+command and have it hit a resource that exists. Reconcile the two by keeping the
+walkthrough YAML devstack-named and embedding the isolation-named fixture as a
+labelled `::: details` exhibit inside `## Tested by`, prefaced by a sentence
+that states which names the exhibit uses and why. The import is real, so the
+exhibit cannot drift from the tested fixture, and the walkthrough keeps the
+names the reader's devstack can actually copy.
 
 ## Housekeeping
 

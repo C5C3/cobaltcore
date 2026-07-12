@@ -315,9 +315,8 @@ your workstation cannot complete the login form against it — the browser
 WebSSO flow needs an **externally reachable** IdP (your production Keycloak, or
 a fixture published through the gateway with matching redirect URIs). The
 headless authorization-code round trip against the in-cluster fixture is
-exercised end-to-end by the mirroring e2e suite
-(`tests/e2e/keystone/oidc-federation/`); the CLI bearer flow above is the
-copy-pasteable devstack path.
+exercised end-to-end by the mirroring e2e suite (see [Tested by](#tested-by));
+the CLI bearer flow above is the copy-pasteable devstack path.
 :::
 
 ## Multiple identity providers
@@ -403,3 +402,22 @@ WebSSO origin, so set `spec.federation.trustedDashboards` directly on the Keysto
 CR. It is a list, rendered as one `[federation] trusted_dashboard` line per entry.
 See the standalone section of [End-to-End SSO](./end-to-end-sso.md#standalone-keystone-without-a-controlplane)
 for the full shape and the `spec.extraConfig` conflict rule.
+
+## Tested by
+
+Attaching the OIDC backend, watching the conditions converge, and the headless
+CLI bearer flow are asserted end-to-end on the CI e2e kind cluster by this
+chainsaw suite:
+
+```bash
+chainsaw test --test-dir tests/e2e/keystone/oidc-federation
+```
+
+::: details The backend CR the suite applies
+The suite isolates its Keystone instance from the parallel suite pool, so its
+backend CR points `keystoneRef` at `keystone-oidc` (and enables
+`oauth2Introspection` for the CLI bearer flow) — deliberately differing from the
+`controlplane-keystone` reference used in the walkthrough above.
+
+<<< @/../tests/e2e/keystone/oidc-federation/02-backend-cr.yaml#backend-cr
+:::

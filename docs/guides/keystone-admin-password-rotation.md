@@ -358,4 +358,13 @@ so write to whatever path it reads.
 - [Labels and Annotations](../reference/keystone/keystone-reconciler.md#labels-and-annotations) — stable metadata keys, including `forge.c5c3.io/admin-password-hash` and `forge.c5c3.io/pod-spec-hash`.
 - See also [Schedule Keystone Admin Password Rotation](keystone-admin-password-scheduled-rotation.md) — the Model B scheduled flow, where a CronJob mints the password instead of an operator writing OpenBao by hand.
 - See also [Rotate Keystone Fernet and Credential Keys](keystone-key-rotation.md) — the key-rotation counterpart to this admin-password rotation.
-- Chainsaw test: `tests/e2e/keystone/admin-password-rotation/chainsaw-test.yaml` asserts this guide's happy path end-to-end — re-bootstrap on Secret change, old-password `401` / new-password `201` cutover, and unchanged API pod UIDs.
+
+## Tested by
+
+This guide's happy path is asserted end-to-end on the CI e2e kind cluster —
+re-bootstrap on Secret change, old-password `401` / new-password `201` cutover,
+and unchanged API pod UIDs — by this chainsaw suite:
+
+```bash
+chainsaw test --test-dir tests/e2e/keystone/admin-password-rotation
+```

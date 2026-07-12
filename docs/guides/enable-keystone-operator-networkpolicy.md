@@ -256,22 +256,6 @@ kubectl -n keystone-system logs deploy/keystone-operator -f \
   | grep -Ei 'apiserver|leader|timeout|refused|deadline'
 ```
 
-### 4.4 Chart-level E2E guardrail
-
-The repository ships a Chainsaw E2E that exercises this exact code path —
-operator installed with `networkPolicy.enabled=true`, one Keystone CR
-reaches `Ready=True`:
-
-```bash
-chainsaw test tests/e2e/keystone-operator/network-policy-egress
-```
-
-Like the verification steps above, this suite runs on the default `kindnet`
-CI cluster, so it validates that the chart **renders** the policy and that
-the operator **reconciles to Ready** while the (unenforced) policy is present
-— it does **not** assert that blocked egress is actually dropped. Enforcement
-coverage would require a CI job with a NetworkPolicy-enforcing CNI.
-
 ---
 
 ## Troubleshooting
@@ -382,3 +366,19 @@ without a pod restart.
   the CR-scoped `reconcileNetworkPolicy` sub-reconciler for the
   Keystone API pod NetworkPolicy (different scope from this guide).
 - [Kubernetes NetworkPolicy concepts](https://kubernetes.io/docs/concepts/services-networking/network-policies/).
+
+## Tested by
+
+The operator installed with `networkPolicy.enabled=true` and one Keystone CR
+reaching `Ready=True` is exercised on the CI e2e kind cluster by this chainsaw
+suite:
+
+```bash
+chainsaw test --test-dir tests/e2e/keystone-operator/network-policy-egress
+```
+
+Like the verification steps above, this suite runs on the default `kindnet` CI
+cluster, so it validates that the chart **renders** the policy and that the
+operator **reconciles to Ready** while the (unenforced) policy is present — it
+does **not** assert that blocked egress is actually dropped. Enforcement
+coverage would require a CI job with a NetworkPolicy-enforcing CNI.

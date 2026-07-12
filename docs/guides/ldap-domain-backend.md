@@ -189,3 +189,22 @@ applies `spec.domain.deletionPolicy`:
 | LDAP users not listed | Check the tree/attribute mapping against your directory (`user_tree_dn`, `user_objectclass`, `user_id_attribute`) — unset fields fall back to keystone's defaults, which may not match your schema. |
 | `GET /v3/users` returns HTTP 400 `'enabled' is a required property` | The projected `user_enabled_invert`/`user_enabled_default` fallback was suppressed by a `user_enabled_*` key in `extraOptions` that does not match the directory — with no matching attribute, keystone omits `enabled` from the user model and its own response validation rejects the reply. Align the `user_enabled_*` options with the directory schema (or drop them to restore the fallback). |
 | Admission rejects the CR | The message names the exact rule: Default-domain protection, domain-name uniqueness per Keystone, the `extraOptions` denylist, or the fixed Secret data-key contract. |
+
+## Tested by
+
+Attaching the LDAP domain, watching the conditions converge, and authenticating
+an LDAP user against the seeded `dc=planetexpress,dc=com` directory are asserted
+end-to-end on the CI e2e kind cluster by this chainsaw suite:
+
+```bash
+chainsaw test --test-dir tests/e2e/keystone/ldap-domain-backend
+```
+
+::: details The backend CR the suite applies
+The suite isolates its Keystone instance from the parallel suite pool, so its
+backend CR name (`planetexpress-ldap`) and `keystoneRef` (`keystone-ldap`)
+deliberately differ from the `corp-ldap` / `keystone` names used in the
+walkthrough above.
+
+<<< @/../tests/e2e/keystone/ldap-domain-backend/02-backend-cr.yaml#backend-cr
+:::

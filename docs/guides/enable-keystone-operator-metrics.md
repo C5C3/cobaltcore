@@ -288,3 +288,15 @@ ServiceMonitor (and therefore the Prometheus scrape) is removed.
 - [Keystone Reconciler — Metrics Instrumentation](../reference/keystone/keystone-reconciler.md#metrics-instrumentation) — how sub-reconcilers are instrumented.
 - [Observability & Diagnostics](../guides/observability.md) — conditions, events, and logs.
 - [`operators/keystone/dashboards/keystone-operator.json`](https://github.com/c5c3/forge/blob/main/operators/keystone/dashboards/keystone-operator.json) — reference Grafana dashboard.
+
+## Tested by
+
+The chart's ServiceMonitor render-and-remove lifecycle is asserted on the CI
+e2e kind cluster by `tests/e2e/keystone/metrics`; the end-to-end
+`WITH_PROMETHEUS` scrape-and-dashboard path is asserted by
+`tests/e2e/keystone/prometheus-stack`:
+
+```bash
+chainsaw test --test-dir tests/e2e/keystone/metrics
+chainsaw test --test-dir tests/e2e/keystone/prometheus-stack
+```

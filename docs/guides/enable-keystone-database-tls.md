@@ -266,20 +266,6 @@ except Exception as exc:
 
 Expected: `PLAINTEXT_REJECTED: …` from the server's TLS-required enforcement.
 
-### 4. Run the end-to-end chainsaw test (canonical check)
-
-The repository ships a chainsaw E2E suite that pins all three of the above
-verifications against a standalone Keystone CR (whose `openstack-db` ships
-`tls.required=true`):
-
-```bash
-chainsaw test --test-dir tests/e2e/keystone/database-tls/
-```
-
-The suite is also listed in the
-[E2E inventory](../reference/keystone/keystone-crd.md#chainsaw-e2e-tests) of
-the Keystone CRD reference.
-
 ---
 
 ## Disabling
@@ -366,3 +352,18 @@ mechanics through this standalone flow.
 - [Infrastructure Manifests — OpenStack DB CA Issuer](../reference/infrastructure/infrastructure-manifests.md#openstack-db-ca-issuer) — CA keypair and ClusterIssuer.
 - [Infrastructure Manifests — MariaDB Galera Cluster](../reference/infrastructure/infrastructure-manifests.md#mariadb-galera-cluster) — server-side TLS configuration.
 - [`tests/e2e/keystone/database-tls/`](https://github.com/c5c3/forge/tree/main/tests/e2e/keystone/database-tls) — chainsaw E2E suite.
+
+## Tested by
+
+The canonical check pins all three verifications above — `DatabaseTLSReady=True`,
+the encrypted live connection, and the plaintext rejection — against a standalone
+Keystone CR whose `openstack-db` ships `tls.required=true`. Run it on the CI e2e
+kind cluster:
+
+```bash
+chainsaw test --test-dir tests/e2e/keystone/database-tls
+```
+
+The suite is also listed in the
+[E2E inventory](../reference/keystone/keystone-crd.md#chainsaw-e2e-tests) of the
+Keystone CRD reference.

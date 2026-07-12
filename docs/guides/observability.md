@@ -229,3 +229,14 @@ kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --ta
 - [Enable the Keystone operator metrics endpoint](./enable-keystone-operator-metrics.md) — ServiceMonitor enablement and Grafana import walk-through
 - [Keystone Upgrade Flow](../reference/keystone/keystone-upgrade-flow.md) — state machine that drives upgrade conditions
 - [Day 2 Operations](./day-2-operations.md) — putting this observability into practice during scale, upgrade, rotation
+
+## Tested by
+
+Lifecycle event emission and `spec.logging` → oslo.log propagation — the two
+observable surfaces this guide reads — are asserted on the CI e2e kind cluster
+by these chainsaw suites:
+
+```bash
+chainsaw test --test-dir tests/e2e/keystone/events
+chainsaw test --test-dir tests/e2e/keystone/logging
+```
