@@ -935,16 +935,21 @@ The KV-v2 path layout for these backups has evolved in two steps:
    and `…/{keystone.Namespace}/{keystone.Name}/credential-keys`.
 
 The RemoteKey change lands the moment the Keystone operator is upgraded —
-the next reconcile of each Keystone CR emits the new path. For existing
-clusters the corresponding OpenBao ACL
-(`deploy/openbao/policies/push-keystone-keys.hcl`) must also be re-applied
-so ESO is authorised to write to the new paths; otherwise ESO will return
-`403` on the backup step and `FernetKeysReady` / `CredentialKeysReady` will
-flip to `False`. For kind/dev clusters this happens automatically when
-`hack/deploy-infra.sh` (or `deploy/openbao/bootstrap/setup-policies.sh`)
-is re-run; for production clusters managed outside the bootstrap flow the
-equivalent is a single `bao policy write push-keystone-keys …` against the
-updated HCL file.
+the next reconcile of each Keystone CR emits the new path. A standalone
+Keystone's Fernet/credential backup PushSecrets authenticate as the per-tenant
+`eso-tenant` identity through a namespaced `openbao-tenant-store` SecretStore, so
+for existing clusters that identity and store must be in place — otherwise ESO
+will return `403` on the backup step and `FernetKeysReady` /
+`CredentialKeysReady` will flip to `False`. The write authorisation comes from
+the `eso-tenant` policy (`deploy/openbao/policies/eso-tenant.hcl`), whose paths
+are templated to the caller's own namespace; it is created by
+`deploy/openbao/bootstrap/setup-auth.sh` (the `eso-tenant` auth role) and
+`deploy/openbao/bootstrap/setup-policies.sh` (the policy). For kind/dev clusters
+this happens automatically when `hack/deploy-infra.sh` is re-run; the in-cluster
+namespaced store is then provisioned per namespace by
+`deploy/openbao/bootstrap/setup-eso-tenant.sh <namespace>`, and the standalone
+Keystone CR must select it with
+`spec.secretStoreRef: {kind: SecretStore, name: openbao-tenant-store}`.
 
 The superseded paths (both the original flat paths **and** the
 per-name paths that lacked the namespace segment) are **orphaned but
@@ -978,13 +983,16 @@ operation and the right inverse of the now-superseded write.
 The Model-B admin-password PushSecret moves onto the same
 per-CR layout. The flat `bootstrap/keystone-admin` object becomes the per-CR
 `bootstrap/{keystone.Namespace}/{keystone.Name}/admin`. As above, the new
-RemoteKey lands on operator upgrade, so the matching ACL
-(`deploy/openbao/policies/push-keystone-admin.hcl`) must be re-applied first or
-concurrently — re-run `deploy/openbao/bootstrap/setup-policies.sh` or
-`bao policy write push-keystone-admin …` — otherwise ESO returns `403` on the
-push and `PasswordRotationReady` flips to `False`. The legacy
-`bootstrap/keystone-admin` object is **orphaned but harmless** after migration
-and can be purged once the per-CR path is populated and Ready:
+RemoteKey lands on operator upgrade, and the same per-tenant `eso-tenant`
+identity authorises the push: the `admin` leaf is covered by the `eso-tenant`
+policy (`deploy/openbao/policies/eso-tenant.hcl`), templated to the caller's own
+namespace. Re-run `deploy/openbao/bootstrap/setup-auth.sh` and
+`deploy/openbao/bootstrap/setup-policies.sh` (or `hack/deploy-infra.sh`) and
+provision the namespaced store with
+`deploy/openbao/bootstrap/setup-eso-tenant.sh <namespace>` — otherwise ESO
+returns `403` on the push and `PasswordRotationReady` flips to `False`. The
+legacy `bootstrap/keystone-admin` object is **orphaned but harmless** after
+migration and can be purged once the per-CR path is populated and Ready:
 
 ```sh
 bao kv metadata delete kv-v2/bootstrap/keystone-admin

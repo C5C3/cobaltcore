@@ -108,7 +108,6 @@ deploy/
 │       ├── eso-hypervisor.hcl          ESO policy for hypervisor cluster
 │       ├── eso-storage.hcl             ESO policy for storage cluster
 │       ├── eso-tenant.hcl              Per-tenant ESO identity (namespace-templated Keystone key/bootstrap access)
-│       ├── push-app-credentials.hcl    PushSecret policy for app credentials
 │       ├── push-ceph-keys.hcl          PushSecret policy for Ceph keys
 │       ├── ci-cd-provisioner.hcl       CI/CD pipeline provisioning policy
 │       ├── keystone-db-dynamic.hcl     Per-tenant dynamic DB credential read policy
@@ -473,15 +472,15 @@ Two policies are **namespace-templated** rather than statically scoped, so a
 single policy backs every tenant while confining each token to its own namespace:
 
 - `keystone-db-dynamic` — read on the caller's own dynamic DB-credential path.
-- `eso-tenant` — the per-ControlPlane ESO identity: read on the caller's own
+- `eso-tenant` — the per-ControlPlane ESO identity and the **sole write path**
+  for per-ControlPlane Keystone key material: read on the caller's own
   `openstack/keystone/{ns}/*` and `bootstrap/{ns}/*` subtrees, and
   create/update/read/delete on that namespace's fernet-keys, credential-keys,
   admin bootstrap, admin application-credential, and service-account backup
-  paths. It mirrors `push-keystone-keys`, `push-keystone-admin`, and
-  `push-app-credentials`, but every path is scoped to the caller's own
-  `service_account_namespace`, so a tenant token cannot touch another tenant's
-  Keystone key material. It deliberately grants **no** `infrastructure/*` access
-  — the static infrastructure ExternalSecrets stay on the shared cluster store.
+  paths. Every path is scoped to the caller's own `service_account_namespace`,
+  so a tenant token cannot touch another tenant's Keystone key material. It
+  deliberately grants **no** `infrastructure/*` access — the static
+  infrastructure ExternalSecrets stay on the shared cluster store.
 
 **Idempotency:** `bao policy write` is an upsert operation — it creates a new policy
 or overwrites an existing one with the same name. Re-running with the same policy
@@ -538,7 +537,7 @@ password versions untouched.
 
 ## HCL Access Control Policies
 
-Eight HCL policies enforce least-privilege access for each consumer type. All policy
+Nine HCL policies enforce least-privilege access for each consumer type. All policy
 paths under the KV v2 engine include the `data/` prefix, which is required by the
 OpenBao/Vault KV v2 API for read and write operations.
 
@@ -549,8 +548,8 @@ from OpenBao into Kubernetes Secrets.
 
 | Policy | Paths | Capabilities |
 | --- | --- | --- |
-| `eso-management` | `kv-v2/data/bootstrap/*`, `kv-v2/data/infrastructure/*`, `kv-v2/data/openstack/keystone/*` | `read` |
-| `eso-control-plane` | `kv-v2/data/bootstrap/*`, `kv-v2/data/openstack/*`, `kv-v2/data/infrastructure/*`, `kv-v2/data/ceph/*` | `read` |
+| `eso-management` | `kv-v2/data/bootstrap/*`, `kv-v2/data/infrastructure/*` | `read` |
+| `eso-control-plane` | `kv-v2/data/bootstrap/*`, `kv-v2/data/infrastructure/*`, `kv-v2/data/ceph/*` | `read` |
 | `eso-hypervisor` | `kv-v2/data/ceph/client-nova`, `kv-v2/data/openstack/nova/compute-*` | `read` |
 | `eso-storage` | `kv-v2/data/ceph/*` | `read`, `create`, `update` |
 
@@ -564,7 +563,7 @@ Ceph client key for Nova and Nova compute configuration, not broader secret path
 
 | Policy | Paths | Capabilities | Purpose |
 | --- | --- | --- | --- |
-| `push-app-credentials` | `kv-v2/data/openstack/*/app-credential` | `create`, `update`, `read` | PushSecret for OpenStack application credentials |
+| `eso-tenant` | `kv-v2/{data,metadata}/openstack/keystone/{ns}/…` (fernet-keys, credential-keys, admin app-credential, service-accounts) and `kv-v2/{data,metadata}/bootstrap/{ns}/…/admin`, plus `read` on `kv-v2/data/openstack/keystone/{ns}/*` and `kv-v2/data/bootstrap/{ns}/*` | `create`, `update`, `read`, `delete` | Per-tenant **sole write path** for per-ControlPlane Keystone key material (fernet/credential-key backups, admin bootstrap, admin Application Credential, service-account passwords). Every path is namespace-templated to the caller's own `service_account_namespace` (bound to the `eso-tenant` role), so a tenant token cannot reach another tenant's key material. |
 | `push-ceph-keys` | `kv-v2/data/ceph/*` | `create`, `update`, `read` | PushSecret for Ceph client keys |
 | `ci-cd-provisioner` | `kv-v2/data/*` (create/update/read), `kv-v2/metadata/*` (read/list) | `create`, `update`, `read`, `list` | CI/CD pipeline secret provisioning |
 | `pki-issuer` | `pki/issue/*`, `pki/sign/*` | `create`, `update` | cert-manager PKI certificate issuing |
@@ -574,17 +573,20 @@ Ceph client key for Nova and Nova compute configuration, not broader secret path
 pipeline can create, update, and read secrets but cannot delete them, preventing
 accidental secret removal during automated deployments.
 
-**Note:** `push-app-credentials` and `push-ceph-keys` include `read` capability
+**Note:** `push-ceph-keys` and `eso-tenant` include `read` capability
 so that ESO's PushSecret controller can check the current remote value during
 reconciliation and only write when the secret has actually changed.
 
-**Note:** `push-app-credentials` also carries the per-ControlPlane grants for the
-c5c3 operator's admin Application Credential
-(`kv-v2/{data,metadata}/openstack/keystone/+/+/admin/app-credential`) and its
+**Note:** `eso-tenant` carries the per-ControlPlane grants for the c5c3
+operator's admin Application Credential
+(`kv-v2/{data,metadata}/openstack/keystone/{ns}/+/admin/app-credential`) and its
 declarative service-account passwords
-(`kv-v2/{data,metadata}/openstack/keystone/+/+/service-accounts/+`), both with
-`delete` so the `DeletionPolicy: Delete` PushSecrets can purge the KV leaf on
-teardown. See the [infrastructure manifests reference](./infrastructure-manifests.md).
+(`kv-v2/{data,metadata}/openstack/keystone/{ns}/+/service-accounts/+`), with
+`delete` on the data leaves so the `DeletionPolicy: Delete` PushSecrets can purge
+the KV leaf on teardown. These paths are namespace-templated — `{ns}` resolves to
+the caller's own `service_account_namespace` — so a tenant's PushSecret cannot
+write another tenant's KV leaf. See the
+[infrastructure manifests reference](./infrastructure-manifests.md).
 
 ## Secret Paths
 
@@ -612,6 +614,15 @@ whose KV path must then be seeded manually — see
 The ClusterSecretStore `openbao-cluster-store` connects the External Secrets Operator
 to OpenBao. ExternalSecret resources reference this store to pull secrets into
 Kubernetes.
+
+**Note:** The shared `openbao-cluster-store` is now namespace-restricted. Its
+`spec.conditions` (`deploy/eso/clustersecretstore.yaml`) limit which namespaces
+may reference it to `openstack` — the namespace that hosts the static
+infrastructure ExternalSecrets below. Per-ControlPlane Keystone key material is
+no longer read or written through this shared store; each ControlPlane uses its
+own namespaced `openbao-tenant-store` (backed by the per-tenant `eso-tenant`
+identity, provisioned by `setup-eso-tenant.sh`). The exact allowed namespace is
+deployment-specific.
 
 | ExternalSecret | Namespace | Remote Path | Remote Property | K8s Secret Name | K8s Secret Key |
 | --- | --- | --- | --- | --- | --- |

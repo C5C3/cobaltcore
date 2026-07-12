@@ -277,6 +277,12 @@ and the informer cache to that namespace. Keep the default only when
 │           │  early-return if !result.IsZero() || err                         │
 │           ▼                                                                  │
 │  ┌──────────────────────────┐                                                │
+│  │ reconcileESOTenantStore  │  Provision the per-tenant SecretStore + SA +   │
+│  │  (gate: none)            │  mTLS cert. Sets: ESOTenantStoreReady          │
+│  └────────┬─────────────────┘  Requeue: 10s while the store is not Ready     │
+│           │  (skipped when spec.secretStoreRef overrides the default)        │
+│           ▼                                                                  │
+│  ┌──────────────────────────┐                                                │
 │  │ reconcileDBCredentials   │  Project per-CP DB-credential ExternalSecret   │
 │  │  (gate: none)            │  Sets: DBCredentialsReady                      │
 │  └────────┬─────────────────┘  Requeue: 10s while the ES is not yet synced   │
@@ -329,7 +335,7 @@ and the informer cache to that namespace. Keep the default only when
 
 ### Execution Model
 
-All eight sub-reconcilers run **strictly sequentially** — there is no parallel
+All sub-reconcilers run **strictly sequentially** — there is no parallel
 group. The chain is a table-driven pipeline over the shared scaffolding in
 `internal/common/reconcile` (the same shape the keystone controller uses):
 each step is a `commonreconcile.Step` wrapped in `instrumentSubReconciler`
@@ -398,11 +404,11 @@ sub-condition type is `True` using `aggregateReady()`, which delegates to
 | Yes | `Status: True` | `AllReady` | `All sub-conditions are ready` |
 | No (any missing or False) | `Status: False` | `NotAllReady` | `One or more sub-conditions are not ready` |
 
-The eight aggregated sub-condition types (the source-of-truth `subConditionTypes`
+The aggregated sub-condition types (the source-of-truth `subConditionTypes`
 slice in `controlplane_controller.go`) are:
 
 ```text
-InfrastructureReady, DBCredentialsReady, KeystoneReady, HorizonReady, KORCReady, AdminCredentialReady, AdminPasswordReady, CatalogReady
+InfrastructureReady, ESOTenantStoreReady, DBCredentialsReady, KeystoneReady, HorizonReady, KORCReady, AdminCredentialReady, AdminPasswordReady, CatalogReady, ServiceAccountsReady
 ```
 
 The `Ready` condition carries `ObservedGeneration = cp.Generation` so clients can
@@ -547,6 +553,35 @@ pointer.
 > from the unstructured `status.conditions[type=Ready].status == "True"`
 > (`unstructuredReady`), where a missing/malformed list is treated as not-ready
 > rather than an error.
+
+### reconcileESOTenantStore
+
+| Aspect | Value |
+| --- | --- |
+| File | `reconcile_esotenant.go` |
+| Condition | `ESOTenantStoreReady` |
+| Gate | none — runs after Infrastructure and before every store-consuming sub-reconciler so the per-tenant store exists before they gate on it |
+| Projects / Owns | when `spec.secretStoreRef` is omitted: an owner-referenced `ServiceAccount` (`eso-tenant-auth`), a cert-manager mTLS `Certificate` (`eso-tenant-client-tls`), and a namespaced `SecretStore` (`openbao-tenant-store`), all in `childNamespace(cp)`; when `spec.secretStoreRef` is set the sub-reconciler provisions nothing |
+| Requeue | `esoTenantStoreRequeueAfter` = **10s** while the `SecretStore` is not yet Ready |
+
+`reconcileESOTenantStore` provisions the in-cluster half of the ControlPlane's
+per-tenant OpenBao identity and makes it the **enforced default**: every
+ControlPlane that omits `spec.secretStoreRef` routes its (and its children's)
+secret traffic through the per-tenant `openbao-tenant-store`, so OpenBao's
+templated `eso-tenant` policy — not a naming convention — isolates one control
+plane's key material from another. The OpenBao server and Kubernetes-auth mount
+are read from the **shared** cluster store (the per-tenant store cannot describe
+its own bootstrap). An explicit `spec.secretStoreRef` is an override: the
+sub-reconciler provisions nothing and reports `ESOTenantStoreReady=True` with
+reason `StoreRefOverridden`, and the store-consuming sub-reconcilers gate on the
+selected store's own readiness.
+
+| Scenario | Status | Reason |
+| --- | --- | --- |
+| `spec.secretStoreRef` set (override) | True | `StoreRefOverridden` |
+| per-tenant `SecretStore` Ready | True | `ESOTenantStoreReady` |
+| per-tenant `SecretStore` not yet Ready | False | `SecretStoreNotReady` |
+| provisioning the objects failed | False | `ProvisioningError` |
 
 ### reconcileDBCredentials
 
@@ -1972,12 +2007,18 @@ flow apply the updated policy files directly with `bao policy write …`:
 
 | Policy file | Grants write to |
 | --- | --- |
-| `push-app-credentials.hcl` | the per-CR admin AC path `…/keystone/+/+/admin/app-credential` |
-| `push-keystone-admin.hcl` | the per-CR admin-password path `bootstrap/+/+/admin` |
-| `push-keystone-keys.hcl` | the per-CR `…/keystone/+/+/{fernet,credential}-keys` paths |
+| `eso-tenant.hcl` | the per-tenant admin AC, admin-password, fernet-keys, credential-keys, and service-account paths, each templated to the caller's own namespace (`…/keystone/{namespace}/+/…` and `bootstrap/{namespace}/+/admin`) |
 
-Until the matching policy is re-applied, ESO's push to the new path returns `403`
-and the credential's Ready condition stays `False`.
+The three former wildcard write policies (`push-keystone-keys.hcl`,
+`push-keystone-admin.hcl`, `push-app-credentials.hcl`) were retired: they matched
+every tenant's paths behind a `+/+` glob, so a leaked shared-identity token could
+overwrite any tenant's key material. Per-tenant secret traffic now authenticates
+as the `eso-tenant` role through the operator-provisioned per-tenant
+`openbao-tenant-store`, and `eso-tenant.hcl` scopes every writable path to the
+caller's own namespace.
+
+Until the `eso-tenant` policy is re-applied, ESO's push to the new path returns
+`403` and the credential's Ready condition stays `False`.
 
 **Orphaned but harmless.** After migration the legacy flat paths are **orphaned but
 harmless**: the live control plane no longer reads or refreshes them, no live

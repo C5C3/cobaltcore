@@ -764,32 +764,34 @@ so the ExternalSecrets can materialise before any credential is minted. Once the
 c5c3-operator mints the admin Application Credential the same PushSecret overwrites
 the key with the App-Cred-based `clouds.yaml`.
 
-**OpenBao policy** — `deploy/openbao/policies/push-app-credentials.hcl`
+**OpenBao policy** — `deploy/openbao/policies/eso-tenant.hcl`
 
-This policy grants the write path for each ControlPlane's admin credential
-PushSecret. Because the admin credential path is keyed per
+This per-tenant policy grants the write path for each ControlPlane's admin
+credential PushSecret. Because the admin credential path is keyed per
 ControlPlane (`openstack/keystone/{namespace}/{name}/admin/app-credential`), the
-grants template the namespace and name as two `+/+` segments. The pre-existing
-mid-path grant `kv-v2/data/openstack/*/app-credential`
-matches only a single mid-segment (`openstack/<svc>/app-credential`) and therefore does
-**not** cover the four-segment per-CR shape. Rather than
-widening that glob, the policy adds two per-ControlPlane `+/+` grants:
+grant templates the namespace to the caller's OWN `service_account_namespace`
+(`{ns}` below) and matches the ControlPlane name with a single `+` segment. The
+policy is bound to the `eso-tenant` auth role and reached through the namespaced
+`openbao-tenant-store` SecretStore, so a tenant's PushSecret can only write its
+own namespace's leaves:
 
 | Path | Capabilities | Purpose |
 | --- | --- | --- |
-| `kv-v2/data/openstack/keystone/+/+/admin/app-credential` | `create`, `update`, `read`, `delete` | Write (and soft-delete on teardown) each ControlPlane's admin Application Credential `clouds.yaml` data leaf (the two `+` segments are its namespace and name) |
-| `kv-v2/metadata/openstack/keystone/+/+/admin/app-credential` | `create`, `update`, `read` | Allow ESO's Vault provider to write `custom_metadata` on the KV-v2 PushSecret (a data-only grant 403s on the metadata PUT and the PushSecret never reaches Ready) |
-| `kv-v2/data/openstack/keystone/+/+/service-accounts/+` | `create`, `update`, `read`, `delete` | Write (and soft-delete on teardown) each declared service account's password `clouds.yaml` data leaf; the three `+` segments are the ControlPlane's namespace, its name, and the account name (each a DNS-1123 label, so a single `+` leaf suffices) |
-| `kv-v2/metadata/openstack/keystone/+/+/service-accounts/+` | `create`, `update`, `read` | Allow ESO's Vault provider to write `custom_metadata` on the service-account KV-v2 PushSecret |
+| `kv-v2/data/openstack/keystone/{ns}/+/admin/app-credential` | `create`, `update`, `read`, `delete` | Write (and soft-delete on teardown) each ControlPlane's admin Application Credential `clouds.yaml` data leaf (`{ns}` is templated to the caller's namespace; the `+` segment is the ControlPlane name) |
+| `kv-v2/metadata/openstack/keystone/{ns}/+/admin/app-credential` | `create`, `update`, `read` | Allow ESO's Vault provider to write `custom_metadata` on the KV-v2 PushSecret (a data-only grant 403s on the metadata PUT and the PushSecret never reaches Ready) |
+| `kv-v2/data/openstack/keystone/{ns}/+/service-accounts/+` | `create`, `update`, `read`, `delete` | Write (and soft-delete on teardown) each declared service account's password `clouds.yaml` data leaf; the `+` segments are the ControlPlane's name and the account name (each a DNS-1123 label, so a single `+` leaf suffices) |
+| `kv-v2/metadata/openstack/keystone/{ns}/+/service-accounts/+` | `create`, `update`, `read` | Allow ESO's Vault provider to write `custom_metadata` on the service-account KV-v2 PushSecret |
 
-A `+` matches exactly one path segment, so even though the namespace and name vary
-per ControlPlane the grant still terminates at the literal `/admin/app-credential`
-leaf and admits no deeper or sibling paths. Read coverage needs no widening:
-eso-management's read-only `kv-v2/data/openstack/keystone/*` trailing wildcard
-already covers every per-CR `+/+/admin/app-credential` leaf. Both grants stay
-scoped to the per-ControlPlane `+/+` admin-credential leaves, adding no blast
-radius beyond admin app-credentials. For the mTLS transport gate and the
-`openbao-cluster-store` auth path these manifests ride on, see
+`{ns}` is substituted by OpenBao ACL identity templating with the caller's own
+service-account namespace, and each `+` matches exactly one path segment, so the
+grants terminate at the literal `/admin/app-credential` and `/service-accounts/+`
+leaves and admit no deeper, sibling, or cross-tenant paths. Read coverage needs
+no separate grant: the same `eso-tenant` policy carries `read` on the caller's
+own `kv-v2/data/openstack/keystone/{ns}/*` subtree, which covers the read-back
+leg of every per-CR `admin/app-credential` and `service-accounts` PushSecret.
+These grants stay scoped to the per-tenant admin-credential and service-account
+leaves, adding no blast radius beyond them. For the mTLS transport gate and the
+SecretStore auth path these manifests ride on, see
 [OpenBao Bootstrap Procedure](./openbao-bootstrap.md).
 
 ## Kustomization

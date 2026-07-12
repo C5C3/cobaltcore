@@ -308,16 +308,26 @@ For deployments off a checkout, use the published OCI chart instead —
 
 ## Per-ControlPlane secret stores and OpenBao identities
 
-By default every `ControlPlane` — and the `Keystone` / `Horizon` children it
-owns — reaches OpenBao through **one shared, cluster-scoped store**,
-`openbao-cluster-store`, using a single External Secrets Operator (ESO)
-identity. The OpenBao paths are already scoped by namespace and ControlPlane
-name, but the token that reads and writes them belongs to no ControlPlane in
-particular. That makes the isolation between tenants a naming convention rather
-than something OpenBao enforces.
+Every `ControlPlane` — and the `Keystone` / `Horizon` children it owns —
+reaches OpenBao through a **per-tenant namespaced store**, `openbao-tenant-store`,
+that the c5c3 operator provisions in the ControlPlane's own namespace and
+projects onto its children. That store authenticates against OpenBao as the
+`eso-tenant` Kubernetes auth role, and the `eso-tenant` templated policy scopes
+every readable and writable path to the caller's own namespace. A tenant token
+in namespace `team-alpha` can therefore only reach `team-alpha`'s Keystone key
+and bootstrap material and is **denied** on any other tenant's paths — so
+OpenBao itself, not a naming convention, isolates one control plane's secret
+material from another.
 
-`spec.secretStoreRef` turns the store into a per-ControlPlane choice so OpenBao
-itself enforces the boundary:
+This is the **enforced default**: you configure nothing, and existing
+operator-managed ControlPlanes migrate onto it on operator upgrade. The shared
+cluster-scoped store `openbao-cluster-store` no longer carries any
+per-ControlPlane write grant or Keystone read — it is restricted to the
+namespaces hosting the static infrastructure ExternalSecrets and grants only the
+genuinely shared `bootstrap` and `infrastructure` reads.
+
+`spec.secretStoreRef` is an **override**, for the rare case where you manage the
+store yourself:
 
 ```yaml
 apiVersion: c5c3.io/v1alpha1
@@ -327,35 +337,51 @@ metadata:
   namespace: team-alpha
 spec:
   # …
+  # Optional. OMIT this to get the operator-provisioned per-tenant store (the
+  # default). Set it only to point at a store you manage yourself, e.g.:
   secretStoreRef:
-    kind: SecretStore              # namespaced, per-tenant identity
-    name: openbao-tenant-store
+    kind: SecretStore
+    name: my-own-store
 ```
 
-- **Omitted (the default).** The ControlPlane uses the shared
-  `openbao-cluster-store` (`kind: ClusterSecretStore`). Upgrading the operators
-  changes nothing until you opt a ControlPlane in — existing deployments keep
-  working unchanged.
-- **`kind: SecretStore`.** The ControlPlane reaches OpenBao as its own tenant
-  identity through a namespaced `SecretStore` in **its own namespace**. The
-  reference is projected onto the `Keystone` and `Horizon` children, so this is
-  the single place you configure it.
+- **Omitted (the default).** The operator provisions the per-tenant identity —
+  the `ServiceAccount` (`eso-tenant-auth`), the cert-manager mTLS `Certificate`,
+  and the namespaced `SecretStore` (`openbao-tenant-store`) — as owned children
+  and routes the ControlPlane and its children through it. Nothing to do.
+- **Set.** The operator provisions nothing and uses the store you name (a
+  namespaced `SecretStore` you manage, or the shared `openbao-cluster-store`).
+  The reference is projected onto the `Keystone` and `Horizon` children, so this
+  is the single place you configure it.
 
-The namespaced store authenticates against OpenBao as the `eso-tenant`
-Kubernetes auth role, and the `eso-tenant` templated policy scopes every
-readable and writable path to the caller's own namespace. A tenant token in
-namespace `team-alpha` can therefore only reach `team-alpha`'s Keystone key and
-bootstrap material and is **denied** on any other tenant's paths — the
-prerequisite for narrowing the write policies that today match every tenant's
-paths.
+### Migrating an existing deployment
 
-### Onboarding a per-tenant store
+::: warning The "keeps working unchanged across upgrades" promise is withdrawn
+Before this change the shared store carried wildcard write grants that let one
+tenant's ESO identity read and overwrite another tenant's irreplaceable key
+material. Retiring those grants means the shared-store default no longer works
+for per-ControlPlane secret traffic. Upgrading follows a defined path instead:
+:::
 
-The OpenBao side — the `eso-tenant` auth role and the `eso-tenant` policy — is
-created once at bootstrap by `setup-auth.sh` / `setup-policies.sh`. The
-in-cluster side is created per ControlPlane by `setup-eso-tenant.sh`, which
-provisions the tenant `ServiceAccount` (`eso-tenant-auth`), the cert-manager
-mTLS `Certificate`, and the namespaced `SecretStore` (`openbao-tenant-store`):
+**Operator-managed ControlPlanes** migrate automatically. Upgrade the operators;
+each ControlPlane provisions its per-tenant store and re-points its ExternalSecrets
+and PushSecrets in place. On a cluster whose OpenBao was bootstrapped **before**
+this feature, re-run `deploy/openbao/bootstrap/setup-auth.sh` and
+`setup-policies.sh` so the `eso-tenant` role and policy exist. Until they do, the
+per-tenant stores stay `NotReady` and reconciliation of new secret objects is
+gated — but existing Secrets keep serving and no key material is lost (a `403`
+never deletes anything).
+
+::: danger Do not delete a ControlPlane mid-migration
+Deleting a ControlPlane while its PushSecrets cannot reach OpenBao leaves the
+`DeletionPolicy=Delete` finalizer looping on `403` and the CR stuck in
+`Terminating`. Complete the OpenBao bootstrap re-run first.
+:::
+
+**Standalone Keystone / Horizon** deployments have no ControlPlane operator above
+them to provision a store, so they onboard the per-tenant identity manually and
+set the ref explicitly. The OpenBao side — the `eso-tenant` auth role and policy
+— is created once at bootstrap by `setup-auth.sh` / `setup-policies.sh`; the
+in-cluster side is created per namespace by `setup-eso-tenant.sh`:
 
 ```bash
 # Run once per tenant namespace, then wait for the SecretStore to be Ready.
@@ -364,34 +390,15 @@ kubectl wait --for=condition=Ready secretstore/openbao-tenant-store \
   -n team-alpha --timeout=120s
 ```
 
-Once the store is Ready, set `spec.secretStoreRef` on the ControlPlane to
-`{kind: SecretStore, name: openbao-tenant-store}`.
+Then set `spec.secretStoreRef: {kind: SecretStore, name: openbao-tenant-store}`
+on the standalone `Keystone` (and `Horizon`, if it pushes to OpenBao) CR.
 
-### Switching an existing ControlPlane (brownfield)
-
-A ControlPlane's fernet and credential keys are **irreplaceable**: the
-credential keys decrypt every application credential, EC2 credential, and TOTP
-secret, and their OpenBao backup is bound to a PushSecret that deletes the
-remote copy when the binding goes away. Switching stores **moves** this material
-— it never re-creates it: the operator updates the backup PushSecrets **in
-place** (unchanged name and OpenBao path) so a store switch only re-points the
-identity.
-
-::: warning Order matters on an existing ControlPlane
-On an **existing** ControlPlane, run the onboarding **before** flipping the
-ref:
-
-1. Run `setup-eso-tenant.sh <namespace>` and wait for the `SecretStore` to be
-   `Ready`.
-2. On a cluster whose OpenBao was bootstrapped **before** this feature, also
-   re-run `setup-auth.sh` and `setup-policies.sh` so the `eso-tenant` role and
-   policy exist.
-3. Only then set `spec.secretStoreRef` on the ControlPlane.
-
-If you flip the ref before the role/policy exist, ESO's pushes to OpenBao
-return `403` and `FernetKeysReady` / `CredentialKeysReady` degrade. The flip
-itself never deletes or re-creates key material, locally or in OpenBao.
-:::
+A ControlPlane's fernet and credential keys are **irreplaceable**: the credential
+keys decrypt every application credential, EC2 credential, and TOTP secret, and
+their OpenBao backup is bound to a PushSecret that deletes the remote copy when
+the binding goes away. Switching stores **moves** this material — it never
+re-creates it: the operator updates the backup PushSecrets **in place**
+(unchanged name and OpenBao path) so a store switch only re-points the identity.
 
 The per-ControlPlane database and cache need no additional work: the
 infrastructure a ControlPlane owns is already created in the ControlPlane's own

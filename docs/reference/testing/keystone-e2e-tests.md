@@ -668,7 +668,7 @@ into every Pod-creating reconciler call site.
 
 | # | Step Name | Type | Details |
 | --- | --- | --- | --- |
-| 1 | Apply labelled namespace + ESO ExternalSecrets + policy CM | `apply` × 2 + 4× `assert` | Applies `00-namespace.yaml` — Namespace `keystone-pss-restricted-test` with **both** `pod-security.kubernetes.io/enforce=restricted` AND `pod-security.kubernetes.io/enforce-version=latest` labels, plus ExternalSecrets `keystone-admin` (pulls `bootstrap/openstack/controlplane-keystone/admin` from OpenBao) and `keystone-db` (pulls the standalone static path `openstack/keystone/standalone/db` — username + password). Then applies `00-policy-cm.yaml` — ConfigMap `keystone-policy-source` in the test namespace, referenced by the CR's `policyOverrides.configMapRef` so `reconcilePolicyValidation` builds the policy-validation Job (without it the reconciler short-circuits and that Pod is never admitted). Asserts the PSS labels are present so a typo would surface here, before any Pod is created, asserts each ExternalSecret reaches `Ready=True` so an ESO sync regression fails here, not deeper in step 3, and asserts the policy ConfigMap exists. ESO is mandatory because `reconcileSecrets` gates SecretsReady on `WaitForExternalSecret` |
+| 1 | Apply labelled namespace + ESO ExternalSecrets + policy CM, provision the per-tenant store | `apply` × 2 + `script` + 4× `assert` | Applies `00-namespace.yaml` — Namespace `keystone-pss-restricted-test` with **both** `pod-security.kubernetes.io/enforce=restricted` AND `pod-security.kubernetes.io/enforce-version=latest` labels, plus ExternalSecrets `keystone-admin` and `keystone-db` that authenticate through the namespace's own per-tenant `openbao-tenant-store` and read namespace-scoped paths (`bootstrap/keystone-pss-restricted-test/pss/admin`, `openstack/keystone/keystone-pss-restricted-test/pss/db`). Then applies `00-policy-cm.yaml` — ConfigMap `keystone-policy-source`, referenced by the CR's `policyOverrides.configMapRef` so `reconcilePolicyValidation` builds the policy-validation Job (without it the reconciler short-circuits and that Pod is never admitted). A `script` then provisions the per-tenant store via `setup-eso-tenant.sh` and seeds those two paths by copying the shared admin/db values (#606, so the `keystone` user password still matches `brownfield-database`). Asserts the PSS labels are present so a typo would surface here, before any Pod is created, asserts each ExternalSecret reaches `Ready=True` so an ESO sync regression fails here, not deeper in step 3, and asserts the policy ConfigMap exists. ESO is mandatory because `reconcileSecrets` gates SecretsReady on `WaitForExternalSecret` |
 | 2 | Pre-create brownfield MariaDB Database/User/Grant | `apply` + 3× `assert` (5m) | Applies `00-brownfield-db-setup.yaml` — Database `keystone-pss-restricted-db` (database `keystone_pss_restricted`), User `keystone-pss-restricted-user` (manages canonical MariaDB user `keystone` against the existing `openstack/keystone-db` Secret), Grant `keystone-pss-restricted-grant` (ALL PRIVILEGES on `keystone_pss_restricted` to user `keystone`), all in the `openstack` namespace and all marked `cleanupPolicy: Skip` so deletion of the test's CRs does not strand a sibling brownfield test still managing the same MariaDB user. Asserts each MariaDB CR reaches `Ready=True`. The CRs live in `openstack` because `mariaDbRef` is a `LocalObjectReference` (same-namespace only) |
 | 3 | Apply Keystone CR; assert Ready=True/AllReady; no in-namespace MariaDB CRs | `apply` + `assert` (5m) + 3× `error` | Applies `01-keystone-cr.yaml` — Keystone CR `keystone-pss-restricted` in `keystone-pss-restricted-test` with brownfield database (`host=openstack-db.openstack.svc.cluster.local`, `port=3306`, `database=keystone_pss_restricted`, `secretRef=keystone-db`), brownfield cache (`servers=[openstack-memcached.openstack.svc:11211]`, `backend=dogpile.cache.pymemcache`), and `policyOverrides.configMapRef=keystone-policy-source` so the policy-validation Job is exercised under PSS=restricted. Asserts `Ready=True` with `reason=AllReady` within 5m; error-asserts no `Database`, `User`, or `Grant` CR named `keystone-pss-restricted` exists in the test namespace (brownfield-mode invariant — same as `brownfield-database`) |
 | 4 | Trigger manual fernet rotation Job | `script` (180s) | `kubectl create job keystone-pss-restricted-manual-rotate --from=cronjob/keystone-pss-restricted-fernet-rotate -n keystone-pss-restricted-test`, then `kubectl wait --for=condition=complete job/... --timeout=2m`, then asserts `status.succeeded > 0`. Reaching Ready=True alone does not exercise the rotation Pod (the CronJob's first scheduled run is at midnight Sunday); this step proves the rotation Pod also admits under restricted PSS |
@@ -724,18 +724,21 @@ Deployment/Job/CronJob is identifiable. Mirrors the catch-block shape from
   in `operators/keystone/internal/controller/reconcile_secrets.go`, so a plain
   Secret with all required keys still leaves the CR stuck at
   SecretsReady=False/WaitingForDBCredentials. The
-  ExternalSecrets in `00-namespace.yaml` reuse the cluster's existing OpenBao
-  paths (`bootstrap/openstack/controlplane-keystone/admin` and the standalone
-  static DB path `openstack/keystone/standalone/db`) — the
-  `eso-management` policy
-  (`deploy/openbao/policies/eso-management.hcl`) already grants read access to
-  both, so no new OpenBao policy work is needed. Reusing
-  `openstack/keystone/standalone/db` (whose `username` is `keystone`) is
-  what drives the fixture's choice of canonical user `keystone` in
-  00-brownfield-db-setup.yaml. It is the only static DB credential
-  `write-bootstrap-secrets.sh` still seeds: the stage-(a) per-ControlPlane path
-  `openstack/keystone/{ns}/{name}/db` is retired since #439 (managed-mode
-  ControlPlanes draw engine-issued credentials from
+  ExternalSecrets in `00-namespace.yaml` authenticate through the test
+  namespace's OWN per-tenant `openbao-tenant-store` (provisioned by the Step-1
+  script) and read namespace-scoped paths that the `eso-tenant` policy templates
+  to that namespace. Since #606 the shared cluster store grants no read on the
+  `openstack/keystone/*` subtree and is namespace-restricted to `openstack`, so a
+  foreign namespace cannot reach the shared standalone paths through it; the
+  Step-1 script instead COPIES the shared `bootstrap/openstack/controlplane-keystone/admin`
+  and `openstack/keystone/openstack/standalone/db` values into the namespace's own
+  segment. Copying the shared DB value (whose `username` is `keystone`) is what
+  keeps the `keystone` MariaDB user's password matching what 00-brownfield-db-setup.yaml
+  and the `brownfield-database` test reconcile onto the same shared user — no SET
+  PASSWORD race. `openstack/keystone/openstack/standalone/db` is the only static
+  DB credential `write-bootstrap-secrets.sh` still seeds: the stage-(a)
+  per-ControlPlane path `openstack/keystone/{ns}/{name}/db` is retired since #439
+  (managed-mode ControlPlanes draw engine-issued credentials from
   `database/mariadb/creds/keystone-{ns}`); the standalone e2e fixtures keep
   their local ExternalSecret/Secret name `keystone-db` and only the `remoteRef.key`
   path moved.
@@ -747,8 +750,9 @@ Deployment/Job/CronJob is identifiable. Mirrors the catch-block shape from
 - **PushSecret backup paths.** Per-CR fernet/credential PushSecrets push to
   `kv-v2/openstack/keystone/<CR-name>/{fernet,credential}-keys`; the unique CR
   name `keystone-pss-restricted` keeps these paths distinct from sibling tests.
-  The existing `push-keystone-keys` OpenBao policy already covers the wildcard,
-  so no policy change is needed.
+  The per-tenant `eso-tenant` OpenBao policy covers these fernet/credential
+  backup paths, scoped to the caller's own namespace (the earlier shared wildcard
+  policy was retired in #606), so no policy change is needed.
 
 **Cross-references:**
 
