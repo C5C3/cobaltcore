@@ -149,38 +149,6 @@ func TestSecretToOwnersMapper_EmptyOwnerKindDisablesLeg(t *testing.T) {
 	g.Expect(requests).To(gomega.BeNil())
 }
 
-func TestClusterSecretStoreFanOut_NameGuard(t *testing.T) {
-	g := gomega.NewWithT(t)
-
-	c := fake.NewClientBuilder().WithScheme(clientgoscheme.Scheme).
-		WithObjects(testCM("cr-a", "ns1", "")).
-		Build()
-
-	mapper := ClusterSecretStoreFanOut(c, "openbao-cluster-store",
-		func() client.ObjectList { return &corev1.ConfigMapList{} })
-
-	// A different store must not fan out.
-	g.Expect(mapper(context.Background(), testSecret("some-other-store", ""))).To(gomega.BeNil())
-}
-
-func TestClusterSecretStoreFanOut_EnqueuesAllCRs(t *testing.T) {
-	g := gomega.NewWithT(t)
-
-	c := fake.NewClientBuilder().WithScheme(clientgoscheme.Scheme).
-		WithObjects(testCM("cr-a", "ns1", ""), testCM("cr-b", "ns2", "")).
-		Build()
-
-	mapper := ClusterSecretStoreFanOut(c, "openbao-cluster-store",
-		func() client.ObjectList { return &corev1.ConfigMapList{} })
-
-	requests := mapper(context.Background(), testSecret("openbao-cluster-store", ""))
-
-	g.Expect(requests).To(gomega.ConsistOf(
-		reconcile.Request{NamespacedName: types.NamespacedName{Namespace: "ns1", Name: "cr-a"}},
-		reconcile.Request{NamespacedName: types.NamespacedName{Namespace: "ns2", Name: "cr-b"}},
-	), "the store transition must fan out to every CR cluster-wide")
-}
-
 func cmWithRef(name, namespace, ref string) *corev1.ConfigMap {
 	return &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
 		Name: name, Namespace: namespace,

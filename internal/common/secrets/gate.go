@@ -78,39 +78,11 @@ func GateSyncedSecret(ctx context.Context, c client.Client, key client.ObjectKey
 	}
 }
 
-// GateClusterStoreReady checks the named ClusterSecretStore's Ready condition
-// before the per-Secret gate, so an upstream backend outage surfaces as the
-// readiness condition False even while per-ExternalSecret caches still report
-// Ready from their last successful sync. On a not-ready store it sets a
-// SecretStoreNotReady condition on conds and returns (false, nil); the caller
-// requeues. A backend error is propagated as (false, err).
-func GateClusterStoreReady(ctx context.Context, c client.Client, storeName string,
-	conds *[]metav1.Condition, generation int64, conditionType string,
-) (bool, error) {
-	ready, err := IsClusterSecretStoreReady(ctx, c, storeName)
-	if err != nil {
-		return false, err
-	}
-	if ready {
-		return true, nil
-	}
-	conditions.SetCondition(conds, metav1.Condition{
-		Type:               conditionType,
-		Status:             metav1.ConditionFalse,
-		ObservedGeneration: generation,
-		Reason:             "SecretStoreNotReady",
-		Message: fmt.Sprintf("ClusterSecretStore %q is not ready; upstream secret backend unreachable",
-			storeName),
-	})
-	return false, nil
-}
-
 // GateStoreReady checks the readiness of the store selected by ref — a
 // cluster-scoped ClusterSecretStore or a namespaced SecretStore resolved in
 // namespace — before the per-Secret gate, so an upstream backend outage
 // surfaces as the readiness condition False even while per-ExternalSecret
-// caches still report Ready from their last successful sync. It is the
-// store-ref-aware generalisation of GateClusterStoreReady: on a not-ready
+// caches still report Ready from their last successful sync. On a not-ready
 // store it sets a SecretStoreNotReady condition (naming the kind and name) on
 // conds and returns (false, nil); the caller requeues. A backend error — or an
 // unknown store kind — is propagated as (false, err).

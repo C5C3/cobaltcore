@@ -138,42 +138,6 @@ func SecretToOwnersMapper(c client.Reader, cfg SecretMapperConfig) handler.MapFu
 	}
 }
 
-// ClusterSecretStoreFanOut returns a MapFunc that enqueues every CR in the
-// cluster when the named cluster-scoped store object changes. The store is
-// shared across namespaces, so any status transition (e.g. ESO losing the
-// backend connection) must retrigger reconcile on all CRs that route secrets
-// through it; otherwise the secret-derived conditions would stay stale-True
-// until the next periodic resync. On a List error the mapper logs via
-// log.FromContext and returns nil per the handler.MapFunc contract.
-func ClusterSecretStoreFanOut(c client.Reader, storeName string, newList func() client.ObjectList) handler.MapFunc {
-	return func(ctx context.Context, obj client.Object) []reconcile.Request {
-		if obj.GetName() != storeName {
-			return nil
-		}
-
-		list := newList()
-		if err := c.List(ctx, list); err != nil {
-			log.FromContext(ctx).Error(err, "listing CRs for ClusterSecretStore watch")
-			return nil
-		}
-		items, err := apimeta.ExtractList(list)
-		if err != nil {
-			log.FromContext(ctx).Error(err, "extracting CR list for ClusterSecretStore watch")
-			return nil
-		}
-
-		requests := make([]reconcile.Request, 0, len(items))
-		for _, item := range items {
-			if o, ok := item.(client.Object); ok {
-				requests = append(requests, reconcile.Request{
-					NamespacedName: client.ObjectKeyFromObject(o),
-				})
-			}
-		}
-		return requests
-	}
-}
-
 // StoreRefFanOut returns a MapFunc that enqueues the CRs whose effective secret
 // store reference resolves to the changed store object. watchedKind is the
 // scope of the store object the returned mapper is registered against — either

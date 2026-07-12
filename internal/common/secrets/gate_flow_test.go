@@ -19,40 +19,6 @@ import (
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 )
 
-func TestGateClusterStoreReady_ready(t *testing.T) {
-	g := gomega.NewWithT(t)
-	s := gateTestScheme(t)
-	store := &esov1.ClusterSecretStore{
-		ObjectMeta: metav1.ObjectMeta{Name: "openbao-cluster-store"},
-		Status: esov1.SecretStoreStatus{Conditions: []esov1.SecretStoreStatusCondition{
-			{Type: esov1.SecretStoreReady, Status: corev1.ConditionTrue},
-		}},
-	}
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(store).WithStatusSubresource(store).Build()
-
-	var conds []metav1.Condition
-	ready, err := GateClusterStoreReady(context.Background(), c, "openbao-cluster-store", &conds, 2, "SecretsReady")
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	g.Expect(ready).To(gomega.BeTrue())
-	g.Expect(conds).To(gomega.BeEmpty(), "a ready store writes no condition")
-}
-
-func TestGateClusterStoreReady_notReadySetsCondition(t *testing.T) {
-	g := gomega.NewWithT(t)
-	s := gateTestScheme(t)
-	// No store object exists, so it is treated as not ready.
-	c := fake.NewClientBuilder().WithScheme(s).Build()
-
-	var conds []metav1.Condition
-	ready, err := GateClusterStoreReady(context.Background(), c, "openbao-cluster-store", &conds, 2, "SecretsReady")
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	g.Expect(ready).To(gomega.BeFalse())
-	cond := conditions.GetCondition(conds, "SecretsReady")
-	g.Expect(cond.Status).To(gomega.Equal(metav1.ConditionFalse))
-	g.Expect(cond.Reason).To(gomega.Equal("SecretStoreNotReady"))
-	g.Expect(cond.Message).To(gomega.ContainSubstring("upstream secret backend unreachable"))
-}
-
 func TestGateStoreReady_readyCluster(t *testing.T) {
 	g := gomega.NewWithT(t)
 	s := gateTestScheme(t)
