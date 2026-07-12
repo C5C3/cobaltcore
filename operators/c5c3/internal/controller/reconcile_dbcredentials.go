@@ -457,14 +457,15 @@ func (r *ControlPlaneReconciler) openBaoConnection(ctx context.Context, cp *c5c3
 
 	ref := secrets.EffectiveStoreRef(cp.Spec.SecretStoreRef)
 	var provider *esov1.SecretStoreProvider
-	switch ref.Kind {
-	case commonv1.SecretStoreKindNamespaced:
+	if ref.Kind == commonv1.SecretStoreKindNamespaced {
 		store := &esov1.SecretStore{}
 		if err := r.Get(ctx, client.ObjectKey{Name: ref.Name, Namespace: childNamespace(cp)}, store); err != nil {
 			return server, mountPath
 		}
 		provider = store.Spec.Provider
-	default:
+	} else {
+		// EffectiveStoreRef normalises nil/empty-kind refs to the cluster kind,
+		// so anything not namespaced resolves through the cluster-scoped store.
 		store := &esov1.ClusterSecretStore{}
 		if err := r.Get(ctx, client.ObjectKey{Name: ref.Name}, store); err != nil {
 			return server, mountPath
