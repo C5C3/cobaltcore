@@ -2509,6 +2509,48 @@ func TestEnsureKORCCloudsYAMLExternalSecret_ShapeAndOwnerRef(t *testing.T) {
 	g.Expect(*es.OwnerReferences[0].Controller).To(BeTrue())
 }
 
+// TestEnsureKORCCloudsYAMLExternalSecret_HonorsNamespacedStoreRef asserts a
+// ControlPlane selecting a namespaced SecretStore projects that store onto the
+// per-CR clouds.yaml ExternalSecret.
+func TestEnsureKORCCloudsYAMLExternalSecret_HonorsNamespacedStoreRef(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := korcControlPlane()
+	cp.Spec.SecretStoreRef = &commonv1.SecretStoreRefSpec{
+		Kind: commonv1.SecretStoreKindNamespaced, Name: "openbao-tenant-store",
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	g.Expect(r.ensureKORCCloudsYAMLExternalSecret(context.Background(), cp, "")).To(Succeed())
+
+	es := &esov1.ExternalSecret{}
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Name: korcCloudsYamlSecretName, Namespace: childNamespace(cp),
+	}, es)).To(Succeed())
+	g.Expect(es.Spec.SecretStoreRef.Kind).To(Equal("SecretStore"))
+	g.Expect(es.Spec.SecretStoreRef.Name).To(Equal("openbao-tenant-store"))
+}
+
+// TestAdminAppCredentialPushSecret_HonorsNamespacedStoreRef asserts the admin
+// app-credential backup PushSecret carries the selected namespaced store while
+// its per-CR RemoteKey (the OpenBao path) is untouched.
+func TestAdminAppCredentialPushSecret_HonorsNamespacedStoreRef(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := korcControlPlane()
+	cp.Spec.SecretStoreRef = &commonv1.SecretStoreRefSpec{
+		Kind: commonv1.SecretStoreKindNamespaced, Name: "openbao-tenant-store",
+	}
+
+	ps := adminAppCredentialPushSecret(cp)
+	g.Expect(ps.Spec.SecretStoreRefs).To(HaveLen(1))
+	g.Expect(ps.Spec.SecretStoreRefs[0].Kind).To(Equal("SecretStore"))
+	g.Expect(ps.Spec.SecretStoreRefs[0].Name).To(Equal("openbao-tenant-store"))
+	g.Expect(ps.Spec.Data[0].Match.RemoteRef.RemoteKey).To(Equal(adminAppCredentialRemoteKeyFor(cp)))
+}
+
 // TestEnsureKORCCloudsYAMLExternalSecret_PerCRRemoteKeyForNonDefaultName asserts the
 // remote key tracks an arbitrary CR name/namespace, so a non-default ControlPlane
 // resolves to the correct OpenBao path with no manifest edit.

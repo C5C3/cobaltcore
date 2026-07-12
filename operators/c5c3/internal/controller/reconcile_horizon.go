@@ -213,6 +213,12 @@ func (r *ControlPlaneReconciler) reconcileHorizon(ctx context.Context, cp *c5c3v
 
 		horizon.Spec.SecretKeyRef = secretKeyRef
 
+		// Project the ControlPlane's store selection onto the Horizon child.
+		// DeepCopy keeps the projected ref an independent object; a nil source
+		// yields nil, which the horizon operator resolves back to the shared
+		// cluster store, so clearing the field reverts the child to the default.
+		horizon.Spec.SecretStoreRef = cp.Spec.SecretStoreRef.DeepCopy()
+
 		// DeepCopy for the same aliasing reason as Cache above; a nil source
 		// yields nil, clearing any previously-projected gateway so removal
 		// tears the HTTPRoute down.

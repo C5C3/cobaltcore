@@ -433,6 +433,62 @@ func TestValidateCreate_RejectsBadOpenStackRelease(t *testing.T) {
 	g.Expect(err.Error()).To(ContainSubstring("openStackRelease"))
 }
 
+func TestValidateCreate_AcceptsNamespacedSecretStoreRef(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Spec.SecretStoreRef = &commonv1.SecretStoreRefSpec{
+		Kind: commonv1.SecretStoreKindNamespaced, Name: "openbao-tenant-store",
+	}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred(),
+		"a ControlPlane selecting a namespaced SecretStore must be admitted")
+}
+
+func TestValidateCreate_RejectsSecretStoreRefEmptyName(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Spec.SecretStoreRef = &commonv1.SecretStoreRefSpec{Kind: commonv1.SecretStoreKindNamespaced}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("secretStoreRef"))
+	g.Expect(err.Error()).To(ContainSubstring("name"))
+}
+
+func TestValidateCreate_RejectsSecretStoreRefUnknownKind(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Spec.SecretStoreRef = &commonv1.SecretStoreRefSpec{
+		Kind: commonv1.SecretStoreRefKind("Bogus"), Name: "some-store",
+	}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("secretStoreRef"))
+	g.Expect(err.Error()).To(ContainSubstring("kind"))
+}
+
+// TestValidateUpdate_AllowsSecretStoreRefSwitch verifies the store reference is
+// mutable — switching stores is a supported operation (the operator moves the
+// key material in place), so it must NOT be treated as an immutable field.
+func TestValidateUpdate_AllowsSecretStoreRefSwitch(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	oldCP := validControlPlane()
+	newCP := validControlPlane()
+	newCP.Spec.SecretStoreRef = &commonv1.SecretStoreRefSpec{
+		Kind: commonv1.SecretStoreKindNamespaced, Name: "openbao-tenant-store",
+	}
+
+	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+	g.Expect(err).NotTo(HaveOccurred(),
+		"switching spec.secretStoreRef must be allowed on update")
+}
+
 func TestValidateCreate_RejectsKeystoneImageTagAndDigestBothSet(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &ControlPlaneWebhook{}

@@ -270,7 +270,7 @@ tests:
               - patch
               - delete
 
-  - it: should grant read-only on clustersecretstores
+  - it: should grant read-only on clustersecretstores and secretstores
     asserts:
       - contains:
           path: rules
@@ -279,6 +279,7 @@ tests:
               - external-secrets.io
             resources:
               - clustersecretstores
+              - secretstores
             verbs:
               - get
               - list

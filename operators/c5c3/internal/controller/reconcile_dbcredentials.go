@@ -237,7 +237,7 @@ func dbCredentialGeneratorExternalSecret(cp *c5c3v1alpha1.ControlPlane) *esov1.E
 // dbCredentialStaticExternalSecret builds the stage-(a) STATIC, KV-backed
 // ExternalSecret used by the Static opt-out branch (migration staging /
 // brownfield). It reads username+password from the per-ControlPlane KV path via
-// the openbao-cluster-store, exactly as stage (a) did.
+// the store the ControlPlane selected (default: the shared openbao-cluster-store).
 func dbCredentialStaticExternalSecret(cp *c5c3v1alpha1.ControlPlane) *esov1.ExternalSecret {
 	name := dbCredentialSecretName(cp)
 	remoteKey := dbCredentialRemoteKeyFor(cp)
@@ -245,7 +245,7 @@ func dbCredentialStaticExternalSecret(cp *c5c3v1alpha1.ControlPlane) *esov1.Exte
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: childNamespace(cp)},
 		Spec: esov1.ExternalSecretSpec{
 			RefreshInterval: &metav1.Duration{Duration: time.Hour},
-			SecretStoreRef:  esov1.SecretStoreRef{Kind: "ClusterSecretStore", Name: openBaoClusterStoreName},
+			SecretStoreRef:  secrets.ESOSecretStoreRef(secrets.EffectiveStoreRef(cp.Spec.SecretStoreRef)),
 			Target:          esov1.ExternalSecretTarget{Name: name, CreationPolicy: esov1.CreatePolicyOwner},
 			Data: []esov1.ExternalSecretData{
 				{SecretKey: "username", RemoteRef: esov1.ExternalSecretDataRemoteRef{Key: remoteKey, Property: "username"}},
@@ -324,23 +324,26 @@ func (r *ControlPlaneReconciler) reconcileDBCredentials(ctx context.Context, cp 
 		return ctrl.Result{}, nil
 	}
 
-	// Check the OpenBao-backed ClusterSecretStore first so an ESO/OpenBao outage
-	// surfaces as DBCredentialsReady=False even while a per-ExternalSecret cache
-	// still reports Ready=True from its last successful sync (mirrors
-	// reconcile_secrets.go in the keystone operator).
-	storeReady, err := secrets.IsClusterSecretStoreReady(ctx, r.Client, openBaoClusterStoreName)
+	// Check the selected secret store first so an ESO/OpenBao outage surfaces as
+	// DBCredentialsReady=False even while a per-ExternalSecret cache still reports
+	// Ready=True from its last successful sync (mirrors reconcile_secrets.go in
+	// the keystone operator). The store is the one the ControlPlane selected via
+	// spec.secretStoreRef (default: the shared cluster store); a namespaced store
+	// is resolved in the child namespace where the credential Secret is materialised.
+	storeRef := secrets.EffectiveStoreRef(cp.Spec.SecretStoreRef)
+	storeReady, err := secrets.IsStoreRefReady(ctx, r.Client, storeRef, childNamespace(cp))
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 	if !storeReady {
-		logger.Info("ClusterSecretStore not ready, requeuing DB credential projection")
+		logger.Info("secret store not ready, requeuing DB credential projection")
 		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
 			Type:               conditionTypeDBCredentialsReady,
 			Status:             metav1.ConditionFalse,
 			ObservedGeneration: cp.Generation,
 			Reason:             "SecretStoreNotReady",
-			Message: fmt.Sprintf("ClusterSecretStore %q is not ready; upstream secret backend unreachable",
-				openBaoClusterStoreName),
+			Message: fmt.Sprintf("%s %q is not ready; upstream secret backend unreachable",
+				storeRef.Kind, storeRef.Name),
 		})
 		return ctrl.Result{RequeueAfter: dbCredentialsRequeueAfter}, nil
 	}
@@ -382,7 +385,7 @@ func (r *ControlPlaneReconciler) reconcileDBCredentials(ctx context.Context, cp 
 // the auth identity and TLS material exist before the generator that references
 // them.
 func (r *ControlPlaneReconciler) ensureDynamicDBCredentialObjects(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) error {
-	server, mountPath := r.openBaoConnection(ctx)
+	server, mountPath := r.openBaoConnection(ctx, cp)
 
 	if err := apply.EnsureObject(ctx, r.Client, r.Scheme, cp, dbCredentialServiceAccount(cp), apply.FieldManager); err != nil {
 		return fmt.Errorf("ensuring DB credential ServiceAccount: %w", err)
@@ -443,23 +446,38 @@ func (r *ControlPlaneReconciler) deleteDynamicDBCredentialObjects(ctx context.Co
 }
 
 // openBaoConnection returns the OpenBao server URL and Kubernetes-auth mount
-// path, copied from the openbao-cluster-store's Vault provider so the generator
-// cannot drift from the store the rest of the stack uses. Falls back to the
-// documented defaults when the store or the fields are unreadable.
-func (r *ControlPlaneReconciler) openBaoConnection(ctx context.Context) (server, mountPath string) {
+// path, copied from the Vault provider of the store the ControlPlane selected
+// (a cluster-scoped ClusterSecretStore by name, or a namespaced SecretStore in
+// the child namespace) so the generator cannot drift from the store the rest of
+// the stack uses. Falls back to the documented defaults when the store or the
+// fields are unreadable.
+func (r *ControlPlaneReconciler) openBaoConnection(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) (server, mountPath string) {
 	server = openBaoDefaultServer
 	mountPath = openBaoDefaultKubernetesMount
 
-	store := &esov1.ClusterSecretStore{}
-	if err := r.Get(ctx, client.ObjectKey{Name: openBaoClusterStoreName}, store); err != nil {
-		return server, mountPath
-	}
-	if p := store.Spec.Provider; p != nil && p.Vault != nil {
-		if p.Vault.Server != "" {
-			server = p.Vault.Server
+	ref := secrets.EffectiveStoreRef(cp.Spec.SecretStoreRef)
+	var provider *esov1.SecretStoreProvider
+	switch ref.Kind {
+	case commonv1.SecretStoreKindNamespaced:
+		store := &esov1.SecretStore{}
+		if err := r.Get(ctx, client.ObjectKey{Name: ref.Name, Namespace: childNamespace(cp)}, store); err != nil {
+			return server, mountPath
 		}
-		if p.Vault.Auth != nil && p.Vault.Auth.Kubernetes != nil && p.Vault.Auth.Kubernetes.Path != "" {
-			mountPath = p.Vault.Auth.Kubernetes.Path
+		provider = store.Spec.Provider
+	default:
+		store := &esov1.ClusterSecretStore{}
+		if err := r.Get(ctx, client.ObjectKey{Name: ref.Name}, store); err != nil {
+			return server, mountPath
+		}
+		provider = store.Spec.Provider
+	}
+
+	if provider != nil && provider.Vault != nil {
+		if provider.Vault.Server != "" {
+			server = provider.Vault.Server
+		}
+		if provider.Vault.Auth != nil && provider.Vault.Auth.Kubernetes != nil && provider.Vault.Auth.Kubernetes.Path != "" {
+			mountPath = provider.Vault.Auth.Kubernetes.Path
 		}
 	}
 	return server, mountPath

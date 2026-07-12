@@ -32,6 +32,8 @@ import (
 	"github.com/c5c3/forge/internal/common/bootstrap"
 	"github.com/c5c3/forge/internal/common/conditions"
 	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
+	"github.com/c5c3/forge/internal/common/secrets"
+	commonv1 "github.com/c5c3/forge/internal/common/types"
 	"github.com/c5c3/forge/internal/common/watch"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 )
@@ -120,7 +122,7 @@ type ControlPlaneReconciler struct {
 // +kubebuilder:rbac:groups=horizon.openstack.c5c3.io,resources=horizons,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=openstack.k-orc.cloud,resources=applicationcredentials;services;endpoints;users;domains;projects,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=external-secrets.io,resources=externalsecrets;pushsecrets,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=external-secrets.io,resources=clustersecretstores,verbs=get;list;watch
+// +kubebuilder:rbac:groups=external-secrets.io,resources=clustersecretstores;secretstores,verbs=get;list;watch
 // +kubebuilder:rbac:groups=generators.external-secrets.io,resources=vaultdynamicsecrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch;create;update;patch;delete
@@ -437,17 +439,27 @@ func secretToControlPlaneMapper(c client.Reader) handler.MapFunc {
 	})
 }
 
-// clusterSecretStoreToControlPlaneMapper returns a MapFunc that enqueues every
-// ControlPlane in the cluster when the OpenBao-backed ClusterSecretStore
-// changes. The store is cluster-scoped and shared across namespaces, so any
-// status transition (e.g. ESO losing the backend connection) must retrigger
-// reconcile on all ControlPlanes that route credentials through it; otherwise
-// DBCredentialsReady / AdminPasswordReady / AdminCredentialReady would stay
-// stale-True until the next periodic resync (#476). It binds the shared
-// watch.ClusterSecretStoreFanOut to the ControlPlane list type.
-func clusterSecretStoreToControlPlaneMapper(c client.Reader) handler.MapFunc {
-	return watch.ClusterSecretStoreFanOut(c, openBaoClusterStoreName,
-		func() client.ObjectList { return &c5c3v1alpha1.ControlPlaneList{} })
+// storeToControlPlaneMapper returns a MapFunc that enqueues the ControlPlanes
+// whose effective secret store reference resolves to the changed store object.
+// watchedKind selects which store scope this mapper is registered against — a
+// cluster-scoped ClusterSecretStore (shared across namespaces) or a namespaced
+// SecretStore (per tenant). A status transition (e.g. ESO losing the backend
+// connection) must retrigger reconcile on the ControlPlanes that route
+// credentials through the changed store; otherwise DBCredentialsReady /
+// AdminPasswordReady / AdminCredentialReady would stay stale-True until the next
+// periodic resync (#476). A ControlPlane that omits spec.secretStoreRef resolves
+// to the shared cluster store via secrets.EffectiveStoreRef. It binds the shared
+// watch.StoreRefFanOut to the ControlPlane list type.
+func storeToControlPlaneMapper(c client.Reader, watchedKind commonv1.SecretStoreRefKind) handler.MapFunc {
+	return watch.StoreRefFanOut(c, watchedKind,
+		func() client.ObjectList { return &c5c3v1alpha1.ControlPlaneList{} },
+		func(o client.Object) commonv1.SecretStoreRefSpec {
+			cp, ok := o.(*c5c3v1alpha1.ControlPlane)
+			if !ok {
+				return commonv1.SecretStoreRefSpec{}
+			}
+			return secrets.EffectiveStoreRef(cp.Spec.SecretStoreRef)
+		})
 }
 
 // SetupWithManager registers the ControlPlaneReconciler with the controller
@@ -525,8 +537,16 @@ func (r *ControlPlaneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(
 			secretToControlPlaneMapper(mgr.GetClient()),
 		)).
+		// Watch both the cluster-scoped ClusterSecretStore and the namespaced
+		// SecretStore a ControlPlane can select via spec.secretStoreRef, so an
+		// ESO/OpenBao outage reflects in the credential conditions as soon as ESO
+		// flips the selected store's Ready condition. Each mapper enqueues only
+		// the ControlPlanes whose effective store ref matches the changed store.
 		Watches(&esov1.ClusterSecretStore{}, handler.EnqueueRequestsFromMapFunc(
-			clusterSecretStoreToControlPlaneMapper(mgr.GetClient()),
+			storeToControlPlaneMapper(mgr.GetClient(), commonv1.SecretStoreKindCluster),
+		)).
+		Watches(&esov1.SecretStore{}, handler.EnqueueRequestsFromMapFunc(
+			storeToControlPlaneMapper(mgr.GetClient(), commonv1.SecretStoreKindNamespaced),
 		)).
 		Complete(r)
 }

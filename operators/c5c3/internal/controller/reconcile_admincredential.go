@@ -69,25 +69,28 @@ func (r *ControlPlaneReconciler) reconcileAdminCredential(ctx context.Context, c
 		return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
 	}
 
-	// Gate on the OpenBao-backed ClusterSecretStore so an ESO/OpenBao outage
-	// surfaces as AdminCredentialReady=False promptly. The clouds.yaml
-	// ExternalSecret read below would eventually requeue on its own, but ESO only
-	// re-syncs at the refreshInterval (default 1h); the ClusterSecretStore watch
-	// wakes the ControlPlane the moment ESO flips the store condition, so the
-	// credential condition does not stay stale-True through a short outage (#476).
-	storeReady, err := secrets.IsClusterSecretStoreReady(ctx, r.Client, openBaoClusterStoreName)
+	// Gate on the store the ControlPlane selected via spec.secretStoreRef
+	// (default: the shared cluster store) so an ESO/OpenBao outage surfaces as
+	// AdminCredentialReady=False promptly. The clouds.yaml ExternalSecret read
+	// below would eventually requeue on its own, but ESO only re-syncs at the
+	// refreshInterval (default 1h); the store watch wakes the ControlPlane the
+	// moment ESO flips the store condition, so the credential condition does not
+	// stay stale-True through a short outage (#476). A namespaced store is
+	// resolved in the child namespace where the ExternalSecret is materialised.
+	storeRef := secrets.EffectiveStoreRef(cp.Spec.SecretStoreRef)
+	storeReady, err := secrets.IsStoreRefReady(ctx, r.Client, storeRef, childNamespace(cp))
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 	if !storeReady {
-		logger.Info("ClusterSecretStore not ready, deferring admin credential push")
+		logger.Info("secret store not ready, deferring admin credential push")
 		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
 			Type:               conditionTypeAdminCredentialReady,
 			Status:             metav1.ConditionFalse,
 			ObservedGeneration: cp.Generation,
 			Reason:             "SecretStoreNotReady",
-			Message: fmt.Sprintf("ClusterSecretStore %q is not ready; upstream secret backend unreachable",
-				openBaoClusterStoreName),
+			Message: fmt.Sprintf("%s %q is not ready; upstream secret backend unreachable",
+				storeRef.Kind, storeRef.Name),
 		})
 		return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
 	}

@@ -454,6 +454,47 @@ func TestReconcileKeystone_GatewayProjection(t *testing.T) {
 	g.Expect(k.Spec.Bootstrap.PublicEndpoint).To(Equal("https://keystone.127-0-0-1.nip.io:8443/v3"))
 }
 
+// TestReconcileKeystone_ProjectsSecretStoreRef verifies the ControlPlane's
+// spec.secretStoreRef is projected onto the Keystone child.
+func TestReconcileKeystone_ProjectsSecretStoreRef(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := keystoneTestScheme(t)
+	cp := keystoneControlPlane()
+	cp.Spec.SecretStoreRef = &commonv1.SecretStoreRefSpec{
+		Kind: commonv1.SecretStoreKindNamespaced, Name: "openbao-tenant-store",
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileKeystone(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	k := getProjectedKeystone(t, c, cp)
+	g.Expect(k.Spec.SecretStoreRef).NotTo(BeNil(), "the ControlPlane store ref must be projected onto the Keystone child")
+	g.Expect(k.Spec.SecretStoreRef.Kind).To(Equal(commonv1.SecretStoreKindNamespaced))
+	g.Expect(k.Spec.SecretStoreRef.Name).To(Equal("openbao-tenant-store"))
+}
+
+// TestReconcileKeystone_ClearsSecretStoreRefWhenUnset verifies that clearing the
+// ControlPlane store ref reverts the Keystone child to the default (nil), so the
+// keystone operator resolves back to the shared cluster store.
+func TestReconcileKeystone_ClearsSecretStoreRefWhenUnset(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := keystoneTestScheme(t)
+	cp := keystoneControlPlane()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileKeystone(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	k := getProjectedKeystone(t, c, cp)
+	g.Expect(k.Spec.SecretStoreRef).To(BeNil(),
+		"a ControlPlane without a store ref must leave the Keystone child on the default (nil)")
+}
+
 func TestReconcileKeystone_GatewayNilStaysInCluster(t *testing.T) {
 	g := NewGomegaWithT(t)
 

@@ -225,16 +225,20 @@ func (r *ControlPlaneReconciler) reconcileServiceAccounts(ctx context.Context, c
 		return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
 	}
 
-	// Gate on the OpenBao-backed ClusterSecretStore so an ESO/OpenBao outage
-	// surfaces promptly rather than at the next hourly refresh (#476).
-	storeReady, err := secrets.IsClusterSecretStoreReady(ctx, r.Client, openBaoClusterStoreName)
+	// Gate on the store the ControlPlane selected via spec.secretStoreRef
+	// (default: the shared cluster store) so an ESO/OpenBao outage surfaces
+	// promptly rather than at the next hourly refresh (#476). A namespaced store
+	// is resolved in the child namespace where the service-account Secrets are
+	// materialised.
+	storeRef := secrets.EffectiveStoreRef(cp.Spec.SecretStoreRef)
+	storeReady, err := secrets.IsStoreRefReady(ctx, r.Client, storeRef, childNamespace(cp))
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 	if !storeReady {
-		logger.Info("ClusterSecretStore not ready, deferring service-account round-trip")
+		logger.Info("secret store not ready, deferring service-account round-trip")
 		fail(reasonServiceAccountStoreNotReady, fmt.Sprintf(
-			"ClusterSecretStore %q is not ready; upstream secret backend unreachable", openBaoClusterStoreName,
+			"%s %q is not ready; upstream secret backend unreachable", storeRef.Kind, storeRef.Name,
 		))
 		return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
 	}
@@ -917,11 +921,8 @@ func serviceAccountPushSecret(cp *c5c3v1alpha1.ControlPlane, sa c5c3v1alpha1.Ser
 	return &esov1alpha1.PushSecret{
 		ObjectMeta: metav1.ObjectMeta{Name: serviceAccountPushSecretName(cp, sa), Namespace: childNamespace(cp)},
 		Spec: esov1alpha1.PushSecretSpec{
-			DeletionPolicy: esov1alpha1.PushSecretDeletionPolicyDelete,
-			SecretStoreRefs: []esov1alpha1.PushSecretStoreRef{{
-				Kind: "ClusterSecretStore",
-				Name: openBaoClusterStoreName,
-			}},
+			DeletionPolicy:  esov1alpha1.PushSecretDeletionPolicyDelete,
+			SecretStoreRefs: secrets.PushSecretStoreRefs(secrets.EffectiveStoreRef(cp.Spec.SecretStoreRef)),
 			Selector: esov1alpha1.PushSecretSelector{
 				Secret: &esov1alpha1.PushSecretSecret{Name: serviceAccountSourceSecretName(cp, sa)},
 			},
@@ -947,7 +948,7 @@ func (r *ControlPlaneReconciler) ensureServiceAccountExternalSecret(
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: childNamespace(cp)},
 		Spec: esov1.ExternalSecretSpec{
 			RefreshInterval: &metav1.Duration{Duration: time.Hour},
-			SecretStoreRef:  esov1.SecretStoreRef{Kind: "ClusterSecretStore", Name: openBaoClusterStoreName},
+			SecretStoreRef:  secrets.ESOSecretStoreRef(secrets.EffectiveStoreRef(cp.Spec.SecretStoreRef)),
 			Target:          esov1.ExternalSecretTarget{Name: name, CreationPolicy: esov1.CreatePolicyOwner},
 			Data: []esov1.ExternalSecretData{
 				{

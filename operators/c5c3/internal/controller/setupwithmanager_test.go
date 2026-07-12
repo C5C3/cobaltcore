@@ -224,19 +224,19 @@ func TestSecretToControlPlaneMapper_ScopedToNamespace(t *testing.T) {
 	g.Expect(reqs[0].NamespacedName).To(Equal(types.NamespacedName{Namespace: "ns-a", Name: "cp-a"}))
 }
 
-// --- clusterSecretStoreToControlPlaneMapper (#476) ---
+// --- storeToControlPlaneMapper (#476, #605) ---
 
-// TestClusterSecretStoreToControlPlaneMapper_EnqueuesAllControlPlanes verifies
+// TestStoreToControlPlaneMapper_ClusterKindEnqueuesDefaultControlPlanes verifies
 // that a status change on the OpenBao-backed ClusterSecretStore enqueues every
-// ControlPlane in the cluster (across namespaces), since the cluster-scoped store
-// is shared and an ESO/OpenBao outage affects all of them.
-func TestClusterSecretStoreToControlPlaneMapper_EnqueuesAllControlPlanes(t *testing.T) {
+// ControlPlane in the cluster that defaults to it (across namespaces), since the
+// cluster-scoped store is shared and an ESO/OpenBao outage affects all of them.
+func TestStoreToControlPlaneMapper_ClusterKindEnqueuesDefaultControlPlanes(t *testing.T) {
 	g := NewGomegaWithT(t)
 
 	cpA := mapperControlPlane("cp-a", "ns-a", "secret-a")
 	cpB := mapperControlPlane("cp-b", "ns-b", "secret-b")
 	c := newControlPlaneMapperClient(t, cpA, cpB)
-	mapper := clusterSecretStoreToControlPlaneMapper(c)
+	mapper := storeToControlPlaneMapper(c, commonv1.SecretStoreKindCluster)
 
 	store := &esov1.ClusterSecretStore{
 		ObjectMeta: metav1.ObjectMeta{Name: openBaoClusterStoreName},
@@ -250,18 +250,18 @@ func TestClusterSecretStoreToControlPlaneMapper_EnqueuesAllControlPlanes(t *test
 	g.Expect(names).To(ConsistOf(
 		types.NamespacedName{Namespace: "ns-a", Name: "cp-a"},
 		types.NamespacedName{Namespace: "ns-b", Name: "cp-b"},
-	), "a ClusterSecretStore change must enqueue every ControlPlane in the cluster")
+	), "a ClusterSecretStore change must enqueue every ControlPlane defaulting to it")
 }
 
-// TestClusterSecretStoreToControlPlaneMapper_IgnoresOtherStores verifies the
-// mapper only reacts to the OpenBao-backed store the operator routes credentials
-// through, not to unrelated ClusterSecretStores.
-func TestClusterSecretStoreToControlPlaneMapper_IgnoresOtherStores(t *testing.T) {
+// TestStoreToControlPlaneMapper_ClusterKindIgnoresOtherStores verifies the
+// mapper only reacts to the store a ControlPlane's effective ref resolves to,
+// not to unrelated ClusterSecretStores.
+func TestStoreToControlPlaneMapper_ClusterKindIgnoresOtherStores(t *testing.T) {
 	g := NewGomegaWithT(t)
 
 	cp := mapperControlPlane("cp", "default", "secret")
 	c := newControlPlaneMapperClient(t, cp)
-	mapper := clusterSecretStoreToControlPlaneMapper(c)
+	mapper := storeToControlPlaneMapper(c, commonv1.SecretStoreKindCluster)
 
 	other := &esov1.ClusterSecretStore{
 		ObjectMeta: metav1.ObjectMeta{Name: "some-other-store"},
@@ -270,6 +270,39 @@ func TestClusterSecretStoreToControlPlaneMapper_IgnoresOtherStores(t *testing.T)
 
 	g.Expect(reqs).To(BeEmpty(),
 		"a change to an unrelated ClusterSecretStore must enqueue nothing")
+}
+
+// TestStoreToControlPlaneMapper_NamespacedKindScopesToStoreNamespace verifies a
+// namespaced SecretStore only enqueues the ControlPlane in its own namespace
+// that pins it via spec.secretStoreRef; a default (cluster-store) ControlPlane
+// and a same-name ControlPlane in a foreign namespace are not enqueued.
+func TestStoreToControlPlaneMapper_NamespacedKindScopesToStoreNamespace(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	pinned := mapperControlPlane("cp-pinned", "tenant-a", "secret-a")
+	pinned.Spec.SecretStoreRef = &commonv1.SecretStoreRefSpec{
+		Kind: commonv1.SecretStoreKindNamespaced, Name: "openbao-tenant-store",
+	}
+	defaulted := mapperControlPlane("cp-default", "tenant-a", "secret-b")
+	foreign := mapperControlPlane("cp-foreign", "tenant-b", "secret-c")
+	foreign.Spec.SecretStoreRef = &commonv1.SecretStoreRefSpec{
+		Kind: commonv1.SecretStoreKindNamespaced, Name: "openbao-tenant-store",
+	}
+	c := newControlPlaneMapperClient(t, pinned, defaulted, foreign)
+	mapper := storeToControlPlaneMapper(c, commonv1.SecretStoreKindNamespaced)
+
+	store := &esov1.SecretStore{
+		ObjectMeta: metav1.ObjectMeta{Name: "openbao-tenant-store", Namespace: "tenant-a"},
+	}
+	reqs := mapper(context.Background(), store)
+
+	names := make([]types.NamespacedName, 0, len(reqs))
+	for _, r := range reqs {
+		names = append(names, r.NamespacedName)
+	}
+	g.Expect(names).To(ConsistOf(
+		types.NamespacedName{Namespace: "tenant-a", Name: "cp-pinned"},
+	), "a namespaced SecretStore change must enqueue only the pinned ControlPlane in its own namespace")
 }
 
 // TestControlPlaneSecretNameExtractor_ExternalModeIndexesUserSecret asserts the

@@ -279,6 +279,12 @@ func (r *ControlPlaneReconciler) reconcileKeystone(ctx context.Context, cp *c5c3
 
 	keystone.Spec.PolicyOverrides = merged
 
+	// Project the ControlPlane's store selection onto the Keystone child. DeepCopy
+	// keeps the projected ref an independent object; a nil source yields nil,
+	// which the keystone operator resolves back to the shared cluster store — so
+	// clearing the field on the ControlPlane reverts the child to the default.
+	keystone.Spec.SecretStoreRef = cp.Spec.SecretStoreRef.DeepCopy()
+
 	if rotationSchedule != "" {
 		keystone.Spec.Fernet.RotationSchedule = rotationSchedule
 		keystone.Spec.CredentialKeys.RotationSchedule = rotationSchedule

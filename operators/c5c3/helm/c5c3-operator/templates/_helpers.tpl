@@ -181,14 +181,16 @@ coordination.k8s.io/leases rule required for leader election.
     - update
     - patch
     - delete
-# external-secrets.io - clustersecretstores (read-only)
-# Required so the operator can observe the ClusterSecretStore's Ready
-# condition and reflect upstream secret-backend outages. ClusterSecretStore is
-# cluster-scoped; the rule is only effective when rendered into the ClusterRole.
+# external-secrets.io - clustersecretstores, secretstores (read-only)
+# Required so the operator can observe the selected store's Ready condition and
+# reflect upstream secret-backend outages. A ControlPlane selects either the
+# shared cluster-scoped ClusterSecretStore (default) or a namespaced SecretStore
+# via spec.secretStoreRef, so both kinds must be watchable.
 - apiGroups:
     - external-secrets.io
   resources:
     - clustersecretstores
+    - secretstores
   verbs:
     - get
     - list

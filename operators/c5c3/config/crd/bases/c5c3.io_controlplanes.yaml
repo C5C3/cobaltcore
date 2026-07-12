@@ -713,6 +713,39 @@ spec:
                   (callers that bypass the CRD default), mirroring BootstrapSpec.Region in the
                   keystone operator.
                 type: string
+              secretStoreRef:
+                description: |-
+                  SecretStoreRef selects the External Secrets store the ControlPlane and its
+                  service children route ExternalSecrets and PushSecrets through. When
+                  omitted the control plane uses the shared cluster-scoped
+                  openbao-cluster-store, so existing deployments keep working unchanged. Set
+                  kind to SecretStore with the name of a namespaced store in the
+                  ControlPlane's namespace to reach OpenBao as a per-tenant identity — the
+                  prerequisite for OpenBao-enforced isolation between control planes. The
+                  reference is projected onto the Keystone and Horizon children, so setting
+                  it here is the single place operators configure it. It is deliberately
+                  MUTABLE: switching stores re-points the identity while the operator moves
+                  the fernet/credential key material in place, never re-creating it.
+                properties:
+                  kind:
+                    default: ClusterSecretStore
+                    description: |-
+                      Kind is the store scope: ClusterSecretStore (cluster-scoped, the default)
+                      or SecretStore (resolved in the CR's namespace).
+                    enum:
+                    - ClusterSecretStore
+                    - SecretStore
+                    type: string
+                  name:
+                    description: |-
+                      Name is the referenced store's name. It must be a non-empty DNS-1123
+                      subdomain (the Kubernetes object-name grammar), matching SecretRefSpec.Name.
+                    minLength: 1
+                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                    type: string
+                required:
+                - name
+                type: object
               services:
                 description: |-
                   Services declares the per-service configuration projected into the

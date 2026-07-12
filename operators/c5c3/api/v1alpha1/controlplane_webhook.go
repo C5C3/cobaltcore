@@ -820,6 +820,11 @@ func (w *ControlPlaneWebhook) validate(cp *ControlPlane) field.ErrorList {
 		))
 	}
 
+	// secretStoreRef is optional (nil defaults to the shared cluster store);
+	// when set it must carry a name and a kind in the enum. Defense-in-depth
+	// twin of the CRD markers on commonv1.SecretStoreRefSpec.
+	allErrs = append(allErrs, validation.SecretStoreRef(specPath.Child("secretStoreRef"), cp.Spec.SecretStoreRef)...)
+
 	// spec.infrastructure is optional at the Go/CRD layer now (External keystone
 	// mode omits it), so the database/cache checks only run when the block is
 	// present. The mode-conditional required/forbidden rules for the block itself

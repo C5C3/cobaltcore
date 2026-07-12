@@ -62,7 +62,7 @@ func adminPasswordExternalSecret(cp *c5c3v1alpha1.ControlPlane) *esov1.ExternalS
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: childNamespace(cp)},
 		Spec: esov1.ExternalSecretSpec{
 			RefreshInterval: &metav1.Duration{Duration: time.Hour},
-			SecretStoreRef:  esov1.SecretStoreRef{Kind: "ClusterSecretStore", Name: openBaoClusterStoreName},
+			SecretStoreRef:  secrets.ESOSecretStoreRef(secrets.EffectiveStoreRef(cp.Spec.SecretStoreRef)),
 			Target:          esov1.ExternalSecretTarget{Name: name, CreationPolicy: esov1.CreatePolicyOwner},
 			Data: []esov1.ExternalSecretData{
 				{SecretKey: "password", RemoteRef: esov1.ExternalSecretDataRemoteRef{Key: remoteKey, Property: "password"}},
@@ -167,23 +167,27 @@ func (r *ControlPlaneReconciler) reconcileAdminPassword(ctx context.Context, cp 
 		return ctrl.Result{}, nil
 	}
 
-	// Check the OpenBao-backed ClusterSecretStore first so an ESO/OpenBao outage
-	// surfaces as AdminPasswordReady=False even while the per-ExternalSecret cache
-	// still reports Ready=True from its last successful sync (#476). Mirrors
+	// Check the selected secret store first so an ESO/OpenBao outage surfaces as
+	// AdminPasswordReady=False even while the per-ExternalSecret cache still
+	// reports Ready=True from its last successful sync (#476). The store is the
+	// one the ControlPlane selected via spec.secretStoreRef (default: the shared
+	// cluster store); a namespaced store is resolved in the child namespace where
+	// the admin-password ExternalSecret is materialised. Mirrors
 	// reconcileDBCredentials and the keystone operator's reconcile_secrets.go.
-	storeReady, err := secrets.IsClusterSecretStoreReady(ctx, r.Client, openBaoClusterStoreName)
+	storeRef := secrets.EffectiveStoreRef(cp.Spec.SecretStoreRef)
+	storeReady, err := secrets.IsStoreRefReady(ctx, r.Client, storeRef, childNamespace(cp))
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 	if !storeReady {
-		logger.Info("ClusterSecretStore not ready, requeuing admin password projection")
+		logger.Info("secret store not ready, requeuing admin password projection")
 		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
 			Type:               conditionTypeAdminPasswordReady,
 			Status:             metav1.ConditionFalse,
 			ObservedGeneration: cp.Generation,
 			Reason:             "SecretStoreNotReady",
-			Message: fmt.Sprintf("ClusterSecretStore %q is not ready; upstream secret backend unreachable",
-				openBaoClusterStoreName),
+			Message: fmt.Sprintf("%s %q is not ready; upstream secret backend unreachable",
+				storeRef.Kind, storeRef.Name),
 		})
 		return ctrl.Result{RequeueAfter: adminPasswordRequeueAfter}, nil
 	}

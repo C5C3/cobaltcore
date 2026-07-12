@@ -18,11 +18,6 @@ import (
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 )
 
-// openBaoClusterStoreName re-exports the shared ClusterSecretStore name (see
-// secrets.OpenBaoClusterStoreName) for the mappers and sub-reconcilers in
-// this package.
-const openBaoClusterStoreName = secrets.OpenBaoClusterStoreName
-
 // korcCloudsYamlSecretName is the conventional name of the admin clouds.yaml
 // Secret (and its ExternalSecret) K-ORC reads its admin credentials from. It
 // matches DefaultCloudCredentialsSecretName, the value the defaulting webhook
@@ -78,11 +73,8 @@ func adminAppCredentialPushSecret(cp *c5c3v1alpha1.ControlPlane) *esov1alpha1.Pu
 			Namespace: childNamespace(cp),
 		},
 		Spec: esov1alpha1.PushSecretSpec{
-			DeletionPolicy: esov1alpha1.PushSecretDeletionPolicyDelete,
-			SecretStoreRefs: []esov1alpha1.PushSecretStoreRef{{
-				Kind: "ClusterSecretStore",
-				Name: openBaoClusterStoreName,
-			}},
+			DeletionPolicy:  esov1alpha1.PushSecretDeletionPolicyDelete,
+			SecretStoreRefs: secrets.PushSecretStoreRefs(secrets.EffectiveStoreRef(cp.Spec.SecretStoreRef)),
 			Selector: esov1alpha1.PushSecretSelector{
 				Secret: &esov1alpha1.PushSecretSecret{
 					Name: adminAppCredentialSecretName(cp),
@@ -162,7 +154,7 @@ func (r *ControlPlaneReconciler) ensureKORCCloudsYAMLExternalSecret(ctx context.
 		},
 		Spec: esov1.ExternalSecretSpec{
 			RefreshInterval: &metav1.Duration{Duration: time.Hour},
-			SecretStoreRef:  esov1.SecretStoreRef{Kind: "ClusterSecretStore", Name: openBaoClusterStoreName},
+			SecretStoreRef:  secrets.ESOSecretStoreRef(secrets.EffectiveStoreRef(cp.Spec.SecretStoreRef)),
 			Target:          esov1.ExternalSecretTarget{Name: name, CreationPolicy: esov1.CreatePolicyOwner},
 			Data:            data,
 		},

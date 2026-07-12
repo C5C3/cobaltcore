@@ -176,6 +176,40 @@ func TestReconcileHorizon_ImageOverrideWins(t *testing.T) {
 	g.Expect(h.Spec.Image.Tag).To(Equal("custom"))
 }
 
+// TestReconcileHorizon_ProjectsSecretStoreRef verifies the ControlPlane's
+// spec.secretStoreRef is projected onto the Horizon child.
+func TestReconcileHorizon_ProjectsSecretStoreRef(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := horizonControlPlane()
+	cp.Spec.SecretStoreRef = &commonv1.SecretStoreRefSpec{
+		Kind: commonv1.SecretStoreKindNamespaced, Name: "openbao-tenant-store",
+	}
+	r := newHorizonTestReconciler(t, cp)
+
+	_, err := r.reconcileHorizon(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	h := getProjectedHorizon(t, r.Client, cp)
+	g.Expect(h.Spec.SecretStoreRef).NotTo(BeNil(), "the ControlPlane store ref must be projected onto the Horizon child")
+	g.Expect(h.Spec.SecretStoreRef.Kind).To(Equal(commonv1.SecretStoreKindNamespaced))
+	g.Expect(h.Spec.SecretStoreRef.Name).To(Equal("openbao-tenant-store"))
+}
+
+// TestReconcileHorizon_ClearsSecretStoreRefWhenUnset verifies clearing the
+// ControlPlane store ref reverts the Horizon child to the default (nil).
+func TestReconcileHorizon_ClearsSecretStoreRefWhenUnset(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := horizonControlPlane()
+	r := newHorizonTestReconciler(t, cp)
+
+	_, err := r.reconcileHorizon(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	h := getProjectedHorizon(t, r.Client, cp)
+	g.Expect(h.Spec.SecretStoreRef).To(BeNil(),
+		"a ControlPlane without a store ref must leave the Horizon child on the default (nil)")
+}
+
 func TestReconcileHorizon_NotManagedWhenUnset(t *testing.T) {
 	g := NewGomegaWithT(t)
 	cp := horizonControlPlane()

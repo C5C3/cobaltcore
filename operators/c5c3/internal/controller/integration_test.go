@@ -2642,3 +2642,103 @@ func TestIntegration_FederationBackendWakesReconcileAndProjectsWebSSO(t *testing
 	}, itEventuallyTimeout, itPollInterval).Should(BeNil(),
 		"detaching the last backend must clear the websso block")
 }
+
+// ensureReadySecretStore creates or refreshes a namespaced SecretStore with a
+// Ready=True condition in namespace — the per-tenant store the store-ref
+// integration test selects (issue #605).
+func ensureReadySecretStore(t testing.TB, ctx context.Context, c client.Client, name, namespace string) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+
+	store := &esov1.SecretStore{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}}
+	err := c.Get(ctx, client.ObjectKeyFromObject(store), store)
+	if apierrors.IsNotFound(err) {
+		g.Expect(c.Create(ctx, store)).To(Succeed(), "create SecretStore")
+	} else {
+		g.Expect(err).NotTo(HaveOccurred(), "get SecretStore")
+	}
+
+	store.Status = esov1.SecretStoreStatus{
+		Conditions: []esov1.SecretStoreStatusCondition{
+			{Type: esov1.SecretStoreReady, Status: corev1.ConditionTrue},
+		},
+	}
+	g.Expect(c.Status().Update(ctx, store)).To(Succeed(), "update SecretStore status")
+}
+
+// TestIntegration_SecretStoreRefProjectedAndGated proves the two halves of the
+// per-ControlPlane store choice end-to-end: (1) the credential gates follow the
+// selected namespaced SecretStore — while it is absent DBCredentialsReady stays
+// False with SecretStoreNotReady even though the cluster store is Ready; and
+// (2) once the namespaced store is Ready and the credential ExternalSecrets
+// sync, the projected Keystone child carries spec.secretStoreRef (issue #605).
+func TestIntegration_SecretStoreRefProjectedAndGated(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupControlPlaneEnvTest(t)
+
+	// Cluster store Ready — this must NOT satisfy a ControlPlane pinned to a
+	// namespaced store.
+	ensureReadyClusterSecretStore(t, ctx, c)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-storeref-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed(), "create test namespace")
+
+	cp := integrationManagedControlPlane("cp", ns.Name)
+	cp.Spec.SecretStoreRef = &commonv1.SecretStoreRefSpec{
+		Kind: commonv1.SecretStoreKindNamespaced,
+		Name: "openbao-tenant-store",
+	}
+	adminSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: adminPasswordSecretName(cp), Namespace: ns.Name},
+		Data:       map[string][]byte{"password": []byte("super-secret-admin-password")},
+	}
+	g.Expect(c.Create(ctx, adminSecret)).To(Succeed(), "create admin password Secret")
+	g.Expect(c.Create(ctx, cp)).To(Succeed(), "create ControlPlane CR")
+	cpKey := types.NamespacedName{Name: cp.Name, Namespace: ns.Name}
+
+	simulateMariaDBReadyWhenPresent(t, ctx, c, client.ObjectKey{Name: "openstack-db", Namespace: ns.Name})
+	simulateMemcachedReadyWhenPresent(t, ctx, c, client.ObjectKey{Name: "openstack-memcached", Namespace: ns.Name})
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeInfrastructureReady, metav1.ConditionTrue, itEventuallyTimeout)
+
+	// The namespaced store is absent, so the DB-credential gate must stay closed
+	// with SecretStoreNotReady even though the cluster store is Ready — proving
+	// the gate follows spec.secretStoreRef.
+	cond := waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeDBCredentialsReady, metav1.ConditionFalse, itEventuallyTimeout)
+	g.Expect(cond.Reason).To(Equal("SecretStoreNotReady"))
+	g.Expect(cond.Message).To(ContainSubstring("openbao-tenant-store"))
+
+	// Bring the namespaced store up → the DB-credential ExternalSecret appears
+	// and, once synced, DBCredentialsReady flips True.
+	ensureReadySecretStore(t, ctx, c, "openbao-tenant-store", ns.Name)
+	g.Eventually(func() error {
+		return c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: dbCredentialSecretName(cp)}, &esov1.ExternalSecret{})
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "operator must create the per-CP DB credential ExternalSecret once the store is Ready")
+
+	g.Expect(simulators.SimulateExternalSecretSync(ctx, c,
+		client.ObjectKey{Namespace: ns.Name, Name: dbCredentialSecretName(cp)})).
+		To(Succeed(), "simulate per-CP DB credential ExternalSecret sync")
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeDBCredentialsReady, metav1.ConditionTrue, itEventuallyTimeout)
+
+	// The admin-password ExternalSecret (a static KV-backed ES, unlike the
+	// generator-backed DB one) must reference the namespaced tenant store.
+	adminES := &esov1.ExternalSecret{}
+	g.Eventually(func() error {
+		return c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: adminPasswordSecretName(cp)}, adminES)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "operator must create the per-CP admin-password ExternalSecret")
+	g.Expect(adminES.Spec.SecretStoreRef.Kind).To(Equal("SecretStore"))
+	g.Expect(adminES.Spec.SecretStoreRef.Name).To(Equal("openbao-tenant-store"))
+
+	simulateAdminPasswordExternalSecretSyncWhenPresent(t, ctx, c, cp)
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeAdminPasswordReady, metav1.ConditionTrue, itEventuallyTimeout)
+
+	// The projected Keystone child must carry the namespaced store ref.
+	ks := &keystonev1alpha1.Keystone{}
+	g.Eventually(func() error {
+		return c.Get(ctx, types.NamespacedName{Name: keystoneName(cp), Namespace: ns.Name}, ks)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "Keystone CR must be projected once the gates open")
+	g.Expect(ks.Spec.SecretStoreRef).NotTo(BeNil(), "the ControlPlane store ref must be projected onto the Keystone child")
+	g.Expect(ks.Spec.SecretStoreRef.Kind).To(Equal(commonv1.SecretStoreKindNamespaced))
+	g.Expect(ks.Spec.SecretStoreRef.Name).To(Equal("openbao-tenant-store"))
+}

@@ -229,6 +229,11 @@ func (in *ControlPlaneSpec) DeepCopyInto(out *ControlPlaneSpec) {
 		*out = new(InfrastructureSpec)
 		(*in).DeepCopyInto(*out)
 	}
+	if in.SecretStoreRef != nil {
+		in, out := &in.SecretStoreRef, &out.SecretStoreRef
+		*out = new(types.SecretStoreRefSpec)
+		**out = **in
+	}
 	in.Services.DeepCopyInto(&out.Services)
 	if in.GlobalPolicyOverrides != nil {
 		in, out := &in.GlobalPolicyOverrides, &out.GlobalPolicyOverrides

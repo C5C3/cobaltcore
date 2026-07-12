@@ -26,6 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/c5c3/forge/internal/common/conditions"
+	"github.com/c5c3/forge/internal/common/secrets"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 )
@@ -73,6 +74,11 @@ func getDBCredES(t *testing.T, r *ControlPlaneReconciler, cp *c5c3v1alpha1.Contr
 		types.NamespacedName{Namespace: childNamespace(cp), Name: dbCredentialSecretName(cp)}, es)
 	return es, err
 }
+
+// openBaoClusterStoreName aliases the shared ClusterSecretStore name
+// (secrets.OpenBaoClusterStoreName) for the ClusterSecretStore fixtures in
+// this package's tests.
+const openBaoClusterStoreName = secrets.OpenBaoClusterStoreName
 
 // readyClusterSecretStore returns the OpenBao-backed ClusterSecretStore with a
 // Ready status condition so IsClusterSecretStoreReady reports the store ready
@@ -180,6 +186,70 @@ func TestReconcileDBCredentials_Managed_ProjectsDynamicObjects(t *testing.T) {
 // TestReconcileDBCredentials_Static_ProjectsKVExternalSecret verifies the Static
 // opt-out projects the stage-(a) KV-backed ExternalSecret (username/password Data
 // from the per-CP KV path) and projects no VaultDynamicSecret generator.
+// readyTenantSecretStore builds a Ready namespaced SecretStore in the given
+// namespace, optionally carrying a Vault provider with a custom server and
+// kubernetes-auth mount so openBaoConnection can read them.
+func readyTenantSecretStore(name, namespace, server, mount string) *esov1.SecretStore {
+	store := &esov1.SecretStore{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Status: esov1.SecretStoreStatus{
+			Conditions: []esov1.SecretStoreStatusCondition{
+				{Type: esov1.SecretStoreReady, Status: corev1.ConditionTrue},
+			},
+		},
+	}
+	if server != "" || mount != "" {
+		store.Spec.Provider = &esov1.SecretStoreProvider{
+			Vault: &esov1.VaultProvider{
+				Server: server,
+				Auth: &esov1.VaultAuth{
+					Kubernetes: &esov1.VaultKubernetesAuth{Path: mount},
+				},
+			},
+		}
+	}
+	return store
+}
+
+// TestOpenBaoConnection_ReadsFromNamespacedStore verifies openBaoConnection
+// resolves the ControlPlane's selected namespaced SecretStore (in the child
+// namespace) and copies its Vault server/mount, rather than the cluster store.
+func TestOpenBaoConnection_ReadsFromNamespacedStore(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := dbCredManagedControlPlane()
+	cp.Spec.SecretStoreRef = &commonv1.SecretStoreRefSpec{
+		Kind: commonv1.SecretStoreKindNamespaced, Name: "openbao-tenant-store",
+	}
+	store := readyTenantSecretStore("openbao-tenant-store", childNamespace(cp),
+		"https://openbao.tenant.svc:8200", "kubernetes/tenant")
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, store).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	server, mount := r.openBaoConnection(context.Background(), cp)
+	g.Expect(server).To(Equal("https://openbao.tenant.svc:8200"))
+	g.Expect(mount).To(Equal("kubernetes/tenant"))
+}
+
+// TestOpenBaoConnection_FallsBackToDefaultsWhenStoreMissing verifies the
+// documented fallbacks when the selected namespaced store is absent.
+func TestOpenBaoConnection_FallsBackToDefaultsWhenStoreMissing(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := dbCredManagedControlPlane()
+	cp.Spec.SecretStoreRef = &commonv1.SecretStoreRefSpec{
+		Kind: commonv1.SecretStoreKindNamespaced, Name: "openbao-tenant-store",
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	server, mount := r.openBaoConnection(context.Background(), cp)
+	g.Expect(server).To(Equal(openBaoDefaultServer))
+	g.Expect(mount).To(Equal(openBaoDefaultKubernetesMount))
+}
+
 func TestReconcileDBCredentials_Static_ProjectsKVExternalSecret(t *testing.T) {
 	g := NewGomegaWithT(t)
 
