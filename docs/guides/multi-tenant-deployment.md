@@ -206,7 +206,15 @@ server itself, so they hold even with the webhook disabled.
 
 ## Example: namespace-scoped install
 
-Deploy the operator into the `team-alpha` namespace with namespace-scoped RBAC:
+Deploy the operator into the `team-alpha` namespace with namespace-scoped RBAC.
+Build the operator image and load it into the kind cluster first — this mirrors
+the install form of the guide's namespace-scoped-rbac chainsaw suite (a local
+`dev` image with `pullPolicy=Never`, no registry needed):
+
+```bash
+make docker-build OPERATOR=keystone IMG=ghcr.io/c5c3/keystone-operator:dev
+kind load docker-image ghcr.io/c5c3/keystone-operator:dev --name forge
+```
 
 ```bash
 helm install keystone-operator \
@@ -215,7 +223,8 @@ helm install keystone-operator \
   --set rbac.namespaceScoped=true \
   --set webhook.enabled=false \
   --set image.repository=ghcr.io/c5c3/keystone-operator \
-  --set image.tag=v0.1.0 \
+  --set image.tag=dev \
+  --set image.pullPolicy=Never \
   --wait --timeout 120s
 ```
 

@@ -101,7 +101,20 @@ spec:
   federation:
     proxyImage:
       repository: ghcr.io/c5c3/keystone-federation-proxy
-      tag: v0.1.0
+      digest: sha256:<64-hex-digest>   # pin by immutable digest, never a mutable tag
+```
+
+The sidecar terminates SAML on the authentication path, so pin it by immutable
+`digest` rather than a tag. `latest` re-pulls on every restart (its default
+`pullPolicy` is `Always`), so a silently re-published image would land
+unreviewed in the auth path with no version to roll back to. The proxy image is
+released under the base-image scheme (`:latest` and per-commit `:<sha>`, not the
+`spec.openStackRelease` cadence), so resolve the digest of the build you intend
+to run and pin that:
+
+```bash
+docker buildx imagetools inspect ghcr.io/c5c3/keystone-federation-proxy:latest \
+  --format '{{.Manifest.Digest}}'
 ```
 
 ## Step 4 — Apply the backend CR
