@@ -120,7 +120,7 @@ kubectl get controlplane controlplane -n openstack -w
 
 ```bash
 kubectl get keystone controlplane-keystone -n openstack -w \
-  -o custom-columns=NAME:.metadata.name,PHASE:.status.upgradePhase,FROM:.status.installedRelease,TO:.status.targetRelease,READY:.status.conditions[?(@.type=='Ready')].status
+  -o custom-columns='NAME:.metadata.name,PHASE:.status.upgradePhase,FROM:.status.installedRelease,TO:.status.targetRelease,READY:.status.conditions[?(@.type=="Ready")].status'
 ```
 
 Expected timeline on the child:
