@@ -10,6 +10,14 @@
 # by setup-eso-tenant.sh authenticates against with the tenant namespace's
 # eso-tenant-auth ServiceAccount.
 #
+# As of #606 this is the SOLE write path for per-ControlPlane Keystone key
+# material: the three shared-identity wildcard policies this policy was originally
+# modelled on (push-keystone-keys / push-keystone-admin / push-app-credentials)
+# have been retired, and eso-management's `openstack/keystone/*` read dropped. The
+# path shapes below are preserved from those retired policies for continuity; the
+# only change is that every path is now namespace-templated instead of matching
+# every tenant behind a `+/+` glob.
+#
 # TENANT ISOLATION: every path below is scoped by OpenBao ACL identity templating
 # to the caller's OWN service-account namespace —
 # {{identity.entity.aliases.KUBERNETES_MANAGEMENT_ACCESSOR.metadata.service_account_namespace}}
@@ -47,7 +55,7 @@ path "kv-v2/data/bootstrap/{{identity.entity.aliases.KUBERNETES_MANAGEMENT_ACCES
   capabilities = ["read"]
 }
 
-# --- fernet-keys / credential-keys backup (mirrors push-keystone-keys.hcl) ---
+# --- fernet-keys / credential-keys backup (formerly push-keystone-keys.hcl) ---
 # ESO writes both the data and metadata endpoints on every KV-v2 PushSecret
 # (custom_metadata: managed-by=external-secrets), and the openbao-finalizer
 # drives DeletionPolicy=Delete (soft-delete on data, hard-delete on metadata),
@@ -70,10 +78,10 @@ path "kv-v2/metadata/openstack/keystone/{{identity.entity.aliases.KUBERNETES_MAN
   capabilities = ["create", "update", "read", "delete"]
 }
 
-# --- admin bootstrap password backup (mirrors push-keystone-admin.hcl) ---
+# --- admin bootstrap password backup (formerly push-keystone-admin.hcl) ---
 # adminPasswordPushSecret uses DeletionPolicy=None, so delete is never exercised;
-# it is retained for policy portability and consistency with push-keystone-keys,
-# adding no blast radius beyond this per-CR bootstrap/{ns}/{name}/admin leaf.
+# it is retained for policy portability and consistency with the fernet/credential
+# leaves above, adding no blast radius beyond this per-CR bootstrap/{ns}/{name}/admin leaf.
 path "kv-v2/data/bootstrap/{{identity.entity.aliases.KUBERNETES_MANAGEMENT_ACCESSOR.metadata.service_account_namespace}}/+/admin" {
   capabilities = ["create", "update", "read", "delete"]
 }
@@ -83,11 +91,11 @@ path "kv-v2/metadata/bootstrap/{{identity.entity.aliases.KUBERNETES_MANAGEMENT_A
 }
 
 # --- admin application credential + service-account backups ---
-# Mirrors push-app-credentials.hcl verbatim, INCLUDING its metadata-path
-# asymmetry: the metadata paths grant create/update/read but NOT delete. That
-# asymmetry is pre-existing on main (push-app-credentials.hcl) and is reproduced
-# here, not fixed — the admin-AC / service-account PushSecrets run
-# DeletionPolicy=Delete and ESO's KV-v2 delete only DELETEs the data path.
+# Carried over from the retired push-app-credentials.hcl, INCLUDING its
+# metadata-path asymmetry: the metadata paths grant create/update/read but NOT
+# delete. That asymmetry predates #606 and is preserved here, not fixed — the
+# admin-AC / service-account PushSecrets run DeletionPolicy=Delete and ESO's
+# KV-v2 delete only DELETEs the data path.
 path "kv-v2/data/openstack/keystone/{{identity.entity.aliases.KUBERNETES_MANAGEMENT_ACCESSOR.metadata.service_account_namespace}}/+/admin/app-credential" {
   capabilities = ["create", "update", "read", "delete"]
 }

@@ -80,32 +80,18 @@ main() {
   # clusters come online — only `bao write auth/kubernetes/<cluster>/config`
   # is needed to activate them.
   for cluster in "${CLUSTERS[@]}"; do
-    # The management cluster's ESO instance runs the PushSecrets that back up
-    # Keystone fernet-keys / credential-keys and that write the
-    # operator-rotated admin password to the shared bootstrap path,
-    # so its role additionally binds the corresponding write policies (see the
-    # management branch below). The other three clusters keep only their own
-    # read-only eso-<cluster> policy.
-    #
-    # Start each iteration from the read-only baseline and only append
-    # cluster-specific extras, so a future branch addition cannot silently
-    # inherit the previous iteration's `token_policies` under `set -u`.
+    # Every cluster's shared ESO role now binds ONLY its own read-only
+    # eso-<cluster> policy. The cross-tenant Keystone write grants that the
+    # management role once carried (push-keystone-keys / push-keystone-admin /
+    # push-app-credentials) have been RETIRED: they matched every ControlPlane's
+    # per-CR paths behind two `+/+` globs, so a leaked management-cluster ESO
+    # token could read, overwrite, and delete ANY tenant's fernet/credential
+    # keys and bootstrap admin password. Per-tenant secret traffic now
+    # authenticates as the templated eso-tenant role (see the eso-tenant role
+    # below and deploy/openbao/policies/eso-tenant.hcl), which OpenBao scopes to
+    # the caller's OWN namespace. The shared eso-management read is now confined
+    # to the genuinely shared bootstrap/* and infrastructure/* subtrees.
     local token_policies="eso-${cluster}"
-    if [[ "${cluster}" == "management" ]]; then
-      # back up rotated fernet-keys / credential-keys to OpenBao.
-      token_policies+=",push-keystone-keys"
-      # write the operator-rotated admin password to the
-      # per-ControlPlane bootstrap/{namespace}/{keystone}/admin path (Model B scheduled rotation; per-CR since). eso-management stays
-      # read-only; write capability lives only in the narrowly-scoped
-      # push-keystone-admin policy.
-      token_policies+=",push-keystone-admin"
-      # the c5c3-operator mirrors the minted admin Application
-      # Credential clouds.yaml to OpenBao via a PushSecret through the
-      # openbao-cluster-store (which binds this management role). Without the
-      # push-app-credentials policy that PushSecret 403s on the app-credential
-      # path and K-ORC silently falls back to the bootstrap admin password.
-      token_policies+=",push-app-credentials"
-    fi
 
     log "Writing ESO role for cluster '${cluster}'..."
     bao_exec bao write "auth/kubernetes/${cluster}/role/eso-${cluster}" \
