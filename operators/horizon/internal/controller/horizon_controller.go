@@ -35,6 +35,7 @@ import (
 	"github.com/c5c3/forge/internal/common/gateway"
 	"github.com/c5c3/forge/internal/common/healthcheck"
 	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
+	commonv1 "github.com/c5c3/forge/internal/common/types"
 	"github.com/c5c3/forge/internal/common/watch"
 	horizonv1alpha1 "github.com/c5c3/forge/operators/horizon/api/v1alpha1"
 )
@@ -142,7 +143,7 @@ var httpRouteGVK = schema.GroupVersionKind{
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes/status,verbs=get
 // +kubebuilder:rbac:groups=external-secrets.io,resources=externalsecrets,verbs=get;list;watch
-// +kubebuilder:rbac:groups=external-secrets.io,resources=clustersecretstores,verbs=get;list;watch
+// +kubebuilder:rbac:groups=external-secrets.io,resources=clustersecretstores;secretstores,verbs=get;list;watch
 
 // Reconcile is the main reconciliation loop for the Horizon CR.
 func (r *HorizonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -365,12 +366,17 @@ func (r *HorizonReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(
 			secretToHorizonMapper(mgr.GetClient()),
 		)).
-		// Watch the OpenBao-backed ClusterSecretStore so the operator reflects
-		// upstream secret-backend outages in SecretsReady as soon as ESO flips
-		// the store's Ready condition, rather than waiting for the next
-		// periodic requeue.
+		// Watch both the cluster-scoped ClusterSecretStore and the namespaced
+		// SecretStore a Horizon can select via spec.secretStoreRef, so the
+		// operator reflects upstream secret-backend outages in SecretsReady as
+		// soon as ESO flips the selected store's Ready condition, rather than
+		// waiting for the next periodic requeue. Each mapper enqueues only the
+		// Horizons whose effective store ref matches the changed store.
 		Watches(&esov1.ClusterSecretStore{}, handler.EnqueueRequestsFromMapFunc(
-			clusterSecretStoreToHorizonMapper(mgr.GetClient()),
+			storeToHorizonMapper(mgr.GetClient(), commonv1.SecretStoreKindCluster),
+		)).
+		Watches(&esov1.SecretStore{}, handler.EnqueueRequestsFromMapFunc(
+			storeToHorizonMapper(mgr.GetClient(), commonv1.SecretStoreKindNamespaced),
 		)).
 		Complete(r)
 }

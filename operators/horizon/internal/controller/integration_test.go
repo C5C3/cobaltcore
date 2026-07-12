@@ -361,3 +361,63 @@ func TestIntegrationHorizon_MissingSecretKeyBlocksReady(t *testing.T) {
 	err := c.Get(ctx, key, &appsv1.Deployment{})
 	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "no Deployment may exist while the secret gate blocks")
 }
+
+// ensureReadySecretStore creates or refreshes a namespaced SecretStore with a
+// Ready=True condition in namespace. The namespaced-store readiness path is one
+// the production stack uses nowhere today, so the store-ref integration test
+// materialises it here (issue #605).
+func ensureReadySecretStore(t testing.TB, ctx context.Context, c client.Client, name, namespace string) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+
+	store := &esov1.SecretStore{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}}
+	err := c.Get(ctx, client.ObjectKeyFromObject(store), store)
+	if apierrors.IsNotFound(err) {
+		g.Expect(c.Create(ctx, store)).To(Succeed(), "create SecretStore")
+	} else {
+		g.Expect(err).NotTo(HaveOccurred(), "get SecretStore")
+	}
+
+	store.Status = esov1.SecretStoreStatus{
+		Conditions: []esov1.SecretStoreStatusCondition{
+			{Type: esov1.SecretStoreReady, Status: corev1.ConditionTrue},
+		},
+	}
+	g.Expect(c.Status().Update(ctx, store)).To(Succeed(), "update SecretStore status")
+}
+
+// TestIntegrationHorizon_NamespacedSecretStoreGate verifies that a Horizon
+// selecting a namespaced SecretStore gates SecretsReady on THAT store, not the
+// shared cluster store: while the cluster store is Ready but the namespaced
+// store is absent, SecretsReady stays False; once the namespaced store reports
+// Ready, SecretsReady flips True (issue #605).
+func TestIntegrationHorizon_NamespacedSecretStoreGate(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+	ns := createTestNamespace(t, ctx, c)
+
+	// createPrerequisites makes the cluster store Ready plus the SECRET_KEY
+	// ExternalSecret and materialized Secret — everything EXCEPT the namespaced
+	// store the Horizon selects.
+	createPrerequisites(t, ctx, c, ns)
+
+	h := integrationHorizon("test-horizon", ns)
+	h.Spec.SecretStoreRef = &commonv1.SecretStoreRefSpec{
+		Kind: commonv1.SecretStoreKindNamespaced,
+		Name: "openbao-tenant-store",
+	}
+	g.Expect(c.Create(ctx, h)).To(Succeed())
+	key := types.NamespacedName{Name: h.Name, Namespace: ns}
+
+	// The namespaced store does not exist yet, so SecretsReady must be False even
+	// though the cluster store is Ready — proving the gate follows the ref.
+	cond := waitForCondition(t, ctx, c, key, "SecretsReady", metav1.ConditionFalse, eventuallyTimeout)
+	g.Expect(cond.Reason).To(Equal("SecretStoreNotReady"))
+	g.Expect(cond.Message).To(ContainSubstring("openbao-tenant-store"))
+
+	// Bring the namespaced store up → SecretsReady flips True.
+	ensureReadySecretStore(t, ctx, c, "openbao-tenant-store", ns)
+	waitForCondition(t, ctx, c, key, "SecretsReady", metav1.ConditionTrue, eventuallyTimeout)
+}

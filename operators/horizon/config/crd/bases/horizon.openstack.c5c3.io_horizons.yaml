@@ -1078,6 +1078,35 @@ spec:
                 required:
                 - name
                 type: object
+              secretStoreRef:
+                description: |-
+                  SecretStoreRef selects the External Secrets store whose Ready condition
+                  gates SecretsReady for this Horizon. When omitted the operator uses the
+                  shared cluster-scoped openbao-cluster-store, so existing deployments keep
+                  working unchanged. Set kind to SecretStore with the name of a namespaced
+                  store in THIS Horizon's namespace to gate on a per-tenant identity. The
+                  ControlPlane operator projects this field onto the Horizon it owns, so
+                  operators normally configure it there rather than here.
+                properties:
+                  kind:
+                    default: ClusterSecretStore
+                    description: |-
+                      Kind is the store scope: ClusterSecretStore (cluster-scoped, the default)
+                      or SecretStore (resolved in the CR's namespace).
+                    enum:
+                    - ClusterSecretStore
+                    - SecretStore
+                    type: string
+                  name:
+                    description: |-
+                      Name is the referenced store's name. It must be a non-empty DNS-1123
+                      subdomain (the Kubernetes object-name grammar), matching SecretRefSpec.Name.
+                    minLength: 1
+                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                    type: string
+                required:
+                - name
+                type: object
               websso:
                 description: |-
                   WebSSO configures the federated single-sign-on choices offered on the

@@ -9,6 +9,7 @@
 package v1alpha1
 
 import (
+	"github.com/c5c3/forge/internal/common/types"
 	"k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
@@ -95,6 +96,11 @@ func (in *HorizonSpec) DeepCopyInto(out *HorizonSpec) {
 	out.Image = in.Image
 	in.Cache.DeepCopyInto(&out.Cache)
 	out.SecretKeyRef = in.SecretKeyRef
+	if in.SecretStoreRef != nil {
+		in, out := &in.SecretStoreRef, &out.SecretStoreRef
+		*out = new(types.SecretStoreRefSpec)
+		**out = **in
+	}
 	if in.Gateway != nil {
 		in, out := &in.Gateway, &out.Gateway
 		*out = new(GatewaySpec)

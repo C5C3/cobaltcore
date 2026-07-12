@@ -205,6 +205,7 @@ func (w *HorizonWebhook) validate(ctx context.Context, h *Horizon) error {
 	// +kubebuilder:validation:XValidation CEL rule on the shared commonv1
 	// type, via the shared validator.
 	allErrs = append(allErrs, validation.CacheXOR(specPath.Child("cache"), &h.Spec.Cache)...)
+	allErrs = append(allErrs, validation.SecretStoreRef(specPath.Child("secretStoreRef"), h.Spec.SecretStoreRef)...)
 
 	// Defense-in-depth keystoneEndpoint URL check alongside the
 	// +kubebuilder:validation:Pattern=^https?:// marker. The dashboard hands

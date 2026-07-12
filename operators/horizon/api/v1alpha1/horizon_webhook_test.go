@@ -320,6 +320,10 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 	}
 	h.Spec.Gateway = &GatewaySpec{}
 	h.Spec.NetworkPolicy = &NetworkPolicySpec{}
+	// Break secretStoreRef — unknown kind so validation.SecretStoreRef fires.
+	h.Spec.SecretStoreRef = &commonv1.SecretStoreRefSpec{
+		Kind: commonv1.SecretStoreRefKind("Bogus"), Name: "some-store",
+	}
 	h.Spec.Autoscaling = &AutoscalingSpec{MaxReplicas: 0}
 	h.Spec.Logging = &LoggingSpec{Format: "xml", PerLoggerLevels: map[string]string{"django": "TRACE"}}
 	// Break websso on every hook: a duplicate choice id, an initialChoice and
@@ -360,6 +364,7 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 		"hostname must be set",
 		"parentRef.name must be set",
 		"at least one ingress source",
+		"secretStoreRef",
 		"maxReplicas must be at least 1",
 		"logging.format",
 		"level must be one of",
@@ -630,4 +635,43 @@ func TestErrorMessagesStartLowercase(t *testing.T) {
 	_, err := w.ValidateCreate(context.Background(), h)
 	g.Expect(err).To(gomega.HaveOccurred())
 	g.Expect(strings.Contains(err.Error(), "keystoneEndpoint must be set")).To(gomega.BeTrue())
+}
+
+// TestValidate_SecretStoreRef covers the secretStoreRef defense-in-depth checks
+// in isolation: a nil ref (default cluster store) and valid cluster/namespaced
+// refs pass, while an empty name or an unknown kind is rejected.
+func TestValidate_SecretStoreRef(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &HorizonWebhook{}
+
+	// nil ref: valid.
+	h := validHorizon()
+	h.Spec.SecretStoreRef = nil
+	_, err := w.ValidateCreate(context.Background(), h)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// valid namespaced ref.
+	h = validHorizon()
+	h.Spec.SecretStoreRef = &commonv1.SecretStoreRefSpec{
+		Kind: commonv1.SecretStoreKindNamespaced, Name: "openbao-tenant-store",
+	}
+	_, err = w.ValidateCreate(context.Background(), h)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// empty name: rejected.
+	h = validHorizon()
+	h.Spec.SecretStoreRef = &commonv1.SecretStoreRefSpec{Kind: commonv1.SecretStoreKindNamespaced}
+	_, err = w.ValidateCreate(context.Background(), h)
+	g.Expect(err).To(gomega.HaveOccurred())
+	g.Expect(err.Error()).To(gomega.ContainSubstring("secretStoreRef"))
+
+	// unknown kind: rejected.
+	h = validHorizon()
+	h.Spec.SecretStoreRef = &commonv1.SecretStoreRefSpec{
+		Kind: commonv1.SecretStoreRefKind("Bogus"), Name: "some-store",
+	}
+	_, err = w.ValidateCreate(context.Background(), h)
+	g.Expect(err).To(gomega.HaveOccurred())
+	g.Expect(err.Error()).To(gomega.ContainSubstring("secretStoreRef"))
+	g.Expect(err.Error()).To(gomega.ContainSubstring("kind"))
 }

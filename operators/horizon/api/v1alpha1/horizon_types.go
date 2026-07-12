@@ -176,6 +176,16 @@ type HorizonSpec struct {
 	// pattern; key defaults to "secret-key".
 	SecretKeyRef commonv1.SecretRefSpec `json:"secretKeyRef"`
 
+	// SecretStoreRef selects the External Secrets store whose Ready condition
+	// gates SecretsReady for this Horizon. When omitted the operator uses the
+	// shared cluster-scoped openbao-cluster-store, so existing deployments keep
+	// working unchanged. Set kind to SecretStore with the name of a namespaced
+	// store in THIS Horizon's namespace to gate on a per-tenant identity. The
+	// ControlPlane operator projects this field onto the Horizon it owns, so
+	// operators normally configure it there rather than here.
+	// +optional
+	SecretStoreRef *commonv1.SecretStoreRefSpec `json:"secretStoreRef,omitempty"`
+
 	// Gateway configures external exposure of the dashboard via a Gateway API
 	// HTTPRoute. When set, the operator creates an HTTPRoute targeting the
 	// {name} Service on port 8080 and attaches it to the referenced

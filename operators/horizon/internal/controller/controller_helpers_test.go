@@ -21,9 +21,15 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
+	"github.com/c5c3/forge/internal/common/secrets"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	horizonv1alpha1 "github.com/c5c3/forge/operators/horizon/api/v1alpha1"
 )
+
+// openBaoClusterStoreName aliases the shared ClusterSecretStore name
+// (secrets.OpenBaoClusterStoreName) for the ClusterSecretStore fixtures in
+// this package's tests.
+const openBaoClusterStoreName = secrets.OpenBaoClusterStoreName
 
 func testScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
@@ -119,6 +125,20 @@ func notReadyClusterSecretStore(name string) *esov1.ClusterSecretStore {
 		Status: esov1.SecretStoreStatus{
 			Conditions: []esov1.SecretStoreStatusCondition{
 				{Type: esov1.SecretStoreReady, Status: corev1.ConditionFalse},
+			},
+		},
+	}
+}
+
+// readySecretStore returns a namespaced SecretStore with a Ready=True status
+// condition so reconcileSecrets proceeds past the store gate for a Horizon that
+// selects a per-tenant store.
+func readySecretStore(name, namespace string) *esov1.SecretStore {
+	return &esov1.SecretStore{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Status: esov1.SecretStoreStatus{
+			Conditions: []esov1.SecretStoreStatusCondition{
+				{Type: esov1.SecretStoreReady, Status: corev1.ConditionTrue},
 			},
 		},
 	}

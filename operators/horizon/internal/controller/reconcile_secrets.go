@@ -17,10 +17,6 @@ import (
 	horizonv1alpha1 "github.com/c5c3/forge/operators/horizon/api/v1alpha1"
 )
 
-// openBaoClusterStoreName re-exports the shared ClusterSecretStore name (see
-// secrets.OpenBaoClusterStoreName) for the watches and tests in this package.
-const openBaoClusterStoreName = secrets.OpenBaoClusterStoreName
-
 // effectiveSecretKeyKey returns the Secret data key holding the Django
 // SECRET_KEY, defaulting to horizonv1alpha1.DefaultSecretKeyKey when
 // spec.secretKeyRef.key is empty (a CR that bypassed the defaulting webhook).
@@ -39,10 +35,14 @@ func effectiveSecretKeyKey(horizon *horizonv1alpha1.Horizon) string {
 func (r *HorizonReconciler) reconcileSecrets(ctx context.Context,
 	horizon *horizonv1alpha1.Horizon,
 ) (ctrl.Result, string, error) {
-	// Check the ClusterSecretStore first so upstream backend outages surface
+	// Check the selected secret store first so upstream backend outages surface
 	// as SecretsReady=False even while the per-ExternalSecret cache still
-	// reports Ready=True from its last successful sync.
-	storeReady, err := secrets.GateClusterStoreReady(ctx, r.Client, openBaoClusterStoreName,
+	// reports Ready=True from its last successful sync. The store is the one
+	// this Horizon selected via spec.secretStoreRef (default: the shared
+	// cluster-scoped openbao-cluster-store); a namespaced store is resolved in
+	// the Horizon's own namespace.
+	storeReady, err := secrets.GateStoreReady(ctx, r.Client,
+		secrets.EffectiveStoreRef(horizon.Spec.SecretStoreRef), horizon.Namespace,
 		&horizon.Status.Conditions, horizon.Generation, "SecretsReady")
 	if err != nil {
 		return ctrl.Result{}, "", err

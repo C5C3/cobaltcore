@@ -214,7 +214,7 @@ tests:
               - list
               - watch
 
-  - it: should grant read-only on clustersecretstores
+  - it: should grant read-only on clustersecretstores and secretstores
     set:
       rbac:
         namespaceScoped: true
@@ -228,6 +228,7 @@ tests:
               - external-secrets.io
             resources:
               - clustersecretstores
+              - secretstores
             verbs:
               - get
               - list

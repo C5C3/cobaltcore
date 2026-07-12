@@ -11,6 +11,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 
+	"github.com/c5c3/forge/internal/common/secrets"
+	commonv1 "github.com/c5c3/forge/internal/common/types"
 	"github.com/c5c3/forge/internal/common/watch"
 	horizonv1alpha1 "github.com/c5c3/forge/operators/horizon/api/v1alpha1"
 )
@@ -31,13 +33,22 @@ func secretToHorizonMapper(c client.Reader) handler.MapFunc {
 	})
 }
 
-// clusterSecretStoreToHorizonMapper returns a MapFunc that enqueues every
-// Horizon CR in the cluster when the OpenBao-backed ClusterSecretStore
-// changes. The store is cluster-scoped and shared across namespaces, so any
-// status transition (e.g. ESO losing the backend connection) must retrigger
-// reconcile on all Horizons that route secrets through it. It binds the
-// shared watch.ClusterSecretStoreFanOut to the Horizon list type.
-func clusterSecretStoreToHorizonMapper(c client.Reader) handler.MapFunc {
-	return watch.ClusterSecretStoreFanOut(c, openBaoClusterStoreName,
-		func() client.ObjectList { return &horizonv1alpha1.HorizonList{} })
+// storeToHorizonMapper returns a MapFunc that enqueues the Horizon CRs whose
+// effective secret store reference resolves to the changed store object.
+// watchedKind selects which store scope this mapper is registered against — a
+// cluster-scoped ClusterSecretStore (shared across namespaces) or a namespaced
+// SecretStore (per tenant). A Horizon that omits spec.secretStoreRef resolves
+// to the shared cluster store via secrets.EffectiveStoreRef, so the default
+// backend-outage fan-out is preserved. It binds the shared watch.StoreRefFanOut
+// to the Horizon list type.
+func storeToHorizonMapper(c client.Reader, watchedKind commonv1.SecretStoreRefKind) handler.MapFunc {
+	return watch.StoreRefFanOut(c, watchedKind,
+		func() client.ObjectList { return &horizonv1alpha1.HorizonList{} },
+		func(o client.Object) commonv1.SecretStoreRefSpec {
+			h, ok := o.(*horizonv1alpha1.Horizon)
+			if !ok {
+				return commonv1.SecretStoreRefSpec{}
+			}
+			return secrets.EffectiveStoreRef(h.Spec.SecretStoreRef)
+		})
 }
