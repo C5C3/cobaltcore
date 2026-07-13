@@ -18,9 +18,10 @@ Keystone-level suites, see [Keystone E2E Test Suites](./keystone-e2e-tests.md).
 
 ## Overview
 
-`tests/e2e/c5c3/` holds five suites. Each applies one or more `ControlPlane`
-CRs (`c5c3.io/v1alpha1`) and asserts operator behaviour end to end against the
-live cluster. The directory is the canonical inventory.
+The `tests/e2e/c5c3/` directory holds the ControlPlane suites. Each applies one
+or more `ControlPlane` CRs (`c5c3.io/v1alpha1`) and asserts operator behaviour
+end to end against the live cluster. The directory is the canonical inventory;
+the table below is a guide, not a count.
 
 Unlike the Keystone suites, the ControlPlane chain additionally requires K-ORC
 and the c5c3-operator (on top of the keystone-operator, OpenBao, ESO, MariaDB,
@@ -64,6 +65,7 @@ Without the stack the suites skip cleanly, so `make e2e` (which runs the whole
 | Suite | CR Name(s) | Behaviour Validated |
 | --- | --- | --- |
 | [full-controlplane-keystone](#full-controlplane-keystone) | `controlplane-keystone` | The entire orchestration chain, link by link, through aggregate `Ready` and a live API check |
+| [external-keystone](#external-keystone) | `controlplane-external` (+ 3 negative CRs) | External mode against a plain, operator-free Keystone: convergence with zero children, imports, the app-credential round-trip, no catalog pollution, service accounts, drift + rotation, `endpoint_type` detection, and zero-blast-radius deletion |
 | [federated-controlplane](#federated-controlplane) | `controlplane-sso` | The end-user SSO experience: websso projection, the login page's SSO choice and domain field, the websso round trip through the gateway |
 | [deletion-orchestration](#deletion-orchestration) | `deletion-orch` | ORC-teardown finalizer sequencing; deletion completes even when Keystone is already gone |
 | [admin-password-scoping](#admin-password-scoping) | `controlplane` | Per-CR OpenBao-backed admin password projection |
@@ -105,6 +107,49 @@ each link on the previous one:
    CLI bundled in the tempest image) against the materialised admin
    clouds.yaml, proving the minted, pushed, re-materialised application
    credential actually authenticates.
+
+### external-keystone
+
+Proves the External-mode adoption contract against a Keystone the operator does
+**not** own. The suite stands up a plain, operator-free Keystone fixture
+(`00-fixture-keystone.yaml`, a single SQLite-backed pod with its own bootstrap
+history and admin Secret) in the `brownfield-keystone` namespace and populates
+its catalog with a non-default admin identity (domain `heimdall`, project
+`platform-admin`, user `brownfield-admin`) and a duplicate identity service
+(`01-fixture-catalog-setup-job.yaml`). It then drives four External
+`ControlPlane`s against that fixture and asserts, in one consolidated script:
+
+1. **Converge** — the main External CR reaches `Ready=True/AllReady` with **zero**
+   MariaDB/Memcached/Keystone/Horizon children; the skipped sub-reconcilers report
+   `ExternallyManaged` and Horizon reports `HorizonNotManaged`.
+2. **Imports resolve** — `KORCReady=ApplicationCredentialMinted`,
+   `CatalogReady=CatalogImported`, and `status.catalog.imports` shows the identity
+   Service plus three Endpoint interfaces resolved with OpenStack ids.
+3. **App credential** — minted against the external Keystone, present at the per-CR
+   OpenBao path with the ESO `managed-by` stamp and in a materialised clouds.yaml
+   targeting the external API; a verify Job authenticates a client with it.
+4. **No pollution** — the external services, endpoints, and domains are byte-for-byte
+   identical to a pre-recorded baseline; users and projects gained exactly the one
+   declared service account.
+5. **Service accounts** — the declared account issues an unscoped token, and a
+   `CredentialRotation` round-trips its password (new works, old is rejected).
+6. **Drift + rotation** — changing the external admin password without updating the
+   Secret makes a forced re-mint fail loudly (a documented drift reason, no
+   remediation); updating the Secret then drives a hash-driven re-mint to a fresh
+   credential, and the old application credential is invalid.
+7. **endpoint_type detection** — a ControlPlane pinned to an unreachable internal
+   interface fails loudly (never a silent-empty import), while `public` converges.
+8. **Negative paths** — a wrong password yields a distinct `AuthenticationFailed`
+   condition; an ambiguous identity catalog fails with `CatalogFailed`.
+9. **Zero blast radius** — deleting the main CP revokes the app credential, removes
+   the OpenBao-backed Secrets, emits `ORCTeardownComplete`, leaves the external
+   users/domains/catalog bit-for-bit identical to the baseline, and the fixture
+   keeps serving tokens.
+
+Run it locally against a full ControlPlane stack with
+`E2E_REQUIRE_CONTROLPLANE_STACK=true make e2e-external-keystone`. It has its own
+dedicated `e2e-external-keystone` CI job (see the
+[CI workflow reference](../ci-cd/ci-workflow.md)).
 
 ### deletion-orchestration
 
@@ -204,6 +249,15 @@ tests/e2e/c5c3/
 ├── deletion-orchestration/
 │   ├── chainsaw-test.yaml              ORC-teardown finalizer sequencing
 │   └── 00-controlplane-cr.yaml         ControlPlane CR (deletion-orch)
+├── external-keystone/
+│   ├── chainsaw-test.yaml              External mode vs a plain, operator-free Keystone
+│   ├── 00-fixture-keystone.yaml        Plain SQLite Keystone fixture (no operator)
+│   ├── 01-fixture-catalog-setup-job.yaml  Non-default identities + duplicate service
+│   ├── 02-controlplane-external.yaml   Main External CR + service account
+│   ├── 03-controlplane-wrong-password.yaml  Wrong-password negative case
+│   ├── 04-controlplane-stalled.yaml    Unreachable-internal-endpoint case
+│   ├── 05-controlplane-ambiguous.yaml  Ambiguous-catalog negative case
+│   └── 06-openstack-verify-job.yaml    openstack CLI verify Job
 ├── full-controlplane-keystone/
 │   ├── chainsaw-test.yaml              Full chain, link by link
 │   ├── 00-controlplane-cr.yaml         ControlPlane CR (controlplane-keystone)

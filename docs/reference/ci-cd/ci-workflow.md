@@ -132,6 +132,8 @@ E2E Jobs (pull requests only, depend on build-e2e-images):
                      if: needs.changes.outputs.e2e-controlplane == 'true'
   e2e-controlplane-sso > needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]
                      if: needs.changes.outputs.e2e-controlplane == 'true'
+  e2e-external-keystone > needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]
+                     if: needs.changes.outputs.e2e-controlplane == 'true'
   tempest ────────> needs: [changes, build-e2e-images, e2e-infra, e2e-operator, e2e-chaos, e2e-prometheus]
   cleanup-e2e-tags > needs: [build-e2e-images, e2e-operator, e2e-operator-upgrade, e2e-chaos, tempest]
 
@@ -145,7 +147,8 @@ Release Job (v* tags only, depends on publish):
 ```
 
 The E2E jobs (`e2e-infra`, `e2e-operator`, `e2e-operator-upgrade`, `e2e-chaos`,
-`e2e-prometheus`, `e2e-controlplane`, `tempest`) share infrastructure setup via
+`e2e-prometheus`, `e2e-controlplane`, `e2e-external-keystone`, `tempest`) share
+infrastructure setup via
 the `setup-e2e-infra` composite action and diagnostic teardown via
 `hack/ci-dump-diagnostics.sh`. They run on `blacksmith-4vcpu-ubuntu-2404` runners
 (as does `test-integration`), except the `e2e-chaos` network suite, which uses a
@@ -848,6 +851,46 @@ one under review — which is why the `e2e_controlplane` path filter also watche
 (`any_e2e_tests`) also triggers the job via `ci-resolve-changes.sh`. When it
 runs, `build-e2e-images` unions `c5c3` into the built operator set so both dev
 images exist even for a full-chain-test-only change.
+
+### e2e-external-keystone
+
+Runs the `tests/e2e/c5c3/external-keystone/` Chainsaw suite: an External-mode
+`ControlPlane` driven against a plain Keystone the operator does **not** own. The
+suite brings up its own operator-free, SQLite-backed Keystone fixture in a
+separate namespace, then drives four External `ControlPlane`s against it and
+asserts the whole adoption contract — convergence with zero
+MariaDB/Memcached/Keystone children, admin and catalog imports, the application
+credential minted against the external API and round-tripped through OpenBao, no
+catalog pollution (compared against a pre-recorded inventory), service-account
+usability and rotation, out-of-band password rotation and drift detection, the
+`endpoint_type` failure detection, the wrong-password and ambiguous-catalog
+negative paths, and zero-blast-radius deletion.
+
+**A sibling job rather than a second suite directory on `e2e-controlplane`.** The
+ControlPlane webhook permits one ControlPlane per namespace, and this suite
+stands up a wholly different infrastructure shape (a plain, operator-free
+Keystone fixture plus four External ControlPlanes, none provisioning
+MariaDB/Memcached), so it needs its own kind cluster.
+
+**Dependencies:** `needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]`
+**Condition:** Runs only when `e2e-controlplane == 'true'`, the upstream
+`build-e2e-images` job succeeded, and no dependency failed or was cancelled.
+
+It mirrors `e2e-controlplane`'s setup with `WITH_CONTROLPLANE: "true"`,
+`CONTROLPLANE_OPERATORS: external`, and `WITH_CONTROLPLANE_CR: "false"`, but
+leaves `CONTROLPLANE_NAME` at its default: the OpenBao bootstrap only seeds the
+managed-mode admin-password path, which the External ControlPlanes — in their own
+namespaces, authenticating from user-supplied Secrets — never read, and the suite
+asserts their own per-CR OpenBao paths are never-seeded. It loads the
+`keystone:2025.2` and `tempest:2025.2` service images (but **not** `horizon:2025.2`
+— External mode never runs a Horizon workload; the horizon-operator is deployed
+only for its CRD) and runs with `E2E_REQUIRE_CONTROLPLANE_STACK: "true"` so a
+broken deployment fails the build instead of the suite skipping.
+
+**Path filter:** shares the `e2e-controlplane` change-detection output, so the
+same `e2e_controlplane` filter (`operators/c5c3/**`, `operators/keystone/**`,
+`operators/horizon/**`, `tests/e2e/c5c3/**`, `deploy/**`, `hack/**`,
+`.github/actions/**`, `.github/workflows/ci.yaml`) triggers it.
 
 ### tempest
 
