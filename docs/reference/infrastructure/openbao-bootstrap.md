@@ -160,7 +160,7 @@ on the successful completion of the previous step:
 3. setup-auth.sh            Configure Kubernetes auth + AppRole
        │
        ▼
-4. setup-policies.sh        Apply 8 HCL least-privilege policies
+4. setup-policies.sh        Apply 9 HCL least-privilege policies
        │
        ▼
 5. write-bootstrap-secrets.sh  Generate and seed initial passwords
@@ -342,10 +342,15 @@ idempotent.
 
 ### setup-eso-tenant.sh
 
-**Purpose:** Provision the in-cluster half of one ControlPlane's per-tenant
-OpenBao identity — the objects that let that tenant's ExternalSecrets and
-PushSecrets reach OpenBao as the `eso-tenant` role instead of the shared
-cluster identity. It is the ESO counterpart to `setup-database-tenant.sh`.
+**Purpose:** Provision the in-cluster half of a **standalone** (non-ControlPlane)
+Keystone/Horizon namespace's per-tenant OpenBao identity — the objects that let
+that namespace's ExternalSecrets and PushSecrets reach OpenBao as the
+`eso-tenant` role instead of the shared cluster identity. It is the **manual**
+onboarding path for standalone CRs; a ControlPlane of **any** mode (Managed or
+External) never needs it, because the c5c3 operator provisions the same
+ServiceAccount, Certificate, and SecretStore itself and defaults the control
+plane onto the store (`reconcileESOTenantStore`). It is the ESO counterpart to
+`setup-database-tenant.sh`.
 
 **File:** `deploy/openbao/bootstrap/setup-eso-tenant.sh`
 
@@ -368,12 +373,13 @@ tenant namespace:
 The SecretStore authenticates as the `eso-tenant` role with the
 `eso-tenant-auth` ServiceAccount and sources its client cert, key, and CA from
 the `eso-tenant-client-tls` Secret (same namespace). After the SecretStore
-reports `Ready`, set the ControlPlane's `spec.secretStoreRef` to
-`{kind: SecretStore, name: openbao-tenant-store}` to switch it onto the
-per-tenant identity. On an **existing** ControlPlane, run this (and, on a
-cluster bootstrapped before this feature, re-run `setup-auth.sh` /
-`setup-policies.sh`) **before** flipping the ref — otherwise ESO's pushes 403
-and `FernetKeysReady` / `CredentialKeysReady` degrade. See the
+reports `Ready`, set the **standalone** Keystone/Horizon CR's
+`spec.secretStoreRef` to `{kind: SecretStore, name: openbao-tenant-store}` to
+route it through the per-tenant identity. On a cluster bootstrapped before this
+feature, re-run `setup-auth.sh` / `setup-policies.sh` first so the `eso-tenant`
+role and policy exist — otherwise ESO's pushes 403 and `FernetKeysReady` /
+`CredentialKeysReady` degrade. Setting `spec.secretStoreRef` on a **ControlPlane**
+is the opt-out override for a self-managed store, not an onboarding step. See the
 [multi-tenant deployment guide](../../guides/multi-tenant-deployment.md#per-controlplane-secret-stores-and-openbao-identities)
 for the full procedure.
 
@@ -497,9 +503,19 @@ into the KV v2 secret engine.
 
 | KV v2 Path | Secret Keys | Description |
 | --- | --- | --- |
-| `kv-v2/bootstrap/<namespace>/<keystone>/admin` | `password` | Keystone admin user password, scoped per ControlPlane. One entry per `KORC_CONTROLPLANES` identity; the default `openstack/controlplane` seeds `kv-v2/bootstrap/openstack/controlplane-keystone/admin`. |
+| `kv-v2/bootstrap/<namespace>/<keystone>/admin` | `password` | Keystone admin user password, scoped per **Managed-mode** ControlPlane. One entry per `KORC_CONTROLPLANES` identity; the default `openstack/controlplane` seeds `kv-v2/bootstrap/openstack/controlplane-keystone/admin`. |
+| `kv-v2/bootstrap/<namespace>/<horizon>/secret-key` | `secret-key` | Horizon Django `SECRET_KEY`, scoped per **Managed-mode** ControlPlane. One entry per `KORC_CONTROLPLANES` identity; the default seeds `kv-v2/bootstrap/openstack/controlplane-horizon/secret-key`, read by the kind-only `horizon-secret-key` ExternalSecret. |
 | `kv-v2/infrastructure/mariadb` | `root-password` | MariaDB root password |
-| `kv-v2/openstack/keystone/standalone/db` | `username`, `password` | Static Keystone DB credential for **standalone** (non-ControlPlane) Keystone demos only (username is `keystone`), read by the kind-only `keystone-db` ExternalSecret. Brownfield-only. |
+| `kv-v2/openstack/keystone/openstack/standalone/db` | `username`, `password` | Static Keystone DB credential for **standalone** (non-ControlPlane) Keystone demos only (username is `keystone`), read by the kind-only `keystone-db` ExternalSecret. Brownfield-only. |
+
+**Mode note:** `KORC_CONTROLPLANES` lists **Managed-mode** ControlPlane
+identities only. An **External-mode** ControlPlane
+(`spec.services.keystone.mode: External`) is **never** seeded here — its admin
+password is owned out-of-band in the user-supplied `passwordSecretRef` Secret, the
+c5c3 operator's `reconcileAdminPassword` short-circuits without reading any
+bootstrap path, and `services.horizon` is rejected in External mode. Listing an
+External identity would write a generated admin password that nothing reads. See
+[OpenBao paths per ControlPlane mode](#openbao-paths-per-controlplane-mode).
 
 **Retired (#439):** the stage-(a) per-ControlPlane static DB seed
 `kv-v2/openstack/keystone/{ns}/{name}/db` is **no longer written**. Managed-mode
@@ -596,9 +612,10 @@ All secrets are stored under the `kv-v2/` mount point (KV version 2 engine).
 
 | Path | Keys | Provisioned By | Consumed By |
 | --- | --- | --- | --- |
-| `kv-v2/bootstrap/<namespace>/<keystone>/admin` | `password` | `write-bootstrap-secrets.sh` (per ControlPlane; default `.../openstack/controlplane-keystone/admin`) | Operator-created ExternalSecret `{controlplane.Name}-keystone-admin-credentials` (default `controlplane-keystone-admin-credentials`); on kind additionally the overlay's `keystone-admin` ExternalSecret (default identity) |
+| `kv-v2/bootstrap/<namespace>/<keystone>/admin` | `password` | `write-bootstrap-secrets.sh` (per **Managed-mode** ControlPlane; default `.../openstack/controlplane-keystone/admin`) | Operator-created ExternalSecret `{controlplane.Name}-keystone-admin-credentials` (default `controlplane-keystone-admin-credentials`); on kind additionally the overlay's `keystone-admin` ExternalSecret (default identity) |
+| `kv-v2/bootstrap/<namespace>/<horizon>/secret-key` | `secret-key` | `write-bootstrap-secrets.sh` (per **Managed-mode** ControlPlane; default `.../openstack/controlplane-horizon/secret-key`) | On kind the overlay's `horizon-secret-key` ExternalSecret (default identity); per-CR ExternalSecrets in test namespaces |
 | `kv-v2/infrastructure/mariadb` | `root-password` | `write-bootstrap-secrets.sh` | On kind the overlay's `mariadb-root-password` ExternalSecret; in production a non-kind Flux MariaDB baseline provides the `mariadb-root-password` Secret itself |
-| `kv-v2/openstack/keystone/standalone/db` | `username`, `password` | `write-bootstrap-secrets.sh` (standalone/brownfield only) | The kind overlay's `keystone-db` ExternalSecret, serving standalone (non-ControlPlane) Keystone demos |
+| `kv-v2/openstack/keystone/openstack/standalone/db` | `username`, `password` | `write-bootstrap-secrets.sh` (standalone/brownfield only) | The kind overlay's `keystone-db` ExternalSecret, serving standalone (non-ControlPlane) Keystone demos |
 
 **Note:** The stage-(a) per-ControlPlane static path
 `openstack/keystone/{ns}/{name}/db` (c5c3 operator helper
@@ -608,6 +625,52 @@ ControlPlanes draw short-lived, engine-issued credentials from
 retained only for the `credentialsMode: Static` opt-out (brownfield migration),
 whose KV path must then be seeded manually — see
 `docs/guides/migrate-keystone-db-to-dynamic-credentials.md`.
+
+### OpenBao paths per ControlPlane mode
+
+Which OpenBao paths exist for a ControlPlane depends on its Keystone identity
+mode (`spec.services.keystone.mode`). Seeding is a **Managed-mode** concern only;
+an **External-mode** ControlPlane wraps a pre-existing Keystone whose credentials
+were never minted by this operator, so no seeding script runs for it. In both
+modes the per-tenant `openbao-tenant-store` SecretStore the c5c3 operator
+provisions for the ControlPlane (`reconcileESOTenantStore`) is what reaches these
+paths, authenticating as the namespace-templated `eso-tenant` identity.
+
+**Both modes** — created on demand by ESO, never seeded. ESO's first PushSecret
+CREATES the KV leaf and stamps `custom_metadata.managed-by=external-secrets`
+itself (the managed-by guard only rejects a *pre-existing* leaf lacking that
+marker, so a first push to a never-seeded path always succeeds):
+
+| Path (under the `kv-v2` mount) | Written by | Read back by |
+| --- | --- | --- |
+| `openstack/keystone/{ns}/{cp}/admin/app-credential` | c5c3 operator admin-AC backup PushSecret (`adminAppCredentialRemoteKeyFor`, `DeletionPolicy: Delete`) | per-CR `k-orc-clouds-yaml` ExternalSecret (`ensureKORCCloudsYAMLExternalSecret`) |
+| `openstack/keystone/{ns}/{cp}/service-accounts/{account}` | c5c3 operator per-service-account backup PushSecret (`serviceAccountRemoteKeyFor`, one per declared `korc.serviceAccounts` entry) | the matching per-service-account ExternalSecret |
+
+**Managed mode additionally** — seeded and/or backed up because the operator owns
+the Keystone lifecycle:
+
+| Path (under the `kv-v2` mount) | Provisioned |
+| --- | --- |
+| `bootstrap/{ns}/{cp}-keystone/admin` | seeded by `write-bootstrap-secrets.sh` (ESO-adoption-marked), later overwritten by the keystone-operator Model B rotation PushSecret |
+| `bootstrap/{ns}/{cp}-horizon/secret-key` | seeded by `write-bootstrap-secrets.sh` |
+| `openstack/keystone/{ns}/{cp}-keystone/fernet-keys` | keystone-operator backup PushSecret (`reconcile_fernet.go`) |
+| `openstack/keystone/{ns}/{cp}-keystone/credential-keys` | keystone-operator backup PushSecret (`reconcile_credential.go`) |
+| `database/mariadb/creds/keystone-{ns}` (database engine, not KV) | dynamic, short-lived leases issued by the `database` engine role provisioned by `setup-database-tenant.sh` |
+
+**External mode** — no seeding script runs for the ControlPlane and no bootstrap
+path is created for it. The **only** OpenBao-side prerequisites are the one-time
+cluster bootstrap:
+
+- the secret engines (`setup-secret-engines.sh`),
+- the `eso-tenant` Kubernetes-auth role (`setup-auth.sh`),
+- the templated `eso-tenant` policy (`setup-policies.sh`),
+
+plus the infra-stack `openbao-ca-issuer` ClusterIssuer that signs the tenant
+store's mTLS client certificate. Neither `setup-eso-tenant.sh` nor
+`setup-database-tenant.sh` is needed: the c5c3 operator provisions the per-tenant
+store itself, and an External-mode ControlPlane has no managed database. The
+app-credential and declared service-account paths above are still created on the
+operator's first push, exactly as in Managed mode.
 
 ### ESO Integration
 
@@ -630,7 +693,7 @@ deployment-specific.
 | `{controlplane.Name}-keystone-db-credentials` | `openstack` | Dynamic (default): generator-backed via `VaultDynamicSecret` reading `database/mariadb/creds/keystone-{ns}` (no KV remote path); Static opt-out: `openstack/keystone/{ns}/{name}/db` | `username`, `password` | `{controlplane.Name}-keystone-db-credentials` | `username`, `password` |
 | `keystone-admin` (kind only) | `openstack` | `bootstrap/openstack/controlplane-keystone/admin` | `password` | `keystone-admin` | `password` |
 | `mariadb-root-password` (kind only) | `openstack` | `infrastructure/mariadb` | `root-password` | `mariadb-root-password` | `password` |
-| `keystone-db` (kind only) | `openstack` | `openstack/keystone/standalone/db` | `username`, `password` | `keystone-db` | `username`, `password` |
+| `keystone-db` (kind only) | `openstack` | `openstack/keystone/openstack/standalone/db` | `username`, `password` | `keystone-db` | `username`, `password` |
 
 **Note:** The static `deploy/eso/externalsecrets/` directory has been removed, so
 the production stack ships **no** ExternalSecret resources — its ESO
