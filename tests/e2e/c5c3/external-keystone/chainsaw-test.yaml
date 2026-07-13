@@ -1,0 +1,666 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the External-mode ControlPlane against a Keystone the
+# operator does NOT own. It brings up a plain, operator-free Keystone fixture in
+# its own namespace (00/01) and drives four External-mode ControlPlanes against
+# it, proving every scenario the External-mode adoption contract must hold:
+#
+#   - Converge          : the main External CR reaches Ready=True with ZERO
+#                         MariaDB/Memcached/Keystone/Horizon children; the
+#                         skipped sub-reconcilers report ExternallyManaged.
+#   - Imports resolve    : admin user/domain imports and the catalog imports show
+#                         resolved status.
+#   - App credential     : minted against the external Keystone, lands in OpenBao
+#                         + a materialised Secret, and a client authenticates with
+#                         it against the external API.
+#   - No pollution       : the external catalog has exactly as many identity
+#                         services/endpoints as before — compared against a
+#                         pre-recorded inventory, not just "no error".
+#   - Service accounts   : a declared account is usable against the external
+#                         Keystone; the password rotation round-trips.
+#   - Drift surfaced     : the external admin password changes without the Secret
+#                         following; a forced re-mint fails loudly (documented
+#                         actionable reason) and the operator does NOT remediate.
+#   - Out-of-band rotate : the Secret is then updated to match; the re-mint fires,
+#                         the old application credential is invalid, the new works.
+#   - endpoint_type      : public converges; a catalog whose internal endpoint is
+#                         unreachable is DETECTED loudly, never silently empty.
+#   - Negative           : a wrong password from the start yields a distinct
+#                         authentication-failure condition; an ambiguous catalog
+#                         (two identity services) fails loudly.
+#   - Zero blast radius   : deleting the CP revokes the app credential and removes
+#                         the OpenBao-backed Secrets; the external users, domains
+#                         and catalog are bit-for-bit identical to the baseline;
+#                         the fixture keeps serving tokens.
+#
+# ── DECISION: belt-and-braces presence guard + single consolidated script ────
+# Mirrors the sibling full-controlplane-keystone suite. The External chain needs
+# K-ORC, the c5c3-operator, OpenBao and ESO, which the plain c5c3 e2e-operator
+# matrix leg (which sweeps this directory) does NOT install. Under the suite's
+# execution.failFast the pure-declarative form would hard-fail every such cluster.
+# So a runtime presence guard probes for the required CRDs + the OpenBao store and
+# either SKIPs cleanly (default) or, when E2E_REQUIRE_CONTROLPLANE_STACK=true (set
+# only by the dedicated e2e-external-keystone CI job), FAILS LOUDLY so broken
+# wiring cannot go green. Chainsaw has no step-level skip, so the guard and every
+# scenario assertion live in ONE script step.
+#
+# ── DECISION: the fixture is SQLite-backed, legacy-policy Keystone ────────────
+# The External-mode reconciler only ever talks to the identity API, never a
+# database, so the fixture's storage backend is invisible to the system under
+# test — SQLite keeps it a single pod and does not double the job wall-clock. The
+# fixture uses legacy oslo.policy (scope NOT enforced) so its project-scoped admin
+# credentials act as cloud-admin, which is what External-mode adoption assumes an
+# operator is handed and is representative of un-migrated brownfield clouds. See
+# 00-fixture-keystone.yaml.
+---
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: external-keystone
+spec:
+  # The main ControlPlane lives in a fixed namespace (brownfield) so the OpenBao
+  # paths and imports are addressable by literal name; chainsaw owns and cleans up
+  # that namespace. The fixture and the three negative ControlPlanes live in their
+  # own namespaces, created and torn down inside the script.
+  namespace: brownfield
+  timeouts:
+    assert: 5m
+    exec: 30m
+  steps:
+  - try:
+    - script:
+        timeout: 30m
+        # Chainsaw defaults to `sh`, which rejects `set -o pipefail`; every c5c3
+        # e2e script pins bash for the same reason.
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          CP_NS="brownfield"
+          CP="controlplane-external"
+          FIX_NS="brownfield-keystone"
+          AUTH_URL="http://keystone.brownfield-keystone.svc:5000/v3"
+          CLOUDS_SECRET="k-orc-clouds-yaml"
+          SA_SECRET="${CP}-service-account-nova-credentials"
+          ADMIN_AC_KV="openstack/keystone/${CP_NS}/${CP}/admin/app-credential"
+          SA_NOVA_KV="openstack/keystone/${CP_NS}/${CP}/service-accounts/nova"
+          IMG=ghcr.io/c5c3/tempest:2025.2
+          WORK="$(mktemp -d)"
+
+          # ── Presence guard ──────────────────────────────────────────────────
+          REQUIRE_STACK="${E2E_REQUIRE_CONTROLPLANE_STACK:-false}"
+          gate_absent() { # <reason...>
+            if [ "${REQUIRE_STACK}" = "true" ]; then
+              echo "ERROR: $*"
+              echo "       E2E_REQUIRE_CONTROLPLANE_STACK=true — the ControlPlane"
+              echo "       stack is required here; failing loudly so broken wiring"
+              echo "       cannot go green."
+              exit 1
+            fi
+            echo "SKIP: $*"
+            echo "      The c5c3-operator + K-ORC + OpenBao stack is not deployed"
+            echo "      here, so the External-mode ControlPlane chain is not exercised."
+            exit 0
+          }
+          missing=""
+          for crd in \
+            controlplanes.c5c3.io \
+            credentialrotations.c5c3.io \
+            applicationcredentials.openstack.k-orc.cloud \
+            services.openstack.k-orc.cloud \
+            endpoints.openstack.k-orc.cloud \
+            users.openstack.k-orc.cloud \
+            domains.openstack.k-orc.cloud \
+            projects.openstack.k-orc.cloud \
+            externalsecrets.external-secrets.io \
+            pushsecrets.external-secrets.io \
+            secretstores.external-secrets.io; do
+            if ! kubectl get crd "$crd" >/dev/null 2>&1; then
+              missing="${missing} ${crd}"
+            fi
+          done
+          if [ -n "${missing}" ]; then
+            gate_absent "required CRDs not present:${missing}"
+          fi
+          if ! kubectl get clustersecretstore openbao-cluster-store >/dev/null 2>&1; then
+            gate_absent "openbao-cluster-store ClusterSecretStore not present."
+          fi
+          if ! kubectl get pod openbao-0 -n openbao-system >/dev/null 2>&1; then
+            gate_absent "openbao-system/openbao-0 not present."
+          fi
+
+          BAO_TOKEN="$(kubectl get secret openbao-init-keys -n openbao-system \
+            -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token')"
+          if [ -z "${BAO_TOKEN}" ] || [ "${BAO_TOKEN}" = "null" ]; then
+            gate_absent "could not extract the OpenBao root token."
+          fi
+          # bao_exec runs a bao command inside openbao-0 with the mTLS client
+          # material (the OpenBao listener requires a client cert in kind).
+          bao_exec() {
+            kubectl exec -n openbao-system openbao-0 -- \
+              env BAO_ADDR=https://127.0.0.1:8200 BAO_TOKEN="${BAO_TOKEN}" \
+              VAULT_CACERT=/openbao/tls/ca.crt \
+              VAULT_CLIENT_CERT=/openbao/client-tls/tls.crt \
+              VAULT_CLIENT_KEY=/openbao/client-tls/tls.key "$@"
+          }
+          # The per-tenant identity used by External-mode PushSecrets/ExternalSecrets
+          # only exists once setup-auth.sh configured the eso-tenant role. A cluster
+          # bootstrapped before per-tenant stores skips cleanly rather than failing.
+          if ! bao_exec bao read auth/kubernetes/management/role/eso-tenant >/dev/null 2>&1; then
+            gate_absent "the eso-tenant OpenBao auth role is not configured."
+          fi
+          echo "OK: prerequisites present — running the External-mode ControlPlane chain."
+
+          # ── Helpers ─────────────────────────────────────────────────────────
+          cp_status() { kubectl get controlplane "$1" -n "$2" \
+            -o "jsonpath={.status.conditions[?(@.type=='$3')].status}" 2>/dev/null || true; }
+          cp_reason() { kubectl get controlplane "$1" -n "$2" \
+            -o "jsonpath={.status.conditions[?(@.type=='$3')].reason}" 2>/dev/null || true; }
+          cp_message() { kubectl get controlplane "$1" -n "$2" \
+            -o "jsonpath={.status.conditions[?(@.type=='$3')].message}" 2>/dev/null || true; }
+
+          assert_eq() { # <desc> <expected> <actual>
+            if [ "$2" != "$3" ]; then echo "ERROR: $1 — expected '$2', got '$3'"; exit 1; fi
+            echo "OK: $1 ('$3')"
+          }
+          assert_contains() { # <desc> <haystack> <needle>
+            case "$2" in *"$3"*) echo "OK: $1 (contains '$3')";;
+              *) echo "ERROR: $1 — '$3' not found in: $2"; exit 1;; esac
+          }
+          assert_empty() { # <desc> <value>
+            if [ -n "$2" ]; then echo "ERROR: $1 — expected empty, got: $2"; exit 1; fi
+            echo "OK: $1 (empty)"
+          }
+
+          # Poll a ControlPlane condition to True.
+          wait_cp_true() { # <name> <ns> <ctype> <timeout>
+            local name="$1" ns="$2" ctype="$3" timeout="$4" deadline st
+            deadline=$(( $(date +%s) + timeout ))
+            while true; do
+              st="$(cp_status "$name" "$ns" "$ctype")"
+              if [ "$st" = "True" ]; then echo "OK: ${ns}/${name} ${ctype}=True"; return 0; fi
+              if [ "$(date +%s)" -ge "$deadline" ]; then
+                echo "ERROR: ${ns}/${name} ${ctype} not True within ${timeout}s (last: '${st:-<none>}')"; return 1
+              fi
+              sleep 5
+            done
+          }
+          # Poll until a condition reaches <want-status> with a reason in a set.
+          wait_cp_cond_reason() { # <name> <ns> <ctype> <want> <timeout> <reason...>
+            local name="$1" ns="$2" ctype="$3" want="$4" timeout="$5"; shift 5
+            local reasons=" $* " deadline st rs
+            deadline=$(( $(date +%s) + timeout ))
+            while true; do
+              st="$(cp_status "$name" "$ns" "$ctype")"
+              rs="$(cp_reason "$name" "$ns" "$ctype")"
+              if [ "$st" = "$want" ] && printf '%s' "$reasons" | grep -q " ${rs} "; then
+                echo "OK: ${ns}/${name} ${ctype}=${want} reason=${rs} (in:${reasons})"; return 0
+              fi
+              if [ "$(date +%s)" -ge "$deadline" ]; then
+                echo "ERROR: ${ns}/${name} ${ctype} not ${want} with reason in{${reasons}} within ${timeout}s (last: status='${st:-<none>}' reason='${rs:-<none>}')"; return 1
+              fi
+              sleep 5
+            done
+          }
+          wait_gone() { # <resource> <name> <ns> <timeout>
+            local res="$1" name="$2" ns="$3" timeout="$4" deadline
+            deadline=$(( $(date +%s) + timeout ))
+            while kubectl get "$res" "$name" -n "$ns" >/dev/null 2>&1; do
+              if [ "$(date +%s)" -ge "$deadline" ]; then
+                echo "ERROR: ${res}/${name} in ${ns} still present after ${timeout}s"; return 1
+              fi
+              sleep 5
+            done
+            echo "OK: ${res}/${name} in ${ns} is gone"
+          }
+
+          # osc_admin runs `openstack $@` against the fixture as its bootstrap admin
+          # (cloud-admin under legacy policy). Prints the client's stdout.
+          osc_admin() {
+            kubectl run "osc-$(date +%s%N)" -n "${FIX_NS}" --rm -i --restart=Never \
+              --image="${IMG}" --image-pull-policy=IfNotPresent \
+              --env OS_AUTH_URL="${AUTH_URL}" --env OS_IDENTITY_API_VERSION=3 \
+              --env OS_USERNAME=admin --env OS_USER_DOMAIN_NAME=Default \
+              --env OS_PROJECT_NAME=admin --env OS_PROJECT_DOMAIN_NAME=Default \
+              --env "OS_PASSWORD=${BOOTSTRAP_ADMIN_PW}" \
+              --command -- openstack "$@"
+          }
+          # osc_user runs `openstack $@` as an arbitrary password identity.
+          osc_user() { # <user> <user-domain> <password> <args...>
+            local u="$1" d="$2" pw="$3"; shift 3
+            kubectl run "oscu-$(date +%s%N)" -n "${FIX_NS}" --rm -i --restart=Never \
+              --image="${IMG}" --image-pull-policy=IfNotPresent \
+              --env OS_AUTH_URL="${AUTH_URL}" --env OS_IDENTITY_API_VERSION=3 \
+              --env OS_USERNAME="$u" --env OS_USER_DOMAIN_NAME="$d" \
+              --env "OS_PASSWORD=${pw}" \
+              --command -- openstack "$@"
+          }
+          # osc_appcred runs `openstack $@` with an application-credential identity.
+          osc_appcred() { # <ac-id> <ac-secret> <args...>
+            local id="$1" secret="$2"; shift 2
+            kubectl run "oscac-$(date +%s%N)" -n "${FIX_NS}" --rm -i --restart=Never \
+              --image="${IMG}" --image-pull-policy=IfNotPresent \
+              --env OS_AUTH_URL="${AUTH_URL}" --env OS_IDENTITY_API_VERSION=3 \
+              --env OS_AUTH_TYPE=v3applicationcredential \
+              --env OS_APPLICATION_CREDENTIAL_ID="$id" \
+              --env OS_APPLICATION_CREDENTIAL_SECRET="$secret" \
+              --command -- openstack "$@"
+          }
+          # capture_inventory snapshots the external catalog + identity into per-
+          # resource, id-stripped, C-sorted files under <prefix>.<resource>, so a
+          # later diff proves the operator added/removed exactly the rows it should.
+          capture_inventory() { # <prefix>
+            local prefix="$1" out r
+            out="$(kubectl run "inv-$(date +%s%N)" -n "${FIX_NS}" --rm -i --restart=Never \
+              --image="${IMG}" --image-pull-policy=IfNotPresent \
+              --env OS_AUTH_URL="${AUTH_URL}" --env OS_IDENTITY_API_VERSION=3 \
+              --env OS_USERNAME=admin --env OS_USER_DOMAIN_NAME=Default \
+              --env OS_PROJECT_NAME=admin --env OS_PROJECT_DOMAIN_NAME=Default \
+              --env "OS_PASSWORD=${BOOTSTRAP_ADMIN_PW}" \
+              --command -- /bin/sh -c '
+                set -e
+                for r in service endpoint user project domain; do
+                  echo "@@@${r}@@@"
+                  openstack ${r} list -f value
+                done
+                echo "@@@end@@@"' 2>/dev/null || true)"
+            if ! printf '%s\n' "$out" | grep -q '@@@end@@@'; then
+              echo "ERROR: inventory capture ${prefix} did not complete; output was:"
+              printf '%s\n' "$out"; exit 1
+            fi
+            for r in service endpoint user project domain; do
+              printf '%s\n' "$out" \
+                | awk -v s="@@@${r}@@@" '$0==s{f=1;next} /^@@@/{f=0} f' \
+                | awk '{$1=""; sub(/^ +/,""); print}' | LC_ALL=C sort > "${prefix}.${r}"
+            done
+          }
+
+          # ── Block 2: bring up the plain, operator-free Keystone fixture ──────
+          kubectl apply -f 00-fixture-keystone.yaml
+          BOOTSTRAP_ADMIN_PW="$(kubectl get secret keystone-fixture-admin -n "${FIX_NS}" \
+            -o jsonpath='{.data.password}' | base64 -d)"
+          if [ -z "${BOOTSTRAP_ADMIN_PW}" ]; then
+            echo "ERROR: keystone-fixture-admin in ${FIX_NS} holds no password"; exit 1
+          fi
+          kubectl rollout status deploy/keystone -n "${FIX_NS}" --timeout=300s
+          kubectl apply -f 01-fixture-catalog-setup-job.yaml
+          kubectl wait --for=condition=complete job/keystone-fixture-setup -n "${FIX_NS}" --timeout=180s
+          echo "OK: brownfield Keystone fixture is serving and its catalog is populated."
+
+          # ── Block 3: never-seeded preconditions + baseline inventory (B0) ────
+          if bao_exec bao kv get -mount=kv-v2 "${ADMIN_AC_KV}" >/dev/null 2>&1; then
+            echo "ERROR: ${ADMIN_AC_KV} already exists; never-seeded precondition violated"; exit 1
+          fi
+          if bao_exec bao kv get -mount=kv-v2 "${SA_NOVA_KV}" >/dev/null 2>&1; then
+            echo "ERROR: ${SA_NOVA_KV} already exists; never-seeded precondition violated"; exit 1
+          fi
+          echo "OK: the External ControlPlane's OpenBao paths are never-seeded."
+          capture_inventory "${WORK}/B0"
+          echo "== baseline external inventory =="
+          for r in service endpoint user project domain; do
+            echo "-- ${r} --"; cat "${WORK}/B0.${r}"
+          done
+
+          # ── Block 4: apply all four ControlPlanes concurrently ──────────────
+          # The stall grace (2m) and the negative auth/ambiguity clocks run while
+          # the main CP converges, so the negative assertions later just read
+          # already-settled conditions.
+          kubectl apply -f 02-controlplane-external.yaml
+          kubectl apply -f 03-controlplane-wrong-password.yaml
+          kubectl apply -f 04-controlplane-stalled.yaml
+          kubectl apply -f 05-controlplane-ambiguous.yaml
+
+          # ── Block 5: Converge + imports + credential + no-pollution ──────────
+          wait_cp_true "${CP}" "${CP_NS}" Ready 900
+          assert_eq "aggregate Ready reason" "AllReady" "$(cp_reason "${CP}" "${CP_NS}" Ready)"
+
+          # Skipped sub-reconcilers report ExternallyManaged, naming the fixture.
+          for ct in InfrastructureReady DBCredentialsReady AdminPasswordReady KeystoneReady; do
+            assert_eq "${ct} status" "True" "$(cp_status "${CP}" "${CP_NS}" "${ct}")"
+            assert_eq "${ct} reason" "ExternallyManaged" "$(cp_reason "${CP}" "${CP_NS}" "${ct}")"
+          done
+          assert_contains "InfrastructureReady message names the external Keystone" \
+            "$(cp_message "${CP}" "${CP_NS}" InfrastructureReady)" "keystone.brownfield-keystone"
+          assert_eq "HorizonReady status" "True" "$(cp_status "${CP}" "${CP_NS}" HorizonReady)"
+          assert_eq "HorizonReady reason" "HorizonNotManaged" "$(cp_reason "${CP}" "${CP_NS}" HorizonReady)"
+          assert_eq "ESOTenantStoreReady status" "True" "$(cp_status "${CP}" "${CP_NS}" ESOTenantStoreReady)"
+          kubectl get secretstore openbao-tenant-store -n "${CP_NS}" >/dev/null
+          echo "OK: per-tenant openbao-tenant-store provisioned in ${CP_NS}."
+
+          # Zero workload children in the ControlPlane namespace.
+          for kind in mariadbs.k8s.mariadb.com memcacheds.memcached.c5c3.io \
+            keystones.keystone.openstack.c5c3.io horizons.horizon.openstack.c5c3.io deployments; do
+            n="$(kubectl get "${kind}" -n "${CP_NS}" --no-headers 2>/dev/null | wc -l | tr -d ' ')"
+            assert_eq "no ${kind} in ${CP_NS}" "0" "${n}"
+          done
+          for es in "${CP}-keystone-admin-credentials" "${CP}-keystone-db-credentials"; do
+            if kubectl get externalsecret "${es}" -n "${CP_NS}" >/dev/null 2>&1; then
+              echo "ERROR: managed-mode ExternalSecret ${es} exists in External mode"; exit 1
+            fi
+          done
+          echo "OK: no MariaDB/Memcached/Keystone/Horizon/Deployment children and no managed-mode credential ExternalSecrets."
+
+          # Imports resolved (KORCReady + CatalogReady + status projections).
+          assert_eq "KORCReady status" "True" "$(cp_status "${CP}" "${CP_NS}" KORCReady)"
+          assert_eq "KORCReady reason" "ApplicationCredentialMinted" "$(cp_reason "${CP}" "${CP_NS}" KORCReady)"
+          assert_eq "AdminCredentialReady status" "True" "$(cp_status "${CP}" "${CP_NS}" AdminCredentialReady)"
+          assert_eq "CatalogReady status" "True" "$(cp_status "${CP}" "${CP_NS}" CatalogReady)"
+          assert_eq "CatalogReady reason" "CatalogImported" "$(cp_reason "${CP}" "${CP_NS}" CatalogReady)"
+          cp_json="$(kubectl get controlplane "${CP}" -n "${CP_NS}" -o json)"
+          assert_eq "catalog import count" "4" \
+            "$(printf '%s' "$cp_json" | jq '.status.catalog.imports | length')"
+          assert_eq "all catalog imports resolved" "4" \
+            "$(printf '%s' "$cp_json" | jq '[.status.catalog.imports[] | select(.resolved==true)] | length')"
+          if ! printf '%s' "$cp_json" | jq -e 'all(.status.catalog.imports[]; (.id // "") != "")' >/dev/null; then
+            echo "ERROR: a resolved catalog import carries no OpenStack id"; exit 1
+          fi
+          echo "OK: identity Service + 3 Endpoint interfaces imported and resolved with ids."
+          ADMIN_AC_ID="$(printf '%s' "$cp_json" | jq -r '.status.adminApplicationCredential.id // ""')"
+          assert_empty "status.adminApplicationCredential.id is set" \
+            "$([ -n "${ADMIN_AC_ID}" ] && echo "" || echo "empty")"
+
+          # App credential: OpenBao path + ESO managed-by stamp + materialised
+          # clouds.yaml targeting the external Keystone, then a live client auth.
+          if ! bao_exec bao kv get -mount=kv-v2 "${ADMIN_AC_KV}" >/dev/null 2>&1; then
+            echo "ERROR: minted admin app-credential not present at ${ADMIN_AC_KV}"; exit 1
+          fi
+          if ! bao_exec bao kv metadata get -format=json -mount=kv-v2 "${ADMIN_AC_KV}" \
+               | jq -e '.data.custom_metadata."managed-by" == "external-secrets"' >/dev/null; then
+            echo "ERROR: ESO did not stamp managed-by=external-secrets on ${ADMIN_AC_KV}"; exit 1
+          fi
+          echo "OK: admin app-credential is in OpenBao with the ESO managed-by stamp."
+          CLOUDS="$(kubectl get secret "${CLOUDS_SECRET}" -n "${CP_NS}" \
+            -o "jsonpath={.data.clouds\.yaml}" | base64 -d)"
+          assert_contains "clouds.yaml targets the external Keystone" "$CLOUDS" "$AUTH_URL"
+          assert_contains "clouds.yaml carries an application credential" "$CLOUDS" "application_credential_id"
+          kubectl delete job external-openstack-verify -n "${CP_NS}" --ignore-not-found >/dev/null 2>&1 || true
+          kubectl apply -f 06-openstack-verify-job.yaml
+          kubectl wait --for=condition=complete job/external-openstack-verify -n "${CP_NS}" --timeout=5m
+          kubectl logs -n "${CP_NS}" job/external-openstack-verify | grep -qi identity \
+            || { echo "ERROR: identity service not listed in the external catalog by the verify Job"; exit 1; }
+          echo "OK: the minted credential authenticates a client against the external API."
+
+          # No pollution: services/endpoints/domains byte-identical to baseline;
+          # users/projects gained exactly the declared service account.
+          capture_inventory "${WORK}/A1"
+          for r in service endpoint domain; do
+            if ! diff "${WORK}/B0.${r}" "${WORK}/A1.${r}" >/dev/null; then
+              echo "ERROR: external ${r} inventory changed after convergence (pollution):"
+              diff "${WORK}/B0.${r}" "${WORK}/A1.${r}" || true; exit 1
+            fi
+          done
+          echo "OK: external services/endpoints/domains unchanged after convergence."
+          assert_empty "no external users removed/renamed" "$(comm -23 "${WORK}/B0.user" "${WORK}/A1.user")"
+          assert_eq "the only added external user is the service account" "nova" \
+            "$(comm -13 "${WORK}/B0.user" "${WORK}/A1.user" | tr -d ' ')"
+          assert_empty "no external projects removed/renamed" "$(comm -23 "${WORK}/B0.project" "${WORK}/A1.project")"
+          assert_eq "the only added external project is the service-account project" "service-nova" \
+            "$(comm -13 "${WORK}/B0.project" "${WORK}/A1.project" | tr -d ' ')"
+
+          # ── Block 6: Service accounts (W6) usability + rotation round-trip ───
+          assert_eq "ServiceAccountsReady status" "True" "$(cp_status "${CP}" "${CP_NS}" ServiceAccountsReady)"
+          assert_eq "ServiceAccountsReady reason" "ServiceAccountsProvisioned" \
+            "$(cp_reason "${CP}" "${CP_NS}" ServiceAccountsReady)"
+          sa_json="$(kubectl get controlplane "${CP}" -n "${CP_NS}" -o json \
+            | jq '.status.serviceAccounts[] | select(.name=="nova")')"
+          assert_eq "service account nova ready" "true" "$(printf '%s' "$sa_json" | jq -r '.ready')"
+          if ! printf '%s' "$sa_json" | jq -e '(.userID // "") != "" and (.projectID // "") != ""' >/dev/null; then
+            echo "ERROR: service account nova has no resolved userID/projectID"; exit 1
+          fi
+          for k in password clouds.yaml; do
+            if ! kubectl get secret "${SA_SECRET}" -n "${CP_NS}" \
+                 -o "jsonpath={.data.$(printf '%s' "$k" | sed 's/\./\\./')}" | grep -q .; then
+              echo "ERROR: service account credentials Secret ${SA_SECRET} is missing key ${k}"; exit 1
+            fi
+          done
+          if ! bao_exec bao kv get -mount=kv-v2 "${SA_NOVA_KV}" >/dev/null 2>&1; then
+            echo "ERROR: service account credentials not present at ${SA_NOVA_KV}"; exit 1
+          fi
+          echo "OK: service account nova is provisioned (user/project/secret/OpenBao path)."
+          OLD_SA_PW="$(kubectl get secret "${SA_SECRET}" -n "${CP_NS}" -o jsonpath='{.data.password}' | base64 -d)"
+          osc_user nova heimdall "${OLD_SA_PW}" token issue >/dev/null
+          echo "OK: service account nova issues an unscoped token against the external Keystone."
+
+          # Rotation round-trip: force a re-mint, wait for a new password, prove the
+          # new one works and the old is rejected.
+          kubectl apply -f - <<EOF
+          apiVersion: c5c3.io/v1alpha1
+          kind: CredentialRotation
+          metadata:
+            name: rotate-nova
+            namespace: ${CP_NS}
+          spec:
+            target: serviceAccountPassword
+            serviceAccount: nova
+            reMint: true
+          EOF
+          deadline=$(( $(date +%s) + 300 )); NEW_SA_PW=""
+          while true; do
+            NEW_SA_PW="$(kubectl get secret "${SA_SECRET}" -n "${CP_NS}" -o jsonpath='{.data.password}' 2>/dev/null | base64 -d || true)"
+            rotated="$(kubectl get controlplane "${CP}" -n "${CP_NS}" -o json \
+              | jq -r '.status.serviceAccounts[] | select(.name=="nova") | .lastPasswordRotation // ""')"
+            if [ -n "${NEW_SA_PW}" ] && [ "${NEW_SA_PW}" != "${OLD_SA_PW}" ] && [ -n "${rotated}" ]; then
+              break
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "ERROR: service account nova password did not rotate within 300s"; exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: service account nova password rotated (lastPasswordRotation set)."
+          osc_user nova heimdall "${NEW_SA_PW}" token issue >/dev/null
+          echo "OK: the rotated service account password issues a token."
+          if osc_user nova heimdall "${OLD_SA_PW}" token issue >/dev/null 2>&1; then
+            echo "ERROR: the pre-rotation service account password still authenticates"; exit 1
+          fi
+          echo "OK: the pre-rotation service account password is rejected."
+
+          # ── Block 7: negative ControlPlanes (clocks already elapsed) ─────────
+          # 7a: wrong password -> distinct authentication-failure condition.
+          wait_cp_cond_reason controlplane-wrong-password brownfield-wrong-password \
+            KORCReady False 240 AuthenticationFailed
+          assert_eq "wrong-password aggregate Ready" "False" \
+            "$(cp_status controlplane-wrong-password brownfield-wrong-password Ready)"
+          assert_contains "wrong-password message names the external Keystone" \
+            "$(cp_message controlplane-wrong-password brownfield-wrong-password KORCReady)" "external Keystone at"
+          # 7b: internal endpoint unreachable -> LOUD detection, never silent-empty.
+          # Both KORCReady (admin imports routed through the internal interface) and
+          # CatalogReady (required internal endpoint) are documented detection sites;
+          # accept the documented detection reasons on either, and require an
+          # actionable message. What is asserted hard is that it is NOT Ready and NOT
+          # silently importing an empty catalog.
+          deadline=$(( $(date +%s) + 300 )); stalled_ok=0
+          while true; do
+            if [ "$(cp_status controlplane-stalled brownfield-stalled Ready)" = "False" ]; then
+              kr="$(cp_reason controlplane-stalled brownfield-stalled KORCReady)"
+              cr="$(cp_reason controlplane-stalled brownfield-stalled CatalogReady)"
+              for rs in "$kr" "$cr"; do
+                if printf '%s' " ImportStalled EndpointUnreachable CatalogEndpointMismatch " \
+                     | grep -q " ${rs} "; then
+                  stalled_ok=1
+                fi
+              done
+              [ "${stalled_ok}" = "1" ] && break
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "ERROR: stalled CP did not surface a loud detection condition within 300s (KORCReady='$(cp_reason controlplane-stalled brownfield-stalled KORCReady)' CatalogReady='$(cp_reason controlplane-stalled brownfield-stalled CatalogReady)')"; exit 1
+            fi
+            sleep 5
+          done
+          assert_eq "stalled CP is not Ready" "False" "$(cp_status controlplane-stalled brownfield-stalled Ready)"
+          if [ "$(cp_status controlplane-stalled brownfield-stalled CatalogReady)" = "True" ]; then
+            echo "ERROR: stalled CP reported CatalogReady=True — the unreachable interface produced a silent-empty import"; exit 1
+          fi
+          echo "OK: the unreachable internal interface is detected loudly, not silently empty."
+          # 7c: ambiguous catalog (two identity services) -> fail loudly.
+          wait_cp_cond_reason controlplane-ambiguous brownfield-ambiguous \
+            CatalogReady False 240 CatalogFailed
+          assert_eq "ambiguous aggregate Ready" "False" \
+            "$(cp_status controlplane-ambiguous brownfield-ambiguous Ready)"
+          assert_contains "ambiguous message reports a terminal identity import error" \
+            "$(cp_message controlplane-ambiguous brownfield-ambiguous CatalogReady)" \
+            "terminal error importing the identity"
+          echo "OK: an ambiguous identity catalog fails loudly (CatalogFailed)."
+
+          # ── Block 8: admin drift -> out-of-band rotation arc (main CP) ───────
+          OLD_CLOUDS="$CLOUDS"
+          OLD_AC_ID="$ADMIN_AC_ID"
+          NEW_ADMIN_PW=brownfield_admin_rotated_pw_1
+          BF_ADMIN_ID="$(osc_admin user show --domain heimdall -f value -c id brownfield-admin 2>/dev/null | tr -d '[:space:]' || true)"
+          assert_empty "resolved brownfield-admin user id" \
+            "$([ -n "${BF_ADMIN_ID}" ] && echo "" || echo "empty")"
+          # 8b: rotate the external admin password out of band; the Secret is NOT
+          # updated, so the operator's view of the credential is now stale.
+          osc_admin user set --password "${NEW_ADMIN_PW}" "${BF_ADMIN_ID}"
+          echo "OK: external brownfield-admin password changed out of band (Secret left stale)."
+          # 8c: force a re-mint against the stale Secret -> drift surfaced loudly.
+          kubectl apply -f - <<EOF
+          apiVersion: c5c3.io/v1alpha1
+          kind: CredentialRotation
+          metadata:
+            name: rotate-admin
+            namespace: ${CP_NS}
+          spec:
+            target: adminApplicationCredential
+            reMint: true
+          EOF
+          wait_cp_cond_reason "${CP}" "${CP_NS}" KORCReady False 300 \
+            AuthenticationFailed CredentialDrift ReMinting ReMintStalled
+          assert_eq "drift: aggregate Ready is False" "False" "$(cp_status "${CP}" "${CP_NS}" Ready)"
+          # no remediation: the operator never wrote the stale Secret value back, so
+          # the external password is still the out-of-band NEW_ADMIN_PW.
+          osc_user brownfield-admin heimdall "${NEW_ADMIN_PW}" token issue >/dev/null
+          echo "OK: drift is surfaced (Ready=False) and the operator did not remediate the external Keystone."
+          # 8d: update the Secret to match -> hash-driven re-mint fires -> recover.
+          kubectl create secret generic brownfield-admin-password -n "${CP_NS}" \
+            --from-literal=password="${NEW_ADMIN_PW}" --dry-run=client -o yaml | kubectl apply -f -
+          deadline=$(( $(date +%s) + 360 )); NEW_AC_ID=""
+          while true; do
+            if [ "$(cp_status "${CP}" "${CP_NS}" KORCReady)" = "True" ] \
+               && [ "$(cp_reason "${CP}" "${CP_NS}" KORCReady)" = "ApplicationCredentialMinted" ] \
+               && [ "$(cp_status "${CP}" "${CP_NS}" Ready)" = "True" ]; then
+              NEW_AC_ID="$(kubectl get controlplane "${CP}" -n "${CP_NS}" -o json | jq -r '.status.adminApplicationCredential.id // ""')"
+              [ -n "${NEW_AC_ID}" ] && [ "${NEW_AC_ID}" != "${OLD_AC_ID}" ] && break
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "ERROR: ControlPlane did not recover with a fresh application credential within 360s (KORCReady='$(cp_reason "${CP}" "${CP_NS}" KORCReady)')"; exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: updating the Secret drove a hash-driven re-mint to a fresh application credential."
+          rotated_at="$(kubectl get controlplane "${CP}" -n "${CP_NS}" -o json | jq -r '.status.adminApplicationCredential.lastRotation // ""')"
+          assert_empty "adminApplicationCredential.lastRotation is set" \
+            "$([ -n "${rotated_at}" ] && echo "" || echo "empty")"
+          # 8e: the old application credential is invalid.
+          old_ac_id="$(printf '%s' "$OLD_CLOUDS" | awk -F': *' '/application_credential_id:/{print $2; exit}')"
+          old_ac_secret="$(printf '%s' "$OLD_CLOUDS" | awk -F': *' '/application_credential_secret:/{print $2; exit}')"
+          if [ -z "${old_ac_id}" ] || [ -z "${old_ac_secret}" ]; then
+            echo "ERROR: could not extract the pre-rotation application credential from clouds.yaml"; exit 1
+          fi
+          if osc_appcred "${old_ac_id}" "${old_ac_secret}" token issue >/dev/null 2>&1; then
+            echo "ERROR: the pre-rotation application credential still authenticates"; exit 1
+          fi
+          echo "OK: the pre-rotation application credential is invalid."
+          # 8f: the new credential authenticates end-to-end.
+          kubectl delete job external-openstack-verify -n "${CP_NS}" --ignore-not-found >/dev/null 2>&1 || true
+          kubectl apply -f 06-openstack-verify-job.yaml
+          kubectl wait --for=condition=complete job/external-openstack-verify -n "${CP_NS}" --timeout=5m
+          echo "OK: the re-minted credential authenticates a client against the external API."
+
+          # ── Block 9: deletion = zero blast radius ───────────────────────────
+          kubectl delete controlplane "${CP}" -n "${CP_NS}" --wait=false
+          # Watch for the teardown-complete event while the finalizer runs, so it is
+          # observed before the deleted object's events are garbage-collected.
+          deadline=$(( $(date +%s) + 600 )); teardown_ok=0; gone=0
+          while true; do
+            ev="$(kubectl get events -n "${CP_NS}" --field-selector "involvedObject.name=${CP}" \
+              -o jsonpath='{range .items[*]}{.reason}{"\n"}{end}' 2>/dev/null || true)"
+            case "$ev" in *ORCResourcesOrphaned*|*ORCTeardownStalled*)
+              echo "ERROR: teardown emitted a Warning event: ${ev}"; exit 1;; esac
+            case "$ev" in *ORCTeardownComplete*) teardown_ok=1;; esac
+            if ! kubectl get controlplane "${CP}" -n "${CP_NS}" >/dev/null 2>&1; then gone=1; break; fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "ERROR: ControlPlane ${CP} not deleted within 600s"; exit 1
+            fi
+            sleep 5
+          done
+          assert_eq "ControlPlane deletion completed" "1" "${gone}"
+          assert_eq "ORCTeardownComplete event was emitted" "1" "${teardown_ok}"
+
+          # All K-ORC CRs owned by the CP are gone (imports GC'd; managed AC/SA
+          # revoked and deleted in Keystone by the finalizers).
+          for kind in applicationcredentials services endpoints users domains projects; do
+            n="$(kubectl get "${kind}.openstack.k-orc.cloud" -n "${CP_NS}" --no-headers 2>/dev/null | wc -l | tr -d ' ')"
+            assert_eq "no ${kind}.openstack.k-orc.cloud remain in ${CP_NS}" "0" "${n}"
+          done
+          wait_gone secret "${CLOUDS_SECRET}" "${CP_NS}" 120
+          wait_gone secret "${SA_SECRET}" "${CP_NS}" 120
+          # OpenBao paths purged (tolerate ESO soft-delete: data:null counts as purged).
+          for kv in "${ADMIN_AC_KV}" "${SA_NOVA_KV}"; do
+            if json="$(bao_exec bao kv get -format=json -mount=kv-v2 "${kv}" 2>/dev/null)"; then
+              if ! printf '%s' "$json" | jq -e '.data.data == null' >/dev/null 2>&1; then
+                echo "ERROR: ${kv} still holds a live value after ControlPlane deletion"; exit 1
+              fi
+            fi
+            echo "OK: OpenBao path ${kv} purged."
+          done
+
+          # The external installation is bit-for-bit untouched, and still serving.
+          capture_inventory "${WORK}/A2"
+          for r in service endpoint user project domain; do
+            if ! diff "${WORK}/B0.${r}" "${WORK}/A2.${r}" >/dev/null; then
+              echo "ERROR: external ${r} inventory differs from baseline after deletion (blast radius):"
+              diff "${WORK}/B0.${r}" "${WORK}/A2.${r}" || true; exit 1
+            fi
+          done
+          echo "OK: external services/endpoints/users/projects/domains are bit-for-bit identical to the baseline."
+          osc_admin token issue >/dev/null
+          osc_user brownfield-admin heimdall "${NEW_ADMIN_PW}" token issue >/dev/null
+          echo "OK: the fixture Keystone still issues tokens after the ControlPlane is gone."
+          assert_empty "brownfield-admin has no application credentials left" \
+            "$(osc_user brownfield-admin heimdall "${NEW_ADMIN_PW}" application credential list -f value 2>/dev/null || true)"
+
+          echo "OK: External-mode ControlPlane suite passed — converge, imports, credential, no-pollution, service accounts, drift, rotation, endpoint_type detection, negative paths, and zero-blast-radius deletion all verified."
+    catch:
+    - script:
+        shell: bash
+        content: |
+          for pair in \
+            "controlplane-external:brownfield" \
+            "controlplane-wrong-password:brownfield-wrong-password" \
+            "controlplane-stalled:brownfield-stalled" \
+            "controlplane-ambiguous:brownfield-ambiguous"; do
+            name="${pair%%:*}"; ns="${pair##*:}"
+            echo "=== ControlPlane ${ns}/${name} conditions ==="
+            kubectl get controlplane "${name}" -n "${ns}" \
+              -o jsonpath='{range .status.conditions[*]}{.type}={.status} ({.reason}: {.message}){"\n"}{end}' 2>&1 || true
+            echo "=== K-ORC CRs in ${ns} ==="
+            kubectl get applicationcredentials.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,users.openstack.k-orc.cloud,domains.openstack.k-orc.cloud,projects.openstack.k-orc.cloud -n "${ns}" 2>&1 || true
+          done
+          echo "=== PushSecret / ExternalSecret in brownfield ==="
+          kubectl get pushsecret,externalsecret -n brownfield 2>&1 || true
+          echo "=== Fixture pod + setup Job logs (brownfield-keystone) ==="
+          kubectl get pods -n brownfield-keystone 2>&1 || true
+          kubectl logs -n brownfield-keystone deploy/keystone --all-containers --tail=120 2>&1 || true
+          kubectl logs -n brownfield-keystone job/keystone-fixture-setup --tail=80 2>&1 || true
+          echo "=== c5c3-operator logs (last 200) ==="
+          kubectl logs -n c5c3-system -l app.kubernetes.io/name=c5c3-operator --tail=200 --all-containers 2>&1 || true
+          echo "=== K-ORC controller logs (last 120) ==="
+          kubectl logs -n orc-system -l app.kubernetes.io/name=openstack-resource-controller --tail=120 --all-containers 2>&1 || true
+          echo "=== OpenBao logs (last 100) ==="
+          kubectl logs -n openbao-system openbao-0 --tail=100 2>&1 || true
+          echo "=== Events (brownfield, last 30) ==="
+          kubectl get events -n brownfield --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+    finally:
+    - script:
+        shell: bash
+        content: |
+          # chainsaw owns the brownfield namespace (spec.namespace) and GC's the
+          # main ControlPlane and its children. Everything else this suite created
+          # outside that namespace is torn down here, best-effort.
+          kubectl delete job external-openstack-verify -n brownfield --ignore-not-found --wait=false 2>&1 || true
+          for ns in brownfield-wrong-password brownfield-stalled brownfield-ambiguous brownfield-keystone; do
+            kubectl delete namespace "${ns}" --ignore-not-found --wait=false 2>&1 || true
+          done

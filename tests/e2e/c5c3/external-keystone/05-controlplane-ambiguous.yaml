@@ -1,0 +1,52 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# P7 fail-loudly case: a ControlPlane that OMITS catalog.identityServiceName, so
+# the identity Service import filters on type=identity alone. The brownfield
+# fixture holds two identity-type services (keystone and keystone-legacy), so the
+# filter matches more than one — which K-ORC treats as a terminal import error.
+# The ControlPlane must surface CatalogReady=False/CatalogFailed (never guess,
+# never import all matches), pointing at catalog.identityServiceName as the fix.
+#
+# The admin password is correct (the bootstrap admin), so authentication and the
+# admin imports succeed and only the catalog ambiguity remains.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: brownfield-ambiguous
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ambiguous-admin-password
+  namespace: brownfield-ambiguous
+stringData:
+  password: bootstrap_admin_fixture_pw_0
+type: Opaque
+---
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: controlplane-ambiguous
+  namespace: brownfield-ambiguous
+spec:
+  openStackRelease: "2025.2"
+  services:
+    keystone:
+      mode: External
+      external:
+        authURL: http://keystone.brownfield-keystone.svc:5000/v3
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+        secretName: k-orc-clouds-yaml
+      passwordSecretRef:
+        name: ambiguous-admin-password
+        key: password
+      applicationCredential:
+        restricted: true
+        rotation:
+          mode: PasswordDriven

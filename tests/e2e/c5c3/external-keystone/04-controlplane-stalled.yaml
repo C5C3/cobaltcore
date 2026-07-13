@@ -1,0 +1,59 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# endpoint_type-matrix negative case (W5): a ControlPlane pinned to the internal
+# interface, whose catalog row (keystone-internal.brownfield-keystone.svc:5001)
+# resolves in DNS but refuses connections because its Service selects no pods.
+#
+# The admin password is CORRECT (the bootstrap admin), so this is not an auth
+# failure — it is the silent-empty hazard the import-first branch exists to
+# catch: a catalog that does not silently produce empty imports must instead
+# surface a LOUD, actionable detection condition (ImportStalled naming
+# endpointType/region, or EndpointUnreachable — both documented External-mode
+# detection reasons). The suite asserts the ControlPlane fails loudly and never
+# reports Ready.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: brownfield-stalled
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: stalled-admin-password
+  namespace: brownfield-stalled
+# The correct bootstrap admin password — the failure here is the unreachable
+# internal interface, not authentication.
+stringData:
+  password: bootstrap_admin_fixture_pw_0
+type: Opaque
+---
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: controlplane-stalled
+  namespace: brownfield-stalled
+spec:
+  openStackRelease: "2025.2"
+  services:
+    keystone:
+      mode: External
+      external:
+        authURL: http://keystone.brownfield-keystone.svc:5000/v3
+        endpointType: internal
+        catalog:
+          identityServiceName: keystone
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+        secretName: k-orc-clouds-yaml
+      passwordSecretRef:
+        name: stalled-admin-password
+        key: password
+      applicationCredential:
+        restricted: true
+        rotation:
+          mode: PasswordDriven

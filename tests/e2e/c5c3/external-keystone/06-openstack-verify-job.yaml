@@ -1,0 +1,51 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# OpenStack client verification Job for the External-mode suite. It authenticates
+# with the materialised admin clouds.yaml (the application credential minted by
+# the operator against the EXTERNAL fixture Keystone, mirrored through OpenBao and
+# read back into the per-CR k-orc-clouds-yaml Secret) and runs
+# `openstack token issue` + `catalog list`. Success proves the minted, pushed,
+# re-materialised credential actually authenticates a client against the external
+# API — not just that the operator reported it Ready.
+#
+# The clouds.yaml here points at the external fixture (auth_url =
+# keystone.brownfield-keystone.svc:5000/v3), unlike the managed suite where it
+# targets the in-cluster Keystone Service. Applied by the chainsaw script after
+# convergence and deleted in the test's finally block. The image is the repo's
+# own tempest image (bundles the OpenStack client), pinned to the tag CI loads
+# into kind with imagePullPolicy: IfNotPresent.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: external-openstack-verify
+  namespace: brownfield
+spec:
+  backoffLimit: 1
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: osc
+          image: ghcr.io/c5c3/tempest:2025.2
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: OS_CLIENT_CONFIG_FILE
+              value: /etc/openstack/clouds.yaml
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              echo "== openstack --os-cloud admin token issue =="
+              openstack --os-cloud admin token issue
+              echo "== openstack --os-cloud admin catalog list =="
+              openstack --os-cloud admin catalog list
+          volumeMounts:
+            - name: clouds
+              mountPath: /etc/openstack
+              readOnly: true
+      volumes:
+        - name: clouds
+          secret:
+            secretName: k-orc-clouds-yaml

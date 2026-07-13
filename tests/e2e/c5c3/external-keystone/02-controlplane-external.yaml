@@ -1,0 +1,69 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The main External-mode ControlPlane: the issue's sketch shape driven against
+# the brownfield Keystone the operator does not own.
+#
+#   - mode: External with an external block (no spec.infrastructure, no managed
+#     Keystone workload) — the External-mode reconciler manages identity against
+#     the pre-existing installation and projects zero MariaDB/Memcached/Keystone
+#     children.
+#   - The admin credential is the NON-DEFAULT identity the fixture setup Job
+#     created (user brownfield-admin, project platform-admin, domain heimdall),
+#     so import, disambiguation and the credential mint are exercised against
+#     something other than the bootstrap admin/Default identity.
+#   - catalog.identityServiceName: keystone disambiguates the identity Service
+#     import from the duplicate keystone-legacy the fixture holds — proving the
+#     P7 filter converges where the ambiguous ControlPlane (05) fails loudly.
+#   - endpointType is omitted, so it defaults to public (the reachable interface).
+#   - One declared service account (W6): a managed user "nova" and a managed
+#     project "service-nova", both in the admin domain heimdall. rotation defaults
+#     to Manual; roles is omitted (K-ORC v2.6.0 ships no RoleAssignment, so only
+#     unscoped-token usability is assertable at this level).
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: brownfield-admin-password
+  namespace: brownfield
+# SYNC: must equal BROWNFIELD_ADMIN_PASSWORD in 01-fixture-catalog-setup-job.yaml
+# — that Job creates user brownfield-admin with exactly this password.
+stringData:
+  password: brownfield_admin_fixture_pw_0
+type: Opaque
+---
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: controlplane-external
+  namespace: brownfield
+spec:
+  openStackRelease: "2025.2"
+  services:
+    keystone:
+      mode: External
+      external:
+        authURL: http://keystone.brownfield-keystone.svc:5000/v3
+        catalog:
+          identityServiceName: keystone
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+        secretName: k-orc-clouds-yaml
+      passwordSecretRef:
+        name: brownfield-admin-password
+        key: password
+      userName: brownfield-admin
+      projectName: platform-admin
+      domainName: heimdall
+      applicationCredential:
+        restricted: true
+        rotation:
+          mode: PasswordDriven
+    serviceAccounts:
+      - name: nova
+        project:
+          name: service-nova
+          create: true
