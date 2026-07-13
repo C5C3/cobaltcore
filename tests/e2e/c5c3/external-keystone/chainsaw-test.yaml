@@ -248,12 +248,50 @@ spec:
               --env OS_APPLICATION_CREDENTIAL_SECRET="$secret" \
               --command -- openstack "$@"
           }
+          # CAPTURE HAZARD: the stdout of `kubectl run --rm -i` is NOT just the
+          # client's stdout — the --rm deletion notice is printed to the same
+          # stream, and when the attach loses the race to a fast container
+          # kubectl replays the pod log afterwards, so the client's output can
+          # arrive incomplete once or in full twice. The plain helpers above are
+          # therefore action-only (exit code and grep are safe; captured values
+          # are not). Value captures go through the *_capture variants below:
+          # the client's stdout is fenced inside the pod (client stderr dropped
+          # in-pod, as every capture site already did), the LAST complete fenced
+          # block wins (the log replay is always complete; a partial attach copy
+          # never carries the opening fence), and the client's exit status
+          # travels in-band on the closing fence.
+          osc_fence_extract() {
+            awk '/^@@OSC@@$/ {body=1; buf=""; next}
+                 /^@@OSC_RC=[0-9]+@@$/ {if (body) {rc=$0; gsub(/[^0-9]/,"",rc); out=buf; done=1}; body=0; next}
+                 body {buf = buf $0 "\n"}
+                 END {if (!done) exit 125; printf "%s", out; exit rc}'
+          }
+          osc_admin_capture() {
+            kubectl run "osc-$(date +%s%N)" -n "${FIX_NS}" --rm -i --restart=Never \
+              --image="${IMG}" --image-pull-policy=IfNotPresent \
+              --env OS_AUTH_URL="${AUTH_URL}" --env OS_IDENTITY_API_VERSION=3 \
+              --env OS_USERNAME=admin --env OS_USER_DOMAIN_NAME=Default \
+              --env OS_PROJECT_NAME=admin --env OS_PROJECT_DOMAIN_NAME=Default \
+              --env "OS_PASSWORD=${BOOTSTRAP_ADMIN_PW}" \
+              --command -- /bin/sh -c 'echo "@@OSC@@"; openstack "$@" 2>/dev/null; echo "@@OSC_RC=$?@@"' osc "$@" \
+              2>/dev/null | osc_fence_extract
+          }
+          osc_user_capture() { # <user> <user-domain> <password> <args...>
+            local u="$1" d="$2" pw="$3"; shift 3
+            kubectl run "oscu-$(date +%s%N)" -n "${FIX_NS}" --rm -i --restart=Never \
+              --image="${IMG}" --image-pull-policy=IfNotPresent \
+              --env OS_AUTH_URL="${AUTH_URL}" --env OS_IDENTITY_API_VERSION=3 \
+              --env OS_USERNAME="$u" --env OS_USER_DOMAIN_NAME="$d" \
+              --env "OS_PASSWORD=${pw}" \
+              --command -- /bin/sh -c 'echo "@@OSC@@"; openstack "$@" 2>/dev/null; echo "@@OSC_RC=$?@@"' osc "$@" \
+              2>/dev/null | osc_fence_extract
+          }
           # capture_inventory snapshots the external catalog + identity into per-
           # resource, id-stripped, C-sorted files under <prefix>.<resource>, so a
           # later diff proves the operator added/removed exactly the rows it should.
           capture_inventory() { # <prefix>
-            local prefix="$1" out r
-            out="$(kubectl run "inv-$(date +%s%N)" -n "${FIX_NS}" --rm -i --restart=Never \
+            local prefix="$1" raw out r
+            raw="$(kubectl run "inv-$(date +%s%N)" -n "${FIX_NS}" --rm -i --restart=Never \
               --image="${IMG}" --image-pull-policy=IfNotPresent \
               --env OS_AUTH_URL="${AUTH_URL}" --env OS_IDENTITY_API_VERSION=3 \
               --env OS_USERNAME=admin --env OS_USER_DOMAIN_NAME=Default \
@@ -263,12 +301,20 @@ spec:
                 set -e
                 for r in service endpoint user project domain; do
                   echo "@@@${r}@@@"
-                  openstack ${r} list -f value
+                  openstack ${r} list -f value 2>/dev/null
                 done
                 echo "@@@end@@@"' 2>/dev/null || true)"
-            if ! printf '%s\n' "$out" | grep -q '@@@end@@@'; then
+            # Same capture hazard as the *_capture helpers: keep only the LAST
+            # complete @@@service@@@..@@@end@@@ block so a log replay cannot
+            # double the rows and a partial attach copy cannot drop some.
+            out="$(printf '%s\n' "$raw" | awk '
+              /^@@@service@@@$/ {body=1; buf=""}
+              body {buf = buf $0 "\n"}
+              /^@@@end@@@$/ {if (body) {out=buf; done=1}; body=0}
+              END {if (done) printf "%s", out}')"
+            if [ -z "$out" ]; then
               echo "ERROR: inventory capture ${prefix} did not complete; output was:"
-              printf '%s\n' "$out"; exit 1
+              printf '%s\n' "$raw"; exit 1
             fi
             for r in service endpoint user project domain; do
               printf '%s\n' "$out" \
@@ -508,7 +554,7 @@ spec:
           OLD_CLOUDS="$CLOUDS"
           OLD_AC_ID="$ADMIN_AC_ID"
           NEW_ADMIN_PW=brownfield_admin_rotated_pw_1
-          BF_ADMIN_ID="$(osc_admin user show --domain heimdall -f value -c id brownfield-admin 2>/dev/null | tr -d '[:space:]' || true)"
+          BF_ADMIN_ID="$(osc_admin_capture user show --domain heimdall -f value -c id brownfield-admin | tr -d '[:space:]' || true)"
           assert_empty "resolved brownfield-admin user id" \
             "$([ -n "${BF_ADMIN_ID}" ] && echo "" || echo "empty")"
           # 8b: rotate the external admin password out of band; the Secret is NOT
@@ -620,7 +666,7 @@ spec:
           osc_user brownfield-admin heimdall "${NEW_ADMIN_PW}" token issue >/dev/null
           echo "OK: the fixture Keystone still issues tokens after the ControlPlane is gone."
           assert_empty "brownfield-admin has no application credentials left" \
-            "$(osc_user brownfield-admin heimdall "${NEW_ADMIN_PW}" application credential list -f value 2>/dev/null || true)"
+            "$(osc_user_capture brownfield-admin heimdall "${NEW_ADMIN_PW}" application credential list -f value || true)"
 
           echo "OK: External-mode ControlPlane suite passed — converge, imports, credential, no-pollution, service accounts, drift, rotation, endpoint_type detection, negative paths, and zero-blast-radius deletion all verified."
     catch:
