@@ -10,6 +10,7 @@ import (
 	"context"
 	"testing"
 
+	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
@@ -154,6 +155,72 @@ func TestReconcileServiceAccounts_ProbeAbsentCreatesManagedUserAndReferencedProj
 
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal(reasonWaitingForServiceAccounts))
+}
+
+// TestReconcileServiceAccounts_ConvergedAccountReportsReadyStatus drives the
+// fully-converged pass: K-ORC has the user Available with the current password
+// applied, the project import resolved, the PushSecret synced, and the
+// materialized consumer Secret carries the current password. The condition must
+// flip True/ServiceAccountsProvisioned AND status.serviceAccounts[].ready must
+// report true in the same pass — the e2e suite reads both back-to-back, so a
+// condition that flips True while the per-account ready flag stays false is the
+// exact regression this guards against.
+func TestReconcileServiceAccounts_ConvergedAccountReportsReadyStatus(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := saControlPlane()
+	sa := cp.Spec.KORC.ServiceAccounts[0]
+	ns := childNamespace(cp)
+
+	user := &orcv1alpha1.User{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            serviceAccountUserRef(cp, sa),
+			Namespace:       ns,
+			Annotations:     map[string]string{serviceAccountPasswordGenerationAnnotation: "1"},
+			OwnerReferences: ownedByCP(cp),
+		},
+		Spec: orcv1alpha1.UserSpec{
+			ManagementPolicy: orcv1alpha1.ManagementPolicyManaged,
+			Resource: &orcv1alpha1.UserResourceSpec{
+				PasswordRef: ptr.To(orcv1alpha1.KubernetesNameRef(serviceAccountPasswordSecretName(cp, sa, 1))),
+			},
+		},
+		Status: orcv1alpha1.UserStatus{
+			Conditions: availableImportConditions(),
+			ID:         ptr.To("sa-user-id"),
+			Resource:   &orcv1alpha1.UserResourceStatus{AppliedPasswordRef: serviceAccountPasswordSecretName(cp, sa, 1)},
+		},
+	}
+	project := &orcv1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: serviceAccountProjectRef(cp, sa), Namespace: ns},
+		Status:     orcv1alpha1.ProjectStatus{Conditions: availableImportConditions(), ID: ptr.To("sa-project-id")},
+	}
+	pw := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: serviceAccountPasswordSecretName(cp, sa, 1), Namespace: ns, OwnerReferences: ownedByCP(cp)},
+		Data:       map[string][]byte{serviceAccountPasswordKey: []byte("current-pw")},
+	}
+	push := serviceAccountPushSecret(cp, sa)
+	push.OwnerReferences = ownedByCP(cp)
+	push.Status.Conditions = []esov1alpha1.PushSecretStatusCondition{
+		{Type: esov1alpha1.PushSecretReady, Status: corev1.ConditionTrue},
+	}
+	push.Status.SyncedResourceVersion = testPushSyncedRV
+	materialized := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: serviceAccountCredentialsSecretName(cp, sa), Namespace: ns},
+		Data:       map[string][]byte{serviceAccountPasswordKey: []byte("current-pw")},
+	}
+
+	cond, _ := runServiceAccounts(t, cp, user, project, pw, push, materialized)
+
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal(reasonServiceAccountsProvisioned))
+	g.Expect(cp.Status.ServiceAccounts).To(HaveLen(1))
+	got := cp.Status.ServiceAccounts[0]
+	g.Expect(got.Ready).To(BeTrue(),
+		"status.serviceAccounts[].ready must be true in the same pass the condition reports ServiceAccountsProvisioned")
+	g.Expect(got.UserID).To(Equal("sa-user-id"))
+	g.Expect(got.ProjectID).To(Equal("sa-project-id"))
+	g.Expect(got.PasswordGeneration).To(Equal(int64(1)))
+	g.Expect(got.SecretName).To(Equal(serviceAccountCredentialsSecretName(cp, sa)))
 }
 
 func TestReconcileServiceAccounts_CollisionFailsLoudly(t *testing.T) {

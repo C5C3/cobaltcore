@@ -185,16 +185,16 @@ func parseServiceAccountGeneration(passwordRefName string) (int64, bool) {
 	return n, true
 }
 
-// serviceAccountState carries one account's ensure outcome: the projected status,
-// whether it is fully ready, and — if not — the single blocking condition, in
-// precedence order (collision, terminal, probing, bounded wait). pendingObjs are
-// the not-yet-resolved K-ORC objects the External-mode classifier inspects.
+// serviceAccountState carries one account's ensure outcome: the projected status
+// (whose Ready field reports full convergence), and — if not ready — the single
+// blocking condition, in precedence order (collision, terminal, probing, bounded
+// wait). pendingObjs are the not-yet-resolved K-ORC objects the External-mode
+// classifier inspects.
 type serviceAccountState struct {
 	status      c5c3v1alpha1.ServiceAccountStatus
 	created     bool // the managed User was created this pass (one-shot deferral events)
 	roles       bool // roles were declared (deferred)
 	scheduled   bool // rotation.mode Scheduled (deferred)
-	ready       bool
 	collision   string
 	terminalMsg string
 	probingMsg  string
@@ -343,7 +343,7 @@ func (r *ControlPlaneReconciler) reconcileServiceAccounts(ctx context.Context, c
 	}
 	// 5. Bounded waits.
 	for _, st := range states {
-		if !st.ready {
+		if !st.status.Ready {
 			fail(reasonWaitingForServiceAccounts, st.waitMsg)
 			return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
 		}
@@ -464,7 +464,7 @@ func (r *ControlPlaneReconciler) ensureServiceAccount(
 		st.waitMsg = fmt.Sprintf("service account %q is provisioned in Keystone; awaiting the OpenBao round-trip and materialized Secret", sa.Name)
 		return st, nil
 	}
-	st.ready = true
+	st.status.Ready = true
 	return st, nil
 }
 
