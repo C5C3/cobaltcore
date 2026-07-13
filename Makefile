@@ -464,6 +464,21 @@ e2e-controlplane:
 	@kubectl get crd controlplanes.c5c3.io >/dev/null 2>&1 || { echo 'the c5c3 ControlPlane stack is not installed; run `WITH_CONTROLPLANE=true make deploy-infra` (and deploy K-ORC + the operators) first' >&2; exit 1; }
 	chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e/c5c3/full-controlplane-keystone/
 
+.PHONY: e2e-external-keystone
+# e2e-external-keystone runs the External-mode ControlPlane suite against a plain
+# Keystone the operator does NOT own (a brownfield-adoption stand-in). It brings
+# up its own operator-free Keystone fixture, so it needs the same ControlPlane
+# stack as e2e-controlplane (c5c3-operator + K-ORC + keystone-operator + OpenBao +
+# ESO); the two cluster-reachability and stack-installed preflights are kept
+# separate for the same distinct-failure-mode reason as e2e-controlplane. This
+# target satisfies CI-to-Makefile parity so developers can reproduce the
+# e2e-external-keystone CI job locally. Set E2E_REQUIRE_CONTROLPLANE_STACK=true to
+# make the suite's presence guard fail loudly (as the CI job does) rather than SKIP.
+e2e-external-keystone:
+	@kubectl version --request-timeout=2s >/dev/null 2>&1 || { echo 'kubectl is not configured or no cluster is reachable' >&2; exit 1; }
+	@kubectl get crd controlplanes.c5c3.io >/dev/null 2>&1 || { echo 'the c5c3 ControlPlane stack is not installed; run `WITH_CONTROLPLANE=true CONTROLPLANE_OPERATORS=external make deploy-infra` (and deploy K-ORC + the operators) first' >&2; exit 1; }
+	chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e/c5c3/external-keystone/
+
 .PHONY: e2e-controlplane-sso
 # e2e-controlplane-sso runs the federated ControlPlane chain: attaching a
 # KeystoneIdentityBackend is the only action taken, and the operator projects the

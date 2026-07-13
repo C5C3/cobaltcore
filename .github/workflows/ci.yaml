@@ -1505,6 +1505,118 @@ jobs:
           path: _output/reports/
           retention-days: 14
 
+  # External-mode ControlPlane E2E: an External CR driven against a plain
+  # Keystone the operator does NOT own (a brownfield-adoption stand-in).
+  #
+  # A SEPARATE job rather than a second suite directory on e2e-controlplane: the
+  # ControlPlane webhook permits one ControlPlane per namespace, and this suite
+  # brings up a wholly different infrastructure shape — a plain, operator-free
+  # SQLite Keystone fixture in its own namespace plus four External ControlPlanes,
+  # none of which provision MariaDB/Memcached. It shares the e2e-controlplane
+  # change-detection output and path filter (the e2e_controlplane filter already
+  # watches operators/c5c3/**, operators/keystone/**, tests/e2e/c5c3/** and the
+  # deploy/hack wiring this job depends on), exactly as e2e-controlplane-sso does.
+  e2e-external-keystone:
+    needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]
+    # always(): allow the job to run when upstream Go jobs are skipped
+    # (e.g. pure E2E test-definition PRs where go=false). The explicit
+    # failure/cancelled guard still blocks if any upstream actually failed.
+    if: |
+      always() &&
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.fork != true &&
+      needs.changes.outputs.e2e-controlplane == 'true' &&
+      needs.build-e2e-images.result == 'success' &&
+      !contains(needs.*.result, 'failure') &&
+      !contains(needs.*.result, 'cancelled')
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 60
+    continue-on-error: false
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - name: Create kind cluster
+        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
+        with:
+          config: hack/kind-config.yaml
+          cluster_name: ${{ env.KIND_CLUSTER }}
+      # The Horizon service image is NOT loaded: External mode never runs a
+      # Horizon workload (HorizonReady=HorizonNotManaged); the horizon-operator is
+      # deployed only so its CRD exists for the c5c3 manager's Owns(Horizon) watch.
+      - name: Load E2E images
+        uses: ./.github/actions/load-e2e-images
+        with:
+          images: |
+            ${{ env.IMAGE_PREFIX }}/keystone-operator:dev
+            ${{ env.IMAGE_PREFIX }}/c5c3-operator:dev
+            ${{ env.IMAGE_PREFIX }}/horizon-operator:dev
+            ${{ env.IMAGE_PREFIX }}/keystone:2025.2
+            ${{ env.IMAGE_PREFIX }}/tempest:2025.2
+      - name: Load images into kind
+        run: |
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/c5c3-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/horizon-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:2025.2 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/tempest:2025.2 --name ${{ env.KIND_CLUSTER }}
+      # CONTROLPLANE_NAME is left at its default: the OpenBao bootstrap only seeds
+      # bootstrap/openstack/<name>-keystone/admin (the managed-mode admin-password
+      # path), which the External ControlPlanes here — in their own namespaces,
+      # authenticating from user-supplied Secrets — never read. The suite asserts
+      # the External CP's own per-CR OpenBao paths are never-seeded, so no seed
+      # must target them (see deploy/openbao/bootstrap/write-bootstrap-secrets.sh).
+      - name: Setup E2E infrastructure
+        uses: ./.github/actions/setup-e2e-infra
+        env:
+          WITH_CONTROLPLANE: "true"
+          CONTROLPLANE_OPERATORS: external
+          WITH_CONTROLPLANE_CR: "false"
+      - name: Deploy K-ORC
+        run: hack/ci-deploy-korc.sh
+      # keystone-operator first so its CRD exists before c5c3-operator's manager
+      # cache starts (it Owns Keystone/Horizon children even in External mode).
+      - name: Deploy keystone-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: keystone
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/keystone-operator
+          NAMESPACE: keystone-system
+      - name: Deploy horizon-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: horizon
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/horizon-operator
+          NAMESPACE: horizon-system
+      - name: Deploy c5c3-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: c5c3
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/c5c3-operator
+          NAMESPACE: c5c3-system
+      # E2E_REQUIRE_CONTROLPLANE_STACK=true flips the suite's presence guard from
+      # SKIP to a hard failure, so missing wiring cannot go green.
+      - name: Run External-mode ControlPlane E2E test
+        run: |
+          mkdir -p _output/reports
+          chainsaw test --config tests/e2e/chainsaw-config.yaml \
+            tests/e2e/c5c3/external-keystone/
+        env:
+          E2E_REQUIRE_CONTROLPLANE_STACK: "true"
+      - name: Dump diagnostic info
+        if: always()
+        run: hack/ci-dump-diagnostics.sh
+        env:
+          OPERATOR: c5c3
+      - name: Upload JUnit report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: e2e-external-keystone-junit-report
+          path: _output/reports/
+          retention-days: 14
+
   # Tempest API integration tests.
   # Deploys services into a kind cluster and runs the OpenStack Tempest test
   # suite against them.  Currently tests Keystone; designed so additional
