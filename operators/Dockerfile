@@ -8,7 +8,7 @@
 # only the module-manifest COPY lines below grow by one.
 
 # ---------- Stage 1: builder ----------
-FROM golang:1.26@sha256:b900de91b15b2e2953d930ece1d0ecff0a1590ab2006088d20dcf0f56f1e979f AS builder
+FROM golang:1.26@sha256:079e59808d2d252516e27e3f3a9c003740dee7f75e55aa71528766d52bcfc16a AS builder
 
 # ARG does not survive FROM; re-declare it in each stage that uses it.
 ARG OPERATOR
