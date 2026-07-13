@@ -1,0 +1,330 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Plain, operator-free Keystone fixture for the External-mode ControlPlane suite.
+#
+# This is the P8 fixture: a Keystone the c5c3-operator does NOT own, standing in
+# for a brownfield installation the operator is pointed at but never manages. It
+# carries its own bootstrap history, its own service catalog, and its own admin
+# password Secret — nothing here is projected by an operator.
+#
+# The database is a container-local SQLite file on an emptyDir. That choice is
+# invisible to the system under test: the External-mode reconciler only ever
+# talks to Keystone's identity API, never its database, so the fixture's storage
+# backend is a fixture-internal detail. SQLite keeps the fixture to a single pod
+# with no DB server, so it does not double the CI job's wall-clock.
+#
+# The catalog is bootstrapped with two identity endpoints that matter to the
+# suite:
+#   - public + admin  -> the reachable API at keystone.brownfield-keystone.svc:5000
+#   - internal        -> keystone-internal.brownfield-keystone.svc:5001, a
+#                        catalog row whose Service selects no pods, so any client
+#                        that follows the internal interface gets a deterministic
+#                        connection failure. That drives the endpoint_type-matrix
+#                        scenario: an External CP pinned to the internal interface
+#                        must fail LOUDLY, not silently import an empty catalog.
+#
+# The non-default admin identities (domain heimdall, project platform-admin, user
+# brownfield-admin) and the duplicate-name identity service (keystone-legacy) are
+# added by 01-fixture-catalog-setup-job.yaml once this Deployment is serving.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: brownfield-keystone
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: keystone-fixture-admin
+  namespace: brownfield-keystone
+# Fixed test-only credential for the fixture's bootstrap admin (user "admin" in
+# domain "Default"). It never leaves this kind cluster; the negative-path
+# ControlPlanes authenticate against this same password (03/04/05).
+stringData:
+  password: bootstrap_admin_fixture_pw_0
+type: Opaque
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keystone-fixture-config
+  namespace: brownfield-keystone
+data:
+  # keystone.conf mirrors the operator-rendered defaults (reconcile_config.go)
+  # with the database pointed at a container-local SQLite file and the cache
+  # disabled (no Memcached in the fixture namespace). keystone-manage and uwsgi
+  # both load it via --config-dir=/etc/keystone/keystone.conf.d/.
+  keystone.conf: |
+    [DEFAULT]
+    use_stderr = true
+
+    [database]
+    connection = sqlite:////var/lib/keystone/keystone.db
+    max_retries = -1
+
+    [token]
+    provider = fernet
+
+    [fernet_tokens]
+    key_repository = /etc/keystone/fernet-keys
+
+    [credential]
+    key_repository = /etc/keystone/credential-keys
+
+    [cache]
+    enabled = false
+
+    [identity]
+    default_domain_id = default
+
+    [paste_deploy]
+    config_file = /etc/keystone/keystone.conf.d/api-paste.ini
+
+    # Legacy oslo.policy (scope NOT enforced): a project-scoped admin token acts
+    # as cloud-admin. External-mode adoption authenticates with an admin
+    # credential that must be able to list and create identity resources across
+    # domains — the operator's brownfield-admin and the fixture's bootstrap admin
+    # are both project-scoped, so legacy policy is what makes them cloud-admin.
+    # This is also representative of many real brownfield installations, which
+    # have not yet migrated to enforced scope. (The MANAGED Keystone the operator
+    # deploys does enforce scope; that is a different, operator-owned workload.)
+    [oslo_policy]
+    enforce_scope = false
+    enforce_new_defaults = false
+  # api-paste.ini is byte-for-byte the pipeline the keystone-operator renders
+  # (internal/common/plugins.RenderPastePipelineINI with keystone's public_api
+  # spec), so the fixture serves through the same WSGI pipeline the managed
+  # workload does.
+  api-paste.ini: |
+    [app:admin_service]
+    use = egg:keystone#service_v3
+
+    [composite:main]
+    /v3 = public_api
+    use = egg:Paste#urlmap
+
+    [filter:cors]
+    oslo_config_project = keystone
+    use = egg:oslo.middleware#cors
+
+    [filter:http_proxy_to_wsgi]
+    use = egg:oslo.middleware#http_proxy_to_wsgi
+
+    [filter:request_id]
+    use = egg:oslo.middleware#request_id
+
+    [filter:sizelimit]
+    use = egg:oslo.middleware#sizelimit
+
+    [filter:url_normalize]
+    use = egg:keystone#url_normalize
+
+    [pipeline:public_api]
+    pipeline = cors sizelimit http_proxy_to_wsgi url_normalize request_id admin_service
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keystone
+  namespace: brownfield-keystone
+  labels:
+    app.kubernetes.io/name: keystone-fixture
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: keystone-fixture
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: keystone-fixture
+    spec:
+      # UID/GID 42424 is the "openstack" user baked into the c5c3 keystone image;
+      # fsGroup makes the emptyDir volumes group-writable so the init container
+      # can create the SQLite DB and the fernet/credential key repositories.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 42424
+        runAsGroup: 42424
+        fsGroup: 42424
+      # One init container bootstraps the fixture on a fresh emptyDir: schema
+      # migration, fernet/credential key setup, then keystone-manage bootstrap
+      # which seeds the admin user/project/role, the identity service, and the
+      # three interface endpoints. It runs exactly once per pod (fresh DB), so no
+      # region pre-seed is needed — bootstrap creates the region for its endpoints.
+      initContainers:
+        - name: bootstrap
+          image: ghcr.io/c5c3/keystone:2025.2
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              # POSIX sh (the keystone image's /bin/sh is dash): no `pipefail`,
+              # which dash rejects. There are no pipelines here, so `set -eu`
+              # gives the same guarantees. Sibling jobs 01 and 06 do the same.
+              set -eu
+              CONF=--config-dir=/etc/keystone/keystone.conf.d/
+              keystone-manage "$CONF" db_sync
+              # Put the SQLite DB in WAL mode, or writes deadlock against
+              # themselves. SQLAlchemy pools file-backed SQLite with a QueuePool,
+              # so a request that reads and writes (POST /v3/services does) holds
+              # an open read transaction on one pooled connection while a second
+              # wants to write. Under the default rollback journal a reader blocks
+              # a writer, so the request waits out the 5s busy timeout and dies
+              # with "database is locked" — a self-deadlock inside one request that
+              # a longer timeout cannot resolve. In WAL, readers never block the
+              # writer. The mode is a persistent property of the DB file, so
+              # setting it once here also covers the uwsgi container. The image
+              # ships no sqlite3 CLI; python3 is the venv interpreter on PATH.
+              python3 -c "import sqlite3; sqlite3.connect('/var/lib/keystone/keystone.db').execute('PRAGMA journal_mode=WAL')"
+              keystone-manage "$CONF" fernet_setup
+              keystone-manage "$CONF" credential_setup
+              keystone-manage "$CONF" bootstrap \
+                --bootstrap-password="${ADMIN_PASSWORD}" \
+                --bootstrap-admin-url http://keystone.brownfield-keystone.svc:5000/v3 \
+                --bootstrap-internal-url http://keystone-internal.brownfield-keystone.svc:5001/v3 \
+                --bootstrap-public-url http://keystone.brownfield-keystone.svc:5000/v3 \
+                --bootstrap-region-id RegionOne
+          env:
+            - name: ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keystone-fixture-admin
+                  key: password
+            - name: TMPDIR
+              value: /tmp
+            - name: SQLITE_TMPDIR
+              value: /tmp
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 42424
+            runAsGroup: 42424
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: config
+              mountPath: /etc/keystone/keystone.conf.d/
+              readOnly: true
+            - name: keystone-data
+              mountPath: /var/lib/keystone
+            - name: fernet-keys
+              mountPath: /etc/keystone/fernet-keys
+            - name: credential-keys
+              mountPath: /etc/keystone/credential-keys
+            - name: tmp
+              mountPath: /tmp
+      containers:
+        - name: keystone
+          image: ghcr.io/c5c3/keystone:2025.2
+          imagePullPolicy: IfNotPresent
+          # Same uWSGI invocation the keystone-operator builds (uwsgiCommand),
+          # pinned to a single process/thread because SQLite serialises writes.
+          command:
+            - uwsgi
+            - --http
+            - ":5000"
+            - --http-keepalive
+            - --master
+            - --lazy-apps
+            - --need-app
+            - --processes
+            - "1"
+            - --threads
+            - "1"
+            - --wsgi-file
+            - /var/lib/openstack/bin/keystone-wsgi-public
+            - --pyargv=--config-dir=/etc/keystone/keystone.conf.d/
+          env:
+            - name: TMPDIR
+              value: /tmp
+            - name: SQLITE_TMPDIR
+              value: /tmp
+          ports:
+            - name: keystone
+              containerPort: 5000
+          startupProbe:
+            httpGet:
+              path: /v3
+              port: 5000
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /v3
+              port: 5000
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: 5000
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 42424
+            runAsGroup: 42424
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: config
+              mountPath: /etc/keystone/keystone.conf.d/
+              readOnly: true
+            - name: keystone-data
+              mountPath: /var/lib/keystone
+            - name: fernet-keys
+              mountPath: /etc/keystone/fernet-keys
+            - name: credential-keys
+              mountPath: /etc/keystone/credential-keys
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config
+          configMap:
+            name: keystone-fixture-config
+        - name: keystone-data
+          emptyDir: {}
+        - name: fernet-keys
+          emptyDir: {}
+        - name: credential-keys
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: keystone
+  namespace: brownfield-keystone
+spec:
+  selector:
+    app.kubernetes.io/name: keystone-fixture
+  ports:
+    - name: keystone
+      port: 5000
+      targetPort: 5000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: keystone-internal
+  namespace: brownfield-keystone
+# Deliberately unroutable: the selector matches no pods, so the internal catalog
+# endpoint registered at this address resolves in DNS but refuses connections.
+# It is the cataloged-but-unreachable interface the stalled ControlPlane (04)
+# points at to prove the endpoint_type-matrix failure is detected, not silent.
+spec:
+  selector:
+    app.kubernetes.io/name: keystone-fixture-no-such-pod
+  ports:
+    - name: keystone
+      port: 5001
+      targetPort: 5000

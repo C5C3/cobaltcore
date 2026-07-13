@@ -1,0 +1,87 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Populates the brownfield Keystone fixture with the state the External-mode
+# suite exercises but keystone-manage bootstrap does not create:
+#
+#   - a non-default admin identity (domain heimdall, project platform-admin,
+#     user brownfield-admin) so admin-user/domain import and disambiguation are
+#     tested against something other than the bootstrap admin/Default identity;
+#   - a SECOND identity-type service (keystone-legacy) so the type-only import
+#     filter matches more than one entry — the P7 fail-loudly case. The main
+#     ControlPlane disambiguates with catalog.identityServiceName; the ambiguous
+#     ControlPlane (05) omits it and must surface CatalogFailed.
+#
+# It authenticates as the bootstrap admin (keystone-fixture-admin) and is written
+# idempotently so a Job retry converges rather than duplicating or erroring.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: keystone-fixture-setup
+  namespace: brownfield-keystone
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: setup
+          image: ghcr.io/c5c3/tempest:2025.2
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: OS_AUTH_URL
+              value: http://keystone.brownfield-keystone.svc:5000/v3
+            - name: OS_IDENTITY_API_VERSION
+              value: "3"
+            - name: OS_USERNAME
+              value: admin
+            - name: OS_USER_DOMAIN_NAME
+              value: Default
+            - name: OS_PROJECT_NAME
+              value: admin
+            - name: OS_PROJECT_DOMAIN_NAME
+              value: Default
+            - name: OS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keystone-fixture-admin
+                  key: password
+            # SYNC: must equal the password in the brownfield-admin-password
+            # Secret in 02-controlplane-external.yaml — the main ControlPlane
+            # authenticates as brownfield-admin with exactly this value.
+            - name: BROWNFIELD_ADMIN_PASSWORD
+              value: brownfield_admin_fixture_pw_0
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              # Non-default admin identity (P1). Each step is idempotent so a Job
+              # retry re-converges instead of failing on AlreadyExists.
+              # `domain create --or-show`, not `domain show || create`: this image's
+              # `openstack domain show <missing>` exits 0 with an empty body, so a
+              # show-guard would skip the create and every later `--domain heimdall`
+              # would fail "No domain ... exists". `project`/`user` show DO fail on a
+              # miss, so those keep the show-guard.
+              openstack domain create --or-show heimdall >/dev/null
+              openstack project show --domain heimdall platform-admin >/dev/null 2>&1 \
+                || openstack project create --domain heimdall platform-admin
+              if openstack user show --domain heimdall brownfield-admin >/dev/null 2>&1; then
+                openstack user set --password "${BROWNFIELD_ADMIN_PASSWORD}" \
+                  "$(openstack user show --domain heimdall -f value -c id brownfield-admin)"
+              else
+                openstack user create --domain heimdall \
+                  --password "${BROWNFIELD_ADMIN_PASSWORD}" brownfield-admin
+              fi
+              # role add is a no-op when the assignment already exists.
+              openstack role add --user brownfield-admin --user-domain heimdall \
+                --project platform-admin --project-domain heimdall admin
+              # P7 duplicate: a second identity-type service so the type-only
+              # import filter is ambiguous. Guarded so a retry does not stack a
+              # third copy.
+              if ! openstack service list --format value -c Name \
+                   | grep -qx keystone-legacy; then
+                openstack service create --name keystone-legacy identity
+              fi
+              echo "OK: brownfield fixture catalog populated"
+              openstack service list --format value -c Name -c Type
