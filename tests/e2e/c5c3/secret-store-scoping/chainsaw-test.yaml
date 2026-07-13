@@ -29,7 +29,14 @@
 #      shared bootstrap subtree — the confused-deputy grants are gone;
 #   5. an ExternalSecret referencing the shared openbao-cluster-store from this
 #      non-allow-listed namespace never goes Ready, because #606 restricted the
-#      cluster store with spec.conditions to the static-manifest namespace(s).
+#      cluster store with spec.conditions to the static-manifest namespace(s);
+#   6. a FIRST PushSecret through the operator-default tenant store to a
+#      NEVER-SEEDED per-CP app-credential path (the External-mode app-credential
+#      round-trip runs on exactly this shape) creates the leaf and lets ESO stamp
+#      managed-by=external-secrets ITSELF (the managed-by guard's inverse), the
+#      read-back materialises the exact value, and DeletionPolicy: Delete purges
+#      the leaf via the eso-tenant delete grant — with zero seeded state and
+#      nothing per-CP beyond the one-time cluster bootstrap.
 #
 # ── Presence + capability guard ──────────────────────────────────────────────
 # Like the sibling db-credential-scoping / multi-controlplane suites, the
@@ -52,11 +59,14 @@ spec:
   # tenant namespace, so the eso-tenant policy templates the tenant token to it.
   timeouts:
     assert: 5m
-    exec: 10m
+    # 15m exec/script budget: checks 1-5 worst-case ~5-6m (240s store-Ready +
+    # 30s cluster-store window + probes) and check 6 adds ~5-6m (120s push-Ready
+    # + 120s read-back-Ready + 90s purge), so ~12m worst case with margin.
+    exec: 15m
   steps:
   - try:
     - script:
-        timeout: 10m
+        timeout: 15m
         shell: bash
         content: |
           set -euo pipefail
@@ -269,6 +279,162 @@ spec:
           fi
           echo "OK: openbao-cluster-store rejected the reference from the non-allow-listed namespace"
 
+          # ── 6. First push to a NEVER-SEEDED per-CP path (ESO managed-by guard
+          #       inverse) ─────────────────────────────────────────────────────
+          # The External-mode app-credential round-trip runs on a per-CP path no
+          # seeding script ever writes: openstack/keystone/{ns}/{cp}/admin/
+          # app-credential (adminAppCredentialRemoteKeyFor in korc_eso.go). This
+          # check proves the OpenBao-side half of that round-trip on a path with
+          # ZERO seeded state, reusing the operator-default tenant store check 1
+          # provisioned: ESO's FIRST PushSecret CREATES the leaf and stamps
+          # custom_metadata.managed-by=external-secrets ITSELF (the managed-by guard
+          # only rejects a pre-existing UNMARKED leaf, so a first push always
+          # succeeds — the inverse of write-bootstrap-secrets.sh's mark_eso_managed),
+          # the read-back ExternalSecret materialises the exact value, and
+          # DeletionPolicy: Delete drives the eso-tenant delete grant to purge it.
+          # Nothing per-CP beyond the one-time cluster bootstrap is required.
+          #
+          # wait_ready <kind> <name> <timeout-seconds>: poll the namespaced
+          # resource in the tenant namespace until its Ready condition is True,
+          # or fail the step once the deadline passes (a still-unset condition
+          # counts as a timeout, never a pass). Callers print their own "OK:" line.
+          wait_ready() {
+            local kind="$1" name="$2" timeout="$3" deadline status
+            deadline=$(( $(date +%s) + timeout ))
+            while true; do
+              status="$(kubectl get "${kind}" "${name}" -n "${TENANT_NS}" \
+                -o "jsonpath={.status.conditions[?(@.type=='Ready')].status}" 2>/dev/null || true)"
+              [ "${status}" = "True" ] && return 0
+              if [ "$(date +%s)" -ge "${deadline}" ]; then
+                echo "ERROR: ${kind}/${name} Ready not True within ${timeout}s (last: '${status:-<none>}')"
+                exit 1
+              fi
+              sleep 5
+            done
+          }
+
+          PROBE_KV="openstack/keystone/${TENANT_NS}/probe-cp/admin/app-credential"
+          PROBE_SRC=probe-app-credential
+          PROBE_PUSH=probe-app-credential-backup
+          PROBE_ES=probe-app-credential-readback
+          # Fixed marker: the never-seeded precondition below proves nothing was at
+          # this path before, so an exact-match read-back can only observe THIS
+          # value if the full push -> materialise round-trip worked.
+          MARKER="unseeded-first-push-probe-value"
+
+          # (a) Never-seeded precondition: the path MUST NOT exist yet, else the
+          #     round-trip below would be a vacuous false-positive on stale state.
+          if bao_exec bao kv get -mount=kv-v2 "${PROBE_KV}" >/dev/null 2>&1; then
+            echo "ERROR: ${PROBE_KV} already exists; the never-seeded precondition is violated"
+            exit 1
+          fi
+          echo "OK: ${PROBE_KV} is never-seeded — first push starts from zero state"
+
+          # (b) Source Secret whose whole content the PushSecret mirrors (the c5c3
+          #     admin-AC PushSecret pushes the source Secret WHOLE, no Match.SecretKey).
+          kubectl create secret generic "${PROBE_SRC}" -n "${TENANT_NS}" \
+            --from-literal=clouds.yaml="${MARKER}"
+
+          # (c) First push through the operator-default per-tenant store.
+          #     deletionPolicy Delete + whole-secret match mirror adminAppCredentialPushSecret.
+          kubectl apply -f - <<EOF
+          apiVersion: external-secrets.io/v1alpha1
+          kind: PushSecret
+          metadata:
+            name: ${PROBE_PUSH}
+            namespace: ${TENANT_NS}
+          spec:
+            deletionPolicy: Delete
+            refreshInterval: 10s
+            secretStoreRefs:
+              - name: ${STORE_NAME}
+                kind: SecretStore
+            selector:
+              secret:
+                name: ${PROBE_SRC}
+            data:
+              - match:
+                  remoteRef:
+                    remoteKey: ${PROBE_KV}
+          EOF
+          wait_ready pushsecret "${PROBE_PUSH}" 120
+          echo "OK: first PushSecret to the never-seeded path reached Ready=True"
+
+          # (d) ESO must have CREATED the path and stamped the managed-by guard
+          #     marker ITSELF — the inverse of the pre-seed mark_eso_managed stamp.
+          if ! bao_exec bao kv metadata get -format=json -mount=kv-v2 "${PROBE_KV}" \
+               | jq -e '.data.custom_metadata."managed-by" == "external-secrets"' >/dev/null; then
+            echo "ERROR: ESO did not stamp managed-by=external-secrets on the first push to ${PROBE_KV}"
+            exit 1
+          fi
+          echo "OK: ESO stamped custom_metadata.managed-by=external-secrets on the first push"
+
+          # (e) Read-back through the same tenant store must materialise the EXACT
+          #     pushed value (mirrors the k-orc-clouds-yaml ExternalSecret, property
+          #     clouds.yaml).
+          kubectl apply -f - <<EOF
+          apiVersion: external-secrets.io/v1
+          kind: ExternalSecret
+          metadata:
+            name: ${PROBE_ES}
+            namespace: ${TENANT_NS}
+          spec:
+            refreshInterval: 10s
+            secretStoreRef:
+              name: ${STORE_NAME}
+              kind: SecretStore
+            target:
+              name: ${PROBE_ES}
+            data:
+              - secretKey: clouds.yaml
+                remoteRef:
+                  key: ${PROBE_KV}
+                  property: clouds.yaml
+          EOF
+          wait_ready externalsecret "${PROBE_ES}" 120
+          got="$(kubectl get secret "${PROBE_ES}" -n "${TENANT_NS}" \
+            -o "jsonpath={.data.clouds\.yaml}" 2>/dev/null | base64 -d || true)"
+          if [ "${got}" != "${MARKER}" ]; then
+            echo "ERROR: read-back materialised '${got}', expected '${MARKER}' — round-trip broken"
+            exit 1
+          fi
+          echo "OK: read-back materialised the exact pushed value — full round-trip verified"
+
+          # (f) DeletionPolicy: Delete teardown. Deleting the PushSecret drives ESO's
+          #     finalizer to remove the data leaf via the eso-tenant delete grant.
+          #     For the app-credential shape the eso-tenant policy grants delete on
+          #     the DATA leaf but NOT the metadata path, so ESO soft-deletes the data
+          #     (the leaf then reports data:null); a hypothetical hard delete would
+          #     make kv get fail outright. Either outcome proves the delete grant
+          #     drove the purge, so accept both — a leaf still holding the pushed
+          #     value fails the poll and surfaces a real regression.
+          kubectl delete externalsecret "${PROBE_ES}" -n "${TENANT_NS}" --ignore-not-found >/dev/null 2>&1 || true
+          kubectl delete pushsecret "${PROBE_PUSH}" -n "${TENANT_NS}" --ignore-not-found >/dev/null 2>&1 || true
+          deadline=$(( $(date +%s) + 90 ))
+          purged=0
+          while [ "$(date +%s)" -lt "${deadline}" ]; do
+            if json="$(bao_exec bao kv get -format=json -mount=kv-v2 "${PROBE_KV}" 2>/dev/null)"; then
+              if echo "${json}" | jq -e '.data.data == null' >/dev/null 2>&1; then
+                purged=1
+                break
+              fi
+            else
+              purged=1
+              break
+            fi
+            sleep 3
+          done
+          if [ "${purged}" -ne 1 ]; then
+            echo "ERROR: ${PROBE_KV} still holds a live value 90s after PushSecret deletion; DeletionPolicy: Delete / the eso-tenant delete grant did not purge it"
+            exit 1
+          fi
+          echo "OK: DeletionPolicy: Delete purged the never-seeded leaf via the eso-tenant delete grant"
+
+          # Best-effort teardown of the probe source Secret + the KV metadata the
+          # soft-delete leaves behind (a root metadata delete clears it).
+          kubectl delete secret "${PROBE_SRC}" -n "${TENANT_NS}" --ignore-not-found >/dev/null 2>&1 || true
+          bao_exec bao kv metadata delete -mount=kv-v2 "${PROBE_KV}" >/dev/null 2>&1 || true
+
           # Best-effort cleanup of the probe secrets (KV-v2 hard delete).
           bao_exec bao kv metadata delete -mount=kv-v2 "${OWN_KV}" >/dev/null 2>&1 || true
           bao_exec bao kv metadata delete -mount=kv-v2 "${FOREIGN_KV}" >/dev/null 2>&1 || true
@@ -283,6 +449,12 @@ spec:
           kubectl describe secretstore openbao-tenant-store -n "$NAMESPACE" 2>&1 || true
           echo "=== Certificate eso-tenant-client-tls ==="
           kubectl describe certificate eso-tenant-client-tls -n "$NAMESPACE" 2>&1 || true
+          echo "=== PushSecret probe-app-credential-backup (check 6) ==="
+          kubectl describe pushsecret probe-app-credential-backup -n "$NAMESPACE" 2>&1 || true
+          echo "=== ExternalSecret probe-app-credential-readback (check 6) ==="
+          kubectl describe externalsecret probe-app-credential-readback -n "$NAMESPACE" 2>&1 || true
+          echo "=== Secret probe-app-credential-readback (check 6; dummy values) ==="
+          kubectl get secret probe-app-credential-readback -n "$NAMESPACE" -o yaml 2>&1 || true
           echo "=== external-secrets controller logs (last 100 lines) ==="
           kubectl logs -n external-secrets -l app.kubernetes.io/name=external-secrets --tail=100 --all-containers 2>&1 || true
           echo "=== OpenBao logs (last 100 lines) ==="

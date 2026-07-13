@@ -167,7 +167,23 @@ cross-tenant isolation. Running in the ephemeral test namespace, the suite:
 3. mints a token from the tenant's `eso-tenant-auth` ServiceAccount, logs in as
    the `eso-tenant` role, and proves the token can read **its own** namespace's
    Keystone key path but is **denied** on a foreign namespace's path — the
-   templated-policy isolation that replaces the naming convention.
+   templated-policy isolation that replaces the naming convention;
+4. logs in as the shared `eso-management` role and proves it is **denied** both
+   read and write on a Keystone key path (#606 retired the `push-*` write
+   policies and dropped `eso-management`'s `openstack/keystone/*` read) while
+   still reading the retained shared `bootstrap/*` subtree;
+5. applies an `ExternalSecret` referencing the shared `openbao-cluster-store`
+   from the non-allow-listed ephemeral namespace and proves it never goes
+   `Ready`, because #606 restricted the cluster store with `spec.conditions`;
+6. drives the **never-seeded first-push** round-trip on a per-CP app-credential
+   path (`openstack/keystone/{ns}/{cp}/admin/app-credential`, the shape the
+   External-mode round-trip uses) through the operator-default tenant store:
+   the first `PushSecret` creates the leaf and ESO stamps
+   `managed-by=external-secrets` itself (the managed-by guard's inverse), a
+   read-back `ExternalSecret` materialises the exact value, and
+   `DeletionPolicy: Delete` purges the leaf via the `eso-tenant` delete grant —
+   with zero seeded state and nothing per-CP beyond the one-time cluster
+   bootstrap.
 
 The ControlPlane→Keystone/Horizon projection and the `SecretsReady` gating are
 covered by the c5c3 operator integration test
