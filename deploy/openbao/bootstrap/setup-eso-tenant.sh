@@ -3,16 +3,29 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# setup-eso-tenant.sh — Provision the in-cluster half of one ControlPlane's
-# per-tenant OpenBao identity: the ServiceAccount, mTLS client Certificate, and
-# namespaced SecretStore that let that tenant's ExternalSecrets and PushSecrets
-# reach OpenBao as the "eso-tenant" role instead of the shared cluster identity.
+# setup-eso-tenant.sh — Provision the in-cluster half of a STANDALONE (non-
+# ControlPlane) Keystone/Horizon namespace's per-tenant OpenBao identity: the
+# ServiceAccount, mTLS client Certificate, and namespaced SecretStore that let
+# that namespace's ExternalSecrets and PushSecrets reach OpenBao as the
+# "eso-tenant" role instead of the shared cluster identity.
 #
-# This is the per-ControlPlane onboarding counterpart to setup-database-tenant.sh
-# (which provisions the tenant's dynamic MariaDB engine role). The OpenBao side —
-# the eso-tenant Kubernetes auth role and the eso-tenant templated policy — is
-# created once at bootstrap by setup-auth.sh / setup-policies.sh; this script
-# creates the objects that come into being when a ControlPlane does:
+# SCOPE: this is the MANUAL onboarding path for standalone Keystone/Horizon CRs
+# (which have no operator above them to provision a tenant store) — for example
+# the standalone dev shims hack/deploy-infra.sh brings up. A ControlPlane —
+# Managed OR External — never needs it: the c5c3 operator provisions the SAME
+# ServiceAccount / Certificate / SecretStore itself and DEFAULTS the control plane
+# onto the store (reconcileESOTenantStore in
+# operators/c5c3/internal/controller/reconcile_esotenant.go, which runs for every
+# ControlPlane regardless of mode). Setting a ControlPlane's spec.secretStoreRef
+# is therefore NOT an onboarding step — it is the opt-OUT override for a
+# ControlPlane that manages its own store (StoreRefOverridden), the opposite of
+# what a standalone CR does. This is the ESO counterpart to setup-database-tenant.sh
+# (the standalone/managed split is analogous there too).
+#
+# The OpenBao side — the eso-tenant Kubernetes auth role and the eso-tenant
+# templated policy — is created once at bootstrap by setup-auth.sh /
+# setup-policies.sh (both provisioning routes converge on it); this script only
+# creates the in-cluster objects a standalone namespace needs:
 #
 #   - ServiceAccount eso-tenant-auth
 #       the identity ESO presents to OpenBao. The eso-tenant role binds this SA
@@ -26,17 +39,15 @@
 #       from the same Secret (mirroring the DB-credential Certificate in
 #       reconcile_dbcredentials.go).
 #   - SecretStore openbao-tenant-store
-#       the namespaced store the ControlPlane selects via
+#       the namespaced store a standalone Keystone/Horizon CR selects via
 #       spec.secretStoreRef: {kind: SecretStore, name: openbao-tenant-store}. It
 #       authenticates as the eso-tenant role with the eso-tenant-auth SA.
 #
-# After this runs and the SecretStore reports Ready, set the ControlPlane's
-# spec.secretStoreRef to the namespaced store to switch it onto the per-tenant
-# identity. On an EXISTING ControlPlane, run this (and, on upgraded clusters,
-# re-run setup-auth.sh / setup-policies.sh so the role and policy exist) BEFORE
-# flipping the ref — otherwise pushes 403 and FernetKeysReady/CredentialKeysReady
-# degrade. The flip updates the PushSecrets in place and never re-creates the
-# irreplaceable fernet/credential key material.
+# After this runs and the SecretStore reports Ready, set the STANDALONE CR's
+# spec.secretStoreRef to the namespaced store to route it through the per-tenant
+# identity. On a cluster bootstrapped before this feature, re-run setup-auth.sh /
+# setup-policies.sh first so the eso-tenant role and policy exist — otherwise
+# pushes 403 and FernetKeysReady/CredentialKeysReady degrade.
 #
 # Idempotent: every object is applied with `kubectl apply`, so re-running
 # refreshes the manifests without disrupting a live tenant.
@@ -51,8 +62,12 @@ set -euo pipefail
 ###############################################################################
 TENANT_NS="${1:?usage: setup-eso-tenant.sh <namespace>}"
 
-# Fixed names — the eso-tenant OpenBao role binds this SA name, and the
-# ControlPlane selects this SecretStore name via spec.secretStoreRef.
+# Fixed names — the eso-tenant OpenBao role binds this SA name, and a standalone
+# Keystone/Horizon CR selects this SecretStore name via spec.secretStoreRef. They
+# MUST match the constants the c5c3 operator uses (esoTenantStoreName /
+# esoTenantServiceAccountName / esoTenantClientCertName in reconcile_esotenant.go)
+# so the manual standalone route and the operator-provisioned ControlPlane route
+# converge on the same objects.
 SA_NAME="eso-tenant-auth"
 CERT_NAME="eso-tenant-client-tls"
 STORE_NAME="openbao-tenant-store"
@@ -157,9 +172,10 @@ spec:
         key: "ca.crt"
 EOF
 
-  echo "=== Done. Set the ControlPlane's spec.secretStoreRef to"
-  echo "    {kind: SecretStore, name: ${STORE_NAME}} to switch it onto the"
-  echo "    per-tenant identity. ==="
+  echo "=== Done. Set the STANDALONE Keystone/Horizon CR's spec.secretStoreRef to"
+  echo "    {kind: SecretStore, name: ${STORE_NAME}} to route it through the"
+  echo "    per-tenant identity. A ControlPlane needs no such flip — the c5c3"
+  echo "    operator provisions this store and defaults onto it. ==="
 }
 
 main "$@"

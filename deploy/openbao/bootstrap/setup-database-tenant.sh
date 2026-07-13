@@ -4,7 +4,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # setup-database-tenant.sh — Provision the per-tenant MariaDB database-engine
-# connection and role for one ControlPlane's Keystone service DB user.
+# connection and role for one MANAGED ControlPlane's Keystone service DB user.
+#
+# MODE: this is a managed-database onboarding step. An External-mode ControlPlane
+# (spec.services.keystone.mode: External) has NO managed database — the c5c3
+# operator's reconcileDBCredentials is skipped for it — so it must not be
+# onboarded here; there is no MariaDB CR to read and no DB credential path to
+# issue.
 #
 # This is the stage-(b) counterpart to the bootstrap engine mount performed by
 # setup-secret-engines.sh (enable_database). The database secrets engine is

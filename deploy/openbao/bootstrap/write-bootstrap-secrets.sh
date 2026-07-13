@@ -21,14 +21,28 @@ BAO_TOKEN="${BAO_TOKEN:?BAO_TOKEN must be set}"
 
 # KORC_CONTROLPLANES: whitespace-separated list of "<namespace>/<controlplane>"
 # identities to seed per-ControlPlane bootstrap secrets.
-# For each identity the script seeds ONLY:
+#
+# MODE CONTRACT: entries are MANAGED-mode ControlPlane identities only. An
+# External-mode ControlPlane (spec.services.keystone.mode: External) must NOT be
+# listed here — nothing is seeded for it, and a listed entry would MIS-SEED it.
+# In External mode the admin password of the pre-existing Keystone is owned
+# out-of-band in the user-supplied passwordSecretRef Secret, and the c5c3
+# operator's reconcileAdminPassword short-circuits (IsExternalKeystone) without
+# projecting an ExternalSecret or reading any bootstrap path; the operator also
+# rejects services.horizon in External mode, so the seeded Horizon secret-key
+# would go unconsumed. Seeding an External-mode identity here would therefore
+# write a generated admin password at bootstrap/<namespace>/<controlplane>-keystone/admin
+# unrelated to the external installation's real one — a path nothing reads.
+#
+# For each MANAGED-mode identity the script seeds:
 #   - the Model B admin password at  kv-v2/bootstrap/<namespace>/<controlplane>-keystone/admin
+#   - the Horizon Django SECRET_KEY at kv-v2/bootstrap/<namespace>/<controlplane>-horizon/secret-key
 # The stage-(a) per-ControlPlane static DB credential seed is RETIRED (#439):
 # managed-mode Keystone draws engine-issued short-lived DB credentials from the
 # OpenBao database engine (see setup-database-tenant.sh), so no static DB
 # password is seeded at rest. A single static credential for standalone
 # (non-ControlPlane) Keystone demos is still seeded at
-# kv-v2/openstack/keystone/standalone/db (brownfield-only).
+# kv-v2/openstack/keystone/openstack/standalone/db (brownfield-only).
 # The K-ORC bootstrap clouds.yaml is no longer seeded here: the operator now seeds
 # it from reconcileKORC (seedBootstrapCloudsYAML).
 # The default is the single canonical ControlPlane the Quick Start brings up
@@ -133,11 +147,14 @@ main() {
   write_secret_if_missing "kv-v2/infrastructure/mariadb" \
     "root-password=${GENERATED_PASSWORD}"
 
-  # per-ControlPlane bootstrap seeding. For each
+  # per-ControlPlane bootstrap seeding. For each MANAGED-mode
   # "<namespace>/<controlplane>" identity in KORC_CONTROLPLANES (default
-  # "openstack/controlplane"), seed ONLY the per-CR Model B admin password on the
-  # per-CR OpenBao path so two ControlPlanes never collide on the cluster-global
-  # OpenBao backend. The K-ORC bootstrap clouds.yaml is now seeded by the
+  # "openstack/controlplane"), seed the per-CR Model B admin password and Horizon
+  # secret-key on the per-CR OpenBao paths so two ControlPlanes never collide on
+  # the cluster-global OpenBao backend. An External-mode ControlPlane is NEVER
+  # seeded here (see the KORC_CONTROLPLANES contract above): its admin password is
+  # user-supplied and reconcileAdminPassword short-circuits without reading any
+  # bootstrap path. The K-ORC bootstrap clouds.yaml is now seeded by the
   # operator's reconcileKORC (seedBootstrapCloudsYAML) rather than here.
   # The legacy flat writes (bootstrap/keystone-admin,
   # openstack/keystone/admin/app-credential) are gone: the keystone-operator Model
