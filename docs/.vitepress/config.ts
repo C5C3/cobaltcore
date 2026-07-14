@@ -43,6 +43,7 @@ export default defineConfig({
           { text: 'Enable Horizon Operator Metrics', link: '/guides/enable-horizon-operator-metrics' },
           { text: 'Enable Horizon Operator NetworkPolicy', link: '/guides/enable-horizon-operator-networkpolicy' },
           { text: 'Migrate Keystone DB to Dynamic Credentials', link: '/guides/migrate-keystone-db-to-dynamic-credentials' },
+          { text: 'Adopt an External Keystone', link: '/guides/adopt-external-keystone' },
         ],
       },
       {
