@@ -30,7 +30,8 @@ const webSSOAuthWebssoPath = "/auth/websso/"
 // listIdentityBackends returns the live KeystoneIdentityBackend CRs attached to
 // the ControlPlane's Keystone child. Backends live beside the Keystone they
 // reference (the backend's keystoneRef is same-namespace by CRD contract),
-// which is childNamespace(cp); the List is served from the informer cache and
+// which is cp.KeystoneNamespace() — the namespace the Keystone service is placed
+// in, not necessarily the ControlPlane's; the List is served from the informer cache and
 // holds one backend per identity provider plus one per LDAP domain, so the
 // keystoneRef filter runs in memory.
 //
@@ -45,7 +46,7 @@ const webSSOAuthWebssoPath = "/auth/websso/"
 // webhook deliberately admits while the old one is Terminating.
 func (r *ControlPlaneReconciler) listIdentityBackends(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) ([]keystonev1alpha1.KeystoneIdentityBackend, error) {
 	var list keystonev1alpha1.KeystoneIdentityBackendList
-	if err := r.List(ctx, &list, client.InNamespace(childNamespace(cp))); err != nil {
+	if err := r.List(ctx, &list, client.InNamespace(cp.KeystoneNamespace())); err != nil {
 		return nil, fmt.Errorf("listing identity backends for Keystone %s: %w", keystoneName(cp), err)
 	}
 
@@ -176,9 +177,11 @@ func horizonPublicEndpoint(hz *c5c3v1alpha1.ServiceHorizonSpec) string {
 //
 // A plain Owns() would never fire: the backends are authored by the operator,
 // not projected by the ControlPlane, so they carry no ControlPlane owner
-// reference. The webhook permits one ControlPlane per namespace, so the List is
-// bounded at one item; the keystoneName comparison still gates it, so a backend
-// attached to a hand-rolled Keystone beside a ControlPlane never wakes it.
+// reference. The List is cluster-wide, not namespace-scoped: a backend attaches
+// to the Keystone child, which may be placed in a namespace of its own, so the
+// ControlPlane it belongs to lives elsewhere. The match is on the keystone
+// NAMESPACE and the child name together, so a backend attached to a hand-rolled
+// Keystone beside a ControlPlane still never wakes it.
 func (r *ControlPlaneReconciler) identityBackendToControlPlaneMapper(ctx context.Context, obj client.Object) []reconcile.Request {
 	logger := log.FromContext(ctx)
 	backend, ok := obj.(*keystonev1alpha1.KeystoneIdentityBackend)
@@ -187,7 +190,7 @@ func (r *ControlPlaneReconciler) identityBackendToControlPlaneMapper(ctx context
 	}
 
 	var list c5c3v1alpha1.ControlPlaneList
-	if err := r.List(ctx, &list, client.InNamespace(backend.Namespace)); err != nil {
+	if err := r.List(ctx, &list); err != nil {
 		// Surface the failure rather than silently dropping the event: an
 		// unhealthy informer cache would otherwise leave the websso projection
 		// stale until the next periodic resync, with no operational signal.
@@ -199,7 +202,7 @@ func (r *ControlPlaneReconciler) identityBackendToControlPlaneMapper(ctx context
 	var requests []reconcile.Request
 	for i := range list.Items {
 		cp := &list.Items[i]
-		if keystoneName(cp) == backend.Spec.KeystoneRef.Name {
+		if cp.KeystoneNamespace() == backend.Namespace && keystoneName(cp) == backend.Spec.KeystoneRef.Name {
 			requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
 		}
 	}

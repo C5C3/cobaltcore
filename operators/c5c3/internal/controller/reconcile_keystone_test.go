@@ -1002,3 +1002,89 @@ func TestReconcileKeystone_DedicatedBrownfieldLeavesSuppliedSecretRef(t *testing
 	g.Expect(k.Spec.Cache.ClusterRef).NotTo(BeNil())
 	g.Expect(k.Spec.Cache.ClusterRef.Name).To(Equal("openstack-memcached"))
 }
+
+// --- per-service namespaces (issue #646) ---
+
+// TestReconcileKeystone_ProjectsIntoTheAssignedNamespace verifies the Keystone
+// child is placed in the namespace services.keystone.namespace assigns, carries
+// the ownership labels (no owner reference is possible across namespaces), and
+// that nothing is projected into the ControlPlane's own namespace.
+func TestReconcileKeystone_ProjectsIntoTheAssignedNamespace(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := keystoneTestScheme(t)
+	cp := keystoneControlPlane()
+	cp.Spec.Services.Keystone.Namespace = &c5c3v1alpha1.ServiceNamespaceSpec{
+		Name:      "identity",
+		Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).
+		WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}, &keystonev1alpha1.Keystone{}).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileKeystone(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var keystone keystonev1alpha1.Keystone
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Name: "cp-keystone", Namespace: "identity",
+	}, &keystone)).To(Succeed())
+	g.Expect(keystone.OwnerReferences).To(BeEmpty(),
+		"a cross-namespace child cannot carry an owner reference")
+	g.Expect(keystone.Labels).To(HaveKeyWithValue(controlPlaneNameLabel, "cp"))
+	g.Expect(keystone.Labels).To(HaveKeyWithValue(controlPlaneNamespaceLabel, "default"))
+
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Name: "cp-keystone", Namespace: "default",
+	}, &keystonev1alpha1.Keystone{})).NotTo(Succeed(),
+		"nothing may be left behind in the ControlPlane's namespace")
+}
+
+// TestDeleteOrphanedKeystone_CrossNamespace verifies the orphan cleanup follows
+// the child into its namespace and honours the LABEL ownership test there — a
+// same-named Keystone the ControlPlane does not own must survive.
+func TestDeleteOrphanedKeystone_CrossNamespace(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := keystoneTestScheme(t)
+	cp := keystoneControlPlane()
+	cp.Spec.Services.Keystone.Namespace = &c5c3v1alpha1.ServiceNamespaceSpec{
+		Name:      "identity",
+		Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+	}
+
+	ours := &keystonev1alpha1.Keystone{
+		ObjectMeta: metav1.ObjectMeta{Name: "cp-keystone", Namespace: "identity"},
+	}
+	stampControlPlaneChildLabels(ours, cp)
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, ours).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	g.Expect(r.deleteOrphanedKeystone(context.Background(), cp)).To(Succeed())
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Name: "cp-keystone", Namespace: "identity",
+	}, &keystonev1alpha1.Keystone{})).NotTo(Succeed())
+
+	// An unlabelled Keystone of the same name is not ours and must survive.
+	foreign := &keystonev1alpha1.Keystone{
+		ObjectMeta: metav1.ObjectMeta{Name: "cp-keystone", Namespace: "identity"},
+	}
+	c2 := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, foreign).Build()
+	r2 := &ControlPlaneReconciler{Client: c2, Scheme: s}
+	g.Expect(r2.deleteOrphanedKeystone(context.Background(), cp)).To(Succeed())
+	g.Expect(c2.Get(context.Background(), types.NamespacedName{
+		Name: "cp-keystone", Namespace: "identity",
+	}, &keystonev1alpha1.Keystone{})).To(Succeed(), "a Keystone we do not own must never be deleted")
+}
+
+// TestKeystoneEndpointURL_FollowsTheServiceNamespace pins the cross-namespace
+// service-discovery mechanism: the namespace-qualified Service DNS is what lets a
+// service in one namespace still reach the identity service in another.
+func TestKeystoneEndpointURL_FollowsTheServiceNamespace(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := keystoneControlPlane()
+	g.Expect(keystoneEndpointURL(cp)).To(Equal("http://cp-keystone.default.svc:5000/v3"),
+		"an unassigned Keystone resolves in the ControlPlane's namespace, as before")
+
+	cp.Spec.Services.Keystone.Namespace = &c5c3v1alpha1.ServiceNamespaceSpec{Name: "identity"}
+	g.Expect(keystoneEndpointURL(cp)).To(Equal("http://cp-keystone.identity.svc:5000/v3"))
+}

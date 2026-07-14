@@ -263,7 +263,7 @@ func TestEnsureMariaDB_OwnedReconcilesReplicas(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, ownedMariaDB).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-	_, err := r.ensureMariaDB(context.Background(), cp, &cp.Spec.Infrastructure.Database)
+	_, err := r.ensureMariaDB(context.Background(), cp, &cp.Spec.Infrastructure.Database, cp.KeystoneNamespace())
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var mariadb mariadbv1alpha1.MariaDB
@@ -308,7 +308,7 @@ func TestEnsureMariaDB_OwnedReconcilesGaleraState(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, ownedMariaDB).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-	_, err := r.ensureMariaDB(context.Background(), cp, &cp.Spec.Infrastructure.Database)
+	_, err := r.ensureMariaDB(context.Background(), cp, &cp.Spec.Infrastructure.Database, cp.KeystoneNamespace())
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var mariadb mariadbv1alpha1.MariaDB
@@ -350,7 +350,7 @@ func TestEnsureMariaDB_ReplicasFromSpec(t *testing.T) {
 			c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
 			r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-			_, err := r.ensureMariaDB(context.Background(), cp, &cp.Spec.Infrastructure.Database)
+			_, err := r.ensureMariaDB(context.Background(), cp, &cp.Spec.Infrastructure.Database, cp.KeystoneNamespace())
 			g.Expect(err).NotTo(HaveOccurred())
 
 			var mariadb mariadbv1alpha1.MariaDB
@@ -393,7 +393,7 @@ func TestEnsureMariaDB_StorageSizeFromSpec(t *testing.T) {
 			c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
 			r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-			_, err := r.ensureMariaDB(context.Background(), cp, &cp.Spec.Infrastructure.Database)
+			_, err := r.ensureMariaDB(context.Background(), cp, &cp.Spec.Infrastructure.Database, cp.KeystoneNamespace())
 			g.Expect(err).NotTo(HaveOccurred())
 
 			var mariadb mariadbv1alpha1.MariaDB
@@ -428,7 +428,7 @@ func TestEnsureMemcached_OwnedReconcilesReplicas(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, ownedMemcached).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-	_, err := r.ensureMemcached(context.Background(), cp, &cp.Spec.Infrastructure.Cache)
+	_, err := r.ensureMemcached(context.Background(), cp, &cp.Spec.Infrastructure.Cache, cp.KeystoneNamespace())
 	g.Expect(err).NotTo(HaveOccurred())
 
 	u := &unstructured.Unstructured{}
@@ -912,4 +912,152 @@ func TestReconcileInfrastructure_DedicatedBrownfieldProvisionsNothing(t *testing
 	g.Expect(memcachedList.Items).To(HaveLen(1),
 		"a brownfield dedicated cache must provision nothing; the shared cache Horizon resolves to is created")
 	g.Expect(memcachedList.Items[0].GetName()).To(Equal("openstack-memcached"))
+}
+
+// --- per-service namespaces (issue #646): backing services follow the service ---
+
+// splitNamespaceControlPlane places Keystone and Horizon in namespaces of their
+// own, both on the SHARED spec.infrastructure block. Each namespace must
+// therefore get its own set of instances materialized from that one declaration.
+func splitNamespaceControlPlane() *c5c3v1alpha1.ControlPlane {
+	cp := managedInfraControlPlane()
+	cp.Namespace = "openstack"
+	cp.Spec.Services = c5c3v1alpha1.ServicesSpec{
+		Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{
+			Namespace: &c5c3v1alpha1.ServiceNamespaceSpec{
+				Name:      "identity",
+				Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+			},
+		},
+		Horizon: &c5c3v1alpha1.ServiceHorizonSpec{
+			Namespace: &c5c3v1alpha1.ServiceNamespaceSpec{
+				Name:      "dashboard",
+				Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+			},
+		},
+	}
+	return cp
+}
+
+// TestManagedInfraInstances_FollowTheServiceNamespace pins the core of "backing
+// services follow the namespace": the SAME shared spec.infrastructure block
+// materializes one instance per namespace that consumes it. Keystone and Horizon
+// placed apart yield a database and a cache in the identity namespace and a
+// second cache in the dashboard namespace — not one set in the ControlPlane's.
+func TestManagedInfraInstances_FollowTheServiceNamespace(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := infraTestScheme(t)
+	cp := splitNamespaceControlPlane()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	instances := r.managedInfraInstances(cp)
+
+	type placement struct{ kind, name, namespace string }
+	got := make([]placement, 0, len(instances))
+	for _, inst := range instances {
+		got = append(got, placement{inst.kind, inst.name, inst.namespace})
+	}
+	g.Expect(got).To(ConsistOf(
+		placement{"MariaDB", "openstack-db", "identity"},
+		placement{"Memcached", "openstack-memcached", "identity"},
+		placement{"Memcached", "openstack-memcached", "dashboard"},
+	), "each namespace hosting a service gets its own instances from the shared block")
+}
+
+// TestManagedInfraInstances_ColocatedServicesShare verifies the dedup: services
+// placed in the SAME namespace share that namespace's instances, so the shared
+// cache is ensured once, not twice.
+func TestManagedInfraInstances_ColocatedServicesShare(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := infraTestScheme(t)
+	cp := splitNamespaceControlPlane()
+	cp.Spec.Services.Horizon.Namespace.Name = "identity"
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	instances := r.managedInfraInstances(cp)
+	g.Expect(instances).To(HaveLen(2), "co-located services share one database and one cache")
+	for _, inst := range instances {
+		g.Expect(inst.namespace).To(Equal("identity"))
+	}
+}
+
+// TestManagedInfraInstances_UnassignedIsUnchanged pins the default: a ControlPlane
+// with no namespace assignments enumerates exactly what it always did — one
+// database and one cache, both in the ControlPlane's own namespace.
+func TestManagedInfraInstances_UnassignedIsUnchanged(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := infraTestScheme(t)
+	cp := managedInfraControlPlane()
+	cp.Spec.Services = c5c3v1alpha1.ServicesSpec{
+		Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{},
+		Horizon:  &c5c3v1alpha1.ServiceHorizonSpec{},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	instances := r.managedInfraInstances(cp)
+	g.Expect(instances).To(HaveLen(2))
+	for _, inst := range instances {
+		g.Expect(inst.namespace).To(Equal(cp.Namespace))
+	}
+}
+
+// TestReconcileInfrastructure_CrossNamespaceChildrenAreLabelledNotOwned verifies
+// the ownership substitute: a backing service in a service namespace carries the
+// ownership labels and NO owner reference (Kubernetes forbids a cross-namespace
+// one), while one in the ControlPlane's own namespace keeps its owner reference.
+func TestReconcileInfrastructure_CrossNamespaceChildrenAreLabelledNotOwned(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := infraTestScheme(t)
+	cp := splitNamespaceControlPlane()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileInfrastructure(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var mariadb mariadbv1alpha1.MariaDB
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Name: "openstack-db", Namespace: "identity",
+	}, &mariadb)).To(Succeed(), "the database must be provisioned in Keystone's namespace")
+	g.Expect(mariadb.OwnerReferences).To(BeEmpty(),
+		"a cross-namespace child cannot carry an owner reference")
+	g.Expect(mariadb.Labels).To(HaveKeyWithValue(controlPlaneNameLabel, "cp"))
+	g.Expect(mariadb.Labels).To(HaveKeyWithValue(controlPlaneNamespaceLabel, "openstack"))
+
+	// Nothing lands in the ControlPlane's own namespace: no service resolves there.
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Name: "openstack-db", Namespace: "openstack",
+	}, &mariadbv1alpha1.MariaDB{})).NotTo(Succeed())
+}
+
+// TestEnsureMariaDB_RefusesToReshapeAForeignInstance verifies the never-adopt
+// guard survives the cross-namespace move: a MariaDB in a service namespace that
+// carries neither our owner reference nor our labels is adopted read-only — its
+// topology is never re-projected, and it is never claimed.
+func TestEnsureMariaDB_RefusesToReshapeAForeignInstance(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := infraTestScheme(t)
+	cp := splitNamespaceControlPlane()
+
+	foreign := &mariadbv1alpha1.MariaDB{
+		ObjectMeta: metav1.ObjectMeta{Name: "openstack-db", Namespace: "identity"},
+		Spec:       mariadbv1alpha1.MariaDBSpec{Replicas: 1},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, foreign).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.ensureMariaDB(context.Background(), cp, &cp.Spec.Infrastructure.Database, "identity")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var live mariadbv1alpha1.MariaDB
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Name: "openstack-db", Namespace: "identity",
+	}, &live)).To(Succeed())
+	g.Expect(live.Spec.Replicas).To(Equal(int32(1)),
+		"an externally-provisioned instance must not have its topology re-projected")
+	g.Expect(live.Labels).NotTo(HaveKey(controlPlaneNameLabel),
+		"ownership must never be claimed over an instance we did not create")
 }

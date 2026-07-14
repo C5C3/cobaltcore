@@ -84,6 +84,9 @@ func (r *ControlPlaneReconciler) reconcileCatalog(ctx context.Context, cp *c5c3v
 	// manager rather than read-modify-write.
 	service := &orcv1alpha1.Service{
 		ObjectMeta: metav1.ObjectMeta{
+			// The K-ORC CRs are ControlPlane-scoped, not service-scoped: they stay in
+			// the ControlPlane's namespace, owner-referenced, however the services are
+			// placed. Only the URL they register follows the Keystone service.
 			Name:      keystoneServiceName(cp),
 			Namespace: childNamespace(cp),
 		},
@@ -200,13 +203,22 @@ func keystoneEndpointName(cp *c5c3v1alpha1.ControlPlane) string {
 
 // keystoneEndpointURL derives the in-cluster Keystone identity URL from the
 // projected Keystone Service — keystoneName(cp) = "{cp.Name}-keystone" — in the
-// ControlPlane namespace (see DECISION on Endpoint URL in reconcileCatalog). It
-// must NOT hard-code "keystone": the keystone-operator names the Service after
-// the projected Keystone CR, so a fixed name would not resolve. This is the URL
-// K-ORC authenticates against (the seeded clouds.yaml auth_url): K-ORC runs
-// in-cluster, so it must always use the Service DNS, never the external endpoint.
+// namespace the Keystone service is placed in (see DECISION on Endpoint URL in
+// reconcileCatalog). It must NOT hard-code "keystone": the keystone-operator
+// names the Service after the projected Keystone CR, so a fixed name would not
+// resolve. This is the URL K-ORC authenticates against (the seeded clouds.yaml
+// auth_url): K-ORC runs in-cluster, so it must always use the Service DNS, never
+// the external endpoint.
+//
+// The namespace-qualified Service DNS is the WHOLE cross-namespace
+// service-discovery mechanism: a Keystone placed in a namespace of its own is
+// still reachable from the ControlPlane's namespace (K-ORC) and from the
+// dashboard's (spec.keystoneEndpoint), because ClusterIP Service DNS resolves
+// across namespaces unchanged. What does NOT come for free is reachability —
+// namespaces are where NetworkPolicy is attached, so a default-deny namespace
+// must explicitly allow this flow.
 func keystoneEndpointURL(cp *c5c3v1alpha1.ControlPlane) string {
-	return fmt.Sprintf("http://%s.%s.svc:5000/v3", keystoneName(cp), childNamespace(cp))
+	return fmt.Sprintf("http://%s.%s.svc:5000/v3", keystoneName(cp), cp.KeystoneNamespace())
 }
 
 // keystoneCatalogURL returns the URL registered for the K-ORC identity catalog

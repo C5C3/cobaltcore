@@ -16,7 +16,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/c5c3/forge/internal/common/conditions"
@@ -24,23 +23,21 @@ import (
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 )
 
-// DECISION (/2.6): every child CR the ControlPlane projects
-// (MariaDB, Memcached, Keystone) is created in the SAME namespace as the owning
-// ControlPlane CR (cp.Namespace), NOT a hardcoded "openstack" literal.
-// Rationale: controllerutil.SetControllerReference rejects cross-namespace owner
-// references because Kubernetes garbage collection only cascades within a single
-// namespace — a child in "openstack" owned by a ControlPlane in "default" would
-// fail admission ("cross-namespace owner references are disallowed") and, even
-// if forced, would never be GC'd. Co-locating the children with their owner
-// keeps the owner reference valid and the GC cascade intact. In production the
-// ControlPlane is deployed INTO the openstack control-plane namespace (the same
-// namespace the deploy stack places MariaDB/Memcached/Keystone in via
-// deploy/flux-system/infrastructure/*.yaml), so the projected children land in
-// "openstack" exactly as before — the namespace is now derived from the owner
-// rather than assumed.
+// childNamespace is the projection target for the CONTROL-PLANE-SCOPED children —
+// the ones that belong to the ControlPlane as a whole rather than to one service:
+// the K-ORC CRs, the clouds.yaml Secret, the service-account material. They live
+// in the ControlPlane's own namespace and are owned by it through a controller
+// owner reference, so the GC cascade reaps them.
 //
-// childNamespace centralises this derivation so every sub-reconciler agrees on
-// the projection target.
+// It is NOT the projection target for a SERVICE and the things that follow it. A
+// service assigned a namespace of its own (spec.services.<svc>.namespace) is
+// placed there, together with its backing services, its tenant store, and its
+// credential material — see cp.KeystoneNamespace() / cp.HorizonNamespace(). Those
+// children cannot carry an owner reference at all: Kubernetes garbage collection
+// only cascades within one namespace, so the API server rejects a cross-namespace
+// controller reference. They are stamped with the ownership labels instead
+// (controlPlaneChildLabels) and deleted explicitly by the finalizer-driven
+// teardown, because nothing collects them otherwise.
 func childNamespace(cp *c5c3v1alpha1.ControlPlane) string {
 	return cp.Namespace
 }
@@ -176,7 +173,8 @@ func (r *ControlPlaneReconciler) reconcileInfrastructure(ctx context.Context, cp
 				Status:             metav1.ConditionFalse,
 				ObservedGeneration: cp.Generation,
 				Reason:             inst.errorReason,
-				Message:            fmt.Sprintf("ensuring %s %q (%s): %v", inst.kind, inst.name, inst.declaredAt, err),
+				Message: fmt.Sprintf("ensuring %s %q in namespace %q (%s): %v",
+					inst.kind, inst.name, inst.namespace, inst.declaredAt, err),
 			})
 			return ctrl.Result{}, err
 		}
@@ -192,13 +190,14 @@ func (r *ControlPlaneReconciler) reconcileInfrastructure(ctx context.Context, cp
 		// pending dedicated database from a pending shared one.
 		inst := notReady
 		logger.Info("managed backing service not ready, requeuing",
-			"kind", inst.kind, "cluster", inst.name, "declaredAt", inst.declaredAt)
+			"kind", inst.kind, "cluster", inst.name, "namespace", inst.namespace, "declaredAt", inst.declaredAt)
 		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
 			Type:               conditionTypeInfrastructureReady,
 			Status:             metav1.ConditionFalse,
 			ObservedGeneration: cp.Generation,
 			Reason:             inst.waitReason,
-			Message:            fmt.Sprintf("%s %q (%s) is not ready", inst.kind, inst.name, inst.declaredAt),
+			Message: fmt.Sprintf("%s %q in namespace %q (%s) is not ready",
+				inst.kind, inst.name, inst.namespace, inst.declaredAt),
 		})
 		return ctrl.Result{RequeueAfter: infraRequeueAfter}, nil
 	}
@@ -219,11 +218,13 @@ func (r *ControlPlaneReconciler) reconcileInfrastructure(ctx context.Context, cp
 // Brownfield instances are not represented — there is nothing to provision or
 // gate readiness on.
 type infraInstance struct {
-	// kind and name identify the child CR; declaredAt is the spec path the
-	// instance was declared at, so a condition message tells a pending dedicated
-	// database from a pending shared one.
+	// kind, name and namespace identify the child CR; declaredAt is the spec path
+	// the instance was declared at, so a condition message tells a pending
+	// dedicated database from a pending shared one — and, now that services can be
+	// placed apart, which namespace the pending one is in.
 	kind       string
 	name       string
+	namespace  string
 	declaredAt string
 	// errorReason / waitReason are the condition reasons for a failed ensure and
 	// for a child still converging. They are per CLASS, not per instance, so the
@@ -248,22 +249,33 @@ type infraInstance struct {
 // control plane back. The same holds for the shared cache once every service has
 // taken one of its own.
 //
-// Entries are deduplicated on (kind, name) — the identity of the child CR they
-// resolve to. That is what the common case needs (Keystone and Horizon both on
-// the shared cache ensure it once), and it also fails closed on a webhook-bypassed
-// CR whose dedicated clusterRef collides with the shared one
-// (validateDedicatedBackingServices rejects the duplicate at admission): without
+// BACKING SERVICES FOLLOW THE SERVICE. Each instance is placed in the namespace
+// of the service that resolves to it, so a namespace hosting at least one service
+// of the ControlPlane gets its own set of backing-service instances. That falls
+// out of the enumeration rather than being a special case: the effective database
+// and cache of each service are added AT that service's namespace, so the shared
+// spec.infrastructure block materializes once per namespace that consumes it —
+// two MariaDBs and two Memcacheds when Keystone and Horizon are placed apart, one
+// of each when they are co-located, exactly one of each (today's behavior) when
+// neither is assigned a namespace.
+//
+// Entries are deduplicated on (kind, namespace, name) — the identity of the child
+// CR they resolve to. The namespace is part of that identity now: the same shared
+// clusterRef name in two namespaces is two distinct child CRs, and must be
+// provisioned twice. Within one namespace the dedup does what it always did: it
+// collapses co-located services onto one instance, and it fails closed on a
+// webhook-bypassed CR whose dedicated clusterRef collides with the shared one
+// (validateDedicatedBackingServices rejects the duplicate at admission). Without
 // it, two entries would run ensure against the SAME child CR in one pass, each
-// projecting a different desired topology, and — because the controller Owns()
-// the child with no update predicate — each write would re-enqueue the
+// projecting a different desired topology, and each write would re-enqueue the
 // ControlPlane into a self-sustaining loop of conflicting writes. First
 // resolution wins.
 func (r *ControlPlaneReconciler) managedInfraInstances(cp *c5c3v1alpha1.ControlPlane) []infraInstance {
 	var instances []infraInstance
 
 	seen := map[string]struct{}{}
-	claim := func(kind, name string) bool {
-		key := kind + "/" + name
+	claim := func(kind, namespace, name string) bool {
+		key := kind + "/" + namespace + "/" + name
 		if _, dup := seen[key]; dup {
 			return false
 		}
@@ -271,42 +283,47 @@ func (r *ControlPlaneReconciler) managedInfraInstances(cp *c5c3v1alpha1.ControlP
 		return true
 	}
 
-	addDatabase := func(db *commonv1.DatabaseSpec, declaredAt string) {
+	addDatabase := func(db *commonv1.DatabaseSpec, namespace, declaredAt string) {
 		if db == nil || db.ClusterRef == nil {
 			return // absent, or brownfield: nothing to provision.
 		}
-		if !claim("MariaDB", db.ClusterRef.Name) {
+		if !claim("MariaDB", namespace, db.ClusterRef.Name) {
 			return
 		}
 		instances = append(instances, infraInstance{
 			kind:        "MariaDB",
 			name:        db.ClusterRef.Name,
+			namespace:   namespace,
 			declaredAt:  declaredAt,
 			errorReason: "MariaDBError",
 			waitReason:  "WaitingForDatabase",
-			ensure:      func(ctx context.Context) (bool, error) { return r.ensureMariaDB(ctx, cp, db) },
+			ensure:      func(ctx context.Context) (bool, error) { return r.ensureMariaDB(ctx, cp, db, namespace) },
 		})
 	}
-	addCache := func(cache *commonv1.CacheSpec, declaredAt string) {
+	addCache := func(cache *commonv1.CacheSpec, namespace, declaredAt string) {
 		if cache == nil || cache.ClusterRef == nil {
 			return
 		}
-		if !claim("Memcached", cache.ClusterRef.Name) {
+		if !claim("Memcached", namespace, cache.ClusterRef.Name) {
 			return
 		}
 		instances = append(instances, infraInstance{
 			kind:        "Memcached",
 			name:        cache.ClusterRef.Name,
+			namespace:   namespace,
 			declaredAt:  declaredAt,
 			errorReason: "MemcachedError",
 			waitReason:  "WaitingForCache",
-			ensure:      func(ctx context.Context) (bool, error) { return r.ensureMemcached(ctx, cp, cache) },
+			ensure:      func(ctx context.Context) (bool, error) { return r.ensureMemcached(ctx, cp, cache, namespace) },
 		})
 	}
 
-	addDatabase(effectiveKeystoneDatabase(cp), keystoneDatabaseDeclaredAt(cp))
-	addCache(effectiveKeystoneCache(cp), keystoneCacheDeclaredAt(cp))
-	addCache(effectiveHorizonCache(cp), horizonCacheDeclaredAt(cp))
+	keystoneNS := cp.KeystoneNamespace()
+	horizonNS := cp.HorizonNamespace()
+
+	addDatabase(effectiveKeystoneDatabase(cp), keystoneNS, keystoneDatabaseDeclaredAt(cp))
+	addCache(effectiveKeystoneCache(cp), keystoneNS, keystoneCacheDeclaredAt(cp))
+	addCache(effectiveHorizonCache(cp), horizonNS, horizonCacheDeclaredAt(cp))
 
 	return instances
 }
@@ -336,21 +353,28 @@ func horizonCacheDeclaredAt(cp *c5c3v1alpha1.ControlPlane) string {
 }
 
 // ensureMariaDB create-or-updates the owned MariaDB CR named after db.clusterRef
-// and reports whether it is Ready. db is the declared instance — the shared
-// spec.infrastructure.database or a per-service dedicated one; both are
-// provisioned, owned, and (via the owner reference) torn down identically, which
-// is what makes a dedicated instance carry the shared block's lifecycle
-// guarantees rather than a parallel set of its own.
+// in namespace and reports whether it is Ready. db is the declared instance — the
+// shared spec.infrastructure.database or a per-service dedicated one; both are
+// provisioned, owned, and torn down identically, which is what makes a dedicated
+// instance carry the shared block's lifecycle guarantees rather than a parallel
+// set of its own.
+//
+// namespace is the namespace of the SERVICE that resolves to this instance, so a
+// service placed apart gets its backing services beside it. In the ControlPlane's
+// own namespace the child takes a controller owner reference and the GC cascade
+// reaps it; in a service namespace no owner reference is possible (Kubernetes
+// forbids a cross-namespace one), so the child is stamped with the ownership
+// labels and the finalizer-driven teardown deletes it explicitly.
 //
 // It stays read-modify-write (not Server-Side Apply): the write is gated on the
-// LIVE object's owner references — an owned CR has its topology re-projected,
-// while an externally-provisioned CR sharing the name is adopted read-only and
-// never has ownership claimed. That adoption-vs-projection decision reads live
-// state, so it cannot be expressed as a pure projection of cp.Spec.
-func (r *ControlPlaneReconciler) ensureMariaDB(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, db *commonv1.DatabaseSpec) (bool, error) {
+// LIVE object's ownership — an owned CR has its topology re-projected, while an
+// externally-provisioned CR sharing the name is adopted read-only and never has
+// ownership claimed. That adoption-vs-projection decision reads live state, so it
+// cannot be expressed as a pure projection of cp.Spec.
+func (r *ControlPlaneReconciler) ensureMariaDB(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, db *commonv1.DatabaseSpec, namespace string) (bool, error) {
 	key := types.NamespacedName{
 		Name:      db.ClusterRef.Name,
-		Namespace: childNamespace(cp),
+		Namespace: namespace,
 	}
 	// Derive the projected topology from the ControlPlane spec. A single replica
 	// yields a single-instance MariaDB with Galera off, so a single-node kind can
@@ -387,8 +411,8 @@ func (r *ControlPlaneReconciler) ensureMariaDB(ctx context.Context, cp *c5c3v1al
 		mariadb.Spec.Replicas = replicas
 		mariadb.Spec.Galera = &mariadbv1alpha1.Galera{Enabled: galeraEnabled}
 		mariadb.Spec.Storage = mariadbv1alpha1.Storage{Size: &size}
-		if serr := controllerutil.SetControllerReference(cp, mariadb, r.Scheme); serr != nil {
-			return false, fmt.Errorf("setting owner reference on MariaDB %q: %w", key.Name, serr)
+		if serr := claimChildOwnership(cp, mariadb, r.Scheme); serr != nil {
+			return false, fmt.Errorf("claiming ownership of MariaDB %q: %w", key.Name, serr)
 		}
 		if cerr := r.Create(ctx, mariadb); cerr != nil {
 			return false, fmt.Errorf("creating MariaDB %q: %w", key.Name, cerr)
@@ -413,9 +437,12 @@ func (r *ControlPlaneReconciler) ensureMariaDB(ctx context.Context, cp *c5c3v1al
 		//     "openstack-db" under the same name): adopt it as-is and reconcile only
 		//     against its status. Re-projecting our defaults would be rejected
 		//     (immutable storage) or needlessly reshape a running database, and we
-		//     never claim GC ownership of a resource we did not create, so deleting
+		//     never claim ownership of a resource we did not create, so deleting
 		//     the ControlPlane never cascades into shared infra.
-		if metav1.IsControlledBy(mariadb, cp) {
+		//
+		// Ownership is isControlPlaneChild, not IsControlledBy: a child in a service
+		// namespace carries the ownership labels instead of an owner reference.
+		if isControlPlaneChild(mariadb, cp) {
 			currentGalera := mariadb.Spec.Galera != nil && mariadb.Spec.Galera.Enabled
 			if mariadb.Spec.Replicas != replicas || currentGalera != galeraEnabled {
 				mariadb.Spec.Replicas = replicas
@@ -441,10 +468,10 @@ func (r *ControlPlaneReconciler) ensureMariaDB(ctx context.Context, cp *c5c3v1al
 // owner references to project only onto an owned CR and adopt an externally
 // provisioned one read-only (never claiming GC ownership), and it is
 // unstructured, which apply.EnsureObject's typed-struct path does not cover.
-func (r *ControlPlaneReconciler) ensureMemcached(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, cache *commonv1.CacheSpec) (bool, error) {
+func (r *ControlPlaneReconciler) ensureMemcached(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, cache *commonv1.CacheSpec, namespace string) (bool, error) {
 	key := types.NamespacedName{
 		Name:      cache.ClusterRef.Name,
-		Namespace: childNamespace(cp),
+		Namespace: namespace,
 	}
 	u := &unstructured.Unstructured{}
 	u.SetGroupVersionKind(memcachedGVK)
@@ -457,8 +484,8 @@ func (r *ControlPlaneReconciler) ensureMemcached(ctx context.Context, cp *c5c3v1
 		if serr := unstructured.SetNestedField(u.Object, int64(cache.Replicas), "spec", "replicas"); serr != nil {
 			return false, fmt.Errorf("setting spec.replicas: %w", serr)
 		}
-		if serr := controllerutil.SetControllerReference(cp, u, r.Scheme); serr != nil {
-			return false, fmt.Errorf("setting owner reference on Memcached %q: %w", key.Name, serr)
+		if serr := claimChildOwnership(cp, u, r.Scheme); serr != nil {
+			return false, fmt.Errorf("claiming ownership of Memcached %q: %w", key.Name, serr)
 		}
 		if cerr := r.Create(ctx, u); cerr != nil {
 			return false, fmt.Errorf("creating Memcached %q: %w", key.Name, cerr)

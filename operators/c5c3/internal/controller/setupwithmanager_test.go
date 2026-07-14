@@ -17,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
@@ -342,4 +343,70 @@ func TestControlPlaneSecretNameExtractor_ExternalModeIndexesUserSecret(t *testin
 	cp.Spec.Infrastructure = &c5c3v1alpha1.InfrastructureSpec{}
 	cp.Spec.Infrastructure.Database.ClusterRef = &corev1.LocalObjectReference{Name: "openstack-db"}
 	g.Expect(controlPlaneSecretNameExtractor(cp)).To(ConsistOf("external-admin"))
+}
+
+// --- per-service namespaces (issue #646) ---
+
+// TestSecretToControlPlaneMapper_ResolvesAcrossNamespaces verifies a Secret event
+// in a SERVICE namespace wakes the ControlPlane that lives elsewhere — the
+// admin-password Secret follows the Keystone service, so a namespace-scoped
+// lookup would look for the ControlPlane where it does not live and swallow the
+// rotation. A ControlPlane that merely references the same Secret NAME in a
+// namespace it does not occupy must still be left alone.
+func TestSecretToControlPlaneMapper_ResolvesAcrossNamespaces(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	// cp-a lives in ns-a and places Keystone in "identity".
+	cpA := mapperControlPlane("cp-a", "ns-a", "shared-secret")
+	cpA.Spec.Services.Keystone = &c5c3v1alpha1.ServiceKeystoneSpec{
+		Namespace: &c5c3v1alpha1.ServiceNamespaceSpec{Name: "identity"},
+	}
+	// cp-b lives in ns-b, references the same Secret NAME, and occupies no other
+	// namespace — the "identity" Secret is none of its business.
+	cpB := mapperControlPlane("cp-b", "ns-b", "shared-secret")
+
+	c := newControlPlaneMapperClient(t, cpA, cpB)
+	mapper := secretToControlPlaneMapper(c)
+
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "shared-secret", Namespace: "identity"},
+	}
+	reqs := mapper(context.Background(), secret)
+
+	g.Expect(reqs).To(ConsistOf(
+		reconcile.Request{NamespacedName: types.NamespacedName{Namespace: "ns-a", Name: "cp-a"}},
+	), "only the ControlPlane that actually occupies the Secret's namespace may be enqueued")
+}
+
+// TestNamespacedStoreToControlPlaneMapper_MatchesServiceNamespaces verifies the
+// per-tenant store watch reaches into the service namespaces: a store flipping
+// unready in a namespace the ControlPlane placed a service in must wake it, while
+// an identically-named store in an unrelated namespace must not.
+func TestNamespacedStoreToControlPlaneMapper_MatchesServiceNamespaces(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := mapperControlPlane("cp", "openstack", "admin-secret")
+	cp.Spec.Services.Keystone = &c5c3v1alpha1.ServiceKeystoneSpec{
+		Namespace: &c5c3v1alpha1.ServiceNamespaceSpec{Name: "identity"},
+	}
+	c := newControlPlaneMapperClient(t, cp)
+	mapper := namespacedStoreToControlPlaneMapper(c)
+
+	inServiceNS := &esov1.SecretStore{
+		ObjectMeta: metav1.ObjectMeta{Name: esoTenantStoreName, Namespace: "identity"},
+	}
+	g.Expect(mapper(context.Background(), inServiceNS)).To(ConsistOf(
+		reconcile.Request{NamespacedName: types.NamespacedName{Namespace: "openstack", Name: "cp"}},
+	), "a tenant store in a service namespace must wake its ControlPlane")
+
+	inOwnNS := &esov1.SecretStore{
+		ObjectMeta: metav1.ObjectMeta{Name: esoTenantStoreName, Namespace: "openstack"},
+	}
+	g.Expect(mapper(context.Background(), inOwnNS)).To(HaveLen(1))
+
+	unrelated := &esov1.SecretStore{
+		ObjectMeta: metav1.ObjectMeta{Name: esoTenantStoreName, Namespace: "some-other-tenant"},
+	}
+	g.Expect(mapper(context.Background(), unrelated)).To(BeEmpty(),
+		"an identically-named store in a namespace the ControlPlane does not occupy must wake nobody")
 }

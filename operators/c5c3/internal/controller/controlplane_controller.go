@@ -456,11 +456,43 @@ func registerControlPlaneSecretNameIndex(ctx context.Context, indexer client.Fie
 // admin password rotates. It binds the shared watch.SecretToOwnersMapper to the
 // ControlPlane types in the index-only shape (no owner-ref leg).
 func secretToControlPlaneMapper(c client.Reader) handler.MapFunc {
-	return watch.SecretToOwnersMapper(c, watch.SecretMapperConfig{
+	// AllNamespaces widens the index-backed List to the whole cluster: a
+	// ControlPlane that places Keystone in a namespace of its own materialises the
+	// admin-password Secret THERE, so the namespace-scoped List would look for the
+	// referencing ControlPlane in a namespace it does not live in and drop the
+	// rotation event.
+	//
+	// The index keys on the Secret NAME alone, though, so a cluster-wide List also
+	// matches a ControlPlane that references the same name in a namespace this
+	// Secret has nothing to do with. Filter those out: a ControlPlane is only woken
+	// by a Secret in a namespace it actually occupies — its own, or one it places a
+	// service in.
+	indexed := watch.SecretToOwnersMapper(c, watch.SecretMapperConfig{
 		IndexKey:      ControlPlaneSecretNameIndexKey,
 		NewList:       func() client.ObjectList { return &c5c3v1alpha1.ControlPlaneList{} },
 		AllNamespaces: true,
 	})
+	return func(ctx context.Context, obj client.Object) []reconcile.Request {
+		var requests []reconcile.Request
+		for _, req := range indexed(ctx, obj) {
+			cp := &c5c3v1alpha1.ControlPlane{}
+			if err := c.Get(ctx, req.NamespacedName, cp); err != nil {
+				if apierrors.IsNotFound(err) {
+					continue
+				}
+				// A transient cache error must not swallow a legitimate rotation
+				// event; enqueue and let reconcile resolve authoritatively.
+				log.FromContext(ctx).V(1).Info("ControlPlane Get failed while scoping a Secret event; enqueueing anyway",
+					"controlPlane", req.NamespacedName, "error", err)
+				requests = append(requests, req)
+				continue
+			}
+			if slices.Contains(controlPlaneNamespaces(cp), obj.GetNamespace()) {
+				requests = append(requests, req)
+			}
+		}
+		return requests
+	}
 }
 
 // namespacedStoreToControlPlaneMapper enqueues the ControlPlanes whose effective

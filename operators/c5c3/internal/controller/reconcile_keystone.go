@@ -11,6 +11,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/c5c3/forge/internal/common/conditions"
@@ -25,9 +26,10 @@ import (
 // "{controlplane.Name}-keystone" — a deterministic, collision-free name derived
 // from the owning ControlPlane so a single namespace can host the Keystone CRs
 // of multiple ControlPlanes without clashing, and so re-reconciles always target
-// the same child. It lives in the ControlPlane's own namespace (childNamespace),
-// for the same cross-namespace-owner-reference reason documented on
-// childNamespace in reconcile_infrastructure.go.
+// the same child. It lives in cp.KeystoneNamespace(): the ControlPlane's own
+// namespace by default, or the one services.keystone.namespace assigns. In the
+// latter case the child carries the ownership labels instead of an owner
+// reference — see childNamespace in reconcile_infrastructure.go.
 const keystoneNameSuffix = "-keystone"
 
 // DECISION the default Keystone image repository is
@@ -190,11 +192,22 @@ func (r *ControlPlaneReconciler) reconcileKeystone(ctx context.Context, cp *c5c3
 		image = *override
 	}
 
+	// Place the child in the namespace assigned to the Keystone service (the
+	// ControlPlane's own unless services.keystone.namespace says otherwise). A
+	// child outside the ControlPlane's namespace can carry no owner reference, so
+	// it is stamped with the ownership labels and applied unowned; the
+	// finalizer-driven teardown deletes it explicitly, since no GC cascade reaches
+	// it.
+	keystoneNS := cp.KeystoneNamespace()
+	crossNamespace := keystoneNS != cp.Namespace
 	keystone := &keystonev1alpha1.Keystone{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      keystoneName(cp),
-			Namespace: childNamespace(cp),
+			Namespace: keystoneNS,
 		},
+	}
+	if crossNamespace {
+		stampControlPlaneChildLabels(keystone, cp)
 	}
 
 	// Compute the Fernet/CredentialKeys rotation schedule before the mutate
@@ -332,6 +345,7 @@ func (r *ControlPlaneReconciler) reconcileKeystone(ctx context.Context, cp *c5c3
 		Conditions:      &cp.Status.Conditions,
 		Generation:      cp.Generation,
 		ChildConditions: func(k *keystonev1alpha1.Keystone) []metav1.Condition { return k.Status.Conditions },
+		Unowned:         crossNamespace,
 	})
 }
 
@@ -392,14 +406,17 @@ func keystonePublicEndpoint(ks *c5c3v1alpha1.ServiceKeystoneSpec) string {
 // spec.services.keystone is unset AND the ControlPlane has opted in to deletion
 // via keystoneDeletionAllowedAnnotation (the caller gates this — without the
 // opt-in the child is preserved, since the cascade would destroy its
-// irreplaceable credential/fernet keys). The child carries this ControlPlane as
-// its controller owner reference, so it is only deleted when still owned here;
+// irreplaceable credential/fernet keys). It is only deleted when this
+// ControlPlane still owns it — by owner reference in its own namespace, by the
+// ownership labels in a service namespace, where no owner reference is possible;
 // DeletePropagationBackground lets Kubernetes garbage-collect the Keystone's own
 // children (Deployment, Jobs, Secrets) behind it. Not-found and an
 // externally-owned collision are both treated as nothing to do.
 func (r *ControlPlaneReconciler) deleteOrphanedKeystone(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) error {
 	child := &keystonev1alpha1.Keystone{
-		ObjectMeta: metav1.ObjectMeta{Name: keystoneName(cp), Namespace: childNamespace(cp)},
+		ObjectMeta: metav1.ObjectMeta{Name: keystoneName(cp), Namespace: cp.KeystoneNamespace()},
 	}
-	return commonreconcile.DeleteOrphanedChild(ctx, r.Client, cp, child)
+	return commonreconcile.DeleteOrphanedChildFunc(ctx, r.Client, child, func(live client.Object) bool {
+		return isControlPlaneChild(live, cp)
+	})
 }

@@ -926,3 +926,72 @@ func TestReconcileHorizon_DedicatedBrownfieldCacheProjected(t *testing.T) {
 	g.Expect(h.Spec.Cache.ClusterRef).To(BeNil())
 	g.Expect(h.Spec.Cache.Servers).To(Equal([]string{"horizon-mc.example.com:11211"}))
 }
+
+// --- per-service namespaces (issue #646) ---
+
+// TestReconcileHorizon_ProjectsIntoTheAssignedNamespace verifies the dashboard is
+// placed in its assigned namespace, carries the ownership labels rather than an
+// owner reference, and — the point of the whole exercise — is still pointed at the
+// Keystone service in ANOTHER namespace via the namespace-qualified Service DNS.
+func TestReconcileHorizon_ProjectsIntoTheAssignedNamespace(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := horizonControlPlane()
+	cp.Spec.Services.Keystone.Namespace = &c5c3v1alpha1.ServiceNamespaceSpec{
+		Name:      "identity",
+		Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+	}
+	cp.Spec.Services.Horizon.Namespace = &c5c3v1alpha1.ServiceNamespaceSpec{
+		Name:      "dashboard",
+		Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+	}
+	r := newHorizonTestReconciler(t, cp)
+
+	_, err := r.reconcileHorizon(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var horizon horizonv1alpha1.Horizon
+	g.Expect(r.Get(context.Background(), types.NamespacedName{
+		Name: "cp-horizon", Namespace: "dashboard",
+	}, &horizon)).To(Succeed())
+	g.Expect(horizon.OwnerReferences).To(BeEmpty(),
+		"a cross-namespace child cannot carry an owner reference")
+	g.Expect(horizon.Labels).To(HaveKeyWithValue(controlPlaneNameLabel, "cp"))
+	g.Expect(horizon.Labels).To(HaveKeyWithValue(controlPlaneNamespaceLabel, "default"))
+
+	g.Expect(horizon.Spec.KeystoneEndpoint).To(Equal("http://cp-keystone.identity.svc:5000/v3"),
+		"the dashboard must reach the identity service across the namespace boundary")
+
+	g.Expect(r.Get(context.Background(), types.NamespacedName{
+		Name: "cp-horizon", Namespace: "default",
+	}, &horizonv1alpha1.Horizon{})).NotTo(Succeed())
+}
+
+// TestDeleteOrphanedHorizon_CrossNamespace verifies the orphan cleanup follows the
+// dashboard into its namespace and honours the LABEL ownership test there.
+func TestDeleteOrphanedHorizon_CrossNamespace(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := horizonControlPlane()
+	cp.Spec.Services.Horizon.Namespace = &c5c3v1alpha1.ServiceNamespaceSpec{
+		Name:      "dashboard",
+		Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+	}
+
+	foreign := &horizonv1alpha1.Horizon{
+		ObjectMeta: metav1.ObjectMeta{Name: "cp-horizon", Namespace: "dashboard"},
+	}
+	r := newHorizonTestReconciler(t, cp, foreign)
+	g.Expect(r.deleteOrphanedHorizon(context.Background(), cp)).To(Succeed())
+	g.Expect(r.Get(context.Background(), types.NamespacedName{
+		Name: "cp-horizon", Namespace: "dashboard",
+	}, &horizonv1alpha1.Horizon{})).To(Succeed(), "a dashboard we do not own must never be deleted")
+
+	ours := &horizonv1alpha1.Horizon{
+		ObjectMeta: metav1.ObjectMeta{Name: "cp-horizon", Namespace: "dashboard"},
+	}
+	stampControlPlaneChildLabels(ours, cp)
+	r2 := newHorizonTestReconciler(t, cp, ours)
+	g.Expect(r2.deleteOrphanedHorizon(context.Background(), cp)).To(Succeed())
+	g.Expect(r2.Get(context.Background(), types.NamespacedName{
+		Name: "cp-horizon", Namespace: "dashboard",
+	}, &horizonv1alpha1.Horizon{})).NotTo(Succeed())
+}

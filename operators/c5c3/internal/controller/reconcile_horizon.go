@@ -12,6 +12,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -25,7 +26,8 @@ import (
 
 // The projected Horizon CR is named "{controlplane.Name}-horizon" — the same
 // deterministic, collision-free naming convention as the Keystone child (see
-// keystoneNameSuffix) — and lives in the ControlPlane's own namespace.
+// keystoneNameSuffix) — and lives in cp.HorizonNamespace(): the ControlPlane's
+// own namespace by default, or the one services.horizon.namespace assigns.
 const horizonNameSuffix = "-horizon"
 
 // defaultHorizonRepository is the canonical dashboard image repository; the
@@ -40,6 +42,11 @@ const defaultHorizonRepository = "ghcr.io/c5c3/horizon"
 // horizon-secret-key-externalsecret.yaml), which is pinned to the default
 // ControlPlane identity — multi-ControlPlane deployments must set
 // secretKeyRef explicitly (documented on ServiceHorizonSpec).
+//
+// The reference is resolved NAMESPACE-LOCALLY by the horizon-operator, i.e. in
+// cp.HorizonNamespace(). A dashboard placed in a namespace of its own therefore
+// needs its SECRET_KEY material provisioned THERE — the shim Secret in the
+// ControlPlane's namespace is not visible to it.
 const (
 	defaultHorizonSecretKeyName = "horizon-secret-key"
 	defaultHorizonSecretKeyKey  = "secret-key"
@@ -170,10 +177,14 @@ func (r *ControlPlaneReconciler) reconcileHorizon(ctx context.Context, cp *c5c3v
 		return ctrl.Result{}, err
 	}
 
+	// Place the child in the namespace assigned to the dashboard (the
+	// ControlPlane's own unless services.horizon.namespace says otherwise). See
+	// reconcileKeystone: a child outside the ControlPlane's namespace carries the
+	// ownership labels instead of an owner reference.
 	horizon := &horizonv1alpha1.Horizon{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      horizonName(cp),
-			Namespace: childNamespace(cp),
+			Namespace: cp.HorizonNamespace(),
 		},
 	}
 
@@ -250,7 +261,7 @@ func (r *ControlPlaneReconciler) reconcileHorizon(ctx context.Context, cp *c5c3v
 		horizon.Spec.WebSSO = projectWebSSO(ctx, cp, backends, horizon.Spec.WebSSO)
 		horizon.Spec.MultiDomain = projectMultiDomain(ctx, backends, horizon.Spec.MultiDomain)
 
-		return controllerutil.SetControllerReference(cp, horizon, r.Scheme)
+		return claimChildOwnership(cp, horizon, r.Scheme)
 	}); err != nil {
 		reason := "HorizonError"
 		message := fmt.Sprintf("create-or-update Horizon: %v", err)
@@ -470,15 +481,18 @@ func horizonKeystoneEndpoint(cp *c5c3v1alpha1.ControlPlane) string {
 
 // deleteOrphanedHorizon removes a previously-projected Horizon child when
 // spec.services.horizon is unset AND the ControlPlane has opted in to
-// deletion via horizonDeletionAllowedAnnotation (the caller gates this). The
-// child carries this ControlPlane as its controller owner reference, so it is
-// only deleted when still owned here; DeletePropagationBackground lets
+// deletion via horizonDeletionAllowedAnnotation (the caller gates this). It is
+// only deleted when this ControlPlane still owns it — by owner reference in its
+// own namespace, by the ownership labels in a service namespace, where no owner
+// reference is possible; DeletePropagationBackground lets
 // Kubernetes garbage-collect the dashboard's own children (Deployment,
 // Service, ConfigMaps) behind it. Not-found and an externally-owned collision
 // are both treated as nothing to do.
 func (r *ControlPlaneReconciler) deleteOrphanedHorizon(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) error {
 	child := &horizonv1alpha1.Horizon{
-		ObjectMeta: metav1.ObjectMeta{Name: horizonName(cp), Namespace: childNamespace(cp)},
+		ObjectMeta: metav1.ObjectMeta{Name: horizonName(cp), Namespace: cp.HorizonNamespace()},
 	}
-	return commonreconcile.DeleteOrphanedChild(ctx, r.Client, cp, child)
+	return commonreconcile.DeleteOrphanedChildFunc(ctx, r.Client, child, func(live client.Object) bool {
+		return isControlPlaneChild(live, cp)
+	})
 }

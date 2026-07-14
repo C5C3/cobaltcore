@@ -11,9 +11,11 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -77,6 +79,19 @@ func stampControlPlaneChildLabels(obj client.Object, cp *c5c3v1alpha1.ControlPla
 		labels[k] = v
 	}
 	obj.SetLabels(labels)
+}
+
+// claimChildOwnership makes obj a child of cp, by the only mechanism the child's
+// namespace permits: a controller owner reference when it shares cp's namespace
+// (so the GC cascade reaps it), the ownership labels when it does not (so the
+// finalizer-driven teardown can find and delete it). It is the single decision
+// point, so no projection site has to re-derive which mechanism applies.
+func claimChildOwnership(cp *c5c3v1alpha1.ControlPlane, obj client.Object, scheme *runtime.Scheme) error {
+	if obj.GetNamespace() != cp.Namespace {
+		stampControlPlaneChildLabels(obj, cp)
+		return nil
+	}
+	return controllerutil.SetControllerReference(cp, obj, scheme)
 }
 
 // isControlPlaneChild reports whether cp owns obj: either it is the controller

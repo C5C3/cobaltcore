@@ -343,3 +343,31 @@ func TestIdentityBackendToControlPlaneMapper_IgnoresWrongType(t *testing.T) {
 	g.Expect(r.identityBackendToControlPlaneMapper(context.Background(),
 		mapperControlPlane("cp", "openstack", "admin-secret"))).To(BeEmpty())
 }
+
+// TestIdentityBackendToControlPlaneMapper_CrossNamespace verifies the mapper finds
+// the ControlPlane when the Keystone child — and therefore the backend attached to
+// it — lives in a namespace of its own, and that it still refuses to wake a
+// ControlPlane whose Keystone is placed elsewhere (a same-named backend in an
+// unrelated namespace).
+func TestIdentityBackendToControlPlaneMapper_CrossNamespace(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := mapperControlPlane("cp", "openstack", "admin-secret")
+	cp.Spec.Services.Keystone = &c5c3v1alpha1.ServiceKeystoneSpec{
+		Namespace: &c5c3v1alpha1.ServiceNamespaceSpec{Name: "identity"},
+	}
+	r := identityBackendMapperReconciler(t, cp)
+
+	// A backend beside the Keystone child, in the service namespace.
+	attached := backend("oidc", keystonev1alpha1.IdentityBackendTypeOIDC, "federated", true)
+	attached.Namespace = "identity"
+	attached.Spec.KeystoneRef.Name = "cp-keystone"
+	g.Expect(r.identityBackendToControlPlaneMapper(context.Background(), &attached)).To(HaveLen(1),
+		"a backend in the Keystone service's namespace must wake the ControlPlane in another namespace")
+
+	// The same backend, in the ControlPlane's own namespace: the Keystone child is
+	// not there, so it attaches to no Keystone of ours.
+	elsewhere := attached.DeepCopy()
+	elsewhere.Namespace = "openstack"
+	g.Expect(r.identityBackendToControlPlaneMapper(context.Background(), elsewhere)).To(BeEmpty(),
+		"a backend outside the Keystone service's namespace must wake nobody")
+}
