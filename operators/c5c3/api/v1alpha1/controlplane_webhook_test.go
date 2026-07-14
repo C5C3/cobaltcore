@@ -2995,3 +2995,266 @@ func TestValidateUpdate_AcceptsDedicatedCacheReplicasChange(t *testing.T) {
 	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
 	g.Expect(err).NotTo(HaveOccurred())
 }
+
+// --- per-service namespace validation (issue #646) ---
+
+// namespacedControlPlane is the baseline for the per-service namespace tests: a
+// ControlPlane in "openstack" that places Keystone in an operator-owned
+// namespace and the dashboard in a pre-existing one.
+func namespacedControlPlane() *ControlPlane {
+	cp := validControlPlane()
+	cp.Name = "cp"
+	cp.Namespace = "openstack"
+	cp.Spec.Services.Keystone.Namespace = &ServiceNamespaceSpec{
+		Name:      "identity",
+		Lifecycle: ServiceNamespaceLifecycleManaged,
+	}
+	cp.Spec.Services.Horizon = &ServiceHorizonSpec{
+		Namespace: &ServiceNamespaceSpec{
+			Name:      "dashboard",
+			Lifecycle: ServiceNamespaceLifecycleExternal,
+		},
+	}
+	return cp
+}
+
+// TestDefault_ServiceNamespaceLifecycle verifies the defaulting webhook
+// materializes the Managed lifecycle on a DECLARED assignment — and never
+// invents an assignment for a service that declared none.
+func TestDefault_ServiceNamespaceLifecycle(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Spec.Services.Keystone.Namespace = &ServiceNamespaceSpec{Name: "identity"}
+	cp.Spec.Services.Horizon = &ServiceHorizonSpec{}
+
+	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+	g.Expect(cp.Spec.Services.Keystone.Namespace.Lifecycle).To(Equal(ServiceNamespaceLifecycleManaged))
+	g.Expect(cp.Spec.Services.Horizon.Namespace).To(BeNil())
+
+	// Idempotent, and an explicit lifecycle is preserved.
+	cp.Spec.Services.Keystone.Namespace.Lifecycle = ServiceNamespaceLifecycleExternal
+	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+	g.Expect(cp.Spec.Services.Keystone.Namespace.Lifecycle).To(Equal(ServiceNamespaceLifecycleExternal))
+}
+
+// TestValidateCreate_AcceptsServiceNamespaces verifies the baseline shape — one
+// Managed and one External assignment — is admissible.
+func TestValidateCreate_AcceptsServiceNamespaces(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	_, err := w.ValidateCreate(context.Background(), namespacedControlPlane())
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// TestValidateCreate_RejectsNamespaceEqualToControlPlane pins the no-op guard:
+// naming the ControlPlane's own namespace is not "place it here", it is the
+// shape that would make the operator claim ownership of — and at teardown delete
+// — the namespace the ControlPlane itself lives in.
+func TestValidateCreate_RejectsNamespaceEqualToControlPlane(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Namespace = "openstack"
+	cp.Spec.Services.Keystone.Namespace = &ServiceNamespaceSpec{Name: "openstack"}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("services.keystone.namespace.name"))
+	g.Expect(err.Error()).To(ContainSubstring("must differ from the ControlPlane's own namespace"))
+}
+
+// TestValidateCreate_RejectsInvalidNamespaceName mirrors the RFC-1123 Pattern
+// marker for webhook-bypassed callers: the value names a Kubernetes namespace.
+func TestValidateCreate_RejectsInvalidNamespaceName(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Namespace = "openstack"
+	cp.Spec.Services.Keystone.Namespace = &ServiceNamespaceSpec{Name: "Identity_NS"}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("RFC-1123 label"))
+}
+
+// TestValidateCreate_RejectsNamespaceLifecycleConflict pins the co-location rule:
+// services sharing a namespace share its backing services and its tenant store,
+// so they cannot disagree on who owns it — one declaration would have teardown
+// delete the namespace the other declared untouchable.
+func TestValidateCreate_RejectsNamespaceLifecycleConflict(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Namespace = "openstack"
+	cp.Spec.Services.Keystone.Namespace = &ServiceNamespaceSpec{
+		Name: "services", Lifecycle: ServiceNamespaceLifecycleManaged,
+	}
+	cp.Spec.Services.Horizon = &ServiceHorizonSpec{
+		Namespace: &ServiceNamespaceSpec{Name: "services", Lifecycle: ServiceNamespaceLifecycleExternal},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("services.horizon.namespace.lifecycle"))
+	g.Expect(err.Error()).To(ContainSubstring("must declare the same lifecycle"))
+}
+
+// TestValidateCreate_RejectsNamespaceInExternalMode verifies the webhook mirror
+// of the External-mode CEL forbid rule: no Keystone workload is deployed, so
+// there is nothing to place.
+func TestValidateCreate_RejectsNamespaceInExternalMode(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Spec.Infrastructure = nil
+	cp.Spec.Services.Keystone = &ServiceKeystoneSpec{
+		Mode:      KeystoneModeExternal,
+		External:  &ExternalKeystoneSpec{AuthURL: "https://keystone.example.com/v3"},
+		Namespace: &ServiceNamespaceSpec{Name: "identity"},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("services.keystone.namespace"))
+	g.Expect(err.Error()).To(ContainSubstring("there is nothing to place"))
+}
+
+// TestValidateCreate_RejectsNamespaceClaimedByOtherControlPlane pins the
+// tenant-key invariant in BOTH directions: a namespace already occupied by
+// another ControlPlane cannot be claimed as a service namespace, and a
+// ControlPlane cannot be created into a namespace another one already claims as
+// its service namespace. The claim is cluster-wide — the incumbent lives in a
+// different namespace than the newcomer, so a namespace-scoped List would miss it.
+func TestValidateCreate_RejectsNamespaceClaimedByOtherControlPlane(t *testing.T) {
+	t.Run("service namespace collides with another ControlPlane's own namespace", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		incumbent := validControlPlane()
+		incumbent.Name = "other"
+		incumbent.Namespace = "identity"
+		c := fake.NewClientBuilder().WithScheme(webhookScheme(t)).WithObjects(incumbent).Build()
+		w := &ControlPlaneWebhook{Client: c}
+
+		_, err := w.ValidateCreate(context.Background(), namespacedControlPlane())
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("services.keystone.namespace.name"))
+		g.Expect(err.Error()).To(ContainSubstring("already occupied by ControlPlane \"other\""))
+	})
+
+	t.Run("service namespace collides with another ControlPlane's service namespace", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		incumbent := namespacedControlPlane()
+		incumbent.Name = "other"
+		incumbent.Namespace = "other-ns"
+		c := fake.NewClientBuilder().WithScheme(webhookScheme(t)).WithObjects(incumbent).Build()
+		w := &ControlPlaneWebhook{Client: c}
+
+		newcomer := namespacedControlPlane()
+		newcomer.Name = "newcomer"
+		newcomer.Namespace = "newcomer-ns"
+
+		_, err := w.ValidateCreate(context.Background(), newcomer)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("identity"))
+		g.Expect(err.Error()).To(ContainSubstring("belongs to at most one ControlPlane"))
+	})
+
+	t.Run("own namespace collides with another ControlPlane's service namespace", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		incumbent := namespacedControlPlane()
+		incumbent.Name = "other"
+		incumbent.Namespace = "other-ns"
+		c := fake.NewClientBuilder().WithScheme(webhookScheme(t)).WithObjects(incumbent).Build()
+		w := &ControlPlaneWebhook{Client: c}
+
+		// A plain ControlPlane created INTO the namespace the incumbent already
+		// claims for its Keystone service.
+		newcomer := validControlPlane()
+		newcomer.Name = "newcomer"
+		newcomer.Namespace = "identity"
+
+		_, err := w.ValidateCreate(context.Background(), newcomer)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("metadata.namespace"))
+		g.Expect(err.Error()).To(ContainSubstring("already claimed as a service namespace"))
+	})
+
+	t.Run("a ControlPlane does not collide with itself", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		self := namespacedControlPlane()
+		c := fake.NewClientBuilder().WithScheme(webhookScheme(t)).WithObjects(self).Build()
+		w := &ControlPlaneWebhook{Client: c}
+
+		g.Expect(w.validateNamespaceClaims(context.Background(), self)).NotTo(HaveOccurred())
+	})
+}
+
+// TestValidateUpdate_RejectsServiceNamespaceChanges pins the create-only freeze:
+// presence, name, and lifecycle are all immutable, because moving a live service
+// across namespaces would strand its backing services, its tenant store, and
+// every OpenBao path scoped by the old namespace.
+func TestValidateUpdate_RejectsServiceNamespaceChanges(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*ControlPlane)
+		wantSub string
+	}{
+		{
+			name:    "removing the assignment",
+			mutate:  func(cp *ControlPlane) { cp.Spec.Services.Keystone.Namespace = nil },
+			wantSub: "spec.services.keystone.namespace",
+		},
+		{
+			name:    "renaming the namespace",
+			mutate:  func(cp *ControlPlane) { cp.Spec.Services.Keystone.Namespace.Name = "identity-2" },
+			wantSub: "spec.services.keystone.namespace.name",
+		},
+		{
+			name: "flipping the lifecycle",
+			mutate: func(cp *ControlPlane) {
+				cp.Spec.Services.Horizon.Namespace.Lifecycle = ServiceNamespaceLifecycleManaged
+			},
+			wantSub: "spec.services.horizon.namespace.lifecycle",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			w := &ControlPlaneWebhook{}
+			oldCP := namespacedControlPlane()
+			newCP := oldCP.DeepCopy()
+			tc.mutate(newCP)
+
+			_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring(tc.wantSub))
+			g.Expect(err.Error()).To(ContainSubstring("the namespace a service is placed in is immutable"))
+		})
+	}
+
+	t.Run("adding an assignment to a live ControlPlane", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		w := &ControlPlaneWebhook{}
+		oldCP := validControlPlane()
+		oldCP.Namespace = "openstack"
+		newCP := oldCP.DeepCopy()
+		newCP.Spec.Services.Keystone.Namespace = &ServiceNamespaceSpec{
+			Name: "identity", Lifecycle: ServiceNamespaceLifecycleManaged,
+		}
+
+		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("the namespace a service is placed in is immutable"))
+	})
+
+	t.Run("an unchanged assignment is not rejected", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		w := &ControlPlaneWebhook{}
+		oldCP := namespacedControlPlane()
+		newCP := oldCP.DeepCopy()
+		newCP.Spec.OpenStackRelease = "2026.1"
+
+		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).NotTo(HaveOccurred())
+	})
+}

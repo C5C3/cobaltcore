@@ -690,6 +690,17 @@ func (w *ControlPlaneWebhook) Default(_ context.Context, obj *ControlPlane) erro
 		ks.Mode = KeystoneModeManaged
 	}
 
+	// A per-service namespace assignment defaults to the Managed lifecycle — the
+	// operator creates, owns, and deletes the namespace. Defaulted only on a
+	// DECLARED block: an absent assignment means "stay in the ControlPlane's
+	// namespace", and the webhook must never invent a placement. Mirrors the
+	// +kubebuilder:default=Managed marker on ServiceNamespaceSpec.Lifecycle.
+	for _, ns := range []*ServiceNamespaceSpec{keystoneNamespaceBlock(obj), horizonNamespaceBlock(obj)} {
+		if ns != nil && ns.Lifecycle == "" {
+			ns.Lifecycle = ServiceNamespaceLifecycleManaged
+		}
+	}
+
 	if obj.IsExternalKeystone() {
 		// External mode: the ControlPlane manages identity against a pre-existing
 		// Keystone and provisions NO backing services, so the infrastructure
@@ -830,7 +841,10 @@ func (w *ControlPlaneWebhook) ValidateCreate(ctx context.Context, obj *ControlPl
 	if err := newInvalidIfErrs(obj, w.validate(obj)); err != nil {
 		return warnings, err
 	}
-	return warnings, w.validateUniqueInNamespace(ctx, obj)
+	if err := w.validateUniqueInNamespace(ctx, obj); err != nil {
+		return warnings, err
+	}
+	return warnings, w.validateNamespaceClaims(ctx, obj)
 }
 
 // ValidateUpdate implements admission.Validator[*ControlPlane].
@@ -1025,8 +1039,165 @@ func (w *ControlPlaneWebhook) validate(cp *ControlPlane) field.ErrorList {
 	allErrs = append(allErrs, validateKeystoneMode(cp)...)
 	allErrs = append(allErrs, validateServiceAccounts(cp)...)
 	allErrs = append(allErrs, validateDedicatedBackingServices(cp)...)
+	allErrs = append(allErrs, validateServiceNamespaces(cp)...)
 
 	return allErrs
+}
+
+// namespaceNamePattern mirrors the Pattern marker on ServiceNamespaceSpec.Name:
+// a namespace name must be an RFC-1123 label.
+var namespaceNamePattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+
+// serviceNamespaceAssignment pairs one service's declared namespace block with
+// the field path it lives at, so the validators below walk every service
+// uniformly and a new service extends the walk rather than reshaping it.
+type serviceNamespaceAssignment struct {
+	path *field.Path
+	ns   *ServiceNamespaceSpec
+}
+
+// declaredServiceNamespaces returns the namespace assignments cp actually
+// declares, in a stable order. A service that stays in the ControlPlane's
+// namespace (the default) contributes nothing.
+func declaredServiceNamespaces(cp *ControlPlane) []serviceNamespaceAssignment {
+	svcPath := field.NewPath("spec", "services")
+	var out []serviceNamespaceAssignment
+	if ns := keystoneNamespaceBlock(cp); ns != nil {
+		out = append(out, serviceNamespaceAssignment{path: svcPath.Child("keystone", "namespace"), ns: ns})
+	}
+	if ns := horizonNamespaceBlock(cp); ns != nil {
+		out = append(out, serviceNamespaceAssignment{path: svcPath.Child("horizon", "namespace"), ns: ns})
+	}
+	return out
+}
+
+// validateServiceNamespaces enforces the rules on the per-service namespace
+// assignments. It mirrors the declarative constraints as defense-in-depth for
+// callers that bypass CRD schema admission (the RFC-1123 name shape, the
+// lifecycle enum) and adds the two the CRD schema cannot express:
+//
+//   - An assignment must not name the ControlPlane's OWN namespace. The block is
+//     the opt-in to a SEPARATE namespace; naming the current one is a no-op the
+//     reconciler would have to special-case at every cross-namespace site, and
+//     under the Managed lifecycle it would make the operator claim ownership of —
+//     and, at teardown, delete — the namespace the ControlPlane itself lives in.
+//   - Two services placed in the SAME namespace must agree on its lifecycle. They
+//     share that namespace's backing services and its tenant store, so they cannot
+//     disagree on whether the operator owns it: one declaration would have the
+//     teardown delete the namespace the other declared untouchable.
+//
+// The cross-field rule that a namespace assignment is forbidden in External mode
+// lives in validateKeystoneMode with the rest of the External-mode matrix.
+func validateServiceNamespaces(cp *ControlPlane) field.ErrorList {
+	var allErrs field.ErrorList
+
+	lifecycles := map[string]ServiceNamespaceLifecycle{}
+	for _, a := range declaredServiceNamespaces(cp) {
+		namePath := a.path.Child("name")
+		switch {
+		case a.ns.Name == "":
+			allErrs = append(allErrs, field.Required(namePath, "must be set"))
+		case a.ns.Name == cp.Namespace:
+			allErrs = append(allErrs, field.Invalid(namePath, a.ns.Name,
+				"must differ from the ControlPlane's own namespace; omit the block entirely to place the service "+
+					"in the ControlPlane's namespace"))
+		case !namespaceNamePattern.MatchString(a.ns.Name):
+			allErrs = append(allErrs, field.Invalid(namePath, a.ns.Name,
+				"must be a lowercase alphanumeric RFC-1123 label (it names a Kubernetes namespace)"))
+		}
+
+		switch a.ns.Lifecycle {
+		case ServiceNamespaceLifecycleManaged, ServiceNamespaceLifecycleExternal, "":
+		default:
+			allErrs = append(allErrs, field.NotSupported(a.path.Child("lifecycle"), a.ns.Lifecycle,
+				[]ServiceNamespaceLifecycle{ServiceNamespaceLifecycleManaged, ServiceNamespaceLifecycleExternal}))
+		}
+
+		if a.ns.Name == "" {
+			continue
+		}
+		if seen, dup := lifecycles[a.ns.Name]; dup && seen != a.ns.Lifecycle {
+			allErrs = append(allErrs, field.Invalid(a.path.Child("lifecycle"), a.ns.Lifecycle, fmt.Sprintf(
+				"services co-located in namespace %q must declare the same lifecycle; they share that namespace's "+
+					"backing services and secret store, so they cannot disagree on whether the operator owns it",
+				a.ns.Name,
+			)))
+		}
+		lifecycles[a.ns.Name] = a.ns.Lifecycle
+	}
+
+	return allErrs
+}
+
+// validateNamespaceClaims enforces that a namespace belongs to at most ONE
+// ControlPlane. The namespace is the tenant key the whole secret stack is scoped
+// by — the OpenBao KV paths (bootstrap/{ns}/…), the database-engine role
+// (keystone-{ns}), and the templated eso-tenant policy that confines a store's
+// token to its own namespace — so two ControlPlanes sharing one namespace would
+// share that scope: exactly the isolation the per-tenant store exists to enforce.
+// The one-ControlPlane-per-namespace rule (validateUniqueInNamespace) already
+// says so for the ControlPlane's own namespace; a service namespace is the same
+// tenant key one level out, so it takes the same rule.
+//
+// Both directions are rejected: a namespace this ControlPlane claims must not be
+// another's (own or service) namespace, and this ControlPlane's own namespace
+// must not be another's service namespace. The List is cluster-wide through the
+// injected uncached API reader — a service namespace can be claimed from any
+// namespace, so a namespace-scoped List would miss the claim it must find.
+//
+// It runs on CREATE only: the assignments are immutable afterwards
+// (validateServiceNamespacesImmutable), so no UPDATE can introduce a new claim.
+// A nil w.Client skips the check, mirroring validateUniqueInNamespace.
+func (w *ControlPlaneWebhook) validateNamespaceClaims(ctx context.Context, obj *ControlPlane) error {
+	if w.Client == nil {
+		return nil
+	}
+	claims := declaredServiceNamespaces(obj)
+	var existing ControlPlaneList
+	if err := w.Client.List(ctx, &existing); err != nil {
+		return apierrors.NewInternalError(
+			fmt.Errorf("listing ControlPlanes to enforce namespace-claim uniqueness: %w", err),
+		)
+	}
+
+	var allErrs field.ErrorList
+	for i := range existing.Items {
+		other := &existing.Items[i]
+		if other.UID == obj.UID && other.Namespace == obj.Namespace && other.Name == obj.Name {
+			continue
+		}
+		// Everything the other ControlPlane occupies: its own namespace (whose
+		// tenant scope validateUniqueInNamespace already guards) and every service
+		// namespace it claims.
+		occupied := map[string]struct{}{other.Namespace: {}}
+		for _, ns := range other.DedicatedServiceNamespaces() {
+			occupied[ns.Name] = struct{}{}
+		}
+
+		for _, a := range claims {
+			if _, taken := occupied[a.ns.Name]; taken && a.ns.Name != "" {
+				allErrs = append(allErrs, field.Invalid(a.path.Child("name"), a.ns.Name, fmt.Sprintf(
+					"namespace %q is already occupied by ControlPlane %q in namespace %q; a namespace is the tenant "+
+						"key the OpenBao paths and the per-tenant secret store are scoped by, so it belongs to at "+
+						"most one ControlPlane",
+					a.ns.Name, other.Name, other.Namespace,
+				)))
+			}
+		}
+
+		for _, ns := range other.DedicatedServiceNamespaces() {
+			if ns.Name == obj.Namespace {
+				allErrs = append(allErrs, field.Forbidden(field.NewPath("metadata", "namespace"), fmt.Sprintf(
+					"namespace %q is already claimed as a service namespace by ControlPlane %q in namespace %q; a "+
+						"namespace is the tenant key the OpenBao paths and the per-tenant secret store are scoped "+
+						"by, so it belongs to at most one ControlPlane",
+					obj.Namespace, other.Name, other.Namespace,
+				)))
+			}
+		}
+	}
+
+	return newInvalidIfErrs(obj, allErrs)
 }
 
 // validateDatabaseReplicas enforces that a managed database's replica count is 1
@@ -1285,6 +1456,10 @@ func validateKeystoneMode(cp *ControlPlane) field.ErrorList {
 			allErrs = append(allErrs, field.Forbidden(ksPath.Child("dedicatedBackingServices"),
 				"forbidden when services.keystone.mode is External (no backing services are provisioned at all)"))
 		}
+		if ks.Namespace != nil {
+			allErrs = append(allErrs, field.Forbidden(ksPath.Child("namespace"),
+				"forbidden when services.keystone.mode is External (no Keystone workload is deployed, so there is nothing to place)"))
+		}
 
 		// Cross-field rules CEL cannot express.
 		if cp.Spec.Infrastructure != nil {
@@ -1436,6 +1611,7 @@ func validateImmutable(oldObj, newObj *ControlPlane) field.ErrorList {
 	}
 
 	allErrs = append(allErrs, validateDedicatedBackingServicesImmutable(oldObj, newObj)...)
+	allErrs = append(allErrs, validateServiceNamespacesImmutable(oldObj, newObj)...)
 
 	oldSecretName := oldObj.Spec.KORC.AdminCredential.CloudCredentialsRef.SecretName
 	newSecretName := newObj.Spec.KORC.AdminCredential.CloudCredentialsRef.SecretName
@@ -1606,6 +1782,61 @@ func validateDedicatedCache(fldPath *field.Path, oldCache, newCache *commonv1.Ca
 		return nil
 	}
 	return validateCacheImmutable(fldPath, oldCache, newCache)
+}
+
+// serviceNamespaceTransitionMessage is the single message every per-service
+// namespace freeze reports, so the sites (the block's presence, its name, its
+// lifecycle, for each service) cannot drift apart.
+const serviceNamespaceTransitionMessage = "the namespace a service is placed in is immutable; moving a live service " +
+	"across namespaces would leave its backing services, its secret store, and the credential material scoped to " +
+	"the old namespace behind with no migration path — remove and recreate the ControlPlane to change it"
+
+// validateServiceNamespacesImmutable freezes the per-service namespace
+// assignments on UPDATE: the PRESENCE of the block, the namespace NAME, and the
+// LIFECYCLE.
+//
+//   - Presence and name: the namespace is where the service's MariaDB/Memcached,
+//     its per-namespace tenant SecretStore, and every OpenBao path scoped by it
+//     (bootstrap/{ns}/…, the keystone-{ns} database-engine role) live. Re-pointing
+//     a live service at another namespace would strand all of it — and the child's
+//     own database/bootstrap leaves are themselves immutable, so the re-projection
+//     would be rejected and wedge the reconcile behind a ProjectionRejected
+//     condition anyway.
+//   - Lifecycle: flipping External->Managed would have the operator claim, and at
+//     teardown DELETE, a namespace it was told it does not own; flipping
+//     Managed->External would abandon a namespace it created.
+//
+// The freeze is deliberately webhook-only, with NO CEL transition rule: moving a
+// service between namespaces (with the data migration that implies) is a reserved
+// future feature, and an immutable CEL marker could never be relaxed to a gated
+// transition later. This mirrors the dedicated-backing-services freeze above.
+func validateServiceNamespacesImmutable(oldObj, newObj *ControlPlane) field.ErrorList {
+	var allErrs field.ErrorList
+	svcPath := field.NewPath("spec", "services")
+
+	freeze := func(path *field.Path, oldNS, newNS *ServiceNamespaceSpec) {
+		switch {
+		case (oldNS == nil) != (newNS == nil):
+			allErrs = append(allErrs, field.Invalid(path, newNS, serviceNamespaceTransitionMessage))
+		case oldNS == nil:
+			return
+		}
+		if oldNS == nil || newNS == nil {
+			return
+		}
+		if oldNS.Name != newNS.Name {
+			allErrs = append(allErrs, field.Invalid(path.Child("name"), newNS.Name, serviceNamespaceTransitionMessage))
+		}
+		if oldNS.Lifecycle != newNS.Lifecycle {
+			allErrs = append(allErrs, field.Invalid(path.Child("lifecycle"), newNS.Lifecycle,
+				serviceNamespaceTransitionMessage))
+		}
+	}
+
+	freeze(svcPath.Child("keystone", "namespace"), keystoneNamespaceBlock(oldObj), keystoneNamespaceBlock(newObj))
+	freeze(svcPath.Child("horizon", "namespace"), horizonNamespaceBlock(oldObj), horizonNamespaceBlock(newObj))
+
+	return allErrs
 }
 
 // validateServiceAccountsImmutable freezes the per-entry identity and project
