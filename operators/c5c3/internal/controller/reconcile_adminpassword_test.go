@@ -358,3 +358,97 @@ func TestEffectiveAdminPasswordSecretRef_ManagedUnchanged(t *testing.T) {
 	g.Expect(effectiveAdminPasswordSecretRef(cp)).
 		To(Equal(commonv1.SecretRefSpec{Name: adminPasswordSecretName(cp), Key: "password"}))
 }
+
+// --- per-service namespaces (issue #646) ---
+
+// TestAdminPasswordRemoteKey_FollowsTheKeystoneNamespace pins the OpenBao path
+// re-keying. The keystone-operator's rotation PushSecret writes to
+// bootstrap/{keystone.Namespace}/{keystone.Name}/admin — it is authored from the
+// Keystone child, so it follows the child. If the ControlPlane kept reading the
+// path under ITS namespace, the two would use different paths and rotation would
+// silently stop reaching the operator.
+func TestAdminPasswordRemoteKey_FollowsTheKeystoneNamespace(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := adminPwManagedControlPlane()
+	g.Expect(adminPasswordRemoteKeyFor(cp)).To(Equal("bootstrap/openstack/controlplane-keystone/admin"),
+		"an unassigned Keystone keeps today's path")
+
+	cp.Spec.Services = c5c3v1alpha1.ServicesSpec{
+		Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{
+			Namespace: &c5c3v1alpha1.ServiceNamespaceSpec{Name: "identity"},
+		},
+	}
+	g.Expect(adminPasswordRemoteKeyFor(cp)).To(Equal("bootstrap/identity/controlplane-keystone/admin"))
+}
+
+// TestReconcileAdminPassword_MaterializesInTheKeystoneNamespace verifies the
+// ExternalSecret lands beside the Keystone child — where the child reads it, and
+// where that namespace's tenant store can deliver it — carrying the ownership
+// labels rather than an owner reference.
+func TestReconcileAdminPassword_MaterializesInTheKeystoneNamespace(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := korcTestScheme(t)
+	cp := adminPwManagedControlPlane()
+	cp.Spec.Services = c5c3v1alpha1.ServicesSpec{
+		Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{
+			Namespace: &c5c3v1alpha1.ServiceNamespaceSpec{
+				Name:      "identity",
+				Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+			},
+		},
+	}
+	// The store gate resolves in the Keystone namespace now, so that is where the
+	// Ready tenant store must be.
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(cp, readyTenantSecretStore(esoTenantStoreName, "identity", "", "")).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileAdminPassword(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	es := &esov1.ExternalSecret{}
+	g.Expect(r.Get(context.Background(), types.NamespacedName{
+		Namespace: "identity", Name: adminPasswordSecretName(cp),
+	}, es)).To(Succeed(), "the admin password must be materialised beside the Keystone child")
+	g.Expect(es.Spec.Data[0].RemoteRef.Key).To(Equal("bootstrap/identity/controlplane-keystone/admin"))
+	g.Expect(es.OwnerReferences).To(BeEmpty())
+	g.Expect(es.Labels).To(HaveKeyWithValue(controlPlaneNameLabel, "controlplane"))
+
+	g.Expect(r.Get(context.Background(), types.NamespacedName{
+		Namespace: "openstack", Name: adminPasswordSecretName(cp),
+	}, &esov1.ExternalSecret{})).NotTo(Succeed(),
+		"nothing may be left in the ControlPlane's namespace")
+}
+
+// TestEffectiveAdminPasswordSecretNamespace covers the three modes. Only the
+// managed Secret follows the Keystone service — a brownfield or External Secret is
+// the USER's, supplied against the ControlPlane they wrote, so it stays where they
+// put it.
+func TestEffectiveAdminPasswordSecretNamespace(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	managed := adminPwManagedControlPlane()
+	managed.Spec.Services = c5c3v1alpha1.ServicesSpec{
+		Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{
+			Namespace: &c5c3v1alpha1.ServiceNamespaceSpec{Name: "identity"},
+		},
+	}
+	g.Expect(effectiveAdminPasswordSecretNamespace(managed)).To(Equal("identity"))
+
+	brownfield := adminPwManagedControlPlane()
+	brownfield.Spec.Infrastructure.Database = commonv1.DatabaseSpec{Host: "db.example.com", Database: "keystone"}
+	brownfield.Spec.Services = managed.Spec.Services
+	g.Expect(effectiveAdminPasswordSecretNamespace(brownfield)).To(Equal("openstack"),
+		"a user-supplied Secret stays in the ControlPlane's namespace")
+
+	external := adminPwManagedControlPlane()
+	external.Spec.Infrastructure = nil
+	external.Spec.Services = c5c3v1alpha1.ServicesSpec{
+		Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{
+			Mode:     c5c3v1alpha1.KeystoneModeExternal,
+			External: &c5c3v1alpha1.ExternalKeystoneSpec{AuthURL: "https://keystone.example.com/v3"},
+		},
+	}
+	g.Expect(effectiveAdminPasswordSecretNamespace(external)).To(Equal("openstack"))
+}

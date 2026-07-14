@@ -18,7 +18,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	"github.com/c5c3/forge/internal/common/apply"
 	"github.com/c5c3/forge/internal/common/conditions"
 	"github.com/c5c3/forge/internal/common/secrets"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
@@ -91,12 +90,18 @@ func effectiveControlPlaneStoreRefPtr(cp *c5c3v1alpha1.ControlPlane) *commonv1.S
 	return &ref
 }
 
-// esoTenantServiceAccount builds the per-ControlPlane ServiceAccount the tenant
-// SecretStore authenticates as. PURE builder: the reconciler sets the owner
-// reference in the apply path.
-func esoTenantServiceAccount(cp *c5c3v1alpha1.ControlPlane) *corev1.ServiceAccount {
+// esoTenantServiceAccount builds the ServiceAccount the tenant SecretStore in
+// namespace authenticates as. PURE builder: the reconciler claims ownership in
+// the apply path.
+//
+// One is provisioned per namespace the ControlPlane occupies. The fixed name is
+// safe because the eso-tenant OpenBao role binds it in ANY namespace and the
+// templated policy then confines the token to the caller's OWN namespace — and
+// because a namespace belongs to at most one ControlPlane (the webhook's
+// namespace-claim check), so two ControlPlanes can never contend for this name.
+func esoTenantServiceAccount(namespace string) *corev1.ServiceAccount {
 	return &corev1.ServiceAccount{
-		ObjectMeta: metav1.ObjectMeta{Name: esoTenantServiceAccountName, Namespace: childNamespace(cp)},
+		ObjectMeta: metav1.ObjectMeta{Name: esoTenantServiceAccountName, Namespace: namespace},
 	}
 }
 
@@ -104,7 +109,7 @@ func esoTenantServiceAccount(cp *c5c3v1alpha1.ControlPlane) *corev1.ServiceAccou
 // client Certificate, mirroring applyDBCredentialCertificateSpec. Extracted so
 // the CreateOrUpdate mutate closure can re-assert the spec on an existing object
 // without clobbering cert-manager-managed status.
-func applyESOTenantCertificateSpec(u *unstructured.Unstructured, cp *c5c3v1alpha1.ControlPlane) {
+func applyESOTenantCertificateSpec(u *unstructured.Unstructured, namespace string) {
 	// SetNested* only errors on a type conflict at an existing path; on a
 	// freshly-built or Certificate-typed object the writes cannot fail, so the
 	// errors are intentionally ignored here.
@@ -112,7 +117,7 @@ func applyESOTenantCertificateSpec(u *unstructured.Unstructured, cp *c5c3v1alpha
 	_ = unstructured.SetNestedField(u.Object, esoTenantClientCertDuration, "spec", "duration")
 	_ = unstructured.SetNestedField(u.Object, esoTenantClientCertRenewBefore, "spec", "renewBefore")
 	_ = unstructured.SetNestedStringSlice(u.Object, []string{"client auth"}, "spec", "usages")
-	_ = unstructured.SetNestedField(u.Object, esoTenantClientCertName+"."+childNamespace(cp)+".svc", "spec", "commonName")
+	_ = unstructured.SetNestedField(u.Object, esoTenantClientCertName+"."+namespace+".svc", "spec", "commonName")
 	_ = unstructured.SetNestedMap(u.Object, map[string]interface{}{
 		"name": openBaoCAIssuerName,
 		"kind": "ClusterIssuer",
@@ -126,9 +131,9 @@ func applyESOTenantCertificateSpec(u *unstructured.Unstructured, cp *c5c3v1alpha
 // Certificate's Secret. server and mountPath are the OpenBao connection resolved
 // from the SHARED cluster store (the tenant store cannot describe its own
 // bootstrap). Mirrors deploy/openbao/bootstrap/setup-eso-tenant.sh.
-func esoTenantSecretStore(cp *c5c3v1alpha1.ControlPlane, server, mountPath string) *esov1.SecretStore {
+func esoTenantSecretStore(namespace, server, mountPath string) *esov1.SecretStore {
 	return &esov1.SecretStore{
-		ObjectMeta: metav1.ObjectMeta{Name: esoTenantStoreName, Namespace: childNamespace(cp)},
+		ObjectMeta: metav1.ObjectMeta{Name: esoTenantStoreName, Namespace: namespace},
 		Spec: esov1.SecretStoreSpec{
 			Provider: &esov1.SecretStoreProvider{
 				Vault: &esov1.VaultProvider{
@@ -205,21 +210,29 @@ func (r *ControlPlaneReconciler) reconcileESOTenantStore(ctx context.Context, cp
 		return ctrl.Result{}, err
 	}
 
-	ready, err := secrets.IsSecretStoreReady(ctx, r.Client, esoTenantStoreName, childNamespace(cp))
-	if err != nil {
-		return ctrl.Result{}, err
-	}
-	if !ready {
-		logger.Info("per-tenant secret store not ready yet, requeuing")
-		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
-			Type:               conditionTypeESOTenantStoreReady,
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: cp.Generation,
-			Reason:             "SecretStoreNotReady",
-			Message: fmt.Sprintf("per-tenant SecretStore %q is not ready yet; waiting on cert issuance and the "+
-				"OpenBao backend", esoTenantStoreName),
-		})
-		return ctrl.Result{RequeueAfter: esoTenantStoreRequeueAfter}, nil
+	// EVERY store must be Ready, not just the one in the ControlPlane's namespace:
+	// a service placed in a namespace of its own materialises its secret material
+	// through THAT namespace's store, so a store still issuing its client cert
+	// there is as load-bearing as the one at home. The first unready store is named
+	// with its namespace so the condition says which one to look at.
+	namespaces := controlPlaneNamespaces(cp)
+	for _, ns := range namespaces {
+		ready, err := secrets.IsSecretStoreReady(ctx, r.Client, esoTenantStoreName, ns)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if !ready {
+			logger.Info("per-tenant secret store not ready yet, requeuing", "namespace", ns)
+			conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+				Type:               conditionTypeESOTenantStoreReady,
+				Status:             metav1.ConditionFalse,
+				ObservedGeneration: cp.Generation,
+				Reason:             "SecretStoreNotReady",
+				Message: fmt.Sprintf("per-tenant SecretStore %q in namespace %q is not ready yet; waiting on cert "+
+					"issuance and the OpenBao backend", esoTenantStoreName, ns),
+			})
+			return ctrl.Result{RequeueAfter: esoTenantStoreRequeueAfter}, nil
+		}
 	}
 
 	conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
@@ -227,44 +240,65 @@ func (r *ControlPlaneReconciler) reconcileESOTenantStore(ctx context.Context, cp
 		Status:             metav1.ConditionTrue,
 		ObservedGeneration: cp.Generation,
 		Reason:             "ESOTenantStoreReady",
-		Message:            fmt.Sprintf("per-tenant SecretStore %q is Ready", esoTenantStoreName),
+		Message: fmt.Sprintf("per-tenant SecretStore %q is Ready in all %d namespace(s) of this ControlPlane",
+			esoTenantStoreName, len(namespaces)),
 	})
 	return ctrl.Result{}, nil
 }
 
-// ensureESOTenantStoreObjects create-or-updates, all owner-referenced to the
-// ControlPlane, the ServiceAccount, the mTLS client Certificate, and the
-// namespaced SecretStore. Ordering (SA → Certificate → SecretStore) makes the
-// auth identity and TLS material exist before the store that references them,
+// ensureESOTenantStoreObjects create-or-updates the ServiceAccount, the mTLS
+// client Certificate, and the namespaced SecretStore — in EVERY namespace the
+// ControlPlane occupies. Ordering (SA → Certificate → SecretStore) makes the auth
+// identity and TLS material exist before the store that references them,
 // mirroring ensureDynamicDBCredentialObjects.
+//
+// SECRET DISTRIBUTION ACROSS NAMESPACES. An ESO SecretStore and the Secrets it
+// materialises are namespace-local: a store in the ControlPlane's namespace
+// cannot deliver anything into a service namespace. So each namespace hosting a
+// service gets its OWN tenant store — its own ServiceAccount, its own client
+// certificate, its own SecretStore object. That needs no OpenBao-side change: the
+// eso-tenant role binds the SA name in ANY namespace and its templated policy
+// scopes every path to the caller's own namespace, so each store authenticates as
+// its own tenant identity and reaches only its own paths.
+//
+// In the ControlPlane's own namespace the objects are owner-referenced and the GC
+// cascade reaps them; elsewhere they carry the ownership labels and the teardown
+// deletes them explicitly.
 func (r *ControlPlaneReconciler) ensureESOTenantStoreObjects(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) error {
-	// server/mountPath come from the SHARED cluster store, not the tenant store
-	// this method is building — the tenant store cannot describe its own OpenBao
+	// server/mountPath come from the SHARED cluster store, not the tenant stores
+	// this method is building — a tenant store cannot describe its own OpenBao
 	// connection. openBaoConnection falls back to the documented defaults when the
-	// shared store is unreadable, which match the tenant store's connection anyway.
+	// shared store is unreadable, which match the tenant stores' connection anyway.
+	// Every tenant store copies the same connection by construction, so it is
+	// resolved once for all of them.
 	server, mountPath := r.openBaoConnection(ctx, cp, secrets.EffectiveStoreRef(nil))
 
-	if err := apply.EnsureObject(ctx, r.Client, r.Scheme, cp, esoTenantServiceAccount(cp), apply.FieldManager); err != nil {
-		return fmt.Errorf("ensuring per-tenant ServiceAccount: %w", err)
-	}
+	for _, ns := range controlPlaneNamespaces(cp) {
+		if err := r.ensureUnownedOrOwned(ctx, cp, esoTenantServiceAccount(ns)); err != nil {
+			return fmt.Errorf("ensuring per-tenant ServiceAccount in namespace %q: %w", ns, err)
+		}
 
-	// The cert-manager Certificate is handled as an unstructured object (no Go
-	// module ships its type), and apply.EnsureObject converts typed structs, not
-	// unstructured inputs — so this projection stays read-modify-write while the
-	// typed sibling objects around it use Server-Side Apply.
-	live := &unstructured.Unstructured{}
-	live.SetGroupVersionKind(certificateGVK)
-	live.SetName(esoTenantClientCertName)
-	live.SetNamespace(childNamespace(cp))
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, live, func() error {
-		applyESOTenantCertificateSpec(live, cp)
-		return controllerutil.SetControllerReference(cp, live, r.Scheme)
-	}); err != nil {
-		return fmt.Errorf("ensuring per-tenant client Certificate: %w", err)
-	}
+		// The cert-manager Certificate is handled as an unstructured object (no Go
+		// module ships its type), and apply.EnsureObject converts typed structs, not
+		// unstructured inputs — so this projection stays read-modify-write while the
+		// typed sibling objects around it use Server-Side Apply.
+		live := &unstructured.Unstructured{}
+		live.SetGroupVersionKind(certificateGVK)
+		live.SetName(esoTenantClientCertName)
+		live.SetNamespace(ns)
+		if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, live, func() error {
+			if err := refuseForeignAdoption(cp, live); err != nil {
+				return err
+			}
+			applyESOTenantCertificateSpec(live, ns)
+			return claimChildOwnership(cp, live, r.Scheme)
+		}); err != nil {
+			return fmt.Errorf("ensuring per-tenant client Certificate in namespace %q: %w", ns, err)
+		}
 
-	if err := apply.EnsureObject(ctx, r.Client, r.Scheme, cp, esoTenantSecretStore(cp, server, mountPath), apply.FieldManager); err != nil {
-		return fmt.Errorf("ensuring per-tenant SecretStore: %w", err)
+		if err := r.ensureUnownedOrOwned(ctx, cp, esoTenantSecretStore(ns, server, mountPath)); err != nil {
+			return fmt.Errorf("ensuring per-tenant SecretStore in namespace %q: %w", ns, err)
+		}
 	}
 	return nil
 }

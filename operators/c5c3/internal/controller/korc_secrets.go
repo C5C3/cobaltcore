@@ -303,7 +303,11 @@ func computeAdminPasswordHash(ctx context.Context, c client.Client, cp *c5c3v1al
 // is the operator-owned per-ControlPlane Secret
 // adminPasswordSecretName(cp) in managed mode and the user-supplied
 // cp.Spec.KORC.AdminCredential.PasswordSecretRef in brownfield mode — see
-// effectiveAdminPasswordSecretRef. reconcileKORC needs the cleartext — not just
+// effectiveAdminPasswordSecretRef. It is read from
+// effectiveAdminPasswordSecretNamespace: the KEYSTONE service namespace in managed
+// mode (where the operator materialises it, beside the child that consumes it) and
+// the ControlPlane's own namespace when the Secret is the user's.
+// reconcileKORC needs the cleartext — not just
 // its hash — to render the password-based clouds.yaml the admin
 // ApplicationCredential mints with, so the read is factored out here and the
 // hash derived from it via hashAdminPassword.
@@ -314,7 +318,7 @@ func readAdminPassword(ctx context.Context, c client.Client, cp *c5c3v1alpha1.Co
 		key = "password"
 	}
 	return secrets.GetSecretValue(ctx, c,
-		types.NamespacedName{Namespace: cp.Namespace, Name: ref.Name}, key)
+		types.NamespacedName{Namespace: effectiveAdminPasswordSecretNamespace(cp), Name: ref.Name}, key)
 }
 
 // hashAdminPassword returns the SHA-256 of the admin password as a lowercase hex

@@ -681,3 +681,83 @@ func TestReconcileDBCredentials_DedicatedBrownfield_NoExternalSecret(t *testing.
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 	g.Expect(cond.Reason).To(Equal("BrownfieldUserSuppliedCredential"))
 }
+
+// --- per-service namespaces (issue #646) ---
+
+// TestDBCredentialKeys_FollowTheKeystoneNamespace pins the re-keying of the two
+// OpenBao handles. The engine role name and the static KV path are keyed on the
+// KEYSTONE service namespace, because that is where the database lives, where the
+// generator's ServiceAccount authenticates from, and what the templated
+// keystone-db-dynamic policy grants: keying them on the ControlPlane's namespace
+// would put the role outside the policy's reach.
+func TestDBCredentialKeys_FollowTheKeystoneNamespace(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := dbCredManagedControlPlane()
+	g.Expect(dbDynamicRoleFor(cp)).To(Equal("keystone-openstack"),
+		"an unassigned Keystone keeps today's role name")
+	g.Expect(dbCredentialRemoteKeyFor(cp)).To(Equal("openstack/keystone/openstack/controlplane/db"))
+
+	cp.Spec.Services = c5c3v1alpha1.ServicesSpec{
+		Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{
+			Namespace: &c5c3v1alpha1.ServiceNamespaceSpec{Name: "identity"},
+		},
+	}
+	g.Expect(dbDynamicRoleFor(cp)).To(Equal("keystone-identity"))
+	g.Expect(dbDynamicCredsPathFor(cp)).To(Equal("database/mariadb/creds/keystone-identity"))
+	g.Expect(dbCredentialRemoteKeyFor(cp)).To(Equal("openstack/keystone/identity/controlplane/db"))
+}
+
+// TestReconcileDBCredentials_ProjectsIntoTheKeystoneNamespace verifies every
+// dynamic-mode object lands beside the Keystone child — the ServiceAccount whose
+// token OpenBao authenticates, the mTLS client Certificate, the generator, and the
+// ExternalSecret — carrying the ownership labels rather than an owner reference.
+func TestReconcileDBCredentials_ProjectsIntoTheKeystoneNamespace(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := korcTestScheme(t)
+	cp := dbCredManagedControlPlane()
+	cp.Spec.Services = c5c3v1alpha1.ServicesSpec{
+		Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{
+			Namespace: &c5c3v1alpha1.ServiceNamespaceSpec{
+				Name:      "identity",
+				Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+			},
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, readyClusterSecretStore(),
+		readyTenantSecretStore(esoTenantStoreName, "identity", "", "")).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	if _, err := r.reconcileDBCredentials(context.Background(), cp); err != nil {
+		t.Fatalf("reconcileDBCredentials: %v", err)
+	}
+
+	es := &esov1.ExternalSecret{}
+	g.Expect(r.Get(context.Background(), types.NamespacedName{
+		Namespace: "identity", Name: dbCredentialSecretName(cp),
+	}, es)).To(Succeed())
+	g.Expect(es.OwnerReferences).To(BeEmpty())
+	g.Expect(es.Labels).To(HaveKeyWithValue(controlPlaneNameLabel, "controlplane"))
+
+	vds := &esgenv1alpha1.VaultDynamicSecret{}
+	g.Expect(r.Get(context.Background(), types.NamespacedName{
+		Namespace: "identity", Name: dbCredentialSecretName(cp),
+	}, vds)).To(Succeed())
+	g.Expect(vds.Spec.Path).To(Equal("database/mariadb/creds/keystone-identity"))
+
+	sa := &corev1.ServiceAccount{}
+	g.Expect(r.Get(context.Background(), types.NamespacedName{
+		Namespace: "identity", Name: dbCredentialServiceAccountName,
+	}, sa)).To(Succeed(), "the generator's SA must authenticate from the namespace the policy grants")
+
+	cert := &unstructured.Unstructured{}
+	cert.SetGroupVersionKind(certificateGVK)
+	g.Expect(r.Get(context.Background(), types.NamespacedName{
+		Namespace: "identity", Name: dbCredentialClientCertName(cp),
+	}, cert)).To(Succeed())
+
+	g.Expect(r.Get(context.Background(), types.NamespacedName{
+		Namespace: "openstack", Name: dbCredentialSecretName(cp),
+	}, &esov1.ExternalSecret{})).NotTo(Succeed(),
+		"nothing may be left in the ControlPlane's namespace")
+}

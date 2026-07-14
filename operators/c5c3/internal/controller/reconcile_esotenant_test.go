@@ -247,3 +247,186 @@ func TestEffectiveControlPlaneStoreRef(t *testing.T) {
 	}}
 	g.Expect(effectiveControlPlaneStoreRef(cpEmptyKind).Kind).To(Equal(commonv1.SecretStoreKindCluster))
 }
+
+// --- per-service namespaces (issue #646) ---
+
+// TestReconcileESOTenantStore_ProvisionsAStorePerNamespace pins the secret-
+// distribution mechanism: an ESO SecretStore and the Secrets it materialises are
+// namespace-local, so a store in the ControlPlane's namespace cannot deliver
+// anything into a service namespace. Each namespace hosting a service therefore
+// gets its own tenant store trio — and the one in a service namespace carries the
+// ownership labels rather than an owner reference.
+func TestReconcileESOTenantStore_ProvisionsAStorePerNamespace(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := korcTestScheme(t)
+	cp := dbCredManagedControlPlane()
+	cp.Spec.Services = c5c3v1alpha1.ServicesSpec{
+		Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{
+			Namespace: &c5c3v1alpha1.ServiceNamespaceSpec{
+				Name:      "identity",
+				Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+			},
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileESOTenantStore(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	for _, ns := range []string{"openstack", "identity"} {
+		store := &esov1.SecretStore{}
+		g.Expect(r.Get(context.Background(),
+			types.NamespacedName{Namespace: ns, Name: esoTenantStoreName}, store)).To(Succeed(),
+			"every namespace hosting a service needs its own tenant store")
+
+		sa := &corev1.ServiceAccount{}
+		g.Expect(r.Get(context.Background(),
+			types.NamespacedName{Namespace: ns, Name: esoTenantServiceAccountName}, sa)).To(Succeed())
+
+		cert := &unstructured.Unstructured{}
+		cert.SetGroupVersionKind(certificateGVK)
+		g.Expect(r.Get(context.Background(),
+			types.NamespacedName{Namespace: ns, Name: esoTenantClientCertName}, cert)).To(Succeed())
+		commonName, _, _ := unstructured.NestedString(cert.Object, "spec", "commonName")
+		g.Expect(commonName).To(Equal(esoTenantClientCertName+"."+ns+".svc"),
+			"each store's client cert must identify its own namespace")
+	}
+
+	// Ownership: owner reference at home, labels abroad.
+	home := &esov1.SecretStore{}
+	g.Expect(r.Get(context.Background(),
+		types.NamespacedName{Namespace: "openstack", Name: esoTenantStoreName}, home)).To(Succeed())
+	g.Expect(metav1.GetControllerOf(home)).NotTo(BeNil())
+
+	abroad := &esov1.SecretStore{}
+	g.Expect(r.Get(context.Background(),
+		types.NamespacedName{Namespace: "identity", Name: esoTenantStoreName}, abroad)).To(Succeed())
+	g.Expect(abroad.OwnerReferences).To(BeEmpty())
+	g.Expect(abroad.Labels).To(HaveKeyWithValue(controlPlaneNameLabel, "controlplane"))
+	g.Expect(abroad.Labels).To(HaveKeyWithValue(controlPlaneNamespaceLabel, "openstack"))
+}
+
+// TestReconcileESOTenantStore_GatesOnEveryNamespace verifies the readiness gate
+// aggregates: a store still issuing its client cert in a SERVICE namespace holds
+// the condition False, and the message names that namespace — otherwise the
+// admin-password ExternalSecret would be projected through a store that cannot
+// deliver it.
+func TestReconcileESOTenantStore_GatesOnEveryNamespace(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := korcTestScheme(t)
+	cp := dbCredManagedControlPlane()
+	cp.Spec.Services = c5c3v1alpha1.ServicesSpec{
+		Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{
+			Namespace: &c5c3v1alpha1.ServiceNamespaceSpec{Name: "identity"},
+		},
+	}
+
+	// Ready at home, absent (hence not ready) in the service namespace.
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(cp, readyTenantSecretStore(esoTenantStoreName, "openstack", "", "")).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	res, err := r.reconcileESOTenantStore(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(esoTenantStoreRequeueAfter))
+
+	cond := esoTenantCondition(cp)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("SecretStoreNotReady"))
+	g.Expect(cond.Message).To(ContainSubstring(`namespace "identity"`))
+}
+
+// TestReconcileESOTenantStore_RefusesForeignStoreInExternalNamespace a SecretStore
+// that merely shares the operator's fixed name (openbao-tenant-store) in an
+// External-lifecycle service namespace, but carries no ControlPlane ownership
+// labels, must NOT be adopted: the operator never created it. Adopting it would
+// overwrite its provider spec to point at our OpenBao and, via the labels the
+// projection would stamp, make the teardown residue sweep DELETE it. The
+// sub-reconciler fails loud (mirroring reconcileNamespaces' NamespaceNotOwned) and
+// leaves the foreign object untouched.
+func TestReconcileESOTenantStore_RefusesForeignStoreInExternalNamespace(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := korcTestScheme(t)
+	cp := dbCredManagedControlPlane()
+	cp.Spec.Services = c5c3v1alpha1.ServicesSpec{
+		Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{
+			Namespace: &c5c3v1alpha1.ServiceNamespaceSpec{
+				Name:      "shared-tenant",
+				Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleExternal,
+			},
+		},
+	}
+	// A store somebody else provisioned in the shared namespace, pointing at their
+	// own OpenBao and carrying no ControlPlane ownership labels.
+	foreign := &esov1.SecretStore{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      esoTenantStoreName,
+			Namespace: "shared-tenant",
+			UID:       types.UID("foreign-store-uid"),
+			Labels:    map[string]string{"owner": "someone-else"},
+		},
+		Spec: esov1.SecretStoreSpec{Provider: &esov1.SecretStoreProvider{Vault: &esov1.VaultProvider{
+			Server: "https://not-ours.example.svc:8200",
+		}}},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, foreign).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileESOTenantStore(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred(), "must refuse to adopt a foreign store in an unowned namespace")
+	g.Expect(err.Error()).To(ContainSubstring("refusing to adopt"))
+
+	// Untouched: the foreign store still points where it did and never acquired the
+	// ownership labels that would make the teardown sweep delete it.
+	after := &esov1.SecretStore{}
+	g.Expect(r.Get(context.Background(),
+		types.NamespacedName{Namespace: "shared-tenant", Name: esoTenantStoreName}, after)).To(Succeed())
+	g.Expect(after.Spec.Provider.Vault.Server).To(Equal("https://not-ours.example.svc:8200"),
+		"foreign store spec must not be overwritten")
+	g.Expect(after.Labels).NotTo(HaveKey(controlPlaneNameLabel))
+	g.Expect(after.Labels).NotTo(HaveKey(controlPlaneNamespaceLabel))
+	g.Expect(isControlPlaneChild(after, cp)).To(BeFalse(),
+		"foreign store must not become a ControlPlane child, so the residue sweep leaves it alone")
+}
+
+// TestReconcileESOTenantStore_RefusesForeignCertInExternalNamespace is the
+// Certificate twin of the store case: the eso-tenant-client-tls Certificate stays
+// read-modify-write via CreateOrUpdate, so its ownership guard lives in
+// refuseForeignAdoption. A same-named foreign Certificate in an External namespace
+// must not be reshaped or stamped with our labels.
+func TestReconcileESOTenantStore_RefusesForeignCertInExternalNamespace(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := korcTestScheme(t)
+	cp := dbCredManagedControlPlane()
+	cp.Spec.Services = c5c3v1alpha1.ServicesSpec{
+		Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{
+			Namespace: &c5c3v1alpha1.ServiceNamespaceSpec{
+				Name:      "shared-tenant",
+				Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleExternal,
+			},
+		},
+	}
+	foreign := &unstructured.Unstructured{}
+	foreign.SetGroupVersionKind(certificateGVK)
+	foreign.SetName(esoTenantClientCertName)
+	foreign.SetNamespace("shared-tenant")
+	foreign.SetUID(types.UID("foreign-cert-uid"))
+	foreign.SetLabels(map[string]string{"owner": "someone-else"})
+	g.Expect(unstructured.SetNestedField(foreign.Object, "not-ours-issuer", "spec", "issuerRef", "name")).To(Succeed())
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, foreign).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileESOTenantStore(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred(), "must refuse to adopt a foreign Certificate in an unowned namespace")
+	g.Expect(err.Error()).To(ContainSubstring("refusing to adopt"))
+
+	after := &unstructured.Unstructured{}
+	after.SetGroupVersionKind(certificateGVK)
+	g.Expect(r.Get(context.Background(),
+		types.NamespacedName{Namespace: "shared-tenant", Name: esoTenantClientCertName}, after)).To(Succeed())
+	issuer, _, _ := unstructured.NestedString(after.Object, "spec", "issuerRef", "name")
+	g.Expect(issuer).To(Equal("not-ours-issuer"), "foreign Certificate spec must not be overwritten")
+	g.Expect(after.GetLabels()).NotTo(HaveKey(controlPlaneNameLabel))
+	g.Expect(isControlPlaneChild(after, cp)).To(BeFalse())
+}

@@ -22,7 +22,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	"github.com/c5c3/forge/internal/common/apply"
 	"github.com/c5c3/forge/internal/common/conditions"
 	"github.com/c5c3/forge/internal/common/secrets"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
@@ -44,8 +43,10 @@ const (
 	dbDynamicVaultRole = "keystone-db"
 	// dbCredentialServiceAccountName is the fixed name of the per-ControlPlane
 	// ServiceAccount whose token the VaultDynamicSecret generator presents to
-	// OpenBao. A fixed name is safe because the one-ControlPlane-per-namespace
-	// webhook guarantees a single ControlPlane per childNamespace.
+	// OpenBao. A fixed name is safe because a namespace belongs to at most one
+	// ControlPlane: the one-ControlPlane-per-namespace webhook guarantees it for the
+	// ControlPlane's own namespace, and the namespace-claim webhook guarantees it
+	// for every service namespace.
 	dbCredentialServiceAccountName = "keystone-db-creds" //nolint:gosec // G101 false positive: ServiceAccount name, not a credential.
 	// dbCredentialClientCertSuffix names the per-ControlPlane cert-manager
 	// Certificate / Secret carrying the mTLS client keypair the generator uses to
@@ -99,6 +100,11 @@ var certificateGVK = schema.GroupVersionKind{
 // the Static opt-out / brownfield-migration path; the default managed mode
 // reads engine-issued credentials from dbDynamicCredsPathFor instead.
 //
+// It is keyed on the KEYSTONE service namespace, not the ControlPlane's: the
+// ExternalSecret that reads it is materialised beside the Keystone child and
+// routes through THAT namespace's tenant store, whose templated OpenBao policy
+// only grants paths under its own namespace.
+//
 // NOTHING SEEDS THIS PATH. The per-ControlPlane static seed was retired when
 // managed mode moved to engine-issued credentials
 // (deploy/openbao/bootstrap/write-bootstrap-secrets.sh), so a ControlPlane on the
@@ -109,7 +115,7 @@ var certificateGVK = schema.GroupVersionKind{
 // condition so the requirement is visible from `kubectl describe controlplane`
 // rather than only in the migration guide.
 func dbCredentialRemoteKeyFor(cp *c5c3v1alpha1.ControlPlane) string {
-	return "openstack/keystone/" + cp.Namespace + "/" + cp.Name + "/db"
+	return "openstack/keystone/" + cp.KeystoneNamespace() + "/" + cp.Name + "/db"
 }
 
 // dbCredentialNotReadyMessage explains an unsynced DB-credential ExternalSecret.
@@ -134,19 +140,22 @@ func dbCredentialNotReadyMessage(cp *c5c3v1alpha1.ControlPlane) string {
 }
 
 // dbDynamicRoleFor returns the per-tenant OpenBao database-engine role name for
-// this ControlPlane. It is keyed on the ControlPlane NAMESPACE alone: the
-// one-ControlPlane-per-namespace admission contract makes the namespace a unique
-// tenant key, so no name component is needed, and cluster-unique namespaces make
-// the role name collision-free (a hyphen-joined <namespace>-<name> would be
-// ambiguous — e.g. ns=a-b/name=c and ns=a/name=b-c both flatten to keystone-a-b-c).
+// this ControlPlane. It is keyed on the KEYSTONE SERVICE NAMESPACE alone — the
+// namespace the database and the generator that reads from it actually live in.
+// A namespace is a unique tenant key (at most one ControlPlane occupies it), so
+// no name component is needed, and cluster-unique namespaces make the role name
+// collision-free (a hyphen-joined <namespace>-<name> would be ambiguous — e.g.
+// ns=a-b/name=c and ns=a/name=b-c both flatten to keystone-a-b-c).
 // Namespace-only keying is also what lets the keystone-db-dynamic policy scope
 // reads by the caller's service_account_namespace with an EXACT match (no
-// over-matching wildcard that would leak another namespace's creds path). It MUST
-// stay in sync with the role-name derivation in
+// over-matching wildcard that would leak another namespace's creds path) — and
+// that caller is the generator's ServiceAccount in the Keystone namespace, so
+// keying on the ControlPlane's namespace instead would put the role outside the
+// policy's reach. It MUST stay in sync with the role-name derivation in
 // deploy/openbao/bootstrap/setup-database-tenant.sh — the operator reads
 // credentials from a role that script provisions.
 func dbDynamicRoleFor(cp *c5c3v1alpha1.ControlPlane) string {
-	return "keystone-" + cp.Namespace
+	return "keystone-" + cp.KeystoneNamespace()
 }
 
 // dbDynamicCredsPathFor returns the OpenBao path the VaultDynamicSecret generator
@@ -174,7 +183,7 @@ func dbCredentialClientCertName(cp *c5c3v1alpha1.ControlPlane) string {
 // reconciler sets the owner reference in the CreateOrUpdate mutate closure.
 func dbCredentialServiceAccount(cp *c5c3v1alpha1.ControlPlane) *corev1.ServiceAccount {
 	return &corev1.ServiceAccount{
-		ObjectMeta: metav1.ObjectMeta{Name: dbCredentialServiceAccountName, Namespace: childNamespace(cp)},
+		ObjectMeta: metav1.ObjectMeta{Name: dbCredentialServiceAccountName, Namespace: cp.KeystoneNamespace()},
 	}
 }
 
@@ -190,7 +199,7 @@ func applyDBCredentialCertificateSpec(u *unstructured.Unstructured, cp *c5c3v1al
 	_ = unstructured.SetNestedField(u.Object, dbCredentialClientCertDuration, "spec", "duration")
 	_ = unstructured.SetNestedField(u.Object, dbCredentialClientCertRenewBefore, "spec", "renewBefore")
 	_ = unstructured.SetNestedStringSlice(u.Object, []string{"client auth"}, "spec", "usages")
-	_ = unstructured.SetNestedField(u.Object, name+"."+childNamespace(cp)+".svc", "spec", "commonName")
+	_ = unstructured.SetNestedField(u.Object, name+"."+cp.KeystoneNamespace()+".svc", "spec", "commonName")
 	_ = unstructured.SetNestedMap(u.Object, map[string]interface{}{
 		"name": openBaoCAIssuerName,
 		"kind": "ClusterIssuer",
@@ -207,7 +216,7 @@ func applyDBCredentialCertificateSpec(u *unstructured.Unstructured, cp *c5c3v1al
 func dbCredentialVaultDynamicSecret(cp *c5c3v1alpha1.ControlPlane, server, mountPath string) *esgenv1alpha1.VaultDynamicSecret {
 	certSecret := dbCredentialClientCertName(cp)
 	return &esgenv1alpha1.VaultDynamicSecret{
-		ObjectMeta: metav1.ObjectMeta{Name: dbCredentialSecretName(cp), Namespace: childNamespace(cp)},
+		ObjectMeta: metav1.ObjectMeta{Name: dbCredentialSecretName(cp), Namespace: cp.KeystoneNamespace()},
 		Spec: esgenv1alpha1.VaultDynamicSecretSpec{
 			Path:   dbDynamicCredsPathFor(cp),
 			Method: "GET",
@@ -241,14 +250,15 @@ func dbCredentialVaultDynamicSecret(cp *c5c3v1alpha1.ControlPlane, server, mount
 }
 
 // dbCredentialGeneratorExternalSecret builds the Dynamic-mode ExternalSecret that
-// materialises the engine-issued username+password into childNamespace(cp) via
-// the per-CP VaultDynamicSecret generator. It carries no static Data refs and no
+// materialises the engine-issued username+password into the KEYSTONE service
+// namespace (beside the child that consumes it) via the per-CP VaultDynamicSecret
+// generator. It carries no static Data refs and no
 // SecretStoreRef — the generatorRef is the sole source. RefreshInterval is below
 // the engine role's default_ttl so ESO renews the lease before it expires.
 func dbCredentialGeneratorExternalSecret(cp *c5c3v1alpha1.ControlPlane) *esov1.ExternalSecret {
 	name := dbCredentialSecretName(cp)
 	return &esov1.ExternalSecret{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: childNamespace(cp)},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: cp.KeystoneNamespace()},
 		Spec: esov1.ExternalSecretSpec{
 			RefreshInterval: &metav1.Duration{Duration: dbCredentialRefreshInterval},
 			Target:          esov1.ExternalSecretTarget{Name: name, CreationPolicy: esov1.CreatePolicyOwner},
@@ -273,7 +283,7 @@ func dbCredentialStaticExternalSecret(cp *c5c3v1alpha1.ControlPlane) *esov1.Exte
 	name := dbCredentialSecretName(cp)
 	remoteKey := dbCredentialRemoteKeyFor(cp)
 	return &esov1.ExternalSecret{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: childNamespace(cp)},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: cp.KeystoneNamespace()},
 		Spec: esov1.ExternalSecretSpec{
 			RefreshInterval: &metav1.Duration{Duration: time.Hour},
 			SecretStoreRef:  secrets.ESOSecretStoreRef(effectiveControlPlaneStoreRef(cp)),
@@ -377,10 +387,10 @@ func (r *ControlPlaneReconciler) reconcileDBCredentials(ctx context.Context, cp 
 	// Ready=True from its last successful sync (mirrors reconcile_secrets.go in
 	// the keystone operator). The store is the one the ControlPlane selected via
 	// spec.secretStoreRef (default: the operator-provisioned per-tenant store); a
-	// namespaced store is resolved in the child namespace where the credential
-	// Secret is materialised.
+	// namespaced store is resolved in the KEYSTONE service namespace, where the
+	// credential Secret is materialised and that namespace's own tenant store lives.
 	storeRef := effectiveControlPlaneStoreRef(cp)
-	storeReady, err := secrets.IsStoreRefReady(ctx, r.Client, storeRef, childNamespace(cp))
+	storeReady, err := secrets.IsStoreRefReady(ctx, r.Client, storeRef, cp.KeystoneNamespace())
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -415,7 +425,7 @@ func (r *ControlPlaneReconciler) reconcileDBCredentials(ctx context.Context, cp 
 		// once that path has been seeded out-of-band — dbCredentialNotReadyMessage
 		// says so in the condition while it has not.
 		r.deleteDynamicDBCredentialObjects(ctx, cp)
-		if err := apply.EnsureObject(ctx, r.Client, r.Scheme, cp, dbCredentialStaticExternalSecret(cp), apply.FieldManager); err != nil {
+		if err := r.ensureUnownedOrOwned(ctx, cp, dbCredentialStaticExternalSecret(cp)); err != nil {
 			conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
 				Type:               conditionTypeDBCredentialsReady,
 				Status:             metav1.ConditionFalse,
@@ -430,16 +440,18 @@ func (r *ControlPlaneReconciler) reconcileDBCredentials(ctx context.Context, cp 
 	return r.waitDBCredentialExternalSecret(ctx, cp)
 }
 
-// ensureDynamicDBCredentialObjects create-or-updates, all owner-referenced to the
-// ControlPlane, the ServiceAccount, mTLS client Certificate, VaultDynamicSecret
-// generator, and generator-backed ExternalSecret that materialise engine-issued
-// DB credentials. Ordering (SA → Certificate → generator → ExternalSecret) makes
-// the auth identity and TLS material exist before the generator that references
-// them.
+// ensureDynamicDBCredentialObjects create-or-updates the ServiceAccount, mTLS
+// client Certificate, VaultDynamicSecret generator, and generator-backed
+// ExternalSecret that materialise engine-issued DB credentials — all in the
+// KEYSTONE service namespace, beside the database they issue against and the child
+// that consumes them. Ordering (SA → Certificate → generator → ExternalSecret)
+// makes the auth identity and TLS material exist before the generator that
+// references them. In the ControlPlane's own namespace they are owner-referenced;
+// in a service namespace they carry the ownership labels instead.
 func (r *ControlPlaneReconciler) ensureDynamicDBCredentialObjects(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) error {
 	server, mountPath := r.openBaoConnection(ctx, cp, effectiveControlPlaneStoreRef(cp))
 
-	if err := apply.EnsureObject(ctx, r.Client, r.Scheme, cp, dbCredentialServiceAccount(cp), apply.FieldManager); err != nil {
+	if err := r.ensureUnownedOrOwned(ctx, cp, dbCredentialServiceAccount(cp)); err != nil {
 		return fmt.Errorf("ensuring DB credential ServiceAccount: %w", err)
 	}
 
@@ -450,19 +462,22 @@ func (r *ControlPlaneReconciler) ensureDynamicDBCredentialObjects(ctx context.Co
 	live := &unstructured.Unstructured{}
 	live.SetGroupVersionKind(certificateGVK)
 	live.SetName(dbCredentialClientCertName(cp))
-	live.SetNamespace(childNamespace(cp))
+	live.SetNamespace(cp.KeystoneNamespace())
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, live, func() error {
+		if err := refuseForeignAdoption(cp, live); err != nil {
+			return err
+		}
 		applyDBCredentialCertificateSpec(live, cp)
-		return controllerutil.SetControllerReference(cp, live, r.Scheme)
+		return claimChildOwnership(cp, live, r.Scheme)
 	}); err != nil {
 		return fmt.Errorf("ensuring DB credential Certificate: %w", err)
 	}
 
-	if err := apply.EnsureObject(ctx, r.Client, r.Scheme, cp, dbCredentialVaultDynamicSecret(cp, server, mountPath), apply.FieldManager); err != nil {
+	if err := r.ensureUnownedOrOwned(ctx, cp, dbCredentialVaultDynamicSecret(cp, server, mountPath)); err != nil {
 		return fmt.Errorf("ensuring VaultDynamicSecret generator: %w", err)
 	}
 
-	if err := apply.EnsureObject(ctx, r.Client, r.Scheme, cp, dbCredentialGeneratorExternalSecret(cp), apply.FieldManager); err != nil {
+	if err := r.ensureUnownedOrOwned(ctx, cp, dbCredentialGeneratorExternalSecret(cp)); err != nil {
 		return fmt.Errorf("ensuring DB credential ExternalSecret: %w", err)
 	}
 	return nil
@@ -477,7 +492,7 @@ func (r *ControlPlaneReconciler) ensureDynamicDBCredentialObjects(ctx context.Co
 // shape (same name).
 func (r *ControlPlaneReconciler) deleteDynamicDBCredentialObjects(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) {
 	logger := log.FromContext(ctx)
-	ns := childNamespace(cp)
+	ns := cp.KeystoneNamespace()
 
 	cert := &unstructured.Unstructured{}
 	cert.SetGroupVersionKind(certificateGVK)
@@ -513,7 +528,7 @@ func (r *ControlPlaneReconciler) openBaoConnection(ctx context.Context, cp *c5c3
 	var provider *esov1.SecretStoreProvider
 	if ref.Kind == commonv1.SecretStoreKindNamespaced {
 		store := &esov1.SecretStore{}
-		if err := r.Get(ctx, client.ObjectKey{Name: ref.Name, Namespace: childNamespace(cp)}, store); err != nil {
+		if err := r.Get(ctx, client.ObjectKey{Name: ref.Name, Namespace: cp.Namespace}, store); err != nil {
 			return server, mountPath
 		}
 		provider = store.Spec.Provider
@@ -546,7 +561,7 @@ func (r *ControlPlaneReconciler) waitDBCredentialExternalSecret(ctx context.Cont
 	logger := log.FromContext(ctx)
 
 	exists, ready, err := secrets.WaitForExternalSecret(ctx, r.Client,
-		types.NamespacedName{Namespace: childNamespace(cp), Name: dbCredentialSecretName(cp)})
+		types.NamespacedName{Namespace: cp.KeystoneNamespace(), Name: dbCredentialSecretName(cp)})
 	if err != nil {
 		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
 			Type:               conditionTypeDBCredentialsReady,

@@ -15,7 +15,6 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	"github.com/c5c3/forge/internal/common/apply"
 	"github.com/c5c3/forge/internal/common/conditions"
 	"github.com/c5c3/forge/internal/common/secrets"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
@@ -30,16 +29,23 @@ import (
 const adminPasswordSecretNameSuffix = "-admin-credentials" //nolint:gosec // G101 false positive: Secret name suffix, not a credential.
 
 // adminPasswordRemoteKeyFor returns the per-ControlPlane OpenBao path the admin
-// password is read from. Unlike the DB-credential path, this
-// path is keystone-NAME-scoped — bootstrap/{ns}/{keystoneName}/admin, NOT
-// cp-name-scoped — because it must match the seeder and the keystone-operator
-// Model B rotation PushSecret, which both write/read the admin password at
+// password is read from. Unlike the DB-credential path, this path is
+// keystone-NAME-scoped — bootstrap/{ns}/{keystoneName}/admin, NOT cp-name-scoped —
+// because it must match the seeder and the keystone-operator Model B rotation
+// PushSecret, which both write/read the admin password at
 // bootstrap/{keystone.Namespace}/{keystone.Name}/admin
-// (operators/keystone/internal/controller/reconcile_passwordrotation.go). The
-// {ns}/{keystoneName} scoping still keeps two ControlPlanes from resolving to the
-// same key on the cluster-global OpenBao backend.
+// (operators/keystone/internal/controller/reconcile_passwordrotation.go).
+//
+// {ns} is therefore the KEYSTONE service namespace, not the ControlPlane's: the
+// rotation PushSecret is authored by the keystone-operator from the Keystone
+// child, so it follows the child wherever the ControlPlane placed it, and the two
+// would read and write different paths if this used cp.Namespace. It is also what
+// keeps the path inside the reach of that namespace's tenant store, whose
+// templated OpenBao policy only grants the caller's own namespace. Two
+// ControlPlanes still cannot resolve to the same key: a namespace belongs to at
+// most one of them.
 func adminPasswordRemoteKeyFor(cp *c5c3v1alpha1.ControlPlane) string {
-	return fmt.Sprintf("bootstrap/%s/%s/admin", cp.Namespace, keystoneName(cp))
+	return fmt.Sprintf("bootstrap/%s/%s/admin", cp.KeystoneNamespace(), keystoneName(cp))
 }
 
 // adminPasswordSecretName returns the deterministic name of the per-ControlPlane
@@ -50,16 +56,20 @@ func adminPasswordSecretName(cp *c5c3v1alpha1.ControlPlane) string {
 }
 
 // adminPasswordExternalSecret builds the per-ControlPlane, OpenBao-backed
-// ExternalSecret that materialises the admin password into childNamespace(cp)
-// It is a PURE builder: no owner reference is set here — the
-// reconciler adds the ControlPlane controller reference in the CreateOrUpdate mutate
-// closure (so GC is wired) while keeping this builder usable for shape assertions.
-// The ExternalSecret type is esov1 (the v1 API), matching dbCredentialGeneratorExternalSecret.
+// ExternalSecret that materialises the admin password into the KEYSTONE service
+// namespace — where the Keystone child reads it, and where that namespace's
+// tenant store can deliver it (an ESO store and the Secrets it materialises are
+// namespace-local).
+//
+// It is a PURE builder: no ownership is claimed here — the reconciler does that in
+// the apply path while keeping this builder usable for shape assertions. The
+// ExternalSecret type is esov1 (the v1 API), matching
+// dbCredentialGeneratorExternalSecret.
 func adminPasswordExternalSecret(cp *c5c3v1alpha1.ControlPlane) *esov1.ExternalSecret {
 	name := adminPasswordSecretName(cp)
 	remoteKey := adminPasswordRemoteKeyFor(cp)
 	return &esov1.ExternalSecret{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: childNamespace(cp)},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: cp.KeystoneNamespace()},
 		Spec: esov1.ExternalSecretSpec{
 			RefreshInterval: &metav1.Duration{Duration: time.Hour},
 			SecretStoreRef:  secrets.ESOSecretStoreRef(effectiveControlPlaneStoreRef(cp)),
@@ -94,6 +104,22 @@ func adminPasswordExternalSecret(cp *c5c3v1alpha1.ControlPlane) *esov1.ExternalS
 //
 // This NEVER mutates cp.Spec — it returns the ref by value so callers cannot alias
 // the user's spec.
+// effectiveAdminPasswordSecretNamespace returns the namespace the effective
+// admin-password Secret lives in. In managed mode the operator materialises it
+// beside the Keystone child, so it follows the Keystone service namespace. In
+// External and brownfield mode the Secret is the USER's, supplied out-of-band
+// against the ControlPlane they wrote — so it stays in the ControlPlane's own
+// namespace, where they put it.
+func effectiveAdminPasswordSecretNamespace(cp *c5c3v1alpha1.ControlPlane) string {
+	if cp.IsExternalKeystone() {
+		return childNamespace(cp)
+	}
+	if infra := cp.Spec.Infrastructure; infra != nil && infra.Database.ClusterRef != nil {
+		return cp.KeystoneNamespace()
+	}
+	return childNamespace(cp)
+}
+
 func effectiveAdminPasswordSecretRef(cp *c5c3v1alpha1.ControlPlane) commonv1.SecretRefSpec {
 	if cp.IsExternalKeystone() {
 		return cp.Spec.KORC.AdminCredential.PasswordSecretRef
@@ -171,11 +197,12 @@ func (r *ControlPlaneReconciler) reconcileAdminPassword(ctx context.Context, cp 
 	// AdminPasswordReady=False even while the per-ExternalSecret cache still
 	// reports Ready=True from its last successful sync (#476). The store is the
 	// one the ControlPlane selected via spec.secretStoreRef (default: the
-	// operator-provisioned per-tenant store); a namespaced store is resolved in
-	// the child namespace where the admin-password ExternalSecret is materialised.
+	// operator-provisioned per-tenant store); a namespaced store is resolved in the
+	// KEYSTONE service namespace, where the admin-password ExternalSecret is
+	// materialised and where that namespace's own tenant store lives.
 	// Mirrors reconcileDBCredentials and the keystone operator's reconcile_secrets.go.
 	storeRef := effectiveControlPlaneStoreRef(cp)
-	storeReady, err := secrets.IsStoreRefReady(ctx, r.Client, storeRef, childNamespace(cp))
+	storeReady, err := secrets.IsStoreRefReady(ctx, r.Client, storeRef, cp.KeystoneNamespace())
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -193,10 +220,11 @@ func (r *ControlPlaneReconciler) reconcileAdminPassword(ctx context.Context, cp 
 	}
 
 	// Managed mode: project the per-CP admin-password ExternalSecret via
-	// Server-Side Apply under the shared field manager, owner-referencing it to the
-	// ControlPlane so it is garbage-collected with the CR. The desired spec is a
-	// pure projection of cp.Spec.
-	if err := apply.EnsureObject(ctx, r.Client, r.Scheme, cp, adminPasswordExternalSecret(cp), apply.FieldManager); err != nil {
+	// Server-Side Apply under the shared field manager. In the ControlPlane's own
+	// namespace it is owner-referenced and garbage-collected with the CR; in a
+	// Keystone service namespace it carries the ownership labels instead and the
+	// teardown deletes it. The desired spec is a pure projection of cp.Spec.
+	if err := r.ensureUnownedOrOwned(ctx, cp, adminPasswordExternalSecret(cp)); err != nil {
 		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
 			Type:               conditionTypeAdminPasswordReady,
 			Status:             metav1.ConditionFalse,
@@ -208,7 +236,7 @@ func (r *ControlPlaneReconciler) reconcileAdminPassword(ctx context.Context, cp 
 	}
 
 	exists, ready, err := secrets.WaitForExternalSecret(ctx, r.Client,
-		types.NamespacedName{Namespace: childNamespace(cp), Name: adminPasswordSecretName(cp)})
+		types.NamespacedName{Namespace: cp.KeystoneNamespace(), Name: adminPasswordSecretName(cp)})
 	if err != nil {
 		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
 			Type:               conditionTypeAdminPasswordReady,

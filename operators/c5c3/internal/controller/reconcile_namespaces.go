@@ -10,6 +10,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -21,6 +22,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	"github.com/c5c3/forge/internal/common/apply"
 	"github.com/c5c3/forge/internal/common/conditions"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 )
@@ -92,6 +94,58 @@ func claimChildOwnership(cp *c5c3v1alpha1.ControlPlane, obj client.Object, schem
 		return nil
 	}
 	return controllerutil.SetControllerReference(cp, obj, scheme)
+}
+
+// ensureUnownedOrOwned is the Server-Side-Apply twin of claimChildOwnership: it
+// applies obj under the shared field manager, owner-referenced when it shares cp's
+// namespace and label-stamped-and-unowned when it does not. Every SSA projection
+// that can land in a service namespace routes through it, so no call site has to
+// re-derive which ownership mechanism its namespace permits.
+//
+// In a namespace the ControlPlane does not own (an External-lifecycle service
+// namespace, or a name we lost the create race for) a same-named object may
+// already belong to somebody else. Adopting it would be doubly destructive: the
+// SSA apply overwrites its spec to point at our OpenBao, and the ownership labels
+// we stamp make the teardown residue sweep DELETE it. So a pre-existing object we
+// did not create is refused here, mirroring reconcileNamespaces' NamespaceNotOwned
+// refusal for the namespace itself.
+func (r *ControlPlaneReconciler) ensureUnownedOrOwned(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, obj client.Object) error {
+	if obj.GetNamespace() == cp.Namespace {
+		return apply.EnsureObject(ctx, r.Client, r.Scheme, cp, obj, apply.FieldManager)
+	}
+	live := obj.DeepCopyObject().(client.Object)
+	switch err := r.Get(ctx, client.ObjectKeyFromObject(obj), live); {
+	case apierrors.IsNotFound(err) || meta.IsNoMatchError(err):
+		// Absent (or its CRD is not installed): safe to create.
+	case err != nil:
+		return fmt.Errorf("checking for a pre-existing %T %s before adopting it: %w",
+			obj, client.ObjectKeyFromObject(obj), err)
+	default:
+		if !isControlPlaneChild(live, cp) {
+			return fmt.Errorf("refusing to adopt pre-existing %T %s in unowned namespace %q: it was not created by "+
+				"this ControlPlane, so adopting it would overwrite its spec and delete it at teardown",
+				obj, client.ObjectKeyFromObject(obj), obj.GetNamespace())
+		}
+	}
+	stampControlPlaneChildLabels(obj, cp)
+	return apply.EnsureUnownedObject(ctx, r.Client, r.Scheme, obj, apply.FieldManager)
+}
+
+// refuseForeignAdoption is the CreateOrUpdate-mutate twin of ensureUnownedOrOwned's
+// pre-apply guard, for the two cert-manager Certificates that stay read-modify-
+// write (no Go type ships for them). live is the object CreateOrUpdate has just
+// Get-populated, so a set UID means it already exists. If it exists in a namespace
+// the ControlPlane does not own and is not already our child, refuse: reshaping
+// and later sweeping a same-named foreign Certificate would clobber somebody
+// else's resource, the same reason ensureUnownedOrOwned refuses foreign adoption.
+func refuseForeignAdoption(cp *c5c3v1alpha1.ControlPlane, live client.Object) error {
+	if live.GetNamespace() == cp.Namespace || live.GetUID() == "" || isControlPlaneChild(live, cp) {
+		return nil
+	}
+	gvk := live.GetObjectKind().GroupVersionKind()
+	return fmt.Errorf("refusing to adopt pre-existing %s %s/%s in unowned namespace %q: it was not created by this "+
+		"ControlPlane, so adopting it would overwrite its spec and delete it at teardown",
+		gvk.Kind, live.GetNamespace(), live.GetName(), live.GetNamespace())
 }
 
 // isControlPlaneChild reports whether cp owns obj: either it is the controller
