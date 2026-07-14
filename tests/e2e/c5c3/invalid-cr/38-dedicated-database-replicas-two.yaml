@@ -1,0 +1,42 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# A two-replica DEDICATED database is rejected by the webhook, exactly as a
+# two-replica shared one is: the managed-MariaDB projection turns any replicas>1
+# into a Galera cluster, and a two-node Galera cluster cannot hold a majority. The
+# CRD marker only enforces Minimum=1, so the webhook is the enforcement point.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-dedicated-replicas-two
+spec:
+  openStackRelease: "2025.2"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+  services:
+    keystone:
+      mode: Managed
+      dedicatedBackingServices:
+        database:
+          clusterRef:
+            name: cp-dedicated-db
+          database: keystone
+          secretRef:
+            name: keystone-db
+          replicas: 2
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password

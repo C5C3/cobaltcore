@@ -98,6 +98,24 @@ MANAGED_INFRA = (
 )
 
 
+# A valid, MANAGED dedicated backing-services block for the Keystone service
+# (indent 6, to be appended to a Managed keystone body). Every dedicated fixture
+# below mutates exactly one aspect of it.
+VALID_DEDICATED_KEYSTONE = (
+    "      dedicatedBackingServices:\n"
+    "        database:\n"
+    "          clusterRef:\n"
+    "            name: cp-dedicated-db\n"
+    "          database: keystone\n"
+    "          secretRef:\n"
+    "            name: keystone-db\n"
+    "        cache:\n"
+    "          clusterRef:\n"
+    "            name: cp-dedicated-cache\n"
+    "          backend: dogpile.cache.pymemcache\n"
+)
+
+
 @dataclass(frozen=True)
 class Fixture:
     """One generated fixture (a rejection case or a transition base)."""
@@ -531,6 +549,129 @@ FIXTURES: tuple[Fixture, ...] = (
             "        name: service\n"
             "        create: true\n"
         ),
+    ),
+    # Per-service dedicated backing services (still the create-rejection matrix).
+    Fixture(
+        filename="35-dedicated-in-external.yaml",
+        comment=(
+            "services.keystone.dedicatedBackingServices in External mode violates the CEL\n"
+            "rule: an External ControlPlane provisions no backing services at all, so there\n"
+            "is nothing to make dedicated."
+        ),
+        name="cp-dedicated-external",
+        keystone=(
+            VALID_EXTERNAL_KEYSTONE
+            + "      dedicatedBackingServices:\n"
+            + "        cache:\n"
+            + "          clusterRef:\n"
+            + "            name: cp-dedicated-cache\n"
+            + "          backend: dogpile.cache.pymemcache\n"
+        ),
+    ),
+    Fixture(
+        filename="36-dedicated-empty-block.yaml",
+        comment=(
+            "An empty dedicatedBackingServices block violates the CEL rule: it requests no\n"
+            "backing-service class at all. Omit the block entirely to share the\n"
+            "ControlPlane-wide instances (the default)."
+        ),
+        name="cp-dedicated-empty",
+        keystone=(
+            "      mode: Managed\n"
+            "      dedicatedBackingServices: {}\n"
+        ),
+        infrastructure=MANAGED_INFRA,
+    ),
+    Fixture(
+        filename="37-dedicated-database-dynamic-credentials.yaml",
+        comment=(
+            "credentialsMode Dynamic on a DEDICATED database is rejected by the webhook: the\n"
+            "OpenBao database engine carries one connection and one role per namespace,\n"
+            "bootstrapped against the SHARED cluster, so no engine role can issue credentials\n"
+            "for a dedicated instance — an admitted CR would wedge on an ExternalSecret that\n"
+            "can never sync. The CRD CEL rule does not catch it (clusterRef IS set, so the\n"
+            "Dynamic-requires-managed-mode rule passes)."
+        ),
+        name="cp-dedicated-dynamic",
+        keystone=(
+            "      mode: Managed\n"
+            "      dedicatedBackingServices:\n"
+            "        database:\n"
+            "          clusterRef:\n"
+            "            name: cp-dedicated-db\n"
+            "          credentialsMode: Dynamic\n"
+            "          database: keystone\n"
+            "          secretRef:\n"
+            "            name: keystone-db\n"
+        ),
+        infrastructure=MANAGED_INFRA,
+    ),
+    Fixture(
+        filename="38-dedicated-database-replicas-two.yaml",
+        comment=(
+            "A two-replica DEDICATED database is rejected by the webhook, exactly as a\n"
+            "two-replica shared one is: the managed-MariaDB projection turns any replicas>1\n"
+            "into a Galera cluster, and a two-node Galera cluster cannot hold a majority. The\n"
+            "CRD marker only enforces Minimum=1, so the webhook is the enforcement point."
+        ),
+        name="cp-dedicated-replicas-two",
+        keystone=(
+            "      mode: Managed\n"
+            "      dedicatedBackingServices:\n"
+            "        database:\n"
+            "          clusterRef:\n"
+            "            name: cp-dedicated-db\n"
+            "          database: keystone\n"
+            "          secretRef:\n"
+            "            name: keystone-db\n"
+            "          replicas: 2\n"
+        ),
+        infrastructure=MANAGED_INFRA,
+    ),
+    Fixture(
+        filename="39-dedicated-clusterref-collision.yaml",
+        comment=(
+            "Two services' dedicated caches naming the same managed clusterRef are rejected\n"
+            "by the webhook: both would resolve to a single Memcached child CR that the two\n"
+            "projections then fight over, silently voiding the very isolation the opt-in\n"
+            "exists for."
+        ),
+        name="cp-dedicated-collision",
+        keystone="      mode: Managed\n" + VALID_DEDICATED_KEYSTONE,
+        infrastructure=MANAGED_INFRA,
+        horizon=(
+            "    horizon:\n"
+            "      dedicatedBackingServices:\n"
+            "        cache:\n"
+            "          clusterRef:\n"
+            "            name: cp-dedicated-cache\n"
+            "          backend: dogpile.cache.pymemcache\n"
+        ),
+    ),
+    # --- transition wave C: shared -> dedicated (Test: c5c3-invalid-cr-shared-to-dedicated) ---
+    Fixture(
+        filename="40-transition-base-shared.yaml",
+        comment=(
+            "Accepted base for the shared->dedicated transition test: a Managed ControlPlane\n"
+            "whose Keystone service shares the ControlPlane-wide backing services (the\n"
+            "default — no dedicatedBackingServices block)."
+        ),
+        name="cp-transition-c",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+    ),
+    Fixture(
+        filename="41-transition-to-dedicated.yaml",
+        comment=(
+            "UPDATE of the accepted shared base onto dedicated backing services is rejected:\n"
+            "the flip would re-point the consuming child's (immutable) database fields at a\n"
+            "different instance while the previously-provisioned one keeps running with the\n"
+            "data still on it. The freeze is webhook-only — no CEL transition rule — so a\n"
+            "later transition feature can relax it to a gated migration."
+        ),
+        name="cp-transition-c",
+        keystone="      mode: Managed\n" + VALID_DEDICATED_KEYSTONE,
+        infrastructure=MANAGED_INFRA,
     ),
     # --- transition wave A: Managed -> External (Test: c5c3-invalid-cr-managed-to-external) ---
     Fixture(

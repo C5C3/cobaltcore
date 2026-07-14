@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# UPDATE of the accepted shared base onto dedicated backing services is rejected:
+# the flip would re-point the consuming child's (immutable) database fields at a
+# different instance while the previously-provisioned one keeps running with the
+# data still on it. The freeze is webhook-only — no CEL transition rule — so a
+# later transition feature can relax it to a gated migration.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-transition-c
+spec:
+  openStackRelease: "2025.2"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+  services:
+    keystone:
+      mode: Managed
+      dedicatedBackingServices:
+        database:
+          clusterRef:
+            name: cp-dedicated-db
+          database: keystone
+          secretRef:
+            name: keystone-db
+        cache:
+          clusterRef:
+            name: cp-dedicated-cache
+          backend: dogpile.cache.pymemcache
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password

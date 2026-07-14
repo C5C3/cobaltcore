@@ -1,0 +1,51 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Two services' dedicated caches naming the same managed clusterRef are rejected
+# by the webhook: both would resolve to a single Memcached child CR that the two
+# projections then fight over, silently voiding the very isolation the opt-in
+# exists for.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-dedicated-collision
+spec:
+  openStackRelease: "2025.2"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+  services:
+    keystone:
+      mode: Managed
+      dedicatedBackingServices:
+        database:
+          clusterRef:
+            name: cp-dedicated-db
+          database: keystone
+          secretRef:
+            name: keystone-db
+        cache:
+          clusterRef:
+            name: cp-dedicated-cache
+          backend: dogpile.cache.pymemcache
+    horizon:
+      dedicatedBackingServices:
+        cache:
+          clusterRef:
+            name: cp-dedicated-cache
+          backend: dogpile.cache.pymemcache
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password

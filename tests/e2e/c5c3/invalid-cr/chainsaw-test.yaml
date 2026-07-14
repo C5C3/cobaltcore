@@ -321,6 +321,83 @@ spec:
             ($error != null): true
             (contains($error, 'serviceAccounts[1].project.name')): true
             (contains($error, 'Duplicate')): true
+  # services.keystone.dedicatedBackingServices in External mode must be rejected
+  # (CEL): an External ControlPlane provisions no backing services at all, so
+  # there is nothing to make dedicated.
+  - try:
+    - apply:
+        file: 35-dedicated-in-external.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'dedicatedBackingServices is forbidden when services.keystone.mode is External')): true
+  # An empty dedicatedBackingServices block requests no backing-service class and
+  # must be rejected (CEL). Omitting the block entirely is how a service shares.
+  - try:
+    - apply:
+        file: 36-dedicated-empty-block.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'must declare at least one backing-service class')): true
+  # credentialsMode Dynamic on a DEDICATED database must be rejected by the
+  # webhook: the OpenBao database engine carries one connection and role per
+  # namespace, bootstrapped against the SHARED cluster, so no engine role can
+  # issue credentials for a dedicated instance. CEL cannot catch it — clusterRef
+  # IS set, so the Dynamic-requires-managed-mode rule passes.
+  - try:
+    - apply:
+        file: 37-dedicated-database-dynamic-credentials.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'credentialsMode Dynamic is not supported on a dedicated database')): true
+  # A two-replica DEDICATED database cannot hold Galera quorum, exactly as a
+  # two-replica shared one cannot (webhook; the CRD marker only enforces
+  # Minimum=1).
+  - try:
+    - apply:
+        file: 38-dedicated-database-replicas-two.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, '2 cannot hold a majority')): true
+  # Two services' dedicated caches naming the same managed clusterRef must be
+  # rejected by the webhook: both would resolve to one Memcached child CR that the
+  # two projections then fight over, voiding the isolation the opt-in exists for.
+  - try:
+    - apply:
+        file: 39-dedicated-clusterref-collision.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'dedicatedBackingServices.cache.clusterRef.name')): true
+            (contains($error, 'Duplicate')): true
+---
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  # Own ephemeral namespace so the accepted base persists (see the sibling
+  # transition waves).
+  name: c5c3-invalid-cr-shared-to-dedicated
+spec:
+  steps:
+  - try:
+    # Base CR (Managed, sharing the ControlPlane-wide backing services — the
+    # default) must be admitted.
+    - apply:
+        file: 40-transition-base-shared.yaml
+    # Moving the live service onto dedicated backing services is rejected: the
+    # flip would re-point the consuming child's immutable database fields at a
+    # different instance while the previously-provisioned one keeps running with
+    # the data still on it. Webhook-only (no CEL transition rule), so a later
+    # transition feature can relax the freeze to a gated migration.
+    - apply:
+        file: 41-transition-to-dedicated.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'switching a service between shared and dedicated backing services')): true
 ---
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
