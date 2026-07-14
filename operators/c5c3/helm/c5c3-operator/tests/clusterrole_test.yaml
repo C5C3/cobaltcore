@@ -1,9 +1,10 @@
 # ClusterRole RBAC rules unit tests.
 # Rules mirror the +kubebuilder:rbac markers on the ControlPlane and
 # CredentialRotation reconcilers (deduplicated), plus the leases rule for
-# leader election — 21 rules total (clustersecretstores read-only and
+# leader election — 22 rules total (clustersecretstores read-only and
 # secretstores read-write are separate rules since the operator provisions the
-# per-tenant SecretStore).
+# per-tenant SecretStore; the namespaces rule lets reconcileNamespaces ensure the
+# per-service dedicated namespaces).
 suite: ClusterRole
 templates:
   - templates/clusterrole.yaml
@@ -12,7 +13,7 @@ tests:
     asserts:
       - lengthEqual:
           path: rules
-          count: 21
+          count: 22
 
   - it: should grant full CRUD on controlplanes
     asserts:
@@ -382,6 +383,26 @@ tests:
               - create
               - update
               - patch
+              - delete
+
+  # reconcileNamespaces ensures the per-service dedicated namespaces declared via
+  # spec.services.<svc>.namespace: create for the Managed lifecycle, delete for the
+  # teardown that follows it, get/list/watch for both lifecycles. No update/patch —
+  # a namespace is only created, verified, or deleted, never mutated in place.
+  - it: should grant get/list/watch/create/delete on core namespaces
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - ""
+            resources:
+              - namespaces
+            verbs:
+              - get
+              - list
+              - watch
+              - create
               - delete
 
   - it: should restrict events to create and patch only

@@ -41,7 +41,7 @@ tests:
       - hasDocuments:
           count: 0
 
-  - it: should have 21 rules matching ClusterRole
+  - it: should have 22 rules matching ClusterRole
     set:
       rbac:
         namespaceScoped: true
@@ -50,7 +50,7 @@ tests:
     asserts:
       - lengthEqual:
           path: rules
-          count: 21
+          count: 22
 
   - it: should grant full CRUD on controlplanes
     set:
@@ -445,6 +445,31 @@ tests:
               - create
               - update
               - patch
+              - delete
+
+  # reconcileNamespaces ensures the per-service dedicated namespaces declared via
+  # spec.services.<svc>.namespace: create for the Managed lifecycle, delete for the
+  # teardown that follows it, get/list/watch for both lifecycles. No update/patch —
+  # a namespace is only created, verified, or deleted, never mutated in place.
+  - it: should grant get/list/watch/create/delete on core namespaces
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - ""
+            resources:
+              - namespaces
+            verbs:
+              - get
+              - list
+              - watch
+              - create
               - delete
 
   - it: should restrict events to create and patch only

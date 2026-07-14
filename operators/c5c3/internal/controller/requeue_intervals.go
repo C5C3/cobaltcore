@@ -10,6 +10,14 @@ import "time"
 // projected child CR to converge. Centralised here
 // so the wait cadence is consistent and tunable in one place.
 const (
+	// namespaceRequeueAfter is the backoff the Namespaces sub-reconciler uses
+	// while a dedicated service namespace is not usable yet: an External one that
+	// has not been provisioned, a Managed one still Terminating, or one whose name
+	// is taken by a namespace the operator refuses to adopt. All three are
+	// resolved out-of-band (or not at all), so the cadence is unhurried — the
+	// condition, not the requeue rate, is what tells the operator what to do.
+	namespaceRequeueAfter = 15 * time.Second
+
 	// infraRequeueAfter is the backoff used while a managed MariaDB/Memcached
 	// child is still converging to Ready.
 	infraRequeueAfter = 15 * time.Second

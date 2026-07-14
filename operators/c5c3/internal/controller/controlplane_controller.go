@@ -28,6 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/c5c3/forge/internal/common/bootstrap"
 	"github.com/c5c3/forge/internal/common/conditions"
@@ -56,6 +57,7 @@ const ControlPlaneSecretNameIndexKey = "spec.korc.adminCredential.passwordSecret
 // rather than inline string literals so a rename is caught by the compiler and
 // the no-inline-literals drift guard.
 const (
+	conditionTypeNamespacesReady      = "NamespacesReady"
 	conditionTypeInfrastructureReady  = "InfrastructureReady"
 	conditionTypeESOTenantStoreReady  = "ESOTenantStoreReady" //nolint:gosec // G101 false positive: condition type name, not a credential.
 	conditionTypeDBCredentialsReady   = "DBCredentialsReady"  //nolint:gosec // G101 false positive: condition type name, not a credential.
@@ -82,6 +84,7 @@ const controlPlaneORCFinalizer = "c5c3.io/orc-teardown"
 // subConditionTypes lists the condition types set by individual sub-reconcilers.
 // The Ready condition is True only when all of these are True.
 var subConditionTypes = []string{
+	conditionTypeNamespacesReady,
 	conditionTypeInfrastructureReady,
 	conditionTypeESOTenantStoreReady,
 	conditionTypeDBCredentialsReady,
@@ -130,6 +133,7 @@ type ControlPlaneReconciler struct {
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch;create;delete
 
 // Reconcile is the main reconciliation loop for the ControlPlane CR.
 func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -206,6 +210,14 @@ func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// SecretsReady gate needs the admin-password ExternalSecret to exist
 	// before the projected Keystone child references it.
 	pipeline := []commonreconcile.Step{
+		// Namespaces runs FIRST: every later sub-reconciler projects into a
+		// service namespace, and applying into one that does not exist fails with
+		// an error naming neither the ControlPlane nor the assignment behind it.
+		// A ControlPlane without namespace assignments (the default) short-circuits
+		// to True immediately, so the step costs nothing.
+		{Name: "Namespaces", Fn: func(ctx context.Context) (ctrl.Result, error) {
+			return r.reconcileNamespaces(ctx, &cp)
+		}},
 		{Name: "Infrastructure", Fn: func(ctx context.Context) (ctrl.Result, error) {
 			return r.reconcileInfrastructure(ctx, &cp)
 		}},
@@ -445,9 +457,60 @@ func registerControlPlaneSecretNameIndex(ctx context.Context, indexer client.Fie
 // ControlPlane types in the index-only shape (no owner-ref leg).
 func secretToControlPlaneMapper(c client.Reader) handler.MapFunc {
 	return watch.SecretToOwnersMapper(c, watch.SecretMapperConfig{
-		IndexKey: ControlPlaneSecretNameIndexKey,
-		NewList:  func() client.ObjectList { return &c5c3v1alpha1.ControlPlaneList{} },
+		IndexKey:      ControlPlaneSecretNameIndexKey,
+		NewList:       func() client.ObjectList { return &c5c3v1alpha1.ControlPlaneList{} },
+		AllNamespaces: true,
 	})
+}
+
+// namespacedStoreToControlPlaneMapper enqueues the ControlPlanes whose effective
+// store reference resolves to the changed namespaced SecretStore. It replaces the
+// shared watch.StoreRefFanOut on the namespaced leg, whose namespace-scoped List
+// assumes a CR can only reference a store in its OWN namespace: the per-tenant
+// store is provisioned in EVERY namespace the ControlPlane places a service in,
+// so a store flipping unready in a service namespace must still wake the
+// ControlPlane that lives elsewhere. The List is therefore cluster-wide, and a
+// ControlPlane matches when the store's name is the one it selected AND the
+// store's namespace is one it actually occupies — so an identically-named store
+// in an unrelated namespace wakes nobody.
+//
+// The cluster-scoped leg keeps the shared fan-out: a ClusterSecretStore is
+// namespace-less, so its List is already unscoped.
+func namespacedStoreToControlPlaneMapper(c client.Reader) handler.MapFunc {
+	return func(ctx context.Context, obj client.Object) []reconcile.Request {
+		var list c5c3v1alpha1.ControlPlaneList
+		if err := c.List(ctx, &list); err != nil {
+			log.FromContext(ctx).Error(err, "listing ControlPlanes for secret-store watch",
+				"store", client.ObjectKeyFromObject(obj))
+			return nil
+		}
+
+		var requests []reconcile.Request
+		for i := range list.Items {
+			cp := &list.Items[i]
+			ref := effectiveControlPlaneStoreRef(cp)
+			if ref.Kind != commonv1.SecretStoreKindNamespaced || ref.Name != obj.GetName() {
+				continue
+			}
+			if !slices.Contains(controlPlaneNamespaces(cp), obj.GetNamespace()) {
+				continue
+			}
+			requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
+		}
+		return requests
+	}
+}
+
+// controlPlaneNamespaces returns every namespace the ControlPlane occupies: its
+// own, plus each namespace it places a service in. It is the deduplicated set the
+// per-namespace concerns walk — the tenant stores are provisioned in each, and
+// the store watch matches against it.
+func controlPlaneNamespaces(cp *c5c3v1alpha1.ControlPlane) []string {
+	namespaces := []string{cp.Namespace}
+	for _, ns := range cp.DedicatedServiceNamespaces() {
+		namespaces = append(namespaces, ns.Name)
+	}
+	return namespaces
 }
 
 // storeToControlPlaneMapper returns a MapFunc that enqueues the ControlPlanes
@@ -559,7 +622,27 @@ func (r *ControlPlaneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			storeToControlPlaneMapper(mgr.GetClient(), commonv1.SecretStoreKindCluster),
 		)).
 		Watches(&esov1.SecretStore{}, handler.EnqueueRequestsFromMapFunc(
-			storeToControlPlaneMapper(mgr.GetClient(), commonv1.SecretStoreKindNamespaced),
+			namespacedStoreToControlPlaneMapper(mgr.GetClient()),
 		)).
+		// Cross-namespace children carry no owner reference (Kubernetes forbids one
+		// across namespaces), so Owns() never fires for a service placed in a
+		// namespace of its own. Watch the same kinds a second time through the
+		// ownership labels the projections stamp on them, so a status transition on
+		// such a child still wakes its ControlPlane. The label predicate gates each
+		// leg so the shared informers only run the mapper for a labelled child; an
+		// unlabelled object is filtered before the mapper, so same-namespace children
+		// keep flowing through Owns() alone and neither leg double-enqueues the
+		// other's objects. The Namespace leg installs a cluster-wide Namespace
+		// informer, so the predicate is what keeps that informer from waking the
+		// mapper on every namespace event in the cluster.
+		Watches(&keystonev1alpha1.Keystone{}, crossNamespaceChildHandler(), builder.WithPredicates(crossNamespaceChildPredicate())).
+		Watches(&horizonv1alpha1.Horizon{}, crossNamespaceChildHandler(), builder.WithPredicates(crossNamespaceChildPredicate())).
+		Watches(&mariadbv1alpha1.MariaDB{}, crossNamespaceChildHandler(), builder.WithPredicates(crossNamespaceChildPredicate())).
+		Watches(memcached, crossNamespaceChildHandler(), builder.WithPredicates(crossNamespaceChildPredicate())).
+		Watches(&esov1.ExternalSecret{}, crossNamespaceChildHandler(), builder.WithPredicates(crossNamespaceChildPredicate())).
+		// The namespace itself: a Managed one being deleted out from under a live
+		// ControlPlane must re-drive NamespacesReady rather than wait for the next
+		// periodic resync.
+		Watches(&corev1.Namespace{}, crossNamespaceChildHandler(), builder.WithPredicates(crossNamespaceChildPredicate())).
 		Complete(r)
 }

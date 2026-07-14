@@ -269,6 +269,22 @@ coordination.k8s.io/leases rule required for leader election.
     - update
     - patch
     - delete
+# core - namespaces
+# Required so reconcileNamespaces can ensure the namespaces a service is placed
+# in via spec.services.<svc>.namespace: create for the Managed lifecycle, delete
+# for the teardown that follows it, get/list/watch for both lifecycles (an
+# External namespace is only ever verified, never mutated). A ControlPlane with
+# no namespace assignments never exercises create or delete.
+- apiGroups:
+    - ""
+  resources:
+    - namespaces
+  verbs:
+    - get
+    - list
+    - watch
+    - create
+    - delete
 # core - events
 - apiGroups:
     - ""
