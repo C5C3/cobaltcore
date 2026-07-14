@@ -916,3 +916,89 @@ func TestReconcileKeystone_TrustedDashboardsNilWithoutHorizonBlock(t *testing.T)
 	g.Expect(getProjectedKeystone(t, c, cp).Spec.Federation.TrustedDashboards).To(BeNil(),
 		"removing the dashboard must clear the trusted origin")
 }
+
+// TestReconcileKeystone_DedicatedBackingServicesProjected verifies the Keystone
+// child is pointed at the instances the service actually got: its DEDICATED
+// database and cache rather than the ControlPlane-wide ones. The projected spec
+// is what the keystone-operator derives its logical database, its MariaDB
+// User/Grant CRs, and its NetworkPolicy egress rules from, so pointing it at the
+// dedicated instances is what carries the isolation through the rest of the
+// chain.
+func TestReconcileKeystone_DedicatedBackingServicesProjected(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := keystoneTestScheme(t)
+	cp := keystoneControlPlane()
+	cp.Spec.Services.Keystone.DedicatedBackingServices = &c5c3v1alpha1.KeystoneDedicatedBackingServicesSpec{
+		Database: &commonv1.DatabaseSpec{
+			ClusterRef:      &corev1.LocalObjectReference{Name: "cp-keystone-db"},
+			CredentialsMode: commonv1.CredentialsModeStatic,
+			Database:        "keystone",
+			SecretRef:       commonv1.SecretRefSpec{Name: "seeded-db"},
+		},
+		Cache: &commonv1.CacheSpec{
+			ClusterRef: &corev1.LocalObjectReference{Name: "cp-keystone-cache"},
+			Backend:    commonv1.DefaultCacheBackend,
+			Replicas:   1,
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileKeystone(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	k := getProjectedKeystone(t, c, cp)
+	g.Expect(k.Spec.Database.ClusterRef).NotTo(BeNil())
+	g.Expect(k.Spec.Database.ClusterRef.Name).To(Equal("cp-keystone-db"),
+		"the child must point at the dedicated database, not the shared one")
+	g.Expect(k.Spec.Cache.ClusterRef).NotTo(BeNil())
+	g.Expect(k.Spec.Cache.ClusterRef.Name).To(Equal("cp-keystone-cache"),
+		"the child must point at the dedicated cache, not the shared one")
+	// A dedicated MANAGED database still has the operator own the credential, so
+	// the user-supplied secretRef is overridden onto the per-ControlPlane Secret —
+	// and the effective mode is Static (no engine role exists for a dedicated
+	// instance).
+	g.Expect(k.Spec.Database.SecretRef.Name).To(Equal(dbCredentialSecretName(cp)))
+	g.Expect(k.Spec.Database.CredentialsMode).To(Equal(commonv1.CredentialsModeStatic))
+
+	// The projection must not alias the ControlPlane spec: mutating the child's
+	// clusterRef must leave the ControlPlane's dedicated declaration intact.
+	k.Spec.Database.ClusterRef.Name = "mutated"
+	g.Expect(cp.Spec.Services.Keystone.DedicatedBackingServices.Database.ClusterRef.Name).
+		To(Equal("cp-keystone-db"), "the projection must DeepCopy the dedicated spec")
+}
+
+// TestReconcileKeystone_DedicatedBrownfieldLeavesSuppliedSecretRef covers the
+// brownfield half of the dedicated split: a service pointed at an externally
+// operated database of its own keeps the user-supplied credential Secret, exactly
+// as a brownfield SHARED database does — the operator owns no credential it did
+// not provision.
+func TestReconcileKeystone_DedicatedBrownfieldLeavesSuppliedSecretRef(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := keystoneTestScheme(t)
+	cp := keystoneControlPlane()
+	cp.Spec.Services.Keystone.DedicatedBackingServices = &c5c3v1alpha1.KeystoneDedicatedBackingServicesSpec{
+		Database: &commonv1.DatabaseSpec{
+			Host:      "keystone-db.example.com",
+			Port:      3306,
+			Database:  "keystone",
+			SecretRef: commonv1.SecretRefSpec{Name: "user-supplied-db-creds"},
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileKeystone(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	k := getProjectedKeystone(t, c, cp)
+	g.Expect(k.Spec.Database.ClusterRef).To(BeNil())
+	g.Expect(k.Spec.Database.Host).To(Equal("keystone-db.example.com"))
+	g.Expect(k.Spec.Database.SecretRef.Name).To(Equal("user-supplied-db-creds"),
+		"a brownfield dedicated database must keep the user-supplied credential Secret")
+	// Only the DATABASE was taken dedicated: the cache stays shared.
+	g.Expect(k.Spec.Cache.ClusterRef).NotTo(BeNil())
+	g.Expect(k.Spec.Cache.ClusterRef.Name).To(Equal("openstack-memcached"))
+}

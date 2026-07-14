@@ -107,14 +107,17 @@ func (r *ControlPlaneReconciler) reconcileHorizon(ctx context.Context, cp *c5c3v
 		return ctrl.Result{}, nil
 	}
 
-	// Nil-safety fail-safe. The dashboard projection DeepCopies the shared cache
-	// from spec.infrastructure, so a nil block has nothing to project and the deref
-	// below would panic. The validating webhook forbids services.horizon in
-	// External mode (the dashboard needs its own External-mode design) and requires
-	// spec.infrastructure otherwise, so an External-mode CR always returns at the
-	// HorizonNotManaged early-exit above and this guard only fires for a
-	// webhook-bypassed CR.
-	if cp.Spec.Infrastructure == nil {
+	// Resolve the cache the dashboard actually talks to: its own dedicated instance
+	// when it opted into one, the ControlPlane-wide shared one otherwise.
+	//
+	// Nil-safety fail-safe. The dashboard projection DeepCopies that cache, so an
+	// unresolvable instance has nothing to project and the deref below would panic.
+	// The validating webhook forbids services.horizon in External mode (the
+	// dashboard needs its own External-mode design) and requires spec.infrastructure
+	// otherwise, so an External-mode CR always returns at the HorizonNotManaged
+	// early-exit above and this guard only fires for a webhook-bypassed CR.
+	cache := effectiveHorizonCache(cp)
+	if cache == nil {
 		return ctrl.Result{RequeueAfter: infraRequeueAfter}, nil
 	}
 
@@ -184,12 +187,13 @@ func (r *ControlPlaneReconciler) reconcileHorizon(ctx context.Context, cp *c5c3v
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, horizon, func() error {
 		horizon.Spec.Image = image
 
-		// Point the dashboard at the SAME Memcached the ControlPlane
-		// provisioned. DeepCopy (over a plain struct copy) is required because
+		// Point the dashboard at the SAME Memcached the ControlPlane provisioned for
+		// it — its dedicated instance when it opted into one, the shared one
+		// otherwise. DeepCopy (over a plain struct copy) is required because
 		// CacheSpec carries a pointer ClusterRef and a Servers slice — a
 		// shallow copy would alias cp.Spec (same rationale as the Keystone
 		// projection).
-		horizon.Spec.Cache = *cp.Spec.Infrastructure.Cache.DeepCopy()
+		horizon.Spec.Cache = *cache.DeepCopy()
 
 		// The shared CacheSpec.Backend is overloaded: infrastructure.cache.backend
 		// carries the oslo.cache dogpile path Keystone consumes

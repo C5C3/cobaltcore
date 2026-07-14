@@ -531,3 +531,153 @@ func TestReconcileDBCredentials_BrownfieldStillReportsBrownfieldReason(t *testin
 	g.Expect(cond.Reason).NotTo(Equal(conditionReasonExternallyManaged),
 		"a brownfield database is not an externally-managed identity plane")
 }
+
+// dbCredDedicatedControlPlane builds a ControlPlane whose Keystone service took a
+// DEDICATED managed database. The shared block stays managed, so the test proves
+// the credential decision follows the EFFECTIVE database rather than the shared
+// one.
+func dbCredDedicatedControlPlane() *c5c3v1alpha1.ControlPlane {
+	cp := dbCredManagedControlPlane()
+	cp.Spec.Services.Keystone = &c5c3v1alpha1.ServiceKeystoneSpec{
+		DedicatedBackingServices: &c5c3v1alpha1.KeystoneDedicatedBackingServicesSpec{
+			Database: &commonv1.DatabaseSpec{
+				ClusterRef:      &corev1.LocalObjectReference{Name: "controlplane-keystone-db"},
+				CredentialsMode: commonv1.CredentialsModeStatic,
+				Database:        "keystone",
+				SecretRef:       commonv1.SecretRefSpec{Name: "keystone-db"},
+			},
+		},
+	}
+	return cp
+}
+
+// TestReconcileDBCredentials_DedicatedManaged_ProjectsStaticExternalSecret pins
+// the one credential constraint a dedicated database carries: the OpenBao
+// database engine is bootstrapped once per namespace against the SHARED cluster,
+// so a dedicated instance has no engine role to draw from and takes the STATIC
+// branch. The generator objects a Dynamic projection would create (the
+// VaultDynamicSecret, its ServiceAccount) must be provably absent — a projected
+// generator would sit forever on an ExternalSecret that can never sync.
+func TestReconcileDBCredentials_DedicatedManaged_ProjectsStaticExternalSecret(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := dbCredDedicatedControlPlane()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, readyClusterSecretStore(), readyTenantStoreFor(cp)).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	if _, err := r.reconcileDBCredentials(context.Background(), cp); err != nil {
+		t.Fatalf("reconcileDBCredentials: %v", err)
+	}
+
+	es, err := getDBCredES(t, r, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(es.Spec.DataFrom).To(BeEmpty(),
+		"a dedicated database must not draw from an engine generator")
+	g.Expect(es.Spec.Data).To(HaveLen(2))
+	g.Expect(es.Spec.Data[0].RemoteRef.Key).To(Equal(dbCredentialRemoteKeyFor(cp)),
+		"the Static credential is read from the per-ControlPlane KV path")
+
+	_, vdsErr := getVDS(t, r, cp)
+	g.Expect(apierrors.IsNotFound(vdsErr)).To(BeTrue(),
+		"a dedicated database must not project a VaultDynamicSecret generator")
+
+	sa := &corev1.ServiceAccount{}
+	saErr := r.Get(context.Background(), types.NamespacedName{
+		Namespace: childNamespace(cp), Name: dbCredentialServiceAccountName,
+	}, sa)
+	g.Expect(apierrors.IsNotFound(saErr)).To(BeTrue(),
+		"a dedicated database must not project the generator's ServiceAccount")
+}
+
+// TestReconcileDBCredentials_StaticNotReady_NamesTheUnseededKVPath pins what the
+// condition must TELL the operator while the Static ExternalSecret has not synced.
+// The KV path it reads is seeded by neither the operator nor the bootstrap (the
+// per-ControlPlane static seed was retired when managed mode moved to
+// engine-issued credentials), so an unsynced Static ExternalSecret is, in the
+// common case, a missing manual seed and not a transient ESO lag — and a dedicated
+// managed database lands on Static without the user ever asking for it. A generic
+// "not yet Ready" would leave them staring at a ControlPlane that can never reach
+// Ready with no hint why, so the message must name the exact path to seed.
+func TestReconcileDBCredentials_StaticNotReady_NamesTheUnseededKVPath(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := dbCredDedicatedControlPlane()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, readyClusterSecretStore(), readyTenantStoreFor(cp)).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	result, err := r.reconcileDBCredentials(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(BeNumerically(">", 0))
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeDBCredentialsReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("WaitingForDBCredentialSecret"))
+	g.Expect(cond.Message).To(ContainSubstring(dbCredentialRemoteKeyFor(cp)),
+		"the condition must name the KV path the Static credential has to be seeded at")
+	g.Expect(cond.Message).To(ContainSubstring("seed"),
+		"the condition must say the credential has to be seeded out-of-band")
+
+	// The Dynamic default mints its credential from the engine, so it carries no
+	// seeding requirement and must not inherit the Static message.
+	shared := dbCredManagedControlPlane()
+	sharedClient := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(shared, readyClusterSecretStore(), readyTenantStoreFor(shared)).Build()
+	sharedR := &ControlPlaneReconciler{Client: sharedClient, Scheme: s}
+	_, err = sharedR.reconcileDBCredentials(context.Background(), shared)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	sharedCond := conditions.GetCondition(shared.Status.Conditions, conditionTypeDBCredentialsReady)
+	g.Expect(sharedCond).NotTo(BeNil())
+	g.Expect(sharedCond.Message).NotTo(ContainSubstring("seed"),
+		"an engine-issued credential has nothing to seed")
+}
+
+// TestReconcileDBCredentials_DedicatedManagedIsStaticEvenWhenModeBypassed is the
+// fail-safe twin: the validating webhook rejects credentialsMode Dynamic on a
+// dedicated database, but a webhook-bypassed CR (direct etcd write) must still
+// fall closed onto Static rather than projecting a generator that could never
+// sync.
+func TestReconcileDBCredentials_DedicatedManagedIsStaticEvenWhenModeBypassed(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := dbCredDedicatedControlPlane()
+	cp.Spec.Services.Keystone.DedicatedBackingServices.Database.CredentialsMode = commonv1.CredentialsModeDynamic
+
+	g.Expect(dbCredentialsDynamicEnabled(cp)).To(BeFalse(),
+		"a dedicated database is never Dynamic, even with the mode written directly into the spec")
+}
+
+// TestReconcileDBCredentials_DedicatedBrownfield_NoExternalSecret verifies a
+// service pointed at an externally operated database of its own gets the same
+// user-owned-credential contract a brownfield SHARED database does: nothing is
+// projected, and the shared block's managed clusterRef does not drag the operator
+// into owning a credential for a database it did not provision.
+func TestReconcileDBCredentials_DedicatedBrownfield_NoExternalSecret(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := dbCredDedicatedControlPlane()
+	cp.Spec.Services.Keystone.DedicatedBackingServices.Database = &commonv1.DatabaseSpec{
+		Host:      "keystone-db.example.com",
+		Database:  "keystone",
+		SecretRef: commonv1.SecretRefSpec{Name: "user-supplied-db-creds"},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, readyClusterSecretStore(), readyTenantStoreFor(cp)).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	result, err := r.reconcileDBCredentials(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).To(Equal(ctrl.Result{}), "a brownfield dedicated database must not requeue")
+
+	_, getErr := getDBCredES(t, r, cp)
+	g.Expect(apierrors.IsNotFound(getErr)).To(BeTrue(),
+		"a brownfield dedicated database must NOT project a DB-credential ExternalSecret")
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeDBCredentialsReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal("BrownfieldUserSuppliedCredential"))
+}

@@ -150,13 +150,20 @@ func (r *ControlPlaneReconciler) reconcileKeystone(ctx context.Context, cp *c5c3
 		return ctrl.Result{}, nil
 	}
 
+	// Resolve the backing services Keystone actually talks to: its own dedicated
+	// instances when it opted into them, the ControlPlane-wide shared ones
+	// otherwise (the default).
+	//
 	// Nil-safety fail-safe. This managed projection points the Keystone child at
-	// the backing services the ControlPlane provisioned, so a nil block has nothing
-	// to project and the derefs below would panic. The validating webhook requires
-	// spec.infrastructure outside External mode, and the External branch above has
-	// already returned, so this only fires for a webhook-bypassed CR —
-	// reconcileInfrastructure halts the same CR with InfrastructureNotConfigured.
-	if cp.Spec.Infrastructure == nil {
+	// the backing services the ControlPlane provisioned, so an unresolvable
+	// instance has nothing to project and the derefs below would panic. The
+	// validating webhook requires spec.infrastructure outside External mode, and
+	// the External branch above has already returned, so this only fires for a
+	// webhook-bypassed CR — reconcileInfrastructure halts the same CR with
+	// InfrastructureNotConfigured.
+	database := effectiveKeystoneDatabase(cp)
+	cache := effectiveKeystoneCache(cp)
+	if database == nil || cache == nil {
 		return ctrl.Result{RequeueAfter: infraRequeueAfter}, nil
 	}
 
@@ -234,18 +241,25 @@ func (r *ControlPlaneReconciler) reconcileKeystone(ctx context.Context, cp *c5c3
 		TrustedDashboards: trustedDashboards(cp),
 	}
 
-	// Point Keystone at the SAME backing services the ControlPlane provisioned by
-	// reusing the infrastructure specs. DeepCopy (over a plain struct copy) is
-	// required because DatabaseSpec carries pointer fields (ClusterRef, TLS): a
-	// shallow copy would share those pointers with cp.Spec (#476).
-	keystone.Spec.Database = *cp.Spec.Infrastructure.Database.DeepCopy()
+	// Point Keystone at the SAME backing services the ControlPlane provisioned for
+	// it by reusing the EFFECTIVE specs resolved above. Projecting the effective
+	// spec is what carries the dedicated opt-in through the rest of the chain with
+	// no per-class special-casing: the keystone-operator derives its logical
+	// database, its MariaDB User/Grant CRs, and its NetworkPolicy database/cache
+	// egress rules from spec.database / spec.cache, so they follow the instance the
+	// service actually talks to.
+	//
+	// DeepCopy (over a plain struct copy) is required because DatabaseSpec carries
+	// pointer fields (ClusterRef, TLS): a shallow copy would share those pointers
+	// with cp.Spec (#476).
+	keystone.Spec.Database = *database.DeepCopy()
 
 	// in managed mode the operator OWNS the service DB credential —
 	// reconcileDBCredentials materialises it into a per-ControlPlane Secret named
 	// dbCredentialSecretName(cp). Override the projected Keystone CR's
 	// database.secretRef to that operator-owned Secret (key "password"). Brownfield
-	// (Database.ClusterRef == nil) leaves the user-supplied secretRef in place.
-	if cp.Spec.Infrastructure.Database.ClusterRef != nil {
+	// (ClusterRef == nil) leaves the user-supplied secretRef in place.
+	if database.ClusterRef != nil {
 		keystone.Spec.Database.SecretRef = commonv1.SecretRefSpec{Name: dbCredentialSecretName(cp), Key: "password"}
 		// Project the EFFECTIVE credentials mode (Dynamic unless the CP opted into
 		// Static), matching reconcileDBCredentials' effective-mode decision.
@@ -257,7 +271,7 @@ func (r *ControlPlaneReconciler) reconcileKeystone(ctx context.Context, cp *c5c3
 	}
 
 	// DeepCopy for the same reason as Database above (#476).
-	keystone.Spec.Cache = *cp.Spec.Infrastructure.Cache.DeepCopy()
+	keystone.Spec.Cache = *cache.DeepCopy()
 
 	// in managed mode the operator OWNS the admin password —
 	// reconcileAdminPassword projects it from OpenBao into a per-ControlPlane

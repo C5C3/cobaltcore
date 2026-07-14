@@ -98,8 +98,39 @@ var certificateGVK = schema.GroupVersionKind{
 // stage-(a) STATIC service DB credential is read from. It is retained only for
 // the Static opt-out / brownfield-migration path; the default managed mode
 // reads engine-issued credentials from dbDynamicCredsPathFor instead.
+//
+// NOTHING SEEDS THIS PATH. The per-ControlPlane static seed was retired when
+// managed mode moved to engine-issued credentials
+// (deploy/openbao/bootstrap/write-bootstrap-secrets.sh), so a ControlPlane on the
+// Static branch — the explicit opt-out on the shared database, and every DEDICATED
+// managed database, which is Static-only — must have the path seeded out-of-band
+// (username, password) before ESO can sync the credential. Until then the
+// ExternalSecret cannot go Ready; dbCredentialNotReadyMessage names the path in the
+// condition so the requirement is visible from `kubectl describe controlplane`
+// rather than only in the migration guide.
 func dbCredentialRemoteKeyFor(cp *c5c3v1alpha1.ControlPlane) string {
 	return "openstack/keystone/" + cp.Namespace + "/" + cp.Name + "/db"
+}
+
+// dbCredentialNotReadyMessage explains an unsynced DB-credential ExternalSecret.
+//
+// In Dynamic mode ESO mints the credential from the OpenBao database engine, so
+// an unready ExternalSecret means no more than "ESO has not synced yet".
+//
+// In Static mode the ExternalSecret READS a KV path nothing seeds (see
+// dbCredentialRemoteKeyFor), so an unready ExternalSecret is, in the common case,
+// a missing manual seed rather than a transient sync — and it is reached without
+// the user asking for it, because a dedicated managed database is materialized
+// onto Static on their behalf. The message names the exact path so the condition
+// tells the operator what to do instead of leaving them to infer it.
+func dbCredentialNotReadyMessage(cp *c5c3v1alpha1.ControlPlane) string {
+	if dbCredentialsDynamicEnabled(cp) {
+		return "DB credential ExternalSecret is not yet Ready"
+	}
+	return fmt.Sprintf("DB credential ExternalSecret is not yet Ready: credentialsMode Static reads the "+
+		"credential from OpenBao KV key %q, which neither the operator nor the bootstrap seeds; seed it "+
+		"(username, password) out-of-band before this ControlPlane can reach Ready",
+		dbCredentialRemoteKeyFor(cp))
 }
 
 // dbDynamicRoleFor returns the per-tenant OpenBao database-engine role name for
@@ -255,15 +286,29 @@ func dbCredentialStaticExternalSecret(cp *c5c3v1alpha1.ControlPlane) *esov1.Exte
 	}
 }
 
-// dbCredentialsDynamicEnabled reports the effective credentials mode: Dynamic
-// (engine-issued) is the default for managed mode; a ControlPlane opts out by
-// setting spec.infrastructure.database.credentialsMode: Static (migration
-// staging / brownfield).
+// dbCredentialsDynamicEnabled reports the effective credentials mode of the
+// database Keystone actually connects to: Dynamic (engine-issued) is the default
+// for a managed SHARED database; a ControlPlane opts out by setting
+// credentialsMode: Static (migration staging / brownfield).
+//
+// A DEDICATED database is never Dynamic. The OpenBao database engine carries one
+// connection and one role per NAMESPACE (deploy/openbao/bootstrap/
+// setup-database-tenant.sh), bootstrapped against the SHARED cluster, so no
+// engine role exists that could issue credentials for a dedicated instance — it
+// takes the Static branch, the same documented contract the shared block's own
+// Static opt-out carries. The validating webhook rejects an explicit Dynamic
+// there; keying the decision on the dedicated declaration rather than only on the
+// stored mode keeps a webhook-bypassed CR failing closed onto Static rather than
+// projecting a generator that could never sync.
 func dbCredentialsDynamicEnabled(cp *c5c3v1alpha1.ControlPlane) bool {
-	// spec.infrastructure is optional (External keystone mode omits it). A nil
-	// block has no managed database, so credential issuance is not dynamic.
-	infra := cp.Spec.Infrastructure
-	return infra != nil && infra.Database.CredentialsMode != commonv1.CredentialsModeStatic
+	if cp.DedicatedKeystoneDatabase() != nil {
+		return false
+	}
+	// The effective database is nil for an External-mode (or webhook-bypassed) CR,
+	// and brownfield when it carries no ClusterRef: neither has a managed database
+	// to issue credentials for.
+	db := effectiveKeystoneDatabase(cp)
+	return db != nil && db.ClusterRef != nil && db.CredentialsMode != commonv1.CredentialsModeStatic
 }
 
 // reconcileDBCredentials projects (in managed mode) the per-ControlPlane service
@@ -309,10 +354,13 @@ func (r *ControlPlaneReconciler) reconcileDBCredentials(ctx context.Context, cp 
 	}
 
 	// Brownfield early-exit: the user supplies their own DB credential Secret, so
-	// there is nothing for the operator to project or reference in OpenBao. A nil
-	// spec.infrastructure on a non-External CR is a webhook-bypass shape; treat it
-	// as brownfield rather than dereferencing it.
-	if infra := cp.Spec.Infrastructure; infra == nil || infra.Database.ClusterRef == nil {
+	// there is nothing for the operator to project or reference in OpenBao. The
+	// decision is made on the EFFECTIVE database — Keystone's dedicated one when it
+	// opted in, the shared one otherwise — so a service on a brownfield dedicated
+	// database gets the same user-owned-credential contract a brownfield shared one
+	// does. A nil effective database on a non-External CR is a webhook-bypass shape;
+	// treat it as brownfield rather than dereferencing it.
+	if db := effectiveKeystoneDatabase(cp); db == nil || db.ClusterRef == nil {
 		logger.Info("brownfield database (user-supplied credential), skipping DB credential ExternalSecret projection")
 		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
 			Type:               conditionTypeDBCredentialsReady,
@@ -361,8 +409,11 @@ func (r *ControlPlaneReconciler) reconcileDBCredentials(ctx context.Context, cp 
 			return ctrl.Result{}, err
 		}
 	} else {
-		// Static opt-out: tear down any dynamic-mode objects left from a prior
-		// Dynamic deployment, then project the stage-(a) KV-backed ExternalSecret.
+		// Static: tear down any dynamic-mode objects left from a prior Dynamic
+		// deployment, then project the stage-(a) KV-backed ExternalSecret. It reads
+		// a KV path nothing seeds (see dbCredentialRemoteKeyFor), so it only syncs
+		// once that path has been seeded out-of-band — dbCredentialNotReadyMessage
+		// says so in the condition while it has not.
 		r.deleteDynamicDBCredentialObjects(ctx, cp)
 		if err := apply.EnsureObject(ctx, r.Client, r.Scheme, cp, dbCredentialStaticExternalSecret(cp), apply.FieldManager); err != nil {
 			conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
@@ -516,7 +567,7 @@ func (r *ControlPlaneReconciler) waitDBCredentialExternalSecret(ctx context.Cont
 			Status:             metav1.ConditionFalse,
 			ObservedGeneration: cp.Generation,
 			Reason:             "WaitingForDBCredentialSecret",
-			Message:            "DB credential ExternalSecret is not yet Ready",
+			Message:            dbCredentialNotReadyMessage(cp),
 		})
 		return ctrl.Result{RequeueAfter: dbCredentialsRequeueAfter}, nil
 	}

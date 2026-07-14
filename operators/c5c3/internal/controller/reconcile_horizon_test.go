@@ -869,3 +869,60 @@ func TestReconcileHorizon_ClearsWebSSOWhenBackendsDetached(t *testing.T) {
 	g.Expect(h.Spec.WebSSO).To(BeNil(), "detaching the last OIDC backend must clear the websso block")
 	g.Expect(h.Spec.MultiDomain).To(BeNil(), "detaching the last LDAP backend must clear the multiDomain block")
 }
+
+// TestReconcileHorizon_DedicatedCacheProjected verifies the dashboard is pointed
+// at ITS cache when it opts into a dedicated one, while the Django backend
+// override still applies (the shared CacheSpec.Backend carries the oslo.cache
+// dogpile path, which Django cannot import).
+func TestReconcileHorizon_DedicatedCacheProjected(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := horizonControlPlane()
+	cp.Spec.Services.Horizon.DedicatedBackingServices = &c5c3v1alpha1.HorizonDedicatedBackingServicesSpec{
+		Cache: &commonv1.CacheSpec{
+			ClusterRef: &corev1.LocalObjectReference{Name: "cp-horizon-cache"},
+			Backend:    commonv1.DefaultCacheBackend,
+			Replicas:   2,
+		},
+	}
+	r := newHorizonTestReconciler(t, cp)
+
+	_, err := r.reconcileHorizon(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	h := getProjectedHorizon(t, r.Client, cp)
+	g.Expect(h.Spec.Cache.ClusterRef).NotTo(BeNil())
+	g.Expect(h.Spec.Cache.ClusterRef.Name).To(Equal("cp-horizon-cache"),
+		"the dashboard must point at its dedicated cache, not the shared one")
+	g.Expect(h.Spec.Cache.Replicas).To(Equal(int32(2)))
+	g.Expect(h.Spec.Cache.Backend).To(Equal(horizonv1alpha1.DefaultCacheBackend),
+		"the Django backend override applies to a dedicated cache too")
+
+	// The projection must not alias the ControlPlane spec.
+	h.Spec.Cache.ClusterRef.Name = "mutated"
+	g.Expect(cp.Spec.Services.Horizon.DedicatedBackingServices.Cache.ClusterRef.Name).
+		To(Equal("cp-horizon-cache"), "the projection must DeepCopy the dedicated spec")
+}
+
+// TestReconcileHorizon_DedicatedBrownfieldCacheProjected covers the brownfield
+// half: a dashboard pointed at an externally operated cache of its own gets that
+// endpoint list projected verbatim and no managed clusterRef.
+func TestReconcileHorizon_DedicatedBrownfieldCacheProjected(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := horizonControlPlane()
+	cp.Spec.Services.Horizon.DedicatedBackingServices = &c5c3v1alpha1.HorizonDedicatedBackingServicesSpec{
+		Cache: &commonv1.CacheSpec{
+			Servers: []string{"horizon-mc.example.com:11211"},
+			Backend: commonv1.DefaultCacheBackend,
+		},
+	}
+	r := newHorizonTestReconciler(t, cp)
+
+	_, err := r.reconcileHorizon(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	h := getProjectedHorizon(t, r.Client, cp)
+	g.Expect(h.Spec.Cache.ClusterRef).To(BeNil())
+	g.Expect(h.Spec.Cache.Servers).To(Equal([]string{"horizon-mc.example.com:11211"}))
+}
