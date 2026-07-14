@@ -2770,3 +2770,221 @@ func TestIntegration_SecretStoreRefProjectedAndGated(t *testing.T) {
 	g.Expect(ks.Spec.SecretStoreRef.Kind).To(Equal(commonv1.SecretStoreKindNamespaced))
 	g.Expect(ks.Spec.SecretStoreRef.Name).To(Equal("openbao-tenant-store"))
 }
+
+// integrationDedicatedControlPlane returns a ControlPlane whose Keystone service
+// opts into a dedicated database AND cache, and whose Horizon dashboard opts into
+// a dedicated cache, on top of the shared infrastructure block. It is the opt-in
+// shape TestIntegration_DedicatedBackingServices drives end to end against the
+// real CRD schema and webhook.
+func integrationDedicatedControlPlane(name, namespace string) *c5c3v1alpha1.ControlPlane {
+	cp := integrationManagedControlPlane(name, namespace)
+	cp.Spec.Services.Keystone.DedicatedBackingServices = &c5c3v1alpha1.KeystoneDedicatedBackingServicesSpec{
+		Database: &commonv1.DatabaseSpec{
+			ClusterRef:      &corev1.LocalObjectReference{Name: name + "-keystone-db"},
+			CredentialsMode: commonv1.CredentialsModeStatic,
+			Database:        "keystone",
+			SecretRef:       commonv1.SecretRefSpec{Name: "keystone-db"},
+			Replicas:        1,
+			StorageSize:     "512Mi",
+		},
+		Cache: &commonv1.CacheSpec{
+			ClusterRef: &corev1.LocalObjectReference{Name: name + "-keystone-cache"},
+			Backend:    commonv1.DefaultCacheBackend,
+			Replicas:   1,
+		},
+	}
+	cp.Spec.Services.Horizon = &c5c3v1alpha1.ServiceHorizonSpec{
+		Replicas: ptr.To(int32(1)),
+		DedicatedBackingServices: &c5c3v1alpha1.HorizonDedicatedBackingServicesSpec{
+			Cache: &commonv1.CacheSpec{
+				ClusterRef: &corev1.LocalObjectReference{Name: name + "-horizon-cache"},
+				Backend:    commonv1.DefaultCacheBackend,
+				Replicas:   1,
+			},
+		},
+	}
+	return cp
+}
+
+// TestIntegration_DedicatedBackingServices drives the per-service opt-in through
+// the whole chain against a live API server with the real CRD schema and webhook:
+//
+//   - both services' DEDICATED instances are provisioned and controller-OWNED
+//     (ownership is what tears them down with the ControlPlane), while the shared
+//     block — which every service here opted out of — has no consumer left and is
+//     not provisioned at all;
+//   - readiness is gated COLLECTIVELY: with every other instance Ready but the
+//     dedicated database still converging, InfrastructureReady stays False and no
+//     Keystone child is projected — the consuming service waits for ITS database;
+//   - the dedicated managed database takes the STATIC credential branch (no
+//     engine role exists for a dedicated instance) and no generator is projected;
+//   - each child is pointed at the instance its service actually got.
+func TestIntegration_DedicatedBackingServices(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupControlPlaneEnvTest(t)
+	ensureReadyClusterSecretStore(t, ctx, c)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-dedicated-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed(), "create test namespace")
+	ensureReadySecretStore(t, ctx, c, esoTenantStoreName, ns.Name)
+
+	cp := integrationDedicatedControlPlane("cp", ns.Name)
+	adminSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: adminPasswordSecretName(cp), Namespace: ns.Name},
+		Data:       map[string][]byte{"password": []byte("super-secret-admin-password")},
+	}
+	g.Expect(c.Create(ctx, adminSecret)).To(Succeed(), "create admin password Secret")
+	g.Expect(c.Create(ctx, cp)).To(Succeed(), "create ControlPlane CR with dedicated backing services")
+	cpKey := types.NamespacedName{Name: cp.Name, Namespace: ns.Name}
+
+	// --- The dedicated instances are provisioned and owned. ---
+	dedicatedDB := &mariadbv1alpha1.MariaDB{}
+	g.Eventually(func() error {
+		return c.Get(ctx, client.ObjectKey{Name: "cp-keystone-db", Namespace: ns.Name}, dedicatedDB)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "the dedicated MariaDB must be provisioned")
+	g.Expect(dedicatedDB.Spec.Replicas).To(Equal(int32(1)),
+		"the dedicated database is sized from its OWN spec, independently of the shared cluster")
+	g.Expect(metav1.IsControlledBy(dedicatedDB, cp)).To(BeTrue(),
+		"the dedicated MariaDB must be controller-owned so it is torn down with the ControlPlane")
+
+	for _, cacheName := range []string{"cp-keystone-cache", "cp-horizon-cache"} {
+		u := &unstructured.Unstructured{}
+		u.SetGroupVersionKind(memcachedGVK)
+		g.Eventually(func() error {
+			return c.Get(ctx, client.ObjectKey{Name: cacheName, Namespace: ns.Name}, u)
+		}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "Memcached %q must be provisioned", cacheName)
+		g.Expect(u.GetOwnerReferences()).NotTo(BeEmpty(), "Memcached %q must be owned", cacheName)
+	}
+
+	// --- The shared block has NO consumer left: both services opted out of both
+	// classes, so nothing resolves to the shared instances and neither is
+	// provisioned — an orphan cluster nothing talks to must not be created, nor
+	// hold InfrastructureReady back while it converges. ---
+	g.Consistently(func() bool {
+		dbErr := c.Get(ctx, client.ObjectKey{Name: "openstack-db", Namespace: ns.Name}, &mariadbv1alpha1.MariaDB{})
+		sharedCache := &unstructured.Unstructured{}
+		sharedCache.SetGroupVersionKind(memcachedGVK)
+		cacheErr := c.Get(ctx, client.ObjectKey{Name: "openstack-memcached", Namespace: ns.Name}, sharedCache)
+		return apierrors.IsNotFound(dbErr) && apierrors.IsNotFound(cacheErr)
+	}, 2*time.Second, itPollInterval).Should(BeTrue(),
+		"a shared instance every service opted out of has no consumer and must not be provisioned")
+
+	// --- Collective readiness gate: every other instance Ready, the dedicated
+	// database still converging. InfrastructureReady must stay False and no
+	// Keystone child may be projected. ---
+	simulateMemcachedReadyWhenPresent(t, ctx, c, client.ObjectKey{Name: "cp-keystone-cache", Namespace: ns.Name})
+	simulateMemcachedReadyWhenPresent(t, ctx, c, client.ObjectKey{Name: "cp-horizon-cache", Namespace: ns.Name})
+
+	g.Consistently(func() bool {
+		gated := &c5c3v1alpha1.ControlPlane{}
+		if err := c.Get(ctx, cpKey, gated); err != nil {
+			return false
+		}
+		cond := meta.FindStatusCondition(gated.Status.Conditions, conditionTypeInfrastructureReady)
+		return cond == nil || cond.Status == metav1.ConditionFalse
+	}, 2*time.Second, itPollInterval).Should(BeTrue(),
+		"a pending DEDICATED database must hold InfrastructureReady False even when every other instance is Ready")
+	g.Consistently(func() bool {
+		err := c.Get(ctx, types.NamespacedName{Name: keystoneName(cp), Namespace: ns.Name}, &keystonev1alpha1.Keystone{})
+		return apierrors.IsNotFound(err)
+	}, 2*time.Second, itPollInterval).Should(BeTrue(),
+		"no Keystone child may be projected while its dedicated database is still converging")
+
+	// --- Open the gate: the dedicated database becomes Ready. ---
+	simulateMariaDBReadyWhenPresent(t, ctx, c, client.ObjectKey{Name: "cp-keystone-db", Namespace: ns.Name})
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeInfrastructureReady, metav1.ConditionTrue, itEventuallyTimeout)
+
+	// --- The dedicated managed database takes the STATIC credential branch. ---
+	dbES := &esov1.ExternalSecret{}
+	g.Eventually(func() error {
+		return c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: dbCredentialSecretName(cp)}, dbES)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "the DB-credential ExternalSecret must be projected")
+	g.Expect(dbES.Spec.DataFrom).To(BeEmpty(),
+		"a dedicated database must not draw from an engine generator: no per-instance OpenBao engine role exists")
+	g.Expect(dbES.Spec.Data).To(HaveLen(2))
+	g.Expect(dbES.Spec.Data[0].RemoteRef.Key).To(Equal(dbCredentialRemoteKeyFor(cp)))
+	g.Consistently(func() bool {
+		err := c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: dbCredentialSecretName(cp)},
+			&esgenv1alpha1.VaultDynamicSecret{})
+		return apierrors.IsNotFound(err)
+	}, 2*time.Second, itPollInterval).Should(BeTrue(),
+		"a dedicated database must not project a VaultDynamicSecret generator")
+
+	// --- Each child is pointed at the instance its service actually got. ---
+	g.Expect(simulators.SimulateExternalSecretSync(ctx, c,
+		client.ObjectKey{Namespace: ns.Name, Name: dbCredentialSecretName(cp)})).To(Succeed())
+	simulateAdminPasswordExternalSecretSyncWhenPresent(t, ctx, c, cp)
+
+	ks := &keystonev1alpha1.Keystone{}
+	g.Eventually(func() error {
+		return c.Get(ctx, types.NamespacedName{Name: keystoneName(cp), Namespace: ns.Name}, ks)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "the Keystone child must be projected")
+	g.Expect(ks.Spec.Database.ClusterRef).NotTo(BeNil())
+	g.Expect(ks.Spec.Database.ClusterRef.Name).To(Equal("cp-keystone-db"))
+	g.Expect(ks.Spec.Database.CredentialsMode).To(Equal(commonv1.CredentialsModeStatic))
+	g.Expect(ks.Spec.Database.SecretRef.Name).To(Equal(dbCredentialSecretName(cp)))
+	g.Expect(ks.Spec.Cache.ClusterRef).NotTo(BeNil())
+	g.Expect(ks.Spec.Cache.ClusterRef.Name).To(Equal("cp-keystone-cache"))
+
+	// Horizon is gated on KeystoneReady; once open, the dashboard is pointed at ITS
+	// dedicated cache.
+	simulateKeystoneReadyWhenPresent(t, ctx, c, client.ObjectKey{Name: keystoneName(cp), Namespace: ns.Name})
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeKeystoneReady, metav1.ConditionTrue, itEventuallyTimeout)
+
+	hz := &horizonv1alpha1.Horizon{}
+	g.Eventually(func() error {
+		return c.Get(ctx, types.NamespacedName{Name: horizonName(cp), Namespace: ns.Name}, hz)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "the Horizon child must be projected")
+	g.Expect(hz.Spec.Cache.ClusterRef).NotTo(BeNil())
+	g.Expect(hz.Spec.Cache.ClusterRef.Name).To(Equal("cp-horizon-cache"),
+		"the dashboard must be pointed at its own dedicated cache, not the shared one")
+}
+
+// TestIntegration_DedicatedBackingServices_TransitionRejected proves the
+// shared<->dedicated freeze holds at the REAL validating webhook, not just in the
+// unit tests: a live ControlPlane cannot be moved between shared and dedicated
+// backing services in either direction. The freeze is webhook-only (no CEL
+// transition rule), so a later transition feature can relax it to a gated
+// migration.
+func TestIntegration_DedicatedBackingServices_TransitionRejected(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupControlPlaneEnvTest(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-dedicated-flip-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed(), "create test namespace")
+
+	// A live ControlPlane sharing the ControlPlane-wide instances (the default).
+	shared := integrationManagedControlPlane("cp", ns.Name)
+	g.Expect(c.Create(ctx, shared)).To(Succeed(), "create shared-backing-services ControlPlane")
+
+	// shared -> dedicated is rejected.
+	live := &c5c3v1alpha1.ControlPlane{}
+	g.Expect(c.Get(ctx, types.NamespacedName{Name: "cp", Namespace: ns.Name}, live)).To(Succeed())
+	live.Spec.Services.Keystone.DedicatedBackingServices = &c5c3v1alpha1.KeystoneDedicatedBackingServicesSpec{
+		Cache: &commonv1.CacheSpec{
+			ClusterRef: &corev1.LocalObjectReference{Name: "cp-keystone-cache"},
+			Backend:    commonv1.DefaultCacheBackend,
+		},
+	}
+	err := c.Update(ctx, live)
+	g.Expect(err).To(HaveOccurred(), "moving a live service onto dedicated backing services must be rejected")
+	g.Expect(err.Error()).To(ContainSubstring("switching a service between shared and dedicated backing services"))
+
+	// dedicated -> shared is rejected too. A second ControlPlane needs its own
+	// namespace (one ControlPlane per namespace).
+	ns2 := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-dedicated-flip-"}}
+	g.Expect(c.Create(ctx, ns2)).To(Succeed(), "create second test namespace")
+	dedicated := integrationDedicatedControlPlane("cp", ns2.Name)
+	g.Expect(c.Create(ctx, dedicated)).To(Succeed(), "create dedicated-backing-services ControlPlane")
+
+	live2 := &c5c3v1alpha1.ControlPlane{}
+	g.Expect(c.Get(ctx, types.NamespacedName{Name: "cp", Namespace: ns2.Name}, live2)).To(Succeed())
+	live2.Spec.Services.Keystone.DedicatedBackingServices = nil
+	err = c.Update(ctx, live2)
+	g.Expect(err).To(HaveOccurred(), "moving a live service back onto the shared instances must be rejected")
+	g.Expect(err.Error()).To(ContainSubstring("switching a service between shared and dedicated backing services"))
+}
