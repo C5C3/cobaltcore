@@ -60,8 +60,8 @@ func childNamespace(cp *c5c3v1alpha1.ControlPlane) string {
 // pins a far smaller value). TLS / issuerRefs are deliberately NOT set here: the
 // baseline wires those from cluster-specific ClusterIssuers that are an
 // infrastructure concern outside the aggregate's knowledge, and the keystone
-// DB-client baseline reads TLS from cp.Spec.Infrastructure.Database.TLS rather
-// than the MariaDB CR. The minimal spec keeps the CR admissible while leaving
+// DB-client baseline reads TLS from the projected database spec (the effective
+// instance's .TLS) rather than from the MariaDB CR. The minimal spec keeps the CR admissible while leaving
 // site-specific hardening to the platform team.
 const (
 	// infraMariaDBStorageSizeDefault is the zero-value fallback applied when
