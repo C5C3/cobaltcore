@@ -101,7 +101,19 @@ spec:
             echo "      the admin-credential chain cannot complete."
             exit 0
           fi
-          echo "OK: stack present — running ControlPlane deletion orchestration."
+          # The CRDs alone no longer prove the stack: the e2e-operator (c5c3)
+          # matrix leg installs every CRD the c5c3 controller watches WITHOUT
+          # deploying the sibling operators. This suite's ControlPlane needs
+          # the keystone-operator to converge before its deletion can be
+          # orchestrated, so probe for running pods (any namespace), not just
+          # the schema.
+          if ! kubectl get pods -A -l app.kubernetes.io/name=keystone-operator --no-headers 2>/dev/null | grep -q .; then
+            echo "SKIP: no keystone-operator is running; the cluster carries the"
+            echo "      stack's CRDs only, so the ControlPlane cannot converge here."
+            exit 0
+          fi
+          echo "OK: stack present (including a running keystone-operator) —"
+          echo "    running ControlPlane deletion orchestration."
 
           # ── Helpers ────────────────────────────────────────────────────────
           wait_cp_condition() { # <conditionType> <timeoutSeconds>

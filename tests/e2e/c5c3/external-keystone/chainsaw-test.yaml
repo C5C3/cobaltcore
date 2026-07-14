@@ -130,6 +130,17 @@ spec:
           if ! kubectl get pod openbao-0 -n openbao-system >/dev/null 2>&1; then
             gate_absent "openbao-system/openbao-0 not present."
           fi
+          # The CRDs alone no longer prove the stack: the e2e-operator (c5c3)
+          # matrix leg installs every CRD the c5c3 controller watches WITHOUT
+          # deploying the sibling operators. External mode never projects a
+          # Keystone child, but a running keystone-operator is still the
+          # discriminator between that CRDs-only leg and the full-stack jobs
+          # this 30-minute, service-image-pulling suite is scoped to (its own
+          # e2e-external-keystone job deploys the operator even though External
+          # mode leaves it idle).
+          if ! kubectl get pods -A -l app.kubernetes.io/name=keystone-operator --no-headers 2>/dev/null | grep -q .; then
+            gate_absent "no keystone-operator is running; this cluster carries the stack's CRDs only, not the full-stack job this suite is scoped to."
+          fi
 
           BAO_TOKEN="$(kubectl get secret openbao-init-keys -n openbao-system \
             -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token')"

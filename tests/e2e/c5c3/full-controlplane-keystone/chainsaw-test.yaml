@@ -171,8 +171,17 @@ spec:
           if ! kubectl get clustersecretstore openbao-cluster-store >/dev/null 2>&1; then
             gate_absent "openbao-cluster-store ClusterSecretStore not present; the admin-credential push chain cannot complete."
           fi
-          echo "OK: c5c3 + K-ORC + keystone CRDs and OpenBao store present —"
-          echo "    running the full ControlPlane → Keystone chain."
+          # The CRDs alone no longer prove the stack: the e2e-operator (c5c3)
+          # matrix leg installs every CRD the c5c3 controller watches WITHOUT
+          # deploying the sibling operators. This chain needs the
+          # keystone-operator to drive the projected Keystone to Ready, so
+          # probe for its running pods (any namespace — the release namespace
+          # differs per job), not just its schema.
+          if ! kubectl get pods -A -l app.kubernetes.io/name=keystone-operator --no-headers 2>/dev/null | grep -q .; then
+            gate_absent "no keystone-operator is running; the cluster carries the stack's CRDs only."
+          fi
+          echo "OK: c5c3 + K-ORC + keystone CRDs, OpenBao store, and a running"
+          echo "    keystone-operator present — running the full ControlPlane → Keystone chain."
 
           # ── Helpers ────────────────────────────────────────────────────────
           # Poll a ControlPlane status condition to True. Implemented as an

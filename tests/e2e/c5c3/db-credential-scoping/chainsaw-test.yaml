@@ -91,8 +91,19 @@ spec:
             echo "      the DB-credential ExternalSecret cannot sync."
             exit 0
           fi
-          echo "OK: c5c3 + ESO CRDs and OpenBao store present — running the"
-          echo "    per-ControlPlane DB-credential scoping assertions."
+          # The CRDs alone no longer prove the stack: the e2e-operator (c5c3)
+          # matrix leg installs every CRD the c5c3 controller watches WITHOUT
+          # deploying the sibling operators. This suite's ControlPlane needs the
+          # keystone-operator to converge (and it shares the canonical
+          # namespace with the other stack suites), so probe for running pods
+          # (any namespace), not just the schema.
+          if ! kubectl get pods -A -l app.kubernetes.io/name=keystone-operator --no-headers 2>/dev/null | grep -q .; then
+            echo "SKIP: no keystone-operator is running; the cluster carries the"
+            echo "      stack's CRDs only, so the ControlPlane cannot converge here."
+            exit 0
+          fi
+          echo "OK: c5c3 + ESO CRDs, OpenBao store, and a running keystone-operator"
+          echo "    present — running the per-ControlPlane DB-credential scoping assertions."
 
           # ── Helpers ────────────────────────────────────────────────────────
           assert_eq() { # <description> <expected> <actual>

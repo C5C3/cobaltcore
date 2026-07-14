@@ -910,12 +910,33 @@ jobs:
       # Use composite action for shared Flux CLI + test deps + deploy-infra sequence.
       - name: Setup E2E infrastructure
         uses: ./.github/actions/setup-e2e-infra
-      # Use shared operator deployment script.
+      # The c5c3 ControlPlane controller Owns()/Watches() the Keystone,
+      # KeystoneIdentityBackend, Horizon, and K-ORC kinds
+      # (ControlPlaneReconciler.SetupWithManager). controller-runtime informers
+      # for a kind whose CRD is absent never sync, so without these CRDs the
+      # elected leader dies on the controller's 2-minute cache-sync timeout and
+      # the ControlPlane reconciler never runs on this leg — the webhook keeps
+      # serving, so the breakage only surfaces in suites that need the
+      # reconciler. Install the sibling operators' CRDs (charts only — their
+      # controllers stay undeployed; suites that need them run in the
+      # e2e-controlplane job) and K-ORC via the shared pinned installer.
+      - name: Install CRDs watched by the c5c3-operator
+        if: matrix.operator == 'c5c3'
+        run: |
+          kubectl apply -f operators/keystone/helm/keystone-operator/crds/
+          kubectl apply -f operators/horizon/helm/horizon-operator/crds/
+          hack/ci-deploy-korc.sh
+      # Use shared operator deployment script. NAMESPACE mirrors what
+      # hack/ci-dump-diagnostics.sh derives (${OPERATOR}-system) so the
+      # diagnostics of a failed run actually find the operator's pods and logs
+      # — without it every matrix leg lands in the script default
+      # keystone-system while the dump looks elsewhere.
       - name: Deploy operator
         run: hack/ci-deploy-operator.sh
         env:
           OPERATOR: ${{ matrix.operator }}
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/${{ matrix.operator }}-operator
+          NAMESPACE: ${{ matrix.operator }}-system
       - name: Run E2E tests
         env:
           OPERATOR: ${{ matrix.operator }}

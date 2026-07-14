@@ -27,8 +27,13 @@ Unlike the Keystone suites, the ControlPlane chain additionally requires K-ORC
 and the c5c3-operator (on top of the keystone-operator, OpenBao, ESO, MariaDB,
 and Memcached stack). The default kind E2E wiring does not install these, so
 every suite follows the repo's **belt-and-braces presence-guard pattern**: a
-runtime guard probes for the required CRDs and the OpenBao
-`ClusterSecretStore`, and exits with a SKIP line when the stack is absent.
+runtime guard probes for the required CRDs, the OpenBao
+`ClusterSecretStore`, and — for the suites whose ControlPlanes must actually
+converge — **running keystone-operator pods**, exiting with a SKIP line when
+any of it is absent. The pod probe matters because CRDs alone no longer imply
+the stack: the `e2e-operator` c5c3 matrix leg installs every CRD the c5c3
+controller watches (its informers cannot start otherwise) without deploying
+the sibling operators.
 Because Chainsaw has no step-level skip and the shared config runs with
 `failFast: true`, the guard and all assertions live in a single script step.
 
