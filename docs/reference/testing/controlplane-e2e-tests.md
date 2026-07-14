@@ -76,6 +76,7 @@ Without the stack the suites skip cleanly, so `make e2e` (which runs the whole
 | [admin-password-scoping](#admin-password-scoping) | `controlplane` | Per-CR OpenBao-backed admin password projection |
 | [db-credential-scoping](#db-credential-scoping) | `controlplane` | Per-CR OpenBao-backed service DB credential projection |
 | [dedicated-backing-services](#dedicated-backing-services) | `cp` (ephemeral namespace) | Opt-in per-service dedicated database/cache: provisioning, ownership, sizing, and collective readiness gating |
+| [dedicated-namespaces](#dedicated-namespaces) | `cp` (ephemeral namespace) | Per-service dedicated namespaces: Managed/External lifecycles, backing-service placement, ownership labels, per-namespace tenant stores, and the deletion sweep |
 | [multi-controlplane](#multi-controlplane) | `controlplane-a`, `controlplane-b` | Per-CR admin-credential isolation across two tenants; rotation non-interference |
 | [secret-store-scoping](#secret-store-scoping) | — (namespace-only) | Per-ControlPlane OpenBao identity via a namespaced `SecretStore`; OpenBao-enforced cross-tenant isolation |
 
@@ -231,6 +232,42 @@ design. They are hard-asserted in the envtest scenario
 `TestIntegration_DedicatedBackingServices`, which runs against the real CRD
 schema and webhook on every PR.
 
+### dedicated-namespaces
+
+Asserts per-service
+[dedicated namespaces](../c5c3/controlplane-crd.md#service-namespaces): a
+`ControlPlane` that places its Keystone service in an operator-owned (`Managed`)
+namespace and its Horizon dashboard in a pre-existing (`External`) one. It proves
+the placement and lifecycle contract on a live cluster:
+
+- `NamespacesReady` goes `True` once the `External` namespace (pre-created by the
+  test) is present and the `Managed` one has been created by the operator;
+- the `Managed` namespace carries the ownership labels plus
+  `app.kubernetes.io/managed-by`; the `External` namespace is left **unlabelled**;
+- the one shared `spec.infrastructure` block materializes its backing services in
+  **each service's** namespace — a `MariaDB` and `Memcached` in the Keystone
+  namespace, a `Memcached` in the Horizon namespace — each carrying the ownership
+  labels and **no owner reference** (Kubernetes forbids a cross-namespace one),
+  and nothing in the ControlPlane's own namespace;
+- a per-tenant `openbao-tenant-store` `SecretStore` is provisioned in every
+  namespace the ControlPlane occupies;
+- on deletion the cross-namespace children are torn down explicitly (no GC
+  cascade reaches them), the `Managed` namespace is deleted, and the `External`
+  namespace **survives** with its ControlPlane residue swept.
+
+Like the sibling dedicated-backing-services suite it runs in **chainsaw's
+ephemeral namespace** with a ControlPlane of its own, deriving the two service
+namespaces from it: the namespace-assignment fields are frozen after creation and
+a service namespace is a tenant key admission reserves to one ControlPlane, so the
+suite cannot reuse the canonical `openstack` ControlPlane. It carries the same CRD
+presence guard and `E2E_REQUIRE_CONTROLPLANE_STACK` escalation.
+
+The credential material and the projected Keystone child sit behind the
+OpenBao-seeded DB-credential / admin-password machinery this ephemeral suite
+cannot reach; the full cross-namespace readiness (the credential ExternalSecrets,
+the projected child, the OpenBao path re-keying) is hard-asserted in the envtest
+scenario `TestIntegration_DedicatedNamespaces` on every PR.
+
 ### multi-controlplane
 
 Brings up two ControlPlanes in two namespaces (`tenant-a/controlplane-a`,
@@ -295,6 +332,9 @@ tests/e2e/c5c3/
 ├── dedicated-backing-services/
 │   ├── chainsaw-test.yaml              Per-service dedicated database/cache opt-in
 │   └── 00-controlplane-cr.yaml         ControlPlane CR (cp; ephemeral namespace)
+├── dedicated-namespaces/
+│   ├── chainsaw-test.yaml              Per-service dedicated namespaces + lifecycles
+│   └── 00-controlplane-cr.yaml         ControlPlane CR (cp; @KEYSTONE_NS@/@HORIZON_NS@ tokens)
 ├── deletion-orchestration/
 │   ├── chainsaw-test.yaml              ORC-teardown finalizer sequencing
 │   └── 00-controlplane-cr.yaml         ControlPlane CR (deletion-orch)

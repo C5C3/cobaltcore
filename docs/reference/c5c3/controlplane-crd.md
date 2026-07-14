@@ -360,6 +360,7 @@ validating webhook is bypassed) and mirrored by the validating webhook; see
 | `publicEndpoint` | `string` | No | `""` | Externally routable Keystone identity endpoint URL (e.g. `https://keystone.example.com/v3`). Projected into the Keystone bootstrap (`--bootstrap-public-url`) and used for the K-ORC identity catalog Endpoint, so external clients resolve the same URL Keystone advertises. When set, it must be an HTTP(S) URL (`+kubebuilder:validation:Pattern=^https?://`), so a malformed endpoint fails at admission rather than wedging the projected Keystone CR. When empty and `gateway` is set, the reconciler derives `https://{gateway.hostname}/v3` (the default-443 form); set it explicitly when the externally reachable port differs (e.g. a kind host-port mapping like `:8443`). |
 | `federationProxyImage` | [`*commonv1.ImageSpec`](../keystone/keystone-crd.md#imagespec) | No | `nil` | Overrides the `mod_auth_openidc` sidecar image projected onto the Keystone child's `spec.federation.proxyImage`. When `nil` the reconciler projects `ghcr.io/c5c3/keystone-federation-proxy:latest`. That default is a **mutable tag**: every node re-pulls it on each pod start, and a locally built sidecar cannot be exercised. Override it with a digest-carrying `ImageSpec` for the immutable pin published images are expected to carry. Inert until a federation-typed `KeystoneIdentityBackend` attaches. Forbidden in External mode (CEL + webhook). |
 | `dedicatedBackingServices` | [`*KeystoneDedicatedBackingServicesSpec`](#dedicatedbackingservices) | No | `nil` (shares the ControlPlane-wide instances) | Opts the Keystone service **out** of the shared `spec.infrastructure` instances and gives it backing services of its own. Forbidden in External mode (CEL + webhook): no backing services are provisioned at all there. |
+| `namespace` | [`*ServiceNamespaceSpec`](#service-namespaces) | No | `nil` (placed in the ControlPlane's namespace) | Places the Keystone service — and the backing services, secret store, and credential material that follow it — in a namespace of its own. Create-only. Forbidden in External mode (CEL + webhook): no Keystone workload is deployed, so there is nothing to place. See [Service Namespaces](#service-namespaces). |
 
 ---
 
@@ -382,6 +383,7 @@ its fields carry per-field External-mode forbid-rules.
 | `secretKeyRef` | [`*commonv1.SecretRefSpec`](../keystone/keystone-crd.md#secretrefspec) | No | `nil` | Overrides the Secret holding the Django `SECRET_KEY` the dashboard replicas share. When `nil` the reconciler defaults to the kind-infrastructure shim Secret `horizon-secret-key`, which is pinned to the **default** ControlPlane identity — multi-ControlPlane deployments MUST set this explicitly. |
 | `publicEndpoint` | `string` | No | `""` | The **browser-observed** dashboard base URL, without a trailing slash and **including a non-default port** (e.g. `https://horizon.example.com:8443`). The reconciler derives the WebSSO origin from it (`publicEndpoint + "/auth/websso/"`) and projects that onto the Keystone child's `spec.federation.trustedDashboards`. Keystone matches the origin the dashboard sends verbatim, so the value must reproduce exactly what the browser's address bar shows. When empty and `gateway` is set, the reconciler derives `https://{gateway.hostname}` (the default-443 form). Must match `^https?://`, parse with a host, and be at most 499 characters — the Keystone child's 512-character bound on `trustedDashboards[]` minus the 13 characters `/auth/websso/` appends. |
 | `dedicatedBackingServices` | [`*HorizonDedicatedBackingServicesSpec`](#dedicatedbackingservices) | No | `nil` (shares the ControlPlane-wide cache) | Opts the dashboard **out** of the shared `spec.infrastructure.cache` and gives it a cache of its own. The dashboard consumes no database, so `cache` is the only class it can take dedicated. |
+| `namespace` | [`*ServiceNamespaceSpec`](#service-namespaces) | No | `nil` (placed in the ControlPlane's namespace) | Places the dashboard — and the cache and secret store that follow it — in a namespace of its own. Create-only. A dashboard placed apart reads its `SECRET_KEY` from **that** namespace: the default `horizon-secret-key` shim Secret is namespace-local, so supply the key material there (and name it via `secretKeyRef`). See [Service Namespaces](#service-namespaces). |
 
 > **`publicEndpoint` and `gateway.hostname` must name the same host.** Django
 > derives the origin it sends from the request's `Host` header — i.e. from
@@ -1695,24 +1697,177 @@ Set by `setReadyCondition`.
 
 ---
 
+## Service Namespaces
+
+By default every service a ControlPlane projects lands in the **ControlPlane's
+own namespace**: namespace and ControlPlane are the same boundary, so no
+network-policy, RBAC, or quota line can be drawn between the services of one
+control plane. A `namespace` assignment on `services.keystone` or
+`services.horizon` makes the target namespace a **per-service choice** — a
+service can be placed in a namespace of its own, and the backing services, secret
+store, and credential material that belong to it follow it there. A service
+without an assignment stays in the ControlPlane's namespace exactly as before.
+
+### ServiceNamespaceSpec
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `name` | `string` | Yes | — | The namespace the service is placed in. Must be an RFC-1123 label (`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`, ≤ 63 chars) and must **differ** from the ControlPlane's own namespace — omit the whole block to keep the service there. |
+| `lifecycle` | `string` (`Managed` \| `External`) | No | `Managed` | Who owns the namespace's lifecycle. Defaulted to `Managed` by both the `+kubebuilder:default` marker and the defaulting webhook. |
+
+### Lifecycles
+
+The two lifecycles are deliberately asymmetric — they differ on who owns the
+namespace, both when the ControlPlane is created and when it is deleted:
+
+| Lifecycle | On reconcile | On ControlPlane deletion |
+| --- | --- | --- |
+| `Managed` | The operator **creates** the namespace and stamps it with the ownership labels plus `app.kubernetes.io/managed-by: c5c3-operator`. A namespace that already exists **without** those labels is never adopted — the operator fails loud with `NamespacesReady=False/NamespaceNotOwned` rather than taking over a namespace it did not create. | The operator **deletes** the namespace (only if it carries the ownership labels), which cascades everything left in it. |
+| `External` | The operator only **verifies** the namespace exists; it never creates, labels, or mutates it. A missing one parks on `NamespacesReady=False/NamespaceNotFound` and requeues. | The namespace **survives**. The residue the ControlPlane placed in it — backing services, credential material, tenant store — is swept by name, but the namespace itself is left standing. |
+
+Use `External` for namespaces whose quotas, RBAC, and policies are provisioned
+out-of-band, and `Managed` for a namespace the operator should own end to end.
+
+### Backing services follow the service
+
+Each namespace that hosts at least one service of the ControlPlane gets its **own
+set of backing-service instances** (database, cache) materialized from the shared
+`spec.infrastructure` block. Services co-located in one namespace share that
+namespace's instances (with the same per-service logical databases, users, and
+cache isolation used within a single namespace); services placed apart each get
+their own. Within a namespace a service can still opt into dedicated instances
+via [`dedicatedBackingServices`](#dedicatedbackingservices) — that opt-in simply
+follows its service into the assigned namespace.
+
+### Ownership and garbage collection
+
+Kubernetes garbage collection only cascades **within** a namespace, so a
+controller owner reference cannot cross one — the API server rejects it. A child
+the ControlPlane places in a service namespace therefore carries no owner
+reference; it is stamped with two **ownership labels** instead —
+`c5c3.io/controlplane-name` and `c5c3.io/controlplane-namespace`, which together
+name the owning ControlPlane — and the [ORC-teardown
+finalizer](./controlplane-reconciler.md#owner-ref--gc-model) deletes it
+explicitly, because nothing else collects it. The finalizer deletes
+the service children first and waits for them (their own operators run a
+sequenced ESO cleanup through the tenant store in the same namespace), then takes
+the namespace down per its lifecycle.
+
+### Secret distribution
+
+An ESO `SecretStore` and the Secrets it materializes are namespace-local, so a
+store in the ControlPlane's namespace cannot deliver anything into a service
+namespace. Every namespace the ControlPlane occupies therefore gets its own
+per-tenant `openbao-tenant-store` (its own ServiceAccount, client certificate,
+and store object), and `ESOTenantStoreReady` gates on **all** of them. This needs
+no OpenBao-side change: the `eso-tenant` role binds the ServiceAccount name in any
+namespace and its templated policy scopes every path to the caller's own
+namespace.
+
+The credential material follows the Keystone service, and its OpenBao paths are
+re-keyed on the Keystone service namespace:
+
+- the admin-password seed path is
+  `bootstrap/<keystone-namespace>/<controlplane>-keystone/admin` — the same path
+  the keystone-operator's rotation `PushSecret` writes to (both follow the
+  Keystone child), and the path
+  [`write-bootstrap-secrets.sh`](../infrastructure/infrastructure-manifests.md)
+  seeds (its `KORC_CONTROLPLANES` entries accept an optional
+  `<namespace>/<controlplane>/<keystone-namespace>` third segment);
+- the database-engine role is `keystone-<keystone-namespace>`, which
+  `setup-database-tenant.sh` provisions by resolving the service namespace from
+  the live ControlPlane spec.
+
+A **brownfield** or **External** admin-password Secret is the user's, supplied
+against the ControlPlane they wrote, so it stays in the ControlPlane's own
+namespace where they put it.
+
+### Cross-namespace service discovery
+
+A service placed in one namespace still reaches the identity service in another
+through the **namespace-qualified Service DNS**:
+`http://<controlplane>-keystone.<keystone-namespace>.svc:5000/v3`. ClusterIP
+Service DNS resolves across namespaces unchanged, so K-ORC's `clouds.yaml`
+`auth_url` and the dashboard's `spec.keystoneEndpoint` reach a Keystone placed
+apart with no extra wiring. What does **not** come for free is reachability —
+namespaces are where NetworkPolicy is attached, so a default-deny namespace must
+explicitly allow this flow (see below).
+
+### Network policies
+
+The operator creates **no NetworkPolicies** — it never has, in either the
+single-namespace or the split-namespace case. Splitting a control plane across
+namespaces is precisely what makes drawing them possible, so a platform operator
+who wants a default-deny posture writes them per namespace. The cross-namespace
+flows one ControlPlane needs are:
+
+| From | To | Port | Purpose |
+| --- | --- | --- | --- |
+| the Horizon namespace | the Keystone namespace | `5000` | the dashboard authenticates every login against Keystone |
+| the ControlPlane's namespace (K-ORC) | the Keystone namespace | `5000` | K-ORC reconciles the identity catalog and the admin credential |
+| each service's namespace | its own database | `3306` | the service's DB connection |
+| each service's namespace | its own cache | `11211` | the service's cache connection |
+| a gateway namespace | the exposed service's namespace | the service port | external ingress via Gateway API |
+
+### Uniqueness and immutability
+
+A namespace is the **tenant key** the whole secret stack is scoped by (the
+OpenBao KV paths, the `keystone-<namespace>` database-engine role, the templated
+`eso-tenant` policy), so it belongs to **at most one** ControlPlane. Admission
+rejects an assignment that names a namespace another ControlPlane already occupies
+(its own or one of its service namespaces), and vice versa — the same rule
+[`validateUniqueInNamespace`](#validation-rules) already enforces for a
+ControlPlane's own namespace, one level out. An `External`-lifecycle namespace
+that also hosts unrelated third-party workloads shares that namespace's OpenBao
+path scope by design, so pick a dedicated namespace when that scope matters.
+
+The assignment is **create-only**: the block's presence, its `name`, and its
+`lifecycle` are all frozen after creation (webhook-only, no CEL transition rule,
+so a later gated migration can relax it). Moving a live service across namespaces
+would leave its backing services, its secret store, and every OpenBao path scoped
+to the old namespace behind with no migration path — remove and recreate the
+ControlPlane to change it. Two services co-located in one namespace must also
+agree on its lifecycle: they share that namespace's backing services and tenant
+store, so one must not have the teardown delete what the other declared
+untouchable.
+
+> **Chart mode:** the Helm chart's namespace-scoped RBAC mode
+> (`rbac.namespaceScoped: true`) does **not** support dedicated service
+> namespaces — the operator needs cluster-scoped `namespaces` (`create`,
+> `delete`) and cross-namespace child access, which only the default ClusterRole
+> mode grants.
+
+---
+
 ## Child Namespace
 
-> **DECISION:** every child the reconciler projects — the `MariaDB`,
-> `Memcached`, and `Keystone` CRs, the K-ORC `ApplicationCredential` /
-> `Service` / `Endpoint` CRs, the owned Secret, and the OpenBao `PushSecret` —
-> is created in the **ControlPlane's own namespace** (`childNamespace =
-> cp.Namespace`), **not** a hardcoded `"openstack"` literal.
+> **DECISION:** the **ControlPlane-scoped** children the reconciler projects —
+> the ones that belong to the ControlPlane as a whole rather than to one service:
+> the K-ORC `ApplicationCredential` / `Service` / `Endpoint` / `User` / `Domain`
+> CRs, the `clouds.yaml` Secret, the OpenBao `PushSecret`, and the
+> service-account material — are created in the **ControlPlane's own namespace**
+> (`childNamespace = cp.Namespace`), owned by it through a controller owner
+> reference so the GC cascade reaps them.
+
+A **service** and the things that follow it — its `MariaDB`, `Memcached`, and
+`Keystone`/`Horizon` CRs, its tenant store, its credential material — are placed
+in `cp.KeystoneNamespace()` / `cp.HorizonNamespace()`, the service's own
+namespace when [`services.<svc>.namespace`](#service-namespaces) assigns one and
+the ControlPlane's namespace otherwise. Only the latter can carry an owner
+reference; a child in a different namespace carries the ownership labels instead
+(see [Ownership and garbage collection](#ownership-and-garbage-collection)).
 
 The rationale is garbage collection: `controllerutil.SetControllerReference`
 rejects cross-namespace owner references because Kubernetes GC only cascades
 within a single namespace. A child in `openstack` owned by a ControlPlane in
 `default` would fail admission and, even if forced, would never be GC'd.
-Co-locating the children with their owner keeps the owner reference valid and the
-GC cascade intact. In production the ControlPlane is deployed into the
-`openstack` control-plane namespace, so the projected children land in
-`openstack` exactly as expected — the namespace is now **derived from the
-owner** rather than assumed. Projected child names are deterministic and derived
-from the ControlPlane name (e.g. `{name}-keystone`,
+Co-locating a same-namespace child with its owner keeps the owner reference valid
+and the GC cascade intact; a cross-namespace child is instead cleaned up by the
+finalizer. In production a ControlPlane without any namespace assignments is
+deployed into the `openstack` control-plane namespace, so its projected children
+land in `openstack` exactly as expected — the namespace is **derived from the
+owner (or the assignment)** rather than assumed. Projected child names are
+deterministic and derived from the ControlPlane name (e.g. `{name}-keystone`,
 `{name}-admin-app-credential`, `{name}-identity-service`,
 `{name}-identity-endpoint`) so a single namespace can host the children of
 multiple ControlPlanes without clashing.

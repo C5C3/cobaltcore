@@ -230,6 +230,13 @@ c5c3-operator only **reads** from that path — the engine connection and the
 per-tenant role are provisioned out-of-band, once per ControlPlane, by
 `deploy/openbao/bootstrap/setup-database-tenant.sh`.
 
+Here `<namespace>` is the **Keystone service namespace** — the ControlPlane's own
+namespace (`openstack`) in this quick start, and only different when
+`spec.services.keystone.namespace` places the Keystone service in a namespace of
+its own. The onboarding script resolves it from the live ControlPlane spec, so
+the two arguments below always name the ControlPlane, wherever its Keystone
+lands.
+
 Run it after the `kubectl apply` from Step 3, as soon as the projected MariaDB
 is Ready (the script configures the engine's database connection, so it needs a
 reachable database):

@@ -245,11 +245,19 @@ details that privilege-escalation path. Two specifics apply to this operator:
   `rolebindings` verbs, so it lacks the RoleBinding-forgery escalation
   primitive — the cluster-wide Secret read is the dominant risk.
 
-Because `childNamespace` co-locates every projected resource in the
-ControlPlane's own namespace, a single-namespace deployment can run the operator
-namespace-scoped (`rbac.namespaceScoped: true`), bounding both the RBAC grant
-and the informer cache to that namespace. Keep the default only when
+A single-namespace deployment — one where no service is placed in a namespace of
+its own — co-locates every projected resource in the ControlPlane's own
+namespace, so it can run the operator namespace-scoped
+(`rbac.namespaceScoped: true`), bounding both the RBAC grant and the informer
+cache to that namespace. Keep the default only when
 [cluster-wide RBAC is still required](../../guides/multi-tenant-deployment.md#when-cluster-wide-rbac-is-still-required).
+
+[Dedicated service namespaces](./controlplane-crd.md#service-namespaces) are
+**incompatible with namespace-scoped mode**: placing a service in a namespace of
+its own needs cluster-scoped `namespaces` verbs (`create`, `delete`) and
+cross-namespace access to the children, which only the default ClusterRole mode
+grants. The markers therefore add `core/namespaces` with
+`get;list;watch;create;delete`.
 
 ---
 
@@ -270,6 +278,12 @@ and the informer cache to that namespace. Keep the default only when
 │  (Ready=False / DuplicateControlPlane, requeue 30s; see Multi-instance)      │
 │         │                                                                    │
 │         ▼                                                                    │
+│  ┌──────────────────────────┐                                                │
+│  │ reconcileNamespaces      │  Ensure the namespaces services are placed in  │
+│  │  (gate: none)            │  Sets: NamespacesReady                         │
+│  └────────┬─────────────────┘  Requeue: 15s while a namespace is unusable    │
+│           │  (True immediately when no service declares a namespace)         │
+│           ▼                                                                  │
 │  ┌──────────────────────────┐                                                │
 │  │ reconcileInfrastructure  │  Ensure managed MariaDB + Memcached children   │
 │  │  (gate: none)            │  Sets: InfrastructureReady                     │
@@ -506,15 +520,63 @@ itself: everything stays K-ORC-mediated.
   the trust store only after cache expiry. Nothing in this operator can shorten
   that window; an upstream fix would have to fold `cacert` into the cache key.
 
+### reconcileNamespaces
+
+| Aspect | Value |
+| --- | --- |
+| File | `reconcile_namespaces.go` |
+| Condition | `NamespacesReady` |
+| Gate | none (runs first) |
+| Projects / Owns | `Namespace` objects for every service placed in a namespace of its own under the `Managed` lifecycle |
+| Requeue | `namespaceRequeueAfter` = **15s** while a namespace is unusable |
+
+`reconcileNamespaces` ensures the namespaces the ControlPlane's services are
+placed in outside its own (see
+[Service Namespaces](./controlplane-crd.md#service-namespaces)), and runs
+**first** because every later sub-reconciler projects into one of them — applying
+into a namespace that does not exist fails with an error naming neither the
+ControlPlane nor the assignment behind it. A ControlPlane with no assignments (the
+default) has nothing to ensure and reports `NamespacesReady=True` immediately, so
+the step costs nothing on the common path.
+
+The two lifecycles are asymmetric. Under **`Managed`** the operator creates the
+namespace and stamps it with the ownership labels plus
+`app.kubernetes.io/managed-by`; a namespace that already exists without those
+labels is **never adopted** — the condition fails loud rather than taking over a
+namespace it did not create. Under **`External`** the operator only verifies the
+namespace exists; a missing one parks the condition and requeues.
+
+| Status | Reason | When |
+| --- | --- | --- |
+| `True` | `NoDedicatedNamespaces` | No service declares a namespace of its own. |
+| `True` | `NamespacesReady` | Every declared service namespace is present (and, for `Managed`, owned). |
+| `False` | `NamespaceNotFound` | An `External` namespace does not exist; requeue. |
+| `False` | `NamespaceNotOwned` | A `Managed` namespace exists but lacks the operator's ownership labels — never adopted. |
+| `False` | `NamespaceTerminating` | The namespace is being deleted; wait and requeue. |
+| `False` | `FinalizingNamespaces` | On deletion, waiting for cross-namespace children to be torn down (see [Owner-ref / GC model](#owner-ref--gc-model)). |
+| `False` | `NamespaceError` | A create/get against the namespace failed. |
+
 ### reconcileInfrastructure
 
 | Aspect | Value |
 | --- | --- |
 | File | `reconcile_infrastructure.go` |
 | Condition | `InfrastructureReady` |
-| Gate | none (runs first) |
-| Projects / Owns | Managed-mode `MariaDB` (`k8s.mariadb.com`) and `Memcached` (unstructured `memcached.c5c3.io/v1beta1`) children, each named after its `clusterRef` and created in `childNamespace(cp)` |
+| Gate | none |
+| Projects / Owns | Managed-mode `MariaDB` (`k8s.mariadb.com`) and `Memcached` (unstructured `memcached.c5c3.io/v1beta1`) children, each named after its `clusterRef` and created in **the namespace of the service that resolves to it** (`cp.KeystoneNamespace()` / `cp.HorizonNamespace()`, the ControlPlane's own unless a `namespace` assignment places the service elsewhere) |
 | Requeue | `infraRequeueAfter` = **15s** while a managed child is not yet Ready |
+
+**Backing services follow the service.** `managedInfraInstances` adds each
+service's effective database and cache **at that service's namespace** and
+deduplicates on `(kind, namespace, name)`, so the one shared `spec.infrastructure`
+block materializes once **per namespace** that consumes it — two instances when
+Keystone and Horizon are placed apart, one when they are co-located, exactly one
+(today's behavior) when neither is assigned a namespace. A child in a service
+namespace carries no owner reference (Kubernetes forbids a cross-namespace one) —
+it is stamped with the ownership labels and cleaned up by the finalizer instead;
+a same-namespace child keeps its controller owner reference. The dashboard's cache
+is enumerated only when the dashboard is **declared**, so a ControlPlane that
+places Keystone apart never provisions a phantom cache for an absent Horizon.
 
 `reconcileInfrastructure` provisions the backing services the ControlPlane owns.
 That set is the instances its services actually **resolve to**, not the set of
@@ -1659,11 +1721,24 @@ for moving an existing single-instance cluster onto the per-CR layout.
 
 ## Owner-ref / GC model
 
-All child CRs created by the sub-reconcilers carry an owner reference to the
-ControlPlane CR via `controllerutil.SetControllerReference()`. This enables both
-**automatic garbage collection** (deleting the ControlPlane cascades to its
-children) and **watch-based reconciliation** (a child change re-reconciles the
-owner).
+A child CR created in **the ControlPlane's own namespace** carries an owner
+reference to the ControlPlane CR via `controllerutil.SetControllerReference()`.
+This enables both **automatic garbage collection** (deleting the ControlPlane
+cascades to its children) and **watch-based reconciliation** (a child change
+re-reconciles the owner).
+
+A child created in a **service namespace** — one a
+[`namespace` assignment](./controlplane-crd.md#service-namespaces) places
+elsewhere — can carry **no owner reference**: Kubernetes garbage collection only
+cascades within one namespace, so the API server rejects a cross-namespace
+controller reference. Such a child is stamped with two **ownership labels**
+instead — `c5c3.io/controlplane-name` and `c5c3.io/controlplane-namespace`,
+which together name the owning ControlPlane. They carry the two jobs an owner
+reference would have done: `isControlPlaneChild` recognizes the child (so a
+colliding object owned by nobody is never reshaped or deleted), and a
+label-mapped `Watches()` leg resolves an event on it back to a reconcile request.
+Because nothing garbage-collects such a child, the finalizer tears it down
+explicitly (see below).
 
 ### Deletion ordering — the `c5c3.io/orc-teardown` finalizer
 
@@ -1694,10 +1769,29 @@ projected. On deletion it:
    PushSecret still stuck past the stall window has its finalizers
    force-removed, and a **Warning** `OpenBaoCleanupStalled` names the OpenBao
    paths that may retain data.
-3. **Releases the finalizer once the ORC CRs and PushSecrets are gone**,
-   letting GC cascade-delete Keystone, the infrastructure, and the remaining
-   children.
-4. **Releases an unmanaged-only remainder immediately.** K-ORC re-fetches the
+3. **Tears down the cross-namespace children before releasing.** A service
+   placed in a namespace of its own — and the backing services, tenant store,
+   and credential material that follow it — carries no owner reference, so no GC
+   cascade reaches it; releasing the finalizer first would strand every one of
+   them. `teardownDedicatedNamespaces` deletes them by hand, in order: the
+   service children (`Keystone`/`Horizon`) first, waiting for them (their
+   operators run a sequenced ESO cleanup through the tenant store in the same
+   namespace), then the namespace per its lifecycle. A **`Managed`** namespace is
+   deleted, which cascades everything left in it — but only when it carries the
+   ownership labels; an unlabelled one is left standing with a **Warning**
+   `NamespaceNotOwned`, because the operator never destroys a namespace it did
+   not create. An **`External`** namespace survives, so its residue (backing
+   services, credential material, tenant-store trio last) is swept by name, each
+   object ownership-checked so a same-named object belonging to somebody else in
+   that shared namespace is left alone. While children remain the condition
+   reports `NamespacesReady=False/FinalizingNamespaces`; past the
+   `orcTeardownStallTimeout` the sweep stops waiting, emits a **Warning**
+   `NamespaceTeardownStalled` naming what is stuck, and releases anyway — a wedged
+   child must not make a namespace undeletable forever.
+4. **Releases the finalizer once the ORC CRs, PushSecrets, and cross-namespace
+   children are gone**, letting GC cascade-delete the same-namespace Keystone,
+   the infrastructure, and the remaining children.
+5. **Releases an unmanaged-only remainder immediately.** K-ORC re-fetches the
    imported resource through an *authenticated* actuator before releasing any
    finalizer, and the unmanaged imports authenticate with the admin application
    credential whose revocation step 1 already triggered — so once every CR
@@ -1706,13 +1800,13 @@ projected. On deletion it:
    `openstack.k-orc.cloud/*` finalizers right away and emits a **Normal**
    `ORCImportsReleased` event. An import's deletion is CR-only, so the external
    installation is untouched and nothing is orphaned.
-5. **Bounds the wait.** If managed ORC CRs stay Terminating longer than the
+6. **Bounds the wait.** If managed ORC CRs stay Terminating longer than the
    `orcTeardownStallTimeout` (5 minutes) — typically because Keystone is already
    gone and K-ORC cannot revoke — the reconciler force-removes the stuck
    `openstack.k-orc.cloud/*` finalizers (preserving any non-K-ORC finalizers),
    emits a **Warning** `ORCTeardownStalled` event, and releases the ControlPlane
    finalizer so deletion completes rather than wedging forever.
-6. **Names what the escape orphaned.** The escape strips the very finalizer that
+7. **Names what the escape orphaned.** The escape strips the very finalizer that
    would have revoked the credential or removed the catalog row, so every
    `Managed` CR it releases leaves its OpenStack resource behind with no
    Kubernetes object naming it. A second **Warning**, `ORCResourcesOrphaned`,
@@ -1739,14 +1833,19 @@ then OpenBao cleanup); see
 The `{name}-admin-app-credential-backup` PushSecret is the one child kept on
 `DeletionPolicy: None` so its OpenBao path is not purged on teardown.
 
-> **Children live in the owner's namespace.** Every projected child is created in
-> `childNamespace(cp) = cp.Namespace`, **not** a hardcoded `openstack`. A
-> cross-namespace owner reference is rejected at admission ("cross-namespace
-> owner references are disallowed") because Kubernetes GC only cascades within a
-> single namespace; co-locating children with their owner keeps the owner
-> reference valid and the GC cascade intact. In production the ControlPlane is
-> deployed into the `openstack` namespace, so the children land there exactly as
-> before — the namespace is now *derived from the owner* rather than assumed.
+> **ControlPlane-scoped children live in the owner's namespace; service children
+> follow their service.** The K-ORC CRs, the `clouds.yaml` Secret, the
+> PushSecret, and the service-account material belong to the ControlPlane as a
+> whole and are created in `childNamespace(cp) = cp.Namespace`, owner-referenced.
+> A **service** and the things that follow it (its `MariaDB`, `Memcached`,
+> `Keystone`/`Horizon`, tenant store, and credential material) are placed in
+> `cp.KeystoneNamespace()` / `cp.HorizonNamespace()` — the ControlPlane's own
+> namespace by default, or the one a [`namespace`
+> assignment](./controlplane-crd.md#service-namespaces) gives it. A
+> cross-namespace owner reference is rejected at admission because Kubernetes GC
+> only cascades within a single namespace, so a service child in another
+> namespace carries the ownership labels and is torn down by the finalizer
+> instead of the GC cascade.
 
 | Resource | Name | Owner | Notes |
 | --- | --- | --- | --- |
