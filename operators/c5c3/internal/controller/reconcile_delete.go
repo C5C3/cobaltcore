@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -309,7 +310,12 @@ func (r *ControlPlaneReconciler) ownedCatalogEntryChildren(
 //
 //  1. Delete every owned K-ORC CR (idempotent; NotFound / CRD-absent tolerated)
 //     and collect those still present (Terminating behind a K-ORC finalizer).
-//  2. When none remain, release the finalizer so GC tears down the rest.
+//     Also delete every owned PushSecret: their DeletionPolicy=Delete cleanup —
+//     ESO removing the mirrored OpenBao data — needs the per-tenant SecretStore
+//     and its ServiceAccount, which the post-release GC cascade reaps
+//     unsequenced, so it must happen while the finalizer still holds them.
+//  2. When no K-ORC CR and no owned PushSecret remain, release the finalizer so
+//     GC tears down the rest.
 //  3. When every CR still present is an Unmanaged import, force-remove their
 //     K-ORC finalizers right away: an import's deletion is CR-only, but K-ORC
 //     builds an authenticated delete actuator and re-fetches the imported
@@ -337,6 +343,19 @@ func (r *ControlPlaneReconciler) reconcileDelete(ctx context.Context, cp *c5c3v1
 		return ctrl.Result{}, err
 	}
 
+	// The owned PushSecrets carry DeletionPolicy=Delete: ESO removes the
+	// mirrored OpenBao data when it processes their deletion — and that needs
+	// the per-tenant SecretStore and its eso-tenant-auth ServiceAccount, both of
+	// which are CP-owned and die in the unsequenced GC cascade the moment the
+	// finalizer is released. Delete the PushSecrets HERE, while the store still
+	// authenticates, and gate the release on their disappearance; otherwise the
+	// credential this teardown revokes in Keystone outlives it in OpenBao behind
+	// an Errored, Terminating PushSecret.
+	pushRemaining, err := r.deleteOwnedPushSecrets(ctx, cp)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
 	// Announce the teardown once, on the first pass where a live (not-yet-
 	// Terminating) ORC CR is observed. Later requeues see only Terminating CRs
 	// and suppress the event, giving exactly-once semantics per deletion.
@@ -345,8 +364,9 @@ func (r *ControlPlaneReconciler) reconcileDelete(ctx context.Context, cp *c5c3v1
 			"Deleting owned K-ORC CRs before releasing the ControlPlane so K-ORC can revoke against a reachable Keystone")
 	}
 
-	if len(remaining) == 0 {
-		// Every owned K-ORC CR is gone (revoked and deleted, or never existed).
+	if len(remaining) == 0 && len(pushRemaining) == 0 {
+		// Every owned K-ORC CR is gone (revoked and deleted, or never existed)
+		// and ESO has finished the OpenBao cleanup behind the owned PushSecrets.
 		// Release the finalizer so GC tears down Keystone/MariaDB and the rest.
 		r.Recorder.Event(cp, "Normal", "ORCTeardownComplete",
 			"No remaining K-ORC CRs; releasing the ControlPlane finalizer")
@@ -365,7 +385,7 @@ func (r *ControlPlaneReconciler) reconcileDelete(ctx context.Context, cp *c5c3v1
 	// stall window on a dead-credential retry loop. This is a Normal event, not
 	// a Warning: an import's deletion is CR-only by definition, so the external
 	// installation is left bit-for-bit intact and nothing is orphaned.
-	onlyUnmanagedLeft := true
+	onlyUnmanagedLeft := len(remaining) > 0
 	for _, obj := range remaining {
 		if isManagedORCChild(obj) {
 			onlyUnmanagedLeft = false
@@ -390,10 +410,11 @@ func (r *ControlPlaneReconciler) reconcileDelete(ctx context.Context, cp *c5c3v1
 		return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
 	}
 
-	// Some managed K-ORC CRs are still present — typically Terminating behind a
-	// K-ORC finalizer that revokes against Keystone. Within the stall window,
-	// wait and requeue; updateStatus persists the FinalizingORC condition so the
-	// wait is operator-visible. The reason matches the FinalizingORC event above.
+	// Managed K-ORC CRs are still Terminating behind a finalizer that revokes
+	// against Keystone, and/or ESO is still deleting the OpenBao data behind the
+	// owned PushSecrets. Within the stall window, wait and requeue; updateStatus
+	// persists the FinalizingORC condition so the wait is operator-visible. The
+	// reason matches the FinalizingORC event above.
 	if time.Since(cp.DeletionTimestamp.Time) <= orcTeardownStallTimeout {
 		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
 			Type:               conditionTypeKORCReady,
@@ -401,8 +422,8 @@ func (r *ControlPlaneReconciler) reconcileDelete(ctx context.Context, cp *c5c3v1
 			ObservedGeneration: cp.Generation,
 			Reason:             "FinalizingORC",
 			Message: fmt.Sprintf(
-				"waiting for %d K-ORC CR(s) to be revoked and deleted before releasing the ControlPlane",
-				len(remaining),
+				"waiting for %d K-ORC CR(s) and %d PushSecret(s) to finish their teardown before releasing the ControlPlane",
+				len(remaining), len(pushRemaining),
 			),
 		})
 		return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
@@ -429,31 +450,103 @@ func (r *ControlPlaneReconciler) reconcileDelete(ctx context.Context, cp *c5c3v1
 		}
 	}
 
-	if err := r.forceRemoveKORCFinalizers(ctx, remaining); err != nil {
-		return ctrl.Result{}, err
+	// The stall can also be hit with ZERO K-ORC CRs left (only PushSecrets
+	// stuck, handled below) — suppress the K-ORC Warning then, so it never
+	// alarms about an empty list.
+	if len(remaining) > 0 {
+		if err := r.forceRemoveKORCFinalizers(ctx, remaining); err != nil {
+			return ctrl.Result{}, err
+		}
+		r.Recorder.Event(cp, "Warning", "ORCTeardownStalled", fmt.Sprintf(
+			"K-ORC CRs %v stayed Terminating longer than %s (K-ORC may be unable to reach Keystone to revoke); "+
+				"force-removed their K-ORC finalizers and releasing the ControlPlane",
+			names, orcTeardownStallTimeout,
+		))
+		if len(orphaned) > 0 {
+			r.Recorder.Event(cp, "Warning", "ORCResourcesOrphaned", fmt.Sprintf(
+				"the OpenStack resources behind the managed K-ORC CRs %v were NOT deleted: their finalizers were "+
+					"force-removed before K-ORC could revoke the admin application credential or remove the "+
+					"spec.services.keystone.external.catalog.managedEntries rows it registered. Nothing in "+
+					"Kubernetes names them any more — remove them from Keystone by hand",
+				orphaned,
+			))
+		}
+		log.FromContext(ctx).Info("ORC teardown stalled; force-removed K-ORC finalizers",
+			"remaining", names, "orphaned", orphaned, "stallTimeout", orcTeardownStallTimeout)
 	}
-	r.Recorder.Event(cp, "Warning", "ORCTeardownStalled", fmt.Sprintf(
-		"K-ORC CRs %v stayed Terminating longer than %s (K-ORC may be unable to reach Keystone to revoke); "+
-			"force-removed their K-ORC finalizers and releasing the ControlPlane",
-		names, orcTeardownStallTimeout,
-	))
-	if len(orphaned) > 0 {
-		r.Recorder.Event(cp, "Warning", "ORCResourcesOrphaned", fmt.Sprintf(
-			"the OpenStack resources behind the managed K-ORC CRs %v were NOT deleted: their finalizers were "+
-				"force-removed before K-ORC could revoke the admin application credential or remove the "+
-				"spec.services.keystone.external.catalog.managedEntries rows it registered. Nothing in "+
-				"Kubernetes names them any more — remove them from Keystone by hand",
-			orphaned,
+
+	// A PushSecret still present past the stall window means ESO cannot finish
+	// the OpenBao cleanup (backend or store gone). Strip its finalizers so the
+	// namespace cannot wedge on it, and name the OpenBao paths that keep their
+	// data — like the orphaned managed CRs, they are repair-by-hand outcomes.
+	if len(pushRemaining) > 0 {
+		stuckKeys := make([]string, 0, len(pushRemaining))
+		for _, ps := range pushRemaining {
+			for _, d := range ps.Spec.Data {
+				stuckKeys = append(stuckKeys, d.Match.RemoteRef.RemoteKey)
+			}
+			ps.Finalizers = nil
+			if err := r.Update(ctx, ps); err != nil && !apierrors.IsNotFound(err) {
+				return ctrl.Result{}, fmt.Errorf("force-removing finalizers from PushSecret %q: %w", ps.Name, err)
+			}
+		}
+		r.Recorder.Event(cp, "Warning", "OpenBaoCleanupStalled", fmt.Sprintf(
+			"ESO could not delete the mirrored OpenBao data behind %d PushSecret(s) within %s; the OpenBao "+
+				"path(s) %v may still hold the revoked credential — delete them by hand",
+			len(pushRemaining), orcTeardownStallTimeout, stuckKeys,
 		))
 	}
-	log.FromContext(ctx).Info("ORC teardown stalled; force-removed K-ORC finalizers",
-		"remaining", names, "orphaned", orphaned, "stallTimeout", orcTeardownStallTimeout)
 
 	controllerutil.RemoveFinalizer(cp, controlPlaneORCFinalizer)
 	if err := r.Update(ctx, cp); err != nil {
 		return ctrl.Result{}, fmt.Errorf("removing finalizer after force-remove: %w", err)
 	}
 	return ctrl.Result{}, nil
+}
+
+// deleteOwnedPushSecrets issues an idempotent Delete on every PushSecret this
+// ControlPlane owns and returns those still present after the sweep. The owned
+// PushSecrets carry DeletionPolicy=Delete, so ESO deletes the mirrored OpenBao
+// data while processing their deletion — which only works while the per-tenant
+// SecretStore and its eso-tenant-auth ServiceAccount are still alive, i.e.
+// BEFORE the ControlPlane finalizer is released and the GC cascade reaps them.
+// An absent PushSecret CRD (meta.IsNoMatchError) reads as nothing-to-clean so
+// the finalizer can still release when the ESO stack is gone.
+func (r *ControlPlaneReconciler) deleteOwnedPushSecrets(
+	ctx context.Context, cp *c5c3v1alpha1.ControlPlane,
+) ([]*esov1alpha1.PushSecret, error) {
+	var list esov1alpha1.PushSecretList
+	switch err := r.List(ctx, &list, client.InNamespace(childNamespace(cp))); {
+	case err == nil:
+	case meta.IsNoMatchError(err):
+		return nil, nil
+	default:
+		return nil, fmt.Errorf("listing owned PushSecrets for teardown: %w", err)
+	}
+
+	var remaining []*esov1alpha1.PushSecret
+	for i := range list.Items {
+		ps := &list.Items[i]
+		if !metav1.IsControlledBy(ps, cp) {
+			continue
+		}
+		if ps.DeletionTimestamp.IsZero() {
+			if err := client.IgnoreNotFound(r.Delete(ctx, ps)); err != nil {
+				return nil, fmt.Errorf("deleting PushSecret %q: %w", ps.Name, err)
+			}
+		}
+		// Re-Get: a finalizer-less PushSecret is gone with the Delete, while one
+		// held by ESO stays present until the remote delete is confirmed.
+		current := &esov1alpha1.PushSecret{}
+		switch err := r.Get(ctx, client.ObjectKeyFromObject(ps), current); {
+		case err == nil:
+			remaining = append(remaining, current)
+		case apierrors.IsNotFound(err):
+		default:
+			return nil, fmt.Errorf("re-checking PushSecret %q: %w", ps.Name, err)
+		}
+	}
+	return remaining, nil
 }
 
 // deleteORCResources issues an idempotent Delete on every owned K-ORC CR

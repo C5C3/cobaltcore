@@ -1610,9 +1610,19 @@ projected. On deletion it:
    reachable while K-ORC revokes. While ORC CRs are still Terminating the
    reconciler reports `KORCReady=False` with reason `FinalizingORC` and requeues
    at the K-ORC cadence.
-2. **Releases the finalizer once the ORC CRs are gone**, letting GC cascade-
-   delete Keystone, the infrastructure, and the remaining children.
-3. **Releases an unmanaged-only remainder immediately.** K-ORC re-fetches the
+2. **Deletes the owned PushSecrets alongside them.** Their
+   `deletionPolicy: Delete` cleanup — ESO deleting the mirrored OpenBao data —
+   needs the per-tenant `SecretStore` and its `eso-tenant-auth` ServiceAccount,
+   both of which the post-release GC cascade reaps unsequenced. Deleting the
+   PushSecrets while the finalizer still holds that infrastructure is what
+   keeps the revoked credential from outliving the ControlPlane in OpenBao. A
+   PushSecret still stuck past the stall window has its finalizers
+   force-removed, and a **Warning** `OpenBaoCleanupStalled` names the OpenBao
+   paths that may retain data.
+3. **Releases the finalizer once the ORC CRs and PushSecrets are gone**,
+   letting GC cascade-delete Keystone, the infrastructure, and the remaining
+   children.
+4. **Releases an unmanaged-only remainder immediately.** K-ORC re-fetches the
    imported resource through an *authenticated* actuator before releasing any
    finalizer, and the unmanaged imports authenticate with the admin application
    credential whose revocation step 1 already triggered — so once every CR
@@ -1621,13 +1631,13 @@ projected. On deletion it:
    `openstack.k-orc.cloud/*` finalizers right away and emits a **Normal**
    `ORCImportsReleased` event. An import's deletion is CR-only, so the external
    installation is untouched and nothing is orphaned.
-4. **Bounds the wait.** If managed ORC CRs stay Terminating longer than the
+5. **Bounds the wait.** If managed ORC CRs stay Terminating longer than the
    `orcTeardownStallTimeout` (5 minutes) — typically because Keystone is already
    gone and K-ORC cannot revoke — the reconciler force-removes the stuck
    `openstack.k-orc.cloud/*` finalizers (preserving any non-K-ORC finalizers),
    emits a **Warning** `ORCTeardownStalled` event, and releases the ControlPlane
    finalizer so deletion completes rather than wedging forever.
-5. **Names what the escape orphaned.** The escape strips the very finalizer that
+6. **Names what the escape orphaned.** The escape strips the very finalizer that
    would have revoked the credential or removed the catalog row, so every
    `Managed` CR it releases leaves its OpenStack resource behind with no
    Kubernetes object naming it. A second **Warning**, `ORCResourcesOrphaned`,

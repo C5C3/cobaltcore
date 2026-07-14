@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
 	. "github.com/onsi/gomega"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -306,6 +307,62 @@ func TestReconcileDelete_ReleasesUnmanagedImportsWithoutStall(t *testing.T) {
 		"releasing unmanaged imports orphans nothing and must not alarm")
 
 	// The follow-up pass finds nothing remaining and releases the ControlPlane.
+	g.Expect(c.Get(context.Background(), key, cp)).To(Succeed())
+	res, err = r.reconcileDelete(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{}))
+	err = c.Get(context.Background(), key, &c5c3v1alpha1.ControlPlane{})
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue())
+	g.Expect(drainEvents(rec)).To(ContainElement(ContainSubstring("ORCTeardownComplete")))
+}
+
+// TestReconcileDelete_WaitsForOwnedPushSecretCleanup is the regression guard
+// for the OpenBao-orphan race the external-keystone suite exposed: the owned
+// PushSecrets carry DeletionPolicy=Delete, and ESO can only delete the
+// mirrored OpenBao data while the per-tenant store and its ServiceAccount are
+// alive — both die in the GC cascade the moment the ControlPlane finalizer is
+// released. reconcileDelete must therefore delete the PushSecrets itself and
+// hold the finalizer until they are gone.
+func TestReconcileDelete_WaitsForOwnedPushSecretCleanup(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := deletingExternalControlPlane()
+	ns := childNamespace(cp)
+	// An owned PushSecret still live (not yet Terminating), held by ESO's
+	// finalizer once deleted — the state right after the CP delete lands.
+	ps := &esov1alpha1.PushSecret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            adminAppCredentialPushSecretName(cp),
+			Namespace:       ns,
+			OwnerReferences: ownedByCP(cp),
+			Finalizers:      []string{"pushsecret.externalsecrets.io/finalizer"},
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, ps).Build()
+	rec := record.NewFakeRecorder(10)
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: rec}
+
+	key := types.NamespacedName{Name: cp.Name, Namespace: cp.Namespace}
+	g.Expect(c.Get(context.Background(), key, cp)).To(Succeed())
+
+	res, err := r.reconcileDelete(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter),
+		"the teardown must wait for ESO to finish the OpenBao cleanup")
+
+	gotPS := &esov1alpha1.PushSecret{}
+	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(ps), gotPS)).To(Succeed())
+	g.Expect(gotPS.DeletionTimestamp.IsZero()).To(BeFalse(),
+		"the owned PushSecret must have been deleted by the teardown, not left to GC")
+	g.Expect(controllerutil.ContainsFinalizer(cp, controlPlaneORCFinalizer)).To(BeTrue(),
+		"the ControlPlane finalizer must be held while the PushSecret cleanup runs")
+	g.Expect(drainEvents(rec)).NotTo(ContainElement(ContainSubstring("ORCTeardownComplete")))
+
+	// ESO finishes: the remote data is deleted and the finalizer released.
+	gotPS.Finalizers = nil
+	g.Expect(c.Update(context.Background(), gotPS)).To(Succeed())
+
 	g.Expect(c.Get(context.Background(), key, cp)).To(Succeed())
 	res, err = r.reconcileDelete(context.Background(), cp)
 	g.Expect(err).NotTo(HaveOccurred())
