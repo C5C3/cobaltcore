@@ -263,7 +263,7 @@ func TestEnsureMariaDB_OwnedReconcilesReplicas(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, ownedMariaDB).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-	_, err := r.ensureMariaDB(context.Background(), cp)
+	_, err := r.ensureMariaDB(context.Background(), cp, &cp.Spec.Infrastructure.Database)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var mariadb mariadbv1alpha1.MariaDB
@@ -308,7 +308,7 @@ func TestEnsureMariaDB_OwnedReconcilesGaleraState(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, ownedMariaDB).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-	_, err := r.ensureMariaDB(context.Background(), cp)
+	_, err := r.ensureMariaDB(context.Background(), cp, &cp.Spec.Infrastructure.Database)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var mariadb mariadbv1alpha1.MariaDB
@@ -350,7 +350,7 @@ func TestEnsureMariaDB_ReplicasFromSpec(t *testing.T) {
 			c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
 			r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-			_, err := r.ensureMariaDB(context.Background(), cp)
+			_, err := r.ensureMariaDB(context.Background(), cp, &cp.Spec.Infrastructure.Database)
 			g.Expect(err).NotTo(HaveOccurred())
 
 			var mariadb mariadbv1alpha1.MariaDB
@@ -393,7 +393,7 @@ func TestEnsureMariaDB_StorageSizeFromSpec(t *testing.T) {
 			c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
 			r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-			_, err := r.ensureMariaDB(context.Background(), cp)
+			_, err := r.ensureMariaDB(context.Background(), cp, &cp.Spec.Infrastructure.Database)
 			g.Expect(err).NotTo(HaveOccurred())
 
 			var mariadb mariadbv1alpha1.MariaDB
@@ -428,7 +428,7 @@ func TestEnsureMemcached_OwnedReconcilesReplicas(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, ownedMemcached).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-	_, err := r.ensureMemcached(context.Background(), cp)
+	_, err := r.ensureMemcached(context.Background(), cp, &cp.Spec.Infrastructure.Cache)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	u := &unstructured.Unstructured{}
@@ -566,4 +566,350 @@ func TestReconcileInfrastructure_NilInfrastructureNonExternalFailsClosed(t *test
 	var mariadbList mariadbv1alpha1.MariaDBList
 	g.Expect(c.List(context.Background(), &mariadbList)).To(Succeed())
 	g.Expect(mariadbList.Items).To(BeEmpty())
+}
+
+// dedicatedInfraControlPlane keeps the managed shared block but opts BOTH services
+// out of it: a dedicated database and cache for Keystone, a dedicated cache for
+// Horizon. It is the opt-in shape the reconciler must provision, own, and gate
+// readiness on — and, because nothing resolves to the shared block any more, the
+// shape that must leave the shared instances unprovisioned.
+func dedicatedInfraControlPlane() *c5c3v1alpha1.ControlPlane {
+	cp := managedInfraControlPlane()
+	cp.Spec.Services = c5c3v1alpha1.ServicesSpec{
+		Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{
+			DedicatedBackingServices: &c5c3v1alpha1.KeystoneDedicatedBackingServicesSpec{
+				Database: &commonv1.DatabaseSpec{
+					ClusterRef:      &corev1.LocalObjectReference{Name: "cp-keystone-db"},
+					CredentialsMode: commonv1.CredentialsModeStatic,
+					Database:        "keystone",
+					SecretRef:       commonv1.SecretRefSpec{Name: "keystone-db"},
+					Replicas:        1,
+					StorageSize:     "512Mi",
+				},
+				Cache: &commonv1.CacheSpec{
+					ClusterRef: &corev1.LocalObjectReference{Name: "cp-keystone-cache"},
+					Backend:    commonv1.DefaultCacheBackend,
+					Replicas:   1,
+				},
+			},
+		},
+		Horizon: &c5c3v1alpha1.ServiceHorizonSpec{
+			DedicatedBackingServices: &c5c3v1alpha1.HorizonDedicatedBackingServicesSpec{
+				Cache: &commonv1.CacheSpec{
+					ClusterRef: &corev1.LocalObjectReference{Name: "cp-horizon-cache"},
+					Backend:    commonv1.DefaultCacheBackend,
+					Replicas:   2,
+				},
+			},
+		},
+	}
+	return cp
+}
+
+// readyMemcached builds a Memcached child that already reports Ready, so a test
+// can gate readiness on exactly the instances it wants still converging.
+func readyMemcached(name, namespace string) *unstructured.Unstructured {
+	u := &unstructured.Unstructured{}
+	u.SetGroupVersionKind(memcachedGVK)
+	u.SetName(name)
+	u.SetNamespace(namespace)
+	_ = unstructured.SetNestedSlice(u.Object, []interface{}{
+		map[string]interface{}{"type": "Ready", "status": "True"},
+	}, "status", "conditions")
+	return u
+}
+
+// TestReconcileInfrastructure_DedicatedProjectsChildren verifies a service that
+// opts into dedicated backing services gets its OWN MariaDB and Memcached
+// children — provisioned and controller-OWNED exactly like a shared one (the
+// owner reference is what tears them down with the ControlPlane) — with the
+// topology and volume size taken from the DEDICATED spec, not the shared one.
+//
+// The fixture opts BOTH services out of BOTH shared instances, so the shared
+// block has no consumer left: nothing resolves to it, so nothing is provisioned
+// for it (see TestReconcileInfrastructure_SkipsSharedInstancesNoServiceResolvesTo).
+func TestReconcileInfrastructure_DedicatedProjectsChildren(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := infraTestScheme(t)
+	cp := dedicatedInfraControlPlane()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileInfrastructure(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// Keystone's dedicated MariaDB: sized from the dedicated spec (1 replica, no
+	// Galera, 512Mi) — independently of the shared cluster's 3-replica default.
+	var dedicatedDB mariadbv1alpha1.MariaDB
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Name: "cp-keystone-db", Namespace: childNamespace(cp),
+	}, &dedicatedDB)).To(Succeed(), "the dedicated MariaDB must be provisioned")
+	g.Expect(dedicatedDB.Spec.Replicas).To(Equal(int32(1)))
+	g.Expect(dedicatedDB.Spec.Galera).NotTo(BeNil())
+	g.Expect(dedicatedDB.Spec.Galera.Enabled).To(BeFalse(),
+		"a single-replica dedicated database must not enable Galera")
+	g.Expect(dedicatedDB.Spec.Storage.Size).NotTo(BeNil())
+	g.Expect(dedicatedDB.Spec.Storage.Size.Equal(resource.MustParse("512Mi"))).To(BeTrue(),
+		"the dedicated volume size must come from the dedicated spec, not the shared one")
+	g.Expect(metav1.IsControlledBy(&dedicatedDB, cp)).To(BeTrue(),
+		"the dedicated MariaDB must be controller-owned so it is torn down with the ControlPlane")
+
+	// Each service's dedicated cache gets its own Memcached, owned, at its own
+	// replica count.
+	for _, tc := range []struct {
+		name     string
+		replicas int64
+	}{
+		{name: "cp-keystone-cache", replicas: 1},
+		{name: "cp-horizon-cache", replicas: 2},
+	} {
+		u := &unstructured.Unstructured{}
+		u.SetGroupVersionKind(memcachedGVK)
+		g.Expect(c.Get(context.Background(), types.NamespacedName{
+			Name: tc.name, Namespace: childNamespace(cp),
+		}, u)).To(Succeed(), "Memcached %q must be provisioned", tc.name)
+		replicas, found, nerr := unstructured.NestedInt64(u.Object, "spec", "replicas")
+		g.Expect(nerr).NotTo(HaveOccurred())
+		g.Expect(found).To(BeTrue())
+		g.Expect(replicas).To(Equal(tc.replicas), "Memcached %q replica count", tc.name)
+		g.Expect(u.GetOwnerReferences()).NotTo(BeEmpty(), "Memcached %q must be owned", tc.name)
+	}
+}
+
+// TestReconcileInfrastructure_SkipsSharedInstancesNoServiceResolvesTo pins the
+// consumer-driven provisioning rule: a MANAGED shared instance every service has
+// opted out of has no consumer, so it is not provisioned and does not gate
+// readiness. Keystone is the ControlPlane's only database consumer, and the
+// webhook materializes spec.infrastructure.database whenever it is omitted (3
+// Galera replicas, 100Gi) — so provisioning the declared set rather than the
+// resolved one would leave a full Galera cluster nothing talks to, with
+// InfrastructureReady blocked on it coming up.
+func TestReconcileInfrastructure_SkipsSharedInstancesNoServiceResolvesTo(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := infraTestScheme(t)
+	cp := dedicatedInfraControlPlane()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileInfrastructure(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var mariadbList mariadbv1alpha1.MariaDBList
+	g.Expect(c.List(context.Background(), &mariadbList)).To(Succeed())
+	g.Expect(mariadbList.Items).To(HaveLen(1))
+	g.Expect(mariadbList.Items[0].Name).To(Equal("cp-keystone-db"),
+		"the shared MariaDB has no consumer left and must not be provisioned")
+
+	memcachedList := &unstructured.UnstructuredList{}
+	memcachedList.SetGroupVersionKind(memcachedGVK)
+	g.Expect(c.List(context.Background(), memcachedList)).To(Succeed())
+	var names []string
+	for _, item := range memcachedList.Items {
+		names = append(names, item.GetName())
+	}
+	g.Expect(names).To(ConsistOf("cp-keystone-cache", "cp-horizon-cache"),
+		"the shared Memcached has no consumer left and must not be provisioned")
+}
+
+// TestReconcileInfrastructure_PartialOptOutKeepsConsumedSharedCache is the other
+// half of the rule: a shared instance a service STILL resolves to is provisioned
+// as before. Keystone here takes only a dedicated database, so the shared cache
+// keeps its consumer while the shared database loses its only one.
+func TestReconcileInfrastructure_PartialOptOutKeepsConsumedSharedCache(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := infraTestScheme(t)
+	cp := dedicatedInfraControlPlane()
+	// Drop both dedicated caches: every service is back on the shared cache, and
+	// only the database is dedicated.
+	cp.Spec.Services.Keystone.DedicatedBackingServices.Cache = nil
+	cp.Spec.Services.Horizon = nil
+
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileInfrastructure(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var mariadbList mariadbv1alpha1.MariaDBList
+	g.Expect(c.List(context.Background(), &mariadbList)).To(Succeed())
+	g.Expect(mariadbList.Items).To(HaveLen(1))
+	g.Expect(mariadbList.Items[0].Name).To(Equal("cp-keystone-db"))
+
+	memcachedList := &unstructured.UnstructuredList{}
+	memcachedList.SetGroupVersionKind(memcachedGVK)
+	g.Expect(c.List(context.Background(), memcachedList)).To(Succeed())
+	g.Expect(memcachedList.Items).To(HaveLen(1))
+	g.Expect(memcachedList.Items[0].GetName()).To(Equal("openstack-memcached"),
+		"the shared cache still has a consumer and must still be provisioned")
+}
+
+// TestManagedInfraInstances_DeduplicatesOnChildIdentity covers the
+// webhook-bypassed collision the admission rule (validateDedicatedBackingServices
+// rejects a duplicate clusterRef name) makes unreachable on the API path. Two
+// entries resolving to ONE child CR would run ensure against it twice per pass,
+// each projecting a different topology; because the controller Owns() the child
+// with no update predicate, each of those writes re-enqueues the ControlPlane —
+// a self-sustaining loop of conflicting writes. Deduplicating on (kind, name)
+// fails closed: one entry, one projection.
+func TestManagedInfraInstances_DeduplicatesOnChildIdentity(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := infraTestScheme(t)
+	cp := dedicatedInfraControlPlane()
+	// Direct-to-etcd shape: Keystone's dedicated cache collides with the shared
+	// one Horizon still resolves to.
+	cp.Spec.Services.Keystone.DedicatedBackingServices.Cache.ClusterRef.Name = "openstack-memcached"
+	cp.Spec.Services.Horizon.DedicatedBackingServices = nil
+
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	instances := r.managedInfraInstances(cp)
+	var caches int
+	for _, inst := range instances {
+		if inst.kind == "Memcached" {
+			caches++
+		}
+	}
+	g.Expect(caches).To(Equal(1), "the colliding declarations must resolve to ONE managed instance")
+
+	_, err := r.reconcileInfrastructure(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	u := &unstructured.Unstructured{}
+	u.SetGroupVersionKind(memcachedGVK)
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Name: "openstack-memcached", Namespace: childNamespace(cp),
+	}, u)).To(Succeed())
+	replicas, found, nerr := unstructured.NestedInt64(u.Object, "spec", "replicas")
+	g.Expect(nerr).NotTo(HaveOccurred())
+	g.Expect(found).To(BeTrue())
+	g.Expect(replicas).To(Equal(int64(1)),
+		"the first resolution wins outright; the second must not re-project a conflicting topology")
+}
+
+// TestReconcileInfrastructure_DedicatedNotReadyGatesCollectively verifies
+// readiness is gated across the WHOLE managed set: with every other instance
+// Ready but one dedicated instance still converging, InfrastructureReady stays
+// False and the message names the pending instance — so the consuming service's
+// projection (gated on InfrastructureReady) is deferred until the database it
+// actually talks to is up.
+func TestReconcileInfrastructure_DedicatedNotReadyGatesCollectively(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := infraTestScheme(t)
+	cp := dedicatedInfraControlPlane()
+
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(
+		cp,
+		readyMemcached("cp-keystone-cache", childNamespace(cp)),
+		readyMemcached("cp-horizon-cache", childNamespace(cp)),
+	).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	// The dedicated MariaDB is freshly created by this pass and carries no Ready
+	// condition yet — the only instance still converging.
+	res, err := r.reconcileInfrastructure(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(infraRequeueAfter))
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeInfrastructureReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse),
+		"a pending DEDICATED instance must hold InfrastructureReady False even when every other instance is Ready")
+	g.Expect(cond.Reason).To(Equal("WaitingForDatabase"))
+	g.Expect(cond.Message).To(ContainSubstring("cp-keystone-db"),
+		"the message must name the pending instance")
+	g.Expect(cond.Message).To(ContainSubstring("dedicatedBackingServices.database"),
+		"the message must name where the pending instance was declared")
+}
+
+// TestReconcileInfrastructure_DedicatedAdoptsExistingWithoutMutating verifies the
+// adoption-safe path applies to a dedicated instance exactly as it does to a
+// shared one: a pre-existing, externally-provisioned CR under the dedicated name
+// is adopted read-only — never reshaped, never GC-claimed — so pointing a service
+// at an operator-managed-elsewhere instance cannot destroy it.
+func TestReconcileInfrastructure_DedicatedAdoptsExistingWithoutMutating(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := infraTestScheme(t)
+	cp := dedicatedInfraControlPlane()
+
+	existingSize := resource.MustParse("50Gi")
+	existing := &mariadbv1alpha1.MariaDB{
+		ObjectMeta: metav1.ObjectMeta{Name: "cp-keystone-db", Namespace: childNamespace(cp)},
+		Spec: mariadbv1alpha1.MariaDBSpec{
+			Replicas: 3,
+			Storage: mariadbv1alpha1.Storage{
+				Size:             &existingSize,
+				StorageClassName: "premium",
+			},
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, existing).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileInfrastructure(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred(), "adopting a pre-existing dedicated instance must not error")
+
+	var mariadb mariadbv1alpha1.MariaDB
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Name: "cp-keystone-db", Namespace: childNamespace(cp),
+	}, &mariadb)).To(Succeed())
+	g.Expect(mariadb.Spec.Replicas).To(Equal(int32(3)),
+		"an adopted dedicated MariaDB must not be reshaped to the declared topology")
+	g.Expect(mariadb.Spec.Storage.StorageClassName).To(Equal("premium"))
+	g.Expect(mariadb.OwnerReferences).To(BeEmpty(),
+		"must not claim GC ownership of a pre-existing dedicated instance")
+}
+
+// TestReconcileInfrastructure_DedicatedBrownfieldProvisionsNothing covers the
+// managed-versus-brownfield split at the dedicated level: a dedicated instance
+// that references an externally operated endpoint provisions no child CR. Keystone
+// is the only database consumer and it points at an external one here, so no
+// MariaDB is created at all — the shared managed database it opted out of has no
+// consumer left. The shared cache still has one (Horizon resolves to it), so it is
+// still provisioned.
+func TestReconcileInfrastructure_DedicatedBrownfieldProvisionsNothing(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := infraTestScheme(t)
+	cp := managedInfraControlPlane()
+	cp.Spec.Services = c5c3v1alpha1.ServicesSpec{
+		Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{
+			DedicatedBackingServices: &c5c3v1alpha1.KeystoneDedicatedBackingServicesSpec{
+				Database: &commonv1.DatabaseSpec{
+					Host:      "keystone-db.example.com",
+					Port:      3306,
+					Database:  "keystone",
+					SecretRef: commonv1.SecretRefSpec{Name: "keystone-db"},
+				},
+				Cache: &commonv1.CacheSpec{
+					Servers: []string{"keystone-mc.example.com:11211"},
+					Backend: commonv1.DefaultCacheBackend,
+				},
+			},
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileInfrastructure(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var mariadbList mariadbv1alpha1.MariaDBList
+	g.Expect(c.List(context.Background(), &mariadbList)).To(Succeed())
+	g.Expect(mariadbList.Items).To(BeEmpty(),
+		"a brownfield dedicated database provisions nothing, and the shared managed database "+
+			"Keystone opted out of has no consumer left")
+
+	memcachedList := &unstructured.UnstructuredList{}
+	memcachedList.SetGroupVersionKind(memcachedGVK)
+	g.Expect(c.List(context.Background(), memcachedList)).To(Succeed())
+	g.Expect(memcachedList.Items).To(HaveLen(1),
+		"a brownfield dedicated cache must provision nothing; the shared cache Horizon resolves to is created")
+	g.Expect(memcachedList.Items[0].GetName()).To(Equal("openstack-memcached"))
 }

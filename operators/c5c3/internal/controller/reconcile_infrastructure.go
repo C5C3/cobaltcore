@@ -49,14 +49,15 @@ func childNamespace(cp *c5c3v1alpha1.ControlPlane) string {
 // a MINIMAL but VALID spec. The mariadb-operator's webhook requires
 // Storage.Size (or a VolumeClaimTemplate) — see Storage.Validate in the
 // vendored v0.38.1 types — so a size is always set. Both the replica topology
-// and the storage size are DERIVED from the ControlPlane spec:
-// spec.infrastructure.database.replicas drives the topology (the default 3
-// yields a Galera HA cluster matching the production baseline, a single replica
-// a single-instance non-Galera MariaDB so the fresh-create path schedules on a
-// constrained cluster such as a single-node kind), and
-// spec.infrastructure.database.storageSize drives the volume size (default
-// 100Gi mirrors deploy/flux-system/infrastructure/mariadb.yaml; kind/CI pins a
-// far smaller value). TLS / issuerRefs are deliberately NOT set here: the
+// and the storage size are DERIVED from the DECLARED instance — the shared
+// spec.infrastructure.database or a per-service dedicated one, which is exactly
+// what lets an operator size a busy service's database independently of the
+// shared cluster: its replicas drive the topology (the default 3 yields a Galera
+// HA cluster matching the production baseline, a single replica a single-instance
+// non-Galera MariaDB so the fresh-create path schedules on a constrained cluster
+// such as a single-node kind), and its storageSize drives the volume size
+// (default 100Gi mirrors deploy/flux-system/infrastructure/mariadb.yaml; kind/CI
+// pins a far smaller value). TLS / issuerRefs are deliberately NOT set here: the
 // baseline wires those from cluster-specific ClusterIssuers that are an
 // infrastructure concern outside the aggregate's knowledge, and the keystone
 // DB-client baseline reads TLS from cp.Spec.Infrastructure.Database.TLS rather
@@ -92,16 +93,20 @@ var memcachedGVK = schema.GroupVersionKind{
 	Kind:    "Memcached",
 }
 
-// reconcileInfrastructure reconciles the shared backing services (MariaDB,
-// Memcached) declared in spec.infrastructure and drives the
-// InfrastructureReady condition.
+// reconcileInfrastructure reconciles the backing services (MariaDB, Memcached)
+// the ControlPlane provisions and drives the InfrastructureReady condition.
 //
-// Managed mode (ClusterRef set) ensures an owned child CR per backing service;
-// brownfield mode (Host / Servers set) provisions nothing. InfrastructureReady
-// is True once every managed child is ensured and reports Ready; while a child
-// is still converging the sub-reconciler requeues with InfrastructureReady
-// False. When the control plane uses only brownfield infra there is nothing to
-// provision, so InfrastructureReady is True immediately.
+// That set is the instances the ControlPlane's services actually RESOLVE to
+// (managedInfraInstances enumerates them): the SHARED instances in
+// spec.infrastructure, and the per-service DEDICATED instances under
+// services.<svc>.dedicatedBackingServices that a service opted into instead. A
+// shared instance every service has opted out of has no consumer and is NOT
+// provisioned. Managed mode (ClusterRef set) ensures an owned child CR per
+// instance; brownfield mode (Host / Servers set) provisions nothing.
+// InfrastructureReady is True once every managed child is ensured and reports
+// Ready; while any child is still converging the sub-reconciler requeues with
+// InfrastructureReady False. When the control plane uses only brownfield infra
+// there is nothing to provision, so InfrastructureReady is True immediately.
 //
 // External keystone mode has NO infrastructure block at all, so the skip is
 // keyed on the mode discriminator (cp.IsExternalKeystone) rather than on the
@@ -153,69 +158,47 @@ func (r *ControlPlaneReconciler) reconcileInfrastructure(ctx context.Context, cp
 		return ctrl.Result{RequeueAfter: infraRequeueAfter}, nil
 	}
 
-	dbManaged := cp.Spec.Infrastructure.Database.ClusterRef != nil
-	cacheManaged := cp.Spec.Infrastructure.Cache.ClusterRef != nil
+	// Ensure every managed instance FIRST, in a single pass, so a half-provisioned
+	// control plane (e.g. DB created but Memcached missing) never occurs: every
+	// child is created/updated before readiness is gated on. Readiness is then
+	// evaluated collectively across ALL of them — the shared instances and every
+	// per-service dedicated one alike, so a service's dedicated database is as
+	// load-bearing for InfrastructureReady (and therefore for the projection gate
+	// on the consuming service) as the shared cluster is.
+	instances := r.managedInfraInstances(cp)
 
-	// Ensure every managed child FIRST, in a single pass, so a half-provisioned
-	// control plane (e.g. DB created but Memcached missing) never occurs: both
-	// children are created/updated before readiness is gated on. Readiness is
-	// then evaluated collectively after every child has been ensured.
-	dbReady := true
-	if dbManaged {
-		ready, err := r.ensureMariaDB(ctx, cp)
+	var notReady *infraInstance
+	for _, inst := range instances {
+		ready, err := inst.ensure(ctx)
 		if err != nil {
 			conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
 				Type:               conditionTypeInfrastructureReady,
 				Status:             metav1.ConditionFalse,
 				ObservedGeneration: cp.Generation,
-				Reason:             "MariaDBError",
-				Message:            fmt.Sprintf("ensuring MariaDB: %v", err),
+				Reason:             inst.errorReason,
+				Message:            fmt.Sprintf("ensuring %s %q (%s): %v", inst.kind, inst.name, inst.declaredAt, err),
 			})
 			return ctrl.Result{}, err
 		}
-		dbReady = ready
-	}
-
-	cacheReady := true
-	if cacheManaged {
-		ready, err := r.ensureMemcached(ctx, cp)
-		if err != nil {
-			conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
-				Type:               conditionTypeInfrastructureReady,
-				Status:             metav1.ConditionFalse,
-				ObservedGeneration: cp.Generation,
-				Reason:             "MemcachedError",
-				Message:            fmt.Sprintf("ensuring Memcached: %v", err),
-			})
-			return ctrl.Result{}, err
+		if !ready && notReady == nil {
+			notReady = &inst
 		}
-		cacheReady = ready
 	}
 
-	if !dbReady {
-		logger.Info("MariaDB not ready, requeuing",
-			"cluster", cp.Spec.Infrastructure.Database.ClusterRef.Name)
+	if notReady != nil {
+		// Report the first instance still converging. The reason stays the
+		// class-level WaitingForDatabase / WaitingForCache (unchanged for the shared
+		// block), and the message names the instance so an operator can tell a
+		// pending dedicated database from a pending shared one.
+		inst := notReady
+		logger.Info("managed backing service not ready, requeuing",
+			"kind", inst.kind, "cluster", inst.name, "declaredAt", inst.declaredAt)
 		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
 			Type:               conditionTypeInfrastructureReady,
 			Status:             metav1.ConditionFalse,
 			ObservedGeneration: cp.Generation,
-			Reason:             "WaitingForDatabase",
-			Message: fmt.Sprintf("MariaDB %q is not ready",
-				cp.Spec.Infrastructure.Database.ClusterRef.Name),
-		})
-		return ctrl.Result{RequeueAfter: infraRequeueAfter}, nil
-	}
-
-	if !cacheReady {
-		logger.Info("Memcached not ready, requeuing",
-			"cluster", cp.Spec.Infrastructure.Cache.ClusterRef.Name)
-		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
-			Type:               conditionTypeInfrastructureReady,
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: cp.Generation,
-			Reason:             "WaitingForCache",
-			Message: fmt.Sprintf("Memcached %q is not ready",
-				cp.Spec.Infrastructure.Cache.ClusterRef.Name),
+			Reason:             inst.waitReason,
+			Message:            fmt.Sprintf("%s %q (%s) is not ready", inst.kind, inst.name, inst.declaredAt),
 		})
 		return ctrl.Result{RequeueAfter: infraRequeueAfter}, nil
 	}
@@ -230,17 +213,143 @@ func (r *ControlPlaneReconciler) reconcileInfrastructure(ctx context.Context, cp
 	return ctrl.Result{}, nil
 }
 
-// ensureMariaDB create-or-updates the owned MariaDB CR named after
-// spec.infrastructure.database.clusterRef and reports whether it is Ready.
+// infraInstance is one MANAGED backing-service instance the ControlPlane
+// provisions and owns: an instance some service EFFECTIVELY resolves to — the
+// shared database/cache from spec.infrastructure, or a per-service dedicated one.
+// Brownfield instances are not represented — there is nothing to provision or
+// gate readiness on.
+type infraInstance struct {
+	// kind and name identify the child CR; declaredAt is the spec path the
+	// instance was declared at, so a condition message tells a pending dedicated
+	// database from a pending shared one.
+	kind       string
+	name       string
+	declaredAt string
+	// errorReason / waitReason are the condition reasons for a failed ensure and
+	// for a child still converging. They are per CLASS, not per instance, so the
+	// reason vocabulary is unchanged by the dedicated opt-in.
+	errorReason string
+	waitReason  string
+	ensure      func(context.Context) (bool, error)
+}
+
+// managedInfraInstances enumerates the managed backing-service instances of cp.
+// It is the single place the set is derived, so adding a backing-service class or
+// a service extends the enumeration rather than the reconcile flow around it.
+//
+// The set is the instances the ControlPlane's services actually RESOLVE to (the
+// effective-* resolvers), NOT the set of declared blocks. That distinction is
+// load-bearing once a service opts out: Keystone is the only database consumer,
+// so a ControlPlane whose Keystone took a dedicated database leaves the shared
+// spec.infrastructure.database with no consumer at all — and the webhook
+// materializes that block (3 Galera replicas, 100Gi) whenever it is omitted.
+// Enumerating declarations would provision that cluster anyway and then gate
+// InfrastructureReady on it, so an instance nothing talks to could hold the whole
+// control plane back. The same holds for the shared cache once every service has
+// taken one of its own.
+//
+// Entries are deduplicated on (kind, name) — the identity of the child CR they
+// resolve to. That is what the common case needs (Keystone and Horizon both on
+// the shared cache ensure it once), and it also fails closed on a webhook-bypassed
+// CR whose dedicated clusterRef collides with the shared one
+// (validateDedicatedBackingServices rejects the duplicate at admission): without
+// it, two entries would run ensure against the SAME child CR in one pass, each
+// projecting a different desired topology, and — because the controller Owns()
+// the child with no update predicate — each write would re-enqueue the
+// ControlPlane into a self-sustaining loop of conflicting writes. First
+// resolution wins.
+func (r *ControlPlaneReconciler) managedInfraInstances(cp *c5c3v1alpha1.ControlPlane) []infraInstance {
+	var instances []infraInstance
+
+	seen := map[string]struct{}{}
+	claim := func(kind, name string) bool {
+		key := kind + "/" + name
+		if _, dup := seen[key]; dup {
+			return false
+		}
+		seen[key] = struct{}{}
+		return true
+	}
+
+	addDatabase := func(db *commonv1.DatabaseSpec, declaredAt string) {
+		if db == nil || db.ClusterRef == nil {
+			return // absent, or brownfield: nothing to provision.
+		}
+		if !claim("MariaDB", db.ClusterRef.Name) {
+			return
+		}
+		instances = append(instances, infraInstance{
+			kind:        "MariaDB",
+			name:        db.ClusterRef.Name,
+			declaredAt:  declaredAt,
+			errorReason: "MariaDBError",
+			waitReason:  "WaitingForDatabase",
+			ensure:      func(ctx context.Context) (bool, error) { return r.ensureMariaDB(ctx, cp, db) },
+		})
+	}
+	addCache := func(cache *commonv1.CacheSpec, declaredAt string) {
+		if cache == nil || cache.ClusterRef == nil {
+			return
+		}
+		if !claim("Memcached", cache.ClusterRef.Name) {
+			return
+		}
+		instances = append(instances, infraInstance{
+			kind:        "Memcached",
+			name:        cache.ClusterRef.Name,
+			declaredAt:  declaredAt,
+			errorReason: "MemcachedError",
+			waitReason:  "WaitingForCache",
+			ensure:      func(ctx context.Context) (bool, error) { return r.ensureMemcached(ctx, cp, cache) },
+		})
+	}
+
+	addDatabase(effectiveKeystoneDatabase(cp), keystoneDatabaseDeclaredAt(cp))
+	addCache(effectiveKeystoneCache(cp), keystoneCacheDeclaredAt(cp))
+	addCache(effectiveHorizonCache(cp), horizonCacheDeclaredAt(cp))
+
+	return instances
+}
+
+// The declaredAt-* helpers name the spec path the instance a service resolves to
+// was declared at, so a condition message tells a pending dedicated instance from
+// a pending shared one.
+func keystoneDatabaseDeclaredAt(cp *c5c3v1alpha1.ControlPlane) string {
+	if cp.DedicatedKeystoneDatabase() != nil {
+		return "spec.services.keystone.dedicatedBackingServices.database"
+	}
+	return "spec.infrastructure.database"
+}
+
+func keystoneCacheDeclaredAt(cp *c5c3v1alpha1.ControlPlane) string {
+	if cp.DedicatedKeystoneCache() != nil {
+		return "spec.services.keystone.dedicatedBackingServices.cache"
+	}
+	return "spec.infrastructure.cache"
+}
+
+func horizonCacheDeclaredAt(cp *c5c3v1alpha1.ControlPlane) string {
+	if cp.DedicatedHorizonCache() != nil {
+		return "spec.services.horizon.dedicatedBackingServices.cache"
+	}
+	return "spec.infrastructure.cache"
+}
+
+// ensureMariaDB create-or-updates the owned MariaDB CR named after db.clusterRef
+// and reports whether it is Ready. db is the declared instance — the shared
+// spec.infrastructure.database or a per-service dedicated one; both are
+// provisioned, owned, and (via the owner reference) torn down identically, which
+// is what makes a dedicated instance carry the shared block's lifecycle
+// guarantees rather than a parallel set of its own.
 //
 // It stays read-modify-write (not Server-Side Apply): the write is gated on the
 // LIVE object's owner references — an owned CR has its topology re-projected,
 // while an externally-provisioned CR sharing the name is adopted read-only and
 // never has ownership claimed. That adoption-vs-projection decision reads live
 // state, so it cannot be expressed as a pure projection of cp.Spec.
-func (r *ControlPlaneReconciler) ensureMariaDB(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) (bool, error) {
+func (r *ControlPlaneReconciler) ensureMariaDB(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, db *commonv1.DatabaseSpec) (bool, error) {
 	key := types.NamespacedName{
-		Name:      cp.Spec.Infrastructure.Database.ClusterRef.Name,
+		Name:      db.ClusterRef.Name,
 		Namespace: childNamespace(cp),
 	}
 	// Derive the projected topology from the ControlPlane spec. A single replica
@@ -249,7 +358,7 @@ func (r *ControlPlaneReconciler) ensureMariaDB(ctx context.Context, cp *c5c3v1al
 	// enables the Galera clustering the production baseline uses. Floor a
 	// zero/negative value (only reachable when CRD validation was bypassed) to
 	// the default.
-	replicas := cp.Spec.Infrastructure.Database.Replicas
+	replicas := db.Replicas
 	if replicas < 1 {
 		replicas = infraMariaDBReplicasDefault
 	}
@@ -259,7 +368,7 @@ func (r *ControlPlaneReconciler) ensureMariaDB(ctx context.Context, cp *c5c3v1al
 	// production baseline when the field is empty (only reachable when the CRD
 	// default was bypassed). Storage is immutable on the mariadb-operator CR, so
 	// this value is honoured on fresh create only and never re-projected below.
-	storageSize := cp.Spec.Infrastructure.Database.StorageSize
+	storageSize := db.StorageSize
 	if storageSize == "" {
 		storageSize = infraMariaDBStorageSizeDefault
 	}
@@ -322,17 +431,19 @@ func (r *ControlPlaneReconciler) ensureMariaDB(ctx context.Context, cp *c5c3v1al
 }
 
 // ensureMemcached create-or-updates the owned Memcached CR named after
-// spec.infrastructure.cache.clusterRef and reports whether it is Ready. The
-// Memcached CR is handled as an unstructured.Unstructured because
-// memcached.c5c3.io ships no Go module (see memcachedGVK).
+// cache.clusterRef and reports whether it is Ready. cache is the declared
+// instance — the shared spec.infrastructure.cache or a per-service dedicated one
+// (see ensureMariaDB). The Memcached CR is handled as an
+// unstructured.Unstructured because memcached.c5c3.io ships no Go module (see
+// memcachedGVK).
 //
 // Like ensureMariaDB it stays read-modify-write: it reads the live object's
 // owner references to project only onto an owned CR and adopt an externally
 // provisioned one read-only (never claiming GC ownership), and it is
 // unstructured, which apply.EnsureObject's typed-struct path does not cover.
-func (r *ControlPlaneReconciler) ensureMemcached(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) (bool, error) {
+func (r *ControlPlaneReconciler) ensureMemcached(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, cache *commonv1.CacheSpec) (bool, error) {
 	key := types.NamespacedName{
-		Name:      cp.Spec.Infrastructure.Cache.ClusterRef.Name,
+		Name:      cache.ClusterRef.Name,
 		Namespace: childNamespace(cp),
 	}
 	u := &unstructured.Unstructured{}
@@ -343,7 +454,7 @@ func (r *ControlPlaneReconciler) ensureMemcached(ctx context.Context, cp *c5c3v1
 		u.SetName(key.Name)
 		u.SetNamespace(key.Namespace)
 		// int32 must be widened to int64 for unstructured nested-field storage.
-		if serr := unstructured.SetNestedField(u.Object, int64(cp.Spec.Infrastructure.Cache.Replicas), "spec", "replicas"); serr != nil {
+		if serr := unstructured.SetNestedField(u.Object, int64(cache.Replicas), "spec", "replicas"); serr != nil {
 			return false, fmt.Errorf("setting spec.replicas: %w", serr)
 		}
 		if serr := controllerutil.SetControllerReference(cp, u, r.Scheme); serr != nil {
@@ -357,13 +468,13 @@ func (r *ControlPlaneReconciler) ensureMemcached(ctx context.Context, cp *c5c3v1
 	default:
 		// An existing Memcached. If this ControlPlane OWNS it (we created it on an
 		// earlier pass), reconcile spec.replicas so a ControlPlane spec change
-		// (cp.Spec.Infrastructure.Cache.Replicas) actually scales the cache we own
+		// (the declared instance's cache.replicas) actually scales the cache we own
 		// instead of being ignored after first creation. If it is a pre-existing /
 		// externally-provisioned instance (NOT owned) we adopt it as-is and never
 		// reshape it — same rationale as ensureMariaDB — nor claim GC ownership of
 		// shared infra.
 		if metav1.IsControlledBy(u, cp) {
-			desired := int64(cp.Spec.Infrastructure.Cache.Replicas)
+			desired := int64(cache.Replicas)
 			current, found, gerr := unstructured.NestedInt64(u.Object, "spec", "replicas")
 			if gerr != nil {
 				return false, fmt.Errorf("reading Memcached %q spec.replicas: %w", key.Name, gerr)

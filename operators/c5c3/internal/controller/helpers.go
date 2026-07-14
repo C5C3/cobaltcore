@@ -7,7 +7,66 @@ package controller
 import (
 	"fmt"
 	"time"
+
+	commonv1 "github.com/c5c3/forge/internal/common/types"
+	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 )
+
+// The effective-* resolvers below answer the one question every consumer of a
+// backing service asks: which INSTANCE does this service actually talk to? A
+// service that opted into a dedicated instance
+// (services.<svc>.dedicatedBackingServices.<class>) talks to that one; a service
+// that did not — the default — shares the ControlPlane-wide instance in
+// spec.infrastructure.
+//
+// Routing every consumer through these resolvers is what makes the opt-in carry
+// the same lifecycle guarantees as the shared block with no per-class
+// special-casing: the infrastructure sub-reconciler provisions and gates
+// readiness on the effective instances, the service projections point the child
+// CRs at them (which in turn carries the child operators' credential wiring and
+// NetworkPolicy egress derivation, both pure functions of the projected
+// spec.database / spec.cache), and the DB-credential sub-reconciler decides the
+// credential shape from them.
+//
+// They return nil when nothing resolves — an External-mode ControlPlane (no
+// backing services at all) or a webhook-bypassed CR that dropped
+// spec.infrastructure. Callers fail closed on nil rather than dereferencing it.
+
+// effectiveKeystoneDatabase resolves the database instance the Keystone service
+// connects to.
+func effectiveKeystoneDatabase(cp *c5c3v1alpha1.ControlPlane) *commonv1.DatabaseSpec {
+	if db := cp.DedicatedKeystoneDatabase(); db != nil {
+		return db
+	}
+	if cp.Spec.Infrastructure != nil {
+		return &cp.Spec.Infrastructure.Database
+	}
+	return nil
+}
+
+// effectiveKeystoneCache resolves the cache instance the Keystone service
+// connects to.
+func effectiveKeystoneCache(cp *c5c3v1alpha1.ControlPlane) *commonv1.CacheSpec {
+	if cache := cp.DedicatedKeystoneCache(); cache != nil {
+		return cache
+	}
+	if cp.Spec.Infrastructure != nil {
+		return &cp.Spec.Infrastructure.Cache
+	}
+	return nil
+}
+
+// effectiveHorizonCache resolves the cache instance the Horizon dashboard
+// connects to.
+func effectiveHorizonCache(cp *c5c3v1alpha1.ControlPlane) *commonv1.CacheSpec {
+	if cache := cp.DedicatedHorizonCache(); cache != nil {
+		return cache
+	}
+	if cp.Spec.Infrastructure != nil {
+		return &cp.Spec.Infrastructure.Cache
+	}
+	return nil
+}
 
 // intervalToCron converts a rotation interval into a cron expression suitable
 // for a Kubernetes CronJob schedule.
