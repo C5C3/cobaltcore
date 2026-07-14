@@ -14,9 +14,14 @@ import (
 	"testing"
 	"time"
 
+	horizonv1alpha1 "github.com/c5c3/forge/operators/horizon/api/v1alpha1"
+	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
+	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
+	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -942,4 +947,238 @@ func TestReconcileDelete_ServiceAccount_TearsDownManagedUserAndProject(t *testin
 
 	// The ControlPlane still carries its finalizer until they are gone.
 	g.Expect(controllerutil.ContainsFinalizer(cp, controlPlaneORCFinalizer)).To(BeTrue())
+}
+
+// --- cross-namespace teardown (issue #646) ---
+
+// namespaceTeardownScheme extends the K-ORC test scheme with the service-child
+// and backing-service types the cross-namespace teardown deletes.
+func namespaceTeardownScheme(t *testing.T) *runtime.Scheme {
+	t.Helper()
+	s := korcTestScheme(t)
+	if err := keystonev1alpha1.AddToScheme(s); err != nil {
+		t.Fatalf("adding keystone scheme: %v", err)
+	}
+	if err := horizonv1alpha1.AddToScheme(s); err != nil {
+		t.Fatalf("adding horizon scheme: %v", err)
+	}
+	if err := mariadbv1alpha1.AddToScheme(s); err != nil {
+		t.Fatalf("adding mariadb scheme: %v", err)
+	}
+	return s
+}
+
+// deletingNamespacedControlPlane returns a deleting ControlPlane that placed
+// Keystone in an operator-owned namespace and Horizon in a pre-existing one.
+func deletingNamespacedControlPlane(deletionAge time.Duration) *c5c3v1alpha1.ControlPlane {
+	cp := deletingControlPlane(deletionAge)
+	cp.Spec.Services = c5c3v1alpha1.ServicesSpec{
+		Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{
+			Namespace: &c5c3v1alpha1.ServiceNamespaceSpec{
+				Name:      "identity",
+				Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+			},
+		},
+		Horizon: &c5c3v1alpha1.ServiceHorizonSpec{
+			Namespace: &c5c3v1alpha1.ServiceNamespaceSpec{
+				Name:      "dashboard",
+				Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleExternal,
+			},
+		},
+	}
+	return cp
+}
+
+// TestTeardownDedicatedNamespaces_NoAssignments verifies the default costs
+// nothing: a ControlPlane with no service namespaces reports done at once.
+func TestTeardownDedicatedNamespaces_NoAssignments(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := namespaceTeardownScheme(t)
+	cp := deletingControlPlane(time.Minute)
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
+
+	done, err := r.teardownDedicatedNamespaces(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(done).To(BeTrue())
+}
+
+// TestTeardownDedicatedNamespaces_WaitsForServiceChildren pins the ordering: the
+// service children are deleted and WAITED on before anything else, because their
+// own operators run a sequenced ESO cleanup through the tenant store in the same
+// namespace — removing the store first would strand their key material in OpenBao.
+func TestTeardownDedicatedNamespaces_WaitsForServiceChildren(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := namespaceTeardownScheme(t)
+	cp := deletingNamespacedControlPlane(time.Minute)
+
+	// A Keystone child held by its own cleanup finalizer, so the Delete leaves it
+	// Terminating rather than gone.
+	keystone := &keystonev1alpha1.Keystone{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: keystoneName(cp), Namespace: "identity",
+			Finalizers: []string{"keystone.openstack.c5c3.io/cleanup"},
+		},
+	}
+	stampControlPlaneChildLabels(keystone, cp)
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+		Name: "identity", Labels: controlPlaneChildLabels(cp),
+	}}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, keystone, ns).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
+
+	done, err := r.teardownDedicatedNamespaces(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(done).To(BeFalse(), "the sweep must wait for the service child")
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeNamespacesReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("FinalizingNamespaces"))
+
+	// The Keystone child was deleted (Terminating), and the namespace still stands:
+	// deleting it now would cascade the child out from under its own cleanup.
+	live := &keystonev1alpha1.Keystone{}
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Name: keystoneName(cp), Namespace: "identity",
+	}, live)).To(Succeed())
+	g.Expect(live.DeletionTimestamp).NotTo(BeNil())
+	g.Expect(c.Get(context.Background(), types.NamespacedName{Name: "identity"}, &corev1.Namespace{})).To(Succeed())
+}
+
+// TestTeardownDedicatedNamespaces_DeletesTheManagedNamespace verifies a Managed
+// namespace is deleted once its children are gone — that is the whole point of
+// the Managed lifecycle, and the namespace delete cascades whatever is left in it.
+func TestTeardownDedicatedNamespaces_DeletesTheManagedNamespace(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := namespaceTeardownScheme(t)
+	cp := deletingNamespacedControlPlane(time.Minute)
+	cp.Spec.Services.Horizon = nil
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+		Name: "identity", Labels: controlPlaneChildLabels(cp),
+	}}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, ns).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
+
+	done, err := r.teardownDedicatedNamespaces(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(done).To(BeTrue())
+
+	err = c.Get(context.Background(), types.NamespacedName{Name: "identity"}, &corev1.Namespace{})
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "a Managed namespace must be deleted with the ControlPlane")
+}
+
+// TestTeardownDedicatedNamespaces_RefusesToDeleteAnUnownedNamespace is the guard
+// that matters most on the way out: a namespace carrying no ownership labels was
+// not created by us, so deleting it would destroy every workload in it. It is left
+// standing and the operator is warned.
+func TestTeardownDedicatedNamespaces_RefusesToDeleteAnUnownedNamespace(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := namespaceTeardownScheme(t)
+	cp := deletingNamespacedControlPlane(time.Minute)
+	cp.Spec.Services.Horizon = nil
+
+	foreign := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+		Name: "identity", Labels: map[string]string{"team": "platform"},
+	}}
+	rec := record.NewFakeRecorder(10)
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, foreign).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: rec}
+
+	done, err := r.teardownDedicatedNamespaces(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(done).To(BeTrue())
+
+	g.Expect(c.Get(context.Background(), types.NamespacedName{Name: "identity"}, &corev1.Namespace{})).
+		To(Succeed(), "a namespace we did not create must never be deleted")
+	g.Expect(strings.Join(drainEvents(rec), "\n")).To(ContainSubstring("NamespaceNotOwned"))
+}
+
+// TestTeardownDedicatedNamespaces_SweepsExternalNamespaceResidue verifies the
+// External lifecycle: the namespace survives, so nothing cascades and every object
+// the ControlPlane placed there has to be named and deleted — while a same-named
+// object belonging to somebody else in that shared namespace is left alone.
+func TestTeardownDedicatedNamespaces_SweepsExternalNamespaceResidue(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := namespaceTeardownScheme(t)
+
+	// Keystone in the External namespace, so its credential material lands there.
+	cp := deletingControlPlane(time.Minute)
+	cp.Spec.Services = c5c3v1alpha1.ServicesSpec{
+		Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{
+			Namespace: &c5c3v1alpha1.ServiceNamespaceSpec{
+				Name:      "shared-ns",
+				Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleExternal,
+			},
+		},
+	}
+
+	ours := &esov1.SecretStore{ObjectMeta: metav1.ObjectMeta{
+		Name: esoTenantStoreName, Namespace: "shared-ns", Labels: controlPlaneChildLabels(cp),
+	}}
+	adminPw := &esov1.ExternalSecret{ObjectMeta: metav1.ObjectMeta{
+		Name: adminPasswordSecretName(cp), Namespace: "shared-ns", Labels: controlPlaneChildLabels(cp),
+	}}
+	// Somebody else's ServiceAccount of the same fixed name in the shared namespace.
+	foreignSA := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
+		Name: esoTenantServiceAccountName, Namespace: "shared-ns",
+	}}
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "shared-ns"}}
+
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, ns, ours, adminPw, foreignSA).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
+
+	done, err := r.teardownDedicatedNamespaces(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(done).To(BeTrue())
+
+	g.Expect(c.Get(context.Background(), types.NamespacedName{Name: "shared-ns"}, &corev1.Namespace{})).
+		To(Succeed(), "an External namespace must survive the ControlPlane")
+
+	err = c.Get(context.Background(), types.NamespacedName{
+		Name: esoTenantStoreName, Namespace: "shared-ns",
+	}, &esov1.SecretStore{})
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "our tenant store must be swept")
+
+	err = c.Get(context.Background(), types.NamespacedName{
+		Name: adminPasswordSecretName(cp), Namespace: "shared-ns",
+	}, &esov1.ExternalSecret{})
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "our credential material must be swept")
+
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Name: esoTenantServiceAccountName, Namespace: "shared-ns",
+	}, &corev1.ServiceAccount{})).To(Succeed(),
+		"an object we do not own must survive, even under a name we also use")
+}
+
+// TestTeardownDedicatedNamespaces_StallEscape verifies the bounded escape: past the
+// stall window a child that will not go must not make the namespace undeletable
+// forever. The sweep warns, names what it left behind, and releases.
+func TestTeardownDedicatedNamespaces_StallEscape(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := namespaceTeardownScheme(t)
+	cp := deletingNamespacedControlPlane(orcTeardownStallTimeout + time.Minute)
+	cp.Spec.Services.Horizon = nil
+
+	wedged := &keystonev1alpha1.Keystone{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: keystoneName(cp), Namespace: "identity",
+			Finalizers: []string{"keystone.openstack.c5c3.io/cleanup"},
+		},
+	}
+	stampControlPlaneChildLabels(wedged, cp)
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+		Name: "identity", Labels: controlPlaneChildLabels(cp),
+	}}
+	rec := record.NewFakeRecorder(10)
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, wedged, ns).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: rec}
+
+	done, err := r.teardownDedicatedNamespaces(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(done).To(BeTrue(), "the stall escape must release rather than wedge forever")
+
+	events := strings.Join(drainEvents(rec), "\n")
+	g.Expect(events).To(ContainSubstring("NamespaceTeardownStalled"))
+	g.Expect(events).To(ContainSubstring("identity/" + keystoneName(cp)))
 }

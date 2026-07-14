@@ -10,11 +10,20 @@ import (
 	"strings"
 	"time"
 
+	horizonv1alpha1 "github.com/c5c3/forge/operators/horizon/api/v1alpha1"
+	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
+	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
+	esgenv1alpha1 "github.com/external-secrets/external-secrets/apis/generators/v1alpha1"
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
+	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -367,6 +376,20 @@ func (r *ControlPlaneReconciler) reconcileDelete(ctx context.Context, cp *c5c3v1
 	if len(remaining) == 0 && len(pushRemaining) == 0 {
 		// Every owned K-ORC CR is gone (revoked and deleted, or never existed)
 		// and ESO has finished the OpenBao cleanup behind the owned PushSecrets.
+		//
+		// The cross-namespace children are still standing, though: no GC cascade
+		// reaches them, because they carry ownership labels rather than an owner
+		// reference. Tear them down HERE, while the finalizer still holds the
+		// ControlPlane — releasing first would strand every one of them, in a
+		// namespace nothing points back from.
+		done, err := r.teardownDedicatedNamespaces(ctx, cp)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if !done {
+			return ctrl.Result{RequeueAfter: namespaceRequeueAfter}, nil
+		}
+
 		// Release the finalizer so GC tears down Keystone/MariaDB and the rest.
 		r.Recorder.Event(cp, "Normal", "ORCTeardownComplete",
 			"No remaining K-ORC CRs; releasing the ControlPlane finalizer")
@@ -502,6 +525,277 @@ func (r *ControlPlaneReconciler) reconcileDelete(ctx context.Context, cp *c5c3v1
 		return ctrl.Result{}, fmt.Errorf("removing finalizer after force-remove: %w", err)
 	}
 	return ctrl.Result{}, nil
+}
+
+// teardownDedicatedNamespaces deletes the children the ControlPlane placed in a
+// namespace of its own, and reports whether the sweep is complete. It is the
+// GARBAGE-COLLECTION MECHANISM that owner references cannot provide: a
+// cross-namespace child carries no owner reference (Kubernetes forbids one), so
+// nothing reaps it when the ControlPlane goes. This does, by hand, while the
+// finalizer still holds the CR.
+//
+// The order is load-bearing:
+//
+//  1. The SERVICE CHILDREN (Keystone, Horizon) first, and the sweep waits for them
+//     to disappear. Their own operators run a sequenced ESO cleanup on deletion —
+//     the Keystone child's fernet/credential-key PushSecrets purge their OpenBao
+//     paths — and that cleanup authenticates through the tenant store in the same
+//     namespace. Removing the store first would leave the key material in OpenBao
+//     with no Kubernetes object naming it.
+//  2. Then the NAMESPACE, per lifecycle:
+//     - Managed: delete the namespace, which cascades everything left in it. It is
+//     deleted ONLY when it carries our ownership labels — reconcileNamespaces
+//     never adopts a namespace it did not create, and neither does this. An
+//     unlabelled one is left standing with a Warning, rather than destroying a
+//     namespace (and every workload in it) the operator never owned.
+//     - External: the namespace stays. Its residue is swept by name instead — the
+//     backing services, the credential material, and the tenant-store trio LAST,
+//     for the reason above.
+//
+// Past orcTeardownStallTimeout the sweep stops waiting: it emits a Warning naming
+// what is stuck and reports done, so a wedged child can never make a namespace
+// undeletable. That mirrors the ORC stall escape, and it is the same trade — a
+// repairable leak beats a permanently wedged namespace.
+func (r *ControlPlaneReconciler) teardownDedicatedNamespaces(
+	ctx context.Context, cp *c5c3v1alpha1.ControlPlane,
+) (bool, error) {
+	assignments := cp.DedicatedServiceNamespaces()
+	if len(assignments) == 0 {
+		return true, nil
+	}
+	logger := log.FromContext(ctx)
+
+	stalled := time.Since(cp.DeletionTimestamp.Time) > orcTeardownStallTimeout
+
+	var stuck []string
+	for _, assignment := range assignments {
+		remaining, err := r.deleteServiceChildrenIn(ctx, cp, assignment.Name)
+		if err != nil {
+			return false, err
+		}
+		if len(remaining) > 0 {
+			stuck = append(stuck, remaining...)
+			continue
+		}
+
+		if assignment.Lifecycle == c5c3v1alpha1.ServiceNamespaceLifecycleExternal {
+			r.sweepExternalNamespaceResidue(ctx, cp, assignment.Name)
+			continue
+		}
+		if err := r.deleteManagedNamespace(ctx, cp, assignment.Name); err != nil {
+			return false, err
+		}
+	}
+
+	if len(stuck) == 0 {
+		return true, nil
+	}
+
+	if !stalled {
+		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+			Type:               conditionTypeNamespacesReady,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: cp.Generation,
+			Reason:             "FinalizingNamespaces",
+			Message: fmt.Sprintf("waiting for %d cross-namespace child(ren) to finish their teardown before "+
+				"releasing the ControlPlane: %v", len(stuck), stuck),
+		})
+		return false, nil
+	}
+
+	// Stalled. Proceed anyway rather than wedging the namespace forever, and name
+	// what was left behind — like the orphaned K-ORC resources, it is a
+	// repair-by-hand outcome.
+	r.Recorder.Event(cp, "Warning", "NamespaceTeardownStalled", fmt.Sprintf(
+		"cross-namespace child(ren) %v stayed present longer than %s; releasing the ControlPlane anyway. "+
+			"They carry no owner reference, so nothing will garbage-collect them — remove them by hand",
+		stuck, orcTeardownStallTimeout,
+	))
+	logger.Info("cross-namespace teardown stalled; releasing the ControlPlane anyway",
+		"stuck", stuck, "stallTimeout", orcTeardownStallTimeout)
+	return true, nil
+}
+
+// crossNamespaceServiceChildren returns the service children the ControlPlane
+// placed in namespace: the Keystone child when the Keystone service is assigned
+// there, the Horizon child likewise. Both are matched by their deterministic
+// names; ownership is re-checked against the live object before anything is
+// deleted.
+func crossNamespaceServiceChildren(cp *c5c3v1alpha1.ControlPlane, namespace string) []client.Object {
+	var children []client.Object
+	if cp.KeystoneNamespace() == namespace {
+		children = append(children, &keystonev1alpha1.Keystone{
+			ObjectMeta: metav1.ObjectMeta{Name: keystoneName(cp), Namespace: namespace},
+		})
+	}
+	if cp.HorizonNamespace() == namespace {
+		children = append(children, &horizonv1alpha1.Horizon{
+			ObjectMeta: metav1.ObjectMeta{Name: horizonName(cp), Namespace: namespace},
+		})
+	}
+	return children
+}
+
+// deleteServiceChildrenIn deletes the service children this ControlPlane placed in
+// namespace and returns those still present afterwards (Terminating behind their
+// own operator's cleanup finalizers). A child that is not ours — same name, no
+// ownership labels — is never touched and never reported as stuck.
+func (r *ControlPlaneReconciler) deleteServiceChildrenIn(
+	ctx context.Context, cp *c5c3v1alpha1.ControlPlane, namespace string,
+) ([]string, error) {
+	var remaining []string
+	for _, child := range crossNamespaceServiceChildren(cp, namespace) {
+		key := client.ObjectKeyFromObject(child)
+		switch err := r.Get(ctx, key, child); {
+		case apierrors.IsNotFound(err) || meta.IsNoMatchError(err):
+			continue
+		case err != nil:
+			return nil, fmt.Errorf("getting %T %s for cross-namespace teardown: %w", child, key, err)
+		}
+		if !isControlPlaneChild(child, cp) {
+			continue
+		}
+		if child.GetDeletionTimestamp().IsZero() {
+			if err := client.IgnoreNotFound(
+				r.Delete(ctx, child, client.PropagationPolicy(metav1.DeletePropagationBackground)),
+			); err != nil {
+				return nil, fmt.Errorf("deleting %T %s: %w", child, key, err)
+			}
+		}
+		remaining = append(remaining, fmt.Sprintf("%s/%s", namespace, child.GetName()))
+	}
+	return remaining, nil
+}
+
+// deleteManagedNamespace deletes a namespace the operator created, which cascades
+// everything left in it. It refuses to delete one that does not carry our
+// ownership labels: reconcileNamespaces never adopts a foreign namespace, and
+// deleting one here would destroy every workload in it. That case can only arise
+// from a webhook-bypassed CR or a namespace re-created out-of-band under the same
+// name, so it is reported as a Warning rather than acted on.
+//
+// The delete is fire-and-observe: the namespace's own termination (Kubernetes
+// reaping every object in it) can take a while, and holding the ControlPlane
+// finalizer for it would gain nothing — the children the ControlPlane is
+// responsible for are already gone by the time this runs.
+func (r *ControlPlaneReconciler) deleteManagedNamespace(
+	ctx context.Context, cp *c5c3v1alpha1.ControlPlane, name string,
+) error {
+	ns := &corev1.Namespace{}
+	switch err := r.Get(ctx, types.NamespacedName{Name: name}, ns); {
+	case apierrors.IsNotFound(err):
+		return nil
+	case err != nil:
+		return fmt.Errorf("getting managed service namespace %q for teardown: %w", name, err)
+	}
+	if !ns.DeletionTimestamp.IsZero() {
+		return nil
+	}
+	if !isControlPlaneChild(ns, cp) {
+		r.Recorder.Event(cp, "Warning", "NamespaceNotOwned", fmt.Sprintf(
+			"namespace %q does not carry this ControlPlane's ownership labels, so it was NOT deleted even though "+
+				"its lifecycle is Managed; the operator never destroys a namespace it did not create", name,
+		))
+		return nil
+	}
+	if err := client.IgnoreNotFound(r.Delete(ctx, ns)); err != nil {
+		return fmt.Errorf("deleting managed service namespace %q: %w", name, err)
+	}
+	log.FromContext(ctx).Info("deleted managed service namespace", "namespace", name)
+	return nil
+}
+
+// sweepExternalNamespaceResidue deletes, best-effort, the objects the ControlPlane
+// placed in a namespace it does NOT own — the namespace itself must survive, so
+// nothing cascades and every object has to be named. The set is deterministic
+// (every name is derived from the ControlPlane), so nothing has to be discovered:
+// the backing services, the admin-password and DB-credential material, and the
+// tenant-store trio.
+//
+// The tenant-store trio goes LAST: the service children deleted before this ran
+// their own ESO cleanup through that store, and an ESO PushSecret cannot purge its
+// OpenBao path once the store it authenticates with is gone.
+//
+// Each object is ownership-checked against its live state, so a same-named object
+// belonging to somebody else in this shared namespace is left alone. Errors are
+// logged rather than propagated: this is the last step before the ControlPlane is
+// released, and a residual object is a repairable leak, whereas an error here
+// would wedge the namespace on a finalizer that can never clear.
+func (r *ControlPlaneReconciler) sweepExternalNamespaceResidue(
+	ctx context.Context, cp *c5c3v1alpha1.ControlPlane, namespace string,
+) {
+	logger := log.FromContext(ctx)
+
+	unstructuredIn := func(gvk schema.GroupVersionKind, name string) client.Object {
+		u := &unstructured.Unstructured{}
+		u.SetGroupVersionKind(gvk)
+		u.SetName(name)
+		u.SetNamespace(namespace)
+		return u
+	}
+
+	var objs []client.Object
+	// The backing services this namespace's services resolved to.
+	for _, inst := range r.managedInfraInstances(cp) {
+		if inst.namespace != namespace {
+			continue
+		}
+		switch inst.kind {
+		case "MariaDB":
+			objs = append(objs, &mariadbv1alpha1.MariaDB{
+				ObjectMeta: metav1.ObjectMeta{Name: inst.name, Namespace: namespace},
+			})
+		case "Memcached":
+			objs = append(objs, unstructuredIn(memcachedGVK, inst.name))
+		}
+	}
+	// The credential material, which follows the Keystone service.
+	if cp.KeystoneNamespace() == namespace {
+		objs = append(
+			objs,
+			&esov1.ExternalSecret{ObjectMeta: metav1.ObjectMeta{
+				Name: adminPasswordSecretName(cp), Namespace: namespace,
+			}},
+			&esov1.ExternalSecret{ObjectMeta: metav1.ObjectMeta{
+				Name: dbCredentialSecretName(cp), Namespace: namespace,
+			}},
+			&esgenv1alpha1.VaultDynamicSecret{ObjectMeta: metav1.ObjectMeta{
+				Name: dbCredentialSecretName(cp), Namespace: namespace,
+			}},
+			unstructuredIn(certificateGVK, dbCredentialClientCertName(cp)),
+			&corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
+				Name: dbCredentialServiceAccountName, Namespace: namespace,
+			}},
+		)
+	}
+	// The tenant store LAST: everything above authenticated through it.
+	objs = append(
+		objs,
+		&esov1.SecretStore{ObjectMeta: metav1.ObjectMeta{Name: esoTenantStoreName, Namespace: namespace}},
+		unstructuredIn(certificateGVK, esoTenantClientCertName),
+		&corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
+			Name: esoTenantServiceAccountName, Namespace: namespace,
+		}},
+	)
+
+	for _, obj := range objs {
+		key := client.ObjectKeyFromObject(obj)
+		switch err := r.Get(ctx, key, obj); {
+		case apierrors.IsNotFound(err) || meta.IsNoMatchError(err):
+			continue
+		case err != nil:
+			logger.V(1).Info("best-effort residue sweep could not read an object",
+				"object", key, "error", err.Error())
+			continue
+		}
+		if !isControlPlaneChild(obj, cp) {
+			continue
+		}
+		if err := client.IgnoreNotFound(r.Delete(ctx, obj)); err != nil {
+			logger.V(1).Info("best-effort residue sweep could not delete an object",
+				"object", key, "error", err.Error())
+		}
+	}
 }
 
 // deleteOwnedPushSecrets issues an idempotent Delete on every PushSecret this
