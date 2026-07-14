@@ -113,10 +113,12 @@ func TestReconcileNamespaces_ManagedCreatesAndLabels(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-	// First pass creates and requeues.
+	// A namespace created with our labels is ours by construction, so the pass
+	// goes Ready straight away rather than waiting a requeue to re-read what it
+	// just wrote.
 	res, err := r.reconcileNamespaces(context.Background(), cp)
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(res.RequeueAfter).To(Equal(namespaceRequeueAfter))
+	g.Expect(res.IsZero()).To(BeTrue())
 
 	ns := &corev1.Namespace{}
 	g.Expect(c.Get(context.Background(), types.NamespacedName{Name: "identity"}, ns)).To(Succeed())
@@ -124,13 +126,15 @@ func TestReconcileNamespaces_ManagedCreatesAndLabels(t *testing.T) {
 	g.Expect(ns.Labels).To(HaveKeyWithValue(controlPlaneNamespaceLabel, "openstack"))
 	g.Expect(ns.Labels).To(HaveKeyWithValue(managedByLabel, managedByValue))
 
-	// Second pass observes the namespace it owns and goes Ready.
-	res, err = r.reconcileNamespaces(context.Background(), cp)
-	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(res.IsZero()).To(BeTrue())
 	cond := namespacesCondition(cp)
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 	g.Expect(cond.Reason).To(Equal("NamespacesReady"))
+
+	// Idempotent: a second pass observes the namespace it owns and stays Ready.
+	res, err = r.reconcileNamespaces(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.IsZero()).To(BeTrue())
+	g.Expect(namespacesCondition(cp).Reason).To(Equal("NamespacesReady"))
 }
 
 // TestReconcileNamespaces_ManagedRefusesToAdoptForeignNamespace is the guard that

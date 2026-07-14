@@ -373,6 +373,24 @@ spec:
             ($error != null): true
             (contains($error, 'dedicatedBackingServices.cache.clusterRef.name')): true
             (contains($error, 'Duplicate')): true
+    # A namespace assignment in External mode is rejected by the CEL rule: no
+    # Keystone workload is deployed, so there is nothing to place.
+    - apply:
+        file: 42-namespace-in-external-mode.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'services.keystone.namespace')): true
+    # Two services co-located in one namespace must agree on its lifecycle: they
+    # share that namespace's backing services and its tenant store, so one
+    # declaration must not have the teardown delete what the other declared
+    # untouchable.
+    - apply:
+        file: 43-namespace-lifecycle-conflict.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'must declare the same lifecycle')): true
 ---
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -437,3 +455,29 @@ spec:
         - check:
             ($error != null): true
             (contains($error, 'phase-3')): true
+---
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  # Own ephemeral namespace so the accepted base persists (see the sibling
+  # transition waves).
+  name: c5c3-invalid-cr-namespace-freeze
+spec:
+  steps:
+  - try:
+    # Base CR (Managed, Keystone placed in a pre-existing namespace it does not
+    # own) must be admitted. The External lifecycle means the operator never
+    # creates that namespace, so the CR parks on NamespaceNotFound and provisions
+    # nothing — no side effects for the rejection step to clean up.
+    - apply:
+        file: 44-transition-base-namespaced.yaml
+    # Dropping the namespace assignment from the live ControlPlane is rejected:
+    # the assignment is create-only, because moving a live service across
+    # namespaces would strand its backing services, its secret store, and every
+    # OpenBao path scoped to the old namespace.
+    - apply:
+        file: 45-transition-remove-namespace.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'the namespace a service is placed in is immutable')): true

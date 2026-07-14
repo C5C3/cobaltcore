@@ -272,15 +272,24 @@ func (r *ControlPlaneReconciler) reconcileNamespaces(ctx context.Context, cp *c5
 			created := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: assignment.Name}}
 			stampControlPlaneChildLabels(created, cp)
 			created.Labels[managedByLabel] = managedByValue
-			if cerr := r.Create(ctx, created); cerr != nil && !apierrors.IsAlreadyExists(cerr) {
+			switch cerr := r.Create(ctx, created); {
+			case cerr == nil:
+				// Created with our labels, so it is ours by construction: move on to
+				// the next assignment rather than waiting a requeue to re-read what we
+				// just wrote.
+				logger.Info("created managed service namespace", "namespace", assignment.Name)
+				continue
+			case apierrors.IsAlreadyExists(cerr):
+				// Another writer won the race. Requeue so the next pass re-Gets the
+				// namespace and applies the ownership check below to whatever is
+				// actually there — it may well be a namespace we must refuse to adopt.
+				logger.Info("lost the race to create a managed service namespace, re-evaluating",
+					"namespace", assignment.Name)
+				return ctrl.Result{RequeueAfter: namespaceRequeueAfter}, nil
+			default:
 				fail("NamespaceError", fmt.Sprintf("creating namespace %q: %v", assignment.Name, cerr))
 				return ctrl.Result{}, fmt.Errorf("creating managed service namespace %q: %w", assignment.Name, cerr)
 			}
-			logger.Info("created managed service namespace", "namespace", assignment.Name)
-			// Requeue rather than falling through: an AlreadyExists means another
-			// writer won the race, and the next pass re-Gets it and applies the
-			// ownership check below to whatever is actually there.
-			return ctrl.Result{RequeueAfter: namespaceRequeueAfter}, nil
 		case err != nil:
 			fail("NamespaceError", fmt.Sprintf("getting namespace %q: %v", assignment.Name, err))
 			return ctrl.Result{}, fmt.Errorf("getting managed service namespace %q: %w", assignment.Name, err)

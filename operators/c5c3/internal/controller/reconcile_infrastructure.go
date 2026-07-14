@@ -319,11 +319,24 @@ func (r *ControlPlaneReconciler) managedInfraInstances(cp *c5c3v1alpha1.ControlP
 	}
 
 	keystoneNS := cp.KeystoneNamespace()
-	horizonNS := cp.HorizonNamespace()
 
 	addDatabase(effectiveKeystoneDatabase(cp), keystoneNS, keystoneDatabaseDeclaredAt(cp))
 	addCache(effectiveKeystoneCache(cp), keystoneNS, keystoneCacheDeclaredAt(cp))
-	addCache(effectiveHorizonCache(cp), horizonNS, horizonCacheDeclaredAt(cp))
+
+	// The dashboard's cache is enumerated only when the dashboard is DECLARED.
+	// While every service shared the ControlPlane's namespace this gate made no
+	// difference — an undeclared Horizon resolved to the same shared cache in the
+	// same namespace as Keystone, so the entry deduplicated away. Once the services
+	// can be placed apart it does: without the gate, a ControlPlane that declares
+	// only Keystone and places it elsewhere would provision a SECOND cache back in
+	// its own namespace, for a dashboard that does not exist — and then gate
+	// InfrastructureReady on that cache reaching Ready, holding the whole control
+	// plane behind an instance nothing talks to. That is precisely the
+	// no-consumer-no-instance rule this enumeration already applies to a shared
+	// block every service opted out of.
+	if cp.Spec.Services.Horizon != nil {
+		addCache(effectiveHorizonCache(cp), cp.HorizonNamespace(), horizonCacheDeclaredAt(cp))
+	}
 
 	return instances
 }

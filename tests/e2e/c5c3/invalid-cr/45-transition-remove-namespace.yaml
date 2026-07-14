@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# UPDATE dropping the namespace assignment from the accepted base is rejected: the
+# assignment is create-only. Moving a live service across namespaces would leave
+# its backing services, its secret store, and every OpenBao path scoped to the old
+# namespace behind with no migration path. namespace is explicitly nulled, not
+# merely omitted: Chainsaw applies an UPDATE as an RFC 7386 JSON merge patch, so
+# an omitted block would simply be retained and the update would be admitted.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-transition-d
+spec:
+  openStackRelease: "2025.2"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+  services:
+    keystone:
+      mode: Managed
+      namespace: null
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password

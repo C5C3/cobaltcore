@@ -1,0 +1,41 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Two services co-located in ONE namespace must agree on its lifecycle. They share
+# that namespace's backing services and its tenant store, so they cannot disagree
+# on whether the operator owns it: the Managed declaration would have the teardown
+# delete the namespace the External one declared untouchable.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-ns-lifecycle-conflict
+spec:
+  openStackRelease: "2025.2"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+  services:
+    keystone:
+      mode: Managed
+      namespace:
+        name: shared-services
+        lifecycle: Managed
+    horizon:
+      namespace:
+        name: shared-services
+        lifecycle: External
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password

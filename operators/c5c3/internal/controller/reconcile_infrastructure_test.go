@@ -906,12 +906,17 @@ func TestReconcileInfrastructure_DedicatedBrownfieldProvisionsNothing(t *testing
 		"a brownfield dedicated database provisions nothing, and the shared managed database "+
 			"Keystone opted out of has no consumer left")
 
+	// Horizon is NOT declared here, so it resolves to no cache at all — the shared
+	// managed cache Keystone opted out of therefore has no consumer and is not
+	// provisioned. (Enumerating the shared cache for an undeclared Horizon would
+	// provision an instance nothing talks to, and — once services can be placed in
+	// separate namespaces — hold InfrastructureReady behind a cache for a service
+	// that does not exist; see the Horizon gate in managedInfraInstances.)
 	memcachedList := &unstructured.UnstructuredList{}
 	memcachedList.SetGroupVersionKind(memcachedGVK)
 	g.Expect(c.List(context.Background(), memcachedList)).To(Succeed())
-	g.Expect(memcachedList.Items).To(HaveLen(1),
-		"a brownfield dedicated cache must provision nothing; the shared cache Horizon resolves to is created")
-	g.Expect(memcachedList.Items[0].GetName()).To(Equal("openstack-memcached"))
+	g.Expect(memcachedList.Items).To(BeEmpty(),
+		"a brownfield dedicated cache provisions nothing, and no declared service resolves to the shared cache")
 }
 
 // --- per-service namespaces (issue #646): backing services follow the service ---
@@ -1060,4 +1065,38 @@ func TestEnsureMariaDB_RefusesToReshapeAForeignInstance(t *testing.T) {
 		"an externally-provisioned instance must not have its topology re-projected")
 	g.Expect(live.Labels).NotTo(HaveKey(controlPlaneNameLabel),
 		"ownership must never be claimed over an instance we did not create")
+}
+
+// TestManagedInfraInstances_UndeclaredHorizonHasNoCache pins the Horizon gate: a
+// ControlPlane that declares only Keystone must not enumerate a cache for a
+// dashboard that does not exist. While every service shared the ControlPlane's
+// namespace an undeclared Horizon's shared cache simply deduplicated against
+// Keystone's; once Keystone is placed in a namespace of its own the phantom
+// dashboard cache would be a distinct instance in the ControlPlane's namespace,
+// with no consumer, holding InfrastructureReady back forever.
+func TestManagedInfraInstances_UndeclaredHorizonHasNoCache(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := infraTestScheme(t)
+	cp := managedInfraControlPlane()
+	cp.Namespace = "openstack"
+	cp.Spec.Services = c5c3v1alpha1.ServicesSpec{
+		Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{
+			Namespace: &c5c3v1alpha1.ServiceNamespaceSpec{Name: "identity"},
+		},
+		// Horizon deliberately unset.
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	instances := r.managedInfraInstances(cp)
+
+	type placement struct{ kind, namespace string }
+	got := make([]placement, 0, len(instances))
+	for _, inst := range instances {
+		got = append(got, placement{inst.kind, inst.namespace})
+	}
+	g.Expect(got).To(ConsistOf(
+		placement{"MariaDB", "identity"},
+		placement{"Memcached", "identity"},
+	), "only Keystone's own database and cache are provisioned; no phantom dashboard cache")
 }

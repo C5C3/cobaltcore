@@ -37,7 +37,7 @@ _CHAINSAW_TEST = _HERE / "chainsaw-test.yaml"
 # Number of fixtures emitted by _generate.py. Bumping this value requires adding
 # the matching Fixture entry AND the matching `file: <name>` line in
 # chainsaw-test.yaml.
-_EXPECTED_FIXTURE_COUNT = 42
+_EXPECTED_FIXTURE_COUNT = 46
 
 
 def _load_generator() -> types.ModuleType:
@@ -75,9 +75,14 @@ class TestFixtures(unittest.TestCase):
     def test_no_fixture_pins_a_namespace(self) -> None:
         # Chainsaw injects the ephemeral namespace; a hardcoded namespace would
         # break the one-ControlPlane-per-namespace isolation across Tests.
+        #
+        # Anchored at the metadata indent level (2 spaces, where metadata.name
+        # sits). A bare substring scan would also catch the deeply-indented
+        # spec.services.<svc>.namespace field, which pins no metadata.namespace at
+        # all — it names the namespace a SERVICE is placed in.
         for fixture in self.generator.FIXTURES:
             self.assertNotIn(
-                "namespace:",
+                "\n  namespace:",
                 fixture.render(),
                 f"{fixture.filename} must not pin a metadata.namespace",
             )

@@ -673,6 +673,81 @@ FIXTURES: tuple[Fixture, ...] = (
         keystone="      mode: Managed\n" + VALID_DEDICATED_KEYSTONE,
         infrastructure=MANAGED_INFRA,
     ),
+    # --- per-service namespaces (issue #646) ---
+    Fixture(
+        filename="42-namespace-in-external-mode.yaml",
+        comment=(
+            "services.keystone.namespace in External mode violates the CEL rule: no Keystone\n"
+            "workload is deployed, so there is nothing to place in a namespace of its own."
+        ),
+        name="cp-external-namespace",
+        keystone=(
+            "      mode: External\n"
+            "      external:\n"
+            "        authURL: https://keystone.example.com/v3\n"
+            "      namespace:\n"
+            "        name: identity\n"
+        ),
+    ),
+    Fixture(
+        filename="43-namespace-lifecycle-conflict.yaml",
+        comment=(
+            "Two services co-located in ONE namespace must agree on its lifecycle. They share\n"
+            "that namespace's backing services and its tenant store, so they cannot disagree\n"
+            "on whether the operator owns it: the Managed declaration would have the teardown\n"
+            "delete the namespace the External one declared untouchable."
+        ),
+        name="cp-ns-lifecycle-conflict",
+        keystone=(
+            "      mode: Managed\n"
+            "      namespace:\n"
+            "        name: shared-services\n"
+            "        lifecycle: Managed\n"
+        ),
+        horizon=(
+            "    horizon:\n"
+            "      namespace:\n"
+            "        name: shared-services\n"
+            "        lifecycle: External\n"
+        ),
+        infrastructure=MANAGED_INFRA,
+    ),
+    # --- transition wave D: namespace assignment freeze (Test: c5c3-invalid-cr-namespace-freeze) ---
+    Fixture(
+        filename="44-transition-base-namespaced.yaml",
+        comment=(
+            "Accepted base for the namespace-assignment freeze test: a Managed ControlPlane\n"
+            "whose Keystone service is placed in a pre-existing namespace it does not own.\n"
+            "The External lifecycle is deliberate — the operator never creates that\n"
+            "namespace, so the CR parks on NamespacesReady=False/NamespaceNotFound and\n"
+            "provisions nothing, leaving no side effects for the rejection step to clean up."
+        ),
+        name="cp-transition-d",
+        keystone=(
+            "      mode: Managed\n"
+            "      namespace:\n"
+            "        name: invalid-cr-preexisting\n"
+            "        lifecycle: External\n"
+        ),
+        infrastructure=MANAGED_INFRA,
+    ),
+    Fixture(
+        filename="45-transition-remove-namespace.yaml",
+        comment=(
+            "UPDATE dropping the namespace assignment from the accepted base is rejected: the\n"
+            "assignment is create-only. Moving a live service across namespaces would leave\n"
+            "its backing services, its secret store, and every OpenBao path scoped to the old\n"
+            "namespace behind with no migration path. namespace is explicitly nulled, not\n"
+            "merely omitted: Chainsaw applies an UPDATE as an RFC 7386 JSON merge patch, so\n"
+            "an omitted block would simply be retained and the update would be admitted."
+        ),
+        name="cp-transition-d",
+        keystone=(
+            "      mode: Managed\n"
+            "      namespace: null\n"
+        ),
+        infrastructure=MANAGED_INFRA,
+    ),
     # --- transition wave A: Managed -> External (Test: c5c3-invalid-cr-managed-to-external) ---
     Fixture(
         filename="15-transition-base-managed.yaml",

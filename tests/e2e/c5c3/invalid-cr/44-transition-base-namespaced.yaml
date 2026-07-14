@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Accepted base for the namespace-assignment freeze test: a Managed ControlPlane
+# whose Keystone service is placed in a pre-existing namespace it does not own.
+# The External lifecycle is deliberate — the operator never creates that
+# namespace, so the CR parks on NamespacesReady=False/NamespaceNotFound and
+# provisions nothing, leaving no side effects for the rejection step to clean up.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-transition-d
+spec:
+  openStackRelease: "2025.2"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+  services:
+    keystone:
+      mode: Managed
+      namespace:
+        name: invalid-cr-preexisting
+        lifecycle: External
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password

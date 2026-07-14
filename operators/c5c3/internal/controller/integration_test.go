@@ -39,6 +39,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 
+	"github.com/c5c3/forge/internal/common/conditions"
 	"github.com/c5c3/forge/internal/common/testutil/simulators"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
@@ -112,6 +113,17 @@ func setupControlPlaneEnvTest(t testing.TB) (client.Client, context.Context, con
 				Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(
 					secretToControlPlaneMapper(mgr.GetClient()),
 				)).
+				// Mirror the cross-namespace watch legs SetupWithManager registers.
+				// A child the ControlPlane placed in a service namespace carries no
+				// owner reference (Kubernetes forbids one across namespaces), so the
+				// Owns() legs above never fire for it: without these, a status
+				// transition on such a child would only be picked up on the next
+				// periodic requeue, and the harness would not reflect production.
+				Watches(&keystonev1alpha1.Keystone{}, crossNamespaceChildHandler()).
+				Watches(&mariadbv1alpha1.MariaDB{}, crossNamespaceChildHandler()).
+				Watches(memcached, crossNamespaceChildHandler()).
+				Watches(&esov1.ExternalSecret{}, crossNamespaceChildHandler()).
+				Watches(&corev1.Namespace{}, crossNamespaceChildHandler()).
 				WithOptions(controller.Options{SkipNameValidation: ptr.To(true)}).
 				Complete(r)
 		},
@@ -522,19 +534,30 @@ func simulateAdminPasswordExternalSecretSyncWhenPresent(
 	g := NewGomegaWithT(t)
 
 	es := &esov1.ExternalSecret{}
+	// The admin password is materialised beside the Keystone child, which follows
+	// the namespace its service is placed in.
+	adminNS := effectiveAdminPasswordSecretNamespace(cp)
 	g.Eventually(func() error {
-		return c.Get(ctx, client.ObjectKey{Namespace: childNamespace(cp), Name: adminPasswordSecretName(cp)}, es)
+		return c.Get(ctx, client.ObjectKey{Namespace: adminNS, Name: adminPasswordSecretName(cp)}, es)
 	}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
 		"operator must create the per-CP admin password ExternalSecret")
 	g.Expect(es.Spec.Data).NotTo(BeEmpty(), "admin password ExternalSecret must declare Data entries")
 	g.Expect(es.Spec.Data[0].RemoteRef.Key).To(Equal(adminPasswordRemoteKeyFor(cp)),
 		"admin password ExternalSecret must read this CR's keystone-name-scoped OpenBao path")
-	owner := metav1.GetControllerOf(es)
-	g.Expect(owner).NotTo(BeNil(), "admin password ExternalSecret must be controller-owned by the ControlPlane")
-	g.Expect(owner.Kind).To(Equal("ControlPlane"))
-	g.Expect(owner.Name).To(Equal(cp.Name))
+	// Ownership: a controller owner reference at home, the ownership labels when
+	// the Keystone service (and with it the admin password) is placed in a
+	// namespace of its own — Kubernetes forbids a cross-namespace owner reference.
+	if adminNS == cp.Namespace {
+		owner := metav1.GetControllerOf(es)
+		g.Expect(owner).NotTo(BeNil(), "admin password ExternalSecret must be controller-owned by the ControlPlane")
+		g.Expect(owner.Kind).To(Equal("ControlPlane"))
+		g.Expect(owner.Name).To(Equal(cp.Name))
+	} else {
+		g.Expect(es.OwnerReferences).To(BeEmpty())
+		g.Expect(es.Labels).To(HaveKeyWithValue(controlPlaneNameLabel, cp.Name))
+	}
 	g.Expect(simulators.SimulateExternalSecretSync(ctx, c,
-		client.ObjectKey{Namespace: childNamespace(cp), Name: adminPasswordSecretName(cp)})).
+		client.ObjectKey{Namespace: adminNS, Name: adminPasswordSecretName(cp)})).
 		To(Succeed(), "simulate per-CP admin password ExternalSecret sync")
 }
 
@@ -2987,4 +3010,226 @@ func TestIntegration_DedicatedBackingServices_TransitionRejected(t *testing.T) {
 	err = c.Update(ctx, live2)
 	g.Expect(err).To(HaveOccurred(), "moving a live service back onto the shared instances must be rejected")
 	g.Expect(err.Error()).To(ContainSubstring("switching a service between shared and dedicated backing services"))
+}
+
+// --- per-service namespaces (issue #646) ---
+
+// TestIntegration_DedicatedNamespaces exercises the whole cross-namespace path
+// against a real API server: the operator creates the namespace, provisions the
+// backing services and the tenant store IN it, materialises the credential
+// material there, projects the Keystone child there — all without an owner
+// reference, which the API server would reject across a namespace — and then, on
+// deletion, tears every one of them down by hand and deletes the namespace.
+//
+// envtest runs no namespace controller, so a deleted namespace never actually
+// disappears: it is asserted on its DeletionTimestamp, which is what the operator
+// is responsible for setting.
+func TestIntegration_DedicatedNamespaces(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupControlPlaneEnvTest(t)
+	ensureReadyClusterSecretStore(t, ctx, c)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-cp-ns-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed(), "create the ControlPlane's namespace")
+
+	// The Keystone service is placed in a namespace of its own, under the Managed
+	// lifecycle: the operator creates it, and deletes it with the ControlPlane.
+	keystoneNS := ns.Name + "-identity"
+
+	cp := integrationManagedControlPlane("cp", ns.Name)
+	cp.Spec.Services.Keystone.Namespace = &c5c3v1alpha1.ServiceNamespaceSpec{
+		Name:      keystoneNS,
+		Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+	}
+	g.Expect(c.Create(ctx, cp)).To(Succeed(), "create ControlPlane CR with a dedicated Keystone namespace")
+	cpKey := types.NamespacedName{Name: cp.Name, Namespace: ns.Name}
+
+	// --- The namespace is created and stamped with the ownership labels. ---
+	created := &corev1.Namespace{}
+	g.Eventually(func() error {
+		return c.Get(ctx, client.ObjectKey{Name: keystoneNS}, created)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "the Managed service namespace must be created")
+	g.Expect(created.Labels).To(HaveKeyWithValue(controlPlaneNameLabel, "cp"))
+	g.Expect(created.Labels).To(HaveKeyWithValue(controlPlaneNamespaceLabel, ns.Name))
+	g.Expect(created.Labels).To(HaveKeyWithValue(managedByLabel, managedByValue))
+
+	// --- The backing services follow the service into that namespace, carrying
+	// the ownership labels and NO owner reference: the API server rejects a
+	// cross-namespace controller reference outright. ---
+	mariadb := &mariadbv1alpha1.MariaDB{}
+	g.Eventually(func() error {
+		return c.Get(ctx, client.ObjectKey{Name: "openstack-db", Namespace: keystoneNS}, mariadb)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+		"the database must be provisioned in the Keystone service's namespace")
+	g.Expect(mariadb.OwnerReferences).To(BeEmpty(),
+		"a cross-namespace child cannot carry an owner reference")
+	g.Expect(mariadb.Labels).To(HaveKeyWithValue(controlPlaneNameLabel, "cp"))
+
+	memcached := &unstructured.Unstructured{}
+	memcached.SetGroupVersionKind(memcachedGVK)
+	g.Eventually(func() error {
+		return c.Get(ctx, client.ObjectKey{Name: "openstack-memcached", Namespace: keystoneNS}, memcached)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+		"the cache must be provisioned in the Keystone service's namespace")
+
+	// Nothing is provisioned in the ControlPlane's own namespace: no service
+	// resolves there.
+	g.Consistently(func() bool {
+		err := c.Get(ctx, client.ObjectKey{Name: "openstack-db", Namespace: ns.Name}, &mariadbv1alpha1.MariaDB{})
+		return apierrors.IsNotFound(err)
+	}, 2*time.Second, itPollInterval).Should(BeTrue(),
+		"no backing service may be provisioned in a namespace no service is placed in")
+
+	// The ESOTenantStore sub-reconciler runs after Infrastructure, which
+	// short-circuits the pipeline while a backing service is still converging — so
+	// the backing services have to reach Ready before the tenant stores are
+	// provisioned at all.
+	simulateMariaDBReadyWhenPresent(t, ctx, c, client.ObjectKey{Name: "openstack-db", Namespace: keystoneNS})
+	simulateMemcachedReadyWhenPresent(t, ctx, c, client.ObjectKey{Name: "openstack-memcached", Namespace: keystoneNS})
+
+	// --- A tenant SecretStore is provisioned in BOTH namespaces: an ESO store and
+	// the Secrets it materialises are namespace-local, so the store at home cannot
+	// deliver anything into the service namespace. ---
+	for _, storeNS := range []string{ns.Name, keystoneNS} {
+		store := &esov1.SecretStore{}
+		g.Eventually(func() error {
+			return c.Get(ctx, client.ObjectKey{Name: esoTenantStoreName, Namespace: storeNS}, store)
+		}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+			"a tenant SecretStore must be provisioned in namespace %q", storeNS)
+	}
+	// Drive both stores Ready so the store-gated sub-reconcilers proceed.
+	ensureReadySecretStore(t, ctx, c, esoTenantStoreName, ns.Name)
+	ensureReadySecretStore(t, ctx, c, esoTenantStoreName, keystoneNS)
+
+	// --- The DB credential is issued in the Keystone namespace too: the engine
+	// role, the generator's ServiceAccount, and the ExternalSecret all follow the
+	// database. Sync it so the pipeline advances to AdminPassword. ---
+	dbES := &esov1.ExternalSecret{}
+	g.Eventually(func() error {
+		return c.Get(ctx, client.ObjectKey{Name: dbCredentialSecretName(cp), Namespace: keystoneNS}, dbES)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+		"the DB-credential ExternalSecret must be projected beside the Keystone child")
+	g.Expect(dbES.OwnerReferences).To(BeEmpty())
+	vds := &esgenv1alpha1.VaultDynamicSecret{}
+	g.Expect(c.Get(ctx, client.ObjectKey{
+		Name: dbCredentialSecretName(cp), Namespace: keystoneNS,
+	}, vds)).To(Succeed(), "the generator must be projected beside the database it issues against")
+	g.Expect(vds.Spec.Path).To(Equal("database/mariadb/creds/keystone-"+keystoneNS),
+		"the engine role is keyed on the Keystone service namespace, which the templated OpenBao policy grants")
+	g.Expect(simulators.SimulateExternalSecretSync(ctx, c,
+		client.ObjectKey{Name: dbCredentialSecretName(cp), Namespace: keystoneNS})).To(Succeed())
+
+	// --- The admin-password ExternalSecret is materialised in the Keystone
+	// namespace, at the OpenBao path keyed on THAT namespace — the path the
+	// keystone-operator's rotation PushSecret writes to. ---
+	simulateAdminPasswordExternalSecretSyncWhenPresent(t, ctx, c, cp)
+	adminES := &esov1.ExternalSecret{}
+	g.Expect(c.Get(ctx, client.ObjectKey{
+		Name: adminPasswordSecretName(cp), Namespace: keystoneNS,
+	}, adminES)).To(Succeed(), "the admin password must be materialised beside the Keystone child")
+	g.Expect(adminES.Spec.Data[0].RemoteRef.Key).To(Equal("bootstrap/" + keystoneNS + "/cp-keystone/admin"))
+	g.Expect(adminES.OwnerReferences).To(BeEmpty())
+
+	// --- The Keystone child is projected into the service namespace, and its
+	// in-cluster endpoint resolves across the namespace boundary. ---
+	keystone := &keystonev1alpha1.Keystone{}
+	g.Eventually(func() error {
+		return c.Get(ctx, client.ObjectKey{Name: "cp-keystone", Namespace: keystoneNS}, keystone)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+		"the Keystone child must be projected into its assigned namespace")
+	g.Expect(keystone.OwnerReferences).To(BeEmpty(),
+		"the API server rejects a cross-namespace controller owner reference")
+	g.Expect(keystone.Labels).To(HaveKeyWithValue(controlPlaneNameLabel, "cp"))
+	g.Expect(keystoneEndpointURL(cp)).To(Equal("http://cp-keystone." + keystoneNS + ".svc:5000/v3"))
+
+	// --- NamespacesReady reports the namespace is there. ---
+	g.Eventually(func() bool {
+		live := &c5c3v1alpha1.ControlPlane{}
+		if err := c.Get(ctx, cpKey, live); err != nil {
+			return false
+		}
+		return conditions.AllTrue(live.Status.Conditions, conditionTypeNamespacesReady)
+	}, itEventuallyTimeout, itPollInterval).Should(BeTrue(), "NamespacesReady must go True")
+
+	// --- Deletion: nothing garbage-collects a cross-namespace child, so the
+	// finalizer must delete them by hand and take the namespace down with them. ---
+	live := &c5c3v1alpha1.ControlPlane{}
+	g.Expect(c.Get(ctx, cpKey, live)).To(Succeed())
+	g.Expect(c.Delete(ctx, live)).To(Succeed(), "delete the ControlPlane")
+
+	g.Eventually(func() bool {
+		err := c.Get(ctx, client.ObjectKey{Name: "cp-keystone", Namespace: keystoneNS}, &keystonev1alpha1.Keystone{})
+		return apierrors.IsNotFound(err)
+	}, itEventuallyTimeout, itPollInterval).Should(BeTrue(),
+		"the cross-namespace Keystone child must be deleted explicitly — no GC cascade reaches it")
+
+	// envtest runs no namespace controller, so a deleted namespace stays Terminating
+	// forever. The DeletionTimestamp is what the operator is responsible for.
+	g.Eventually(func() bool {
+		terminating := &corev1.Namespace{}
+		if err := c.Get(ctx, client.ObjectKey{Name: keystoneNS}, terminating); err != nil {
+			return apierrors.IsNotFound(err)
+		}
+		return !terminating.DeletionTimestamp.IsZero()
+	}, itEventuallyTimeout, itPollInterval).Should(BeTrue(),
+		"the Managed service namespace must be deleted with the ControlPlane")
+}
+
+// TestIntegration_DedicatedNamespaces_RefusesToAdoptForeignNamespace pins the
+// never-adopt guard against a real API server. A Managed lifecycle DELETES its
+// namespace at teardown, so adopting a pre-existing one would destroy every
+// workload in it: the ControlPlane parks on NamespaceNotOwned instead, and
+// projects nothing.
+func TestIntegration_DedicatedNamespaces_RefusesToAdoptForeignNamespace(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupControlPlaneEnvTest(t)
+	ensureReadyClusterSecretStore(t, ctx, c)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-cp-adopt-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+	ensureReadySecretStore(t, ctx, c, esoTenantStoreName, ns.Name)
+
+	// A namespace somebody else provisioned, carrying none of our labels.
+	foreign := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+		GenerateName: "test-foreign-",
+		Labels:       map[string]string{"team": "platform"},
+	}}
+	g.Expect(c.Create(ctx, foreign)).To(Succeed())
+
+	cp := integrationManagedControlPlane("cp", ns.Name)
+	cp.Spec.Services.Keystone.Namespace = &c5c3v1alpha1.ServiceNamespaceSpec{
+		Name:      foreign.Name,
+		Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+	}
+	g.Expect(c.Create(ctx, cp)).To(Succeed())
+	cpKey := types.NamespacedName{Name: cp.Name, Namespace: ns.Name}
+
+	g.Eventually(func() string {
+		live := &c5c3v1alpha1.ControlPlane{}
+		if err := c.Get(ctx, cpKey, live); err != nil {
+			return ""
+		}
+		cond := conditions.GetCondition(live.Status.Conditions, conditionTypeNamespacesReady)
+		if cond == nil {
+			return ""
+		}
+		return cond.Reason
+	}, itEventuallyTimeout, itPollInterval).Should(Equal("NamespaceNotOwned"),
+		"a pre-existing namespace must never be adopted under the Managed lifecycle")
+
+	// Nothing is projected into it, and it is left exactly as it was.
+	g.Consistently(func() bool {
+		err := c.Get(ctx, client.ObjectKey{Name: "openstack-db", Namespace: foreign.Name}, &mariadbv1alpha1.MariaDB{})
+		return apierrors.IsNotFound(err)
+	}, 2*time.Second, itPollInterval).Should(BeTrue(),
+		"nothing may be projected into a namespace the operator refuses to own")
+
+	untouched := &corev1.Namespace{}
+	g.Expect(c.Get(ctx, client.ObjectKey{Name: foreign.Name}, untouched)).To(Succeed())
+	g.Expect(untouched.Labels).NotTo(HaveKey(controlPlaneNameLabel),
+		"a namespace the operator refuses to own must never be labelled")
 }
