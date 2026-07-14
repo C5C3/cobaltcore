@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -195,5 +196,115 @@ func TestKORCSpecShape(t *testing.T) {
 	}
 	if clone.AdminCredential.ApplicationCredential.Rotation.Mode != RotationModePasswordDriven {
 		t.Errorf("unexpected rotation mode %q", clone.AdminCredential.ApplicationCredential.Rotation.Mode)
+	}
+}
+
+// TestDedicatedBackingServicesDeepCopy verifies the per-service dedicated blocks
+// round-trip through DeepCopy with independent pointer storage. The reconciler
+// DeepCopies the effective (dedicated-or-shared) specs onto the service children,
+// so an aliased ClusterRef here would let a child projection mutate the
+// ControlPlane spec it was derived from.
+func TestDedicatedBackingServicesDeepCopy(t *testing.T) {
+	spec := ServiceKeystoneSpec{
+		DedicatedBackingServices: &KeystoneDedicatedBackingServicesSpec{
+			Database: &commonv1.DatabaseSpec{
+				ClusterRef: &corev1.LocalObjectReference{Name: "cp-keystone-db"},
+				Database:   "keystone",
+			},
+			Cache: &commonv1.CacheSpec{
+				ClusterRef: &corev1.LocalObjectReference{Name: "cp-keystone-cache"},
+				Backend:    commonv1.DefaultCacheBackend,
+			},
+		},
+	}
+
+	clone := spec.DeepCopy()
+	if clone.DedicatedBackingServices == spec.DedicatedBackingServices {
+		t.Errorf("DeepCopy did not allocate a new *KeystoneDedicatedBackingServicesSpec")
+	}
+	if clone.DedicatedBackingServices.Database == spec.DedicatedBackingServices.Database {
+		t.Errorf("DeepCopy did not allocate a new *DatabaseSpec for the dedicated database")
+	}
+	if clone.DedicatedBackingServices.Database.ClusterRef == spec.DedicatedBackingServices.Database.ClusterRef {
+		t.Errorf("DeepCopy did not allocate a new *LocalObjectReference for the dedicated database clusterRef")
+	}
+	if clone.DedicatedBackingServices.Cache.ClusterRef == spec.DedicatedBackingServices.Cache.ClusterRef {
+		t.Errorf("DeepCopy did not allocate a new *LocalObjectReference for the dedicated cache clusterRef")
+	}
+
+	// Mutating the clone must not touch the source.
+	clone.DedicatedBackingServices.Database.ClusterRef.Name = "other-db"
+	if spec.DedicatedBackingServices.Database.ClusterRef.Name != "cp-keystone-db" {
+		t.Errorf("DeepCopy aliased the dedicated database clusterRef: source name changed to %q",
+			spec.DedicatedBackingServices.Database.ClusterRef.Name)
+	}
+}
+
+// TestDedicatedBackingServicesAccessors exercises the nil-safe reads the webhook
+// and the reconciler share, across the three states a service can be in: no
+// service block, a service that shares the ControlPlane-wide instances (the
+// default), and a service that opted into dedicated instances.
+func TestDedicatedBackingServicesAccessors(t *testing.T) {
+	tests := []struct {
+		name              string
+		cp                *ControlPlane
+		wantKeystoneDB    bool
+		wantKeystoneCache bool
+		wantHorizonCache  bool
+	}{
+		{
+			name: "no service blocks",
+			cp:   &ControlPlane{},
+		},
+		{
+			name: "services share the ControlPlane-wide instances",
+			cp: &ControlPlane{Spec: ControlPlaneSpec{Services: ServicesSpec{
+				Keystone: &ServiceKeystoneSpec{},
+				Horizon:  &ServiceHorizonSpec{},
+			}}},
+		},
+		{
+			name: "keystone takes a dedicated cache only",
+			cp: &ControlPlane{Spec: ControlPlaneSpec{Services: ServicesSpec{
+				Keystone: &ServiceKeystoneSpec{
+					DedicatedBackingServices: &KeystoneDedicatedBackingServicesSpec{
+						Cache: &commonv1.CacheSpec{Backend: commonv1.DefaultCacheBackend},
+					},
+				},
+			}}},
+			wantKeystoneCache: true,
+		},
+		{
+			name: "both services take dedicated instances",
+			cp: &ControlPlane{Spec: ControlPlaneSpec{Services: ServicesSpec{
+				Keystone: &ServiceKeystoneSpec{
+					DedicatedBackingServices: &KeystoneDedicatedBackingServicesSpec{
+						Database: &commonv1.DatabaseSpec{Database: "keystone"},
+						Cache:    &commonv1.CacheSpec{Backend: commonv1.DefaultCacheBackend},
+					},
+				},
+				Horizon: &ServiceHorizonSpec{
+					DedicatedBackingServices: &HorizonDedicatedBackingServicesSpec{
+						Cache: &commonv1.CacheSpec{Backend: commonv1.DefaultCacheBackend},
+					},
+				},
+			}}},
+			wantKeystoneDB:    true,
+			wantKeystoneCache: true,
+			wantHorizonCache:  true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.cp.DedicatedKeystoneDatabase() != nil; got != tc.wantKeystoneDB {
+				t.Errorf("DedicatedKeystoneDatabase() present = %v, want %v", got, tc.wantKeystoneDB)
+			}
+			if got := tc.cp.DedicatedKeystoneCache() != nil; got != tc.wantKeystoneCache {
+				t.Errorf("DedicatedKeystoneCache() present = %v, want %v", got, tc.wantKeystoneCache)
+			}
+			if got := tc.cp.DedicatedHorizonCache() != nil; got != tc.wantHorizonCache {
+				t.Errorf("DedicatedHorizonCache() present = %v, want %v", got, tc.wantHorizonCache)
+			}
+		})
 	}
 }

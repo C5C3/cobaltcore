@@ -767,6 +767,66 @@ spec:
                       ControlPlane's Keystone child, so it is only created once that child is
                       ready.
                     properties:
+                      dedicatedBackingServices:
+                        description: |-
+                          DedicatedBackingServices opts the dashboard OUT of the ControlPlane-wide
+                          shared cache declared in spec.infrastructure and gives it a cache of its
+                          own. Omitting it (the default) keeps today's behavior — the dashboard shares
+                          the ControlPlane's cache. See HorizonDedicatedBackingServicesSpec.
+                        properties:
+                          cache:
+                            description: |-
+                              Cache gives the dashboard its own cache instead of the shared
+                              spec.infrastructure.cache. Managed (clusterRef) and brownfield (servers)
+                              modes are both supported; a managed clusterRef defaults to
+                              "{controlplane}-horizon-cache".
+                            properties:
+                              backend:
+                                description: Backend is the cache backend (e.g. dogpile.cache.pymemcache).
+                                type: string
+                              clusterRef:
+                                description: ClusterRef references a Memcached CR
+                                  in the cluster (managed mode).
+                                properties:
+                                  name:
+                                    default: ""
+                                    description: |-
+                                      Name of the referent.
+                                      This field is effectively required, but due to backwards compatibility is
+                                      allowed to be empty. Instances of this type with an empty value here are
+                                      almost certainly wrong.
+                                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                    type: string
+                                type: object
+                                x-kubernetes-map-type: atomic
+                              replicas:
+                                default: 3
+                                description: |-
+                                  Replicas is the number of Memcached pod replicas in the referenced cluster
+                                  (managed mode). Used to generate the correct number of StatefulSet pod
+                                  endpoints. Only used when ClusterRef is set.
+                                format: int32
+                                minimum: 1
+                                type: integer
+                              servers:
+                                description: Servers is the list of cache server endpoints
+                                  (brownfield mode).
+                                items:
+                                  type: string
+                                type: array
+                            required:
+                            - backend
+                            type: object
+                            x-kubernetes-validations:
+                            - message: exactly one of clusterRef or servers must be
+                                set
+                              rule: has(self.clusterRef) != (has(self.servers) &&
+                                size(self.servers) > 0)
+                        type: object
+                        x-kubernetes-validations:
+                        - message: dedicatedBackingServices must declare at least
+                            one backing-service class (cache)
+                          rule: has(self.cache)
                       gateway:
                         description: |-
                           Gateway optionally exposes the projected dashboard externally via a
@@ -933,6 +993,264 @@ spec:
                       reconciler reports KeystoneReady as not-managed. Flipping this from set to
                       nil deletes the previously-projected Keystone child.
                     properties:
+                      dedicatedBackingServices:
+                        description: |-
+                          DedicatedBackingServices opts the Keystone service out of the
+                          ControlPlane-wide shared instances declared in spec.infrastructure and gives
+                          it backing services of its own. Omitting it (the default) keeps Keystone on
+                          the ControlPlane's shared database cluster and cache, isolated only logically
+                          (its own logical database, its own credentials).
+
+                          Forbidden when services.keystone.mode is External: no backing services are
+                          provisioned at all when identity is managed against a pre-existing Keystone.
+                        properties:
+                          cache:
+                            description: |-
+                              Cache gives Keystone its own cache instead of the shared
+                              spec.infrastructure.cache. Managed (clusterRef) and brownfield (servers)
+                              modes are both supported.
+                            properties:
+                              backend:
+                                description: Backend is the cache backend (e.g. dogpile.cache.pymemcache).
+                                type: string
+                              clusterRef:
+                                description: ClusterRef references a Memcached CR
+                                  in the cluster (managed mode).
+                                properties:
+                                  name:
+                                    default: ""
+                                    description: |-
+                                      Name of the referent.
+                                      This field is effectively required, but due to backwards compatibility is
+                                      allowed to be empty. Instances of this type with an empty value here are
+                                      almost certainly wrong.
+                                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                    type: string
+                                type: object
+                                x-kubernetes-map-type: atomic
+                              replicas:
+                                default: 3
+                                description: |-
+                                  Replicas is the number of Memcached pod replicas in the referenced cluster
+                                  (managed mode). Used to generate the correct number of StatefulSet pod
+                                  endpoints. Only used when ClusterRef is set.
+                                format: int32
+                                minimum: 1
+                                type: integer
+                              servers:
+                                description: Servers is the list of cache server endpoints
+                                  (brownfield mode).
+                                items:
+                                  type: string
+                                type: array
+                            required:
+                            - backend
+                            type: object
+                            x-kubernetes-validations:
+                            - message: exactly one of clusterRef or servers must be
+                                set
+                              rule: has(self.clusterRef) != (has(self.servers) &&
+                                size(self.servers) > 0)
+                          database:
+                            description: |-
+                              Database gives Keystone its own database cluster instead of the shared
+                              spec.infrastructure.database. Managed (clusterRef) and brownfield (host)
+                              modes are both supported.
+
+                              A dedicated managed database uses credentialsMode Static (the webhook
+                              materializes it and rejects Dynamic): the OpenBao database engine is
+                              bootstrapped once per namespace against the shared cluster, so no engine role
+                              exists that could issue credentials for a dedicated instance. Seed and rotate
+                              the credential at the OpenBao source.
+                            properties:
+                              clusterRef:
+                                description: ClusterRef references a MariaDB CR in
+                                  the cluster (managed mode).
+                                properties:
+                                  name:
+                                    default: ""
+                                    description: |-
+                                      Name of the referent.
+                                      This field is effectively required, but due to backwards compatibility is
+                                      allowed to be empty. Instances of this type with an empty value here are
+                                      almost certainly wrong.
+                                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                    type: string
+                                type: object
+                                x-kubernetes-map-type: atomic
+                              credentialsMode:
+                                description: |-
+                                  CredentialsMode selects how the service DB credential in SecretRef is
+                                  provisioned. "Static" (the default when empty) has the operator manage
+                                  the MariaDB User/Grant CRs with a long-lived password from SecretRef.
+                                  "Dynamic" has an external secrets engine issue short-lived credentials on
+                                  demand: SecretRef then carries both a username and password, no User/Grant
+                                  CRs are managed, and no long-lived DB password remains at rest. Dynamic is
+                                  only valid in managed mode (ClusterRef set).
+                                enum:
+                                - Static
+                                - Dynamic
+                                type: string
+                              database:
+                                description: |-
+                                  Database is the database name within the cluster. Constrained to the MySQL
+                                  identifier character set and the 64-character identifier limit.
+                                maxLength: 64
+                                minLength: 1
+                                pattern: ^[A-Za-z0-9_]+$
+                                type: string
+                              host:
+                                description: |-
+                                  Host is the database hostname (brownfield mode). The pattern is a
+                                  permissive host matcher that accepts DNS names, IPv4, and IPv6 literals
+                                  while rejecting empty strings and shell/path metacharacters; it is not a
+                                  strict RFC-1123 validator, deliberately, so airgapped/mirror endpoints are
+                                  not rejected at admission.
+                                minLength: 1
+                                pattern: ^[a-zA-Z0-9._:-]+$
+                                type: string
+                              port:
+                                description: |-
+                                  Port is the database port (brownfield mode, default 3306). Omitted (managed
+                                  mode) leaves it unset; an explicit value must be a valid TCP port.
+                                format: int32
+                                maximum: 65535
+                                minimum: 1
+                                type: integer
+                              replicas:
+                                default: 3
+                                description: |-
+                                  Replicas is the number of managed MariaDB replicas provisioned in
+                                  fresh-create mode. It mirrors CacheSpec.Replicas: only the c5c3 operator's
+                                  managed-mode projection honours it (a single replica yields a
+                                  single-instance non-Galera MariaDB, three or more yield a Galera cluster),
+                                  so a constrained cluster such as a single-node kind can schedule the
+                                  fresh-create path. Operators that adopt an existing MariaDB (the c5c3 adopted-infra path,
+                                  and every service operator) ignore it. Only meaningful when ClusterRef is
+                                  set.
+                                format: int32
+                                minimum: 1
+                                type: integer
+                              secretRef:
+                                description: SecretRef references the K8s Secret with
+                                  credentials.
+                                properties:
+                                  key:
+                                    type: string
+                                  name:
+                                    description: |-
+                                      Name is the referenced Secret's name. It must be a non-empty DNS-1123
+                                      subdomain (the Kubernetes object-name grammar). Tightening the shared type
+                                      fixes every consumer at once — a service operator adminPasswordSecretRef /
+                                      database.secretRef / messaging / TLS cert refs and the c5c3
+                                      passwordSecretRef — so an empty name no longer slips through "required".
+                                    minLength: 1
+                                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                                    type: string
+                                required:
+                                - name
+                                type: object
+                              storageSize:
+                                default: 100Gi
+                                description: |-
+                                  StorageSize is the persistent-volume size requested for each managed
+                                  MariaDB replica in fresh-create mode. Like Replicas, only the c5c3
+                                  operator's managed-mode projection honours it (it is written to the owned
+                                  MariaDB's spec.storage.size); operators that adopt an existing MariaDB
+                                  (the c5c3 adopted-infra path, and every service operator) ignore it. The default 100Gi
+                                  mirrors the production baseline (deploy/flux-system/infrastructure/
+                                  mariadb.yaml); a constrained cluster such as a single-node kind can pin a
+                                  far smaller value (e.g. 512Mi) so CI does not request a 100Gi volume it
+                                  never fills. Immutable after creation: the mariadb-operator rejects
+                                  changing spec.storage.size on a live CR, so the ControlPlane validating
+                                  webhook freezes it too. Only meaningful when ClusterRef is set. The pattern
+                                  admits binary IEC units (Mi/Gi/Ti) matching the Kubernetes quantity grammar
+                                  the operator parses with resource.ParseQuantity.
+                                pattern: ^[0-9]+(Mi|Gi|Ti)$
+                                type: string
+                              tls:
+                                description: |-
+                                  TLS optionally enables TLS/mTLS for the database connection. The pointer keeps the field opt-in and non-mutating: a nil
+                                  TLS means plaintext TCP, preserving the pre-existing behavior for all
+                                  existing DatabaseSpec consumers.
+                                properties:
+                                  caBundleSecretRef:
+                                    description: |-
+                                      CABundleSecretRef references the K8s Secret holding the server CA
+                                      bundle the client trusts when verifying the database endpoint.
+                                    properties:
+                                      key:
+                                        type: string
+                                      name:
+                                        description: |-
+                                          Name is the referenced Secret's name. It must be a non-empty DNS-1123
+                                          subdomain (the Kubernetes object-name grammar). Tightening the shared type
+                                          fixes every consumer at once — a service operator adminPasswordSecretRef /
+                                          database.secretRef / messaging / TLS cert refs and the c5c3
+                                          passwordSecretRef — so an empty name no longer slips through "required".
+                                        minLength: 1
+                                        pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                                        type: string
+                                    required:
+                                    - name
+                                    type: object
+                                  clientCertSecretRef:
+                                    description: |-
+                                      ClientCertSecretRef references the K8s Secret holding the client
+                                      keypair presented to the database for mutual TLS.
+                                    properties:
+                                      key:
+                                        type: string
+                                      name:
+                                        description: |-
+                                          Name is the referenced Secret's name. It must be a non-empty DNS-1123
+                                          subdomain (the Kubernetes object-name grammar). Tightening the shared type
+                                          fixes every consumer at once — a service operator adminPasswordSecretRef /
+                                          database.secretRef / messaging / TLS cert refs and the c5c3
+                                          passwordSecretRef — so an empty name no longer slips through "required".
+                                        minLength: 1
+                                        pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                                        type: string
+                                    required:
+                                    - name
+                                    type: object
+                                  mode:
+                                    description: |-
+                                      Mode selects the TLS verification strength applied to the connection:
+                                        - disabled:       TLS is off; certificate references are ignored.
+                                        - prefer/require: encrypt the connection only (no peer verification).
+                                        - verify-ca:      additionally verify the server certificate chain
+                                                           against the trusted CA bundle.
+                                        - verify-full:    additionally verify the server certificate chain
+                                                           and that the server hostname matches the
+                                                           certificate identity.
+                                    enum:
+                                    - disabled
+                                    - prefer
+                                    - require
+                                    - verify-ca
+                                    - verify-full
+                                    type: string
+                                required:
+                                - caBundleSecretRef
+                                - clientCertSecretRef
+                                type: object
+                            required:
+                            - database
+                            - secretRef
+                            type: object
+                            x-kubernetes-validations:
+                            - message: exactly one of clusterRef or host must be set
+                              rule: has(self.clusterRef) != has(self.host)
+                            - message: credentialsMode Dynamic requires clusterRef
+                                (managed mode)
+                              rule: '!has(self.credentialsMode) || self.credentialsMode
+                                != ''Dynamic'' || has(self.clusterRef)'
+                        type: object
+                        x-kubernetes-validations:
+                        - message: dedicatedBackingServices must declare at least
+                            one backing-service class (database, cache)
+                          rule: has(self.database) || has(self.cache)
                       external:
                         description: |-
                           External carries the connection parameters for an externally-operated
@@ -1402,6 +1720,9 @@ spec:
                     - message: services.keystone.federationProxyImage is forbidden
                         when services.keystone.mode is External
                       rule: '!(has(self.mode) && self.mode == ''External'') || !has(self.federationProxyImage)'
+                    - message: services.keystone.dedicatedBackingServices is forbidden
+                        when services.keystone.mode is External
+                      rule: '!(has(self.mode) && self.mode == ''External'') || !has(self.dedicatedBackingServices)'
                 type: object
             required:
             - korc

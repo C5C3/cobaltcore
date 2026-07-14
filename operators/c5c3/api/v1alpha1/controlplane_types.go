@@ -202,6 +202,7 @@ type ServicesSpec struct {
 // +kubebuilder:validation:XValidation:rule="!(has(self.mode) && self.mode == 'External') || !has(self.gateway)",message="services.keystone.gateway is forbidden when services.keystone.mode is External"
 // +kubebuilder:validation:XValidation:rule="!(has(self.mode) && self.mode == 'External') || !has(self.publicEndpoint)",message="services.keystone.publicEndpoint is forbidden when services.keystone.mode is External"
 // +kubebuilder:validation:XValidation:rule="!(has(self.mode) && self.mode == 'External') || !has(self.federationProxyImage)",message="services.keystone.federationProxyImage is forbidden when services.keystone.mode is External"
+// +kubebuilder:validation:XValidation:rule="!(has(self.mode) && self.mode == 'External') || !has(self.dedicatedBackingServices)",message="services.keystone.dedicatedBackingServices is forbidden when services.keystone.mode is External"
 type ServiceKeystoneSpec struct {
 	// Mode selects whether the Keystone service is Managed (the reconciler
 	// deploys and owns a full Keystone workload, today's behavior) or External
@@ -291,6 +292,68 @@ type ServiceKeystoneSpec struct {
 	// is deployed, so there is no sidecar to image.
 	// +optional
 	FederationProxyImage *commonv1.ImageSpec `json:"federationProxyImage,omitempty"`
+
+	// DedicatedBackingServices opts the Keystone service out of the
+	// ControlPlane-wide shared instances declared in spec.infrastructure and gives
+	// it backing services of its own. Omitting it (the default) keeps Keystone on
+	// the ControlPlane's shared database cluster and cache, isolated only logically
+	// (its own logical database, its own credentials).
+	//
+	// Forbidden when services.keystone.mode is External: no backing services are
+	// provisioned at all when identity is managed against a pre-existing Keystone.
+	// +optional
+	DedicatedBackingServices *KeystoneDedicatedBackingServicesSpec `json:"dedicatedBackingServices,omitempty"`
+}
+
+// KeystoneDedicatedBackingServicesSpec declares the backing-service instances
+// the Keystone service gets for itself instead of the ControlPlane-wide shared
+// ones. Each backing-service class is one optional pointer field, so a service
+// can take a dedicated database, a dedicated cache, or both; a class left unset
+// resolves to the ControlPlane-wide instance in spec.infrastructure.
+//
+// A dedicated instance supports the same managed (clusterRef) and brownfield
+// (database.host / cache.servers) modes as the shared block. In managed mode the
+// clusterRef name defaults to "{controlplane}-keystone-db" /
+// "{controlplane}-keystone-cache" and must not collide with the shared instance
+// or with another service's dedicated instance of the same class.
+//
+// The block is optional, but must declare at least one class when present.
+//
+// +kubebuilder:validation:XValidation:rule="has(self.database) || has(self.cache)",message="dedicatedBackingServices must declare at least one backing-service class (database, cache)"
+type KeystoneDedicatedBackingServicesSpec struct {
+	// Database gives Keystone its own database cluster instead of the shared
+	// spec.infrastructure.database. Managed (clusterRef) and brownfield (host)
+	// modes are both supported.
+	//
+	// A dedicated managed database uses credentialsMode Static (the webhook
+	// materializes it and rejects Dynamic): the OpenBao database engine is
+	// bootstrapped once per namespace against the shared cluster, so no engine role
+	// exists that could issue credentials for a dedicated instance. Seed and rotate
+	// the credential at the OpenBao source.
+	// +optional
+	Database *commonv1.DatabaseSpec `json:"database,omitempty"`
+
+	// Cache gives Keystone its own cache instead of the shared
+	// spec.infrastructure.cache. Managed (clusterRef) and brownfield (servers)
+	// modes are both supported.
+	// +optional
+	Cache *commonv1.CacheSpec `json:"cache,omitempty"`
+}
+
+// HorizonDedicatedBackingServicesSpec declares the backing-service instances the
+// Horizon dashboard gets for itself instead of the ControlPlane-wide shared
+// ones. The dashboard consumes no database, so cache is the only class it can
+// take dedicated. See KeystoneDedicatedBackingServicesSpec for the full
+// contract.
+//
+// +kubebuilder:validation:XValidation:rule="has(self.cache)",message="dedicatedBackingServices must declare at least one backing-service class (cache)"
+type HorizonDedicatedBackingServicesSpec struct {
+	// Cache gives the dashboard its own cache instead of the shared
+	// spec.infrastructure.cache. Managed (clusterRef) and brownfield (servers)
+	// modes are both supported; a managed clusterRef defaults to
+	// "{controlplane}-horizon-cache".
+	// +optional
+	Cache *commonv1.CacheSpec `json:"cache,omitempty"`
 }
 
 // KeystoneMode selects whether the ControlPlane's Keystone service is deployed
@@ -569,6 +632,13 @@ type ServiceHorizonSpec struct {
 	// +kubebuilder:validation:MaxLength=499
 	// +kubebuilder:validation:Pattern=`^https?://`
 	PublicEndpoint string `json:"publicEndpoint,omitempty"`
+
+	// DedicatedBackingServices opts the dashboard OUT of the ControlPlane-wide
+	// shared cache declared in spec.infrastructure and gives it a cache of its
+	// own. Omitting it (the default) keeps today's behavior — the dashboard shares
+	// the ControlPlane's cache. See HorizonDedicatedBackingServicesSpec.
+	// +optional
+	DedicatedBackingServices *HorizonDedicatedBackingServicesSpec `json:"dedicatedBackingServices,omitempty"`
 }
 
 // KORCSpec configures the K-ORC (OpenStack Resource Controller) integration of
@@ -1087,6 +1157,55 @@ type AdminApplicationCredentialStatus struct {
 func (cp *ControlPlane) IsExternalKeystone() bool {
 	ks := cp.Spec.Services.Keystone
 	return ks != nil && ks.Mode == KeystoneModeExternal
+}
+
+// keystoneDedicatedBlock / horizonDedicatedBlock are the single nil-safe walk of
+// the per-service dedicated BLOCK, shared by the webhook (defaulting, collision
+// and immutability rules) and by the class accessors below, so no call site
+// re-walks the optional chain. The immutability rules need the block itself, to
+// tell "block absent" from "block present with the class unset"; the reconciler
+// needs the individual classes, which the exported accessors expose.
+func keystoneDedicatedBlock(cp *ControlPlane) *KeystoneDedicatedBackingServicesSpec {
+	if ks := cp.Spec.Services.Keystone; ks != nil {
+		return ks.DedicatedBackingServices
+	}
+	return nil
+}
+
+func horizonDedicatedBlock(cp *ControlPlane) *HorizonDedicatedBackingServicesSpec {
+	if hz := cp.Spec.Services.Horizon; hz != nil {
+		return hz.DedicatedBackingServices
+	}
+	return nil
+}
+
+// DedicatedKeystoneDatabase returns the database instance declared FOR the
+// Keystone service alone, or nil when Keystone shares the ControlPlane-wide
+// instance (the default).
+func (cp *ControlPlane) DedicatedKeystoneDatabase() *commonv1.DatabaseSpec {
+	if b := keystoneDedicatedBlock(cp); b != nil {
+		return b.Database
+	}
+	return nil
+}
+
+// DedicatedKeystoneCache returns the cache instance declared for the Keystone
+// service alone, or nil when Keystone shares the ControlPlane-wide instance.
+func (cp *ControlPlane) DedicatedKeystoneCache() *commonv1.CacheSpec {
+	if b := keystoneDedicatedBlock(cp); b != nil {
+		return b.Cache
+	}
+	return nil
+}
+
+// DedicatedHorizonCache returns the cache instance declared for the Horizon
+// dashboard alone, or nil when the dashboard shares the ControlPlane-wide
+// instance.
+func (cp *ControlPlane) DedicatedHorizonCache() *commonv1.CacheSpec {
+	if b := horizonDedicatedBlock(cp); b != nil {
+		return b.Cache
+	}
+	return nil
 }
 
 func init() {

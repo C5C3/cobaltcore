@@ -62,6 +62,21 @@ const (
 	// DefaultCacheClusterRefName is the managed Memcached CR name materialized when
 	// spec.infrastructure.cache is in managed mode (servers unset).
 	DefaultCacheClusterRefName = "openstack-memcached"
+	// The dedicated-backing-service clusterRef names are derived from the
+	// ControlPlane's own name so a per-service instance never collides with the
+	// shared one (openstack-db / openstack-memcached) nor with another
+	// ControlPlane's instance in a shared namespace. They are materialized when a
+	// dedicated block declares a managed instance without naming it.
+	//
+	// DedicatedKeystoneDatabaseClusterRefSuffix names the MariaDB CR of a
+	// dedicated Keystone database.
+	DedicatedKeystoneDatabaseClusterRefSuffix = "-keystone-db" //nolint:gosec // G101 false positive: CR name suffix, not a credential
+	// DedicatedKeystoneCacheClusterRefSuffix names the Memcached CR of a dedicated
+	// Keystone cache.
+	DedicatedKeystoneCacheClusterRefSuffix = "-keystone-cache"
+	// DedicatedHorizonCacheClusterRefSuffix names the Memcached CR of a dedicated
+	// Horizon cache.
+	DedicatedHorizonCacheClusterRefSuffix = "-horizon-cache"
 	// DefaultDatabaseStorageSize is the effective per-replica MariaDB volume size
 	// when spec.infrastructure.database.storageSize is empty. It aliases
 	// commonv1.DatabaseStorageSizeDefault (also the CRD +kubebuilder:default and
@@ -614,6 +629,50 @@ func (w *ControlPlaneWebhook) SetupWebhookWithManager(mgr ctrl.Manager) error {
 		Complete()
 }
 
+// defaultDatabaseLeaves materializes the well-known leaves of a DatabaseSpec —
+// the logical database name, the credential Secret name, and, in MANAGED mode
+// only, the clusterRef naming the MariaDB CR. clusterRefName is the managed CR
+// name to invent when the block names none: the shared, well-known
+// DefaultDatabaseClusterRefName for spec.infrastructure, and a ControlPlane-
+// derived name for a per-service dedicated instance.
+//
+// The managed clusterRef is invented only when the brownfield discriminator
+// (host) is unset, so an explicit brownfield endpoint is never coerced into
+// managed mode and the database XOR check still passes. Idempotent: only zero
+// values are filled.
+func defaultDatabaseLeaves(db *commonv1.DatabaseSpec, clusterRefName string) {
+	if db.Database == "" {
+		db.Database = DefaultDatabaseName
+	}
+	if db.SecretRef.Name == "" {
+		db.SecretRef.Name = DefaultDatabaseSecretName
+	}
+	if db.Host == "" {
+		if db.ClusterRef == nil {
+			db.ClusterRef = &corev1.LocalObjectReference{Name: clusterRefName}
+		} else if db.ClusterRef.Name == "" {
+			db.ClusterRef.Name = clusterRefName
+		}
+	}
+}
+
+// defaultCacheLeaves materializes the well-known leaves of a CacheSpec — the
+// oslo.cache backend and, in MANAGED mode only, the clusterRef naming the
+// Memcached CR — with the same brownfield-preserving discipline as
+// defaultDatabaseLeaves (see there).
+func defaultCacheLeaves(cache *commonv1.CacheSpec, clusterRefName string) {
+	if cache.Backend == "" {
+		cache.Backend = DefaultCacheBackend
+	}
+	if len(cache.Servers) == 0 {
+		if cache.ClusterRef == nil {
+			cache.ClusterRef = &corev1.LocalObjectReference{Name: clusterRefName}
+		} else if cache.ClusterRef.Name == "" {
+			cache.ClusterRef.Name = clusterRefName
+		}
+	}
+}
+
 // Default implements admission.Defaulter[*ControlPlane].
 // It fills only zero-valued fields with their documented defaults, leaving any
 // explicit value untouched. It is idempotent: applying it twice produces the
@@ -660,30 +719,35 @@ func (w *ControlPlaneWebhook) Default(_ context.Context, obj *ControlPlane) erro
 		if obj.Spec.Infrastructure == nil {
 			obj.Spec.Infrastructure = &InfrastructureSpec{}
 		}
-		db := &obj.Spec.Infrastructure.Database
-		if db.Database == "" {
-			db.Database = DefaultDatabaseName
-		}
-		if db.SecretRef.Name == "" {
-			db.SecretRef.Name = DefaultDatabaseSecretName
-		}
-		if db.Host == "" {
-			if db.ClusterRef == nil {
-				db.ClusterRef = &corev1.LocalObjectReference{Name: DefaultDatabaseClusterRefName}
-			} else if db.ClusterRef.Name == "" {
-				db.ClusterRef.Name = DefaultDatabaseClusterRefName
+		defaultDatabaseLeaves(&obj.Spec.Infrastructure.Database, DefaultDatabaseClusterRefName)
+		defaultCacheLeaves(&obj.Spec.Infrastructure.Cache, DefaultCacheClusterRefName)
+
+		// Per-service DEDICATED backing services take the same leaf defaults as the
+		// shared block — the same helpers, so a dedicated instance can never drift
+		// from the shared one on what an omitted leaf means — but derive their
+		// managed clusterRef name from the ControlPlane so they never collide with
+		// the shared instance. A dedicated block is only defaulted when the operator
+		// declared it: absent means "share the ControlPlane-wide instances", and the
+		// webhook must never invent an opt-in.
+		if ks := keystoneDedicatedBlock(obj); ks != nil {
+			if db := ks.Database; db != nil {
+				defaultDatabaseLeaves(db, obj.Name+DedicatedKeystoneDatabaseClusterRefSuffix)
+				// A dedicated MANAGED database is Static-only: the OpenBao
+				// database-engine connection is bootstrapped once per namespace against
+				// the SHARED cluster, so no engine role can issue credentials for a
+				// dedicated instance. Materialize the mode so the stored spec states the
+				// contract the reconciler applies; validate() rejects an explicit Dynamic.
+				if db.ClusterRef != nil && db.CredentialsMode == "" {
+					db.CredentialsMode = commonv1.CredentialsModeStatic
+				}
+			}
+			if cache := ks.Cache; cache != nil {
+				defaultCacheLeaves(cache, obj.Name+DedicatedKeystoneCacheClusterRefSuffix)
 			}
 		}
-
-		cache := &obj.Spec.Infrastructure.Cache
-		if cache.Backend == "" {
-			cache.Backend = DefaultCacheBackend
-		}
-		if len(cache.Servers) == 0 {
-			if cache.ClusterRef == nil {
-				cache.ClusterRef = &corev1.LocalObjectReference{Name: DefaultCacheClusterRefName}
-			} else if cache.ClusterRef.Name == "" {
-				cache.ClusterRef.Name = DefaultCacheClusterRefName
+		if hz := horizonDedicatedBlock(obj); hz != nil {
+			if cache := hz.Cache; cache != nil {
+				defaultCacheLeaves(cache, obj.Name+DedicatedHorizonCacheClusterRefSuffix)
 			}
 		}
 	}
@@ -839,23 +903,7 @@ func (w *ControlPlaneWebhook) validate(cp *ControlPlane) field.ErrorList {
 		allErrs = append(allErrs, validation.DatabaseXOR(specPath.Child("infrastructure", "database"), &db)...)
 		allErrs = append(allErrs, validation.DynamicCredentialsRequireClusterRef(specPath.Child("infrastructure", "database"), &db)...)
 
-		// database.replicas must be 1 (standalone) or >=3 (a quorum-safe Galera
-		// cluster). Exactly 2 is rejected because the managed-mode MariaDB projection
-		// (ensureMariaDB) turns any replicas>1 into a Galera cluster, and a two-node
-		// Galera cluster cannot hold a majority — a single pod disruption (restart,
-		// OOM-kill, rolling update, network partition) then loses quorum and takes the
-		// whole database offline. The CRD marker only enforces Minimum=1, so this
-		// webhook is the enforcement point; the shared commonv1.DatabaseSpec must not
-		// carry a c5c3-specific CEL rule the keystone operator (which ignores replicas)
-		// would also inherit. A zero value (CRD/webhook default bypassed) is left to
-		// the reconciler's floor, so only an explicit 2 is rejected here.
-		if db.Replicas == 2 {
-			allErrs = append(allErrs, field.Invalid(
-				specPath.Child("infrastructure", "database", "replicas"),
-				db.Replicas,
-				"database replicas must be 1 (standalone) or >=3 (Galera needs quorum); 2 cannot hold a majority",
-			))
-		}
+		allErrs = append(allErrs, validateDatabaseReplicas(specPath.Child("infrastructure", "database"), &db)...)
 
 		// cache must use exactly one of clusterRef or servers — the shared
 		// validator mirroring the CEL rule on the shared commonv1.CacheSpec.
@@ -976,6 +1024,145 @@ func (w *ControlPlaneWebhook) validate(cp *ControlPlane) field.ErrorList {
 
 	allErrs = append(allErrs, validateKeystoneMode(cp)...)
 	allErrs = append(allErrs, validateServiceAccounts(cp)...)
+	allErrs = append(allErrs, validateDedicatedBackingServices(cp)...)
+
+	return allErrs
+}
+
+// validateDatabaseReplicas enforces that a managed database's replica count is 1
+// (standalone) or >=3 (a quorum-safe Galera cluster). Exactly 2 is rejected
+// because the managed-mode MariaDB projection (ensureMariaDB) turns any
+// replicas>1 into a Galera cluster, and a two-node Galera cluster cannot hold a
+// majority — a single pod disruption (restart, OOM-kill, rolling update, network
+// partition) then loses quorum and takes the whole database offline. The CRD
+// marker only enforces Minimum=1, so this webhook is the enforcement point; the
+// shared commonv1.DatabaseSpec must not carry a c5c3-specific CEL rule the
+// keystone operator (which ignores replicas) would also inherit. A zero value
+// (CRD/webhook default bypassed) is left to the reconciler's floor, so only an
+// explicit 2 is rejected. It applies to the shared database and to every
+// dedicated one alike: the projection that makes 2 unsafe is the same.
+func validateDatabaseReplicas(fldPath *field.Path, db *commonv1.DatabaseSpec) field.ErrorList {
+	if db.Replicas != 2 {
+		return nil
+	}
+	return field.ErrorList{field.Invalid(
+		fldPath.Child("replicas"),
+		db.Replicas,
+		"database replicas must be 1 (standalone) or >=3 (Galera needs quorum); 2 cannot hold a majority",
+	)}
+}
+
+// dedicatedBackingServices pairs one service's declared dedicated block with the
+// field path it lives at, so the validators below walk every service uniformly
+// and a new backing-service class or a new service extends the walk rather than
+// reshaping it.
+type dedicatedBackingServices struct {
+	path  *field.Path
+	db    *commonv1.DatabaseSpec
+	cache *commonv1.CacheSpec
+}
+
+// declaredDedicatedBackingServices returns the dedicated blocks cp actually
+// declares, in a stable order. A service that shares the ControlPlane-wide
+// instances (the default) contributes nothing.
+func declaredDedicatedBackingServices(cp *ControlPlane) []dedicatedBackingServices {
+	svcPath := field.NewPath("spec", "services")
+	var out []dedicatedBackingServices
+	if ks := keystoneDedicatedBlock(cp); ks != nil {
+		out = append(out, dedicatedBackingServices{
+			path:  svcPath.Child("keystone", "dedicatedBackingServices"),
+			db:    ks.Database,
+			cache: ks.Cache,
+		})
+	}
+	if hz := horizonDedicatedBlock(cp); hz != nil {
+		out = append(out, dedicatedBackingServices{
+			path:  svcPath.Child("horizon", "dedicatedBackingServices"),
+			cache: hz.Cache,
+		})
+	}
+	return out
+}
+
+// validateDedicatedBackingServices enforces the rules on the per-service
+// dedicated backing-service blocks. It mirrors the declarative constraints as
+// defense-in-depth for callers that bypass CRD schema admission (the
+// at-least-one-class CEL rule, and the database/cache XORs carried by the shared
+// commonv1 types) and adds the rules the CRD schema cannot express:
+//
+//   - A dedicated MANAGED database may not use credentialsMode Dynamic. The
+//     OpenBao database engine has exactly one connection and role per NAMESPACE
+//     (deploy/openbao/bootstrap/setup-database-tenant.sh), bootstrapped against
+//     the SHARED cluster, so no engine role exists that could issue credentials
+//     for a dedicated instance — an admitted Dynamic dedicated database would
+//     wedge on an ExternalSecret that can never sync. Static is the supported
+//     mode (and the one the defaulting webhook materializes).
+//   - Managed clusterRef NAMES must be unique per backing-service class across
+//     the shared block and every dedicated instance. Two instances sharing a name
+//     resolve to one child CR, which the projections would then fight over —
+//     silently voiding the very isolation the opt-in exists for.
+//   - The Galera-quorum replicas rule applies to a dedicated database exactly as
+//     it does to the shared one.
+//
+// The cross-field rule that a dedicated block is forbidden in External mode
+// lives in validateKeystoneMode with the rest of the External-mode matrix.
+func validateDedicatedBackingServices(cp *ControlPlane) field.ErrorList {
+	var allErrs field.ErrorList
+
+	// Seed the per-class name sets with the SHARED instances so a dedicated
+	// instance colliding with them is caught, not just a dedicated-vs-dedicated
+	// collision.
+	dbNames := map[string]struct{}{}
+	cacheNames := map[string]struct{}{}
+	if infra := cp.Spec.Infrastructure; infra != nil {
+		if ref := infra.Database.ClusterRef; ref != nil {
+			dbNames[ref.Name] = struct{}{}
+		}
+		if ref := infra.Cache.ClusterRef; ref != nil {
+			cacheNames[ref.Name] = struct{}{}
+		}
+	}
+
+	for _, d := range declaredDedicatedBackingServices(cp) {
+		if d.db == nil && d.cache == nil {
+			allErrs = append(allErrs, field.Required(d.path,
+				"at least one backing-service class must be declared; omit the block entirely to share the "+
+					"ControlPlane-wide instances"))
+			continue
+		}
+
+		if db := d.db; db != nil {
+			dbPath := d.path.Child("database")
+			allErrs = append(allErrs, validation.DatabaseXOR(dbPath, db)...)
+			allErrs = append(allErrs, validateDatabaseReplicas(dbPath, db)...)
+			// Strictly stronger than the shared block's Dynamic-requires-clusterRef
+			// rule (which the commonv1 CEL rule still carries): Dynamic is rejected on
+			// a dedicated database in EITHER mode.
+			if db.CredentialsMode == commonv1.CredentialsModeDynamic {
+				allErrs = append(allErrs, field.Forbidden(dbPath.Child("credentialsMode"),
+					"credentialsMode Dynamic is not supported on a dedicated database: the OpenBao database-engine "+
+						"connection is bootstrapped once per namespace against the shared cluster, so no engine role "+
+						"issues credentials for a dedicated instance; use Static"))
+			}
+			if ref := db.ClusterRef; ref != nil {
+				if _, dup := dbNames[ref.Name]; dup {
+					allErrs = append(allErrs, field.Duplicate(dbPath.Child("clusterRef", "name"), ref.Name))
+				}
+				dbNames[ref.Name] = struct{}{}
+			}
+		}
+
+		if cache := d.cache; cache != nil {
+			cachePath := d.path.Child("cache")
+			allErrs = append(allErrs, validation.CacheXOR(cachePath, cache)...)
+			if ref := cache.ClusterRef; ref != nil {
+				if _, dup := cacheNames[ref.Name]; dup {
+					allErrs = append(allErrs, field.Duplicate(cachePath.Child("clusterRef", "name"), ref.Name))
+				}
+				cacheNames[ref.Name] = struct{}{}
+			}
+		}
+	}
 
 	return allErrs
 }
@@ -1094,6 +1281,10 @@ func validateKeystoneMode(cp *ControlPlane) field.ErrorList {
 			allErrs = append(allErrs, field.Forbidden(ksPath.Child("federationProxyImage"),
 				"forbidden when services.keystone.mode is External (no Keystone workload is deployed, so there is no sidecar to image)"))
 		}
+		if ks.DedicatedBackingServices != nil {
+			allErrs = append(allErrs, field.Forbidden(ksPath.Child("dedicatedBackingServices"),
+				"forbidden when services.keystone.mode is External (no backing services are provisioned at all)"))
+		}
 
 		// Cross-field rules CEL cannot express.
 		if cp.Spec.Infrastructure != nil {
@@ -1163,20 +1354,17 @@ func newInvalidIfErrs(cp *ControlPlane, allErrs field.ErrorList) error {
 // commonv1.DatabaseSpec/CacheSpec types, which the keystone operator reuses and
 // which therefore must not carry c5c3-specific CEL immutability markers.
 //
-//   - Database/cache MODE (managed clusterRef vs brownfield host/servers):
-//     flipping it leaves the previously-projected MariaDB/Memcached child (and,
-//     in managed mode, its per-ControlPlane credential ExternalSecret) running
-//     and owned until the ControlPlane is deleted.
-//   - A managed clusterRef.NAME change re-points the projection at a new child
-//     and orphans the old one the same way.
+//   - The create-only leaves of every database/cache instance — the shared block
+//     and each per-service dedicated one — via validateDatabaseImmutable /
+//     validateCacheImmutable, and the shared<->dedicated presence freeze via
+//     validateDedicatedBackingServicesImmutable.
 //   - A cloudCredentialsRef.secretName change re-points the K-ORC clouds.yaml
 //     projection and leaks the previously-named ExternalSecret.
-//   - The database NAME (spec.infrastructure.database.database) and the region
-//     (spec.region) are projected verbatim into the Keystone child's now-immutable
-//     spec.database.database / spec.bootstrap.region (#466). Renaming either here
-//     would make the next reconcile attempt an update the Keystone CEL rule
-//     rejects, wedging the loop; rejecting the change at the ControlPlane layer
-//     surfaces a clean error instead.
+//   - The region (spec.region) is projected verbatim into the Keystone child's
+//     now-immutable spec.bootstrap.region (#466). Changing it here would make the
+//     next reconcile attempt an update the Keystone CEL rule rejects, wedging the
+//     loop; rejecting the change at the ControlPlane layer surfaces a clean error
+//     instead.
 //
 // keystoneModeString returns cp's keystone service mode as a string for use in a
 // transition-gating error message, or "unset" when the service block is absent.
@@ -1242,65 +1430,12 @@ func validateImmutable(oldObj, newObj *ControlPlane) field.ErrorList {
 	// cloudCredentialsRef.secretName and region immutability checks below are
 	// mode-independent and always run.
 	if oldInfra, newInfra := oldObj.Spec.Infrastructure, newObj.Spec.Infrastructure; oldInfra != nil && newInfra != nil {
-		dbPath := field.NewPath("spec", "infrastructure", "database")
-		oldDB := oldInfra.Database
-		newDB := newInfra.Database
-		switch {
-		case (oldDB.ClusterRef != nil) != (newDB.ClusterRef != nil):
-			allErrs = append(allErrs, field.Invalid(dbPath, newDB,
-				"database mode (managed clusterRef vs brownfield host) is immutable"))
-		case oldDB.ClusterRef != nil && newDB.ClusterRef != nil && oldDB.ClusterRef.Name != newDB.ClusterRef.Name:
-			allErrs = append(allErrs, field.Invalid(dbPath.Child("clusterRef", "name"),
-				newDB.ClusterRef.Name, "managed database clusterRef.name is immutable"))
-		}
-		if oldDB.Database != newDB.Database {
-			allErrs = append(allErrs, field.Invalid(dbPath.Child("database"),
-				newDB.Database, "database name is immutable"))
-		}
-		// database.replicas is create-only. It is projected into the managed MariaDB
-		// child's replica count and the derived Galera topology (ensureMariaDB), so
-		// editing it on a live ControlPlane would drive a destructive Update on the
-		// owned cluster — toggling Galera off (3->1) or scaling a running Galera
-		// cluster down. Freezing it here keeps the CR the single source of truth for a
-		// topology that can only be changed safely by recreating the control plane,
-		// mirroring the database name / region / clusterRef.name immutability above.
-		if oldDB.Replicas != newDB.Replicas {
-			allErrs = append(allErrs, field.Invalid(dbPath.Child("replicas"),
-				newDB.Replicas, "database replicas is immutable after creation "+
-					"(toggling Galera or scaling down a live cluster is destructive)"))
-		}
-		// database.storageSize is create-only for the same reason: it is projected
-		// into the owned MariaDB's spec.storage.size, which the mariadb-operator
-		// rejects changing on a live CR (its webhook forbids resizing/shrinking the
-		// PVC). Freezing it at the ControlPlane layer surfaces the constraint at
-		// admission with a clear message instead of letting the edit reach — and be
-		// rejected by — the child MariaDB. Mirrors the replicas immutability above.
-		//
-		// The comparison is against the DEFAULTED value on both sides: a ControlPlane
-		// created before storageSize existed has "" persisted (and any read/apply
-		// path that bypasses CRD defaulting, e.g. a fake-client test, can surface ""),
-		// yet its live MariaDB was provisioned at the default size. Normalizing ""
-		// to DefaultDatabaseStorageSize lets such a CR migrate once — an update that
-		// pins the field to the default it already runs at is admitted — while any
-		// OTHER value is still rejected as a resize the mariadb-operator would refuse.
-		if effectiveStorageSize(oldDB.StorageSize) != effectiveStorageSize(newDB.StorageSize) {
-			allErrs = append(allErrs, field.Invalid(dbPath.Child("storageSize"),
-				newDB.StorageSize, "database storageSize is immutable after creation "+
-					"(the mariadb-operator rejects resizing a live volume)"))
-		}
-
-		cachePath := field.NewPath("spec", "infrastructure", "cache")
-		oldCache := oldInfra.Cache
-		newCache := newInfra.Cache
-		switch {
-		case (oldCache.ClusterRef != nil) != (newCache.ClusterRef != nil):
-			allErrs = append(allErrs, field.Invalid(cachePath, newCache,
-				"cache mode (managed clusterRef vs brownfield servers) is immutable"))
-		case oldCache.ClusterRef != nil && newCache.ClusterRef != nil && oldCache.ClusterRef.Name != newCache.ClusterRef.Name:
-			allErrs = append(allErrs, field.Invalid(cachePath.Child("clusterRef", "name"),
-				newCache.ClusterRef.Name, "managed cache clusterRef.name is immutable"))
-		}
+		specPath := field.NewPath("spec", "infrastructure")
+		allErrs = append(allErrs, validateDatabaseImmutable(specPath.Child("database"), &oldInfra.Database, &newInfra.Database)...)
+		allErrs = append(allErrs, validateCacheImmutable(specPath.Child("cache"), &oldInfra.Cache, &newInfra.Cache)...)
 	}
+
+	allErrs = append(allErrs, validateDedicatedBackingServicesImmutable(oldObj, newObj)...)
 
 	oldSecretName := oldObj.Spec.KORC.AdminCredential.CloudCredentialsRef.SecretName
 	newSecretName := newObj.Spec.KORC.AdminCredential.CloudCredentialsRef.SecretName
@@ -1321,6 +1456,156 @@ func validateImmutable(oldObj, newObj *ControlPlane) field.ErrorList {
 	allErrs = append(allErrs, validateServiceAccountsImmutable(oldObj, newObj)...)
 
 	return allErrs
+}
+
+// validateDatabaseImmutable freezes the create-only leaves of ONE database
+// instance — the shared spec.infrastructure.database and every per-service
+// dedicated one alike, since each is projected onto the same MariaDB and
+// Keystone-child fields:
+//
+//   - the MODE (managed clusterRef vs brownfield host): flipping it leaves the
+//     previously-projected MariaDB child (and its credential ExternalSecret)
+//     running and owned until the ControlPlane is deleted;
+//   - a managed clusterRef.NAME change re-points the projection at a new child
+//     and orphans the old one the same way;
+//   - the database NAME, which is projected verbatim into the consuming service
+//     child's now-immutable spec.database.database — renaming it here would make
+//     the next reconcile attempt an update the child's CEL rule rejects, wedging
+//     the loop behind a KeystoneProjectionRejected condition;
+//   - replicas, which drives the owned MariaDB's replica count and the derived
+//     Galera topology, so an in-place edit would toggle Galera off or scale a
+//     running Galera cluster down — destructive on a live cluster;
+//   - storageSize, which the mariadb-operator refuses to change on a live CR. The
+//     comparison normalizes "" to the default the fresh-create projection
+//     actually provisions (effectiveStorageSize), so a ControlPlane stored before
+//     the field existed can migrate once to an explicit default while any OTHER
+//     value is still rejected as a resize.
+//
+// The checks are webhook-only: the leaves live in the shared commonv1.DatabaseSpec,
+// which the keystone operator reuses and which therefore must not carry
+// c5c3-specific CEL immutability markers.
+func validateDatabaseImmutable(fldPath *field.Path, oldDB, newDB *commonv1.DatabaseSpec) field.ErrorList {
+	var allErrs field.ErrorList
+
+	// validate() enforces the database XOR (exactly one of clusterRef or host), so
+	// clusterRef nil-ness is an unambiguous mode discriminator here.
+	switch {
+	case (oldDB.ClusterRef != nil) != (newDB.ClusterRef != nil):
+		allErrs = append(allErrs, field.Invalid(fldPath, *newDB,
+			"database mode (managed clusterRef vs brownfield host) is immutable"))
+	case oldDB.ClusterRef != nil && newDB.ClusterRef != nil && oldDB.ClusterRef.Name != newDB.ClusterRef.Name:
+		allErrs = append(allErrs, field.Invalid(fldPath.Child("clusterRef", "name"),
+			newDB.ClusterRef.Name, "managed database clusterRef.name is immutable"))
+	}
+	if oldDB.Database != newDB.Database {
+		allErrs = append(allErrs, field.Invalid(fldPath.Child("database"),
+			newDB.Database, "database name is immutable"))
+	}
+	if oldDB.Replicas != newDB.Replicas {
+		allErrs = append(allErrs, field.Invalid(fldPath.Child("replicas"),
+			newDB.Replicas, "database replicas is immutable after creation "+
+				"(toggling Galera or scaling down a live cluster is destructive)"))
+	}
+	if effectiveStorageSize(oldDB.StorageSize) != effectiveStorageSize(newDB.StorageSize) {
+		allErrs = append(allErrs, field.Invalid(fldPath.Child("storageSize"),
+			newDB.StorageSize, "database storageSize is immutable after creation "+
+				"(the mariadb-operator rejects resizing a live volume)"))
+	}
+	return allErrs
+}
+
+// validateCacheImmutable freezes the create-only leaves of ONE cache instance —
+// the shared spec.infrastructure.cache and every per-service dedicated one alike.
+// Only the MODE and the managed clusterRef.name are frozen: replicas stays
+// mutable, because ensureMemcached reconciles an owned Memcached's replica count
+// in place (scaling a cache loses no data).
+func validateCacheImmutable(fldPath *field.Path, oldCache, newCache *commonv1.CacheSpec) field.ErrorList {
+	var allErrs field.ErrorList
+	switch {
+	case (oldCache.ClusterRef != nil) != (newCache.ClusterRef != nil):
+		allErrs = append(allErrs, field.Invalid(fldPath, *newCache,
+			"cache mode (managed clusterRef vs brownfield servers) is immutable"))
+	case oldCache.ClusterRef != nil && newCache.ClusterRef != nil && oldCache.ClusterRef.Name != newCache.ClusterRef.Name:
+		allErrs = append(allErrs, field.Invalid(fldPath.Child("clusterRef", "name"),
+			newCache.ClusterRef.Name, "managed cache clusterRef.name is immutable"))
+	}
+	return allErrs
+}
+
+// dedicatedTransitionMessage is the single message every shared<->dedicated
+// presence freeze reports, so the four sites (the per-service block and each
+// backing-service class within it) cannot drift apart.
+const dedicatedTransitionMessage = "switching a service between shared and dedicated backing services on a live " +
+	"ControlPlane is not yet supported; remove and recreate the ControlPlane to change it"
+
+// validateDedicatedBackingServicesImmutable freezes the per-service dedicated
+// backing-service declarations on UPDATE, in two layers:
+//
+//   - PRESENCE, both of the per-service block and of each backing-service class
+//     within it. An in-place shared->dedicated flip (or back) would re-point the
+//     consuming child's database/cache at a different instance — and those child
+//     leaves (spec.database.database, spec.bootstrap.*) are themselves immutable,
+//     so the projection would be rejected and wedge the reconcile behind a
+//     KeystoneProjectionRejected condition — while the previously-provisioned
+//     instance keeps running, owned, with no migration of the data on it.
+//   - The create-only LEAVES of a dedicated instance that stays declared, via the
+//     same validateDatabaseImmutable / validateCacheImmutable rules the shared
+//     block gets.
+//
+// The presence freeze is deliberately webhook-only, with NO CEL transition rule:
+// switching an existing service between shared and dedicated (with or without
+// data migration) is a reserved future feature, and an immutable CEL marker could
+// never be relaxed to a gated transition later. This mirrors the keystone-mode
+// transition gating above.
+func validateDedicatedBackingServicesImmutable(oldObj, newObj *ControlPlane) field.ErrorList {
+	var allErrs field.ErrorList
+	svcPath := field.NewPath("spec", "services")
+
+	ksPath := svcPath.Child("keystone", "dedicatedBackingServices")
+	oldKS := keystoneDedicatedBlock(oldObj)
+	newKS := keystoneDedicatedBlock(newObj)
+	if (oldKS == nil) != (newKS == nil) {
+		allErrs = append(allErrs, field.Invalid(ksPath, newKS, dedicatedTransitionMessage))
+	} else if oldKS != nil && newKS != nil {
+		allErrs = append(allErrs, validateDedicatedDatabase(ksPath.Child("database"), oldKS.Database, newKS.Database)...)
+		allErrs = append(allErrs, validateDedicatedCache(ksPath.Child("cache"), oldKS.Cache, newKS.Cache)...)
+	}
+
+	hzPath := svcPath.Child("horizon", "dedicatedBackingServices")
+	oldHZ := horizonDedicatedBlock(oldObj)
+	newHZ := horizonDedicatedBlock(newObj)
+	if (oldHZ == nil) != (newHZ == nil) {
+		allErrs = append(allErrs, field.Invalid(hzPath, newHZ, dedicatedTransitionMessage))
+	} else if oldHZ != nil && newHZ != nil {
+		allErrs = append(allErrs, validateDedicatedCache(hzPath.Child("cache"), oldHZ.Cache, newHZ.Cache)...)
+	}
+
+	return allErrs
+}
+
+// validateDedicatedDatabase freezes one dedicated database class: its presence
+// (adding or removing the class is the same shared<->dedicated transition as
+// adding or removing the whole block) and, when it stays declared, its
+// create-only leaves.
+func validateDedicatedDatabase(fldPath *field.Path, oldDB, newDB *commonv1.DatabaseSpec) field.ErrorList {
+	switch {
+	case (oldDB == nil) != (newDB == nil):
+		return field.ErrorList{field.Invalid(fldPath, newDB, dedicatedTransitionMessage)}
+	case oldDB == nil:
+		return nil
+	}
+	return validateDatabaseImmutable(fldPath, oldDB, newDB)
+}
+
+// validateDedicatedCache is the cache twin of validateDedicatedDatabase.
+func validateDedicatedCache(fldPath *field.Path, oldCache, newCache *commonv1.CacheSpec) field.ErrorList {
+	switch {
+	case (oldCache == nil) != (newCache == nil):
+		return field.ErrorList{field.Invalid(fldPath, newCache, dedicatedTransitionMessage)}
+	case oldCache == nil:
+		return nil
+	}
+	return validateCacheImmutable(fldPath, oldCache, newCache)
 }
 
 // validateServiceAccountsImmutable freezes the per-entry identity and project

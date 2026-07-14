@@ -708,6 +708,28 @@ func TestValidateCreate_AccumulatesAllErrors(t *testing.T) {
 	cp.Spec.Services.Keystone.PolicyOverrides = &commonv1.PolicySpec{
 		Rules: map[string]string{"identity:get_user": ""},
 	}
+	// Dedicated backing services: a Dynamic credentialsMode the dedicated database
+	// cannot support, and a Horizon dedicated cache colliding with the Keystone one.
+	cp.Spec.Services.Keystone.DedicatedBackingServices = &KeystoneDedicatedBackingServicesSpec{
+		Database: &commonv1.DatabaseSpec{
+			ClusterRef:      &corev1.LocalObjectReference{Name: "cp-keystone-db"},
+			CredentialsMode: commonv1.CredentialsModeDynamic,
+			Database:        "keystone",
+			SecretRef:       commonv1.SecretRefSpec{Name: "keystone-db"},
+		},
+		Cache: &commonv1.CacheSpec{
+			ClusterRef: &corev1.LocalObjectReference{Name: "cp-keystone-cache"},
+			Backend:    commonv1.DefaultCacheBackend,
+		},
+	}
+	cp.Spec.Services.Horizon = &ServiceHorizonSpec{
+		DedicatedBackingServices: &HorizonDedicatedBackingServicesSpec{
+			Cache: &commonv1.CacheSpec{
+				ClusterRef: &corev1.LocalObjectReference{Name: "cp-keystone-cache"},
+				Backend:    commonv1.DefaultCacheBackend,
+			},
+		},
+	}
 
 	_, err := w.ValidateCreate(context.Background(), cp)
 	g.Expect(err).To(HaveOccurred())
@@ -722,6 +744,10 @@ func TestValidateCreate_AccumulatesAllErrors(t *testing.T) {
 	g.Expect(msg).To(ContainSubstring("policyOverrides"), "per-service policy rule-value error must be present")
 	g.Expect(msg).To(ContainSubstring("policy rule name must not be empty"))
 	g.Expect(msg).To(ContainSubstring("policy rule value must not be empty"))
+	g.Expect(msg).To(ContainSubstring("credentialsMode Dynamic is not supported on a dedicated database"),
+		"dedicated Dynamic-credentials error must be present")
+	g.Expect(msg).To(ContainSubstring("horizon.dedicatedBackingServices.cache.clusterRef.name"),
+		"dedicated cache collision error must be present")
 }
 
 // TestValidateCreate_RejectsBadRotationInterval verifies a rotationInterval the
@@ -2513,6 +2539,458 @@ func TestValidateUpdate_AcceptsServiceAccountAdoptFlip(t *testing.T) {
 	// Flipping adopt to true is the documented collision remediation — it must
 	// stay mutable.
 	newCP.Spec.KORC.ServiceAccounts[0].Adopt = true
+
+	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// --- Per-service dedicated backing services ---
+
+// dedicatedControlPlane returns a ControlPlane whose Keystone service opts into a
+// dedicated database AND cache, and whose Horizon dashboard opts into a dedicated
+// cache. The SHARED block stays brownfield (the validControlPlane baseline), so
+// the managed clusterRef names below cannot collide with a shared instance unless
+// a test makes them.
+func dedicatedControlPlane() *ControlPlane {
+	cp := validControlPlane()
+	cp.Name = "cp"
+	cp.Spec.Services.Keystone.DedicatedBackingServices = &KeystoneDedicatedBackingServicesSpec{
+		Database: &commonv1.DatabaseSpec{
+			ClusterRef: &corev1.LocalObjectReference{Name: "cp-keystone-db"},
+			Database:   "keystone",
+			SecretRef:  commonv1.SecretRefSpec{Name: "keystone-db"},
+		},
+		Cache: &commonv1.CacheSpec{
+			ClusterRef: &corev1.LocalObjectReference{Name: "cp-keystone-cache"},
+			Backend:    commonv1.DefaultCacheBackend,
+		},
+	}
+	cp.Spec.Services.Horizon = &ServiceHorizonSpec{
+		DedicatedBackingServices: &HorizonDedicatedBackingServicesSpec{
+			Cache: &commonv1.CacheSpec{
+				ClusterRef: &corev1.LocalObjectReference{Name: "cp-horizon-cache"},
+				Backend:    commonv1.DefaultCacheBackend,
+			},
+		},
+	}
+	return cp
+}
+
+// TestDefault_DedicatedBackingServicesLeaves verifies a declared dedicated block
+// takes the same leaf defaults as the shared one, with a managed clusterRef name
+// DERIVED from the ControlPlane so it cannot collide with the shared instance,
+// and with credentialsMode materialized to Static (a dedicated managed database
+// cannot draw engine-issued credentials).
+func TestDefault_DedicatedBackingServicesLeaves(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Name = "prod"
+	cp.Spec.Services.Keystone.DedicatedBackingServices = &KeystoneDedicatedBackingServicesSpec{
+		Database: &commonv1.DatabaseSpec{},
+		Cache:    &commonv1.CacheSpec{},
+	}
+	cp.Spec.Services.Horizon = &ServiceHorizonSpec{
+		DedicatedBackingServices: &HorizonDedicatedBackingServicesSpec{Cache: &commonv1.CacheSpec{}},
+	}
+
+	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+
+	db := cp.Spec.Services.Keystone.DedicatedBackingServices.Database
+	g.Expect(db.ClusterRef).NotTo(BeNil())
+	g.Expect(db.ClusterRef.Name).To(Equal("prod" + DedicatedKeystoneDatabaseClusterRefSuffix))
+	g.Expect(db.Database).To(Equal(DefaultDatabaseName))
+	g.Expect(db.SecretRef.Name).To(Equal(DefaultDatabaseSecretName))
+	g.Expect(db.CredentialsMode).To(Equal(commonv1.CredentialsModeStatic),
+		"a dedicated managed database is Static-only: no per-instance OpenBao engine role exists")
+
+	ksCache := cp.Spec.Services.Keystone.DedicatedBackingServices.Cache
+	g.Expect(ksCache.ClusterRef).NotTo(BeNil())
+	g.Expect(ksCache.ClusterRef.Name).To(Equal("prod" + DedicatedKeystoneCacheClusterRefSuffix))
+	g.Expect(ksCache.Backend).To(Equal(DefaultCacheBackend))
+
+	hzCache := cp.Spec.Services.Horizon.DedicatedBackingServices.Cache
+	g.Expect(hzCache.ClusterRef).NotTo(BeNil())
+	g.Expect(hzCache.ClusterRef.Name).To(Equal("prod" + DedicatedHorizonCacheClusterRefSuffix))
+
+	// The derived names must differ from each other AND from the shared defaults,
+	// otherwise two instances would resolve to one child CR.
+	g.Expect(db.ClusterRef.Name).NotTo(Equal(DefaultDatabaseClusterRefName))
+	g.Expect(ksCache.ClusterRef.Name).NotTo(Equal(hzCache.ClusterRef.Name))
+	g.Expect(ksCache.ClusterRef.Name).NotTo(Equal(DefaultCacheClusterRefName))
+
+	// Defaulting must be idempotent on the dedicated leaves too.
+	before := cp.DeepCopy()
+	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+	g.Expect(cp.Spec.Services).To(Equal(before.Spec.Services))
+}
+
+// TestDefault_DoesNotInventDedicatedBackingServices pins the shared-by-default
+// contract: a service that does not opt in must come out of the defaulting
+// webhook with NO dedicated block, so its projection keeps using the
+// ControlPlane-wide instances.
+func TestDefault_DoesNotInventDedicatedBackingServices(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Spec.Services.Horizon = &ServiceHorizonSpec{}
+
+	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+
+	g.Expect(cp.Spec.Services.Keystone.DedicatedBackingServices).To(BeNil())
+	g.Expect(cp.Spec.Services.Horizon.DedicatedBackingServices).To(BeNil())
+	g.Expect(cp.DedicatedKeystoneDatabase()).To(BeNil())
+	g.Expect(cp.DedicatedKeystoneCache()).To(BeNil())
+	g.Expect(cp.DedicatedHorizonCache()).To(BeNil())
+}
+
+// TestDefault_DedicatedBrownfieldNotCoercedIntoManaged mirrors
+// TestDefault_DoesNotInventModeForBrownfield for the dedicated blocks: an
+// explicit external endpoint must never grow a managed clusterRef, which would
+// make the block fail its own XOR check.
+func TestDefault_DedicatedBrownfieldNotCoercedIntoManaged(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Name = "cp"
+	cp.Spec.Services.Keystone.DedicatedBackingServices = &KeystoneDedicatedBackingServicesSpec{
+		Database: &commonv1.DatabaseSpec{Host: "keystone-db.example.com", Port: 3306},
+		Cache:    &commonv1.CacheSpec{Servers: []string{"keystone-mc:11211"}},
+	}
+
+	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+
+	db := cp.Spec.Services.Keystone.DedicatedBackingServices.Database
+	g.Expect(db.ClusterRef).To(BeNil(), "a brownfield dedicated database must not grow a managed clusterRef")
+	g.Expect(db.CredentialsMode).To(BeEmpty(), "Static is only materialized for a MANAGED dedicated database")
+	g.Expect(cp.Spec.Services.Keystone.DedicatedBackingServices.Cache.ClusterRef).To(BeNil())
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred(), "a brownfield dedicated instance must survive its own XOR check")
+}
+
+func TestValidateCreate_AcceptsDedicatedBackingServices(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+
+	_, err := w.ValidateCreate(context.Background(), dedicatedControlPlane())
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// TestValidateCreate_RejectsEmptyDedicatedBlock rejects an opt-in that requests
+// nothing — the webhook mirror of the at-least-one-class CEL rule.
+func TestValidateCreate_RejectsEmptyDedicatedBlock(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Spec.Services.Keystone.DedicatedBackingServices = &KeystoneDedicatedBackingServicesSpec{}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("at least one backing-service class"))
+}
+
+// TestValidateCreate_RejectsDedicatedDatabaseXOR verifies the dedicated database
+// inherits the managed-vs-brownfield XOR of the shared block: both modes set, or
+// neither, is rejected.
+func TestValidateCreate_RejectsDedicatedDatabaseXOR(t *testing.T) {
+	tests := []struct {
+		name string
+		db   commonv1.DatabaseSpec
+	}{
+		{name: "both clusterRef and host", db: commonv1.DatabaseSpec{
+			ClusterRef: &corev1.LocalObjectReference{Name: "cp-keystone-db"},
+			Host:       "db.example.com",
+			Database:   "keystone",
+			SecretRef:  commonv1.SecretRefSpec{Name: "keystone-db"},
+		}},
+		{name: "neither clusterRef nor host", db: commonv1.DatabaseSpec{
+			Database:  "keystone",
+			SecretRef: commonv1.SecretRefSpec{Name: "keystone-db"},
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			w := &ControlPlaneWebhook{}
+			cp := validControlPlane()
+			db := tc.db
+			cp.Spec.Services.Keystone.DedicatedBackingServices = &KeystoneDedicatedBackingServicesSpec{Database: &db}
+
+			_, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring("exactly one of clusterRef or host must be set"))
+			g.Expect(err.Error()).To(ContainSubstring("dedicatedBackingServices.database"))
+		})
+	}
+}
+
+// TestValidateCreate_RejectsDedicatedCacheXOR is the cache twin of
+// TestValidateCreate_RejectsDedicatedDatabaseXOR, on the Horizon block so both
+// services' dedicated caches are covered.
+func TestValidateCreate_RejectsDedicatedCacheXOR(t *testing.T) {
+	tests := []struct {
+		name  string
+		cache commonv1.CacheSpec
+	}{
+		{name: "both clusterRef and servers", cache: commonv1.CacheSpec{
+			ClusterRef: &corev1.LocalObjectReference{Name: "cp-horizon-cache"},
+			Servers:    []string{"mc:11211"},
+			Backend:    commonv1.DefaultCacheBackend,
+		}},
+		{name: "neither clusterRef nor servers", cache: commonv1.CacheSpec{
+			Backend: commonv1.DefaultCacheBackend,
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			w := &ControlPlaneWebhook{}
+			cp := validControlPlane()
+			cache := tc.cache
+			cp.Spec.Services.Horizon = &ServiceHorizonSpec{
+				DedicatedBackingServices: &HorizonDedicatedBackingServicesSpec{Cache: &cache},
+			}
+
+			_, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring("exactly one of clusterRef or servers must be set"))
+			g.Expect(err.Error()).To(ContainSubstring("horizon.dedicatedBackingServices.cache"))
+		})
+	}
+}
+
+// TestValidateCreate_RejectsDynamicCredentialsOnDedicatedDatabase pins the one
+// constraint a dedicated database carries that the shared block does not: the
+// OpenBao database engine is bootstrapped once per NAMESPACE against the shared
+// cluster, so no engine role can issue credentials for a dedicated instance and
+// an admitted Dynamic dedicated database would wedge on an ExternalSecret that
+// can never sync.
+func TestValidateCreate_RejectsDynamicCredentialsOnDedicatedDatabase(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := dedicatedControlPlane()
+	cp.Spec.Services.Keystone.DedicatedBackingServices.Database.CredentialsMode = commonv1.CredentialsModeDynamic
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("credentialsMode Dynamic is not supported on a dedicated database"))
+}
+
+// TestValidateCreate_RejectsDedicatedDatabaseReplicasTwo verifies the
+// Galera-quorum rule applies to a dedicated database exactly as it does to the
+// shared one — the projection that makes 2 unsafe is the same.
+func TestValidateCreate_RejectsDedicatedDatabaseReplicasTwo(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := dedicatedControlPlane()
+	cp.Spec.Services.Keystone.DedicatedBackingServices.Database.Replicas = 2
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("2 cannot hold a majority"))
+	g.Expect(err.Error()).To(ContainSubstring("dedicatedBackingServices.database.replicas"))
+}
+
+// TestValidateCreate_RejectsDedicatedClusterRefCollision covers both collision
+// axes: a dedicated instance named like the SHARED one, and two services'
+// dedicated instances of the same class named alike. Either would make two
+// projections resolve to one child CR and silently void the isolation the opt-in
+// exists for.
+func TestValidateCreate_RejectsDedicatedClusterRefCollision(t *testing.T) {
+	t.Run("dedicated database collides with the shared database", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		w := &ControlPlaneWebhook{}
+		cp := dedicatedControlPlane()
+		// Make the shared block managed, then point the dedicated database at it.
+		cp.Spec.Infrastructure.Database = commonv1.DatabaseSpec{
+			ClusterRef: &corev1.LocalObjectReference{Name: "openstack-db"},
+			Database:   "openstack",
+			SecretRef:  commonv1.SecretRefSpec{Name: "db-creds"},
+		}
+		cp.Spec.Services.Keystone.DedicatedBackingServices.Database.ClusterRef = &corev1.LocalObjectReference{Name: "openstack-db"}
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("Duplicate value"))
+		g.Expect(err.Error()).To(ContainSubstring("openstack-db"))
+	})
+
+	t.Run("two dedicated caches collide with each other", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		w := &ControlPlaneWebhook{}
+		cp := dedicatedControlPlane()
+		cp.Spec.Services.Horizon.DedicatedBackingServices.Cache.ClusterRef = &corev1.LocalObjectReference{Name: "cp-keystone-cache"}
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("Duplicate value"))
+		g.Expect(err.Error()).To(ContainSubstring("cp-keystone-cache"))
+	})
+}
+
+// TestValidateCreate_RejectsDedicatedInExternalMode verifies the webhook mirror of
+// the External-mode CEL forbid rule: an External ControlPlane provisions no
+// backing services at all, so there is nothing to make dedicated.
+func TestValidateCreate_RejectsDedicatedInExternalMode(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Spec.Infrastructure = nil
+	cp.Spec.Services.Keystone = &ServiceKeystoneSpec{
+		Mode:     KeystoneModeExternal,
+		External: &ExternalKeystoneSpec{AuthURL: "https://keystone.example.com/v3"},
+		DedicatedBackingServices: &KeystoneDedicatedBackingServicesSpec{
+			Cache: &commonv1.CacheSpec{
+				ClusterRef: &corev1.LocalObjectReference{Name: "cp-keystone-cache"},
+				Backend:    commonv1.DefaultCacheBackend,
+			},
+		},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("services.keystone.dedicatedBackingServices"))
+	g.Expect(err.Error()).To(ContainSubstring("no backing services are provisioned at all"))
+}
+
+// TestValidateUpdate_RejectsDedicatedPresenceFlip pins the transition freeze: a
+// live service cannot be moved between shared and dedicated backing services, in
+// either direction, at either granularity (the whole block, or one class within
+// it). The freeze is webhook-only precisely so a later transition feature can
+// relax it to a gated migration.
+func TestValidateUpdate_RejectsDedicatedPresenceFlip(t *testing.T) {
+	tests := []struct {
+		name           string
+		oldCP, newCP   func() *ControlPlane
+		wantSubstrings []string
+	}{
+		{
+			name:  "shared -> dedicated block",
+			oldCP: validControlPlane,
+			newCP: dedicatedControlPlane,
+		},
+		{
+			name:  "dedicated -> shared block",
+			oldCP: dedicatedControlPlane,
+			newCP: validControlPlane,
+		},
+		{
+			name: "adding a dedicated class to an existing block",
+			oldCP: func() *ControlPlane {
+				cp := dedicatedControlPlane()
+				cp.Spec.Services.Keystone.DedicatedBackingServices.Database = nil
+				return cp
+			},
+			newCP:          dedicatedControlPlane,
+			wantSubstrings: []string{"dedicatedBackingServices.database"},
+		},
+		{
+			name:  "removing a dedicated class from an existing block",
+			oldCP: dedicatedControlPlane,
+			newCP: func() *ControlPlane {
+				cp := dedicatedControlPlane()
+				cp.Spec.Services.Keystone.DedicatedBackingServices.Cache = nil
+				return cp
+			},
+			wantSubstrings: []string{"dedicatedBackingServices.cache"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			w := &ControlPlaneWebhook{}
+
+			_, err := w.ValidateUpdate(context.Background(), tc.oldCP(), tc.newCP())
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring(
+				"switching a service between shared and dedicated backing services",
+			))
+			for _, want := range tc.wantSubstrings {
+				g.Expect(err.Error()).To(ContainSubstring(want))
+			}
+		})
+	}
+}
+
+// TestValidateUpdate_RejectsDedicatedLeafChanges verifies a dedicated instance
+// that stays declared is frozen on the same create-only leaves as the shared
+// block: renaming its child CR, its logical database, or reshaping its topology
+// would orphan the live instance or drive a destructive update on it.
+func TestValidateUpdate_RejectsDedicatedLeafChanges(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(cp *ControlPlane)
+		wantMsg string
+	}{
+		{
+			name: "managed clusterRef rename",
+			mutate: func(cp *ControlPlane) {
+				cp.Spec.Services.Keystone.DedicatedBackingServices.Database.ClusterRef = &corev1.LocalObjectReference{Name: "renamed-db"}
+			},
+			wantMsg: "managed database clusterRef.name is immutable",
+		},
+		{
+			name: "database name change",
+			mutate: func(cp *ControlPlane) {
+				cp.Spec.Services.Keystone.DedicatedBackingServices.Database.Database = "keystone2"
+			},
+			wantMsg: "database name is immutable",
+		},
+		{
+			name: "replicas change",
+			mutate: func(cp *ControlPlane) {
+				cp.Spec.Services.Keystone.DedicatedBackingServices.Database.Replicas = 3
+			},
+			wantMsg: "database replicas is immutable after creation",
+		},
+		{
+			name: "storageSize change",
+			mutate: func(cp *ControlPlane) {
+				cp.Spec.Services.Keystone.DedicatedBackingServices.Database.StorageSize = "512Mi"
+			},
+			wantMsg: "database storageSize is immutable after creation",
+		},
+		{
+			name: "cache mode flip",
+			mutate: func(cp *ControlPlane) {
+				cp.Spec.Services.Horizon.DedicatedBackingServices.Cache.ClusterRef = nil
+				cp.Spec.Services.Horizon.DedicatedBackingServices.Cache.Servers = []string{"mc:11211"}
+			},
+			wantMsg: "cache mode (managed clusterRef vs brownfield servers) is immutable",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			w := &ControlPlaneWebhook{}
+			oldCP := dedicatedControlPlane()
+			// Pin storageSize on the old object so the "" -> default normalization
+			// does not mask the resize test.
+			oldCP.Spec.Services.Keystone.DedicatedBackingServices.Database.StorageSize = "100Gi"
+			newCP := dedicatedControlPlane()
+			newCP.Spec.Services.Keystone.DedicatedBackingServices.Database.StorageSize = "100Gi"
+			tc.mutate(newCP)
+
+			_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring(tc.wantMsg))
+		})
+	}
+}
+
+// TestValidateUpdate_AcceptsDedicatedCacheReplicasChange pins the other half of
+// the immutability contract — only what genuinely cannot change is frozen. A
+// cache replica count is reconciled in place on the owned Memcached (scaling a
+// cache loses no data), so it stays mutable on a dedicated instance exactly as it
+// is on the shared one.
+func TestValidateUpdate_AcceptsDedicatedCacheReplicasChange(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	oldCP := dedicatedControlPlane()
+	oldCP.Spec.Services.Keystone.DedicatedBackingServices.Cache.Replicas = 1
+	newCP := dedicatedControlPlane()
+	newCP.Spec.Services.Keystone.DedicatedBackingServices.Cache.Replicas = 3
 
 	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
 	g.Expect(err).NotTo(HaveOccurred())
