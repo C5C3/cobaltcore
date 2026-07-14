@@ -40,7 +40,22 @@ func EnsureObject[T client.Object](ctx context.Context, c client.Client, scheme 
 	if err := controllerutil.SetControllerReference(owner, obj, scheme); err != nil {
 		return fmt.Errorf("setting owner reference on %s/%s: %w", obj.GetNamespace(), obj.GetName(), err)
 	}
+	return EnsureUnownedObject(ctx, c, scheme, obj, fieldManager)
+}
 
+// EnsureUnownedObject creates or updates obj using Server-Side Apply under
+// fieldManager, setting NO owner reference. It is EnsureObject's apply core, and
+// the two share it so their SSA behavior (GVK stamping, metadata stripping,
+// conflict retry, response decode) cannot drift.
+//
+// Use it for a child in a DIFFERENT namespace than its owner: Kubernetes rejects
+// a cross-namespace controller owner reference — garbage collection only cascades
+// within one namespace — so such a child cannot be owned, and EnsureObject would
+// fail before the apply. Ownership and cleanup of an unowned child are the
+// caller's responsibility: stamp it with ownership labels the controller can
+// resolve, and delete it explicitly (a finalizer-driven teardown), because
+// nothing garbage-collects it when the owner goes.
+func EnsureUnownedObject[T client.Object](ctx context.Context, c client.Client, scheme *runtime.Scheme, obj T, fieldManager string) error {
 	// Server-Side Apply requires apiVersion/kind in the request body, but
 	// objects built in-code carry an empty TypeMeta, so resolve and stamp the
 	// GVK before converting to the unstructured apply configuration.

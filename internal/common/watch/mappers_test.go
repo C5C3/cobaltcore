@@ -279,3 +279,30 @@ func TestStoreRefFanOut_NamespacedKindIgnoresForeignNamespace(t *testing.T) {
 	changed := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "openbao-tenant-store", Namespace: "ns2"}}
 	g.Expect(mapper(context.Background(), changed)).To(gomega.BeEmpty())
 }
+
+// TestSecretToOwnersMapper_AllNamespaces pins the cross-namespace secret watch: a
+// CR that places its services (and their secret material) in namespaces of their
+// own references Secrets outside its own namespace, so the default
+// namespace-scoped List would look for it where it does not live and silently
+// drop the event.
+func TestSecretToOwnersMapper_AllNamespaces(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	c := fake.NewClientBuilder().WithScheme(clientgoscheme.Scheme).
+		WithObjects(testCM("cr-a", "ns1", "db-secret"), testCM("cr-b", "ns2", "other")).
+		WithIndex(&corev1.ConfigMap{}, testIndexKey, indexByRefAnnotation).
+		Build()
+
+	// The Secret lives in ns2; the CR referencing it lives in ns1.
+	secret := testSecret("db-secret", "ns2")
+
+	scoped := SecretToOwnersMapper(c, testMapperConfig(false))(context.Background(), secret)
+	g.Expect(scoped).To(gomega.BeEmpty(), "the namespace-scoped List cannot see a CR in another namespace")
+
+	cfg := testMapperConfig(false)
+	cfg.AllNamespaces = true
+	widened := SecretToOwnersMapper(c, cfg)(context.Background(), secret)
+	g.Expect(widened).To(gomega.ConsistOf(
+		reconcile.Request{NamespacedName: types.NamespacedName{Namespace: "ns1", Name: "cr-a"}},
+	))
+}

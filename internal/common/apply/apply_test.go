@@ -160,3 +160,43 @@ func TestEnsureObject_errorsWhenGVKUnknown(t *testing.T) {
 	err := EnsureObject(context.Background(), c, s, owner, cronJob, FieldManager)
 	g.Expect(err).To(HaveOccurred())
 }
+
+// TestEnsureUnownedObject_appliesWithoutOwnerReference pins the cross-namespace
+// apply path: the object lands with no owner reference at all, so nothing
+// garbage-collects it — the caller carries ownership via labels and an explicit
+// teardown instead.
+func TestEnsureUnownedObject_appliesWithoutOwnerReference(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	c := fake.NewClientBuilder().WithScheme(s).Build()
+
+	cm := testConfigMap()
+	cm.Namespace = "elsewhere"
+	g.Expect(EnsureUnownedObject(context.Background(), c, s, cm, FieldManager)).To(Succeed())
+
+	fetched := &corev1.ConfigMap{}
+	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(cm), fetched)).To(Succeed())
+	g.Expect(fetched.Data).To(HaveKeyWithValue("key", "value"))
+	g.Expect(fetched.OwnerReferences).To(BeEmpty(), "a cross-namespace child must carry no owner reference")
+}
+
+// TestEnsureObject_rejectsCrossNamespaceOwner is the reason EnsureUnownedObject
+// exists: Kubernetes garbage collection does not cascade across namespaces, so
+// SetControllerReference refuses a foreign-namespace child — the apply never even
+// reaches the API server.
+func TestEnsureObject_rejectsCrossNamespaceOwner(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner() // namespace "default"
+
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(owner).Build()
+
+	cm := testConfigMap()
+	cm.Namespace = "elsewhere"
+	err := EnsureObject(context.Background(), c, s, owner, cm, FieldManager)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("setting owner reference"))
+
+	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(cm), &corev1.ConfigMap{})).NotTo(Succeed(),
+		"nothing may be applied once the owner reference is refused")
+}

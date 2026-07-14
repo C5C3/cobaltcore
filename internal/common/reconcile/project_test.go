@@ -163,3 +163,65 @@ func TestDeleteOrphanedChild(t *testing.T) {
 	g.Expect(DeleteOrphanedChild(context.Background(), c2, owner, &skelCR{ObjectMeta: metav1.ObjectMeta{Name: "foreign", Namespace: foreign.Namespace}})).To(gomega.Succeed())
 	g.Expect(c2.Get(context.Background(), client.ObjectKey{Namespace: foreign.Namespace, Name: "foreign"}, &skelCR{})).To(gomega.Succeed(), "foreign child must survive")
 }
+
+// TestProjectChild_UnownedSkipsOwnerReference pins the cross-namespace projection
+// path: the child is applied with no owner reference, so the apply is not refused
+// for a namespace the GC cascade cannot reach. Readiness mirroring is unchanged.
+func TestProjectChild_UnownedSkipsOwnerReference(t *testing.T) {
+	g := gomega.NewWithT(t)
+	s := skelScheme(t)
+	owner := newSkelCR()
+	owner.Name = "owner"
+	owner.UID = "owner-uid"
+
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(owner).Build()
+
+	desired := newSkelCR()
+	desired.Name = "child"
+	desired.Namespace = "elsewhere"
+	var conds []metav1.Condition
+	params := projectParams(desired, &conds)
+	params.Unowned = true
+
+	res, err := ProjectChild(context.Background(), c, s, owner, params)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(res.RequeueAfter).To(gomega.Equal(10*time.Second), "a fresh child is not ready yet")
+
+	fetched := &skelCR{}
+	g.Expect(c.Get(context.Background(), client.ObjectKey{Namespace: "elsewhere", Name: "child"}, fetched)).To(gomega.Succeed())
+	g.Expect(fetched.OwnerReferences).To(gomega.BeEmpty(), "a cross-namespace child must carry no owner reference")
+}
+
+// TestDeleteOrphanedChildFunc_HonorsThePredicate covers the label-based ownership
+// test a cross-namespace child needs: an owner reference is absent there, so the
+// caller supplies the predicate. An object the predicate rejects is left alone.
+func TestDeleteOrphanedChildFunc_HonorsThePredicate(t *testing.T) {
+	g := gomega.NewWithT(t)
+	s := skelScheme(t)
+
+	labelled := newSkelCR()
+	labelled.Name = "labelled"
+	labelled.Namespace = "elsewhere"
+	labelled.Labels = map[string]string{"owner": "cp"}
+
+	foreign := newSkelCR()
+	foreign.Name = "foreign"
+	foreign.Namespace = "elsewhere"
+
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(labelled, foreign).Build()
+	ours := func(o client.Object) bool { return o.GetLabels()["owner"] == "cp" }
+
+	g.Expect(DeleteOrphanedChildFunc(context.Background(), c,
+		&skelCR{ObjectMeta: metav1.ObjectMeta{Name: "labelled", Namespace: "elsewhere"}}, ours)).To(gomega.Succeed())
+	err := c.Get(context.Background(), client.ObjectKey{Namespace: "elsewhere", Name: "labelled"}, &skelCR{})
+	g.Expect(apierrors.IsNotFound(err)).To(gomega.BeTrue())
+
+	g.Expect(DeleteOrphanedChildFunc(context.Background(), c,
+		&skelCR{ObjectMeta: metav1.ObjectMeta{Name: "foreign", Namespace: "elsewhere"}}, ours)).To(gomega.Succeed())
+	g.Expect(c.Get(context.Background(), client.ObjectKey{Namespace: "elsewhere", Name: "foreign"}, &skelCR{})).
+		To(gomega.Succeed(), "an object the predicate rejects must survive")
+
+	// Absent object is a no-op.
+	g.Expect(DeleteOrphanedChildFunc(context.Background(), c,
+		&skelCR{ObjectMeta: metav1.ObjectMeta{Name: "absent", Namespace: "elsewhere"}}, ours)).To(gomega.Succeed())
+}

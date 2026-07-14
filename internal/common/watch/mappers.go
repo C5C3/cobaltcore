@@ -58,6 +58,16 @@ type SecretMapperConfig struct {
 	// NewObject constructs an empty CR used for the cached staleness Get on
 	// the owner-ref leg. Required when OwnerKind is set.
 	NewObject func() client.Object
+
+	// AllNamespaces widens the index-backed List to the whole cluster instead of
+	// the Secret's own namespace. Set it when a CR can reference a Secret in a
+	// namespace OTHER than its own — an orchestrating CR that places its services
+	// (and their secret material) in namespaces of their own — because a
+	// namespace-scoped List would look for that CR in the Secret's namespace,
+	// where it does not live, and silently drop the event. Leave it false for the
+	// common case where a CR only ever references same-namespace Secrets: the
+	// narrower List is cheaper and cannot match a foreign CR of the same name.
+	AllNamespaces bool
 }
 
 // SecretToOwnersMapper returns a MapFunc that maps Secret events to reconcile
@@ -76,11 +86,11 @@ func SecretToOwnersMapper(c client.Reader, cfg SecretMapperConfig) handler.MapFu
 		seen := make(map[types.NamespacedName]struct{})
 
 		list := cfg.NewList()
-		if err := c.List(
-			ctx, list,
-			client.InNamespace(namespace),
-			client.MatchingFields{cfg.IndexKey: secretName},
-		); err != nil {
+		opts := []client.ListOption{client.MatchingFields{cfg.IndexKey: secretName}}
+		if !cfg.AllNamespaces {
+			opts = append(opts, client.InNamespace(namespace))
+		}
+		if err := c.List(ctx, list, opts...); err != nil {
 			// Log and swallow: the owner-ref path below is independent of
 			// the index and must still run.
 			log.FromContext(ctx).Error(err, "listing CRs for secret watch", "indexKey", cfg.IndexKey)

@@ -56,6 +56,14 @@ type ChildProjectionParams[T client.Object] struct {
 	// ChildConditions extracts the child's status conditions for the readiness
 	// mirror.
 	ChildConditions func(T) []metav1.Condition
+	// Unowned applies the child WITHOUT an owner reference. Set it when the child
+	// lives in a different namespace than the owner: Kubernetes rejects a
+	// cross-namespace controller owner reference, so such a child cannot be owned
+	// and the apply would fail before it reached the API server. The caller must
+	// then carry ownership itself — stamp the child with resolvable ownership
+	// labels before handing it over, and delete it explicitly at teardown, since
+	// no GC cascade reaches it.
+	Unowned bool
 }
 
 // ProjectChild applies the desired child via Server-Side Apply under the shared
@@ -65,7 +73,13 @@ type ChildProjectionParams[T client.Object] struct {
 // of the ControlPlane's per-service projection so onboarding a new service adds
 // configuration rather than another copy.
 func ProjectChild[T client.Object](ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, p ChildProjectionParams[T]) (ctrl.Result, error) {
-	if err := apply.EnsureObject(ctx, c, scheme, owner, p.Child, apply.FieldManager); err != nil {
+	ensure := func() error {
+		if p.Unowned {
+			return apply.EnsureUnownedObject(ctx, c, scheme, p.Child, apply.FieldManager)
+		}
+		return apply.EnsureObject(ctx, c, scheme, owner, p.Child, apply.FieldManager)
+	}
+	if err := ensure(); err != nil {
 		reason := p.ErrorReason
 		message := p.ErrorMessage(err)
 		if apierrors.IsInvalid(err) {
@@ -110,6 +124,19 @@ func ProjectChild[T client.Object](ctx context.Context, c client.Client, scheme 
 // behind it. child is a zero-valued object of the child type with its Name and
 // Namespace set.
 func DeleteOrphanedChild(ctx context.Context, c client.Client, owner, child client.Object) error {
+	return DeleteOrphanedChildFunc(ctx, c, child, func(live client.Object) bool {
+		return metav1.IsControlledBy(live, owner)
+	})
+}
+
+// DeleteOrphanedChildFunc is DeleteOrphanedChild with the ownership test supplied
+// by the caller. An owner reference is the right test only while the child shares
+// the owner's namespace — Kubernetes forbids a cross-namespace controller
+// reference, so a child placed in another namespace carries none and must be
+// recognized by the ownership labels the projection stamped on it instead.
+// controls decides, from the LIVE object, whether this owner may delete it; a
+// colliding object it does not control is left alone.
+func DeleteOrphanedChildFunc(ctx context.Context, c client.Client, child client.Object, controls func(client.Object) bool) error {
 	key := client.ObjectKeyFromObject(child)
 	if err := c.Get(ctx, key, child); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -117,7 +144,7 @@ func DeleteOrphanedChild(ctx context.Context, c client.Client, owner, child clie
 		}
 		return fmt.Errorf("getting %T %s for orphan cleanup: %w", child, key, err)
 	}
-	if !metav1.IsControlledBy(child, owner) {
+	if !controls(child) {
 		// Not our child (externally managed with a colliding name) — leave it.
 		return nil
 	}
