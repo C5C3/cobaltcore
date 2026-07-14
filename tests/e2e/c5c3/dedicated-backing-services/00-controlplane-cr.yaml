@@ -1,0 +1,73 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# ControlPlane fixture for the dedicated-backing-services E2E test.
+#
+# It carries NO metadata.namespace: chainsaw runs the suite in its own ephemeral
+# namespace and the test applies this CR into it with `kubectl apply -n`. That is
+# load-bearing twice over — the ControlPlane webhook permits one ControlPlane per
+# namespace (so the suite cannot reuse the canonical `openstack` one), and the
+# shared<->dedicated presence flip is frozen on a live CR (so the dedicated
+# declaration below cannot be patched onto a pre-existing shared ControlPlane).
+#
+# The SHARED block is deliberately brownfield: it references endpoints that are
+# never dialled (the suite asserts on the projected CRs, not on a live Keystone),
+# so the ControlPlane provisions NOTHING for it. Every MariaDB / Memcached that
+# appears in the namespace is therefore a DEDICATED instance, which is what lets
+# the test assert the exact provisioned set rather than a superset.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp
+spec:
+  openStackRelease: "2025.2"
+  infrastructure:
+    database:
+      host: shared-db.invalid
+      port: 3306
+      database: openstack
+      secretRef:
+        name: shared-db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+        - shared-memcached.invalid:11211
+  services:
+    keystone:
+      replicas: 1
+      # Keystone opts out of BOTH shared instances and takes its own. The
+      # clusterRef names are spelled out (rather than left to the derived
+      # "{controlplane}-keystone-db" default) so the assertions pin exact names.
+      dedicatedBackingServices:
+        database:
+          clusterRef:
+            name: cp-keystone-db
+          # Static is the only supported mode on a dedicated managed database:
+          # the OpenBao database engine is bootstrapped once per namespace against
+          # the shared cluster, so no engine role can issue credentials for a
+          # dedicated instance. The webhook materializes this value; it is spelled
+          # out here so the fixture states the contract.
+          credentialsMode: Static
+          database: keystone
+          secretRef:
+            name: keystone-db
+          # kind-sized: a single non-Galera replica on a small volume, so the
+          # dedicated instance schedules on a single-node cluster.
+          replicas: 1
+          storageSize: 512Mi
+        cache:
+          clusterRef:
+            name: cp-keystone-cache
+          backend: dogpile.cache.pymemcache
+          replicas: 1
+    horizon:
+      replicas: 1
+      # The dashboard takes a cache of its own, so the suite proves the opt-in is
+      # genuinely PER SERVICE: two services, two distinct dedicated caches.
+      dedicatedBackingServices:
+        cache:
+          clusterRef:
+            name: cp-horizon-cache
+          backend: dogpile.cache.pymemcache
+          replicas: 1

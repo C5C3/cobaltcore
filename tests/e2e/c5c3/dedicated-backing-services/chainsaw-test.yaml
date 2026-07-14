@@ -1,0 +1,291 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for opt-in, per-service DEDICATED backing services.
+#
+# A ControlPlane declares one shared infrastructure block that every service it
+# manages connects to; a service can opt out of it per backing-service class and
+# take an instance of its own. This suite asserts, on a live cluster, that a
+# dedicated instance carries the SAME lifecycle guarantees the shared block does:
+#
+#   - it is PROVISIONED by the ControlPlane (a MariaDB / Memcached child CR);
+#   - it is OWNED by it (a controller owner reference with blockOwnerDeletion —
+#     the mechanism that tears the instance down with the ControlPlane, exactly as
+#     it tears down a shared one);
+#   - it is sized from its OWN spec, independently of the shared cluster;
+#   - it GATES readiness: InfrastructureReady only goes True once every dedicated
+#     instance is Ready, so the consuming service's projection waits for the
+#     database it actually talks to;
+#   - the consuming child CR is POINTED AT it (guarded — see below).
+#
+# The suite also asserts the negative half: the brownfield SHARED block in the
+# fixture provisions nothing, so the exact set of MariaDB / Memcached CRs in the
+# namespace is the dedicated set and nothing else.
+#
+# ── Ephemeral namespace, not the canonical `openstack` ControlPlane ──────────
+# Unlike the sibling c5c3 suites this test does NOT reuse the canonical
+# "controlplane" CR in namespace "openstack". Two contracts rule that out: the
+# webhook permits one ControlPlane per namespace, and the shared<->dedicated
+# presence flip is FROZEN on a live ControlPlane — so the dedicated declaration
+# cannot be patched onto the pre-existing shared CR, it has to be created with it.
+# Chainsaw's ephemeral per-test namespace gives the suite a ControlPlane identity
+# of its own and keeps it from colliding with the suites that do use `openstack`.
+#
+# ── Presence guard + single consolidated script ──────────────────────────────
+# Mirrors the sibling c5c3 suites: the c5c3-operator + MariaDB/Memcached operator
+# stack this test spans is not installed by every E2E cluster, and the suite runs
+# under execution.failFast (tests/e2e/chainsaw-config.yaml), so a pure declarative
+# test would hard-fail every cluster missing that stack. A runtime presence guard
+# probes for the CRDs and exits 0 with a SKIP line when they are absent;
+# E2E_REQUIRE_CONTROLPLANE_STACK=true flips the guard from SKIP to a hard failure
+# so a job that IS meant to carry the stack cannot go green on missing wiring.
+# Because chainsaw has no step-level skip, the guard and all assertions live in
+# ONE script step.
+#
+# ── Why the guard probes CRDs the suite never touches ────────────────────────
+# The ControlPlane controller Owns()/Watches() the Keystone, Horizon,
+# KeystoneIdentityBackend, and K-ORC kinds (ControlPlaneReconciler.
+# SetupWithManager). controller-runtime informers for a kind whose CRD is absent
+# never sync, so on a cluster missing ANY of those CRDs the elected leader dies
+# on the controller's cache-sync timeout and the reconciler this suite drives
+# never runs — the ControlPlane CR is admitted (the webhook serves independently)
+# but is never reconciled: no finalizer, no status, no children. The guard
+# therefore probes the full watched set, not just the kinds asserted below.
+#
+# The Keystone-child projection itself is NOT asserted here: reaching
+# reconcileKeystone requires the DB-credential and admin-password machinery to
+# converge, which needs OpenBao seeded for the ControlPlane's namespace — and
+# this suite runs in an ephemeral namespace precisely because the dedicated
+# declaration cannot be patched onto the canonical ControlPlane. The projection
+# is hard-asserted in the envtest integration scenario
+# (TestIntegration_DedicatedBackingServices), which runs against the real CRD
+# schema and webhook on every PR.
+---
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: dedicated-backing-services
+spec:
+  # No fixed spec.namespace: chainsaw runs this Test in its own ephemeral
+  # namespace and injects it as $NAMESPACE (see the note above).
+  timeouts:
+    assert: 5m
+    exec: 15m
+  steps:
+  - try:
+    - script:
+        # Budget: the dedicated MariaDB Ready wait is bounded at 600s and every
+        # other probe is a bounded kubectl call, so 12m leaves headroom on a cold
+        # single-node cluster pulling the MariaDB image.
+        timeout: 12m
+        # Chainsaw defaults to `sh`, which rejects `set -o pipefail`; every c5c3
+        # e2e script pins bash for the same reason.
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          CP_NS="${NAMESPACE}"
+          CP_NAME=cp
+          DEDICATED_DB=cp-keystone-db
+          DEDICATED_KS_CACHE=cp-keystone-cache
+          DEDICATED_HZ_CACHE=cp-horizon-cache
+
+          REQUIRE_STACK="${E2E_REQUIRE_CONTROLPLANE_STACK:-false}"
+          skip_or_fail() { # <reason...>
+            if [ "${REQUIRE_STACK}" = "true" ]; then
+              echo "ERROR: $*"
+              echo "       E2E_REQUIRE_CONTROLPLANE_STACK=true — the ControlPlane"
+              echo "       stack is required on this job, so this is a hard failure."
+              exit 1
+            fi
+            echo "SKIP: $*"
+            exit 0
+          }
+
+          # ── Presence guard ────────────────────────────────────────────────
+          # Beyond the kinds asserted below, the guard probes every CRD the
+          # ControlPlane controller watches (see the header note): without any
+          # one of them the reconciler never starts, so running the suite would
+          # time out with an unreconciled ControlPlane rather than fail a real
+          # assertion. Keep this list in sync with
+          # ControlPlaneReconciler.SetupWithManager (Owns/Watches kinds whose
+          # CRDs deploy-infra does not install everywhere).
+          missing=""
+          for crd in \
+            controlplanes.c5c3.io \
+            mariadbs.k8s.mariadb.com \
+            memcacheds.memcached.c5c3.io \
+            keystones.keystone.openstack.c5c3.io \
+            keystoneidentitybackends.keystone.openstack.c5c3.io \
+            horizons.horizon.openstack.c5c3.io \
+            applicationcredentials.openstack.k-orc.cloud \
+            services.openstack.k-orc.cloud \
+            endpoints.openstack.k-orc.cloud \
+            users.openstack.k-orc.cloud \
+            domains.openstack.k-orc.cloud \
+            projects.openstack.k-orc.cloud; do
+            if ! kubectl get crd "$crd" >/dev/null 2>&1; then
+              missing="${missing} ${crd}"
+            fi
+          done
+          if [ -n "${missing}" ]; then
+            skip_or_fail "required CRDs not present:${missing}; the c5c3-operator needs every CRD its controller watches (plus the MariaDB/Memcached operators) on this cluster."
+          fi
+          echo "OK: every CRD the ControlPlane controller watches is present —"
+          echo "    running the dedicated-backing-services assertions in namespace ${CP_NS}."
+
+          # ── Helpers ───────────────────────────────────────────────────────
+          assert_eq() { # <description> <expected> <actual>
+            if [ "$2" != "$3" ]; then
+              echo "ERROR: $1 — expected '$2', got '$3'"
+              exit 1
+            fi
+            echo "OK: $1 ('$3')"
+          }
+
+          # assert_owned checks the controller owner reference the ControlPlane
+          # stamps on every instance it provisions. This is the teardown contract:
+          # blockOwnerDeletion + controller ownership is what makes Kubernetes
+          # garbage-collect the instance with the ControlPlane, for a dedicated
+          # instance exactly as for a shared one.
+          assert_owned() { # <resource> <name>
+            local res="$1" name="$2" owner controller blocking
+            owner="$(kubectl get "${res}" "${name}" -n "${CP_NS}" \
+              -o "jsonpath={.metadata.ownerReferences[?(@.kind=='ControlPlane')].name}")"
+            assert_eq "${res}/${name} is owned by the ControlPlane" "${CP_NAME}" "${owner}"
+            controller="$(kubectl get "${res}" "${name}" -n "${CP_NS}" \
+              -o "jsonpath={.metadata.ownerReferences[?(@.kind=='ControlPlane')].controller}")"
+            assert_eq "${res}/${name} owner reference is a CONTROLLER reference" "true" "${controller}"
+            blocking="$(kubectl get "${res}" "${name}" -n "${CP_NS}" \
+              -o "jsonpath={.metadata.ownerReferences[?(@.kind=='ControlPlane')].blockOwnerDeletion}")"
+            assert_eq "${res}/${name} owner reference blocks owner deletion" "true" "${blocking}"
+          }
+
+          wait_exists() { # <resource> <name> <timeoutSeconds>
+            local res="$1" name="$2" timeout="$3" deadline
+            deadline=$(( $(date +%s) + timeout ))
+            while ! kubectl get "${res}" "${name}" -n "${CP_NS}" >/dev/null 2>&1; do
+              if [ "$(date +%s)" -ge "${deadline}" ]; then
+                echo "ERROR: ${res}/${name} was not created within ${timeout}s"
+                exit 1
+              fi
+              sleep 5
+            done
+            echo "OK: ${res}/${name} provisioned"
+          }
+
+          wait_ready_condition() { # <resource> <name> <timeoutSeconds>
+            local res="$1" name="$2" timeout="$3" deadline status
+            deadline=$(( $(date +%s) + timeout ))
+            while true; do
+              status="$(kubectl get "${res}" "${name}" -n "${CP_NS}" \
+                -o "jsonpath={.status.conditions[?(@.type=='Ready')].status}" 2>/dev/null || true)"
+              if [ "${status}" = "True" ]; then
+                echo "OK: ${res}/${name} Ready=True"
+                return 0
+              fi
+              if [ "$(date +%s)" -ge "${deadline}" ]; then
+                echo "ERROR: ${res}/${name} Ready not True within ${timeout}s (last: '${status:-<none>}')"
+                return 1
+              fi
+              sleep 5
+            done
+          }
+
+          # ── Apply the ControlPlane ────────────────────────────────────────
+          # Chainsaw runs scripts with the test directory as CWD. The fixture
+          # carries no namespace, so it lands in the ephemeral one.
+          kubectl apply -n "${CP_NS}" -f 00-controlplane-cr.yaml
+
+          # ── The dedicated database is provisioned, owned, and sized from its
+          #    OWN spec — not from the shared cluster's ────────────────────────
+          wait_exists mariadb "${DEDICATED_DB}" 120
+          assert_owned mariadb "${DEDICATED_DB}"
+          assert_eq "dedicated MariaDB replica count comes from the dedicated spec" "1" \
+            "$(kubectl get mariadb "${DEDICATED_DB}" -n "${CP_NS}" -o 'jsonpath={.spec.replicas}')"
+          # spec.galera.enabled carries omitempty, so the false the reconciler
+          # projects is DROPPED from the stored object — absent and "false" both
+          # mean disabled; only a literal "true" is a failure.
+          GALERA_ENABLED="$(kubectl get mariadb "${DEDICATED_DB}" -n "${CP_NS}" \
+            -o 'jsonpath={.spec.galera.enabled}')"
+          if [ "${GALERA_ENABLED}" = "true" ]; then
+            echo "ERROR: a single-replica dedicated MariaDB must run without Galera — got enabled='true'"
+            exit 1
+          fi
+          echo "OK: a single-replica dedicated MariaDB runs without Galera (enabled='${GALERA_ENABLED:-<absent>}')"
+          assert_eq "dedicated MariaDB volume size comes from the dedicated spec" "512Mi" \
+            "$(kubectl get mariadb "${DEDICATED_DB}" -n "${CP_NS}" -o 'jsonpath={.spec.storage.size}')"
+
+          # ── Each service's dedicated cache is provisioned and owned ────────
+          for cache in "${DEDICATED_KS_CACHE}" "${DEDICATED_HZ_CACHE}"; do
+            wait_exists memcached "${cache}" 120
+            assert_owned memcached "${cache}"
+            assert_eq "Memcached ${cache} replica count comes from the dedicated spec" "1" \
+              "$(kubectl get memcached "${cache}" -n "${CP_NS}" -o 'jsonpath={.spec.replicas}')"
+          done
+
+          # ── The brownfield SHARED block provisions NOTHING ─────────────────
+          # Assert the exact provisioned set, not a superset: the only instances in
+          # the namespace are the dedicated ones. A shared instance appearing here
+          # would mean the reconciler still projects the shared block onto services
+          # that opted out of it.
+          DB_NAMES="$(kubectl get mariadb -n "${CP_NS}" -o 'jsonpath={.items[*].metadata.name}')"
+          assert_eq "the only MariaDB in the namespace is the dedicated one" \
+            "${DEDICATED_DB}" "${DB_NAMES}"
+          CACHE_NAMES="$(kubectl get memcached -n "${CP_NS}" \
+            -o 'jsonpath={range .items[*]}{.metadata.name}{"\n"}{end}' | sort | tr '\n' ' ' | sed 's/ $//')"
+          assert_eq "the only Memcacheds in the namespace are the two dedicated ones" \
+            "${DEDICATED_HZ_CACHE} ${DEDICATED_KS_CACHE}" "${CACHE_NAMES}"
+
+          # ── Readiness is gated on the DEDICATED instances ──────────────────
+          # Nothing shared is provisioned here, so InfrastructureReady=True is
+          # exactly the statement "every dedicated instance came up".
+          wait_ready_condition mariadb "${DEDICATED_DB}" 600
+          READY_DEADLINE=$(( $(date +%s) + 180 ))
+          while true; do
+            INFRA_READY="$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" \
+              -o "jsonpath={.status.conditions[?(@.type=='InfrastructureReady')].status}" 2>/dev/null || true)"
+            [ "${INFRA_READY}" = "True" ] && break
+            if [ "$(date +%s)" -ge "${READY_DEADLINE}" ]; then
+              echo "ERROR: InfrastructureReady not True within 180s of the dedicated instances becoming Ready (last: '${INFRA_READY:-<none>}')"
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: InfrastructureReady=True once every dedicated instance is Ready"
+
+          # The Keystone-child projection (child pointed at the dedicated
+          # database/cache, Static credentials) is deliberately NOT asserted
+          # here: it sits behind the DB-credential/admin-password machinery,
+          # which cannot converge in this suite's ephemeral, OpenBao-unseeded
+          # namespace (see the header note). TestIntegration_DedicatedBackingServices
+          # hard-asserts it against the real CRD schema and webhook on every PR.
+          echo "OK: dedicated backing services provisioned, owned, sized, and readiness-gated."
+    catch:
+    - script:
+        shell: bash
+        content: |
+          echo "=== ControlPlane spec + status.conditions ==="
+          kubectl get controlplane cp -n "${NAMESPACE}" -o yaml 2>&1 || true
+          echo "=== Dedicated MariaDB ==="
+          kubectl describe mariadb cp-keystone-db -n "${NAMESPACE}" 2>&1 || true
+          echo "=== Dedicated Memcacheds ==="
+          kubectl describe memcached cp-keystone-cache -n "${NAMESPACE}" 2>&1 || true
+          kubectl describe memcached cp-horizon-cache -n "${NAMESPACE}" 2>&1 || true
+          echo "=== All backing-service CRs in the namespace ==="
+          kubectl get mariadb,memcached -n "${NAMESPACE}" 2>&1 || true
+          # The operator's release namespace differs per job (keystone-system is
+          # the ci-deploy-operator.sh default, e2e-controlplane uses
+          # c5c3-system), so resolve it from the pods instead of hardcoding one —
+          # a hardcoded miss silently drops the single most important evidence.
+          echo "=== c5c3-operator pods (restarts betray a crash-looping leader) ==="
+          kubectl get pods -A -l app.kubernetes.io/name=c5c3-operator -o wide 2>&1 || true
+          OPERATOR_NS="$(kubectl get pods -A -l app.kubernetes.io/name=c5c3-operator \
+            -o 'jsonpath={.items[0].metadata.namespace}' 2>/dev/null || true)"
+          echo "=== c5c3-operator logs (current, last 100 lines) ==="
+          kubectl logs -n "${OPERATOR_NS:-c5c3-system}" -l app.kubernetes.io/name=c5c3-operator --tail=100 --all-containers 2>&1 || true
+          echo "=== c5c3-operator logs (previous, last 100 lines) ==="
+          kubectl logs -n "${OPERATOR_NS:-c5c3-system}" -l app.kubernetes.io/name=c5c3-operator --tail=100 --all-containers --previous 2>&1 || true
+          echo "=== Events (last 30) ==="
+          kubectl get events -n "${NAMESPACE}" --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
