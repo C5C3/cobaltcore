@@ -23,6 +23,8 @@ Pages in this section are explicitly **not**:
 ## Current sketches
 
 - [Brownfield Keystone Adoption](./brownfield-keystone-adoption.md) — adopt an
-  existing OpenStack Keystone installation incrementally, starting with a
-  service-less ControlPlane that only manages credentials, service accounts,
-  and catalog entries via K-ORC.
+  existing OpenStack Keystone installation incrementally. **Phase 1 has
+  graduated**: the service-less, External-mode ControlPlane is implemented, and
+  running it is documented in
+  [Adopt an External Keystone](../guides/adopt-external-keystone.md). The page
+  keeps the later phases (infrastructure attach, service takeover) as sketches.

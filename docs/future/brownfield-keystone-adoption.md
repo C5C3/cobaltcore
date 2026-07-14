@@ -5,22 +5,27 @@ quadrant: operator
 
 # Brownfield Keystone Adoption
 
-> **Status: idea sketch.** Nothing on this page is implemented or scheduled.
-> It analyzes what a phased takeover of an existing Keystone installation
-> would require, using the current codebase as the baseline.
+> **Status: phase 1 is implemented.** The service-less, External-mode
+> ControlPlane described below now exists. Use the
+> [Adopt an External Keystone](../guides/adopt-external-keystone.md) guide to run
+> it, and the [ControlPlane CRD](../reference/c5c3/controlplane-crd.md#externalkeystonespec)
+> and [reconciler](../reference/c5c3/controlplane-reconciler.md) references for
+> the authoritative behavior. **Phases 2–4 remain idea sketches** — nothing beyond
+> phase 1 is implemented or scheduled.
 
 ## Motivation
 
-Today a `ControlPlane` CR always ends in a running, operator-deployed Keystone:
-the reconciler chain provisions infrastructure, projects a Keystone CR, runs
-the bootstrap job, and only then wires up K-ORC credentials and the catalog.
-For an existing (brownfield) OpenStack installation this is a big-bang
-proposition — the operator cannot add value before it owns the whole stack.
+In **Managed** mode a `ControlPlane` CR always ends in a running,
+operator-deployed Keystone: the reconciler chain provisions infrastructure,
+projects a Keystone CR, runs the bootstrap job, and only then wires up K-ORC
+credentials and the catalog. For an existing (brownfield) OpenStack installation
+that alone would be a big-bang proposition — the operator could not add value
+before it owned the whole stack.
 
-The idea: invert the adoption order. In a first step, a **service-less
-ControlPlane** deploys *nothing* — no Keystone, no MariaDB, no cache — and
-takes over only the **identity-plane management** that K-ORC provides against
-the existing, externally running Keystone API:
+Phase 1 inverts the adoption order. A **service-less ControlPlane** deploys
+*nothing* — no Keystone, no MariaDB, no cache — and takes over only the
+**identity-plane management** that K-ORC provides against the existing,
+externally running Keystone API:
 
 - minting and rotating the admin **application credential**,
 - managing **service accounts** (service users, projects, role assignments)
@@ -35,14 +40,15 @@ seeds via `keystone-manage bootstrap`. On a brownfield the admin password is
 supplied by the platform owner and rotated out-of-band.
 
 The actual takeover of MariaDB, messaging, and the Keystone deployment itself
-then happens in later, individually reversible phases on the **same CR**.
+would then happen in later, individually reversible phases on the **same CR**.
+Those phases are still sketches.
 
-## Baseline: what exists today
+## Baseline: what phase 1 built on
 
-The building blocks are further along than one might expect — brownfield is
-already a first-class concept, just not for the service layer.
+The building blocks were further along than one might expect — brownfield was
+already a first-class concept, just not yet for the service layer.
 
-**Already in place:**
+**Already in place before phase 1:**
 
 - **Brownfield infrastructure modes.** `spec.infrastructure.database` accepts
   either a `clusterRef` (managed MariaDB) or a `host` (existing external
@@ -55,10 +61,11 @@ already a first-class concept, just not for the service layer.
   sub-reconciler detects a pre-existing MariaDB or Memcached CR it does not
   control and adopts it as-is instead of re-projecting defaults.
 - **K-ORC imports for pre-existing identity resources.** The admin user and
-  the `Default` domain are created as *unmanaged* K-ORC resources — imports of
-  objects that already exist in Keystone. This is exactly the mechanism a
-  brownfield needs; today it merely happens to import objects the operator's
-  own bootstrap job created moments earlier.
+  the domain are created as *unmanaged* K-ORC resources — imports of objects that
+  already exist in Keystone. This was exactly the mechanism a brownfield needs; in
+  Managed mode it merely happens to import objects the operator's own bootstrap
+  job created moments earlier. Phase 1 points the same mechanism at objects the
+  operator never created.
 - **Credential lifecycle machinery.** The admin application credential is
   minted by a managed K-ORC `ApplicationCredential`, backed up to OpenBao via
   PushSecret, re-materialized via ExternalSecret, and re-minted
@@ -66,29 +73,37 @@ already a first-class concept, just not for the service layer.
   `CredentialRotation` CR nudges it. None of this logic cares *where* the
   Keystone API lives — only the endpoint URL does.
 
-**Gaps that block a service-less mode** (all in `operators/c5c3`):
+**Gaps that blocked a service-less mode** (all in `operators/c5c3`) — **all five
+are closed by phase 1**:
 
-1. **`services.keystone` is a required struct.** There is no way to express
-   "manage identity, deploy nothing". The `Keystone` sub-reconciler always
-   projects a child Keystone CR.
-2. **The auth URL is hardwired to the in-cluster Service.** Both clouds.yaml
-   builders (password-based and application-credential-based) use
-   `http://{name}-keystone.{namespace}.svc:5000/v3` with
-   `endpoint_type: internal`. No spec field, env var, or Secret can point
-   K-ORC at an external Keystone; the only configurable URL today,
-   `services.keystone.publicEndpoint`, affects catalog advertisement and the
-   bootstrap job — never the auth path.
-3. **`spec.infrastructure` is required.** Even in brownfield database mode the
-   CR must carry database coordinates, because the projected Keystone consumes
-   them. A service-less ControlPlane needs neither database nor cache.
-4. **The catalog sub-reconciler only creates.** It manages a K-ORC `Service`
-   (type `identity`) and `Endpoint` (interface `public`) as *managed*
-   resources. Pointed at an existing installation this would duplicate catalog
-   entries — Keystone does not enforce unique service names.
-5. **The bootstrap seed assumes the managed flow.** The write-if-empty
-   password clouds.yaml seed and the OpenBao bootstrap path
-   (`bootstrap/{namespace}/{keystone}/admin`) are built around the
-   operator-generated admin password.
+1. **No way to say "manage identity, deploy nothing".** `services.keystone` is
+   already an *optional pointer* (`*ServiceKeystoneSpec`); when it is nil the
+   ControlPlane manages no identity plane and reports `KeystoneNotManaged`. But
+   nil is deliberately **not** "external": absence carries no endpoint
+   configuration, and an omitted field reads like an authoring mistake rather
+   than intent. That is exactly why phase 1 added a `mode` discriminator
+   (`Managed` | `External`) with an `external` block, rather than overloading
+   absence. **Closed:** `mode: External` projects no Keystone child and reports
+   `KeystoneReady=True/ExternallyManaged`.
+2. **The auth URL was hardwired to the in-cluster Service.** Both clouds.yaml
+   builders used `http://{name}-keystone.{namespace}.svc:5000/v3` with
+   `endpoint_type: internal`; nothing could point K-ORC at an external Keystone.
+   **Closed:** `external.authURL` plus a configurable `external.endpointType`
+   (default `public`) and an optional `external.caBundleSecretRef`, projected
+   into both credentials Secrets.
+3. **`spec.infrastructure` was required.** **Closed:** it is now optional, and
+   the validating webhook *forbids* it in External mode — a service-less
+   ControlPlane needs neither database nor cache.
+4. **The catalog sub-reconciler only created.** Pointed at an existing
+   installation it would have duplicated catalog entries, since Keystone does not
+   enforce unique service names. **Closed:** External mode is **import-first** —
+   the existing identity service and its endpoints are imported as unmanaged
+   K-ORC resources, and managed entries are created only on explicit opt-in. An
+   ambiguous catalog fails loudly rather than guessing.
+5. **The bootstrap seed assumed the managed flow.** **Closed:** External mode
+   **never seeds** the OpenBao bootstrap path — the admin password is read only
+   from the referenced Secret. Only the application-credential and service-account
+   paths exist.
 
 ## Phase model
 
@@ -96,12 +111,12 @@ Each phase is a spec transition on the same `ControlPlane` CR, forward-only,
 and leaves the system in a supported steady state. A brownfield operator can
 stop at any phase indefinitely.
 
-| Phase | Name | Operator manages | Existing installation keeps |
-|-------|------|------------------|------------------------------|
-| 1 | Identity-only (service-less) | App credentials, service accounts, catalog entries, secret rotation via K-ORC + OpenBao | Keystone API, database, admin password, all data |
-| 2 | Infrastructure attach | Phase 1 + database/cache coordinates (brownfield `host`/`servers` mode), later managed replacements with data migration | Keystone API, admin password |
-| 3 | Service takeover | Phase 2 + the Keystone deployment itself (fernet/credential keys imported, bootstrap skipped, endpoint cutover) | — |
-| 4 | Steady state | Everything — indistinguishable from a greenfield ControlPlane | — |
+| Phase | Name | Status | Operator manages | Existing installation keeps |
+|-------|------|--------|------------------|------------------------------|
+| 1 | Identity-only (service-less) | **Implemented** | App credentials, service accounts, catalog entries, secret rotation via K-ORC + OpenBao | Keystone API, database, admin password, all data |
+| 2 | Infrastructure attach | Sketch | Phase 1 + database/cache coordinates (brownfield `host`/`servers` mode), later managed replacements with data migration | Keystone API, admin password |
+| 3 | Service takeover | Sketch | Phase 2 + the Keystone deployment itself (fernet/credential keys imported, bootstrap skipped, endpoint cutover) | — |
+| 4 | Steady state | Sketch | Everything — indistinguishable from a greenfield ControlPlane | — |
 
 Messaging (RabbitMQ) is not modeled in the ControlPlane CRD at all today —
 Keystone needs none. The phase model reserves its takeover for the point where
@@ -111,128 +126,91 @@ replacement with migration later.
 
 ## Phase 1: the service-less ControlPlane
 
-### API sketch
+**Implemented.** This section summarizes what shipped and how each of the
+sketch's open questions was resolved. For the authoritative material see the
+[Adopt an External Keystone](../guides/adopt-external-keystone.md) guide, the
+[ControlPlane CRD reference](../reference/c5c3/controlplane-crd.md#externalkeystonespec),
+and the [reconciler reference](../reference/c5c3/controlplane-reconciler.md).
 
-A mode discriminator on the service entry, mirroring the existing
-managed-vs-brownfield split of the infrastructure specs:
+### What shipped
+
+A `mode` discriminator on the Keystone service entry, with an `external` block:
 
 ```yaml
-apiVersion: c5c3.io/v1alpha1
-kind: ControlPlane
-metadata:
-  name: brownfield
-  namespace: openstack
 spec:
-  openStackRelease: "2025.1"        # advisory in this mode — no images are deployed
-  region: RegionOne
-  # infrastructure: omitted — must become optional (forbidden in External mode)
   services:
     keystone:
-      mode: External                 # new discriminator; default Managed
+      mode: External                 # default Managed
       external:
         authURL: https://keystone.example.com/v3
-        endpointType: public         # interface K-ORC selects from the catalog
+        endpointType: public         # default; the catalog interface K-ORC authenticates against
         caBundleSecretRef:           # optional, for private CAs
           name: brownfield-keystone-ca
+        catalog:
+          identityServiceName: keystone   # only needed to disambiguate duplicates
   korc:
     adminCredential:
       passwordSecretRef:
         name: brownfield-admin-password   # user-supplied, from the existing installation
+    serviceAccounts:
+      - name: nova
+        project:
+          name: service-nova
+          create: true
 ```
 
-Alternative shapes considered:
+`spec.infrastructure` became optional and is **forbidden** in External mode, as is
+`services.horizon`. `mode` transitions are rejected in **both** directions, so
+adoption is always a new CR — `External → Managed` is reserved for the phase-3
+takeover, and `Managed → External` has no meaning.
 
-- **Make `services.keystone` a pointer** (absent = not deployed). Rejected:
-  absence cannot carry the external endpoint configuration, and an omitted
-  required-feeling field reads like an authoring mistake rather than intent.
-- **A separate CRD** (e.g. `IdentityPlane`). Rejected: the whole point of the
-  phase model is that adoption is a sequence of spec transitions on one CR;
-  a CRD migration in the middle of it would break ownership, status history,
-  and the one-ControlPlane-per-namespace invariant.
+The baseline analysis held up: the two heaviest sub-reconcilers (KORC,
+AdminCredential) needed almost no change, because their logic is
+endpoint-agnostic. The bulk of the work was API surface, the import-first catalog,
+and the failure-classification vocabulary.
 
-The `mode: External` → `mode: Managed` transition is precisely the phase 3
-takeover and must therefore be *gated*, not immutable — unlike the existing
-infrastructure mode fields, which are immutable today and would need the same
-relaxation for phase 2. The reverse transition (`Managed` → `External`) should
-be rejected outright.
+Sub-reconcilers that would deploy something short-circuit with
+`Status=True, Reason=ExternallyManaged` (Infrastructure, DBCredentials,
+AdminPassword, Keystone), so the condition schema is identical across modes. The
+conditions that carry signal are `KORCReady`, `AdminCredentialReady`,
+`CatalogReady`, and `ServiceAccountsReady`.
 
-### Sub-reconciler behavior in External mode
+Beyond the original sketch, phase 1 also delivered **declarative service
+accounts** (`korc.serviceAccounts`): managed K-ORC users and projects with
+operator-generated, OpenBao-backed, rotatable passwords, collision-gated against
+pre-existing users and adoptable on explicit consent. This is the operational win
+the sketch predicted, and it landed in phase 1 rather than later.
 
-The chain keeps its order; External mode changes what each link does:
+### How the open questions resolved
 
-| Sub-reconciler | Managed (today) | External mode (proposed) |
-|----------------|-----------------|--------------------------|
-| Infrastructure | Creates MariaDB / Memcached CRs | Skipped — `InfrastructureReady` with a dedicated reason (e.g. `ExternallyManaged`) |
-| DBCredentials | Projects ExternalSecret from OpenBao | Skipped — no database involvement at all |
-| AdminPassword | Projects ExternalSecret from the OpenBao bootstrap path | Skipped — the user-supplied `passwordSecretRef` Secret is the source, exactly as in today's brownfield database mode |
-| Keystone | Creates the child Keystone CR | Skipped — no child CR; `KeystoneReady` reports `ExternallyManaged` |
-| KORC | Builds clouds.yaml against the in-cluster Service URL | Builds clouds.yaml against `spec…external.authURL` with the configured `endpointType`; admin user/domain imports, application-credential mint, OpenBao round-trip all unchanged |
-| AdminCredential | Assembles app-credential clouds.yaml, force-push/force-sync | Unchanged — the assembled clouds.yaml simply carries the external `auth_url` |
-| Catalog | Creates managed Service + Endpoint | Import-first: unmanaged imports of the existing identity service and endpoints; managed creation only as an explicit opt-in for genuinely new entries |
-
-The striking observation from the baseline analysis: **the two heaviest
-sub-reconcilers (KORC, AdminCredential) need almost no change.** Their logic
-is endpoint-agnostic; only the two clouds.yaml builders take a different
-`auth_url` and `endpoint_type`. The bulk of the work is API surface
-(mode/external fields, optionality of `infrastructure`, webhook rules) and the
-catalog import semantics.
-
-### What phase 1 delivers on a brownfield
-
-- **Admin application credential under management.** Minted by K-ORC against
-  the existing Keystone, stored per-CR in OpenBao, re-minted automatically
-  when the admin password changes (hash-driven) or on demand via a
-  `CredentialRotation` CR. Consumers read it from OpenBao / the materialized
-  Secret instead of sharing long-lived admin passwords.
-- **A home for service accounts.** The `bootstrapResources` field already
-  reserved in the CRD (kinds `Project` and `Role`, currently not reconciled)
-  grows into the service-account story: K-ORC `User`, `Project`, and role
-  assignment resources for the service users of other OpenStack services
-  (nova, glance, …), with passwords generated into OpenBao and rotated on
-  schedule. For an existing installation this is the single biggest
-  operational win of phase 1.
-- **Catalog stewardship.** Existing services and endpoints become visible as
-  imports; endpoint changes (new URLs, TLS migrations) become declarative
-  once entries are promoted to managed.
-- **Zero blast radius.** No database connection, no message queue, no running
-  service is touched. Deleting the ControlPlane in phase 1 tears down only the
-  K-ORC-managed application credential (its finalizer revokes it) and the
-  OpenBao-backed Secrets — imports are left untouched by definition.
-
-### Open questions for phase 1
-
-- **Reachability and trust.** K-ORC runs in-cluster and must reach the
-  external API: egress/NetworkPolicy posture, and CA-bundle delivery for
-  private CAs. gophercloud honors a `cacert` key, but how a bundle travels
-  from a Secret into K-ORC's credential resolution needs verification —
-  possibly a documented constraint of the first iteration.
-- **`endpoint_type` semantics.** In-cluster the operator deliberately forces
-  `internal`; against an external installation the reachable interface is
-  usually `public`. Making it configurable per External spec (as sketched)
-  seems right, but the interplay with catalog entries that also list internal
-  endpoints unreachable from the cluster needs a test matrix.
-- **Readiness semantics.** What does `Ready` mean when nothing is deployed?
-  The natural proxy is the K-ORC import conditions (a failed admin-user import
-  means the external Keystone is unreachable or the credential is wrong).
-  An active health probe would require an OpenStack client in the operator,
-  which it deliberately does not have today — everything is K-ORC-mediated,
-  and phase 1 should keep it that way.
-- **Admin password rotation stays out.** The scheduled password rotation
-  (rotation CronJob, staging/commit, push to OpenBao) lives in the Keystone
-  operator and presumes the managed deployment. On a brownfield the password
-  rotates out-of-band; updating the referenced Secret already triggers the
-  hash-driven application-credential re-mint. Whether the ControlPlane should
-  *validate* freshness (e.g. warn on stale seeds) is open.
-- **Release skew.** `openStackRelease` drives image selection, which External
-  mode doesn't use. Should the field validate against the actual version of
-  the external Keystone (discoverable via the root endpoint), or is it purely
-  advisory until phase 3? At takeover time it *must* match the existing
-  database schema.
-- **OpenBao path layout.** The per-CR scoped paths carry over unchanged, but
-  the admin-password seed path is bootstrap-oriented; External mode reads the
-  password only from the referenced Secret and never seeds, so the OpenBao
-  seeding scripts and policies need an audit for assumptions about the
-  managed flow.
+- **Reachability and trust.** The CA bundle travels from a Secret into K-ORC as
+  the inline `cacert` key beside `clouds.yaml` — which gophercloud reads natively,
+  so no mount and no upstream change were needed. Egress remains the operator's
+  responsibility: nothing restricts it by default, and a restrictive-egress cluster
+  must allow K-ORC to reach the endpoint. A *rotated* bundle only takes effect
+  after K-ORC's provider cache expires — a documented constraint, not a bug.
+- **`endpoint_type` semantics.** Configurable per External spec, defaulting to
+  `public`. The hazard the sketch worried about — a catalog whose entries point at
+  interfaces unreachable from the cluster — is handled by failing **loudly**:
+  a mismatch surfaces as `CatalogEndpointMismatch`, and a silently-empty import is
+  caught by a stall detector that reports `ImportStalled` naming `endpoint_type`
+  and `region`. Nothing waits forever.
+- **Readiness semantics.** As the sketch proposed: K-ORC-proxied, with no
+  OpenStack client in the operator. The failure classes (`AuthenticationFailed`,
+  `EndpointUnreachable`, `TLSVerificationFailed`, `CatalogEndpointMismatch`,
+  `CredentialDrift`, `ImportStalled`) are recovered from K-ORC's message, since
+  K-ORC collapses every hard API failure into one transient condition.
+- **Admin password rotation stays out.** Confirmed: it rotates out-of-band at the
+  installation, and updating the referenced Secret drives the hash-driven
+  application-credential re-mint. Freshness is **not** validated; a stale Secret
+  surfaces as drift (`AuthenticationFailed`), which the operator reports and never
+  remediates.
+- **Release skew.** `openStackRelease` stays required but is **advisory** in
+  External mode — no images are deployed. It must match the existing database
+  schema only at the phase-3 takeover.
+- **OpenBao path layout.** External mode **never seeds**. The bootstrap path does
+  not exist for it; only the per-CR application-credential and service-account
+  paths do, created on first push.
 
 ## Phase 2: infrastructure attach
 
@@ -286,31 +264,41 @@ the (now historical) spec transitions.
 
 ## Risks
 
+The phase-1 risks are **addressed by the implemented posture**; they are kept
+here because phases 2–4 inherit them.
+
 - **Catalog duplication.** Keystone happily stores duplicate service entries;
-  a bug in import-vs-create logic pollutes the production catalog. Import
-  semantics must be conservative (never create unless explicitly told to).
+  a bug in import-vs-create logic would pollute the production catalog.
+  *Addressed:* External mode is import-first and never creates unless explicitly
+  told to; an ambiguous catalog fails loudly instead of guessing.
 - **Re-mint revokes.** The application-credential re-mint is delete + recreate;
   the old credential is revoked at the Keystone level the moment the K-ORC
-  finalizer runs. Anything in the existing installation that was handed the
-  minted credential must consume it from OpenBao (or the materialized Secret),
-  never from a copy.
-- **Spec/reality drift.** A service-less ControlPlane describes an
-  installation it does not control; the external Keystone can change under it
-  (endpoints edited by hand, admin password rotated without updating the
-  Secret). Conditions must surface drift loudly rather than fighting it.
-- **Scope creep in phase 1.** The temptation is to "just add" a health probe,
-  a schema check, a password rotator. Phase 1 stays credible exactly because
-  it is K-ORC-only and touches nothing stateful.
+  finalizer runs. *Addressed:* the consumer contract — always read the credential
+  from the materialized Secret or its OpenBao path, never from a copy — is stated
+  in the [adoption guide](../guides/adopt-external-keystone.md).
+- **Spec/reality drift.** A service-less ControlPlane describes an installation it
+  does not control; the external Keystone can change under it (endpoints edited by
+  hand, admin password rotated without updating the Secret). *Addressed:* drift is
+  surfaced as dedicated conditions (`AuthenticationFailed`, `CredentialDrift`,
+  `ImportStalled`) and never fought — the operator does not write to the external
+  installation.
+- **Scope creep in phase 1.** The temptation was to "just add" a health probe, a
+  schema check, a password rotator. *Held:* phase 1 stayed K-ORC-only and touches
+  nothing stateful; readiness is K-ORC-proxied and the operator carries no
+  OpenStack client.
 
 ## Suggested next steps
 
-1. **Spike:** run K-ORC from a kind cluster against an external Keystone
-   (clouds.yaml with an external `auth_url`, `endpoint_type: public`, private
-   CA) and confirm imports, application-credential mint, and revoke-on-delete
-   behave as assumed above.
-2. **API design review:** settle the `mode`/`external` shape (or an
-   alternative) and the optionality/immutability matrix for
-   `infrastructure` — this decides how painful phases 2–3 become.
-3. **Triage:** open a GitHub issue for phase 1 following the usual
-   feature-triage flow; phases 2–4 remain sketches until phase 1 proves the
-   model.
+Phases 2–4 remain sketches. The natural next step is to triage **phase 2**
+(infrastructure attach) through the usual feature-triage flow, now that phase 1
+has proven the model — in particular that the mode discriminator, the import-first
+catalog, and the K-ORC-proxied readiness hold up against a real external
+installation.
+
+The two hard problems phase 2 and phase 3 still owe a design:
+
+- **Data migration** for the database cutover (phase 2b) — replication or
+  dump/restore with a maintenance window; no tooling exists.
+- **Key material import** (fernet and credential encryption keys) before the first
+  operator-managed pod starts, plus an explicit bootstrap skip/adopt gate
+  (phase 3).
