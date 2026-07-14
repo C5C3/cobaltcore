@@ -19,8 +19,19 @@ source "${SCRIPT_DIR}/common.sh"
 ###############################################################################
 BAO_TOKEN="${BAO_TOKEN:?BAO_TOKEN must be set}"
 
-# KORC_CONTROLPLANES: whitespace-separated list of "<namespace>/<controlplane>"
-# identities to seed per-ControlPlane bootstrap secrets.
+# KORC_CONTROLPLANES: whitespace-separated list of
+# "<namespace>/<controlplane>[/<keystone-namespace>]" identities to seed
+# per-ControlPlane bootstrap secrets.
+#
+# The optional third segment is the KEYSTONE SERVICE NAMESPACE — where the admin
+# password is read from when spec.services.keystone.namespace places the Keystone
+# service in a namespace of its own. It defaults to <namespace>, so a ControlPlane
+# without a namespace assignment is spelled exactly as before. It must be given
+# when there IS one: the seeded path must match adminPasswordRemoteKeyFor in the
+# c5c3 operator (bootstrap/<keystone-namespace>/<controlplane>-keystone/admin),
+# which follows the Keystone child so it agrees with the keystone-operator's
+# rotation PushSecret — seeding under <namespace> instead would write a path
+# nothing reads.
 #
 # MODE CONTRACT: entries are MANAGED-mode ControlPlane identities only. An
 # External-mode ControlPlane (spec.services.keystone.mode: External) must NOT be
@@ -35,8 +46,13 @@ BAO_TOKEN="${BAO_TOKEN:?BAO_TOKEN must be set}"
 # unrelated to the external installation's real one — a path nothing reads.
 #
 # For each MANAGED-mode identity the script seeds:
-#   - the Model B admin password at  kv-v2/bootstrap/<namespace>/<controlplane>-keystone/admin
+#   - the Model B admin password at  kv-v2/bootstrap/<keystone-namespace>/<controlplane>-keystone/admin
 #   - the Horizon Django SECRET_KEY at kv-v2/bootstrap/<namespace>/<controlplane>-horizon/secret-key
+#
+# The Horizon secret-key path stays on <namespace>: it is a kind-only shim, read
+# by an ExternalSecret in the namespace the dashboard's SECRET_KEY Secret lives
+# in. A dashboard placed in a namespace of its own needs its own key material
+# there — see the secretKeyRef note on ServiceHorizonSpec.
 # The stage-(a) per-ControlPlane static DB credential seed is RETIRED (#439):
 # managed-mode Keystone draws engine-issued short-lived DB credentials from the
 # OpenBao database engine (see setup-database-tenant.sh), so no static DB
@@ -50,7 +66,7 @@ BAO_TOKEN="${BAO_TOKEN:?BAO_TOKEN must be set}"
 # namespace "openstack"), so the single-CR `make deploy-infra` path is unchanged
 # (see hack/deploy-infra.sh). Override it to bring up several
 # ControlPlanes (e.g. KORC_CONTROLPLANES="tenant-a/cp tenant-b/cp"); each entry
-# MUST be "<namespace>/<controlplane>".
+# MUST be "<namespace>/<controlplane>[/<keystone-namespace>]".
 KORC_CONTROLPLANES="${KORC_CONTROLPLANES:-openstack/controlplane}"
 
 # Marker value: use as a key's value to generate a cryptographically random
@@ -164,17 +180,33 @@ main() {
   # shellcheck disable=SC2086  # KORC_CONTROLPLANES is intentionally word-split on whitespace into identities.
   for identity in ${KORC_CONTROLPLANES}; do
     if [[ "${identity}" != */* ]]; then
-      log "ERROR: KORC_CONTROLPLANES entry '${identity}' is not in '<namespace>/<controlplane>' form."
+      log "ERROR: KORC_CONTROLPLANES entry '${identity}' is not in '<namespace>/<controlplane>[/<keystone-namespace>]' form."
       exit 1
     fi
-    local cp_ns="${identity%%/*}"
-    local cp_name="${identity#*/}"
+    local cp_ns cp_name keystone_ns rest
+    cp_ns="${identity%%/*}"
+    rest="${identity#*/}"
+    cp_name="${rest%%/*}"
+    # Third segment: the Keystone service namespace. Absent (no further "/") it
+    # defaults to the ControlPlane's own namespace — the shape of a ControlPlane
+    # that places no service in a namespace of its own.
+    if [[ "${rest}" == */* ]]; then
+      keystone_ns="${rest#*/}"
+    else
+      keystone_ns="${cp_ns}"
+    fi
+    if [[ -z "${cp_name}" || -z "${keystone_ns}" || "${keystone_ns}" == */* ]]; then
+      log "ERROR: KORC_CONTROLPLANES entry '${identity}' is not in '<namespace>/<controlplane>[/<keystone-namespace>]' form."
+      exit 1
+    fi
     local keystone_name="${cp_name}-keystone"
     local horizon_name="${cp_name}-horizon"
-    local admin_path="kv-v2/bootstrap/${cp_ns}/${keystone_name}/admin"
+    # The admin path follows the KEYSTONE service namespace so it matches
+    # adminPasswordRemoteKeyFor and the keystone-operator's rotation PushSecret.
+    local admin_path="kv-v2/bootstrap/${keystone_ns}/${keystone_name}/admin"
     local horizon_secret_key_path="kv-v2/bootstrap/${cp_ns}/${horizon_name}/secret-key"
 
-    log "--- Seeding ControlPlane '${identity}' (keystone='${keystone_name}', horizon='${horizon_name}') ---"
+    log "--- Seeding ControlPlane '${cp_ns}/${cp_name}' (keystone='${keystone_name}' in '${keystone_ns}', horizon='${horizon_name}') ---"
 
     # Model B admin password. This bootstrap source is now read by (a) the
     # operator-projected per-ControlPlane admin-password ExternalSecret (c5c3 operator reconcileAdminPassword) and (b) the kind-only

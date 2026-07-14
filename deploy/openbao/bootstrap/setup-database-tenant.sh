@@ -19,17 +19,24 @@
 # exist at bootstrap time. This script is therefore run once per ControlPlane,
 # after its MariaDB is Ready, to configure:
 #
-#   - database/mariadb/config/keystone-<namespace>
+#   - database/mariadb/config/keystone-<keystone-namespace>
 #       the connection to the ControlPlane's MariaDB, authenticated as root.
-#   - database/mariadb/roles/keystone-<namespace>
+#   - database/mariadb/roles/keystone-<keystone-namespace>
 #       a role that issues short-lived MySQL users with ALL PRIVILEGES on the
 #       Keystone database and auto-revokes them at lease end.
 #
-# The role is keyed on the ControlPlane NAMESPACE alone: the
-# one-ControlPlane-per-namespace admission contract makes the namespace a unique
-# tenant key, and cluster-unique namespaces keep the role name collision-free (a
-# hyphen-joined <namespace>-<controlplane> would be ambiguous — e.g. ns=a-b/name=c
-# and ns=a/name=b-c both flatten to keystone-a-b-c and would overwrite each other's
+# The role is keyed on the KEYSTONE SERVICE NAMESPACE alone — the namespace the
+# MariaDB lives in and the generator's ServiceAccount authenticates from. That is
+# the ControlPlane's own namespace unless spec.services.keystone.namespace places
+# the Keystone service elsewhere, in which case its database and its credential
+# generator follow it there, and a role keyed on the ControlPlane's namespace
+# would be outside the reach of the keystone-db-dynamic templated policy — which
+# grants exactly the caller's OWN namespace.
+#
+# A namespace is a unique tenant key (at most one ControlPlane occupies it), and
+# cluster-unique namespaces keep the role name collision-free (a hyphen-joined
+# <namespace>-<controlplane> would be ambiguous — e.g. ns=a-b/name=c and
+# ns=a/name=b-c both flatten to keystone-a-b-c and would overwrite each other's
 # connection config on the second onboarding). Namespace-only keying is also what
 # lets the keystone-db-dynamic policy scope reads to the caller's OWN namespace
 # with an exact ACL-template match (no over-matching wildcard).
@@ -41,6 +48,9 @@
 #
 # Idempotent: config and role writes are upserts, so re-running refreshes a
 # rotated root password or an updated database name.
+#
+# The arguments still name the ControlPlane (<namespace> is where the CR lives);
+# the Keystone service namespace is resolved from its spec.
 #
 # Usage: setup-database-tenant.sh <namespace> <controlplane>
 # Requires: BAO_TOKEN in the environment (kubectl access to the openbao-0 pod).
@@ -101,15 +111,9 @@ get_controlplane_field() {
 # Main
 ###############################################################################
 main() {
-  # Keyed on the ControlPlane namespace alone (see header): unique + collision-free,
-  # and matched exactly by the keystone-db-dynamic templated policy.
-  local role_name="keystone-${CP_NS}"
-  local config_name="${role_name}"
-
   log "=== Provisioning MariaDB database-engine tenant '${CP_NS}/${CP_NAME}' ==="
   log "Namespace : ${NAMESPACE}"
   log "BAO_ADDR  : ${BAO_ADDR}"
-  log "Role      : database/mariadb/roles/${role_name}"
 
   # Fail loudly if the ControlPlane CR cannot be read. get_controlplane_field
   # below falls back to the projection defaults (openstack-db / keystone) on an
@@ -123,6 +127,23 @@ main() {
     exit 1
   fi
 
+  # Resolve the KEYSTONE SERVICE NAMESPACE: the namespace the MariaDB, the
+  # credential generator, and its ServiceAccount all live in. It defaults to the
+  # ControlPlane's own namespace, and is spec.services.keystone.namespace.name
+  # when the Keystone service is placed in a namespace of its own.
+  local svc_ns
+  svc_ns="$(get_controlplane_field '{.spec.services.keystone.namespace.name}' "${CP_NS}")"
+
+  # Keyed on the Keystone service namespace alone (see header): unique +
+  # collision-free, and matched exactly by the keystone-db-dynamic templated
+  # policy, whose ACL template resolves to the caller's own namespace — the
+  # generator's ServiceAccount in exactly this namespace.
+  local role_name="keystone-${svc_ns}"
+  local config_name="${role_name}"
+
+  log "Service NS: ${svc_ns}"
+  log "Role      : database/mariadb/roles/${role_name}"
+
   # Resolve the MariaDB cluster name and Keystone database name from the live
   # ControlPlane spec. Defaults mirror the c5c3 operator's projection defaults
   # (openstack-db / keystone) so a ControlPlane that leaves them unset resolves
@@ -131,7 +152,7 @@ main() {
   mariadb_name="$(get_controlplane_field '{.spec.infrastructure.database.clusterRef.name}' 'openstack-db')"
   database_name="$(get_controlplane_field '{.spec.infrastructure.database.database}' 'keystone')"
 
-  log "MariaDB   : ${mariadb_name}.${CP_NS}.svc:3306"
+  log "MariaDB   : ${mariadb_name}.${svc_ns}.svc:3306"
   log "Database  : ${database_name}"
 
   # Resolve the MariaDB root credential from the effective
@@ -140,23 +161,23 @@ main() {
   # back from the live CR avoids hardcoding the operator's Secret-naming
   # convention.
   local root_secret_name root_secret_key
-  root_secret_name="$(kubectl get mariadb "${mariadb_name}" -n "${CP_NS}" \
+  root_secret_name="$(kubectl get mariadb "${mariadb_name}" -n "${svc_ns}" \
     -o 'jsonpath={.spec.rootPasswordSecretKeyRef.name}' 2>/dev/null || true)"
   if [[ -z "${root_secret_name}" ]]; then
-    log "ERROR: could not resolve spec.rootPasswordSecretKeyRef.name on MariaDB '${mariadb_name}' in namespace '${CP_NS}'."
+    log "ERROR: could not resolve spec.rootPasswordSecretKeyRef.name on MariaDB '${mariadb_name}' in namespace '${svc_ns}'."
     exit 1
   fi
-  root_secret_key="$(kubectl get mariadb "${mariadb_name}" -n "${CP_NS}" \
+  root_secret_key="$(kubectl get mariadb "${mariadb_name}" -n "${svc_ns}" \
     -o 'jsonpath={.spec.rootPasswordSecretKeyRef.key}' 2>/dev/null || true)"
   if [[ -z "${root_secret_key}" ]]; then
     root_secret_key="password"
   fi
 
   local root_password_b64 root_password
-  root_password_b64="$(kubectl get secret "${root_secret_name}" -n "${CP_NS}" \
+  root_password_b64="$(kubectl get secret "${root_secret_name}" -n "${svc_ns}" \
     -o "jsonpath={.data.${root_secret_key}}" 2>/dev/null || true)"
   if [[ -z "${root_password_b64}" ]]; then
-    log "ERROR: MariaDB root Secret '${root_secret_name}' (key '${root_secret_key}') not found or empty in namespace '${CP_NS}'."
+    log "ERROR: MariaDB root Secret '${root_secret_name}' (key '${root_secret_key}') not found or empty in namespace '${svc_ns}'."
     exit 1
   fi
   root_password="$(echo "${root_password_b64}" | base64 -d)"
@@ -169,7 +190,7 @@ main() {
   log "Writing database/mariadb/config/${config_name} ..."
   printf '%s' "${root_password}" | bao_exec_stdin bao write "database/mariadb/config/${config_name}" \
     plugin_name=mysql-database-plugin \
-    connection_url="{{username}}:{{password}}@tcp(${mariadb_name}.${CP_NS}.svc:3306)/" \
+    connection_url="{{username}}:{{password}}@tcp(${mariadb_name}.${svc_ns}.svc:3306)/" \
     allowed_roles="${role_name}" \
     username=root \
     password=- \
