@@ -245,6 +245,117 @@ func deletingExternalControlPlane() *c5c3v1alpha1.ControlPlane {
 	return cp
 }
 
+// terminatingImportMeta builds the ObjectMeta of a Terminating K-ORC CR: a
+// K-ORC finalizer holds it and its DeletionTimestamp is set — the state the
+// identity imports sit in once the teardown has revoked the application
+// credential their finalizers would authenticate with.
+func terminatingImportMeta(name, ns, finalizer string) metav1.ObjectMeta {
+	ts := metav1.NewTime(metav1.Now().Add(-30 * time.Second))
+	return metav1.ObjectMeta{
+		Name:              name,
+		Namespace:         ns,
+		Finalizers:        []string{finalizer},
+		DeletionTimestamp: &ts,
+	}
+}
+
+// TestReconcileDelete_ReleasesUnmanagedImportsWithoutStall is the regression
+// guard for the teardown wedge the external-keystone suite exposed: after the
+// managed children (application credential included) are gone, the only CRs
+// left are Unmanaged imports whose K-ORC finalizers can never run again — the
+// revoked credential is the one they authenticate with. reconcileDelete must
+// release them immediately (Normal event, finalizer held, no Warning), NOT
+// wait out the five-minute stall window and alarm with ORCTeardownStalled.
+func TestReconcileDelete_ReleasesUnmanagedImportsWithoutStall(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := deletingExternalControlPlane() // deleted 1s ago — well inside the stall window
+	ns := childNamespace(cp)
+	svc := &orcv1alpha1.Service{
+		ObjectMeta: terminatingImportMeta(keystoneServiceName(cp), ns, "openstack.k-orc.cloud/service"),
+		Spec:       orcv1alpha1.ServiceSpec{ManagementPolicy: orcv1alpha1.ManagementPolicyUnmanaged},
+	}
+	domain := &orcv1alpha1.Domain{
+		ObjectMeta: terminatingImportMeta(adminDomainRef(cp), ns, "openstack.k-orc.cloud/domain"),
+		Spec:       orcv1alpha1.DomainSpec{ManagementPolicy: orcv1alpha1.ManagementPolicyUnmanaged},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, svc, domain).Build()
+	rec := record.NewFakeRecorder(10)
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: rec}
+
+	key := types.NamespacedName{Name: cp.Name, Namespace: cp.Namespace}
+	g.Expect(c.Get(context.Background(), key, cp)).To(Succeed())
+
+	res, err := r.reconcileDelete(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter),
+		"the release pass must requeue to confirm the imports are gone")
+
+	// Stripping the only (K-ORC) finalizer completes the deletions.
+	err = c.Get(context.Background(), client.ObjectKeyFromObject(svc), &orcv1alpha1.Service{})
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "the released Service import must be gone")
+	err = c.Get(context.Background(), client.ObjectKeyFromObject(domain), &orcv1alpha1.Domain{})
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "the released Domain import must be gone")
+
+	g.Expect(controllerutil.ContainsFinalizer(cp, controlPlaneORCFinalizer)).To(BeTrue(),
+		"the ControlPlane finalizer is held until the follow-up pass confirms emptiness")
+	events := drainEvents(rec)
+	g.Expect(events).To(ContainElement(ContainSubstring("ORCImportsReleased")))
+	g.Expect(events).NotTo(ContainElement(ContainSubstring("Warning")),
+		"releasing unmanaged imports orphans nothing and must not alarm")
+
+	// The follow-up pass finds nothing remaining and releases the ControlPlane.
+	g.Expect(c.Get(context.Background(), key, cp)).To(Succeed())
+	res, err = r.reconcileDelete(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{}))
+	err = c.Get(context.Background(), key, &c5c3v1alpha1.ControlPlane{})
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue())
+	g.Expect(drainEvents(rec)).To(ContainElement(ContainSubstring("ORCTeardownComplete")))
+}
+
+// TestReconcileDelete_MixedRemainderStillWaitsForManaged asserts the release
+// shortcut stays gated on the managed children: while a managed CR (here the
+// application credential, whose revocation is real OpenStack work) is still
+// Terminating, the unmanaged imports keep their K-ORC finalizers and the
+// teardown waits at the K-ORC cadence.
+func TestReconcileDelete_MixedRemainderStillWaitsForManaged(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := deletingExternalControlPlane()
+	ns := childNamespace(cp)
+	ac := &orcv1alpha1.ApplicationCredential{
+		// ManagementPolicy unset counts as managed (fail-loud default).
+		ObjectMeta: terminatingImportMeta(adminAppCredentialName(cp), ns, "openstack.k-orc.cloud/applicationcredential"),
+	}
+	svc := &orcv1alpha1.Service{
+		ObjectMeta: terminatingImportMeta(keystoneServiceName(cp), ns, "openstack.k-orc.cloud/service"),
+		Spec:       orcv1alpha1.ServiceSpec{ManagementPolicy: orcv1alpha1.ManagementPolicyUnmanaged},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, ac, svc).Build()
+	rec := record.NewFakeRecorder(10)
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: rec}
+
+	key := types.NamespacedName{Name: cp.Name, Namespace: cp.Namespace}
+	g.Expect(c.Get(context.Background(), key, cp)).To(Succeed())
+
+	res, err := r.reconcileDelete(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+
+	gotSvc := &orcv1alpha1.Service{}
+	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(svc), gotSvc)).To(Succeed())
+	g.Expect(gotSvc.Finalizers).To(ContainElement("openstack.k-orc.cloud/service"),
+		"unmanaged imports must NOT be released while a managed CR still needs K-ORC")
+
+	g.Expect(drainEvents(rec)).NotTo(ContainElement(ContainSubstring("ORCImportsReleased")))
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeKORCReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Reason).To(Equal("FinalizingORC"))
+}
+
 // deletingExternalOptInControlPlane returns an External-mode ControlPlane being
 // deleted that declared one opt-in catalog entry — the one thing this operator
 // created in the external catalog, and therefore the one thing it removes from it.

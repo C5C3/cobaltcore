@@ -1612,13 +1612,22 @@ projected. On deletion it:
    at the K-ORC cadence.
 2. **Releases the finalizer once the ORC CRs are gone**, letting GC cascade-
    delete Keystone, the infrastructure, and the remaining children.
-3. **Bounds the wait.** If the ORC CRs stay Terminating longer than the
+3. **Releases an unmanaged-only remainder immediately.** K-ORC re-fetches the
+   imported resource through an *authenticated* actuator before releasing any
+   finalizer, and the unmanaged imports authenticate with the admin application
+   credential whose revocation step 1 already triggered — so once every CR
+   still present is an `Unmanaged` import, waiting on K-ORC is waiting on a
+   dead-credential retry loop. The reconciler force-removes their
+   `openstack.k-orc.cloud/*` finalizers right away and emits a **Normal**
+   `ORCImportsReleased` event. An import's deletion is CR-only, so the external
+   installation is untouched and nothing is orphaned.
+4. **Bounds the wait.** If managed ORC CRs stay Terminating longer than the
    `orcTeardownStallTimeout` (5 minutes) — typically because Keystone is already
    gone and K-ORC cannot revoke — the reconciler force-removes the stuck
    `openstack.k-orc.cloud/*` finalizers (preserving any non-K-ORC finalizers),
    emits a **Warning** `ORCTeardownStalled` event, and releases the ControlPlane
    finalizer so deletion completes rather than wedging forever.
-4. **Names what the escape orphaned.** The escape strips the very finalizer that
+5. **Names what the escape orphaned.** The escape strips the very finalizer that
    would have revoked the credential or removed the catalog row, so every
    `Managed` CR it releases leaves its OpenStack resource behind with no
    Kubernetes object naming it. A second **Warning**, `ORCResourcesOrphaned`,

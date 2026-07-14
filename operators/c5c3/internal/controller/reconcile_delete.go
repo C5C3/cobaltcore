@@ -69,7 +69,11 @@ func (c orcChildObject) key() string {
 //     Deleting their CRs removes the Kubernetes objects and leaves the OpenStack
 //     resources they imported untouched. K-ORC's deletion-guard finalizers also
 //     enforce the teardown order: a User cannot go while an ApplicationCredential
-//     still references it.
+//     still references it. Note that K-ORC cannot RUN those finalizers once the
+//     credential the imports authenticate with is revoked (it re-fetches the
+//     imported resource through an authenticated actuator before releasing any
+//     finalizer), which is why reconcileDelete force-releases an unmanaged-only
+//     remainder instead of waiting for K-ORC.
 //   - Service, Endpoint — in Managed mode these are the managed catalog entries, so
 //     the sweep deletes them from Keystone's catalog. In External mode the identity
 //     Service and its per-interface Endpoints are ManagementPolicyUnmanaged imports
@@ -306,9 +310,18 @@ func (r *ControlPlaneReconciler) ownedCatalogEntryChildren(
 //  1. Delete every owned K-ORC CR (idempotent; NotFound / CRD-absent tolerated)
 //     and collect those still present (Terminating behind a K-ORC finalizer).
 //  2. When none remain, release the finalizer so GC tears down the rest.
-//  3. While some remain and the bounded orcTeardownStallTimeout has not elapsed,
-//     report KORCReady=False/FinalizingORC and requeue.
-//  4. Once the stall timeout elapses (K-ORC cannot make progress — most likely
+//  3. When every CR still present is an Unmanaged import, force-remove their
+//     K-ORC finalizers right away: an import's deletion is CR-only, but K-ORC
+//     builds an authenticated delete actuator and re-fetches the imported
+//     resource by ID before releasing ANY finalizer — and the imports
+//     authenticate with the admin application credential whose revocation
+//     step 1 already triggered (the managed children ride the admin-password
+//     cloud instead). Waiting on them is waiting on a dead-credential retry
+//     loop only the stall breaker would cut, five minutes later. Nothing is
+//     orphaned: an import never owned the OpenStack resource behind it.
+//  4. While managed CRs remain and the bounded orcTeardownStallTimeout has not
+//     elapsed, report KORCReady=False/FinalizingORC and requeue.
+//  5. Once the stall timeout elapses (K-ORC cannot make progress — most likely
 //     Keystone is already gone, so it cannot revoke), force-remove the
 //     openstack.k-orc.cloud/* finalizers, emit a Warning event, and release the
 //     ControlPlane finalizer so deletion can complete. Every MANAGED CR released
@@ -344,10 +357,43 @@ func (r *ControlPlaneReconciler) reconcileDelete(ctx context.Context, cp *c5c3v1
 		return ctrl.Result{}, nil
 	}
 
-	// Some K-ORC CRs are still present — typically Terminating behind a K-ORC
-	// finalizer that revokes against Keystone. Within the stall window, wait and
-	// requeue; updateStatus persists the FinalizingORC condition so the wait is
-	// operator-visible. The reason matches the FinalizingORC event above.
+	// Once only Unmanaged imports remain, K-ORC can never finish them: its
+	// delete path re-fetches the imported resource by ID through an
+	// authenticated actuator before releasing any finalizer, and the imports
+	// authenticate with the admin application credential this sweep just
+	// revoked. Force-release their K-ORC finalizers instead of waiting out the
+	// stall window on a dead-credential retry loop. This is a Normal event, not
+	// a Warning: an import's deletion is CR-only by definition, so the external
+	// installation is left bit-for-bit intact and nothing is orphaned.
+	onlyUnmanagedLeft := true
+	for _, obj := range remaining {
+		if isManagedORCChild(obj) {
+			onlyUnmanagedLeft = false
+			break
+		}
+	}
+	if onlyUnmanagedLeft {
+		names := make([]string, 0, len(remaining))
+		for _, obj := range remaining {
+			names = append(names, obj.GetName())
+		}
+		if err := r.forceRemoveKORCFinalizers(ctx, remaining); err != nil {
+			return ctrl.Result{}, err
+		}
+		r.Recorder.Event(cp, "Normal", "ORCImportsReleased", fmt.Sprintf(
+			"released the K-ORC finalizers of the remaining unmanaged import CR(s) %v: an import's deletion is "+
+				"CR-only, and its finalizer cannot authenticate once the admin application credential is revoked",
+			names,
+		))
+		log.FromContext(ctx).Info("released the K-ORC finalizers of the remaining unmanaged imports",
+			"imports", names)
+		return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
+	}
+
+	// Some managed K-ORC CRs are still present — typically Terminating behind a
+	// K-ORC finalizer that revokes against Keystone. Within the stall window,
+	// wait and requeue; updateStatus persists the FinalizingORC condition so the
+	// wait is operator-visible. The reason matches the FinalizingORC event above.
 	if time.Since(cp.DeletionTimestamp.Time) <= orcTeardownStallTimeout {
 		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
 			Type:               conditionTypeKORCReady,
