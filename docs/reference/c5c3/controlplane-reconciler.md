@@ -1383,11 +1383,21 @@ Per declared entry it, in order:
    the **materialized password matching the current generation**, so a rotated-away
    password never reads Ready.
 
+**Per-account status.** Each declared entry is projected onto a
+`status.serviceAccounts[]` entry keyed by `name`. Its `ready` field mirrors that
+account's own convergence — user, project, and a materialized password Secret
+matching the current generation — so a single lagging account is attributable
+without reading the aggregate `ServiceAccountsReady` message. The entry also
+carries the resolved `userID` / `projectID`, the applied `passwordGeneration`, and
+`lastPasswordRotation`, alongside the `secretName` handle below.
+
 **Consumption contract.** Consumers read from the materialized Secret
 `{controlplane.Name}-service-account-{name}-credentials` (keys `password` and a
 ready-to-use `clouds.yaml`), named in `status.serviceAccounts[].secretName`. The
 credentials are always read from that Secret (or the OpenBao path directly); after
-a rotation, one reload picks up the new password.
+a rotation, one reload picks up the new password. For which OpenBao paths exist in
+each Keystone mode, see
+[OpenBao paths per ControlPlane mode](../infrastructure/openbao-bootstrap.md#openbao-paths-per-controlplane-mode).
 
 **Deletion.** A managed `User`/`Project` (created **or adopted** — adoption makes
 it operator-owned) is deleted from Keystone at teardown, sequenced through the

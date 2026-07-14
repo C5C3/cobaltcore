@@ -193,7 +193,7 @@ status:
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `openStackRelease` | `string` | Yes | — | OpenStack release the control plane targets (e.g. `"2025.2"`). The reconciler (L2) projects this into each service CR's image tag. Must match the date-based release pattern `^\d{4}\.\d$`, enforced by both the CRD `+kubebuilder:validation:Pattern` marker and the validating webhook. Upgrades are allowed on update, but **downgrades are rejected** (Keystone DB migrations are forward-only). Stays required in **both** keystone modes; in **External** mode it is **advisory** — no images are deployed, so the value only needs to match the external installation's release at the phase-3 managed takeover. |
+| `openStackRelease` | `string` | Yes | — | OpenStack release the control plane targets (e.g. `"2025.2"`). The reconciler (L2) projects this into each service CR's image tag. Must match the date-based release pattern `^\d{4}\.[12]$`, enforced by both the CRD `+kubebuilder:validation:Pattern` marker and the validating webhook. Upgrades are allowed on update, but **downgrades are rejected** (Keystone DB migrations are forward-only). Stays required in **both** keystone modes; in **External** mode it is **advisory** — no images are deployed, so the value only needs to match the external installation's release at the phase-3 managed takeover. |
 | `region` | `string` | No | `"RegionOne"` | OpenStack region name applied across the control plane. Projected into the Keystone CR's `bootstrap.region`. Defaulted to `RegionOne` by **both** the `+kubebuilder:default` marker (normal admission) and the defaulting webhook (callers that bypass the CRD default). Immutable after create (the projected `bootstrap.region` is itself immutable). |
 | `infrastructure` | [`*InfrastructureSpec`](#infrastructurespec) | Conditional | managed-mode defaulted | Shared backing services (database, cache) the control plane's services connect to. **Required** when `services.keystone.mode` is `Managed` (or unset, or `services.keystone` unset) — the defaulting webhook materializes a managed-mode `database`/`cache` when omitted, and the validating webhook rejects a non-External ControlPlane without it. **Forbidden** in **External** mode (an External ControlPlane provisions no backing services; phase 2 relaxes this to optional). The mode-conditional required/forbidden rule is webhook-enforced because CEL cannot span `spec.infrastructure` and `spec.services.keystone`; see [InfrastructureSpec](#infrastructurespec) and [Validation Rules](#validation-rules). |
 | `services` | [`ServicesSpec`](#servicesspec) | Yes | — | Per-service configuration projected into the individual service CRs. |
@@ -305,12 +305,13 @@ that adopts a pre-existing MariaDB/Memcached leaves its topology untouched.
 ## ServicesSpec
 
 Declares the per-service configuration of the control plane. Today
-only Keystone is modeled; additional services are added as fields as the
-operator grows.
+Keystone and the Horizon dashboard are modeled; additional services are added as
+fields as the operator grows.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `keystone` | [`*ServiceKeystoneSpec`](#servicekeystonespec) | No | `nil` | Configuration for the Keystone service projected by the reconciler. Optional: when unset, this ControlPlane manages no Keystone service (staged adoption, or an externally-managed Keystone) and `KeystoneReady` is reported as not-managed. Flipping it from set to `nil` **preserves** the previously-projected Keystone child by default — deleting it would cascade to the child's irreplaceable `<name>-credential-keys` Secret (and its OpenBao backup), so an accidental unset is fail-safe. Set the `c5c3.io/allow-keystone-deletion: "true"` annotation on the ControlPlane to opt in to deleting the child on unset. |
+| `horizon` | [`*ServiceHorizonSpec`](#servicehorizonspec) | No | `nil` | Configuration for the Horizon dashboard projected by the reconciler. Optional: when unset, this ControlPlane manages no dashboard and `HorizonReady` is reported as not-managed (`HorizonNotManaged`), so the aggregate `Ready` is not blocked. **Forbidden in External mode** — the dashboard needs its own External-mode design. Flipping it from set to `nil` preserves the previously-projected Horizon child by default; set the `c5c3.io/allow-horizon-deletion: "true"` annotation to opt in to deleting the child on unset. |
 
 ---
 
@@ -403,7 +404,7 @@ identity against that endpoint rather than deploying a Keystone workload.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `authURL` | `string` | Yes | — | Identity endpoint of the external Keystone (e.g. `https://keystone.example.com/v3`). Must match the HTTP(S) URL pattern `^https?://`, enforced by both the CRD `+kubebuilder:validation:Pattern` marker and the validating webhook. |
+| `authURL` | `string` | Yes | — | Identity endpoint of the external Keystone (e.g. `https://keystone.example.com/v3`). Must match the HTTP(S) URL pattern `^https?://[^\s/]+` — an HTTP(S) shape with a **non-empty host**, so a hostless endpoint is rejected at admission — and be at most **2048** characters. Both are enforced by the CRD `+kubebuilder:validation:Pattern` / `MaxLength` markers and mirrored by the validating webhook with a full `net/url` parse. The cap bounds the one unbounded input the reconciler interpolates into `status.conditions[].message`: the pattern is end-unanchored, so without it a multi-kilobyte path could push the assembled message past the apiserver's 32768-byte cap and fail the **whole** `status.conditions` write. Neither gate is an SSRF control — admission cannot resolve where the host points, so egress restrictions remain the operator's responsibility. |
 | `endpointType` | `string` (`public` \| `internal` \| `admin`) | No | `public` | Which Keystone catalog interface to authenticate against. Defaulted to `public` by both the `+kubebuilder:default` marker and the defaulting webhook. Rendered as the clouds.yaml `endpoint_type` key of **both** generated credentials Secrets. Named `endpointType` (not `interface`) because K-ORC drops gophercloud's `Interface` field and only honours `endpoint_type` (the authoritative note lives on `buildAppCredCloudsYAML` in the reconciler's `korc_cloudsyaml.go`). The selected interface must exist in the external catalog for `spec.region` — otherwise the control plane fails loud with `KORCReady=False/CatalogEndpointMismatch`. |
 | `caBundleSecretRef` | [`*commonv1.SecretRefSpec`](../keystone/keystone-crd.md#secretrefspec) | No | `nil` | References a Secret carrying a private CA bundle the client trusts when verifying the external endpoint. The bundle is projected verbatim as the inline `cacert` key into **both** generated K-ORC credentials Secrets — K-ORC reads that key natively from the same Secret that carries `clouds.yaml`, so no mount and no upstream change are needed. `key` defaults to `ca.crt`; this default is **webhook-only** because the shared `SecretRefSpec` carries no c5c3-specific marker (the same discipline as `passwordSecretRef.key`). When the ref is set its `name` must be non-empty (CRD `MinLength` marker + webhook). A missing Secret, a missing key, or a present-but-empty key defers the mint with `KORCReady=False/WaitingForCABundle` — the last shape is the normal transient of a two-step "create the Secret, then populate it" flow. |
 | `catalog` | [`*ExternalCatalogSpec`](#externalcatalogspec) | No | `nil` | Tunes how the control plane stewards the external Keystone's service catalog. Omitting it selects the conservative default: the existing identity service and all three of its endpoint interfaces are **imported** as unmanaged K-ORC CRs, and **zero** catalog entries are created. |
@@ -989,11 +990,11 @@ Keystone discipline:
 
 | Field | Rule |
 | --- | --- |
-| `spec.openStackRelease` | Pattern `^\d{4}\.\d$` |
+| `spec.openStackRelease` | Pattern `^\d{4}\.[12]$` |
 | `spec.services.keystone.publicEndpoint` | Pattern `^https?://`; MaxLength 512 (the Horizon child's bound on `websso.keystoneURL`, which this value is projected onto) |
 | `spec.services.horizon.publicEndpoint` | Pattern `^https?://`; MaxLength 499 (the Keystone child's 512-character bound on `trustedDashboards[]` minus `/auth/websso/`) |
 | `spec.services.keystone.mode` | Enum: `Managed`, `External`; schema default `Managed` |
-| `spec.services.keystone.external.authURL` | Pattern `^https?://` |
+| `spec.services.keystone.external.authURL` | Pattern `^https?://[^\s/]+`; MaxLength 2048 (bounds the one unbounded input interpolated into `status.conditions[].message`) |
 | `spec.services.keystone.external.endpointType` | Enum: `public`, `internal`, `admin`; schema default `public` |
 | `spec.services.keystone.external.caBundleSecretRef.name` | MinLength 1 (shared `SecretRefSpec` marker) |
 | `spec.korc.adminCredential.applicationCredential.accessRules[].method` | Enum: `CONNECT`, `DELETE`, `GET`, `HEAD`, `OPTIONS`, `PATCH`, `POST`, `PUT`, `TRACE` |
@@ -1033,7 +1034,7 @@ short-circuit on the first error.
 
 | Rule | Field Path | Error Type | Condition |
 | --- | --- | --- | --- |
-| Release pattern | `spec.openStackRelease` | `field.Invalid` | Value does not match `^\d{4}\.\d$`. Defense-in-depth alongside the CRD `+kubebuilder:validation:Pattern` marker. |
+| Release pattern | `spec.openStackRelease` | `field.Invalid` | Value does not match `^\d{4}\.[12]$`. Defense-in-depth alongside the CRD `+kubebuilder:validation:Pattern` marker. |
 | Database mutual exclusivity | `spec.infrastructure.database` | `field.Invalid` | Both `clusterRef` and `host` set, or neither (`(clusterRef != nil) == (host != "")`). Defense-in-depth alongside the CEL `XValidation` rule on `commonv1.DatabaseSpec`. |
 | Cache mutual exclusivity | `spec.infrastructure.cache` | `field.Invalid` | Both `clusterRef` and `servers` set, or neither (`(clusterRef != nil) == (len(servers) > 0)`). Defense-in-depth alongside the CEL `XValidation` rule on `commonv1.CacheSpec`. |
 | Database replicas quorum | `spec.infrastructure.database.replicas` | `field.Invalid` | Value is exactly `2`. The managed-mode projection turns any `replicas > 1` into a Galera cluster, and a two-node Galera cluster cannot hold a majority — a single pod disruption then loses quorum. Replicas must be 1 (standalone) or >=3. The CRD marker enforces only `Minimum=1` (the shared `commonv1.DatabaseSpec` must not carry a c5c3-specific CEL rule the keystone operator, which ignores `replicas`, would inherit), so this check is **webhook-only**; a zero value (defaulting bypassed) is left to the reconciler's floor. |
@@ -1042,7 +1043,7 @@ short-circuit on the first error.
 | Empty policy rule name | `spec.globalPolicyOverrides.rules[<key>]`, `spec.services.keystone.policyOverrides.rules[<key>]` | `field.Required` | A rule name (map key) is the empty string. Enforced via the shared `policy.ValidatePolicyRules`, mirrored by the CEL rule on `commonv1.PolicySpec`. |
 | Empty policy rule value | `spec.globalPolicyOverrides.rules[<key>]`, `spec.services.keystone.policyOverrides.rules[<key>]` | `field.Required` | A rule value is the empty string. Enforced via the shared `policy.ValidatePolicyRules`, mirrored by the CEL rule on `commonv1.PolicySpec`. |
 | External block required | `spec.services.keystone.external` | `field.Required` | `mode: External` but `external` unset. Defense-in-depth mirror of the CEL rule. |
-| External authURL required/URL | `spec.services.keystone.external.authURL` | `field.Required` / `field.Invalid` | In External mode, `authURL` empty (Required) or not matching `^https?://` (Invalid). Mirrors the CRD required/pattern markers. |
+| External authURL required/URL | `spec.services.keystone.external.authURL` | `field.Required` / `field.Invalid` | In External mode, `authURL` empty (Required), or not matching `^https?://[^\s/]+` / failing a full `net/url` parse / exceeding 2048 characters (Invalid). Mirrors the CRD required/pattern/maxLength markers. |
 | External caBundle name required | `spec.services.keystone.external.caBundleSecretRef.name` | `field.Required` | `caBundleSecretRef` set with an empty `name`. Mirrors the shared `SecretRefSpec` MinLength marker. |
 | Managed-only field forbidden in External mode | `spec.services.keystone.{replicas,image,policyOverrides,rotationInterval,gateway,publicEndpoint,federationProxyImage}` | `field.Forbidden` | The field is set while `mode: External`. Defense-in-depth mirror of the per-field CEL rules. |
 | Federation proxy image resolvable | `spec.services.keystone.federationProxyImage` | `field.Required` / `field.Invalid` | Empty `repository`, or neither/both of `tag` and `digest`. Surfaces on the ControlPlane the operator edits rather than as an opaque `KeystoneProjectionRejected` condition on the child. |
@@ -1216,6 +1217,7 @@ markers' documented values where a marker also exists.
 | `spec.korc.adminCredential.userName` | `== ""` | `"admin"` | Marker + webhook |
 | `spec.korc.adminCredential.projectName` | `== ""` | `"admin"` | Marker + webhook |
 | `spec.korc.adminCredential.domainName` | `== ""` | `"Default"` | Marker + webhook |
+| `spec.korc.serviceAccounts[].userName` | `== ""` | the entry's `name` | Webhook-only |
 
 <a id="secretref-default-note"></a>
 > **† `database.secretRef.name` default — managed-mode convenience name only.**
@@ -1288,22 +1290,31 @@ func (w *ControlPlaneWebhook) ValidateDelete(_ context.Context, _ *ControlPlane)
 
 ## Status Conditions
 
-The ControlPlane status is driven by eight sub-reconcilers, each owning one
+The ControlPlane status is driven by ten sub-reconcilers, each owning one
 condition type, plus an aggregate `Ready` condition. The condition-type
-constants in `controlplane_controller.go` are the single source of truth; call
-sites reference the constants rather than inline literals.
+constants in `controlplane_controller.go` (`subConditionTypes`) are the single
+source of truth; call sites reference the constants rather than inline literals.
 
 The sub-reconcilers run in dependency order; a stage that has not converged
 requeues and stops the chain, so later conditions are never computed against a
-half-built earlier stage. Three stages additionally gate **explicitly** on an
+half-built earlier stage. Four stages additionally gate **explicitly** on an
 earlier condition being `True` (`reconcileKeystone` on `InfrastructureReady`,
-`reconcileAdminCredential` on `KORCReady`, `reconcileCatalog` on
-`AdminCredentialReady`):
+`reconcileHorizon` on `KeystoneReady`, `reconcileAdminCredential` on `KORCReady`,
+`reconcileCatalog` and `reconcileServiceAccounts` on `AdminCredentialReady`):
 
 ```
-InfrastructureReady → DBCredentialsReady → AdminPasswordReady → KeystoneReady
-  → KORCReady → AdminCredentialReady → CatalogReady → ServiceAccountsReady
+InfrastructureReady → ESOTenantStoreReady → DBCredentialsReady → AdminPasswordReady
+  → KeystoneReady → HorizonReady → KORCReady → AdminCredentialReady
+  → CatalogReady → ServiceAccountsReady
 ```
+
+`ESOTenantStoreReady` runs ahead of every store-consuming stage because it
+provisions the per-tenant `SecretStore` they route their ExternalSecrets and
+PushSecrets through. It is **mode-independent**: an External-mode ControlPlane
+provisions the same tenant store (it just never seeds a bootstrap path through
+it), so both `ESOTenantStoreReady` and `HorizonReady` appear on an External-mode
+CR's status — the latter as `HorizonNotManaged`, since the dashboard is forbidden
+in External mode.
 
 `ServiceAccountsReady` gates explicitly on `AdminCredentialReady` (like
 `CatalogReady`): the admin credential must be minted before K-ORC can project
@@ -1332,6 +1343,21 @@ Set by `reconcileInfrastructure`.
 | `True` | `ExternallyManaged` | `services.keystone.mode` is `External`: identity is managed against `services.keystone.external.authURL`, so no MariaDB/Memcached is provisioned. |
 | `False` | `InfrastructureNotConfigured` | `spec.infrastructure` is unset on a **non**-External ControlPlane. The validating webhook requires the block outside External mode, so this only fires for a webhook-bypassed CR; it fails closed rather than dereferencing the nil block. |
 
+### ESOTenantStoreReady
+
+Set by `reconcileESOTenantStore`. It provisions the per-tenant `SecretStore` (plus
+its ServiceAccount and mTLS certificate) that every store-consuming stage routes
+its ExternalSecrets and PushSecrets through, which is why it runs ahead of them.
+It is **mode-independent** — an External-mode ControlPlane provisions the same
+store.
+
+| Status | Reason | When |
+| --- | --- | --- |
+| `True` | `ESOTenantStoreReady` | The operator-provisioned per-tenant `SecretStore` is Ready. |
+| `True` | `StoreRefOverridden` | An explicit `spec.secretStoreRef` opts out of the operator-provisioned store: the ControlPlane owns the referenced store's lifecycle, so nothing is provisioned. The selected store's readiness is still gated by each store-consuming sub-reconciler. |
+| `False` | `SecretStoreNotReady` | The per-tenant `SecretStore` is not Ready yet; waiting on cert issuance and the OpenBao backend. |
+| `False` | `ProvisioningError` | Error ensuring the per-tenant secret-store objects (SecretStore, ServiceAccount, certificate). |
+
 ### DBCredentialsReady
 
 Set by `reconcileDBCredentials`. In managed mode (`database.clusterRef` set) it
@@ -1348,6 +1374,7 @@ ExternalSecret's stale per-object Ready cache.
 | `True` | `BrownfieldUserSuppliedCredential` | Brownfield database (`clusterRef` unset): the user supplies the DB-credential Secret out-of-band, so no ExternalSecret is projected and the chain proceeds immediately. |
 | `True` | `ExternallyManaged` | `services.keystone.mode` is `External`: the ControlPlane manages no database at all, so nothing is projected and neither OpenBao nor the `ClusterSecretStore` is consulted. |
 | `False` | `SecretStoreNotReady` | The store selected by `spec.secretStoreRef` (a ClusterSecretStore or a namespaced SecretStore) is not Ready; the secret backend is unreachable. |
+| `False` | `GeneratorError` | Error ensuring the dynamic DB-credential objects (the MariaDB `database` engine-backed generator that issues short-lived credentials). |
 | `False` | `ExternalSecretError` | Error ensuring or checking the DB-credential ExternalSecret. |
 | `False` | `WaitingForDBCredentialSecret` | The ExternalSecret is ensured but ESO has not yet synced it to Ready. |
 
@@ -1383,7 +1410,24 @@ Set by `reconcileKeystone` (gated on `InfrastructureReady`).
 | `False` | `WaitingForInfrastructure` | `InfrastructureReady` is not `True`; Keystone projection deferred. |
 | `False` | `WaitingForKeystone` | The Keystone CR is ensured but not yet Ready. |
 | `False` | `InvalidRotationInterval` | `services.keystone.rotationInterval` could not be converted to a cron schedule. |
+| `False` | `KeystoneProjectionRejected` | The Keystone API server rejected the projected spec (HTTP 422) — almost always a now-immutable db/bootstrap field that diverged from the frozen Keystone child. Reconcile the ControlPlane spec back to the child's values, or recreate the child, to recover. Distinct from `KeystoneError` so the wedge is diagnosable from the condition. |
 | `False` | `KeystoneError` | Error create-or-updating the Keystone CR. |
+
+### HorizonReady
+
+Set by `reconcileHorizon` (gated on `KeystoneReady` — the dashboard authenticates
+against the Keystone child). The dashboard is **forbidden in External mode**, so
+an External-mode ControlPlane always reports `HorizonNotManaged`.
+
+| Status | Reason | When |
+| --- | --- | --- |
+| `True` | `HorizonReady` | The projected Horizon CR reports Ready. |
+| `True` | `HorizonNotManaged` | `services.horizon` is unset (or the ControlPlane is in External mode): no dashboard is managed, so the aggregate `Ready` is not blocked. Any previously-projected Horizon child is **preserved** unless the `c5c3.io/allow-horizon-deletion: "true"` annotation opts in to its deletion. |
+| `False` | `WaitingForKeystone` | `KeystoneReady` is not `True`; Horizon projection deferred. |
+| `False` | `WaitingForHorizon` | The Horizon CR is ensured but not yet Ready. |
+| `False` | `IdentityBackendsUnavailable` | Listing the Keystone child's identity backends for the Horizon projection failed. The chain stops rather than projecting an empty `websso` block, which would silently remove a working SSO button from the login page. |
+| `False` | `HorizonProjectionRejected` | The Horizon API server rejected the projected spec (HTTP 422) — the projection violates a CRD/webhook rule. Reconcile the ControlPlane spec to a valid projection to recover. |
+| `False` | `HorizonError` | Error create-or-updating the Horizon CR. |
 
 ### KORCReady
 
@@ -1393,10 +1437,21 @@ Set by `reconcileKORC`.
 | --- | --- | --- |
 | `True` | `ApplicationCredentialMinted` | The K-ORC admin `ApplicationCredential` is minted and reports `Available=True`. |
 | `False` | `WaitingForAdminPassword` | The admin password Secret/key is not yet available; minting deferred. |
+| `False` | `WaitingForCABundle` | **External mode only.** The Secret referenced by `external.caBundleSecretRef` does not exist yet, or exists with a missing/empty key; the mint is deferred rather than attempted against an endpoint whose certificate cannot be verified. The present-but-empty shape is the normal transient of a two-step "create the Secret, then populate it" flow. |
+| `False` | `CABundleError` | **External mode only.** Non-missing error reading the external CA bundle. |
 | `False` | `ApplicationCredentialFailed` | The `ApplicationCredential` reports a terminal K-ORC error (`GetTerminalError` — an unrecoverable/invalid-config reason such as K-ORC being unable to authenticate); the message folds in any stuck admin Domain/User import. |
 | `False` | `WaitingForApplicationCredential` | The `ApplicationCredential` CR is ensured but not yet `Available`; the message folds in any stuck admin Domain/User import. |
+| `False` | `ReMinting` | The admin application credential is being re-minted (delete + recreate) after an admin-password change or a `CredentialRotation` request; awaiting K-ORC's revoke of the previous credential. The old credential is **already revoked** at the Keystone level — see the [consumption contract](#admincredentialspec). |
+| `False` | `ReMintStalled` | The `ApplicationCredential` has been `Terminating` longer than `remintStallTimeout`; K-ORC may be unable to reach Keystone to revoke the previous credential. Escalated from `ReMinting` so a stuck finalizer is alertable instead of looping silently. |
 | `False` | `AdminPasswordError` | Non-missing error reading the admin password. |
-| `False` | `ApplicationCredentialError` | Error create-or-updating the `ApplicationCredential` CR. |
+| `False` | `PasswordCloudError` | Error ensuring the operator-owned password-based `clouds.yaml` Secret the mint authenticates with. |
+| `False` | `AdminImportError` | Error create-or-updating the K-ORC admin `User`/`Domain` imports. |
+| `False` | `SecretError` | Error ensuring the application-credential Secret, or regenerating its `value` for a re-mint. |
+| `False` | `SeedCloudsYamlError` | Error seeding the bootstrap `clouds.yaml`. |
+| `False` | `PushSecretError` | Error ensuring the admin app-credential `PushSecret`, or forcing its CA-bundle re-push. |
+| `False` | `ExternalSecretError` | Error ensuring the K-ORC `clouds.yaml` `ExternalSecret`. |
+| `False` | `ApplicationCredentialError` | Error create-or-updating (or deleting, for a re-mint) the `ApplicationCredential` CR. |
+| `False` | `FinalizingORC` | The ControlPlane is being deleted and the operator is waiting for the owned K-ORC CRs and PushSecrets to finish their teardown (K-ORC's finalizer revokes the credential against Keystone) before releasing the `c5c3.io/orc-teardown` finalizer. Set by `reconcileDelete`; see the [reconciler reference](./controlplane-reconciler.md). |
 | `False` | `AuthenticationFailed` | **External mode only.** The external Keystone rejected the admin credential (HTTP 401) — typically the password was rotated out-of-band and `passwordSecretRef` is stale. K-ORC's message is relayed verbatim. |
 | `False` | `EndpointUnreachable` | **External mode only.** `services.keystone.external.authURL` could not be dialled (DNS failure, connection refused, timeout). |
 | `False` | `TLSVerificationFailed` | **External mode only.** The external endpoint's certificate did not verify; supply the private CA via `external.caBundleSecretRef`. |
@@ -1419,6 +1474,8 @@ application-credential id+secret) the freshly assembled credential).
 | `False` | `CredentialDrift` | **External mode only.** `KORCReady` reports drift in the external installation (`AuthenticationFailed` or `CredentialDrift`). The operator never remediates the external Keystone; update the `passwordSecretRef` Secret to drive a re-mint. |
 | `False` | `SecretStoreNotReady` | The store selected by `spec.secretStoreRef` (a ClusterSecretStore or a namespaced SecretStore) is not Ready; the secret backend is unreachable. |
 | `False` | `WaitingForCloudsYaml` | The operator-created per-ControlPlane `k-orc-clouds-yaml` ExternalSecret in the control-plane namespace (co-located with the K-ORC CRs per C1; created and owned by `reconcileKORC`) is not yet Ready. |
+| `False` | `WaitingForCredentialID` | K-ORC has not yet reported the minted application credential's id; the assembly is deferred until it does. |
+| `False` | `WaitingForAppCredentialSecret` | The operator-owned app-credential Secret does not exist yet, or carries no credential key — the mint is not complete. |
 | `False` | `WaitingForPushSecret` | The admin app-credential `PushSecret` has not synced the assembled `clouds.yaml` to OpenBao yet. `AdminCredentialReady` is gated on the PushSecret's `Ready` condition — not merely on the CR existing — so a backend permission failure (e.g. the ESO role missing the push policy) cannot yield a false-positive Ready while OpenBao still serves the password-based bootstrap `clouds.yaml`. |
 | `False` | `WaitingForCloudsYamlSync` | The materialised `k-orc-clouds-yaml` Secret is absent or still holds a stale credential (a re-mint revoked the old one but ESO has not re-synced yet). `reconcileAdminCredential` stamps the `external-secrets.io/force-sync` annotation to force an immediate re-sync and compares the materialised Secret semantically (parsed application-credential id+secret) against the assembled credential before reporting Ready, so the condition never reads `True` against a revoked credential. |
 | `False` | `CloudsYamlSyncStuck` | The materialised `k-orc-clouds-yaml` Secret has failed to match the assembled credential for longer than `cloudsYamlSyncStuckTimeout` (measured from the credential's `LastRotation`); the ESO ExternalSecret or OpenBao backend may be unable to sync. Escalated from `WaitingForCloudsYamlSync` so a never-converging sync is alertable and distinguishable from a transient miss. |
