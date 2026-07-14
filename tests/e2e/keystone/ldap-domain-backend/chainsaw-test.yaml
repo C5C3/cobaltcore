@@ -25,6 +25,13 @@ spec:
   namespace: openstack
   timeouts:
     assert: 5m
+    # Deleting a KeystoneIdentityBackend is finalizer-driven: the operator
+    # must de-project the domains volume and complete a Keystone Deployment
+    # rollout before it releases the finalizer (reconcileDelete). Under
+    # parallel:4 contention that regularly exceeds the global 30s delete
+    # bound (tests/e2e/chainsaw-config.yaml), so give deletion the same 3m
+    # budget the shared config gives cleanup.
+    delete: 3m
   steps:
   # ── Step 1: Deploy the OpenLDAP fixture and Keystone; both become ready ──
   - try:
