@@ -359,6 +359,7 @@ validating webhook is bypassed) and mirrored by the validating webhook; see
 | `gateway` | [`*commonv1.GatewaySpec`](#gatewayspec) | No | `nil` | Exposes the projected Keystone API externally via a Gateway API HTTPRoute. When `nil`, no HTTPRoute is projected and the Keystone API is reachable in-cluster only (its ClusterIP Service). When set, the reconciler projects it onto the Keystone CR's `spec.gateway`, so the Keystone operator attaches an HTTPRoute to the referenced Gateway. When a `gateway` is set its `hostname` must be non-empty — enforced at admission by the validating webhook (see [Validation Rules](#validation-rules)). |
 | `publicEndpoint` | `string` | No | `""` | Externally routable Keystone identity endpoint URL (e.g. `https://keystone.example.com/v3`). Projected into the Keystone bootstrap (`--bootstrap-public-url`) and used for the K-ORC identity catalog Endpoint, so external clients resolve the same URL Keystone advertises. When set, it must be an HTTP(S) URL (`+kubebuilder:validation:Pattern=^https?://`), so a malformed endpoint fails at admission rather than wedging the projected Keystone CR. When empty and `gateway` is set, the reconciler derives `https://{gateway.hostname}/v3` (the default-443 form); set it explicitly when the externally reachable port differs (e.g. a kind host-port mapping like `:8443`). |
 | `federationProxyImage` | [`*commonv1.ImageSpec`](../keystone/keystone-crd.md#imagespec) | No | `nil` | Overrides the `mod_auth_openidc` sidecar image projected onto the Keystone child's `spec.federation.proxyImage`. When `nil` the reconciler projects `ghcr.io/c5c3/keystone-federation-proxy:latest`. That default is a **mutable tag**: every node re-pulls it on each pod start, and a locally built sidecar cannot be exercised. Override it with a digest-carrying `ImageSpec` for the immutable pin published images are expected to carry. Inert until a federation-typed `KeystoneIdentityBackend` attaches. Forbidden in External mode (CEL + webhook). |
+| `dedicatedBackingServices` | [`*KeystoneDedicatedBackingServicesSpec`](#dedicatedbackingservices) | No | `nil` (shares the ControlPlane-wide instances) | Opts the Keystone service **out** of the shared `spec.infrastructure` instances and gives it backing services of its own. Forbidden in External mode (CEL + webhook): no backing services are provisioned at all there. |
 
 ---
 
@@ -380,6 +381,7 @@ its fields carry per-field External-mode forbid-rules.
 | `gateway` | [`*commonv1.GatewaySpec`](#gatewayspec) | No | `nil` | Exposes the projected dashboard externally via a Gateway API HTTPRoute. When `nil` the dashboard is reachable in-cluster only. |
 | `secretKeyRef` | [`*commonv1.SecretRefSpec`](../keystone/keystone-crd.md#secretrefspec) | No | `nil` | Overrides the Secret holding the Django `SECRET_KEY` the dashboard replicas share. When `nil` the reconciler defaults to the kind-infrastructure shim Secret `horizon-secret-key`, which is pinned to the **default** ControlPlane identity — multi-ControlPlane deployments MUST set this explicitly. |
 | `publicEndpoint` | `string` | No | `""` | The **browser-observed** dashboard base URL, without a trailing slash and **including a non-default port** (e.g. `https://horizon.example.com:8443`). The reconciler derives the WebSSO origin from it (`publicEndpoint + "/auth/websso/"`) and projects that onto the Keystone child's `spec.federation.trustedDashboards`. Keystone matches the origin the dashboard sends verbatim, so the value must reproduce exactly what the browser's address bar shows. When empty and `gateway` is set, the reconciler derives `https://{gateway.hostname}` (the default-443 form). Must match `^https?://`, parse with a host, and be at most 499 characters — the Keystone child's 512-character bound on `trustedDashboards[]` minus the 13 characters `/auth/websso/` appends. |
+| `dedicatedBackingServices` | [`*HorizonDedicatedBackingServicesSpec`](#dedicatedbackingservices) | No | `nil` (shares the ControlPlane-wide cache) | Opts the dashboard **out** of the shared `spec.infrastructure.cache` and gives it a cache of its own. The dashboard consumes no database, so `cache` is the only class it can take dedicated. |
 
 > **`publicEndpoint` and `gateway.hostname` must name the same host.** Django
 > derives the origin it sends from the request's `Host` header — i.e. from
@@ -390,6 +392,151 @@ its fields carry per-field External-mode forbid-rules.
 > must be `https`: the listener terminates TLS, and Keystone POSTs the unscoped
 > WebSSO token to this origin. See the
 > [End-to-End SSO guide](../../guides/end-to-end-sso.md).
+
+---
+
+## DedicatedBackingServices
+
+By default every service a ControlPlane manages connects to the **shared**
+instances declared in [`spec.infrastructure`](#infrastructurespec): one database
+cluster, one cache. Isolation between services is logical only — each service
+gets its own logical database and its own credentials on the shared MariaDB, and
+shares the Memcached instance.
+
+`services.<svc>.dedicatedBackingServices` is the **opt-in** that gives a single
+service backing services of its own instead. It is declared per service and per
+backing-service **class**:
+
+```yaml
+spec:
+  services:
+    keystone:
+      dedicatedBackingServices:
+        database:                       # Keystone gets its own database cluster
+          clusterRef:
+            name: prod-keystone-db
+          credentialsMode: Static
+          database: keystone
+          secretRef:
+            name: keystone-db
+          replicas: 3
+          storageSize: 200Gi
+        cache:                          # …and its own cache
+          clusterRef:
+            name: prod-keystone-cache
+          backend: dogpile.cache.pymemcache
+          replicas: 3
+    horizon:
+      dedicatedBackingServices:
+        cache:                          # the dashboard gets a cache of its own
+          clusterRef:
+            name: prod-horizon-cache
+          backend: dogpile.cache.pymemcache
+          replicas: 1
+```
+
+**Omitting the block is the default and keeps today's behavior**: the service
+shares the ControlPlane-wide instances. A class left unset inside a declared
+block is shared too — the Keystone service above could take a dedicated database
+and keep sharing the cache.
+
+### Fields
+
+`KeystoneDedicatedBackingServicesSpec`:
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `database` | [`*commonv1.DatabaseSpec`](../keystone/keystone-crd.md#databasespec) | No | `nil` (shares `spec.infrastructure.database`) | Gives Keystone its own database cluster. In managed mode `clusterRef.name` defaults to `{controlplane}-keystone-db`. |
+| `cache` | [`*commonv1.CacheSpec`](../keystone/keystone-crd.md#cachespec) | No | `nil` (shares `spec.infrastructure.cache`) | Gives Keystone its own cache. In managed mode `clusterRef.name` defaults to `{controlplane}-keystone-cache`. |
+
+`HorizonDedicatedBackingServicesSpec`:
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `cache` | [`*commonv1.CacheSpec`](../keystone/keystone-crd.md#cachespec) | No | `nil` (shares `spec.infrastructure.cache`) | Gives the dashboard its own cache. In managed mode `clusterRef.name` defaults to `{controlplane}-horizon-cache`. |
+
+Declaring the block with **no class set** is rejected — it would request nothing.
+Omit it entirely to share.
+
+### Lifecycle
+
+A dedicated instance is not a second-class one. It reuses the same `commonv1`
+shapes as the shared block, so it carries the same **managed-versus-brownfield**
+split — managed mode (`clusterRef`) has the ControlPlane provision the instance,
+brownfield mode (`database.host` / `cache.servers`) references an externally
+operated endpoint and provisions nothing — and the reconciler puts it through the
+same path as a shared instance:
+
+| Guarantee | How it holds for a dedicated instance |
+| --- | --- |
+| Provisioning | `reconcileInfrastructure` ensures a `MariaDB` / `Memcached` child CR per managed instance a service **resolves to**, shared and dedicated alike, sized from **that instance's** `replicas` / `storageSize`. Opting out is a genuine opt-out: a shared instance every service has left has no consumer, so it is not provisioned. Keystone is the only database consumer, so giving it a dedicated database means the shared cluster is never created — it would otherwise be an orphan (3 Galera replicas, 100Gi by default) that nothing talks to and readiness still waits for. |
+| Ownership and teardown | The child carries a controller owner reference to the ControlPlane with `blockOwnerDeletion`, so it is garbage-collected with the ControlPlane. A pre-existing CR under the same name is **adopted read-only** and never GC-claimed. |
+| Readiness gating | `InfrastructureReady` is `True` only once **every** managed instance is Ready. A service whose dedicated database is still converging holds the condition `False`, so its projection is deferred — it waits for the database it actually talks to, not just for the shared cluster. |
+| Credentials | The service child's `spec.database` is projected from the dedicated spec, so credential provisioning and rotation follow the instance the service connects to (see [Credential modes](#credential-modes) below). |
+| Network policy | The service operators derive their database/cache egress rules from the projected `spec.database` / `spec.cache`, so they follow the dedicated instance automatically. |
+
+### Credential modes
+
+A dedicated **managed** database uses `credentialsMode: Static`. The defaulting
+webhook materializes it, and an explicit `Dynamic` is **rejected at admission**:
+the OpenBao database engine carries exactly one connection and one role **per
+namespace** (`deploy/openbao/bootstrap/setup-database-tenant.sh`), bootstrapped
+against the *shared* cluster, so no engine role exists that could issue
+credentials for a dedicated instance — an admitted `Dynamic` dedicated database
+would wedge on an ExternalSecret that can never sync.
+
+`Static` is the same contract the shared block's own Static opt-out carries: the
+operator projects a KV-backed ExternalSecret reading
+`openstack/keystone/{namespace}/{name}/db`, and the credential is **seeded and
+rotated at the OpenBao source** (ESO refreshes it within the hour). A brownfield
+dedicated database keeps the user-supplied `secretRef` Secret, exactly as a
+brownfield shared one does.
+
+> **Seed the KV path before you expect `Ready`.** It is seeded by **neither the
+> operator nor the bootstrap** — the per-ControlPlane static seed was retired when
+> managed mode moved to engine-issued credentials. A dedicated managed database
+> therefore reaches `Ready` only once you have seeded
+> `kv-v2/openstack/keystone/{namespace}/{name}/db` (`username`, `password`)
+> yourself; see
+> [Migrate the Keystone DB to dynamic credentials](../../guides/migrate-keystone-db-to-dynamic-credentials.md)
+> for the exact `bao kv put`. Until then `DBCredentialsReady` stays `False` with
+> reason `WaitingForDBCredentialSecret` and a message naming the path.
+
+### Name collisions
+
+Managed `clusterRef` names must be **unique per backing-service class** across
+the shared block and every dedicated instance. Two instances sharing a name would
+resolve to a single child CR that both projections then fight over — silently
+voiding the isolation the opt-in exists for — so the validating webhook rejects
+the duplicate. The derived defaults (`{controlplane}-keystone-db`,
+`{controlplane}-keystone-cache`, `{controlplane}-horizon-cache`) never collide
+with each other or with the shared defaults (`openstack-db`,
+`openstack-memcached`).
+
+### Immutability
+
+Both the per-service block and each class within it are **frozen on a live
+ControlPlane**: a service cannot be moved between shared and dedicated backing
+services in either direction, because the flip would re-point the consuming
+child's (immutable) database fields at a different instance while the
+previously-provisioned one keeps running with the data still on it. The
+create-only leaves of a declared instance (`clusterRef.name`, `database`,
+`replicas`, `storageSize`, and the managed-vs-brownfield mode) are frozen the same
+way the shared block's are; a cache's `replicas` stays mutable.
+
+The freeze is **webhook-only** — deliberately carrying no CEL transition rule —
+so a later transition feature (with or without data migration) can relax it to a
+gated migration. An immutable CEL marker never could.
+
+### Adding a backing-service class
+
+Database and cache exist today. A new class (Valkey, RabbitMQ) is added as **one
+more optional pointer field** on the per-service block, reusing its own canonical
+`commonv1` shape. The shared-by-default / dedicated-on-request contract and the
+per-service opt-in surface are unchanged by that addition — which is why the
+classes are individual fields rather than one opaque block. A service's block
+only ever surfaces the classes that service actually consumes, which is why
+Horizon has a `cache` and no `database`.
 
 ---
 
@@ -1376,7 +1523,7 @@ ExternalSecret's stale per-object Ready cache.
 | `False` | `SecretStoreNotReady` | The store selected by `spec.secretStoreRef` (a ClusterSecretStore or a namespaced SecretStore) is not Ready; the secret backend is unreachable. |
 | `False` | `GeneratorError` | Error ensuring the dynamic DB-credential objects (the MariaDB `database` engine-backed generator that issues short-lived credentials). |
 | `False` | `ExternalSecretError` | Error ensuring or checking the DB-credential ExternalSecret. |
-| `False` | `WaitingForDBCredentialSecret` | The ExternalSecret is ensured but ESO has not yet synced it to Ready. |
+| `False` | `WaitingForDBCredentialSecret` | The ExternalSecret is ensured but ESO has not yet synced it to Ready. In `Static` mode (the explicit opt-out, and every dedicated managed database) the message names the OpenBao KV path the credential has to be **seeded at out-of-band** — nothing seeds it, so until it exists this is where the ControlPlane stops. |
 
 ### AdminPasswordReady
 

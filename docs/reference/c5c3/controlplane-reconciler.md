@@ -516,12 +516,41 @@ itself: everything stays K-ORC-mediated.
 | Projects / Owns | Managed-mode `MariaDB` (`k8s.mariadb.com`) and `Memcached` (unstructured `memcached.c5c3.io/v1beta1`) children, each named after its `clusterRef` and created in `childNamespace(cp)` |
 | Requeue | `infraRequeueAfter` = **15s** while a managed child is not yet Ready |
 
-`reconcileInfrastructure` provisions the shared backing services declared in
-`spec.infrastructure`. A backing service is **managed** when its `clusterRef` is
-set and **brownfield** (provisions nothing) when `host`/`servers` are set
-instead. Both managed children are ensured in a single pass *before* readiness is
-gated, so a half-provisioned control plane (DB created but cache missing) never
-occurs; readiness is evaluated collectively afterwards.
+`reconcileInfrastructure` provisions the backing services the ControlPlane owns.
+That set is the instances its services actually **resolve to**, not the set of
+declared blocks: the **shared** instances in `spec.infrastructure`, and the
+per-service **dedicated** instances under
+`services.<svc>.dedicatedBackingServices` (see
+[DedicatedBackingServices](./controlplane-crd.md#dedicatedbackingservices)) that
+a service opted into instead. `managedInfraInstances` enumerates them by walking
+the effective-instance resolvers per service and deduplicating on the identity of
+the child CR they resolve to — so several services on one shared instance ensure
+it exactly once, and a **shared instance every service has opted out of has no
+consumer and is not provisioned at all**. Keystone is the ControlPlane's only
+database consumer, and the defaulting webhook materializes
+`spec.infrastructure.database` whenever it is omitted, so provisioning the
+declared set instead would leave a full Galera cluster nothing talks to — with
+`InfrastructureReady` blocked on it coming up. A backing service is **managed**
+when its `clusterRef` is set and **brownfield** (provisions nothing) when
+`host`/`servers` are set instead.
+
+Every managed child — shared or dedicated — is ensured in a single pass *before*
+readiness is gated, so a half-provisioned control plane (DB created but cache
+missing) never occurs; readiness is then evaluated **collectively** across the
+whole set. A service whose dedicated database is still converging therefore holds
+`InfrastructureReady` `False` even when every other instance is Ready, so that
+service's projection stays gated on the database it actually talks to. The
+condition message names the pending instance and the spec path it was declared
+at; the *reasons* stay per-class (`WaitingForDatabase` / `WaitingForCache`), so
+the reason vocabulary is unchanged by the dedicated opt-in.
+
+`ensureMariaDB` / `ensureMemcached` take the **declared instance** rather than
+reading `spec.infrastructure` directly, which is what makes a dedicated instance
+carry the shared block's lifecycle rather than a parallel one of its own: it is
+created with a controller owner reference (so it is garbage-collected with the
+ControlPlane), sized from **its** `replicas` / `storageSize`, re-projected on
+drift while owned, and **adopted read-only** — never reshaped, never GC-claimed —
+when a CR under that name already exists.
 
 `spec.infrastructure` is optional: an **External**-mode Keystone ControlPlane
 omits it (the validating webhook forbids it in External mode and requires it
@@ -546,8 +575,10 @@ pointer.
 > `replicas: 3`, `galera.enabled: true`, `storage.size: 100Gi`
 > (`infraMariaDBReplicas` / `infraMariaDBStorageSize`) — mirroring the production
 > baseline; the mariadb-operator webhook rejects a CR without a storage size.
-> The Memcached child's `spec.replicas` is taken from
-> `spec.infrastructure.cache.replicas` (widened to `int64` for unstructured
+> Both values come from the **declared instance**, so a dedicated database can be
+> sized (and, with `replicas: 1`, taken off Galera) independently of the shared
+> cluster. The Memcached child's `spec.replicas` is likewise taken from the
+> declared instance's `cache.replicas` (widened to `int64` for unstructured
 > nested-field storage). MariaDB readiness is read via
 > `conditions.IsReady(mariadb.Status.Conditions)`; Memcached readiness is read
 > from the unstructured `status.conditions[type=Ready].status == "True"`
@@ -596,8 +627,23 @@ selected store's own readiness.
 `reconcileDBCredentials` projects the per-ControlPlane service database
 credential so the projected Keystone CR consumes a DB credential scoped to its
 own ControlPlane. It mirrors `reconcileAdminCredential`'s wait/condition
-handling. The database is **managed** when `spec.infrastructure.database.clusterRef`
-is set and **brownfield** when the user supplies a `host`-based connection:
+handling.
+
+Every decision below is made on the **effective** database
+(`effectiveKeystoneDatabase`) — the Keystone service's
+[dedicated](./controlplane-crd.md#dedicatedbackingservices) database when it
+opted into one, the shared `spec.infrastructure.database` otherwise — so the
+credential follows the instance the service actually connects to. A **dedicated**
+managed database always takes the **Static** branch: the OpenBao database engine
+carries one connection and one role per *namespace*, bootstrapped against the
+shared cluster, so no engine role can issue credentials for a dedicated instance.
+The validating webhook rejects an explicit `credentialsMode: Dynamic` there, and
+keying the reconciler's decision on the dedicated *declaration* (not only on the
+stored mode) makes a webhook-bypassed CR fail closed onto Static rather than
+project a generator that could never sync.
+
+The database is **managed** when the effective `clusterRef` is set and
+**brownfield** when the user supplies a `host`-based connection:
 
 - **Brownfield is a pure no-op.** When `clusterRef == nil` the user owns the DB
   credential Secret out-of-band, so the operator projects **no** ExternalSecret
@@ -622,12 +668,21 @@ is set and **brownfield** when the user supplies a `host`-based connection:
   listener's require-and-verify-client-cert gate. The materialised Secret carries
   an engine-issued username and password with a finite lease, so no long-lived
   static DB password remains at rest.
-- **Managed Static is the opt-out.** With `spec.infrastructure.database.credentialsMode: Static`
-  the operator projects the stage-(a) KV-backed `ExternalSecret`
+- **Managed Static is the opt-out** — and the only mode a **dedicated** managed
+  database has. The operator projects the stage-(a) KV-backed `ExternalSecret`
   (`SecretStoreRef` the selected store — default `openbao-cluster-store`, built via
   `secrets.ESOSecretStoreRef` — with `username`/`password` `Data` reading
   `openstack/keystone/{cp.Namespace}/{cp.Name}/db`) and tears down any leftover
-  dynamic-mode objects. Used for migration staging / brownfield.
+  dynamic-mode objects.
+
+  > **That KV path is seeded by neither the operator nor the bootstrap.** The
+  > per-ControlPlane static seed was retired when managed mode moved to
+  > engine-issued credentials, so a Static ControlPlane — the explicit opt-out on
+  > the shared database, and *every dedicated managed database* — reaches Ready
+  > only once the path has been seeded (`username`, `password`) out-of-band; see
+  > [Migrate the Keystone DB to dynamic credentials](../../guides/migrate-keystone-db-to-dynamic-credentials.md).
+  > Until then `DBCredentialsReady` stays `False` with reason
+  > `WaitingForDBCredentialSecret`, and the message names the exact path to seed.
 
 `reconcileKeystone` projects the effective mode onto the Keystone CR's
 `spec.database.credentialsMode`, so the Keystone operator consumes the matching
@@ -760,9 +815,16 @@ the ControlPlane provisioned:
 - **Image:** repository defaults to `ghcr.io/c5c3/keystone` with the tag derived
   from `spec.openStackRelease`; `spec.services.keystone.image` overrides the
   whole image reference when set.
-- **Database / Cache:** `keystone.Spec.Database = cp.Spec.Infrastructure.Database`
-  and `keystone.Spec.Cache = cp.Spec.Infrastructure.Cache` (the same `clusterRef`s,
-  reused unchanged).
+- **Database / Cache:** `keystone.Spec.Database` and `keystone.Spec.Cache` are
+  DeepCopies of the **effective** instances — the service's
+  [dedicated](./controlplane-crd.md#dedicatedbackingservices) database/cache when
+  it opted into one (`effectiveKeystoneDatabase` / `effectiveKeystoneCache`), the
+  shared `spec.infrastructure` instance otherwise (the default). Projecting the
+  effective spec is what carries the opt-in through the rest of the chain with no
+  per-class special-casing: the keystone-operator derives its logical database,
+  its MariaDB `User`/`Grant` CRs, and its NetworkPolicy database/cache egress
+  rules from `spec.database` / `spec.cache`, so all of them follow the instance
+  the service actually talks to.
 - **Bootstrap:** the admin-password Secret ref is the effective ref
   (`effectiveAdminPasswordSecretRef`) — in managed mode the operator-projected
   per-CP Secret `{controlplane.Name}-keystone-admin-credentials` (see
@@ -832,9 +894,12 @@ services:
 - **Image:** repository defaults to `ghcr.io/c5c3/horizon` with the tag derived
   from `spec.openStackRelease`; `spec.services.horizon.image` overrides the whole
   image reference when set.
-- **Cache:** a DeepCopy of `cp.Spec.Infrastructure.Cache` (same `clusterRef` /
-  servers / replicas), **except** `Backend` is overridden to the Horizon Django
-  default `django.core.cache.backends.memcached.PyMemcacheCache`. The shared
+- **Cache:** a DeepCopy of the **effective** cache (`effectiveHorizonCache`) —
+  the dashboard's [dedicated](./controlplane-crd.md#dedicatedbackingservices)
+  cache when it opted into one, the shared `spec.infrastructure.cache` otherwise
+  — with the same `clusterRef` / servers / replicas, **except** that `Backend` is
+  overridden to the Horizon Django default
+  `django.core.cache.backends.memcached.PyMemcacheCache`. The shared
   `CacheSpec.Backend` carries the oslo.cache dogpile path Keystone consumes
   (`dogpile.cache.pymemcache`), which Django renders verbatim as a `CACHES`
   backend and rejects with `InvalidCacheBackendError`, so the dashboard would

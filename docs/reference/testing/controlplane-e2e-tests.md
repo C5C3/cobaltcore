@@ -70,6 +70,7 @@ Without the stack the suites skip cleanly, so `make e2e` (which runs the whole
 | [deletion-orchestration](#deletion-orchestration) | `deletion-orch` | ORC-teardown finalizer sequencing; deletion completes even when Keystone is already gone |
 | [admin-password-scoping](#admin-password-scoping) | `controlplane` | Per-CR OpenBao-backed admin password projection |
 | [db-credential-scoping](#db-credential-scoping) | `controlplane` | Per-CR OpenBao-backed service DB credential projection |
+| [dedicated-backing-services](#dedicated-backing-services) | `cp` (ephemeral namespace) | Opt-in per-service dedicated database/cache: provisioning, ownership, sizing, and collective readiness gating |
 | [multi-controlplane](#multi-controlplane) | `controlplane-a`, `controlplane-b` | Per-CR admin-credential isolation across two tenants; rotation non-interference |
 | [secret-store-scoping](#secret-store-scoping) | — (namespace-only) | Per-ControlPlane OpenBao identity via a namespaced `SecretStore`; OpenBao-enforced cross-tenant isolation |
 
@@ -185,6 +186,46 @@ generator via `dataFrom.sourceRef.generatorRef` (no static Data refs), a
 engine-issued username (not the static `keystone` user). The stage-(a) static
 per-CR KV seed is retired (#439).
 
+### dedicated-backing-services
+
+Asserts the opt-in per-service
+[dedicated backing services](../c5c3/controlplane-crd.md#dedicatedbackingservices):
+a `ControlPlane` whose Keystone service takes a dedicated database **and** cache
+and whose Horizon dashboard takes a dedicated cache. It proves a dedicated
+instance carries the shared block's lifecycle — it is provisioned as a `MariaDB` /
+`Memcached` child, owned with a **controller owner reference and
+`blockOwnerDeletion`** (the mechanism that tears it down with the ControlPlane),
+sized from its **own** `replicas` / `storageSize`, and gates `InfrastructureReady`
+so the consuming service waits for the database it actually talks to.
+
+The fixture's **shared** block is brownfield, so the ControlPlane provisions
+nothing for it: the exact set of `MariaDB` / `Memcached` CRs in the namespace *is*
+the dedicated set, which the suite asserts as an exact set rather than a superset
+— the proof that a service which opted out no longer gets the shared instance.
+
+Unlike the sibling suites it runs in **chainsaw's ephemeral namespace** with a
+ControlPlane of its own (`cp`) rather than reusing the canonical `openstack` one.
+Two contracts rule that out: the webhook permits one ControlPlane per namespace,
+and the shared↔dedicated presence flip is frozen on a live CR, so the dedicated
+declaration cannot be patched onto the pre-existing shared ControlPlane — it has
+to be created with it.
+
+The suite's presence guard probes every CRD the ControlPlane controller
+watches (the Keystone, KeystoneIdentityBackend, Horizon, and K-ORC kinds
+alongside the ones asserted): a controller-runtime informer for a kind whose
+CRD is absent never syncs, so on a cluster missing any of them the operator's
+elected leader dies on the cache-sync timeout and the reconciler this suite
+drives never runs at all.
+
+The projected-child assertions (the Keystone child pointing at the dedicated
+instances, with `credentialsMode: Static`) are deliberately not part of the
+suite: reaching the Keystone projection requires the DB-credential and
+admin-password machinery to converge, which needs OpenBao seeded for the
+ControlPlane's namespace — and this suite runs in an ephemeral namespace by
+design. They are hard-asserted in the envtest scenario
+`TestIntegration_DedicatedBackingServices`, which runs against the real CRD
+schema and webhook on every PR.
+
 ### multi-controlplane
 
 Brings up two ControlPlanes in two namespaces (`tenant-a/controlplane-a`,
@@ -246,6 +287,9 @@ tests/e2e/c5c3/
 ├── db-credential-scoping/
 │   ├── chainsaw-test.yaml              Per-CR DB-credential projection
 │   └── 00-controlplane-cr.yaml         Canonical ControlPlane CR
+├── dedicated-backing-services/
+│   ├── chainsaw-test.yaml              Per-service dedicated database/cache opt-in
+│   └── 00-controlplane-cr.yaml         ControlPlane CR (cp; ephemeral namespace)
 ├── deletion-orchestration/
 │   ├── chainsaw-test.yaml              ORC-teardown finalizer sequencing
 │   └── 00-controlplane-cr.yaml         ControlPlane CR (deletion-orch)
