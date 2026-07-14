@@ -1,0 +1,63 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# ControlPlane fixture for the dedicated-namespaces E2E test.
+#
+# It places its two services in namespaces of their OWN, one per lifecycle:
+#
+#   - Keystone lands in @KEYSTONE_NS@ under the Managed lifecycle: the operator
+#     creates the namespace, stamps it with the ControlPlane's ownership labels,
+#     and deletes it with the ControlPlane.
+#   - Horizon lands in @HORIZON_NS@ under the External lifecycle: the operator
+#     uses a pre-existing namespace (the test creates it) and never touches its
+#     lifecycle.
+#
+# The @KEYSTONE_NS@ / @HORIZON_NS@ tokens are substituted by the test script from
+# the ephemeral test namespace, so each run gets fresh, collision-free namespace
+# names. The CR itself carries NO metadata.namespace: chainsaw runs the suite in
+# its own ephemeral namespace and the test applies this CR into it.
+#
+# The SHARED infrastructure block is MANAGED (clusterRef), so the operator
+# provisions its backing services — and, because backing services follow the
+# service, it provisions them in each SERVICE's namespace, which is what the suite
+# asserts. The instances are kind-sized (single non-Galera replica, small volume)
+# so they schedule on a single-node cluster.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp
+spec:
+  openStackRelease: "2025.2"
+  infrastructure:
+    database:
+      clusterRef:
+        name: openstack-db
+      database: keystone
+      secretRef:
+        name: keystone-db
+      replicas: 1
+      storageSize: 512Mi
+    cache:
+      clusterRef:
+        name: openstack-memcached
+      backend: dogpile.cache.pymemcache
+      replicas: 1
+  services:
+    keystone:
+      replicas: 1
+      namespace:
+        name: "@KEYSTONE_NS@"
+        lifecycle: Managed
+    horizon:
+      replicas: 1
+      namespace:
+        name: "@HORIZON_NS@"
+        lifecycle: External
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: keystone-admin
+        key: password

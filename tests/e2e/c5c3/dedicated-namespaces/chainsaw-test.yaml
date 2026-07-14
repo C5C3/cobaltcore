@@ -1,0 +1,317 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for per-service DEDICATED namespaces.
+#
+# A ControlPlane can place a service — and the backing services, secret store,
+# and credential material that follow it — in a namespace of its own instead of
+# the ControlPlane's. This suite asserts, on a live cluster, the placement and
+# lifecycle contract for BOTH namespace lifecycles:
+#
+#   - MANAGED — the operator CREATES the namespace, stamps it with the
+#     ControlPlane's ownership labels plus app.kubernetes.io/managed-by, and
+#     DELETES it when the ControlPlane is torn down.
+#   - EXTERNAL — the operator USES a pre-existing namespace it does not own: it is
+#     never labelled and never deleted. Its residue (the objects the ControlPlane
+#     placed in it) is swept on teardown, but the namespace itself survives.
+#
+# And the cross-cutting mechanics the split rests on:
+#
+#   - BACKING SERVICES FOLLOW THE SERVICE. The one shared spec.infrastructure
+#     block materializes a MariaDB / Memcached in EACH service's namespace, not
+#     in the ControlPlane's.
+#   - NO OWNER REFERENCE ACROSS NAMESPACES. A child placed in a service namespace
+#     carries the ControlPlane's ownership LABELS, never a controller owner
+#     reference — Kubernetes forbids a cross-namespace one — so garbage collection
+#     cannot reach it, and the finalizer-driven teardown is what removes it.
+#   - PER-NAMESPACE TENANT STORE. An ESO SecretStore is namespace-local, so every
+#     namespace hosting a service gets its own openbao-tenant-store.
+#
+# ── Ephemeral namespace, per-run service namespaces ──────────────────────────
+# Like the sibling dedicated-backing-services suite this does NOT reuse the
+# canonical "controlplane" CR: the namespace-assignment fields are frozen after
+# creation (they cannot be patched onto a live CR), and the per-service namespace
+# is a tenant key admission reserves to one ControlPlane. Chainsaw's ephemeral
+# per-test namespace gives the suite an identity of its own; the two SERVICE
+# namespaces are derived from it (@NAMESPACE@-identity / -dashboard) so they are
+# fresh and collision-free too.
+#
+# ── Presence guard + single consolidated script ──────────────────────────────
+# Mirrors the sibling c5c3 suites: the c5c3-operator + MariaDB/Memcached operator
+# stack this test spans is not installed by every E2E cluster, and the suite runs
+# under execution.failFast, so a pure declarative test would hard-fail every
+# cluster missing that stack. A runtime presence guard probes for the CRDs the
+# ControlPlane controller watches and exits 0 with a SKIP line when they are
+# absent; E2E_REQUIRE_CONTROLPLANE_STACK=true flips the guard to a hard failure so
+# a job that IS meant to carry the stack cannot go green on missing wiring.
+#
+# ── What is NOT asserted here ────────────────────────────────────────────────
+# The credential material and the Keystone-child projection sit behind the
+# DB-credential / admin-password machinery, which needs OpenBao seeded for each
+# service namespace — out of reach in this ephemeral, unseeded suite. The full
+# cross-namespace readiness (credential ExternalSecrets, the projected Keystone
+# child, the OpenBao path re-keying) is hard-asserted in the envtest scenario
+# TestIntegration_DedicatedNamespaces, which runs against the real CRD schema and
+# webhook on every PR. This suite proves the placement and lifecycle half on a
+# live cluster: namespaces, backing-service placement, ownership labels, tenant
+# stores, and the deletion sweep.
+---
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: dedicated-namespaces
+spec:
+  timeouts:
+    assert: 5m
+    exec: 15m
+  steps:
+  - try:
+    - script:
+        timeout: 12m
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          CP_NS="${NAMESPACE}"
+          CP_NAME=cp
+          KEYSTONE_NS="${NAMESPACE}-identity"
+          HORIZON_NS="${NAMESPACE}-dashboard"
+          SHARED_DB=openstack-db
+          SHARED_CACHE=openstack-memcached
+          TENANT_STORE=openbao-tenant-store
+          CP_NAME_LABEL=c5c3.io/controlplane-name
+          CP_NS_LABEL=c5c3.io/controlplane-namespace
+          MANAGED_BY_LABEL=app.kubernetes.io/managed-by
+
+          REQUIRE_STACK="${E2E_REQUIRE_CONTROLPLANE_STACK:-false}"
+          skip_or_fail() { # <reason...>
+            if [ "${REQUIRE_STACK}" = "true" ]; then
+              echo "ERROR: $*"
+              echo "       E2E_REQUIRE_CONTROLPLANE_STACK=true — the ControlPlane"
+              echo "       stack is required on this job, so this is a hard failure."
+              exit 1
+            fi
+            echo "SKIP: $*"
+            exit 0
+          }
+
+          # ── Presence guard ────────────────────────────────────────────────
+          # The ControlPlane controller Owns()/Watches() every kind below; an
+          # informer for an absent CRD never syncs, so the elected leader dies on
+          # the cache-sync timeout and the CR is admitted but never reconciled.
+          # Keep in sync with ControlPlaneReconciler.SetupWithManager.
+          missing=""
+          for crd in \
+            controlplanes.c5c3.io \
+            mariadbs.k8s.mariadb.com \
+            memcacheds.memcached.c5c3.io \
+            keystones.keystone.openstack.c5c3.io \
+            keystoneidentitybackends.keystone.openstack.c5c3.io \
+            horizons.horizon.openstack.c5c3.io \
+            secretstores.external-secrets.io \
+            applicationcredentials.openstack.k-orc.cloud \
+            services.openstack.k-orc.cloud \
+            endpoints.openstack.k-orc.cloud \
+            users.openstack.k-orc.cloud \
+            domains.openstack.k-orc.cloud \
+            projects.openstack.k-orc.cloud; do
+            if ! kubectl get crd "$crd" >/dev/null 2>&1; then
+              missing="${missing} ${crd}"
+            fi
+          done
+          if [ -n "${missing}" ]; then
+            skip_or_fail "required CRDs not present:${missing}; the c5c3-operator needs every CRD its controller watches (plus the MariaDB/Memcached operators) on this cluster."
+          fi
+          echo "OK: every CRD the ControlPlane controller watches is present —"
+          echo "    running the dedicated-namespaces assertions."
+          echo "    ControlPlane namespace: ${CP_NS}"
+          echo "    Keystone namespace (Managed): ${KEYSTONE_NS}"
+          echo "    Horizon namespace (External): ${HORIZON_NS}"
+
+          # ── Helpers ───────────────────────────────────────────────────────
+          assert_eq() { # <description> <expected> <actual>
+            if [ "$2" != "$3" ]; then
+              echo "ERROR: $1 — expected '$2', got '$3'"
+              exit 1
+            fi
+            echo "OK: $1 ('$3')"
+          }
+
+          # assert_cp_labelled checks the ownership labels the ControlPlane stamps
+          # on a cross-namespace child in place of an owner reference: they name
+          # the owning ControlPlane, and they are what the finalizer-driven
+          # teardown finds the child by.
+          assert_cp_labelled() { # <resource> <name> <namespace>
+            local res="$1" name="$2" ns="$3" got_name got_ns
+            got_name="$(kubectl get "${res}" "${name}" -n "${ns}" \
+              -o "jsonpath={.metadata.labels.${CP_NAME_LABEL//./\\.}}")"
+            assert_eq "${res}/${name} carries the controlplane-name label" "${CP_NAME}" "${got_name}"
+            got_ns="$(kubectl get "${res}" "${name}" -n "${ns}" \
+              -o "jsonpath={.metadata.labels.${CP_NS_LABEL//./\\.}}")"
+            assert_eq "${res}/${name} carries the controlplane-namespace label" "${CP_NS}" "${got_ns}"
+          }
+
+          # assert_no_cp_owner checks that a cross-namespace child carries NO
+          # controller owner reference: Kubernetes rejects a cross-namespace one,
+          # so ownership is by label instead.
+          assert_no_cp_owner() { # <resource> <name> <namespace>
+            local res="$1" name="$2" ns="$3" owner
+            owner="$(kubectl get "${res}" "${name}" -n "${ns}" \
+              -o "jsonpath={.metadata.ownerReferences[?(@.kind=='ControlPlane')].name}")"
+            assert_eq "${res}/${name} carries no cross-namespace owner reference" "" "${owner}"
+          }
+
+          wait_exists() { # <resource> <name> <namespace> <timeoutSeconds>
+            local res="$1" name="$2" ns="$3" timeout="$4" deadline
+            deadline=$(( $(date +%s) + timeout ))
+            while ! kubectl get "${res}" "${name}" -n "${ns}" >/dev/null 2>&1; do
+              if [ "$(date +%s)" -ge "${deadline}" ]; then
+                echo "ERROR: ${res}/${name} in ${ns} was not created within ${timeout}s"
+                exit 1
+              fi
+              sleep 5
+            done
+            echo "OK: ${res}/${name} provisioned in ${ns}"
+          }
+
+          wait_cp_condition_true() { # <conditionType> <timeoutSeconds>
+            local cond="$1" timeout="$2" deadline status
+            deadline=$(( $(date +%s) + timeout ))
+            while true; do
+              status="$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" \
+                -o "jsonpath={.status.conditions[?(@.type=='${cond}')].status}" 2>/dev/null || true)"
+              if [ "${status}" = "True" ]; then
+                echo "OK: ControlPlane ${cond}=True"
+                return 0
+              fi
+              if [ "$(date +%s)" -ge "${deadline}" ]; then
+                echo "ERROR: ControlPlane ${cond} not True within ${timeout}s (last: '${status:-<none>}')"
+                exit 1
+              fi
+              sleep 5
+            done
+          }
+
+          # ── The External namespace must exist BEFORE the ControlPlane ─────
+          # The External lifecycle never creates it; NamespacesReady parks on
+          # NamespaceNotFound until it is there. The Managed one is left to the
+          # operator to create.
+          kubectl create namespace "${HORIZON_NS}"
+
+          # ── Apply the ControlPlane ────────────────────────────────────────
+          sed -e "s|@KEYSTONE_NS@|${KEYSTONE_NS}|g" -e "s|@HORIZON_NS@|${HORIZON_NS}|g" \
+            00-controlplane-cr.yaml | kubectl apply -n "${CP_NS}" -f -
+
+          # ── NamespacesReady, and the two namespaces exist per lifecycle ────
+          wait_cp_condition_true NamespacesReady 120
+
+          # Managed: created by the operator, stamped with ownership + managed-by.
+          wait_exists namespace "${KEYSTONE_NS}" "" 60
+          assert_cp_labelled namespace "${KEYSTONE_NS}" ""
+          assert_eq "the Managed namespace carries the managed-by label" "c5c3-operator" \
+            "$(kubectl get namespace "${KEYSTONE_NS}" -o "jsonpath={.metadata.labels.${MANAGED_BY_LABEL//./\\.}}")"
+
+          # External: pre-existing, NEVER labelled by the operator.
+          assert_eq "the External namespace is not stamped with an ownership label" "" \
+            "$(kubectl get namespace "${HORIZON_NS}" -o "jsonpath={.metadata.labels.${CP_NAME_LABEL//./\\.}}")"
+
+          # ── Backing services follow the service into its namespace ─────────
+          # Keystone's database and cache land in the Keystone namespace; Horizon's
+          # cache lands in the Horizon namespace. Each carries the ownership labels
+          # and NO owner reference.
+          wait_exists mariadb "${SHARED_DB}" "${KEYSTONE_NS}" 120
+          assert_cp_labelled mariadb "${SHARED_DB}" "${KEYSTONE_NS}"
+          assert_no_cp_owner mariadb "${SHARED_DB}" "${KEYSTONE_NS}"
+
+          wait_exists memcached "${SHARED_CACHE}" "${KEYSTONE_NS}" 120
+          assert_cp_labelled memcached "${SHARED_CACHE}" "${KEYSTONE_NS}"
+          assert_no_cp_owner memcached "${SHARED_CACHE}" "${KEYSTONE_NS}"
+
+          wait_exists memcached "${SHARED_CACHE}" "${HORIZON_NS}" 120
+          assert_cp_labelled memcached "${SHARED_CACHE}" "${HORIZON_NS}"
+          assert_no_cp_owner memcached "${SHARED_CACHE}" "${HORIZON_NS}"
+
+          # Nothing is provisioned in the ControlPlane's own namespace: no service
+          # is placed there.
+          assert_eq "no MariaDB is provisioned in the ControlPlane's own namespace" "" \
+            "$(kubectl get mariadb -n "${CP_NS}" -o 'jsonpath={.items[*].metadata.name}')"
+
+          # ── A per-namespace tenant store is provisioned in each namespace ──
+          # An ESO SecretStore is namespace-local, so each namespace hosting a
+          # service gets its own. This needs InfrastructureReady, which needs the
+          # backing services Ready — bounded generously for a cold cluster.
+          wait_cp_condition_true InfrastructureReady 600
+          for store_ns in "${CP_NS}" "${KEYSTONE_NS}" "${HORIZON_NS}"; do
+            wait_exists secretstore "${TENANT_STORE}" "${store_ns}" 120
+          done
+          echo "OK: a per-tenant SecretStore is provisioned in every namespace of the ControlPlane."
+
+          # ── Deletion: the cross-namespace children are torn down by hand and
+          #    the namespaces follow their lifecycle ───────────────────────────
+          kubectl delete controlplane "${CP_NAME}" -n "${CP_NS}" --wait=true --timeout=300s
+
+          # The service children are gone (nothing GC-cascades a cross-namespace
+          # child; the finalizer deleted them explicitly).
+          DELETE_DEADLINE=$(( $(date +%s) + 300 ))
+          while kubectl get mariadb "${SHARED_DB}" -n "${KEYSTONE_NS}" >/dev/null 2>&1; do
+            if [ "$(date +%s)" -ge "${DELETE_DEADLINE}" ]; then
+              echo "ERROR: the cross-namespace MariaDB was not torn down within 300s"
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: the cross-namespace backing services were torn down explicitly."
+
+          # The Managed namespace is deleted (or Terminating) — the operator owns
+          # it, so it goes with the ControlPlane.
+          KS_PHASE="$(kubectl get namespace "${KEYSTONE_NS}" -o 'jsonpath={.status.phase}' 2>/dev/null || true)"
+          if [ -n "${KS_PHASE}" ] && [ "${KS_PHASE}" != "Terminating" ]; then
+            echo "ERROR: the Managed namespace ${KEYSTONE_NS} is still Active after ControlPlane deletion"
+            exit 1
+          fi
+          echo "OK: the Managed namespace is deleted or Terminating (phase='${KS_PHASE:-<gone>}')."
+
+          # The External namespace SURVIVES — the operator never owned it — and its
+          # residue (the tenant store the ControlPlane placed there) is swept.
+          assert_eq "the External namespace survives the ControlPlane" "Active" \
+            "$(kubectl get namespace "${HORIZON_NS}" -o 'jsonpath={.status.phase}')"
+          RESIDUE_DEADLINE=$(( $(date +%s) + 120 ))
+          while kubectl get secretstore "${TENANT_STORE}" -n "${HORIZON_NS}" >/dev/null 2>&1; do
+            if [ "$(date +%s)" -ge "${RESIDUE_DEADLINE}" ]; then
+              echo "ERROR: the tenant store residue in the External namespace was not swept within 120s"
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: the External namespace survives with its ControlPlane residue swept."
+
+          # Clean up the pre-created External namespace.
+          kubectl delete namespace "${HORIZON_NS}" --wait=false || true
+
+          echo "OK: dedicated namespaces created, placed, labelled, tenant-stored, and torn down per lifecycle."
+    catch:
+    - script:
+        shell: bash
+        content: |
+          KEYSTONE_NS="${NAMESPACE}-identity"
+          HORIZON_NS="${NAMESPACE}-dashboard"
+          echo "=== ControlPlane spec + status.conditions ==="
+          kubectl get controlplane cp -n "${NAMESPACE}" -o yaml 2>&1 || true
+          echo "=== Namespaces ==="
+          kubectl get namespace "${KEYSTONE_NS}" "${HORIZON_NS}" -o yaml 2>&1 || true
+          echo "=== Backing services across the service namespaces ==="
+          kubectl get mariadb,memcached -n "${KEYSTONE_NS}" 2>&1 || true
+          kubectl get mariadb,memcached -n "${HORIZON_NS}" 2>&1 || true
+          echo "=== Tenant stores ==="
+          kubectl get secretstore -A -l "${CP_NAME_LABEL:-c5c3.io/controlplane-name}" 2>&1 || true
+          kubectl get secretstore -n "${KEYSTONE_NS}" 2>&1 || true
+          kubectl get secretstore -n "${HORIZON_NS}" 2>&1 || true
+          echo "=== c5c3-operator pods ==="
+          kubectl get pods -A -l app.kubernetes.io/name=c5c3-operator -o wide 2>&1 || true
+          OPERATOR_NS="$(kubectl get pods -A -l app.kubernetes.io/name=c5c3-operator \
+            -o 'jsonpath={.items[0].metadata.namespace}' 2>/dev/null || true)"
+          echo "=== c5c3-operator logs (current, last 100 lines) ==="
+          kubectl logs -n "${OPERATOR_NS:-c5c3-system}" -l app.kubernetes.io/name=c5c3-operator --tail=100 --all-containers 2>&1 || true
+          echo "=== Events (last 30) ==="
+          kubectl get events -n "${NAMESPACE}" --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
