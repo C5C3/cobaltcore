@@ -358,6 +358,11 @@ spec:
           # The stall grace (2m) and the negative auth/ambiguity clocks run while
           # the main CP converges, so the negative assertions later just read
           # already-settled conditions.
+          # The main CP's admin-password Secret is a separate file (the three
+          # negative CPs carry theirs inline): the adoption guide has readers apply
+          # 02-controlplane-external.yaml against a namespace whose
+          # brownfield-admin-password holds a REAL admin password.
+          kubectl apply -f 02-admin-password-secret.yaml
           kubectl apply -f 02-controlplane-external.yaml
           kubectl apply -f 03-controlplane-wrong-password.yaml
           kubectl apply -f 04-controlplane-stalled.yaml

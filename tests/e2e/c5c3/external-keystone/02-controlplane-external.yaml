@@ -21,18 +21,14 @@
 #     project "service-nova", both in the admin domain heimdall. rotation defaults
 #     to Manual; roles is omitted (K-ORC v2.6.0 ships no RoleAssignment, so only
 #     unscoped-token usability is assertable at this level).
+#
+# The admin-password Secret this CR references lives in its own file
+# (02-admin-password-secret.yaml), NOT here: the adoption guide imports the region
+# below and tells the reader to apply this file, and their copy of
+# brownfield-admin-password holds a real admin password that a fixture Secret
+# riding along in the same file must not overwrite.
 ---
-apiVersion: v1
-kind: Secret
-metadata:
-  name: brownfield-admin-password
-  namespace: brownfield
-# SYNC: must equal BROWNFIELD_ADMIN_PASSWORD in 01-fixture-catalog-setup-job.yaml
-# — that Job creates user brownfield-admin with exactly this password.
-stringData:
-  password: brownfield_admin_fixture_pw_0
-type: Opaque
----
+# region controlplane-external
 apiVersion: c5c3.io/v1alpha1
 kind: ControlPlane
 metadata:
@@ -67,3 +63,4 @@ spec:
         project:
           name: service-nova
           create: true
+# endregion controlplane-external

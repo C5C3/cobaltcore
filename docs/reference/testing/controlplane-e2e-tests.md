@@ -253,6 +253,7 @@ tests/e2e/c5c3/
 │   ├── chainsaw-test.yaml              External mode vs a plain, operator-free Keystone
 │   ├── 00-fixture-keystone.yaml        Plain SQLite Keystone fixture (no operator)
 │   ├── 01-fixture-catalog-setup-job.yaml  Non-default identities + duplicate service
+│   ├── 02-admin-password-secret.yaml   Fixture admin password for the main CR
 │   ├── 02-controlplane-external.yaml   Main External CR + service account
 │   ├── 03-controlplane-wrong-password.yaml  Wrong-password negative case
 │   ├── 04-controlplane-stalled.yaml    Unreachable-internal-endpoint case

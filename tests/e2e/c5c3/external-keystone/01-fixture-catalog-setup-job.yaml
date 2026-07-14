@@ -48,7 +48,7 @@ spec:
                   name: keystone-fixture-admin
                   key: password
             # SYNC: must equal the password in the brownfield-admin-password
-            # Secret in 02-controlplane-external.yaml — the main ControlPlane
+            # Secret in 02-admin-password-secret.yaml — the main ControlPlane
             # authenticates as brownfield-admin with exactly this value.
             - name: BROWNFIELD_ADMIN_PASSWORD
               value: brownfield_admin_fixture_pw_0
