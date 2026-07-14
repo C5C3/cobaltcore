@@ -336,13 +336,18 @@ spec:
           echo "OK: brownfield Keystone fixture is serving and its catalog is populated."
 
           # ── Block 3: never-seeded preconditions + baseline inventory (B0) ────
-          if bao_exec bao kv get -mount=kv-v2 "${ADMIN_AC_KV}" >/dev/null 2>&1; then
-            echo "ERROR: ${ADMIN_AC_KV} already exists; never-seeded precondition violated"; exit 1
-          fi
-          if bao_exec bao kv get -mount=kv-v2 "${SA_NOVA_KV}" >/dev/null 2>&1; then
-            echo "ERROR: ${SA_NOVA_KV} already exists; never-seeded precondition violated"; exit 1
-          fi
-          echo "OK: the External ControlPlane's OpenBao paths are never-seeded."
+          # Probe for LIVE data, exactly like the zero-blast-radius deletion
+          # check: a previous run's clean teardown leaves a kv-v2 soft delete
+          # behind (metadata survives, `kv get` exits 0 with data:null), and
+          # that must read as "not seeded" or the suite can never re-run on the
+          # same cluster.
+          for kv in "${ADMIN_AC_KV}" "${SA_NOVA_KV}"; do
+            if json="$(bao_exec bao kv get -format=json -mount=kv-v2 "${kv}" 2>/dev/null)" \
+               && ! printf '%s' "$json" | jq -e '.data.data == null' >/dev/null 2>&1; then
+              echo "ERROR: ${kv} already holds a live value; never-seeded precondition violated"; exit 1
+            fi
+          done
+          echo "OK: the External ControlPlane's OpenBao paths hold no live value (never seeded or cleanly purged)."
           capture_inventory "${WORK}/B0"
           echo "== baseline external inventory =="
           for r in service endpoint user project domain; do
