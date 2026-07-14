@@ -203,6 +203,7 @@ type ServicesSpec struct {
 // +kubebuilder:validation:XValidation:rule="!(has(self.mode) && self.mode == 'External') || !has(self.publicEndpoint)",message="services.keystone.publicEndpoint is forbidden when services.keystone.mode is External"
 // +kubebuilder:validation:XValidation:rule="!(has(self.mode) && self.mode == 'External') || !has(self.federationProxyImage)",message="services.keystone.federationProxyImage is forbidden when services.keystone.mode is External"
 // +kubebuilder:validation:XValidation:rule="!(has(self.mode) && self.mode == 'External') || !has(self.dedicatedBackingServices)",message="services.keystone.dedicatedBackingServices is forbidden when services.keystone.mode is External"
+// +kubebuilder:validation:XValidation:rule="!(has(self.mode) && self.mode == 'External') || !has(self.namespace)",message="services.keystone.namespace is forbidden when services.keystone.mode is External"
 type ServiceKeystoneSpec struct {
 	// Mode selects whether the Keystone service is Managed (the reconciler
 	// deploys and owns a full Keystone workload, today's behavior) or External
@@ -303,6 +304,69 @@ type ServiceKeystoneSpec struct {
 	// provisioned at all when identity is managed against a pre-existing Keystone.
 	// +optional
 	DedicatedBackingServices *KeystoneDedicatedBackingServicesSpec `json:"dedicatedBackingServices,omitempty"`
+
+	// Namespace places the Keystone service — and the backing services, secret
+	// store, and credential material that follow it — in a namespace of its own
+	// instead of the ControlPlane's. Omitting it (the default) keeps Keystone in
+	// the ControlPlane's namespace, exactly as before.
+	//
+	// Forbidden when services.keystone.mode is External: no Keystone workload is
+	// deployed, so there is nothing to place.
+	// +optional
+	Namespace *ServiceNamespaceSpec `json:"namespace,omitempty"`
+}
+
+// ServiceNamespaceLifecycle selects who owns the lifecycle of a service's
+// dedicated namespace. It mirrors the managed-vs-brownfield split the backing
+// services already use, one level up: the operator either creates and destroys
+// the namespace, or it uses one it must never touch.
+// +kubebuilder:validation:Enum=Managed;External
+type ServiceNamespaceLifecycle string
+
+const (
+	// ServiceNamespaceLifecycleManaged (the default) has the operator CREATE the
+	// namespace, stamp it with the ControlPlane's ownership labels, and DELETE it
+	// when the ControlPlane is torn down. A namespace that already exists without
+	// those labels is never adopted: the sub-reconciler fails loud with
+	// NamespacesReady=False/NamespaceNotOwned rather than taking over — and
+	// eventually deleting — a namespace somebody else provisioned.
+	ServiceNamespaceLifecycleManaged ServiceNamespaceLifecycle = "Managed"
+	// ServiceNamespaceLifecycleExternal has the operator USE a pre-existing
+	// namespace it does not own: it is never created, never labelled, and never
+	// deleted. Teardown removes the children the ControlPlane placed in it and
+	// leaves the namespace itself standing. Use it for namespaces whose quotas,
+	// RBAC, and policies are provisioned out-of-band.
+	ServiceNamespaceLifecycleExternal ServiceNamespaceLifecycle = "External"
+)
+
+// ServiceNamespaceSpec assigns one service of the ControlPlane to a namespace of
+// its own. The assignment is create-only: the validating webhook freezes the
+// block's presence, name, and lifecycle after creation, because moving a live
+// service across namespaces would leave its database, its secret material, and
+// its per-namespace tenant store behind with no migration path.
+//
+// The namespace is a TENANT KEY throughout the stack — the OpenBao paths, the
+// database-engine role, and the templated eso-tenant policy are all scoped by it
+// — so a namespace may be claimed by exactly one ControlPlane: the webhook
+// rejects a name another ControlPlane already occupies (as its own namespace or
+// as one of its service namespaces), and vice versa.
+type ServiceNamespaceSpec struct {
+	// Name is the namespace the service is placed in. It must differ from the
+	// ControlPlane's own namespace — omit the whole block to keep the service
+	// there — and be an RFC-1123 label, the shape Kubernetes requires of a
+	// namespace name.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	Name string `json:"name"`
+
+	// Lifecycle selects whether the operator owns the namespace (Managed: it is
+	// created, labelled, and deleted with the ControlPlane) or merely uses a
+	// pre-existing one (External: never created, never deleted). Defaults to
+	// Managed via both the CRD schema default and the defaulting webhook.
+	// +kubebuilder:default=Managed
+	// +optional
+	Lifecycle ServiceNamespaceLifecycle `json:"lifecycle,omitempty"`
 }
 
 // KeystoneDedicatedBackingServicesSpec declares the backing-service instances
@@ -639,6 +703,17 @@ type ServiceHorizonSpec struct {
 	// the ControlPlane's cache. See HorizonDedicatedBackingServicesSpec.
 	// +optional
 	DedicatedBackingServices *HorizonDedicatedBackingServicesSpec `json:"dedicatedBackingServices,omitempty"`
+
+	// Namespace places the dashboard — and the cache and secret store that follow
+	// it — in a namespace of its own instead of the ControlPlane's. Omitting it
+	// (the default) keeps the dashboard in the ControlPlane's namespace.
+	//
+	// A dashboard in a namespace of its own reads its Django SECRET_KEY from THAT
+	// namespace: the default "horizon-secret-key" shim Secret is namespace-local,
+	// so such a deployment must supply the key material there (and name it via
+	// secretKeyRef if it is named differently).
+	// +optional
+	Namespace *ServiceNamespaceSpec `json:"namespace,omitempty"`
 }
 
 // KORCSpec configures the K-ORC (OpenStack Resource Controller) integration of
@@ -1206,6 +1281,75 @@ func (cp *ControlPlane) DedicatedHorizonCache() *commonv1.CacheSpec {
 		return b.Cache
 	}
 	return nil
+}
+
+// keystoneNamespaceBlock / horizonNamespaceBlock are the single nil-safe walk of
+// the per-service namespace BLOCK, shared by the webhook (defaulting, claim and
+// immutability rules) and by the resolvers below. The webhook needs the block
+// itself, to tell "no assignment" from "assigned with the lifecycle defaulted";
+// the reconciler needs the resolved namespace, which the exported accessors
+// expose.
+func keystoneNamespaceBlock(cp *ControlPlane) *ServiceNamespaceSpec {
+	if ks := cp.Spec.Services.Keystone; ks != nil {
+		return ks.Namespace
+	}
+	return nil
+}
+
+func horizonNamespaceBlock(cp *ControlPlane) *ServiceNamespaceSpec {
+	if hz := cp.Spec.Services.Horizon; hz != nil {
+		return hz.Namespace
+	}
+	return nil
+}
+
+// KeystoneNamespace resolves the namespace the Keystone service — and everything
+// that follows it: its database, its cache, its tenant store, its admin-password
+// and DB-credential material — is placed in. It is the assigned namespace when
+// services.keystone.namespace is set, and the ControlPlane's own namespace
+// otherwise (the default), so a ControlPlane without an assignment resolves
+// exactly as it did before the field existed.
+func (cp *ControlPlane) KeystoneNamespace() string {
+	if ns := keystoneNamespaceBlock(cp); ns != nil && ns.Name != "" {
+		return ns.Name
+	}
+	return cp.Namespace
+}
+
+// HorizonNamespace resolves the namespace the Horizon dashboard — and the cache
+// and tenant store that follow it — is placed in. See KeystoneNamespace.
+func (cp *ControlPlane) HorizonNamespace() string {
+	if ns := horizonNamespaceBlock(cp); ns != nil && ns.Name != "" {
+		return ns.Name
+	}
+	return cp.Namespace
+}
+
+// DedicatedServiceNamespaces returns the namespaces the ControlPlane places
+// services in OUTSIDE its own, deduplicated by name and in a stable order
+// (keystone first). It is the enumeration every cross-namespace concern walks:
+// the namespace sub-reconciler creates/verifies them, the tenant-store
+// sub-reconciler provisions a store in each, and the teardown sweeps each.
+//
+// An assignment naming the ControlPlane's own namespace contributes nothing (the
+// webhook rejects it at admission; skipping it here keeps a webhook-bypassed CR
+// from re-creating — and, at teardown, deleting — the ControlPlane's own
+// namespace). Two services sharing one namespace yield ONE entry: they share
+// that namespace's backing services and its tenant store.
+func (cp *ControlPlane) DedicatedServiceNamespaces() []ServiceNamespaceSpec {
+	var out []ServiceNamespaceSpec
+	seen := map[string]struct{}{}
+	for _, ns := range []*ServiceNamespaceSpec{keystoneNamespaceBlock(cp), horizonNamespaceBlock(cp)} {
+		if ns == nil || ns.Name == "" || ns.Name == cp.Namespace {
+			continue
+		}
+		if _, dup := seen[ns.Name]; dup {
+			continue
+		}
+		seen[ns.Name] = struct{}{}
+		out = append(out, *ns)
+	}
+	return out
 }
 
 func init() {

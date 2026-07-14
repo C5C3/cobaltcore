@@ -308,3 +308,120 @@ func TestDedicatedBackingServicesAccessors(t *testing.T) {
 		})
 	}
 }
+
+func TestServiceNamespaceAccessors(t *testing.T) {
+	cpIn := func(services ServicesSpec) *ControlPlane {
+		return &ControlPlane{
+			ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "openstack"},
+			Spec:       ControlPlaneSpec{Services: services},
+		}
+	}
+
+	tests := []struct {
+		name          string
+		cp            *ControlPlane
+		wantKeystone  string
+		wantHorizon   string
+		wantDedicated []string
+	}{
+		{
+			name:         "no service blocks default to the ControlPlane namespace",
+			cp:           cpIn(ServicesSpec{}),
+			wantKeystone: "openstack",
+			wantHorizon:  "openstack",
+		},
+		{
+			name: "service blocks without an assignment default to the ControlPlane namespace",
+			cp: cpIn(ServicesSpec{
+				Keystone: &ServiceKeystoneSpec{},
+				Horizon:  &ServiceHorizonSpec{},
+			}),
+			wantKeystone: "openstack",
+			wantHorizon:  "openstack",
+		},
+		{
+			name: "each service takes a namespace of its own",
+			cp: cpIn(ServicesSpec{
+				Keystone: &ServiceKeystoneSpec{
+					Namespace: &ServiceNamespaceSpec{Name: "identity", Lifecycle: ServiceNamespaceLifecycleManaged},
+				},
+				Horizon: &ServiceHorizonSpec{
+					Namespace: &ServiceNamespaceSpec{Name: "dashboard", Lifecycle: ServiceNamespaceLifecycleExternal},
+				},
+			}),
+			wantKeystone:  "identity",
+			wantHorizon:   "dashboard",
+			wantDedicated: []string{"identity", "dashboard"},
+		},
+		{
+			name: "co-located services yield one dedicated namespace",
+			cp: cpIn(ServicesSpec{
+				Keystone: &ServiceKeystoneSpec{Namespace: &ServiceNamespaceSpec{Name: "shared-ns"}},
+				Horizon:  &ServiceHorizonSpec{Namespace: &ServiceNamespaceSpec{Name: "shared-ns"}},
+			}),
+			wantKeystone:  "shared-ns",
+			wantHorizon:   "shared-ns",
+			wantDedicated: []string{"shared-ns"},
+		},
+		{
+			// Webhook-bypass shape: an assignment naming the ControlPlane's own
+			// namespace must never be enumerated as dedicated, or teardown would
+			// delete the ControlPlane's own namespace.
+			name: "an assignment equal to the ControlPlane namespace is not dedicated",
+			cp: cpIn(ServicesSpec{
+				Keystone: &ServiceKeystoneSpec{Namespace: &ServiceNamespaceSpec{Name: "openstack"}},
+			}),
+			wantKeystone: "openstack",
+			wantHorizon:  "openstack",
+		},
+		{
+			// Webhook-bypass shape: an empty name is not an assignment.
+			name: "an empty assignment name falls back to the ControlPlane namespace",
+			cp: cpIn(ServicesSpec{
+				Keystone: &ServiceKeystoneSpec{Namespace: &ServiceNamespaceSpec{}},
+			}),
+			wantKeystone: "openstack",
+			wantHorizon:  "openstack",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.cp.KeystoneNamespace(); got != tc.wantKeystone {
+				t.Errorf("KeystoneNamespace() = %q, want %q", got, tc.wantKeystone)
+			}
+			if got := tc.cp.HorizonNamespace(); got != tc.wantHorizon {
+				t.Errorf("HorizonNamespace() = %q, want %q", got, tc.wantHorizon)
+			}
+			var gotNames []string
+			for _, ns := range tc.cp.DedicatedServiceNamespaces() {
+				gotNames = append(gotNames, ns.Name)
+			}
+			if len(gotNames) != len(tc.wantDedicated) {
+				t.Fatalf("DedicatedServiceNamespaces() = %v, want %v", gotNames, tc.wantDedicated)
+			}
+			for i := range gotNames {
+				if gotNames[i] != tc.wantDedicated[i] {
+					t.Errorf("DedicatedServiceNamespaces()[%d] = %q, want %q", i, gotNames[i], tc.wantDedicated[i])
+				}
+			}
+		})
+	}
+}
+
+func TestDedicatedServiceNamespacesCarriesTheLifecycle(t *testing.T) {
+	cp := &ControlPlane{
+		ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "openstack"},
+		Spec: ControlPlaneSpec{Services: ServicesSpec{
+			Horizon: &ServiceHorizonSpec{
+				Namespace: &ServiceNamespaceSpec{Name: "dashboard", Lifecycle: ServiceNamespaceLifecycleExternal},
+			},
+		}},
+	}
+	got := cp.DedicatedServiceNamespaces()
+	if len(got) != 1 {
+		t.Fatalf("DedicatedServiceNamespaces() = %v, want one entry", got)
+	}
+	if got[0].Lifecycle != ServiceNamespaceLifecycleExternal {
+		t.Errorf("lifecycle = %q, want %q", got[0].Lifecycle, ServiceNamespaceLifecycleExternal)
+	}
+}
