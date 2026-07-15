@@ -73,6 +73,13 @@ metadata:
 apiVersion: v1
 kind: Namespace
 metadata:
+  # garage-system hosts the garage-operator controller (S3 object store for the
+  # CI/e2e stack), mirroring the mariadb-system / memcached-system operators.
+  name: garage-system
+---
+apiVersion: v1
+kind: Namespace
+metadata:
   name: orc-system
 # The chaos-mesh Namespace lives in the opt-in overlay deploy/kind/chaos-mesh/,
 # not here, so the privileged PodSecurity label is created only when Chaos Mesh

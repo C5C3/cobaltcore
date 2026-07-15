@@ -35,6 +35,8 @@ resources:
   - sources/c5c3-charts.yaml
   - sources/k-orc.yaml
   - sources/prometheus-community.yaml
+  # First third-party OCI-type HelmRepository (see sources/garage-operator.yaml).
+  - sources/garage-operator.yaml
 
   # HelmRelease operators (deployed via FluxCD).
   # Chaos Mesh is intentionally absent: opt-in via deploy/kind/chaos-mesh/
@@ -49,3 +51,5 @@ resources:
   - releases/horizon-operator.yaml
   - releases/k-orc.yaml
   - releases/c5c3-operator.yaml
+  # Garage object store operator (S3 backend for the CI/e2e stack).
+  - releases/garage-operator.yaml

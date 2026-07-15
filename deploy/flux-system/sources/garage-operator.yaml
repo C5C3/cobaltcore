@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# First THIRD-PARTY OCI-type HelmRepository in the repo. The url is the OCI
+# registry namespace (the chart name lives in the HelmRelease's chart.spec.chart,
+# exactly like the c5c3-charts source that memcached-operator consumes). The
+# garage-operator chart is semver-released in lockstep with the operator, so the
+# HelmRelease version range is resolved by Flux and needs no Renovate custom rule.
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: garage-operator
+  namespace: flux-system
+spec:
+  type: oci
+  interval: 1h
+  url: oci://ghcr.io/rajsinghtech/charts

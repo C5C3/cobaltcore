@@ -89,11 +89,11 @@ test_production_overlay_unchanged() {
   # remain byte-identical.
   local groups_label=(
     "deploy/flux-system/fluxinstance.yaml"
-    "deploy/flux-system/releases (excluding chaos-mesh.yaml relocated, openbao.yaml edited in place, external-secrets.yaml edited in place, keystone-operator.yaml/horizon-operator.yaml edited in place for the image-digest valuesFrom, and the c5c3-operator.yaml/k-orc.yaml releases added)"
+    "deploy/flux-system/releases (excluding chaos-mesh.yaml relocated, openbao.yaml edited in place, external-secrets.yaml edited in place, keystone-operator.yaml/horizon-operator.yaml edited in place for the image-digest valuesFrom, and the c5c3-operator.yaml/k-orc.yaml/garage-operator.yaml releases added)"
   )
   local groups_specs=(
     "deploy/flux-system/fluxinstance.yaml"
-    "deploy/flux-system/releases :(exclude)deploy/flux-system/releases/chaos-mesh.yaml :(exclude)deploy/flux-system/releases/openbao.yaml :(exclude)deploy/flux-system/releases/external-secrets.yaml :(exclude)deploy/flux-system/releases/c5c3-operator.yaml :(exclude)deploy/flux-system/releases/k-orc.yaml :(exclude)deploy/flux-system/releases/keystone-operator.yaml :(exclude)deploy/flux-system/releases/horizon-operator.yaml"
+    "deploy/flux-system/releases :(exclude)deploy/flux-system/releases/chaos-mesh.yaml :(exclude)deploy/flux-system/releases/openbao.yaml :(exclude)deploy/flux-system/releases/external-secrets.yaml :(exclude)deploy/flux-system/releases/c5c3-operator.yaml :(exclude)deploy/flux-system/releases/k-orc.yaml :(exclude)deploy/flux-system/releases/garage-operator.yaml :(exclude)deploy/flux-system/releases/keystone-operator.yaml :(exclude)deploy/flux-system/releases/horizon-operator.yaml"
   )
 
   local diff_output=""
