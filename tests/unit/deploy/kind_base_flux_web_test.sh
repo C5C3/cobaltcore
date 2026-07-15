@@ -220,10 +220,10 @@ test_production_overlay_has_no_flux_web() {
   assert_eq "production overlay renders no flux-web string" "0" "$fw_count"
 }
 
-# --- Test 6: production kustomization + fluxinstance are unchanged vs. origin/main
-#             ---
+# --- Test 6: production fluxinstance frozen; kustomization carries no flux-web
+#             leakage ---
 test_production_kustomization_unchanged() {
-  echo "Test: deploy/flux-system/{kustomization.yaml,fluxinstance.yaml} have no diff vs. origin/main"
+  echo "Test: deploy/flux-system/fluxinstance.yaml unchanged vs. origin/main and kustomization.yaml carries no flux-web leakage"
 
   if ! git -C "$PROJECT_ROOT" rev-parse --verify origin/main >/dev/null 2>&1; then
     echo "  SKIP: origin/main ref is not available in this checkout (1 check skipped)"
@@ -231,13 +231,24 @@ test_production_kustomization_unchanged() {
     return
   fi
 
+  # The FluxInstance spec is frozen — the kind-only flux-web addon must not
+  # touch it.
   local diff_rc=0
   git -C "$PROJECT_ROOT" diff --quiet origin/main -- \
-    deploy/flux-system/kustomization.yaml \
     deploy/flux-system/fluxinstance.yaml \
     || diff_rc=$?
+  assert_eq "fluxinstance.yaml diff against origin/main is empty" "0" "$diff_rc"
 
-  assert_eq "git diff against origin/main is empty" "0" "$diff_rc"
+  # The production kustomization legitimately grows as operators are added (the
+  # documented Extensibility recipe adds each operator's source + release to the
+  # resources list — mariadb, memcached, c5c3-operator, k-orc, garage-operator,
+  # …), so it is NOT byte-frozen. The flux-web guard here is that the kind-only
+  # Web UI overlay never leaks a flux-web ResourceSet into it; Test 5 renders the
+  # overlay and asserts the same absence semantically.
+  assert_file_not_contains \
+    "production kustomization.yaml references no flux-web resource" \
+    "$FLUX_SYSTEM_KUSTOMIZATION" \
+    "flux-web"
 }
 
 # --- Run ---
