@@ -23,6 +23,11 @@
 # service, it provisions them in each SERVICE's namespace, which is what the suite
 # asserts. The instances are kind-sized (single non-Galera replica, small volume)
 # so they schedule on a single-node cluster.
+#
+# The region markers are consumed by a VitePress code-import in
+# docs/guides/dedicated-service-namespaces.md — the guide embeds this fixture
+# verbatim so its exhibit cannot drift from what the suite tests.
+# region controlplane
 apiVersion: c5c3.io/v1alpha1
 kind: ControlPlane
 metadata:
@@ -61,3 +66,4 @@ spec:
       passwordSecretRef:
         name: keystone-admin
         key: password
+# endregion controlplane

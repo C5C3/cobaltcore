@@ -33,6 +33,7 @@ export default defineConfig({
           { text: 'Rotate Keystone Admin Password', link: '/guides/keystone-admin-password-rotation' },
           { text: 'Schedule Keystone Admin Password Rotation', link: '/guides/keystone-admin-password-scheduled-rotation' },
           { text: 'Multi-Tenant Deployment', link: '/guides/multi-tenant-deployment' },
+          { text: 'Deploy Services into Dedicated Namespaces', link: '/guides/dedicated-service-namespaces' },
           { text: 'Attach an LDAP Domain Backend', link: '/guides/ldap-domain-backend' },
           { text: 'Attach an OIDC Federation Backend', link: '/guides/oidc-federation' },
           { text: 'Attach a SAML Federation Backend', link: '/guides/saml-federation' },
