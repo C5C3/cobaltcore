@@ -29,3 +29,14 @@ horizon:
     # dashboard is otherwise pure Python. Without this, uwsgi fails to load
     # (python-base ships no libpython3.12.so.1.0).
     - libpython3.12t64
+glance:
+  pip_extras: []
+  pip_packages:
+    # The S3 store driver's extra lives on glance_store, not glance — it pulls
+    # boto3/botocore/s3transfer, all pinned in upper-constraints.txt.
+    - "glance_store[s3]"
+  apt_packages:
+    # uWSGI is compiled in venv-builder against the shared libpython; glance is
+    # otherwise pure Python at runtime. Without this, uwsgi fails to load
+    # (python-base ships no libpython3.12.so.1.0).
+    - libpython3.12t64
