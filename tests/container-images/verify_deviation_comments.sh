@@ -47,6 +47,16 @@ test_horizon_deviation_comment() {
   assert_file_contains "DEVIATION comment references generic user vs per-service" "$dockerfile" "openstack"
 }
 
+# --- Test 4: glance has DEVIATION comment ---
+test_glance_deviation_comment() {
+  echo "Test: glance Dockerfile has DEVIATION comment"
+
+  local dockerfile="$PROJECT_ROOT/images/glance/Dockerfile"
+
+  assert_file_contains "glance/Dockerfile contains DEVIATION comment" "$dockerfile" "# DEVIATION"
+  assert_file_contains "DEVIATION comment references generic user vs per-service" "$dockerfile" "openstack"
+}
+
 # --- Run all tests ---
 echo "=== DEVIATION comment verification tests ==="
 echo ""
@@ -55,6 +65,8 @@ echo ""
 test_keystone_deviation_comment
 echo ""
 test_horizon_deviation_comment
+echo ""
+test_glance_deviation_comment
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 

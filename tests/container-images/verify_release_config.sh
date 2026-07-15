@@ -17,7 +17,7 @@ FAIL=0
 
 # Services that every release must register in source-refs.yaml and
 # extra-packages.yaml, each with a matching images/<service>/Dockerfile.
-SERVICES="keystone horizon"
+SERVICES="keystone horizon glance"
 
 # shellcheck source=tests/lib/assertions.sh
 source "$SCRIPT_DIR/../lib/assertions.sh"
@@ -118,13 +118,14 @@ test_extra_packages_valid_yaml_structure() {
         FAIL=$((FAIL + 1))
       fi
 
-      # Verify pip_packages entries are valid if present (optional field)
+      # Verify pip_packages entries are valid if present (optional field).
+      # An optional PEP 508 extras suffix is allowed (e.g. glance_store[s3]).
       local pip_pkg_count
       pip_pkg_count=$(yq ".${service}.pip_packages | length // 0" "$extra_packages" 2>/dev/null || echo "0")
       if [ "$pip_pkg_count" -gt 0 ]; then
         local bad_pip_pkgs
         bad_pip_pkgs=$(yq ".${service}.pip_packages[]" "$extra_packages" \
-          | tr -d '"' | grep -vE '^[a-zA-Z0-9][a-zA-Z0-9._-]*$' || true)
+          | tr -d '"' | grep -vE '^[a-zA-Z0-9][a-zA-Z0-9._-]*(\[[a-zA-Z0-9_,-]+\])?$' || true)
         if [ -z "$bad_pip_pkgs" ]; then
           echo "  PASS: [$release_name] $service pip_packages entries are valid ($pip_pkg_count)"
           PASS=$((PASS + 1))
