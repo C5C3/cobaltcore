@@ -1546,19 +1546,24 @@ schema matches the expected Alembic migration head. See
 | `False` | `SchemaDriftDetected` | "schema-check job failed: {error}" | — (error returned) |
 | `True` | `DatabaseSynced` | "Database schema is up to date (revision verified)" | — |
 
-**Error handling:** Errors from `database.EnsureDatabase()`,
-`database.EnsureDatabaseUser()`, and `job.RunJob()` (db_sync) are wrapped with
-context and returned. The `DBSyncFailed` condition is set before returning the error
-so that the failure reason is visible in the CR status.
+**Error handling:** Errors from the shared provisioning and sync flows —
+`database.ReconcileProvision()` and `database.ReconcileSyncJobs()`, which run
+`database.EnsureDatabase()`/`EnsureDatabaseUser()` and `job.RunJob()` (db_sync,
+schema-check) internally — are wrapped with context and returned. The
+`DBSyncFailed` condition is set before returning the error so that the failure
+reason is visible in the CR status.
 
-**Shared library calls:** `database.EnsureDatabase()`, `database.EnsureDatabaseUser()`,
-`job.RunJob()` (db_sync and schema-check)
+**Shared library calls:** `database.ReconcileProvision()` (managed/brownfield
+provisioning: cluster gate, `EnsureDatabase`/`EnsureDatabaseUser`) and
+`database.ReconcileSyncJobs()` (db_sync then schema-check via `job.RunJob()`).
+The expand-migrate-contract upgrade branch between them stays keystone-private.
 
 **Dynamic credentials mode:** when `spec.database.credentialsMode: Dynamic`, the
 OpenBao database engine owns the DB user lifecycle — it issues short-lived MySQL
-users on demand and revokes them at lease end. `reconcileDatabase` therefore
-**skips** `database.EnsureDatabaseUser()` (no MariaDB `User`/`Grant` CR is
-provisioned) while still managing the schema via `database.EnsureDatabase()`. A
+users on demand and revokes them at lease end. The provisioning flow
+(`database.ReconcileProvision()`) therefore **skips**
+`database.EnsureDatabaseUser()` (no MariaDB `User`/`Grant` CR is provisioned)
+while still managing the schema via `database.EnsureDatabase()`. A
 pre-existing operator-provisioned `User`/`Grant` from a prior Static deployment is
 intentionally **not** deleted, so its grant overlaps the engine-issued logins for
 a downtime-free migration; retiring the static user is a documented migration step
@@ -3278,7 +3283,8 @@ mechanism.
 ### Derived `<name>-db-connection` Secret
 
 The `reconcileDBConnectionSecret` sub-reconciler (in
-`operators/keystone/internal/controller/reconcile_dbconnection_secret.go`) runs
+`operators/keystone/internal/controller/reconcile_dbconnection_secret.go`)
+delegates to the shared `database.ReconcileConnectionSecret()` and runs
 between `reconcileSecrets` and `reconcileConfig`. On every reconcile it:
 
 1. Reads the upstream DB credentials `Secret` referenced by
@@ -3287,8 +3293,8 @@ between `reconcileSecrets` and `reconcileConfig`. On every reconcile it:
    and `password` keys are read from the upstream Secret.
 2. Builds the pymysql URL using `url.UserPassword()` for RFC 3986-compliant
    percent-encoding of reserved characters in the userinfo component, the
-   shared `resolveDatabaseHost()` / `dbPort()` helpers for host resolution, and
-   `?charset=utf8` as the fixed query string. The URL scheme is
+   shared `database.ResolveHost()` / `database.Port()` helpers for host
+   resolution, and `?charset=utf8` as the fixed query string. The URL scheme is
    `mysql+pymysql`.
 3. Writes the URL to a derived `Secret` named `<keystone.Name>-db-connection`
    in the Keystone namespace under the single data key `connection`. The
