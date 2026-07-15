@@ -53,6 +53,7 @@ jobs:
           - images/venv-builder/Dockerfile
           - images/keystone/Dockerfile
           - images/horizon/Dockerfile
+          - images/glance/Dockerfile
           - images/tempest/Dockerfile
           - images/keystone-federation-proxy/Dockerfile
           - operators/Dockerfile
