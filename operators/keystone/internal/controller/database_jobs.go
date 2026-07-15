@@ -12,15 +12,15 @@ import (
 	corev1 "k8s.io/api/core/v1"
 
 	"github.com/c5c3/forge/internal/common/database"
-	"github.com/c5c3/forge/internal/common/deployment"
-	"github.com/c5c3/forge/internal/common/job"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
 
 // keystoneProvisionParams derives the shared MariaDB provisioning inputs from
 // the Keystone CR: the resource name and SQL username are the CR name, the
 // database and cluster reference come from spec.database, and the password is
-// read from the database credentials Secret.
+// read from the database credentials Secret. The provisioning flow
+// (database.ReconcileProvision) derives the same params internally; this helper
+// keeps the CR builders (buildDatabase/buildUser/buildGrant) available for tests.
 func keystoneProvisionParams(keystone *keystonev1alpha1.Keystone) database.ProvisionParams {
 	key := mariaDBResourceKey(keystone)
 	return database.ProvisionParams{
@@ -44,19 +44,13 @@ func buildGrant(keystone *keystonev1alpha1.Keystone) *mariadbv1alpha1.Grant {
 	return database.BuildGrant(keystoneProvisionParams(keystone))
 }
 
-// buildDBJob constructs a keystone-manage db_sync Job with the shared container spec,
-// volume mounts, and security context used by both regular db_sync and upgrade phase
-// jobs. This single builder prevents drift when these need to change in the future.
-//
-// The image parameter is the fully-qualified reference the Job runs: the regular
-// db_sync / schema-check jobs use the CR's Image.Reference() (which honors a
-// pinned digest), while the upgrade phases pass a specific "repo:tag" so they
-// can pin the old/new release image independently of spec.image.
-//
-// TODO: Wire spec.Resources (or a smaller Job-specific default) to the
-// container. Currently runs as BestEffort QoS. See reconcile_deployment.go
-// containerResources() for the pattern used by the keystone container.
-func buildDBJob(keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName, image, nameSuffix string, command []string) *batchv1.Job {
+// keystoneJobSetParams derives the shared migration-Job inputs from the Keystone
+// CR: the config mount, the DB-connection env override, the db-tls and per-domain
+// volumes, the priority class, and the keystone-manage db_sync / schema-check
+// commands. The steady-state sync flow (database.ReconcileSyncJobs) and the
+// upgrade-phase builders (buildDBJob) both consume it, so every db_sync variant
+// runs the identical pod spec.
+func keystoneJobSetParams(keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName string) database.JobSetParams {
 	// Project the db-tls client keypair into every db_sync variant (db-sync,
 	// expand, migrate, contract, schema-check) when DB TLS is enabled; the gate
 	// is centralised in dbTLSEnabled so deployment and job builders decide
@@ -75,12 +69,10 @@ func buildDBJob(keystone *keystonev1alpha1.Keystone, configMapName, domainsSecre
 		extraVolumes = append(extraVolumes, domVol)
 		extraMounts = append(extraMounts, domMount)
 	}
-	return job.BuildMigrationJob(job.MigrationJobParams{
-		Name:            fmt.Sprintf("%s-%s", keystone.Name, nameSuffix),
+	return database.JobSetParams{
+		InstanceName:    keystone.Name,
 		Namespace:       keystone.Namespace,
-		Image:           image,
-		ContainerName:   nameSuffix,
-		Command:         command,
+		Image:           keystone.Spec.Image.Reference(),
 		ConfigMapName:   configMapName,
 		ConfigMountPath: "/etc/keystone/keystone.conf.d/",
 		// Override [database].connection via oslo.config env-var so every db_sync
@@ -90,14 +82,37 @@ func buildDBJob(keystone *keystonev1alpha1.Keystone, configMapName, domainsSecre
 		ExtraVolumes:      extraVolumes,
 		ExtraVolumeMounts: extraMounts,
 		PriorityClassName: priorityClassName(keystone),
-		BackoffLimit:      4,
-		SecurityContext:   deployment.RestrictedSecurityContext(),
-	})
+		SyncCommand:       []string{"keystone-manage", "--config-dir=/etc/keystone/keystone.conf.d/", "db_sync"},
+		// Read-only schema verification via keystone-manage db_sync --check.
+		// Exit codes: 0 = up-to-date, 1..4 = needs expand/migrate/contract. This
+		// avoids parsing db_version output, which mixes Oslo log lines with
+		// revision hashes and only reports the expand head (not the contract head).
+		SchemaCheckCommand: []string{
+			"/bin/sh", "-eu", "-c",
+			`keystone-manage --config-dir=/etc/keystone/keystone.conf.d/ db_sync --check`,
+		},
+	}
+}
+
+// buildDBJob constructs a keystone-manage db_sync Job with the shared container
+// spec, volume mounts, and security context used by both regular db_sync and
+// upgrade phase jobs. It delegates to the shared database.BuildJob so the pod
+// spec never drifts across db_sync variants.
+//
+// The image parameter is the fully-qualified reference the Job runs: the regular
+// db_sync / schema-check jobs use the CR's Image.Reference() (which honors a
+// pinned digest), while the upgrade phases pass a specific "repo:tag" so they
+// can pin the old/new release image independently of spec.image.
+//
+// TODO: Wire spec.Resources (or a smaller Job-specific default) to the
+// container. Currently runs as BestEffort QoS. See reconcile_deployment.go
+// containerResources() for the pattern used by the keystone container.
+func buildDBJob(keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName, image, nameSuffix string, command []string) *batchv1.Job {
+	return database.BuildJob(keystoneJobSetParams(keystone, configMapName, domainsSecretName), image, nameSuffix, command, 4)
 }
 
 func buildDBSyncJob(keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName string) *batchv1.Job {
-	return buildDBJob(keystone, configMapName, domainsSecretName, keystone.Spec.Image.Reference(), "db-sync",
-		[]string{"keystone-manage", "--config-dir=/etc/keystone/keystone.conf.d/", "db_sync"})
+	return database.SyncJob(keystoneJobSetParams(keystone, configMapName, domainsSecretName))
 }
 
 // buildUpgradeJob creates a db_sync Job for one of the expand-migrate-contract
@@ -129,28 +144,9 @@ func buildContractJob(keystone *keystonev1alpha1.Keystone, configMapName, domain
 // buildSchemaCheckJob constructs a schema-check Job that verifies the database
 // schema matches the expected Alembic migration state after db_sync completes.
 // The Job runs keystone-manage db_sync --check which exits 0 when the schema is
-// up-to-date, and 1..4 when expand/migrate/contract migrations are pending.
-// It delegates to buildDBJob for the shared pod spec and overrides backoffLimit=2
-// for a read-only check. TTLSecondsAfterFinished is
-// intentionally left unset: the completed Job is the RunJob state record, and a
-// TTL-driven garbage-collection would re-create it on the next reconcile, causing
-// a re-creation loop (#415). The Job is cleaned up via owner-reference GC
-// with the Keystone CR.
+// up-to-date, and 1..4 when expand/migrate/contract migrations are pending. It
+// delegates to the shared database.SchemaCheckJob for the shared pod spec and
+// the read-only backoff limit.
 func buildSchemaCheckJob(keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName string) *batchv1.Job {
-	// Read-only schema verification via keystone-manage db_sync --check.
-	// Exit codes: 0 = up-to-date, 1..4 = needs expand/migrate/contract.
-	// This avoids parsing db_version output, which mixes Oslo log lines with
-	// revision hashes and only reports the expand head (not the contract head).
-	schemaCheckScript := `keystone-manage --config-dir=/etc/keystone/keystone.conf.d/ db_sync --check`
-
-	j := buildDBJob(keystone, configMapName, domainsSecretName, keystone.Spec.Image.Reference(), "schema-check",
-		[]string{"/bin/sh", "-eu", "-c", schemaCheckScript})
-
-	// Override defaults: fewer retries for a read-only check. The completed Job
-	// lingers as the RunJob state record (no TTL) to avoid a TTL-driven
-	// re-creation loop (#415).
-	backoffLimit := int32(2)
-	j.Spec.BackoffLimit = &backoffLimit
-
-	return j
+	return database.SchemaCheckJob(keystoneJobSetParams(keystone, configMapName, domainsSecretName))
 }

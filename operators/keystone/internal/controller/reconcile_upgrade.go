@@ -16,6 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/c5c3/forge/internal/common/conditions"
+	"github.com/c5c3/forge/internal/common/database"
 	"github.com/c5c3/forge/internal/common/job"
 	"github.com/c5c3/forge/internal/common/release"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
@@ -306,7 +307,7 @@ func (r *KeystoneReconciler) completeContract(ctx context.Context, keystone *key
 		Type:               "DatabaseReady",
 		Status:             metav1.ConditionTrue,
 		ObservedGeneration: keystone.Generation,
-		Reason:             conditionReasonDatabaseSynced,
+		Reason:             database.ReasonDatabaseSynced,
 		Message:            fmt.Sprintf("Database schema is up to date (upgraded %s \u2192 %s)", from, to),
 	})
 	r.Recorder.Eventf(keystone, corev1.EventTypeNormal, conditionReasonUpgradeComplete, "Upgrade complete: %s \u2192 %s", from, to)

@@ -28,6 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 
+	"github.com/c5c3/forge/internal/common/database"
 	"github.com/c5c3/forge/internal/common/job"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
@@ -289,7 +290,7 @@ func TestReconcileDatabase_Managed_AllReady_DatabaseSynced(t *testing.T) {
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
-	g.Expect(cond.Reason).To(Equal(conditionReasonDatabaseSynced))
+	g.Expect(cond.Reason).To(Equal(database.ReasonDatabaseSynced))
 
 	expectEvent(g, r, "Normal DatabaseSynced")
 }
@@ -319,7 +320,7 @@ func TestReconcileDatabase_DynamicManaged_CreatesDatabaseButNoUserGrant(t *testi
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
-	g.Expect(cond.Reason).To(Equal(conditionReasonDatabaseSynced))
+	g.Expect(cond.Reason).To(Equal(database.ReasonDatabaseSynced))
 
 	// No User/Grant CRs must have been created — the engine owns the DB user.
 	userList := &mariadbv1alpha1.UserList{}
@@ -376,7 +377,7 @@ func TestReconcileDatabase_Managed_DatabaseNotReady_Requeues(t *testing.T) {
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-	g.Expect(cond.Reason).To(Equal(conditionReasonWaitingForDatabase))
+	g.Expect(cond.Reason).To(Equal(database.ReasonWaitingForDatabase))
 
 	expectNoEvent(g, r)
 }
@@ -401,7 +402,7 @@ func TestReconcileDatabase_Managed_UserNotReady_Requeues(t *testing.T) {
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-	g.Expect(cond.Reason).To(Equal(conditionReasonWaitingForDatabase))
+	g.Expect(cond.Reason).To(Equal(database.ReasonWaitingForDatabase))
 
 	expectNoEvent(g, r)
 }
@@ -422,7 +423,7 @@ func TestReconcileDatabase_Managed_ClusterMissing_Requeues(t *testing.T) {
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-	g.Expect(cond.Reason).To(Equal(conditionReasonClusterNotReady))
+	g.Expect(cond.Reason).To(Equal(database.ReasonClusterNotReady))
 
 	// No Database CR should be created while the cluster is unavailable.
 	dbList := &mariadbv1alpha1.DatabaseList{}
@@ -443,7 +444,7 @@ func TestReconcileDatabase_Managed_ClusterNotReady_FlipsDatabaseReadyFalse(t *te
 	meta.SetStatusCondition(&ks.Status.Conditions, metav1.Condition{
 		Type:   "DatabaseReady",
 		Status: metav1.ConditionTrue,
-		Reason: conditionReasonDatabaseSynced,
+		Reason: database.ReasonDatabaseSynced,
 	})
 
 	r := newDBTestReconciler(
@@ -462,7 +463,7 @@ func TestReconcileDatabase_Managed_ClusterNotReady_FlipsDatabaseReadyFalse(t *te
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-	g.Expect(cond.Reason).To(Equal(conditionReasonClusterNotReady))
+	g.Expect(cond.Reason).To(Equal(database.ReasonClusterNotReady))
 	g.Expect(cond.Message).To(ContainSubstring("mariadb"))
 
 	expectNoEvent(g, r)
@@ -484,7 +485,7 @@ func TestReconcileDatabase_Brownfield_DBSyncComplete_DatabaseSynced(t *testing.T
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
-	g.Expect(cond.Reason).To(Equal(conditionReasonDatabaseSynced))
+	g.Expect(cond.Reason).To(Equal(database.ReasonDatabaseSynced))
 
 	expectEvent(g, r, "Normal DatabaseSynced")
 
@@ -515,7 +516,7 @@ func TestReconcileDatabase_DBSyncRunning_Requeues(t *testing.T) {
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-	g.Expect(cond.Reason).To(Equal(conditionReasonDBSyncInProgress))
+	g.Expect(cond.Reason).To(Equal(database.ReasonDBSyncInProgress))
 
 	expectNoEvent(g, r)
 }
@@ -534,7 +535,7 @@ func TestReconcileDatabase_DBSyncFailed_ReturnsError(t *testing.T) {
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-	g.Expect(cond.Reason).To(Equal(conditionReasonDBSyncFailed))
+	g.Expect(cond.Reason).To(Equal(database.ReasonDBSyncFailed))
 
 	expectEvent(g, r, "Warning DBSyncFailed")
 }
@@ -588,7 +589,7 @@ func TestReconcileDatabase_Brownfield_SkipsMariaDBCRs_CreatesDBSyncJob(t *testin
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-	g.Expect(cond.Reason).To(Equal(conditionReasonDBSyncInProgress))
+	g.Expect(cond.Reason).To(Equal(database.ReasonDBSyncInProgress))
 	g.Expect(cond.Message).To(Equal("db_sync job is running"))
 }
 
@@ -937,7 +938,7 @@ func TestReconcileDatabase_FreshDeploy_SetsInstalledRelease(t *testing.T) {
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
-	g.Expect(cond.Reason).To(Equal(conditionReasonDatabaseSynced))
+	g.Expect(cond.Reason).To(Equal(database.ReasonDatabaseSynced))
 
 	expectEvent(g, r, "Normal DatabaseSynced")
 }
@@ -1429,7 +1430,7 @@ func TestReconcileContract_JobCompleted_CompletesUpgrade(t *testing.T) {
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
-	g.Expect(cond.Reason).To(Equal(conditionReasonDatabaseSynced))
+	g.Expect(cond.Reason).To(Equal(database.ReasonDatabaseSynced))
 	g.Expect(cond.Message).To(ContainSubstring("upgraded"))
 	g.Expect(cond.Message).To(ContainSubstring("2025.2"))
 	g.Expect(cond.Message).To(ContainSubstring("2026.1"))
@@ -1812,7 +1813,7 @@ func TestReconcileDatabase_SchemaCheckRunning_Requeues(t *testing.T) {
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-	g.Expect(cond.Reason).To(Equal(conditionReasonSchemaCheckInProgress))
+	g.Expect(cond.Reason).To(Equal(database.ReasonSchemaCheckInProgress))
 
 	expectNoEvent(g, r)
 }
@@ -1834,7 +1835,7 @@ func TestReconcileDatabase_SchemaCheckComplete_DatabaseSynced(t *testing.T) {
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
-	g.Expect(cond.Reason).To(Equal(conditionReasonDatabaseSynced))
+	g.Expect(cond.Reason).To(Equal(database.ReasonDatabaseSynced))
 	g.Expect(cond.Message).To(ContainSubstring("revision"))
 
 	expectEvent(g, r, "Normal DatabaseSynced")
@@ -1857,7 +1858,7 @@ func TestReconcileDatabase_SchemaCheckFailed_SchemaDriftDetected(t *testing.T) {
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-	g.Expect(cond.Reason).To(Equal(conditionReasonSchemaDriftDetected))
+	g.Expect(cond.Reason).To(Equal(database.ReasonSchemaDriftDetected))
 
 	expectEvent(g, r, "Warning SchemaDriftDetected")
 }
@@ -1888,7 +1889,7 @@ func TestReconcileDatabase_Managed_AllReady_WithSchemaCheck(t *testing.T) {
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
-	g.Expect(cond.Reason).To(Equal(conditionReasonDatabaseSynced))
+	g.Expect(cond.Reason).To(Equal(database.ReasonDatabaseSynced))
 	g.Expect(cond.Message).To(ContainSubstring("revision"))
 	g.Expect(cond.ObservedGeneration).To(Equal(ks.Generation))
 
@@ -1947,7 +1948,7 @@ func TestReconcileDatabase_SchemaCheckNotCreatedWhenDBSyncRunning(t *testing.T) 
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-	g.Expect(cond.Reason).To(Equal(conditionReasonDBSyncInProgress))
+	g.Expect(cond.Reason).To(Equal(database.ReasonDBSyncInProgress))
 
 	// Verify no schema-check Job was created.
 	var schemaCheckJob batchv1.Job
@@ -1977,7 +1978,7 @@ func TestReconcileDatabase_SchemaCheckNotCreatedWhenDBSyncFails(t *testing.T) {
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-	g.Expect(cond.Reason).To(Equal(conditionReasonDBSyncFailed))
+	g.Expect(cond.Reason).To(Equal(database.ReasonDBSyncFailed))
 
 	// Verify no schema-check Job was created.
 	var schemaCheckJob batchv1.Job
@@ -3045,7 +3046,7 @@ func TestReconcileDatabase_CompletedSchemaCheck_SameHash_NotRecreated(t *testing
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
-	g.Expect(cond.Reason).To(Equal(conditionReasonDatabaseSynced))
+	g.Expect(cond.Reason).To(Equal(database.ReasonDatabaseSynced))
 
 	// The completed schema-check Job must still exist with the SAME UID,
 	// proving it was neither deleted nor recreated.

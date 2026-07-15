@@ -35,6 +35,7 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	"github.com/c5c3/forge/internal/common/bootstrap"
+	"github.com/c5c3/forge/internal/common/database"
 	"github.com/c5c3/forge/internal/common/gateway"
 	"github.com/c5c3/forge/internal/common/healthcheck"
 	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
@@ -646,23 +647,10 @@ func (r *KeystoneReconciler) reconcileDelete(ctx context.Context, keystone *keys
 // (Database, User, Grant) owned by this Keystone still exists with
 // DeletionTimestamp unset — i.e., real cleanup work remains. Brownfield CRs
 // (no MariaDB CRs ever created) report false so the FinalizingDatabase event
-// is suppressed when there is nothing to announce.
+// is suppressed when there is nothing to announce. It delegates to the shared
+// database.HasLiveResources.
 func (r *KeystoneReconciler) hasLiveMariaDBResources(ctx context.Context, keystone *keystonev1alpha1.Keystone) (bool, error) {
-	key := mariaDBResourceKey(keystone)
-	for _, ctor := range mariaDBResourceCtors {
-		obj := ctor()
-		err := r.Get(ctx, key, obj)
-		if apierrors.IsNotFound(err) {
-			continue
-		}
-		if err != nil {
-			return false, fmt.Errorf("checking %T %s: %w", obj, key, err)
-		}
-		if obj.GetDeletionTimestamp().IsZero() {
-			return true, nil
-		}
-	}
-	return false, nil
+	return database.HasLiveResources(ctx, r.Client, mariaDBResourceKey(keystone))
 }
 
 // reconcileDeleteOpenBao drives the openbao-finalizer cleanup when the Keystone
