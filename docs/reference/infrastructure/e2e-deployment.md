@@ -275,6 +275,20 @@ The test asserts readiness of all deployed components:
 
 Assert timeout is ~5 minutes to account for operator startup time.
 
+The `e2e-infra` job auto-discovers every `chainsaw-test.yaml` under
+`tests/e2e/infrastructure/`, so sibling suites run in the same job with no CI wiring.
+
+**File:** `tests/e2e/infrastructure/garage-health/chainsaw-test.yaml`
+
+Covers the Garage object store (the S3 backend for the Glance e2e suites):
+
+| # | Assertion | Namespace | Resource |
+| --- | --- | --- | --- |
+| 1 | garage-operator Deployment ready + HelmRelease Ready | `garage-system` | `Deployment`, `HelmRelease` |
+| 2 | Credential ExternalSecrets SecretSynced | `openstack` | `ExternalSecret` (x2) |
+| 3 | GarageCluster `Running`; GarageBucket / GarageKey `Ready` | `openstack` | `GarageCluster`, `GarageBucket`, `GarageKey` |
+| 4 | S3 put + list with the imported key over path-style HTTP | `openstack` | `script` (throwaway `aws-cli` pod) |
+
 ## Pinned Tool Versions
 
 `hack/install-test-deps.sh` installs these pinned versions with SHA256 checksum

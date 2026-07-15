@@ -506,6 +506,8 @@ into the KV v2 secret engine.
 | `kv-v2/bootstrap/<namespace>/<keystone>/admin` | `password` | Keystone admin user password, scoped per **Managed-mode** ControlPlane. One entry per `KORC_CONTROLPLANES` identity; the default `openstack/controlplane` seeds `kv-v2/bootstrap/openstack/controlplane-keystone/admin`. |
 | `kv-v2/bootstrap/<namespace>/<horizon>/secret-key` | `secret-key` | Horizon Django `SECRET_KEY`, scoped per **Managed-mode** ControlPlane. One entry per `KORC_CONTROLPLANES` identity; the default seeds `kv-v2/bootstrap/openstack/controlplane-horizon/secret-key`, read by the kind-only `horizon-secret-key` ExternalSecret. |
 | `kv-v2/infrastructure/mariadb` | `root-password` | MariaDB root password |
+| `kv-v2/bootstrap/openstack/garage/admin-token` | `token` | Garage Admin API token — the operator authenticates to Garage's Admin API with it. Read by the kind-only `garage-admin-token` ExternalSecret (`GarageCluster.spec.admin.adminTokenSecretRef`). Seeded unconditionally (Garage is base infrastructure, not per-ControlPlane). |
+| `kv-v2/bootstrap/openstack/garage/s3-credentials` | `access-key-id`, `secret-access-key` | Garage S3 key pair, **imported** by the `GarageKey` (not minted by the operator). `access-key-id` is `GK`-prefixed (`@generate-gk`), as Garage requires. Read by the kind-only `garage-s3-credentials` ExternalSecret; Glance later reads the same path from its own namespace. |
 | `kv-v2/openstack/keystone/openstack/standalone/db` | `username`, `password` | Static Keystone DB credential for **standalone** (non-ControlPlane) Keystone demos only (username is `keystone`), read by the kind-only `keystone-db` ExternalSecret. Brownfield-only. |
 
 **Mode note:** `KORC_CONTROLPLANES` lists **Managed-mode** ControlPlane
@@ -529,6 +531,12 @@ remains.
 (256-bit) cryptographically secure random value encoded as base64 (44 characters).
 Generating passwords inside the pod prevents cleartext passwords from appearing in
 host `/proc/<pid>/cmdline` process argument lists.
+
+**Generated-value markers:** A key whose value is the marker `@generate` is replaced
+with a freshly generated random value in-pod (as above). The `@generate-gk` marker is a
+variant for Garage S3 access-key IDs: it emits the literal prefix `GK` followed by 24 hex
+characters (12 random bytes), the format Garage's key import requires. Both markers keep
+the cleartext off the host process argument list.
 
 **Security:** Generated passwords are never echoed to stdout or stderr and never
 appear as command-line arguments visible to host process listings. The script
@@ -615,6 +623,8 @@ All secrets are stored under the `kv-v2/` mount point (KV version 2 engine).
 | `kv-v2/bootstrap/<namespace>/<keystone>/admin` | `password` | `write-bootstrap-secrets.sh` (per **Managed-mode** ControlPlane; default `.../openstack/controlplane-keystone/admin`) | Operator-created ExternalSecret `{controlplane.Name}-keystone-admin-credentials` (default `controlplane-keystone-admin-credentials`); on kind additionally the overlay's `keystone-admin` ExternalSecret (default identity) |
 | `kv-v2/bootstrap/<namespace>/<horizon>/secret-key` | `secret-key` | `write-bootstrap-secrets.sh` (per **Managed-mode** ControlPlane; default `.../openstack/controlplane-horizon/secret-key`) | On kind the overlay's `horizon-secret-key` ExternalSecret (default identity); per-CR ExternalSecrets in test namespaces |
 | `kv-v2/infrastructure/mariadb` | `root-password` | `write-bootstrap-secrets.sh` | On kind the overlay's `mariadb-root-password` ExternalSecret; in production a non-kind Flux MariaDB baseline provides the `mariadb-root-password` Secret itself |
+| `kv-v2/bootstrap/openstack/garage/admin-token` | `token` | `write-bootstrap-secrets.sh` (unconditional; Garage is base infra) | The kind overlay's `garage-admin-token` ExternalSecret → `GarageCluster.spec.admin.adminTokenSecretRef` |
+| `kv-v2/bootstrap/openstack/garage/s3-credentials` | `access-key-id` (`GK`-prefixed), `secret-access-key` | `write-bootstrap-secrets.sh` (unconditional) | The kind overlay's `garage-s3-credentials` ExternalSecret → `GarageKey.spec.importKey.secretRef`; Glance later reads the same path from its own namespace |
 | `kv-v2/openstack/keystone/openstack/standalone/db` | `username`, `password` | `write-bootstrap-secrets.sh` (standalone/brownfield only) | The kind overlay's `keystone-db` ExternalSecret, serving standalone (non-ControlPlane) Keystone demos |
 
 **Note:** The stage-(a) per-ControlPlane static path

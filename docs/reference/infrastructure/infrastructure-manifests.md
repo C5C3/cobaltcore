@@ -53,7 +53,7 @@ comment, license identifier).
 
 ## Namespaces
 
-Ten `Namespace` resources are defined in `namespaces.yaml` and included as the first
+Eleven `Namespace` resources are defined in `namespaces.yaml` and included as the first
 entry in the base kustomization. Kustomize applies `Namespace` resources before other
 resource kinds, ensuring target namespaces exist before any namespaced resources are
 created.
@@ -65,8 +65,9 @@ created.
 | `external-secrets` | External Secrets Operator |
 | `monitoring` | Prometheus Operator CRDs (consumed by the optional kube-prometheus-stack kind overlay) |
 | `memcached-system` | Memcached Operator |
+| `garage-system` | Garage Operator (S3 object store for the CI/e2e stack) |
 | `keystone-system` | Keystone Operator controller (workload CRs continue to live in `openstack`) |
-| `openstack` | Infrastructure instance CRs (MariaDB cluster, Memcached cluster) |
+| `openstack` | Infrastructure instance CRs (MariaDB cluster, Memcached cluster, Garage cluster) |
 | `openbao-system` | OpenBao HA Raft cluster |
 | `c5c3-system` | c5c3-operator controller; the `ControlPlane` and its child CRs are created in the `ControlPlane`'s own namespace |
 | `orc-system` | K-ORC (OpenStack Resource Controller) and its installer resources |
@@ -124,7 +125,7 @@ applied via `kubectl apply -f install.yaml`) before this kustomization is applie
 
 ## HelmRepository Sources
 
-Six HelmRepository CRs define the Helm chart registries that FluxCD pulls from. All
+Seven HelmRepository CRs define the Helm chart registries that FluxCD pulls from. All
 use `apiVersion: source.toolkit.fluxcd.io/v1`, are deployed to the `flux-system`
 namespace, and poll at `interval: 1h`.
 
@@ -136,6 +137,7 @@ namespace, and poll at `interval: 1h`.
 | `sources/openbao.yaml` | `openbao` | `https://openbao.github.io/openbao-helm` | HTTPS |
 | `sources/c5c3-charts.yaml` | `c5c3-charts` | `oci://ghcr.io/c5c3/charts` | OCI |
 | `sources/prometheus-community.yaml` | `prometheus-community` | `oci://ghcr.io/prometheus-community/charts` | OCI |
+| `sources/garage-operator.yaml` | `garage-operator` | `oci://ghcr.io/rajsinghtech/charts` | OCI |
 
 **K-ORC is sourced from Git, not Helm.** K-ORC publishes no Helm chart (its
 `github.io` page serves no Helm index), so `sources/k-orc.yaml` is a `GitRepository`
@@ -149,15 +151,18 @@ The `chaos-mesh` HelmRepository ships in the kind-only opt-in overlay at
 from `deploy/flux-system/{sources,kustomization.yaml}`. See
 [Chaos Mesh (kind-only opt-in)](#chaos-mesh-kind-only-opt-in).
 
-The `c5c3-charts` and `prometheus-community` repositories are OCI-type sources
-(`spec.type: oci`). `c5c3-charts` hosts internally-built operator charts (e.g.,
-memcached-operator) in the GitHub Container Registry. `prometheus-community` hosts
-Prometheus community charts (e.g., prometheus-operator-crds). All other repositories
-use standard HTTPS Helm registries.
+The `c5c3-charts`, `prometheus-community`, and `garage-operator` repositories are
+OCI-type sources (`spec.type: oci`). `c5c3-charts` hosts internally-built operator
+charts (e.g., memcached-operator) in the GitHub Container Registry;
+`prometheus-community` hosts Prometheus community charts (e.g.,
+prometheus-operator-crds); `garage-operator` is the first **third-party** OCI-type
+source and hosts the upstream garage-operator chart. For every OCI-type source the
+registry URL is the chart *namespace* and the chart name lives in the HelmRelease's
+`chart.spec.chart`. All other repositories use standard HTTPS Helm registries.
 
 ## HelmRelease Operators
 
-Nine HelmRelease CRs deploy the infrastructure operators and CRD charts (K-ORC is
+Ten HelmRelease CRs deploy the infrastructure operators and CRD charts (K-ORC is
 applied separately via a Flux `Kustomization` — see
 [K-ORC (OpenStack Resource Controller)](#k-orc-openstack-resource-controller)). All use
 `apiVersion: helm.toolkit.fluxcd.io/v2` and share these common settings:
@@ -184,6 +189,7 @@ mariadb-operator-crds     (no dependencies)
 ├── mariadb-operator      dependsOn: cert-manager, mariadb-operator-crds
 ├── external-secrets      dependsOn: cert-manager
 ├── memcached-operator    dependsOn: cert-manager, prometheus-operator-crds
+├── garage-operator       dependsOn: cert-manager
 ├── openbao               dependsOn: cert-manager
 ├── keystone-operator     dependsOn: cert-manager, mariadb-operator, memcached-operator, external-secrets
 └── c5c3-operator         dependsOn: keystone-operator, external-secrets, mariadb-operator, memcached-operator
@@ -333,6 +339,34 @@ OCI registry (`oci://ghcr.io/c5c3/charts`), not a dedicated HelmRepository. The
 | --- | --- | --- |
 | `metrics.enabled` | `true` | Expose Prometheus metrics |
 | `webhook.enabled` | `true` | Enable admission webhooks for Memcached CRDs |
+
+### Garage Operator
+
+**File:** `deploy/flux-system/releases/garage-operator.yaml`
+
+| Property | Value |
+| --- | --- |
+| Target namespace | `garage-system` |
+| Chart | `garage-operator` |
+| Version constraint | `>=0.6.26 <1.0.0` |
+| Source | `garage-operator` HelmRepository (third-party OCI registry) |
+| Dependencies | `cert-manager` in `cert-manager` namespace |
+
+The [garage-operator](https://github.com/rajsinghtech/garage-operator) deploys
+[Garage](https://garagehq.deuxfleurs.fr), a lightweight S3-compatible object store, as
+the in-cluster S3 backend for the CI/e2e stack (the Glance multi-store e2e suites need an
+S3 endpoint before any glance-operator lands). Its instance CRs are described under
+[Garage Object Store](#garage-object-store) below.
+
+No Helm values are overridden. The Garage image rides the operator/chart releases (no
+custom `GarageCluster.spec.image` pin), and the operator's admission/conversion webhooks
+are on by default — hence the `dependsOn: cert-manager` edge.
+
+**Accepted risk (decided 2026-07-15):** garage-operator is a young, single-maintainer,
+pre-1.0 (v0.6.x) project. It is accepted for **test infrastructure only** — never a
+production dependency of the operators — and the consuming surface is deliberately thin
+(three instance CRs plus two ExternalSecrets), so a later provider swap stays local to
+this layer.
 
 ### OpenBao
 
@@ -529,6 +563,7 @@ Each HelmRelease `sourceRef.name` must match a HelmRepository `metadata.name` in
 | `external-secrets` | `external-secrets` | `sources/external-secrets.yaml` |
 | `memcached-operator` | `c5c3-charts` | `sources/c5c3-charts.yaml` |
 | `openbao` | `openbao` | `sources/openbao.yaml` |
+| `garage-operator` | `garage-operator` | `sources/garage-operator.yaml` |
 | `keystone-operator` | `c5c3-charts` | `sources/c5c3-charts.yaml` |
 | `c5c3-operator` | `c5c3-charts` | `sources/c5c3-charts.yaml` |
 
@@ -709,6 +744,46 @@ service discovery for operator consumers.
 **API group:** The API group is `memcached.c5c3.io`, matching the CRD definition
 shipped by the [memcached-operator](https://github.com/C5C3/memcached-operator) Helm chart.
 
+### Garage Object Store
+
+**File:** `deploy/flux-system/infrastructure/garage.yaml`
+
+Three instance CRs (API group `garage.rajsingh.info`) declare the S3 object store the
+[garage-operator](#garage-operator) manages. All live in the `openstack` namespace:
+
+| Kind | API version | Name | Purpose |
+| --- | --- | --- | --- |
+| `GarageCluster` | `garage.rajsingh.info/v1beta2` | `garage` | Storage tier StatefulSet, config, and cluster layout — declarative, no manual `garage layout assign/apply` |
+| `GarageBucket` | `garage.rajsingh.info/v1beta1` | `glance-images` | Pre-created bucket with an explicit `globalAlias` (deterministic S3 name) |
+| `GarageKey` | `garage.rajsingh.info/v1beta1` | `glance-s3` | Imported S3 credentials with read/write on the `glance-images` bucket |
+
+`GarageCluster` is written against the `v1beta2` storage version with
+`replication.factor: 1`, a single storage tier, `network.service.type: ClusterIP`, and
+the S3 API on `:3900` with SigV4 region `garage` (path-style addressing — virtual-host
+style would need wildcard DNS). No `spec.image` is set, so the Garage version rides the
+operator/chart releases. The kind overlay
+(`deploy/kind/infrastructure/kustomization.yaml`) patches the storage tier to a single
+node with small PVCs on the `standard` storage class, mirroring the MariaDB/Memcached
+single-node kind footprint. This is a **CI/dev fixture** — plain HTTP in-cluster, single
+tier; production-grade multi-node/zone-aware guidance is out of scope.
+
+**Credential flow — OpenBao stays the single source of truth.** No key material is read
+back from Garage and there is no cross-namespace Secret plumbing:
+
+1. `write-bootstrap-secrets.sh` seeds an admin token at
+   `bootstrap/openstack/garage/admin-token` and a `GK`-prefixed S3 access/secret pair at
+   `bootstrap/openstack/garage/s3-credentials` (see the
+   [OpenBao bootstrap reference](./openbao-bootstrap.md#write-bootstrap-secretssh)).
+2. Two kind-only ExternalSecrets
+   (`deploy/kind/infrastructure/garage-{admin-token,s3-credentials}-externalsecret.yaml`)
+   materialize them into the `openstack` namespace through the shared
+   `openbao-cluster-store`.
+3. The `GarageCluster` reads the admin token via `spec.admin.adminTokenSecretRef`; the
+   `GarageKey` **imports** the pre-existing S3 pair via `spec.importKey.secretRef` (rather
+   than the operator minting a fresh key), so the key material never diverges from
+   OpenBao. Glance later reads the identical `s3-credentials` path from its own namespace
+   through its tenant store.
+
 ### Admin Credential Chain
 
 The c5c3-operator mints a single restricted admin Application Credential per cluster and
@@ -807,17 +882,17 @@ The base kustomization uses `apiVersion: kustomize.config.k8s.io/v1beta1` and in
 namespaces, the FluxInstance CR, HelmRepository sources, and HelmRelease operators.
 These resources do not depend on any custom CRDs.
 
-**Resource count:** 19 files producing 28 Kubernetes resources.
+**Resource count:** 21 files producing 31 Kubernetes resources.
 
 | Category | Count | Resources |
 | --- | --- | --- |
-| Namespace | 10 | cert-manager, mariadb-system, external-secrets, monitoring, memcached-system, keystone-system, openstack, openbao-system, c5c3-system, orc-system |
+| Namespace | 11 | cert-manager, mariadb-system, external-secrets, monitoring, memcached-system, garage-system, keystone-system, openstack, openbao-system, c5c3-system, orc-system |
 | FluxInstance | 1 | flux (drives the flux-operator) |
-| HelmRepository | 6 | cert-manager, mariadb-operator, external-secrets, openbao, c5c3-charts, prometheus-community |
+| HelmRepository | 7 | cert-manager, mariadb-operator, external-secrets, openbao, c5c3-charts, prometheus-community, garage-operator |
 | GitRepository | 1 | k-orc |
-| HelmRelease | 9 | cert-manager, prometheus-operator-crds, mariadb-operator-crds, mariadb-operator, external-secrets, memcached-operator, openbao, keystone-operator, c5c3-operator |
+| HelmRelease | 10 | cert-manager, prometheus-operator-crds, mariadb-operator-crds, mariadb-operator, external-secrets, memcached-operator, garage-operator, openbao, keystone-operator, c5c3-operator |
 | Kustomization | 1 | k-orc |
-| **Total** | **28** | |
+| **Total** | **31** | |
 
 The `chaos-mesh` HelmRepository, HelmRelease, and Namespace ship in the
 kind-only opt-in overlay at `deploy/kind/chaos-mesh/` and are not
@@ -831,9 +906,9 @@ The infrastructure kustomization includes CRD-dependent resources that require t
 operator CRDs to be installed first. This kustomization must be applied after the base
 kustomization and after operators have finished installing their CRDs.
 
-**Resource count:** 4 manifests producing 6 Kubernetes resources (the
+**Resource count:** 5 manifests producing 9 Kubernetes resources (the
 `db-ca-issuer.yaml` manifest declares two resources: a CA Certificate and the
-CA-type ClusterIssuer that signs from it).
+CA-type ClusterIssuer that signs from it; `garage.yaml` declares three).
 
 | Category | Count | Resources |
 | --- | --- | --- |
@@ -841,7 +916,8 @@ CA-type ClusterIssuer that signs from it).
 | Certificate | 2 | `openstack-db-ca`, `openbao-ca` — both CA keypair Secrets in the `cert-manager` namespace, signed by `selfsigned-cluster-issuer` |
 | MariaDB | 1 | `openstack-db` (requires mariadb-operator CRDs; TLS enabled per [MariaDB Galera Cluster](#mariadb-galera-cluster)) |
 | Memcached | 1 | `openstack-memcached` (requires memcached-operator CRDs) |
-| **Total** | **6** | |
+| GarageCluster / GarageBucket / GarageKey | 3 | `garage`, `glance-images`, `glance-s3` (require garage-operator CRDs; see [Garage Object Store](#garage-object-store)) |
+| **Total** | **9** | |
 
 <!-- NOTE: count excludes openbao-tls-cert.yaml and the ../../eso overlay that
 the infrastructure kustomization also references. Those resources are documented
@@ -858,8 +934,8 @@ of scope here. -->
 kubectl apply -k deploy/flux-system/
 ```
 
-This applies 28 resources: 10 namespaces, 1 FluxInstance, 7 sources
-(6 HelmRepository + 1 GitRepository for K-ORC), 9 HelmRelease operators, and
+This applies 31 resources: 11 namespaces, 1 FluxInstance, 8 sources
+(7 HelmRepository + 1 GitRepository for K-ORC), 10 HelmRelease operators, and
 1 Kustomization (K-ORC). FluxCD resolves the dependency graph between
 HelmReleases and installs operators in the correct order. Wait for all operators to
 finish installing before proceeding to step 2.
@@ -873,8 +949,9 @@ kubectl apply -k deploy/flux-system/infrastructure/
 This applies the CRD-dependent resources: the `selfsigned-cluster-issuer`
 ClusterIssuer, the `openstack-db-ca-issuer` ClusterIssuer plus its backing CA
 `Certificate`, the `openbao-ca-issuer` ClusterIssuer plus
-its backing CA `Certificate`, the MariaDB Galera cluster, and the
-Memcached cluster. These resources require CRDs that are installed by the operator
+its backing CA `Certificate`, the MariaDB Galera cluster, the
+Memcached cluster, and the Garage object store (`GarageCluster` / `GarageBucket` /
+`GarageKey`). These resources require CRDs that are installed by the operator
 HelmReleases in step 1. If CRDs are not yet available, the apply will fail — wait
 for the operators to finish installing and retry.
 
@@ -924,9 +1001,18 @@ The manifest structure is designed for straightforward extension. Adding a new o
 4. **Add the operator namespace** to `namespaces.yaml` (e.g., `openbao-system`) so the
    namespace exists before `kubectl apply -k` creates the namespaced HelmRelease CR
 
-Infrastructure instance CRs (e.g., a new database or cache cluster) follow the same
-pattern: add a file in `infrastructure/` and list it in
-`infrastructure/kustomization.yaml`.
+The [garage-operator](#garage-operator) is the worked example of an **OCI-type
+third-party** operator following this recipe: step 1 adds an OCI HelmRepository
+(`sources/garage-operator.yaml`, `spec.type: oci`, the registry namespace as `url`); the
+release (`releases/garage-operator.yaml`) references it by `sourceRef.name` and carries
+the chart name in `chart.spec.chart`. The OCI variant changes nothing else in the recipe
+— Renovate's native Flux handling resolves the HelmRelease version range with no custom
+rule, exactly as for the HTTPS sources.
+
+Infrastructure instance CRs (e.g., a new database, cache, or object-store cluster) follow
+the same pattern: add a file in `infrastructure/` and list it in
+`infrastructure/kustomization.yaml` (see [Garage Object Store](#garage-object-store) and
+its single-node kind patch for a multi-CR example).
 
 ## Design Decisions
 
