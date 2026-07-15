@@ -19,9 +19,11 @@ ubuntu:noble
 ├── python-base          Runtime base: Python 3.12, system libs, openstack user
 │   ├── venv-builder     Build stage: compilers, uv, virtualenv with common packages
 │   │   ├── keystone     Stage 1 (build): install Keystone into virtualenv
-│   │   └── horizon      Stage 1 (build): install Horizon, pre-build static assets
+│   │   ├── horizon      Stage 1 (build): install Horizon, pre-build static assets
+│   │   └── glance       Stage 1 (build): install Glance + glance_store[s3]
 │   ├── keystone         Stage 2 (runtime): copy virtualenv, add runtime apt packages
-│   └── horizon          Stage 2 (runtime): copy virtualenv + static assets
+│   ├── horizon          Stage 2 (runtime): copy virtualenv + static assets
+│   └── glance           Stage 2 (runtime): copy virtualenv, add runtime apt packages
 ```
 
 The `venv-builder` image is used only as a build stage — it never runs in production.
@@ -216,6 +218,61 @@ horizon-specific twists: static assets are pre-built at image-build time, and th
 **Unit tests:** horizon ships no `.stestr.conf` — its Django suite runs under pytest.
 `hack/ci-run-unit-tests.sh` branches on `.stestr.conf` presence and delegates to
 horizon's upstream `tools/unit_tests.sh` driver in the pytest path.
+
+### glance
+
+**Location:** `images/glance/Dockerfile`
+
+The Glance service image uses the same two-stage build as Keystone. Both launch
+modes ship in one image by construction — 2025.2 starts the eventlet `glance-api`
+console script, and 2026.1+ runs uWSGI with the module path
+`glance.wsgi.api:application`.
+
+**Stage 1 (`build`)** — extends `venv-builder`:
+
+- Declares `ARG PIP_EXTRAS` (unused by glance today; kept for parity) and
+  `ARG PIP_PACKAGES`, which carries `glance_store[s3]` — the S3 store driver's
+  extra lives on `glance_store`, not `glance`, and pulls `boto3`, `botocore`,
+  and `s3transfer` (all pinned in `upper-constraints.txt`)
+- Mounts `upper-constraints.txt` and the Glance source tree via named build
+  contexts (`--build-context glance=...` / `--build-context upper-constraints=...`)
+- Installs Glance into the virtualenv using `uv pip install --constraint`. The
+  `--prefix` install generates the `glance-api` and `glance-manage` console
+  scripts from `setup.cfg` (it only skips PBR `wsgi_scripts`), so no wsgi script
+  is hand-written — the 2026.1 uWSGI module path needs none
+
+**Stage 2 (runtime)** — extends `python-base`:
+
+- Declares `ARG EXTRA_APT_PACKAGES`, which carries `libpython3.12t64`: the
+  venv-builder-compiled uwsgi binary links `libpython3.12.so.1.0`, which
+  python-base does not ship (the same rationale as horizon). Glance is otherwise
+  pure Python at runtime
+- Copies `/var/lib/openstack` from the build stage using `COPY --from=build --link`
+- Sets `USER openstack` for non-root execution
+
+The image stays config-free: the glance-operator mounts `glance-api.conf`,
+`glance-api-paste.ini`, and policy, and provides the staging/tasks paths as
+`emptyDir` mounts.
+
+**Runtime packages:**
+
+| Package | Purpose |
+| --- | --- |
+| `libpython3.12t64` | Shared `libpython3.12.so.1.0` for the venv-builder-compiled uwsgi |
+
+**Final image properties:**
+
+- Runs as `openstack` user (UID 42424, GID 42424)
+- Contains no build tools (`gcc`, `python3-dev`, `build-essential`, `uv` are absent)
+- Virtualenv at `/var/lib/openstack` with all Glance dependencies and the S3 store driver
+- `glance-manage` and `glance-api` CLIs available via `PATH`
+
+**Unit tests:** glance ships a `.stestr.conf`, so `hack/ci-run-unit-tests.sh`
+runs its suite under stestr (the default path, as for keystone).
+
+**Image contract check:** `tests/container-images/verify_glance.sh` is the hard
+gate — it verifies the CLIs, importability, the uWSGI module path, the S3 store
+driver's boto3 resolution, non-root execution, and the absence of build tools.
 
 ## Named Build Contexts
 
