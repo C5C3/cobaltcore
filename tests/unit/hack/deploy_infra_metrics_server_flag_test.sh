@@ -175,11 +175,11 @@ test_metrics_server_appended_dynamically() {
     "$DEPLOY_INFRA_SH" \
     'envoy-gateway metrics-server'
 
-  # The base array must preserve the seven non-opt-in releases in order.
+  # The base array must preserve the eight non-opt-in releases in order.
   assert_file_contains \
-    "helm_releases array preserves the seven non-opt-in releases in the documented order" \
+    "helm_releases array preserves the eight non-opt-in releases in the documented order" \
     "$DEPLOY_INFRA_SH" \
-    'helm_releases=(prometheus-operator-crds openbao mariadb-operator-crds mariadb-operator external-secrets memcached-operator envoy-gateway)'
+    'helm_releases=(prometheus-operator-crds openbao mariadb-operator-crds mariadb-operator external-secrets memcached-operator envoy-gateway garage-operator)'
 
   # The dynamic append must be guarded by WITH_METRICS_SERVER.
   assert_file_contains \

@@ -1658,14 +1658,15 @@ main() {
   log "Phase 3: Waiting for remaining HelmReleases..."
   # Build the release list dynamically so chaos-mesh is only awaited when the
   # opt-in overlay was applied. The surviving non-chaos order is
-  # preserved exactly as before; chaos-mesh is appended last to avoid moving
-  # any other release's relative position.
-  local helm_releases=(prometheus-operator-crds openbao mariadb-operator-crds mariadb-operator external-secrets memcached-operator envoy-gateway)
+  # preserved exactly as before; garage-operator is appended as the last base
+  # release, and chaos-mesh after it, to avoid moving any other release's
+  # relative position.
+  local helm_releases=(prometheus-operator-crds openbao mariadb-operator-crds mariadb-operator external-secrets memcached-operator envoy-gateway garage-operator)
   if [[ "${WITH_CHAOS_MESH}" == "true" ]]; then
     helm_releases+=(chaos-mesh)
   fi
   # kube-prometheus-stack is appended last so the relative
-  # ordering of the seven base releases (and chaos-mesh) is preserved exactly.
+  # ordering of the eight base releases (and chaos-mesh) is preserved exactly.
   local release_wait_timeout="${HELMRELEASE_TIMEOUT}"
   if [[ "${WITH_PROMETHEUS}" == "true" ]]; then
     helm_releases+=(kube-prometheus-stack)
@@ -1678,7 +1679,7 @@ main() {
     fi
   fi
   # metrics-server is appended last (after chaos-mesh and kube-prometheus-stack)
-  # so the relative ordering of the seven base releases is preserved exactly.
+  # so the relative ordering of the eight base releases is preserved exactly.
   if [[ "${WITH_METRICS_SERVER}" == "true" ]]; then
     helm_releases+=(metrics-server)
   fi
@@ -1711,7 +1712,10 @@ main() {
     clustersecretstores.external-secrets.io \
     externalsecrets.external-secrets.io \
     mariadbs.k8s.mariadb.com \
-    envoyproxies.gateway.envoyproxy.io
+    envoyproxies.gateway.envoyproxy.io \
+    garageclusters.garage.rajsingh.info \
+    garagebuckets.garage.rajsingh.info \
+    garagekeys.garage.rajsingh.info
 
   # Invalidate kubectl's client-side discovery cache so that the newly
   # registered CRDs are visible to kubectl apply.
@@ -1842,6 +1846,39 @@ main() {
     wait_for_externalsecrets "openstack" "${EXTERNALSECRET_TIMEOUT}" \
       keystone-admin keystone-db mariadb-root-password
   fi
+
+  # Garage object store (S3 backend for the Glance e2e suites). Its
+  # GarageCluster/GarageBucket/GarageKey CRs and the two ESO ExternalSecrets are
+  # applied on BOTH paths — they are not among the MariaDB/Memcached/standalone-
+  # shim resources the WITH_CONTROLPLANE overlay filter drops — so this
+  # readiness block runs unconditionally. The two ExternalSecrets read the
+  # OpenBao paths bootstrap/openstack/garage/{admin-token,s3-credentials} through
+  # the shared cluster store (re-validated above on both paths); force a re-sync
+  # now that OpenBao is up, the same reason as the standalone shims above.
+  log "Forcing Garage ExternalSecret re-sync..."
+  for es in garage-admin-token garage-s3-credentials; do
+    kubectl annotate "externalsecret/${es}" -n openstack \
+      "force-sync=${now}" --overwrite || true
+  done
+  wait_for_externalsecrets "openstack" "${EXTERNALSECRET_TIMEOUT}" \
+    garage-admin-token garage-s3-credentials
+
+  # The GarageCluster CR was applied in Step 5, before its admin-token Secret
+  # existed (that Secret is materialized by the ExternalSecret above). The
+  # operator may have stopped retrying; patch an annotation to force a new
+  # reconciliation now that the Secret is available, then wait for the cluster to
+  # reach its terminal healthy phase. "Running" is the operator's fully-
+  # operational phase (set once the Admin API is reachable); a storage-backed
+  # GarageCluster never advances to the "Ready" phase value, and the operator
+  # sets no "Ready" status condition (only health conditions such as
+  # QuorumAtRisk), so the wait keys on status.phase rather than a condition.
+  log "Triggering GarageCluster re-reconciliation..."
+  kubectl patch garagecluster garage -n openstack --type merge \
+    -p "{\"metadata\":{\"annotations\":{\"deploy.c5c3.io/reconcile-trigger\":\"${now}\"}}}" || true
+  log "Waiting for the GarageCluster CR to become Running..."
+  kubectl wait garagecluster/garage -n openstack \
+    --for=jsonpath='{.status.phase}'=Running --timeout="${POD_TIMEOUT}s"
+  log "GarageCluster CR is Running."
 
   if [[ "${WITH_CONTROLPLANE}" != "true" ]]; then
     # Trigger MariaDB operator re-reconciliation.
