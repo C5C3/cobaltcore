@@ -1,0 +1,134 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the Garage object store (S3 backend for the Glance e2e
+# suites). Auto-discovered by the e2e-infra job, which runs
+# `chainsaw test tests/e2e/infrastructure/` after `make deploy-infra`.
+#
+# Covers:
+#   - garage-operator Deployment available + its HelmRelease Ready
+#   - The two credential ExternalSecrets (admin token, S3 key pair) SecretSynced
+#   - GarageCluster Running (terminal healthy phase — a storage-backed cluster
+#     never advances to the "Ready" phase value and the operator sets no "Ready"
+#     status condition, only health conditions such as QuorumAtRisk), and the
+#     GarageBucket / GarageKey Ready
+#   - The S3 endpoint answers and the IMPORTED key can put and list an object in
+#     the bucket over path-style HTTP — the end-to-end proof that the seeded
+#     OpenBao credentials flow through ESO into a working S3 grant
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: garage-health
+spec:
+  # Extended assert timeout (~5min) for operator startup, CRD reconciliation,
+  # and the StatefulSet/PVC provisioning the GarageCluster drives.
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Operator Deployment + HelmRelease ───────────────────────────
+  # The chart's fullname helper renders the Deployment as "garage-operator" for
+  # a release of that name.
+  - try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: garage-operator
+            namespace: garage-system
+          status:
+            (availableReplicas > `0`): true
+    - assert:
+        resource:
+          apiVersion: helm.toolkit.fluxcd.io/v2
+          kind: HelmRelease
+          metadata:
+            name: garage-operator
+            namespace: garage-system
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+  # ── Step 2: Credential ExternalSecrets ──────────────────────────────────
+  # Both read bootstrap/openstack/garage/{admin-token,s3-credentials} from
+  # OpenBao through the shared cluster store. SecretSynced proves the seed +
+  # ESO materialization end-to-end.
+  - try:
+    - assert:
+        resource:
+          apiVersion: external-secrets.io/v1
+          kind: ExternalSecret
+          metadata:
+            name: garage-admin-token
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: SecretSynced
+    - assert:
+        resource:
+          apiVersion: external-secrets.io/v1
+          kind: ExternalSecret
+          metadata:
+            name: garage-s3-credentials
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: SecretSynced
+  # ── Step 3: Garage instance CRs ─────────────────────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: garage.rajsingh.info/v1beta2
+          kind: GarageCluster
+          metadata:
+            name: garage
+            namespace: openstack
+          status:
+            (phase == 'Running'): true
+    - assert:
+        resource:
+          apiVersion: garage.rajsingh.info/v1beta1
+          kind: GarageBucket
+          metadata:
+            name: glance-images
+            namespace: openstack
+          status:
+            (phase == 'Ready'): true
+    - assert:
+        resource:
+          apiVersion: garage.rajsingh.info/v1beta1
+          kind: GarageKey
+          metadata:
+            name: glance-s3
+            namespace: openstack
+          status:
+            (phase == 'Ready'): true
+  # ── Step 4: S3 put + list with the imported key ─────────────────────────
+  # Decode the imported key pair and drive a put-object + list-objects-v2 from a
+  # throwaway aws-cli pod against the ClusterIP S3 endpoint. addressing_style is
+  # forced to "path" (Garage has no wildcard DNS for virtual-host style) and the
+  # SigV4 region is "garage" (the GarageCluster's s3Api.region). Success is the
+  # listing echoing the key we just wrote.
+  - try:
+    - script:
+        timeout: 3m
+        content: |
+          set -eu
+          AKID="$(kubectl get secret garage-s3-credentials -n openstack \
+            -o 'jsonpath={.data.access-key-id}' | base64 -d)"
+          SAK="$(kubectl get secret garage-s3-credentials -n openstack \
+            -o 'jsonpath={.data.secret-access-key}' | base64 -d)"
+          OUT="$(kubectl run garage-s3-probe -n openstack \
+            --image=public.ecr.aws/aws-cli/aws-cli:2.35.23@sha256:0425835c7c9e33a747dfd499dcd3603ec802662f7f7ded42d8fc81ce7b712bf9 \
+            --rm -i --restart=Never --pod-running-timeout=2m \
+            --env "AWS_ACCESS_KEY_ID=${AKID}" \
+            --env "AWS_SECRET_ACCESS_KEY=${SAK}" \
+            --env "AWS_DEFAULT_REGION=garage" \
+            --env "AWS_CONFIG_FILE=/tmp/aws-cfg" \
+            --command -- sh -c 'set -e; printf "[default]\ns3 =\n    addressing_style = path\n" > /tmp/aws-cfg; echo probe > /tmp/p; aws --endpoint-url http://garage.openstack.svc.cluster.local:3900 s3api put-object --bucket glance-images --key garage-health/probe.txt --body /tmp/p; aws --endpoint-url http://garage.openstack.svc.cluster.local:3900 s3api list-objects-v2 --bucket glance-images --prefix garage-health/')"
+          echo "${OUT}"
+          echo "${OUT}" | grep -q 'garage-health/probe.txt'
+          echo "OK: imported key put and listed garage-health/probe.txt in glance-images"

@@ -243,6 +243,17 @@
       ],
       "datasourceTemplate": "docker",
       "versioningTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/tests/e2e/infrastructure/garage-health/chainsaw-test\\.yaml$/"
+      ],
+      "matchStrings": [
+        "image=(?<depName>public\\.ecr\\.aws/aws-cli/aws-cli):(?<currentValue>[^@\\s]+)@(?<currentDigest>sha256:[a-f0-9]+)"
+      ],
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "docker"
     }
   ],
   "packageRules": [
@@ -467,6 +478,22 @@
       "automerge": true,
       "minimumReleaseAge": "3 days",
       "groupName": "keycloak e2e fixture"
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["tests/e2e/infrastructure/garage-health/chainsaw-test.yaml"],
+      "matchPackageNames": ["public.ecr.aws/aws-cli/aws-cli"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["tests/e2e/infrastructure/garage-health/chainsaw-test.yaml"],
+      "matchPackageNames": ["public.ecr.aws/aws-cli/aws-cli"],
+      "matchUpdateTypes": ["minor", "patch", "digest"],
+      "automerge": true,
+      "minimumReleaseAge": "3 days",
+      "groupName": "aws-cli e2e fixture"
     },
     {
       "matchDatasources": ["docker", "go"],
