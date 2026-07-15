@@ -38,6 +38,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/c5c3/forge/internal/common/conditions"
+	"github.com/c5c3/forge/internal/common/database"
 	commontls "github.com/c5c3/forge/internal/common/tls"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
@@ -261,7 +262,7 @@ func dbTLSEnabled(keystone *keystonev1alpha1.Keystone) bool {
 // onto a single mount path (dbTLSMountPath). Each Secret contributes the
 // canonical cert-manager file names — ca.crt from caBundleSecretRef and
 // tls.crt/tls.key from clientCertSecretRef — so the ssl_ca/ssl_cert/ssl_key
-// DSN parameters (dbTLSPathsForMount) resolve identically in both modes:
+// DSN parameters (database.TLSFilePaths) resolve identically in both modes:
 //
 //   - managed mode: both refs point to the operator-issued <name>-db-client
 //     Secret (cert-manager writes all three keys into one Secret). The same
@@ -291,7 +292,7 @@ func dbTLSVolumeAndMount(keystone *keystonev1alpha1.Keystone) (corev1.Volume, co
 								Name: tlsSpec.CABundleSecretRef.Name,
 							},
 							Items: []corev1.KeyToPath{
-								{Key: dbTLSCAFileName, Path: dbTLSCAFileName},
+								{Key: database.TLSCAFileName, Path: database.TLSCAFileName},
 							},
 						},
 					},
@@ -301,8 +302,8 @@ func dbTLSVolumeAndMount(keystone *keystonev1alpha1.Keystone) (corev1.Volume, co
 								Name: tlsSpec.ClientCertSecretRef.Name,
 							},
 							Items: []corev1.KeyToPath{
-								{Key: dbTLSCertFileName, Path: dbTLSCertFileName},
-								{Key: dbTLSKeyFileName, Path: dbTLSKeyFileName},
+								{Key: database.TLSCertFileName, Path: database.TLSCertFileName},
+								{Key: database.TLSKeyFileName, Path: database.TLSKeyFileName},
 							},
 						},
 					},

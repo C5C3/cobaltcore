@@ -31,6 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 
+	"github.com/c5c3/forge/internal/common/database"
 	"github.com/c5c3/forge/internal/common/deployment"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
@@ -697,7 +698,7 @@ func TestReconcileFernetKeys_CronJobSpec(t *testing.T) {
 	g.Expect(container.Env[3].Name).To(Equal("OS_DATABASE__CONNECTION"))
 	g.Expect(container.Env[3].ValueFrom).NotTo(BeNil())
 	g.Expect(container.Env[3].ValueFrom.SecretKeyRef.LocalObjectReference.Name).To(Equal("test-keystone-db-connection"))
-	g.Expect(container.Env[3].ValueFrom.SecretKeyRef.Key).To(Equal(dbConnectionSecretKey))
+	g.Expect(container.Env[3].ValueFrom.SecretKeyRef.Key).To(Equal(database.ConnectionSecretKey))
 
 	// Verify volume mounts on main container: fernet-keys + credential-keys (read-only) + config + scripts.
 	g.Expect(container.VolumeMounts).To(HaveLen(4))

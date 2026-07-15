@@ -29,6 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
+	"github.com/c5c3/forge/internal/common/database"
 	"github.com/c5c3/forge/internal/common/deployment"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
@@ -672,7 +673,7 @@ func TestBuildDBConnectionEnvVar(t *testing.T) {
 	g.Expect(env.ValueFrom).NotTo(BeNil())
 	g.Expect(env.ValueFrom.SecretKeyRef).NotTo(BeNil())
 	g.Expect(env.ValueFrom.SecretKeyRef.Name).To(Equal("test-keystone-db-connection"))
-	g.Expect(env.ValueFrom.SecretKeyRef.Key).To(Equal(dbConnectionSecretKey))
+	g.Expect(env.ValueFrom.SecretKeyRef.Key).To(Equal(database.ConnectionSecretKey))
 }
 
 // TestBuildKeystoneDeployment_DBConnectionEnv verifies that the keystone

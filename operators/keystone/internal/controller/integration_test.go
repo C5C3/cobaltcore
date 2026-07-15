@@ -47,6 +47,7 @@ import (
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
+	"github.com/c5c3/forge/internal/common/database"
 	"github.com/c5c3/forge/internal/common/testutil/simulators"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	"github.com/c5c3/forge/internal/common/watch"
@@ -1101,7 +1102,7 @@ func TestIntegration_BootstrapJobDetailedSpec(t *testing.T) {
 	g.Expect(dbEnv.ValueFrom.SecretKeyRef).NotTo(BeNil())
 	g.Expect(dbEnv.ValueFrom.SecretKeyRef.Name).To(Equal(ks.Name+"-db-connection"),
 		"OS_DATABASE__CONNECTION should reference the derived db-connection Secret")
-	g.Expect(dbEnv.ValueFrom.SecretKeyRef.Key).To(Equal(dbConnectionSecretKey))
+	g.Expect(dbEnv.ValueFrom.SecretKeyRef.Key).To(Equal(database.ConnectionSecretKey))
 
 	g.Expect(container.Env[2].Name).To(Equal("BOOTSTRAP_REGION_ID"))
 	g.Expect(container.Env[2].Value).To(Equal(ks.Spec.Bootstrap.Region))
@@ -3153,7 +3154,7 @@ func TestIntegration_KeystonePodReachesDatabaseViaEnvOverride(t *testing.T) {
 	g.Expect(c.Get(ctx, derivedKey, derived)).To(Succeed(),
 		"derived db-connection Secret must exist")
 	g.Expect(derived.Data).To(HaveLen(1), "derived Secret must contain exactly one key")
-	connStr := string(derived.Data[dbConnectionSecretKey])
+	connStr := string(derived.Data[database.ConnectionSecretKey])
 	g.Expect(connStr).To(HavePrefix("mysql+pymysql://"),
 		"derived connection must be a pymysql URL")
 	g.Expect(connStr).To(ContainSubstring("keystone:secret@"),
@@ -3198,7 +3199,7 @@ func TestIntegration_RecreateDerivedSecretWhenDeleted(t *testing.T) {
 	g.Expect(c.Get(ctx, derivedKey, original)).To(Succeed(),
 		"derived db-connection Secret must exist before deletion")
 	originalUID := original.UID
-	originalConn := string(original.Data[dbConnectionSecretKey])
+	originalConn := string(original.Data[database.ConnectionSecretKey])
 	g.Expect(originalConn).NotTo(BeEmpty(), "derived Secret must carry a connection value")
 
 	// Delete the derived Secret out-of-band, then expect the watch-driven
@@ -3211,7 +3212,7 @@ func TestIntegration_RecreateDerivedSecretWhenDeleted(t *testing.T) {
 		// A fresh object: different UID from the deleted one.
 		g.Expect(recreated.UID).NotTo(Equal(originalUID),
 			"derived Secret must be a freshly created object after deletion")
-		g.Expect(recreated.Data[dbConnectionSecretKey]).To(Equal([]byte(originalConn)),
+		g.Expect(recreated.Data[database.ConnectionSecretKey]).To(Equal([]byte(originalConn)),
 			"recreated Secret must carry the same connection URL")
 		g.Expect(recreated.OwnerReferences).NotTo(BeEmpty(),
 			"recreated Secret must be owner-referenced by the Keystone CR")

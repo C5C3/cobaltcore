@@ -18,6 +18,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/c5c3/forge/internal/common/database"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 )
 
@@ -87,7 +88,7 @@ func TestReconcileDBConnectionSecret_ReadsCredentialPairAtomically(t *testing.T)
 		Name:      derivedDBConnectionSecretName(ks.Name),
 	}, derived)).To(Succeed())
 
-	connStr := string(derived.Data[dbConnectionSecretKey])
+	connStr := string(derived.Data[database.ConnectionSecretKey])
 	g.Expect(connStr).To(ContainSubstring("u1:p1@"),
 		"username and password must come from the same upstream Secret read")
 	g.Expect(connStr).NotTo(ContainSubstring("u1:p2@"),
@@ -124,7 +125,7 @@ func TestReconcileDBConnectionSecret_CreatesSecretWithCorrectURL_Brownfield(t *t
 	g.Expect(derived.OwnerReferences).To(HaveLen(1))
 	g.Expect(derived.OwnerReferences[0].UID).To(Equal(ks.UID))
 	g.Expect(derived.Data).To(HaveLen(1))
-	g.Expect(string(derived.Data[dbConnectionSecretKey])).To(Equal(
+	g.Expect(string(derived.Data[database.ConnectionSecretKey])).To(Equal(
 		"mysql+pymysql://ks_user:ks_pass@db.example.com:3306/keystone?charset=utf8",
 	))
 }
@@ -155,7 +156,7 @@ func TestReconcileDBConnectionSecret_CreatesSecretWithCorrectURL_Managed(t *test
 	}, derived)).To(Succeed())
 
 	g.Expect(derived.Data).To(HaveLen(1))
-	g.Expect(string(derived.Data[dbConnectionSecretKey])).To(Equal(
+	g.Expect(string(derived.Data[database.ConnectionSecretKey])).To(Equal(
 		"mysql+pymysql://test-keystone:secret123@mariadb-cluster.default.svc:3306/keystone?charset=utf8",
 	))
 }
@@ -189,7 +190,7 @@ func TestReconcileDBConnectionSecret_DynamicManaged_UsesSecretUsername(t *testin
 		Namespace: "default",
 		Name:      derivedDBConnectionSecretName(ks.Name),
 	}, derived)).To(Succeed())
-	g.Expect(string(derived.Data[dbConnectionSecretKey])).To(Equal(
+	g.Expect(string(derived.Data[database.ConnectionSecretKey])).To(Equal(
 		"mysql+pymysql://v-kube-abc123:leaseSecret@mariadb-cluster.default.svc:3306/keystone?charset=utf8",
 	))
 }
@@ -291,7 +292,7 @@ func TestReconcileDBConnectionSecret_UpdatesOnPasswordRotation(t *testing.T) {
 	}
 	first := &corev1.Secret{}
 	g.Expect(r.Get(ctx, derivedKey, first)).To(Succeed())
-	g.Expect(string(first.Data[dbConnectionSecretKey])).To(ContainSubstring(":old@"))
+	g.Expect(string(first.Data[database.ConnectionSecretKey])).To(ContainSubstring(":old@"))
 	originalUID := first.UID
 
 	// Rotate the upstream password and reconcile again.
@@ -308,7 +309,7 @@ func TestReconcileDBConnectionSecret_UpdatesOnPasswordRotation(t *testing.T) {
 	g.Expect(second.Name).To(Equal(first.Name))
 	g.Expect(second.UID).To(Equal(originalUID))
 	g.Expect(second.Data).To(HaveLen(1))
-	connStr := string(second.Data[dbConnectionSecretKey])
+	connStr := string(second.Data[database.ConnectionSecretKey])
 	g.Expect(connStr).To(ContainSubstring(":new@"))
 	g.Expect(connStr).NotTo(ContainSubstring(":old@"))
 }
@@ -476,7 +477,7 @@ func TestReconcileDBConnectionSecret_TLSDisabled_NoSSLParams(t *testing.T) {
 		Name:      derivedDBConnectionSecretName(ks.Name),
 	}, derived)).To(Succeed())
 
-	q := parseDSNQuery(t, string(derived.Data[dbConnectionSecretKey]))
+	q := parseDSNQuery(t, string(derived.Data[database.ConnectionSecretKey]))
 	g.Expect(q.Get("charset")).To(Equal("utf8"))
 	for _, key := range []string{"ssl_ca", "ssl_cert", "ssl_key", "ssl_verify_cert", "ssl_verify_identity"} {
 		g.Expect(q.Has(key)).To(BeFalse(), "ssl_* parameter %q must be absent when TLS is disabled", key)
@@ -519,14 +520,14 @@ func TestReconcileDBConnectionSecret_TLSEnabled_AppendsModeSSLParams(t *testing.
 				Name:      derivedDBConnectionSecretName(ks.Name),
 			}, derived)).To(Succeed())
 
-			q := parseDSNQuery(t, string(derived.Data[dbConnectionSecretKey]))
+			q := parseDSNQuery(t, string(derived.Data[database.ConnectionSecretKey]))
 
 			// charset=utf8 (the pre- parameter) must survive the merge.
 			g.Expect(q.Get("charset")).To(Equal("utf8"))
 
 			// The ssl_ca/ssl_cert/ssl_key triple is present for every mode and
 			// must match the canonical /etc/keystone/db-tls/ mount layout.
-			wantPaths := dbTLSPathsForMount()
+			wantPaths := database.TLSFilePaths(dbTLSMountPath)
 			g.Expect(q.Get("ssl_ca")).To(Equal(wantPaths.CA))
 			g.Expect(q.Get("ssl_cert")).To(Equal(wantPaths.Cert))
 			g.Expect(q.Get("ssl_key")).To(Equal(wantPaths.Key))
@@ -575,7 +576,7 @@ func TestReconcileDBConnectionSecret_TLSDisabledMode_NoSSLParams(t *testing.T) {
 		Name:      derivedDBConnectionSecretName(ks.Name),
 	}, derived)).To(Succeed())
 
-	q := parseDSNQuery(t, string(derived.Data[dbConnectionSecretKey]))
+	q := parseDSNQuery(t, string(derived.Data[database.ConnectionSecretKey]))
 	g.Expect(q.Get("charset")).To(Equal("utf8"))
 	for _, key := range []string{"ssl_ca", "ssl_cert", "ssl_key", "ssl_verify_cert", "ssl_verify_identity"} {
 		g.Expect(q.Has(key)).To(BeFalse(),
@@ -611,7 +612,7 @@ func TestReconcileDBConnectionSecret_TLSEnabled_NoPercentEncodedSlashes(t *testi
 		Name:      derivedDBConnectionSecretName(ks.Name),
 	}, derived)).To(Succeed())
 
-	connStr := string(derived.Data[dbConnectionSecretKey])
+	connStr := string(derived.Data[database.ConnectionSecretKey])
 	g.Expect(connStr).NotTo(ContainSubstring("%2F"),
 		"DSN must not contain percent-encoded slashes — they trip Python configparser interpolation in keystone-manage db_sync")
 	g.Expect(connStr).NotTo(ContainSubstring("%2f"),

@@ -25,6 +25,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	"github.com/c5c3/forge/internal/common/database"
 	"github.com/c5c3/forge/internal/common/job"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
@@ -188,7 +189,7 @@ func TestReconcileBootstrap_JobCreated(t *testing.T) {
 	g.Expect(container.Env[0].ValueFrom.SecretKeyRef.Key).To(Equal("password"))
 	g.Expect(container.Env[1].Name).To(Equal("OS_DATABASE__CONNECTION"))
 	g.Expect(container.Env[1].ValueFrom.SecretKeyRef.LocalObjectReference.Name).To(Equal(ks.Name + "-db-connection"))
-	g.Expect(container.Env[1].ValueFrom.SecretKeyRef.Key).To(Equal(dbConnectionSecretKey))
+	g.Expect(container.Env[1].ValueFrom.SecretKeyRef.Key).To(Equal(database.ConnectionSecretKey))
 	g.Expect(container.Env[2].Name).To(Equal("BOOTSTRAP_REGION_ID"))
 	g.Expect(container.Env[2].Value).To(Equal("RegionOne"))
 	expectedServiceURL := fmt.Sprintf("http://%s.%s.svc.cluster.local:5000/v3", ks.Name, ks.Namespace)

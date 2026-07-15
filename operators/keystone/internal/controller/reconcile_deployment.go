@@ -20,6 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/c5c3/forge/internal/common/conditions"
+	"github.com/c5c3/forge/internal/common/database"
 	"github.com/c5c3/forge/internal/common/deployment"
 	"github.com/c5c3/forge/internal/common/naming"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
@@ -29,29 +30,13 @@ import (
 // Condition reason constants for DeploymentReady.
 const conditionReasonDeploymentRolloutComplete = "DeploymentRolloutComplete"
 
-// dbConnectionEnvVarName is the oslo.config env override key for
-// [database].connection. The OS_<GROUP>__<OPTION> form wins over the ConfigMap
-// value at runtime, so keystone containers read the real DB URL from the
-// derived Secret instead of from the ConfigMap.
-const dbConnectionEnvVarName = "OS_DATABASE__CONNECTION"
-
 // buildDBConnectionEnvVar returns the EnvVar that overrides
 // [database].connection in keystone.conf by sourcing the URL from the derived
-// <keystone.Name>-db-connection Secret produced by reconcileDBConnectionSecret
-// Every pod-spec builder that needs database access uses
-// this helper to avoid string duplication.
+// <keystone.Name>-db-connection Secret produced by reconcileDBConnectionSecret.
+// Every pod-spec builder that needs database access uses this helper to avoid
+// string duplication; it delegates to the shared database.ConnectionEnvVar.
 func buildDBConnectionEnvVar(keystone *keystonev1alpha1.Keystone) corev1.EnvVar {
-	return corev1.EnvVar{
-		Name: dbConnectionEnvVarName,
-		ValueFrom: &corev1.EnvVarSource{
-			SecretKeyRef: &corev1.SecretKeySelector{
-				LocalObjectReference: corev1.LocalObjectReference{
-					Name: fmt.Sprintf("%s-db-connection", keystone.Name),
-				},
-				Key: dbConnectionSecretKey,
-			},
-		},
-	}
+	return database.ConnectionEnvVar(keystone.Name)
 }
 
 // dbReadinessProbeConnectTimeoutSeconds bounds the TCP connect attempt in

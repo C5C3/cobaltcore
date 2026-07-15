@@ -12,7 +12,6 @@ operators/c5c3/internal/controller/reconcile_korc.go:2
 operators/keystone/internal/controller/dbtls_mode.go:1
 operators/keystone/internal/controller/reconcile_bootstrap.go:1
 operators/keystone/internal/controller/reconcile_credential.go:1
-operators/keystone/internal/controller/reconcile_dbconnection_secret.go:1
 operators/keystone/internal/controller/reconcile_fernet.go:1
 operators/keystone/internal/controller/reconcile_passwordrotation.go:3
 tests/e2e-chaos/mariadb-pod-kill/chainsaw-test.yaml:2
