@@ -16,6 +16,7 @@ resources:
   - db-ca-issuer.yaml
   - mariadb.yaml
   - memcached.yaml
+  - garage.yaml
   - openbao-ca-issuer.yaml
   - openbao-tls-cert.yaml
   - openbao-client-tls-cert.yaml

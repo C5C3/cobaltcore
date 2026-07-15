@@ -36,6 +36,13 @@ resources:
   # horizon-secret-key is the Django SECRET_KEY shim for standalone Horizon
   # flows (per-CR OpenBao path; survives the WITH_CONTROLPLANE shim drop).
   - horizon-secret-key-externalsecret.yaml
+  # kind-only: materialize the Garage admin token and the imported S3 key pair
+  # (seeded in OpenBao) so the GarageCluster/GarageKey can consume them. Both
+  # sit in the openstack namespace and survive the WITH_CONTROLPLANE shim drop
+  # (they are not among the keystone-admin/keystone-db/mariadb-root-password
+  # names that hack/deploy-infra.sh filters out on the ControlPlane path).
+  - garage-admin-token-externalsecret.yaml
+  - garage-s3-credentials-externalsecret.yaml
 
 patches:
   # MariaDB: single replica, no Galera, no MaxScale, standard storage.
@@ -94,3 +101,27 @@ patches:
         namespace: openstack
       spec:
         replicas: 1
+
+  # Garage: single storage node with small PVCs on the kind default storage
+  # class (mirrors the MariaDB/Memcached single-node kind footprint).
+  - target:
+      group: garage.rajsingh.info
+      version: v1beta2
+      kind: GarageCluster
+      name: garage
+      namespace: openstack
+    patch: |
+      apiVersion: garage.rajsingh.info/v1beta2
+      kind: GarageCluster
+      metadata:
+        name: garage
+        namespace: openstack
+      spec:
+        storage:
+          replicas: 1
+          metadata:
+            size: 512Mi
+            storageClassName: standard
+          data:
+            size: 2Gi
+            storageClassName: standard

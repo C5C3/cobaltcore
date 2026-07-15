@@ -1,0 +1,97 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Garage object store for the CI/e2e stack — an in-cluster, S3-compatible
+# backend for the Glance multi-store e2e suites. The garage-operator manages
+# these CRs the same way the mariadb-operator/memcached-operator manage their
+# instance CRs; cluster layout, buckets, and keys are all declarative (no
+# `garage layout assign/apply` scripting).
+#
+# CI-ONLY posture (decided 2026-07-15): plain HTTP in-cluster (the glance S3
+# driver's s3_store_cacert covers TLS when a suite later needs it) and a single
+# storage tier. The kind overlay (deploy/kind/infrastructure/kustomization.yaml)
+# patches this to a single node with small PVCs.
+#
+# Credential flow — OpenBao stays the single source of truth, no read-back from
+# Garage and no cross-namespace Secret plumbing:
+#   1. write-bootstrap-secrets.sh seeds a GK-prefixed access/secret pair at
+#      bootstrap/openstack/garage/s3-credentials and an admin token at
+#      bootstrap/openstack/garage/admin-token.
+#   2. Two kind-only ExternalSecrets materialize them into the `openstack`
+#      namespace as Secrets garage-s3-credentials / garage-admin-token.
+#   3. The GarageCluster reads the admin token via admin.adminTokenSecretRef;
+#      the GarageKey IMPORTS the pre-existing S3 pair via importKey.secretRef
+#      (rather than the operator minting a fresh key), so the key material never
+#      diverges from OpenBao. Glance later reads the identical OpenBao path from
+#      its own namespace through its tenant store.
+---
+apiVersion: garage.rajsingh.info/v1beta2
+kind: GarageCluster
+metadata:
+  name: garage
+  namespace: openstack
+spec:
+  # No spec.image: the Garage version rides the operator/chart releases Renovate
+  # already tracks, so pinning our own image would add a customManager for no CI
+  # benefit.
+  replication:
+    factor: 1
+  # Storage tier — a long-lived StatefulSet with PVCs. Sized for a small
+  # multi-node baseline; the kind overlay patches replicas/PVC sizes down to a
+  # single node (mirroring the MariaDB/Memcached single-node kind patches).
+  storage:
+    replicas: 3
+    metadata:
+      size: 1Gi
+    data:
+      size: 10Gi
+  network:
+    service:
+      type: ClusterIP
+  s3Api:
+    # Path-style addressing on the default S3 port; the SigV4 region is "garage"
+    # (Garage's default) — the e2e probe and any consumer must sign with it.
+    bindPort: 3900
+    region: garage
+  admin:
+    # The operator authenticates to Garage's Admin API with this token to manage
+    # buckets, keys, and layout. Seeded in OpenBao and materialized by the
+    # kind-only garage-admin-token ExternalSecret.
+    adminTokenSecretRef:
+      name: garage-admin-token
+      key: token
+---
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageBucket
+metadata:
+  name: glance-images
+  namespace: openstack
+spec:
+  clusterRef:
+    name: garage
+  # Explicit global alias so the S3 bucket name is deterministic for consumers
+  # (no reliance on s3_store_create_bucket_on_put). A second bucket for the
+  # multi-store suite is a two-line addition here (#656).
+  globalAlias: glance-images
+---
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageKey
+metadata:
+  name: glance-s3
+  namespace: openstack
+spec:
+  clusterRef:
+    name: garage
+  # Import the pre-seeded OpenBao key pair rather than minting a new one. The
+  # secretRef namespace defaults to this GarageKey's namespace (openstack); the
+  # data-key names are pinned to match the garage-s3-credentials Secret.
+  importKey:
+    secretRef:
+      name: garage-s3-credentials
+    accessKeyIdKey: access-key-id
+    secretAccessKeyKey: secret-access-key
+  bucketPermissions:
+    - globalAlias: glance-images
+      read: true
+      write: true

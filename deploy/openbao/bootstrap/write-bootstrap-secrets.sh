@@ -75,6 +75,13 @@ KORC_CONTROLPLANES="${KORC_CONTROLPLANES:-openstack/controlplane}"
 # argument lists.
 readonly GENERATED_PASSWORD="@generate"
 
+# Marker value: like GENERATED_PASSWORD but generates a Garage-format S3 access
+# key ID — the literal prefix "GK" followed by 24 hex characters (12 random
+# bytes). Garage's key import REQUIRES the GK prefix, so a plain @generate value
+# would be rejected. The random part is generated in-pod for the same reason as
+# @generate (no cleartext in host process argument lists).
+readonly GENERATED_GK_ACCESS_KEY="@generate-gk"
+
 # Write a secret only if it does not already exist in the KV-v2 store.
 #
 # Usage: write_secret_if_missing <kv_path> <key1>=<value1> [<key2>=<value2> ...]
@@ -102,6 +109,9 @@ write_secret_if_missing() {
     local val="${arg#*=}"
     if [[ "${val}" == "${GENERATED_PASSWORD}" ]]; then
       put_args+=" ${key}=\"\$(bao write -field=random_bytes sys/tools/random/32 format=hex)\""
+    elif [[ "${val}" == "${GENERATED_GK_ACCESS_KEY}" ]]; then
+      # Garage access-key ID: literal "GK" + 24 hex chars (12 random bytes).
+      put_args+=" ${key}=\"GK\$(bao write -field=random_bytes sys/tools/random/12 format=hex)\""
     else
       # Quote non-generated values to guard against shell metacharacters
       # (spaces, equals signs in values, etc.) in the sh -c command string.
@@ -162,6 +172,26 @@ main() {
 
   write_secret_if_missing "kv-v2/infrastructure/mariadb" \
     "root-password=${GENERATED_PASSWORD}"
+
+  # Garage object store (S3 backend for the CI/e2e stack) — seeded
+  # unconditionally, independent of KORC_CONTROLPLANES, because Garage is a
+  # base infrastructure component (not per-ControlPlane). Both paths sit under
+  # bootstrap/openstack/garage/ so they are readable today through the shared
+  # cluster store (the eso-management policy grants read on bootstrap/*) AND by
+  # an openstack-namespace tenant store later, which is what lets a same-
+  # namespace Glance read the identical s3-credentials path (per-dedicated-
+  # namespace delivery for Glance is deferred to the Glance onboarding, not
+  # this seed). No mark_eso_managed: no PushSecret targets these paths.
+  #
+  # The admin token authenticates the operator to Garage's Admin API. The S3
+  # pair is IMPORTED by the GarageKey, so the access key must be GK-prefixed
+  # (@generate-gk); the secret is a 32-byte hex value like every other
+  # generated credential.
+  write_secret_if_missing "kv-v2/bootstrap/openstack/garage/admin-token" \
+    "token=${GENERATED_PASSWORD}"
+  write_secret_if_missing "kv-v2/bootstrap/openstack/garage/s3-credentials" \
+    "access-key-id=${GENERATED_GK_ACCESS_KEY}" \
+    "secret-access-key=${GENERATED_PASSWORD}"
 
   # per-ControlPlane bootstrap seeding. For each MANAGED-mode
   # "<namespace>/<controlplane>" identity in KORC_CONTROLPLANES (default
