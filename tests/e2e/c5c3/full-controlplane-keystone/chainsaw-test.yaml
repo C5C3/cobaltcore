@@ -29,6 +29,10 @@
 #                        (: the control-plane-namespace k-orc-clouds-yaml ExternalSecret is now OPERATOR-CREATED — per-CR, controller-owned — and the bootstrap clouds.yaml is operator-seeded; this test WAITS FOR, never pre-creates, them.)
 #   5. Catalog         — owned K-ORC Service ("…-identity-service") + Endpoint
 #                        ("…-identity-endpoint"); CatalogReady=True.
+#   5b. Service accts  — the declared "glance" account projects a managed
+#                        User/Project, an unmanaged K-ORC Role import, and a managed
+#                        RoleAssignment ("…-service-account-glance-assign-member-…");
+#                        ServiceAccountsReady=True and status.serviceAccounts[0].ready.
 #   6. Aggregate       — ControlPlane Ready=True (reason AllReady).
 #   7. API reachable   — Keystone /v3 returns HTTP 200; `openstack token issue`
 #                        and `openstack catalog list` succeed using the
@@ -159,6 +163,7 @@ spec:
             applicationcredentials.openstack.k-orc.cloud \
             services.openstack.k-orc.cloud \
             endpoints.openstack.k-orc.cloud \
+            roleassignments.openstack.k-orc.cloud \
             externalsecrets.external-secrets.io \
             vaultdynamicsecrets.generators.external-secrets.io; do
             if ! kubectl get crd "$crd" >/dev/null 2>&1; then
@@ -437,6 +442,25 @@ spec:
             "$(owner_of services.openstack.k-orc.cloud "${SVC_CR}")"
           assert_eq "K-ORC identity Endpoint owned by ControlPlane" "${CP_NAME}" \
             "$(owner_of endpoints.openstack.k-orc.cloud "${EP_CR}")"
+
+          # ── Link 5b: service accounts (role projection) ────────────────────
+          # The declared "glance" account projects a managed User/Project, an
+          # unmanaged K-ORC Role import, and a managed RoleAssignment. The
+          # RoleAssignment name embeds the deterministic role slug for "member"
+          # (base "member" + "-" + the first 8 hex of sha256("member")).
+          # ServiceAccountsReady gates on all of them Available AND the OpenBao
+          # password round-trip, and status.serviceAccounts[0].ready mirrors that
+          # per-account convergence.
+          SA_ASSIGN="${CP_NAME}-service-account-glance-assign-member-e31ab643"
+          wait_cp_condition ServiceAccountsReady 600
+          assert_eq "status.serviceAccounts[0].ready" "true" \
+            "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.status.serviceAccounts[0].ready}')"
+          kubectl get roleassignments.openstack.k-orc.cloud "${SA_ASSIGN}" -n "${CP_NS}" >/dev/null
+          assert_eq "RoleAssignment ${SA_ASSIGN} Available" "True" \
+            "$(kubectl get roleassignments.openstack.k-orc.cloud "${SA_ASSIGN}" -n "${CP_NS}" \
+              -o "jsonpath={.status.conditions[?(@.type=='Available')].status}")"
+          assert_eq "RoleAssignment owned by ControlPlane" "${CP_NAME}" \
+            "$(owner_of roleassignments.openstack.k-orc.cloud "${SA_ASSIGN}")"
 
           # ── Link 6: aggregate Ready=True ───────────────────────────────────
           wait_cp_condition Ready 300

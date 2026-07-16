@@ -876,7 +876,7 @@ or created), and the roles bound to it. Projected by
 | `domainName` | `string` | No | admin domain | The OpenStack domain the user and project live in. Empty resolves to `spec.korc.adminCredential.domainName`. |
 | `adopt` | `bool` | No | `false` | Explicit consent that a pre-existing Keystone user of this name may be taken over. Fail-loudly by default: a declared user that already exists surfaces `ServiceAccountsReady=False/ServiceAccountCollision` and is never touched. `adopt: true` opts into a **password takeover** AND into operator ownership — an adopted user is a managed `User`, so it is **deleted from Keystone at teardown**, exactly like one the operator created. |
 | `project` | [`ServiceAccountProjectSpec`](#serviceaccountprojectspec) | Yes | — | The project the service user is associated with, referenced (default) or created. |
-| `roles` | `[]string` | No | `nil` | OpenStack role names bound to the user. **Accepted but not yet projected** (K-ORC ships no `RoleAssignment` kind); the reconciler emits a `RoleAssignmentsDeferred` event so the deferral is not silent. Item pattern `^[^,]+$`, ≤ 255, max 32. |
+| `roles` | `[]string` | No | `nil` | OpenStack role names assigned to the user on the project. Each role projects one **unmanaged** K-ORC `Role` import (referenced by name, never created or deleted — Keystone roles are global) plus one **managed** `RoleAssignment` binding it to the user on the project (one per user × project × role). Their readiness folds into the per-account `ServiceAccountsReady` gate; removing a role prunes both child CRs; at teardown the managed assignment is deleted from Keystone while the `Role` import is released untouched. Item pattern `^[^,]+$`, ≤ 255, max 32. |
 | `rotation` | [`*ServiceAccountRotationSpec`](#serviceaccountrotationspec) | No | mode `Manual` | Per-account password-rotation policy. |
 
 ### ServiceAccountProjectSpec
@@ -1869,7 +1869,9 @@ land in `openstack` exactly as expected — the namespace is **derived from the
 owner (or the assignment)** rather than assumed. Projected child names are
 deterministic and derived from the ControlPlane name (e.g. `{name}-keystone`,
 `{name}-admin-app-credential`, `{name}-identity-service`,
-`{name}-identity-endpoint`) so a single namespace can host the children of
+`{name}-identity-endpoint`, `{name}-service-account-{account}-role-{slug}` (an
+unmanaged `Role` import) and `{name}-service-account-{account}-assign-{slug}` (a
+managed `RoleAssignment`)) so a single namespace can host the children of
 multiple ControlPlanes without clashing.
 
 ---

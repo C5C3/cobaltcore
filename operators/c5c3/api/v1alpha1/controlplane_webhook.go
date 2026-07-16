@@ -450,13 +450,25 @@ const (
 	maxServiceAccounts = 32
 
 	// serviceAccountChildNameOverhead is the longest fixed part of a child name
-	// the account name is embedded in — everything except the ControlPlane name
-	// and the account name. The password Secret
-	// "{cp}-service-account-{name}-password-vN" carries the longest fixed affix;
-	// the "vN" generation suffix is bounded generously at 10 digits so a name that
-	// admission accepts can never overflow a child CR / Secret the reconciler then
-	// wedges on.
+	// EVERY account embeds its own name in — everything except the ControlPlane
+	// name and the account name. That is the password Secret
+	// "{cp}-service-account-{name}-password-vN", whose "vN" generation suffix is
+	// bounded generously at 10 digits.
 	serviceAccountChildNameOverhead = len("-service-account-") + len("-password-v") + 10
+
+	// serviceAccountRoleChildNameOverhead is the same bound for an account that
+	// declares roles: it additionally mints the managed RoleAssignment
+	// "{cp}-service-account-{name}-assign-{slug}", where slug is bounded at 25
+	// bytes by serviceAccountRoleSlug. That is the longest account-keyed child
+	// name, and for any account name it also dominates the un-keyed Role import
+	// "{cp}-service-account-role-{slug}" (47 bytes), so both stay covered.
+	//
+	// Only an account WITH roles is charged it. A roles-less account mints no
+	// assignment, so charging it the wider budget would reject a pair the
+	// reconciler handles fine — and, because this check also runs on update,
+	// would wedge every later edit to a ControlPlane an earlier operator level
+	// already admitted.
+	serviceAccountRoleChildNameOverhead = len("-service-account-") + len("-assign-") + 25
 )
 
 // effectiveServiceAccountUserName resolves the OpenStack user name for an entry:
@@ -532,10 +544,15 @@ func validateServiceAccounts(cp *ControlPlane) field.ErrorList {
 		seenNames[sa.Name] = struct{}{}
 
 		if sa.Name != "" {
-			if n := len(cp.Name) + serviceAccountChildNameOverhead + len(sa.Name); n > maxObjectNameBytes {
+			overhead := serviceAccountChildNameOverhead
+			if len(sa.Roles) > 0 {
+				overhead = serviceAccountRoleChildNameOverhead
+			}
+			if n := len(cp.Name) + overhead + len(sa.Name); n > maxObjectNameBytes {
 				allErrs = append(allErrs, field.Invalid(entryPath.Child("name"), sa.Name, fmt.Sprintf(
 					"the child K-ORC CR name would be %d bytes; shorten the ControlPlane name or the account "+
-						"name so the total stays within the %d-byte Kubernetes object-name limit", n, maxObjectNameBytes,
+						"name (or drop the account's roles) so the total stays within the %d-byte Kubernetes "+
+						"object-name limit", n, maxObjectNameBytes,
 				)))
 			}
 		}

@@ -2544,6 +2544,100 @@ func TestValidateUpdate_AcceptsServiceAccountAdoptFlip(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 }
 
+// TestValidateCreate_RejectsOverlongServiceAccountChildName pins the child-CR
+// name-length bound the CRD markers cannot express: metadata.name is bounded only
+// by the apiserver's 253 bytes, and the longest child name a roles-less account
+// mints — the password Secret "{cp}-service-account-{name}-password-vN" — composes
+// it with serviceAccountChildNameOverhead and the account name. Admitting an
+// overflowing pair would wedge reconcileServiceAccounts at CreateOrUpdate.
+func TestValidateCreate_RejectsOverlongServiceAccountChildName(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+
+	cp := saControlPlane()
+	// One byte past the bound for the single "nova" account.
+	cp.Name = strings.Repeat("a", maxObjectNameBytes-serviceAccountChildNameOverhead-len("nova")+1)
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("serviceAccounts[0].name"))
+	g.Expect(err.Error()).To(ContainSubstring("253-byte Kubernetes object-name limit"))
+}
+
+// TestValidateCreate_AcceptsServiceAccountChildNameAtTheLimit is the other side of
+// the bound: the longest composed child name sitting exactly on 253 bytes is
+// admissible, so the check rejects only what the apiserver would.
+func TestValidateCreate_AcceptsServiceAccountChildNameAtTheLimit(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+
+	cp := saControlPlane()
+	cp.Name = strings.Repeat("a", maxObjectNameBytes-serviceAccountChildNameOverhead-len("nova"))
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// TestValidateCreate_RejectsOverlongServiceAccountRoleAssignmentChildName pins the
+// WIDER bound an account that declares roles pays: it also mints the managed
+// RoleAssignment "{cp}-service-account-{name}-assign-{slug}", 12 bytes longer than
+// the password Secret. A pair the roles-less budget admits must be rejected once
+// roles are declared, or reconcileServiceAccounts wedges minting the assignment.
+func TestValidateCreate_RejectsOverlongServiceAccountRoleAssignmentChildName(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+
+	cp := saControlPlane()
+	cp.Spec.KORC.ServiceAccounts[0].Roles = []string{"member"}
+	// One byte past the roles bound — but comfortably inside the roles-less one.
+	cp.Name = strings.Repeat("a", maxObjectNameBytes-serviceAccountRoleChildNameOverhead-len("nova")+1)
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("serviceAccounts[0].name"))
+	g.Expect(err.Error()).To(ContainSubstring("253-byte Kubernetes object-name limit"))
+}
+
+// TestValidateCreate_AcceptsServiceAccountRoleAssignmentChildNameAtTheLimit is the
+// other side of the roles bound: the RoleAssignment sitting exactly on 253 bytes is
+// admissible.
+func TestValidateCreate_AcceptsServiceAccountRoleAssignmentChildNameAtTheLimit(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+
+	cp := saControlPlane()
+	cp.Spec.KORC.ServiceAccounts[0].Roles = []string{"member"}
+	cp.Name = strings.Repeat("a", maxObjectNameBytes-serviceAccountRoleChildNameOverhead-len("nova"))
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// TestValidateUpdate_AcceptsRolelessServiceAccountInTheRoleAssignmentBand guards the
+// upgrade one-way door: projecting roles as RoleAssignments widened the account-keyed
+// child-name overhead, so a ControlPlane an earlier operator level admitted can sit
+// in the band between the two budgets. A roles-less account mints no assignment, so
+// its name must stay admissible — otherwise EVERY later edit to that CR (an
+// openStackRelease bump, an unrelated field) is rejected after the operator upgrade,
+// with no escape hatch that is not itself a spec edit.
+func TestValidateUpdate_AcceptsRolelessServiceAccountInTheRoleAssignmentBand(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+
+	oldCP := saControlPlane()
+	// Inside the roles-less budget, one byte past the roles budget: exactly the band
+	// widening the overhead unconditionally would have made unmaintainable.
+	oldCP.Name = strings.Repeat("a", maxObjectNameBytes-serviceAccountRoleChildNameOverhead-len("nova")+1)
+	g.Expect(len(oldCP.Name)+serviceAccountChildNameOverhead+len("nova")).
+		To(BeNumerically("<=", maxObjectNameBytes), "fixture must sit inside the roles-less budget")
+
+	newCP := oldCP.DeepCopy()
+	newCP.Spec.OpenStackRelease = "2026.1"
+
+	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
 // --- Per-service dedicated backing services ---
 
 // dedicatedControlPlane returns a ControlPlane whose Keystone service opts into a

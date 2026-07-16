@@ -8,6 +8,8 @@
 # delivered to the per-CR k-orc-clouds-yaml Secret by the credential chain) and
 # runs `openstack token issue` + `openstack catalog list` to prove the
 # credential actually works end-to-end and the identity service is catalogued.
+# It also lists the role assignments of the projected "glance" service account and
+# greps for the "member" role, proving the RoleAssignment landed in Keystone.
 #
 # the orc-system copy of k-orc-clouds-yaml was removed; the
 # operator now materialises the per-CR k-orc-clouds-yaml Secret ONLY into the
@@ -50,6 +52,9 @@ spec:
               openstack --os-cloud admin token issue
               echo "== openstack --os-cloud admin catalog list =="
               openstack --os-cloud admin catalog list
+              echo "== openstack --os-cloud admin role assignment list --names --user glance =="
+              openstack --os-cloud admin role assignment list --names --user glance | tee /tmp/glance-roles.txt
+              grep -qw member /tmp/glance-roles.txt
           volumeMounts:
             - name: clouds
               mountPath: /etc/openstack

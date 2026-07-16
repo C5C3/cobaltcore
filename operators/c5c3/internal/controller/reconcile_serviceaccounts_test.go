@@ -8,6 +8,7 @@ package controller
 
 import (
 	"context"
+	"regexp"
 	"testing"
 
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
@@ -79,6 +80,41 @@ func getUserByName(t *testing.T, c client.Client, name, ns string) (*orcv1alpha1
 		t.Fatalf("getting User %q: %v", name, err)
 	}
 	return u, true
+}
+
+// saUserProjectAppliedV1 seeds the managed User (Available, generation-1 password
+// applied), the referenced Project import (Available), and the generation-1
+// password Secret, so a reconcile reaches the role-projection step for sa.
+func saUserProjectAppliedV1(cp *c5c3v1alpha1.ControlPlane, sa c5c3v1alpha1.ServiceAccountSpec) []client.Object {
+	ns := childNamespace(cp)
+	user := &orcv1alpha1.User{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            serviceAccountUserRef(cp, sa),
+			Namespace:       ns,
+			Annotations:     map[string]string{serviceAccountPasswordGenerationAnnotation: "1"},
+			OwnerReferences: ownedByCP(cp),
+		},
+		Spec: orcv1alpha1.UserSpec{
+			ManagementPolicy: orcv1alpha1.ManagementPolicyManaged,
+			Resource: &orcv1alpha1.UserResourceSpec{
+				PasswordRef: ptr.To(orcv1alpha1.KubernetesNameRef(serviceAccountPasswordSecretName(cp, sa, 1))),
+			},
+		},
+		Status: orcv1alpha1.UserStatus{
+			Conditions: availableImportConditions(),
+			ID:         ptr.To("sa-user-id"),
+			Resource:   &orcv1alpha1.UserResourceStatus{AppliedPasswordRef: serviceAccountPasswordSecretName(cp, sa, 1)},
+		},
+	}
+	project := &orcv1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: serviceAccountProjectRef(cp, sa), Namespace: ns},
+		Status:     orcv1alpha1.ProjectStatus{Conditions: availableImportConditions(), ID: ptr.To("sa-project-id")},
+	}
+	pw := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: serviceAccountPasswordSecretName(cp, sa, 1), Namespace: ns, OwnerReferences: ownedByCP(cp)},
+		Data:       map[string][]byte{serviceAccountPasswordKey: []byte("current-pw")},
+	}
+	return []client.Object{user, project, pw}
 }
 
 func TestReconcileServiceAccounts_EmptyListReady(t *testing.T) {
@@ -168,8 +204,20 @@ func TestReconcileServiceAccounts_ProbeAbsentCreatesManagedUserAndReferencedProj
 func TestReconcileServiceAccounts_ConvergedAccountReportsReadyStatus(t *testing.T) {
 	g := NewGomegaWithT(t)
 	cp := saControlPlane()
+	// A declared role must be Available too for the account to converge: its
+	// readiness is folded into the per-account gate.
+	cp.Spec.KORC.ServiceAccounts[0].Roles = []string{"member"}
 	sa := cp.Spec.KORC.ServiceAccounts[0]
 	ns := childNamespace(cp)
+
+	roleImport := &orcv1alpha1.Role{
+		ObjectMeta: metav1.ObjectMeta{Name: serviceAccountRoleImportRef(cp, "member"), Namespace: ns},
+		Status:     orcv1alpha1.RoleStatus{Conditions: availableImportConditions(), ID: ptr.To("member-role-id")},
+	}
+	roleAssignment := &orcv1alpha1.RoleAssignment{
+		ObjectMeta: metav1.ObjectMeta{Name: serviceAccountRoleAssignmentRef(cp, sa, "member"), Namespace: ns},
+		Status:     orcv1alpha1.RoleAssignmentStatus{Conditions: availableImportConditions()},
+	}
 
 	user := &orcv1alpha1.User{
 		ObjectMeta: metav1.ObjectMeta{
@@ -209,7 +257,7 @@ func TestReconcileServiceAccounts_ConvergedAccountReportsReadyStatus(t *testing.
 		Data:       map[string][]byte{serviceAccountPasswordKey: []byte("current-pw")},
 	}
 
-	cond, _ := runServiceAccounts(t, cp, user, project, pw, push, materialized)
+	cond, _ := runServiceAccounts(t, cp, user, project, pw, push, materialized, roleImport, roleAssignment)
 
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 	g.Expect(cond.Reason).To(Equal(reasonServiceAccountsProvisioned))
@@ -519,6 +567,229 @@ func TestReconcileServiceAccounts_PrunesUndeclaredChild(t *testing.T) {
 	g.Expect(ok).To(BeFalse(), "the undeclared owned User must be pruned")
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal(reasonWaitingForServiceAccounts))
+}
+
+// TestReconcileServiceAccounts_ProjectsRoleImportAndAssignment covers the role
+// projection: a declared role creates the unmanaged Role import and the managed
+// RoleAssignment with the expected names, refs, policies, and credentials refs, and
+// the account stays not-ready while the freshly-created assignment is still pending.
+func TestReconcileServiceAccounts_ProjectsRoleImportAndAssignment(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := saControlPlane()
+	cp.Spec.KORC.ServiceAccounts[0].Roles = []string{"member"}
+	sa := cp.Spec.KORC.ServiceAccounts[0]
+	ns := childNamespace(cp)
+
+	cond, c := runServiceAccounts(t, cp, saUserProjectAppliedV1(cp, sa)...)
+
+	roleImport := &orcv1alpha1.Role{}
+	g.Expect(c.Get(context.Background(),
+		types.NamespacedName{Name: serviceAccountRoleImportRef(cp, "member"), Namespace: ns}, roleImport)).To(Succeed())
+	g.Expect(roleImport.Spec.ManagementPolicy).To(Equal(orcv1alpha1.ManagementPolicyUnmanaged))
+	g.Expect(roleImport.Spec.Import).NotTo(BeNil())
+	g.Expect(roleImport.Spec.Import.Filter).NotTo(BeNil())
+	g.Expect(roleImport.Spec.Import.Filter.Name).NotTo(BeNil())
+	g.Expect(string(*roleImport.Spec.Import.Filter.Name)).To(Equal("member"))
+	g.Expect(roleImport.Spec.Import.Filter.DomainRef).To(BeNil(),
+		"a role import must carry no DomainRef (Keystone roles are global)")
+	g.Expect(roleImport.Spec.CloudCredentialsRef.SecretName).To(Equal("k-orc-clouds-yaml"),
+		"the Role import rides the spec clouds.yaml, like the Domain/Project imports")
+
+	assignment := &orcv1alpha1.RoleAssignment{}
+	g.Expect(c.Get(context.Background(),
+		types.NamespacedName{Name: serviceAccountRoleAssignmentRef(cp, sa, "member"), Namespace: ns}, assignment)).To(Succeed())
+	g.Expect(assignment.Spec.ManagementPolicy).To(Equal(orcv1alpha1.ManagementPolicyManaged))
+	g.Expect(assignment.Spec.Resource).NotTo(BeNil())
+	g.Expect(string(assignment.Spec.Resource.RoleRef)).To(Equal(serviceAccountRoleImportRef(cp, "member")))
+	g.Expect(assignment.Spec.Resource.UserRef).NotTo(BeNil())
+	g.Expect(string(*assignment.Spec.Resource.UserRef)).To(Equal(serviceAccountUserRef(cp, sa)))
+	g.Expect(assignment.Spec.Resource.ProjectRef).NotTo(BeNil())
+	g.Expect(string(*assignment.Spec.Resource.ProjectRef)).To(Equal(serviceAccountProjectRef(cp, sa)))
+	g.Expect(assignment.Spec.CloudCredentialsRef.SecretName).To(Equal(adminPasswordCloudSecretName(cp)),
+		"the managed RoleAssignment authenticates via the admin-password cloud so teardown survives the AC revoke")
+
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(reasonWaitingForServiceAccounts))
+	g.Expect(cp.Status.ServiceAccounts).To(HaveLen(1))
+	g.Expect(cp.Status.ServiceAccounts[0].Ready).To(BeFalse(),
+		"the account must stay not-ready while its RoleAssignment is pending")
+}
+
+// TestReconcileServiceAccounts_SharedRoleProjectsOneImport pins the Role import's
+// keying: the import filters on the role name alone and rides the one credRef every
+// account shares, so it carries nothing account-specific and accounts declaring the
+// same role MUST resolve the SAME import. Keying it per account would mint
+// byte-identical duplicates — K-ORC would poll one Keystone role lookup per account
+// and wake the ControlPlane on every duplicate's status write. Their
+// RoleAssignments stay per-account: those bind a specific user to a project.
+func TestReconcileServiceAccounts_SharedRoleProjectsOneImport(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := saControlPlane()
+	cp.Spec.KORC.ServiceAccounts[0].Roles = []string{"member"}
+	cp.Spec.KORC.ServiceAccounts = append(cp.Spec.KORC.ServiceAccounts, c5c3v1alpha1.ServiceAccountSpec{
+		Name:    "glance",
+		Project: c5c3v1alpha1.ServiceAccountProjectSpec{Name: "service"},
+		Roles:   []string{"member"},
+	})
+	nova, glance := cp.Spec.KORC.ServiceAccounts[0], cp.Spec.KORC.ServiceAccounts[1]
+
+	g.Expect(serviceAccountRoleImportRef(cp, "member")).To(Equal(serviceAccountRoleImportRef(cp, "member")),
+		"the Role import name must not depend on the account")
+	g.Expect(serviceAccountRoleAssignmentRef(cp, nova, "member")).
+		NotTo(Equal(serviceAccountRoleAssignmentRef(cp, glance, "member")),
+			"RoleAssignments bind a specific user/project, so they stay per-account")
+
+	seeded := append(saUserProjectAppliedV1(cp, nova), saUserProjectAppliedV1(cp, glance)...)
+	_, c := runServiceAccounts(t, cp, seeded...)
+
+	roles := &orcv1alpha1.RoleList{}
+	g.Expect(c.List(context.Background(), roles, client.InNamespace(childNamespace(cp)))).To(Succeed())
+	g.Expect(roles.Items).To(HaveLen(1),
+		"two accounts declaring the same role must project ONE shared Role import")
+	g.Expect(roles.Items[0].Name).To(Equal(serviceAccountRoleImportRef(cp, "member")))
+
+	assignments := &orcv1alpha1.RoleAssignmentList{}
+	g.Expect(c.List(context.Background(), assignments, client.InNamespace(childNamespace(cp)))).To(Succeed())
+	g.Expect(assignments.Items).To(HaveLen(2),
+		"each account still gets its own RoleAssignment against the shared import")
+	for i := range assignments.Items {
+		g.Expect(string(assignments.Items[i].Spec.Resource.RoleRef)).To(Equal(serviceAccountRoleImportRef(cp, "member")))
+	}
+
+	// Both accounts keep the shared import in the prune keep-set, so dropping one
+	// account cannot prune the role the other still declares.
+	g.Expect(serviceAccountDeclaredChildNames(cp, cp.Spec.KORC.ServiceAccounts)).
+		To(HaveKey(serviceAccountRoleImportRef(cp, "member")))
+}
+
+// TestReconcileServiceAccounts_RoleAssignmentTerminalErrorFailsLoudly pins the
+// terminal-error precedence: a terminal K-ORC failure on the managed RoleAssignment
+// surfaces ServiceAccountsReady=False/ServiceAccountsFailed naming the account and role.
+func TestReconcileServiceAccounts_RoleAssignmentTerminalErrorFailsLoudly(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := saControlPlane()
+	cp.Spec.KORC.ServiceAccounts[0].Roles = []string{"member"}
+	sa := cp.Spec.KORC.ServiceAccounts[0]
+	ns := childNamespace(cp)
+
+	roleImport := &orcv1alpha1.Role{
+		ObjectMeta: metav1.ObjectMeta{Name: serviceAccountRoleImportRef(cp, "member"), Namespace: ns},
+		Status:     orcv1alpha1.RoleStatus{Conditions: availableImportConditions()},
+	}
+	assignment := &orcv1alpha1.RoleAssignment{
+		ObjectMeta: metav1.ObjectMeta{Name: serviceAccountRoleAssignmentRef(cp, sa, "member"), Namespace: ns},
+		Status:     orcv1alpha1.RoleAssignmentStatus{Conditions: terminalImportConditions("role assignment rejected")},
+	}
+	seed := append(saUserProjectAppliedV1(cp, sa), roleImport, assignment)
+
+	cond, _ := runServiceAccounts(t, cp, seed...)
+
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(reasonServiceAccountsFailed))
+	g.Expect(cond.Message).To(ContainSubstring("nova"))
+	g.Expect(cond.Message).To(ContainSubstring("member"))
+}
+
+// TestReconcileServiceAccounts_PrunesRemovedRoleChildren covers the prune sweep for
+// role children: an owned Role import and RoleAssignment left over from a role the
+// spec no longer declares are both deleted.
+func TestReconcileServiceAccounts_PrunesRemovedRoleChildren(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := saControlPlane() // account "nova" declares NO roles
+	sa := cp.Spec.KORC.ServiceAccounts[0]
+	ns := childNamespace(cp)
+
+	roleImport := &orcv1alpha1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: serviceAccountRoleImportRef(cp, "member"), Namespace: ns, OwnerReferences: ownedByCP(cp),
+		},
+		Spec: orcv1alpha1.RoleSpec{ManagementPolicy: orcv1alpha1.ManagementPolicyUnmanaged},
+	}
+	assignment := &orcv1alpha1.RoleAssignment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: serviceAccountRoleAssignmentRef(cp, sa, "member"), Namespace: ns, OwnerReferences: ownedByCP(cp),
+		},
+		Spec: orcv1alpha1.RoleAssignmentSpec{ManagementPolicy: orcv1alpha1.ManagementPolicyManaged},
+	}
+
+	_, c := runServiceAccounts(t, cp, roleImport, assignment)
+
+	ri := &orcv1alpha1.Role{}
+	g.Expect(apierrors.IsNotFound(c.Get(context.Background(),
+		types.NamespacedName{Name: serviceAccountRoleImportRef(cp, "member"), Namespace: ns}, ri))).To(BeTrue(),
+		"the removed role's Role import must be pruned")
+	ra := &orcv1alpha1.RoleAssignment{}
+	g.Expect(apierrors.IsNotFound(c.Get(context.Background(),
+		types.NamespacedName{Name: serviceAccountRoleAssignmentRef(cp, sa, "member"), Namespace: ns}, ra))).To(BeTrue(),
+		"the removed role's RoleAssignment must be pruned")
+}
+
+// TestReconcileServiceAccounts_NoRoleAssignmentsDeferredEvent guards that the old
+// one-shot deferral event is gone: a creation pass over an account WITH a declared
+// role must not emit RoleAssignmentsDeferred (role projection is real now).
+func TestReconcileServiceAccounts_NoRoleAssignmentsDeferredEvent(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := saControlPlane()
+	cp.Spec.KORC.ServiceAccounts[0].Roles = []string{"member"}
+	sa := cp.Spec.KORC.ServiceAccounts[0]
+	ns := childNamespace(cp)
+
+	// The user probe reports absent, so the managed User is created this pass
+	// (st.created=true) — the old trigger for the deferral event.
+	probe := &orcv1alpha1.User{
+		ObjectMeta: metav1.ObjectMeta{Name: serviceAccountUserProbeRef(cp, sa), Namespace: ns},
+		Status:     orcv1alpha1.UserStatus{Conditions: pendingImportConditions(0)},
+	}
+
+	s := korcTestScheme(t)
+	rec := record.NewFakeRecorder(20)
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(cp, readyClusterSecretStore(), readyTenantStoreFor(cp), probe).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: rec}
+	_, err := r.reconcileServiceAccounts(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	_, ok := getUserByName(t, c, serviceAccountUserRef(cp, sa), ns)
+	g.Expect(ok).To(BeTrue(), "the managed User must be created this pass")
+
+	close(rec.Events)
+	for ev := range rec.Events {
+		g.Expect(ev).NotTo(ContainSubstring("RoleAssignmentsDeferred"),
+			"role projection is real now; the deferral event must never fire")
+	}
+}
+
+// TestServiceAccountRoleSlug covers the slug normalization and its case-sensitive
+// collision resistance.
+func TestServiceAccountRoleSlug(t *testing.T) {
+	// The readable base plus an 8-hex suffix, at most 25 bytes; the base may be
+	// empty for an all-non-alnum role, leaving just "-<hash>".
+	shape := regexp.MustCompile(`^[a-z0-9-]{0,16}-[0-9a-f]{8}$`)
+
+	cases := []struct {
+		name       string
+		role       string
+		wantPrefix string
+	}{
+		{"mixed case lowercases", "Member", "member-"},
+		{"unicode and spaces collapse to dashes", "Über Admin", "ber-admin-"},
+		{"long base truncates to 16", "verylongrolenamethatexceeds", "verylongrolename-"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			slug := serviceAccountRoleSlug(tc.role)
+			g.Expect(len(slug)).To(BeNumerically("<=", 25))
+			g.Expect(shape.MatchString(slug)).To(BeTrue(), "slug %q must be a name-safe segment", slug)
+			g.Expect(slug).To(HavePrefix(tc.wantPrefix))
+		})
+	}
+
+	g := NewGomegaWithT(t)
+	// Two roles differing only by case must not collide: the hash is taken over the
+	// ORIGINAL (case-sensitive) role string, so the suffixes differ.
+	g.Expect(serviceAccountRoleSlug("Member")).NotTo(Equal(serviceAccountRoleSlug("member")),
+		"case-only-different roles must hash to distinct slugs")
 }
 
 func TestBuildServiceAccountCloudsYAML_UsesAccountIdentity(t *testing.T) {

@@ -11,6 +11,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -138,6 +139,50 @@ func serviceAccountDomainRef(cp *c5c3v1alpha1.ControlPlane, sa c5c3v1alpha1.Serv
 	return serviceAccountChildPrefix(cp) + "domain-" + sa.Name
 }
 
+// serviceAccountRoleSlugNonAlnum matches every maximal run of characters outside
+// [a-z0-9], which serviceAccountRoleSlug collapses to a single "-".
+var serviceAccountRoleSlugNonAlnum = regexp.MustCompile(`[^a-z0-9]+`)
+
+// serviceAccountRoleSlug derives a deterministic, name-safe discriminator for a
+// role to embed in the Role import / RoleAssignment child CR names. It lowercases
+// the role, collapses every run of characters outside [a-z0-9] to a single "-",
+// trims leading/trailing "-", truncates the readable base to 16 chars, and appends
+// "-" plus the first 8 hex chars of sha256(role). The hash is taken over the
+// ORIGINAL role string (before normalization): Keystone role names are
+// case-sensitive and up to 255 chars, so hashing the raw value keeps two roles
+// that normalize alike ("Member" vs "member", or two long names sharing a 16-char
+// prefix) alias-free. The result is at most 25 bytes.
+func serviceAccountRoleSlug(role string) string {
+	sum := sha256.Sum256([]byte(role))
+	suffix := hex.EncodeToString(sum[:])[:8]
+	base := strings.Trim(serviceAccountRoleSlugNonAlnum.ReplaceAllString(strings.ToLower(role), "-"), "-")
+	if len(base) > 16 {
+		base = base[:16]
+	}
+	return base + "-" + suffix
+}
+
+// serviceAccountRoleImportRef names the unmanaged Role import for one role. It is
+// NOT keyed on the account: the import filters on the role name alone (Keystone
+// roles are global by default, so it carries no DomainRef) and rides the one
+// credRef reconcileServiceAccounts computes for every account, so a per-account
+// name would only mint byte-identical duplicates — N accounts declaring the same
+// role would have K-ORC polling N identical Keystone lookups and waking the
+// ControlPlane N times per status write. Every account declaring a role therefore
+// resolves the SAME import (the same reuse serviceAccountDomainRef applies to a
+// shared domain). The slug sits in a fixed position after a per-kind discriminator
+// so one role can never alias another's CR.
+func serviceAccountRoleImportRef(cp *c5c3v1alpha1.ControlPlane, role string) string {
+	return serviceAccountChildPrefix(cp) + "role-" + serviceAccountRoleSlug(role)
+}
+
+// serviceAccountRoleAssignmentRef names the managed RoleAssignment CR projected for
+// one (account, role) — unlike the Role import it IS per-account, since it binds
+// that account's user to its project.
+func serviceAccountRoleAssignmentRef(cp *c5c3v1alpha1.ControlPlane, sa c5c3v1alpha1.ServiceAccountSpec, role string) string {
+	return serviceAccountChildPrefix(cp) + sa.Name + "-assign-" + serviceAccountRoleSlug(role)
+}
+
 func serviceAccountPasswordSecretName(cp *c5c3v1alpha1.ControlPlane, sa c5c3v1alpha1.ServiceAccountSpec, gen int64) string {
 	return fmt.Sprintf("%s%s-password-v%d", serviceAccountChildPrefix(cp), sa.Name, gen)
 }
@@ -193,7 +238,6 @@ func parseServiceAccountGeneration(passwordRefName string) (int64, bool) {
 type serviceAccountState struct {
 	status      c5c3v1alpha1.ServiceAccountStatus
 	created     bool // the managed User was created this pass (one-shot deferral events)
-	roles       bool // roles were declared (deferred)
 	scheduled   bool // rotation.mode Scheduled (deferred)
 	collision   string
 	terminalMsg string
@@ -289,12 +333,6 @@ func (r *ControlPlaneReconciler) reconcileServiceAccounts(ctx context.Context, c
 	for i := range states {
 		if !states[i].created {
 			continue
-		}
-		if states[i].roles {
-			r.Recorder.Event(cp, "Normal", "RoleAssignmentsDeferred", fmt.Sprintf(
-				"roles declared on service account %q are accepted but not yet projected: K-ORC ships no "+
-					"RoleAssignment kind; role assignments follow as a fast-follow", sas[i].Name,
-			))
 		}
 		if states[i].scheduled {
 			r.Recorder.Event(cp, "Normal", "ScheduledRotationDeferred", fmt.Sprintf(
@@ -392,7 +430,6 @@ func (r *ControlPlaneReconciler) ensureServiceAccount(
 			SecretName:           serviceAccountCredentialsSecretName(cp, sa),
 			LastPasswordRotation: prior.LastPasswordRotation,
 		},
-		roles:     len(sa.Roles) > 0,
 		scheduled: sa.Rotation != nil && sa.Rotation.Mode == c5c3v1alpha1.ServiceAccountRotationModeScheduled,
 	}
 
@@ -451,6 +488,19 @@ func (r *ControlPlaneReconciler) ensureServiceAccount(
 	if !projReady || !orcv1alpha1.IsAvailable(user) || !appliedCurrent {
 		st.waitMsg = serviceAccountWaitMessage(sa.Name, projObj, user)
 		st.pendingObjs = pendingServiceAccountObjs(projObj, user)
+		return st, nil
+	}
+
+	// (e.5) Role assignments: project one unmanaged Role import plus one managed
+	// RoleAssignment per declared role and fold their readiness into the per-account
+	// gate, so st.status.Ready stays true only once the roles are assigned too. The
+	// user and project handles the assignments reference are Available by here.
+	rolesReady, err := r.ensureServiceAccountRoles(ctx, cp, sa, credRef, managedCredRef,
+		serviceAccountUserRef(cp, sa), serviceAccountProjectRef(cp, sa), &st)
+	if err != nil {
+		return st, err
+	}
+	if !rolesReady {
 		return st, nil
 	}
 
@@ -817,6 +867,101 @@ func (r *ControlPlaneReconciler) ensureServiceAccountUser(
 	return user, desiredGen, op == controllerutil.OperationResultCreated, rotatedAt, nil
 }
 
+// ensureServiceAccountRoles projects the declared roles onto K-ORC CRs and reports
+// whether every projected object is Available. Per role, in dependency order, it
+// applies:
+//
+//   - an UNMANAGED Role import filtered by the role NAME (no DomainRef — Keystone
+//     roles are global by default), riding the spec clouds.yaml (credRef) like the
+//     Domain/Project imports: reading a role never mutates it; and
+//   - a MANAGED RoleAssignment binding that Role to the account's user on its
+//     project. It authenticates via the admin PASSWORD cloud (managedCredRef), not
+//     the spec's app-credential clouds.yaml, so a teardown Delete survives the AC
+//     revoke — the same rationale as the managed User.
+//
+// The names are deterministic per (account, role), so both applies are pure
+// projections. A terminal K-ORC error on either object writes st.terminalMsg and
+// returns; a not-yet-Available object is recorded on st.pendingObjs and, on the
+// first blocker, named in st.waitMsg (with a hint that the role may be missing from
+// Keystone once its import stalls past the grace window).
+func (r *ControlPlaneReconciler) ensureServiceAccountRoles(
+	ctx context.Context, cp *c5c3v1alpha1.ControlPlane, sa c5c3v1alpha1.ServiceAccountSpec,
+	credRef, managedCredRef orcv1alpha1.CloudCredentialsReference, userRef, projectRef string, st *serviceAccountState,
+) (bool, error) {
+	ns := childNamespace(cp)
+	ready := true
+	for _, role := range sa.Roles {
+		roleImportName := serviceAccountRoleImportRef(cp, role)
+		assignmentName := serviceAccountRoleAssignmentRef(cp, sa, role)
+
+		roleObj := &orcv1alpha1.Role{
+			ObjectMeta: metav1.ObjectMeta{Name: roleImportName, Namespace: ns},
+			Spec: orcv1alpha1.RoleSpec{
+				ManagementPolicy:    orcv1alpha1.ManagementPolicyUnmanaged,
+				CloudCredentialsRef: credRef,
+				Import: &orcv1alpha1.RoleImport{
+					Filter: &orcv1alpha1.RoleFilter{Name: ptr.To(orcv1alpha1.KeystoneName(role))},
+				},
+			},
+		}
+		if err := apply.EnsureObject(ctx, r.Client, r.Scheme, cp, roleObj, apply.FieldManager); err != nil {
+			return false, fmt.Errorf("service-account Role import %q: %w", roleImportName, err)
+		}
+
+		assignment := &orcv1alpha1.RoleAssignment{
+			ObjectMeta: metav1.ObjectMeta{Name: assignmentName, Namespace: ns},
+			Spec: orcv1alpha1.RoleAssignmentSpec{
+				ManagementPolicy:    orcv1alpha1.ManagementPolicyManaged,
+				CloudCredentialsRef: managedCredRef,
+				Resource: &orcv1alpha1.RoleAssignmentResourceSpec{
+					RoleRef:    orcv1alpha1.KubernetesNameRef(roleImportName),
+					UserRef:    ptr.To(orcv1alpha1.KubernetesNameRef(userRef)),
+					ProjectRef: ptr.To(orcv1alpha1.KubernetesNameRef(projectRef)),
+				},
+			},
+		}
+		if err := apply.EnsureObject(ctx, r.Client, r.Scheme, cp, assignment, apply.FieldManager); err != nil {
+			return false, fmt.Errorf("service-account RoleAssignment %q: %w", assignmentName, err)
+		}
+
+		// A terminal K-ORC error on either object fails loud.
+		for _, obj := range []orcv1alpha1.ObjectWithConditions{roleObj, assignment} {
+			if termErr := orcv1alpha1.GetTerminalError(obj); termErr != nil {
+				st.terminalMsg = fmt.Sprintf(
+					"K-ORC reported a terminal error on service account %q role %q: %v", sa.Name, role, termErr,
+				)
+				return false, nil
+			}
+		}
+
+		if !korcAvailableUpToDate(roleObj) {
+			ready = false
+			st.pendingObjs = append(st.pendingObjs, roleObj)
+			if st.waitMsg == "" {
+				st.waitMsg = fmt.Sprintf(
+					"service account %q: Role import for role %q is registered but not yet Available", sa.Name, role,
+				)
+				if korcImportStalled(roleObj, externalImportStallGrace) {
+					st.waitMsg += fmt.Sprintf(
+						"; role %q may not exist in Keystone — create it there or fix the spelling", role,
+					)
+				}
+			}
+			continue
+		}
+		if !korcAvailableUpToDate(assignment) {
+			ready = false
+			st.pendingObjs = append(st.pendingObjs, assignment)
+			if st.waitMsg == "" {
+				st.waitMsg = fmt.Sprintf(
+					"service account %q: RoleAssignment for role %q is registered but not yet Available", sa.Name, role,
+				)
+			}
+		}
+	}
+	return ready, nil
+}
+
 // ensureServiceAccountPasswordSecret ensures the generation-scoped, operator-owned
 // Secret holding the K-ORC-facing password exists with a generated value. The
 // value is generated once and preserved (a new generation is a new Secret name,
@@ -1063,6 +1208,27 @@ func (r *ControlPlaneReconciler) pruneServiceAccounts(
 		return nil
 	}
 
+	// RoleAssignments (managed) before Roles (unmanaged imports) before the
+	// User/Project they reference: K-ORC orders its own deletion guards via
+	// finalizers, but sweeping the dependent assignment first keeps the intent clear.
+	var roleAssignments orcv1alpha1.RoleAssignmentList
+	if err := r.List(ctx, &roleAssignments, client.InNamespace(ns)); err != nil {
+		return nil, fmt.Errorf("listing service-account RoleAssignments: %w", err)
+	}
+	for i := range roleAssignments.Items {
+		if err := sweep(&roleAssignments.Items[i], true); err != nil {
+			return nil, err
+		}
+	}
+	var roles orcv1alpha1.RoleList
+	if err := r.List(ctx, &roles, client.InNamespace(ns)); err != nil {
+		return nil, fmt.Errorf("listing service-account Roles: %w", err)
+	}
+	for i := range roles.Items {
+		if err := sweep(&roles.Items[i], true); err != nil {
+			return nil, err
+		}
+	}
 	var users orcv1alpha1.UserList
 	if err := r.List(ctx, &users, client.InNamespace(ns)); err != nil {
 		return nil, fmt.Errorf("listing service-account Users: %w", err)
@@ -1141,6 +1307,10 @@ func serviceAccountDeclaredChildNames(cp *c5c3v1alpha1.ControlPlane, declared []
 		keep[serviceAccountSourceSecretName(cp, sa)] = true
 		keep[serviceAccountPushSecretName(cp, sa)] = true
 		keep[serviceAccountCredentialsSecretName(cp, sa)] = true
+		for _, role := range sa.Roles {
+			keep[serviceAccountRoleImportRef(cp, role)] = true
+			keep[serviceAccountRoleAssignmentRef(cp, sa, role)] = true
+		}
 	}
 	return keep
 }

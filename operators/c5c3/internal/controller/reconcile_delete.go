@@ -118,6 +118,8 @@ func orcChildObjects(cp *c5c3v1alpha1.ControlPlane) []orcChildObject {
 	newUser := func() client.Object { return &orcv1alpha1.User{} }
 	newProject := func() client.Object { return &orcv1alpha1.Project{} }
 	newDomain := func() client.Object { return &orcv1alpha1.Domain{} }
+	newRole := func() client.Object { return &orcv1alpha1.Role{} }
+	newRoleAssignment := func() client.Object { return &orcv1alpha1.RoleAssignment{} }
 
 	objs := []orcChildObject{
 		{func() client.Object { return &orcv1alpha1.ApplicationCredential{} }, adminAppCredentialName(cp)},
@@ -130,9 +132,11 @@ func orcChildObjects(cp *c5c3v1alpha1.ControlPlane) []orcChildObject {
 	// Declarative service accounts are mode-independent, so their children are torn
 	// down in BOTH keystone modes (before the External-only catalog additions). Each
 	// declared entry projects a managed User and Project (whose K-ORC finalizers
-	// delete them from Keystone) plus the collision-probe and per-account domain
-	// imports (CR-only deletes). The password Secrets / PushSecret / ExternalSecret
-	// are owner-reference-GC'd, not K-ORC CRs, so they are not part of this sweep.
+	// delete them from Keystone), one managed RoleAssignment per declared role (also
+	// deleted from Keystone), plus the collision-probe, per-account domain, and
+	// per-role Role imports (CR-only deletes). The password Secrets / PushSecret /
+	// ExternalSecret are owner-reference-GC'd, not K-ORC CRs, so they are not part of
+	// this sweep.
 	for i := range cp.Spec.KORC.ServiceAccounts {
 		sa := cp.Spec.KORC.ServiceAccounts[i]
 		objs = append(
@@ -142,6 +146,15 @@ func orcChildObjects(cp *c5c3v1alpha1.ControlPlane) []orcChildObject {
 			orcChildObject{newProject, serviceAccountProjectRef(cp, sa)},
 			orcChildObject{newProject, serviceAccountProjectProbeRef(cp, sa)},
 		)
+		// RoleAssignment (managed) before its Role import (unmanaged), matching the
+		// dependency direction K-ORC's own deletion guards enforce.
+		for _, role := range sa.Roles {
+			objs = append(
+				objs,
+				orcChildObject{newRoleAssignment, serviceAccountRoleAssignmentRef(cp, sa, role)},
+				orcChildObject{newRole, serviceAccountRoleImportRef(cp, role)},
+			)
+		}
 		if domainRef := serviceAccountDomainRef(cp, sa); domainRef != adminDomainRef(cp) {
 			objs = append(objs, orcChildObject{newDomain, domainRef})
 		}
@@ -179,11 +192,9 @@ func orcChildObjects(cp *c5c3v1alpha1.ControlPlane) []orcChildObject {
 func (r *ControlPlaneReconciler) orcTeardownChildren(
 	ctx context.Context, cp *c5c3v1alpha1.ControlPlane,
 ) ([]orcChildObject, error) {
-	children := orcChildObjects(cp)
-	seen := make(map[string]struct{}, len(children))
-	for _, child := range children {
-		seen[child.key()] = struct{}{}
-	}
+	declared := orcChildObjects(cp)
+	var children []orcChildObject
+	seen := make(map[string]struct{}, len(declared))
 	merge := func(extra []orcChildObject) {
 		for _, child := range extra {
 			if _, dup := seen[child.key()]; dup {
@@ -193,6 +204,11 @@ func (r *ControlPlaneReconciler) orcTeardownChildren(
 			children = append(children, child)
 		}
 	}
+	// The spec-derived list is itself merged, not taken verbatim: it walks the
+	// declared accounts, and accounts sharing a role name the SAME Role import
+	// (serviceAccountRoleImportRef is not keyed on the account), so it can name one
+	// CR twice — the duplicate key() exists to prevent.
+	merge(declared)
 
 	// Service accounts are mode-independent, so their owned-but-undeclared children
 	// are folded in for both modes (a spec edit made moments before the delete can
@@ -251,6 +267,34 @@ func (r *ControlPlaneReconciler) ownedServiceAccountChildren(
 	case meta.IsNoMatchError(err):
 	default:
 		return nil, fmt.Errorf("listing service-account Projects for teardown: %w", err)
+	}
+
+	var roleAssignments orcv1alpha1.RoleAssignmentList
+	switch err := r.List(ctx, &roleAssignments, client.InNamespace(ns)); {
+	case err == nil:
+		for i := range roleAssignments.Items {
+			if r.ownsServiceAccountChild(cp, &roleAssignments.Items[i]) {
+				out = append(out, orcChildObject{
+					func() client.Object { return &orcv1alpha1.RoleAssignment{} }, roleAssignments.Items[i].Name,
+				})
+			}
+		}
+	case meta.IsNoMatchError(err):
+	default:
+		return nil, fmt.Errorf("listing service-account RoleAssignments for teardown: %w", err)
+	}
+
+	var roles orcv1alpha1.RoleList
+	switch err := r.List(ctx, &roles, client.InNamespace(ns)); {
+	case err == nil:
+		for i := range roles.Items {
+			if r.ownsServiceAccountChild(cp, &roles.Items[i]) {
+				out = append(out, orcChildObject{func() client.Object { return &orcv1alpha1.Role{} }, roles.Items[i].Name})
+			}
+		}
+	case meta.IsNoMatchError(err):
+	default:
+		return nil, fmt.Errorf("listing service-account Roles for teardown: %w", err)
 	}
 
 	return out, nil
@@ -921,6 +965,10 @@ func isManagedORCChild(obj client.Object) bool {
 	case *orcv1alpha1.Domain:
 		return o.Spec.ManagementPolicy != orcv1alpha1.ManagementPolicyUnmanaged
 	case *orcv1alpha1.Project:
+		return o.Spec.ManagementPolicy != orcv1alpha1.ManagementPolicyUnmanaged
+	case *orcv1alpha1.RoleAssignment:
+		return o.Spec.ManagementPolicy != orcv1alpha1.ManagementPolicyUnmanaged
+	case *orcv1alpha1.Role:
 		return o.Spec.ManagementPolicy != orcv1alpha1.ManagementPolicyUnmanaged
 	default:
 		return true

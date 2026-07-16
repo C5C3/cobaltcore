@@ -474,6 +474,136 @@ func simulateCatalogServiceEndpointAvailableWhenPresent(t testing.TB, ctx contex
 	g.Expect(c.Status().Update(ctx, ep)).To(Succeed(), "set identity Endpoint Available=True")
 }
 
+// simulateServiceAccountConvergedWhenPresent drives one declared service account
+// with one role through to convergence in envtest, where neither a K-ORC nor an ESO
+// controller runs. In dependency order it: resolves the collision User probe to
+// ABSENT (so the operator creates the managed User), marks the referenced Project
+// import, the managed User, the unmanaged Role import, and the managed
+// RoleAssignment Available, syncs the PushSecret, and materialises the consumer
+// Secret with the source password — the same round-trip the admin-credential
+// simulators perform.
+func simulateServiceAccountConvergedWhenPresent(
+	t testing.TB, ctx context.Context, c client.Client,
+	cp *c5c3v1alpha1.ControlPlane, sa c5c3v1alpha1.ServiceAccountSpec, role string,
+) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+	ns := childNamespace(cp)
+
+	// Resolve the collision User probe to ABSENT: Available=False on the
+	// "created externally" marker is what korcImportPendingExternal reads as "no
+	// pre-existing user", so the operator drops the probe and creates the User.
+	probe := &orcv1alpha1.User{}
+	g.Eventually(func() error {
+		return c.Get(ctx, client.ObjectKey{Namespace: ns, Name: serviceAccountUserProbeRef(cp, sa)}, probe)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "the service-account User probe should be created")
+	meta.SetStatusCondition(&probe.Status.Conditions, metav1.Condition{
+		Type:    orcv1alpha1.ConditionAvailable,
+		Status:  metav1.ConditionFalse,
+		Reason:  orcv1alpha1.ConditionReasonProgressing,
+		Message: korcImportPendingExternalMarker,
+	})
+	g.Expect(c.Status().Update(ctx, probe)).To(Succeed(), "mark the User probe absent")
+
+	// Referenced Project import → Available (korcAvailableUpToDate needs a matching
+	// ObservedGeneration; the operator re-applies an identical spec, a no-op that
+	// leaves the generation stable).
+	project := &orcv1alpha1.Project{}
+	g.Eventually(func() error {
+		return c.Get(ctx, client.ObjectKey{Namespace: ns, Name: serviceAccountProjectRef(cp, sa)}, project)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "the referenced Project import should be created")
+	meta.SetStatusCondition(&project.Status.Conditions, metav1.Condition{
+		Type:               orcv1alpha1.ConditionAvailable,
+		Status:             metav1.ConditionTrue,
+		Reason:             orcv1alpha1.ConditionReasonSuccess,
+		ObservedGeneration: project.Generation,
+		Message:            "simulated available",
+	})
+	project.Status.ID = ptr.To("sa-project-id")
+	g.Expect(c.Status().Update(ctx, project)).To(Succeed(), "resolve the Project import")
+
+	// Managed User → Available with the current generation's password applied.
+	user := &orcv1alpha1.User{}
+	g.Eventually(func() error {
+		if err := c.Get(ctx, client.ObjectKey{Namespace: ns, Name: serviceAccountUserRef(cp, sa)}, user); err != nil {
+			return err
+		}
+		if user.Spec.Resource == nil || user.Spec.Resource.PasswordRef == nil {
+			return fmt.Errorf("managed User has no passwordRef yet")
+		}
+		return nil
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "the managed User should be created with a passwordRef")
+	meta.SetStatusCondition(&user.Status.Conditions, metav1.Condition{
+		Type:    orcv1alpha1.ConditionAvailable,
+		Status:  metav1.ConditionTrue,
+		Reason:  orcv1alpha1.ConditionReasonSuccess,
+		Message: "simulated available",
+	})
+	user.Status.ID = ptr.To("sa-user-id")
+	user.Status.Resource = &orcv1alpha1.UserResourceStatus{AppliedPasswordRef: string(*user.Spec.Resource.PasswordRef)}
+	g.Expect(c.Status().Update(ctx, user)).To(Succeed(), "mark the managed User Available")
+
+	// Unmanaged Role import → Available.
+	roleImport := &orcv1alpha1.Role{}
+	g.Eventually(func() error {
+		return c.Get(ctx, client.ObjectKey{Namespace: ns, Name: serviceAccountRoleImportRef(cp, role)}, roleImport)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "the Role import should be created")
+	meta.SetStatusCondition(&roleImport.Status.Conditions, metav1.Condition{
+		Type:               orcv1alpha1.ConditionAvailable,
+		Status:             metav1.ConditionTrue,
+		Reason:             orcv1alpha1.ConditionReasonSuccess,
+		ObservedGeneration: roleImport.Generation,
+		Message:            "simulated available",
+	})
+	roleImport.Status.ID = ptr.To("sa-role-id")
+	g.Expect(c.Status().Update(ctx, roleImport)).To(Succeed(), "resolve the Role import")
+
+	// Managed RoleAssignment → Available.
+	assignment := &orcv1alpha1.RoleAssignment{}
+	g.Eventually(func() error {
+		return c.Get(ctx, client.ObjectKey{Namespace: ns, Name: serviceAccountRoleAssignmentRef(cp, sa, role)}, assignment)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "the RoleAssignment should be created")
+	meta.SetStatusCondition(&assignment.Status.Conditions, metav1.Condition{
+		Type:               orcv1alpha1.ConditionAvailable,
+		Status:             metav1.ConditionTrue,
+		Reason:             orcv1alpha1.ConditionReasonSuccess,
+		ObservedGeneration: assignment.Generation,
+		Message:            "simulated available",
+	})
+	g.Expect(c.Status().Update(ctx, assignment)).To(Succeed(), "mark the RoleAssignment Available")
+
+	// PushSecret sync + consumer-Secret materialisation (the ESO round-trip the
+	// per-account readiness gate ends on).
+	g.Eventually(func() error {
+		return simulators.SimulatePushSecretSynced(ctx, c,
+			client.ObjectKey{Namespace: ns, Name: serviceAccountPushSecretName(cp, sa)})
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "the service-account PushSecret should sync")
+
+	src := &corev1.Secret{}
+	g.Eventually(func() error {
+		return c.Get(ctx, client.ObjectKey{Namespace: ns, Name: serviceAccountSourceSecretName(cp, sa)}, src)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "the operator must assemble the service-account source Secret")
+
+	name := serviceAccountCredentialsSecretName(cp, sa)
+	materialized := &corev1.Secret{}
+	switch err := c.Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, materialized); {
+	case apierrors.IsNotFound(err):
+		materialized = &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+			Data:       map[string][]byte{serviceAccountPasswordKey: src.Data[serviceAccountPasswordKey]},
+		}
+		g.Expect(c.Create(ctx, materialized)).To(Succeed(), "materialize the service-account consumer Secret")
+	case err == nil:
+		if materialized.Data == nil {
+			materialized.Data = map[string][]byte{}
+		}
+		materialized.Data[serviceAccountPasswordKey] = src.Data[serviceAccountPasswordKey]
+		g.Expect(c.Update(ctx, materialized)).To(Succeed(), "refresh the materialized service-account Secret")
+	default:
+		g.Expect(err).NotTo(HaveOccurred(), "get the materialized service-account Secret")
+	}
+}
+
 // simulateExternalCatalogImportsAvailableWhenPresent waits for the four UNMANAGED
 // catalog import CRs an External-mode ControlPlane projects — the identity Service
 // plus one Endpoint per interface — and resolves each one inline: Available=True
@@ -590,6 +720,15 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	// would otherwise wedge at the unsimulated Horizon step before KORC.
 	cp := integrationManagedControlPlane("cp", ns.Name)
 	cp.Spec.Services.Horizon = &c5c3v1alpha1.ServiceHorizonSpec{}
+
+	// Declare one service account with a role so the ServiceAccounts sub-reconciler
+	// projects the managed User/Project, the unmanaged Role import, and the managed
+	// RoleAssignment; simulateServiceAccountConvergedWhenPresent drives them to Ready.
+	cp.Spec.KORC.ServiceAccounts = []c5c3v1alpha1.ServiceAccountSpec{{
+		Name:    "glance",
+		Project: c5c3v1alpha1.ServiceAccountProjectSpec{Name: "service"},
+		Roles:   []string{"member"},
+	}}
 
 	// Admin password Secret the KORC sub-reconciler hashes to drive the mint. In
 	// managed mode readAdminPassword resolves the operator-owned per-CP name
@@ -715,6 +854,23 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	simulateCatalogServiceEndpointAvailableWhenPresent(t, ctx, c, cp)
 	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeCatalogReady, metav1.ConditionTrue, itEventuallyTimeout)
 
+	// --- Phase 5.5: Service accounts. The declared account projects a managed
+	// User/Project, an unmanaged Role import, and a managed RoleAssignment; envtest
+	// runs neither K-ORC nor ESO, so drive the whole round-trip here, assert the two
+	// role CRs exist with the expected policies, then wait for ServiceAccountsReady. ---
+	sa := cp.Spec.KORC.ServiceAccounts[0]
+	simulateServiceAccountConvergedWhenPresent(t, ctx, c, cp, sa, "member")
+	roleImport := &orcv1alpha1.Role{}
+	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: serviceAccountRoleImportRef(cp, "member")}, roleImport)).
+		To(Succeed(), "the unmanaged Role import must be projected")
+	g.Expect(roleImport.Spec.ManagementPolicy).To(Equal(orcv1alpha1.ManagementPolicyUnmanaged))
+	roleAssignment := &orcv1alpha1.RoleAssignment{}
+	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: serviceAccountRoleAssignmentRef(cp, sa, "member")}, roleAssignment)).
+		To(Succeed(), "the managed RoleAssignment must be projected")
+	g.Expect(roleAssignment.Spec.ManagementPolicy).To(Equal(orcv1alpha1.ManagementPolicyManaged))
+	g.Expect(string(roleAssignment.Spec.Resource.RoleRef)).To(Equal(serviceAccountRoleImportRef(cp, "member")))
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeServiceAccountsReady, metav1.ConditionTrue, itEventuallyTimeout)
+
 	// --- Aggregate: Ready=True. ---
 	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeReady, metav1.ConditionTrue, itEventuallyTimeout)
 
@@ -730,6 +886,7 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 		conditionTypeKORCReady,
 		conditionTypeAdminCredentialReady,
 		conditionTypeCatalogReady,
+		conditionTypeServiceAccountsReady,
 		conditionTypeReady,
 	} {
 		cond := meta.FindStatusCondition(final.Status.Conditions, condType)

@@ -726,12 +726,12 @@ type KORCSpec struct {
 
 	// ServiceAccounts declares the composite OpenStack service accounts the
 	// control plane manages for other OpenStack services (nova, glance, …). Each
-	// entry projects one K-ORC User and one Project (role assignments follow as a
-	// deferred fast-follow — see ServiceAccountSpec.Roles), with an
-	// operator-generated password delivered to Keystone via K-ORC's passwordRef,
-	// mirrored to a per-CR OpenBao path, and materialized as a stable consumer
-	// Secret. The field is mode-independent: the same declaration works on a
-	// Managed and an External ControlPlane.
+	// entry projects one K-ORC User, one Project, and one RoleAssignment per
+	// declared role (see ServiceAccountSpec.Roles), with an operator-generated
+	// password delivered to Keystone via K-ORC's passwordRef, mirrored to a per-CR
+	// OpenBao path, and materialized as a stable consumer Secret. The field is
+	// mode-independent: the same declaration works on a Managed and an External
+	// ControlPlane.
 	//
 	// maxItems bounds the child-CR and external-API amplification of one
 	// admission, mirroring the managedEntries cap: every entry projects a K-ORC
@@ -746,7 +746,7 @@ type KORCSpec struct {
 
 // ServiceAccountSpec declares one composite OpenStack service account: a K-ORC
 // User with an operator-generated, OpenBao-backed, rotatable password, its
-// project (referenced or created), and the roles bound to it (deferred).
+// project (referenced or created), and the roles assigned to it.
 type ServiceAccountSpec struct {
 	// Name keys the listType=map ServiceAccounts list (the apiserver rejects
 	// duplicates) and is embedded verbatim in the names of every child CR and
@@ -795,13 +795,15 @@ type ServiceAccountSpec struct {
 	// either referenced (the default) or created and owned by the control plane.
 	Project ServiceAccountProjectSpec `json:"project"`
 
-	// Roles are the OpenStack role names bound to the user on the project. They
-	// are ACCEPTED but not yet projected: K-ORC v2.6.0 — the pinned and newest
-	// release — ships no RoleAssignment kind, so role-assignment projection is a
-	// sanctioned fast-follow once upstream releases it. The deferral is NOT
-	// silent: when roles is non-empty the reconciler emits a
-	// RoleAssignmentsDeferred event so an operator knows the bindings are not yet
-	// applied. The field is carried now so the CRD schema is stable across levels.
+	// Roles are the OpenStack role names assigned to the user on the project. Each
+	// declared role is projected as one UNMANAGED K-ORC Role import (the role is
+	// referenced by name, never created or deleted — Keystone roles are global) plus
+	// one MANAGED K-ORC RoleAssignment binding that role to the user on the project,
+	// i.e. one assignment per user x project x role. Their readiness is folded into
+	// the per-account ServiceAccountsReady gate, so an account reads Ready only once
+	// its roles are assigned. Removing a role from the list prunes both its child
+	// CRs; at teardown the managed RoleAssignment is deleted from Keystone while the
+	// Role import is released without touching the global role.
 	// +optional
 	// +kubebuilder:validation:MaxItems=32
 	// +kubebuilder:validation:items:MinLength=1

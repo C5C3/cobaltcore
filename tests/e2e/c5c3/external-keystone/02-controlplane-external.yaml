@@ -19,8 +19,9 @@
 #   - endpointType is omitted, so it defaults to public (the reachable interface).
 #   - One declared service account (W6): a managed user "nova" and a managed
 #     project "service-nova", both in the admin domain heimdall. rotation defaults
-#     to Manual; roles is omitted (K-ORC v2.6.0 ships no RoleAssignment, so only
-#     unscoped-token usability is assertable at this level).
+#     to Manual; roles is left unset here (role projection — one unmanaged Role
+#     import plus one managed RoleAssignment per role — is mode-independent and is
+#     exercised by the managed full-controlplane-keystone suite).
 #
 # The admin-password Secret this CR references lives in its own file
 # (02-admin-password-secret.yaml), NOT here: the adoption guide imports the region

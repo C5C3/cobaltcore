@@ -260,9 +260,9 @@ The entry in [step 2](#_2-apply-the-external-mode-controlplane) declares user
   user of that name. Without it, a name collision fails loudly
   (`ServiceAccountCollision`) rather than silently hijacking the account. Note an
   adopted user becomes operator-owned, so it *is* deleted at teardown.
-- **`roles`** is accepted but **deferred** — K-ORC ships no RoleAssignment yet, so
-  the operator emits a `RoleAssignmentsDeferred` event rather than silently
-  dropping them. Bind roles yourself for now.
+- **`roles`** are projected — each becomes an unmanaged K-ORC `Role` import plus a
+  managed `RoleAssignment` binding the role to the user on the project, and the
+  account is not Ready until every assignment lands in Keystone.
 
 Each account's password is generated into OpenBao at
 `openstack/keystone/{namespace}/{controlplane}/service-accounts/{name}` and

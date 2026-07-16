@@ -95,3 +95,15 @@ spec:
         restricted: true
         rotation:
           mode: PasswordDriven
+    # One declared service account (glance) exercising the role projection: a
+    # managed user "glance" on a managed project "service", bound to the "member"
+    # role. The role projects as one unmanaged K-ORC Role import plus one managed
+    # RoleAssignment; the chainsaw link asserts the assignment reaches Available
+    # and the verify Job asserts the role is listed against the user in Keystone.
+    serviceAccounts:
+      - name: glance
+        project:
+          name: service
+          create: true
+        roles:
+          - member

@@ -887,6 +887,7 @@ func TestOrcChildObjects_IncludesServiceAccountChildren(t *testing.T) {
 	cp.Spec.KORC.ServiceAccounts = []c5c3v1alpha1.ServiceAccountSpec{{
 		Name:    "nova",
 		Project: c5c3v1alpha1.ServiceAccountProjectSpec{Name: "service"},
+		Roles:   []string{"member"},
 	}}
 	sa := cp.Spec.KORC.ServiceAccounts[0]
 
@@ -898,6 +899,8 @@ func TestOrcChildObjects_IncludesServiceAccountChildren(t *testing.T) {
 	g.Expect(names).To(HaveKey(serviceAccountUserProbeRef(cp, sa)))
 	g.Expect(names).To(HaveKey(serviceAccountProjectRef(cp, sa)))
 	g.Expect(names).To(HaveKey(serviceAccountProjectProbeRef(cp, sa)))
+	g.Expect(names).To(HaveKey(serviceAccountRoleImportRef(cp, "member")))
+	g.Expect(names).To(HaveKey(serviceAccountRoleAssignmentRef(cp, sa, "member")))
 }
 
 func TestIsManagedORCChild_ClassifiesProject(t *testing.T) {
@@ -906,6 +909,22 @@ func TestIsManagedORCChild_ClassifiesProject(t *testing.T) {
 	unmanaged := &orcv1alpha1.Project{Spec: orcv1alpha1.ProjectSpec{ManagementPolicy: orcv1alpha1.ManagementPolicyUnmanaged}}
 	g.Expect(isManagedORCChild(managed)).To(BeTrue(), "a managed Project leaks on force-remove")
 	g.Expect(isManagedORCChild(unmanaged)).To(BeFalse(), "an unmanaged reference Project is a CR-only delete")
+}
+
+// TestIsManagedORCChild_ClassifiesRoleChildren pins the two role kinds: the managed
+// RoleAssignment leaks on force-remove (its finalizer revokes the assignment in
+// Keystone), while the unmanaged Role import is a CR-only delete that must be
+// force-releasable without a false orphan warning.
+func TestIsManagedORCChild_ClassifiesRoleChildren(t *testing.T) {
+	g := NewGomegaWithT(t)
+	managedAssignment := &orcv1alpha1.RoleAssignment{
+		Spec: orcv1alpha1.RoleAssignmentSpec{ManagementPolicy: orcv1alpha1.ManagementPolicyManaged},
+	}
+	unmanagedRole := &orcv1alpha1.Role{
+		Spec: orcv1alpha1.RoleSpec{ManagementPolicy: orcv1alpha1.ManagementPolicyUnmanaged},
+	}
+	g.Expect(isManagedORCChild(managedAssignment)).To(BeTrue(), "a managed RoleAssignment leaks on force-remove")
+	g.Expect(isManagedORCChild(unmanagedRole)).To(BeFalse(), "an unmanaged Role import is a CR-only delete")
 }
 
 func TestReconcileDelete_ServiceAccount_TearsDownManagedUserAndProject(t *testing.T) {

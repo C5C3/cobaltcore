@@ -123,6 +123,8 @@ kinds (`ClusterSecretStore` and `SecretStore`):
 | K-ORC `ApplicationCredential` | `Owns()` | Re-reconciles when the minted admin credential's `Available` condition or `status.id` changes |
 | K-ORC `Service` | `Owns()` | Re-reconciles when the identity catalog Service changes |
 | K-ORC `Endpoint` | `Owns()` | Re-reconciles when the public identity Endpoint changes |
+| K-ORC `Role` | `Owns()` | Re-reconciles when a service-account role's unmanaged `Role` import resolves |
+| K-ORC `RoleAssignment` | `Owns()` | Re-reconciles when a service-account managed `RoleAssignment` becomes Available |
 | `ExternalSecret` | `Owns()` | Re-reconciles when an owned ESO ExternalSecret (DB credential, admin password, K-ORC clouds.yaml) syncs or fails, so the credential conditions track ESO promptly |
 | `PushSecret` | `Owns()` | Re-reconciles when the owned admin-credential PushSecret status changes |
 | `Secret` | `Watches()` | Maps Secret events to referencing ControlPlane CRs via the `ControlPlaneSecretNameIndexKey` field indexer (`secretToControlPlaneMapper`) |
@@ -1499,7 +1501,19 @@ Per declared entry it, in order:
    clearing the `forge.c5c3.io/password-generation` annotation. The superseded
    generation Secret is deleted once K-ORC confirms the new one is applied
    (`status.resource.appliedPasswordRef`).
-5. **OpenBao round-trip** (once the current password is applied) — assemble a
+5. **Role assignments** — for each declared `roles[]` entry, project one
+   **unmanaged** `Role` import (filtered by the role name, no domain — Keystone
+   roles are global) named `{cp}-service-account-{name}-role-{slug}` plus one
+   **managed** `RoleAssignment` named `{cp}-service-account-{name}-assign-{slug}`
+   binding that role to the account's user on its project (one per user × project ×
+   role). The import rides the spec clouds.yaml; the assignment rides the
+   admin-password cloud, so a teardown `Delete` survives the AC revoke (like the
+   managed `User`). Readiness is folded into the per-account gate — the account is
+   not Ready until every assignment is Available — and a `Role` import stalled past
+   the grace window hints the role may be missing from Keystone. `{slug}` is a
+   deterministic, name-safe discriminator (a normalized ≤16-char base plus 8 hex of
+   `sha256(role)`), so distinct roles never alias.
+6. **OpenBao round-trip** (once the current password is applied) — assemble a
    source Secret, `PushSecret` (`DeletionPolicy: Delete`) it to
    `openstack/keystone/{cp.Namespace}/{cp.Name}/service-accounts/{name}`, and
    materialize the consumer Secret via an `ExternalSecret`, mirroring the admin
@@ -1527,15 +1541,15 @@ each Keystone mode, see
 [OpenBao paths per ControlPlane mode](../infrastructure/openbao-bootstrap.md#openbao-paths-per-controlplane-mode).
 
 **Deletion.** A managed `User`/`Project` (created **or adopted** — adoption makes
-it operator-owned) is deleted from Keystone at teardown, sequenced through the
-ORC-teardown finalizer exactly like the admin credential; a probe / domain import
-/ referenced project is a CR-only delete. The password/source Secrets, PushSecret,
-and ExternalSecret are owner-reference-GC'd, and the OpenBao entry dies with the
-PushSecret (`DeletionPolicy: Delete`).
+it operator-owned) and the managed `RoleAssignment`s are deleted from Keystone at
+teardown, sequenced through the ORC-teardown finalizer exactly like the admin
+credential; a probe / domain import / referenced project / `Role` import is a
+CR-only delete. The password/source Secrets, PushSecret, and ExternalSecret are
+owner-reference-GC'd, and the OpenBao entry dies with the PushSecret
+(`DeletionPolicy: Delete`).
 
-**Deferred.** `roles` and `rotation.mode: Scheduled` are accepted but not yet
-implemented; each emits a one-shot `RoleAssignmentsDeferred` /
-`ScheduledRotationDeferred` event so the deferral is not silent.
+**Deferred.** `rotation.mode: Scheduled` is accepted but not yet implemented; it
+emits a one-shot `ScheduledRotationDeferred` event so the deferral is not silent.
 
 ### CredentialRotation reconciler
 
