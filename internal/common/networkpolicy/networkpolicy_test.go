@@ -131,7 +131,7 @@ func TestS3EgressRule(t *testing.T) {
 			got := make([]int32, 0, len(rule.Ports))
 			for _, p := range rule.Ports {
 				g.Expect(*p.Protocol).To(gomega.Equal(corev1.ProtocolTCP))
-				got = append(got, int32(p.Port.IntValue()))
+				got = append(got, p.Port.IntVal)
 			}
 			g.Expect(got).To(gomega.Equal(tc.want))
 		})

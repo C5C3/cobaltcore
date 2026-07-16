@@ -20,7 +20,7 @@ import (
 // ConfigMap value at runtime, so service containers read the service-account
 // password from a Secret via PasswordEnvVar instead of from the rendered
 // ConfigMap, keeping the secret out of the config.
-const PasswordEnvVarName = "OS_KEYSTONE_AUTHTOKEN__PASSWORD"
+const PasswordEnvVarName = "OS_KEYSTONE_AUTHTOKEN__PASSWORD" //nolint:gosec // G101 false positive: env var name, not a credential.
 
 // SectionParams carries the non-secret [keystone_authtoken] options a service
 // operator renders for its API token middleware. The password is deliberately
