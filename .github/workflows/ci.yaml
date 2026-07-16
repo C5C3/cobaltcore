@@ -95,9 +95,10 @@ jobs:
               - 'operators/horizon/**'
               - 'operators/Dockerfile'
               - 'images/horizon/**'
-            # glance:                        # uncomment when glance is added
-            #   - 'operators/glance/**'
-            #   - 'images/glance/**'
+            glance:
+              - 'operators/glance/**'
+              - 'operators/Dockerfile'
+              - 'images/glance/**'
             docs:
               - 'docs/**'
               - 'package.json'
@@ -112,6 +113,7 @@ jobs:
               - 'operators/keystone/helm/**'
               - 'operators/c5c3/helm/**'
               - 'operators/horizon/helm/**'
+              - 'operators/glance/helm/**'
               - 'operators/shared/helm/**'
               - 'hack/gen-helm-values-schema.py'
               - 'Makefile'
@@ -181,11 +183,11 @@ jobs:
       - name: Resolve effective changes
         id: result
         env:
-          ALL_OPERATORS: keystone c5c3 horizon
+          ALL_OPERATORS: keystone c5c3 horizon glance
           FILTER_keystone: ${{ steps.filter.outputs.keystone }}
           FILTER_c5c3: ${{ steps.filter.outputs.c5c3 }}
           FILTER_horizon: ${{ steps.filter.outputs.horizon }}
-          # FILTER_glance: ${{ steps.filter.outputs.glance }}
+          FILTER_glance: ${{ steps.filter.outputs.glance }}
           FILTER_docs: ${{ steps.filter.outputs.docs }}
           FILTER_helm: ${{ steps.filter.outputs.helm }}
           FILTER_e2e_infra: ${{ steps.filter.outputs.e2e_infra }}
@@ -369,7 +371,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [common, keystone, c5c3, horizon]
+        target: [common, keystone, c5c3, horizon, glance]
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
@@ -406,7 +408,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [common, keystone, c5c3, horizon]
+        target: [common, keystone, c5c3, horizon, glance]
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
@@ -554,13 +556,13 @@ jobs:
         run: make helm-deps
       - name: Helm lint
         run: |
-          for chart in operators/keystone/helm/keystone-operator operators/c5c3/helm/c5c3-operator operators/horizon/helm/horizon-operator; do
+          for chart in operators/keystone/helm/keystone-operator operators/c5c3/helm/c5c3-operator operators/horizon/helm/horizon-operator operators/glance/helm/glance-operator; do
             echo "--- lint $chart ---"
             helm lint "$chart"
           done
       - name: Helm template
         run: |
-          for chart in operators/keystone/helm/keystone-operator operators/c5c3/helm/c5c3-operator operators/horizon/helm/horizon-operator; do
+          for chart in operators/keystone/helm/keystone-operator operators/c5c3/helm/c5c3-operator operators/horizon/helm/horizon-operator operators/glance/helm/glance-operator; do
             echo "=== $chart ==="
             echo "--- Scenario 1: default values ---"
             helm template test "$chart"
@@ -575,7 +577,7 @@ jobs:
           done
       - name: Helm unittest
         run: |
-          for chart in operators/keystone/helm/keystone-operator operators/c5c3/helm/c5c3-operator operators/horizon/helm/horizon-operator; do
+          for chart in operators/keystone/helm/keystone-operator operators/c5c3/helm/c5c3-operator operators/horizon/helm/horizon-operator operators/glance/helm/glance-operator; do
             echo "--- unittest $chart ---"
             helm unittest "$chart"
           done
@@ -670,15 +672,18 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Tempest always tests keystone, so keystone must be built regardless
-      # of which operator triggered the pipeline.  Union the changed-operator
-      # list with a fixed "keystone" entry so the dependency is explicit.
+      # Tempest and the e2e-chaos suites always exercise both keystone and
+      # glance, so both must be built regardless of which operator triggered
+      # the pipeline.  Union the changed-operator list with fixed "keystone"
+      # and "glance" entries so the dependency is explicit.
       - name: Resolve build operators
         run: |
           ops=$(echo '${{ needs.changes.outputs.e2e-operators }}' | jq -r '.operator[]')
-          if ! printf '%s\n' $ops | grep -qx keystone; then
-            ops=$(printf '%s\nkeystone' "$ops")
-          fi
+          for base in keystone glance; do
+            if ! printf '%s\n' $ops | grep -qx "$base"; then
+              ops=$(printf '%s\n%s' "$ops" "$base")
+            fi
+          done
           # The e2e-controlplane job runs the full chain from local dev images, so
           # keystone-operator:dev, c5c3-operator:dev, and horizon-operator:dev
           # must all be built when it runs — even if only the full-chain test
@@ -1125,12 +1130,14 @@ jobs:
               tests/e2e-chaos/keystone-federation
               tests/e2e-chaos/operator-pod-crash
               tests/e2e-chaos/operator-pod-kill
+              tests/e2e-chaos/glance-operator-pod-kill
           - suite: network
             runner: ubuntu-24.04
             test_dirs: >-
               tests/e2e/infrastructure/chaos-mesh-health
               tests/e2e-chaos/mariadb-network-latency
               tests/e2e-chaos/mariadb-network-partition
+              tests/e2e-chaos/glance-garage-outage
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     # Pod-chaos is blocking; network-chaos stays non-blocking (its kernel-module
@@ -1157,6 +1164,8 @@ jobs:
             ${{ env.IMAGE_PREFIX }}/keystone-federation-proxy:dev
             ${{ env.IMAGE_PREFIX }}/horizon-operator:dev
             ${{ env.IMAGE_PREFIX }}/horizon:2025.2
+            ${{ env.IMAGE_PREFIX }}/glance-operator:dev
+            ${{ env.IMAGE_PREFIX }}/glance:2025.2
       - name: Load images into kind
         run: |
           kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name ${{ env.KIND_CLUSTER }}
@@ -1164,6 +1173,8 @@ jobs:
           kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-federation-proxy:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/horizon-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/horizon:2025.2 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/glance-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/glance:2025.2 --name ${{ env.KIND_CLUSTER }}
       # Use composite action for shared Flux CLI + test deps + deploy-infra sequence.
       # Opt in to Chaos Mesh - required for the chaos suites; covers both matrix entries.
       - name: Setup E2E infrastructure
@@ -1190,6 +1201,20 @@ jobs:
           OPERATOR: horizon
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/horizon-operator
           NAMESPACE: horizon-system
+      # The glance chaos suites (glance-operator-pod-kill, glance-garage-outage)
+      # need the glance-operator too. Like horizon it must land in its own
+      # dedicated glance-system namespace (not the script's keystone-system
+      # default) because glance-operator-pod-kill selects and kills the operator
+      # pod by `-n glance-system` — the same namespace the Flux/deploy-infra path
+      # installs it into — and its PodChaos targets glance-system. Without this
+      # the operator installs into keystone-system, the pod selector finds
+      # nothing, and the recovery assertion fails.
+      - name: Deploy glance operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: glance
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/glance-operator
+          NAMESPACE: glance-system
       - name: Run chaos E2E tests
         run: |
           mkdir -p _output/reports
@@ -1690,6 +1715,27 @@ jobs:
         run: |
           kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:${{ matrix.release }} --name ${{ env.KIND_CLUSTER }}
+      # -- Glance ----------------------------------------------------------
+      # The glance leg additionally pulls the glance-operator and the matching
+      # glance service image; the keystone leg needs neither.
+      - name: Load Glance E2E images
+        if: matrix.service == 'glance'
+        uses: ./.github/actions/load-e2e-images
+        with:
+          images: |
+            ${{ env.IMAGE_PREFIX }}/glance-operator:dev
+            ${{ env.IMAGE_PREFIX }}/glance:${{ matrix.release }}
+      # The tempest image is kind-loaded only on the glance leg: the keystone leg
+      # runs it exclusively via `docker run` on the runner, but the glance leg
+      # also runs it in-cluster as the catalog-setup Job, which resolves the
+      # image on the kind node (imagePullPolicy: IfNotPresent) and would
+      # otherwise pull the published tag from GHCR instead of this PR's build.
+      - name: Load Glance images into kind
+        if: matrix.service == 'glance'
+        run: |
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/glance-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/glance:${{ matrix.release }} --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/tempest:${{ matrix.release }} --name ${{ env.KIND_CLUSTER }}
       # Use composite action for shared Flux CLI + test deps + deploy-infra sequence.
       - name: Setup E2E infrastructure
         uses: ./.github/actions/setup-e2e-infra
@@ -1699,10 +1745,37 @@ jobs:
         env:
           OPERATOR: keystone
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/keystone-operator
+      # The glance leg also needs the glance-operator in its own glance-system
+      # namespace before its Glance CR reconciles.
+      - name: Deploy glance operator
+        if: matrix.service == 'glance'
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: glance
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/glance-operator
+          NAMESPACE: glance-system
+      # Both services deploy the Keystone CR from their own config-dir (the
+      # glance leg runs against its own keystone-glance-tempest identity CR).
       - name: Deploy Keystone CR for Tempest
         run: |
           kubectl apply -f ${{ matrix.config-dir }}/00-keystone-cr.yaml
           kubectl wait keystone/${{ matrix.cr-name }} -n openstack \
+            --for=condition=Ready --timeout=300s
+      # The glance leg bootstraps the image catalog (Keystone service +
+      # endpoints via a setup Job) before its Glance + GlanceBackend CRs, which
+      # depend on that catalog entry to reconcile.
+      - name: Bootstrap image catalog
+        if: matrix.service == 'glance'
+        run: |
+          kubectl apply -f ${{ matrix.config-dir }}/01-catalog-setup-job.yaml
+          kubectl wait --for=condition=complete job/glance-tempest-catalog-setup -n openstack \
+            --timeout=300s
+      - name: Deploy Glance CR for Tempest
+        if: matrix.service == 'glance'
+        run: |
+          kubectl apply -f ${{ matrix.config-dir }}/02-glance-cr.yaml
+          kubectl apply -f ${{ matrix.config-dir }}/03-glancebackend-cr.yaml
+          kubectl wait glance/${{ matrix.glance-cr-name }} -n openstack \
             --for=condition=Ready --timeout=300s
       # Use shared Tempest wrapper script.
       - name: Run Tempest API tests
@@ -1711,11 +1784,15 @@ jobs:
           CONFIG_DIR: ${{ matrix.config-dir }}
           TEMPEST_IMAGE: ${{ env.IMAGE_PREFIX }}/tempest:${{ matrix.release }}
           SERVICE_K8S_NAME: ${{ matrix.service-k8s-name }}
+          # The Glance Service carries the CR name. Empty for keystone legs
+          # (matrix key absent → ""), which disables the 9292 port-forward in
+          # ci-run-tempest.sh.
+          GLANCE_K8S_NAME: ${{ matrix.glance-cr-name }}
       - name: Upload Tempest results
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: tempest-${{ matrix.release }}-results
+          name: tempest-${{ matrix.service }}-${{ matrix.release }}-results
           # The rendered tempest.conf carries the cleartext Keystone admin
           # password substituted by hack/ci-run-tempest.sh; keep it out of the
           # retained artifact. The JUnit/subunit results carry no secrets.
@@ -1756,7 +1833,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: [keystone-operator, keystone, c5c3-operator, horizon-operator, horizon, tempest]
+        package: [keystone-operator, keystone, c5c3-operator, horizon-operator, horizon, glance-operator, glance, tempest]
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       # GH-312: do NOT pass delete-untagged here. This job runs in
