@@ -12,7 +12,7 @@
 #   manifests for each operator module that has an api/ directory.
 
 # Default operators to build and test
-OPERATORS ?= keystone c5c3 horizon
+OPERATORS ?= keystone c5c3 horizon glance
 
 # Allow single operator override: make build OPERATOR=keystone
 ifdef OPERATOR
