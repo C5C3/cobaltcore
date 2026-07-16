@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Patch: add a second ingress source (monitoring namespace).
+apiVersion: glance.openstack.c5c3.io/v1alpha1
+kind: Glance
+metadata:
+  name: glance-netpol
+  namespace: openstack
+spec:
+  networkPolicy:
+    ingress:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: openstack
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: monitoring

@@ -1,0 +1,47 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Glance CR with spec.gateway for the HTTPRoute lifecycle test.
+# Managed mode (clusterRef openstack-db, schema glance_httproute), same shape as
+# the basic-deployment fixture. 02-glance-backend.yaml attaches the default S3
+# store so the CR progresses past the Deployment step and the operator reaches
+# the parallel group that reconciles the HTTPRoute.
+#
+# The parentRef is deliberately non-existent so no real Gateway controller ever
+# writes its own RouteParentStatus slot and races the status merge-patch in the
+# acceptance-simulation step.
+apiVersion: glance.openstack.c5c3.io/v1alpha1
+kind: Glance
+metadata:
+  name: glance-httproute
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/glance
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: glance_httproute
+    secretRef:
+      name: glance-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password
+  gateway:
+    parentRef:
+      name: not-a-real-gateway
+    hostname: glance.e2e.example.com

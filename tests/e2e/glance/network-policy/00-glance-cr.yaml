@@ -1,0 +1,45 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Glance CR with spec.networkPolicy for the NetworkPolicy lifecycle test.
+# Managed mode (clusterRef openstack-db, schema glance_netpol), same shape as
+# the basic-deployment fixture. 01-glance-backend.yaml attaches the default S3
+# store so the CR progresses past the Deployment step (the NetworkPolicy is
+# reconciled in the parallel group that runs after it) and so the S3 host is
+# present in the backends projection that drives the object-store egress rule.
+apiVersion: glance.openstack.c5c3.io/v1alpha1
+kind: Glance
+metadata:
+  name: glance-netpol
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/glance
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: glance_netpol
+    secretRef:
+      name: glance-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password
+  networkPolicy:
+    ingress:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: openstack

@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Default S3 image store for the glance-pss CR. glance-api registers no store
+# without a default backend, so this must go Ready before the Glance CR can. It
+# points at the in-cluster Garage S3 endpoint and the pre-created glance-images
+# bucket, reading the namespace-local `garage-s3-credentials` Secret synced by
+# the ExternalSecret in 00-namespace.yaml. The backend's Pod-less controller
+# creates no workload, so it does not itself exercise PSS admission — the API
+# Deployment and db-sync Job Pods it unblocks are what the suite scans.
+apiVersion: glance.openstack.c5c3.io/v1alpha1
+kind: GlanceBackend
+metadata:
+  name: glance-pss-s3
+  namespace: glance-pss-restricted-test
+spec:
+  glanceRef:
+    name: glance-pss
+  type: S3
+  isDefault: true
+  s3:
+    host: http://garage.openstack.svc.cluster.local:3900
+    bucket: glance-images
+    region: garage
+    credentialsSecretRef:
+      name: garage-s3-credentials

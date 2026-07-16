@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Default S3 image store for the glance-netpol CR. Beyond letting the CR reach a
+# running Deployment, this backend's host is what the auto-derived object-store
+# egress rule (port 3900) is built from: the networkpolicy sub-reconciler tracks
+# the S3 host URL of every attached backend in the backends projection.
+apiVersion: glance.openstack.c5c3.io/v1alpha1
+kind: GlanceBackend
+metadata:
+  name: glance-netpol-s3
+  namespace: openstack
+spec:
+  glanceRef:
+    name: glance-netpol
+  type: S3
+  isDefault: true
+  s3:
+    host: http://garage.openstack.svc.cluster.local:3900
+    bucket: glance-images
+    region: garage
+    credentialsSecretRef:
+      name: garage-s3-credentials

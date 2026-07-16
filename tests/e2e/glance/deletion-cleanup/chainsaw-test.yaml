@@ -1,0 +1,271 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the Glance backend-detach re-render and the
+# finalizer-driven MariaDB CR cleanup on Glance CR deletion.
+#
+# Deploys a Glance CR with two attached S3 backends (deletion-a default,
+# deletion-b non-default), waits for Ready=True, then:
+#   - deletes the non-default backend deletion-b and asserts the re-rendered
+#     content-hashed backends Secret (mounted by the API Deployment) drops the
+#     [deletion-b] store section while keeping [deletion-a];
+#   - asserts the cleanup finalizer is present, deletes the Glance CR, and
+#     asserts all owned resources (Deployment/Service/PDB/db-sync Job) AND the
+#     MariaDB Database/User/Grant CRs the operator created are absent within a
+#     bounded deletion window, plus the content-hashed ConfigMaps and backends
+#     Secrets;
+#   - asserts the surviving, user-owned backend deletion-a flips Ready=False
+#     (its parent Glance is gone, so the backend controller can no longer
+#     observe the config projection).
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: glance-deletion-cleanup
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply the Glance CR and both S3 backends ───────────────────
+  - try:
+    - apply:
+        file: 00-glance-cr.yaml
+    - apply:
+        file: 01-backend-a.yaml
+    - apply:
+        file: 02-backend-b.yaml
+  # ── Step 2: Wait for Ready=True and assert the cleanup finalizer ────────
+  # The cleanup finalizer is added on first reconcile so deletion can trigger
+  # the MariaDB CR cleanup before the Glance CR is removed from etcd.
+  - try:
+    - assert:
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: Glance
+          metadata:
+            name: glance-deletion
+            namespace: openstack
+            # Nil-safe: on the first poll after apply the controller may not
+            # have added the finalizer yet (`finalizers` is nil). The `|| `[]``
+            # fallback lets the assert retry rather than raising a non-retryable
+            # JMESPath type error.
+            (contains(finalizers || `[]`, 'glance.openstack.c5c3.io/finalizer')): true
+          status:
+            (conditions[?type == 'BackendsReady']):
+            - status: "True"
+              reason: AllBackendsProjected
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: GlanceBackend
+          metadata:
+            name: deletion-a
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: GlanceBackend
+          metadata:
+            name: deletion-b
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: |
+          echo "=== Glance CR status ==="
+          kubectl get glance glance-deletion -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== GlanceBackend status ==="
+          kubectl get glancebackend deletion-a deletion-b -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n glance-system -l app.kubernetes.io/name=glance-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n glance-system -l app.kubernetes.io/name=glance-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 3: Detach backend deletion-b and assert the re-render ─────────
+  # Deleting a backend re-renders the content-hashed backends Secret and rolls
+  # the API Deployment onto it. Poll the Secret the Deployment currently mounts
+  # (its `backends` volume) until [deletion-b]'s store section is gone and the
+  # default [deletion-a] section remains.
+  - try:
+    - delete:
+        ref:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: GlanceBackend
+          name: deletion-b
+          namespace: openstack
+    - script:
+        timeout: 3m
+        shell: bash
+        content: |
+          set -eu
+          NS=openstack
+          DEPLOY=glance-deletion
+          # Bounded retry: 120 s budget, 3 s interval. Exit 0 on the first sweep
+          # where the mounted backends Secret keeps [deletion-a] and no longer
+          # carries [deletion-b].
+          deadline=$(( $(date +%s) + 120 ))
+          while [ "$(date +%s)" -lt "${deadline}" ]; do
+            SECRET="$(kubectl get deploy "$DEPLOY" -n "$NS" \
+              -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="backends")].secret.secretName}' 2>/dev/null || true)"
+            if [ -z "$SECRET" ]; then
+              echo "waiting: backends volume not found on deploy/$DEPLOY yet"
+              sleep 3
+              continue
+            fi
+            CONF="$(kubectl get secret "$SECRET" -n "$NS" \
+              -o 'jsonpath={.data.backends\.conf}' 2>/dev/null | base64 -d || true)"
+            echo "=== current backends Secret ${SECRET} ==="
+            printf '%s\n' "$CONF"
+            if printf '%s\n' "$CONF" | grep -qF '[deletion-a]' \
+               && ! printf '%s\n' "$CONF" | grep -qF '[deletion-b]'; then
+              echo "OK: backends Secret ${SECRET} keeps [deletion-a] and dropped [deletion-b]"
+              exit 0
+            fi
+            echo "waiting: backends Secret still lists [deletion-b] (or missing [deletion-a])"
+            sleep 3
+          done
+          echo "ERROR: backends Secret still contains [deletion-b] after 120s" >&2
+          exit 1
+    catch:
+    - script:
+        content: |
+          echo "=== Glance CR status ==="
+          kubectl get glance glance-deletion -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== backends Secrets ==="
+          kubectl get secret -n $NAMESPACE -o name | grep glance-deletion-backends- 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n glance-system -l app.kubernetes.io/name=glance-operator --all-containers --tail=60 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 4: Delete the Glance CR ───────────────────────────────────────
+  # Bounded timeout (<= 2m) to keep deletion responsive; fails the test if the
+  # finalizer blocks removal for longer than this.
+  - try:
+    - delete:
+        timeout: 2m
+        ref:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: Glance
+          name: glance-deletion
+          namespace: openstack
+  # ── Step 5: Assert owned resources and MariaDB CRs are deleted ─────────
+  - try:
+    - error:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: glance-deletion
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: glance-deletion
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: policy/v1
+          kind: PodDisruptionBudget
+          metadata:
+            name: glance-deletion
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: glance-deletion-db-sync
+            namespace: openstack
+    # MariaDB CRs created by reconcileDatabase in managed mode (clusterRef).
+    # Owner references are set on these CRs, but the cleanup finalizer also
+    # issues an explicit Delete so the schema teardown is triggered before the
+    # owner-ref chain disappears.
+    - error:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Database
+          metadata:
+            name: glance-deletion
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: User
+          metadata:
+            name: glance-deletion
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Grant
+          metadata:
+            name: glance-deletion
+            namespace: openstack
+  # ── Step 6: Assert dynamically-named ConfigMaps and backends Secrets ───
+  # These carry a content-hash suffix so they cannot use a static error
+  # assertion. A script step with an inverted grep verifies none with the
+  # expected prefix remains after garbage collection.
+  - try:
+    - script:
+        content: |
+          set -eu
+          if kubectl get cm -n openstack -o name | grep -q glance-deletion-config-; then
+            echo "ERROR: ConfigMap matching glance-deletion-config-* still exists"
+            exit 1
+          fi
+          if kubectl get secret -n openstack -o name | grep -q glance-deletion-backends-; then
+            echo "ERROR: Secret matching glance-deletion-backends-* still exists"
+            exit 1
+          fi
+          echo "OK: no glance-deletion config ConfigMap or backends Secret remains"
+  # ── Step 7: Assert the surviving backend deletion-a flips Ready=False ──
+  # deletion-a is user-owned (no owner ref, no finalizer) so the operator never
+  # reaps it. With its parent Glance gone, the backend controller can no longer
+  # observe the config projection, so ConfigProjected flips False and the
+  # aggregate Ready flips False/NotAllReady.
+  - try:
+    - assert:
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: GlanceBackend
+          metadata:
+            name: deletion-a
+            namespace: openstack
+          status:
+            (conditions[?type == 'ConfigProjected']):
+            - status: "False"
+              reason: WaitingForProjection
+            (conditions[?type == 'Ready']):
+            - status: "False"
+              reason: NotAllReady
+    catch:
+    - script:
+        content: |
+          echo "=== surviving GlanceBackend deletion-a ==="
+          kubectl get glancebackend deletion-a -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n glance-system -l app.kubernetes.io/name=glance-operator --all-containers --tail=60 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 8: Cleanup ────────────────────────────────────────────────────
+  - try:
+    - delete:
+        ref:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: GlanceBackend
+          name: deletion-a
+          namespace: openstack

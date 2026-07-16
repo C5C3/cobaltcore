@@ -1,0 +1,175 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the optional HTTPRoute sub-reconciler.
+# Verifies the full lifecycle of spec.gateway driven by the Glance CR:
+#   - Apply a Glance CR with spec.gateway (plus a default S3 backend so the CR
+#     reaches a running Deployment and the operator runs the parallel group that
+#     owns the HTTPRoute) and assert the HTTPRoute is created with the expected
+#     ParentRef/Hostname/BackendRef (Glance API port 9292) and that
+#     status.endpoint flips to the public gateway URL.
+#   - Before any Gateway controller reports Accepted, HTTPRouteReady is
+#     False with reason HTTPRouteNotAccepted.
+#   - Simulate a Gateway controller accepting the route by patching the
+#     parent status, then assert HTTPRouteReady flips True/HTTPRouteAccepted.
+#   - Unset spec.gateway and assert the HTTPRoute is deleted and
+#     HTTPRouteReady is True with reason HTTPRouteNotRequired.
+#
+# SCOPE: this suite covers the operator's HTTPRoute contract only — it patches
+# the Accepted condition itself rather than running a Gateway controller, so
+# nothing here proves traffic actually reaches the Glance API. Unlike the
+# keystone and horizon gateway-quick-start-smoke suites, glance has no
+# real-Gateway leg yet: that needs an https-glance listener in
+# deploy/kind/base/openstack-gateway.yaml plus a smoke suite driving
+# kind host :443 → NodePort → Envoy Gateway → HTTPRoute → Service → pod.
+# Deliberately out of scope for the initial glance onboarding; a follow-up
+# carries the end-to-end gateway coverage.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: glance-httproute
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Install HTTPRoute CRD ──────────────────────────────────────
+  # The E2E cluster may not install a Gateway controller; apply the minimal
+  # CRD so the operator can create HTTPRoute objects and the test can patch
+  # their status.
+  - try:
+    - apply:
+        file: 00-httproute-crd.yaml
+  # ── Step 2: Apply Glance CR with spec.gateway + its default S3 backend ──
+  - try:
+    - apply:
+        file: 01-glance-cr.yaml
+    - apply:
+        file: 02-glance-backend.yaml
+  # ── Step 3: Assert HTTPRoute created with the expected spec ────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: gateway.networking.k8s.io/v1
+          kind: HTTPRoute
+          metadata:
+            name: glance-httproute
+            namespace: openstack
+            labels:
+              app.kubernetes.io/name: glance
+              app.kubernetes.io/instance: glance-httproute
+              app.kubernetes.io/managed-by: glance-operator
+          spec:
+            parentRefs:
+            - name: not-a-real-gateway
+            hostnames:
+            - glance.e2e.example.com
+            rules:
+            - matches:
+              - path:
+                  type: PathPrefix
+                  value: /
+              backendRefs:
+              - name: glance-httproute
+                port: 9292
+    catch:
+    - script:
+        content: |
+          echo "=== Glance CR status ==="
+          kubectl get glance glance-httproute -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== GlanceBackend status ==="
+          kubectl get glancebackend glance-httproute-s3 -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== HTTPRoute ==="
+          kubectl get httproute -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n glance-system -l app.kubernetes.io/name=glance-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n glance-system -l app.kubernetes.io/name=glance-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 4: Assert gateway-aware status.endpoint ───────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: Glance
+          metadata:
+            name: glance-httproute
+            namespace: openstack
+          status:
+            endpoint: https://glance.e2e.example.com/
+            (conditions[?type == 'HTTPRouteReady']):
+            - status: "False"
+              reason: HTTPRouteNotAccepted
+  # ── Step 5: Simulate Gateway controller accepting the HTTPRoute ────────
+  - try:
+    - script:
+        content: |
+          kubectl patch httproute glance-httproute -n $NAMESPACE \
+            --subresource=status --type=merge -p '{
+              "status": {
+                "parents": [{
+                  "parentRef": {"name": "not-a-real-gateway"},
+                  "controllerName": "e2e.example.com/fake-gateway-controller",
+                  "conditions": [{
+                    "type": "Accepted",
+                    "status": "True",
+                    "reason": "Accepted",
+                    "message": "Simulated Accepted condition for E2E test",
+                    "lastTransitionTime": "2026-07-05T00:00:00Z",
+                    "observedGeneration": 1
+                  }]
+                }]
+              }
+            }'
+  # ── Step 6: Assert HTTPRouteReady=True/HTTPRouteAccepted ───────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: Glance
+          metadata:
+            name: glance-httproute
+            namespace: openstack
+          status:
+            (conditions[?type == 'HTTPRouteReady']):
+            - status: "True"
+              reason: HTTPRouteAccepted
+    catch:
+    - script:
+        content: |
+          echo "=== Glance CR status ==="
+          kubectl get glance glance-httproute -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== HTTPRoute ==="
+          kubectl get httproute -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n glance-system -l app.kubernetes.io/name=glance-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n glance-system -l app.kubernetes.io/name=glance-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 7: Unset spec.gateway ─────────────────────────────────────────
+  - try:
+    - patch:
+        file: 03-patch-remove-gateway.yaml
+  # ── Step 8: Assert HTTPRoute deleted and NotRequired ───────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: Glance
+          metadata:
+            name: glance-httproute
+            namespace: openstack
+          status:
+            (conditions[?type == 'HTTPRouteReady']):
+            - status: "True"
+              reason: HTTPRouteNotRequired
+    - script:
+        content: |
+          # Verify HTTPRoute no longer exists.
+          if kubectl get httproute glance-httproute -n $NAMESPACE 2>/dev/null; then
+            echo "FAIL: HTTPRoute should have been deleted"
+            exit 1
+          fi
+          echo "PASS: HTTPRoute correctly deleted"

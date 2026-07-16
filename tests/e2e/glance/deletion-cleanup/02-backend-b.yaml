@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Second, non-default S3 store (deletion-b) for the glance-deletion CR, backing
+# the pre-created glance-images-2 bucket. The suite deletes it first to prove a
+# backend removal re-renders the content-hashed backends Secret, dropping the
+# [deletion-b] store section while keeping the default [deletion-a].
+apiVersion: glance.openstack.c5c3.io/v1alpha1
+kind: GlanceBackend
+metadata:
+  name: deletion-b
+  namespace: openstack
+spec:
+  glanceRef:
+    name: glance-deletion
+  type: S3
+  isDefault: false
+  s3:
+    host: http://garage.openstack.svc.cluster.local:3900
+    bucket: glance-images-2
+    region: garage
+    credentialsSecretRef:
+      name: garage-s3-credentials

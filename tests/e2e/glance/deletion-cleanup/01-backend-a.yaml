@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Default S3 store (deletion-a) for the glance-deletion CR, backing the
+# pre-created glance-images bucket. It survives the detach step and the CR
+# deletion: it is user-owned (no owner ref to the Glance CR) and carries no
+# finalizer, so the operator never reaps it. Once its parent Glance is gone the
+# backend controller can no longer observe the projection and flips Ready=False.
+apiVersion: glance.openstack.c5c3.io/v1alpha1
+kind: GlanceBackend
+metadata:
+  name: deletion-a
+  namespace: openstack
+spec:
+  glanceRef:
+    name: glance-deletion
+  type: S3
+  isDefault: true
+  s3:
+    host: http://garage.openstack.svc.cluster.local:3900
+    bucket: glance-images
+    region: garage
+    credentialsSecretRef:
+      name: garage-s3-credentials

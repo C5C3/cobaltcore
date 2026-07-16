@@ -1,0 +1,148 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the NetworkPolicy sub-reconciler.
+#
+# SCOPE CAVEAT: the default CI CNI (kindnet) does NOT enforce NetworkPolicy,
+# so this suite validates the rendered policy object (ingress on the Glance API
+# port 9292, auto-derived DNS/database/cache/S3 egress) and its lifecycle, not
+# actual traffic enforcement — same scope as the keystone/horizon network-policy
+# suites.
+#
+# The auto-derived egress order is deterministic (DNS, database, cache, S3):
+#   - DNS      UDP+TCP 53
+#   - database TCP 3306 (spec.database default port)
+#   - cache    TCP 11211 (managed memcached)
+#   - S3       TCP 3900 (parsed from the attached backend's Garage host URL)
+# There is deliberately NO dedicated keystone egress rule: the glance
+# networkpolicy reconciler derives egress from the database, cache, and attached
+# S3 backends only.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: glance-network-policy
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply Glance CR with networkPolicy + its default S3 backend ─
+  - try:
+    - apply:
+        file: 00-glance-cr.yaml
+    - apply:
+        file: 01-glance-backend.yaml
+  # ── Step 2: Assert NetworkPolicy created with the expected rules ───────
+  - try:
+    - assert:
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: Glance
+          metadata:
+            name: glance-netpol
+            namespace: openstack
+          status:
+            (conditions[?type == 'NetworkPolicyReady']):
+            - status: "True"
+              reason: NetworkPolicyReady
+    - assert:
+        resource:
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: glance-netpol
+            namespace: openstack
+          spec:
+            podSelector:
+              matchLabels:
+                app.kubernetes.io/name: glance
+                app.kubernetes.io/instance: glance-netpol
+            policyTypes:
+            - Ingress
+            - Egress
+            ingress:
+            - ports:
+              - protocol: TCP
+                port: 9292
+            # Auto-derived egress order is deterministic: DNS, database (3306),
+            # cache (11211 managed memcached), then the S3 object store (3900
+            # parsed from the attached backend's Garage host URL).
+            egress:
+            - ports:
+              - protocol: UDP
+                port: 53
+              - protocol: TCP
+                port: 53
+            - ports:
+              - protocol: TCP
+                port: 3306
+            - ports:
+              - protocol: TCP
+                port: 11211
+            - ports:
+              - protocol: TCP
+                port: 3900
+    catch:
+    - script:
+        content: |
+          echo "=== Glance CR status ==="
+          kubectl get glance glance-netpol -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== GlanceBackend status ==="
+          kubectl get glancebackend glance-netpol-s3 -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== NetworkPolicy ==="
+          kubectl get networkpolicy glance-netpol -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n glance-system -l app.kubernetes.io/name=glance-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n glance-system -l app.kubernetes.io/name=glance-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 3: Add a second ingress source and assert it lands ────────────
+  - try:
+    - patch:
+        file: 02-patch-update-ingress.yaml
+    - assert:
+        resource:
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: glance-netpol
+            namespace: openstack
+          spec:
+            ingress:
+            - (length(from) >= `2`): true
+    catch:
+    - script:
+        content: |
+          echo "=== Glance CR status ==="
+          kubectl get glance glance-netpol -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== NetworkPolicy ==="
+          kubectl get networkpolicy glance-netpol -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n glance-system -l app.kubernetes.io/name=glance-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n glance-system -l app.kubernetes.io/name=glance-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 4: Disable networkPolicy and assert deletion ──────────────────
+  - try:
+    - patch:
+        file: 03-patch-disable-networkpolicy.yaml
+    - assert:
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: Glance
+          metadata:
+            name: glance-netpol
+            namespace: openstack
+          status:
+            (conditions[?type == 'NetworkPolicyReady']):
+            - status: "True"
+              reason: NetworkPolicyNotRequired
+    - script:
+        content: |
+          if kubectl get networkpolicy glance-netpol -n $NAMESPACE 2>/dev/null; then
+            echo "FAIL: NetworkPolicy should have been deleted"
+            exit 1
+          fi
+          echo "PASS: NetworkPolicy correctly deleted"

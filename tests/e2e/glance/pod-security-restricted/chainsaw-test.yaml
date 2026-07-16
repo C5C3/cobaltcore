@@ -1,0 +1,282 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for a Glance CR reconciling under restricted PodSecurity.
+#
+# Decisions worth knowing before reading the steps:
+#
+#   - Opt-out from per-test namespace (`spec.namespace: ""`): Chainsaw's
+#     per-test namespace plumbing creates a chainsaw-* namespace WITHOUT PSS
+#     labels. To exercise restricted-profile admission we must own the
+#     namespace, so this test sets `spec.namespace: ""` to OPT OUT of the
+#     plumbing entirely; Chainsaw then creates no namespace and the test
+#     applies its own labelled namespace `glance-pss-restricted-test` from
+#     00-namespace.yaml. Chainsaw's applied-resource cleanup deletes that
+#     namespace (and everything in it) when the test finishes.
+#
+#   - Brownfield mode (database.host + cache.servers, no clusterRef): the shared
+#     provisioning flow resolves `Database.ClusterRef` / `Cache.ClusterRef` in
+#     the Glance CR's own namespace, so a CR in `glance-pss-restricted-test`
+#     cannot reach `openstack/openstack-db` through clusterRef. Brownfield wiring
+#     reaches the existing cluster DB/cache without duplicating infra; the
+#     `glance_pss` Database/User/Grant are pre-created in `openstack` by Step 2.
+#
+#   - ESO-managed Secrets (keystone-admin / glance-db / garage-s3-credentials
+#     are ExternalSecrets, not plain Secrets): `reconcileSecrets` gates
+#     SecretsReady on the per-tenant store and the ESO-synced credential
+#     Secrets, and the GlanceBackend controller gates CredentialsReady on the S3
+#     credentials Secret. The Step-1 script seeds the namespace-scoped OpenBao
+#     paths by COPYING the shared standalone values, then provisions this
+#     namespace's per-tenant store via setup-eso-tenant.sh.
+#
+#   - Zero-PSS-violation event scan (Step 4): the parent controller emits a
+#     `FailedCreate` event with the violation listed verbatim when PSS rejects
+#     a Pod, so a zero-match scan on `violates PodSecurity "restricted:latest"`
+#     is the explicit regression net for any future reconciler that forgets the
+#     restricted securityContext.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: glance-pod-security-restricted
+spec:
+  # Disable Chainsaw's per-test namespace plumbing so Pods land in our
+  # PSS-labelled namespace.
+  namespace: ""
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply the labelled namespace + ESO ExternalSecrets ──────────
+  # Asserts the PSS enforce label is present so a mis-typed label would surface
+  # here, before any Pod is created. Also asserts each ExternalSecret reaches
+  # Ready=True so a regression that broke ESO sync fails here, not deeper in
+  # Step 3 where the operator's SecretsReady condition would be the only signal.
+  - try:
+    - apply:
+        file: 00-namespace.yaml
+    # Provision this namespace's per-tenant OpenBao store and seed its
+    # namespace-scoped admin + db + s3 paths by COPYING the shared values, so
+    # the three ExternalSecrets (which authenticate as the eso-tenant identity)
+    # can sync and the `glance` MariaDB user's password still matches the value
+    # the brownfield User CR reconciles onto the same shared user — no SET
+    # PASSWORD race. Chainsaw runs scripts with the test directory as CWD.
+    - script:
+        timeout: 5m
+        shell: bash
+        content: |
+          set -euo pipefail
+          BAO_NS="openbao-system"
+          BAO_POD="openbao-0"
+          TENANT_NS="glance-pss-restricted-test"
+          BAO_TOKEN="$(kubectl get secret openbao-init-keys -n "${BAO_NS}" \
+            -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token')"
+          bao_exec() {
+            kubectl exec -n "${BAO_NS}" "${BAO_POD}" -- \
+              env BAO_ADDR="https://127.0.0.1:8200" BAO_TOKEN="${BAO_TOKEN}" \
+              VAULT_CACERT="/openbao/tls/ca.crt" \
+              VAULT_CLIENT_CERT=/openbao/client-tls/tls.crt \
+              VAULT_CLIENT_KEY=/openbao/client-tls/tls.key "$@"
+          }
+          ADMIN_PASS="$(bao_exec bao kv get -mount=kv-v2 -field=password \
+            bootstrap/openstack/controlplane-keystone/admin)"
+          DB_USER="$(bao_exec bao kv get -mount=kv-v2 -field=username \
+            openstack/glance/openstack/standalone/db)"
+          DB_PASS="$(bao_exec bao kv get -mount=kv-v2 -field=password \
+            openstack/glance/openstack/standalone/db)"
+          S3_AKID="$(bao_exec bao kv get -mount=kv-v2 -field=access-key-id \
+            bootstrap/openstack/garage/s3-credentials)"
+          S3_SAK="$(bao_exec bao kv get -mount=kv-v2 -field=secret-access-key \
+            bootstrap/openstack/garage/s3-credentials)"
+          bao_exec bao kv put -mount=kv-v2 "bootstrap/${TENANT_NS}/pss/admin" \
+            password="${ADMIN_PASS}" >/dev/null
+          bao_exec bao kv put -mount=kv-v2 "openstack/glance/${TENANT_NS}/pss/db" \
+            username="${DB_USER}" password="${DB_PASS}" >/dev/null
+          bao_exec bao kv put -mount=kv-v2 "bootstrap/${TENANT_NS}/pss/s3" \
+            access-key-id="${S3_AKID}" secret-access-key="${S3_SAK}" >/dev/null
+          ../../../../deploy/openbao/bootstrap/setup-eso-tenant.sh "${TENANT_NS}"
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: glance-pss-restricted-test
+            labels:
+              pod-security.kubernetes.io/enforce: restricted
+              pod-security.kubernetes.io/enforce-version: latest
+    - assert:
+        resource:
+          apiVersion: external-secrets.io/v1
+          kind: ExternalSecret
+          metadata:
+            name: keystone-admin
+            namespace: glance-pss-restricted-test
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    - assert:
+        resource:
+          apiVersion: external-secrets.io/v1
+          kind: ExternalSecret
+          metadata:
+            name: glance-db
+            namespace: glance-pss-restricted-test
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    - assert:
+        resource:
+          apiVersion: external-secrets.io/v1
+          kind: ExternalSecret
+          metadata:
+            name: garage-s3-credentials
+            namespace: glance-pss-restricted-test
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+  # ── Step 2: Pre-create brownfield MariaDB Database/User/Grant ──────────
+  # The CRs live in `openstack` (the MariaDB operator's namespace), not in the
+  # test namespace, because MariaDB CRs reference `openstack-db` via a
+  # same-namespace `mariaDbRef`. The User CR manages the canonical `glance`
+  # MariaDB user against the existing `openstack/glance-db` Secret and is marked
+  # `cleanupPolicy: Skip` so this test's User-CR deletion does not drop the user
+  # out from under a sibling test.
+  - try:
+    - apply:
+        file: 00-brownfield-db-setup.yaml
+    - assert:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Database
+          metadata:
+            name: glance-pss-restricted-db
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    - assert:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: User
+          metadata:
+            name: glance-pss-restricted-user
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    - assert:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Grant
+          metadata:
+            name: glance-pss-restricted-grant
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+  # ── Step 3: Apply the Glance CR + default backend, assert Ready ────────
+  # The Ready=True signal is the primary end-to-end gate — every Pod the
+  # reconciler creates (API Deployment, db-sync Job) must have been admitted
+  # under restricted PSS for the sub-conditions to flip True.
+  #
+  # The trailing `error` assertions enforce the brownfield-mode invariant: NO
+  # Database/User/Grant CR named after the Glance CR may be created in the test
+  # namespace.
+  - try:
+    - apply:
+        file: 01-glance-cr.yaml
+    - apply:
+        file: 02-glance-backend.yaml
+    - assert:
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: Glance
+          metadata:
+            name: glance-pss
+            namespace: glance-pss-restricted-test
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - error:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Database
+          metadata:
+            name: glance-pss
+            namespace: glance-pss-restricted-test
+    - error:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: User
+          metadata:
+            name: glance-pss
+            namespace: glance-pss-restricted-test
+    - error:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Grant
+          metadata:
+            name: glance-pss
+            namespace: glance-pss-restricted-test
+    catch:
+    - script:
+        content: |
+          NS=glance-pss-restricted-test
+          echo "=== Glance CR status ==="
+          kubectl get glance glance-pss -n "$NS" -o yaml 2>&1 || true
+          echo "=== GlanceBackend status ==="
+          kubectl get glancebackend glance-pss-s3 -n "$NS" -o yaml 2>&1 || true
+          echo "=== Pod securityContext (CR namespace) ==="
+          kubectl get pods -n "$NS" \
+            -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.securityContext}{"\t"}{.spec.containers[*].securityContext}{"\n"}{end}' 2>&1 || true
+          echo "=== Sorted events (last 30, CR namespace) ==="
+          kubectl get events -n "$NS" --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+          echo "=== Job pods ==="
+          for pod in $(kubectl get pods -n "$NS" -l job-name -o name 2>/dev/null); do
+            echo "--- $pod logs ---"
+            kubectl logs -n "$NS" "$pod" --all-containers --tail=100 2>&1 || true
+            echo "--- $pod describe (last 30 lines) ---"
+            kubectl describe -n "$NS" "$pod" 2>&1 | tail -30 || true
+          done
+          echo "=== Operator pod logs ==="
+          kubectl logs -n glance-system -l app.kubernetes.io/name=glance-operator --all-containers --tail=100 2>&1 || true
+  # ── Step 4: Assert zero PSS-violation FailedCreate events ──────────────
+  # PSS admission rejection emits a `FailedCreate` event on the Pod's parent
+  # (Deployment/Job) with the violation listed verbatim. A zero-match scan on
+  # `violates PodSecurity "restricted:latest"` is the explicit regression net
+  # for any future reconciler that forgets the restricted securityContext. The
+  # scan is scoped to the test namespace so unrelated FailedCreate events in
+  # `openstack` are not picked up.
+  - try:
+    - script:
+        shell: bash
+        content: |
+          set -euo pipefail
+          NS=glance-pss-restricted-test
+          NEEDLE='violates PodSecurity "restricted:latest"'
+
+          MSGS=$(kubectl get events -n "$NS" \
+            --field-selector reason=FailedCreate \
+            -o jsonpath='{range .items[*]}{.message}{"\n"}{end}')
+          # grep -c returns 1 when zero matches; guard with `|| true` so
+          # `set -e` does not abort before the count check runs.
+          COUNT=$(printf '%s\n' "$MSGS" | grep -cF "$NEEDLE" || true)
+          if [ "$COUNT" -ne 0 ]; then
+            echo "FAIL: $COUNT FailedCreate event(s) carry the PSS-restricted violation:"
+            printf '%s\n' "$MSGS" | grep -F "$NEEDLE" || true
+            exit 1
+          fi
+          echo "OK: zero PSS-restricted FailedCreate events in $NS"
+    catch:
+    - script:
+        content: |
+          NS=glance-pss-restricted-test
+          echo "=== Pod securityContext (CR namespace) ==="
+          kubectl get pods -n "$NS" \
+            -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.securityContext}{"\t"}{.spec.containers[*].securityContext}{"\n"}{end}' 2>&1 || true
+          echo "=== All FailedCreate events (CR namespace) ==="
+          kubectl get events -n "$NS" --field-selector reason=FailedCreate \
+            -o custom-columns=LAST:.lastTimestamp,OBJ:.involvedObject.kind/.involvedObject.name,MSG:.message 2>&1 || true
+          echo "=== Sorted events (last 30, CR namespace) ==="
+          kubectl get events -n "$NS" --sort-by='.lastTimestamp' 2>&1 | tail -30 || true

@@ -1,0 +1,58 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Glance CR fixture for the PSS-restricted E2E test.
+#
+# Brownfield mode (database.host + cache.servers, no `clusterRef`): the CR lives
+# in the labelled `glance-pss-restricted-test` namespace, but `Database.ClusterRef`
+# / `Cache.ClusterRef` are namespace-local (the shared provisioning flow looks up
+# the MariaDB / Memcached CR in the Glance CR's namespace). Brownfield wiring is
+# the only path that reaches the existing `openstack/openstack-db` and
+# `openstack/openstack-memcached` from this namespace without duplicating MariaDB
+# / Memcached CRs.
+#
+# The `glance_pss` Database/User/Grant are pre-created in the openstack namespace
+# by 00-brownfield-db-setup.yaml. The service-user password, the database
+# credentials, and the Garage S3 key pair are synced into this namespace by the
+# ExternalSecrets in 00-namespace.yaml (reconcileSecrets gates SecretsReady on
+# the per-tenant store and on the ESO-synced credential Secrets, so plain
+# Secrets would never satisfy the gate).
+#
+# `replicas: 1` keeps the test inside the suite's 5-minute assert budget; the
+# regression net we want is "every Pod the operator creates admits under
+# PSS=restricted", which a single replica is sufficient to prove.
+apiVersion: glance.openstack.c5c3.io/v1alpha1
+kind: Glance
+metadata:
+  name: glance-pss
+  namespace: glance-pss-restricted-test
+spec:
+  secretStoreRef:
+    kind: SecretStore
+    name: openbao-tenant-store
+  openStackRelease: "2025.2"
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/glance
+    tag: "2025.2"
+  database:
+    host: openstack-db.openstack.svc.cluster.local
+    port: 3306
+    database: glance_pss
+    secretRef:
+      name: glance-db
+  cache:
+    backend: dogpile.cache.pymemcache
+    servers:
+    - "openstack-memcached.openstack.svc:11211"
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password
