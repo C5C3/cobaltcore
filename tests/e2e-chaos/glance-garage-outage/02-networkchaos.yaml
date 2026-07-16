@@ -1,0 +1,60 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# NetworkChaos CR to partition glance-api <-> Garage (S3) traffic.
+#
+# The partition is enforced on the Garage (server) side on purpose. glance-api
+# does not connect to a Garage pod IP — it connects to the cluster-level S3 API
+# ClusterIP Service garage.openstack.svc.cluster.local:3900 (see the GlanceBackend
+# s3.host). chaos-mesh installs its drop rule inside the *selector* pods' network
+# namespace and matches the *target* pods by their pod IPs. If the rule were
+# installed on the glance-api (client) side, it would match Garage pod IPs — but
+# at that point the packet still carries the Service ClusterIP, because kube-proxy
+# only DNATs ClusterIP -> pod IP later, in the node's root namespace, after the
+# packet has left the pod. The rule would therefore never match and the partition
+# would be a no-op for Service-routed traffic.
+#
+# Installing the rule on the Garage storage pods and dropping traffic *from* the
+# glance-api pods works because, by the time the packet reaches the Garage
+# namespace, it has already been DNATed and carries the real glance-api pod source
+# IP — the same reason Kubernetes NetworkPolicies can match Service-routed traffic
+# by client pod IP. direction 'both' fully severs the link in either direction.
+#
+# The selector label pair (garage.rajsingh.info/cluster=garage +
+# garage.rajsingh.info/tier=storage) is the faithful anchor: it is the exact
+# selector the cluster-level S3 API Service uses to pick its backends, so
+# partitioning those pods severs precisely the traffic the Service routes — no
+# more, no less.
+#
+# Duration is a safety net for auto-expiry if the test does not explicitly delete
+# the CR; step 5 lifts the partition explicitly. It must *exceed* the Chainsaw
+# assert window, not equal it. An equal duration self-heals at the exact deadline:
+# chaos-mesh recovers Garage connectivity in the same instant the fail-closed
+# assertion (step 4) is still probing, which can flip a failing PUT back to
+# success mid-assert and mask the fault — exactly the trap the mariadb suite
+# documents. 600s sits above the 5m assert window with margin.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: partition-garage
+  namespace: openstack
+spec:
+  action: partition
+  mode: all
+  selector:
+    namespaces:
+      - openstack
+    labelSelectors:
+      garage.rajsingh.info/cluster: garage
+      garage.rajsingh.info/tier: storage
+  direction: both
+  target:
+    mode: all
+    selector:
+      namespaces:
+        - openstack
+      labelSelectors:
+        app.kubernetes.io/name: glance
+        app.kubernetes.io/instance: glance-chaos-garage
+  duration: "600s"

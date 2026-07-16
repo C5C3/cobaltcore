@@ -1,0 +1,71 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Glance CR fixture for the Garage S3 outage chaos test. Unique name
+# (glance-chaos-garage) and database (glance_chaos_garage) to avoid conflicts
+# with other test suites. A single default S3 store on the pre-created
+# glance-images bucket is attached by 01-glancebackend-cr.yaml.
+#
+# No Keystone runs in the chaos leg, so API access is opened without a live
+# token, which takes all three knobs below acting together (mirroring the
+# s3-multistore suite so the in-cluster probes can create and PUT images):
+#   - [DEFAULT] allow_anonymous_access=true (via extraConfig, which overrides
+#     everything) lets keystonemiddleware's delay_auth_decision pipeline admit
+#     the tokenless request instead of returning 401 from ContextMiddleware;
+#   - the injected unauthenticated-context filter (glance's own noauth
+#     middleware, position "after" = between context and rootapp) then replaces
+#     the anonymous context: ContextMiddleware builds anonymous contexts with
+#     read_only=True, and glance's @mutating decorator 403s every write (e.g.
+#     POST /v2/images) on such a context BEFORE any policy check, so no
+#     policyOverride alone can open the upload path;
+#   - policyOverrides opens the image API rules for the resulting role-less
+#     context. The rule value "@" is oslo.policy's always-allow token; the
+#     CRD's CEL rule forbids an empty rule value, so "@" stands in for the
+#     conventional empty-string "allow all".
+apiVersion: glance.openstack.c5c3.io/v1alpha1
+kind: Glance
+metadata:
+  name: glance-chaos-garage
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/glance
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: glance_chaos_garage
+    secretRef:
+      name: glance-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password
+  extraConfig:
+    DEFAULT:
+      allow_anonymous_access: "true"
+  middleware:
+    - name: unauthenticated-context
+      filterFactory: glance.api.middleware.context:UnauthenticatedContextMiddleware.factory
+      position: after
+  policyOverrides:
+    rules:
+      add_image: "@"
+      get_image: "@"
+      get_images: "@"
+      upload_image: "@"
+      download_image: "@"
+      delete_image: "@"
+      modify_image: "@"

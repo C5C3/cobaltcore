@@ -1,0 +1,210 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test for glance-operator pod kill.
+# Verifies the deployed Glance workload is undisturbed by the operator outage
+# (operational-independence contract): its API pods are never restarted while
+# the operator is killed and recovers, asserted by comparing the glance-api pod
+# UIDs across the kill. And that the operator resumes reconciliation after the
+# kill: a spec change patched afterwards is rolled out.
+# Identity-based verification: snapshot ALL pre-chaos pod UIDs, then
+# wait for at least one to disappear. Snapshotting only .items[0] is racy —
+# the operator runs 2 replicas and PodChaos mode: one picks its victim at
+# random, so the recorded pod survives the kill in ~half the runs and the
+# old-pod-gone poll fails spuriously. Mirrors horizon-operator-pod-kill.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: glance-operator-pod-kill
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply Glance CR + default store and wait for baseline Ready ──
+  - try:
+    - apply:
+        file: 00-glance-cr.yaml
+    - apply:
+        file: 01-glance-backend.yaml
+    - assert:
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: Glance
+          metadata:
+            name: glance-chaos-op
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: ../diagnostics.sh baseline glance-chaos-op --cr-kind=glance
+  # ── Step 2: Inject chaos and verify one operator pod was replaced ──────
+  # Snapshot, apply and poll live in one script so the pre-chaos UID
+  # snapshot and the wait share state. mode: one kills exactly one of the
+  # two replicas, so "at least one pre-chaos UID gone" proves the kill took
+  # effect regardless of which pod chaos-mesh picked. Phase 3 then compares
+  # the workload UIDs snapshotted here against the post-recovery set.
+  - try:
+    - script:
+        # Timeout budget: Phase 1 (60×2s=120s) + Phase 2 (60×2s=120s) = 240s
+        # worst case; Phase 3 is two kubectl reads with no polling. 270s gives
+        # 30s margin.
+        timeout: 270s
+        content: |
+          # NOTE: set -euo pipefail is intentionally omitted. The polling
+          # loops use ${VAR:-0} defensive defaults that would fail under
+          # set -e when kubectl returns empty output, and loop exit
+          # conditions are checked explicitly rather than via exit codes.
+
+          # Read desired replica count from the Deployment so the test stays
+          # valid if the operator replica count changes.
+          DESIRED=$(kubectl get deployment glance-operator -n glance-system -o jsonpath='{.spec.replicas}')
+          if [ -z "$DESIRED" ] || [ "$DESIRED" -lt 1 ]; then
+            echo "ERROR: could not determine desired replica count from glance-operator Deployment"
+            exit 1
+          fi
+          echo "Desired replicas: ${DESIRED}"
+
+          # Snapshot pre-chaos pod UIDs. mode: one must replace at least one
+          # of these; checking that at least one disappears is race-free.
+          OLD_UIDS=$(kubectl get pods -n glance-system -l app.kubernetes.io/name=glance-operator -o jsonpath='{.items[*].metadata.uid}')
+          if [ -z "$OLD_UIDS" ]; then
+            echo "ERROR: no operator pods found before chaos injection"
+            exit 1
+          fi
+          echo "Pre-chaos operator pod UIDs: ${OLD_UIDS}"
+
+          # Snapshot the managed workload's pod UIDs too. The operator is a
+          # control-plane component: killing it must not disturb the running
+          # glance-api pods. Phase 3 re-reads these and fails if any UID
+          # changed, which is the operational-independence contract.
+          WORKLOAD_UIDS=$(kubectl get pods -n openstack -l app.kubernetes.io/instance=glance-chaos-op -o jsonpath='{.items[*].metadata.uid}')
+          if [ -z "$WORKLOAD_UIDS" ]; then
+            echo "ERROR: no glance-api pods found before chaos injection"
+            exit 1
+          fi
+          echo "Pre-chaos glance-api pod UIDs: ${WORKLOAD_UIDS}"
+
+          # Inject chaos (kill one operator pod).
+          kubectl apply -f 02-podchaos.yaml
+
+          # Phase 1: wait until at least one pre-chaos UID is gone, proving
+          # mode: one replaced a pod. 60 iterations × 2s = 120s max.
+          # Empty CURRENT_UIDS (transient kubectl failure) would spuriously
+          # match "no UIDs present" — skip those iterations instead.
+          # REPLACED is seeded here, not only inside the loop body: every
+          # iteration can hit the empty-CURRENT_UIDS `continue` above, and an
+          # unset REPLACED would make the guard below an "integer expression
+          # expected" error that the `if` reads as false, silently falling
+          # through to Phase 2 instead of failing.
+          REPLACED=0
+          for i in $(seq 1 60); do
+            CURRENT_UIDS=$(kubectl get pods -n glance-system -l app.kubernetes.io/name=glance-operator -o jsonpath='{.items[*].metadata.uid}')
+            if [ -z "$CURRENT_UIDS" ]; then
+              sleep 2
+              continue
+            fi
+            REPLACED=0
+            for uid in $OLD_UIDS; do
+              case " $CURRENT_UIDS " in
+                *" $uid "*) ;;
+                *) REPLACED=1; break ;;
+              esac
+            done
+            if [ "$REPLACED" -eq 1 ]; then
+              echo "At least one pre-chaos operator pod replaced"
+              break
+            fi
+            sleep 2
+          done
+          if [ "$REPLACED" -ne 1 ]; then
+            echo "ERROR: no pre-chaos operator pod was replaced by chaos injection"
+            echo "  pre-chaos UIDs: ${OLD_UIDS}"
+            echo "  current UIDs:   ${CURRENT_UIDS}"
+            exit 1
+          fi
+
+          # Phase 2: wait until readyReplicas returns to DESIRED (operator
+          # recovered and reconciliation resumed). 60×2s = 120s max.
+          RECOVERED=0
+          for i in $(seq 1 60); do
+            READY=$(kubectl get deployment glance-operator -n glance-system -o jsonpath='{.status.readyReplicas}')
+            if [ "${READY:-0}" -eq "${DESIRED}" ]; then
+              echo "Operator recovered: readyReplicas=${DESIRED}"
+              RECOVERED=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$RECOVERED" -ne 1 ]; then
+            echo "ERROR: operator did not recover — readyReplicas=${READY:-0}, desired=${DESIRED}"
+            exit 1
+          fi
+
+          # Phase 3: operational independence. The workload must have been
+          # untouched by the operator outage — same pods, never restarted.
+          # Any UID that changed means the glance-api pods were disrupted by
+          # an operator kill, which the contract forbids.
+          NOW_WORKLOAD_UIDS=$(kubectl get pods -n openstack -l app.kubernetes.io/instance=glance-chaos-op -o jsonpath='{.items[*].metadata.uid}')
+          if [ -z "$NOW_WORKLOAD_UIDS" ]; then
+            echo "ERROR: no glance-api pods present after the operator kill"
+            exit 1
+          fi
+          for uid in $WORKLOAD_UIDS; do
+            case " $NOW_WORKLOAD_UIDS " in
+              *" $uid "*) ;;
+              *)
+                echo "ERROR: glance-api pod ${uid} was replaced during the operator outage"
+                echo "  pre-chaos workload UIDs: ${WORKLOAD_UIDS}"
+                echo "  current workload UIDs:   ${NOW_WORKLOAD_UIDS}"
+                exit 1
+                ;;
+            esac
+          done
+          echo "Workload undisturbed: glance-api pod UIDs unchanged across the kill"
+          exit 0
+    catch:
+    - script:
+        content: ../diagnostics.sh chaos glance-chaos-op --cr-kind=glance --dep-label=app.kubernetes.io/name=glance-operator --dep-ns=glance-system
+  # ── Step 3: Delete PodChaos ────────────────────────────────────────────
+  - try:
+    - delete:
+        ref:
+          apiVersion: chaos-mesh.org/v1alpha1
+          kind: PodChaos
+          name: kill-glance-operator
+          namespace: glance-system
+  # ── Step 4: Prove the recovered operator reconciles a spec change ──────
+  - try:
+    - patch:
+        file: 03-patch-scale.yaml
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: glance-chaos-op
+            namespace: openstack
+          spec:
+            replicas: 2
+          status:
+            availableReplicas: 2
+            updatedReplicas: 2
+    - assert:
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: Glance
+          metadata:
+            name: glance-chaos-op
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: ../diagnostics.sh chaos glance-chaos-op --cr-kind=glance --dep-label=app.kubernetes.io/name=glance-operator --dep-ns=glance-system

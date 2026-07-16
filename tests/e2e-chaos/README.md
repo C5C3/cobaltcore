@@ -31,9 +31,10 @@ as in `tests/e2e/README.md`. Chaos-specific rules:
   matrix leg (chainsaw v0.2.14's include/exclude-regex flags are
   no-ops). A new suite **must** be added to the `pod` or `network` leg
   there, or it never runs in CI.
-- **Runner split:** PodChaos suites run on Blacksmith runners; the
-  NetworkChaos suites (`mariadb-network-latency`, `-partition`) need the
-  `sch_netem`/`ip_set` kernel modules that only GitHub-hosted
+- **Runner split:** PodChaos suites (e.g. `glance-operator-pod-kill`) run
+  on Blacksmith runners; the NetworkChaos suites
+  (`mariadb-network-latency`, `-partition`, `glance-garage-outage`) need
+  the `sch_netem`/`ip_set` kernel modules that only GitHub-hosted
   `ubuntu-24.04` runners provide, and that leg is `continue-on-error`.
 - **Recovery assertions are UID-gated** where the contract is "a new pod
   recovered" (compare the pod UID before/after the kill), and

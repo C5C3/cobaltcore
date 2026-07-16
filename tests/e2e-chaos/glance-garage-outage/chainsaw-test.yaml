@@ -1,0 +1,373 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test for a Garage (S3) storage outage.
+# The partition severs glance-api <-> Garage traffic. It is enforced on the
+# Garage (server) side so it catches the ClusterIP-routed connection glance-api
+# actually uses (see 02-networkchaos.yaml for why a client-side rule would be a
+# no-op). The suite proves the image-write path fails closed under the outage
+# while the API and the CR stay up:
+#   - baseline: a plain PUT /v2/images/{id}/file lands the data in the default
+#     store and the image goes active
+#   - under partition: a fresh PUT FAILS (non-2xx or bounded timeout) — glance
+#     never claims a durable write it could not make
+#   - under partition: GET /healthcheck stays 200 AND the Glance CR stays
+#     Ready=True. This is the deliberate contrast with the mariadb-network-
+#     partition suite: there the readiness probe is database-aware, so a MariaDB
+#     partition drops the Deployment and flips Ready=False; here readiness hits
+#     /healthcheck (oslo middleware, never touches S3), so an S3 outage is
+#     invisible to readiness and the CR stays Ready — only writes fail.
+#   - after the partition is lifted a fresh PUT succeeds again autonomously
+#
+# No Keystone runs in this leg: [DEFAULT] allow_anonymous_access=true, the
+# injected unauthenticated-context middleware, and the opened image-API policy
+# rules stand in for a live token (00-glance-cr.yaml documents why all three
+# knobs are needed).
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: glance-garage-outage
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply the Glance CR and default S3 store, assert Ready ───────
+  - try:
+    - apply:
+        file: 00-glance-cr.yaml
+    - apply:
+        file: 01-glancebackend-cr.yaml
+    - assert:
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: Glance
+          metadata:
+            name: glance-chaos-garage
+            namespace: openstack
+          status:
+            (conditions[?type == 'BackendsReady']):
+            - status: "True"
+              reason: AllBackendsProjected
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: ../diagnostics.sh baseline glance-chaos-garage --cr-kind=glance
+  # ── Step 2: Baseline — a plain PUT lands data and the image goes active ──
+  # Runs an in-cluster python client (the glance image ships python3): it creates
+  # an image record, PUTs a small payload to the default store (no
+  # X-Image-Meta-Store header needed), and asserts the image goes active.
+  # Connection errors are retried; an HTTP error fails fast with the body. The
+  # WRITE-OK sentinel is grepped so a swallowed pod exit code still fails.
+  - try:
+    - script:
+        timeout: 5m
+        content: |
+          set -eu
+          OUT="$(kubectl run glance-garage-baseline-probe -n $NAMESPACE \
+            --image=ghcr.io/c5c3/glance:2025.2 --rm -i --restart=Never \
+            --pod-running-timeout=3m --command -- python3 -c '
+          import json, sys, time, urllib.request, urllib.error
+
+          BASE = "http://glance-chaos-garage.openstack.svc:9292"
+          NAME = "garage-baseline-probe"
+
+          def fail(msg):
+              print("FAIL: " + msg)
+              sys.exit(1)
+
+          def call(method, path, data=None, headers=None):
+              req = urllib.request.Request(BASE + path, data=data, method=method, headers=dict(headers or {}))
+              return urllib.request.urlopen(req, timeout=30)
+
+          def do(fn, what):
+              err = None
+              for i in range(30):
+                  try:
+                      return fn()
+                  except urllib.error.HTTPError as e:
+                      body = e.read().decode("utf-8", "replace")
+                      fail("%s -> HTTP %d: %s" % (what, e.code, body))
+                  except (urllib.error.URLError, ConnectionError, OSError) as e:
+                      err = e
+                      print("retry %d for %s: %s" % (i, what, e))
+                      time.sleep(5)
+              fail("%s -> gave up after retries: %s" % (what, err))
+
+          payload = json.dumps({"name": NAME, "disk_format": "raw", "container_format": "bare"}).encode()
+          img = json.loads(do(lambda: call("POST", "/v2/images", data=payload, headers={"Content-Type": "application/json"}), "create image").read())
+          image_id = img["id"]
+          print("created image %s (status %s)" % (image_id, img.get("status")))
+
+          resp = do(lambda: call("PUT", "/v2/images/%s/file" % image_id, data=b"garage-outage-payload", headers={"Content-Type": "application/octet-stream"}), "upload to default store")
+          print("upload HTTP %d" % resp.status)
+
+          final = json.loads(do(lambda: call("GET", "/v2/images/%s" % image_id), "get image").read())
+          if final.get("status") != "active":
+              fail("image status is %r, want active" % final.get("status"))
+          print("image active with stores %r" % final.get("stores"))
+          print("WRITE-OK")
+          ')"
+          echo "${OUT}"
+          echo "${OUT}" | grep -q 'WRITE-OK'
+          echo "OK: baseline image PUT landed and went active"
+    catch:
+    - script:
+        content: ../diagnostics.sh baseline glance-chaos-garage --cr-kind=glance
+  # ── Step 3: Inject NetworkChaos to partition Garage traffic ─────────────
+  - try:
+    - apply:
+        file: 02-networkchaos.yaml
+  # ── Step 4a: Assert NetworkChaos injection is active ────────────────────
+  # Confirms the fault is applied before checking effects. Uses `kubectl wait
+  # --for=condition=AllInjected` instead of a chainsaw resource assert because
+  # NetworkChaos.status.conditions is a fixed 4-item list
+  # (Selected/AllInjected/AllRecovered/Paused); chainsaw's list-merge rejects
+  # any shorter expected slice with "lengths of slices don't match".
+  - try:
+    - script:
+        timeout: 60s
+        content: |
+          set -eu
+          kubectl wait networkchaos/partition-garage -n openstack \
+            --for=condition=AllInjected --timeout=60s
+    catch:
+    - script:
+        content: kubectl get networkchaos/partition-garage -n openstack -o yaml 2>&1 || true
+    - script:
+        content: ../diagnostics.sh chaos glance-chaos-garage --cr-kind=glance --dep-label=app.kubernetes.io/name=glance-operator --dep-ns=glance-system --log-label=app.kubernetes.io/instance=glance-chaos-garage
+  # ── Step 4b: Assert fail-closed — writes fail while API + Ready stay up ──
+  # The in-cluster probe proves three things at once while Garage is
+  # partitioned: (1) GET /healthcheck stays 200 (the API keeps serving), (2) an
+  # image record still creates (a DB-only write, unaffected by the Garage
+  # partition), and (3) the data PUT does NOT return a 2xx — glance fails closed
+  # rather than claiming a durable write it could not make. The resource assert
+  # then confirms the CR stays Ready=True: glance readiness hits /healthcheck and
+  # never touches S3, so the storage outage is invisible to it — the deliberate
+  # opposite of the mariadb suite, where a partition flips Ready=False.
+  - try:
+    - script:
+        timeout: 5m
+        content: |
+          set -eu
+          OUT="$(kubectl run glance-garage-failclosed-probe -n $NAMESPACE \
+            --image=ghcr.io/c5c3/glance:2025.2 --rm -i --restart=Never \
+            --pod-running-timeout=3m --command -- python3 -c '
+          import json, sys, time, urllib.request, urllib.error
+
+          BASE = "http://glance-chaos-garage.openstack.svc:9292"
+
+          def fail(msg):
+              print("FAIL: " + msg)
+              sys.exit(1)
+
+          def call(method, path, data=None, headers=None, timeout=30):
+              req = urllib.request.Request(BASE + path, data=data, method=method, headers=dict(headers or {}))
+              return urllib.request.urlopen(req, timeout=timeout)
+
+          def do(fn, what):
+              err = None
+              for i in range(12):
+                  try:
+                      return fn()
+                  except urllib.error.HTTPError as e:
+                      body = e.read().decode("utf-8", "replace")
+                      fail("%s -> HTTP %d: %s" % (what, e.code, body))
+                  except (urllib.error.URLError, ConnectionError, OSError) as e:
+                      err = e
+                      print("retry %d for %s: %s" % (i, what, e))
+                      time.sleep(5)
+              fail("%s -> gave up after retries: %s" % (what, err))
+
+          # The API must keep serving health traffic: /healthcheck is served by
+          # the oslo healthcheck middleware and never touches S3, so it stays 200.
+          hc = do(lambda: call("GET", "/healthcheck", timeout=15), "healthcheck")
+          if hc.status != 200:
+              fail("healthcheck -> %d during partition, want 200" % hc.status)
+          print("healthcheck 200 during partition (API up)")
+
+          # Creating an image record is a DB-only write, unaffected by the Garage
+          # partition, so it still succeeds and yields an id to upload to.
+          payload = json.dumps({"name": "garage-outage-failclosed", "disk_format": "raw", "container_format": "bare"}).encode()
+          img = json.loads(do(lambda: call("POST", "/v2/images", data=payload, headers={"Content-Type": "application/json"}), "create image").read())
+          image_id = img["id"]
+          print("created image %s (status %s)" % (image_id, img.get("status")))
+
+          # Fail-closed contract: the data PUT streams to the partitioned S3
+          # store, so it must NOT return a 2xx. A non-2xx status or a bounded
+          # timeout / connection error is the expected, correct outcome; a 2xx
+          # would mean glance claimed a durable write it could not have made.
+          try:
+              resp = call("PUT", "/v2/images/%s/file" % image_id, data=b"garage-outage-payload", headers={"Content-Type": "application/octet-stream"}, timeout=90)
+              if 200 <= resp.status < 300:
+                  fail("PUT returned %d during partition -- image write did NOT fail closed" % resp.status)
+              print("PUT non-2xx %d during partition (fail-closed OK)" % resp.status)
+          except urllib.error.HTTPError as e:
+              print("PUT -> HTTP %d during partition (fail-closed OK)" % e.code)
+          except (urllib.error.URLError, ConnectionError, OSError) as e:
+              print("PUT -> %r during partition (fail-closed OK)" % e)
+          print("FAILCLOSED-OK")
+          ')"
+          echo "${OUT}"
+          echo "${OUT}" | grep -q 'FAILCLOSED-OK'
+          echo "OK: image write failed closed while API stayed up"
+    - assert:
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: Glance
+          metadata:
+            name: glance-chaos-garage
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: ../diagnostics.sh chaos glance-chaos-garage --cr-kind=glance --dep-label=app.kubernetes.io/name=glance-operator --dep-ns=glance-system --log-label=app.kubernetes.io/instance=glance-chaos-garage
+    - script:
+        content: kubectl get networkchaos/partition-garage -n openstack -o yaml 2>&1 || true
+    - script:
+        content: kubectl get pods -n openstack -l garage.rajsingh.info/cluster=garage,garage.rajsingh.info/tier=storage -o wide 2>&1 || true
+  # ── Step 5: Delete NetworkChaos to lift the partition ───────────────────
+  - try:
+    - delete:
+        ref:
+          apiVersion: chaos-mesh.org/v1alpha1
+          kind: NetworkChaos
+          name: partition-garage
+    catch:
+    - script:
+        content: ../diagnostics.sh chaos glance-chaos-garage --cr-kind=glance --dep-label=app.kubernetes.io/name=glance-operator --dep-ns=glance-system --log-label=app.kubernetes.io/instance=glance-chaos-garage
+    - script:
+        content: kubectl get networkchaos/partition-garage -n openstack -o yaml 2>&1 || true
+    - script:
+        content: kubectl get pods -n openstack -l garage.rajsingh.info/cluster=garage,garage.rajsingh.info/tier=storage -o wide 2>&1 || true
+  # ── Step 5b: Assert the failed-closed write stayed failed ───────────────
+  # Step 4b accepts a bounded timeout as a fail-closed outcome, but a timeout
+  # only proves the CLIENT gave up — glance's store client could still have
+  # completed the upload via its own retry/backoff after the probe stopped
+  # waiting. Re-read the image now that Garage is reachable again: it must
+  # still be non-active (queued/killed). An image that turned active is a
+  # write glance was never confirmed on — the fail-closed contract broken in
+  # exactly the way step 4b cannot see.
+  - try:
+    - script:
+        timeout: 3m
+        content: |
+          set -eu
+          OUT="$(kubectl run glance-garage-failclosed-verify -n $NAMESPACE \
+            --image=ghcr.io/c5c3/glance:2025.2 --rm -i --restart=Never \
+            --pod-running-timeout=2m --command -- python3 -c '
+          import json, sys, time, urllib.request, urllib.error
+
+          BASE = "http://glance-chaos-garage.openstack.svc:9292"
+          NAME = "garage-outage-failclosed"
+
+          def fail(msg):
+              print("FAIL: " + msg)
+              sys.exit(1)
+
+          def do(fn, what):
+              err = None
+              for i in range(12):
+                  try:
+                      return fn()
+                  except urllib.error.HTTPError as e:
+                      body = e.read().decode("utf-8", "replace")
+                      fail("%s -> HTTP %d: %s" % (what, e.code, body))
+                  except (urllib.error.URLError, ConnectionError, OSError) as e:
+                      err = e
+                      print("retry %d for %s: %s" % (i, what, e))
+                      time.sleep(5)
+              fail("%s -> gave up after retries: %s" % (what, err))
+
+          def call(path):
+              req = urllib.request.Request(BASE + path, method="GET")
+              return urllib.request.urlopen(req, timeout=30)
+
+          listing = json.loads(do(lambda: call("/v2/images?name=" + NAME), "list images").read())
+          images = listing.get("images", [])
+          if not images:
+              fail("image %r not found -- step 4b should have created it" % NAME)
+
+          # The record is created before the data PUT, so a fail-closed upload
+          # leaves it queued; glance may also mark it killed. active means the
+          # data landed after the probe timed out.
+          for img in images:
+              status = img.get("status")
+              print("image %s status=%r stores=%r" % (img.get("id"), status, img.get("stores")))
+              if status == "active":
+                  fail("fail-closed image went active after recovery -- glance persisted a write the client was never confirmed on")
+          print("STAYED-FAILED-OK")
+          ')"
+          echo "${OUT}"
+          echo "${OUT}" | grep -q 'STAYED-FAILED-OK'
+          echo "OK: the failed-closed image never became active"
+    catch:
+    - script:
+        content: ../diagnostics.sh chaos glance-chaos-garage --cr-kind=glance --dep-label=app.kubernetes.io/name=glance-operator --dep-ns=glance-system --log-label=app.kubernetes.io/instance=glance-chaos-garage
+  # ── Step 6: Assert recovery — a fresh PUT succeeds again ────────────────
+  # Once the partition is lifted glance-api reaches Garage again; the retrying
+  # probe uploads a fresh image and asserts it goes active, proving writes
+  # recover autonomously with no operator intervention.
+  - try:
+    - script:
+        timeout: 5m
+        content: |
+          set -eu
+          OUT="$(kubectl run glance-garage-recovery-probe -n $NAMESPACE \
+            --image=ghcr.io/c5c3/glance:2025.2 --rm -i --restart=Never \
+            --pod-running-timeout=3m --command -- python3 -c '
+          import json, sys, time, urllib.request, urllib.error
+
+          BASE = "http://glance-chaos-garage.openstack.svc:9292"
+          NAME = "garage-recovery-probe"
+
+          def fail(msg):
+              print("FAIL: " + msg)
+              sys.exit(1)
+
+          def call(method, path, data=None, headers=None):
+              req = urllib.request.Request(BASE + path, data=data, method=method, headers=dict(headers or {}))
+              return urllib.request.urlopen(req, timeout=30)
+
+          def do(fn, what):
+              err = None
+              for i in range(30):
+                  try:
+                      return fn()
+                  except urllib.error.HTTPError as e:
+                      body = e.read().decode("utf-8", "replace")
+                      fail("%s -> HTTP %d: %s" % (what, e.code, body))
+                  except (urllib.error.URLError, ConnectionError, OSError) as e:
+                      err = e
+                      print("retry %d for %s: %s" % (i, what, e))
+                      time.sleep(5)
+              fail("%s -> gave up after retries: %s" % (what, err))
+
+          payload = json.dumps({"name": NAME, "disk_format": "raw", "container_format": "bare"}).encode()
+          img = json.loads(do(lambda: call("POST", "/v2/images", data=payload, headers={"Content-Type": "application/json"}), "create image").read())
+          image_id = img["id"]
+          print("created image %s (status %s)" % (image_id, img.get("status")))
+
+          resp = do(lambda: call("PUT", "/v2/images/%s/file" % image_id, data=b"garage-outage-payload", headers={"Content-Type": "application/octet-stream"}), "upload to default store")
+          print("upload HTTP %d" % resp.status)
+
+          final = json.loads(do(lambda: call("GET", "/v2/images/%s" % image_id), "get image").read())
+          if final.get("status") != "active":
+              fail("image status is %r, want active" % final.get("status"))
+          print("image active with stores %r" % final.get("stores"))
+          print("WRITE-OK")
+          ')"
+          echo "${OUT}"
+          echo "${OUT}" | grep -q 'WRITE-OK'
+          echo "OK: image PUT succeeds again after the partition was lifted"
+    catch:
+    - script:
+        content: ../diagnostics.sh chaos glance-chaos-garage --cr-kind=glance --dep-label=app.kubernetes.io/name=glance-operator --dep-ns=glance-system --log-label=app.kubernetes.io/instance=glance-chaos-garage
+    - script:
+        content: kubectl get pods -n openstack -l garage.rajsingh.info/cluster=garage,garage.rajsingh.info/tier=storage -o wide 2>&1 || true

@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Default S3 image store for the glance-chaos-op CR. It points at the in-cluster
+# Garage S3 endpoint on the pre-created glance-images bucket with SigV4 region
+# "garage"; credentials come from the ESO-synced garage-s3-credentials Secret.
+# glance-api registers no store without it, so it must go Ready before the
+# Glance CR can.
+apiVersion: glance.openstack.c5c3.io/v1alpha1
+kind: GlanceBackend
+metadata:
+  name: glance-chaos-op-s3
+  namespace: openstack
+spec:
+  glanceRef:
+    name: glance-chaos-op
+  type: S3
+  isDefault: true
+  s3:
+    host: http://garage.openstack.svc.cluster.local:3900
+    bucket: glance-images
+    region: garage
+    credentialsSecretRef:
+      name: garage-s3-credentials
