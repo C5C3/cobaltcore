@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Default S3 store (garage-a) for the glance-multistore CR. Its name becomes the
+# glance store id (enabled_backends "garage-a:s3", [glance_store] default_backend
+# = garage-a). It points at the pre-created glance-images bucket on the in-cluster
+# Garage endpoint; the glance-s3 GarageKey (garage-s3-credentials Secret) holds
+# read/write on both glance-images and glance-images-2.
+apiVersion: glance.openstack.c5c3.io/v1alpha1
+kind: GlanceBackend
+metadata:
+  name: garage-a
+  namespace: openstack
+spec:
+  glanceRef:
+    name: glance-multistore
+  type: S3
+  isDefault: true
+  s3:
+    host: http://garage.openstack.svc.cluster.local:3900
+    bucket: glance-images
+    region: garage
+    credentialsSecretRef:
+      name: garage-s3-credentials

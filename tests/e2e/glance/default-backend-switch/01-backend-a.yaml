@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Initial default S3 store (switch-a) for the glance-backend-switch CR. It backs
+# the pre-created glance-images bucket. The suite later clears its isDefault flag
+# to exercise the no-default (last-good retention) state.
+apiVersion: glance.openstack.c5c3.io/v1alpha1
+kind: GlanceBackend
+metadata:
+  name: switch-a
+  namespace: openstack
+spec:
+  glanceRef:
+    name: glance-backend-switch
+  type: S3
+  isDefault: true
+  s3:
+    host: http://garage.openstack.svc.cluster.local:3900
+    bucket: glance-images
+    region: garage
+    credentialsSecretRef:
+      name: garage-s3-credentials

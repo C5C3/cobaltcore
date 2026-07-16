@@ -1,0 +1,239 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the Glance default-backend switch contract (2025.2).
+# Two S3 stores are attached (switch-a default, switch-b non-default) and the
+# suite flips which one carries isDefault to lock two invariants:
+#
+#   - No default: clearing switch-a's isDefault (with switch-b still non-default)
+#     leaves zero credential-ready defaults, so BackendsReady goes
+#     False/NoDefaultBackend and the config is NOT re-rendered — the running
+#     Deployment keeps mounting the last-good config ConfigMap (still
+#     default_backend = switch-a).
+#   - Re-render + roll: promoting switch-b to the default re-renders
+#     [glance_store] default_backend = switch-b into a NEW content-hashed config
+#     ConfigMap, which rolls the API pods, and Ready returns True.
+#
+# The rendered [glance_store] default_backend line lives in the config ConfigMap
+# (glance-api.conf), not the backends Secret: the per-store [<name>] sections in
+# backends.conf are invariant to isDefault, so the backends Secret name is
+# unchanged across the whole flow — the roll is driven by the config ConfigMap.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: glance-default-backend-switch
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply the Glance CR and both S3 stores ──────────────────────
+  - try:
+    - apply:
+        file: 00-glance-cr.yaml
+    - apply:
+        file: 01-backend-a.yaml
+    - apply:
+        file: 02-backend-b.yaml
+  # ── Step 2: Assert Ready with switch-a as the default ──────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: Glance
+          metadata:
+            name: glance-backend-switch
+            namespace: openstack
+          status:
+            (conditions[?type == 'BackendsReady']):
+            - status: "True"
+              reason: AllBackendsProjected
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: glance-backend-switch
+            namespace: openstack
+          spec:
+            replicas: 1
+          status:
+            availableReplicas: 1
+            updatedReplicas: 1
+    catch:
+    - script:
+        content: |
+          echo "=== Glance CR status ==="
+          kubectl get glance glance-backend-switch -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== GlanceBackend status ==="
+          kubectl get glancebackend switch-a switch-b -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n glance-system -l app.kubernetes.io/name=glance-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n glance-system -l app.kubernetes.io/name=glance-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Glance API pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=glance-backend-switch -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 3: Capture the last-good config ConfigMap + backends Secret ────
+  # The Deployment's config volume names the content-hashed glance-api.conf
+  # ConfigMap; the backends volume names the content-hashed backends Secret.
+  # Both names are captured (to /tmp, read back in later steps) after asserting
+  # the initial render carries default_backend = switch-a.
+  - try:
+    - script:
+        content: |
+          set -eu
+          CM=$(kubectl get deploy glance-backend-switch -n openstack \
+            -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="config")].configMap.name}')
+          SEC=$(kubectl get deploy glance-backend-switch -n openstack \
+            -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="backends")].secret.secretName}')
+          test -n "$CM"
+          test -n "$SEC"
+          printf '%s' "$CM" > /tmp/glance-backend-switch-config-before
+          printf '%s' "$SEC" > /tmp/glance-backend-switch-backends-before
+          echo "before config ConfigMap: $CM"
+          echo "before backends Secret:  $SEC"
+          kubectl get cm "$CM" -n openstack -o 'jsonpath={.data.glance-api\.conf}' \
+            | grep -q 'default_backend = switch-a'
+          echo "OK: initial default_backend = switch-a; names captured"
+  # ── Step 4: Clear switch-a's default → no default, last-good retained ──
+  - try:
+    - patch:
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: GlanceBackend
+          metadata:
+            name: switch-a
+            namespace: openstack
+          spec:
+            isDefault: false
+    - assert:
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: Glance
+          metadata:
+            name: glance-backend-switch
+            namespace: openstack
+          status:
+            (conditions[?type == 'BackendsReady']):
+            - status: "False"
+              reason: NoDefaultBackend
+    - script:
+        content: |
+          set -eu
+          BEFORE_CM=$(cat /tmp/glance-backend-switch-config-before)
+          BEFORE_SEC=$(cat /tmp/glance-backend-switch-backends-before)
+          CM=$(kubectl get deploy glance-backend-switch -n openstack \
+            -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="config")].configMap.name}')
+          SEC=$(kubectl get deploy glance-backend-switch -n openstack \
+            -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="backends")].secret.secretName}')
+          echo "config:   before=$BEFORE_CM now=$CM"
+          echo "backends: before=$BEFORE_SEC now=$SEC"
+          if [ "$CM" != "$BEFORE_CM" ]; then
+            echo "ERROR: config ConfigMap changed with no default backend (expected last-good retention)"
+            exit 1
+          fi
+          if [ "$SEC" != "$BEFORE_SEC" ]; then
+            echo "ERROR: backends Secret changed with no default backend"
+            exit 1
+          fi
+          kubectl get cm "$CM" -n openstack -o 'jsonpath={.data.glance-api\.conf}' \
+            | grep -q 'default_backend = switch-a'
+          echo "OK: last-good config retained (still default_backend = switch-a)"
+    catch:
+    - script:
+        content: |
+          echo "=== Glance CR status ==="
+          kubectl get glance glance-backend-switch -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== GlanceBackend status ==="
+          kubectl get glancebackend switch-a switch-b -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n glance-system -l app.kubernetes.io/name=glance-operator --all-containers --tail=60 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 5: Promote switch-b → re-render, roll, Ready returns True ─────
+  - try:
+    - patch:
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: GlanceBackend
+          metadata:
+            name: switch-b
+            namespace: openstack
+          spec:
+            isDefault: true
+    - assert:
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: Glance
+          metadata:
+            name: glance-backend-switch
+            namespace: openstack
+          status:
+            (conditions[?type == 'BackendsReady']):
+            - status: "True"
+              reason: AllBackendsProjected
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: glance-backend-switch
+            namespace: openstack
+          spec:
+            replicas: 1
+          status:
+            availableReplicas: 1
+            updatedReplicas: 1
+    - script:
+        content: |
+          set -eu
+          BEFORE_CM=$(cat /tmp/glance-backend-switch-config-before)
+          BEFORE_SEC=$(cat /tmp/glance-backend-switch-backends-before)
+          CM=$(kubectl get deploy glance-backend-switch -n openstack \
+            -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="config")].configMap.name}')
+          SEC=$(kubectl get deploy glance-backend-switch -n openstack \
+            -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="backends")].secret.secretName}')
+          echo "config:   before=$BEFORE_CM now=$CM"
+          echo "backends: before=$BEFORE_SEC now=$SEC"
+          if [ "$CM" = "$BEFORE_CM" ]; then
+            echo "ERROR: config ConfigMap did not change after promoting switch-b to default"
+            exit 1
+          fi
+          if [ "$SEC" != "$BEFORE_SEC" ]; then
+            echo "ERROR: backends Secret changed on default switch (store sections are invariant to isDefault)"
+            exit 1
+          fi
+          kubectl get cm "$CM" -n openstack -o 'jsonpath={.data.glance-api\.conf}' \
+            | grep -q 'default_backend = switch-b'
+          echo "OK: re-rendered to a new config ConfigMap with default_backend = switch-b; backends Secret unchanged"
+    catch:
+    - script:
+        content: |
+          echo "=== Glance CR status ==="
+          kubectl get glance glance-backend-switch -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== GlanceBackend status ==="
+          kubectl get glancebackend switch-a switch-b -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n glance-system -l app.kubernetes.io/name=glance-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n glance-system -l app.kubernetes.io/name=glance-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Glance API pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=glance-backend-switch -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true

@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Second, non-default S3 store (switch-b) for the glance-backend-switch CR. It
+# backs the pre-created glance-images-2 bucket. The suite later promotes it to
+# the default, which re-renders [glance_store] default_backend = switch-b and
+# rolls the API pods onto the new content-hashed config ConfigMap.
+apiVersion: glance.openstack.c5c3.io/v1alpha1
+kind: GlanceBackend
+metadata:
+  name: switch-b
+  namespace: openstack
+spec:
+  glanceRef:
+    name: glance-backend-switch
+  type: S3
+  isDefault: false
+  s3:
+    host: http://garage.openstack.svc.cluster.local:3900
+    bucket: glance-images-2
+    region: garage
+    credentialsSecretRef:
+      name: garage-s3-credentials

@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Glance CR fixture for the default-backend-switch E2E test (2025.2 release).
+# Two S3 stores are attached (switch-a default, switch-b non-default). The suite
+# flips which store carries isDefault to lock the default-backend re-render and
+# config-roll contract. No API calls are made, so no anonymous-mode extraConfig
+# is needed.
+apiVersion: glance.openstack.c5c3.io/v1alpha1
+kind: Glance
+metadata:
+  name: glance-backend-switch
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/glance
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: glance_backend_switch
+    secretRef:
+      name: glance-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password

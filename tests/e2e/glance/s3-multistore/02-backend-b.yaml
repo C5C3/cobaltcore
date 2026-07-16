@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Second, non-default S3 store (garage-b) for the glance-multistore CR. It backs
+# the independent, pre-created glance-images-2 bucket. The suite targets this
+# store explicitly on upload (X-Image-Meta-Store: garage-b) to prove image data
+# lands in the non-default store while garage-a stays the registered default.
+apiVersion: glance.openstack.c5c3.io/v1alpha1
+kind: GlanceBackend
+metadata:
+  name: garage-b
+  namespace: openstack
+spec:
+  glanceRef:
+    name: glance-multistore
+  type: S3
+  isDefault: false
+  s3:
+    host: http://garage.openstack.svc.cluster.local:3900
+    bucket: glance-images-2
+    region: garage
+    credentialsSecretRef:
+      name: garage-s3-credentials

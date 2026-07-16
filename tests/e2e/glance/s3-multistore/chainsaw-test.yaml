@@ -1,0 +1,212 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the Glance S3 multistore contract (2025.2 release).
+# Two S3 stores are attached (garage-a default, garage-b non-default) and the
+# suite drives the plain PUT upload path (no import staging) against the
+# NON-default store to lock the design decisions:
+#   - /v2/info/stores advertises both store ids with garage-a flagged default
+#   - a plain PUT /v2/images/{id}/file with X-Image-Meta-Store: garage-b lands
+#     the data in the non-default, pre-created glance-images-2 bucket
+#   - the image goes active with stores == "garage-b"
+#   - the object is observable S3-side in glance-images-2
+#
+# No Keystone runs in this leg: [DEFAULT] allow_anonymous_access=true plus the
+# opened image-API policy rules stand in for a live token.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: glance-s3-multistore
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply the Glance CR and both S3 stores ──────────────────────
+  - try:
+    - apply:
+        file: 00-glance-cr.yaml
+    - apply:
+        file: 01-backend-a.yaml
+    - apply:
+        file: 02-backend-b.yaml
+  # ── Step 2: Assert Ready and both stores projected ─────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: Glance
+          metadata:
+            name: glance-multistore
+            namespace: openstack
+          status:
+            (conditions[?type == 'BackendsReady']):
+            - status: "True"
+              reason: AllBackendsProjected
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: GlanceBackend
+          metadata:
+            name: garage-a
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: GlanceBackend
+          metadata:
+            name: garage-b
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: |
+          echo "=== Glance CR status ==="
+          kubectl get glance glance-multistore -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== GlanceBackend status ==="
+          kubectl get glancebackend garage-a garage-b -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n glance-system -l app.kubernetes.io/name=glance-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n glance-system -l app.kubernetes.io/name=glance-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Glance API pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=glance-multistore -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 3: Store discovery + plain PUT to the non-default store ────────
+  # Runs an in-cluster python client (the glance image ships python3): it reads
+  # /v2/info/stores, creates an image record, PUTs a small payload to garage-b
+  # via X-Image-Meta-Store, and asserts the image goes active with stores ==
+  # "garage-b". Genuine connection errors are retried; an HTTP error (e.g. a
+  # policy denial) fails fast with the response body. The MULTISTORE-OK sentinel
+  # is grepped so a swallowed pod exit code still fails the step.
+  - try:
+    - script:
+        timeout: 5m
+        content: |
+          set -eu
+          OUT="$(kubectl run glance-multistore-probe -n $NAMESPACE \
+            --image=ghcr.io/c5c3/glance:2025.2 --rm -i --restart=Never \
+            --pod-running-timeout=3m --command -- python3 -c '
+          import json, sys, time, urllib.request, urllib.error
+
+          BASE = "http://glance-multistore.openstack.svc:9292"
+
+          def fail(msg):
+              print("FAIL: " + msg)
+              sys.exit(1)
+
+          def call(method, path, data=None, headers=None):
+              req = urllib.request.Request(BASE + path, data=data, method=method, headers=dict(headers or {}))
+              return urllib.request.urlopen(req, timeout=30)
+
+          def do(fn, what):
+              err = None
+              for i in range(30):
+                  try:
+                      return fn()
+                  except urllib.error.HTTPError as e:
+                      body = e.read().decode("utf-8", "replace")
+                      fail("%s -> HTTP %d: %s" % (what, e.code, body))
+                  except (urllib.error.URLError, ConnectionError, OSError) as e:
+                      err = e
+                      print("retry %d for %s: %s" % (i, what, e))
+                      time.sleep(5)
+              fail("%s -> gave up after retries: %s" % (what, err))
+
+          info = json.loads(do(lambda: call("GET", "/v2/info/stores"), "get stores").read())
+          stores = {s["id"]: s for s in info.get("stores", [])}
+          print("stores: " + json.dumps(stores))
+          for want in ("garage-a", "garage-b"):
+              if want not in stores:
+                  fail("store %s missing from /v2/info/stores" % want)
+          if not stores["garage-a"].get("default"):
+              fail("garage-a is not flagged default: " + json.dumps(stores["garage-a"]))
+          print("stores OK: garage-a and garage-b present, garage-a default")
+
+          payload = json.dumps({"name": "multistore-probe", "disk_format": "raw", "container_format": "bare"}).encode()
+          img = json.loads(do(lambda: call("POST", "/v2/images", data=payload, headers={"Content-Type": "application/json"}), "create image").read())
+          image_id = img["id"]
+          print("created image %s (status %s)" % (image_id, img.get("status")))
+
+          resp = do(lambda: call("PUT", "/v2/images/%s/file" % image_id, data=b"multistore-probe-payload", headers={"Content-Type": "application/octet-stream", "X-Image-Meta-Store": "garage-b"}), "upload to garage-b")
+          print("upload HTTP %d" % resp.status)
+
+          final = json.loads(do(lambda: call("GET", "/v2/images/%s" % image_id), "get image").read())
+          print("final image: " + json.dumps(final))
+          if final.get("status") != "active":
+              fail("image status is %r, want active" % final.get("status"))
+          if final.get("stores") != "garage-b":
+              fail("image stores is %r, want garage-b" % final.get("stores"))
+          print("MULTISTORE-OK")
+          ')"
+          echo "${OUT}"
+          echo "${OUT}" | grep -q 'MULTISTORE-OK'
+          echo "OK: image uploaded to non-default store garage-b and went active"
+    catch:
+    - script:
+        content: |
+          echo "=== Glance CR status ==="
+          kubectl get glance glance-multistore -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== GlanceBackend status ==="
+          kubectl get glancebackend garage-a garage-b -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n glance-system -l app.kubernetes.io/name=glance-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n glance-system -l app.kubernetes.io/name=glance-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Glance API pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=glance-multistore -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 4: S3-side cross-check that the object landed in glance-images-2 ─
+  # Secondary proof of the pre-created-bucket / plain-PUT decisions: decode the
+  # imported Garage key and list glance-images-2 with the aws-cli, asserting the
+  # listing is non-empty (this run wrote exactly one object to it).
+  - try:
+    - script:
+        timeout: 3m
+        content: |
+          set -eu
+          AKID="$(kubectl get secret garage-s3-credentials -n openstack \
+            -o 'jsonpath={.data.access-key-id}' | base64 -d)"
+          SAK="$(kubectl get secret garage-s3-credentials -n openstack \
+            -o 'jsonpath={.data.secret-access-key}' | base64 -d)"
+          OUT="$(kubectl run glance-multistore-s3-probe -n openstack \
+            --image=public.ecr.aws/aws-cli/aws-cli:2.35.23@sha256:0425835c7c9e33a747dfd499dcd3603ec802662f7f7ded42d8fc81ce7b712bf9 \
+            --rm -i --restart=Never --pod-running-timeout=2m \
+            --env "AWS_ACCESS_KEY_ID=${AKID}" \
+            --env "AWS_SECRET_ACCESS_KEY=${SAK}" \
+            --env "AWS_DEFAULT_REGION=garage" \
+            --env "AWS_CONFIG_FILE=/tmp/aws-cfg" \
+            --command -- sh -c 'set -e; printf "[default]\ns3 =\n    addressing_style = path\n" > /tmp/aws-cfg; aws --endpoint-url http://garage.openstack.svc.cluster.local:3900 s3api list-objects-v2 --bucket glance-images-2')"
+          echo "${OUT}"
+          echo "${OUT}" | grep -q '"Key"'
+          echo "OK: glance-images-2 holds at least one object"
+    catch:
+    - script:
+        content: |
+          echo "=== Glance API pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=glance-multistore -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
