@@ -8,6 +8,8 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/url"
+	"slices"
 	"strconv"
 
 	corev1 "k8s.io/api/core/v1"
@@ -140,6 +142,64 @@ func CacheEgressPorts(cache commonv1.CacheSpec) []int32 {
 		ports = append(ports, port)
 	}
 	return ports
+}
+
+// S3EgressRule returns the object-store egress rule (TCP, one port per distinct
+// endpoint parsed from hostURLs) and ok=true, or a zero rule and ok=false when
+// no entry yields a usable port. Each port is the URL's explicit port, or the
+// scheme default (443 for https, 80 for http) when none is given; entries that
+// fail to parse or carry no usable host or port (invalid or out-of-range ports)
+// are skipped. Destination is unrestricted, matching the DNS/database/cache
+// egress posture, because the backends are user-supplied external hosts.
+//
+// Unlike CacheEgressPorts, which preserves input order, the ports are sorted
+// ascending: S3 backends come from an unordered set of backend CRs, so a stable
+// order keeps the rendered rule deterministic.
+func S3EgressRule(hostURLs []string) (networkingv1.NetworkPolicyEgressRule, bool) {
+	const maxPort = 65535
+	seen := make(map[int32]struct{}, len(hostURLs))
+	var ports []int32
+	for _, hostURL := range hostURLs {
+		u, err := url.Parse(hostURL)
+		if err != nil || u.Hostname() == "" {
+			continue
+		}
+		var port int32
+		if portStr := u.Port(); portStr != "" {
+			// ParseInt with bitSize 32 bounds the result to int32; the explicit
+			// range check rejects non-port values before the conversion.
+			n, err := strconv.ParseInt(portStr, 10, 32)
+			if err != nil || n <= 0 || n > maxPort {
+				continue
+			}
+			port = int32(n)
+		} else {
+			switch u.Scheme {
+			case "https":
+				port = 443
+			case "http":
+				port = 80
+			default:
+				continue
+			}
+		}
+		if _, ok := seen[port]; ok {
+			continue
+		}
+		seen[port] = struct{}{}
+		ports = append(ports, port)
+	}
+	if len(ports) == 0 {
+		return networkingv1.NetworkPolicyEgressRule{}, false
+	}
+	slices.Sort(ports)
+	tcp := corev1.ProtocolTCP
+	rulePorts := make([]networkingv1.NetworkPolicyPort, 0, len(ports))
+	for i := range ports {
+		s3Port := intstr.FromInt32(ports[i])
+		rulePorts = append(rulePorts, networkingv1.NetworkPolicyPort{Protocol: &tcp, Port: &s3Port})
+	}
+	return networkingv1.NetworkPolicyEgressRule{Ports: rulePorts}, true
 }
 
 // IngressPeersParams carries the inputs of IngressPeers: the user-declared

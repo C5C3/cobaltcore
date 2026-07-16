@@ -102,6 +102,42 @@ func TestCacheEgressRule(t *testing.T) {
 	g.Expect(rule.Ports[0].Port.IntValue()).To(gomega.Equal(11211))
 }
 
+func TestS3EgressRule(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		hostURLs []string
+		wantOK   bool
+		want     []int32
+	}{
+		{name: "empty input", wantOK: false},
+		{name: "explicit port", hostURLs: []string{"https://host:3900"}, wantOK: true, want: []int32{3900}},
+		{name: "https default", hostURLs: []string{"https://host"}, wantOK: true, want: []int32{443}},
+		{name: "http default", hostURLs: []string{"http://host"}, wantOK: true, want: []int32{80}},
+		{name: "deduped same port", hostURLs: []string{"https://a", "https://b"}, wantOK: true, want: []int32{443}},
+		{name: "sorted ascending", hostURLs: []string{"https://a:9000", "http://b", "https://c:3900"}, wantOK: true, want: []int32{80, 3900, 9000}},
+		{name: "all garbage", hostURLs: []string{"://nope", "not a url at all", "https://host:0"}, wantOK: false},
+		{name: "out of range port skipped", hostURLs: []string{"https://host:99999"}, wantOK: false},
+		{name: "mixed valid and invalid", hostURLs: []string{"https://host:3900", "://nope"}, wantOK: true, want: []int32{3900}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			rule, ok := S3EgressRule(tc.hostURLs)
+			g.Expect(ok).To(gomega.Equal(tc.wantOK))
+			if !tc.wantOK {
+				g.Expect(rule).To(gomega.Equal(networkingv1.NetworkPolicyEgressRule{}))
+				return
+			}
+			g.Expect(rule.To).To(gomega.BeEmpty())
+			got := make([]int32, 0, len(rule.Ports))
+			for _, p := range rule.Ports {
+				g.Expect(*p.Protocol).To(gomega.Equal(corev1.ProtocolTCP))
+				got = append(got, int32(p.Port.IntValue()))
+			}
+			g.Expect(got).To(gomega.Equal(tc.want))
+		})
+	}
+}
+
 func TestIngressPeers_Order(t *testing.T) {
 	g := gomega.NewWithT(t)
 	src := commonv1.NetworkPolicyIngressSource{
