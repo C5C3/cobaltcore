@@ -1,0 +1,77 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Registers the Glance image service and its public/internal endpoints in the
+# keystone-glance-tempest-2025-2 catalog so Tempest's image client can discover
+# the glance-tempest-2025-2 API. keystone-manage bootstrap only creates the
+# identity service, so the image service/endpoints must be added out-of-band.
+#
+# It authenticates as the bootstrap admin (keystone-admin Secret) and is written
+# idempotently so a Job retry converges rather than duplicating or erroring.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: glance-tempest-catalog-setup
+  namespace: openstack
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: setup
+          image: ghcr.io/c5c3/tempest:2025.2
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: OS_AUTH_URL
+              value: http://keystone-glance-tempest-2025-2.openstack.svc.cluster.local:5000/v3
+            - name: OS_IDENTITY_API_VERSION
+              value: "3"
+            - name: OS_USERNAME
+              value: admin
+            - name: OS_USER_DOMAIN_NAME
+              value: Default
+            - name: OS_PROJECT_NAME
+              value: admin
+            - name: OS_PROJECT_DOMAIN_NAME
+              value: Default
+            - name: OS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keystone-admin
+                  key: password
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              # Each step is idempotent so a Job retry re-converges instead of
+              # failing on AlreadyExists.
+              #
+              # Service create is guarded by a name-list grep (mirroring the
+              # external-keystone fixture): `openstack service show` of a missing
+              # resource can exit 0 on this image, so a show-guard would skip the
+              # create; listing + an exact-match grep is unambiguous.
+              if ! openstack service list --format value -c Name | grep -qx glance; then
+                openstack service create --name glance \
+                  --description "OpenStack Image Service" image
+              fi
+
+              # Endpoints are guarded by listing the glance service's existing
+              # endpoints for the interface and matching the exact URL (fixed
+              # string, so the dotted FQDN is not treated as a regex).
+              create_endpoint() {
+                interface="$1"
+                url="$2"
+                if ! openstack endpoint list --service glance --interface "${interface}" \
+                     --format value -c URL | grep -qxF "${url}"; then
+                  openstack endpoint create --region RegionOne image "${interface}" "${url}"
+                fi
+              }
+
+              GLANCE_URL="http://glance-tempest-2025-2.openstack.svc.cluster.local:9292"
+              create_endpoint public "${GLANCE_URL}"
+              create_endpoint internal "${GLANCE_URL}"
+
+              echo "OK: glance service and endpoints registered"
+              openstack endpoint list --service glance --format value -c Interface -c URL

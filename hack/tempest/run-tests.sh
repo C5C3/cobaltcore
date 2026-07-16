@@ -11,10 +11,14 @@
 # hack/ci-run-tempest.sh and hack/run-tempest.sh so the retry/exit-code logic
 # lives in one place and cannot drift between CI and local runs.
 #
+# The plugin phase is optional: when phase-2-plugin.txt is empty (a pure
+# tempest.api.* include list, e.g. the glance image leg) the plugin phase is
+# skipped instead of running stestr with an empty include list.
+#
 # Expected layout inside the container:
 #   /etc/tempest/tempest.conf
 #   /etc/tempest/phases/phase-1-core.txt
-#   /etc/tempest/phases/phase-2-plugin.txt
+#   /etc/tempest/phases/phase-2-plugin.txt  (may be empty; plugin phase skipped)
 #   /etc/tempest/extract-failed.py
 #   /etc/tempest/merge-retry-junit.py
 #   /etc/tempest/exclude-tests.txt       (optional)
@@ -73,9 +77,19 @@ run_phase() {
 overall_rc=0
 run_phase phase-1-core "${TEMPEST_CONCURRENCY}" \
   /etc/tempest/phases/phase-1-core.txt /output/phase-1-core.subunit || overall_rc=$?
+
+# Phase 2 is optional: an include list that only selects core tempest.api.*
+# tests (e.g. the glance image leg) has no keystone_tempest_plugin.* patterns,
+# so the phase-2 file is empty and the plugin phase is skipped entirely. A
+# skipped phase still needs an (empty) subunit so the concatenations below work.
 phase2_rc=0
-run_phase phase-2-plugin "${TEMPEST_CONCURRENCY}" \
-  /etc/tempest/phases/phase-2-plugin.txt /output/phase-2-plugin.subunit || phase2_rc=$?
+if [[ -s /etc/tempest/phases/phase-2-plugin.txt ]]; then
+  run_phase phase-2-plugin "${TEMPEST_CONCURRENCY}" \
+    /etc/tempest/phases/phase-2-plugin.txt /output/phase-2-plugin.subunit || phase2_rc=$?
+else
+  echo "phase-2-plugin: no patterns, skipping"
+  : > /output/phase-2-plugin.subunit
+fi
 if [[ ${phase2_rc} -gt ${overall_rc} ]]; then
   overall_rc=${phase2_rc}
 fi

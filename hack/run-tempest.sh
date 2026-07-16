@@ -294,8 +294,13 @@ run_tempest() {
     log "ERROR: every non-comment line must start with 'tempest.' or 'keystone_tempest_plugin.'."
     return 1
   fi
-  if [[ "${phase1_count}" -eq 0 || "${phase2_count}" -eq 0 ]]; then
-    log "ERROR: scope-split produced an empty phase (phase1=${phase1_count}, phase2=${phase2_count}); both phases must have at least one pattern."
+  # ONE phase may legitimately be empty: a pure tempest.api.* include list (the
+  # glance legs) has no plugin phase, and hack/tempest/run-tests.sh — the runner
+  # this function installs into the container below — skips an empty plugin
+  # phase instead of running stestr with an empty include list. Only a split
+  # that selects nothing at all is a real error.
+  if [[ "${phase1_count}" -eq 0 && "${phase2_count}" -eq 0 ]]; then
+    log "ERROR: scope-split produced two empty phases (phase1=${phase1_count}, phase2=${phase2_count}); include-tests.txt selects no runnable patterns."
     return 1
   fi
 

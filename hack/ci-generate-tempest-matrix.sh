@@ -5,9 +5,25 @@
 
 # hack/ci-generate-tempest-matrix.sh — Generate Tempest release matrix from releases/ directories.
 #
-# Scans releases/*/ directories and builds a JSON matrix for the Tempest CI job.
-# Each release requires a matching Tempest config directory at
-# tests/tempest/keystone-<slug>/ (e.g. keystone-2025-2 for release 2025.2).
+# Scans releases/*/ directories and, for each release, emits one matrix entry
+# per Tempest-covered service (keystone, glance). Each service requires a
+# matching Tempest config directory at tests/tempest/<service>-<slug>/ (e.g.
+# keystone-2025-2 and glance-2025-2 for release 2025.2); a missing directory for
+# either service is a hard failure.
+#
+# Each emitted entry carries:
+#   service          — service under test (keystone|glance)
+#   release          — OpenStack release (e.g. 2025.2)
+#   config-dir       — tests/tempest/<service>-<slug>
+#   cr-name          — Keystone CR the CI job waits on and port-forwards
+#   service-k8s-name — K8s Service name for the keystone port-forward (== cr-name)
+# and, for the glance service only, additionally:
+#   glance-cr-name   — Glance CR the CI job waits on; doubles as the K8s Service
+#                      name for the glance port-forward
+#
+# For keystone the cr-name/service-k8s-name are keystone-tempest-<slug>; the
+# glance leg runs against its own keystone-glance-tempest-<slug> identity CR and
+# the glance-tempest-<slug> image CR.
 #
 # Required env vars:
 #   GITHUB_OUTPUT — GitHub Actions output file (set automatically by Actions)
@@ -34,14 +50,22 @@ for d in "${dirs[@]}"; do
   release="${d%/}"
   release="${release##*/}"
   slug="${release//./-}"
-  config_dir="tests/tempest/keystone-${slug}"
-  if [[ ! -d "${REPO_ROOT}/${config_dir}" ]]; then
-    echo "::error::Missing Tempest config directory: ${config_dir} (for release ${release})"
-    exit 1
-  fi
-  cr_name="keystone-tempest-${slug}"
-  svc_name="${cr_name}"
-  entries+=("{\"release\":\"${release}\",\"config-dir\":\"${config_dir}\",\"cr-name\":\"${cr_name}\",\"service-k8s-name\":\"${svc_name}\"}")
+  for service in keystone glance; do
+    config_dir="tests/tempest/${service}-${slug}"
+    if [[ ! -d "${REPO_ROOT}/${config_dir}" ]]; then
+      echo "::error::Missing Tempest config directory: ${config_dir} (for service ${service}, release ${release})"
+      exit 1
+    fi
+    cr_name="keystone-tempest-${slug}"
+    glance_keys=""
+    if [[ "${service}" == "glance" ]]; then
+      # The glance leg runs against its own Keystone identity CR (waited on and
+      # port-forwarded by the CI job) plus its Glance image CR.
+      cr_name="keystone-glance-tempest-${slug}"
+      glance_keys=",\"glance-cr-name\":\"glance-tempest-${slug}\""
+    fi
+    entries+=("{\"service\":\"${service}\",\"release\":\"${release}\",\"config-dir\":\"${config_dir}\",\"cr-name\":\"${cr_name}\",\"service-k8s-name\":\"${cr_name}\"${glance_keys}}")
+  done
 done
 
 # ---------------------------------------------------------------------------

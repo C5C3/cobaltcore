@@ -1,0 +1,55 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Dedicated Glance CR for the Glance Tempest leg (2025.2 release).
+# Uses a separate database (glance_tempest_2025_2) to avoid stale state from
+# prior Chainsaw E2E tests that reuse the same kind cluster. It authenticates
+# against the dedicated keystone-glance-tempest-2025-2 identity service with the
+# real admin credentials (no allow_anonymous_access, no policy overrides) so the
+# tempest.api.image suite exercises the production auth path end-to-end. The
+# database credentials come from the ESO-synced glance-db Secret and the
+# service-user password from the pre-seeded keystone-admin Secret. glance-api
+# cannot start without a default image store, so 03-glancebackend-cr.yaml
+# attaches one before Ready can settle.
+apiVersion: glance.openstack.c5c3.io/v1alpha1
+kind: Glance
+metadata:
+  name: glance-tempest-2025-2
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  deployment:
+    replicas: 1
+    # Mirror 00-keystone-cr.yaml: the operator's default 500m CPU limit
+    # throttles the glance-api pod to half a core, which is what pushed the
+    # keystone Tempest leg past its CI timeout. tempest.api.image is
+    # upload/download-heavy on the data path, so give it the same headroom.
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: "2"
+        memory: 1Gi
+  image:
+    repository: ghcr.io/c5c3/glance
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: glance_tempest_2025_2
+    secretRef:
+      name: glance-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone-glance-tempest-2025-2.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password

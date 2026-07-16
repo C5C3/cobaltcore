@@ -34,8 +34,24 @@
 #   OUTPUT_DIR    — Test output directory (default: _output/tempest)
 #   TEMPEST_IMAGE    — Tempest container image (default: c5c3/tempest:local)
 #   SERVICE_K8S_NAME — K8s Service name for port-forward (default: ${SERVICE}-tempest-2025-2)
+#   GLANCE_K8S_NAME  — K8s Service name of a Glance API to port-forward on 9292
+#                   (default: empty). When set, the script also forwards
+#                   svc/${GLANCE_K8S_NAME} 9292:9292, waits for its /healthcheck,
+#                   and add-hosts its cluster-local DNS names to 127.0.0.1 so the
+#                   catalog's image endpoint resolves to the forwarded port. Used
+#                   by the glance leg (tempest.api.image against a real Glance).
 #   TEMPEST_CONCURRENCY — stestr worker count (default: 4). Must not exceed the
-#                   request capacity of the Keystone target (replicas × uwsgi.processes).
+#                   request capacity (replicas × uwsgi.processes) of ANY target
+#                   it drives — the Keystone target, and on the glance leg the
+#                   Glance target too. Both port-forwards pin to a single pod,
+#                   so capacity is raised via uwsgi.processes in the target CR,
+#                   not via replicas.
+#
+# The include list is scope-split into a core (tempest.*) and a plugin
+# (keystone_tempest_plugin.*) phase. Every non-comment line must land in exactly
+# one phase (unknown prefixes are a hard failure), but ONE phase may be empty —
+# a pure tempest.api.image include list (the glance leg) has no plugin phase, so
+# hack/tempest/run-tests.sh skips the empty plugin phase instead of running it.
 #
 # CI-specific Tempest wrapper script.
 # set -euo pipefail, SPDX Apache-2.0 header, shellcheck-clean.
@@ -63,6 +79,10 @@ TEMPEST_CONCURRENCY="${TEMPEST_CONCURRENCY:-4}"
 SERVICE_K8S_NAME="${SERVICE_K8S_NAME:-${SERVICE}-tempest-2025-2}"
 CATALOG_SVC="${SERVICE_K8S_NAME}.${NAMESPACE}.svc.cluster.local"
 
+# Optional Glance API to port-forward on 9292 (glance leg). Empty for the
+# keystone-only scenario.
+GLANCE_K8S_NAME="${GLANCE_K8S_NAME:-}"
+
 # ---------------------------------------------------------------------------
 # 1. Prepare output directories
 # ---------------------------------------------------------------------------
@@ -88,7 +108,20 @@ ADMIN_PASSWORD=$(echo "${ADMIN_PASSWORD_B64}" | base64 -d)
 # ---------------------------------------------------------------------------
 kubectl port-forward "svc/${SERVICE_K8S_NAME}" -n "${NAMESPACE}" 5000:5000 >/dev/null 2>&1 &
 PF_PID=$!
-trap 'kill "${PF_PID}" 2>/dev/null || true' EXIT
+GLANCE_PF_PID=""
+cleanup() {
+  kill "${PF_PID}" 2>/dev/null || true
+  if [[ -n "${GLANCE_PF_PID}" ]]; then
+    kill "${GLANCE_PF_PID}" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT
+
+# Forward the Glance API alongside Keystone when a glance target is configured.
+if [[ -n "${GLANCE_K8S_NAME}" ]]; then
+  kubectl port-forward "svc/${GLANCE_K8S_NAME}" -n "${NAMESPACE}" 9292:9292 >/dev/null 2>&1 &
+  GLANCE_PF_PID=$!
+fi
 
 ready=false
 for _ in $(seq 1 10); do
@@ -101,6 +134,21 @@ done
 if [[ "${ready}" != "true" ]]; then
   echo "::error::${SERVICE} API at http://localhost:5000 did not become reachable after 10 attempts"
   exit 1
+fi
+
+if [[ -n "${GLANCE_K8S_NAME}" ]]; then
+  glance_ready=false
+  for _ in $(seq 1 10); do
+    if curl -sf http://localhost:9292/healthcheck >/dev/null 2>&1; then
+      glance_ready=true
+      break
+    fi
+    sleep 1
+  done
+  if [[ "${glance_ready}" != "true" ]]; then
+    echo "::error::Glance API at http://localhost:9292 did not become reachable after 10 attempts"
+    exit 1
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -166,8 +214,11 @@ if [[ "${COVERED}" -ne "${TOTAL_PATTERNS}" ]]; then
   echo "::error::Scope-split does not cover include-tests.txt: ${TOTAL_PATTERNS} patterns, ${COVERED} covered (phase1=${PHASE1_COUNT}, phase2=${PHASE2_COUNT}). Every non-comment line must start with 'tempest.' or 'keystone_tempest_plugin.'."
   exit 1
 fi
-if [[ "${PHASE1_COUNT}" -eq 0 || "${PHASE2_COUNT}" -eq 0 ]]; then
-  echo "::error::Scope-split produced an empty phase (phase1=${PHASE1_COUNT}, phase2=${PHASE2_COUNT}). Both phases must have at least one pattern."
+# One phase may be empty — a pure tempest.api.image include list (the glance
+# leg) has no plugin phase, and run-tests.sh skips an empty phase — but both
+# empty means the include list selects nothing runnable.
+if [[ "${PHASE1_COUNT}" -eq 0 && "${PHASE2_COUNT}" -eq 0 ]]; then
+  echo "::error::Scope-split produced two empty phases (phase1=${PHASE1_COUNT}, phase2=${PHASE2_COUNT}). include-tests.txt selects no runnable patterns."
   exit 1
 fi
 
@@ -178,10 +229,22 @@ fi
 # GITHUB_WORKSPACE; locally fall back to the git repo root.
 WORKSPACE_ROOT="${GITHUB_WORKSPACE:-$(git rev-parse --show-toplevel)}"
 
+# Point the catalog's service DNS names at the forwarded ports inside the
+# container. The keystone names are always present; the glance names are added
+# only when a glance target is configured so its image endpoint resolves to the
+# forwarded 9292.
+ADD_HOST_ARGS=(
+  --add-host "${CATALOG_SVC}:127.0.0.1"
+  --add-host "${SERVICE_K8S_NAME}.${NAMESPACE}.svc:127.0.0.1"
+)
+if [[ -n "${GLANCE_K8S_NAME}" ]]; then
+  ADD_HOST_ARGS+=(--add-host "${GLANCE_K8S_NAME}.${NAMESPACE}.svc.cluster.local:127.0.0.1")
+  ADD_HOST_ARGS+=(--add-host "${GLANCE_K8S_NAME}.${NAMESPACE}.svc:127.0.0.1")
+fi
+
 docker run --rm \
   --network host \
-  --add-host "${CATALOG_SVC}:127.0.0.1" \
-  --add-host "${SERVICE_K8S_NAME}.${NAMESPACE}.svc:127.0.0.1" \
+  "${ADD_HOST_ARGS[@]}" \
   -v "${WORKSPACE_ROOT}/${OUTPUT_DIR}/config:/etc/tempest:ro" \
   -v "${WORKSPACE_ROOT}/${OUTPUT_DIR}:/output" \
   -e "TEMPEST_CONCURRENCY=${TEMPEST_CONCURRENCY}" \
