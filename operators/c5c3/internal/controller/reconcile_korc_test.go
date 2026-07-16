@@ -1761,6 +1761,11 @@ func TestReconcileCatalog_DefersUntilServiceEndpointAvailable(t *testing.T) {
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal("WaitingForCatalog"))
+	// The message names the stuck ROW, not a hard-coded service: the loop walks
+	// managedCatalogRows, so a second row must point the operator at itself rather
+	// than send them to check Keystone's Service/Endpoint (which may be Available).
+	g.Expect(cond.Message).To(ContainSubstring("identity"))
+	g.Expect(cond.Message).NotTo(ContainSubstring("Keystone"))
 }
 
 // TestReconcileCatalog_StaleAvailableGenerationDefers asserts CatalogReady is gated

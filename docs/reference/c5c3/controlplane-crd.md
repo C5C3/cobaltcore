@@ -1651,7 +1651,7 @@ entry.
 
 | Status | Reason | When |
 | --- | --- | --- |
-| `True` | `CatalogRegistered` | **Managed mode only.** The Keystone identity `Service` and public `Endpoint` are registered as K-ORC CRs **and** both report `Available`. |
+| `True` | `CatalogRegistered` | **Managed mode only.** Every managed catalog entry is registered as K-ORC CRs **and** reports `Available`. The catalog is a per-service table whose only entry today is the identity (Keystone) `Service` and its public `Endpoint`; the message counts the registered entries, so a future second service is one more entry rather than a reworded condition. |
 | `True` | `CatalogImported` | **External mode only.** The external identity `Service` and the endpoint interface `endpointType` selects resolved as unmanaged imports, and every declared managed entry is `Available`. The message reports how many of the three endpoint interfaces resolved. Deliberately distinct from `CatalogRegistered`: nothing was registered, and conflating the two would make "did this ControlPlane write to my catalog?" unanswerable from status. |
 | `False` | `WaitingForAdminCredential` | `AdminCredentialReady` is not `True`; catalog reconciliation deferred. |
 | `False` | `WaitingForCatalog` | A catalog child is reconciled but not yet `Available` for the current generation (a stale `Available` condition whose `ObservedGeneration` lags the object does not count). In External mode this names the gating import or declared entry that has not resolved. |

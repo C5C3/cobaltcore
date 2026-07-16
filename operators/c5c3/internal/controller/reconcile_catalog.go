@@ -79,78 +79,73 @@ func (r *ControlPlaneReconciler) reconcileCatalog(ctx context.Context, cp *c5c3v
 		return r.reconcileCatalogExternal(ctx, cp, credRef)
 	}
 
-	// 1. Identity (Keystone) Service. The desired spec is a pure projection of
-	// cp.Spec, so it is applied via Server-Side Apply under the shared field
-	// manager rather than read-modify-write.
-	service := &orcv1alpha1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			// The K-ORC CRs are ControlPlane-scoped, not service-scoped: they stay in
-			// the ControlPlane's namespace, owner-referenced, however the services are
-			// placed. Only the URL they register follows the Keystone service.
-			Name:      keystoneServiceName(cp),
-			Namespace: childNamespace(cp),
-		},
-		Spec: orcv1alpha1.ServiceSpec{
-			ManagementPolicy:    orcv1alpha1.ManagementPolicyManaged,
-			CloudCredentialsRef: credRef,
-			Resource: &orcv1alpha1.ServiceResourceSpec{
-				Type:    "identity",
-				Name:    ptr.To(orcv1alpha1.OpenStackName("keystone")),
-				Enabled: ptr.To(true),
-			},
-		},
-	}
-	if err := apply.EnsureObject(ctx, r.Client, r.Scheme, cp, service, apply.FieldManager); err != nil {
-		fail("ServiceError", fmt.Sprintf("applying identity Service: %v", err))
-		return ctrl.Result{}, err
-	}
-
-	// 2. Public Endpoint for the Keystone API.
+	// Register every managed catalog row's Service and its Endpoints as owned K-ORC
+	// CRs, then gate CatalogReady on their readiness. The desired spec of each child
+	// is a pure projection of cp.Spec, so it is applied via Server-Side Apply under
+	// the shared field manager rather than read-modify-write.
 	//
-	// DECISION (Endpoint URL): K-ORC's EndpointResourceSpec.URL is REQUIRED.
-	// When the ControlPlane exposes Keystone externally (a gateway or explicit
-	// publicEndpoint is set) we register that public URL so the catalog matches
-	// what Keystone's own bootstrap advertises; otherwise we fall back to the
-	// in-cluster Keystone Service URL derived from the PROJECTED Keystone
-	// Service — keystoneName(cp) = "{cp.Name}-keystone" in the ControlPlane
-	// namespace — which is the Service the keystone-operator actually exposes.
-	endpoint := &orcv1alpha1.Endpoint{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      keystoneEndpointName(cp),
-			Namespace: childNamespace(cp),
-		},
-		Spec: orcv1alpha1.EndpointSpec{
-			ManagementPolicy:    orcv1alpha1.ManagementPolicyManaged,
-			CloudCredentialsRef: credRef,
-			Resource: &orcv1alpha1.EndpointResourceSpec{
-				Interface:  "public",
-				URL:        keystoneCatalogURL(cp),
-				ServiceRef: orcv1alpha1.KubernetesNameRef(keystoneServiceName(cp)),
-				Enabled:    ptr.To(true),
-			},
-		},
+	// The catalog is driven from managedCatalogRows so a second service is a table
+	// row, not a copied literal. Today that is exactly the identity (Keystone) row:
+	// an identity-type Service named "keystone" and a single public Endpoint whose
+	// URL defaults to the in-cluster Keystone Service URL and rises to the external
+	// publicEndpoint when Keystone is exposed via a Gateway (see keystoneCatalogURL).
+	type appliedCatalogRow struct {
+		row       managedCatalogServiceRow
+		service   *orcv1alpha1.Service
+		endpoints []*orcv1alpha1.Endpoint
 	}
-	if err := apply.EnsureObject(ctx, r.Client, r.Scheme, cp, endpoint, apply.FieldManager); err != nil {
-		fail("EndpointError", fmt.Sprintf("applying identity Endpoint: %v", err))
-		return ctrl.Result{}, err
+	rows := managedCatalogRows(cp)
+	applied := make([]appliedCatalogRow, 0, len(rows))
+	for _, row := range rows {
+		service := managedCatalogService(cp, credRef, row)
+		if err := apply.EnsureObject(ctx, r.Client, r.Scheme, cp, service, apply.FieldManager); err != nil {
+			fail("ServiceError", fmt.Sprintf("applying %s Service: %v", row.serviceType, err))
+			return ctrl.Result{}, err
+		}
+		endpoints := make([]*orcv1alpha1.Endpoint, 0, len(row.endpoints))
+		for _, ep := range row.endpoints {
+			endpoint := managedCatalogEndpoint(cp, credRef, row, ep)
+			if err := apply.EnsureObject(ctx, r.Client, r.Scheme, cp, endpoint, apply.FieldManager); err != nil {
+				fail("EndpointError", fmt.Sprintf("applying %s Endpoint: %v", row.serviceType, err))
+				return ctrl.Result{}, err
+			}
+			endpoints = append(endpoints, endpoint)
+		}
+		applied = append(applied, appliedCatalogRow{row: row, service: service, endpoints: endpoints})
 	}
 
-	// Gate CatalogReady on BOTH child CRs reporting Available, and surface a TERMINAL
+	// Gate CatalogReady on EVERY child CR reporting Available, and surface a TERMINAL
 	// K-ORC failure distinctly: registering the Service/Endpoint CRs only instructs
 	// K-ORC to create the catalog entries — it does not mean the entries exist in
 	// Keystone. The documented failure class (wrong clouds.yaml endpoint, K-ORC
 	// swallowing list errors, an import hung on "created externally") otherwise lets
 	// CatalogReady (and the aggregate Ready) report True while the catalog is empty.
-	if termErr := orcv1alpha1.GetTerminalError(service); termErr != nil {
-		return r.catalogTerminalError(cp, "identity Service", service.Name, termErr), nil
+	//
+	// A row's Service terminal error is reported before its Endpoints' so the ROOT
+	// stuck dependency surfaces rather than an Endpoint merely blocked on it; every
+	// row's terminal errors precede the availability waits.
+	for _, ar := range applied {
+		if termErr := orcv1alpha1.GetTerminalError(ar.service); termErr != nil {
+			return r.catalogTerminalError(cp, ar.row.serviceType+" Service", ar.service.Name, termErr), nil
+		}
+		for _, endpoint := range ar.endpoints {
+			if termErr := orcv1alpha1.GetTerminalError(endpoint); termErr != nil {
+				return r.catalogTerminalError(cp, ar.row.serviceType+" Endpoint", endpoint.Name, termErr), nil
+			}
+		}
 	}
-	if termErr := orcv1alpha1.GetTerminalError(endpoint); termErr != nil {
-		return r.catalogTerminalError(cp, "identity Endpoint", endpoint.Name, termErr), nil
-	}
-	if !korcAvailableUpToDate(service) || !korcAvailableUpToDate(endpoint) {
-		logger.Info("catalog Service/Endpoint not yet Available, requeuing")
-		fail(conditionReasonWaitingForCatalog, "Keystone identity Service and Endpoint are registered but not yet Available")
-		return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
+	for _, ar := range applied {
+		ready := korcAvailableUpToDate(ar.service)
+		for _, endpoint := range ar.endpoints {
+			ready = ready && korcAvailableUpToDate(endpoint)
+		}
+		if !ready {
+			logger.Info("catalog Service/Endpoint not yet Available, requeuing", "serviceType", ar.row.serviceType)
+			fail(conditionReasonWaitingForCatalog, fmt.Sprintf(
+				"the %s catalog Service and Endpoint CRs are registered but not yet Available", ar.row.serviceType,
+			))
+			return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
+		}
 	}
 
 	conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
@@ -158,9 +153,116 @@ func (r *ControlPlaneReconciler) reconcileCatalog(ctx context.Context, cp *c5c3v
 		Status:             metav1.ConditionTrue,
 		ObservedGeneration: cp.Generation,
 		Reason:             "CatalogRegistered",
-		Message:            "Keystone identity Service and Endpoint are registered and Available",
+		Message: fmt.Sprintf(
+			"%d catalog entry/entries registered as K-ORC CRs and Available", len(rows),
+		),
 	})
 	return ctrl.Result{}, nil
+}
+
+// managedCatalogEndpointRow is one Endpoint of a managed catalog service row: an
+// interface, the deterministic name of the K-ORC Endpoint CR that registers it,
+// and the URL to advertise.
+type managedCatalogEndpointRow struct {
+	iface  string
+	crName string
+	url    string
+}
+
+// managedCatalogServiceRow is one entry in the managed service catalog: an
+// OpenStack service (type and name), the deterministic name of the K-ORC Service
+// CR that registers it, and the Endpoint rows registered under it.
+//
+// NAMING CONVENTION for FUTURE rows: a service of type {type} gets a Service CR
+// named "{cp}-{type}-service" and, per interface, an Endpoint CR named
+// "{cp}-{type}-endpoint-{iface}". The identity row is the ONE exception — it
+// keeps its legacy CR names ("{cp}-identity-service" / "{cp}-identity-endpoint",
+// via keystoneServiceName / keystoneEndpointName) because renaming a live CR
+// would delete and re-add its catalog row on upgrade. Every new row follows the
+// generic convention from the start, so only identity carries the legacy shape.
+//
+// endpoints is a list so a row can register several interfaces, but the identity
+// row exercises only the default posture: a single public entry whose URL falls
+// back to the in-cluster Keystone Service URL. Per-interface endpoint lists are
+// supported by the type and not yet exercised.
+type managedCatalogServiceRow struct {
+	serviceType string
+	serviceName string
+	crName      string
+	endpoints   []managedCatalogEndpointRow
+}
+
+// managedCatalogRows returns the managed service-catalog rows the ControlPlane
+// registers via K-ORC. Today it is exactly one row — the identity (Keystone)
+// service with a single public Endpoint — keyed on the legacy CR names so the
+// live catalog rows are never renamed (see managedCatalogServiceRow). A future
+// second service (e.g. type "image", name "glance") is added here as another
+// row, not by copying the builder call sites. It is mode-independent: reconcileDelete
+// enumerates the same rows to tear down the identity CRs in both keystone modes.
+func managedCatalogRows(cp *c5c3v1alpha1.ControlPlane) []managedCatalogServiceRow {
+	return []managedCatalogServiceRow{{
+		serviceType: "identity",
+		serviceName: "keystone",
+		crName:      keystoneServiceName(cp),
+		endpoints: []managedCatalogEndpointRow{{
+			iface:  "public",
+			crName: keystoneEndpointName(cp),
+			url:    keystoneCatalogURL(cp),
+		}},
+	}}
+}
+
+// managedCatalogService builds the MANAGED K-ORC Service CR for one catalog row.
+// The desired spec is a pure projection of cp.Spec, so it is applied via
+// Server-Side Apply under the shared field manager rather than read-modify-write;
+// the owner reference is stamped by apply.EnsureObject at apply time.
+func managedCatalogService(
+	cp *c5c3v1alpha1.ControlPlane, credRef orcv1alpha1.CloudCredentialsReference, row managedCatalogServiceRow,
+) *orcv1alpha1.Service {
+	return &orcv1alpha1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			// The K-ORC CRs are ControlPlane-scoped, not service-scoped: they stay in
+			// the ControlPlane's namespace, owner-referenced, however the services are
+			// placed. Only the URL they register follows the service.
+			Name:      row.crName,
+			Namespace: childNamespace(cp),
+		},
+		Spec: orcv1alpha1.ServiceSpec{
+			ManagementPolicy:    orcv1alpha1.ManagementPolicyManaged,
+			CloudCredentialsRef: credRef,
+			Resource: &orcv1alpha1.ServiceResourceSpec{
+				Type:    row.serviceType,
+				Name:    ptr.To(orcv1alpha1.OpenStackName(row.serviceName)),
+				Enabled: ptr.To(true),
+			},
+		},
+	}
+}
+
+// managedCatalogEndpoint builds the MANAGED K-ORC Endpoint CR for one endpoint of
+// a catalog row. Same SSA projection as managedCatalogService; its Interface comes
+// from the endpoint row (today always "public") and its ServiceRef points at the
+// row's Service CR.
+func managedCatalogEndpoint(
+	cp *c5c3v1alpha1.ControlPlane, credRef orcv1alpha1.CloudCredentialsReference,
+	row managedCatalogServiceRow, ep managedCatalogEndpointRow,
+) *orcv1alpha1.Endpoint {
+	return &orcv1alpha1.Endpoint{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      ep.crName,
+			Namespace: childNamespace(cp),
+		},
+		Spec: orcv1alpha1.EndpointSpec{
+			ManagementPolicy:    orcv1alpha1.ManagementPolicyManaged,
+			CloudCredentialsRef: credRef,
+			Resource: &orcv1alpha1.EndpointResourceSpec{
+				Interface:  ep.iface,
+				URL:        ep.url,
+				ServiceRef: orcv1alpha1.KubernetesNameRef(row.crName),
+				Enabled:    ptr.To(true),
+			},
+		},
+	}
 }
 
 // catalogTerminalError records a terminal K-ORC catalog failure: it sets
@@ -218,7 +320,17 @@ func keystoneEndpointName(cp *c5c3v1alpha1.ControlPlane) string {
 // namespaces are where NetworkPolicy is attached, so a default-deny namespace
 // must explicitly allow this flow.
 func keystoneEndpointURL(cp *c5c3v1alpha1.ControlPlane) string {
-	return fmt.Sprintf("http://%s.%s.svc:5000/v3", keystoneName(cp), cp.KeystoneNamespace())
+	return managedServiceURL(keystoneName(cp), cp.KeystoneNamespace(), 5000, "/v3")
+}
+
+// managedServiceURL renders the in-cluster URL of a projected Service by
+// convention: http://{name}.{namespace}.svc:{port}{path}. Deriving the address
+// top-down from the naming convention rather than reading a producing CR's
+// status is the cross-service endpoint contract (see internal/common/naming),
+// so a second service (e.g. glance-api on 9292) registers its catalog URL the
+// same way without a status watch.
+func managedServiceURL(name, namespace string, port int32, path string) string {
+	return fmt.Sprintf("http://%s.%s.svc:%d%s", name, namespace, port, path)
 }
 
 // keystoneCatalogURL returns the URL registered for the K-ORC identity catalog

@@ -123,11 +123,25 @@ func orcChildObjects(cp *c5c3v1alpha1.ControlPlane) []orcChildObject {
 
 	objs := []orcChildObject{
 		{func() client.Object { return &orcv1alpha1.ApplicationCredential{} }, adminAppCredentialName(cp)},
-		{newService, keystoneServiceName(cp)},
-		{newEndpoint, keystoneEndpointName(cp)},
-		{newUser, adminUserRef(cp)},
-		{newDomain, adminDomainRef(cp)},
 	}
+
+	// The managed-mode catalog children come from the same per-service table that
+	// registers them (managedCatalogRows), so a second service is a table row here
+	// too, not a second hard-coded pair. In External mode these very names belong to
+	// the unmanaged identity imports instead; either way a name that never existed in
+	// the current mode is simply NotFound and tolerated as already-gone.
+	for _, row := range managedCatalogRows(cp) {
+		objs = append(objs, orcChildObject{newService, row.crName})
+		for _, ep := range row.endpoints {
+			objs = append(objs, orcChildObject{newEndpoint, ep.crName})
+		}
+	}
+
+	objs = append(
+		objs,
+		orcChildObject{newUser, adminUserRef(cp)},
+		orcChildObject{newDomain, adminDomainRef(cp)},
+	)
 
 	// Declarative service accounts are mode-independent, so their children are torn
 	// down in BOTH keystone modes (before the External-only catalog additions). Each

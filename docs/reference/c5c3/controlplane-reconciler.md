@@ -1359,13 +1359,14 @@ CRD-not-installed condition.
 
 #### Managed mode — the control plane owns the catalog
 
-`reconcileCatalog` registers the OpenStack service-catalog entries for Keystone
-as owned K-ORC CRs: an `identity`-type `Service` named
-`keystone`, plus a `public` `Endpoint` whose URL defaults to the conventional
-in-cluster identity URL `http://keystone.<namespace>.svc:5000/v3` and whose
-`serviceRef` points at the identity Service. Both children are projected
-idempotently via Server-Side Apply under the shared field manager
-(`forge-operator`).
+`reconcileCatalog` registers the OpenStack service-catalog entries as owned K-ORC
+CRs, driven from a per-service table (`managedCatalogRows`) so a second service is
+a table row rather than a copied literal. The only entry today is the identity
+(Keystone) service: an `identity`-type `Service` named `keystone`, plus a
+`public` `Endpoint` whose URL defaults to the conventional in-cluster identity URL
+`http://keystone.<namespace>.svc:5000/v3` and whose `serviceRef` points at the
+identity Service. Every child is projected idempotently via Server-Side Apply
+under the shared field manager (`forge-operator`).
 
 Registering the child CRs only instructs K-ORC to create the catalog entries — it
 does not mean they exist in Keystone — so `CatalogReady` is gated on both children
@@ -1382,9 +1383,9 @@ surfaced as the distinct `CatalogFailed` reason instead of a false-positive Read
 | `AdminCredentialReady` not True | False | `WaitingForAdminCredential` | requeue 10s |
 | Service create/update fails | False | `ServiceError` | returns the error |
 | Endpoint create/update fails | False | `EndpointError` | returns the error |
-| Service/Endpoint reports a terminal K-ORC error | False | `CatalogFailed` | requeue 10s |
-| Service/Endpoint registered but not yet Available | False | `WaitingForCatalog` | requeue 10s |
-| both registered and Available | True | `CatalogRegistered` | identity Service and Endpoint registered and Available |
+| a catalog entry's Service/Endpoint reports a terminal K-ORC error | False | `CatalogFailed` | requeue 10s (Service before its Endpoints, so the root stuck dependency surfaces) |
+| a catalog entry's Service/Endpoint registered but not yet Available | False | `WaitingForCatalog` | requeue 10s |
+| every catalog entry registered and Available | True | `CatalogRegistered` | message counts the registered entries; identity is the only entry today |
 
 #### External mode — import-first
 
