@@ -16,6 +16,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/c5c3/forge/internal/common/conditions"
@@ -30,7 +31,7 @@ func TestReconcile_AddsFinalizerOnFirstPass(t *testing.T) {
 	res, err := r.Reconcile(context.Background(), glanceRequest)
 
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(res.Requeue).To(BeTrue(), "the finalizer add requeues so the next pass sees it persisted")
+	g.Expect(res).To(Equal(ctrl.Result{Requeue: true}), "the finalizer add requeues so the next pass sees it persisted")
 	got := getGlance(t, r.Client, "test-glance")
 	g.Expect(got.Finalizers).To(ContainElement(glanceFinalizer))
 }

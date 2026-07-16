@@ -41,12 +41,8 @@ func TestSchemeBuilderRegistration(t *testing.T) {
 			Version: "v1alpha1",
 			Kind:    tc.kind,
 		}
-		obj, err := scheme.New(gvk)
-		if err != nil {
+		if _, err := scheme.New(gvk); err != nil {
 			t.Fatalf("scheme.New(%v) failed: %v", gvk, err)
-		}
-		if _, ok := obj.(runtime.Object); !ok {
-			t.Errorf("kind %q: registered object %T is not a runtime.Object", tc.kind, obj)
 		}
 	}
 }
