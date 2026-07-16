@@ -68,6 +68,11 @@ metadata:
 apiVersion: v1
 kind: Namespace
 metadata:
+  name: glance-system
+---
+apiVersion: v1
+kind: Namespace
+metadata:
   name: c5c3-system
 ---
 apiVersion: v1

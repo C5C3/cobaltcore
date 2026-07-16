@@ -1,0 +1,69 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The glance-operator controller runs in its own dedicated glance-system
+# Namespace; the Glance CR and the operator-managed payload (Deployment,
+# Secrets, HTTPRoute, NetworkPolicy) live in the openstack tenant Namespace.
+# dependsOn: keystone-operator is ordered so the image service's identity
+# backend exists before Glance is projected; mariadb-operator is required
+# because Glance has a database (unlike horizon, which has none).
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: glance-operator
+  namespace: glance-system
+spec:
+  interval: 30m
+  dependsOn:
+    - name: cert-manager
+      namespace: cert-manager
+    - name: mariadb-operator
+      namespace: mariadb-system
+    - name: memcached-operator
+      namespace: memcached-system
+    - name: external-secrets
+      namespace: external-secrets
+    - name: keystone-operator
+      namespace: keystone-system
+  chart:
+    spec:
+      chart: glance-operator
+      # Floor 0.1.0: the first published chart, whose values schema already
+      # accepts image.digest. Older charts do not exist — this operator is
+      # first published to GHCR when this release lands on main.
+      version: ">=0.1.0 <1.0.0"
+      sourceRef:
+        kind: HelmRepository
+        name: c5c3-charts
+        namespace: flux-system
+  values:
+    replicas: 2
+    leaderElection:
+      enabled: true
+    image:
+      # Use latest until a versioned release (v* git tag) publishes a semver image tag.
+      # The chart default (appVersion) only works once 0.1.0 has been released.
+      tag: latest
+  # image.digest is injected from a ConfigMap that
+  # hack/refresh-operator-image-digests.sh (re)applies at deploy time on the
+  # WITH_CONTROLPLANE flux path, pinning the mutable :latest tag to the digest
+  # current at deploy. optional: true — when the ConfigMap is absent (default
+  # Quick Start and CI paths) the release renders exactly as before. Flux
+  # merges valuesFrom first, then spec.values on top per-key (deep merge), so
+  # image.tag stays from spec.values and image.digest comes only from here.
+  valuesFrom:
+    - kind: ConfigMap
+      name: glance-operator-image-digest
+      valuesKey: values.yaml
+      optional: true
+  install:
+    crds: CreateReplace
+    createNamespace: true
+    remediation:
+      retries: 3
+  upgrade:
+    crds: CreateReplace
+    remediation:
+      retries: 3

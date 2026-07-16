@@ -49,6 +49,7 @@ resources:
   - releases/openbao.yaml
   - releases/keystone-operator.yaml
   - releases/horizon-operator.yaml
+  - releases/glance-operator.yaml
   - releases/k-orc.yaml
   - releases/c5c3-operator.yaml
   # Garage object store operator (S3 backend for the CI/e2e stack).

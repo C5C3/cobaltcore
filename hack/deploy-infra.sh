@@ -1685,7 +1685,7 @@ main() {
   fi
   wait_for_helmreleases "${release_wait_timeout}" "${helm_releases[@]}"
 
-  # with kube-prometheus-stack Ready, flip both operator charts'
+  # with kube-prometheus-stack Ready, flip the operator charts'
   # monitoring.serviceMonitor.enabled to true so Prometheus picks up the
   # metrics targets. Runs only when WITH_PROMETHEUS=true to keep the default
   # Quick Start free of monitoring-coreos-com CRD lookups. The horizon-operator
@@ -1696,6 +1696,7 @@ main() {
   if [[ "${WITH_PROMETHEUS}" == "true" ]]; then
     enable_operator_servicemonitor keystone-operator keystone-system "${HELMRELEASE_TIMEOUT}"
     enable_operator_servicemonitor horizon-operator horizon-system "${HELMRELEASE_TIMEOUT}"
+    enable_operator_servicemonitor glance-operator glance-system "${HELMRELEASE_TIMEOUT}"
   fi
 
   # Step 5: Apply infrastructure kustomize overlay (CRD-dependent resources)

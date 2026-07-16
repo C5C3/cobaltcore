@@ -128,6 +128,25 @@ patches:
       spec:
         suspend: true
 
+  # glance-operator: suspend Flux management in kind for the same reason as
+  # keystone-operator above — the e2e CI job installs it manually with a
+  # locally built dev image, and the published chart and the dev image cannot
+  # share the same release name without one overwriting the other.
+  - target:
+      group: helm.toolkit.fluxcd.io
+      version: v2
+      kind: HelmRelease
+      name: glance-operator
+      namespace: glance-system
+    patch: |
+      apiVersion: helm.toolkit.fluxcd.io/v2
+      kind: HelmRelease
+      metadata:
+        name: glance-operator
+        namespace: glance-system
+      spec:
+        suspend: true
+
   # The Chaos Mesh kind-tuning patch (containerd runtime, dashboard disabled,
   # reduced resource requests) lives in the opt-in deploy/kind/chaos-mesh/
   # overlay. It cannot stay here because Chaos Mesh is no longer in the base
