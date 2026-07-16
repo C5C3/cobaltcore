@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Second isDefault GlanceBackend attached to the same Glance as
+# 07-default-base. Exactly one default store is allowed per Glance, so
+# the validating webhook's single-default List rejects the newcomer.
+# Applied AFTER 07-default-base. This substitutes for the untestable
+# type-immutability update (S3 is the only enum value).
+apiVersion: glance.openstack.c5c3.io/v1alpha1
+kind: GlanceBackend
+metadata:
+  name: glancebackend-default-b
+spec:
+  glanceRef:
+    name: glance-default
+  type: S3
+  s3:
+    host: https://s3.example.com
+    bucket: glance-images
+    credentialsSecretRef:
+      name: garage-s3-credentials
+  isDefault: true

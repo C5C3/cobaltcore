@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.extraOptions carrying s3_store_access_key duplicates an option the
+# operator renders from spec.s3.credentialsSecretRef; the validating
+# webhook's denylist rejects it.
+apiVersion: glance.openstack.c5c3.io/v1alpha1
+kind: GlanceBackend
+metadata:
+  name: glancebackend-denylist
+spec:
+  glanceRef:
+    name: glance
+  type: S3
+  s3:
+    host: https://s3.example.com
+    bucket: glance-images
+    credentialsSecretRef:
+      name: garage-s3-credentials
+  extraOptions:
+    s3_store_access_key: "placeholder"

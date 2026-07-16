@@ -1,0 +1,110 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E tests for GlanceBackend CRD + webhook validation rejection.
+# Pins every implemented CEL XValidation, kubebuilder-marker, and
+# webhook.validate() rejection path in
+# operators/glance/api/v1alpha1/glancebackend_* to a deterministic admission
+# failure. Each step applies an otherwise-valid backend CR with a single aspect
+# violating the rule under test, captures the admission $error, and asserts the
+# message substring.
+#
+# Fixture categories:
+#   - Create-rejection fixtures (00-04) are each applied once and rejected.
+#   - The glanceRef-immutability pair: 05-immutable-glanceref-base is the valid
+#     base CR applied first, and 06-immutable-glanceref is applied as an UPDATE
+#     that the CRD CEL transition rule (self == oldSelf, evaluated only on
+#     UPDATE) rejects. A type-immutability update fixture is deliberately
+#     absent: S3 is the only Phase-1 enum value, so a changed type is already
+#     rejected by the Enum marker.
+#   - The single-default pair: 07-default-base is a valid default backend
+#     applied first, and 08-second-default attaches a second default to the same
+#     Glance, which the validating webhook's single-default List rejects. It is
+#     the substitute update/create-rejection that needs an existing object.
+#
+# To prevent scaffold drift across fixtures they are generated from a single
+# source of truth in `_generate.py`. After editing the canonical scaffold or
+# any per-fixture override, regenerate via:
+#   python3 tests/e2e/glance/invalid-glancebackend-cr/_generate.py
+# CI runs `make verify-invalid-cr-fixtures`, which invokes
+# `_generate.py --check` (drift mode incl. the orphan sweep) and
+# `test_generate.py` (FIXTURES count + chainsaw-test.yaml cross-reference)
+# so any hand-edit fails the build before the cluster-bound e2e-operator job.
+#
+# The test runs in an ephemeral namespace: the base CRs reference Glances that
+# do not exist there — admission deliberately tolerates the dangling reference
+# (GitOps ordering) and the backend finalizer fails open when the Glance is
+# gone, so namespace cleanup never wedges.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: glance-invalid-glancebackend-cr
+spec:
+  steps:
+  # type S3 without spec.s3 must be rejected (union rule).
+  - try:
+    - apply:
+        file: 00-type-s3-without-s3-block.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'exactly one backend block matching spec.type')): true
+  # A reserved store name (exact "default") must be rejected by the webhook.
+  - try:
+    - apply:
+        file: 01-reserved-name-default.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'reserved or operator-managed Glance store section')): true
+  # A reserved os-glance- store-section prefix must be rejected by the webhook.
+  - try:
+    - apply:
+        file: 02-reserved-name-prefix.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'store-section prefix')): true
+  # extraOptions must not carry an option owned by a typed spec.s3 field.
+  - try:
+    - apply:
+        file: 03-extraoptions-denylist.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'option "s3_store_access_key" is owned by')): true
+  # extraOptions keys must match the ^[A-Za-z0-9_]+$ allowlist.
+  - try:
+    - apply:
+        file: 04-extraoptions-bad-charset.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'option name must match')): true
+  # ── glanceRef-immutability block ────────────────────────────────────────
+  # The valid base CR is applied first and must SUCCEED.
+  - try:
+    - apply:
+        file: 05-immutable-glanceref-base.yaml
+  # glanceRef is immutable (CEL transition rule, UPDATE-only).
+  - try:
+    - apply:
+        file: 06-immutable-glanceref.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'glanceRef is immutable')): true
+  # ── single-default block ────────────────────────────────────────────────
+  # The valid default base CR is applied first and must SUCCEED.
+  - try:
+    - apply:
+        file: 07-default-base.yaml
+  # A second default backend on the same Glance must be rejected by the webhook.
+  - try:
+    - apply:
+        file: 08-second-default.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'exactly one default store is allowed')): true

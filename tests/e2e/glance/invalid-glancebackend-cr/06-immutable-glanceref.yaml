@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Update of the glancebackend-immutable base CR that re-points
+# spec.glanceRef.name. The spec-level CEL transition rule
+# (self.glanceRef.name == oldSelf.glanceRef.name) rejects the change on
+# UPDATE — re-pointing would orphan the store on the old Glance.
+apiVersion: glance.openstack.c5c3.io/v1alpha1
+kind: GlanceBackend
+metadata:
+  name: glancebackend-immutable
+spec:
+  glanceRef:
+    name: glance-repointed
+  type: S3
+  s3:
+    host: https://s3.example.com
+    bucket: glance-images
+    credentialsSecretRef:
+      name: garage-s3-credentials

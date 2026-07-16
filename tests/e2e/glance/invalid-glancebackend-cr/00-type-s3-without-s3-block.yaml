@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# type S3 without a spec.s3 block violates the union CEL rule
+# ((self.type == 'S3') == has(self.s3)); the webhook mirrors it.
+apiVersion: glance.openstack.c5c3.io/v1alpha1
+kind: GlanceBackend
+metadata:
+  name: glancebackend-no-s3
+spec:
+  glanceRef:
+    name: glance
+  type: S3

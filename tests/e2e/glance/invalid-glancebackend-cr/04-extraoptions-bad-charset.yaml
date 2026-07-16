@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.extraOptions key "s3-store-timeout" carries dashes, which the
+# validating webhook's key allowlist (^[A-Za-z0-9_]+$) rejects before the
+# denylist runs.
+apiVersion: glance.openstack.c5c3.io/v1alpha1
+kind: GlanceBackend
+metadata:
+  name: glancebackend-bad-key
+spec:
+  glanceRef:
+    name: glance
+  type: S3
+  s3:
+    host: https://s3.example.com
+    bucket: glance-images
+    credentialsSecretRef:
+      name: garage-s3-credentials
+  extraOptions:
+    s3-store-timeout: "10"

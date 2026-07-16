@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Valid base GlanceBackend for the glanceRef-immutability pair. It is
+# applied FIRST and must SUCCEED; 06-immutable-glanceref reuses this name
+# so it is applied as an UPDATE. The referenced Glance does not have to
+# exist at admission time (GitOps ordering), so the base is admitted.
+apiVersion: glance.openstack.c5c3.io/v1alpha1
+kind: GlanceBackend
+metadata:
+  name: glancebackend-immutable
+spec:
+  glanceRef:
+    name: glance-immutable
+  type: S3
+  s3:
+    host: https://s3.example.com
+    bucket: glance-images
+    credentialsSecretRef:
+      name: garage-s3-credentials

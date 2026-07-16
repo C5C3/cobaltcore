@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Valid default GlanceBackend for the single-default pair. It is applied
+# FIRST and must SUCCEED; 08-second-default attaches a second default to
+# the same Glance, which the webhook rejects.
+apiVersion: glance.openstack.c5c3.io/v1alpha1
+kind: GlanceBackend
+metadata:
+  name: glancebackend-default-a
+spec:
+  glanceRef:
+    name: glance-default
+  type: S3
+  s3:
+    host: https://s3.example.com
+    bucket: glance-images
+    credentialsSecretRef:
+      name: garage-s3-credentials
+  isDefault: true

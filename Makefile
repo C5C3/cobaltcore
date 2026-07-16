@@ -382,11 +382,15 @@ verify-invalid-cr-fixtures:
 	@python3 tests/e2e/keystone/invalid-identitybackend-cr/_generate.py --check
 	@python3 tests/e2e/horizon/invalid-cr/_generate.py --check
 	@python3 tests/e2e/c5c3/invalid-cr/_generate.py --check
+	@python3 tests/e2e/glance/invalid-cr/_generate.py --check
+	@python3 tests/e2e/glance/invalid-glancebackend-cr/_generate.py --check
 	@echo "Running invalid-CR fixture unit tests..."
 	@python3 tests/e2e/keystone/invalid-cr/test_generate.py
 	@python3 tests/e2e/keystone/invalid-identitybackend-cr/test_generate.py
 	@python3 tests/e2e/horizon/invalid-cr/test_generate.py
 	@python3 tests/e2e/c5c3/invalid-cr/test_generate.py
+	@python3 tests/e2e/glance/invalid-cr/test_generate.py
+	@python3 tests/e2e/glance/invalid-glancebackend-cr/test_generate.py
 
 .PHONY: check-feature-ids
 # check-feature-ids fails if any internal feature / requirement ID (CC-NNNN or
