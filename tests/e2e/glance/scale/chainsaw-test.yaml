@@ -1,0 +1,148 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for replica scaling and PDB policy.
+# Verifies that patching spec.deployment.replicas propagates to the Deployment
+# and PDB:
+#   - Initial deployment with replicas: 3 (PDB: minAvailable=1)
+#   - Scale up to 5 replicas — updatedReplicas proves new pods started
+#   - Scale down to 1 replica (PDB: maxUnavailable=1)
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: glance-scale
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply the Glance CR (replicas: 3) and its default backend ───
+  - try:
+    - apply:
+        file: 00-glance-cr.yaml
+    - apply:
+        file: 01-glance-backend.yaml
+  # ── Step 2: Assert Ready and initial replica count ─────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: Glance
+          metadata:
+            name: glance-scale
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: glance-scale
+            namespace: openstack
+          spec:
+            replicas: 3
+          status:
+            availableReplicas: 3
+    - assert:
+        resource:
+          apiVersion: policy/v1
+          kind: PodDisruptionBudget
+          metadata:
+            name: glance-scale
+            namespace: openstack
+          spec:
+            minAvailable: 1
+    catch:
+    - script:
+        content: |
+          echo "=== Glance CR status ==="
+          kubectl get glance glance-scale -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n glance-system -l app.kubernetes.io/name=glance-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n glance-system -l app.kubernetes.io/name=glance-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Glance API pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=glance-scale -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 3: Scale up to 5 and assert rollout completed ─────────────────
+  - try:
+    - patch:
+        file: 02-patch-scale-up.yaml
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: glance-scale
+            namespace: openstack
+          spec:
+            replicas: 5
+          status:
+            availableReplicas: 5
+            updatedReplicas: 5
+    catch:
+    - script:
+        content: |
+          echo "=== Glance CR status ==="
+          kubectl get glance glance-scale -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n glance-system -l app.kubernetes.io/name=glance-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n glance-system -l app.kubernetes.io/name=glance-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Glance API pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=glance-scale -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 4: Scale down to 1 and assert the PDB flips ───────────────────
+  - try:
+    - patch:
+        file: 03-patch-scale-to-one.yaml
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: glance-scale
+            namespace: openstack
+          spec:
+            replicas: 1
+          status:
+            availableReplicas: 1
+            updatedReplicas: 1
+    - assert:
+        resource:
+          apiVersion: policy/v1
+          kind: PodDisruptionBudget
+          metadata:
+            name: glance-scale
+            namespace: openstack
+          spec:
+            maxUnavailable: 1
+    catch:
+    - script:
+        content: |
+          echo "=== Glance CR status ==="
+          kubectl get glance glance-scale -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n glance-system -l app.kubernetes.io/name=glance-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n glance-system -l app.kubernetes.io/name=glance-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Glance API pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=glance-scale -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true

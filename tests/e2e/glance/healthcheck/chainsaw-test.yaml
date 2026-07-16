@@ -1,0 +1,60 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the HealthCheck sub-reconciler.
+# Verifies the operator's HTTP probe of the Glance API /healthcheck endpoint
+# drives GlanceAPIReady and status.endpoint:
+#   - GlanceAPIReady=True with reason APIHealthy once the Deployment serves
+#   - status.endpoint carries the cluster-local URL (no gateway configured)
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: glance-healthcheck
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply the Glance CR and its default S3 backend ──────────────
+  - try:
+    - apply:
+        file: 00-glance-cr.yaml
+    - apply:
+        file: 01-glance-backend.yaml
+  # ── Step 2: Assert GlanceAPIReady and the endpoint ─────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: Glance
+          metadata:
+            name: glance-healthcheck
+            namespace: openstack
+          status:
+            endpoint: http://glance-healthcheck.openstack.svc.cluster.local:9292/
+            (conditions[?type == 'DeploymentReady']):
+            - status: "True"
+            (conditions[?type == 'GlanceAPIReady']):
+            - status: "True"
+              reason: APIHealthy
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: |
+          echo "=== Glance CR status ==="
+          kubectl get glance glance-healthcheck -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n glance-system -l app.kubernetes.io/name=glance-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n glance-system -l app.kubernetes.io/name=glance-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Glance API pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=glance-healthcheck -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true

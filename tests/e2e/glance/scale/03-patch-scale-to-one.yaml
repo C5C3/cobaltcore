@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Patch: scale the Glance API down to a single replica (PDB flips to
+# maxUnavailable=1 to avoid drain deadlock).
+apiVersion: glance.openstack.c5c3.io/v1alpha1
+kind: Glance
+metadata:
+  name: glance-scale
+  namespace: openstack
+spec:
+  deployment:
+    replicas: 1

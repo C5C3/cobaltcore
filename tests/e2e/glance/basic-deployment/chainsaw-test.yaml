@@ -1,0 +1,186 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for happy-path Glance deployment (2025.2 release).
+# Validates the full reconciliation cycle:
+#   - All 8 sub-conditions progress to True with expected reasons
+#   - Aggregate Ready=True with reason AllReady
+#   - The API Deployment launches the eventlet glance-api server (the pre-2026.1
+#     launch mode: `glance-api --config-dir ...`)
+#   - Owned resources exist (Deployment, Service on 9292, PDB, config ConfigMap,
+#     backends Secret)
+#   - The attached default S3 backend reaches Ready=True
+#   - The Glance API answers /healthcheck over HTTP (200) — the oslo healthcheck
+#     middleware proves the WSGI app serves requests
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: glance-basic-deployment
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply the Glance CR and its default S3 backend ──────────────
+  - try:
+    - apply:
+        file: 00-glance-cr.yaml
+    - apply:
+        file: 01-glance-backend.yaml
+  # ── Step 2: Assert all sub-conditions and Ready ────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: Glance
+          metadata:
+            name: glance-basic
+            namespace: openstack
+          status:
+            (conditions[?type == 'SecretsReady']):
+            - status: "True"
+              reason: SecretsAvailable
+            (conditions[?type == 'BackendsReady']):
+            - status: "True"
+              reason: AllBackendsProjected
+            (conditions[?type == 'DatabaseReady']):
+            - status: "True"
+              reason: DatabaseSynced
+            (conditions[?type == 'DeploymentReady']):
+            - status: "True"
+              reason: DeploymentReady
+            (conditions[?type == 'GlanceAPIReady']):
+            - status: "True"
+              reason: APIHealthy
+            (conditions[?type == 'HPAReady']):
+            - status: "True"
+              reason: HPANotRequired
+            (conditions[?type == 'NetworkPolicyReady']):
+            - status: "True"
+              reason: NetworkPolicyNotRequired
+            (conditions[?type == 'HTTPRouteReady']):
+            - status: "True"
+              reason: HTTPRouteNotRequired
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: |
+          echo "=== Glance CR status ==="
+          kubectl get glance glance-basic -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== GlanceBackend status ==="
+          kubectl get glancebackend glance-basic-s3 -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n glance-system -l app.kubernetes.io/name=glance-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n glance-system -l app.kubernetes.io/name=glance-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Glance API pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=glance-basic -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 3: Assert the Deployment, its eventlet launch command, Service ──
+  # ── and PDB ─────────────────────────────────────────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: glance-basic
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                containers:
+                - name: glance-api
+                  command:
+                  - glance-api
+                  - --config-dir
+                  - /etc/glance/glance-api.conf.d/
+                  - --config-dir
+                  - /etc/glance/backends.conf.d/
+          status:
+            (availableReplicas > `0`): true
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: glance-basic
+            namespace: openstack
+          spec:
+            ports:
+            - port: 9292
+    - assert:
+        resource:
+          apiVersion: policy/v1
+          kind: PodDisruptionBudget
+          metadata:
+            name: glance-basic
+            namespace: openstack
+            labels:
+              app.kubernetes.io/name: glance
+              app.kubernetes.io/instance: glance-basic
+              app.kubernetes.io/managed-by: glance-operator
+          spec:
+            minAvailable: 1
+            selector:
+              matchLabels:
+                app.kubernetes.io/name: glance
+                app.kubernetes.io/instance: glance-basic
+  # ── Step 4: Assert the default S3 backend is Ready ─────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: GlanceBackend
+          metadata:
+            name: glance-basic-s3
+            namespace: openstack
+          status:
+            (conditions[?type == 'CredentialsReady']):
+            - status: "True"
+              reason: CredentialsAvailable
+            (conditions[?type == 'ConfigProjected']):
+            - status: "True"
+              reason: ConfigProjected
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+  # ── Step 5: Assert the rendered config ConfigMap and backends Secret ────
+  - try:
+    - script:
+        content: |
+          kubectl get cm -n openstack -o name | grep glance-basic-config-
+          kubectl get secret -n openstack -o name | grep glance-basic-backends-
+  # ── Step 6: Assert the Glance API answers /healthcheck over HTTP ────────
+  # HTTP-level API coverage: the oslo healthcheck middleware answers without
+  # touching the database or Keystone, proving the WSGI app is serving requests.
+  - try:
+    - script:
+        timeout: 60s
+        content: |
+          kubectl run curl-test-glance-basic -n $NAMESPACE --image=ghcr.io/c5c3/glance:2025.2 --rm -i --restart=Never \
+            --command -- python3 -c "import urllib.request; r = urllib.request.urlopen('http://glance-basic.openstack.svc:9292/healthcheck'); assert r.status == 200, r.status; print('healthcheck OK, status %d' % r.status)"
+    catch:
+    - script:
+        content: |
+          echo "=== Glance CR status ==="
+          kubectl get glance glance-basic -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n glance-system -l app.kubernetes.io/name=glance-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n glance-system -l app.kubernetes.io/name=glance-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Glance API pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=glance-basic -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true

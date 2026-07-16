@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Glance CR fixture for the scale E2E test (2025.2 release).
+# Managed mode: database via clusterRef to openstack-db (schema glance_scale),
+# cache via clusterRef to openstack-memcached. Starts at replicas: 3 so the PDB
+# renders minAvailable=1; the test patches it up to 5 and down to 1. glance-api
+# cannot start without a default image store, so 01-glance-backend.yaml attaches
+# one before Ready can settle.
+apiVersion: glance.openstack.c5c3.io/v1alpha1
+kind: Glance
+metadata:
+  name: glance-scale
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  deployment:
+    replicas: 3
+  image:
+    repository: ghcr.io/c5c3/glance
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: glance_scale
+    secretRef:
+      name: glance-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password

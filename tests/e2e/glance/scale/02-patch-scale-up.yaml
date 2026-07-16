@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Patch: scale the Glance API from 3 to 5 replicas.
+apiVersion: glance.openstack.c5c3.io/v1alpha1
+kind: Glance
+metadata:
+  name: glance-scale
+  namespace: openstack
+spec:
+  deployment:
+    replicas: 5
