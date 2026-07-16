@@ -7,7 +7,7 @@ require (
 	github.com/c5c3/forge/operators/horizon v0.0.0-00010101000000-000000000000
 	github.com/c5c3/forge/operators/keystone v0.0.0
 	github.com/external-secrets/external-secrets/apis v0.0.0-20260710155933-68826f87b4ff
-	github.com/k-orc/openstack-resource-controller/v2 v2.6.0
+	github.com/k-orc/openstack-resource-controller/v2 v2.5.1-0.20260708153253-ef6119d9effa
 	github.com/mariadb-operator/mariadb-operator v0.38.1
 	github.com/onsi/gomega v1.42.1
 	github.com/prometheus/client_golang v1.23.2

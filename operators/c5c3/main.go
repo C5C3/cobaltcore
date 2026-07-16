@@ -56,7 +56,9 @@ func init() {
 	// reconcileDBCredentials to issue short-lived DB credentials in Dynamic mode.
 	utilruntime.Must(esgenv1alpha1.AddToScheme(scheme))
 	// K-ORC CRs (ApplicationCredential, Service, Endpoint, ...) — minted/Owned by
-	// reconcileKORC and reconcileCatalog.
+	// reconcileKORC and reconcileCatalog. This same group registration also
+	// covers the Role/RoleAssignment kinds used for the service-account role
+	// projection.
 	utilruntime.Must(orcv1alpha1.AddToScheme(scheme))
 	// Memcached (memcached.c5c3.io) is deliberately NOT registered: it ships no Go
 	// module, so SetupWithManager's Owns(unstructured) resolves the GVK via the
