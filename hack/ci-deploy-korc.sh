@@ -4,25 +4,45 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # hack/ci-deploy-korc.sh — Deploy K-ORC (OpenStack Resource Controller) into a
-# kind cluster from the upstream released installer manifest.
+# kind cluster from a pinned upstream commit.
 #
-# K-ORC does not publish a Helm chart; upstream ships a single flattened
-# installer manifest as a release asset
-# (releases/download/<tag>/install.yaml). This script pins to the SAME tag the
-# Flux GitRepository uses (deploy/flux-system/sources/k-orc.yaml) — parsed at
-# runtime rather than hardcoded so the two never drift — verifies the downloaded
-# bytes against a pinned SHA-256 (release assets are mutable, so an unverified
-# `kubectl apply` would grant cluster-admin to attacker-substituted objects),
-# applies the verified local copy, then waits for the orc-system controller
-# Deployment to become Available.
+# K-ORC does not publish a Helm chart. At release time upstream ships a single
+# flattened installer manifest as a release asset, but the c5c3-operator now
+# Owns() the RoleAssignment kind, which no released K-ORC ships and which only
+# upstream main's controller reconciles. The Flux source
+# (deploy/flux-system/sources/k-orc.yaml) is therefore pinned to an upstream MAIN
+# COMMIT, and its Kustomization builds ./config/default with an image override
+# instead of applying the release-only ./dist/install.yaml.
+#
+# This script mirrors that exactly: it parses the pinned commit from the Flux
+# GitRepository manifest and the container image tag from the Flux Kustomization
+# manifest (both at runtime, so the CI installer and the Flux stack never drift),
+# git-clones K-ORC at that commit, `kubectl apply --server-side -k`s a generated
+# kustomization that builds ./config/default with the same image override, then
+# waits for the orc-system controller Deployment to become Available.
+#
+# Integrity. Two things must be pinned, and each has its own content address:
+#   - the SOURCE tree, by the 40-char commit (a commit cannot be re-pointed, so the
+#     detached checkout pins it exactly — this is what replaced the old release-
+#     asset SHA-256, which guarded a MUTABLE release tag); and
+#   - the controller IMAGE, by digest. A quay tag IS mutable, so the per-commit
+#     commit-<short sha> tag pins nothing on its own; a re-pointed tag would run a
+#     substituted controller under K-ORC's cluster RBAC. The digest is parsed from
+#     the Flux Kustomization and applied verbatim, so CI and Flux schedule the same
+#     bytes.
+# On top of that a drift guard asserts the (documentation-only) image tag equals
+# commit-<first 7 chars of the pinned commit>, so a Renovate commit bump that
+# forgets to re-pin the image fails this step loudly on the bump PR.
 #
 # Used by the e2e-controlplane CI job, which deploys the c5c3 + keystone
 # operators as local dev images and needs K-ORC's CRDs + controller alongside
 # them (the Flux ControlPlane stack is suspended on that path).
 #
 # Optional env vars:
-#   KORC_SOURCE  — Path to the Flux GitRepository manifest holding the pinned
-#                  tag (default: deploy/flux-system/sources/k-orc.yaml).
+#   KORC_SOURCE  — Flux GitRepository manifest holding the pinned commit
+#                  (default: deploy/flux-system/sources/k-orc.yaml).
+#   KORC_RELEASE — Flux Kustomization manifest holding the image override
+#                  (default: deploy/flux-system/releases/k-orc.yaml).
 #   WAIT_TIMEOUT — kubectl wait timeout for the controller Deployment
 #                  (default: 180s).
 #
@@ -35,65 +55,89 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${REPO_ROOT}"
 
 KORC_SOURCE="${KORC_SOURCE:-deploy/flux-system/sources/k-orc.yaml}"
+KORC_RELEASE="${KORC_RELEASE:-deploy/flux-system/releases/k-orc.yaml}"
 WAIT_TIMEOUT="${WAIT_TIMEOUT:-180s}"
-
-# install.yaml is fetched from a GitHub release asset, which is MUTABLE — an
-# upstream compromise or a re-uploaded asset at the same tag could otherwise run
-# attacker-authored Kubernetes objects when applied with cluster-admin. The
-# downloaded bytes are therefore verified against a pinned SHA-256 before apply.
-# The digest is pinned to KORC_PINNED_TAG; when the tag in ${KORC_SOURCE} is
-# bumped (by Renovate or by hand), re-pin BOTH values below. The e2e-controlplane
-# job re-runs on any deploy/** or hack/** change, so a stale pin fails this step
-# loudly on the bump PR, forcing a human to re-verify the new upstream installer.
-# Recompute with:
-#   curl -fsSL https://github.com/k-orc/openstack-resource-controller/releases/download/<tag>/install.yaml | sha256sum
-KORC_PINNED_TAG="v2.6.0"
-KORC_INSTALL_SHA256="affe57ece8c81001d4dacd35fe3bd5bf35662ed6b5c4b1da59f334c685bba109"
+KORC_REPO_URL="https://github.com/k-orc/openstack-resource-controller"
 
 if [[ ! -f "${KORC_SOURCE}" ]]; then
   echo "::error::K-ORC source manifest not found: ${KORC_SOURCE}"
   exit 1
 fi
-
-# Parse the pinned tag (e.g. "v2.5.0") from the GitRepository ref.tag line. Use
-# awk (POSIX) so no yq dependency is required on this early CI step.
-KORC_TAG="$(awk '/^[[:space:]]*tag:[[:space:]]*/{print $2; exit}' "${KORC_SOURCE}")"
-if [[ -z "${KORC_TAG}" ]]; then
-  echo "::error::Could not parse a 'tag:' value from ${KORC_SOURCE}"
+if [[ ! -f "${KORC_RELEASE}" ]]; then
+  echo "::error::K-ORC release manifest not found: ${KORC_RELEASE}"
   exit 1
 fi
 
-# Guard the pin against a tag bump that forgot to re-pin the checksum, so the
-# failure is an actionable message rather than a raw hash mismatch.
-if [[ "${KORC_TAG}" != "${KORC_PINNED_TAG}" ]]; then
-  echo "::error::K-ORC tag ${KORC_TAG} in ${KORC_SOURCE} does not match the pinned checksum tag ${KORC_PINNED_TAG}; re-pin KORC_PINNED_TAG and KORC_INSTALL_SHA256 in $(basename "${BASH_SOURCE[0]}") to the SHA-256 of the new install.yaml"
+# Parse the pinned commit (ref.commit) from the GitRepository manifest and the
+# image tag + digest (spec.images[].newTag / .digest) from the Kustomization
+# manifest. Use awk (POSIX) so no yq dependency is required on this early CI step.
+# The commit is what pins the source tree, so require it in the canonical 40-char
+# form: `checkout --detach main` and `--detach v2.6.0` both succeed but follow a
+# MUTABLE ref, which would void the pin this whole script rests on.
+KORC_COMMIT="$(awk '/^[[:space:]]*commit:[[:space:]]*/{print $2; exit}' "${KORC_SOURCE}")"
+if [[ ! "${KORC_COMMIT}" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "::error::Could not parse a 'commit: <40 hex>' value from ${KORC_SOURCE}; the K-ORC source MUST be pinned by a full commit SHA (a branch or tag is mutable)"
   exit 1
 fi
 
-INSTALL_URL="https://github.com/k-orc/openstack-resource-controller/releases/download/${KORC_TAG}/install.yaml"
-INSTALL_FILE="$(mktemp)"
-trap 'rm -f "${INSTALL_FILE}"' EXIT
-
-echo "Downloading K-ORC ${KORC_TAG} installer from ${INSTALL_URL}"
-curl -fsSL "${INSTALL_URL}" -o "${INSTALL_FILE}"
-
-# Verify the downloaded installer against the pinned digest before it is applied
-# with cluster-admin. Portable across GNU coreutils (sha256sum) and BSD/macOS
-# (shasum -a 256), matching hack/install-test-deps.sh.
-if command -v sha256sum &>/dev/null; then
-  ACTUAL_SHA256="$(sha256sum "${INSTALL_FILE}" | awk '{print $1}')"
-else
-  ACTUAL_SHA256="$(shasum -a 256 "${INSTALL_FILE}" | awk '{print $1}')"
-fi
-if [[ "${ACTUAL_SHA256}" != "${KORC_INSTALL_SHA256}" ]]; then
-  echo "::error::K-ORC installer checksum mismatch for ${INSTALL_URL}: expected ${KORC_INSTALL_SHA256}, got ${ACTUAL_SHA256}; the release asset may have been re-uploaded or tampered with, refusing to apply. If the tag was intentionally bumped, re-pin KORC_INSTALL_SHA256 in $(basename "${BASH_SOURCE[0]}")"
+KORC_IMAGE_TAG="$(awk '/^[[:space:]]*newTag:[[:space:]]*/{print $2; exit}' "${KORC_RELEASE}")"
+if [[ -z "${KORC_IMAGE_TAG}" ]]; then
+  echo "::error::Could not parse a 'newTag:' value from ${KORC_RELEASE}"
   exit 1
 fi
 
-echo "Verified K-ORC installer SHA-256 ${ACTUAL_SHA256}; applying ${INSTALL_FILE}"
-kubectl apply --server-side -f "${INSTALL_FILE}"
+# The digest is what resolves the pull, so require it in the canonical
+# sha256:<64 hex> form: dropping or mistyping it must fail here rather than
+# silently degrade the deploy to a mutable-tag pull.
+KORC_IMAGE_DIGEST="$(awk '/^[[:space:]]*digest:[[:space:]]*/{print $2; exit}' "${KORC_RELEASE}")"
+if [[ ! "${KORC_IMAGE_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+  echo "::error::Could not parse a 'digest: sha256:<64 hex>' value from ${KORC_RELEASE}; the K-ORC controller image MUST be pinned by digest (a quay tag is mutable)"
+  exit 1
+fi
+
+# Drift guard: upstream publishes a deterministic per-commit image tagged
+# commit-<first 7 chars of the commit SHA>. If the Flux image override was not
+# bumped in lockstep with the source commit, fail loudly with an actionable
+# message rather than silently deploying a mismatched controller image.
+KORC_EXPECTED_TAG="commit-${KORC_COMMIT:0:7}"
+if [[ "${KORC_IMAGE_TAG}" != "${KORC_EXPECTED_TAG}" ]]; then
+  echo "::error::K-ORC image tag ${KORC_IMAGE_TAG} in ${KORC_RELEASE} does not match the pinned commit ${KORC_COMMIT} in ${KORC_SOURCE} (expected ${KORC_EXPECTED_TAG}); bump spec.images[].newTag in lockstep with ref.commit"
+  exit 1
+fi
+
+# Fetch the pinned tree. --filter=blob:none keeps the clone small (blobs are
+# fetched on demand); the detached checkout of the 40-char SHA pins the exact
+# source. Two throwaway subdirs live under one temp workdir: the checkout, and a
+# build dir holding the generated kustomization.
+KORC_WORKDIR="$(mktemp -d)"
+trap 'rm -rf "${KORC_WORKDIR}"' EXIT
+KORC_CHECKOUT="${KORC_WORKDIR}/checkout"
+KORC_BUILD="${KORC_WORKDIR}/build"
+mkdir -p "${KORC_BUILD}"
+
+echo "Cloning K-ORC ${KORC_COMMIT} from ${KORC_REPO_URL}"
+git clone --filter=blob:none --no-checkout "${KORC_REPO_URL}" "${KORC_CHECKOUT}"
+git -C "${KORC_CHECKOUT}" checkout --detach "${KORC_COMMIT}"
+
+# Generate a kustomization that builds the upstream ./config/default base with the
+# same digest-pinned image override the Flux Kustomization applies. kustomize
+# rejects an absolute directory as a resource root, so reference the checkout via a
+# relative path from this build dir.
+cat >"${KORC_BUILD}/kustomization.yaml" <<EOF
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../checkout/config/default
+images:
+  - name: controller
+    newName: quay.io/orc/openstack-resource-controller
+    digest: ${KORC_IMAGE_DIGEST}
+EOF
+
+echo "Applying K-ORC ${KORC_COMMIT} (image ${KORC_IMAGE_TAG}@${KORC_IMAGE_DIGEST}) from ./config/default"
+kubectl apply --server-side -k "${KORC_BUILD}"
 
 echo "Waiting for the K-ORC controller Deployment in orc-system to become Available..."
 kubectl wait --for=condition=Available deployment --all \
   -n orc-system --timeout="${WAIT_TIMEOUT}"
-echo "K-ORC ${KORC_TAG} is deployed and Available."
+echo "K-ORC ${KORC_COMMIT} is deployed and Available."

@@ -3,15 +3,18 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify renovate.json has a customManager for the K-ORC GitRepository tag in
-# deploy/flux-system/sources/k-orc.yaml. The manager must:
+# Verify renovate.json has a customManager for the K-ORC GitRepository commit pin
+# in deploy/flux-system/sources/k-orc.yaml. The source is pinned to an upstream
+# main commit (a released K-ORC does not yet ship the RoleAssignment kind the
+# c5c3-operator now Owns()), so the manager must:
 #   - target the file, not the broader deploy/flux-system/ dir
-#   - use datasource=github-releases with the k-orc repo package name
-#   - capture the ref.tag value from `tag: vX.Y.Z`
-#   - be paired with a packageRule that disables majors and automerges
-#     minor/patch with minimumReleaseAge=3 days
-# This closes the coverage gap the un-tracked Flux tag left: it and the
-# Renovate-tracked go.mod k-orc module can no longer drift a minor version apart.
+#   - use datasource=git-refs with the k-orc repo URL as the package name
+#   - track the branch (currentValue=main) as a digest
+#   - capture the ref.commit value from `commit: <40 hex>`
+#   - be paired with a packageRule that automerges the digest bump with
+#     minimumReleaseAge=3 days
+# This closes the coverage gap the un-tracked Flux commit left: it and the
+# Renovate-tracked go.mod k-orc module can no longer drift apart.
 #
 # Usage: bash tests/unit/renovate/korc_source_custommanager_test.sh
 
@@ -30,12 +33,14 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 RENOVATE_FILE="$PROJECT_ROOT/renovate.json"
 SOURCE_FILE="$PROJECT_ROOT/deploy/flux-system/sources/k-orc.yaml"
 
-test_custom_manager_uses_github_releases() {
-  echo "Test: k-orc customManager uses datasource=github-releases with the k-orc repo"
+KORC_PACKAGE="https://github.com/k-orc/openstack-resource-controller"
+
+test_custom_manager_uses_git_refs() {
+  echo "Test: k-orc customManager uses datasource=git-refs tracking the main branch"
 
   if ! command -v jq >/dev/null 2>&1; then
-    echo "  SKIP: jq not installed (3 checks skipped)"
-    SKIP=$((SKIP + 3))
+    echo "  SKIP: jq not installed (4 checks skipped)"
+    SKIP=$((SKIP + 4))
     return
   fi
 
@@ -46,23 +51,26 @@ test_custom_manager_uses_github_releases() {
 
   if [ -z "$entry" ]; then
     echo "  FAIL: no customManagers entry targeting deploy/flux-system/sources/k-orc.yaml"
-    FAIL=$((FAIL + 3))
+    FAIL=$((FAIL + 4))
     return
   fi
 
-  assert_eq "k-orc customManager.datasourceTemplate is github-releases" \
-    "github-releases" \
+  assert_eq "k-orc customManager.datasourceTemplate is git-refs" \
+    "git-refs" \
     "$(jq -r '.datasourceTemplate' <<<"$entry")"
-  assert_eq "k-orc customManager.depNameTemplate is the k-orc repo" \
-    "k-orc/openstack-resource-controller" \
+  assert_eq "k-orc customManager.depNameTemplate is the k-orc repo URL" \
+    "$KORC_PACKAGE" \
     "$(jq -r '.depNameTemplate' <<<"$entry")"
-  assert_eq "k-orc customManager.packageNameTemplate is the k-orc repo" \
-    "k-orc/openstack-resource-controller" \
+  assert_eq "k-orc customManager.packageNameTemplate is the k-orc repo URL" \
+    "$KORC_PACKAGE" \
     "$(jq -r '.packageNameTemplate' <<<"$entry")"
+  assert_eq "k-orc customManager.currentValueTemplate tracks the main branch" \
+    "main" \
+    "$(jq -r '.currentValueTemplate' <<<"$entry")"
 }
 
-test_regex_captures_ref_tag() {
-  echo "Test: k-orc customManager regex captures the GitRepository ref.tag"
+test_regex_captures_ref_commit() {
+  echo "Test: k-orc customManager regex captures the GitRepository ref.commit digest"
 
   if ! command -v jq >/dev/null 2>&1; then
     echo "  SKIP: jq not installed"
@@ -80,81 +88,65 @@ test_regex_captures_ref_tag() {
     return
   fi
 
-  local entry match_string tag_line captured expected_value
+  local entry match_string commit_line captured expected_value
   entry="$(jq -c '.customManagers[]
     | select((.managerFilePatterns // []) | join(",") | contains("k-orc"))' \
     "$RENOVATE_FILE")"
   match_string="$(jq -r '.matchStrings[0]' <<<"$entry")"
 
-  tag_line="$(grep -E '^[[:space:]]*tag:[[:space:]]*v' "$SOURCE_FILE" | head -1)"
-  assert_not_empty "ref.tag line present in deploy/flux-system/sources/k-orc.yaml" \
-    "$tag_line"
+  commit_line="$(grep -E '^[[:space:]]*commit:[[:space:]]*[a-f0-9]{40}' "$SOURCE_FILE" | head -1)"
+  assert_not_empty "ref.commit line present in deploy/flux-system/sources/k-orc.yaml" \
+    "$commit_line"
 
-  captured="$(REGEX="$match_string" LINE="$tag_line" perl -e '
+  captured="$(REGEX="$match_string" LINE="$commit_line" perl -e '
     my $re = $ENV{REGEX};
     my $line = $ENV{LINE};
-    if ($line =~ /$re/) { print $+{currentValue} // ""; }
+    if ($line =~ /$re/) { print $+{currentDigest} // ""; }
   ')"
 
-  expected_value="$(printf '%s' "$tag_line" \
-    | sed -E 's/.*tag:[[:space:]]*(v[0-9]+\.[0-9]+\.[0-9]+).*/\1/')"
+  expected_value="$(printf '%s' "$commit_line" \
+    | sed -E 's/.*commit:[[:space:]]*([a-f0-9]{40}).*/\1/')"
 
-  assert_eq "matchStrings regex captures the k-orc ref.tag version" \
+  assert_eq "matchStrings regex captures the k-orc ref.commit digest" \
     "$expected_value" "$captured"
 }
 
 test_package_rules_for_korc() {
-  echo "Test: packageRules disable major k-orc bumps, automerge minor/patch"
+  echo "Test: packageRules automerge the k-orc digest bump with a 3-day age gate"
 
   if ! command -v jq >/dev/null 2>&1; then
-    echo "  SKIP: jq not installed (5 checks skipped)"
-    SKIP=$((SKIP + 5))
+    echo "  SKIP: jq not installed (3 checks skipped)"
+    SKIP=$((SKIP + 3))
     return
   fi
 
-  local major_rule minor_rule
-  major_rule="$(jq -c '.packageRules[]
+  local digest_rule
+  digest_rule="$(jq -c --arg pkg "$KORC_PACKAGE" '.packageRules[]
     | select(
-        (((.matchPackageNames // []) | index("k-orc/openstack-resource-controller")) != null
+        (((.matchPackageNames // []) | index($pkg)) != null
          or ((.matchFileNames   // []) | index("deploy/flux-system/sources/k-orc.yaml")) != null)
-        and (((.matchUpdateTypes // []) | index("major")) != null)
+        and (((.matchUpdateTypes // []) | index("digest")) != null)
       )' "$RENOVATE_FILE" | head -1)"
 
-  minor_rule="$(jq -c '.packageRules[]
-    | select(
-        (((.matchPackageNames // []) | index("k-orc/openstack-resource-controller")) != null
-         or ((.matchFileNames   // []) | index("deploy/flux-system/sources/k-orc.yaml")) != null)
-        and (((.matchUpdateTypes // []) | index("minor")) != null)
-      )' "$RENOVATE_FILE" | head -1)"
-
-  if [ -z "$major_rule" ]; then
-    echo "  FAIL: no packageRule scoping major updates for k-orc"
-    FAIL=$((FAIL + 2))
-  else
-    assert_eq "major k-orc updates are disabled" \
-      "false" \
-      "$(jq -r '.enabled' <<<"$major_rule")"
-  fi
-
-  if [ -z "$minor_rule" ]; then
-    echo "  FAIL: no packageRule scoping minor/patch updates for k-orc"
-    FAIL=$((FAIL + 4))
+  if [ -z "$digest_rule" ]; then
+    echo "  FAIL: no packageRule scoping digest updates for k-orc"
+    FAIL=$((FAIL + 3))
     return
   fi
 
-  assert_eq "minor/patch k-orc updates are automerged" \
+  assert_eq "digest k-orc updates are automerged" \
     "true" \
-    "$(jq -r '.automerge' <<<"$minor_rule")"
-  assert_eq "minor/patch k-orc rule waits minimumReleaseAge=3 days" \
+    "$(jq -r '.automerge' <<<"$digest_rule")"
+  assert_eq "digest k-orc rule waits minimumReleaseAge=3 days" \
     "3 days" \
-    "$(jq -r '.minimumReleaseAge' <<<"$minor_rule")"
-  assert_eq "minor/patch k-orc rule groupName is k-orc" \
+    "$(jq -r '.minimumReleaseAge' <<<"$digest_rule")"
+  assert_eq "digest k-orc rule groupName is k-orc" \
     "k-orc" \
-    "$(jq -r '.groupName' <<<"$minor_rule")"
+    "$(jq -r '.groupName' <<<"$digest_rule")"
 }
 
-test_custom_manager_uses_github_releases
-test_regex_captures_ref_tag
+test_custom_manager_uses_git_refs
+test_regex_captures_ref_commit
 test_package_rules_for_korc
 
 echo ""

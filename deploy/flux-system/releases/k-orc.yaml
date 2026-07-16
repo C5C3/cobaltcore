@@ -3,16 +3,45 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Deploy K-ORC (OpenStack Resource Controller),
-# whose ApplicationCredential / Service / Endpoint CRDs the c5c3-operator drives.
+# whose ApplicationCredential / Service / Endpoint / RoleAssignment CRDs the
+# c5c3-operator drives.
 #
 # DECISION: a Flux Kustomization (kustomize.toolkit.fluxcd.io), not a HelmRelease.
 # K-ORC ships no Helm chart (see sources/k-orc.yaml) — only a flattened installer
-# manifest. The GitRepository source vendors ./dist (just dist/install.yaml, the
-# byte-identical copy of the pinned release asset), and this Kustomization applies
-# it. The path has no kustomization.yaml, so the kustomize-controller generates one
-# over all manifests in ./dist and applies install.yaml verbatim. install.yaml
-# already declares the orc-system Namespace and namespaces every resource into it,
-# so no spec.targetNamespace is set (the installer already declares + namespaces orc-system; orc-system is also declared in deploy/flux-system/namespaces.yaml, where we co-declare it — because the K-ORC installer's own resources land there — so the Namespace exists before this Kustomization reconciles).
+# manifest, and only at release time. The source is pinned to an upstream main
+# commit (no released K-ORC ships the RoleAssignment kind the c5c3-operator now
+# Owns()), so it vendors ./config rather than a stale ./dist and this Kustomization
+# runs the kustomize build of ./config/default. That base carries its own
+# kustomization.yaml (namespace: orc-system, namePrefix: orc-): it declares the
+# orc-system Namespace and namespaces every resource into it — the same posture
+# dist/install.yaml had — so no spec.targetNamespace is set (orc-system is also
+# declared in deploy/flux-system/namespaces.yaml, where we co-declare it — because
+# the K-ORC installer's own resources land there — so the Namespace exists before
+# this Kustomization reconciles). REVERT to path ./dist (and drop the images
+# override below) once the source pin returns to a release tag.
+#
+# Images: config/manager/manager.yaml uses the placeholder image controller:latest,
+# so spec.images (the kustomize-controller's native image override) is the ONLY
+# thing resolving the controller that actually gets scheduled. It rewrites the
+# placeholder to the quay.io/orc/openstack-resource-controller image upstream
+# publishes per commit, matching the pinned source commit in sources/k-orc.yaml.
+#
+# The pull is resolved by DIGEST, not by the commit-<short sha> tag: a quay tag is
+# mutable, so the tag alone pins nothing — anyone able to push to the upstream quay
+# repo could re-point it at a substituted image, which then runs with K-ORC's
+# cluster RBAC and reads the Keystone admin clouds.yaml the ControlPlane hands it.
+# The source commit is content-addressed; the digest pins the image the same way.
+# Both consumers agree: the kustomize-controller ignores newTag when digest is set,
+# and the `kubectl apply -k` in hack/ci-deploy-korc.sh renders name:tag@digest —
+# either way the digest is what resolves.
+#
+# newTag therefore stays only as the human-readable record of the tag the digest
+# was resolved from, and as the OFFLINE drift anchor: neither is Renovate-tracked,
+# so a source-commit bump must re-pin BOTH here in lockstep. The
+# hack/ci-deploy-korc.sh drift guard fails CI on a stale tag — which is what blocks
+# Renovate from automerging a commit bump that leaves this image behind. Resolve
+# the new digest at bump time, e.g.
+#   crane digest quay.io/orc/openstack-resource-controller:commit-<short sha>
 #
 # Credentials: the previous HelmRelease set globalCloudConfig.secretName, the chart
 # value for K-ORC's GLOBAL default clouds.yaml mount. The upstream installer has no
@@ -39,6 +68,12 @@ spec:
     kind: GitRepository
     name: k-orc
     namespace: flux-system
-  path: ./dist
+  path: ./config/default
+  images:
+    - name: controller
+      newName: quay.io/orc/openstack-resource-controller
+      # Documentation + drift anchor; the digest below is what resolves the pull.
+      newTag: commit-ef6119d
+      digest: sha256:6a132b1ea890040fa5bdf7c69e98270d58ed30acea7827770ee90c774335d7df
   prune: true
   wait: true

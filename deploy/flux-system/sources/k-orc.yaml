@@ -4,23 +4,35 @@
 
 # K-ORC (OpenStack Resource Controller) provides the
 # declarative Keystone resource CRDs (ApplicationCredential, Service, Endpoint,
-# ...) that the c5c3-operator drives.
+# RoleAssignment, ...) that the c5c3-operator drives.
 #
 # DECISION: GitRepository, not HelmRepository. K-ORC does NOT publish a Helm
 # chart — https://k-orc.github.io/openstack-resource-controller serves no Helm
-# index (404). Upstream ships a single flattened installer manifest as a release
-# asset (releases/download/<tag>/install.yaml), which is byte-identical to the
-# dist/install.yaml committed at the tag. So we pin a GitRepository to the
-# release tag and apply ./dist via a Flux Kustomization (releases/k-orc.yaml).
+# index (404). At release time upstream ships a single flattened installer
+# manifest as a release asset (releases/download/<tag>/install.yaml), byte-
+# identical to the dist/install.yaml committed at the tag. So we vendor a
+# GitRepository and apply it via a Flux Kustomization (releases/k-orc.yaml).
 #
-# The clone is scoped to /dist via spec.ignore so the source artifact stays small
-# (the full upstream repo carries a website/, examples/, tooling, etc.).
+# TEMPORARY main-commit pin (ref.commit, not ref.tag): the c5c3-operator now
+# Owns() the RoleAssignment kind, which no released K-ORC ships (latest is
+# v2.6.0) and which only upstream main's controller reconciles. dist/install.yaml
+# is regenerated ONLY at release time, so a main commit carries no refreshed
+# ./dist — the Kustomization therefore builds ./config/default with an image
+# override (see releases/k-orc.yaml) instead of applying ./dist. REVERT to the
+# tag + ./dist form once the first release shipping RoleAssignment (expected
+# v2.7.0) lands.
 #
-# Renovate: the pinned tag below is tracked by a customManager rule in
-# renovate.json (matching this file's ref.tag), so it cannot silently drift from
-# the go.mod k-orc module version the operator compiles against. hack/ci-deploy-
-# korc.sh parses this same tag so the CI installer and the Flux source stay in
-# lockstep.
+# The clone is scoped to /config via spec.ignore so the source artifact stays
+# small (the full upstream repo carries a website/, examples/, tooling, etc.).
+#
+# Renovate: the pinned commit below is tracked by a customManager rule in
+# renovate.json (datasource git-refs, currentValue main), so it cannot silently
+# drift from the go.mod k-orc module version the operator compiles against.
+# hack/ci-deploy-korc.sh parses this same commit so the CI installer and the Flux
+# source stay in lockstep. The container image in releases/k-orc.yaml (pinned by
+# digest, with newTag: commit-<short sha> as its drift anchor) is NOT independently
+# Renovate-tracked; the ci-deploy-korc.sh drift guard plus e2e keep it honest, so a
+# Renovate commit-bump PR fails CI until the image is re-pinned in lockstep.
 ---
 apiVersion: source.toolkit.fluxcd.io/v1
 kind: GitRepository
@@ -31,8 +43,8 @@ spec:
   interval: 1h
   url: https://github.com/k-orc/openstack-resource-controller
   ref:
-    tag: v2.6.0
+    commit: ef6119d9effa613c887b3540d4159469dce451d7
   ignore: |
-    # Vendor only the released installer manifest; skip the rest of the repo.
+    # Vendor only the config/ kustomize base; skip the rest of the repo.
     /*
-    !/dist
+    !/config
