@@ -1,0 +1,34 @@
+# RoleBinding tests for namespace-scoped mode.
+suite: RoleBinding
+templates:
+  - templates/rolebinding.yaml
+tests:
+  - it: should render RoleBinding referencing Role when namespaceScoped is true
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
+    asserts:
+      - hasDocuments:
+          count: 1
+      - equal:
+          path: roleRef.apiGroup
+          value: rbac.authorization.k8s.io
+      - equal:
+          path: roleRef.kind
+          value: Role
+      - equal:
+          path: roleRef.name
+          value: RELEASE-NAME-glance-operator
+      - equal:
+          path: subjects[0].kind
+          value: ServiceAccount
+      - equal:
+          path: subjects[0].name
+          value: RELEASE-NAME-glance-operator
+
+  - it: should not render RoleBinding when namespaceScoped is false
+    asserts:
+      - hasDocuments:
+          count: 0

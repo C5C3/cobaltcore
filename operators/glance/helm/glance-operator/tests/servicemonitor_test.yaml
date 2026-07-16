@@ -1,0 +1,98 @@
+# ServiceMonitor template unit tests.
+#
+# DECISION: The task spec called for a Go test file
+# (servicemonitor_test.go using helm template + sigs.k8s.io/yaml). All
+# existing tests/*_test.yaml files in this chart are helm-unittest, and CI
+# runs `helm unittest` per docs/reference/ci-workflow.md — no Go-based
+# chart test harness exists. Following the codebase convention preserves
+# the single chart-test entry point and keeps the CI pipeline wiring
+# intact; introducing a parallel Go harness would duplicate infrastructure.
+# The three test names from the spec are kept verbatim in `it:` lines so
+# traceability to the task spec is preserved.
+suite: ServiceMonitor
+templates:
+  - templates/servicemonitor.yaml
+tests:
+  - it: TestServiceMonitorOmittedByDefault — should not render when monitoring disabled
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: TestServiceMonitorRenderedWhenEnabled — renders ServiceMonitor with correct fields
+    set:
+      monitoring:
+        serviceMonitor:
+          enabled: true
+    asserts:
+      - hasDocuments:
+          count: 1
+      - isKind:
+          of: ServiceMonitor
+      - isAPIVersion:
+          of: monitoring.coreos.com/v1
+      - equal:
+          path: spec.endpoints[0].port
+          value: metrics
+      - equal:
+          path: spec.endpoints[0].path
+          value: /metrics
+      - equal:
+          path: spec.endpoints[0].interval
+          value: 30s
+      - equal:
+          path: spec.selector.matchLabels["app.kubernetes.io/name"]
+          value: glance-operator
+
+  - it: should honour a custom scrape interval
+    set:
+      monitoring:
+        serviceMonitor:
+          enabled: true
+          interval: 15s
+    asserts:
+      - equal:
+          path: spec.endpoints[0].interval
+          value: 15s
+
+  # Prometheus operator's `Duration` type accepts the literal "0" to mean
+  # "use the global default scrape interval". The schema regex must allow
+  # this bare-zero form (I-002 review feedback).
+  - it: should accept "0" as the scrape interval (I-002)
+    set:
+      monitoring:
+        serviceMonitor:
+          enabled: true
+          interval: "0"
+    asserts:
+      - equal:
+          path: spec.endpoints[0].interval
+          value: "0"
+
+  - it: TestValuesSchemaRejectsBadMonitoringInput — rejects non-duration interval
+    set:
+      monitoring:
+        serviceMonitor:
+          enabled: true
+          interval: "not-a-duration"
+    asserts:
+      - failedTemplate:
+          errorPattern: "/monitoring/serviceMonitor/interval.*does not match pattern"
+
+  - it: should reject non-boolean monitoring.serviceMonitor.enabled
+    set:
+      monitoring:
+        serviceMonitor:
+          enabled: "yes"
+    asserts:
+      - failedTemplate:
+          errorPattern: "/monitoring/serviceMonitor/enabled.*got string, want boolean"
+
+  - it: should reject unknown property under monitoring.serviceMonitor
+    set:
+      monitoring:
+        serviceMonitor:
+          enabled: true
+          scheme: https
+    asserts:
+      - failedTemplate:
+          errorPattern: "/monitoring/serviceMonitor.*additional properties.*not allowed"

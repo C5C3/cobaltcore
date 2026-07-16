@@ -1,0 +1,341 @@
+# ClusterRole RBAC rules unit tests.
+suite: ClusterRole
+templates:
+  - templates/clusterrole.yaml
+tests:
+  - it: should have the correct number of rules
+    asserts:
+      - lengthEqual:
+          path: rules
+          count: 20
+
+  - it: should grant full CRUD on glances
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - glance.openstack.c5c3.io
+            resources:
+              - glances
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  - it: should grant get/update/patch on glances/status
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - glance.openstack.c5c3.io
+            resources:
+              - glances/status
+            verbs:
+              - get
+              - update
+              - patch
+
+  - it: should grant update on glances/finalizers
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - glance.openstack.c5c3.io
+            resources:
+              - glances/finalizers
+            verbs:
+              - update
+
+  - it: should grant read-only (no create/update/delete) on glancebackends
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - glance.openstack.c5c3.io
+            resources:
+              - glancebackends
+            verbs:
+              - get
+              - list
+              - watch
+
+  - it: should grant get/update/patch on glancebackends/status
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - glance.openstack.c5c3.io
+            resources:
+              - glancebackends/status
+            verbs:
+              - get
+              - update
+              - patch
+
+  - it: should grant full CRUD on apps/deployments
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - apps
+            resources:
+              - deployments
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  - it: should grant full CRUD on core resources
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - ""
+            resources:
+              - services
+              - configmaps
+              - secrets
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  - it: should restrict events to create and patch only
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - ""
+            resources:
+              - events
+            verbs:
+              - create
+              - patch
+
+  - it: should grant full CRUD on batch jobs
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - batch
+            resources:
+              - jobs
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  - it: should grant full CRUD on mariadb resources
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - k8s.mariadb.com
+            resources:
+              - databases
+              - users
+              - grants
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  - it: should grant read-only on mariadb cluster CRs
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - k8s.mariadb.com
+            resources:
+              - mariadbs
+            verbs:
+              - get
+              - list
+              - watch
+
+  - it: should grant read-only on externalsecrets
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - external-secrets.io
+            resources:
+              - externalsecrets
+            verbs:
+              - get
+              - list
+              - watch
+
+  - it: should grant read-only on clustersecretstores and secretstores
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - external-secrets.io
+            resources:
+              - clustersecretstores
+              - secretstores
+            verbs:
+              - get
+              - list
+              - watch
+
+  - it: should grant full CRUD on poddisruptionbudgets
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - policy
+            resources:
+              - poddisruptionbudgets
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  - it: should grant full CRUD on horizontalpodautoscalers
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - autoscaling
+            resources:
+              - horizontalpodautoscalers
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  - it: should grant full CRUD on networkpolicies
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - networking.k8s.io
+            resources:
+              - networkpolicies
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  - it: should grant full CRUD on httproutes
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - gateway.networking.k8s.io
+            resources:
+              - httproutes
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  - it: should grant read-only on httproutes/status
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - gateway.networking.k8s.io
+            resources:
+              - httproutes/status
+            verbs:
+              - get
+
+  - it: should grant read-only on priorityclasses for webhook validation
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - scheduling.k8s.io
+            resources:
+              - priorityclasses
+            verbs:
+              - get
+              - list
+              - watch
+
+  - it: should grant full CRUD on leases for leader election
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - coordination.k8s.io
+            resources:
+              - leases
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  # ClusterRole must not render in namespace-scoped mode.
+  - it: should not render ClusterRole when rbac.namespaceScoped is true
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0

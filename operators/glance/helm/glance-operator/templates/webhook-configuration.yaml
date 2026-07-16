@@ -1,0 +1,14 @@
+{{- include "operator-library.webhookConfiguration" (dict
+      "root" .
+      "mutatingWebhookName" "mglance.kb.io"
+      "validatingWebhookName" "vglance.kb.io"
+      "mutatePath" "/mutate-glance-openstack-c5c3-io-v1alpha1-glance"
+      "validatePath" "/validate-glance-openstack-c5c3-io-v1alpha1-glance"
+      "apiGroup" "glance.openstack.c5c3.io"
+      "resource" "glances"
+      "additionalWebhooks" (list (dict
+        "mutatingWebhookName" "mglancebackend.kb.io"
+        "validatingWebhookName" "vglancebackend.kb.io"
+        "mutatePath" "/mutate-glance-openstack-c5c3-io-v1alpha1-glancebackend"
+        "validatePath" "/validate-glance-openstack-c5c3-io-v1alpha1-glancebackend"
+        "resource" "glancebackends"))) }}

@@ -1,0 +1,128 @@
+# Default values for glance-operator.
+# Validated by values.schema.json.
+
+image:
+  repository: ghcr.io/c5c3/glance-operator
+  # tag defaults to .Chart.AppVersion when left empty; set explicitly to override (e.g. tag: "latest" for local dev)
+  tag: ""
+  # Optional immutable digest (sha256:<64 hex>). When set, the pod image is
+  # pinned as repository:tag@digest. On the Flux deployment path this is
+  # injected at deploy time by hack/refresh-operator-image-digests.sh via a
+  # valuesFrom ConfigMap; leave empty for tag-only resolution.
+  digest: ""
+  pullPolicy: IfNotPresent
+
+replicas: 2
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 128Mi
+  requests:
+    cpu: 10m
+    memory: 64Mi
+
+rbac:
+  # Set to true to deploy with namespace-scoped Role/RoleBinding
+  # instead of ClusterRole/ClusterRoleBinding. Restricts the operator to its
+  # release namespace. Requires webhook.enabled=false.
+  # Recommended for single-namespace production deployments: the default
+  # ClusterRole grants cluster-wide Secret CRUD, so namespace scoping bounds a
+  # compromised operator pod to a single namespace. See the Multi-Tenant
+  # Deployment guide for the cluster-wide privilege-escalation trade-off.
+  namespaceScoped: false
+
+leaderElection:
+  enabled: true
+
+# Controller-runtime reconcile-loop tuning.
+controller:
+  # Maximum number of Glance CRs that may reconcile concurrently
+  # (controller-runtime MaxConcurrentReconciles). The upstream default of 1
+  # serialises reconciles across CRs, so one slow or flapping CR delays every
+  # other CR; 2 is a safe default. Raise to 5-10 for fleets with many CRs.
+  # Rendered as --max-concurrent-reconciles; omit the key to fall back to the
+  # operator's built-in default.
+  maxConcurrentReconciles: 2
+
+webhook:
+  enabled: true
+
+metrics:
+  port: 8080
+
+# Operator logging configuration (controller-runtime zap logger). The operator
+# defaults to the production profile (development=false): JSON encoder, info
+# level, and stack traces only at error level — suitable for log aggregation.
+# Override these to restore human-readable console output during local
+# development; each value maps to a controller-runtime --zap-* flag and is
+# omitted from the operator args when left at its default.
+logging:
+  # When true, passes --zap-devel: console encoder, debug verbosity, warn-level
+  # stack traces, and a DPanic that panics. Leave false for production.
+  development: false
+  # --zap-log-level: one of debug, info, error, panic, or a positive integer
+  # for custom verbosity. Empty uses the mode default (info in production).
+  level: ""
+  # --zap-encoder: json or console. Empty uses the mode default (json in
+  # production).
+  encoder: ""
+
+# Prometheus ServiceMonitor integration.
+# When enabled, renders a monitoring.coreos.com/v1 ServiceMonitor targeting the
+# operator's metrics port; prometheus-operator CRDs must be installed in-cluster.
+monitoring:
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+
+serviceAccount:
+  create: true
+  name: ""
+
+# NetworkPolicy for operator pod egress restriction.
+# Default-off (opt-in) to preserve upgrade compatibility for clusters whose
+# kube-apiserver CIDR or DNS layout does not match the defaults below.
+networkPolicy:
+  # When true, a NetworkPolicy is rendered that targets the operator
+  # pod and default-denies both ingress and egress except for the rules below.
+  # When false (default), no NetworkPolicy object is emitted.
+  enabled: false
+
+  # Kubernetes API server reachability. When networkPolicy is
+  # enabled, both cidrs and ports MUST be non-empty — an empty list would render
+  # an open egress rule (fail-closed guard in templates/networkpolicy.yaml).
+  # Discover the CIDR with:  kubectl get endpoints kubernetes -o json
+  # Kind default (uncomment to enable on a kind cluster):
+  #   cidrs: ["10.96.0.1/32"]
+  #   ports: [6443]
+  kubeApiServer:
+    cidrs: []
+    ports: []
+
+  # DNS egress. Required for kubernetes.default.svc resolution and for
+  # any hostname-based client configuration. Both UDP and TCP port 53 are
+  # permitted (TCP is used for DNS responses larger than 512 bytes).
+  dns:
+    enabled: true
+    namespaceSelector:
+      kubernetes.io/metadata.name: kube-system
+    podSelector:
+      k8s-app: kube-dns
+
+  # Prometheus metrics scraping. Opt-in — when empty (default), no
+  # ingress rule is rendered for the metrics port. Each list entry is a
+  # NetworkPolicyPeer rendered verbatim (namespaceSelector and/or podSelector).
+  # Example:
+  #   allowMetricsFrom:
+  #     - namespaceSelector:
+  #         matchLabels:
+  #           kubernetes.io/metadata.name: monitoring
+  allowMetricsFrom: []
+
+  # Webhook admission ingress source override. Only consulted when
+  # webhook.enabled=true. When cidrs is empty (default), the webhook ingress
+  # rule falls back to kubeApiServer.cidrs (the API server initiates webhook
+  # calls, so a single knob usually covers both directions).
+  webhookClients:
+    cidrs: []

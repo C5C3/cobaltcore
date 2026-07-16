@@ -1,0 +1,462 @@
+# NetworkPolicy unit tests for the glance-operator Helm chart.
+# Verifies default-off posture, rule shape, fail-closed guards, and absence
+# of the health-probe (8081) ingress rule.
+suite: NetworkPolicy
+templates:
+  - templates/networkpolicy.yaml
+tests:
+  # ---------------------------------------------------------------------------
+  # Default-off posture and base NetworkPolicy structure.
+  # ---------------------------------------------------------------------------
+  - it: should not render any document when networkPolicy.enabled is false (default)
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: should render exactly one NetworkPolicy when enabled
+    set:
+      networkPolicy:
+        enabled: true
+        kubeApiServer:
+          cidrs: ["10.96.0.1/32"]
+          ports: [6443]
+    asserts:
+      - hasDocuments:
+          count: 1
+      - isKind:
+          of: NetworkPolicy
+      - equal:
+          path: apiVersion
+          value: networking.k8s.io/v1
+
+  - it: should set standard chart labels on the NetworkPolicy
+    set:
+      networkPolicy:
+        enabled: true
+        kubeApiServer:
+          cidrs: ["10.96.0.1/32"]
+          ports: [6443]
+    asserts:
+      - equal:
+          path: metadata.labels["app.kubernetes.io/name"]
+          value: glance-operator
+      - equal:
+          path: metadata.labels["app.kubernetes.io/managed-by"]
+          value: Helm
+      - isNotNullOrEmpty:
+          path: metadata.labels["app.kubernetes.io/instance"]
+
+  - it: should select the operator pod via selectorLabels
+    set:
+      networkPolicy:
+        enabled: true
+        kubeApiServer:
+          cidrs: ["10.96.0.1/32"]
+          ports: [6443]
+    asserts:
+      - equal:
+          path: spec.podSelector.matchLabels["app.kubernetes.io/name"]
+          value: glance-operator
+      - isNotNullOrEmpty:
+          path: spec.podSelector.matchLabels["app.kubernetes.io/instance"]
+
+  - it: should set policyTypes to Ingress and Egress exactly
+    set:
+      networkPolicy:
+        enabled: true
+        kubeApiServer:
+          cidrs: ["10.96.0.1/32"]
+          ports: [6443]
+    asserts:
+      - equal:
+          path: spec.policyTypes
+          value:
+            - Ingress
+            - Egress
+
+  # ---------------------------------------------------------------------------
+  # DNS egress rule — default selectors, override, disable.
+  # ---------------------------------------------------------------------------
+  - it: should render DNS egress with default kube-system/kube-dns selectors
+    set:
+      networkPolicy:
+        enabled: true
+        kubeApiServer:
+          cidrs: ["10.96.0.1/32"]
+          ports: [6443]
+    asserts:
+      - equal:
+          path: spec.egress[0].to[0].namespaceSelector.matchLabels["kubernetes.io/metadata.name"]
+          value: kube-system
+      - equal:
+          path: spec.egress[0].to[0].podSelector.matchLabels["k8s-app"]
+          value: kube-dns
+      - equal:
+          path: spec.egress[0].ports
+          value:
+            - protocol: UDP
+              port: 53
+            - protocol: TCP
+              port: 53
+
+  - it: should honor overridden DNS namespaceSelector and podSelector
+    set:
+      networkPolicy:
+        enabled: true
+        kubeApiServer:
+          cidrs: ["10.96.0.1/32"]
+          ports: [6443]
+        dns:
+          namespaceSelector:
+            custom-ns: dns-system
+          podSelector:
+            custom-app: coredns
+    asserts:
+      - equal:
+          path: spec.egress[0].to[0].namespaceSelector.matchLabels["custom-ns"]
+          value: dns-system
+      - equal:
+          path: spec.egress[0].to[0].podSelector.matchLabels["custom-app"]
+          value: coredns
+
+  - it: should not render a DNS egress rule when dns.enabled is false
+    set:
+      networkPolicy:
+        enabled: true
+        kubeApiServer:
+          cidrs: ["10.96.0.1/32"]
+          ports: [6443]
+        dns:
+          enabled: false
+    asserts:
+      # Only the kube-apiserver egress rule remains.
+      - lengthEqual:
+          path: spec.egress
+          count: 1
+      - equal:
+          path: spec.egress[0].to
+          value:
+            - ipBlock:
+                cidr: "10.96.0.1/32"
+      - equal:
+          path: spec.egress[0].ports
+          value:
+            - protocol: TCP
+              port: 6443
+
+  # ---------------------------------------------------------------------------
+  # kube-apiserver egress — single rule combining all CIDRs + ports.
+  # DNS is disabled in these tests to keep spec.egress indexed at 0.
+  # ---------------------------------------------------------------------------
+  - it: should render a single egress rule with one CIDR and one port
+    set:
+      networkPolicy:
+        enabled: true
+        kubeApiServer:
+          cidrs: ["10.96.0.1/32"]
+          ports: [6443]
+        dns:
+          enabled: false
+    asserts:
+      - lengthEqual:
+          path: spec.egress
+          count: 1
+      - equal:
+          path: spec.egress[0].to
+          value:
+            - ipBlock:
+                cidr: "10.96.0.1/32"
+      - equal:
+          path: spec.egress[0].ports
+          value:
+            - protocol: TCP
+              port: 6443
+
+  - it: should combine multiple CIDRs into a single egress rule
+    set:
+      networkPolicy:
+        enabled: true
+        kubeApiServer:
+          cidrs:
+            - "10.96.0.1/32"
+            - "10.96.0.2/32"
+            - "192.168.1.0/24"
+          ports: [6443]
+        dns:
+          enabled: false
+    asserts:
+      - lengthEqual:
+          path: spec.egress
+          count: 1
+      - equal:
+          path: spec.egress[0].to
+          value:
+            - ipBlock:
+                cidr: "10.96.0.1/32"
+            - ipBlock:
+                cidr: "10.96.0.2/32"
+            - ipBlock:
+                cidr: "192.168.1.0/24"
+      - lengthEqual:
+          path: spec.egress[0].ports
+          count: 1
+
+  - it: should combine multiple ports into a single egress rule
+    set:
+      networkPolicy:
+        enabled: true
+        kubeApiServer:
+          cidrs: ["10.96.0.1/32"]
+          ports: [443, 6443, 8443]
+        dns:
+          enabled: false
+    asserts:
+      - lengthEqual:
+          path: spec.egress
+          count: 1
+      - equal:
+          path: spec.egress[0].ports
+          value:
+            - protocol: TCP
+              port: 443
+            - protocol: TCP
+              port: 6443
+            - protocol: TCP
+              port: 8443
+      - lengthEqual:
+          path: spec.egress[0].to
+          count: 1
+
+  # ---------------------------------------------------------------------------
+  # Webhook ingress — TCP 9443 from webhook clients or apiserver CIDRs.
+  # ---------------------------------------------------------------------------
+  - it: should render webhook ingress falling back to kubeApiServer.cidrs when webhookClients.cidrs is empty
+    set:
+      networkPolicy:
+        enabled: true
+        kubeApiServer:
+          cidrs: ["10.96.0.1/32"]
+          ports: [6443]
+      webhook:
+        enabled: true
+    asserts:
+      - equal:
+          path: spec.ingress[0].from
+          value:
+            - ipBlock:
+                cidr: "10.96.0.1/32"
+      - equal:
+          path: spec.ingress[0].ports
+          value:
+            - protocol: TCP
+              port: 9443
+
+  - it: should use webhookClients.cidrs when provided
+    set:
+      networkPolicy:
+        enabled: true
+        kubeApiServer:
+          cidrs: ["10.96.0.1/32"]
+          ports: [6443]
+        webhookClients:
+          cidrs:
+            - "172.16.0.0/16"
+            - "192.168.10.0/24"
+      webhook:
+        enabled: true
+    asserts:
+      - equal:
+          path: spec.ingress[0].from
+          value:
+            - ipBlock:
+                cidr: "172.16.0.0/16"
+            - ipBlock:
+                cidr: "192.168.10.0/24"
+      - equal:
+          path: spec.ingress[0].ports
+          value:
+            - protocol: TCP
+              port: 9443
+
+  - it: should not render webhook ingress when webhook.enabled is false
+    set:
+      networkPolicy:
+        enabled: true
+        kubeApiServer:
+          cidrs: ["10.96.0.1/32"]
+          ports: [6443]
+        allowMetricsFrom:
+          - namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: monitoring
+      webhook:
+        enabled: false
+    asserts:
+      # Only the metrics ingress rule remains — no 9443 rule.
+      - lengthEqual:
+          path: spec.ingress
+          count: 1
+      - equal:
+          path: spec.ingress[0].ports[0].port
+          value: 8080
+
+  # ---------------------------------------------------------------------------
+  # Metrics ingress — opt-in via allowMetricsFrom; peers rendered
+  # verbatim. Webhook disabled to keep spec.ingress index stable.
+  # ---------------------------------------------------------------------------
+  - it: should not render metrics ingress when allowMetricsFrom is empty
+    set:
+      networkPolicy:
+        enabled: true
+        kubeApiServer:
+          cidrs: ["10.96.0.1/32"]
+          ports: [6443]
+      webhook:
+        enabled: true
+    asserts:
+      # Only the webhook ingress rule is rendered.
+      - lengthEqual:
+          path: spec.ingress
+          count: 1
+      - equal:
+          path: spec.ingress[0].ports[0].port
+          value: 9443
+
+  - it: should render metrics ingress with one namespace peer
+    set:
+      networkPolicy:
+        enabled: true
+        kubeApiServer:
+          cidrs: ["10.96.0.1/32"]
+          ports: [6443]
+        allowMetricsFrom:
+          - namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: monitoring
+      webhook:
+        enabled: false
+    asserts:
+      - lengthEqual:
+          path: spec.ingress
+          count: 1
+      - equal:
+          path: spec.ingress[0].from
+          value:
+            - namespaceSelector:
+                matchLabels:
+                  kubernetes.io/metadata.name: monitoring
+      - equal:
+          path: spec.ingress[0].ports
+          value:
+            - protocol: TCP
+              port: 8080
+
+  - it: should render metrics ingress with multiple peers verbatim
+    set:
+      networkPolicy:
+        enabled: true
+        kubeApiServer:
+          cidrs: ["10.96.0.1/32"]
+          ports: [6443]
+        allowMetricsFrom:
+          - namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: monitoring
+          - podSelector:
+              matchLabels:
+                app.kubernetes.io/name: prometheus
+      webhook:
+        enabled: false
+    asserts:
+      - lengthEqual:
+          path: spec.ingress
+          count: 1
+      - equal:
+          path: spec.ingress[0].from
+          value:
+            - namespaceSelector:
+                matchLabels:
+                  kubernetes.io/metadata.name: monitoring
+            - podSelector:
+                matchLabels:
+                  app.kubernetes.io/name: prometheus
+
+  - it: should honor configured metrics.port in the metrics ingress rule
+    set:
+      networkPolicy:
+        enabled: true
+        kubeApiServer:
+          cidrs: ["10.96.0.1/32"]
+          ports: [6443]
+        allowMetricsFrom:
+          - namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: monitoring
+      metrics:
+        port: 9090
+      webhook:
+        enabled: false
+    asserts:
+      - equal:
+          path: spec.ingress[0].ports
+          value:
+            - protocol: TCP
+              port: 9090
+
+  # ---------------------------------------------------------------------------
+  # Fail-closed guards when enabled=true but cidrs or ports are empty.
+  # Either the schema (minItems: 1 when enabled=true) or the template `fail`
+  # statement will trigger — both reference the offending key name.
+  # ---------------------------------------------------------------------------
+  - it: should fail rendering when enabled=true and kubeApiServer.cidrs is empty
+    set:
+      networkPolicy:
+        enabled: true
+        kubeApiServer:
+          cidrs: []
+          ports: [6443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "cidrs"
+
+  - it: should fail rendering when enabled=true and kubeApiServer.ports is empty
+    set:
+      networkPolicy:
+        enabled: true
+        kubeApiServer:
+          cidrs: ["10.96.0.1/32"]
+          ports: []
+    asserts:
+      - failedTemplate:
+          errorPattern: "ports"
+
+  # ---------------------------------------------------------------------------
+  # Health probe port 8081 is never covered by a NetworkPolicy rule —
+  # kubelet calls probes from the node network namespace and is not subject to
+  # NetworkPolicy in standard CNIs.
+  # ---------------------------------------------------------------------------
+  - it: should never render an ingress rule for health probe port 8081
+    set:
+      networkPolicy:
+        enabled: true
+        kubeApiServer:
+          cidrs: ["10.96.0.1/32"]
+          ports: [6443]
+        allowMetricsFrom:
+          - namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: monitoring
+      webhook:
+        enabled: true
+    asserts:
+      # With webhook + metrics both on, ingress has exactly two rules
+      # (webhook 9443 and metrics 8080) — never a 8081 rule.
+      - lengthEqual:
+          path: spec.ingress
+          count: 2
+      - equal:
+          path: spec.ingress[0].ports[0].port
+          value: 9443
+      - equal:
+          path: spec.ingress[1].ports[0].port
+          value: 8080
