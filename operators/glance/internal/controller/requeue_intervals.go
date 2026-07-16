@@ -5,6 +5,8 @@
 package controller
 
 import (
+	"time"
+
 	"github.com/c5c3/forge/internal/common/healthcheck"
 	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 )
@@ -32,4 +34,14 @@ const (
 	// HealthCheckCacheTTL bounds how long a successful Glance API probe is
 	// reused before the operator re-probes.
 	HealthCheckCacheTTL = healthcheck.HealthCheckCacheTTL
+)
+
+// Glance-specific requeue intervals that no other operator shares.
+const (
+	// RequeueDatabaseWait is the interval for waiting on MariaDB CR readiness,
+	// db-sync Job completion, and a ready default backend before the database
+	// schema can be provisioned. These operations are moderately slow, so a
+	// longer interval avoids unnecessary API churn. It mirrors keystone's
+	// RequeueDatabaseWait.
+	RequeueDatabaseWait = 30 * time.Second
 )

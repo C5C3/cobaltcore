@@ -9,8 +9,12 @@ import (
 	"context"
 	"fmt"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	"github.com/c5c3/forge/internal/common/watch"
 	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
 )
@@ -122,4 +126,64 @@ func registerGlanceBackendIndexes(ctx context.Context, indexer client.FieldIndex
 		return fmt.Errorf("registering field indexer %q: %w", GlanceBackendSecretNameIndexKey, err)
 	}
 	return nil
+}
+
+// subConditionTypes lists the condition types set by the individual Glance
+// sub-reconcilers. The aggregate Ready condition is True only when all of these
+// are True. This commit lands the config/database chain; the remaining
+// workload conditions (DeploymentReady, GlanceAPIReady, HPAReady,
+// NetworkPolicyReady, HTTPRouteReady) join the list with their sub-reconcilers
+// in the next commit.
+var subConditionTypes = []string{
+	"SecretsReady",
+	"BackendsReady",
+	"DatabaseReady",
+}
+
+// GlanceReconciler reconciles a Glance object. Its fields mirror
+// KeystoneReconciler's core set; the pipeline (Reconcile/SetupWithManager) and
+// the Gateway/cert-manager availability flags land with the workload
+// sub-reconcilers in the next commit.
+type GlanceReconciler struct {
+	client.Client
+	Scheme   *runtime.Scheme
+	Recorder record.EventRecorder
+
+	// OperatorNamespace is the Namespace the operator Pod runs in (resolved at
+	// startup by bootstrap.DetectOperatorNamespace). The networkpolicy step
+	// (next commit) appends an ingress peer for this Namespace so the operator's
+	// own health check can reach the Glance API. Empty when the namespace could
+	// not be determined, in which case no operator-namespace peer is added.
+	OperatorNamespace string
+
+	// MaxConcurrentReconciles bounds how many Glance CRs reconcile concurrently.
+	// It is threaded from the --max-concurrent-reconciles flag and applied to
+	// the controller's controller.Options in SetupWithManager (next commit). A
+	// value <= 0 falls back to bootstrap.DefaultMaxConcurrentReconciles inside
+	// bootstrap.ControllerOptions, so the zero value is safe.
+	MaxConcurrentReconciles int
+}
+
+// glanceSkeleton bundles the shared controller-skeleton glue (Ready
+// aggregation, no-op-skipping status writes, config-failure marking) with
+// glance's sub-condition vocabulary and status accessor. The wrapper helpers
+// below delegate to it; the pipeline wiring that also uses it (updateStatus,
+// RunParallelGroup) lands in the next commit.
+var glanceSkeleton = commonreconcile.Skeleton[*glancev1alpha1.Glance, glancev1alpha1.GlanceStatus]{
+	SubConditionTypes: subConditionTypes,
+	Conditions:        func(g *glancev1alpha1.Glance) *[]metav1.Condition { return &g.Status.Conditions },
+}
+
+// conditionReasonConfigError is the SecretsReady=False reason set when
+// reconcileConfig fails. Config artefacts (the rendered glance-api.conf
+// ConfigMap) gate the same downstream graph as the upstream credential
+// Secrets, so failures reuse SecretsReady rather than a dedicated condition —
+// matching reconcileDBConnectionSecret's Config→SecretsReady mapping.
+const conditionReasonConfigError = "ConfigError"
+
+// markConfigFailed flips SecretsReady to False so a reconcileConfig failure
+// cannot leave the aggregate Ready condition stale-True at the new
+// ObservedGeneration. It mirrors keystone's markConfigFailed helper.
+func markConfigFailed(glance *glancev1alpha1.Glance, err error) {
+	glanceSkeleton.MarkFailed(glance, "SecretsReady", conditionReasonConfigError, err)
 }
