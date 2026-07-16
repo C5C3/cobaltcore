@@ -31,6 +31,12 @@ resources:
   # (reconcileAdminPassword); the MariaDB root password is expected
   # from a non-kind Flux MariaDB baseline.
   - keystone-db-externalsecret.yaml
+  # kind-only: standalone Glance CRs (the glance e2e/multistore suites) reference
+  # the Secret "glance-db" through the Glance CR's database.secretRef, mirroring
+  # the keystone-db shim above. It is NOT one of the WITH_CONTROLPLANE shim-drop
+  # names (keystone-admin/keystone-db/mariadb-root-password), so it survives that
+  # filter on the ControlPlane path.
+  - glance-db-externalsecret.yaml
   - keystone-admin-externalsecret.yaml
   - mariadb-root-password-externalsecret.yaml
   # horizon-secret-key is the Django SECRET_KEY shim for standalone Horizon

@@ -45,9 +45,14 @@
 
 # --- read: the tenant's own Keystone and bootstrap subtrees ---
 # Covers the keystone-db ExternalSecret (openstack/keystone/{ns}/db), the
+# glance-db ExternalSecret (openstack/glance/{ns}/standalone/db), the
 # keystone-admin ExternalSecret (bootstrap/{ns}/{name}/admin), and the read-back
 # leg of every PushSecret below.
 path "kv-v2/data/openstack/keystone/{{identity.entity.aliases.KUBERNETES_MANAGEMENT_ACCESSOR.metadata.service_account_namespace}}/*" {
+  capabilities = ["read"]
+}
+
+path "kv-v2/data/openstack/glance/{{identity.entity.aliases.KUBERNETES_MANAGEMENT_ACCESSOR.metadata.service_account_namespace}}/*" {
   capabilities = ["read"]
 }
 

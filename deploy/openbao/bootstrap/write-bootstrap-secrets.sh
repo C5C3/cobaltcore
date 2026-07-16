@@ -282,6 +282,19 @@ main() {
     "username=keystone" \
     "password=${GENERATED_PASSWORD}"
 
+  # Standalone (non-ControlPlane) Glance demos read a static KV DB credential
+  # too, mirroring the Keystone standalone seed above. It is read by the kind-only
+  # glance-db ExternalSecret (deploy/kind/infrastructure/glance-db-externalsecret.yaml)
+  # and materialised as the Secret the glance e2e suites' Glance CR selects via
+  # database.secretRef. No PushSecret targets it, so no mark_eso_managed is needed.
+  #
+  # The path mirrors the Keystone standalone shape with the glance service segment
+  # (openstack/glance/{namespace}/standalone/db); like keystone-db, the glance-db
+  # ExternalSecret reaches it through the per-tenant openbao-tenant-store.
+  write_secret_if_missing "kv-v2/openstack/glance/openstack/standalone/db" \
+    "username=glance" \
+    "password=${GENERATED_PASSWORD}"
+
   log "=== Done ==="
 }
 

@@ -71,9 +71,22 @@ spec:
   clusterRef:
     name: garage
   # Explicit global alias so the S3 bucket name is deterministic for consumers
-  # (no reliance on s3_store_create_bucket_on_put). A second bucket for the
-  # multi-store suite is a two-line addition here (#656).
+  # (no reliance on s3_store_create_bucket_on_put). The second store the
+  # multi-store suite needs is the glance-images-2 bucket below.
   globalAlias: glance-images
+---
+apiVersion: garage.rajsingh.info/v1beta1
+kind: GarageBucket
+metadata:
+  name: glance-images-2
+  namespace: openstack
+spec:
+  clusterRef:
+    name: garage
+  # The second, independent store for the s3-multistore e2e suite (Glance writes
+  # image data across two S3 backends). Same explicit-alias rationale as
+  # glance-images above.
+  globalAlias: glance-images-2
 ---
 apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageKey
@@ -93,5 +106,8 @@ spec:
     secretAccessKeyKey: secret-access-key
   bucketPermissions:
     - globalAlias: glance-images
+      read: true
+      write: true
+    - globalAlias: glance-images-2
       read: true
       write: true
