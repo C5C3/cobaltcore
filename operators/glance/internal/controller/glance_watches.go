@@ -17,6 +17,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	"github.com/c5c3/forge/internal/common/secrets"
+	commonv1 "github.com/c5c3/forge/internal/common/types"
 	"github.com/c5c3/forge/internal/common/watch"
 	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
 )
@@ -103,6 +105,43 @@ func glanceBackendToGlanceMapper() handler.MapFunc {
 			},
 		}}
 	}
+}
+
+// mariaDBToGlanceMapper returns a MapFunc that maps MariaDB cluster events to
+// reconcile requests for Glance CRs whose spec.database.clusterRef targets the
+// MariaDB by name in the same namespace. It binds the shared
+// watch.ClusterRefMapper to the Glance list type and its database clusterRef.
+func mariaDBToGlanceMapper(c client.Reader) handler.MapFunc {
+	return watch.ClusterRefMapper(c,
+		func() client.ObjectList { return &glancev1alpha1.GlanceList{} },
+		func(o client.Object) string {
+			g, ok := o.(*glancev1alpha1.Glance)
+			if !ok || g.Spec.Database.ClusterRef == nil {
+				return ""
+			}
+			return g.Spec.Database.ClusterRef.Name
+		})
+}
+
+// storeToGlanceMapper returns a MapFunc that enqueues the Glance CRs whose
+// effective secret store reference resolves to the changed store object.
+// watchedKind selects which store scope this mapper is registered against — a
+// cluster-scoped ClusterSecretStore (shared across namespaces) or a namespaced
+// SecretStore (per tenant). A Glance that omits spec.secretStoreRef resolves to
+// the shared cluster store via secrets.EffectiveStoreRef, so the default
+// backend-outage fan-out is preserved while a Glance pinned to a namespaced
+// store is only woken by its own store. It binds the shared watch.StoreRefFanOut
+// to the Glance list type.
+func storeToGlanceMapper(c client.Reader, watchedKind commonv1.SecretStoreRefKind) handler.MapFunc {
+	return watch.StoreRefFanOut(c, watchedKind,
+		func() client.ObjectList { return &glancev1alpha1.GlanceList{} },
+		func(o client.Object) commonv1.SecretStoreRefSpec {
+			g, ok := o.(*glancev1alpha1.Glance)
+			if !ok {
+				return commonv1.SecretStoreRefSpec{}
+			}
+			return secrets.EffectiveStoreRef(g.Spec.SecretStoreRef)
+		})
 }
 
 // glanceToGlanceBackendsMapper returns a MapFunc that fans a Glance event out

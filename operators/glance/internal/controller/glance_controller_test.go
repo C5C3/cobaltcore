@@ -10,12 +10,121 @@ import (
 	"context"
 	"testing"
 
+	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/c5c3/forge/internal/common/conditions"
 	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
 )
+
+func TestReconcile_AddsFinalizerOnFirstPass(t *testing.T) {
+	g := NewGomegaWithT(t)
+	glance := testGlance() // no finalizer yet
+	r := newGlanceTestReconciler(glance)
+
+	res, err := r.Reconcile(context.Background(), glanceRequest)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.Requeue).To(BeTrue(), "the finalizer add requeues so the next pass sees it persisted")
+	got := getGlance(t, r.Client, "test-glance")
+	g.Expect(got.Finalizers).To(ContainElement(glanceFinalizer))
+}
+
+func TestReconcile_FailingSecretsStepShortCircuitsPipeline(t *testing.T) {
+	g := NewGomegaWithT(t)
+	glance := testGlance()
+	glance.Finalizers = []string{glanceFinalizer} // skip the finalizer-add requeue
+	// The selected store is explicitly not Ready, so the Secrets step fails fast.
+	r := newGlanceTestReconciler(glance, notReadyClusterSecretStore(openBaoClusterStoreName))
+
+	res, err := r.Reconcile(context.Background(), glanceRequest)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(RequeueSecretPolling))
+
+	got := getGlance(t, r.Client, "test-glance")
+	secrets := conditions.GetCondition(got.Status.Conditions, "SecretsReady")
+	g.Expect(secrets).NotTo(BeNil())
+	g.Expect(secrets.Status).To(Equal(metav1.ConditionFalse))
+	// A later step must not have run: BackendsReady is never set when Secrets
+	// short-circuits the pipeline.
+	g.Expect(conditions.GetCondition(got.Status.Conditions, "BackendsReady")).To(BeNil())
+	g.Expect(conditions.GetCondition(got.Status.Conditions, "DatabaseReady")).To(BeNil())
+}
+
+func TestReconcileDelete_LiveResourcesRetainFinalizer(t *testing.T) {
+	g := NewGomegaWithT(t)
+	glance := testGlance()
+	glance.Finalizers = []string{glanceFinalizer}
+	// A live MariaDB Database owned by this Glance (key is the bare CR name).
+	mdb := &mariadbv1alpha1.Database{}
+	mdb.Name = "test-glance"
+	mdb.Namespace = "default"
+	r := newGlanceTestReconciler(glance, mdb)
+
+	// Move the Glance into the deleting state.
+	g.Expect(r.Delete(context.Background(), glance)).To(Succeed())
+
+	res, err := r.Reconcile(context.Background(), glanceRequest)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(RequeueDatabaseWait))
+	got := getGlance(t, r.Client, "test-glance")
+	g.Expect(got.Finalizers).To(ContainElement(glanceFinalizer),
+		"the finalizer is retained one pass while live MariaDB resources remain")
+}
+
+func TestReconcileDelete_NoLiveResourcesReleasesFinalizer(t *testing.T) {
+	g := NewGomegaWithT(t)
+	glance := testGlance()
+	glance.Finalizers = []string{glanceFinalizer}
+	r := newGlanceTestReconciler(glance) // no MariaDB CRs
+
+	g.Expect(r.Delete(context.Background(), glance)).To(Succeed())
+
+	res, err := r.Reconcile(context.Background(), glanceRequest)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.IsZero()).To(BeTrue())
+	// With the finalizer released, the fake client garbage-collects the CR.
+	var gone glancev1alpha1.Glance
+	err = r.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "test-glance"}, &gone)
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(),
+		"the finalizer is released when no live MariaDB resource remains")
+}
+
+func TestSetReadyCondition_TrueOnlyWhenAllSubConditionsTrue(t *testing.T) {
+	g := NewGomegaWithT(t)
+	glance := testGlance()
+
+	// All eight sub-conditions True → aggregate Ready True.
+	for _, ct := range subConditionTypes {
+		conditions.SetCondition(&glance.Status.Conditions, metav1.Condition{
+			Type:   ct,
+			Status: metav1.ConditionTrue,
+			Reason: "OK",
+		})
+	}
+	setReadyCondition(glance)
+	ready := conditions.GetCondition(glance.Status.Conditions, "Ready")
+	g.Expect(ready).NotTo(BeNil())
+	g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
+
+	// Flip one sub-condition False → aggregate Ready flips False.
+	conditions.SetCondition(&glance.Status.Conditions, metav1.Condition{
+		Type:   "HPAReady",
+		Status: metav1.ConditionFalse,
+		Reason: "Degraded",
+	})
+	setReadyCondition(glance)
+	ready = conditions.GetCondition(glance.Status.Conditions, "Ready")
+	g.Expect(ready.Status).To(Equal(metav1.ConditionFalse))
+}
 
 // recordingFieldIndexer is a client.FieldIndexer that records the keys it was
 // asked to register, so the registration helpers can be exercised without a

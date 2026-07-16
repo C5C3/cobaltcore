@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
+	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -22,6 +23,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	commonconditions "github.com/c5c3/forge/internal/common/conditions"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
@@ -42,6 +44,10 @@ func testScheme() *runtime.Scheme {
 	_ = clientgoscheme.AddToScheme(s)
 	_ = glancev1alpha1.AddToScheme(s)
 	_ = esov1.SchemeBuilder.AddToScheme(s)
+	// Gateway API and MariaDB types back the HTTPRoute and database
+	// finalize/provision paths the controller and workload steps exercise.
+	_ = gatewayv1.Install(s)
+	_ = mariadbv1alpha1.AddToScheme(s)
 	return s
 }
 
