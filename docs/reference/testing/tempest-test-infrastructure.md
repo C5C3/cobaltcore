@@ -23,9 +23,12 @@ and `build-images.yaml` dynamically discovers releases for the Tempest image pip
 | `releases/<release>/test-refs.yaml` | PyPI version pins for test tooling (single source of truth), per release |
 | `tests/tempest/keystone-2025-2/` | Keystone 2025.2 Tempest configuration (`tempest.conf`, `include-tests.txt`, `exclude-tests.txt`) |
 | `tests/tempest/keystone-2026-1/` | Keystone 2026.1 Tempest configuration |
+| `tests/tempest/glance-2025-2/` | Glance 2025.2 Tempest configuration: the `tempest.conf` / `include-tests.txt` / `exclude-tests.txt` triplet, a `00-keystone-cr.yaml` identity CR named `keystone-glance-tempest-2025-2`, and three extra fixtures the CI job applies — `01-catalog-setup-job.yaml` (image-catalog bootstrap Job), `02-glance-cr.yaml` (Glance CR), `03-glancebackend-cr.yaml` (GlanceBackend CR) |
+| `tests/tempest/glance-2026-1/` | Glance 2026.1 Tempest configuration (same file set; identity CR `keystone-glance-tempest-2026-1`) |
 | `tests/container-images/verify_tempest.sh` | Image verification script (PASS/FAIL counters) |
 | `hack/run-tempest.sh` | Local orchestration script for running Tempest against a kind cluster |
 | `hack/ci-run-tempest.sh` | CI-specific Tempest wrapper with port-forwarding and config generation |
+| `hack/ci-generate-tempest-matrix.sh` | Generates the `tempest` job matrix from `releases/*/`, emitting one leg per service (`keystone`, `glance`) per release |
 | `hack/tempest/extract-failed.py` | Print anchored regex patterns for failed testcases in a JUnit report (used to build the retry include-list) |
 | `hack/tempest/merge-retry-junit.py` | Merge a retry subunit stream into a JUnit report, rewriting resolved failures as flakes |
 | `hack/tempest/run-tests.sh` | Shared in-container runner invoked by both runners; holds the phase + retry + exit-code logic so it stays identical between CI and local runs |
@@ -237,7 +240,17 @@ The two phases run **sequentially**; within each phase `stestr` runs at
 Each runner enforces that every non-comment, non-empty line in
 `include-tests.txt` lands in exactly one phase. A line with any other prefix
 causes the runner to abort with a clear error — this guards against silent
-drops when new include patterns are added. Both phases must be non-empty.
+drops when new include patterns are added.
+
+The two runners differ on empty phases. `hack/ci-run-tempest.sh` permits one
+phase to be empty: the glance legs ship a pure core-tempest include list
+(`tempest.api.image` only), which leaves `phase-2-plugin.txt` empty, and
+`hack/tempest/run-tests.sh` skips the empty plugin phase (writing an empty
+`phase-2-plugin.subunit` so the concatenations still line up) instead of
+running `stestr` against an empty include list. Only an include list that
+leaves **both** phases empty — selecting nothing runnable — is a hard error in
+CI. `hack/run-tempest.sh` (local, keystone-only) still requires both phases to
+be non-empty.
 
 **Why sequential.** Keystone re-resolves the list of enabled federation
 service providers on every `POST /v3/auth/tokens` and `GET /v3/auth/tokens`
@@ -325,19 +338,31 @@ the plugin pinned in that release's `test-refs.yaml`.
 
 ### Adding a New Service
 
-To add Tempest tests for a new service (e.g., `glance`):
+Tempest coverage is keyed per **service × release**. `glance` is the worked
+example: `hack/ci-generate-tempest-matrix.sh` emits a `keystone` and a `glance`
+leg for every release, so a new service needs one config directory per release,
+not a single directory. To add another service:
 
-1. Create `tests/tempest/glance/` with `tempest.conf`, `include-tests.txt`, and
-   `exclude-tests.txt`
-2. Set `[service_available]` flags to match the deployed services
-3. Update `[identity]` URI to point to the service endpoint
-4. Run `make tempest-test SERVICE=glance` to test locally
+1. Create a `tests/tempest/<service>-<slug>/` directory for each release (e.g.
+   `<service>-2025-2` and `<service>-2026-1`), each with `tempest.conf`,
+   `include-tests.txt`, `exclude-tests.txt`, and the `00-keystone-cr.yaml`
+   identity CR the job waits on. The `tempest` job hard-fails if a release is
+   missing the directory. A service with its own operator payload also ships the
+   CRs the job applies before Tempest runs — glance carries
+   `01-catalog-setup-job.yaml` (registers the image service + endpoints in
+   Keystone), `02-glance-cr.yaml`, and `03-glancebackend-cr.yaml`.
+2. Set `[service_available]` flags to match the deployed services and point
+   `[identity]` `uri_v3` at the leg's identity CR (glance authenticates against
+   its own `keystone-glance-tempest-<slug>` CR, not the shared keystone leg's CR).
+3. Extend `hack/ci-generate-tempest-matrix.sh` to emit the new `service` leg. If
+   the service needs an extra port-forward, thread it through
+   `hack/ci-run-tempest.sh` the way glance uses the optional `GLANCE_K8S_NAME`
+   env (9292 forward + `/healthcheck` poll + host mappings) and add the
+   conditional deploy steps to the `tempest` job in `ci.yaml`, gated on
+   `matrix.service == '<service>'`.
 
-No changes to the Dockerfile are needed. The `tempest` job in `ci.yaml` and
-`hack/ci-run-tempest.sh` accept environment variables for service-specific values
-(`SERVICE`, `CONFIG_DIR`, `ADMIN_SECRET`, `SERVICE_K8S_NAME`), so adding a new service
-requires adding a matrix entry to the `tempest` job with the appropriate values.
-`hack/run-tempest.sh` (local execution) also accepts `SERVICE` and `ADMIN_SECRET`
+No changes to the Dockerfile are needed. `hack/run-tempest.sh` (local execution)
+runs a single keystone leg and accepts `SERVICE`, `RELEASE`, and `ADMIN_SECRET`
 overrides.
 
 ## Image Verification
@@ -444,16 +469,27 @@ Omitting `SERVICE` produces an error message:
 ### ci.yaml — tempest Job
 
 The `tempest` job is a dedicated job that deploys services into a kind
-cluster and runs the OpenStack Tempest test suite. A release matrix lets each
-OpenStack release be validated independently with its own Tempest configuration, Keystone
-CR, and K8s service name.
+cluster and runs the OpenStack Tempest test suite. `hack/ci-generate-tempest-matrix.sh`
+fans the matrix out over two dimensions — a `release` and a `service` — so each
+OpenStack release is validated independently for both `keystone` and `glance`,
+each leg with its own Tempest configuration and identity CR (and, for glance, an
+image CR and backend).
 
 **Release matrix:**
 
-| Release | Config directory | CR name | K8s service name |
-| --- | --- | --- | --- |
-| `2025.2` | `tests/tempest/keystone-2025-2` | `keystone-tempest-2025-2` | `keystone-tempest-2025-2-api` |
-| `2026.1` | `tests/tempest/keystone-2026-1` | `keystone-tempest-2026-1` | `keystone-tempest-2026-1-api` |
+The generator scans `releases/*/` and emits one `keystone` and one `glance`
+leg per release; each service requires a matching `tests/tempest/<service>-<slug>`
+directory or the job hard-fails. `service-k8s-name` always equals `cr-name` (the
+Keystone identity CR the job waits on and port-forwards on 5000); the glance legs
+additionally carry `glance-cr-name` (the Glance CR the job waits on and
+port-forwards on 9292).
+
+| Service | Release | Config directory | Keystone CR (`cr-name` = `service-k8s-name`) | Glance CR (`glance-cr-name`) |
+| --- | --- | --- | --- | --- |
+| `keystone` | `2025.2` | `tests/tempest/keystone-2025-2` | `keystone-tempest-2025-2` | — |
+| `keystone` | `2026.1` | `tests/tempest/keystone-2026-1` | `keystone-tempest-2026-1` | — |
+| `glance` | `2025.2` | `tests/tempest/glance-2025-2` | `keystone-glance-tempest-2025-2` | `glance-tempest-2025-2` |
+| `glance` | `2026.1` | `tests/tempest/glance-2026-1` | `keystone-glance-tempest-2026-1` | `glance-tempest-2026-1` |
 
 **Step sequence:**
 
@@ -462,20 +498,24 @@ CR, and K8s service name.
 | Build service image | `hack/ci-build-service-image.sh` with `RELEASE=matrix.release` |
 | Build Tempest image | `hack/ci-build-tempest-image.sh` with `RELEASE=matrix.release`, image tagged `c5c3/tempest:<release>` |
 | Load images into kind | Loads operator and release-specific service images |
+| Deploy Glance operator *(glance leg only)* | `hack/ci-deploy-operator.sh` with `OPERATOR=glance`, `NAMESPACE=glance-system` (before the Keystone CR reconciles) |
 | Deploy Keystone CR | Applies `matrix.config-dir/00-keystone-cr.yaml`, waits for `matrix.cr-name` Ready |
-| Run Tempest API tests | `hack/ci-run-tempest.sh` with `CONFIG_DIR`, `TEMPEST_IMAGE`, and `SERVICE_K8S_NAME` from matrix |
-| Upload Tempest results | Uploads `_output/tempest/` as artifact with 14-day retention |
+| Bootstrap image catalog *(glance leg only)* | Applies `matrix.config-dir/01-catalog-setup-job.yaml`, waits for the `glance-tempest-catalog-setup` Job to complete (registers the image service + endpoints in Keystone that the Glance CR needs to reconcile) |
+| Deploy Glance CR *(glance leg only)* | Applies `matrix.config-dir/02-glance-cr.yaml` and `03-glancebackend-cr.yaml`, waits for `matrix.glance-cr-name` Ready |
+| Run Tempest API tests | `hack/ci-run-tempest.sh` with `CONFIG_DIR`, `TEMPEST_IMAGE`, and `SERVICE_K8S_NAME` from matrix; the glance leg also passes `GLANCE_K8S_NAME` (empty on keystone legs, which disables the 9292 port-forward) |
+| Upload Tempest results | Uploads `_output/tempest/` (minus the rendered `tempest.conf`, which carries the substituted admin password) as artifact with 14-day retention |
 
 **CI-specific adaptations** (compared to local execution):
 
 | Aspect | Local (`hack/run-tempest.sh`) | CI (`hack/ci-run-tempest.sh`) |
 | --- | --- | --- |
 | Service endpoint | In-cluster DNS (`<service-k8s-name>.openstack.svc:5000`) | Port-forwarded to `localhost:5000` |
+| Glance endpoint | Not supported (local runs are keystone-only) | When `GLANCE_K8S_NAME` is set (glance legs), additionally forwards `svc/<glance-cr-name>` on 9292, polls its `/healthcheck`, and add-hosts its cluster DNS names to `127.0.0.1` so the catalog's image endpoint resolves to the forwarded port |
 | Credential injection | Environment variable passed to container | `sed` substitution into generated config copy |
 | Base images | Pulled from GHCR (`docker-image://ghcr.io/...`) | Built locally in prior CI steps (no `--build-context` for bases) |
-| Artifact upload | Manual inspection of `_output/` | `actions/upload-artifact` with `tempest-<release>-results` name |
+| Artifact upload | Manual inspection of `_output/` | `actions/upload-artifact` with `tempest-<service>-<release>-results` name |
 
-**Artifact name:** `tempest-<release>-results` (e.g., `tempest-2025.2-results`, `tempest-2026.1-results`)
+**Artifact name:** `tempest-<service>-<release>-results` (e.g., `tempest-keystone-2025.2-results`, `tempest-glance-2026.1-results`)
 **Retention:** 14 days
 
 ### build-images.yaml — build-tempest Job
@@ -610,7 +650,7 @@ releases/<release>/test-refs.yaml ──yq──▶ TEMPEST_VERSION + KEYSTONE_T
          #   python3 /etc/tempest/merge-retry-junit.py tempest-results.xml retry.subunit
                          │
                          ▼
-         actions/upload-artifact ──▶ tempest-<release>-results (14-day retention)
+         actions/upload-artifact ──▶ tempest-<service>-<release>-results (14-day retention)
 ```
 
 ## Dependencies on Prior Features
