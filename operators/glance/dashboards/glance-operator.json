@@ -1,0 +1,249 @@
+{
+  "uid": "glance-operator",
+  "title": "Glance Operator",
+  "tags": ["glance", "operator", "c5c3"],
+  "schemaVersion": 38,
+  "version": 1,
+  "editable": true,
+  "refresh": "30s",
+  "timezone": "",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "DS_PROMETHEUS",
+        "label": "Prometheus",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "hide": 0,
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Reconcile duration p50/p95/p99 per sub_reconciler",
+      "description": "p50/p95/p99 wall-clock duration of Glance sub-reconciler invocations, derived from glance_operator_reconcile_duration_seconds_bucket. p50 tracks the steady-state hot path; p99 surfaces the tail a speedup roadmap must watch.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.50, sum by (le, sub_reconciler) (rate(glance_operator_reconcile_duration_seconds_bucket[5m])))",
+          "legendFormat": "p50 {{sub_reconciler}}"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le, sub_reconciler) (rate(glance_operator_reconcile_duration_seconds_bucket[5m])))",
+          "legendFormat": "p95 {{sub_reconciler}}"
+        },
+        {
+          "refId": "C",
+          "expr": "histogram_quantile(0.99, sum by (le, sub_reconciler) (rate(glance_operator_reconcile_duration_seconds_bucket[5m])))",
+          "legendFormat": "p99 {{sub_reconciler}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Reconcile error rate per condition_type",
+      "description": "Rate of glance_operator_reconcile_errors_total grouped by condition_type.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (condition_type) (rate(glance_operator_reconcile_errors_total[5m]))",
+          "legendFormat": "{{condition_type}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "db_sync duration p95 and failure rate",
+      "description": "Target A: p95 of glance_operator_db_sync_duration_seconds_bucket per Glance CR. Target B: failure rate of glance_operator_db_sync_total{result=\"failed\"}.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "fillOpacity": 10
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^failures .*"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ops"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le, namespace, glance) (rate(glance_operator_db_sync_duration_seconds_bucket[5m])))",
+          "legendFormat": "p95 {{namespace}}/{{glance}}"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (namespace, glance) (rate(glance_operator_db_sync_total{result=\"failed\"}[5m]))",
+          "legendFormat": "failures {{namespace}}/{{glance}}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "End-to-end reconcile duration (controller-runtime)",
+      "description": "p50/p95/p99 of controller_runtime_reconcile_time_seconds_bucket for the glance controller. Unlike glance_operator_reconcile_duration_seconds (which samples only the sub-reconcilers), this built-in histogram covers the whole Reconcile call — orchestration, status update, and watch handling — so it is the SLO signal for end-to-end reconcile latency.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(controller_runtime_reconcile_time_seconds_bucket{controller=\"glance\"}[5m])))",
+          "legendFormat": "p50"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(controller_runtime_reconcile_time_seconds_bucket{controller=\"glance\"}[5m])))",
+          "legendFormat": "p95"
+        },
+        {
+          "refId": "C",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(controller_runtime_reconcile_time_seconds_bucket{controller=\"glance\"}[5m])))",
+          "legendFormat": "p99"
+        }
+      ]
+    }
+  ]
+}
