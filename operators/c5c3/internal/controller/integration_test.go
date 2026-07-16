@@ -482,6 +482,11 @@ func simulateCatalogServiceEndpointAvailableWhenPresent(t testing.TB, ctx contex
 // RoleAssignment Available, syncs the PushSecret, and materialises the consumer
 // Secret with the source password — the same round-trip the admin-credential
 // simulators perform.
+//
+// The K-ORC children (probe, project, user, roles) live in the child namespace;
+// the publish leg (PushSecret, source Secret, materialized Secret) lives in the
+// account's DELIVERY namespace, which is the child namespace by default and a
+// dedicated service namespace when the account sets targetNamespace.
 func simulateServiceAccountConvergedWhenPresent(
 	t testing.TB, ctx context.Context, c client.Client,
 	cp *c5c3v1alpha1.ControlPlane, sa c5c3v1alpha1.ServiceAccountSpec, role string,
@@ -489,6 +494,7 @@ func simulateServiceAccountConvergedWhenPresent(
 	t.Helper()
 	g := NewGomegaWithT(t)
 	ns := childNamespace(cp)
+	deliveryNS := serviceAccountDeliveryNamespace(cp, sa)
 
 	// Resolve the collision User probe to ABSENT: Available=False on the
 	// "created externally" marker is what korcImportPendingExternal reads as "no
@@ -573,23 +579,23 @@ func simulateServiceAccountConvergedWhenPresent(
 	g.Expect(c.Status().Update(ctx, assignment)).To(Succeed(), "mark the RoleAssignment Available")
 
 	// PushSecret sync + consumer-Secret materialisation (the ESO round-trip the
-	// per-account readiness gate ends on).
+	// per-account readiness gate ends on), in the account's delivery namespace.
 	g.Eventually(func() error {
 		return simulators.SimulatePushSecretSynced(ctx, c,
-			client.ObjectKey{Namespace: ns, Name: serviceAccountPushSecretName(cp, sa)})
+			client.ObjectKey{Namespace: deliveryNS, Name: serviceAccountPushSecretName(cp, sa)})
 	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "the service-account PushSecret should sync")
 
 	src := &corev1.Secret{}
 	g.Eventually(func() error {
-		return c.Get(ctx, client.ObjectKey{Namespace: ns, Name: serviceAccountSourceSecretName(cp, sa)}, src)
+		return c.Get(ctx, client.ObjectKey{Namespace: deliveryNS, Name: serviceAccountSourceSecretName(cp, sa)}, src)
 	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "the operator must assemble the service-account source Secret")
 
 	name := serviceAccountCredentialsSecretName(cp, sa)
 	materialized := &corev1.Secret{}
-	switch err := c.Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, materialized); {
+	switch err := c.Get(ctx, client.ObjectKey{Namespace: deliveryNS, Name: name}, materialized); {
 	case apierrors.IsNotFound(err):
 		materialized = &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: deliveryNS},
 			Data:       map[string][]byte{serviceAccountPasswordKey: src.Data[serviceAccountPasswordKey]},
 		}
 		g.Expect(c.Create(ctx, materialized)).To(Succeed(), "materialize the service-account consumer Secret")
@@ -3200,6 +3206,16 @@ func TestIntegration_DedicatedNamespaces(t *testing.T) {
 		Name:      keystoneNS,
 		Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
 	}
+	// A service account delivering its credentials into the dedicated Keystone
+	// namespace: its publish leg rides that namespace's tenant store, so the source
+	// Secret, PushSecret, and consumer ExternalSecret must land there — carrying the
+	// ownership labels — at the OpenBao path keyed on THAT namespace.
+	cp.Spec.KORC.ServiceAccounts = []c5c3v1alpha1.ServiceAccountSpec{{
+		Name:            "nova",
+		Project:         c5c3v1alpha1.ServiceAccountProjectSpec{Name: "service"},
+		Roles:           []string{"member"},
+		TargetNamespace: keystoneNS,
+	}}
 	g.Expect(c.Create(ctx, cp)).To(Succeed(), "create ControlPlane CR with a dedicated Keystone namespace")
 	cpKey := types.NamespacedName{Name: cp.Name, Namespace: ns.Name}
 
@@ -3309,6 +3325,76 @@ func TestIntegration_DedicatedNamespaces(t *testing.T) {
 		}
 		return conditions.AllTrue(live.Status.Conditions, conditionTypeNamespacesReady)
 	}, itEventuallyTimeout, itPollInterval).Should(BeTrue(), "NamespacesReady must go True")
+
+	// --- Drive the rest of the pipeline so the service-account publish leg runs.
+	// The admin/K-ORC/catalog machinery lives in the ControlPlane's own namespace
+	// (K-ORC children never move); only the delivery leg follows the account. K-ORC's
+	// readAdminPassword reads the cleartext beside the Keystone child, so seed it in
+	// the (now-created) Keystone namespace. ---
+	adminCleartext := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: adminPasswordSecretName(cp), Namespace: keystoneNS},
+		Data:       map[string][]byte{"password": []byte("super-secret-admin-password")},
+	}
+	g.Expect(c.Create(ctx, adminCleartext)).To(Succeed(), "seed the cleartext admin password beside the Keystone child")
+
+	simulateKeystoneReadyWhenPresent(t, ctx, c, client.ObjectKey{Name: keystoneName(cp), Namespace: keystoneNS})
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeKeystoneReady, metav1.ConditionTrue, itEventuallyTimeout)
+
+	simulateApplicationCredentialAvailableWhenPresent(t, ctx, c,
+		client.ObjectKey{Name: adminAppCredentialName(cp), Namespace: ns.Name})
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeKORCReady, metav1.ConditionTrue, itEventuallyTimeout)
+
+	g.Expect(simulators.SimulateExternalSecretSync(ctx, c,
+		client.ObjectKey{Namespace: ns.Name, Name: korcCloudsYamlSecretName})).
+		To(Succeed(), "simulate k-orc clouds.yaml ExternalSecret sync")
+	simulatePushSecretSyncedWhenPresent(t, ctx, c,
+		client.ObjectKey{Name: adminAppCredentialPushSecretName(cp), Namespace: ns.Name})
+	simulateCloudsYamlMaterializedWhenPresent(t, ctx, c, cp)
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeAdminCredentialReady, metav1.ConditionTrue, itEventuallyTimeout)
+
+	simulateCatalogServiceEndpointAvailableWhenPresent(t, ctx, c, cp)
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeCatalogReady, metav1.ConditionTrue, itEventuallyTimeout)
+
+	// --- Service account: the K-ORC children converge in the ControlPlane's own
+	// namespace, but the publish leg lands in the dedicated Keystone namespace,
+	// carrying the ownership labels and reading the OpenBao path keyed on THAT
+	// namespace. ---
+	sa := cp.Spec.KORC.ServiceAccounts[0]
+	simulateServiceAccountConvergedWhenPresent(t, ctx, c, cp, sa, "member")
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeServiceAccountsReady, metav1.ConditionTrue, itEventuallyTimeout)
+
+	saPush := &esov1alpha1.PushSecret{}
+	g.Expect(c.Get(ctx, client.ObjectKey{
+		Name: serviceAccountPushSecretName(cp, sa), Namespace: keystoneNS,
+	}, saPush)).To(Succeed(), "the service-account PushSecret must land in the delivery namespace")
+	g.Expect(saPush.OwnerReferences).To(BeEmpty(), "a cross-namespace child carries no owner reference")
+	g.Expect(saPush.Labels).To(HaveKeyWithValue(controlPlaneNameLabel, "cp"))
+	g.Expect(saPush.Labels).To(HaveKeyWithValue(controlPlaneNamespaceLabel, ns.Name))
+	g.Expect(saPush.Spec.Data[0].Match.RemoteRef.RemoteKey).
+		To(Equal("openstack/keystone/"+keystoneNS+"/cp/service-accounts/nova"),
+			"the PushSecret's remote key must be keyed on the delivery namespace")
+
+	saES := &esov1.ExternalSecret{}
+	g.Expect(c.Get(ctx, client.ObjectKey{
+		Name: serviceAccountCredentialsSecretName(cp, sa), Namespace: keystoneNS,
+	}, saES)).To(Succeed(), "the service-account consumer ExternalSecret must land in the delivery namespace")
+	g.Expect(saES.OwnerReferences).To(BeEmpty())
+	g.Expect(saES.Labels).To(HaveKeyWithValue(controlPlaneNameLabel, "cp"))
+	g.Expect(saES.Spec.Data[0].RemoteRef.Key).
+		To(Equal("openstack/keystone/" + keystoneNS + "/cp/service-accounts/nova"))
+
+	// Nothing of the delivery leg is placed in the ControlPlane's own namespace.
+	g.Expect(apierrors.IsNotFound(c.Get(ctx, client.ObjectKey{
+		Name: serviceAccountPushSecretName(cp, sa), Namespace: ns.Name,
+	}, &esov1alpha1.PushSecret{}))).To(BeTrue(),
+		"no service-account delivery object may land in the ControlPlane's own namespace")
+
+	// status.serviceAccounts[].secretNamespace reports the delivery namespace.
+	converged := &c5c3v1alpha1.ControlPlane{}
+	g.Expect(c.Get(ctx, cpKey, converged)).To(Succeed())
+	g.Expect(converged.Status.ServiceAccounts).To(HaveLen(1))
+	g.Expect(converged.Status.ServiceAccounts[0].SecretNamespace).To(Equal(keystoneNS),
+		"status must report the delivery namespace the credentials Secret lives in")
 
 	// --- Deletion: nothing garbage-collects a cross-namespace child, so the
 	// finalizer must delete them by hand and take the namespace down with them. ---

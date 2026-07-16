@@ -16,6 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -132,20 +133,30 @@ func (r *ControlPlaneReconciler) ensureUnownedOrOwned(ctx context.Context, cp *c
 }
 
 // refuseForeignAdoption is the CreateOrUpdate-mutate twin of ensureUnownedOrOwned's
-// pre-apply guard, for the two cert-manager Certificates that stay read-modify-
-// write (no Go type ships for them). live is the object CreateOrUpdate has just
+// pre-apply guard, for the projections that stay read-modify-write: the two
+// cert-manager Certificates (no Go type ships for them) and the owned Secrets
+// whose mutate reads live Data. live is the object CreateOrUpdate has just
 // Get-populated, so a set UID means it already exists. If it exists in a namespace
 // the ControlPlane does not own and is not already our child, refuse: reshaping
-// and later sweeping a same-named foreign Certificate would clobber somebody
-// else's resource, the same reason ensureUnownedOrOwned refuses foreign adoption.
-func refuseForeignAdoption(cp *c5c3v1alpha1.ControlPlane, live client.Object) error {
+// and later sweeping a same-named foreign object would clobber somebody else's
+// resource, the same reason ensureUnownedOrOwned refuses foreign adoption.
+//
+// The kind is resolved from the SCHEME, not from live.GetObjectKind(): a TYPED
+// object built in-code carries an empty TypeMeta and the typed client does not
+// populate it on Get, so reading the GVK off the object would name the refused
+// object as an empty kind — in the one message an operator has to go on. The
+// unstructured Certificates carry their own GVK and resolve identically here.
+func refuseForeignAdoption(cp *c5c3v1alpha1.ControlPlane, live client.Object, scheme *runtime.Scheme) error {
 	if live.GetNamespace() == cp.Namespace || live.GetUID() == "" || isControlPlaneChild(live, cp) {
 		return nil
 	}
-	gvk := live.GetObjectKind().GroupVersionKind()
+	kind := live.GetObjectKind().GroupVersionKind().Kind
+	if gvk, err := apiutil.GVKForObject(live, scheme); err == nil {
+		kind = gvk.Kind
+	}
 	return fmt.Errorf("refusing to adopt pre-existing %s %s/%s in unowned namespace %q: it was not created by this "+
 		"ControlPlane, so adopting it would overwrite its spec and delete it at teardown",
-		gvk.Kind, live.GetNamespace(), live.GetName(), live.GetNamespace())
+		kind, live.GetNamespace(), live.GetName(), live.GetNamespace())
 }
 
 // isControlPlaneChild reports whether cp owns obj: either it is the controller

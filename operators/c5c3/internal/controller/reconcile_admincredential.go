@@ -216,7 +216,7 @@ func (r *ControlPlaneReconciler) reconcileAdminCredential(ctx context.Context, c
 	// content-hash annotation changes the PushSecret's metadata hash and forces the
 	// re-push now; it is idempotent (skipped when the hash already matches), so a
 	// converged credential never churns the push.
-	if err := r.forceRepushPushSecret(ctx, cp, ps.Name, adminAppCredentialPushContentHashAnnotation, contentHash); err != nil {
+	if err := r.forceRepushPushSecret(ctx, cp, childNamespace(cp), ps.Name, adminAppCredentialPushContentHashAnnotation, contentHash); err != nil {
 		fail("PushSecretError", fmt.Sprintf("forcing admin app-credential PushSecret re-push: %v", err))
 		return ctrl.Result{}, err
 	}
@@ -264,7 +264,7 @@ func (r *ControlPlaneReconciler) reconcileAdminCredential(ctx context.Context, c
 	// more as soon as the re-push lands; both inputs are stable once converged, so
 	// a steady-state pass still leaves the ExternalSecret untouched.
 	syncTrigger := contentHash + "/" + pushed.Status.SyncedResourceVersion
-	if err := r.forceSyncExternalSecret(ctx, cp, cloudsYamlName, syncTrigger); err != nil {
+	if err := r.forceSyncExternalSecret(ctx, cp, childNamespace(cp), cloudsYamlName, syncTrigger); err != nil {
 		fail("CloudsYamlError", fmt.Sprintf("forcing k-orc clouds.yaml ExternalSecret re-sync: %v", err))
 		return ctrl.Result{}, err
 	}
@@ -386,8 +386,8 @@ func parseAppCredIdentity(cloudsYAML []byte) (appCredIdentity, bool) {
 }
 
 // forceSyncExternalSecret nudges ESO to re-materialise the named ExternalSecret
-// in childNamespace(cp) immediately rather than at the next hourly refresh, by
-// stamping the external-secrets.io/force-sync annotation with the given trigger
+// in namespace immediately rather than at the next hourly refresh, by stamping
+// the external-secrets.io/force-sync annotation with the given trigger
 // (typically a content hash combined with the source PushSecret's
 // syncedResourceVersion — see the admin-credential call site in
 // reconcileAdminCredential for why the completed-push marker must be part of it).
@@ -395,13 +395,17 @@ func parseAppCredIdentity(cloudsYAML []byte) (appCredIdentity, bool) {
 // changed value forces a re-sync; an unchanged value is a no-op, so a steady-state
 // pass does not churn the ExternalSecret.
 //
+// namespace is childNamespace(cp) for the admin credential and the account's
+// delivery namespace (serviceAccountDeliveryNamespace) for a service account,
+// whose consumer ExternalSecret may live in a dedicated service namespace.
+//
 // A missing ExternalSecret is treated as a no-op nil — the sub-reconciler that
 // owns the ExternalSecret's creation, and the byte-compare gate at the call site
 // (not this nudge), is what guarantees the materialized value is fresh before the
 // owning condition flips True. Shared by the admin-credential and service-account
 // sub-reconcilers.
-func (r *ControlPlaneReconciler) forceSyncExternalSecret(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, name, trigger string) error {
-	key := types.NamespacedName{Namespace: childNamespace(cp), Name: name}
+func (r *ControlPlaneReconciler) forceSyncExternalSecret(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, namespace, name, trigger string) error {
+	key := types.NamespacedName{Namespace: namespace, Name: name}
 	// Read-modify-write the force-sync annotation under RetryOnConflict: ESO mutates
 	// this ExternalSecret's status and its own annotations on every refresh (and on
 	// the force-sync it triggers), so a 409 Conflict between our Get and Update is
@@ -450,17 +454,21 @@ const adminAppCredentialCACertHashAnnotation = "c5c3.io/push-cacert-hash" //noli
 
 // forceRepushPushSecret nudges ESO to re-push the named PushSecret's source
 // Secret to OpenBao by stamping the given annotation on the backing PushSecret in
-// childNamespace(cp). ESO's PushSecret controller re-pushes only when the
-// PushSecret object's own metadata hash changes (it does not watch the referenced
-// Secret), so without this stamp a source-Secret update — e.g. the fresh-create
-// handoff from the bootstrap clouds.yaml to the minted credential, a newly
-// projected CA bundle, or a rotated service-account password — would not reach
-// OpenBao until the PushSecret's hourly refreshInterval. Each caller keys its own
-// annotation by the content it owns, so the stamp changes only when that content
-// changes and a steady-state pass is a no-op. Shared by the admin-credential and
-// service-account sub-reconcilers.
-func (r *ControlPlaneReconciler) forceRepushPushSecret(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, name, annotation, hash string) error {
-	key := types.NamespacedName{Namespace: childNamespace(cp), Name: name}
+// namespace. ESO's PushSecret controller re-pushes only when the PushSecret
+// object's own metadata hash changes (it does not watch the referenced Secret),
+// so without this stamp a source-Secret update — e.g. the fresh-create handoff
+// from the bootstrap clouds.yaml to the minted credential, a newly projected CA
+// bundle, or a rotated service-account password — would not reach OpenBao until
+// the PushSecret's hourly refreshInterval. Each caller keys its own annotation by
+// the content it owns, so the stamp changes only when that content changes and a
+// steady-state pass is a no-op.
+//
+// namespace is childNamespace(cp) for the admin credential and the account's
+// delivery namespace (serviceAccountDeliveryNamespace) for a service account,
+// whose backing PushSecret may live in a dedicated service namespace. Shared by
+// the admin-credential and service-account sub-reconcilers.
+func (r *ControlPlaneReconciler) forceRepushPushSecret(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, namespace, name, annotation, hash string) error {
+	key := types.NamespacedName{Namespace: namespace, Name: name}
 	// Read-modify-write under RetryOnConflict: ESO mutates the PushSecret's status
 	// (and re-pushes on the metadata change this triggers), so a 409 Conflict
 	// between our Get and Update is expected concurrency, not a fault — retrying

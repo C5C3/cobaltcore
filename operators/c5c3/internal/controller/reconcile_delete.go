@@ -826,6 +826,27 @@ func (r *ControlPlaneReconciler) sweepExternalNamespaceResidue(
 			}},
 		)
 	}
+	// Any service-account credential delivered into this namespace: its source
+	// Secret and consumer ExternalSecret, both operator-owned by label here. The
+	// PushSecret was already deleted by deleteOwnedPushSecrets (before this ran, so
+	// its OpenBao purge finished while the tenant store was still alive), and the
+	// materialized credentials Secret is ESO-owned and dies with the ExternalSecret,
+	// so neither is named here.
+	for i := range cp.Spec.KORC.ServiceAccounts {
+		sa := cp.Spec.KORC.ServiceAccounts[i]
+		if serviceAccountDeliveryNamespace(cp, sa) != namespace {
+			continue
+		}
+		objs = append(
+			objs,
+			&corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+				Name: serviceAccountSourceSecretName(cp, sa), Namespace: namespace,
+			}},
+			&esov1.ExternalSecret{ObjectMeta: metav1.ObjectMeta{
+				Name: serviceAccountCredentialsSecretName(cp, sa), Namespace: namespace,
+			}},
+		)
+	}
 	// The tenant store LAST: everything above authenticated through it.
 	objs = append(
 		objs,
@@ -864,38 +885,48 @@ func (r *ControlPlaneReconciler) sweepExternalNamespaceResidue(
 // BEFORE the ControlPlane finalizer is released and the GC cascade reaps them.
 // An absent PushSecret CRD (meta.IsNoMatchError) reads as nothing-to-clean so
 // the finalizer can still release when the ESO stack is gone.
+//
+// It sweeps every namespace the ControlPlane occupies and matches
+// isControlPlaneChild, not a bare controller reference: a service-account
+// credential delivered into a dedicated service namespace carries the ownership
+// labels rather than an owner reference, and its DeletionPolicy=Delete OpenBao
+// purge must run while that namespace's tenant store is still alive — which the
+// existing ordering guarantees, since this runs before teardownDedicatedNamespaces
+// (and its per-namespace tenant-store sweep).
 func (r *ControlPlaneReconciler) deleteOwnedPushSecrets(
 	ctx context.Context, cp *c5c3v1alpha1.ControlPlane,
 ) ([]*esov1alpha1.PushSecret, error) {
-	var list esov1alpha1.PushSecretList
-	switch err := r.List(ctx, &list, client.InNamespace(childNamespace(cp))); {
-	case err == nil:
-	case meta.IsNoMatchError(err):
-		return nil, nil
-	default:
-		return nil, fmt.Errorf("listing owned PushSecrets for teardown: %w", err)
-	}
-
 	var remaining []*esov1alpha1.PushSecret
-	for i := range list.Items {
-		ps := &list.Items[i]
-		if !metav1.IsControlledBy(ps, cp) {
-			continue
-		}
-		if ps.DeletionTimestamp.IsZero() {
-			if err := client.IgnoreNotFound(r.Delete(ctx, ps)); err != nil {
-				return nil, fmt.Errorf("deleting PushSecret %q: %w", ps.Name, err)
-			}
-		}
-		// Re-Get: a finalizer-less PushSecret is gone with the Delete, while one
-		// held by ESO stays present until the remote delete is confirmed.
-		current := &esov1alpha1.PushSecret{}
-		switch err := r.Get(ctx, client.ObjectKeyFromObject(ps), current); {
+	for _, namespace := range controlPlaneNamespaces(cp) {
+		var list esov1alpha1.PushSecretList
+		switch err := r.List(ctx, &list, client.InNamespace(namespace)); {
 		case err == nil:
-			remaining = append(remaining, current)
-		case apierrors.IsNotFound(err):
+		case meta.IsNoMatchError(err):
+			return nil, nil
 		default:
-			return nil, fmt.Errorf("re-checking PushSecret %q: %w", ps.Name, err)
+			return nil, fmt.Errorf("listing owned PushSecrets in namespace %q for teardown: %w", namespace, err)
+		}
+
+		for i := range list.Items {
+			ps := &list.Items[i]
+			if !isControlPlaneChild(ps, cp) {
+				continue
+			}
+			if ps.DeletionTimestamp.IsZero() {
+				if err := client.IgnoreNotFound(r.Delete(ctx, ps)); err != nil {
+					return nil, fmt.Errorf("deleting PushSecret %q: %w", ps.Name, err)
+				}
+			}
+			// Re-Get: a finalizer-less PushSecret is gone with the Delete, while one
+			// held by ESO stays present until the remote delete is confirmed.
+			current := &esov1alpha1.PushSecret{}
+			switch err := r.Get(ctx, client.ObjectKeyFromObject(ps), current); {
+			case err == nil:
+				remaining = append(remaining, current)
+			case apierrors.IsNotFound(err):
+			default:
+				return nil, fmt.Errorf("re-checking PushSecret %q: %w", ps.Name, err)
+			}
 		}
 	}
 	return remaining, nil

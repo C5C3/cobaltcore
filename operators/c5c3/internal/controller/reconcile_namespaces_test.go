@@ -17,9 +17,11 @@ import (
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -369,4 +371,119 @@ func TestControlPlaneNamespaces(t *testing.T) {
 	colocated.Spec.Services.Horizon.Namespace.Lifecycle = c5c3v1alpha1.ServiceNamespaceLifecycleManaged
 	g.Expect(controlPlaneNamespaces(colocated)).To(ConsistOf("openstack", "identity"),
 		"co-located services share one namespace, which is listed once")
+}
+
+// TestRefuseForeignAdoption_NamesTheKind pins the one thing an operator has to go
+// on when the guard fires: the refusal names the refused object's KIND.
+//
+// The typed case is the regression. A *corev1.Secret built in-code carries an
+// empty TypeMeta and the typed client does not populate it on Get, so reading the
+// kind off the object rendered it BLANK — the guard refused correctly, but the
+// resulting ServiceAccountsReady=False message said "refusing to adopt
+// pre-existing  identity/cp-..." and never named what was refused. The
+// unstructured Certificate is the control: it carries its own GVK and must keep
+// resolving identically now that the kind comes from the scheme.
+func TestRefuseForeignAdoption_NamesTheKind(t *testing.T) {
+	cp := namespacedControlPlane()
+
+	// A typed Secret exactly as CreateOrUpdate hands it to the guard: built
+	// in-code (empty TypeMeta), Get-populated with a foreign object's UID and
+	// labels, in a service namespace the ControlPlane does not own.
+	foreignSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+		Name:      "cp-service-account-nova-source",
+		Namespace: "dashboard",
+		UID:       types.UID("foreign-secret-uid"),
+		Labels:    map[string]string{"owner": "someone-else"},
+	}}
+	foreignCert := &unstructured.Unstructured{}
+	foreignCert.SetGroupVersionKind(certificateGVK)
+	foreignCert.SetName(esoTenantClientCertName)
+	foreignCert.SetNamespace("dashboard")
+	foreignCert.SetUID(types.UID("foreign-cert-uid"))
+	foreignCert.SetLabels(map[string]string{"owner": "someone-else"})
+
+	tests := []struct {
+		name string
+		live client.Object
+		kind string
+	}{
+		{name: "typed Secret with an empty TypeMeta", live: foreignSecret, kind: "Secret"},
+		{name: "unstructured Certificate", live: foreignCert, kind: "Certificate"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+
+			err := refuseForeignAdoption(cp, tc.live, namespacesTestScheme(t))
+
+			g.Expect(err).To(HaveOccurred(), "a foreign object in an unowned namespace must be refused")
+			g.Expect(err.Error()).To(ContainSubstring("refusing to adopt pre-existing "+tc.kind+" "),
+				"the refusal must name the kind: it is all an operator has to identify WHAT was refused")
+		})
+	}
+}
+
+// TestRefuseForeignAdoption_AllowsOwnAndAbsent covers the three states that are
+// not a foreign adoption, so resolving the kind from the scheme did not tighten
+// the guard itself: our own labelled child, a name in the ControlPlane's own
+// namespace (an owner reference is legal there), and an absent object
+// CreateOrUpdate is about to create.
+func TestRefuseForeignAdoption_AllowsOwnAndAbsent(t *testing.T) {
+	cp := namespacedControlPlane()
+
+	ownChild := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+		Name:      "cp-service-account-nova-source",
+		Namespace: "dashboard",
+		UID:       types.UID("our-secret-uid"),
+		Labels:    controlPlaneChildLabels(cp),
+	}}
+	atHome := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+		Name:      "cp-admin-app-credential",
+		Namespace: cp.Namespace,
+		UID:       types.UID("home-secret-uid"),
+		Labels:    map[string]string{"owner": "someone-else"},
+	}}
+	absent := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+		Name:      "cp-service-account-nova-source",
+		Namespace: "dashboard",
+	}}
+
+	tests := []struct {
+		name string
+		live client.Object
+	}{
+		{name: "our own labelled child in a service namespace", live: ownChild},
+		{name: "a foreign name in the ControlPlane's own namespace", live: atHome},
+		{name: "an absent object about to be created", live: absent},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			g.Expect(refuseForeignAdoption(cp, tc.live, namespacesTestScheme(t))).To(Succeed())
+		})
+	}
+}
+
+// TestRefuseForeignAdoption_UnresolvableKindStillRefuses guards the fallback: a
+// kind the scheme cannot resolve must still be REFUSED — refusing is the security
+// behavior, and naming the kind is only the diagnostic on top of it.
+func TestRefuseForeignAdoption_UnresolvableKindStillRefuses(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := namespacedControlPlane()
+
+	foreign := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+		Name:      "cp-service-account-nova-source",
+		Namespace: "dashboard",
+		UID:       types.UID("foreign-secret-uid"),
+	}}
+
+	// An EMPTY scheme resolves no kind at all, so the guard falls back to the
+	// object's own (here: blank) GVK rather than erroring out and letting the
+	// adoption through.
+	err := refuseForeignAdoption(cp, foreign, runtime.NewScheme())
+
+	g.Expect(err).To(HaveOccurred(), "an unresolvable kind must not turn a refusal into an adoption")
+	g.Expect(err.Error()).To(ContainSubstring("refusing to adopt pre-existing"))
 }

@@ -56,6 +56,14 @@
 # webhook on every PR. This suite proves the placement and lifecycle half on a
 # live cluster: namespaces, backing-service placement, ownership labels, tenant
 # stores, and the deletion sweep.
+#
+# The fixture also declares a SERVICE ACCOUNT with targetNamespace set to the
+# Keystone namespace, so admitting the CR proves the webhook accepts an own-or-
+# dedicated targetNamespace on a live cluster. Its credential delivery leg (the
+# source Secret, PushSecret, consumer ExternalSecret, and materialized credentials
+# Secret in that namespace) is behind the same unseeded admin-credential machinery
+# as above, so — like the Keystone-child credential material — it is hard-asserted
+# in TestIntegration_DedicatedNamespaces rather than here.
 ---
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test

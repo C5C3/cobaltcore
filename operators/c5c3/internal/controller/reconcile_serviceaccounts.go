@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -199,20 +200,76 @@ func serviceAccountCredentialsSecretName(cp *c5c3v1alpha1.ControlPlane, sa c5c3v
 	return serviceAccountChildPrefix(cp) + sa.Name + "-credentials"
 }
 
+// serviceAccountDeliveryNamespace resolves the namespace an account's consumer
+// credentials — the source Secret, PushSecret, ExternalSecret, and materialized
+// Secret behind them — are delivered into: the account's spec targetNamespace
+// when set, the ControlPlane's own namespace otherwise. It is the service-account
+// twin of the KeystoneNamespace scoping the admin password rides (cf.
+// adminPasswordRemoteKeyFor): the delivery leg follows the consumer, and the
+// OpenBao path segment follows the delivery namespace so it stays inside that
+// namespace's templated eso-tenant policy.
+//
+// The webhook constrains targetNamespace to the ControlPlane's own namespace or
+// one of its dedicated service namespaces. That rule is RE-ENFORCED here rather
+// than assumed — the same reasoning as DedicatedServiceNamespaces(): admission can
+// be absent, not merely unavailable (the ValidatingWebhookConfiguration not yet
+// registered during install, a GitOps/etcd restore replaying stored objects), and
+// failurePolicy: Fail does not cover that. An out-of-scope target falls back to the
+// ControlPlane's own namespace, so a webhook-bypassed CR cannot plant an account's
+// plaintext password and clouds.yaml in a namespace no sweep reaches:
+// pruneServiceAccounts and sweepExternalNamespaceResidue both walk
+// controlPlaneNamespaces(cp), so a Secret outside it would survive teardown of the
+// ControlPlane that minted it.
+func serviceAccountDeliveryNamespace(cp *c5c3v1alpha1.ControlPlane, sa c5c3v1alpha1.ServiceAccountSpec) string {
+	if sa.TargetNamespace != "" && !slices.Contains(controlPlaneNamespaces(cp), sa.TargetNamespace) {
+		return childNamespace(cp)
+	}
+	return cmp.Or(sa.TargetNamespace, childNamespace(cp))
+}
+
+// serviceAccountDeliveryNamespaces returns the DISTINCT delivery namespaces across
+// the declared accounts, always including the child namespace (the default target
+// and the K-ORC children's home) and in a stable order (child namespace first).
+// It is the deduplicated set the per-namespace store gate walks.
+func serviceAccountDeliveryNamespaces(cp *c5c3v1alpha1.ControlPlane, sas []c5c3v1alpha1.ServiceAccountSpec) []string {
+	namespaces := []string{childNamespace(cp)}
+	seen := map[string]struct{}{childNamespace(cp): {}}
+	for i := range sas {
+		ns := serviceAccountDeliveryNamespace(cp, sas[i])
+		if _, dup := seen[ns]; dup {
+			continue
+		}
+		seen[ns] = struct{}{}
+		namespaces = append(namespaces, ns)
+	}
+	return namespaces
+}
+
 // serviceAccountRemoteKeyFor returns the per-CR, namespace-scoped OpenBao path a
 // service account's credentials are mirrored to, following the established
 // per-CR + namespace-scoped convention (cf. adminAppCredentialRemoteKeyFor).
-func serviceAccountRemoteKeyFor(cp *c5c3v1alpha1.ControlPlane, name string) string {
-	return "openstack/keystone/" + cp.Namespace + "/" + cp.Name + "/service-accounts/" + name
+//
+// The namespace segment is the account's DELIVERY namespace, not the
+// ControlPlane's own: delivery rides that namespace's openbao-tenant-store, whose
+// templated eso-tenant policy only admits paths whose namespace segment is its own
+// (openstack/keystone/{caller-namespace}/+/service-accounts/+). It is bit-for-bit
+// unchanged for the default (no targetNamespace), where the delivery namespace IS
+// the ControlPlane's own — the same rationale as adminPasswordRemoteKeyFor keying
+// on the KeystoneNamespace.
+func serviceAccountRemoteKeyFor(cp *c5c3v1alpha1.ControlPlane, sa c5c3v1alpha1.ServiceAccountSpec) string {
+	return "openstack/keystone/" + serviceAccountDeliveryNamespace(cp, sa) + "/" + cp.Name + "/service-accounts/" + sa.Name
 }
 
-// ownsServiceAccountChild reports whether obj is a CR this ControlPlane created
-// for a declared service account. BOTH the controller reference and the
+// ownsServiceAccountChild reports whether obj is a child this ControlPlane created
+// for a declared service account. BOTH the ownership test and the
 // "-service-account-" name prefix must match, so the admin imports (and any
-// foreign CR sharing the namespace) can never be caught by the prune or teardown
-// sweep. Shared by pruneServiceAccounts and the deletion sweep.
+// foreign object sharing a namespace) can never be caught by the prune or teardown
+// sweep. Ownership is isControlPlaneChild, not a bare controller reference, so it
+// recognises a delivery child placed in a dedicated service namespace by its
+// ownership LABELS too (a cross-namespace child carries no owner reference). Shared
+// by pruneServiceAccounts and the deletion sweep.
 func (r *ControlPlaneReconciler) ownsServiceAccountChild(cp *c5c3v1alpha1.ControlPlane, obj client.Object) bool {
-	return metav1.IsControlledBy(obj, cp) && strings.HasPrefix(obj.GetName(), serviceAccountChildPrefix(cp))
+	return isControlPlaneChild(obj, cp) && strings.HasPrefix(obj.GetName(), serviceAccountChildPrefix(cp))
 }
 
 // parseServiceAccountGeneration extracts the generation N from a password Secret
@@ -272,19 +329,26 @@ func (r *ControlPlaneReconciler) reconcileServiceAccounts(ctx context.Context, c
 	// Gate on the store the ControlPlane selected via spec.secretStoreRef
 	// (default: the operator-provisioned per-tenant store) so an ESO/OpenBao
 	// outage surfaces promptly rather than at the next hourly refresh (#476). A
-	// namespaced store is resolved in the child namespace where the
-	// service-account Secrets are materialised.
+	// namespaced store is resolved per namespace, so gate on every DISTINCT
+	// delivery namespace across the declared accounts — always including the child
+	// namespace (the default delivery target and the K-ORC children's home) — and
+	// name the one that is not ready. An account with a dedicated targetNamespace
+	// rides that namespace's own openbao-tenant-store, so a store ready at home is
+	// not enough to deliver into a service namespace whose store is still coming up.
 	storeRef := effectiveControlPlaneStoreRef(cp)
-	storeReady, err := secrets.IsStoreRefReady(ctx, r.Client, storeRef, childNamespace(cp))
-	if err != nil {
-		return ctrl.Result{}, err
-	}
-	if !storeReady {
-		logger.Info("secret store not ready, deferring service-account round-trip")
-		fail(reasonServiceAccountStoreNotReady, fmt.Sprintf(
-			"%s %q is not ready; upstream secret backend unreachable", storeRef.Kind, storeRef.Name,
-		))
-		return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
+	for _, deliveryNS := range serviceAccountDeliveryNamespaces(cp, sas) {
+		storeReady, err := secrets.IsStoreRefReady(ctx, r.Client, storeRef, deliveryNS)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if !storeReady {
+			logger.Info("secret store not ready, deferring service-account round-trip", "namespace", deliveryNS)
+			fail(reasonServiceAccountStoreNotReady, fmt.Sprintf(
+				"%s %q in namespace %q is not ready; upstream secret backend unreachable",
+				storeRef.Kind, storeRef.Name, deliveryNS,
+			))
+			return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
+		}
 	}
 
 	secretName := cmp.Or(cp.Spec.KORC.AdminCredential.CloudCredentialsRef.SecretName, korcCloudsYamlSecretName)
@@ -428,6 +492,7 @@ func (r *ControlPlaneReconciler) ensureServiceAccount(
 		status: c5c3v1alpha1.ServiceAccountStatus{
 			Name:                 sa.Name,
 			SecretName:           serviceAccountCredentialsSecretName(cp, sa),
+			SecretNamespace:      serviceAccountDeliveryNamespace(cp, sa),
 			LastPasswordRotation: prior.LastPasswordRotation,
 		},
 		scheduled: sa.Rotation != nil && sa.Rotation.Mode == c5c3v1alpha1.ServiceAccountRotationModeScheduled,
@@ -970,7 +1035,7 @@ func (r *ControlPlaneReconciler) ensureServiceAccountPasswordSecret(
 	ctx context.Context, cp *c5c3v1alpha1.ControlPlane, sa c5c3v1alpha1.ServiceAccountSpec, gen int64,
 ) error {
 	name := serviceAccountPasswordSecretName(cp, sa, gen)
-	if err := r.ensureOwnedSecret(ctx, cp, name, func(secret *corev1.Secret) error {
+	if err := r.ensureOwnedSecret(ctx, cp, name, childNamespace(cp), func(secret *corev1.Secret) error {
 		if len(secret.Data[serviceAccountPasswordKey]) == 0 {
 			v, gerr := generateAppCredSecretValue()
 			if gerr != nil {
@@ -990,11 +1055,20 @@ func (r *ControlPlaneReconciler) ensureServiceAccountPasswordSecret(
 // materialized "password" matches the current generation (a rotated-away password
 // never reads ready). It is only called once K-ORC confirms the current password
 // is applied to the user.
+//
+// The publish leg — source Secret, PushSecret, consumer ExternalSecret, and the
+// materialized Secret it reads back — lands in the account's DELIVERY namespace
+// (serviceAccountDeliveryNamespace), riding that namespace's own tenant store, so
+// it carries the ownership LABELS rather than a controller reference when that is a
+// dedicated service namespace (Kubernetes forbids a cross-namespace owner
+// reference). The K-ORC-facing password Secret is read from the child namespace:
+// that source is owned by ensureServiceAccountUser and never moves.
 func (r *ControlPlaneReconciler) publishServiceAccount(
 	ctx context.Context, cp *c5c3v1alpha1.ControlPlane, sa c5c3v1alpha1.ServiceAccountSpec,
 	userName, projectName, domain string, gen int64,
 ) (bool, error) {
 	ns := childNamespace(cp)
+	deliveryNS := serviceAccountDeliveryNamespace(cp, sa)
 
 	pwSecret := &corev1.Secret{}
 	if err := r.Get(ctx, types.NamespacedName{Name: serviceAccountPasswordSecretName(cp, sa, gen), Namespace: ns}, pwSecret); err != nil {
@@ -1009,7 +1083,8 @@ func (r *ControlPlaneReconciler) publishServiceAccount(
 	}
 
 	cloudsYAML := []byte(buildServiceAccountCloudsYAML(cp, userName, projectName, domain, string(password)))
-	if err := r.ensureOwnedSecret(ctx, cp, serviceAccountSourceSecretName(cp, sa), func(secret *corev1.Secret) error {
+	sourceName := serviceAccountSourceSecretName(cp, sa)
+	if err := r.ensureOwnedSecret(ctx, cp, sourceName, deliveryNS, func(secret *corev1.Secret) error {
 		secret.Data[serviceAccountPasswordKey] = password
 		secret.Data["username"] = []byte(userName)
 		secret.Data["project_name"] = []byte(projectName)
@@ -1020,21 +1095,26 @@ func (r *ControlPlaneReconciler) publishServiceAccount(
 		secret.Data[appCredCloudsYAMLKey] = cloudsYAML
 		return nil
 	}); err != nil {
-		return false, fmt.Errorf("assembling service-account source Secret: %w", err)
+		return false, fmt.Errorf("assembling service-account source Secret %q in namespace %q: %w",
+			sourceName, deliveryNS, err)
 	}
 
 	sum := sha256.Sum256(cloudsYAML)
 	contentHash := hex.EncodeToString(sum[:])
 
+	// The PushSecret carries a controller reference at home and the ownership labels
+	// in a dedicated service namespace, so it goes through ensureUnownedOrOwned
+	// rather than secrets.EnsurePushSecret (whose controller reference is illegal
+	// cross-namespace).
 	ps := serviceAccountPushSecret(cp, sa)
-	if err := secrets.EnsurePushSecret(ctx, r.Client, r.Scheme, cp, ps); err != nil {
+	if err := r.ensureUnownedOrOwned(ctx, cp, ps); err != nil {
 		return false, fmt.Errorf("ensuring service-account PushSecret: %w", err)
 	}
-	if err := r.forceRepushPushSecret(ctx, cp, ps.Name, serviceAccountPushContentHashAnnotation, contentHash); err != nil {
+	if err := r.forceRepushPushSecret(ctx, cp, deliveryNS, ps.Name, serviceAccountPushContentHashAnnotation, contentHash); err != nil {
 		return false, fmt.Errorf("forcing service-account PushSecret re-push: %w", err)
 	}
 	pushed := &esov1alpha1.PushSecret{}
-	if err := r.Get(ctx, types.NamespacedName{Name: ps.Name, Namespace: ns}, pushed); err != nil {
+	if err := r.Get(ctx, types.NamespacedName{Name: ps.Name, Namespace: deliveryNS}, pushed); err != nil {
 		return false, fmt.Errorf("reading service-account PushSecret: %w", err)
 	}
 	if !pushSecretReady(pushed) {
@@ -1045,12 +1125,12 @@ func (r *ControlPlaneReconciler) publishServiceAccount(
 		return false, fmt.Errorf("ensuring service-account ExternalSecret: %w", err)
 	}
 	syncTrigger := contentHash + "/" + pushed.Status.SyncedResourceVersion
-	if err := r.forceSyncExternalSecret(ctx, cp, serviceAccountCredentialsSecretName(cp, sa), syncTrigger); err != nil {
+	if err := r.forceSyncExternalSecret(ctx, cp, deliveryNS, serviceAccountCredentialsSecretName(cp, sa), syncTrigger); err != nil {
 		return false, fmt.Errorf("forcing service-account ExternalSecret re-sync: %w", err)
 	}
 
 	materialized := &corev1.Secret{}
-	if err := r.Get(ctx, types.NamespacedName{Name: serviceAccountCredentialsSecretName(cp, sa), Namespace: ns}, materialized); err != nil {
+	if err := r.Get(ctx, types.NamespacedName{Name: serviceAccountCredentialsSecretName(cp, sa), Namespace: deliveryNS}, materialized); err != nil {
 		if apierrors.IsNotFound(err) {
 			return false, nil
 		}
@@ -1060,11 +1140,12 @@ func (r *ControlPlaneReconciler) publishServiceAccount(
 }
 
 // serviceAccountPushSecret builds the PushSecret mirroring the source Secret to
-// the per-CR OpenBao path. DeletionPolicy Delete: the credential dies with the
-// account that owns it (the same rationale as adminAppCredentialPushSecret).
+// the per-CR OpenBao path, in the account's delivery namespace. DeletionPolicy
+// Delete: the credential dies with the account that owns it (the same rationale as
+// adminAppCredentialPushSecret).
 func serviceAccountPushSecret(cp *c5c3v1alpha1.ControlPlane, sa c5c3v1alpha1.ServiceAccountSpec) *esov1alpha1.PushSecret {
 	return &esov1alpha1.PushSecret{
-		ObjectMeta: metav1.ObjectMeta{Name: serviceAccountPushSecretName(cp, sa), Namespace: childNamespace(cp)},
+		ObjectMeta: metav1.ObjectMeta{Name: serviceAccountPushSecretName(cp, sa), Namespace: serviceAccountDeliveryNamespace(cp, sa)},
 		Spec: esov1alpha1.PushSecretSpec{
 			DeletionPolicy:  esov1alpha1.PushSecretDeletionPolicyDelete,
 			SecretStoreRefs: secrets.PushSecretStoreRefs(effectiveControlPlaneStoreRef(cp)),
@@ -1073,7 +1154,7 @@ func serviceAccountPushSecret(cp *c5c3v1alpha1.ControlPlane, sa c5c3v1alpha1.Ser
 			},
 			Data: []esov1alpha1.PushSecretData{{
 				Match: esov1alpha1.PushSecretMatch{
-					RemoteRef: esov1alpha1.PushSecretRemoteRef{RemoteKey: serviceAccountRemoteKeyFor(cp, sa.Name)},
+					RemoteRef: esov1alpha1.PushSecretRemoteRef{RemoteKey: serviceAccountRemoteKeyFor(cp, sa)},
 				},
 			}},
 		},
@@ -1082,15 +1163,17 @@ func serviceAccountPushSecret(cp *c5c3v1alpha1.ControlPlane, sa c5c3v1alpha1.Ser
 
 // ensureServiceAccountExternalSecret create-or-updates the operator-owned
 // ExternalSecret that materializes the consumer Secret from the per-CR OpenBao
-// path. It reads back the "password" and "clouds.yaml" properties — the documented
-// consumption contract.
+// path, in the account's delivery namespace. It reads back the "password" and
+// "clouds.yaml" properties — the documented consumption contract. It rides
+// ensureUnownedOrOwned so the ExternalSecret is owner-referenced at home and
+// label-owned (refusing foreign adoption) in a dedicated service namespace.
 func (r *ControlPlaneReconciler) ensureServiceAccountExternalSecret(
 	ctx context.Context, cp *c5c3v1alpha1.ControlPlane, sa c5c3v1alpha1.ServiceAccountSpec,
 ) error {
 	name := serviceAccountCredentialsSecretName(cp, sa)
-	remoteKey := serviceAccountRemoteKeyFor(cp, sa.Name)
+	remoteKey := serviceAccountRemoteKeyFor(cp, sa)
 	es := &esov1.ExternalSecret{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: childNamespace(cp)},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: serviceAccountDeliveryNamespace(cp, sa)},
 		Spec: esov1.ExternalSecretSpec{
 			RefreshInterval: &metav1.Duration{Duration: time.Hour},
 			SecretStoreRef:  secrets.ESOSecretStoreRef(effectiveControlPlaneStoreRef(cp)),
@@ -1107,7 +1190,7 @@ func (r *ControlPlaneReconciler) ensureServiceAccountExternalSecret(
 			},
 		},
 	}
-	if err := apply.EnsureObject(ctx, r.Client, r.Scheme, cp, es, apply.FieldManager); err != nil {
+	if err := r.ensureUnownedOrOwned(ctx, cp, es); err != nil {
 		return fmt.Errorf("ensuring service-account ExternalSecret %q: %w", name, err)
 	}
 	return nil
@@ -1256,35 +1339,44 @@ func (r *ControlPlaneReconciler) pruneServiceAccounts(
 			return nil, err
 		}
 	}
-	var pushSecrets esov1alpha1.PushSecretList
-	if err := r.List(ctx, &pushSecrets, client.InNamespace(ns)); err != nil {
-		return nil, fmt.Errorf("listing service-account PushSecrets: %w", err)
-	}
-	for i := range pushSecrets.Items {
-		if err := sweep(&pushSecrets.Items[i], false); err != nil {
-			return nil, err
+	// The delivery objects — PushSecret, ExternalSecret, and the source + password
+	// Secrets — can land in a dedicated service namespace (an account's
+	// targetNamespace), so sweep every namespace the ControlPlane occupies, not just
+	// the child namespace, and removing an entry reaps its delivery objects wherever
+	// they landed. The K-ORC sweeps above stay child-namespace-only: those children
+	// never move.
+	for _, sweepNS := range controlPlaneNamespaces(cp) {
+		var pushSecrets esov1alpha1.PushSecretList
+		if err := r.List(ctx, &pushSecrets, client.InNamespace(sweepNS)); err != nil {
+			return nil, fmt.Errorf("listing service-account PushSecrets in namespace %q: %w", sweepNS, err)
 		}
-	}
-	var externalSecrets esov1.ExternalSecretList
-	if err := r.List(ctx, &externalSecrets, client.InNamespace(ns)); err != nil {
-		return nil, fmt.Errorf("listing service-account ExternalSecrets: %w", err)
-	}
-	for i := range externalSecrets.Items {
-		if err := sweep(&externalSecrets.Items[i], false); err != nil {
-			return nil, err
+		for i := range pushSecrets.Items {
+			if err := sweep(&pushSecrets.Items[i], false); err != nil {
+				return nil, err
+			}
 		}
-	}
-	// Secrets: password (generation-scoped) + source. The materialized credentials
-	// Secret is ESO-owned (CreationPolicy Owner) and garbage-collected with its
-	// ExternalSecret, so it carries no ControlPlane controller reference and the
-	// ownership guard correctly leaves it to the ExternalSecret deletion above.
-	var kubeSecrets corev1.SecretList
-	if err := r.List(ctx, &kubeSecrets, client.InNamespace(ns)); err != nil {
-		return nil, fmt.Errorf("listing service-account Secrets: %w", err)
-	}
-	for i := range kubeSecrets.Items {
-		if err := sweep(&kubeSecrets.Items[i], false); err != nil {
-			return nil, err
+		var externalSecrets esov1.ExternalSecretList
+		if err := r.List(ctx, &externalSecrets, client.InNamespace(sweepNS)); err != nil {
+			return nil, fmt.Errorf("listing service-account ExternalSecrets in namespace %q: %w", sweepNS, err)
+		}
+		for i := range externalSecrets.Items {
+			if err := sweep(&externalSecrets.Items[i], false); err != nil {
+				return nil, err
+			}
+		}
+		// Secrets: password (generation-scoped, child namespace) + source (delivery
+		// namespace). The materialized credentials Secret is ESO-owned (CreationPolicy
+		// Owner) and garbage-collected with its ExternalSecret, so it carries no
+		// ControlPlane ownership and the guard correctly leaves it to the ExternalSecret
+		// deletion above.
+		var kubeSecrets corev1.SecretList
+		if err := r.List(ctx, &kubeSecrets, client.InNamespace(sweepNS)); err != nil {
+			return nil, fmt.Errorf("listing service-account Secrets in namespace %q: %w", sweepNS, err)
+		}
+		for i := range kubeSecrets.Items {
+			if err := sweep(&kubeSecrets.Items[i], false); err != nil {
+				return nil, err
+			}
 		}
 	}
 

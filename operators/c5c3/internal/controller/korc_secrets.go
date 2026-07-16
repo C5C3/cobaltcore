@@ -56,34 +56,40 @@ func adminAppCredentialSecretName(cp *c5c3v1alpha1.ControlPlane) string {
 }
 
 // ensureOwnedSecret create-or-updates an operator-owned corev1.Secret named
-// `name` in childNamespace(cp), with cp set as the controller owner reference.
+// `name` in `namespace`, claimed as a child of cp the only way that namespace
+// permits (claimChildOwnership): a controller owner reference at home, the
+// ownership labels in a dedicated service namespace — where a same-named foreign
+// Secret is refused rather than adopted (refuseForeignAdoption).
 // The Secret's Data map is guaranteed non-nil before `mutate` runs, so callers
 // only set the keys they own; `mutate` may return an error to abort the write
 // (e.g. when generating a random value fails). It stays read-modify-write (not
 // Server-Side Apply) precisely because `mutate` reads the LIVE Secret's Data to
 // preserve generated-once random values across reconciles, which cannot be a
-// pure projection. It centralises the four
-// near-identical owned-Secret CreateOrUpdate wrappers (ensureAppCredentialSecret,
-// ensureAdminPasswordCloud, seedBootstrapCloudsYAML and
-// regenerateAppCredentialSecretValue); each keeps its own error wrapping so the
-// failure context stays specific.
+// pure projection. It centralises the near-identical owned-Secret CreateOrUpdate
+// wrappers (ensureAppCredentialSecret, ensureAdminPasswordCloud,
+// seedBootstrapCloudsYAML, regenerateAppCredentialSecretValue,
+// ensureServiceAccountPasswordSecret and the service-account source Secret); each
+// keeps its own error wrapping so the failure context stays specific.
 func (r *ControlPlaneReconciler) ensureOwnedSecret(
-	ctx context.Context, cp *c5c3v1alpha1.ControlPlane, name string, mutate func(*corev1.Secret) error,
+	ctx context.Context, cp *c5c3v1alpha1.ControlPlane, name, namespace string, mutate func(*corev1.Secret) error,
 ) error {
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
-			Namespace: childNamespace(cp),
+			Namespace: namespace,
 		},
 	}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
+		if err := refuseForeignAdoption(cp, secret, r.Scheme); err != nil {
+			return err
+		}
 		if secret.Data == nil {
 			secret.Data = map[string][]byte{}
 		}
 		if err := mutate(secret); err != nil {
 			return err
 		}
-		return controllerutil.SetControllerReference(cp, secret, r.Scheme)
+		return claimChildOwnership(cp, secret, r.Scheme)
 	})
 	return err
 }
@@ -168,7 +174,7 @@ func readExternalCABundle(ctx context.Context, c client.Client, cp *c5c3v1alpha1
 // "cacert". This Secret is the PushSecret's source and ESO pushes it WHOLE, so the
 // bundle reaches OpenBao next to the assembled clouds.yaml with no extra plumbing.
 func (r *ControlPlaneReconciler) ensureAppCredentialSecret(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, caBundle string) error {
-	if err := r.ensureOwnedSecret(ctx, cp, adminAppCredentialSecretName(cp), func(secret *corev1.Secret) error {
+	if err := r.ensureOwnedSecret(ctx, cp, adminAppCredentialSecretName(cp), childNamespace(cp), func(secret *corev1.Secret) error {
 		if len(secret.Data[appCredSecretValueKey]) == 0 {
 			v, gerr := generateAppCredSecretValue()
 			if gerr != nil {
@@ -211,7 +217,7 @@ func generateAppCredSecretValue() (string, error) {
 // DIRECTLY, so without the bundle a private-CA endpoint fails TLS verification on
 // every mint and re-mint.
 func (r *ControlPlaneReconciler) ensureAdminPasswordCloud(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, password, caBundle string) error {
-	if err := r.ensureOwnedSecret(ctx, cp, adminPasswordCloudSecretName(cp), func(secret *corev1.Secret) error {
+	if err := r.ensureOwnedSecret(ctx, cp, adminPasswordCloudSecretName(cp), childNamespace(cp), func(secret *corev1.Secret) error {
 		secret.Data[appCredCloudsYAMLKey] = []byte(buildPasswordCloudsYAML(cp, password))
 		setCACertKey(secret, caBundle)
 		return nil
@@ -248,7 +254,7 @@ func (r *ControlPlaneReconciler) ensureAdminPasswordCloud(ctx context.Context, c
 // the re-authentication gap. The "value" key (owned by ensureAppCredentialSecret)
 // is never touched.
 func (r *ControlPlaneReconciler) seedBootstrapCloudsYAML(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, password string) error {
-	if err := r.ensureOwnedSecret(ctx, cp, adminAppCredentialSecretName(cp), func(secret *corev1.Secret) error {
+	if err := r.ensureOwnedSecret(ctx, cp, adminAppCredentialSecretName(cp), childNamespace(cp), func(secret *corev1.Secret) error {
 		// Write-if-empty: never overwrite a minted credential-based clouds.yaml.
 		if len(secret.Data[appCredCloudsYAMLKey]) == 0 {
 			secret.Data[appCredCloudsYAMLKey] = []byte(buildPasswordCloudsYAML(cp, password))
@@ -266,7 +272,7 @@ func (r *ControlPlaneReconciler) seedBootstrapCloudsYAML(ctx context.Context, cp
 // clouds.yaml forces reconcileAdminCredential to rebuild it from the fresh id+value
 // rather than keep serving the just-revoked credential.
 func (r *ControlPlaneReconciler) regenerateAppCredentialSecretValue(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) error {
-	if err := r.ensureOwnedSecret(ctx, cp, adminAppCredentialSecretName(cp), func(secret *corev1.Secret) error {
+	if err := r.ensureOwnedSecret(ctx, cp, adminAppCredentialSecretName(cp), childNamespace(cp), func(secret *corev1.Secret) error {
 		v, gerr := generateAppCredSecretValue()
 		if gerr != nil {
 			return gerr

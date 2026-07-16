@@ -66,4 +66,15 @@ spec:
       passwordSecretRef:
         name: keystone-admin
         key: password
+    # A service account delivering its credentials into the dedicated Keystone
+    # namespace: its source Secret, PushSecret, consumer ExternalSecret, and the
+    # materialized credentials Secret all land in @KEYSTONE_NS@ (carrying the
+    # ownership labels), reading the OpenBao path keyed on that namespace. The
+    # webhook accepts targetNamespace only when it names the ControlPlane's own or
+    # one of its dedicated service namespaces, so admitting this CR proves the rule.
+    serviceAccounts:
+    - name: nova
+      project:
+        name: service
+      targetNamespace: "@KEYSTONE_NS@"
 # endregion controlplane

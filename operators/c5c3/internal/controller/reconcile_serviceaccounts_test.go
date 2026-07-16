@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"testing"
 
+	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
 	. "github.com/onsi/gomega"
@@ -802,4 +803,206 @@ func TestBuildServiceAccountCloudsYAML_UsesAccountIdentity(t *testing.T) {
 	g.Expect(out).To(ContainSubstring("project_name: \"service\""))
 	g.Expect(out).To(ContainSubstring("user_domain_name: \"Default\""))
 	g.Expect(out).To(ContainSubstring("project_domain_name: \"Default\""))
+}
+
+// TestServiceAccountRemoteKeyFor_DefaultAndTargetNamespace pins the OpenBao path
+// scoping: the default (no targetNamespace) key stays BIT-FOR-BIT the
+// ControlPlane-namespace-scoped path, and a targetNamespace re-keys only the
+// namespace segment (following the consumer, per the admin-password precedent).
+func TestServiceAccountRemoteKeyFor_DefaultAndTargetNamespace(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := saControlPlane()
+
+	def := cp.Spec.KORC.ServiceAccounts[0]
+	g.Expect(serviceAccountRemoteKeyFor(cp, def)).To(Equal("openstack/keystone/default/cp/service-accounts/nova"),
+		"the default remote key must be bit-for-bit the ControlPlane-namespace-scoped path")
+
+	// The target rides saTargetControlPlane, which DECLARES "identity" as the
+	// dedicated keystone namespace: the remote key follows the delivery namespace,
+	// and serviceAccountDeliveryNamespace only honours a target the ControlPlane
+	// actually dedicates (see TestServiceAccountDeliveryNamespace_RejectsOutOfScopeTarget).
+	targetedCP, targetNS := saTargetControlPlane()
+	targeted := targetedCP.Spec.KORC.ServiceAccounts[0]
+	g.Expect(serviceAccountRemoteKeyFor(targetedCP, targeted)).
+		To(Equal("openstack/keystone/"+targetNS+"/cp/service-accounts/nova"),
+			"a targetNamespace must move only the namespace segment of the remote key")
+}
+
+// TestServiceAccountDeliveryNamespace_RejectsOutOfScopeTarget pins the reconciler's
+// own re-enforcement of the webhook's targetNamespace rule. The webhook constrains
+// the target to the ControlPlane's own namespace or one of its dedicated service
+// namespaces, but admission can be ABSENT rather than merely unavailable (the
+// ValidatingWebhookConfiguration not yet registered during install, a GitOps/etcd
+// restore replaying stored objects), which failurePolicy: Fail does not cover. An
+// out-of-scope target must fall back to the ControlPlane's own namespace: the
+// delivery Secrets carry the account's plaintext password and clouds.yaml, and the
+// prune/teardown sweeps only walk controlPlaneNamespaces(cp), so a Secret planted
+// outside it would survive the ControlPlane that minted it.
+func TestServiceAccountDeliveryNamespace_RejectsOutOfScopeTarget(t *testing.T) {
+	dedicated, dedicatedNS := saTargetControlPlane()
+	own := saControlPlane()
+
+	for _, tc := range []struct {
+		name   string
+		cp     *c5c3v1alpha1.ControlPlane
+		target string
+		want   string
+	}{
+		{"unset falls back to the own namespace", own, "", own.Namespace},
+		{"the own namespace is in scope", own, own.Namespace, own.Namespace},
+		{"a dedicated service namespace is in scope", dedicated, dedicatedNS, dedicatedNS},
+		{"an out-of-scope target falls back", own, "kube-system", own.Namespace},
+		{"a namespace dedicated to ANOTHER CP falls back", own, dedicatedNS, own.Namespace},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			sa := tc.cp.Spec.KORC.ServiceAccounts[0]
+			sa.TargetNamespace = tc.target
+			g.Expect(serviceAccountDeliveryNamespace(tc.cp, sa)).To(Equal(tc.want))
+		})
+	}
+}
+
+// saTargetControlPlane returns saControlPlane's CP with its single account
+// delivered into the dedicated "identity" service namespace (declared on the CR so
+// the webhook contract holds), so the publish leg rides that namespace's tenant
+// store.
+func saTargetControlPlane() (*c5c3v1alpha1.ControlPlane, string) {
+	const targetNS = "identity"
+	cp := saControlPlane()
+	cp.Spec.Services.Keystone.Namespace = &c5c3v1alpha1.ServiceNamespaceSpec{
+		Name:      targetNS,
+		Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+	}
+	cp.Spec.KORC.ServiceAccounts[0].TargetNamespace = targetNS
+	return cp, targetNS
+}
+
+// TestReconcileServiceAccounts_TargetNamespaceDeliversWithLabels drives a converged
+// account whose targetNamespace is a dedicated service namespace: the source
+// Secret, PushSecret, and consumer ExternalSecret land in that namespace carrying
+// the ownership LABELS (no owner reference — Kubernetes forbids a cross-namespace
+// one), the PushSecret's remote key is re-scoped to the target namespace, and the
+// converged pass records status.serviceAccounts[].secretNamespace as the target.
+func TestReconcileServiceAccounts_TargetNamespaceDeliversWithLabels(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp, targetNS := saTargetControlPlane()
+	sa := cp.Spec.KORC.ServiceAccounts[0]
+	ns := childNamespace(cp)
+
+	// The publish leg lands in the target namespace; seed its already-synced
+	// PushSecret (label-owned so ensureUnownedOrOwned adopts it) and the
+	// materialized consumer Secret, plus a Ready tenant store in that namespace.
+	push := serviceAccountPushSecret(cp, sa)
+	stampControlPlaneChildLabels(push, cp)
+	push.Status.Conditions = []esov1alpha1.PushSecretStatusCondition{
+		{Type: esov1alpha1.PushSecretReady, Status: corev1.ConditionTrue},
+	}
+	push.Status.SyncedResourceVersion = testPushSyncedRV
+	materialized := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: serviceAccountCredentialsSecretName(cp, sa), Namespace: targetNS},
+		Data:       map[string][]byte{serviceAccountPasswordKey: []byte("current-pw")},
+	}
+	targetStore := readyTenantSecretStore(esoTenantStoreName, targetNS, "", "")
+
+	seed := append(saUserProjectAppliedV1(cp, sa), push, materialized, targetStore)
+	cond, c := runServiceAccounts(t, cp, seed...)
+
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal(reasonServiceAccountsProvisioned))
+
+	// The source Secret is created in the target namespace, label-owned, no owner ref.
+	src := &corev1.Secret{}
+	g.Expect(c.Get(context.Background(),
+		types.NamespacedName{Name: serviceAccountSourceSecretName(cp, sa), Namespace: targetNS}, src)).To(Succeed(),
+		"the source Secret must be assembled in the target namespace")
+	g.Expect(src.OwnerReferences).To(BeEmpty(), "a cross-namespace child carries no owner reference")
+	g.Expect(src.Labels).To(HaveKeyWithValue(controlPlaneNameLabel, cp.Name))
+	g.Expect(src.Labels).To(HaveKeyWithValue(controlPlaneNamespaceLabel, cp.Namespace))
+
+	// The PushSecret lives in the target namespace with the re-scoped remote key.
+	gotPush := &esov1alpha1.PushSecret{}
+	g.Expect(c.Get(context.Background(),
+		types.NamespacedName{Name: serviceAccountPushSecretName(cp, sa), Namespace: targetNS}, gotPush)).To(Succeed())
+	g.Expect(gotPush.Labels).To(HaveKeyWithValue(controlPlaneNameLabel, cp.Name))
+	g.Expect(gotPush.Spec.Data[0].Match.RemoteRef.RemoteKey).
+		To(Equal("openstack/keystone/identity/cp/service-accounts/nova"))
+	// No PushSecret is created in the ControlPlane's own namespace.
+	homeErr := c.Get(context.Background(),
+		types.NamespacedName{Name: serviceAccountPushSecretName(cp, sa), Namespace: ns}, &esov1alpha1.PushSecret{})
+	g.Expect(apierrors.IsNotFound(homeErr)).To(BeTrue(),
+		"no delivery object may land in the ControlPlane's own namespace")
+
+	// The consumer ExternalSecret lives in the target namespace, label-owned.
+	es := &esov1.ExternalSecret{}
+	g.Expect(c.Get(context.Background(),
+		types.NamespacedName{Name: serviceAccountCredentialsSecretName(cp, sa), Namespace: targetNS}, es)).To(Succeed())
+	g.Expect(es.OwnerReferences).To(BeEmpty())
+	g.Expect(es.Labels).To(HaveKeyWithValue(controlPlaneNameLabel, cp.Name))
+	g.Expect(es.Spec.Data[0].RemoteRef.Key).To(Equal("openstack/keystone/identity/cp/service-accounts/nova"))
+
+	g.Expect(cp.Status.ServiceAccounts).To(HaveLen(1))
+	got := cp.Status.ServiceAccounts[0]
+	g.Expect(got.Ready).To(BeTrue())
+	g.Expect(got.SecretName).To(Equal(serviceAccountCredentialsSecretName(cp, sa)))
+	g.Expect(got.SecretNamespace).To(Equal(targetNS),
+		"status must report the target namespace the credentials Secret lives in")
+}
+
+// TestReconcileServiceAccounts_StoreGateNamesTargetNamespace pins the per-namespace
+// store gate: a NOT-ready tenant store in the target namespace blocks the account
+// and names that namespace, even when the ControlPlane's own tenant store is Ready.
+func TestReconcileServiceAccounts_StoreGateNamesTargetNamespace(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp, targetNS := saTargetControlPlane()
+
+	// runServiceAccounts seeds the child-namespace store Ready; seed the target
+	// namespace's store NOT ready.
+	notReady := readyTenantSecretStore(esoTenantStoreName, targetNS, "", "")
+	notReady.Status.Conditions = nil
+
+	cond, _ := runServiceAccounts(t, cp, notReady)
+
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(reasonServiceAccountStoreNotReady))
+	g.Expect(cond.Message).To(ContainSubstring(targetNS),
+		"the store gate must name the delivery namespace whose store is not ready")
+}
+
+// TestReconcileServiceAccounts_PrunesDeliveryObjectsInTargetNamespace pins the
+// widened prune sweep: removing an account reaps its delivery objects wherever they
+// landed, including a dedicated service namespace. It seeds label-owned delivery
+// objects in the target namespace and reconciles with the entry removed.
+func TestReconcileServiceAccounts_PrunesDeliveryObjectsInTargetNamespace(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp, targetNS := saTargetControlPlane()
+	sa := cp.Spec.KORC.ServiceAccounts[0]
+
+	// Label-owned leftovers from a since-removed account in the target namespace.
+	src := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: serviceAccountSourceSecretName(cp, sa), Namespace: targetNS},
+	}
+	stampControlPlaneChildLabels(src, cp)
+	push := serviceAccountPushSecret(cp, sa)
+	stampControlPlaneChildLabels(push, cp)
+	es := &esov1.ExternalSecret{
+		ObjectMeta: metav1.ObjectMeta{Name: serviceAccountCredentialsSecretName(cp, sa), Namespace: targetNS},
+	}
+	stampControlPlaneChildLabels(es, cp)
+
+	// Reconcile with the entry REMOVED (but the namespace assignment kept, so the
+	// target namespace is still in the ControlPlane's occupied set).
+	cp.Spec.KORC.ServiceAccounts = nil
+	_, c := runServiceAccounts(t, cp,
+		readyTenantSecretStore(esoTenantStoreName, targetNS, "", ""), src, push, es)
+
+	for _, obj := range []client.Object{
+		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: src.Name, Namespace: targetNS}},
+		&esov1alpha1.PushSecret{ObjectMeta: metav1.ObjectMeta{Name: push.Name, Namespace: targetNS}},
+		&esov1.ExternalSecret{ObjectMeta: metav1.ObjectMeta{Name: es.Name, Namespace: targetNS}},
+	} {
+		err := c.Get(context.Background(), client.ObjectKeyFromObject(obj), obj)
+		g.Expect(apierrors.IsNotFound(err)).To(BeTrue(),
+			"undeclared delivery object %T in the target namespace must be pruned", obj)
+	}
 }

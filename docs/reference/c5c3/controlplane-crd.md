@@ -878,6 +878,7 @@ or created), and the roles bound to it. Projected by
 | `project` | [`ServiceAccountProjectSpec`](#serviceaccountprojectspec) | Yes | — | The project the service user is associated with, referenced (default) or created. |
 | `roles` | `[]string` | No | `nil` | OpenStack role names assigned to the user on the project. Each role projects one **unmanaged** K-ORC `Role` import (referenced by name, never created or deleted — Keystone roles are global) plus one **managed** `RoleAssignment` binding it to the user on the project (one per user × project × role). Their readiness folds into the per-account `ServiceAccountsReady` gate; removing a role prunes both child CRs; at teardown the managed assignment is deleted from Keystone while the `Role` import is released untouched. Item pattern `^[^,]+$`, ≤ 255, max 32. |
 | `rotation` | [`*ServiceAccountRotationSpec`](#serviceaccountrotationspec) | No | mode `Manual` | Per-account password-rotation policy. |
+| `targetNamespace` | `string` | No | ControlPlane's own namespace | The namespace the consumer credentials Secret — and the source Secret, PushSecret, and ExternalSecret behind it — materializes in, through that namespace's `openbao-tenant-store`. When set it must be **either the ControlPlane's own namespace or one of its dedicated service namespaces** (declared via the services' `namespace` blocks); the webhook rejects any other namespace, since delivery rides that namespace's tenant store and none is provisioned elsewhere. **Immutable per entry** (matched by `name`): moving delivery would strand the credentials already delivered to the old namespace. DNS-1123 label, `[a-z0-9]([-a-z0-9]*[a-z0-9])?`, ≤ 63. |
 
 ### ServiceAccountProjectSpec
 
@@ -894,9 +895,13 @@ or created), and the roles bound to it. Projected by
 
 **Consumption contract.** Each account's credentials are materialized into a
 Secret named `{controlplane.Name}-service-account-{name}-credentials` (keys
-`password` and a ready-to-use `clouds.yaml`), mirrored from the per-CR OpenBao
-path `openstack/keystone/{namespace}/{controlplane.Name}/service-accounts/{name}`.
-`status.serviceAccounts[].secretName` names it. See the
+`password` and a ready-to-use `clouds.yaml`) in the account's **delivery
+namespace** — `targetNamespace`, or the ControlPlane's own namespace when that is
+empty — mirrored from the per-CR OpenBao path
+`openstack/keystone/{delivery-namespace}/{controlplane.Name}/service-accounts/{name}`
+(the namespace segment follows the delivery namespace so it stays inside that
+namespace's tenant-store policy). `status.serviceAccounts[].secretName` /
+`secretNamespace` name where it lives. See the
 [reconciler reference](./controlplane-reconciler.md#reconcileserviceaccounts).
 
 ---
@@ -989,6 +994,7 @@ Reports the observed state of one declared service account.
 | `passwordGeneration` | `int64` | No | The monotonically increasing generation of the password currently applied. Increments on every rotation. |
 | `lastPasswordRotation` | `*metav1.Time` | No | Timestamp of the last successful password rotation. |
 | `secretName` | `string` | No | The materialized Secret carrying the account's credentials (`password` + `clouds.yaml`) — the documented, stable handle consumers read from. |
+| `secretNamespace` | `string` | No | The namespace of `secretName` — the account's delivery namespace (spec `targetNamespace`, or the ControlPlane's own namespace when empty). Reports where the credentials Secret was materialized. |
 
 ### UpdatePhase
 
@@ -1153,6 +1159,7 @@ Keystone discipline:
 | `spec.korc.serviceAccounts[].name` | Pattern `^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`; MinLength 1; MaxLength 63 |
 | `spec.korc.serviceAccounts[].userName`, `.domainName`, `.project.name` | Pattern `^[^,]+$`; MinLength 1; MaxLength 255 |
 | `spec.korc.serviceAccounts[].roles[]` | Pattern `^[^,]+$`; item MinLength 1; item MaxLength 255; MaxItems 32 |
+| `spec.korc.serviceAccounts[].targetNamespace` | Pattern `^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`; MinLength 1; MaxLength 63 |
 | `spec.korc.serviceAccounts[].rotation.mode` | Enum: `Manual`, `Scheduled`; schema default `Manual` |
 | `spec.korc.serviceAccounts` | listType=map keyed by `name`; MaxItems 32 |
 | `spec.services.keystone.replicas` | Minimum: 1 |
@@ -1208,6 +1215,7 @@ short-circuit on the first error.
 | Service-account identity uniqueness | `spec.korc.serviceAccounts[].userName` | `field.Duplicate` | Two entries resolve to the same effective `(userName, domainName)` — they would project two managed `User`s onto one Keystone user. **Cross-item, webhook-only.** |
 | Service-account admin collision | `spec.korc.serviceAccounts[].userName` | `field.Invalid` | An entry's effective identity equals the admin identity (`adminCredential.userName`/`domainName`) — a managed `User` would take over the admin user and rotate its password. **Cross-field, webhook-only.** |
 | Service-account managed-project uniqueness | `spec.korc.serviceAccounts[].project.name` | `field.Duplicate` | Two `project.create: true` entries name the same project in one domain — each managed `Project` would adopt the other's row. **Cross-item, webhook-only.** |
+| Service-account target namespace | `spec.korc.serviceAccounts[].targetNamespace` | `field.Invalid` | Set to a namespace that is neither the ControlPlane's own nor one of its dedicated service namespaces — delivery rides that namespace's `openbao-tenant-store`, and none is provisioned elsewhere. **Cross-field, webhook-only.** |
 
 ### Update-only immutability rules
 
@@ -1261,6 +1269,7 @@ independently as defense-in-depth for webhook-bypassed states.
 | Cloud secretName immutable | `spec.korc.adminCredential.cloudCredentialsRef.secretName` | The value changed |
 | Region immutable | `spec.region` | The region changed |
 | Service-account identity/project immutable | `spec.korc.serviceAccounts[].{userName,domainName,project.name,project.create}` | For an entry matched by `name` across old/new, one of these changed — an in-place repoint would rename or re-own live Keystone resources; remove and re-add the entry instead. `adopt` stays mutable (flipping it to `true` is the documented collision remediation). |
+| Service-account target namespace immutable | `spec.korc.serviceAccounts[].targetNamespace` | For an entry matched by `name` across old/new, the value changed — moving delivery would strand the credentials already delivered to the old namespace; remove and re-add the entry instead. |
 | Release downgrade rejected | `spec.openStackRelease` | New release `(year, minor)` is lower than the old (upgrades and same-release updates allowed) |
 
 ---

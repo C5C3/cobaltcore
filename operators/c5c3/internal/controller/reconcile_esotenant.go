@@ -287,7 +287,7 @@ func (r *ControlPlaneReconciler) ensureESOTenantStoreObjects(ctx context.Context
 		live.SetName(esoTenantClientCertName)
 		live.SetNamespace(ns)
 		if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, live, func() error {
-			if err := refuseForeignAdoption(cp, live); err != nil {
+			if err := refuseForeignAdoption(cp, live, r.Scheme); err != nil {
 				return err
 			}
 			applyESOTenantCertificateSpec(live, ns)

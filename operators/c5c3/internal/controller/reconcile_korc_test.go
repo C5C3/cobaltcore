@@ -962,7 +962,7 @@ func TestForceSyncKORCCloudsYAMLExternalSecret_RetriesOnConflict(t *testing.T) {
 		}).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-	err := r.forceSyncExternalSecret(context.Background(), cp, korcCloudsYamlSecretName, "hash-1")
+	err := r.forceSyncExternalSecret(context.Background(), cp, childNamespace(cp), korcCloudsYamlSecretName, "hash-1")
 	g.Expect(err).NotTo(HaveOccurred(), "an expected 409 conflict must be retried, not surfaced as a hard error")
 	g.Expect(conflicts).To(Equal(1), "the first Update must have conflicted and been retried")
 
@@ -1010,7 +1010,7 @@ func TestForceRepushAdminAppCredential_StampsHashRetriesAndIdempotent(t *testing
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
 	// First stamp: the annotation is set and the 409 is retried, not surfaced.
-	g.Expect(r.forceRepushPushSecret(context.Background(), cp, psName,
+	g.Expect(r.forceRepushPushSecret(context.Background(), cp, childNamespace(cp), psName,
 		adminAppCredentialPushContentHashAnnotation, "hash-1")).To(Succeed(),
 		"an expected 409 conflict must be retried, not surfaced as a hard error")
 	g.Expect(conflicts).To(Equal(1), "the first Update must have conflicted and been retried")
@@ -1023,12 +1023,12 @@ func TestForceRepushAdminAppCredential_StampsHashRetriesAndIdempotent(t *testing
 
 	// Idempotent: a second call with the SAME hash must not Update the PushSecret,
 	// so a converged credential does not churn the push (and thus OpenBao) each pass.
-	g.Expect(r.forceRepushPushSecret(context.Background(), cp, psName,
+	g.Expect(r.forceRepushPushSecret(context.Background(), cp, childNamespace(cp), psName,
 		adminAppCredentialPushContentHashAnnotation, "hash-1")).To(Succeed())
 	g.Expect(updates).To(Equal(1), "an unchanged hash must be a no-op (no second Update)")
 
 	// A changed hash re-stamps so a rotated credential reaches OpenBao promptly.
-	g.Expect(r.forceRepushPushSecret(context.Background(), cp, psName,
+	g.Expect(r.forceRepushPushSecret(context.Background(), cp, childNamespace(cp), psName,
 		adminAppCredentialPushContentHashAnnotation, "hash-2")).To(Succeed())
 	g.Expect(updates).To(Equal(2), "a changed hash must stamp a fresh re-push trigger")
 	g.Expect(c.Get(context.Background(), types.NamespacedName{Name: psName, Namespace: childNamespace(cp)}, got)).To(Succeed())
@@ -1037,7 +1037,7 @@ func TestForceRepushAdminAppCredential_StampsHashRetriesAndIdempotent(t *testing
 	// A different annotation carries an independent trigger: the two sub-reconcilers
 	// that nudge this PushSecret must never overwrite each other's value, or every
 	// reconcile would re-push the credential to OpenBao.
-	g.Expect(r.forceRepushPushSecret(context.Background(), cp, psName,
+	g.Expect(r.forceRepushPushSecret(context.Background(), cp, childNamespace(cp), psName,
 		adminAppCredentialCACertHashAnnotation, "cacert-1")).To(Succeed())
 	g.Expect(c.Get(context.Background(), types.NamespacedName{Name: psName, Namespace: childNamespace(cp)}, got)).To(Succeed())
 	g.Expect(got.Annotations[adminAppCredentialCACertHashAnnotation]).To(Equal("cacert-1"))

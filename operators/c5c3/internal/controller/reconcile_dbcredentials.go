@@ -464,7 +464,7 @@ func (r *ControlPlaneReconciler) ensureDynamicDBCredentialObjects(ctx context.Co
 	live.SetName(dbCredentialClientCertName(cp))
 	live.SetNamespace(cp.KeystoneNamespace())
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, live, func() error {
-		if err := refuseForeignAdoption(cp, live); err != nil {
+		if err := refuseForeignAdoption(cp, live, r.Scheme); err != nil {
 			return err
 		}
 		applyDBCredentialCertificateSpec(live, cp)

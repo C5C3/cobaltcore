@@ -1475,7 +1475,7 @@ is owned by the imports.
 | --- | --- |
 | File | `reconcile_serviceaccounts.go` |
 | Condition | `ServiceAccountsReady` |
-| Gate | `AdminCredentialReady == True` **and** the store selected via `spec.secretStoreRef` (default the OpenBao-backed cluster store `openbao-cluster-store`) is Ready (`secrets.IsStoreRefReady`) |
+| Gate | `AdminCredentialReady == True` **and** the store selected via `spec.secretStoreRef` (default the operator-provisioned per-tenant store) is Ready in **every distinct delivery namespace** across the declared accounts — always including the child namespace, plus each account's `targetNamespace` — with the not-ready namespace named in the condition message (`secrets.IsStoreRefReady`, per namespace) |
 | Requeue | `korcRequeueAfter` = **10s** while a gate is closed or an account is converging |
 
 `reconcileServiceAccounts` projects each `spec.korc.serviceAccounts` entry onto a
@@ -1516,14 +1516,25 @@ Per declared entry it, in order:
    `sha256(role)`), so distinct roles never alias.
 6. **OpenBao round-trip** (once the current password is applied) — assemble a
    source Secret, `PushSecret` (`DeletionPolicy: Delete`) it to
-   `openstack/keystone/{cp.Namespace}/{cp.Name}/service-accounts/{name}`, and
+   `openstack/keystone/{delivery-namespace}/{cp.Name}/service-accounts/{name}`, and
    materialize the consumer Secret via an `ExternalSecret`, mirroring the admin
-   app-credential's re-push / force-sync discipline. Both the PushSecret and the
-   ExternalSecret take their store ref from `spec.secretStoreRef` (default
-   `openbao-cluster-store`) via `secrets.PushSecretStoreRefs` /
-   `secrets.ESOSecretStoreRef`. Per-account readiness gates on
-   the **materialized password matching the current generation**, so a rotated-away
-   password never reads Ready.
+   app-credential's re-push / force-sync discipline. The **delivery namespace** is
+   the account's `targetNamespace`, or the ControlPlane's own namespace when empty.
+   The source Secret, PushSecret, consumer ExternalSecret, and the materialized
+   `…-credentials` Secret all land in that namespace, riding **its own**
+   `openbao-tenant-store`; the K-ORC-facing password Secret is read from the child
+   namespace (that source never moves). When the delivery namespace is a dedicated
+   service namespace, these carry the ControlPlane's **ownership labels** rather
+   than a controller owner reference — Kubernetes forbids a cross-namespace one — so
+   they route through `ensureUnownedOrOwned` (and a `CreateOrUpdate` that refuses to
+   adopt a same-named foreign object) instead of an owner-referenced apply. The
+   remote-key **namespace segment follows the delivery namespace** so the path stays
+   inside that namespace's templated eso-tenant policy — the same scoping the admin
+   password rides on the Keystone namespace. Both the PushSecret and the
+   ExternalSecret take their store ref from `spec.secretStoreRef` (default the
+   per-tenant store) via `secrets.PushSecretStoreRefs` / `secrets.ESOSecretStoreRef`.
+   Per-account readiness gates on the **materialized password matching the current
+   generation**, so a rotated-away password never reads Ready.
 
 **Per-account status.** Each declared entry is projected onto a
 `status.serviceAccounts[]` entry keyed by `name`. Its `ready` field mirrors that
@@ -1531,11 +1542,13 @@ account's own convergence — user, project, and a materialized password Secret
 matching the current generation — so a single lagging account is attributable
 without reading the aggregate `ServiceAccountsReady` message. The entry also
 carries the resolved `userID` / `projectID`, the applied `passwordGeneration`, and
-`lastPasswordRotation`, alongside the `secretName` handle below.
+`lastPasswordRotation`, alongside the `secretName` / `secretNamespace` handle below.
 
 **Consumption contract.** Consumers read from the materialized Secret
 `{controlplane.Name}-service-account-{name}-credentials` (keys `password` and a
-ready-to-use `clouds.yaml`), named in `status.serviceAccounts[].secretName`. The
+ready-to-use `clouds.yaml`), named in `status.serviceAccounts[].secretName` and
+located in `status.serviceAccounts[].secretNamespace` (the account's delivery
+namespace — its `targetNamespace`, or the ControlPlane's own namespace). The
 credentials are always read from that Secret (or the OpenBao path directly); after
 a rotation, one reload picks up the new password. For which OpenBao paths exist in
 each Keystone mode, see
@@ -1546,8 +1559,12 @@ it operator-owned) and the managed `RoleAssignment`s are deleted from Keystone a
 teardown, sequenced through the ORC-teardown finalizer exactly like the admin
 credential; a probe / domain import / referenced project / `Role` import is a
 CR-only delete. The password/source Secrets, PushSecret, and ExternalSecret are
-owner-reference-GC'd, and the OpenBao entry dies with the PushSecret
-(`DeletionPolicy: Delete`).
+owner-reference-GC'd at home; a delivery leg placed in a dedicated service
+namespace carries the ownership labels instead, so the teardown deletes the
+PushSecret explicitly (while that namespace's tenant store is still alive) and
+sweeps the source Secret and ExternalSecret by name — the materialized Secret is
+ESO-owned and dies with its ExternalSecret. The OpenBao entry dies with the
+PushSecret (`DeletionPolicy: Delete`).
 
 **Deferred.** `rotation.mode: Scheduled` is accepted but not yet implemented; it
 emits a one-shot `ScheduledRotationDeferred` event so the deferral is not silent.

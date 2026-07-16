@@ -377,6 +377,67 @@ func TestReconcileDelete_WaitsForOwnedPushSecretCleanup(t *testing.T) {
 	g.Expect(drainEvents(rec)).To(ContainElement(ContainSubstring("ORCTeardownComplete")))
 }
 
+// TestDeleteOwnedPushSecrets_SweepsLabelOwnedInDedicatedNamespace pins the widened
+// teardown: a service-account credential PushSecret delivered into a dedicated
+// service namespace carries the ownership LABELS, not a controller reference, and
+// must still get its DeletionPolicy=Delete OpenBao purge while that namespace's
+// tenant store is alive. deleteOwnedPushSecrets therefore sweeps every namespace
+// the ControlPlane occupies and matches isControlPlaneChild — while a same-named
+// foreign PushSecret in that shared namespace is left alone.
+func TestDeleteOwnedPushSecrets_SweepsLabelOwnedInDedicatedNamespace(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := korcTestScheme(t)
+
+	cp := deletingNamespacedControlPlane(time.Second) // places Keystone in "identity"
+	homeNS := childNamespace(cp)
+
+	// A label-owned PushSecret in the dedicated namespace, held by ESO's finalizer.
+	delivered := &esov1alpha1.PushSecret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "cp-service-account-nova-backup", Namespace: "identity",
+			Labels:     controlPlaneChildLabels(cp),
+			Finalizers: []string{"pushsecret.externalsecrets.io/finalizer"},
+		},
+	}
+	// A finalizer-less owned PushSecret at home — gone with the Delete.
+	home := &esov1alpha1.PushSecret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: adminAppCredentialPushSecretName(cp), Namespace: homeNS, OwnerReferences: ownedByCP(cp),
+		},
+	}
+	// Somebody else's PushSecret of the same name in the shared namespace.
+	foreign := &esov1alpha1.PushSecret{
+		ObjectMeta: metav1.ObjectMeta{Name: "cp-service-account-nova-backup", Namespace: "dashboard"},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, delivered, home, foreign).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
+
+	remaining, err := r.deleteOwnedPushSecrets(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// The delivery-namespace PushSecret was Deleted and, held by its finalizer, is
+	// still present — so it is reported as remaining and gates the finalizer release.
+	gotDelivered := &esov1alpha1.PushSecret{}
+	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(delivered), gotDelivered)).To(Succeed())
+	g.Expect(gotDelivered.DeletionTimestamp.IsZero()).To(BeFalse(),
+		"the label-owned delivery PushSecret must be deleted, not left to a GC cascade that never reaches it")
+	names := make([]string, 0, len(remaining))
+	for _, ps := range remaining {
+		names = append(names, ps.Namespace+"/"+ps.Name)
+	}
+	g.Expect(names).To(ContainElement("identity/cp-service-account-nova-backup"))
+
+	// The finalizer-less owned PushSecret at home is gone.
+	err = c.Get(context.Background(), client.ObjectKeyFromObject(home), &esov1alpha1.PushSecret{})
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "the owned home PushSecret must be swept too")
+
+	// The foreign PushSecret is untouched.
+	gotForeign := &esov1alpha1.PushSecret{}
+	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(foreign), gotForeign)).To(Succeed())
+	g.Expect(gotForeign.DeletionTimestamp.IsZero()).To(BeTrue(),
+		"a same-named PushSecret we do not own must be left alone")
+}
+
 // TestReconcileDelete_MixedRemainderStillWaitsForManaged asserts the release
 // shortcut stays gated on the managed children: while a managed CR (here the
 // application credential, whose revocation is real OpenStack work) is still
@@ -1131,6 +1192,15 @@ func TestTeardownDedicatedNamespaces_SweepsExternalNamespaceResidue(t *testing.T
 			},
 		},
 	}
+	// A service account delivering its credentials into that same External namespace:
+	// its source Secret and consumer ExternalSecret are label-owned residue that must
+	// be swept too.
+	cp.Spec.KORC.ServiceAccounts = []c5c3v1alpha1.ServiceAccountSpec{{
+		Name:            "nova",
+		Project:         c5c3v1alpha1.ServiceAccountProjectSpec{Name: "service"},
+		TargetNamespace: "shared-ns",
+	}}
+	sa := cp.Spec.KORC.ServiceAccounts[0]
 
 	ours := &esov1.SecretStore{ObjectMeta: metav1.ObjectMeta{
 		Name: esoTenantStoreName, Namespace: "shared-ns", Labels: controlPlaneChildLabels(cp),
@@ -1138,13 +1208,19 @@ func TestTeardownDedicatedNamespaces_SweepsExternalNamespaceResidue(t *testing.T
 	adminPw := &esov1.ExternalSecret{ObjectMeta: metav1.ObjectMeta{
 		Name: adminPasswordSecretName(cp), Namespace: "shared-ns", Labels: controlPlaneChildLabels(cp),
 	}}
+	saSource := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+		Name: serviceAccountSourceSecretName(cp, sa), Namespace: "shared-ns", Labels: controlPlaneChildLabels(cp),
+	}}
+	saES := &esov1.ExternalSecret{ObjectMeta: metav1.ObjectMeta{
+		Name: serviceAccountCredentialsSecretName(cp, sa), Namespace: "shared-ns", Labels: controlPlaneChildLabels(cp),
+	}}
 	// Somebody else's ServiceAccount of the same fixed name in the shared namespace.
 	foreignSA := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
 		Name: esoTenantServiceAccountName, Namespace: "shared-ns",
 	}}
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "shared-ns"}}
 
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, ns, ours, adminPw, foreignSA).Build()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, ns, ours, adminPw, saSource, saES, foreignSA).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
 
 	done, err := r.teardownDedicatedNamespaces(context.Background(), cp)
@@ -1158,6 +1234,16 @@ func TestTeardownDedicatedNamespaces_SweepsExternalNamespaceResidue(t *testing.T
 		Name: esoTenantStoreName, Namespace: "shared-ns",
 	}, &esov1.SecretStore{})
 	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "our tenant store must be swept")
+
+	err = c.Get(context.Background(), types.NamespacedName{
+		Name: serviceAccountSourceSecretName(cp, sa), Namespace: "shared-ns",
+	}, &corev1.Secret{})
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "the service-account source Secret must be swept")
+
+	err = c.Get(context.Background(), types.NamespacedName{
+		Name: serviceAccountCredentialsSecretName(cp, sa), Namespace: "shared-ns",
+	}, &esov1.ExternalSecret{})
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "the service-account consumer ExternalSecret must be swept")
 
 	err = c.Get(context.Background(), types.NamespacedName{
 		Name: adminPasswordSecretName(cp), Namespace: "shared-ns",
