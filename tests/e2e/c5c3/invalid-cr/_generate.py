@@ -550,6 +550,26 @@ FIXTURES: tuple[Fixture, ...] = (
             "        create: true\n"
         ),
     ),
+    Fixture(
+        filename="46-service-account-target-namespace-unassigned.yaml",
+        comment=(
+            "spec.korc.serviceAccounts[].targetNamespace naming a namespace that is\n"
+            "neither the ControlPlane's own nor one assigned to a service via\n"
+            "spec.services.<svc>.namespace is rejected by the webhook: the consumer\n"
+            "credentials Secret is delivered through that namespace's openbao-tenant-store,\n"
+            "and none is provisioned for a namespace the ControlPlane neither owns nor\n"
+            "placed a service in. The knob is inert this commit — the rule guards it before\n"
+            "the delivery reconciler wiring lands."
+        ),
+        name="cp-sa-target-namespace-unassigned",
+        service_accounts=(
+            "    serviceAccounts:\n"
+            "    - name: nova\n"
+            "      targetNamespace: shared-services\n"
+            "      project:\n"
+            "        name: service\n"
+        ),
+    ),
     # Per-service dedicated backing services (still the create-rejection matrix).
     Fixture(
         filename="35-dedicated-in-external.yaml",

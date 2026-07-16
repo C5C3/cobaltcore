@@ -815,6 +815,21 @@ type ServiceAccountSpec struct {
 	// defaults to Manual (on-demand rotation via a CredentialRotation CR).
 	// +optional
 	Rotation *ServiceAccountRotationSpec `json:"rotation,omitempty"`
+
+	// TargetNamespace is the namespace the consumer credentials Secret — and the
+	// source Secret, PushSecret, and ExternalSecret behind it — materializes in,
+	// through that namespace's openbao-tenant-store. Empty (the default) means the
+	// ControlPlane's own namespace. When set it must be either the ControlPlane's
+	// own namespace or one of its dedicated service namespaces (declared via the
+	// services' namespace blocks; see ServiceNamespaceSpec) — the validating
+	// webhook rejects any other namespace, since delivery rides that namespace's
+	// tenant store and none is provisioned elsewhere. Immutable per entry: moving
+	// delivery would strand the credentials already delivered to the old namespace.
+	// +optional
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	TargetNamespace string `json:"targetNamespace,omitempty"`
 }
 
 // ServiceAccountProjectSpec declares the OpenStack project a service account is
@@ -1153,6 +1168,12 @@ type ServiceAccountStatus struct {
 	// documented, stable handle consumers read the credentials from.
 	// +optional
 	SecretName string `json:"secretName,omitempty"`
+
+	// SecretNamespace is the namespace of secretName — the namespace the account's
+	// credentials Secret was materialized in (spec targetNamespace, or the
+	// ControlPlane's own namespace when that is empty).
+	// +optional
+	SecretNamespace string `json:"secretNamespace,omitempty"`
 }
 
 // CatalogStatus reports how the External-mode identity catalog imports resolved.

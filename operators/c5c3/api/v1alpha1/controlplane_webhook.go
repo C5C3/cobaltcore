@@ -524,6 +524,16 @@ func validateServiceAccounts(cp *ControlPlane) field.ErrorList {
 	adminUser := effectiveAdminUserName(cp)
 	adminDomain := effectiveAdminDomain(cp)
 
+	// The namespaces a consumer credentials Secret may be delivered to: the
+	// ControlPlane's own namespace or one already assigned to a service via
+	// spec.services.<svc>.namespace. Each is scoped by an openbao-tenant-store,
+	// which delivery rides — none is provisioned for any other namespace.
+	dedicated := cp.DedicatedServiceNamespaces()
+	dedicatedNamespaces := make(map[string]struct{}, len(dedicated))
+	for _, ns := range dedicated {
+		dedicatedNamespaces[ns.Name] = struct{}{}
+	}
+
 	seenNames := make(map[string]struct{}, len(sas))
 	seenIdentities := make(map[string]struct{}, len(sas))
 	seenManagedProjects := make(map[string]struct{}, len(sas))
@@ -580,6 +590,26 @@ func validateServiceAccounts(cp *ControlPlane) field.ErrorList {
 			if strings.Contains(role, ",") {
 				allErrs = append(allErrs, field.Invalid(entryPath.Child("roles").Index(j), role,
 					"must not contain a comma (mirrors K-ORC's OpenStackName pattern ^[^,]+$)"))
+			}
+		}
+
+		// targetNamespace routes the consumer credentials Secret. The RFC-1123 label
+		// shape mirrors the CRD Pattern marker for webhook-bypassed callers; the
+		// own-or-dedicated rule is the one the CRD schema cannot express — a namespace
+		// this ControlPlane neither owns nor placed a service in has no
+		// openbao-tenant-store to deliver through.
+		if sa.TargetNamespace != "" {
+			tnPath := entryPath.Child("targetNamespace")
+			switch {
+			case !namespaceNamePattern.MatchString(sa.TargetNamespace):
+				allErrs = append(allErrs, field.Invalid(tnPath, sa.TargetNamespace,
+					"must be a lowercase alphanumeric RFC-1123 label (it names a Kubernetes namespace)"))
+			case sa.TargetNamespace != cp.Namespace:
+				if _, ok := dedicatedNamespaces[sa.TargetNamespace]; !ok {
+					allErrs = append(allErrs, field.Invalid(tnPath, sa.TargetNamespace,
+						"must be the ControlPlane's own namespace or one of its dedicated service namespaces; "+
+							"assign the namespace to a service via spec.services.<svc>.namespace first"))
+				}
 			}
 		}
 
@@ -1889,6 +1919,12 @@ func validateServiceAccountsImmutable(oldObj, newObj *ControlPlane) field.ErrorL
 		if old.Project.Create != sa.Project.Create {
 			allErrs = append(allErrs, field.Invalid(saPath.Child("project", "create"), sa.Project.Create,
 				"project.create is immutable; a managed<->referenced flip would orphan or adopt the live project"))
+		}
+		if old.TargetNamespace != sa.TargetNamespace {
+			allErrs = append(allErrs, field.Invalid(saPath.Child("targetNamespace"), sa.TargetNamespace,
+				"targetNamespace is immutable; moving delivery would strand the credentials Secret (and the "+
+					"source Secret / PushSecret behind it) in the old namespace — remove and re-add the service "+
+					"account to deliver it elsewhere"))
 		}
 	}
 	return allErrs

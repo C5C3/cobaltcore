@@ -667,6 +667,21 @@ spec:
                               - Scheduled
                               type: string
                           type: object
+                        targetNamespace:
+                          description: |-
+                            TargetNamespace is the namespace the consumer credentials Secret — and the
+                            source Secret, PushSecret, and ExternalSecret behind it — materializes in,
+                            through that namespace's openbao-tenant-store. Empty (the default) means the
+                            ControlPlane's own namespace. When set it must be either the ControlPlane's
+                            own namespace or one of its dedicated service namespaces (declared via the
+                            services' namespace blocks; see ServiceNamespaceSpec) — the validating
+                            webhook rejects any other namespace, since delivery rides that namespace's
+                            tenant store and none is provisioned elsewhere. Immutable per entry: moving
+                            delivery would strand the credentials already delivered to the old namespace.
+                          maxLength: 63
+                          minLength: 1
+                          pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                          type: string
                         userName:
                           description: |-
                             UserName is the OpenStack user name managed in Keystone. Defaults to Name
@@ -1993,6 +2008,12 @@ spec:
                         SecretName is the name of the materialized Secret carrying the account's
                         credentials (key "password" and a ready-to-use "clouds.yaml"). It is the
                         documented, stable handle consumers read the credentials from.
+                      type: string
+                    secretNamespace:
+                      description: |-
+                        SecretNamespace is the namespace of secretName — the namespace the account's
+                        credentials Secret was materialized in (spec targetNamespace, or the
+                        ControlPlane's own namespace when that is empty).
                       type: string
                     userID:
                       description: |-

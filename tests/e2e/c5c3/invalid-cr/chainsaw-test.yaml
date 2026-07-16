@@ -321,6 +321,19 @@ spec:
             ($error != null): true
             (contains($error, 'serviceAccounts[1].project.name')): true
             (contains($error, 'Duplicate')): true
+  # serviceAccounts[].targetNamespace naming a namespace that is neither the
+  # ControlPlane's own nor one assigned to a service must be rejected by the
+  # webhook: the credentials Secret is delivered through that namespace's tenant
+  # store, and none is provisioned for a namespace the ControlPlane neither owns
+  # nor placed a service in. The error points at the remedy.
+  - try:
+    - apply:
+        file: 46-service-account-target-namespace-unassigned.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'serviceAccounts[0].targetNamespace')): true
+            (contains($error, 'assign the namespace to a service via spec.services.<svc>.namespace first')): true
   # services.keystone.dedicatedBackingServices in External mode must be rejected
   # (CEL): an External ControlPlane provisions no backing services at all, so
   # there is nothing to make dedicated.

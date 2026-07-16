@@ -2638,6 +2638,108 @@ func TestValidateUpdate_AcceptsRolelessServiceAccountInTheRoleAssignmentBand(t *
 	g.Expect(err).NotTo(HaveOccurred())
 }
 
+// TestValidateCreate_AcceptsServiceAccountTargetNamespaceOwn pins that targeting
+// the ControlPlane's own namespace is admissible: it always has a tenant store,
+// so the own-or-dedicated rule never has to consult the dedicated set.
+func TestValidateCreate_AcceptsServiceAccountTargetNamespaceOwn(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := saControlPlane()
+	cp.Namespace = "openstack"
+	cp.Spec.KORC.ServiceAccounts[0].TargetNamespace = "openstack"
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// TestValidateCreate_AcceptsServiceAccountTargetNamespaceDedicated pins that a
+// namespace already assigned to a service via spec.services.<svc>.namespace is a
+// valid delivery target: it is provisioned its own openbao-tenant-store.
+func TestValidateCreate_AcceptsServiceAccountTargetNamespaceDedicated(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := saControlPlane()
+	cp.Namespace = "openstack"
+	cp.Spec.Services.Keystone.Namespace = &ServiceNamespaceSpec{
+		Name: "identity", Lifecycle: ServiceNamespaceLifecycleManaged,
+	}
+	cp.Spec.KORC.ServiceAccounts[0].TargetNamespace = "identity"
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// TestValidateCreate_RejectsServiceAccountTargetNamespaceUnassigned pins the rule
+// the CRD schema cannot express: a namespace this ControlPlane neither owns nor
+// placed a service in has no tenant store to deliver through, and the error points
+// at the remedy.
+func TestValidateCreate_RejectsServiceAccountTargetNamespaceUnassigned(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := saControlPlane()
+	cp.Namespace = "openstack"
+	cp.Spec.KORC.ServiceAccounts[0].TargetNamespace = "shared-services"
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("serviceAccounts[0].targetNamespace"))
+	g.Expect(err.Error()).To(ContainSubstring("assign the namespace to a service via spec.services.<svc>.namespace first"))
+}
+
+// TestValidateCreate_RejectsServiceAccountTargetNamespaceBadPattern mirrors the
+// RFC-1123 Pattern marker for webhook-bypassed callers: the value names a
+// Kubernetes namespace.
+func TestValidateCreate_RejectsServiceAccountTargetNamespaceBadPattern(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := saControlPlane()
+	cp.Namespace = "openstack"
+	cp.Spec.KORC.ServiceAccounts[0].TargetNamespace = "Shared_NS"
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("serviceAccounts[0].targetNamespace"))
+	g.Expect(err.Error()).To(ContainSubstring("RFC-1123 label"))
+}
+
+// TestValidateUpdate_RejectsServiceAccountTargetNamespaceChange pins the per-entry
+// freeze: flipping targetNamespace on a live entry would strand the delivered
+// Secret, while leaving it unchanged passes.
+func TestValidateUpdate_RejectsServiceAccountTargetNamespaceChange(t *testing.T) {
+	base := func() *ControlPlane {
+		cp := saControlPlane()
+		cp.Namespace = "openstack"
+		cp.Spec.Services.Keystone.Namespace = &ServiceNamespaceSpec{
+			Name: "identity", Lifecycle: ServiceNamespaceLifecycleManaged,
+		}
+		cp.Spec.KORC.ServiceAccounts[0].TargetNamespace = "identity"
+		return cp
+	}
+
+	t.Run("flipping targetNamespace on a live entry is rejected", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		w := &ControlPlaneWebhook{}
+		oldCP := base()
+		newCP := base()
+		newCP.Spec.KORC.ServiceAccounts[0].TargetNamespace = "openstack"
+
+		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("serviceAccounts[0].targetNamespace"))
+		g.Expect(err.Error()).To(ContainSubstring("targetNamespace is immutable"))
+	})
+
+	t.Run("an unchanged targetNamespace passes", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		w := &ControlPlaneWebhook{}
+		oldCP := base()
+		newCP := base()
+
+		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).NotTo(HaveOccurred())
+	})
+}
+
 // --- Per-service dedicated backing services ---
 
 // dedicatedControlPlane returns a ControlPlane whose Keystone service opts into a
