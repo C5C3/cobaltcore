@@ -916,7 +916,7 @@ jobs:
       - name: Setup E2E infrastructure
         uses: ./.github/actions/setup-e2e-infra
       # The c5c3 ControlPlane controller Owns()/Watches() the Keystone,
-      # KeystoneIdentityBackend, Horizon, and K-ORC kinds
+      # KeystoneIdentityBackend, Horizon, Glance, GlanceBackend, and K-ORC kinds
       # (ControlPlaneReconciler.SetupWithManager). controller-runtime informers
       # for a kind whose CRD is absent never sync, so without these CRDs the
       # elected leader dies on the controller's 2-minute cache-sync timeout and
@@ -930,6 +930,7 @@ jobs:
         run: |
           kubectl apply -f operators/keystone/helm/keystone-operator/crds/
           kubectl apply -f operators/horizon/helm/horizon-operator/crds/
+          kubectl apply -f operators/glance/helm/glance-operator/crds/
           hack/ci-deploy-korc.sh
       # Use shared operator deployment script. NAMESPACE mirrors what
       # hack/ci-dump-diagnostics.sh derives (${OPERATOR}-system) so the
@@ -1367,16 +1368,20 @@ jobs:
             ${{ env.IMAGE_PREFIX }}/keystone-operator:dev
             ${{ env.IMAGE_PREFIX }}/c5c3-operator:dev
             ${{ env.IMAGE_PREFIX }}/horizon-operator:dev
+            ${{ env.IMAGE_PREFIX }}/glance-operator:dev
             ${{ env.IMAGE_PREFIX }}/keystone:2025.2
             ${{ env.IMAGE_PREFIX }}/horizon:2025.2
+            ${{ env.IMAGE_PREFIX }}/glance:2025.2
             ${{ env.IMAGE_PREFIX }}/tempest:2025.2
       - name: Load images into kind
         run: |
           kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/c5c3-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/horizon-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/glance-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:2025.2 --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/horizon:2025.2 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/glance:2025.2 --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/tempest:2025.2 --name ${{ env.KIND_CLUSTER }}
       # Prepare the shared infra (TLS, OpenBao + per-CR seeding, ESO store) and
       # suspend the Flux ControlPlane stack; the operators are deployed below.
@@ -1409,6 +1414,14 @@ jobs:
           OPERATOR: horizon
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/horizon-operator
           NAMESPACE: horizon-system
+      # glance-operator before c5c3-operator so the Glance and GlanceBackend CRDs
+      # exist before c5c3-operator projects the Glance child and its backends.
+      - name: Deploy glance-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: glance
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/glance-operator
+          NAMESPACE: glance-system
       - name: Deploy c5c3-operator
         run: hack/ci-deploy-operator.sh
         env:
@@ -1525,6 +1538,12 @@ jobs:
           OPERATOR: horizon
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/horizon-operator
           NAMESPACE: horizon-system
+      # The c5c3 manager also watches the Glance and GlanceBackend kinds; an
+      # informer for an absent CRD never syncs, so the elected leader dies on
+      # the cache-sync timeout. The suite's CR declares no services.glance, so
+      # only the CRDs are needed — the glance-operator itself stays undeployed.
+      - name: Install Glance CRDs watched by the c5c3-operator
+        run: kubectl apply -f operators/glance/helm/glance-operator/crds/
       - name: Deploy c5c3-operator
         run: hack/ci-deploy-operator.sh
         env:
@@ -1635,6 +1654,12 @@ jobs:
           OPERATOR: horizon
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/horizon-operator
           NAMESPACE: horizon-system
+      # The c5c3 manager also watches the Glance and GlanceBackend kinds; an
+      # informer for an absent CRD never syncs, so the elected leader dies on
+      # the cache-sync timeout. External mode forbids services.glance, so only
+      # the CRDs are needed — the glance-operator itself stays undeployed.
+      - name: Install Glance CRDs watched by the c5c3-operator
+        run: kubectl apply -f operators/glance/helm/glance-operator/crds/
       - name: Deploy c5c3-operator
         run: hack/ci-deploy-operator.sh
         env:

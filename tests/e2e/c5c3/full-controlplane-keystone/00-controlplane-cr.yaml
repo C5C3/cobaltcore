@@ -2,7 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# ControlPlane CR fixture for the full-controlplane-keystone E2E test
+# ControlPlane CR fixture for the full-controlplane-keystone E2E test. It drives
+# THREE services — keystone, horizon, and glance — through the full chain.
 #
 # Managed mode: database and cache reference managed clusters by clusterRef, so
 # the c5c3-operator reconcileInfrastructure sub-reconciler projects an owned
@@ -80,6 +81,21 @@ spec:
       secretKeyRef:
         name: controlplane-keystone-horizon-secret-key
         key: secret-key
+    # single-replica Glance against the Garage S3 bucket the deploy stack
+    # provisions (deploy/flux-system/infrastructure/garage.yaml, ESO-synced
+    # garage-s3-credentials Secret in the openstack namespace).
+    glance:
+      replicas: 1
+      backends:
+        - name: default
+          type: S3
+          isDefault: true
+          s3:
+            endpoint: "http://garage.openstack.svc.cluster.local:3900"
+            bucket: glance-images
+            region: garage
+            credentialsSecretRef:
+              name: garage-s3-credentials
   globalPolicyOverrides:
     rules:
       "identity:list_users": "role:admin"
@@ -95,15 +111,12 @@ spec:
         restricted: true
         rotation:
           mode: PasswordDriven
-    # One declared service account (glance) exercising the role projection: a
-    # managed user "glance" on a managed project "service", bound to the "member"
-    # role. The role projects as one unmanaged K-ORC Role import plus one managed
-    # RoleAssignment; the chainsaw link asserts the assignment reaches Available
-    # and the verify Job asserts the role is listed against the user in Keystone.
-    serviceAccounts:
-      - name: glance
-        project:
-          name: service
-          create: true
-        roles:
-          - member
+    # NOTE: no serviceAccounts are declared here on purpose. Whenever
+    # services.glance is set the defaulting webhook INJECTS the glance service
+    # account (name glance, project service (create), role "service" — Keystone's
+    # SRBAC default for identity:validate_token requires the "service" role) with
+    # its targetNamespace set to the Glance namespace. Exercising that injection on
+    # a live cluster is the point: the role projects as one unmanaged K-ORC Role
+    # import plus one managed RoleAssignment; the chainsaw link asserts the injected
+    # entry and its RoleAssignment reaches Available, and the verify Job asserts the
+    # role is listed against the user in Keystone.
