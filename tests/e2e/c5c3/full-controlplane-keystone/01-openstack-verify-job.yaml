@@ -58,8 +58,8 @@ spec:
               echo "== image service catalogued =="
               openstack --os-cloud admin catalog list | grep -qi image
               echo "== openstack --os-cloud admin role assignment list --names --user glance =="
-              openstack --os-cloud admin role assignment list --names --user glance | tee /tmp/glance-roles.txt
-              grep -qw service /tmp/glance-roles.txt
+              openstack --os-cloud admin role assignment list --names --user glance
+              openstack --os-cloud admin role assignment list --user glance --names -f value -c Role | grep -qx service
               echo "== image upload round-trip =="
               # The projected K-ORC catalog rows carry no region — K-ORC's
               # EndpointResourceSpec has no region field — while the mounted
