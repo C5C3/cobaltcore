@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
+	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -39,6 +40,9 @@ func glanceTestScheme(t *testing.T) *runtime.Scheme {
 	}
 	if err := glancev1alpha1.AddToScheme(s); err != nil {
 		t.Fatalf("adding glance scheme: %v", err)
+	}
+	if err := orcv1alpha1.AddToScheme(s); err != nil {
+		t.Fatalf("adding K-ORC scheme: %v", err)
 	}
 	if err := esov1.AddToScheme(s); err != nil {
 		t.Fatalf("adding external-secrets scheme: %v", err)

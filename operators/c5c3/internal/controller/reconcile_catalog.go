@@ -85,10 +85,12 @@ func (r *ControlPlaneReconciler) reconcileCatalog(ctx context.Context, cp *c5c3v
 	// the shared field manager rather than read-modify-write.
 	//
 	// The catalog is driven from managedCatalogRows so a second service is a table
-	// row, not a copied literal. Today that is exactly the identity (Keystone) row:
-	// an identity-type Service named "keystone" and a single public Endpoint whose
-	// URL defaults to the in-cluster Keystone Service URL and rises to the external
-	// publicEndpoint when Keystone is exposed via a Gateway (see keystoneCatalogURL).
+	// row, not a copied literal. The first row is always the identity (Keystone)
+	// service: an identity-type Service named "keystone" and a single public Endpoint
+	// whose URL defaults to the in-cluster Keystone Service URL and rises to the
+	// external publicEndpoint when Keystone is exposed via a Gateway (see
+	// keystoneCatalogURL). A second image (Glance) row joins it whenever
+	// spec.services.glance is set.
 	type appliedCatalogRow struct {
 		row       managedCatalogServiceRow
 		service   *orcv1alpha1.Service
@@ -181,10 +183,10 @@ type managedCatalogEndpointRow struct {
 // would delete and re-add its catalog row on upgrade. Every new row follows the
 // generic convention from the start, so only identity carries the legacy shape.
 //
-// endpoints is a list so a row can register several interfaces, but the identity
-// row exercises only the default posture: a single public entry whose URL falls
-// back to the in-cluster Keystone Service URL. Per-interface endpoint lists are
-// supported by the type and not yet exercised.
+// endpoints is a list so a row can register several interfaces. The identity row
+// exercises only the default posture — a single public entry whose URL falls back
+// to the in-cluster Keystone Service URL — while the image (Glance) row exercises
+// the multi-interface list, registering both an internal and a public Endpoint.
 type managedCatalogServiceRow struct {
 	serviceType string
 	serviceName string
@@ -193,14 +195,17 @@ type managedCatalogServiceRow struct {
 }
 
 // managedCatalogRows returns the managed service-catalog rows the ControlPlane
-// registers via K-ORC. Today it is exactly one row — the identity (Keystone)
-// service with a single public Endpoint — keyed on the legacy CR names so the
-// live catalog rows are never renamed (see managedCatalogServiceRow). A future
-// second service (e.g. type "image", name "glance") is added here as another
-// row, not by copying the builder call sites. It is mode-independent: reconcileDelete
-// enumerates the same rows to tear down the identity CRs in both keystone modes.
+// registers via K-ORC. The first row is always the identity (Keystone) service
+// with a single public Endpoint, keyed on the legacy CR names so the live catalog
+// rows are never renamed (see managedCatalogServiceRow). When spec.services.glance
+// is set a second row registers the image (Glance) service under the generic
+// naming convention, with an internal and a public Endpoint (D6 — both interfaces
+// from the start so no later catalog migration is needed). A further service is
+// added here as another row, not by copying the builder call sites. It is
+// mode-independent: reconcileDelete enumerates the same rows to tear down the CRs
+// in both keystone modes.
 func managedCatalogRows(cp *c5c3v1alpha1.ControlPlane) []managedCatalogServiceRow {
-	return []managedCatalogServiceRow{{
+	rows := []managedCatalogServiceRow{{
 		serviceType: "identity",
 		serviceName: "keystone",
 		crName:      keystoneServiceName(cp),
@@ -210,6 +215,18 @@ func managedCatalogRows(cp *c5c3v1alpha1.ControlPlane) []managedCatalogServiceRo
 			url:    keystoneCatalogURL(cp),
 		}},
 	}}
+	if cp.Spec.Services.Glance != nil {
+		rows = append(rows, managedCatalogServiceRow{
+			serviceType: "image",
+			serviceName: "glance",
+			crName:      glanceCatalogServiceName(cp),
+			endpoints: []managedCatalogEndpointRow{
+				{iface: "internal", crName: glanceCatalogEndpointName(cp, "internal"), url: glanceEndpointURL(cp)},
+				{iface: "public", crName: glanceCatalogEndpointName(cp, "public"), url: glanceCatalogURL(cp)},
+			},
+		})
+	}
+	return rows
 }
 
 // managedCatalogService builds the MANAGED K-ORC Service CR for one catalog row.
@@ -343,4 +360,31 @@ func keystoneCatalogURL(cp *c5c3v1alpha1.ControlPlane) string {
 		return pe
 	}
 	return keystoneEndpointURL(cp)
+}
+
+// glanceCatalogServiceName / glanceCatalogEndpointName return the deterministic
+// names of the owned K-ORC Service/Endpoint CRs registering the image catalog
+// entry. Unlike identity, the image row follows the generic naming convention from
+// the start (see managedCatalogServiceRow): "{cp}-image-service" and, per interface,
+// "{cp}-image-endpoint-{iface}".
+func glanceCatalogServiceName(cp *c5c3v1alpha1.ControlPlane) string {
+	return cp.Name + "-image-service"
+}
+
+func glanceCatalogEndpointName(cp *c5c3v1alpha1.ControlPlane, iface string) string {
+	return cp.Name + "-image-endpoint-" + iface
+}
+
+// glanceCatalogURL returns the URL registered for the K-ORC image catalog PUBLIC
+// Endpoint. Per D6 the image service registers both a public and an internal
+// endpoint from the start; the internal endpoint always advertises the in-cluster
+// Service URL (glanceEndpointURL), while the public one prefers the externally
+// routable gateway hostname and falls back to that same in-cluster URL when Glance
+// is not exposed via a Gateway. Unlike keystoneCatalogURL there is no "/v3" path
+// suffix — the Glance API is served at the root.
+func glanceCatalogURL(cp *c5c3v1alpha1.ControlPlane) string {
+	if gw := cp.Spec.Services.Glance.Gateway; gw != nil {
+		return fmt.Sprintf("https://%s", gw.Hostname)
+	}
+	return glanceEndpointURL(cp)
 }

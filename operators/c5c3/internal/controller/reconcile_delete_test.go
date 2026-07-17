@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
 	horizonv1alpha1 "github.com/c5c3/forge/operators/horizon/api/v1alpha1"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
@@ -593,8 +594,9 @@ func TestReconcileDelete_ExternalMode_TearsDownOnlyOwnedORCCRs(t *testing.T) {
 	// Every owned K-ORC CR is gone — including the three per-interface identity
 	// Endpoint imports and the opt-in entry's Service/Endpoint.
 	children := orcChildObjects(cp)
-	g.Expect(children).To(HaveLen(5+len(externalCatalogInterfaces)+2),
-		"the sweep must enumerate the catalog imports and the declared entry")
+	g.Expect(children).To(HaveLen(5+len(externalCatalogInterfaces)+2+3),
+		"the sweep must enumerate the catalog imports, the declared entry, and the "+
+			"three preserved-orphan image-catalog names (glance is unset in External mode)")
 	for _, child := range children {
 		obj := child.newObj()
 		key := types.NamespacedName{Name: child.name, Namespace: childNamespace(cp)}
@@ -667,15 +669,18 @@ func TestDeleteORCResources_ExternalMode_LeavesUnmanagedImportsUntouched(t *test
 }
 
 // TestOrcChildObjects_ManagedModeUnchanged is the golden-behavior guard on the
-// sweep: a Managed ControlPlane still enumerates exactly the five CRs it always
-// did, so the External-mode additions cannot widen the managed blast radius.
+// sweep: a Managed ControlPlane with no image service enumerates exactly the five
+// identity/admin CRs it always did, plus the three preserved-orphan image-catalog
+// names the glance teardown adds unconditionally (NotFound-tolerated when glance
+// was never set) — and nothing more, so neither the External-mode nor the glance
+// additions widen the managed blast radius.
 func TestOrcChildObjects_ManagedModeUnchanged(t *testing.T) {
 	g := NewGomegaWithT(t)
 
-	cp := korcControlPlane()
+	cp := korcControlPlane() // services.glance unset
 	children := orcChildObjects(cp)
 
-	g.Expect(children).To(HaveLen(5))
+	g.Expect(children).To(HaveLen(8))
 	names := make([]string, 0, len(children))
 	for _, child := range children {
 		names = append(names, child.name)
@@ -686,7 +691,53 @@ func TestOrcChildObjects_ManagedModeUnchanged(t *testing.T) {
 		keystoneEndpointName(cp),
 		adminUserRef(cp),
 		adminDomainRef(cp),
+		glanceCatalogServiceName(cp),
+		glanceCatalogEndpointName(cp, "internal"),
+		glanceCatalogEndpointName(cp, "public"),
 	))
+}
+
+// TestOrcChildObjects_GlanceCatalogEnumeration pins the image-catalog teardown
+// names: they are enumerated via the preserved-orphan cover when services.glance
+// is unset (a row left behind by a glance removal without the opt-in is still torn
+// down with the ControlPlane) and via the managedCatalogRows row when it is set —
+// exactly once either way, since naming a CR twice would make the stall escape
+// Update the same object off two stale reads.
+func TestOrcChildObjects_GlanceCatalogEnumeration(t *testing.T) {
+	glanceCatalogNames := func(cp *c5c3v1alpha1.ControlPlane) []string {
+		return []string{
+			glanceCatalogServiceName(cp),
+			glanceCatalogEndpointName(cp, "internal"),
+			glanceCatalogEndpointName(cp, "public"),
+		}
+	}
+	countNames := func(cp *c5c3v1alpha1.ControlPlane) map[string]int {
+		counts := map[string]int{}
+		for _, child := range orcChildObjects(cp) {
+			counts[child.name]++
+		}
+		return counts
+	}
+
+	t.Run("unset enumerates the preserved-orphan names", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := korcControlPlane() // services.glance unset
+		counts := countNames(cp)
+		for _, name := range glanceCatalogNames(cp) {
+			g.Expect(counts[name]).To(Equal(1), "preserved-orphan catalog CR %q must be named exactly once", name)
+		}
+	})
+
+	t.Run("set enumerates them once via the catalog row", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := korcControlPlane()
+		cp.Spec.Services.Glance = &c5c3v1alpha1.ServiceGlanceSpec{}
+		counts := countNames(cp)
+		for _, name := range glanceCatalogNames(cp) {
+			g.Expect(counts[name]).To(Equal(1),
+				"a glance-set ControlPlane must name catalog CR %q via the row alone, not also the preserved-orphan cover", name)
+		}
+	})
 }
 
 // TestOrcChildObjects_ExternalOptInEnumeratesDeclaredEntry proves the sweep tracks
@@ -1042,6 +1093,9 @@ func namespaceTeardownScheme(t *testing.T) *runtime.Scheme {
 	if err := horizonv1alpha1.AddToScheme(s); err != nil {
 		t.Fatalf("adding horizon scheme: %v", err)
 	}
+	if err := glancev1alpha1.AddToScheme(s); err != nil {
+		t.Fatalf("adding glance scheme: %v", err)
+	}
 	if err := mariadbv1alpha1.AddToScheme(s); err != nil {
 		t.Fatalf("adding mariadb scheme: %v", err)
 	}
@@ -1067,6 +1121,80 @@ func deletingNamespacedControlPlane(deletionAge time.Duration) *c5c3v1alpha1.Con
 		},
 	}
 	return cp
+}
+
+// TestCrossNamespaceServiceChildren_IncludesGlance verifies the Glance child is
+// enumerated for the namespace it was assigned to, and excluded from any other —
+// so a Glance placed in a namespace of its own is torn down by the finalizer sweep
+// (which carries no owner reference to garbage-collect it), while a namespace it
+// was never placed in never names it.
+func TestCrossNamespaceServiceChildren_IncludesGlance(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := korcControlPlane()
+	cp.Spec.Services.Glance = &c5c3v1alpha1.ServiceGlanceSpec{
+		Namespace: &c5c3v1alpha1.ServiceNamespaceSpec{
+			Name: "images", Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+		},
+	}
+
+	hasGlance := func(namespace string) bool {
+		for _, child := range crossNamespaceServiceChildren(cp, namespace) {
+			if _, ok := child.(*glancev1alpha1.Glance); ok && child.GetName() == glanceName(cp) {
+				return true
+			}
+		}
+		return false
+	}
+
+	g.Expect(hasGlance("images")).To(BeTrue(), "the Glance child is enumerated for its assigned namespace")
+	g.Expect(hasGlance("unrelated")).To(BeFalse(), "a namespace Glance was not placed in must not name it")
+}
+
+// TestDeleteServiceChildrenIn_SweepsOwnedGlanceBackends verifies the cross-namespace
+// teardown reaps the projected GlanceBackend children the ControlPlane placed in a
+// dedicated namespace: a c5c3-owned backend carrying the glance child's name prefix
+// is deleted and reported as remaining (so the sweep waits for it), while a
+// hand-created backend that merely shares the namespace is left untouched.
+func TestDeleteServiceChildrenIn_SweepsOwnedGlanceBackends(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := namespaceTeardownScheme(t)
+
+	cp := deletingControlPlane(time.Minute)
+	cp.Spec.Services = c5c3v1alpha1.ServicesSpec{
+		Glance: &c5c3v1alpha1.ServiceGlanceSpec{
+			Namespace: &c5c3v1alpha1.ServiceNamespaceSpec{
+				Name: "images", Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+			},
+		},
+	}
+
+	// A projected, label-owned backend carrying the glance child's name prefix (a
+	// cross-namespace child cannot carry an owner reference).
+	owned := &glancev1alpha1.GlanceBackend{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: glanceBackendName(cp, "primary"), Namespace: "images",
+			Labels: controlPlaneChildLabels(cp),
+		},
+	}
+	// A hand-created backend sharing the namespace and the prefix but owned by nobody.
+	foreign := &glancev1alpha1.GlanceBackend{
+		ObjectMeta: metav1.ObjectMeta{Name: glanceBackendName(cp, "byo"), Namespace: "images"},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, owned, foreign).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
+
+	remaining, err := r.deleteServiceChildrenIn(context.Background(), cp, "images")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// The owned backend was deleted and reported as remaining so the sweep waits.
+	g.Expect(remaining).To(ContainElement("images/" + glanceBackendName(cp, "primary")))
+	err = c.Get(context.Background(), client.ObjectKeyFromObject(owned), &glancev1alpha1.GlanceBackend{})
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "the owned projected backend must be swept")
+
+	// The foreign backend is untouched and never reported as remaining.
+	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(foreign), &glancev1alpha1.GlanceBackend{})).
+		To(Succeed(), "a hand-created backend we do not own must never be swept")
+	g.Expect(remaining).NotTo(ContainElement("images/" + glanceBackendName(cp, "byo")))
 }
 
 // TestTeardownDedicatedNamespaces_NoAssignments verifies the default costs
@@ -1182,10 +1310,17 @@ func TestTeardownDedicatedNamespaces_SweepsExternalNamespaceResidue(t *testing.T
 	g := NewGomegaWithT(t)
 	s := namespaceTeardownScheme(t)
 
-	// Keystone in the External namespace, so its credential material lands there.
+	// Keystone and Glance in the External namespace, so their credential material
+	// lands there.
 	cp := deletingControlPlane(time.Minute)
 	cp.Spec.Services = c5c3v1alpha1.ServicesSpec{
 		Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{
+			Namespace: &c5c3v1alpha1.ServiceNamespaceSpec{
+				Name:      "shared-ns",
+				Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleExternal,
+			},
+		},
+		Glance: &c5c3v1alpha1.ServiceGlanceSpec{
 			Namespace: &c5c3v1alpha1.ServiceNamespaceSpec{
 				Name:      "shared-ns",
 				Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleExternal,
@@ -1208,6 +1343,9 @@ func TestTeardownDedicatedNamespaces_SweepsExternalNamespaceResidue(t *testing.T
 	adminPw := &esov1.ExternalSecret{ObjectMeta: metav1.ObjectMeta{
 		Name: adminPasswordSecretName(cp), Namespace: "shared-ns", Labels: controlPlaneChildLabels(cp),
 	}}
+	glanceDB := &esov1.ExternalSecret{ObjectMeta: metav1.ObjectMeta{
+		Name: glanceDBCredentialSecretName(cp), Namespace: "shared-ns", Labels: controlPlaneChildLabels(cp),
+	}}
 	saSource := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
 		Name: serviceAccountSourceSecretName(cp, sa), Namespace: "shared-ns", Labels: controlPlaneChildLabels(cp),
 	}}
@@ -1220,7 +1358,7 @@ func TestTeardownDedicatedNamespaces_SweepsExternalNamespaceResidue(t *testing.T
 	}}
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "shared-ns"}}
 
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, ns, ours, adminPw, saSource, saES, foreignSA).Build()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, ns, ours, adminPw, glanceDB, saSource, saES, foreignSA).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
 
 	done, err := r.teardownDedicatedNamespaces(context.Background(), cp)
@@ -1249,6 +1387,11 @@ func TestTeardownDedicatedNamespaces_SweepsExternalNamespaceResidue(t *testing.T
 		Name: adminPasswordSecretName(cp), Namespace: "shared-ns",
 	}, &esov1.ExternalSecret{})
 	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "our credential material must be swept")
+
+	err = c.Get(context.Background(), types.NamespacedName{
+		Name: glanceDBCredentialSecretName(cp), Namespace: "shared-ns",
+	}, &esov1.ExternalSecret{})
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "the Glance DB-credential ExternalSecret must be swept")
 
 	g.Expect(c.Get(context.Background(), types.NamespacedName{
 		Name: esoTenantServiceAccountName, Namespace: "shared-ns",
