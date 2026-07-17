@@ -7,9 +7,12 @@
 # clouds.yaml (the minted, OpenBao-round-tripped application credential
 # delivered to the per-CR k-orc-clouds-yaml Secret by the credential chain) and
 # runs `openstack token issue` + `openstack catalog list` to prove the
-# credential actually works end-to-end and the identity service is catalogued.
-# It also lists the role assignments of the projected "glance" service account and
-# greps for the "member" role, proving the RoleAssignment landed in Keystone.
+# credential actually works end-to-end and BOTH the identity and image services
+# are catalogued. It also lists the role assignments of the INJECTED "glance"
+# service account and greps for the "service" role, proving the RoleAssignment
+# landed in Keystone, and uploads a real image through the projected Glance
+# endpoint into the Garage S3 backend, waits for it to reach "active", and
+# deletes it — proving the image service works end-to-end, not just catalogued.
 #
 # the orc-system copy of k-orc-clouds-yaml was removed; the
 # operator now materialises the per-CR k-orc-clouds-yaml Secret ONLY into the
@@ -52,9 +55,31 @@ spec:
               openstack --os-cloud admin token issue
               echo "== openstack --os-cloud admin catalog list =="
               openstack --os-cloud admin catalog list
+              echo "== image service catalogued =="
+              openstack --os-cloud admin catalog list | grep -qi image
               echo "== openstack --os-cloud admin role assignment list --names --user glance =="
               openstack --os-cloud admin role assignment list --names --user glance | tee /tmp/glance-roles.txt
-              grep -qw member /tmp/glance-roles.txt
+              grep -qw service /tmp/glance-roles.txt
+              echo "== image upload round-trip =="
+              # The projected K-ORC catalog rows carry no region — K-ORC's
+              # EndpointResourceSpec has no region field — while the mounted
+              # clouds.yaml pins region_name (RegionOne by default), so a
+              # region-scoped lookup finds no image endpoint at all ("internal
+              # endpoint for image service in RegionOne region not found"). The
+              # image commands therefore run against a copy of the document with
+              # the region_name line stripped; an empty --os-region-name or
+              # OS_REGION_NAME override is DROPPED by osc-lib's config merge, so
+              # the stripped copy is the only way to clear the filter. Interface
+              # resolution (endpoint_type: internal) still selects the projected
+              # internal endpoint, and identity is unaffected: keystone-manage
+              # bootstrap registers its own RegionOne identity rows.
+              grep -v 'region_name' /etc/openstack/clouds.yaml > /tmp/clouds-noregion.yaml
+              dd if=/dev/urandom of=/tmp/e2e.img bs=1024 count=1
+              OS_CLIENT_CONFIG_FILE=/tmp/clouds-noregion.yaml openstack --os-cloud admin image create --disk-format raw --container-format bare --file /tmp/e2e.img e2e-upload
+              STATUS="$(OS_CLIENT_CONFIG_FILE=/tmp/clouds-noregion.yaml openstack --os-cloud admin image show e2e-upload -f value -c status)"
+              test "${STATUS}" = "active" || { echo "ERROR: uploaded image status '${STATUS}' != active"; exit 1; }
+              OS_CLIENT_CONFIG_FILE=/tmp/clouds-noregion.yaml openstack --os-cloud admin image delete e2e-upload
+              echo "OK: image uploaded to the projected endpoint, reached active, and was deleted"
           volumeMounts:
             - name: clouds
               mountPath: /etc/openstack

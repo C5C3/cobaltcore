@@ -57,6 +57,13 @@
 # live cluster: namespaces, backing-service placement, ownership labels, tenant
 # stores, and the deletion sweep.
 #
+# The Glance CHILD CR itself never appears in this suite either: Keystone never
+# reaches Ready here (unseeded OpenBao) and the Glance projection gates on
+# KeystoneReady plus its service account, so the child/backend reap path is
+# hard-asserted in the c5c3 unit tests (reconcile_delete_test.go) and envtest
+# instead. This suite proves the namespace lifecycle, backing-service placement,
+# tenant store, and teardown reap for the glance namespace.
+#
 # The fixture also declares a SERVICE ACCOUNT with targetNamespace set to the
 # Keystone namespace, so admitting the CR proves the webhook accepts an own-or-
 # dedicated targetNamespace on a live cluster. Its credential delivery leg (the
@@ -85,6 +92,7 @@ spec:
           CP_NAME=cp
           KEYSTONE_NS="${NAMESPACE}-identity"
           HORIZON_NS="${NAMESPACE}-dashboard"
+          GLANCE_NS="${NAMESPACE}-image"
           SHARED_DB=openstack-db
           SHARED_CACHE=openstack-memcached
           TENANT_STORE=openbao-tenant-store
@@ -117,6 +125,8 @@ spec:
             keystones.keystone.openstack.c5c3.io \
             keystoneidentitybackends.keystone.openstack.c5c3.io \
             horizons.horizon.openstack.c5c3.io \
+            glances.glance.openstack.c5c3.io \
+            glancebackends.glance.openstack.c5c3.io \
             secretstores.external-secrets.io \
             applicationcredentials.openstack.k-orc.cloud \
             services.openstack.k-orc.cloud \
@@ -136,6 +146,7 @@ spec:
           echo "    ControlPlane namespace: ${CP_NS}"
           echo "    Keystone namespace (Managed): ${KEYSTONE_NS}"
           echo "    Horizon namespace (External): ${HORIZON_NS}"
+          echo "    Glance namespace (Managed): ${GLANCE_NS}"
 
           # ── Helpers ───────────────────────────────────────────────────────
           assert_eq() { # <description> <expected> <actual>
@@ -209,6 +220,7 @@ spec:
 
           # ── Apply the ControlPlane ────────────────────────────────────────
           sed -e "s|@KEYSTONE_NS@|${KEYSTONE_NS}|g" -e "s|@HORIZON_NS@|${HORIZON_NS}|g" \
+            -e "s|@GLANCE_NS@|${GLANCE_NS}|g" \
             00-controlplane-cr.yaml | kubectl apply -n "${CP_NS}" -f -
 
           # ── NamespacesReady, and the two namespaces exist per lifecycle ────
@@ -219,6 +231,12 @@ spec:
           assert_cp_labelled namespace "${KEYSTONE_NS}" ""
           assert_eq "the Managed namespace carries the managed-by label" "c5c3-operator" \
             "$(kubectl get namespace "${KEYSTONE_NS}" -o "jsonpath={.metadata.labels.${MANAGED_BY_LABEL//./\\.}}")"
+
+          # Glance's namespace is a SECOND Managed namespace — same contract.
+          wait_exists namespace "${GLANCE_NS}" "" 60
+          assert_cp_labelled namespace "${GLANCE_NS}" ""
+          assert_eq "the Glance Managed namespace carries the managed-by label" "c5c3-operator" \
+            "$(kubectl get namespace "${GLANCE_NS}" -o "jsonpath={.metadata.labels.${MANAGED_BY_LABEL//./\\.}}")"
 
           # External: pre-existing, NEVER labelled by the operator.
           assert_eq "the External namespace is not stamped with an ownership label" "" \
@@ -240,6 +258,16 @@ spec:
           assert_cp_labelled memcached "${SHARED_CACHE}" "${HORIZON_NS}"
           assert_no_cp_owner memcached "${SHARED_CACHE}" "${HORIZON_NS}"
 
+          # Glance consumes both a database and a cache, like Keystone, so both land
+          # in its namespace.
+          wait_exists mariadb "${SHARED_DB}" "${GLANCE_NS}" 120
+          assert_cp_labelled mariadb "${SHARED_DB}" "${GLANCE_NS}"
+          assert_no_cp_owner mariadb "${SHARED_DB}" "${GLANCE_NS}"
+
+          wait_exists memcached "${SHARED_CACHE}" "${GLANCE_NS}" 120
+          assert_cp_labelled memcached "${SHARED_CACHE}" "${GLANCE_NS}"
+          assert_no_cp_owner memcached "${SHARED_CACHE}" "${GLANCE_NS}"
+
           # Nothing is provisioned in the ControlPlane's own namespace: no service
           # is placed there.
           assert_eq "no MariaDB is provisioned in the ControlPlane's own namespace" "" \
@@ -250,7 +278,7 @@ spec:
           # service gets its own. This needs InfrastructureReady, which needs the
           # backing services Ready — bounded generously for a cold cluster.
           wait_cp_condition_true InfrastructureReady 600
-          for store_ns in "${CP_NS}" "${KEYSTONE_NS}" "${HORIZON_NS}"; do
+          for store_ns in "${CP_NS}" "${KEYSTONE_NS}" "${HORIZON_NS}" "${GLANCE_NS}"; do
             wait_exists secretstore "${TENANT_STORE}" "${store_ns}" 120
           done
           echo "OK: a per-tenant SecretStore is provisioned in every namespace of the ControlPlane."
@@ -280,6 +308,14 @@ spec:
           fi
           echo "OK: the Managed namespace is deleted or Terminating (phase='${KS_PHASE:-<gone>}')."
 
+          # The Glance Managed namespace follows the same lifecycle.
+          GL_PHASE="$(kubectl get namespace "${GLANCE_NS}" -o 'jsonpath={.status.phase}' 2>/dev/null || true)"
+          if [ -n "${GL_PHASE}" ] && [ "${GL_PHASE}" != "Terminating" ]; then
+            echo "ERROR: the Managed namespace ${GLANCE_NS} is still Active after ControlPlane deletion"
+            exit 1
+          fi
+          echo "OK: the Glance Managed namespace is deleted or Terminating (phase='${GL_PHASE:-<gone>}')."
+
           # The External namespace SURVIVES — the operator never owned it — and its
           # residue (the tenant store the ControlPlane placed there) is swept.
           assert_eq "the External namespace survives the ControlPlane" "Active" \
@@ -304,13 +340,15 @@ spec:
         content: |
           KEYSTONE_NS="${NAMESPACE}-identity"
           HORIZON_NS="${NAMESPACE}-dashboard"
+          GLANCE_NS="${NAMESPACE}-image"
           echo "=== ControlPlane spec + status.conditions ==="
           kubectl get controlplane cp -n "${NAMESPACE}" -o yaml 2>&1 || true
           echo "=== Namespaces ==="
-          kubectl get namespace "${KEYSTONE_NS}" "${HORIZON_NS}" -o yaml 2>&1 || true
+          kubectl get namespace "${KEYSTONE_NS}" "${HORIZON_NS}" "${GLANCE_NS}" -o yaml 2>&1 || true
           echo "=== Backing services across the service namespaces ==="
           kubectl get mariadb,memcached -n "${KEYSTONE_NS}" 2>&1 || true
           kubectl get mariadb,memcached -n "${HORIZON_NS}" 2>&1 || true
+          kubectl get mariadb,memcached -n "${GLANCE_NS}" 2>&1 || true
           echo "=== Tenant stores ==="
           kubectl get secretstore -A -l "${CP_NAME_LABEL:-c5c3.io/controlplane-name}" 2>&1 || true
           kubectl get secretstore -n "${KEYSTONE_NS}" 2>&1 || true

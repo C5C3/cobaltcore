@@ -45,13 +45,14 @@
 #
 # ── Why the guard probes CRDs the suite never touches ────────────────────────
 # The ControlPlane controller Owns()/Watches() the Keystone, Horizon,
-# KeystoneIdentityBackend, and K-ORC kinds (ControlPlaneReconciler.
-# SetupWithManager). controller-runtime informers for a kind whose CRD is absent
-# never sync, so on a cluster missing ANY of those CRDs the elected leader dies
-# on the controller's cache-sync timeout and the reconciler this suite drives
-# never runs — the ControlPlane CR is admitted (the webhook serves independently)
-# but is never reconciled: no finalizer, no status, no children. The guard
-# therefore probes the full watched set, not just the kinds asserted below.
+# KeystoneIdentityBackend, Glance, GlanceBackend, and K-ORC kinds
+# (ControlPlaneReconciler.SetupWithManager). controller-runtime informers for a
+# kind whose CRD is absent never sync, so on a cluster missing ANY of those
+# CRDs the elected leader dies on the controller's cache-sync timeout and the
+# reconciler this suite drives never runs — the ControlPlane CR is admitted
+# (the webhook serves independently) but is never reconciled: no finalizer, no
+# status, no children. The guard therefore probes the full watched set, not
+# just the kinds asserted below.
 #
 # The Keystone-child projection itself is NOT asserted here: reaching
 # reconcileKeystone requires the DB-credential and admin-password machinery to
@@ -119,6 +120,8 @@ spec:
             keystones.keystone.openstack.c5c3.io \
             keystoneidentitybackends.keystone.openstack.c5c3.io \
             horizons.horizon.openstack.c5c3.io \
+            glances.glance.openstack.c5c3.io \
+            glancebackends.glance.openstack.c5c3.io \
             applicationcredentials.openstack.k-orc.cloud \
             services.openstack.k-orc.cloud \
             endpoints.openstack.k-orc.cloud \

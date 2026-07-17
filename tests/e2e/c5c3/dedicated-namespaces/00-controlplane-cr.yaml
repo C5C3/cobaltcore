@@ -4,7 +4,7 @@
 
 # ControlPlane fixture for the dedicated-namespaces E2E test.
 #
-# It places its two services in namespaces of their OWN, one per lifecycle:
+# It places its three services in namespaces of their OWN, per lifecycle:
 #
 #   - Keystone lands in @KEYSTONE_NS@ under the Managed lifecycle: the operator
 #     creates the namespace, stamps it with the ControlPlane's ownership labels,
@@ -12,11 +12,18 @@
 #   - Horizon lands in @HORIZON_NS@ under the External lifecycle: the operator
 #     uses a pre-existing namespace (the test creates it) and never touches its
 #     lifecycle.
+#   - Glance lands in @GLANCE_NS@ under a SECOND Managed lifecycle, exercising the
+#     operator creating and later deleting a second owned namespace. Whenever
+#     services.glance is set the defaulting webhook additionally injects the glance
+#     service account with its targetNamespace pinned to the Glance namespace
+#     (@GLANCE_NS@) — the webhook accepts targetNamespace only when it names the
+#     ControlPlane's own or one of its dedicated service namespaces, so it must
+#     equal the dedicated glance namespace.
 #
-# The @KEYSTONE_NS@ / @HORIZON_NS@ tokens are substituted by the test script from
-# the ephemeral test namespace, so each run gets fresh, collision-free namespace
-# names. The CR itself carries NO metadata.namespace: chainsaw runs the suite in
-# its own ephemeral namespace and the test applies this CR into it.
+# The @KEYSTONE_NS@ / @HORIZON_NS@ / @GLANCE_NS@ tokens are substituted by the test
+# script from the ephemeral test namespace, so each run gets fresh, collision-free
+# namespace names. The CR itself carries NO metadata.namespace: chainsaw runs the
+# suite in its own ephemeral namespace and the test applies this CR into it.
 #
 # The SHARED infrastructure block is MANAGED (clusterRef), so the operator
 # provisions its backing services — and, because backing services follow the
@@ -59,6 +66,21 @@ spec:
       namespace:
         name: "@HORIZON_NS@"
         lifecycle: External
+    glance:
+      replicas: 1
+      namespace:
+        name: "@GLANCE_NS@"
+        lifecycle: Managed
+      backends:
+        - name: default
+          type: S3
+          isDefault: true
+          s3:
+            endpoint: "http://garage.openstack.svc.cluster.local:3900"
+            bucket: glance-images
+            region: garage
+            credentialsSecretRef:
+              name: garage-s3-credentials
   korc:
     adminCredential:
       cloudCredentialsRef:

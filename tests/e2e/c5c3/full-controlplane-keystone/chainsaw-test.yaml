@@ -29,16 +29,25 @@
 #                        (: the control-plane-namespace k-orc-clouds-yaml ExternalSecret is now OPERATOR-CREATED — per-CR, controller-owned — and the bootstrap clouds.yaml is operator-seeded; this test WAITS FOR, never pre-creates, them.)
 #   5. Catalog         — owned K-ORC Service ("…-identity-service") + Endpoint
 #                        ("…-identity-endpoint"); CatalogReady=True.
-#   5b. Service accts  — the declared "glance" account projects a managed
-#                        User/Project, an unmanaged K-ORC Role import, and a managed
-#                        RoleAssignment ("…-service-account-glance-assign-member-…");
+#   5b. Service accts  — the INJECTED "glance" account (the CR declares none; the
+#                        defaulting webhook adds it) projects a managed User/Project,
+#                        an unmanaged K-ORC Role import, and a managed RoleAssignment
+#                        ("…-service-account-glance-assign-service-…");
 #                        ServiceAccountsReady=True and status.serviceAccounts[0].ready.
+#   5c. Glance child   — owned Glance CR ("…-glance") with database/cache clusterRefs,
+#                        a Static DB credential, the derived Keystone endpoint, the
+#                        injected service user, and its GlanceBackend ("…-glance-default")
+#                        against the Garage S3 bucket; GlanceReady=True.
+#   5d. Image catalog  — owned K-ORC image Service ("…-image-service") + internal/public
+#                        Endpoints ("…-image-endpoint-{internal,public}"), both URLs the
+#                        in-cluster Glance API (no gateway in this fixture).
 #   6. Aggregate       — ControlPlane Ready=True (reason AllReady).
-#   7. API reachable   — Keystone /v3 returns HTTP 200; `openstack token issue`
-#                        and `openstack catalog list` succeed using the
-#                        materialised admin clouds.yaml (proves the minted,
-#                        pushed, re-materialised application credential actually
-#                        authenticates and the identity service is catalogued).
+#   7. API reachable   — Keystone /v3 returns HTTP 200; `openstack token issue`,
+#                        `openstack catalog list` (identity AND image), and an image
+#                        upload round-trip through the projected Glance endpoint into
+#                        the Garage S3 backend succeed using the materialised admin
+#                        clouds.yaml (proves the minted, pushed, re-materialised
+#                        application credential authenticates and both services work).
 #
 # ── DECISION: belt-and-braces presence guard + single consolidated script ────
 # Ambiguity: the task says "follow tests/e2e/keystone/basic-deployment
@@ -125,6 +134,10 @@ spec:
           PUSH_SECRET="${CP_NAME}-admin-app-credential-backup"
           SVC_CR="${CP_NAME}-identity-service"
           EP_CR="${CP_NAME}-identity-endpoint"
+          GLANCE_CR="${CP_NAME}-glance"
+          IMG_SVC_CR="${CP_NAME}-image-service"
+          IMG_EP_INT="${CP_NAME}-image-endpoint-internal"
+          IMG_EP_PUB="${CP_NAME}-image-endpoint-public"
           CLOUDS_SECRET=k-orc-clouds-yaml
 
           # ── Presence guard ──────────────────────────────
@@ -160,6 +173,8 @@ spec:
             controlplanes.c5c3.io \
             keystones.keystone.openstack.c5c3.io \
             horizons.horizon.openstack.c5c3.io \
+            glances.glance.openstack.c5c3.io \
+            glancebackends.glance.openstack.c5c3.io \
             applicationcredentials.openstack.k-orc.cloud \
             services.openstack.k-orc.cloud \
             endpoints.openstack.k-orc.cloud \
@@ -185,8 +200,13 @@ spec:
           if ! kubectl get pods -A -l app.kubernetes.io/name=keystone-operator --no-headers 2>/dev/null | grep -q .; then
             gate_absent "no keystone-operator is running; the cluster carries the stack's CRDs only."
           fi
-          echo "OK: c5c3 + K-ORC + keystone CRDs, OpenBao store, and a running"
-          echo "    keystone-operator present — running the full ControlPlane → Keystone chain."
+          # Same for the glance-operator: it drives the projected Glance child to
+          # Ready, so probe for its running pods (any namespace), not just its schema.
+          if ! kubectl get pods -A -l app.kubernetes.io/name=glance-operator --no-headers 2>/dev/null | grep -q .; then
+            gate_absent "no glance-operator is running; the cluster carries the stack's CRDs only."
+          fi
+          echo "OK: c5c3 + K-ORC + keystone + glance CRDs, OpenBao store, and running"
+          echo "    keystone-operator and glance-operator present — running the full ControlPlane → Keystone chain."
 
           # ── Helpers ────────────────────────────────────────────────────────
           # Poll a ControlPlane status condition to True. Implemented as an
@@ -443,15 +463,22 @@ spec:
           assert_eq "K-ORC identity Endpoint owned by ControlPlane" "${CP_NAME}" \
             "$(owner_of endpoints.openstack.k-orc.cloud "${EP_CR}")"
 
-          # ── Link 5b: service accounts (role projection) ────────────────────
-          # The declared "glance" account projects a managed User/Project, an
-          # unmanaged K-ORC Role import, and a managed RoleAssignment. The
-          # RoleAssignment name embeds the deterministic role slug for "member"
-          # (base "member" + "-" + the first 8 hex of sha256("member")).
-          # ServiceAccountsReady gates on all of them Available AND the OpenBao
-          # password round-trip, and status.serviceAccounts[0].ready mirrors that
-          # per-account convergence.
-          SA_ASSIGN="${CP_NAME}-service-account-glance-assign-member-e31ab643"
+          # ── Link 5b: service accounts (INJECTED glance account) ────────────
+          # The CR fixture declares NO serviceAccounts — whenever services.glance
+          # is set the defaulting webhook INJECTS the glance account (name glance,
+          # project service (create), role "service"). Asserting the entry landed on
+          # spec.korc.serviceAccounts[0] proves the injection ran on this live
+          # cluster. The injected account projects a managed User/Project, an
+          # unmanaged K-ORC Role import, and a managed RoleAssignment whose name
+          # embeds the deterministic role slug for "service" (base "service" + "-" +
+          # the first 8 hex of sha256("service")). ServiceAccountsReady gates on all
+          # of them Available AND the OpenBao password round-trip, and
+          # status.serviceAccounts[0].ready mirrors that per-account convergence.
+          assert_eq "webhook injected the glance service account (spec.korc.serviceAccounts[0].name)" "glance" \
+            "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.spec.korc.serviceAccounts[0].name}')"
+          assert_eq "injected glance account bound to the \"service\" role" "service" \
+            "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.spec.korc.serviceAccounts[0].roles[0]}')"
+          SA_ASSIGN="${CP_NAME}-service-account-glance-assign-service-9df6b026"
           wait_cp_condition ServiceAccountsReady 600
           assert_eq "status.serviceAccounts[0].ready" "true" \
             "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.status.serviceAccounts[0].ready}')"
@@ -462,12 +489,80 @@ spec:
           assert_eq "RoleAssignment owned by ControlPlane" "${CP_NAME}" \
             "$(owner_of roleassignments.openstack.k-orc.cloud "${SA_ASSIGN}")"
 
+          # ── Link 5c: Glance child (gated on KeystoneReady + service account) ─
+          # GlanceReady mirrors the child's Ready, which requires the real
+          # glance-api Deployment + db-sync against MariaDB and the S3 backend —
+          # this is the live end-to-end proof the envtest chain simulates.
+          wait_cp_condition GlanceReady 600
+          assert_eq "Glance image tag derived from openStackRelease" "2025.2" \
+            "$(kubectl get glances.glance.openstack.c5c3.io "${GLANCE_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.image.tag}')"
+          assert_eq "Glance database clusterRef wired to infra" "openstack-db" \
+            "$(kubectl get glances.glance.openstack.c5c3.io "${GLANCE_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.database.clusterRef.name}')"
+          assert_eq "Glance logical database is glance" "glance" \
+            "$(kubectl get glances.glance.openstack.c5c3.io "${GLANCE_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.database.database}')"
+          assert_eq "Glance DB secretRef points at the projected DB-credential Secret" "${CP_NAME}-glance-db-credentials" \
+            "$(kubectl get glances.glance.openstack.c5c3.io "${GLANCE_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.database.secretRef.name}')"
+          assert_eq "Glance DB credentialsMode forced Static" "Static" \
+            "$(kubectl get glances.glance.openstack.c5c3.io "${GLANCE_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.database.credentialsMode}')"
+          assert_eq "Glance cache clusterRef wired to infra" "openstack-memcached" \
+            "$(kubectl get glances.glance.openstack.c5c3.io "${GLANCE_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.cache.clusterRef.name}')"
+          assert_eq "Glance keystoneEndpoint derived from the naming convention" \
+            "http://${KEYSTONE_CR}.${CP_NS}.svc:5000/v3" \
+            "$(kubectl get glances.glance.openstack.c5c3.io "${GLANCE_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.keystoneEndpoint}')"
+          assert_eq "Glance service user derived from the injected account (username)" "glance" \
+            "$(kubectl get glances.glance.openstack.c5c3.io "${GLANCE_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.serviceUser.username}')"
+          assert_eq "Glance service user project" "service" \
+            "$(kubectl get glances.glance.openstack.c5c3.io "${GLANCE_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.serviceUser.projectName}')"
+          assert_eq "Glance service user secretRef" "${CP_NAME}-service-account-glance-credentials" \
+            "$(kubectl get glances.glance.openstack.c5c3.io "${GLANCE_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.serviceUser.secretRef.name}')"
+          assert_eq "Glance CR owned by ControlPlane" "${CP_NAME}" \
+            "$(owner_of glances.glance.openstack.c5c3.io "${GLANCE_CR}")"
+
+          # The projected GlanceBackend for the single "default" entry.
+          GLANCE_BACKEND="${GLANCE_CR}-default"
+          kubectl get glancebackends.glance.openstack.c5c3.io "${GLANCE_BACKEND}" -n "${CP_NS}" >/dev/null
+          assert_eq "GlanceBackend attached to the Glance child" "${GLANCE_CR}" \
+            "$(kubectl get glancebackends.glance.openstack.c5c3.io "${GLANCE_BACKEND}" -n "${CP_NS}" -o 'jsonpath={.spec.glanceRef.name}')"
+          assert_eq "GlanceBackend is the default store" "true" \
+            "$(kubectl get glancebackends.glance.openstack.c5c3.io "${GLANCE_BACKEND}" -n "${CP_NS}" -o 'jsonpath={.spec.isDefault}')"
+          assert_eq "GlanceBackend S3 host is the Garage endpoint" "http://garage.openstack.svc.cluster.local:3900" \
+            "$(kubectl get glancebackends.glance.openstack.c5c3.io "${GLANCE_BACKEND}" -n "${CP_NS}" -o 'jsonpath={.spec.s3.host}')"
+          assert_eq "GlanceBackend owned by ControlPlane" "${CP_NAME}" \
+            "$(owner_of glancebackends.glance.openstack.c5c3.io "${GLANCE_BACKEND}")"
+
+          # ── Link 5d: image catalog (K-ORC Service + both Endpoints, owned) ──
+          # Per design decision D6 the image service registers BOTH an internal and
+          # a public Endpoint at birth; with no gateway in this fixture both URLs
+          # advertise the in-cluster Glance API Service.
+          kubectl get services.openstack.k-orc.cloud "${IMG_SVC_CR}" -n "${CP_NS}" >/dev/null
+          kubectl get endpoints.openstack.k-orc.cloud "${IMG_EP_INT}" -n "${CP_NS}" >/dev/null
+          kubectl get endpoints.openstack.k-orc.cloud "${IMG_EP_PUB}" -n "${CP_NS}" >/dev/null
+          assert_eq "K-ORC image Service owned by ControlPlane" "${CP_NAME}" \
+            "$(owner_of services.openstack.k-orc.cloud "${IMG_SVC_CR}")"
+          assert_eq "K-ORC image Service type" "image" \
+            "$(kubectl get services.openstack.k-orc.cloud "${IMG_SVC_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.resource.type}')"
+          IMG_URL="http://${GLANCE_CR}.${CP_NS}.svc:9292"
+          assert_eq "K-ORC image internal Endpoint owned by ControlPlane" "${CP_NAME}" \
+            "$(owner_of endpoints.openstack.k-orc.cloud "${IMG_EP_INT}")"
+          assert_eq "image internal Endpoint interface" "internal" \
+            "$(kubectl get endpoints.openstack.k-orc.cloud "${IMG_EP_INT}" -n "${CP_NS}" -o 'jsonpath={.spec.resource.interface}')"
+          assert_eq "image internal Endpoint URL is the in-cluster Glance API" "${IMG_URL}" \
+            "$(kubectl get endpoints.openstack.k-orc.cloud "${IMG_EP_INT}" -n "${CP_NS}" -o 'jsonpath={.spec.resource.url}')"
+          assert_eq "K-ORC image public Endpoint owned by ControlPlane" "${CP_NAME}" \
+            "$(owner_of endpoints.openstack.k-orc.cloud "${IMG_EP_PUB}")"
+          assert_eq "image public Endpoint interface" "public" \
+            "$(kubectl get endpoints.openstack.k-orc.cloud "${IMG_EP_PUB}" -n "${CP_NS}" -o 'jsonpath={.spec.resource.interface}')"
+          assert_eq "image public Endpoint URL is the in-cluster Glance API" "${IMG_URL}" \
+            "$(kubectl get endpoints.openstack.k-orc.cloud "${IMG_EP_PUB}" -n "${CP_NS}" -o 'jsonpath={.spec.resource.url}')"
+
           # ── Link 6: aggregate Ready=True ───────────────────────────────────
           wait_cp_condition Ready 300
           assert_eq "Aggregate Ready reason" "AllReady" \
             "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o "jsonpath={.status.conditions[?(@.type=='Ready')].reason}")"
 
-          # ── Link 6a: status.services[] reports both services ready ─────────
+          # ── Link 6a: status.services[] reports all three services ready ────
+          # keystone [0], horizon [1], glance [2] — the stable order
+          # setServicesStatus emits.
           assert_eq "status.services[0] is keystone" "keystone" \
             "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.status.services[0].name}')"
           assert_eq "status.services[0] keystone ready" "true" \
@@ -476,6 +571,10 @@ spec:
             "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.status.services[1].name}')"
           assert_eq "status.services[1] horizon ready" "true" \
             "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.status.services[1].ready}')"
+          assert_eq "status.services[2] is glance" "glance" \
+            "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.status.services[2].name}')"
+          assert_eq "status.services[2] glance ready" "true" \
+            "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.status.services[2].ready}')"
 
           # ── Link 6b: dynamic DB credential engine (no-static / revoke / iso) ─
           # Per-tenant role is keyed on the namespace alone (dbDynamicRoleFor /
@@ -553,10 +652,21 @@ spec:
           kubectl apply -f 01-openstack-verify-job.yaml
           kubectl wait --for=condition=complete job/cp-openstack-verify -n "${CP_NS}" --timeout=5m
           echo "=== openstack client output ==="
-          kubectl logs -n "${CP_NS}" job/cp-openstack-verify
-          kubectl logs -n "${CP_NS}" job/cp-openstack-verify | grep -qi "identity" \
+          # Fetch the Job log ONCE and assert on the captured text. `kubectl
+          # logs | grep -q` fails under pipefail exactly when it MATCHES:
+          # grep -q exits at the first hit and closes the pipe while kubectl is
+          # still streaming, so kubectl dies on EPIPE and pipefail turns the
+          # matched pipeline into a failure. The image round-trip output grew
+          # the log past the point where kubectl finishes writing before grep
+          # exits. A single capture also pins every assertion to one pod's log
+          # instead of re-selecting a pod per kubectl call.
+          VERIFY_LOGS="$(kubectl logs -n "${CP_NS}" job/cp-openstack-verify)"
+          printf '%s\n' "${VERIFY_LOGS}"
+          grep -qi "identity" <<<"${VERIFY_LOGS}" \
             || { echo "ERROR: identity (keystone) service not listed in the catalog"; exit 1; }
-          echo "OK: token issued and identity service catalogued — full chain verified."
+          grep -qi "image" <<<"${VERIFY_LOGS}" \
+            || { echo "ERROR: image (glance) service not listed in the catalog"; exit 1; }
+          echo "OK: token issued, identity + image services catalogued, and image round-trip passed — full chain verified."
     catch:
     - script:
         shell: bash
@@ -576,6 +686,12 @@ spec:
           kubectl describe externalsecret controlplane-keystone-keystone-db-credentials -n openstack 2>&1 || true
           kubectl describe vaultdynamicsecret controlplane-keystone-keystone-db-credentials -n openstack 2>&1 || true
           kubectl get serviceaccount keystone-db-creds -n openstack 2>&1 || true
+          echo "=== Glance child + GlanceBackends ==="
+          kubectl get glances.glance.openstack.c5c3.io,glancebackends.glance.openstack.c5c3.io -n openstack 2>&1 || true
+          kubectl describe glance controlplane-keystone-glance -n openstack 2>&1 || true
+          kubectl describe externalsecret controlplane-keystone-glance-db-credentials -n openstack 2>&1 || true
+          echo "=== glance-operator logs (last 200 lines) ==="
+          kubectl logs -n glance-system -l app.kubernetes.io/name=glance-operator --tail=200 --all-containers 2>&1 || true
           echo "=== OpenBao logs (last 100 lines) ==="
           kubectl logs -n openbao-system -l app.kubernetes.io/name=openbao --tail=100 --all-containers 2>&1 || true
           echo "=== c5c3-operator logs (last 200 lines) ==="
