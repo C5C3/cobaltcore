@@ -79,6 +79,8 @@ github.com/json-iterator/go v1.1.12 h1:PV8peI4a0ysnczrg+LtxykD8LfKY9ML6u2jnxaEnr
 github.com/json-iterator/go v1.1.12/go.mod h1:e30LSqwooZae/UwlEbR2852Gd8hjQvJoHmT4TnhNGBo=
 github.com/k-orc/openstack-resource-controller/v2 v2.5.1-0.20260708153253-ef6119d9effa h1:lbaZcNL7NjewHGKsM2O9OfO0sPBtCcilt2mEY0Kk9SQ=
 github.com/k-orc/openstack-resource-controller/v2 v2.5.1-0.20260708153253-ef6119d9effa/go.mod h1:1Cj8Vz1OGH9fitp+BD/9MXEloS/DKqRR5KVFI7/ea1s=
+github.com/k-orc/openstack-resource-controller/v2 v2.6.0 h1:KKmdPiec2rzXv8NWWF01qQT6pIp4pILhDTnj45Nq7Uc=
+github.com/k-orc/openstack-resource-controller/v2 v2.6.0/go.mod h1:4G1kcWulFGyWqzde7AyCRjA6qpuZ8V4B3O3eluN3djU=
 github.com/klauspost/compress v1.18.0 h1:c/Cqfb0r+Yi+JtIEq73FWXVkRonBlf0CRNYc8Zttxdo=
 github.com/klauspost/compress v1.18.0/go.mod h1:2Pp+KzxcywXVXMr50+X0Q/Lsb43OQHYWRCY2AiWywWQ=
 github.com/kr/pretty v0.3.1 h1:flRD4NNwYAUpkphVc1HcthR4KEIFJ65n8Mw5qdRn3LE=
