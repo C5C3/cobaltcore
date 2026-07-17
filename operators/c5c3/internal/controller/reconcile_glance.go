@@ -12,6 +12,7 @@ import (
 	"time"
 
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
+	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -429,9 +430,10 @@ func (r *ControlPlaneReconciler) reconcileGlance(ctx context.Context, cp *c5c3v1
 }
 
 // deleteOrphanedGlance removes a previously-projected Glance child — and the
-// GlanceBackend children and DB-credential ExternalSecret that follow it — when
-// spec.services.glance is unset AND the ControlPlane has opted in to deletion via
-// glanceDeletionAllowedAnnotation (the caller gates this). Each object is only
+// GlanceBackend children, DB-credential ExternalSecret, and image catalog K-ORC
+// CRs that follow it — when spec.services.glance is unset AND the ControlPlane has
+// opted in to deletion via glanceDeletionAllowedAnnotation (the caller gates
+// this). Each object is only
 // deleted when this ControlPlane still owns it (by owner reference in its own
 // namespace, by the ownership labels in a service namespace); a hand-created
 // GlanceBackend that merely shares the namespace, or a foreign object colliding
@@ -477,8 +479,24 @@ func (r *ControlPlaneReconciler) deleteOrphanedGlance(ctx context.Context, cp *c
 		return err
 	}
 
-	// The Glance catalog K-ORC CRs (Service/Endpoint) are handled by a later
-	// package — not swept here.
+	// The Glance catalog K-ORC CRs: the image Service and its internal/public
+	// Endpoints. These are ControlPlane-scoped and live in the ControlPlane's own
+	// namespace regardless of Glance placement (see managedCatalogService), so they
+	// are swept from childNamespace(cp), not glanceNS. Each is ownership-checked, so
+	// a foreign CR colliding on a name is left alone.
+	catalogNS := childNamespace(cp)
+	catalogChildren := []client.Object{
+		&orcv1alpha1.Service{ObjectMeta: metav1.ObjectMeta{Name: glanceCatalogServiceName(cp), Namespace: catalogNS}},
+		&orcv1alpha1.Endpoint{ObjectMeta: metav1.ObjectMeta{Name: glanceCatalogEndpointName(cp, "internal"), Namespace: catalogNS}},
+		&orcv1alpha1.Endpoint{ObjectMeta: metav1.ObjectMeta{Name: glanceCatalogEndpointName(cp, "public"), Namespace: catalogNS}},
+	}
+	for _, child := range catalogChildren {
+		if err := commonreconcile.DeleteOrphanedChildFunc(ctx, r.Client, child, func(live client.Object) bool {
+			return isControlPlaneChild(live, cp)
+		}); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

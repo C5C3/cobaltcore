@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
 	horizonv1alpha1 "github.com/c5c3/forge/operators/horizon/api/v1alpha1"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
@@ -135,6 +136,22 @@ func orcChildObjects(cp *c5c3v1alpha1.ControlPlane) []orcChildObject {
 		for _, ep := range row.endpoints {
 			objs = append(objs, orcChildObject{newEndpoint, ep.crName})
 		}
+	}
+
+	// Preserved-orphan cover for the image catalog row. When spec.services.glance is
+	// set, managedCatalogRows already enumerated its Service/Endpoints above. When it
+	// is UNSET the reconcile-time sweep (deleteOrphanedGlance) only removes those CRs
+	// on the deletion opt-in, so a glance removal without the opt-in leaves the row
+	// standing — enumerate its names unconditionally here so the ControlPlane teardown
+	// still tears it down. A name that never existed is simply NotFound and tolerated
+	// as already-gone.
+	if cp.Spec.Services.Glance == nil {
+		objs = append(
+			objs,
+			orcChildObject{newService, glanceCatalogServiceName(cp)},
+			orcChildObject{newEndpoint, glanceCatalogEndpointName(cp, "internal")},
+			orcChildObject{newEndpoint, glanceCatalogEndpointName(cp, "public")},
+		)
 	}
 
 	objs = append(
@@ -676,9 +693,9 @@ func (r *ControlPlaneReconciler) teardownDedicatedNamespaces(
 
 // crossNamespaceServiceChildren returns the service children the ControlPlane
 // placed in namespace: the Keystone child when the Keystone service is assigned
-// there, the Horizon child likewise. Both are matched by their deterministic
-// names; ownership is re-checked against the live object before anything is
-// deleted.
+// there, the Horizon child likewise, and the Glance child likewise. Each is
+// matched by its deterministic name; ownership is re-checked against the live
+// object before anything is deleted.
 func crossNamespaceServiceChildren(cp *c5c3v1alpha1.ControlPlane, namespace string) []client.Object {
 	var children []client.Object
 	if cp.KeystoneNamespace() == namespace {
@@ -689,6 +706,11 @@ func crossNamespaceServiceChildren(cp *c5c3v1alpha1.ControlPlane, namespace stri
 	if cp.HorizonNamespace() == namespace {
 		children = append(children, &horizonv1alpha1.Horizon{
 			ObjectMeta: metav1.ObjectMeta{Name: horizonName(cp), Namespace: namespace},
+		})
+	}
+	if cp.GlanceNamespace() == namespace {
+		children = append(children, &glancev1alpha1.Glance{
+			ObjectMeta: metav1.ObjectMeta{Name: glanceName(cp), Namespace: namespace},
 		})
 	}
 	return children
@@ -721,6 +743,34 @@ func (r *ControlPlaneReconciler) deleteServiceChildrenIn(
 			}
 		}
 		remaining = append(remaining, fmt.Sprintf("%s/%s", namespace, child.GetName()))
+	}
+
+	// Also sweep the projected GlanceBackend children the ControlPlane placed in this
+	// namespace. They carry no external state, so deleting them alongside the Glance
+	// child is safe. Only c5c3-owned children carrying the glance child's name prefix
+	// are touched — a hand-created GlanceBackend that merely shares the namespace is
+	// never deleted. Each still-present owned backend is reported as remaining, the
+	// same way the service children are, so the sweep waits for it to disappear.
+	if cp.GlanceNamespace() == namespace {
+		var backends glancev1alpha1.GlanceBackendList
+		if err := r.List(ctx, &backends, client.InNamespace(namespace)); err != nil {
+			return nil, fmt.Errorf("listing GlanceBackends in %q for cross-namespace teardown: %w", namespace, err)
+		}
+		prefix := glanceBackendNamePrefix(cp)
+		for i := range backends.Items {
+			b := &backends.Items[i]
+			if !isControlPlaneChild(b, cp) || !strings.HasPrefix(b.Name, prefix) {
+				continue
+			}
+			if b.GetDeletionTimestamp().IsZero() {
+				if err := client.IgnoreNotFound(
+					r.Delete(ctx, b, client.PropagationPolicy(metav1.DeletePropagationBackground)),
+				); err != nil {
+					return nil, fmt.Errorf("deleting GlanceBackend %s/%s: %w", namespace, b.Name, err)
+				}
+			}
+			remaining = append(remaining, fmt.Sprintf("%s/%s", namespace, b.Name))
+		}
 	}
 	return remaining, nil
 }
@@ -767,8 +817,8 @@ func (r *ControlPlaneReconciler) deleteManagedNamespace(
 // placed in a namespace it does NOT own — the namespace itself must survive, so
 // nothing cascades and every object has to be named. The set is deterministic
 // (every name is derived from the ControlPlane), so nothing has to be discovered:
-// the backing services, the admin-password and DB-credential material, and the
-// tenant-store trio.
+// the backing services, the admin-password and Keystone DB-credential material, the
+// Glance DB-credential ExternalSecret, and the tenant-store trio.
 //
 // The tenant-store trio goes LAST: the service children deleted before this ran
 // their own ESO cleanup through that store, and an ESO PushSecret cannot purge its
@@ -825,6 +875,12 @@ func (r *ControlPlaneReconciler) sweepExternalNamespaceResidue(
 				Name: dbCredentialServiceAccountName, Namespace: namespace,
 			}},
 		)
+	}
+	// The Glance DB-credential ExternalSecret, which follows the Glance service.
+	if cp.GlanceNamespace() == namespace {
+		objs = append(objs, &esov1.ExternalSecret{ObjectMeta: metav1.ObjectMeta{
+			Name: glanceDBCredentialSecretName(cp), Namespace: namespace,
+		}})
 	}
 	// Any service-account credential delivered into this namespace: its source
 	// Secret and consumer ExternalSecret, both operator-owned by label here. The

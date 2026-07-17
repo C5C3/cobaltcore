@@ -11,6 +11,9 @@ import (
 
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
 	. "github.com/onsi/gomega"
+
+	commonv1 "github.com/c5c3/forge/internal/common/types"
+	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 )
 
 // TestManagedCatalogRows_IdentityOnly locks in that the managed catalog is driven
@@ -34,6 +37,69 @@ func TestManagedCatalogRows_IdentityOnly(t *testing.T) {
 	g.Expect(ep.iface).To(Equal("public"))
 	g.Expect(ep.crName).To(Equal(keystoneEndpointName(cp)), "the identity row keeps its legacy Endpoint CR name")
 	g.Expect(ep.url).To(Equal(keystoneCatalogURL(cp)))
+}
+
+// TestManagedCatalogRows_ImageRow covers the image (Glance) catalog row: it is
+// absent when services.glance is unset, and present with the generic CR names and
+// the D6 public+internal endpoint posture when it is set — the internal endpoint
+// always advertises the in-cluster Glance Service URL, while the public one shares
+// that URL without a gateway and flips to the gateway hostname when exposed.
+func TestManagedCatalogRows_ImageRow(t *testing.T) {
+	t.Run("absent when glance unset", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := korcControlPlane() // services.glance unset
+		rows := managedCatalogRows(cp)
+		g.Expect(rows).To(HaveLen(1), "with no image service the catalog is the identity row alone")
+		g.Expect(rows[0].serviceType).To(Equal("identity"))
+	})
+
+	t.Run("present with generic names and both interfaces when set", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := korcControlPlane()
+		cp.Spec.Services.Glance = &c5c3v1alpha1.ServiceGlanceSpec{}
+
+		rows := managedCatalogRows(cp)
+		g.Expect(rows).To(HaveLen(2), "the image row joins the identity row")
+
+		image := rows[1]
+		g.Expect(image.serviceType).To(Equal("image"))
+		g.Expect(image.serviceName).To(Equal("glance"))
+		g.Expect(image.crName).To(Equal("cp-image-service"))
+
+		// The internal endpoint is registered first, the public one second.
+		g.Expect(image.endpoints).To(HaveLen(2), "the image row registers both interfaces")
+		internal, public := image.endpoints[0], image.endpoints[1]
+		g.Expect(internal.iface).To(Equal("internal"))
+		g.Expect(internal.crName).To(Equal("cp-image-endpoint-internal"))
+		g.Expect(public.iface).To(Equal("public"))
+		g.Expect(public.crName).To(Equal("cp-image-endpoint-public"))
+
+		// Without a gateway the public URL equals the internal in-cluster URL (D6
+		// registers both interfaces at birth to avoid a later catalog migration).
+		wantInternal := "http://cp-glance.default.svc:9292"
+		g.Expect(internal.url).To(Equal(wantInternal))
+		g.Expect(public.url).To(Equal(wantInternal),
+			"without a gateway the public endpoint shares the in-cluster URL")
+	})
+
+	t.Run("public URL flips to the gateway hostname when exposed", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := korcControlPlane()
+		cp.Spec.Services.Glance = &c5c3v1alpha1.ServiceGlanceSpec{
+			Gateway: &commonv1.GatewaySpec{
+				ParentRef: commonv1.GatewayParentRefSpec{Name: "openstack-gw"},
+				Hostname:  "glance.example.com",
+			},
+		}
+
+		rows := managedCatalogRows(cp)
+		g.Expect(rows).To(HaveLen(2))
+		internal, public := rows[1].endpoints[0], rows[1].endpoints[1]
+		g.Expect(internal.url).To(Equal("http://cp-glance.default.svc:9292"),
+			"the internal endpoint stays in-cluster even when the public one is exposed")
+		g.Expect(public.url).To(Equal("https://glance.example.com"),
+			"the public endpoint prefers the gateway hostname, with no /v3 suffix")
+	})
 }
 
 // TestManagedCatalogBuilders_IdentityShapeUnchanged is the refactor-equivalence
