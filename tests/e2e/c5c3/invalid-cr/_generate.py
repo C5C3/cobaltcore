@@ -52,6 +52,7 @@ LICENSE_HEADER = """\
 #   {infrastructure} the whole spec.infrastructure block (indent 2) or ""
 #   {keystone}       the spec.services.keystone body (indent 6) or "" for nil
 #   {horizon}        the spec.services.horizon entry (indent 4) or ""
+#   {glance}         the spec.services.glance entry (indent 4) or ""
 #
 # korc.adminCredential.applicationCredential is intentionally omitted: the
 # defaulting webhook materializes it (rotation.mode etc.) before the CRD's
@@ -65,7 +66,7 @@ spec:
   openStackRelease: "2025.2"
 {infrastructure}  services:
     keystone:
-{keystone}{horizon}  korc:
+{keystone}{horizon}{glance}  korc:
     adminCredential:
       cloudCredentialsRef:
         cloudName: admin
@@ -98,6 +99,23 @@ MANAGED_INFRA = (
 )
 
 
+# A valid glance service body (indent 4): one S3 backend promoted to the default
+# store. The three glance-block fixtures below mutate exactly one aspect of it,
+# and the External-mode forbid fixture reuses it whole.
+VALID_GLANCE = (
+    "    glance:\n"
+    "      backends:\n"
+    "      - name: primary\n"
+    "        type: S3\n"
+    "        isDefault: true\n"
+    "        s3:\n"
+    "          endpoint: https://s3.example.com\n"
+    "          bucket: images\n"
+    "          credentialsSecretRef:\n"
+    "            name: glance-s3-creds\n"
+)
+
+
 # A valid, MANAGED dedicated backing-services block for the Keystone service
 # (indent 6, to be appended to a Managed keystone body). Every dedicated fixture
 # below mutates exactly one aspect of it.
@@ -126,6 +144,7 @@ class Fixture:
     keystone: str = VALID_EXTERNAL_KEYSTONE
     infrastructure: str = ""
     horizon: str = ""
+    glance: str = ""
     # The spec.korc.serviceAccounts block (indent 4, trailing newline) or "".
     service_accounts: str = ""
 
@@ -135,6 +154,7 @@ class Fixture:
             infrastructure=self.infrastructure,
             keystone=self.keystone,
             horizon=self.horizon,
+            glance=self.glance,
             service_accounts=self.service_accounts,
         )
         comment_lines = "".join(f"# {line}\n" for line in self.comment.splitlines())
@@ -666,6 +686,78 @@ FIXTURES: tuple[Fixture, ...] = (
             "          clusterRef:\n"
             "            name: cp-dedicated-cache\n"
             "          backend: dogpile.cache.pymemcache\n"
+        ),
+    ),
+    # --- per-service Glance (issue #672, still the create-rejection matrix) ---
+    Fixture(
+        filename="47-external-with-glance.yaml",
+        comment=(
+            "services.glance set in External mode is forbidden by the webhook (cross-field,\n"
+            "mirrors services.horizon): Glance needs its own External-mode design. The glance\n"
+            "block itself is valid, so the ONLY violation is the cross-field forbid."
+        ),
+        name="cp-external-with-glance",
+        glance=VALID_GLANCE,
+    ),
+    Fixture(
+        filename="48-glance-backends-empty.yaml",
+        comment=(
+            "services.glance.backends with no entry violates the CRD MinItems floor: an empty\n"
+            "list projects no GlanceBackend, so Glance has no image store at all."
+        ),
+        name="cp-glance-backends-empty",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        glance=(
+            "    glance:\n"
+            "      backends: []\n"
+        ),
+    ),
+    Fixture(
+        filename="49-glance-two-defaults.yaml",
+        comment=(
+            "Two backends both setting isDefault violate the single-default CEL rule: the\n"
+            "Glance default_backend would be ambiguous. The webhook mirrors the rule."
+        ),
+        name="cp-glance-two-defaults",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        glance=(
+            "    glance:\n"
+            "      backends:\n"
+            "      - name: primary\n"
+            "        type: S3\n"
+            "        isDefault: true\n"
+            "        s3:\n"
+            "          endpoint: https://s3.example.com\n"
+            "          bucket: images\n"
+            "          credentialsSecretRef:\n"
+            "            name: glance-s3-creds\n"
+            "      - name: secondary\n"
+            "        type: S3\n"
+            "        isDefault: true\n"
+            "        s3:\n"
+            "          endpoint: https://s3-2.example.com\n"
+            "          bucket: images2\n"
+            "          credentialsSecretRef:\n"
+            "            name: glance-s3-creds-2\n"
+        ),
+    ),
+    Fixture(
+        filename="50-glance-s3-block-missing.yaml",
+        comment=(
+            "A backend of type S3 without the s3 block violates the type/s3 union CEL rule:\n"
+            "the driver parameters live in that block. The webhook mirrors the rule."
+        ),
+        name="cp-glance-s3-missing",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        glance=(
+            "    glance:\n"
+            "      backends:\n"
+            "      - name: primary\n"
+            "        type: S3\n"
+            "        isDefault: true\n"
         ),
     ),
     # --- transition wave C: shared -> dedicated (Test: c5c3-invalid-cr-shared-to-dedicated) ---
