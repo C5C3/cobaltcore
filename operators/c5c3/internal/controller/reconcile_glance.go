@@ -12,6 +12,7 @@ import (
 	"time"
 
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -115,6 +116,14 @@ func glanceDBCredentialSecretName(cp *c5c3v1alpha1.ControlPlane) string {
 // syncs once the path has been seeded out-of-band.
 func glanceDBCredentialRemoteKeyFor(cp *c5c3v1alpha1.ControlPlane) string {
 	return "openstack/glance/" + cp.GlanceNamespace() + "/" + cp.Name + "/db"
+}
+
+// glanceBackendName returns the deterministic name of the GlanceBackend child
+// projected for a backends[] entry: the Glance child name, a hyphen, and the
+// entry name — so the prune sweep recognises projected backends by the
+// glanceName(cp)+"-" prefix and never touches a hand-created one.
+func glanceBackendName(cp *c5c3v1alpha1.ControlPlane, entryName string) string {
+	return glanceBackendNamePrefix(cp) + entryName
 }
 
 // glanceServiceAccount returns the auto-injected "glance" entry from
@@ -372,6 +381,28 @@ func (r *ControlPlaneReconciler) reconcileGlance(ctx context.Context, cp *c5c3v1
 	// spec.apiServer is deliberately NOT set — the child-side release-conditional
 	// defaults (workers vs uwsgi) stay authoritative.
 
+	// Project the declared image stores as GlanceBackend children and prune any
+	// previously-projected backend whose entry was removed. A GlanceBackend
+	// references its Glance by name (inverted attachment), so the ordering relative
+	// to the child ensure below is immaterial — GitOps applies them in either order.
+	if err := r.reconcileGlanceBackends(ctx, cp, glanceNS); err != nil {
+		reason := "GlanceBackendError"
+		message := fmt.Sprintf("projecting GlanceBackend children: %v", err)
+		if apierrors.IsInvalid(err) {
+			reason = "GlanceBackendProjectionRejected"
+			message = fmt.Sprintf("Glance API server rejected a projected GlanceBackend; reconcile the "+
+				"services.glance.backends entries to a valid projection to recover: %v", err)
+		}
+		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+			Type:               conditionTypeGlanceReady,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: cp.Generation,
+			Reason:             reason,
+			Message:            message,
+		})
+		return ctrl.Result{}, err
+	}
+
 	return commonreconcile.ProjectChild(ctx, r.Client, r.Scheme, cp, commonreconcile.ChildProjectionParams[*glancev1alpha1.Glance]{
 		Child:          glance,
 		ConditionType:  conditionTypeGlanceReady,
@@ -448,5 +479,72 @@ func (r *ControlPlaneReconciler) deleteOrphanedGlance(ctx context.Context, cp *c
 
 	// The Glance catalog K-ORC CRs (Service/Endpoint) are handled by a later
 	// package — not swept here.
+	return nil
+}
+
+// glanceBackendForEntry builds the GlanceBackend child projected from one
+// services.glance.backends entry. The CP-side S3 endpoint maps to the child's
+// spec.s3.host, and an unset bucketURLFormat serializes away (omitempty) so the
+// GlanceBackend CRD's own default ("path") applies at exactly one layer.
+func glanceBackendForEntry(cp *c5c3v1alpha1.ControlPlane, entry c5c3v1alpha1.GlanceBackendEntry, glanceNS string) *glancev1alpha1.GlanceBackend {
+	s3 := &glancev1alpha1.S3BackendSpec{
+		Host:                 entry.S3.Endpoint,
+		Bucket:               entry.S3.Bucket,
+		Region:               entry.S3.Region,
+		BucketURLFormat:      entry.S3.BucketURLFormat,
+		CredentialsSecretRef: glancev1alpha1.SecretNameRefSpec{Name: entry.S3.CredentialsSecretRef.Name},
+	}
+	return &glancev1alpha1.GlanceBackend{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      glanceBackendName(cp, entry.Name),
+			Namespace: glanceNS,
+		},
+		Spec: glancev1alpha1.GlanceBackendSpec{
+			GlanceRef: glancev1alpha1.GlanceRefSpec{Name: glanceName(cp)},
+			Type:      glancev1alpha1.GlanceBackendTypeS3,
+			S3:        s3,
+			IsDefault: entry.IsDefault,
+		},
+	}
+}
+
+// reconcileGlanceBackends projects one GlanceBackend child per
+// services.glance.backends entry and prunes previously-projected children whose
+// entry was removed.
+//
+// Every write routes through ensureUnownedOrOwned, which owner-references the
+// child in the ControlPlane's own namespace and label-stamps it (unowned) in a
+// service namespace — and, in a namespace the ControlPlane does not own, REFUSES
+// to adopt a same-named object it did not create. The prune sweep deletes only
+// c5c3-owned children carrying the glance child's name prefix, so a hand-created
+// GlanceBackend attached to the same Glance — or any foreign object colliding on
+// a name — is never pruned or overwritten.
+func (r *ControlPlaneReconciler) reconcileGlanceBackends(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, glanceNS string) error {
+	declared := make(map[string]struct{}, len(cp.Spec.Services.Glance.Backends))
+	for i := range cp.Spec.Services.Glance.Backends {
+		backend := glanceBackendForEntry(cp, cp.Spec.Services.Glance.Backends[i], glanceNS)
+		if err := r.ensureUnownedOrOwned(ctx, cp, backend); err != nil {
+			return fmt.Errorf("projecting GlanceBackend %q: %w", backend.Name, err)
+		}
+		declared[backend.Name] = struct{}{}
+	}
+
+	var list glancev1alpha1.GlanceBackendList
+	if err := r.List(ctx, &list, client.InNamespace(glanceNS)); err != nil {
+		return fmt.Errorf("listing GlanceBackends for prune: %w", err)
+	}
+	prefix := glanceBackendNamePrefix(cp)
+	for i := range list.Items {
+		b := &list.Items[i]
+		if _, kept := declared[b.Name]; kept {
+			continue
+		}
+		if !isControlPlaneChild(b, cp) || !strings.HasPrefix(b.Name, prefix) {
+			continue
+		}
+		if err := client.IgnoreNotFound(r.Delete(ctx, b, client.PropagationPolicy(metav1.DeletePropagationBackground))); err != nil {
+			return fmt.Errorf("pruning undeclared GlanceBackend %q: %w", b.Name, err)
+		}
+	}
 	return nil
 }

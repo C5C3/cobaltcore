@@ -656,3 +656,233 @@ func TestGlanceEndpointURL(t *testing.T) {
 	cp := glanceControlPlane()
 	g.Expect(glanceEndpointURL(cp)).To(Equal("http://cp-glance.default.svc:9292"))
 }
+
+// --- GlanceBackend projection and prune (Commit B) ---
+
+func getProjectedGlanceBackend(t *testing.T, c client.Client, cp *c5c3v1alpha1.ControlPlane, entryName string) *glancev1alpha1.GlanceBackend {
+	t.Helper()
+	b := &glancev1alpha1.GlanceBackend{}
+	key := types.NamespacedName{Name: glanceBackendName(cp, entryName), Namespace: cp.GlanceNamespace()}
+	if err := c.Get(context.Background(), key, b); err != nil {
+		t.Fatalf("getting projected GlanceBackend %s: %v", key, err)
+	}
+	return b
+}
+
+// TestReconcileGlance_BackendFieldMapping verifies the CP-side backend entry is
+// projected onto the GlanceBackend child field for field, with the CP-side
+// endpoint mapped to the child's spec.s3.host and bucketURLFormat left unset so
+// the child's own default applies.
+func TestReconcileGlance_BackendFieldMapping(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := glanceControlPlane() // one backend "primary", default, no region/urlFormat
+	r := newGlanceTestReconciler(t, cp)
+
+	_, err := r.reconcileGlance(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	b := getProjectedGlanceBackend(t, r.Client, cp, "primary")
+	g.Expect(b.Name).To(Equal("cp-glance-primary"))
+	g.Expect(b.Spec.GlanceRef.Name).To(Equal("cp-glance"),
+		"the backend must attach to this ControlPlane's Glance child")
+	g.Expect(b.Spec.Type).To(Equal(glancev1alpha1.GlanceBackendTypeS3))
+	g.Expect(b.Spec.S3).NotTo(BeNil())
+	g.Expect(b.Spec.S3.Host).To(Equal("https://s3.example.com"),
+		"the CP-side S3 endpoint maps to the child's spec.s3.host")
+	g.Expect(b.Spec.S3.Bucket).To(Equal("images"))
+	g.Expect(b.Spec.S3.CredentialsSecretRef.Name).To(Equal("glance-s3-creds"))
+	g.Expect(b.Spec.IsDefault).To(BeTrue())
+	g.Expect(b.Spec.S3.Region).To(BeEmpty())
+	g.Expect(b.Spec.S3.BucketURLFormat).To(BeEmpty(),
+		"an unset bucketURLFormat must be left unset so the GlanceBackend CRD default (path) applies")
+	// The projected backend is owned so it is torn down with the ControlPlane.
+	g.Expect(metav1.IsControlledBy(b, cp)).To(BeTrue())
+}
+
+// TestReconcileGlance_BackendOptionalFieldsProjectedWhenSet is the other half of
+// the mapping: region and bucketURLFormat are carried through when the entry sets
+// them.
+func TestReconcileGlance_BackendOptionalFieldsProjectedWhenSet(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := glanceControlPlane()
+	cp.Spec.Services.Glance.Backends[0].S3.Region = "us-east-1"
+	cp.Spec.Services.Glance.Backends[0].S3.BucketURLFormat = "virtual"
+	r := newGlanceTestReconciler(t, cp)
+
+	_, err := r.reconcileGlance(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	b := getProjectedGlanceBackend(t, r.Client, cp, "primary")
+	g.Expect(b.Spec.S3.Region).To(Equal("us-east-1"))
+	g.Expect(b.Spec.S3.BucketURLFormat).To(Equal("virtual"))
+}
+
+// TestReconcileGlance_TwoBackendsTwoChildren verifies each declared entry
+// projects its own GlanceBackend child.
+func TestReconcileGlance_TwoBackendsTwoChildren(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := glanceControlPlane()
+	cp.Spec.Services.Glance.Backends = append(cp.Spec.Services.Glance.Backends,
+		c5c3v1alpha1.GlanceBackendEntry{
+			Name: "secondary",
+			Type: "S3",
+			S3: &c5c3v1alpha1.GlanceBackendS3Spec{
+				Endpoint:             "https://s3-2.example.com",
+				Bucket:               "images-2",
+				CredentialsSecretRef: c5c3v1alpha1.SecretNameRef{Name: "glance-s3-creds-2"},
+			},
+		})
+	r := newGlanceTestReconciler(t, cp)
+
+	_, err := r.reconcileGlance(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var list glancev1alpha1.GlanceBackendList
+	g.Expect(r.Client.List(context.Background(), &list)).To(Succeed())
+	names := make([]string, 0, len(list.Items))
+	for i := range list.Items {
+		names = append(names, list.Items[i].Name)
+	}
+	g.Expect(names).To(ConsistOf("cp-glance-primary", "cp-glance-secondary"))
+}
+
+// TestReconcileGlance_PruneRemovedBackend verifies removing an entry from the
+// spec prunes exactly its projected child and leaves the others.
+func TestReconcileGlance_PruneRemovedBackend(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := glanceControlPlane()
+	cp.Spec.Services.Glance.Backends = append(cp.Spec.Services.Glance.Backends,
+		c5c3v1alpha1.GlanceBackendEntry{
+			Name: "secondary",
+			Type: "S3",
+			S3: &c5c3v1alpha1.GlanceBackendS3Spec{
+				Endpoint:             "https://s3-2.example.com",
+				Bucket:               "images-2",
+				CredentialsSecretRef: c5c3v1alpha1.SecretNameRef{Name: "glance-s3-creds-2"},
+			},
+		})
+	r := newGlanceTestReconciler(t, cp)
+	ctx := context.Background()
+
+	_, err := r.reconcileGlance(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	var before glancev1alpha1.GlanceBackendList
+	g.Expect(r.Client.List(ctx, &before)).To(Succeed())
+	g.Expect(before.Items).To(HaveLen(2))
+
+	// Drop "secondary" from the spec.
+	cp.Spec.Services.Glance.Backends = cp.Spec.Services.Glance.Backends[:1]
+	_, err = r.reconcileGlance(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var after glancev1alpha1.GlanceBackendList
+	g.Expect(r.Client.List(ctx, &after)).To(Succeed())
+	g.Expect(after.Items).To(HaveLen(1))
+	g.Expect(after.Items[0].Name).To(Equal("cp-glance-primary"),
+		"only the removed entry's child is pruned")
+}
+
+// TestReconcileGlance_NeverPrunesForeignBackend proves the prune is
+// ownership-checked: a hand-created GlanceBackend that shares the projected name
+// prefix but is NOT owned by the ControlPlane survives the sweep.
+func TestReconcileGlance_NeverPrunesForeignBackend(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := glanceControlPlane()
+
+	// A hand-created backend attached to the same Glance, name-prefix colliding,
+	// but carrying neither our owner reference nor our labels.
+	foreign := &glancev1alpha1.GlanceBackend{
+		ObjectMeta: metav1.ObjectMeta{Name: "cp-glance-handmade", Namespace: cp.GlanceNamespace()},
+		Spec: glancev1alpha1.GlanceBackendSpec{
+			GlanceRef: glancev1alpha1.GlanceRefSpec{Name: "cp-glance"},
+			Type:      glancev1alpha1.GlanceBackendTypeS3,
+			S3: &glancev1alpha1.S3BackendSpec{
+				Host:                 "https://byo.example.com",
+				Bucket:               "byo",
+				CredentialsSecretRef: glancev1alpha1.SecretNameRefSpec{Name: "byo-creds"},
+			},
+		},
+	}
+	r := newGlanceTestReconciler(t, cp, foreign)
+
+	_, err := r.reconcileGlance(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(r.Get(context.Background(), types.NamespacedName{
+		Name: "cp-glance-handmade", Namespace: cp.GlanceNamespace(),
+	}, &glancev1alpha1.GlanceBackend{})).To(Succeed(),
+		"a hand-created GlanceBackend we do not own must never be pruned")
+}
+
+// TestReconcileGlance_NeverAdoptsForeignBackend proves the ensure refuses foreign
+// adoption in a namespace the ControlPlane does not own: a pre-existing,
+// unowned GlanceBackend at the projected name is neither overwritten nor adopted,
+// and the projection surfaces the refusal.
+func TestReconcileGlance_NeverAdoptsForeignBackend(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := glanceControlPlane()
+	cp.Spec.Services.Glance.Namespace = &c5c3v1alpha1.ServiceNamespaceSpec{
+		Name: "images", Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+	}
+
+	// A foreign object at the projected name in the (unowned) service namespace.
+	foreign := &glancev1alpha1.GlanceBackend{
+		ObjectMeta: metav1.ObjectMeta{Name: "cp-glance-primary", Namespace: "images"},
+		Spec: glancev1alpha1.GlanceBackendSpec{
+			GlanceRef: glancev1alpha1.GlanceRefSpec{Name: "someone-else"},
+			Type:      glancev1alpha1.GlanceBackendTypeS3,
+			S3: &glancev1alpha1.S3BackendSpec{
+				Host:                 "https://foreign.example.com",
+				Bucket:               "foreign",
+				CredentialsSecretRef: glancev1alpha1.SecretNameRefSpec{Name: "foreign-creds"},
+			},
+		},
+	}
+	r := newGlanceTestReconciler(t, cp, foreign)
+
+	_, err := r.reconcileGlance(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred(), "adopting a foreign backend must be refused")
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeGlanceReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("GlanceBackendError"))
+
+	// The foreign object's spec must be untouched.
+	var live glancev1alpha1.GlanceBackend
+	g.Expect(r.Get(context.Background(), types.NamespacedName{
+		Name: "cp-glance-primary", Namespace: "images",
+	}, &live)).To(Succeed())
+	g.Expect(live.Spec.GlanceRef.Name).To(Equal("someone-else"),
+		"a foreign backend must never be overwritten")
+	g.Expect(live.Labels).NotTo(HaveKey(controlPlaneNameLabel),
+		"ownership must never be claimed over a backend we did not create")
+}
+
+// TestReconcileGlance_CrossNamespaceChildrenAreLabelledNotOwned verifies the
+// ownership substitute for a Glance placed in a namespace of its own: the Glance
+// child and its GlanceBackend children carry the ControlPlane's ownership labels
+// and NO owner reference (Kubernetes forbids a cross-namespace one).
+func TestReconcileGlance_CrossNamespaceChildrenAreLabelledNotOwned(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := glanceControlPlane()
+	cp.Spec.Services.Glance.Namespace = &c5c3v1alpha1.ServiceNamespaceSpec{
+		Name: "images", Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+	}
+	r := newGlanceTestReconciler(t, cp)
+
+	_, err := r.reconcileGlance(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	gl := getProjectedGlance(t, r.Client, cp)
+	g.Expect(gl.Namespace).To(Equal("images"))
+	g.Expect(gl.OwnerReferences).To(BeEmpty(), "a cross-namespace child cannot carry an owner reference")
+	g.Expect(gl.Labels).To(HaveKeyWithValue(controlPlaneNameLabel, "cp"))
+	g.Expect(gl.Labels).To(HaveKeyWithValue(controlPlaneNamespaceLabel, "default"))
+
+	b := getProjectedGlanceBackend(t, r.Client, cp, "primary")
+	g.Expect(b.Namespace).To(Equal("images"))
+	g.Expect(b.OwnerReferences).To(BeEmpty(), "a cross-namespace backend cannot carry an owner reference")
+	g.Expect(b.Labels).To(HaveKeyWithValue(controlPlaneNameLabel, "cp"))
+	g.Expect(b.Labels).To(HaveKeyWithValue(controlPlaneNamespaceLabel, "default"))
+	// It still attaches to the Glance child by name across the namespace boundary.
+	g.Expect(b.Spec.GlanceRef.Name).To(Equal("cp-glance"))
+}
