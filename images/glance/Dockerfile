@@ -24,11 +24,13 @@ ARG PIP_PACKAGES=""
 # Both launch modes ship in this one image by construction: uv's --prefix
 # install generates the glance-api and glance-manage console scripts from
 # setup.cfg (it only skips PBR wsgi_scripts). 2025.2 starts the eventlet
-# glance-api console script; 2026.1+ runs uWSGI with the module path
-# glance.wsgi.api:application, which needs no script — so nothing is
-# hand-written here. keystone's technique (a hand-written wsgi script, see
-# images/keystone/Dockerfile) stays the fallback if that changes. uwsgi
-# itself comes from the venv-builder base requirements.
+# glance-api console script; 2026.1+ runs uWSGI with the hand-shipped
+# glance-wsgi-api script (keystone's technique, see images/keystone/
+# Dockerfile). The stock module path glance.wsgi.api:application is unusable
+# under the operator's layout: wsgi_app.init_app() ignores sys.argv (and so
+# uWSGI's --pyargv) and reads only $OS_GLANCE_CONFIG_DIR/glance-api.conf,
+# never the two --config-dir mounts — see glance-wsgi-api. uwsgi itself comes
+# from the venv-builder base requirements.
 #
 # 'set -f' disables pathname expansion for the install step: PIP_PACKAGES stays
 # unquoted so multiple space-separated packages word-split, but its
@@ -56,6 +58,14 @@ FROM python-base
 ARG EXTRA_APT_PACKAGES=""
 
 COPY --from=build --link /var/lib/openstack /var/lib/openstack
+
+# The uWSGI entry script for the 2026.1+ launch mode: it redirects glance's
+# WSGI config discovery to the --config-dir roots passed via uWSGI --pyargv
+# (glance's stock module path ignores sys.argv — see the script header). The
+# glance-operator references it as `--wsgi-file /var/lib/openstack/bin/
+# glance-wsgi-api` in reconcile_deployment.go; the two paths must stay in
+# lockstep.
+COPY --chmod=0755 glance-wsgi-api /var/lib/openstack/bin/glance-wsgi-api
 
 # Runtime system packages required by Glance. Glance is otherwise pure Python
 # at runtime, but the venv-builder-compiled uwsgi binary links

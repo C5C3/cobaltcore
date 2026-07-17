@@ -82,11 +82,22 @@ const (
 // operators so every request line reaches stderr in the same shape.
 const uwsgiLogFormat = "%(method) %(uri) => generated %(rsize) bytes in %(msecs) msecs (%(proto) %(status))"
 
-// glanceUWSGIPyargv is the argument vector uWSGI forwards to glance-api via
-// --pyargv: both oslo.config --config-dir entries (the immutable config
-// ConfigMap and the backends Secret), so the WSGI app loads the same config the
-// eventlet launch command loads.
+// glanceUWSGIPyargv is the argument vector uWSGI forwards to the WSGI entry
+// script via --pyargv: both oslo.config --config-dir entries (the immutable
+// config ConfigMap and the backends Secret), so the WSGI app loads the same
+// config the eventlet launch command loads. Glance's stock module path
+// (glance.wsgi.api:application) ignores sys.argv — wsgi_app.init_app() parses
+// with CONF([], ...) and reads only $OS_GLANCE_CONFIG_DIR/glance-api.conf —
+// which is why the launch command loads glanceWSGIScriptPath instead: that
+// image-shipped script consumes these flags and redirects glance's config
+// discovery to them.
 var glanceUWSGIPyargv = "--config-dir " + glanceConfigDir + " --config-dir " + glanceBackendsConfigDir
+
+// glanceWSGIScriptPath is the uWSGI entry script shipped by images/glance
+// (COPY glance-wsgi-api). It parses the --pyargv --config-dir flags that
+// glance's own WSGI module ignores; the two paths must stay in lockstep with
+// the image.
+const glanceWSGIScriptPath = "/var/lib/openstack/bin/glance-wsgi-api"
 
 // Condition reason constants for DeploymentReady.
 const (
@@ -383,7 +394,7 @@ func glanceUsesUWSGI(glance *glancev1alpha1.Glance) bool {
 // glanceUWSGICommand constructs the uWSGI container command from the given
 // apiServer spec, mirroring keystone's uwsgiCommand flag-by-flag. When apiServer
 // or apiServer.uwsgi is nil the webhook defaults (processes=2, threads=1,
-// httpKeepAlive=true) apply. Fixed flags (--http, --module, --master,
+// httpKeepAlive=true) apply. Fixed flags (--http, --wsgi-file, --master,
 // --lazy-apps, --need-app, --pyargv, and the always-on request logging) are
 // always included; --http-keepalive[-timeout] and --harakiri are conditional on
 // the uWSGI spec exactly as keystone emits them.
@@ -430,7 +441,7 @@ func glanceUWSGICommand(apiServer *glancev1alpha1.APIServerSpec) []string {
 	)
 	cmd = append(
 		cmd,
-		"--module", "glance.wsgi.api:application",
+		"--wsgi-file", glanceWSGIScriptPath,
 		"--master",
 		"--lazy-apps",
 		"--need-app",

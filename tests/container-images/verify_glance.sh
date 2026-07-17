@@ -53,21 +53,28 @@ test_glance_importable() {
   assert_eq "import glance exits 0" "0" "$exit_code"
 }
 
-# --- Test 4: the uWSGI module path resolves on the import path ---
-test_wsgi_module_resolvable() {
-  echo "Test: glance.wsgi.api is resolvable"
-  # glance/wsgi/api.py runs wsgi_app.init_app() at module-import time (config
-  # load -> store init -> paste app), so a bare `import glance.wsgi.api`
-  # legitimately fails in this config-free image. importlib.util.find_spec
-  # proves exactly what uWSGI's `--module glance.wsgi.api:application` needs at
-  # runtime: the module resolves on the import path, without executing it.
+# --- Test 4: the uWSGI entry script is present, executable, and parses ---
+test_wsgi_shim_present() {
+  echo "Test: glance-wsgi-api shim is present, executable, and parses"
+  # The operator launches 2026.1+ with
+  # `--wsgi-file /var/lib/openstack/bin/glance-wsgi-api` (glance's stock
+  # module path ignores --pyargv, so the shim redirects config discovery to
+  # the mounted --config-dir roots). Executing the shim needs operator-mounted
+  # runtime config, so assert what the launch needs without running it: the
+  # file exists, is executable, and is valid Python (ast.parse writes no
+  # bytecode, unlike py_compile, which would fail as the openstack user).
   local exit_code=0
   docker run --rm "$IMAGE" \
-    /var/lib/openstack/bin/python -c \
-    'import importlib.util, sys; sys.exit(0 if importlib.util.find_spec("glance.wsgi.api") else 1)' \
+    sh -c 'test -x /var/lib/openstack/bin/glance-wsgi-api' \
     > /dev/null 2>&1 || exit_code=$?
+  assert_eq "glance-wsgi-api exists and is executable" "0" "$exit_code"
 
-  assert_eq "glance.wsgi.api find_spec exits 0" "0" "$exit_code"
+  local parse_exit=0
+  docker run --rm "$IMAGE" \
+    /var/lib/openstack/bin/python -c \
+    'import ast; ast.parse(open("/var/lib/openstack/bin/glance-wsgi-api").read())' \
+    > /dev/null 2>&1 || parse_exit=$?
+  assert_eq "glance-wsgi-api parses as Python" "0" "$parse_exit"
 }
 
 # --- Test 5: the S3 store driver resolved boto3 ---
@@ -120,7 +127,7 @@ test_no_build_tools_in_final_image() {
   assert_nonzero_exit "uv not found" "$uv_exit"
 }
 
-# --- Test 8: uwsgi is runnable (serves glance.wsgi.api at runtime) ---
+# --- Test 8: uwsgi is runnable (serves glance-wsgi-api at runtime) ---
 test_uwsgi_runnable() {
   echo "Test: uwsgi --version succeeds"
   # Transitively proves the libpython3.12t64 apt wiring: the venv-builder
@@ -142,7 +149,7 @@ test_glance_api_present
 echo ""
 test_glance_importable
 echo ""
-test_wsgi_module_resolvable
+test_wsgi_shim_present
 echo ""
 test_s3_driver_and_boto3
 echo ""

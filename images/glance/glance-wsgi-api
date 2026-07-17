@@ -1,0 +1,38 @@
+#!/var/lib/openstack/bin/python
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# uWSGI entry point for the Glance API (the 2026.1+ launch mode).
+#
+# Glance's stock module path (glance.wsgi.api:application) cannot be used
+# here: wsgi_app.init_app() parses config with CONF([], ...) — sys.argv, and
+# therefore uWSGI's --pyargv, is ignored — and reads only the fixed file
+# $OS_GLANCE_CONFIG_DIR/glance-api.conf. The glance-operator instead supplies
+# two oslo --config-dir roots via --pyargv (the immutable config ConfigMap and
+# the content-hashed backends Secret), so this script redirects wsgi_app's
+# config discovery to every *.conf under those directories before init_app()
+# parses. Sorting per directory, in argv order, mirrors oslo.config's own
+# --config-dir semantics — the same files the eventlet glance-api launch mode
+# loads from the same flags.
+
+import glob
+import sys
+
+from glance.common import wsgi_app
+
+if not hasattr(wsgi_app, '_get_config_files'):
+    raise RuntimeError(
+        'glance.common.wsgi_app._get_config_files is gone; '
+        'this shim must be ported to the new config discovery')
+
+
+def _config_files_from_argv(env=None):
+    dirs = [sys.argv[i + 1] for i, arg in enumerate(sys.argv)
+            if arg == '--config-dir' and i + 1 < len(sys.argv)]
+    return [path for d in dirs
+            for path in sorted(glob.glob(d.rstrip('/') + '/*.conf'))]
+
+
+wsgi_app._get_config_files = _config_files_from_argv
+application = wsgi_app.init_app()

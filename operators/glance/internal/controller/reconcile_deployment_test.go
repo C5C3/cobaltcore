@@ -79,8 +79,13 @@ func TestGlanceLaunchCommand_UWSGIFrom2026(t *testing.T) {
 
 	cmd := glanceLaunchCommand(deployGlance("2026.1"))
 	g.Expect(cmd[0]).To(Equal("uwsgi"))
-	// Fixed uWSGI flags for the WSGI launch mode.
-	g.Expect(cmd).To(ContainElements("--module", "glance.wsgi.api:application"))
+	// Fixed uWSGI flags for the WSGI launch mode. The entry point is the
+	// image-shipped shim, NOT glance.wsgi.api:application: the stock module
+	// ignores sys.argv (and so --pyargv), reading only
+	// $OS_GLANCE_CONFIG_DIR/glance-api.conf — the shim consumes the
+	// --config-dir flags asserted below.
+	g.Expect(cmd).To(ContainElements("--wsgi-file", glanceWSGIScriptPath))
+	g.Expect(cmd).NotTo(ContainElement("--module"))
 	g.Expect(cmd).To(ContainElements("--http-auto-chunked", "--http-chunked-input"))
 	httpBind, ok := argAfter(cmd, "--http")
 	g.Expect(ok).To(BeTrue())

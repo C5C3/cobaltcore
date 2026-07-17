@@ -224,9 +224,13 @@ horizon's upstream `tools/unit_tests.sh` driver in the pytest path.
 **Location:** `images/glance/Dockerfile`
 
 The Glance service image uses the same two-stage build as Keystone. Both launch
-modes ship in one image by construction — 2025.2 starts the eventlet `glance-api`
-console script, and 2026.1+ runs uWSGI with the module path
-`glance.wsgi.api:application`.
+modes ship in one image — 2025.2 starts the eventlet `glance-api` console
+script, and 2026.1+ runs uWSGI with the hand-shipped
+`/var/lib/openstack/bin/glance-wsgi-api` entry script. Glance's stock module
+path (`glance.wsgi.api:application`) is unusable under the operator's config
+layout: `wsgi_app.init_app()` ignores `sys.argv` (and so uWSGI's `--pyargv`)
+and reads only `$OS_GLANCE_CONFIG_DIR/glance-api.conf`, so the shim redirects
+config discovery to the two mounted `--config-dir` roots instead.
 
 **Stage 1 (`build`)** — extends `venv-builder`:
 
@@ -238,8 +242,8 @@ console script, and 2026.1+ runs uWSGI with the module path
   contexts (`--build-context glance=...` / `--build-context upper-constraints=...`)
 - Installs Glance into the virtualenv using `uv pip install --constraint`. The
   `--prefix` install generates the `glance-api` and `glance-manage` console
-  scripts from `setup.cfg` (it only skips PBR `wsgi_scripts`), so no wsgi script
-  is hand-written — the 2026.1 uWSGI module path needs none
+  scripts from `setup.cfg` (it only skips PBR `wsgi_scripts`); the uWSGI entry
+  script is not generated but copied in during the runtime stage
 
 **Stage 2 (runtime)** — extends `python-base`:
 
@@ -248,6 +252,9 @@ console script, and 2026.1+ runs uWSGI with the module path
   python-base does not ship (the same rationale as horizon). Glance is otherwise
   pure Python at runtime
 - Copies `/var/lib/openstack` from the build stage using `COPY --from=build --link`
+- Copies the `glance-wsgi-api` uWSGI entry script to
+  `/var/lib/openstack/bin/glance-wsgi-api` (the path the glance-operator's
+  `--wsgi-file` flag references)
 - Sets `USER openstack` for non-root execution
 
 The image stays config-free: the glance-operator mounts `glance-api.conf`,
@@ -271,7 +278,7 @@ The image stays config-free: the glance-operator mounts `glance-api.conf`,
 runs its suite under stestr (the default path, as for keystone).
 
 **Image contract check:** `tests/container-images/verify_glance.sh` is the hard
-gate — it verifies the CLIs, importability, the uWSGI module path, the S3 store
+gate — it verifies the CLIs, importability, the uWSGI entry script, the S3 store
 driver's boto3 resolution, non-root execution, and the absence of build tools.
 
 ## Named Build Contexts
