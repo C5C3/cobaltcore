@@ -35,6 +35,7 @@ KEY_THRESHOLD="${KEY_THRESHOLD:-3}"
 POD_RUNNING_TIMEOUT="${POD_RUNNING_TIMEOUT:-120}"
 BAO_REACHABLE_RETRIES="${BAO_REACHABLE_RETRIES:-30}"
 BAO_REACHABLE_INTERVAL="${BAO_REACHABLE_INTERVAL:-5}"
+EXEC_READY_TIMEOUT="${EXEC_READY_TIMEOUT:-60}"
 
 log() {
   echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] unseal-openbao: $*"
@@ -61,6 +62,29 @@ wait_for_pod_running() {
     fi
     if [[ $(date +%s) -ge ${deadline} ]]; then
       log "ERROR: pod ${BAO_NAMESPACE}/${POD} did not reach Running within ${POD_RUNNING_TIMEOUT}s (last phase: ${phase:-<not found>})"
+      kubectl get pod "${POD}" -n "${BAO_NAMESPACE}" -o wide 2>&1 || true
+      exit 1
+    fi
+    sleep 2
+  done
+}
+
+# phase=Running is not enough to exec: right after a pod-kill the kubelet
+# reports the recreated pod Running while the runtime is still starting the
+# openbao container, and `kubectl exec` fails with
+# `container not found ("openbao")`. Probe the exec path with a no-op until
+# it works, so no unseal key is ever submitted over a transport that is not
+# up yet.
+wait_for_exec_ready() {
+  local deadline=$(( $(date +%s) + EXEC_READY_TIMEOUT ))
+  log "Waiting up to ${EXEC_READY_TIMEOUT}s for exec into ${BAO_NAMESPACE}/${POD} to become available..."
+  while true; do
+    if kubectl exec -n "${BAO_NAMESPACE}" "${POD}" -- true 2>/dev/null; then
+      log "  exec into ${BAO_NAMESPACE}/${POD} is available"
+      return 0
+    fi
+    if [[ $(date +%s) -ge ${deadline} ]]; then
+      log "ERROR: exec into ${BAO_NAMESPACE}/${POD} did not become available within ${EXEC_READY_TIMEOUT}s"
       kubectl get pod "${POD}" -n "${BAO_NAMESPACE}" -o wide 2>&1 || true
       exit 1
     fi
@@ -131,6 +155,7 @@ main() {
   fi
 
   log "${POD} is not Ready, applying unseal keys..."
+  wait_for_exec_ready
   unseal
 
   wait_for_pod_ready
