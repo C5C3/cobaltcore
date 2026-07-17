@@ -237,20 +237,25 @@ func (r *GlanceReconciler) reconcileConfig(ctx context.Context, glance *glancev1
 	return ctrl.Result{}, configArtifacts{configMapName: configMapName, backendsSecretName: projection.secretName}, nil
 }
 
-// renderPasteINI renders glance-api-paste.ini: the WSGI pipeline
-// (cors → healthcheck → http_proxy_to_wsgi → versionnegotiation → authtoken →
-// context → rootapp) with any spec.Middleware injected via the shared pipeline
-// renderer, merged with the literal glance root-app / filter sections the
-// PipelineSpec cannot express. The healthcheck filter must stay in the pipeline
-// because the /healthcheck probes depend on it.
+// renderPasteINI renders glance-api-paste.ini, mirroring upstream's shape:
+// the flavored name glance loads ([paste_deploy] flavor = keystone →
+// glance-api-keystone) is a root composite that mounts the filter pipeline
+// (cors → http_proxy_to_wsgi → versionnegotiation → authtoken → context →
+// rootapp) at / and the healthcheck app at /healthcheck. Healthcheck must be
+// an app, not a pipeline filter: oslo.middleware in glance ≥ 32.0.0 (2026.1)
+// raises NotImplementedError for filter-style deployment, crash-looping every
+// API pod at startup. Routing /healthcheck above the pipeline also keeps the
+// probes outside authtoken, as the old front-of-pipeline filter did.
+// Any spec.Middleware is injected into the pipeline via the shared renderer,
+// merged with the literal glance sections the PipelineSpec cannot express.
 func renderPasteINI(glance *glancev1alpha1.Glance) (string, error) {
 	sections, err := plugins.RenderPastePipeline(plugins.PipelineSpec{
-		PipelineName: "glance-api-keystone",
+		PipelineName: "api",
 		// rootapp terminates the pipeline directive; it is a composite section
 		// (below), not an [app:*], so no AppFactory is set — that suppresses the
 		// [app:rootapp] the renderer would otherwise emit.
 		AppName:     "rootapp",
-		BaseFilters: []string{"cors", "healthcheck", "http_proxy_to_wsgi", "versionnegotiation", "authtoken", "context"},
+		BaseFilters: []string{"cors", "http_proxy_to_wsgi", "versionnegotiation", "authtoken", "context"},
 		Middleware:  glance.Spec.Middleware,
 	})
 	if err != nil {
@@ -268,14 +273,24 @@ func renderPasteINI(glance *glancev1alpha1.Glance) (string, error) {
 }
 
 // glanceStaticPasteSections returns the literal glance-api-paste.ini sections
-// the PipelineSpec cannot express: the rootapp composite, the two versioned
-// apps, and the base filter factories.
+// the PipelineSpec cannot express: the root and rootapp composites, the
+// versioned apps, the healthcheck app, and the base filter factories.
 func glanceStaticPasteSections() map[string]map[string]string {
 	return map[string]map[string]string{
+		"composite:glance-api-keystone": {
+			"paste.composite_factory": "glance.api:root_app_factory",
+			"/":                       "api",
+			"/healthcheck":            "healthcheck",
+		},
 		"composite:rootapp": {
 			"paste.composite_factory": "glance.api:root_app_factory",
 			"/":                       "apiversions",
 			"/v2":                     "apiv2app",
+		},
+		"app:healthcheck": {
+			"paste.app_factory":    "oslo_middleware:Healthcheck.app_factory",
+			"backends":             "disable_by_file",
+			"disable_by_file_path": "/etc/glance/healthcheck_disable",
 		},
 		"app:apiversions": {
 			"paste.app_factory": "glance.api.versions:create_resource",
@@ -287,11 +302,6 @@ func glanceStaticPasteSections() map[string]map[string]string {
 			"paste.filter_factory": "oslo_middleware.cors:filter_factory",
 			"oslo_config_project":  "glance",
 			"oslo_config_program":  "glance-api",
-		},
-		"filter:healthcheck": {
-			"paste.filter_factory": "oslo_middleware:Healthcheck.factory",
-			"backends":             "disable_by_file",
-			"disable_by_file_path": "/etc/glance/healthcheck_disable",
 		},
 		"filter:http_proxy_to_wsgi": {
 			"paste.filter_factory": "oslo_middleware:HTTPProxyToWSGI.factory",
