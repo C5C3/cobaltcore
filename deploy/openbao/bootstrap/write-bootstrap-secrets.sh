@@ -258,6 +258,28 @@ main() {
     # mark_eso_managed.
     mark_eso_managed "${admin_path}"
 
+    # Per-ControlPlane, namespace-scoped STATIC KV source read by the
+    # OPERATOR-PROJECTED glance DB-credential ExternalSecret
+    # ({cp}-glance-db-credentials, c5c3-operator reconcileGlance) in
+    # ControlPlane deployments. The glance DB credential is always Static
+    # because no OpenBao database-engine role exists for the glance schema
+    # (the dynamic engine role is keystone-schema-scoped).
+    #
+    # The path segment is the GLANCE service namespace: this loop seeds it as
+    # ${cp_ns} (the ControlPlane's namespace, the co-located default). A
+    # ControlPlane that places Glance in a DEDICATED namespace needs a manual
+    # seed under that namespace instead — the same caveat as the
+    # Keystone-namespace admin path segment above.
+    #
+    # The username value is a gate-satisfying placeholder: in managed-Static
+    # mode the glance-operator derives the MySQL username from the Glance CR
+    # name (internal/common/database ResolveUsername), so only the password
+    # property is load-bearing. No PushSecret targets this path, so no
+    # mark_eso_managed is needed.
+    write_secret_if_missing "kv-v2/openstack/glance/${cp_ns}/${cp_name}/db" \
+      "username=glance" \
+      "password=${GENERATED_PASSWORD}"
+
     # The stage-(a) per-ControlPlane STATIC DB credential seed
     # (kv-v2/openstack/keystone/{ns}/{cp}/db) is RETIRED here (#439): managed-mode
     # Keystone now draws short-lived, engine-issued DB credentials from the
