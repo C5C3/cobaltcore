@@ -23,7 +23,7 @@ and `build-images.yaml` dynamically discovers releases for the Tempest image pip
 | `releases/<release>/test-refs.yaml` | PyPI version pins for test tooling (single source of truth), per release |
 | `tests/tempest/keystone-2025-2/` | Keystone 2025.2 Tempest configuration (`tempest.conf`, `include-tests.txt`, `exclude-tests.txt`) |
 | `tests/tempest/keystone-2026-1/` | Keystone 2026.1 Tempest configuration |
-| `tests/tempest/glance-2025-2/` | Glance 2025.2 Tempest configuration: the `tempest.conf` / `include-tests.txt` / `exclude-tests.txt` triplet, a `00-keystone-cr.yaml` identity CR named `keystone-glance-tempest-2025-2`, and three extra fixtures the CI job applies — `01-catalog-setup-job.yaml` (image-catalog bootstrap Job), `02-glance-cr.yaml` (Glance CR), `03-glancebackend-cr.yaml` (GlanceBackend CR) |
+| `tests/tempest/glance-2025-2/` | Glance 2025.2 Tempest configuration: the `tempest.conf` / `include-tests.txt` / `exclude-tests.txt` triplet, a `00-keystone-cr.yaml` identity CR named `keystone-glance-tempest-2025-2`, and four extra fixtures the CI job applies — `01-catalog-setup-job.yaml` (image-catalog bootstrap Job), `02-glance-cr.yaml` (Glance CR), `03-glancebackend-cr.yaml` (default GlanceBackend CR), `04-glancebackend2-cr.yaml` (second, non-default store so the copy-image import test has a copy target) |
 | `tests/tempest/glance-2026-1/` | Glance 2026.1 Tempest configuration (same file set; identity CR `keystone-glance-tempest-2026-1`) |
 | `tests/container-images/verify_tempest.sh` | Image verification script (PASS/FAIL counters) |
 | `hack/run-tempest.sh` | Local orchestration script for running Tempest against a kind cluster |
@@ -74,9 +74,16 @@ tooling versions can evolve independently.
 **Format:**
 
 ```yaml
-tempest: "45.0.0"
-keystone-tempest-plugin: "0.19.0"
+tempest: "46.3.0"
+keystone-tempest-plugin: "0.21.0"
 ```
+
+The tempest pin may run ahead of the release line a directory represents:
+tempest is branchless (released tags never receive fixes) and upstream
+validates current plus recent stable releases with the latest tag. Both
+release directories currently pin tempest `46.3.0` — the glance legs need
+`>= 46.2.0`, where the web-download bad-URL negative test accepts the
+synchronous 400 that glance's DNS-based URI filtering returns.
 
 Each key is a PyPI package name. Values are quoted strings representing exact version
 pins. CI workflows resolve versions from this file via `yq`:
@@ -147,7 +154,7 @@ in three ways: (1) it installs from PyPI instead of mounting a git source tree,
 
 | Arg | Default | Source |
 | --- | --- | --- |
-| `TEMPEST_VERSION` | `45.0.0` | `test-refs.yaml` → `.tempest` |
+| `TEMPEST_VERSION` | `46.3.0` | `test-refs.yaml` → `.tempest` |
 | `KEYSTONE_TEMPEST_PLUGIN_VERSION` | `0.19.0` | `test-refs.yaml` → `.["keystone-tempest-plugin"]` |
 
 ### Local Build
@@ -350,7 +357,10 @@ not a single directory. To add another service:
    missing the directory. A service with its own operator payload also ships the
    CRs the job applies before Tempest runs — glance carries
    `01-catalog-setup-job.yaml` (registers the image service + endpoints in
-   Keystone), `02-glance-cr.yaml`, and `03-glancebackend-cr.yaml`.
+   Keystone), `02-glance-cr.yaml`, `03-glancebackend-cr.yaml`, and
+   `04-glancebackend2-cr.yaml` (a second, non-default store: the copy-image
+   import test only executes a real copy when there is a store the image is
+   not already in).
 2. Set `[service_available]` flags to match the deployed services and point
    `[identity]` `uri_v3` at the leg's identity CR (glance authenticates against
    its own `keystone-glance-tempest-<slug>` CR, not the shared keystone leg's CR).
@@ -377,7 +387,7 @@ PASS/FAIL counter pattern as other `verify_*.sh` scripts and sources
 
 ```bash
 bash tests/container-images/verify_tempest.sh [image_name]
-# Default image: c5c3/tempest:45.0.0
+# Default image: c5c3/tempest:46.3.0
 ```
 
 **Test cases:**
@@ -501,7 +511,7 @@ port-forwards on 9292).
 | Deploy Glance operator *(glance leg only)* | `hack/ci-deploy-operator.sh` with `OPERATOR=glance`, `NAMESPACE=glance-system` (before the Keystone CR reconciles) |
 | Deploy Keystone CR | Applies `matrix.config-dir/00-keystone-cr.yaml`, waits for `matrix.cr-name` Ready |
 | Bootstrap image catalog *(glance leg only)* | Applies `matrix.config-dir/01-catalog-setup-job.yaml`, waits for the `glance-tempest-catalog-setup` Job to complete (registers the image service + endpoints in Keystone that the Glance CR needs to reconcile) |
-| Deploy Glance CR *(glance leg only)* | Applies `matrix.config-dir/02-glance-cr.yaml` and `03-glancebackend-cr.yaml`, waits for `matrix.glance-cr-name` Ready |
+| Deploy Glance CR *(glance leg only)* | Applies `matrix.config-dir/02-glance-cr.yaml`, `03-glancebackend-cr.yaml`, and `04-glancebackend2-cr.yaml`, waits for `matrix.glance-cr-name` Ready |
 | Run Tempest API tests | `hack/ci-run-tempest.sh` with `CONFIG_DIR`, `TEMPEST_IMAGE`, and `SERVICE_K8S_NAME` from matrix; the glance leg also passes `GLANCE_K8S_NAME` (empty on keystone legs, which disables the 9292 port-forward) |
 | Upload Tempest results | Uploads `_output/tempest/` (minus the rendered `tempest.conf`, which carries the substituted admin password) as artifact with 14-day retention |
 
@@ -574,7 +584,7 @@ security. The job is parameterized by release via the `generate-matrix` job.
 | Tag | Example | Description |
 | --- | --- | --- |
 | `<release>` | `ghcr.io/<owner>/tempest:2025.2` | Release series tag |
-| `<tempest-version>` | `ghcr.io/<owner>/tempest:45.0.0` | Tempest PyPI version (main branch only) |
+| `<tempest-version>` | `ghcr.io/<owner>/tempest:46.3.0` | Tempest PyPI version (main branch only) |
 | `<release>-<commit-sha>` | `ghcr.io/<owner>/tempest:2025.2-<sha>` | Release + git commit for traceability |
 
 **Supply chain security steps:**

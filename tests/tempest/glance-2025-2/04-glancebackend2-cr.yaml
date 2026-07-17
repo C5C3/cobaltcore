@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Second, non-default S3 store for the glance-tempest-2025-2 CR, backing the
+# independent, pre-created glance-images-2 bucket (same Garage cluster and
+# credentials as the default store in 03-glancebackend-cr.yaml). The copy-image
+# tempest test (ImportCopyImagesTest.test_image_copy_image_import) needs a
+# second store to be meaningful: with a single store the image is already
+# present everywhere, glance exits the copy workflow before stamping
+# os_glance_importing_to_stores, and the tempest waiter polls that property
+# until timeout. With this store attached, the copy actually executes
+# (default store → staging → this store) and the test verifies it end-to-end.
+apiVersion: glance.openstack.c5c3.io/v1alpha1
+kind: GlanceBackend
+metadata:
+  name: glance-tempest-2025-2-s3-b
+  namespace: openstack
+spec:
+  glanceRef:
+    name: glance-tempest-2025-2
+  type: S3
+  isDefault: false
+  s3:
+    host: http://garage.openstack.svc.cluster.local:3900
+    bucket: glance-images-2
+    region: garage
+    credentialsSecretRef:
+      name: garage-s3-credentials
