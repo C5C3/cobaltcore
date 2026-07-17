@@ -1100,3 +1100,99 @@ func TestManagedInfraInstances_UndeclaredHorizonHasNoCache(t *testing.T) {
 		placement{"Memcached", "identity"},
 	), "only Keystone's own database and cache are provisioned; no phantom dashboard cache")
 }
+
+// --- Glance (issue #672): a third database + cache consumer ---
+
+// TestManagedInfraInstances_GlanceEnumeratedOnlyWhenDeclared pins the
+// no-consumer-no-instance rule for Glance: an undeclared Glance enumerates
+// nothing, and a co-located declared Glance resolves to the SAME shared database
+// and cache as Keystone, so the entries dedup away rather than provisioning a
+// second set.
+func TestManagedInfraInstances_GlanceEnumeratedOnlyWhenDeclared(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := infraTestScheme(t)
+	cp := managedInfraControlPlane()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	// Without services.glance: only Keystone's shared database and cache.
+	g.Expect(r.managedInfraInstances(cp)).To(HaveLen(2))
+
+	// With services.glance sharing the ControlPlane's namespace: Glance resolves to
+	// the same shared instances, so the (kind, namespace, name) dedup collapses
+	// them — still two.
+	cp.Spec.Services.Glance = &c5c3v1alpha1.ServiceGlanceSpec{}
+	g.Expect(r.managedInfraInstances(cp)).To(HaveLen(2),
+		"a co-located Glance shares Keystone's instances, so nothing new is enumerated")
+}
+
+// TestManagedInfraInstances_GlanceDedicatedNamespaceMaterializesInstances verifies
+// backing services follow Glance into a namespace of its own: the shared block
+// materializes a second database and cache in the Glance namespace, distinct from
+// Keystone's in the ControlPlane's namespace.
+func TestManagedInfraInstances_GlanceDedicatedNamespaceMaterializesInstances(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := infraTestScheme(t)
+	cp := managedInfraControlPlane()
+	cp.Namespace = "openstack"
+	cp.Spec.Services = c5c3v1alpha1.ServicesSpec{
+		Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{},
+		Glance: &c5c3v1alpha1.ServiceGlanceSpec{
+			Namespace: &c5c3v1alpha1.ServiceNamespaceSpec{Name: "images"},
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	instances := r.managedInfraInstances(cp)
+	type placement struct{ kind, name, namespace string }
+	got := make([]placement, 0, len(instances))
+	for _, inst := range instances {
+		got = append(got, placement{inst.kind, inst.name, inst.namespace})
+	}
+	g.Expect(got).To(ConsistOf(
+		placement{"MariaDB", "openstack-db", "openstack"},
+		placement{"Memcached", "openstack-memcached", "openstack"},
+		placement{"MariaDB", "openstack-db", "images"},
+		placement{"Memcached", "openstack-memcached", "images"},
+	), "Glance placed apart materializes the shared block a second time in its namespace")
+}
+
+// TestManagedInfraInstances_GlanceDedicatedBackingServices verifies a Glance that
+// opts into a dedicated database is enumerated as its own instance (declared at
+// the dedicated path), while its still-shared cache dedups against Keystone's.
+func TestManagedInfraInstances_GlanceDedicatedBackingServices(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := infraTestScheme(t)
+	cp := managedInfraControlPlane()
+	cp.Spec.Services = c5c3v1alpha1.ServicesSpec{
+		Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{},
+		Glance: &c5c3v1alpha1.ServiceGlanceSpec{
+			DedicatedBackingServices: &c5c3v1alpha1.GlanceDedicatedBackingServicesSpec{
+				Database: &commonv1.DatabaseSpec{
+					ClusterRef: &corev1.LocalObjectReference{Name: "cp-glance-db"},
+					Database:   "glance",
+					SecretRef:  commonv1.SecretRefSpec{Name: "glance-db"},
+					Replicas:   1,
+				},
+			},
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	instances := r.managedInfraInstances(cp)
+	byName := make(map[string]infraInstance, len(instances))
+	for _, inst := range instances {
+		byName[inst.kind+"/"+inst.name] = inst
+	}
+	g.Expect(byName).To(HaveKey("MariaDB/cp-glance-db"))
+	g.Expect(byName["MariaDB/cp-glance-db"].declaredAt).To(
+		Equal("spec.services.glance.dedicatedBackingServices.database"),
+	)
+	// Keystone still shares the ControlPlane database, and Glance's own cache is
+	// not dedicated — so it resolves to (and dedups against) the shared cache
+	// Keystone consumes.
+	g.Expect(byName).To(HaveKey("MariaDB/openstack-db"))
+	g.Expect(byName).To(HaveKey("Memcached/openstack-memcached"))
+}

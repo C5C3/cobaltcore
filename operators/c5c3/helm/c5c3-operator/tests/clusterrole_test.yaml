@@ -1,7 +1,7 @@
 # ClusterRole RBAC rules unit tests.
 # Rules mirror the +kubebuilder:rbac markers on the ControlPlane and
 # CredentialRotation reconcilers (deduplicated), plus the leases rule for
-# leader election — 22 rules total (clustersecretstores read-only and
+# leader election — 23 rules total (clustersecretstores read-only and
 # secretstores read-write are separate rules since the operator provisions the
 # per-tenant SecretStore; the namespaces rule lets reconcileNamespaces ensure the
 # per-service dedicated namespaces).
@@ -13,7 +13,7 @@ tests:
     asserts:
       - lengthEqual:
           path: rules
-          count: 22
+          count: 23
 
   - it: should grant full CRUD on controlplanes
     asserts:
@@ -199,6 +199,25 @@ tests:
               - horizon.openstack.c5c3.io
             resources:
               - horizons
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  - it: should grant full CRUD on glances and glancebackends
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - glance.openstack.c5c3.io
+            resources:
+              - glances
+              - glancebackends
             verbs:
               - get
               - list

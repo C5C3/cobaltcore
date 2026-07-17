@@ -124,6 +124,45 @@ func TestSetServicesStatus_WritesPhaseAndKeystoneReadiness(t *testing.T) {
 		"keystone service must be Ready once KeystoneReady is True")
 }
 
+// TestSetServicesStatus_GlanceEntry extends the status projection to the third
+// service: services.glance produces a "glance" entry whose readiness tracks the
+// GlanceReady sub-condition, and an unmanaged Glance is omitted.
+func TestSetServicesStatus_GlanceEntry(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := &c5c3v1alpha1.ControlPlane{
+		ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "openstack"},
+		Spec: c5c3v1alpha1.ControlPlaneSpec{
+			OpenStackRelease: "2025.2",
+			Services: c5c3v1alpha1.ServicesSpec{
+				Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{},
+				Horizon:  &c5c3v1alpha1.ServiceHorizonSpec{},
+				Glance:   &c5c3v1alpha1.ServiceGlanceSpec{},
+			},
+		},
+	}
+
+	setServicesStatus(cp)
+	g.Expect(cp.Status.Services).To(HaveLen(3))
+	// Stable order: keystone, horizon, glance.
+	g.Expect(cp.Status.Services[2].Name).To(Equal("glance"))
+	g.Expect(cp.Status.Services[2].Ready).To(BeFalse(),
+		"glance is not Ready while GlanceReady is absent")
+	g.Expect(cp.Status.Services[2].Release).To(Equal("2025.2"))
+
+	// GlanceReady True flips only the glance entry.
+	conditions.SetCondition(&cp.Status.Conditions, trueCondition(conditionTypeGlanceReady))
+	setServicesStatus(cp)
+	glance := findServiceStatus(cp.Status.Services, "glance")
+	g.Expect(glance).NotTo(BeNil())
+	g.Expect(glance.Ready).To(BeTrue())
+
+	// An unmanaged glance is omitted rather than reported.
+	cp.Spec.Services.Glance = nil
+	setServicesStatus(cp)
+	g.Expect(cp.Status.Services).To(HaveLen(2))
+	g.Expect(findServiceStatus(cp.Status.Services, "glance")).To(BeNil())
+}
+
 // findServiceStatus returns a pointer to the ServiceStatus entry with the given
 // name, or nil when the listType=map status.services list has no such entry.
 func findServiceStatus(services []c5c3v1alpha1.ServiceStatus, name string) *c5c3v1alpha1.ServiceStatus {

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"slices"
 
+	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
 	horizonv1alpha1 "github.com/c5c3/forge/operators/horizon/api/v1alpha1"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
@@ -63,6 +64,7 @@ const (
 	conditionTypeDBCredentialsReady   = "DBCredentialsReady"  //nolint:gosec // G101 false positive: condition type name, not a credential.
 	conditionTypeKeystoneReady        = "KeystoneReady"
 	conditionTypeHorizonReady         = "HorizonReady"
+	conditionTypeGlanceReady          = "GlanceReady"
 	conditionTypeKORCReady            = "KORCReady"
 	conditionTypeAdminCredentialReady = "AdminCredentialReady" //nolint:gosec // G101 false positive: condition type name, not a credential.
 	conditionTypeAdminPasswordReady   = "AdminPasswordReady"   //nolint:gosec // G101 false positive: condition type name, not a credential.
@@ -90,6 +92,7 @@ var subConditionTypes = []string{
 	conditionTypeDBCredentialsReady,
 	conditionTypeKeystoneReady,
 	conditionTypeHorizonReady,
+	conditionTypeGlanceReady,
 	conditionTypeKORCReady,
 	conditionTypeAdminCredentialReady,
 	conditionTypeAdminPasswordReady,
@@ -124,6 +127,8 @@ type ControlPlaneReconciler struct {
 // +kubebuilder:rbac:groups=keystone.openstack.c5c3.io,resources=keystones,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=keystone.openstack.c5c3.io,resources=keystoneidentitybackends,verbs=get;list;watch
 // +kubebuilder:rbac:groups=horizon.openstack.c5c3.io,resources=horizons,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=glance.openstack.c5c3.io,resources=glances,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=glance.openstack.c5c3.io,resources=glancebackends,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=openstack.k-orc.cloud,resources=applicationcredentials;services;endpoints;users;domains;projects;roles;roleassignments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=external-secrets.io,resources=externalsecrets;pushsecrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=external-secrets.io,resources=clustersecretstores,verbs=get;list;watch
@@ -260,6 +265,13 @@ func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		{Name: "ServiceAccounts", Fn: func(ctx context.Context) (ctrl.Result, error) {
 			return r.reconcileServiceAccounts(ctx, &cp)
 		}},
+		// Glance runs after ServiceAccounts: its projection is gated on the glance
+		// service account's per-account readiness, which reconcileServiceAccounts
+		// computes into status in this same pass (and on KeystoneReady — Glance
+		// validates tokens against the Keystone child).
+		{Name: "Glance", Fn: func(ctx context.Context) (ctrl.Result, error) {
+			return r.reconcileGlance(ctx, &cp)
+		}},
 	}
 
 	result, err := commonreconcile.RunPipeline(ctx, instrumentSubReconciler, pipeline)
@@ -368,6 +380,10 @@ const keystoneServiceKey = "keystone"
 // Horizon dashboard.
 const horizonServiceKey = "horizon"
 
+// glanceServiceKey is the key under which status.services reports the Glance
+// image service.
+const glanceServiceKey = "glance"
+
 // setServicesStatus records status.services and status.updatePhase on every
 // status write (#476). Both fields were declared on ControlPlaneStatus but never
 // written. status.updatePhase is fixed at Idle until the release-update state
@@ -382,7 +398,7 @@ func setServicesStatus(cp *c5c3v1alpha1.ControlPlane) {
 	// ControlPlane (spec.services.keystone set). When unset the ControlPlane
 	// manages no Keystone, so status.services stays empty rather than reporting a
 	// service that does not exist.
-	// One entry per configured service (keystone, horizon), in a stable
+	// One entry per configured service (keystone, horizon, glance), in a stable
 	// order; unmanaged services are omitted rather than reported as a
 	// service that does not exist.
 	var services []c5c3v1alpha1.ServiceStatus
@@ -397,6 +413,13 @@ func setServicesStatus(cp *c5c3v1alpha1.ControlPlane) {
 		services = append(services, c5c3v1alpha1.ServiceStatus{
 			Name:    horizonServiceKey,
 			Ready:   conditions.AllTrue(cp.Status.Conditions, conditionTypeHorizonReady),
+			Release: cp.Spec.OpenStackRelease,
+		})
+	}
+	if cp.Spec.Services.Glance != nil {
+		services = append(services, c5c3v1alpha1.ServiceStatus{
+			Name:    glanceServiceKey,
+			Ready:   conditions.AllTrue(cp.Status.Conditions, conditionTypeGlanceReady),
 			Release: cp.Spec.OpenStackRelease,
 		})
 	}
@@ -623,6 +646,8 @@ func (r *ControlPlaneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&mariadbv1alpha1.MariaDB{}).
 		Owns(&keystonev1alpha1.Keystone{}).
 		Owns(&horizonv1alpha1.Horizon{}).
+		Owns(&glancev1alpha1.Glance{}).
+		Owns(&glancev1alpha1.GlanceBackend{}).
 		Owns(&orcv1alpha1.ApplicationCredential{}).
 		Owns(&orcv1alpha1.Service{}).
 		Owns(&orcv1alpha1.Endpoint{}).
@@ -671,6 +696,8 @@ func (r *ControlPlaneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// mapper on every namespace event in the cluster.
 		Watches(&keystonev1alpha1.Keystone{}, crossNamespaceChildHandler(), builder.WithPredicates(crossNamespaceChildPredicate())).
 		Watches(&horizonv1alpha1.Horizon{}, crossNamespaceChildHandler(), builder.WithPredicates(crossNamespaceChildPredicate())).
+		Watches(&glancev1alpha1.Glance{}, crossNamespaceChildHandler(), builder.WithPredicates(crossNamespaceChildPredicate())).
+		Watches(&glancev1alpha1.GlanceBackend{}, crossNamespaceChildHandler(), builder.WithPredicates(crossNamespaceChildPredicate())).
 		Watches(&mariadbv1alpha1.MariaDB{}, crossNamespaceChildHandler(), builder.WithPredicates(crossNamespaceChildPredicate())).
 		Watches(memcached, crossNamespaceChildHandler(), builder.WithPredicates(crossNamespaceChildPredicate())).
 		Watches(&esov1.ExternalSecret{}, crossNamespaceChildHandler(), builder.WithPredicates(crossNamespaceChildPredicate())).

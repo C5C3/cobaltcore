@@ -22,6 +22,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	commonenvtest "github.com/c5c3/forge/internal/common/testutil/envtest"
+	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
 	horizonv1alpha1 "github.com/c5c3/forge/operators/horizon/api/v1alpha1"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
@@ -83,8 +84,9 @@ func crdDirectoryPaths() []string {
 	c5c3CRDDir := filepath.Join(base, "..", "..", "config", "crd", "bases")
 	keystoneCRDDir := filepath.Join(base, "..", "..", "..", "keystone", "config", "crd", "bases")
 	horizonCRDDir := filepath.Join(base, "..", "..", "..", "horizon", "config", "crd", "bases")
+	glanceCRDDir := filepath.Join(base, "..", "..", "..", "glance", "config", "crd", "bases")
 
-	dirs := []string{c5c3CRDDir, keystoneCRDDir, horizonCRDDir}
+	dirs := []string{c5c3CRDDir, keystoneCRDDir, horizonCRDDir, glanceCRDDir}
 	return append(dirs, commonenvtest.CommonFakeCRDDirs()...)
 }
 
@@ -129,6 +131,7 @@ func buildControllerScheme(addToScheme func(*k8sruntime.Scheme) error) *k8srunti
 		mariadbv1alpha1.AddToScheme,
 		keystonev1alpha1.AddToScheme,
 		horizonv1alpha1.AddToScheme,
+		glancev1alpha1.AddToScheme,
 		esov1.AddToScheme,
 		esov1alpha1.AddToScheme,
 		esgenv1alpha1.AddToScheme,
