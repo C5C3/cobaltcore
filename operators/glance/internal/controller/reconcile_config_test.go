@@ -127,6 +127,13 @@ func TestReconcileConfig_PasteContainsPipelineAndComposite(t *testing.T) {
 	// The rootapp composite the PipelineSpec cannot express.
 	g.Expect(paste).To(ContainSubstring("[composite:rootapp]"))
 	g.Expect(paste).To(ContainSubstring("paste.composite_factory = glance.api:root_app_factory"))
+	// The versioned app factories must resolve to real paste-deploy targets:
+	// glance-api loads them at startup, and a dangling reference crash-loops
+	// every API pod ("module 'glance.api.v2.router' has no attribute ...").
+	g.Expect(paste).To(ContainSubstring("[app:apiv2app]"))
+	g.Expect(paste).To(ContainSubstring("paste.app_factory = glance.api.v2.router:API.factory"))
+	g.Expect(paste).To(ContainSubstring("[app:apiversions]"))
+	g.Expect(paste).To(ContainSubstring("paste.app_factory = glance.api.versions:create_resource"))
 }
 
 func TestReconcileConfig_ExtraConfigWins(t *testing.T) {

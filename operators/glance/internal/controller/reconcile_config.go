@@ -281,7 +281,7 @@ func glanceStaticPasteSections() map[string]map[string]string {
 			"paste.app_factory": "glance.api.versions:create_resource",
 		},
 		"app:apiv2app": {
-			"paste.app_factory": "glance.api.v2.router:API_factory",
+			"paste.app_factory": "glance.api.v2.router:API.factory",
 		},
 		"filter:cors": {
 			"paste.filter_factory": "oslo_middleware.cors:filter_factory",
