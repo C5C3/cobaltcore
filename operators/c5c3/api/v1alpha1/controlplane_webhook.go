@@ -77,6 +77,12 @@ const (
 	// DedicatedHorizonCacheClusterRefSuffix names the Memcached CR of a dedicated
 	// Horizon cache.
 	DedicatedHorizonCacheClusterRefSuffix = "-horizon-cache"
+	// DedicatedGlanceDatabaseClusterRefSuffix names the MariaDB CR of a dedicated
+	// Glance database.
+	DedicatedGlanceDatabaseClusterRefSuffix = "-glance-db" //nolint:gosec // G101 false positive: CR name suffix, not a credential
+	// DedicatedGlanceCacheClusterRefSuffix names the Memcached CR of a dedicated
+	// Glance cache.
+	DedicatedGlanceCacheClusterRefSuffix = "-glance-cache"
 	// DefaultDatabaseStorageSize is the effective per-replica MariaDB volume size
 	// when spec.infrastructure.database.storageSize is empty. It aliases
 	// commonv1.DatabaseStorageSizeDefault (also the CRD +kubebuilder:default and
@@ -640,6 +646,166 @@ func validateServiceAccounts(cp *ControlPlane) field.ErrorList {
 	return allErrs
 }
 
+// glanceBackendChildNameOverhead is the fixed part of a projected GlanceBackend
+// child CR name, "{cp}-glance-{name}", i.e. everything except the ControlPlane
+// name and the backend entry name. It mirrors identityImportChildNameOverhead
+// one level up: nothing bounds the ControlPlane name below 253, so a backend
+// name admitted here must leave room for the composed child name to stay within
+// the apiserver's metadata.name cap. Without the guard the reconciler wedges
+// projecting a GlanceBackend CR the apiserver rejects, on an Invalid the
+// ControlPlane admission already accepted.
+const glanceBackendChildNameOverhead = len("-glance-")
+
+// GlanceServiceAccountName is the spec.korc.serviceAccounts entry the Glance
+// projection consumes; the defaulting webhook injects it and the reconciler
+// gates on it.
+const GlanceServiceAccountName = "glance"
+
+// validateGlance enforces the rules on the services.glance block. It mirrors the
+// declarative constraints as defense-in-depth for callers that bypass CRD schema
+// admission — the gateway hostname shape, the image tag/digest XOR, the
+// per-backend type/s3 union, the S3 endpoint URL shape, the non-empty
+// credentialsSecretRef, and the non-empty-backends / exactly-one-default
+// invariants — and adds the two rules the CRD schema cannot express: the composed
+// GlanceBackend child-name length bound, and the defense-in-depth requirement
+// that the glance service account the defaulting webhook injects is present (and,
+// when Glance is placed in a dedicated namespace, targets it).
+//
+// The cross-field rule that services.glance is forbidden in External mode lives
+// in validateKeystoneMode with the rest of the External-mode matrix.
+func validateGlance(cp *ControlPlane) field.ErrorList {
+	gl := cp.Spec.Services.Glance
+	if gl == nil {
+		return nil
+	}
+	var allErrs field.ErrorList
+	glPath := field.NewPath("spec", "services", "glance")
+
+	// When a gateway is configured, its hostname must be set and usable as the
+	// host of the derived public endpoint. Mirrors the MinLength=1 marker on
+	// commonv1.GatewaySpec.Hostname.
+	if g := gl.Gateway; g != nil {
+		hostnamePath := glPath.Child("gateway", "hostname")
+		if g.Hostname == "" {
+			allErrs = append(allErrs, field.Required(hostnamePath,
+				"must be set when a gateway is configured"))
+		} else if err := validateGatewayHostname(hostnamePath, g.Hostname); err != nil {
+			allErrs = append(allErrs, err)
+		}
+	}
+
+	// When the Glance image is overridden, mirror the ImageSpec tag/digest XOR
+	// (the +kubebuilder:validation:XValidation rule on commonv1.ImageSpec).
+	if img := gl.Image; img != nil && (img.Tag != "") == (img.Digest != "") {
+		allErrs = append(allErrs, field.Invalid(glPath.Child("image"), img,
+			"exactly one of image.tag or image.digest must be set"))
+	}
+
+	allErrs = append(allErrs, validateGlanceBackends(cp, glPath.Child("backends"))...)
+	allErrs = append(allErrs, validateGlanceServiceAccount(cp)...)
+
+	return allErrs
+}
+
+// validateGlanceBackends mirrors the declarative constraints on
+// services.glance.backends: the MinItems floor, the single-isDefault CEL rule,
+// and the per-entry type/s3 union CEL rule on GlanceBackendEntry, plus the S3
+// store's own shape (endpoint URL, non-empty credentialsSecretRef) and the
+// composed GlanceBackend child-name length bound the CRD schema cannot express.
+func validateGlanceBackends(cp *ControlPlane, backendsPath *field.Path) field.ErrorList {
+	var allErrs field.ErrorList
+	backends := cp.Spec.Services.Glance.Backends
+
+	if len(backends) == 0 {
+		allErrs = append(allErrs, field.Required(backendsPath,
+			"at least one backend must be declared"))
+	}
+
+	defaults := 0
+	for i := range backends {
+		entry := backends[i]
+		entryPath := backendsPath.Index(i)
+		if entry.IsDefault {
+			defaults++
+		}
+
+		// The s3 block must be set exactly when type is S3.
+		if (entry.Type == "S3") != (entry.S3 != nil) {
+			allErrs = append(allErrs, field.Invalid(entryPath, entry.Type,
+				"the s3 block must be set exactly when type is S3"))
+		}
+		if s3 := entry.S3; s3 != nil {
+			s3Path := entryPath.Child("s3")
+			if _, err := validateHTTPURL(s3Path.Child("endpoint"), s3.Endpoint); err != nil {
+				allErrs = append(allErrs, err)
+			}
+			if s3.CredentialsSecretRef.Name == "" {
+				allErrs = append(allErrs, field.Required(s3Path.Child("credentialsSecretRef", "name"),
+					"must be set"))
+			}
+		}
+
+		if entry.Name != "" {
+			if n := len(cp.Name) + glanceBackendChildNameOverhead + len(entry.Name); n > maxObjectNameBytes {
+				allErrs = append(allErrs, field.Invalid(entryPath.Child("name"), entry.Name, fmt.Sprintf(
+					"the child GlanceBackend CR name would be %d bytes; shorten the ControlPlane name or the "+
+						"backend name so the total stays within the %d-byte Kubernetes object-name limit",
+					n, maxObjectNameBytes,
+				)))
+			}
+		}
+	}
+	if len(backends) > 0 && defaults != 1 {
+		allErrs = append(allErrs, field.Invalid(backendsPath, defaults,
+			"exactly one backends entry must set isDefault"))
+	}
+
+	return allErrs
+}
+
+// validateGlanceServiceAccount is the defense-in-depth twin of the defaulting
+// webhook's glance service-account injection: a services.glance CR must carry a
+// spec.korc.serviceAccounts entry named "glance" (the Glance projection gates on
+// it for [keystone_authtoken] token validation). The defaulting webhook injects
+// it; requiring it here catches a webhook-bypassed CR that dropped it. When
+// Glance is placed in a dedicated namespace the entry must TARGET that namespace,
+// since its consumer credentials Secret is delivered through that namespace's
+// tenant store; when Glance is co-located with the ControlPlane the entry must
+// leave targetNamespace empty or name the ControlPlane's own namespace.
+func validateGlanceServiceAccount(cp *ControlPlane) field.ErrorList {
+	var allErrs field.ErrorList
+	saPath := field.NewPath("spec", "korc", "serviceAccounts")
+
+	index := -1
+	for i := range cp.Spec.KORC.ServiceAccounts {
+		if cp.Spec.KORC.ServiceAccounts[i].Name == GlanceServiceAccountName {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		return field.ErrorList{field.Required(saPath,
+			`a service account named "glance" is required when services.glance is set; the defaulting webhook `+
+				"injects it so Glance can validate the [keystone_authtoken] tokens it receives")}
+	}
+
+	targetNamespace := cp.Spec.KORC.ServiceAccounts[index].TargetNamespace
+	tnPath := saPath.Index(index).Child("targetNamespace")
+	glanceNamespace := cp.GlanceNamespace()
+	switch {
+	case glanceNamespace != cp.Namespace && targetNamespace != glanceNamespace:
+		allErrs = append(allErrs, field.Invalid(tnPath, targetNamespace, fmt.Sprintf(
+			"must equal the namespace Glance is placed in (%q): the glance service account's consumer "+
+				"credentials Secret is delivered through that namespace's tenant store", glanceNamespace,
+		)))
+	case glanceNamespace == cp.Namespace && targetNamespace != "" && targetNamespace != cp.Namespace:
+		allErrs = append(allErrs, field.Invalid(tnPath, targetNamespace,
+			"must be empty or the ControlPlane's own namespace when Glance is co-located with the ControlPlane"))
+	}
+
+	return allErrs
+}
+
 // externalAuthURLIsPlaintext reports whether raw is an http:// (non-TLS) endpoint.
 // A parse failure reads as false: validateHTTPURL already rejects those on the same
 // field, and a second error on it would only add noise.
@@ -742,7 +908,7 @@ func (w *ControlPlaneWebhook) Default(_ context.Context, obj *ControlPlane) erro
 	// DECLARED block: an absent assignment means "stay in the ControlPlane's
 	// namespace", and the webhook must never invent a placement. Mirrors the
 	// +kubebuilder:default=Managed marker on ServiceNamespaceSpec.Lifecycle.
-	for _, ns := range []*ServiceNamespaceSpec{keystoneNamespaceBlock(obj), horizonNamespaceBlock(obj)} {
+	for _, ns := range []*ServiceNamespaceSpec{keystoneNamespaceBlock(obj), horizonNamespaceBlock(obj), glanceNamespaceBlock(obj)} {
 		if ns != nil && ns.Lifecycle == "" {
 			ns.Lifecycle = ServiceNamespaceLifecycleManaged
 		}
@@ -808,6 +974,20 @@ func (w *ControlPlaneWebhook) Default(_ context.Context, obj *ControlPlane) erro
 				defaultCacheLeaves(cache, obj.Name+DedicatedHorizonCacheClusterRefSuffix)
 			}
 		}
+		if gl := glanceDedicatedBlock(obj); gl != nil {
+			if db := gl.Database; db != nil {
+				defaultDatabaseLeaves(db, obj.Name+DedicatedGlanceDatabaseClusterRefSuffix)
+				// A dedicated MANAGED Glance database is Static-only for the same
+				// reason the Keystone one is (see above): no per-instance OpenBao
+				// engine role exists. Materialize the mode; validate() rejects Dynamic.
+				if db.ClusterRef != nil && db.CredentialsMode == "" {
+					db.CredentialsMode = commonv1.CredentialsModeStatic
+				}
+			}
+			if cache := gl.Cache; cache != nil {
+				defaultCacheLeaves(cache, obj.Name+DedicatedGlanceCacheClusterRefSuffix)
+			}
+		}
 	}
 
 	// K-ORC admin-credential defaults. cloudCredentialsRef.secretName defaults to
@@ -856,6 +1036,40 @@ func (w *ControlPlaneWebhook) Default(_ context.Context, obj *ControlPlane) erro
 	// applicationCredential.rotation.mode defaults to PasswordDriven.
 	if appCred.Rotation.Mode == "" {
 		appCred.Rotation.Mode = RotationModePasswordDriven
+	}
+
+	// Inject the glance service account when services.glance is declared and the
+	// operator has not already declared one. A later reconciler package gates the
+	// Glance projection on a spec.korc.serviceAccounts entry named "glance", so a
+	// minimal services.glance CR must work without the operator hand-wiring the
+	// account. The role is "service", NOT "member": Keystone's SRBAC default for
+	// identity:validate_token requires role "service", and the account exists so
+	// Glance can validate the [keystone_authtoken] tokens it receives. The
+	// injection runs before the userName-defaulting loop below so the entry picks
+	// up UserName defaulting, and it targets the namespace Glance is placed in so
+	// its consumer credentials Secret is delivered through that namespace's tenant
+	// store. Idempotent: a pre-existing "glance" entry (operator- or
+	// previously-injected) is left untouched.
+	if obj.Spec.Services.Glance != nil {
+		hasGlance := false
+		for i := range obj.Spec.KORC.ServiceAccounts {
+			if obj.Spec.KORC.ServiceAccounts[i].Name == GlanceServiceAccountName {
+				hasGlance = true
+				break
+			}
+		}
+		if !hasGlance {
+			var targetNamespace string
+			if ns := obj.GlanceNamespace(); ns != obj.Namespace {
+				targetNamespace = ns
+			}
+			obj.Spec.KORC.ServiceAccounts = append(obj.Spec.KORC.ServiceAccounts, ServiceAccountSpec{
+				Name:            GlanceServiceAccountName,
+				Project:         ServiceAccountProjectSpec{Name: "service", Create: true},
+				Roles:           []string{"service"},
+				TargetNamespace: targetNamespace,
+			})
+		}
 	}
 
 	// serviceAccounts[i].userName defaults to serviceAccounts[i].name: the K-ORC
@@ -1083,6 +1297,7 @@ func (w *ControlPlaneWebhook) validate(cp *ControlPlane) field.ErrorList {
 		)...)
 	}
 
+	allErrs = append(allErrs, validateGlance(cp)...)
 	allErrs = append(allErrs, validateKeystoneMode(cp)...)
 	allErrs = append(allErrs, validateServiceAccounts(cp)...)
 	allErrs = append(allErrs, validateDedicatedBackingServices(cp)...)
@@ -1114,6 +1329,9 @@ func declaredServiceNamespaces(cp *ControlPlane) []serviceNamespaceAssignment {
 	}
 	if ns := horizonNamespaceBlock(cp); ns != nil {
 		out = append(out, serviceNamespaceAssignment{path: svcPath.Child("horizon", "namespace"), ns: ns})
+	}
+	if ns := glanceNamespaceBlock(cp); ns != nil {
+		out = append(out, serviceNamespaceAssignment{path: svcPath.Child("glance", "namespace"), ns: ns})
 	}
 	return out
 }
@@ -1297,6 +1515,13 @@ func declaredDedicatedBackingServices(cp *ControlPlane) []dedicatedBackingServic
 		out = append(out, dedicatedBackingServices{
 			path:  svcPath.Child("horizon", "dedicatedBackingServices"),
 			cache: hz.Cache,
+		})
+	}
+	if gl := glanceDedicatedBlock(cp); gl != nil {
+		out = append(out, dedicatedBackingServices{
+			path:  svcPath.Child("glance", "dedicatedBackingServices"),
+			db:    gl.Database,
+			cache: gl.Cache,
 		})
 	}
 	return out
@@ -1516,6 +1741,10 @@ func validateKeystoneMode(cp *ControlPlane) field.ErrorList {
 		if cp.Spec.Services.Horizon != nil {
 			allErrs = append(allErrs, field.Forbidden(specPath.Child("services", "horizon"),
 				"forbidden when services.keystone.mode is External (Horizon needs its own External-mode design)"))
+		}
+		if cp.Spec.Services.Glance != nil {
+			allErrs = append(allErrs, field.Forbidden(specPath.Child("services", "glance"),
+				"forbidden when services.keystone.mode is External (Glance needs its own External-mode design)"))
 		}
 
 		return allErrs
@@ -1803,6 +2032,16 @@ func validateDedicatedBackingServicesImmutable(oldObj, newObj *ControlPlane) fie
 		allErrs = append(allErrs, validateDedicatedCache(hzPath.Child("cache"), oldHZ.Cache, newHZ.Cache)...)
 	}
 
+	glPath := svcPath.Child("glance", "dedicatedBackingServices")
+	oldGL := glanceDedicatedBlock(oldObj)
+	newGL := glanceDedicatedBlock(newObj)
+	if (oldGL == nil) != (newGL == nil) {
+		allErrs = append(allErrs, field.Invalid(glPath, newGL, dedicatedTransitionMessage))
+	} else if oldGL != nil && newGL != nil {
+		allErrs = append(allErrs, validateDedicatedDatabase(glPath.Child("database"), oldGL.Database, newGL.Database)...)
+		allErrs = append(allErrs, validateDedicatedCache(glPath.Child("cache"), oldGL.Cache, newGL.Cache)...)
+	}
+
 	return allErrs
 }
 
@@ -1882,6 +2121,7 @@ func validateServiceNamespacesImmutable(oldObj, newObj *ControlPlane) field.Erro
 
 	freeze(svcPath.Child("keystone", "namespace"), keystoneNamespaceBlock(oldObj), keystoneNamespaceBlock(newObj))
 	freeze(svcPath.Child("horizon", "namespace"), horizonNamespaceBlock(oldObj), horizonNamespaceBlock(newObj))
+	freeze(svcPath.Child("glance", "namespace"), glanceNamespaceBlock(oldObj), glanceNamespaceBlock(newObj))
 
 	return allErrs
 }

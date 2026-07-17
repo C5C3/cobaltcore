@@ -404,6 +404,40 @@ spec:
         - check:
             ($error != null): true
             (contains($error, 'must declare the same lifecycle')): true
+    # services.glance in External mode is rejected by the webhook (cross-field,
+    # mirrors services.horizon): no Keystone workload is deployed, so Glance needs
+    # its own External-mode design.
+    - apply:
+        file: 47-external-with-glance.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'glance')): true
+            (contains($error, 'forbidden when services.keystone.mode is External')): true
+    # services.glance.backends must declare at least one image store (CRD
+    # MinItems): an empty list projects no GlanceBackend and Glance has no store.
+    - apply:
+        file: 48-glance-backends-empty.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'backends')): true
+    # Exactly one backend must set isDefault (CEL): two defaults leave the Glance
+    # default_backend ambiguous.
+    - apply:
+        file: 49-glance-two-defaults.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'exactly one backends entry must set isDefault')): true
+    # A backend of type S3 must carry the s3 block (CEL union rule): the driver
+    # parameters live there.
+    - apply:
+        file: 50-glance-s3-block-missing.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'the s3 block must be set exactly when type is S3')): true
 ---
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test

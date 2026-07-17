@@ -3454,3 +3454,506 @@ func TestValidateUpdate_RejectsServiceNamespaceChanges(t *testing.T) {
 		g.Expect(err).NotTo(HaveOccurred())
 	})
 }
+
+// --- services.glance validation (issue #672) ---
+
+// validGlanceSpec is the minimal admissible glance block: a single S3 backend
+// promoted to the default store. Tests mutate one aspect of it to exercise one
+// rule.
+func validGlanceSpec() *ServiceGlanceSpec {
+	return &ServiceGlanceSpec{
+		Backends: []GlanceBackendEntry{{
+			Name:      "primary",
+			Type:      "S3",
+			IsDefault: true,
+			S3: &GlanceBackendS3Spec{
+				Endpoint:             "https://s3.example.com",
+				Bucket:               "images",
+				CredentialsSecretRef: SecretNameRef{Name: "glance-s3-creds"},
+			},
+		}},
+	}
+}
+
+// glanceControlPlane returns a managed ControlPlane with a minimal valid glance
+// block AND the glance service account the defaulting webhook injects, so the
+// validation tests start from an admissible baseline (the validating webhook's
+// defense-in-depth check requires that account). The shared infrastructure stays
+// brownfield (the validControlPlane baseline).
+func glanceControlPlane() *ControlPlane {
+	cp := validControlPlane()
+	cp.Name = "cp"
+	cp.Spec.Services.Glance = validGlanceSpec()
+	cp.Spec.KORC.ServiceAccounts = []ServiceAccountSpec{{
+		Name:    "glance",
+		Project: ServiceAccountProjectSpec{Name: "service", Create: true},
+		Roles:   []string{"service"},
+	}}
+	return cp
+}
+
+// findServiceAccount returns a pointer to the named service account entry, or nil.
+func findServiceAccount(cp *ControlPlane, name string) *ServiceAccountSpec {
+	for i := range cp.Spec.KORC.ServiceAccounts {
+		if cp.Spec.KORC.ServiceAccounts[i].Name == name {
+			return &cp.Spec.KORC.ServiceAccounts[i]
+		}
+	}
+	return nil
+}
+
+// TestDefault_GlanceServiceNamespaceLifecycle verifies a declared glance
+// namespace assignment takes the Managed lifecycle default, exactly as the
+// keystone/horizon ones do.
+func TestDefault_GlanceServiceNamespaceLifecycle(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Spec.Services.Glance = validGlanceSpec()
+	cp.Spec.Services.Glance.Namespace = &ServiceNamespaceSpec{Name: "images"}
+
+	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+	g.Expect(cp.Spec.Services.Glance.Namespace.Lifecycle).To(Equal(ServiceNamespaceLifecycleManaged))
+}
+
+// TestDefault_GlanceDedicatedBackingServicesLeaves verifies a declared glance
+// dedicated block takes the same leaf defaults as the shared one, with a managed
+// clusterRef name DERIVED from the ControlPlane and credentialsMode materialized
+// to Static (a dedicated managed database cannot draw engine-issued credentials).
+func TestDefault_GlanceDedicatedBackingServicesLeaves(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Name = "prod"
+	cp.Spec.Services.Glance = validGlanceSpec()
+	cp.Spec.Services.Glance.DedicatedBackingServices = &GlanceDedicatedBackingServicesSpec{
+		Database: &commonv1.DatabaseSpec{},
+		Cache:    &commonv1.CacheSpec{},
+	}
+
+	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+
+	db := cp.Spec.Services.Glance.DedicatedBackingServices.Database
+	g.Expect(db.ClusterRef).NotTo(BeNil())
+	g.Expect(db.ClusterRef.Name).To(Equal("prod" + DedicatedGlanceDatabaseClusterRefSuffix))
+	g.Expect(db.Database).To(Equal(DefaultDatabaseName))
+	g.Expect(db.SecretRef.Name).To(Equal(DefaultDatabaseSecretName))
+	g.Expect(db.CredentialsMode).To(Equal(commonv1.CredentialsModeStatic),
+		"a dedicated managed database is Static-only: no per-instance OpenBao engine role exists")
+
+	cache := cp.Spec.Services.Glance.DedicatedBackingServices.Cache
+	g.Expect(cache.ClusterRef).NotTo(BeNil())
+	g.Expect(cache.ClusterRef.Name).To(Equal("prod" + DedicatedGlanceCacheClusterRefSuffix))
+	g.Expect(cache.Backend).To(Equal(DefaultCacheBackend))
+
+	// Idempotent on the dedicated leaves too.
+	before := cp.DeepCopy()
+	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+	g.Expect(cp.Spec.Services).To(Equal(before.Spec.Services))
+}
+
+// TestDefault_GlanceBrownfieldDedicatedNotCoercedIntoManaged mirrors the keystone
+// case: an explicit brownfield endpoint must never grow a managed clusterRef (nor
+// the Static mode, which is only materialized for a MANAGED dedicated database).
+func TestDefault_GlanceBrownfieldDedicatedNotCoercedIntoManaged(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Name = "cp"
+	cp.Spec.Services.Glance = validGlanceSpec()
+	cp.Spec.Services.Glance.DedicatedBackingServices = &GlanceDedicatedBackingServicesSpec{
+		Database: &commonv1.DatabaseSpec{Host: "glance-db.example.com", Port: 3306},
+	}
+
+	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+
+	db := cp.Spec.Services.Glance.DedicatedBackingServices.Database
+	g.Expect(db.ClusterRef).To(BeNil(), "a brownfield dedicated database must not grow a managed clusterRef")
+	g.Expect(db.CredentialsMode).To(BeEmpty(), "Static is only materialized for a MANAGED dedicated database")
+}
+
+// TestDefault_InjectsGlanceServiceAccount verifies the defaulting webhook injects
+// the glance service account when services.glance is declared: name, project,
+// role "service" (SRBAC identity:validate_token, NOT member), empty
+// targetNamespace when co-located, and UserName defaulted (the injection precedes
+// the userName loop).
+func TestDefault_InjectsGlanceServiceAccount(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Spec.Services.Glance = validGlanceSpec()
+
+	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+
+	glance := findServiceAccount(cp, "glance")
+	g.Expect(glance).NotTo(BeNil(), "the defaulting webhook must inject a glance service account")
+	g.Expect(glance.Project.Name).To(Equal("service"))
+	g.Expect(glance.Project.Create).To(BeTrue())
+	g.Expect(glance.Roles).To(Equal([]string{"service"}),
+		`the role must be "service" (SRBAC identity:validate_token), not "member"`)
+	g.Expect(glance.TargetNamespace).To(BeEmpty(),
+		"a co-located Glance leaves the account targetNamespace empty")
+	g.Expect(glance.UserName).To(Equal("glance"),
+		"the injected entry is defaulted before the userName loop, so it gets UserName")
+}
+
+// TestDefault_GlanceServiceAccountInjectionIsIdempotent verifies applying Default
+// twice injects the glance account exactly once.
+func TestDefault_GlanceServiceAccountInjectionIsIdempotent(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Spec.Services.Glance = validGlanceSpec()
+
+	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+
+	count := 0
+	for _, sa := range cp.Spec.KORC.ServiceAccounts {
+		if sa.Name == "glance" {
+			count++
+		}
+	}
+	g.Expect(count).To(Equal(1), "Default twice must not inject two glance accounts")
+}
+
+// TestDefault_PreservesUserDeclaredGlanceServiceAccount verifies an
+// operator-declared glance account is left untouched — no second injection, and
+// its project and roles are preserved.
+func TestDefault_PreservesUserDeclaredGlanceServiceAccount(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Spec.Services.Glance = validGlanceSpec()
+	cp.Spec.KORC.ServiceAccounts = []ServiceAccountSpec{{
+		Name:     "glance",
+		UserName: "glance-svc",
+		Project:  ServiceAccountProjectSpec{Name: "images", Create: false},
+		Roles:    []string{"admin"},
+	}}
+
+	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+
+	count := 0
+	for _, sa := range cp.Spec.KORC.ServiceAccounts {
+		if sa.Name == "glance" {
+			count++
+		}
+	}
+	g.Expect(count).To(Equal(1), "an operator-declared glance account must not trigger a second injection")
+	glance := findServiceAccount(cp, "glance")
+	g.Expect(glance.UserName).To(Equal("glance-svc"))
+	g.Expect(glance.Project).To(Equal(ServiceAccountProjectSpec{Name: "images", Create: false}))
+	g.Expect(glance.Roles).To(Equal([]string{"admin"}))
+}
+
+// TestDefault_DoesNotInjectGlanceServiceAccountWhenGlanceUnset verifies a
+// ControlPlane without services.glance grows no glance account.
+func TestDefault_DoesNotInjectGlanceServiceAccountWhenGlanceUnset(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+
+	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+	g.Expect(findServiceAccount(cp, "glance")).To(BeNil())
+}
+
+// TestDefault_GlanceServiceAccountTargetsDedicatedNamespace verifies the injected
+// account targets the namespace Glance is placed in when that differs from the
+// ControlPlane's own, so its consumer credentials Secret rides that namespace's
+// tenant store.
+func TestDefault_GlanceServiceAccountTargetsDedicatedNamespace(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Namespace = "openstack"
+	cp.Spec.Services.Glance = validGlanceSpec()
+	cp.Spec.Services.Glance.Namespace = &ServiceNamespaceSpec{Name: "images", Lifecycle: ServiceNamespaceLifecycleManaged}
+
+	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+
+	glance := findServiceAccount(cp, "glance")
+	g.Expect(glance).NotTo(BeNil())
+	g.Expect(glance.TargetNamespace).To(Equal("images"),
+		"a Glance placed in a dedicated namespace delivers its credentials there")
+}
+
+// TestValidateCreate_AcceptsGlanceControlPlane pins the admissible baseline.
+func TestValidateCreate_AcceptsGlanceControlPlane(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+
+	_, err := w.ValidateCreate(context.Background(), glanceControlPlane())
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// TestValidateCreate_RejectsGlanceBackendsEmpty mirrors the MinItems floor: a
+// glance block with no backend projects no image store.
+func TestValidateCreate_RejectsGlanceBackendsEmpty(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := glanceControlPlane()
+	cp.Spec.Services.Glance.Backends = nil
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("services.glance.backends"))
+	g.Expect(err.Error()).To(ContainSubstring("at least one backend"))
+}
+
+// TestValidateCreate_RejectsGlanceTwoDefaults mirrors the single-default CEL rule:
+// two default stores leave the Glance default_backend ambiguous.
+func TestValidateCreate_RejectsGlanceTwoDefaults(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := glanceControlPlane()
+	cp.Spec.Services.Glance.Backends = append(cp.Spec.Services.Glance.Backends, GlanceBackendEntry{
+		Name: "secondary", Type: "S3", IsDefault: true,
+		S3: &GlanceBackendS3Spec{
+			Endpoint: "https://s3-2.example.com", Bucket: "images2",
+			CredentialsSecretRef: SecretNameRef{Name: "glance-s3-creds-2"},
+		},
+	})
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("exactly one backends entry must set isDefault"))
+}
+
+// TestValidateCreate_RejectsGlanceZeroDefaults is the other half of the
+// single-default rule: no default store at all is rejected too.
+func TestValidateCreate_RejectsGlanceZeroDefaults(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := glanceControlPlane()
+	cp.Spec.Services.Glance.Backends[0].IsDefault = false
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("exactly one backends entry must set isDefault"))
+}
+
+// TestValidateCreate_RejectsGlanceBackendUnionViolation mirrors the type/s3 union
+// CEL rule: a backend of type S3 must carry the s3 block.
+func TestValidateCreate_RejectsGlanceBackendUnionViolation(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := glanceControlPlane()
+	cp.Spec.Services.Glance.Backends[0].S3 = nil
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("the s3 block must be set exactly when type is S3"))
+}
+
+// TestValidateCreate_RejectsGlanceBadEndpointURL covers the defense-in-depth
+// http(s) shape gate on the S3 endpoint (beyond the coarse ^https?:// pattern).
+func TestValidateCreate_RejectsGlanceBadEndpointURL(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := glanceControlPlane()
+	cp.Spec.Services.Glance.Backends[0].S3.Endpoint = "not-a-url"
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("services.glance.backends[0].s3.endpoint"))
+}
+
+// TestValidateCreate_RejectsGlanceMissingCredentialsSecretRefName covers the
+// non-empty credentialsSecretRef.name requirement.
+func TestValidateCreate_RejectsGlanceMissingCredentialsSecretRefName(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := glanceControlPlane()
+	cp.Spec.Services.Glance.Backends[0].S3.CredentialsSecretRef.Name = ""
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("services.glance.backends[0].s3.credentialsSecretRef.name"))
+}
+
+// TestValidateCreate_RejectsOverlongGlanceBackendChildName pins the composed
+// GlanceBackend child-name length guard the CRD schema cannot express.
+func TestValidateCreate_RejectsOverlongGlanceBackendChildName(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := glanceControlPlane()
+	cp.Name = "cp"
+	// len("cp") + len("-glance-") + len(name) must exceed the 253-byte cap.
+	cp.Spec.Services.Glance.Backends[0].Name = strings.Repeat("a", 253)
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("child GlanceBackend CR name would be"))
+}
+
+// TestValidateCreate_RejectsGlanceInExternalMode verifies the webhook cross-field
+// forbid, mirroring services.horizon: no Keystone workload is deployed.
+func TestValidateCreate_RejectsGlanceInExternalMode(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := externalControlPlane()
+	cp.Spec.Services.Glance = validGlanceSpec()
+	// Mirror the admission sequence: the mutating webhook (which injects the
+	// glance service account) runs before the validating one.
+	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("services.glance"))
+	g.Expect(err.Error()).To(ContainSubstring("forbidden when services.keystone.mode is External"))
+}
+
+// TestValidateCreate_RejectsGlanceWithoutServiceAccount pins the defense-in-depth
+// for the injection: a webhook-bypassed CR that dropped the glance account is
+// rejected.
+func TestValidateCreate_RejectsGlanceWithoutServiceAccount(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := glanceControlPlane()
+	cp.Spec.KORC.ServiceAccounts = nil
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring(`a service account named "glance" is required`))
+}
+
+// TestValidateCreate_RejectsGlanceServiceAccountTargetNamespaceMismatch pins that
+// a Glance placed in a dedicated namespace requires its account to target that
+// namespace.
+func TestValidateCreate_RejectsGlanceServiceAccountTargetNamespaceMismatch(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := glanceControlPlane()
+	cp.Namespace = "openstack"
+	cp.Spec.Services.Glance.Namespace = &ServiceNamespaceSpec{Name: "images", Lifecycle: ServiceNamespaceLifecycleManaged}
+	cp.Spec.KORC.ServiceAccounts[0].TargetNamespace = "openstack"
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("must equal the namespace Glance is placed in"))
+}
+
+// TestValidateCreate_AcceptsGlanceInDedicatedNamespace pins the accepting side:
+// the account targets the namespace Glance is placed in.
+func TestValidateCreate_AcceptsGlanceInDedicatedNamespace(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := glanceControlPlane()
+	cp.Namespace = "openstack"
+	cp.Spec.Services.Glance.Namespace = &ServiceNamespaceSpec{Name: "images", Lifecycle: ServiceNamespaceLifecycleManaged}
+	cp.Spec.KORC.ServiceAccounts[0].TargetNamespace = "images"
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// TestValidateCreate_RejectsGlanceNamespaceClaimedByOtherControlPlane mirrors the
+// tenant-key claim rule for the glance service namespace.
+func TestValidateCreate_RejectsGlanceNamespaceClaimedByOtherControlPlane(t *testing.T) {
+	g := NewGomegaWithT(t)
+	incumbent := validControlPlane()
+	incumbent.Name = "other"
+	incumbent.Namespace = "images"
+	c := fake.NewClientBuilder().WithScheme(webhookScheme(t)).WithObjects(incumbent).Build()
+	w := &ControlPlaneWebhook{Client: c}
+
+	cp := glanceControlPlane()
+	cp.Namespace = "openstack"
+	cp.Spec.Services.Glance.Namespace = &ServiceNamespaceSpec{Name: "images", Lifecycle: ServiceNamespaceLifecycleManaged}
+	cp.Spec.KORC.ServiceAccounts[0].TargetNamespace = "images"
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("services.glance.namespace.name"))
+	g.Expect(err.Error()).To(ContainSubstring(`already occupied by ControlPlane "other"`))
+}
+
+// TestValidateUpdate_RejectsGlanceNamespaceChange pins the create-only freeze on
+// the glance namespace assignment.
+func TestValidateUpdate_RejectsGlanceNamespaceChange(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	oldCP := glanceControlPlane()
+	oldCP.Namespace = "openstack"
+	oldCP.Spec.Services.Glance.Namespace = &ServiceNamespaceSpec{Name: "images", Lifecycle: ServiceNamespaceLifecycleManaged}
+	oldCP.Spec.KORC.ServiceAccounts[0].TargetNamespace = "images"
+	newCP := oldCP.DeepCopy()
+	newCP.Spec.Services.Glance.Namespace.Name = "images-2"
+	newCP.Spec.KORC.ServiceAccounts[0].TargetNamespace = "images-2"
+
+	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("spec.services.glance.namespace.name"))
+	g.Expect(err.Error()).To(ContainSubstring("the namespace a service is placed in is immutable"))
+}
+
+// TestValidateCreate_RejectsGlanceDedicatedDatabaseDynamic confirms glance's
+// dedicated database goes through the shared dedicated-backing validation: the
+// Dynamic-credentials rule (no per-instance OpenBao engine role) applies to it
+// exactly as to keystone's.
+func TestValidateCreate_RejectsGlanceDedicatedDatabaseDynamic(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := glanceControlPlane()
+	cp.Spec.Services.Glance.DedicatedBackingServices = &GlanceDedicatedBackingServicesSpec{
+		Database: &commonv1.DatabaseSpec{
+			ClusterRef:      &corev1.LocalObjectReference{Name: "cp-glance-db"},
+			CredentialsMode: commonv1.CredentialsModeDynamic,
+			Database:        "glance",
+			SecretRef:       commonv1.SecretRefSpec{Name: "glance-db"},
+		},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("credentialsMode Dynamic is not supported on a dedicated database"))
+	g.Expect(err.Error()).To(ContainSubstring("glance.dedicatedBackingServices.database"))
+}
+
+// TestValidateCreate_RejectsGlanceDedicatedClusterRefCollision pins that a glance
+// dedicated cache colliding with keystone's is rejected: the two projections
+// would resolve to one Memcached child CR.
+func TestValidateCreate_RejectsGlanceDedicatedClusterRefCollision(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := glanceControlPlane()
+	cp.Spec.Services.Keystone.DedicatedBackingServices = &KeystoneDedicatedBackingServicesSpec{
+		Cache: &commonv1.CacheSpec{
+			ClusterRef: &corev1.LocalObjectReference{Name: "shared-cache"},
+			Backend:    commonv1.DefaultCacheBackend,
+		},
+	}
+	cp.Spec.Services.Glance.DedicatedBackingServices = &GlanceDedicatedBackingServicesSpec{
+		Cache: &commonv1.CacheSpec{
+			ClusterRef: &corev1.LocalObjectReference{Name: "shared-cache"},
+			Backend:    commonv1.DefaultCacheBackend,
+		},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("Duplicate value"))
+	g.Expect(err.Error()).To(ContainSubstring("shared-cache"))
+}
+
+// TestValidateUpdate_RejectsGlanceDedicatedPresenceFlip pins the transition freeze
+// on the glance dedicated block: a live service cannot be moved between shared and
+// dedicated backing services.
+func TestValidateUpdate_RejectsGlanceDedicatedPresenceFlip(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	oldCP := glanceControlPlane()
+	newCP := glanceControlPlane()
+	newCP.Spec.Services.Glance.DedicatedBackingServices = &GlanceDedicatedBackingServicesSpec{
+		Cache: &commonv1.CacheSpec{
+			ClusterRef: &corev1.LocalObjectReference{Name: "cp-glance-cache"},
+			Backend:    commonv1.DefaultCacheBackend,
+		},
+	}
+
+	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("switching a service between shared and dedicated backing services"))
+	g.Expect(err.Error()).To(ContainSubstring("glance.dedicatedBackingServices"))
+}
