@@ -145,6 +145,23 @@ coordination.k8s.io/leases rule required for leader election.
     - update
     - patch
     - delete
+# glance.openstack.c5c3.io - glances, glancebackends
+# The ControlPlane reconciler projects and Owns a Glance child plus one
+# GlanceBackend child per services.glance.backends entry. Both are
+# operator-written children, so both get full verbs.
+- apiGroups:
+    - glance.openstack.c5c3.io
+  resources:
+    - glances
+    - glancebackends
+  verbs:
+    - get
+    - list
+    - watch
+    - create
+    - update
+    - patch
+    - delete
 # openstack.k-orc.cloud - applicationcredentials, services, endpoints, users,
 # domains, projects, roles, roleassignments. Minted/owned by reconcileKORC and
 # reconcileCatalog; users + domains are imported (unmanaged) so the admin

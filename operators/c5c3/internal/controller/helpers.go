@@ -68,6 +68,30 @@ func effectiveHorizonCache(cp *c5c3v1alpha1.ControlPlane) *commonv1.CacheSpec {
 	return nil
 }
 
+// effectiveGlanceDatabase resolves the database instance the Glance service
+// connects to.
+func effectiveGlanceDatabase(cp *c5c3v1alpha1.ControlPlane) *commonv1.DatabaseSpec {
+	if db := cp.DedicatedGlanceDatabase(); db != nil {
+		return db
+	}
+	if cp.Spec.Infrastructure != nil {
+		return &cp.Spec.Infrastructure.Database
+	}
+	return nil
+}
+
+// effectiveGlanceCache resolves the cache instance the Glance service connects
+// to.
+func effectiveGlanceCache(cp *c5c3v1alpha1.ControlPlane) *commonv1.CacheSpec {
+	if cache := cp.DedicatedGlanceCache(); cache != nil {
+		return cache
+	}
+	if cp.Spec.Infrastructure != nil {
+		return &cp.Spec.Infrastructure.Cache
+	}
+	return nil
+}
+
 // intervalToCron converts a rotation interval into a cron expression suitable
 // for a Kubernetes CronJob schedule.
 //

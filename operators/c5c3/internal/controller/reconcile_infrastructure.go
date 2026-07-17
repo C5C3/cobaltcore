@@ -338,6 +338,17 @@ func (r *ControlPlaneReconciler) managedInfraInstances(cp *c5c3v1alpha1.ControlP
 		addCache(effectiveHorizonCache(cp), cp.HorizonNamespace(), horizonCacheDeclaredAt(cp))
 	}
 
+	// Glance's database and cache are enumerated only when the service is
+	// DECLARED — the same no-consumer-no-instance rationale the Horizon cache
+	// above applies: an undeclared Glance would otherwise provision a database and
+	// a cache in the ControlPlane's namespace for a service that does not exist and
+	// then hold InfrastructureReady behind them.
+	if cp.Spec.Services.Glance != nil {
+		glanceNS := cp.GlanceNamespace()
+		addDatabase(effectiveGlanceDatabase(cp), glanceNS, glanceDatabaseDeclaredAt(cp))
+		addCache(effectiveGlanceCache(cp), glanceNS, glanceCacheDeclaredAt(cp))
+	}
+
 	return instances
 }
 
@@ -361,6 +372,20 @@ func keystoneCacheDeclaredAt(cp *c5c3v1alpha1.ControlPlane) string {
 func horizonCacheDeclaredAt(cp *c5c3v1alpha1.ControlPlane) string {
 	if cp.DedicatedHorizonCache() != nil {
 		return "spec.services.horizon.dedicatedBackingServices.cache"
+	}
+	return "spec.infrastructure.cache"
+}
+
+func glanceDatabaseDeclaredAt(cp *c5c3v1alpha1.ControlPlane) string {
+	if cp.DedicatedGlanceDatabase() != nil {
+		return "spec.services.glance.dedicatedBackingServices.database"
+	}
+	return "spec.infrastructure.database"
+}
+
+func glanceCacheDeclaredAt(cp *c5c3v1alpha1.ControlPlane) string {
+	if cp.DedicatedGlanceCache() != nil {
+		return "spec.services.glance.dedicatedBackingServices.cache"
 	}
 	return "spec.infrastructure.cache"
 }

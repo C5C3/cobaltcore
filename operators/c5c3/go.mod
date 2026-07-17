@@ -4,6 +4,7 @@ go 1.26.5
 
 require (
 	github.com/c5c3/forge/internal/common v0.0.0
+	github.com/c5c3/forge/operators/glance v0.0.0-00010101000000-000000000000
 	github.com/c5c3/forge/operators/horizon v0.0.0-00010101000000-000000000000
 	github.com/c5c3/forge/operators/keystone v0.0.0
 	github.com/external-secrets/external-secrets/apis v0.0.0-20260710155933-68826f87b4ff
@@ -86,6 +87,8 @@ require (
 )
 
 replace github.com/c5c3/forge/internal/common => ../../internal/common
+
+replace github.com/c5c3/forge/operators/glance => ../glance
 
 replace github.com/c5c3/forge/operators/horizon => ../horizon
 
