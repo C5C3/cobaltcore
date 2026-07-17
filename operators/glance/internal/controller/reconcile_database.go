@@ -125,6 +125,14 @@ func (r *GlanceReconciler) reconcileDatabase(ctx context.Context, glance *glance
 	})
 }
 
+// glanceMetadefsSourcePath is the directory the glance image ships the default
+// metadata-definition JSON files at. Glance's setup.cfg installs etc/metadefs/*
+// to <prefix>/etc/glance/metadefs, and the image installs glance with
+// --prefix /var/lib/openstack (images/glance/Dockerfile); the two paths must
+// stay in lockstep. The oslo default (/etc/glance/metadefs/) does not exist in
+// the config-free image, so the db-sync Job passes this path explicitly.
+const glanceMetadefsSourcePath = "/var/lib/openstack/etc/glance/metadefs"
+
 // glanceJobSetParams derives the shared migration-Job inputs from the Glance CR:
 // the config mount, the DB-connection env override, and the glance-manage db
 // sync command. The steady-state sync flow (database.ReconcileSyncJobs) consumes
@@ -138,8 +146,18 @@ func glanceJobSetParams(glance *glancev1alpha1.Glance, configMapName string) dat
 		ConfigMountPath: glanceConfigDir,
 		// Override [database].connection via the oslo.config env-var so db-sync
 		// reads the DB URL from the derived Secret instead of the ConfigMap.
-		Env:         []corev1.EnvVar{database.ConnectionEnvVar(glance.Name)},
-		SyncCommand: []string{"glance-manage", "--config-dir", glanceConfigDir, "db", "sync"},
+		Env: []corev1.EnvVar{database.ConnectionEnvVar(glance.Name)},
+		// After the schema migration, load the default metadata-definitions
+		// catalog — the managed counterpart of the classic deployment's
+		// `glance-manage db_load_metadefs` step. Without it GET
+		// /v2/metadefs/resource_types serves an empty catalog. The load is
+		// idempotent: namespaces already in the database are skipped (no
+		// --merge), so re-runs and release upgrades only insert new files.
+		SyncCommand: []string{
+			"/bin/sh", "-eu", "-c",
+			"glance-manage --config-dir " + glanceConfigDir + " db sync && " +
+				"glance-manage --config-dir " + glanceConfigDir + " db load_metadefs --path " + glanceMetadefsSourcePath,
+		},
 		// No schema-check: glance-manage db sync is idempotent and applies all
 		// pending migrations in one pass, unlike keystone's expand/migrate split.
 		SchemaCheckCommand: nil,

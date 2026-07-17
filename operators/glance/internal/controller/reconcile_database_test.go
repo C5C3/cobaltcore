@@ -167,7 +167,10 @@ func TestReconcileDatabase_SyncJobCommandAndEnv(t *testing.T) {
 
 	container := syncJob.Spec.Template.Spec.Containers[0]
 	g.Expect(container.Command).To(Equal([]string{
-		"glance-manage", "--config-dir", "/etc/glance/glance-api.conf.d/", "db", "sync",
+		"/bin/sh", "-eu", "-c",
+		"glance-manage --config-dir /etc/glance/glance-api.conf.d/ db sync && " +
+			"glance-manage --config-dir /etc/glance/glance-api.conf.d/ db load_metadefs " +
+			"--path /var/lib/openstack/etc/glance/metadefs",
 	}))
 
 	var connEnv *corev1.EnvVar
