@@ -1775,6 +1775,7 @@ jobs:
         run: |
           kubectl apply -f ${{ matrix.config-dir }}/02-glance-cr.yaml
           kubectl apply -f ${{ matrix.config-dir }}/03-glancebackend-cr.yaml
+          kubectl apply -f ${{ matrix.config-dir }}/04-glancebackend2-cr.yaml
           kubectl wait glance/${{ matrix.glance-cr-name }} -n openstack \
             --for=condition=Ready --timeout=300s
       # Use shared Tempest wrapper script.

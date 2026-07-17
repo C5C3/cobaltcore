@@ -11,7 +11,7 @@
 FROM venv-builder AS build
 
 # PyPI versions passed by CI from releases/<release>/test-refs.yaml.
-ARG TEMPEST_VERSION=45.0.0
+ARG TEMPEST_VERSION=46.3.0
 ARG KEYSTONE_TEMPEST_PLUGIN_VERSION=0.19.0
 
 # Install Tempest and plugins into the shared virtualenv.
