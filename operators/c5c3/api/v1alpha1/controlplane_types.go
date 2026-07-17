@@ -136,8 +136,8 @@ type InfrastructureSpec struct {
 }
 
 // ServicesSpec declares the per-service configuration of the control plane.
-// Keystone and Horizon are modeled today; additional services are added as
-// optional pointer fields as the operator grows.
+// Keystone, Horizon, and Glance are modeled today; additional services are added
+// as optional pointer fields as the operator grows.
 type ServicesSpec struct {
 	// Keystone configures the Keystone service projected by the reconciler.
 	// Optional: a ControlPlane with services.keystone unset manages no Keystone
@@ -155,6 +155,16 @@ type ServicesSpec struct {
 	// ready.
 	// +optional
 	Horizon *ServiceHorizonSpec `json:"horizon,omitempty"`
+
+	// Glance configures the Glance image service projected by the reconciler.
+	// Optional: a ControlPlane with services.glance unset manages no image
+	// service and the reconciler reports GlanceReady as not-managed. The
+	// projection is gated on KeystoneReady — the image service authenticates
+	// against the ControlPlane's Keystone child, so it is only created once that
+	// child is ready. Flipping this from set to nil deletes the
+	// previously-projected Glance child.
+	// +optional
+	Glance *ServiceGlanceSpec `json:"glance,omitempty"`
 }
 
 // ServiceKeystoneSpec is a CURATED LOCAL subset of the knobs the ControlPlane
@@ -714,6 +724,194 @@ type ServiceHorizonSpec struct {
 	// secretKeyRef if it is named differently).
 	// +optional
 	Namespace *ServiceNamespaceSpec `json:"namespace,omitempty"`
+}
+
+// ServiceGlanceSpec is a CURATED LOCAL subset of the knobs the ControlPlane
+// exposes for the Glance image service, mirroring the ServiceKeystoneSpec and
+// ServiceHorizonSpec DECISION above: the reconciler (L2) PROJECTS this struct
+// into a Glance CR; the database, cache, and Keystone endpoint of that Glance CR
+// are DERIVED from the ControlPlane (infrastructure.* and the Keystone child's
+// naming convention) rather than set by the user here, and the L1 api package
+// stays free of a dependency on the glance module.
+//
+// DECISION (phase-0 D10): the image stores are a CURATED list of backends — each
+// a name, a driver type (S3 today), the typed driver block, and an isDefault flag
+// — projected one-to-one into GlanceBackend child CRs. The api package models its
+// own S3 shape (GlanceBackendS3Spec) rather than importing the glance module's
+// S3BackendSpec, keeping the curated-subset contract (see the ServiceKeystoneSpec
+// DECISION on L2 dependency coordinates). The validating webhook enforces the
+// exactly-one-default invariant; the MinItems floor and the XValidation rule
+// below make it hold at the CRD schema layer too.
+type ServiceGlanceSpec struct {
+	// Replicas overrides the number of Glance API replicas. When nil the
+	// reconciler applies the Glance operator's own default (3).
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	Replicas *int32 `json:"replicas,omitempty"`
+
+	// Image optionally overrides the Glance container image. When nil the
+	// reconciler derives the image from spec.openStackRelease.
+	// +optional
+	Image *commonv1.ImageSpec `json:"image,omitempty"`
+
+	// Gateway optionally exposes the projected Glance API externally via a
+	// Gateway API HTTPRoute. When nil (the default) the reconciler does NOT
+	// project a gateway and the Glance API is reachable in-cluster only.
+	// +optional
+	Gateway *commonv1.GatewaySpec `json:"gateway,omitempty"`
+
+	// Backends is the curated list of image stores projected into GlanceBackend
+	// child CRs, one per entry. Exactly one entry must set isDefault, promoting
+	// its store to the Glance default_backend; the MinItems floor plus the
+	// XValidation single-default rule below hold that invariant at the CRD schema
+	// layer, and the validating webhook mirrors it.
+	//
+	// maxItems bounds the child-CR amplification of one admission: every entry
+	// projects one GlanceBackend CR. The name keys the listType=map list, so the
+	// apiserver rejects duplicate names.
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=32
+	// +listType=map
+	// +listMapKey=name
+	// +kubebuilder:validation:XValidation:rule="self.filter(b, has(b.isDefault) && b.isDefault).size() == 1",message="exactly one backends entry must set isDefault"
+	Backends []GlanceBackendEntry `json:"backends"`
+
+	// DedicatedBackingServices opts the Glance service out of the ControlPlane-wide
+	// shared instances declared in spec.infrastructure and gives it backing
+	// services of its own. Omitting it (the default) keeps Glance on the
+	// ControlPlane's shared database cluster and cache, isolated only logically
+	// (its own logical database, its own credentials). See
+	// GlanceDedicatedBackingServicesSpec.
+	// +optional
+	DedicatedBackingServices *GlanceDedicatedBackingServicesSpec `json:"dedicatedBackingServices,omitempty"`
+
+	// Namespace places the Glance service — and the backing services, secret
+	// store, and credential material that follow it — in a namespace of its own
+	// instead of the ControlPlane's. Omitting it (the default) keeps Glance in the
+	// ControlPlane's namespace, exactly as before. The assignment is create-only:
+	// the validating webhook freezes the block after creation (see
+	// ServiceNamespaceSpec), because moving a live service across namespaces would
+	// strand its database, its object-store credentials, and its tenant store with
+	// no migration path.
+	// +optional
+	Namespace *ServiceNamespaceSpec `json:"namespace,omitempty"`
+}
+
+// GlanceBackendEntry declares one curated image store of the Glance service. The
+// reconciler (L2) projects each entry one-to-one into a GlanceBackend child CR;
+// the driver block matching type carries the store parameters. The type/s3 union
+// rule enforces "the s3 block is set exactly when type is S3" at the CRD schema
+// layer so it holds even when the validating webhook is bypassed, mirroring the
+// GlanceBackend CR's own union rule.
+// +kubebuilder:validation:XValidation:rule="(self.type == 'S3') == has(self.s3)",message="the s3 block must be set exactly when type is S3"
+type GlanceBackendEntry struct {
+	// Name keys the listType=map Backends list (the apiserver rejects duplicates)
+	// and is embedded verbatim in the name of the projected GlanceBackend child
+	// CR, hence the DNS-1123 label shape.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	Name string `json:"name"`
+
+	// Type selects the image-store driver. Phase 1 supports S3 only; the enum
+	// mirrors the GlanceBackend CR's own type enum so an entry admitted here can
+	// never be rejected downstream by the GlanceBackend CRD.
+	// +kubebuilder:validation:Enum=S3
+	Type string `json:"type"`
+
+	// S3 configures the S3-compatible object store. Required exactly when type is
+	// S3 (union rule above) and forbidden otherwise.
+	// +optional
+	S3 *GlanceBackendS3Spec `json:"s3,omitempty"`
+
+	// IsDefault marks this backend as the Glance default store. Exactly one entry
+	// in services.glance.backends must set it (CEL + webhook enforced); the
+	// reconciler projects it onto the child GlanceBackend's spec.isDefault.
+	// +optional
+	IsDefault bool `json:"isDefault,omitempty"`
+}
+
+// GlanceBackendS3Spec is the CURATED LOCAL S3 store shape the ControlPlane
+// projects onto a GlanceBackend child CR's spec.s3. It deliberately models only
+// the D10 subset (endpoint, bucket, region, bucketURLFormat, credentials) and
+// defines its own field types rather than importing the glance module's
+// S3BackendSpec, keeping the L1 api package free of a dependency on the glance
+// module (see the ServiceKeystoneSpec DECISION on L2 dependency coordinates). The
+// field bounds mirror that S3BackendSpec so a value admitted here can never be
+// rejected downstream by the GlanceBackend CRD.
+type GlanceBackendS3Spec struct {
+	// Endpoint is the S3 endpoint URL, e.g. "https://s3.example.com". Projected
+	// onto the child's spec.s3.host.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern=`^https?://`
+	Endpoint string `json:"endpoint"`
+
+	// Bucket is the S3 bucket images are stored in. Projected onto the child's
+	// spec.s3.bucket.
+	// +kubebuilder:validation:MinLength=1
+	Bucket string `json:"bucket"`
+
+	// Region is the S3 region the bucket lives in. Optional; only projected onto
+	// the child's spec.s3.region when set.
+	// +optional
+	Region string `json:"region,omitempty"`
+
+	// BucketURLFormat selects how the bucket is addressed in request URLs: "path"
+	// (https://host/bucket) or "virtual" (https://bucket.host). It carries NO
+	// schema default on purpose — when unset the projection leaves the child's
+	// field unset so the GlanceBackend CR's own default ("path") applies at exactly
+	// one layer.
+	// +kubebuilder:validation:Enum=path;virtual
+	// +optional
+	BucketURLFormat string `json:"bucketURLFormat,omitempty"`
+
+	// CredentialsSecretRef references the Secret holding the S3 credentials,
+	// resolved in the namespace the Glance service is placed in. Required.
+	CredentialsSecretRef SecretNameRef `json:"credentialsSecretRef"`
+}
+
+// SecretNameRef is a name-only reference to a Kubernetes Secret, resolved in the
+// namespace the Glance service is placed in. commonv1 carries no name-only ref
+// (its SecretRefSpec always pairs a key), and this L1 api package must not import
+// the glance module's SecretNameRefSpec — so the small name-only shape is defined
+// locally here. The data keys the referenced Secret must expose are fixed by
+// contract downstream (the GlanceBackend controller reads them), so there is no
+// key to select.
+type SecretNameRef struct {
+	// Name is the referenced Secret's name.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Name string `json:"name"`
+}
+
+// GlanceDedicatedBackingServicesSpec declares the backing-service instances the
+// Glance service gets for itself instead of the ControlPlane-wide shared ones.
+// Glance consumes both a database and a cache, so it can take either or both
+// dedicated; a class left unset resolves to the ControlPlane-wide instance in
+// spec.infrastructure. See KeystoneDedicatedBackingServicesSpec for the full
+// contract.
+//
+// The block is optional, but must declare at least one class when present.
+//
+// +kubebuilder:validation:XValidation:rule="has(self.database) || has(self.cache)",message="dedicatedBackingServices must declare at least one backing-service class (database, cache)"
+type GlanceDedicatedBackingServicesSpec struct {
+	// Database gives Glance its own database cluster instead of the shared
+	// spec.infrastructure.database. Managed (clusterRef) and brownfield (host)
+	// modes are both supported.
+	//
+	// A dedicated managed database uses credentialsMode Static (the webhook
+	// materializes it and rejects Dynamic): the OpenBao database engine is
+	// bootstrapped once per namespace against the shared cluster, so no engine role
+	// exists that could issue credentials for a dedicated instance. Seed and rotate
+	// the credential at the OpenBao source.
+	// +optional
+	Database *commonv1.DatabaseSpec `json:"database,omitempty"`
+
+	// Cache gives Glance its own cache instead of the shared
+	// spec.infrastructure.cache. Managed (clusterRef) and brownfield (servers)
+	// modes are both supported.
+	// +optional
+	Cache *commonv1.CacheSpec `json:"cache,omitempty"`
 }
 
 // KORCSpec configures the K-ORC (OpenStack Resource Controller) integration of
@@ -1277,6 +1475,13 @@ func horizonDedicatedBlock(cp *ControlPlane) *HorizonDedicatedBackingServicesSpe
 	return nil
 }
 
+func glanceDedicatedBlock(cp *ControlPlane) *GlanceDedicatedBackingServicesSpec {
+	if gl := cp.Spec.Services.Glance; gl != nil {
+		return gl.DedicatedBackingServices
+	}
+	return nil
+}
+
 // DedicatedKeystoneDatabase returns the database instance declared FOR the
 // Keystone service alone, or nil when Keystone shares the ControlPlane-wide
 // instance (the default).
@@ -1306,6 +1511,25 @@ func (cp *ControlPlane) DedicatedHorizonCache() *commonv1.CacheSpec {
 	return nil
 }
 
+// DedicatedGlanceDatabase returns the database instance declared FOR the Glance
+// service alone, or nil when Glance shares the ControlPlane-wide instance (the
+// default).
+func (cp *ControlPlane) DedicatedGlanceDatabase() *commonv1.DatabaseSpec {
+	if b := glanceDedicatedBlock(cp); b != nil {
+		return b.Database
+	}
+	return nil
+}
+
+// DedicatedGlanceCache returns the cache instance declared for the Glance service
+// alone, or nil when Glance shares the ControlPlane-wide instance.
+func (cp *ControlPlane) DedicatedGlanceCache() *commonv1.CacheSpec {
+	if b := glanceDedicatedBlock(cp); b != nil {
+		return b.Cache
+	}
+	return nil
+}
+
 // keystoneNamespaceBlock / horizonNamespaceBlock are the single nil-safe walk of
 // the per-service namespace BLOCK, shared by the webhook (defaulting, claim and
 // immutability rules) and by the resolvers below. The webhook needs the block
@@ -1322,6 +1546,13 @@ func keystoneNamespaceBlock(cp *ControlPlane) *ServiceNamespaceSpec {
 func horizonNamespaceBlock(cp *ControlPlane) *ServiceNamespaceSpec {
 	if hz := cp.Spec.Services.Horizon; hz != nil {
 		return hz.Namespace
+	}
+	return nil
+}
+
+func glanceNamespaceBlock(cp *ControlPlane) *ServiceNamespaceSpec {
+	if gl := cp.Spec.Services.Glance; gl != nil {
+		return gl.Namespace
 	}
 	return nil
 }
@@ -1348,6 +1579,16 @@ func (cp *ControlPlane) HorizonNamespace() string {
 	return cp.Namespace
 }
 
+// GlanceNamespace resolves the namespace the Glance service — and the database,
+// cache, tenant store, and object-store credential material that follow it — is
+// placed in. See KeystoneNamespace.
+func (cp *ControlPlane) GlanceNamespace() string {
+	if ns := glanceNamespaceBlock(cp); ns != nil && ns.Name != "" {
+		return ns.Name
+	}
+	return cp.Namespace
+}
+
 // DedicatedServiceNamespaces returns the namespaces the ControlPlane places
 // services in OUTSIDE its own, deduplicated by name and in a stable order
 // (keystone first). It is the enumeration every cross-namespace concern walks:
@@ -1362,7 +1603,7 @@ func (cp *ControlPlane) HorizonNamespace() string {
 func (cp *ControlPlane) DedicatedServiceNamespaces() []ServiceNamespaceSpec {
 	var out []ServiceNamespaceSpec
 	seen := map[string]struct{}{}
-	for _, ns := range []*ServiceNamespaceSpec{keystoneNamespaceBlock(cp), horizonNamespaceBlock(cp)} {
+	for _, ns := range []*ServiceNamespaceSpec{keystoneNamespaceBlock(cp), horizonNamespaceBlock(cp), glanceNamespaceBlock(cp)} {
 		if ns == nil || ns.Name == "" || ns.Name == cp.Namespace {
 			continue
 		}

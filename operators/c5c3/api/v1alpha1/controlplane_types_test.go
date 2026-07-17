@@ -425,3 +425,195 @@ func TestDedicatedServiceNamespacesCarriesTheLifecycle(t *testing.T) {
 		t.Errorf("lifecycle = %q, want %q", got[0].Lifecycle, ServiceNamespaceLifecycleExternal)
 	}
 }
+
+// TestGlanceNamespace exercises the nil-safe namespace resolver for the Glance
+// service across the states the accessor can be in: no service block and a block
+// without an assignment (both default to the ControlPlane's namespace), a
+// webhook-bypass empty name (also a fallback), and an explicit assignment.
+func TestGlanceNamespace(t *testing.T) {
+	cpIn := func(glance *ServiceGlanceSpec) *ControlPlane {
+		return &ControlPlane{
+			ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "openstack"},
+			Spec:       ControlPlaneSpec{Services: ServicesSpec{Glance: glance}},
+		}
+	}
+	tests := []struct {
+		name string
+		cp   *ControlPlane
+		want string
+	}{
+		{"no glance block defaults to the ControlPlane namespace", cpIn(nil), "openstack"},
+		{"glance block without an assignment defaults to the ControlPlane namespace", cpIn(&ServiceGlanceSpec{}), "openstack"},
+		{"an empty assignment name falls back to the ControlPlane namespace", cpIn(&ServiceGlanceSpec{Namespace: &ServiceNamespaceSpec{}}), "openstack"},
+		{"glance takes a namespace of its own", cpIn(&ServiceGlanceSpec{Namespace: &ServiceNamespaceSpec{Name: "images"}}), "images"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.cp.GlanceNamespace(); got != tc.want {
+				t.Errorf("GlanceNamespace() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestDedicatedServiceNamespacesIncludesGlance asserts the Glance assignment is
+// enumerated alongside keystone and horizon, in the stable keystone→horizon→
+// glance order, and that co-located services collapse to a single entry (services
+// sharing a namespace share its backing services and tenant store).
+func TestDedicatedServiceNamespacesIncludesGlance(t *testing.T) {
+	cpIn := func(services ServicesSpec) *ControlPlane {
+		return &ControlPlane{
+			ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "openstack"},
+			Spec:       ControlPlaneSpec{Services: services},
+		}
+	}
+	tests := []struct {
+		name string
+		cp   *ControlPlane
+		want []string
+	}{
+		{
+			name: "glance takes a namespace of its own",
+			cp: cpIn(ServicesSpec{
+				Glance: &ServiceGlanceSpec{Namespace: &ServiceNamespaceSpec{Name: "images"}},
+			}),
+			want: []string{"images"},
+		},
+		{
+			name: "each service in its own namespace enumerates in keystone→horizon→glance order",
+			cp: cpIn(ServicesSpec{
+				Keystone: &ServiceKeystoneSpec{Namespace: &ServiceNamespaceSpec{Name: "identity"}},
+				Horizon:  &ServiceHorizonSpec{Namespace: &ServiceNamespaceSpec{Name: "dashboard"}},
+				Glance:   &ServiceGlanceSpec{Namespace: &ServiceNamespaceSpec{Name: "images"}},
+			}),
+			want: []string{"identity", "dashboard", "images"},
+		},
+		{
+			name: "glance co-located with keystone yields one entry",
+			cp: cpIn(ServicesSpec{
+				Keystone: &ServiceKeystoneSpec{Namespace: &ServiceNamespaceSpec{Name: "shared-ns"}},
+				Glance:   &ServiceGlanceSpec{Namespace: &ServiceNamespaceSpec{Name: "shared-ns"}},
+			}),
+			want: []string{"shared-ns"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var got []string
+			for _, ns := range tc.cp.DedicatedServiceNamespaces() {
+				got = append(got, ns.Name)
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("DedicatedServiceNamespaces() = %v, want %v", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("DedicatedServiceNamespaces()[%d] = %q, want %q", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+// TestDedicatedGlanceBackingServicesAccessors exercises the nil-safe reads for
+// the Glance service across the three states it can be in: no service block
+// (services.glance nil), a block that shares the ControlPlane-wide instances
+// (dedicatedBackingServices nil), and one that opted into dedicated instances.
+func TestDedicatedGlanceBackingServicesAccessors(t *testing.T) {
+	tests := []struct {
+		name         string
+		cp           *ControlPlane
+		wantDatabase bool
+		wantCache    bool
+	}{
+		{
+			name: "no glance block",
+			cp:   &ControlPlane{},
+		},
+		{
+			name: "glance shares the ControlPlane-wide instances",
+			cp: &ControlPlane{Spec: ControlPlaneSpec{Services: ServicesSpec{
+				Glance: &ServiceGlanceSpec{},
+			}}},
+		},
+		{
+			name: "glance takes a dedicated database only",
+			cp: &ControlPlane{Spec: ControlPlaneSpec{Services: ServicesSpec{
+				Glance: &ServiceGlanceSpec{
+					DedicatedBackingServices: &GlanceDedicatedBackingServicesSpec{
+						Database: &commonv1.DatabaseSpec{Database: "glance"},
+					},
+				},
+			}}},
+			wantDatabase: true,
+		},
+		{
+			name: "glance takes both dedicated instances",
+			cp: &ControlPlane{Spec: ControlPlaneSpec{Services: ServicesSpec{
+				Glance: &ServiceGlanceSpec{
+					DedicatedBackingServices: &GlanceDedicatedBackingServicesSpec{
+						Database: &commonv1.DatabaseSpec{Database: "glance"},
+						Cache:    &commonv1.CacheSpec{Backend: commonv1.DefaultCacheBackend},
+					},
+				},
+			}}},
+			wantDatabase: true,
+			wantCache:    true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.cp.DedicatedGlanceDatabase() != nil; got != tc.wantDatabase {
+				t.Errorf("DedicatedGlanceDatabase() present = %v, want %v", got, tc.wantDatabase)
+			}
+			if got := tc.cp.DedicatedGlanceCache() != nil; got != tc.wantCache {
+				t.Errorf("DedicatedGlanceCache() present = %v, want %v", got, tc.wantCache)
+			}
+		})
+	}
+}
+
+// TestServiceGlanceSpecDeepCopy verifies the curated Glance subset round-trips
+// through DeepCopy with independent pointer storage, in particular the backends
+// slice and the S3 pointer nested in each entry: the reconciler DeepCopies the
+// projected spec onto the Glance child, so an aliased S3 block here would let a
+// child projection mutate the ControlPlane spec it was derived from.
+func TestServiceGlanceSpecDeepCopy(t *testing.T) {
+	replicas := int32(2)
+	spec := ServiceGlanceSpec{
+		Replicas: &replicas,
+		Image:    &commonv1.ImageSpec{Repository: "ghcr.io/c5c3/glance", Tag: "2026.1"},
+		Backends: []GlanceBackendEntry{
+			{
+				Name: "primary",
+				Type: "S3",
+				S3: &GlanceBackendS3Spec{
+					Endpoint:             "https://s3.example.com",
+					Bucket:               "images",
+					CredentialsSecretRef: SecretNameRef{Name: "glance-s3"},
+				},
+				IsDefault: true,
+			},
+		},
+		DedicatedBackingServices: &GlanceDedicatedBackingServicesSpec{
+			Database: &commonv1.DatabaseSpec{Database: "glance"},
+		},
+	}
+
+	clone := spec.DeepCopy()
+	if clone.Replicas == spec.Replicas {
+		t.Errorf("DeepCopy did not allocate a new *int32 for Replicas")
+	}
+	if &clone.Backends[0] == &spec.Backends[0] {
+		t.Errorf("DeepCopy did not allocate a new backends slice")
+	}
+	if clone.Backends[0].S3 == spec.Backends[0].S3 {
+		t.Errorf("DeepCopy did not allocate a new *GlanceBackendS3Spec for the backend")
+	}
+
+	// Mutating the clone's backend must not touch the source.
+	clone.Backends[0].S3.Bucket = "other"
+	if spec.Backends[0].S3.Bucket != "images" {
+		t.Errorf("DeepCopy aliased the backend S3 block: source bucket changed to %q", spec.Backends[0].S3.Bucket)
+	}
+}
