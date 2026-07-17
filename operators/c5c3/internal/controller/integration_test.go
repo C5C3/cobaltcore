@@ -44,6 +44,7 @@ import (
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 	"github.com/c5c3/forge/operators/c5c3/internal/testutil"
+	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
 	horizonv1alpha1 "github.com/c5c3/forge/operators/horizon/api/v1alpha1"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
@@ -212,6 +213,31 @@ func integrationMinimalControlPlane(name, namespace string) *c5c3v1alpha1.Contro
 	}
 }
 
+// integrationGlanceService returns a valid services.glance block: a single
+// default S3 backend pointed at the in-cluster Garage endpoint. It is shared by
+// the full-chain projection test (whose Phase 6 asserts the projected
+// GlanceBackend's host and default flag), the service-account injection test, and
+// the External-mode rejection case, so the one curated backend shape is defined
+// exactly once.
+func integrationGlanceService() *c5c3v1alpha1.ServiceGlanceSpec {
+	return &c5c3v1alpha1.ServiceGlanceSpec{
+		Backends: []c5c3v1alpha1.GlanceBackendEntry{{
+			Name: "default",
+			// The GlanceBackendEntry.Type field is a plain string with a
+			// +kubebuilder:validation:Enum=S3 marker — the c5c3 api package defines no
+			// Go const for it — so the literal "S3" is the enum value.
+			Type:      "S3",
+			IsDefault: true,
+			S3: &c5c3v1alpha1.GlanceBackendS3Spec{
+				Endpoint:             "http://garage.openstack.svc.cluster.local:3900",
+				Bucket:               "glance-images",
+				Region:               "garage",
+				CredentialsSecretRef: c5c3v1alpha1.SecretNameRef{Name: "garage-s3-credentials"},
+			},
+		}},
+	}
+}
+
 // ensureReadyClusterSecretStore creates the cluster-scoped OpenBao-backed
 // ClusterSecretStore the DB-credential, admin-password and admin-credential
 // sub-reconcilers gate on (#476) and marks it Ready. It is idempotent across the
@@ -338,6 +364,28 @@ func simulateHorizonReadyWhenPresent(t testing.TB, ctx context.Context, c client
 		Message: "simulated ready",
 	})
 	g.Expect(c.Status().Update(ctx, hz)).To(Succeed(), "set Horizon Ready=True")
+}
+
+// simulateGlanceReadyWhenPresent waits for the projected Glance child, then sets
+// its aggregate Ready condition True so reconcileGlance's mirror flips GlanceReady
+// (there is no glance-operator running in envtest). Mirrors
+// simulateHorizonReadyWhenPresent.
+func simulateGlanceReadyWhenPresent(t testing.TB, ctx context.Context, c client.Client, key client.ObjectKey) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+
+	gl := &glancev1alpha1.Glance{}
+	g.Eventually(func() error {
+		return c.Get(ctx, key, gl)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "Glance child should be created")
+
+	meta.SetStatusCondition(&gl.Status.Conditions, metav1.Condition{
+		Type:    "Ready",
+		Status:  metav1.ConditionTrue,
+		Reason:  "AllReady",
+		Message: "simulated ready",
+	})
+	g.Expect(c.Status().Update(ctx, gl)).To(Succeed(), "set Glance Ready=True")
 }
 
 // simulateApplicationCredentialAvailableWhenPresent waits for the owned K-ORC
@@ -472,6 +520,51 @@ func simulateCatalogServiceEndpointAvailableWhenPresent(t testing.TB, ctx contex
 		Message:            "simulated available",
 	})
 	g.Expect(c.Status().Update(ctx, ep)).To(Succeed(), "set identity Endpoint Available=True")
+}
+
+// simulateGlanceCatalogAvailableWhenPresent waits for the image (Glance) catalog
+// row reconcileCatalog projects when spec.services.glance is set — the image
+// Service plus its internal and public Endpoints — and marks each Available
+// inline. CatalogReady gates on ALL catalog children (identity AND image)
+// reporting Available via korcAvailableUpToDate, so the image row must be resolved
+// alongside the identity row (simulateCatalogServiceEndpointAvailableWhenPresent)
+// before CatalogReady can flip True. It is a sibling of that helper rather than an
+// extension of it, so the glance-free tests reusing it never wait on image CRs
+// that are not projected.
+func simulateGlanceCatalogAvailableWhenPresent(t testing.TB, ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+	ns := childNamespace(cp)
+
+	svc := &orcv1alpha1.Service{}
+	g.Eventually(func() error {
+		return c.Get(ctx, client.ObjectKey{Namespace: ns, Name: glanceCatalogServiceName(cp)}, svc)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "image Service should be registered")
+	meta.SetStatusCondition(&svc.Status.Conditions, metav1.Condition{
+		Type:               orcv1alpha1.ConditionAvailable,
+		Status:             metav1.ConditionTrue,
+		Reason:             orcv1alpha1.ConditionReasonSuccess,
+		ObservedGeneration: svc.Generation,
+		Message:            "simulated available",
+	})
+	g.Expect(c.Status().Update(ctx, svc)).To(Succeed(), "set image Service Available=True")
+
+	// Both interfaces (D6): the image row registers an internal and a public
+	// Endpoint from the start.
+	for _, iface := range []string{"internal", "public"} {
+		ep := &orcv1alpha1.Endpoint{}
+		g.Eventually(func() error {
+			return c.Get(ctx, client.ObjectKey{Namespace: ns, Name: glanceCatalogEndpointName(cp, iface)}, ep)
+		}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "image %q Endpoint should be registered", iface)
+		meta.SetStatusCondition(&ep.Status.Conditions, metav1.Condition{
+			Type:               orcv1alpha1.ConditionAvailable,
+			Status:             metav1.ConditionTrue,
+			Reason:             orcv1alpha1.ConditionReasonSuccess,
+			ObservedGeneration: ep.Generation,
+			Message:            "simulated available",
+		})
+		g.Expect(c.Status().Update(ctx, ep)).To(Succeed(), "set image %q Endpoint Available=True", iface)
+	}
 }
 
 // simulateServiceAccountConvergedWhenPresent drives one declared service account
@@ -720,16 +813,22 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	ensureReadySecretStore(t, ctx, c, esoTenantStoreName, ns.Name)
 
 	// Create the ControlPlane CR (the defaulting webhook fills region etc.).
-	// Horizon is enabled HERE (not in the shared fixture) so only this
-	// full-chain test — which simulates the Horizon child in Phase 2.5 —
-	// carries the second service; the gate-focused tests reusing the fixture
-	// would otherwise wedge at the unsimulated Horizon step before KORC.
+	// Horizon and Glance are enabled HERE (not in the shared fixture) so only this
+	// full-chain test — which simulates the Horizon child in Phase 2.5 and the
+	// Glance child (plus its catalog row and GlanceBackend) in Phases 5/6 — carries
+	// the extra services; the gate-focused tests reusing the fixture would otherwise
+	// wedge at the unsimulated Horizon/Glance steps.
 	cp := integrationManagedControlPlane("cp", ns.Name)
 	cp.Spec.Services.Horizon = &c5c3v1alpha1.ServiceHorizonSpec{}
+	cp.Spec.Services.Glance = integrationGlanceService()
 
 	// Declare one service account with a role so the ServiceAccounts sub-reconciler
 	// projects the managed User/Project, the unmanaged Role import, and the managed
 	// RoleAssignment; simulateServiceAccountConvergedWhenPresent drives them to Ready.
+	// This declared "glance" entry deliberately pre-empts the defaulting webhook's
+	// auto-injection (injection fires only when no "glance" entry exists), so the
+	// "member"-role assertions in Phase 5.5 stay valid; the injection itself is
+	// covered by TestIntegration_GlanceServiceAccountInjection.
 	cp.Spec.KORC.ServiceAccounts = []c5c3v1alpha1.ServiceAccountSpec{{
 		Name:    "glance",
 		Project: c5c3v1alpha1.ServiceAccountProjectSpec{Name: "service"},
@@ -855,9 +954,12 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	simulateCloudsYamlMaterializedWhenPresent(t, ctx, c, cp)
 	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeAdminCredentialReady, metav1.ConditionTrue, itEventuallyTimeout)
 
-	// --- Phase 5: Catalog (Service + Endpoint). Gated on both child CRs reporting
-	// Available, so simulate the K-ORC actuator marking them Available. ---
+	// --- Phase 5: Catalog. With services.glance set, reconcileCatalog projects the
+	// identity row (Service + public Endpoint) AND the image row (Service + internal
+	// and public Endpoints); CatalogReady gates on ALL of them reporting Available,
+	// so simulate the K-ORC actuator marking both rows Available before waiting. ---
 	simulateCatalogServiceEndpointAvailableWhenPresent(t, ctx, c, cp)
+	simulateGlanceCatalogAvailableWhenPresent(t, ctx, c, cp)
 	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeCatalogReady, metav1.ConditionTrue, itEventuallyTimeout)
 
 	// --- Phase 5.5: Service accounts. The declared account projects a managed
@@ -877,6 +979,96 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	g.Expect(string(roleAssignment.Spec.Resource.RoleRef)).To(Equal(serviceAccountRoleImportRef(cp, "member")))
 	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeServiceAccountsReady, metav1.ConditionTrue, itEventuallyTimeout)
 
+	// --- Phase 6: Glance child (the last pipeline step, after ServiceAccounts).
+	// Projection is gated on KeystoneReady AND the glance service account's
+	// per-account readiness (driven in Phase 5.5), so the child — and its
+	// GlanceBackend and DB-credential ExternalSecret — only appear now. Assert their
+	// operator-derived shape before simulating readiness. ---
+	glanceKey := client.ObjectKey{Name: glanceName(cp), Namespace: ns.Name}
+	projectedGlance := &glancev1alpha1.Glance{}
+	g.Eventually(func() error {
+		return c.Get(ctx, glanceKey, projectedGlance)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+		"Glance child should be projected once KeystoneReady and the glance service account are ready")
+
+	// Image: the canonical repository with the release-derived tag.
+	g.Expect(projectedGlance.Spec.Image.Repository).To(Equal(defaultGlanceRepository))
+	g.Expect(projectedGlance.Spec.Image.Tag).To(Equal("2025.2"), "Glance image tag must derive from openStackRelease")
+
+	// Database: the shared managed cluster, the fixed "glance" logical schema, and
+	// the operator-owned static KV-backed DB credential (there is no OpenBao engine
+	// role for the glance schema, so the credential is never engine-issued).
+	g.Expect(projectedGlance.Spec.Database.ClusterRef).NotTo(BeNil(), "Glance database clusterRef must be wired")
+	g.Expect(projectedGlance.Spec.Database.ClusterRef.Name).To(Equal("openstack-db"))
+	g.Expect(projectedGlance.Spec.Database.Database).To(Equal("glance"))
+	g.Expect(projectedGlance.Spec.Database.SecretRef.Name).To(Equal(glanceDBCredentialSecretName(cp)),
+		"managed Glance DB secretRef must point at the operator-owned per-CP Glance DB-credential Secret")
+	g.Expect(projectedGlance.Spec.Database.SecretRef.Key).To(Equal("password"))
+	g.Expect(projectedGlance.Spec.Database.CredentialsMode).To(Equal(commonv1.CredentialsModeStatic),
+		"the projected Glance DB credential is forced Static (KV-backed)")
+
+	// Cache: the shared managed Memcached.
+	g.Expect(projectedGlance.Spec.Cache.ClusterRef).NotTo(BeNil(), "Glance cache clusterRef must be wired")
+	g.Expect(projectedGlance.Spec.Cache.ClusterRef.Name).To(Equal("openstack-memcached"))
+
+	// Keystone endpoint: the cluster-local convention URL of the projected Keystone
+	// child (the same URL K-ORC authenticates against), never the external one.
+	g.Expect(projectedGlance.Spec.KeystoneEndpoint).To(
+		Equal(fmt.Sprintf("http://%s.%s.svc:5000/v3", keystoneName(cp), ns.Name)),
+		"keystoneEndpoint must be the cluster-local Keystone Service URL",
+	)
+
+	// Service user: the auto-defaulted glance identity and the account's
+	// materialized consumer Secret (from the declared "glance" service account).
+	g.Expect(projectedGlance.Spec.ServiceUser.Username).To(Equal("glance"))
+	g.Expect(projectedGlance.Spec.ServiceUser.ProjectName).To(Equal("service"))
+	g.Expect(projectedGlance.Spec.ServiceUser.SecretRef.Name).To(Equal(serviceAccountCredentialsSecretName(cp, sa)),
+		"Glance service-user password must read the glance service account's materialized consumer Secret")
+	g.Expect(projectedGlance.Spec.ServiceUser.SecretRef.Key).To(Equal("password"))
+
+	// The child is co-located with the ControlPlane, so it carries a controller
+	// owner reference back to it.
+	glanceOwner := metav1.GetControllerOf(projectedGlance)
+	g.Expect(glanceOwner).NotTo(BeNil(), "Glance child must be controller-owned by the ControlPlane")
+	g.Expect(glanceOwner.Kind).To(Equal("ControlPlane"))
+	g.Expect(glanceOwner.Name).To(Equal(cp.Name))
+
+	// The projected default GlanceBackend mirrors the curated backends[] entry: it
+	// attaches to the Glance child, carries the S3 endpoint as its host, and is the
+	// default store.
+	projectedBackend := &glancev1alpha1.GlanceBackend{}
+	g.Expect(c.Get(ctx, client.ObjectKey{Name: glanceBackendName(cp, "default"), Namespace: ns.Name}, projectedBackend)).
+		To(Succeed(), "the default GlanceBackend child must be projected")
+	g.Expect(projectedBackend.Spec.GlanceRef.Name).To(Equal(glanceName(cp)),
+		"GlanceBackend must reference the projected Glance child by name")
+	g.Expect(projectedBackend.Spec.Type).To(Equal(glancev1alpha1.GlanceBackendTypeS3))
+	g.Expect(projectedBackend.Spec.S3).NotTo(BeNil())
+	g.Expect(projectedBackend.Spec.S3.Host).To(Equal("http://garage.openstack.svc.cluster.local:3900"),
+		"the backends[] endpoint must project onto the child's spec.s3.host")
+	g.Expect(projectedBackend.Spec.IsDefault).To(BeTrue(), "the single backends[] entry is the default store")
+	backendOwner := metav1.GetControllerOf(projectedBackend)
+	g.Expect(backendOwner).NotTo(BeNil(), "GlanceBackend child must be controller-owned by the ControlPlane")
+	g.Expect(backendOwner.Name).To(Equal(cp.Name))
+
+	// The static, KV-backed Glance DB-credential ExternalSecret: two Data entries
+	// (username/password) read from this CR's namespace-scoped OpenBao KV path.
+	glanceDBCredES := &esov1.ExternalSecret{}
+	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: glanceDBCredentialSecretName(cp)}, glanceDBCredES)).
+		To(Succeed(), "operator must create the per-CP Glance DB-credential ExternalSecret")
+	g.Expect(glanceDBCredES.Spec.Data).To(HaveLen(2), "Glance DB-credential ExternalSecret carries username + password")
+	g.Expect(glanceDBCredES.Spec.Data[0].SecretKey).To(Equal("username"))
+	g.Expect(glanceDBCredES.Spec.Data[1].SecretKey).To(Equal("password"))
+	for _, d := range glanceDBCredES.Spec.Data {
+		g.Expect(d.RemoteRef.Key).To(Equal(glanceDBCredentialRemoteKeyFor(cp)),
+			"Glance DB-credential ExternalSecret must read this CR's namespace-scoped OpenBao KV path")
+	}
+	glanceESOwner := metav1.GetControllerOf(glanceDBCredES)
+	g.Expect(glanceESOwner).NotTo(BeNil(), "Glance DB-credential ExternalSecret must be controller-owned by the ControlPlane")
+	g.Expect(glanceESOwner.Name).To(Equal(cp.Name))
+
+	simulateGlanceReadyWhenPresent(t, ctx, c, glanceKey)
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeGlanceReady, metav1.ConditionTrue, itEventuallyTimeout)
+
 	// --- Aggregate: Ready=True. ---
 	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeReady, metav1.ConditionTrue, itEventuallyTimeout)
 
@@ -893,6 +1085,7 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 		conditionTypeAdminCredentialReady,
 		conditionTypeCatalogReady,
 		conditionTypeServiceAccountsReady,
+		conditionTypeGlanceReady,
 		conditionTypeReady,
 	} {
 		cond := meta.FindStatusCondition(final.Status.Conditions, condType)
@@ -908,12 +1101,15 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	g.Expect(final.Status.ObservedGeneration).To(Equal(final.Generation),
 		"status.observedGeneration should match the CR generation")
 
-	// status.services reports one entry per configured service, both ready.
-	g.Expect(final.Status.Services).To(HaveLen(2), "two services are configured (keystone, horizon)")
+	// status.services reports one entry per configured service, all ready, in the
+	// stable order setServicesStatus produces (keystone, horizon, glance).
+	g.Expect(final.Status.Services).To(HaveLen(3), "three services are configured (keystone, horizon, glance)")
 	g.Expect(final.Status.Services[0].Name).To(Equal("keystone"))
 	g.Expect(final.Status.Services[0].Ready).To(BeTrue())
 	g.Expect(final.Status.Services[1].Name).To(Equal("horizon"))
 	g.Expect(final.Status.Services[1].Ready).To(BeTrue())
+	g.Expect(final.Status.Services[2].Name).To(Equal("glance"))
+	g.Expect(final.Status.Services[2].Ready).To(BeTrue())
 
 	// Every condition records the generation it was observed against.
 	for _, cond := range final.Status.Conditions {
@@ -991,6 +1187,31 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	g.Expect(string(ep.Spec.Resource.ServiceRef)).To(Equal(keystoneServiceName(final)),
 		"Endpoint serviceRef must reference the identity Service CR")
 	g.Expect(ep.Spec.Resource.URL).NotTo(BeEmpty(), "Endpoint URL must be derived")
+
+	// Image catalog (Glance): the managed image Service and both interface
+	// Endpoints. The image row uses the same k-orc-clouds-yaml credential as the
+	// identity row. Per D6 the internal AND public Endpoints both advertise the
+	// in-cluster Glance API URL at birth — this fixture sets no gateway, so the
+	// public interface has not yet diverged to an external URL.
+	imgSvc := &orcv1alpha1.Service{}
+	g.Expect(c.Get(ctx, types.NamespacedName{Name: glanceCatalogServiceName(final), Namespace: ns.Name}, imgSvc)).
+		To(Succeed(), "get projected image Service CR")
+	g.Expect(imgSvc.Spec.Resource).NotTo(BeNil())
+	g.Expect(imgSvc.Spec.Resource.Type).To(Equal("image"), "Service type must be image")
+	g.Expect(imgSvc.Spec.CloudCredentialsRef.SecretName).To(Equal(korcCloudsYamlSecretName))
+
+	wantGlanceURL := fmt.Sprintf("http://%s.%s.svc:9292", glanceName(final), ns.Name)
+	for _, iface := range []string{"internal", "public"} {
+		imgEP := &orcv1alpha1.Endpoint{}
+		g.Expect(c.Get(ctx, types.NamespacedName{Name: glanceCatalogEndpointName(final, iface), Namespace: ns.Name}, imgEP)).
+			To(Succeed(), "get projected image %q Endpoint CR", iface)
+		g.Expect(imgEP.Spec.Resource).NotTo(BeNil())
+		g.Expect(imgEP.Spec.Resource.Interface).To(Equal(iface), "Endpoint interface must be %q", iface)
+		g.Expect(string(imgEP.Spec.Resource.ServiceRef)).To(Equal(glanceCatalogServiceName(final)),
+			"image Endpoint serviceRef must reference the image Service CR")
+		g.Expect(imgEP.Spec.Resource.URL).To(Equal(wantGlanceURL),
+			"both image Endpoint interfaces advertise the in-cluster Glance API URL (no gateway in this fixture)")
+	}
 
 	// --- Per-CR OpenBao RemoteKey lock. ---
 	//
@@ -1845,6 +2066,70 @@ func TestIntegration_ControlPlane_ValidationMarkers(t *testing.T) {
 	}
 }
 
+// TestIntegration_GlanceServiceAccountInjection proves the defaulting webhook
+// auto-injects the glance service account whenever services.glance is set and the
+// operator declared none, and that the injection is idempotent across a later
+// UPDATE. The Glance projection gates on a spec.korc.serviceAccounts entry named
+// "glance", so a minimal services.glance CR must converge without the operator
+// hand-wiring the account.
+func TestIntegration_GlanceServiceAccountInjection(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupControlPlaneEnvTest(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-glance-inject-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed(), "create test namespace")
+
+	// A managed ControlPlane with services.glance set and NO serviceAccounts of its
+	// own: the defaulting webhook must inject the glance account BEFORE the
+	// validating webhook's defense-in-depth check (validateGlanceServiceAccount)
+	// runs, or admission would reject the CR for the missing account.
+	cp := integrationManagedControlPlane("cp-glance-inject", ns.Name)
+	cp.Spec.Services.Glance = integrationGlanceService()
+	g.Expect(cp.Spec.KORC.ServiceAccounts).To(BeEmpty(), "the fixture declares no service accounts")
+	g.Expect(c.Create(ctx, cp)).To(Succeed(),
+		"create managed ControlPlane with services.glance and no serviceAccounts")
+
+	// Exactly one entry was injected: name glance, project service (created, not
+	// merely referenced), role "service" (Keystone SRBAC identity:validate_token —
+	// NOT "member"), and userName defaulted to the account name by the loop that
+	// runs after injection.
+	fetched := &c5c3v1alpha1.ControlPlane{}
+	g.Expect(c.Get(ctx, client.ObjectKeyFromObject(cp), fetched)).To(Succeed(), "re-fetch defaulted ControlPlane")
+	g.Expect(fetched.Spec.KORC.ServiceAccounts).To(HaveLen(1),
+		"the defaulting webhook must inject exactly one service account")
+	injected := fetched.Spec.KORC.ServiceAccounts[0]
+	g.Expect(injected.Name).To(Equal("glance"))
+	g.Expect(injected.Project.Name).To(Equal("service"))
+	g.Expect(injected.Project.Create).To(BeTrue(), "the glance project is created, not merely referenced")
+	g.Expect(injected.Roles).To(Equal([]string{"service"}),
+		"the injected role is 'service' (identity:validate_token), never 'member'")
+	g.Expect(injected.UserName).To(Equal("glance"), "userName defaults to the account name")
+
+	// Idempotency: an UPDATE touching an unrelated field must NOT inject a second
+	// entry. The reconciler writes status (bumping resourceVersion), so drive the
+	// update through an Eventually that re-fetches and retries on the inevitable
+	// conflict.
+	g.Eventually(func() error {
+		latest := &c5c3v1alpha1.ControlPlane{}
+		if err := c.Get(ctx, client.ObjectKeyFromObject(cp), latest); err != nil {
+			return err
+		}
+		if latest.Labels == nil {
+			latest.Labels = map[string]string{}
+		}
+		latest.Labels["glance-injection-test"] = "touched"
+		return c.Update(ctx, latest)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "update an unrelated field")
+
+	afterUpdate := &c5c3v1alpha1.ControlPlane{}
+	g.Expect(c.Get(ctx, client.ObjectKeyFromObject(cp), afterUpdate)).To(Succeed(), "re-fetch after the update")
+	g.Expect(afterUpdate.Spec.KORC.ServiceAccounts).To(HaveLen(1),
+		"a re-defaulting UPDATE must not inject a second glance service account")
+	g.Expect(afterUpdate.Spec.KORC.ServiceAccounts[0].Name).To(Equal("glance"))
+}
+
 // TestIntegration_CredentialRotation_ServiceAccountValidation pins the two CEL
 // rules on the CredentialRotation CRD (serviceAccount required exactly when the
 // target is serviceAccountPassword) against the real envtest API server. There is
@@ -2029,6 +2314,17 @@ func TestIntegration_ExternalMode_Rejections(t *testing.T) {
 			name: "webhook: external block missing in External mode",
 			mutate: func(cp *c5c3v1alpha1.ControlPlane) {
 				cp.Spec.Services.Keystone.External = nil
+			},
+		},
+		{
+			// services.glance has no External-mode design yet (identity is managed
+			// against a pre-existing Keystone, so there is no control plane to attach
+			// an image service to). validateKeystoneMode forbids it with the message
+			// "forbidden when services.keystone.mode is External (Glance needs its own
+			// External-mode design)", which the apiserver returns as an Invalid error.
+			name: "webhook: services.glance set in External mode",
+			mutate: func(cp *c5c3v1alpha1.ControlPlane) {
+				cp.Spec.Services.Glance = integrationGlanceService()
 			},
 		},
 		{
