@@ -1474,8 +1474,9 @@ identity Service. When `spec.services.glance` is set a second row registers the
 both interfaces from the start so no later catalog migration is needed): the
 `internal` one always advertises the in-cluster Glance API Service URL
 `http://{controlplane.Name}-glance.<glance-namespace>.svc:9292` (`glanceEndpointURL`),
-while the `public` one prefers the externally routable gateway hostname
-(`https://{gateway.hostname}`) and falls back to that same in-cluster URL when
+while the `public` one prefers an explicit `services.glance.publicEndpoint`
+(advertised verbatim), then the externally routable gateway hostname
+(`https://{gateway.hostname}`), then falls back to that same in-cluster URL when
 Glance is not exposed via a Gateway (`glanceCatalogURL`). Unlike identity there is
 no `/v3` path suffix — the Glance API is served at the root. The image row follows
 the generic `{controlplane.Name}-image-service` / `{controlplane.Name}-image-endpoint-{interface}`

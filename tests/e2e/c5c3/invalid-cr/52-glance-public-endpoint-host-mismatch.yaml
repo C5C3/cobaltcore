@@ -1,0 +1,50 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# services.glance.publicEndpoint must name the same host as
+# services.glance.gateway.hostname. The Gateway listener is what routes that
+# hostname to the Glance API, so a divergent host advertises a catalog endpoint
+# that never reaches it — and the value is projected into no child CR, so this
+# webhook is the only gate on the URL every image client resolves.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-glance-endpoint-host-mismatch
+spec:
+  openStackRelease: "2025.2"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+  services:
+    keystone:
+      mode: Managed
+    glance:
+      backends:
+      - name: primary
+        type: S3
+        isDefault: true
+        s3:
+          endpoint: https://s3.example.com
+          bucket: images
+          credentialsSecretRef:
+            name: glance-s3-creds
+      gateway:
+        hostname: glance.example.com
+        parentRef:
+          name: openstack-gw
+      publicEndpoint: https://images.example.com
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password

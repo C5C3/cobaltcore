@@ -378,11 +378,16 @@ func glanceCatalogEndpointName(cp *c5c3v1alpha1.ControlPlane, iface string) stri
 // glanceCatalogURL returns the URL registered for the K-ORC image catalog PUBLIC
 // Endpoint. Per D6 the image service registers both a public and an internal
 // endpoint from the start; the internal endpoint always advertises the in-cluster
-// Service URL (glanceEndpointURL), while the public one prefers the externally
-// routable gateway hostname and falls back to that same in-cluster URL when Glance
-// is not exposed via a Gateway. Unlike keystoneCatalogURL there is no "/v3" path
-// suffix — the Glance API is served at the root.
+// Service URL (glanceEndpointURL), while the public one prefers an explicit
+// services.glance.publicEndpoint (the only way to advertise a non-443 external
+// port), then the externally routable gateway hostname ("https://{gateway.hostname}"),
+// and falls back to that same in-cluster URL when Glance is not exposed via a
+// Gateway. Unlike keystoneCatalogURL there is no "/v3" path suffix — the Glance
+// API is served at the root.
 func glanceCatalogURL(cp *c5c3v1alpha1.ControlPlane) string {
+	if pe := cp.Spec.Services.Glance.PublicEndpoint; pe != "" {
+		return pe
+	}
 	if gw := cp.Spec.Services.Glance.Gateway; gw != nil {
 		return fmt.Sprintf("https://%s", gw.Hostname)
 	}

@@ -760,6 +760,52 @@ FIXTURES: tuple[Fixture, ...] = (
             "        isDefault: true\n"
         ),
     ),
+    Fixture(
+        filename="51-glance-public-endpoint-not-a-url.yaml",
+        comment=(
+            "services.glance.publicEndpoint with a non-http(s) scheme violates the CRD\n"
+            "pattern. The value is advertised verbatim as the public image catalog\n"
+            "Endpoint, so an unusable scheme could never serve external clients."
+        ),
+        name="cp-glance-bad-endpoint",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        glance=VALID_GLANCE + "      publicEndpoint: ftp://glance.example.com\n",
+    ),
+    Fixture(
+        filename="52-glance-public-endpoint-host-mismatch.yaml",
+        comment=(
+            "services.glance.publicEndpoint must name the same host as\n"
+            "services.glance.gateway.hostname. The Gateway listener is what routes that\n"
+            "hostname to the Glance API, so a divergent host advertises a catalog endpoint\n"
+            "that never reaches it — and the value is projected into no child CR, so this\n"
+            "webhook is the only gate on the URL every image client resolves."
+        ),
+        name="cp-glance-endpoint-host-mismatch",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        glance=(
+            VALID_GLANCE
+            + "      gateway:\n"
+            + "        hostname: glance.example.com\n"
+            + "        parentRef:\n"
+            + "          name: openstack-gw\n"
+            + "      publicEndpoint: https://images.example.com\n"
+        ),
+    ),
+    Fixture(
+        filename="53-glance-public-endpoint-with-query.yaml",
+        comment=(
+            "services.glance.publicEndpoint must be a bare origin. The ^https?:// pattern\n"
+            "anchors only the prefix, so a query string is schema-legal — and since the\n"
+            "Glance API is served at the root, clients append the API path to the catalog\n"
+            "endpoint and 404 on every image call."
+        ),
+        name="cp-glance-endpoint-with-query",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        glance=VALID_GLANCE + "      publicEndpoint: https://glance.example.com?utm=1\n",
+    ),
     # --- transition wave C: shared -> dedicated (Test: c5c3-invalid-cr-shared-to-dedicated) ---
     Fixture(
         filename="40-transition-base-shared.yaml",

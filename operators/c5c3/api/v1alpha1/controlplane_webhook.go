@@ -666,10 +666,12 @@ const GlanceServiceAccountName = "glance"
 // admission — the gateway hostname shape, the image tag/digest XOR, the
 // per-backend type/s3 union, the S3 endpoint URL shape, the non-empty
 // credentialsSecretRef, and the non-empty-backends / exactly-one-default
-// invariants — and adds the two rules the CRD schema cannot express: the composed
-// GlanceBackend child-name length bound, and the defense-in-depth requirement
-// that the glance service account the defaulting webhook injects is present (and,
-// when Glance is placed in a dedicated namespace, targets it).
+// invariants — and adds the rules the CRD schema cannot express: the public
+// endpoint's origin shape and its agreement with the gateway
+// (validateGlancePublicEndpoint), the composed GlanceBackend child-name length
+// bound, and the defense-in-depth requirement that the glance service account the
+// defaulting webhook injects is present (and, when Glance is placed in a
+// dedicated namespace, targets it).
 //
 // The cross-field rule that services.glance is forbidden in External mode lives
 // in validateKeystoneMode with the rest of the External-mode matrix.
@@ -701,10 +703,107 @@ func validateGlance(cp *ControlPlane) field.ErrorList {
 			"exactly one of image.tag or image.digest must be set"))
 	}
 
+	allErrs = append(allErrs, validateGlancePublicEndpoint(glPath, gl)...)
 	allErrs = append(allErrs, validateGlanceBackends(cp, glPath.Child("backends"))...)
 	allErrs = append(allErrs, validateGlanceServiceAccount(cp)...)
 
 	return allErrs
+}
+
+// validateGlancePublicEndpoint enforces the rules on
+// services.glance.publicEndpoint that the CRD markers cannot express. The value
+// is advertised VERBATIM as the K-ORC public image catalog Endpoint — the URL
+// every authenticated OpenStack client resolves for `openstack image ...` and
+// sends its scoped Keystone token (X-Auth-Token) to. Unlike the keystone
+// override it is projected into no child CR, so no downstream webhook re-checks
+// it: whatever admission accepts here is what lands in the Keystone catalog.
+//
+//   - Shape, as defense-in-depth alongside the ^https?:// Pattern marker:
+//     "https://" alone matches the pattern and stays under the 512-byte cap, yet
+//     registers a hostless URL no client can resolve.
+//   - A bare origin, with no path, query or fragment. The Pattern marker anchors
+//     only the prefix, so "https://glance.example.com?utm=1" is schema-legal;
+//     the Glance API is served at the root and clients append the API path to
+//     the catalog URL, yielding "https://glance.example.com?utm=1/v2/images" and
+//     a 404 on every image call. A single trailing slash is tolerated —
+//     OpenStack clients normalize the catalog endpoint before appending.
+//   - With a gateway configured the listener terminates TLS, so the externally
+//     observed scheme is https — the same rule the Horizon public endpoint
+//     applies. An http endpoint is also a token leak, and a worse one than the
+//     dashboard's: the scoped Keystone token rides EVERY image call rather than
+//     one WebSSO hand-off per login, and the image payload goes with it.
+//   - With a gateway configured the host must equal gateway.hostname. The
+//     Gateway listener is what routes that hostname to the Glance Service, so a
+//     divergent host advertises an endpoint that never reaches the API — failing
+//     client-side, with no status condition and no admission error naming the
+//     cause. The port may still differ: Gateway API hostnames carry none, so an
+//     API published off 443 has to spell the port out here.
+func validateGlancePublicEndpoint(glPath *field.Path, gl *ServiceGlanceSpec) field.ErrorList {
+	if gl.PublicEndpoint == "" {
+		return nil
+	}
+	pePath := glPath.Child("publicEndpoint")
+	u, err := validateHTTPURL(pePath, gl.PublicEndpoint)
+	if err != nil {
+		return field.ErrorList{err}
+	}
+
+	var errs field.ErrorList
+	if (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+		errs = append(errs, field.Invalid(pePath, gl.PublicEndpoint,
+			"must be a bare origin (scheme://host[:port]) with no path, query, or fragment: the Glance API is served "+
+				"at the root and clients append the API path to the catalog endpoint"))
+	}
+
+	g := gl.Gateway
+	if g == nil || g.Hostname == "" {
+		return errs
+	}
+
+	if u.Scheme != "https" {
+		errs = append(errs, field.Invalid(pePath, gl.PublicEndpoint,
+			"scheme must be https when services.glance.gateway is configured (the Gateway listener terminates TLS): "+
+				"every image call sends the caller's scoped Keystone token, and the image payload, to this endpoint"))
+	}
+	if u.Hostname() != g.Hostname {
+		errs = append(errs, field.Invalid(pePath, gl.PublicEndpoint,
+			fmt.Sprintf("host %q must equal services.glance.gateway.hostname %q: the Gateway listener routes that "+
+				"hostname to the Glance API, so the catalog would direct image clients to a host that never reaches it",
+				u.Hostname(), g.Hostname)))
+	}
+	return errs
+}
+
+// warnInsecureGlancePublicEndpoint surfaces a cleartext image endpoint that
+// validateGlancePublicEndpoint cannot reject: without a gateway Glance is
+// published by some other means, and a plain-http endpoint is a legal, if
+// unwise, development setup that the ^https?:// CRD Pattern deliberately allows.
+// The downgrade must never be silent, though — every authenticated image call
+// carries the caller's scoped Keystone token to this URL, and that bearer token
+// grants the caller's full API privileges, not just image access.
+func warnInsecureGlancePublicEndpoint(cp *ControlPlane) admission.Warnings {
+	gl := cp.Spec.Services.Glance
+	if gl == nil || gl.PublicEndpoint == "" {
+		return nil
+	}
+	if u, err := url.Parse(gl.PublicEndpoint); err != nil || u.Scheme != "http" {
+		return nil
+	}
+	return admission.Warnings{fmt.Sprintf(
+		"spec.services.glance.publicEndpoint %q uses http://: it is advertised as the public image catalog endpoint, "+
+			"so every authenticated image call would deliver the caller's scoped Keystone token — and the image "+
+			"payload — in cleartext. Use https://.",
+		gl.PublicEndpoint,
+	)}
+}
+
+// insecurePublicEndpointWarnings collects the cleartext-endpoint admission
+// warnings the validating webhook attaches to every create and update. Neither
+// shape can be rejected outright (the ^https?:// markers admit http:// on
+// purpose), so surfacing them together keeps a gateway-less deployment from
+// downgrading a bearer-token path silently.
+func insecurePublicEndpointWarnings(cp *ControlPlane) admission.Warnings {
+	return append(warnInsecureHorizonPublicEndpoint(cp), warnInsecureGlancePublicEndpoint(cp)...)
 }
 
 // validateGlanceBackends mirrors the declarative constraints on
@@ -1098,7 +1197,7 @@ func (w *ControlPlaneWebhook) Default(_ context.Context, obj *ControlPlane) erro
 // The check runs only on CREATE (not UPDATE) so an existing CR stays mutable.
 // Reviewer: please verify boundary 6 = option (a).
 func (w *ControlPlaneWebhook) ValidateCreate(ctx context.Context, obj *ControlPlane) (admission.Warnings, error) {
-	warnings := warnInsecureHorizonPublicEndpoint(obj)
+	warnings := insecurePublicEndpointWarnings(obj)
 	if err := newInvalidIfErrs(obj, w.validate(obj)); err != nil {
 		return warnings, err
 	}
@@ -1125,7 +1224,7 @@ func (w *ControlPlaneWebhook) ValidateUpdate(_ context.Context, oldObj, newObj *
 	allErrs := w.validate(newObj)
 	allErrs = append(allErrs, validateImmutable(oldObj, newObj)...)
 	allErrs = append(allErrs, validateReleaseNotDowngraded(oldObj, newObj)...)
-	return warnInsecureHorizonPublicEndpoint(newObj), newInvalidIfErrs(newObj, allErrs)
+	return insecurePublicEndpointWarnings(newObj), newInvalidIfErrs(newObj, allErrs)
 }
 
 // ValidateDelete implements admission.Validator[*ControlPlane]. The method is
