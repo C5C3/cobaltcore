@@ -6,6 +6,7 @@
 # the independent, pre-created glance-images-2 bucket. The suite targets this
 # store explicitly on upload (X-Image-Meta-Store: garage-b) to prove image data
 # lands in the non-default store while garage-a stays the registered default.
+# region backend-b
 apiVersion: glance.openstack.c5c3.io/v1alpha1
 kind: GlanceBackend
 metadata:
@@ -22,3 +23,4 @@ spec:
     region: garage
     credentialsSecretRef:
       name: garage-s3-credentials
+# endregion backend-b

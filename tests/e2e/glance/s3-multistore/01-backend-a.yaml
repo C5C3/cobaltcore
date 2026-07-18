@@ -7,6 +7,7 @@
 # = garage-a). It points at the pre-created glance-images bucket on the in-cluster
 # Garage endpoint; the glance-s3 GarageKey (garage-s3-credentials Secret) holds
 # read/write on both glance-images and glance-images-2.
+# region backend-a
 apiVersion: glance.openstack.c5c3.io/v1alpha1
 kind: GlanceBackend
 metadata:
@@ -23,3 +24,4 @@ spec:
     region: garage
     credentialsSecretRef:
       name: garage-s3-credentials
+# endregion backend-a
