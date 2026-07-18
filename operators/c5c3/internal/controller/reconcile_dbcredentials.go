@@ -7,12 +7,15 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	esgenv1alpha1 "github.com/external-secrets/external-secrets/apis/generators/v1alpha1"
 	esmetav1 "github.com/external-secrets/external-secrets/apis/meta/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -64,6 +67,16 @@ const (
 	// leaves (openbao-client-tls-cert.yaml) so client-cert rotation cadences align.
 	dbCredentialClientCertDuration    = "8760h"
 	dbCredentialClientCertRenewBefore = "720h"
+	// engineIssuedUsernamePrefix is the prefix every username the OpenBao MariaDB
+	// database engine mints carries. The mysql-database-plugin derives usernames
+	// from its default username_template ("v-<display>-<role>-<random>-<timestamp>",
+	// truncated to MySQL's 32-character limit) and setup-database-tenant.sh does not
+	// override that template, so the prefix is what tells an engine-issued login
+	// apart from the hand-seeded static one a retired Static deployment leaves
+	// behind. A template override there would have to keep the prefix, or the gate
+	// below stalls the credentials-mode flip (fail CLOSED — a diagnosable
+	// GlanceReady=False, never a DSN naming a login that was never created).
+	engineIssuedUsernamePrefix = "v-"
 )
 
 // dbCredentialRefreshInterval is how often ESO re-issues the engine-issued
@@ -178,20 +191,80 @@ func dbCredentialClientCertName(cp *c5c3v1alpha1.ControlPlane) string {
 	return keystoneName(cp) + dbCredentialClientCertSuffix
 }
 
+// dbCredentialTarget carries everything that distinguishes one service's
+// DB-credential concern from another's. The projected objects, their ordering,
+// and their teardown are identical across services, so the builders and the
+// ensure/delete pair below take a target rather than being transliterated once
+// per service (see keystoneDBCredentialTarget / glanceDBCredentialTarget in
+// reconcile_glance_dbcredentials.go).
+type dbCredentialTarget struct {
+	// qualifier is the service name the error and log messages this concern emits
+	// prefix themselves with, so each service names itself in the ControlPlane
+	// condition it surfaces through: empty for Keystone ("ensuring DB credential
+	// ServiceAccount"), "Glance" for Glance ("ensuring Glance DB credential
+	// ServiceAccount"). Message sites splice it through prefix(), never directly.
+	qualifier string
+	// namespace is the SERVICE namespace every object lands in, beside the
+	// database it issues against and the child that consumes it.
+	namespace string
+	// secretName names the DB-credential Secret, its ExternalSecret, and the
+	// VaultDynamicSecret generator behind it (all three share the name).
+	secretName string
+	// certName names the mTLS client Certificate and the Secret it materialises.
+	certName string
+	// saName is the ServiceAccount whose token the generator presents to OpenBao.
+	saName string
+	// vaultRole is the OpenBao Kubernetes-auth role the generator authenticates
+	// against; credsPath is the database-engine path it reads from.
+	vaultRole string
+	credsPath string
+	// kvPath is the KV path the Static opt-out branch reads instead.
+	kvPath string
+	// storeRef is the store the ControlPlane selected, used by the Static
+	// ExternalSecret and to resolve the OpenBao connection config.
+	storeRef commonv1.SecretStoreRefSpec
+}
+
+// prefix returns qualifier as a message prefix: the service name plus the
+// separating space, or "" for the unqualified (Keystone) concern. Keeping the
+// separator here rather than inside the qualifier literal means no message
+// depends on an invisible trailing space surviving every future edit.
+func (t dbCredentialTarget) prefix() string {
+	if t.qualifier == "" {
+		return ""
+	}
+	return t.qualifier + " "
+}
+
+// keystoneDBCredentialTarget describes the Keystone DB-credential concern.
+func keystoneDBCredentialTarget(cp *c5c3v1alpha1.ControlPlane) dbCredentialTarget {
+	return dbCredentialTarget{
+		namespace:  cp.KeystoneNamespace(),
+		secretName: dbCredentialSecretName(cp),
+		certName:   dbCredentialClientCertName(cp),
+		saName:     dbCredentialServiceAccountName,
+		vaultRole:  dbDynamicVaultRole,
+		credsPath:  dbDynamicCredsPathFor(cp),
+		kvPath:     dbCredentialRemoteKeyFor(cp),
+		storeRef:   effectiveControlPlaneStoreRef(cp),
+	}
+}
+
 // dbCredentialServiceAccount builds the per-ControlPlane ServiceAccount whose
 // token the VaultDynamicSecret generator presents to OpenBao. PURE builder: the
 // reconciler sets the owner reference in the CreateOrUpdate mutate closure.
-func dbCredentialServiceAccount(cp *c5c3v1alpha1.ControlPlane) *corev1.ServiceAccount {
+func dbCredentialServiceAccount(t dbCredentialTarget) *corev1.ServiceAccount {
 	return &corev1.ServiceAccount{
-		ObjectMeta: metav1.ObjectMeta{Name: dbCredentialServiceAccountName, Namespace: cp.KeystoneNamespace()},
+		ObjectMeta: metav1.ObjectMeta{Name: t.saName, Namespace: t.namespace},
 	}
 }
 
 // applyDBCredentialCertificateSpec sets the desired spec fields on the client
-// Certificate. Extracted so the CreateOrUpdate mutate closure can re-assert the
-// spec on an existing object without clobbering cert-manager-managed status.
-func applyDBCredentialCertificateSpec(u *unstructured.Unstructured, cp *c5c3v1alpha1.ControlPlane) {
-	name := dbCredentialClientCertName(cp)
+// Certificate named name in namespace. Extracted so the CreateOrUpdate mutate
+// closure can re-assert the spec on an existing object without clobbering
+// cert-manager-managed status, and generalized over name/namespace so both the
+// Keystone and the Glance DB-credential concerns can drive their own client cert.
+func applyDBCredentialCertificateSpec(u *unstructured.Unstructured, name, namespace string) {
 	// SetNested* only errors on a type conflict at an existing path; on a
 	// freshly-built or Certificate-typed object the writes cannot fail, so the
 	// errors are intentionally ignored here.
@@ -199,7 +272,7 @@ func applyDBCredentialCertificateSpec(u *unstructured.Unstructured, cp *c5c3v1al
 	_ = unstructured.SetNestedField(u.Object, dbCredentialClientCertDuration, "spec", "duration")
 	_ = unstructured.SetNestedField(u.Object, dbCredentialClientCertRenewBefore, "spec", "renewBefore")
 	_ = unstructured.SetNestedStringSlice(u.Object, []string{"client auth"}, "spec", "usages")
-	_ = unstructured.SetNestedField(u.Object, name+"."+cp.KeystoneNamespace()+".svc", "spec", "commonName")
+	_ = unstructured.SetNestedField(u.Object, name+"."+namespace+".svc", "spec", "commonName")
 	_ = unstructured.SetNestedMap(u.Object, map[string]interface{}{
 		"name": openBaoCAIssuerName,
 		"kind": "ClusterIssuer",
@@ -213,12 +286,12 @@ func applyDBCredentialCertificateSpec(u *unstructured.Unstructured, cp *c5c3v1al
 // Certificate's Secret, and the SA token from the per-CP ServiceAccount. server
 // and mountPath are copied from the live openbao-cluster-store so the connection
 // config cannot drift from the store the rest of the stack uses.
-func dbCredentialVaultDynamicSecret(cp *c5c3v1alpha1.ControlPlane, server, mountPath string) *esgenv1alpha1.VaultDynamicSecret {
-	certSecret := dbCredentialClientCertName(cp)
+func dbCredentialVaultDynamicSecret(t dbCredentialTarget, server, mountPath string) *esgenv1alpha1.VaultDynamicSecret {
+	certSecret := t.certName
 	return &esgenv1alpha1.VaultDynamicSecret{
-		ObjectMeta: metav1.ObjectMeta{Name: dbCredentialSecretName(cp), Namespace: cp.KeystoneNamespace()},
+		ObjectMeta: metav1.ObjectMeta{Name: t.secretName, Namespace: t.namespace},
 		Spec: esgenv1alpha1.VaultDynamicSecretSpec{
-			Path:   dbDynamicCredsPathFor(cp),
+			Path:   t.credsPath,
 			Method: "GET",
 			Provider: &esov1.VaultProvider{
 				Server: server,
@@ -231,8 +304,8 @@ func dbCredentialVaultDynamicSecret(cp *c5c3v1alpha1.ControlPlane, server, mount
 				Auth: &esov1.VaultAuth{
 					Kubernetes: &esov1.VaultKubernetesAuth{
 						Path:              mountPath,
-						Role:              dbDynamicVaultRole,
-						ServiceAccountRef: &esmetav1.ServiceAccountSelector{Name: dbCredentialServiceAccountName},
+						Role:              t.vaultRole,
+						ServiceAccountRef: &esmetav1.ServiceAccountSelector{Name: t.saName},
 					},
 				},
 				CAProvider: &esov1.CAProvider{
@@ -250,15 +323,17 @@ func dbCredentialVaultDynamicSecret(cp *c5c3v1alpha1.ControlPlane, server, mount
 }
 
 // dbCredentialGeneratorExternalSecret builds the Dynamic-mode ExternalSecret that
-// materialises the engine-issued username+password into the KEYSTONE service
-// namespace (beside the child that consumes it) via the per-CP VaultDynamicSecret
+// materialises the engine-issued username+password into the SERVICE namespace
+// (beside the child that consumes it) via the per-CP VaultDynamicSecret
 // generator. It carries no static Data refs and no
 // SecretStoreRef — the generatorRef is the sole source. RefreshInterval is below
-// the engine role's default_ttl so ESO renews the lease before it expires.
-func dbCredentialGeneratorExternalSecret(cp *c5c3v1alpha1.ControlPlane) *esov1.ExternalSecret {
-	name := dbCredentialSecretName(cp)
+// the engine role's default_ttl so ESO renews the lease before it expires. The
+// materialised Secret carries the same username/password keys the static
+// ExternalSecret produces, so the projected DB secretRef is mode-agnostic.
+func dbCredentialGeneratorExternalSecret(t dbCredentialTarget) *esov1.ExternalSecret {
+	name := t.secretName
 	return &esov1.ExternalSecret{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: cp.KeystoneNamespace()},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: t.namespace},
 		Spec: esov1.ExternalSecretSpec{
 			RefreshInterval: &metav1.Duration{Duration: dbCredentialRefreshInterval},
 			Target:          esov1.ExternalSecretTarget{Name: name, CreationPolicy: esov1.CreatePolicyOwner},
@@ -279,14 +354,16 @@ func dbCredentialGeneratorExternalSecret(cp *c5c3v1alpha1.ControlPlane) *esov1.E
 // ExternalSecret used by the Static opt-out branch (migration staging /
 // brownfield). It reads username+password from the per-ControlPlane KV path via
 // the store the ControlPlane selected (default: the shared openbao-cluster-store).
-func dbCredentialStaticExternalSecret(cp *c5c3v1alpha1.ControlPlane) *esov1.ExternalSecret {
-	name := dbCredentialSecretName(cp)
-	remoteKey := dbCredentialRemoteKeyFor(cp)
+// It materialises the same target Secret shape the Dynamic generator does, so the
+// projected DB secretRef is mode-agnostic.
+func dbCredentialStaticExternalSecret(t dbCredentialTarget) *esov1.ExternalSecret {
+	name := t.secretName
+	remoteKey := t.kvPath
 	return &esov1.ExternalSecret{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: cp.KeystoneNamespace()},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: t.namespace},
 		Spec: esov1.ExternalSecretSpec{
 			RefreshInterval: &metav1.Duration{Duration: time.Hour},
-			SecretStoreRef:  secrets.ESOSecretStoreRef(effectiveControlPlaneStoreRef(cp)),
+			SecretStoreRef:  secrets.ESOSecretStoreRef(t.storeRef),
 			Target:          esov1.ExternalSecretTarget{Name: name, CreationPolicy: esov1.CreatePolicyOwner},
 			Data: []esov1.ExternalSecretData{
 				{SecretKey: "username", RemoteRef: esov1.ExternalSecretDataRemoteRef{Key: remoteKey, Property: "username"}},
@@ -299,7 +376,10 @@ func dbCredentialStaticExternalSecret(cp *c5c3v1alpha1.ControlPlane) *esov1.Exte
 // dbCredentialsDynamicEnabled reports the effective credentials mode of the
 // database Keystone actually connects to: Dynamic (engine-issued) is the default
 // for a managed SHARED database; a ControlPlane opts out by setting
-// credentialsMode: Static (migration staging / brownfield).
+// credentialsMode: Static (migration staging / brownfield). A non-empty
+// per-service services.keystone.databaseCredentialsMode override wins over the
+// shared credentialsMode, so a staged migration can run Keystone on one mode
+// while another service stays on the other.
 //
 // A DEDICATED database is never Dynamic. The OpenBao database engine carries one
 // connection and one role per NAMESPACE (deploy/openbao/bootstrap/
@@ -311,14 +391,34 @@ func dbCredentialStaticExternalSecret(cp *c5c3v1alpha1.ControlPlane) *esov1.Exte
 // stored mode keeps a webhook-bypassed CR failing closed onto Static rather than
 // projecting a generator that could never sync.
 func dbCredentialsDynamicEnabled(cp *c5c3v1alpha1.ControlPlane) bool {
-	if cp.DedicatedKeystoneDatabase() != nil {
+	var override string
+	if ks := cp.Spec.Services.Keystone; ks != nil {
+		override = ks.DatabaseCredentialsMode
+	}
+	return dbCredentialModeIsDynamic(cp.DedicatedKeystoneDatabase(), effectiveKeystoneDatabase(cp), override)
+}
+
+// dbCredentialModeIsDynamic decides the effective credentials mode shared by
+// every service's *DynamicEnabled predicate: dedicated declarations and
+// databases without a managed cluster fail closed onto Static, and a non-empty
+// per-service override wins over the shared credentialsMode.
+func dbCredentialModeIsDynamic(dedicated, effective *commonv1.DatabaseSpec, override string) bool {
+	if dedicated != nil {
 		return false
 	}
 	// The effective database is nil for an External-mode (or webhook-bypassed) CR,
 	// and brownfield when it carries no ClusterRef: neither has a managed database
 	// to issue credentials for.
-	db := effectiveKeystoneDatabase(cp)
-	return db != nil && db.ClusterRef != nil && db.CredentialsMode != commonv1.CredentialsModeStatic
+	if effective == nil || effective.ClusterRef == nil {
+		return false
+	}
+	// The per-service override takes precedence over the shared credentialsMode
+	// when set; an empty override inherits the shared mode (Dynamic by default).
+	mode := effective.CredentialsMode
+	if override != "" {
+		mode = override
+	}
+	return mode != commonv1.CredentialsModeStatic
 }
 
 // reconcileDBCredentials projects (in managed mode) the per-ControlPlane service
@@ -407,8 +507,9 @@ func (r *ControlPlaneReconciler) reconcileDBCredentials(ctx context.Context, cp 
 		return ctrl.Result{RequeueAfter: dbCredentialsRequeueAfter}, nil
 	}
 
+	target := keystoneDBCredentialTarget(cp)
 	if dbCredentialsDynamicEnabled(cp) {
-		if err := r.ensureDynamicDBCredentialObjects(ctx, cp); err != nil {
+		if err := r.ensureDynamicDBCredentialObjects(ctx, cp, target); err != nil {
 			conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
 				Type:               conditionTypeDBCredentialsReady,
 				Status:             metav1.ConditionFalse,
@@ -424,8 +525,8 @@ func (r *ControlPlaneReconciler) reconcileDBCredentials(ctx context.Context, cp 
 		// a KV path nothing seeds (see dbCredentialRemoteKeyFor), so it only syncs
 		// once that path has been seeded out-of-band — dbCredentialNotReadyMessage
 		// says so in the condition while it has not.
-		r.deleteDynamicDBCredentialObjects(ctx, cp)
-		if err := r.ensureUnownedOrOwned(ctx, cp, dbCredentialStaticExternalSecret(cp)); err != nil {
+		r.deleteDynamicDBCredentialObjects(ctx, cp, target)
+		if err := r.ensureUnownedOrOwned(ctx, cp, dbCredentialStaticExternalSecret(target)); err != nil {
 			conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
 				Type:               conditionTypeDBCredentialsReady,
 				Status:             metav1.ConditionFalse,
@@ -443,16 +544,16 @@ func (r *ControlPlaneReconciler) reconcileDBCredentials(ctx context.Context, cp 
 // ensureDynamicDBCredentialObjects create-or-updates the ServiceAccount, mTLS
 // client Certificate, VaultDynamicSecret generator, and generator-backed
 // ExternalSecret that materialise engine-issued DB credentials — all in the
-// KEYSTONE service namespace, beside the database they issue against and the child
+// target's SERVICE namespace, beside the database they issue against and the child
 // that consumes them. Ordering (SA → Certificate → generator → ExternalSecret)
 // makes the auth identity and TLS material exist before the generator that
 // references them. In the ControlPlane's own namespace they are owner-referenced;
 // in a service namespace they carry the ownership labels instead.
-func (r *ControlPlaneReconciler) ensureDynamicDBCredentialObjects(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) error {
-	server, mountPath := r.openBaoConnection(ctx, cp, effectiveControlPlaneStoreRef(cp))
+func (r *ControlPlaneReconciler) ensureDynamicDBCredentialObjects(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, t dbCredentialTarget) error {
+	server, mountPath := r.openBaoConnection(ctx, cp, t.storeRef)
 
-	if err := r.ensureUnownedOrOwned(ctx, cp, dbCredentialServiceAccount(cp)); err != nil {
-		return fmt.Errorf("ensuring DB credential ServiceAccount: %w", err)
+	if err := r.ensureUnownedOrOwned(ctx, cp, dbCredentialServiceAccount(t)); err != nil {
+		return fmt.Errorf("ensuring %sDB credential ServiceAccount: %w", t.prefix(), err)
 	}
 
 	// The cert-manager Certificate is handled as an unstructured object (no Go
@@ -461,55 +562,100 @@ func (r *ControlPlaneReconciler) ensureDynamicDBCredentialObjects(ctx context.Co
 	// typed sibling objects around it use Server-Side Apply.
 	live := &unstructured.Unstructured{}
 	live.SetGroupVersionKind(certificateGVK)
-	live.SetName(dbCredentialClientCertName(cp))
-	live.SetNamespace(cp.KeystoneNamespace())
+	live.SetName(t.certName)
+	live.SetNamespace(t.namespace)
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, live, func() error {
 		if err := refuseForeignAdoption(cp, live, r.Scheme); err != nil {
 			return err
 		}
-		applyDBCredentialCertificateSpec(live, cp)
+		applyDBCredentialCertificateSpec(live, t.certName, t.namespace)
 		return claimChildOwnership(cp, live, r.Scheme)
 	}); err != nil {
-		return fmt.Errorf("ensuring DB credential Certificate: %w", err)
+		return fmt.Errorf("ensuring %sDB credential Certificate: %w", t.prefix(), err)
 	}
 
-	if err := r.ensureUnownedOrOwned(ctx, cp, dbCredentialVaultDynamicSecret(cp, server, mountPath)); err != nil {
-		return fmt.Errorf("ensuring VaultDynamicSecret generator: %w", err)
+	if err := r.ensureUnownedOrOwned(ctx, cp, dbCredentialVaultDynamicSecret(t, server, mountPath)); err != nil {
+		return fmt.Errorf("ensuring %sVaultDynamicSecret generator: %w", t.prefix(), err)
 	}
 
-	if err := r.ensureUnownedOrOwned(ctx, cp, dbCredentialGeneratorExternalSecret(cp)); err != nil {
-		return fmt.Errorf("ensuring DB credential ExternalSecret: %w", err)
+	if err := r.ensureUnownedOrOwned(ctx, cp, dbCredentialGeneratorExternalSecret(t)); err != nil {
+		return fmt.Errorf("ensuring %sDB credential ExternalSecret: %w", t.prefix(), err)
 	}
 	return nil
 }
 
 // deleteDynamicDBCredentialObjects best-effort deletes the dynamic-mode
 // ServiceAccount, client Certificate, and VaultDynamicSecret so a Dynamic→Static
-// flip leaves no orphaned generator. Uses minimal-object Delete + IgnoreNotFound
-// (the Get-less delete pattern); a non-NotFound error is logged rather than
-// blocking the Static reconcile of a superseded object. The generator-backed
-// ExternalSecret is not deleted — it is create-or-updated in place to the static
-// shape (same name).
-func (r *ControlPlaneReconciler) deleteDynamicDBCredentialObjects(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) {
+// flip leaves no orphaned generator. The generator-backed ExternalSecret is not
+// deleted — it is create-or-updated in place to the static shape (same name).
+//
+// Every object is read live and gated on isControlPlaneChild before the Delete,
+// mirroring sweepExternalNamespaceResidue: the names here are fixed and
+// non-CP-derived (keystone-db-creds / glance-db-creds), and a service namespace
+// need not belong to this ControlPlane, so a same-named object belonging to
+// somebody else must be left alone. Deleting it would be the teardown-side twin of
+// the adoption ensureUnownedOrOwned already refuses. Reads and deletes are
+// best-effort: an unreadable or undeletable object is logged rather than blocking
+// the Static reconcile of a superseded object, and an absent CRD
+// (meta.IsNoMatchError) reads as nothing-to-clean.
+func (r *ControlPlaneReconciler) deleteDynamicDBCredentialObjects(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, t dbCredentialTarget) {
 	logger := log.FromContext(ctx)
-	ns := cp.KeystoneNamespace()
 
 	cert := &unstructured.Unstructured{}
 	cert.SetGroupVersionKind(certificateGVK)
-	cert.SetName(dbCredentialClientCertName(cp))
-	cert.SetNamespace(ns)
+	cert.SetName(t.certName)
+	cert.SetNamespace(t.namespace)
 
 	objs := []client.Object{
-		&esgenv1alpha1.VaultDynamicSecret{ObjectMeta: metav1.ObjectMeta{Name: dbCredentialSecretName(cp), Namespace: ns}},
+		&esgenv1alpha1.VaultDynamicSecret{ObjectMeta: metav1.ObjectMeta{Name: t.secretName, Namespace: t.namespace}},
 		cert,
-		&corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: dbCredentialServiceAccountName, Namespace: ns}},
+		&corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: t.saName, Namespace: t.namespace}},
 	}
 	for _, obj := range objs {
+		key := client.ObjectKeyFromObject(obj)
+		switch err := r.Get(ctx, key, obj); {
+		case apierrors.IsNotFound(err) || meta.IsNoMatchError(err):
+			continue
+		case err != nil:
+			logger.V(1).Info(fmt.Sprintf("best-effort delete of dynamic %sDB credential object could not read it",
+				t.prefix()), "object", key, "error", err.Error())
+			continue
+		}
+		if !isControlPlaneChild(obj, cp) {
+			continue
+		}
 		if err := client.IgnoreNotFound(r.Delete(ctx, obj)); err != nil {
-			logger.V(1).Info("best-effort delete of dynamic DB credential object failed",
-				"kind", obj.GetObjectKind().GroupVersionKind().Kind, "name", obj.GetName(), "error", err.Error())
+			logger.V(1).Info(fmt.Sprintf("best-effort delete of dynamic %sDB credential object failed", t.prefix()),
+				"object", key, "error", err.Error())
 		}
 	}
+}
+
+// dbCredentialEngineIssuedUsername reads the MATERIALISED DB-credential Secret
+// behind t and reports the username it carries plus whether the database engine
+// issued that username (see engineIssuedUsernamePrefix).
+//
+// It exists because an ExternalSecret's Ready condition is not a statement about
+// its target Secret's current CONTENTS. A Static->Dynamic flip create-or-updates
+// the ExternalSecret in place — same name, same target Secret — so the Ready it
+// reports can still be the one the retired STATIC sync left behind, over a Secret
+// that still holds the static seed's username. Callers gate the credentials-mode
+// flip on this in addition to WaitForExternalSecret, so the flip waits for the
+// generator's first sync instead of for a prose migration step.
+//
+// A missing Secret reads as "not engine-issued yet", not as an error: it is the
+// expected state between deleting the stale Secret and ESO re-materialising it
+// from the generator. Only an unexpected client failure returns an error.
+func (r *ControlPlaneReconciler) dbCredentialEngineIssuedUsername(ctx context.Context, t dbCredentialTarget) (string, bool, error) {
+	secret := &corev1.Secret{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: t.namespace, Name: t.secretName}, secret); err != nil {
+		if apierrors.IsNotFound(err) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("reading %sDB credential Secret: %w", t.prefix(), err)
+	}
+	username := string(secret.Data["username"])
+	return username, strings.HasPrefix(username, engineIssuedUsernamePrefix), nil
 }
 
 // openBaoConnection returns the OpenBao server URL and Kubernetes-auth mount

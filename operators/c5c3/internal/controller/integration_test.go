@@ -790,6 +790,40 @@ func simulateAdminPasswordExternalSecretSyncWhenPresent(
 		To(Succeed(), "simulate per-CP admin password ExternalSecret sync")
 }
 
+// simulateGlanceDBCredentialSyncWhenPresent waits for the operator-created Glance
+// DB-credential ExternalSecret, simulates the ESO sync, and materialises the
+// Secret behind it with an ENGINE-ISSUED username.
+//
+// Both halves are required: reconcileGlance gates the Dynamic projection on the
+// ExternalSecret being Ready AND on the Secret it targets carrying a username the
+// database engine minted, because a Static->Dynamic flip updates the
+// ExternalSecret in place and its Ready can otherwise still be the retired Static
+// sync's. SimulateExternalSecretSync patches only the ExternalSecret .status, and
+// envtest runs no ESO, so the Secret is created here the way ESO would create it.
+func simulateGlanceDBCredentialSyncWhenPresent(
+	t testing.TB, ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane,
+) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+
+	glanceNS, name := cp.GlanceNamespace(), glanceDBCredentialSecretName(cp)
+	g.Eventually(func() error {
+		return c.Get(ctx, client.ObjectKey{Namespace: glanceNS, Name: name}, &esov1.ExternalSecret{})
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+		"operator must create the per-CP Glance DB-credential ExternalSecret")
+
+	g.Expect(c.Create(ctx, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: glanceNS},
+		Data: map[string][]byte{
+			"username": []byte(engineIssuedUsernamePrefix + "kubernetes-glance-abc123-1750000000"),
+			"password": []byte("engine-issued-password"),
+		},
+	})).To(Succeed(), "materialise the engine-issued Glance DB credential ESO would have written")
+
+	g.Expect(simulators.SimulateExternalSecretSync(ctx, c, client.ObjectKey{Namespace: glanceNS, Name: name})).
+		To(Succeed(), "simulate per-CP Glance DB credential ExternalSecret sync")
+}
+
 // TestIntegration_FullReconcile_ManagedToReady drives a managed-mode ControlPlane
 // through every sub-reconciler to the aggregate Ready=True, simulating each
 // external dependency's readiness in dependency order. It is the single primary
@@ -984,6 +1018,12 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	// per-account readiness (driven in Phase 5.5), so the child — and its
 	// GlanceBackend and DB-credential ExternalSecret — only appear now. Assert their
 	// operator-derived shape before simulating readiness. ---
+	//
+	// The Dynamic-default credential is a THIRD gate on top of those two: no child
+	// is projected until the glance-scoped ExternalSecret has synced and the Secret
+	// behind it carries an engine-issued username, so open it first.
+	simulateGlanceDBCredentialSyncWhenPresent(t, ctx, c, cp)
+
 	glanceKey := client.ObjectKey{Name: glanceName(cp), Namespace: ns.Name}
 	projectedGlance := &glancev1alpha1.Glance{}
 	g.Eventually(func() error {
@@ -996,16 +1036,16 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	g.Expect(projectedGlance.Spec.Image.Tag).To(Equal("2025.2"), "Glance image tag must derive from openStackRelease")
 
 	// Database: the shared managed cluster, the fixed "glance" logical schema, and
-	// the operator-owned static KV-backed DB credential (there is no OpenBao engine
-	// role for the glance schema, so the credential is never engine-issued).
+	// the operator-owned engine-issued DB credential (Dynamic is the default on the
+	// managed shared database, mirroring Keystone with glance-scoped objects).
 	g.Expect(projectedGlance.Spec.Database.ClusterRef).NotTo(BeNil(), "Glance database clusterRef must be wired")
 	g.Expect(projectedGlance.Spec.Database.ClusterRef.Name).To(Equal("openstack-db"))
 	g.Expect(projectedGlance.Spec.Database.Database).To(Equal("glance"))
 	g.Expect(projectedGlance.Spec.Database.SecretRef.Name).To(Equal(glanceDBCredentialSecretName(cp)),
 		"managed Glance DB secretRef must point at the operator-owned per-CP Glance DB-credential Secret")
 	g.Expect(projectedGlance.Spec.Database.SecretRef.Key).To(Equal("password"))
-	g.Expect(projectedGlance.Spec.Database.CredentialsMode).To(Equal(commonv1.CredentialsModeStatic),
-		"the projected Glance DB credential is forced Static (KV-backed)")
+	g.Expect(projectedGlance.Spec.Database.CredentialsMode).To(Equal(commonv1.CredentialsModeDynamic),
+		"the projected Glance DB credential defaults to Dynamic (engine-issued)")
 
 	// Cache: the shared managed Memcached.
 	g.Expect(projectedGlance.Spec.Cache.ClusterRef).NotTo(BeNil(), "Glance cache clusterRef must be wired")
@@ -1050,21 +1090,39 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	g.Expect(backendOwner).NotTo(BeNil(), "GlanceBackend child must be controller-owned by the ControlPlane")
 	g.Expect(backendOwner.Name).To(Equal(cp.Name))
 
-	// The static, KV-backed Glance DB-credential ExternalSecret: two Data entries
-	// (username/password) read from this CR's namespace-scoped OpenBao KV path.
+	// The Dynamic-mode Glance DB-credential ExternalSecret draws from the per-CP
+	// VaultDynamicSecret generator (dataFrom.sourceRef.generatorRef) and carries no
+	// static Data refs.
 	glanceDBCredES := &esov1.ExternalSecret{}
 	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: glanceDBCredentialSecretName(cp)}, glanceDBCredES)).
 		To(Succeed(), "operator must create the per-CP Glance DB-credential ExternalSecret")
-	g.Expect(glanceDBCredES.Spec.Data).To(HaveLen(2), "Glance DB-credential ExternalSecret carries username + password")
-	g.Expect(glanceDBCredES.Spec.Data[0].SecretKey).To(Equal("username"))
-	g.Expect(glanceDBCredES.Spec.Data[1].SecretKey).To(Equal("password"))
-	for _, d := range glanceDBCredES.Spec.Data {
-		g.Expect(d.RemoteRef.Key).To(Equal(glanceDBCredentialRemoteKeyFor(cp)),
-			"Glance DB-credential ExternalSecret must read this CR's namespace-scoped OpenBao KV path")
-	}
+	g.Expect(glanceDBCredES.Spec.Data).To(BeEmpty(), "the Dynamic Glance DB-credential ExternalSecret carries no static Data refs")
+	g.Expect(glanceDBCredES.Spec.DataFrom).NotTo(BeEmpty(), "the Dynamic Glance DB-credential ExternalSecret must declare a generatorRef")
+	g.Expect(glanceDBCredES.Spec.DataFrom[0].SourceRef).NotTo(BeNil())
+	g.Expect(glanceDBCredES.Spec.DataFrom[0].SourceRef.GeneratorRef).NotTo(BeNil())
+	g.Expect(glanceDBCredES.Spec.DataFrom[0].SourceRef.GeneratorRef.Kind).To(Equal("VaultDynamicSecret"))
 	glanceESOwner := metav1.GetControllerOf(glanceDBCredES)
 	g.Expect(glanceESOwner).NotTo(BeNil(), "Glance DB-credential ExternalSecret must be controller-owned by the ControlPlane")
 	g.Expect(glanceESOwner.Name).To(Equal(cp.Name))
+
+	// The per-CP Glance VaultDynamicSecret generator reads this tenant's glance
+	// creds path with role glance-db, authenticating with the glance-db-creds SA and
+	// the mTLS client Certificate — all in the glance namespace.
+	glanceVDS := &esgenv1alpha1.VaultDynamicSecret{}
+	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: glanceDBCredentialSecretName(cp)}, glanceVDS)).
+		To(Succeed(), "operator must create the per-CP Glance VaultDynamicSecret generator")
+	g.Expect(glanceVDS.Spec.Path).To(Equal(glanceDBDynamicCredsPathFor(cp)))
+	g.Expect(glanceVDS.Spec.Provider.Auth.Kubernetes.Role).To(Equal(glanceDBDynamicVaultRole))
+	g.Expect(metav1.GetControllerOf(glanceVDS)).NotTo(BeNil(), "Glance VaultDynamicSecret must be owned by the ControlPlane")
+
+	glanceDBCredSA := &corev1.ServiceAccount{}
+	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: glanceDBCredentialServiceAccountName}, glanceDBCredSA)).
+		To(Succeed(), "operator must create the Glance generator's ServiceAccount in the glance namespace")
+
+	glanceDBCredCert := &unstructured.Unstructured{}
+	glanceDBCredCert.SetGroupVersionKind(certificateGVK)
+	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: glanceDBCredentialClientCertName(cp)}, glanceDBCredCert)).
+		To(Succeed(), "operator must create the Glance generator's mTLS client Certificate in the glance namespace")
 
 	simulateGlanceReadyWhenPresent(t, ctx, c, glanceKey)
 	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeGlanceReady, metav1.ConditionTrue, itEventuallyTimeout)
