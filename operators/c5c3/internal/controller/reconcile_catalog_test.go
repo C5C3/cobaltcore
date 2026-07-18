@@ -43,7 +43,8 @@ func TestManagedCatalogRows_IdentityOnly(t *testing.T) {
 // absent when services.glance is unset, and present with the generic CR names and
 // the D6 public+internal endpoint posture when it is set — the internal endpoint
 // always advertises the in-cluster Glance Service URL, while the public one shares
-// that URL without a gateway and flips to the gateway hostname when exposed.
+// that URL without a gateway, flips to the gateway hostname when exposed, and
+// prefers an explicit services.glance.publicEndpoint over both.
 func TestManagedCatalogRows_ImageRow(t *testing.T) {
 	t.Run("absent when glance unset", func(t *testing.T) {
 		g := NewGomegaWithT(t)
@@ -99,6 +100,42 @@ func TestManagedCatalogRows_ImageRow(t *testing.T) {
 			"the internal endpoint stays in-cluster even when the public one is exposed")
 		g.Expect(public.url).To(Equal("https://glance.example.com"),
 			"the public endpoint prefers the gateway hostname, with no /v3 suffix")
+	})
+
+	t.Run("explicit publicEndpoint wins over the gateway hostname", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := korcControlPlane()
+		cp.Spec.Services.Glance = &c5c3v1alpha1.ServiceGlanceSpec{
+			Gateway: &commonv1.GatewaySpec{
+				ParentRef: commonv1.GatewayParentRefSpec{Name: "openstack-gw"},
+				Hostname:  "glance.example.com",
+			},
+			PublicEndpoint: "https://glance.127-0-0-1.nip.io:8443",
+		}
+
+		rows := managedCatalogRows(cp)
+		g.Expect(rows).To(HaveLen(2))
+		internal, public := rows[1].endpoints[0], rows[1].endpoints[1]
+		g.Expect(internal.url).To(Equal("http://cp-glance.default.svc:9292"),
+			"the internal endpoint stays in-cluster even when the public one is exposed")
+		g.Expect(public.url).To(Equal("https://glance.127-0-0-1.nip.io:8443"),
+			"the override is the only way to advertise a non-443 external port")
+	})
+
+	t.Run("publicEndpoint without a gateway still wins", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := korcControlPlane()
+		cp.Spec.Services.Glance = &c5c3v1alpha1.ServiceGlanceSpec{
+			PublicEndpoint: "https://glance.127-0-0-1.nip.io:8443",
+		}
+
+		rows := managedCatalogRows(cp)
+		g.Expect(rows).To(HaveLen(2))
+		internal, public := rows[1].endpoints[0], rows[1].endpoints[1]
+		g.Expect(internal.url).To(Equal("http://cp-glance.default.svc:9292"),
+			"the internal endpoint stays in-cluster")
+		g.Expect(public.url).To(Equal("https://glance.127-0-0-1.nip.io:8443"),
+			"the override wins even without a gateway, matching keystonePublicEndpoint semantics")
 	})
 }
 

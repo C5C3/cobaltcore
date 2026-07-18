@@ -760,6 +760,31 @@ type ServiceGlanceSpec struct {
 	// +optional
 	Gateway *commonv1.GatewaySpec `json:"gateway,omitempty"`
 
+	// PublicEndpoint is the externally routable Glance image endpoint URL
+	// (e.g. "https://glance.127-0-0-1.nip.io:8443"). It is used ONLY for the
+	// K-ORC public image catalog Endpoint (glanceCatalogURL); unlike the
+	// keystone override it is projected into no child CR — the Glance child's
+	// keystoneEndpoint is Keystone's endpoint, a separate concern. When empty
+	// and Gateway is set, the reconciler derives "https://{gateway.hostname}"
+	// (the default-443 form); set it explicitly when the externally reachable
+	// port differs (e.g. a kind host-port mapping like :8443), since the port
+	// cannot be derived from the hostname alone. The pattern and the
+	// 512-character bound mirror ServiceKeystoneSpec.PublicEndpoint, whose
+	// value flows into the same K-ORC Endpoint URL field.
+	//
+	// The keystone override is re-validated on the projected Keystone child;
+	// this one is projected nowhere, so the validating webhook is the only gate
+	// on the URL that every authenticated image client resolves and sends its
+	// scoped Keystone token to. It therefore enforces what the markers cannot:
+	// a parseable bare origin (no path, query, or fragment — the Glance API is
+	// served at the root), and, whenever a gateway is configured, an https
+	// scheme and a host equal to gateway.hostname. Without a gateway an http://
+	// value stays legal for development but raises an admission warning.
+	// +optional
+	// +kubebuilder:validation:MaxLength=512
+	// +kubebuilder:validation:Pattern=`^https?://`
+	PublicEndpoint string `json:"publicEndpoint,omitempty"`
+
 	// Backends is the curated list of image stores projected into GlanceBackend
 	// child CRs, one per entry. Exactly one entry must set isDefault, promoting
 	// its store to the Glance default_backend; the MinItems floor plus the

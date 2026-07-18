@@ -438,6 +438,33 @@ spec:
         - check:
             ($error != null): true
             (contains($error, 'the s3 block must be set exactly when type is S3')): true
+    # services.glance.publicEndpoint must be an http(s) URL (CRD pattern,
+    # mirroring services.keystone.publicEndpoint): the value is advertised
+    # verbatim as the public image catalog Endpoint.
+    - apply:
+        file: 51-glance-public-endpoint-not-a-url.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'publicEndpoint')): true
+    # services.glance.publicEndpoint must name the same host as the gateway
+    # (webhook-only): the listener routes that hostname to the Glance API, so a
+    # divergent host advertises a catalog endpoint that never reaches it.
+    - apply:
+        file: 52-glance-public-endpoint-host-mismatch.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'must equal services.glance.gateway.hostname')): true
+    # services.glance.publicEndpoint must be a bare origin (webhook-only): the
+    # pattern anchors only the prefix, and clients append the API path to the
+    # catalog endpoint.
+    - apply:
+        file: 53-glance-public-endpoint-with-query.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'must be a bare origin')): true
 ---
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test

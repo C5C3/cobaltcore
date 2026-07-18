@@ -3772,6 +3772,148 @@ func TestValidateCreate_RejectsGlanceMissingCredentialsSecretRefName(t *testing.
 	g.Expect(err.Error()).To(ContainSubstring("services.glance.backends[0].s3.credentialsSecretRef.name"))
 }
 
+// TestValidateCreate_GlancePublicEndpointMustBeURL covers the defense-in-depth
+// URL parse behind the coarse ^https?:// pattern. The value is advertised
+// verbatim as the public image catalog Endpoint and is projected into no child
+// CR, so nothing downstream re-checks it: "https://" is schema-legal and would
+// register a hostless URL no client can resolve.
+func TestValidateCreate_GlancePublicEndpointMustBeURL(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	for name, endpoint := range map[string]string{
+		"missing host": "https://",
+		"wrong scheme": "ftp://glance.example.com",
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := glanceControlPlane()
+			cp.Spec.Services.Glance.PublicEndpoint = endpoint
+
+			_, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring("services.glance.publicEndpoint"))
+		})
+	}
+}
+
+// TestValidateCreate_GlancePublicEndpointMustBeABareOrigin covers the shapes the
+// ^https?:// Pattern marker lets through and validateHTTPURL happily parses. The
+// Glance API is served at the root and clients append the API path to the catalog
+// endpoint, so "https://glance.example.com?utm=1" yields
+// "https://glance.example.com?utm=1/v2/images" and 404s every image call.
+//
+// The gateway is deliberately left unset in each case: the rule holds on the
+// gateway-less path too, which is where the scheme/host rules stop applying.
+func TestValidateCreate_GlancePublicEndpointMustBeABareOrigin(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	for name, endpoint := range map[string]string{
+		"query":    "https://glance.example.com?utm=1",
+		"fragment": "https://glance.example.com#top",
+		"path":     "https://glance.example.com/image",
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := glanceControlPlane()
+			cp.Spec.Services.Glance.PublicEndpoint = endpoint
+
+			_, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring("services.glance.publicEndpoint"))
+			g.Expect(err.Error()).To(ContainSubstring("must be a bare origin"))
+		})
+	}
+}
+
+// TestValidateCreate_GlancePublicEndpointMustAgreeWithGateway pins the two
+// cross-field rules. An http endpoint behind a TLS-terminating listener ships the
+// caller's scoped Keystone token and the image payload in cleartext on EVERY
+// image call; a divergent host advertises a catalog URL the Gateway listener
+// never routes, which fails client-side with nothing on the ControlPlane
+// recording why.
+func TestValidateCreate_GlancePublicEndpointMustAgreeWithGateway(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+	gateway := func() *commonv1.GatewaySpec {
+		return &commonv1.GatewaySpec{
+			Hostname:  "glance.example.com",
+			ParentRef: commonv1.GatewayParentRefSpec{Name: "openstack-gw"},
+		}
+	}
+
+	t.Run("divergent host", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := glanceControlPlane()
+		cp.Spec.Services.Glance.Gateway = gateway()
+		cp.Spec.Services.Glance.PublicEndpoint = "https://images.example.com"
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("services.glance.publicEndpoint"))
+		g.Expect(err.Error()).To(ContainSubstring(`must equal services.glance.gateway.hostname "glance.example.com"`))
+	})
+
+	t.Run("http scheme behind a TLS-terminating gateway", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := glanceControlPlane()
+		cp.Spec.Services.Glance.Gateway = gateway()
+		cp.Spec.Services.Glance.PublicEndpoint = "http://glance.example.com"
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("scheme must be https"))
+	})
+
+	t.Run("matching host with a non-default port", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := glanceControlPlane()
+		cp.Spec.Services.Glance.Gateway = gateway()
+		cp.Spec.Services.Glance.PublicEndpoint = "https://glance.example.com:8443"
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred(),
+			"Gateway API hostnames carry no port, so the port is the reason the override exists")
+	})
+
+	t.Run("trailing slash", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := glanceControlPlane()
+		cp.Spec.Services.Glance.Gateway = gateway()
+		cp.Spec.Services.Glance.PublicEndpoint = "https://glance.example.com/"
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred(), "clients normalize the catalog endpoint before appending the API path")
+	})
+}
+
+// TestValidateCreate_WarnsOnCleartextGlancePublicEndpoint covers the gateway-less
+// image service, where an http endpoint is a legal (if unwise) development setup
+// the CRD Pattern deliberately allows. Every authenticated image call sends a
+// scoped Keystone token to that URL, so the downgrade must at least be surfaced.
+func TestValidateCreate_WarnsOnCleartextGlancePublicEndpoint(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	t.Run("http warns", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := glanceControlPlane()
+		cp.Spec.Services.Glance.PublicEndpoint = "http://glance.example.com"
+
+		warnings, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(warnings).To(HaveLen(1))
+		g.Expect(warnings[0]).To(ContainSubstring("scoped Keystone token"))
+	})
+
+	t.Run("https is silent", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := glanceControlPlane()
+		cp.Spec.Services.Glance.PublicEndpoint = "https://glance.example.com"
+
+		warnings, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(warnings).To(BeEmpty())
+	})
+}
+
 // TestValidateCreate_RejectsOverlongGlanceBackendChildName pins the composed
 // GlanceBackend child-name length guard the CRD schema cannot express.
 func TestValidateCreate_RejectsOverlongGlanceBackendChildName(t *testing.T) {
