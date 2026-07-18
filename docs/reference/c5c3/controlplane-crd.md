@@ -9,7 +9,8 @@ Reference documentation for the c5c3-operator ControlPlane Custom Resource
 Definition. The ControlPlane CRD is the top-level aggregate that
 projects an OpenStack control plane: it owns the shared infrastructure
 references (database, cache), a curated set of per-service specs (today:
-Keystone), and the K-ORC (OpenStack Resource Controller) integration that
+Keystone, Horizon, and Glance), and the K-ORC (OpenStack Resource Controller)
+integration that
 bootstraps and rotates the admin application credential. The reconciler (L2)
 materializes this aggregate into the individual per-service CRs — see the
 [ControlPlane Reconciler reference](./controlplane-reconciler.md) for the
@@ -305,13 +306,14 @@ that adopts a pre-existing MariaDB/Memcached leaves its topology untouched.
 ## ServicesSpec
 
 Declares the per-service configuration of the control plane. Today
-Keystone and the Horizon dashboard are modeled; additional services are added as
-fields as the operator grows.
+Keystone, the Horizon dashboard, and the Glance image service are modeled;
+additional services are added as fields as the operator grows.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `keystone` | [`*ServiceKeystoneSpec`](#servicekeystonespec) | No | `nil` | Configuration for the Keystone service projected by the reconciler. Optional: when unset, this ControlPlane manages no Keystone service (staged adoption, or an externally-managed Keystone) and `KeystoneReady` is reported as not-managed. Flipping it from set to `nil` **preserves** the previously-projected Keystone child by default — deleting it would cascade to the child's irreplaceable `<name>-credential-keys` Secret (and its OpenBao backup), so an accidental unset is fail-safe. Set the `c5c3.io/allow-keystone-deletion: "true"` annotation on the ControlPlane to opt in to deleting the child on unset. |
 | `horizon` | [`*ServiceHorizonSpec`](#servicehorizonspec) | No | `nil` | Configuration for the Horizon dashboard projected by the reconciler. Optional: when unset, this ControlPlane manages no dashboard and `HorizonReady` is reported as not-managed (`HorizonNotManaged`), so the aggregate `Ready` is not blocked. **Forbidden in External mode** — the dashboard needs its own External-mode design. Flipping it from set to `nil` preserves the previously-projected Horizon child by default; set the `c5c3.io/allow-horizon-deletion: "true"` annotation to opt in to deleting the child on unset. |
+| `glance` | [`*ServiceGlanceSpec`](#serviceglancespec) | No | `nil` | Configuration for the Glance image service projected by the reconciler. Optional: when unset, this ControlPlane manages no image service and `GlanceReady` is reported as not-managed (`GlanceNotManaged`), so the aggregate `Ready` is not blocked. The projection is **gated on `KeystoneReady`** — Glance validates every token against the ControlPlane's Keystone child. **Forbidden in External mode** — Glance needs its own External-mode design. Flipping it from set to `nil` preserves the previously-projected Glance child by default; set the `c5c3.io/allow-glance-deletion: "true"` annotation to opt in to deleting the child (and its `GlanceBackend` children and DB-credential ExternalSecret) on unset. |
 
 ---
 
@@ -397,6 +399,70 @@ its fields carry per-field External-mode forbid-rules.
 
 ---
 
+## ServiceGlanceSpec
+
+A **curated local subset** of the knobs the ControlPlane exposes for the Glance
+image service, mirroring `ServiceKeystoneSpec` and `ServiceHorizonSpec`. The
+reconciler (L2) **projects** it into a [`Glance`](../glance/glance-crd.md) CR;
+the database, cache, and Keystone endpoint of that child are **derived** from the
+ControlPlane (`infrastructure.*` and the Keystone child's naming convention)
+rather than set here, and only a **subset** of the Glance CRD's knobs is exposed.
+`spec.apiServer` on the child is deliberately **not** projected, so the
+Glance operator's own release-conditional API-server defaults stay authoritative.
+
+Forbidden entirely when `services.keystone.mode` is `External` (Glance needs its
+own External-mode design), so — like `ServiceHorizonSpec` — none of its fields
+carry per-field External-mode forbid-rules.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `replicas` | `*int32` | No | `nil` | Overrides the number of Glance API replicas. When `nil` the reconciler applies the Glance operator's own default (3). Minimum 1. |
+| `image` | [`*commonv1.ImageSpec`](../keystone/keystone-crd.md#imagespec) | No | `nil` | Overrides the Glance container image. When `nil` the reconciler derives `ghcr.io/c5c3/glance:{spec.openStackRelease}`. |
+| `gateway` | [`*commonv1.GatewaySpec`](#gatewayspec) | No | `nil` | Exposes the projected Glance API externally via a Gateway API HTTPRoute. When `nil` (the default) no HTTPRoute is projected and the Glance API is reachable in-cluster only. When a `gateway` is set its `hostname` must be non-empty — enforced at admission by the validating webhook (see [Validation Rules](#validation-rules)). |
+| `backends` | [`[]GlanceBackendEntry`](#glancebackendentry) | Yes | — | The curated list of image stores, projected one-to-one into [`GlanceBackend`](../glance/glance-backend-crd.md) child CRs. **Exactly one** entry must set `isDefault`, promoting its store to the Glance `default_backend`. A `listType=map` list keyed on `name` (the API server rejects duplicate names); `MinItems` 1 and `MaxItems` 32 (every entry amplifies into one `GlanceBackend` CR). The single-default invariant holds at the CRD schema layer via a CEL `XValidation` rule and is mirrored by the validating webhook. |
+| `dedicatedBackingServices` | [`*GlanceDedicatedBackingServicesSpec`](#dedicatedbackingservices) | No | `nil` (shares the ControlPlane-wide instances) | Opts Glance **out** of the shared `spec.infrastructure` instances and gives it a database and/or cache of its own. Glance consumes both classes, so it can take either or both dedicated. |
+| `namespace` | [`*ServiceNamespaceSpec`](#service-namespaces) | No | `nil` (placed in the ControlPlane's namespace) | Places the Glance service — and the database, cache, secret store, and object-store credential material that follow it — in a namespace of its own. Create-only. See [Service Namespaces](#service-namespaces). |
+
+### GlanceBackendEntry
+
+One curated image store, projected one-to-one into a `GlanceBackend` child CR.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `name` | `string` | Yes | — | Keys the `listType=map` `backends` list (duplicates rejected) and is embedded **verbatim** in the projected child's name `{controlplane.Name}-glance-{name}`, hence the DNS-1123 label shape (`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`, `MinLength` 1, `MaxLength` 63). The validating webhook additionally bounds the composed child-CR name to the 253-byte object-name limit (no CRD marker can express it). |
+| `type` | `string` (`S3`) | Yes | — | The image-store driver. Phase 1 supports `S3` only (`Enum: S3`); the enum mirrors the `GlanceBackend` CR's own type enum, so an entry admitted here can never be rejected downstream. |
+| `s3` | [`*GlanceBackendS3Spec`](#glancebackends3spec) | Conditional | `nil` | The S3-compatible object store. **Required exactly when `type` is `S3`**, forbidden otherwise (the type/s3 union CEL rule on `GlanceBackendEntry` + webhook). |
+| `isDefault` | `bool` | No | `false` | Marks this backend as the Glance default store. Exactly one `backends` entry must set it (CEL + webhook enforced); the reconciler projects it onto the child `GlanceBackend`'s `spec.isDefault`. |
+
+### GlanceBackendS3Spec
+
+The curated local S3 store shape projected onto a `GlanceBackend` child's
+`spec.s3`. It models only the exposed subset and defines its own field types
+rather than importing the glance module, keeping the L1 API package free of a
+dependency on it; the field bounds mirror the child's own S3 shape so a value
+admitted here can never be rejected downstream.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `endpoint` | `string` | Yes | — | The S3 endpoint URL (e.g. `https://s3.example.com`). Pattern `^https?://`, `MinLength` 1. Projected onto the child's `spec.s3.host`. |
+| `bucket` | `string` | Yes | — | The S3 bucket images are stored in. `MinLength` 1. Projected onto the child's `spec.s3.bucket`. |
+| `region` | `string` | No | `""` | The S3 region the bucket lives in. Only projected onto the child's `spec.s3.region` when set. |
+| `bucketURLFormat` | `string` (`path` \| `virtual`) | No | `""` (**no schema default**) | How the bucket is addressed in request URLs: `path` (`https://host/bucket`) or `virtual` (`https://bucket.host`). Carries **no schema default on purpose** — when unset the projection leaves the child's field unset so the `GlanceBackend` CR's own default (`path`) applies at exactly one layer. |
+| `credentialsSecretRef` | [`SecretNameRef`](#secretnameref) | Yes | — | References the Secret holding the S3 credentials, **resolved in the namespace the Glance service is placed in**. |
+
+### SecretNameRef
+
+A **name-only** reference to a Kubernetes Secret, resolved in the namespace the
+Glance service is placed in. The data keys it must expose are fixed by contract
+downstream (the `GlanceBackend` controller reads them), so there is no key to
+select.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `name` | `string` | Yes | — | The referenced Secret's name. `MinLength` 1, `MaxLength` 253. |
+
+---
+
 ## DedicatedBackingServices
 
 By default every service a ControlPlane manages connects to the **shared**
@@ -457,6 +523,16 @@ and keep sharing the cache.
 | --- | --- | --- | --- | --- |
 | `cache` | [`*commonv1.CacheSpec`](../keystone/keystone-crd.md#cachespec) | No | `nil` (shares `spec.infrastructure.cache`) | Gives the dashboard its own cache. In managed mode `clusterRef.name` defaults to `{controlplane}-horizon-cache`. |
 
+`GlanceDedicatedBackingServicesSpec`:
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `database` | [`*commonv1.DatabaseSpec`](../keystone/keystone-crd.md#databasespec) | No | `nil` (shares `spec.infrastructure.database`) | Gives Glance its own database cluster. In managed mode `clusterRef.name` defaults to `{controlplane}-glance-db`. A dedicated **managed** database is **`Static`-only** — the defaulting webhook materializes `credentialsMode: Static` and an explicit `Dynamic` is rejected, for the same reason as Keystone (see [Credential modes](#credential-modes)): the OpenBao database engine is bootstrapped once per namespace against the shared cluster, so no engine role can issue credentials for a dedicated instance. Seed and rotate the credential at the OpenBao source. |
+| `cache` | [`*commonv1.CacheSpec`](../keystone/keystone-crd.md#cachespec) | No | `nil` (shares `spec.infrastructure.cache`) | Gives Glance its own cache. In managed mode `clusterRef.name` defaults to `{controlplane}-glance-cache`. |
+
+Glance consumes both a database and a cache, so it can take either or both
+dedicated; a class left unset resolves to the ControlPlane-wide instance.
+
 Declaring the block with **no class set** is rejected — it would request nothing.
 Omit it entirely to share.
 
@@ -511,7 +587,8 @@ the shared block and every dedicated instance. Two instances sharing a name woul
 resolve to a single child CR that both projections then fight over — silently
 voiding the isolation the opt-in exists for — so the validating webhook rejects
 the duplicate. The derived defaults (`{controlplane}-keystone-db`,
-`{controlplane}-keystone-cache`, `{controlplane}-horizon-cache`) never collide
+`{controlplane}-keystone-cache`, `{controlplane}-horizon-cache`,
+`{controlplane}-glance-db`, `{controlplane}-glance-cache`) never collide
 with each other or with the shared defaults (`openstack-db`,
 `openstack-memcached`).
 
@@ -913,7 +990,7 @@ namespace's tenant-store policy). `status.serviceAccounts[].secretName` /
 | `conditions` | `[]metav1.Condition` | Latest available observations of the control-plane state. Each condition carries an `observedGeneration`. See [Status Conditions](#status-conditions). |
 | `observedGeneration` | `int64` | The `.metadata.generation` the controller last reconciled, so a stale status is distinguishable from a current one. |
 | `updatePhase` | [`UpdatePhase`](#updatephase) | Current phase of a control-plane release update. Written on every status update; fixed at `Idle` in the current implementation because the release-update state machine is reserved (the other `UpdatePhase` values are not yet set). |
-| `services` | `[]ServiceStatus` | Per-service readiness of the projected service CRs. A `listType=map` list keyed by `name`, so per-service entries merge under server-side apply and can grow per-service conditions cleanly. Written on every status update with a `keystone` entry whose `ready` mirrors the `KeystoneReady` condition and whose `release` is `spec.openStackRelease` — omitted entirely when `spec.services.keystone` is unset (no Keystone is managed). See [ServiceStatus](#servicestatus). |
+| `services` | `[]ServiceStatus` | Per-service readiness of the projected service CRs. A `listType=map` list keyed by `name`, so per-service entries merge under server-side apply and can grow per-service conditions cleanly. Written on every status update with one entry per managed service in a stable order — `keystone`, then `horizon`, then `glance` — each present only when its `spec.services.<svc>` is set. Each entry's `ready` mirrors the matching `KeystoneReady` / `HorizonReady` / `GlanceReady` condition and its `release` is `spec.openStackRelease`; an unmanaged service is omitted rather than reported. See [ServiceStatus](#servicestatus). |
 | `catalog` | [`*CatalogStatus`](#catalogstatus) | Observed state of the External-mode catalog imports. Nil in Managed mode, where the control plane creates the catalog entries rather than importing them. See [CatalogStatus](#catalogstatus). |
 | `serviceAccounts` | `[]ServiceAccountStatus` | Observed state of the declared service accounts, keyed by `name` (`listType=map`). The discoverability half of the consumption contract: `secretName` names the materialized Secret each account's password is read from. See [ServiceAccountStatus](#serviceaccountstatus). |
 
@@ -1180,6 +1257,17 @@ Keystone discipline:
 | `spec.services.keystone` (CEL) | `mode == 'External'` ⇒ `has(self.external)` → "external is required when services.keystone.mode is External" |
 | `spec.services.keystone` (CEL) | `has(self.external)` ⇒ `mode == 'External'` → "external may only be set when services.keystone.mode is External" |
 | `spec.services.keystone` (CEL) | `mode == 'External'` ⇒ each managed-only field (`replicas`, `image`, `policyOverrides`, `rotationInterval`, `gateway`, `publicEndpoint`, `federationProxyImage`) absent → "services.keystone.\<field\> is forbidden when services.keystone.mode is External" (one rule per field) |
+| `spec.services.glance.replicas` | Minimum: 1 |
+| `spec.services.glance.gateway.hostname` | MinLength 1 (shared `GatewaySpec` marker) |
+| `spec.services.glance.backends` | listType=map keyed by `name`; MinItems 1; MaxItems 32 |
+| `spec.services.glance.backends` (CEL) | `self.filter(b, has(b.isDefault) && b.isDefault).size() == 1` → "exactly one backends entry must set isDefault" |
+| `spec.services.glance.backends[].name` | Pattern `^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`; MinLength 1; MaxLength 63 |
+| `spec.services.glance.backends[].type` | Enum: `S3` |
+| `spec.services.glance.backends[]` (CEL) | `(self.type == 'S3') == has(self.s3)` → "the s3 block must be set exactly when type is S3" |
+| `spec.services.glance.backends[].s3.endpoint` | Pattern `^https?://`; MinLength 1 |
+| `spec.services.glance.backends[].s3.bucket` | MinLength 1 |
+| `spec.services.glance.backends[].s3.bucketURLFormat` | Enum: `path`, `virtual` (no schema default, so an unset value serialises away) |
+| `spec.services.glance.backends[].s3.credentialsSecretRef.name` | MinLength 1; MaxLength 253 |
 
 ### Validating-webhook rules
 
@@ -1216,6 +1304,17 @@ short-circuit on the first error.
 | Service-account admin collision | `spec.korc.serviceAccounts[].userName` | `field.Invalid` | An entry's effective identity equals the admin identity (`adminCredential.userName`/`domainName`) — a managed `User` would take over the admin user and rotate its password. **Cross-field, webhook-only.** |
 | Service-account managed-project uniqueness | `spec.korc.serviceAccounts[].project.name` | `field.Duplicate` | Two `project.create: true` entries name the same project in one domain — each managed `Project` would adopt the other's row. **Cross-item, webhook-only.** |
 | Service-account target namespace | `spec.korc.serviceAccounts[].targetNamespace` | `field.Invalid` | Set to a namespace that is neither the ControlPlane's own nor one of its dedicated service namespaces — delivery rides that namespace's `openbao-tenant-store`, and none is provisioned elsewhere. **Cross-field, webhook-only.** |
+| Glance gateway hostname required | `spec.services.glance.gateway.hostname` | `field.Required` | A `gateway` is configured but its `hostname` is empty. Mirrors the `+kubebuilder:validation:MinLength=1` marker on `commonv1.GatewaySpec.Hostname`; without it the derived public endpoint has an empty host. The same usable-DNS-name check that applies to the Keystone/Horizon gateway hostnames applies here too. |
+| Glance image resolvable | `spec.services.glance.image` | `field.Invalid` | The image override sets neither or both of `tag` and `digest` (mirrors the `commonv1.ImageSpec` tag/digest XOR). |
+| Glance backends non-empty | `spec.services.glance.backends` | `field.Required` | No backend is declared. Mirrors the `MinItems=1` marker. |
+| Glance single default backend | `spec.services.glance.backends` | `field.Invalid` | Not exactly one entry sets `isDefault`. Mirrors the single-`isDefault` CEL rule. |
+| Glance backend type/s3 union | `spec.services.glance.backends[]` | `field.Invalid` | The `s3` block is not set exactly when `type` is `S3`. Mirrors the per-entry union CEL rule on `GlanceBackendEntry`. |
+| Glance backend S3 endpoint is a URL | `spec.services.glance.backends[].s3.endpoint` | `field.Invalid` | Not an HTTP(S) URL (`^https?://`, full `net/url` parse). Mirrors the CRD pattern marker. |
+| Glance backend credentials Secret required | `spec.services.glance.backends[].s3.credentialsSecretRef.name` | `field.Required` | The S3 credentials Secret name is empty. |
+| Glance backend child-CR name length | `spec.services.glance.backends[].name` | `field.Invalid` | The composed `GlanceBackend` child name `{controlplane.Name}-glance-{name}` would exceed the apiserver's 253-byte `metadata.name` limit. **Webhook-only** — no CRD marker can express it. |
+| Glance service account required | `spec.korc.serviceAccounts` | `field.Required` | `services.glance` is set but no `spec.korc.serviceAccounts` entry named `glance` is declared. The defaulting webhook injects it (so Glance can validate the `[keystone_authtoken]` tokens it receives); requiring it here catches a webhook-bypassed CR that dropped it. **Webhook-only.** |
+| Glance service-account target namespace | `spec.korc.serviceAccounts[].targetNamespace` (the `glance` entry) | `field.Invalid` | The `glance` account's `targetNamespace` must equal the namespace Glance is placed in when Glance has a dedicated namespace, and be empty or the ControlPlane's own namespace when Glance is co-located — its consumer credentials Secret rides that namespace's tenant store. **Cross-field, webhook-only.** |
+| Glance forbidden in External mode | `spec.services.glance` | `field.Forbidden` | `services.glance` set while `mode: External` (Glance needs its own External-mode design). **Cross-field, webhook-only.** |
 
 ### Update-only immutability rules
 
@@ -1376,6 +1475,10 @@ markers' documented values where a marker also exists.
 | `spec.korc.adminCredential.projectName` | `== ""` | `"admin"` | Marker + webhook |
 | `spec.korc.adminCredential.domainName` | `== ""` | `"Default"` | Marker + webhook |
 | `spec.korc.serviceAccounts[].userName` | `== ""` | the entry's `name` | Webhook-only |
+| `spec.korc.serviceAccounts` (the `glance` entry) | `services.glance` set and no `glance` entry present | an injected entry `{name: glance, project: {name: service, create: true}, roles: [service], targetNamespace: <the Glance namespace when dedicated, else empty>}` (its `userName` then defaults to `glance` via the row above) | Webhook-only |
+| `spec.services.glance.dedicatedBackingServices.database.clusterRef.name` | managed dedicated database declared, `== ""` | `{controlplane}-glance-db` (and `credentialsMode` → `Static`) | Webhook-only, brownfield-guarded |
+| `spec.services.glance.dedicatedBackingServices.cache.clusterRef.name` | managed dedicated cache declared, `len(servers) == 0` | `{controlplane}-glance-cache` | Webhook-only, brownfield-guarded |
+| `spec.services.{keystone,horizon,glance}.namespace.lifecycle` | `== ""` (a `namespace` block is declared) | `Managed` | Marker + webhook |
 
 <a id="secretref-default-note"></a>
 > **† `database.secretRef.name` default — managed-mode convenience name only.**
@@ -1448,22 +1551,26 @@ func (w *ControlPlaneWebhook) ValidateDelete(_ context.Context, _ *ControlPlane)
 
 ## Status Conditions
 
-The ControlPlane status is driven by ten sub-reconcilers, each owning one
+The ControlPlane status is driven by twelve sub-reconcilers, each owning one
 condition type, plus an aggregate `Ready` condition. The condition-type
 constants in `controlplane_controller.go` (`subConditionTypes`) are the single
 source of truth; call sites reference the constants rather than inline literals.
 
 The sub-reconcilers run in dependency order; a stage that has not converged
 requeues and stops the chain, so later conditions are never computed against a
-half-built earlier stage. Four stages additionally gate **explicitly** on an
+half-built earlier stage. Six stages additionally gate **explicitly** on an
 earlier condition being `True` (`reconcileKeystone` on `InfrastructureReady`,
-`reconcileHorizon` on `KeystoneReady`, `reconcileAdminCredential` on `KORCReady`,
-`reconcileCatalog` and `reconcileServiceAccounts` on `AdminCredentialReady`):
+`reconcileHorizon` on `KeystoneReady`, `reconcileGlance` on `KeystoneReady` — and
+on the injected `glance` service account — `reconcileAdminCredential` on
+`KORCReady`, `reconcileCatalog` and `reconcileServiceAccounts` on
+`AdminCredentialReady`). `reconcileGlance` runs **last**, after
+`reconcileServiceAccounts`, because it gates on the per-account readiness that
+stage computes into status in the same pass:
 
 ```
-InfrastructureReady → ESOTenantStoreReady → DBCredentialsReady → AdminPasswordReady
-  → KeystoneReady → HorizonReady → KORCReady → AdminCredentialReady
-  → CatalogReady → ServiceAccountsReady
+NamespacesReady → InfrastructureReady → ESOTenantStoreReady → DBCredentialsReady
+  → AdminPasswordReady → KeystoneReady → HorizonReady → KORCReady
+  → AdminCredentialReady → CatalogReady → ServiceAccountsReady → GlanceReady
 ```
 
 `ESOTenantStoreReady` runs ahead of every store-consuming stage because it
@@ -1587,6 +1694,27 @@ an External-mode ControlPlane always reports `HorizonNotManaged`.
 | `False` | `HorizonProjectionRejected` | The Horizon API server rejected the projected spec (HTTP 422) — the projection violates a CRD/webhook rule. Reconcile the ControlPlane spec to a valid projection to recover. |
 | `False` | `HorizonError` | Error create-or-updating the Horizon CR. |
 
+### GlanceReady
+
+Set by `reconcileGlance` (gated on `KeystoneReady` — Glance validates every token
+against the Keystone child — **and** on the injected `glance` service account
+being Ready). Glance is **forbidden in External mode**, so it is only ever managed
+against a Managed-mode Keystone.
+
+| Status | Reason | When |
+| --- | --- | --- |
+| `True` | `GlanceReady` | The projected Glance CR reports Ready. |
+| `True` | `GlanceNotManaged` | `spec.services.glance` is unset: no image service is managed, so the aggregate `Ready` is not blocked. Any previously-projected Glance child (and its `GlanceBackend` children and DB-credential ExternalSecret) is **preserved** unless the `c5c3.io/allow-glance-deletion: "true"` annotation opts in to its deletion. |
+| `False` | `WaitingForKeystone` | `KeystoneReady` is not `True`; Glance projection deferred. |
+| `False` | `ServiceAccountNotDeclared` | No `spec.korc.serviceAccounts` entry named `glance` is declared — the defaulting webhook injects it whenever `services.glance` is set, so a ControlPlane reaching here bypassed admission. Fails loud rather than projecting a Glance with no Keystone user. |
+| `False` | `WaitingForServiceAccount` | The `glance` service account is declared but not yet Ready; projection deferred until its Keystone user and password are provisioned. |
+| `False` | `GlanceDBCredentialError` | Error ensuring the Glance DB-credential ExternalSecret (managed database only). |
+| `False` | `GlanceBackendProjectionRejected` | The Glance API server rejected a projected `GlanceBackend` (HTTP 422). Reconcile the `services.glance.backends` entries to a valid projection to recover. |
+| `False` | `GlanceBackendError` | Error projecting or pruning a `GlanceBackend` child. |
+| `False` | `WaitingForGlance` | The Glance CR is ensured but not yet Ready. |
+| `False` | `GlanceProjectionRejected` | The Glance API server rejected the projected Glance spec (HTTP 422) — the projection violates a CRD/webhook rule. Reconcile the ControlPlane spec to a valid projection to recover. |
+| `False` | `GlanceError` | Error create-or-updating the Glance CR. |
+
 ### KORCReady
 
 Set by `reconcileKORC`.
@@ -1701,7 +1829,7 @@ Set by `setReadyCondition`.
 
 | Status | Reason | When |
 | --- | --- | --- |
-| `True` | `AllReady` | All eight sub-conditions above are `True`. |
+| `True` | `AllReady` | All twelve sub-conditions above are `True`. |
 | `False` | `NotAllReady` | One or more sub-conditions are not `True`. |
 
 ---
@@ -1711,8 +1839,9 @@ Set by `setReadyCondition`.
 By default every service a ControlPlane projects lands in the **ControlPlane's
 own namespace**: namespace and ControlPlane are the same boundary, so no
 network-policy, RBAC, or quota line can be drawn between the services of one
-control plane. A `namespace` assignment on `services.keystone` or
-`services.horizon` makes the target namespace a **per-service choice** — a
+control plane. A `namespace` assignment on `services.keystone`,
+`services.horizon`, or `services.glance` makes the target namespace a
+**per-service choice** — a
 service can be placed in a namespace of its own, and the backing services, secret
 store, and credential material that belong to it follow it there. A service
 without an assignment stays in the ControlPlane's namespace exactly as before.
@@ -1859,10 +1988,11 @@ untouchable.
 > reference so the GC cascade reaps them.
 
 A **service** and the things that follow it — its `MariaDB`, `Memcached`, and
-`Keystone`/`Horizon` CRs, its tenant store, its credential material — are placed
-in `cp.KeystoneNamespace()` / `cp.HorizonNamespace()`, the service's own
-namespace when [`services.<svc>.namespace`](#service-namespaces) assigns one and
-the ControlPlane's namespace otherwise. Only the latter can carry an owner
+`Keystone`/`Horizon`/`Glance` (and `GlanceBackend`) CRs, its tenant store, its
+credential material — are placed in `cp.KeystoneNamespace()` /
+`cp.HorizonNamespace()` / `cp.GlanceNamespace()`, the service's own namespace when
+[`services.<svc>.namespace`](#service-namespaces) assigns one and the
+ControlPlane's namespace otherwise. Only the latter can carry an owner
 reference; a child in a different namespace carries the ownership labels instead
 (see [Ownership and garbage collection](#ownership-and-garbage-collection)).
 
@@ -1877,6 +2007,7 @@ deployed into the `openstack` control-plane namespace, so its projected children
 land in `openstack` exactly as expected — the namespace is **derived from the
 owner (or the assignment)** rather than assumed. Projected child names are
 deterministic and derived from the ControlPlane name (e.g. `{name}-keystone`,
+`{name}-glance`, `{name}-glance-{backend}` (a projected `GlanceBackend`),
 `{name}-admin-app-credential`, `{name}-identity-service`,
 `{name}-identity-endpoint`, `{name}-service-account-{account}-role-{slug}` (an
 unmanaged `Role` import) and `{name}-service-account-{account}-assign-{slug}` (a
