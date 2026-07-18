@@ -84,6 +84,10 @@ spec:
       # VaultDynamicSecret generator (Dynamic) or the stage-(a) KV-backed
       # ExternalSecret (Static). Dynamic requires clusterRef (managed mode).
       # credentialsMode: Dynamic
+      # Per-service override: services.<svc>.databaseCredentialsMode (Static |
+      # Dynamic) overrides this ControlPlane-wide mode for one service on the
+      # shared database, so a staged migration can run one service Dynamic while
+      # another stays Static; empty (the default) inherits the mode above.
       # In managed mode (clusterRef set) database.secretRef is
       # operator-owned — reconcileDBCredentials materialises a per-ControlPlane
       # Secret and the projected Keystone CR's secretRef is overridden to
@@ -313,7 +317,7 @@ additional services are added as fields as the operator grows.
 | --- | --- | --- | --- | --- |
 | `keystone` | [`*ServiceKeystoneSpec`](#servicekeystonespec) | No | `nil` | Configuration for the Keystone service projected by the reconciler. Optional: when unset, this ControlPlane manages no Keystone service (staged adoption, or an externally-managed Keystone) and `KeystoneReady` is reported as not-managed. Flipping it from set to `nil` **preserves** the previously-projected Keystone child by default — deleting it would cascade to the child's irreplaceable `<name>-credential-keys` Secret (and its OpenBao backup), so an accidental unset is fail-safe. Set the `c5c3.io/allow-keystone-deletion: "true"` annotation on the ControlPlane to opt in to deleting the child on unset. |
 | `horizon` | [`*ServiceHorizonSpec`](#servicehorizonspec) | No | `nil` | Configuration for the Horizon dashboard projected by the reconciler. Optional: when unset, this ControlPlane manages no dashboard and `HorizonReady` is reported as not-managed (`HorizonNotManaged`), so the aggregate `Ready` is not blocked. **Forbidden in External mode** — the dashboard needs its own External-mode design. Flipping it from set to `nil` preserves the previously-projected Horizon child by default; set the `c5c3.io/allow-horizon-deletion: "true"` annotation to opt in to deleting the child on unset. |
-| `glance` | [`*ServiceGlanceSpec`](#serviceglancespec) | No | `nil` | Configuration for the Glance image service projected by the reconciler. Optional: when unset, this ControlPlane manages no image service and `GlanceReady` is reported as not-managed (`GlanceNotManaged`), so the aggregate `Ready` is not blocked. The projection is **gated on `KeystoneReady`** — Glance validates every token against the ControlPlane's Keystone child. **Forbidden in External mode** — Glance needs its own External-mode design. Flipping it from set to `nil` preserves the previously-projected Glance child by default; set the `c5c3.io/allow-glance-deletion: "true"` annotation to opt in to deleting the child (and its `GlanceBackend` children and DB-credential ExternalSecret) on unset. |
+| `glance` | [`*ServiceGlanceSpec`](#serviceglancespec) | No | `nil` | Configuration for the Glance image service projected by the reconciler. Optional: when unset, this ControlPlane manages no image service and `GlanceReady` is reported as not-managed (`GlanceNotManaged`), so the aggregate `Ready` is not blocked. The projection is **gated on `KeystoneReady`** — Glance validates every token against the ControlPlane's Keystone child. **Forbidden in External mode** — Glance needs its own External-mode design. Flipping it from set to `nil` preserves the previously-projected Glance child by default; set the `c5c3.io/allow-glance-deletion: "true"` annotation to opt in to deleting the child (and its `GlanceBackend` children and DB-credential ExternalSecret) on unset. The dynamic DB-credential generator is torn down on unset regardless of the annotation — preserving a running service does not imply preserving a credential minter. |
 
 ---
 
@@ -361,6 +365,7 @@ validating webhook is bypassed) and mirrored by the validating webhook; see
 | `gateway` | [`*commonv1.GatewaySpec`](#gatewayspec) | No | `nil` | Exposes the projected Keystone API externally via a Gateway API HTTPRoute. When `nil`, no HTTPRoute is projected and the Keystone API is reachable in-cluster only (its ClusterIP Service). When set, the reconciler projects it onto the Keystone CR's `spec.gateway`, so the Keystone operator attaches an HTTPRoute to the referenced Gateway. When a `gateway` is set its `hostname` must be non-empty — enforced at admission by the validating webhook (see [Validation Rules](#validation-rules)). |
 | `publicEndpoint` | `string` | No | `""` | Externally routable Keystone identity endpoint URL (e.g. `https://keystone.example.com/v3`). Projected into the Keystone bootstrap (`--bootstrap-public-url`) and used for the K-ORC identity catalog Endpoint, so external clients resolve the same URL Keystone advertises. When set, it must be an HTTP(S) URL (`+kubebuilder:validation:Pattern=^https?://`), so a malformed endpoint fails at admission rather than wedging the projected Keystone CR. When empty and `gateway` is set, the reconciler derives `https://{gateway.hostname}/v3` (the default-443 form); set it explicitly when the externally reachable port differs (e.g. a kind host-port mapping like `:8443`). |
 | `federationProxyImage` | [`*commonv1.ImageSpec`](../keystone/keystone-crd.md#imagespec) | No | `nil` | Overrides the `mod_auth_openidc` sidecar image projected onto the Keystone child's `spec.federation.proxyImage`. When `nil` the reconciler projects `ghcr.io/c5c3/keystone-federation-proxy:latest`. That default is a **mutable tag**: every node re-pulls it on each pod start, and a locally built sidecar cannot be exercised. Override it with a digest-carrying `ImageSpec` for the immutable pin published images are expected to carry. Inert until a federation-typed `KeystoneIdentityBackend` attaches. Forbidden in External mode (CEL + webhook). |
+| `databaseCredentialsMode` | `string` (`Static` \| `Dynamic`) | No | `""` (inherits `spec.infrastructure.database.credentialsMode`) | Per-service override of the ControlPlane-wide credentials mode for the managed **shared** database, so a staged migration can run Keystone on one mode while another service (e.g. Glance) stays on the other. Empty (the default) **inherits** the shared mode — deliberately **not** materialized by the defaulting webhook, so "inherit" stays distinguishable from an explicit override. A `Dynamic` override is **rejected** when the Keystone service declares a [dedicated](#dedicatedbackingservices) database (dedicated is `Static`-only — set `dedicatedBackingServices.database.credentialsMode` instead; see [Credential modes](#credential-modes)) and when the shared database is **brownfield** (`clusterRef` unset); `Static` is always admitted. **Forbidden in External mode (CEL + webhook)** — no managed database is provisioned there, so there is no credentials mode to override. |
 | `dedicatedBackingServices` | [`*KeystoneDedicatedBackingServicesSpec`](#dedicatedbackingservices) | No | `nil` (shares the ControlPlane-wide instances) | Opts the Keystone service **out** of the shared `spec.infrastructure` instances and gives it backing services of its own. Forbidden in External mode (CEL + webhook): no backing services are provisioned at all there. |
 | `namespace` | [`*ServiceNamespaceSpec`](#service-namespaces) | No | `nil` (placed in the ControlPlane's namespace) | Places the Keystone service — and the backing services, secret store, and credential material that follow it — in a namespace of its own. Create-only. Forbidden in External mode (CEL + webhook): no Keystone workload is deployed, so there is nothing to place. See [Service Namespaces](#service-namespaces). |
 
@@ -421,6 +426,7 @@ carry per-field External-mode forbid-rules.
 | `gateway` | [`*commonv1.GatewaySpec`](#gatewayspec) | No | `nil` | Exposes the projected Glance API externally via a Gateway API HTTPRoute. When `nil` (the default) no HTTPRoute is projected and the Glance API is reachable in-cluster only. When a `gateway` is set its `hostname` must be non-empty — enforced at admission by the validating webhook (see [Validation Rules](#validation-rules)). |
 | `publicEndpoint` | `string` | No | `""` | Externally routable Glance image endpoint URL (e.g. `https://glance.127-0-0-1.nip.io:8443`). Used **only** for the K-ORC public image catalog Endpoint; it is projected into no child CR, so the validating webhook is the only gate on it. When set, it must match `^https?://`, parse to a bare origin with a host (no path, query, or fragment — the Glance API is served at the root), and be at most 512 characters. When a `gateway` is configured the scheme must be `https` and the host must equal `gateway.hostname` (the port may differ) — see [Validation Rules](#validation-rules). When empty and `gateway` is set, the reconciler derives `https://{gateway.hostname}` (the default-443 form); set it explicitly when the externally reachable port differs (e.g. a kind host-port mapping like `:8443`). |
 | `backends` | [`[]GlanceBackendEntry`](#glancebackendentry) | Yes | — | The curated list of image stores, projected one-to-one into [`GlanceBackend`](../glance/glance-backend-crd.md) child CRs. **Exactly one** entry must set `isDefault`, promoting its store to the Glance `default_backend`. A `listType=map` list keyed on `name` (the API server rejects duplicate names); `MinItems` 1 and `MaxItems` 32 (every entry amplifies into one `GlanceBackend` CR). The single-default invariant holds at the CRD schema layer via a CEL `XValidation` rule and is mirrored by the validating webhook. |
+| `databaseCredentialsMode` | `string` (`Static` \| `Dynamic`) | No | `""` (inherits `spec.infrastructure.database.credentialsMode`) | Per-service override of the ControlPlane-wide credentials mode for the managed **shared** database, so a staged migration can run Glance on one mode while another service (e.g. Keystone) stays on the other. Empty (the default) **inherits** the shared mode — deliberately **not** materialized by the defaulting webhook, so "inherit" stays distinguishable from an explicit override. A `Dynamic` override is **rejected** when Glance declares a [dedicated](#dedicatedbackingservices) database (dedicated is `Static`-only — set `dedicatedBackingServices.database.credentialsMode` instead; see [Credential modes](#credential-modes)) and when the shared database is **brownfield** (`clusterRef` unset); `Static` is always admitted. |
 | `dedicatedBackingServices` | [`*GlanceDedicatedBackingServicesSpec`](#dedicatedbackingservices) | No | `nil` (shares the ControlPlane-wide instances) | Opts Glance **out** of the shared `spec.infrastructure` instances and gives it a database and/or cache of its own. Glance consumes both classes, so it can take either or both dedicated. |
 | `namespace` | [`*ServiceNamespaceSpec`](#service-namespaces) | No | `nil` (placed in the ControlPlane's namespace) | Places the Glance service — and the database, cache, secret store, and object-store credential material that follow it — in a namespace of its own. Create-only. See [Service Namespaces](#service-namespaces). |
 
@@ -556,30 +562,60 @@ same path as a shared instance:
 
 ### Credential modes
 
+On the managed **shared** database, `credentialsMode: Dynamic` — short-lived,
+engine-issued credentials from the OpenBao database engine — is the **default**
+for **both** Keystone and Glance. Glance is no longer forced onto `Static`: it
+now carries its own glance-scoped engine role, `glance-db-dynamic` policy, and
+`glance-db` auth role (`deploy/openbao/bootstrap/setup-database-tenant.sh` /
+`setup-auth.sh` / `deploy/openbao/policies/glance-db-dynamic.hcl`), exactly the
+way Keystone does.
+
+The mode is resolved from ControlPlane-wide to per-service:
+
+1. `spec.infrastructure.database.credentialsMode` is the ControlPlane-wide
+   default for the shared database — `Dynamic` unless you opt out to `Static`
+   (migration staging / brownfield). `Dynamic` requires `clusterRef` (managed
+   mode).
+2. `spec.services.<svc>.databaseCredentialsMode` **overrides** it for one
+   service. Empty (the default) **inherits** the shared mode — deliberately not
+   materialized by the defaulting webhook, so "inherit" stays distinguishable
+   from an explicit override — so a staged migration can run one service (say
+   Keystone) on `Dynamic` while another (Glance) stays `Static`, or the reverse.
+   A `Dynamic` override is rejected on a service that declares a dedicated
+   database or when the shared database is brownfield; `Static` is always
+   admitted.
+
+In the shared **Static** branch — the ControlPlane-wide opt-out or a per-service
+`Static` override — the operator projects a KV-backed ExternalSecret reading the
+per-service path (`openstack/keystone/{namespace}/{name}/db` for Keystone,
+`openstack/glance/{namespace}/{name}/db` for Glance), and the credential is
+**seeded and rotated at the OpenBao source** (ESO refreshes it within the hour).
+
 A dedicated **managed** database uses `credentialsMode: Static`. The defaulting
 webhook materializes it, and an explicit `Dynamic` is **rejected at admission**:
 the OpenBao database engine carries exactly one connection and one role **per
 namespace** (`deploy/openbao/bootstrap/setup-database-tenant.sh`), bootstrapped
 against the *shared* cluster, so no engine role exists that could issue
 credentials for a dedicated instance — an admitted `Dynamic` dedicated database
-would wedge on an ExternalSecret that can never sync.
-
-`Static` is the same contract the shared block's own Static opt-out carries: the
-operator projects a KV-backed ExternalSecret reading
-`openstack/keystone/{namespace}/{name}/db`, and the credential is **seeded and
-rotated at the OpenBao source** (ESO refreshes it within the hour). A brownfield
-dedicated database keeps the user-supplied `secretRef` Secret, exactly as a
-brownfield shared one does.
+would wedge on an ExternalSecret that can never sync. It reads the same
+per-service KV path a shared `Static` opt-out does, and a brownfield dedicated
+database keeps the user-supplied `secretRef` Secret, exactly as a brownfield
+shared one does.
 
 > **Seed the KV path before you expect `Ready`.** It is seeded by **neither the
 > operator nor the bootstrap** — the per-ControlPlane static seed was retired when
-> managed mode moved to engine-issued credentials. A dedicated managed database
-> therefore reaches `Ready` only once you have seeded
-> `kv-v2/openstack/keystone/{namespace}/{name}/db` (`username`, `password`)
-> yourself; see
+> managed mode moved to engine-issued credentials. A service on the `Static`
+> branch (a dedicated managed database, or the shared database opted out)
+> therefore reaches `Ready` only once you have seeded its per-service KV path —
+> `kv-v2/openstack/keystone/{namespace}/{name}/db` for Keystone,
+> `kv-v2/openstack/glance/{namespace}/{name}/db` for Glance — with `username` and
+> `password` yourself; see
 > [Migrate the Keystone DB to dynamic credentials](../../guides/keystone/migrate-keystone-db-to-dynamic-credentials.md)
-> for the exact `bao kv put`. Until then `DBCredentialsReady` stays `False` with
-> reason `WaitingForDBCredentialSecret` and a message naming the path.
+> and [Migrate the Glance DB to dynamic credentials](../../guides/glance/migrate-glance-db-to-dynamic-credentials.md)
+> for the exact `bao kv put`. Until then Keystone's `DBCredentialsReady` stays
+> `False` with reason `WaitingForDBCredentialSecret` and a message naming the
+> path, and Glance's projected child cannot resolve its DB secret, so
+> `GlanceReady` stays `False`.
 
 ### Name collisions
 
@@ -1230,6 +1266,7 @@ Keystone discipline:
 | `spec.services.keystone.external.authURL` | Pattern `^https?://[^\s/]+`; MaxLength 2048 (bounds the one unbounded input interpolated into `status.conditions[].message`) |
 | `spec.services.keystone.external.endpointType` | Enum: `public`, `internal`, `admin`; schema default `public` |
 | `spec.services.keystone.external.caBundleSecretRef.name` | MinLength 1 (shared `SecretRefSpec` marker) |
+| `spec.services.keystone.databaseCredentialsMode` | Enum: `Static`, `Dynamic` |
 | `spec.korc.adminCredential.applicationCredential.accessRules[].method` | Enum: `CONNECT`, `DELETE`, `GET`, `HEAD`, `OPTIONS`, `PATCH`, `POST`, `PUT`, `TRACE` |
 | `spec.korc.adminCredential.applicationCredential.accessRules[].path` | Pattern `^/` |
 | `spec.korc.adminCredential.bootstrapResources[].kind` | Enum: `Project`, `Role` |
@@ -1257,8 +1294,9 @@ Keystone discipline:
 | `spec.globalPolicyOverrides`, `spec.services.keystone.policyOverrides` (CEL) | `!has(self.rules) \|\| self.rules.all(k, size(self.rules[k]) > 0)` → "policy rule value must not be empty" |
 | `spec.services.keystone` (CEL) | `mode == 'External'` ⇒ `has(self.external)` → "external is required when services.keystone.mode is External" |
 | `spec.services.keystone` (CEL) | `has(self.external)` ⇒ `mode == 'External'` → "external may only be set when services.keystone.mode is External" |
-| `spec.services.keystone` (CEL) | `mode == 'External'` ⇒ each managed-only field (`replicas`, `image`, `policyOverrides`, `rotationInterval`, `gateway`, `publicEndpoint`, `federationProxyImage`) absent → "services.keystone.\<field\> is forbidden when services.keystone.mode is External" (one rule per field) |
+| `spec.services.keystone` (CEL) | `mode == 'External'` ⇒ each managed-only field (`replicas`, `image`, `policyOverrides`, `rotationInterval`, `gateway`, `publicEndpoint`, `federationProxyImage`, `databaseCredentialsMode`) absent → "services.keystone.\<field\> is forbidden when services.keystone.mode is External" (one rule per field) |
 | `spec.services.glance.replicas` | Minimum: 1 |
+| `spec.services.glance.databaseCredentialsMode` | Enum: `Static`, `Dynamic` |
 | `spec.services.glance.gateway.hostname` | MinLength 1 (shared `GatewaySpec` marker) |
 | `spec.services.glance.publicEndpoint` | Pattern `^https?://`; MaxLength 512 (mirrors `services.keystone.publicEndpoint`; the value feeds the K-ORC image Endpoint URL) |
 | `spec.services.glance.backends` | listType=map keyed by `name`; MinItems 1; MaxItems 32 |
@@ -1292,6 +1330,9 @@ short-circuit on the first error.
 | External authURL required/URL | `spec.services.keystone.external.authURL` | `field.Required` / `field.Invalid` | In External mode, `authURL` empty (Required), or not matching `^https?://[^\s/]+` / failing a full `net/url` parse / exceeding 2048 characters (Invalid). Mirrors the CRD required/pattern/maxLength markers. |
 | External caBundle name required | `spec.services.keystone.external.caBundleSecretRef.name` | `field.Required` | `caBundleSecretRef` set with an empty `name`. Mirrors the shared `SecretRefSpec` MinLength marker. |
 | Managed-only field forbidden in External mode | `spec.services.keystone.{replicas,image,policyOverrides,rotationInterval,gateway,publicEndpoint,federationProxyImage}` | `field.Forbidden` | The field is set while `mode: External`. Defense-in-depth mirror of the per-field CEL rules. |
+| Keystone credentials-mode override forbidden in External mode | `spec.services.keystone.databaseCredentialsMode` | `field.Forbidden` | The per-service override is set while `mode: External` — no managed database is provisioned, so there is no credentials mode to override. Defense-in-depth mirror of the per-field CEL rule. |
+| Dynamic credentials-mode override on a dedicated database | `spec.services.{keystone,glance}.databaseCredentialsMode` | `field.Forbidden` | The override is `Dynamic` while that service declares a dedicated database: the override retargets the shared database the service does not use, and a dedicated database is `Static`-only (set `dedicatedBackingServices.database.credentialsMode` instead). `Static` stays admitted. **Cross-field, webhook-only.** |
+| Dynamic credentials-mode override on a brownfield shared database | `spec.services.{keystone,glance}.databaseCredentialsMode` | `field.Forbidden` | The override is `Dynamic` while the shared database is brownfield (`clusterRef` unset): the dynamic engine issues per-tenant DB users only against a cluster the operator provisions. **Cross-field, webhook-only.** |
 | Federation proxy image resolvable | `spec.services.keystone.federationProxyImage` | `field.Required` / `field.Invalid` | Empty `repository`, or neither/both of `tag` and `digest`. Surfaces on the ControlPlane the operator edits rather than as an opaque `KeystoneProjectionRejected` condition on the child. |
 | Dashboard public endpoint is a URL | `spec.services.horizon.publicEndpoint` | `field.Invalid` | Not an absolute HTTP(S) URL with a host. Keystone matches the derived WebSSO origin verbatim, so an unusable endpoint could never match any dashboard. |
 | Dashboard public endpoint is a bare origin | `spec.services.horizon.publicEndpoint` | `field.Invalid` | Carries a path, query, or fragment (a single trailing `/` is trimmed and allowed). The `^https?://` pattern anchors only the prefix, so `https://horizon.example.com?utm=1` is schema-legal and would render the trusted origin `https://horizon.example.com?utm=1/auth/websso/` — accepted by Keystone, matched by nothing. **Webhook-only.** |
@@ -1709,11 +1750,12 @@ against a Managed-mode Keystone.
 | Status | Reason | When |
 | --- | --- | --- |
 | `True` | `GlanceReady` | The projected Glance CR reports Ready. |
-| `True` | `GlanceNotManaged` | `spec.services.glance` is unset: no image service is managed, so the aggregate `Ready` is not blocked. Any previously-projected Glance child (and its `GlanceBackend` children and DB-credential ExternalSecret) is **preserved** unless the `c5c3.io/allow-glance-deletion: "true"` annotation opts in to its deletion. |
+| `True` | `GlanceNotManaged` | `spec.services.glance` is unset: no image service is managed, so the aggregate `Ready` is not blocked. Any previously-projected Glance child (and its `GlanceBackend` children and DB-credential ExternalSecret) is **preserved** unless the `c5c3.io/allow-glance-deletion: "true"` annotation opts in to its deletion. The dynamic DB-credential generator, its ServiceAccount, and its client Certificate are torn down **either way** — preserving a running service does not imply preserving the generator that keeps minting its credentials. |
 | `False` | `WaitingForKeystone` | `KeystoneReady` is not `True`; Glance projection deferred. |
 | `False` | `ServiceAccountNotDeclared` | No `spec.korc.serviceAccounts` entry named `glance` is declared — the defaulting webhook injects it whenever `services.glance` is set, so a ControlPlane reaching here bypassed admission. Fails loud rather than projecting a Glance with no Keystone user. |
 | `False` | `WaitingForServiceAccount` | The `glance` service account is declared but not yet Ready; projection deferred until its Keystone user and password are provisioned. |
 | `False` | `GlanceDBCredentialError` | Error ensuring the Glance DB-credential ExternalSecret (managed database only). |
+| `False` | `WaitingForGlanceDBCredential` | `credentialsMode: Dynamic` is in effect but no engine-issued credential has materialised yet — either the generator-backed DB-credential ExternalSecret has not synced, or (on a Static→Dynamic migration, where the ExternalSecret is updated in place and keeps reporting the previous Static sync's `Ready`) the Secret it targets still carries the retired static username. No Glance CR is projected, and an existing child keeps its current mode, until one does. The message names the `database/mariadb/creds/glance-<namespace>` path, which only exists once `setup-database-tenant.sh` has onboarded the tenant, or the stale username it found. |
 | `False` | `GlanceBackendProjectionRejected` | The Glance API server rejected a projected `GlanceBackend` (HTTP 422). Reconcile the `services.glance.backends` entries to a valid projection to recover. |
 | `False` | `GlanceBackendError` | Error projecting or pruning a `GlanceBackend` child. |
 | `False` | `WaitingForGlance` | The Glance CR is ensured but not yet Ready. |

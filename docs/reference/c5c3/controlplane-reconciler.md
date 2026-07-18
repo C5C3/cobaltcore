@@ -1057,7 +1057,7 @@ an empty websso block, which would silently remove a working SSO button.
 | File | `reconcile_glance.go` |
 | Condition | `GlanceReady` |
 | Gate | `KeystoneReady == True` (Glance validates every token against the Keystone child) **and** the injected `glance` service account being Ready |
-| Projects / Owns | one `Glance` child named `{controlplane.Name}-glance` (`glanceNameSuffix`) in `cp.GlanceNamespace()`; one `GlanceBackend` child per `services.glance.backends` entry, named `{controlplane.Name}-glance-{entry}`; and — managed database only — a DB-credential `ExternalSecret` named `{controlplane.Name}-glance-db-credentials` reading OpenBao KV path `openstack/glance/{glance-namespace}/{controlplane.Name}/db` (properties `username`, `password`). Only when `spec.services.glance` is set |
+| Projects / Owns | one `Glance` child named `{controlplane.Name}-glance` (`glanceNameSuffix`) in `cp.GlanceNamespace()`; one `GlanceBackend` child per `services.glance.backends` entry, named `{controlplane.Name}-glance-{entry}`; and — managed database only — the per-ControlPlane DB-credential objects in the Glance service namespace: in **Dynamic** mode (the managed-shared default) a ServiceAccount `glance-db-creds`, an mTLS client Certificate `{controlplane.Name}-glance-db-openbao-client`, a `VaultDynamicSecret` generator reading `database/mariadb/creds/glance-{glance-namespace}` (auth role `glance-db`), and a generator-backed `ExternalSecret` `{controlplane.Name}-glance-db-credentials`; in the **Static** opt-out a KV-backed `ExternalSecret` of the same name reading `openstack/glance/{glance-namespace}/{controlplane.Name}/db` (properties `username`, `password`). Only when `spec.services.glance` is set |
 | Requeue | `keystoneInfraGateRequeueAfter` = **5s** while gated on Keystone; `korcRequeueAfter` = **10s** while the `glance` service account is not yet Ready; `infraRequeueAfter` = **15s** while the child is not Ready |
 
 `reconcileGlance` runs **last** in the pipeline (after `reconcileServiceAccounts`),
@@ -1065,8 +1065,10 @@ because it gates on the per-account readiness that stage computes into status in
 the same pass. It is optional: `spec.services.glance` unset means this ControlPlane
 manages no image service, and the sub-reconciler reports `GlanceReady=True` /
 `GlanceNotManaged` so the aggregate is not blocked (staged adoption). A
-previously-projected child — and its `GlanceBackend` children and DB-credential
-ExternalSecret — is **preserved** unless the ControlPlane opts in with
+previously-projected child — and its `GlanceBackend` children, DB-credential
+ExternalSecret, and (from a prior Dynamic deployment) the `VaultDynamicSecret`
+generator, its client Certificate, and the `glance-db-creds` ServiceAccount — is
+**preserved** unless the ControlPlane opts in with
 `c5c3.io/allow-glance-deletion: "true"` (then the orphans, plus the image catalog
 K-ORC CRs, are deleted). Cross-namespace children are ownership-checked, so a
 hand-created `GlanceBackend` sharing the namespace is never touched.
@@ -1082,12 +1084,21 @@ reusing the ControlPlane's own specs so Glance points at the same backing servic
   when it opted into one, the shared `spec.infrastructure.database` otherwise) with
   its logical database name forced to `glance` so Glance's schema stays isolated
   from Keystone's on a shared cluster. In managed mode (`clusterRef` set) the
-  `secretRef` is repointed at the operator-owned `{controlplane.Name}-glance-db-credentials`
-  Secret and `credentialsMode` is forced to `Static`: there is **no** OpenBao
-  dynamic-engine role for the glance schema (the engine role is keystone-scoped and
-  bootstrapped once per namespace), so the credential is always read from the KV
-  path above and seeded/rotated at the OpenBao source. A brownfield database keeps
-  the user-supplied `secretRef`.
+  `secretRef` is repointed at the operator-owned
+  `{controlplane.Name}-glance-db-credentials` Secret, and the projected
+  `credentialsMode` is the **effective** mode: `Dynamic` (engine-issued) by
+  default on the managed shared database — Glance now has its own engine role
+  `glance-{glance-ns}`, provisioned by `setup-database-tenant.sh` — flipped to
+  `Static` by the shared-block opt-out or the per-service
+  `services.glance.databaseCredentialsMode` override, and always `Static` for a
+  dedicated glance database (fail-closed even when the stored mode says
+  otherwise). In `Dynamic` mode the generator objects above (the
+  `glance-db-creds` ServiceAccount, the client Certificate, the
+  `VaultDynamicSecret`, and the generator-backed ExternalSecret) are ensured
+  before the child; in `Static` mode they are torn down and the KV-backed
+  ExternalSecret is projected, reading a path seeded **out-of-band** (see
+  [Migrate the Glance DB to dynamic credentials](../../guides/glance/migrate-glance-db-to-dynamic-credentials.md)).
+  A brownfield database keeps the user-supplied `secretRef` and `credentialsMode`.
 - **Cache:** a DeepCopy of the **effective** cache (`effectiveGlanceCache`).
 - **Keystone endpoint:** `keystoneEndpoint` is derived top-down via
   `glanceKeystoneEndpoint(cp)` — **always** the cluster-local `{controlplane.Name}-keystone`
@@ -1125,11 +1136,12 @@ unowned, and the finalizer sweeps it by those labels.
 
 | Path | Status | Reason | Notes |
 | --- | --- | --- | --- |
-| `spec.services.glance` unset | True | `GlanceNotManaged` | staged adoption; a previously-projected child is preserved unless `c5c3.io/allow-glance-deletion: "true"` is set |
+| `spec.services.glance` unset | True | `GlanceNotManaged` | staged adoption; a previously-projected child is preserved unless `c5c3.io/allow-glance-deletion: "true"` is set — but its dynamic DB-credential generator, ServiceAccount, and client Certificate are torn down either way, so no credential minter outlives the service |
 | `KeystoneReady` not True | False | `WaitingForKeystone` | requeue 5s; no Glance CR is projected while Keystone is unready |
 | no `glance` service account declared | False | `ServiceAccountNotDeclared` | admission was bypassed (the defaulting webhook injects it); fails loud rather than projecting a Glance with no Keystone user |
 | `glance` service account not yet Ready | False | `WaitingForServiceAccount` | requeue 10s; deferred until its Keystone user and password are provisioned |
-| DB-credential ExternalSecret ensure fails | False | `GlanceDBCredentialError` | returns the error (managed database only) |
+| DB-credential ensure fails (Dynamic generator objects or Static ExternalSecret) | False | `GlanceDBCredentialError` | returns the error (managed database only) |
+| Dynamic DB credential not yet materialised | False | `WaitingForGlanceDBCredential` | requeue 10s; no Glance CR is projected and an existing child keeps its current mode until the generator-backed ExternalSecret reports Ready **and** the Secret it targets carries an engine-issued username. The message names the `database/mariadb/creds/glance-<namespace>` path, which only exists after `setup-database-tenant.sh` has onboarded the tenant, or — on a Static→Dynamic migration, where the in-place ExternalSecret update leaves the previous Static sync's `Ready` in place over a stale Secret — the non-engine-issued username it found |
 | projected `GlanceBackend` rejected (HTTP 422 Invalid) | False | `GlanceBackendProjectionRejected` | returns the error; reconcile the `services.glance.backends` entries to a valid projection to recover |
 | `GlanceBackend` project/prune fails | False | `GlanceBackendError` | returns the error |
 | Glance child not yet Ready | False | `WaitingForGlance` | requeue 15s |
