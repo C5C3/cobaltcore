@@ -1,0 +1,41 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# TLS material for the Glance listener (`https-glance`) defined in
+# deploy/kind/base/openstack-gateway.yaml. cert-manager issues a
+# self-signed certificate for `glance.127-0-0-1.nip.io` and writes it
+# to the `glance-nip-io-tls` Secret in the `openstack` namespace,
+# where the Gateway's `https-glance` listener `certificateRefs` picks
+# it up. Kept as a sibling of `keystone-nip-io-tls-certificate.yaml`
+# and `horizon-nip-io-tls-certificate.yaml` (one Certificate per
+# listener hostname) rather than a shared SAN certificate so each
+# listener terminates with its own key material.
+#
+# Lives in the infrastructure overlay (Phase 2 of hack/deploy-infra.sh)
+# rather than the base overlay because the `cert-manager.io/v1`
+# Certificate CRD is installed by the `cert-manager` HelmRelease in
+# Phase 1; applying this resource before Phase 4 ("wait HelmReleases
+# Ready") would fail with `no matches for kind "Certificate"`.
+# The same reasoning applies to the `selfsigned-cluster-issuer`
+# ClusterIssuer it references (deploy/flux-system/infrastructure/
+# cluster-issuer.yaml) — also a Phase-2 resource.
+#
+# Self-signed is correct for a kind quick-start cluster (single-user
+# localhost-only), matching the sibling keystone/horizon certificates.
+#
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: glance-nip-io-tls
+  namespace: openstack
+spec:
+  secretName: glance-nip-io-tls
+  duration: 8760h
+  renewBefore: 720h
+  issuerRef:
+    name: selfsigned-cluster-issuer
+    kind: ClusterIssuer
+  dnsNames:
+    - glance.127-0-0-1.nip.io
