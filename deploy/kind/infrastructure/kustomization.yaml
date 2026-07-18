@@ -20,6 +20,9 @@ resources:
   # TLS for the second Gateway listener the ControlPlane Quick Start's Horizon
   # dashboard is exposed through (deploy/kind/base/openstack-gateway.yaml).
   - horizon-nip-io-tls-certificate.yaml
+  # TLS for the third Gateway listener the ControlPlane Quick Start's Glance
+  # image API is exposed through (deploy/kind/base/openstack-gateway.yaml).
+  - glance-nip-io-tls-certificate.yaml
   # kind-only: standalone Keystone CRs (Quick Start, keystone e2e/tempest/
   # chaos suites) reference the Secret "keystone-db"; ControlPlane-based
   # deployments use the operator-projected per-ControlPlane ExternalSecret
