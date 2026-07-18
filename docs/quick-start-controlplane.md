@@ -190,7 +190,10 @@ of the default-443 form the operator would otherwise derive from the gateway
 hostname. The defaulting webhook injects a `glance` service account (user
 `glance`, project `service`, role `service`) into `spec.korc.serviceAccounts` so
 Glance can validate the Keystone tokens it receives; its database and cache
-derive from `spec.infrastructure`, exactly like Keystone's. A `GlanceReady`
+derive from `spec.infrastructure`, exactly like Keystone's. On the managed
+shared database its DB credential is engine-issued and auto-rotated exactly like
+Keystone's — short-lived leases from the OpenBao database engine, and the Step 4
+onboarding provisions the engine tenant for both services. A `GlanceReady`
 condition joins the chain — gating on `KeystoneReady` plus that injected service
 account — and `status.services` gains a third entry.
 

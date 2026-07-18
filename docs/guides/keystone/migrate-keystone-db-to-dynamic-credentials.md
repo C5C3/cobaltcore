@@ -114,6 +114,14 @@ seed `kv-v2/openstack/keystone/<namespace>/<controlplane>/db` (`username`,
 `password`) by hand while staging. Remove the field (or set it to `Dynamic`) to
 cut over.
 
+The shared `spec.infrastructure.database.credentialsMode: Static` above stages
+**every** service on the shared database at once. To scope the staging to
+Keystone alone, set `spec.services.keystone.databaseCredentialsMode: Static`
+instead — the per-service variant of the same opt-out, so another service (for
+example Glance) can already run Dynamic while Keystone stays Static. An empty
+override inherits the shared mode; clear it (or set it to `Dynamic`) to cut
+Keystone over.
+
 ### 4. Upgrade the operators and observe the cutover
 
 Upgrade the c5c3 and keystone operators to a build that includes the dynamic
