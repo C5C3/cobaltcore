@@ -77,6 +77,18 @@ export default defineConfig({
             ],
           },
           {
+            text: 'Glance',
+            link: '/reference/glance/',
+            collapsed: true,
+            items: [
+              { text: 'Overview', link: '/reference/glance/' },
+              { text: 'CRD', link: '/reference/glance/glance-crd' },
+              { text: 'Backend CRD', link: '/reference/glance/glance-backend-crd' },
+              { text: 'Controller Events', link: '/reference/glance/glance-events' },
+              { text: 'Reconciler Architecture', link: '/reference/glance/glance-reconciler' },
+            ],
+          },
+          {
             text: 'c5c3 (ControlPlane)',
             collapsed: true,
             items: [
