@@ -32,7 +32,7 @@ and are registered by `RegisterMetrics()` via their `Register()` function.
 All collectors attach to the controller-runtime registry
 (`sigs.k8s.io/controller-runtime/pkg/metrics`) and are served on the
 operator's metrics listener at `:8080/metrics` by default; see
-[How to enable the Keystone operator metrics endpoint](../guides/enable-keystone-operator-metrics.md)
+[How to enable the Keystone operator metrics endpoint](../guides/keystone/enable-keystone-operator-metrics.md)
 for cluster-side wiring.
 
 ## Metric summary
@@ -330,7 +330,7 @@ The ServiceMonitor selector targets the operator Service by
 (`ServiceMonitor`) must be installed in the cluster; the chart does
 **not** install them. For the end-to-end operator-side enablement flow,
 see
-[How to enable the Keystone operator metrics endpoint](../guides/enable-keystone-operator-metrics.md).
+[How to enable the Keystone operator metrics endpoint](../guides/keystone/enable-keystone-operator-metrics.md).
 
 ---
 
@@ -338,5 +338,5 @@ see
 
 - [Keystone Reconciler Architecture — Metrics Instrumentation](./keystone/keystone-reconciler.md#metrics-instrumentation) — the `instrumentSubReconciler` contract and the rule that every new sub-reconciler must be wrapped.
 - [Observability & Diagnostics](../guides/observability.md) — human-facing status, conditions, and events.
-- [How to enable the Keystone operator metrics endpoint](../guides/enable-keystone-operator-metrics.md) — cluster-side Prometheus/Grafana wiring.
+- [How to enable the Keystone operator metrics endpoint](../guides/keystone/enable-keystone-operator-metrics.md) — cluster-side Prometheus/Grafana wiring.
 - [`operators/keystone/dashboards/keystone-operator.json`](../../operators/keystone/dashboards/keystone-operator.json) — reference Grafana dashboard consuming the metrics above.

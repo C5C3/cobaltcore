@@ -19,12 +19,12 @@ Detaching the last OIDC backend restores the plain uWSGI-only pod — the
 sidecar costs nothing until federation is in use.
 
 For the full field reference, see the
-[KeystoneIdentityBackend CRD API Reference](../reference/keystone/identity-backend-crd.md).
+[KeystoneIdentityBackend CRD API Reference](../../reference/keystone/identity-backend-crd.md).
 
 ## Prerequisites
 
 ::: info Devstack
-This guide is written against the **[Quick Start (ControlPlane)](../quick-start-controlplane.md)** devstack. Stand it up first:
+This guide is written against the **[Quick Start (ControlPlane)](../../quick-start-controlplane.md)** devstack. Stand it up first:
 
 ```bash
 KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
@@ -42,7 +42,7 @@ On a ControlPlane deployment the `controlplane-keystone` Keystone CR is
 `spec.federation` block (proxy image and trusted dashboards) on every reconcile.
 Set the federation proxy image on the `ControlPlane` CR (Step 3), and the trusted
 dashboards flow from `spec.services.horizon` — see
-[End-to-End SSO](./end-to-end-sso.md). The `KeystoneIdentityBackend` CR you apply
+[End-to-End SSO](../end-to-end-sso.md). The `KeystoneIdentityBackend` CR you apply
 in Step 4 is yours to own; only the projected Keystone child's `spec.federation`
 is operator-managed.
 :::
@@ -305,7 +305,7 @@ the dashboard. The `origin` must be listed in keystone's
 `[federation] trusted_dashboard`. On a ControlPlane deployment the operator
 projects this onto the child's typed `spec.federation.trustedDashboards` from
 the dashboard's `spec.services.horizon` (`publicEndpoint` / `gateway`) — you do
-not set it by hand; see [End-to-End SSO](./end-to-end-sso.md). On a standalone
+not set it by hand; see [End-to-End SSO](../end-to-end-sso.md). On a standalone
 Keystone, set `spec.federation.trustedDashboards` directly (see the
 [Standalone Keystone](#standalone-keystone-without-a-controlplane) section).
 
@@ -370,7 +370,7 @@ Declarative groups live inside the domain and follow it.
 
 ## Standalone Keystone, without a ControlPlane
 
-On the [Quick Start](../quick-start.md) / [Quick Start (Extended)](../quick-start-extended.md)
+On the [Quick Start](../../quick-start.md) / [Quick Start (Extended)](../../quick-start-extended.md)
 devstacks a standalone Keystone CR named `keystone` runs with no ControlPlane
 projecting it, so there is no operator projecting the federation block onto it —
 you set it directly on the Keystone CR.
@@ -400,7 +400,7 @@ standalone CR by name — `keystoneRef.name: keystone` instead of
 **Trusted dashboards.** Without the ControlPlane there is nothing to project the
 WebSSO origin, so set `spec.federation.trustedDashboards` directly on the Keystone
 CR. It is a list, rendered as one `[federation] trusted_dashboard` line per entry.
-See the standalone section of [End-to-End SSO](./end-to-end-sso.md#standalone-keystone-without-a-controlplane)
+See the standalone section of [End-to-End SSO](../end-to-end-sso.md#standalone-keystone-without-a-controlplane)
 for the full shape and the `spec.extraConfig` conflict rule.
 
 ## Tested by

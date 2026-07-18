@@ -55,7 +55,7 @@ controller traffic or open every port.
 
 Operators must **explicitly opt in** by setting `networkPolicy.enabled=true`
 and populating `kubeApiServer.cidrs` / `kubeApiServer.ports`. The
-[how-to guide](../../guides/enable-keystone-operator-networkpolicy.md) walks
+[how-to guide](../../guides/keystone/enable-keystone-operator-networkpolicy.md) walks
 through the enablement steps.
 
 ## Rules rendered
@@ -187,7 +187,7 @@ helm unittest operators/keystone/helm/keystone-operator \
 
 ## Related
 
-- [How to enable the keystone-operator NetworkPolicy](../../guides/enable-keystone-operator-networkpolicy.md) —
+- [How to enable the keystone-operator NetworkPolicy](../../guides/keystone/enable-keystone-operator-networkpolicy.md) —
   step-by-step enablement, verification, and troubleshooting.
 - [Keystone Reconciler Architecture](./keystone-reconciler.md) —
   including the per-CR

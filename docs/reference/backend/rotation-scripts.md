@@ -42,7 +42,7 @@ The embedded `scripts/` directory also carries `admin_password_rotate.sh` and
 and bootstrap sub-reconcilers; they follow the same go:embed/ConfigMap delivery
 pattern but sit outside the Fernet/credential scope of this page. See the
 `reconcilePasswordRotation` section of the reconciler reference and the
-[scheduled rotation guide](../../guides/keystone-admin-password-scheduled-rotation.md).
+[scheduled rotation guide](../../guides/keystone/keystone-admin-password-scheduled-rotation.md).
 
 ## Script Contract
 

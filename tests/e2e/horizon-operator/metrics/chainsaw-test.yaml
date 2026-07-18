@@ -8,7 +8,7 @@
 # /metrics endpoint when monitoring.serviceMonitor.enabled is toggled.
 #
 # This mirrors tests/e2e/keystone/metrics/chainsaw-test.yaml so the
-# metrics guide's flow (docs/guides/enable-horizon-operator-metrics.md) is
+# metrics guide's flow (docs/guides/horizon/enable-horizon-operator-metrics.md) is
 # asserted on a real cluster rather than only by the chart's helm-unittest.
 #
 # DEPLOYMENT NOTE — why this test installs its own Helm release:

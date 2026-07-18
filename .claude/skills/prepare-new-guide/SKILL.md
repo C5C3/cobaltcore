@@ -35,14 +35,18 @@ opt-in flags compose onto the bring-up command.
 ```bash
 bash .claude/skills/prepare-new-guide/scripts/scaffold-guide.sh \
   <slug> --devstack quick-start-controlplane \
+  --service <service> \
   --title "<Title>" \
   --opt-in WITH_PROMETHEUS=true \
   --suite tests/e2e/keystone/<suite> \
-  > docs/guides/<slug>.md
+  > docs/guides/<service>/<slug>.md
 ```
 
 The script prints the skeleton to stdout and never writes to the tree —
-you perform the write. The skeleton carries the `::: info Devstack`
+you perform the write. Service-specific guides live in a per-service
+subdirectory (`docs/guides/keystone/`, `docs/guides/horizon/`,
+`docs/guides/glance/`, ...); cross-service and general operational guides
+sit flat under `docs/guides/`. The skeleton carries the `::: info Devstack`
 container with the devstack's verbatim bring-up command, the section
 structure (`## Steps`, `## Verification`, `## See also`), and the terminal
 `## Tested by` fence; the ControlPlane variant additionally carries the
@@ -53,8 +57,10 @@ skeleton fails the docs gate — that is intended, not a scaffold bug.
 
 ### 3. Register the guide in the sidebar
 
-Add a `{ text: '<Title>', link: '/guides/<slug>' }` entry to the `Guides`
-sidebar section in `docs/.vitepress/config.ts`.
+Add a `{ text: '<Title>', link: '/guides/<service>/<slug>' }` entry to the
+matching collapsed service group of the `Guides` sidebar section in
+`docs/.vitepress/config.ts` (general guides register flat as
+`/guides/<slug>` above the service groups).
 
 ### 4. Author the body with the devstack's real names
 
@@ -83,7 +89,7 @@ names the exhibit uses and why.
 bash .claude/skills/prepare-new-guide/scripts/validate-guide.sh [<guide.md>...]
 ```
 
-Without arguments it walks every `docs/guides/*.md`. It checks what the
+Without arguments it walks every `docs/guides/*.md` and `docs/guides/*/*.md`. It checks what the
 docs gate does not:
 
 - **V1** — banned placeholder names (`keystone-default`).
@@ -145,7 +151,7 @@ guide side and the convention side:
 - **Raw helm against the OCI chart is not itself a violation** — it is the
   canonical non-kind path for the operator charts. The violation is raw
   helm with no Flux-ownership framing; the model is the `::: tip On kind`
-  block in `docs/guides/enable-keystone-operator-metrics.md`, which frames
+  block in `docs/guides/keystone/enable-keystone-operator-metrics.md`, which frames
   the raw-helm sections as the non-kind path and routes kind users through
   the HelmRelease.
 - **Not every `controlplane-keystone-*` mutation is a projected-CR edit** —

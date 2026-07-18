@@ -17,8 +17,8 @@ in place.
 
 For the reconciler-side contract (when the bootstrap Job is recreated, the
 event reasons, the failure path), see
-[reconcileBootstrap](../reference/keystone/keystone-reconciler.md#reconcilebootstrap)
-in [Keystone Reconciler Architecture](../reference/keystone/keystone-reconciler.md).
+[reconcileBootstrap](../../reference/keystone/keystone-reconciler.md#reconcilebootstrap)
+in [Keystone Reconciler Architecture](../../reference/keystone/keystone-reconciler.md).
 
 > **Names.** The examples target the ControlPlane devstack's projected Keystone:
 > the CR is `controlplane-keystone` in the `openstack` namespace, and its admin
@@ -34,7 +34,7 @@ in [Keystone Reconciler Architecture](../reference/keystone/keystone-reconciler.
 ## Prerequisites
 
 ::: info Devstack
-This guide is written against the **[Quick Start (ControlPlane)](../quick-start-controlplane.md)** devstack. Stand it up first:
+This guide is written against the **[Quick Start (ControlPlane)](../../quick-start-controlplane.md)** devstack. Stand it up first:
 
 ```bash
 KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
@@ -45,7 +45,7 @@ projected `controlplane-keystone` Keystone is `Ready`. Every resource name in th
 examples below is one that devstack produces.
 :::
 
-- A bootstrapped Keystone CR (`BootstrapReady=True`) — see [Observability & Diagnostics](./observability.md).
+- A bootstrapped Keystone CR (`BootstrapReady=True`) — see [Observability & Diagnostics](../observability.md).
 - The admin password projected via ESO: the `controlplane-keystone-admin-credentials`
   ExternalSecret is present and `Ready`. Plain (non-ESO) admin Secrets never go `Ready`
   — rotate at the OpenBao source, not by editing the Secret.
@@ -319,8 +319,8 @@ only new authentications with the old password are rejected.
 
 ## Standalone Keystone, without a ControlPlane
 
-The [Quick Start](../quick-start.md) and
-[Quick Start (Extended)](../quick-start-extended.md) devstacks run a standalone
+The [Quick Start](../../quick-start.md) and
+[Quick Start (Extended)](../../quick-start-extended.md) devstacks run a standalone
 Keystone CR — no ControlPlane projects it. There the names are:
 
 | ControlPlane devstack | Standalone devstack |
@@ -354,8 +354,8 @@ so write to whatever path it reads.
 
 ## Related reference
 
-- [reconcileBootstrap](../reference/keystone/keystone-reconciler.md#reconcilebootstrap) — the authoritative contract for the bootstrap sub-reconciler and the admin-password-hash re-run gate.
-- [Labels and Annotations](../reference/keystone/keystone-reconciler.md#labels-and-annotations) — stable metadata keys, including `forge.c5c3.io/admin-password-hash` and `forge.c5c3.io/pod-spec-hash`.
+- [reconcileBootstrap](../../reference/keystone/keystone-reconciler.md#reconcilebootstrap) — the authoritative contract for the bootstrap sub-reconciler and the admin-password-hash re-run gate.
+- [Labels and Annotations](../../reference/keystone/keystone-reconciler.md#labels-and-annotations) — stable metadata keys, including `forge.c5c3.io/admin-password-hash` and `forge.c5c3.io/pod-spec-hash`.
 - See also [Schedule Keystone Admin Password Rotation](keystone-admin-password-scheduled-rotation.md) — the Model B scheduled flow, where a CronJob mints the password instead of an operator writing OpenBao by hand.
 - See also [Rotate Keystone Fernet and Credential Keys](keystone-key-rotation.md) — the key-rotation counterpart to this admin-password rotation.
 

@@ -69,7 +69,7 @@ openstack   keystone   True    http://keystone.openstack.svc.cluster.local:5000/
 | `FernetKeysReady` | Fernet key Secret and rotation CronJob exist |
 | `CredentialKeysReady` | Credential key Secret and rotation CronJob exist (always managed; `spec.credentialKeys` only tunes the schedule and max active keys) |
 | `DatabaseReady` | `db_sync` Job completed successfully (and schema check passed) |
-| `DatabaseTLSReady` | Database TLS client certificate issued, or `NotRequired` — see [Enable Keystone Database TLS](./enable-keystone-database-tls.md) |
+| `DatabaseTLSReady` | Database TLS client certificate issued, or `NotRequired` — see [Enable Keystone Database TLS](./keystone/enable-keystone-database-tls.md) |
 | `PolicyValidReady` | `spec.policyOverrides` validated against `oslo.policy` |
 | `DeploymentReady` | API Deployment has available replicas |
 | `KeystoneAPIReady` | Keystone API is responding to `/v3` health probes |
@@ -78,7 +78,7 @@ openstack   keystone   True    http://keystone.openstack.svc.cluster.local:5000/
 | `HTTPRouteReady` | Gateway API HTTPRoute reconciled, or not required when `spec.gateway` is unset |
 | `BootstrapReady` | Bootstrap Job completed (admin user, region, endpoints) |
 | `TrustFlushReady` | Trust-flush CronJob created — defaults to hourly |
-| `PasswordRotationReady` | Scheduled admin-password rotation reconciled, or `RotationDisabled` when `spec.passwordRotation` is unset — see [Schedule Keystone Admin Password Rotation](./keystone-admin-password-scheduled-rotation.md) |
+| `PasswordRotationReady` | Scheduled admin-password rotation reconciled, or `RotationDisabled` when `spec.passwordRotation` is unset — see [Schedule Keystone Admin Password Rotation](./keystone/keystone-admin-password-scheduled-rotation.md) |
 | `Ready` | All of the above are `True` |
 
 Read them as a tree:
@@ -226,7 +226,7 @@ kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --ta
 - [Keystone Reconciler Architecture](../reference/keystone/keystone-reconciler.md) — sub-reconciler contracts and watches
 - [Keystone Operator Prometheus Metrics](../reference/keystone-operator-metrics.md) — metric catalogue, labels, buckets, and sample PromQL
 - [Reconcile duration SLOs](../reference/keystone-operator-metrics.md#reconcile-duration-slos) — steady-state and rotation-wait p95 targets for the reconcile loop
-- [Enable the Keystone operator metrics endpoint](./enable-keystone-operator-metrics.md) — ServiceMonitor enablement and Grafana import walk-through
+- [Enable the Keystone operator metrics endpoint](./keystone/enable-keystone-operator-metrics.md) — ServiceMonitor enablement and Grafana import walk-through
 - [Keystone Upgrade Flow](../reference/keystone/keystone-upgrade-flow.md) — state machine that drives upgrade conditions
 - [Day 2 Operations](./day-2-operations.md) — putting this observability into practice during scale, upgrade, rotation
 

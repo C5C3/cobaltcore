@@ -115,7 +115,7 @@ for the privilege-escalation path this closes. The default stays `false` because
 | `monitoring.serviceMonitor.enabled` | `boolean` | requires the `monitoring.coreos.com` CRDs in-cluster when enabled | `false` |
 | `monitoring.serviceMonitor.interval` | `string` | pattern: Go duration (`15s`, `30s`, `1m`) or `0` for the global default | `30s` |
 
-See [How to enable the Keystone operator metrics endpoint](../../guides/enable-keystone-operator-metrics.md).
+See [How to enable the Keystone operator metrics endpoint](../../guides/keystone/enable-keystone-operator-metrics.md).
 
 ### networkPolicy
 

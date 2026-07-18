@@ -16,21 +16,21 @@ every Keystone workload that opens a database connection, and appends the
 `ssl_*` parameters to the database DSN so the live transport is TLS-protected.
 
 For the authoritative field reference, see
-[DatabaseTLSSpec](../reference/keystone/keystone-crd.md#databasetlsspec) in the
+[DatabaseTLSSpec](../../reference/keystone/keystone-crd.md#databasetlsspec) in the
 Keystone CRD reference and
-[InfrastructureSpec](../reference/c5c3/controlplane-crd.md#infrastructurespec) in
+[InfrastructureSpec](../../reference/c5c3/controlplane-crd.md#infrastructurespec) in
 the ControlPlane CRD reference. For the underlying MariaDB and CA issuer
 manifests, see
-[OpenStack DB CA Issuer](../reference/infrastructure/infrastructure-manifests.md#openstack-db-ca-issuer)
+[OpenStack DB CA Issuer](../../reference/infrastructure/infrastructure-manifests.md#openstack-db-ca-issuer)
 and
-[MariaDB Galera Cluster](../reference/infrastructure/infrastructure-manifests.md#mariadb-galera-cluster).
+[MariaDB Galera Cluster](../../reference/infrastructure/infrastructure-manifests.md#mariadb-galera-cluster).
 
 ---
 
 ## Prerequisites
 
 ::: info Devstack
-This guide is written against the **[Quick Start (ControlPlane)](../quick-start-controlplane.md)** devstack. Stand it up first:
+This guide is written against the **[Quick Start (ControlPlane)](../../quick-start-controlplane.md)** devstack. Stand it up first:
 
 ```bash
 KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
@@ -302,7 +302,7 @@ above).
 
 ## Standalone Keystone, without a ControlPlane
 
-On the [Quick Start](../quick-start.md) / [Quick Start (Extended)](../quick-start-extended.md)
+On the [Quick Start](../../quick-start.md) / [Quick Start (Extended)](../../quick-start-extended.md)
 devstacks a standalone Keystone CR named `keystone` runs with no ControlPlane
 projecting it, and the shared `openstack-db` MariaDB ships with
 `spec.tls.enabled=true, required=true` — so this flow is fully runnable
@@ -346,11 +346,11 @@ mechanics through this standalone flow.
 
 ## See also
 
-- [Keystone CRD — DatabaseTLSSpec](../reference/keystone/keystone-crd.md#databasetlsspec) — authoritative field reference.
-- [Keystone CRD — Mode → connect-args mapping](../reference/keystone/keystone-crd.md#mode--connect-args-mapping) — DSN parameters per mode.
-- [ControlPlane CRD — InfrastructureSpec](../reference/c5c3/controlplane-crd.md#infrastructurespec) — the `spec.infrastructure.database` block the reconciler projects.
-- [Infrastructure Manifests — OpenStack DB CA Issuer](../reference/infrastructure/infrastructure-manifests.md#openstack-db-ca-issuer) — CA keypair and ClusterIssuer.
-- [Infrastructure Manifests — MariaDB Galera Cluster](../reference/infrastructure/infrastructure-manifests.md#mariadb-galera-cluster) — server-side TLS configuration.
+- [Keystone CRD — DatabaseTLSSpec](../../reference/keystone/keystone-crd.md#databasetlsspec) — authoritative field reference.
+- [Keystone CRD — Mode → connect-args mapping](../../reference/keystone/keystone-crd.md#mode--connect-args-mapping) — DSN parameters per mode.
+- [ControlPlane CRD — InfrastructureSpec](../../reference/c5c3/controlplane-crd.md#infrastructurespec) — the `spec.infrastructure.database` block the reconciler projects.
+- [Infrastructure Manifests — OpenStack DB CA Issuer](../../reference/infrastructure/infrastructure-manifests.md#openstack-db-ca-issuer) — CA keypair and ClusterIssuer.
+- [Infrastructure Manifests — MariaDB Galera Cluster](../../reference/infrastructure/infrastructure-manifests.md#mariadb-galera-cluster) — server-side TLS configuration.
 - [`tests/e2e/keystone/database-tls/`](https://github.com/c5c3/forge/tree/main/tests/e2e/keystone/database-tls) — chainsaw E2E suite.
 
 ## Tested by
@@ -365,5 +365,5 @@ chainsaw test --test-dir tests/e2e/keystone/database-tls
 ```
 
 The suite is also listed in the
-[E2E inventory](../reference/keystone/keystone-crd.md#chainsaw-e2e-tests) of the
+[E2E inventory](../../reference/keystone/keystone-crd.md#chainsaw-e2e-tests) of the
 Keystone CRD reference.

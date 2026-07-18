@@ -30,7 +30,7 @@ Scheduled admin-password rotation (Model B, `spec.passwordRotation`) is
 **standalone-only**: the `ControlPlane` CRD does not expose it, and the
 `controlplane-keystone` Keystone child is operator-projected. Setting
 `spec.passwordRotation` on that child is **unsupported** — the
-[guide conventions](../contributing/guide-conventions.md) forbid editing
+[guide conventions](../../contributing/guide-conventions.md) forbid editing
 operator-projected children, and on a ControlPlane the c5c3-operator already owns
 the admin credential's lifecycle (it mints and rotates the K-ORC admin
 application credential and projects the admin password from OpenBao into
@@ -58,7 +58,7 @@ The rest of this guide targets a **standalone** Keystone CR you own.
 ## Prerequisites
 
 ::: info Devstack
-This guide is written against the **[Quick Start](../quick-start.md)** devstack. Stand it up first:
+This guide is written against the **[Quick Start](../../quick-start.md)** devstack. Stand it up first:
 
 ```bash
 KIND_HOST_PORT=8443 make deploy-infra
@@ -238,7 +238,7 @@ Two safety properties are worth calling out:
 
 For the full sub-reconciler contract (validation rules, event reasons, the
 clobber-safe gate, RBAC shape) see
-[`reconcilePasswordRotation`](../reference/keystone/keystone-reconciler.md#reconcilepasswordrotation).
+[`reconcilePasswordRotation`](../../reference/keystone/keystone-reconciler.md#reconcilepasswordrotation).
 
 ---
 
@@ -419,8 +419,8 @@ Secrets, the RBAC trio, the PushSecret, and the script ConfigMap — and reports
 
 ## Related reference
 
-- [`reconcilePasswordRotation`](../reference/keystone/keystone-reconciler.md#reconcilepasswordrotation) — the authoritative contract for the Model B sub-reconciler: validation rules, event reasons, the clobber-safe PushSecret gate, and the split RBAC.
-- [`reconcileBootstrap`](../reference/keystone/keystone-reconciler.md#reconcilebootstrap) — the bootstrap sub-reconciler and the `admin-password-hash` re-run gate that applies the rotated credential.
+- [`reconcilePasswordRotation`](../../reference/keystone/keystone-reconciler.md#reconcilepasswordrotation) — the authoritative contract for the Model B sub-reconciler: validation rules, event reasons, the clobber-safe PushSecret gate, and the split RBAC.
+- [`reconcileBootstrap`](../../reference/keystone/keystone-reconciler.md#reconcilebootstrap) — the bootstrap sub-reconciler and the `admin-password-hash` re-run gate that applies the rotated credential.
 - [Rotate the Keystone Admin Password](keystone-admin-password-rotation.md) — the manual rotation guide whose verification steps (3–7) this guide cross-links, and the supported admin-password rotation path on a ControlPlane deployment.
 - [Rotate Keystone Fernet and Credential Keys](keystone-key-rotation.md) — the key-rotation counterpart, which uses an analogous staging→production split.
 

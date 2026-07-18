@@ -1567,7 +1567,7 @@ while still managing the schema via `database.EnsureDatabase()`. A
 pre-existing operator-provisioned `User`/`Grant` from a prior Static deployment is
 intentionally **not** deleted, so its grant overlaps the engine-issued logins for
 a downtime-free migration; retiring the static user is a documented migration step
-(see [Migrate Keystone DB to Dynamic Credentials](/guides/migrate-keystone-db-to-dynamic-credentials)).
+(see [Migrate Keystone DB to Dynamic Credentials](/guides/keystone/migrate-keystone-db-to-dynamic-credentials)).
 
 ---
 

@@ -7,7 +7,7 @@ quadrant: operator
 
 > **Status: phase 1 is implemented.** The service-less, External-mode
 > ControlPlane described below now exists. Use the
-> [Adopt an External Keystone](../guides/adopt-external-keystone.md) guide to run
+> [Adopt an External Keystone](../guides/keystone/adopt-external-keystone.md) guide to run
 > it, and the [ControlPlane CRD](../reference/c5c3/controlplane-crd.md#externalkeystonespec)
 > and [reconciler](../reference/c5c3/controlplane-reconciler.md) references for
 > the authoritative behavior. **Phases 2–4 remain idea sketches** — nothing beyond
@@ -128,7 +128,7 @@ replacement with migration later.
 
 **Implemented.** This section summarizes what shipped and how each of the
 sketch's open questions was resolved. For the authoritative material see the
-[Adopt an External Keystone](../guides/adopt-external-keystone.md) guide, the
+[Adopt an External Keystone](../guides/keystone/adopt-external-keystone.md) guide, the
 [ControlPlane CRD reference](../reference/c5c3/controlplane-crd.md#externalkeystonespec),
 and the [reconciler reference](../reference/c5c3/controlplane-reconciler.md).
 
@@ -275,7 +275,7 @@ here because phases 2–4 inherit them.
   the old credential is revoked at the Keystone level the moment the K-ORC
   finalizer runs. *Addressed:* the consumer contract — always read the credential
   from the materialized Secret or its OpenBao path, never from a copy — is stated
-  in the [adoption guide](../guides/adopt-external-keystone.md).
+  in the [adoption guide](../guides/keystone/adopt-external-keystone.md).
 - **Spec/reality drift.** A service-less ControlPlane describes an installation it
   does not control; the external Keystone can change under it (endpoints edited by
   hand, admin password rotated without updating the Secret). *Addressed:* drift is

@@ -8,7 +8,8 @@
 #   (a) a "## Prerequisites" heading exists;
 #   (b) its section contains a "::: info Devstack" container;
 #   (c) that container names exactly one Getting-Started tutorial
-#       ("](../quick-start...") and holds at least one ```bash fence with the
+#       ("](../quick-start..." / "](../../quick-start..." for guides in a
+#       service subdirectory) and holds at least one ```bash fence with the
 #       devstack bring-up command;
 #   (d) a "## Tested by" heading exists;
 #   (e) the "## Tested by" section names at least one suite via
@@ -94,7 +95,7 @@ check_guide() {
   # occurrences (grep -o, one match per line) rather than matching lines, so a
   # second link on the same line cannot slip past.
   local link_count
-  link_count="$(printf '%s\n' "$devstack" | grep -oE '\]\(\.\./quick-start' | wc -l | tr -d '[:space:]')"
+  link_count="$(printf '%s\n' "$devstack" | grep -oE '\]\((\.\./)+quick-start' | wc -l | tr -d '[:space:]')"
   assert_eq "$name devstack names exactly one Getting-Started tutorial" \
     "1" "$link_count"
 
@@ -170,7 +171,7 @@ if [[ ! -d "$GUIDES_DIR" ]]; then
 fi
 
 shopt -s nullglob
-guide_files=("$GUIDES_DIR"/*.md)
+guide_files=("$GUIDES_DIR"/*.md "$GUIDES_DIR"/*/*.md)
 shopt -u nullglob
 
 if [[ "${#guide_files[@]}" -eq 0 ]]; then

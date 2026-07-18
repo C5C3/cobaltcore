@@ -22,7 +22,7 @@ the `horizon_operator` prefix:
 
 For the controller-side contract (which sub-reconciler drives which
 condition), see
-[Horizon Reconciler Architecture](../reference/horizon/horizon-reconciler.md).
+[Horizon Reconciler Architecture](../../reference/horizon/horizon-reconciler.md).
 
 ::: tip On kind
 If you are running the kind ControlPlane Quick Start, the prometheus-operator
@@ -42,7 +42,7 @@ is the path for a devstack that is **already running** without
 ## Prerequisites
 
 ::: info Devstack
-This guide is written against the **[Quick Start (ControlPlane)](../quick-start-controlplane.md)** devstack. Stand it up first:
+This guide is written against the **[Quick Start (ControlPlane)](../../quick-start-controlplane.md)** devstack. Stand it up first:
 
 ```bash
 KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true WITH_PROMETHEUS=true make deploy-infra

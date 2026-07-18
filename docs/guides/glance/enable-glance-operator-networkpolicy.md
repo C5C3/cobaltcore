@@ -14,14 +14,14 @@ to the minimum required for correct reconciliation.
 > **Scope.** This guide covers the NetworkPolicy that protects the
 > **operator pod itself**. For the per-CR NetworkPolicy that protects the
 > Glance API pods (`spec.networkPolicy` on a Glance CR), see the
-> [Glance CRD API Reference](../reference/glance/glance-crd.md).
+> [Glance CRD API Reference](../../reference/glance/glance-crd.md).
 
 ---
 
 ## Prerequisites
 
 ::: info Devstack
-This guide is written against the **[Quick Start (ControlPlane)](../quick-start-controlplane.md)** devstack. Stand it up first:
+This guide is written against the **[Quick Start (ControlPlane)](../../quick-start-controlplane.md)** devstack. Stand it up first:
 
 ```bash
 KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra

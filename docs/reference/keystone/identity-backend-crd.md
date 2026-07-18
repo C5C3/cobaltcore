@@ -27,9 +27,9 @@ Definition. One CR attaches to a [Keystone](./keystone-crd.md) CR via
   SAML backend per Keystone (webhook-enforced).
 
 For the task-oriented walkthroughs, see the
-[LDAP Domain Backend guide](../../guides/ldap-domain-backend.md), the
-[OIDC Federation guide](../../guides/oidc-federation.md), and the
-[SAML Federation guide](../../guides/saml-federation.md). For the
+[LDAP Domain Backend guide](../../guides/keystone/ldap-domain-backend.md), the
+[OIDC Federation guide](../../guides/keystone/oidc-federation.md), and the
+[SAML Federation guide](../../guides/keystone/saml-federation.md). For the
 controller topology (dedicated backend controller + keystone-side projection),
 see [Keystone Reconciler Architecture](./keystone-reconciler.md).
 

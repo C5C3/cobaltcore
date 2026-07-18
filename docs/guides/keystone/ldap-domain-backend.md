@@ -14,12 +14,12 @@ an LDAP user can authenticate. The worked example uses the same
 kind cluster.
 
 For the full field reference, see the
-[KeystoneIdentityBackend CRD API Reference](../reference/keystone/identity-backend-crd.md).
+[KeystoneIdentityBackend CRD API Reference](../../reference/keystone/identity-backend-crd.md).
 
 ## Prerequisites
 
 ::: info Devstack
-This guide is written against the **[Quick Start](../quick-start.md)** devstack. Stand it up first:
+This guide is written against the **[Quick Start](../../quick-start.md)** devstack. Stand it up first:
 
 ```bash
 KIND_HOST_PORT=8443 make deploy-infra

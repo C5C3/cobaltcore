@@ -634,7 +634,7 @@ ControlPlanes draw short-lived, engine-issued credentials from
 `database/mariadb/creds/keystone-{ns}` instead. The static path derivation is
 retained only for the `credentialsMode: Static` opt-out (brownfield migration),
 whose KV path must then be seeded manually — see
-`docs/guides/migrate-keystone-db-to-dynamic-credentials.md`.
+`docs/guides/keystone/migrate-keystone-db-to-dynamic-credentials.md`.
 
 ### OpenBao paths per ControlPlane mode
 

@@ -22,13 +22,13 @@ serving tokens throughout, and deleting the ControlPlane leaves it untouched.
 
 This is the first step of a staged adoption. Taking over the database and the
 Keystone deployment itself are later, separate phases — see
-[Brownfield Keystone Adoption](../future/brownfield-keystone-adoption.md).
+[Brownfield Keystone Adoption](../../future/brownfield-keystone-adoption.md).
 
 ## Prerequisites
 
 ::: info Devstack
 This guide is written against the
-[Quick Start (ControlPlane)](../quick-start-controlplane.md).
+[Quick Start (ControlPlane)](../../quick-start-controlplane.md).
 
 ```bash
 KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
@@ -208,7 +208,7 @@ Imports resolve **once**. If an imported object is later replaced in Keystone, t
 surfaces as drift rather than the operator silently re-pointing at the new one.
 
 The full reason vocabulary for every condition is in the
-[ControlPlane CRD reference](../reference/c5c3/controlplane-crd.md#status-conditions).
+[ControlPlane CRD reference](../../reference/c5c3/controlplane-crd.md#status-conditions).
 
 ### 4. Verify
 
@@ -379,7 +379,7 @@ exist, and both are created on first push — there is no per-ControlPlane OpenB
 preparation to do, because the operator provisions the per-tenant store itself.
 
 The full per-mode path catalog is in
-[OpenBao paths per ControlPlane mode](../reference/infrastructure/openbao-bootstrap.md#openbao-paths-per-controlplane-mode).
+[OpenBao paths per ControlPlane mode](../../reference/infrastructure/openbao-bootstrap.md#openbao-paths-per-controlplane-mode).
 
 ### 8. Deletion — zero blast radius
 
@@ -402,13 +402,13 @@ revoked against a still-reachable Keystone before the CR leaves etcd.
 
 ## See also
 
-- [ControlPlane CRD reference](../reference/c5c3/controlplane-crd.md#externalkeystonespec) —
-  `ExternalKeystoneSpec` and the full [status-condition catalog](../reference/c5c3/controlplane-crd.md#status-conditions).
-- [ControlPlane reconciler reference](../reference/c5c3/controlplane-reconciler.md) —
+- [ControlPlane CRD reference](../../reference/c5c3/controlplane-crd.md#externalkeystonespec) —
+  `ExternalKeystoneSpec` and the full [status-condition catalog](../../reference/c5c3/controlplane-crd.md#status-conditions).
+- [ControlPlane reconciler reference](../../reference/c5c3/controlplane-reconciler.md) —
   what each sub-reconciler does in External mode.
-- [OpenBao bootstrap reference](../reference/infrastructure/openbao-bootstrap.md#openbao-paths-per-controlplane-mode) —
+- [OpenBao bootstrap reference](../../reference/infrastructure/openbao-bootstrap.md#openbao-paths-per-controlplane-mode) —
   which paths exist per mode.
-- [Brownfield Keystone Adoption](../future/brownfield-keystone-adoption.md) —
+- [Brownfield Keystone Adoption](../../future/brownfield-keystone-adoption.md) —
   the later phases (infrastructure attach, service takeover).
 
 ## Tested by

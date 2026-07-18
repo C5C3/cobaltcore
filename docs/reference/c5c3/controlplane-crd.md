@@ -576,7 +576,7 @@ brownfield shared one does.
 > therefore reaches `Ready` only once you have seeded
 > `kv-v2/openstack/keystone/{namespace}/{name}/db` (`username`, `password`)
 > yourself; see
-> [Migrate the Keystone DB to dynamic credentials](../../guides/migrate-keystone-db-to-dynamic-credentials.md)
+> [Migrate the Keystone DB to dynamic credentials](../../guides/keystone/migrate-keystone-db-to-dynamic-credentials.md)
 > for the exact `bao kv put`. Until then `DBCredentialsReady` stays `False` with
 > reason `WaitingForDBCredentialSecret` and a message naming the path.
 

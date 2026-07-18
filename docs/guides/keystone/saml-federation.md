@@ -22,12 +22,12 @@ configuration into the sidecar alongside `mod_auth_openidc`; the two
 coexist, so a Keystone can serve OIDC and SAML backends at once.
 
 For the full field reference, see the
-[KeystoneIdentityBackend CRD API Reference](../reference/keystone/identity-backend-crd.md).
+[KeystoneIdentityBackend CRD API Reference](../../reference/keystone/identity-backend-crd.md).
 
 ## Prerequisites
 
 ::: info Devstack
-This guide is written against the **[Quick Start](../quick-start.md)** devstack. Stand it up first:
+This guide is written against the **[Quick Start](../../quick-start.md)** devstack. Stand it up first:
 
 ```bash
 KIND_HOST_PORT=8443 make deploy-infra
