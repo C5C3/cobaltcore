@@ -72,6 +72,71 @@ STUB
   chmod +x "$dir/kubectl"
 }
 
+# make_kubectl_full <dir> <glance_ns> <glance_dedicated_db>
+# A kubectl stub that answers EVERY lookup setup-database-tenant.sh makes so both
+# the keystone AND the glance legs run to completion — the bao writes reach
+# OpenBao via `kubectl exec ... openbao-0`, which the stub swallows. The
+# ControlPlane declares Glance (spec.services.glance non-empty); its service
+# namespace resolves to <glance_ns> (empty defaults to the ControlPlane
+# namespace) and it declares a dedicated glance database only when
+# <glance_dedicated_db> is non-empty. Keystone stays namespace-unassigned, so its
+# role is keyed on the ControlPlane namespace.
+make_kubectl_full() {
+  local dir="$1" glance_ns="$2" glance_dedicated_db="$3"
+  mkdir -p "$dir"
+  cat >"$dir/kubectl" <<STUB
+#!/bin/bash
+# The bao writes reach OpenBao via 'kubectl exec ... openbao-0'; swallow them.
+if [[ "\$1" == "exec" ]]; then
+  exit 0
+fi
+# Existence check: the ControlPlane is there.
+if [[ "\$*" == *"get controlplane"* && "\$*" != *"jsonpath"* ]]; then
+  exit 0
+fi
+if [[ "\$*" == *"jsonpath={.spec.services.keystone.namespace.name}"* ]]; then
+  exit 0
+fi
+if [[ "\$*" == *"jsonpath={.spec.services.glance.dedicatedBackingServices.database}"* ]]; then
+  printf '%s' "${glance_dedicated_db}"
+  exit 0
+fi
+if [[ "\$*" == *"jsonpath={.spec.services.glance.namespace.name}"* ]]; then
+  printf '%s' "${glance_ns}"
+  exit 0
+fi
+if [[ "\$*" == *"jsonpath={.spec.services.glance}"* ]]; then
+  # A non-empty object marks Glance as declared; its exact shape is irrelevant.
+  printf 'map[namespace:map[name:%s]]' "${glance_ns}"
+  exit 0
+fi
+if [[ "\$*" == *"jsonpath={.spec.infrastructure.database.clusterRef.name}"* ]]; then
+  printf 'openstack-db'
+  exit 0
+fi
+if [[ "\$*" == *"jsonpath={.spec.infrastructure.database.database}"* ]]; then
+  printf 'keystone'
+  exit 0
+fi
+# MariaDB root-secret resolution (per service), then the root Secret payload.
+if [[ "\$*" == *"get mariadb"* && "\$*" == *"rootPasswordSecretKeyRef.name"* ]]; then
+  printf 'openstack-db-root'
+  exit 0
+fi
+if [[ "\$*" == *"get mariadb"* && "\$*" == *"rootPasswordSecretKeyRef.key"* ]]; then
+  printf 'password'
+  exit 0
+fi
+if [[ "\$*" == *"get secret"* ]]; then
+  # base64("root") — decoded by the script before the (swallowed) bao write.
+  printf 'cm9vdA=='
+  exit 0
+fi
+exit 1
+STUB
+  chmod +x "$dir/kubectl"
+}
+
 # run_db_tenant <stub_dir> <namespace> <controlplane>
 run_db_tenant() {
   local stub_dir="$1" ns="$2" cp="$3"
@@ -132,6 +197,78 @@ test_db_tenant_defaults_to_the_controlplane_namespace() {
 }
 
 # ---------------------------------------------------------------------------
+# Test: the glance engine role follows the Glance service namespace
+# ---------------------------------------------------------------------------
+test_db_tenant_provisions_glance_on_the_glance_namespace() {
+  echo "Test: setup-database-tenant.sh keys the glance engine role on the Glance namespace"
+
+  local tmp
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+
+  # Glance declared, placed in its own "images" namespace, no dedicated database.
+  make_kubectl_full "$tmp" "images" ""
+
+  local output
+  output="$(run_db_tenant "$tmp" "openstack" "cp")"
+
+  assert_contains "the glance engine role is keyed on the Glance service namespace" \
+    "$output" "database/mariadb/roles/glance-images"
+  assert_contains "the glance MariaDB is read from the Glance service namespace" \
+    "$output" "openstack-db.images.svc:3306"
+  assert_contains "keystone is still provisioned on the ControlPlane namespace" \
+    "$output" "database/mariadb/roles/keystone-openstack"
+  assert_not_contains "the glance role must not be keyed on the ControlPlane namespace" \
+    "$output" "roles/glance-openstack"
+}
+
+# ---------------------------------------------------------------------------
+# Test: an unplaced Glance defaults its engine role to the ControlPlane namespace
+# ---------------------------------------------------------------------------
+test_db_tenant_defaults_glance_to_the_controlplane_namespace() {
+  echo "Test: setup-database-tenant.sh defaults the glance role to the ControlPlane namespace"
+
+  local tmp
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+
+  # Glance declared but not placed in a namespace of its own: role follows the CP.
+  make_kubectl_full "$tmp" "" ""
+
+  local output
+  output="$(run_db_tenant "$tmp" "openstack" "cp")"
+
+  assert_contains "an unplaced Glance keeps the ControlPlane-namespace role" \
+    "$output" "database/mariadb/roles/glance-openstack"
+  assert_contains "the glance MariaDB is read from the ControlPlane namespace" \
+    "$output" "openstack-db.openstack.svc:3306"
+}
+
+# ---------------------------------------------------------------------------
+# Test: a dedicated glance database skips the glance engine leg
+# ---------------------------------------------------------------------------
+test_db_tenant_skips_glance_with_a_dedicated_database() {
+  echo "Test: setup-database-tenant.sh skips the glance leg for a dedicated glance database"
+
+  local tmp
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+
+  # Glance declared WITH a dedicated database — Static-only, so no engine role.
+  make_kubectl_full "$tmp" "images" "glance-db"
+
+  local output
+  output="$(run_db_tenant "$tmp" "openstack" "cp")"
+
+  assert_contains "the dedicated-database glance leg is skipped, loudly" \
+    "$output" "skipping the glance database-engine tenant"
+  assert_not_contains "no glance engine role is written for a dedicated database" \
+    "$output" "database/mariadb/roles/glance-"
+  assert_contains "keystone is still provisioned" \
+    "$output" "database/mariadb/roles/keystone-openstack"
+}
+
+# ---------------------------------------------------------------------------
 # Test: the seeder parses the optional Keystone-namespace segment
 # ---------------------------------------------------------------------------
 # write-bootstrap-secrets.sh reaches OpenBao almost immediately, so it is driven
@@ -181,6 +318,9 @@ STUB
 # ---------------------------------------------------------------------------
 test_db_tenant_uses_the_service_namespace
 test_db_tenant_defaults_to_the_controlplane_namespace
+test_db_tenant_provisions_glance_on_the_glance_namespace
+test_db_tenant_defaults_glance_to_the_controlplane_namespace
+test_db_tenant_skips_glance_with_a_dedicated_database
 test_seeder_rejects_a_malformed_identity
 
 echo ""

@@ -964,6 +964,9 @@ openbao_bootstrap() {
 # Ready. This is the stage-(b) tenant-onboarding step (#439): managed-mode
 # Keystone draws engine-issued credentials from database/mariadb/creds/keystone-
 # <ns>-<cp>, which only exist after setup-database-tenant.sh configures the role.
+# setup-database-tenant.sh now ALSO provisions the glance engine connection+role
+# (database/mariadb/creds/glance-<ns>) when the ControlPlane declares Glance on
+# the shared managed database, so this single call onboards both services.
 #
 # Arguments:
 #   $1 — ControlPlane namespace
@@ -977,23 +980,65 @@ openbao_onboard_database_tenant() {
 
   log "--- Onboarding OpenBao database-engine tenant '${cp_ns}/${cp_name}' ---"
 
+  # Wait on the MariaDB in EVERY namespace setup-database-tenant.sh will read a
+  # root credential from, not just the ControlPlane's. Each service leg of that
+  # script resolves its own service namespace and hard-exits when that namespace's
+  # MariaDB root Secret is missing, so a ControlPlane that places Keystone or
+  # Glance in a namespace of its own provisions a SECOND openstack-db there on an
+  # independent timeline. Waiting only on the ControlPlane's namespace lets the
+  # Keystone leg succeed and the Glance leg exit 1 — a partially applied
+  # onboarding, with the operator already primed to flip Glance to Dynamic.
+  #
+  # The namespaces are resolved from the live CR with the same defaults the
+  # operator projects (an unset namespace block means the ControlPlane's own) and
+  # under the same conditions the script applies, so the wait set matches the read
+  # set exactly. The Glance leg in particular is SKIPPED for a dedicated glance
+  # database (Static-only, no engine role), which also has its own clusterRef name
+  # — waiting for the shared one in that namespace would block until timeout.
+  #
+  # Seeded with the ControlPlane's own namespace (the default every unset service
+  # namespace resolves to), which also keeps the dedup test below from expanding
+  # an empty array under `set -u`.
+  local svc_ns_list=("${cp_ns}")
+  local ns candidates=()
+
+  candidates+=("$(kubectl get controlplane "${cp_name}" -n "${cp_ns}" \
+    -o 'jsonpath={.spec.services.keystone.namespace.name}' 2>/dev/null || true)")
+
+  if [[ -n "$(kubectl get controlplane "${cp_name}" -n "${cp_ns}" \
+      -o 'jsonpath={.spec.services.glance}' 2>/dev/null || true)" &&
+    -z "$(kubectl get controlplane "${cp_name}" -n "${cp_ns}" \
+      -o 'jsonpath={.spec.services.glance.dedicatedBackingServices.database}' 2>/dev/null || true)" ]]; then
+    candidates+=("$(kubectl get controlplane "${cp_name}" -n "${cp_ns}" \
+      -o 'jsonpath={.spec.services.glance.namespace.name}' 2>/dev/null || true)")
+  fi
+
+  for ns in "${candidates[@]}"; do
+    [[ -z "${ns}" ]] && continue
+    if [[ ! " ${svc_ns_list[*]} " == *" ${ns} "* ]]; then
+      svc_ns_list+=("${ns}")
+    fi
+  done
+
   # The ControlPlane projects the MariaDB after it reconciles; wait for the CR to
   # appear before waiting on its Ready condition (kubectl wait errors on a
   # not-yet-existent resource).
-  log "Waiting for MariaDB '${mariadb_name}' to be projected in namespace '${cp_ns}'..."
   local i
-  for i in $(seq 1 30); do
-    if kubectl get "mariadb/${mariadb_name}" -n "${cp_ns}" >/dev/null 2>&1; then
-      break
+  for ns in "${svc_ns_list[@]}"; do
+    log "Waiting for MariaDB '${mariadb_name}' to be projected in namespace '${ns}'..."
+    for i in $(seq 1 30); do
+      if kubectl get "mariadb/${mariadb_name}" -n "${ns}" >/dev/null 2>&1; then
+        break
+      fi
+      sleep 10
+    done
+    log "Waiting for MariaDB '${mariadb_name}' in namespace '${ns}' to become Ready..."
+    if ! kubectl wait "mariadb/${mariadb_name}" -n "${ns}" \
+      --for=condition=Ready --timeout="${POD_TIMEOUT}s"; then
+      log "ERROR: MariaDB '${mariadb_name}' in namespace '${ns}' did not become Ready; cannot onboard the database-engine tenant."
+      exit 1
     fi
-    sleep 10
   done
-  log "Waiting for MariaDB '${mariadb_name}' to become Ready..."
-  if ! kubectl wait "mariadb/${mariadb_name}" -n "${cp_ns}" \
-    --for=condition=Ready --timeout="${POD_TIMEOUT}s"; then
-    log "ERROR: MariaDB '${mariadb_name}' in namespace '${cp_ns}' did not become Ready; cannot onboard the database-engine tenant."
-    exit 1
-  fi
 
   export BAO_TOKEN
   trap 'unset BAO_TOKEN' EXIT
@@ -1984,9 +2029,10 @@ main() {
       log "  It provisions MariaDB/Memcached, projects Keystone, mints the K-ORC admin"
       log "  credential, and registers the identity catalog (not awaited here)."
 
-      # Onboard the OpenBao database-engine tenant so managed-mode Keystone can
-      # draw engine-issued (Dynamic) DB credentials (#439). The ControlPlane CR
-      # always lives in the openstack namespace; its MariaDB defaults to
+      # Onboard the OpenBao database-engine tenant so managed-mode Keystone — and
+      # Glance, when the ControlPlane declares it on the shared managed database —
+      # can draw engine-issued (Dynamic) DB credentials (#439). The ControlPlane
+      # CR always lives in the openstack namespace; its MariaDB defaults to
       # openstack-db. Idempotent, so it is safe even if a downstream suite also
       # onboards. The e2e-controlplane CI job uses WITH_CONTROLPLANE_CR=false and
       # runs setup-database-tenant.sh from its own chainsaw suite instead.
