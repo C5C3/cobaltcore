@@ -159,8 +159,8 @@ kubectl get glance controlplane-glance -n openstack \
 ```
 
 Confirm it from the data path. The projected Glance API is reachable in-cluster
-only (the kind gateway terminates only Keystone and Horizon), so issue a token
-on the host and run a one-shot in-cluster client — the same pattern the
+only (this guide's ControlPlane leaves `services.glance.gateway` unset), so
+issue a token on the host and run a one-shot in-cluster client — the same pattern the
 [extended Quick Start](../../quick-start-extended.md) uses to reach an API Service —
 against `GET /v2/info/stores`:
 
