@@ -120,6 +120,9 @@ kinds (`ClusterSecretStore` and `SecretStore`):
 | `MariaDB` | `Owns()` | Re-reconciles the owning ControlPlane when the managed MariaDB child status changes |
 | `Memcached` (unstructured `memcachedGVK`) | `Owns()` | Re-reconciles when the managed Memcached child status changes; owned as `*unstructured.Unstructured` because the kind has no Go module |
 | `Keystone` | `Owns()` | Re-reconciles when the projected Keystone child status changes |
+| `Horizon` | `Owns()` | Re-reconciles when the projected Horizon dashboard child status changes |
+| `Glance` | `Owns()` | Re-reconciles when the projected Glance image-service child status changes |
+| `GlanceBackend` | `Owns()` | Re-reconciles when a projected GlanceBackend child status changes |
 | K-ORC `ApplicationCredential` | `Owns()` | Re-reconciles when the minted admin credential's `Available` condition or `status.id` changes |
 | K-ORC `Service` | `Owns()` | Re-reconciles when the identity catalog Service changes |
 | K-ORC `Endpoint` | `Owns()` | Re-reconciles when the public identity Endpoint changes |
@@ -130,6 +133,7 @@ kinds (`ClusterSecretStore` and `SecretStore`):
 | `Secret` | `Watches()` | Maps Secret events to referencing ControlPlane CRs via the `ControlPlaneSecretNameIndexKey` field indexer (`secretToControlPlaneMapper`) |
 | `ClusterSecretStore` | `Watches()` | Per-ref fan-out via `storeToControlPlaneMapper` (bound to the shared `watch.StoreRefFanOut` for the cluster kind): a status change on a cluster-scoped store enqueues only the ControlPlanes whose effective `spec.secretStoreRef` resolves to it |
 | `SecretStore` | `Watches()` | The namespaced twin, scoped to the store's own namespace, so a ControlPlane pinned to a per-tenant `SecretStore` reacts to its backend health (`storeToControlPlaneMapper` for the namespaced kind) |
+| projected service children + `Namespace` (cross-namespace) | `Watches()` | Label-predicate twin of the `Owns()` rows for a service placed in a namespace of its own: a cross-namespace child carries no owner reference (Kubernetes forbids one), so `Keystone` / `Horizon` / `Glance` / `GlanceBackend` / `MariaDB` / `Memcached` / `ExternalSecret` — and the `Namespace` itself — are watched a second time through the ownership labels the projections stamp (`crossNamespaceChildHandler` gated by `crossNamespaceChildPredicate`), so same-namespace children keep flowing through `Owns()` alone and neither leg double-enqueues the other's objects |
 
 The `Secret` watch uses `Watches()` with a `MapFunc` rather than `Owns()`
 because the admin-password Secret
@@ -340,6 +344,18 @@ grants. The markers therefore add `core/namespaces` with
 │  └────────┬─────────────────┘  Requeue: 10s gated / not Available / terminal  │
 │           │                                                                  │
 │           ▼                                                                  │
+│  ┌──────────────────────────┐                                                │
+│  │ reconcileServiceAccounts │  Project managed K-ORC User/Project accounts   │
+│  │  (gate: AdminCredReady)  │  Sets: ServiceAccountsReady                    │
+│  └────────┬─────────────────┘  Requeue: 10s gated / accounts converging      │
+│           │                                                                  │
+│           ▼                                                                  │
+│  ┌──────────────────────────┐                                                │
+│  │ reconcileGlance          │  Project the Glance image-service child CR     │
+│  │  (gate: KS + glance SA)  │  Sets: GlanceReady (not-managed when unset)    │
+│  └────────┬─────────────────┘  Requeue: 5s gated / 15s child not Ready       │
+│           │                                                                  │
+│           ▼                                                                  │
 │  setReadyCondition()  — aggregate Ready = AllTrue(subConditionTypes)         │
 │  updateStatus()       — stamp status.observedGeneration, persist             │
 │                                                                              │
@@ -361,10 +377,11 @@ call site:
 
 ```go
 pipeline := []commonreconcile.Step{
-    {Name: "Infrastructure", Fn: func(ctx context.Context) (ctrl.Result, error) {
-        return r.reconcileInfrastructure(ctx, &cp)
+    {Name: "Namespaces", Fn: func(ctx context.Context) (ctrl.Result, error) {
+        return r.reconcileNamespaces(ctx, &cp)
     }},
-    // ... DBCredentials, AdminPassword, Keystone, Horizon, KORC, AdminCredential, Catalog
+    // ... Infrastructure, ESOTenantStore, DBCredentials, AdminPassword, Keystone,
+    //     Horizon, KORC, AdminCredential, Catalog, ServiceAccounts, Glance
 }
 result, err := commonreconcile.RunPipeline(ctx, instrumentSubReconciler, pipeline)
 return r.updateStatus(ctx, &cp, statusBefore, result, err)
@@ -424,7 +441,7 @@ The aggregated sub-condition types (the source-of-truth `subConditionTypes`
 slice in `controlplane_controller.go`) are:
 
 ```text
-InfrastructureReady, ESOTenantStoreReady, DBCredentialsReady, KeystoneReady, HorizonReady, KORCReady, AdminCredentialReady, AdminPasswordReady, CatalogReady, ServiceAccountsReady
+NamespacesReady, InfrastructureReady, ESOTenantStoreReady, DBCredentialsReady, KeystoneReady, HorizonReady, GlanceReady, KORCReady, AdminCredentialReady, AdminPasswordReady, CatalogReady, ServiceAccountsReady
 ```
 
 The `Ready` condition carries `ObservedGeneration = cp.Generation` so clients can
@@ -443,7 +460,7 @@ fields that the schema declared but the reconciler previously never wrote:
 | Field | Value |
 | --- | --- |
 | `status.updatePhase` | Fixed at `Idle` — the release-update state machine is not implemented and the other `UpdatePhase` values are reserved, so "no update in progress" is the current state |
-| `status.services` | one entry per managed service, in a stable order: `keystone` (present when `spec.services.keystone` is set) then `horizon` (present when `spec.services.horizon` is set). Each entry's `ready` mirrors the matching `KeystoneReady` / `HorizonReady` sub-condition (via `conditions.AllTrue`) and `release` is `spec.openStackRelease`; an unmanaged service is omitted rather than reported |
+| `status.services` | one entry per managed service, in a stable order: `keystone` (present when `spec.services.keystone` is set), then `horizon` (present when `spec.services.horizon` is set), then `glance` (present when `spec.services.glance` is set). Each entry's `ready` mirrors the matching `KeystoneReady` / `HorizonReady` / `GlanceReady` sub-condition (via `conditions.AllTrue`) and `release` is `spec.openStackRelease`; an unmanaged service is omitted rather than reported |
 
 ---
 
@@ -1033,6 +1050,93 @@ an empty websso block, which would silently remove a working SSO button.
 | Horizon child not yet Ready | False | `WaitingForHorizon` | requeue 15s |
 | Horizon child Ready | True | `HorizonReady` | — |
 
+### reconcileGlance
+
+| Aspect | Value |
+| --- | --- |
+| File | `reconcile_glance.go` |
+| Condition | `GlanceReady` |
+| Gate | `KeystoneReady == True` (Glance validates every token against the Keystone child) **and** the injected `glance` service account being Ready |
+| Projects / Owns | one `Glance` child named `{controlplane.Name}-glance` (`glanceNameSuffix`) in `cp.GlanceNamespace()`; one `GlanceBackend` child per `services.glance.backends` entry, named `{controlplane.Name}-glance-{entry}`; and — managed database only — a DB-credential `ExternalSecret` named `{controlplane.Name}-glance-db-credentials` reading OpenBao KV path `openstack/glance/{glance-namespace}/{controlplane.Name}/db` (properties `username`, `password`). Only when `spec.services.glance` is set |
+| Requeue | `keystoneInfraGateRequeueAfter` = **5s** while gated on Keystone; `korcRequeueAfter` = **10s** while the `glance` service account is not yet Ready; `infraRequeueAfter` = **15s** while the child is not Ready |
+
+`reconcileGlance` runs **last** in the pipeline (after `reconcileServiceAccounts`),
+because it gates on the per-account readiness that stage computes into status in
+the same pass. It is optional: `spec.services.glance` unset means this ControlPlane
+manages no image service, and the sub-reconciler reports `GlanceReady=True` /
+`GlanceNotManaged` so the aggregate is not blocked (staged adoption). A
+previously-projected child — and its `GlanceBackend` children and DB-credential
+ExternalSecret — is **preserved** unless the ControlPlane opts in with
+`c5c3.io/allow-glance-deletion: "true"` (then the orphans, plus the image catalog
+K-ORC CRs, are deleted). Cross-namespace children are ownership-checked, so a
+hand-created `GlanceBackend` sharing the namespace is never touched.
+
+When managed, the projection mirrors the Keystone/Horizon *thin* discipline,
+reusing the ControlPlane's own specs so Glance points at the same backing services:
+
+- **Image:** repository defaults to `ghcr.io/c5c3/glance` with the tag derived
+  from `spec.openStackRelease`; `spec.services.glance.image` overrides the whole
+  image reference when set.
+- **Database:** a DeepCopy of the **effective** database (`effectiveGlanceDatabase`
+  — Glance's [dedicated](./controlplane-crd.md#dedicatedbackingservices) database
+  when it opted into one, the shared `spec.infrastructure.database` otherwise) with
+  its logical database name forced to `glance` so Glance's schema stays isolated
+  from Keystone's on a shared cluster. In managed mode (`clusterRef` set) the
+  `secretRef` is repointed at the operator-owned `{controlplane.Name}-glance-db-credentials`
+  Secret and `credentialsMode` is forced to `Static`: there is **no** OpenBao
+  dynamic-engine role for the glance schema (the engine role is keystone-scoped and
+  bootstrapped once per namespace), so the credential is always read from the KV
+  path above and seeded/rotated at the OpenBao source. A brownfield database keeps
+  the user-supplied `secretRef`.
+- **Cache:** a DeepCopy of the **effective** cache (`effectiveGlanceCache`).
+- **Keystone endpoint:** `keystoneEndpoint` is derived top-down via
+  `glanceKeystoneEndpoint(cp)` — **always** the cluster-local `{controlplane.Name}-keystone`
+  Service URL (the same URL K-ORC authenticates against), never the external
+  `publicEndpoint` or gateway hostname, because Glance validates tokens
+  server-side and the pods must reach it in-cluster. `keystonePublicEndpoint` is a
+  pass-through of the Keystone service's own public endpoint (empty when Keystone is
+  not externally exposed, in which case the child falls back to the internal URL).
+- **Service user:** derived from the auto-injected `glance` service account — its
+  `username`, project, and user/project domains — with the password read from the
+  account's materialized consumer Secret `{controlplane.Name}-service-account-glance-credentials`.
+- **Backends:** each `services.glance.backends` entry projects one `GlanceBackend`
+  child (the CP-side S3 `endpoint` maps to the child's `spec.s3.host`; an unset
+  `bucketURLFormat` serializes away so the child's own `path` default applies), and
+  previously-projected children whose entry was removed are **pruned** — matched by
+  the c5c3 ownership and the `{controlplane.Name}-glance-` name prefix. A prune
+  **de-registers a store whose id existing image location rows still reference**:
+  the backend's name is its store id, so dropping the entry removes the
+  `[<name>]` section from `backends.conf` and the `<name>:s3` entry from
+  `enabled_backends`, and Glance no longer resolves that store. Images stored
+  there stay listed in the catalog but `GET /v2/images/{id}/file` fails for each
+  of them, so the breakage is invisible until download. Recovery is re-creating
+  the entry under the *identical* name. Unlike unsetting `spec.services.glance`,
+  which is gated behind `c5c3.io/allow-glance-deletion`, removing one
+  `backends[]` line takes effect immediately and is not gated.
+- **Gateway / Replicas / SecretStoreRef / Region:** `gateway` is a DeepCopy of
+  `spec.services.glance.gateway` (a nil source clears it, tearing the HTTPRoute
+  down); `replicas` defaults to `commonv1.DefaultReplicas`, overridden by
+  `spec.services.glance.replicas`; the resolved store selection and `spec.region`
+  are projected through. `spec.apiServer` is deliberately **not** set.
+
+A child placed outside the ControlPlane's namespace (`services.glance.namespace`)
+carries no owner reference — it is stamped with the ownership labels and applied
+unowned, and the finalizer sweeps it by those labels.
+
+| Path | Status | Reason | Notes |
+| --- | --- | --- | --- |
+| `spec.services.glance` unset | True | `GlanceNotManaged` | staged adoption; a previously-projected child is preserved unless `c5c3.io/allow-glance-deletion: "true"` is set |
+| `KeystoneReady` not True | False | `WaitingForKeystone` | requeue 5s; no Glance CR is projected while Keystone is unready |
+| no `glance` service account declared | False | `ServiceAccountNotDeclared` | admission was bypassed (the defaulting webhook injects it); fails loud rather than projecting a Glance with no Keystone user |
+| `glance` service account not yet Ready | False | `WaitingForServiceAccount` | requeue 10s; deferred until its Keystone user and password are provisioned |
+| DB-credential ExternalSecret ensure fails | False | `GlanceDBCredentialError` | returns the error (managed database only) |
+| projected `GlanceBackend` rejected (HTTP 422 Invalid) | False | `GlanceBackendProjectionRejected` | returns the error; reconcile the `services.glance.backends` entries to a valid projection to recover |
+| `GlanceBackend` project/prune fails | False | `GlanceBackendError` | returns the error |
+| Glance child not yet Ready | False | `WaitingForGlance` | requeue 15s |
+| projected Glance spec rejected (HTTP 422 Invalid) | False | `GlanceProjectionRejected` | returns the error; the projection violates a Glance CRD/webhook rule — reconcile the ControlPlane spec to a valid projection to recover |
+| Glance create/update fails | False | `GlanceError` | returns the error |
+| Glance child Ready | True | `GlanceReady` | — |
+
 ### reconcileKORC
 
 | Aspect | Value |
@@ -1347,7 +1451,7 @@ OpenBao:
 | File | `reconcile_catalog.go` (Managed), `reconcile_catalog_external.go` (External) |
 | Condition | `CatalogReady` |
 | Gate | `AdminCredentialReady == True`, **and** every catalog child reports `Available` |
-| Owns | Managed mode: a K-ORC identity `Service` (`{controlplane.Name}-identity-service`) and its public `Endpoint` (`{controlplane.Name}-identity-endpoint`). External mode: the same `Service` plus one `Endpoint` per interface (`{controlplane.Name}-identity-endpoint-{interface}`), all unmanaged imports, plus one managed `Service`/`Endpoint` set per declared entry (`{controlplane.Name}-catalog-{type}[-{interface}]`). All in `childNamespace(cp)` |
+| Owns | Managed mode: a K-ORC identity `Service` (`{controlplane.Name}-identity-service`) and its public `Endpoint` (`{controlplane.Name}-identity-endpoint`), plus — when `spec.services.glance` is set — an image `Service` (`{controlplane.Name}-image-service`) with an internal **and** a public `Endpoint` (`{controlplane.Name}-image-endpoint-internal` / `{controlplane.Name}-image-endpoint-public`). External mode: the same identity `Service` plus one `Endpoint` per interface (`{controlplane.Name}-identity-endpoint-{interface}`), all unmanaged imports, plus one managed `Service`/`Endpoint` set per declared entry (`{controlplane.Name}-catalog-{type}[-{interface}]`). All in `childNamespace(cp)` |
 | Requeue | `korcRequeueAfter` = **10s** while gated, while a child is not yet Available, or on a terminal K-ORC failure |
 
 `reconcileCatalog` drives `CatalogReady`. Everything up to and including the
@@ -1361,12 +1465,23 @@ CRD-not-installed condition.
 
 `reconcileCatalog` registers the OpenStack service-catalog entries as owned K-ORC
 CRs, driven from a per-service table (`managedCatalogRows`) so a second service is
-a table row rather than a copied literal. The only entry today is the identity
+a table row rather than a copied literal. The first row is always the identity
 (Keystone) service: an `identity`-type `Service` named `keystone`, plus a
 `public` `Endpoint` whose URL defaults to the conventional in-cluster identity URL
 `http://keystone.<namespace>.svc:5000/v3` and whose `serviceRef` points at the
-identity Service. Every child is projected idempotently via Server-Side Apply
-under the shared field manager (`forge-operator`).
+identity Service. When `spec.services.glance` is set a second row registers the
+`image` (Glance) service — a `Service` named `glance` with **two** Endpoints (D6,
+both interfaces from the start so no later catalog migration is needed): the
+`internal` one always advertises the in-cluster Glance API Service URL
+`http://{controlplane.Name}-glance.<glance-namespace>.svc:9292` (`glanceEndpointURL`),
+while the `public` one prefers the externally routable gateway hostname
+(`https://{gateway.hostname}`) and falls back to that same in-cluster URL when
+Glance is not exposed via a Gateway (`glanceCatalogURL`). Unlike identity there is
+no `/v3` path suffix — the Glance API is served at the root. The image row follows
+the generic `{controlplane.Name}-image-service` / `{controlplane.Name}-image-endpoint-{interface}`
+naming convention rather than identity's legacy CR names. Every child is projected
+idempotently via Server-Side Apply under the shared field manager
+(`forge-operator`).
 
 Registering the child CRs only instructs K-ORC to create the catalog entries — it
 does not mean they exist in Keystone — so `CatalogReady` is gated on both children
@@ -1385,7 +1500,7 @@ surfaced as the distinct `CatalogFailed` reason instead of a false-positive Read
 | Endpoint create/update fails | False | `EndpointError` | returns the error |
 | a catalog entry's Service/Endpoint reports a terminal K-ORC error | False | `CatalogFailed` | requeue 10s (Service before its Endpoints, so the root stuck dependency surfaces) |
 | a catalog entry's Service/Endpoint registered but not yet Available | False | `WaitingForCatalog` | requeue 10s |
-| every catalog entry registered and Available | True | `CatalogRegistered` | message counts the registered entries; identity is the only entry today |
+| every catalog entry registered and Available | True | `CatalogRegistered` | message counts the registered entries — identity always, plus the image (Glance) entry when `spec.services.glance` is set |
 
 #### External mode — import-first
 
@@ -2122,43 +2237,68 @@ operators/c5c3/
 └── internal/
     ├── controller/
     │   ├── controlplane_controller.go          Reconciler struct, Reconcile(), setReadyCondition,
-    │   │                                        aggregateReady, updateStatus, secret field indexer,
-    │   │                                        SetupWithManager
-    │   ├── reconcile_infrastructure.go          reconcileInfrastructure (MariaDB + Memcached),
+    │   │                                        aggregateReady, setServicesStatus, updateStatus, secret
+    │   │                                        field indexer, SetupWithManager
+    │   ├── external_mode.go                    IsExternalKeystone predicate + K-ORC external-failure
+    │   │                                        classification and import-stall markers
+    │   ├── helpers.go                          effective backing-service resolvers, intervalToCron
+    │   ├── identity_backends.go                KeystoneIdentityBackend listing + WebSSO/MultiDomain
+    │   │                                        projection helpers
+    │   ├── instrumentation.go                  instrumentSubReconciler + drift-guard map
+    │   ├── korc_cloudsyaml.go                  clouds.yaml document builders (app-credential + password bootstrap)
+    │   ├── korc_eso.go                         PushSecret + clouds.yaml ExternalSecret builders/ensure
+    │   ├── korc_imports.go                     admin Domain/User import projection
+    │   ├── korc_secrets.go                     app-credential Secret seeding, computeAdminPasswordHash
+    │   ├── reconcile_infrastructure.go         reconcileInfrastructure (MariaDB + Memcached),
     │   │                                        childNamespace, memcachedGVK
-    │   ├── reconcile_dbcredentials.go           reconcileDBCredentials (per-CP DB-credential ExternalSecret)
-    │   ├── reconcile_adminpassword.go           reconcileAdminPassword (per-CP admin-password ExternalSecret),
+    │   ├── reconcile_namespaces.go             reconcileNamespaces (dedicated service namespaces),
+    │   │                                        child ownership labels + claim
+    │   ├── reconcile_esotenant.go              reconcileESOTenantStore (per-tenant SecretStore + SA +
+    │   │                                        mTLS cert), effectiveControlPlaneStoreRef
+    │   ├── reconcile_dbcredentials.go          reconcileDBCredentials (per-CP DB-credential ExternalSecret)
+    │   ├── reconcile_adminpassword.go          reconcileAdminPassword (per-CP admin-password ExternalSecret),
     │   │                                        effectiveAdminPasswordSecretRef
-    │   ├── reconcile_keystone.go                reconcileKeystone projection
-    │   ├── reconcile_korc.go                    reconcileKORC (AC mint/re-mint, drift detection)
-    │   ├── reconcile_admincredential.go         reconcileAdminCredential (assemble + push + re-push
+    │   ├── reconcile_keystone.go               reconcileKeystone projection
+    │   ├── reconcile_horizon.go                reconcileHorizon projection (dashboard + WebSSO/MultiDomain)
+    │   ├── reconcile_glance.go                 reconcileGlance projection (Glance + GlanceBackend
+    │   │                                        children, DB-credential ExternalSecret)
+    │   ├── reconcile_korc.go                   reconcileKORC (AC mint/re-mint, drift detection)
+    │   ├── reconcile_admincredential.go        reconcileAdminCredential (assemble + push + re-push
     │   │                                        nudges, semantic clouds.yaml gate)
-    │   ├── reconcile_catalog.go                 reconcileCatalog (mode fork; managed identity
-    │   │                                        Service/Endpoint), korcAvailableUpToDate
-    │   ├── reconcile_catalog_external.go        reconcileCatalogExternal (import-first: unmanaged
+    │   ├── reconcile_catalog.go                reconcileCatalog (mode fork; managed identity + image
+    │   │                                        Service/Endpoints), korcAvailableUpToDate
+    │   ├── reconcile_catalog_external.go       reconcileCatalogExternal (import-first: unmanaged
     │   │                                        identity imports, opt-in entries, stall detection)
-    │   ├── reconcile_delete.go                  reconcileDelete (ORC-teardown finalizer sequencing)
-    │   ├── korc_cloudsyaml.go                   clouds.yaml document builders (app-credential + password bootstrap)
-    │   ├── korc_eso.go                          PushSecret + clouds.yaml ExternalSecret builders/ensure
-    │   ├── korc_imports.go                      admin Domain/User import projection
-    │   ├── korc_secrets.go                      app-credential Secret seeding, computeAdminPasswordHash
-    │   ├── reconcile_credentialrotation.go      CredentialRotationReconciler (nudge model)
-    │   ├── requeue_intervals.go                 infra/dbCredentials/adminPassword/keystone/korc/credentialRotation backoffs
-    │   ├── instrumentation.go                   instrumentSubReconciler + drift-guard map
-    │   ├── helpers.go                           intervalToCron
-    │   ├── controlplane_controller_test.go      Orchestration tests
-    │   ├── reconcile_infrastructure_test.go     Infrastructure tests
-    │   ├── reconcile_dbcredentials_test.go      DBCredentials tests
-    │   ├── reconcile_adminpassword_test.go      AdminPassword tests
-    │   ├── reconcile_keystone_test.go           Keystone projection tests
-    │   ├── reconcile_korc_test.go               K-ORC / admin-credential / catalog tests
-    │   ├── reconcile_delete_test.go             Deletion-sequencing (finalizer) tests
+    │   ├── reconcile_serviceaccounts.go        reconcileServiceAccounts (managed K-ORC User/Project +
+    │   │                                        rotatable, OpenBao-backed password)
+    │   ├── reconcile_delete.go                 reconcileDelete (ORC-teardown finalizer sequencing)
+    │   ├── reconcile_credentialrotation.go     CredentialRotationReconciler (nudge model)
+    │   ├── requeue_intervals.go                infra/dbCredentials/adminPassword/keystone/korc/credentialRotation backoffs
+    │   ├── controlplane_controller_test.go     Orchestration tests
+    │   ├── external_mode_test.go               External-mode helper tests
+    │   ├── helpers_test.go                     helper-function tests
+    │   ├── identity_backends_test.go           Identity-backend projection tests
+    │   ├── instrumentation_test.go             Metrics instrumentation + drift guards
+    │   ├── korc_cloudsyaml_test.go             clouds.yaml builder tests
+    │   ├── reconcile_infrastructure_test.go    Infrastructure tests
+    │   ├── reconcile_namespaces_test.go        Namespaces tests
+    │   ├── reconcile_esotenant_test.go         ESO-tenant-store tests
+    │   ├── reconcile_dbcredentials_test.go     DBCredentials tests
+    │   ├── reconcile_adminpassword_test.go     AdminPassword tests
+    │   ├── reconcile_keystone_test.go          Keystone projection tests
+    │   ├── reconcile_horizon_test.go           Horizon projection tests
+    │   ├── reconcile_glance_test.go            Glance projection tests
+    │   ├── reconcile_korc_test.go              K-ORC mint/re-mint tests
+    │   ├── reconcile_admincredential_test.go   AdminCredential tests
+    │   ├── reconcile_catalog_test.go           Catalog (managed-mode) tests
+    │   ├── reconcile_catalog_external_test.go  External-catalog tests
+    │   ├── reconcile_serviceaccounts_test.go   ServiceAccounts tests
+    │   ├── reconcile_delete_test.go            Deletion-sequencing (finalizer) tests
     │   ├── reconcile_credentialrotation_test.go CredentialRotation tests
-    │   ├── credential_invariant_test.go         Security-invariant tests
-    │   ├── instrumentation_test.go              Metrics instrumentation + drift guards
-    │   ├── setupwithmanager_test.go             Watch/Owns/indexer wiring tests
-    │   ├── helpers_test.go                      helper-function tests
-    │   └── integration_test.go                  Envtest integration test (tag: integration)
+    │   ├── credential_invariant_test.go        Security-invariant tests
+    │   ├── setupwithmanager_test.go            Watch/Owns/indexer wiring tests
+    │   ├── setupwithmanager_integration_test.go SetupWithManager envtest wiring (tag: integration)
+    │   └── integration_test.go                 Envtest integration test (tag: integration)
     └── testutil/                                c5c3 envtest setup helpers
 ```
 
