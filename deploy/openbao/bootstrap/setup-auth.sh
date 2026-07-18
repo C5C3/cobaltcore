@@ -132,6 +132,32 @@ main() {
     token_max_ttl=72h
   log "keystone-db role written."
 
+  # glance-db role on the management cluster's Kubernetes auth mount — the Glance
+  # analogue of the keystone-db role above, and fully keystone-independent. The
+  # c5c3 operator's per-ControlPlane VaultDynamicSecret generator authenticates
+  # with the "glance-db-creds" ServiceAccount to read short-lived DB credentials
+  # at database/mariadb/creds/glance-<namespace>.
+  # bound_service_account_namespaces="*" lets any ControlPlane namespace
+  # authenticate; the fixed SA name is what tells this role apart from keystone-db
+  # (a glance-db-creds token can never read a keystone creds path), and the
+  # cross-tenant boundary is enforced by the glance-db-dynamic policy, which
+  # templates the readable creds path to the caller's OWN service_account_namespace
+  # (an exact match).
+  #
+  # Token TTLs are pinned to DB_CREDS_MAX_TTL (72h, setup-database-tenant.sh) for
+  # the same reason spelled out on the keystone-db role above: OpenBao revokes a
+  # dynamic-secret lease together with the token that minted it, so the token must
+  # outlive the lease or the issued DB credential dies early under a running
+  # Glance.
+  log "Writing glance-db role on kubernetes/management..."
+  bao_exec bao write "auth/kubernetes/management/role/glance-db" \
+    bound_service_account_names=glance-db-creds \
+    bound_service_account_namespaces="*" \
+    token_policies=glance-db-dynamic \
+    token_ttl=72h \
+    token_max_ttl=72h
+  log "glance-db role written."
+
   # eso-tenant role on the management cluster's Kubernetes auth mount. This is
   # the per-ControlPlane ESO identity a namespaced SecretStore authenticates
   # with (created per tenant by setup-eso-tenant.sh with the "eso-tenant-auth"
