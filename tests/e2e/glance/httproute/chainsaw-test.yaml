@@ -18,13 +18,12 @@
 #
 # SCOPE: this suite covers the operator's HTTPRoute contract only — it patches
 # the Accepted condition itself rather than running a Gateway controller, so
-# nothing here proves traffic actually reaches the Glance API. Unlike the
-# keystone and horizon gateway-quick-start-smoke suites, glance has no
-# real-Gateway leg yet: that needs an https-glance listener in
-# deploy/kind/base/openstack-gateway.yaml plus a smoke suite driving
-# kind host :443 → NodePort → Envoy Gateway → HTTPRoute → Service → pod.
-# Deliberately out of scope for the initial glance onboarding; a follow-up
-# carries the end-to-end gateway coverage.
+# nothing here proves traffic actually reaches the Glance API. The real-Gateway
+# leg now lives in the sibling tests/e2e/glance/gateway-quick-start-smoke/
+# suite, which drives kind host :443 → NodePort → Envoy Gateway (the
+# `https-glance` listener in deploy/kind/base/openstack-gateway.yaml) →
+# HTTPRoute → Service → pod, mirroring the keystone and horizon
+# gateway-quick-start-smoke suites.
 #
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
