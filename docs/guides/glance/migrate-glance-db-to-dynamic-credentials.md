@@ -176,8 +176,7 @@ onto an engine-issued login. This is the no-downtime property.
 
 ### 5. Retire the static credential
 
-Once the ControlPlane reports `DBCredentialsReady=True` on the dynamic path and
-Glance is Ready:
+Once the ControlPlane reports `GlanceReady=True` on the dynamic path:
 
 1. Delete the leftover static MariaDB `User` and `Grant` CRs (they carry the
    long-lived `glance` login the engine no longer uses):
@@ -227,15 +226,15 @@ operators if you also need to remove the generator objects.
   they disconnect.
 - **ESO/OpenBao outage longer than the lease:** the materialised credential
   expires before a refresh lands; running Pods keep pooled connections but new
-  connections fail until ESO recovers. This surfaces as `DBCredentialsReady=False`
-  via the ClusterSecretStore gate.
+  connections fail until ESO recovers. This surfaces through the Glance child's
+  own database readiness and, ControlPlane-side, as `GlanceReady=False`.
 
 ## See also
 
 - [OpenBao Bootstrap reference](/reference/infrastructure/openbao-bootstrap) —
   engines, auth roles, policies, and secret paths.
 - [ControlPlane reconciler reference](/reference/c5c3/controlplane-reconciler) —
-  `reconcileDBCredentials` projection flow.
+  `reconcileGlance` DB-credential projection flow.
 - [Migrate Keystone DB to Dynamic Credentials](/guides/keystone/migrate-keystone-db-to-dynamic-credentials) —
   the sibling migration for the Keystone service DB user.
 
