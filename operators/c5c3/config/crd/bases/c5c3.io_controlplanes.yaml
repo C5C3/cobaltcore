@@ -896,6 +896,24 @@ spec:
                         - message: exactly one backends entry must set isDefault
                           rule: self.filter(b, has(b.isDefault) && b.isDefault).size()
                             == 1
+                      databaseCredentialsMode:
+                        description: |-
+                          DatabaseCredentialsMode overrides spec.infrastructure.database.credentialsMode
+                          for THIS service on the managed SHARED database, so a staged migration can run
+                          Glance on one mode while another service stays on the other. Empty (the
+                          default) inherits the ControlPlane-wide mode; it is deliberately NOT
+                          materialized by the defaulting webhook, so "inherit" stays distinguishable
+                          from an explicit override. A dedicated per-service database is Static-only
+                          (its own credentialsMode lives in dedicatedBackingServices.database, where the
+                          webhook already rejects Dynamic), so a Dynamic override on a service that
+                          declares one is rejected; Dynamic also requires the shared database to be
+                          managed (clusterRef set), mirroring the commonv1.DatabaseSpec contract, so a
+                          Dynamic override on a brownfield shared database is rejected too. A Static
+                          override is always admitted.
+                        enum:
+                        - Static
+                        - Dynamic
+                        type: string
                       dedicatedBackingServices:
                         description: |-
                           DedicatedBackingServices opts the Glance service out of the ControlPlane-wide
@@ -1583,6 +1601,27 @@ spec:
                       reconciler reports KeystoneReady as not-managed. Flipping this from set to
                       nil deletes the previously-projected Keystone child.
                     properties:
+                      databaseCredentialsMode:
+                        description: |-
+                          DatabaseCredentialsMode overrides spec.infrastructure.database.credentialsMode
+                          for THIS service on the managed SHARED database, so a staged migration can run
+                          Keystone on one mode while another service stays on the other. Empty (the
+                          default) inherits the ControlPlane-wide mode; it is deliberately NOT
+                          materialized by the defaulting webhook, so "inherit" stays distinguishable
+                          from an explicit override. A dedicated per-service database is Static-only
+                          (its own credentialsMode lives in dedicatedBackingServices.database, where the
+                          webhook already rejects Dynamic), so a Dynamic override on a service that
+                          declares one is rejected; Dynamic also requires the shared database to be
+                          managed (clusterRef set), mirroring the commonv1.DatabaseSpec contract, so a
+                          Dynamic override on a brownfield shared database is rejected too. A Static
+                          override is always admitted.
+
+                          Forbidden when services.keystone.mode is External (CEL + webhook enforced): no
+                          managed database is provisioned, so there is no credentials mode to override.
+                        enum:
+                        - Static
+                        - Dynamic
+                        type: string
                       dedicatedBackingServices:
                         description: |-
                           DedicatedBackingServices opts the Keystone service out of the
@@ -2350,6 +2389,9 @@ spec:
                     - message: services.keystone.namespace is forbidden when services.keystone.mode
                         is External
                       rule: '!(has(self.mode) && self.mode == ''External'') || !has(self.namespace)'
+                    - message: services.keystone.databaseCredentialsMode is forbidden
+                        when services.keystone.mode is External
+                      rule: '!(has(self.mode) && self.mode == ''External'') || !has(self.databaseCredentialsMode)'
                 type: object
             required:
             - korc

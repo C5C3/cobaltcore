@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# databaseCredentialsMode Dynamic on a service using the SHARED database is
+# rejected by the webhook when that shared database is brownfield (host set, no
+# clusterRef), mirroring the commonv1 Dynamic-requires-clusterRef contract one
+# level up: the dynamic engine issues per-tenant DB users only against a cluster
+# the operator provisions. The CRD Enum admits the value and the keystone CEL rule
+# forbids the field only in External mode, so the webhook is the enforcement point.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-override-dynamic-brownfield
+spec:
+  openStackRelease: "2025.2"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+  services:
+    keystone:
+      mode: Managed
+      databaseCredentialsMode: Dynamic
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password

@@ -465,6 +465,42 @@ spec:
         - check:
             ($error != null): true
             (contains($error, 'must be a bare origin')): true
+    # services.keystone.databaseCredentialsMode in External mode is rejected by the
+    # CEL rule: no managed database is provisioned, so there is no credentials mode
+    # to override. Even a Static value is forbidden (the rule is a plain field forbid).
+    - apply:
+        file: 54-keystone-credentials-mode-override-in-external.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'services.keystone.databaseCredentialsMode is forbidden when services.keystone.mode is External')): true
+    # databaseCredentialsMode Dynamic on the Keystone service with a DEDICATED database
+    # is rejected by the webhook: the override retargets the shared database this
+    # service does not use, and a dedicated database is Static-only. CEL cannot catch it
+    # (the value passes the Enum, and no CEL rule spans the dedicated block).
+    - apply:
+        file: 55-keystone-override-dynamic-on-dedicated.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'Dynamic is not supported as an override on a service with a dedicated database')): true
+    # databaseCredentialsMode Dynamic on the Glance service with a DEDICATED database is
+    # rejected by the webhook, mirroring the keystone case above.
+    - apply:
+        file: 56-glance-override-dynamic-on-dedicated.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'Dynamic is not supported as an override on a service with a dedicated database')): true
+    # databaseCredentialsMode Dynamic on a service using the SHARED database is rejected
+    # by the webhook when that shared database is brownfield (no clusterRef), mirroring
+    # the commonv1 Dynamic-requires-clusterRef contract one level up.
+    - apply:
+        file: 57-override-dynamic-on-brownfield.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'Dynamic requires the shared database to be managed')): true
 ---
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test

@@ -1400,6 +1400,7 @@ func (w *ControlPlaneWebhook) validate(cp *ControlPlane) field.ErrorList {
 	allErrs = append(allErrs, validateKeystoneMode(cp)...)
 	allErrs = append(allErrs, validateServiceAccounts(cp)...)
 	allErrs = append(allErrs, validateDedicatedBackingServices(cp)...)
+	allErrs = append(allErrs, validateServiceCredentialsModeOverrides(cp)...)
 	allErrs = append(allErrs, validateServiceNamespaces(cp)...)
 
 	return allErrs
@@ -1709,6 +1710,66 @@ func validateDedicatedBackingServices(cp *ControlPlane) field.ErrorList {
 	return allErrs
 }
 
+// validateServiceCredentialsModeOverrides enforces the rules on the per-service
+// spec.services.<svc>.databaseCredentialsMode override, which overrides the
+// ControlPlane-wide spec.infrastructure.database.credentialsMode for one service
+// on the managed SHARED database. The Enum marker already bounds the value to
+// Static|Dynamic at the schema layer; the two rejections below are the cross-field
+// invariants CEL cannot express, so they live in the webhook (per the established
+// CEL-vs-webhook split):
+//
+//   - A Dynamic override is rejected on a service that declares a DEDICATED
+//     database. The override targets the shared database, which that service does
+//     not use; its dedicated database has its own credentialsMode (Static-only —
+//     validateDedicatedBackingServices already rejects Dynamic there), so a Dynamic
+//     override on such a service is meaningless. Static stays admissible.
+//   - A Dynamic override is rejected when the shared database is brownfield
+//     (clusterRef unset), mirroring the commonv1.DatabaseSpec Dynamic-requires-
+//     clusterRef contract one level up: the dynamic engine issues per-tenant DB
+//     users only against a cluster the operator provisions.
+//
+// A Static override is always admitted, and an empty override (inherit) is a no-op.
+// The External-mode forbid on services.keystone.databaseCredentialsMode lives in
+// validateKeystoneMode with the rest of the External-mode matrix (glance is
+// forbidden entirely in External mode, so it needs no such rule).
+func validateServiceCredentialsModeOverrides(cp *ControlPlane) field.ErrorList {
+	var allErrs field.ErrorList
+	svcPath := field.NewPath("spec", "services")
+
+	// The shared database is managed exactly when it names a clusterRef. A nil
+	// infrastructure block (only reachable in External mode, which forbids the
+	// keystone override via CEL and forbids glance entirely) counts as not managed.
+	sharedManaged := cp.Spec.Infrastructure != nil && cp.Spec.Infrastructure.Database.ClusterRef != nil
+
+	check := func(svc string, mode string, dedicatedDB *commonv1.DatabaseSpec) {
+		if mode != commonv1.CredentialsModeDynamic {
+			return
+		}
+		modePath := svcPath.Child(svc, "databaseCredentialsMode")
+		switch {
+		case dedicatedDB != nil:
+			allErrs = append(allErrs, field.Forbidden(modePath,
+				"credentialsMode Dynamic is not supported as an override on a service with a dedicated database: "+
+					"the override retargets the shared database this service does not use, and a dedicated database is "+
+					"Static-only (set dedicatedBackingServices.database.credentialsMode instead)"))
+		case !sharedManaged:
+			allErrs = append(allErrs, field.Forbidden(modePath,
+				"credentialsMode Dynamic requires the shared database to be managed (clusterRef): the dynamic engine "+
+					"issues per-tenant DB users only against a cluster the operator provisions, so it cannot run against "+
+					"a brownfield database"))
+		}
+	}
+
+	if ks := cp.Spec.Services.Keystone; ks != nil {
+		check("keystone", ks.DatabaseCredentialsMode, cp.DedicatedKeystoneDatabase())
+	}
+	if gl := cp.Spec.Services.Glance; gl != nil {
+		check("glance", gl.DatabaseCredentialsMode, cp.DedicatedGlanceDatabase())
+	}
+
+	return allErrs
+}
+
 // validateKeystoneMode enforces the External-mode validation matrix. It mirrors
 // the type-level CEL rules on ServiceKeystoneSpec as defense-in-depth for callers
 // that bypass CRD schema admission (the same discipline as the release/database
@@ -1830,6 +1891,10 @@ func validateKeystoneMode(cp *ControlPlane) field.ErrorList {
 		if ks.Namespace != nil {
 			allErrs = append(allErrs, field.Forbidden(ksPath.Child("namespace"),
 				"forbidden when services.keystone.mode is External (no Keystone workload is deployed, so there is nothing to place)"))
+		}
+		if ks.DatabaseCredentialsMode != "" {
+			allErrs = append(allErrs, field.Forbidden(ksPath.Child("databaseCredentialsMode"),
+				"forbidden when services.keystone.mode is External (no managed database is provisioned, so there is no credentials mode to override)"))
 		}
 
 		// Cross-field rules CEL cannot express.

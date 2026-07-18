@@ -214,6 +214,7 @@ type ServicesSpec struct {
 // +kubebuilder:validation:XValidation:rule="!(has(self.mode) && self.mode == 'External') || !has(self.federationProxyImage)",message="services.keystone.federationProxyImage is forbidden when services.keystone.mode is External"
 // +kubebuilder:validation:XValidation:rule="!(has(self.mode) && self.mode == 'External') || !has(self.dedicatedBackingServices)",message="services.keystone.dedicatedBackingServices is forbidden when services.keystone.mode is External"
 // +kubebuilder:validation:XValidation:rule="!(has(self.mode) && self.mode == 'External') || !has(self.namespace)",message="services.keystone.namespace is forbidden when services.keystone.mode is External"
+// +kubebuilder:validation:XValidation:rule="!(has(self.mode) && self.mode == 'External') || !has(self.databaseCredentialsMode)",message="services.keystone.databaseCredentialsMode is forbidden when services.keystone.mode is External"
 type ServiceKeystoneSpec struct {
 	// Mode selects whether the Keystone service is Managed (the reconciler
 	// deploys and owns a full Keystone workload, today's behavior) or External
@@ -303,6 +304,25 @@ type ServiceKeystoneSpec struct {
 	// is deployed, so there is no sidecar to image.
 	// +optional
 	FederationProxyImage *commonv1.ImageSpec `json:"federationProxyImage,omitempty"`
+
+	// DatabaseCredentialsMode overrides spec.infrastructure.database.credentialsMode
+	// for THIS service on the managed SHARED database, so a staged migration can run
+	// Keystone on one mode while another service stays on the other. Empty (the
+	// default) inherits the ControlPlane-wide mode; it is deliberately NOT
+	// materialized by the defaulting webhook, so "inherit" stays distinguishable
+	// from an explicit override. A dedicated per-service database is Static-only
+	// (its own credentialsMode lives in dedicatedBackingServices.database, where the
+	// webhook already rejects Dynamic), so a Dynamic override on a service that
+	// declares one is rejected; Dynamic also requires the shared database to be
+	// managed (clusterRef set), mirroring the commonv1.DatabaseSpec contract, so a
+	// Dynamic override on a brownfield shared database is rejected too. A Static
+	// override is always admitted.
+	//
+	// Forbidden when services.keystone.mode is External (CEL + webhook enforced): no
+	// managed database is provisioned, so there is no credentials mode to override.
+	// +optional
+	// +kubebuilder:validation:Enum=Static;Dynamic
+	DatabaseCredentialsMode string `json:"databaseCredentialsMode,omitempty"`
 
 	// DedicatedBackingServices opts the Keystone service out of the
 	// ControlPlane-wide shared instances declared in spec.infrastructure and gives
@@ -800,6 +820,22 @@ type ServiceGlanceSpec struct {
 	// +listMapKey=name
 	// +kubebuilder:validation:XValidation:rule="self.filter(b, has(b.isDefault) && b.isDefault).size() == 1",message="exactly one backends entry must set isDefault"
 	Backends []GlanceBackendEntry `json:"backends"`
+
+	// DatabaseCredentialsMode overrides spec.infrastructure.database.credentialsMode
+	// for THIS service on the managed SHARED database, so a staged migration can run
+	// Glance on one mode while another service stays on the other. Empty (the
+	// default) inherits the ControlPlane-wide mode; it is deliberately NOT
+	// materialized by the defaulting webhook, so "inherit" stays distinguishable
+	// from an explicit override. A dedicated per-service database is Static-only
+	// (its own credentialsMode lives in dedicatedBackingServices.database, where the
+	// webhook already rejects Dynamic), so a Dynamic override on a service that
+	// declares one is rejected; Dynamic also requires the shared database to be
+	// managed (clusterRef set), mirroring the commonv1.DatabaseSpec contract, so a
+	// Dynamic override on a brownfield shared database is rejected too. A Static
+	// override is always admitted.
+	// +optional
+	// +kubebuilder:validation:Enum=Static;Dynamic
+	DatabaseCredentialsMode string `json:"databaseCredentialsMode,omitempty"`
 
 	// DedicatedBackingServices opts the Glance service out of the ControlPlane-wide
 	// shared instances declared in spec.infrastructure and gives it backing
