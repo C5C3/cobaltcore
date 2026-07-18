@@ -9,7 +9,6 @@
 .github
 .planwerk
 
-architecture/
 deploy/
 docs/
 hack/

@@ -5,11 +5,8 @@
 # Makefile for Go Workspace
 # Manages build, test, lint, and deployment operations for operators and common modules
 #
-# DEVIATION from architecture/01-project-setup.md
-# - Architecture doc lists 9 targets; this Makefile defines 12 (adds deploy-infra,
-#   teardown-infra, install-test-deps) for completeness.
-# - generate/manifests use controller-gen to produce deepcopy functions and CRD/webhook
-#   manifests for each operator module that has an api/ directory.
+# generate/manifests use controller-gen to produce deepcopy functions and CRD/webhook
+# manifests for each operator module that has an api/ directory.
 
 # Default operators to build and test
 OPERATORS ?= keystone c5c3 horizon glance

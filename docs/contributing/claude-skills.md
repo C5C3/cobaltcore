@@ -114,8 +114,8 @@ a companion Bash script (the deterministic part).
 
 | Skill | Audits | Use when |
 |---|---|---|
-| [`check-doc-drift`](https://github.com/c5c3/forge/blob/main/.claude/skills/check-doc-drift/SKILL.md) | The forge documentation against the implementation — the `architecture/docs/` chapters vs the operator code, and the `docs/` user-facing reference vs the `deploy/` infrastructure stack. | After adding or removing a sub-reconciler, status condition, operator binary, or infrastructure component, before tagging a release. |
-| [`check-spdx-reuse`](https://github.com/c5c3/forge/blob/main/.claude/skills/check-spdx-reuse/SKILL.md) | SPDX / REUSE compliance across the source tree — every `*.go`, `*.sh`, hand-authored YAML, and CI workflow file should carry matching `SPDX-FileCopyrightText` and `SPDX-License-Identifier` headers; every licence referenced has a corresponding text under `LICENSES/`; `architecture/REUSE.toml` stays well-formed. Defers to `reuse lint` as the authoritative gate. | After adding a new source file; before tagging a release where SAP supply-chain audits require clean REUSE output. |
+| [`check-doc-drift`](https://github.com/c5c3/forge/blob/main/.claude/skills/check-doc-drift/SKILL.md) | The forge documentation against the implementation — the `docs/reference/` pages vs the operator code, and the guides and quick-starts vs the `deploy/` infrastructure stack. | After adding or removing a sub-reconciler, status condition, operator binary, or infrastructure component, before tagging a release. |
+| [`check-spdx-reuse`](https://github.com/c5c3/forge/blob/main/.claude/skills/check-spdx-reuse/SKILL.md) | SPDX / REUSE compliance across the source tree — every `*.go`, `*.sh`, hand-authored YAML, and CI workflow file should carry matching `SPDX-FileCopyrightText` and `SPDX-License-Identifier` headers; every licence referenced has a corresponding text under `LICENSES/`. Defers to `reuse lint` as the authoritative gate. | After adding a new source file; before tagging a release where SAP supply-chain audits require clean REUSE output. |
 
 ### Planners and runbooks
 

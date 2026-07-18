@@ -12,7 +12,6 @@
 #       are exempted)
 #   S4  every SPDX-License-Identifier value has a matching LICENSES/<id>.txt
 #   S5  every LICENSES/<id>.txt is referenced by at least one file
-#   S6  architecture/REUSE.toml parses as valid TOML
 #
 # Defers full compliance to `reuse lint`. Exit code 1 on [FAIL].
 
@@ -145,24 +144,6 @@ if [[ -d LICENSES ]]; then
       info "${id} in LICENSES/ but no file references it — unused inventory"
     fi
   done
-fi
-
-# ---------------------------------------------------------------------------
-# S6 — REUSE.toml parses
-# ---------------------------------------------------------------------------
-hdr "S6: architecture/REUSE.toml parses as valid TOML"
-if [[ -f architecture/REUSE.toml ]]; then
-  if command -v python3 >/dev/null 2>&1; then
-    if python3 -c 'import tomllib,sys; tomllib.load(open("architecture/REUSE.toml","rb"))' 2>/dev/null; then
-      pass "architecture/REUSE.toml parses"
-    else
-      fail "architecture/REUSE.toml does not parse as TOML"
-    fi
-  else
-    info "python3 not on PATH — S6 skipped"
-  fi
-else
-  info "no architecture/REUSE.toml — S6 skipped"
 fi
 
 # ---------------------------------------------------------------------------

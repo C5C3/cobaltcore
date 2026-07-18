@@ -14,10 +14,8 @@
 #   K4  every condition type in the instrumentation map is documented
 #   K5  every condition type referenced in docs is set in code
 #
-# The per-operator doc corpus is docs/reference/<op>/*.md; keystone
-# additionally consults architecture/docs/09-implementation/03-crd-implementation.md
-# when the architecture/ submodule is checked out. Operators without a
-# reference-doc directory skip K4/K5 with [INFO].
+# The per-operator doc corpus is docs/reference/<op>/*.md. Operators
+# without a reference-doc directory skip K4/K5 with [INFO].
 #
 # Defers Go-AST-aware checks to the existing per-operator drift-guard test:
 #   TestSubReconcilerConditionTypesCoversAllNames
@@ -70,9 +68,6 @@ for op in "${OPERATORS[@]}"; do
     for d in "docs/reference/${op}"/*.md; do
       [[ -f "${d}" ]] && DOC_FILES+=("${d}")
     done
-  fi
-  if [[ "${op}" == "keystone" && -f "architecture/docs/09-implementation/03-crd-implementation.md" ]]; then
-    DOC_FILES+=("architecture/docs/09-implementation/03-crd-implementation.md")
   fi
 
   # Build the union of condition types declared in the map (right-hand side).

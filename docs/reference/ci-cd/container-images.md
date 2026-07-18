@@ -555,13 +555,12 @@ bash tests/container-images/verify_horizon.sh c5c3/horizon:25.5.1
 
 ## Design Deviations
 
-The implementation deviates from the architecture document
-(`architecture/docs/08-container-images/01-build-pipeline.md`) in one area, documented
-with `# DEVIATION` comments in the affected Dockerfiles:
+The implementation deviates from the original design document in one area,
+documented with `# DEVIATION` comments in the affected Dockerfiles:
 
 **Generic `openstack` user instead of per-service users:**
 
-The architecture document's Keystone Dockerfile example creates a per-service user
+The original design's Keystone Dockerfile example creates a per-service user
 (e.g., `groupadd keystone` / `useradd keystone`). The implementation uses a single
 generic `openstack` user (UID/GID 42424) defined in `python-base` and shared by all
 service images. This reduces complexity and image layers — each service image inherits

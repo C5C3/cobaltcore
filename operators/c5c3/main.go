@@ -4,7 +4,7 @@
 
 // Package main is the entrypoint for the C5C3 operator.
 //
-// DEVIATION from architecture/01-project-setup.md
+// DEVIATION from the original project-setup design:
 // Hand-crafted instead of `operator-sdk init` — the SDK scaffolds config/,
 // internal/controller/, Dockerfile, and a per-module Makefile that would be
 // immediately deleted for this minimal scaffolding phase. The manager setup

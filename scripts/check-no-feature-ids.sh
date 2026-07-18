@@ -19,10 +19,7 @@
 #
 # Scope is git-tracked files (git ls-files). This automatically excludes
 # git-ignored build output (node_modules/, bin/, docs/.vitepress/{dist,cache}/,
-# coverage *.out) and the architecture/ submodule, which git lists as a single
-# gitlink entry rather than its contents — that directory is the upstream
-# C5C3/C5C3 repository and is read-only from this worktree, so any IDs there are
-# fixed upstream and pulled in via a submodule bump.
+# coverage *.out).
 #
 # Additional excludes:
 #   - .planwerk/  internal planning/review tool records keyed by the IDs (the

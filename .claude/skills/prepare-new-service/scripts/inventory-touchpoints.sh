@@ -98,9 +98,6 @@ for uc in releases/*/upper-constraints.txt; do
       "${uc}" "${pin}"
   fi
 done
-if [[ ! -f "architecture/docs/index.md" && ! -d "architecture/docs" ]]; then
-  printf '  [WARN] architecture/ submodule not initialized — architecture chapters live in a separate repo (git submodule update --init architecture)\n'
-fi
 
 printf '\nSummary: %d done, %d todo (inventory only — todo is expected for a fresh service)\n' \
   "${DONE_COUNT}" "${TODO_COUNT}"

@@ -396,9 +396,7 @@ whether from a Raft peer, the in-pod bootstrap script, or
 `ClusterSecretStore/openbao-cluster-store` — must present a client certificate
 that chains to the same self-signed CA bundle as the server cert; the
 Kubernetes-token auth method (`auth.kubernetes`) is unchanged and runs
-*after* the transport-layer admission gate. See
-`architecture/docs/09-implementation/09-openbao-deployment.md` for design
-rationale.
+*after* the transport-layer admission gate.
 
 **Helm values:**
 
@@ -536,8 +534,7 @@ the catalog and rotate the admin credential, but K-ORC is the separate Flux
 is a hard dependency the manager requires at startup rather than tolerating). The
 operator child CRs are created
 in the `ControlPlane`'s own namespace, not a hard-coded one. For the reconciliation
-contract see the upstream design chapter
-`architecture/docs/09-implementation/08-c5c3-operator.md`.
+contract see the [`ControlPlane` reconciler reference](../c5c3/controlplane-reconciler.md).
 
 **Helm values:**
 
@@ -1058,23 +1055,7 @@ which provisions secrets from an external vault into the cluster.
 
 The Memcached Operator chart is sourced from the shared `c5c3-charts` OCI registry
 rather than a dedicated HelmRepository. This follows the project convention of publishing
-internally-built charts to `oci://ghcr.io/c5c3/charts` (see
-`architecture/docs/09-implementation/07-ci-cd-and-packaging.md`).
-
-### c5c3-operator and K-ORC design source
-
-The upstream design for the c5c3-operator, K-ORC, and the admin-credential lifecycle
-documented above lives in the `architecture/` git submodule:
-
-- `architecture/docs/09-implementation/08-c5c3-operator.md` — the c5c3-operator `ControlPlane` reconciler contract
-- `architecture/docs/03-components/01-control-plane/05-korc.md` — the K-ORC component and chart constraint
-- `architecture/docs/05-deployment/01-gitops-fluxcd/01-credential-lifecycle.md` — the restricted admin Application Credential lifecycle
-
-These chapters are the authoritative design source. They are **updated upstream only**
-and reach this repository through a submodule pointer bump — they are **not** edited from
-this repository or worktree. Treat any divergence between these chapters and
-the manifests above as a drift to reconcile at the source, not by editing the submodule
-in place.
+internally-built charts to `oci://ghcr.io/c5c3/charts`.
 
 ## Kind Overlay Demo Addons
 
