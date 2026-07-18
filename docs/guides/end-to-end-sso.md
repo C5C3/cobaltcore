@@ -15,8 +15,8 @@ a working SSO button, and then to a domain dropdown for users who live in an
 LDAP-backed domain.
 
 It assumes you already know how to attach identity backends. If you do not,
-read [Attach an OIDC Federation Backend](./oidc-federation.md) and
-[Attach an LDAP Domain Backend](./ldap-domain-backend.md) first — this guide
+read [Attach an OIDC Federation Backend](./keystone/oidc-federation.md) and
+[Attach an LDAP Domain Backend](./keystone/ldap-domain-backend.md) first — this guide
 picks up where they leave off and shows what the ControlPlane does with them.
 
 ## Prerequisites
@@ -54,9 +54,9 @@ kubectl -n openstack rollout restart deploy/keycloak
 ```
 :::
 
-- [Attach an OIDC Federation Backend](./oidc-federation.md) — how to stand up the
+- [Attach an OIDC Federation Backend](./keystone/oidc-federation.md) — how to stand up the
   federation backend this guide projects onto the login page.
-- [Attach an LDAP Domain Backend](./ldap-domain-backend.md) — how to stand up the
+- [Attach an LDAP Domain Backend](./keystone/ldap-domain-backend.md) — how to stand up the
   LDAP domain backend used in the multi-domain step.
 
 ## What the ControlPlane does for you
@@ -158,7 +158,7 @@ spec:
     # Fixture-true values from the two-fixture apply in Prerequisites. Explicit
     # endpoints are required because the operator's metadata-fetch SSRF guard
     # blocks .well-known discovery against the in-cluster Keycloak — see
-    # [Attach an OIDC Federation Backend](./oidc-federation.md) Step 4 for the
+    # [Attach an OIDC Federation Backend](./keystone/oidc-federation.md) Step 4 for the
     # full worked example (mappings, groups, and why introspection is https).
     issuer: http://keycloak.openstack.svc.cluster.local:8080/realms/forge
     clientID: keystone
@@ -232,7 +232,7 @@ Envoy-routed gateway redirect URIs this guide's fixtures register — is
 exercised headlessly by the mirroring e2e suite (see [Tested by](#tested-by)).
 
 For a copy-pasteable devstack login that does not need a browser, use the CLI
-bearer flow in [Attach an OIDC Federation Backend](./oidc-federation.md#step-6-log-in-as-a-federated-user).
+bearer flow in [Attach an OIDC Federation Backend](./keystone/oidc-federation.md#step-6-log-in-as-a-federated-user).
 :::
 
 ## Step 4 — Multi-domain login for LDAP users

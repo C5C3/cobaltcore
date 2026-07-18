@@ -19,6 +19,18 @@ names that name a resource the reader's cluster never created.
 This page is the contract. New guides follow it from the start; existing guides
 are being brought into conformance.
 
+## Placement: one subdirectory per service
+
+Mirroring the reference set, service-specific guides live in a per-service
+subdirectory — `docs/guides/keystone/`, `docs/guides/horizon/`,
+`docs/guides/glance/`, and so on — and register in the matching collapsed
+service group of the `Guides` sidebar section in `docs/.vitepress/config.ts`.
+Cross-service and general operational guides (observability, day-2 operations,
+tenancy, end-to-end SSO) sit flat under `docs/guides/` and register above the
+service groups. A guide that walks a single service's CRs, operator, or
+backends belongs to that service's subdirectory even when it touches the
+ControlPlane that projects them.
+
 The `prepare-new-guide` Claude Code skill applies this contract: its
 `scaffold-guide.sh` prints a conforming skeleton for a chosen devstack anchor,
 and its `validate-guide.sh` checks a draft against the conventions the docs
@@ -39,7 +51,8 @@ The block is machine-checkable. It must be:
 2. Whose first element is a `::: info Devstack` container that holds, in order:
    - exactly **one** link to a Getting-Started tutorial
      (`../quick-start.md`, `../quick-start-extended.md`, or
-     `../quick-start-controlplane.md`);
+     `../quick-start-controlplane.md` — one `../` deeper from a service
+     subdirectory);
    - exactly **one** fenced ` ```bash ` block with the tutorial's verbatim
      bring-up command, including every `WITH_*` opt-in flag the guide depends
      on (a guide that needs Prometheus names `WITH_PROMETHEUS=true`, a guide

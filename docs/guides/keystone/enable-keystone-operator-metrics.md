@@ -12,9 +12,9 @@ ServiceMonitor shipped with the `keystone-operator` Helm chart, importing the re
 verifying that scrape targets transition to `Up`.
 
 For the authoritative metric catalogue (names, labels, buckets), see
-[Keystone Operator Prometheus Metrics](../reference/keystone-operator-metrics.md).
+[Keystone Operator Prometheus Metrics](../../reference/keystone-operator-metrics.md).
 For the controller-side instrumentation contract, see
-[Keystone Reconciler — Metrics Instrumentation](../reference/keystone/keystone-reconciler.md#metrics-instrumentation).
+[Keystone Reconciler — Metrics Instrumentation](../../reference/keystone/keystone-reconciler.md#metrics-instrumentation).
 
 ::: tip On kind
 If you are running the kind Quick Start, the prometheus-operator CRDs,
@@ -30,7 +30,7 @@ WITH_PROMETHEUS=true make deploy-infra
 overlay (`deploy/kind/prometheus/`), patch the keystone-operator
 HelmRelease to flip `monitoring.serviceMonitor.enabled=true`, and wait
 for the scrape targets to come up. See
-[Extended Quick Start — Step 4c](../quick-start-extended.md#step-4c-grafana-ui)
+[Extended Quick Start — Step 4c](../../quick-start-extended.md#step-4c-grafana-ui)
 for the port-forward, default credentials, and the Prometheus targets
 sanity-check.
 
@@ -45,7 +45,7 @@ sections below cover that wiring end-to-end.
 ## Prerequisites
 
 ::: info Devstack
-This guide is written against the **[Quick Start](../quick-start.md)** devstack. Stand it up first:
+This guide is written against the **[Quick Start](../../quick-start.md)** devstack. Stand it up first:
 
 ```bash
 KIND_HOST_PORT=8443 WITH_PROMETHEUS=true make deploy-infra
@@ -204,7 +204,7 @@ curl -s http://localhost:8080/metrics \
 ```
 
 Expected: `# TYPE` and `# HELP` lines for every metric in the
-[reference catalogue](../reference/keystone-operator-metrics.md), for
+[reference catalogue](../../reference/keystone-operator-metrics.md), for
 example:
 
 ```
@@ -258,7 +258,7 @@ Operators with stricter cluster policies must take extra steps:
 The metrics endpoint deliberately exposes **no credentials, secrets,
 or per-tenant payloads** — only Prometheus collector samples described
 in the
-[reference catalogue](../reference/keystone-operator-metrics.md) — so
+[reference catalogue](../../reference/keystone-operator-metrics.md) — so
 the default plain-HTTP exposure is appropriate for cluster-internal
 scraping. The hardening guidance above applies only when external
 policy demands a stricter posture.
@@ -284,9 +284,9 @@ ServiceMonitor (and therefore the Prometheus scrape) is removed.
 
 ## See also
 
-- [Keystone Operator Prometheus Metrics](../reference/keystone-operator-metrics.md) — authoritative metric catalogue.
-- [Keystone Reconciler — Metrics Instrumentation](../reference/keystone/keystone-reconciler.md#metrics-instrumentation) — how sub-reconcilers are instrumented.
-- [Observability & Diagnostics](../guides/observability.md) — conditions, events, and logs.
+- [Keystone Operator Prometheus Metrics](../../reference/keystone-operator-metrics.md) — authoritative metric catalogue.
+- [Keystone Reconciler — Metrics Instrumentation](../../reference/keystone/keystone-reconciler.md#metrics-instrumentation) — how sub-reconcilers are instrumented.
+- [Observability & Diagnostics](../observability.md) — conditions, events, and logs.
 - [`operators/keystone/dashboards/keystone-operator.json`](https://github.com/c5c3/forge/blob/main/operators/keystone/dashboards/keystone-operator.json) — reference Grafana dashboard.
 
 ## Tested by

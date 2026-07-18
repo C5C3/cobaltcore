@@ -19,13 +19,13 @@ store is a `GlanceBackend` — on a ControlPlane you declare them as
 entry; a standalone Glance owns its `GlanceBackend` CRs directly.
 
 For the full field reference, see the
-[Glance CRD API Reference](../reference/glance/glance-crd.md) and the
-[GlanceBackend CRD API Reference](../reference/glance/glance-backend-crd.md).
+[Glance CRD API Reference](../../reference/glance/glance-crd.md) and the
+[GlanceBackend CRD API Reference](../../reference/glance/glance-backend-crd.md).
 
 ## Prerequisites
 
 ::: info Devstack
-This guide is written against the **[Quick Start (ControlPlane)](../quick-start-controlplane.md)** devstack. Stand it up first:
+This guide is written against the **[Quick Start (ControlPlane)](../../quick-start-controlplane.md)** devstack. Stand it up first:
 
 ```bash
 KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
@@ -45,7 +45,7 @@ resource name in the examples below is one that devstack produces.
 ## Step 1 — The Garage devstack pieces
 
 The ControlPlane devstack ships an in-cluster, S3-compatible
-[Garage object store](../reference/infrastructure/infrastructure-manifests.md#garage-object-store)
+[Garage object store](../../reference/infrastructure/infrastructure-manifests.md#garage-object-store)
 so the multi-store flow is copy-pasteable against a kind cluster. It provides:
 
 - an S3 endpoint at `http://garage.openstack.svc.cluster.local:3900`
@@ -161,7 +161,7 @@ kubectl get glance controlplane-glance -n openstack \
 Confirm it from the data path. The projected Glance API is reachable in-cluster
 only (the kind gateway terminates only Keystone and Horizon), so issue a token
 on the host and run a one-shot in-cluster client — the same pattern the
-[extended Quick Start](../quick-start-extended.md) uses to reach an API Service —
+[extended Quick Start](../../quick-start-extended.md) uses to reach an API Service —
 against `GET /v2/info/stores`:
 
 ```bash
@@ -303,7 +303,7 @@ argv, so it is written to the shell's history file and is readable out of
 `/proc/<pid>/cmdline` by any local user running `ps auxww` while the command
 runs. `--from-file=password=/dev/stdin` keeps it on a pipe instead — the same
 reason the [external-Keystone adoption
-guide](./adopt-external-keystone.md) writes its Secret that way when rotating
+guide](../keystone/adopt-external-keystone.md) writes its Secret that way when rotating
 the admin password.
 
 Apply a `Glance` CR you own — it names its own Keystone endpoint and service
@@ -400,7 +400,7 @@ kubectl patch glancebackend secondary -n openstack --type merge \
 Glance keeps serving from the last-good config across the window between the two
 patches — the `default-backend-switch` suite below asserts exactly this order and
 that retention. See the
-[Glance CRD API Reference](../reference/glance/glance-crd.md) for the full
+[Glance CRD API Reference](../../reference/glance/glance-crd.md) for the full
 standalone CR shape.
 
 ## Tested by

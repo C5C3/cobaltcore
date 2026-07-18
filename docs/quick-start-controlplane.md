@@ -309,7 +309,7 @@ Skip this step only when:
   bundled ControlPlane automatically, or
 - the ControlPlane opts out of Dynamic credentials with
   `spec.infrastructure.database.credentialsMode: Static` (see
-  [Migrate Keystone DB to Dynamic Credentials](/guides/migrate-keystone-db-to-dynamic-credentials)).
+  [Migrate Keystone DB to Dynamic Credentials](/guides/keystone/migrate-keystone-db-to-dynamic-credentials)).
 
 ::: warning If you skip it
 The reconcile chain stalls before any Keystone or Horizon child is created: the

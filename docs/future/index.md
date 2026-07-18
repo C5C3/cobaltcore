@@ -26,5 +26,5 @@ Pages in this section are explicitly **not**:
   existing OpenStack Keystone installation incrementally. **Phase 1 has
   graduated**: the service-less, External-mode ControlPlane is implemented, and
   running it is documented in
-  [Adopt an External Keystone](../guides/adopt-external-keystone.md). The page
+  [Adopt an External Keystone](../guides/keystone/adopt-external-keystone.md). The page
   keeps the later phases (infrastructure attach, service takeover) as sketches.

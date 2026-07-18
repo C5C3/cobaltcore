@@ -286,7 +286,7 @@ main() {
     # OpenBao database engine (database/mariadb/creds/keystone-{ns}), so no
     # long-lived static DB password is seeded at rest. A ControlPlane that
     # explicitly opts back into credentialsMode: Static must have its KV path
-    # seeded manually (see docs/guides/migrate-keystone-db-to-dynamic-credentials.md).
+    # seeded manually (see docs/guides/keystone/migrate-keystone-db-to-dynamic-credentials.md).
   done
 
   # Standalone (non-ControlPlane) Keystone demos still use a static KV credential.

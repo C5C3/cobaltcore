@@ -15,7 +15,7 @@
 # and an empty serviceMonitorSelector ensure the keystone-operator's
 # app.kubernetes.io/*-labelled ServiceMonitor is picked up cross-namespace, sidestepping
 # the `release: <stack-name>` selector mismatch documented in
-# docs/guides/enable-keystone-operator-metrics.md:40-49.
+# docs/guides/keystone/enable-keystone-operator-metrics.md:40-49.
 ---
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease

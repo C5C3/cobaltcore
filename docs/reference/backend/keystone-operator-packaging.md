@@ -263,7 +263,7 @@ operator args when left at its default.
 | `monitoring.serviceMonitor.enabled` | `boolean` | `false` | Render a `monitoring.coreos.com/v1` ServiceMonitor targeting the metrics port. Requires prometheus-operator CRDs in the cluster |
 | `monitoring.serviceMonitor.interval` | `string` | `30s` | Scrape interval on the ServiceMonitor endpoint |
 
-See [Enable Keystone Operator Metrics](../../guides/enable-keystone-operator-metrics.md)
+See [Enable Keystone Operator Metrics](../../guides/keystone/enable-keystone-operator-metrics.md)
 for the end-to-end scraping setup.
 
 #### NetworkPolicy

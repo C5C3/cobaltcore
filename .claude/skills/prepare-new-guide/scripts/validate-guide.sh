@@ -29,7 +29,9 @@
 # source of truth; this script is the machine copy.
 #
 # Usage: validate-guide.sh [--full] [<guide.md>...]
-# Defaults to every docs/guides/*.md. Exit code 1 on any [FAIL].
+# Defaults to every docs/guides/*.md and docs/guides/*/*.md (general guides
+# sit flat; service-specific guides sit in a per-service subdirectory).
+# Exit code 1 on any [FAIL].
 
 set -euo pipefail
 
@@ -58,7 +60,9 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 if [[ "${#FILES[@]}" -eq 0 ]]; then
-  FILES=("${REPO_ROOT}"/docs/guides/*.md)
+  shopt -s nullglob
+  FILES=("${REPO_ROOT}"/docs/guides/*.md "${REPO_ROOT}"/docs/guides/*/*.md)
+  shopt -u nullglob
 fi
 
 FAIL_COUNT=0
@@ -100,7 +104,7 @@ check_guide() {
   if [[ -z "${container}" ]]; then
     info "V2 ${file}: no '::: info Devstack' container — structure is owned by ${GATE} (run --full)"
   else
-    printf '%s\n' "${container}" | grep -qF '](../quick-start-controlplane.md' && links_cp=1
+    printf '%s\n' "${container}" | grep -qE '\]\((\.\./)+quick-start-controlplane\.md' && links_cp=1
     printf '%s\n' "${container}" | grep -qF 'WITH_CONTROLPLANE=true' && has_flag=1
     if [[ "${links_cp}" -eq 1 && "${has_flag}" -eq 0 ]]; then
       fail "V2 ${file}: devstack links quick-start-controlplane.md but the bring-up command lacks WITH_CONTROLPLANE=true"

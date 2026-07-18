@@ -19,8 +19,11 @@
 # that page is the prose source of truth; this script is the machine copy.
 #
 # Usage: scaffold-guide.sh <slug> --devstack <devstack> [options]
-#   <slug>                guide file slug ([a-z0-9-]+, becomes docs/guides/<slug>.md)
+#   <slug>                guide file slug ([a-z0-9-]+, becomes docs/guides/<slug>.md,
+#                         or docs/guides/<service>/<slug>.md with --service)
 #   --devstack <name>     quick-start | quick-start-extended | quick-start-controlplane
+#   --service <name>      the guide is service-specific and lives one level deeper
+#                         (docs/guides/<service>/) — deepens the devstack link
 #   --title <title>       guide title (default: title-cased slug)
 #   --opt-in WITH_X=true  compose a WITH_* opt-in flag onto the bring-up command
 #                         (repeatable; WITH_CONTROLPLANE is a devstack, not an opt-in)
@@ -29,12 +32,13 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: $0 <slug> --devstack <quick-start|quick-start-extended|quick-start-controlplane> [--title <title>] [--opt-in WITH_X=true]... [--suite tests/e2e/...]" >&2
+  echo "usage: $0 <slug> --devstack <quick-start|quick-start-extended|quick-start-controlplane> [--service <name>] [--title <title>] [--opt-in WITH_X=true]... [--suite tests/e2e/...]" >&2
   exit 2
 }
 
 SLUG=""
 DEVSTACK=""
+SERVICE=""
 TITLE=""
 SUITE=""
 OPT_INS=""
@@ -44,6 +48,15 @@ while [[ $# -gt 0 ]]; do
     --devstack)
       [[ $# -ge 2 ]] || usage
       DEVSTACK="$2"
+      shift 2
+      ;;
+    --service)
+      [[ $# -ge 2 ]] || usage
+      if [[ ! "$2" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+        echo "error: --service must match [a-z0-9][a-z0-9-]*, got '$2'" >&2
+        exit 2
+      fi
+      SERVICE="$2"
       shift 2
       ;;
     --title)
@@ -112,6 +125,11 @@ if [[ -z "${SUITE}" ]]; then
   echo "note: no --suite given — '## Tested by' carries a TODO placeholder the docs gate rejects" >&2
 fi
 
+# Devstack link depth: service-specific guides live one level deeper
+# (docs/guides/<service>/), so the Getting-Started link climbs twice.
+LINK_PREFIX="../"
+[[ -n "${SERVICE}" ]] && LINK_PREFIX="../../"
+
 # Bring-up command per devstack, with opt-ins composed onto the
 # 'make deploy-infra' line (guide-conventions.md: "Opt-in flags compose").
 OPT_SUFFIX=""
@@ -153,7 +171,7 @@ why an operator reaches for it.
 ## Prerequisites
 
 ::: info Devstack
-This guide is written against the **[${DEVSTACK_LABEL}](../${DEVSTACK}.md)** devstack. Stand it up first:
+This guide is written against the **[${DEVSTACK_LABEL}](${LINK_PREFIX}${DEVSTACK}.md)** devstack. Stand it up first:
 
 \`\`\`bash
 ${BRING_UP}

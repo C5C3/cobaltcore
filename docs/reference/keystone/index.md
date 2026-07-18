@@ -71,7 +71,7 @@ See [CRD API Reference](./keystone-crd.md) and
   retained) governs teardown.
 
 See [KeystoneIdentityBackend CRD](./identity-backend-crd.md) and the
-[LDAP Domain Backend guide](../../guides/ldap-domain-backend.md).
+[LDAP Domain Backend guide](../../guides/keystone/ldap-domain-backend.md).
 
 ## Encryption Key Management
 
@@ -88,7 +88,7 @@ See [KeystoneIdentityBackend CRD](./identity-backend-crd.md) and the
 - **Watch-driven backup finalizer.** PushSecret watch with predicate filter
   eliminates per-sync workqueue churn and trims delete latency to sub-15s.
 
-See the [Key Rotation Guide](../../guides/keystone-key-rotation.md).
+See the [Key Rotation Guide](../../guides/keystone/keystone-key-rotation.md).
 
 ## Database Lifecycle
 
@@ -112,7 +112,7 @@ See the [Key Rotation Guide](../../guides/keystone-key-rotation.md).
   connections up to `verify-full`, with a cert-manager-issued client
   certificate in managed mode and a dedicated `DatabaseTLSReady`
   sub-condition. See the
-  [Database TLS guide](../../guides/enable-keystone-database-tls.md).
+  [Database TLS guide](../../guides/keystone/enable-keystone-database-tls.md).
 
 ## Networking and Exposure
 
@@ -127,7 +127,7 @@ See the [Key Rotation Guide](../../guides/keystone-key-rotation.md).
 - **Operator NetworkPolicy.** Chart-level, default-off, opt-in hardening of
   the operator pod itself with fail-closed render guards. See
   [Operator NetworkPolicy](./keystone-operator-networkpolicy.md) and the
-  [enablement guide](../../guides/enable-keystone-operator-networkpolicy.md).
+  [enablement guide](../../guides/keystone/enable-keystone-operator-networkpolicy.md).
 
 ## Observability
 
@@ -140,7 +140,7 @@ See the [Key Rotation Guide](../../guides/keystone-key-rotation.md).
   error counts, key rotation age, db_sync outcomes and duration.
   Contract-tested against this catalogue. See
   [Operator Metrics](../keystone-operator-metrics.md) and the
-  [enablement guide](../../guides/enable-keystone-operator-metrics.md).
+  [enablement guide](../../guides/keystone/enable-keystone-operator-metrics.md).
 
 ## Day-2 Operations
 
@@ -151,8 +151,8 @@ See the [Key Rotation Guide](../../guides/keystone-key-rotation.md).
 - **Admin password rotation.** Manual rotation at the OpenBao source with a
   digest-gated bootstrap re-run, plus an optional in-cluster scheduled
   rotation CronJob via `spec.passwordRotation`. See the
-  [rotation](../../guides/keystone-admin-password-rotation.md) and
-  [scheduled rotation](../../guides/keystone-admin-password-scheduled-rotation.md)
+  [rotation](../../guides/keystone/keystone-admin-password-rotation.md) and
+  [scheduled rotation](../../guides/keystone/keystone-admin-password-scheduled-rotation.md)
   guides.
 - **Policy validation.** `oslopolicy-validator` Job blocks rollouts on
   invalid policy overrides.

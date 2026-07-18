@@ -634,7 +634,7 @@ to render its server certificate. The infrastructure kustomization still referen
 `db-ca-issuer.yaml` so subsequent `kubectl apply -k` runs are idempotent.
 
 For the end-to-end TLS path the issuer participates in, see the
-[Enable Keystone Database TLS](../../guides/enable-keystone-database-tls.md) how-to.
+[Enable Keystone Database TLS](../../guides/keystone/enable-keystone-database-tls.md) how-to.
 
 ### MariaDB Galera Cluster
 
@@ -723,7 +723,7 @@ that the live connection is encrypted lives in
 (asserts `SHOW STATUS LIKE 'Ssl_cipher'` reports a non-empty cipher).
 
 To turn the path on for a `Keystone` CR, follow the
-[Enable Keystone Database TLS](../../guides/enable-keystone-database-tls.md) guide.
+[Enable Keystone Database TLS](../../guides/keystone/enable-keystone-database-tls.md) guide.
 
 ### Memcached Cluster
 
@@ -1196,7 +1196,7 @@ contributor explicitly opts in. The production `deploy/flux-system/` overlay
 also does not install the stack: production clusters are expected to run
 their own Prometheus and widen its `serviceMonitorSelector` to pick up the
 keystone-operator chart's `ServiceMonitor` (see
-[Enable Keystone Operator Metrics](../../guides/enable-keystone-operator-metrics.md)
+[Enable Keystone Operator Metrics](../../guides/keystone/enable-keystone-operator-metrics.md)
 for that wiring path).
 
 The overlay is self-contained: the `Namespace` and `HelmRelease` live in

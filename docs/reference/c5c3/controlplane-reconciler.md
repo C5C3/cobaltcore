@@ -761,7 +761,7 @@ The database is **managed** when the effective `clusterRef` is set and
   > engine-issued credentials, so a Static ControlPlane — the explicit opt-out on
   > the shared database, and *every dedicated managed database* — reaches Ready
   > only once the path has been seeded (`username`, `password`) out-of-band; see
-  > [Migrate the Keystone DB to dynamic credentials](../../guides/migrate-keystone-db-to-dynamic-credentials.md).
+  > [Migrate the Keystone DB to dynamic credentials](../../guides/keystone/migrate-keystone-db-to-dynamic-credentials.md).
   > Until then `DBCredentialsReady` stays `False` with reason
   > `WaitingForDBCredentialSecret`, and the message names the exact path to seed.
 

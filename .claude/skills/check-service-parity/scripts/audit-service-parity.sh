@@ -285,13 +285,13 @@ for svc in ${SERVICES}; do
   check "${svc}" P8 "reference-reconciler" "${t}" \
     "docs/reference/${svc}/${svc}-reconciler.md present"
 
-  t=0; [[ -f "docs/guides/enable-${svc}-operator-metrics.md" ]] || t=1
+  t=0; [[ -f "docs/guides/${svc}/enable-${svc}-operator-metrics.md" ]] || t=1
   check "${svc}" P8 "guide-metrics" "${t}" \
-    "docs/guides/enable-${svc}-operator-metrics.md present"
+    "docs/guides/${svc}/enable-${svc}-operator-metrics.md present"
 
-  t=0; [[ -f "docs/guides/enable-${svc}-operator-networkpolicy.md" ]] || t=1
+  t=0; [[ -f "docs/guides/${svc}/enable-${svc}-operator-networkpolicy.md" ]] || t=1
   check "${svc}" P8 "guide-networkpolicy" "${t}" \
-    "docs/guides/enable-${svc}-operator-networkpolicy.md present"
+    "docs/guides/${svc}/enable-${svc}-operator-networkpolicy.md present"
 
   t=0; grep -qF "/reference/${svc}/" docs/.vitepress/config.ts || t=1
   check "${svc}" P8 "vitepress-nav" "${t}" \

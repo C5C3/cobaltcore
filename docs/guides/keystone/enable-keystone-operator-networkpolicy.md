@@ -11,19 +11,19 @@ This guide walks an operator through opting in to the chart-level
 NetworkPolicy that restricts the keystone-operator pod's egress and ingress
 to the minimum required for correct reconciliation. For the
 authoritative rule table, failure modes, and schema contract, see
-[Keystone Operator NetworkPolicy](../reference/keystone/keystone-operator-networkpolicy.md).
+[Keystone Operator NetworkPolicy](../../reference/keystone/keystone-operator-networkpolicy.md).
 
 > **Scope.** This guide covers the NetworkPolicy that protects the
 > **operator pod itself**. For the per-CR NetworkPolicy that protects
 > Keystone API pods, see the
-> [reconcileNetworkPolicy sub-reconciler](../reference/keystone/keystone-reconciler.md#sub-reconciler-contracts).
+> [reconcileNetworkPolicy sub-reconciler](../../reference/keystone/keystone-reconciler.md#sub-reconciler-contracts).
 
 ---
 
 ## Prerequisites
 
 ::: info Devstack
-This guide is written against the **[Quick Start](../quick-start.md)** devstack. Stand it up first:
+This guide is written against the **[Quick Start](../../quick-start.md)** devstack. Stand it up first:
 
 ```bash
 KIND_HOST_PORT=8443 make deploy-infra
@@ -360,9 +360,9 @@ without a pod restart.
 
 ## See also
 
-- [Keystone Operator NetworkPolicy](../reference/keystone/keystone-operator-networkpolicy.md) —
+- [Keystone Operator NetworkPolicy](../../reference/keystone/keystone-operator-networkpolicy.md) —
   authoritative rule table and schema contract.
-- [Keystone Reconciler Architecture](../reference/keystone/keystone-reconciler.md) —
+- [Keystone Reconciler Architecture](../../reference/keystone/keystone-reconciler.md) —
   the CR-scoped `reconcileNetworkPolicy` sub-reconciler for the
   Keystone API pod NetworkPolicy (different scope from this guide).
 - [Kubernetes NetworkPolicy concepts](https://kubernetes.io/docs/concepts/services-networking/network-policies/).

@@ -409,7 +409,7 @@ namespace, so two ControlPlanes already get two instances.
 ## Further reading
 
 - [ControlPlane Quick Start](../quick-start-controlplane.md) — standing up a tenant as a `ControlPlane` CR (the one-per-namespace tenancy aggregate).
-- [Enable the Keystone Operator NetworkPolicy](./enable-keystone-operator-networkpolicy.md) — confine the namespace-scoped operator's egress.
+- [Enable the Keystone Operator NetworkPolicy](./keystone/enable-keystone-operator-networkpolicy.md) — confine the namespace-scoped operator's egress.
 - [Helm Values Schema](../reference/backend/helm-values-schema.md) — the full `rbac.*` / `webhook.*` value reference.
 
 ## Tested by

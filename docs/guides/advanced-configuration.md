@@ -128,14 +128,14 @@ full Keystone CR reference.
 | Replica count | `spec.deployment.replicas` | `spec.services.keystone.replicas` | [Day 2 — Scale](./day-2-operations.md#scale-replicas) |
 | Release / image | `spec.image` | `spec.openStackRelease` (tag) + `spec.services.keystone.image` (override) | [Day 2 — Upgrade](./day-2-operations.md#upgrade-the-openstack-release) |
 | Policy overrides | `spec.policyOverrides` | `spec.services.keystone.policyOverrides` (+ `spec.globalPolicyOverrides`) | [PolicySpec](../reference/keystone/keystone-crd.md#policyspec) |
-| Federation proxy image | `spec.federation.proxyImage` | `spec.services.keystone.federationProxyImage` | [Attach an OIDC Federation Backend](./oidc-federation.md) |
+| Federation proxy image | `spec.federation.proxyImage` | `spec.services.keystone.federationProxyImage` | [Attach an OIDC Federation Backend](./keystone/oidc-federation.md) |
 | Public endpoint / gateway | `spec.bootstrap.publicEndpoint`, `spec.gateway` | `spec.services.keystone.publicEndpoint`, `spec.services.keystone.gateway` | [BootstrapSpec](../reference/keystone/keystone-crd.md#bootstrapspec) |
 | Fernet / credential-key schedule | `spec.fernet`, `spec.credentialKeys` | `spec.services.keystone.rotationInterval` (schedule only) | [Day 2 — Rotate Fernet keys](./day-2-operations.md#rotate-fernet-keys-manually) |
-| Database TLS/mTLS | `spec.database.tls` | `spec.infrastructure.database.tls` | [Enable Keystone Database TLS/mTLS](./enable-keystone-database-tls.md) |
+| Database TLS/mTLS | `spec.database.tls` | `spec.infrastructure.database.tls` | [Enable Keystone Database TLS/mTLS](./keystone/enable-keystone-database-tls.md) |
 | Autoscaling (HPA) | `spec.autoscaling` | not exposed — standalone-only | [Autoscaling (HPA)](#autoscaling-hpa) |
 | Network policy | `spec.networkPolicy` | not exposed — standalone-only | [Network policy](#network-policy) |
 | Free-form INI (`extraConfig`) | `spec.extraConfig` | not exposed — standalone-only | [ExtraConfig](#extraconfig-free-form-ini-sections) |
-| Scheduled admin-password rotation | `spec.passwordRotation` | not exposed — standalone-only | [Schedule Admin Password Rotation](./keystone-admin-password-scheduled-rotation.md) |
+| Scheduled admin-password rotation | `spec.passwordRotation` | not exposed — standalone-only | [Schedule Admin Password Rotation](./keystone/keystone-admin-password-scheduled-rotation.md) |
 | uWSGI tuning | `spec.uwsgi` | not exposed — standalone-only | [UWSGISpec](../reference/keystone/keystone-crd.md#uwsgispec) |
 | Logging | `spec.logging` | not exposed — standalone-only | [LoggingSpec](../reference/keystone/keystone-crd.md#loggingspec) |
 | Trust flush | `spec.trustFlush` | not exposed — standalone-only | [TrustFlushSpec](../reference/keystone/keystone-crd.md#trustflushspec) |

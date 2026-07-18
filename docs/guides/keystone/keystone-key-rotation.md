@@ -12,9 +12,9 @@ and recovering when the operator rejects a staged rotation.
 
 For the reconciler-side contract (RBAC split, staging-Secret naming,
 validation rules, event reasons), see
-[Key Rotation RBAC Split](../reference/keystone/keystone-reconciler.md#key-rotation-rbac-split)
+[Key Rotation RBAC Split](../../reference/keystone/keystone-reconciler.md#key-rotation-rbac-split)
 under the Fernet and credential sub-reconciler sections in
-[Keystone Reconciler Architecture](../reference/keystone/keystone-reconciler.md).
+[Keystone Reconciler Architecture](../../reference/keystone/keystone-reconciler.md).
 
 > **Names.** The examples target the ControlPlane devstack's projected Keystone:
 > the CR is `controlplane-keystone` in the `openstack` namespace, so the rotation
@@ -29,7 +29,7 @@ under the Fernet and credential sub-reconciler sections in
 ## Prerequisites
 
 ::: info Devstack
-This guide is written against the **[Quick Start (ControlPlane)](../quick-start-controlplane.md)** devstack. Stand it up first:
+This guide is written against the **[Quick Start (ControlPlane)](../../quick-start-controlplane.md)** devstack. Stand it up first:
 
 ```bash
 KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
@@ -40,7 +40,7 @@ projected `controlplane-keystone` Keystone is `Ready`. Every resource name in th
 examples below is one that devstack produces.
 :::
 
-- A healthy Keystone CR (`Ready=True`) — see [Observability & Diagnostics](./observability.md).
+- A healthy Keystone CR (`Ready=True`) — see [Observability & Diagnostics](../observability.md).
 - `kubectl` access to the CR's namespace (`openstack`).
 - The rotation CronJobs already reconciled —
   `kubectl -n openstack get cronjob controlplane-keystone-fernet-rotate controlplane-keystone-credential-rotate` returns both.
@@ -216,7 +216,7 @@ is the same.
 Because the staged `.data` is cleared on rejection, the `RotationRejected`
 event message above — not the staging Secret — is what tells you which
 rule failed. Match it against the operator's validation contract
-(see [Operator validation rules](../reference/keystone/keystone-reconciler.md#key-rotation-rbac-split)):
+(see [Operator validation rules](../../reference/keystone/keystone-reconciler.md#key-rotation-rbac-split)):
 
 | Event message contains | Likely cause |
 | --- | --- |
@@ -284,8 +284,8 @@ aging-out.
 
 ## Standalone Keystone, without a ControlPlane
 
-The [Quick Start](../quick-start.md) and
-[Quick Start (Extended)](../quick-start-extended.md) devstacks run a standalone
+The [Quick Start](../../quick-start.md) and
+[Quick Start (Extended)](../../quick-start-extended.md) devstacks run a standalone
 Keystone CR named `keystone`. The rotation resources are named after that CR, so
 substitute the `controlplane-keystone-` prefix with `keystone-` throughout:
 
@@ -306,13 +306,13 @@ identical.
 
 - [Rotate the Keystone Admin Password](./keystone-admin-password-rotation.md) — the *admin-password* counterpart to this key rotation, driven from the OpenBao source.
 - [Schedule Keystone Admin Password Rotation](./keystone-admin-password-scheduled-rotation.md) — CronJob-driven scheduled admin-password rotation.
-- [Day 2 Operations](./day-2-operations.md) — a condensed on-demand rotation trigger alongside scaling and upgrades.
+- [Day 2 Operations](../day-2-operations.md) — a condensed on-demand rotation trigger alongside scaling and upgrades.
 
 ## Related reference
 
-- [Key Rotation RBAC Split](../reference/keystone/keystone-reconciler.md#key-rotation-rbac-split) — the authoritative contract for the Fernet sub-reconciler.
-- [Labels and Annotations](../reference/keystone/keystone-reconciler.md#labels-and-annotations) — stable metadata keys observable by consumers.
-- [Rotation Scripts](../reference/backend/rotation-scripts.md) — the embedded `fernet_rotate.sh` / `credential_rotate.sh` contract.
+- [Key Rotation RBAC Split](../../reference/keystone/keystone-reconciler.md#key-rotation-rbac-split) — the authoritative contract for the Fernet sub-reconciler.
+- [Labels and Annotations](../../reference/keystone/keystone-reconciler.md#labels-and-annotations) — stable metadata keys observable by consumers.
+- [Rotation Scripts](../../reference/backend/rotation-scripts.md) — the embedded `fernet_rotate.sh` / `credential_rotate.sh` contract.
 
 ## Tested by
 

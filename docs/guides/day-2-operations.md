@@ -214,7 +214,7 @@ kubectl -n openstack describe keystone controlplane-keystone | grep FernetKeysRo
 
 For the full staging-aware verification flow, the operator's validation contract, and
 recovery from a rejected rotation (`RotationRejected`), see
-[Rotate Keystone Fernet and Credential Keys](./keystone-key-rotation.md).
+[Rotate Keystone Fernet and Credential Keys](./keystone/keystone-key-rotation.md).
 
 ::: tip Cleanup
 Manual rotation Jobs are not garbage-collected automatically and accumulate if you run
@@ -290,9 +290,9 @@ scheduled rotation during an incident without deleting the CronJob, and
 ## Further reading
 
 - [Observability & Diagnostics](./observability.md) — reading conditions, events, and status fields while operations run
-- [Rotate Keystone Fernet and Credential Keys](./keystone-key-rotation.md) — the full staging→production rotation flow, validation contract, and recovery
-- [Rotate the Keystone Admin Password](./keystone-admin-password-rotation.md) — manual admin-password rotation at the OpenBao source
-- [Schedule Keystone Admin Password Rotation](./keystone-admin-password-scheduled-rotation.md) — CronJob-driven scheduled admin-password rotation
+- [Rotate Keystone Fernet and Credential Keys](./keystone/keystone-key-rotation.md) — the full staging→production rotation flow, validation contract, and recovery
+- [Rotate the Keystone Admin Password](./keystone/keystone-admin-password-rotation.md) — manual admin-password rotation at the OpenBao source
+- [Schedule Keystone Admin Password Rotation](./keystone/keystone-admin-password-scheduled-rotation.md) — CronJob-driven scheduled admin-password rotation
 - [Keystone Upgrade Flow](../reference/keystone/keystone-upgrade-flow.md) — state machine, job names, retry behavior
 - [Keystone Controller Events](../reference/keystone/keystone-events.md) — full event catalogue for upgrade, rotation, and scale events
 - [Advanced Configuration](./advanced-configuration.md) — brownfield DB, autoscaling, network policy, and more
