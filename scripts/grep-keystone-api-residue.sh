@@ -28,11 +28,6 @@
 # scan misses stale doc tables that contradict the current naming convention;
 # this scanner catches both.
 #
-# Architecture docs (`architecture/`) are intentionally excluded from the scan:
-# that directory is a git submodule pointing at the upstream C5C3 repository
-# and is read-only from this worktree. Stale references inside `architecture/`
-# must be fixed upstream and pulled in via a submodule SHA bump.
-#
 # This script itself is excluded from BOTH scans because its description
 # mentions the literal and templated forms verbatim and would otherwise
 # self-trip if `scripts/` is ever added to the search roots.
@@ -59,8 +54,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
-# Search roots, minus the `architecture/` submodule (see header comment for
-# rationale).
 SEARCH_ROOTS=(
   "operators"
   "tests"
@@ -74,7 +67,6 @@ SEARCH_ROOTS=(
 # instead of treating it as opaque. Adding a new top-level directory without
 # also adding it to SEARCH_ROOTS or here causes the script to exit 2.
 EXCLUDED_ROOTS=(
-  "architecture"  # git submodule; residue must be fixed upstream
   "internal"      # shared Go libs; verified clean of `keystone-api`
   "scripts"       # contains this script, which references the patterns by design
   "releases"      # generated install manifests; sourced from operators/ which is scanned

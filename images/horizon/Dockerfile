@@ -62,7 +62,7 @@ RUN SITE_PKG="$(/var/lib/openstack/bin/python -c 'import os, openstack_dashboard
 # hadolint ignore=DL3006
 FROM python-base
 
-# DEVIATION from architecture/docs/08-container-images/01-build-pipeline.md:
+# DEVIATION from the original build-pipeline design:
 # Uses the generic 'openstack' user (UID/GID 42424) from python-base instead
 # of a per-service user. See python-base/Dockerfile for rationale.
 

@@ -179,7 +179,7 @@ Groups the pod-level knobs for the Keystone API Deployment under `spec.deploymen
 | `resources` | [`*corev1.ResourceRequirements`](https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/pod-v1/#resources) | No | See below | CPU and memory requests and limits for the Keystone API container. When unset, the defaulting webhook injects sensible defaults to ensure Burstable QoS class and enable HPA utilization calculations. |
 | `topologySpreadConstraints` | [`[]corev1.TopologySpreadConstraint`](https://kubernetes.io/docs/concepts/scheduling-eviction/topology-spread-constraints/) | No | See [below](#topologyspreadconstraints) | Scheduler hints for spreading pods across zones and nodes. `nil` injects two defaults (zone + hostname, MaxSkew=1, `ScheduleAnyway`); a non-nil value (including `[]`) is used verbatim. |
 | `priorityClassName` | `*string` | No | `nil` | PriorityClass attached to the Keystone API pod spec. When set, the webhook verifies the class exists; when unset, no priority class is configured. |
-| `terminationGracePeriodSeconds` | `*int64` | No | `nil` | Grace period (seconds) granted to Keystone API pods between SIGTERM and SIGKILL during rolling updates. When `nil`, the reconciler applies `30` (the CRD schema emits no `default:` so pre-existing CRs are not mutated on operator upgrade). Minimum: `10`. Must be strictly greater than `preStopSleepSeconds`. Drives the PodSpec `terminationGracePeriodSeconds`. See [Graceful-termination fields](#graceful-termination-fields) and the HA rollout sequence in `architecture/docs/04-architecture/04-high-availability.md`. |
+| `terminationGracePeriodSeconds` | `*int64` | No | `nil` | Grace period (seconds) granted to Keystone API pods between SIGTERM and SIGKILL during rolling updates. When `nil`, the reconciler applies `30` (the CRD schema emits no `default:` so pre-existing CRs are not mutated on operator upgrade). Minimum: `10`. Must be strictly greater than `preStopSleepSeconds`. Drives the PodSpec `terminationGracePeriodSeconds`. See [Graceful-termination fields](#graceful-termination-fields). |
 | `preStopSleepSeconds` | `*int64` | No | `nil` | Sleep duration (seconds) of the preStop lifecycle hook, covering the window between EndpointSlice removal and kube-proxy/ingress propagation. When `nil`, the reconciler applies `5` (the CRD schema emits no `default:` so pre-existing CRs are not mutated on operator upgrade). Minimum: `0`. Must be strictly less than `terminationGracePeriodSeconds`. See [Graceful-termination fields](#graceful-termination-fields). |
 | `strategy` | [`*appsv1.DeploymentStrategy`](https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/deployment-v1/#DeploymentSpec) | No | `RollingUpdate(maxSurge=1, maxUnavailable=0)` | Overrides the Deployment rollout strategy. When `nil`, the reconciler injects `RollingUpdate` with `maxUnavailable=0` and `maxSurge=1` so available capacity never drops below `spec.deployment.replicas` during an image-tag patch. Set to customize surge/unavailable counts or switch to `Recreate`. |
 
@@ -316,8 +316,8 @@ from the spec.
 | `processes` | `int32` | No | `2` | Number of uWSGI worker processes. Minimum: 1. Maps to `--processes` in the container command. |
 | `threads` | `int32` | No | `1` | Number of threads per uWSGI worker process. Minimum: 1. Maps to `--threads` in the container command. |
 | `httpKeepAlive` | `*bool` | No | `true` | Enables the `--http-keepalive` flag on the uWSGI process. When `false`, the flag is omitted. A nil-preserving pointer: unset means the documented default (`true`) is restored by the webhook. See [HTTPKeepAlive defaulting](#httpkeepalive-defaulting). |
-| `harakiri` | `*int32` | No | `nil` (flag omitted) | Caps the per-request worker lifetime (seconds) via `--harakiri`. Minimum: `1`. The webhook additionally enforces `harakiri < terminationGracePeriodSeconds − preStopSleepSeconds` so the worst-case per-request kill fits inside the shutdown drain window. See the HA rollout sequence in `architecture/docs/04-architecture/04-high-availability.md`. |
-| `httpKeepAliveTimeout` | `*int32` | No | `nil` (flag omitted) | Idle timeout (seconds) for keep-alive connections via `--http-keepalive-timeout`. Minimum: `1`. Emitted only when `httpKeepAlive=true` (the webhook rejects a non-nil timeout combined with `httpKeepAlive=false`). Recommended to set `≤ preStopSleepSeconds` so idle sockets close before SIGTERM reaches uWSGI. See the HA rollout sequence in `architecture/docs/04-architecture/04-high-availability.md`. |
+| `harakiri` | `*int32` | No | `nil` (flag omitted) | Caps the per-request worker lifetime (seconds) via `--harakiri`. Minimum: `1`. The webhook additionally enforces `harakiri < terminationGracePeriodSeconds − preStopSleepSeconds` so the worst-case per-request kill fits inside the shutdown drain window. See [Graceful-termination fields](#graceful-termination-fields). |
+| `httpKeepAliveTimeout` | `*int32` | No | `nil` (flag omitted) | Idle timeout (seconds) for keep-alive connections via `--http-keepalive-timeout`. Minimum: `1`. Emitted only when `httpKeepAlive=true` (the webhook rejects a non-nil timeout combined with `httpKeepAlive=false`). Recommended to set `≤ preStopSleepSeconds` so idle sockets close before SIGTERM reaches uWSGI. See [Graceful-termination fields](#graceful-termination-fields). |
 
 ### Deployment Command Mapping
 
@@ -387,10 +387,6 @@ updates — `spec.deployment.terminationGracePeriodSeconds`, `spec.deployment.pr
 Each field is listed in its owning section (top-level `KeystoneSpec` or
 `UWSGISpec`); this section consolidates their semantics, interaction rules,
 and defaulting behavior.
-
-For the rollout sequence diagram and tunable-selection guidance, see
-`architecture/docs/04-architecture/04-high-availability.md` (section
-"Keystone Rolling Update").
 
 ### Field Summary
 

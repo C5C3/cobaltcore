@@ -32,8 +32,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     tzdata \
     && rm -rf /var/lib/apt/lists/*
 
-# DEVIATION from architecture/docs/08-container-images/01-build-pipeline.md:
-# The architecture doc's Keystone Dockerfile example creates a per-service user
+# DEVIATION from the original build-pipeline design:
+# The original design's Keystone Dockerfile example creates a per-service user
 # (e.g., groupadd keystone / useradd keystone). We use a generic 'openstack'
 # user/group (UID/GID 42424) shared by all service images to reduce complexity
 # and image layers. Each service image inherits this user via USER openstack.

@@ -23,5 +23,4 @@ Chainsaw E2E).
 
 Outstanding work is tracked in [GitHub Issues](https://github.com/c5c3/forge/issues) — the issue
 tracker is the single source of truth for planned features (`CC-NNNN` labels), production-hardening
-gaps, and release milestones. See the architecture handbook under [`architecture/docs/`](architecture/docs/)
-for the design context behind individual feature IDs.
+gaps, and release milestones.

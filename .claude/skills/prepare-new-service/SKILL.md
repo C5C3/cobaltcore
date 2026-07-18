@@ -32,7 +32,7 @@ Every service in forge threads through five layers. Keystone
 | 2. Service operator | `operators/<svc>/` (api, controller, webhook, helm chart on `operators/shared/helm/operator-library`), `go.work`, `Makefile` `OPERATORS` | **no** — module + enumerations by hand |
 | 3. CI / e2e / deploy | `ci.yaml` paths-filter + `ALL_OPERATORS` + matrices, `tests/e2e/<svc>/`, `tests/e2e/<svc>-operator/`, `tests/e2e-chaos/`, `tests/tempest/<svc>-*/`, `deploy/flux-system/releases/<svc>-operator.yaml` | chainsaw suites: **yes** (auto-discovered); ci.yaml wiring: **no** (3-step procedure in `hack/ci-resolve-changes.sh` header) |
 | 4. ControlPlane (c5c3) | `ServicesSpec` in `operators/c5c3/api/v1alpha1/controlplane_types.go`, `reconcile_<svc>.go`, condition/instrumentation maps, RBAC markers + helm `_helpers.tpl`, scheme, webhook | **no** — ~10 enumeration points |
-| 5. Documentation | `docs/reference/<svc>/` (hand-written, `quadrant: operator` frontmatter), VitePress sidebar, guides, `tests/unit/docs/` conventions; `architecture/` **submodule** (separate repo C5C3/C5C3) | **no** — no doc generator exists |
+| 5. Documentation | `docs/reference/<svc>/` (hand-written, `quadrant: operator` frontmatter), VitePress sidebar, guides, `tests/unit/docs/` conventions | **no** — no doc generator exists |
 
 ## Procedure
 
@@ -160,9 +160,6 @@ sub-issues use them as gates): [[check-crd-drift]], [[check-fixture-drift]],
 - **Operator Dockerfiles are coupled to `go.work`:** each copies every
   module's go.mod, so adding a module edits all existing operator
   Dockerfiles (until a parameterized `ARG OPERATOR` Dockerfile lands).
-- **`architecture/` is a git submodule** of a separate repo — architecture
-  chapters (esp. `docs/09-implementation/`) are planned there, not here,
-  and need `git submodule update --init architecture` to even read.
 - **Tempest matrix naming** (`hack/ci-generate-tempest-matrix.sh`) and the
   chaos CI job's image list are keystone-specific today.
 - **WSGI entry points:** `uv pip install --prefix` skips PBR

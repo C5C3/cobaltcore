@@ -24,8 +24,7 @@
 #
 # Scope is git-tracked files (git ls-files). This automatically excludes
 # git-ignored build output (node_modules/, bin/, docs/.vitepress/{dist,cache}/,
-# coverage *.out) and the architecture/ submodule, which git lists as a single
-# gitlink entry rather than its contents.
+# coverage *.out).
 #
 # Additional excludes:
 #   - .planwerk/  internal planning/review tool records; they quote the

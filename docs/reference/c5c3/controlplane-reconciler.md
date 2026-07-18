@@ -2261,21 +2261,3 @@ bao kv metadata delete kv-v2/openstack/keystone/<name>/credential-keys
 path — the canonical KV-v2 purge and the right inverse of the now-superseded write.
 (The Fernet / credential families were previously migrated flat→per-name in an
 earlier release, and the boundary-4 change layers the namespace segment on top.)
-
-## Architecture references
-
-The `ControlPlane` reconciler and the K-ORC self-credentialing chain implement
-the following upstream architecture chapters (in the `architecture/` submodule,
-[github.com/C5C3/C5C3](https://github.com/C5C3/C5C3)). They are the authoritative
-design source for this reconciler:
-
-- `architecture/docs/09-implementation/08-c5c3-operator.md` — the c5c3-operator
-  `ControlPlane` reconciler contract and sub-reconciler ordering.
-- `architecture/docs/03-components/01-control-plane/05-korc.md` — the K-ORC
-  component, the per-resource `cloudCredentialsRef` resolution model (resolved in
-  the resource's own namespace, the basis for the C1 co-location fix), and the
-  chart constraint.
-- `architecture/docs/05-deployment/01-gitops-fluxcd/01-credential-lifecycle.md` —
-  the restricted, password-driven admin Application Credential lifecycle and the
-  operator bootstrap-seed → mint → PushSecret → operator-owned per-CR
-  ExternalSecret round-trip.

@@ -39,7 +39,7 @@ an `UNKNOWN` Prometheus label:
 | Set in code | `operators/<op>/internal/controller/reconcile_*.go` (`conditions.SetCondition` with `Type: "<Name>Ready"` or `Type: conditionType<X>Ready`) | the sub-reconciler that actually computes the status |
 | Instrumentation map | `operators/<op>/internal/controller/instrumentation.go` (`subReconcilerConditionTypes`) | the canonical sub-reconciler → condition-type label binding for Prometheus |
 | Unit tests | `operators/<op>/internal/controller/reconcile_*_test.go` plus the drift-guard test `TestSubReconcilerConditionTypesCoversAllNames` (in `instrumentation_test.go`) | test functions named after the sub-reconciler |
-| Docs | `docs/reference/<op>/*.md` (the reconciler and CRD reference pages); keystone additionally `architecture/docs/09-implementation/03-crd-implementation.md` when the submodule is checked out | the condition tables / sections in the reference docs |
+| Docs | `docs/reference/<op>/*.md` (the reconciler and CRD reference pages) | the condition tables / sections in the reference docs |
 
 The authoritative gate is the per-operator drift-guard test
 `TestSubReconcilerConditionTypesCoversAllNames` in
@@ -188,9 +188,8 @@ These recurring shapes are worth grepping for first:
   parser — the per-operator `TestSubReconcilerConditionTypesCoversAllNames`
   drift-guard test does the map-side check with full Go AST awareness.
   Treat K1 as a smoke check and the test as the authoritative gate.
-- The `architecture/` submodule is usually not checked out; the
-  keystone architecture chapter is consulted only when present. The
-  operator's `docs/reference/<op>/` pages are the primary doc corpus.
+- The operator's `docs/reference/<op>/` pages are the doc corpus for
+  K4/K5.
 - Pair this with [[check-doc-drift]] — that skill confirms the prose
   reference matches the code (sub-reconciler chain, OPERATORS list);
   this skill drills into the condition-type wiring specifically.
