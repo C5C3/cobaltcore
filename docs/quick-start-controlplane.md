@@ -12,8 +12,8 @@ SPDX-License-Identifier: Apache-2.0
 The shortest path from `git clone` to an authenticated Keystone API call driven
 by a single **c5c3 ControlPlane** CR. Where the [Quick Start](./quick-start.md)
 stops at a hand-applied `Keystone` CR, here one `ControlPlane` CR makes the
-c5c3-operator provision the `MariaDB`, `Memcached`, `Keystone`, and `Horizon`
-children, mint the admin application credential through
+c5c3-operator provision the `MariaDB`, `Memcached`, `Keystone`, `Horizon`, and
+`Glance` children, mint the admin application credential through
 [K-ORC](https://github.com/k-orc/openstack-resource-controller), mirror it to
 OpenBao, and register the identity catalog — all reconciled to an aggregate
 `Ready`.
@@ -63,8 +63,8 @@ KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
 ```
 
 `WITH_CONTROLPLANE=true` brings up the shared infrastructure and then the
-ControlPlane operator stack (keystone-operator, horizon-operator, K-ORC,
-c5c3-operator) from the published charts — but **not** the `ControlPlane` CR
+ControlPlane operator stack (keystone-operator, horizon-operator,
+glance-operator, K-ORC, c5c3-operator) from the published charts — but **not** the `ControlPlane` CR
 itself; you create and apply that in Step 3. In this mode the ControlPlane provisions its own MariaDB/Memcached
 (managed mode), so deploy-infra does not create the shared ones. `KIND_HOST_PORT=8443`
 maps the Gateway to a non-privileged host port for macOS; on Linux with rootful
@@ -138,6 +138,20 @@ spec:
         parentRef:
           name: openstack-gw
         hostname: horizon.127-0-0-1.nip.io
+    glance:
+      replicas: 1
+      # One curated S3 image store on the in-cluster Garage object store; the
+      # Step 2 stack ships the Garage cluster and the glance-images bucket.
+      backends:
+        - name: default
+          type: S3
+          isDefault: true
+          s3:
+            endpoint: http://garage.openstack.svc.cluster.local:3900
+            bucket: glance-images
+            region: garage
+            credentialsSecretRef:
+              name: garage-s3-credentials
 ```
 
 ```bash
@@ -153,6 +167,18 @@ Django `SECRET_KEY` defaults to the kind-only `horizon-secret-key` Secret
 `services.horizon.secretKeyRef` to its own Secret. A `HorizonReady` condition
 joins the chain (after `KeystoneReady`) and `status.services` gains a second
 entry.
+
+The `glance` block makes the reconciler project the OpenStack Image service and
+one `GlanceBackend` child per `backends` entry — here a single S3 store on the
+in-cluster Garage object store. Garage and the ESO-synced
+`garage-s3-credentials` Secret ship with the Step 2 stack, so
+`credentialsSecretRef` resolves without extra wiring. The defaulting webhook
+injects a `glance` service account (user `glance`, project `service`, role
+`service`) into `spec.korc.serviceAccounts` so Glance can validate the Keystone
+tokens it receives; its database and cache derive from `spec.infrastructure`,
+exactly like Keystone's. A `GlanceReady` condition joins the chain — gating on
+`KeystoneReady` plus that injected service account — and `status.services` gains
+a third entry.
 
 Applying the CR is not the end of the manual work: a hand-applied ControlPlane
 needs the one-time OpenBao onboarding in Step 4 before the chain can progress
@@ -204,6 +230,18 @@ spec:
       secretKeyRef:
         name: horizon-secret-key       # default-identity kind shim Secret
         key: secret-key
+    glance:
+      replicas: 1
+      backends:
+        - name: default
+          type: S3
+          isDefault: true
+          s3:
+            endpoint: http://garage.openstack.svc.cluster.local:3900
+            bucket: glance-images
+            region: garage
+            credentialsSecretRef:
+              name: garage-s3-credentials
   korc:
     adminCredential:
       cloudCredentialsRef:
@@ -217,6 +255,14 @@ spec:
       applicationCredential:
         rotation:
           mode: PasswordDriven
+    serviceAccounts:
+      - name: glance                 # injected because services.glance is set
+        userName: glance             # defaults to the account name
+        project:
+          name: service
+          create: true
+        roles:
+          - service                  # Keystone SRBAC default for identity:validate_token
 ```
 
 </details>
@@ -287,12 +333,12 @@ ControlPlane. See the
 
 ## Step 5 — Watch the chain reconcile
 
-The aggregate `Ready` flips to `True` once all seven sub-conditions are met, in
-dependency order (`HorizonReady` gates on `KeystoneReady`; the K-ORC branch runs
-alongside it):
+The aggregate `Ready` flips to `True` once all 12 sub-conditions are met, in
+dependency order (`HorizonReady` gates on `KeystoneReady`; `GlanceReady` gates on
+`KeystoneReady` plus `ServiceAccountsReady`; the K-ORC branch runs alongside):
 
 ```
-InfrastructureReady → DBCredentialsReady → KeystoneReady → HorizonReady → KORCReady → AdminCredentialReady → CatalogReady
+NamespacesReady → InfrastructureReady → ESOTenantStoreReady → DBCredentialsReady → AdminPasswordReady → KeystoneReady → HorizonReady → KORCReady → AdminCredentialReady → CatalogReady → ServiceAccountsReady → GlanceReady
 ```
 
 ```bash
@@ -338,6 +384,80 @@ openstack --insecure token issue
 > With the default `KIND_HOST_PORT=443` use `https://keystone.127-0-0-1.nip.io/v3`
 > and drop the `publicEndpoint` line from the CR in Step 3.
 
+### Upload a first image
+
+With the `OS_*` variables from the token-issue step still exported, confirm the
+Image service reached the catalog:
+
+```bash
+openstack --insecure catalog list
+```
+
+An `image` row proves Glance registered its endpoints. The upload itself runs
+**in-cluster**, though: those catalog rows carry cluster-local endpoint URLs (the
+kind Gateway terminates only Keystone and Horizon — no glance listener), so the
+host `openstack` CLI cannot reach Glance directly.
+
+Run a one-shot pod that authenticates against the cluster-local Keystone URL,
+uploads a throwaway image into the Garage S3 backend, waits for it to reach
+`active`, and deletes it again:
+
+```bash
+kubectl run glance-smoke -n openstack --rm -i --restart=Never \
+  --image=ghcr.io/c5c3/tempest:2025.2 \
+  --env=OS_AUTH_URL=http://controlplane-keystone.openstack.svc:5000/v3 \
+  --env=OS_INTERFACE=internal \
+  --env=OS_USERNAME=admin \
+  --env=OS_PROJECT_NAME=admin \
+  --env=OS_USER_DOMAIN_NAME=Default \
+  --env=OS_PROJECT_DOMAIN_NAME=Default \
+  --override-type=strategic \
+  --overrides='{"spec":{"containers":[{"name":"glance-smoke","env":[{"name":"OS_PASSWORD","valueFrom":{"secretKeyRef":{"name":"controlplane-keystone-admin-credentials","key":"password"}}}]}]}}' \
+  -- sh -c '
+    set -e
+    dd if=/dev/urandom of=/tmp/first.img bs=1024 count=1
+    openstack image create --disk-format raw --container-format bare \
+      --file /tmp/first.img first-image
+    trap "openstack image delete first-image 2>/dev/null || true" EXIT
+    for _ in $(seq 30); do
+      [ "$(openstack image show first-image -f value -c status)" = active ] && break
+      sleep 2
+    done
+    test "$(openstack image show first-image -f value -c status)" = active
+    echo "OK: image uploaded to Glance and reached active; deleting it again"'
+```
+
+`OS_INTERFACE=internal` selects the cluster-local image endpoint the pod can
+actually reach. `--rm` removes the pod as soon as the attached session ends, so
+nothing lingers.
+
+The poll loop matters because `image create` returns as soon as Glance accepts
+the upload, while the store write completes asynchronously — a cold S3
+connection or a contended Garage backend can leave the image in `saving` for a
+few seconds. The `trap ... EXIT` deletes `first-image` on **every** exit path,
+including the timeout: without it a failed run would leave the image behind and
+the next attempt would fail on a name collision instead of the real error.
+
+`OS_PASSWORD` is **referenced** out of the admin-credentials Secret rather than
+passed with `--env`: the kubelet resolves the `secretKeyRef` when the container
+starts, so the password itself never enters the Pod spec. Inlining it would
+persist the literal in etcd for the pod's lifetime, expose it to every subject
+holding `get`/`list` on pods in `openstack` — a far broader set than `get
+secrets` — and, under `RequestBody` apiserver auditing, write it permanently
+into the audit record of the CREATE call, which `--rm` does not retract. The
+`--override-type=strategic` merges the one `valueFrom` entry into the container
+the `--env` flags above build; the default merge type would replace the whole
+`env` array instead.
+
+::: warning Leave OS_REGION_NAME unset
+Do **not** add `OS_REGION_NAME` to the pod or the host exports: the projected
+K-ORC catalog rows carry no region, so a region-scoped lookup finds no image
+endpoint and the upload fails with `internal endpoint for image service in
+RegionOne region not found`. Keystone's own bootstrap registers RegionOne
+identity rows, so identity is unaffected — only the region-less image endpoint
+needs the filter left clear.
+:::
+
 ### Open the Horizon dashboard
 
 The dashboard is exposed through the same shared Envoy Gateway as Keystone, on
@@ -375,4 +495,6 @@ make teardown-infra
   `spec.*` field, the webhooks, and the status conditions.
 - [ControlPlane Reconciler](./reference/c5c3/controlplane-reconciler.md) — the
   sub-reconciler ordering and gating semantics.
+- [Glance Operator](./reference/glance/index.md) — the projected Image service,
+  its `GlanceBackend` stores, and the reconciler chain.
 - [Quick Start](./quick-start.md) — the compact per-service Keystone path.
