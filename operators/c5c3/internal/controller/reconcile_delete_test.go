@@ -19,12 +19,14 @@ import (
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
+	esgenv1alpha1 "github.com/external-secrets/external-secrets/apis/generators/v1alpha1"
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
@@ -1346,6 +1348,19 @@ func TestTeardownDedicatedNamespaces_SweepsExternalNamespaceResidue(t *testing.T
 	glanceDB := &esov1.ExternalSecret{ObjectMeta: metav1.ObjectMeta{
 		Name: glanceDBCredentialSecretName(cp), Namespace: "shared-ns", Labels: controlPlaneChildLabels(cp),
 	}}
+	// The Dynamic-mode Glance DB-credential objects: the generator, its mTLS client
+	// Certificate, and the generator's ServiceAccount are label-owned residue too.
+	glanceDBVDS := &esgenv1alpha1.VaultDynamicSecret{ObjectMeta: metav1.ObjectMeta{
+		Name: glanceDBCredentialSecretName(cp), Namespace: "shared-ns", Labels: controlPlaneChildLabels(cp),
+	}}
+	glanceDBCert := &unstructured.Unstructured{}
+	glanceDBCert.SetGroupVersionKind(certificateGVK)
+	glanceDBCert.SetName(glanceDBCredentialClientCertName(cp))
+	glanceDBCert.SetNamespace("shared-ns")
+	glanceDBCert.SetLabels(controlPlaneChildLabels(cp))
+	glanceDBSA := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
+		Name: glanceDBCredentialServiceAccountName, Namespace: "shared-ns", Labels: controlPlaneChildLabels(cp),
+	}}
 	saSource := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
 		Name: serviceAccountSourceSecretName(cp, sa), Namespace: "shared-ns", Labels: controlPlaneChildLabels(cp),
 	}}
@@ -1358,7 +1373,9 @@ func TestTeardownDedicatedNamespaces_SweepsExternalNamespaceResidue(t *testing.T
 	}}
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "shared-ns"}}
 
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, ns, ours, adminPw, glanceDB, saSource, saES, foreignSA).Build()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(
+		cp, ns, ours, adminPw, glanceDB, glanceDBVDS, glanceDBCert, glanceDBSA, saSource, saES, foreignSA,
+	).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
 
 	done, err := r.teardownDedicatedNamespaces(context.Background(), cp)
@@ -1392,6 +1409,23 @@ func TestTeardownDedicatedNamespaces_SweepsExternalNamespaceResidue(t *testing.T
 		Name: glanceDBCredentialSecretName(cp), Namespace: "shared-ns",
 	}, &esov1.ExternalSecret{})
 	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "the Glance DB-credential ExternalSecret must be swept")
+
+	err = c.Get(context.Background(), types.NamespacedName{
+		Name: glanceDBCredentialSecretName(cp), Namespace: "shared-ns",
+	}, &esgenv1alpha1.VaultDynamicSecret{})
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "the Glance VaultDynamicSecret generator must be swept")
+
+	sweptGlanceCert := &unstructured.Unstructured{}
+	sweptGlanceCert.SetGroupVersionKind(certificateGVK)
+	err = c.Get(context.Background(), types.NamespacedName{
+		Name: glanceDBCredentialClientCertName(cp), Namespace: "shared-ns",
+	}, sweptGlanceCert)
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "the Glance DB-credential Certificate must be swept")
+
+	err = c.Get(context.Background(), types.NamespacedName{
+		Name: glanceDBCredentialServiceAccountName, Namespace: "shared-ns",
+	}, &corev1.ServiceAccount{})
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "the Glance DB-credential ServiceAccount must be swept")
 
 	g.Expect(c.Get(context.Background(), types.NamespacedName{
 		Name: esoTenantServiceAccountName, Namespace: "shared-ns",

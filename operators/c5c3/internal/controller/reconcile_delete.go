@@ -876,11 +876,24 @@ func (r *ControlPlaneReconciler) sweepExternalNamespaceResidue(
 			}},
 		)
 	}
-	// The Glance DB-credential ExternalSecret, which follows the Glance service.
+	// The Glance credential material, which follows the Glance service: the
+	// DB-credential ExternalSecret plus, in Dynamic mode, the VaultDynamicSecret
+	// generator, its mTLS client Certificate, and the ServiceAccount whose token it
+	// authenticates with.
 	if cp.GlanceNamespace() == namespace {
-		objs = append(objs, &esov1.ExternalSecret{ObjectMeta: metav1.ObjectMeta{
-			Name: glanceDBCredentialSecretName(cp), Namespace: namespace,
-		}})
+		objs = append(
+			objs,
+			&esov1.ExternalSecret{ObjectMeta: metav1.ObjectMeta{
+				Name: glanceDBCredentialSecretName(cp), Namespace: namespace,
+			}},
+			&esgenv1alpha1.VaultDynamicSecret{ObjectMeta: metav1.ObjectMeta{
+				Name: glanceDBCredentialSecretName(cp), Namespace: namespace,
+			}},
+			unstructuredIn(certificateGVK, glanceDBCredentialClientCertName(cp)),
+			&corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
+				Name: glanceDBCredentialServiceAccountName, Namespace: namespace,
+			}},
+		)
 	}
 	// Any service-account credential delivered into this namespace: its source
 	// Secret and consumer ExternalSecret, both operator-owned by label here. The

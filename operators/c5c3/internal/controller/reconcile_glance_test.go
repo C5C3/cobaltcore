@@ -10,10 +10,12 @@ import (
 	"testing"
 
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
+	esgenv1alpha1 "github.com/external-secrets/external-secrets/apis/generators/v1alpha1"
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -46,6 +48,9 @@ func glanceTestScheme(t *testing.T) *runtime.Scheme {
 	}
 	if err := esov1.AddToScheme(s); err != nil {
 		t.Fatalf("adding external-secrets scheme: %v", err)
+	}
+	if err := esgenv1alpha1.AddToScheme(s); err != nil {
+		t.Fatalf("adding external-secrets generators scheme: %v", err)
 	}
 	return s
 }
@@ -115,10 +120,76 @@ func glanceControlPlane() *c5c3v1alpha1.ControlPlane {
 	return cp
 }
 
+// readyGlanceDBCredES builds a Ready Glance DB-credential ExternalSecret at the
+// derived name/namespace (Dynamic default shape), so WaitForExternalSecret reports
+// Ready and the projection clears its dynamic readiness gate. Mirrors
+// readyDBCredES on the Keystone side.
+func readyGlanceDBCredES(cp *c5c3v1alpha1.ControlPlane) *esov1.ExternalSecret {
+	es := notReadyGlanceDBCredES(cp)
+	es.Status = esov1.ExternalSecretStatus{
+		Conditions: []esov1.ExternalSecretStatusCondition{
+			{Type: esov1.ExternalSecretReady, Status: corev1.ConditionTrue},
+		},
+	}
+	return es
+}
+
+// materialisedGlanceDBCredSecret builds the Secret an ESO sync of the
+// generator-backed ExternalSecret would materialise: an ENGINE-ISSUED username
+// (the OpenBao mysql-database-plugin prefix) plus its password. The Dynamic gate
+// checks the username, not just the ExternalSecret's Ready condition, so a Secret
+// carrying a static seed's username reads as "not yet issued".
+func materialisedGlanceDBCredSecret(cp *c5c3v1alpha1.ControlPlane) *corev1.Secret {
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      glanceDBCredentialSecretName(cp),
+			Namespace: cp.GlanceNamespace(),
+		},
+		Data: map[string][]byte{
+			"username": []byte(engineIssuedUsernamePrefix + "kubernetes-glance-abc123-1750000000"),
+			"password": []byte("engine-issued-password"),
+		},
+	}
+}
+
+// withReadyGlanceDBCred seeds a Ready Glance DB-credential ExternalSecret AND the
+// engine-issued Secret an ESO sync of it would materialise, for the ControlPlane
+// in objs, unless an ExternalSecret was already seeded explicitly.
+//
+// The Dynamic-default projection gates the child on both — the ExternalSecret
+// having synced and the Secret behind it carrying an engine-issued username — and
+// a fake client never runs ESO, so without this every projection test would stall
+// on the gate and assert against a child that was deliberately not projected.
+// Seeding both here is the fake-client stand-in for "ESO has materialised the
+// engine-issued credential"; the tests that exercise the gate itself seed their
+// own ExternalSecret (and, where the gate under test is the username one, their
+// own Secret), which is kept.
+func withReadyGlanceDBCred(objs []client.Object) []client.Object {
+	var cp *c5c3v1alpha1.ControlPlane
+	for _, o := range objs {
+		if c, ok := o.(*c5c3v1alpha1.ControlPlane); ok {
+			cp = c
+			break
+		}
+	}
+	// Only the Dynamic path has a readiness gate; a Static ControlPlane projects a
+	// KV-backed ExternalSecret of a different shape and must be left to build it.
+	if cp == nil || !glanceDBCredentialsDynamicEnabled(cp) {
+		return objs
+	}
+	name, ns := glanceDBCredentialSecretName(cp), cp.GlanceNamespace()
+	for _, o := range objs {
+		if _, ok := o.(*esov1.ExternalSecret); ok && o.GetName() == name && o.GetNamespace() == ns {
+			return objs
+		}
+	}
+	return append(objs, readyGlanceDBCredES(cp), materialisedGlanceDBCredSecret(cp))
+}
+
 func newGlanceTestReconciler(t *testing.T, objs ...client.Object) *ControlPlaneReconciler {
 	t.Helper()
 	s := glanceTestScheme(t)
-	cb := fake.NewClientBuilder().WithScheme(s).WithObjects(objs...).
+	cb := fake.NewClientBuilder().WithScheme(s).WithObjects(withReadyGlanceDBCred(objs)...).
 		WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}, &glancev1alpha1.Glance{})
 	return &ControlPlaneReconciler{Client: cb.Build(), Scheme: s}
 }
@@ -174,10 +245,202 @@ func TestReconcileGlance_UnsetPreservesChildByDefault(t *testing.T) {
 	g.Expect(cond.Message).To(ContainSubstring(glanceDeletionAllowedAnnotation))
 }
 
+// notReadyGlanceDBCredES builds the Glance DB-credential ExternalSecret with NO
+// Ready condition, so WaitForExternalSecret reports not-Ready and the Dynamic
+// readiness gate engages. Seeding it explicitly is what keeps
+// withReadyGlanceDBCred from substituting a Ready one.
+func notReadyGlanceDBCredES(cp *c5c3v1alpha1.ControlPlane) *esov1.ExternalSecret {
+	es := dbCredentialGeneratorExternalSecret(glanceDBCredentialTarget(cp))
+	// Stamped as this ControlPlane's child so the cross-namespace projection path
+	// re-applies it instead of refusing to adopt a same-named foreign object.
+	stampControlPlaneChildLabels(es, cp)
+	return es
+}
+
+// TestReconcileGlance_DynamicCredentialNotReady_DefersProjection is the gate that
+// keeps the Dynamic default from failing OPEN. The engine role behind the
+// generator is provisioned by a MANUAL onboarding step
+// (setup-database-tenant.sh), while the operator rolls out on its own, so a
+// ControlPlane can reach here with no role to mint against. Until the credential
+// materialises no Glance child may be projected at all — projecting one would
+// point Glance at a credential that never lands.
+func TestReconcileGlance_DynamicCredentialNotReady_DefersProjection(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := glanceControlPlane()
+	r := newGlanceTestReconciler(t, cp, notReadyGlanceDBCredES(cp))
+
+	res, err := r.reconcileGlance(context.Background(), cp)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(BeNumerically(">", 0), "must requeue while the DB credential has not landed")
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeGlanceReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("WaitingForGlanceDBCredential"))
+	g.Expect(cond.Message).To(ContainSubstring(glanceDBDynamicCredsPathFor(cp)),
+		"the condition must name the engine path an operator has to onboard")
+
+	var list glancev1alpha1.GlanceList
+	g.Expect(r.Client.List(context.Background(), &list)).To(Succeed())
+	g.Expect(list.Items).To(BeEmpty(), "no Glance child may be projected before the credential lands")
+}
+
+// TestReconcileGlance_DynamicCredentialNotReady_LeavesExistingChildStatic is the
+// migration half of the same gate: a Static->Dynamic flip must not move a RUNNING
+// Glance onto credentialsMode Dynamic before the engine-issued credential exists.
+// Flipping early points the child at whatever the materialised Secret happens to
+// hold — on a migrated deployment, the retired static seed's stale username — and
+// stops the glance-operator asserting the static User/Grant that was working.
+func TestReconcileGlance_DynamicCredentialNotReady_LeavesExistingChildStatic(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := glanceControlPlane()
+	cp.Spec.Services.Glance.DatabaseCredentialsMode = commonv1.CredentialsModeStatic
+	r := newGlanceTestReconciler(t, cp, notReadyGlanceDBCredES(cp))
+
+	// Static deployment: the child is projected and runs on the static credential.
+	_, err := r.reconcileGlance(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(getProjectedGlance(t, r.Client, cp).Spec.Database.CredentialsMode).
+		To(Equal(commonv1.CredentialsModeStatic))
+
+	// Flip to Dynamic while the generator-backed ExternalSecret has not synced.
+	cp.Spec.Services.Glance.DatabaseCredentialsMode = commonv1.CredentialsModeDynamic
+	res, err := r.reconcileGlance(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(BeNumerically(">", 0))
+
+	g.Expect(getProjectedGlance(t, r.Client, cp).Spec.Database.CredentialsMode).
+		To(Equal(commonv1.CredentialsModeStatic),
+			"the running child must stay Static until the engine-issued credential lands")
+}
+
+// staleStaticGlanceDBCredSecret builds the Secret a MIGRATED cluster is left with
+// right after the Static->Dynamic flip: materialised by the last STATIC sync, so
+// it still carries the retired bootstrap's username=glance seed. That name is a
+// syntactically valid username, so a gate that only checks for a non-empty
+// username would wave it through — but no MySQL user was ever created under it
+// (the static login is the Glance CR name).
+func staleStaticGlanceDBCredSecret(cp *c5c3v1alpha1.ControlPlane) *corev1.Secret {
+	secret := materialisedGlanceDBCredSecret(cp)
+	secret.Data["username"] = []byte("glance")
+	return secret
+}
+
+// TestReconcileGlance_DynamicCredentialStaleStaticUsername_LeavesExistingChildStatic
+// is the regression guard for the failure the ExternalSecret-only gate let
+// through. A Static->Dynamic flip create-or-updates the ExternalSecret IN PLACE,
+// so on a migrated cluster it keeps reporting Ready from its last Static sync
+// while the Secret behind it still holds the retired static seed. Flipping the
+// child on that Ready alone stops the glance-operator asserting the static
+// User/Grant Glance was serving on and points it at a login that never existed —
+// an outage behind GlanceReady=True. The operator must hold the flip until the
+// Secret carries an engine-issued username.
+func TestReconcileGlance_DynamicCredentialStaleStaticUsername_LeavesExistingChildStatic(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := glanceControlPlane()
+	cp.Spec.Services.Glance.DatabaseCredentialsMode = commonv1.CredentialsModeStatic
+	// A Ready ExternalSecret over a Secret still holding the static seed: exactly
+	// what a cluster upgraded from the Static path presents to the reconciler.
+	r := newGlanceTestReconciler(t, cp, readyGlanceDBCredES(cp), staleStaticGlanceDBCredSecret(cp))
+
+	// Static deployment: the child is projected and runs on the static credential.
+	_, err := r.reconcileGlance(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(getProjectedGlance(t, r.Client, cp).Spec.Database.CredentialsMode).
+		To(Equal(commonv1.CredentialsModeStatic))
+
+	// Flip to Dynamic. The ExternalSecret is Ready, but only from the Static sync.
+	cp.Spec.Services.Glance.DatabaseCredentialsMode = commonv1.CredentialsModeDynamic
+	res, err := r.reconcileGlance(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(BeNumerically(">", 0), "must requeue while the credential is not engine-issued")
+
+	g.Expect(getProjectedGlance(t, r.Client, cp).Spec.Database.CredentialsMode).
+		To(Equal(commonv1.CredentialsModeStatic),
+			"a Ready ExternalSecret over a stale static username must not flip the running child to Dynamic")
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeGlanceReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("WaitingForGlanceDBCredential"))
+	g.Expect(cond.Message).To(ContainSubstring(`"glance"`),
+		"the condition must name the non-engine-issued username it found")
+	g.Expect(cond.Message).To(ContainSubstring(glanceDBCredentialSecretName(cp)),
+		"the condition must name the Secret an operator has to delete")
+}
+
+// TestReconcileGlance_DynamicCredentialSecretAbsent_DefersProjection covers the
+// window the migration guide's `kubectl delete secret` step opens: the
+// ExternalSecret is Ready but its target Secret is gone until ESO re-materialises
+// it from the generator. An absent Secret is "not issued yet", not an error — no
+// child may be projected against it.
+func TestReconcileGlance_DynamicCredentialSecretAbsent_DefersProjection(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := glanceControlPlane()
+	// A Ready ExternalSecret with no materialised Secret behind it.
+	r := newGlanceTestReconciler(t, cp, readyGlanceDBCredES(cp))
+
+	res, err := r.reconcileGlance(context.Background(), cp)
+
+	g.Expect(err).NotTo(HaveOccurred(), "an absent Secret is an expected state, not a client failure")
+	g.Expect(res.RequeueAfter).To(BeNumerically(">", 0))
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeGlanceReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("WaitingForGlanceDBCredential"))
+
+	var list glancev1alpha1.GlanceList
+	g.Expect(r.Client.List(context.Background(), &list)).To(Succeed())
+	g.Expect(list.Items).To(BeEmpty(), "no Glance child may be projected before the credential is materialised")
+}
+
+// TestReconcileGlance_UnsetTearsDownDynamicGeneratorWithoutOptIn covers the
+// preserve-by-default branch: dropping spec.services.glance keeps the child
+// (an accidental block drop must not remove a running service) but must NOT keep
+// the credential minter. A retained VaultDynamicSecret mints a fresh MySQL user
+// with ALL PRIVILEGES every refresh interval, forever, for a service the operator
+// was told it no longer manages — with no consumer, no revocation, and a
+// GlanceReady=True condition that surfaces none of it.
+func TestReconcileGlance_UnsetTearsDownDynamicGeneratorWithoutOptIn(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := glanceControlPlane()
+	r := newGlanceTestReconciler(t, cp)
+	ctx := context.Background()
+
+	_, err := r.reconcileGlance(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(r.Get(ctx, types.NamespacedName{
+		Name: glanceDBCredentialSecretName(cp), Namespace: cp.GlanceNamespace(),
+	}, &esgenv1alpha1.VaultDynamicSecret{})).To(Succeed(), "the generator was projected alongside the child")
+
+	// No opt-in annotation: the child is preserved.
+	cp.Spec.Services.Glance = nil
+	_, err = r.reconcileGlance(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(getProjectedGlance(t, r.Client, cp)).NotTo(BeNil(), "the child must still be preserved")
+
+	g.Expect(r.Get(ctx, types.NamespacedName{
+		Name: glanceDBCredentialSecretName(cp), Namespace: cp.GlanceNamespace(),
+	}, &esgenv1alpha1.VaultDynamicSecret{})).NotTo(Succeed(),
+		"the credential minter must be torn down even though the child is preserved")
+	g.Expect(r.Get(ctx, types.NamespacedName{
+		Name: glanceDBCredentialServiceAccountName, Namespace: cp.GlanceNamespace(),
+	}, &corev1.ServiceAccount{})).NotTo(Succeed(), "the generator's ServiceAccount must be torn down too")
+	orphanCert := &unstructured.Unstructured{}
+	orphanCert.SetGroupVersionKind(certificateGVK)
+	g.Expect(r.Get(ctx, types.NamespacedName{
+		Name: glanceDBCredentialClientCertName(cp), Namespace: cp.GlanceNamespace(),
+	}, orphanCert)).NotTo(Succeed(), "the generator's mTLS client Certificate must be torn down too")
+}
+
 // TestReconcileGlance_UnsetDeletesChildWithOptIn verifies the opt-in deletion
-// sweep removes the child AND the DB-credential ExternalSecret, and — the
-// ownership guard — never touches a hand-created Glance child the ControlPlane
-// does not own.
+// sweep removes the child AND every DB-credential object — the (generator-backed)
+// ExternalSecret plus the Dynamic-mode VaultDynamicSecret, Certificate, and
+// ServiceAccount — and, the ownership guard, never touches a hand-created Glance
+// child the ControlPlane does not own.
 func TestReconcileGlance_UnsetDeletesChildWithOptIn(t *testing.T) {
 	g := NewGomegaWithT(t)
 	cp := glanceControlPlane()
@@ -186,11 +449,22 @@ func TestReconcileGlance_UnsetDeletesChildWithOptIn(t *testing.T) {
 
 	_, err := r.reconcileGlance(ctx, cp)
 	g.Expect(err).NotTo(HaveOccurred())
-	// The DB-credential ExternalSecret was projected alongside the child.
+	// The Dynamic-default DB-credential objects were projected alongside the child.
 	var es esov1.ExternalSecret
 	g.Expect(r.Get(ctx, types.NamespacedName{
 		Name: glanceDBCredentialSecretName(cp), Namespace: cp.GlanceNamespace(),
 	}, &es)).To(Succeed())
+	g.Expect(r.Get(ctx, types.NamespacedName{
+		Name: glanceDBCredentialSecretName(cp), Namespace: cp.GlanceNamespace(),
+	}, &esgenv1alpha1.VaultDynamicSecret{})).To(Succeed())
+	g.Expect(r.Get(ctx, types.NamespacedName{
+		Name: glanceDBCredentialServiceAccountName, Namespace: cp.GlanceNamespace(),
+	}, &corev1.ServiceAccount{})).To(Succeed())
+	glanceCert := &unstructured.Unstructured{}
+	glanceCert.SetGroupVersionKind(certificateGVK)
+	g.Expect(r.Get(ctx, types.NamespacedName{
+		Name: glanceDBCredentialClientCertName(cp), Namespace: cp.GlanceNamespace(),
+	}, glanceCert)).To(Succeed())
 
 	cp.Spec.Services.Glance = nil
 	cp.Annotations = map[string]string{glanceDeletionAllowedAnnotation: "true"}
@@ -205,6 +479,17 @@ func TestReconcileGlance_UnsetDeletesChildWithOptIn(t *testing.T) {
 	g.Expect(r.Get(ctx, types.NamespacedName{
 		Name: glanceDBCredentialSecretName(cp), Namespace: cp.GlanceNamespace(),
 	}, &esov1.ExternalSecret{})).NotTo(Succeed(), "the DB-credential ExternalSecret must be swept too")
+	g.Expect(r.Get(ctx, types.NamespacedName{
+		Name: glanceDBCredentialSecretName(cp), Namespace: cp.GlanceNamespace(),
+	}, &esgenv1alpha1.VaultDynamicSecret{})).NotTo(Succeed(), "the VaultDynamicSecret generator must be swept too")
+	g.Expect(r.Get(ctx, types.NamespacedName{
+		Name: glanceDBCredentialServiceAccountName, Namespace: cp.GlanceNamespace(),
+	}, &corev1.ServiceAccount{})).NotTo(Succeed(), "the generator's ServiceAccount must be swept too")
+	sweptCert := &unstructured.Unstructured{}
+	sweptCert.SetGroupVersionKind(certificateGVK)
+	g.Expect(r.Get(ctx, types.NamespacedName{
+		Name: glanceDBCredentialClientCertName(cp), Namespace: cp.GlanceNamespace(),
+	}, sweptCert)).NotTo(Succeed(), "the mTLS client Certificate must be swept too")
 }
 
 // TestReconcileGlance_UnsetPreservesForeignChild proves the deletion sweep is
@@ -341,8 +626,8 @@ func TestReconcileGlance_ImageOverrideWins(t *testing.T) {
 
 // TestReconcileGlance_DatabaseManagedProjection verifies the managed-mode DB
 // wiring: the logical schema is always "glance", the secretRef points at the
-// operator-owned DB-credential Secret, and credentialsMode is forced Static
-// (there is no engine role for the glance schema).
+// operator-owned DB-credential Secret, and credentialsMode is Dynamic by default
+// (the managed-shared default now that glance has its own engine role).
 func TestReconcileGlance_DatabaseManagedProjection(t *testing.T) {
 	g := NewGomegaWithT(t)
 	cp := glanceControlPlane()
@@ -358,8 +643,8 @@ func TestReconcileGlance_DatabaseManagedProjection(t *testing.T) {
 		"the logical schema must be glance, not the shared block's keystone")
 	g.Expect(gl.Spec.Database.SecretRef.Name).To(Equal(glanceDBCredentialSecretName(cp)))
 	g.Expect(gl.Spec.Database.SecretRef.Key).To(Equal("password"))
-	g.Expect(gl.Spec.Database.CredentialsMode).To(Equal(commonv1.CredentialsModeStatic),
-		"a managed glance database is Static — no engine role can mint its credentials")
+	g.Expect(gl.Spec.Database.CredentialsMode).To(Equal(commonv1.CredentialsModeDynamic),
+		"a managed shared glance database defaults to Dynamic (engine-issued) credentials")
 
 	// DeepCopy: the projected ClusterRef must not alias the ControlPlane spec.
 	g.Expect(gl.Spec.Database.ClusterRef).NotTo(BeIdenticalTo(cp.Spec.Infrastructure.Database.ClusterRef))
@@ -579,12 +864,15 @@ func TestReconcileGlance_DoesNotSetAPIServer(t *testing.T) {
 	g.Expect(gl.Spec.APIServer).To(BeNil())
 }
 
-// TestReconcileGlance_DBCredentialExternalSecretShape verifies the projected
-// DB-credential ExternalSecret reads the per-ControlPlane KV path through the
-// resolved store and materializes the operator-owned Secret.
+// TestReconcileGlance_DBCredentialExternalSecretShape verifies the Static opt-out
+// projects a KV-backed DB-credential ExternalSecret that reads the
+// per-ControlPlane KV path through the resolved store and materializes the
+// operator-owned Secret. The opt-out is set explicitly now that the managed-shared
+// default is Dynamic.
 func TestReconcileGlance_DBCredentialExternalSecretShape(t *testing.T) {
 	g := NewGomegaWithT(t)
 	cp := glanceControlPlane()
+	cp.Spec.Services.Glance.DatabaseCredentialsMode = commonv1.CredentialsModeStatic
 	r := newGlanceTestReconciler(t, cp)
 
 	_, err := r.reconcileGlance(context.Background(), cp)
@@ -597,6 +885,7 @@ func TestReconcileGlance_DBCredentialExternalSecretShape(t *testing.T) {
 
 	g.Expect(es.Spec.Target.Name).To(Equal(glanceDBCredentialSecretName(cp)))
 	g.Expect(es.Spec.SecretStoreRef.Name).To(Equal("openbao-tenant-store"))
+	g.Expect(es.Spec.DataFrom).To(BeEmpty(), "the Static ExternalSecret must not use a generator")
 	g.Expect(es.Spec.Data).To(HaveLen(2))
 	wantKey := glanceDBCredentialRemoteKeyFor(cp)
 	g.Expect(wantKey).To(Equal("openstack/glance/default/cp/db"))

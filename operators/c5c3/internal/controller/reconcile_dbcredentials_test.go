@@ -99,7 +99,7 @@ func readyClusterSecretStore() *esov1.ClusterSecretStore {
 // name/namespace (Dynamic default shape), so WaitForExternalSecret reports Ready
 // without an ESO controller in the fake client.
 func readyDBCredES(cp *c5c3v1alpha1.ControlPlane) *esov1.ExternalSecret {
-	es := dbCredentialGeneratorExternalSecret(cp)
+	es := dbCredentialGeneratorExternalSecret(keystoneDBCredentialTarget(cp))
 	es.Status = esov1.ExternalSecretStatus{
 		Conditions: []esov1.ExternalSecretStatusCondition{
 			{Type: esov1.ExternalSecretReady, Status: corev1.ConditionTrue},
@@ -287,8 +287,10 @@ func TestReconcileDBCredentials_StaticAfterDynamic_TearsDownGenerator(t *testing
 	s := korcTestScheme(t)
 	cp := dbCredManagedControlPlane()
 	cp.Spec.Infrastructure.Database.CredentialsMode = commonv1.CredentialsModeStatic
-	// Pre-seed a leftover VaultDynamicSecret from a prior Dynamic deployment.
-	leftover := dbCredentialVaultDynamicSecret(cp, openBaoDefaultServer, openBaoDefaultKubernetesMount)
+	// Pre-seed a leftover VaultDynamicSecret from a prior Dynamic deployment,
+	// carrying the ownership a live projection stamps — the teardown gates on it.
+	leftover := dbCredentialVaultDynamicSecret(keystoneDBCredentialTarget(cp), openBaoDefaultServer, openBaoDefaultKubernetesMount)
+	g.Expect(claimChildOwnership(cp, leftover, s)).To(Succeed())
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, readyClusterSecretStore(), readyTenantStoreFor(cp), leftover).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
@@ -633,6 +635,81 @@ func TestReconcileDBCredentials_StaticNotReady_NamesTheUnseededKVPath(t *testing
 	g.Expect(sharedCond).NotTo(BeNil())
 	g.Expect(sharedCond.Message).NotTo(ContainSubstring("seed"),
 		"an engine-issued credential has nothing to seed")
+}
+
+// TestReconcileDBCredentials_KeystoneOverrideStatic_TearsDownGenerator pins the
+// per-service override: services.keystone.databaseCredentialsMode: Static opts
+// Keystone out of the shared Dynamic default, so the sub-reconciler projects the
+// stage-(a) KV-backed ExternalSecret and tears down any leftover generator.
+func TestReconcileDBCredentials_KeystoneOverrideStatic_TearsDownGenerator(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := dbCredManagedControlPlane()
+	// The shared database defaults to Dynamic; the per-service override opts out.
+	cp.Spec.Services.Keystone = &c5c3v1alpha1.ServiceKeystoneSpec{
+		DatabaseCredentialsMode: commonv1.CredentialsModeStatic,
+	}
+	g.Expect(dbCredentialsDynamicEnabled(cp)).To(BeFalse(),
+		"a Static per-service override must resolve to Static even on a Dynamic-default shared database")
+
+	// Pre-seed a leftover generator from a prior Dynamic deployment, carrying the
+	// ownership a live projection stamps — the teardown gates on it.
+	leftover := dbCredentialVaultDynamicSecret(keystoneDBCredentialTarget(cp), openBaoDefaultServer, openBaoDefaultKubernetesMount)
+	g.Expect(claimChildOwnership(cp, leftover, s)).To(Succeed())
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(cp, readyClusterSecretStore(), readyTenantStoreFor(cp), leftover).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	if _, err := r.reconcileDBCredentials(context.Background(), cp); err != nil {
+		t.Fatalf("reconcileDBCredentials: %v", err)
+	}
+
+	es, err := getDBCredES(t, r, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(es.Spec.DataFrom).To(BeEmpty(), "the override Static branch must project the KV ExternalSecret")
+	g.Expect(es.Spec.Data).To(HaveLen(2))
+	g.Expect(es.Spec.Data[0].RemoteRef.Key).To(Equal(dbCredentialRemoteKeyFor(cp)))
+
+	_, vdsErr := getVDS(t, r, cp)
+	g.Expect(apierrors.IsNotFound(vdsErr)).To(BeTrue(),
+		"the override Static branch must tear down the leftover VaultDynamicSecret")
+}
+
+// TestReconcileDBCredentials_KeystoneOverrideDynamic_WinsOverSharedStatic is the
+// mirror: a Dynamic per-service override wins over a shared credentialsMode:
+// Static, so Keystone gets the generator-backed ExternalSecret while the shared
+// default would have projected the KV one.
+func TestReconcileDBCredentials_KeystoneOverrideDynamic_WinsOverSharedStatic(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := dbCredManagedControlPlane()
+	cp.Spec.Infrastructure.Database.CredentialsMode = commonv1.CredentialsModeStatic
+	cp.Spec.Services.Keystone = &c5c3v1alpha1.ServiceKeystoneSpec{
+		DatabaseCredentialsMode: commonv1.CredentialsModeDynamic,
+	}
+	g.Expect(dbCredentialsDynamicEnabled(cp)).To(BeTrue(),
+		"a Dynamic per-service override must win over a shared Static mode")
+
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(cp, readyClusterSecretStore(), readyTenantStoreFor(cp)).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	if _, err := r.reconcileDBCredentials(context.Background(), cp); err != nil {
+		t.Fatalf("reconcileDBCredentials: %v", err)
+	}
+
+	es, err := getDBCredES(t, r, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(es.Spec.DataFrom).To(HaveLen(1),
+		"the override Dynamic branch must project the generator-backed ExternalSecret")
+	g.Expect(es.Spec.Data).To(BeEmpty(), "the override Dynamic ExternalSecret carries no static Data")
+
+	vds, vdsErr := getVDS(t, r, cp)
+	g.Expect(vdsErr).NotTo(HaveOccurred(),
+		"the override Dynamic branch must project a VaultDynamicSecret generator")
+	g.Expect(vds.Spec.Path).To(Equal(dbDynamicCredsPathFor(cp)))
 }
 
 // TestReconcileDBCredentials_DedicatedManagedIsStaticEvenWhenModeBypassed is the
