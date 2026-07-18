@@ -35,7 +35,8 @@
 #                        ("…-service-account-glance-assign-service-…");
 #                        ServiceAccountsReady=True and status.serviceAccounts[0].ready.
 #   5c. Glance child   — owned Glance CR ("…-glance") with database/cache clusterRefs,
-#                        a Static DB credential, the derived Keystone endpoint, the
+#                        an engine-issued (Dynamic) DB credential drawn from the
+#                        OpenBao database engine, the derived Keystone endpoint, the
 #                        injected service user, and its GlanceBackend ("…-glance-default")
 #                        against the Garage S3 bucket; GlanceReady=True.
 #   5d. Image catalog  — owned K-ORC image Service ("…-image-service") + internal/public
@@ -502,8 +503,40 @@ spec:
             "$(kubectl get glances.glance.openstack.c5c3.io "${GLANCE_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.database.database}')"
           assert_eq "Glance DB secretRef points at the projected DB-credential Secret" "${CP_NAME}-glance-db-credentials" \
             "$(kubectl get glances.glance.openstack.c5c3.io "${GLANCE_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.database.secretRef.name}')"
-          assert_eq "Glance DB credentialsMode forced Static" "Static" \
+          assert_eq "Glance projected with Dynamic credentialsMode" "Dynamic" \
             "$(kubectl get glances.glance.openstack.c5c3.io "${GLANCE_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.database.credentialsMode}')"
+
+          # ── Assert the Glance DB credential is generator-backed (engine-issued) ─
+          # Named after the projected Glance CR: <cp>-glance-db-credentials.
+          # The glance dynamic objects are ensured INSIDE the Keystone-gated
+          # reconcileGlance rather than pre-gate like Keystone's, so these
+          # assertions sit after GlanceReady. That ordering is sound because
+          # reconcileGlance gates the child on this ExternalSecret reporting Ready
+          # AND on the Secret behind it carrying an engine-issued username
+          # (WaitingForGlanceDBCredential) before it projects credentialsMode
+          # Dynamic — so GlanceReady=True already implies an engine-issued
+          # credential has materialised. The username check below re-asserts that
+          # end-to-end against a real ESO+OpenBao, not just the operator's gate.
+          GLANCE_DB_SECRET="${GLANCE_CR}-db-credentials"
+          assert_eq "Glance DB-credential ExternalSecret uses a VaultDynamicSecret generator" "VaultDynamicSecret" \
+            "$(kubectl get externalsecret "${GLANCE_DB_SECRET}" -n "${CP_NS}" \
+              -o "jsonpath={.spec.dataFrom[0].sourceRef.generatorRef.kind}")"
+          assert_eq "Glance DB-credential ExternalSecret carries no static Data refs" "" \
+            "$(kubectl get externalsecret "${GLANCE_DB_SECRET}" -n "${CP_NS}" -o 'jsonpath={.spec.data}')"
+          kubectl get vaultdynamicsecret "${GLANCE_DB_SECRET}" -n "${CP_NS}" >/dev/null
+          # Glance shares the ControlPlane namespace in this suite, so the
+          # per-tenant engine role is glance-<CP_NS>.
+          assert_eq "Glance VaultDynamicSecret reads the glance engine-role creds path" "database/mariadb/creds/glance-${CP_NS}" \
+            "$(kubectl get vaultdynamicsecret "${GLANCE_DB_SECRET}" -n "${CP_NS}" -o 'jsonpath={.spec.path}')"
+          kubectl get serviceaccount glance-db-creds -n "${CP_NS}" >/dev/null
+          # The materialised Secret must carry the engine-issued username (a
+          # transient v-kube-... login), not the static "glance" user.
+          GLANCE_DB_USERNAME="$(kubectl get secret "${GLANCE_DB_SECRET}" -n "${CP_NS}" \
+            -o "jsonpath={.data.username}" | base64 -d)"
+          if [ "${GLANCE_DB_USERNAME}" = "glance" ] || [ -z "${GLANCE_DB_USERNAME}" ]; then
+            echo "ERROR: Glance DB-credential Secret username '${GLANCE_DB_USERNAME}' is not engine-issued"; exit 1
+          fi
+          echo "OK: Glance DB credential is engine-issued (username '${GLANCE_DB_USERNAME}')"
           assert_eq "Glance cache clusterRef wired to infra" "openstack-memcached" \
             "$(kubectl get glances.glance.openstack.c5c3.io "${GLANCE_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.cache.clusterRef.name}')"
           assert_eq "Glance keystoneEndpoint derived from the naming convention" \
@@ -627,6 +660,45 @@ spec:
           echo "OK: an unrelated lease survives another's revoke (AC 4 lease isolation)"
           assert_eq "ControlPlane still Ready after lease revokes" "True" \
             "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o "jsonpath={.status.conditions[?(@.type=='Ready')].status}")"
+
+          # ── Link 6c: glance-db / keystone-db SERVICE isolation ─────────────
+          # deploy/openbao/policies/glance-db-dynamic.hcl claims the two role +
+          # policy pairs are told apart by the ServiceAccount NAME the token
+          # carries — glance-db-creds vs keystone-db-creds — and that this holds
+          # even for two services CO-LOCATED in one namespace. This suite runs
+          # exactly that co-located shape (Glance shares ${CP_NS}), so it is the
+          # place to prove it. (The cross-TENANT half of the claim is the
+          # multi-controlplane suite's keystone-db check; this is the
+          # cross-SERVICE half, which nothing exercised before.)
+          GLANCE_ROLE="glance-${CP_NS}"
+          # login <sa> <role> → prints the client token minted from that SA's JWT.
+          db_login() {
+            bao_exec bao write -field=token "auth/kubernetes/management/login" \
+              role="$2" jwt="$(kubectl create token "$1" -n "${CP_NS}" --duration=10m)"
+          }
+          G_TOKEN="$(db_login glance-db-creds glance-db)"
+          if [ -z "${G_TOKEN}" ]; then
+            echo "ERROR: glance-db login returned no token"; exit 1
+          fi
+          # Positive control first, so a broken login cannot make the denies below
+          # pass vacuously.
+          if ! bao_exec env BAO_TOKEN="${G_TOKEN}" \
+            bao read "database/mariadb/creds/${GLANCE_ROLE}" >/dev/null 2>&1; then
+            echo "ERROR: glance token could not read its OWN creds path ${GLANCE_ROLE}"; exit 1
+          fi
+          echo "OK: glance token reads its own creds path (${GLANCE_ROLE})"
+          if bao_exec env BAO_TOKEN="${G_TOKEN}" \
+            bao read "database/mariadb/creds/${ROLE}" >/dev/null 2>&1; then
+            echo "ERROR: glance token READ the keystone creds path ${ROLE} in its own namespace"; exit 1
+          fi
+          echo "OK: glance token denied on the co-located keystone creds path (${ROLE})"
+          # The mirror direction: keystone's token must not reach glance's path.
+          K_TOKEN="$(db_login keystone-db-creds keystone-db)"
+          if bao_exec env BAO_TOKEN="${K_TOKEN}" \
+            bao read "database/mariadb/creds/${GLANCE_ROLE}" >/dev/null 2>&1; then
+            echo "ERROR: keystone token READ the glance creds path ${GLANCE_ROLE} in its own namespace"; exit 1
+          fi
+          echo "OK: keystone token denied on the co-located glance creds path (${GLANCE_ROLE}) — service isolation holds"
           unset BAO_TOKEN
 
           # ── Link 7a: Keystone /v3 returns HTTP 200 ─────────────────────────
@@ -690,6 +762,8 @@ spec:
           kubectl get glances.glance.openstack.c5c3.io,glancebackends.glance.openstack.c5c3.io -n openstack 2>&1 || true
           kubectl describe glance controlplane-keystone-glance -n openstack 2>&1 || true
           kubectl describe externalsecret controlplane-keystone-glance-db-credentials -n openstack 2>&1 || true
+          kubectl describe vaultdynamicsecret controlplane-keystone-glance-db-credentials -n openstack 2>&1 || true
+          kubectl get serviceaccount glance-db-creds -n openstack 2>&1 || true
           echo "=== glance-operator logs (last 200 lines) ==="
           kubectl logs -n glance-system -l app.kubernetes.io/name=glance-operator --tail=200 --all-containers 2>&1 || true
           echo "=== OpenBao logs (last 100 lines) ==="
