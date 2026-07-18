@@ -4099,3 +4099,148 @@ func TestValidateUpdate_RejectsGlanceDedicatedPresenceFlip(t *testing.T) {
 	g.Expect(err.Error()).To(ContainSubstring("switching a service between shared and dedicated backing services"))
 	g.Expect(err.Error()).To(ContainSubstring("glance.dedicatedBackingServices"))
 }
+
+// --- per-service databaseCredentialsMode override (issue #683) ---
+
+// TestValidateCreate_RejectsKeystoneCredentialsModeOverrideDynamicOnDedicated pins
+// that a Dynamic override on the Keystone service is rejected when Keystone
+// declares a dedicated database: the override retargets the shared database the
+// service does not use, and a dedicated database is Static-only. CEL cannot catch
+// it — the value passes the Enum, and no CEL rule spans the dedicated block.
+func TestValidateCreate_RejectsKeystoneCredentialsModeOverrideDynamicOnDedicated(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Name = "cp"
+	cp.Spec.Services.Keystone.DatabaseCredentialsMode = commonv1.CredentialsModeDynamic
+	cp.Spec.Services.Keystone.DedicatedBackingServices = &KeystoneDedicatedBackingServicesSpec{
+		Database: &commonv1.DatabaseSpec{
+			ClusterRef: &corev1.LocalObjectReference{Name: "cp-keystone-db"},
+			Database:   "keystone",
+			SecretRef:  commonv1.SecretRefSpec{Name: "keystone-db"},
+		},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("services.keystone.databaseCredentialsMode"))
+	g.Expect(err.Error()).To(ContainSubstring(
+		"Dynamic is not supported as an override on a service with a dedicated database",
+	))
+}
+
+// TestValidateCreate_RejectsGlanceCredentialsModeOverrideDynamicOnDedicated is the
+// glance mirror of the keystone dedicated-database rejection above.
+func TestValidateCreate_RejectsGlanceCredentialsModeOverrideDynamicOnDedicated(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := glanceControlPlane()
+	cp.Spec.Services.Glance.DatabaseCredentialsMode = commonv1.CredentialsModeDynamic
+	cp.Spec.Services.Glance.DedicatedBackingServices = &GlanceDedicatedBackingServicesSpec{
+		Database: &commonv1.DatabaseSpec{
+			ClusterRef: &corev1.LocalObjectReference{Name: "cp-glance-db"},
+			Database:   "glance",
+			SecretRef:  commonv1.SecretRefSpec{Name: "glance-db"},
+		},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("services.glance.databaseCredentialsMode"))
+	g.Expect(err.Error()).To(ContainSubstring(
+		"Dynamic is not supported as an override on a service with a dedicated database",
+	))
+}
+
+// TestValidateCreate_RejectsCredentialsModeOverrideDynamicOnBrownfieldShared pins
+// that a Dynamic override on a service using the SHARED database is rejected when
+// that shared database is brownfield (host set, no clusterRef), mirroring the
+// commonv1.DatabaseSpec Dynamic-requires-clusterRef contract one level up.
+func TestValidateCreate_RejectsCredentialsModeOverrideDynamicOnBrownfieldShared(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane() // shared database is brownfield (host set, no clusterRef)
+	cp.Spec.Services.Keystone.DatabaseCredentialsMode = commonv1.CredentialsModeDynamic
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("services.keystone.databaseCredentialsMode"))
+	g.Expect(err.Error()).To(ContainSubstring(
+		"Dynamic requires the shared database to be managed (clusterRef)",
+	))
+}
+
+// TestValidateCreate_RejectsKeystoneCredentialsModeOverrideInExternalMode pins the
+// webhook mirror of the CEL forbid rule: databaseCredentialsMode is forbidden on
+// the Keystone service in External mode (even a Static value), because no managed
+// database is provisioned. The webhook is the enforcement point a direct validate()
+// call exercises (CEL runs only against a live apiserver).
+func TestValidateCreate_RejectsKeystoneCredentialsModeOverrideInExternalMode(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := externalControlPlane()
+	cp.Spec.Services.Keystone.DatabaseCredentialsMode = commonv1.CredentialsModeStatic
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("services.keystone.databaseCredentialsMode"))
+	g.Expect(err.Error()).To(ContainSubstring("forbidden when services.keystone.mode is External"))
+}
+
+// TestValidateCreate_AcceptsStaticCredentialsModeOverrideOnDedicated pins that a
+// Static override is always admitted, even on a service that declares a dedicated
+// database (only Dynamic is rejected there).
+func TestValidateCreate_AcceptsStaticCredentialsModeOverrideOnDedicated(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Name = "cp"
+	cp.Spec.Services.Keystone.DatabaseCredentialsMode = commonv1.CredentialsModeStatic
+	cp.Spec.Services.Keystone.DedicatedBackingServices = &KeystoneDedicatedBackingServicesSpec{
+		Database: &commonv1.DatabaseSpec{
+			ClusterRef: &corev1.LocalObjectReference{Name: "cp-keystone-db"},
+			Database:   "keystone",
+			SecretRef:  commonv1.SecretRefSpec{Name: "keystone-db"},
+		},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred(),
+		"a Static override is always admitted, even on a service with a dedicated database")
+}
+
+// TestValidateCreate_AcceptsCredentialsModeOverridesOnManagedShared pins that a
+// Static or Dynamic override on a MANAGED shared database is admitted for both
+// services, in every combination — the staged-migration shape the field exists for.
+func TestValidateCreate_AcceptsCredentialsModeOverridesOnManagedShared(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+
+	tests := []struct {
+		name         string
+		keystoneMode string
+		glanceMode   string
+	}{
+		{"keystone-dynamic-glance-static", commonv1.CredentialsModeDynamic, commonv1.CredentialsModeStatic},
+		{"keystone-static-glance-dynamic", commonv1.CredentialsModeStatic, commonv1.CredentialsModeDynamic},
+		{"both-dynamic", commonv1.CredentialsModeDynamic, commonv1.CredentialsModeDynamic},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cp := managedControlPlane() // shared database is managed (clusterRef)
+			cp.Name = "cp"
+			cp.Spec.Services.Keystone.DatabaseCredentialsMode = tc.keystoneMode
+			cp.Spec.Services.Glance = validGlanceSpec()
+			cp.Spec.Services.Glance.DatabaseCredentialsMode = tc.glanceMode
+			cp.Spec.KORC.ServiceAccounts = []ServiceAccountSpec{{
+				Name:    "glance",
+				Project: ServiceAccountProjectSpec{Name: "service", Create: true},
+				Roles:   []string{"service"},
+			}}
+
+			_, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).NotTo(HaveOccurred(),
+				"a Static/Dynamic override on a managed shared database must be admitted for both services")
+		})
+	}
+}

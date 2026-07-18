@@ -806,6 +806,92 @@ FIXTURES: tuple[Fixture, ...] = (
         infrastructure=MANAGED_INFRA,
         glance=VALID_GLANCE + "      publicEndpoint: https://glance.example.com?utm=1\n",
     ),
+    # --- per-service databaseCredentialsMode override (issue #683, still the
+    #     create-rejection matrix) ---
+    Fixture(
+        filename="54-keystone-credentials-mode-override-in-external.yaml",
+        comment=(
+            "services.keystone.databaseCredentialsMode in External mode violates the CEL\n"
+            "rule: no managed database is provisioned, so there is no credentials mode to\n"
+            "override. A Static value is otherwise valid, so the ONLY violation is the\n"
+            "External-mode forbid."
+        ),
+        name="cp-external-credentials-mode",
+        keystone=VALID_EXTERNAL_KEYSTONE + "      databaseCredentialsMode: Static\n",
+    ),
+    Fixture(
+        filename="55-keystone-override-dynamic-on-dedicated.yaml",
+        comment=(
+            "databaseCredentialsMode Dynamic on the Keystone service is rejected by the\n"
+            "webhook when Keystone declares a DEDICATED database: the override retargets the\n"
+            "shared database this service does not use, and a dedicated database is\n"
+            "Static-only. The CRD Enum admits the value (Static|Dynamic) and no CEL rule\n"
+            "spans the dedicated block, so the webhook is the enforcement point."
+        ),
+        name="cp-override-dynamic-dedicated-ks",
+        keystone=(
+            "      mode: Managed\n"
+            "      databaseCredentialsMode: Dynamic\n"
+            "      dedicatedBackingServices:\n"
+            "        database:\n"
+            "          clusterRef:\n"
+            "            name: cp-dedicated-db\n"
+            "          database: keystone\n"
+            "          secretRef:\n"
+            "            name: keystone-db\n"
+        ),
+        infrastructure=MANAGED_INFRA,
+    ),
+    Fixture(
+        filename="56-glance-override-dynamic-on-dedicated.yaml",
+        comment=(
+            "databaseCredentialsMode Dynamic on the Glance service is rejected by the webhook\n"
+            "when Glance declares a DEDICATED database, mirroring the Keystone case: the\n"
+            "override retargets the shared database this service does not use, and a\n"
+            "dedicated database is Static-only. The defaulting webhook injects the glance\n"
+            "service account, so the only violation is the credentials-mode override."
+        ),
+        name="cp-override-dynamic-dedicated-gl",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        glance=(
+            "    glance:\n"
+            "      databaseCredentialsMode: Dynamic\n"
+            "      backends:\n"
+            "      - name: primary\n"
+            "        type: S3\n"
+            "        isDefault: true\n"
+            "        s3:\n"
+            "          endpoint: https://s3.example.com\n"
+            "          bucket: images\n"
+            "          credentialsSecretRef:\n"
+            "            name: glance-s3-creds\n"
+            "      dedicatedBackingServices:\n"
+            "        database:\n"
+            "          clusterRef:\n"
+            "            name: cp-dedicated-db\n"
+            "          database: glance\n"
+            "          secretRef:\n"
+            "            name: glance-db\n"
+        ),
+    ),
+    Fixture(
+        filename="57-override-dynamic-on-brownfield.yaml",
+        comment=(
+            "databaseCredentialsMode Dynamic on a service using the SHARED database is\n"
+            "rejected by the webhook when that shared database is brownfield (host set, no\n"
+            "clusterRef), mirroring the commonv1 Dynamic-requires-clusterRef contract one\n"
+            "level up: the dynamic engine issues per-tenant DB users only against a cluster\n"
+            "the operator provisions. The CRD Enum admits the value and the keystone CEL rule\n"
+            "forbids the field only in External mode, so the webhook is the enforcement point."
+        ),
+        name="cp-override-dynamic-brownfield",
+        keystone=(
+            "      mode: Managed\n"
+            "      databaseCredentialsMode: Dynamic\n"
+        ),
+        infrastructure=MANAGED_INFRA,
+    ),
     # --- transition wave C: shared -> dedicated (Test: c5c3-invalid-cr-shared-to-dedicated) ---
     Fixture(
         filename="40-transition-base-shared.yaml",

@@ -1,0 +1,53 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# databaseCredentialsMode Dynamic on the Glance service is rejected by the webhook
+# when Glance declares a DEDICATED database, mirroring the Keystone case: the
+# override retargets the shared database this service does not use, and a
+# dedicated database is Static-only. The defaulting webhook injects the glance
+# service account, so the only violation is the credentials-mode override.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-override-dynamic-dedicated-gl
+spec:
+  openStackRelease: "2025.2"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+  services:
+    keystone:
+      mode: Managed
+    glance:
+      databaseCredentialsMode: Dynamic
+      backends:
+      - name: primary
+        type: S3
+        isDefault: true
+        s3:
+          endpoint: https://s3.example.com
+          bucket: images
+          credentialsSecretRef:
+            name: glance-s3-creds
+      dedicatedBackingServices:
+        database:
+          clusterRef:
+            name: cp-dedicated-db
+          database: glance
+          secretRef:
+            name: glance-db
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password

@@ -1,0 +1,43 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# databaseCredentialsMode Dynamic on the Keystone service is rejected by the
+# webhook when Keystone declares a DEDICATED database: the override retargets the
+# shared database this service does not use, and a dedicated database is
+# Static-only. The CRD Enum admits the value (Static|Dynamic) and no CEL rule
+# spans the dedicated block, so the webhook is the enforcement point.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-override-dynamic-dedicated-ks
+spec:
+  openStackRelease: "2025.2"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+  services:
+    keystone:
+      mode: Managed
+      databaseCredentialsMode: Dynamic
+      dedicatedBackingServices:
+        database:
+          clusterRef:
+            name: cp-dedicated-db
+          database: keystone
+          secretRef:
+            name: keystone-db
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password
