@@ -140,6 +140,15 @@ spec:
         hostname: horizon.127-0-0-1.nip.io
     glance:
       replicas: 1
+      # Drop publicEndpoint on the default port 443 — the operator then derives
+      # https://glance.127-0-0-1.nip.io from the gateway hostname.
+      publicEndpoint: https://glance.127-0-0-1.nip.io:8443
+      # Exposed through the same shared Envoy Gateway, via the third HTTPS
+      # listener the kind overlay adds for glance.127-0-0-1.nip.io.
+      gateway:
+        parentRef:
+          name: openstack-gw
+        hostname: glance.127-0-0-1.nip.io
       # One curated S3 image store on the in-cluster Garage object store; the
       # Step 2 stack ships the Garage cluster and the glance-images bucket.
       backends:
@@ -172,13 +181,18 @@ The `glance` block makes the reconciler project the OpenStack Image service and
 one `GlanceBackend` child per `backends` entry — here a single S3 store on the
 in-cluster Garage object store. Garage and the ESO-synced
 `garage-s3-credentials` Secret ship with the Step 2 stack, so
-`credentialsSecretRef` resolves without extra wiring. The defaulting webhook
-injects a `glance` service account (user `glance`, project `service`, role
-`service`) into `spec.korc.serviceAccounts` so Glance can validate the Keystone
-tokens it receives; its database and cache derive from `spec.infrastructure`,
-exactly like Keystone's. A `GlanceReady` condition joins the chain — gating on
-`KeystoneReady` plus that injected service account — and `status.services` gains
-a third entry.
+`credentialsSecretRef` resolves without extra wiring. The `gateway` block
+exposes the image API through the same shared Envoy Gateway as Keystone and
+Horizon, on the third HTTPS listener the kind overlay adds for
+`glance.127-0-0-1.nip.io`, and `publicEndpoint` makes the public image catalog
+row advertise the actually reachable host URL — the `:8443` host port — instead
+of the default-443 form the operator would otherwise derive from the gateway
+hostname. The defaulting webhook injects a `glance` service account (user
+`glance`, project `service`, role `service`) into `spec.korc.serviceAccounts` so
+Glance can validate the Keystone tokens it receives; its database and cache
+derive from `spec.infrastructure`, exactly like Keystone's. A `GlanceReady`
+condition joins the chain — gating on `KeystoneReady` plus that injected service
+account — and `status.services` gains a third entry.
 
 Applying the CR is not the end of the manual work: a hand-applied ControlPlane
 needs the one-time OpenBao onboarding in Step 4 before the chain can progress
@@ -232,6 +246,11 @@ spec:
         key: secret-key
     glance:
       replicas: 1
+      publicEndpoint: https://glance.127-0-0-1.nip.io:8443
+      gateway:
+        parentRef:
+          name: openstack-gw          # same Gateway; third listener
+        hostname: glance.127-0-0-1.nip.io
       backends:
         - name: default
           type: S3
@@ -382,7 +401,8 @@ openstack --insecure token issue
 > `foo-keystone-admin-credentials` instead.
 
 > With the default `KIND_HOST_PORT=443` use `https://keystone.127-0-0-1.nip.io/v3`
-> and drop the `publicEndpoint` line from the CR in Step 3.
+> and drop both `publicEndpoint` lines (keystone and glance) from the CR in
+> Step 3.
 
 ### Upload a first image
 
@@ -393,66 +413,42 @@ Image service reached the catalog:
 openstack --insecure catalog list
 ```
 
-An `image` row proves Glance registered its endpoints. The upload itself runs
-**in-cluster**, though: those catalog rows carry cluster-local endpoint URLs (the
-kind Gateway terminates only Keystone and Horizon — no glance listener), so the
-host `openstack` CLI cannot reach Glance directly.
+An `image` row proves Glance registered its endpoints. The public image catalog
+row now carries the gateway URL (`https://glance.127-0-0-1.nip.io:8443`, the
+`publicEndpoint` from Step 3), and the `openstack` CLI resolves the `public`
+interface by default, so the upload runs directly from the host through the
+shared Gateway — no in-cluster pod needed. `--insecure` accepts the listener's
+self-signed certificate, as with the Keystone calls above.
 
-Run a one-shot pod that authenticates against the cluster-local Keystone URL,
-uploads a throwaway image into the Garage S3 backend, waits for it to reach
-`active`, and deletes it again:
+Create a throwaway 1 KiB image, upload it through the gateway, wait for it to
+reach `active`, and delete it again:
 
 ```bash
-kubectl run glance-smoke -n openstack --rm -i --restart=Never \
-  --image=ghcr.io/c5c3/tempest:2025.2 \
-  --env=OS_AUTH_URL=http://controlplane-keystone.openstack.svc:5000/v3 \
-  --env=OS_INTERFACE=internal \
-  --env=OS_USERNAME=admin \
-  --env=OS_PROJECT_NAME=admin \
-  --env=OS_USER_DOMAIN_NAME=Default \
-  --env=OS_PROJECT_DOMAIN_NAME=Default \
-  --override-type=strategic \
-  --overrides='{"spec":{"containers":[{"name":"glance-smoke","env":[{"name":"OS_PASSWORD","valueFrom":{"secretKeyRef":{"name":"controlplane-keystone-admin-credentials","key":"password"}}}]}]}}' \
-  -- sh -c '
-    set -e
-    dd if=/dev/urandom of=/tmp/first.img bs=1024 count=1
-    openstack image create --disk-format raw --container-format bare \
-      --file /tmp/first.img first-image
-    trap "openstack image delete first-image 2>/dev/null || true" EXIT
-    for _ in $(seq 30); do
-      [ "$(openstack image show first-image -f value -c status)" = active ] && break
-      sleep 2
-    done
-    test "$(openstack image show first-image -f value -c status)" = active
-    echo "OK: image uploaded to Glance and reached active; deleting it again"'
+dd if=/dev/urandom of=/tmp/first.img bs=1024 count=1
+openstack --insecure image create --disk-format raw --container-format bare \
+  --file /tmp/first.img first-image
+for _ in $(seq 30); do
+  [ "$(openstack --insecure image show first-image -f value -c status)" = active ] && break
+  sleep 2
+done
+test "$(openstack --insecure image show first-image -f value -c status)" = active \
+  && echo "OK: image uploaded through the gateway and reached active"
+openstack --insecure image delete first-image
 ```
-
-`OS_INTERFACE=internal` selects the cluster-local image endpoint the pod can
-actually reach. `--rm` removes the pod as soon as the attached session ends, so
-nothing lingers.
 
 The poll loop matters because `image create` returns as soon as Glance accepts
 the upload, while the store write completes asynchronously — a cold S3
 connection or a contended Garage backend can leave the image in `saving` for a
-few seconds. The `trap ... EXIT` deletes `first-image` on **every** exit path,
-including the timeout: without it a failed run would leave the image behind and
-the next attempt would fail on a name collision instead of the real error.
+few seconds.
 
-`OS_PASSWORD` is **referenced** out of the admin-credentials Secret rather than
-passed with `--env`: the kubelet resolves the `secretKeyRef` when the container
-starts, so the password itself never enters the Pod spec. Inlining it would
-persist the literal in etcd for the pod's lifetime, expose it to every subject
-holding `get`/`list` on pods in `openstack` — a far broader set than `get
-secrets` — and, under `RequestBody` apiserver auditing, write it permanently
-into the audit record of the CREATE call, which `--rm` does not retract. The
-`--override-type=strategic` merges the one `valueFrom` entry into the container
-the `--env` flags above build; the default merge type would replace the whole
-`env` array instead.
+A run aborted before the final `delete` leaves `first-image` behind; delete it
+(`openstack --insecure image delete first-image`) before retrying, or the next
+`image create` fails on a name collision.
 
 ::: warning Leave OS_REGION_NAME unset
-Do **not** add `OS_REGION_NAME` to the pod or the host exports: the projected
-K-ORC catalog rows carry no region, so a region-scoped lookup finds no image
-endpoint and the upload fails with `internal endpoint for image service in
+Do **not** add `OS_REGION_NAME` to the host exports: the projected K-ORC
+catalog rows carry no region, so a region-scoped lookup finds no image
+endpoint and the upload fails with `public endpoint for image service in
 RegionOne region not found`. Keystone's own bootstrap registers RegionOne
 identity rows, so identity is unaffected — only the region-less image endpoint
 needs the filter left clear.
