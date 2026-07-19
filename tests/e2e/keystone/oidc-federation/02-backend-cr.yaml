@@ -33,13 +33,12 @@ spec:
     clientID: keystone
     clientSecretRef:
       name: keycloak-forge-client
-    # Explicit endpoints (both backends use them: the operator's metadata-fetch
-    # SSRF guard blocks discovery against the in-cluster Keycloak's private
-    # ClusterIP — the .well-known fetch is unit-tested instead). Everything
-    # speaks the fixture's plain-http listener EXCEPT the introspection
-    # endpoint, which mod_auth_openidc requires to be https — the fixture serves
-    # it on the self-signed 8443 listener, and tlsVerify opts out of verifying
-    # that throwaway certificate.
+    # Explicit endpoints: this backend pins the explicit-endpoints path while
+    # 03-backend2-cr.yaml pins discovery mode, so both metadata shapes stay
+    # covered. Everything speaks the fixture's plain-http listener EXCEPT the
+    # introspection endpoint, which mod_auth_openidc requires to be https — the
+    # fixture serves it on the self-signed 8443 listener, and tlsVerify opts out
+    # of verifying that throwaway certificate.
     endpoints:
       authorizationEndpoint: http://keycloak.openstack.svc.cluster.local:8080/realms/forge/protocol/openid-connect/auth
       tokenEndpoint: http://keycloak.openstack.svc.cluster.local:8080/realms/forge/protocol/openid-connect/token
