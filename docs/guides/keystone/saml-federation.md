@@ -70,7 +70,11 @@ Pick exactly one of the three sources for `spec.saml.idpMetadata`:
   operator validates its `entityID` against `spec.saml.idpEntityID` at
   admission).
 - **`url`** — the operator fetches the document through the same hardened,
-  SSRF-guarded client the OIDC path uses.
+  SSRF-guarded client the OIDC path uses. By default that client refuses to dial
+  any non-public address; to fetch metadata from a trusted in-cluster SAML IdP,
+  allowlist its CIDR through the same operator-level `federation.metadataAllowCidrs`
+  chart value (`--federation-metadata-allow-cidrs` flag) described under
+  [OIDC discovery against an in-cluster IdP](./oidc-federation.md#discovery-against-an-in-cluster-identity-provider).
 
 ## Step 2 — Configure the SP certificate (optional)
 

@@ -278,6 +278,15 @@ for the end-to-end scraping setup.
 
 Full semantics live in the [Operator NetworkPolicy reference](../keystone/keystone-operator-networkpolicy.md).
 
+#### Federation
+
+| Parameter | Type | Default | Description |
+| --- | --- | --- | --- |
+| `federation.metadataAllowCidrs` | `list` of CIDR strings | `[]` | CIDRs the SSRF-guarded federation-metadata client may additionally dial to fetch identity-provider metadata (OIDC discovery documents and SAML IdP metadata) — e.g. the cluster's Service CIDR `10.96.0.0/12` for a trusted in-cluster IdP. Rendered as `--federation-metadata-allow-cidrs`. Empty (the default) keeps the operator refusing every non-public address; loopback, link-local (cloud IMDS), multicast, and unspecified addresses stay blocked even when an entry covers them. Operator-level only — never derived from a CR |
+
+See [Attach an OIDC Federation Backend to Keystone](../../guides/keystone/oidc-federation.md#discovery-against-an-in-cluster-identity-provider)
+for the discovery workflow this value enables.
+
 #### Service Account
 
 | Parameter | Type | Default | Description |
@@ -336,6 +345,7 @@ The operator Deployment is configured with the following fixed settings:
 | `--leader-elect` | Present when `leaderElection.enabled=true` | Yes |
 | `--metrics-bind-address` | `:{{ .Values.metrics.port }}` (default `:8080`) | Yes (port) |
 | `--health-probe-bind-address` | `:8081` | No (hardcoded in bootstrap.Run) |
+| `--federation-metadata-allow-cidrs` | Comma-separated `.Values.federation.metadataAllowCidrs`; omitted when the list is empty | Yes |
 :::
 
 **Health probes:**

@@ -262,12 +262,16 @@ either metadata-driven (`providerMetadataURL`, defaulted to
 explicit (`endpoints`); the two shapes are mutually exclusive (CEL rule plus
 webhook defense-in-depth). The operator fetches the discovery document at
 reconcile time and pre-provisions it into the sidecar's read-only
-`OIDCMetadataDir` — the module cannot self-cache there.
+`OIDCMetadataDir` — the module cannot self-cache there. The fetch client is
+SSRF-guarded: it refuses non-public metadata addresses unless the operator
+deployment allowlists them via `--federation-metadata-allow-cidrs`
+(operator-level configuration, never a CR field), so discovery against a
+trusted in-cluster IdP is opt-in and cannot be widened from this CR.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `issuer` | `string` | Yes | — | The OIDC issuer URL exactly as the IdP asserts it (the `iss` claim); pattern `^https?://`. Registered as the keystone identity provider's remote ID and encoded (scheme-stripped, URL-escaped) into the metadata file basenames. |
-| `providerMetadataURL` | `string` | No | derived from `issuer` | The OIDC discovery document URL; pattern `^https?://`. Mutually exclusive with `endpoints`. A fetch failure or a document whose `issuer` mismatches the spec parks the backend pending with a Warning event. |
+| `providerMetadataURL` | `string` | No | derived from `issuer` | The OIDC discovery document URL; pattern `^https?://`. Mutually exclusive with `endpoints`. A fetch failure or a document whose `issuer` mismatches the spec parks the backend pending with a Warning event. Non-public metadata addresses are refused unless the operator deployment allowlists them via `--federation-metadata-allow-cidrs` (operator configuration, not a CR field); use explicit `endpoints` otherwise. |
 | `endpoints` | [`OIDCEndpointsSpec`](#oidcendpointsspec) | No | — | Explicit provider endpoints for air-gapped operators or IdPs unreachable from the operator pod. |
 | `clientID` | `string` | Yes | — | The relying-party client ID registered at the IdP. |
 | `clientSecretRef` | `SecretRefSpec` | Yes | — | Secret holding the relying-party client secret under the **fixed data key** `clientSecret`. The `key` field must stay empty (webhook-enforced), mirroring the LDAP bind Secret contract. |
@@ -321,7 +325,7 @@ defense-in-depth).
 | --- | --- | --- | --- |
 | `inline` | `string` | No | Raw IdP EntityDescriptor XML (≤65536). The operator validates its entityID against `idpEntityID` at admission. |
 | `secretRef` | `SecretRefSpec` | No | Secret holding the IdP metadata under the fixed data key `idp-metadata.xml`. The `key` field must stay empty (webhook-enforced). |
-| `url` | `string` | No | IdP metadata URL (pattern `^https://`, ≤512); operator-fetched through the hardened SSRF-guarded client. `https://` is mandatory — the metadata carries the assertion-signing certificate, so a plaintext fetch would let an on-path attacker substitute the trust anchor. |
+| `url` | `string` | No | IdP metadata URL (pattern `^https://`, ≤512); operator-fetched through the hardened SSRF-guarded client. `https://` is mandatory — the metadata carries the assertion-signing certificate, so a plaintext fetch would let an on-path attacker substitute the trust anchor. Non-public addresses are refused unless the operator deployment allowlists them via `--federation-metadata-allow-cidrs` (operator configuration, not a CR field). |
 
 ### SAMLSPSpec
 
