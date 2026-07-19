@@ -93,7 +93,7 @@ info "reference service: keystone"
 # Canonical per-service chainsaw suite set, derived from the suites every
 # service is expected to carry (the keystone reference has all of them).
 CANONICAL_E2E="basic-deployment scale healthcheck httproute network-policy \
-deletion-cleanup pod-security-restricted invalid-cr"
+deletion-cleanup pod-security-restricted invalid-cr gateway-quick-start-smoke"
 
 # Reference helm-unittest suite set, derived live from the keystone chart.
 REFERENCE_HELM_TESTS="$(find operators/keystone/helm/keystone-operator/tests \

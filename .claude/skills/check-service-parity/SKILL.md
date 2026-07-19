@@ -40,7 +40,7 @@ threads through five layers:
 | Service operator | `operators/<svc>/` (module, CRD, webhook, helm chart, dashboards) | the keystone operator scaffolding on `internal/common` |
 | CI / e2e / deploy | `.github/workflows/*.yaml`, `hack/ci-resolve-changes.sh` env, `tests/e2e/<svc>/`, `tests/e2e-chaos/`, `deploy/flux-system/` | the enumeration points and canonical suite set keystone populates |
 | ControlPlane integration | `operators/c5c3/api/` `ServicesSpec`, `internal/controller/reconcile_<svc>.go`, c5c3 chart RBAC | the keystone projection (`reconcile_keystone.go`, `KeystoneReady`) |
-| Documentation | `docs/reference/<svc>/`, `docs/guides/enable-<svc>-operator-*.md`, `docs/.vitepress/config.ts` | the keystone reference/guide set |
+| Documentation | `docs/reference/<svc>/`, `docs/guides/<svc>/enable-<svc>-operator-*.md`, `docs/.vitepress/config.ts` | the keystone reference/guide set |
 
 There is no single authoritative gate for parity — that is the point of
 this skill. CI runs exactly the matrices it enumerates, so a service
@@ -95,7 +95,8 @@ inventory. Exit code `1` means at least one `[FAIL]`. Interpret:
   never run and CI stays green.
 - **P6** — e2e coverage: the canonical chainsaw suite set
   (basic-deployment, scale, healthcheck, httproute, network-policy,
-  deletion-cleanup, pod-security-restricted, invalid-cr), the
+  deletion-cleanup, pod-security-restricted, invalid-cr,
+  gateway-quick-start-smoke), the
   latest-release `basic-deployment-<slug>` variant, and at least one
   chaos suite. Keystone's chaos suites predate multi-service naming
   and are unprefixed; later services prefix theirs (`<svc>-*`).
@@ -201,7 +202,11 @@ These recurring shapes are worth grepping for first:
   helm-unittest set are derived live from the keystone tree, so a
   keystone regression surfaces as every other service suddenly
   "leading" the reference. Read multi-service failures with that in
-  mind.
+  mind. The canon has known holes, though — a later service can pioneer
+  a surface keystone lacks (glance: the dual public+internal catalog
+  row, the satellite backend CRD, the backing-store-outage chaos
+  suite). A pioneered surface is a candidate for back-porting or for a
+  recorded deviation, not automatically a finding against the pioneer.
 - `ALLOWED_DEVIATIONS` (top of the audit script) is the single place
   deliberate deviations live, one `<svc>:<check>:<item>` token per
   line. Record the *why* in a comment next to the token.
