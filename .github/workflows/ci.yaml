@@ -589,7 +589,7 @@ jobs:
     needs: [changes]
     if: github.event_name == 'pull_request' && needs.changes.outputs.e2e-infra == 'true'
     runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
@@ -607,9 +607,47 @@ jobs:
         run: |
           mkdir -p _output/reports
           chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e/infrastructure/
-      # Use shared diagnostic dump script.
+      # Locks the same-parameter re-run convergence (#650).  Runs make
+      # deploy-infra directly (not the composite action, and deliberately
+      # WITHOUT SKIP_KIND_CREATE) so the script's own existing-cluster
+      # detection path -- the developer flow from the bug report -- is
+      # exercised.  CLUSTER_NAME is passed explicitly from KIND_CLUSTER rather
+      # than relying on the script's default happening to match it: without it,
+      # editing KIND_CLUSTER above would make the script find no cluster of that
+      # name, `kind create cluster` a fresh one, and deploy into that instead --
+      # a silently-green second fresh deploy that tests zero convergence.
+      - name: Re-run deploy-infra with unchanged parameters
+        run: make deploy-infra
+        env:
+          CLUSTER_NAME: ${{ env.KIND_CLUSTER }}
+      # Verifies a healthy stack is left unchanged after the same-parameter
+      # re-run -- including the two `no-*` absence suites still passing.  A
+      # distinct report name keeps the first run's JUnit XML intact.
+      - name: Re-run Chainsaw E2E tests after unchanged re-run
+        run: |
+          chainsaw test --config tests/e2e/chainsaw-config.yaml --report-name chainsaw-report-rerun tests/e2e/infrastructure/
+      # Additive opt-in leg (#650) -- the script's own Phase-3 wait gates the
+      # newly enabled metrics-server HelmRelease on Ready, so exit 0 proves
+      # the additive install landed without disturbing the base stack.
+      - name: Re-run deploy-infra with WITH_METRICS_SERVER=true
+        run: make deploy-infra
+        env:
+          CLUSTER_NAME: ${{ env.KIND_CLUSTER }}
+          WITH_METRICS_SERVER: "true"
+      # The full suite is NOT re-run here because
+      # `no-metrics-server-when-disabled` asserts the absence of
+      # metrics-server, which the additive leg just (correctly) installed --
+      # the scoped set proves the base stack is untouched and Prometheus is
+      # still absent.
+      - name: Run scoped Chainsaw E2E tests after additive re-run
+        run: |
+          chainsaw test --config tests/e2e/chainsaw-config.yaml --report-name chainsaw-report-additive tests/e2e/infrastructure/infra-stack-health tests/e2e/infrastructure/garage-health tests/e2e/infrastructure/flux-web-health tests/e2e/infrastructure/no-prometheus-when-disabled
+      # Use shared diagnostic dump script.  `always()` (matching every other
+      # e2e job) also covers the timeout-cancellation path -- `failure()`
+      # alone is skipped when timeout-minutes expires, discarding the cluster
+      # state exactly when a hung re-run leg makes it hardest to debug.
       - name: Dump diagnostic info
-        if: failure()
+        if: always()
         run: hack/ci-dump-diagnostics.sh
       - name: Upload JUnit report
         if: always()
