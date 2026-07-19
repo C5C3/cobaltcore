@@ -25,6 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/c5c3/forge/internal/common/config"
 	"github.com/c5c3/forge/internal/common/secrets"
@@ -415,30 +416,53 @@ var _, nat64CIDR, _ = net.ParseCIDR("64:ff9b::/96")
 // lives at 169.254.169.254), private (RFC1918 / IPv6 unique-local),
 // carrier-grade NAT (RFC6598 100.64.0.0/10), the NAT64 well-known prefix
 // (RFC6052 64:ff9b::/96), unspecified, or multicast.
-func isBlockedMetadataIP(ip net.IP) bool {
+//
+// allowCIDRs is the operator-scoped --federation-metadata-allow-cidrs list. An
+// address it Contains lifts only the private-range classes (private, CGNAT,
+// NAT64), so a trusted in-cluster IdP on a private Service address can serve
+// discovery. Loopback, link-local (cloud IMDS), multicast, and unspecified are
+// hard-blocked before the allowlist is consulted and can NEVER be lifted: they
+// address the operator pod's own metrics/health/webhook listeners, cloud IMDS,
+// or nothing routable — none of which is ever a legitimate metadata target. With
+// a nil/empty allowlist the predicate is byte-for-byte the original behavior
+// (the hard-block and private-range class groups are disjoint).
+func isBlockedMetadataIP(ip net.IP, allowCIDRs []*net.IPNet) bool {
 	if v4 := ip.To4(); v4 != nil { // normalize IPv4-mapped before range checks
 		ip = v4
 	}
-	return ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
-		ip.IsMulticast() || ip.IsUnspecified() || ip.IsPrivate() ||
-		cgnatCIDR.Contains(ip) || nat64CIDR.Contains(ip)
+	// Hard-block classes no allowlist entry may lift.
+	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+		ip.IsMulticast() || ip.IsUnspecified() {
+		return true
+	}
+	// An operator-scoped allowlist entry lifts the private-range classes below.
+	for _, cidr := range allowCIDRs {
+		if cidr.Contains(ip) {
+			return false
+		}
+	}
+	return ip.IsPrivate() || cgnatCIDR.Contains(ip) || nat64CIDR.Contains(ip)
 }
 
-// blockMetadataDial is the net.Dialer.Control SSRF guard for the discovery
-// fetch. It runs after DNS resolution with the concrete IP:port being dialed,
-// so it rejects a providerMetadataURL — or a DNS-rebinding answer — that
-// targets an in-cluster or cloud-metadata address the untrusted CR creator
-// must not be able to reach through the operator pod.
-func blockMetadataDial(_, address string, _ syscall.RawConn) error {
-	host, _, err := net.SplitHostPort(address)
-	if err != nil {
-		return fmt.Errorf("%w: parsing dial address %q: %w", errProviderMetadataUnavailable, address, err)
+// blockMetadataDialControl builds the net.Dialer.Control SSRF guard for the
+// discovery fetch. The returned func runs after DNS resolution with the
+// concrete IP:port being dialed, so it rejects a providerMetadataURL — or a
+// DNS-rebinding answer — that targets an in-cluster or cloud-metadata address
+// the untrusted CR creator must not be able to reach through the operator pod.
+// allowCIDRs (the operator-scoped --federation-metadata-allow-cidrs list) is
+// threaded into the address check so a trusted in-cluster IdP can be reached.
+func blockMetadataDialControl(allowCIDRs []*net.IPNet) func(network, address string, c syscall.RawConn) error {
+	return func(_, address string, _ syscall.RawConn) error {
+		host, _, err := net.SplitHostPort(address)
+		if err != nil {
+			return fmt.Errorf("%w: parsing dial address %q: %w", errProviderMetadataUnavailable, address, err)
+		}
+		ip := net.ParseIP(host)
+		if ip == nil || isBlockedMetadataIP(ip, allowCIDRs) {
+			return fmt.Errorf("%w: refusing to dial non-public address %s", errProviderMetadataUnavailable, address)
+		}
+		return nil
 	}
-	ip := net.ParseIP(host)
-	if ip == nil || isBlockedMetadataIP(ip) {
-		return fmt.Errorf("%w: refusing to dial non-public address %s", errProviderMetadataUnavailable, address)
-	}
-	return nil
 }
 
 // newHardenedMetadataClient builds the HTTP client the operator uses to fetch
@@ -450,7 +474,12 @@ func blockMetadataDial(_, address string, _ syscall.RawConn) error {
 // always inspects the real target (operators whose IdP is only reachable via a
 // proxy use spec.oidc.endpoints); DisableKeepAlives keeps the single-use
 // client from leaving an idle connection behind.
-func newHardenedMetadataClient() *http.Client {
+//
+// allowCIDRs is the operator-scoped --federation-metadata-allow-cidrs list; it
+// lifts only the private-range classes (private/CGNAT/NAT64) in the dial guard
+// so a trusted in-cluster IdP can serve metadata. Redirect refusal and every
+// other control are unchanged.
+func newHardenedMetadataClient(allowCIDRs []*net.IPNet) *http.Client {
 	return &http.Client{
 		CheckRedirect: func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
@@ -459,7 +488,7 @@ func newHardenedMetadataClient() *http.Client {
 			DisableKeepAlives: true,
 			DialContext: (&net.Dialer{
 				Timeout: federationMetadataFetchTimeout,
-				Control: blockMetadataDial,
+				Control: blockMetadataDialControl(allowCIDRs),
 			}).DialContext,
 		},
 	}
@@ -474,7 +503,58 @@ func (r *KeystoneReconciler) federationMetadataClient() HTTPDoer {
 	if r.HTTPClient != nil {
 		return r.HTTPClient
 	}
-	return newHardenedMetadataClient()
+	return newHardenedMetadataClient(r.FederationMetadataAllowCIDRs)
+}
+
+// ParseMetadataAllowCIDRs parses the --federation-metadata-allow-cidrs flag
+// value into the CIDR networks the federation-metadata dial guard additionally
+// permits. An empty or whitespace-only value returns (nil, nil), keeping the
+// hardened default (every non-public address blocked). Otherwise it splits on
+// commas, trims each entry, and rejects an empty entry or a malformed CIDR.
+//
+// A default route (0.0.0.0/0, ::/0) is rejected at startup rather than accepted:
+// it lifts the private-range guard wholesale, which is never the smallest range
+// that reaches an identity provider. Refusing it here makes the "scope the
+// allowlist narrowly" rule an enforced default instead of documentation.
+func ParseMetadataAllowCIDRs(flagValue string) ([]*net.IPNet, error) {
+	if strings.TrimSpace(flagValue) == "" {
+		return nil, nil
+	}
+	var cidrs []*net.IPNet
+	for _, entry := range strings.Split(flagValue, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			return nil, fmt.Errorf("empty cidr entry in %q", flagValue)
+		}
+		_, network, err := net.ParseCIDR(entry)
+		if err != nil {
+			return nil, fmt.Errorf("parsing cidr %q: %w", entry, err)
+		}
+		if ones, _ := network.Mask.Size(); ones == 0 {
+			return nil, fmt.Errorf("refusing default route %q: allowlist the smallest range that reaches the identity provider", entry)
+		}
+		cidrs = append(cidrs, network)
+	}
+	return cidrs, nil
+}
+
+// metadataFetchFailure logs detail and returns the tenant-safe federation
+// metadata error every post-request fetch failure must collapse to.
+//
+// The returned error is echoed verbatim into a tenant-visible
+// IdentityBackendSkipped Event, and the untrusted CR creator picks the dial
+// target (spec.oidc.providerMetadataURL / spec.saml.idpMetadata.url). Reflecting
+// the transport error, the HTTP status, or anything decoded out of the response
+// would therefore turn the metadata fetch into an SSRF probe oracle: with a
+// --federation-metadata-allow-cidrs entry configured, walking the allowlisted
+// range and a port list would enumerate every in-cluster service reachable from
+// the operator pod. Collapsing all of them to one string keeps a refused
+// connection, a listening non-HTTP service, and an HTTP response with the wrong
+// content indistinguishable. Only the tenant's own metadataURL is echoed back;
+// the detail goes to the operator log.
+func metadataFetchFailure(ctx context.Context, metadataURL string, detail error) error {
+	log.FromContext(ctx).Error(detail, "fetching federation metadata failed", "url", metadataURL)
+	return fmt.Errorf("%w: fetching %s failed", errProviderMetadataUnavailable, metadataURL)
 }
 
 // fetchProviderMetadata GETs the backend's discovery document through the
@@ -505,25 +585,26 @@ func (r *KeystoneReconciler) fetchProviderMetadata(ctx context.Context, backend 
 	}
 	resp, err := r.federationMetadataClient().Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("%w: fetching %s: %w", errProviderMetadataUnavailable, metadataURL, err)
+		return nil, metadataFetchFailure(ctx, metadataURL, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("%w: fetching %s: HTTP %d", errProviderMetadataUnavailable, metadataURL, resp.StatusCode)
+		return nil, metadataFetchFailure(ctx, metadataURL, fmt.Errorf("HTTP %d", resp.StatusCode))
 	}
 	document, err := io.ReadAll(io.LimitReader(resp.Body, maxProviderMetadataBytes+1))
 	if err != nil {
-		return nil, fmt.Errorf("%w: reading %s: %w", errProviderMetadataUnavailable, metadataURL, err)
+		return nil, metadataFetchFailure(ctx, metadataURL, fmt.Errorf("reading response: %w", err))
 	}
 	if len(document) > maxProviderMetadataBytes {
-		return nil, fmt.Errorf("%w: %s exceeds the %d-byte budget", errProviderMetadataUnavailable, metadataURL, maxProviderMetadataBytes)
+		return nil, metadataFetchFailure(ctx, metadataURL,
+			fmt.Errorf("response exceeds the %d-byte budget", maxProviderMetadataBytes))
 	}
 
 	var doc struct {
 		Issuer string `json:"issuer"`
 	}
 	if err := json.Unmarshal(document, &doc); err != nil {
-		return nil, fmt.Errorf("%w: decoding %s: %w", errProviderMetadataUnavailable, metadataURL, err)
+		return nil, metadataFetchFailure(ctx, metadataURL, fmt.Errorf("decoding response: %w", err))
 	}
 	if doc.Issuer != backend.Spec.OIDC.Issuer {
 		// Deliberately does not echo doc.Issuer: this error surfaces in a
