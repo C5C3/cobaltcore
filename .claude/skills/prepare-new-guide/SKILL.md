@@ -51,7 +51,9 @@ container with the devstack's verbatim bring-up command, the section
 structure (`## Steps`, `## Verification`, `## See also`), and the terminal
 `## Tested by` fence; the ControlPlane variant additionally carries the
 operator-owned `::: warning` block and a
-`## Standalone Keystone, without a ControlPlane` stub. Until the
+`## Standalone <Service>, without a ControlPlane` stub — `--service` also
+selects the subject of that prose (projected child `controlplane-<service>`;
+default subject is keystone). Until the
 tested-by suite path resolves to a real `chainsaw-test.yaml`, the
 skeleton fails the docs gate — that is intended, not a scaffold bug.
 
@@ -67,9 +69,10 @@ matching collapsed service group of the `Guides` sidebar section in
 Use only the resource names the declared devstack actually produces — the
 table in `docs/contributing/guide-conventions.md` lists them per devstack.
 Standalone differences go in the terminal
-`## Standalone Keystone, without a ControlPlane` section (modeled on
-`docs/guides/end-to-end-sso.md`); never interleave the two naming worlds
-in the primary walkthrough.
+`## Standalone <Service>, without a ControlPlane` section (keystone model:
+`docs/guides/end-to-end-sso.md`; glance model:
+`docs/guides/glance/glance-s3-multistore.md`); never interleave the two
+naming worlds in the primary walkthrough.
 
 ### 5. Wire the Tested by section
 
@@ -99,8 +102,9 @@ docs gate does not:
   the published operator chart (`oci://ghcr.io/c5c3/charts/`) requires a
   `HelmRelease` mention (Flux-ownership framing).
 - **V4** — a mutating kubectl verb on a projected child CR
-  (`controlplane-keystone` / `controlplane-horizon`) requires a
-  `::: warning` container with revert/projected language.
+  (`controlplane-<svc>` for every onboarded service — the list is
+  discovered from the newest `releases/<version>/source-refs.yaml`)
+  requires a `::: warning` container with revert/projected language.
 
 ### 2. Run the authoritative gate
 
@@ -123,8 +127,13 @@ What the scripts cannot decide:
   names table in `docs/contributing/guide-conventions.md`.
 - Revert warnings sit adjacent to the operations they cover, not in a
   distant section.
+- Readiness signals are scoped to the guide's subject: a service guide
+  watches the service condition on the ControlPlane (`GlanceReady`,
+  `KeystoneReady`, ...) or the child CR's `Ready`, never the
+  ControlPlane-wide `Ready` — the latter couples the guide to every other
+  service's health.
 - Standalone differences live in a terminal
-  `## Standalone Keystone, without a ControlPlane` section with no
+  `## Standalone <Service>, without a ControlPlane` section with no
   interleaved naming worlds.
 - Walkthrough YAML is devstack-named; the imported fixture exhibit is
   isolation-named and labelled as such.

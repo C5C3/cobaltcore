@@ -24,6 +24,10 @@
 #   --devstack <name>     quick-start | quick-start-extended | quick-start-controlplane
 #   --service <name>      the guide is service-specific and lives one level deeper
 #                         (docs/guides/<service>/) — deepens the devstack link
+#                         and makes that service the subject of the ControlPlane
+#                         prose (projected child controlplane-<service>, the
+#                         "Standalone <Service>" section); default subject is
+#                         keystone
 #   --title <title>       guide title (default: title-cased slug)
 #   --opt-in WITH_X=true  compose a WITH_* opt-in flag onto the bring-up command
 #                         (repeatable; WITH_CONTROLPLANE is a devstack, not an opt-in)
@@ -121,9 +125,14 @@ if [[ -n "${SUITE}" && ! -f "${REPO_ROOT}/${SUITE}/chainsaw-test.yaml" ]]; then
   echo "note: ${SUITE}/chainsaw-test.yaml does not exist yet — the docs gate fails until it does" >&2
 fi
 if [[ -z "${SUITE}" ]]; then
-  SUITE="tests/e2e/keystone/<TODO-suite>"
+  SUITE="tests/e2e/${SERVICE:-keystone}/<TODO-suite>"
   echo "note: no --suite given — '## Tested by' carries a TODO placeholder the docs gate rejects" >&2
 fi
+
+# Subject service for the skeleton prose: --service when given, else keystone
+# (the reference). The title-cased form is the CR kind (glance -> Glance).
+SUBJECT="${SERVICE:-keystone}"
+SUBJECT_KIND="$(printf '%s' "${SUBJECT}" | awk '{ print toupper(substr($0, 1, 1)) substr($0, 2) }')"
 
 # Devstack link depth: service-specific guides live one level deeper
 # (docs/guides/<service>/), so the Getting-Started link climbs twice.
@@ -181,21 +190,21 @@ EOF
 
 case "${DEVSTACK}" in
   quick-start-controlplane)
-    cat <<'EOF'
-Follow that tutorial through to its final **Verify** step, so a `ControlPlane`
-CR named `controlplane` is `Ready` in the `openstack` namespace and its projected
-`controlplane-keystone` Keystone child is running. Every resource name in the
+    cat <<EOF
+Follow that tutorial through to its final **Verify** step, so a \`ControlPlane\`
+CR named \`controlplane\` is \`Ready\` in the \`openstack\` namespace and its projected
+\`controlplane-${SUBJECT}\` ${SUBJECT_KIND} child is running. Every resource name in the
 examples below is one that devstack produces.
 :::
 
-::: warning The Keystone child is operator-owned
-On a ControlPlane deployment the `controlplane-keystone` Keystone CR is
+::: warning The ${SUBJECT_KIND} child is operator-owned
+On a ControlPlane deployment the \`controlplane-${SUBJECT}\` ${SUBJECT_KIND} CR is
 **projected** by the c5c3-operator, so a knob you set directly on the child is
-reverted on the next reconcile. Set operational knobs on the `ControlPlane` CR
-and let the operator project them down. Where the `ControlPlane` CRD does not
+reverted on the next reconcile. Set operational knobs on the \`ControlPlane\` CR
+and let the operator project them down. Where the \`ControlPlane\` CRD does not
 expose a knob, this guide points to the
-[Standalone Keystone](#standalone-keystone-without-a-controlplane) section,
-which drives a Keystone CR you own.
+[Standalone ${SUBJECT_KIND}](#standalone-${SUBJECT}-without-a-controlplane) section,
+which drives a ${SUBJECT_KIND} CR you own.
 :::
 EOF
     ;;
@@ -238,12 +247,12 @@ TODO: how the reader confirms the change took effect.
 EOF
 
 if [[ "${DEVSTACK}" == "quick-start-controlplane" ]]; then
-  cat <<'EOF'
+  cat <<EOF
 
-## Standalone Keystone, without a ControlPlane
+## Standalone ${SUBJECT_KIND}, without a ControlPlane
 
 TODO: where a standalone (non-ControlPlane) installation differs, describe it
-here against a Keystone CR the reader owns — do not interleave the two naming
+here against a ${SUBJECT_KIND} CR the reader owns — do not interleave the two naming
 worlds in the primary walkthrough above.
 EOF
 fi

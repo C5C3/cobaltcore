@@ -16,7 +16,8 @@
 #       published operator chart (oci://ghcr.io/c5c3/charts/) requires the
 #       guide to frame Flux ownership (a 'HelmRelease' mention)
 #   V4  a mutating kubectl verb on an operator-projected child CR
-#       (kind keystone/horizon, name controlplane-keystone/-horizon)
+#       (kind <svc>, name controlplane-<svc>; the service list is
+#       discovered from the newest releases/<version>/source-refs.yaml)
 #       requires a '::: warning' container with revert/projected language
 #
 # The missing-devstack-block / missing-tested-by half of the conventions is
@@ -69,6 +70,21 @@ FAIL_COUNT=0
 fail() { echo "[FAIL] $*"; FAIL_COUNT=$((FAIL_COUNT + 1)); }
 pass() { echo "[PASS] $*"; }
 info() { echo "[INFO] $*"; }
+
+# Onboarded services, discovered from the newest releases/<version>/
+# source-refs.yaml (the same discovery the parity audit uses), so V4 covers
+# a newly onboarded service without a hand-kept list here. Falls back to
+# the known set if discovery fails.
+onboarded_services() {
+  local latest
+  latest="$(find "${REPO_ROOT}/releases" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort | tail -1)"
+  if [[ -n "${latest}" && -f "${latest}/source-refs.yaml" ]]; then
+    grep -E '^[a-z0-9_-]+:' "${latest}/source-refs.yaml" | cut -d: -f1 | xargs
+  else
+    echo "keystone horizon glance"
+  fi
+}
+SVC_ALT="$(onboarded_services | tr ' ' '|')"
 
 # Body of the first "::: info Devstack" container (same extractor as the
 # docs gate), including the fence lines.
@@ -143,12 +159,13 @@ check_guide() {
   fi
 
   # V4 — projected-child edits need a revert warning (guide-conventions.md
-  # "Never edit operator-projected children"): a mutating kubectl verb on the
-  # projected keystone/horizon CR requires a '::: warning' container with
+  # "Never edit operator-projected children"): a mutating kubectl verb on a
+  # projected service CR requires a '::: warning' container with
   # projected/revert language. The kind token must sit adjacent to the child
   # name so Secrets/ExternalSecrets named controlplane-keystone-* do not
-  # trigger.
-  local mut_re='kubectl[^`]*[[:space:]](patch|edit|scale|set|annotate|label|delete)[[:space:]](.*[[:space:]])?(keystone|horizon)s?(\.[a-z0-9.]*)?[[:space:]]+(controlplane-keystone|controlplane-horizon)([^a-z0-9-]|$)'
+  # trigger. The service alternation comes from onboarded_services above.
+  local mut_re
+  mut_re='kubectl[^`]*[[:space:]](patch|edit|scale|set|annotate|label|delete)[[:space:]](.*[[:space:]])?('"${SVC_ALT}"')s?(\.[a-z0-9.]*)?[[:space:]]+controlplane-('"${SVC_ALT}"')([^a-z0-9-]|$)'
   hits="$(grep -nE "${mut_re}" "${file}" || true)"
   if [[ -z "${hits}" ]]; then
     pass "V4 ${file}: no mutating kubectl command on a projected child CR"
