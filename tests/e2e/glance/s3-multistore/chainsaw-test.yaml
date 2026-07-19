@@ -95,14 +95,20 @@ spec:
   # "garage-b". Genuine connection errors are retried; an HTTP error (e.g. a
   # policy denial) fails fast with the response body. The MULTISTORE-OK sentinel
   # is grepped so a swallowed pod exit code still fails the step.
+  #
+  # The probe runs detached and its output is read back with kubectl logs after
+  # the pod reaches a terminal phase: kubectl run -i only streams from the
+  # moment the attach lands, and with the image cached the probe exits in under
+  # a second — before the attach — losing the sentinel and flaking the step.
   - try:
     - script:
         timeout: 5m
         content: |
           set -eu
-          OUT="$(kubectl run glance-multistore-probe -n $NAMESPACE \
-            --image=ghcr.io/c5c3/glance:2025.2 --rm -i --restart=Never \
-            --pod-running-timeout=3m --command -- python3 -c '
+          kubectl delete pod glance-multistore-probe -n $NAMESPACE --ignore-not-found
+          kubectl run glance-multistore-probe -n $NAMESPACE \
+            --image=ghcr.io/c5c3/glance:2025.2 --restart=Never \
+            --command -- python3 -c '
           import json, sys, time, urllib.request, urllib.error
 
           BASE = "http://glance-multistore.openstack.svc:9292"
@@ -154,8 +160,20 @@ spec:
           if final.get("stores") != "garage-b":
               fail("image stores is %r, want garage-b" % final.get("stores"))
           print("MULTISTORE-OK")
-          ')"
+          '
+          # 48 polls x 5s = 4m, inside the 5m step timeout so the phase check
+          # below (with the logs echoed) reports a stuck pod, not the chainsaw kill.
+          PHASE=""
+          for i in $(seq 1 48); do
+            PHASE="$(kubectl get pod glance-multistore-probe -n $NAMESPACE \
+              -o 'jsonpath={.status.phase}' 2>/dev/null || true)"
+            case "$PHASE" in Succeeded|Failed) break ;; esac
+            sleep 5
+          done
+          OUT="$(kubectl logs glance-multistore-probe -n $NAMESPACE 2>&1 || true)"
+          kubectl delete pod glance-multistore-probe -n $NAMESPACE --ignore-not-found
           echo "${OUT}"
+          [ "$PHASE" = "Succeeded" ]
           echo "${OUT}" | grep -q 'MULTISTORE-OK'
           echo "OK: image uploaded to non-default store garage-b and went active"
     catch:
@@ -179,7 +197,8 @@ spec:
   # ── Step 4: S3-side cross-check that the object landed in glance-images-2 ─
   # Secondary proof of the pre-created-bucket / plain-PUT decisions: decode the
   # imported Garage key and list glance-images-2 with the aws-cli, asserting the
-  # listing is non-empty (this run wrote exactly one object to it).
+  # listing is non-empty (this run wrote exactly one object to it). Detached
+  # run + kubectl logs for the same attach-race reason as step 3.
   - try:
     - script:
         timeout: 3m
@@ -189,15 +208,28 @@ spec:
             -o 'jsonpath={.data.access-key-id}' | base64 -d)"
           SAK="$(kubectl get secret garage-s3-credentials -n openstack \
             -o 'jsonpath={.data.secret-access-key}' | base64 -d)"
-          OUT="$(kubectl run glance-multistore-s3-probe -n openstack \
+          kubectl delete pod glance-multistore-s3-probe -n openstack --ignore-not-found
+          kubectl run glance-multistore-s3-probe -n openstack \
             --image=public.ecr.aws/aws-cli/aws-cli:2.35.23@sha256:0425835c7c9e33a747dfd499dcd3603ec802662f7f7ded42d8fc81ce7b712bf9 \
-            --rm -i --restart=Never --pod-running-timeout=2m \
+            --restart=Never \
             --env "AWS_ACCESS_KEY_ID=${AKID}" \
             --env "AWS_SECRET_ACCESS_KEY=${SAK}" \
             --env "AWS_DEFAULT_REGION=garage" \
             --env "AWS_CONFIG_FILE=/tmp/aws-cfg" \
-            --command -- sh -c 'set -e; printf "[default]\ns3 =\n    addressing_style = path\n" > /tmp/aws-cfg; aws --endpoint-url http://garage.openstack.svc.cluster.local:3900 s3api list-objects-v2 --bucket glance-images-2')"
+            --command -- sh -c 'set -e; printf "[default]\ns3 =\n    addressing_style = path\n" > /tmp/aws-cfg; aws --endpoint-url http://garage.openstack.svc.cluster.local:3900 s3api list-objects-v2 --bucket glance-images-2'
+          # 30 polls x 5s = 150s, inside the 3m step timeout (covers the digest-
+          # pinned aws-cli image pull on a cold node).
+          PHASE=""
+          for i in $(seq 1 30); do
+            PHASE="$(kubectl get pod glance-multistore-s3-probe -n openstack \
+              -o 'jsonpath={.status.phase}' 2>/dev/null || true)"
+            case "$PHASE" in Succeeded|Failed) break ;; esac
+            sleep 5
+          done
+          OUT="$(kubectl logs glance-multistore-s3-probe -n openstack 2>&1 || true)"
+          kubectl delete pod glance-multistore-s3-probe -n openstack --ignore-not-found
           echo "${OUT}"
+          [ "$PHASE" = "Succeeded" ]
           echo "${OUT}" | grep -q '"Key"'
           echo "OK: glance-images-2 holds at least one object"
     catch:
