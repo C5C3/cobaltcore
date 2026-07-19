@@ -303,23 +303,24 @@ func (r *KeystoneReconciler) fetchSAMLIdPMetadata(ctx context.Context, backend *
 	}
 	resp, err := r.federationMetadataClient().Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("%w: fetching %s: %w", errProviderMetadataUnavailable, metadataURL, err)
+		return nil, metadataFetchFailure(ctx, metadataURL, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("%w: fetching %s: HTTP %d", errProviderMetadataUnavailable, metadataURL, resp.StatusCode)
+		return nil, metadataFetchFailure(ctx, metadataURL, fmt.Errorf("HTTP %d", resp.StatusCode))
 	}
 	document, err := io.ReadAll(io.LimitReader(resp.Body, maxProviderMetadataBytes+1))
 	if err != nil {
-		return nil, fmt.Errorf("%w: reading %s: %w", errProviderMetadataUnavailable, metadataURL, err)
+		return nil, metadataFetchFailure(ctx, metadataURL, fmt.Errorf("reading response: %w", err))
 	}
 	if len(document) > maxProviderMetadataBytes {
-		return nil, fmt.Errorf("%w: %s exceeds the %d-byte budget", errProviderMetadataUnavailable, metadataURL, maxProviderMetadataBytes)
+		return nil, metadataFetchFailure(ctx, metadataURL,
+			fmt.Errorf("response exceeds the %d-byte budget", maxProviderMetadataBytes))
 	}
 
 	entityID, err := keystonev1alpha1.SAMLEntityIDFromMetadata(document)
 	if err != nil {
-		return nil, fmt.Errorf("%w: parsing %s: %w", errProviderMetadataUnavailable, metadataURL, err)
+		return nil, metadataFetchFailure(ctx, metadataURL, fmt.Errorf("parsing response: %w", err))
 	}
 	if entityID != backend.Spec.SAML.IdPEntityID {
 		// Deliberately does not echo the fetched entityID: this error surfaces in

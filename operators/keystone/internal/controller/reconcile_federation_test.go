@@ -6,6 +6,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -342,6 +343,86 @@ func TestFetchProviderMetadata_RejectsIssuerMismatch(t *testing.T) {
 	g.Expect(err.Error()).NotTo(ContainSubstring("evil.example.com"))
 }
 
+// probeDoer answers with a caller-supplied transport error or response, standing
+// in for the arbitrary in-cluster target an SSRF probe aims the fetch at.
+type probeDoer struct {
+	status int
+	body   string
+	err    error
+}
+
+func (p *probeDoer) Do(*http.Request) (*http.Response, error) {
+	if p.err != nil {
+		return nil, p.err
+	}
+	return &http.Response{StatusCode: p.status, Body: io.NopCloser(strings.NewReader(p.body))}, nil
+}
+
+// TestFetchProviderMetadata_DoesNotEchoProbeDetail pins the SSRF probe-oracle
+// guard. The tenant picks the dial target via spec.oidc.providerMetadataURL and
+// reads the resulting error back out of a tenant-visible IdentityBackendSkipped
+// Event, so with a --federation-metadata-allow-cidrs entry configured any
+// response-derived detail (transport failure mode, HTTP status, decode error)
+// would enumerate the in-cluster services reachable from the operator pod.
+func TestFetchProviderMetadata_DoesNotEchoProbeDetail(t *testing.T) {
+	g := NewGomegaWithT(t)
+	const metadataURL = "https://idp.example.com/realms/forge/.well-known/openid-configuration"
+
+	probes := []struct {
+		name string
+		doer *probeDoer
+		// leaked is detail that must never reach the tenant-visible error.
+		leaked []string
+	}{
+		{
+			name:   "closed port",
+			doer:   &probeDoer{err: errors.New("dial tcp 10.96.0.1:443: connect: connection refused")},
+			leaked: []string{"connection refused", "10.96.0.1"},
+		},
+		{
+			name:   "filtered port",
+			doer:   &probeDoer{err: context.DeadlineExceeded},
+			leaked: []string{"deadline exceeded"},
+		},
+		{
+			name:   "listening http service",
+			doer:   &probeDoer{status: http.StatusForbidden, body: "forbidden"},
+			leaked: []string{"403", "Forbidden"},
+		},
+		{
+			name:   "listening non-idp service",
+			doer:   &probeDoer{status: http.StatusOK, body: "<html>OpenBao</html>"},
+			leaked: []string{"invalid character", "html", "OpenBao"},
+		},
+	}
+
+	var messages []string
+	for _, p := range probes {
+		backend := testProjectableOIDCBackend("corp-oidc")
+		backend.Spec.OIDC.Endpoints = nil
+		backend.Spec.OIDC.ProviderMetadataURL = metadataURL
+		r := newTestReconciler()
+		r.HTTPClient = p.doer
+
+		_, err := r.fetchProviderMetadata(context.Background(), backend)
+		g.Expect(err).To(MatchError(errProviderMetadataUnavailable), p.name)
+		for _, leak := range p.leaked {
+			g.Expect(err.Error()).NotTo(ContainSubstring(leak), p.name)
+		}
+		// The tenant's own input stays echoed: it leaks nothing back and keeps
+		// the Event actionable.
+		g.Expect(err.Error()).To(ContainSubstring(metadataURL), p.name)
+		messages = append(messages, err.Error())
+	}
+
+	// Indistinguishability is the actual control: a closed port, a filtered
+	// port, and a listening non-IdP service must all read identically, so
+	// iterating an allowlisted CIDR and a port list yields no signal.
+	for i, m := range messages[1:] {
+		g.Expect(m).To(Equal(messages[0]), probes[i+1].name)
+	}
+}
+
 // ctxDeadlineDoer records whether the request context carried a deadline.
 type ctxDeadlineDoer struct {
 	body        string
@@ -372,6 +453,21 @@ func TestFetchProviderMetadata_BoundsRequestContext(t *testing.T) {
 		"the metadata fetch must bound the request context so a slow IdP cannot pin the reconcile worker")
 }
 
+// mustAllowCIDRs is a test helper turning CIDR strings into the *net.IPNet
+// allowlist the federation dial guard consumes.
+func mustAllowCIDRs(t *testing.T, cidrs ...string) []*net.IPNet {
+	t.Helper()
+	var nets []*net.IPNet
+	for _, c := range cidrs {
+		_, n, err := net.ParseCIDR(c)
+		if err != nil {
+			t.Fatalf("parsing %q: %v", c, err)
+		}
+		nets = append(nets, n)
+	}
+	return nets
+}
+
 func TestIsBlockedMetadataIP(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -386,8 +482,9 @@ func TestIsBlockedMetadataIP(t *testing.T) {
 		"0.0.0.0", "::", // unspecified
 		"224.0.0.1", // multicast
 	}
+	// A nil allowlist pins today's posture: the predicate set is unchanged.
 	for _, s := range blocked {
-		g.Expect(isBlockedMetadataIP(net.ParseIP(s))).To(BeTrue(), s)
+		g.Expect(isBlockedMetadataIP(net.ParseIP(s), nil)).To(BeTrue(), s)
 	}
 
 	// Addresses just outside the blocked ranges stay public — the guard must not
@@ -397,29 +494,102 @@ func TestIsBlockedMetadataIP(t *testing.T) {
 		"2606:2800:220:1:248:1893:25c8:1946", "64:ff9c::1",
 	}
 	for _, s := range allowed {
-		g.Expect(isBlockedMetadataIP(net.ParseIP(s))).To(BeFalse(), s)
+		g.Expect(isBlockedMetadataIP(net.ParseIP(s), nil)).To(BeFalse(), s)
 	}
+}
+
+func TestIsBlockedMetadataIP_Allowlist(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	// A trusted in-cluster IdP: the Service CIDR (private) and an IPv6 ULA
+	// prefix are lifted, but an address outside the allowlist stays blocked.
+	allow := mustAllowCIDRs(t, "10.96.0.0/12", "fd00::/108")
+	g.Expect(isBlockedMetadataIP(net.ParseIP("10.96.0.5"), allow)).To(BeFalse(), "10.96.0.5")
+	g.Expect(isBlockedMetadataIP(net.ParseIP("fd00::5"), allow)).To(BeFalse(), "fd00::5")
+	g.Expect(isBlockedMetadataIP(net.ParseIP("10.0.0.5"), allow)).To(BeTrue(), "10.0.0.5")
+
+	// A hostile allowlist cannot lift the hard-block classes: loopback,
+	// link-local (cloud IMDS), multicast, and unspecified stay blocked even when
+	// covered by 0.0.0.0/0 or ::/0. Only the private-range breadth — the admin's
+	// deliberate choice — is honored (10.0.0.5 is covered by 0.0.0.0/0).
+	hostile := mustAllowCIDRs(t, "127.0.0.0/8", "169.254.0.0/16", "::/0", "0.0.0.0/0")
+	for _, s := range []string{"127.0.0.1", "::1", "169.254.169.254", "224.0.0.1", "0.0.0.0"} {
+		g.Expect(isBlockedMetadataIP(net.ParseIP(s), hostile)).To(BeTrue(), s)
+	}
+	g.Expect(isBlockedMetadataIP(net.ParseIP("10.0.0.5"), hostile)).To(BeFalse(), "10.0.0.5")
 }
 
 func TestBlockMetadataDial(t *testing.T) {
 	g := NewGomegaWithT(t)
 
+	block := blockMetadataDialControl(nil)
 	// Cloud-metadata and in-cluster addresses are refused after resolution.
-	g.Expect(blockMetadataDial("tcp", "169.254.169.254:80", nil)).To(MatchError(errProviderMetadataUnavailable))
-	g.Expect(blockMetadataDial("tcp", "10.0.0.5:443", nil)).To(MatchError(errProviderMetadataUnavailable))
+	g.Expect(block("tcp", "169.254.169.254:80", nil)).To(MatchError(errProviderMetadataUnavailable))
+	g.Expect(block("tcp", "10.0.0.5:443", nil)).To(MatchError(errProviderMetadataUnavailable))
 	// A NAT64 address a DNS64 answer would resolve to IMDS is refused.
-	g.Expect(blockMetadataDial("tcp", "[64:ff9b::a9fe:a9fe]:443", nil)).To(MatchError(errProviderMetadataUnavailable))
+	g.Expect(block("tcp", "[64:ff9b::a9fe:a9fe]:443", nil)).To(MatchError(errProviderMetadataUnavailable))
 	// A public address is allowed through.
-	g.Expect(blockMetadataDial("tcp", "8.8.8.8:443", nil)).NotTo(HaveOccurred())
+	g.Expect(block("tcp", "8.8.8.8:443", nil)).NotTo(HaveOccurred())
 	// A malformed address is refused rather than silently dialed.
-	g.Expect(blockMetadataDial("tcp", "not-an-address", nil)).To(MatchError(errProviderMetadataUnavailable))
+	g.Expect(block("tcp", "not-an-address", nil)).To(MatchError(errProviderMetadataUnavailable))
+
+	// An operator-scoped allowlist lifts a trusted in-cluster Service address.
+	allowed := blockMetadataDialControl(mustAllowCIDRs(t, "10.96.0.0/12"))
+	g.Expect(allowed("tcp", "10.96.0.5:8080", nil)).NotTo(HaveOccurred())
+	// ...but never a hard-blocked cloud-IMDS address, even when the allowlist
+	// covers its /16.
+	imds := blockMetadataDialControl(mustAllowCIDRs(t, "169.254.0.0/16"))
+	g.Expect(imds("tcp", "169.254.169.254:80", nil)).To(MatchError(errProviderMetadataUnavailable))
 }
 
 func TestNewHardenedMetadataClient_DoesNotFollowRedirects(t *testing.T) {
 	g := NewGomegaWithT(t)
-	c := newHardenedMetadataClient()
+	c := newHardenedMetadataClient(nil)
 	g.Expect(c.CheckRedirect).NotTo(BeNil())
 	g.Expect(c.CheckRedirect(nil, nil)).To(Equal(http.ErrUseLastResponse))
+}
+
+func TestParseMetadataAllowCIDRs(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	// Empty and whitespace-only input keep the hardened default (no allowlist).
+	for _, empty := range []string{"", "   ", "\t "} {
+		nets, err := ParseMetadataAllowCIDRs(empty)
+		g.Expect(err).NotTo(HaveOccurred(), empty)
+		g.Expect(nets).To(BeNil(), empty)
+	}
+
+	// A single CIDR parses to one network.
+	nets, err := ParseMetadataAllowCIDRs("10.96.0.0/12")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(nets).To(HaveLen(1))
+	g.Expect(nets[0].String()).To(Equal("10.96.0.0/12"))
+
+	// Comma-separated entries tolerate surrounding whitespace.
+	nets, err = ParseMetadataAllowCIDRs("10.96.0.0/12, fd00::/108")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(nets).To(HaveLen(2))
+	g.Expect(nets[0].String()).To(Equal("10.96.0.0/12"))
+	g.Expect(nets[1].String()).To(Equal("fd00::/108"))
+
+	// Error cases name the offending entry.
+	for _, tc := range []struct {
+		value    string
+		contains string
+	}{
+		{"10.96.0.0", "10.96.0.0"},                                   // missing prefix length
+		{"bogus/33", "bogus/33"},                                     // invalid CIDR
+		{"10.0.0.0/8,,192.168.0.0/16", "10.0.0.0/8,,192.168.0.0/16"}, // empty entry
+		// A default route lifts the private-range guard wholesale, so it is
+		// refused at startup rather than shipped as a documentation rule.
+		{"0.0.0.0/0", "default route"},
+		{"::/0", "default route"},
+		{"10.96.0.0/12,0.0.0.0/0", "default route"},
+	} {
+		_, err := ParseMetadataAllowCIDRs(tc.value)
+		g.Expect(err).To(HaveOccurred(), tc.value)
+		g.Expect(err.Error()).To(ContainSubstring(tc.contains), tc.value)
+	}
 }
 
 // TestRenderOIDCBackend_DiscoveryModeEgressPortsFromDocument pins the

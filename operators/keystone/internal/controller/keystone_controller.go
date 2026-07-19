@@ -8,6 +8,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"net"
 	"sync"
 
 	certmanagerv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
@@ -213,6 +214,15 @@ type KeystoneReconciler struct {
 	Scheme     *runtime.Scheme
 	Recorder   record.EventRecorder
 	HTTPClient HTTPDoer
+
+	// FederationMetadataAllowCIDRs is threaded from the
+	// --federation-metadata-allow-cidrs binary flag: the CIDRs the
+	// federation-metadata dial guard additionally permits for OIDC discovery /
+	// SAML IdP-metadata fetches (e.g. the cluster's Service CIDR for a trusted
+	// in-cluster IdP). nil keeps the hardened default (all non-public addresses
+	// blocked). Deliberately operator-scoped configuration, never derived from
+	// CR fields.
+	FederationMetadataAllowCIDRs []*net.IPNet
 
 	// OperatorNamespace is the Namespace the operator Pod runs in (resolved at
 	// startup by bootstrap.DetectOperatorNamespace). reconcileNetworkPolicy appends an
