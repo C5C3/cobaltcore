@@ -34,6 +34,15 @@
 #                        `helm dependency build` step is skipped — the file://
 #                        dependency path in a pulled chart does not resolve
 #                        outside the repo.
+#   FEDERATION_METADATA_ALLOW_CIDRS
+#                      — Comma-separated CIDRs the operator's federation-metadata
+#                        SSRF dial guard may additionally reach, rendered into
+#                        the chart's federation.metadataAllowCidrs value (helm
+#                        brace-list). Only valid for charts exposing the value
+#                        (keystone-operator >= 0.9.0); leave unset for CHART_DIR
+#                        upgrade-baseline installs, whose older released chart's
+#                        additionalProperties:false values schema rejects the
+#                        unknown key.
 #
 # Reusable operator deployment script.
 # set -euo pipefail, SPDX Apache-2.0 header, shellcheck-clean.
@@ -55,6 +64,7 @@ fi
 IMAGE_REPO="${IMAGE_REPO:?IMAGE_REPO is required (e.g. ghcr.io/c5c3/keystone-operator)}"
 IMAGE_TAG="${IMAGE_TAG:-dev}"
 WITH_PROMETHEUS="${WITH_PROMETHEUS:-false}"
+FEDERATION_METADATA_ALLOW_CIDRS="${FEDERATION_METADATA_ALLOW_CIDRS:-}"
 # dedicated release Namespace for the operator. The Keystone workload
 # CRs themselves are still reconciled in the `openstack` Namespace.
 NAMESPACE="${NAMESPACE:-keystone-system}"
@@ -107,6 +117,7 @@ fi
 # pinpoint at which step the gate flipped without grepping back to the
 # workflow YAML.
 echo "Prometheus stack    : ${WITH_PROMETHEUS} (set WITH_PROMETHEUS=true to enable ServiceMonitor)"
+echo "Metadata allow CIDRs: ${FEDERATION_METADATA_ALLOW_CIDRS:-<none>} (set FEDERATION_METADATA_ALLOW_CIDRS to allow in-cluster IdP discovery)"
 helm_args=(
   --set "image.repository=${IMAGE_REPO}"
   --set "image.tag=${IMAGE_TAG}"
@@ -114,6 +125,13 @@ helm_args=(
 )
 if [[ "${WITH_PROMETHEUS}" == "true" ]]; then
   helm_args+=(--set "monitoring.serviceMonitor.enabled=true")
+fi
+# When set, allowlist those CIDRs on the operator's federation-metadata SSRF
+# dial guard (chart value federation.metadataAllowCidrs) so it may fetch an
+# in-cluster IdP's .well-known/openid-configuration for discovery-mode backends.
+# Helm brace-list syntax expands the comma-separated string into the array.
+if [[ -n "${FEDERATION_METADATA_ALLOW_CIDRS}" ]]; then
+  helm_args+=(--set "federation.metadataAllowCidrs={${FEDERATION_METADATA_ALLOW_CIDRS}}")
 fi
 
 helm install "${OPERATOR}-operator" \

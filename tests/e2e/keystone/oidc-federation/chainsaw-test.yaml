@@ -17,7 +17,9 @@
 #   - The browser websso flow: cookie-jar authorization-code round trip
 #     through the Keycloak login form ends in keystone's 200 token form
 #   - A second realm proves multi-realm: each per-IdP websso path pins its
-#     own issuer
+#     own issuer, and it also proves discovery-mode metadata fetch — the
+#     backend omits explicit endpoints and only reaches Ready because the
+#     operator's CIDR allowlist lets it fetch the in-cluster IdP's metadata
 #   - Deleting the backends de-projects the sidecar, tears the federation
 #     objects down, deletes the domains (deletionPolicy Delete), and leaves
 #     Keystone Ready with admin auth intact

@@ -981,6 +981,11 @@ jobs:
           OPERATOR: ${{ matrix.operator }}
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/${{ matrix.operator }}-operator
           NAMESPACE: ${{ matrix.operator }}-system
+          # kind's ClusterIPs fall in this range; allowlisting it lets the
+          # oidc-federation suite's discovery-mode backend fetch the in-cluster
+          # Keycloak metadata past the operator's SSRF guard. keystone-gated
+          # because only the keystone chart exposes federation.metadataAllowCidrs.
+          FEDERATION_METADATA_ALLOW_CIDRS: ${{ matrix.operator == 'keystone' && '10.96.0.0/12' || '' }}
       - name: Run E2E tests
         env:
           OPERATOR: ${{ matrix.operator }}
