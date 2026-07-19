@@ -104,6 +104,11 @@ Step 2 ── Install flux-operator + apply FluxInstance
      │         kubectl apply --server-side -f <upstream standard-install.yaml>
      │         Required by the keystone-operator HTTPRoute watch; version
      │         pinned via GATEWAY_API_VERSION, default matches go.mod.
+     │         Skipped when all five standard-channel CRDs already exist
+     │         (gatewayclasses, gateways, grpcroutes, httproutes,
+     │         referencegrants): on a provisioned cluster the envoy-gateway
+     │         chart (helm-controller) may field-manage them, so re-asserting
+     │         would SSA-conflict. The skip never upgrades present CRDs.
      │
      ├── Install Envoy Gateway + Gateway/openstack-gw (kind-only)
      │         Installed as part of the deploy/kind/base/ overlay applied
@@ -153,6 +158,34 @@ types (Namespaces, HelmRepository, HelmRelease). The infrastructure kustomizatio
 contains CRD-dependent resources (ClusterIssuer, MariaDB CR, Memcached CR) that require
 operator CRDs to be installed first. Applying them in two phases prevents
 `kubectl apply` failures on fresh clusters where CRDs do not yet exist.
+
+### Idempotent Re-runs
+
+Re-running `make deploy-infra` against an existing cluster converges rather than
+failing — each step detects the work it already completed and skips it:
+
+- **Step 1** skips cluster creation when the kind cluster already exists.
+- The **containerd nofile cap** skips the write, the containerd restart, and the
+  node-Ready wait only when the node's drop-in *and* the limit the running
+  containerd reports both already match. Checking the drop-in alone would
+  permanently skip a node whose write landed but whose restart failed, leaving
+  containerd uncapped behind a clean-looking deploy.
+- **Gateway API CRDs** are skipped when all five standard-channel CRDs are
+  present (see the sequence above).
+- The **kustomize overlays** and **TLS prerequisites** re-apply convergently
+  (`kubectl apply` / upserts).
+- **OpenBao init, unseal, and bootstrap** detect completed work: initialized
+  and unsealed checks, enable-if-missing for engines/auth/policies, and
+  write-if-missing for the bootstrap secrets.
+- Additional `WITH_*` opt-ins on a re-run install only the newly enabled
+  components; the already-deployed ones are left untouched.
+- Removing a previously enabled flag does **not** uninstall that component —
+  cleanup is `make teardown-infra`'s job.
+- `WITH_REGISTRY_CACHE` needs a cluster created with the flag; enabling it on a
+  pre-existing cluster leaves the mirrors inert and prints a warning.
+- `WITH_CONTROLPLANE` on a provisioned standalone stack is a mode change (the
+  ControlPlane owns MariaDB/Memcached), not supported as a re-run — start from a
+  fresh cluster.
 
 ## Kustomize Overlay Structure
 
@@ -242,14 +275,18 @@ of the `changes` job matches. It depends only on `changes` — not on the `lint`
 5. Install test dependencies (`make install-test-deps`, adds `~/.local/bin` to `PATH`)
 6. Deploy infrastructure stack (`make deploy-infra` with `SKIP_KIND_CREATE=true`)
 7. Run Chainsaw E2E tests against `tests/e2e/infrastructure/`
-8. Dump diagnostic info on failure (`kubectl get`, `flux logs` for troubleshooting)
-9. Upload JUnit report as workflow artifact (SHA-pinned `actions/upload-artifact`, `if: always()`)
+8. Re-run `make deploy-infra` with unchanged parameters (no `SKIP_KIND_CREATE`, exercises the script's existing-cluster detection)
+9. Re-run the full infrastructure suite (report `chainsaw-report-rerun`) to prove the healthy stack is left unchanged
+10. Re-run `make deploy-infra` with `WITH_METRICS_SERVER=true` (additive leg — the script's Phase-3 wait gates the new metrics-server HelmRelease on Ready)
+11. Run a scoped Chainsaw suite (report `chainsaw-report-additive`) over infra-stack-health, garage-health, flux-web-health, and no-prometheus-when-disabled, skipping the metrics-server absence suite it would now rightly fail
+12. Dump diagnostic info on failure (`kubectl get`, `flux logs` for troubleshooting)
+13. Upload JUnit report as workflow artifact (SHA-pinned `actions/upload-artifact`, `if: always()`)
 
 **Configuration:**
 
 | Setting | Value |
 | --- | --- |
-| `timeout-minutes` | 20 |
+| `timeout-minutes` | 30 |
 | `permissions` | `contents: read` (inherited from workflow-level) |
 | `concurrency` | Cancel-in-progress on PRs (inherited from workflow-level) |
 | Action pinning | All `uses:` references are SHA-pinned with version comments |

@@ -47,6 +47,13 @@ MariaDB operator + `openstack-db`, External Secrets, Memcached operator +
 `openstack-memcached`, Envoy Gateway and the shared `openstack-gw`. Expect
 **5–10 minutes** on first run (image pulls dominate).
 
+`make deploy-infra` is safe to re-run: a run with the same parameters detects
+the existing cluster and the steps already completed and converges without
+redoing them, so an interrupted bootstrap can simply be re-executed. Optional
+components can be enabled later by re-running with the flag set — see the
+opt-in tips in the [Extended Quick Start](./quick-start-extended.md). Removing a
+flag does not uninstall that component — that is `make teardown-infra`'s job.
+
 ## Step 3 — Keystone operator
 
 ```bash

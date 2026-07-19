@@ -550,10 +550,19 @@ validates health of all operators, CRs, and ExternalSecrets.
 | 3 | `helm/kind-action@v1.14.0` | Creates kind cluster (`forge`) |
 | 4 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack |
 | 5 | `chainsaw test` | Runs E2E tests from `tests/e2e/infrastructure/` |
-| 6 | `hack/ci-dump-diagnostics.sh` (on failure) | Dumps HelmReleases, pods, events, Flux logs |
-| 7 | Upload JUnit report | Uploads test results as artifact (14-day retention) |
+| 6 | `make deploy-infra` (re-run) | Unchanged-parameter re-run (no `SKIP_KIND_CREATE`) — exercises the script's existing-cluster detection |
+| 7 | `chainsaw test --report-name chainsaw-report-rerun` | Re-runs the full infrastructure suite to prove the healthy stack is left unchanged |
+| 8 | `make deploy-infra` with `WITH_METRICS_SERVER=true` | Additive re-run — the script's Phase-3 wait gates the new metrics-server HelmRelease on Ready |
+| 9 | `chainsaw test --report-name chainsaw-report-additive` | Scoped run over infra-stack-health, garage-health, flux-web-health, and no-prometheus-when-disabled; the metrics-server absence suite is deliberately excluded |
+| 10 | `hack/ci-dump-diagnostics.sh` (on failure) | Dumps HelmReleases, pods, events, Flux logs |
+| 11 | Upload JUnit report | Uploads test results as artifact (14-day retention) |
 
-Timeout: 20 minutes.
+Timeout: 30 minutes.
+
+The two re-run legs (steps 6–9) lock the `make deploy-infra` idempotency
+contract: the unchanged-parameter re-run must converge against the provisioned
+cluster, and the additive `WITH_METRICS_SERVER=true` re-run must install only
+the newly enabled component while leaving the base stack untouched.
 
 ### build-e2e-images
 
