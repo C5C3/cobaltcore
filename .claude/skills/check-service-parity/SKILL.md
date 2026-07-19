@@ -38,7 +38,7 @@ threads through five layers:
 |---|---|---|
 | Container image | `images/<svc>/Dockerfile`, `tests/container-images/verify_<svc>.sh`, `releases/*/`(source-refs, extra-packages, test-excludes) | the keystone image contract and `verify_release_config.sh` |
 | Service operator | `operators/<svc>/` (module, CRD, webhook, helm chart, dashboards) | the keystone operator scaffolding on `internal/common` |
-| CI / e2e / deploy | `.github/workflows/*.yaml`, `hack/ci-resolve-changes.sh` env, `tests/e2e/<svc>/`, `tests/e2e-chaos/`, `deploy/flux-system/` | the enumeration points and canonical suite set keystone populates |
+| CI / e2e / deploy | `.github/workflows/*.yaml`, `hack/ci-resolve-changes.sh` env, `tests/e2e/<svc>/`, `tests/e2e-chaos/`, `deploy/flux-system/`, the per-service lists in `hack/deploy-infra.sh` + `hack/refresh-operator-image-digests.sh` | the enumeration points and canonical suite set keystone populates |
 | ControlPlane integration | `operators/c5c3/api/` `ServicesSpec`, `internal/controller/reconcile_<svc>.go`, c5c3 chart RBAC | the keystone projection (`reconcile_keystone.go`, `KeystoneReady`) |
 | Documentation | `docs/reference/<svc>/`, `docs/guides/<svc>/enable-<svc>-operator-*.md`, `docs/.vitepress/config.ts` | the keystone reference/guide set |
 
@@ -101,8 +101,16 @@ inventory. Exit code `1` means at least one `[FAIL]`. Interpret:
   chaos suite. Keystone's chaos suites predate multi-service naming
   and are unprefixed; later services prefix theirs (`<svc>-*`).
 - **P7** — deploy stack: the FluxCD HelmRelease under
-  `deploy/flux-system/releases/`, the `<svc>-system` namespace, and
-  the kustomization resource entry.
+  `deploy/flux-system/releases/`, the `<svc>-system` namespace, the
+  kustomization resource entry, and the three literal per-service
+  lists in the deploy helpers: the `hack/deploy-infra.sh` un-suspend
+  patch on the flux ControlPlane path (the kind overlay suspends every
+  self-built operator HelmRelease; a service missing from the
+  un-suspend list stays suspended forever, its CRDs never install, and
+  the c5c3-operator's controlplane cache never syncs — the glance
+  gap), the `hack/refresh-operator-image-digests.sh` target tuple
+  (without it the `:latest` image is never digest-pinned), and the
+  `enable_operator_servicemonitor` call site (WITH_PROMETHEUS).
 - **P8** — documentation: `docs/reference/<svc>/` (index, CRD,
   reconciler), the metrics and networkpolicy guides, and the
   vitepress nav entry.

@@ -79,6 +79,14 @@ check "tests/tempest/${SERVICE}-*/ config (skip if no tempest plugin)" \
   bash -c "ls -d tests/tempest/${SERVICE}-*/"
 check "deploy/flux-system/releases/${SERVICE}-operator.yaml" \
   test -f "deploy/flux-system/releases/${SERVICE}-operator.yaml"
+check "deploy/kind/base/kustomization.yaml suspend patch for ${SERVICE}-operator" \
+  grep -q "name: ${SERVICE}-operator" deploy/kind/base/kustomization.yaml
+check "hack/deploy-infra.sh un-suspends ${SERVICE}-operator (flux ControlPlane path)" \
+  bash -c "grep -A1 'kubectl patch helmrelease ${SERVICE}-operator -n ${SERVICE}-system' hack/deploy-infra.sh | grep -q '\"suspend\":false'"
+check "hack/refresh-operator-image-digests.sh target tuple for ${SERVICE}-operator" \
+  grep -q "${SERVICE}-operator|${SERVICE}-system|" hack/refresh-operator-image-digests.sh
+check "hack/deploy-infra.sh enable_operator_servicemonitor call for ${SERVICE}-operator" \
+  grep -q "enable_operator_servicemonitor ${SERVICE}-operator ${SERVICE}-system" hack/deploy-infra.sh
 check "kind Gateway listener hostname ${SERVICE}.127-0-0-1.nip.io" \
   grep -q "${SERVICE}\.127-0-0-1\.nip\.io" deploy/kind/base/openstack-gateway.yaml
 check "deploy/kind/infrastructure/${SERVICE}-nip-io-tls-certificate.yaml" \

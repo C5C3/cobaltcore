@@ -19,7 +19,9 @@
 #       matrices, helm-validate chart loop, build/cleanup image matrices
 #   P6  e2e coverage: canonical chainsaw suite set under tests/e2e/<svc>/
 #       (incl. latest-release variant) plus at least one chaos suite
-#   P7  deploy stack: flux HelmRelease, namespace entry, kustomization entry
+#   P7  deploy stack: flux HelmRelease, namespace entry, kustomization entry,
+#       and the deploy-infra literal lists (kind-overlay un-suspend on the
+#       flux ControlPlane path, digest-refresh target, ServiceMonitor toggle)
 #   P8  docs: reference set, metrics/networkpolicy guides, vitepress nav
 #   P9  ControlPlane integration: ServicesSpec field, reconcile_<svc>.go,
 #       <Svc>Ready condition, c5c3 chart RBAC rule
@@ -255,7 +257,7 @@ done
 # ---------------------------------------------------------------------------
 # P7 — deploy stack
 # ---------------------------------------------------------------------------
-hdr "P7: deploy stack (flux HelmRelease, namespace, kustomization)"
+hdr "P7: deploy stack (flux HelmRelease, namespace, kustomization, deploy-infra wiring)"
 for svc in ${SERVICES}; do
   t=0; [[ -f "deploy/flux-system/releases/${svc}-operator.yaml" ]] || t=1
   check "${svc}" P7 "flux-release" "${t}" \
@@ -268,6 +270,41 @@ for svc in ${SERVICES}; do
   t=0; grep -qF "releases/${svc}-operator.yaml" deploy/flux-system/kustomization.yaml || t=1
   check "${svc}" P7 "kustomization" "${t}" \
     "deploy/flux-system/kustomization.yaml lists releases/${svc}-operator.yaml"
+
+  # hack/deploy-infra.sh carries three literal per-service lists that no gate
+  # cross-checks — the failure mode that left glance-operator suspended on the
+  # quick-start flux path (Glance CRDs never installed, the c5c3-operator's
+  # controlplane cache never synced, the ControlPlane CR stayed status-less).
+  # Each check is gated on the artefact that makes it required, so a service
+  # that never enters the respective mechanism is not flagged.
+
+  # The kind base overlay suspends the self-built operator HelmReleases (dev
+  # image vs published chart); the WITH_CONTROLPLANE flux branch must
+  # un-suspend every one of them.
+  if grep -qE "name: ${svc}-operator" deploy/kind/base/kustomization.yaml; then
+    t=0
+    grep -A1 "kubectl patch helmrelease ${svc}-operator -n ${svc}-system" hack/deploy-infra.sh \
+      | grep -q '"suspend":false' || t=1
+    check "${svc}" P7 "deploy-infra-unsuspend" "${t}" \
+      "hack/deploy-infra.sh un-suspends the ${svc}-operator HelmRelease on the flux ControlPlane path"
+  fi
+
+  # A HelmRelease consuming a <svc>-operator-image-digest ConfigMap needs the
+  # matching OPERATOR_DIGEST_TARGETS tuple, or its :latest image is never
+  # digest-pinned and a merged feature does not roll out.
+  if grep -q "${svc}-operator-image-digest" "deploy/flux-system/releases/${svc}-operator.yaml" 2>/dev/null; then
+    t=0; grep -qF "\"${svc}-operator|${svc}-system|" hack/refresh-operator-image-digests.sh || t=1
+    check "${svc}" P7 "digest-target" "${t}" \
+      "hack/refresh-operator-image-digests.sh OPERATOR_DIGEST_TARGETS covers ${svc}-operator"
+  fi
+
+  # A chart exposing metrics.serviceMonitor needs the WITH_PROMETHEUS toggle
+  # call site, or the operator ships without a scrape target on that path.
+  if grep -q 'serviceMonitor' "operators/${svc}/helm/${svc}-operator/values.yaml" 2>/dev/null; then
+    t=0; grep -q "enable_operator_servicemonitor ${svc}-operator ${svc}-system" hack/deploy-infra.sh || t=1
+    check "${svc}" P7 "servicemonitor-toggle" "${t}" \
+      "hack/deploy-infra.sh calls enable_operator_servicemonitor for ${svc}-operator (WITH_PROMETHEUS)"
+  fi
 done
 
 # ---------------------------------------------------------------------------
