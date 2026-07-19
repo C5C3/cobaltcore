@@ -1774,14 +1774,19 @@ main() {
   if [[ "${WITH_CONTROLPLANE}" == "true" && "${CONTROLPLANE_OPERATORS}" == "flux" ]]; then
     # Deploy the full ControlPlane stack via Flux from the published c5c3-operator
     # chart and the K-ORC GitRepository/Kustomization. The kind base overlay
-    # suspends keystone-operator for the local-build E2E path; un-suspend it here
-    # so the c5c3-operator HelmRelease's dependsOn is satisfied and the projected
-    # Keystone CR can reconcile. c5c3-operator, k-orc, and the c5c3-charts /
-    # k-orc sources are left un-suspended (the base applied them active).
-    log "WITH_CONTROLPLANE=true: deploying the c5c3 ControlPlane stack (keystone-operator, horizon-operator, k-orc, c5c3-operator)."
+    # suspends the keystone-, horizon-, and glance-operator HelmReleases for the
+    # local-build E2E path; un-suspend all three here so the c5c3-operator
+    # HelmRelease's dependsOn is satisfied and the projected service CRs can
+    # reconcile. Without the glance-operator the Glance CRDs never install and
+    # the c5c3-operator's controlplane cache never syncs, so the ControlPlane CR
+    # stays status-less. c5c3-operator, k-orc, and the c5c3-charts / k-orc
+    # sources are left un-suspended (the base applied them active).
+    log "WITH_CONTROLPLANE=true: deploying the c5c3 ControlPlane stack (keystone-operator, horizon-operator, glance-operator, k-orc, c5c3-operator)."
     kubectl patch helmrelease keystone-operator -n keystone-system \
       --type merge -p '{"spec":{"suspend":false}}' 2>/dev/null || true
     kubectl patch helmrelease horizon-operator -n horizon-system \
+      --type merge -p '{"spec":{"suspend":false}}' 2>/dev/null || true
+    kubectl patch helmrelease glance-operator -n glance-system \
       --type merge -p '{"spec":{"suspend":false}}' 2>/dev/null || true
     # Pin the GHCR :latest operator images to their current digest so a
     # feature merged since the last deploy actually rolls out (the tag is
@@ -1792,13 +1797,13 @@ main() {
     "${SCRIPT_DIR}/refresh-operator-image-digests.sh" \
       || log "WARNING: operator image digest refresh failed (best-effort); HelmReleases will resolve :latest by tag."
   elif [[ "${WITH_CONTROLPLANE}" == "true" ]]; then
-    # CONTROLPLANE_OPERATORS=external: the keystone-operator, K-ORC, and
-    # c5c3-operator are deployed out of band (e.g. the e2e-controlplane CI job
-    # uses local dev images). Suspend the Flux ControlPlane stack — including
-    # keystone-operator, which stays suspended so the base HelmRelease does not
-    # fight the dev image deployed via hack/ci-deploy-operator.sh — and let the
-    # rest of this run only prepare the shared prerequisites (TLS, OpenBao +
-    # per-CR seeding, ESO store).
+    # CONTROLPLANE_OPERATORS=external: the service operators (keystone, horizon,
+    # glance), K-ORC, and c5c3-operator are deployed out of band (e.g. the
+    # e2e-controlplane CI job uses local dev images). Suspend the Flux
+    # ControlPlane stack — the service-operator HelmReleases stay suspended so
+    # they do not fight the dev images deployed via hack/ci-deploy-operator.sh —
+    # and let the rest of this run only prepare the shared prerequisites (TLS,
+    # OpenBao + per-CR seeding, ESO store).
     log "WITH_CONTROLPLANE=true: ControlPlane operator stack provided externally (dev images); suspending the Flux stack."
     kubectl patch helmrelease c5c3-operator -n c5c3-system \
       --type merge -p '{"spec":{"suspend":true}}' 2>/dev/null || true
