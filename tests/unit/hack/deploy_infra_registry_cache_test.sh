@@ -62,6 +62,8 @@ resolve_flag() {
 #   network inspect → $DOCKER_NETWORK_EXISTS (default 0 = exists)
 #   volume inspect  → 1 (absent, so `volume create` runs)
 #   inspect -f …    → prints $DOCKER_RUNNING (default false = recreate)
+#   exec … grep … config.toml → $NODE_CONFIG_PATH_EXISTS (default 0 = present,
+#     so the config_path probe stays quiet unless a test opts into the warning)
 #   everything else → 0
 # kind prints $KIND_NODES for `kind get nodes`.
 make_docker_stub() {
@@ -80,6 +82,14 @@ case "${1:-}" in
     exit 0 ;;
   inspect)
     printf '%s' "${DOCKER_RUNNING:-false}"; exit 0 ;;
+  exec)
+    # The config_path probe: `docker exec <node> grep -q … config.toml`.
+    for arg in "$@"; do
+      if [ "$arg" = "/etc/containerd/config.toml" ]; then
+        exit "${NODE_CONFIG_PATH_EXISTS:-0}"
+      fi
+    done
+    exit 0 ;;
   *)
     exit 0 ;;
 esac
@@ -304,10 +314,11 @@ test_wire_node_registry_mirror() {
   local log
   log="$(cat "$tmp/docker.log")"
 
-  # 2 nodes × 6 upstreams = 12 docker exec calls.
+  # One config_path probe per node + one write exec per node per upstream:
+  # 2 probes + 2 nodes × 6 upstreams = 14 docker exec calls.
   local execs
   execs="$(grep -c 'docker exec' "$tmp/docker.log" || true)"
-  assert_eq "one docker exec per node per upstream (2×6=12)" "12" "$execs"
+  assert_eq "one probe per node + one exec per node per upstream (2+12=14)" "14" "$execs"
 
   # Each exec passes the host/server/mirror as env so the node shell writes the
   # right hosts.toml. Spot-check docker.io, quay, and a vanity front.
@@ -330,7 +341,67 @@ test_wire_node_registry_mirror() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 8: main() gates both calls behind WITH_REGISTRY_CACHE
+# Test 8: wire_node_registry_mirror warns when containerd lacks the config_path
+# ---------------------------------------------------------------------------
+test_wire_warns_without_config_path() {
+  echo "Test: wire_node_registry_mirror warns (but still writes) when config_path is absent"
+
+  local tmp
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+  make_docker_stub "$tmp/bin"
+
+  local output
+  output="$(
+    PATH="$tmp/bin:$PATH"; export PATH
+    export DOCKER_LOG="$tmp/docker.log"; : >"$DOCKER_LOG"
+    export KIND_NODES="forge-control-plane"
+    export NODE_CONFIG_PATH_EXISTS=1        # cluster created WITHOUT the flag
+    # shellcheck source=/dev/null
+    source "$DEPLOY_INFRA_SH"
+    WITH_REGISTRY_CACHE=true wire_node_registry_mirror 2>&1
+  )"
+
+  assert_contains "the warning names the missing config_path setting" "$output" "config_path"
+  assert_contains "the warning names the recreate remedy" "$output" "recreate"
+
+  # Warn-only: the hosts.toml mirror files are still written.
+  local log
+  log="$(cat "$tmp/docker.log")"
+  assert_contains "hosts.toml writes still run despite the warning" "$log" "HOSTS_HOST=docker.io"
+}
+
+# ---------------------------------------------------------------------------
+# Test 9: no warning when containerd already carries the config_path setting
+# ---------------------------------------------------------------------------
+test_wire_no_warning_with_config_path() {
+  echo "Test: wire_node_registry_mirror stays quiet when config_path is present"
+
+  local tmp
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+  make_docker_stub "$tmp/bin"
+
+  local output
+  output="$(
+    PATH="$tmp/bin:$PATH"; export PATH
+    export DOCKER_LOG="$tmp/docker.log"; : >"$DOCKER_LOG"
+    export KIND_NODES="forge-control-plane"
+    export NODE_CONFIG_PATH_EXISTS=0        # cluster created WITH the flag
+    # shellcheck source=/dev/null
+    source "$DEPLOY_INFRA_SH"
+    WITH_REGISTRY_CACHE=true wire_node_registry_mirror 2>&1
+  )"
+
+  assert_not_contains "no config_path warning when the setting is present" "$output" "config_path"
+
+  local log
+  log="$(cat "$tmp/docker.log")"
+  assert_contains "hosts.toml writes still run" "$log" "HOSTS_HOST=docker.io"
+}
+
+# ---------------------------------------------------------------------------
+# Test 10: main() gates both calls behind WITH_REGISTRY_CACHE
 # ---------------------------------------------------------------------------
 test_main_gates_calls() {
   echo "Test: main() gates start_registry_cache + wire_node_registry_mirror behind the flag"
@@ -357,6 +428,8 @@ test_start_registry_cache
 test_start_registry_cache_idempotent
 test_start_registry_cache_noop_when_off
 test_wire_node_registry_mirror
+test_wire_warns_without_config_path
+test_wire_no_warning_with_config_path
 test_main_gates_calls
 
 echo ""
