@@ -36,6 +36,22 @@
 #   EnvoyProxy CR that GatewayClass/envoy's parametersRef targets has been
 #   applied via the infrastructure overlay), dumping describe +
 #   envoy-gateway-system pod logs on timeout.
+#
+# Idempotent re-runs:
+#   Re-running with the SAME parameters converges without errors and leaves a
+#   healthy stack unchanged — steps either detect completed work and skip it
+#   (cluster create, nofile cap, Gateway API CRDs, OpenBao init/bootstrap) or
+#   apply their changes convergently (kubectl apply / upserts).
+#   Re-running with ADDITIONAL opt-in flags (e.g. WITH_METRICS_SERVER=true,
+#   WITH_PROMETHEUS=true) installs only the newly enabled components and leaves
+#   the already-deployed ones untouched. Two flags are NOT additive:
+#   WITH_REGISTRY_CACHE only takes effect on a cluster CREATED with it (the
+#   mirror files stay inert otherwise — wire_node_registry_mirror warns), and
+#   WITH_CONTROLPLANE on a provisioned standalone stack is a mode change (the
+#   ControlPlane provisions its own MariaDB/Memcached), not an opt-in — start
+#   from a fresh cluster for both.
+#   Removing a previously enabled flag does NOT uninstall that run's components —
+#   cleanup is hack/teardown-infra.sh's job.
 
 set -euo pipefail
 
@@ -1332,8 +1348,11 @@ render_controlplane_replicas() {
 # NODE_NOFILE_LIMIT and restart containerd. This must run BEFORE any workload is
 # scheduled: a containerd restart does not change the limit of already-running
 # containers, so only pods created afterwards inherit the sane value (the target
-# is the fresh-deploy path). Idempotent — re-writing the same drop-in and
-# restarting again is a no-op — and best-effort per node: a node that cannot be
+# is the fresh-deploy path). Convergent — a node is skipped without a containerd
+# restart only when its drop-in AND the limit the running containerd reports are
+# both already at NODE_NOFILE_LIMIT, so a healthy same-parameter re-run is
+# read-only here while a node whose drop-in was written but whose restart failed
+# is retried instead of masked — and best-effort per node: a node that cannot be
 # patched logs a warning but does not abort the deploy.
 #
 # No-op when NODE_NOFILE_LIMIT is empty (opt out on a runtime that already ships
@@ -1354,8 +1373,24 @@ cap_node_nofile() {
 
   log "Capping containerd RLIMIT_NOFILE to ${NODE_NOFILE_LIMIT} on kind node(s): ${nodes//$'\n'/ }"
 
+  local restarted=false
   local node
   for node in ${nodes}; do
+    # Skip only when BOTH the drop-in on disk AND the limit the running
+    # containerd reports are already at the cap. Checking the file alone would
+    # permanently mask a prior run whose write succeeded but whose `systemctl
+    # restart containerd` failed: the drop-in is on disk, so every later run
+    # skips the node while containerd keeps the inherited ~1e9 limit — exactly
+    # the #546 OOM-crashloop this function exists to prevent, and unrecoverable
+    # by re-running.
+    if docker exec "${node}" sh -c '
+      grep -qx "LimitNOFILE='"${NODE_NOFILE_LIMIT}"'" \
+        /etc/systemd/system/containerd.service.d/nofile.conf 2>/dev/null &&
+      [ "$(systemctl show containerd -p LimitNOFILE --value 2>/dev/null)" = "'"${NODE_NOFILE_LIMIT}"'" ]
+    ' 2>/dev/null; then
+      log "  ${node}: containerd RLIMIT_NOFILE already capped to ${NODE_NOFILE_LIMIT} — skipping restart."
+      continue
+    fi
     if docker exec "${node}" sh -c '
       set -e
       mkdir -p /etc/systemd/system/containerd.service.d
@@ -1365,14 +1400,19 @@ cap_node_nofile() {
       systemctl restart containerd
     ' >/dev/null 2>&1; then
       log "  ${node}: containerd RLIMIT_NOFILE set to ${NODE_NOFILE_LIMIT}."
+      restarted=true
     else
       log "  WARNING: failed to cap RLIMIT_NOFILE on ${node} — uWSGI workloads (Keystone) may OOM-crashloop."
     fi
   done
 
-  # containerd was just restarted; give the node a moment to re-register with the
-  # API server before Step 2 starts issuing kubectl apply against it.
-  wait_for_node_ready "${POD_TIMEOUT}"
+  # containerd was just restarted on at least one node; give the node(s) a moment
+  # to re-register with the API server before Step 2 starts issuing kubectl apply
+  # against them. Skipped when no containerd was restarted (every node's drop-in
+  # already matched), so a healthy same-parameter re-run stays read-only here.
+  if [[ "${restarted}" == "true" ]]; then
+    wait_for_node_ready "${POD_TIMEOUT}"
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -1504,6 +1544,14 @@ start_registry_cache() {
 #
 # Best-effort per node/host: a docker-exec failure warns but does not abort the
 # deploy. No-op unless WITH_REGISTRY_CACHE=true.
+#
+# containerd only honours these files when it was started with the certs.d
+# config_path, which render_kind_config injects only on a fresh `kind create
+# cluster` under WITH_REGISTRY_CACHE=true. When the probe finds a node whose
+# containerd config lacks that setting (the cluster was created without the
+# flag), we warn that the mirror files are inert and name the recreate remedy —
+# but still write them, so they become active if the cluster is later recreated
+# with the flag.
 # ---------------------------------------------------------------------------
 wire_node_registry_mirror() {
   if [[ "${WITH_REGISTRY_CACHE}" != "true" ]]; then
@@ -1521,6 +1569,14 @@ wire_node_registry_mirror() {
 
   local node entry host url suffix container
   for node in ${nodes}; do
+    if ! docker exec "${node}" grep -q '/etc/containerd/certs.d' /etc/containerd/config.toml 2>/dev/null; then
+      log "  WARNING: ${node}: containerd config lacks the 'config_path = /etc/containerd/certs.d'"
+      log "           registry setting — cluster '${CLUSTER_NAME}' was created WITHOUT"
+      log "           WITH_REGISTRY_CACHE=true. The hosts.toml mirror files written below will"
+      log "           be IGNORED and image pulls fall back to the origin registries. To activate"
+      log "           the cache, recreate the cluster with WITH_REGISTRY_CACHE=true (e.g."
+      log "           \`make teardown-infra && WITH_REGISTRY_CACHE=true make deploy-infra\`)."
+    fi
     for entry in "${REGISTRY_CACHE_UPSTREAMS[@]}"; do
       IFS='|' read -r host url suffix <<<"${entry}"
       container="registry-cache-${suffix}"

@@ -51,6 +51,28 @@ STUB
   cat >"$dir/docker" <<'STUB'
 #!/bin/bash
 echo "docker $*" >> "$DOCKER_LOG"
+# Convergence probe of the containerd nofile cap — the read-only `docker exec`
+# that inspects the node (the write path is told apart by its `printf`). This
+# models node state, so each leg is answered only if the probe actually asks
+# for it; a probe that drops a leg gets the weaker answer a real node gives:
+#   grep "LimitNOFILE=<n>" ... nofile.conf   → matched against $NOFILE_CURRENT
+#   systemctl show containerd -p LimitNOFILE → matched against $NOFILE_EFFECTIVE
+# Unset ⇒ absent/uncapped ⇒ that leg misses ⇒ the write path runs.
+argv="$*"
+if [ "${1:-}" = "exec" ] && [[ "$argv" == *nofile.conf* && "$argv" != *printf* ]]; then
+  # Read the requested value back out of the probe rather than duplicating the
+  # script's NODE_NOFILE_LIMIT default here.
+  limit="${argv#*LimitNOFILE=}"
+  limit="${limit%%[\" ]*}"
+  case "${NOFILE_CURRENT:-}" in
+    *"LimitNOFILE=${limit}"*) ;;
+    *) exit 1 ;;
+  esac
+  if [[ "$argv" == *"systemctl show containerd"* && "${NOFILE_EFFECTIVE:-}" != "${limit}" ]]; then
+    exit 1
+  fi
+  exit 0
+fi
 exit "${DOCKER_EXIT:-0}"
 STUB
 
@@ -67,7 +89,10 @@ STUB
 # run_cap <stub_dir>
 # Sources deploy-infra.sh in a subshell with <stub_dir> prepended to PATH and
 # invokes cap_node_nofile. The caller controls behaviour via the exported env:
-# KIND_NODES, DOCKER_LOG, DOCKER_EXIT, and NODE_NOFILE_LIMIT (set/unset).
+# KIND_NODES, DOCKER_LOG, DOCKER_EXIT, NODE_NOFILE_LIMIT (set/unset),
+# NOFILE_CURRENT (the drop-in the probe's `grep` leg matches against; unset ⇒
+# the file is absent) and NOFILE_EFFECTIVE (what the probe's `systemctl show`
+# leg reports for the running containerd; unset ⇒ uncapped).
 # Echoes combined stdout/stderr.
 run_cap() {
   local stub_dir="$1"
@@ -96,6 +121,8 @@ test_default_limit_applied() {
   export DOCKER_EXIT=0
   : >"$DOCKER_LOG"
   unset NODE_NOFILE_LIMIT   # exercise the built-in 1048576 default
+  unset NOFILE_CURRENT      # no existing drop-in  → probe misses → write path
+  unset NOFILE_EFFECTIVE    # containerd still uncapped
 
   local output
   output="$(run_cap "$tmp/bin")"
@@ -126,6 +153,8 @@ test_override_limit() {
   export DOCKER_EXIT=0
   : >"$DOCKER_LOG"
   export NODE_NOFILE_LIMIT=524288
+  unset NOFILE_CURRENT      # no existing drop-in  → probe misses → write path
+  unset NOFILE_EFFECTIVE    # containerd still uncapped
 
   run_cap "$tmp/bin" >/dev/null
 
@@ -199,6 +228,8 @@ test_multi_node() {
   export DOCKER_EXIT=0
   : >"$DOCKER_LOG"
   unset NODE_NOFILE_LIMIT
+  unset NOFILE_CURRENT      # no existing drop-in  → probe misses → write path
+  unset NOFILE_EFFECTIVE    # containerd still uncapped
 
   run_cap "$tmp/bin" >/dev/null
 
@@ -224,6 +255,8 @@ test_docker_failure_is_best_effort() {
   export DOCKER_EXIT=1          # docker exec fails
   : >"$DOCKER_LOG"
   unset NODE_NOFILE_LIMIT
+  unset NOFILE_CURRENT      # probe misses → write path (which then fails)
+  unset NOFILE_EFFECTIVE
 
   local output exit_code
   output="$(run_cap "$tmp/bin")"
@@ -231,6 +264,86 @@ test_docker_failure_is_best_effort() {
 
   assert_eq "cap_node_nofile returns 0 despite the failure" "0" "$exit_code"
   assert_contains "log warns about the failed node" "$output" "failed to cap RLIMIT_NOFILE on forge-control-plane"
+}
+
+# ---------------------------------------------------------------------------
+# Test 7: a node already capped in BOTH legs is skipped — no restart, no wait
+# ---------------------------------------------------------------------------
+test_matching_dropin_skips_restart() {
+  echo "Test: cap_node_nofile skips the restart when drop-in and containerd both match"
+
+  local tmp
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+  make_recording_stubs "$tmp/bin"
+
+  export KIND_NODES="forge-control-plane"
+  export DOCKER_LOG="$tmp/docker.log"
+  export DOCKER_EXIT=0
+  : >"$DOCKER_LOG"
+  unset NODE_NOFILE_LIMIT   # exercise the built-in 1048576 default
+  # The node reports the exact drop-in the function would write AND a running
+  # containerd already at that limit, so both the restart and the node-Ready
+  # wait are skipped.
+  export NOFILE_CURRENT=$'[Service]\nLimitNOFILE=1048576'
+  export NOFILE_EFFECTIVE=1048576
+
+  local output
+  output="$(run_cap "$tmp/bin")"
+
+  local docker_log
+  docker_log="$(cat "$DOCKER_LOG")"
+
+  assert_contains "the drop-in leg of the probe is issued" "$docker_log" \
+    'grep -qx "LimitNOFILE=1048576" '
+  assert_contains "the effective-limit leg of the probe is issued" "$docker_log" \
+    "systemctl show containerd -p LimitNOFILE --value"
+  assert_not_contains "containerd is NOT restarted on a match" "$docker_log" "systemctl restart containerd"
+  assert_contains "log reports the skip" "$output" "already capped"
+  assert_not_contains "the node-Ready wait is skipped too" "$output" "for all nodes to be Ready"
+
+  unset NOFILE_CURRENT
+  unset NOFILE_EFFECTIVE
+}
+
+# ---------------------------------------------------------------------------
+# Test 8: drop-in present but containerd NOT capped → the node is still patched
+#
+# Regression guard for the write-succeeded/restart-failed state: a prior run
+# wrote the drop-in and then failed `systemctl restart containerd`, so the file
+# is on disk while containerd keeps the inherited ~1e9 limit. A file-only
+# convergence check would skip the node forever and report a clean deploy while
+# Keystone OOM-crashloops (#546); the effective-limit leg must force the retry.
+# ---------------------------------------------------------------------------
+test_stale_dropin_without_restart_is_retried() {
+  echo "Test: cap_node_nofile re-patches a node whose drop-in exists but containerd is uncapped"
+
+  local tmp
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+  make_recording_stubs "$tmp/bin"
+
+  export KIND_NODES="forge-control-plane"
+  export DOCKER_LOG="$tmp/docker.log"
+  export DOCKER_EXIT=0
+  : >"$DOCKER_LOG"
+  unset NODE_NOFILE_LIMIT   # exercise the built-in 1048576 default
+  export NOFILE_CURRENT=$'[Service]\nLimitNOFILE=1048576'   # file written...
+  export NOFILE_EFFECTIVE=1073741816                        # ...restart never took
+
+  local output
+  output="$(run_cap "$tmp/bin")"
+
+  local docker_log
+  docker_log="$(cat "$DOCKER_LOG")"
+
+  assert_not_contains "the node is NOT reported as already capped" "$output" "already capped"
+  assert_contains "the drop-in is rewritten" "$docker_log" "LimitNOFILE=1048576"
+  assert_contains "containerd IS restarted" "$docker_log" "systemctl restart containerd"
+  assert_contains "log confirms the applied limit" "$output" "containerd RLIMIT_NOFILE set to 1048576"
+
+  unset NOFILE_CURRENT
+  unset NOFILE_EFFECTIVE
 }
 
 # ---------------------------------------------------------------------------
@@ -242,6 +355,8 @@ test_empty_limit_skips
 test_no_nodes_warns
 test_multi_node
 test_docker_failure_is_best_effort
+test_matching_dropin_skips_restart
+test_stale_dropin_without_restart_is_retried
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
