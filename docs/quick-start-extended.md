@@ -273,6 +273,24 @@ before running the chaos E2E suites — see
 list and `make e2e-chaos` workflow.
 :::
 
+::: tip Re-running deploy-infra
+`make deploy-infra` is idempotent: a re-run with the same parameters converges
+and leaves a healthy stack unchanged, and each `WITH_*` opt-in below can be
+enabled later by re-running against the existing cluster — only the newly
+enabled components are installed.
+
+Two caveats apply. `WITH_REGISTRY_CACHE=true` only becomes fully active on a
+cluster **created** with it — on a pre-existing cluster the deploy prints a
+warning that the mirrors stay inert until the cluster is recreated with the
+flag. And flipping `WITH_CONTROLPLANE=true` on an already-provisioned standalone
+stack is a **mode change** — the ControlPlane provisions its own
+MariaDB/Memcached — not an additive opt-in; use a fresh cluster
+(`make teardown-infra` first).
+
+Removing a previously enabled flag does not uninstall that component; cleanup is
+`make teardown-infra`'s job.
+:::
+
 ::: tip Enabling Prometheus & Grafana
 The kube-prometheus-stack is **not installed by default** in the kind Quick Start. The default
 `make deploy-infra` flow leaves the `monitoring` namespace absent so first-run
@@ -314,13 +332,12 @@ scales.
 :::
 
 ::: tip Enabling the local registry pull-through cache
-Every `make deploy-infra` run creates a fresh kind cluster, and every
-third-party image (from `docker.io`, `ghcr.io`, `registry.k8s.io`, `quay.io`,
-and the per-project vanity registries `oci.external-secrets.io` and
-`docker-registry3.mariadb.com`) is then pulled from its upstream registry inside
-the node's containerd. If you recreate the cluster many times a day, the same
-images are fetched over the wire again and again — slow, and exposed to Docker
-Hub rate limits and transient upstream flakes. `kind load docker-image` only
+Every **fresh** kind cluster pulls every third-party image (from `docker.io`,
+`ghcr.io`, `registry.k8s.io`, `quay.io`, and the per-project vanity registries
+`oci.external-secrets.io` and `docker-registry3.mariadb.com`) from its upstream
+registry inside the node's containerd. If you recreate the cluster many times a
+day, the same images are fetched over the wire again and again — slow, and
+exposed to Docker Hub rate limits and transient upstream flakes. `kind load docker-image` only
 helps for the handful of images you build yourself; it does nothing for the
 dozen-plus third-party images the infra stack pulls.
 
