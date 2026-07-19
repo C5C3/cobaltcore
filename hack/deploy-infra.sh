@@ -229,6 +229,10 @@ CONTROLPLANE_DB_STORAGE="${CONTROLPLANE_DB_STORAGE:-512Mi}"
 # Gateway API CRD release installed before the keystone-operator HelmRelease so
 # the operator's HTTPRoute watch has a registered kind at startup.
 # Keep aligned with sigs.k8s.io/gateway-api in operators/keystone/go.mod.
+# When bumping this, re-check the gwapi_crds presence list in
+# install_gateway_api_crds(): it enumerates the standard-channel CRD names of
+# this bundle, and a release that adds a CRD needs the new name added there —
+# otherwise the presence check passes on the old set and skips the install.
 GATEWAY_API_VERSION="${GATEWAY_API_VERSION:-v1.1.0}"
 GATEWAY_API_CRDS_URL="${GATEWAY_API_CRDS_URL:-https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_API_VERSION}/standard-install.yaml}"
 
@@ -638,6 +642,130 @@ wait_for_crds() {
 
     sleep 5
   done
+}
+
+# ---------------------------------------------------------------------------
+# install_gateway_api_crds — Register the Gateway API CRDs before Flux owns them.
+#
+# Purpose: the Gateway API CRDs must be registered before the keystone-operator
+# Pod starts, so its HTTPRoute watch finds the gateway.networking.k8s.io/v1 kind
+# at startup. Without them the operator logs 'no matches for kind HTTPRoute' and
+# never becomes Ready.
+#
+# Skip rationale: on a re-run against an already-provisioned cluster the CRDs
+# already exist and may since be field-managed by another owner — the
+# envoy-gateway chart via Flux's helm-controller. Re-asserting them with
+# `kubectl apply --server-side` then fails with a field-manager conflict, and
+# could downgrade a newer live bundle back to this script's pinned version.
+# Presence of all five standard-channel CRDs already fulfills this step's
+# purpose, so the install is skipped. Upgrading the CRDs is the chart's (or a
+# teardown/redeploy's) job, never this script's — a live bundle that differs
+# from GATEWAY_API_VERSION is therefore reported as a warning, not reconciled.
+#
+# Presence is probed per CRD, so an INCOMPLETE live set (some names present,
+# some missing) is distinguishable from a bare cluster instead of silently
+# taking the install path. It still attempts the install — a live bundle whose
+# present CRDs are content-identical co-owns cleanly — but names the split set
+# up front so the conflict, if it comes, is already diagnosed.
+#
+# --force-conflicts is deliberately NOT used: surfacing (or avoiding) the SSA
+# conflict is correct; forcibly stealing field ownership from helm-controller is
+# not. A conflict is therefore terminal and NOT retried — only transient
+# failures (bundle fetch, API server hiccup) consume the retry budget.
+# ---------------------------------------------------------------------------
+install_gateway_api_crds() {
+  # Standard-channel CRD names shipped by the GATEWAY_API_VERSION bundle. This
+  # list is hand-maintained against that pin (see its definition above) — a
+  # release that adds a standard-channel CRD needs its name added here, or the
+  # presence check below passes on the stale set and skips the install.
+  local gwapi_crds=(
+    gatewayclasses.gateway.networking.k8s.io
+    gateways.gateway.networking.k8s.io
+    grpcroutes.gateway.networking.k8s.io
+    httproutes.gateway.networking.k8s.io
+    referencegrants.gateway.networking.k8s.io
+  )
+
+  # Probe each name separately. `kubectl get crd a b c` exits non-zero as soon
+  # as ONE name is NotFound, which would make a partially-present set (a live
+  # bundle whose standard channel differs from this pin by one CRD) look exactly
+  # like a bare cluster and send the run down the install path — where the
+  # co-owned CRDs then fail on a field-manager conflict.
+  local gwapi_present=()
+  local gwapi_missing=()
+  local crd
+  for crd in "${gwapi_crds[@]}"; do
+    if kubectl get crd "${crd}" &>/dev/null; then
+      gwapi_present+=("${crd}")
+    else
+      gwapi_missing+=("${crd}")
+    fi
+  done
+
+  if (( ${#gwapi_missing[@]} == 0 )); then
+    local live_bundle_version
+    live_bundle_version="$(kubectl get crd httproutes.gateway.networking.k8s.io \
+      -o jsonpath='{.metadata.annotations.gateway\.networking\.k8s\.io/bundle-version}' \
+      2>/dev/null || true)"
+    log "Gateway API CRDs already present (live bundle ${live_bundle_version:-unknown}); skipping install — another owner (e.g. the envoy-gateway chart via helm-controller) may manage them now."
+    if [[ -z "${live_bundle_version}" ]]; then
+      log "  WARNING: the live CRDs carry no bundle-version annotation, so the installed"
+      log "           Gateway API version cannot be verified against the requested"
+      log "           ${GATEWAY_API_VERSION} — an arbitrarily divergent bundle is accepted here."
+      log "           Recreate the cluster (\`make teardown-infra\`) to install ${GATEWAY_API_VERSION}."
+    elif [[ "${live_bundle_version}" != "${GATEWAY_API_VERSION}" ]]; then
+      log "  WARNING: the live bundle does not match the requested ${GATEWAY_API_VERSION}."
+      log "           This step never upgrades present CRDs, so the cluster keeps"
+      log "           ${live_bundle_version}. Recreate the cluster (\`make teardown-infra\`)"
+      log "           to install ${GATEWAY_API_VERSION}."
+    fi
+    return 0
+  fi
+
+  # server-side apply avoids the 'metadata.annotations: Too long' error that
+  # client-side apply hits on the upstream CRD bundle.
+  log "=== Installing Gateway API CRDs (${GATEWAY_API_VERSION}) ==="
+  if (( ${#gwapi_present[@]} > 0 )); then
+    log "  WARNING: the cluster carries an INCOMPLETE Gateway API CRD set."
+    log "           present: ${gwapi_present[*]}"
+    log "           missing: ${gwapi_missing[*]}"
+    log "           The present CRDs are likely field-managed by another owner (the"
+    log "           envoy-gateway chart via helm-controller), so the bundle apply below"
+    log "           may fail on a field-manager conflict — see the ERROR path there."
+  fi
+  local gwapi_attempts=3
+  local gwapi_attempt=0
+  local gwapi_delay=5
+  local gwapi_output
+  while (( gwapi_attempt < gwapi_attempts )); do
+    gwapi_attempt=$((gwapi_attempt + 1))
+    if gwapi_output="$(kubectl apply --server-side -f "${GATEWAY_API_CRDS_URL}" 2>&1)"; then
+      printf '%s\n' "${gwapi_output}"
+      break
+    fi
+    printf '%s\n' "${gwapi_output}"
+    # A field-manager conflict is deterministic — another owner holds the
+    # fields and --force-conflicts is deliberately not used (see the docblock),
+    # so re-applying the identical bundle cannot succeed. Fail fast with the
+    # real diagnosis instead of burning the backoff on a misleading
+    # 'after N attempts' message. Everything else (bundle fetch, API server
+    # hiccup) is transient and keeps its retries.
+    if [[ "${gwapi_output}" == *"conflict"* ]]; then
+      log "ERROR: Gateway API CRD apply hit a field-manager conflict — another owner"
+      log "       (e.g. the envoy-gateway chart via helm-controller) already manages"
+      log "       part of this bundle. Not retried: the conflict is deterministic."
+      log "       Recreate the cluster (\`make teardown-infra && make deploy-infra\`) to"
+      log "       install ${GATEWAY_API_VERSION} cleanly."
+      exit 1
+    fi
+    if (( gwapi_attempt >= gwapi_attempts )); then
+      log "ERROR: Failed to install Gateway API CRDs after ${gwapi_attempts} attempts from ${GATEWAY_API_CRDS_URL}"
+      exit 1
+    fi
+    log "  Gateway API CRD apply failed (attempt ${gwapi_attempt}/${gwapi_attempts}); retrying in ${gwapi_delay}s..."
+    sleep "${gwapi_delay}"
+  done
+  log "Gateway API CRDs installed."
 }
 
 # ---------------------------------------------------------------------------
@@ -1524,29 +1652,7 @@ main() {
   wait_for_fluxinstance "${HELMRELEASE_TIMEOUT}"
   log "flux-operator installed and FluxInstance/flux is Ready."
 
-  # Gateway API CRDs. Installed before the base kustomize overlay so
-  # the keystone-operator Pod (deployed via HelmRelease in Step 3/4) finds the
-  # gateway.networking.k8s.io/v1 HTTPRoute kind at startup. Without this, the
-  # operator logs 'no matches for kind HTTPRoute' and never becomes Ready.
-  # server-side apply avoids the 'metadata.annotations: Too long' error that
-  # client-side apply hits on the upstream CRD bundle.
-  log "=== Installing Gateway API CRDs (${GATEWAY_API_VERSION}) ==="
-  local gwapi_attempts=3
-  local gwapi_attempt=0
-  local gwapi_delay=5
-  while (( gwapi_attempt < gwapi_attempts )); do
-    gwapi_attempt=$((gwapi_attempt + 1))
-    if kubectl apply --server-side -f "${GATEWAY_API_CRDS_URL}"; then
-      break
-    fi
-    if (( gwapi_attempt >= gwapi_attempts )); then
-      log "ERROR: Failed to install Gateway API CRDs after ${gwapi_attempts} attempts from ${GATEWAY_API_CRDS_URL}"
-      exit 1
-    fi
-    log "  Gateway API CRD apply failed (attempt ${gwapi_attempt}/${gwapi_attempts}); retrying in ${gwapi_delay}s..."
-    sleep "${gwapi_delay}"
-  done
-  log "Gateway API CRDs installed."
+  install_gateway_api_crds
 
   # Step 3: Apply base kustomize overlay (namespaces, HelmRepos, HelmReleases)
   #
