@@ -47,6 +47,13 @@ type ManagerConfig struct {
 	// resolved --max-concurrent-reconciles value; controllers that do not tune
 	// concurrency may ignore it.
 	SetupFunc func(mgr ctrl.Manager, webhooks bool, maxConcurrentReconciles int) error
+
+	// RegisterFlags is an optional, nil-safe hook for registering
+	// operator-specific flags on the shared flag set. It is invoked after the
+	// shared flags are registered and before parsing, so operators can add
+	// binary-local flags (e.g. keystone's --federation-metadata-allow-cidrs)
+	// without leaking them into the other operator binaries.
+	RegisterFlags func(fs *flag.FlagSet)
 }
 
 // validate returns an error if required fields are missing.
@@ -137,6 +144,10 @@ func parseRunOptions(cfg ManagerConfig, args []string) (runOptions, error) {
 
 	o.zapOpts = zapOptions()
 	o.zapOpts.BindFlags(fs)
+
+	if cfg.RegisterFlags != nil {
+		cfg.RegisterFlags(fs)
+	}
 
 	if err := fs.Parse(args); err != nil {
 		return runOptions{}, fmt.Errorf("parsing flags: %w", err)

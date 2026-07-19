@@ -5,6 +5,7 @@
 package bootstrap
 
 import (
+	"flag"
 	"reflect"
 	"testing"
 	"time"
@@ -182,6 +183,32 @@ func TestParseRunOptions_invalidArgReturnsError(t *testing.T) {
 
 	if _, err := parseRunOptions(cfg, []string{"--no-such-flag"}); err == nil {
 		t.Fatal("expected an error for an unknown flag, got nil")
+	}
+}
+
+// TestParseRunOptions_registerFlags verifies that a RegisterFlags hook can
+// register an operator-specific flag on the shared flag set and that an
+// injected custom arg is parsed into the bound variable, while the shared
+// flag defaults (metricsAddr) remain intact.
+func TestParseRunOptions_registerFlags(t *testing.T) {
+	var custom string
+	cfg := ManagerConfig{
+		Scheme:           runtime.NewScheme(),
+		LeaderElectionID: "test.c5c3.io",
+		RegisterFlags: func(fs *flag.FlagSet) {
+			fs.StringVar(&custom, "custom", "", "An operator-specific flag.")
+		},
+	}
+
+	opts, err := parseRunOptions(cfg, []string{"--custom=x"})
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if custom != "x" {
+		t.Fatalf("custom = %q, want x (from RegisterFlags hook)", custom)
+	}
+	if opts.metricsAddr != ":8080" {
+		t.Fatalf("metricsAddr = %q, want :8080 (shared default)", opts.metricsAddr)
 	}
 }
 
