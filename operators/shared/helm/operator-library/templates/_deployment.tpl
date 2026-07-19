@@ -63,6 +63,11 @@ spec:
             - --max-concurrent-reconciles={{ . }}
             {{- end }}
             {{- end }}
+            {{- with .Values.federation }}
+            {{- with .metadataAllowCidrs }}
+            - --federation-metadata-allow-cidrs={{ join "," . }}
+            {{- end }}
+            {{- end }}
             - --metrics-bind-address=:{{ .Values.metrics.port }}
             - --health-probe-bind-address=:8081
             {{- if .Values.logging.development }}

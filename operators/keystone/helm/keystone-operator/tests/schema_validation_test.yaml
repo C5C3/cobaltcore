@@ -491,6 +491,36 @@ tests:
           of: Deployment
 
   # ---------------------------------------------------------------------------
+  # federation schema constraints
+  # ---------------------------------------------------------------------------
+  - it: should reject non-array federation.metadataAllowCidrs
+    set:
+      federation:
+        metadataAllowCidrs: "10.0.0.0/8"
+    asserts:
+      - failedTemplate:
+          errorPattern: "/federation/metadataAllowCidrs.*got string, want array"
+
+  - it: should reject invalid CIDR in federation.metadataAllowCidrs
+    set:
+      federation:
+        metadataAllowCidrs:
+          - "999.0.0.1/32"
+    asserts:
+      - failedTemplate:
+          errorPattern: "/federation/metadataAllowCidrs.*does not match pattern"
+
+  - it: should accept a valid federation.metadataAllowCidrs list
+    set:
+      federation:
+        metadataAllowCidrs:
+          - "10.96.0.0/12"
+          - "fd00::/108"
+    asserts:
+      - isKind:
+          of: Deployment
+
+  # ---------------------------------------------------------------------------
   # logging schema constraints
   # ---------------------------------------------------------------------------
   - it: should reject non-boolean logging.development
