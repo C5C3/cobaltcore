@@ -123,6 +123,19 @@ The `networkPolicy` block (default-off operator pod hardening with fail-closed
 render guards) is validated by the schema as well; its fields are documented in
 [Keystone Operator NetworkPolicy](../keystone/keystone-operator-networkpolicy.md).
 
+### federation
+
+| Field | Type | Constraint | Default |
+| --- | --- | --- | --- |
+| `federation.metadataAllowCidrs` | `array` | each item matches the shared `cidr` pattern definition | `[]` |
+
+The `federation` block is keystone-only — like `networkPolicy`, it is layered
+onto the keystone-operator schema alone (the sibling operators do not register
+the flag). Each `metadataAllowCidrs` entry is validated against the same shared
+`cidr` pattern definition the `networkPolicy` block reuses. The rendered
+`--federation-metadata-allow-cidrs` flag and its runtime semantics are covered in
+the [keystone-operator packaging reference](./keystone-operator-packaging.md#federation).
+
 ### operator-library
 
 A reserved, empty values namespace for the `operator-library` library subchart.

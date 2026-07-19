@@ -3064,7 +3064,10 @@ condition:
   mount time). The `.provider` discovery document is pre-provisioned —
   assembled from explicit `endpoints` or fetched from
   `providerMetadataURL` through the operator's HTTP seam with a per-backend
-  `(uid, generation)` cache and an issuer-equality check. The
+  `(uid, generation)` cache and an issuer-equality check. That fetch client
+  blocks non-public addresses by default (SSRF guard), relaxable per-CIDR via
+  the operator-level `--federation-metadata-allow-cidrs` flag — never via the
+  CR — so discovery against a trusted in-cluster IdP is opt-in. The
   `OIDCCryptoPassphrase` lives in the stable-named
   `<name>-oidc-crypto-passphrase` Secret (operator-generated, no OpenBao
   backup — regenerable by design) and is embedded into `proxy.conf`, so a

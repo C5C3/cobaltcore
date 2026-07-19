@@ -339,6 +339,65 @@ identity provider — always — and finally applies
 `spec.domain.deletionPolicy` to the domain exactly like the LDAP flow.
 Declarative groups live inside the domain and follow it.
 
+## Discovery against an in-cluster identity provider
+
+By default the operator's federation-metadata client is SSRF-guarded: it refuses
+to dial **any** non-public address when it fetches an OIDC discovery document (or
+SAML IdP metadata). Auto-discovery of `<issuer>/.well-known/openid-configuration`
+therefore cannot reach an IdP on a private in-cluster address — for example the
+fixture Keycloak's ClusterIP in the kind Service CIDR. That is why Step 4 spells
+out `spec.oidc.endpoints`: explicit endpoints skip the metadata fetch entirely
+and stay the recommended path for air-gapped setups and anywhere the allowlist is
+not wanted.
+
+To let discovery run against a **trusted** in-cluster IdP instead, allowlist its
+address range on the operator deployment. The `federation.metadataAllowCidrs`
+chart value (rendered as the operator's `--federation-metadata-allow-cidrs` flag)
+lists the extra CIDRs the metadata client may dial:
+
+```bash
+helm upgrade keystone-operator oci://ghcr.io/c5c3/charts/keystone-operator \
+  --namespace keystone-system \
+  --set 'federation.metadataAllowCidrs={10.96.0.0/12}'
+```
+
+or in a values file:
+
+```yaml
+federation:
+  metadataAllowCidrs:
+    - 10.96.0.0/12   # the cluster's Service CIDR
+```
+
+With the Service CIDR allowlisted, an OIDC backend can drop `spec.oidc.endpoints`
+and rely on `issuer:` alone — the operator fetches the discovery document from the
+in-cluster IdP itself.
+
+::: warning Scope the allowlist narrowly
+Allowlist the **smallest** range that reaches the IdP — the cluster's Service
+CIDR (e.g. `10.96.0.0/12`). A default route (`0.0.0.0/0`, `::/0`) is rejected at
+startup: the operator refuses to boot rather than lift the private-range guard
+wholesale. The allowlist is operator-level configuration and can never be set or
+widened from a `KeystoneIdentityBackend` CR, so a tenant cannot expand the
+operator's reachable surface. Only the private-range classes are liftable:
+loopback, link-local (including the cloud IMDS at `169.254.169.254`), multicast,
+and unspecified addresses stay blocked even when an allowlist entry covers them.
+
+A tenant *can* still aim `spec.oidc.providerMetadataURL` at any address **inside**
+the range you allowlist, so keep the range to what the IdP actually needs. The
+operator does not help them read the result: every fetch failure — refused
+connection, timeout, HTTP status, unparseable body — collapses to the same
+tenant-visible message, and the underlying cause goes to the operator log only.
+:::
+
+::: warning The operator NetworkPolicy blocks metadata fetches outright
+The keystone-operator chart's opt-in NetworkPolicy (`networkPolicy.enabled=true`)
+default-denies egress except kube-apiserver and DNS, so it blocks **every**
+metadata fetch — public or allowlisted — at the network layer regardless of this
+allowlist. With that policy enabled, keep spelling out `spec.oidc.endpoints`;
+this was already the case for public IdPs.
+:::
+
 ## Security considerations
 
 - **Register an exact redirect URI at the IdP.** mod_auth_openidc derives the
@@ -357,7 +416,7 @@ Declarative groups live inside the domain and follow it.
 | Symptom | Likely cause |
 | --- | --- |
 | `IdentityBackendsReady=False` with a `FederationProxyImageMissing` Warning | The child Keystone CR has no `spec.federation.proxyImage`. On a ControlPlane deployment the operator always projects it, so this points to a **standalone** Keystone with no proxy image — set `spec.federation.proxyImage` on it (see the [Standalone Keystone](#standalone-keystone-without-a-controlplane) section). |
-| `IdentityBackendsSkipped` Warning naming `provider metadata unavailable` | The discovery document could not be fetched from the operator pod, or its `issuer` does not equal `spec.oidc.issuer`. Check egress/DNS, or spell out `spec.oidc.endpoints`. |
+| `IdentityBackendsSkipped` Warning naming `provider metadata unavailable` (or the client `refusing to dial non-public address`) | The discovery document could not be fetched from the operator pod, or its `issuer` does not equal `spec.oidc.issuer`. The Event withholds the underlying cause on purpose (SSRF probe oracle) — read the **operator log** for the concrete failure. Check egress/DNS; spell out `spec.oidc.endpoints`; or — for a trusted in-cluster IdP — allowlist its CIDR via the operator's `federation.metadataAllowCidrs` chart value (see [Discovery against an in-cluster identity provider](#discovery-against-an-in-cluster-identity-provider)). |
 | `FederationObjectsReady=False/NoMappingRules` | `spec.mappings` is empty — keystone cannot represent a rule-less mapping; add at least one rule. |
 | `MappingsReady=False/RoleOrProjectNotFound` | A role assignment references a role or project that does not exist (yet); the backend retries on a bounded poll. |
 | Federated login returns 401 with valid IdP credentials | The mapping did not match: compare the asserted claims (the sidecar logs them at debug) against your `remote[].type` matchers, and remember the issuer gate must equal the `iss` claim byte for byte. |
