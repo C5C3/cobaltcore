@@ -12,8 +12,9 @@ serviceAccount / name-override properties, the operator-library subchart-values
 property, and the rbac->webhook constraint. This script holds that shared
 schema once and emits each chart's values.schema.json, layering the
 chart-specific pieces on top: the image repository default, the webhook
-description, and -- for keystone only -- the cidr/stringMap definitions plus the
-NetworkPolicy property and its fail-closed constraint.
+description, and -- for keystone only -- the cidr/stringMap definitions, the
+NetworkPolicy property and its fail-closed constraint, and the federation
+metadata-allowlist property.
 
 Editing a shared field here regenerates both charts, so the two schemas cannot
 drift. Run via the Makefile:
@@ -371,6 +372,19 @@ NETWORK_POLICY = {
     },
 }
 
+FEDERATION = {
+    "type": "object",
+    "description": "Federation identity-provider metadata fetch (OIDC discovery documents and SAML IdP metadata) settings for the operator",
+    "additionalProperties": False,
+    "properties": {
+        "metadataAllowCidrs": {
+            "type": "array",
+            "description": "CIDRs the SSRF-guarded federation-metadata client may additionally dial to fetch identity-provider metadata (e.g. the cluster's Service CIDR '10.96.0.0/12' to reach a trusted in-cluster identity provider). Rendered as --federation-metadata-allow-cidrs; empty (default) keeps the operator refusing every non-public address. Loopback, link-local (cloud IMDS), multicast, and unspecified addresses stay blocked even when covered by an entry.",
+            "items": {"allOf": [{"$ref": "#/definitions/cidr"}]},
+        }
+    },
+}
+
 RBAC_WEBHOOK_RULE = {
     "if": {
         "properties": {
@@ -465,6 +479,7 @@ def discover_charts():
                 "image_repository_default": repository,
                 "webhook_enabled_description": WEBHOOK_ENABLED_DESCRIPTIONS[name],
                 "network_policy": (chart_dir / "templates" / "networkpolicy.yaml").exists(),
+                "federation": name == "keystone-operator",
             }
         )
     return charts
@@ -497,6 +512,10 @@ def build_schema(chart):
         definitions["stringMap"] = STRING_MAP
         properties["networkPolicy"] = NETWORK_POLICY
         all_of.append(NETWORK_POLICY_RULE)
+
+    if chart["federation"]:
+        definitions["cidr"] = CIDR
+        properties["federation"] = FEDERATION
 
     properties["nameOverride"] = NAME_OVERRIDE
     properties["fullnameOverride"] = FULLNAME_OVERRIDE

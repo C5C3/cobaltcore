@@ -231,6 +231,31 @@ tests:
           path: spec.template.spec.containers[0].args
           content: --max-concurrent-reconciles=2
 
+  # Federation metadata allowlist (--federation-metadata-allow-cidrs) tests.
+  - it: should render --federation-metadata-allow-cidrs from federation.metadataAllowCidrs
+    set:
+      federation:
+        metadataAllowCidrs:
+          - "10.96.0.0/12"
+          - "fd00::/108"
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --federation-metadata-allow-cidrs=10.96.0.0/12,fd00::/108
+
+  - it: should omit --federation-metadata-allow-cidrs when the list is empty
+    set:
+      federation:
+        metadataAllowCidrs: []
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].args
+          value:
+            - --leader-elect
+            - --max-concurrent-reconciles=2
+            - --metrics-bind-address=:8080
+            - --health-probe-bind-address=:8081
+
   # Operator logging (zap) configuration tests.
   - it: should not render zap flags with default logging values
     asserts:

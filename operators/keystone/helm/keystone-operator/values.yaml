@@ -45,6 +45,17 @@ controller:
   # operator's built-in default.
   maxConcurrentReconciles: 2
 
+# Federation metadata fetch (OIDC discovery documents and SAML IdP metadata)
+# is SSRF-guarded: by default the operator refuses to dial any non-public
+# address. List CIDRs here (e.g. the cluster's Service CIDR) to additionally
+# allow discovery against a trusted in-cluster identity provider. Loopback,
+# link-local (cloud IMDS), multicast, and unspecified addresses stay blocked
+# even when covered by an entry. Rendered as --federation-metadata-allow-cidrs;
+# leave empty to keep the hardened default.
+#   metadataAllowCidrs: ["10.96.0.0/12"]
+federation:
+  metadataAllowCidrs: []
+
 webhook:
   enabled: true
 
