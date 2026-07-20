@@ -167,7 +167,7 @@ status:
 | `gateway` | [`*GatewaySpec`](#gatewayspec) | No | `nil` | Gateway API HTTPRoute configuration. When set, an HTTPRoute is created targeting the `{name}` Service on port 5000 and attached to the referenced pre-existing Gateway; `status.endpoint` is updated to `https://{hostname}/v3`. When removed, the HTTPRoute is deleted and `status.endpoint` reverts to the cluster-local Service URL. |
 | `uwsgi` | [`*UWSGISpec`](#uwsgispec) | No | `nil` | uWSGI application server parameters. When set, the operator uses these values for the Deployment container command. When `nil`, hardcoded defaults (processes=2, threads=1, httpKeepAlive=true) are used in the reconciler. |
 | `logging` | [`*LoggingSpec`](#loggingspec) | No | See below | oslo.log configuration for the Keystone API container. When `nil`, the defaulting webhook materializes a baseline (`format=text`, `level=INFO`, `debug=false`, no per-logger overrides) so downstream reconciler code never sees a nil pointer. When set, zero-valued sub-fields are partially filled with the same baseline. |
-| `extraConfig` | `map[string]map[string]string` | No | `nil` | Free-form INI sections for additional configuration. |
+| `extraConfig` | `map[string]map[string]string` | No | `nil` | Free-form INI sections for additional configuration. The render-time merge follows `plugins < operator defaults < extraConfig` (each stage merged key-wise), so `extraConfig` wins over both. Overrides of operator-owned keys are honored but reported via the `ExtraConfigHealthy` condition and an `ExtraConfigOwnedKeyOverride` Warning event. |
 
 ### DeploymentSpec
 
@@ -487,16 +487,14 @@ into `keystone.conf`. When `spec.logging.format == "json"`, an additional
 `logging.conf` ConfigMap entry is rendered (oslo.log JSON formatter wired to a
 stderr StreamHandler) and `[DEFAULT] log_config_append=/etc/keystone/keystone.conf.d/logging.conf`
 is appended; toggling `format` back to `text` drops the `logging.conf` key.
-A `Warning` event with reason `LoggingStderrDisabled` is emitted when
-`spec.extraConfig` overrides `[DEFAULT].use_stderr` to a non-`true` value,
-because doing so silently breaks the cluster log-aggregation pipeline.
-The reconciler also surfaces this misconfiguration via an informational
-`LoggingHealthy` status condition (`Reason=StderrDisabled` when overridden,
-`Reason=StderrEnabled` otherwise). The condition is intentionally **not**
-aggregated into the top-level `Ready` condition so an explicit operator
-override is honoured rather than blocking the rollout; the gated event
-fires only on transition into `StderrDisabled`. See
-[keystone-events.md, Logging](keystone-events.md#logging) for the
+`[DEFAULT] use_stderr=true` is an operator-owned default. A `spec.extraConfig`
+override of it is honored — the value is rendered — but surfaces through the
+informational `ExtraConfigHealthy` status condition (`Reason=OwnedKeysOverridden`,
+with a message noting that container logs will no longer reach `kubectl logs`) and
+the gated `ExtraConfigOwnedKeyOverride` Warning event. The condition is
+intentionally **not** aggregated into the top-level `Ready` condition so an
+explicit operator override is honoured rather than blocking the rollout. See
+[keystone-events.md, Configuration](keystone-events.md#configuration) for the
 full event/condition contract.
 
 | Field | Type | Required | Default | Description |

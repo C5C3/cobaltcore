@@ -53,6 +53,21 @@ All events follow these conventions:
 
 **Source:** `reconcileBackends` in `reconcile_backends.go`
 
+### Configuration
+
+| Reason | Type | Trigger Condition | Example Message |
+| --- | --- | --- | --- |
+| `ExtraConfigOwnedKeyOverride` | Warning | `spec.extraConfig` overrides one or more operator-owned configuration keys (the per-service ownership registry) | `spec.extraConfig overrides operator-owned keys: [DEFAULT] enabled_backends (must agree with the projected backends Secret)` |
+
+**Source:** `reconcileConfig` in `reconcile_config.go`
+
+> **Note:** The event is gated on the `ExtraConfigHealthy=False` condition's
+> message — it fires once on the transition into `False` and once more when the
+> overridden-key set changes, never on the steady reconcile poll. Removing the
+> overrides transitions the condition back to `ExtraConfigHealthy=True,
+> Reason=NoOwnedKeysOverridden` without a further event. The condition is
+> informational and is not aggregated into `Ready`.
+
 ### Database Sync
 
 | Reason | Type | Trigger Condition | Example Message |
@@ -160,6 +175,10 @@ GlanceReconciler.Reconcile()
   │
   ├── reconcileBackends()
   │     └─ per-backend fault (missing Secret / control char) → Warning GlanceBackendSkipped
+  │
+  ├── reconcileConfig()
+  │     └─ spec.extraConfig overrides operator-owned keys → Warning ExtraConfigOwnedKeyOverride
+  │       (gated on transition into ExtraConfigHealthy=False, Reason=OwnedKeysOverridden)
   │
   └── reconcileDatabase()
         ├─ Invalid release transition → Warning InvalidReleaseTransition

@@ -22,7 +22,7 @@ chart ships a synced copy (`make sync-crds` / `make verify-crd-sync`).
 | `networkPolicy` | `*NetworkPolicySpec` | no | Ingress restricted to TCP 8080 from the listed sources; egress auto-derived (DNS, the Keystone endpoint port, cache ports). At least one ingress source is required (fail-closed) |
 | `autoscaling` | `*AutoscalingSpec` | no | HPA bounds and CPU/memory utilization targets |
 | `logging` | `*LoggingSpec` | no | Django `LOGGING` dictConfig derivation: root `level`, `debug`, `perLoggerLevels`. Defaulted to `text`/`INFO`/`debug: false` |
-| `extraConfig` | `map[string]JSON` | no | Free-form Django settings rendered after the operator defaults (user values win). `SECRET_KEY` is rejected by the webhook |
+| `extraConfig` | `map[string]JSON` | no | Free-form Django settings rendered after the operator defaults (user values win). `SECRET_KEY` is rejected by the webhook. Overrides of operator-owned settings (for example `STATIC_ROOT`, `COMPRESS_OFFLINE`) are honored but reported via the `ExtraConfigHealthy` condition and an `ExtraConfigOwnedKeyOverride` Warning event |
 | `websso` | `*WebSSOSpec` | no | Federated single-sign-on choices on the login page. When nil the operator renders no `WEBSSO_*` settings and the dashboard offers local credentials only. The c5c3 ControlPlane projects this from the federation backends attached to its Keystone child |
 | `multiDomain` | `*MultiDomainSpec` | no | Multi-domain login: the domain field (or dropdown) on the login form, needed when users live in domains other than the default one — typically LDAP-backed. When nil the operator renders no `OPENSTACK_KEYSTONE_MULTIDOMAIN_*` settings |
 | `secretStoreRef` | `*SecretStoreRefSpec` | no | Selects the External Secrets store the dashboard resolves its `SecretsReady` gate against — `kind` (`ClusterSecretStore` \| `SecretStore`, default `ClusterSecretStore`) and a required non-empty `name`. When omitted the shared cluster-scoped `ClusterSecretStore` `openbao-cluster-store` is used, so existing deployments are unchanged; set to a namespaced `SecretStore` in this Horizon's own namespace to reach OpenBao as a per-tenant identity. It only gates `SecretsReady` on the selected store — Horizon creates no PushSecrets. Normally projected from the owning ControlPlane |
@@ -41,6 +41,24 @@ arithmetic, topology-spread selectors, and PriorityClass existence.
 A CEL rule over `extraConfig` keys is not expressible (the API server cannot
 build CEL type information for preserve-unknown-fields map values), so the
 empty-key and `SECRET_KEY` guards are webhook-only.
+
+### ExtraConfig ownership guard
+
+Beyond the rejected settings, the operator ships a registry of the
+`local_settings.py` settings it computes. Overriding one of them through
+`spec.extraConfig` is report-only — the value is rendered — but it flips the
+informational `ExtraConfigHealthy` condition to `False`
+(`Reason=OwnedKeysOverridden`, with the overridden settings named in the
+message; with no overrides the condition reads `True`,
+`Reason=NoOwnedKeysOverridden`) and emits a one-shot
+`ExtraConfigOwnedKeyOverride` Warning event gated on that message transition — it
+fires once on entering `False` and once more when the overridden-setting set
+changes, never on the steady reconcile poll. The condition is intentionally not
+aggregated into `Ready`, so an explicit operator override is honored rather than
+blocking the rollout. `OPENSTACK_ENDPOINT_TYPE` and `SECURE_PROXY_SSL_HEADER` are
+deliberately left unregistered as supported escape hatches, so overriding either
+stays silent. Horizon has no separate events reference page by design; this is
+the documentation home for the `ExtraConfigOwnedKeyOverride` event.
 
 ## WebSSOSpec
 
