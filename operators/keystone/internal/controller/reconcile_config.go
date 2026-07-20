@@ -12,13 +12,11 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/c5c3/forge/internal/common/cache"
-	"github.com/c5c3/forge/internal/common/conditions"
 	"github.com/c5c3/forge/internal/common/config"
 	"github.com/c5c3/forge/internal/common/database"
 	"github.com/c5c3/forge/internal/common/plugins"
@@ -36,9 +34,7 @@ import (
 // attaching or detaching a backend flips the [identity]
 // domain-specific-driver options (LDAP) or the [auth]/[openid]/[federation]
 // sections (OIDC) without bumping the Keystone generation, so both must
-// invalidate the cache. useStderr is retained so the LoggingHealthy
-// condition/event contract is preserved on the cache-hit path without
-// re-deriving the merged config.
+// invalidate the cache.
 type configRenderCacheEntry struct {
 	uid                     types.UID
 	generation              int64
@@ -49,29 +45,7 @@ type configRenderCacheEntry struct {
 	samlProtocolID          string
 	samlRemoteIDAttribute   string
 	configMapName           string
-	useStderr               string
 }
-
-// conditionTypeLoggingHealthy reflects whether the merged keystone.conf
-// preserves the safe logging defaults required for kubectl logs / sidecar
-// shippers to receive Keystone application records. The
-// only currently-tracked failure mode is the StderrDisabled override emitted
-// by spec.extraConfig; healthy reconciles set the condition to True so
-// transitions are detectable. The condition is informational and is
-// intentionally NOT added to subConditionTypes because a use_stderr=false
-// override is an explicit operator choice, not a Ready-blocking failure.
-const conditionTypeLoggingHealthy = "LoggingHealthy"
-
-// conditionReasonStderrDisabled is the Reason emitted on the
-// LoggingHealthy=False condition (and on the gated LoggingStderrDisabled
-// Warning event) when spec.extraConfig overrides [DEFAULT].use_stderr to a
-// non-"true" value.
-const conditionReasonStderrDisabled = "StderrDisabled"
-
-// conditionReasonStderrEnabled is the Reason emitted on the
-// LoggingHealthy=True condition when the merged [DEFAULT].use_stderr is
-// "true" — i.e. container stderr will receive oslo.log records as designed
-const conditionReasonStderrEnabled = "StderrEnabled"
 
 // defaultConfigMapRetainCount is the number of historical immutable ConfigMaps
 // to retain after pruning. Combined with the current active ConfigMap, this
@@ -150,18 +124,26 @@ const ssoCallbackTemplateHTML = `<!DOCTYPE html>
 // remote_id_attribute, and the [federation] section, and the ConfigMap ships
 // the WebSSO callback template.
 func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, keystone *keystonev1alpha1.Keystone, domainsProjected bool, fed *federationProjection) (string, error) {
+	// The extraConfig ownership guard is a pure function of the spec, so it
+	// runs before the render-cache short-circuit and needs no render or cache
+	// participation. The ExtraConfigHealthy condition is informational and
+	// deliberately stays out of subConditionTypes (Ready aggregation) and
+	// subReconcilerConditionTypes (metrics attribution).
+	config.RecordExtraConfigHealth(r.Recorder, keystone, &keystone.Status.Conditions, keystone.Generation,
+		config.FindOwnedOverrides(keystone.Spec.ExtraConfig, keystonev1alpha1.OwnedConfigKeys))
+
 	// Cache short-circuit: the rendered ConfigMap is content-addressed and
 	// immutable, and every spec input to the render bumps the CR generation, so
 	// a matching (uid, generation, policy-ConfigMap ResourceVersion,
 	// projection-state) tuple means the last rendered ConfigMap is still
-	// current. Skip the INI/paste/policy rendering and the
-	// immutable-ConfigMap write, but still re-run recordLoggingHealth so the
-	// LoggingHealthy condition/event contract holds on every pass.
+	// current. Skip the INI/paste/policy rendering and the immutable-ConfigMap
+	// write; the extraConfig ownership guard above already ran, so it needs no
+	// re-run here.
 	policyCMRV, err := r.policyConfigMapResourceVersion(ctx, keystone)
 	if err != nil {
 		return "", err
 	}
-	if name, useStderr, ok := r.configRenderCacheHit(keystone, policyCMRV, domainsProjected, fed); ok {
+	if name, ok := r.configRenderCacheHit(keystone, policyCMRV, domainsProjected, fed); ok {
 		// Confirm the cached ConfigMap still exists: an out-of-band delete must
 		// fall through to a full render/recreate. Owns(ConfigMap) enqueues us on
 		// the delete, but the cache would otherwise hand back a deleted name.
@@ -170,14 +152,137 @@ func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, keystone *keys
 			return "", existsErr
 		}
 		if exists {
-			r.recordLoggingHealth(keystone, map[string]map[string]string{"DEFAULT": {"use_stderr": useStderr}})
 			return name, nil
 		}
 		r.evictConfigRender(client.ObjectKeyFromObject(keystone))
 		log.FromContext(ctx).V(1).Info("cached config ConfigMap missing; re-rendering", "configMap", name)
 	}
 
-	// Step 1: Build keystone.conf INI sections from CRD spec.
+	// Step 1: Build the operator-owned keystone.conf defaults from the spec.
+	defaults := operatorDefaults(keystone, domainsProjected, fed)
+
+	// logging is re-derived here (operatorDefaults keeps its own copy) for the
+	// later logging.conf data-key decisions below.
+	logging := effectiveLogging(keystone.Spec.Logging)
+
+	merged := defaults
+
+	// Step 2: Merge plugin config (operator defaults win over plugin sections
+	// that collide, then user extraConfig wins over both).
+	if len(keystone.Spec.Plugins) > 0 {
+		pluginConfig, err := plugins.RenderPluginConfig(keystone.Spec.Plugins)
+		if err != nil {
+			return "", fmt.Errorf("rendering plugin config: %w", err)
+		}
+		merged = config.MergeDefaults(defaults, pluginConfig)
+	}
+
+	// Step 3: Merge extraConfig (extraConfig overrides everything).
+	if keystone.Spec.ExtraConfig != nil {
+		merged = config.MergeDefaults(keystone.Spec.ExtraConfig, merged)
+	}
+
+	// Step 4: Handle PolicyOverrides.
+	var policyYAML string
+	if keystone.Spec.PolicyOverrides != nil {
+		yaml, err := buildPolicyYAML(ctx, r.Client, keystone)
+		if err != nil {
+			return "", fmt.Errorf("building policy: %w", err)
+		}
+		policyYAML = yaml
+		if policyYAML != "" {
+			merged = config.InjectOsloPolicyConfig(merged, "/etc/keystone/keystone.conf.d/policy.yaml")
+		}
+	}
+
+	// Step 5: Render api-paste.ini.
+	apiPasteINI, err := plugins.RenderPastePipelineINI(plugins.PipelineSpec{
+		PipelineName: "public_api",
+		AppName:      "admin_service",
+		AppFactory:   "egg:keystone#service_v3",
+		BaseFilters:  []string{"cors", "sizelimit", "http_proxy_to_wsgi", "url_normalize", "request_id"},
+		BaseFilterFactories: map[string]string{
+			"cors":               "egg:oslo.middleware#cors",
+			"sizelimit":          "egg:oslo.middleware#sizelimit",
+			"http_proxy_to_wsgi": "egg:oslo.middleware#http_proxy_to_wsgi",
+			"url_normalize":      "egg:keystone#url_normalize",
+			"request_id":         "egg:oslo.middleware#request_id",
+		},
+		BaseFilterConfigs: map[string]map[string]string{
+			"cors": {"oslo_config_project": "keystone"},
+		},
+		CompositeRoutes: map[string]string{"/v3": "public_api"},
+		Middleware:      keystone.Spec.Middleware,
+	})
+	if err != nil {
+		return "", fmt.Errorf("rendering api-paste.ini: %w", err)
+	}
+
+	// Step 6: Create immutable ConfigMap.
+	//
+	// [federation] trusted_dashboard is an oslo MultiStrOpt: a dashboard origin
+	// per line. Lift the merged single-valued map into the multi-valued shape
+	// and set the repeated key there, after the extraConfig merge — the webhook
+	// rejects declaring the option in both places, so nothing is being
+	// overwritten here. A CR with no origins renders byte-identically to
+	// before, since the lifted map is otherwise a one-element-slice image of
+	// merged.
+	multi := config.LiftSections(merged)
+	if origins := trustedDashboards(keystone); len(origins) > 0 {
+		if multi["federation"] == nil {
+			multi["federation"] = map[string][]string{}
+		}
+		multi["federation"]["trusted_dashboard"] = origins
+	}
+
+	data := map[string]string{
+		"keystone.conf": config.RenderINIMulti(multi),
+		"api-paste.ini": apiPasteINI,
+	}
+	if policyYAML != "" {
+		data["policy.yaml"] = policyYAML
+	}
+	// when format=json, ship the oslo.log JSONFormatter config
+	// alongside keystone.conf. log_config_append in [DEFAULT] (set above when
+	// format=json) points oslo.log at this path. Toggling back to format=text
+	// drops both the data key and the log_config_append entry — the resulting
+	// content hash differs, so the immutable ConfigMap name changes and the
+	// Deployment rolls.
+	if logging.Format == "json" {
+		data["logging.conf"] = renderLoggingConf(logging.Level)
+	}
+	// Federation ships keystone's canonical WebSSO callback template beside
+	// keystone.conf (pip installs do not provide it). oslo.config's
+	// --config-dir only parses *.conf files, so the extra key is inert for
+	// the config loader — the logging.conf precedent. Detaching the last OIDC
+	// backend drops the key and the [auth]/[openid]/[federation] sections, so
+	// the content hash changes and the Deployment rolls back to the
+	// non-federated config.
+	if fed != nil {
+		data["sso_callback_template.html"] = ssoCallbackTemplateHTML
+	}
+
+	configMapName, err := config.CreateImmutableConfigMap(ctx, r.Client, r.Scheme, keystone,
+		fmt.Sprintf("%s-config", keystone.Name), keystone.Namespace, data)
+	if err != nil {
+		return "", fmt.Errorf("creating config ConfigMap: %w", err)
+	}
+
+	// Memoize the render so a subsequent pass at the same generation, policy
+	// ConfigMap ResourceVersion, and projection state returns this name
+	// without re-rendering.
+	r.storeConfigRender(keystone, policyCMRV, configMapName, domainsProjected, fed)
+
+	return configMapName, nil
+}
+
+// operatorDefaults builds the operator-owned keystone.conf sections from the
+// CRD spec: the static [DEFAULT]/[token]/… scaffolding plus the
+// domain-projection, federation, per-logger-level, json-logging, and cache
+// server conditionals. It is a pure function of the spec (no cluster access),
+// so the registry drift-guard test can call it directly to assert the rendered
+// defaults stay in lockstep with keystonev1alpha1.OwnedConfigKeys.
+func operatorDefaults(keystone *keystonev1alpha1.Keystone, domainsProjected bool, fed *federationProjection) map[string]map[string]string {
 	logging := effectiveLogging(keystone.Spec.Logging)
 	defaults := map[string]map[string]string{
 		"DEFAULT": {
@@ -185,7 +290,7 @@ func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, keystone *keys
 			"keystone_group": "",
 			// route oslo.log records to stderr so kubectl logs
 			// surfaces them. Users may override via spec.extraConfig — the
-			// post-merge guard below emits a Warning event when they do.
+			// extraConfig ownership guard reports the override.
 			"use_stderr": "true",
 			// oslo.log gates several extra-verbose code paths
 			// (SQL echo, auth backend tracing) on the debug flag specifically,
@@ -285,130 +390,14 @@ func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, keystone *keys
 		defaults["DEFAULT"]["log_config_append"] = loggingConfFilePath
 	}
 
-	// Step 2: Resolve cache servers.
+	// Resolve cache servers.
 	serverList := resolveCacheServers(keystone)
 	defaults["cache"]["memcache_servers"] = serverList
 	defaults["memcache"] = map[string]string{
 		"servers": serverList,
 	}
 
-	merged := defaults
-
-	// Step 3: Merge plugin config.
-	if len(keystone.Spec.Plugins) > 0 {
-		pluginConfig, err := plugins.RenderPluginConfig(keystone.Spec.Plugins)
-		if err != nil {
-			return "", fmt.Errorf("rendering plugin config: %w", err)
-		}
-		merged = config.MergeDefaults(pluginConfig, defaults)
-	}
-
-	// Step 4: Merge extraConfig (extraConfig overrides everything).
-	if keystone.Spec.ExtraConfig != nil {
-		merged = config.MergeDefaults(keystone.Spec.ExtraConfig, merged)
-	}
-
-	// surface the corner case where spec.extraConfig overrode
-	// the safe [DEFAULT].use_stderr=true default. We honour the user's override
-	// (otherwise extraConfig would not be a true escape hatch) but warn loudly
-	// because kubectl logs / sidecar shippers will then see nothing. The
-	// Warning event is gated on a transition into LoggingHealthy=False so the
-	// 10s reconcile poll does not flood the event stream (gated-event pattern). LoggingHealthy is always set so the condition reflects the
-	// current state on every reconcile, regardless of transition.
-	r.recordLoggingHealth(keystone, merged)
-
-	// Step 5: Handle PolicyOverrides.
-	var policyYAML string
-	if keystone.Spec.PolicyOverrides != nil {
-		yaml, err := buildPolicyYAML(ctx, r.Client, keystone)
-		if err != nil {
-			return "", fmt.Errorf("building policy: %w", err)
-		}
-		policyYAML = yaml
-		if policyYAML != "" {
-			merged = config.InjectOsloPolicyConfig(merged, "/etc/keystone/keystone.conf.d/policy.yaml")
-		}
-	}
-
-	// Step 6: Render api-paste.ini.
-	apiPasteINI, err := plugins.RenderPastePipelineINI(plugins.PipelineSpec{
-		PipelineName: "public_api",
-		AppName:      "admin_service",
-		AppFactory:   "egg:keystone#service_v3",
-		BaseFilters:  []string{"cors", "sizelimit", "http_proxy_to_wsgi", "url_normalize", "request_id"},
-		BaseFilterFactories: map[string]string{
-			"cors":               "egg:oslo.middleware#cors",
-			"sizelimit":          "egg:oslo.middleware#sizelimit",
-			"http_proxy_to_wsgi": "egg:oslo.middleware#http_proxy_to_wsgi",
-			"url_normalize":      "egg:keystone#url_normalize",
-			"request_id":         "egg:oslo.middleware#request_id",
-		},
-		BaseFilterConfigs: map[string]map[string]string{
-			"cors": {"oslo_config_project": "keystone"},
-		},
-		CompositeRoutes: map[string]string{"/v3": "public_api"},
-		Middleware:      keystone.Spec.Middleware,
-	})
-	if err != nil {
-		return "", fmt.Errorf("rendering api-paste.ini: %w", err)
-	}
-
-	// Step 7: Create immutable ConfigMap.
-	//
-	// [federation] trusted_dashboard is an oslo MultiStrOpt: a dashboard origin
-	// per line. Lift the merged single-valued map into the multi-valued shape
-	// and set the repeated key there, after the extraConfig merge — the webhook
-	// rejects declaring the option in both places, so nothing is being
-	// overwritten here. A CR with no origins renders byte-identically to
-	// before, since the lifted map is otherwise a one-element-slice image of
-	// merged.
-	multi := config.LiftSections(merged)
-	if origins := trustedDashboards(keystone); len(origins) > 0 {
-		if multi["federation"] == nil {
-			multi["federation"] = map[string][]string{}
-		}
-		multi["federation"]["trusted_dashboard"] = origins
-	}
-
-	data := map[string]string{
-		"keystone.conf": config.RenderINIMulti(multi),
-		"api-paste.ini": apiPasteINI,
-	}
-	if policyYAML != "" {
-		data["policy.yaml"] = policyYAML
-	}
-	// when format=json, ship the oslo.log JSONFormatter config
-	// alongside keystone.conf. log_config_append in [DEFAULT] (set above when
-	// format=json) points oslo.log at this path. Toggling back to format=text
-	// drops both the data key and the log_config_append entry — the resulting
-	// content hash differs, so the immutable ConfigMap name changes and the
-	// Deployment rolls.
-	if logging.Format == "json" {
-		data["logging.conf"] = renderLoggingConf(logging.Level)
-	}
-	// Federation ships keystone's canonical WebSSO callback template beside
-	// keystone.conf (pip installs do not provide it). oslo.config's
-	// --config-dir only parses *.conf files, so the extra key is inert for
-	// the config loader — the logging.conf precedent. Detaching the last OIDC
-	// backend drops the key and the [auth]/[openid]/[federation] sections, so
-	// the content hash changes and the Deployment rolls back to the
-	// non-federated config.
-	if fed != nil {
-		data["sso_callback_template.html"] = ssoCallbackTemplateHTML
-	}
-
-	configMapName, err := config.CreateImmutableConfigMap(ctx, r.Client, r.Scheme, keystone,
-		fmt.Sprintf("%s-config", keystone.Name), keystone.Namespace, data)
-	if err != nil {
-		return "", fmt.Errorf("creating config ConfigMap: %w", err)
-	}
-
-	// Memoize the render so a subsequent pass at the same generation, policy
-	// ConfigMap ResourceVersion, and projection state returns this name
-	// without re-rendering.
-	r.storeConfigRender(keystone, policyCMRV, configMapName, mergedUseStderr(merged), domainsProjected, fed)
-
-	return configMapName, nil
+	return defaults
 }
 
 // policyConfigMapResourceVersion returns the ResourceVersion of the external
@@ -461,25 +450,25 @@ func federationCacheKeyOf(fed *federationProjection) (projected bool, remoteIDAt
 // configRenderCacheHit reports whether the memoized render for this CR is still
 // valid: matching UID, generation, policy-ConfigMap ResourceVersion, and
 // identity-backend projection state (domains and federation).
-func (r *KeystoneReconciler) configRenderCacheHit(keystone *keystonev1alpha1.Keystone, policyCMRV string, domainsProjected bool, fed *federationProjection) (name, useStderr string, ok bool) {
+func (r *KeystoneReconciler) configRenderCacheHit(keystone *keystonev1alpha1.Keystone, policyCMRV string, domainsProjected bool, fed *federationProjection) (name string, ok bool) {
 	federationProjected, remoteIDAttribute, samlProtocolID, samlRemoteIDAttribute := federationCacheKeyOf(fed)
 	r.configRenderCacheMu.Lock()
 	defer r.configRenderCacheMu.Unlock()
 	entry, found := r.configRenderCache[client.ObjectKeyFromObject(keystone)]
 	if !found {
-		return "", "", false
+		return "", false
 	}
 	if entry.uid != keystone.UID || entry.generation != keystone.Generation ||
 		entry.policyCMResourceVersion != policyCMRV || entry.domainsProjected != domainsProjected ||
 		entry.federationProjected != federationProjected || entry.remoteIDAttribute != remoteIDAttribute ||
 		entry.samlProtocolID != samlProtocolID || entry.samlRemoteIDAttribute != samlRemoteIDAttribute {
-		return "", "", false
+		return "", false
 	}
-	return entry.configMapName, entry.useStderr, true
+	return entry.configMapName, true
 }
 
 // storeConfigRender memoizes a successful render.
-func (r *KeystoneReconciler) storeConfigRender(keystone *keystonev1alpha1.Keystone, policyCMRV, configMapName, useStderr string, domainsProjected bool, fed *federationProjection) {
+func (r *KeystoneReconciler) storeConfigRender(keystone *keystonev1alpha1.Keystone, policyCMRV, configMapName string, domainsProjected bool, fed *federationProjection) {
 	federationProjected, remoteIDAttribute, samlProtocolID, samlRemoteIDAttribute := federationCacheKeyOf(fed)
 	r.configRenderCacheMu.Lock()
 	defer r.configRenderCacheMu.Unlock()
@@ -496,7 +485,6 @@ func (r *KeystoneReconciler) storeConfigRender(keystone *keystonev1alpha1.Keysto
 		samlProtocolID:          samlProtocolID,
 		samlRemoteIDAttribute:   samlRemoteIDAttribute,
 		configMapName:           configMapName,
-		useStderr:               useStderr,
 	}
 }
 
@@ -519,65 +507,6 @@ func (r *KeystoneReconciler) configMapExists(ctx context.Context, namespace, nam
 		return false, fmt.Errorf("checking config ConfigMap %s: %w", name, err)
 	}
 	return true, nil
-}
-
-// mergedUseStderr extracts the effective [DEFAULT].use_stderr value from the
-// merged config, defaulting to "true" (the operator-supplied default) when the
-// key is somehow absent.
-func mergedUseStderr(merged map[string]map[string]string) string {
-	if d := merged["DEFAULT"]; d != nil {
-		if v, ok := d["use_stderr"]; ok {
-			return v
-		}
-	}
-	return "true"
-}
-
-// recordLoggingHealth maintains the LoggingHealthy status condition and
-// emits the LoggingStderrDisabled Warning event only on a state transition
-// into LoggingHealthy=False, Reason=StderrDisabled. The 10s polling cadence
-// (RequeueDeploymentPolling) would otherwise flood the event stream because
-// the use_stderr guard is purely a function of user spec and never changes
-// between reconciles for a steady CR (gated-event pattern).
-//
-// The condition itself is upserted on every reconcile so status reflects the
-// current logging shape even when no transition occurred — a brand-new CR
-// admitted with use_stderr=false therefore still ends up with
-// LoggingHealthy=False after the first reconcile, just without re-emitting
-// the same Warning event on subsequent passes.
-func (r *KeystoneReconciler) recordLoggingHealth(
-	keystone *keystonev1alpha1.Keystone,
-	merged map[string]map[string]string,
-) {
-	prev := conditions.GetCondition(keystone.Status.Conditions, conditionTypeLoggingHealthy)
-
-	if merged["DEFAULT"] != nil && merged["DEFAULT"]["use_stderr"] != "true" {
-		useStderr := merged["DEFAULT"]["use_stderr"]
-		if prev == nil || prev.Status != metav1.ConditionFalse || prev.Reason != conditionReasonStderrDisabled {
-			r.Recorder.Eventf(keystone, corev1.EventTypeWarning, "LoggingStderrDisabled",
-				"spec.extraConfig overrode [DEFAULT].use_stderr to %q; container logs will not reach kubectl logs",
-				useStderr)
-		}
-		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
-			Type:               conditionTypeLoggingHealthy,
-			Status:             metav1.ConditionFalse,
-			Reason:             conditionReasonStderrDisabled,
-			ObservedGeneration: keystone.Generation,
-			Message: fmt.Sprintf(
-				"spec.extraConfig set [DEFAULT].use_stderr=%q; container logs will not reach kubectl logs",
-				useStderr,
-			),
-		})
-		return
-	}
-
-	conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
-		Type:               conditionTypeLoggingHealthy,
-		Status:             metav1.ConditionTrue,
-		Reason:             conditionReasonStderrEnabled,
-		ObservedGeneration: keystone.Generation,
-		Message:            "[DEFAULT].use_stderr is true; oslo.log records reach container stderr",
-	})
 }
 
 // pruneStaleConfigMaps removes historical immutable ConfigMaps that exceed
