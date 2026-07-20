@@ -108,3 +108,13 @@ spec:
         - check:
             ($error != null): true
             (contains($error, 'extraConfig key must not be empty')): true
+  # spec.extraConfig setting [keystone_authtoken] password must be rejected by
+  # the webhook — the operator owns it via spec.serviceUser.secretRef and a file
+  # value would leak the service password into the namespace-readable ConfigMap.
+  - try:
+    - apply:
+        file: 10-extraconfig-owned-password.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'password is managed via spec.serviceUser.secretRef')): true

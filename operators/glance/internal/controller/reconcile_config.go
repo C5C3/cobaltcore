@@ -96,78 +96,25 @@ type configArtifacts struct {
 // Deployment currently mounts so downstream steps keep using the last-good
 // config (D3 last-good retention), or empty names on first install.
 func (r *GlanceReconciler) reconcileConfig(ctx context.Context, glance *glancev1alpha1.Glance, projection backendsProjection) (ctrl.Result, configArtifacts, error) {
+	// The extraConfig ownership guard is a pure function of the spec, so it
+	// runs before the invalid-projection short-circuit: the condition is
+	// maintained on the last-good-retention path too. The ExtraConfigHealthy
+	// condition is informational and deliberately stays out of
+	// subConditionTypes and subReconcilerConditionTypes.
+	config.RecordExtraConfigHealth(r.Recorder, glance, &glance.Status.Conditions, glance.Generation,
+		config.FindOwnedOverrides(glance.Spec.ExtraConfig, glancev1alpha1.OwnedConfigKeys))
+
 	if !projection.valid {
 		// Last-good retention: keep whatever the running Deployment mounts rather
 		// than re-rendering against an invalid projection.
 		return r.lastGoodArtifacts(ctx, glance)
 	}
 
-	logging := effectiveLogging(glance.Spec.Logging)
-	defaults := map[string]map[string]string{
-		"DEFAULT": {
-			"enabled_backends": projection.enabledBackends,
-			// web-download and copy-image only: glance-direct is deliberately
-			// excluded because it stages the uploaded image on the API pod's local
-			// disk, and there is no staging volume shared across replicas — a
-			// direct import begun on one pod could not be finished by another.
-			"enabled_import_methods": "[web-download,copy-image]",
-			// Route oslo.log records to stderr so kubectl logs surfaces them.
-			"use_stderr": "true",
-			// oslo.log gates several extra-verbose code paths on the debug flag
-			// specifically, independent of the root logger level. Debug is a
-			// nil-preserving *bool: nil renders as the default (false).
-			"debug": fmt.Sprintf("%t", logging.Debug != nil && *logging.Debug),
-		},
-		"database": {
-			"max_retries":             "-1",
-			"connection_recycle_time": "600",
-			// The real URL is materialized by reconcileDBConnectionSecret into a
-			// derived Secret and injected at runtime via OS_DATABASE__CONNECTION.
-			"connection": dbConnectionPlaceholder,
-		},
-		"keystone_authtoken": keystoneauth.Section(keystoneauth.SectionParams{
-			AuthURL:            glance.Spec.KeystoneEndpoint,
-			WWWAuthenticateURI: glance.Spec.EffectiveKeystonePublicEndpoint(),
-			Username:           glance.Spec.ServiceUser.Username,
-			ProjectName:        glance.Spec.ServiceUser.ProjectName,
-			UserDomainName:     glance.Spec.ServiceUser.UserDomainName,
-			ProjectDomainName:  glance.Spec.ServiceUser.ProjectDomainName,
-			RegionName:         glance.Spec.Region,
-			MemcachedServers:   cache.ResolveServers(&glance.Spec.Cache),
-		}),
-		"glance_store": {
-			"default_backend": projection.defaultBackend,
-		},
-		// Reserved stores: always registered so import staging and async task
-		// work have a local landing directory regardless of the image store.
-		"os_glance_staging_store": {
-			"filesystem_store_datadir": glanceStagingStorePath,
-		},
-		"os_glance_tasks_store": {
-			"filesystem_store_datadir": glanceTasksStorePath,
-		},
-		"paste_deploy": {
-			"flavor":      "keystone",
-			"config_file": pasteFilePath,
-		},
-	}
+	defaults := operatorDefaults(glance, projection)
 
-	// workers is the eventlet API worker count; rendered when set. It is inert
-	// under the uWSGI launch mode (2026.1+), where uWSGI ignores it — the webhook
-	// warns on that combination.
-	if s := glance.Spec.APIServer; s != nil && s.Workers != nil {
-		defaults["DEFAULT"]["workers"] = fmt.Sprintf("%d", *s.Workers)
-	}
-	// PerLoggerLevels render into oslo.log's default_log_levels CSV; empty omits
-	// the key so oslo.log keeps its compiled-in defaults.
-	if v := renderDefaultLogLevels(logging.PerLoggerLevels); v != "" {
-		defaults["DEFAULT"]["default_log_levels"] = v
-	}
-	// format=json ships a logging.conf and points oslo.log at it via
-	// log_config_append.
-	if logging.Format == "json" {
-		defaults["DEFAULT"]["log_config_append"] = loggingConfFilePath
-	}
+	// logging is re-derived here (operatorDefaults keeps its own copy) for the
+	// later logging.conf data-key decision below.
+	logging := effectiveLogging(glance.Spec.Logging)
 
 	merged := defaults
 
@@ -235,6 +182,84 @@ func (r *GlanceReconciler) reconcileConfig(ctx context.Context, glance *glancev1
 	}
 
 	return ctrl.Result{}, configArtifacts{configMapName: configMapName, backendsSecretName: projection.secretName}, nil
+}
+
+// operatorDefaults builds the operator-owned glance-api.conf sections from the
+// CRD spec and the backends projection: the static
+// [DEFAULT]/[database]/[keystone_authtoken]/… scaffolding plus the
+// worker-count, per-logger-level, and json-logging conditionals. It is a pure
+// function of the spec (no cluster access), so the registry drift-guard test
+// can call it directly to assert the rendered defaults stay in lockstep with
+// glancev1alpha1.OwnedConfigKeys. It mirrors keystone's operatorDefaults.
+func operatorDefaults(glance *glancev1alpha1.Glance, projection backendsProjection) map[string]map[string]string {
+	logging := effectiveLogging(glance.Spec.Logging)
+	defaults := map[string]map[string]string{
+		"DEFAULT": {
+			"enabled_backends": projection.enabledBackends,
+			// web-download and copy-image only: glance-direct is deliberately
+			// excluded because it stages the uploaded image on the API pod's local
+			// disk, and there is no staging volume shared across replicas — a
+			// direct import begun on one pod could not be finished by another.
+			"enabled_import_methods": "[web-download,copy-image]",
+			// Route oslo.log records to stderr so kubectl logs surfaces them.
+			"use_stderr": "true",
+			// oslo.log gates several extra-verbose code paths on the debug flag
+			// specifically, independent of the root logger level. Debug is a
+			// nil-preserving *bool: nil renders as the default (false).
+			"debug": fmt.Sprintf("%t", logging.Debug != nil && *logging.Debug),
+		},
+		"database": {
+			"max_retries":             "-1",
+			"connection_recycle_time": "600",
+			// The real URL is materialized by reconcileDBConnectionSecret into a
+			// derived Secret and injected at runtime via OS_DATABASE__CONNECTION.
+			"connection": dbConnectionPlaceholder,
+		},
+		"keystone_authtoken": keystoneauth.Section(keystoneauth.SectionParams{
+			AuthURL:            glance.Spec.KeystoneEndpoint,
+			WWWAuthenticateURI: glance.Spec.EffectiveKeystonePublicEndpoint(),
+			Username:           glance.Spec.ServiceUser.Username,
+			ProjectName:        glance.Spec.ServiceUser.ProjectName,
+			UserDomainName:     glance.Spec.ServiceUser.UserDomainName,
+			ProjectDomainName:  glance.Spec.ServiceUser.ProjectDomainName,
+			RegionName:         glance.Spec.Region,
+			MemcachedServers:   cache.ResolveServers(&glance.Spec.Cache),
+		}),
+		"glance_store": {
+			"default_backend": projection.defaultBackend,
+		},
+		// Reserved stores: always registered so import staging and async task
+		// work have a local landing directory regardless of the image store.
+		"os_glance_staging_store": {
+			"filesystem_store_datadir": glanceStagingStorePath,
+		},
+		"os_glance_tasks_store": {
+			"filesystem_store_datadir": glanceTasksStorePath,
+		},
+		"paste_deploy": {
+			"flavor":      "keystone",
+			"config_file": pasteFilePath,
+		},
+	}
+
+	// workers is the eventlet API worker count; rendered when set. It is inert
+	// under the uWSGI launch mode (2026.1+), where uWSGI ignores it — the webhook
+	// warns on that combination.
+	if s := glance.Spec.APIServer; s != nil && s.Workers != nil {
+		defaults["DEFAULT"]["workers"] = fmt.Sprintf("%d", *s.Workers)
+	}
+	// PerLoggerLevels render into oslo.log's default_log_levels CSV; empty omits
+	// the key so oslo.log keeps its compiled-in defaults.
+	if v := renderDefaultLogLevels(logging.PerLoggerLevels); v != "" {
+		defaults["DEFAULT"]["default_log_levels"] = v
+	}
+	// format=json ships a logging.conf and points oslo.log at it via
+	// log_config_append.
+	if logging.Format == "json" {
+		defaults["DEFAULT"]["log_config_append"] = loggingConfFilePath
+	}
+
+	return defaults
 }
 
 // renderPasteINI renders glance-api-paste.ini, mirroring upstream's shape:

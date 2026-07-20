@@ -11,10 +11,13 @@ import (
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/c5c3/forge/internal/common/config"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
 )
@@ -262,4 +265,143 @@ func TestReconcileConfig_InvalidProjectionNoDeploymentReturnsEmpty(t *testing.T)
 	g.Expect(res.IsZero()).To(BeTrue())
 	g.Expect(art.configMapName).To(BeEmpty())
 	g.Expect(art.backendsSecretName).To(BeEmpty())
+}
+
+// --- extraConfig ownership guard ---
+
+// TestReconcileConfig_OwnedKeyOverrideReported verifies the report-only
+// contract: overriding an operator-owned key in spec.extraConfig sets
+// ExtraConfigHealthy=False, emits a Warning event, AND still honours the
+// override in the rendered glance-api.conf (the guard reports, it does not
+// reject).
+func TestReconcileConfig_OwnedKeyOverrideReported(t *testing.T) {
+	g := NewGomegaWithT(t)
+	glance := glanceForConfig()
+	glance.Spec.ExtraConfig = map[string]map[string]string{
+		"DEFAULT": {"enabled_backends": "rogue:file"},
+	}
+	r := newGlanceTestReconciler(glance)
+
+	_, art, err := r.reconcileConfig(context.Background(), glance, validProjection())
+	g.Expect(err).NotTo(HaveOccurred())
+
+	cond := meta.FindStatusCondition(glance.Status.Conditions, config.ConditionTypeExtraConfigHealthy)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(config.ConditionReasonOwnedKeysOverridden))
+	g.Expect(cond.Message).To(ContainSubstring("[DEFAULT] enabled_backends"))
+
+	// A Warning event carries the reason and the overridden-key text.
+	events := collectEvents(r.Recorder.(*record.FakeRecorder))
+	g.Expect(events).To(ContainElement(And(
+		ContainSubstring("Warning"),
+		ContainSubstring(config.EventReasonExtraConfigOwnedKeyOverride),
+		ContainSubstring("[DEFAULT] enabled_backends"),
+	)))
+
+	// Report-only: the override is honoured in the rendered glance-api.conf.
+	conf := renderedConfig(t, r, art)
+	g.Expect(conf).To(ContainSubstring("enabled_backends = rogue:file"))
+}
+
+// TestReconcileConfig_InvalidProjectionStillUpsertsExtraConfigHealthy verifies
+// the guard runs before the invalid-projection short-circuit: an invalid
+// projection takes the last-good early return, yet ExtraConfigHealthy is still
+// upserted (False, naming the overridden key).
+func TestReconcileConfig_InvalidProjectionStillUpsertsExtraConfigHealthy(t *testing.T) {
+	g := NewGomegaWithT(t)
+	glance := glanceForConfig()
+	glance.Spec.ExtraConfig = map[string]map[string]string{
+		"DEFAULT": {"enabled_backends": "rogue:file"},
+	}
+	r := newGlanceTestReconciler(glance)
+
+	res, art, err := r.reconcileConfig(context.Background(), glance, backendsProjection{valid: false})
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.IsZero()).To(BeTrue())
+	// Last-good early return: no fresh render on the invalid path.
+	g.Expect(art.configMapName).To(BeEmpty())
+
+	cond := meta.FindStatusCondition(glance.Status.Conditions, config.ConditionTypeExtraConfigHealthy)
+	g.Expect(cond).NotTo(BeNil(), "guard runs before the invalid-projection short-circuit")
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(config.ConditionReasonOwnedKeysOverridden))
+	g.Expect(cond.Message).To(ContainSubstring("[DEFAULT] enabled_backends"))
+}
+
+// TestReconcileConfig_ExtraConfigHealthyTrueOnDefaults verifies that a CR whose
+// spec.extraConfig overrides no operator-owned key sets ExtraConfigHealthy=True
+// with reason NoOwnedKeysOverridden and emits no event.
+func TestReconcileConfig_ExtraConfigHealthyTrueOnDefaults(t *testing.T) {
+	g := NewGomegaWithT(t)
+	glance := glanceForConfig()
+	// image_size_cap is a real glance-api.conf key the operator does not own, so
+	// overriding it must not trip the guard.
+	glance.Spec.ExtraConfig = map[string]map[string]string{
+		"DEFAULT": {"image_size_cap": "1073741824"},
+	}
+	r := newGlanceTestReconciler(glance)
+
+	_, _, err := r.reconcileConfig(context.Background(), glance, validProjection())
+	g.Expect(err).NotTo(HaveOccurred())
+
+	cond := meta.FindStatusCondition(glance.Status.Conditions, config.ConditionTypeExtraConfigHealthy)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal(config.ConditionReasonNoOwnedKeysOverridden))
+	g.Expect(collectEvents(r.Recorder.(*record.FakeRecorder))).To(BeEmpty())
+}
+
+// TestOperatorDefaults_RegistryDriftGuard is the completeness check tying
+// operatorDefaults to glancev1alpha1.OwnedConfigKeys: every key the operator
+// renders must be registered (forward) and every registered key must be
+// rendered (reverse), so the registry and the renderer cannot drift apart.
+func TestOperatorDefaults_RegistryDriftGuard(t *testing.T) {
+	glance := glanceForConfig()
+	// glanceForConfig already sets Region=RegionOne (emits region_name), Workers
+	// (emits workers), and Cache.Servers (emits memcached_servers). Add json
+	// logging with per-logger levels and debug so log_config_append,
+	// default_log_levels, and debug all render.
+	glance.Spec.Logging = &glancev1alpha1.LoggingSpec{
+		Format:          "json",
+		Debug:           ptr.To(true),
+		PerLoggerLevels: map[string]string{"glance": "DEBUG"},
+	}
+
+	defaults := operatorDefaults(glance, validProjection())
+	defaults = config.InjectOsloPolicyConfig(defaults, policyFilePath)
+
+	registered := make(map[[2]string]struct{}, len(glancev1alpha1.OwnedConfigKeys))
+	for _, o := range glancev1alpha1.OwnedConfigKeys {
+		registered[[2]string{o.Section, o.Key}] = struct{}{}
+	}
+
+	// Forward check: every rendered (section, key) is registered — no exceptions.
+	for section, kvs := range defaults {
+		for key := range kvs {
+			if _, ok := registered[[2]string{section, key}]; ok {
+				continue
+			}
+			t.Errorf("operatorDefaults renders unregistered key [%s] %s: add it to "+
+				"glancev1alpha1.OwnedConfigKeys", section, key)
+		}
+	}
+
+	// Reverse check: every registered key is rendered by operatorDefaults or on
+	// the extras list. keystone_authtoken/password is never rendered —
+	// keystoneauth.Section omits it — but is registered because a user putting
+	// it in spec.extraConfig leaks the credential.
+	reverseExtras := map[[2]string]struct{}{
+		{"keystone_authtoken", "password"}: {},
+	}
+	for _, o := range glancev1alpha1.OwnedConfigKeys {
+		if _, ok := defaults[o.Section][o.Key]; ok {
+			continue
+		}
+		if _, ok := reverseExtras[[2]string{o.Section, o.Key}]; ok {
+			continue
+		}
+		t.Errorf("registry key [%s] %s is not rendered by operatorDefaults: remove it "+
+			"from glancev1alpha1.OwnedConfigKeys or extend the drift-guard extras list", o.Section, o.Key)
+	}
 }
