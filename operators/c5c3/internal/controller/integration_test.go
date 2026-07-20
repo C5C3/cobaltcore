@@ -1288,6 +1288,162 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 		"admin app-credential PushSecret RemoteKey must be the per-CR OpenBao path")
 }
 
+// TestIntegration_UnreadyHorizonDoesNotParkBootstrap locks the tail-group
+// isolation contract: a dashboard (Horizon) child that never becomes Ready must
+// NOT park the identity bootstrap (KORC, AdminCredential, Catalog,
+// ServiceAccounts) or the image service (Glance). Under the old short-circuiting
+// chain the reconcile stalled at the unready Horizon step and never reached the
+// members behind it; the sequential tail group instead attempts every member on
+// each pass and lets each one self-gate, so everything except HorizonReady
+// converges while HorizonReady — and with it the aggregate Ready — stays False.
+//
+// The test drives the full phased bring-up exactly as
+// TestIntegration_FullReconcile_ManagedToReady does but NEVER simulates the
+// Horizon child ready, then asserts the admin ApplicationCredential is still
+// minted and every sub-condition except HorizonReady (GlanceReady included)
+// reaches True.
+func TestIntegration_UnreadyHorizonDoesNotParkBootstrap(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupControlPlaneEnvTest(t)
+
+	// The OpenBao-backed ClusterSecretStore must be Ready before the chain
+	// reaches the credential gates.
+	ensureReadyClusterSecretStore(t, ctx, c)
+
+	// Isolated test namespace per run (namespace-per-test with GenerateName).
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-cp-horizon-unready-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed(), "create test namespace")
+	// Pre-seed the per-tenant SecretStore Ready so the ESOTenantStore gate opens
+	// (envtest has no ESO controller).
+	ensureReadySecretStore(t, ctx, c, esoTenantStoreName, ns.Name)
+
+	// Enable Horizon and Glance on the managed CR exactly as the full-chain test
+	// does — but this test deliberately never simulates the Horizon child ready.
+	cp := integrationManagedControlPlane("cp", ns.Name)
+	cp.Spec.Services.Horizon = &c5c3v1alpha1.ServiceHorizonSpec{}
+	cp.Spec.Services.Glance = integrationGlanceService()
+
+	// Declare the glance service account (project "service", role "member") so the
+	// ServiceAccounts sub-reconciler projects the managed User/Project, the
+	// unmanaged Role import, and the managed RoleAssignment.
+	cp.Spec.KORC.ServiceAccounts = []c5c3v1alpha1.ServiceAccountSpec{{
+		Name:    "glance",
+		Project: c5c3v1alpha1.ServiceAccountProjectSpec{Name: "service"},
+		Roles:   []string{"member"},
+	}}
+
+	// Admin password Secret the KORC sub-reconciler hashes to drive the mint (the
+	// cleartext source readAdminPassword resolves via the effective per-CP ref).
+	adminSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: adminPasswordSecretName(cp), Namespace: ns.Name},
+		Data:       map[string][]byte{"password": []byte("super-secret-admin-password")},
+	}
+	g.Expect(c.Create(ctx, adminSecret)).To(Succeed(), "create admin password Secret")
+
+	g.Expect(c.Create(ctx, cp)).To(Succeed(), "create ControlPlane CR")
+	cpKey := types.NamespacedName{Name: cp.Name, Namespace: ns.Name}
+
+	// --- Phase 1: Infrastructure (MariaDB + Memcached). ---
+	simulateMariaDBReadyWhenPresent(t, ctx, c, client.ObjectKey{Name: "openstack-db", Namespace: ns.Name})
+	simulateMemcachedReadyWhenPresent(t, ctx, c, client.ObjectKey{Name: "openstack-memcached", Namespace: ns.Name})
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeInfrastructureReady, metav1.ConditionTrue, itEventuallyTimeout)
+
+	// DBCredentials: wait for the per-CP DB-credential ExternalSecret, then
+	// simulate the ESO sync. The projected-shape assertions live in the full-chain
+	// test; here we only need the gate to open.
+	dbCredES := &esov1.ExternalSecret{}
+	g.Eventually(func() error {
+		return c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: dbCredentialSecretName(cp)}, dbCredES)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "operator must create the per-CP DB credential ExternalSecret")
+	g.Expect(simulators.SimulateExternalSecretSync(ctx, c,
+		client.ObjectKey{Namespace: ns.Name, Name: dbCredentialSecretName(cp)})).
+		To(Succeed(), "simulate per-CP DB credential ExternalSecret sync")
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeDBCredentialsReady, metav1.ConditionTrue, itEventuallyTimeout)
+
+	// --- Phase 1.5: AdminPassword. ---
+	simulateAdminPasswordExternalSecretSyncWhenPresent(t, ctx, c, cp)
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeAdminPasswordReady, metav1.ConditionTrue, itEventuallyTimeout)
+
+	// --- Phase 2: Keystone child (the last member of the blocking prefix). ---
+	simulateKeystoneReadyWhenPresent(t, ctx, c, client.ObjectKey{Name: keystoneName(cp), Namespace: ns.Name})
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeKeystoneReady, metav1.ConditionTrue, itEventuallyTimeout)
+
+	// --- Phase 2.5: the point of the test. The tail group has been entered: the
+	// Horizon child is projected but NEVER simulated ready, so reconcileHorizon
+	// settles HorizonReady False. Under the old short-circuiting chain the
+	// reconcile would park here; the tail group instead continues to KORC, so the
+	// admin ApplicationCredential is minted despite HorizonReady=False. ---
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeHorizonReady, metav1.ConditionFalse, itEventuallyTimeout)
+
+	adminAC := &orcv1alpha1.ApplicationCredential{}
+	g.Eventually(func() error {
+		return c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: adminAppCredentialName(cp)}, adminAC)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+		"the admin ApplicationCredential must be minted even though HorizonReady is False")
+
+	// --- Phase 3: K-ORC admin ApplicationCredential. ---
+	simulateApplicationCredentialAvailableWhenPresent(t, ctx, c,
+		client.ObjectKey{Name: adminAppCredentialName(cp), Namespace: ns.Name})
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeKORCReady, metav1.ConditionTrue, itEventuallyTimeout)
+
+	cloudsYamlES := &esov1.ExternalSecret{}
+	g.Eventually(func() error {
+		return c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: korcCloudsYamlSecretName}, cloudsYamlES)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "operator must create the k-orc clouds.yaml ExternalSecret")
+	g.Expect(simulators.SimulateExternalSecretSync(ctx, c,
+		client.ObjectKey{Namespace: ns.Name, Name: korcCloudsYamlSecretName})).
+		To(Succeed(), "simulate k-orc clouds.yaml ExternalSecret sync")
+
+	// --- Phase 4: AdminCredential push. ---
+	simulatePushSecretSyncedWhenPresent(t, ctx, c,
+		client.ObjectKey{Name: adminAppCredentialPushSecretName(cp), Namespace: childNamespace(cp)})
+	simulateCloudsYamlMaterializedWhenPresent(t, ctx, c, cp)
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeAdminCredentialReady, metav1.ConditionTrue, itEventuallyTimeout)
+
+	// --- Phase 5: Catalog (identity + image rows). ---
+	simulateCatalogServiceEndpointAvailableWhenPresent(t, ctx, c, cp)
+	simulateGlanceCatalogAvailableWhenPresent(t, ctx, c, cp)
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeCatalogReady, metav1.ConditionTrue, itEventuallyTimeout)
+
+	// --- Phase 5.5: Service accounts. ---
+	sa := cp.Spec.KORC.ServiceAccounts[0]
+	simulateServiceAccountConvergedWhenPresent(t, ctx, c, cp, sa, "member")
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeServiceAccountsReady, metav1.ConditionTrue, itEventuallyTimeout)
+
+	// --- Phase 6: Glance child (the last tail-group member). ---
+	simulateGlanceDBCredentialSyncWhenPresent(t, ctx, c, cp)
+	simulateGlanceReadyWhenPresent(t, ctx, c, client.ObjectKey{Name: glanceName(cp), Namespace: ns.Name})
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeGlanceReady, metav1.ConditionTrue, itEventuallyTimeout)
+
+	// --- Final assertion: every sub-condition except HorizonReady (GlanceReady,
+	// NamespacesReady and ESOTenantStoreReady included) is True, HorizonReady is
+	// False, and the aggregate Ready is False. This read is deterministic because
+	// updateStatus re-aggregates Ready on every status write, so once GlanceReady
+	// flips True the aggregate has already been recomputed against the still-False
+	// HorizonReady. ---
+	final := &c5c3v1alpha1.ControlPlane{}
+	g.Expect(c.Get(ctx, cpKey, final)).To(Succeed(), "get the ControlPlane after the phased bring-up")
+
+	for _, condType := range subConditionTypes {
+		cond := conditions.GetCondition(final.Status.Conditions, condType)
+		g.Expect(cond).NotTo(BeNil(), "condition %s should exist", condType)
+		if condType == conditionTypeHorizonReady {
+			g.Expect(cond.Status).To(Equal(metav1.ConditionFalse),
+				"HorizonReady must stay False — the dashboard child is never simulated ready")
+			continue
+		}
+		g.Expect(cond.Status).To(Equal(metav1.ConditionTrue),
+			"sub-condition %s must reach True even though HorizonReady is False", condType)
+	}
+
+	readyCond := conditions.GetCondition(final.Status.Conditions, conditionTypeReady)
+	g.Expect(readyCond).NotTo(BeNil(), "aggregate Ready condition should exist")
+	g.Expect(readyCond.Status).To(Equal(metav1.ConditionFalse),
+		"the aggregate Ready must stay False while HorizonReady is False")
+}
+
 // TestIntegration_MinimalManagedToReady drives the SMALLEST valid ControlPlane —
 // only openStackRelease + services.keystone — to the aggregate Ready=True. The CR
 // omits spec.infrastructure and spec.korc entirely, so the defaulting webhook
