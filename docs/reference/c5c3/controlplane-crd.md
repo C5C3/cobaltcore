@@ -1806,6 +1806,7 @@ application-credential id+secret) the freshly assembled credential).
 | `False` | `WaitingForKORC` | `KORCReady` is not `True`; credential push deferred. |
 | `False` | `CredentialDrift` | **External mode only.** `KORCReady` reports drift in the external installation (`AuthenticationFailed` or `CredentialDrift`). The operator never remediates the external Keystone; update the `passwordSecretRef` Secret to drive a re-mint. |
 | `False` | `SecretStoreNotReady` | The store selected by `spec.secretStoreRef` (a ClusterSecretStore or a namespaced SecretStore) is not Ready; the secret backend is unreachable. |
+| `False` | `SecretStoreError` | Error checking whether the store selected by `spec.secretStoreRef` is Ready (as opposed to it reporting not-Ready). The condition is stamped before the error is returned so `reconcileCatalog` and `reconcileServiceAccounts` — which gate on `AdminCredentialReady` and run in the same reconcile pass — cannot act on a stale `True`. |
 | `False` | `WaitingForCloudsYaml` | The operator-created per-ControlPlane `k-orc-clouds-yaml` ExternalSecret in the control-plane namespace (co-located with the K-ORC CRs per C1; created and owned by `reconcileKORC`) is not yet Ready. |
 | `False` | `WaitingForCredentialID` | K-ORC has not yet reported the minted application credential's id; the assembly is deferred until it does. |
 | `False` | `WaitingForAppCredentialSecret` | The operator-owned app-credential Secret does not exist yet, or carries no credential key — the mint is not complete. |
@@ -1867,7 +1868,7 @@ external Keystone.
 | `False` | `ServiceAccountCollision` | A declared user (or a `project.create: true` project) already exists in Keystone and `adopt`/`project.create: false` was not set — the operator fails loud rather than take over an account it did not create. The message names the account and both remediations. |
 | `False` | `WaitingForServiceAccounts` | The `User`/`Project`/password round-trip is converging, or an undeclared child is still being removed. |
 | `False` | `ServiceAccountsFailed` | A service-account child reports a terminal K-ORC error. |
-| `False` | `ServiceAccountError` | Kubernetes-level error reconciling (or pruning) a service-account child. |
+| `False` | `ServiceAccountError` | Kubernetes-level error reconciling (or pruning) a service-account child, or checking the selected secret store's readiness. Every `status.serviceAccounts[].ready` flag is cleared alongside the condition, so a consumer gating on per-account readiness (notably `reconcileGlance`) cannot act on the last converged value. |
 | `False` | `AuthenticationFailed` \| `EndpointUnreachable` \| `TLSVerificationFailed` \| `CatalogEndpointMismatch` \| `CredentialDrift` | **External mode only.** A pending child carries a K-ORC message identifying one of these failure classes (see [`KORCReady`](#korcready)). |
 
 ### Ready (aggregate)
