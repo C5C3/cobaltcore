@@ -27,10 +27,13 @@ owns child CRs (MariaDB, Memcached, Keystone, Horizon, K-ORC
 `ApplicationCredential` / `Service` / `Endpoint`) and aggregates their readiness. It does **not**
 re-implement the per-service logic those child operators already own. As a
 consequence the c5c3 API surface is deliberately smaller than the
-[Keystone reconciler](../keystone/keystone-reconciler.md)'s: no parallel
-sub-reconciler group and no per-CR metric cardinality. It does install a single
-finalizer to sequence K-ORC teardown ahead of Keystone/infrastructure teardown
-on deletion — see [Owner-ref / GC model](#owner-ref--gc-model).
+[Keystone reconciler](../keystone/keystone-reconciler.md)'s: its reconcile chain
+is a blocking prefix plus a sequential, non-short-circuiting tail group
+(`RunSequentialGroup`) — not the keystone reconciler's goroutine-backed parallel
+groups (`RunParallelGroup`) — and it keeps no per-CR metric cardinality. It does
+install a single finalizer to sequence K-ORC teardown ahead of
+Keystone/infrastructure teardown on deletion — see
+[Owner-ref / GC model](#owner-ref--gc-model).
 
 ## Controller Registration
 
@@ -270,96 +273,104 @@ grants. The markers therefore add `core/namespaces` with
 ## Reconciliation Flow
 
 ```text
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                    CONTROLPLANE RECONCILIATION FLOW                          │
-├──────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  ControlPlane CR changed (or requeue timer fires)                            │
-│         │                                                                    │
-│         ▼                                                                    │
-│  Fetch ControlPlane CR (return empty result if NotFound)                     │
-│         │                                                                    │
-│         ▼                                                                    │
-│  Duplicate guard — park all but the oldest ControlPlane in the namespace     │
-│  (Ready=False / DuplicateControlPlane, requeue 30s; see Multi-instance)      │
-│         │                                                                    │
-│         ▼                                                                    │
-│  ┌──────────────────────────┐                                                │
-│  │ reconcileNamespaces      │  Ensure the namespaces services are placed in  │
-│  │  (gate: none)            │  Sets: NamespacesReady                         │
-│  └────────┬─────────────────┘  Requeue: 15s while a namespace is unusable    │
-│           │  (True immediately when no service declares a namespace)         │
-│           ▼                                                                  │
-│  ┌──────────────────────────┐                                                │
-│  │ reconcileInfrastructure  │  Ensure managed MariaDB + Memcached children   │
-│  │  (gate: none)            │  Sets: InfrastructureReady                     │
-│  └────────┬─────────────────┘  Requeue: 15s while a child is not Ready       │
-│           │  early-return if !result.IsZero() || err                         │
-│           ▼                                                                  │
-│  ┌──────────────────────────┐                                                │
-│  │ reconcileESOTenantStore  │  Provision the per-tenant SecretStore + SA +   │
-│  │  (gate: none)            │  mTLS cert. Sets: ESOTenantStoreReady          │
-│  └────────┬─────────────────┘  Requeue: 10s while the store is not Ready     │
-│           │  (skipped when spec.secretStoreRef overrides the default)        │
-│           ▼                                                                  │
-│  ┌──────────────────────────┐                                                │
-│  │ reconcileDBCredentials   │  Project per-CP DB-credential ExternalSecret   │
-│  │  (gate: none)            │  Sets: DBCredentialsReady                      │
-│  └────────┬─────────────────┘  Requeue: 10s while the ES is not yet synced   │
-│           │                                                                  │
-│           ▼                                                                  │
-│  ┌──────────────────────────┐                                                │
-│  │ reconcileAdminPassword   │  Project per-CP admin-password ExternalSecret  │
-│  │  (gate: none)            │  Sets: AdminPasswordReady                      │
-│  └────────┬─────────────────┘  Requeue: 10s while the ES is not yet synced   │
-│           │                                                                  │
-│           ▼                                                                  │
-│  ┌──────────────────────────┐                                                │
-│  │ reconcileKeystone        │  Project the Keystone child CR                 │
-│  │  (gate: InfraReady)      │  Sets: KeystoneReady                           │
-│  └────────┬─────────────────┘  Requeue: 5s gated / 15s child not Ready       │
-│           │                                                                  │
-│           ▼                                                                  │
-│  ┌──────────────────────────┐                                                │
-│  │ reconcileHorizon         │  Project the Horizon dashboard child CR        │
-│  │  (gate: KeystoneReady)   │  Sets: HorizonReady (not-managed when unset)   │
-│  └────────┬─────────────────┘  Requeue: 5s gated / 15s child not Ready       │
-│           │                                                                  │
-│           ▼                                                                  │
-│  ┌──────────────────────────┐                                                │
-│  │ reconcileKORC            │  Mint the admin ApplicationCredential          │
-│  │  (gate: none*)           │  Sets: KORCReady                               │
-│  └────────┬─────────────────┘  Requeue: 10s while AC not Available           │
-│           │                                                                  │
-│           ▼                                                                  │
-│  ┌──────────────────────────┐                                                │
-│  │ reconcileAdminCredential │  Commit minted Secret + PushSecret to OpenBao  │
-│  │  (gate: KORCReady)       │  Sets: AdminCredentialReady                    │
-│  └────────┬─────────────────┘  Requeue: 10s gated / clouds.yaml not Ready    │
-│           │                                                                  │
-│           ▼                                                                  │
-│  ┌──────────────────────────┐                                                │
-│  │ reconcileCatalog         │  Register identity Service + public Endpoint   │
-│  │  (gate: AdminCredReady)  │  Sets: CatalogReady (Service+Endpoint Available)│
-│  └────────┬─────────────────┘  Requeue: 10s gated / not Available / terminal  │
-│           │                                                                  │
-│           ▼                                                                  │
-│  ┌──────────────────────────┐                                                │
-│  │ reconcileServiceAccounts │  Project managed K-ORC User/Project accounts   │
-│  │  (gate: AdminCredReady)  │  Sets: ServiceAccountsReady                    │
-│  └────────┬─────────────────┘  Requeue: 10s gated / accounts converging      │
-│           │                                                                  │
-│           ▼                                                                  │
-│  ┌──────────────────────────┐                                                │
-│  │ reconcileGlance          │  Project the Glance image-service child CR     │
-│  │  (gate: KS + glance SA)  │  Sets: GlanceReady (not-managed when unset)    │
-│  └────────┬─────────────────┘  Requeue: 5s gated / 15s child not Ready       │
-│           │                                                                  │
-│           ▼                                                                  │
-│  setReadyCondition()  — aggregate Ready = AllTrue(subConditionTypes)         │
-│  updateStatus()       — stamp status.observedGeneration, persist             │
-│                                                                              │
-└──────────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│                    CONTROLPLANE RECONCILIATION FLOW                                 │
+├─────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                     │
+│  ControlPlane CR changed (or requeue timer fires)                                   │
+│         │                                                                           │
+│         ▼                                                                           │
+│  Fetch ControlPlane CR (return empty result if NotFound)                            │
+│         │                                                                           │
+│         ▼                                                                           │
+│  Duplicate guard — park all but the oldest ControlPlane in the namespace            │
+│  (Ready=False / DuplicateControlPlane, requeue 30s; see Multi-instance)             │
+│         │                                                                           │
+│         ▼                                                                           │
+│  ┌──────────────────────────┐                                                       │
+│  │ reconcileNamespaces      │  Ensure the namespaces services are placed in         │
+│  │  (gate: none)            │  Sets: NamespacesReady                                │
+│  └────────┬─────────────────┘  Requeue: 15s while a namespace is unusable           │
+│           │  (True immediately when no service declares a namespace)                │
+│           ▼                                                                         │
+│  ┌──────────────────────────┐                                                       │
+│  │ reconcileInfrastructure  │  Ensure managed MariaDB + Memcached children          │
+│  │  (gate: none)            │  Sets: InfrastructureReady                            │
+│  └────────┬─────────────────┘  Requeue: 15s while a child is not Ready              │
+│           │  early-return if !result.IsZero() || err                                │
+│           ▼                                                                         │
+│  ┌──────────────────────────┐                                                       │
+│  │ reconcileESOTenantStore  │  Provision the per-tenant SecretStore + SA +          │
+│  │  (gate: none)            │  mTLS cert. Sets: ESOTenantStoreReady                 │
+│  └────────┬─────────────────┘  Requeue: 10s while the store is not Ready            │
+│           │  (skipped when spec.secretStoreRef overrides the default)               │
+│           ▼                                                                         │
+│  ┌──────────────────────────┐                                                       │
+│  │ reconcileDBCredentials   │  Project per-CP DB-credential ExternalSecret          │
+│  │  (gate: none)            │  Sets: DBCredentialsReady                             │
+│  └────────┬─────────────────┘  Requeue: 10s while the ES is not yet synced          │
+│           │                                                                         │
+│           ▼                                                                         │
+│  ┌──────────────────────────┐                                                       │
+│  │ reconcileAdminPassword   │  Project per-CP admin-password ExternalSecret         │
+│  │  (gate: none)            │  Sets: AdminPasswordReady                             │
+│  └────────┬─────────────────┘  Requeue: 10s while the ES is not yet synced          │
+│           │                                                                         │
+│           ▼                                                                         │
+│  ┌──────────────────────────┐                                                       │
+│  │ reconcileKeystone        │  Project the Keystone child CR                        │
+│  │  (gate: InfraReady)      │  Sets: KeystoneReady                                  │
+│  └────────┬─────────────────┘  Requeue: 5s gated / 15s child not Ready              │
+│           │                                                                         │
+│           ▼                                                                         │
+│  ╔════════════════════════════════════════════════════════════════════════════════╗ │
+│  ║  RunSequentialGroup — tail group · non-short-circuiting                        ║ │
+│  ║                                                                                ║ │
+│  ║  every member runs each pass · each member condition always persists           ║ │
+│  ║                                                                                ║ │
+│  ║  ┌──────────────────────────┐                                                  ║ │
+│  ║  │ reconcileHorizon         │  Project the Horizon dashboard child CR          ║ │
+│  ║  │  (gate: KeystoneReady)   │  Sets: HorizonReady (not-managed when unset)     ║ │
+│  ║  └────────┬─────────────────┘  Requeue: 5s gated / 15s child not Ready         ║ │
+│  ║           │                                                                    ║ │
+│  ║           ▼                                                                    ║ │
+│  ║  ┌──────────────────────────┐                                                  ║ │
+│  ║  │ reconcileKORC            │  Mint the admin ApplicationCredential            ║ │
+│  ║  │  (gate: none*)           │  Sets: KORCReady                                 ║ │
+│  ║  └────────┬─────────────────┘  Requeue: 10s while AC not Available             ║ │
+│  ║           │                                                                    ║ │
+│  ║           ▼                                                                    ║ │
+│  ║  ┌──────────────────────────┐                                                  ║ │
+│  ║  │ reconcileAdminCredential │  Commit minted Secret + PushSecret to OpenBao    ║ │
+│  ║  │  (gate: KORCReady)       │  Sets: AdminCredentialReady                      ║ │
+│  ║  └────────┬─────────────────┘  Requeue: 10s gated / clouds.yaml not Ready      ║ │
+│  ║           │                                                                    ║ │
+│  ║           ▼                                                                    ║ │
+│  ║  ┌──────────────────────────┐                                                  ║ │
+│  ║  │ reconcileCatalog         │  Register identity Service + public Endpoint     ║ │
+│  ║  │  (gate: AdminCredReady)  │  Sets: CatalogReady (Service+Endpoint Available) ║ │
+│  ║  └────────┬─────────────────┘  Requeue: 10s gated / not Available / terminal   ║ │
+│  ║           │                                                                    ║ │
+│  ║           ▼                                                                    ║ │
+│  ║  ┌──────────────────────────┐                                                  ║ │
+│  ║  │ reconcileServiceAccounts │  Project managed K-ORC User/Project accounts     ║ │
+│  ║  │  (gate: AdminCredReady)  │  Sets: ServiceAccountsReady                      ║ │
+│  ║  └────────┬─────────────────┘  Requeue: 10s gated / accounts converging        ║ │
+│  ║           │                                                                    ║ │
+│  ║           ▼                                                                    ║ │
+│  ║  ┌──────────────────────────┐                                                  ║ │
+│  ║  │ reconcileGlance          │  Project the Glance image-service child CR       ║ │
+│  ║  │  (gate: KS + glance SA)  │  Sets: GlanceReady (not-managed when unset)      ║ │
+│  ║  └────────┬─────────────────┘  Requeue: 5s gated / 15s child not Ready         ║ │
+│  ║                                                                                ║ │
+│  ║  member requeues → ShortestRequeue · member errors → errors.Join               ║ │
+│  ╚═══════════╤════════════════════════════════════════════════════════════════════╝ │
+│              │                                                                      │
+│              ▼                                                                      │
+│  setReadyCondition()  — aggregate Ready = AllTrue(subConditionTypes)                │
+│  updateStatus()       — stamp status.observedGeneration, persist                    │
+│                                                                                     │
+└─────────────────────────────────────────────────────────────────────────────────────┘
 
   * reconcileKORC has no condition gate, but it defers (KORCReady=False,
     requeue) until the admin-password Secret can be read.
@@ -367,21 +378,50 @@ grants. The markers therefore add `core/namespaces` with
 
 ### Execution Model
 
-All sub-reconcilers run **strictly sequentially** — there is no parallel
-group. The chain is a table-driven pipeline over the shared scaffolding in
-`internal/common/reconcile` (the same shape the keystone controller uses):
-each step is a `commonreconcile.Step` wrapped in `instrumentSubReconciler`
-(see [Metrics Instrumentation](#metrics-instrumentation)), and
-`commonreconcile.RunPipeline` enforces the early-return contract at a single
-call site:
+The chain runs in **two phases** over the shared scaffolding in
+`internal/common/reconcile` (the same building blocks the keystone controller
+uses). Every step is a `commonreconcile.Step`, and the whole table is driven by
+one `commonreconcile.RunPipeline` call:
+
+**Phase 1 — the blocking prefix.** Namespaces → Infrastructure → ESOTenantStore
+→ DBCredentials → AdminPassword → Keystone run as six named, short-circuiting
+`Step` entries. `RunPipeline` returns the pass at the **first non-zero result or
+error**, because each step genuinely feeds the next — a later step applying
+before its predecessor converged would fail or wedge. Each named step is wrapped
+in `instrumentSubReconciler` (see
+[Metrics Instrumentation](#metrics-instrumentation)) so a duration sample and an
+error counter are emitted under a stable `sub_reconciler` label.
+
+**Phase 2 — the tail group.** Horizon, KORC, AdminCredential, Catalog,
+ServiceAccounts and Glance are the six named members of one
+`commonreconcile.RunSequentialGroup`, embedded as the pipeline's final **bare
+(unnamed)** `Step`. The group members self-instrument through
+`instrumentSubReconciler` — following the keystone self-instrumenting-group
+convention — which is why the enclosing group step carries no `sub_reconciler`
+name of its own. `RunSequentialGroup` attempts **every** member on **every**
+pass and never short-circuits: each member self-gates on the conditions it needs
+(Horizon on `KeystoneReady`; KORC until the admin-password Secret is readable;
+AdminCredential on `KORCReady`; Catalog and ServiceAccounts on
+`AdminCredentialReady`; Glance on `KeystoneReady` and the glance service
+account's per-account readiness), so running all of them each pass is safe.
 
 ```go
 pipeline := []commonreconcile.Step{
     {Name: "Namespaces", Fn: func(ctx context.Context) (ctrl.Result, error) {
         return r.reconcileNamespaces(ctx, &cp)
     }},
-    // ... Infrastructure, ESOTenantStore, DBCredentials, AdminPassword, Keystone,
-    //     Horizon, KORC, AdminCredential, Catalog, ServiceAccounts, Glance
+    // ... Infrastructure, ESOTenantStore, DBCredentials, AdminPassword, Keystone
+    //     — the blocking prefix, each short-circuiting via RunPipeline.
+    //
+    // The independent tail projections run as one self-instrumenting,
+    // non-short-circuiting group embedded as the final bare Step:
+    {Fn: func(ctx context.Context) (ctrl.Result, error) {
+        return commonreconcile.RunSequentialGroup(ctx, instrumentSubReconciler,
+            []commonreconcile.Step{
+                {Name: "Horizon", Fn: /* ... */},
+                // KORC, AdminCredential, Catalog, ServiceAccounts, Glance
+            })
+    }},
 }
 result, err := commonreconcile.RunPipeline(ctx, instrumentSubReconciler, pipeline)
 return r.updateStatus(ctx, &cp, statusBefore, result, err)
@@ -389,12 +429,29 @@ return r.updateStatus(ctx, &cp, statusBefore, result, err)
 
 This guarantees:
 
-1. A sub-reconciler error **propagates immediately** — subsequent sub-reconcilers
-   are skipped.
-2. A non-zero result (`RequeueAfter > 0`) causes an **early return** — status is
-   persisted and the reconciler exits.
-3. Status conditions from the failing/requeuing sub-reconciler are **always
-   persisted** via `updateStatus()` before returning.
+1. **Prefix (phase 1) — unchanged early-return semantics.** A prefix
+   sub-reconciler error **propagates immediately** and a non-zero result
+   (`RequeueAfter > 0`) causes an **early return**; either way the subsequent
+   prefix steps and the whole tail group are skipped for that pass.
+2. **Group (phase 2) — every member runs each pass.** No member's non-zero
+   result or error prevents a later member from running, so a still-converging
+   or failing Horizon no longer parks KORC, the
+   AdminCredential/Catalog/ServiceAccounts identity bootstrap, or Glance. Each
+   member's condition therefore always persists.
+3. **Group result aggregation.** When no member errors, the group result is the
+   **shortest** member requeue (`commonreconcile.ShortestRequeue`) and the error
+   is nil. When one or more members error, the group returns `ctrl.Result{}`
+   and the `errors.Join` of every member error — member requeues are
+   **discarded**, and controller-runtime's error backoff drives the retry.
+4. **Status always persisted.** Whichever phase ends the pass, its outcome
+   funnels through `updateStatus()`, so the conditions and the `(result, error)`
+   pair are persisted by construction on every exit path.
+
+**Onboarding rule.** A future service whose projection is **independent** of the
+others — it self-gates on the conditions it needs rather than being a hard
+prerequisite for a later step — joins the **tail group**, not the blocking
+prefix. Only a projection that genuinely feeds the next step belongs in the
+prefix.
 
 ### Status Update Pattern
 
@@ -1434,11 +1491,12 @@ OpenBao:
 - **Drift escalation (External mode).** When the `KORCReady` gate is closed
   *because* the external Keystone reports drift, the gate reports
   `CredentialDrift` rather than the opaque `WaitingForKORC`. Note that the **live**
-  drift signal is `KORCReady` itself: `reconcileKORC` requeues on the drift and
-  `RunPipeline` short-circuits on that non-zero result, so this sub-reconciler is
-  not re-entered in the same pass. The escalation is the defense-in-depth path
-  that keeps `AdminCredentialReady` honest for any caller that does observe a
-  drifted `KORCReady`. An unreachable endpoint, a TLS failure, a catalog mismatch
+  drift signal is `KORCReady` itself: `reconcileKORC` writes the drifted
+  `KORCReady` earlier in the pass, and because both run inside the
+  non-short-circuiting tail group, `reconcileAdminCredential` runs later in the
+  **same** pass and observes it directly — so this `CredentialDrift` escalation is
+  the live same-pass path that keeps `AdminCredentialReady` honest, not merely a
+  defense-in-depth fallback. An unreachable endpoint, a TLS failure, a catalog mismatch
   or a stalled import are **not** drift and keep `WaitingForKORC` — drift is a
   statement about the credential.
 
@@ -1447,6 +1505,7 @@ OpenBao:
 | `KORCReady` not True | False | `WaitingForKORC` | requeue 10s |
 | `KORCReady` reports drift (`AuthenticationFailed` / `CredentialDrift`), External mode | False | `CredentialDrift` | requeue 10s; names the Secret the operator reads and states that the external installation is never remediated |
 | Selected secret store not Ready | False | `SecretStoreNotReady` | requeue 10s; checked after the `KORCReady` gate so an OpenBao/ESO outage surfaces before the clouds.yaml wait. The message names the store's kind and name |
+| Selected secret store check errors | False | `SecretStoreError` | returns the error; stamped rather than returned bare so the peers gating on `AdminCredentialReady` later in the tail group cannot read the previous pass's `True` |
 | clouds.yaml ES check errors | False | `CloudsYamlError` | returns the error (also covers a force-sync/materialised-Secret read error) |
 | clouds.yaml ES not Ready | False | `WaitingForCloudsYaml` | requeue 10s |
 | operator Secret ensure fails | False | `SecretError` | returns the error |
@@ -1671,6 +1730,16 @@ matching the current generation — so a single lagging account is attributable
 without reading the aggregate `ServiceAccountsReady` message. The entry also
 carries the resolved `userID` / `projectID`, the applied `passwordGeneration`, and
 `lastPasswordRotation`, alongside the `secretName` / `secretNamespace` handle below.
+
+A pass that **errors** returns before it projects this slice, so every `ready`
+flag is cleared first (`invalidateServiceAccountReadiness`) while the remaining
+fields — `lastPasswordRotation` in particular — are preserved. The slice is a live
+gate, not just reporting: `reconcileGlance` runs in the same tail group and reads
+it, so leaving the last converged `ready: true` behind would let Glance keep
+projecting for an account the failing pass could not verify. All entries are
+cleared, not only the one that errored, because the early return means the
+accounts ordered after it were never attempted either. One successful pass
+restores them.
 
 **Consumption contract.** Consumers read from the materialized Secret
 `{controlplane.Name}-service-account-{name}-credentials` (keys `password` and a
