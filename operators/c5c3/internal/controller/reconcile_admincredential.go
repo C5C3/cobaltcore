@@ -81,6 +81,13 @@ func (r *ControlPlaneReconciler) reconcileAdminCredential(ctx context.Context, c
 	storeRef := effectiveControlPlaneStoreRef(cp)
 	storeReady, err := secrets.IsStoreRefReady(ctx, r.Client, storeRef, childNamespace(cp))
 	if err != nil {
+		// Stamp the condition BEFORE returning. AdminCredentialReady is a live
+		// gate for reconcileCatalog and reconcileServiceAccounts, which now run
+		// in the same RunSequentialGroup tail rather than behind a short-circuit:
+		// an unstamped error return would leave them reading the previous pass's
+		// True and projecting against a credential whose backing store could not
+		// be verified.
+		fail("SecretStoreError", fmt.Sprintf("checking %s %q: %v", storeRef.Kind, storeRef.Name, err))
 		return ctrl.Result{}, err
 	}
 	if !storeReady {

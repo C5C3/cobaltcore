@@ -205,15 +205,44 @@ func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{Requeue: true}, nil
 	}
 
-	// Run the sub-reconciler pipeline in dependency order via the shared
-	// table-driven chain: the first step to return a non-zero result or an
-	// error short-circuits and funnels through updateStatus, so conditions and
-	// the requeue/error are persisted by construction on every exit path.
-	// Every step is routed through instrumentSubReconciler so that duration
+	// Run the sub-reconcilers in two phases via the shared table-driven chain.
+	//
+	// The blocking prefix — Namespaces → Infrastructure → ESOTenantStore →
+	// DBCredentials → AdminPassword → Keystone — runs through RunPipeline and
+	// short-circuits at the first non-zero result or error, because each step
+	// genuinely feeds the next: a later step applying before its predecessor
+	// converged would fail or wedge.
+	//
+	// The tail is a RunSequentialGroup of six independent projections (Horizon,
+	// KORC, AdminCredential, Catalog, ServiceAccounts, Glance). Running every
+	// member on every pass is safe: every member runs each pass, its condition
+	// always persists, the members' requeues aggregate to the shortest member
+	// interval, and one member's failure no longer suppresses its peers (member
+	// errors are joined). A still-converging Horizon therefore no longer parks
+	// KORC, the AdminCredential/Catalog/ServiceAccounts identity bootstrap, or
+	// Glance.
+	//
+	// Correctness rests on each member gating itself on the conditions it
+	// consumes rather than on its position in the chain — the prefix's
+	// short-circuit is gone, so a member that assumed an unreachable peer had
+	// blocked it would now run against unverified state. Every member except
+	// KORC opens with an in-memory conditions.AllTrue gate and returns before
+	// touching the API; KORC has no condition gate and runs its full body every
+	// pass, which is what dominates the group's steady-state API cost.
+	//
+	// Onboarding rule: a future service whose projection is independent of the
+	// others joins the tail group rather than the blocking prefix — and MUST
+	// carry its own condition gate, following the five gated members rather than
+	// KORC.
+	//
+	// Either phase's outcome funnels through updateStatus, so conditions and
+	// the requeue/error are persisted by construction on every exit path. Every
+	// named step is routed through instrumentSubReconciler so that duration
 	// samples and error counters are emitted under a stable sub_reconciler
-	// label. AdminPassword runs BEFORE Keystone: the keystone-operator's
-	// SecretsReady gate needs the admin-password ExternalSecret to exist
-	// before the projected Keystone child references it.
+	// label; the group members self-instrument, which is why the group step
+	// itself is bare/unnamed. AdminPassword runs BEFORE Keystone: the
+	// keystone-operator's SecretsReady gate needs the admin-password
+	// ExternalSecret to exist before the projected Keystone child references it.
 	pipeline := []commonreconcile.Step{
 		// Namespaces runs FIRST: every later sub-reconciler projects into a
 		// service namespace, and applying into one that does not exist fails with
@@ -244,33 +273,40 @@ func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		{Name: "Keystone", Fn: func(ctx context.Context) (ctrl.Result, error) {
 			return r.reconcileKeystone(ctx, &cp)
 		}},
-		// Horizon runs after Keystone: the dashboard projection is gated on
-		// KeystoneReady (the dashboard authenticates against the Keystone
-		// child).
-		{Name: "Horizon", Fn: func(ctx context.Context) (ctrl.Result, error) {
-			return r.reconcileHorizon(ctx, &cp)
-		}},
-		{Name: "KORC", Fn: func(ctx context.Context) (ctrl.Result, error) {
-			return r.reconcileKORC(ctx, &cp)
-		}},
-		{Name: "AdminCredential", Fn: func(ctx context.Context) (ctrl.Result, error) {
-			return r.reconcileAdminCredential(ctx, &cp)
-		}},
-		{Name: "Catalog", Fn: func(ctx context.Context) (ctrl.Result, error) {
-			return r.reconcileCatalog(ctx, &cp)
-		}},
-		// ServiceAccounts runs after Catalog: it projects managed K-ORC
-		// User/Project CRs and is gated on AdminCredentialReady, exactly like
-		// Catalog, so K-ORC can already authenticate against Keystone.
-		{Name: "ServiceAccounts", Fn: func(ctx context.Context) (ctrl.Result, error) {
-			return r.reconcileServiceAccounts(ctx, &cp)
-		}},
-		// Glance runs after ServiceAccounts: its projection is gated on the glance
-		// service account's per-account readiness, which reconcileServiceAccounts
-		// computes into status in this same pass (and on KeystoneReady — Glance
-		// validates tokens against the Keystone child).
-		{Name: "Glance", Fn: func(ctx context.Context) (ctrl.Result, error) {
-			return r.reconcileGlance(ctx, &cp)
+		// The member order is same-pass convergence ordering, not a
+		// short-circuiting dependency chain.
+		{Fn: func(ctx context.Context) (ctrl.Result, error) {
+			return commonreconcile.RunSequentialGroup(ctx, instrumentSubReconciler, []commonreconcile.Step{
+				// Horizon is gated on KeystoneReady (the dashboard
+				// authenticates against the Keystone child).
+				{Name: "Horizon", Fn: func(ctx context.Context) (ctrl.Result, error) {
+					return r.reconcileHorizon(ctx, &cp)
+				}},
+				{Name: "KORC", Fn: func(ctx context.Context) (ctrl.Result, error) {
+					return r.reconcileKORC(ctx, &cp)
+				}},
+				// AdminCredential is ordered after KORC because it reads the
+				// KORCReady condition KORC wrote earlier in this same pass.
+				{Name: "AdminCredential", Fn: func(ctx context.Context) (ctrl.Result, error) {
+					return r.reconcileAdminCredential(ctx, &cp)
+				}},
+				{Name: "Catalog", Fn: func(ctx context.Context) (ctrl.Result, error) {
+					return r.reconcileCatalog(ctx, &cp)
+				}},
+				// ServiceAccounts projects managed K-ORC User/Project CRs and
+				// is gated on AdminCredentialReady, exactly like Catalog, so
+				// K-ORC can already authenticate against Keystone.
+				{Name: "ServiceAccounts", Fn: func(ctx context.Context) (ctrl.Result, error) {
+					return r.reconcileServiceAccounts(ctx, &cp)
+				}},
+				// Glance is gated on the glance service account's per-account
+				// readiness, which reconcileServiceAccounts computes into status
+				// in this same pass (and on KeystoneReady — Glance validates
+				// tokens against the Keystone child).
+				{Name: "Glance", Fn: func(ctx context.Context) (ctrl.Result, error) {
+					return r.reconcileGlance(ctx, &cp)
+				}},
+			})
 		}},
 	}
 

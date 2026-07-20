@@ -8,8 +8,10 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"regexp"
 	"testing"
+	"time"
 
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
@@ -152,6 +154,95 @@ func TestReconcileServiceAccounts_SecretStoreNotReady(t *testing.T) {
 	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeServiceAccountsReady)
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal(reasonServiceAccountStoreNotReady))
+}
+
+// TestReconcileServiceAccounts_ErrorClearsStaleReadyStatus pins the invariant the
+// Glance gate rides on: a pass that fails before its status projection must not
+// leave the previously-converged Ready=true entries behind. reconcileGlance is no
+// longer unreachable behind a short-circuiting RunPipeline — it runs in the same
+// RunSequentialGroup tail — and gates on exactly this slice, so a stale True would
+// let it keep projecting (and keep minting DB credentials) for a service account
+// this pass could not verify.
+func TestReconcileServiceAccounts_ErrorClearsStaleReadyStatus(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := saControlPlane()
+	cp.Spec.KORC.ServiceAccounts = append(cp.Spec.KORC.ServiceAccounts, c5c3v1alpha1.ServiceAccountSpec{
+		Name:    glanceServiceAccountName,
+		Project: c5c3v1alpha1.ServiceAccountProjectSpec{Name: "service"},
+	})
+	// The last converged pass left both accounts Ready — glance among them.
+	rotated := metav1.NewTime(time.Now().Add(-time.Hour).Truncate(time.Second))
+	cp.Status.ServiceAccounts = []c5c3v1alpha1.ServiceAccountStatus{
+		{Name: "nova", Ready: true},
+		{Name: glanceServiceAccountName, Ready: true, LastPasswordRotation: &rotated},
+	}
+	g.Expect(glanceServiceAccountReady(cp)).To(BeTrue(), "precondition: the Glance gate starts open")
+
+	// Fail every managed-User read, so the FIRST account errors and the pass
+	// returns before glance is attempted at all.
+	s := korcTestScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(cp, readyClusterSecretStore(), readyTenantStoreFor(cp)).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if _, ok := obj.(*orcv1alpha1.User); ok {
+					return apierrors.NewInternalError(errors.New("reading the Keystone user failed"))
+				}
+				return cl.Get(ctx, key, obj, opts...)
+			},
+		}).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(20)}
+
+	_, err := r.reconcileServiceAccounts(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeServiceAccountsReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(reasonServiceAccountError))
+
+	// The gate this pass could not vouch for is closed — including for the account
+	// the early return never reached.
+	g.Expect(glanceServiceAccountReady(cp)).To(BeFalse(),
+		"a failed pass must not leave the Glance service-account gate reading stale-True")
+	for _, sa := range cp.Status.ServiceAccounts {
+		g.Expect(sa.Ready).To(BeFalse(), "account %q still reports stale readiness", sa.Name)
+	}
+	// Only readiness is invalidated: the rotation bookkeeping the next pass seeds
+	// its `prior` map from survives.
+	g.Expect(cp.Status.ServiceAccounts).To(ContainElement(HaveField("LastPasswordRotation", Equal(&rotated))))
+}
+
+// TestReconcileServiceAccounts_StoreCheckErrorStampsCondition covers the other
+// unstamped error return: a store-readiness lookup that fails outright (as opposed
+// to reporting not-ready) must still drive ServiceAccountsReady False, or peers
+// gating on it keep reading the previous pass's True.
+func TestReconcileServiceAccounts_StoreCheckErrorStampsCondition(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := saControlPlane()
+	cp.Status.ServiceAccounts = []c5c3v1alpha1.ServiceAccountStatus{{Name: "nova", Ready: true}}
+
+	s := korcTestScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(cp, readyClusterSecretStore(), readyTenantStoreFor(cp)).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if _, ok := obj.(*esov1.SecretStore); ok {
+					return apierrors.NewInternalError(errors.New("store read failed"))
+				}
+				return cl.Get(ctx, key, obj, opts...)
+			},
+		}).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(20)}
+
+	_, err := r.reconcileServiceAccounts(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeServiceAccountsReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(reasonServiceAccountError))
+	g.Expect(cp.Status.ServiceAccounts[0].Ready).To(BeFalse())
 }
 
 func TestReconcileServiceAccounts_ProbeAbsentCreatesManagedUserAndReferencedProject(t *testing.T) {
