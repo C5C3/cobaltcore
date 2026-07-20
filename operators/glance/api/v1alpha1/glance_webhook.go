@@ -437,6 +437,29 @@ func (w *GlanceWebhook) validate(ctx context.Context, g *Glance) error {
 		}
 	}
 
+	// Reject an extraConfig override of any Rejected owned key. The rejection
+	// list is driven by the owned-config-key registry's Rejected flag; for glance
+	// it is [keystone_authtoken] password, whose file value is inert at runtime
+	// (env-injected via OS_KEYSTONE_AUTHTOKEN__PASSWORD) but would leak the
+	// service password into the namespace-readable ConfigMap if rendered.
+	// Admission is the only gate before the credential reaches the ConfigMap, so
+	// this is a rejection, not a reported-but-honored override.
+	for _, e := range OwnedConfigKeys {
+		if !e.Rejected {
+			continue
+		}
+		if _, ok := g.Spec.ExtraConfig[e.Section][e.Key]; ok {
+			msg := fmt.Sprintf("%s is managed via %s and must not be set in extraConfig", e.Key, e.OwnedBy)
+			if e.Impact != "" {
+				msg += fmt.Sprintf(" (%s)", e.Impact)
+			}
+			allErrs = append(allErrs, field.Forbidden(
+				specPath.Child("extraConfig").Key(e.Section).Key(e.Key),
+				msg,
+			))
+		}
+	}
+
 	// Validate that resource requests do not exceed limits.
 	if g.Spec.Deployment.Resources != nil && g.Spec.Deployment.Resources.Limits != nil {
 		for resourceName, request := range g.Spec.Deployment.Resources.Requests {

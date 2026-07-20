@@ -256,6 +256,23 @@ FIXTURES: tuple[Fixture, ...] = (
             '      "": bar\n'
         ),
     ),
+    Fixture(
+        filename="10-extraconfig-owned-password.yaml",
+        comment=(
+            "spec.extraConfig setting [keystone_authtoken] password is rejected by\n"
+            "the validating webhook. The operator owns it via\n"
+            "spec.serviceUser.secretRef and the middleware reads it from the\n"
+            "OS_KEYSTONE_AUTHTOKEN__PASSWORD env override, so a file value is inert\n"
+            "at runtime but would leak the service password into the\n"
+            "namespace-readable ConfigMap — the registry's single Rejected entry."
+        ),
+        name="glance-invalid-extraconfig-password",
+        extra=(
+            "  extraConfig:\n"
+            "    keystone_authtoken:\n"
+            "      password: s3cr3t\n"
+        ),
+    ),
 )
 
 

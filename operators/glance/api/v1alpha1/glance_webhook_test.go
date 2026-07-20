@@ -211,6 +211,20 @@ func TestGlanceValidateCreate_RejectionTable(t *testing.T) {
 			wantSub: "extraConfig key must not be empty",
 		},
 		{
+			// The operator owns [keystone_authtoken] password via
+			// spec.serviceUser.secretRef and env-injects it at runtime, so a file
+			// override is inert but would leak the service password into the
+			// namespace-readable ConfigMap. It is the registry's single Rejected
+			// entry, blocked at admission rather than merely reported.
+			name: "extraConfig owned password rejected",
+			mutate: func(o *Glance) {
+				o.Spec.ExtraConfig = map[string]map[string]string{
+					"keystone_authtoken": {"password": "s3cr3t"},
+				}
+			},
+			wantSub: "password is managed via spec.serviceUser.secretRef",
+		},
+		{
 			name: "gateway without hostname rejected",
 			mutate: func(o *Glance) {
 				o.Spec.Gateway = &GatewaySpec{ParentRef: GatewayParentRefSpec{Name: "openstack-gw"}}
