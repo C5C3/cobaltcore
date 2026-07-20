@@ -19,6 +19,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+
+	"github.com/c5c3/forge/internal/common/config"
 )
 
 // KeystoneIdentityBackendWebhook implements defaulting and validation
@@ -550,16 +552,12 @@ func (w *KeystoneIdentityBackendWebhook) validateOIDC(oidcPath *field.Path, o *O
 }
 
 // samlReservedSections enumerates the keystone.conf section names the config
-// renderer (reconcile_config.go) owns. A SAML backend's protocolID becomes a
+// renderer (reconcile_config.go) owns, derived from the owned-config-key
+// registry so the two can never drift. A SAML backend's protocolID becomes a
 // [<protocolID>] section (carrying the per-protocol remote_id_attribute), so it
 // must not collide with any of these or the render would clobber an
-// operator-owned section. Keep this in sync with reconcileConfig's defaults map.
-var samlReservedSections = map[string]struct{}{
-	"DEFAULT": {}, "database": {}, "cache": {}, "memcache": {}, "identity": {},
-	"token": {}, "fernet_tokens": {}, "credential": {}, "auth": {},
-	"federation": {}, "openid": {}, "paste_deploy": {},
-	"oslo_middleware": {}, "oslo_policy": {},
-}
+// operator-owned section.
+var samlReservedSections = config.OwnedSections(OwnedConfigKeys)
 
 // samlRemoteIDAttributePattern requires the HTTP_ prefix: the mellon env var
 // crosses the sidecar → uWSGI HTTP hop as a request header, so the WSGI environ

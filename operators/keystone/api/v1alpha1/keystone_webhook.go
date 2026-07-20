@@ -869,12 +869,21 @@ func validateTrustedDashboards(specPath *field.Path, k *Keystone) field.ErrorLis
 		}
 	}
 
-	if _, ok := k.Spec.ExtraConfig["federation"]["trusted_dashboard"]; ok {
-		errs = append(errs, field.Forbidden(
-			specPath.Child("extraConfig").Key("federation").Key("trusted_dashboard"),
-			"trusted_dashboard is managed via spec.federation.trustedDashboards and must not also be set in extraConfig "+
-				"(extraConfig wins the merge, which would silently drop the typed list)",
-		))
+	// The rejection list is driven by the owned-config-key registry's Rejected
+	// flag: an extraConfig override of one of these keys is blocked at
+	// admission because extraConfig wins the merge and would silently drop the
+	// typed source.
+	for _, e := range OwnedConfigKeys {
+		if !e.Rejected {
+			continue
+		}
+		if _, ok := k.Spec.ExtraConfig[e.Section][e.Key]; ok {
+			errs = append(errs, field.Forbidden(
+				specPath.Child("extraConfig").Key(e.Section).Key(e.Key),
+				fmt.Sprintf("%s is managed via %s and must not also be set in extraConfig "+
+					"(extraConfig wins the merge, which would silently drop the typed list)", e.Key, e.OwnedBy),
+			))
+		}
 	}
 	return errs
 }
