@@ -15,6 +15,7 @@ import (
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/c5c3/forge/internal/common/conditions"
@@ -413,4 +414,132 @@ func TestRenderLocalSettings_NoGatewayOmitsSecureProxySSLHeader(t *testing.T) {
 	rendered, err := renderLocalSettings(testHorizon())
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(rendered).NotTo(ContainSubstring(horizonv1alpha1.SettingSecureProxySSLHeader))
+}
+
+// --- extraConfig ownership guard ---
+
+// TestReconcileConfig_OwnedSettingOverrideReported verifies the report-only
+// contract: overriding an operator-owned flat setting in spec.extraConfig sets
+// ExtraConfigHealthy=False, emits exactly one Warning event, AND still honours
+// the override in the rendered local_settings.py (the guard reports, it does
+// not reject).
+func TestReconcileConfig_OwnedSettingOverrideReported(t *testing.T) {
+	g := NewGomegaWithT(t)
+	h := testHorizon()
+	h.Spec.ExtraConfig = map[string]apiextensionsv1.JSON{
+		"STATIC_ROOT": {Raw: []byte(`"/custom/static"`)},
+	}
+	r := newTestReconciler(testScheme(), h)
+
+	name, err := r.reconcileConfig(context.Background(), h)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	cond := conditions.GetCondition(h.Status.Conditions, config.ConditionTypeExtraConfigHealthy)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(config.ConditionReasonOwnedKeysOverridden))
+	// Flat form: the bare setting name, never an "[section] key" INI rendering.
+	g.Expect(cond.Message).To(ContainSubstring("STATIC_ROOT"))
+	g.Expect(cond.Message).NotTo(ContainSubstring("["))
+
+	// Exactly one Warning event carries the ownership-guard event reason.
+	fakeRecorder := r.Recorder.(*record.FakeRecorder)
+	g.Expect(fakeRecorder.Events).To(Receive(ContainSubstring("Warning " + config.EventReasonExtraConfigOwnedKeyOverride)))
+	g.Expect(fakeRecorder.Events).NotTo(Receive(), "the guard must emit exactly one event")
+
+	// Report-only: extraConfig still wins the render, so the override lands in
+	// the rendered local_settings.py despite the False condition.
+	var cm corev1.ConfigMap
+	g.Expect(r.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: name}, &cm)).To(Succeed())
+	g.Expect(cm.Data["local_settings.py"]).To(ContainSubstring(`STATIC_ROOT = "/custom/static"`))
+}
+
+// TestReconcileConfig_NoOwnedOverridesConditionTrue verifies that a CR whose
+// spec.extraConfig overrides no operator-owned setting sets
+// ExtraConfigHealthy=True with reason NoOwnedKeysOverridden and emits no event.
+func TestReconcileConfig_NoOwnedOverridesConditionTrue(t *testing.T) {
+	g := NewGomegaWithT(t)
+	h := testHorizon()
+	// SESSION_TIMEOUT is a real Django setting the operator does not own, so
+	// overriding it must not trip the guard.
+	h.Spec.ExtraConfig = map[string]apiextensionsv1.JSON{
+		"SESSION_TIMEOUT": {Raw: []byte(`1800`)},
+	}
+	r := newTestReconciler(testScheme(), h)
+
+	_, err := r.reconcileConfig(context.Background(), h)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	cond := conditions.GetCondition(h.Status.Conditions, config.ConditionTypeExtraConfigHealthy)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal(config.ConditionReasonNoOwnedKeysOverridden))
+
+	fakeRecorder := r.Recorder.(*record.FakeRecorder)
+	g.Expect(fakeRecorder.Events).NotTo(Receive(), "a non-owned override must emit no event")
+}
+
+// TestDefaultSettings_RegistryDriftGuard is the completeness check tying
+// defaultSettings to horizonv1alpha1.OwnedConfigKeys: every setting the
+// operator renders must be registered (forward) and every registered key must
+// be rendered (reverse), so the registry and the renderer cannot drift apart.
+func TestDefaultSettings_RegistryDriftGuard(t *testing.T) {
+	// Exercise every conditional branch so all websso and multiDomain settings —
+	// plus SECURE_PROXY_SSL_HEADER — are emitted: a Gateway, a fully-populated
+	// websso block (choices, mapping, initialChoice, keystoneURL, all set by
+	// webssoTestHorizon), and a fully-populated multiDomain block (enabled,
+	// defaultDomain, dropdown, choices).
+	h := webssoTestHorizon()
+	h.Spec.Gateway = gatewaySpec()
+	h.Spec.MultiDomain = &horizonv1alpha1.MultiDomainSpec{
+		Enabled:        true,
+		DefaultDomain:  horizonv1alpha1.DefaultMultiDomainDefaultDomain,
+		DomainDropdown: true,
+		DomainChoices: []horizonv1alpha1.DomainChoice{
+			{Name: "Default", Label: "Default"},
+		},
+	}
+
+	settings, err := defaultSettings(h)
+	if err != nil {
+		t.Fatalf("defaultSettings returned an error: %v", err)
+	}
+
+	registered := make(map[string]struct{}, len(horizonv1alpha1.OwnedConfigKeys))
+	for _, o := range horizonv1alpha1.OwnedConfigKeys {
+		registered[o.Key] = struct{}{}
+	}
+
+	// Forward check: every rendered setting is registered or explicitly exempt.
+	// The code comments in reconcile_config.go name extraConfig overrides of
+	// OPENSTACK_ENDPOINT_TYPE and SECURE_PROXY_SSL_HEADER as the supported
+	// escape hatch, so both stay unregistered.
+	forwardExceptions := map[string]struct{}{
+		"OPENSTACK_ENDPOINT_TYPE":                   {},
+		horizonv1alpha1.SettingSecureProxySSLHeader: {},
+	}
+	for name := range settings {
+		if _, ok := registered[name]; ok {
+			continue
+		}
+		if _, ok := forwardExceptions[name]; ok {
+			continue
+		}
+		t.Errorf("defaultSettings renders unregistered setting %s: add it to "+
+			"horizonv1alpha1.OwnedConfigKeys or the drift-guard exception list", name)
+	}
+
+	// Reverse check: every registered key is rendered by defaultSettings or is
+	// SECRET_KEY — the only extras entry, which enters the render through the
+	// env-var preamble (spec.secretKeyRef), never through defaultSettings.
+	for _, o := range horizonv1alpha1.OwnedConfigKeys {
+		if _, ok := settings[o.Key]; ok {
+			continue
+		}
+		if o.Key == secretKeySettingName {
+			continue
+		}
+		t.Errorf("registry key %s is not rendered by defaultSettings: remove it "+
+			"from horizonv1alpha1.OwnedConfigKeys or extend the drift-guard extras list", o.Key)
+	}
 }

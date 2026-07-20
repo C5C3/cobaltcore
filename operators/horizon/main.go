@@ -53,6 +53,7 @@ func main() {
 			if err := (&controller.HorizonReconciler{
 				Client:                  mgr.GetClient(),
 				Scheme:                  mgr.GetScheme(),
+				Recorder:                mgr.GetEventRecorderFor("horizon-controller"), //nolint:staticcheck // SA1019: reconciler consumes record.EventRecorder (old events API); GetEventRecorder returns the incompatible events/v1 type.
 				OperatorNamespace:       bootstrap.DetectOperatorNamespace(),
 				MaxConcurrentReconciles: maxConcurrentReconciles,
 			}).SetupWithManager(mgr); err != nil {

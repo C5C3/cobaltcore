@@ -15,6 +15,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -70,8 +71,9 @@ func newTestReconciler(s *runtime.Scheme, objs ...client.Object) *HorizonReconci
 	cb := fake.NewClientBuilder().WithScheme(s).WithObjects(objs...)
 	cb = cb.WithStatusSubresource(&horizonv1alpha1.Horizon{})
 	return &HorizonReconciler{
-		Client: cb.Build(),
-		Scheme: s,
+		Client:   cb.Build(),
+		Scheme:   s,
+		Recorder: record.NewFakeRecorder(50),
 	}
 }
 
@@ -100,7 +102,7 @@ func newUpdateStatusReconciler(t *testing.T, h *horizonv1alpha1.Horizon, statusU
 	if err := c.Get(context.Background(), client.ObjectKeyFromObject(h), fetched); err != nil {
 		t.Fatalf("fetching Horizon from fake client: %v", err)
 	}
-	return &HorizonReconciler{Client: c, Scheme: s}, fetched
+	return &HorizonReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(50)}, fetched
 }
 
 // readyClusterSecretStore returns a ClusterSecretStore with a Ready=True
