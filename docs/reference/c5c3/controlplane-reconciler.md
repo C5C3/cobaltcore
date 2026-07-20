@@ -1095,7 +1095,8 @@ services:
   never broken. The retention is logged.
 
 A failure to list the backends surfaces as `HorizonReady=False` with reason
-`IdentityBackendsUnavailable` and returns the error so the chain stops — never
+`IdentityBackendsUnavailable` and returns the error — joined into the tail
+group's error, with controller-runtime's backoff driving the retry — never
 an empty websso block, which would silently remove a working SSO button.
 
 | Path | Status | Reason | Notes |
