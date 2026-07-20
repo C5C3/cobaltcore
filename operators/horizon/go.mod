@@ -6,7 +6,7 @@ require (
 	github.com/c5c3/forge/internal/common v0.0.0
 	github.com/external-secrets/external-secrets/apis v0.0.0-20260710155933-68826f87b4ff
 	github.com/onsi/gomega v1.42.1
-	github.com/prometheus/client_golang v1.23.2
+	github.com/prometheus/client_golang v1.24.0
 	github.com/prometheus/client_model v0.6.2
 	k8s.io/api v0.36.2
 	k8s.io/apiextensions-apiserver v0.36.2
@@ -54,8 +54,8 @@ require (
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
-	github.com/prometheus/common v0.67.5 // indirect
-	github.com/prometheus/procfs v0.20.1 // indirect
+	github.com/prometheus/common v0.70.0 // indirect
+	github.com/prometheus/procfs v0.21.1 // indirect
 	github.com/robfig/cron/v3 v3.0.1 // indirect
 	github.com/sethvargo/go-envconfig v1.1.1 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
@@ -67,7 +67,7 @@ require (
 	golang.org/x/net v0.56.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
-	golang.org/x/sys v0.46.0 // indirect
+	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/term v0.44.0 // indirect
 	golang.org/x/text v0.38.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
