@@ -26,11 +26,17 @@ Either:
   check-doc-expressions, or check-doc-structure (the `[SEVERITY]
   <PREFIX>-<n> — <location> — <problem> — Fix: <hint>` format those
   skills emit), or
-- nothing — in which case, run the relevant check-doc-* skill(s) first,
-  at a depth matching the requested scope, to generate findings.
+- nothing — in which case, run **all** check-doc-* skills, at
+  a depth matching the requested scope, to generate findings. Default to
+  all even when the request names only "the style guide" or
+  "STYLE_GUIDE.md" — that file covers one narrow slice of
+  check-doc-expressions. Run a subset instead of all three only when the
+  user explicitly names a single check-doc-* skill or scopes the request
+  to one of their concerns (e.g. "just check terminology consistency").
 
 If given a specific severity or file scope ("just the HIGH ones", "only
-the quick-start pages"), filter to that before classifying.
+the quick-start pages"), filter to that before classifying — this narrows
+which findings to act on, not which check-doc-* skills produce them.
 
 ## Procedure
 

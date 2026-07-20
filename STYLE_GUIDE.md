@@ -3,6 +3,10 @@
 A guide for writing docs (`docs/`) so they read as if a person wrote them:
 varied, plain where it can be, with no filler.
 
+**Scope.** This file governs rhetorical style: em-dash/italics/
+antithesis/callout/aphorism budgets, filler vocabulary, and quality
+self-labels. It is not a completeness check.
+
 ## The one principle
 
 Docs start to read machine-written when every sentence does the same rhetorical
