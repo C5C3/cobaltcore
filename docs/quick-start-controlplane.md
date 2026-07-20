@@ -9,8 +9,8 @@ SPDX-License-Identifier: Apache-2.0
 
 # Quick Start (ControlPlane): C5C3 + K-ORC on Kind
 
-The shortest path from `git clone` to an authenticated Keystone API call driven
-by a single **c5c3 ControlPlane** CR. Where the [Quick Start](./quick-start.md)
+Deploys Keystone, OpenStack's identity service, driven end to end by a
+single **c5c3 ControlPlane** CR. Where the [Quick Start](./quick-start.md)
 stops at a hand-applied `Keystone` CR, here one `ControlPlane` CR makes the
 c5c3-operator provision the `MariaDB`, `Memcached`, `Keystone`, and `Horizon`
 children, mint the admin application credential through
@@ -20,8 +20,14 @@ aggregate `Ready`.
 
 ## Prerequisites
 
-Same toolchain as the [Quick Start](./quick-start.md), plus an internet
-connection (K-ORC is cloned from GitHub at a pinned tag).
+Same toolchain as the [Quick Start](./quick-start.md), including the
+[openstack CLI](https://docs.openstack.org/python-openstackclient/latest/installation.html)
+for Step 6's token-issue check, plus a stable internet connection: K-ORC is
+cloned from GitHub at a pinned tag in Step 2, and `yq` is required
+unconditionally here (`WITH_CONTROLPLANE=true` needs it regardless of
+whether `KIND_HOST_PORT` is overridden). If Step 2 or Step 4 stalls or
+drops mid-run, run `make teardown-infra` and retry rather than resuming a
+half-provisioned cluster.
 
 The bundled kind `ControlPlane` CR pins its backing services to a single instance
 (`spec.infrastructure.database.replicas: 1`, `cache.replicas: 1`) so the
@@ -65,7 +71,7 @@ KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
 
 `WITH_CONTROLPLANE=true` brings up the shared infrastructure and then the
 ControlPlane operator stack (keystone-operator, horizon-operator, K-ORC,
-c5c3-operator) from the published charts — but **not** the `ControlPlane` CR
+c5c3-operator) from the published charts, but **not** the `ControlPlane` CR
 itself; you create and apply that in Step 3. In this mode the ControlPlane provisions its own MariaDB/Memcached
 (managed mode), so deploy-infra does not create the shared ones. `KIND_HOST_PORT=8443`
 maps the Gateway to a non-privileged host port for macOS; on Linux with rootful

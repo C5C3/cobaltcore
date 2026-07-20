@@ -9,14 +9,16 @@ SPDX-License-Identifier: Apache-2.0
 
 # Quick Start (Extended): Keystone Operator on Kind
 
-> Looking for the shortest happy-path on macOS with port `8443`?
-> See the compact [Quick Start](./quick-start.md). This page is the
-> deep-dive variant with UI tours, fallbacks, the local-build path,
-> the production HelmRelease, E2E and Tempest.
+> Want the compact macOS-on-port-`8443` path instead? See the
+> [Quick Start](./quick-start.md). This page is the deep-dive variant with
+> UI tours, fallbacks, the local-build path, the production HelmRelease, E2E
+> and Tempest.
 
-This guide walks through running the Keystone operator on a local [kind](https://kind.sigs.k8s.io/)
-cluster. It follows the same steps used by the E2E test suite, so the cluster you end up with is
-identical to what CI validates.
+This guide walks through running the Keystone operator (which manages
+Keystone, OpenStack's identity service) on a local
+[kind](https://kind.sigs.k8s.io/) cluster. It follows the same steps used
+by the E2E test suite, so the cluster you end up with is identical to what
+CI validates.
 
 **What you get after completing this guide:**
 
@@ -36,6 +38,7 @@ identical to what CI validates.
 | RAM | 8 GB available to Docker |
 | CPU | 2 cores |
 | Disk | 10 GB free |
+| Network | A stable connection for the duration of Step 3 — `deploy-infra` pulls a dozen-plus container images and Helm chart sources; see the note at the end of [Step 3](#step-3-deploy-the-infrastructure-stack) for recovering from a mid-run drop |
 
 ### Required and optional tools
 
@@ -46,6 +49,7 @@ identical to what CI validates.
 | [kubectl](https://kubernetes.io/docs/tasks/tools/) | see below |
 | [Helm](https://helm.sh/docs/intro/install/) | platform installer |
 | [jq](https://jqlang.org/download/) | platform installer |
+| [openstack CLI](https://docs.openstack.org/python-openstackclient/latest/installation.html) (`python-openstackclient`) | **Optional.** Only needed for the `openstack token issue` checks in [Access Keystone from your local machine](#access-keystone-from-your-local-machine); Step 9's own verification uses `kubectl run` and `curl` instead. |
 | [Flux CLI](https://fluxcd.io/flux/installation/) | **Optional — debugging only.** `make deploy-infra` bootstraps Flux via flux-operator + `FluxInstance` and does not require the CLI. Install it only to run ad-hoc `flux logs` or `flux get` commands against a live cluster. |
 
 The project ships a helper script that downloads and verifies kind and kubectl with pinned
@@ -64,6 +68,8 @@ WITH_FLUX_CLI=true make install-test-deps
 ```
 
 By default, binaries are installed to `~/.local/bin`. Make sure that directory is in your `PATH`:
+the Makefile's `kind`/`kubectl`/`chainsaw` recipes call each tool by its bare command name, so they
+must resolve on `PATH`; living in `~/.local/bin` alone is not enough.
 
 ```bash
 export PATH="${HOME}/.local/bin:${PATH}"
@@ -88,7 +94,7 @@ cd forge
 
 ---
 
-## Step 2 — Create the kind cluster
+## Step 2 — Create the kind cluster {#step-2-create-the-kind-cluster}
 
 The project provides a `hack/kind-config.yaml` with a single control-plane node configuration:
 
@@ -155,7 +161,7 @@ suites or run them in CI (Linux + rootful Docker).
 
 ---
 
-## Step 3 — Deploy the infrastructure stack
+## Step 3 — Deploy the infrastructure stack {#step-3-deploy-the-infrastructure-stack}
 
 The `deploy-infra` target runs an 8-step deployment sequence that installs and configures all
 dependencies the Keystone operator needs:
@@ -192,7 +198,20 @@ c5c3-operator, and the MariaDB root password is expected from a non-kind Flux Ma
 baseline.
 :::
 
-Expected duration: **5–10 minutes** on first run (image pulls dominate).
+Expected duration: **5–10 minutes** on first run: most of it spent pulling
+the dozen-plus third-party images this stack needs from their upstream
+registries on a cold Docker cache (see
+[Enabling the local registry pull-through cache](#enabling-the-local-registry-pull-through-cache)
+below to avoid re-pulling them on every recreate).
+
+::: warning If the network drops mid-run
+Every wait in this sequence (`HelmRelease` reconciliation, the OpenBao pod,
+the `ExternalSecret` syncs) depends on images and chart sources actually
+arriving. A dropped connection during Step 3 leaves the cluster
+half-provisioned in a way `make deploy-infra` cannot resume from: re-run
+`make teardown-infra` and start again from Step 2 once your connection is
+stable, rather than re-running `deploy-infra` against the partial state.
+:::
 
 ::: tip Configurable timeouts
 Override the default timeouts via environment variables if your machine is slow:
@@ -635,8 +654,10 @@ keystone-operator-6d7f9f4d5b-xyz99   1/1     Running   0          30s
 The `Keystone` CR references a service image that runs the actual OpenStack Keystone API. Either
 pull the pre-built image from GHCR or build it locally.
 
-Set the release you want to work with. The default is the most recent release; update this variable
-whenever a new release is available:
+Set the release you want to work with. `2025.2` is the release this guide's
+bundled Keystone CR is pinned to; it is not necessarily the newest release
+the operator supports; see `releases/` for the full list, each with its
+own `source-refs.yaml`, `upper-constraints.txt`, and Tempest configuration:
 
 ```bash
 RELEASE=2025.2   # update to the target release
@@ -869,7 +890,7 @@ kubectl get cronjob,secret -n openstack -l app.kubernetes.io/instance=keystone
 kubectl get cm -n openstack | grep keystone-config-
 ```
 
-### Query the Keystone API
+### Query the Keystone API {#query-the-keystone-api}
 
 Run a one-shot pod inside the cluster to reach the API service:
 
@@ -891,7 +912,7 @@ kubectl get keystone keystone -n openstack -o jsonpath='{.status.conditions}' | 
 
 ---
 
-## Access Keystone from your local machine
+## Access Keystone from your local machine {#access-keystone-from-your-local-machine}
 
 The Keystone CR from Step 7 attaches to the `openstack-gw` Gateway and is exposed at
 `https://keystone.127-0-0-1.nip.io/v3`. The kind cluster's `extraPortMappings` bridges the
