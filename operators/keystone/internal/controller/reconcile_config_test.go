@@ -969,139 +969,6 @@ func TestReconcileConfig_LoggingDebugTruePropagates(t *testing.T) {
 	g.Expect(keystoneConf).To(ContainSubstring("debug = true"))
 }
 
-// TestReconcileConfig_LoggingExtraConfigUseStderrFalseEmitsWarningEvent
-// verifies the corner case: when spec.extraConfig overrides
-// [DEFAULT].use_stderr to a non-"true" value, the operator still writes the
-// merged ConfigMap (with use_stderr=false honoured) AND emits a Warning event
-// with reason=LoggingStderrDisabled to surface that container logs will no
-// longer reach kubectl logs. The test asserts both the rendered key and the
-// emitted Warning event so a regression that only swallows the override or
-// only swallows the event surfaces explicitly.
-func TestReconcileConfig_LoggingExtraConfigUseStderrFalseEmitsWarningEvent(t *testing.T) {
-	g := NewGomegaWithT(t)
-	s := configTestScheme()
-
-	ks := configTestKeystone()
-	ks.Spec.Logging = &keystonev1alpha1.LoggingSpec{
-		Format: "text",
-		Level:  "INFO",
-	}
-	ks.Spec.ExtraConfig = map[string]map[string]string{
-		"DEFAULT": {"use_stderr": "false"},
-	}
-	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
-	r := newConfigTestReconciler(s, ks, secret)
-
-	configMapName, err := r.reconcileConfig(context.Background(), ks, false, nil)
-	g.Expect(err).NotTo(HaveOccurred())
-
-	cm, err := getCreatedConfigMap(context.Background(), r.Client, "default", configMapName)
-	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(cm.Data["keystone.conf"]).To(ContainSubstring("use_stderr = false"),
-		"spec.extraConfig override of [DEFAULT].use_stderr must be honoured in the rendered keystone.conf "+
-			"(: the controller warns but does not swallow the override)")
-
-	expectEvent(g, r, "Warning LoggingStderrDisabled")
-}
-
-// TestReconcileConfig_LoggingExtraConfigUseStderrFalseEventGatedOnTransition
-// verifies the gated-event invariant for the LoggingStderrDisabled
-// Warning: a second reconcile pass with the same use_stderr=false override
-// must NOT re-emit the event because the LoggingHealthy condition is already
-// False with reason=StderrDisabled. The 10s requeue cadence
-// (RequeueDeploymentPolling) would otherwise flood the event stream
-func TestReconcileConfig_LoggingExtraConfigUseStderrFalseEventGatedOnTransition(t *testing.T) {
-	g := NewGomegaWithT(t)
-	s := configTestScheme()
-
-	ks := configTestKeystone()
-	ks.Spec.Logging = &keystonev1alpha1.LoggingSpec{Format: "text", Level: "INFO"}
-	ks.Spec.ExtraConfig = map[string]map[string]string{
-		"DEFAULT": {"use_stderr": "false"},
-	}
-	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
-	r := newConfigTestReconciler(s, ks, secret)
-
-	// First reconcile: the LoggingHealthy condition is absent, so this is a
-	// transition into Status=False/Reason=StderrDisabled and the event fires.
-	_, err := r.reconcileConfig(context.Background(), ks, false, nil)
-	g.Expect(err).NotTo(HaveOccurred())
-	expectEvent(g, r, "Warning LoggingStderrDisabled")
-
-	cond := meta.FindStatusCondition(ks.Status.Conditions, "LoggingHealthy")
-	g.Expect(cond).NotTo(BeNil(), "first reconcile must set LoggingHealthy")
-	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-	g.Expect(cond.Reason).To(Equal("StderrDisabled"))
-
-	// Second reconcile: condition is already False/StderrDisabled, so the
-	// gate suppresses the event — the FakeRecorder channel must remain empty.
-	_, err = r.reconcileConfig(context.Background(), ks, false, nil)
-	g.Expect(err).NotTo(HaveOccurred())
-	expectNoEvent(g, r)
-}
-
-// TestReconcileConfig_LoggingHealthyConditionTrueOnDefaults verifies that the
-// happy-path reconcile sets LoggingHealthy=True with Reason=StderrEnabled, so
-// status reflects logging health on every reconcile rather than only on the
-// failure path.
-func TestReconcileConfig_LoggingHealthyConditionTrueOnDefaults(t *testing.T) {
-	g := NewGomegaWithT(t)
-	s := configTestScheme()
-
-	ks := configTestKeystone()
-	ks.Spec.Logging = &keystonev1alpha1.LoggingSpec{Format: "text", Level: "INFO"}
-	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
-	r := newConfigTestReconciler(s, ks, secret)
-
-	_, err := r.reconcileConfig(context.Background(), ks, false, nil)
-	g.Expect(err).NotTo(HaveOccurred())
-
-	cond := meta.FindStatusCondition(ks.Status.Conditions, "LoggingHealthy")
-	g.Expect(cond).NotTo(BeNil())
-	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
-	g.Expect(cond.Reason).To(Equal("StderrEnabled"))
-	expectNoEvent(g, r)
-}
-
-// TestReconcileConfig_LoggingHealthyConditionTransitionsBackToTrue verifies
-// that removing the use_stderr=false override on a subsequent reconcile
-// transitions LoggingHealthy back to True/StderrEnabled without emitting an
-// additional Warning event — the gating is one-shot per transition into the
-// failure state.
-func TestReconcileConfig_LoggingHealthyConditionTransitionsBackToTrue(t *testing.T) {
-	g := NewGomegaWithT(t)
-	s := configTestScheme()
-
-	ks := configTestKeystone()
-	ks.Generation = 1
-	ks.Spec.Logging = &keystonev1alpha1.LoggingSpec{Format: "text", Level: "INFO"}
-	ks.Spec.ExtraConfig = map[string]map[string]string{
-		"DEFAULT": {"use_stderr": "false"},
-	}
-	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
-	r := newConfigTestReconciler(s, ks, secret)
-
-	_, err := r.reconcileConfig(context.Background(), ks, false, nil)
-	g.Expect(err).NotTo(HaveOccurred())
-	expectEvent(g, r, "Warning LoggingStderrDisabled")
-
-	// Operator removes the override; the next reconcile must transition the
-	// condition back to True and must NOT emit a transition Warning event.
-	// Removing spec.extraConfig is a spec edit, so it bumps the generation —
-	// exactly as the apiserver would — which the config-render cache keys on, so
-	// the render actually re-runs against the new spec.
-	ks.Spec.ExtraConfig = nil
-	ks.Generation = 2
-	_, err = r.reconcileConfig(context.Background(), ks, false, nil)
-	g.Expect(err).NotTo(HaveOccurred())
-	expectNoEvent(g, r)
-
-	cond := meta.FindStatusCondition(ks.Status.Conditions, "LoggingHealthy")
-	g.Expect(cond).NotTo(BeNil())
-	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
-	g.Expect(cond.Reason).To(Equal("StderrEnabled"))
-}
-
 // TestReconcileConfig_LoggingTextPathOmitsLoggingConf verifies that when
 // spec.logging.format=="text" the ConfigMap contains no logging.conf data
 // key and keystone.conf [DEFAULT] does not contain log_config_append
@@ -1486,34 +1353,35 @@ func TestReconcileConfig_CachedConfigMapDeleted_ReRenders(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred(), "the deleted ConfigMap must be recreated")
 }
 
-// TestReconcileConfig_CacheHit_UpsertsLoggingHealthy verifies the cache-hit path
-// still maintains the LoggingHealthy condition from the cached use_stderr value,
-// so the condition contract holds even when the render is skipped.
-func TestReconcileConfig_CacheHit_UpsertsLoggingHealthy(t *testing.T) {
+// TestReconcileConfig_CacheHit_UpsertsExtraConfigHealthy verifies the
+// cache-hit path still maintains the ExtraConfigHealthy condition, because the
+// ownership guard runs before the render-cache short-circuit. Even when the
+// render is served from cache the condition is re-upserted from the spec.
+func TestReconcileConfig_CacheHit_UpsertsExtraConfigHealthy(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := configTestScheme()
 	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
 
 	ks := configTestKeystone()
-	ks.Spec.ExtraConfig = map[string]map[string]string{"DEFAULT": {"use_stderr": "false"}}
+	ks.Spec.ExtraConfig = map[string]map[string]string{"fernet_tokens": {"max_active_keys": "9"}}
 	r := newConfigTestReconciler(s, ks, secret)
 
 	_, err := r.reconcileConfig(context.Background(), ks, false, nil)
 	g.Expect(err).NotTo(HaveOccurred())
-	cond := meta.FindStatusCondition(ks.Status.Conditions, "LoggingHealthy")
+	cond := meta.FindStatusCondition(ks.Status.Conditions, config.ConditionTypeExtraConfigHealthy)
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 
 	// Remove the condition, then reconcile again at the same generation so the
-	// render is served from cache; the cache-hit path must re-upsert
-	// LoggingHealthy from the cached use_stderr value.
-	meta.RemoveStatusCondition(&ks.Status.Conditions, "LoggingHealthy")
+	// render is served from cache; the ownership guard runs before the
+	// short-circuit and must re-upsert ExtraConfigHealthy from the spec.
+	meta.RemoveStatusCondition(&ks.Status.Conditions, config.ConditionTypeExtraConfigHealthy)
 	_, err = r.reconcileConfig(context.Background(), ks, false, nil)
 	g.Expect(err).NotTo(HaveOccurred())
-	cond = meta.FindStatusCondition(ks.Status.Conditions, "LoggingHealthy")
-	g.Expect(cond).NotTo(BeNil(), "cache hit must re-upsert LoggingHealthy")
+	cond = meta.FindStatusCondition(ks.Status.Conditions, config.ConditionTypeExtraConfigHealthy)
+	g.Expect(cond).NotTo(BeNil(), "cache hit must re-upsert ExtraConfigHealthy")
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-	g.Expect(cond.Reason).To(Equal("StderrDisabled"))
+	g.Expect(cond.Reason).To(Equal(config.ConditionReasonOwnedKeysOverridden))
 }
 
 // TestReconcileConfig_FederationRendersAuthAndTemplate verifies the
@@ -1760,4 +1628,269 @@ func TestReconcileConfig_CacheInvalidatesOnFederationState(t *testing.T) {
 	nameDetached, err := r.reconcileConfig(context.Background(), ks, false, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(nameDetached).To(Equal(nameOff), "detaching returns the non-federated content hash")
+}
+
+// --- extraConfig ownership guard ---
+
+// TestReconcileConfig_OwnedKeyOverrideReportOnly verifies the report-only
+// contract: overriding an operator-owned key in spec.extraConfig sets
+// ExtraConfigHealthy=False, emits a Warning event, AND still honours the
+// override in the rendered keystone.conf (the guard reports, it does not
+// reject).
+func TestReconcileConfig_OwnedKeyOverrideReportOnly(t *testing.T) {
+	t.Run("fernet_tokens max_active_keys", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		s := configTestScheme()
+
+		ks := configTestKeystone()
+		ks.Spec.ExtraConfig = map[string]map[string]string{
+			"fernet_tokens": {"max_active_keys": "9"},
+		}
+		secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
+		r := newConfigTestReconciler(s, ks, secret)
+
+		configMapName, err := r.reconcileConfig(context.Background(), ks, false, nil)
+		g.Expect(err).NotTo(HaveOccurred())
+
+		cond := meta.FindStatusCondition(ks.Status.Conditions, config.ConditionTypeExtraConfigHealthy)
+		g.Expect(cond).NotTo(BeNil())
+		g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		g.Expect(cond.Reason).To(Equal(config.ConditionReasonOwnedKeysOverridden))
+		g.Expect(cond.Message).To(ContainSubstring("[fernet_tokens] max_active_keys"))
+
+		// A Warning event carries the same overridden-key text.
+		expectEvent(g, r, "[fernet_tokens] max_active_keys")
+
+		// Report-only: the override is honoured in the rendered config.
+		cm, err := getCreatedConfigMap(context.Background(), r.Client, "default", configMapName)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(cm.Data["keystone.conf"]).To(ContainSubstring("max_active_keys = 9"))
+	})
+
+	t.Run("DEFAULT use_stderr", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		s := configTestScheme()
+
+		ks := configTestKeystone()
+		ks.Spec.ExtraConfig = map[string]map[string]string{
+			"DEFAULT": {"use_stderr": "false"},
+		}
+		secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
+		r := newConfigTestReconciler(s, ks, secret)
+
+		configMapName, err := r.reconcileConfig(context.Background(), ks, false, nil)
+		g.Expect(err).NotTo(HaveOccurred())
+
+		cond := meta.FindStatusCondition(ks.Status.Conditions, config.ConditionTypeExtraConfigHealthy)
+		g.Expect(cond).NotTo(BeNil())
+		g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		g.Expect(cond.Message).To(ContainSubstring("container logs will no longer reach kubectl logs"))
+
+		cm, err := getCreatedConfigMap(context.Background(), r.Client, "default", configMapName)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(cm.Data["keystone.conf"]).To(ContainSubstring("use_stderr = false"))
+	})
+}
+
+// TestReconcileConfig_ExtraConfigHealthyTrueOnDefaults verifies that a CR whose
+// spec.extraConfig overrides no operator-owned key sets ExtraConfigHealthy=True
+// with reason NoOwnedKeysOverridden and emits no event.
+func TestReconcileConfig_ExtraConfigHealthyTrueOnDefaults(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := configTestScheme()
+
+	ks := configTestKeystone()
+	// insecure_debug is a real keystone.conf key the operator does not own, so
+	// overriding it must not trip the guard.
+	ks.Spec.ExtraConfig = map[string]map[string]string{
+		"DEFAULT": {"insecure_debug": "true"},
+	}
+	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
+	r := newConfigTestReconciler(s, ks, secret)
+
+	_, err := r.reconcileConfig(context.Background(), ks, false, nil)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, config.ConditionTypeExtraConfigHealthy)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal(config.ConditionReasonNoOwnedKeysOverridden))
+	expectNoEvent(g, r)
+}
+
+// TestReconcileConfig_OwnedKeyEventGatedAcrossReconciles verifies the
+// gated-event invariant: a second reconcile with the same owned override keeps
+// ExtraConfigHealthy=False but does not re-emit the Warning event, so the
+// reconcile poll never floods the event stream.
+func TestReconcileConfig_OwnedKeyEventGatedAcrossReconciles(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := configTestScheme()
+
+	ks := configTestKeystone()
+	ks.Spec.ExtraConfig = map[string]map[string]string{
+		"token": {"provider": "jws"},
+	}
+	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
+	r := newConfigTestReconciler(s, ks, secret)
+
+	// First pass: transition into False emits exactly one event; drain it.
+	_, err := r.reconcileConfig(context.Background(), ks, false, nil)
+	g.Expect(err).NotTo(HaveOccurred())
+	expectEvent(g, r, "ExtraConfigOwnedKeyOverride")
+
+	// Second pass at the same generation: condition stays False, no re-emit.
+	_, err = r.reconcileConfig(context.Background(), ks, false, nil)
+	g.Expect(err).NotTo(HaveOccurred())
+	cond := meta.FindStatusCondition(ks.Status.Conditions, config.ConditionTypeExtraConfigHealthy)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	expectNoEvent(g, r)
+}
+
+// TestReconcileConfig_OperatorDefaultsWinOverPlugins verifies the flipped merge
+// precedence: a plugin section colliding with an operator-owned key does NOT
+// override it (operator defaults win), while a non-colliding plugin section
+// still renders its values.
+func TestReconcileConfig_OperatorDefaultsWinOverPlugins(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := configTestScheme()
+
+	ks := configTestKeystone()
+	ks.Spec.Plugins = []commonv1.PluginSpec{
+		{
+			Name:          "rogue-token",
+			ConfigSection: "token",
+			Config:        map[string]string{"provider": "rogue"},
+		},
+		{
+			Name:          "extra-section",
+			ConfigSection: "myplugin",
+			Config:        map[string]string{"foo": "bar"},
+		},
+	}
+	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
+	r := newConfigTestReconciler(s, ks, secret)
+
+	configMapName, err := r.reconcileConfig(context.Background(), ks, false, nil)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	cm, err := getCreatedConfigMap(context.Background(), r.Client, "default", configMapName)
+	g.Expect(err).NotTo(HaveOccurred())
+	keystoneConf := cm.Data["keystone.conf"]
+	g.Expect(keystoneConf).To(ContainSubstring("provider = fernet"),
+		"operator default wins over a colliding plugin section")
+	g.Expect(keystoneConf).NotTo(ContainSubstring("provider = rogue"))
+	// Non-colliding plugin sections still render.
+	g.Expect(keystoneConf).To(ContainSubstring("[myplugin]"))
+	g.Expect(keystoneConf).To(ContainSubstring("foo = bar"))
+}
+
+// TestReconcileConfig_PluginRenderErrorPropagates verifies that a plugin spec
+// RenderPluginConfig rejects (here two plugins sharing a ConfigSection)
+// surfaces as a "rendering plugin config:" error rather than a silent skip.
+func TestReconcileConfig_PluginRenderErrorPropagates(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := configTestScheme()
+
+	ks := configTestKeystone()
+	ks.Spec.Plugins = []commonv1.PluginSpec{
+		{Name: "first", ConfigSection: "dup", Config: map[string]string{"a": "1"}},
+		{Name: "second", ConfigSection: "dup", Config: map[string]string{"b": "2"}},
+	}
+	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
+	r := newConfigTestReconciler(s, ks, secret)
+
+	_, err := r.reconcileConfig(context.Background(), ks, false, nil)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("rendering plugin config:"))
+}
+
+// TestOperatorDefaults_RegistryDriftGuard is the completeness check tying
+// operatorDefaults to keystonev1alpha1.OwnedConfigKeys: every key the operator
+// renders must be registered (forward) and every registered key must be
+// rendered (reverse), so the registry and the renderer cannot drift apart.
+func TestOperatorDefaults_RegistryDriftGuard(t *testing.T) {
+	ks := configTestKeystone()
+	ks.Spec.Logging = &keystonev1alpha1.LoggingSpec{
+		Format:          "json",
+		Debug:           ptr.To(true),
+		PerLoggerLevels: map[string]string{"keystone": "DEBUG"},
+	}
+
+	// Exercise every conditional branch: domain projection on, OIDC + SAML
+	// federation active, json logging, per-logger levels, and the injected
+	// oslo_policy.policy_file.
+	defaults := operatorDefaults(ks, true, &federationProjection{
+		RemoteIDAttribute:     "HTTP_OIDC_ISS",
+		SAMLProtocolID:        "saml2",
+		SAMLRemoteIDAttribute: "HTTP_MELLON_IDP",
+	})
+	defaults = config.InjectOsloPolicyConfig(defaults, "/etc/keystone/keystone.conf.d/policy.yaml")
+
+	registered := make(map[[2]string]struct{}, len(keystonev1alpha1.OwnedConfigKeys))
+	for _, o := range keystonev1alpha1.OwnedConfigKeys {
+		registered[[2]string{o.Section, o.Key}] = struct{}{}
+	}
+
+	// Forward check: every rendered (section, key) is registered or explicitly
+	// exempt. [cache] enabled is the documented sanctioned override, and the
+	// dynamically named SAML per-protocol section (named "saml2" by the
+	// protocolID this test passes) is a documented Non-Goal — dynamically named
+	// sections are guarded by the derived reserved-sections webhook rejection,
+	// not the static registry — so the whole section is exempt.
+	forwardExceptions := map[[2]string]struct{}{
+		{"cache", "enabled"}: {},
+	}
+	dynamicSections := map[string]struct{}{"saml2": {}}
+	for section, kvs := range defaults {
+		if _, ok := dynamicSections[section]; ok {
+			continue
+		}
+		for key := range kvs {
+			pair := [2]string{section, key}
+			if _, ok := registered[pair]; ok {
+				continue
+			}
+			if _, ok := forwardExceptions[pair]; ok {
+				continue
+			}
+			t.Errorf("operatorDefaults renders unregistered key [%s] %s: add it to "+
+				"keystonev1alpha1.OwnedConfigKeys or the drift-guard exception list", section, key)
+		}
+	}
+
+	// Reverse check: every registered key is rendered by operatorDefaults or on
+	// the multi-value extras list. [federation] trusted_dashboard renders
+	// through the LiftSections multi-value path in reconcileConfig, not through
+	// the defaults map.
+	reverseExtras := map[[2]string]struct{}{
+		{"federation", "trusted_dashboard"}: {},
+	}
+	for _, o := range keystonev1alpha1.OwnedConfigKeys {
+		if _, ok := defaults[o.Section][o.Key]; ok {
+			continue
+		}
+		if _, ok := reverseExtras[[2]string{o.Section, o.Key}]; ok {
+			continue
+		}
+		t.Errorf("registry key [%s] %s is not rendered by operatorDefaults: remove it "+
+			"from keystonev1alpha1.OwnedConfigKeys or extend the drift-guard extras list", o.Section, o.Key)
+	}
+}
+
+// TestOwnedSectionsMatchPreviousSAMLReservedSections pins the exact set of
+// operator-owned INI sections the registry declares, guarding against a
+// section being added or dropped without review.
+func TestOwnedSectionsMatchPreviousSAMLReservedSections(t *testing.T) {
+	g := NewGomegaWithT(t)
+	sections := config.OwnedSections(keystonev1alpha1.OwnedConfigKeys)
+	want := []string{
+		"DEFAULT", "database", "cache", "memcache", "identity", "token",
+		"fernet_tokens", "credential", "auth", "federation", "openid",
+		"paste_deploy", "oslo_middleware", "oslo_policy",
+	}
+	g.Expect(sections).To(HaveLen(len(want)))
+	for _, name := range want {
+		g.Expect(sections).To(HaveKey(name))
+	}
 }
