@@ -303,6 +303,31 @@ type serviceAccountState struct {
 	pendingObjs []orcv1alpha1.ObjectWithConditions
 }
 
+// invalidateServiceAccountReadiness clears Ready on every projected per-account
+// status entry, leaving the remaining fields (notably LastPasswordRotation)
+// intact.
+//
+// reconcileServiceAccounts returns BEFORE its status projection on every error
+// path, so without this the last converged slice — Ready=true entries included —
+// survives a pass that could not verify a single account. That stale slice is a
+// live gate, not just cosmetic status: reconcileGlance runs in the same
+// RunSequentialGroup tail and gates on it via glanceServiceAccountReady, so a
+// stale True would keep Glance projecting — and keep its dynamic DB-credential
+// generator minting MySQL users — for a service whose Keystone identity this pass
+// could not confirm. A persistent error would hold that gate open indefinitely.
+//
+// Clearing ALL entries rather than only the account that errored is deliberate:
+// the pass returns early, so the accounts ordered after the failing one were never
+// attempted either, and a failing pass has no basis to vouch for any of them. This
+// restores exactly the reachability the short-circuiting RunPipeline used to give
+// (an erroring ServiceAccounts meant Glance never ran at all); recovery is one
+// successful pass away.
+func invalidateServiceAccountReadiness(cp *c5c3v1alpha1.ControlPlane) {
+	for i := range cp.Status.ServiceAccounts {
+		cp.Status.ServiceAccounts[i].Ready = false
+	}
+}
+
 // reconcileServiceAccounts projects spec.korc.serviceAccounts onto managed K-ORC
 // User / Project CRs with operator-generated, OpenBao-backed, rotatable passwords,
 // driving the ServiceAccountsReady condition. It is mode-independent: the same
@@ -339,6 +364,10 @@ func (r *ControlPlaneReconciler) reconcileServiceAccounts(ctx context.Context, c
 	for _, deliveryNS := range serviceAccountDeliveryNamespaces(cp, sas) {
 		storeReady, err := secrets.IsStoreRefReady(ctx, r.Client, storeRef, deliveryNS)
 		if err != nil {
+			invalidateServiceAccountReadiness(cp)
+			fail(reasonServiceAccountError, fmt.Sprintf(
+				"checking %s %q in namespace %q: %v", storeRef.Kind, storeRef.Name, deliveryNS, err,
+			))
 			return ctrl.Result{}, err
 		}
 		if !storeReady {
@@ -372,6 +401,7 @@ func (r *ControlPlaneReconciler) reconcileServiceAccounts(ctx context.Context, c
 	for i := range sas {
 		st, err := r.ensureServiceAccount(ctx, cp, sas[i], credRef, managedCredRef, prior[sas[i].Name])
 		if err != nil {
+			invalidateServiceAccountReadiness(cp)
 			fail(reasonServiceAccountError, fmt.Sprintf("reconciling service account %q: %v", sas[i].Name, err))
 			return ctrl.Result{}, err
 		}
@@ -382,6 +412,7 @@ func (r *ControlPlaneReconciler) reconcileServiceAccounts(ctx context.Context, c
 	// previously-declared account must be swept).
 	pruning, err := r.pruneServiceAccounts(ctx, cp, sas)
 	if err != nil {
+		invalidateServiceAccountReadiness(cp)
 		fail(reasonServiceAccountError, fmt.Sprintf("pruning undeclared service accounts: %v", err))
 		return ctrl.Result{}, err
 	}
