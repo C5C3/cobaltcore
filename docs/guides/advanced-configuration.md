@@ -312,6 +312,23 @@ surface. For everything else — logging levels, oslo.messaging tuning, experime
 Keystone flags — `spec.extraConfig` takes a `map[section][key] = value` that is
 rendered into the generated `keystone.conf`.
 
+For the INI-file services (Keystone, Glance) the operator renders configuration
+through a single precedence chain: `plugins < operator defaults <
+spec.extraConfig`. Each stage is merged key-wise, so a plugin section cannot
+shadow an operator-computed value, the operator defaults win over any colliding
+plugin section, and `spec.extraConfig` is the only door past the operator's own
+defaults.
+
+Each operator ships a registry of the configuration keys it computes. Overriding
+one of those keys through `spec.extraConfig` is honored — the value is rendered —
+but reported: the operator sets the informational `ExtraConfigHealthy=False`
+condition naming every overridden key and emits a one-shot
+`ExtraConfigOwnedKeyOverride` Warning event on the transition into that state.
+Most registered keys are report-only; a few are rejected outright at admission by
+the service webhook because a typed spec field owns them — for example Keystone's
+`[federation] trusted_dashboard`, Glance's `[keystone_authtoken] password`, or
+Horizon's `SECRET_KEY`.
+
 ```yaml
 spec:
   extraConfig:
@@ -324,6 +341,11 @@ spec:
     oslo_messaging_rabbit:
       heartbeat_timeout_threshold: "60"
 ```
+
+The `[DEFAULT] debug` override above is an operator-owned key — Keystone computes
+it from the typed `spec.logging.debug` field — so this example now draws an
+`ExtraConfigOwnedKeyOverride` Warning event and flips `ExtraConfigHealthy` to
+`False` while still taking effect.
 
 The operator does not validate the content of these sections. A typo becomes a silent
 no-op at best and a crash loop at worst — test changes in a lab before rolling out.

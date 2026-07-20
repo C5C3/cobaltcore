@@ -187,20 +187,20 @@ from the adoption-wait pass in `reconcile_secrets.go`
 > **Note:** This event fires only during an active upgrade's rolling update phase.
 > Normal steady-state Deployment readiness does not emit an event.
 
-### Logging
+### Configuration
 
 | Reason | Type | Trigger Condition | Example Message |
 | --- | --- | --- | --- |
-| `LoggingStderrDisabled` | Warning | `spec.extraConfig` overrides `[DEFAULT].use_stderr` to a non-`true` value, causing container logs to no longer reach `kubectl logs` | `spec.extraConfig overrode [DEFAULT].use_stderr to "false"; container logs will not reach kubectl logs` |
+| `ExtraConfigOwnedKeyOverride` | Warning | `spec.extraConfig` overrides one or more operator-owned configuration keys (the per-service ownership registry) | `spec.extraConfig overrides operator-owned keys: [DEFAULT] use_stderr (container logs will no longer reach kubectl logs)` |
 
 **Source:** `reconcileConfig` in `reconcile_config.go`
 
-> **Note:** The event is gated on a state transition into the
-> `LoggingHealthy=False, Reason=StderrDisabled` status condition, so it fires
-> at most once per transition rather than on every reconcile poll. Restoring
-> `[DEFAULT].use_stderr=true` (e.g. by removing the `spec.extraConfig`
-> override) transitions the condition back to `LoggingHealthy=True,
-> Reason=StderrEnabled` without emitting an additional Warning event.
+> **Note:** The event is gated on the `ExtraConfigHealthy=False` condition's
+> message — it fires once on the transition into `False` and once more when the
+> overridden-key set changes, never on the steady reconcile poll. Removing the
+> overrides transitions the condition back to `ExtraConfigHealthy=True,
+> Reason=NoOwnedKeysOverridden` without a further event. The condition is
+> informational and is not aggregated into `Ready`.
 
 ---
 
@@ -332,8 +332,8 @@ KeystoneReconciler.Reconcile()
   │     └─ Staged password rejected → Warning AdminPasswordRotationRejected
   │
   ├── reconcileConfig()
-  │     └─ spec.extraConfig overrides use_stderr → Warning LoggingStderrDisabled
-  │       (gated on transition into LoggingHealthy=False, Reason=StderrDisabled)
+  │     └─ spec.extraConfig overrides operator-owned keys → Warning ExtraConfigOwnedKeyOverride
+  │       (gated on transition into ExtraConfigHealthy=False, Reason=OwnedKeysOverridden)
   │
   ├── reconcileTrustFlush()
   │     └─ Legacy nil spec.trustFlush bypass → Warning TrustFlushBypass

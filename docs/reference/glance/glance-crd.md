@@ -38,7 +38,7 @@ stores are **not** part of this spec — they attach out-of-band through
 | `policyOverrides` | `*PolicySpec` | no | Custom oslo.policy rules. A CEL rule requires at least one of `rules` or `configMapRef`; when set, the operator renders a `policy.yaml` and wires `oslo_policy.policy_file` |
 | `middleware` | `[]MiddlewareSpec` | no | WSGI middleware filters injected into the `api-paste.ini` pipeline |
 | `plugins` | `[]PluginSpec` | no | Service plugins/drivers, modeled as a list-map keyed by `configSection` so duplicate sections are rejected structurally |
-| `extraConfig` | `map[string]map[string]string` | no | Free-form INI sections for configuration not covered by explicit fields — the escape hatch for import/staging tuning. User values win the render-time merge |
+| `extraConfig` | `map[string]map[string]string` | no | Free-form INI sections for configuration not covered by explicit fields — the escape hatch for import/staging tuning. The render-time merge follows `plugins < operator defaults < extraConfig` (each stage merged key-wise), so user values win over both. Overrides of operator-owned keys are honored but reported (report-only) via the `ExtraConfigHealthy` condition and an `ExtraConfigOwnedKeyOverride` Warning event — except `[keystone_authtoken] password`, which the validating webhook rejects at admission so the env-injected service password never leaks into the namespace-readable ConfigMap |
 
 ### ServiceUserSpec
 
@@ -98,8 +98,10 @@ inside the drain window), the `Recreate`-vs-`rollingUpdate` sanity check,
 autoscaling bounds (including the implicit `minReplicas` default from
 `deployment.replicas`), network-policy ingress, gateway hostname/parentRef,
 resource requests-vs-limits, PriorityClass existence, topology-spread selectors
-(matching the `glance` / instance labels), and the empty-section/empty-key
-guards on `extraConfig` (a preserve-unknown-fields map CEL cannot constrain).
+(matching the `glance` / instance labels), and the `extraConfig` guards (a
+preserve-unknown-fields map CEL cannot constrain): empty section/key names plus
+the rejected override of `[keystone_authtoken] password`, which the operator
+owns via `spec.serviceUser.secretRef`.
 
 ## Status
 
