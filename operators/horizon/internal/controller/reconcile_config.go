@@ -39,6 +39,16 @@ const (
 // holding it, and sets ConfigReady. It returns the name of the created
 // ConfigMap (with content-hash suffix).
 func (r *HorizonReconciler) reconcileConfig(ctx context.Context, horizon *horizonv1alpha1.Horizon) (string, error) {
+	// The extraConfig ownership guard is a pure function of the spec, so it
+	// runs before the render. The ExtraConfigHealthy condition is
+	// informational and deliberately stays out of subConditionTypes.
+	names := make([]string, 0, len(horizon.Spec.ExtraConfig))
+	for name := range horizon.Spec.ExtraConfig {
+		names = append(names, name)
+	}
+	config.RecordExtraConfigHealth(r.Recorder, horizon, &horizon.Status.Conditions, horizon.Generation,
+		config.FindOwnedSettingOverrides(names, horizonv1alpha1.OwnedConfigKeys))
+
 	rendered, err := renderLocalSettings(horizon)
 	if err != nil {
 		return "", fmt.Errorf("rendering local_settings.py: %w", err)

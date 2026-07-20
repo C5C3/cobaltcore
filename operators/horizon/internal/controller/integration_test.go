@@ -72,6 +72,7 @@ func setupEnvTestWithController(t testing.TB) (client.Client, context.Context, c
 			r := &HorizonReconciler{
 				Client:     mgr.GetClient(),
 				Scheme:     mgr.GetScheme(),
+				Recorder:   mgr.GetEventRecorderFor("horizon-controller"),
 				HTTPClient: healthyHTTPClient{},
 				// envtest loads the fake HTTPRoute CRD from
 				// internal/common/testutil/fake_crds/gateway-api, so the
