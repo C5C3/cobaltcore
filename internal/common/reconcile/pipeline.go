@@ -6,6 +6,7 @@ package reconcile
 
 import (
 	"context"
+	"errors"
 
 	ctrl "sigs.k8s.io/controller-runtime"
 )
@@ -19,6 +20,16 @@ import (
 type Step struct {
 	Name string
 	Fn   func(ctx context.Context) (ctrl.Result, error)
+}
+
+// run dispatches the step following the empty-Name convention documented on
+// Step. Every group helper routes its members through this so the convention
+// is implemented exactly once.
+func (s Step) run(ctx context.Context, instrument InstrumentFunc) (ctrl.Result, error) {
+	if s.Name == "" {
+		return s.Fn(ctx)
+	}
+	return instrument(ctx, s.Name, s.Fn)
 }
 
 // InstrumentFunc wraps a sub-reconciler call with per-operator duration/error
@@ -35,20 +46,59 @@ type InstrumentFunc func(ctx context.Context, name string, fn func(context.Conte
 // returns a zero result and nil error.
 func RunPipeline(ctx context.Context, instrument InstrumentFunc, steps []Step) (ctrl.Result, error) {
 	for _, s := range steps {
-		var (
-			result ctrl.Result
-			err    error
-		)
-		if s.Name == "" {
-			result, err = s.Fn(ctx)
-		} else {
-			result, err = instrument(ctx, s.Name, s.Fn)
-		}
+		result, err := s.run(ctx, instrument)
 		if !result.IsZero() || err != nil {
 			return result, err
 		}
 	}
 	return ctrl.Result{}, nil
+}
+
+// RunSequentialGroup runs the steps in order, exactly once each, and never
+// short-circuits: a step's non-zero result or non-nil error never prevents a
+// later step from running. This suits a reconcile tail of independent,
+// self-gated projections where every member must be attempted every pass.
+// Named steps are wrapped in instrument; empty-Name steps run bare, the same
+// convention RunPipeline follows.
+//
+// When no member returns an error, the shortest non-zero member RequeueAfter
+// wins (via ShortestRequeue) and the error is nil. When one or more members
+// return errors, the member requeues are discarded and ctrl.Result{} is
+// returned together with errors.Join of every member error, so
+// controller-runtime's error backoff drives the retry. A nil or empty steps
+// slice returns a zero result and a nil error.
+//
+// Errors beat requeues deliberately, and the cost is real: controller-runtime
+// discards Result whenever err != nil, so a single erroring member throws away
+// a converged-but-waiting sibling's pacing and re-runs the whole chain on the
+// failure ramp instead. Surfacing the error is still the right trade — it is
+// what raises the reconcile error counter and puts the failure in the manager's
+// log. Swallowing it to keep a sibling's interval would leave a persistently
+// failing member visible only to whatever conditions its own body happened to
+// stamp, which a general-purpose helper cannot assume. Callers that need a
+// gentler cadence should bound the retry at the member (return a RequeueAfter
+// with a stamped condition instead of an error), not here.
+//
+// This differs from RunParallelGroup in one respect worth knowing: that helper
+// is errgroup-backed, so it surfaces only the FIRST member error, not a join of
+// all of them.
+func RunSequentialGroup(ctx context.Context, instrument InstrumentFunc, steps []Step) (ctrl.Result, error) {
+	var (
+		results []ctrl.Result
+		errs    []error
+	)
+	for _, s := range steps {
+		result, err := s.run(ctx, instrument)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		results = append(results, result)
+	}
+	if len(errs) > 0 {
+		return ctrl.Result{}, errors.Join(errs...)
+	}
+	return ShortestRequeue(results...), nil
 }
 
 // ShortestRequeue returns the ctrl.Result with the shortest non-zero

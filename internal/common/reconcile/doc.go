@@ -4,9 +4,11 @@
 
 // Package reconcile provides the generic sub-reconciler pipeline and status
 // aggregation scaffolding shared by the service operators: the table-driven
-// sequential chain (RunPipeline), the errgroup-backed parallel group
-// (RunParallelGroup) with per-member CR copies and condition merge on partial
-// failure, RequeueAfter-only requeue aggregation (ShortestRequeue), the
+// sequential chain (RunPipeline), the non-short-circuiting sequential group
+// (RunSequentialGroup) that runs every member and aggregates requeues, the
+// errgroup-backed parallel group (RunParallelGroup) with per-member CR copies
+// and condition merge on partial failure, RequeueAfter-only requeue
+// aggregation (ShortestRequeue), the
 // aggregate Ready condition (SetAggregateReady), and the no-op-skipping
 // status writer (UpdateStatus).
 //

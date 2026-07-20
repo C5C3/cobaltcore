@@ -6,6 +6,7 @@ package reconcile
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -121,6 +122,129 @@ func TestRunPipeline_EmptyNameBypassesInstrument(t *testing.T) {
 	g.Expect(ran).To(gomega.Equal([]string{"named", "anonymous"}))
 	g.Expect(instrumented).To(gomega.Equal([]string{"named"}),
 		"the empty-Name step must bypass the instrument hook")
+}
+
+func TestRunSequentialGroup_RunsAllStepsAndAggregatesShortestRequeue(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	var ran []string
+	var instrumented []string
+	step := func(name string, requeue time.Duration) Step {
+		return Step{Name: name, Fn: func(context.Context) (ctrl.Result, error) {
+			ran = append(ran, name)
+			return ctrl.Result{RequeueAfter: requeue}, nil
+		}}
+	}
+
+	result, err := RunSequentialGroup(context.Background(), passthroughInstrument(&instrumented),
+		[]Step{
+			step("a", 15*time.Second),
+			step("b", 0),
+			step("c", 10*time.Second),
+		})
+
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(ran).To(gomega.Equal([]string{"a", "b", "c"}),
+		"every member must run once, in slice order")
+	g.Expect(result).To(gomega.Equal(ctrl.Result{RequeueAfter: 10 * time.Second}),
+		"the shortest non-zero member RequeueAfter must win")
+}
+
+func TestRunSequentialGroup_JoinsErrorsAndDiscardsRequeues(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	var instrumented []string
+	errA := errors.New("member a failed")
+	errB := errors.New("member b failed")
+	steps := []Step{
+		{Name: "a", Fn: func(context.Context) (ctrl.Result, error) {
+			return ctrl.Result{}, errA
+		}},
+		{Name: "b", Fn: func(context.Context) (ctrl.Result, error) {
+			return ctrl.Result{}, errB
+		}},
+		{Name: "c", Fn: func(context.Context) (ctrl.Result, error) {
+			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+		}},
+	}
+
+	result, err := RunSequentialGroup(context.Background(), passthroughInstrument(&instrumented), steps)
+
+	g.Expect(errors.Is(err, errA)).To(gomega.BeTrue(), "the joined error must retain errA")
+	g.Expect(errors.Is(err, errB)).To(gomega.BeTrue(), "the joined error must retain errB")
+	g.Expect(result).To(gomega.Equal(ctrl.Result{}),
+		"member requeues must be discarded on the error path")
+}
+
+func TestRunSequentialGroup_ContinuesAfterError(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	var instrumented []string
+	var reached bool
+	steps := []Step{
+		{Name: "boom", Fn: func(context.Context) (ctrl.Result, error) {
+			return ctrl.Result{}, fmt.Errorf("boom")
+		}},
+		{Name: "after", Fn: func(context.Context) (ctrl.Result, error) {
+			reached = true
+			return ctrl.Result{}, nil
+		}},
+	}
+
+	_, err := RunSequentialGroup(context.Background(), passthroughInstrument(&instrumented), steps)
+
+	g.Expect(err).To(gomega.HaveOccurred())
+	g.Expect(reached).To(gomega.BeTrue(),
+		"a later step must still run after an earlier step errored")
+}
+
+func TestRunSequentialGroup_InstrumentsNamedMembersOnly(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	var ran []string
+	var instrumented []string
+	steps := []Step{
+		{Name: "first", Fn: func(context.Context) (ctrl.Result, error) {
+			ran = append(ran, "first")
+			return ctrl.Result{}, nil
+		}},
+		{Fn: func(context.Context) (ctrl.Result, error) {
+			ran = append(ran, "anonymous")
+			return ctrl.Result{}, nil
+		}},
+		{Name: "second", Fn: func(context.Context) (ctrl.Result, error) {
+			ran = append(ran, "second")
+			return ctrl.Result{}, nil
+		}},
+	}
+
+	_, err := RunSequentialGroup(context.Background(), passthroughInstrument(&instrumented), steps)
+
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(ran).To(gomega.Equal([]string{"first", "anonymous", "second"}),
+		"every member must run")
+	g.Expect(instrumented).To(gomega.Equal([]string{"first", "second"}),
+		"only named members are routed through the instrument hook, once each in order")
+}
+
+func TestRunSequentialGroup_NilSteps(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	var instrumented []string
+	result, err := RunSequentialGroup(context.Background(), passthroughInstrument(&instrumented), nil)
+
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(result).To(gomega.Equal(ctrl.Result{}), "a nil steps slice must produce a zero Result")
+}
+
+func TestRunSequentialGroup_EmptySteps(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	var instrumented []string
+	result, err := RunSequentialGroup(context.Background(), passthroughInstrument(&instrumented), []Step{})
+
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(result).To(gomega.Equal(ctrl.Result{}), "an empty steps slice must produce a zero Result")
 }
 
 func TestShortestRequeue_AllZero(t *testing.T) {
