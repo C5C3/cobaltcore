@@ -342,3 +342,27 @@ func TestIntegration_WebhookEnforcesSingleDefault(t *testing.T) {
 	other.Spec.IsDefault = true
 	g.Expect(c.Create(ctx, other)).To(Succeed(), "a default for a different Glance should be accepted")
 }
+
+// TestIntegration_WebhookRejectsUnknownExtraConfigOption pins the extraConfig
+// option-catalog check through the real API server: a CR whose extraConfig names
+// an option the release's catalog does not accept is rejected by the validating
+// webhook. "default_backend_typo" is a typo for the [glance_store]
+// default_backend option.
+func TestIntegration_WebhookRejectsUnknownExtraConfigOption(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTest(t)
+	ns := newNamespace(t, ctx, c, "extraconfig-catalog-")
+
+	glance := integrationGlance("glance", ns)
+	glance.Spec.ExtraConfig = map[string]map[string]string{
+		"glance_store": {"default_backend_typo": "s3"},
+	}
+
+	err := c.Create(ctx, glance)
+	g.Expect(err).To(HaveOccurred(), "unknown extraConfig option should be rejected by the webhook")
+	g.Expect(apierrors.IsInvalid(err) || apierrors.IsForbidden(err)).To(BeTrue(),
+		fmt.Sprintf("expected Invalid or Forbidden status error, got: %v", err))
+	g.Expect(err.Error()).To(ContainSubstring("no such option in the glance 2025.2 option catalog"))
+}

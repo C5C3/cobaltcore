@@ -426,3 +426,213 @@ func TestGlanceWarnings_InertLaunchModeKnobs(t *testing.T) {
 		})
 	}
 }
+
+// --- extraConfig option-catalog validation ---
+
+// TestGlanceValidate_ExtraConfigUnknownOptionRejected pins that an unknown option
+// name under a known catalog section is rejected. "default_backend_typo" is a
+// typo for the [glance_store] default_backend option, so the catalog does not
+// list it.
+func TestGlanceValidate_ExtraConfigUnknownOptionRejected(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &GlanceWebhook{}
+	obj := validGlance()
+	obj.Spec.ExtraConfig = map[string]map[string]string{
+		"glance_store": {"default_backend_typo": "s3"},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), obj)
+	g.Expect(err).To(gomega.HaveOccurred())
+	g.Expect(err.Error()).To(gomega.ContainSubstring("no such option in the glance 2025.2 option catalog"))
+}
+
+// TestGlanceValidate_ExtraConfigUnknownSectionRejected pins that an option under
+// a section the catalog does not contain is rejected as an unknown section.
+// "glance_stor" is a typo for "glance_store".
+func TestGlanceValidate_ExtraConfigUnknownSectionRejected(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &GlanceWebhook{}
+	obj := validGlance()
+	obj.Spec.ExtraConfig = map[string]map[string]string{
+		"glance_stor": {"default_backend": "s3"},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), obj)
+	g.Expect(err).To(gomega.HaveOccurred())
+	g.Expect(err.Error()).To(gomega.ContainSubstring("no such section in the glance 2025.2 option catalog"))
+}
+
+// TestGlanceValidate_ExtraConfigReservedStoreSectionsExempt pins that the
+// reserved glance_store staging and tasks sections are skipped whole: an
+// arbitrary file-store option under either — one the release catalog does not
+// list — is accepted, because CatalogExemptSections exempts the section itself
+// (not just the two operator-owned datadir keys).
+func TestGlanceValidate_ExtraConfigReservedStoreSectionsExempt(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &GlanceWebhook{}
+	obj := validGlance()
+	obj.Spec.ExtraConfig = map[string]map[string]string{
+		"os_glance_staging_store": {"filesystem_store_chunk_size": "65536"},
+		"os_glance_tasks_store":   {"filesystem_store_chunk_size": "65536"},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), obj)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+}
+
+// TestGlanceValidate_ExtraConfigOwnershipRegistryKeyExempt pins that an
+// operator-owned (section, key) pair is exempt even when the catalog section
+// exists but does not list that key. [keystone_authtoken] username is a
+// non-Rejected registry entry whose key the 2025.2 catalog does not carry, so
+// without the registry exemption it would be flagged as an unknown option.
+func TestGlanceValidate_ExtraConfigOwnershipRegistryKeyExempt(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &GlanceWebhook{}
+	obj := validGlance()
+	obj.Spec.ExtraConfig = map[string]map[string]string{
+		"keystone_authtoken": {"username": "glance-svc"},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), obj)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+}
+
+// TestGlanceValidate_ExtraConfigPluginSectionExempt pins that a section declared
+// by a loaded plugin is skipped whole, so options under it are never flagged even
+// though the catalog cannot enumerate them.
+func TestGlanceValidate_ExtraConfigPluginSectionExempt(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &GlanceWebhook{}
+	obj := validGlance()
+	obj.Spec.Plugins = []commonv1.PluginSpec{
+		{Name: "custom-store", ConfigSection: "custom_store"},
+	}
+	obj.Spec.ExtraConfig = map[string]map[string]string{
+		"custom_store": {"endpoint": "https://store.example.com", "bucket": "images"},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), obj)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+}
+
+// TestGlanceValidate_ExtraConfigEmptyReleaseFailsOpen pins the fail-open behavior
+// when spec.openStackRelease does not name a release: the catalog cannot be
+// resolved, so the check emits a single warning and no catalog error even though
+// "default_backend_typo" is unknown. Other validation may reject the empty
+// release, so this asserts only on the warning and the absence of catalog errors.
+func TestGlanceValidate_ExtraConfigEmptyReleaseFailsOpen(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &GlanceWebhook{}
+	obj := validGlance()
+	obj.Spec.OpenStackRelease = ""
+	obj.Spec.ExtraConfig = map[string]map[string]string{
+		"glance_store": {"default_backend_typo": "s3"},
+	}
+
+	warnings, err := w.ValidateCreate(context.Background(), obj)
+	g.Expect(warnings).To(gomega.ContainElement(
+		"spec.extraConfig was not validated against an option catalog: spec.openStackRelease does not name an OpenStack release",
+	))
+	if err != nil {
+		g.Expect(err.Error()).NotTo(gomega.ContainSubstring("option catalog"))
+	}
+}
+
+// TestGlanceValidate_ExtraConfigUnknownReleaseFailsOpen pins the fail-open
+// behavior for a parseable release the operator ships no catalog for.
+func TestGlanceValidate_ExtraConfigUnknownReleaseFailsOpen(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &GlanceWebhook{}
+	obj := validGlance()
+	obj.Spec.OpenStackRelease = "2027.1"
+	obj.Spec.ExtraConfig = map[string]map[string]string{
+		"glance_store": {"default_backend_typo": "s3"},
+	}
+
+	warnings, err := w.ValidateCreate(context.Background(), obj)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(warnings).To(gomega.ContainElement(
+		`spec.extraConfig was not validated against an option catalog: no catalog for release "2027.1" is embedded in this operator build`,
+	))
+}
+
+// TestGlanceValidate_ExtraConfigDeprecatedOptionWarns pins that a
+// deprecated-but-still-accepted option is honored (no error) but surfaces a
+// warning naming its replacement. [DEFAULT] logfile is deprecated in favor of
+// [DEFAULT] log_file.
+func TestGlanceValidate_ExtraConfigDeprecatedOptionWarns(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &GlanceWebhook{}
+	obj := validGlance()
+	obj.Spec.ExtraConfig = map[string]map[string]string{
+		"DEFAULT": {"logfile": "/var/log/glance/glance.log"},
+	}
+
+	warnings, err := w.ValidateCreate(context.Background(), obj)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(warnings).To(gomega.ContainElement(gomega.ContainSubstring(
+		"deprecated option in glance 2025.2, replaced by [DEFAULT] log_file",
+	)))
+}
+
+// TestGlanceValidateUpdate_ExtraConfigCatalogGate exercises all four arms of the
+// UPDATE re-validation gate. The old object carries a since-invalidated
+// extraConfig; the check re-runs only when extraConfig, the plugin
+// config-section set, or spec.openStackRelease changes.
+func TestGlanceValidateUpdate_ExtraConfigCatalogGate(t *testing.T) {
+	w := &GlanceWebhook{}
+	oldObj := func() *Glance {
+		o := validGlance()
+		o.Spec.ExtraConfig = map[string]map[string]string{
+			"glance_store": {"default_backend_typo": "s3"},
+		}
+		return o
+	}
+
+	t.Run("unrelated edit is accepted", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		old := oldObj()
+		newObj := old.DeepCopy()
+		newObj.Spec.Deployment.Replicas = 2
+
+		_, err := w.ValidateUpdate(context.Background(), old, newObj)
+		g.Expect(err).NotTo(gomega.HaveOccurred())
+	})
+
+	t.Run("extraConfig edit is re-validated and rejected", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		old := oldObj()
+		newObj := old.DeepCopy()
+		newObj.Spec.ExtraConfig = map[string]map[string]string{
+			"glance_store": {"another_typo": "x"},
+		}
+
+		_, err := w.ValidateUpdate(context.Background(), old, newObj)
+		g.Expect(err).To(gomega.HaveOccurred())
+		g.Expect(err.Error()).To(gomega.ContainSubstring("no such option in the glance 2025.2 option catalog"))
+	})
+
+	t.Run("openStackRelease edit is re-validated and rejected", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		old := oldObj()
+		newObj := old.DeepCopy()
+		newObj.Spec.OpenStackRelease = "2026.1"
+
+		_, err := w.ValidateUpdate(context.Background(), old, newObj)
+		g.Expect(err).To(gomega.HaveOccurred())
+		g.Expect(err.Error()).To(gomega.ContainSubstring("no such option in the glance 2026.1 option catalog"))
+	})
+
+	t.Run("plugin-list edit is re-validated and rejected", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		old := oldObj()
+		newObj := old.DeepCopy()
+		newObj.Spec.Plugins = []commonv1.PluginSpec{
+			{Name: "custom-store", ConfigSection: "custom_store"},
+		}
+
+		_, err := w.ValidateUpdate(context.Background(), old, newObj)
+		g.Expect(err).To(gomega.HaveOccurred())
+		g.Expect(err.Error()).To(gomega.ContainSubstring("no such option in the glance 2025.2 option catalog"))
+	})
+}
