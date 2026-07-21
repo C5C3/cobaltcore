@@ -46,7 +46,25 @@ identical to what CI validates.
 | [kubectl](https://kubernetes.io/docs/tasks/tools/) | see below |
 | [Helm](https://helm.sh/docs/intro/install/) | platform installer |
 | [jq](https://jqlang.org/download/) | platform installer |
-| [Flux CLI](https://fluxcd.io/flux/installation/) | **Optional — debugging only.** `make deploy-infra` bootstraps Flux via flux-operator + `FluxInstance` and does not require the CLI. Install it only to run ad-hoc `flux logs` or `flux get` commands against a live cluster. |
+
+**Optional:** [Flux CLI](https://fluxcd.io/flux/installation/) for ad-hoc debugging only. `make deploy-infra` bootstraps Flux via flux-operator + `FluxInstance` and does not require the CLI.
+
+::: tip Nix users
+Instead of `make install-test-deps`, you can run `nix develop` to get every
+tool in the table above — plus `controller-gen`, `gofumpt`, `golangci-lint`,
+`kustomize`, `chainsaw`, and the envtest assets — at the versions CI pins. See
+[Nix Development Environment](./contributing/nix-dev-environment.md). Docker
+still has to be installed separately (kind needs a running daemon).
+:::
+
+---
+
+## Step 1 — Clone the repository
+
+```bash
+git clone https://github.com/c5c3/forge.git
+cd forge
+```
 
 The project ships a helper script that downloads and verifies kind and kubectl with pinned
 SHA256 checksums. The authoritative versions are declared at the top of
@@ -67,23 +85,6 @@ By default, binaries are installed to `~/.local/bin`. Make sure that directory i
 
 ```bash
 export PATH="${HOME}/.local/bin:${PATH}"
-```
-
-::: tip Nix users
-Instead of `make install-test-deps`, you can run `nix develop` to get every
-tool in the table above — plus `controller-gen`, `gofumpt`, `golangci-lint`,
-`kustomize`, `chainsaw`, and the envtest assets — at the versions CI pins. See
-[Nix Development Environment](./contributing/nix-dev-environment.md). Docker
-still has to be installed separately (kind needs a running daemon).
-:::
-
----
-
-## Step 1 — Clone the repository
-
-```bash
-git clone https://github.com/c5c3/forge.git
-cd forge
 ```
 
 ---
