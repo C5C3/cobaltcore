@@ -677,6 +677,38 @@ FIXTURES: list[Fixture] = [
 # Admission must reject this CR with an $error referencing the substring
 # "trusted_dashboard is managed via spec.federation.trustedDashboards".""",
     ),
+    Fixture(
+        filename="24-extraconfig-unknown-option.yaml",
+        name="invalid-extraconfig-unknown-option",
+        trailing=(
+            "  extraConfig:\n"
+            "    token:\n"
+            "      providr: fernet\n"
+        ),
+        comment="""\
+# Keystone CR whose spec.extraConfig sets "providr" (a typo for "provider") in
+# the known [token] section. The option does not exist in the keystone 2025.2
+# option catalog, so the validating webhook rejects it — a typo'd key must
+# never silently reach the rendered keystone.conf where oslo.config would
+# ignore it. Admission must reject this CR with an $error referencing the
+# substring "no such option in the keystone 2025.2 option catalog".""",
+    ),
+    Fixture(
+        filename="25-extraconfig-unknown-section.yaml",
+        name="invalid-extraconfig-unknown-section",
+        trailing=(
+            "  extraConfig:\n"
+            "    fernet_token:\n"
+            '      max_active_keys: "5"\n'
+        ),
+        comment="""\
+# Keystone CR whose spec.extraConfig declares a "fernet_token" section
+# (singular — a typo for "fernet_tokens"). The section does not exist in the
+# keystone 2025.2 option catalog, so the validating webhook rejects it — a
+# typo'd section name must never silently reach the rendered keystone.conf.
+# Admission must reject this CR with an $error referencing the substring
+# "no such section in the keystone 2025.2 option catalog".""",
+    ),
 ]
 
 

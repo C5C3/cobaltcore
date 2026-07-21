@@ -39,12 +39,14 @@ _CHAINSAW_TEST = _HERE / "chainsaw-test.yaml"
 
 # Number of fixtures emitted by _generate.py: eleven create-rejection fixtures
 # (02-12 plus 13-policy-overrides-empty-rule-value), five update-rejection
-# fixtures (13-immutable-base and 14-17, #466), and eight validation-marker
-# fixtures (13-image-empty-tag through 20-perloggerlevels-invalid-value). The
+# fixtures (13-immutable-base and 14-17, #466), eight validation-marker
+# fixtures (13-image-empty-tag through 20-perloggerlevels-invalid-value), and
+# the two extraConfig option-catalog fixtures (24-extraconfig-unknown-option
+# and 25-extraconfig-unknown-section). The
 # fixtures (00-, 01-) predate and are intentionally NOT generated. Bumping this
 # value requires adding the matching Fixture entry AND the matching
 # `file: <name>` line in chainsaw-test.yaml.
-_EXPECTED_FIXTURE_COUNT = 27
+_EXPECTED_FIXTURE_COUNT = 29
 
 
 def _load_generator() -> types.ModuleType:
