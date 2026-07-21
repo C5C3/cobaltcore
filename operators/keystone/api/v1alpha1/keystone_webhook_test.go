@@ -3257,6 +3257,192 @@ func TestDefault_DefaultsModeOnlyWhenBlockPresent(t *testing.T) {
 	})
 }
 
+// --- extraConfig option-catalog validation tests ---
+
+// TestValidate_ExtraConfigUnknownOptionRejected pins that an unknown option name
+// under a known catalog section is rejected. "providr" is a typo for the token
+// [token] provider option, so the catalog does not list it.
+func TestValidate_ExtraConfigUnknownOptionRejected(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.ExtraConfig = map[string]map[string]string{
+		"token": {"providr": "fernet"},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("no such option in the keystone 2025.2 option catalog"))
+}
+
+// TestValidate_ExtraConfigUnknownSectionRejected pins that an option under a
+// section the catalog does not contain is rejected as an unknown section.
+// "fernet_token" (singular) is a typo for "fernet_tokens".
+func TestValidate_ExtraConfigUnknownSectionRejected(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.ExtraConfig = map[string]map[string]string{
+		"fernet_token": {"max_active_keys": "5"},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("no such section in the keystone 2025.2 option catalog"))
+}
+
+// TestValidate_ExtraConfigOwnershipRegistryPairExempt pins that an
+// operator-owned (section, key) pair is exempt even when the catalog does not
+// contain that section. [memcache] servers is a registry entry whose section is
+// deliberately absent from the 2025.2 catalog.
+func TestValidate_ExtraConfigOwnershipRegistryPairExempt(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.ExtraConfig = map[string]map[string]string{
+		"memcache": {"servers": "mc1:11211,mc2:11211"},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// TestValidate_ExtraConfigPluginSectionExempt pins that a section declared by a
+// loaded plugin is skipped whole, so options under it are never flagged even
+// though the catalog cannot enumerate them.
+func TestValidate_ExtraConfigPluginSectionExempt(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.Plugins = []commonv1.PluginSpec{
+		{Name: "keycloak-backend", ConfigSection: "keycloak"},
+	}
+	k.Spec.ExtraConfig = map[string]map[string]string{
+		"keycloak": {"auth_url": "https://kc.example.com", "client_id": "keystone"},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// TestValidate_ExtraConfigDigestPinFailsOpen pins the fail-open behavior for a
+// digest-pinned image: the option catalog cannot be resolved, so the check
+// emits a single warning and no error even though "providr" is unknown.
+func TestValidate_ExtraConfigDigestPinFailsOpen(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.Image.Tag = ""
+	k.Spec.Image.Digest = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+	k.Spec.ExtraConfig = map[string]map[string]string{
+		"token": {"providr": "x"},
+	}
+
+	warnings, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(warnings).To(ContainElement(
+		"spec.extraConfig was not validated against an option catalog: spec.image does not name an OpenStack release",
+	))
+}
+
+// TestValidate_ExtraConfigUnknownReleaseFailsOpen pins the fail-open behavior for
+// a parseable release the operator ships no catalog for.
+func TestValidate_ExtraConfigUnknownReleaseFailsOpen(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.Image.Tag = "2027.1"
+	k.Spec.ExtraConfig = map[string]map[string]string{
+		"token": {"providr": "x"},
+	}
+
+	warnings, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(warnings).To(ContainElement(
+		`spec.extraConfig was not validated against an option catalog: no catalog for release "2027.1" is embedded in this operator build`,
+	))
+}
+
+// TestValidate_ExtraConfigDeprecatedOptionWarns pins that a deprecated-but-still-
+// accepted option is honored (no error) but surfaces a warning naming its
+// replacement. [DEFAULT] logfile is deprecated in favor of [DEFAULT] log_file.
+func TestValidate_ExtraConfigDeprecatedOptionWarns(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &KeystoneWebhook{}
+	k := validKeystone()
+	k.Spec.ExtraConfig = map[string]map[string]string{
+		"DEFAULT": {"logfile": "/var/log/keystone.log"},
+	}
+
+	warnings, err := w.ValidateCreate(context.Background(), k)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(warnings).To(ContainElement(ContainSubstring(
+		"deprecated option in keystone 2025.2, replaced by [DEFAULT] log_file",
+	)))
+}
+
+// TestValidateUpdate_ExtraConfigCatalogGate exercises all four arms of the
+// UPDATE re-validation gate. The old object carries a since-invalidated
+// extraConfig; the check re-runs only when extraConfig, the plugin config-section
+// set, or the image tag changes.
+func TestValidateUpdate_ExtraConfigCatalogGate(t *testing.T) {
+	w := &KeystoneWebhook{}
+	oldObj := func() *Keystone {
+		k := validKeystone()
+		k.Spec.ExtraConfig = map[string]map[string]string{
+			"token": {"providr": "fernet"},
+		}
+		return k
+	}
+
+	t.Run("unrelated edit is accepted", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		old := oldObj()
+		newObj := old.DeepCopy()
+		newObj.Spec.Deployment.Replicas = 2
+
+		_, err := w.ValidateUpdate(context.Background(), old, newObj)
+		g.Expect(err).NotTo(HaveOccurred())
+	})
+
+	t.Run("extraConfig edit is re-validated and rejected", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		old := oldObj()
+		newObj := old.DeepCopy()
+		newObj.Spec.ExtraConfig = map[string]map[string]string{
+			"token": {"providr": "uuid"},
+		}
+
+		_, err := w.ValidateUpdate(context.Background(), old, newObj)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("no such option in the keystone 2025.2 option catalog"))
+	})
+
+	t.Run("image tag edit is re-validated and rejected", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		old := oldObj()
+		newObj := old.DeepCopy()
+		newObj.Spec.Image.Tag = "2026.1"
+
+		_, err := w.ValidateUpdate(context.Background(), old, newObj)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("no such option in the keystone 2026.1 option catalog"))
+	})
+
+	t.Run("plugin-list edit is re-validated and rejected", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		old := oldObj()
+		newObj := old.DeepCopy()
+		newObj.Spec.Plugins = []commonv1.PluginSpec{
+			{Name: "keycloak-backend", ConfigSection: "keycloak"},
+		}
+
+		_, err := w.ValidateUpdate(context.Background(), old, newObj)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("no such option in the keystone 2025.2 option catalog"))
+	})
+}
+
 // --- Interface compliance ---
 
 func TestKeystoneWebhook_ImplementsInterfaces(t *testing.T) {

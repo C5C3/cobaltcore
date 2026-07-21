@@ -60,6 +60,13 @@ spec:
   # Each patch sets a unique extraConfig value, producing a new immutable
   # ConfigMap. With retain=3, after the 4th patch the operator must prune
   # the oldest ConfigMap, capping the total at retain + 1 = 4.
+  # The marker key is [DEFAULT] instance_format, a real oslo.log option that
+  # the extraConfig webhook accepts against the 2025.2 catalog (an invented
+  # key would now be rejected on every patch). Its value is not validated, and
+  # instance_format is only interpolated into log records that carry instance
+  # context — which keystone never emits — so it stays inert while each
+  # iteration's distinct value still yields a distinct rendered config hash and
+  # thus a new immutable ConfigMap.
   - try:
     - script:
         timeout: 300s
@@ -93,11 +100,14 @@ spec:
 
           echo "Initial ConfigMap count: $(count_cms)"
 
-          # Apply 4 sequential config changes via extraConfig patches.
+          # Apply 4 sequential config changes via extraConfig patches. The value
+          # is inert (instance_format only affects instance-context log records,
+          # which keystone never emits) but distinct per iteration, so each patch
+          # renders a new config hash and a new immutable ConfigMap.
           for i in 1 2 3 4; do
             echo "=== Patch $i: setting extraConfig ==="
             kubectl patch keystone "$CR_NAME" -n "$NS" --type=merge -p \
-              "{\"spec\":{\"extraConfig\":{\"DEFAULT\":{\"e2e_pruning_marker\":\"iteration-$i\"}}}}"
+              "{\"spec\":{\"extraConfig\":{\"DEFAULT\":{\"instance_format\":\"iteration-$i\"}}}}"
 
             # Wait for the reconciler to process the change.
             sleep 5

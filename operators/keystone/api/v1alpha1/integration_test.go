@@ -1095,6 +1095,31 @@ func TestIntegration_AcceptsValidNonDefaultMarkers(t *testing.T) {
 		"valid non-default validation-marker values should be accepted")
 }
 
+// TestIntegration_WebhookRejectsUnknownExtraConfigOption pins the extraConfig
+// option-catalog check through the real API server: a CR whose extraConfig names
+// an option the pinned release's catalog does not accept is rejected by the
+// validating webhook. "providr" is a typo for the [token] provider option.
+func TestIntegration_WebhookRejectsUnknownExtraConfigOption(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTest(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-extraconfig-catalog-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	k := validIntegrationKeystone("extraconfig-unknown-option", ns.Name)
+	k.Spec.ExtraConfig = map[string]map[string]string{
+		"token": {"providr": "fernet"},
+	}
+
+	err := c.Create(ctx, k)
+	g.Expect(err).To(HaveOccurred(), "unknown extraConfig option should be rejected by the webhook")
+	g.Expect(apierrors.IsInvalid(err) || apierrors.IsForbidden(err)).To(BeTrue(),
+		fmt.Sprintf("expected Invalid or Forbidden status error, got: %v", err))
+	g.Expect(err.Error()).To(ContainSubstring("no such option in the keystone 2025.2 option catalog"))
+}
+
 // --- KeystoneIdentityBackend CRD schema (CEL + defaults) ---
 
 // validIntegrationIdentityBackend returns a minimal valid backend CR for
