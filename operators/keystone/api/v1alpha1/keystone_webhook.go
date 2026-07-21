@@ -8,6 +8,8 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"reflect"
+	"sort"
 
 	appsv1 "k8s.io/api/apps/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -19,7 +21,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
+	"github.com/c5c3/forge/internal/common/config"
 	"github.com/c5c3/forge/internal/common/policy"
+	"github.com/c5c3/forge/internal/common/release"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	"github.com/c5c3/forge/internal/common/validation"
 )
@@ -224,12 +228,24 @@ func (w *KeystoneWebhook) Default(_ context.Context, obj *Keystone) error {
 
 // ValidateCreate implements admission.Validator[*Keystone].
 func (w *KeystoneWebhook) ValidateCreate(ctx context.Context, obj *Keystone) (admission.Warnings, error) {
-	return warnCleartextTrustedDashboards(obj), w.validate(ctx, obj)
+	catalogWarnings, catalogErrs := validateExtraConfigOptions(field.NewPath("spec"), obj)
+	return append(warnCleartextTrustedDashboards(obj), catalogWarnings...), w.validate(ctx, obj, catalogErrs)
 }
 
 // ValidateUpdate implements admission.Validator[*Keystone].
-func (w *KeystoneWebhook) ValidateUpdate(ctx context.Context, _, newObj *Keystone) (admission.Warnings, error) {
-	return warnCleartextTrustedDashboards(newObj), w.validate(ctx, newObj)
+//
+// The extraConfig option-catalog check is re-run only when one of its inputs
+// changed (extraConfig, the plugin config-section set, or the image tag). This
+// keeps an unrelated update — for example scaling replicas — from retroactively
+// rejecting a CR whose extraConfig was accepted at create time but has since
+// been invalidated by a regenerated catalog.
+func (w *KeystoneWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj *Keystone) (admission.Warnings, error) {
+	var catalogWarnings admission.Warnings
+	var catalogErrs field.ErrorList
+	if extraConfigCatalogInputsChanged(oldObj, newObj) {
+		catalogWarnings, catalogErrs = validateExtraConfigOptions(field.NewPath("spec"), newObj)
+	}
+	return append(warnCleartextTrustedDashboards(newObj), catalogWarnings...), w.validate(ctx, newObj, catalogErrs)
 }
 
 // ValidateDelete implements admission.Validator[*Keystone]. The method is
@@ -243,7 +259,9 @@ func (w *KeystoneWebhook) ValidateDelete(_ context.Context, _ *Keystone) (admiss
 
 // validate runs all validation rules against the Keystone spec.
 // ctx is required for cluster-scoped lookups (PriorityClass validation).
-func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
+// extra carries errors accumulated by the caller (the extraConfig option-catalog
+// check) so they aggregate into the single Invalid error alongside the rest.
+func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone, extra field.ErrorList) error {
 	var allErrs field.ErrorList
 	specPath := field.NewPath("spec")
 
@@ -818,6 +836,8 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone) error {
 		)...)
 	}
 
+	allErrs = append(allErrs, extra...)
+
 	if len(allErrs) > 0 {
 		return apierrors.NewInvalid(
 			schema.GroupKind{Group: GroupVersion.Group, Kind: "Keystone"},
@@ -918,4 +938,121 @@ func warnCleartextTrustedDashboards(k *Keystone) admission.Warnings {
 		))
 	}
 	return warnings
+}
+
+// validateExtraConfigOptions validates the option names in spec.extraConfig
+// against the option catalog embedded for the release named by spec.image.tag.
+//
+// It fails open: when the image cannot be resolved to an embedded catalog it
+// returns exactly one warning and no errors, so a digest-pinned image, an
+// unparseable tag, or a build that ships no catalog for the release never blocks
+// admission. Sections a loaded plugin declares (spec.plugins[].configSection)
+// and the operator-owned keys in OwnedConfigKeys are exempt from the scan, so a
+// plugin's dynamically named options and an operator-owned override are never
+// mistaken for unknown options. Every remaining unknown option or unknown
+// section becomes a field error; every deprecated-but-accepted option becomes a
+// warning naming its replacement.
+func validateExtraConfigOptions(specPath *field.Path, k *Keystone) (admission.Warnings, field.ErrorList) {
+	if len(k.Spec.ExtraConfig) == 0 {
+		return nil, nil
+	}
+
+	catalog, ok := OptionCatalogForRelease(k.Spec.Image.Tag)
+	if !ok {
+		// Fail open with exactly one warning. Distinguish an image that does not
+		// name a release at all (empty tag, digest pin, "latest") from a
+		// parseable release the operator ships no catalog for.
+		rel, err := release.ParseRelease(k.Spec.Image.Tag)
+		if err != nil {
+			return admission.Warnings{
+				"spec.extraConfig was not validated against an option catalog: " +
+					"spec.image does not name an OpenStack release",
+			}, nil
+		}
+		return admission.Warnings{
+			fmt.Sprintf("spec.extraConfig was not validated against an option catalog: "+
+				"no catalog for release %q is embedded in this operator build",
+				fmt.Sprintf("%d.%d", rel.Year, rel.Minor)),
+		}, nil
+	}
+
+	// Exempt the sections a loaded plugin owns (their option set is not
+	// enumerable from the release catalog) and the operator-owned keys, so
+	// neither is flagged as unknown.
+	pluginSections := make(map[string]struct{}, len(k.Spec.Plugins))
+	for _, p := range k.Spec.Plugins {
+		pluginSections[p.ConfigSection] = struct{}{}
+	}
+	ex := config.CatalogExemptions{
+		Sections: pluginSections,
+		Keys:     config.KeyExemptionsFromRegistry(OwnedConfigKeys),
+	}
+
+	base := catalog.Release
+	unknown, deprecated := catalog.FindUnknownOptions(k.Spec.ExtraConfig, ex)
+
+	extraConfigPath := specPath.Child("extraConfig")
+	var errs field.ErrorList
+	for _, u := range unknown {
+		fldPath := extraConfigPath.Key(u.Section).Key(u.Key)
+		if u.SectionUnknown {
+			errs = append(errs, field.Invalid(fldPath, u.Key,
+				fmt.Sprintf("no such section in the keystone %s option catalog "+
+					"(sections registered by a loaded plugin must be declared via spec.plugins)", base)))
+			continue
+		}
+		errs = append(errs, field.Invalid(fldPath, u.Key,
+			fmt.Sprintf("no such option in the keystone %s option catalog", base)))
+	}
+
+	var warnings admission.Warnings
+	for _, d := range deprecated {
+		if d.Replacement == "" {
+			warnings = append(warnings, fmt.Sprintf(
+				"spec.extraConfig [%s] %s: deprecated option in keystone %s with no replacement",
+				d.Section, d.Key, base,
+			))
+			continue
+		}
+		warnings = append(warnings, fmt.Sprintf(
+			"spec.extraConfig [%s] %s: deprecated option in keystone %s, replaced by %s",
+			d.Section, d.Key, base, d.Replacement,
+		))
+	}
+	return warnings, errs
+}
+
+// extraConfigCatalogInputsChanged reports whether anything the extraConfig
+// option-catalog check depends on differs between oldObj and newObj: the
+// extraConfig map itself, the image tag that selects the release catalog, or the
+// set of plugin config sections (compared order-insensitively, since it only
+// feeds an exemption set). ValidateUpdate gates the catalog re-validation on
+// this so a CR whose extraConfig went stale-invalid is not rejected by an
+// otherwise-unrelated update.
+func extraConfigCatalogInputsChanged(oldObj, newObj *Keystone) bool {
+	if !reflect.DeepEqual(oldObj.Spec.ExtraConfig, newObj.Spec.ExtraConfig) {
+		return true
+	}
+	if oldObj.Spec.Image.Tag != newObj.Spec.Image.Tag {
+		return true
+	}
+	if len(oldObj.Spec.Plugins) != len(newObj.Spec.Plugins) {
+		return true
+	}
+	oldSections := make([]string, len(oldObj.Spec.Plugins))
+	for i, p := range oldObj.Spec.Plugins {
+		oldSections[i] = p.ConfigSection
+	}
+	newSections := make([]string, len(newObj.Spec.Plugins))
+	for i, p := range newObj.Spec.Plugins {
+		newSections[i] = p.ConfigSection
+	}
+	sort.Strings(oldSections)
+	sort.Strings(newSections)
+	for i := range oldSections {
+		if oldSections[i] != newSections[i] {
+			return true
+		}
+	}
+	return false
 }
