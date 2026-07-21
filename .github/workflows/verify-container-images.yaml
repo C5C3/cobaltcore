@@ -16,6 +16,9 @@ name: Verify Container Images
       - patches/**
       - scripts/**
       - hack/tempest/**
+      - hack/gen-option-catalog.sh
+      - operators/keystone/api/v1alpha1/catalogs/**
+      - operators/glance/api/v1alpha1/catalogs/**
       - tests/container-images/**
       - tests/scripts/**
       - tests/tempest/test_retry_helpers.py
