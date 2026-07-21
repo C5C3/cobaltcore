@@ -1,0 +1,646 @@
+{
+  "release": "2025.2",
+  "sections": {
+    "DEFAULT": {
+      "deprecated": {
+        "log_config": "[DEFAULT] log_config_append",
+        "logdir": "[DEFAULT] log_dir",
+        "logfile": "[DEFAULT] log_file",
+        "rpc_thread_pool_size": "[DEFAULT] executor_thread_pool_size"
+      },
+      "opts": [
+        "admin_token",
+        "control_exchange",
+        "debug",
+        "default_log_levels",
+        "default_publisher_id",
+        "executor_thread_pool_size",
+        "fatal_deprecations",
+        "insecure_debug",
+        "instance_format",
+        "instance_uuid_format",
+        "list_limit",
+        "log_color",
+        "log_config_append",
+        "log_date_format",
+        "log_dir",
+        "log_file",
+        "log_rotate_interval",
+        "log_rotate_interval_type",
+        "log_rotation_type",
+        "logging_context_format_string",
+        "logging_debug_format_suffix",
+        "logging_default_format_string",
+        "logging_exception_prefix",
+        "logging_user_identity_format",
+        "max_db_limit",
+        "max_logfile_count",
+        "max_logfile_size_mb",
+        "max_param_size",
+        "max_project_tree_depth",
+        "max_token_size",
+        "notification_format",
+        "notification_opt_out",
+        "public_endpoint",
+        "publish_errors",
+        "rate_limit_burst",
+        "rate_limit_except_level",
+        "rate_limit_interval",
+        "rpc_ping_enabled",
+        "rpc_response_timeout",
+        "strict_password_check",
+        "syslog_log_facility",
+        "transport_url",
+        "use_journal",
+        "use_json",
+        "use_stderr",
+        "use_syslog",
+        "watch_log_file"
+      ]
+    },
+    "application_credential": {
+      "deprecated": {},
+      "opts": [
+        "cache_time",
+        "caching",
+        "driver",
+        "user_limit"
+      ]
+    },
+    "assignment": {
+      "deprecated": {
+        "cache_time": "[resource] cache_time",
+        "caching": "[resource] caching",
+        "list_limit": "[resource] list_limit"
+      },
+      "opts": [
+        "driver",
+        "prohibited_implied_role"
+      ]
+    },
+    "auth": {
+      "deprecated": {},
+      "opts": [
+        "application_credential",
+        "external",
+        "mapped",
+        "methods",
+        "oauth1",
+        "password",
+        "token"
+      ]
+    },
+    "cache": {
+      "deprecated": {},
+      "opts": [
+        "backend",
+        "backend_argument",
+        "backend_expiration_time",
+        "config_prefix",
+        "dead_timeout",
+        "debug_cache_backend",
+        "enable_retry_client",
+        "enable_socket_keepalive",
+        "enabled",
+        "enforce_fips_mode",
+        "expiration_time",
+        "hashclient_retry_attempts",
+        "hashclient_retry_delay",
+        "memcache_dead_retry",
+        "memcache_password",
+        "memcache_pool_connection_get_timeout",
+        "memcache_pool_flush_on_reconnect",
+        "memcache_pool_maxsize",
+        "memcache_pool_unused_timeout",
+        "memcache_sasl_enabled",
+        "memcache_servers",
+        "memcache_socket_timeout",
+        "memcache_username",
+        "proxies",
+        "redis_db",
+        "redis_password",
+        "redis_sentinel_service_name",
+        "redis_sentinels",
+        "redis_server",
+        "redis_socket_timeout",
+        "redis_username",
+        "retry_attempts",
+        "retry_delay",
+        "socket_keepalive_count",
+        "socket_keepalive_idle",
+        "socket_keepalive_interval",
+        "tls_allowed_ciphers",
+        "tls_cafile",
+        "tls_certfile",
+        "tls_enabled",
+        "tls_keyfile"
+      ]
+    },
+    "catalog": {
+      "deprecated": {},
+      "opts": [
+        "cache_time",
+        "caching",
+        "driver",
+        "list_limit"
+      ]
+    },
+    "cors": {
+      "deprecated": {},
+      "opts": [
+        "allow_credentials",
+        "allow_headers",
+        "allow_methods",
+        "allowed_origin",
+        "expose_headers",
+        "max_age"
+      ]
+    },
+    "credential": {
+      "deprecated": {},
+      "opts": [
+        "auth_ttl",
+        "cache_time",
+        "caching",
+        "driver",
+        "key_repository",
+        "provider",
+        "user_limit"
+      ]
+    },
+    "database": {
+      "deprecated": {},
+      "opts": [
+        "asyncio_connection",
+        "asyncio_slave_connection",
+        "backend",
+        "connection",
+        "connection_debug",
+        "connection_parameters",
+        "connection_recycle_time",
+        "connection_trace",
+        "db_inc_retry_interval",
+        "db_max_retries",
+        "db_max_retry_interval",
+        "db_retry_interval",
+        "max_overflow",
+        "max_pool_size",
+        "max_retries",
+        "mysql_sql_mode",
+        "mysql_wsrep_sync_wait",
+        "pool_timeout",
+        "retry_interval",
+        "slave_connection",
+        "sqlite_synchronous",
+        "use_db_reconnect"
+      ]
+    },
+    "domain_config": {
+      "deprecated": {},
+      "opts": [
+        "additional_sensitive_options",
+        "additional_whitelisted_options",
+        "cache_time",
+        "caching",
+        "driver"
+      ]
+    },
+    "endpoint_filter": {
+      "deprecated": {},
+      "opts": [
+        "driver",
+        "return_all_endpoints_if_no_filter"
+      ]
+    },
+    "endpoint_policy": {
+      "deprecated": {},
+      "opts": [
+        "driver"
+      ]
+    },
+    "federation": {
+      "deprecated": {},
+      "opts": [
+        "assertion_prefix",
+        "attribute_mapping_default_schema_version",
+        "caching",
+        "default_authorization_ttl",
+        "driver",
+        "federated_domain_name",
+        "remote_id_attribute",
+        "sso_callback_template",
+        "trusted_dashboard"
+      ]
+    },
+    "fernet_receipts": {
+      "deprecated": {},
+      "opts": [
+        "key_repository",
+        "max_active_keys"
+      ]
+    },
+    "fernet_tokens": {
+      "deprecated": {},
+      "opts": [
+        "key_repository",
+        "max_active_keys"
+      ]
+    },
+    "healthcheck": {
+      "deprecated": {},
+      "opts": [
+        "allowed_source_ranges",
+        "backends",
+        "detailed",
+        "disable_by_file_path",
+        "disable_by_file_paths",
+        "enable_by_file_paths",
+        "ignore_proxied_requests",
+        "path"
+      ]
+    },
+    "identity": {
+      "deprecated": {},
+      "opts": [
+        "cache_time",
+        "caching",
+        "default_domain_id",
+        "domain_config_dir",
+        "domain_configurations_from_database",
+        "domain_specific_drivers_enabled",
+        "driver",
+        "list_limit",
+        "max_password_length",
+        "password_hash_algorithm",
+        "password_hash_rounds",
+        "salt_bytesize",
+        "scrypt_block_size",
+        "scrypt_parallelism"
+      ]
+    },
+    "identity_mapping": {
+      "deprecated": {},
+      "opts": [
+        "backward_compatible_ids",
+        "driver",
+        "generator"
+      ]
+    },
+    "jwt_tokens": {
+      "deprecated": {},
+      "opts": [
+        "jws_private_key_repository",
+        "jws_public_key_repository"
+      ]
+    },
+    "ldap": {
+      "deprecated": {},
+      "opts": [
+        "alias_dereferencing",
+        "auth_pool_connection_lifetime",
+        "auth_pool_size",
+        "chase_referrals",
+        "connection_timeout",
+        "debug_level",
+        "group_ad_nesting",
+        "group_additional_attribute_mapping",
+        "group_attribute_ignore",
+        "group_desc_attribute",
+        "group_filter",
+        "group_id_attribute",
+        "group_member_attribute",
+        "group_members_are_ids",
+        "group_name_attribute",
+        "group_objectclass",
+        "group_tree_dn",
+        "page_size",
+        "password",
+        "pool_connection_lifetime",
+        "pool_connection_timeout",
+        "pool_retry_delay",
+        "pool_retry_max",
+        "pool_size",
+        "query_scope",
+        "randomize_urls",
+        "suffix",
+        "tls_cacertdir",
+        "tls_cacertfile",
+        "tls_req_cert",
+        "url",
+        "use_auth_pool",
+        "use_pool",
+        "use_tls",
+        "user",
+        "user_additional_attribute_mapping",
+        "user_attribute_ignore",
+        "user_default_project_id_attribute",
+        "user_description_attribute",
+        "user_enabled_attribute",
+        "user_enabled_default",
+        "user_enabled_emulation",
+        "user_enabled_emulation_dn",
+        "user_enabled_emulation_use_group_config",
+        "user_enabled_invert",
+        "user_enabled_mask",
+        "user_filter",
+        "user_id_attribute",
+        "user_mail_attribute",
+        "user_name_attribute",
+        "user_objectclass",
+        "user_pass_attribute",
+        "user_tree_dn"
+      ]
+    },
+    "oauth1": {
+      "deprecated": {},
+      "opts": [
+        "access_token_duration",
+        "driver",
+        "request_token_duration"
+      ]
+    },
+    "oauth2": {
+      "deprecated": {},
+      "opts": [
+        "oauth2_authn_methods",
+        "oauth2_cert_dn_mapping_id"
+      ]
+    },
+    "oslo_messaging_kafka": {
+      "deprecated": {},
+      "opts": [
+        "compression_codec",
+        "consumer_group",
+        "enable_auto_commit",
+        "kafka_consumer_timeout",
+        "kafka_max_fetch_bytes",
+        "max_poll_records",
+        "producer_batch_size",
+        "producer_batch_timeout",
+        "sasl_mechanism",
+        "security_protocol",
+        "ssl_cafile",
+        "ssl_client_cert_file",
+        "ssl_client_key_file",
+        "ssl_client_key_password"
+      ]
+    },
+    "oslo_messaging_notifications": {
+      "deprecated": {},
+      "opts": [
+        "driver",
+        "retry",
+        "topics",
+        "transport_url"
+      ]
+    },
+    "oslo_messaging_rabbit": {
+      "deprecated": {
+        "kombu_reconnect_timeout": "[oslo_messaging_rabbit] kombu_missing_consumer_retry_timeout"
+      },
+      "opts": [
+        "amqp_auto_delete",
+        "amqp_durable_queues",
+        "conn_pool_min_size",
+        "conn_pool_ttl",
+        "direct_mandatory_flag",
+        "enable_cancel_on_failover",
+        "heartbeat_in_pthread",
+        "heartbeat_rate",
+        "heartbeat_timeout_threshold",
+        "hostname",
+        "kombu_compression",
+        "kombu_failover_strategy",
+        "kombu_missing_consumer_retry_timeout",
+        "kombu_reconnect_delay",
+        "kombu_reconnect_splay",
+        "processname",
+        "rabbit_ha_queues",
+        "rabbit_interval_max",
+        "rabbit_login_method",
+        "rabbit_qos_prefetch_count",
+        "rabbit_quorum_delivery_limit",
+        "rabbit_quorum_max_memory_bytes",
+        "rabbit_quorum_max_memory_length",
+        "rabbit_quorum_queue",
+        "rabbit_retry_backoff",
+        "rabbit_retry_interval",
+        "rabbit_stream_fanout",
+        "rabbit_transient_queues_ttl",
+        "rabbit_transient_quorum_queue",
+        "rpc_conn_pool_size",
+        "ssl",
+        "ssl_ca_file",
+        "ssl_cert_file",
+        "ssl_enforce_fips_mode",
+        "ssl_key_file",
+        "ssl_version",
+        "use_queue_manager"
+      ]
+    },
+    "oslo_middleware": {
+      "deprecated": {},
+      "opts": [
+        "enable_proxy_headers_parsing",
+        "http_basic_auth_user_file",
+        "max_request_body_size"
+      ]
+    },
+    "oslo_policy": {
+      "deprecated": {},
+      "opts": [
+        "enforce_new_defaults",
+        "enforce_scope",
+        "policy_default_rule",
+        "policy_dirs",
+        "policy_file",
+        "remote_content_type",
+        "remote_ssl_ca_crt_file",
+        "remote_ssl_client_crt_file",
+        "remote_ssl_client_key_file",
+        "remote_ssl_verify_server_crt",
+        "remote_timeout"
+      ]
+    },
+    "policy": {
+      "deprecated": {},
+      "opts": [
+        "driver",
+        "list_limit"
+      ]
+    },
+    "profiler": {
+      "deprecated": {
+        "profiler_enabled": "[profiler] enabled"
+      },
+      "opts": [
+        "connection_string",
+        "enabled",
+        "es_doc_type",
+        "es_scroll_size",
+        "es_scroll_time",
+        "filter_error_trace",
+        "hmac_keys",
+        "sentinel_service_name",
+        "socket_timeout",
+        "trace_requests",
+        "trace_sqlalchemy"
+      ]
+    },
+    "profiler_jaeger": {
+      "deprecated": {},
+      "opts": [
+        "process_tags",
+        "service_name_prefix"
+      ]
+    },
+    "profiler_otlp": {
+      "deprecated": {},
+      "opts": [
+        "service_name_prefix"
+      ]
+    },
+    "receipt": {
+      "deprecated": {},
+      "opts": [
+        "cache_on_issue",
+        "cache_time",
+        "caching",
+        "expiration",
+        "provider"
+      ]
+    },
+    "resource": {
+      "deprecated": {},
+      "opts": [
+        "admin_project_domain_name",
+        "admin_project_name",
+        "cache_time",
+        "caching",
+        "domain_name_url_safe",
+        "driver",
+        "list_limit",
+        "project_name_url_safe"
+      ]
+    },
+    "revoke": {
+      "deprecated": {},
+      "opts": [
+        "cache_time",
+        "caching",
+        "driver",
+        "expiration_buffer"
+      ]
+    },
+    "role": {
+      "deprecated": {},
+      "opts": [
+        "cache_time",
+        "caching",
+        "driver",
+        "list_limit"
+      ]
+    },
+    "saml": {
+      "deprecated": {},
+      "opts": [
+        "assertion_expiration_time",
+        "certfile",
+        "idp_contact_company",
+        "idp_contact_email",
+        "idp_contact_name",
+        "idp_contact_surname",
+        "idp_contact_telephone",
+        "idp_contact_type",
+        "idp_entity_id",
+        "idp_lang",
+        "idp_metadata_path",
+        "idp_organization_display_name",
+        "idp_organization_name",
+        "idp_organization_url",
+        "idp_sso_endpoint",
+        "keyfile",
+        "relay_state_prefix",
+        "xmlsec1_binary"
+      ]
+    },
+    "security_compliance": {
+      "deprecated": {},
+      "opts": [
+        "change_password_upon_first_use",
+        "disable_user_account_days_inactive",
+        "invalid_password_hash_function",
+        "invalid_password_hash_max_chars",
+        "invalid_password_hash_secret_key",
+        "lockout_duration",
+        "lockout_failure_attempts",
+        "minimum_password_age",
+        "password_expires_days",
+        "password_regex",
+        "password_regex_description",
+        "report_invalid_password_hash",
+        "unique_last_password_count"
+      ]
+    },
+    "shadow_users": {
+      "deprecated": {},
+      "opts": [
+        "driver"
+      ]
+    },
+    "token": {
+      "deprecated": {
+        "revocation_cache_time": "[revoke] cache_time"
+      },
+      "opts": [
+        "allow_expired_window",
+        "allow_rescope_scoped_token",
+        "cache_on_issue",
+        "cache_time",
+        "caching",
+        "expiration",
+        "provider",
+        "revoke_by_id"
+      ]
+    },
+    "tokenless_auth": {
+      "deprecated": {},
+      "opts": [
+        "issuer_attribute",
+        "protocol",
+        "trusted_issuer"
+      ]
+    },
+    "totp": {
+      "deprecated": {},
+      "opts": [
+        "included_previous_windows"
+      ]
+    },
+    "trust": {
+      "deprecated": {},
+      "opts": [
+        "allow_redelegation",
+        "driver",
+        "max_redelegation_count"
+      ]
+    },
+    "unified_limit": {
+      "deprecated": {},
+      "opts": [
+        "cache_time",
+        "caching",
+        "driver",
+        "enforcement_model",
+        "list_limit"
+      ]
+    },
+    "wsgi": {
+      "deprecated": {},
+      "opts": [
+        "debug_middleware"
+      ]
+    }
+  },
+  "service": "keystone"
+}
