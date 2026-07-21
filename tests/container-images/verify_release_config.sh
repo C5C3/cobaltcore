@@ -410,6 +410,46 @@ test_test_excludes_files_match_services() {
   fi
 }
 
+# --- Test 8: per-release option catalogs exist and parse as JSON ---
+test_option_catalogs_present_and_parse() {
+  echo "Test: option catalogs exist and parse as JSON for every release"
+
+  local found_any=false
+  for release_dir in "$PROJECT_ROOT"/releases/*/; do
+    [ -d "$release_dir" ] || continue
+    found_any=true
+    local release_name
+    release_name=$(basename "$release_dir")
+
+    # Both keystone and glance ship a per-release option catalog. yq reads
+    # JSON, so it doubles as the parse check.
+    local catalog_service
+    for catalog_service in keystone glance; do
+      local catalog="$PROJECT_ROOT/operators/${catalog_service}/api/v1alpha1/catalogs/${release_name}.json"
+      local rel_path="${catalog#"$PROJECT_ROOT"/}"
+
+      if [ ! -f "$catalog" ]; then
+        echo "  FAIL: [$release_name] $rel_path is missing"
+        FAIL=$((FAIL + 1))
+        continue
+      fi
+
+      if yq '.' "$catalog" > /dev/null 2>&1; then
+        echo "  PASS: [$release_name] $rel_path exists and parses as JSON"
+        PASS=$((PASS + 1))
+      else
+        echo "  FAIL: [$release_name] $rel_path does not parse as JSON"
+        FAIL=$((FAIL + 1))
+      fi
+    done
+  done
+
+  if [ "$found_any" = false ]; then
+    echo "  FAIL: no releases/*/ directories found"
+    FAIL=$((FAIL + 1))
+  fi
+}
+
 # --- Run all tests ---
 echo "=== Release config verification tests ==="
 echo ""
@@ -426,6 +466,8 @@ echo ""
 test_test_excludes_directory_structure
 echo ""
 test_test_excludes_files_match_services
+echo ""
+test_option_catalogs_present_and_parse
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 

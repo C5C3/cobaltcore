@@ -16,6 +16,9 @@ name: Build Images
       - patches/**
       - scripts/**
       - hack/ci-*
+      - hack/gen-option-catalog.sh
+      - operators/keystone/api/v1alpha1/catalogs/**
+      - operators/glance/api/v1alpha1/catalogs/**
       - .github/actions/**
       - tests/container-images/**
       - .github/workflows/build-images.yaml
@@ -28,6 +31,9 @@ name: Build Images
       - patches/**
       - scripts/**
       - hack/ci-*
+      - hack/gen-option-catalog.sh
+      - operators/keystone/api/v1alpha1/catalogs/**
+      - operators/glance/api/v1alpha1/catalogs/**
       - .github/actions/**
       - tests/container-images/**
       - .github/workflows/build-images.yaml
@@ -566,6 +572,15 @@ jobs:
           verify-script: ${{ github.event_name == 'pull_request' && format('tests/container-images/verify_{0}.sh', matrix.service) || '' }}
           verify-image-ref: ${{ steps.tags.outputs.composite }}
 
+      - name: Verify option catalog
+        if: github.event_name == 'pull_request' && (matrix.service == 'keystone' || matrix.service == 'glance')
+        env:
+          MATRIX_SERVICE: ${{ matrix.service }}
+          MATRIX_RELEASE: ${{ matrix.release }}
+          IMAGE_REF: ${{ steps.tags.outputs.composite }}
+          SOURCE_DIR: src/${{ matrix.service }}
+        run: hack/gen-option-catalog.sh --check "$MATRIX_SERVICE" "$MATRIX_RELEASE" "$IMAGE_REF"
+
   # Assembles per-platform service digests into multi-arch manifests with attestation.
   merge-service-images:
     if: github.event_name != 'pull_request'
@@ -719,3 +734,11 @@ jobs:
         run: |
           docker pull "$IMAGE_REF"
           bash "tests/container-images/verify_${SERVICE_NAME}.sh" "$IMAGE_REF"
+
+      - name: Verify option catalog
+        if: matrix.service == 'keystone' || matrix.service == 'glance'
+        env:
+          MATRIX_SERVICE: ${{ matrix.service }}
+          MATRIX_RELEASE: ${{ matrix.release }}
+          IMAGE_REF: ${{ steps.tags.outputs.composite }}
+        run: hack/gen-option-catalog.sh --check "$MATRIX_SERVICE" "$MATRIX_RELEASE" "$IMAGE_REF"
