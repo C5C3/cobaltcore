@@ -20,9 +20,11 @@ OpenBao, and registers the identity catalog.
 
 Same toolchain as the [Quick Start](./quick-start.md), plus:
 
-- The OpenStack CLI (`python-openstackclient`) on `PATH` for the auth check in Step 6
+- `make` on `PATH` for `install-test-deps`, `deploy-infra`, and `teardown-infra`
+- The OpenStack CLI ([`python-openstackclient`](https://docs.openstack.org/python-openstackclient/latest/installation/index.html)) on `PATH` for the auth check in Step 6
 - A stable internet connection while `make deploy-infra` clones K-ORC from GitHub
 - Roughly 8 GB RAM, 2 CPU cores, and 10 GB of free disk for a laptop-sized kind cluster
+- `yq` v4.x on `PATH` for the `KIND_HOST_PORT=8443` override path in Step 2
 
 - The bundled kind `ControlPlane` CR pins its backing services to a single
   instance (`spec.infrastructure.database.replicas: 1`, `cache.replicas: 1`) so

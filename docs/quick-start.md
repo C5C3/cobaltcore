@@ -9,16 +9,18 @@ SPDX-License-Identifier: Apache-2.0
 
 # Quick Start
 
-The shortest path from `git clone` to an authenticated Keystone API call on
-**macOS** with kind on host port **`8443`** — no `vmnetd` helper, no
-privileged port binding. For UI tours, fallbacks, the local-build path,
-the production HelmRelease, E2E and Tempest, see
+This macOS quick start gets you from `git clone` to an authenticated Keystone
+API call on kind host port **`8443`** — no `vmnetd` helper, no privileged port
+binding. For the Keystone identity service reference, see
+[Keystone Operator](./reference/keystone/index.md). For UI tours, fallbacks,
+the local-build path, the production HelmRelease, E2E and Tempest, see
 [Quick Start (Extended)](./quick-start-extended.md).
 
 ## Prerequisites
 
 - Docker Desktop running
-- OpenStack CLI (`python-openstackclient`) on `PATH` for the authenticated token check in Step 6
+- `make` on `PATH` for `install-test-deps`, `deploy-infra`, and `teardown-infra`
+- OpenStack CLI ([`python-openstackclient`](https://docs.openstack.org/python-openstackclient/latest/installation/index.html)) on `PATH` for the authenticated token check in Step 6
 - Pinned `kind`, `kubectl`, `Helm`, `jq` on `PATH`:
 
   ```bash
@@ -26,7 +28,7 @@ the production HelmRelease, E2E and Tempest, see
   export PATH="${HOME}/.local/bin:${PATH}"
   ```
 
-- `yq` on `PATH` (only required because `KIND_HOST_PORT` is overridden)
+- `yq` v4.x on `PATH` (only required because `KIND_HOST_PORT` is overridden)
 - A stable internet connection for the initial image pulls and package downloads
 
 ## Step 1 — Clone
@@ -47,7 +49,7 @@ then installs Flux, cert-manager, the Gateway API CRDs,
 prometheus-operator-crds, OpenBao (initialised, unsealed and bootstrapped),
 MariaDB operator + `openstack-db`, External Secrets, Memcached operator +
 `openstack-memcached`, Envoy Gateway and the shared `openstack-gw`. Expect
-**5–10 minutes** on first run (image pulls dominate).
+**5–10 minutes** on first run.
 
 `make deploy-infra` is safe to re-run: a run with the same parameters detects
 the existing cluster and the steps already completed and converges without
@@ -71,6 +73,10 @@ kubectl wait helmrelease/keystone-operator -n keystone-system \
 ## Step 4 — Keystone service image
 
 > Note: the keystone-operator controller runs in `keystone-system`; the Keystone workload it manages runs in `openstack` (controller-vs-workload split).
+
+> The `2025.2` image tag below matches the OpenStack release pinned in this
+> repository under `releases/2025.2/`; if you are following a different release
+> branch, substitute the matching tag there.
 
 ```bash
 RELEASE=2025.2
