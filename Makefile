@@ -389,6 +389,36 @@ verify-invalid-cr-fixtures:
 	@python3 tests/e2e/glance/invalid-cr/test_generate.py
 	@python3 tests/e2e/glance/invalid-glancebackend-cr/test_generate.py
 
+.PHONY: gen-option-catalogs
+# gen-option-catalogs regenerates the per-release option catalogs the
+# extraConfig validation checks against. For every releases/<release>/ directory
+# it runs hack/gen-option-catalog.sh for keystone and glance, extracting each
+# catalog from the matching shipped service image via that image's own
+# oslo-config-generator. Requires docker and network access: it pulls the
+# service image when absent and fetches the upstream generator config. It is
+# intentionally wired into no aggregate target and no CI job.
+gen-option-catalogs:
+	@for release in $(notdir $(patsubst %/,%,$(wildcard releases/*/))); do \
+		for service in keystone glance; do \
+			echo "Generating $$service $$release option catalog..."; \
+			hack/gen-option-catalog.sh $$service $$release; \
+		done; \
+	done
+
+.PHONY: verify-option-catalogs
+# verify-option-catalogs asserts the committed option catalogs stay byte-stable
+# against a fresh extraction. It runs the same loop as gen-option-catalogs with
+# --check, so a drifted or missing catalog fails the target with a diff. Like
+# gen-option-catalogs it requires docker and network access and is wired into no
+# aggregate target and no CI job.
+verify-option-catalogs:
+	@for release in $(notdir $(patsubst %/,%,$(wildcard releases/*/))); do \
+		for service in keystone glance; do \
+			echo "Checking $$service $$release option catalog..."; \
+			hack/gen-option-catalog.sh --check $$service $$release; \
+		done; \
+	done
+
 .PHONY: check-feature-ids
 # check-feature-ids fails if any internal feature / requirement ID (CC-NNNN or
 # REQ-NNN) appears anywhere in the tracked source tree — code, tests, CI,
