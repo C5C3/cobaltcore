@@ -49,6 +49,13 @@ identical to what CI validates.
 
 **Optional:** [Flux CLI](https://fluxcd.io/flux/installation/) for ad-hoc debugging only. `make deploy-infra` bootstraps Flux via flux-operator + `FluxInstance` and does not require the CLI.
 
+Use Docker Desktop on macOS. On Linux, use rootful Docker or Podman if you
+prefer; the host-port override path documents the privileged-port tradeoffs for
+those runtimes below.
+
+You need `make` for the install and deployment targets below. The `KIND_HOST_PORT`
+override path also needs `yq` v4.x on `PATH`.
+
 ::: tip Nix users
 Instead of `make install-test-deps`, you can run `nix develop` to get every
 tool in the table above — plus `controller-gen`, `gofumpt`, `golangci-lint`,
@@ -193,7 +200,7 @@ c5c3-operator, and the MariaDB root password is expected from a non-kind Flux Ma
 baseline.
 :::
 
-Expected duration: **5–10 minutes** on first run (image pulls dominate).
+Expected duration: **5–10 minutes** on first run.
 
 ::: tip Configurable timeouts
 Override the default timeouts via environment variables if your machine is slow:
