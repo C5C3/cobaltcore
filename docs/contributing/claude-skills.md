@@ -16,12 +16,14 @@ Most skills are focused **audits** that compare one surface of the
 codebase against its source of truth — the operator CRDs, the
 sub-reconciler chains, the validation rules, the release wiring, the
 FluxCD infrastructure stack, the Renovate configuration, the e2e
-fixture corpus, the SPDX/REUSE coverage, the Go workspace — and report
-drift before it reaches a release. The suite also carries three
-**planners** (`prepare-new-service`, `prepare-new-release`,
-`prepare-new-guide`) that turn an onboarding or authoring task into a
-phased checklist, and a **runbook** (`debug-e2e-failure`) for diagnosing
-failing chainsaw e2e jobs.
+fixture corpus, the SPDX/REUSE coverage, the Go workspace, and the
+documentation itself — and report drift before it reaches a release.
+The suite also carries three **planners** (`prepare-new-service`,
+`prepare-new-release`, `prepare-new-guide`) that turn an onboarding or
+authoring task into a phased checklist, a **doc-fix driver**
+(`fix-docs`) that turns audit findings into actual edits, and a
+**runbook** (`debug-e2e-failure`) for diagnosing failing chainsaw e2e
+jobs.
 
 The skills complement the CI gates configured in
 [`.github/workflows/`](https://github.com/c5c3/forge/tree/main/.github/workflows)
@@ -115,6 +117,9 @@ a companion Bash script (the deterministic part).
 | Skill | Audits | Use when |
 |---|---|---|
 | [`check-doc-drift`](https://github.com/c5c3/forge/blob/main/.claude/skills/check-doc-drift/SKILL.md) | The forge documentation against the implementation — the `docs/reference/` pages vs the operator code, and the guides and quick-starts vs the `deploy/` infrastructure stack. | After adding or removing a sub-reconciler, status condition, operator binary, or infrastructure component, before tagging a release. |
+| [`check-doc-consistency`](https://github.com/c5c3/forge/blob/main/.claude/skills/check-doc-consistency/SKILL.md) | Documentation consistency across forge docs — terminology, naming, release/version references, repeated examples, cross-page claims, and alignment with code or configuration when docs describe implementation details. | When asked to check for contradictions; after changing shared terminology; when one doc seems to disagree with another. |
+| [`check-doc-expressions`](https://github.com/c5c3/forge/blob/main/.claude/skills/check-doc-expressions/SKILL.md) | Documentation prose quality — sentence clarity, active voice, terminology, ambiguity, tone, jargon control, adherence to `STYLE_GUIDE.md`'s rhetorical-device budget, and the readability of command examples and code-adjacent explanations. | When asked to improve writing quality; after drafting or editing prose; when a page reads correctly but not clearly. |
+| [`check-doc-structure`](https://github.com/c5c3/forge/blob/main/.claude/skills/check-doc-structure/SKILL.md) | Documentation structure and navigation — required frontmatter, heading hierarchy, section order, index/nav coverage, link and anchor integrity, orphan pages, and duplicate or misplaced topics. | When asked to check doc structure; after adding or moving a doc page; when a page becomes hard to discover from the docs nav. |
 | [`check-spdx-reuse`](https://github.com/c5c3/forge/blob/main/.claude/skills/check-spdx-reuse/SKILL.md) | SPDX / REUSE compliance across the source tree — every `*.go`, `*.sh`, hand-authored YAML, and CI workflow file should carry matching `SPDX-FileCopyrightText` and `SPDX-License-Identifier` headers; every licence referenced has a corresponding text under `LICENSES/`. Defers to `reuse lint` as the authoritative gate. | After adding a new source file; before tagging a release where SAP supply-chain audits require clean REUSE output. |
 
 ### Planners and runbooks
@@ -125,6 +130,7 @@ a companion Bash script (the deterministic part).
 | [`prepare-new-release`](https://github.com/c5c3/forge/blob/main/.claude/skills/prepare-new-release/SKILL.md) | Plans the addition of a new OpenStack release — inventories the touch points auto-discovery does not cover (release config files, the Tempest config directory, per-release e2e variants, constraint overrides) and walks the decision points: moving the default release, extending the upgrade-path tests, retiring an old release. | When asked to add a new OpenStack release, bump the release matrix, or remove an old release. |
 | [`prepare-new-guide`](https://github.com/c5c3/forge/blob/main/.claude/skills/prepare-new-guide/SKILL.md) | Scaffolds a new how-to guide skeleton under `docs/guides/` for a chosen devstack anchor and validates draft guides against the guide conventions — placeholder names no tutorial produces, devstack↔flag consistency, raw-helm instructions against Flux-owned releases, projected-child edits without a revert warning. Defers to `tests/unit/docs/guide_devstack_and_tested_by_test.sh` as the authoritative gate. | When writing a new guide under `docs/guides/`; when checking a draft guide for convention violations. |
 | [`debug-e2e-failure`](https://github.com/c5c3/forge/blob/main/.claude/skills/debug-e2e-failure/SKILL.md) | Diagnoses a failing chainsaw e2e job — resolves the failed run, pulls the failed-step logs and JUnit/diagnostic evidence, maps the failure back to the suite directory under `tests/`, classifies it against the known flake patterns, and reproduces it locally against a kind cluster. | When any CI e2e job fails (`e2e-operator`, `e2e-chaos`, `e2e-controlplane`, …); when reproducing an e2e failure locally. |
+| [`fix-docs`](https://github.com/c5c3/forge/blob/main/.claude/skills/fix-docs/SKILL.md) | Applies fixes for findings produced by `check-doc-consistency`, `check-doc-expressions`, and `check-doc-structure` — or runs those audits first if no findings are supplied. Classifies each finding as mechanical (safe to apply directly), a judgment call (propose first, confirm before applying), or needs-research (establish the correct fact before writing anything), then edits the docs and re-verifies with the originating audit. | When asked to fix documentation issues; when actioning a docs audit report; when cleaning up findings from `check-doc-consistency`, `check-doc-expressions`, or `check-doc-structure`. |
 
 ## What a skill is, structurally
 
