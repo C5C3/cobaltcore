@@ -347,9 +347,44 @@ it from the typed `spec.logging.debug` field — so this example now draws an
 `ExtraConfigOwnedKeyOverride` Warning event and flips `ExtraConfigHealthy` to
 `False` while still taking effect.
 
-The operator does not validate the content of these sections. A typo becomes a silent
-no-op at best and a crash loop at worst — test changes in a lab before rolling out.
-A change to `extraConfig` triggers a ConfigMap rehash and a rolling Deployment update.
+Beyond the ownership registry, the validating webhook checks every option name in
+`spec.extraConfig` against a catalog of the options the service actually accepts.
+Each operator embeds one catalog per OpenStack release, generated from the
+`oslo-config-generator` run of the exact service image forge ships for that
+release. The catalog answers a single question: does this option name exist?
+Values are never inspected. Keystone derives the release from `spec.image.tag`;
+Glance derives it from `spec.openStackRelease`. An option that sits in a known
+section but is absent from the catalog is rejected at apply time with `no such
+option in the <service> <release> option catalog`, naming the section and key. An
+unknown section is rejected with `no such section in the <service> <release>
+option catalog (sections registered by a loaded plugin must be declared via
+spec.plugins)`.
+
+Three classes of section or key are exempt from the catalog check. A section
+declared by a `spec.plugins` entry's `configSection` is trusted, because the
+plugin owns it and its options are not in the base catalog. Every key in the
+operator-ownership registry above is exempt too, since the operator already
+governs those. For Glance, the reserved store sections `os_glance_staging_store`
+and `os_glance_tasks_store` are additionally allowed.
+
+The check fails open when it cannot reason about a release. A digest-pinned
+Keystone image (or any tag that does not name a release) carries no release to
+look up, so the option check is skipped and the admission response returns a
+warning. A release newer than the operator build, one with no embedded catalog,
+is skipped the same way. A deprecated option that the service still accepts is
+admitted with a warning naming its replacement, for example `[DEFAULT] logfile`
+superseded by `[DEFAULT] log_file`.
+
+This check lives only in the webhook. There is no CEL or CRD-schema backstop, so
+a cluster with the validating webhook disabled accepts a misspelled option name
+and surfaces it only at render time. Updates re-run the check only when
+`spec.extraConfig`, the plugin section list, or the release field changes.
+
+The operator still does not validate the values in these sections, but a
+misspelled option name is now rejected at apply time. A wrong value on a real
+option becomes a silent no-op at best and a crash loop at worst, so test changes
+in a lab before rolling out. A change to `extraConfig` triggers a ConfigMap
+rehash and a rolling Deployment update.
 
 ---
 
