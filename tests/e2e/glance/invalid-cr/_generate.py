@@ -273,6 +273,36 @@ FIXTURES: tuple[Fixture, ...] = (
             "      password: s3cr3t\n"
         ),
     ),
+    Fixture(
+        filename="11-extraconfig-unknown-option.yaml",
+        comment=(
+            "spec.extraConfig setting an unknown option 'default_backend_typo' in\n"
+            "the known [glance_store] section is rejected by the validating webhook:\n"
+            "the option is absent from the glance 2025.2 option catalog, so a typo'd\n"
+            "key can never silently reach the rendered glance-api.conf."
+        ),
+        name="glance-invalid-extraconfig-unknown-option",
+        extra=(
+            "  extraConfig:\n"
+            "    glance_store:\n"
+            "      default_backend_typo: s3\n"
+        ),
+    ),
+    Fixture(
+        filename="12-extraconfig-unknown-section.yaml",
+        comment=(
+            "spec.extraConfig declaring an unknown section 'glance_stor' (a typo for\n"
+            "[glance_store]) is rejected by the validating webhook: the section is\n"
+            "absent from the glance 2025.2 option catalog, so a typo'd section name\n"
+            "can never silently reach the rendered glance-api.conf."
+        ),
+        name="glance-invalid-extraconfig-unknown-section",
+        extra=(
+            "  extraConfig:\n"
+            "    glance_stor:\n"
+            "      default_backend: s3\n"
+        ),
+    ),
 )
 
 

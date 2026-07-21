@@ -343,3 +343,21 @@ spec:
         - check:
             ($error != null): true
             (contains($error, 'trusted_dashboard is managed via spec.federation.trustedDashboards')): true
+  # spec.extraConfig sets an unknown option (typo'd key) in a known section:
+  # rejected because it is absent from the keystone 2025.2 option catalog.
+  - try:
+    - apply:
+        file: 24-extraconfig-unknown-option.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'no such option in the keystone 2025.2 option catalog')): true
+  # spec.extraConfig declares an unknown section (typo'd section name):
+  # rejected because it is absent from the keystone 2025.2 option catalog.
+  - try:
+    - apply:
+        file: 25-extraconfig-unknown-section.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'no such section in the keystone 2025.2 option catalog')): true

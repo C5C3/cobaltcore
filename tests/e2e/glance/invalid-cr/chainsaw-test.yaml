@@ -118,3 +118,21 @@ spec:
         - check:
             ($error != null): true
             (contains($error, 'password is managed via spec.serviceUser.secretRef')): true
+  # spec.extraConfig setting an unknown option (typo'd key) in a known section
+  # must be rejected: it is absent from the glance 2025.2 option catalog.
+  - try:
+    - apply:
+        file: 11-extraconfig-unknown-option.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'no such option in the glance 2025.2 option catalog')): true
+  # spec.extraConfig declaring an unknown section (typo'd section name) must be
+  # rejected: it is absent from the glance 2025.2 option catalog.
+  - try:
+    - apply:
+        file: 12-extraconfig-unknown-section.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'no such section in the glance 2025.2 option catalog')): true

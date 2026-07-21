@@ -1,0 +1,41 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Keystone CR whose spec.extraConfig declares a "fernet_token" section
+# (singular — a typo for "fernet_tokens"). The section does not exist in the
+# keystone 2025.2 option catalog, so the validating webhook rejects it — a
+# typo'd section name must never silently reach the rendered keystone.conf.
+# Admission must reject this CR with an $error referencing the substring
+# "no such section in the keystone 2025.2 option catalog".
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: invalid-extraconfig-unknown-section
+spec:
+  deployment:
+    replicas: 3
+  image:
+    repository: ghcr.io/c5c3/keystone
+    tag: "2025.2"
+  database:
+    host: db.example.com
+    port: 3306
+    database: keystone
+    secretRef:
+      name: keystone-db
+  cache:
+    backend: dogpile.cache.pymemcache
+    servers:
+    - "mc:11211"
+  fernet:
+    rotationSchedule: "0 0 * * 0"
+    maxActiveKeys: 3
+  bootstrap:
+    adminUser: admin
+    adminPasswordSecretRef:
+      name: keystone-admin
+    region: RegionOne
+  extraConfig:
+    fernet_token:
+      max_active_keys: "5"
