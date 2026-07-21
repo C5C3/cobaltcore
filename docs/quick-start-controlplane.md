@@ -9,40 +9,42 @@ SPDX-License-Identifier: Apache-2.0
 
 # Quick Start (ControlPlane): C5C3 + K-ORC on Kind
 
-The shortest path from `git clone` to an authenticated Keystone API call driven
-by a single **c5c3 ControlPlane** CR. Where the [Quick Start](./quick-start.md)
-stops at a hand-applied `Keystone` CR, here one `ControlPlane` CR makes the
-c5c3-operator provision the `MariaDB`, `Memcached`, `Keystone`, `Horizon`, and
-`Glance` children, mint the admin application credential through
-[K-ORC](https://github.com/k-orc/openstack-resource-controller), mirror it to
-OpenBao, and register the identity catalog — all reconciled to an aggregate
-`Ready`.
+This guide takes a single **c5c3 ControlPlane** CR from `git clone` to an authenticated
+Keystone API call. Compared with the [Quick Start](./quick-start.md), the
+c5c3-operator now provisions the `MariaDB`, `Memcached`, `Keystone`, `Horizon`,
+and `Glance` children, mints the admin application credential through
+[K-ORC](https://github.com/k-orc/openstack-resource-controller), mirrors it to
+OpenBao, and registers the identity catalog.
 
 ## Prerequisites
 
-Same toolchain as the [Quick Start](./quick-start.md), plus an internet
-connection (K-ORC is cloned from GitHub at a pinned tag).
+Same toolchain as the [Quick Start](./quick-start.md), plus:
 
-The bundled kind `ControlPlane` CR pins its backing services to a single instance
-(`spec.infrastructure.database.replicas: 1`, `cache.replicas: 1`) so the
-fresh-create chain fits a single-node kind cluster: `database.replicas: 1` yields
-a single-instance, non-Galera MariaDB (the operator derives Galera from
-`replicas > 1`) and `cache.replicas: 1` a single Memcached pod. The CRD default for
-both is `3` — a 3-node Galera cluster plus three Memcached pods, matching the
-production baseline — which OOM-kills a laptop-sized kind. To provision the
-production-shaped topology on a bigger box, set `CONTROLPLANE_DB_REPLICAS=3` and/or
-`CONTROLPLANE_CACHE_REPLICAS=N` for Step 2 (`2` is rejected for the database —
-Galera needs a quorum). `database.replicas` is immutable after the CR is created,
-so change it on a fresh environment (`make teardown-infra` first).
+- The OpenStack CLI (`python-openstackclient`) on `PATH` for the auth check in Step 6
+- A stable internet connection while `make deploy-infra` clones K-ORC from GitHub
+- Roughly 8 GB RAM, 2 CPU cores, and 10 GB of free disk for a laptop-sized kind cluster
 
-The bundled CR also pins the MariaDB volume to a test size
-(`spec.infrastructure.database.storageSize: 512Mi`). The CRD default is `100Gi` —
-the production volume size — which a kind/CI run never fills, so the managed MariaDB
-requests a small volume instead. To mirror the production volume on a bigger box,
-set `CONTROLPLANE_DB_STORAGE=100Gi` for Step 2 (any Kubernetes quantity in
-`Mi`/`Gi`/`Ti` is accepted). Like `database.replicas`, `database.storageSize` is
-immutable after the CR is created — the MariaDB operator refuses to resize a live
-volume — so change it on a fresh environment (`make teardown-infra` first).
+- The bundled kind `ControlPlane` CR pins its backing services to a single
+  instance (`spec.infrastructure.database.replicas: 1`, `cache.replicas: 1`) so
+  the fresh-create chain fits a single-node kind cluster.
+- `database.replicas: 1` yields a single-instance, non-Galera MariaDB and
+  `cache.replicas: 1` a single Memcached pod. The CRD default for both is `3`,
+  which matches the production baseline but OOM-kills a laptop-sized kind.
+- On a bigger box, set `CONTROLPLANE_DB_REPLICAS=3` and/or
+  `CONTROLPLANE_CACHE_REPLICAS=N` for Step 2. `2` is rejected for the database —
+  Galera needs a quorum.
+- `database.replicas` is immutable after the CR is created, so change it on a
+  fresh environment (`make teardown-infra` first).
+
+- The bundled CR also pins the MariaDB volume to a test size
+  (`spec.infrastructure.database.storageSize: 512Mi`).
+- The CRD default is `100Gi`, which a kind/CI run never fills, so the managed
+  MariaDB requests a small volume instead.
+- To mirror the production volume on a bigger box, set
+  `CONTROLPLANE_DB_STORAGE=100Gi` for Step 2. Any Kubernetes quantity in
+  `Mi`/`Gi`/`Ti` is accepted.
+- Like `database.replicas`, `database.storageSize` is immutable after the CR is
+  created, so change it on a fresh environment (`make teardown-infra` first).
 
 ```bash
 make install-test-deps
@@ -70,6 +72,8 @@ itself; you create and apply that in Step 3. In this mode the ControlPlane provi
 maps the Gateway to a non-privileged host port for macOS; on Linux with rootful
 Docker drop the override and use port `443`. Expect **5–10 minutes**.
 
+If a download or image pull fails, run `make teardown-infra` and repeat Step 2.
+
 ::: tip Fresh operator images after a merge
 The operator images are published under the mutable `:latest` tag, so
 deploy-infra pins them to the digest current at deploy time (per-operator
@@ -82,25 +86,21 @@ no redeploy needed.
 
 ## Step 3 — Create the ControlPlane CR
 
-Apply a `ControlPlane` CR — the c5c3-operator reconciles it into the whole stack.
-You only supply `openStackRelease` and the `services.keystone` block: the
-defaulting webhook fills the infrastructure and admin-credential references with
-their well-known names — `openstack-db` (managed MariaDB), `openstack-memcached`
-(managed Memcached), `keystone-db` (DB-credential placeholder — in managed mode
-the operator projects a per-ControlPlane `{name}-keystone-db-credentials`
-Secret and points the Keystone CR at it instead), `keystone-admin` / `password`
-(admin-password placeholder — in managed mode the operator projects a per-ControlPlane
-`{name}-keystone-admin-credentials` Secret and points the Keystone CR at it instead),
-`k-orc-clouds-yaml` with cloud entry `admin`
-(K-ORC clouds.yaml) — which match the Secrets and clusters the infrastructure
-layer (Step 2) seeds. The c5c3-operator seeds the K-ORC bootstrap
-`clouds.yaml` per-CR, deriving the in-cluster Keystone auth URL from the CR's own
-name, so the CR name is no longer pinned by a pre-seeded `clouds.yaml`; to use a
-different name, pass `CONTROLPLANE_NAME=foo` to Step 2 — it renames the bundled CR
-and seeds the matching admin password. The defaulting only fills the
-names/references; the operator still **consumes** the pre-seeded Secret *content*
-(DB credentials, admin password) and materialises the bootstrap `clouds.yaml`
-itself, so it does **not invent** credentials.
+Apply a `ControlPlane` CR. You only supply `openStackRelease` and the
+`services.keystone` block; the defaulting webhook fills the infrastructure and
+admin-credential references with their well-known names:
+
+- `openstack-db` and `openstack-memcached` for the managed infrastructure
+- `keystone-db` and `keystone-admin` / `password` as placeholders that the
+  operator replaces with per-ControlPlane Secrets in managed mode
+- `k-orc-clouds-yaml` with the `admin` cloud entry
+
+The c5c3-operator seeds the K-ORC bootstrap `clouds.yaml` per CR, deriving the
+in-cluster Keystone auth URL from the CR name. To use a different name, pass
+`CONTROLPLANE_NAME=foo` to Step 2; it renames the bundled CR and seeds the
+matching admin password. The defaulting only fills the names and references;
+the operator still consumes the pre-seeded Secret content and materialises the
+bootstrap `clouds.yaml` itself.
 
 ```yaml
 # controlplane.yaml

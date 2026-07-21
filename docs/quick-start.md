@@ -18,6 +18,7 @@ the production HelmRelease, E2E and Tempest, see
 ## Prerequisites
 
 - Docker Desktop running
+- OpenStack CLI (`python-openstackclient`) on `PATH` for the authenticated token check in Step 6
 - Pinned `kind`, `kubectl`, `Helm`, `jq` on `PATH`:
 
   ```bash
@@ -26,6 +27,7 @@ the production HelmRelease, E2E and Tempest, see
   ```
 
 - `yq` on `PATH` (only required because `KIND_HOST_PORT` is overridden)
+- A stable internet connection for the initial image pulls and package downloads
 
 ## Step 1 — Clone
 
@@ -53,6 +55,9 @@ redoing them, so an interrupted bootstrap can simply be re-executed. Optional
 components can be enabled later by re-running with the flag set — see the
 opt-in tips in the [Extended Quick Start](./quick-start-extended.md). Removing a
 flag does not uninstall that component — that is `make teardown-infra`'s job.
+
+If the first run fails because a download or image pull flakes out, run
+`make teardown-infra` and then repeat Step 2.
 
 ## Step 3 — Keystone operator
 
