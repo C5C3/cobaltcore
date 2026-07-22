@@ -218,7 +218,7 @@ func TestHorizonPublicEndpoint(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			g := NewGomegaWithT(t)
-			g.Expect(horizonPublicEndpoint(tc.hz)).To(Equal(tc.want))
+			g.Expect(tc.hz.DerivedPublicEndpoint()).To(Equal(tc.want))
 		})
 	}
 }

@@ -2056,7 +2056,7 @@ func TestValidateCreate_HorizonPublicEndpointMustBeABareOrigin(t *testing.T) {
 
 // TestValidateCreate_AcceptsHorizonPublicEndpointWithPort pins the case the
 // override exists for: a dashboard published off the default HTTPS port. The
-// trailing-slash form is accepted too — horizonPublicEndpoint trims it before
+// trailing-slash form is accepted too — DerivedPublicEndpoint trims it before
 // appending the WebSSO path.
 func TestValidateCreate_AcceptsHorizonPublicEndpointWithPort(t *testing.T) {
 	for _, endpoint := range []string{

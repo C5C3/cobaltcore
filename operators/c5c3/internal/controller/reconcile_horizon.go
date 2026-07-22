@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strconv"
 
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -253,6 +254,14 @@ func (r *ControlPlaneReconciler) reconcileHorizon(ctx context.Context, cp *c5c3v
 			horizon.Spec.Deployment.Replicas = *cp.Spec.Services.Horizon.Replicas
 		}
 
+		// Project the dashboard's extraConfig verbatim. Horizon is flat Django
+		// settings, not INI, so the global INI block never applies — only the
+		// per-service block is projected, deep-copied so the child never aliases
+		// cp.Spec. Assigned unconditionally, following the revert-on-clear
+		// convention: a nil/empty source clears the child's block rather than
+		// pinning the last projected value.
+		horizon.Spec.ExtraConfig = deepCopyHorizonExtraConfig(cp.Spec.Services.Horizon.ExtraConfig)
+
 		// Project the federated-login surface from the Ready backends.
 		// Detaching the last backend clears the block so the login page reverts
 		// to local credentials rather than keeping a dead SSO button pinned on
@@ -400,7 +409,7 @@ func horizonWebSSO(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, backends 
 		logger.Info("Ready OIDC identity backends found, but the WebSSO hand-off has no browser-facing endpoints; "+
 			"omitting the login page's SSO choices",
 			"readyBackends", len(federated),
-			"trustedDashboardOrigin", horizonPublicEndpoint(cp.Spec.Services.Horizon),
+			"trustedDashboardOrigin", cp.Spec.Services.Horizon.DerivedPublicEndpoint(),
 			"keystoneURL", keystoneURL)
 		return nil
 	}
@@ -477,6 +486,22 @@ func horizonMultiDomain(backends []keystonev1alpha1.KeystoneIdentityBackend) *ho
 // from the naming convention, never read from the child's status.
 func horizonKeystoneEndpoint(cp *c5c3v1alpha1.ControlPlane) string {
 	return keystoneEndpointURL(cp)
+}
+
+// deepCopyHorizonExtraConfig returns an independent copy of the dashboard's
+// flat Django extraConfig block so the projected child never aliases cp.Spec: a
+// shared map (or a shared JSON value's Raw bytes) would let a later mutation of
+// the child leak back into the ControlPlane spec. A nil or empty source yields
+// nil, so an absent block projects an absent field rather than an empty map.
+func deepCopyHorizonExtraConfig(src map[string]apiextensionsv1.JSON) map[string]apiextensionsv1.JSON {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make(map[string]apiextensionsv1.JSON, len(src))
+	for k, v := range src {
+		out[k] = *v.DeepCopy()
+	}
+	return out
 }
 
 // deleteOrphanedHorizon removes a previously-projected Horizon child when

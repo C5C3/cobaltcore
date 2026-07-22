@@ -218,7 +218,7 @@ func validateHorizonPublicEndpoint(specPath *field.Path, hz *ServiceHorizonSpec)
 
 	var errs field.ErrorList
 	// A single trailing slash is the one path the reconciler tolerates:
-	// horizonPublicEndpoint trims it before appending "/auth/websso/".
+	// DerivedPublicEndpoint trims it before appending "/auth/websso/".
 	if (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
 		errs = append(errs, field.Invalid(pePath, hz.PublicEndpoint,
 			"must be a bare origin (scheme://host[:port]) with no path, query, or fragment: the WebSSO origin is "+

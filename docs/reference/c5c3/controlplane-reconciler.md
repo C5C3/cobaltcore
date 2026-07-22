@@ -975,7 +975,7 @@ the ControlPlane provisioned:
   `spec.services.keystone.federationProxyImage` override when set, else
   `ghcr.io/c5c3/keystone-federation-proxy:latest`;
   `spec.federation.trustedDashboards` is the ControlPlane's own dashboard origin
-  (`horizonPublicEndpoint(cp) + "/auth/websso/"`), or `nil` when no dashboard is
+  (`cp.Spec.Services.Horizon.DerivedPublicEndpoint() + "/auth/websso/"`), or `nil` when no dashboard is
   externally reachable. Both are assigned unconditionally, so clearing the
   override or the horizon block reverts the child. The origin is derived
   **top-down from `cp.Spec`**, never from the Horizon child's status, so this

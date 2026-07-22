@@ -329,6 +329,70 @@ func TestReconcileKeystone_PolicyMerge(t *testing.T) {
 	}), "per-service overrides must win, global rules merged in")
 }
 
+// TestReconcileKeystone_ExtraConfigMerge proves the projected child's
+// spec.extraConfig is the key-by-key merge of globalExtraConfig and the
+// per-service block: the per-service value wins on an overlapping key, a
+// global-only key in the same section survives, and a global-only section is
+// carried over — mirroring TestReconcileKeystone_PolicyMerge.
+func TestReconcileKeystone_ExtraConfigMerge(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := keystoneTestScheme(t)
+	cp := keystoneControlPlane()
+	cp.Spec.GlobalExtraConfig = map[string]map[string]string{
+		"database": {
+			"connection_recycle_time": "280",
+			"max_pool_size":           "5",
+		},
+		"DEFAULT": {"debug": "true"},
+	}
+	cp.Spec.Services.Keystone.ExtraConfig = map[string]map[string]string{
+		"database": {"connection_recycle_time": "600"}, // overrides global
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileKeystone(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	k := getProjectedKeystone(t, c, cp)
+	g.Expect(k.Spec.ExtraConfig).To(Equal(map[string]map[string]string{
+		"database": {
+			"connection_recycle_time": "600", // per-service wins
+			"max_pool_size":           "5",   // global-only key in the same section
+		},
+		"DEFAULT": {"debug": "true"}, // global-only section
+	}), "per-service extraConfig must win, global keys/sections merged in")
+}
+
+// TestReconcileKeystone_ExtraConfigClearedProjectsNil proves the field is
+// assigned unconditionally: clearing both extraConfig blocks reverts the child
+// to an absent spec.extraConfig rather than leaving the previously-projected
+// value pinned — mirroring TestReconcileKeystone_ClearsFederationProxyImageOverride.
+func TestReconcileKeystone_ExtraConfigClearedProjectsNil(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := keystoneTestScheme(t)
+	cp := keystoneControlPlane()
+	cp.Spec.GlobalExtraConfig = map[string]map[string]string{"DEFAULT": {"debug": "true"}}
+	cp.Spec.Services.Keystone.ExtraConfig = map[string]map[string]string{
+		"database": {"connection_recycle_time": "600"},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileKeystone(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(getProjectedKeystone(t, c, cp).Spec.ExtraConfig).NotTo(BeEmpty())
+
+	cp.Spec.GlobalExtraConfig = nil
+	cp.Spec.Services.Keystone.ExtraConfig = nil
+	_, err = r.reconcileKeystone(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(getProjectedKeystone(t, c, cp).Spec.ExtraConfig).To(BeNil(),
+		"clearing both extraConfig blocks must revert the child")
+}
+
 func TestReconcileKeystone_ScheduleConversionWeekly(t *testing.T) {
 	g := NewGomegaWithT(t)
 

@@ -403,6 +403,14 @@ func (r *ControlPlaneReconciler) reconcileGlance(ctx context.Context, cp *c5c3v1
 	glance.Spec.OpenStackRelease = cp.Spec.OpenStackRelease
 	glance.Spec.Image = image
 
+	// Project the merged extraConfig (globalExtraConfig unioned with the
+	// per-service block, per-service winning key by key). Assigned
+	// unconditionally, following the revert-on-clear convention: a nil merge keeps
+	// the SSA-applied intent free of spec.extraConfig, so a direct edit on the
+	// child stays unowned until a ControlPlane block is set — and clearing the
+	// ControlPlane block reverts the child rather than pinning the last value.
+	glance.Spec.ExtraConfig = c5c3v1alpha1.MergedExtraConfig(cp.Spec.GlobalExtraConfig, cp.Spec.Services.Glance.ExtraConfig)
+
 	// Point Glance at the SAME backing services the ControlPlane provisioned. The
 	// logical database is always "glance" — its own schema keeps it isolated from
 	// Keystone's on a shared cluster. DeepCopy (over a plain struct copy) is
