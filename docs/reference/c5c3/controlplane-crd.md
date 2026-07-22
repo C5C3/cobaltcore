@@ -203,6 +203,7 @@ status:
 | `infrastructure` | [`*InfrastructureSpec`](#infrastructurespec) | Conditional | managed-mode defaulted | Shared backing services (database, cache) the control plane's services connect to. **Required** when `services.keystone.mode` is `Managed` (or unset, or `services.keystone` unset) — the defaulting webhook materializes a managed-mode `database`/`cache` when omitted, and the validating webhook rejects a non-External ControlPlane without it. **Forbidden** in **External** mode (an External ControlPlane provisions no backing services; phase 2 relaxes this to optional). The mode-conditional required/forbidden rule is webhook-enforced because CEL cannot span `spec.infrastructure` and `spec.services.keystone`; see [InfrastructureSpec](#infrastructurespec) and [Validation Rules](#validation-rules). |
 | `services` | [`ServicesSpec`](#servicesspec) | Yes | — | Per-service configuration projected into the individual service CRs. |
 | `globalPolicyOverrides` | [`*commonv1.PolicySpec`](../keystone/keystone-crd.md#policyspec) | No | `nil` | oslo.policy overrides applied across every service in the control plane. Per-service overrides (e.g. `services.keystone.policyOverrides`) take precedence over these global rules when both are set. |
+| `globalExtraConfig` | `map[string]map[string]string` | No | `nil` | Free-form INI sections (`section` → `key` → `value`) applied to every INI-configured service the control plane declares (Keystone and Glance today). Merged **key by key** with each service's own `extraConfig`: sections are unioned, the per-service value wins per key, and a global key with no per-service counterpart stays effective, before the merged result is projected onto that service's child. **Never** applies to Horizon, which renders flat Django settings rather than INI. Legal but **inert** in External mode, the same posture as `globalPolicyOverrides`. Admission validates the merged result per declared INI service against that service's option catalog and operator-owned-key registry — see [ExtraConfig admission checks](#extraconfig-admission-checks). |
 | `secretStoreRef` | [`*commonv1.SecretStoreRefSpec`](#secretstorerefspec) | No | `nil` (defaults to the shared cluster store `openbao-cluster-store`) | Selects the External Secrets store the control plane routes its ExternalSecrets and backup PushSecrets through, and is **projected onto the Keystone and Horizon children** — so operators normally set the store here rather than on the individual service CRs. **Mutable:** switching stores is supported — the operator moves the fernet/credential key material in place, never re-creating it. When omitted, defaults to the shared cluster-scoped `ClusterSecretStore` named `openbao-cluster-store`, so existing deployments are unchanged; set `{kind: SecretStore, name: <store>}` to reach OpenBao as a per-tenant identity resolved in the ControlPlane's own namespace. See [SecretStoreRefSpec](#secretstorerefspec). |
 | `korc` | [`KORCSpec`](#korcspec) | No | defaulted | K-ORC integration used to bootstrap and rotate the admin application credential and any declared bootstrap resources. Optional — the defaulting webhook fills `adminCredential` (cloudCredentialsRef, passwordSecretRef, applicationCredential restriction/rotation) from well-known defaults when omitted. |
 
@@ -347,10 +348,11 @@ managed-vs-brownfield split of the infrastructure specs at the service level:
 | `mode: External` | Service-less: identity is managed against a pre-existing, externally-operated Keystone at [`external.authURL`](#externalkeystonespec) and no Keystone workload is deployed. |
 
 In **External** mode every managed-only field below (`replicas`, `image`,
-`policyOverrides`, `rotationInterval`, `gateway`, `publicEndpoint`) is
-**forbidden** and the typed [`external`](#externalkeystonespec) block is
-**required**. These intra-struct rules are enforced by type-level CEL
-`XValidation` rules (so they hold at the CRD schema layer even when the
+`policyOverrides`, `extraConfig`, `rotationInterval`, `gateway`,
+`publicEndpoint`) is **forbidden** and the typed
+[`external`](#externalkeystonespec) block is **required**. These intra-struct
+rules are enforced by type-level CEL `XValidation` rules (so they hold at the
+CRD schema layer even when the
 validating webhook is bypassed) and mirrored by the validating webhook; see
 [Validation Rules](#validation-rules).
 
@@ -361,6 +363,7 @@ validating webhook is bypassed) and mirrored by the validating webhook; see
 | `replicas` | `*int32` | No | `nil` (Keystone operator default, 3) | Overrides the number of Keystone API replicas. When `nil`, the reconciler leaves `replicas` unset on the projected Keystone CR, so the Keystone operator applies its own default. Minimum: 1. **Forbidden in External mode.** |
 | `image` | [`*commonv1.ImageSpec`](../keystone/keystone-crd.md#imagespec) | No | `nil` | Overrides the Keystone container image. When `nil`, the reconciler derives the image as `ghcr.io/c5c3/keystone:{spec.openStackRelease}`. When set, the whole image reference is used verbatim. |
 | `policyOverrides` | [`*commonv1.PolicySpec`](../keystone/keystone-crd.md#policyspec) | No | `nil` | Per-service oslo.policy overrides for Keystone. When set, these take precedence over `spec.globalPolicyOverrides` for the Keystone service. |
+| `extraConfig` | `map[string]map[string]string` | No | `nil` | Free-form INI sections for the Keystone service. Merged **key by key** with `spec.globalExtraConfig` (this per-service value winning per key) and the merged result projected onto the Keystone child's `spec.extraConfig`. **Forbidden in External mode** (CEL + webhook, message `services.keystone.extraConfig is forbidden when services.keystone.mode is External`): no Keystone workload is deployed, so there is no config to render. Admission runs shape, operator-owned-key, and option-catalog checks on the merged block — see [ExtraConfig admission checks](#extraconfig-admission-checks). |
 | `rotationInterval` | `*metav1.Duration` | No | `nil` | Overrides the Fernet / credential-key rotation interval the reconciler derives for the projected Keystone CR. When `nil`, the reconciler derives a default schedule. When set, the duration is converted to a cron expression and applied to both `fernet.rotationSchedule` and `credentialKeys.rotationSchedule` on the projected Keystone CR. An unconvertible interval (not a positive whole number of days) is **rejected at admission** by the validating webhook; if the webhook is bypassed, the reconciler surfaces `KeystoneReady=False` with reason `InvalidRotationInterval` and returns the error so the reconcile chain stops and requeues with backoff. |
 | `gateway` | [`*commonv1.GatewaySpec`](#gatewayspec) | No | `nil` | Exposes the projected Keystone API externally via a Gateway API HTTPRoute. When `nil`, no HTTPRoute is projected and the Keystone API is reachable in-cluster only (its ClusterIP Service). When set, the reconciler projects it onto the Keystone CR's `spec.gateway`, so the Keystone operator attaches an HTTPRoute to the referenced Gateway. When a `gateway` is set its `hostname` must be non-empty — enforced at admission by the validating webhook (see [Validation Rules](#validation-rules)). |
 | `publicEndpoint` | `string` | No | `""` | Externally routable Keystone identity endpoint URL (e.g. `https://keystone.example.com/v3`). Projected into the Keystone bootstrap (`--bootstrap-public-url`) and used for the K-ORC identity catalog Endpoint, so external clients resolve the same URL Keystone advertises. When set, it must be an HTTP(S) URL (`+kubebuilder:validation:Pattern=^https?://`), so a malformed endpoint fails at admission rather than wedging the projected Keystone CR. When empty and `gateway` is set, the reconciler derives `https://{gateway.hostname}/v3` (the default-443 form); set it explicitly when the externally reachable port differs (e.g. a kind host-port mapping like `:8443`). |
@@ -389,6 +392,7 @@ its fields carry per-field External-mode forbid-rules.
 | `gateway` | [`*commonv1.GatewaySpec`](#gatewayspec) | No | `nil` | Exposes the projected dashboard externally via a Gateway API HTTPRoute. When `nil` the dashboard is reachable in-cluster only. |
 | `secretKeyRef` | [`*commonv1.SecretRefSpec`](../keystone/keystone-crd.md#secretrefspec) | No | `nil` | Overrides the Secret holding the Django `SECRET_KEY` the dashboard replicas share. When `nil` the reconciler defaults to the kind-infrastructure shim Secret `horizon-secret-key`, which is pinned to the **default** ControlPlane identity — multi-ControlPlane deployments MUST set this explicitly. |
 | `publicEndpoint` | `string` | No | `""` | The **browser-observed** dashboard base URL, without a trailing slash and **including a non-default port** (e.g. `https://horizon.example.com:8443`). The reconciler derives the WebSSO origin from it (`publicEndpoint + "/auth/websso/"`) and projects that onto the Keystone child's `spec.federation.trustedDashboards`. Keystone matches the origin the dashboard sends verbatim, so the value must reproduce exactly what the browser's address bar shows. When empty and `gateway` is set, the reconciler derives `https://{gateway.hostname}` (the default-443 form). Must match `^https?://`, parse with a host, and be at most 499 characters — the Keystone child's 512-character bound on `trustedDashboards[]` minus the 13 characters `/auth/websso/` appends. |
+| `extraConfig` | `map[string]JSON` | No | `nil` | Free-form **flat Django settings** mirroring the Horizon child's `spec.extraConfig`: keys are Django setting names, values arbitrary JSON. Projected **verbatim** (deep-copied) onto the Horizon child. Because the dashboard renders `local_settings.py` rather than INI, `spec.globalExtraConfig` never applies and there is no merge for this block. Admission rejects empty or non-Python-identifier setting names and the operator-owned settings — `SECRET_KEY` and every WebSSO / multi-domain setting — see [ExtraConfig admission checks](#extraconfig-admission-checks). |
 | `dedicatedBackingServices` | [`*HorizonDedicatedBackingServicesSpec`](#dedicatedbackingservices) | No | `nil` (shares the ControlPlane-wide cache) | Opts the dashboard **out** of the shared `spec.infrastructure.cache` and gives it a cache of its own. The dashboard consumes no database, so `cache` is the only class it can take dedicated. |
 | `namespace` | [`*ServiceNamespaceSpec`](#service-namespaces) | No | `nil` (placed in the ControlPlane's namespace) | Places the dashboard — and the cache and secret store that follow it — in a namespace of its own. Create-only. A dashboard placed apart reads its `SECRET_KEY` from **that** namespace: the default `horizon-secret-key` shim Secret is namespace-local, so supply the key material there (and name it via `secretKeyRef`). See [Service Namespaces](#service-namespaces). |
 
@@ -427,6 +431,7 @@ carry per-field External-mode forbid-rules.
 | `publicEndpoint` | `string` | No | `""` | Externally routable Glance image endpoint URL (e.g. `https://glance.127-0-0-1.nip.io:8443`). Used **only** for the K-ORC public image catalog Endpoint; it is projected into no child CR, so the validating webhook is the only gate on it. When set, it must match `^https?://`, parse to a bare origin with a host (no path, query, or fragment — the Glance API is served at the root), and be at most 512 characters. When a `gateway` is configured the scheme must be `https` and the host must equal `gateway.hostname` (the port may differ) — see [Validation Rules](#validation-rules). When empty and `gateway` is set, the reconciler derives `https://{gateway.hostname}` (the default-443 form); set it explicitly when the externally reachable port differs (e.g. a kind host-port mapping like `:8443`). |
 | `backends` | [`[]GlanceBackendEntry`](#glancebackendentry) | Yes | — | The curated list of image stores, projected one-to-one into [`GlanceBackend`](../glance/glance-backend-crd.md) child CRs. **Exactly one** entry must set `isDefault`, promoting its store to the Glance `default_backend`. A `listType=map` list keyed on `name` (the API server rejects duplicate names); `MinItems` 1 and `MaxItems` 32 (every entry amplifies into one `GlanceBackend` CR). The single-default invariant holds at the CRD schema layer via a CEL `XValidation` rule and is mirrored by the validating webhook. |
 | `databaseCredentialsMode` | `string` (`Static` \| `Dynamic`) | No | `""` (inherits `spec.infrastructure.database.credentialsMode`) | Per-service override of the ControlPlane-wide credentials mode for the managed **shared** database, so a staged migration can run Glance on one mode while another service (e.g. Keystone) stays on the other. Empty (the default) **inherits** the shared mode — deliberately **not** materialized by the defaulting webhook, so "inherit" stays distinguishable from an explicit override. A `Dynamic` override is **rejected** when Glance declares a [dedicated](#dedicatedbackingservices) database (dedicated is `Static`-only — set `dedicatedBackingServices.database.credentialsMode` instead; see [Credential modes](#credential-modes)) and when the shared database is **brownfield** (`clusterRef` unset); `Static` is always admitted. |
+| `extraConfig` | `map[string]map[string]string` | No | `nil` | Free-form INI sections for the Glance service. Merged **key by key** with `spec.globalExtraConfig` (this per-service value winning per key) and the merged result projected onto the Glance child's `spec.extraConfig`. Admission runs shape, operator-owned-key, and option-catalog checks on the merged block; the sole always-rejected owned key is `[keystone_authtoken] password` — see [ExtraConfig admission checks](#extraconfig-admission-checks). |
 | `dedicatedBackingServices` | [`*GlanceDedicatedBackingServicesSpec`](#dedicatedbackingservices) | No | `nil` (shares the ControlPlane-wide instances) | Opts Glance **out** of the shared `spec.infrastructure` instances and gives it a database and/or cache of its own. Glance consumes both classes, so it can take either or both dedicated. |
 | `namespace` | [`*ServiceNamespaceSpec`](#service-namespaces) | No | `nil` (placed in the ControlPlane's namespace) | Places the Glance service — and the database, cache, secret store, and object-store credential material that follow it — in a namespace of its own. Create-only. See [Service Namespaces](#service-namespaces). |
 
@@ -1294,7 +1299,7 @@ Keystone discipline:
 | `spec.globalPolicyOverrides`, `spec.services.keystone.policyOverrides` (CEL) | `!has(self.rules) \|\| self.rules.all(k, size(self.rules[k]) > 0)` → "policy rule value must not be empty" |
 | `spec.services.keystone` (CEL) | `mode == 'External'` ⇒ `has(self.external)` → "external is required when services.keystone.mode is External" |
 | `spec.services.keystone` (CEL) | `has(self.external)` ⇒ `mode == 'External'` → "external may only be set when services.keystone.mode is External" |
-| `spec.services.keystone` (CEL) | `mode == 'External'` ⇒ each managed-only field (`replicas`, `image`, `policyOverrides`, `rotationInterval`, `gateway`, `publicEndpoint`, `federationProxyImage`, `databaseCredentialsMode`) absent → "services.keystone.\<field\> is forbidden when services.keystone.mode is External" (one rule per field) |
+| `spec.services.keystone` (CEL) | `mode == 'External'` ⇒ each managed-only field (`replicas`, `image`, `policyOverrides`, `extraConfig`, `rotationInterval`, `gateway`, `publicEndpoint`, `federationProxyImage`, `databaseCredentialsMode`) absent → "services.keystone.\<field\> is forbidden when services.keystone.mode is External" (one rule per field) |
 | `spec.services.glance.replicas` | Minimum: 1 |
 | `spec.services.glance.databaseCredentialsMode` | Enum: `Static`, `Dynamic` |
 | `spec.services.glance.gateway.hostname` | MinLength 1 (shared `GatewaySpec` marker) |
@@ -1329,7 +1334,7 @@ short-circuit on the first error.
 | External block required | `spec.services.keystone.external` | `field.Required` | `mode: External` but `external` unset. Defense-in-depth mirror of the CEL rule. |
 | External authURL required/URL | `spec.services.keystone.external.authURL` | `field.Required` / `field.Invalid` | In External mode, `authURL` empty (Required), or not matching `^https?://[^\s/]+` / failing a full `net/url` parse / exceeding 2048 characters (Invalid). Mirrors the CRD required/pattern/maxLength markers. |
 | External caBundle name required | `spec.services.keystone.external.caBundleSecretRef.name` | `field.Required` | `caBundleSecretRef` set with an empty `name`. Mirrors the shared `SecretRefSpec` MinLength marker. |
-| Managed-only field forbidden in External mode | `spec.services.keystone.{replicas,image,policyOverrides,rotationInterval,gateway,publicEndpoint,federationProxyImage}` | `field.Forbidden` | The field is set while `mode: External`. Defense-in-depth mirror of the per-field CEL rules. |
+| Managed-only field forbidden in External mode | `spec.services.keystone.{replicas,image,policyOverrides,extraConfig,rotationInterval,gateway,publicEndpoint,federationProxyImage}` | `field.Forbidden` | The field is set while `mode: External`. Defense-in-depth mirror of the per-field CEL rules. |
 | Keystone credentials-mode override forbidden in External mode | `spec.services.keystone.databaseCredentialsMode` | `field.Forbidden` | The per-service override is set while `mode: External` — no managed database is provisioned, so there is no credentials mode to override. Defense-in-depth mirror of the per-field CEL rule. |
 | Dynamic credentials-mode override on a dedicated database | `spec.services.{keystone,glance}.databaseCredentialsMode` | `field.Forbidden` | The override is `Dynamic` while that service declares a dedicated database: the override retargets the shared database the service does not use, and a dedicated database is `Static`-only (set `dedicatedBackingServices.database.credentialsMode` instead). `Static` stays admitted. **Cross-field, webhook-only.** |
 | Dynamic credentials-mode override on a brownfield shared database | `spec.services.{keystone,glance}.databaseCredentialsMode` | `field.Forbidden` | The override is `Dynamic` while the shared database is brownfield (`clusterRef` unset): the dynamic engine issues per-tenant DB users only against a cluster the operator provisions. **Cross-field, webhook-only.** |
@@ -1361,6 +1366,64 @@ short-circuit on the first error.
 | Glance service account required | `spec.korc.serviceAccounts` | `field.Required` | `services.glance` is set but no `spec.korc.serviceAccounts` entry named `glance` is declared. The defaulting webhook injects it (so Glance can validate the `[keystone_authtoken]` tokens it receives); requiring it here catches a webhook-bypassed CR that dropped it. **Webhook-only.** |
 | Glance service-account target namespace | `spec.korc.serviceAccounts[].targetNamespace` (the `glance` entry) | `field.Invalid` | The `glance` account's `targetNamespace` must equal the namespace Glance is placed in when Glance has a dedicated namespace, and be empty or the ControlPlane's own namespace when Glance is co-located — its consumer credentials Secret rides that namespace's tenant store. **Cross-field, webhook-only.** |
 | Glance forbidden in External mode | `spec.services.glance` | `field.Forbidden` | `services.glance` set while `mode: External` (Glance needs its own External-mode design). **Cross-field, webhook-only.** |
+
+### ExtraConfig admission checks
+
+`spec.globalExtraConfig` and the per-service `services.<svc>.extraConfig` blocks
+are checked at admission by the validating webhook only. There is **no CEL or
+CRD-schema backstop** (beyond the External-mode forbid rule on
+`services.keystone.extraConfig` above), so a cluster that bypasses the webhook
+accepts a misspelled option and surfaces it at render time. The checks run on the
+**merged** result — `spec.globalExtraConfig` unioned with each service's block,
+the per-service value winning per key — which is the same map the reconciler
+projects, so admission and projection never disagree. Findings are computed once
+on the merged map and attributed back to every block that carries the offending
+`(section, key)`: an error anchored at `spec.globalExtraConfig[<section>][<key>]`
+and/or `spec.services.<svc>.extraConfig[<section>][<key>]`. A key present in both
+blocks yields one error per path. Because `spec.globalExtraConfig` reaches every
+declared INI service, a Keystone-only option placed there is rejected while
+`services.glance` is declared; the fix is to move it to
+`services.keystone.extraConfig`.
+
+Two families run, with different gating:
+
+- **Shape and ownership** — un-gated, on every create **and** every update, since
+  it depends on nothing a regenerated catalog can invalidate. It rejects empty
+  section or key names in any INI block, and empty or non-Python-identifier
+  (`[A-Za-z_][A-Za-z0-9_]*`) setting names in the Horizon block. It rejects the
+  operator-owned keys the ControlPlane projects itself: Glance's
+  `[keystone_authtoken] password` (always), Horizon's `SECRET_KEY` and every
+  WebSSO / multi-domain setting (always — the ControlPlane projects `websso` /
+  `multiDomain` dynamically from the attached identity backends, so a collision is
+  not decidable at admission), and Keystone's `[federation] trusted_dashboard`
+  **only when** the ControlPlane derives a dashboard endpoint from
+  `services.horizon`. With no Horizon block that Keystone key is admitted with a
+  warning, supporting an externally-run dashboard doing WebSSO against the managed
+  Keystone. Every other operator-owned key is honored but produces an admission
+  warning naming the key, its owner, its impact, and the contributing block
+  path(s).
+- **Option catalog** — on every create, and on update **only when a catalog input
+  changed**: either INI block, `spec.openStackRelease`, `services.keystone.image`,
+  or a newly-declared service. So a stored CR whose `extraConfig` went
+  stale-invalid against a regenerated catalog is not rejected by an unrelated edit
+  such as a replicas bump. The merged block of each declared INI service is
+  validated against that service's per-release option catalog embedded in the
+  operator (Keystone's release resolved from `services.keystone.image.tag` when
+  the image override is set, otherwise `spec.openStackRelease`; Glance's from
+  `spec.openStackRelease`). An unknown section or option is rejected with the
+  section and key named; a deprecated-but-accepted option is admitted with a
+  warning naming its replacement. Plugin-registered sections are rejected as
+  unknown, because the ControlPlane has no `plugins` field and never sets
+  `spec.plugins` on a child; configure plugin sections on the service CR directly.
+  The check **fails open** with exactly one warning per service (and no error)
+  when no catalog resolves: a digest-pinned image, an unparseable tag, or a
+  release the operator build ships no catalog for.
+
+The catalogs consulted here are the ones embedded in the **c5c3-operator** build.
+A deployed service operator of a different build may embed a different catalog;
+the child service webhook remains the defense-in-depth check for that skew, and a
+skewed rejection surfaces as `KeystoneProjectionRejected` /
+`GlanceProjectionRejected` on the ControlPlane's conditions.
 
 ### Update-only immutability rules
 
