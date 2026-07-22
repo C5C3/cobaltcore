@@ -117,6 +117,140 @@ cache) is set — never both — for both `database` and `cache`.
 
 ---
 
+## Free-form service configuration
+
+The `ControlPlane` exposes the same free-form configuration escape hatch the
+service CRs carry, at two levels. `spec.globalExtraConfig` applies to every
+INI-configured service the control plane declares (Keystone and Glance today).
+`spec.services.<svc>.extraConfig` sets one service's own block. Both take the INI
+`map[section][key] = value` shape the child renders into its service config
+(`keystone.conf`, `glance-api.conf`). The dashboard is the exception:
+`spec.services.horizon.extraConfig` is a flat map of Django settings, covered in
+[Horizon settings are flat, not INI](#horizon-settings-are-flat-not-ini).
+
+```yaml
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: controlplane
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  # Applied to every INI service the control plane declares (Keystone, Glance):
+  globalExtraConfig:
+    database:
+      pool_timeout: "30"
+  services:
+    keystone:
+      extraConfig:
+        database:
+          pool_timeout: "60"           # wins over the global value for Keystone
+        token:
+          expiration: "43200"          # 12h instead of the default 1h
+    horizon:
+      extraConfig:
+        SESSION_TIMEOUT: 7200           # flat Django setting, not INI
+```
+
+The reconciler projects the merged INI result onto each INI service child's
+`spec.extraConfig`, and the Horizon block verbatim onto the dashboard child.
+
+### Merge semantics
+
+For each INI service the global and per-service blocks merge **key by key**, the
+per-service value winning. Whole sections are unioned: a per-service `[database]`
+block that sets only `pool_timeout` still inherits every other `[database]` key
+from the global block, and a global key with no per-service counterpart stays
+effective. In the example above Keystone renders `[database] pool_timeout = 60`
+(its own value), while a Glance service declared with no block of its own would
+render `30`, inherited from the global block.
+
+The option catalog that guards a service CR's own `spec.extraConfig` guards the
+merged result here too, so a global key must be valid against **every** declared
+INI service's catalog. Because `spec.globalExtraConfig` reaches Glance as well, a
+Keystone-only option placed there is rejected while `services.glance` is declared;
+the fix is to move that key to `spec.services.keystone.extraConfig`.
+
+### Horizon settings are flat, not INI
+
+The dashboard renders `local_settings.py`, so `spec.services.horizon.extraConfig`
+is a flat `map[setting] = value` of Django settings (`SESSION_TIMEOUT` above),
+projected verbatim onto the Horizon child. `spec.globalExtraConfig` is INI and
+never reaches the dashboard, and there is no merge for the Horizon block.
+
+### External keystone mode
+
+`spec.services.keystone.extraConfig` is forbidden when `services.keystone.mode`
+is `External`: no Keystone workload is deployed, so there is nothing to render.
+Both a CEL rule and the webhook reject it, with the message
+`services.keystone.extraConfig is forbidden when services.keystone.mode is External`.
+`spec.globalExtraConfig` stays legal but inert in External mode, the same posture
+`spec.globalPolicyOverrides` holds, since no INI-configured workload consumes it.
+Glance and Horizon are forbidden entirely in External mode, so their blocks
+cannot appear at all.
+
+### Admission checks
+
+The validating webhook runs two families of check at `ControlPlane` admission,
+using option catalogs and ownership registries embedded from the service API
+packages.
+
+**Shape and ownership** run on every create and every update. Empty section or
+key names in any INI block, and empty or non-Python-identifier setting names in
+the Horizon block, are rejected. Keys the ControlPlane projects itself are
+rejected outright: Glance's `[keystone_authtoken] password` (always), the Horizon
+`SECRET_KEY` and every WebSSO / multi-domain setting (always, since the
+ControlPlane projects those dynamically from the attached identity backends), and
+Keystone's `[federation] trusted_dashboard` **only when** the ControlPlane derives
+a dashboard endpoint from `services.horizon`. With no Horizon block that Keystone
+key is admitted with a warning, so an externally-run dashboard can still do WebSSO
+against the managed Keystone. Any other operator-owned key is honored but draws an
+admission warning naming the key, its owner, any impact, and the block that set it.
+
+**Option-catalog** validation runs on every create, and on update only when a
+catalog input changed: either INI block, `spec.openStackRelease`,
+`services.keystone.image`, or a newly-declared service. A replicas bump alone does
+not re-run it, so a stored CR whose `extraConfig` went stale-invalid against a
+regenerated catalog is not rejected by an unrelated edit. The merged result per
+INI service is checked against that service's per-release option catalog
+(Keystone's resolved from `services.keystone.image.tag` when the image is
+overridden, otherwise `spec.openStackRelease`; Glance's from
+`spec.openStackRelease`). Unknown sections and options are rejected; a
+deprecated-but-accepted option draws a warning naming its replacement. The check
+**fails open** with one warning per service and no error when no catalog resolves:
+a digest-pinned image, an unparseable tag, or a release the operator build ships
+no catalog for. Plugin-registered INI sections are rejected as unknown, because
+the ControlPlane has no plugins field and never sets `spec.plugins` on a child;
+configure plugin sections on the service CR directly. Neither family has a CEL or
+CRD-schema backstop; both live only in the webhook.
+
+Rejections name the block that carries the offending key. A finding is computed
+once on the merged config, then attributed to every contributing path:
+`spec.globalExtraConfig[<section>][<key>]` and
+`spec.services.<svc>.extraConfig[<section>][<key>]`. A key present in both blocks
+yields one error per path.
+
+::: warning The projected children are operator-owned
+The merged INI result and the Horizon block are re-asserted on the service
+children on every reconcile. While no `ControlPlane` block is set the projection
+carries no `extraConfig`, so a value set directly on a child stays untouched. Once
+you set any `ControlPlane` block, the projection owns the child's field: a direct
+edit on the child is reverted on the next reconcile. Clearing every `ControlPlane`
+block projects nothing and the child's field reverts to unset. Configure the
+free-form config on the `ControlPlane`, not on the child.
+:::
+
+### Catalog skew across operator builds
+
+The catalogs consulted at `ControlPlane` admission are the ones embedded in the
+**c5c3-operator** build. A deployed service operator of a different build may
+embed a different catalog. The service CR's own validating webhook stays the
+defense-in-depth check for that skew: when it rejects the projected child, the
+ControlPlane surfaces `KeystoneProjectionRejected` or `GlanceProjectionRejected`
+on its conditions, making a skewed rejection visible.
+
+---
+
 ## Feature pointer table
 
 Everything else the control plane supports. One-line hints, the ControlPlane knob
@@ -134,7 +268,7 @@ full Keystone CR reference.
 | Database TLS/mTLS | `spec.database.tls` | `spec.infrastructure.database.tls` | [Enable Keystone Database TLS/mTLS](./keystone/enable-keystone-database-tls.md) |
 | Autoscaling (HPA) | `spec.autoscaling` | not exposed — standalone-only | [Autoscaling (HPA)](#autoscaling-hpa) |
 | Network policy | `spec.networkPolicy` | not exposed — standalone-only | [Network policy](#network-policy) |
-| Free-form INI (`extraConfig`) | `spec.extraConfig` | not exposed — standalone-only | [ExtraConfig](#extraconfig-free-form-ini-sections) |
+| Free-form config (`extraConfig`) | `spec.extraConfig` | `spec.services.<svc>.extraConfig` (+ `spec.globalExtraConfig`) | [Free-form service configuration](#free-form-service-configuration) |
 | Scheduled admin-password rotation | `spec.passwordRotation` | not exposed — standalone-only | [Schedule Admin Password Rotation](./keystone/keystone-admin-password-scheduled-rotation.md) |
 | uWSGI tuning | `spec.uwsgi` | not exposed — standalone-only | [UWSGISpec](../reference/keystone/keystone-crd.md#uwsgispec) |
 | Logging | `spec.logging` | not exposed — standalone-only | [LoggingSpec](../reference/keystone/keystone-crd.md#loggingspec) |
@@ -157,10 +291,12 @@ The "not exposed — standalone-only" knobs are not projectable through the
 
 On the [Quick Start](../quick-start.md) / [Quick Start (Extended)](../quick-start-extended.md)
 devstacks a standalone Keystone CR named `keystone` runs with no ControlPlane
-projecting it. The recipes below apply to that CR. Several of them —
-`spec.autoscaling`, `spec.networkPolicy`, `spec.extraConfig` — are **not exposed
-on the `ControlPlane` CRD today**, so a standalone Keystone is the only place they
-can be set.
+projecting it. The recipes below apply to that CR. Two of them —
+`spec.autoscaling` and `spec.networkPolicy` — are **not exposed on the
+`ControlPlane` CRD today**, so a standalone Keystone is the only place they can be
+set. `spec.extraConfig` is exposed on the ControlPlane, through
+[Free-form service configuration](#free-form-service-configuration); the recipe
+below is the standalone equivalent.
 
 ### Brownfield database
 
@@ -306,11 +442,14 @@ for the auto-derived egress rules (Keystone API → MariaDB, Memcached, DNS).
 
 ### ExtraConfig — free-form INI sections
 
-`spec.extraConfig` is not exposed on the `ControlPlane` CRD today, so it is
-standalone-only. The typed fields on the CR cover the supported configuration
-surface. For everything else — logging levels, oslo.messaging tuning, experimental
-Keystone flags — `spec.extraConfig` takes a `map[section][key] = value` that is
-rendered into the generated `keystone.conf`.
+On a standalone Keystone CR you set `spec.extraConfig` directly. On a ControlPlane
+the equivalent surface is `spec.globalExtraConfig` plus
+`spec.services.<svc>.extraConfig` (see
+[Free-form service configuration](#free-form-service-configuration)). The typed
+fields on the CR cover the supported configuration surface. For everything else —
+logging levels, oslo.messaging tuning, experimental Keystone flags —
+`spec.extraConfig` takes a `map[section][key] = value` that is rendered into the
+generated `keystone.conf`.
 
 For the INI-file services (Keystone, Glance) the operator renders configuration
 through a single precedence chain: `plugins < operator defaults <
