@@ -1,0 +1,117 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test pinning the default-state non-regression invariant for the
+# dizzy observability kind opt-in: when WITH_DIZZY is unset (or set to anything
+# other than the literal string "true"), `make deploy-infra` MUST NOT install
+# the dizzy Namespace, the VictoriaMetrics/Grafana HelmRepositories, or the
+# dizzy HelmReleases.
+#
+# Why this test exists
+#   The shell unit tests (tests/unit/hack/deploy_infra_dizzy_flag_test.sh,
+#   tests/unit/deploy/dizzy_overlay_test.sh) exercise the gating logic and
+#   overlay render at the source level. Neither positively asserts "default
+#   cluster has no dizzy footprint", so a regression that accidentally installs
+#   it (a stray `kubectl apply -k deploy/kind/dizzy` outside the WITH_DIZZY gate,
+#   or a future kustomize merge that pulls the overlay into the base) would slip
+#   through. This suite closes that gap by asserting absence end-to-end against
+#   the running cluster, mirroring the sibling no-metrics-server-when-disabled
+#   suite.
+#
+# Lane wiring:
+#   This test runs in the default e2e-infra lane (which exercises
+#   `make deploy-infra` without WITH_DIZZY), so the absence assertions hold.
+#   There is no CI lane that opts the flag on today, so this negative gate is the
+#   primary end-to-end coverage of the default posture.
+#
+# Scope gating — none. This absence invariant is also true on production
+# overlays (deploy/flux-system/ does not install the dizzy stack at all), so the
+# test is environment-agnostic like no-metrics-server-when-disabled.
+#
+# Why a single script and not declarative `error` blocks: asserting "no
+# HelmRelease named dizzy-* in any namespace" requires a list-and-filter, which
+# is more naturally expressed in shell. Consolidating into one script also keeps
+# the catch-block dump aligned with the assertion sequence.
+#
+---
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: no-dizzy-when-disabled
+spec:
+  # Namespace get, two helmrepository gets, two helmrelease list counts, plus a
+  # diagnostic dump on failure. Realistic worst case is sub-second; budget 2m
+  # for cluster slowness margin.
+  timeouts:
+    assert: 2m
+    exec: 2m
+  steps:
+  - try:
+    - script:
+        timeout: 2m
+        # Chainsaw defaults to `sh`, which rejects `set -o pipefail`. Pin bash
+        # to match the rest of the infra/keystone e2e scripts.
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          # ── Assertion 1: no dizzy Namespace ──
+          # The only producer is deploy/kind/dizzy/namespace.yaml, applied solely
+          # inside the WITH_DIZZY=true gate.
+          if kubectl get namespace dizzy >/dev/null 2>&1; then
+            echo "FAIL: Namespace 'dizzy' exists on a default cluster."
+            echo "      Source of regression: hack/deploy-infra.sh ran the dizzy overlay"
+            echo "      apply outside the WITH_DIZZY gate, or the overlay was pulled into"
+            echo "      deploy/kind/base."
+            exit 1
+          fi
+          echo "OK: no Namespace 'dizzy'"
+
+          # ── Assertion 2: no dizzy HelmRepositories in flux-system ──
+          # The only producers are deploy/kind/dizzy/source-{victoria-metrics,
+          # grafana}.yaml, applied solely inside the WITH_DIZZY=true gate.
+          for repo in victoria-metrics grafana; do
+            if kubectl get helmrepository.source.toolkit.fluxcd.io "${repo}" \
+                  -n flux-system >/dev/null 2>&1; then
+              echo "FAIL: HelmRepository '${repo}' exists in 'flux-system' on a default cluster."
+              echo "      Source of regression: the dizzy overlay was applied without"
+              echo "      WITH_DIZZY=true, or a source was pulled into deploy/flux-system."
+              exit 1
+            fi
+            echo "OK: no HelmRepository '${repo}' in 'flux-system'"
+          done
+
+          # ── Assertion 3: no dizzy HelmReleases anywhere ──
+          # `kubectl get -A -o name` returns 0 even when the list is empty; we
+          # count lines rather than relying on exit codes.
+          for rel in dizzy-victoria-metrics dizzy-grafana; do
+            hr_count=$(kubectl get helmrelease.helm.toolkit.fluxcd.io --all-namespaces \
+              --field-selector=metadata.name="${rel}" \
+              -o name 2>/dev/null | wc -l | tr -d '[:space:]')
+            if [ "${hr_count}" != "0" ]; then
+              echo "FAIL: HelmRelease '${rel}' exists (count=${hr_count}) on a default cluster."
+              kubectl get helmrelease.helm.toolkit.fluxcd.io --all-namespaces \
+                --field-selector=metadata.name="${rel}" -o wide 2>&1 || true
+              exit 1
+            fi
+            echo "OK: no HelmRelease '${rel}' exists"
+          done
+
+          echo "PASS: default kind deploy footprint matches the WITH_DIZZY=false contract."
+    catch:
+    # On failure, dump the cluster's dizzy footprint for triage. Each block is
+    # independently scoped so a missing resource does not short-circuit the rest
+    # of the dump.
+    - script:
+        content: |
+          echo "=== Namespace dizzy ==="
+          kubectl get namespace dizzy -o wide 2>&1 || true
+          echo "=== HelmRepositories dizzy sources (flux-system) ==="
+          kubectl get helmrepository.source.toolkit.fluxcd.io -n flux-system \
+            victoria-metrics grafana -o wide 2>&1 || true
+          echo "=== HelmReleases named dizzy-* (any namespace) ==="
+          kubectl get helmrelease.helm.toolkit.fluxcd.io --all-namespaces \
+            --field-selector=metadata.name=dizzy-victoria-metrics -o wide 2>&1 || true
+          kubectl get helmrelease.helm.toolkit.fluxcd.io --all-namespaces \
+            --field-selector=metadata.name=dizzy-grafana -o wide 2>&1 || true
